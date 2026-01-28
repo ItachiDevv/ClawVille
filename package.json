@@ -1,0 +1,33 @@
+{
+  "name": "elizapets",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "db:migrate": "bun run --filter @elizapets/database migrate",
+    "db:push": "bun run --filter @elizapets/database push",
+    "db:seed": "bun run scripts/seed-locations.ts",
+    "db:studio": "bun run --filter @elizapets/database studio",
+    "clean": "turbo run clean && rm -rf node_modules"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "dotenv": "^17.2.3",
+    "prettier": "^3.2.0",
+    "turbo": "^2.0.0",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "packageManager": "bun@1.0.25",
+  "dependencies": {
+    "pg": "^8.17.2"
+  }
+}
