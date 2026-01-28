@@ -1,0 +1,97 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 142 30% 28%;
+    --foreground: 0 0% 100%;
+  }
+
+  body {
+    background: linear-gradient(135deg, #2E5E34 0%, #3A7D44 50%, #2E5E34 100%);
+    min-height: 100vh;
+  }
+}
+
+/* LegacyTheme star background pattern */
+.star-bg {
+  background-color: #3A7D44;
+  background-image:
+    radial-gradient(circle, #8BC34A 1px, transparent 1px),
+    radial-gradient(circle, #7CB342 1px, transparent 1px);
+  background-size: 40px 40px, 60px 60px;
+  background-position: 0 0, 20px 30px;
+}
+
+/* Yellow panel styling */
+.legacytheme-panel {
+  background: linear-gradient(180deg, #FFE066 0%, #FFD700 100%);
+  border: 3px solid #D4A900;
+  border-radius: 12px;
+  box-shadow: 3px 3px 0px rgba(0, 0, 0, 0.3), inset 2px 2px 0px rgba(255, 255, 255, 0.3);
+  padding: 16px;
+}
+
+/* Cartoon border style */
+.cartoon-border {
+  border: 3px solid #333;
+  border-radius: 12px;
+  box-shadow: 3px 3px 0px rgba(0, 0, 0, 0.3);
+}
+
+/* Species selector card */
+.species-card {
+  @apply cursor-pointer transition-all duration-200;
+  border: 3px solid transparent;
+  border-radius: 12px;
+  padding: 8px;
+}
+.species-card:hover {
+  border-color: #FFD700;
+  transform: translateY(-2px);
+}
+.species-card.selected {
+  border-color: #FFD700;
+  background: rgba(255, 215, 0, 0.2);
+  box-shadow: 0 0 12px rgba(255, 215, 0, 0.4);
+}
+
+/* Color button */
+.color-btn {
+  @apply font-bold uppercase tracking-wider px-6 py-2 text-white transition-all;
+  border: 3px solid rgba(0, 0, 0, 0.3);
+  border-radius: 8px;
+  text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
+}
+.color-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+}
+.color-btn.selected {
+  box-shadow: 0 0 0 3px #FFD700, 0 4px 8px rgba(0, 0, 0, 0.3);
+}
+
+/* Chat panel slide-in */
+.chat-panel-enter {
+  animation: slideInRight 0.3s ease-out;
+}
+
+@keyframes slideInRight {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* Game canvas container */
+.game-container {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  position: relative;
+}

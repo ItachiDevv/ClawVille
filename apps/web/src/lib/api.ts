@@ -1,0 +1,109 @@
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
+
+async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    ...options,
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      ...options?.headers,
+    },
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Request failed' }));
+    throw new Error(err.error || `HTTP ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export const api = {
+  // Auth
+  signup: (data: { email: string; password: string; name?: string }) =>
+    request<{ success: boolean }>('/api/auth/signup', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  login: (data: { email: string; password: string }) =>
+    request<{ success: boolean }>('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  logout: () =>
+    request<{ success: boolean }>('/api/auth/logout', { method: 'POST' }),
+
+  me: () =>
+    request<{ user: { id: string; email: string; name: string } }>('/api/auth/me'),
+
+  // Pets
+  createPet: (data: {
+    name: string;
+    species: string;
+    color: string;
+    gender: string;
+    personality: { habitat: string; hobby: string; greeting: string };
+  }) =>
+    request<{ pet: any }>('/api/pets', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  getMyPet: () => request<{ pet: any }>('/api/pets/me'),
+
+  updatePetPosition: (positionX: number, positionY: number) =>
+    request<{ pet: any }>('/api/pets/me', {
+      method: 'PATCH',
+      body: JSON.stringify({ positionX, positionY }),
+    }),
+
+  checkPetName: (name: string) =>
+    request<{ available: boolean; reason?: string }>(`/api/pets/check-name/${name}`),
+
+  // Locations
+  getLocations: () => request<{ locations: any[] }>('/api/locations'),
+
+  getLocationAgent: (locationId: string) =>
+    request<{ agent: any }>(`/api/locations/${locationId}/agent`),
+
+  saveLocationAgent: (
+    locationId: string,
+    data: {
+      agentName: string;
+      characterConfig: {
+        name: string;
+        personality: string;
+        bio: string;
+        greeting: string;
+        tone: string;
+        topics: string[];
+        rules: string[];
+        style: string[];
+      };
+    }
+  ) =>
+    request<{ agent: any }>(`/api/locations/${locationId}/agent`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  deleteLocationAgent: (locationId: string) =>
+    request<{ success: boolean }>(`/api/locations/${locationId}/agent`, {
+      method: 'DELETE',
+    }),
+
+  // Chat
+  sendChat: (locationId: string, content: string) =>
+    request<{ message: { role: string; content: string; timestamp: string } }>(
+      `/api/locations/${locationId}/chat`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ content }),
+      }
+    ),
+
+  getChatHistory: (locationId: string) =>
+    request<{ messages: any[] }>(`/api/locations/${locationId}/chat/history`),
+};
