@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "strict": true,
+    "strictNullChecks": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "baseUrl": ".",
+    "typeRoots": ["./node_modules/@types"],
+    "paths": {
+      "@legacyapp/database": ["packages/database/src"],
+      "@legacyapp/shared": ["packages/shared/src"],
+      "@legacyapp/agent-runtime": ["packages/agent-runtime/src"],
+      "@legacyapp/agent-templates": ["packages/agent-templates/src"]
+    }
+  },
+  "exclude": ["node_modules", "dist", ".next"]
+}
