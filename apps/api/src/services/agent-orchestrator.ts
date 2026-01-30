@@ -86,15 +86,20 @@ class AgentOrchestrator {
 
     try {
       const customization = (agent.customization as Record<string, unknown>) ?? {};
+      const isAvatarAgent = agent.type === 'avatar-agent';
 
       const runtime: ElizaRuntime = createElizaRuntime({
         agentId,
-        agentType: 'location-agent',
+        agentType: isAvatarAgent ? 'avatar-agent' : 'location-agent',
         customization: {
-          name: customization.name as string | undefined,
+          name: agent.name,
           personality: customization.personality as string | undefined,
+          bio: customization.bio as string | undefined,
+          greeting: customization.greeting as string | undefined,
           rules: customization.rules as string[] | undefined,
           tone: customization.tone as 'formal' | 'casual' | 'friendly' | 'professional' | undefined,
+          topics: customization.topics as string[] | undefined,
+          style: customization.style as string[] | undefined,
         },
         agentConfig: (agent.config as Record<string, unknown>) ?? {},
         databaseUrl: process.env.DATABASE_URL,

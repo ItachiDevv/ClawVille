@@ -33,6 +33,10 @@ export const petsRelations = relations(avatars, ({ one }) => ({
     fields: [avatars.userId],
     references: [users.id],
   }),
+  agent: one(agents, {
+    fields: [avatars.platformAgentId],
+    references: [agents.id],
+  }),
 }));
 
 export const agentsRelations = relations(agents, ({ one, many }) => ({

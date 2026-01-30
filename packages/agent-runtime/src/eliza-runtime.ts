@@ -54,15 +54,16 @@ function generateRoomId(agentId: string, userId: string): UUID {
 
 export interface ElizaRuntimeConfig {
   agentId: string;
-  agentType: string;
+  agentType: 'location-agent' | 'avatar-agent' | string;
   customization?: {
     name?: string;
     personality?: string;
     bio?: string;
     greeting?: string;
     rules?: string[];
-    tone?: 'formal' | 'casual' | 'friendly' | 'professional';
+    tone?: 'formal' | 'casual' | 'friendly' | 'professional' | 'playful';
     topics?: string[];
+    adjectives?: string[];
     style?: string[];
   };
   agentConfig: Record<string, unknown>;
@@ -157,9 +158,66 @@ export class ElizaRuntime {
   constructor(config: ElizaRuntimeConfig) {
     this.config = config;
 
-    const locationId = (config.agentConfig?.locationId as string) || 'potion-shop';
-    const template = loadLocationTemplate(locationId);
-    this.character = convertToElizaCharacter(template, config);
+    if (config.agentType === 'avatar-agent') {
+      // Avatar agents use customization directly, no template
+      this.character = this.buildPetCharacter(config);
+    } else {
+      // Location agents load from templates
+      const locationId = (config.agentConfig?.locationId as string) || 'potion-shop';
+      const template = loadLocationTemplate(locationId);
+      this.character = convertToElizaCharacter(template, config);
+    }
+  }
+
+  private buildPetCharacter(config: ElizaRuntimeConfig): Character {
+    const { customization } = config;
+    const name = customization?.name || 'Avatar';
+    const species = (config.agentConfig?.species as string) || 'creature';
+
+    const bio = customization?.bio || `A friendly ${species} companion.`;
+
+    let system = `You are ${name}, a ${species} avatar in the world of LegacyApp. You are a virtual companion who loves to chat with your owner.`;
+    if (customization?.personality) {
+      system += `\n\nPersonality: ${customization.personality}`;
+    }
+    if (customization?.greeting) {
+      system += `\n\nWhen greeting your owner, say something like: "${customization.greeting}"`;
+    }
+    if (customization?.rules?.length) {
+      system += `\n\nRules to follow:\n${customization.rules.map((r) => `- ${r}`).join('\n')}`;
+    }
+    if (customization?.tone) {
+      system += `\n\nCommunication tone: ${customization.tone}`;
+    }
+
+    const plugins: string[] = [
+      '@elizaos/plugin-anthropic',
+      '@elizaos/plugin-openai',
+      '@elizaos/plugin-bootstrap',
+      '@elizaos/plugin-sql',
+    ];
+
+    return {
+      id: undefined,
+      name,
+      username: name.toLowerCase().replace(/\s+/g, '-'),
+      system,
+      bio,
+      messageExamples: [],
+      postExamples: [],
+      topics: customization?.topics || ['avatars', 'games', 'adventures'],
+      adjectives: customization?.adjectives || ['friendly', 'playful', 'curious'],
+      knowledge: [],
+      plugins,
+      settings: {
+        model: 'claude-3-5-haiku-20241022',
+      },
+      style: {
+        all: customization?.style || ['Be friendly and engaging', 'Use playful language'],
+        chat: [],
+        post: [],
+      },
+    };
   }
 
   async start(): Promise<void> {

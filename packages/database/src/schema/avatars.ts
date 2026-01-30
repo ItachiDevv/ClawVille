@@ -8,6 +8,7 @@ import {
   integer,
 } from 'drizzle-orm/pg-core';
 import { users } from './users';
+import { platformAgents } from './agents';
 
 export const petSpeciesEnum = pgEnum('avatar_species', [
   'cat', 'dragon', 'fox', 'owl', 'wolf', 'bunny', 'phoenix', 'turtle',
@@ -31,6 +32,21 @@ export interface PetStatsJson {
   movement: number;
 }
 
+/** ElizaOS-compatible character config for avatar agents */
+export interface PetCharacterConfigJson {
+  bio: string;
+  greeting: string;
+  personality: string;
+  tone: 'formal' | 'casual' | 'friendly' | 'playful';
+  topics: string[];
+  adjectives: string[];
+  rules: string[];
+  style: string[];
+  messageExamples?: Array<{ user: string; content: string }[]>;
+  lore?: string[];
+  knowledge?: string[];
+}
+
 export const avatars = pgTable('avatars', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id')
@@ -43,6 +59,11 @@ export const avatars = pgTable('avatars', {
   gender: petGenderEnum('gender').notNull(),
   personality: jsonb('personality').$type<PetPersonalityJson>().notNull(),
   stats: jsonb('stats').$type<PetStatsJson>().notNull(),
+  /** ElizaOS character config - defines the avatar's AI personality */
+  characterConfig: jsonb('character_config').$type<PetCharacterConfigJson>(),
+  /** Link to platform_agents table for ElizaOS runtime */
+  platformAgentId: uuid('platform_agent_id')
+    .references(() => platformAgents.id, { onDelete: 'set null' }),
   positionX: integer('position_x').default(400).notNull(),
   positionY: integer('position_y').default(250).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),

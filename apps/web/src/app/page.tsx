@@ -23,8 +23,15 @@ export default function HomePage() {
           </Link>
 
           <Link
-            href="/login"
+            href="/login?mode=signup"
             className="color-btn bg-legacytheme-blue hover:bg-blue-700 text-center text-lg"
+          >
+            Sign Up
+          </Link>
+
+          <Link
+            href="/login"
+            className="color-btn bg-white hover:bg-gray-100 text-gray-800 border-2 border-gray-300 text-center text-lg"
           >
             Login
           </Link>

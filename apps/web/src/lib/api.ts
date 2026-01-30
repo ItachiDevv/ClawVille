@@ -45,13 +45,33 @@ export const api = {
     color: string;
     gender: string;
     personality: { habitat: string; hobby: string; greeting: string };
+    characterConfig: {
+      bio: string;
+      greeting: string;
+      personality: string;
+      tone: 'formal' | 'casual' | 'friendly' | 'playful';
+      topics: string[];
+      adjectives: string[];
+      rules: string[];
+      style: string[];
+    };
   }) =>
-    request<{ avatar: any }>('/api/avatars', {
+    request<{ avatar: any; agentId: string }>('/api/avatars', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
 
   getMyAvatar: () => request<{ avatar: any }>('/api/avatars/me'),
+
+  // Avatar chat (chat with your own avatar)
+  sendPetChat: (content: string) =>
+    request<{ message: { role: string; content: string; timestamp: string } }>(
+      '/api/avatars/me/chat',
+      {
+        method: 'POST',
+        body: JSON.stringify({ content }),
+      }
+    ),
 
   updatePetPosition: (positionX: number, positionY: number) =>
     request<{ avatar: any }>('/api/avatars/me', {
