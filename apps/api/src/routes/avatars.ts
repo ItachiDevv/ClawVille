@@ -1,15 +1,28 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq } from 'drizzle-orm';
-import { db, avatars } from '@legacyapp/database';
+import { db, avatars, agents } from '@legacyapp/database';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
+import { agentOrchestrator } from '../services/agent-orchestrator';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 
 export const avatarRoutes = new Hono<AppContext>();
 
 avatarRoutes.use('*', sessionMiddleware);
+
+// Character config schema for ElizaOS agent
+const characterConfigSchema = z.object({
+  bio: z.string().min(10).max(500),
+  greeting: z.string().min(1).max(200),
+  personality: z.string().min(10).max(300),
+  tone: z.enum(['formal', 'casual', 'friendly', 'playful']),
+  topics: z.array(z.string().max(50)).min(1).max(10),
+  adjectives: z.array(z.string().max(30)).min(1).max(10),
+  rules: z.array(z.string().max(100)).max(5).default([]),
+  style: z.array(z.string().max(100)).max(5).default([]),
+});
 
 // Create avatar schema
 const createAvatarSchema = z.object({
@@ -22,6 +35,7 @@ const createAvatarSchema = z.object({
     hobby: z.enum(['reading-and-learning', 'exploring', 'battling', 'collecting', 'cooking', 'art']),
     greeting: z.enum(['run-away', 'wave-hello', 'tackle-hug', 'shy-peek', 'bow-politely', 'roar']),
   }),
+  characterConfig: characterConfigSchema,
 });
 
 // Calculate stats from personality
@@ -64,7 +78,7 @@ function calculateStats(personality: z.infer<typeof createAvatarSchema>['persona
   };
 }
 
-// Create avatar (one per user)
+// Create avatar (one per user) - also creates ElizaOS agent
 avatarRoutes.post('/', requireAuth, async (c) => {
   const user = c.get('user');
   const body = await c.req.json();
@@ -94,6 +108,20 @@ avatarRoutes.post('/', requireAuth, async (c) => {
 
   const stats = calculateStats(result.data.personality);
 
+  // Create the platform agent record first
+  const [agent] = await db.insert(agents).values({
+    userId: user.id,
+    name: result.data.name,
+    type: 'avatar-agent',
+    status: 'pending',
+    config: {
+      species: result.data.species,
+      color: result.data.color,
+    },
+    customization: result.data.characterConfig,
+  }).returning();
+
+  // Create avatar linked to the agent
   const [avatar] = await db.insert(avatars).values({
     userId: user.id,
     name: result.data.name,
@@ -102,9 +130,11 @@ avatarRoutes.post('/', requireAuth, async (c) => {
     gender: result.data.gender,
     personality: result.data.personality,
     stats,
+    characterConfig: result.data.characterConfig,
+    platformAgentId: agent.id,
   }).returning();
 
-  return c.json({ avatar });
+  return c.json({ avatar, agentId: agent.id });
 });
 
 // Get user's avatar
@@ -167,4 +197,57 @@ avatarRoutes.get('/check-name/:name', sessionMiddleware, async (c) => {
   });
 
   return c.json({ available: !existing });
+});
+
+// Chat with your avatar
+const avatarChatSchema = z.object({
+  content: z.string().min(1).max(4000),
+});
+
+avatarRoutes.post('/me/chat', requireAuth, async (c) => {
+  const user = c.get('user');
+  const body = await c.req.json();
+  const result = avatarChatSchema.safeParse(body);
+
+  if (!result.success) {
+    throw new HTTPException(400, { message: 'Message must be 1-4000 characters' });
+  }
+
+  // Get user's avatar
+  const avatar = await db.query.avatars.findFirst({
+    where: eq(avatars.userId, user.id),
+  });
+
+  if (!avatar) {
+    throw new HTTPException(404, { message: 'You do not have a avatar yet' });
+  }
+
+  if (!avatar.platformAgentId) {
+    throw new HTTPException(400, { message: 'Avatar does not have an agent configured' });
+  }
+
+  // Ensure agent runtime is running (lazy-start)
+  const runtime = await agentOrchestrator.ensureAgentRuntime(
+    avatar.platformAgentId,
+    user.id
+  );
+
+  if (!runtime) {
+    throw new HTTPException(500, { message: 'Failed to start avatar agent runtime' });
+  }
+
+  // Process message
+  const response = await runtime.processMessage(result.data.content, {
+    userId: user.id,
+    roomId: `avatar-${avatar.id}-${user.id}`,
+    platform: 'legacyapp',
+  });
+
+  return c.json({
+    message: {
+      role: 'assistant' as const,
+      content: response.content,
+      timestamp: response.timestamp.toISOString(),
+    },
+  });
 });
