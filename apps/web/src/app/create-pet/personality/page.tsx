@@ -84,6 +84,23 @@ interface Step1Data {
   gender: string;
 }
 
+const TONE_OPTIONS = [
+  { value: 'friendly', label: 'Friendly' },
+  { value: 'playful', label: 'Playful' },
+  { value: 'casual', label: 'Casual' },
+  { value: 'formal', label: 'Formal' },
+];
+
+const SUGGESTED_TOPICS = [
+  'adventures', 'food', 'games', 'nature', 'magic', 'friendship',
+  'exploring', 'treasure', 'stories', 'jokes', 'dreams', 'secrets'
+];
+
+const SUGGESTED_ADJECTIVES = [
+  'friendly', 'curious', 'playful', 'brave', 'shy', 'clever',
+  'loyal', 'mischievous', 'gentle', 'energetic', 'mysterious', 'wise'
+];
+
 export default function PersonalityPage() {
   const router = useRouter();
   const createPetMutation = useCreatePet();
@@ -91,8 +108,18 @@ export default function PersonalityPage() {
   const [step1, setStep1] = useState<Step1Data | null>(null);
   const [habitat, setHabitat] = useState('forest');
   const [hobby, setHobby] = useState('reading-and-learning');
-  const [greeting, setGreeting] = useState('run-away');
+  const [greetingStyle, setGreetingStyle] = useState('run-away');
   const [error, setError] = useState('');
+
+  // Character config fields (for ElizaOS agent)
+  const [bio, setBio] = useState('');
+  const [greetingMessage, setGreetingMessage] = useState('');
+  const [personalityDesc, setPersonalityDesc] = useState('');
+  const [tone, setTone] = useState('friendly');
+  const [topics, setTopics] = useState<string[]>(['adventures', 'games']);
+  const [adjectives, setAdjectives] = useState<string[]>(['friendly', 'curious']);
+  const [topicInput, setTopicInput] = useState('');
+  const [adjectiveInput, setAdjectiveInput] = useState('');
 
   // Load step 1 data from sessionStorage
   useEffect(() => {
@@ -112,14 +139,14 @@ export default function PersonalityPage() {
   const stats = useMemo(() => {
     const h = HABITAT_STATS[habitat] ?? { s: 0, d: 0, m: 0 };
     const ho = HOBBY_STATS[hobby] ?? { s: 0, d: 0, m: 0 };
-    const g = GREETING_STATS[greeting] ?? { s: 0, d: 0, m: 0 };
+    const g = GREETING_STATS[greetingStyle] ?? { s: 0, d: 0, m: 0 };
 
     return {
       strength: h.s + ho.s + g.s,
       defence: h.d + ho.d + g.d,
       movement: h.m + ho.m + g.m,
     };
-  }, [habitat, hobby, greeting]);
+  }, [habitat, hobby, greetingStyle]);
 
   const maxStat = 15; // theoretical max per stat (5+4+4 for strength via mountain+battling+roar)
 
@@ -127,13 +154,45 @@ export default function PersonalityPage() {
     if (!step1) return;
     setError('');
 
+    // Validate required character config fields
+    if (!bio || bio.length < 10) {
+      setError('Please write a bio (at least 10 characters)');
+      return;
+    }
+    if (!greetingMessage) {
+      setError('Please write a greeting message');
+      return;
+    }
+    if (!personalityDesc || personalityDesc.length < 10) {
+      setError('Please describe your pet\'s personality (at least 10 characters)');
+      return;
+    }
+    if (topics.length === 0) {
+      setError('Please select at least one topic');
+      return;
+    }
+    if (adjectives.length === 0) {
+      setError('Please select at least one adjective');
+      return;
+    }
+
     try {
       await createPetMutation.mutateAsync({
         name: step1.name,
         species: step1.species,
         color: step1.color,
         gender: step1.gender,
-        personality: { habitat, hobby, greeting },
+        personality: { habitat, hobby, greeting: greetingStyle },
+        characterConfig: {
+          bio,
+          greeting: greetingMessage,
+          personality: personalityDesc,
+          tone: tone as 'formal' | 'casual' | 'friendly' | 'playful',
+          topics,
+          adjectives,
+          rules: [],
+          style: [],
+        },
       });
 
       sessionStorage.removeItem('createPetStep1');
@@ -141,6 +200,30 @@ export default function PersonalityPage() {
     } catch (err: any) {
       setError(err.message || 'Failed to create pet');
     }
+  }
+
+  function addTopic(topic: string) {
+    const t = topic.trim().toLowerCase();
+    if (t && !topics.includes(t) && topics.length < 10) {
+      setTopics([...topics, t]);
+    }
+    setTopicInput('');
+  }
+
+  function removeTopic(topic: string) {
+    setTopics(topics.filter((t) => t !== topic));
+  }
+
+  function addAdjective(adj: string) {
+    const a = adj.trim().toLowerCase();
+    if (a && !adjectives.includes(a) && adjectives.length < 10) {
+      setAdjectives([...adjectives, a]);
+    }
+    setAdjectiveInput('');
+  }
+
+  function removeAdjective(adj: string) {
+    setAdjectives(adjectives.filter((a) => a !== adj));
   }
 
   if (!step1) {
@@ -231,14 +314,14 @@ export default function PersonalityPage() {
             </select>
           </div>
 
-          {/* Greeting */}
+          {/* Greeting Style */}
           <div>
             <label className="block font-bold text-gray-800 mb-1">
               How does your pet greet others?
             </label>
             <select
-              value={greeting}
-              onChange={(e) => setGreeting(e.target.value)}
+              value={greetingStyle}
+              onChange={(e) => setGreetingStyle(e.target.value)}
               className="w-full px-3 py-2 rounded-lg border-3 border-neopets-panel-border bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-neopets-green"
             >
               {GREETING_OPTIONS.map((opt) => (
@@ -247,6 +330,186 @@ export default function PersonalityPage() {
                 </option>
               ))}
             </select>
+          </div>
+        </div>
+      </div>
+
+      {/* AI PERSONALITY section */}
+      <div className="w-full max-w-xl mb-4">
+        <div className="flex justify-end mb-1">
+          <span className="neopets-panel px-4 py-1 font-bold text-gray-900 uppercase tracking-wide text-sm">
+            AI Personality
+          </span>
+        </div>
+        <div className="neopets-panel space-y-4">
+          {/* Bio */}
+          <div>
+            <label className="block font-bold text-gray-800 mb-1">
+              Tell us about your pet (Bio)
+            </label>
+            <textarea
+              value={bio}
+              onChange={(e) => setBio(e.target.value)}
+              maxLength={500}
+              rows={3}
+              className="w-full px-3 py-2 rounded-lg border-3 border-neopets-panel-border bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-neopets-green resize-none"
+              placeholder={`${step1?.name || 'My pet'} is a ${step1?.species || 'creature'} who loves...`}
+            />
+            <p className="text-xs text-gray-600 mt-1">{bio.length}/500</p>
+          </div>
+
+          {/* Greeting Message */}
+          <div>
+            <label className="block font-bold text-gray-800 mb-1">
+              How does your pet say hello?
+            </label>
+            <input
+              type="text"
+              value={greetingMessage}
+              onChange={(e) => setGreetingMessage(e.target.value)}
+              maxLength={200}
+              className="w-full px-3 py-2 rounded-lg border-3 border-neopets-panel-border bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-neopets-green"
+              placeholder="Hey there! Ready for an adventure?"
+            />
+          </div>
+
+          {/* Personality Description */}
+          <div>
+            <label className="block font-bold text-gray-800 mb-1">
+              Describe your pet's personality
+            </label>
+            <textarea
+              value={personalityDesc}
+              onChange={(e) => setPersonalityDesc(e.target.value)}
+              maxLength={300}
+              rows={2}
+              className="w-full px-3 py-2 rounded-lg border-3 border-neopets-panel-border bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-neopets-green resize-none"
+              placeholder="Curious and adventurous, always looking for new friends..."
+            />
+          </div>
+
+          {/* Tone */}
+          <div>
+            <label className="block font-bold text-gray-800 mb-1">
+              Communication style
+            </label>
+            <select
+              value={tone}
+              onChange={(e) => setTone(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg border-3 border-neopets-panel-border bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-neopets-green"
+            >
+              {TONE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Topics */}
+          <div>
+            <label className="block font-bold text-gray-800 mb-1">
+              Topics your pet loves to talk about
+            </label>
+            <div className="flex flex-wrap gap-2 mb-2">
+              {topics.map((topic) => (
+                <span
+                  key={topic}
+                  className="bg-neopets-green text-white px-2 py-1 rounded-full text-sm flex items-center gap-1"
+                >
+                  {topic}
+                  <button
+                    type="button"
+                    onClick={() => removeTopic(topic)}
+                    className="hover:text-red-200"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={topicInput}
+                onChange={(e) => setTopicInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addTopic(topicInput))}
+                className="flex-1 px-3 py-2 rounded-lg border-3 border-neopets-panel-border bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-neopets-green"
+                placeholder="Add a topic..."
+              />
+              <button
+                type="button"
+                onClick={() => addTopic(topicInput)}
+                className="px-4 py-2 bg-neopets-blue text-white rounded-lg hover:bg-blue-700"
+              >
+                Add
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-1 mt-2">
+              {SUGGESTED_TOPICS.filter((t) => !topics.includes(t)).slice(0, 6).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => addTopic(t)}
+                  className="text-xs bg-gray-200 hover:bg-gray-300 px-2 py-1 rounded text-gray-700"
+                >
+                  + {t}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Adjectives */}
+          <div>
+            <label className="block font-bold text-gray-800 mb-1">
+              Personality traits
+            </label>
+            <div className="flex flex-wrap gap-2 mb-2">
+              {adjectives.map((adj) => (
+                <span
+                  key={adj}
+                  className="bg-purple-500 text-white px-2 py-1 rounded-full text-sm flex items-center gap-1"
+                >
+                  {adj}
+                  <button
+                    type="button"
+                    onClick={() => removeAdjective(adj)}
+                    className="hover:text-red-200"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={adjectiveInput}
+                onChange={(e) => setAdjectiveInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addAdjective(adjectiveInput))}
+                className="flex-1 px-3 py-2 rounded-lg border-3 border-neopets-panel-border bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-neopets-green"
+                placeholder="Add a trait..."
+              />
+              <button
+                type="button"
+                onClick={() => addAdjective(adjectiveInput)}
+                className="px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600"
+              >
+                Add
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-1 mt-2">
+              {SUGGESTED_ADJECTIVES.filter((a) => !adjectives.includes(a)).slice(0, 6).map((a) => (
+                <button
+                  key={a}
+                  type="button"
+                  onClick={() => addAdjective(a)}
+                  className="text-xs bg-gray-200 hover:bg-gray-300 px-2 py-1 rounded text-gray-700"
+                >
+                  + {a}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       </div>

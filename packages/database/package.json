@@ -12,8 +12,8 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "generate": "drizzle-kit generate",
-    "migrate": "drizzle-kit push",
-    "push": "drizzle-kit push",
+    "migrate": "drizzle-kit push --force",
+    "push": "drizzle-kit push --force",
     "studio": "drizzle-kit studio"
   },
   "dependencies": {
