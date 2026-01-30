@@ -1,15 +1,28 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq } from 'drizzle-orm';
-import { db, pets } from '@legacyapp/database';
+import { db, pets, agents } from '@legacyapp/database';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
+import { agentOrchestrator } from '../services/agent-orchestrator';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 
 export const petRoutes = new Hono<AppContext>();
 
 petRoutes.use('*', sessionMiddleware);
+
+// Character config schema for ElizaOS agent
+const characterConfigSchema = z.object({
+  bio: z.string().min(10).max(500),
+  greeting: z.string().min(1).max(200),
+  personality: z.string().min(10).max(300),
+  tone: z.enum(['formal', 'casual', 'friendly', 'playful']),
+  topics: z.array(z.string().max(50)).min(1).max(10),
+  adjectives: z.array(z.string().max(30)).min(1).max(10),
+  rules: z.array(z.string().max(100)).max(5).default([]),
+  style: z.array(z.string().max(100)).max(5).default([]),
+});
 
 // Create pet schema
 const createPetSchema = z.object({
@@ -22,6 +35,7 @@ const createPetSchema = z.object({
     hobby: z.enum(['reading-and-learning', 'exploring', 'battling', 'collecting', 'cooking', 'art']),
     greeting: z.enum(['run-away', 'wave-hello', 'tackle-hug', 'shy-peek', 'bow-politely', 'roar']),
   }),
+  characterConfig: characterConfigSchema,
 });
 
 // Calculate stats from personality
@@ -64,7 +78,7 @@ function calculateStats(personality: z.infer<typeof createPetSchema>['personalit
   };
 }
 
-// Create pet (one per user)
+// Create pet (one per user) - also creates ElizaOS agent
 petRoutes.post('/', requireAuth, async (c) => {
   const user = c.get('user');
   const body = await c.req.json();
@@ -94,6 +108,20 @@ petRoutes.post('/', requireAuth, async (c) => {
 
   const stats = calculateStats(result.data.personality);
 
+  // Create the platform agent record first
+  const [agent] = await db.insert(agents).values({
+    userId: user.id,
+    name: result.data.name,
+    type: 'pet-agent',
+    status: 'pending',
+    config: {
+      species: result.data.species,
+      color: result.data.color,
+    },
+    customization: result.data.characterConfig,
+  }).returning();
+
+  // Create pet linked to the agent
   const [pet] = await db.insert(pets).values({
     userId: user.id,
     name: result.data.name,
@@ -102,9 +130,11 @@ petRoutes.post('/', requireAuth, async (c) => {
     gender: result.data.gender,
     personality: result.data.personality,
     stats,
+    characterConfig: result.data.characterConfig,
+    platformAgentId: agent.id,
   }).returning();
 
-  return c.json({ pet });
+  return c.json({ pet, agentId: agent.id });
 });
 
 // Get user's pet
@@ -167,4 +197,57 @@ petRoutes.get('/check-name/:name', sessionMiddleware, async (c) => {
   });
 
   return c.json({ available: !existing });
+});
+
+// Chat with your pet
+const petChatSchema = z.object({
+  content: z.string().min(1).max(4000),
+});
+
+petRoutes.post('/me/chat', requireAuth, async (c) => {
+  const user = c.get('user');
+  const body = await c.req.json();
+  const result = petChatSchema.safeParse(body);
+
+  if (!result.success) {
+    throw new HTTPException(400, { message: 'Message must be 1-4000 characters' });
+  }
+
+  // Get user's pet
+  const pet = await db.query.pets.findFirst({
+    where: eq(pets.userId, user.id),
+  });
+
+  if (!pet) {
+    throw new HTTPException(404, { message: 'You do not have a pet yet' });
+  }
+
+  if (!pet.platformAgentId) {
+    throw new HTTPException(400, { message: 'Pet does not have an agent configured' });
+  }
+
+  // Ensure agent runtime is running (lazy-start)
+  const runtime = await agentOrchestrator.ensureAgentRuntime(
+    pet.platformAgentId,
+    user.id
+  );
+
+  if (!runtime) {
+    throw new HTTPException(500, { message: 'Failed to start pet agent runtime' });
+  }
+
+  // Process message
+  const response = await runtime.processMessage(result.data.content, {
+    userId: user.id,
+    roomId: `pet-${pet.id}-${user.id}`,
+    platform: 'legacyapp',
+  });
+
+  return c.json({
+    message: {
+      role: 'assistant' as const,
+      content: response.content,
+      timestamp: response.timestamp.toISOString(),
+    },
+  });
 });
