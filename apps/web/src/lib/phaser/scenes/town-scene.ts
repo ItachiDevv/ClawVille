@@ -130,7 +130,8 @@ export class TownScene extends Phaser.Scene {
 
     // Zone overlap detection
     let foundZone: string | null = null;
-    const petBounds = this.pet.body.getBounds({} as Phaser.Geom.Rectangle);
+    const pBody = this.pet.body as Phaser.Physics.Arcade.Body;
+    const petBounds = new Phaser.Geom.Rectangle(pBody.x, pBody.y, pBody.width, pBody.height);
 
     for (const zone of this.zones) {
       const zBody = zone.body as Phaser.Physics.Arcade.StaticBody;
