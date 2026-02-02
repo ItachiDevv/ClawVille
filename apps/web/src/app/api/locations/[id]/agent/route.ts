@@ -1,0 +1,157 @@
+import { NextRequest } from 'next/server';
+import { z } from 'zod';
+import { db, mapLocations, locationAgents, agents, eq, and } from '@legacyapp/database';
+import { json, error, requireAuth } from '@/lib/api-utils';
+
+// GET - Get user's agent config for a location
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const authResult = await requireAuth();
+    if (authResult.error) return authResult.error;
+    const { user } = authResult;
+
+    const { id: locationId } = await params;
+
+    const agent = await db.query.locationAgents.findFirst({
+      where: and(
+        eq(locationAgents.userId, user.id),
+        eq(locationAgents.locationId, locationId)
+      ),
+    });
+
+    return json({ agent: agent ?? null });
+  } catch (err) {
+    console.error('Get location agent error:', err);
+    return error('Internal server error', 500);
+  }
+}
+
+const agentConfigSchema = z.object({
+  agentName: z.string().min(1).max(100),
+  characterConfig: z.object({
+    name: z.string().min(1).max(100),
+    personality: z.string().min(1).max(1000),
+    bio: z.string().min(1).max(2000),
+    greeting: z.string().min(1).max(500),
+    tone: z.enum(['formal', 'casual', 'friendly', 'professional']),
+    topics: z.array(z.string()).max(20),
+    rules: z.array(z.string()).max(20),
+    style: z.array(z.string()).max(20),
+  }),
+});
+
+// POST - Create/update agent for location
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const authResult = await requireAuth();
+    if (authResult.error) return authResult.error;
+    const { user } = authResult;
+
+    const { id: locationId } = await params;
+    const body = await request.json();
+    const result = agentConfigSchema.safeParse(body);
+
+    if (!result.success) {
+      return error(result.error.issues[0].message, 400);
+    }
+
+    // Verify location exists
+    const location = await db.query.mapLocations.findFirst({
+      where: eq(mapLocations.id, locationId),
+    });
+
+    if (!location) {
+      return error('Location not found', 404);
+    }
+
+    // Check if agent already exists for this user+location
+    const existing = await db.query.locationAgents.findFirst({
+      where: and(
+        eq(locationAgents.userId, user.id),
+        eq(locationAgents.locationId, locationId)
+      ),
+    });
+
+    if (existing) {
+      // Update existing
+      const [updated] = await db
+        .update(locationAgents)
+        .set({
+          agentName: result.data.agentName,
+          characterConfig: result.data.characterConfig,
+          updatedAt: new Date(),
+        })
+        .where(eq(locationAgents.id, existing.id))
+        .returning();
+
+      return json({ agent: updated });
+    }
+
+    // Create platform agent record
+    const [platformAgent] = await db.insert(agents).values({
+      userId: user.id,
+      name: result.data.agentName,
+      type: 'location-agent',
+      status: 'stopped',
+      customization: result.data.characterConfig,
+      config: { locationId },
+    }).returning();
+
+    // Create location agent
+    const [agent] = await db.insert(locationAgents).values({
+      userId: user.id,
+      locationId,
+      agentName: result.data.agentName,
+      characterConfig: result.data.characterConfig,
+      platformAgentId: platformAgent.id,
+    }).returning();
+
+    return json({ agent });
+  } catch (err) {
+    console.error('Save location agent error:', err);
+    return error('Internal server error', 500);
+  }
+}
+
+// DELETE - Delete agent from location
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const authResult = await requireAuth();
+    if (authResult.error) return authResult.error;
+    const { user } = authResult;
+
+    const { id: locationId } = await params;
+
+    const existing = await db.query.locationAgents.findFirst({
+      where: and(
+        eq(locationAgents.userId, user.id),
+        eq(locationAgents.locationId, locationId)
+      ),
+    });
+
+    if (!existing) {
+      return error('No agent configured for this location', 404);
+    }
+
+    // Delete platform agent if exists
+    if (existing.platformAgentId) {
+      await db.delete(agents).where(eq(agents.id, existing.platformAgentId));
+    }
+
+    await db.delete(locationAgents).where(eq(locationAgents.id, existing.id));
+
+    return json({ success: true });
+  } catch (err) {
+    console.error('Delete location agent error:', err);
+    return error('Internal server error', 500);
+  }
+}
