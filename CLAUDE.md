@@ -82,3 +82,31 @@ Required in `.env.local`:
 - Kebab-case filenames, PascalCase components
 - Zod validation on all API inputs
 - `@/` path alias in web app, `@elizapets/*` for packages
+
+## Memory System
+
+This project uses the Itachi Memory System for persistent context across Claude Code sessions.
+
+### How It Works
+
+- All file edits are automatically synced to a cloud database
+- Memories are searchable using semantic search (OpenAI embeddings)
+- Context persists across sessions, computers, and time
+
+### Commands
+
+- /recall <query> - Search memories semantically
+- /recent [limit] - Show recent changes (default: 10)
+- /itachi-init - Add memory docs to CLAUDE.md
+
+### Memory Categories
+
+Changes are auto-categorized:
+- code_change - Default for code files
+- test - Test/spec files
+- documentation - README, .md files
+- dependencies - package.json, requirements.txt, etc.
+
+### Disable Memory
+
+To disable memory for this project, create a file called .no-memory in the project root.
