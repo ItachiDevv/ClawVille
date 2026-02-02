@@ -9,7 +9,10 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@elizapets/agent-runtime": "workspace:*",
+    "@elizapets/database": "workspace:*",
     "@elizapets/shared": "workspace:*",
+    "@lucia-auth/adapter-drizzle": "^1.1.0",
     "@radix-ui/react-dialog": "^1.1.0",
     "@radix-ui/react-label": "^2.1.0",
     "@radix-ui/react-select": "^2.1.0",
@@ -17,8 +20,10 @@
     "@radix-ui/react-slot": "^1.1.0",
     "@radix-ui/react-tooltip": "^1.2.8",
     "@tanstack/react-query": "^5.51.0",
+    "bcryptjs": "^3.0.3",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
+    "lucia": "^3.2.2",
     "lucide-react": "^0.400.0",
     "next": "14.2.5",
     "phaser": "^3.80.0",
@@ -26,9 +31,11 @@
     "react-dom": "^18.3.1",
     "tailwind-merge": "^2.4.0",
     "tailwindcss-animate": "^1.0.7",
+    "zod": "^4.3.6",
     "zustand": "^4.5.4"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^3.0.0",
     "@types/node": "^20.14.10",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",

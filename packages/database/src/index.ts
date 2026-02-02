@@ -1,4 +1,4 @@
-import { drizzle } from 'drizzle-orm/postgres-js';
+import { drizzle, PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import * as schema from './schema';
 
@@ -13,15 +13,28 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 export * from './schema';
+export { eq, and, or, not, sql, desc, asc } from 'drizzle-orm';
 
-const connectionString = process.env.DATABASE_URL;
+// Lazy database connection for Next.js build compatibility
+let _db: PostgresJsDatabase<typeof schema> | null = null;
 
-if (!connectionString) {
-  throw new Error('DATABASE_URL environment variable is not set');
+function getDb(): PostgresJsDatabase<typeof schema> {
+  if (_db) return _db;
+
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    throw new Error('DATABASE_URL environment variable is not set');
+  }
+
+  const client = postgres(connectionString);
+  _db = drizzle(client, { schema });
+  return _db;
 }
 
-const client = postgres(connectionString);
+export const db = new Proxy({} as PostgresJsDatabase<typeof schema>, {
+  get(_target, prop) {
+    return (getDb() as any)[prop];
+  },
+});
 
-export const db = drizzle(client, { schema });
-
-export type Database = typeof db;
+export type Database = PostgresJsDatabase<typeof schema>;
