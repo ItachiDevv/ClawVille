@@ -2,6 +2,15 @@
 
 A 2D LegacyTheme-themed ElizaOS game. Users create an LegacyApp, walk it around a ClawVille map with WASD, and chat with AI agents inside buildings.
 
+## IMPORTANT: ElizaOS is MANDATORY
+
+**ElizaOS is a core requirement for this project - do NOT remove or stub it out.**
+
+- All avatar and location chat MUST use the ElizaOS runtime (`@legacyapp/agent-runtime`)
+- The agent orchestrator MUST use `createElizaRuntime` from the agent-runtime package
+- For deployment, use a platform that supports persistent servers (Railway, Render, Fly.io) - NOT Vercel serverless
+- Never replace ElizaOS with direct API calls or stub implementations
+
 ## Tech Stack
 
 - **Monorepo**: Turborepo + Bun

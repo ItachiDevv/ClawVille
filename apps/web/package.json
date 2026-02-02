@@ -9,6 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@legacyapp/agent-runtime": "workspace:*",
     "@legacyapp/database": "workspace:*",
     "@legacyapp/shared": "workspace:*",
     "@lucia-auth/adapter-drizzle": "^1.1.0",
