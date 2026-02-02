@@ -2,6 +2,15 @@
 
 A 2D Neopets-themed ElizaOS game. Users create an ElizaPet, walk it around a Neopia Central map with WASD, and chat with AI agents inside buildings.
 
+## IMPORTANT: ElizaOS is MANDATORY
+
+**ElizaOS is a core requirement for this project - do NOT remove or stub it out.**
+
+- All pet and location chat MUST use the ElizaOS runtime (`@elizapets/agent-runtime`)
+- The agent orchestrator MUST use `createElizaRuntime` from the agent-runtime package
+- For deployment, use a platform that supports persistent servers (Railway, Render, Fly.io) - NOT Vercel serverless
+- Never replace ElizaOS with direct API calls or stub implementations
+
 ## Tech Stack
 
 - **Monorepo**: Turborepo + Bun

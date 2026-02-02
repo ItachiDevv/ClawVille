@@ -9,6 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@elizapets/agent-runtime": "workspace:*",
     "@elizapets/database": "workspace:*",
     "@elizapets/shared": "workspace:*",
     "@lucia-auth/adapter-drizzle": "^1.1.0",
