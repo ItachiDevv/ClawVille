@@ -16,14 +16,7 @@
     "forceConsistentCasingInFileNames": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
-    "baseUrl": ".",
-    "typeRoots": ["./node_modules/@types"],
-    "paths": {
-      "@legacyapp/database": ["packages/database/src"],
-      "@legacyapp/shared": ["packages/shared/src"],
-      "@legacyapp/agent-runtime": ["packages/agent-runtime/src"],
-      "@legacyapp/agent-templates": ["packages/agent-templates/src"]
-    }
+    "typeRoots": ["./node_modules/@types"]
   },
   "exclude": ["node_modules", "dist", ".next"]
 }
