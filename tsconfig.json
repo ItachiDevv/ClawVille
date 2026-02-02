@@ -16,14 +16,7 @@
     "forceConsistentCasingInFileNames": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
-    "baseUrl": ".",
-    "typeRoots": ["./node_modules/@types"],
-    "paths": {
-      "@elizapets/database": ["packages/database/src"],
-      "@elizapets/shared": ["packages/shared/src"],
-      "@elizapets/agent-runtime": ["packages/agent-runtime/src"],
-      "@elizapets/agent-templates": ["packages/agent-templates/src"]
-    }
+    "typeRoots": ["./node_modules/@types"]
   },
   "exclude": ["node_modules", "dist", ".next"]
 }
