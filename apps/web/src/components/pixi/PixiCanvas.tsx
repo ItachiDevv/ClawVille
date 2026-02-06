@@ -1,14 +1,15 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { Application, Container, Graphics, Text } from 'pixi.js';
+import { Application, Container, Graphics, Sprite, Assets } from 'pixi.js';
 import { useViewport } from '@/lib/pixi/use-viewport';
 import { useCamera } from '@/lib/pixi/use-camera';
 import { useGameLoop } from '@/lib/pixi/use-game-loop';
-import { useGameStore, type MovementDirection } from '@/stores/game';
+import { useGameStore } from '@/stores/game';
 import { MAP_LOCATIONS } from '@elizapets/shared';
-import { getSpeciesConfig, blendColors, COLOR_TINT_MAP } from '@/lib/pixi/pet-sprites';
-import type { PetColor } from '@elizapets/shared';
+import { SPECIES_SPRITE_MAP, COLOR_TINT_MAP, blendColors } from '@/lib/pixi/pet-sprites';
+import { drawBuilding } from '@/lib/pixi/building-renderer';
+import type { PetColor, PetSpecies } from '@elizapets/shared';
 import {
   MAP_WIDTH,
   MAP_HEIGHT,
@@ -19,35 +20,8 @@ import {
   groundLayer,
   pathLayer,
   decorationLayer,
-  buildingLayer,
   buildingZones,
 } from '@/lib/pixi/tilemap-data';
-
-// Color palette for tile rendering
-const TILE_COLORS: Record<number, number> = {
-  [TILES.EMPTY]: 0x000000,
-  [TILES.GRASS_1]: 0x4caf50,
-  [TILES.GRASS_2]: 0x66bb6a,
-  [TILES.GRASS_3]: 0x43a047,
-  [TILES.DIRT_PATH]: 0xbcaaa4,
-  [TILES.STONE_PATH]: 0x9e9e9e,
-  [TILES.WATER]: 0x42a5f5,
-  [TILES.TREE_1]: 0x2e7d32,
-  [TILES.TREE_2]: 0x1b5e20,
-  [TILES.FLOWER_1]: 0xff7043,
-  [TILES.FLOWER_2]: 0xffca28,
-  [TILES.BUSH]: 0x388e3c,
-  [TILES.FENCE]: 0x8d6e63,
-  [TILES.BUILDING_SHOP]: 0xffe0b2,
-  [TILES.BUILDING_LARGE]: 0xffccbc,
-  [TILES.BUILDING_SPECIAL]: 0xe1bee7,
-  [TILES.BUILDING_SMALL]: 0xbbdefb,
-  [TILES.ROOF_RED]: 0xef5350,
-  [TILES.ROOF_BLUE]: 0x42a5f5,
-  [TILES.ROOF_GREEN]: 0x66bb6a,
-  [TILES.DOOR]: 0x6d4c41,
-  [TILES.WINDOW]: 0x90caf9,
-};
 
 // Convert building zones from tile coords to pixel coords for game loop
 const pixelZones = buildingZones.map((z) => ({
@@ -58,24 +32,226 @@ const pixelZones = buildingZones.map((z) => ({
   height: z.height * TILE_SIZE,
 }));
 
-function drawTileLayer(g: Graphics, tiles: number[], cols: number, rows: number) {
-  for (let row = 0; row < rows; row++) {
-    for (let col = 0; col < cols; col++) {
-      const tile = tiles[row * cols + col];
-      if (tile === TILES.EMPTY || tile === -1) continue;
-      const color = TILE_COLORS[tile] ?? 0xff00ff;
-      g.rect(col * TILE_SIZE, row * TILE_SIZE, TILE_SIZE, TILE_SIZE);
-      g.fill(color);
+// ---- Illustrated ground tile drawing ----
+
+// Seeded pseudo-random for consistent tile variation
+function seededRandom(x: number, y: number, seed: number = 42): number {
+  const n = Math.sin(x * 127.1 + y * 311.7 + seed * 113.5) * 43758.5453;
+  return n - Math.floor(n);
+}
+
+function drawGroundTile(g: Graphics, col: number, row: number, tile: number) {
+  const x = col * TILE_SIZE;
+  const y = row * TILE_SIZE;
+  const rand = seededRandom(col, row);
+
+  if (tile === TILES.GRASS_1 || tile === TILES.GRASS_2 || tile === TILES.GRASS_3) {
+    // Base grass color with variation
+    const grassColors = [0x4caf50, 0x43a047, 0x388e3c];
+    const baseColor = grassColors[tile] ?? 0x4caf50;
+    const variedColor = blendColors(baseColor, tile === TILES.GRASS_2 ? 0x66bb6a : 0x2e7d32, rand * 0.15);
+
+    g.rect(x, y, TILE_SIZE, TILE_SIZE);
+    g.fill(variedColor);
+
+    // Grass blade strokes (2-3 per tile)
+    const bladeCount = 2 + Math.floor(rand * 2);
+    for (let i = 0; i < bladeCount; i++) {
+      const bx = x + 4 + seededRandom(col, row, i * 7) * (TILE_SIZE - 8);
+      const by = y + TILE_SIZE - 4;
+      const bh = 4 + seededRandom(col, row, i * 13) * 6;
+      const lean = (seededRandom(col, row, i * 19) - 0.5) * 4;
+      g.moveTo(bx, by);
+      g.lineTo(bx + lean, by - bh);
+      g.stroke({ color: 0x2e7d32, width: 0.8 });
+    }
+
+    // Occasional tiny flower dot
+    if (rand > 0.85) {
+      const dotColors = [0xffeb3b, 0xffffff, 0xf48fb1];
+      g.circle(x + 8 + rand * 16, y + 8 + seededRandom(col, row, 99) * 16, 1.2);
+      g.fill(dotColors[Math.floor(rand * 3)]);
     }
   }
+}
+
+function drawPathTile(g: Graphics, col: number, row: number, tile: number) {
+  const x = col * TILE_SIZE;
+  const y = row * TILE_SIZE;
+  const rand = seededRandom(col, row);
+
+  if (tile === TILES.DIRT_PATH) {
+    // Warm brown base
+    const baseColor = blendColors(0xbcaaa4, 0xa1887f, rand * 0.2);
+    g.rect(x, y, TILE_SIZE, TILE_SIZE);
+    g.fill(baseColor);
+    // Small pebble dots
+    for (let i = 0; i < 3; i++) {
+      const px = x + 4 + seededRandom(col, row, i * 11) * (TILE_SIZE - 8);
+      const py = y + 4 + seededRandom(col, row, i * 17) * (TILE_SIZE - 8);
+      g.circle(px, py, 1 + seededRandom(col, row, i * 23) * 1.5);
+      g.fill(blendColors(0x8d6e63, 0xbcaaa4, seededRandom(col, row, i * 29)));
+    }
+  } else if (tile === TILES.STONE_PATH) {
+    // Grey stone base
+    g.rect(x, y, TILE_SIZE, TILE_SIZE);
+    g.fill(0x9e9e9e);
+    // Individual stone shapes
+    const stonePositions = [
+      [2, 2, 13, 13],
+      [17, 2, 13, 13],
+      [2, 17, 13, 13],
+      [17, 17, 13, 13],
+    ];
+    for (const [sx, sy, sw, sh] of stonePositions) {
+      const stoneColor = blendColors(0xbdbdbd, 0x9e9e9e, seededRandom(col + sx, row + sy) * 0.3);
+      g.roundRect(x + sx, y + sy, sw, sh, 2);
+      g.fill(stoneColor);
+      g.stroke({ color: 0x757575, width: 0.6 });
+    }
+  }
+}
+
+function drawWaterTile(g: Graphics, col: number, row: number) {
+  const x = col * TILE_SIZE;
+  const y = row * TILE_SIZE;
+  const rand = seededRandom(col, row);
+
+  // Blue gradient base
+  const baseColor = blendColors(0x1e88e5, 0x42a5f5, rand * 0.4);
+  g.rect(x, y, TILE_SIZE, TILE_SIZE);
+  g.fill(baseColor);
+
+  // Lighter center highlight
+  g.ellipse(x + TILE_SIZE / 2, y + TILE_SIZE / 2, TILE_SIZE / 3, TILE_SIZE / 4);
+  g.fill({ color: 0x64b5f6, alpha: 0.35 });
+
+  // Ripple marks
+  g.arc(x + 10 + rand * 12, y + 10 + rand * 12, 4, 0, Math.PI);
+  g.stroke({ color: 0xbbdefb, width: 0.6 });
+}
+
+// ---- Illustrated decoration drawing ----
+
+function drawTreeDecoration(g: Graphics, col: number, row: number, tile: number) {
+  const cx = col * TILE_SIZE + TILE_SIZE / 2;
+  const by = (row + 1) * TILE_SIZE; // bottom of tile
+  const rand = seededRandom(col, row);
+  const isType2 = tile === TILES.TREE_2;
+
+  // Shadow at base
+  g.ellipse(cx, by - 2, 8, 3);
+  g.fill({ color: 0x000000, alpha: 0.15 });
+
+  // Trunk
+  const trunkH = isType2 ? 16 : 13;
+  g.roundRect(cx - 3, by - trunkH, 6, trunkH, 2);
+  g.fill(0x795548);
+  g.stroke({ color: 0x5d4037, width: 1 });
+
+  // Leafy canopy — overlapping circles in varying greens
+  const greens = isType2 ? [0x1b5e20, 0x2e7d32, 0x33691e] : [0x388e3c, 0x43a047, 0x4caf50];
+  const canopyY = by - trunkH - 4;
+  const r1 = 8 + rand * 3;
+  g.circle(cx, canopyY, r1);
+  g.fill(greens[0]);
+  g.circle(cx - 5, canopyY + 3, r1 - 2);
+  g.fill(greens[1]);
+  g.circle(cx + 5, canopyY + 3, r1 - 2);
+  g.fill(greens[2]);
+  g.circle(cx, canopyY - 4, r1 - 3);
+  g.fill(greens[1]);
+}
+
+function drawFlowerDecoration(g: Graphics, col: number, row: number, tile: number) {
+  const cx = col * TILE_SIZE + TILE_SIZE / 2;
+  const by = (row + 1) * TILE_SIZE - 4;
+  const isType2 = tile === TILES.FLOWER_2;
+  const rand = seededRandom(col, row);
+
+  // Stem
+  g.moveTo(cx, by);
+  g.lineTo(cx + (rand - 0.5) * 2, by - 10);
+  g.stroke({ color: 0x4caf50, width: 1.5 });
+
+  // Leaf
+  g.ellipse(cx + 3, by - 5, 3, 1.5);
+  g.fill(0x66bb6a);
+
+  // Petals
+  const petalColor = isType2 ? 0xffca28 : 0xff7043;
+  const centerColor = isType2 ? 0xff9800 : 0xffeb3b;
+  const petalCount = 5;
+  for (let i = 0; i < petalCount; i++) {
+    const angle = (i / petalCount) * Math.PI * 2;
+    g.circle(cx + Math.cos(angle) * 3.5, by - 12 + Math.sin(angle) * 3.5, 2.5);
+    g.fill(petalColor);
+  }
+  // Center
+  g.circle(cx, by - 12, 2);
+  g.fill(centerColor);
+}
+
+function drawBushDecoration(g: Graphics, col: number, row: number) {
+  const cx = col * TILE_SIZE + TILE_SIZE / 2;
+  const cy = row * TILE_SIZE + TILE_SIZE / 2 + 4;
+  const rand = seededRandom(col, row);
+
+  // 2-3 overlapping green circles
+  g.circle(cx - 4, cy, 7);
+  g.fill(0x388e3c);
+  g.circle(cx + 4, cy, 7);
+  g.fill(0x43a047);
+  g.circle(cx, cy - 3, 6);
+  g.fill(0x4caf50);
+
+  // Darker outline
+  g.circle(cx - 4, cy, 7);
+  g.stroke({ color: 0x2e7d32, width: 0.8 });
+  g.circle(cx + 4, cy, 7);
+  g.stroke({ color: 0x2e7d32, width: 0.8 });
+
+  // Occasional small flower dot
+  if (rand > 0.5) {
+    g.circle(cx + 2, cy - 4, 1.5);
+    g.fill(rand > 0.75 ? 0xf48fb1 : 0xffeb3b);
+  }
+}
+
+function drawFenceDecoration(g: Graphics, col: number, row: number) {
+  const x = col * TILE_SIZE;
+  const y = row * TILE_SIZE;
+
+  // Vertical posts
+  for (let i = 0; i < 3; i++) {
+    const px = x + 4 + i * 12;
+    g.rect(px, y + 6, 3, 22);
+    g.fill(0x8d6e63);
+    g.stroke({ color: 0x5d4037, width: 0.5 });
+    // Post cap
+    g.circle(px + 1.5, y + 6, 2);
+    g.fill(0x8d6e63);
+  }
+  // Horizontal rails
+  g.rect(x + 2, y + 12, TILE_SIZE - 4, 2.5);
+  g.fill(0xa1887f);
+  g.rect(x + 2, y + 20, TILE_SIZE - 4, 2.5);
+  g.fill(0xa1887f);
+}
+
+// ---- Preload all pet sprites ----
+async function preloadPetTextures() {
+  const entries = Object.entries(SPECIES_SPRITE_MAP) as [PetSpecies, string][];
+  const promises = entries.map(([, path]) => Assets.load(path));
+  await Promise.all(promises);
 }
 
 export default function PixiCanvas() {
   const canvasRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<Application | null>(null);
   const worldRef = useRef<Container | null>(null);
-  const petGraphicRef = useRef<Graphics | null>(null);
-  const markersRef = useRef<Container | null>(null);
+  const petSpriteRef = useRef<Sprite | null>(null);
+  const scaleRef = useRef<number>(1);
   const viewport = useViewport();
   const updateCamera = useCamera(MAP_WIDTH, MAP_HEIGHT, viewport.width, viewport.height);
   const gameTick = useGameLoop({ mapWidth: MAP_WIDTH, mapHeight: MAP_HEIGHT, buildingZones: pixelZones });
@@ -86,11 +262,16 @@ export default function PixiCanvas() {
     let destroyed = false;
 
     (async () => {
+      // Preload pet textures
+      await preloadPetTextures();
+
+      if (destroyed) return;
+
       const app = new Application();
       await app.init({
         width: viewport.width,
         height: viewport.height,
-        backgroundColor: 0x1a1a2e,
+        backgroundColor: 0x2e7d32, // Green to match grass if visible at edges
         antialias: true,
         resolution: window.devicePixelRatio || 1,
         autoDensity: true,
@@ -109,456 +290,122 @@ export default function PixiCanvas() {
       app.stage.addChild(world);
       worldRef.current = world;
 
-      // Draw ground layer
+      // Phase 2: Viewport scaling — scale world to fill screen
+      const scale = Math.max(viewport.width / MAP_WIDTH, viewport.height / MAP_HEIGHT);
+      world.scale.set(scale);
+      scaleRef.current = scale;
+
+      // ---- Draw ground layer (illustrated) ----
       const groundGraphics = new Graphics();
-      drawTileLayer(groundGraphics, groundLayer, MAP_COLS, MAP_ROWS);
+      for (let row = 0; row < MAP_ROWS; row++) {
+        for (let col = 0; col < MAP_COLS; col++) {
+          const tile = groundLayer[row * MAP_COLS + col];
+          if (tile === TILES.EMPTY || tile === -1) continue;
+          if (tile === TILES.WATER) {
+            drawWaterTile(groundGraphics, col, row);
+          } else {
+            drawGroundTile(groundGraphics, col, row, tile);
+          }
+        }
+      }
       world.addChild(groundGraphics);
 
-      // Draw path layer
+      // ---- Draw path layer (illustrated) ----
       const pathGraphics = new Graphics();
-      drawTileLayer(pathGraphics, pathLayer, MAP_COLS, MAP_ROWS);
+      for (let row = 0; row < MAP_ROWS; row++) {
+        for (let col = 0; col < MAP_COLS; col++) {
+          const tile = pathLayer[row * MAP_COLS + col];
+          if (tile === TILES.EMPTY || tile === -1) continue;
+          drawPathTile(pathGraphics, col, row, tile);
+        }
+      }
       world.addChild(pathGraphics);
 
-      // Draw decoration layer
+      // ---- Draw decoration layer (illustrated) ----
       const decoGraphics = new Graphics();
-      drawTileLayer(decoGraphics, decorationLayer, MAP_COLS, MAP_ROWS);
+      for (let row = 0; row < MAP_ROWS; row++) {
+        for (let col = 0; col < MAP_COLS; col++) {
+          const tile = decorationLayer[row * MAP_COLS + col];
+          if (tile === TILES.EMPTY || tile === -1) continue;
+          if (tile === TILES.TREE_1 || tile === TILES.TREE_2) {
+            drawTreeDecoration(decoGraphics, col, row, tile);
+          } else if (tile === TILES.FLOWER_1 || tile === TILES.FLOWER_2) {
+            drawFlowerDecoration(decoGraphics, col, row, tile);
+          } else if (tile === TILES.BUSH) {
+            drawBushDecoration(decoGraphics, col, row);
+          } else if (tile === TILES.FENCE) {
+            drawFenceDecoration(decoGraphics, col, row);
+          }
+        }
+      }
       world.addChild(decoGraphics);
 
-      // Draw building layer
-      const buildingGraphics = new Graphics();
-      drawTileLayer(buildingGraphics, buildingLayer, MAP_COLS, MAP_ROWS);
-      world.addChild(buildingGraphics);
-
-      // Building markers (emoji + name labels)
-      const markers = new Container();
+      // ---- Draw buildings (illustrated) ----
+      const buildingsContainer = new Container();
       for (const zone of buildingZones) {
         const loc = MAP_LOCATIONS.find((l) => l.id === zone.id);
         if (!loc) continue;
 
-        const markerContainer = new Container();
-        markerContainer.x = (zone.x + zone.width / 2) * TILE_SIZE;
-        markerContainer.y = zone.y * TILE_SIZE - 12;
-
-        // Background pill
-        const bg = new Graphics();
-        bg.roundRect(-36, -14, 72, 28, 8);
-        bg.fill({ color: 0x000000, alpha: 0.6 });
-        markerContainer.addChild(bg);
-
-        // Icon text
-        const icon = new Text({ text: loc.icon, style: { fontSize: 16 } });
-        icon.anchor.set(0.5);
-        icon.x = 0;
-        icon.y = 0;
-        markerContainer.addChild(icon);
-
-        // Name label below
-        const label = new Text({
-          text: loc.name,
-          style: { fontSize: 10, fill: 0xffffff, fontFamily: 'Arial' },
-        });
-        label.anchor.set(0.5, 0);
-        label.x = 0;
-        label.y = 16;
-        markerContainer.addChild(label);
+        const buildingContainer = drawBuilding(zone.id, zone.width, zone.height);
+        buildingContainer.x = zone.x * TILE_SIZE;
+        buildingContainer.y = zone.y * TILE_SIZE;
 
         // Make interactive
-        markerContainer.eventMode = 'static';
-        markerContainer.cursor = 'pointer';
-        markerContainer.on('pointerdown', () => {
+        buildingContainer.eventMode = 'static';
+        buildingContainer.cursor = 'pointer';
+        buildingContainer.on('pointerdown', () => {
           const store = useGameStore.getState();
           if (!store.movementFrozen) {
             store.enterBuilding(zone.id);
           }
         });
-        markerContainer.on('pointerover', () => {
-          markerContainer.scale.set(1.15);
+        buildingContainer.on('pointerover', () => {
+          buildingContainer.scale.set(1.08);
+          buildingContainer.alpha = 0.95;
         });
-        markerContainer.on('pointerout', () => {
-          markerContainer.scale.set(1.0);
+        buildingContainer.on('pointerout', () => {
+          buildingContainer.scale.set(1.0);
+          buildingContainer.alpha = 1.0;
         });
 
-        markers.addChild(markerContainer);
+        buildingsContainer.addChild(buildingContainer);
       }
-      world.addChild(markers);
-      markersRef.current = markers;
+      world.addChild(buildingsContainer);
 
-      // Pet container (procedural sprite)
+      // ---- Pet PNG sprite ----
       const petContainer = new Container();
       world.addChild(petContainer);
 
-      // Pet body graphics (will be redrawn each frame)
-      const petBody = new Graphics();
-      petContainer.addChild(petBody);
-      petGraphicRef.current = petBody;
+      const state = useGameStore.getState();
+      const species = (state.petSpecies || 'cat') as PetSpecies;
+      const texturePath = SPECIES_SPRITE_MAP[species] ?? SPECIES_SPRITE_MAP.cat;
+      const texture = Assets.get(texturePath);
+      const petSprite = new Sprite(texture);
+
+      // Scale to ~72px height
+      const targetHeight = 72;
+      const spriteScale = targetHeight / petSprite.texture.height;
+      petSprite.scale.set(spriteScale);
+      petSprite.anchor.set(0.5, 0.85); // feet near the bottom
+
+      // Apply color tint
+      const petColor = (state.petColor || 'blue') as PetColor;
+      const tint = COLOR_TINT_MAP[petColor] ?? 0xffffff;
+      if (tint !== 0xffffff) {
+        petSprite.tint = blendColors(0xffffff, tint, 0.3);
+      }
+
+      petContainer.addChild(petSprite);
+      petSpriteRef.current = petSprite;
+
+      // Shadow under pet
+      const petShadow = new Graphics();
+      petShadow.ellipse(0, 6, 16, 5);
+      petShadow.fill({ color: 0x000000, alpha: 0.2 });
+      petContainer.addChildAt(petShadow, 0);
 
       let elapsedTime = 0;
-      let lastSpecies = '';
-      let lastColor = '';
-
-      // --- Procedural drawing helpers ---
-
-      function eyeOffset(dir: MovementDirection): { lx: number; rx: number; y: number } {
-        switch (dir) {
-          case 'left': return { lx: -6, rx: -2, y: -4 };
-          case 'right': return { lx: 2, rx: 6, y: -4 };
-          case 'up': return { lx: -4, rx: 4, y: -7 };
-          default: return { lx: -4, rx: 4, y: -4 };
-        }
-      }
-
-      function walkBounce(t: number, dir: MovementDirection): { by: number; lp: number } {
-        if (dir === 'idle') {
-          return { by: Math.sin(t * 2) * 1.5, lp: 0 };
-        }
-        return { by: Math.abs(Math.sin(t * 8)) * -3, lp: t * 8 };
-      }
-
-      function drawPetSprite(
-        g: Graphics,
-        species: string,
-        color: string,
-        dir: MovementDirection,
-        time: number,
-      ) {
-        g.clear();
-        const config = getSpeciesConfig(species);
-        const tint = COLOR_TINT_MAP[color as PetColor] ?? 0xffeb3b;
-        const bc = blendColors(config.baseColor, tint, 0.35);
-        const ac = blendColors(config.accentColor, tint, 0.15);
-        const { by, lp } = walkBounce(time, dir);
-        const eyes = eyeOffset(dir);
-        const showFace = dir !== 'up';
-
-        // Shadow
-        g.ellipse(0, 16, 11, 4);
-        g.fill({ color: 0x000000, alpha: 0.25 });
-
-        // Leg offsets for walk cycle
-        const lo1 = Math.sin(lp) * 3;
-        const lo2 = Math.sin(lp + Math.PI) * 3;
-        const tailSide = dir === 'left' ? -1 : 1;
-
-        switch (species) {
-          case 'cat': {
-            // Tail
-            g.moveTo(tailSide * 8, by + 4);
-            g.quadraticCurveTo(tailSide * 18, by - 6 + Math.sin(lp) * 4, tailSide * 14, by - 12);
-            g.stroke({ color: bc, width: 3 });
-            // Body
-            g.ellipse(0, by, 12, 10);
-            g.fill(bc);
-            g.stroke({ color: 0x000000, width: 1.5 });
-            // Belly
-            g.ellipse(0, by + 3, 7, 5);
-            g.fill(ac);
-            // Ears
-            g.moveTo(-8, by - 10); g.lineTo(-12, by - 20); g.lineTo(-4, by - 10);
-            g.fill(bc);
-            g.moveTo(-10, by - 14); g.lineTo(-9, by - 18); g.lineTo(-6, by - 13);
-            g.fill(ac);
-            g.moveTo(8, by - 10); g.lineTo(12, by - 20); g.lineTo(4, by - 10);
-            g.fill(bc);
-            g.moveTo(10, by - 14); g.lineTo(9, by - 18); g.lineTo(6, by - 13);
-            g.fill(ac);
-            // Face
-            if (showFace) {
-              g.circle(eyes.lx, by + eyes.y, 2.5); g.fill(0x000000);
-              g.circle(eyes.rx, by + eyes.y, 2.5); g.fill(0x000000);
-              g.circle(eyes.lx + 0.5, by + eyes.y - 0.5, 1); g.fill(0xffffff);
-              g.circle(eyes.rx + 0.5, by + eyes.y - 0.5, 1); g.fill(0xffffff);
-              g.circle(0, by, 1.5); g.fill(0xf48fb1);
-              g.moveTo(-2, by + 2); g.lineTo(0, by + 1); g.lineTo(2, by + 2);
-              g.stroke({ color: 0x000000, width: 0.8 });
-              // Whiskers
-              const wo = dir === 'left' ? -2 : dir === 'right' ? 2 : 0;
-              g.moveTo(-3 + wo, by + 1); g.lineTo(-14 + wo, by - 2); g.stroke({ color: 0x000000, width: 0.6 });
-              g.moveTo(-3 + wo, by + 2); g.lineTo(-14 + wo, by + 3); g.stroke({ color: 0x000000, width: 0.6 });
-              g.moveTo(3 + wo, by + 1); g.lineTo(14 + wo, by - 2); g.stroke({ color: 0x000000, width: 0.6 });
-              g.moveTo(3 + wo, by + 2); g.lineTo(14 + wo, by + 3); g.stroke({ color: 0x000000, width: 0.6 });
-            }
-            // Legs
-            g.roundRect(-8, by + 6, 5, 8 + lo1, 2); g.fill(bc); g.stroke({ color: 0x000000, width: 1 });
-            g.roundRect(3, by + 6, 5, 8 + lo2, 2); g.fill(bc); g.stroke({ color: 0x000000, width: 1 });
-            break;
-          }
-
-          case 'dragon': {
-            // Wings
-            const wf = Math.sin(lp * 0.7) * 5;
-            g.moveTo(-10, by - 4);
-            g.lineTo(-22, by - 14 + wf); g.lineTo(-18, by - 4 + wf * 0.5);
-            g.lineTo(-14, by - 10 + wf); g.lineTo(-10, by);
-            g.fill(ac); g.stroke({ color: 0x000000, width: 1 });
-            g.moveTo(10, by - 4);
-            g.lineTo(22, by - 14 + wf); g.lineTo(18, by - 4 + wf * 0.5);
-            g.lineTo(14, by - 10 + wf); g.lineTo(10, by);
-            g.fill(ac); g.stroke({ color: 0x000000, width: 1 });
-            // Tail
-            g.moveTo(tailSide * 8, by + 6);
-            g.quadraticCurveTo(tailSide * 20, by + 2 + Math.sin(lp) * 3, tailSide * 18, by - 4);
-            g.stroke({ color: bc, width: 3 });
-            g.moveTo(tailSide * 17, by - 3); g.lineTo(tailSide * 21, by - 8); g.lineTo(tailSide * 15, by - 6);
-            g.fill(ac);
-            // Body
-            g.ellipse(0, by, 12, 12);
-            g.fill(bc); g.stroke({ color: 0x000000, width: 1.5 });
-            g.ellipse(0, by + 4, 6, 6); g.fill(ac);
-            // Horns
-            g.moveTo(-5, by - 12); g.lineTo(-8, by - 22); g.lineTo(-3, by - 14); g.fill(ac);
-            g.moveTo(5, by - 12); g.lineTo(8, by - 22); g.lineTo(3, by - 14); g.fill(ac);
-            // Spines
-            for (let i = 0; i < 3; i++) {
-              const sx = -2 + i * 2; const sy = by - 10 + i * 3;
-              g.moveTo(sx, sy); g.lineTo(sx, sy - 5); g.lineTo(sx + 2, sy); g.fill(ac);
-            }
-            // Face
-            if (showFace) {
-              g.ellipse(eyes.lx, by + eyes.y, 3, 2.5); g.fill(0xffeb3b); g.stroke({ color: 0x000000, width: 0.8 });
-              g.ellipse(eyes.rx, by + eyes.y, 3, 2.5); g.fill(0xffeb3b); g.stroke({ color: 0x000000, width: 0.8 });
-              g.ellipse(eyes.lx, by + eyes.y, 1, 2); g.fill(0x000000);
-              g.ellipse(eyes.rx, by + eyes.y, 1, 2); g.fill(0x000000);
-              g.circle(-2, by + 2, 1); g.fill(0x000000);
-              g.circle(2, by + 2, 1); g.fill(0x000000);
-            }
-            // Legs
-            g.roundRect(-9, by + 8, 6, 7 + lo1, 2); g.fill(bc); g.stroke({ color: 0x000000, width: 1 });
-            g.roundRect(3, by + 8, 6, 7 + lo2, 2); g.fill(bc); g.stroke({ color: 0x000000, width: 1 });
-            break;
-          }
-
-          case 'fox': {
-            // Bushy tail
-            g.moveTo(tailSide * 6, by + 4);
-            g.quadraticCurveTo(tailSide * 18, by, tailSide * 16, by - 10 + Math.sin(lp) * 3);
-            g.quadraticCurveTo(tailSide * 14, by - 14 + Math.sin(lp) * 3, tailSide * 10, by - 8);
-            g.fill(bc);
-            g.circle(tailSide * 15, by - 10 + Math.sin(lp) * 3, 3); g.fill(ac);
-            // Body
-            g.ellipse(0, by, 11, 11); g.fill(bc); g.stroke({ color: 0x000000, width: 1.5 });
-            g.ellipse(0, by + 3, 7, 6); g.fill(ac);
-            // Ears
-            g.moveTo(-7, by - 8); g.lineTo(-11, by - 20); g.lineTo(-3, by - 8);
-            g.fill(bc); g.stroke({ color: 0x000000, width: 1 });
-            g.moveTo(-9, by - 13); g.lineTo(-8, by - 18); g.lineTo(-5, by - 12); g.fill(ac);
-            g.moveTo(7, by - 8); g.lineTo(11, by - 20); g.lineTo(3, by - 8);
-            g.fill(bc); g.stroke({ color: 0x000000, width: 1 });
-            g.moveTo(9, by - 13); g.lineTo(8, by - 18); g.lineTo(5, by - 12); g.fill(ac);
-            // Face
-            if (showFace) {
-              g.circle(eyes.lx, by + eyes.y, 2.5); g.fill(0x000000);
-              g.circle(eyes.rx, by + eyes.y, 2.5); g.fill(0x000000);
-              g.circle(eyes.lx + 0.5, by + eyes.y - 0.5, 1); g.fill(0xffffff);
-              g.circle(eyes.rx + 0.5, by + eyes.y - 0.5, 1); g.fill(0xffffff);
-              g.circle(0, by + 1, 2); g.fill(0x333333);
-            }
-            // Legs + white paws
-            g.roundRect(-8, by + 7, 5, 8 + lo1, 2); g.fill(bc); g.stroke({ color: 0x000000, width: 1 });
-            g.roundRect(3, by + 7, 5, 8 + lo2, 2); g.fill(bc); g.stroke({ color: 0x000000, width: 1 });
-            g.roundRect(-8, by + 13 + lo1, 5, 2, 1); g.fill(ac);
-            g.roundRect(3, by + 13 + lo2, 5, 2, 1); g.fill(ac);
-            break;
-          }
-
-          case 'owl': {
-            // Wings
-            const wt = Math.sin(lp * 0.5) * 2;
-            g.ellipse(-12, by + 2, 5, 10 + wt); g.fill(bc); g.stroke({ color: 0x000000, width: 1 });
-            g.ellipse(12, by + 2, 5, 10 + wt); g.fill(bc); g.stroke({ color: 0x000000, width: 1 });
-            // Body
-            g.circle(0, by, 13); g.fill(bc); g.stroke({ color: 0x000000, width: 1.5 });
-            g.circle(0, by + 4, 8); g.fill(ac);
-            // Belly chevrons
-            for (let i = 0; i < 3; i++) {
-              const py = by + 1 + i * 4;
-              g.moveTo(-3, py); g.lineTo(0, py + 2); g.lineTo(3, py);
-              g.stroke({ color: bc, width: 0.8 });
-            }
-            // Ear tufts
-            g.moveTo(-7, by - 13); g.lineTo(-10, by - 21); g.lineTo(-5, by - 15); g.fill(bc);
-            g.moveTo(7, by - 13); g.lineTo(10, by - 21); g.lineTo(5, by - 15); g.fill(bc);
-            // Face
-            if (showFace) {
-              g.circle(eyes.lx, by + eyes.y, 5); g.fill(ac); g.stroke({ color: 0x000000, width: 1 });
-              g.circle(eyes.rx, by + eyes.y, 5); g.fill(ac); g.stroke({ color: 0x000000, width: 1 });
-              g.circle(eyes.lx, by + eyes.y, 3); g.fill(0xffab00);
-              g.circle(eyes.rx, by + eyes.y, 3); g.fill(0xffab00);
-              g.circle(eyes.lx, by + eyes.y, 1.5); g.fill(0x000000);
-              g.circle(eyes.rx, by + eyes.y, 1.5); g.fill(0x000000);
-              g.circle(eyes.lx + 1, by + eyes.y - 1, 0.8); g.fill(0xffffff);
-              g.circle(eyes.rx + 1, by + eyes.y - 1, 0.8); g.fill(0xffffff);
-              // Beak
-              g.moveTo(-2, by + 2); g.lineTo(0, by + 5); g.lineTo(2, by + 2); g.fill(0xffc107);
-            }
-            // Feet
-            const fo1 = Math.sin(lp) * 2; const fo2 = Math.sin(lp + Math.PI) * 2;
-            g.moveTo(-5, by + 13); g.lineTo(-8 + fo1, by + 18); g.stroke({ color: 0xffc107, width: 2 });
-            g.moveTo(-5, by + 13); g.lineTo(-5 + fo1, by + 19); g.stroke({ color: 0xffc107, width: 2 });
-            g.moveTo(-5, by + 13); g.lineTo(-2 + fo1, by + 18); g.stroke({ color: 0xffc107, width: 2 });
-            g.moveTo(5, by + 13); g.lineTo(2 + fo2, by + 18); g.stroke({ color: 0xffc107, width: 2 });
-            g.moveTo(5, by + 13); g.lineTo(5 + fo2, by + 19); g.stroke({ color: 0xffc107, width: 2 });
-            g.moveTo(5, by + 13); g.lineTo(8 + fo2, by + 18); g.stroke({ color: 0xffc107, width: 2 });
-            break;
-          }
-
-          case 'wolf': {
-            // Tail
-            g.moveTo(tailSide * 8, by + 2);
-            g.quadraticCurveTo(tailSide * 20, by - 6 + Math.sin(lp) * 3, tailSide * 16, by - 12);
-            g.stroke({ color: bc, width: 4 });
-            // Body
-            g.ellipse(0, by, 12, 11); g.fill(bc); g.stroke({ color: 0x000000, width: 1.5 });
-            g.ellipse(0, by + 2, 7, 7); g.fill(ac);
-            // Ears
-            g.moveTo(-8, by - 9); g.lineTo(-12, by - 21); g.lineTo(-4, by - 10);
-            g.fill(bc); g.stroke({ color: 0x000000, width: 1 });
-            g.moveTo(-10, by - 14); g.lineTo(-9, by - 19); g.lineTo(-6, by - 12); g.fill(ac);
-            g.moveTo(8, by - 9); g.lineTo(12, by - 21); g.lineTo(4, by - 10);
-            g.fill(bc); g.stroke({ color: 0x000000, width: 1 });
-            g.moveTo(10, by - 14); g.lineTo(9, by - 19); g.lineTo(6, by - 12); g.fill(ac);
-            // Snout
-            if (showFace) {
-              g.ellipse(0, by + 2, 5, 3.5); g.fill(ac); g.stroke({ color: 0x000000, width: 0.8 });
-              g.circle(0, by + 0.5, 2); g.fill(0x333333);
-              g.circle(eyes.lx, by + eyes.y, 2.5); g.fill(0xffab00); g.stroke({ color: 0x000000, width: 0.8 });
-              g.circle(eyes.rx, by + eyes.y, 2.5); g.fill(0xffab00); g.stroke({ color: 0x000000, width: 0.8 });
-              g.circle(eyes.lx, by + eyes.y, 1.2); g.fill(0x000000);
-              g.circle(eyes.rx, by + eyes.y, 1.2); g.fill(0x000000);
-            }
-            // Legs
-            g.roundRect(-9, by + 7, 6, 9 + lo1, 2); g.fill(bc); g.stroke({ color: 0x000000, width: 1 });
-            g.roundRect(3, by + 7, 6, 9 + lo2, 2); g.fill(bc); g.stroke({ color: 0x000000, width: 1 });
-            break;
-          }
-
-          case 'bunny': {
-            // Cotton tail
-            g.circle(tailSide * 10, by + 6, 4); g.fill(ac); g.stroke({ color: 0x000000, width: 0.8 });
-            // Body
-            g.ellipse(0, by, 11, 12); g.fill(bc); g.stroke({ color: 0x000000, width: 1.5 });
-            g.ellipse(0, by + 4, 7, 6); g.fill(ac);
-            // Long ears with bounce
-            const eb = Math.sin(lp * 0.8) * 2;
-            g.ellipse(-5, by - 22 + eb, 4, 12); g.fill(bc); g.stroke({ color: 0x000000, width: 1 });
-            g.ellipse(-5, by - 22 + eb, 2.5, 9); g.fill(ac);
-            g.ellipse(5, by - 21 + eb * 0.7, 4, 11); g.fill(bc); g.stroke({ color: 0x000000, width: 1 });
-            g.ellipse(5, by - 21 + eb * 0.7, 2.5, 8); g.fill(ac);
-            // Face
-            if (showFace) {
-              g.circle(eyes.lx, by + eyes.y, 3); g.fill(0x000000);
-              g.circle(eyes.rx, by + eyes.y, 3); g.fill(0x000000);
-              g.circle(eyes.lx + 1, by + eyes.y - 1, 1.2); g.fill(0xffffff);
-              g.circle(eyes.rx + 1, by + eyes.y - 1, 1.2); g.fill(0xffffff);
-              g.circle(0, by + 1, 1.5); g.fill(0xf48fb1);
-              // Buck teeth
-              g.rect(-1.5, by + 2, 1.5, 2.5); g.fill(0xffffff); g.stroke({ color: 0x000000, width: 0.5 });
-              g.rect(0, by + 2, 1.5, 2.5); g.fill(0xffffff); g.stroke({ color: 0x000000, width: 0.5 });
-              // Whiskers
-              g.moveTo(-3, by + 2); g.lineTo(-12, by); g.stroke({ color: 0x000000, width: 0.5 });
-              g.moveTo(-3, by + 3); g.lineTo(-12, by + 4); g.stroke({ color: 0x000000, width: 0.5 });
-              g.moveTo(3, by + 2); g.lineTo(12, by); g.stroke({ color: 0x000000, width: 0.5 });
-              g.moveTo(3, by + 3); g.lineTo(12, by + 4); g.stroke({ color: 0x000000, width: 0.5 });
-            }
-            // Big feet
-            g.ellipse(-5, by + 15 + lo1, 5, 3); g.fill(bc); g.stroke({ color: 0x000000, width: 1 });
-            g.ellipse(5, by + 15 + lo2, 5, 3); g.fill(bc); g.stroke({ color: 0x000000, width: 1 });
-            break;
-          }
-
-          case 'phoenix': {
-            const fl = Math.sin(lp * 1.5) * 2;
-            // Tail flames
-            for (let i = 0; i < 3; i++) {
-              const sx = tailSide * (8 + i * 3);
-              const sy = by + 4 - i * 2;
-              const fh = 8 + Math.sin(lp + i) * 4;
-              g.moveTo(sx, sy);
-              g.quadraticCurveTo(sx + tailSide * 6, sy - fh, sx + tailSide * 2, sy - fh - 4);
-              g.stroke({ color: i === 1 ? 0xffeb3b : ac, width: 2.5 - i * 0.5 });
-            }
-            // Wing flames
-            const wfl = Math.sin(lp * 0.6) * 6;
-            g.moveTo(-10, by - 2);
-            g.quadraticCurveTo(-20, by - 12 + wfl, -16, by - 18 + wfl + fl);
-            g.quadraticCurveTo(-14, by - 10 + wfl, -12, by - 14 + wfl + fl);
-            g.quadraticCurveTo(-10, by - 6 + wfl, -8, by); g.fill(ac);
-            g.moveTo(10, by - 2);
-            g.quadraticCurveTo(20, by - 12 + wfl, 16, by - 18 + wfl + fl);
-            g.quadraticCurveTo(14, by - 10 + wfl, 12, by - 14 + wfl + fl);
-            g.quadraticCurveTo(10, by - 6 + wfl, 8, by); g.fill(ac);
-            // Body
-            g.ellipse(0, by, 11, 11); g.fill(bc); g.stroke({ color: 0x000000, width: 1.5 });
-            g.ellipse(0, by + 2, 6, 6); g.fill(0xffeb3b);
-            // Head crest flames
-            g.moveTo(-3, by - 11);
-            g.quadraticCurveTo(-4, by - 19 + fl, -1, by - 16 + fl); g.fill(ac);
-            g.moveTo(0, by - 11);
-            g.quadraticCurveTo(0, by - 21 + fl, 2, by - 17 + fl); g.fill(bc);
-            g.moveTo(3, by - 11);
-            g.quadraticCurveTo(4, by - 19 + fl, 1, by - 16 + fl); g.fill(0xffeb3b);
-            // Face
-            if (showFace) {
-              g.circle(eyes.lx, by + eyes.y, 2.5); g.fill(0xffeb3b); g.stroke({ color: 0x000000, width: 0.8 });
-              g.circle(eyes.rx, by + eyes.y, 2.5); g.fill(0xffeb3b); g.stroke({ color: 0x000000, width: 0.8 });
-              g.circle(eyes.lx, by + eyes.y, 1); g.fill(0x000000);
-              g.circle(eyes.rx, by + eyes.y, 1); g.fill(0x000000);
-              g.moveTo(-2, by + 1); g.lineTo(0, by + 4); g.lineTo(2, by + 1); g.fill(0xff6f00);
-            }
-            // Feet
-            const pf1 = Math.sin(lp) * 2; const pf2 = Math.sin(lp + Math.PI) * 2;
-            g.moveTo(-4, by + 11); g.lineTo(-6 + pf1, by + 16); g.stroke({ color: 0xff6f00, width: 2 });
-            g.moveTo(-4, by + 11); g.lineTo(-3 + pf1, by + 17); g.stroke({ color: 0xff6f00, width: 2 });
-            g.moveTo(4, by + 11); g.lineTo(6 + pf2, by + 16); g.stroke({ color: 0xff6f00, width: 2 });
-            g.moveTo(4, by + 11); g.lineTo(3 + pf2, by + 17); g.stroke({ color: 0xff6f00, width: 2 });
-            break;
-          }
-
-          case 'turtle': {
-            // Tail
-            g.moveTo(tailSide * 14, by + 6);
-            g.lineTo(tailSide * 18, by + 8);
-            g.lineTo(tailSide * 16, by + 6); g.fill(ac);
-            // Legs (slow)
-            const tl1 = Math.sin(lp * 0.5) * 2;
-            const tl2 = Math.sin(lp * 0.5 + Math.PI) * 2;
-            g.roundRect(-14, by + 4, 6, 8 + tl1, 3); g.fill(ac); g.stroke({ color: 0x000000, width: 1 });
-            g.roundRect(8, by + 4, 6, 8 + tl2, 3); g.fill(ac); g.stroke({ color: 0x000000, width: 1 });
-            // Shell
-            g.ellipse(0, by, 14, 12); g.fill(bc); g.stroke({ color: 0x000000, width: 2 });
-            g.ellipse(0, by, 12, 10); g.stroke({ color: 0x000000, width: 0.8 });
-            g.circle(0, by, 5); g.stroke({ color: 0x000000, width: 0.6 });
-            for (let a = 0; a < Math.PI * 2; a += Math.PI / 3) {
-              g.moveTo(Math.cos(a) * 5, by + Math.sin(a) * 5);
-              g.lineTo(Math.cos(a) * 10, by + Math.sin(a) * 10);
-              g.stroke({ color: 0x000000, width: 0.6 });
-            }
-            // Head
-            const hx = dir === 'left' ? -4 : dir === 'right' ? 4 : 0;
-            const hy = dir === 'up' ? -4 : 0;
-            g.circle(hx, by - 12 + hy, 6); g.fill(ac); g.stroke({ color: 0x000000, width: 1.2 });
-            if (showFace) {
-              g.circle(hx - 3, by - 14 + hy, 2); g.fill(0x000000);
-              g.circle(hx + 3, by - 14 + hy, 2); g.fill(0x000000);
-              g.circle(hx - 2.5, by - 14.5 + hy, 0.8); g.fill(0xffffff);
-              g.circle(hx + 3.5, by - 14.5 + hy, 0.8); g.fill(0xffffff);
-              g.moveTo(hx - 2, by - 11 + hy);
-              g.quadraticCurveTo(hx, by - 9 + hy, hx + 2, by - 11 + hy);
-              g.stroke({ color: 0x000000, width: 0.8 });
-            }
-            break;
-          }
-
-          default: {
-            // Fallback circle
-            g.ellipse(0, by, 12, 12); g.fill(bc); g.stroke({ color: 0x000000, width: 2 });
-            if (showFace) {
-              g.circle(-3, by - 3, 2); g.fill(0x000000);
-              g.circle(3, by - 3, 2); g.fill(0x000000);
-            }
-            break;
-          }
-        }
-      }
+      let lastSpecies: string = species;
 
       // Game loop
       app.ticker.add((ticker) => {
@@ -567,30 +414,58 @@ export default function PixiCanvas() {
         const dt = ticker.deltaTime / 60;
         elapsedTime += dt;
 
-        const state = useGameStore.getState();
+        const st = useGameStore.getState();
+        const currentScale = scaleRef.current;
 
-        // Redraw pet procedural sprite each frame for smooth animation
-        if (petGraphicRef.current) {
-          drawPetSprite(
-            petGraphicRef.current,
-            state.petSpecies,
-            state.petColor,
-            state.movementDirection,
-            elapsedTime,
-          );
-          lastSpecies = state.petSpecies;
-          lastColor = state.petColor;
+        // Update pet sprite if species changed
+        if (st.petSpecies !== lastSpecies && petSpriteRef.current) {
+          const newSpecies = (st.petSpecies || 'cat') as PetSpecies;
+          const newPath = SPECIES_SPRITE_MAP[newSpecies] ?? SPECIES_SPRITE_MAP.cat;
+          const newTex = Assets.get(newPath);
+          if (newTex) {
+            petSpriteRef.current.texture = newTex;
+            const ns = targetHeight / newTex.height;
+            petSpriteRef.current.scale.set(ns);
+          }
+          lastSpecies = st.petSpecies;
+        }
+
+        // Pet animation
+        if (petSpriteRef.current) {
+          const sprite = petSpriteRef.current;
+          const dir = st.movementDirection;
+          const isMoving = dir !== 'idle';
+
+          // Direction flipping
+          const baseScale = targetHeight / sprite.texture.height;
+          if (dir === 'left') {
+            sprite.scale.x = -baseScale;
+          } else if (dir === 'right') {
+            sprite.scale.x = baseScale;
+          }
+          // keep last direction for up/down/idle
+
+          // Bobbing animation
+          if (isMoving) {
+            // Faster bob + slight tilt while walking
+            sprite.y = Math.sin(elapsedTime * 12) * 3;
+            sprite.rotation = Math.sin(elapsedTime * 8) * 0.05;
+          } else {
+            // Gentle idle bob
+            sprite.y = Math.sin(elapsedTime * 3) * 2;
+            sprite.rotation = 0;
+          }
         }
 
         // Update pet container position
-        petContainer.x = state.petPosition.x;
-        petContainer.y = state.petPosition.y;
+        petContainer.x = st.petPosition.x;
+        petContainer.y = st.petPosition.y;
 
-        // Update camera
+        // Update camera (scale-aware)
         const cam = updateCamera();
         if (worldRef.current) {
-          worldRef.current.x = cam.x;
-          worldRef.current.y = cam.y;
+          worldRef.current.x = cam.x * currentScale;
+          worldRef.current.y = cam.y * currentScale;
         }
       });
     })();
@@ -606,8 +481,11 @@ export default function PixiCanvas() {
 
   // Handle resize
   useEffect(() => {
-    if (appRef.current) {
+    if (appRef.current && worldRef.current) {
       appRef.current.renderer.resize(viewport.width, viewport.height);
+      const scale = Math.max(viewport.width / MAP_WIDTH, viewport.height / MAP_HEIGHT);
+      worldRef.current.scale.set(scale);
+      scaleRef.current = scale;
     }
   }, [viewport.width, viewport.height]);
 

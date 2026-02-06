@@ -17,16 +17,16 @@ export const ANIMATION_STATES = {
 
 export type AnimationState = keyof typeof ANIMATION_STATES;
 
-/** Maps species to a future sprite sheet path */
+/** Maps species to pet PNG sprite path */
 export const SPECIES_SPRITE_MAP: Record<PetSpecies, string> = {
-  cat: '/sprites/sheets/cat.png',
-  dragon: '/sprites/sheets/dragon.png',
-  fox: '/sprites/sheets/fox.png',
-  owl: '/sprites/sheets/owl.png',
-  wolf: '/sprites/sheets/wolf.png',
-  bunny: '/sprites/sheets/bunny.png',
-  phoenix: '/sprites/sheets/phoenix.png',
-  turtle: '/sprites/sheets/turtle.png',
+  cat: '/sprites/pets/cat.png',
+  dragon: '/sprites/pets/dragon.png',
+  fox: '/sprites/pets/fox.png',
+  owl: '/sprites/pets/owl.png',
+  wolf: '/sprites/pets/wolf.png',
+  bunny: '/sprites/pets/bunny.png',
+  phoenix: '/sprites/pets/phoenix.png',
+  turtle: '/sprites/pets/turtle.png',
 };
 
 /** Color tinting hex values */
