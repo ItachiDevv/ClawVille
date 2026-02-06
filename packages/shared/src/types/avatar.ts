@@ -1,3 +1,5 @@
+export type { PetArchetypeId, PetTone } from '../constants/avatar-archetypes';
+
 export type AvatarSpecies = 'cat' | 'dragon' | 'fox' | 'owl' | 'wolf' | 'bunny' | 'phoenix' | 'turtle';
 export type AvatarColor = 'green' | 'red' | 'blue' | 'yellow';
 export type AvatarGender = 'male' | 'female';
@@ -25,6 +27,7 @@ export interface Avatar {
   species: AvatarSpecies;
   color: AvatarColor;
   gender: AvatarGender;
+  archetype: string;
   personality: PetPersonality;
   stats: PetStats;
   positionX: number;
