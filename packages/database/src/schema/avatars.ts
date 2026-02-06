@@ -34,17 +34,21 @@ export interface PetStatsJson {
 
 /** ElizaOS-compatible character config for avatar agents */
 export interface PetCharacterConfigJson {
-  bio: string;
+  bio: string[];
   greeting: string;
-  personality: string;
-  tone: 'formal' | 'casual' | 'friendly' | 'playful';
+  tone: string;
   topics: string[];
   adjectives: string[];
   rules: string[];
-  style: string[];
-  messageExamples?: Array<{ user: string; content: string }[]>;
-  lore?: string[];
-  knowledge?: string[];
+  style: {
+    all: string[];
+    chat: string[];
+    post: string[];
+  };
+  messageExamples: Array<{ user: string; content: string }[]>;
+  lore: string[];
+  knowledge: string[];
+  system?: string;
 }
 
 export const avatars = pgTable('avatars', {
@@ -57,9 +61,11 @@ export const avatars = pgTable('avatars', {
   species: petSpeciesEnum('species').notNull(),
   color: petColorEnum('color').notNull(),
   gender: petGenderEnum('gender').notNull(),
+  /** Selected archetype ID (e.g. 'brave-adventurer') */
+  archetype: varchar('archetype', { length: 50 }).notNull(),
   personality: jsonb('personality').$type<PetPersonalityJson>().notNull(),
   stats: jsonb('stats').$type<PetStatsJson>().notNull(),
-  /** ElizaOS character config - defines the avatar's AI personality */
+  /** ElizaOS character config - full archetype data for the avatar's AI personality */
   characterConfig: jsonb('character_config').$type<PetCharacterConfigJson>(),
   /** Link to platform_agents table for ElizaOS runtime */
   platformAgentId: uuid('platform_agent_id')
