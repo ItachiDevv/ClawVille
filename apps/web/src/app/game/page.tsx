@@ -4,8 +4,12 @@ import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { useAvatar } from '@/hooks/use-avatar';
+import { useGameStore } from '@/stores/game';
+import GameMenu from '@/components/game/game-menu';
+import AvatarSettingsModal from '@/components/game/avatar-settings-modal';
+import LocationConfigModal from '@/components/game/location-config-modal';
 
-const GameCanvas = dynamic(() => import('@/components/game/game-canvas'), {
+const PixiCanvas = dynamic(() => import('@/components/pixi/PixiCanvas'), {
   ssr: false,
   loading: () => (
     <div className="w-full h-full flex items-center justify-center bg-legacytheme-bg-dark">
@@ -28,6 +32,10 @@ const AvatarStatusBar = dynamic(() => import('@/components/game/avatar-status-ba
   ssr: false,
 });
 
+const MobileControls = dynamic(() => import('@/components/game/mobile-controls'), {
+  ssr: false,
+});
+
 export default function GamePage() {
   const router = useRouter();
   const { data: avatar, isLoading, isError } = useAvatar();
@@ -37,6 +45,13 @@ export default function GamePage() {
       router.push('/create-avatar');
     }
   }, [avatar, isLoading, isError, router]);
+
+  // Sync avatar appearance to game store for PixiJS rendering
+  useEffect(() => {
+    if (avatar) {
+      useGameStore.getState().setPetAppearance(avatar.species, avatar.color);
+    }
+  }, [avatar]);
 
   if (isLoading) {
     return (
@@ -54,10 +69,14 @@ export default function GamePage() {
 
   return (
     <div className="game-container">
-      <GameCanvas />
+      <PixiCanvas />
       <ChatPanel />
       <LocationHUD />
       <AvatarStatusBar />
+      <MobileControls />
+      <GameMenu />
+      <AvatarSettingsModal />
+      <LocationConfigModal />
     </div>
   );
 }
