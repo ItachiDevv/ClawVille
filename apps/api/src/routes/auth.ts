@@ -41,7 +41,8 @@ authRoutes.post('/signup', async (c) => {
     throw new HTTPException(400, { message: 'Invalid input' });
   }
 
-  const { email, password, name } = result.data;
+  const { email: rawEmail, password, name } = result.data;
+  const email = rawEmail.toLowerCase();
 
   const existingUser = await db.query.users.findFirst({
     where: eq(users.email, email),
@@ -85,7 +86,8 @@ authRoutes.post('/login', async (c) => {
     throw new HTTPException(400, { message: 'Invalid input' });
   }
 
-  const { email, password } = result.data;
+  const { email: rawEmail, password } = result.data;
+  const email = rawEmail.toLowerCase();
 
   const user = await db.query.users.findFirst({
     where: eq(users.email, email),
