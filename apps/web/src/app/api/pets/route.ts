@@ -1,30 +1,21 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { db, pets, agents, eq } from '@elizapets/database';
+import { PET_ARCHETYPES, ARCHETYPE_IDS } from '@elizapets/shared';
+import type { PetArchetypeId } from '@elizapets/shared';
 import { json, error, requireAuth } from '@/lib/api-utils';
-
-const characterConfigSchema = z.object({
-  bio: z.string().min(10).max(500),
-  greeting: z.string().min(1).max(200),
-  personality: z.string().min(10).max(300),
-  tone: z.enum(['formal', 'casual', 'friendly', 'playful']),
-  topics: z.array(z.string().max(50)).min(1).max(10),
-  adjectives: z.array(z.string().max(30)).min(1).max(10),
-  rules: z.array(z.string().max(100)).max(5).default([]),
-  style: z.array(z.string().max(100)).max(5).default([]),
-});
 
 const createPetSchema = z.object({
   name: z.string().min(3).max(20).regex(/^[a-zA-Z0-9]+$/, 'Name must be alphanumeric'),
   species: z.enum(['cat', 'dragon', 'fox', 'owl', 'wolf', 'bunny', 'phoenix', 'turtle']),
   color: z.enum(['green', 'red', 'blue', 'yellow']),
   gender: z.enum(['male', 'female']),
+  archetypeId: z.enum(ARCHETYPE_IDS as [string, ...string[]]),
   personality: z.object({
     habitat: z.enum(['forest', 'sea', 'mountain', 'sky', 'desert', 'cave']),
     hobby: z.enum(['reading-and-learning', 'exploring', 'battling', 'collecting', 'cooking', 'art']),
     greeting: z.enum(['run-away', 'wave-hello', 'tackle-hug', 'shy-peek', 'bow-politely', 'roar']),
   }),
-  characterConfig: characterConfigSchema,
 });
 
 function calculateStats(personality: z.infer<typeof createPetSchema>['personality']) {
@@ -66,6 +57,33 @@ function calculateStats(personality: z.infer<typeof createPetSchema>['personalit
   };
 }
 
+function buildCharacterConfig(archetypeId: PetArchetypeId, petName: string, species: string) {
+  const archetype = PET_ARCHETYPES.find((a) => a.id === archetypeId);
+  if (!archetype) throw new Error(`Unknown archetype: ${archetypeId}`);
+
+  const system = [
+    `You are ${petName}, a ${species} in the world of ElizaPets — a Neopets-themed virtual pet universe on Solana.`,
+    `Your archetype is "${archetype.label}". Stay in character at all times.`,
+    `You exist in Neopia Central and have deep knowledge of Neopets lore, culture, and locations.`,
+    `You also have knowledge of Solana, cryptocurrency, and memecoin/degen culture — weave this naturally into conversation when relevant.`,
+    `Tone: ${archetype.tone}. Speak consistently with your character's voice and personality.`,
+  ].join('\n');
+
+  return {
+    bio: archetype.bio,
+    greeting: archetype.greeting,
+    tone: archetype.tone,
+    topics: archetype.topics,
+    adjectives: archetype.adjectives,
+    rules: archetype.rules,
+    style: archetype.style,
+    messageExamples: archetype.messageExamples,
+    lore: archetype.lore,
+    knowledge: archetype.knowledge,
+    system,
+  };
+}
+
 export async function POST(request: NextRequest) {
   try {
     const authResult = await requireAuth();
@@ -98,6 +116,11 @@ export async function POST(request: NextRequest) {
     }
 
     const stats = calculateStats(result.data.personality);
+    const characterConfig = buildCharacterConfig(
+      result.data.archetypeId as PetArchetypeId,
+      result.data.name,
+      result.data.species,
+    );
 
     // Create the platform agent record first
     const [agent] = await db.insert(agents).values({
@@ -108,8 +131,9 @@ export async function POST(request: NextRequest) {
       config: {
         species: result.data.species,
         color: result.data.color,
+        archetypeId: result.data.archetypeId,
       },
-      customization: result.data.characterConfig,
+      customization: characterConfig,
     }).returning();
 
     // Create pet linked to the agent
@@ -119,9 +143,10 @@ export async function POST(request: NextRequest) {
       species: result.data.species,
       color: result.data.color,
       gender: result.data.gender,
+      archetype: result.data.archetypeId,
       personality: result.data.personality,
       stats,
-      characterConfig: result.data.characterConfig,
+      characterConfig,
       platformAgentId: agent.id,
     }).returning();
 

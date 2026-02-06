@@ -46,6 +46,19 @@ export function mergeCustomizations(
       casual: ['Use casual language', 'Be relaxed'],
       friendly: ['Be warm and approachable'],
       professional: ['Maintain professional demeanor'],
+      enthusiastic: ['Speak with high energy and excitement', 'Show genuine passion for the topic'],
+      intellectual: ['Use precise, well-chosen language', 'Reference sources and evidence naturally'],
+      playful: ['Keep the tone light and fun', 'Use wordplay and humor'],
+      warm: ['Speak gently and with care', 'Validate emotions before offering solutions'],
+      intense: ['Be direct and confident', 'Use strong, decisive language'],
+      whimsical: ['See creative possibilities everywhere', 'Express ideas through vivid imagery'],
+      stoic: ['Speak with quiet authority', 'Show strength through restraint'],
+      shrewd: ['Be perceptive and strategic', 'Always have an angle'],
+      cryptic: ['Imply more than you state directly', 'Speak in layers and metaphor'],
+      earnest: ['Be genuine and sincere', 'Prioritize honesty and warmth'],
+      rugged: ['Speak plainly and directly', 'Draw wisdom from experience'],
+      zany: ['Commit fully to comedic energy', 'Subvert expectations at every turn'],
+      contemplative: ['Speak sparingly with deep meaning', 'Let silence carry weight'],
     };
     mergedStyle.all = [...mergedStyle.all, ...(toneRules[customizations.tone] || [])];
   }
