@@ -58,13 +58,17 @@ export interface ElizaRuntimeConfig {
   customization?: {
     name?: string;
     personality?: string;
-    bio?: string;
+    bio?: string | string[];
     greeting?: string;
     rules?: string[];
-    tone?: 'formal' | 'casual' | 'friendly' | 'professional' | 'playful';
+    tone?: string;
     topics?: string[];
     adjectives?: string[];
-    style?: string[];
+    style?: string[] | { all: string[]; chat: string[]; post: string[] };
+    lore?: string[];
+    knowledge?: string[];
+    messageExamples?: Array<{ user: string; content: string }[]>;
+    system?: string;
   };
   agentConfig: Record<string, unknown>;
   databaseUrl?: string;
@@ -141,7 +145,7 @@ function convertToElizaCharacter(
       model: 'claude-3-5-haiku-20241022',
     },
     style: {
-      all: [...(template.style?.all || []), ...(customization?.style || [])],
+      all: [...(template.style?.all || []), ...(Array.isArray(customization?.style) ? customization.style : [])],
       chat: template.style?.chat || [],
       post: template.style?.post || [],
     },
@@ -174,28 +178,55 @@ export class ElizaRuntime {
     const name = customization?.name || 'Pet';
     const species = (config.agentConfig?.species as string) || 'creature';
 
-    const bio = customization?.bio || `A friendly ${species} companion.`;
+    // Support both string and string[] bio from archetype data
+    const bioRaw = customization?.bio;
+    const bio = Array.isArray(bioRaw) ? bioRaw.join('\n') : (bioRaw || `A friendly ${species} companion.`);
 
-    let system = `You are ${name}, a ${species} pet in the world of LegacyApp. You are a virtual companion who loves to chat with your owner.`;
-    if (customization?.personality) {
-      system += `\n\nPersonality: ${customization.personality}`;
+    // Use pre-built system prompt from archetype, or construct a basic one
+    let system = customization?.system ||
+      `You are ${name}, a ${species} pet in the world of LegacyApp. You are a virtual companion who loves to chat with your owner.`;
+    if (!customization?.system) {
+      if (customization?.personality) {
+        system += `\n\nPersonality: ${customization.personality}`;
+      }
+      if (customization?.greeting) {
+        system += `\n\nWhen greeting your owner, say something like: "${customization.greeting}"`;
+      }
+      if (customization?.rules?.length) {
+        system += `\n\nRules to follow:\n${customization.rules.map((r) => `- ${r}`).join('\n')}`;
+      }
+      if (customization?.tone) {
+        system += `\n\nCommunication tone: ${customization.tone}`;
+      }
     }
-    if (customization?.greeting) {
-      system += `\n\nWhen greeting your owner, say something like: "${customization.greeting}"`;
-    }
-    if (customization?.rules?.length) {
-      system += `\n\nRules to follow:\n${customization.rules.map((r) => `- ${r}`).join('\n')}`;
-    }
-    if (customization?.tone) {
-      system += `\n\nCommunication tone: ${customization.tone}`;
-    }
+
+    // Convert messageExamples from {user, content}[] to ElizaOS format
+    const messageExamples = customization?.messageExamples?.map((conversation) =>
+      conversation.map((msg) => ({
+        name: msg.user === 'assistant' ? name : 'User',
+        content: {
+          text: msg.content,
+        },
+      }))
+    );
 
     const plugins: string[] = [
       '@elizaos/plugin-anthropic',
       '@elizaos/plugin-openai',
       '@elizaos/plugin-bootstrap',
       '@elizaos/plugin-sql',
+      '@elizaos/plugin-solana',
     ];
+
+    // Support structured style object from archetype data
+    const styleRaw = customization?.style;
+    const style = styleRaw && !Array.isArray(styleRaw)
+      ? { all: styleRaw.all, chat: styleRaw.chat, post: styleRaw.post }
+      : {
+          all: (Array.isArray(styleRaw) ? styleRaw : null) || ['Be friendly and engaging', 'Use playful language'],
+          chat: [] as string[],
+          post: [] as string[],
+        };
 
     return {
       id: undefined,
@@ -203,20 +234,16 @@ export class ElizaRuntime {
       username: name.toLowerCase().replace(/\s+/g, '-'),
       system,
       bio,
-      messageExamples: [],
+      messageExamples: messageExamples || [],
       postExamples: [],
       topics: customization?.topics || ['pets', 'games', 'adventures'],
       adjectives: customization?.adjectives || ['friendly', 'playful', 'curious'],
-      knowledge: [],
+      knowledge: customization?.knowledge || [],
       plugins,
       settings: {
         model: 'claude-3-5-haiku-20241022',
       },
-      style: {
-        all: customization?.style || ['Be friendly and engaging', 'Use playful language'],
-        chat: [],
-        post: [],
-      },
+      style,
     };
   }
 
@@ -271,6 +298,7 @@ export class ElizaRuntime {
       '@elizaos/plugin-openai': 'openaiPlugin',
       '@elizaos/plugin-bootstrap': 'bootstrapPlugin',
       '@elizaos/plugin-sql': 'sqlPlugin',
+      '@elizaos/plugin-solana': 'solanaPlugin',
     };
 
     for (const pluginName of this.character.plugins || []) {

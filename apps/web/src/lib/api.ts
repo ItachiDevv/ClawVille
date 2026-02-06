@@ -42,17 +42,8 @@ export const api = {
     species: string;
     color: string;
     gender: string;
+    archetypeId: string;
     personality: { habitat: string; hobby: string; greeting: string };
-    characterConfig: {
-      bio: string;
-      greeting: string;
-      personality: string;
-      tone: 'formal' | 'casual' | 'friendly' | 'playful';
-      topics: string[];
-      adjectives: string[];
-      rules: string[];
-      style: string[];
-    };
   }) =>
     request<{ pet: any; agentId: string }>('/api/pets', {
       method: 'POST',

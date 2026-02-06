@@ -1,3 +1,5 @@
+export type { PetArchetypeId, PetTone } from '../constants/pet-archetypes';
+
 export type PetSpecies = 'cat' | 'dragon' | 'fox' | 'owl' | 'wolf' | 'bunny' | 'phoenix' | 'turtle';
 export type PetColor = 'green' | 'red' | 'blue' | 'yellow';
 export type PetGender = 'male' | 'female';
@@ -25,6 +27,7 @@ export interface Pet {
   species: PetSpecies;
   color: PetColor;
   gender: PetGender;
+  archetype: string;
   personality: PetPersonality;
   stats: PetStats;
   positionX: number;
