@@ -29,12 +29,12 @@ export default function PetStatusBar() {
   const emoji = species?.emoji ?? '?';
 
   return (
-    <div className="neopets-panel fixed bottom-4 left-4 z-40 w-48">
-      <div className="flex items-center gap-2 mb-2">
+    <div className="neopets-panel fixed bottom-4 left-4 z-40 w-auto md:w-48">
+      <div className="flex items-center gap-2 md:mb-2">
         <span className="text-xl">{emoji}</span>
         <span className="text-black font-bold text-sm truncate">{pet.name}</span>
       </div>
-      <div className="space-y-1">
+      <div className="hidden md:block space-y-1">
         <StatBar label="S" value={pet.stats.strength} />
         <StatBar label="D" value={pet.stats.defence} />
         <StatBar label="M" value={pet.stats.movement} />
