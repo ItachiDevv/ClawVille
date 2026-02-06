@@ -158,6 +158,7 @@ export class ElizaRuntime {
   private state: ElizaRuntimeState = 'idle';
   private character: Character;
   private loadedPlugins: Plugin[] = [];
+  private lightweightMode = false;
 
   constructor(config: ElizaRuntimeConfig) {
     this.config = config;

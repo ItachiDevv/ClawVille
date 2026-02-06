@@ -1,0 +1,9 @@
+node_modules
+.next
+dist
+.git
+.env*
+*.md
+nul
+cookies.txt
+apps/web
