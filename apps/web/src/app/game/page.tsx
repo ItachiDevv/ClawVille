@@ -4,8 +4,12 @@ import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { usePet } from '@/hooks/use-pet';
+import { useGameStore } from '@/stores/game';
+import GameMenu from '@/components/game/game-menu';
+import PetSettingsModal from '@/components/game/pet-settings-modal';
+import LocationConfigModal from '@/components/game/location-config-modal';
 
-const GameCanvas = dynamic(() => import('@/components/game/game-canvas'), {
+const PixiCanvas = dynamic(() => import('@/components/pixi/PixiCanvas'), {
   ssr: false,
   loading: () => (
     <div className="w-full h-full flex items-center justify-center bg-legacytheme-bg-dark">
@@ -28,6 +32,10 @@ const PetStatusBar = dynamic(() => import('@/components/game/pet-status-bar'), {
   ssr: false,
 });
 
+const MobileControls = dynamic(() => import('@/components/game/mobile-controls'), {
+  ssr: false,
+});
+
 export default function GamePage() {
   const router = useRouter();
   const { data: pet, isLoading, isError } = usePet();
@@ -37,6 +45,13 @@ export default function GamePage() {
       router.push('/create-pet');
     }
   }, [pet, isLoading, isError, router]);
+
+  // Sync pet appearance to game store for PixiJS rendering
+  useEffect(() => {
+    if (pet) {
+      useGameStore.getState().setPetAppearance(pet.species, pet.color);
+    }
+  }, [pet]);
 
   if (isLoading) {
     return (
@@ -54,10 +69,14 @@ export default function GamePage() {
 
   return (
     <div className="game-container">
-      <GameCanvas />
+      <PixiCanvas />
       <ChatPanel />
       <LocationHUD />
       <PetStatusBar />
+      <MobileControls />
+      <GameMenu />
+      <PetSettingsModal />
+      <LocationConfigModal />
     </div>
   );
 }

@@ -1,11 +1,22 @@
 import { create } from 'zustand';
 
+export type MovementDirection = 'idle' | 'left' | 'right' | 'up' | 'down';
+
 export interface GameState {
-  // Pet position (written by Phaser)
+  // Pet appearance (species + color for sprite rendering)
+  petSpecies: string;
+  petColor: string;
+  setPetAppearance: (species: string, color: string) => void;
+
+  // Pet position (written by game loop)
   petPosition: { x: number; y: number };
   setPetPosition: (x: number, y: number) => void;
 
-  // Near location (written by Phaser when overlapping a building zone)
+  // Movement direction for sprite animation
+  movementDirection: MovementDirection;
+  setMovementDirection: (dir: MovementDirection) => void;
+
+  // Near location (written by game loop when overlapping a building zone)
   nearLocation: string | null;
   setNearLocation: (id: string | null) => void;
 
@@ -23,11 +34,36 @@ export interface GameState {
 
   // Movement frozen (when chat is open)
   movementFrozen: boolean;
+
+  // Game menu
+  menuOpen: boolean;
+  setMenuOpen: (open: boolean) => void;
+
+  // Pet settings modal
+  settingsModalOpen: boolean;
+  setSettingsModalOpen: (open: boolean) => void;
+
+  // Location config modal
+  locationConfigModalOpen: boolean;
+  locationConfigTarget: string | null;
+  openLocationConfig: (locationId: string) => void;
+  closeLocationConfig: () => void;
+
+  // Joystick velocity from mobile controls (0-1 range)
+  joystickVelocity: { x: number; y: number };
+  setJoystickVelocity: (x: number, y: number) => void;
 }
 
 export const useGameStore = create<GameState>((set) => ({
+  petSpecies: 'cat',
+  petColor: 'yellow',
+  setPetAppearance: (species, color) => set({ petSpecies: species, petColor: color }),
+
   petPosition: { x: 400, y: 250 },
   setPetPosition: (x, y) => set({ petPosition: { x, y } }),
+
+  movementDirection: 'idle',
+  setMovementDirection: (dir) => set({ movementDirection: dir }),
 
   nearLocation: null,
   setNearLocation: (id) => set({ nearLocation: id }),
@@ -49,4 +85,26 @@ export const useGameStore = create<GameState>((set) => ({
       chatOpen: false,
       movementFrozen: false,
     }),
+
+  menuOpen: false,
+  setMenuOpen: (open) => set({ menuOpen: open }),
+
+  settingsModalOpen: false,
+  setSettingsModalOpen: (open) => set({ settingsModalOpen: open }),
+
+  locationConfigModalOpen: false,
+  locationConfigTarget: null,
+  openLocationConfig: (locationId) =>
+    set({
+      locationConfigModalOpen: true,
+      locationConfigTarget: locationId,
+    }),
+  closeLocationConfig: () =>
+    set({
+      locationConfigModalOpen: false,
+      locationConfigTarget: null,
+    }),
+
+  joystickVelocity: { x: 0, y: 0 },
+  setJoystickVelocity: (x, y) => set({ joystickVelocity: { x, y } }),
 }));
