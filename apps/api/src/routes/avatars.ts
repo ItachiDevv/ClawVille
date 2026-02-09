@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq } from 'drizzle-orm';
-import { db, avatars, agents } from '@legacyapp/database';
-import { AVATAR_ARCHETYPES, ARCHETYPE_IDS } from '@legacyapp/shared';
+import { db, avatars, agents, avatarInventory } from '@legacyapp/database';
+import { AVATAR_ARCHETYPES, ARCHETYPE_IDS, getBookById } from '@legacyapp/shared';
 import type { PetArchetypeId } from '@legacyapp/shared';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
@@ -260,11 +260,33 @@ avatarRoutes.post('/me/chat', requireAuth, async (c) => {
     throw new HTTPException(500, { message: 'Failed to start avatar agent runtime' });
   }
 
-  // Process message
+  // Build dynamic context for the avatar
+  const dynamicContextParts: string[] = [];
+
+  // Token balance
+  dynamicContextParts.push(`Your owner has ${avatar.clawTokens} ClawTokens.`);
+
+  // Knowledge / learned books
+  const characterConfig = (avatar.characterConfig as any) ?? {};
+  const knowledgeCount = (characterConfig.knowledge as string[] | undefined)?.length ?? 0;
+  if (knowledgeCount > 0) {
+    // Find which books contributed knowledge
+    const inventory = await db.query.avatarInventory.findMany({
+      where: eq(avatarInventory.avatarId, avatar.id),
+    });
+    dynamicContextParts.push(
+      `You have studied ${knowledgeCount} knowledge entries and can discuss them knowledgeably.`
+    );
+  }
+
+  const dynamicContext = dynamicContextParts.join('\n');
+
+  // Process message with dynamic context
   const response = await runtime.processMessage(result.data.content, {
     userId: user.id,
     roomId: `avatar-${avatar.id}-${user.id}`,
     platform: 'legacyapp',
+    dynamicContext,
   });
 
   return c.json({

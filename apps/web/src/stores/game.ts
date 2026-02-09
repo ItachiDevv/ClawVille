@@ -2,6 +2,28 @@ import { create } from 'zustand';
 
 export type MovementDirection = 'idle' | 'left' | 'right' | 'up' | 'down';
 
+export interface Toast {
+  id: string;
+  icon: string;
+  message: string;
+  expiresAt: number;
+}
+
+const VISITED_STORAGE_KEY = 'legacyapp-visited-buildings';
+
+function loadVisited(): Set<string> {
+  try {
+    const raw = localStorage.getItem(VISITED_STORAGE_KEY);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function saveVisited(visited: Set<string>) {
+  localStorage.setItem(VISITED_STORAGE_KEY, JSON.stringify([...visited]));
+}
+
 export interface GameState {
   // Avatar appearance (species + color for sprite rendering)
   avatarSpecies: string;
@@ -49,9 +71,28 @@ export interface GameState {
   openLocationConfig: (locationId: string) => void;
   closeLocationConfig: () => void;
 
+  // Inventory modal
+  inventoryOpen: boolean;
+  openInventory: () => void;
+  closeInventory: () => void;
+
+  // Shop overlay
+  shopOpen: boolean;
+  openShop: () => void;
+  closeShop: () => void;
+
   // Joystick velocity from mobile controls (0-1 range)
   joystickVelocity: { x: number; y: number };
   setJoystickVelocity: (x: number, y: number) => void;
+
+  // Discovery tracker
+  visitedBuildings: Set<string>;
+  markBuildingVisited: (id: string) => boolean; // returns true if newly discovered
+
+  // Toast notifications
+  toasts: Toast[];
+  addToast: (icon: string, message: string, durationMs?: number) => void;
+  removeToast: (id: string) => void;
 }
 
 export const useGameStore = create<GameState>((set) => ({
@@ -72,12 +113,18 @@ export const useGameStore = create<GameState>((set) => ({
   chatOpen: false,
   movementFrozen: false,
 
-  enterBuilding: (locationId) =>
+  enterBuilding: (locationId) => {
     set({
       currentLocation: locationId,
       chatOpen: true,
       movementFrozen: true,
-    }),
+    });
+    // Track discovery
+    const isNew = useGameStore.getState().markBuildingVisited(locationId);
+    if (isNew) {
+      useGameStore.getState().addToast('🏠', 'New location discovered!');
+    }
+  },
 
   exitBuilding: () =>
     set({
@@ -105,6 +152,40 @@ export const useGameStore = create<GameState>((set) => ({
       locationConfigTarget: null,
     }),
 
+  inventoryOpen: false,
+  openInventory: () => set({ inventoryOpen: true }),
+  closeInventory: () => set({ inventoryOpen: false }),
+
+  shopOpen: false,
+  openShop: () => set({ shopOpen: true }),
+  closeShop: () => set({ shopOpen: false }),
+
   joystickVelocity: { x: 0, y: 0 },
   setJoystickVelocity: (x, y) => set({ joystickVelocity: { x, y } }),
+
+  visitedBuildings: typeof window !== 'undefined' ? loadVisited() : new Set(),
+  markBuildingVisited: (id) => {
+    const current = useGameStore.getState().visitedBuildings;
+    if (current.has(id)) return false;
+    const updated = new Set(current);
+    updated.add(id);
+    saveVisited(updated);
+    set({ visitedBuildings: updated });
+    return true;
+  },
+
+  toasts: [],
+  addToast: (icon, message, durationMs = 3000) => {
+    const toast: Toast = {
+      id: crypto.randomUUID(),
+      icon,
+      message,
+      expiresAt: Date.now() + durationMs,
+    };
+    set((s) => ({ toasts: [...s.toasts, toast] }));
+    setTimeout(() => {
+      set((s) => ({ toasts: s.toasts.filter((t) => t.id !== toast.id) }));
+    }, durationMs);
+  },
+  removeToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
 }));

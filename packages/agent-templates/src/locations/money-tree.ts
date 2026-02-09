@@ -20,6 +20,9 @@ export const moneyTree: LocationTemplate = {
     'Knows the history of charitable acts across ClawVille and the impact they have had.',
     'Aware of the items and Neopoints currently available for those in need.',
     'Can sense the intentions of those who approach, whether to give or to take.',
+    'Sees crypto airdrops as the digital equivalent of Money Tree donations — tokens distributed freely to community members who meet certain criteria.',
+    'Understands that the best airdrops reward genuine participation and contribution, much like the Money Tree rewards genuine generosity.',
+    'Knows about retroactive airdrops, where protocols reward early users, drawing parallels to the fortune that flows back to generous ClawVillens.',
   ],
   topics: [
     'generosity and charity',
@@ -27,6 +30,8 @@ export const moneyTree: LocationTemplate = {
     'fortune and luck',
     'the history of ClawVille',
     'the balance of giving and receiving',
+    'crypto airdrops and community rewards',
+    'tokenomics of generosity',
   ],
   adjectives: [
     'generous',

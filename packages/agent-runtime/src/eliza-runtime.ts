@@ -421,7 +421,7 @@ export class ElizaRuntime {
 
   async processMessage(
     content: string,
-    context: { userId?: string; roomId?: string; platform?: string } = {}
+    context: { userId?: string; roomId?: string; platform?: string; dynamicContext?: string } = {}
   ): Promise<ElizaMessage> {
     if (this.state !== 'running' || !this.runtime) {
       throw new Error(`Agent is not running (state: ${this.state})`);
@@ -454,9 +454,16 @@ export class ElizaRuntime {
         'messages'
       );
 
-      const promptWithHistory = historyContext
-        ? `${historyContext}User: ${content}\n\nRespond to the user's latest message.`
-        : content;
+      // Build prompt: dynamic context → conversation history → user message
+      let promptParts: string[] = [];
+      if (context.dynamicContext) {
+        promptParts.push(`[Current state context]\n${context.dynamicContext}`);
+      }
+      if (historyContext) {
+        promptParts.push(historyContext.trim());
+      }
+      promptParts.push(`User: ${content}\n\nRespond to the user's latest message.`);
+      const promptWithHistory = promptParts.join('\n\n');
 
       const result = await this.runtime.generateText(promptWithHistory, {
         maxTokens: 1000,
