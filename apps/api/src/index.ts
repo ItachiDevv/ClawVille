@@ -7,6 +7,7 @@ import { authRoutes } from './routes/auth';
 import { petRoutes } from './routes/pets';
 import { locationRoutes } from './routes/locations';
 import { chatRoutes } from './routes/chat';
+import { itemRoutes } from './routes/items';
 import type { AppContext } from './types';
 
 const app = new Hono<AppContext>();
@@ -39,6 +40,7 @@ app.route('/api/auth', authRoutes);
 app.route('/api/pets', petRoutes);
 app.route('/api/locations', locationRoutes);
 app.route('/api/locations', chatRoutes);
+app.route('/api/items', itemRoutes);
 
 // Error handler
 app.onError((err, c) => {

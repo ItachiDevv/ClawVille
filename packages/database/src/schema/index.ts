@@ -5,11 +5,13 @@ export * from './pets';
 export * from './locations';
 export * from './location-agents';
 export * from './agents';
+export * from './inventory';
 
 import { users, sessions } from './users';
 import { pets } from './pets';
 import { agents, agentLogs } from './agents';
 import { locationAgents } from './location-agents';
+import { petInventory } from './inventory';
 
 export const usersRelations = relations(users, ({ many, one }) => ({
   sessions: many(sessions),
@@ -28,7 +30,7 @@ export const sessionsRelations = relations(sessions, ({ one }) => ({
   }),
 }));
 
-export const petsRelations = relations(pets, ({ one }) => ({
+export const petsRelations = relations(pets, ({ one, many }) => ({
   user: one(users, {
     fields: [pets.userId],
     references: [users.id],
@@ -36,6 +38,14 @@ export const petsRelations = relations(pets, ({ one }) => ({
   agent: one(agents, {
     fields: [pets.platformAgentId],
     references: [agents.id],
+  }),
+  inventory: many(petInventory),
+}));
+
+export const petInventoryRelations = relations(petInventory, ({ one }) => ({
+  pet: one(pets, {
+    fields: [petInventory.petId],
+    references: [pets.id],
   }),
 }));
 

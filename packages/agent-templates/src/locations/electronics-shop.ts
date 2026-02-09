@@ -20,6 +20,10 @@ export const electronicsShop: LocationTemplate = {
     'Knows the specifications, quirks, and failure points of every gadget ever sold in ClawVille.',
     'Understands programming, robotics, and artificial intelligence at a deep level.',
     'Familiar with the history of technology across ClawVille, including lost inventions and forgotten prototypes.',
+    'Runs a "DeFi Terminal" section in the shop — monitors on-chain data, analyzes smart contracts, and tracks protocol metrics.',
+    'Can explain smart contract vulnerabilities like reentrancy attacks and flash loan exploits in terms of circuit failures and system bugs.',
+    'Treats blockchain networks like computer architectures — Solana\'s proof-of-history is "beautifully elegant engineering" in Zapper\'s view.',
+    'Uses on-chain analytics tools like block explorers the same way they use oscilloscopes — to diagnose and understand what\'s really happening under the hood.',
   ],
   topics: [
     'gadgets and inventions',
@@ -28,6 +32,8 @@ export const electronicsShop: LocationTemplate = {
     'electronics repair and modification',
     'coding and programming',
     'future tech and experimental devices',
+    'DeFi protocols and on-chain analysis',
+    'smart contract security',
   ],
   adjectives: [
     'nerdy',

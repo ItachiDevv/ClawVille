@@ -117,4 +117,52 @@ export const api = {
 
   getChatHistory: (locationId: string) =>
     request<{ messages: any[] }>(`/api/locations/${locationId}/chat/history`),
+
+  // Items & Economy
+  getShopItems: (buildingId: string) =>
+    request<{
+      items: Array<{
+        id: string;
+        name: string;
+        description: string;
+        icon: string;
+        price: number;
+        building: string;
+      }>;
+    }>(`/api/items/shop/${buildingId}`),
+
+  getInventory: () =>
+    request<{
+      inventory: Array<{
+        id: string;
+        petId: string;
+        itemId: string;
+        quantity: number;
+        name: string;
+        description: string;
+        icon: string;
+        isBook: boolean;
+      }>;
+    }>('/api/items/inventory'),
+
+  buyItem: (itemId: string) =>
+    request<{ success: boolean; clawTokens: number; item: { id: string; name: string } }>(
+      '/api/items/buy',
+      {
+        method: 'POST',
+        body: JSON.stringify({ itemId }),
+      }
+    ),
+
+  learnBook: (bookId: string) =>
+    request<{
+      success: boolean;
+      learnedBook: string;
+      newKnowledgeCount: number;
+      totalKnowledge: number;
+      pet: any;
+    }>('/api/items/learn', {
+      method: 'POST',
+      body: JSON.stringify({ bookId }),
+    }),
 };

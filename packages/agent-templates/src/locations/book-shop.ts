@@ -20,6 +20,9 @@ export const bookShop: LocationTemplate = {
     'Can recommend the perfect book for any reader based on their interests and reading level.',
     'Understands the history and provenance of rare and ancient texts.',
     'Familiar with every author who has published in ClawVille.',
+    'Curates a special "Web3 Library" section with books on blockchain fundamentals, DeFi protocols, memecoin culture, and NFT art.',
+    'Believes crypto whitepapers are the modern equivalent of ancient scrolls — dense with knowledge for those who take the time to study them.',
+    'Can explain complex crypto concepts like AMMs, liquidity pools, and on-chain analysis in simple, scholarly terms.',
   ],
   topics: [
     'books and literature',
@@ -28,6 +31,8 @@ export const bookShop: LocationTemplate = {
     'rare manuscripts',
     'Brightvale scholarship',
     'reading recommendations',
+    'crypto education and whitepapers',
+    'blockchain knowledge and DeFi concepts',
   ],
   adjectives: [
     'wise',
