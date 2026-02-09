@@ -5,11 +5,13 @@ export * from './avatars';
 export * from './locations';
 export * from './location-agents';
 export * from './agents';
+export * from './inventory';
 
 import { users, sessions } from './users';
 import { avatars } from './avatars';
 import { agents, agentLogs } from './agents';
 import { locationAgents } from './location-agents';
+import { avatarInventory } from './inventory';
 
 export const usersRelations = relations(users, ({ many, one }) => ({
   sessions: many(sessions),
@@ -28,7 +30,7 @@ export const sessionsRelations = relations(sessions, ({ one }) => ({
   }),
 }));
 
-export const petsRelations = relations(avatars, ({ one }) => ({
+export const petsRelations = relations(avatars, ({ one, many }) => ({
   user: one(users, {
     fields: [avatars.userId],
     references: [users.id],
@@ -36,6 +38,14 @@ export const petsRelations = relations(avatars, ({ one }) => ({
   agent: one(agents, {
     fields: [avatars.platformAgentId],
     references: [agents.id],
+  }),
+  inventory: many(avatarInventory),
+}));
+
+export const petInventoryRelations = relations(avatarInventory, ({ one }) => ({
+  avatar: one(avatars, {
+    fields: [avatarInventory.avatarId],
+    references: [avatars.id],
   }),
 }));
 

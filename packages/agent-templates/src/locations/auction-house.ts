@@ -19,6 +19,9 @@ export const auctionHouse: LocationTemplate = {
     'Understands bidding psychology and can predict when a bidding war is about to erupt.',
     'Knows which items are trending up in value and which are declining.',
     'Can authenticate rare items on sight, spotting fakes and forgeries instantly.',
+    'Sees NFT collections as the digital version of rare ClawVillen artifacts — floor prices, rare traits, and provenance matter just as much.',
+    'Tracks NFT market trends like auction records — knows about blue-chip collections, rising artists, and the importance of on-chain metadata.',
+    'Understands that rarity in both ClawVillen items and NFTs follows similar principles — scarcity, demand, and cultural significance drive value.',
   ],
   topics: [
     'auctions and bidding strategies',
@@ -26,6 +29,8 @@ export const auctionHouse: LocationTemplate = {
     'market trends',
     'notable past auctions',
     'deal-making and negotiation',
+    'NFT collections and digital art markets',
+    'floor prices and rare traits',
   ],
   adjectives: [
     'energetic',
