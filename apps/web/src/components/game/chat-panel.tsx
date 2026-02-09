@@ -4,10 +4,10 @@ import { useState, useRef, useEffect } from 'react';
 import { useGameStore } from '@/stores/game';
 import { useLocationChat } from '@/hooks/use-location-chat';
 import { useLocationAgent } from '@/hooks/use-locations';
-import { MAP_LOCATIONS } from '@elizapets/shared';
+import { MAP_LOCATIONS, isShopBuilding } from '@elizapets/shared';
 
 export default function ChatPanel() {
-  const { chatOpen, currentLocation, exitBuilding, openLocationConfig } = useGameStore();
+  const { chatOpen, currentLocation, exitBuilding, openLocationConfig, openShop } = useGameStore();
   const { messages, sendMessage, isLoading } = useLocationChat(currentLocation);
   const { data: agent, isLoading: isAgentLoading } = useLocationAgent(currentLocation);
 
@@ -41,6 +41,15 @@ export default function ChatPanel() {
       <div className="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-yellow-600 to-yellow-500 text-black font-bold">
         <span className="flex items-center gap-2">
           {location?.icon} {location?.name ?? 'Unknown'}
+          {currentLocation && isShopBuilding(currentLocation) && (
+            <button
+              onClick={openShop}
+              className="text-[11px] font-bold px-2 py-0.5 rounded bg-black/10 hover:bg-black/30 transition-colors"
+              title="Browse shop items"
+            >
+              Shop
+            </button>
+          )}
           <button
             onClick={() => currentLocation && openLocationConfig(currentLocation)}
             className="w-7 h-7 flex items-center justify-center rounded-full bg-black/10 hover:bg-black/30 transition-colors"
@@ -116,8 +125,10 @@ export default function ChatPanel() {
             ))}
             {isLoading && (
               <div className="flex justify-start">
-                <div className="bg-white/10 text-yellow-300/70 rounded-lg px-3 py-2 text-sm">
-                  <span className="animate-pulse">Thinking...</span>
+                <div className="bg-white/10 rounded-lg px-4 py-3 flex gap-1.5 items-center">
+                  <span className="w-2 h-2 bg-yellow-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                  <span className="w-2 h-2 bg-yellow-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                  <span className="w-2 h-2 bg-yellow-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
                 </div>
               </div>
             )}

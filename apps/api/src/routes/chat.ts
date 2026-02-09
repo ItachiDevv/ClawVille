@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and } from 'drizzle-orm';
-import { db, locationAgents } from '@elizapets/database';
+import { db, locationAgents, pets } from '@elizapets/database';
+import { MAP_LOCATIONS, BUILDING_CRYPTO_THEMES, getBooksForBuilding, isShopBuilding } from '@elizapets/shared';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
@@ -49,12 +50,58 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
     throw new HTTPException(500, { message: 'Failed to start agent runtime' });
   }
 
-  // Process message
+  // Build dynamic context for the location agent
+  const dynamicContextParts: string[] = [];
+  const location = MAP_LOCATIONS.find((l) => l.id === locationId);
+
+  // Get visitor's pet info
+  const pet = await db.query.pets.findFirst({
+    where: eq(pets.userId, user.id),
+  });
+
+  if (pet) {
+    dynamicContextParts.push(`The visitor has a pet named ${pet.name} (a ${pet.species}).`);
+  }
+
+  // Shop-specific context
+  if (isShopBuilding(locationId)) {
+    const books = getBooksForBuilding(locationId);
+    if (books.length > 0) {
+      const bookList = books.map((b) => `${b.name} (${b.price} NeoTokens)`).join(', ');
+      dynamicContextParts.push(`Your shop sells: ${bookList}. Recommend items naturally in conversation when relevant.`);
+    }
+  }
+
+  // Crypto theme context
+  const cryptoTheme = BUILDING_CRYPTO_THEMES[locationId];
+  if (cryptoTheme) {
+    dynamicContextParts.push(
+      `You specialize in ${cryptoTheme.focus}. Share crypto insights and alpha naturally when relevant.`
+    );
+  }
+
+  const dynamicContext = dynamicContextParts.length > 0
+    ? dynamicContextParts.join('\n')
+    : undefined;
+
+  // Process message with dynamic context
   const response = await runtime.processMessage(result.data.content, {
     userId: user.id,
     roomId: `${locationId}-${user.id}`,
     platform: 'elizapets',
+    dynamicContext,
   });
+
+  // Award +1 NeoToken for chatting with a location agent
+  if (pet) {
+    await db
+      .update(pets)
+      .set({
+        neoTokens: pet.neoTokens + 1,
+        updatedAt: new Date(),
+      })
+      .where(eq(pets.id, pet.id));
+  }
 
   return c.json({
     message: {

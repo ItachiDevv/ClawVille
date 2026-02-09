@@ -8,6 +8,12 @@ import { useGameStore } from '@/stores/game';
 import GameMenu from '@/components/game/game-menu';
 import PetSettingsModal from '@/components/game/pet-settings-modal';
 import LocationConfigModal from '@/components/game/location-config-modal';
+import TutorialOverlay from '@/components/game/tutorial-overlay';
+import ToastNotifications from '@/components/game/toast-notifications';
+import Minimap from '@/components/game/minimap';
+import PetChatBar from '@/components/game/pet-chat-bar';
+import ShopOverlay from '@/components/game/shop-overlay';
+import InventoryModal from '@/components/game/inventory-modal';
 
 const PixiCanvas = dynamic(() => import('@/components/pixi/PixiCanvas'), {
   ssr: false,
@@ -74,9 +80,15 @@ export default function GamePage() {
       <LocationHUD />
       <PetStatusBar />
       <MobileControls />
+      <Minimap />
       <GameMenu />
       <PetSettingsModal />
       <LocationConfigModal />
+      <PetChatBar />
+      <ShopOverlay />
+      <InventoryModal />
+      <TutorialOverlay />
+      <ToastNotifications />
     </div>
   );
 }

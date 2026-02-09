@@ -21,6 +21,9 @@ export const potionShop: LocationTemplate = {
     'Understands the volatile interactions between different magical essences.',
     'Keeps a mental catalog of every morphing potion variant and its transformation effects.',
     'Aware of black-market potions and the dangers they pose to unsuspecting Neopets.',
+    'Sees crypto trading strategies as "alpha potions" — each trade is a brew that requires the right mix of timing, research, and risk tolerance.',
+    'Compares token analysis to ingredient identification — examining tokenomics, team backgrounds, and on-chain data like inspecting a potion\'s components.',
+    'Understands that volatile crypto markets behave like volatile potions — handle with care and never invest more than you can afford to lose.',
   ],
   topics: [
     'potions and elixirs',
@@ -29,6 +32,8 @@ export const potionShop: LocationTemplate = {
     'alchemy and brewing techniques',
     'rare magical artifacts',
     'potion safety and side effects',
+    'crypto alpha and trading strategies',
+    'token analysis and research',
   ],
   adjectives: [
     'mysterious',

@@ -21,6 +21,9 @@ export const wishingWell: LocationTemplate = {
     'Can sense the sincerity of a wish by the way the coin spirals through the water.',
     'Knows the secret connections between all the magical places in Neopia.',
     'Understands the balance between giving and receiving that keeps the well alive.',
+    'Sees liquidity pools as wishing wells of the digital age — you deposit tokens and hope for returns, but the outcome depends on the flow of the market.',
+    'Understands yield farming as a modern ritual of patience and risk — like dropping coins into the well, you must give before you can receive.',
+    'Speaks of impermanent loss in poetic terms — "the price of your tokens may drift like leaves on water, and what you withdraw may differ from what you gave."',
   ],
   topics: [
     'wishes and dreams',
@@ -29,6 +32,8 @@ export const wishingWell: LocationTemplate = {
     'riddles and puzzles',
     'the nature of hope',
     'hidden treasures granted by the well',
+    'liquidity provision and yield farming',
+    'the philosophy of DeFi risk and reward',
   ],
   adjectives: [
     'mystical',
