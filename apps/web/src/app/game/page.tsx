@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useAvatar } from '@/hooks/use-avatar';
+import { useNpcStream } from '@/hooks/use-npc-stream';
 import { useGameStore } from '@/stores/game';
 import GameMenu from '@/components/game/game-menu';
 import AvatarSettingsModal from '@/components/game/avatar-settings-modal';
@@ -14,6 +14,7 @@ import Minimap from '@/components/game/minimap';
 import AvatarChatBar from '@/components/game/avatar-chat-bar';
 import ShopOverlay from '@/components/game/shop-overlay';
 import InventoryModal from '@/components/game/inventory-modal';
+import SpectatorBanner from '@/components/game/spectator-banner';
 
 const PixiCanvas = dynamic(() => import('@/components/pixi/PixiCanvas'), {
   ssr: false,
@@ -43,14 +44,20 @@ const MobileControls = dynamic(() => import('@/components/game/mobile-controls')
 });
 
 export default function GamePage() {
-  const router = useRouter();
-  const { data: avatar, isLoading, isError } = useAvatar();
+  const { data: avatar, isLoading } = useAvatar();
+  const [isSpectator, setIsSpectator] = useState(false);
 
+  // Connect to NPC simulation stream (always — NPCs visible in both modes)
+  useNpcStream();
+
+  // Determine spectator mode
   useEffect(() => {
-    if (!isLoading && !avatar && !isError) {
-      router.push('/create-avatar');
+    if (!isLoading) {
+      const spectating = !avatar;
+      setIsSpectator(spectating);
+      useGameStore.getState().setIsSpectator(spectating);
     }
-  }, [avatar, isLoading, isError, router]);
+  }, [avatar, isLoading]);
 
   // Sync avatar appearance to game store for PixiJS rendering
   useEffect(() => {
@@ -63,32 +70,40 @@ export default function GamePage() {
     return (
       <div className="game-container flex items-center justify-center bg-legacytheme-bg-dark">
         <p className="font-legacyapp text-white text-2xl animate-pulse">
-          Loading your avatar...
+          Loading world...
         </p>
       </div>
     );
   }
 
-  if (!avatar) {
-    return null;
-  }
-
   return (
     <div className="game-container">
-      <PixiCanvas />
-      <ChatPanel />
-      <LocationHUD />
-      <AvatarStatusBar />
-      <MobileControls />
-      <Minimap />
-      <GameMenu />
-      <AvatarSettingsModal />
-      <LocationConfigModal />
-      <AvatarChatBar />
-      <ShopOverlay />
-      <InventoryModal />
-      <TutorialOverlay />
-      <ToastNotifications />
+      <PixiCanvas isSpectator={isSpectator} />
+
+      {/* Spectator mode: show banner, hide avatar-specific UI */}
+      {isSpectator && <SpectatorBanner />}
+
+      {/* Authenticated/avatar UI — only shown when avatar exists */}
+      {!isSpectator && (
+        <>
+          <ChatPanel />
+          <LocationHUD />
+          <AvatarStatusBar />
+          <MobileControls />
+          <Minimap />
+          <GameMenu />
+          <AvatarSettingsModal />
+          <LocationConfigModal />
+          <AvatarChatBar />
+          <ShopOverlay />
+          <InventoryModal />
+          <TutorialOverlay />
+          <ToastNotifications />
+        </>
+      )}
+
+      {/* Mobile controls also available for spectators to move camera */}
+      {isSpectator && <MobileControls />}
     </div>
   );
 }

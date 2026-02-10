@@ -12,18 +12,26 @@ interface CameraState {
  * Camera hook that smoothly follows the avatar position.
  * Returns a function to call each frame that returns the camera offset.
  * Scale-aware: adjusts viewport bounds based on world scale.
+ *
+ * Uses a ref for viewport dimensions so the ticker closure always reads
+ * the latest values even though it captures the initial callback reference.
  */
 export function useCamera(mapWidth: number, mapHeight: number, viewWidth: number, viewHeight: number) {
   const cameraRef = useRef<CameraState>({ x: 0, y: 0 });
+  const viewRef = useRef({ viewWidth, viewHeight });
+
+  // Keep ref in sync with latest viewport dimensions
+  viewRef.current = { viewWidth, viewHeight };
 
   const update = useCallback(() => {
     const { avatarPosition } = useGameStore.getState();
     const cam = cameraRef.current;
+    const { viewWidth: vw, viewHeight: vh } = viewRef.current;
 
     // Account for viewport scaling
-    const scale = Math.max(viewWidth / mapWidth, viewHeight / mapHeight);
-    const effectiveViewWidth = viewWidth / scale;
-    const effectiveViewHeight = viewHeight / scale;
+    const scale = Math.max(vw / mapWidth, vh / mapHeight);
+    const effectiveViewWidth = vw / scale;
+    const effectiveViewHeight = vh / scale;
 
     // Target: center the avatar in viewport
     const targetX = avatarPosition.x - effectiveViewWidth / 2;
@@ -40,7 +48,7 @@ export function useCamera(mapWidth: number, mapHeight: number, viewWidth: number
     cam.y = Math.max(0, Math.min(maxY, cam.y));
 
     return { x: -cam.x, y: -cam.y };
-  }, [mapWidth, mapHeight, viewWidth, viewHeight]);
+  }, [mapWidth, mapHeight]);
 
   return update;
 }
