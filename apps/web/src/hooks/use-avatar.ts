@@ -6,8 +6,16 @@ import { api } from '@/lib/api';
 export function useAvatar() {
   return useQuery({
     queryKey: ['avatar'],
-    queryFn: () => api.getMyAvatar(),
+    queryFn: async () => {
+      try {
+        return await api.getMyAvatar();
+      } catch {
+        // Gracefully return null when unauthenticated (401) or no avatar
+        return { avatar: null };
+      }
+    },
     select: (data) => data.avatar,
+    retry: false,
   });
 }
 

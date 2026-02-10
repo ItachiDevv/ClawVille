@@ -24,12 +24,12 @@ function StatBar({ label, value, max = 20 }: { label: string; value: number; max
 export default function AvatarStatusBar() {
   const { data: avatar, isLoading } = useAvatar();
   const openInventory = useGameStore((s) => s.openInventory);
+  const visitedCount = useGameStore((s) => s.visitedBuildings.size);
 
   if (isLoading || !avatar) return null;
 
   const species = AVATAR_SPECIES.find((s) => s.id === avatar.species);
   const emoji = species?.emoji ?? '?';
-  const visitedCount = useGameStore((s) => s.visitedBuildings.size);
   const knowledgeCount = (avatar.characterConfig as any)?.knowledge?.length ?? 0;
 
   return (
