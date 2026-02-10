@@ -15,18 +15,66 @@ interface GameLoopOptions {
     width: number;
     height: number;
   }>;
+  isSpectator?: boolean;
 }
 
 /**
  * Game loop hook — call the returned function each frame via useTick.
  * Handles movement, zone detection, and building entry/exit.
+ * In spectator mode: WASD moves camera target, no pet physics or building interaction.
  */
-export function useGameLoop({ mapWidth, mapHeight, buildingZones }: GameLoopOptions) {
+export function useGameLoop({ mapWidth, mapHeight, buildingZones, isSpectator = false }: GameLoopOptions) {
   const keyboard = useKeyboard();
 
   const tick = useCallback(
     (delta: number) => {
       const store = useGameStore.getState();
+
+      if (isSpectator) {
+        // Spectator mode: move the petPosition as a "camera target" with WASD
+        let vx = 0;
+        let vy = 0;
+        if (keyboard.isDown('w') || keyboard.isDown('arrowup')) vy = -1;
+        if (keyboard.isDown('s') || keyboard.isDown('arrowdown')) vy = 1;
+        if (keyboard.isDown('a') || keyboard.isDown('arrowleft')) vx = -1;
+        if (keyboard.isDown('d') || keyboard.isDown('arrowright')) vx = 1;
+
+        if (vx !== 0 && vy !== 0) {
+          vx *= DIAGONAL_FACTOR;
+          vy *= DIAGONAL_FACTOR;
+        }
+
+        // Merge joystick input
+        const { joystickVelocity } = store;
+        if (joystickVelocity.x !== 0 || joystickVelocity.y !== 0) {
+          vx = joystickVelocity.x;
+          vy = joystickVelocity.y;
+        }
+
+        if (vx === 0 && vy === 0) {
+          store.setMovementDirection('idle');
+          return;
+        }
+
+        // Set direction for camera info
+        let dir: MovementDirection = 'idle';
+        if (Math.abs(vx) > Math.abs(vy)) {
+          dir = vx > 0 ? 'right' : 'left';
+        } else {
+          dir = vy > 0 ? 'down' : 'up';
+        }
+        store.setMovementDirection(dir);
+
+        const dt = delta / 60;
+        let newX = store.petPosition.x + vx * SPEED * dt;
+        let newY = store.petPosition.y + vy * SPEED * dt;
+        newX = Math.max(16, Math.min(mapWidth - 16, newX));
+        newY = Math.max(16, Math.min(mapHeight - 16, newY));
+        store.setPetPosition(newX, newY);
+        return;
+      }
+
+      // ---- Normal (non-spectator) mode ----
 
       // Handle Escape to exit building
       if (keyboard.wasJustPressed('escape') && store.chatOpen) {
@@ -105,7 +153,7 @@ export function useGameLoop({ mapWidth, mapHeight, buildingZones }: GameLoopOpti
         store.setNearLocation(nearZone);
       }
     },
-    [keyboard, mapWidth, mapHeight, buildingZones]
+    [keyboard, mapWidth, mapHeight, buildingZones, isSpectator]
   );
 
   return tick;

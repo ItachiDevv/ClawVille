@@ -25,6 +25,10 @@ function saveVisited(visited: Set<string>) {
 }
 
 export interface GameState {
+  // Spectator mode (no pet, camera-only)
+  isSpectator: boolean;
+  setIsSpectator: (v: boolean) => void;
+
   // Pet appearance (species + color for sprite rendering)
   petSpecies: string;
   petColor: string;
@@ -96,6 +100,9 @@ export interface GameState {
 }
 
 export const useGameStore = create<GameState>((set) => ({
+  isSpectator: false,
+  setIsSpectator: (v) => set({ isSpectator: v }),
+
   petSpecies: 'cat',
   petColor: 'yellow',
   setPetAppearance: (species, color) => set({ petSpecies: species, petColor: color }),

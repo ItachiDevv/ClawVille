@@ -26,6 +26,18 @@ export default function PetChatBar() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Derive learned book topics from characterConfig knowledge entries
+  const knowledgeTopics = useMemo(() => {
+    const knowledge: string[] = (pet?.characterConfig as any)?.knowledge ?? [];
+    if (knowledge.length === 0) return [];
+    const topicNames: string[] = [];
+    for (const book of KNOWLEDGE_BOOKS) {
+      const hasEntry = book.knowledgeEntries.some((e) => knowledge.includes(e));
+      if (hasEntry) topicNames.push(book.name.replace(/\s+(101|Guide|Basics|Deep Dive)$/i, ''));
+    }
+    return topicNames;
+  }, [pet?.characterConfig]);
+
   // Don't render when location chat is open or no pet
   if (chatOpen || !pet) return null;
 
@@ -33,19 +45,6 @@ export default function PetChatBar() {
   const speciesData = PET_SPECIES.find((s) => s.id === species);
   const emoji = speciesData?.emoji ?? '?';
   const spritePath = SPECIES_SPRITE_MAP[species] ?? SPECIES_SPRITE_MAP.cat;
-
-  // Derive learned book topics from characterConfig knowledge entries
-  const knowledgeTopics = useMemo(() => {
-    const knowledge: string[] = (pet.characterConfig as any)?.knowledge ?? [];
-    if (knowledge.length === 0) return [];
-    // Match knowledge entries to book names
-    const topicNames: string[] = [];
-    for (const book of KNOWLEDGE_BOOKS) {
-      const hasEntry = book.knowledgeEntries.some((e) => knowledge.includes(e));
-      if (hasEntry) topicNames.push(book.name.replace(/\s+(101|Guide|Basics|Deep Dive)$/i, ''));
-    }
-    return topicNames;
-  }, [pet.characterConfig]);
 
   const scrollToBottom = () => {
     setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);

@@ -8,6 +8,9 @@ import { petRoutes } from './routes/pets';
 import { locationRoutes } from './routes/locations';
 import { chatRoutes } from './routes/chat';
 import { itemRoutes } from './routes/items';
+import { npcRoutes } from './routes/npc-sse';
+import { openclawRoutes } from './routes/openclaw';
+import { startSimulation } from './services/npc-simulation';
 import type { AppContext } from './types';
 
 const app = new Hono<AppContext>();
@@ -41,6 +44,8 @@ app.route('/api/pets', petRoutes);
 app.route('/api/locations', locationRoutes);
 app.route('/api/locations', chatRoutes);
 app.route('/api/items', itemRoutes);
+app.route('/api/npc', npcRoutes);
+app.route('/api/openclaw', openclawRoutes);
 
 // Error handler
 app.onError((err, c) => {
@@ -57,6 +62,10 @@ app.notFound((c) => {
 
 const port = parseInt(process.env.PORT || '4000', 10);
 console.log(`Starting ElizaPets API on port ${port}...`);
+
+// Start NPC simulation (arena mode runs combat, world mode is peaceful)
+const arenaMode = process.env.NPC_ARENA_MODE === 'true';
+startSimulation(arenaMode);
 
 export default {
   port,

@@ -6,8 +6,16 @@ import { api } from '@/lib/api';
 export function usePet() {
   return useQuery({
     queryKey: ['pet'],
-    queryFn: () => api.getMyPet(),
+    queryFn: async () => {
+      try {
+        return await api.getMyPet();
+      } catch {
+        // Gracefully return null when unauthenticated (401) or no pet
+        return { pet: null };
+      }
+    },
     select: (data) => data.pet,
+    retry: false,
   });
 }
 

@@ -12,6 +12,7 @@
     "test:watch": "bun test --watch"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.74.0",
     "@elizapets/agent-runtime": "workspace:*",
     "@elizapets/agent-templates": "workspace:*",
     "@elizapets/database": "workspace:*",
