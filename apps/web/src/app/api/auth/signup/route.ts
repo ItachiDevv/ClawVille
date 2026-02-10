@@ -20,7 +20,8 @@ export async function POST(request: NextRequest) {
       return error('Invalid input', 400);
     }
 
-    const { email, password, name } = result.data;
+    const { email: rawEmail, password, name } = result.data;
+    const email = rawEmail.toLowerCase();
 
     const existingUser = await db.query.users.findFirst({
       where: eq(users.email, email),

@@ -1,4 +1,23 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
+const HONO_API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
+
+async function honoRequest<T>(path: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(`${HONO_API_URL}${path}`, {
+    ...options,
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      ...options?.headers,
+    },
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Request failed' }));
+    throw new Error(err.error || `HTTP ${res.status}`);
+  }
+
+  return res.json();
+}
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
@@ -165,4 +184,36 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ bookId }),
     }),
+
+  // OpenClaw
+  registerOpenClaw: (data: {
+    mode: 'override' | 'avatar';
+    gatewayUrl: string;
+    authToken: string;
+    agentId: string;
+    sessionKey: string;
+    targetNpcId?: string;
+    name?: string;
+    species?: string;
+    color?: number;
+    stats?: { hp: number; attack: number; defense: number; speed: number };
+    personality?: string;
+    homeX?: number;
+    homeY?: number;
+    patrolRadius?: number;
+  }) =>
+    honoRequest<{ sessionId: string; mode: string }>('/api/openclaw/register', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  unregisterOpenClaw: (sessionId: string) =>
+    honoRequest<{ success: boolean }>(`/api/openclaw/unregister/${sessionId}`, {
+      method: 'DELETE',
+    }),
+
+  getActiveOpenClawBots: () =>
+    honoRequest<{
+      bots: Array<{ sessionId: string; mode: string; npcId?: string; name?: string }>;
+    }>('/api/openclaw/active'),
 };

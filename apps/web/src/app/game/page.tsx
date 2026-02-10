@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { usePet } from '@/hooks/use-pet';
+import { useNpcStream } from '@/hooks/use-npc-stream';
 import { useGameStore } from '@/stores/game';
 import GameMenu from '@/components/game/game-menu';
 import PetSettingsModal from '@/components/game/pet-settings-modal';
@@ -14,6 +14,7 @@ import Minimap from '@/components/game/minimap';
 import PetChatBar from '@/components/game/pet-chat-bar';
 import ShopOverlay from '@/components/game/shop-overlay';
 import InventoryModal from '@/components/game/inventory-modal';
+import SpectatorBanner from '@/components/game/spectator-banner';
 
 const PixiCanvas = dynamic(() => import('@/components/pixi/PixiCanvas'), {
   ssr: false,
@@ -43,14 +44,20 @@ const MobileControls = dynamic(() => import('@/components/game/mobile-controls')
 });
 
 export default function GamePage() {
-  const router = useRouter();
-  const { data: pet, isLoading, isError } = usePet();
+  const { data: pet, isLoading } = usePet();
+  const [isSpectator, setIsSpectator] = useState(false);
 
+  // Connect to NPC simulation stream (always — NPCs visible in both modes)
+  useNpcStream();
+
+  // Determine spectator mode
   useEffect(() => {
-    if (!isLoading && !pet && !isError) {
-      router.push('/create-pet');
+    if (!isLoading) {
+      const spectating = !pet;
+      setIsSpectator(spectating);
+      useGameStore.getState().setIsSpectator(spectating);
     }
-  }, [pet, isLoading, isError, router]);
+  }, [pet, isLoading]);
 
   // Sync pet appearance to game store for PixiJS rendering
   useEffect(() => {
@@ -63,32 +70,40 @@ export default function GamePage() {
     return (
       <div className="game-container flex items-center justify-center bg-legacytheme-bg-dark">
         <p className="font-legacyapp text-white text-2xl animate-pulse">
-          Loading your pet...
+          Loading world...
         </p>
       </div>
     );
   }
 
-  if (!pet) {
-    return null;
-  }
-
   return (
     <div className="game-container">
-      <PixiCanvas />
-      <ChatPanel />
-      <LocationHUD />
-      <PetStatusBar />
-      <MobileControls />
-      <Minimap />
-      <GameMenu />
-      <PetSettingsModal />
-      <LocationConfigModal />
-      <PetChatBar />
-      <ShopOverlay />
-      <InventoryModal />
-      <TutorialOverlay />
-      <ToastNotifications />
+      <PixiCanvas isSpectator={isSpectator} />
+
+      {/* Spectator mode: show banner, hide pet-specific UI */}
+      {isSpectator && <SpectatorBanner />}
+
+      {/* Authenticated/pet UI — only shown when pet exists */}
+      {!isSpectator && (
+        <>
+          <ChatPanel />
+          <LocationHUD />
+          <PetStatusBar />
+          <MobileControls />
+          <Minimap />
+          <GameMenu />
+          <PetSettingsModal />
+          <LocationConfigModal />
+          <PetChatBar />
+          <ShopOverlay />
+          <InventoryModal />
+          <TutorialOverlay />
+          <ToastNotifications />
+        </>
+      )}
+
+      {/* Mobile controls also available for spectators to move camera */}
+      {isSpectator && <MobileControls />}
     </div>
   );
 }

@@ -24,12 +24,12 @@ function StatBar({ label, value, max = 20 }: { label: string; value: number; max
 export default function PetStatusBar() {
   const { data: pet, isLoading } = usePet();
   const openInventory = useGameStore((s) => s.openInventory);
+  const visitedCount = useGameStore((s) => s.visitedBuildings.size);
 
   if (isLoading || !pet) return null;
 
   const species = PET_SPECIES.find((s) => s.id === pet.species);
   const emoji = species?.emoji ?? '?';
-  const visitedCount = useGameStore((s) => s.visitedBuildings.size);
   const knowledgeCount = (pet.characterConfig as any)?.knowledge?.length ?? 0;
 
   return (

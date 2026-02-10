@@ -12,6 +12,7 @@
     "test:watch": "bun test --watch"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.74.0",
     "@legacyapp/agent-runtime": "workspace:*",
     "@legacyapp/agent-templates": "workspace:*",
     "@legacyapp/database": "workspace:*",
