@@ -21,8 +21,8 @@
     "@radix-ui/react-separator": "^1.1.0",
     "@radix-ui/react-slot": "^1.1.0",
     "@radix-ui/react-tooltip": "^1.2.8",
-    "@react-three/drei": "^10.7.7",
-    "@react-three/fiber": "^9.5.0",
+    "@react-three/drei": "9.121.5",
+    "@react-three/fiber": "8.17.14",
     "@tanstack/react-query": "^5.51.0",
     "@types/three": "^0.182.0",
     "bcryptjs": "^3.0.3",
@@ -38,6 +38,7 @@
     "tailwind-merge": "^2.4.0",
     "tailwindcss-animate": "^1.0.7",
     "three": "^0.182.0",
+    "three-stdlib": "^2.36.1",
     "zod": "^4.3.6",
     "zustand": "^4.5.4"
   },
