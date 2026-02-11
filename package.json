@@ -28,6 +28,7 @@
   },
   "packageManager": "bun@1.0.25",
   "dependencies": {
-    "pg": "^8.17.2"
+    "pg": "^8.17.2",
+    "three-stdlib": "^2.36.1"
   }
 }
