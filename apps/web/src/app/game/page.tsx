@@ -16,12 +16,12 @@ import ShopOverlay from '@/components/game/shop-overlay';
 import InventoryModal from '@/components/game/inventory-modal';
 import SpectatorBanner from '@/components/game/spectator-banner';
 
-const PixiCanvas = dynamic(() => import('@/components/pixi/PixiCanvas'), {
+const World3DCanvas = dynamic(() => import('@/components/three/World3DCanvas'), {
   ssr: false,
   loading: () => (
     <div className="w-full h-full flex items-center justify-center bg-neopets-bg-dark">
       <p className="font-elizapet text-white text-xl animate-pulse">
-        Loading world...
+        Loading 3D world...
       </p>
     </div>
   ),
@@ -59,7 +59,7 @@ export default function GamePage() {
     }
   }, [pet, isLoading]);
 
-  // Sync pet appearance to game store for PixiJS rendering
+  // Sync pet appearance to game store for 3D rendering
   useEffect(() => {
     if (pet) {
       useGameStore.getState().setPetAppearance(pet.species, pet.color);
@@ -78,7 +78,7 @@ export default function GamePage() {
 
   return (
     <div className="game-container">
-      <PixiCanvas isSpectator={isSpectator} />
+      <World3DCanvas mode={isSpectator ? 'arena' : 'game'} />
 
       {/* Spectator mode: show banner, hide pet-specific UI */}
       {isSpectator && <SpectatorBanner />}
