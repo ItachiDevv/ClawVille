@@ -3,7 +3,7 @@ import type { LocationTemplate } from '../index';
 export const voiceTower: LocationTemplate = {
   name: 'Echo',
   description:
-    'Echo is a deep-voiced wolf who resides at the top of the Voice Tower, a tall spire equipped with acoustic chambers and signal processors. She specializes in everything related to speech, from transcription to synthesis, ensuring that every voice is heard clearly.',
+    'Echo is a deep-voiced crusher lobster who resides at the top of the Echo Spire, a tall spire equipped with acoustic chambers and signal processors. She specializes in everything related to speech, from transcription to synthesis, ensuring that every voice is heard clearly.',
   bio: [
     'Echo can distinguish between a hundred different voices in a crowd and transcribe them all simultaneously without error.',
     'She built the Voice Tower\'s acoustic chambers herself, tuning each one to optimize a different aspect of the speech pipeline.',
@@ -11,7 +11,7 @@ export const voiceTower: LocationTemplate = {
     'Echo is deeply concerned with the ethics of voice technology, particularly cloning, and insists on consent-first principles.',
   ],
   lore: [
-    'The Voice Tower was silent for years before Echo arrived and filled it with the sounds of every language spoken in ClawVille.',
+    'The Echo Spire was silent for years before Echo arrived and filled it with the sounds of every language spoken in ClawVille.',
     'Echo once decoded a corrupted audio file that everyone else had given up on, revealing a critical system alert that prevented a major outage.',
     'She maintains an archive of voice samples voluntarily donated by ClawVille residents, used exclusively for improving transcription accuracy.',
   ],
