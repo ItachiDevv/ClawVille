@@ -74,21 +74,16 @@ export interface BuildingZone {
 }
 
 export const buildingZones: BuildingZone[] = [
-  { id: 'potion-shop',      x: 3,  y: 2,  width: 4, height: 3 },
-  { id: 'auction-house',    x: 9,  y: 1,  width: 4, height: 3 },
-  { id: 'book-shop',        x: 16, y: 1,  width: 3, height: 3 },
-  { id: 'clothing-shop',    x: 23, y: 1,  width: 3, height: 3 },
-  { id: 'bazaar',           x: 2,  y: 8,  width: 4, height: 3 },
-  { id: 'petpet-shop',      x: 7,  y: 10, width: 3, height: 3 },
-  { id: 'money-tree',       x: 14, y: 7,  width: 4, height: 4 },
-  { id: 'rainbow-pool',     x: 20, y: 8,  width: 4, height: 3 },
-  { id: 'wishing-well',     x: 27, y: 6,  width: 3, height: 3 },
-  { id: 'treasure-island',  x: 32, y: 3,  width: 4, height: 3 },
-  { id: 'clawvillen-flats',    x: 2,  y: 16, width: 4, height: 3 },
-  { id: 'art-studio',       x: 9,  y: 18, width: 3, height: 3 },
-  { id: 'juice-shop',       x: 17, y: 17, width: 3, height: 3 },
-  { id: 'electronics-shop', x: 25, y: 16, width: 3, height: 3 },
-  { id: 'pharmacy',         x: 32, y: 17, width: 3, height: 3 },
+  { id: 'cron-hub',            x: 3,  y: 2,  width: 4, height: 3 },
+  { id: 'webhook-gateway',     x: 9,  y: 1,  width: 4, height: 3 },
+  { id: 'memory-vault',        x: 16, y: 1,  width: 3, height: 3 },
+  { id: 'skill-forge',         x: 2,  y: 8,  width: 4, height: 3 },
+  { id: 'channel-bridge',      x: 14, y: 7,  width: 4, height: 4 },
+  { id: 'tool-workshop',       x: 20, y: 8,  width: 4, height: 3 },
+  { id: 'canvas-studio',       x: 32, y: 3,  width: 4, height: 3 },
+  { id: 'voice-tower',         x: 2,  y: 16, width: 4, height: 3 },
+  { id: 'security-fortress',   x: 9,  y: 18, width: 3, height: 3 },
+  { id: 'config-citadel',      x: 25, y: 16, width: 3, height: 3 },
 ];
 
 // ---------------------------------------------------------------------------
@@ -163,7 +158,7 @@ export const pathLayer: number[] = [
   _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
   // Row 3
   _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 4 — horizontal path segment from potion-shop down toward center area
+  // Row 4 — horizontal path segment from cron-hub down toward center area
   _,_,_,_,_,SP,_,_,_,_,_,SP,_,_,_,_,_,_,SP,_,_,_,_,_,SP,_,_,_,_,_,_,_,_,_,SP,_,_,_,_,_,
   // Row 5 — main east-west path connecting top-row buildings
   _,_,_,_,_,SP,DP,DP,DP,DP,DP,SP,DP,DP,DP,DP,DP,DP,SP,DP,DP,DP,DP,DP,SP,DP,DP,DP,DP,DP,DP,DP,DP,DP,SP,_,_,_,_,_,
@@ -227,11 +222,11 @@ export const decorationLayer: number[] = [
   _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,T1,
   // Row 6 — some bushes and flowers between buildings
   T2,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,T2,
-  // Row 7 — Money Tree area decorations
+  // Row 7 — Channel Bridge area decorations
   T1,_,BU,_,_,_,_,_,_,_,F1,_,_,_,_,_,_,_,_,_,_,_,_,_,_,F2,_,_,_,BU,_,_,_,_,_,_,_,BU,_,T1,
   // Row 8
   _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 9 — flowers around Rainbow Pool
+  // Row 9 — flowers around Tool Workshop
   _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,F1,_,_,_,_,F2,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
   // Row 10
   T2,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,F2,_,_,_,_,F1,_,_,_,_,_,_,_,_,_,_,_,_,_,_,T2,
@@ -273,45 +268,45 @@ export const decorationLayer: number[] = [
 export const buildingLayer: number[] = [
   // Row 0
   _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 1 — roof line: auction-house (9-12), book-shop (16-18), clothing-shop (23-25)
+  // Row 1 — roof line: webhook-gateway (9-12), memory-vault (16-18)
   _,_,_,_,_,_,_,_,_,RR,RR,RR,RR,_,_,_,RB,RB,RB,_,_,_,_,RG,RG,RG,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 2 — walls: potion-shop (3-6), auction-house, book-shop, clothing-shop
+  // Row 2 — walls: cron-hub (3-6), webhook-gateway, memory-vault
   _,_,_,RR,RR,RR,RR,_,_,WN,BS,BS,WN,_,_,_,WN,BS,WN,_,_,_,_,WN,BS,WN,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 3 — walls + doors: potion-shop, auction-house, book-shop, clothing-shop + treasure-island roof (32-35)
+  // Row 3 — walls + doors: cron-hub, webhook-gateway, memory-vault + canvas-studio roof (32-35)
   _,_,_,WN,BS,BS,WN,_,_,BS,DR,DR,BS,_,_,_,BS,DR,BS,_,_,_,_,BS,DR,BS,_,_,_,_,_,_,RB,RB,RB,RB,_,_,_,_,
-  // Row 4 — potion-shop door row + treasure-island walls
+  // Row 4 — cron-hub door row + canvas-studio walls
   _,_,_,BS,DR,DR,BS,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,WN,BL,BL,WN,_,_,_,_,
-  // Row 5 — treasure-island door
+  // Row 5 — canvas-studio door
   _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,BL,DR,DR,BL,_,_,_,_,
-  // Row 6 — wishing-well roof (27-29)
+  // Row 6
   _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,RG,RG,RG,_,_,_,_,_,_,_,_,_,_,
-  // Row 7 — money-tree (14-17) special area + wishing-well walls
+  // Row 7 — channel-bridge (14-17) special area
   _,_,_,_,_,_,_,_,_,_,_,_,_,_,BX,BX,BX,BX,_,_,_,_,_,_,_,_,_,WN,SM,WN,_,_,_,_,_,_,_,_,_,_,
-  // Row 8 — bazaar (2-5) roof + money-tree + rainbow-pool (20-23) + wishing-well door
+  // Row 8 — skill-forge (2-5) roof + channel-bridge + tool-workshop (20-23)
   _,_,RR,RR,RR,RR,_,_,_,_,_,_,_,_,BX,BX,BX,BX,_,_,WA,WA,WA,WA,_,_,_,SM,DR,SM,_,_,_,_,_,_,_,_,_,_,
-  // Row 9 — bazaar walls + money-tree + rainbow-pool
+  // Row 9 — skill-forge walls + channel-bridge + tool-workshop
   _,_,WN,BS,BS,WN,_,_,_,_,_,_,_,_,BX,DR,DR,BX,_,_,WA,WA,WA,WA,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 10 — bazaar door + petpet-shop roof (7-9) + money-tree bottom + rainbow-pool
+  // Row 10 — skill-forge door + channel-bridge bottom + tool-workshop
   _,_,BS,DR,DR,BS,_,RG,RG,RG,_,_,_,_,BX,BX,BX,BX,_,_,WA,WA,WA,WA,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 11 — petpet-shop walls
+  // Row 11
   _,_,_,_,_,_,_,WN,SM,WN,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 12 — petpet-shop door
+  // Row 12
   _,_,_,_,_,_,_,SM,DR,SM,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
   // Row 13
   _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
   // Row 14
   _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 15 — electronics-shop roof (25-27)
+  // Row 15 — config-citadel roof (25-27)
   _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,RB,RB,RB,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 16 — clawvillen-flats roof (2-5) + electronics-shop walls + pharmacy roof (32-34)
+  // Row 16 — voice-tower roof (2-5) + config-citadel walls
   _,_,RR,RR,RR,RR,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,WN,BS,WN,_,_,_,_,RG,RG,RG,_,_,_,_,_,
-  // Row 17 — clawvillen-flats walls + juice-shop roof (17-19) + electronics-shop door + pharmacy walls
+  // Row 17 — voice-tower walls + config-citadel door
   _,_,WN,BL,BL,WN,_,_,_,_,_,_,_,_,_,_,_,RR,RR,RR,_,_,_,_,_,BS,DR,BS,_,_,_,_,WN,SM,WN,_,_,_,_,_,
-  // Row 18 — clawvillen-flats door + art-studio roof (9-11) + juice-shop walls + pharmacy door
+  // Row 18 — voice-tower door + security-fortress roof (9-11)
   _,_,BL,DR,DR,BL,_,_,_,RB,RB,RB,_,_,_,_,_,WN,BS,WN,_,_,_,_,_,_,_,_,_,_,_,_,SM,DR,SM,_,_,_,_,_,
-  // Row 19 — art-studio walls + juice-shop door
+  // Row 19 — security-fortress walls
   _,_,_,_,_,_,_,_,_,WN,SM,WN,_,_,_,_,_,BS,DR,BS,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 20 — art-studio door
+  // Row 20 — security-fortress door
   _,_,_,_,_,_,_,_,_,SM,DR,SM,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
   // Row 21
   _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
