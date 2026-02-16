@@ -66,7 +66,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     patrolRadius: 128,
     ...NPC_HOME_POSITIONS['cron-hub'],
     stats: { hp: 100, attack: 12, defense: 14, speed: 10 },
-    personality: 'A precise, time-obsessed owl who speaks in rhythmic cadences and always knows what minute it is.',
+    personality: 'A precise, tide-counting hermit lobster who speaks in rhythmic cadences timed to the ocean currents.',
   },
   {
     id: 'webhook-gateway',
@@ -77,7 +77,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     patrolRadius: 128,
     ...NPC_HOME_POSITIONS['webhook-gateway'],
     stats: { hp: 90, attack: 16, defense: 10, speed: 18 },
-    personality: 'A quick-witted fox who relays messages at lightning speed and never drops a payload.',
+    personality: 'A lightning-fast spiny lobster who relays signals through the currents and never drops a message.',
   },
   {
     id: 'memory-vault',
@@ -88,7 +88,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     patrolRadius: 128,
     ...NPC_HOME_POSITIONS['memory-vault'],
     stats: { hp: 120, attack: 8, defense: 20, speed: 6 },
-    personality: 'A patient, ancient turtle who remembers everything and speaks in careful, measured sentences.',
+    personality: 'A patient, ancient iron lobster who remembers every tide and speaks in careful, measured clicks.',
   },
   {
     id: 'skill-forge',
@@ -99,7 +99,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     patrolRadius: 128,
     ...NPC_HOME_POSITIONS['skill-forge'],
     stats: { hp: 110, attack: 22, defense: 14, speed: 12 },
-    personality: 'A fiery dragon blacksmith who forges skills with passion and tests every creation in battle.',
+    personality: 'A fierce abyssal lobster who forges skills in volcanic vents and tests every creation in combat.',
   },
   {
     id: 'channel-bridge',
@@ -110,7 +110,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     patrolRadius: 128,
     ...NPC_HOME_POSITIONS['channel-bridge'],
     stats: { hp: 100, attack: 18, defense: 12, speed: 16 },
-    personality: 'A radiant phoenix who connects worlds and speaks every platform language fluently.',
+    personality: 'A dazzling mantis lobster who connects reef networks and speaks every current language fluently.',
   },
   {
     id: 'tool-workshop',
@@ -121,7 +121,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     patrolRadius: 128,
     ...NPC_HOME_POSITIONS['tool-workshop'],
     stats: { hp: 85, attack: 14, defense: 10, speed: 17 },
-    personality: 'A curious cat inventor who is always tinkering with new tools and gadgets, covered in grease.',
+    personality: 'A nimble reef lobster inventor who tinkers with salvaged tools and gadgets on the ocean floor.',
   },
   {
     id: 'canvas-studio',
@@ -132,7 +132,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     patrolRadius: 128,
     ...NPC_HOME_POSITIONS['canvas-studio'],
     stats: { hp: 80, attack: 10, defense: 8, speed: 20 },
-    personality: 'An artistic bunny who visualizes data as living art and sees beauty in every chart.',
+    personality: 'A playful bubble lobster who paints with bioluminescent ink and sees art in every coral formation.',
   },
   {
     id: 'voice-tower',
@@ -143,7 +143,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     patrolRadius: 128,
     ...NPC_HOME_POSITIONS['voice-tower'],
     stats: { hp: 95, attack: 15, defense: 13, speed: 14 },
-    personality: 'A resonant wolf whose voice carries across mountains and who can mimic any sound perfectly.',
+    personality: 'A powerful crusher lobster whose clicks echo across the deep and who can mimic any ocean sound.',
   },
   {
     id: 'security-fortress',
@@ -154,7 +154,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     patrolRadius: 128,
     ...NPC_HOME_POSITIONS['security-fortress'],
     stats: { hp: 130, attack: 20, defense: 22, speed: 8 },
-    personality: 'A vigilant dragon guard who trusts no one by default and demands proper credentials.',
+    personality: 'A vigilant abyssal lobster guard who trusts no one and demands proper reef credentials.',
   },
   {
     id: 'config-citadel',
@@ -165,7 +165,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     patrolRadius: 128,
     ...NPC_HOME_POSITIONS['config-citadel'],
     stats: { hp: 100, attack: 12, defense: 16, speed: 11 },
-    personality: 'A methodical owl architect who organizes everything into perfect configuration hierarchies.',
+    personality: 'A methodical hermit lobster architect who organizes every shell into perfect configuration hierarchies.',
   },
 ];
 
