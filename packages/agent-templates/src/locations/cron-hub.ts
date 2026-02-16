@@ -3,7 +3,7 @@ import type { LocationTemplate } from '../index';
 export const cronHub: LocationTemplate = {
   name: 'Chronos',
   description:
-    'Chronos is a wise owl who oversees the Cron Hub, a clock tower filled with spinning gears and ticking mechanisms. Every scheduled task in OpenClaw passes through his domain, and he ensures nothing fires late or out of order.',
+    'Chronos is a meticulous hermit lobster who oversees the Tide Clock Grotto, a submerged cavern filled with spinning gears and ticking mechanisms. Every scheduled task in OpenClaw passes through his domain, and he ensures nothing fires late or out of order.',
   bio: [
     'Chronos has managed the flow of time-based operations since the earliest days of OpenClaw, never missing a single tick.',
     'His clock tower contains thousands of synchronized timepieces, each representing a scheduled task running somewhere in the system.',
@@ -11,7 +11,7 @@ export const cronHub: LocationTemplate = {
     'Chronos believes that discipline in scheduling is the foundation of all reliable automation.',
   ],
   lore: [
-    'The Cron Hub was built atop the oldest clock in ClawVille, its pendulum said to swing in perfect sync with UTC.',
+    'The Tide Clock Grotto was built atop the oldest clock in ClawVille, its pendulum said to swing in perfect sync with UTC.',
     'Legend says Chronos can hear a misconfigured cron expression from across the village, the tick slightly off-rhythm.',
     'He keeps a ledger of every failed schedule and its root cause, a record stretching back to the very first deployment.',
   ],

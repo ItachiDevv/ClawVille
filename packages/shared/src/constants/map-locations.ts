@@ -1,13 +1,13 @@
 import type { MapLocation } from '../types/location';
 
-// Building zones calibrated for the clawville-map.png (780x468 actual dimensions)
-// 10 OpenClaw integration-themed landmarks
+// Building zones calibrated for the sea-floor map (780x468 actual dimensions)
+// 10 OpenClaw integration-themed sea landmarks
 export const MAP_LOCATIONS: MapLocation[] = [
   {
     id: 'cron-hub',
-    name: 'Cron Hub',
-    description: 'Tick-tock — schedule tasks and automate your agent workflows.',
-    icon: '⏰',
+    name: 'Tide Clock Grotto',
+    description: 'Tick-tock — schedule tasks timed to the ocean currents.',
+    icon: '🐚',
     positionX: 80,
     positionY: 60,
     width: 80,
@@ -15,9 +15,9 @@ export const MAP_LOCATIONS: MapLocation[] = [
   },
   {
     id: 'webhook-gateway',
-    name: 'Webhook Gateway',
-    description: 'Incoming signals arrive here — HTTP endpoints for the world.',
-    icon: '🔗',
+    name: 'Current Gateway',
+    description: 'Incoming signals ride the currents — endpoints for the reef.',
+    icon: '🌊',
     positionX: 200,
     positionY: 50,
     width: 70,
@@ -25,8 +25,8 @@ export const MAP_LOCATIONS: MapLocation[] = [
   },
   {
     id: 'memory-vault',
-    name: 'Memory Vault',
-    description: 'Deep storage of knowledge, powered by LanceDB vectors.',
+    name: 'Abyssal Vault',
+    description: 'Deep-sea storage of knowledge, sealed in nautilus chambers.',
     icon: '🧠',
     positionX: 330,
     positionY: 30,
@@ -35,9 +35,9 @@ export const MAP_LOCATIONS: MapLocation[] = [
   },
   {
     id: 'skill-forge',
-    name: 'Skill Forge',
-    description: 'Craft and discover skills from the ClawHub marketplace.',
-    icon: '🔨',
+    name: 'Hydrothermal Forge',
+    description: 'Craft skills in volcanic vents from the ClawHub marketplace.',
+    icon: '🌋',
     positionX: 50,
     positionY: 170,
     width: 70,
@@ -45,9 +45,9 @@ export const MAP_LOCATIONS: MapLocation[] = [
   },
   {
     id: 'channel-bridge',
-    name: 'Channel Bridge',
-    description: 'A bridge connecting Discord, Telegram, Twitter, and beyond.',
-    icon: '🌉',
+    name: 'Coral Bridge',
+    description: 'A living coral bridge connecting reef networks across the sea.',
+    icon: '🪸',
     positionX: 280,
     positionY: 140,
     width: 90,
@@ -55,9 +55,9 @@ export const MAP_LOCATIONS: MapLocation[] = [
   },
   {
     id: 'tool-workshop',
-    name: 'Tool Workshop',
-    description: 'Build and test custom tools and plugins for your agents.',
-    icon: '🛠️',
+    name: 'Salvage Workshop',
+    description: 'Build and test tools from shipwreck salvage and sea glass.',
+    icon: '⚓',
     positionX: 400,
     positionY: 160,
     width: 80,
@@ -65,8 +65,8 @@ export const MAP_LOCATIONS: MapLocation[] = [
   },
   {
     id: 'canvas-studio',
-    name: 'Canvas Studio',
-    description: 'Visualize data and render live canvases for your agents.',
+    name: 'Biolume Studio',
+    description: 'Paint with bioluminescent ink on the ocean canvas.',
     icon: '🎨',
     positionX: 620,
     positionY: 80,
@@ -75,9 +75,9 @@ export const MAP_LOCATIONS: MapLocation[] = [
   },
   {
     id: 'voice-tower',
-    name: 'Voice Tower',
-    description: 'Voice and speech integration — let your agents speak and listen.',
-    icon: '🗼',
+    name: 'Echo Spire',
+    description: 'Sonar and whale-song integration — let your agents be heard.',
+    icon: '🐋',
     positionX: 40,
     positionY: 310,
     width: 80,
@@ -85,9 +85,9 @@ export const MAP_LOCATIONS: MapLocation[] = [
   },
   {
     id: 'security-fortress',
-    name: 'Security Fortress',
-    description: 'Permissions, access control, and security policies enforced here.',
-    icon: '🏰',
+    name: 'Shell Fortress',
+    description: 'Armored shell defense — permissions and reef access control.',
+    icon: '🛡️',
     positionX: 180,
     positionY: 340,
     width: 70,
@@ -95,9 +95,9 @@ export const MAP_LOCATIONS: MapLocation[] = [
   },
   {
     id: 'config-citadel',
-    name: 'Config Citadel',
-    description: 'Configuration and deployment — the nerve center of your agent.',
-    icon: '⚙️',
+    name: 'Nautilus Citadel',
+    description: 'Configuration spirals — the nerve center of your reef agent.',
+    icon: '🐙',
     positionX: 490,
     positionY: 300,
     width: 70,

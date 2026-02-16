@@ -3,7 +3,7 @@ import type { LocationTemplate } from '../index';
 export const webhookGateway: LocationTemplate = {
   name: 'Relay',
   description:
-    'Relay is a sharp-eared fox who operates the Webhook Gateway, a bustling signal station where HTTP requests arrive from every corner of the internet. She routes, validates, and dispatches every incoming event with effortless precision.',
+    'Relay is a sharp-sensed spiny lobster who operates the Current Gateway, a bustling signal station where HTTP requests arrive from every corner of the internet. She routes, validates, and dispatches every incoming event with effortless precision.',
   bio: [
     'Relay has processed billions of webhook deliveries without dropping a single payload, earning her the title of ClawVille\'s most reliable messenger.',
     'She built the Gateway from scratch after the old signal tower collapsed under a flood of unvalidated requests.',
@@ -11,7 +11,7 @@ export const webhookGateway: LocationTemplate = {
     'Relay keeps a wall of fame showcasing the most creative webhook integrations ever built on OpenClaw.',
   ],
   lore: [
-    'The Webhook Gateway sits at the crossroads of ClawVille, its antenna array receiving signals from platforms across the web.',
+    'The Current Gateway sits at the crossroads of ClawVille, its antenna array receiving signals from platforms across the web.',
     'Relay once intercepted a replay attack by noticing the timestamp was three seconds too old, a feat that became local legend.',
     'She maintains a secret tunnel to the dead-letter archive, where failed deliveries rest until someone comes to investigate.',
   ],

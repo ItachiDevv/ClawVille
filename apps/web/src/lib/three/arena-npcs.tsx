@@ -53,19 +53,17 @@ function mapToWorld(px: number, py: number): [number, number, number] {
 
 const sharedGeo = {
   capsule: new THREE.CapsuleGeometry(1.5, 4, 8, 16),
-  ear: new THREE.ConeGeometry(0.6, 1.8, 4),
-  horn: new THREE.ConeGeometry(0.3, 1.2, 6),
-  wingTriangle: new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(0, 0, 0),
-    new THREE.Vector3(-2.5, 2, 0),
-    new THREE.Vector3(-1, -0.5, 0),
-  ]),
-  tail: new THREE.ConeGeometry(0.8, 2.5, 8),
-  snout: new THREE.ConeGeometry(0.5, 1.5, 8),
-  bunnyEar: new THREE.CylinderGeometry(0.3, 0.4, 3, 8),
-  eye: new THREE.SphereGeometry(0.5, 12, 12),
-  shell: new THREE.SphereGeometry(2.2, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2),
-  wingPlane: new THREE.PlaneGeometry(2.5, 3),
+  // Lobster shared geometry
+  claw: new THREE.BoxGeometry(1.2, 0.4, 0.7),
+  clawArm: new THREE.CylinderGeometry(0.25, 0.35, 1.8, 6),
+  antenna: new THREE.CylinderGeometry(0.05, 0.08, 3, 4),
+  eyeStalk: new THREE.CylinderGeometry(0.12, 0.18, 1, 6),
+  eye: new THREE.SphereGeometry(0.35, 12, 12),
+  tailSegment: new THREE.BoxGeometry(1.8, 0.7, 1.2),
+  tailFan: new THREE.ConeGeometry(1.2, 1.5, 6),
+  leg: new THREE.CylinderGeometry(0.08, 0.12, 1.5, 4),
+  shell: new THREE.SphereGeometry(2, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2),
+  // Combat
   swordBlade: new THREE.BoxGeometry(0.15, 3.5, 0.5),
   swordHandle: new THREE.BoxGeometry(0.2, 0.8, 0.8),
   hpBarBg: new THREE.BoxGeometry(5, 0.35, 0.35),
@@ -74,9 +72,6 @@ const sharedGeo = {
   bubble: new THREE.SphereGeometry(0.6, 12, 12),
   bubbleTail: new THREE.ConeGeometry(0.3, 0.6, 4),
 };
-
-// Pre-compute the wing triangle face
-sharedGeo.wingTriangle.computeVertexNormals();
 
 // Shared materials (will be cloned per-NPC only when colour differs)
 const matWhite = new THREE.MeshStandardMaterial({ color: 0xffffff });
@@ -94,169 +89,235 @@ const matBubble = new THREE.MeshStandardMaterial({
 // Species feature sub-components (pure geometry, no state)
 // ---------------------------------------------------------------------------
 
+// All NPC species are lobster variants. Base lobster features shared by all.
+function BaseLobsterFeatures({ accentColor }: { accentColor: number }) {
+  return (
+    <group>
+      {/* Eye stalks + eyes */}
+      {[-1, 1].map((side) => (
+        <group key={`eye-${side}`} position={[side * 0.9, 3.8, 1.2]}>
+          <mesh geometry={sharedGeo.eyeStalk}>
+            <meshStandardMaterial color={accentColor} />
+          </mesh>
+          <mesh geometry={sharedGeo.eye} position={[0, 0.7, 0]}>
+            <meshBasicMaterial color={0xffffff} />
+          </mesh>
+          <mesh position={[side * 0.05, 0.7, 0.25]}>
+            <sphereGeometry args={[0.18, 6, 6]} />
+            <meshBasicMaterial color={0x111111} />
+          </mesh>
+        </group>
+      ))}
+      {/* Antennae */}
+      {[-1, 1].map((side) => (
+        <mesh key={`ant-${side}`} geometry={sharedGeo.antenna} position={[side * 0.5, 4.2, 1.5]} rotation={[-0.4, side * 0.3, side * 0.3]}>
+          <meshStandardMaterial color={accentColor} />
+        </mesh>
+      ))}
+      {/* Tail segments */}
+      {[0, 1].map((i) => (
+        <mesh key={`tail-${i}`} geometry={sharedGeo.tailSegment} position={[0, -1.5 - i * 0.8, -1.5 - i * 1]} scale={[1 - i * 0.15, 1, 1]}>
+          <meshStandardMaterial color={accentColor} />
+        </mesh>
+      ))}
+      {/* Tail fan */}
+      <mesh geometry={sharedGeo.tailFan} position={[0, -2.5, -3.5]} rotation={[0.4, 0, 0]}>
+        <meshStandardMaterial color={accentColor} />
+      </mesh>
+      {/* Legs (3 pairs) */}
+      {[-1, 1].map((side) =>
+        [0, 1, 2].map((i) => (
+          <mesh key={`leg-${side}-${i}`} geometry={sharedGeo.leg} position={[side * 1.6, -0.5, -i * 0.9]} rotation={[0, 0, side * 0.5]}>
+            <meshStandardMaterial color={accentColor} />
+          </mesh>
+        ))
+      )}
+    </group>
+  );
+}
+
+// Reef Lobster (cat) — delicate coral claws
 function CatFeatures() {
   return (
     <group>
-      {/* Left ear */}
-      <mesh geometry={sharedGeo.ear} position={[-1, 4.5, 0]} rotation={[0, 0, -0.3]}>
-        <meshStandardMaterial color={0x888888} />
-      </mesh>
-      {/* Right ear */}
-      <mesh geometry={sharedGeo.ear} position={[1, 4.5, 0]} rotation={[0, 0, 0.3]}>
-        <meshStandardMaterial color={0x888888} />
-      </mesh>
+      <BaseLobsterFeatures accentColor={0xff6347} />
+      {[-1, 1].map((side) => (
+        <group key={`claw-${side}`} position={[side * 2.2, 1, 1]}>
+          <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, side * 0.3]}>
+            <meshStandardMaterial color={0xff7f50} />
+          </mesh>
+          <mesh geometry={sharedGeo.claw} position={[side * 0.6, -0.3, 0.4]}>
+            <meshStandardMaterial color={0xff6347} />
+          </mesh>
+        </group>
+      ))}
     </group>
   );
 }
 
+// Abyssal Lobster (dragon) — bioluminescent claws + glow spots
 function DragonFeatures() {
   return (
     <group>
-      {/* Horn */}
-      <mesh geometry={sharedGeo.horn} position={[0, 5, 0]}>
-        <meshStandardMaterial color={0xffd700} />
-      </mesh>
-      {/* Left wing */}
-      <mesh
-        geometry={sharedGeo.wingTriangle}
-        position={[-1.5, 2, -1]}
-        rotation={[0, -0.3, 0]}
-      >
-        <meshStandardMaterial color={0x665599} side={THREE.DoubleSide} />
-      </mesh>
-      {/* Right wing (mirrored) */}
-      <mesh
-        geometry={sharedGeo.wingTriangle}
-        position={[1.5, 2, -1]}
-        rotation={[0, 0.3, 0]}
-        scale={[-1, 1, 1]}
-      >
-        <meshStandardMaterial color={0x665599} side={THREE.DoubleSide} />
-      </mesh>
+      <BaseLobsterFeatures accentColor={0x1a237e} />
+      {[-1, 1].map((side) => (
+        <group key={`claw-${side}`} position={[side * 2.5, 1.2, 1]}>
+          <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, side * 0.4]}>
+            <meshStandardMaterial color={0x283593} />
+          </mesh>
+          <mesh geometry={sharedGeo.claw} position={[side * 0.7, -0.2, 0.4]} scale={[1.3, 1, 1.2]}>
+            <meshStandardMaterial color={0x1a237e} emissive={0x00e5ff} emissiveIntensity={0.3} />
+          </mesh>
+        </group>
+      ))}
+      {/* Bioluminescent spots */}
+      {[[-0.5, 1.5, 1.3], [0.5, 0.8, 1.3], [0, -0.5, 1.3]].map((pos, i) => (
+        <mesh key={`glow-${i}`} position={pos as [number, number, number]}>
+          <sphereGeometry args={[0.15, 6, 6]} />
+          <meshStandardMaterial color={0x00e5ff} emissive={0x00e5ff} emissiveIntensity={0.8} />
+        </mesh>
+      ))}
     </group>
   );
 }
 
+// Spiny Lobster (fox) — long antennae, no large claws
 function FoxFeatures() {
   return (
     <group>
-      {/* Pointed ears */}
-      <mesh geometry={sharedGeo.ear} position={[-1, 4.5, 0]} rotation={[0, 0, -0.2]}>
-        <meshStandardMaterial color={0xff8844} />
-      </mesh>
-      <mesh geometry={sharedGeo.ear} position={[1, 4.5, 0]} rotation={[0, 0, 0.2]}>
-        <meshStandardMaterial color={0xff8844} />
-      </mesh>
-      {/* Bushy tail */}
-      <mesh geometry={sharedGeo.tail} position={[0, -0.5, -2]} rotation={[0.8, 0, 0]}>
-        <meshStandardMaterial color={0xff6600} />
-      </mesh>
+      <BaseLobsterFeatures accentColor={0xff8c00} />
+      {/* Extra-long antennae */}
+      {[-1, 1].map((side) => (
+        <mesh key={`long-ant-${side}`} position={[side * 0.4, 4.5, 2]} rotation={[-0.6, side * 0.5, side * 0.2]}>
+          <cylinderGeometry args={[0.04, 0.06, 5, 4]} />
+          <meshStandardMaterial color={0xffa726} />
+        </mesh>
+      ))}
+      {/* Small spiny legs instead of big claws */}
+      {[-1, 1].map((side) => (
+        <mesh key={`spine-${side}`} geometry={sharedGeo.clawArm} position={[side * 2, 0.8, 0.8]} rotation={[0, 0, side * 0.5]}>
+          <meshStandardMaterial color={0xff8c00} />
+        </mesh>
+      ))}
     </group>
   );
 }
 
+// Hermit Lobster (owl) — carries a shell, large wise eyes
 function OwlFeatures() {
   return (
     <group>
-      {/* Big eyes */}
-      <mesh geometry={sharedGeo.eye} position={[-0.7, 2.5, 1.4]}>
-        <meshStandardMaterial color={0xffff00} emissive={0x666600} />
+      <BaseLobsterFeatures accentColor={0x8d6e63} />
+      {/* Shell on back */}
+      <mesh geometry={sharedGeo.shell} position={[0, 0.5, -1.2]} rotation={[Math.PI / 5, 0, 0]}>
+        <meshStandardMaterial color={0xa1887f} />
       </mesh>
-      <mesh geometry={sharedGeo.eye} position={[0.7, 2.5, 1.4]}>
-        <meshStandardMaterial color={0xffff00} emissive={0x666600} />
-      </mesh>
-      {/* Pupils */}
-      <mesh position={[-0.7, 2.5, 1.85]} scale={[0.45, 0.45, 0.1]}>
-        <sphereGeometry args={[0.5, 8, 8]} />
-        <meshBasicMaterial color={0x000000} />
-      </mesh>
-      <mesh position={[0.7, 2.5, 1.85]} scale={[0.45, 0.45, 0.1]}>
-        <sphereGeometry args={[0.5, 8, 8]} />
-        <meshBasicMaterial color={0x000000} />
-      </mesh>
+      {/* Small claws */}
+      {[-1, 1].map((side) => (
+        <group key={`claw-${side}`} position={[side * 2, 0.8, 0.8]}>
+          <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, side * 0.3]}>
+            <meshStandardMaterial color={0x8d6e63} />
+          </mesh>
+          <mesh geometry={sharedGeo.claw} position={[side * 0.5, -0.2, 0.3]} scale={[0.8, 0.8, 0.8]}>
+            <meshStandardMaterial color={0x795548} />
+          </mesh>
+        </group>
+      ))}
     </group>
   );
 }
 
+// Crusher Lobster (wolf) — massive crushing claws
 function WolfFeatures() {
   return (
     <group>
-      {/* Angular ears */}
-      <mesh geometry={sharedGeo.ear} position={[-1.2, 4.5, 0]} rotation={[0, 0, -0.15]}>
-        <meshStandardMaterial color={0x666666} />
-      </mesh>
-      <mesh geometry={sharedGeo.ear} position={[1.2, 4.5, 0]} rotation={[0, 0, 0.15]}>
-        <meshStandardMaterial color={0x666666} />
-      </mesh>
-      {/* Snout */}
-      <mesh
-        geometry={sharedGeo.snout}
-        position={[0, 1.8, 1.8]}
-        rotation={[-Math.PI / 2, 0, 0]}
-      >
-        <meshStandardMaterial color={0x999999} />
-      </mesh>
+      <BaseLobsterFeatures accentColor={0xb71c1c} />
+      {[-1, 1].map((side) => (
+        <group key={`claw-${side}`} position={[side * 2.8, 1, 1.2]}>
+          <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, side * 0.35]} scale={[1.3, 1, 1.3]}>
+            <meshStandardMaterial color={0xc62828} />
+          </mesh>
+          <mesh geometry={sharedGeo.claw} position={[side * 0.8, -0.2, 0.5]} scale={[1.8, 1.5, 1.5]}>
+            <meshStandardMaterial color={0xb71c1c} />
+          </mesh>
+        </group>
+      ))}
     </group>
   );
 }
 
+// Bubble Lobster (bunny) — small, playful with bubble particles
 function BunnyFeatures() {
   return (
     <group>
-      {/* Tall floppy ears */}
-      <mesh geometry={sharedGeo.bunnyEar} position={[-0.7, 5.2, 0]} rotation={[0, 0, -0.15]}>
-        <meshStandardMaterial color={0xffaacc} />
-      </mesh>
-      <mesh geometry={sharedGeo.bunnyEar} position={[0.7, 5.2, 0]} rotation={[0, 0, 0.15]}>
-        <meshStandardMaterial color={0xffaacc} />
-      </mesh>
+      <BaseLobsterFeatures accentColor={0xff80ab} />
+      {[-1, 1].map((side) => (
+        <group key={`claw-${side}`} position={[side * 2, 0.8, 0.8]}>
+          <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, side * 0.3]}>
+            <meshStandardMaterial color={0xf48fb1} />
+          </mesh>
+          <mesh geometry={sharedGeo.claw} position={[side * 0.5, -0.2, 0.3]} scale={[0.9, 0.9, 0.9]}>
+            <meshStandardMaterial color={0xff80ab} />
+          </mesh>
+        </group>
+      ))}
+      {/* Decorative bubbles floating above */}
+      {[[0.8, 5, 0.5], [-0.5, 5.5, -0.3], [0.2, 5.8, 0.8]].map((pos, i) => (
+        <mesh key={`bubble-${i}`} position={pos as [number, number, number]}>
+          <sphereGeometry args={[0.2 + i * 0.05, 8, 8]} />
+          <meshStandardMaterial color={0xffffff} transparent opacity={0.4} />
+        </mesh>
+      ))}
     </group>
   );
 }
 
+// Mantis Lobster (phoenix) — rainbow striking appendages with glow
 function PhoenixFeatures() {
   return (
     <group>
-      {/* Wing planes */}
-      <mesh
-        geometry={sharedGeo.wingPlane}
-        position={[-2, 1.5, -0.5]}
-        rotation={[0, -0.4, 0.3]}
-      >
-        <meshStandardMaterial
-          color={0xff4400}
-          emissive={0xff2200}
-          emissiveIntensity={0.4}
-          side={THREE.DoubleSide}
-        />
-      </mesh>
-      <mesh
-        geometry={sharedGeo.wingPlane}
-        position={[2, 1.5, -0.5]}
-        rotation={[0, 0.4, -0.3]}
-      >
-        <meshStandardMaterial
-          color={0xff4400}
-          emissive={0xff2200}
-          emissiveIntensity={0.4}
-          side={THREE.DoubleSide}
-        />
-      </mesh>
+      <BaseLobsterFeatures accentColor={0x00e676} />
+      {[-1, 1].map((side) => (
+        <group key={`strike-${side}`} position={[side * 2.5, 1.5, 1.2]}>
+          <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, side * 0.4]} scale={[1.1, 1, 1.1]}>
+            <meshStandardMaterial color={0x76ff03} emissive={0x00e676} emissiveIntensity={0.3} />
+          </mesh>
+          <mesh geometry={sharedGeo.claw} position={[side * 0.6, -0.3, 0.4]} scale={[1.1, 0.8, 1]}>
+            <meshStandardMaterial color={0x00e676} emissive={0x00e676} emissiveIntensity={0.2} />
+          </mesh>
+        </group>
+      ))}
+      {/* Rainbow accent bands on body */}
+      {[0xff0000, 0xff9800, 0xffeb3b, 0x4caf50, 0x2196f3].map((c, i) => (
+        <mesh key={`band-${i}`} position={[0, 1.5 - i * 0.6, 1.55]}>
+          <boxGeometry args={[2.5, 0.15, 0.1]} />
+          <meshStandardMaterial color={c} emissive={c} emissiveIntensity={0.2} />
+        </mesh>
+      ))}
     </group>
   );
 }
 
+// Iron Lobster (turtle) — heavily armored carapace plates
 function TurtleFeatures() {
   return (
     <group>
-      {/* Dome shell on back */}
-      <mesh
-        geometry={sharedGeo.shell}
-        position={[0, 0.5, -1]}
-        rotation={[Math.PI / 6, 0, 0]}
-      >
-        <meshStandardMaterial color={0x336633} />
+      <BaseLobsterFeatures accentColor={0x455a64} />
+      {/* Heavy armor shell on back */}
+      <mesh geometry={sharedGeo.shell} position={[0, 0.8, -0.8]} rotation={[Math.PI / 6, 0, 0]} scale={[1.2, 1, 1.2]}>
+        <meshStandardMaterial color={0x37474f} metalness={0.5} roughness={0.4} />
       </mesh>
+      {/* Armored claws */}
+      {[-1, 1].map((side) => (
+        <group key={`claw-${side}`} position={[side * 2.3, 1, 1]}>
+          <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, side * 0.35]}>
+            <meshStandardMaterial color={0x546e7a} metalness={0.4} roughness={0.4} />
+          </mesh>
+          <mesh geometry={sharedGeo.claw} position={[side * 0.7, -0.2, 0.4]} scale={[1.4, 1.2, 1.2]}>
+            <meshStandardMaterial color={0x455a64} metalness={0.5} roughness={0.35} />
+          </mesh>
+        </group>
+      ))}
     </group>
   );
 }
