@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and } from 'drizzle-orm';
 import { db, locationAgents, pets } from '@legacyapp/database';
-import { MAP_LOCATIONS, BUILDING_CRYPTO_THEMES, getBooksForBuilding, isShopBuilding } from '@legacyapp/shared';
+import { MAP_LOCATIONS, BUILDING_OPENCLAW_THEMES, getBooksForBuilding, isShopBuilding } from '@legacyapp/shared';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
@@ -72,11 +72,11 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
     }
   }
 
-  // Crypto theme context
-  const cryptoTheme = BUILDING_CRYPTO_THEMES[locationId];
-  if (cryptoTheme) {
+  // OpenClaw theme context
+  const openClawTheme = BUILDING_OPENCLAW_THEMES[locationId];
+  if (openClawTheme) {
     dynamicContextParts.push(
-      `You specialize in ${cryptoTheme.focus}. Share crypto insights and alpha naturally when relevant.`
+      `You specialize in ${openClawTheme.focus}. Share OpenClaw insights and expertise naturally when relevant.`
     );
   }
 
