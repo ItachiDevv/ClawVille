@@ -16,36 +16,26 @@ export interface LocationTemplate {
 }
 
 // Import all location templates
-import { potionShop } from './locations/potion-shop';
-import { auctionHouse } from './locations/auction-house';
-import { bookShop } from './locations/book-shop';
-import { clothingShop } from './locations/clothing-shop';
-import { bazaar } from './locations/bazaar';
-import { petpetShop } from './locations/petpet-shop';
-import { moneyTree } from './locations/money-tree';
-import { rainbowPool } from './locations/rainbow-pool';
-import { wishingWell } from './locations/wishing-well';
-import { treasureIsland } from './locations/treasure-island';
-import { neopianFlats } from './locations/neopian-flats';
-import { artStudio } from './locations/art-studio';
-import { juiceShop } from './locations/juice-shop';
-import { electronicsShop } from './locations/electronics-shop';
-import { pharmacy } from './locations/pharmacy';
+import { cronHub } from './locations/cron-hub';
+import { webhookGateway } from './locations/webhook-gateway';
+import { memoryVault } from './locations/memory-vault';
+import { skillForge } from './locations/skill-forge';
+import { channelBridge } from './locations/channel-bridge';
+import { toolWorkshop } from './locations/tool-workshop';
+import { canvasStudio } from './locations/canvas-studio';
+import { voiceTower } from './locations/voice-tower';
+import { securityFortress } from './locations/security-fortress';
+import { configCitadel } from './locations/config-citadel';
 
 export const templates: Record<string, LocationTemplate> = {
-  'potion-shop': potionShop,
-  'auction-house': auctionHouse,
-  'book-shop': bookShop,
-  'clothing-shop': clothingShop,
-  'bazaar': bazaar,
-  'petpet-shop': petpetShop,
-  'money-tree': moneyTree,
-  'rainbow-pool': rainbowPool,
-  'wishing-well': wishingWell,
-  'treasure-island': treasureIsland,
-  'neopian-flats': neopianFlats,
-  'art-studio': artStudio,
-  'juice-shop': juiceShop,
-  'electronics-shop': electronicsShop,
-  'pharmacy': pharmacy,
+  'cron-hub': cronHub,
+  'webhook-gateway': webhookGateway,
+  'memory-vault': memoryVault,
+  'skill-forge': skillForge,
+  'channel-bridge': channelBridge,
+  'tool-workshop': toolWorkshop,
+  'canvas-studio': canvasStudio,
+  'voice-tower': voiceTower,
+  'security-fortress': securityFortress,
+  'config-citadel': configCitadel,
 };

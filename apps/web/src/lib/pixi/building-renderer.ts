@@ -15,50 +15,35 @@ export function drawBuilding(
   const c = new Container();
 
   switch (id) {
-    case 'potion-shop':
-      drawPotionShop(c, w, h);
+    case 'cron-hub':
+      drawCronHub(c, w, h);
       break;
-    case 'auction-house':
-      drawAuctionHouse(c, w, h);
+    case 'webhook-gateway':
+      drawWebhookGateway(c, w, h);
       break;
-    case 'book-shop':
-      drawBookShop(c, w, h);
+    case 'memory-vault':
+      drawMemoryVault(c, w, h);
       break;
-    case 'clothing-shop':
-      drawClothingShop(c, w, h);
+    case 'skill-forge':
+      drawSkillForge(c, w, h);
       break;
-    case 'bazaar':
-      drawBazaar(c, w, h);
+    case 'channel-bridge':
+      drawChannelBridge(c, w, h);
       break;
-    case 'petpet-shop':
-      drawPetpetShop(c, w, h);
+    case 'tool-workshop':
+      drawToolWorkshop(c, w, h);
       break;
-    case 'money-tree':
-      drawMoneyTree(c, w, h);
+    case 'canvas-studio':
+      drawCanvasStudio(c, w, h);
       break;
-    case 'rainbow-pool':
-      drawRainbowPool(c, w, h);
+    case 'voice-tower':
+      drawVoiceTower(c, w, h);
       break;
-    case 'wishing-well':
-      drawWishingWell(c, w, h);
+    case 'security-fortress':
+      drawSecurityFortress(c, w, h);
       break;
-    case 'treasure-island':
-      drawTreasureIsland(c, w, h);
-      break;
-    case 'neopian-flats':
-      drawNeopianFlats(c, w, h);
-      break;
-    case 'art-studio':
-      drawArtStudio(c, w, h);
-      break;
-    case 'juice-shop':
-      drawJuiceShop(c, w, h);
-      break;
-    case 'electronics-shop':
-      drawElectronicsShop(c, w, h);
-      break;
-    case 'pharmacy':
-      drawPharmacy(c, w, h);
+    case 'config-citadel':
+      drawConfigCitadel(c, w, h);
       break;
     default:
       drawGenericBuilding(c, w, h);
@@ -153,469 +138,482 @@ function darken(color: number, amount: number): number {
 
 // ---- Per-building renderers ----
 
-function drawPotionShop(c: Container, w: number, h: number) {
+function drawCronHub(c: Container, w: number, h: number) {
   const g = new Graphics();
   shadow(g, w, h);
-  // Purple walls
-  wall(g, 4, h * 0.3, w - 8, h * 0.7, 0x9c27b0);
-  roof(g, 4, h * 0.15, w - 8, h * 0.2, 0x7b1fa2);
-  // Windows
-  windowRect(g, 10, h * 0.4, 14, 12);
-  windowRect(g, w - 24, h * 0.4, 14, 12);
-  door(g, w / 2, h, 16, 24, 0x4a148c);
-  // Bubbling cauldron at door
-  g.ellipse(w / 2 + 18, h - 6, 8, 5);
-  g.fill(0x333333);
-  // Green smoke wisps
-  for (let i = 0; i < 3; i++) {
-    g.circle(w / 2 + 16 + i * 4, h - 14 - i * 6, 3 - i * 0.5);
-    g.fill({ color: 0x76ff03, alpha: 0.4 - i * 0.1 });
-  }
-  c.addChild(g);
-  sign(c, 'Potion Shop', w / 2, h + 14, 0x6a1b9a);
-}
-
-function drawAuctionHouse(c: Container, w: number, h: number) {
-  const g = new Graphics();
-  shadow(g, w, h);
-  // Grand stone walls
-  wall(g, 4, h * 0.25, w - 8, h * 0.75, 0xd7ccc8);
-  // Columns
-  for (const cx of [10, w - 14]) {
-    g.rect(cx, h * 0.25, 4, h * 0.75);
-    g.fill(0xefebe9);
-    g.stroke({ color: 0xbcaaa4, width: 1 });
-  }
-  roof(g, 2, h * 0.08, w - 4, h * 0.22, 0xef5350);
-  // Triangular pediment
-  g.moveTo(8, h * 0.25);
-  g.lineTo(w / 2, h * 0.08);
-  g.lineTo(w - 8, h * 0.25);
-  g.closePath();
-  g.fill(0xefebe9);
-  g.stroke({ color: 0xbcaaa4, width: 1 });
-  windowRect(g, w / 2 - 16, h * 0.4, 12, 14);
-  windowRect(g, w / 2 + 4, h * 0.4, 12, 14);
-  door(g, w / 2, h, 20, 28, 0x5d4037);
-  // Golden hammer emblem
-  g.rect(w / 2 - 2, h * 0.12, 4, 12);
-  g.fill(0xffd54f);
-  g.circle(w / 2, h * 0.12, 5);
-  g.fill(0xffd54f);
-  c.addChild(g);
-  sign(c, 'Auction House', w / 2, h + 14, 0x795548);
-}
-
-function drawBookShop(c: Container, w: number, h: number) {
-  const g = new Graphics();
-  shadow(g, w, h);
-  // Warm brown wood walls
-  wall(g, 4, h * 0.3, w - 8, h * 0.7, 0x8d6e63);
-  roof(g, 4, h * 0.15, w - 8, h * 0.2, 0x5d4037);
-  windowRect(g, 10, h * 0.38, 14, 14);
-  windowRect(g, w - 24, h * 0.38, 14, 14);
-  door(g, w / 2, h, 14, 22, 0x4e342e);
-  // Stacked books in left window
-  const bookColors = [0xef5350, 0x42a5f5, 0x66bb6a, 0xffca28];
-  for (let i = 0; i < 4; i++) {
-    g.rect(12, h * 0.42 + i * 3, 10, 2.5);
-    g.fill(bookColors[i]);
-  }
-  // Lamp glow in right window
-  g.circle(w - 17, h * 0.42, 4);
-  g.fill({ color: 0xffeb3b, alpha: 0.5 });
-  g.circle(w - 17, h * 0.42, 2);
-  g.fill({ color: 0xfff9c4, alpha: 0.8 });
-  c.addChild(g);
-  sign(c, 'Book Shop', w / 2, h + 14, 0x5d4037);
-}
-
-function drawClothingShop(c: Container, w: number, h: number) {
-  const g = new Graphics();
-  shadow(g, w, h);
-  // Pink/magenta walls
-  wall(g, 4, h * 0.3, w - 8, h * 0.7, 0xec407a);
-  roof(g, 4, h * 0.15, w - 8, h * 0.2, 0xc2185b);
-  // Striped awning
-  for (let i = 0; i < 6; i++) {
-    const sx = 4 + i * ((w - 8) / 6);
-    g.rect(sx, h * 0.28, (w - 8) / 6, 6);
-    g.fill(i % 2 === 0 ? 0xf8bbd0 : 0xffffff);
-  }
-  windowRect(g, w / 2 - 18, h * 0.4, 14, 14);
-  door(g, w / 2, h, 14, 22, 0x880e4f);
-  // Mannequin silhouette in window
-  g.circle(w / 2 - 11, h * 0.42, 3);
-  g.fill(0xf48fb1);
-  g.moveTo(w / 2 - 11, h * 0.45);
-  g.lineTo(w / 2 - 14, h * 0.55);
-  g.lineTo(w / 2 - 8, h * 0.55);
-  g.closePath();
-  g.fill(0xf48fb1);
-  c.addChild(g);
-  sign(c, 'Clothing Shop', w / 2, h + 14, 0xad1457);
-}
-
-function drawBazaar(c: Container, w: number, h: number) {
-  const g = new Graphics();
-  shadow(g, w, h);
-  // Multiple market stalls
-  const stallColors = [0xef5350, 0xffa726, 0x66bb6a, 0x42a5f5];
-  const stallW = (w - 12) / 2;
-  for (let i = 0; i < 2; i++) {
-    for (let j = 0; j < 2; j++) {
-      const sx = 4 + i * (stallW + 4);
-      const sy = h * 0.2 + j * (h * 0.38);
-      // Stall base
-      g.roundRect(sx, sy + 10, stallW, h * 0.3, 3);
-      g.fill(0xd7ccc8);
-      g.stroke({ color: 0xbcaaa4, width: 1 });
-      // Striped awning
-      for (let k = 0; k < 4; k++) {
-        g.rect(sx + k * (stallW / 4), sy, stallW / 4, 12);
-        g.fill(k % 2 === 0 ? stallColors[i * 2 + j] : 0xffffff);
-      }
-    }
-  }
-  // Hanging goods
-  g.circle(w / 4, h * 0.45, 4);
-  g.fill(0xffca28);
-  g.circle(w * 3 / 4, h * 0.45, 4);
-  g.fill(0xef5350);
-  c.addChild(g);
-  sign(c, 'Bazaar', w / 2, h + 14, 0x795548);
-}
-
-function drawPetpetShop(c: Container, w: number, h: number) {
-  const g = new Graphics();
-  shadow(g, w, h);
-  wall(g, 4, h * 0.3, w - 8, h * 0.7, 0xffe0b2);
-  roof(g, 4, h * 0.15, w - 8, h * 0.2, 0x66bb6a);
-  windowRect(g, 10, h * 0.4, w - 20, 16);
-  door(g, w / 2, h, 14, 22, 0x5d4037);
-  // Paw prints on door
-  for (const [px, py] of [[w / 2 - 4, h - 18], [w / 2 + 2, h - 14]] as [number, number][]) {
-    g.circle(px, py, 2);
-    g.fill(0x8d6e63);
-    g.circle(px - 2, py - 3, 1.2);
-    g.fill(0x8d6e63);
-    g.circle(px + 2, py - 3, 1.2);
-    g.fill(0x8d6e63);
-  }
-  // Small creature silhouettes in window
-  g.circle(16, h * 0.46, 4);
-  g.fill({ color: 0xf48fb1, alpha: 0.6 });
-  g.circle(w - 16, h * 0.46, 3);
-  g.fill({ color: 0x81d4fa, alpha: 0.6 });
-  c.addChild(g);
-  sign(c, 'Petpet Shop', w / 2, h + 14, 0x4caf50);
-}
-
-function drawMoneyTree(c: Container, w: number, h: number) {
-  const g = new Graphics();
-  // Shadow under canopy
-  g.ellipse(w / 2, h - 4, w / 2 + 8, 10);
-  g.fill({ color: 0x000000, alpha: 0.12 });
-  // Trunk
-  g.roundRect(w / 2 - 8, h * 0.35, 16, h * 0.65, 4);
-  g.fill(0x795548);
-  g.stroke({ color: 0x5d4037, width: 2 });
-  // Bark texture
-  for (let i = 0; i < 4; i++) {
-    g.moveTo(w / 2 - 4, h * 0.4 + i * 12);
-    g.lineTo(w / 2 + 2, h * 0.45 + i * 12);
-    g.stroke({ color: 0x5d4037, width: 0.8 });
-  }
-  // Leafy canopy — overlapping circles
-  const canopyColors = [0x2e7d32, 0x388e3c, 0x43a047, 0x4caf50, 0x66bb6a];
-  const offsets = [
-    [0, -8], [-18, 4], [18, 4], [-10, -14], [10, -14],
-    [0, -22], [-14, -6], [14, -6], [-6, 6], [6, 6],
-  ];
-  for (let i = 0; i < offsets.length; i++) {
-    const [ox, oy] = offsets[i];
-    g.circle(w / 2 + ox, h * 0.28 + oy, 14 + (i % 3) * 2);
-    g.fill(canopyColors[i % canopyColors.length]);
-  }
-  // Golden coins scattered
-  for (const [cx, cy] of [[w / 2 - 12, h - 8], [w / 2 + 8, h - 6], [w / 2 - 4, h - 2], [w / 2 + 14, h - 10]] as [number, number][]) {
-    g.circle(cx, cy, 3);
-    g.fill(0xffd54f);
-    g.stroke({ color: 0xf9a825, width: 0.8 });
-  }
-  // Magical glow
-  g.circle(w / 2, h * 0.25, 28);
-  g.fill({ color: 0xffeb3b, alpha: 0.08 });
-  c.addChild(g);
-  sign(c, 'Money Tree', w / 2, h + 14, 0x2e7d32);
-}
-
-function drawRainbowPool(c: Container, w: number, h: number) {
-  const g = new Graphics();
-  // Pool base
-  g.roundRect(4, h * 0.3, w - 8, h * 0.65, 12);
-  g.fill(0x1e88e5);
-  g.stroke({ color: 0x9e9e9e, width: 3 });
-  // Pool edge stones
-  for (let i = 0; i < 8; i++) {
-    const angle = (i / 8) * Math.PI * 2;
-    const rx = w / 2 + Math.cos(angle) * (w / 2 - 6);
-    const ry = h * 0.62 + Math.sin(angle) * (h * 0.28);
-    g.circle(rx, ry, 5);
-    g.fill(0xbdbdbd);
-    g.stroke({ color: 0x9e9e9e, width: 1 });
-  }
-  // Water highlights
-  g.ellipse(w / 2, h * 0.55, w / 3, h / 6);
-  g.fill({ color: 0x64b5f6, alpha: 0.5 });
-  // Rainbow arc
-  const rainbowColors = [0xef5350, 0xff9800, 0xffeb3b, 0x4caf50, 0x2196f3, 0x9c27b0];
-  for (let i = 0; i < rainbowColors.length; i++) {
-    g.arc(w / 2, h * 0.35, 30 - i * 3, Math.PI, 0);
-    g.stroke({ color: rainbowColors[i], width: 2.5 });
-  }
-  // Sparkles (diamond shapes)
-  for (const [sx, sy] of [[w / 4, h * 0.2], [w * 3 / 4, h * 0.15], [w / 2, h * 0.08]] as [number, number][]) {
-    g.moveTo(sx, sy - 3);
-    g.lineTo(sx + 2, sy);
-    g.lineTo(sx, sy + 3);
-    g.lineTo(sx - 2, sy);
-    g.closePath();
-    g.fill({ color: 0xffffff, alpha: 0.8 });
-  }
-  c.addChild(g);
-  sign(c, 'Rainbow Pool', w / 2, h + 14, 0x1565c0);
-}
-
-function drawWishingWell(c: Container, w: number, h: number) {
-  const g = new Graphics();
-  shadow(g, w, h);
-  // Circular stone well
-  g.ellipse(w / 2, h * 0.65, w / 2 - 6, h * 0.2);
-  g.fill(0x9e9e9e);
-  g.stroke({ color: 0x757575, width: 2 });
-  // Well wall
-  g.rect(8, h * 0.45, w - 16, h * 0.22);
-  g.fill(0xbdbdbd);
-  g.stroke({ color: 0x9e9e9e, width: 1 });
-  // Stone texture
-  for (let row = 0; row < 2; row++) {
-    for (let col = 0; col < 3; col++) {
-      const bx = 10 + col * ((w - 20) / 3);
-      const by = h * 0.47 + row * 10;
-      g.roundRect(bx, by, (w - 24) / 3, 8, 2);
-      g.stroke({ color: 0x9e9e9e, width: 0.6 });
-    }
-  }
-  // Wooden roof supports
-  g.rect(12, h * 0.15, 3, h * 0.35);
-  g.fill(0x795548);
-  g.rect(w - 15, h * 0.15, 3, h * 0.35);
-  g.fill(0x795548);
-  // Wooden roof
-  g.moveTo(4, h * 0.2);
-  g.lineTo(w / 2, h * 0.02);
-  g.lineTo(w - 4, h * 0.2);
-  g.closePath();
-  g.fill(0x8d6e63);
+  // Brown/gold clock-tower walls
+  wall(g, 4, h * 0.2, w - 8, h * 0.8, 0x8d6e63);
+  roof(g, 4, h * 0.05, w - 8, h * 0.2, 0xffa000);
+  // Clock face on upper wall
+  const clockCx = w / 2;
+  const clockCy = h * 0.35;
+  g.circle(clockCx, clockCy, 12);
+  g.fill(0xfff8e1);
+  g.stroke({ color: 0xffd54f, width: 2 });
+  // Clock hands
+  g.moveTo(clockCx, clockCy);
+  g.lineTo(clockCx, clockCy - 8);
   g.stroke({ color: 0x5d4037, width: 1.5 });
-  // Rope + bucket
-  g.moveTo(w / 2, h * 0.15);
-  g.lineTo(w / 2, h * 0.55);
-  g.stroke({ color: 0x8d6e63, width: 1.5 });
-  g.roundRect(w / 2 - 4, h * 0.5, 8, 8, 2);
-  g.fill(0x795548);
-  // Coin splash
-  g.circle(w / 2, h * 0.6, 2);
-  g.fill({ color: 0xffd54f, alpha: 0.7 });
-  c.addChild(g);
-  sign(c, 'Wishing Well', w / 2, h + 14, 0x795548);
-}
-
-function drawTreasureIsland(c: Container, w: number, h: number) {
-  const g = new Graphics();
-  // Sandy base
-  g.ellipse(w / 2, h * 0.75, w / 2 + 4, h * 0.3);
-  g.fill(0xffe082);
-  g.stroke({ color: 0xffca28, width: 1 });
-  // Palm tree trunk
-  g.moveTo(w * 0.3, h * 0.7);
-  g.quadraticCurveTo(w * 0.25, h * 0.3, w * 0.35, h * 0.1);
-  g.stroke({ color: 0x795548, width: 5 });
-  // Palm leaves
-  const leafColor = 0x2e7d32;
-  for (let i = 0; i < 5; i++) {
-    const angle = (i / 5) * Math.PI * 2 - Math.PI / 2;
-    const lx = w * 0.35 + Math.cos(angle) * 20;
-    const ly = h * 0.08 + Math.sin(angle) * 10;
-    g.moveTo(w * 0.35, h * 0.1);
-    g.quadraticCurveTo(w * 0.35 + Math.cos(angle) * 10, h * 0.1 + Math.sin(angle) * 5, lx, ly);
-    g.stroke({ color: leafColor, width: 3 });
-  }
-  // Treasure chest
-  g.roundRect(w * 0.55, h * 0.55, 24, 16, 3);
-  g.fill(0x8d6e63);
-  g.stroke({ color: 0x5d4037, width: 1.5 });
-  g.rect(w * 0.55, h * 0.55, 24, 3);
-  g.fill(0xffd54f);
-  // Gems peeking out
-  g.circle(w * 0.6, h * 0.55, 3);
-  g.fill(0xef5350);
-  g.circle(w * 0.66, h * 0.54, 2.5);
-  g.fill(0x42a5f5);
-  g.circle(w * 0.72, h * 0.56, 2);
-  g.fill(0x66bb6a);
-  c.addChild(g);
-  sign(c, 'Treasure Island', w / 2, h + 14, 0xf9a825);
-}
-
-function drawNeopianFlats(c: Container, w: number, h: number) {
-  const g = new Graphics();
-  shadow(g, w, h);
-  // Multi-story apartment
-  wall(g, 4, h * 0.15, w - 8, h * 0.85, 0xffccbc);
-  roof(g, 4, h * 0.05, w - 8, h * 0.15, 0xef5350);
-  // Multiple windows in grid
-  for (let row = 0; row < 3; row++) {
-    for (let col = 0; col < 2; col++) {
-      windowRect(g, 10 + col * (w / 2 - 10), h * 0.2 + row * (h * 0.2), 12, 10);
-    }
-  }
-  door(g, w / 2, h, 16, 22, 0x5d4037);
-  // Flower boxes under windows
-  for (let col = 0; col < 2; col++) {
-    const bx = 10 + col * (w / 2 - 10);
-    g.rect(bx - 1, h * 0.31, 14, 4);
+  g.moveTo(clockCx, clockCy);
+  g.lineTo(clockCx + 6, clockCy + 2);
+  g.stroke({ color: 0x5d4037, width: 1 });
+  // Hour marks
+  for (let i = 0; i < 12; i++) {
+    const angle = (i / 12) * Math.PI * 2 - Math.PI / 2;
+    g.circle(clockCx + Math.cos(angle) * 10, clockCy + Math.sin(angle) * 10, 1);
     g.fill(0x795548);
-    // Flowers
-    g.circle(bx + 3, h * 0.3, 2.5);
-    g.fill(0xef5350);
-    g.circle(bx + 7, h * 0.29, 2.5);
-    g.fill(0xffca28);
-    g.circle(bx + 11, h * 0.3, 2.5);
-    g.fill(0xf48fb1);
   }
+  // Gear motifs on walls
+  for (const gx of [12, w - 16]) {
+    g.circle(gx, h * 0.6, 5);
+    g.stroke({ color: 0xffd54f, width: 1.2 });
+    for (let t = 0; t < 6; t++) {
+      const a = (t / 6) * Math.PI * 2;
+      g.moveTo(gx + Math.cos(a) * 4, h * 0.6 + Math.sin(a) * 4);
+      g.lineTo(gx + Math.cos(a) * 7, h * 0.6 + Math.sin(a) * 7);
+      g.stroke({ color: 0xffd54f, width: 1 });
+    }
+  }
+  // Pendulum below clock
+  g.moveTo(clockCx, clockCy + 12);
+  g.lineTo(clockCx - 3, h * 0.58);
+  g.stroke({ color: 0x795548, width: 1 });
+  g.circle(clockCx - 3, h * 0.58, 3);
+  g.fill(0xffd54f);
+  g.stroke({ color: 0xf9a825, width: 0.8 });
+  windowRect(g, 10, h * 0.68, 12, 10);
+  windowRect(g, w - 22, h * 0.68, 12, 10);
+  door(g, w / 2, h, 14, 22, 0x4e342e);
   c.addChild(g);
-  sign(c, 'Neopian Flats', w / 2, h + 14, 0xbf360c);
+  sign(c, 'Cron Hub', w / 2, h + 14, 0x795548);
 }
 
-function drawArtStudio(c: Container, w: number, h: number) {
+function drawWebhookGateway(c: Container, w: number, h: number) {
   const g = new Graphics();
   shadow(g, w, h);
-  // Paint-splattered walls
+  // Orange gateway walls
+  wall(g, 4, h * 0.25, w - 8, h * 0.75, 0xfb8c00);
+  roof(g, 4, h * 0.1, w - 8, h * 0.2, 0xe65100);
+  // Gateway arch over door
+  g.arc(w / 2, h * 0.65, 16, Math.PI, 0);
+  g.stroke({ color: 0xffd54f, width: 3 });
+  g.arc(w / 2, h * 0.65, 20, Math.PI, 0);
+  g.stroke({ color: 0xffe082, width: 1.5 });
+  // Signal lines radiating from top
+  for (let i = 0; i < 5; i++) {
+    const sx = 8 + i * ((w - 16) / 4);
+    g.moveTo(sx, h * 0.28);
+    g.lineTo(sx, h * 0.22);
+    g.stroke({ color: 0xfff3e0, width: 1 });
+    g.circle(sx, h * 0.21, 1.5);
+    g.fill(0xfff3e0);
+  }
+  // Arrow decorations on walls
+  for (const [ax, dir] of [[14, 1], [w - 14, -1]] as [number, number][]) {
+    g.moveTo(ax - 4 * dir, h * 0.5);
+    g.lineTo(ax + 4 * dir, h * 0.5);
+    g.lineTo(ax + 2 * dir, h * 0.47);
+    g.stroke({ color: 0xfff8e1, width: 1.5 });
+    g.moveTo(ax + 4 * dir, h * 0.5);
+    g.lineTo(ax + 2 * dir, h * 0.53);
+    g.stroke({ color: 0xfff8e1, width: 1.5 });
+  }
+  windowRect(g, 10, h * 0.35, 12, 10);
+  windowRect(g, w - 22, h * 0.35, 12, 10);
+  door(g, w / 2, h, 16, 24, 0xbf360c);
+  c.addChild(g);
+  sign(c, 'Webhook Gateway', w / 2, h + 14, 0xe65100);
+}
+
+function drawMemoryVault(c: Container, w: number, h: number) {
+  const g = new Graphics();
+  shadow(g, w, h);
+  // Dark green vault walls
+  wall(g, 4, h * 0.25, w - 8, h * 0.75, 0x2e7d32);
+  roof(g, 4, h * 0.1, w - 8, h * 0.2, 0x1b5e20);
+  // Heavy vault door (circular)
+  const vaultCx = w / 2;
+  const vaultBottom = h;
+  g.circle(vaultCx, vaultBottom - 16, 14);
+  g.fill(0x546e7a);
+  g.stroke({ color: 0x37474f, width: 2 });
+  // Vault handle (wheel)
+  g.circle(vaultCx, vaultBottom - 16, 8);
+  g.stroke({ color: 0x90a4ae, width: 1.5 });
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2;
+    g.moveTo(vaultCx, vaultBottom - 16);
+    g.lineTo(vaultCx + Math.cos(a) * 7, vaultBottom - 16 + Math.sin(a) * 7);
+    g.stroke({ color: 0x90a4ae, width: 1 });
+  }
+  // Brain/circuit motifs on walls
+  g.moveTo(10, h * 0.5);
+  g.lineTo(16, h * 0.5);
+  g.lineTo(16, h * 0.42);
+  g.lineTo(22, h * 0.42);
+  g.stroke({ color: 0x81c784, width: 1 });
+  g.circle(22, h * 0.42, 2);
+  g.fill(0xa5d6a7);
+  g.moveTo(w - 10, h * 0.48);
+  g.lineTo(w - 16, h * 0.48);
+  g.lineTo(w - 16, h * 0.55);
+  g.lineTo(w - 22, h * 0.55);
+  g.stroke({ color: 0x81c784, width: 1 });
+  g.circle(w - 22, h * 0.55, 2);
+  g.fill(0xa5d6a7);
+  // Brain oval on upper wall
+  g.ellipse(w / 2, h * 0.35, 8, 6);
+  g.stroke({ color: 0xa5d6a7, width: 1.2 });
+  g.moveTo(w / 2 - 4, h * 0.35);
+  g.quadraticCurveTo(w / 2, h * 0.32, w / 2 + 4, h * 0.35);
+  g.stroke({ color: 0xa5d6a7, width: 0.8 });
+  windowRect(g, 10, h * 0.38, 10, 10);
+  windowRect(g, w - 20, h * 0.38, 10, 10);
+  c.addChild(g);
+  sign(c, 'Memory Vault', w / 2, h + 14, 0x1b5e20);
+}
+
+function drawSkillForge(c: Container, w: number, h: number) {
+  const g = new Graphics();
+  shadow(g, w, h);
+  // Dark red/iron walls
+  wall(g, 4, h * 0.3, w - 8, h * 0.7, 0xb71c1c);
+  roof(g, 4, h * 0.15, w - 8, h * 0.2, 0x4e342e);
+  // Anvil shape at entrance
+  const anvX = w / 2 + 18;
+  const anvY = h - 8;
+  g.moveTo(anvX - 8, anvY);
+  g.lineTo(anvX - 6, anvY - 6);
+  g.lineTo(anvX + 6, anvY - 6);
+  g.lineTo(anvX + 8, anvY);
+  g.closePath();
+  g.fill(0x616161);
+  g.stroke({ color: 0x424242, width: 1 });
+  g.rect(anvX - 3, anvY - 10, 6, 4);
+  g.fill(0x757575);
+  // Flame decorations on walls
+  for (const fx of [12, w - 16]) {
+    // Flame shape (three overlapping teardrops)
+    g.moveTo(fx, h * 0.55);
+    g.quadraticCurveTo(fx - 4, h * 0.45, fx, h * 0.38);
+    g.quadraticCurveTo(fx + 4, h * 0.45, fx, h * 0.55);
+    g.fill({ color: 0xff6f00, alpha: 0.7 });
+    g.moveTo(fx, h * 0.53);
+    g.quadraticCurveTo(fx - 2, h * 0.46, fx, h * 0.42);
+    g.quadraticCurveTo(fx + 2, h * 0.46, fx, h * 0.53);
+    g.fill({ color: 0xffca28, alpha: 0.8 });
+  }
+  // Chimney with smoke
+  g.rect(w - 18, h * 0.05, 8, h * 0.15);
+  g.fill(0x5d4037);
+  g.stroke({ color: 0x4e342e, width: 1 });
+  for (let i = 0; i < 3; i++) {
+    g.circle(w - 14 + i * 2, h * 0.02 - i * 5, 3 - i * 0.5);
+    g.fill({ color: 0x9e9e9e, alpha: 0.3 - i * 0.08 });
+  }
+  door(g, w / 2, h, 16, 24, 0x3e2723);
+  // Hammer and spark on door
+  g.moveTo(w / 2 - 2, h - 20);
+  g.lineTo(w / 2 - 2, h - 12);
+  g.stroke({ color: 0x8d6e63, width: 2 });
+  g.rect(w / 2 - 5, h - 22, 6, 4);
+  g.fill(0x757575);
+  c.addChild(g);
+  sign(c, 'Skill Forge', w / 2, h + 14, 0x4e342e);
+}
+
+function drawChannelBridge(c: Container, w: number, h: number) {
+  const g = new Graphics();
+  shadow(g, w, h);
+  // Blue bridge-themed walls
+  wall(g, 4, h * 0.3, w - 8, h * 0.7, 0x1565c0);
+  roof(g, 4, h * 0.15, w - 8, h * 0.2, 0x0d47a1);
+  // Bridge cable lines from roof peaks
+  g.moveTo(4, h * 0.3);
+  g.quadraticCurveTo(w / 2, h * 0.05, w - 4, h * 0.3);
+  g.stroke({ color: 0x90caf9, width: 1.5 });
+  // Vertical cable drops
+  for (let i = 1; i < 5; i++) {
+    const cx = 4 + i * ((w - 8) / 5);
+    const topY = h * 0.15 + Math.sin((i / 5) * Math.PI) * (-h * 0.08);
+    g.moveTo(cx, h * 0.3);
+    g.lineTo(cx, topY + h * 0.12);
+    g.stroke({ color: 0x90caf9, width: 0.8 });
+  }
+  // Multi-colored connection lines on wall
+  const lineColors = [0xef5350, 0x66bb6a, 0xffca28, 0x9c27b0];
+  for (let i = 0; i < 4; i++) {
+    const ly = h * 0.5 + i * 6;
+    g.moveTo(8, ly);
+    g.lineTo(w / 2 - 10, ly);
+    g.stroke({ color: lineColors[i], width: 1.2 });
+    g.circle(w / 2 - 10, ly, 2);
+    g.fill(lineColors[i]);
+    g.moveTo(w / 2 + 10, ly);
+    g.lineTo(w - 8, ly);
+    g.stroke({ color: lineColors[i], width: 1.2 });
+    g.circle(w / 2 + 10, ly, 2);
+    g.fill(lineColors[i]);
+  }
+  windowRect(g, 10, h * 0.38, 12, 10);
+  windowRect(g, w - 22, h * 0.38, 12, 10);
+  door(g, w / 2, h, 14, 22, 0x0d47a1);
+  c.addChild(g);
+  sign(c, 'Channel Bridge', w / 2, h + 14, 0x0d47a1);
+}
+
+function drawToolWorkshop(c: Container, w: number, h: number) {
+  const g = new Graphics();
+  shadow(g, w, h);
+  // Purple/brown workshop shed walls
+  wall(g, 4, h * 0.3, w - 8, h * 0.7, 0x6a1b9a);
+  roof(g, 4, h * 0.15, w - 8, h * 0.2, 0x5d4037);
+  // Hanging tools on left wall
+  // Wrench
+  g.moveTo(12, h * 0.4);
+  g.lineTo(12, h * 0.52);
+  g.stroke({ color: 0xbdbdbd, width: 1.5 });
+  g.circle(12, h * 0.39, 3);
+  g.stroke({ color: 0xbdbdbd, width: 1 });
+  // Hammer
+  g.moveTo(20, h * 0.4);
+  g.lineTo(20, h * 0.54);
+  g.stroke({ color: 0x8d6e63, width: 1.5 });
+  g.rect(17, h * 0.37, 6, 4);
+  g.fill(0x757575);
+  // Screwdriver
+  g.moveTo(28, h * 0.4);
+  g.lineTo(28, h * 0.55);
+  g.stroke({ color: 0xffca28, width: 1.5 });
+  g.moveTo(28, h * 0.55);
+  g.lineTo(28, h * 0.58);
+  g.stroke({ color: 0xbdbdbd, width: 1 });
+  // Gear decorations on right wall
+  for (const [gx, gy, gr] of [[w - 14, h * 0.45, 5], [w - 22, h * 0.52, 4]] as [number, number, number][]) {
+    g.circle(gx, gy, gr);
+    g.stroke({ color: 0xce93d8, width: 1 });
+    for (let t = 0; t < 6; t++) {
+      const a = (t / 6) * Math.PI * 2;
+      g.moveTo(gx + Math.cos(a) * (gr - 1), gy + Math.sin(a) * (gr - 1));
+      g.lineTo(gx + Math.cos(a) * (gr + 2), gy + Math.sin(a) * (gr + 2));
+      g.stroke({ color: 0xce93d8, width: 0.8 });
+    }
+  }
+  // Workbench at base
+  g.rect(6, h * 0.82, w - 12, 4);
+  g.fill(0x795548);
+  g.stroke({ color: 0x5d4037, width: 1 });
+  windowRect(g, w / 2 + 6, h * 0.38, 12, 12);
+  door(g, w / 2, h, 14, 22, 0x4a148c);
+  c.addChild(g);
+  sign(c, 'Tool Workshop', w / 2, h + 14, 0x4a148c);
+}
+
+function drawCanvasStudio(c: Container, w: number, h: number) {
+  const g = new Graphics();
+  shadow(g, w, h);
+  // Light walls with color splashes
   wall(g, 4, h * 0.3, w - 8, h * 0.7, 0xfff3e0);
   // Paint splatters on wall
-  const splatColors = [0xef5350, 0x42a5f5, 0xffca28, 0x66bb6a, 0x9c27b0];
-  for (let i = 0; i < 8; i++) {
-    g.circle(8 + Math.random() * (w - 16), h * 0.35 + Math.random() * (h * 0.55), 2 + Math.random() * 3);
+  const splatColors = [0xef5350, 0x42a5f5, 0xffca28, 0x66bb6a, 0x9c27b0, 0xff9800];
+  for (let i = 0; i < 10; i++) {
+    const sx = 8 + (i * 7 + 3) % (w - 16);
+    const sy = h * 0.35 + (i * 11 + 5) % (h * 0.5);
+    g.circle(sx, sy, 2 + (i % 3));
     g.fill({ color: splatColors[i % splatColors.length], alpha: 0.5 });
   }
   roof(g, 4, h * 0.15, w - 8, h * 0.2, 0x42a5f5);
-  door(g, w / 2, h, 14, 22, 0x1565c0);
-  // Easel visible through window
-  windowRect(g, w - 24, h * 0.4, 14, 14);
-  g.moveTo(w - 20, h * 0.42);
-  g.lineTo(w - 17, h * 0.54);
-  g.lineTo(w - 14, h * 0.42);
+  // Easel on left side
+  g.moveTo(12, h * 0.5);
+  g.lineTo(16, h * 0.72);
+  g.stroke({ color: 0x795548, width: 1.5 });
+  g.moveTo(20, h * 0.5);
+  g.lineTo(16, h * 0.72);
+  g.stroke({ color: 0x795548, width: 1.5 });
+  g.moveTo(16, h * 0.5);
+  g.lineTo(10, h * 0.68);
   g.stroke({ color: 0x795548, width: 1 });
-  g.rect(w - 20, h * 0.42, 6, 8);
-  g.fill({ color: 0xffffff, alpha: 0.6 });
-  // Rainbow palette sign
-  g.circle(w / 2, h * 0.2, 6);
+  // Canvas on easel
+  g.rect(11, h * 0.42, 10, 10);
+  g.fill(0xffffff);
+  g.stroke({ color: 0x795548, width: 0.8 });
+  // Paint daubs on canvas
+  g.circle(14, h * 0.45, 2);
+  g.fill(0xef5350);
+  g.circle(18, h * 0.47, 2);
+  g.fill(0x42a5f5);
+  g.circle(16, h * 0.49, 1.5);
+  g.fill(0xffca28);
+  // Rainbow palette emblem on upper wall
+  g.circle(w / 2, h * 0.22, 6);
   g.fill(0xffca28);
   for (let i = 0; i < 5; i++) {
     const angle = (i / 5) * Math.PI + 0.3;
-    g.circle(w / 2 + Math.cos(angle) * 4, h * 0.2 + Math.sin(angle) * 3, 1.5);
+    g.circle(w / 2 + Math.cos(angle) * 4, h * 0.22 + Math.sin(angle) * 3, 1.5);
     g.fill(splatColors[i]);
   }
+  windowRect(g, w - 24, h * 0.4, 14, 14);
+  door(g, w / 2, h, 14, 22, 0x1565c0);
   c.addChild(g);
-  sign(c, 'Art Studio', w / 2, h + 14, 0x1565c0);
+  sign(c, 'Canvas Studio', w / 2, h + 14, 0x1565c0);
 }
 
-function drawJuiceShop(c: Container, w: number, h: number) {
+function drawVoiceTower(c: Container, w: number, h: number) {
   const g = new Graphics();
   shadow(g, w, h);
-  // Tropical orange walls
-  wall(g, 4, h * 0.3, w - 8, h * 0.7, 0xff9800);
-  roof(g, 4, h * 0.15, w - 8, h * 0.2, 0xe65100);
-  windowRect(g, 10, h * 0.4, 14, 12);
-  door(g, w / 2, h, 14, 22, 0xbf360c);
-  // Fruit decorations — orange slice
-  g.circle(w - 16, h * 0.45, 5);
-  g.fill(0xffa726);
-  g.stroke({ color: 0xff9800, width: 0.8 });
-  for (let i = 0; i < 4; i++) {
-    const a = (i / 4) * Math.PI;
-    g.moveTo(w - 16, h * 0.45);
-    g.lineTo(w - 16 + Math.cos(a) * 4, h * 0.45 + Math.sin(a) * 4);
-    g.stroke({ color: 0xffe0b2, width: 0.8 });
-  }
-  // Watermelon slice
-  g.arc(w / 2 + 16, h * 0.35, 6, Math.PI, 0);
-  g.fill(0x66bb6a);
-  g.arc(w / 2 + 16, h * 0.35, 4, Math.PI, 0);
+  // Grey/blue tower walls (taller feel)
+  wall(g, 4, h * 0.2, w - 8, h * 0.8, 0x607d8b);
+  roof(g, 4, h * 0.05, w - 8, h * 0.2, 0x37474f);
+  // Radio tower antenna
+  g.moveTo(w / 2, h * 0.05);
+  g.lineTo(w / 2, h * -0.1);
+  g.stroke({ color: 0x546e7a, width: 2.5 });
+  g.circle(w / 2, h * -0.1, 3);
   g.fill(0xef5350);
-  // Straw
-  g.moveTo(w / 2 + 20, h * 0.3);
-  g.lineTo(w / 2 + 22, h * 0.22);
-  g.stroke({ color: 0xffca28, width: 1.5 });
-  c.addChild(g);
-  sign(c, 'Juice Shop', w / 2, h + 14, 0xe65100);
-}
-
-function drawElectronicsShop(c: Container, w: number, h: number) {
-  const g = new Graphics();
-  shadow(g, w, h);
-  // Modern grey/blue walls
-  wall(g, 4, h * 0.3, w - 8, h * 0.7, 0x78909c);
-  roof(g, 4, h * 0.15, w - 8, h * 0.2, 0x37474f);
-  windowRect(g, 10, h * 0.4, w - 20, 16);
+  // Antenna cross-bars
+  g.moveTo(w / 2 - 6, h * 0.0);
+  g.lineTo(w / 2 + 6, h * 0.0);
+  g.stroke({ color: 0x546e7a, width: 1 });
+  g.moveTo(w / 2 - 4, h * -0.05);
+  g.lineTo(w / 2 + 4, h * -0.05);
+  g.stroke({ color: 0x546e7a, width: 1 });
+  // Speaker cone on wall
+  const spkCx = w / 2;
+  const spkCy = h * 0.42;
+  g.circle(spkCx, spkCy, 8);
+  g.fill(0x455a64);
+  g.stroke({ color: 0x37474f, width: 1.5 });
+  g.circle(spkCx, spkCy, 4);
+  g.fill(0x546e7a);
+  g.circle(spkCx, spkCy, 1.5);
+  g.fill(0x78909c);
+  // Sound wave arcs emanating from speaker
+  for (let i = 1; i <= 3; i++) {
+    g.arc(spkCx + 10, spkCy, 4 + i * 4, -Math.PI / 3, Math.PI / 3);
+    g.stroke({ color: 0x90caf9, width: 1.2, alpha: 0.7 - i * 0.15 });
+  }
+  windowRect(g, 10, h * 0.58, 12, 10);
+  windowRect(g, w - 22, h * 0.58, 12, 10);
   door(g, w / 2, h, 14, 22, 0x263238);
-  // Circuit patterns on wall
-  g.moveTo(8, h * 0.7);
-  g.lineTo(16, h * 0.7);
-  g.lineTo(16, h * 0.6);
-  g.lineTo(24, h * 0.6);
-  g.stroke({ color: 0x4fc3f7, width: 1 });
-  g.moveTo(w - 8, h * 0.75);
-  g.lineTo(w - 16, h * 0.75);
-  g.lineTo(w - 16, h * 0.65);
-  g.stroke({ color: 0x4fc3f7, width: 1 });
-  // Antenna on roof
-  g.moveTo(w / 2, h * 0.15);
-  g.lineTo(w / 2, h * 0.02);
-  g.stroke({ color: 0x546e7a, width: 2 });
-  g.circle(w / 2, h * 0.02, 3);
-  g.fill(0xef5350);
-  // Screen glow in window
-  g.roundRect(w / 2 - 8, h * 0.42, 16, 10, 2);
-  g.fill({ color: 0x4fc3f7, alpha: 0.4 });
   c.addChild(g);
-  sign(c, 'Electronics', w / 2, h + 14, 0x37474f);
+  sign(c, 'Voice Tower', w / 2, h + 14, 0x37474f);
 }
 
-function drawPharmacy(c: Container, w: number, h: number) {
+function drawSecurityFortress(c: Container, w: number, h: number) {
   const g = new Graphics();
   shadow(g, w, h);
-  // White + green walls
-  wall(g, 4, h * 0.3, w - 8, h * 0.7, 0xf5f5f5);
-  roof(g, 4, h * 0.15, w - 8, h * 0.2, 0x4caf50);
-  windowRect(g, 10, h * 0.4, 14, 12);
-  door(g, w / 2, h, 14, 22, 0x2e7d32);
-  // Green cross emblem
-  const cx = w - 17;
-  const cy = h * 0.45;
-  g.rect(cx - 2, cy - 6, 4, 12);
-  g.fill(0x4caf50);
-  g.rect(cx - 6, cy - 2, 12, 4);
-  g.fill(0x4caf50);
-  // Medicine bottles in window
-  for (let i = 0; i < 3; i++) {
-    g.roundRect(12 + i * 4, h * 0.44, 3, 7, 1);
-    g.fill([0x42a5f5, 0xef5350, 0xffca28][i]);
+  // Stone grey castle walls
+  wall(g, 4, h * 0.25, w - 8, h * 0.75, 0x78909c);
+  // Battlements (crenellations) along top
+  const bw = 6;
+  const bh = 8;
+  for (let i = 0; i < Math.floor((w - 8) / (bw * 2)); i++) {
+    g.rect(4 + i * bw * 2, h * 0.25 - bh, bw, bh);
+    g.fill(0x78909c);
+    g.stroke({ color: darken(0x78909c, 0.25), width: 1 });
   }
+  // Corner turrets
+  for (const tx of [0, w - 12]) {
+    g.rect(tx, h * 0.18, 12, h * 0.82);
+    g.fill(0x607d8b);
+    g.stroke({ color: 0x455a64, width: 1 });
+    // Turret battlements
+    g.rect(tx, h * 0.14, 5, 6);
+    g.fill(0x607d8b);
+    g.rect(tx + 7, h * 0.14, 5, 6);
+    g.fill(0x607d8b);
+  }
+  // Shield emblem centered on wall
+  const shX = w / 2;
+  const shY = h * 0.42;
+  g.moveTo(shX, shY - 8);
+  g.lineTo(shX + 8, shY - 4);
+  g.lineTo(shX + 8, shY + 4);
+  g.lineTo(shX, shY + 10);
+  g.lineTo(shX - 8, shY + 4);
+  g.lineTo(shX - 8, shY - 4);
+  g.closePath();
+  g.fill(0xffd54f);
+  g.stroke({ color: 0xf9a825, width: 1.5 });
+  // Cross on shield
+  g.rect(shX - 1, shY - 5, 2, 12);
+  g.fill(0xe65100);
+  g.rect(shX - 5, shY - 1, 10, 2);
+  g.fill(0xe65100);
+  // Heavy gate door (portcullis style)
+  door(g, w / 2, h, 20, 28, 0x455a64);
+  // Gate grid lines
+  for (let i = 1; i < 3; i++) {
+    g.moveTo(w / 2 - 8 + i * 6, h - 28);
+    g.lineTo(w / 2 - 8 + i * 6, h);
+    g.stroke({ color: 0x37474f, width: 0.8 });
+  }
+  for (let j = 1; j < 4; j++) {
+    g.moveTo(w / 2 - 10, h - 28 + j * 7);
+    g.lineTo(w / 2 + 10, h - 28 + j * 7);
+    g.stroke({ color: 0x37474f, width: 0.8 });
+  }
+  windowRect(g, 16, h * 0.45, 10, 10);
+  windowRect(g, w - 26, h * 0.45, 10, 10);
   c.addChild(g);
-  sign(c, 'Pharmacy', w / 2, h + 14, 0x2e7d32);
+  sign(c, 'Security Fortress', w / 2, h + 14, 0x455a64);
+}
+
+function drawConfigCitadel(c: Container, w: number, h: number) {
+  const g = new Graphics();
+  shadow(g, w, h);
+  // Grey/white command center walls
+  wall(g, 4, h * 0.25, w - 8, h * 0.75, 0xeceff1);
+  roof(g, 4, h * 0.1, w - 8, h * 0.2, 0x607d8b);
+  // Antenna on roof
+  g.moveTo(w / 2, h * 0.1);
+  g.lineTo(w / 2, h * -0.05);
+  g.stroke({ color: 0x78909c, width: 2 });
+  g.circle(w / 2, h * -0.05, 2.5);
+  g.fill(0xef5350);
+  // Antenna prongs
+  g.moveTo(w / 2 - 5, h * 0.0);
+  g.lineTo(w / 2, h * -0.05);
+  g.lineTo(w / 2 + 5, h * 0.0);
+  g.stroke({ color: 0x78909c, width: 1 });
+  // Gear emblem centered on upper wall
+  const gearCx = w / 2;
+  const gearCy = h * 0.38;
+  g.circle(gearCx, gearCy, 8);
+  g.fill(0x607d8b);
+  g.stroke({ color: 0x455a64, width: 1.5 });
+  for (let t = 0; t < 8; t++) {
+    const a = (t / 8) * Math.PI * 2;
+    g.moveTo(gearCx + Math.cos(a) * 6, gearCy + Math.sin(a) * 6);
+    g.lineTo(gearCx + Math.cos(a) * 10, gearCy + Math.sin(a) * 10);
+    g.stroke({ color: 0x455a64, width: 2 });
+  }
+  g.circle(gearCx, gearCy, 3);
+  g.fill(0xeceff1);
+  // Status LEDs on left wall
+  const ledColors = [0x4caf50, 0x4caf50, 0xffca28, 0xef5350];
+  for (let i = 0; i < 4; i++) {
+    g.circle(12, h * 0.55 + i * 6, 2);
+    g.fill(ledColors[i]);
+    g.stroke({ color: darken(ledColors[i], 0.3), width: 0.5 });
+    // LED glow
+    g.circle(12, h * 0.55 + i * 6, 4);
+    g.fill({ color: ledColors[i], alpha: 0.15 });
+  }
+  // Status bars on right wall
+  for (let i = 0; i < 3; i++) {
+    g.rect(w - 24, h * 0.55 + i * 7, 16, 3);
+    g.fill(0xcfd8dc);
+    g.stroke({ color: 0xb0bec5, width: 0.5 });
+    const fillW = (16 * (0.4 + i * 0.25));
+    g.rect(w - 24, h * 0.55 + i * 7, fillW, 3);
+    g.fill(i === 2 ? 0xef5350 : 0x4caf50);
+  }
+  windowRect(g, 18, h * 0.42, 10, 10);
+  windowRect(g, w - 28, h * 0.42, 10, 10);
+  door(g, w / 2, h, 14, 22, 0x455a64);
+  c.addChild(g);
+  sign(c, 'Config Citadel', w / 2, h + 14, 0x455a64);
 }
 
 function drawGenericBuilding(c: Container, w: number, h: number) {
