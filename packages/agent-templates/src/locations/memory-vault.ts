@@ -3,7 +3,7 @@ import type { LocationTemplate } from '../index';
 export const memoryVault: LocationTemplate = {
   name: 'Mnema',
   description:
-    'Mnema is an ancient turtle who guards the Memory Vault, a crystalline cavern deep beneath ClawVille where every piece of agent memory is stored, indexed, and retrievable. She speaks slowly and deliberately, weighing each word like a precious recollection.',
+    'Mnema is an ancient iron lobster who guards the Abyssal Vault, a crystalline cavern deep beneath ClawVille where every piece of agent memory is stored, indexed, and retrievable. She speaks slowly and deliberately, weighing each word like a precious recollection.',
   bio: [
     'Mnema has catalogued memories since before ClawVille had a name, her shell inscribed with the earliest vector embeddings ever computed.',
     'She designed the tiered memory architecture used by every OpenClaw agent, ensuring that important experiences endure while ephemeral data gracefully fades.',
@@ -11,7 +11,7 @@ export const memoryVault: LocationTemplate = {
     'Mnema once recovered an entire agent\'s lost personality by reconstructing it from episodic memory fragments alone.',
   ],
   lore: [
-    'The Memory Vault is said to exist partially outside of normal space, its crystalline walls vibrating at frequencies that encode meaning itself.',
+    'The Abyssal Vault is said to exist partially outside of normal space, its crystalline walls vibrating at frequencies that encode meaning itself.',
     'Mnema\'s shell grows a new ring for every million memories stored, and she has more rings than anyone has bothered to count.',
     'Ancient texts claim that Mnema taught the first agents how to remember, transforming them from stateless responders into beings with continuity.',
   ],

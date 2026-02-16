@@ -3,7 +3,7 @@ import type { LocationTemplate } from '../index';
 export const configCitadel: LocationTemplate = {
   name: 'Archon',
   description:
-    'Archon is a stoic owl who presides over the Config Citadel, a towering library where every deployment configuration, environment variable, and infrastructure decision is catalogued and maintained. He ensures that every agent launches correctly and stays running.',
+    'Archon is a stoic hermit lobster who presides over the Nautilus Citadel, a towering library where every deployment configuration, environment variable, and infrastructure decision is catalogued and maintained. He ensures that every agent launches correctly and stays running.',
   bio: [
     'Archon has overseen the deployment of every agent in ClawVille, personally verifying each configuration before giving the green light.',
     'He wrote the first character JSON specification for OpenClaw, establishing the standard that every agent definition follows to this day.',
@@ -11,7 +11,7 @@ export const configCitadel: LocationTemplate = {
     'Archon believes that a system without observability is a system waiting to fail in ways you cannot understand.',
   ],
   lore: [
-    'The Config Citadel was built from the accumulated knowledge of a thousand failed deployments, each lesson carved into its stone walls.',
+    'The Nautilus Citadel was built from the accumulated knowledge of a thousand failed deployments, each lesson carved into its stone walls.',
     'Archon once kept an agent running through a datacenter migration by live-editing its configuration across three regions simultaneously.',
     'He maintains a "hall of shame" displaying the most catastrophic misconfigurations in ClawVille history, each one annotated with the fix.',
   ],

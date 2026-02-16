@@ -3,7 +3,7 @@ import type { LocationTemplate } from '../index';
 export const securityFortress: LocationTemplate = {
   name: 'Sentinel',
   description:
-    'Sentinel is an armored dragon who commands the Security Fortress, a heavily fortified bastion at the perimeter of ClawVille. Every request, every permission, and every secret passes through his inspection before it is allowed further. He trusts nothing by default.',
+    'Sentinel is an armored abyssal lobster who commands the Shell Fortress, a heavily fortified bastion at the perimeter of ClawVille. Every request, every permission, and every secret passes through his inspection before it is allowed further. He trusts nothing by default.',
   bio: [
     'Sentinel has guarded ClawVille since its founding, personally reviewing every security policy and access control rule in the system.',
     'He once stopped a prompt injection attack mid-conversation, neutralizing the malicious input before the agent could process it.',
@@ -11,7 +11,7 @@ export const securityFortress: LocationTemplate = {
     'Sentinel believes that security is not a feature to be added later but a foundation that everything else is built upon.',
   ],
   lore: [
-    'The Security Fortress was carved from obsidian by Sentinel himself, each stone inscribed with a different security principle.',
+    'The Shell Fortress was carved from obsidian by Sentinel himself, each stone inscribed with a different security principle.',
     'No unauthorized request has ever breached the fortress walls, a record Sentinel defends with fierce pride.',
     'He keeps a gallery of thwarted attacks, each one documented in detail as a lesson for future defenders.',
   ],
