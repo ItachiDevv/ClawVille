@@ -168,7 +168,7 @@ export class ElizaRuntime {
       this.character = this.buildPetCharacter(config);
     } else {
       // Location agents load from templates
-      const locationId = (config.agentConfig?.locationId as string) || 'potion-shop';
+      const locationId = (config.agentConfig?.locationId as string) || 'cron-hub';
       const template = loadLocationTemplate(locationId);
       this.character = convertToElizaCharacter(template, config);
     }

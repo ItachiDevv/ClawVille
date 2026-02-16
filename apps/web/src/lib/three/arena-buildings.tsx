@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 import { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
@@ -70,7 +70,7 @@ function FloatingLabel({ text, y }: { text: string; y: number }) {
 }
 
 // ---------------------------------------------------------------------------
-// Pitched roof (triangular prism) â€” reused by several buildings
+// Pitched roof (triangular prism) — reused by several buildings
 // ---------------------------------------------------------------------------
 function PitchedRoof({ width, depth, height, color }: { width: number; depth: number; height: number; color: number }) {
   const geometry = useMemo(() => {
@@ -230,1073 +230,822 @@ function GroundScatter({
 }
 
 // ---------------------------------------------------------------------------
-// 1. POTION SHOP â€” Mushroom/cauldron shaped, witch-hat roof, purple
+// 1. CRON HUB — Clock tower with gears, pendulum. Brown/gold. Animated pendulum.
 // ---------------------------------------------------------------------------
-function PotionShopBuilding({ zone }: { zone: BuildingZone }) {
-  const [cx, , cz] = zoneCenter(zone);
-  const smokeRef = useRef<THREE.Group>(null);
-
-  useFrame(({ clock }) => {
-    if (smokeRef.current) {
-      const t = clock.getElapsedTime();
-      smokeRef.current.children.forEach((child, i) => {
-        child.position.y = 5 + Math.sin(t * 1.5 + i * 1.2) * 4;
-        (child as THREE.Mesh).scale.setScalar(0.8 + Math.sin(t * 2 + i) * 0.3);
-        ((child as THREE.Mesh).material as THREE.MeshStandardMaterial).opacity = 0.4 + Math.sin(t + i * 0.5) * 0.2;
-      });
-    }
-  });
-
-  return (
-    <group position={[cx, 0, cz]} rotation={[0, 0, 0.02]}>
-      {/* Starry brim base (ClawVille map magic shop feel) */}
-      <mesh position={[0, 4, 0]} castShadow>
-        <torusGeometry args={[18, 7, 8, 16]} />
-        <meshStandardMaterial color={0x5f5ac6} roughness={0.65} />
-      </mesh>
-      {[0, 1, 2, 3, 4, 5].map((i) => (
-        <mesh key={`star-${i}`} position={[Math.cos(i * 1.04) * 16, 1.8, Math.sin(i * 1.04) * 16]} rotation={[-Math.PI / 2, 0, i * 0.2]}>
-          <circleGeometry args={[2.8, 5]} />
-          <meshStandardMaterial color={0xffca28} emissive={0xffca28} emissiveIntensity={0.25} />
-        </mesh>
-      ))}
-      {/* Tall wizard hat body */}
-      <mesh position={[0, 23, 0]} castShadow>
-        <coneGeometry args={[22, 42, 12]} />
-        <meshStandardMaterial color={0x333a8a} roughness={0.62} />
-      </mesh>
-      <mesh position={[0, 35, 0]} castShadow>
-        <coneGeometry args={[13, 18, 10]} />
-        <meshStandardMaterial color={0x2a2f74} roughness={0.58} />
-      </mesh>
-      <mesh position={[3, 48, 0]} rotation={[0, 0, 0.35]} castShadow>
-        <coneGeometry args={[3.8, 12, 8]} />
-        <meshStandardMaterial color={0x2a2f74} roughness={0.56} />
-      </mesh>
-      {/* Front star door */}
-      <mesh position={[0, 8, -13]}>
-        <boxGeometry args={[9, 14, 2]} />
-        <meshStandardMaterial color={0x6d4c41} roughness={0.82} />
-      </mesh>
-      <mesh position={[0, 9, -11.8]} rotation={[0, 0, 0.3]}>
-        <circleGeometry args={[2.8, 5]} />
-        <meshStandardMaterial color={0xffca28} emissive={0xffca28} emissiveIntensity={0.3} />
-      </mesh>
-      {/* Side potion bottles */}
-      {[-1, 1].map((side, i) => (
-        <mesh key={`bottle-${i}`} position={[side * 11, 11, -11]}>
-          <cylinderGeometry args={[2.1, 2.6, 6, 8]} />
-          <meshStandardMaterial color={side > 0 ? 0x69f0ae : 0xce93d8} emissive={side > 0 ? 0x69f0ae : 0xce93d8} emissiveIntensity={0.2} />
-        </mesh>
-      ))}
-      {/* Cauldron + smoke */}
-      <mesh position={[15, 4, -10]}>
-        <sphereGeometry args={[5.4, 10, 7, 0, Math.PI * 2, 0, Math.PI * 0.62]} />
-        <meshStandardMaterial color={0x2c2c2c} roughness={0.9} />
-      </mesh>
-      <group ref={smokeRef} position={[15, 9, -10]}>
-        {[0, 1, 2].map((i) => (
-          <mesh key={`smoke-${i}`} position={[(i - 1) * 2.6, 5 + i * 2.7, 0]}>
-            <sphereGeometry args={[2.8, 7, 7]} />
-            <meshStandardMaterial color={0x69f0ae} transparent opacity={0.42} />
-          </mesh>
-        ))}
-      </group>
-      <GroundScatter seedKey={zone.id} radius={TILE_SIZE * 2.15} tone="magic" />
-      <FloatingLabel text="Potion Shop" y={70} />
-    </group>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// 2. AUCTION HOUSE â€” Grand classical with columns, golden trim
-// ---------------------------------------------------------------------------
-function AuctionHouseBuilding({ zone }: { zone: BuildingZone }) {
+function CronHubBuilding({ zone }: { zone: BuildingZone }) {
   const [cx, , cz] = zoneCenter(zone);
   const w = zone.width * TILE_SIZE;
-  const d = zone.height * TILE_SIZE;
-
-  return (
-    <group position={[cx, 0, cz]} rotation={[0, 0, 0.04]}>
-      {/* Old-map style wooden pedestal + tower */}
-      <mesh position={[0, 6, 0]} castShadow>
-        <cylinderGeometry args={[w * 0.33, w * 0.42, 12, 12]} />
-        <meshStandardMaterial color={0x7a4b28} roughness={0.82} />
-      </mesh>
-      <mesh position={[0, 15, 0]} castShadow>
-        <cylinderGeometry args={[w * 0.22, w * 0.26, 8, 12]} />
-        <meshStandardMaterial color={0x8b5a32} roughness={0.82} />
-      </mesh>
-      <mesh position={[0, 34, 0]} castShadow>
-        <cylinderGeometry args={[w * 0.14, w * 0.17, 38, 10]} />
-        <meshStandardMaterial color={0xa56a3e} roughness={0.78} />
-      </mesh>
-      {/* Side beam and gavel head motif */}
-      <mesh position={[-w * 0.23, 53, 0]} rotation={[0, 0, 0.03]} castShadow>
-        <cylinderGeometry args={[2.2, 2.2, w * 0.5, 8]} />
-        <meshStandardMaterial color={0x9c6238} roughness={0.78} />
-      </mesh>
-      <mesh position={[-w * 0.43, 53, 0]} castShadow>
-        <boxGeometry args={[8, 9, 9]} />
-        <meshStandardMaterial color={0x7b4a29} roughness={0.8} />
-      </mesh>
-      {/* Folded blue roof cap */}
-      <group position={[0, 54, 0]} rotation={[0, 0, -0.08]}>
-        <mesh castShadow>
-          <sphereGeometry args={[w * 0.26, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.52]} />
-          <meshStandardMaterial color={0x355fc5} roughness={0.54} />
-        </mesh>
-        <mesh position={[0, 1.2, 0]}>
-          <sphereGeometry args={[w * 0.23, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.46]} />
-          <meshStandardMaterial color={0x4d77e0} roughness={0.5} />
-        </mesh>
-      </group>
-      {/* Tiny front door */}
-      <mesh position={[0, 4.5, -w * 0.29]}>
-        <boxGeometry args={[8, 8, 1.5]} />
-        <meshStandardMaterial color={0x3e2723} roughness={0.8} />
-      </mesh>
-      <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.56} tone="warm" />
-      <FloatingLabel text="Auction House" y={78} />
-    </group>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// 3. BOOK SHOP â€” Tall, narrow, leaning, stack-of-books style
-// ---------------------------------------------------------------------------
-function BookShopBuilding({ zone }: { zone: BuildingZone }) {
-  const [cx, , cz] = zoneCenter(zone);
-  const w = zone.width * TILE_SIZE;
-  const d = zone.height * TILE_SIZE;
-  const wallH = 48;
-
-  return (
-    <group position={[cx, 0, cz]} rotation={[0, 0, -0.03]}>
-      {/* Open-book structure from ClawVille map */}
-      <mesh position={[0, 9, 0]} castShadow>
-        <boxGeometry args={[w * 0.46, 18, d * 0.72]} />
-        <meshStandardMaterial color={0xf4efe3} roughness={0.66} />
-      </mesh>
-      {/* Red book covers */}
-      <mesh position={[-w * 0.19, wallH * 0.55, 0]} rotation={[0, 0, 0.64]} castShadow>
-        <boxGeometry args={[10, wallH, d * 0.8]} />
-        <meshStandardMaterial color={0xe53935} roughness={0.55} />
-      </mesh>
-      <mesh position={[w * 0.19, wallH * 0.55, 0]} rotation={[0, 0, -0.64]} castShadow>
-        <boxGeometry args={[10, wallH, d * 0.8]} />
-        <meshStandardMaterial color={0xe53935} roughness={0.55} />
-      </mesh>
-      {/* Blue central page fold/door */}
-      <mesh position={[0, 10, -d * 0.34]}>
-        <boxGeometry args={[10, 16, 2]} />
-        <meshStandardMaterial color={0x8ec5ff} roughness={0.5} />
-      </mesh>
-      {/* Spine stripes */}
-      {[-6, -3, 0, 3, 6].map((x, i) => (
-        <mesh key={`page-${i}`} position={[x, 23, 0]}>
-          <boxGeometry args={[1, wallH * 0.62, d * 0.75]} />
-          <meshStandardMaterial color={0xfff8e1} roughness={0.6} />
-        </mesh>
-      ))}
-      {/* Small round window light */}
-      <mesh position={[0, 26, -d * 0.3]}>
-        <circleGeometry args={[4.2, 10]} />
-        <meshStandardMaterial color={0xffe082} emissive={0xffca28} emissiveIntensity={0.35} />
-      </mesh>
-      <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.52} tone="warm" />
-      <FloatingLabel text="Book Shop" y={86} />
-    </group>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// 4. CLOTHING SHOP â€” Pink boutique with striped awning
-// ---------------------------------------------------------------------------
-function ClothingShopBuilding({ zone }: { zone: BuildingZone }) {
-  const [cx, , cz] = zoneCenter(zone);
-  const w = zone.width * TILE_SIZE;
-  const d = zone.height * TILE_SIZE;
-  const wallH = 40;
-
-  return (
-    <group position={[cx, 0, cz]} rotation={[0, 0, -0.03]}>
-      {/* Rounded boutique base */}
-      <mesh position={[0, wallH * 0.45, 0]} castShadow>
-        <cylinderGeometry args={[w * 0.46, w * 0.5, wallH * 0.9, 12]} />
-        <meshStandardMaterial color={0xf8bbd0} roughness={0.62} />
-      </mesh>
-      {/* Back loft volume for depth */}
-      <mesh position={[0, wallH * 0.62, d * 0.12]} castShadow>
-        <boxGeometry args={[w * 0.7, wallH * 0.54, d * 0.55]} />
-        <meshStandardMaterial color={0xf48fb1} roughness={0.62} />
-      </mesh>
-      {/* Curvy roof and bow */}
-      <mesh position={[0, wallH + 10, 0]} castShadow>
-        <sphereGeometry args={[w * 0.48, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
-        <meshStandardMaterial color={0xc2185b} roughness={0.55} />
-      </mesh>
-      <group position={[0, wallH + 15, 0]}>
-        <mesh position={[-4, 0, 0]} rotation={[0, 0, 0.35]}>
-          <sphereGeometry args={[4.5, 8, 6]} />
-          <meshStandardMaterial color={0xf06292} roughness={0.56} />
-        </mesh>
-        <mesh position={[4, 0, 0]} rotation={[0, 0, -0.35]}>
-          <sphereGeometry args={[4.5, 8, 6]} />
-          <meshStandardMaterial color={0xf06292} roughness={0.56} />
-        </mesh>
-        <mesh>
-          <sphereGeometry args={[2.4, 8, 6]} />
-          <meshStandardMaterial color={0xf48fb1} roughness={0.56} />
-        </mesh>
-      </group>
-      {/* Striped awning */}
-      {[0, 1, 2, 3, 4, 5, 6].map((i) => (
-        <mesh key={`awning-${i}`} position={[-w * 0.38 + i * (w * 0.125), wallH * 0.56, -d / 2 - 6]} rotation={[0.38, 0, 0]}>
-          <boxGeometry args={[w * 0.11, 11, 1.5]} />
-          <meshStandardMaterial color={i % 2 === 0 ? 0xe91e63 : 0xffffff} roughness={0.52} />
-        </mesh>
-      ))}
-      {/* Window + mannequin */}
-      <mesh position={[w * 0.2, wallH * 0.45, -d / 2 - 1.4]}>
-        <planeGeometry args={[15, 18]} />
-        <meshStandardMaterial color={0xfce4ec} emissive={0xf48fb1} emissiveIntensity={0.25} />
-      </mesh>
-      <mesh position={[w * 0.2, wallH * 0.44, -d / 2 - 2]}>
-        <cylinderGeometry args={[1.8, 2.4, 14, 8]} />
-        <meshStandardMaterial color={0x880e4f} roughness={0.88} />
-      </mesh>
-      {/* Decorative hearts and ribbon */}
-      {[[-6, wallH - 4, -d / 2 - 1], [6, wallH - 2, -d / 2 - 1]].map((pos, i) => (
-        <mesh key={`heart-${i}`} position={pos as [number, number, number]}>
-          <sphereGeometry args={[2.4, 8, 6]} />
-          <meshStandardMaterial color={0xe91e63} emissive={0xe91e63} emissiveIntensity={0.2} />
-        </mesh>
-      ))}
-      <mesh position={[-w * 0.2, 8, -d / 2 - 1.3]}>
-        <boxGeometry args={[10, 16, 2]} />
-        <meshStandardMaterial color={0xffffff} roughness={0.5} />
-      </mesh>
-      <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.5} tone="warm" />
-      <FloatingLabel text="Clothing Shop" y={72} />
-    </group>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// 5. BAZAAR â€” Open-air market stalls with colorful tent awnings + pennants
-// ---------------------------------------------------------------------------
-function BazaarBuilding({ zone }: { zone: BuildingZone }) {
-  const [cx, , cz] = zoneCenter(zone);
-  const w = zone.width * TILE_SIZE;
-  const stallColors = [0xef5350, 0x42a5f5, 0xffca28, 0x66bb6a];
-
-  return (
-    <group position={[cx, 0, cz]}>
-      {/* 4 market stalls */}
-      {stallColors.map((color, i) => {
-        const sx = -w * 0.3 + i * (w * 0.22);
-        return (
-          <group key={`stall-${i}`} position={[sx, 0, 0]}>
-            {/* Counter */}
-            <mesh position={[0, 8, 0]} castShadow>
-              <boxGeometry args={[20, 16, 18]} />
-              <meshStandardMaterial color={0x8d6e63} roughness={0.85} />
-            </mesh>
-            {/* Tent pole */}
-            <mesh position={[0, 22, 0]}>
-              <cylinderGeometry args={[1, 1, 28, 4]} />
-              <meshStandardMaterial color={0x5d4037} roughness={0.9} />
-            </mesh>
-            {/* Tent awning (cone) */}
-            <mesh position={[0, 38, 0]}>
-              <coneGeometry args={[16, 8, 8]} />
-              <meshStandardMaterial color={color} roughness={0.5} side={THREE.DoubleSide} />
-            </mesh>
-            {/* Goods on counter */}
-            <mesh position={[0, 17, 0]}>
-              <boxGeometry args={[6, 4, 6]} />
-              <meshStandardMaterial color={0xffe0b2} roughness={0.7} />
-            </mesh>
-          </group>
-        );
-      })}
-      {/* Pennant string between poles */}
-      {[0, 1, 2].map((i) => {
-        const colors = [0xff5722, 0xffeb3b, 0x2196f3, 0x4caf50];
-        return (
-          <mesh key={`pennant-${i}`} position={[-w * 0.2 + i * (w * 0.22), 34, 0]} rotation={[0, 0, (i - 1) * 0.1]}>
-            <coneGeometry args={[2.5, 5, 3]} />
-            <meshStandardMaterial color={colors[i % 4]} roughness={0.5} />
-          </mesh>
-        );
-      })}
-      {/* Hanging lanterns */}
-      {[-1, 1].map((side) => (
-        <mesh key={`lantern-${side}`} position={[side * w * 0.3, 30, 0]}>
-          <sphereGeometry args={[2.5, 6, 6]} />
-          <meshStandardMaterial color={0xffca28} emissive={0xffa000} emissiveIntensity={0.5} />
-        </mesh>
-      ))}
-      <GroundScatter seedKey={zone.id} radius={Math.max(w, TILE_SIZE * 3) * 0.44} tone="warm" />
-      <FloatingLabel text="Bazaar" y={52} />
-    </group>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// 6. PETPET SHOP â€” Cozy dome cottage with thatched roof, paw prints
-// ---------------------------------------------------------------------------
-function PetpetShopBuilding({ zone }: { zone: BuildingZone }) {
-  const [cx, , cz] = zoneCenter(zone);
-  const r = zone.width * TILE_SIZE * 0.45;
-
-  return (
-    <group position={[cx, 0, cz]} rotation={[0, 0, -0.04]}>
-      {/* Purple blob body like classic map */}
-      <mesh position={[0, 18, 0]} castShadow>
-        <sphereGeometry args={[r * 1.08, 12, 10]} />
-        <meshStandardMaterial color={0x5a55aa} roughness={0.72} />
-      </mesh>
-      {/* Root/trunk base */}
-      <mesh position={[0, 7, 0]} castShadow>
-        <cylinderGeometry args={[r * 0.48, r * 0.65, 14, 10]} />
-        <meshStandardMaterial color={0x6d4c41} roughness={0.88} />
-      </mesh>
-      {/* Dark spots */}
-      {[[-8, 23, -7], [7, 27, -2], [11, 20, 8], [-10, 18, 7], [0, 29, 9]].map((pos, i) => (
-        <mesh key={`spot-${i}`} position={pos as [number, number, number]}>
-          <sphereGeometry args={[2.6, 7, 6]} />
-          <meshStandardMaterial color={0x2f3f71} roughness={0.8} />
-        </mesh>
-      ))}
-      {/* Yellow circular windows */}
-      {[[-r * 0.44, 19, -r * 0.62], [r * 0.42, 17, -r * 0.64]].map((pos, i) => (
-        <group key={`petwin-${i}`} position={pos as [number, number, number]}>
-          <mesh>
-            <cylinderGeometry args={[3.8, 3.8, 1.4, 14]} />
-            <meshStandardMaterial color={0x39404f} roughness={0.7} />
-          </mesh>
-          <mesh position={[0, 0, 0.8]}>
-            <circleGeometry args={[3, 12]} />
-            <meshStandardMaterial color={0xffeb3b} emissive={0xffca28} emissiveIntensity={0.35} />
-          </mesh>
-        </group>
-      ))}
-      {/* Tiny round door */}
-      <mesh position={[0, 7, -r * 0.68]}>
-        <cylinderGeometry args={[4.5, 4.5, 2, 12, 1, false, 0, Math.PI]} />
-        <meshStandardMaterial color={0x6d4c41} roughness={0.85} side={THREE.DoubleSide} />
-      </mesh>
-      {/* Vines/grass patch */}
-      {[[-10, 1, -r], [-4, 1, -r * 1.08], [3, 1, -r * 0.96], [9, 1, -r * 1.05]].map((pos, i) => (
-        <mesh key={`vine-${i}`} position={pos as [number, number, number]} rotation={[-Math.PI / 2, 0, i * 0.35]}>
-          <circleGeometry args={[3.6, 7]} />
-          <meshStandardMaterial color={0x43a047} roughness={0.85} />
-        </mesh>
-      ))}
-      <GroundScatter seedKey={zone.id} radius={r * 1.25} tone="forest" />
-      <FloatingLabel text="Petpet Shop" y={64} />
-    </group>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// 7. MONEY TREE â€” Giant magical tree with face, floating coins, glow
-// ---------------------------------------------------------------------------
-function MoneyTreeBuilding({ zone }: { zone: BuildingZone }) {
-  const [cx, , cz] = zoneCenter(zone);
-  const scatterR = Math.max(zone.width, zone.height) * TILE_SIZE * 0.56;
-  const canopyRef = useRef<THREE.Group>(null);
-  const coinsRef = useRef<THREE.Group>(null);
+  const pendulumRef = useRef<THREE.Group>(null);
+  const gearRef = useRef<THREE.Mesh>(null);
 
   useFrame(({ clock }) => {
     const t = clock.getElapsedTime();
-    if (canopyRef.current) {
-      canopyRef.current.rotation.y = Math.sin(t * 0.3) * 0.04;
-      canopyRef.current.position.y = 55 + Math.sin(t * 0.6) * 2;
+    if (pendulumRef.current) {
+      pendulumRef.current.rotation.z = Math.sin(t * 1.8) * 0.35;
     }
-    if (coinsRef.current) {
-      coinsRef.current.children.forEach((coin, i) => {
-        coin.position.y = 10 + Math.sin(t * 1.5 + i * 1.3) * 6;
-        coin.rotation.y = t * 2 + i;
-      });
+    if (gearRef.current) {
+      gearRef.current.rotation.z = t * 0.5;
     }
   });
 
   return (
     <group position={[cx, 0, cz]}>
-      {/* Curved trunk with root flare */}
-      <mesh position={[0, 9, 0]} castShadow>
-        <cylinderGeometry args={[8, 12, 18, 10]} />
-        <meshStandardMaterial color={0x6d4c41} roughness={0.95} />
+      {/* Stone base */}
+      <mesh position={[0, 12, 0]} castShadow>
+        <boxGeometry args={[w * 0.5, 24, w * 0.5]} />
+        <meshStandardMaterial color={0x6d4c41} roughness={0.85} />
       </mesh>
-      <mesh position={[2, 24, 0]} rotation={[0, 0, -0.18]} castShadow>
-        <cylinderGeometry args={[5.5, 7.4, 28, 10]} />
-        <meshStandardMaterial color={0x6d4c41} roughness={0.94} />
+      {/* Tower body */}
+      <mesh position={[0, 38, 0]} castShadow>
+        <boxGeometry args={[w * 0.4, 28, w * 0.4]} />
+        <meshStandardMaterial color={0x8d6e63} roughness={0.8} />
       </mesh>
-      <mesh position={[8, 39, -2]} rotation={[0, 0, -0.3]} castShadow>
-        <cylinderGeometry args={[3.5, 5, 22, 9]} />
-        <meshStandardMaterial color={0x6d4c41} roughness={0.92} />
+      {/* Clock face */}
+      <mesh position={[0, 42, -w * 0.21]}>
+        <circleGeometry args={[8, 24]} />
+        <meshStandardMaterial color={0xfff8e1} roughness={0.4} />
       </mesh>
-      {/* Leafy canopy with swirl lobes like map icon */}
-      <group ref={canopyRef} position={[10, 58, 0]}>
-        <mesh castShadow>
-          <sphereGeometry args={[28, 14, 11]} />
-          <meshStandardMaterial color={0x3d8b3d} roughness={0.8} />
+      {/* Clock rim */}
+      <mesh position={[0, 42, -w * 0.22]}>
+        <torusGeometry args={[8.5, 1, 8, 24]} />
+        <meshStandardMaterial color={0xffd700} metalness={0.7} roughness={0.2} />
+      </mesh>
+      {/* Clock hands */}
+      <mesh position={[0, 45, -w * 0.23]} rotation={[0, 0, 0.4]}>
+        <boxGeometry args={[0.8, 6, 0.3]} />
+        <meshStandardMaterial color={0x3e2723} roughness={0.7} />
+      </mesh>
+      <mesh position={[0, 43, -w * 0.23]} rotation={[0, 0, -0.8]}>
+        <boxGeometry args={[0.6, 4.5, 0.3]} />
+        <meshStandardMaterial color={0x3e2723} roughness={0.7} />
+      </mesh>
+      {/* Pointed roof */}
+      <mesh position={[0, 58, 0]} castShadow>
+        <coneGeometry args={[w * 0.28, 16, 4]} />
+        <meshStandardMaterial color={0x5d4037} roughness={0.75} />
+      </mesh>
+      {/* Gold finial */}
+      <mesh position={[0, 67, 0]}>
+        <sphereGeometry args={[2, 8, 8]} />
+        <meshStandardMaterial color={0xffd700} metalness={0.8} roughness={0.15} />
+      </mesh>
+      {/* Gear on front */}
+      <mesh ref={gearRef} position={[0, 28, -w * 0.26]}>
+        <torusGeometry args={[5, 1.2, 6, 8]} />
+        <meshStandardMaterial color={0xffc107} metalness={0.6} roughness={0.3} />
+      </mesh>
+      {/* Second gear */}
+      <mesh position={[8, 25, -w * 0.26]}>
+        <torusGeometry args={[3.5, 0.9, 6, 8]} />
+        <meshStandardMaterial color={0xffb300} metalness={0.6} roughness={0.3} />
+      </mesh>
+      {/* Pendulum */}
+      <group ref={pendulumRef} position={[0, 16, -w * 0.26]}>
+        <mesh position={[0, -5, 0]}>
+          <cylinderGeometry args={[0.4, 0.4, 10, 4]} />
+          <meshStandardMaterial color={0x5d4037} roughness={0.8} />
         </mesh>
-        {[[-24, 2, 8], [-8, 16, -6], [18, 10, 10], [22, -4, -6], [-14, -10, -4]].map((pos, i) => (
-          <mesh key={`leaf-${i}`} position={pos as [number, number, number]}>
-            <sphereGeometry args={[11 + (i % 2), 10, 8]} />
-            <meshStandardMaterial color={i % 2 === 0 ? 0x4caf50 : 0x2e7d32} roughness={0.82} />
-          </mesh>
-        ))}
-        {[-1, 1].map((side, i) => (
-          <mesh key={`curl-${i}`} position={[side * 25, 0, 2]} rotation={[0, 0, side * 0.7]}>
-            <torusGeometry args={[6, 2.2, 8, 14, Math.PI * 1.3]} />
-            <meshStandardMaterial color={0x2e7d32} roughness={0.82} />
-          </mesh>
-        ))}
-        {[0, 1, 2].map((i) => (
-          <mesh
-            key={`leaf-cap-${i}`}
-            position={[-5 + i * 8, 14 + (i % 2) * 2, -2 + i]}
-            rotation={[-Math.PI / 2, 0, i * 0.35]}
-          >
-            <circleGeometry args={[8, 14]} />
-            <meshStandardMaterial color={0x2f7f2f} roughness={0.82} side={THREE.DoubleSide} />
-          </mesh>
-        ))}
-      </group>
-      {/* Coin pile at roots */}
-      {[[-6, 2, 8], [-2, 2.4, 10], [2, 2.2, 9], [6, 2.1, 7]].map((pos, i) => (
-        <mesh key={`root-coin-${i}`} position={pos as [number, number, number]} rotation={[Math.PI / 2, 0, i * 0.35]}>
-          <cylinderGeometry args={[2.5, 2.5, 1, 10]} />
+        <mesh position={[0, -11, 0]}>
+          <sphereGeometry args={[2.5, 8, 8]} />
           <meshStandardMaterial color={0xffd700} metalness={0.75} roughness={0.2} />
         </mesh>
-      ))}
-      {/* Floating gold coins */}
-      <group ref={coinsRef}>
-        {[[-12, 11, -8], [8, 12, 10], [-6, 16, 12], [14, 10, -6], [0, 18, -12], [-16, 8, 4]].map((pos, i) => (
-          <mesh key={`coin-${i}`} position={pos as [number, number, number]} rotation={[Math.PI / 2, 0, 0]}>
-            <cylinderGeometry args={[2.5, 2.5, 0.6, 8]} />
-            <meshStandardMaterial color={0xffd700} metalness={0.85} roughness={0.15} emissive={0xffa000} emissiveIntensity={0.2} />
-          </mesh>
-        ))}
       </group>
-      {/* Magical glow ring at base */}
-      <mesh position={[0, 1, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <ringGeometry args={[14, 18, 24]} />
-        <meshStandardMaterial color={0x69f0ae} transparent opacity={0.3} emissive={0x69f0ae} emissiveIntensity={0.4} side={THREE.DoubleSide} />
+      {/* Door */}
+      <mesh position={[0, 7, -w * 0.26]}>
+        <boxGeometry args={[8, 14, 1.5]} />
+        <meshStandardMaterial color={0x3e2723} roughness={0.85} />
       </mesh>
-      <GroundScatter seedKey={zone.id} radius={scatterR} tone="forest" />
-      <FloatingLabel text="Money Tree" y={96} />
+      <GroundScatter seedKey={zone.id} radius={w * 0.55} tone="warm" />
+      <FloatingLabel text="Cron Hub" y={78} />
     </group>
   );
 }
 
 // ---------------------------------------------------------------------------
-// 8. RAINBOW POOL â€” Stone pool, sparkling water, vibrant rainbow arc
+// 2. WEBHOOK GATEWAY — Gateway arch with glowing signal lines. Orange/amber.
 // ---------------------------------------------------------------------------
-function RainbowPoolBuilding({ zone }: { zone: BuildingZone }) {
+function WebhookGatewayBuilding({ zone }: { zone: BuildingZone }) {
   const [cx, , cz] = zoneCenter(zone);
-  const arcRef = useRef<THREE.Group>(null);
-  const waterRef = useRef<THREE.MeshStandardMaterial>(null);
-  const poolR = Math.min(zone.width, zone.height) * TILE_SIZE * 0.45;
+  const w = zone.width * TILE_SIZE;
+  const d = zone.height * TILE_SIZE;
+  const pulseRef = useRef<THREE.Group>(null);
 
   useFrame(({ clock }) => {
     const t = clock.getElapsedTime();
-    if (waterRef.current) {
-      waterRef.current.opacity = 0.7 + Math.sin(t * 2) * 0.1;
-    }
-    if (arcRef.current) {
-      arcRef.current.rotation.y = t * 0.15;
+    if (pulseRef.current) {
+      pulseRef.current.children.forEach((child, i) => {
+        const mat = (child as THREE.Mesh).material as THREE.MeshStandardMaterial;
+        mat.emissiveIntensity = 0.3 + Math.sin(t * 3 + i * 1.5) * 0.4;
+        mat.opacity = 0.6 + Math.sin(t * 3 + i * 1.5) * 0.3;
+      });
     }
   });
 
-  const rainbowColors = [0xff0000, 0xff7700, 0xffff00, 0x00ff00, 0x0000ff, 0x8b00ff];
-
   return (
     <group position={[cx, 0, cz]}>
-      {/* Carved stone rim â€” elevated */}
-      <mesh position={[0, 3, 0]}>
-        <torusGeometry args={[poolR, 4, 8, 24]} />
-        <meshStandardMaterial color={0x78909c} roughness={0.85} />
+      {/* Left pillar */}
+      <mesh position={[-w * 0.22, 22, 0]} castShadow>
+        <boxGeometry args={[10, 44, 10]} />
+        <meshStandardMaterial color={0x8d6e63} roughness={0.8} />
       </mesh>
-      {/* Inner stone basin */}
-      <mesh position={[0, 1, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <circleGeometry args={[poolR - 3, 24]} />
-        <meshStandardMaterial color={0x607d8b} roughness={0.8} />
+      {/* Right pillar */}
+      <mesh position={[w * 0.22, 22, 0]} castShadow>
+        <boxGeometry args={[10, 44, 10]} />
+        <meshStandardMaterial color={0x8d6e63} roughness={0.8} />
       </mesh>
-      {/* Sparkling water */}
-      <mesh position={[0, 2.5, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <circleGeometry args={[poolR - 4, 24]} />
-        <meshStandardMaterial ref={waterRef} color={0x4fc3f7} transparent opacity={0.75} roughness={0.05} metalness={0.6} side={THREE.DoubleSide} />
+      {/* Arch top */}
+      <mesh position={[0, 46, 0]}>
+        <torusGeometry args={[w * 0.22, 5, 8, 16, Math.PI]} />
+        <meshStandardMaterial color={0xff8f00} roughness={0.5} />
       </mesh>
-      {/* Rainbow arc */}
-      <group ref={arcRef}>
-        {rainbowColors.map((color, i) => (
-          <mesh key={`arc-${i}`} position={[0, 6, 0]}>
-            <torusGeometry args={[poolR * 0.85 + i * 2.5, 1.5, 6, 32, Math.PI]} />
-            <meshStandardMaterial color={color} roughness={0.3} emissive={color} emissiveIntensity={0.2} />
+      {/* Keystone */}
+      <mesh position={[0, 52, 0]}>
+        <boxGeometry args={[8, 8, 8]} />
+        <meshStandardMaterial color={0xffa000} metalness={0.5} roughness={0.3} />
+      </mesh>
+      {/* Signal lines on pillars */}
+      <group ref={pulseRef}>
+        {[0, 1, 2, 3].map((i) => (
+          <mesh key={`pulse-l-${i}`} position={[-w * 0.22, 8 + i * 9, -6]}>
+            <boxGeometry args={[2, 1.2, 0.5]} />
+            <meshStandardMaterial color={0xff6f00} emissive={0xff6f00} emissiveIntensity={0.5} transparent opacity={0.8} />
+          </mesh>
+        ))}
+        {[0, 1, 2, 3].map((i) => (
+          <mesh key={`pulse-r-${i}`} position={[w * 0.22, 8 + i * 9, -6]}>
+            <boxGeometry args={[2, 1.2, 0.5]} />
+            <meshStandardMaterial color={0xff6f00} emissive={0xff6f00} emissiveIntensity={0.5} transparent opacity={0.8} />
           </mesh>
         ))}
       </group>
-      {/* Sparkle orbs floating above water */}
-      {[0, 1, 2, 3].map((i) => (
-        <mesh key={`sparkle-${i}`} position={[Math.cos(i * 1.5) * poolR * 0.5, 5, Math.sin(i * 1.5) * poolR * 0.5]}>
-          <sphereGeometry args={[1, 6, 6]} />
-          <meshStandardMaterial color={0xffffff} emissive={0xffffff} emissiveIntensity={0.8} transparent opacity={0.6} />
+      {/* Horizontal signal beam under arch */}
+      <mesh position={[0, 36, -5.5]}>
+        <boxGeometry args={[w * 0.35, 0.8, 0.4]} />
+        <meshStandardMaterial color={0xffca28} emissive={0xffca28} emissiveIntensity={0.4} />
+      </mesh>
+      {/* Amber lanterns on top of pillars */}
+      {[-1, 1].map((side) => (
+        <mesh key={`lantern-${side}`} position={[side * w * 0.22, 46, 0]}>
+          <sphereGeometry args={[3, 8, 8]} />
+          <meshStandardMaterial color={0xffb300} emissive={0xff8f00} emissiveIntensity={0.5} />
         </mesh>
       ))}
-      <GroundScatter seedKey={zone.id} radius={poolR * 1.15} tone="cool" />
-      <FloatingLabel text="Rainbow Pool" y={poolR + 30} />
+      {/* Base platform */}
+      <mesh position={[0, 1, 0]}>
+        <boxGeometry args={[w * 0.7, 2, d * 0.5]} />
+        <meshStandardMaterial color={0x795548} roughness={0.85} />
+      </mesh>
+      <GroundScatter seedKey={zone.id} radius={w * 0.5} tone="warm" />
+      <FloatingLabel text="Webhook Gateway" y={68} />
     </group>
   );
 }
 
 // ---------------------------------------------------------------------------
-// 9. WISHING WELL â€” Fairy-tale stone well, wooden shingle roof, glow
+// 3. MEMORY VAULT — Domed vault/bank with heavy door. Green/dark. Inner glow.
 // ---------------------------------------------------------------------------
-function WishingWellBuilding({ zone }: { zone: BuildingZone }) {
+function MemoryVaultBuilding({ zone }: { zone: BuildingZone }) {
   const [cx, , cz] = zoneCenter(zone);
-  const wellR = TILE_SIZE * 1.2;
-  const wallH = TILE_SIZE * 1.0;
-  const roofH = TILE_SIZE * 1.2;
+  const w = zone.width * TILE_SIZE;
+  const d = zone.height * TILE_SIZE;
   const glowRef = useRef<THREE.MeshStandardMaterial>(null);
 
   useFrame(({ clock }) => {
     if (glowRef.current) {
       const t = clock.getElapsedTime();
-      glowRef.current.emissiveIntensity = 0.3 + Math.sin(t * 2) * 0.2;
+      glowRef.current.emissiveIntensity = 0.2 + Math.sin(t * 1.5) * 0.15;
     }
   });
 
   return (
     <group position={[cx, 0, cz]}>
-      {/* Stone well walls */}
-      <mesh position={[0, wallH / 2, 0]}>
-        <cylinderGeometry args={[wellR, wellR, wallH, 12, 1, true]} />
-        <meshStandardMaterial color={0x78909c} roughness={0.9} side={THREE.DoubleSide} />
+      {/* Vault base */}
+      <mesh position={[0, 14, 0]} castShadow>
+        <boxGeometry args={[w * 0.7, 28, d * 0.65]} />
+        <meshStandardMaterial color={0x2e7d32} roughness={0.75} />
       </mesh>
-      {/* Well rim â€” ornate stone */}
-      <mesh position={[0, wallH, 0]}>
-        <torusGeometry args={[wellR + 1, 2.5, 6, 12]} />
-        <meshStandardMaterial color={0x607d8b} roughness={0.8} />
+      {/* Dome roof */}
+      <mesh position={[0, 30, 0]} castShadow>
+        <sphereGeometry args={[w * 0.38, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
+        <meshStandardMaterial color={0x1b5e20} roughness={0.6} />
       </mesh>
-      {/* Magical glow from inside */}
-      <mesh position={[0, wallH * 0.4, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <circleGeometry args={[wellR - 2, 12]} />
-        <meshStandardMaterial ref={glowRef} color={0x00bcd4} emissive={0x00bcd4} emissiveIntensity={0.3} transparent opacity={0.7} />
+      {/* Dark trim bands */}
+      {[10, 20].map((y) => (
+        <mesh key={`band-${y}`} position={[0, y, -d * 0.33]}>
+          <boxGeometry args={[w * 0.72, 1.5, 0.5]} />
+          <meshStandardMaterial color={0x1b5e20} roughness={0.7} />
+        </mesh>
+      ))}
+      {/* Heavy vault door */}
+      <mesh position={[0, 12, -d * 0.34]}>
+        <boxGeometry args={[14, 20, 2]} />
+        <meshStandardMaterial color={0x263238} roughness={0.6} metalness={0.4} />
       </mesh>
-      {/* Support posts */}
+      {/* Door wheel/lock */}
+      <mesh position={[0, 14, -d * 0.36]}>
+        <torusGeometry args={[4, 0.8, 6, 16]} />
+        <meshStandardMaterial color={0x9e9e9e} metalness={0.7} roughness={0.25} />
+      </mesh>
+      {/* Inner glow from door cracks */}
+      <mesh position={[0, 12, -d * 0.35]}>
+        <planeGeometry args={[12, 18]} />
+        <meshStandardMaterial ref={glowRef} color={0x69f0ae} emissive={0x69f0ae} emissiveIntensity={0.2} transparent opacity={0.3} />
+      </mesh>
+      {/* Side columns */}
       {[-1, 1].map((side) => (
-        <mesh key={`post-${side}`} position={[side * (wellR - 2), wallH + roofH / 2, 0]}>
-          <cylinderGeometry args={[1.5, 1.5, roofH, 4]} />
-          <meshStandardMaterial color={0x5d4037} roughness={0.9} />
+        <mesh key={`col-${side}`} position={[side * w * 0.3, 14, -d * 0.34]} castShadow>
+          <cylinderGeometry args={[3, 3.5, 28, 8]} />
+          <meshStandardMaterial color={0x388e3c} roughness={0.7} />
         </mesh>
       ))}
-      {/* Wooden shingle roof */}
-      <mesh position={[0, wallH + roofH + 5, 0]}>
-        <coneGeometry args={[wellR + 8, 16, 6]} />
-        <meshStandardMaterial color={0x6d4c41} roughness={0.85} />
-      </mesh>
-      {/* Rope */}
-      <mesh position={[0, wallH + roofH * 0.5, 0]}>
-        <cylinderGeometry args={[0.5, 0.5, roofH * 0.7, 4]} />
-        <meshStandardMaterial color={0xbcaaa4} roughness={0.95} />
-      </mesh>
-      {/* Bucket */}
-      <mesh position={[0, wallH + 4, 0]}>
-        <cylinderGeometry args={[2, 2.5, 4, 6]} />
-        <meshStandardMaterial color={0x795548} roughness={0.9} />
-      </mesh>
-      {/* Sparkle wish particles around top */}
-      {[0, 1, 2, 3, 4].map((i) => (
-        <mesh key={`wish-${i}`} position={[Math.cos(i * 1.26) * (wellR + 4), wallH + 8 + i * 3, Math.sin(i * 1.26) * (wellR + 4)]}>
-          <sphereGeometry args={[0.8, 4, 4]} />
-          <meshStandardMaterial color={0xffd700} emissive={0xffd700} emissiveIntensity={0.6} transparent opacity={0.5} />
+      {/* Gold rivets on door */}
+      {[[-4, 8], [4, 8], [-4, 18], [4, 18]].map((pos, i) => (
+        <mesh key={`rivet-${i}`} position={[pos[0], pos[1], -d * 0.36]}>
+          <sphereGeometry args={[1, 6, 6]} />
+          <meshStandardMaterial color={0xffd700} metalness={0.7} roughness={0.2} />
         </mesh>
       ))}
-      <GroundScatter seedKey={zone.id} radius={wellR * 1.9} tone="magic" />
-      <FloatingLabel text="Wishing Well" y={wallH + roofH + 28} />
+      <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.5} tone="forest" />
+      <FloatingLabel text="Memory Vault" y={62} />
     </group>
   );
 }
 
 // ---------------------------------------------------------------------------
-// 10. TREASURE ISLAND â€” Sandy mound, palm tree, treasure chest, pirate flag
+// 4. SKILL FORGE — Blacksmith forge with anvil, fire. Red/dark iron. Animated flames.
 // ---------------------------------------------------------------------------
-function TreasureIslandBuilding({ zone }: { zone: BuildingZone }) {
-  const [cx, , cz] = zoneCenter(zone);
-  const w = zone.width * TILE_SIZE;
-  const palmRef = useRef<THREE.Group>(null);
-
-  useFrame(({ clock }) => {
-    if (palmRef.current) {
-      const t = clock.getElapsedTime();
-      palmRef.current.rotation.z = Math.sin(t * 0.7) * 0.04;
-    }
-  });
-
-  return (
-    <group position={[cx, 0, cz]}>
-      {/* Sandy island mound */}
-      <mesh position={[0, 3, 0]}>
-        <cylinderGeometry args={[w * 0.4, w * 0.55, 6, 12]} />
-        <meshStandardMaterial color={0xf4d03f} roughness={0.95} />
-      </mesh>
-      {/* Seashells on sand */}
-      {[[8, 6.5, 10], [-12, 6.5, 8], [5, 6.5, -14]].map((pos, i) => (
-        <mesh key={`shell-${i}`} position={pos as [number, number, number]} rotation={[-Math.PI / 2, 0, i * 1.2]}>
-          <circleGeometry args={[1.5, 6]} />
-          <meshStandardMaterial color={0xfce4ec} roughness={0.6} />
-        </mesh>
-      ))}
-      {/* Palm tree */}
-      <group ref={palmRef} position={[w * 0.15, 6, 0]}>
-        <mesh position={[0, 20, 0]} rotation={[0, 0, 0.12]}>
-          <cylinderGeometry args={[2, 3.5, 40, 6]} />
-          <meshStandardMaterial color={0x795548} roughness={0.9} />
-        </mesh>
-        {/* Coconuts */}
-        {[[-2, 39, -2], [2, 38, 2], [0, 39, 3]].map((pos, i) => (
-          <mesh key={`coco-${i}`} position={pos as [number, number, number]}>
-            <sphereGeometry args={[1.5, 6, 6]} />
-            <meshStandardMaterial color={0x795548} roughness={0.8} />
-          </mesh>
-        ))}
-        {/* Palm fronds */}
-        {[0, 1, 2, 3, 4, 5].map((i) => (
-          <group key={`frond-${i}`} position={[0, 40, 0]} rotation={[0.6, (i * Math.PI * 2) / 6, 0.3]}>
-            <mesh position={[0, 0, -10]}>
-              <coneGeometry args={[3.5, 22, 4]} />
-              <meshStandardMaterial color={0x2e7d32} roughness={0.8} side={THREE.DoubleSide} />
-            </mesh>
-          </group>
-        ))}
-      </group>
-      {/* Treasure chest */}
-      <mesh position={[-w * 0.2, 7.5, 8]}>
-        <boxGeometry args={[10, 7, 7]} />
-        <meshStandardMaterial color={0x6d4c41} roughness={0.7} />
-      </mesh>
-      {/* Gold lid */}
-      <mesh position={[-w * 0.2, 11.5, 8]}>
-        <boxGeometry args={[11, 2, 8]} />
-        <meshStandardMaterial color={0xffd700} metalness={0.7} roughness={0.2} />
-      </mesh>
-      {/* Gold spilling out */}
-      {[[-w * 0.2 - 4, 8, 12], [-w * 0.2 + 3, 7.5, 13]].map((pos, i) => (
-        <mesh key={`gold-${i}`} position={pos as [number, number, number]}>
-          <sphereGeometry args={[1.5, 6, 6]} />
-          <meshStandardMaterial color={0xffd700} metalness={0.8} roughness={0.15} />
-        </mesh>
-      ))}
-      {/* Pirate flag on palm */}
-      <mesh position={[w * 0.15 + 6, 42, 0]} rotation={[0, 0.3, 0]}>
-        <planeGeometry args={[10, 7]} />
-        <meshStandardMaterial color={0x212121} roughness={0.7} side={THREE.DoubleSide} />
-      </mesh>
-      <GroundScatter seedKey={zone.id} radius={w * 0.5} tone="warm" />
-      <FloatingLabel text="Treasure Island" y={62} />
-    </group>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// 11. CLAWVILLE FLATS â€” Multi-story brick building with dormers & flower boxes
-// ---------------------------------------------------------------------------
-function ClawVillenFlatsBuilding({ zone }: { zone: BuildingZone }) {
+function SkillForgeBuilding({ zone }: { zone: BuildingZone }) {
   const [cx, , cz] = zoneCenter(zone);
   const w = zone.width * TILE_SIZE;
   const d = zone.height * TILE_SIZE;
-  const wallH = 60;
+  const flameRef = useRef<THREE.Group>(null);
+
+  useFrame(({ clock }) => {
+    const t = clock.getElapsedTime();
+    if (flameRef.current) {
+      flameRef.current.children.forEach((child, i) => {
+        const mesh = child as THREE.Mesh;
+        mesh.scale.y = 0.8 + Math.sin(t * 5 + i * 2) * 0.4;
+        mesh.scale.x = 0.8 + Math.sin(t * 4 + i * 1.3) * 0.2;
+        mesh.position.y = 4 + Math.sin(t * 6 + i * 0.8) * 1.5;
+      });
+    }
+  });
 
   return (
-    <group position={[cx, 0, cz]} rotation={[0, 0, 0.015]}>
-      {/* Main and side towers for a hotel-like silhouette */}
-      <mesh position={[0, wallH * 0.45, 0]} castShadow>
-        <boxGeometry args={[w * 0.88, wallH * 0.9, d * 0.88]} />
-        <meshStandardMaterial color={0xbf360c} roughness={0.86} />
+    <group position={[cx, 0, cz]}>
+      {/* Forge structure */}
+      <mesh position={[0, 16, 0]} castShadow>
+        <boxGeometry args={[w * 0.6, 32, d * 0.55]} />
+        <meshStandardMaterial color={0x424242} roughness={0.9} />
       </mesh>
-      {[-1, 1].map((side) => (
-        <mesh key={`wing-${side}`} position={[side * w * 0.36, wallH * 0.4, 0]} castShadow>
-          <boxGeometry args={[w * 0.26, wallH * 0.8, d * 0.7]} />
-          <meshStandardMaterial color={0xc4512d} roughness={0.84} />
-        </mesh>
-      ))}
-      {/* Mansard roof + dormers */}
-      <group position={[0, wallH, 0]}>
-        <PitchedRoof width={w + 10} depth={d + 10} height={24} color={0x5d4037} />
+      {/* Chimney */}
+      <mesh position={[w * 0.12, 40, d * 0.1]} castShadow>
+        <boxGeometry args={[8, 16, 8]} />
+        <meshStandardMaterial color={0x37474f} roughness={0.85} />
+      </mesh>
+      {/* Fire pit opening */}
+      <mesh position={[0, 14, -d * 0.28]}>
+        <boxGeometry args={[16, 12, 2]} />
+        <meshStandardMaterial color={0x212121} roughness={0.9} />
+      </mesh>
+      {/* Flames inside */}
+      <group ref={flameRef} position={[0, 12, -d * 0.26]}>
+        {[0, 1, 2, 3].map((i) => (
+          <mesh key={`flame-${i}`} position={[-4 + i * 3, 4, 0]}>
+            <coneGeometry args={[1.5, 6, 5]} />
+            <meshStandardMaterial color={i % 2 === 0 ? 0xff5722 : 0xffca28} emissive={i % 2 === 0 ? 0xff5722 : 0xffca28} emissiveIntensity={0.7} />
+          </mesh>
+        ))}
       </group>
-      {[-1, 0, 1].map((col) => (
-        <group key={`dormer-${col}`} position={[col * w * 0.25, wallH + 12, -d * 0.14]}>
-          <mesh>
-            <boxGeometry args={[10, 8, 8]} />
-            <meshStandardMaterial color={0xefebe9} roughness={0.62} />
-          </mesh>
-          <group position={[0, 5, 0]}>
-            <PitchedRoof width={11} depth={10} height={6} color={0x6d4c41} />
-          </group>
-        </group>
-      ))}
-      {/* Window grid - 3 columns x 3 floors */}
-      {[0, 1, 2].map((floor) =>
-        [-1, 0, 1].map((col) => (
-          <group key={`win-${floor}-${col}`}>
-            <mesh position={[col * (w * 0.26), 9 + floor * 16, -d / 2 - 1.1]}>
-              <planeGeometry args={[8, 10]} />
-              <meshStandardMaterial color={0xbbdefb} emissive={0xffca28} emissiveIntensity={floor === 1 ? 0.33 : 0.15} />
-            </mesh>
-            <mesh position={[col * (w * 0.26), 9 + floor * 16, -d / 2 - 0.7]}>
-              <boxGeometry args={[9, 11, 0.65]} />
-              <meshStandardMaterial color={0xefebe9} roughness={0.62} />
-            </mesh>
-          </group>
-        ))
-      )}
-      {/* Balconies and flower boxes */}
-      {[-1, 1].map((col) => (
-        <mesh key={`balcony-${col}`} position={[col * (w * 0.26), 28, -d / 2 - 3.3]}>
-          <boxGeometry args={[11, 1.2, 3]} />
-          <meshStandardMaterial color={0x8d6e63} roughness={0.82} />
+      {/* Red accent roof */}
+      <group position={[0, 32, 0]}>
+        <PitchedRoof width={w * 0.7} depth={d * 0.65} height={14} color={0xc62828} />
+      </group>
+      {/* Anvil */}
+      <group position={[-w * 0.25, 0, -d * 0.35]}>
+        <mesh position={[0, 4, 0]}>
+          <cylinderGeometry args={[3, 4, 8, 6]} />
+          <meshStandardMaterial color={0x616161} metalness={0.6} roughness={0.4} />
+        </mesh>
+        <mesh position={[0, 9, 0]}>
+          <boxGeometry args={[10, 2, 5]} />
+          <meshStandardMaterial color={0x424242} metalness={0.7} roughness={0.3} />
+        </mesh>
+      </group>
+      {/* Hammer next to anvil */}
+      <mesh position={[-w * 0.18, 11, -d * 0.4]} rotation={[0, 0, 0.5]}>
+        <cylinderGeometry args={[0.6, 0.6, 10, 4]} />
+        <meshStandardMaterial color={0x795548} roughness={0.8} />
+      </mesh>
+      <mesh position={[-w * 0.14, 15, -d * 0.4]}>
+        <boxGeometry args={[3, 3, 3]} />
+        <meshStandardMaterial color={0x616161} metalness={0.6} roughness={0.3} />
+      </mesh>
+      {/* Embers on ground */}
+      {[[-3, 0.5, -8], [5, 0.5, -10], [-6, 0.5, -12]].map((pos, i) => (
+        <mesh key={`ember-${i}`} position={pos as [number, number, number]}>
+          <sphereGeometry args={[0.8, 6, 6]} />
+          <meshStandardMaterial color={0xff6f00} emissive={0xff6f00} emissiveIntensity={0.5} />
         </mesh>
       ))}
-      {[-1, 0, 1].map((col) => (
-        <mesh key={`fbox-${col}`} position={[col * (w * 0.26), 4, -d / 2 - 2.8]}>
-          <boxGeometry args={[10, 3, 3]} />
-          <meshStandardMaterial color={0x6d4c41} roughness={0.82} />
-        </mesh>
-      ))}
-      {[-1, 0, 1].map((col) =>
-        [-2, 0, 2].map((fx, fi) => (
-          <mesh key={`flower-${col}-${fi}`} position={[col * (w * 0.26) + fx, 6.7, -d / 2 - 2.7]}>
-            <sphereGeometry args={[1, 6, 5]} />
-            <meshStandardMaterial color={[0xef5350, 0xffca28, 0xf48fb1][fi]} />
-          </mesh>
-        ))
-      )}
-      {/* Arched entry */}
-      <mesh position={[0, 10, -d / 2 - 1.1]}>
-        <boxGeometry args={[13, 20, 2]} />
-        <meshStandardMaterial color={0x5d4037} roughness={0.8} />
-      </mesh>
-      <mesh position={[0, 20, -d / 2 - 1.1]}>
-        <cylinderGeometry args={[6.6, 6.6, 2, 12, 1, false, 0, Math.PI]} />
-        <meshStandardMaterial color={0x8d6e63} roughness={0.75} side={THREE.DoubleSide} />
-      </mesh>
-      {[0, 1].map((step) => (
-        <mesh key={`step-${step}`} position={[0, 1 + step * 1.4, -d / 2 - 4.4 - step * 1.8]}>
-          <boxGeometry args={[17, 1.3, 2.4]} />
-          <meshStandardMaterial color={0x9e9e9e} roughness={0.8} />
-        </mesh>
-      ))}
-      <mesh position={[w * 0.3, wallH + 15, 0]}>
-        <boxGeometry args={[6, 12, 6]} />
-        <meshStandardMaterial color={0x8d6e63} roughness={0.86} />
-      </mesh>
-      <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.56} tone="warm" />
-      <FloatingLabel text="ClawVillen Flats" y={92} />
+      <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.5} tone="warm" />
+      <FloatingLabel text="Skill Forge" y={60} />
     </group>
   );
 }
 
 // ---------------------------------------------------------------------------
-// 12. ART STUDIO — Bohemian cottage with paint splatters, skylight, easel
+// 5. CHANNEL BRIDGE — Suspension bridge structure. Blue/silver.
 // ---------------------------------------------------------------------------
-function ArtStudioBuilding({ zone }: { zone: BuildingZone }) {
+function ChannelBridgeBuilding({ zone }: { zone: BuildingZone }) {
+  const [cx, , cz] = zoneCenter(zone);
+  const w = zone.width * TILE_SIZE;
+  const d = zone.height * TILE_SIZE;
+
+  return (
+    <group position={[cx, 0, cz]}>
+      {/* Bridge deck */}
+      <mesh position={[0, 8, 0]} castShadow>
+        <boxGeometry args={[w * 0.8, 3, d * 0.35]} />
+        <meshStandardMaterial color={0x90a4ae} roughness={0.7} />
+      </mesh>
+      {/* Deck planks */}
+      {[-3, -1, 1, 3].map((i) => (
+        <mesh key={`plank-${i}`} position={[i * w * 0.09, 9.8, 0]}>
+          <boxGeometry args={[w * 0.08, 0.5, d * 0.33]} />
+          <meshStandardMaterial color={0x78909c} roughness={0.8} />
+        </mesh>
+      ))}
+      {/* Left tower */}
+      <mesh position={[-w * 0.35, 28, 0]} castShadow>
+        <boxGeometry args={[8, 48, 8]} />
+        <meshStandardMaterial color={0x42a5f5} roughness={0.5} />
+      </mesh>
+      {/* Right tower */}
+      <mesh position={[w * 0.35, 28, 0]} castShadow>
+        <boxGeometry args={[8, 48, 8]} />
+        <meshStandardMaterial color={0x42a5f5} roughness={0.5} />
+      </mesh>
+      {/* Tower caps */}
+      {[-1, 1].map((side) => (
+        <mesh key={`cap-${side}`} position={[side * w * 0.35, 54, 0]}>
+          <coneGeometry args={[6, 8, 4]} />
+          <meshStandardMaterial color={0x1e88e5} roughness={0.45} />
+        </mesh>
+      ))}
+      {/* Main cables (top of towers to deck center) */}
+      {[-1, 1].map((side) => (
+        <group key={`cable-${side}`}>
+          <mesh position={[side * w * 0.17, 34, -d * 0.12]} rotation={[0, 0, side * 0.55]}>
+            <cylinderGeometry args={[0.4, 0.4, w * 0.38, 4]} />
+            <meshStandardMaterial color={0xb0bec5} metalness={0.6} roughness={0.3} />
+          </mesh>
+          <mesh position={[side * w * 0.17, 34, d * 0.12]} rotation={[0, 0, side * 0.55]}>
+            <cylinderGeometry args={[0.4, 0.4, w * 0.38, 4]} />
+            <meshStandardMaterial color={0xb0bec5} metalness={0.6} roughness={0.3} />
+          </mesh>
+        </group>
+      ))}
+      {/* Vertical suspender cables */}
+      {[-2, -1, 0, 1, 2].map((i) => (
+        <mesh key={`susp-${i}`} position={[i * w * 0.1, 22, -d * 0.12]}>
+          <cylinderGeometry args={[0.25, 0.25, 18 - Math.abs(i) * 4, 4]} />
+          <meshStandardMaterial color={0xcfd8dc} metalness={0.5} roughness={0.35} />
+        </mesh>
+      ))}
+      {/* Silver railing */}
+      {[-1, 1].map((side) => (
+        <mesh key={`rail-${side}`} position={[0, 11, side * d * 0.17]}>
+          <boxGeometry args={[w * 0.78, 1, 0.8]} />
+          <meshStandardMaterial color={0xb0bec5} metalness={0.5} roughness={0.3} />
+        </mesh>
+      ))}
+      {/* Blue accent light on bridge */}
+      <mesh position={[0, 10, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[2, 4, 12]} />
+        <meshStandardMaterial color={0x42a5f5} emissive={0x42a5f5} emissiveIntensity={0.3} transparent opacity={0.5} side={THREE.DoubleSide} />
+      </mesh>
+      <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.5} tone="cool" />
+      <FloatingLabel text="Channel Bridge" y={70} />
+    </group>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 6. TOOL WORKSHOP — Workshop shed with tools hanging. Purple/wood brown.
+// ---------------------------------------------------------------------------
+function ToolWorkshopBuilding({ zone }: { zone: BuildingZone }) {
+  const [cx, , cz] = zoneCenter(zone);
+  const w = zone.width * TILE_SIZE;
+  const d = zone.height * TILE_SIZE;
+  const wallH = 36;
+
+  return (
+    <group position={[cx, 0, cz]} rotation={[0, 0, -0.03]}>
+      {/* Wooden shed body */}
+      <mesh position={[0, wallH * 0.45, 0]} castShadow>
+        <boxGeometry args={[w * 0.7, wallH * 0.9, d * 0.65]} />
+        <meshStandardMaterial color={0x6d4c41} roughness={0.85} />
+      </mesh>
+      {/* Purple accent panel */}
+      <mesh position={[0, wallH * 0.45, -d * 0.33]}>
+        <boxGeometry args={[w * 0.72, wallH * 0.92, 1]} />
+        <meshStandardMaterial color={0x7b1fa2} roughness={0.65} />
+      </mesh>
+      {/* Pitched roof */}
+      <group position={[0, wallH, 0]}>
+        <PitchedRoof width={w * 0.82} depth={d * 0.75} height={16} color={0x4a148c} />
+      </group>
+      {/* Tool pegboard on front */}
+      <mesh position={[w * 0.2, wallH * 0.55, -d * 0.34]}>
+        <boxGeometry args={[14, 12, 0.5]} />
+        <meshStandardMaterial color={0x5d4037} roughness={0.8} />
+      </mesh>
+      {/* Hanging tools: wrench */}
+      <mesh position={[w * 0.16, wallH * 0.6, -d * 0.35]} rotation={[0, 0, 0.3]}>
+        <boxGeometry args={[1.5, 8, 0.4]} />
+        <meshStandardMaterial color={0x9e9e9e} metalness={0.6} roughness={0.3} />
+      </mesh>
+      {/* Hanging tools: hammer */}
+      <mesh position={[w * 0.22, wallH * 0.58, -d * 0.35]} rotation={[0, 0, -0.2]}>
+        <boxGeometry args={[1.2, 7, 0.4]} />
+        <meshStandardMaterial color={0x795548} roughness={0.8} />
+      </mesh>
+      <mesh position={[w * 0.22, wallH * 0.65, -d * 0.36]}>
+        <boxGeometry args={[3.5, 2.5, 1]} />
+        <meshStandardMaterial color={0x757575} metalness={0.5} roughness={0.35} />
+      </mesh>
+      {/* Hanging tools: saw */}
+      <mesh position={[w * 0.28, wallH * 0.52, -d * 0.35]} rotation={[0, 0, 0.1]}>
+        <boxGeometry args={[1, 10, 0.3]} />
+        <meshStandardMaterial color={0xbdbdbd} metalness={0.5} roughness={0.3} />
+      </mesh>
+      {/* Workbench outside */}
+      <mesh position={[-w * 0.28, 5, -d * 0.38]}>
+        <boxGeometry args={[14, 10, 6]} />
+        <meshStandardMaterial color={0x8d6e63} roughness={0.82} />
+      </mesh>
+      {/* Parts on bench */}
+      {[-2, 1, 4].map((x, i) => (
+        <mesh key={`part-${i}`} position={[-w * 0.28 + x, 11, -d * 0.38]}>
+          <boxGeometry args={[2, 2, 2]} />
+          <meshStandardMaterial color={[0x9c27b0, 0xce93d8, 0x7b1fa2][i]} roughness={0.5} />
+        </mesh>
+      ))}
+      {/* Window */}
+      <mesh position={[-w * 0.18, wallH * 0.5, -d * 0.34]}>
+        <planeGeometry args={[8, 8]} />
+        <meshStandardMaterial color={0xfff8e1} emissive={0xffca28} emissiveIntensity={0.2} />
+      </mesh>
+      {/* Door */}
+      <mesh position={[0, 8, -d * 0.34]}>
+        <boxGeometry args={[10, 16, 1.5]} />
+        <meshStandardMaterial color={0x4e342e} roughness={0.85} />
+      </mesh>
+      <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.48} tone="magic" />
+      <FloatingLabel text="Tool Workshop" y={64} />
+    </group>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 7. CANVAS STUDIO — Easel/art studio with paint splashes. Pink/multicolor.
+// ---------------------------------------------------------------------------
+function CanvasStudioBuilding({ zone }: { zone: BuildingZone }) {
   const [cx, , cz] = zoneCenter(zone);
   const w = zone.width * TILE_SIZE;
   const d = zone.height * TILE_SIZE;
   const wallH = 38;
 
   return (
-    <group position={[cx, 0, cz]} rotation={[0, 0, -0.045]}>
-      {/* Crooked studio volumes */}
+    <group position={[cx, 0, cz]} rotation={[0, 0, -0.04]}>
+      {/* Studio body */}
       <mesh position={[0, wallH * 0.45, 0]} castShadow>
-        <boxGeometry args={[w * 0.86, wallH * 0.9, d * 0.84]} />
-        <meshStandardMaterial color={0xfff3e0} roughness={0.72} />
+        <boxGeometry args={[w * 0.8, wallH * 0.9, d * 0.75]} />
+        <meshStandardMaterial color={0xfce4ec} roughness={0.65} />
       </mesh>
-      <mesh position={[w * 0.18, wallH * 0.36, d * 0.22]} rotation={[0, 0.12, 0.05]} castShadow>
-        <boxGeometry args={[w * 0.36, wallH * 0.55, d * 0.34]} />
-        <meshStandardMaterial color={0xffe0b2} roughness={0.7} />
+      {/* Side extension */}
+      <mesh position={[w * 0.2, wallH * 0.35, d * 0.2]} rotation={[0, 0.1, 0.04]} castShadow>
+        <boxGeometry args={[w * 0.3, wallH * 0.5, d * 0.3]} />
+        <meshStandardMaterial color={0xf8bbd0} roughness={0.6} />
       </mesh>
-      {/* Slanted loft roof + bright trim */}
-      <group position={[0, wallH, 0]} rotation={[0, 0, 0.05]}>
-        <PitchedRoof width={w + 10} depth={d + 10} height={24} color={0x42a5f5} />
+      {/* Colorful slanted roof */}
+      <group position={[0, wallH, 0]} rotation={[0, 0, 0.04]}>
+        <PitchedRoof width={w + 8} depth={d + 6} height={20} color={0xe91e63} />
       </group>
-      <mesh position={[0, wallH + 3, 0]} rotation={[0, 0, 0.05]}>
-        <boxGeometry args={[w + 8, 2, d + 8]} />
-        <meshStandardMaterial color={0xffca28} roughness={0.6} />
-      </mesh>
       {/* Skylight */}
-      <mesh position={[0, wallH + 13, -4]} rotation={[0.52, 0, 0.05]}>
-        <planeGeometry args={[12, 9]} />
-        <meshStandardMaterial color={0xbbdefb} emissive={0x90caf9} emissiveIntensity={0.34} transparent opacity={0.82} />
+      <mesh position={[0, wallH + 11, -3]} rotation={[0.5, 0, 0.04]}>
+        <planeGeometry args={[10, 8]} />
+        <meshStandardMaterial color={0xbbdefb} emissive={0x90caf9} emissiveIntensity={0.3} transparent opacity={0.8} />
       </mesh>
-      {/* Paint splatters and drips */}
+      {/* Paint splatters on front */}
       {[
-        { pos: [-w * 0.3, 24, -d / 2 - 1], color: 0xef5350, r: 3.2 },
-        { pos: [w * 0.2, 18, -d / 2 - 1], color: 0x42a5f5, r: 3.7 },
-        { pos: [-w * 0.1, 30, -d / 2 - 1], color: 0xffca28, r: 2.9 },
-        { pos: [w * 0.35, 26, -d / 2 - 1], color: 0x66bb6a, r: 3.4 },
+        { pos: [-w * 0.25, 22, -d / 2 - 1], color: 0xff5722, r: 3.5 },
+        { pos: [w * 0.15, 16, -d / 2 - 1], color: 0x2196f3, r: 3 },
+        { pos: [-w * 0.08, 28, -d / 2 - 1], color: 0xffeb3b, r: 2.8 },
+        { pos: [w * 0.3, 24, -d / 2 - 1], color: 0x4caf50, r: 3.2 },
+        { pos: [w * 0.05, 12, -d / 2 - 1], color: 0x9c27b0, r: 2.5 },
       ].map((splat, i) => (
         <group key={`splat-${i}`} position={splat.pos as [number, number, number]}>
           <mesh>
             <circleGeometry args={[splat.r, 10]} />
-            <meshStandardMaterial color={splat.color} roughness={0.6} />
+            <meshStandardMaterial color={splat.color} roughness={0.55} />
           </mesh>
-          <mesh position={[0, -3.5, 0]}>
-            <boxGeometry args={[1.1, 3.8, 0.4]} />
-            <meshStandardMaterial color={splat.color} roughness={0.6} />
+          <mesh position={[0, -3, 0]}>
+            <boxGeometry args={[0.9, 3.5, 0.3]} />
+            <meshStandardMaterial color={splat.color} roughness={0.55} />
           </mesh>
         </group>
       ))}
-      {/* Easel + canvas */}
-      <group position={[-w * 0.4, 0, -d / 2 - 9]}>
-        <mesh position={[-2, 8, 0]} rotation={[0, 0, 0.15]}>
-          <cylinderGeometry args={[0.5, 0.5, 16, 4]} />
+      {/* Giant easel + canvas outside */}
+      <group position={[-w * 0.38, 0, -d / 2 - 8]}>
+        <mesh position={[-2, 9, 0]} rotation={[0, 0, 0.15]}>
+          <cylinderGeometry args={[0.6, 0.6, 18, 4]} />
           <meshStandardMaterial color={0x8d6e63} roughness={0.9} />
         </mesh>
-        <mesh position={[2, 8, 0]} rotation={[0, 0, -0.15]}>
-          <cylinderGeometry args={[0.5, 0.5, 16, 4]} />
+        <mesh position={[2, 9, 0]} rotation={[0, 0, -0.15]}>
+          <cylinderGeometry args={[0.6, 0.6, 18, 4]} />
           <meshStandardMaterial color={0x8d6e63} roughness={0.9} />
         </mesh>
-        <mesh position={[0, 12, -1]}>
-          <boxGeometry args={[8, 6, 0.5]} />
-          <meshStandardMaterial color={0xffffff} roughness={0.5} />
+        <mesh position={[0, 13, -1]}>
+          <boxGeometry args={[10, 8, 0.5]} />
+          <meshStandardMaterial color={0xffffff} roughness={0.45} />
         </mesh>
+        {/* Paint dabs on canvas */}
+        {[[-3, 14], [0, 12], [3, 15]].map((pos, i) => (
+          <mesh key={`dab-${i}`} position={[pos[0], pos[1], -1.3]}>
+            <circleGeometry args={[1.2, 6]} />
+            <meshStandardMaterial color={[0xff5722, 0x2196f3, 0xffeb3b][i]} roughness={0.5} />
+          </mesh>
+        ))}
       </group>
-      {/* Pencil fence */}
+      {/* Colored pencil fence */}
       {[-2, -1, 0, 1, 2].map((i) => (
-        <mesh key={`pencil-${i}`} position={[w * 0.4 + i * 2.5, 4, -d / 2 - 7]} rotation={[0, 0, (i - 1) * 0.04]}>
-          <coneGeometry args={[1, 8, 6]} />
-          <meshStandardMaterial color={[0xef5350, 0x42a5f5, 0xffca28, 0x66bb6a, 0xab47bc][i + 2]} roughness={0.56} />
+        <mesh key={`pencil-${i}`} position={[w * 0.38 + i * 2.5, 5, -d / 2 - 6]} rotation={[0, 0, (i - 1) * 0.03]}>
+          <coneGeometry args={[1.2, 10, 6]} />
+          <meshStandardMaterial color={[0xef5350, 0x42a5f5, 0xffca28, 0x66bb6a, 0xab47bc][i + 2]} roughness={0.5} />
         </mesh>
       ))}
-      <mesh position={[0, 8, -d / 2 - 1.2]}>
-        <boxGeometry args={[10, 16, 2]} />
+      {/* Door */}
+      <mesh position={[0, 8, -d / 2 - 1]}>
+        <boxGeometry args={[10, 16, 1.5]} />
         <meshStandardMaterial color={0x5d4037} roughness={0.8} />
       </mesh>
-      <mesh position={[w * 0.35, 20, -d / 2 - 5]}>
-        <circleGeometry args={[5, 12]} />
-        <meshStandardMaterial color={0xffd700} roughness={0.5} />
-      </mesh>
       <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.5} tone="warm" />
-      <FloatingLabel text="Art Studio" y={72} />
+      <FloatingLabel text="Canvas Studio" y={70} />
     </group>
   );
 }
 
 // ---------------------------------------------------------------------------
-// 13. JUICE SHOP â€” Fruit-shaped building, orange dome, straw on top
+// 8. VOICE TOWER — Tall radio tower with speaker cone. Grey/blue. Animated sound waves.
 // ---------------------------------------------------------------------------
-function JuiceShopBuilding({ zone }: { zone: BuildingZone }) {
-  const [cx, , cz] = zoneCenter(zone);
-  const r = zone.width * TILE_SIZE * 0.42;
-
-  return (
-    <group position={[cx, 0, cz]}>
-      {/* Orange fruit body */}
-      <mesh position={[0, r, 0]} castShadow>
-        <sphereGeometry args={[r, 12, 10]} />
-        <meshStandardMaterial color={0xff9800} roughness={0.6} />
-      </mesh>
-      {/* Green leaf top */}
-      <mesh position={[0, r * 2 - 2, 0]}>
-        <coneGeometry args={[8, 6, 6]} />
-        <meshStandardMaterial color={0x4caf50} roughness={0.7} />
-      </mesh>
-      {/* Straw sticking out */}
-      <mesh position={[3, r * 2 + 6, 0]} rotation={[0, 0, 0.15]}>
-        <cylinderGeometry args={[0.8, 0.8, 16, 4]} />
-        <meshStandardMaterial color={0xef5350} roughness={0.5} />
-      </mesh>
-      {/* Straw bend */}
-      <mesh position={[5, r * 2 + 14, 0]} rotation={[0, 0, 0.6]}>
-        <cylinderGeometry args={[0.8, 0.8, 6, 4]} />
-        <meshStandardMaterial color={0xef5350} roughness={0.5} />
-      </mesh>
-      {/* Orange slice decoration on front */}
-      <mesh position={[0, r, -r - 0.5]} rotation={[0, 0, 0]}>
-        <circleGeometry args={[8, 8]} />
-        <meshStandardMaterial color={0xffa726} roughness={0.5} />
-      </mesh>
-      {/* Slice segments */}
-      {[0, 1, 2, 3].map((i) => (
-        <mesh key={`seg-${i}`} position={[Math.cos(i * 0.8 - 0.8) * 4, r + Math.sin(i * 0.8 - 0.8) * 4, -r - 1]}>
-          <circleGeometry args={[1.5, 6]} />
-          <meshStandardMaterial color={0xffcc80} roughness={0.5} />
-        </mesh>
-      ))}
-      {/* Door carved into fruit */}
-      <mesh position={[0, 8, -r + 2]}>
-        <boxGeometry args={[10, 16, 4]} />
-        <meshStandardMaterial color={0xe65100} roughness={0.7} />
-      </mesh>
-      {/* Fruit crate outside */}
-      <mesh position={[r + 4, 3, 0]}>
-        <boxGeometry args={[6, 6, 6]} />
-        <meshStandardMaterial color={0x8d6e63} roughness={0.8} />
-      </mesh>
-      <GroundScatter seedKey={zone.id} radius={r * 1.28} tone="warm" />
-      <FloatingLabel text="Juice Shop" y={r * 2 + 24} />
-    </group>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// 14. ELECTRONICS SHOP â€” Angular, futuristic, antenna, circuit glow
-// ---------------------------------------------------------------------------
-function ElectronicsShopBuilding({ zone }: { zone: BuildingZone }) {
+function VoiceTowerBuilding({ zone }: { zone: BuildingZone }) {
   const [cx, , cz] = zoneCenter(zone);
   const w = zone.width * TILE_SIZE;
-  const d = zone.height * TILE_SIZE;
-  const wallH = 34;
-  const glowRef = useRef<THREE.MeshStandardMaterial>(null);
+  const wavesRef = useRef<THREE.Group>(null);
 
   useFrame(({ clock }) => {
-    if (glowRef.current) {
-      const t = clock.getElapsedTime();
-      glowRef.current.emissiveIntensity = 0.3 + Math.sin(t * 3) * 0.2;
+    const t = clock.getElapsedTime();
+    if (wavesRef.current) {
+      wavesRef.current.children.forEach((child, i) => {
+        const mesh = child as THREE.Mesh;
+        const scale = 1 + Math.sin(t * 2.5 - i * 0.8) * 0.3;
+        mesh.scale.setScalar(scale);
+        const mat = mesh.material as THREE.MeshStandardMaterial;
+        mat.opacity = 0.5 - i * 0.1 + Math.sin(t * 2.5 - i * 0.8) * 0.15;
+      });
     }
   });
 
   return (
-    <group position={[cx, 0, cz]} rotation={[0, 0, 0.03]}>
-      {/* Compact gadget hut instead of flat slab */}
-      <mesh position={[0, wallH * 0.45, 0]} castShadow>
-        <boxGeometry args={[w * 0.68, wallH * 0.9, d * 0.62]} />
-        <meshStandardMaterial color={0x455a64} roughness={0.72} />
+    <group position={[cx, 0, cz]}>
+      {/* Base building */}
+      <mesh position={[0, 10, 0]} castShadow>
+        <boxGeometry args={[w * 0.45, 20, w * 0.45]} />
+        <meshStandardMaterial color={0x78909c} roughness={0.75} />
       </mesh>
-      <group position={[0, wallH + 5, 0]} rotation={[0, 0, -0.08]}>
-        <PitchedRoof width={w * 0.84} depth={d * 0.72} height={10} color={0x2f3a44} />
+      {/* Tower shaft */}
+      <mesh position={[0, 36, 0]} castShadow>
+        <cylinderGeometry args={[4, 6, 32, 8]} />
+        <meshStandardMaterial color={0x607d8b} roughness={0.6} />
+      </mesh>
+      {/* Lattice cross-braces */}
+      {[25, 35, 45].map((y) => (
+        <mesh key={`brace-${y}`} position={[0, y, 0]}>
+          <boxGeometry args={[12, 0.8, 12]} />
+          <meshStandardMaterial color={0x546e7a} roughness={0.65} />
+        </mesh>
+      ))}
+      {/* Antenna top */}
+      <mesh position={[0, 56, 0]}>
+        <cylinderGeometry args={[0.8, 1.2, 8, 4]} />
+        <meshStandardMaterial color={0x455a64} roughness={0.5} />
+      </mesh>
+      {/* Red beacon light */}
+      <mesh position={[0, 61, 0]}>
+        <sphereGeometry args={[1.5, 8, 8]} />
+        <meshStandardMaterial color={0xef5350} emissive={0xef5350} emissiveIntensity={0.6} />
+      </mesh>
+      {/* Speaker cone on front */}
+      <mesh position={[0, 18, -w * 0.24]} rotation={[Math.PI / 2, 0, 0]}>
+        <coneGeometry args={[7, 8, 12]} />
+        <meshStandardMaterial color={0x455a64} roughness={0.6} />
+      </mesh>
+      {/* Speaker face */}
+      <mesh position={[0, 18, -w * 0.24 - 4]}>
+        <circleGeometry args={[7, 12]} />
+        <meshStandardMaterial color={0x37474f} roughness={0.5} />
+      </mesh>
+      {/* Concentric rings on speaker */}
+      {[2, 4, 6].map((r, i) => (
+        <mesh key={`ring-${i}`} position={[0, 18, -w * 0.24 - 4.2]}>
+          <torusGeometry args={[r, 0.3, 4, 16]} />
+          <meshStandardMaterial color={0x546e7a} roughness={0.5} />
+        </mesh>
+      ))}
+      {/* Animated sound waves */}
+      <group ref={wavesRef} position={[0, 18, -w * 0.24 - 6]}>
+        {[0, 1, 2].map((i) => (
+          <mesh key={`wave-${i}`} position={[0, 0, -i * 3]}>
+            <torusGeometry args={[5 + i * 3, 0.5, 4, 16, Math.PI]} />
+            <meshStandardMaterial color={0x42a5f5} emissive={0x42a5f5} emissiveIntensity={0.3} transparent opacity={0.4} side={THREE.DoubleSide} />
+          </mesh>
+        ))}
       </group>
-      {/* Neon fascia strip */}
-      <mesh position={[0, wallH + 2.2, -d * 0.08]}>
-        <boxGeometry args={[w * 0.72, 1.1, d * 0.06]} />
-        <meshStandardMaterial color={0x00bcd4} emissive={0x00bcd4} emissiveIntensity={0.35} />
+      {/* Door */}
+      <mesh position={[0, 6, -w * 0.23]}>
+        <boxGeometry args={[7, 12, 1.5]} />
+        <meshStandardMaterial color={0x37474f} roughness={0.7} />
       </mesh>
-      {/* Satellite dish + antenna */}
-      <mesh position={[w * 0.2, wallH + 12, 0]} rotation={[0.55, 0, 0]}>
-        <sphereGeometry args={[6, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.45]} />
-        <meshStandardMaterial color={0x90a4ae} roughness={0.45} side={THREE.DoubleSide} />
-      </mesh>
-      <mesh position={[-w * 0.22, wallH + 11, 0]}>
-        <cylinderGeometry args={[0.55, 0.55, 18, 6]} />
-        <meshStandardMaterial color={0x78909c} roughness={0.6} />
-      </mesh>
-      <mesh position={[-w * 0.22, wallH + 20, 0]}>
-        <sphereGeometry args={[1.4, 8, 6]} />
-        <meshStandardMaterial color={0x00e5ff} emissive={0x00e5ff} emissiveIntensity={0.85} />
-      </mesh>
-      {/* Screen panel */}
-      <mesh position={[0, wallH * 0.52, -d * 0.33]}>
-        <planeGeometry args={[16, 11]} />
-        <meshStandardMaterial ref={glowRef} color={0x00bcd4} emissive={0x00bcd4} emissiveIntensity={0.3} />
-      </mesh>
-      {/* Circuit motifs */}
-      {[[-8, 10, -d * 0.33], [8, 15, -d * 0.33], [-2, 19, -d * 0.33], [6, 12, -d * 0.33]].map((pos, i) => (
-        <mesh key={`circuit-${i}`} position={pos as [number, number, number]}>
-          <boxGeometry args={[6, 0.6, 0.4]} />
-          <meshStandardMaterial color={0x00e5ff} emissive={0x00e5ff} emissiveIntensity={0.45} />
-        </mesh>
-      ))}
-      {[[-6, 4, -d * 0.34], [0, 4, -d * 0.34], [6, 4, -d * 0.34]].map((pos, i) => (
-        <mesh key={`led-${i}`} position={pos as [number, number, number]}>
-          <sphereGeometry args={[0.9, 8, 6]} />
-          <meshStandardMaterial color={0x80deea} emissive={0x4dd0e1} emissiveIntensity={0.35} />
-        </mesh>
-      ))}
-      <mesh position={[0, 8, -d * 0.31]}>
-        <boxGeometry args={[10, 15, 2]} />
-        <meshStandardMaterial color={0x263238} roughness={0.72} />
-      </mesh>
-      <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.46} tone="cool" />
-      <FloatingLabel text="Electronics Shop" y={wallH + 30} />
+      <GroundScatter seedKey={zone.id} radius={w * 0.55} tone="cool" />
+      <FloatingLabel text="Voice Tower" y={72} />
     </group>
   );
 }
 
 // ---------------------------------------------------------------------------
-// 15. PHARMACY â€” Clean white building, green cross, medicine details
+// 9. SECURITY FORTRESS — Castle fortress with walls, gate. Cyan/stone grey.
 // ---------------------------------------------------------------------------
-function PharmacyBuilding({ zone }: { zone: BuildingZone }) {
+function SecurityFortressBuilding({ zone }: { zone: BuildingZone }) {
   const [cx, , cz] = zoneCenter(zone);
   const w = zone.width * TILE_SIZE;
   const d = zone.height * TILE_SIZE;
-  const wallH = 38;
 
   return (
-    <group position={[cx, 0, cz]} rotation={[0, 0, -0.03]}>
-      {/* Yellow cottage body based on map pharmacy */}
-      <mesh position={[0, wallH * 0.42, 0]} castShadow>
-        <boxGeometry args={[w * 0.84, wallH * 0.84, d * 0.8]} />
-        <meshStandardMaterial color={0xf2e577} roughness={0.58} />
+    <group position={[cx, 0, cz]}>
+      {/* Main keep */}
+      <mesh position={[0, 20, 0]} castShadow>
+        <boxGeometry args={[w * 0.55, 40, d * 0.5]} />
+        <meshStandardMaterial color={0x78909c} roughness={0.85} />
       </mesh>
-      {/* Dark blue curved roof */}
-      <group position={[0, wallH + 6, 0]} rotation={[0, 0, 0.06]}>
-        <mesh castShadow>
-          <sphereGeometry args={[w * 0.44, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
-          <meshStandardMaterial color={0x2f3f71} roughness={0.62} />
-        </mesh>
-        <mesh position={[0, 1.3, 0]}>
-          <sphereGeometry args={[w * 0.39, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.46]} />
-          <meshStandardMaterial color={0x3f5491} roughness={0.56} />
-        </mesh>
-      </group>
-      {/* Chimney */}
-      <mesh position={[w * 0.26, wallH + 17, 0]} rotation={[0, 0, 0.06]}>
-        <boxGeometry args={[4.5, 10, 4.5]} />
-        <meshStandardMaterial color={0xcf4d3a} roughness={0.7} />
-      </mesh>
-      {/* Green cross sign */}
-      <group position={[0, wallH * 0.62, -d / 2 - 1.6]}>
-        <mesh>
-          <boxGeometry args={[4, 12, 2]} />
-          <meshStandardMaterial color={0x4caf50} emissive={0x4caf50} emissiveIntensity={0.24} />
-        </mesh>
-        <mesh>
-          <boxGeometry args={[12, 4, 2]} />
-          <meshStandardMaterial color={0x4caf50} emissive={0x4caf50} emissiveIntensity={0.24} />
-        </mesh>
-      </group>
-      {/* Oval windows */}
-      {[-w * 0.22, w * 0.22].map((x, i) => (
-        <group key={`pwin-${i}`} position={[x, wallH * 0.46, -d / 2 - 1.1]}>
-          <mesh>
-            <cylinderGeometry args={[3.6, 3.6, 1.4, 12]} />
-            <meshStandardMaterial color={0x2f3f71} roughness={0.7} />
+      {/* Corner towers */}
+      {[[-1, -1], [-1, 1], [1, -1], [1, 1]].map((corner, i) => (
+        <group key={`tower-${i}`} position={[corner[0] * w * 0.3, 0, corner[1] * d * 0.28]}>
+          <mesh position={[0, 24, 0]} castShadow>
+            <cylinderGeometry args={[6, 7, 48, 8]} />
+            <meshStandardMaterial color={0x90a4ae} roughness={0.8} />
           </mesh>
-          <mesh position={[0, 0, 0.8]}>
-            <circleGeometry args={[2.8, 10]} />
-            <meshStandardMaterial color={0xecffe0} emissive={0xc8e6c9} emissiveIntensity={0.25} />
+          {/* Battlement on tower */}
+          <mesh position={[0, 49, 0]}>
+            <cylinderGeometry args={[7, 6.5, 3, 8]} />
+            <meshStandardMaterial color={0x607d8b} roughness={0.75} />
+          </mesh>
+          {/* Cyan accent ring */}
+          <mesh position={[0, 44, 0]}>
+            <torusGeometry args={[6.5, 0.8, 6, 12]} />
+            <meshStandardMaterial color={0x00bcd4} emissive={0x00bcd4} emissiveIntensity={0.25} />
           </mesh>
         </group>
       ))}
-      {/* Front door */}
-      <mesh position={[0, 8, -d / 2 - 1.2]}>
-        <boxGeometry args={[10, 16, 2]} />
-        <meshStandardMaterial color={0xffffff} roughness={0.5} />
-      </mesh>
-      <mesh position={[0, 15, -d / 2 - 1.2]}>
-        <cylinderGeometry args={[5.2, 5.2, 2, 12, 1, false, 0, Math.PI]} />
-        <meshStandardMaterial color={0xeff8ff} roughness={0.5} side={THREE.DoubleSide} />
-      </mesh>
-      {/* Small mortar icon on side */}
-      <group position={[w * 0.36, 21, -d / 2 - 4.8]}>
-        <mesh>
-          <sphereGeometry args={[3.6, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
-          <meshStandardMaterial color={0x9e9e9e} roughness={0.7} />
+      {/* Crenellations on main keep */}
+      {[-2, -1, 0, 1, 2].map((i) => (
+        <mesh key={`crenel-${i}`} position={[i * w * 0.1, 42, -d * 0.26]}>
+          <boxGeometry args={[4, 4, 3]} />
+          <meshStandardMaterial color={0x607d8b} roughness={0.8} />
         </mesh>
-        <mesh position={[1, 1.8, 0]} rotation={[0, 0, 0.6]}>
-          <cylinderGeometry args={[0.8, 0.8, 5, 6]} />
-          <meshStandardMaterial color={0xbdbdbd} roughness={0.6} />
+      ))}
+      {/* Fortress walls connecting towers */}
+      {[-1, 1].map((side) => (
+        <mesh key={`wall-${side}`} position={[side * w * 0.3, 14, 0]} castShadow>
+          <boxGeometry args={[3, 28, d * 0.5]} />
+          <meshStandardMaterial color={0x78909c} roughness={0.85} />
         </mesh>
-      </group>
+      ))}
+      {/* Gate with arch */}
+      <mesh position={[0, 10, -d * 0.26]}>
+        <boxGeometry args={[14, 20, 3]} />
+        <meshStandardMaterial color={0x455a64} roughness={0.8} />
+      </mesh>
+      <mesh position={[0, 20, -d * 0.26]}>
+        <cylinderGeometry args={[7, 7, 3, 12, 1, false, 0, Math.PI]} />
+        <meshStandardMaterial color={0x546e7a} roughness={0.75} side={THREE.DoubleSide} />
+      </mesh>
+      {/* Portcullis lines */}
+      {[-4, -2, 0, 2, 4].map((x) => (
+        <mesh key={`portcullis-${x}`} position={[x, 10, -d * 0.28]}>
+          <boxGeometry args={[0.5, 18, 0.4]} />
+          <meshStandardMaterial color={0x37474f} roughness={0.6} metalness={0.4} />
+        </mesh>
+      ))}
+      {/* Cyan shield emblem */}
+      <mesh position={[0, 30, -d * 0.27]}>
+        <circleGeometry args={[4, 6]} />
+        <meshStandardMaterial color={0x00bcd4} emissive={0x00bcd4} emissiveIntensity={0.3} />
+      </mesh>
+      {/* Flag on top */}
+      <mesh position={[0, 46, 0]}>
+        <cylinderGeometry args={[0.5, 0.5, 12, 4]} />
+        <meshStandardMaterial color={0x455a64} roughness={0.7} />
+      </mesh>
+      <mesh position={[4, 50, 0]} rotation={[0, 0.2, 0]}>
+        <planeGeometry args={[8, 5]} />
+        <meshStandardMaterial color={0x00bcd4} roughness={0.5} side={THREE.DoubleSide} />
+      </mesh>
+      <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.55} tone="cool" />
+      <FloatingLabel text="Security Fortress" y={72} />
+    </group>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 10. CONFIG CITADEL — Citadel/command center tower. Grey/white.
+// ---------------------------------------------------------------------------
+function ConfigCitadelBuilding({ zone }: { zone: BuildingZone }) {
+  const [cx, , cz] = zoneCenter(zone);
+  const w = zone.width * TILE_SIZE;
+  const d = zone.height * TILE_SIZE;
+
+  return (
+    <group position={[cx, 0, cz]}>
+      {/* Wide base platform */}
+      <mesh position={[0, 3, 0]} castShadow>
+        <boxGeometry args={[w * 0.75, 6, d * 0.7]} />
+        <meshStandardMaterial color={0xeceff1} roughness={0.7} />
+      </mesh>
+      {/* Main citadel body */}
+      <mesh position={[0, 24, 0]} castShadow>
+        <boxGeometry args={[w * 0.55, 36, d * 0.5]} />
+        <meshStandardMaterial color={0xb0bec5} roughness={0.65} />
+      </mesh>
+      {/* Upper command section */}
+      <mesh position={[0, 46, 0]} castShadow>
+        <boxGeometry args={[w * 0.4, 10, d * 0.38]} />
+        <meshStandardMaterial color={0xcfd8dc} roughness={0.55} />
+      </mesh>
+      {/* Dome on top */}
+      <mesh position={[0, 53, 0]} castShadow>
+        <sphereGeometry args={[w * 0.22, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
+        <meshStandardMaterial color={0xffffff} roughness={0.4} />
+      </mesh>
+      {/* Spire */}
+      <mesh position={[0, 62, 0]}>
+        <coneGeometry args={[2, 10, 6]} />
+        <meshStandardMaterial color={0xeceff1} roughness={0.4} />
+      </mesh>
+      {/* Windows in grid pattern */}
+      {[0, 1, 2].map((floor) =>
+        [-1, 0, 1].map((col) => (
+          <mesh key={`win-${floor}-${col}`} position={[col * w * 0.14, 12 + floor * 12, -d * 0.26]}>
+            <planeGeometry args={[5, 7]} />
+            <meshStandardMaterial color={0xe3f2fd} emissive={0x90caf9} emissiveIntensity={floor === 1 ? 0.3 : 0.15} />
+          </mesh>
+        ))
+      )}
+      {/* Control panel details on front */}
+      <mesh position={[0, 46, -d * 0.2]}>
+        <planeGeometry args={[w * 0.3, 6]} />
+        <meshStandardMaterial color={0x78909c} roughness={0.5} />
+      </mesh>
+      {/* Status LEDs on control panel */}
+      {[-3, -1, 1, 3].map((x, i) => (
+        <mesh key={`led-${i}`} position={[x * 2, 47, -d * 0.21]}>
+          <sphereGeometry args={[0.6, 6, 6]} />
+          <meshStandardMaterial color={[0x4caf50, 0x4caf50, 0xffeb3b, 0x4caf50][i]} emissive={[0x4caf50, 0x4caf50, 0xffeb3b, 0x4caf50][i]} emissiveIntensity={0.4} />
+        </mesh>
+      ))}
+      {/* Side buttresses */}
+      {[-1, 1].map((side) => (
+        <mesh key={`buttress-${side}`} position={[side * w * 0.3, 15, 0]} castShadow>
+          <boxGeometry args={[4, 24, d * 0.3]} />
+          <meshStandardMaterial color={0x90a4ae} roughness={0.7} />
+        </mesh>
+      ))}
+      {/* Entry door */}
+      <mesh position={[0, 8, -d * 0.26]}>
+        <boxGeometry args={[10, 14, 1.5]} />
+        <meshStandardMaterial color={0x607d8b} roughness={0.7} />
+      </mesh>
+      {/* Steps */}
+      {[0, 1].map((step) => (
+        <mesh key={`step-${step}`} position={[0, 1.5 + step * 1.5, -d * 0.3 - step * 2]}>
+          <boxGeometry args={[14, 1.3, 2.5]} />
+          <meshStandardMaterial color={0xeceff1} roughness={0.6} />
+        </mesh>
+      ))}
       <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.52} tone="mint" />
-      <FloatingLabel text="Pharmacy" y={64} />
+      <FloatingLabel text="Config Citadel" y={78} />
     </group>
   );
 }
@@ -1305,21 +1054,16 @@ function PharmacyBuilding({ zone }: { zone: BuildingZone }) {
 // Building dispatcher
 // ---------------------------------------------------------------------------
 const BUILDING_RENDERERS: Record<string, React.FC<{ zone: BuildingZone }>> = {
-  'potion-shop': PotionShopBuilding,
-  'auction-house': AuctionHouseBuilding,
-  'book-shop': BookShopBuilding,
-  'clothing-shop': ClothingShopBuilding,
-  'bazaar': BazaarBuilding,
-  'petpet-shop': PetpetShopBuilding,
-  'money-tree': MoneyTreeBuilding,
-  'rainbow-pool': RainbowPoolBuilding,
-  'wishing-well': WishingWellBuilding,
-  'treasure-island': TreasureIslandBuilding,
-  'clawvillen-flats': ClawVillenFlatsBuilding,
-  'art-studio': ArtStudioBuilding,
-  'juice-shop': JuiceShopBuilding,
-  'electronics-shop': ElectronicsShopBuilding,
-  'pharmacy': PharmacyBuilding,
+  'cron-hub': CronHubBuilding,
+  'webhook-gateway': WebhookGatewayBuilding,
+  'memory-vault': MemoryVaultBuilding,
+  'skill-forge': SkillForgeBuilding,
+  'channel-bridge': ChannelBridgeBuilding,
+  'tool-workshop': ToolWorkshopBuilding,
+  'canvas-studio': CanvasStudioBuilding,
+  'voice-tower': VoiceTowerBuilding,
+  'security-fortress': SecurityFortressBuilding,
+  'config-citadel': ConfigCitadelBuilding,
 };
 
 function BuildingMesh({ zone }: { zone: BuildingZone }) {
@@ -1340,5 +1084,3 @@ export default function ArenaBuildings() {
     </group>
   );
 }
-
-
