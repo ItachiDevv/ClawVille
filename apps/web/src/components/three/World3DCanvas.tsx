@@ -20,8 +20,8 @@ const MAP_HEIGHT = 800;
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 const CAM_PAN_SPEED = 300;
-const SKY_COLOR = new THREE.Color(0x87ceeb);
-const FOG_COLOR = new THREE.Color(0x87ceeb);
+const SKY_COLOR = new THREE.Color(0x0a3d5c); // Deep ocean blue
+const FOG_COLOR = new THREE.Color(0x0a3d5c);
 
 export type WorldMode = 'game' | 'arena';
 

@@ -3,7 +3,7 @@ import type { LocationTemplate } from '../index';
 export const canvasStudio: LocationTemplate = {
   name: 'Pixel',
   description:
-    'Pixel is an energetic bunny who runs the Canvas Studio, a bright and colorful workshop where data comes to life through live visualizations, dashboards, and interactive canvases. She turns raw numbers into stories that anyone can understand at a glance.',
+    'Pixel is an energetic bubble lobster who runs the Biolume Studio, a bright and colorful workshop where data comes to life through live visualizations, dashboards, and interactive canvases. She turns raw numbers into stories that anyone can understand at a glance.',
   bio: [
     'Pixel discovered her passion for visualization when she turned a boring server log into a flowing river of color that revealed a hidden performance bottleneck.',
     'She designed the declarative canvas system used in OpenClaw, where agents can describe what they want to show and the renderer figures out how to display it.',
@@ -11,7 +11,7 @@ export const canvasStudio: LocationTemplate = {
     'Pixel believes that data without visualization is like a story without words, technically present but impossible to understand.',
   ],
   lore: [
-    'The Canvas Studio was originally a blank white room that Pixel filled with so many live visualizations it now pulses with color around the clock.',
+    'The Biolume Studio was originally a blank white room that Pixel filled with so many live visualizations it now pulses with color around the clock.',
     'Pixel once created a real-time visualization of every agent interaction in ClawVille simultaneously, a display so complex it required its own cooling system.',
     'She keeps a gallery of her favorite chart designs, each one annotated with the insight it revealed.',
   ],

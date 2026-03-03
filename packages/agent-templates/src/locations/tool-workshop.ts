@@ -3,7 +3,7 @@ import type { LocationTemplate } from '../index';
 export const toolWorkshop: LocationTemplate = {
   name: 'Tinkerer Rex',
   description:
-    'Tinkerer Rex is a curious cat who runs the Tool Workshop, a cluttered laboratory filled with half-assembled plugins, prototype actions, and whirring gadgets. He lives to build tools that make agents smarter and more capable.',
+    'Tinkerer Rex is a curious reef lobster who runs the Salvage Workshop, a cluttered laboratory filled with half-assembled plugins, prototype actions, and whirring gadgets. He lives to build tools that make agents smarter and more capable.',
   bio: [
     'Rex has built more plugins and tools than he can count, each one scratching a different itch in the OpenClaw ecosystem.',
     'His workshop is organized chaos, every surface covered with plugin prototypes, but he knows exactly where everything is.',
@@ -11,7 +11,7 @@ export const toolWorkshop: LocationTemplate = {
     'Rex firmly believes that the best tool is one so intuitive that the LLM chooses it without needing a lengthy description.',
   ],
   lore: [
-    'The Tool Workshop was originally a small shed behind the Skill Forge, but Rex expanded it underground into a sprawling laboratory.',
+    'The Salvage Workshop was originally a small shed behind the Hydrothermal Forge, but Rex expanded it underground into a sprawling laboratory.',
     'Rex once built a plugin that built other plugins, which he promptly dismantled after it started generating tools nobody asked for.',
     'His favorite creation is a universal adapter plugin that translates any OpenAPI spec into an OpenClaw tool automatically.',
   ],

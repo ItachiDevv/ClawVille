@@ -37,28 +37,30 @@ function zoneCenter(zone: BuildingZone): [number, number, number] {
 function FloatingLabel({ text, y }: { text: string; y: number }) {
   return (
     <group position={[0, y, 0]}>
+      {/* Kelp stalk post */}
       <mesh position={[0, -8, 0]}>
         <cylinderGeometry args={[0.7, 1, 14, 8]} />
-        <meshStandardMaterial color={0x6d4c41} roughness={0.85} />
+        <meshStandardMaterial color={0x2e7d32} roughness={0.75} />
       </mesh>
       <Billboard follow lockX={false} lockY={false} lockZ={false}>
         <group>
+          {/* Shell-shaped sign background */}
           <mesh scale={[1.95, 1.18, 1]}>
             <circleGeometry args={[10.5, 32]} />
-            <meshBasicMaterial color={0x606880} depthTest={false} />
+            <meshBasicMaterial color={0x1a4a5a} depthTest={false} />
           </mesh>
           <mesh position={[0, 0, 0.2]} scale={[1.72, 1.02, 1]}>
             <circleGeometry args={[9.4, 32]} />
-            <meshBasicMaterial color={0xf0efb3} depthTest={false} />
+            <meshBasicMaterial color={0xe0f2f1} depthTest={false} />
           </mesh>
           <Text
             position={[0, 0.05, 0.5]}
             fontSize={3.9}
-            color="#2f3440"
+            color="#0d3b3e"
             anchorX="center"
             anchorY="middle"
             outlineWidth={0.3}
-            outlineColor="#f0efb3"
+            outlineColor="#e0f2f1"
             maxWidth={30}
           >
             {text}
@@ -118,17 +120,18 @@ function seededRandom(seed: number): () => number {
 
 type ScatterTone = 'warm' | 'magic' | 'forest' | 'cool' | 'mint';
 
+// Sea-themed scatter tones (coral, anemone, bioluminescent)
 const FLOWER_TONES: Record<ScatterTone, number[]> = {
-  warm: [0xff7043, 0xffca28, 0xf06292],
-  magic: [0xce93d8, 0x69f0ae, 0xffd54f],
-  forest: [0x81c784, 0xffeb3b, 0xef5350],
-  cool: [0x4fc3f7, 0x80deea, 0x90caf9],
-  mint: [0x80cbc4, 0xa5d6a7, 0xdcedc8],
+  warm: [0xff6f61, 0xff8a65, 0xffab91],      // Warm coral
+  magic: [0x7c4dff, 0x00e5ff, 0x69f0ae],      // Bioluminescent
+  forest: [0x00897b, 0x26a69a, 0x4db6ac],     // Kelp/seagrass
+  cool: [0x039be5, 0x4fc3f7, 0x81d4fa],       // Deep ocean blue
+  mint: [0x80cbc4, 0x4dd0e1, 0x84ffff],       // Tropical shallows
 };
 
-type StoneScatter = { x: number; z: number; radius: number; rotation: number; color: number };
-type MushroomScatter = { x: number; z: number; stemH: number; capR: number; capColor: number; tilt: number };
-type FlowerScatter = { x: number; z: number; bloomR: number; bloomColor: number; stemH: number };
+type StoneScatter = { x: number; z: number; radius: number; rotation: number; color: number }; // shells/pebbles
+type MushroomScatter = { x: number; z: number; stemH: number; capR: number; capColor: number; tilt: number }; // sea urchins
+type FlowerScatter = { x: number; z: number; bloomR: number; bloomColor: number; stemH: number }; // anemones
 
 function GroundScatter({
   seedKey,
@@ -153,7 +156,7 @@ function GroundScatter({
         z: Math.sin(angle) * dist,
         radius: 1.8 + rand() * 2.4,
         rotation: rand() * Math.PI,
-        color: rand() > 0.5 ? 0xb0bec5 : 0x9e9e9e,
+        color: rand() > 0.5 ? 0xc2b280 : 0xa89070, // sandy shells
       });
     }
 
@@ -167,7 +170,7 @@ function GroundScatter({
         z: Math.sin(angle) * dist,
         stemH: 1.8 + rand() * 1.5,
         capR: 1.3 + rand() * 1.2,
-        capColor: [0xef5350, 0xab47bc, 0xffca28][Math.floor(rand() * 3)],
+        capColor: [0x7b1fa2, 0x1a237e, 0x004d40][Math.floor(rand() * 3)], // sea urchin colors
         tilt: (rand() - 0.5) * 0.35,
       });
     }
@@ -202,26 +205,25 @@ function GroundScatter({
         </mesh>
       ))}
       {mushrooms.map((mushroom, i) => (
-        <group key={`mushroom-${i}`} position={[mushroom.x, 0, mushroom.z]} rotation={[0, 0, mushroom.tilt]}>
-          <mesh position={[0, mushroom.stemH * 0.5, 0]}>
-            <cylinderGeometry args={[0.35, 0.45, mushroom.stemH, 6]} />
-            <meshStandardMaterial color={0xfff8e1} roughness={0.8} />
-          </mesh>
-          <mesh position={[0, mushroom.stemH + mushroom.capR * 0.35, 0]}>
-            <sphereGeometry args={[mushroom.capR, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.6]} />
-            <meshStandardMaterial color={mushroom.capColor} roughness={0.65} />
+        <group key={`urchin-${i}`} position={[mushroom.x, 0, mushroom.z]} rotation={[0, 0, mushroom.tilt]}>
+          {/* Sea urchin body */}
+          <mesh position={[0, mushroom.capR * 0.5 + 0.2, 0]}>
+            <sphereGeometry args={[mushroom.capR, 8, 6]} />
+            <meshStandardMaterial color={mushroom.capColor} roughness={0.5} />
           </mesh>
         </group>
       ))}
       {flowers.map((flower, i) => (
-        <group key={`flower-${i}`} position={[flower.x, 0, flower.z]}>
-          <mesh position={[0, flower.stemH * 0.5, 0]}>
-            <cylinderGeometry args={[0.2, 0.2, flower.stemH, 4]} />
-            <meshStandardMaterial color={0x2e7d32} roughness={0.8} />
+        <group key={`anemone-${i}`} position={[flower.x, 0, flower.z]}>
+          {/* Anemone base */}
+          <mesh position={[0, flower.stemH * 0.4, 0]}>
+            <cylinderGeometry args={[0.3, 0.4, flower.stemH * 0.8, 4]} />
+            <meshStandardMaterial color={0x2e6b62} roughness={0.7} />
           </mesh>
-          <mesh position={[0, flower.stemH + flower.bloomR * 0.35, 0]}>
+          {/* Anemone tentacles */}
+          <mesh position={[0, flower.stemH + flower.bloomR * 0.3, 0]}>
             <sphereGeometry args={[flower.bloomR, 6, 5]} />
-            <meshStandardMaterial color={flower.bloomColor} roughness={0.6} />
+            <meshStandardMaterial color={flower.bloomColor} emissive={flower.bloomColor} emissiveIntensity={0.1} roughness={0.5} />
           </mesh>
         </group>
       ))}
@@ -230,7 +232,7 @@ function GroundScatter({
 }
 
 // ---------------------------------------------------------------------------
-// 1. CRON HUB — Clock tower with gears, pendulum. Brown/gold. Animated pendulum.
+// 1. TIDE CLOCK GROTTO — Giant conch shell with tidal clock face. Ocean teal/pearl.
 // ---------------------------------------------------------------------------
 function CronHubBuilding({ zone }: { zone: BuildingZone }) {
   const [cx, , cz] = zoneCenter(zone);
@@ -250,79 +252,78 @@ function CronHubBuilding({ zone }: { zone: BuildingZone }) {
 
   return (
     <group position={[cx, 0, cz]}>
-      {/* Stone base */}
+      {/* Coral rock base */}
       <mesh position={[0, 12, 0]} castShadow>
         <boxGeometry args={[w * 0.5, 24, w * 0.5]} />
-        <meshStandardMaterial color={0x6d4c41} roughness={0.85} />
+        <meshStandardMaterial color={0x3e6b62} roughness={0.85} />
       </mesh>
-      {/* Tower body */}
+      {/* Conch tower body */}
       <mesh position={[0, 38, 0]} castShadow>
-        <boxGeometry args={[w * 0.4, 28, w * 0.4]} />
-        <meshStandardMaterial color={0x8d6e63} roughness={0.8} />
+        <cylinderGeometry args={[w * 0.18, w * 0.22, 28, 8]} />
+        <meshStandardMaterial color={0xffccbc} roughness={0.6} />
       </mesh>
-      {/* Clock face */}
-      <mesh position={[0, 42, -w * 0.21]}>
+      {/* Tide clock face (shell-like) */}
+      <mesh position={[0, 42, -w * 0.19]}>
         <circleGeometry args={[8, 24]} />
-        <meshStandardMaterial color={0xfff8e1} roughness={0.4} />
+        <meshStandardMaterial color={0xe0f7fa} roughness={0.35} />
       </mesh>
-      {/* Clock rim */}
-      <mesh position={[0, 42, -w * 0.22]}>
+      {/* Clock rim — pearl */}
+      <mesh position={[0, 42, -w * 0.20]}>
         <torusGeometry args={[8.5, 1, 8, 24]} />
-        <meshStandardMaterial color={0xffd700} metalness={0.7} roughness={0.2} />
+        <meshStandardMaterial color={0xfce4ec} metalness={0.5} roughness={0.25} />
       </mesh>
       {/* Clock hands */}
-      <mesh position={[0, 45, -w * 0.23]} rotation={[0, 0, 0.4]}>
+      <mesh position={[0, 45, -w * 0.21]} rotation={[0, 0, 0.4]}>
         <boxGeometry args={[0.8, 6, 0.3]} />
-        <meshStandardMaterial color={0x3e2723} roughness={0.7} />
+        <meshStandardMaterial color={0x004d40} roughness={0.7} />
       </mesh>
-      <mesh position={[0, 43, -w * 0.23]} rotation={[0, 0, -0.8]}>
+      <mesh position={[0, 43, -w * 0.21]} rotation={[0, 0, -0.8]}>
         <boxGeometry args={[0.6, 4.5, 0.3]} />
-        <meshStandardMaterial color={0x3e2723} roughness={0.7} />
+        <meshStandardMaterial color={0x004d40} roughness={0.7} />
       </mesh>
-      {/* Pointed roof */}
+      {/* Spiral shell top */}
       <mesh position={[0, 58, 0]} castShadow>
-        <coneGeometry args={[w * 0.28, 16, 4]} />
-        <meshStandardMaterial color={0x5d4037} roughness={0.75} />
+        <coneGeometry args={[w * 0.22, 16, 12]} />
+        <meshStandardMaterial color={0xffab91} roughness={0.5} />
       </mesh>
-      {/* Gold finial */}
+      {/* Pearl finial */}
       <mesh position={[0, 67, 0]}>
-        <sphereGeometry args={[2, 8, 8]} />
-        <meshStandardMaterial color={0xffd700} metalness={0.8} roughness={0.15} />
+        <sphereGeometry args={[2, 12, 12]} />
+        <meshStandardMaterial color={0xfff3e0} metalness={0.4} roughness={0.2} />
       </mesh>
-      {/* Gear on front */}
-      <mesh ref={gearRef} position={[0, 28, -w * 0.26]}>
+      {/* Barnacle gears */}
+      <mesh ref={gearRef} position={[0, 28, -w * 0.24]}>
         <torusGeometry args={[5, 1.2, 6, 8]} />
-        <meshStandardMaterial color={0xffc107} metalness={0.6} roughness={0.3} />
+        <meshStandardMaterial color={0x80cbc4} metalness={0.4} roughness={0.35} />
       </mesh>
-      {/* Second gear */}
-      <mesh position={[8, 25, -w * 0.26]}>
+      <mesh position={[8, 25, -w * 0.24]}>
         <torusGeometry args={[3.5, 0.9, 6, 8]} />
-        <meshStandardMaterial color={0xffb300} metalness={0.6} roughness={0.3} />
+        <meshStandardMaterial color={0x4db6ac} metalness={0.4} roughness={0.35} />
       </mesh>
-      {/* Pendulum */}
-      <group ref={pendulumRef} position={[0, 16, -w * 0.26]}>
+      {/* Kelp pendulum */}
+      <group ref={pendulumRef} position={[0, 16, -w * 0.24]}>
         <mesh position={[0, -5, 0]}>
           <cylinderGeometry args={[0.4, 0.4, 10, 4]} />
-          <meshStandardMaterial color={0x5d4037} roughness={0.8} />
+          <meshStandardMaterial color={0x2e7d32} roughness={0.7} />
         </mesh>
         <mesh position={[0, -11, 0]}>
           <sphereGeometry args={[2.5, 8, 8]} />
-          <meshStandardMaterial color={0xffd700} metalness={0.75} roughness={0.2} />
+          <meshStandardMaterial color={0xfce4ec} metalness={0.5} roughness={0.25} />
         </mesh>
       </group>
-      {/* Door */}
-      <mesh position={[0, 7, -w * 0.26]}>
+      {/* Cave entrance */}
+      <mesh position={[0, 7, -w * 0.24]}>
         <boxGeometry args={[8, 14, 1.5]} />
-        <meshStandardMaterial color={0x3e2723} roughness={0.85} />
+        <meshStandardMaterial color={0x1a3c34} roughness={0.85} />
       </mesh>
       <GroundScatter seedKey={zone.id} radius={w * 0.55} tone="warm" />
-      <FloatingLabel text="Cron Hub" y={78} />
+      <FloatingLabel text="Tide Clock Grotto" y={78} />
     </group>
   );
 }
 
 // ---------------------------------------------------------------------------
-// 2. WEBHOOK GATEWAY — Gateway arch with glowing signal lines. Orange/amber.
+// 2. CURRENT GATEWAY — Coral arch with bioluminescent current lines.
 // ---------------------------------------------------------------------------
 function WebhookGatewayBuilding({ zone }: { zone: BuildingZone }) {
   const [cx, , cz] = zoneCenter(zone);
@@ -343,66 +344,66 @@ function WebhookGatewayBuilding({ zone }: { zone: BuildingZone }) {
 
   return (
     <group position={[cx, 0, cz]}>
-      {/* Left pillar */}
+      {/* Left coral pillar */}
       <mesh position={[-w * 0.22, 22, 0]} castShadow>
-        <boxGeometry args={[10, 44, 10]} />
-        <meshStandardMaterial color={0x8d6e63} roughness={0.8} />
+        <cylinderGeometry args={[4, 6, 44, 8]} />
+        <meshStandardMaterial color={0xff8a65} roughness={0.7} />
       </mesh>
-      {/* Right pillar */}
+      {/* Right coral pillar */}
       <mesh position={[w * 0.22, 22, 0]} castShadow>
-        <boxGeometry args={[10, 44, 10]} />
-        <meshStandardMaterial color={0x8d6e63} roughness={0.8} />
+        <cylinderGeometry args={[4, 6, 44, 8]} />
+        <meshStandardMaterial color={0xff8a65} roughness={0.7} />
       </mesh>
-      {/* Arch top */}
+      {/* Coral arch top */}
       <mesh position={[0, 46, 0]}>
         <torusGeometry args={[w * 0.22, 5, 8, 16, Math.PI]} />
-        <meshStandardMaterial color={0xff8f00} roughness={0.5} />
+        <meshStandardMaterial color={0xef6c00} roughness={0.55} />
       </mesh>
-      {/* Keystone */}
+      {/* Keystone — giant pearl */}
       <mesh position={[0, 52, 0]}>
-        <boxGeometry args={[8, 8, 8]} />
-        <meshStandardMaterial color={0xffa000} metalness={0.5} roughness={0.3} />
+        <sphereGeometry args={[5, 12, 12]} />
+        <meshStandardMaterial color={0xfff3e0} metalness={0.4} roughness={0.2} />
       </mesh>
-      {/* Signal lines on pillars */}
+      {/* Bioluminescent current lines */}
       <group ref={pulseRef}>
         {[0, 1, 2, 3].map((i) => (
-          <mesh key={`pulse-l-${i}`} position={[-w * 0.22, 8 + i * 9, -6]}>
+          <mesh key={`pulse-l-${i}`} position={[-w * 0.22, 8 + i * 9, -5]}>
             <boxGeometry args={[2, 1.2, 0.5]} />
-            <meshStandardMaterial color={0xff6f00} emissive={0xff6f00} emissiveIntensity={0.5} transparent opacity={0.8} />
+            <meshStandardMaterial color={0x00e5ff} emissive={0x00e5ff} emissiveIntensity={0.5} transparent opacity={0.8} />
           </mesh>
         ))}
         {[0, 1, 2, 3].map((i) => (
-          <mesh key={`pulse-r-${i}`} position={[w * 0.22, 8 + i * 9, -6]}>
+          <mesh key={`pulse-r-${i}`} position={[w * 0.22, 8 + i * 9, -5]}>
             <boxGeometry args={[2, 1.2, 0.5]} />
-            <meshStandardMaterial color={0xff6f00} emissive={0xff6f00} emissiveIntensity={0.5} transparent opacity={0.8} />
+            <meshStandardMaterial color={0x00e5ff} emissive={0x00e5ff} emissiveIntensity={0.5} transparent opacity={0.8} />
           </mesh>
         ))}
       </group>
-      {/* Horizontal signal beam under arch */}
+      {/* Current beam under arch */}
       <mesh position={[0, 36, -5.5]}>
         <boxGeometry args={[w * 0.35, 0.8, 0.4]} />
-        <meshStandardMaterial color={0xffca28} emissive={0xffca28} emissiveIntensity={0.4} />
+        <meshStandardMaterial color={0x00bcd4} emissive={0x00bcd4} emissiveIntensity={0.4} />
       </mesh>
-      {/* Amber lanterns on top of pillars */}
+      {/* Jellyfish lanterns on top */}
       {[-1, 1].map((side) => (
         <mesh key={`lantern-${side}`} position={[side * w * 0.22, 46, 0]}>
           <sphereGeometry args={[3, 8, 8]} />
-          <meshStandardMaterial color={0xffb300} emissive={0xff8f00} emissiveIntensity={0.5} />
+          <meshStandardMaterial color={0x80deea} emissive={0x00bcd4} emissiveIntensity={0.4} transparent opacity={0.7} />
         </mesh>
       ))}
-      {/* Base platform */}
+      {/* Sandy base platform */}
       <mesh position={[0, 1, 0]}>
         <boxGeometry args={[w * 0.7, 2, d * 0.5]} />
-        <meshStandardMaterial color={0x795548} roughness={0.85} />
+        <meshStandardMaterial color={0xc2b280} roughness={0.85} />
       </mesh>
-      <GroundScatter seedKey={zone.id} radius={w * 0.5} tone="warm" />
-      <FloatingLabel text="Webhook Gateway" y={68} />
+      <GroundScatter seedKey={zone.id} radius={w * 0.5} tone="cool" />
+      <FloatingLabel text="Current Gateway" y={68} />
     </group>
   );
 }
 
 // ---------------------------------------------------------------------------
-// 3. MEMORY VAULT — Domed vault/bank with heavy door. Green/dark. Inner glow.
+// 3. ABYSSAL VAULT — Deep-sea nautilus chamber sealed in rock. Dark blue/green glow.
 // ---------------------------------------------------------------------------
 function MemoryVaultBuilding({ zone }: { zone: BuildingZone }) {
   const [cx, , cz] = zoneCenter(zone);
@@ -419,60 +420,60 @@ function MemoryVaultBuilding({ zone }: { zone: BuildingZone }) {
 
   return (
     <group position={[cx, 0, cz]}>
-      {/* Vault base */}
+      {/* Abyssal rock base */}
       <mesh position={[0, 14, 0]} castShadow>
         <boxGeometry args={[w * 0.7, 28, d * 0.65]} />
-        <meshStandardMaterial color={0x2e7d32} roughness={0.75} />
+        <meshStandardMaterial color={0x1a3a4a} roughness={0.85} />
       </mesh>
-      {/* Dome roof */}
+      {/* Nautilus dome */}
       <mesh position={[0, 30, 0]} castShadow>
         <sphereGeometry args={[w * 0.38, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
-        <meshStandardMaterial color={0x1b5e20} roughness={0.6} />
+        <meshStandardMaterial color={0x0d253a} roughness={0.5} />
       </mesh>
-      {/* Dark trim bands */}
+      {/* Barnacle trim bands */}
       {[10, 20].map((y) => (
         <mesh key={`band-${y}`} position={[0, y, -d * 0.33]}>
           <boxGeometry args={[w * 0.72, 1.5, 0.5]} />
-          <meshStandardMaterial color={0x1b5e20} roughness={0.7} />
+          <meshStandardMaterial color={0x37474f} roughness={0.8} />
         </mesh>
       ))}
-      {/* Heavy vault door */}
+      {/* Heavy sealed hatch */}
       <mesh position={[0, 12, -d * 0.34]}>
         <boxGeometry args={[14, 20, 2]} />
-        <meshStandardMaterial color={0x263238} roughness={0.6} metalness={0.4} />
+        <meshStandardMaterial color={0x263238} roughness={0.5} metalness={0.5} />
       </mesh>
-      {/* Door wheel/lock */}
+      {/* Wheel lock */}
       <mesh position={[0, 14, -d * 0.36]}>
         <torusGeometry args={[4, 0.8, 6, 16]} />
-        <meshStandardMaterial color={0x9e9e9e} metalness={0.7} roughness={0.25} />
+        <meshStandardMaterial color={0x546e7a} metalness={0.6} roughness={0.3} />
       </mesh>
-      {/* Inner glow from door cracks */}
+      {/* Bioluminescent glow from cracks */}
       <mesh position={[0, 12, -d * 0.35]}>
         <planeGeometry args={[12, 18]} />
-        <meshStandardMaterial ref={glowRef} color={0x69f0ae} emissive={0x69f0ae} emissiveIntensity={0.2} transparent opacity={0.3} />
+        <meshStandardMaterial ref={glowRef} color={0x00e5ff} emissive={0x00e5ff} emissiveIntensity={0.2} transparent opacity={0.3} />
       </mesh>
-      {/* Side columns */}
+      {/* Coral columns */}
       {[-1, 1].map((side) => (
         <mesh key={`col-${side}`} position={[side * w * 0.3, 14, -d * 0.34]} castShadow>
           <cylinderGeometry args={[3, 3.5, 28, 8]} />
-          <meshStandardMaterial color={0x388e3c} roughness={0.7} />
+          <meshStandardMaterial color={0x00695c} roughness={0.7} />
         </mesh>
       ))}
-      {/* Gold rivets on door */}
+      {/* Pearl rivets */}
       {[[-4, 8], [4, 8], [-4, 18], [4, 18]].map((pos, i) => (
         <mesh key={`rivet-${i}`} position={[pos[0], pos[1], -d * 0.36]}>
           <sphereGeometry args={[1, 6, 6]} />
-          <meshStandardMaterial color={0xffd700} metalness={0.7} roughness={0.2} />
+          <meshStandardMaterial color={0xfce4ec} metalness={0.5} roughness={0.25} />
         </mesh>
       ))}
-      <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.5} tone="forest" />
-      <FloatingLabel text="Memory Vault" y={62} />
+      <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.5} tone="cool" />
+      <FloatingLabel text="Abyssal Vault" y={62} />
     </group>
   );
 }
 
 // ---------------------------------------------------------------------------
-// 4. SKILL FORGE — Blacksmith forge with anvil, fire. Red/dark iron. Animated flames.
+// 4. HYDROTHERMAL FORGE — Volcanic vent forge. Magma orange/dark basalt.
 // ---------------------------------------------------------------------------
 function SkillForgeBuilding({ zone }: { zone: BuildingZone }) {
   const [cx, , cz] = zoneCenter(zone);
@@ -494,69 +495,69 @@ function SkillForgeBuilding({ zone }: { zone: BuildingZone }) {
 
   return (
     <group position={[cx, 0, cz]}>
-      {/* Forge structure */}
+      {/* Basalt vent structure */}
       <mesh position={[0, 16, 0]} castShadow>
         <boxGeometry args={[w * 0.6, 32, d * 0.55]} />
-        <meshStandardMaterial color={0x424242} roughness={0.9} />
+        <meshStandardMaterial color={0x37474f} roughness={0.9} />
       </mesh>
-      {/* Chimney */}
+      {/* Volcanic chimney */}
       <mesh position={[w * 0.12, 40, d * 0.1]} castShadow>
-        <boxGeometry args={[8, 16, 8]} />
-        <meshStandardMaterial color={0x37474f} roughness={0.85} />
+        <cylinderGeometry args={[3, 5, 16, 8]} />
+        <meshStandardMaterial color={0x263238} roughness={0.85} />
       </mesh>
-      {/* Fire pit opening */}
+      {/* Vent opening */}
       <mesh position={[0, 14, -d * 0.28]}>
         <boxGeometry args={[16, 12, 2]} />
-        <meshStandardMaterial color={0x212121} roughness={0.9} />
+        <meshStandardMaterial color={0x1a1a1a} roughness={0.9} />
       </mesh>
-      {/* Flames inside */}
+      {/* Magma plumes */}
       <group ref={flameRef} position={[0, 12, -d * 0.26]}>
         {[0, 1, 2, 3].map((i) => (
-          <mesh key={`flame-${i}`} position={[-4 + i * 3, 4, 0]}>
+          <mesh key={`plume-${i}`} position={[-4 + i * 3, 4, 0]}>
             <coneGeometry args={[1.5, 6, 5]} />
-            <meshStandardMaterial color={i % 2 === 0 ? 0xff5722 : 0xffca28} emissive={i % 2 === 0 ? 0xff5722 : 0xffca28} emissiveIntensity={0.7} />
+            <meshStandardMaterial color={i % 2 === 0 ? 0xff5722 : 0xff8f00} emissive={i % 2 === 0 ? 0xff5722 : 0xff8f00} emissiveIntensity={0.7} />
           </mesh>
         ))}
       </group>
-      {/* Red accent roof */}
+      {/* Jagged basalt roof */}
       <group position={[0, 32, 0]}>
-        <PitchedRoof width={w * 0.7} depth={d * 0.65} height={14} color={0xc62828} />
+        <PitchedRoof width={w * 0.7} depth={d * 0.65} height={14} color={0x455a64} />
       </group>
-      {/* Anvil */}
+      {/* Obsidian anvil */}
       <group position={[-w * 0.25, 0, -d * 0.35]}>
         <mesh position={[0, 4, 0]}>
           <cylinderGeometry args={[3, 4, 8, 6]} />
-          <meshStandardMaterial color={0x616161} metalness={0.6} roughness={0.4} />
+          <meshStandardMaterial color={0x212121} metalness={0.7} roughness={0.3} />
         </mesh>
         <mesh position={[0, 9, 0]}>
           <boxGeometry args={[10, 2, 5]} />
-          <meshStandardMaterial color={0x424242} metalness={0.7} roughness={0.3} />
+          <meshStandardMaterial color={0x1a1a1a} metalness={0.8} roughness={0.2} />
         </mesh>
       </group>
-      {/* Hammer next to anvil */}
+      {/* Coral hammer */}
       <mesh position={[-w * 0.18, 11, -d * 0.4]} rotation={[0, 0, 0.5]}>
         <cylinderGeometry args={[0.6, 0.6, 10, 4]} />
-        <meshStandardMaterial color={0x795548} roughness={0.8} />
+        <meshStandardMaterial color={0xff6f61} roughness={0.7} />
       </mesh>
       <mesh position={[-w * 0.14, 15, -d * 0.4]}>
         <boxGeometry args={[3, 3, 3]} />
-        <meshStandardMaterial color={0x616161} metalness={0.6} roughness={0.3} />
+        <meshStandardMaterial color={0x455a64} metalness={0.6} roughness={0.3} />
       </mesh>
-      {/* Embers on ground */}
+      {/* Magma pools on ground */}
       {[[-3, 0.5, -8], [5, 0.5, -10], [-6, 0.5, -12]].map((pos, i) => (
-        <mesh key={`ember-${i}`} position={pos as [number, number, number]}>
+        <mesh key={`magma-${i}`} position={pos as [number, number, number]}>
           <sphereGeometry args={[0.8, 6, 6]} />
-          <meshStandardMaterial color={0xff6f00} emissive={0xff6f00} emissiveIntensity={0.5} />
+          <meshStandardMaterial color={0xff6f00} emissive={0xff6f00} emissiveIntensity={0.6} />
         </mesh>
       ))}
       <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.5} tone="warm" />
-      <FloatingLabel text="Skill Forge" y={60} />
+      <FloatingLabel text="Hydrothermal Forge" y={60} />
     </group>
   );
 }
 
 // ---------------------------------------------------------------------------
-// 5. CHANNEL BRIDGE — Suspension bridge structure. Blue/silver.
+// 5. CORAL BRIDGE — Living coral bridge. Warm coral/cyan.
 // ---------------------------------------------------------------------------
 function ChannelBridgeBuilding({ zone }: { zone: BuildingZone }) {
   const [cx, , cz] = zoneCenter(zone);
@@ -565,75 +566,75 @@ function ChannelBridgeBuilding({ zone }: { zone: BuildingZone }) {
 
   return (
     <group position={[cx, 0, cz]}>
-      {/* Bridge deck */}
+      {/* Coral bridge deck */}
       <mesh position={[0, 8, 0]} castShadow>
         <boxGeometry args={[w * 0.8, 3, d * 0.35]} />
-        <meshStandardMaterial color={0x90a4ae} roughness={0.7} />
+        <meshStandardMaterial color={0xff8a65} roughness={0.65} />
       </mesh>
-      {/* Deck planks */}
+      {/* Coral ridges on deck */}
       {[-3, -1, 1, 3].map((i) => (
-        <mesh key={`plank-${i}`} position={[i * w * 0.09, 9.8, 0]}>
+        <mesh key={`ridge-${i}`} position={[i * w * 0.09, 9.8, 0]}>
           <boxGeometry args={[w * 0.08, 0.5, d * 0.33]} />
-          <meshStandardMaterial color={0x78909c} roughness={0.8} />
+          <meshStandardMaterial color={0xef6c00} roughness={0.7} />
         </mesh>
       ))}
-      {/* Left tower */}
+      {/* Left coral tower */}
       <mesh position={[-w * 0.35, 28, 0]} castShadow>
-        <boxGeometry args={[8, 48, 8]} />
-        <meshStandardMaterial color={0x42a5f5} roughness={0.5} />
+        <cylinderGeometry args={[4, 5, 48, 8]} />
+        <meshStandardMaterial color={0xff7043} roughness={0.6} />
       </mesh>
-      {/* Right tower */}
+      {/* Right coral tower */}
       <mesh position={[w * 0.35, 28, 0]} castShadow>
-        <boxGeometry args={[8, 48, 8]} />
-        <meshStandardMaterial color={0x42a5f5} roughness={0.5} />
+        <cylinderGeometry args={[4, 5, 48, 8]} />
+        <meshStandardMaterial color={0xff7043} roughness={0.6} />
       </mesh>
-      {/* Tower caps */}
+      {/* Tower coral caps */}
       {[-1, 1].map((side) => (
         <mesh key={`cap-${side}`} position={[side * w * 0.35, 54, 0]}>
-          <coneGeometry args={[6, 8, 4]} />
-          <meshStandardMaterial color={0x1e88e5} roughness={0.45} />
+          <sphereGeometry args={[6, 8, 8]} />
+          <meshStandardMaterial color={0xff5722} roughness={0.5} />
         </mesh>
       ))}
-      {/* Main cables (top of towers to deck center) */}
+      {/* Kelp vine cables */}
       {[-1, 1].map((side) => (
         <group key={`cable-${side}`}>
           <mesh position={[side * w * 0.17, 34, -d * 0.12]} rotation={[0, 0, side * 0.55]}>
             <cylinderGeometry args={[0.4, 0.4, w * 0.38, 4]} />
-            <meshStandardMaterial color={0xb0bec5} metalness={0.6} roughness={0.3} />
+            <meshStandardMaterial color={0x2e7d32} roughness={0.7} />
           </mesh>
           <mesh position={[side * w * 0.17, 34, d * 0.12]} rotation={[0, 0, side * 0.55]}>
             <cylinderGeometry args={[0.4, 0.4, w * 0.38, 4]} />
-            <meshStandardMaterial color={0xb0bec5} metalness={0.6} roughness={0.3} />
+            <meshStandardMaterial color={0x2e7d32} roughness={0.7} />
           </mesh>
         </group>
       ))}
-      {/* Vertical suspender cables */}
+      {/* Kelp suspenders */}
       {[-2, -1, 0, 1, 2].map((i) => (
         <mesh key={`susp-${i}`} position={[i * w * 0.1, 22, -d * 0.12]}>
           <cylinderGeometry args={[0.25, 0.25, 18 - Math.abs(i) * 4, 4]} />
-          <meshStandardMaterial color={0xcfd8dc} metalness={0.5} roughness={0.35} />
+          <meshStandardMaterial color={0x388e3c} roughness={0.7} />
         </mesh>
       ))}
-      {/* Silver railing */}
+      {/* Coral railing */}
       {[-1, 1].map((side) => (
         <mesh key={`rail-${side}`} position={[0, 11, side * d * 0.17]}>
           <boxGeometry args={[w * 0.78, 1, 0.8]} />
-          <meshStandardMaterial color={0xb0bec5} metalness={0.5} roughness={0.3} />
+          <meshStandardMaterial color={0xffab91} roughness={0.6} />
         </mesh>
       ))}
-      {/* Blue accent light on bridge */}
+      {/* Bioluminescent accent on bridge */}
       <mesh position={[0, 10, 0]} rotation={[-Math.PI / 2, 0, 0]}>
         <ringGeometry args={[2, 4, 12]} />
-        <meshStandardMaterial color={0x42a5f5} emissive={0x42a5f5} emissiveIntensity={0.3} transparent opacity={0.5} side={THREE.DoubleSide} />
+        <meshStandardMaterial color={0x00e5ff} emissive={0x00e5ff} emissiveIntensity={0.3} transparent opacity={0.5} side={THREE.DoubleSide} />
       </mesh>
-      <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.5} tone="cool" />
-      <FloatingLabel text="Channel Bridge" y={70} />
+      <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.5} tone="warm" />
+      <FloatingLabel text="Coral Bridge" y={70} />
     </group>
   );
 }
 
 // ---------------------------------------------------------------------------
-// 6. TOOL WORKSHOP — Workshop shed with tools hanging. Purple/wood brown.
+// 6. SALVAGE WORKSHOP — Shipwreck workshop with anchor and sea glass. Teal/driftwood.
 // ---------------------------------------------------------------------------
 function ToolWorkshopBuilding({ zone }: { zone: BuildingZone }) {
   const [cx, , cz] = zoneCenter(zone);
@@ -643,74 +644,74 @@ function ToolWorkshopBuilding({ zone }: { zone: BuildingZone }) {
 
   return (
     <group position={[cx, 0, cz]} rotation={[0, 0, -0.03]}>
-      {/* Wooden shed body */}
+      {/* Driftwood shed body */}
       <mesh position={[0, wallH * 0.45, 0]} castShadow>
         <boxGeometry args={[w * 0.7, wallH * 0.9, d * 0.65]} />
-        <meshStandardMaterial color={0x6d4c41} roughness={0.85} />
+        <meshStandardMaterial color={0x5d4037} roughness={0.85} />
       </mesh>
-      {/* Purple accent panel */}
+      {/* Teal sea glass accent panel */}
       <mesh position={[0, wallH * 0.45, -d * 0.33]}>
         <boxGeometry args={[w * 0.72, wallH * 0.92, 1]} />
-        <meshStandardMaterial color={0x7b1fa2} roughness={0.65} />
+        <meshStandardMaterial color={0x00695c} roughness={0.55} />
       </mesh>
-      {/* Pitched roof */}
+      {/* Barnacle-crusted roof */}
       <group position={[0, wallH, 0]}>
-        <PitchedRoof width={w * 0.82} depth={d * 0.75} height={16} color={0x4a148c} />
+        <PitchedRoof width={w * 0.82} depth={d * 0.75} height={16} color={0x37474f} />
       </group>
-      {/* Tool pegboard on front */}
+      {/* Salvage board */}
       <mesh position={[w * 0.2, wallH * 0.55, -d * 0.34]}>
         <boxGeometry args={[14, 12, 0.5]} />
-        <meshStandardMaterial color={0x5d4037} roughness={0.8} />
+        <meshStandardMaterial color={0x4e342e} roughness={0.8} />
       </mesh>
-      {/* Hanging tools: wrench */}
+      {/* Hanging anchor */}
       <mesh position={[w * 0.16, wallH * 0.6, -d * 0.35]} rotation={[0, 0, 0.3]}>
         <boxGeometry args={[1.5, 8, 0.4]} />
-        <meshStandardMaterial color={0x9e9e9e} metalness={0.6} roughness={0.3} />
+        <meshStandardMaterial color={0x546e7a} metalness={0.5} roughness={0.4} />
       </mesh>
-      {/* Hanging tools: hammer */}
+      {/* Hanging chain */}
       <mesh position={[w * 0.22, wallH * 0.58, -d * 0.35]} rotation={[0, 0, -0.2]}>
         <boxGeometry args={[1.2, 7, 0.4]} />
-        <meshStandardMaterial color={0x795548} roughness={0.8} />
+        <meshStandardMaterial color={0x78909c} metalness={0.4} roughness={0.4} />
       </mesh>
       <mesh position={[w * 0.22, wallH * 0.65, -d * 0.36]}>
         <boxGeometry args={[3.5, 2.5, 1]} />
-        <meshStandardMaterial color={0x757575} metalness={0.5} roughness={0.35} />
+        <meshStandardMaterial color={0x607d8b} metalness={0.5} roughness={0.35} />
       </mesh>
-      {/* Hanging tools: saw */}
+      {/* Trident */}
       <mesh position={[w * 0.28, wallH * 0.52, -d * 0.35]} rotation={[0, 0, 0.1]}>
         <boxGeometry args={[1, 10, 0.3]} />
-        <meshStandardMaterial color={0xbdbdbd} metalness={0.5} roughness={0.3} />
+        <meshStandardMaterial color={0x80cbc4} metalness={0.4} roughness={0.3} />
       </mesh>
-      {/* Workbench outside */}
+      {/* Driftwood workbench */}
       <mesh position={[-w * 0.28, 5, -d * 0.38]}>
         <boxGeometry args={[14, 10, 6]} />
-        <meshStandardMaterial color={0x8d6e63} roughness={0.82} />
+        <meshStandardMaterial color={0x6d4c41} roughness={0.85} />
       </mesh>
-      {/* Parts on bench */}
+      {/* Sea glass parts on bench */}
       {[-2, 1, 4].map((x, i) => (
         <mesh key={`part-${i}`} position={[-w * 0.28 + x, 11, -d * 0.38]}>
           <boxGeometry args={[2, 2, 2]} />
-          <meshStandardMaterial color={[0x9c27b0, 0xce93d8, 0x7b1fa2][i]} roughness={0.5} />
+          <meshStandardMaterial color={[0x00bcd4, 0x4dd0e1, 0x80deea][i]} roughness={0.4} transparent opacity={0.8} />
         </mesh>
       ))}
-      {/* Window */}
+      {/* Porthole window */}
       <mesh position={[-w * 0.18, wallH * 0.5, -d * 0.34]}>
-        <planeGeometry args={[8, 8]} />
-        <meshStandardMaterial color={0xfff8e1} emissive={0xffca28} emissiveIntensity={0.2} />
+        <circleGeometry args={[4, 12]} />
+        <meshStandardMaterial color={0xb2ebf2} emissive={0x00bcd4} emissiveIntensity={0.15} />
       </mesh>
       {/* Door */}
       <mesh position={[0, 8, -d * 0.34]}>
         <boxGeometry args={[10, 16, 1.5]} />
-        <meshStandardMaterial color={0x4e342e} roughness={0.85} />
+        <meshStandardMaterial color={0x3e2723} roughness={0.85} />
       </mesh>
       <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.48} tone="magic" />
-      <FloatingLabel text="Tool Workshop" y={64} />
+      <FloatingLabel text="Salvage Workshop" y={64} />
     </group>
   );
 }
 
 // ---------------------------------------------------------------------------
-// 7. CANVAS STUDIO — Easel/art studio with paint splashes. Pink/multicolor.
+// 7. BIOLUME STUDIO — Bioluminescent art cave with glowing ink splashes.
 // ---------------------------------------------------------------------------
 function CanvasStudioBuilding({ zone }: { zone: BuildingZone }) {
   const [cx, , cz] = zoneCenter(zone);
@@ -720,86 +721,86 @@ function CanvasStudioBuilding({ zone }: { zone: BuildingZone }) {
 
   return (
     <group position={[cx, 0, cz]} rotation={[0, 0, -0.04]}>
-      {/* Studio body */}
+      {/* Deep cave studio body */}
       <mesh position={[0, wallH * 0.45, 0]} castShadow>
         <boxGeometry args={[w * 0.8, wallH * 0.9, d * 0.75]} />
-        <meshStandardMaterial color={0xfce4ec} roughness={0.65} />
+        <meshStandardMaterial color={0x1a3c4a} roughness={0.75} />
       </mesh>
-      {/* Side extension */}
+      {/* Side grotto */}
       <mesh position={[w * 0.2, wallH * 0.35, d * 0.2]} rotation={[0, 0.1, 0.04]} castShadow>
         <boxGeometry args={[w * 0.3, wallH * 0.5, d * 0.3]} />
-        <meshStandardMaterial color={0xf8bbd0} roughness={0.6} />
+        <meshStandardMaterial color={0x263238} roughness={0.7} />
       </mesh>
-      {/* Colorful slanted roof */}
+      {/* Rocky cavern roof */}
       <group position={[0, wallH, 0]} rotation={[0, 0, 0.04]}>
-        <PitchedRoof width={w + 8} depth={d + 6} height={20} color={0xe91e63} />
+        <PitchedRoof width={w + 8} depth={d + 6} height={20} color={0x37474f} />
       </group>
-      {/* Skylight */}
+      {/* Bioluminescent skylight */}
       <mesh position={[0, wallH + 11, -3]} rotation={[0.5, 0, 0.04]}>
         <planeGeometry args={[10, 8]} />
-        <meshStandardMaterial color={0xbbdefb} emissive={0x90caf9} emissiveIntensity={0.3} transparent opacity={0.8} />
+        <meshStandardMaterial color={0x00e5ff} emissive={0x00bcd4} emissiveIntensity={0.4} transparent opacity={0.6} />
       </mesh>
-      {/* Paint splatters on front */}
+      {/* Bioluminescent ink splatters on front */}
       {[
-        { pos: [-w * 0.25, 22, -d / 2 - 1], color: 0xff5722, r: 3.5 },
-        { pos: [w * 0.15, 16, -d / 2 - 1], color: 0x2196f3, r: 3 },
-        { pos: [-w * 0.08, 28, -d / 2 - 1], color: 0xffeb3b, r: 2.8 },
-        { pos: [w * 0.3, 24, -d / 2 - 1], color: 0x4caf50, r: 3.2 },
-        { pos: [w * 0.05, 12, -d / 2 - 1], color: 0x9c27b0, r: 2.5 },
+        { pos: [-w * 0.25, 22, -d / 2 - 1], color: 0x00e5ff, r: 3.5 },
+        { pos: [w * 0.15, 16, -d / 2 - 1], color: 0x7c4dff, r: 3 },
+        { pos: [-w * 0.08, 28, -d / 2 - 1], color: 0x69f0ae, r: 2.8 },
+        { pos: [w * 0.3, 24, -d / 2 - 1], color: 0xff4081, r: 3.2 },
+        { pos: [w * 0.05, 12, -d / 2 - 1], color: 0xffab40, r: 2.5 },
       ].map((splat, i) => (
         <group key={`splat-${i}`} position={splat.pos as [number, number, number]}>
           <mesh>
             <circleGeometry args={[splat.r, 10]} />
-            <meshStandardMaterial color={splat.color} roughness={0.55} />
+            <meshStandardMaterial color={splat.color} emissive={splat.color} emissiveIntensity={0.3} roughness={0.4} />
           </mesh>
           <mesh position={[0, -3, 0]}>
             <boxGeometry args={[0.9, 3.5, 0.3]} />
-            <meshStandardMaterial color={splat.color} roughness={0.55} />
+            <meshStandardMaterial color={splat.color} emissive={splat.color} emissiveIntensity={0.2} roughness={0.4} />
           </mesh>
         </group>
       ))}
-      {/* Giant easel + canvas outside */}
+      {/* Kelp easel + shell canvas outside */}
       <group position={[-w * 0.38, 0, -d / 2 - 8]}>
         <mesh position={[-2, 9, 0]} rotation={[0, 0, 0.15]}>
           <cylinderGeometry args={[0.6, 0.6, 18, 4]} />
-          <meshStandardMaterial color={0x8d6e63} roughness={0.9} />
+          <meshStandardMaterial color={0x2e7d32} roughness={0.8} />
         </mesh>
         <mesh position={[2, 9, 0]} rotation={[0, 0, -0.15]}>
           <cylinderGeometry args={[0.6, 0.6, 18, 4]} />
-          <meshStandardMaterial color={0x8d6e63} roughness={0.9} />
+          <meshStandardMaterial color={0x2e7d32} roughness={0.8} />
         </mesh>
         <mesh position={[0, 13, -1]}>
           <boxGeometry args={[10, 8, 0.5]} />
-          <meshStandardMaterial color={0xffffff} roughness={0.45} />
+          <meshStandardMaterial color={0xfff3e0} roughness={0.5} />
         </mesh>
-        {/* Paint dabs on canvas */}
+        {/* Biolume ink dabs */}
         {[[-3, 14], [0, 12], [3, 15]].map((pos, i) => (
           <mesh key={`dab-${i}`} position={[pos[0], pos[1], -1.3]}>
             <circleGeometry args={[1.2, 6]} />
-            <meshStandardMaterial color={[0xff5722, 0x2196f3, 0xffeb3b][i]} roughness={0.5} />
+            <meshStandardMaterial color={[0x00e5ff, 0x7c4dff, 0x69f0ae][i]} emissive={[0x00e5ff, 0x7c4dff, 0x69f0ae][i]} emissiveIntensity={0.3} />
           </mesh>
         ))}
       </group>
-      {/* Colored pencil fence */}
+      {/* Coral spire fence */}
       {[-2, -1, 0, 1, 2].map((i) => (
-        <mesh key={`pencil-${i}`} position={[w * 0.38 + i * 2.5, 5, -d / 2 - 6]} rotation={[0, 0, (i - 1) * 0.03]}>
+        <mesh key={`spire-${i}`} position={[w * 0.38 + i * 2.5, 5, -d / 2 - 6]} rotation={[0, 0, (i - 1) * 0.03]}>
           <coneGeometry args={[1.2, 10, 6]} />
-          <meshStandardMaterial color={[0xef5350, 0x42a5f5, 0xffca28, 0x66bb6a, 0xab47bc][i + 2]} roughness={0.5} />
+          <meshStandardMaterial color={[0xff6f61, 0xff8a65, 0xffab91, 0xef6c00, 0xe65100][i + 2]} roughness={0.6} />
         </mesh>
       ))}
-      {/* Door */}
+      {/* Cave entrance */}
       <mesh position={[0, 8, -d / 2 - 1]}>
         <boxGeometry args={[10, 16, 1.5]} />
-        <meshStandardMaterial color={0x5d4037} roughness={0.8} />
+        <meshStandardMaterial color={0x0d1b2a} roughness={0.85} />
       </mesh>
-      <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.5} tone="warm" />
-      <FloatingLabel text="Canvas Studio" y={70} />
+      <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.5} tone="magic" />
+      <FloatingLabel text="Biolume Studio" y={70} />
     </group>
   );
 }
 
 // ---------------------------------------------------------------------------
-// 8. VOICE TOWER — Tall radio tower with speaker cone. Grey/blue. Animated sound waves.
+// 8. ECHO SPIRE — Tall sonar spire with whale-song resonators. Deep blue/teal.
 // ---------------------------------------------------------------------------
 function VoiceTowerBuilding({ zone }: { zone: BuildingZone }) {
   const [cx, , cz] = zoneCenter(zone);
@@ -821,72 +822,72 @@ function VoiceTowerBuilding({ zone }: { zone: BuildingZone }) {
 
   return (
     <group position={[cx, 0, cz]}>
-      {/* Base building */}
+      {/* Coral rock base */}
       <mesh position={[0, 10, 0]} castShadow>
         <boxGeometry args={[w * 0.45, 20, w * 0.45]} />
-        <meshStandardMaterial color={0x78909c} roughness={0.75} />
+        <meshStandardMaterial color={0x1a3c4a} roughness={0.8} />
       </mesh>
-      {/* Tower shaft */}
+      {/* Spire shaft (like a sea stack) */}
       <mesh position={[0, 36, 0]} castShadow>
-        <cylinderGeometry args={[4, 6, 32, 8]} />
-        <meshStandardMaterial color={0x607d8b} roughness={0.6} />
+        <cylinderGeometry args={[3, 6, 32, 8]} />
+        <meshStandardMaterial color={0x004d40} roughness={0.65} />
       </mesh>
-      {/* Lattice cross-braces */}
+      {/* Coral ring braces */}
       {[25, 35, 45].map((y) => (
         <mesh key={`brace-${y}`} position={[0, y, 0]}>
-          <boxGeometry args={[12, 0.8, 12]} />
-          <meshStandardMaterial color={0x546e7a} roughness={0.65} />
+          <torusGeometry args={[7, 1, 6, 12]} />
+          <meshStandardMaterial color={0xff8a65} roughness={0.6} />
         </mesh>
       ))}
-      {/* Antenna top */}
+      {/* Antenna — narwhal tusk */}
       <mesh position={[0, 56, 0]}>
-        <cylinderGeometry args={[0.8, 1.2, 8, 4]} />
-        <meshStandardMaterial color={0x455a64} roughness={0.5} />
+        <coneGeometry args={[1.2, 12, 6]} />
+        <meshStandardMaterial color={0xfff3e0} roughness={0.35} />
       </mesh>
-      {/* Red beacon light */}
-      <mesh position={[0, 61, 0]}>
+      {/* Glowing pearl beacon */}
+      <mesh position={[0, 63, 0]}>
         <sphereGeometry args={[1.5, 8, 8]} />
-        <meshStandardMaterial color={0xef5350} emissive={0xef5350} emissiveIntensity={0.6} />
+        <meshStandardMaterial color={0x00e5ff} emissive={0x00e5ff} emissiveIntensity={0.6} />
       </mesh>
-      {/* Speaker cone on front */}
+      {/* Conch horn on front */}
       <mesh position={[0, 18, -w * 0.24]} rotation={[Math.PI / 2, 0, 0]}>
         <coneGeometry args={[7, 8, 12]} />
-        <meshStandardMaterial color={0x455a64} roughness={0.6} />
+        <meshStandardMaterial color={0xffccbc} roughness={0.5} />
       </mesh>
-      {/* Speaker face */}
+      {/* Conch opening */}
       <mesh position={[0, 18, -w * 0.24 - 4]}>
         <circleGeometry args={[7, 12]} />
-        <meshStandardMaterial color={0x37474f} roughness={0.5} />
+        <meshStandardMaterial color={0xffab91} roughness={0.45} />
       </mesh>
-      {/* Concentric rings on speaker */}
+      {/* Ripple rings */}
       {[2, 4, 6].map((r, i) => (
         <mesh key={`ring-${i}`} position={[0, 18, -w * 0.24 - 4.2]}>
           <torusGeometry args={[r, 0.3, 4, 16]} />
-          <meshStandardMaterial color={0x546e7a} roughness={0.5} />
+          <meshStandardMaterial color={0xff7043} roughness={0.5} />
         </mesh>
       ))}
-      {/* Animated sound waves */}
+      {/* Animated sonar waves */}
       <group ref={wavesRef} position={[0, 18, -w * 0.24 - 6]}>
         {[0, 1, 2].map((i) => (
           <mesh key={`wave-${i}`} position={[0, 0, -i * 3]}>
             <torusGeometry args={[5 + i * 3, 0.5, 4, 16, Math.PI]} />
-            <meshStandardMaterial color={0x42a5f5} emissive={0x42a5f5} emissiveIntensity={0.3} transparent opacity={0.4} side={THREE.DoubleSide} />
+            <meshStandardMaterial color={0x00bcd4} emissive={0x00bcd4} emissiveIntensity={0.3} transparent opacity={0.4} side={THREE.DoubleSide} />
           </mesh>
         ))}
       </group>
-      {/* Door */}
+      {/* Cave entrance */}
       <mesh position={[0, 6, -w * 0.23]}>
         <boxGeometry args={[7, 12, 1.5]} />
-        <meshStandardMaterial color={0x37474f} roughness={0.7} />
+        <meshStandardMaterial color={0x0d1b2a} roughness={0.8} />
       </mesh>
       <GroundScatter seedKey={zone.id} radius={w * 0.55} tone="cool" />
-      <FloatingLabel text="Voice Tower" y={72} />
+      <FloatingLabel text="Echo Spire" y={74} />
     </group>
   );
 }
 
 // ---------------------------------------------------------------------------
-// 9. SECURITY FORTRESS — Castle fortress with walls, gate. Cyan/stone grey.
+// 9. SHELL FORTRESS — Armored shell fortress with barnacle towers. Deep ocean.
 // ---------------------------------------------------------------------------
 function SecurityFortressBuilding({ zone }: { zone: BuildingZone }) {
   const [cx, , cz] = zoneCenter(zone);
@@ -895,82 +896,82 @@ function SecurityFortressBuilding({ zone }: { zone: BuildingZone }) {
 
   return (
     <group position={[cx, 0, cz]}>
-      {/* Main keep */}
+      {/* Shell keep — dark armored */}
       <mesh position={[0, 20, 0]} castShadow>
         <boxGeometry args={[w * 0.55, 40, d * 0.5]} />
-        <meshStandardMaterial color={0x78909c} roughness={0.85} />
+        <meshStandardMaterial color={0x263238} roughness={0.8} />
       </mesh>
-      {/* Corner towers */}
+      {/* Shell corner towers */}
       {[[-1, -1], [-1, 1], [1, -1], [1, 1]].map((corner, i) => (
         <group key={`tower-${i}`} position={[corner[0] * w * 0.3, 0, corner[1] * d * 0.28]}>
           <mesh position={[0, 24, 0]} castShadow>
             <cylinderGeometry args={[6, 7, 48, 8]} />
-            <meshStandardMaterial color={0x90a4ae} roughness={0.8} />
+            <meshStandardMaterial color={0x37474f} roughness={0.75} />
           </mesh>
-          {/* Battlement on tower */}
+          {/* Barnacle cap */}
           <mesh position={[0, 49, 0]}>
-            <cylinderGeometry args={[7, 6.5, 3, 8]} />
-            <meshStandardMaterial color={0x607d8b} roughness={0.75} />
+            <sphereGeometry args={[7, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
+            <meshStandardMaterial color={0xc2b280} roughness={0.8} />
           </mesh>
-          {/* Cyan accent ring */}
+          {/* Bioluminescent ring */}
           <mesh position={[0, 44, 0]}>
             <torusGeometry args={[6.5, 0.8, 6, 12]} />
-            <meshStandardMaterial color={0x00bcd4} emissive={0x00bcd4} emissiveIntensity={0.25} />
+            <meshStandardMaterial color={0x00e5ff} emissive={0x00e5ff} emissiveIntensity={0.3} />
           </mesh>
         </group>
       ))}
-      {/* Crenellations on main keep */}
+      {/* Shell spikes on main keep */}
       {[-2, -1, 0, 1, 2].map((i) => (
-        <mesh key={`crenel-${i}`} position={[i * w * 0.1, 42, -d * 0.26]}>
-          <boxGeometry args={[4, 4, 3]} />
-          <meshStandardMaterial color={0x607d8b} roughness={0.8} />
+        <mesh key={`spike-${i}`} position={[i * w * 0.1, 42, -d * 0.26]}>
+          <coneGeometry args={[2, 5, 4]} />
+          <meshStandardMaterial color={0x455a64} roughness={0.7} />
         </mesh>
       ))}
-      {/* Fortress walls connecting towers */}
+      {/* Fortress walls */}
       {[-1, 1].map((side) => (
         <mesh key={`wall-${side}`} position={[side * w * 0.3, 14, 0]} castShadow>
           <boxGeometry args={[3, 28, d * 0.5]} />
-          <meshStandardMaterial color={0x78909c} roughness={0.85} />
+          <meshStandardMaterial color={0x37474f} roughness={0.85} />
         </mesh>
       ))}
-      {/* Gate with arch */}
+      {/* Gate — dark cave entrance */}
       <mesh position={[0, 10, -d * 0.26]}>
         <boxGeometry args={[14, 20, 3]} />
-        <meshStandardMaterial color={0x455a64} roughness={0.8} />
+        <meshStandardMaterial color={0x0d1b2a} roughness={0.85} />
       </mesh>
       <mesh position={[0, 20, -d * 0.26]}>
         <cylinderGeometry args={[7, 7, 3, 12, 1, false, 0, Math.PI]} />
-        <meshStandardMaterial color={0x546e7a} roughness={0.75} side={THREE.DoubleSide} />
+        <meshStandardMaterial color={0x1a2a3a} roughness={0.8} side={THREE.DoubleSide} />
       </mesh>
-      {/* Portcullis lines */}
+      {/* Coral portcullis bars */}
       {[-4, -2, 0, 2, 4].map((x) => (
         <mesh key={`portcullis-${x}`} position={[x, 10, -d * 0.28]}>
           <boxGeometry args={[0.5, 18, 0.4]} />
-          <meshStandardMaterial color={0x37474f} roughness={0.6} metalness={0.4} />
+          <meshStandardMaterial color={0xff8a65} roughness={0.6} />
         </mesh>
       ))}
-      {/* Cyan shield emblem */}
+      {/* Shell emblem */}
       <mesh position={[0, 30, -d * 0.27]}>
-        <circleGeometry args={[4, 6]} />
-        <meshStandardMaterial color={0x00bcd4} emissive={0x00bcd4} emissiveIntensity={0.3} />
+        <circleGeometry args={[4, 12]} />
+        <meshStandardMaterial color={0xfce4ec} metalness={0.4} roughness={0.25} />
       </mesh>
-      {/* Flag on top */}
+      {/* Kelp flag */}
       <mesh position={[0, 46, 0]}>
         <cylinderGeometry args={[0.5, 0.5, 12, 4]} />
-        <meshStandardMaterial color={0x455a64} roughness={0.7} />
+        <meshStandardMaterial color={0x2e7d32} roughness={0.7} />
       </mesh>
       <mesh position={[4, 50, 0]} rotation={[0, 0.2, 0]}>
         <planeGeometry args={[8, 5]} />
-        <meshStandardMaterial color={0x00bcd4} roughness={0.5} side={THREE.DoubleSide} />
+        <meshStandardMaterial color={0x00897b} roughness={0.6} side={THREE.DoubleSide} />
       </mesh>
       <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.55} tone="cool" />
-      <FloatingLabel text="Security Fortress" y={72} />
+      <FloatingLabel text="Shell Fortress" y={72} />
     </group>
   );
 }
 
 // ---------------------------------------------------------------------------
-// 10. CONFIG CITADEL — Citadel/command center tower. Grey/white.
+// 10. NAUTILUS CITADEL — Spiral nautilus command center. Pearl/deep blue.
 // ---------------------------------------------------------------------------
 function ConfigCitadelBuilding({ zone }: { zone: BuildingZone }) {
   const [cx, , cz] = zoneCenter(zone);
@@ -979,73 +980,73 @@ function ConfigCitadelBuilding({ zone }: { zone: BuildingZone }) {
 
   return (
     <group position={[cx, 0, cz]}>
-      {/* Wide base platform */}
+      {/* Sandy base platform */}
       <mesh position={[0, 3, 0]} castShadow>
         <boxGeometry args={[w * 0.75, 6, d * 0.7]} />
-        <meshStandardMaterial color={0xeceff1} roughness={0.7} />
+        <meshStandardMaterial color={0xc2b280} roughness={0.8} />
       </mesh>
-      {/* Main citadel body */}
+      {/* Nautilus shell body */}
       <mesh position={[0, 24, 0]} castShadow>
-        <boxGeometry args={[w * 0.55, 36, d * 0.5]} />
-        <meshStandardMaterial color={0xb0bec5} roughness={0.65} />
+        <cylinderGeometry args={[w * 0.22, w * 0.28, 36, 12]} />
+        <meshStandardMaterial color={0xffccbc} roughness={0.5} />
       </mesh>
-      {/* Upper command section */}
+      {/* Upper command chamber */}
       <mesh position={[0, 46, 0]} castShadow>
-        <boxGeometry args={[w * 0.4, 10, d * 0.38]} />
-        <meshStandardMaterial color={0xcfd8dc} roughness={0.55} />
+        <cylinderGeometry args={[w * 0.18, w * 0.22, 10, 12]} />
+        <meshStandardMaterial color={0xffab91} roughness={0.45} />
       </mesh>
-      {/* Dome on top */}
+      {/* Pearl dome */}
       <mesh position={[0, 53, 0]} castShadow>
-        <sphereGeometry args={[w * 0.22, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
-        <meshStandardMaterial color={0xffffff} roughness={0.4} />
+        <sphereGeometry args={[w * 0.2, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
+        <meshStandardMaterial color={0xfff3e0} metalness={0.4} roughness={0.25} />
       </mesh>
-      {/* Spire */}
+      {/* Spiral spire */}
       <mesh position={[0, 62, 0]}>
-        <coneGeometry args={[2, 10, 6]} />
-        <meshStandardMaterial color={0xeceff1} roughness={0.4} />
+        <coneGeometry args={[2, 10, 8]} />
+        <meshStandardMaterial color={0xffccbc} roughness={0.4} />
       </mesh>
-      {/* Windows in grid pattern */}
+      {/* Porthole windows */}
       {[0, 1, 2].map((floor) =>
         [-1, 0, 1].map((col) => (
-          <mesh key={`win-${floor}-${col}`} position={[col * w * 0.14, 12 + floor * 12, -d * 0.26]}>
-            <planeGeometry args={[5, 7]} />
-            <meshStandardMaterial color={0xe3f2fd} emissive={0x90caf9} emissiveIntensity={floor === 1 ? 0.3 : 0.15} />
+          <mesh key={`win-${floor}-${col}`} position={[col * w * 0.12, 12 + floor * 12, -w * 0.26]}>
+            <circleGeometry args={[2.5, 12]} />
+            <meshStandardMaterial color={0xb2ebf2} emissive={0x00bcd4} emissiveIntensity={floor === 1 ? 0.3 : 0.15} />
           </mesh>
         ))
       )}
-      {/* Control panel details on front */}
-      <mesh position={[0, 46, -d * 0.2]}>
-        <planeGeometry args={[w * 0.3, 6]} />
-        <meshStandardMaterial color={0x78909c} roughness={0.5} />
+      {/* Navigation panel */}
+      <mesh position={[0, 46, -w * 0.19]}>
+        <planeGeometry args={[w * 0.25, 6]} />
+        <meshStandardMaterial color={0x004d40} roughness={0.5} />
       </mesh>
-      {/* Status LEDs on control panel */}
+      {/* Status pearls */}
       {[-3, -1, 1, 3].map((x, i) => (
-        <mesh key={`led-${i}`} position={[x * 2, 47, -d * 0.21]}>
-          <sphereGeometry args={[0.6, 6, 6]} />
-          <meshStandardMaterial color={[0x4caf50, 0x4caf50, 0xffeb3b, 0x4caf50][i]} emissive={[0x4caf50, 0x4caf50, 0xffeb3b, 0x4caf50][i]} emissiveIntensity={0.4} />
+        <mesh key={`pearl-${i}`} position={[x * 2, 47, -w * 0.2]}>
+          <sphereGeometry args={[0.6, 8, 8]} />
+          <meshStandardMaterial color={[0x00e5ff, 0x00e5ff, 0xffab40, 0x00e5ff][i]} emissive={[0x00e5ff, 0x00e5ff, 0xffab40, 0x00e5ff][i]} emissiveIntensity={0.4} />
         </mesh>
       ))}
-      {/* Side buttresses */}
+      {/* Coral buttresses */}
       {[-1, 1].map((side) => (
         <mesh key={`buttress-${side}`} position={[side * w * 0.3, 15, 0]} castShadow>
-          <boxGeometry args={[4, 24, d * 0.3]} />
-          <meshStandardMaterial color={0x90a4ae} roughness={0.7} />
+          <cylinderGeometry args={[2, 3, 24, 6]} />
+          <meshStandardMaterial color={0xff8a65} roughness={0.65} />
         </mesh>
       ))}
-      {/* Entry door */}
-      <mesh position={[0, 8, -d * 0.26]}>
+      {/* Cave entry */}
+      <mesh position={[0, 8, -w * 0.26]}>
         <boxGeometry args={[10, 14, 1.5]} />
-        <meshStandardMaterial color={0x607d8b} roughness={0.7} />
+        <meshStandardMaterial color={0x0d1b2a} roughness={0.85} />
       </mesh>
-      {/* Steps */}
+      {/* Coral steps */}
       {[0, 1].map((step) => (
-        <mesh key={`step-${step}`} position={[0, 1.5 + step * 1.5, -d * 0.3 - step * 2]}>
+        <mesh key={`step-${step}`} position={[0, 1.5 + step * 1.5, -w * 0.3 - step * 2]}>
           <boxGeometry args={[14, 1.3, 2.5]} />
-          <meshStandardMaterial color={0xeceff1} roughness={0.6} />
+          <meshStandardMaterial color={0xffab91} roughness={0.6} />
         </mesh>
       ))}
       <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.52} tone="mint" />
-      <FloatingLabel text="Config Citadel" y={78} />
+      <FloatingLabel text="Nautilus Citadel" y={78} />
     </group>
   );
 }
