@@ -73,6 +73,9 @@ export const avatars = pgTable('avatars', {
   clawTokens: integer('neo_tokens').default(100).notNull(),
   positionX: integer('position_x').default(400).notNull(),
   positionY: integer('position_y').default(250).notNull(),
+  lastActiveAt: timestamp('last_active_at'),
+  loginStreak: integer('login_streak').default(0).notNull(),
+  lastLoginDate: varchar('last_login_date', { length: 10 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
