@@ -210,6 +210,7 @@ export const api = {
     authToken: string;
     agentId: string;
     sessionKey: string;
+    protocol?: 'openai-compat' | 'anthropic' | 'custom-webhook';
     targetNpcId?: string;
     name?: string;
     species?: string;
@@ -220,7 +221,15 @@ export const api = {
     homeY?: number;
     patrolRadius?: number;
   }) =>
-    honoRequest<{ sessionId: string; mode: string }>('/api/openclaw/register', {
+    honoRequest<{
+      botId: string;
+      agentId: string;
+      sessionId: string;
+      mode: string;
+      isReturning: boolean;
+      totalSessions: number;
+      knowledge: string[];
+    }>('/api/openclaw/register', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
@@ -234,4 +243,91 @@ export const api = {
     honoRequest<{
       bots: Array<{ sessionId: string; mode: string; npcId?: string; name?: string }>;
     }>('/api/openclaw/active'),
+
+  getOpenClawBotProfile: (agentId: string) =>
+    honoRequest<{
+      agentId: string;
+      name: string;
+      species: string;
+      mode: string;
+      protocol: string;
+      totalSessions: number;
+      totalMessages: number;
+      knowledgeCount: number;
+      lastSeenAt: string;
+      createdAt: string;
+    }>(`/api/openclaw/bot/${agentId}`),
+
+  openclawChat: (data: {
+    sessionId: string;
+    content: string;
+    petContext?: {
+      name: string;
+      species: string;
+      archetype?: string;
+      neoTokens?: number;
+      knowledge?: string[];
+    };
+  }) =>
+    honoRequest<{ message: { role: string; content: string; timestamp: string } }>(
+      '/api/openclaw/chat',
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    ),
+
+  openclawLocationChat: (data: {
+    sessionId: string;
+    locationId: string;
+    content: string;
+    petContext?: {
+      name: string;
+      species: string;
+      archetype?: string;
+      neoTokens?: number;
+      knowledge?: string[];
+    };
+  }) =>
+    honoRequest<{
+      message: { role: string; content: string; timestamp: string };
+      knowledgeLearned: string[];
+    }>('/api/openclaw/location-chat', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  openclawKnowledgeExport: (petId: string) =>
+    honoRequest<{
+      petId: string;
+      petName: string;
+      species: string;
+      archetype: string;
+      neoTokens: number;
+      knowledge: string[];
+      topics: string[];
+      lore: string[];
+      bio: string[];
+      skillMd: string;
+      installPath: string;
+      publishCommand: string;
+      exportedAt: string;
+    }>(`/api/openclaw/knowledge-export/${petId}`),
+
+  openclawGenerateSkill: (data: {
+    customName?: string;
+    customDescription?: string;
+    customInstructions?: string;
+    selectedKnowledge?: string[];
+    format?: 'elizaos' | 'openclaw';
+  }) =>
+    honoRequest<{
+      skillMd: string;
+      characterJson?: string;
+      installPath: string;
+      publishCommand: string;
+    }>('/api/openclaw/generate-skill', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
 };

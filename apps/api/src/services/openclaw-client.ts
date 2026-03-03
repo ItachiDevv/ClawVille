@@ -1,5 +1,7 @@
 import type { OpenClawBotConfig } from '@elizapets/shared';
 
+type Protocol = 'openai-compat' | 'anthropic' | 'custom-webhook';
+
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
@@ -14,19 +16,39 @@ interface ChatCompletionResponse {
   }>;
 }
 
+interface AnthropicResponse {
+  content: Array<{ type: string; text: string }>;
+}
+
+interface CustomWebhookResponse {
+  response: string;
+}
+
 export class OpenClawClient {
   private gatewayUrl: string;
   private authToken: string;
   private model: string;
+  private protocol: Protocol;
 
   constructor(config: OpenClawBotConfig) {
-    // Normalize URL — strip trailing slash
     this.gatewayUrl = config.gatewayUrl.replace(/\/+$/, '');
     this.authToken = config.authToken;
     this.model = `openclaw:${config.agentId}`;
+    this.protocol = config.protocol ?? 'openai-compat';
   }
 
   async chat(messages: ChatMessage[]): Promise<string> {
+    switch (this.protocol) {
+      case 'anthropic':
+        return this.chatAnthropic(messages);
+      case 'custom-webhook':
+        return this.chatCustomWebhook(messages);
+      default:
+        return this.chatOpenAI(messages);
+    }
+  }
+
+  private async chatOpenAI(messages: ChatMessage[]): Promise<string> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
 
@@ -51,8 +73,77 @@ export class OpenClawClient {
         throw new Error(`OpenClaw API returned ${res.status}: ${body}`);
       }
 
-      const data: ChatCompletionResponse = await res.json();
+      const data = (await res.json()) as ChatCompletionResponse;
       return data.choices?.[0]?.message?.content ?? '';
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private async chatAnthropic(messages: ChatMessage[]): Promise<string> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+
+    const systemMsg = messages.find((m) => m.role === 'system');
+    const nonSystemMsgs = messages.filter((m) => m.role !== 'system');
+
+    try {
+      const res = await fetch(`${this.gatewayUrl}/v1/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': this.authToken,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: this.model,
+          max_tokens: 150,
+          system: systemMsg?.content,
+          messages: nonSystemMsgs.map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+        }),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`Anthropic API returned ${res.status}: ${body}`);
+      }
+
+      const data = (await res.json()) as AnthropicResponse;
+      return data.content?.[0]?.text ?? '';
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private async chatCustomWebhook(messages: ChatMessage[]): Promise<string> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+
+    try {
+      const res = await fetch(this.gatewayUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.authToken}`,
+        },
+        body: JSON.stringify({
+          messages,
+          context: { model: this.model },
+        }),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`Custom webhook returned ${res.status}: ${body}`);
+      }
+
+      const data = (await res.json()) as CustomWebhookResponse;
+      return data.response ?? '';
     } finally {
       clearTimeout(timeout);
     }

@@ -3,6 +3,7 @@
 import { useState, useCallback } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import { useGameStore } from '@/stores/game';
 
 interface ChatMessage {
   id: string;
@@ -39,6 +40,16 @@ export function useLocationChat(locationId: string | null) {
           timestamp: data.message.timestamp,
         },
       ]);
+
+      // Fire-and-forget: also route through OpenClaw if connected
+      const { openclawConnected, openclawSessionId } = useGameStore.getState();
+      if (openclawConnected && openclawSessionId && locationId) {
+        api.openclawLocationChat({
+          sessionId: openclawSessionId,
+          locationId,
+          content: data.message.content,
+        }).catch(() => {}); // silent — this is supplementary
+      }
     },
   });
 
