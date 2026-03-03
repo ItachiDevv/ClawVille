@@ -155,7 +155,7 @@ class NpcSimulation {
 
   // --- OpenClaw Methods ---
 
-  registerOpenClaw(config: OpenClawRegistration, client: OpenClawClient) {
+  registerOpenClaw(config: OpenClawRegistration, client: OpenClawClient, restoredState?: { lastX?: number; lastY?: number; knowledge?: string[] }) {
     if (config.mode === 'override') {
       // Check if NPC exists
       if (!this.npcs.has(config.targetNpcId)) {
@@ -174,13 +174,15 @@ class NpcSimulation {
       // Avatar mode — inject a new NPC
       const avatarConfig = config as OpenClawAvatarConfig;
       const npcId = `oc-${config.sessionId}`;
+      const startX = restoredState?.lastX ?? avatarConfig.homeX;
+      const startY = restoredState?.lastY ?? avatarConfig.homeY;
       this.npcs.set(npcId, {
         id: npcId,
         name: avatarConfig.name,
-        x: avatarConfig.homeX,
-        y: avatarConfig.homeY,
-        targetX: avatarConfig.homeX,
-        targetY: avatarConfig.homeY,
+        x: startX,
+        y: startY,
+        targetX: startX,
+        targetY: startY,
         homeX: avatarConfig.homeX,
         homeY: avatarConfig.homeY,
         patrolRadius: avatarConfig.patrolRadius,
@@ -203,7 +205,7 @@ class NpcSimulation {
       this.openClawBots.set(config.sessionId, { config, client });
       // Map the NPC ID to this session so conversation routing works
       this.npcOverrides.set(npcId, config.sessionId);
-      console.log(`[OpenClaw] Avatar injected: "${avatarConfig.name}" (${npcId})`);
+      console.log(`[OpenClaw] Avatar injected: "${avatarConfig.name}" (${npcId})${restoredState?.lastX != null ? ' [restored position]' : ''}`);
     }
   }
 
@@ -244,6 +246,21 @@ class NpcSimulation {
       }
     }
     return result;
+  }
+
+  getOpenClawClientBySession(sessionId: string): OpenClawClient | null {
+    return this.openClawBots.get(sessionId)?.client ?? null;
+  }
+
+  getOpenClawBotConfig(sessionId: string): OpenClawRegistration | null {
+    return this.openClawBots.get(sessionId)?.config ?? null;
+  }
+
+  /** Get avatar's current position for persistence on disconnect */
+  getOpenClawAvatarPosition(sessionId: string): { x: number; y: number } | null {
+    const npcId = `oc-${sessionId}`;
+    const npc = this.npcs.get(npcId);
+    return npc ? { x: npc.x, y: npc.y } : null;
   }
 
   private nextId(): string {
