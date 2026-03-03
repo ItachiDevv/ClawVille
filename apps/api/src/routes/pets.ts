@@ -7,6 +7,7 @@ import type { PetArchetypeId } from '@elizapets/shared';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
+import { npcSimulation } from '../services/npc-simulation';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 
@@ -270,13 +271,23 @@ petRoutes.post('/me/chat', requireAuth, async (c) => {
   const characterConfig = (pet.characterConfig as any) ?? {};
   const knowledgeCount = (characterConfig.knowledge as string[] | undefined)?.length ?? 0;
   if (knowledgeCount > 0) {
-    // Find which books contributed knowledge
-    const inventory = await db.query.petInventory.findMany({
-      where: eq(petInventory.petId, pet.id),
-    });
     dynamicContextParts.push(
       `You have studied ${knowledgeCount} knowledge entries and can discuss them knowledgeably.`
     );
+  }
+
+  // World state context (NPCs + activities)
+  try {
+    const snapshot = npcSimulation.getSnapshot();
+    const npcSummaries = snapshot.npcs
+      .filter((n: any) => !n.isDead)
+      .slice(0, 8)
+      .map((n: any) => `${n.name} is ${n.activity ?? 'idle'}${n.destinationBuildingId ? ` near ${n.destinationBuildingId}` : ''}`);
+    if (npcSummaries.length > 0) {
+      dynamicContextParts.push(`[World activity]\n${npcSummaries.join('. ')}.`);
+    }
+  } catch (_) {
+    // NPC simulation may not be running
   }
 
   const dynamicContext = dynamicContextParts.join('\n');
@@ -296,4 +307,86 @@ petRoutes.post('/me/chat', requireAuth, async (c) => {
       timestamp: response.timestamp.toISOString(),
     },
   });
+});
+
+// Heartbeat — reports user activity + position
+const heartbeatSchema = z.object({
+  positionX: z.number().min(0).max(1280),
+  positionY: z.number().min(0).max(800),
+});
+
+petRoutes.post('/me/heartbeat', requireAuth, async (c) => {
+  const user = c.get('user');
+  const body = await c.req.json();
+  const result = heartbeatSchema.safeParse(body);
+
+  if (!result.success) {
+    throw new HTTPException(400, { message: 'Invalid position' });
+  }
+
+  // Update position + lastActiveAt in DB (fire and forget)
+  db.update(pets)
+    .set({
+      positionX: Math.round(result.data.positionX),
+      positionY: Math.round(result.data.positionY),
+      lastActiveAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(eq(pets.userId, user.id))
+    .catch(() => {});
+
+  return c.json({ ok: true });
+});
+
+// Daily login streak
+petRoutes.post('/me/daily-login', requireAuth, async (c) => {
+  const user = c.get('user');
+
+  const pet = await db.query.pets.findFirst({
+    where: eq(pets.userId, user.id),
+  });
+
+  if (!pet) {
+    throw new HTTPException(404, { message: 'No pet found' });
+  }
+
+  const today = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
+  const lastLogin = pet.lastLoginDate;
+
+  // Already claimed today
+  if (lastLogin === today) {
+    return c.json({
+      streak: pet.loginStreak,
+      tokensEarned: 0,
+      totalTokens: pet.neoTokens,
+      alreadyClaimed: true,
+    });
+  }
+
+  // Check if streak continues (yesterday) or resets
+  let newStreak = 1;
+  if (lastLogin) {
+    const lastDate = new Date(lastLogin);
+    const todayDate = new Date(today);
+    const diffDays = Math.floor((todayDate.getTime() - lastDate.getTime()) / (1000 * 60 * 60 * 24));
+    if (diffDays === 1) {
+      newStreak = (pet.loginStreak ?? 0) + 1;
+    }
+    // diffDays > 1 means gap, reset to 1
+  }
+
+  // Calculate reward: 10 + streak * 5, max 100
+  const tokensEarned = Math.min(100, 10 + newStreak * 5);
+  const totalTokens = (pet.neoTokens ?? 100) + tokensEarned;
+
+  await db.update(pets)
+    .set({
+      loginStreak: newStreak,
+      lastLoginDate: today,
+      neoTokens: totalTokens,
+      updatedAt: new Date(),
+    })
+    .where(eq(pets.userId, user.id));
+
+  return c.json({ streak: newStreak, tokensEarned, totalTokens, alreadyClaimed: false });
 });
