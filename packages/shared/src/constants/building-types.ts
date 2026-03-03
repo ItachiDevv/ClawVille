@@ -4,8 +4,11 @@ export const SHOP_BUILDINGS = [
   'webhook-gateway',
   'memory-vault',
   'skill-forge',
+  'channel-bridge',
   'tool-workshop',
   'canvas-studio',
+  'voice-tower',
+  'security-fortress',
   'config-citadel',
 ] as const;
 
