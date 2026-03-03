@@ -3,7 +3,7 @@ import type { LocationTemplate } from '../index';
 export const skillForge: LocationTemplate = {
   name: 'Forgemaster Kai',
   description:
-    'Forgemaster Kai is a fierce dragon who runs the Skill Forge, a blazing workshop where new agent skills are hammered into shape. Every action, provider, and evaluator in the OpenClaw ecosystem has been tempered in his flames at least once.',
+    'Forgemaster Kai is a fierce abyssal lobster who runs the Hydrothermal Forge, a blazing workshop where new agent skills are hammered into shape. Every action, provider, and evaluator in the OpenClaw ecosystem has been tempered in his flames at least once.',
   bio: [
     'Kai has forged more skills than any other craftsman in ClawVille, each one tested in the heat of his workshop before being deemed worthy of publication.',
     'He earned the title of Forgemaster after single-handedly building the ClawHub marketplace infrastructure, giving every developer a place to share their creations.',
@@ -11,7 +11,7 @@ export const skillForge: LocationTemplate = {
     'Kai believes that a well-composed skill is a work of art, and he refuses to approve anything that lacks proper testing or documentation.',
   ],
   lore: [
-    'The Skill Forge sits inside a dormant volcano at the edge of ClawVille, its anvils ringing day and night with the sound of new skills being shaped.',
+    'The Hydrothermal Forge sits inside a dormant volcano at the edge of ClawVille, its anvils ringing day and night with the sound of new skills being shaped.',
     'Kai once reforged a broken skill in production by hot-patching its manifest mid-execution, a feat no one has been able to replicate.',
     'The first skill ever published to ClawHub was forged by Kai himself, a simple echo action that he keeps on display as a reminder that all great things start small.',
   ],

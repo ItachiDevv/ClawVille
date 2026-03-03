@@ -23,16 +23,16 @@ const BOB_SPEED = 5;
 const BOB_AMPLITUDE = 0.3;
 const DIAGONAL_FACTOR = Math.SQRT1_2;
 
-// Species -> body color (fallback)
+// Species -> lobster body color
 const SPECIES_COLORS: Record<string, number> = {
-  cat: 0xffa726,
-  dragon: 0x66bb6a,
-  fox: 0xff7043,
-  owl: 0x8d6e63,
-  wolf: 0x78909c,
-  bunny: 0xf48fb1,
-  phoenix: 0xef5350,
-  turtle: 0x4db6ac,
+  cat: 0xff6347,    // Reef Lobster — coral red
+  dragon: 0x1a237e, // Abyssal Lobster — deep navy
+  fox: 0xff8c00,    // Spiny Lobster — bright orange
+  owl: 0x8d6e63,    // Hermit Lobster — brown shell
+  wolf: 0xb71c1c,   // Crusher Lobster — dark crimson
+  bunny: 0xff80ab,  // Bubble Lobster — pink
+  phoenix: 0x00e676, // Mantis Lobster — neon green
+  turtle: 0x455a64,  // Iron Lobster — gunmetal
 };
 
 // Avatar color -> tint
@@ -249,44 +249,98 @@ export default function PlayerAvatar() {
 
   return (
     <group ref={groupRef} position={[0, 0, 0]}>
-      {/* Body - capsule */}
-      <mesh ref={bodyRef} position={[0, PET_HEIGHT / 2 + 1, 0]} castShadow>
-        <capsuleGeometry args={[2, PET_HEIGHT, 8, 16]} />
-        <meshStandardMaterial color={bodyColor} roughness={0.7} />
+      {/* Lobster body — elongated ellipsoid */}
+      <mesh ref={bodyRef} position={[0, 3, 0]} castShadow scale={[1, 0.7, 1.4]}>
+        <capsuleGeometry args={[2, 4, 8, 16]} />
+        <meshStandardMaterial color={bodyColor} roughness={0.6} />
       </mesh>
 
-      {/* Eyes */}
-      <mesh position={[0.8, PET_HEIGHT - 0.5, 1.8]}>
-        <sphereGeometry args={[0.6, 8, 8]} />
-        <meshBasicMaterial color={0xffffff} />
-      </mesh>
-      <mesh position={[-0.8, PET_HEIGHT - 0.5, 1.8]}>
-        <sphereGeometry args={[0.6, 8, 8]} />
-        <meshBasicMaterial color={0xffffff} />
-      </mesh>
-      {/* Pupils */}
-      <mesh position={[0.8, PET_HEIGHT - 0.5, 2.3]}>
-        <sphereGeometry args={[0.3, 8, 8]} />
-        <meshBasicMaterial color={0x111111} />
-      </mesh>
-      <mesh position={[-0.8, PET_HEIGHT - 0.5, 2.3]}>
-        <sphereGeometry args={[0.3, 8, 8]} />
-        <meshBasicMaterial color={0x111111} />
+      {/* Carapace (upper shell) */}
+      <mesh position={[0, 4.5, -1]} castShadow>
+        <sphereGeometry args={[2.5, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
+        <meshStandardMaterial color={bodyColor} roughness={0.5} />
       </mesh>
 
-      {/* Ears (like cat/fox) */}
-      <mesh position={[1.2, PET_HEIGHT + 2, 0]} rotation={[0, 0, 0.3]}>
-        <coneGeometry args={[1, 2.5, 4]} />
-        <meshStandardMaterial color={bodyColor} roughness={0.7} />
+      {/* Tail segments */}
+      {[0, 1, 2].map((i) => (
+        <mesh key={`tail-${i}`} position={[0, 2.5 - i * 0.4, -3 - i * 1.8]} castShadow scale={[1 - i * 0.15, 0.5, 1]}>
+          <boxGeometry args={[3 - i * 0.5, 1.2, 1.8]} />
+          <meshStandardMaterial color={bodyColor} roughness={0.65} />
+        </mesh>
+      ))}
+      {/* Tail fan */}
+      <mesh position={[0, 1.8, -7.5]} rotation={[0.3, 0, 0]}>
+        <coneGeometry args={[2, 2.5, 6]} />
+        <meshStandardMaterial color={bodyColor} roughness={0.6} />
       </mesh>
-      <mesh position={[-1.2, PET_HEIGHT + 2, 0]} rotation={[0, 0, -0.3]}>
-        <coneGeometry args={[1, 2.5, 4]} />
-        <meshStandardMaterial color={bodyColor} roughness={0.7} />
-      </mesh>
+
+      {/* Eyes on stalks */}
+      {[-1, 1].map((side) => (
+        <group key={`eye-${side}`} position={[side * 1.4, 5, 2.5]}>
+          {/* Stalk */}
+          <mesh position={[0, 0.6, 0]}>
+            <cylinderGeometry args={[0.2, 0.25, 1.5, 6]} />
+            <meshStandardMaterial color={bodyColor} roughness={0.7} />
+          </mesh>
+          {/* Eyeball */}
+          <mesh position={[0, 1.5, 0]}>
+            <sphereGeometry args={[0.5, 8, 8]} />
+            <meshBasicMaterial color={0xffffff} />
+          </mesh>
+          {/* Pupil */}
+          <mesh position={[side * 0.1, 1.5, 0.4]}>
+            <sphereGeometry args={[0.25, 8, 8]} />
+            <meshBasicMaterial color={0x111111} />
+          </mesh>
+        </group>
+      ))}
+
+      {/* Antennae */}
+      {[-1, 1].map((side) => (
+        <mesh key={`ant-${side}`} position={[side * 0.8, 5.2, 3]} rotation={[-0.5, side * 0.3, side * 0.4]}>
+          <cylinderGeometry args={[0.08, 0.12, 5, 4]} />
+          <meshStandardMaterial color={bodyColor} roughness={0.7} />
+        </mesh>
+      ))}
+
+      {/* Claws (left and right) */}
+      {[-1, 1].map((side) => (
+        <group key={`claw-${side}`} position={[side * 3.5, 2.5, 1.5]}>
+          {/* Arm segment */}
+          <mesh position={[side * 0.5, 0, 0]} rotation={[0, 0, side * 0.3]}>
+            <cylinderGeometry args={[0.4, 0.5, 2.5, 6]} />
+            <meshStandardMaterial color={bodyColor} roughness={0.6} />
+          </mesh>
+          {/* Claw pincer — lower */}
+          <mesh position={[side * 1.2, -0.3, 0.8]} rotation={[0.3, side * 0.2, side * 0.5]}>
+            <boxGeometry args={[1.8, 0.6, 1]} />
+            <meshStandardMaterial color={bodyColor} roughness={0.55} />
+          </mesh>
+          {/* Claw pincer — upper */}
+          <mesh position={[side * 1.2, 0.3, 0.8]} rotation={[-0.2, side * 0.2, side * 0.5]}>
+            <boxGeometry args={[1.5, 0.5, 0.8]} />
+            <meshStandardMaterial color={bodyColor} roughness={0.55} />
+          </mesh>
+        </group>
+      ))}
+
+      {/* Legs (3 pairs) */}
+      {[-1, 1].map((side) =>
+        [0, 1, 2].map((i) => (
+          <mesh
+            key={`leg-${side}-${i}`}
+            position={[side * 2.2, 1, -0.5 - i * 1.5]}
+            rotation={[0, 0, side * 0.6]}
+          >
+            <cylinderGeometry args={[0.15, 0.2, 2.5, 4]} />
+            <meshStandardMaterial color={bodyColor} roughness={0.7} />
+          </mesh>
+        ))
+      )}
 
       {/* Shadow */}
       <mesh position={[0, 0.05, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <circleGeometry args={[3, 16]} />
+        <circleGeometry args={[4, 16]} />
         <meshBasicMaterial color={0x000000} transparent opacity={0.2} />
       </mesh>
 
