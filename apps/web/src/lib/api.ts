@@ -185,6 +185,24 @@ export const api = {
       body: JSON.stringify({ bookId }),
     }),
 
+  // Heartbeat
+  sendHeartbeat: (positionX: number, positionY: number) =>
+    honoRequest<{ ok: boolean }>('/api/avatars/me/heartbeat', {
+      method: 'POST',
+      body: JSON.stringify({ positionX, positionY }),
+    }),
+
+  // Daily login
+  claimDailyLogin: () =>
+    honoRequest<{
+      streak: number;
+      tokensEarned: number;
+      totalTokens: number;
+      alreadyClaimed: boolean;
+    }>('/api/avatars/me/daily-login', {
+      method: 'POST',
+    }),
+
   // OpenClaw
   registerOpenClaw: (data: {
     mode: 'override' | 'avatar';

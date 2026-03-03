@@ -7,6 +7,7 @@ import type { PetArchetypeId } from '@legacyapp/shared';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
+import { npcSimulation } from '../services/npc-simulation';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 
@@ -270,13 +271,23 @@ avatarRoutes.post('/me/chat', requireAuth, async (c) => {
   const characterConfig = (avatar.characterConfig as any) ?? {};
   const knowledgeCount = (characterConfig.knowledge as string[] | undefined)?.length ?? 0;
   if (knowledgeCount > 0) {
-    // Find which books contributed knowledge
-    const inventory = await db.query.avatarInventory.findMany({
-      where: eq(avatarInventory.avatarId, avatar.id),
-    });
     dynamicContextParts.push(
       `You have studied ${knowledgeCount} knowledge entries and can discuss them knowledgeably.`
     );
+  }
+
+  // World state context (NPCs + activities)
+  try {
+    const snapshot = npcSimulation.getSnapshot();
+    const npcSummaries = snapshot.npcs
+      .filter((n: any) => !n.isDead)
+      .slice(0, 8)
+      .map((n: any) => `${n.name} is ${n.activity ?? 'idle'}${n.destinationBuildingId ? ` near ${n.destinationBuildingId}` : ''}`);
+    if (npcSummaries.length > 0) {
+      dynamicContextParts.push(`[World activity]\n${npcSummaries.join('. ')}.`);
+    }
+  } catch (_) {
+    // NPC simulation may not be running
   }
 
   const dynamicContext = dynamicContextParts.join('\n');
@@ -296,4 +307,86 @@ avatarRoutes.post('/me/chat', requireAuth, async (c) => {
       timestamp: response.timestamp.toISOString(),
     },
   });
+});
+
+// Heartbeat — reports user activity + position
+const heartbeatSchema = z.object({
+  positionX: z.number().min(0).max(1280),
+  positionY: z.number().min(0).max(800),
+});
+
+avatarRoutes.post('/me/heartbeat', requireAuth, async (c) => {
+  const user = c.get('user');
+  const body = await c.req.json();
+  const result = heartbeatSchema.safeParse(body);
+
+  if (!result.success) {
+    throw new HTTPException(400, { message: 'Invalid position' });
+  }
+
+  // Update position + lastActiveAt in DB (fire and forget)
+  db.update(avatars)
+    .set({
+      positionX: Math.round(result.data.positionX),
+      positionY: Math.round(result.data.positionY),
+      lastActiveAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(eq(avatars.userId, user.id))
+    .catch(() => {});
+
+  return c.json({ ok: true });
+});
+
+// Daily login streak
+avatarRoutes.post('/me/daily-login', requireAuth, async (c) => {
+  const user = c.get('user');
+
+  const avatar = await db.query.avatars.findFirst({
+    where: eq(avatars.userId, user.id),
+  });
+
+  if (!avatar) {
+    throw new HTTPException(404, { message: 'No avatar found' });
+  }
+
+  const today = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
+  const lastLogin = avatar.lastLoginDate;
+
+  // Already claimed today
+  if (lastLogin === today) {
+    return c.json({
+      streak: avatar.loginStreak,
+      tokensEarned: 0,
+      totalTokens: avatar.clawTokens,
+      alreadyClaimed: true,
+    });
+  }
+
+  // Check if streak continues (yesterday) or resets
+  let newStreak = 1;
+  if (lastLogin) {
+    const lastDate = new Date(lastLogin);
+    const todayDate = new Date(today);
+    const diffDays = Math.floor((todayDate.getTime() - lastDate.getTime()) / (1000 * 60 * 60 * 24));
+    if (diffDays === 1) {
+      newStreak = (avatar.loginStreak ?? 0) + 1;
+    }
+    // diffDays > 1 means gap, reset to 1
+  }
+
+  // Calculate reward: 10 + streak * 5, max 100
+  const tokensEarned = Math.min(100, 10 + newStreak * 5);
+  const totalTokens = (avatar.clawTokens ?? 100) + tokensEarned;
+
+  await db.update(avatars)
+    .set({
+      loginStreak: newStreak,
+      lastLoginDate: today,
+      clawTokens: totalTokens,
+      updatedAt: new Date(),
+    })
+    .where(eq(avatars.userId, user.id));
+
+  return c.json({ streak: newStreak, tokensEarned, totalTokens, alreadyClaimed: false });
 });
