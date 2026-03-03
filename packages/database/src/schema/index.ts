@@ -6,12 +6,14 @@ export * from './locations';
 export * from './location-agents';
 export * from './agents';
 export * from './inventory';
+export * from './claws';
 
 import { users, sessions } from './users';
 import { avatars } from './avatars';
 import { agents, agentLogs } from './agents';
 import { locationAgents } from './location-agents';
 import { avatarInventory } from './inventory';
+import { openclawBots } from './claws';
 
 export const usersRelations = relations(users, ({ many, one }) => ({
   sessions: many(sessions),
@@ -72,5 +74,12 @@ export const locationAgentsRelations = relations(locationAgents, ({ one }) => ({
   agent: one(agents, {
     fields: [locationAgents.platformAgentId],
     references: [agents.id],
+  }),
+}));
+
+export const openclawBotsRelations = relations(openclawBots, ({ one }) => ({
+  user: one(users, {
+    fields: [openclawBots.userId],
+    references: [users.id],
   }),
 }));

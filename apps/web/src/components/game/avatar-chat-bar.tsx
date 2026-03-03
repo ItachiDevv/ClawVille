@@ -18,6 +18,8 @@ interface AvatarMessage {
 export default function AvatarChatBar() {
   const { data: avatar } = useAvatar();
   const chatOpen = useGameStore((s) => s.chatOpen); // location chat open
+  const openclawConnected = useGameStore((s) => s.openclawConnected);
+  const openclawSessionId = useGameStore((s) => s.openclawSessionId);
   const [expanded, setExpanded] = useState(false);
   const [messages, setMessages] = useState<AvatarMessage[]>([]);
   const [input, setInput] = useState('');
@@ -61,7 +63,25 @@ export default function AvatarChatBar() {
 
     setLoading(true);
     try {
-      const res = await api.sendPetChat(content);
+      let res: { message: { role: string; content: string; timestamp: string } };
+
+      if (openclawConnected && openclawSessionId) {
+        // Route through OpenClaw gateway
+        res = await api.openclawChat({
+          sessionId: openclawSessionId,
+          content,
+          petContext: {
+            name: avatar.name,
+            species: avatar.species,
+            archetype: (avatar as any).archetype,
+            clawTokens: (avatar as any).clawTokens,
+            knowledge: ((avatar as any).characterConfig as any)?.knowledge,
+          },
+        });
+      } else {
+        res = await api.sendPetChat(content);
+      }
+
       const assistantMsg: AvatarMessage = {
         id: crypto.randomUUID(),
         role: 'assistant',
@@ -194,6 +214,13 @@ export default function AvatarChatBar() {
           height={28}
           className="w-7 h-7 object-contain drop-shadow-sm"
         />
+        {openclawConnected && (
+          <span className="text-green-700 text-xs" title="OpenClaw connected">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" x2="12" y1="19" y2="22" />
+            </svg>
+          </span>
+        )}
         <span className="text-black font-bold text-sm">
           {expanded ? 'Close' : `Chat with ${avatar.name}`}
         </span>

@@ -93,6 +93,13 @@ export interface GameState {
   visitedBuildings: Set<string>;
   markBuildingVisited: (id: string) => boolean; // returns true if newly discovered
 
+  // OpenClaw connection (World mode)
+  openclawConnected: boolean;
+  openclawSessionId: string | null;
+  openclawModalOpen: boolean;
+  setOpenclawModalOpen: (open: boolean) => void;
+  setOpenclawConnection: (sessionId: string | null) => void;
+
   // Toast notifications
   toasts: Toast[];
   addToast: (icon: string, message: string, durationMs?: number) => void;
@@ -180,6 +187,17 @@ export const useGameStore = create<GameState>((set) => ({
     set({ visitedBuildings: updated });
     return true;
   },
+
+  openclawConnected: false,
+  openclawSessionId: null,
+  openclawModalOpen: false,
+  setOpenclawModalOpen: (open) => set({ openclawModalOpen: open }),
+  setOpenclawConnection: (sessionId) =>
+    set({
+      openclawConnected: !!sessionId,
+      openclawSessionId: sessionId,
+      openclawModalOpen: false,
+    }),
 
   toasts: [],
   addToast: (icon, message, durationMs = 3000) => {
