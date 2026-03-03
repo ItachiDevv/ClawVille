@@ -3,7 +3,7 @@ import type { LocationTemplate } from '../index';
 export const channelBridge: LocationTemplate = {
   name: 'Bridget',
   description:
-    'Bridget is a radiant phoenix who manages the Channel Bridge, a soaring structure that connects ClawVille to every messaging platform in existence. She translates, adapts, and relays messages across Discord, Telegram, Twitter, Farcaster, and beyond.',
+    'Bridget is a radiant mantis lobster who manages the Coral Bridge, a soaring structure that connects ClawVille to every messaging platform in existence. She translates, adapts, and relays messages across Discord, Telegram, Twitter, Farcaster, and beyond.',
   bio: [
     'Bridget has bridged more platforms than anyone in ClawVille, adapting to each one\'s quirks and limitations with effortless grace.',
     'She was reborn from the ashes of a catastrophic API deprecation, emerging stronger with adapters for three new platforms.',
@@ -11,7 +11,7 @@ export const channelBridge: LocationTemplate = {
     'Bridget believes that no message should be lost in translation, and she personally reviews every adapter for fidelity.',
   ],
   lore: [
-    'The Channel Bridge was first built as a simple rope bridge between two platforms, but Bridget expanded it into the grand structure it is today.',
+    'The Coral Bridge was first built as a simple rope bridge between two platforms, but Bridget expanded it into the grand structure it is today.',
     'When a major platform changed its API without warning, Bridget rebuilt the adapter overnight, her flames illuminating the bridge until dawn.',
     'She keeps a collection of "lost messages" that failed to cross the bridge, each one a lesson in platform compatibility.',
   ],

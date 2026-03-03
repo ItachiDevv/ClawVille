@@ -29,30 +29,33 @@ function seededRandom(seed: number): () => number {
 // ---------------------------------------------------------------------------
 // Color constants
 // ---------------------------------------------------------------------------
+// Sea-floor sand colors (replacing grass)
 const GRASS_COLORS = [
-  new THREE.Color(0x4caf50), // GRASS_1 - base green
-  new THREE.Color(0x66bb6a), // GRASS_2 - lighter green
-  new THREE.Color(0x388e3c), // GRASS_3 - darker green
+  new THREE.Color(0x2e6b62), // Sandy seafloor - dark teal
+  new THREE.Color(0x3d8b7a), // Lighter seafloor - medium teal
+  new THREE.Color(0x1a4a42), // Deep seafloor - dark marine
 ];
 
 const PATH_COLORS: Record<number, THREE.Color> = {
-  [TILES.DIRT_PATH]: new THREE.Color(0xa0845c),
-  [TILES.STONE_PATH]: new THREE.Color(0x9e9e9e),
+  [TILES.DIRT_PATH]: new THREE.Color(0xc2b280), // Sandy path
+  [TILES.STONE_PATH]: new THREE.Color(0x708090), // Slate stone path
 };
 
-const WATER_COLOR = new THREE.Color(0x29b6f6);
-const WATER_COLOR_DEEP = new THREE.Color(0x0288d1);
+const WATER_COLOR = new THREE.Color(0x006994);
+const WATER_COLOR_DEEP = new THREE.Color(0x003366);
 
-const TREE_TRUNK_COLOR = new THREE.Color(0x795548);
+// Coral/kelp colors replacing trees
+const TREE_TRUNK_COLOR = new THREE.Color(0x5d4037); // Kelp stalk
 const TREE_CANOPY_COLORS = [
-  new THREE.Color(0x2e7d32), // TREE_1
-  new THREE.Color(0x1b5e20), // TREE_2
+  new THREE.Color(0xff6f61), // Coral pink
+  new THREE.Color(0xe65100), // Orange coral
 ];
+// Sea anemone colors replacing flowers
 const FLOWER_COLORS = [
-  new THREE.Color(0xe91e63), // FLOWER_1 - pink
-  new THREE.Color(0xffeb3b), // FLOWER_2 - yellow
+  new THREE.Color(0xff4081), // Pink anemone
+  new THREE.Color(0x7c4dff), // Purple anemone
 ];
-const BUSH_COLOR = new THREE.Color(0x33691e);
+const BUSH_COLOR = new THREE.Color(0x2e7d32); // Kelp bush
 
 // Centering offset: place map origin at world center
 const OFFSET_X = -MAP_WIDTH / 2;
@@ -252,20 +255,27 @@ function WaterSurface() {
 // ---------------------------------------------------------------------------
 function Tree({ position, variant }: { position: [number, number, number]; variant: number }) {
   const trunkHeight = 10 + variant * 4;
-  const canopyRadius = 8 + variant * 3;
-  const canopyColor = TREE_CANOPY_COLORS[variant % 2];
+  const coralColor = TREE_CANOPY_COLORS[variant % 2];
 
   return (
     <group position={position}>
-      {/* Trunk */}
+      {/* Coral trunk / kelp stalk */}
       <mesh position={[0, trunkHeight / 2, 0]}>
-        <cylinderGeometry args={[1.5, 2, trunkHeight, 6]} />
-        <meshStandardMaterial color={TREE_TRUNK_COLOR} roughness={0.9} />
+        <cylinderGeometry args={[1.2, 2, trunkHeight, 6]} />
+        <meshStandardMaterial color={TREE_TRUNK_COLOR} roughness={0.8} />
       </mesh>
-      {/* Canopy */}
-      <mesh position={[0, trunkHeight + canopyRadius * 0.5, 0]}>
-        <coneGeometry args={[canopyRadius, canopyRadius * 1.5, 7]} />
-        <meshStandardMaterial color={canopyColor} roughness={0.85} />
+      {/* Coral branches (sphere cluster instead of cone canopy) */}
+      <mesh position={[0, trunkHeight + 2, 0]}>
+        <sphereGeometry args={[6 + variant * 2, 8, 6]} />
+        <meshStandardMaterial color={coralColor} roughness={0.6} />
+      </mesh>
+      <mesh position={[3, trunkHeight, 2]}>
+        <sphereGeometry args={[4 + variant, 8, 6]} />
+        <meshStandardMaterial color={coralColor} roughness={0.6} />
+      </mesh>
+      <mesh position={[-3, trunkHeight + 1, -1]}>
+        <sphereGeometry args={[3 + variant, 8, 6]} />
+        <meshStandardMaterial color={coralColor} roughness={0.6} />
       </mesh>
     </group>
   );
@@ -278,15 +288,15 @@ function Flower({ position, variant }: { position: [number, number, number]; var
   const color = FLOWER_COLORS[variant % 2];
   return (
     <group position={position}>
-      {/* Stem */}
-      <mesh position={[0, 1.5, 0]}>
-        <cylinderGeometry args={[0.3, 0.3, 3, 4]} />
-        <meshStandardMaterial color={0x33691e} roughness={0.8} />
+      {/* Sea anemone base */}
+      <mesh position={[0, 0.8, 0]}>
+        <cylinderGeometry args={[0.6, 1, 1.6, 6]} />
+        <meshStandardMaterial color={0x4a6741} roughness={0.7} />
       </mesh>
-      {/* Bloom */}
-      <mesh position={[0, 3.5, 0]}>
-        <sphereGeometry args={[1.2, 8, 6]} />
-        <meshStandardMaterial color={color} roughness={0.6} />
+      {/* Tentacle cluster */}
+      <mesh position={[0, 2.2, 0]}>
+        <sphereGeometry args={[1.4, 8, 6]} />
+        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.15} roughness={0.5} />
       </mesh>
     </group>
   );
@@ -297,10 +307,17 @@ function Flower({ position, variant }: { position: [number, number, number]; var
 // ---------------------------------------------------------------------------
 function Bush({ position }: { position: [number, number, number] }) {
   return (
-    <mesh position={[position[0], position[1] + 2, position[2]]}>
-      <sphereGeometry args={[3, 8, 6]} />
-      <meshStandardMaterial color={BUSH_COLOR} roughness={0.9} />
-    </mesh>
+    <group position={[position[0], position[1], position[2]]}>
+      {/* Kelp bush cluster */}
+      <mesh position={[0, 2, 0]}>
+        <sphereGeometry args={[3, 8, 6]} />
+        <meshStandardMaterial color={BUSH_COLOR} roughness={0.7} />
+      </mesh>
+      <mesh position={[1.5, 3, 0.5]}>
+        <sphereGeometry args={[2, 8, 6]} />
+        <meshStandardMaterial color={0x1b5e20} roughness={0.7} />
+      </mesh>
+    </group>
   );
 }
 
@@ -365,7 +382,7 @@ function BasePlane() {
   return (
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.6, 0]}>
       <planeGeometry args={[MAP_WIDTH + 64, MAP_HEIGHT + 64]} />
-      <meshStandardMaterial color={0x2e7d32} roughness={1} />
+      <meshStandardMaterial color={0x0d3b3e} roughness={0.9} />
     </mesh>
   );
 }
@@ -376,12 +393,12 @@ function BasePlane() {
 export default function ArenaTerrain() {
   return (
     <group>
-      {/* Ambient + directional lighting */}
-      <ambientLight intensity={0.5} color={0xfff8e1} />
+      {/* Underwater ambient + directional lighting */}
+      <ambientLight intensity={0.5} color={0x88ccdd} />
       <directionalLight
         position={[MAP_WIDTH * 0.4, 300, -MAP_HEIGHT * 0.3]}
-        intensity={1.0}
-        color={0xffffff}
+        intensity={0.8}
+        color={0x88ddee}
         castShadow
         shadow-mapSize-width={2048}
         shadow-mapSize-height={2048}
@@ -390,21 +407,21 @@ export default function ArenaTerrain() {
         shadow-camera-top={MAP_HEIGHT / 2}
         shadow-camera-bottom={-MAP_HEIGHT / 2}
       />
-      <hemisphereLight args={[0x87ceeb, 0x4caf50, 0.3]} />
+      <hemisphereLight args={[0x1a6e8a, 0x0d3b3e, 0.4]} />
 
-      {/* Base green plane */}
+      {/* Base ocean floor plane */}
       <BasePlane />
 
-      {/* Ground grass tiles */}
+      {/* Seafloor ground tiles */}
       <GroundTiles />
 
-      {/* Dirt/stone paths */}
+      {/* Sandy/stone paths */}
       <PathTiles />
 
-      {/* Animated water (Rainbow Pool area) */}
+      {/* Animated deep water (trench area) */}
       <WaterSurface />
 
-      {/* Trees, flowers, bushes */}
+      {/* Coral, anemones, kelp */}
       <Decorations />
     </group>
   );
