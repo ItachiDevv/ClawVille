@@ -4,7 +4,7 @@ import { db, sessions, users } from '@elizapets/database';
 import { cookies } from 'next/headers';
 import { cache } from 'react';
 
-const adapter = new DrizzlePostgreSQLAdapter(db, sessions, users);
+const adapter = new DrizzlePostgreSQLAdapter(db as any, sessions as any, users as any);
 
 export const lucia = new Lucia(adapter, {
   sessionCookie: {

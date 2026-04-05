@@ -13,6 +13,9 @@ const nextConfig = {
     '@elizapets/agent-runtime',
     '@elizapets/agent-templates',
   ],
+  turbopack: {
+    root: resolve(__dirname, '../..'),
+  },
 };
 
 export default nextConfig;

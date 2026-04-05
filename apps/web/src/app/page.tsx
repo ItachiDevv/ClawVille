@@ -47,7 +47,7 @@ export default function HomePage() {
   return (
     <div className="star-bg min-h-screen overflow-x-hidden flex flex-col">
       {/* Float animation keyframes */}
-      <style jsx global>{`
+      <style dangerouslySetInnerHTML={{ __html: `
         @keyframes petFloat {
           0%, 100% { transform: translateY(0px); }
           50% { transform: translateY(-12px); }
@@ -60,7 +60,7 @@ export default function HomePage() {
           animation: fadeSlideUp 0.6s ease-out forwards;
           opacity: 0;
         }
-      `}</style>
+      ` }} />
 
       {/* Background pets */}
       {mounted && <FloatingPets />}
@@ -69,8 +69,8 @@ export default function HomePage() {
       <div className="flex-1 flex flex-col items-center justify-center px-4 py-16 relative z-10">
         {/* Logo */}
         <div className="animate-fade-up text-center mb-12" style={{ animationDelay: '0.1s' }}>
-          <h1 className="font-elizapet text-5xl md:text-7xl text-white drop-shadow-[0_3px_6px_rgba(0,0,0,0.5)]">
-            ElizaPets
+          <h1 className="font-clawville text-5xl md:text-7xl text-white drop-shadow-[0_3px_6px_rgba(0,0,0,0.5)]">
+            ClawVille
           </h1>
           <p className="text-white/60 text-lg mt-2">
             Choose your experience
@@ -82,10 +82,10 @@ export default function HomePage() {
           className="animate-fade-up grid grid-cols-1 md:grid-cols-2 gap-6 max-w-3xl w-full"
           style={{ animationDelay: '0.3s' }}
         >
-          {/* ElizaPets — Open World */}
+          {/* ClawVille — Open World */}
           <Link
             href="/game"
-            className="group relative bg-gradient-to-br from-green-900/60 to-emerald-900/40 rounded-2xl p-8 border-2 border-green-500/20 hover:border-green-400/50 backdrop-blur-sm transition-all hover:scale-[1.02] hover:shadow-[0_0_30px_rgba(72,187,120,0.15)]"
+            className="group relative bg-gradient-to-br from-blue-900/60 to-cyan-900/40 rounded-2xl p-8 border-2 border-cyan-500/20 hover:border-cyan-400/50 backdrop-blur-sm transition-all hover:scale-[1.02] hover:shadow-[0_0_30px_rgba(0,229,255,0.15)]"
           >
             <div className="flex justify-center mb-4">
               <div className="relative">
@@ -103,30 +103,30 @@ export default function HomePage() {
                 </div>
               </div>
             </div>
-            <h2 className="font-elizapet text-2xl text-white text-center mb-2">
-              ElizaPets
+            <h2 className="font-clawville text-2xl text-white text-center mb-2">
+              ClawVille
             </h2>
             <p className="text-white/70 text-sm text-center leading-relaxed mb-4">
-              Raise your AI pet, explore Neopia Central, learn crypto, and chat with autonomous agents.
+              Raise your AI lobster, explore The Depths, learn crypto, and chat with autonomous agents.
             </p>
             <div className="flex flex-wrap justify-center gap-1.5 mb-4">
-              {['AI Pets', 'Explore', 'Crypto', 'Chat'].map((tag) => (
+              {['AI Lobsters', 'Explore', 'Crypto', 'Chat'].map((tag) => (
                 <span
                   key={tag}
-                  className="text-xs bg-green-500/20 text-green-300 px-2 py-0.5 rounded-full"
+                  className="text-xs bg-cyan-500/20 text-cyan-300 px-2 py-0.5 rounded-full"
                 >
                   {tag}
                 </span>
               ))}
             </div>
             <div className="text-center">
-              <span className="inline-block color-btn bg-green-600 hover:bg-green-500 text-white px-6 py-2 text-sm font-medium group-hover:shadow-lg transition-shadow">
-                Enter World
+              <span className="inline-block color-btn bg-cyan-600 hover:bg-cyan-500 text-white px-6 py-2 text-sm font-medium group-hover:shadow-lg transition-shadow">
+                Explore The Depths
               </span>
             </div>
           </Link>
 
-          {/* ElizaPets Arena */}
+          {/* ClawVille Arena */}
           <Link
             href="/arena"
             className="group relative bg-gradient-to-br from-red-900/60 to-orange-900/40 rounded-2xl p-8 border-2 border-red-500/20 hover:border-red-400/50 backdrop-blur-sm transition-all hover:scale-[1.02] hover:shadow-[0_0_30px_rgba(239,68,68,0.15)]"
@@ -147,8 +147,8 @@ export default function HomePage() {
                 </div>
               </div>
             </div>
-            <h2 className="font-elizapet text-2xl text-white text-center mb-2">
-              ElizaPets Arena
+            <h2 className="font-clawville text-2xl text-white text-center mb-2">
+              ClawVille Arena
             </h2>
             <p className="text-white/70 text-sm text-center leading-relaxed mb-4">
               Watch autonomous AI agents battle, converse, steal loot, and respawn in real-time combat.
@@ -191,7 +191,7 @@ export default function HomePage() {
                 </div>
               </div>
             </div>
-            <h2 className="font-elizapet text-2xl text-white text-center mb-2">
+            <h2 className="font-clawville text-2xl text-white text-center mb-2">
               OpenClaw: Override NPC
             </h2>
             <p className="text-white/70 text-sm text-center leading-relaxed mb-4">
@@ -235,7 +235,7 @@ export default function HomePage() {
                 </div>
               </div>
             </div>
-            <h2 className="font-elizapet text-2xl text-white text-center mb-2">
+            <h2 className="font-clawville text-2xl text-white text-center mb-2">
               OpenClaw: Bot Avatar
             </h2>
             <p className="text-white/70 text-sm text-center leading-relaxed mb-4">
@@ -266,7 +266,7 @@ export default function HomePage() {
           </p>
           <Link
             href="/login"
-            className="text-neopets-yellow/70 hover:text-neopets-yellow text-sm mt-2 inline-block underline underline-offset-2"
+            className="text-claw-accent/70 hover:text-claw-accent text-sm mt-2 inline-block underline underline-offset-2"
           >
             Login / Sign Up
           </Link>

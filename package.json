@@ -18,8 +18,15 @@
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
-    "dotenv": "^17.2.3",
+    "autoprefixer": "^10.4.27",
+    "dotenv": "^17.4.1",
+    "gifenc": "^1.0.3",
+    "obs-websocket-js": "^5.0.7",
+    "postcss": "^8.5.8",
     "prettier": "^3.2.0",
+    "puppeteer-core": "^24.38.0",
+    "sharp": "^0.34.5",
+    "tailwindcss": "3",
     "turbo": "^2.0.0",
     "typescript": "^5.3.3"
   },
