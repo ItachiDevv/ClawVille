@@ -3,7 +3,7 @@
 import { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Text, Billboard } from '@react-three/drei';
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { useGameStore } from '@/stores/game';
 import {
   MAP_WIDTH,
@@ -11,6 +11,7 @@ import {
   TILE_SIZE,
   buildingZones,
 } from '@/lib/pixi/tilemap-data';
+import { LobsterAnimator, type LobsterRefs, resolveAnimState } from '@/lib/three/lobster-animations';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -129,6 +130,18 @@ export default function PlayerPet() {
   const bodyRef = useRef<THREE.Mesh>(null);
   const rotRef = useRef(0);
 
+  // Animation refs
+  const leftClawRef = useRef<THREE.Group>(null);
+  const rightClawRef = useRef<THREE.Group>(null);
+  const tailSeg0Ref = useRef<THREE.Mesh>(null);
+  const tailSeg1Ref = useRef<THREE.Mesh>(null);
+  const tailSeg2Ref = useRef<THREE.Mesh>(null);
+  const tailFanRef = useRef<THREE.Mesh>(null);
+  const legRefs = useRef<(THREE.Mesh | null)[]>([null, null, null, null, null, null]);
+  const eyeStalkRefs = useRef<(THREE.Group | null)[]>([null, null]);
+  const antennaRefs = useRef<(THREE.Mesh | null)[]>([null, null]);
+  const animatorRef = useRef<LobsterAnimator | null>(null);
+
   attachKeyListeners();
 
   const bodyColor = useMemo(() => {
@@ -179,10 +192,50 @@ export default function PlayerPet() {
       vy = joystickVelocity.y;
     }
 
+    const hasKeyboardInput = vx !== 0 || vy !== 0;
+
+    // Keyboard/joystick input cancels click-to-move
+    if (hasKeyboardInput && store.clickPath) {
+      store.clearClickPath();
+    }
+
+    // Click-to-move path following
+    if (!hasKeyboardInput && store.clickPath && store.clickPath.length > 0) {
+      const waypoint = store.clickPath[store.clickPathIndex];
+      if (waypoint) {
+        const dx = waypoint.x - store.petPosition.x;
+        const dy = waypoint.y - store.petPosition.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        if (dist < 6) {
+          // Reached waypoint — advance or finish
+          if (store.clickPathIndex >= store.clickPath.length - 1) {
+            // Reached final destination
+            const target = store.clickPathTarget;
+            store.clearClickPath();
+            // Auto-enter building if destination was inside one
+            if (target && store.nearLocation === target) {
+              store.enterBuilding(target);
+              return;
+            }
+          } else {
+            store.advanceClickPath();
+          }
+        } else {
+          // Move toward waypoint
+          vx = dx / dist;
+          vy = dy / dist;
+        }
+      }
+    }
+
     // Normalize diagonal
     if (vx !== 0 && vy !== 0) {
-      vx *= DIAGONAL_FACTOR;
-      vy *= DIAGONAL_FACTOR;
+      const len = Math.sqrt(vx * vx + vy * vy);
+      if (len > 1) {
+        vx /= len;
+        vy /= len;
+      }
     }
 
     // Direction
@@ -243,6 +296,29 @@ export default function PlayerPet() {
     const targetRot = DIR_ROTATION[dir] ?? 0;
     rotRef.current += (targetRot - rotRef.current) * 0.15;
     group.rotation.y = rotRef.current;
+
+    // Procedural animation
+    if (!animatorRef.current) {
+      const refs: LobsterRefs = {
+        body: bodyRef.current,
+        leftClaw: leftClawRef.current,
+        rightClaw: rightClawRef.current,
+        tailSegments: [tailSeg0Ref.current, tailSeg1Ref.current, tailSeg2Ref.current],
+        tailFan: tailFanRef.current,
+        legs: legRefs.current,
+        eyeStalks: eyeStalkRefs.current,
+        antennae: antennaRefs.current,
+      };
+      animatorRef.current = new LobsterAnimator(refs);
+    }
+    const animState = resolveAnimState({
+      isDead: false,
+      inCombat: false,
+      combatAction: null,
+      direction: dir,
+      inConversation: false,
+    });
+    animatorRef.current.update(delta, elapsed, animState, dir);
   });
 
   const species = useGameStore((s) => s.petSpecies);
@@ -262,81 +338,113 @@ export default function PlayerPet() {
       </mesh>
 
       {/* Tail segments */}
-      {[0, 1, 2].map((i) => (
-        <mesh key={`tail-${i}`} position={[0, 2.5 - i * 0.4, -3 - i * 1.8]} castShadow scale={[1 - i * 0.15, 0.5, 1]}>
-          <boxGeometry args={[3 - i * 0.5, 1.2, 1.8]} />
-          <meshStandardMaterial color={bodyColor} roughness={0.65} />
-        </mesh>
-      ))}
+      <mesh ref={tailSeg0Ref} position={[0, 2.5, -3]} castShadow scale={[1, 0.5, 1]}>
+        <boxGeometry args={[3, 1.2, 1.8]} />
+        <meshStandardMaterial color={bodyColor} roughness={0.65} />
+      </mesh>
+      <mesh ref={tailSeg1Ref} position={[0, 2.1, -4.8]} castShadow scale={[0.85, 0.5, 1]}>
+        <boxGeometry args={[2.5, 1.2, 1.8]} />
+        <meshStandardMaterial color={bodyColor} roughness={0.65} />
+      </mesh>
+      <mesh ref={tailSeg2Ref} position={[0, 1.7, -6.6]} castShadow scale={[0.7, 0.5, 1]}>
+        <boxGeometry args={[2, 1.2, 1.8]} />
+        <meshStandardMaterial color={bodyColor} roughness={0.65} />
+      </mesh>
       {/* Tail fan */}
-      <mesh position={[0, 1.8, -7.5]} rotation={[0.3, 0, 0]}>
+      <mesh ref={tailFanRef} position={[0, 1.8, -7.5]} rotation={[0.3, 0, 0]}>
         <coneGeometry args={[2, 2.5, 6]} />
         <meshStandardMaterial color={bodyColor} roughness={0.6} />
       </mesh>
 
       {/* Eyes on stalks */}
-      {[-1, 1].map((side) => (
-        <group key={`eye-${side}`} position={[side * 1.4, 5, 2.5]}>
-          {/* Stalk */}
-          <mesh position={[0, 0.6, 0]}>
-            <cylinderGeometry args={[0.2, 0.25, 1.5, 6]} />
-            <meshStandardMaterial color={bodyColor} roughness={0.7} />
-          </mesh>
-          {/* Eyeball */}
-          <mesh position={[0, 1.5, 0]}>
-            <sphereGeometry args={[0.5, 8, 8]} />
-            <meshBasicMaterial color={0xffffff} />
-          </mesh>
-          {/* Pupil */}
-          <mesh position={[side * 0.1, 1.5, 0.4]}>
-            <sphereGeometry args={[0.25, 8, 8]} />
-            <meshBasicMaterial color={0x111111} />
-          </mesh>
-        </group>
-      ))}
+      <group ref={(el) => { eyeStalkRefs.current[0] = el; }} position={[-1.4, 5, 2.5]}>
+        <mesh position={[0, 0.6, 0]}>
+          <cylinderGeometry args={[0.2, 0.25, 1.5, 6]} />
+          <meshStandardMaterial color={bodyColor} roughness={0.7} />
+        </mesh>
+        <mesh position={[0, 1.5, 0]}>
+          <sphereGeometry args={[0.5, 8, 8]} />
+          <meshBasicMaterial color={0xffffff} />
+        </mesh>
+        <mesh position={[-0.1, 1.5, 0.4]}>
+          <sphereGeometry args={[0.25, 8, 8]} />
+          <meshBasicMaterial color={0x111111} />
+        </mesh>
+      </group>
+      <group ref={(el) => { eyeStalkRefs.current[1] = el; }} position={[1.4, 5, 2.5]}>
+        <mesh position={[0, 0.6, 0]}>
+          <cylinderGeometry args={[0.2, 0.25, 1.5, 6]} />
+          <meshStandardMaterial color={bodyColor} roughness={0.7} />
+        </mesh>
+        <mesh position={[0, 1.5, 0]}>
+          <sphereGeometry args={[0.5, 8, 8]} />
+          <meshBasicMaterial color={0xffffff} />
+        </mesh>
+        <mesh position={[0.1, 1.5, 0.4]}>
+          <sphereGeometry args={[0.25, 8, 8]} />
+          <meshBasicMaterial color={0x111111} />
+        </mesh>
+      </group>
 
       {/* Antennae */}
-      {[-1, 1].map((side) => (
-        <mesh key={`ant-${side}`} position={[side * 0.8, 5.2, 3]} rotation={[-0.5, side * 0.3, side * 0.4]}>
-          <cylinderGeometry args={[0.08, 0.12, 5, 4]} />
+      <mesh ref={(el) => { antennaRefs.current[0] = el; }} position={[-0.8, 5.2, 3]} rotation={[-0.5, -0.3, -0.4]}>
+        <cylinderGeometry args={[0.08, 0.12, 5, 4]} />
+        <meshStandardMaterial color={bodyColor} roughness={0.7} />
+      </mesh>
+      <mesh ref={(el) => { antennaRefs.current[1] = el; }} position={[0.8, 5.2, 3]} rotation={[-0.5, 0.3, 0.4]}>
+        <cylinderGeometry args={[0.08, 0.12, 5, 4]} />
+        <meshStandardMaterial color={bodyColor} roughness={0.7} />
+      </mesh>
+
+      {/* Claws (left and right) */}
+      <group ref={leftClawRef} position={[-3.5, 2.5, 1.5]}>
+        <mesh position={[-0.5, 0, 0]} rotation={[0, 0, -0.3]}>
+          <cylinderGeometry args={[0.4, 0.5, 2.5, 6]} />
+          <meshStandardMaterial color={bodyColor} roughness={0.6} />
+        </mesh>
+        <mesh position={[-1.2, -0.3, 0.8]} rotation={[0.3, -0.2, -0.5]}>
+          <boxGeometry args={[1.8, 0.6, 1]} />
+          <meshStandardMaterial color={bodyColor} roughness={0.55} />
+        </mesh>
+        <mesh position={[-1.2, 0.3, 0.8]} rotation={[-0.2, -0.2, -0.5]}>
+          <boxGeometry args={[1.5, 0.5, 0.8]} />
+          <meshStandardMaterial color={bodyColor} roughness={0.55} />
+        </mesh>
+      </group>
+      <group ref={rightClawRef} position={[3.5, 2.5, 1.5]}>
+        <mesh position={[0.5, 0, 0]} rotation={[0, 0, 0.3]}>
+          <cylinderGeometry args={[0.4, 0.5, 2.5, 6]} />
+          <meshStandardMaterial color={bodyColor} roughness={0.6} />
+        </mesh>
+        <mesh position={[1.2, -0.3, 0.8]} rotation={[0.3, 0.2, 0.5]}>
+          <boxGeometry args={[1.8, 0.6, 1]} />
+          <meshStandardMaterial color={bodyColor} roughness={0.55} />
+        </mesh>
+        <mesh position={[1.2, 0.3, 0.8]} rotation={[-0.2, 0.2, 0.5]}>
+          <boxGeometry args={[1.5, 0.5, 0.8]} />
+          <meshStandardMaterial color={bodyColor} roughness={0.55} />
+        </mesh>
+      </group>
+
+      {/* Legs (3 pairs) — left side (indices 0-2), right side (indices 3-5) */}
+      {[
+        { side: -1, idx: 0, i: 0 },
+        { side: -1, idx: 1, i: 1 },
+        { side: -1, idx: 2, i: 2 },
+        { side: 1, idx: 3, i: 0 },
+        { side: 1, idx: 4, i: 1 },
+        { side: 1, idx: 5, i: 2 },
+      ].map(({ side, idx, i }) => (
+        <mesh
+          key={`leg-${idx}`}
+          ref={(el) => { legRefs.current[idx] = el; }}
+          position={[side * 2.2, 1, -0.5 - i * 1.5]}
+          rotation={[0, 0, side * 0.6]}
+        >
+          <cylinderGeometry args={[0.15, 0.2, 2.5, 4]} />
           <meshStandardMaterial color={bodyColor} roughness={0.7} />
         </mesh>
       ))}
-
-      {/* Claws (left and right) */}
-      {[-1, 1].map((side) => (
-        <group key={`claw-${side}`} position={[side * 3.5, 2.5, 1.5]}>
-          {/* Arm segment */}
-          <mesh position={[side * 0.5, 0, 0]} rotation={[0, 0, side * 0.3]}>
-            <cylinderGeometry args={[0.4, 0.5, 2.5, 6]} />
-            <meshStandardMaterial color={bodyColor} roughness={0.6} />
-          </mesh>
-          {/* Claw pincer — lower */}
-          <mesh position={[side * 1.2, -0.3, 0.8]} rotation={[0.3, side * 0.2, side * 0.5]}>
-            <boxGeometry args={[1.8, 0.6, 1]} />
-            <meshStandardMaterial color={bodyColor} roughness={0.55} />
-          </mesh>
-          {/* Claw pincer — upper */}
-          <mesh position={[side * 1.2, 0.3, 0.8]} rotation={[-0.2, side * 0.2, side * 0.5]}>
-            <boxGeometry args={[1.5, 0.5, 0.8]} />
-            <meshStandardMaterial color={bodyColor} roughness={0.55} />
-          </mesh>
-        </group>
-      ))}
-
-      {/* Legs (3 pairs) */}
-      {[-1, 1].map((side) =>
-        [0, 1, 2].map((i) => (
-          <mesh
-            key={`leg-${side}-${i}`}
-            position={[side * 2.2, 1, -0.5 - i * 1.5]}
-            rotation={[0, 0, side * 0.6]}
-          >
-            <cylinderGeometry args={[0.15, 0.2, 2.5, 4]} />
-            <meshStandardMaterial color={bodyColor} roughness={0.7} />
-          </mesh>
-        ))
-      )}
 
       {/* Shadow */}
       <mesh position={[0, 0.05, 0]} rotation={[-Math.PI / 2, 0, 0]}>

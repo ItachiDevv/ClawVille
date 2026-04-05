@@ -1,10 +1,11 @@
 'use client';
 
-import { useRef, useMemo, memo } from 'react';
+import { useRef, useMemo, memo, useCallback } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Text, Billboard } from '@react-three/drei';
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { useNpcStore, type NpcSpriteState } from '@/stores/npc';
+import { LobsterAnimator, type LobsterRefs, type AnimState, resolveAnimState } from '@/lib/three/lobster-animations';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -18,7 +19,6 @@ const HALF_H = MAP_HEIGHT / 2;
 const LERP_SPEED = 5;
 const BOB_SPEED = 5;
 const BOB_AMPLITUDE = 0.3;
-const SWORD_SWING_SPEED = 8;
 const GLOW_PULSE_SPEED = 3;
 
 // Direction -> Y rotation (radians). Idle defaults to facing camera (0).
@@ -64,8 +64,6 @@ const sharedGeo = {
   leg: new THREE.CylinderGeometry(0.08, 0.12, 1.5, 4),
   shell: new THREE.SphereGeometry(2, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2),
   // Combat
-  swordBlade: new THREE.BoxGeometry(0.15, 3.5, 0.5),
-  swordHandle: new THREE.BoxGeometry(0.2, 0.8, 0.8),
   hpBarBg: new THREE.BoxGeometry(5, 0.35, 0.35),
   hpBarFill: new THREE.BoxGeometry(5, 0.35, 0.35),
   glowRing: new THREE.TorusGeometry(2.5, 0.25, 8, 32),
@@ -73,11 +71,7 @@ const sharedGeo = {
   bubbleTail: new THREE.ConeGeometry(0.3, 0.6, 4),
 };
 
-// Shared materials (will be cloned per-NPC only when colour differs)
-const matWhite = new THREE.MeshStandardMaterial({ color: 0xffffff });
-const matBlack = new THREE.MeshStandardMaterial({ color: 0x222222 });
-const matSilver = new THREE.MeshStandardMaterial({ color: 0xcccccc });
-const matBrown = new THREE.MeshStandardMaterial({ color: 0x8b5e3c });
+// Shared materials
 const matHpBg = new THREE.MeshBasicMaterial({ color: 0x333333 });
 const matBubble = new THREE.MeshStandardMaterial({
   color: 0xffffff,
@@ -86,90 +80,146 @@ const matBubble = new THREE.MeshStandardMaterial({
 });
 
 // ---------------------------------------------------------------------------
-// Species feature sub-components (pure geometry, no state)
+// Ref callback props for animatable parts
 // ---------------------------------------------------------------------------
 
-// All NPC species are lobster variants. Base lobster features shared by all.
-function BaseLobsterFeatures({ accentColor }: { accentColor: number }) {
+interface AnimRefCallbacks {
+  onTailSeg?: (index: number, el: THREE.Mesh | null) => void;
+  onTailFan?: (el: THREE.Mesh | null) => void;
+  onLeg?: (index: number, el: THREE.Mesh | null) => void;
+  onEyeStalk?: (index: number, el: THREE.Group | null) => void;
+  onAntenna?: (index: number, el: THREE.Mesh | null) => void;
+}
+
+// ---------------------------------------------------------------------------
+// Species feature sub-components (with ref callbacks)
+// ---------------------------------------------------------------------------
+
+function BaseLobsterFeatures({ accentColor, refs }: { accentColor: number; refs?: AnimRefCallbacks }) {
   return (
     <group>
       {/* Eye stalks + eyes */}
-      {[-1, 1].map((side) => (
-        <group key={`eye-${side}`} position={[side * 0.9, 3.8, 1.2]}>
-          <mesh geometry={sharedGeo.eyeStalk}>
-            <meshStandardMaterial color={accentColor} />
-          </mesh>
-          <mesh geometry={sharedGeo.eye} position={[0, 0.7, 0]}>
-            <meshBasicMaterial color={0xffffff} />
-          </mesh>
-          <mesh position={[side * 0.05, 0.7, 0.25]}>
-            <sphereGeometry args={[0.18, 6, 6]} />
-            <meshBasicMaterial color={0x111111} />
-          </mesh>
-        </group>
-      ))}
+      <group ref={(el) => refs?.onEyeStalk?.(0, el)} position={[-0.9, 3.8, 1.2]}>
+        <mesh geometry={sharedGeo.eyeStalk}>
+          <meshStandardMaterial color={accentColor} />
+        </mesh>
+        <mesh geometry={sharedGeo.eye} position={[0, 0.7, 0]}>
+          <meshBasicMaterial color={0xffffff} />
+        </mesh>
+        <mesh position={[-0.05, 0.7, 0.25]}>
+          <sphereGeometry args={[0.18, 6, 6]} />
+          <meshBasicMaterial color={0x111111} />
+        </mesh>
+      </group>
+      <group ref={(el) => refs?.onEyeStalk?.(1, el)} position={[0.9, 3.8, 1.2]}>
+        <mesh geometry={sharedGeo.eyeStalk}>
+          <meshStandardMaterial color={accentColor} />
+        </mesh>
+        <mesh geometry={sharedGeo.eye} position={[0, 0.7, 0]}>
+          <meshBasicMaterial color={0xffffff} />
+        </mesh>
+        <mesh position={[0.05, 0.7, 0.25]}>
+          <sphereGeometry args={[0.18, 6, 6]} />
+          <meshBasicMaterial color={0x111111} />
+        </mesh>
+      </group>
+
       {/* Antennae */}
-      {[-1, 1].map((side) => (
-        <mesh key={`ant-${side}`} geometry={sharedGeo.antenna} position={[side * 0.5, 4.2, 1.5]} rotation={[-0.4, side * 0.3, side * 0.3]}>
-          <meshStandardMaterial color={accentColor} />
-        </mesh>
-      ))}
-      {/* Tail segments */}
-      {[0, 1].map((i) => (
-        <mesh key={`tail-${i}`} geometry={sharedGeo.tailSegment} position={[0, -1.5 - i * 0.8, -1.5 - i * 1]} scale={[1 - i * 0.15, 1, 1]}>
-          <meshStandardMaterial color={accentColor} />
-        </mesh>
-      ))}
-      {/* Tail fan */}
-      <mesh geometry={sharedGeo.tailFan} position={[0, -2.5, -3.5]} rotation={[0.4, 0, 0]}>
+      <mesh ref={(el) => refs?.onAntenna?.(0, el)} geometry={sharedGeo.antenna} position={[-0.5, 4.2, 1.5]} rotation={[-0.4, -0.3, -0.3]}>
         <meshStandardMaterial color={accentColor} />
       </mesh>
-      {/* Legs (3 pairs) */}
-      {[-1, 1].map((side) =>
-        [0, 1, 2].map((i) => (
-          <mesh key={`leg-${side}-${i}`} geometry={sharedGeo.leg} position={[side * 1.6, -0.5, -i * 0.9]} rotation={[0, 0, side * 0.5]}>
-            <meshStandardMaterial color={accentColor} />
-          </mesh>
-        ))
-      )}
-    </group>
-  );
-}
+      <mesh ref={(el) => refs?.onAntenna?.(1, el)} geometry={sharedGeo.antenna} position={[0.5, 4.2, 1.5]} rotation={[-0.4, 0.3, 0.3]}>
+        <meshStandardMaterial color={accentColor} />
+      </mesh>
 
-// Reef Lobster (cat) — delicate coral claws
-function CatFeatures() {
-  return (
-    <group>
-      <BaseLobsterFeatures accentColor={0xff6347} />
-      {[-1, 1].map((side) => (
-        <group key={`claw-${side}`} position={[side * 2.2, 1, 1]}>
-          <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, side * 0.3]}>
-            <meshStandardMaterial color={0xff7f50} />
-          </mesh>
-          <mesh geometry={sharedGeo.claw} position={[side * 0.6, -0.3, 0.4]}>
-            <meshStandardMaterial color={0xff6347} />
-          </mesh>
-        </group>
+      {/* Tail segments */}
+      <mesh ref={(el) => refs?.onTailSeg?.(0, el)} geometry={sharedGeo.tailSegment} position={[0, -1.5, -1.5]}>
+        <meshStandardMaterial color={accentColor} />
+      </mesh>
+      <mesh ref={(el) => refs?.onTailSeg?.(1, el)} geometry={sharedGeo.tailSegment} position={[0, -2.3, -2.5]} scale={[0.85, 1, 1]}>
+        <meshStandardMaterial color={accentColor} />
+      </mesh>
+
+      {/* Tail fan */}
+      <mesh ref={(el) => refs?.onTailFan?.(el)} geometry={sharedGeo.tailFan} position={[0, -2.5, -3.5]} rotation={[0.4, 0, 0]}>
+        <meshStandardMaterial color={accentColor} />
+      </mesh>
+
+      {/* Legs (3 pairs) — left 0-2, right 3-5 */}
+      {[
+        { side: -1, idx: 0, i: 0 },
+        { side: -1, idx: 1, i: 1 },
+        { side: -1, idx: 2, i: 2 },
+        { side: 1, idx: 3, i: 0 },
+        { side: 1, idx: 4, i: 1 },
+        { side: 1, idx: 5, i: 2 },
+      ].map(({ side, idx, i }) => (
+        <mesh
+          key={`leg-${idx}`}
+          ref={(el) => refs?.onLeg?.(idx, el)}
+          geometry={sharedGeo.leg}
+          position={[side * 1.6, -0.5, -i * 0.9]}
+          rotation={[0, 0, side * 0.5]}
+        >
+          <meshStandardMaterial color={accentColor} />
+        </mesh>
       ))}
     </group>
   );
 }
 
-// Abyssal Lobster (dragon) — bioluminescent claws + glow spots
-function DragonFeatures() {
+// Species-specific claw components with ref forwarding
+interface ClawRefCallbacks {
+  onLeftClaw?: (el: THREE.Group | null) => void;
+  onRightClaw?: (el: THREE.Group | null) => void;
+}
+
+// Reef Lobster (cat)
+function CatFeatures({ refs, clawRefs }: { refs?: AnimRefCallbacks; clawRefs?: ClawRefCallbacks }) {
   return (
     <group>
-      <BaseLobsterFeatures accentColor={0x1a237e} />
-      {[-1, 1].map((side) => (
-        <group key={`claw-${side}`} position={[side * 2.5, 1.2, 1]}>
-          <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, side * 0.4]}>
-            <meshStandardMaterial color={0x283593} />
-          </mesh>
-          <mesh geometry={sharedGeo.claw} position={[side * 0.7, -0.2, 0.4]} scale={[1.3, 1, 1.2]}>
-            <meshStandardMaterial color={0x1a237e} emissive={0x00e5ff} emissiveIntensity={0.3} />
-          </mesh>
-        </group>
-      ))}
+      <BaseLobsterFeatures accentColor={0xff6347} refs={refs} />
+      <group ref={(el) => clawRefs?.onLeftClaw?.(el)} position={[-2.2, 1, 1]}>
+        <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, -0.3]}>
+          <meshStandardMaterial color={0xff7f50} />
+        </mesh>
+        <mesh geometry={sharedGeo.claw} position={[-0.6, -0.3, 0.4]}>
+          <meshStandardMaterial color={0xff6347} />
+        </mesh>
+      </group>
+      <group ref={(el) => clawRefs?.onRightClaw?.(el)} position={[2.2, 1, 1]}>
+        <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, 0.3]}>
+          <meshStandardMaterial color={0xff7f50} />
+        </mesh>
+        <mesh geometry={sharedGeo.claw} position={[0.6, -0.3, 0.4]}>
+          <meshStandardMaterial color={0xff6347} />
+        </mesh>
+      </group>
+    </group>
+  );
+}
+
+// Abyssal Lobster (dragon)
+function DragonFeatures({ refs, clawRefs }: { refs?: AnimRefCallbacks; clawRefs?: ClawRefCallbacks }) {
+  return (
+    <group>
+      <BaseLobsterFeatures accentColor={0x1a237e} refs={refs} />
+      <group ref={(el) => clawRefs?.onLeftClaw?.(el)} position={[-2.5, 1.2, 1]}>
+        <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, -0.4]}>
+          <meshStandardMaterial color={0x283593} />
+        </mesh>
+        <mesh geometry={sharedGeo.claw} position={[-0.7, -0.2, 0.4]} scale={[1.3, 1, 1.2]}>
+          <meshStandardMaterial color={0x1a237e} emissive={0x00e5ff} emissiveIntensity={0.3} />
+        </mesh>
+      </group>
+      <group ref={(el) => clawRefs?.onRightClaw?.(el)} position={[2.5, 1.2, 1]}>
+        <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, 0.4]}>
+          <meshStandardMaterial color={0x283593} />
+        </mesh>
+        <mesh geometry={sharedGeo.claw} position={[0.7, -0.2, 0.4]} scale={[1.3, 1, 1.2]}>
+          <meshStandardMaterial color={0x1a237e} emissive={0x00e5ff} emissiveIntensity={0.3} />
+        </mesh>
+      </group>
       {/* Bioluminescent spots */}
       {[[-0.5, 1.5, 1.3], [0.5, 0.8, 1.3], [0, -0.5, 1.3]].map((pos, i) => (
         <mesh key={`glow-${i}`} position={pos as [number, number, number]}>
@@ -181,11 +231,11 @@ function DragonFeatures() {
   );
 }
 
-// Spiny Lobster (fox) — long antennae, no large claws
-function FoxFeatures() {
+// Spiny Lobster (fox)
+function FoxFeatures({ refs, clawRefs }: { refs?: AnimRefCallbacks; clawRefs?: ClawRefCallbacks }) {
   return (
     <group>
-      <BaseLobsterFeatures accentColor={0xff8c00} />
+      <BaseLobsterFeatures accentColor={0xff8c00} refs={refs} />
       {/* Extra-long antennae */}
       {[-1, 1].map((side) => (
         <mesh key={`long-ant-${side}`} position={[side * 0.4, 4.5, 2]} rotation={[-0.6, side * 0.5, side * 0.2]}>
@@ -194,74 +244,95 @@ function FoxFeatures() {
         </mesh>
       ))}
       {/* Small spiny legs instead of big claws */}
-      {[-1, 1].map((side) => (
-        <mesh key={`spine-${side}`} geometry={sharedGeo.clawArm} position={[side * 2, 0.8, 0.8]} rotation={[0, 0, side * 0.5]}>
+      <group ref={(el) => clawRefs?.onLeftClaw?.(el)} position={[-2, 0.8, 0.8]}>
+        <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, -0.5]}>
           <meshStandardMaterial color={0xff8c00} />
         </mesh>
-      ))}
+      </group>
+      <group ref={(el) => clawRefs?.onRightClaw?.(el)} position={[2, 0.8, 0.8]}>
+        <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, 0.5]}>
+          <meshStandardMaterial color={0xff8c00} />
+        </mesh>
+      </group>
     </group>
   );
 }
 
-// Hermit Lobster (owl) — carries a shell, large wise eyes
-function OwlFeatures() {
+// Hermit Lobster (owl)
+function OwlFeatures({ refs, clawRefs }: { refs?: AnimRefCallbacks; clawRefs?: ClawRefCallbacks }) {
   return (
     <group>
-      <BaseLobsterFeatures accentColor={0x8d6e63} />
-      {/* Shell on back */}
+      <BaseLobsterFeatures accentColor={0x8d6e63} refs={refs} />
       <mesh geometry={sharedGeo.shell} position={[0, 0.5, -1.2]} rotation={[Math.PI / 5, 0, 0]}>
         <meshStandardMaterial color={0xa1887f} />
       </mesh>
-      {/* Small claws */}
-      {[-1, 1].map((side) => (
-        <group key={`claw-${side}`} position={[side * 2, 0.8, 0.8]}>
-          <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, side * 0.3]}>
-            <meshStandardMaterial color={0x8d6e63} />
-          </mesh>
-          <mesh geometry={sharedGeo.claw} position={[side * 0.5, -0.2, 0.3]} scale={[0.8, 0.8, 0.8]}>
-            <meshStandardMaterial color={0x795548} />
-          </mesh>
-        </group>
-      ))}
+      <group ref={(el) => clawRefs?.onLeftClaw?.(el)} position={[-2, 0.8, 0.8]}>
+        <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, -0.3]}>
+          <meshStandardMaterial color={0x8d6e63} />
+        </mesh>
+        <mesh geometry={sharedGeo.claw} position={[-0.5, -0.2, 0.3]} scale={[0.8, 0.8, 0.8]}>
+          <meshStandardMaterial color={0x795548} />
+        </mesh>
+      </group>
+      <group ref={(el) => clawRefs?.onRightClaw?.(el)} position={[2, 0.8, 0.8]}>
+        <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, 0.3]}>
+          <meshStandardMaterial color={0x8d6e63} />
+        </mesh>
+        <mesh geometry={sharedGeo.claw} position={[0.5, -0.2, 0.3]} scale={[0.8, 0.8, 0.8]}>
+          <meshStandardMaterial color={0x795548} />
+        </mesh>
+      </group>
     </group>
   );
 }
 
-// Crusher Lobster (wolf) — massive crushing claws
-function WolfFeatures() {
+// Crusher Lobster (wolf)
+function WolfFeatures({ refs, clawRefs }: { refs?: AnimRefCallbacks; clawRefs?: ClawRefCallbacks }) {
   return (
     <group>
-      <BaseLobsterFeatures accentColor={0xb71c1c} />
-      {[-1, 1].map((side) => (
-        <group key={`claw-${side}`} position={[side * 2.8, 1, 1.2]}>
-          <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, side * 0.35]} scale={[1.3, 1, 1.3]}>
-            <meshStandardMaterial color={0xc62828} />
-          </mesh>
-          <mesh geometry={sharedGeo.claw} position={[side * 0.8, -0.2, 0.5]} scale={[1.8, 1.5, 1.5]}>
-            <meshStandardMaterial color={0xb71c1c} />
-          </mesh>
-        </group>
-      ))}
+      <BaseLobsterFeatures accentColor={0xb71c1c} refs={refs} />
+      <group ref={(el) => clawRefs?.onLeftClaw?.(el)} position={[-2.8, 1, 1.2]}>
+        <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, -0.35]} scale={[1.3, 1, 1.3]}>
+          <meshStandardMaterial color={0xc62828} />
+        </mesh>
+        <mesh geometry={sharedGeo.claw} position={[-0.8, -0.2, 0.5]} scale={[1.8, 1.5, 1.5]}>
+          <meshStandardMaterial color={0xb71c1c} />
+        </mesh>
+      </group>
+      <group ref={(el) => clawRefs?.onRightClaw?.(el)} position={[2.8, 1, 1.2]}>
+        <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, 0.35]} scale={[1.3, 1, 1.3]}>
+          <meshStandardMaterial color={0xc62828} />
+        </mesh>
+        <mesh geometry={sharedGeo.claw} position={[0.8, -0.2, 0.5]} scale={[1.8, 1.5, 1.5]}>
+          <meshStandardMaterial color={0xb71c1c} />
+        </mesh>
+      </group>
     </group>
   );
 }
 
-// Bubble Lobster (bunny) — small, playful with bubble particles
-function BunnyFeatures() {
+// Bubble Lobster (bunny)
+function BunnyFeatures({ refs, clawRefs }: { refs?: AnimRefCallbacks; clawRefs?: ClawRefCallbacks }) {
   return (
     <group>
-      <BaseLobsterFeatures accentColor={0xff80ab} />
-      {[-1, 1].map((side) => (
-        <group key={`claw-${side}`} position={[side * 2, 0.8, 0.8]}>
-          <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, side * 0.3]}>
-            <meshStandardMaterial color={0xf48fb1} />
-          </mesh>
-          <mesh geometry={sharedGeo.claw} position={[side * 0.5, -0.2, 0.3]} scale={[0.9, 0.9, 0.9]}>
-            <meshStandardMaterial color={0xff80ab} />
-          </mesh>
-        </group>
-      ))}
-      {/* Decorative bubbles floating above */}
+      <BaseLobsterFeatures accentColor={0xff80ab} refs={refs} />
+      <group ref={(el) => clawRefs?.onLeftClaw?.(el)} position={[-2, 0.8, 0.8]}>
+        <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, -0.3]}>
+          <meshStandardMaterial color={0xf48fb1} />
+        </mesh>
+        <mesh geometry={sharedGeo.claw} position={[-0.5, -0.2, 0.3]} scale={[0.9, 0.9, 0.9]}>
+          <meshStandardMaterial color={0xff80ab} />
+        </mesh>
+      </group>
+      <group ref={(el) => clawRefs?.onRightClaw?.(el)} position={[2, 0.8, 0.8]}>
+        <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, 0.3]}>
+          <meshStandardMaterial color={0xf48fb1} />
+        </mesh>
+        <mesh geometry={sharedGeo.claw} position={[0.5, -0.2, 0.3]} scale={[0.9, 0.9, 0.9]}>
+          <meshStandardMaterial color={0xff80ab} />
+        </mesh>
+      </group>
+      {/* Decorative bubbles */}
       {[[0.8, 5, 0.5], [-0.5, 5.5, -0.3], [0.2, 5.8, 0.8]].map((pos, i) => (
         <mesh key={`bubble-${i}`} position={pos as [number, number, number]}>
           <sphereGeometry args={[0.2 + i * 0.05, 8, 8]} />
@@ -272,22 +343,28 @@ function BunnyFeatures() {
   );
 }
 
-// Mantis Lobster (phoenix) — rainbow striking appendages with glow
-function PhoenixFeatures() {
+// Mantis Lobster (phoenix)
+function PhoenixFeatures({ refs, clawRefs }: { refs?: AnimRefCallbacks; clawRefs?: ClawRefCallbacks }) {
   return (
     <group>
-      <BaseLobsterFeatures accentColor={0x00e676} />
-      {[-1, 1].map((side) => (
-        <group key={`strike-${side}`} position={[side * 2.5, 1.5, 1.2]}>
-          <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, side * 0.4]} scale={[1.1, 1, 1.1]}>
-            <meshStandardMaterial color={0x76ff03} emissive={0x00e676} emissiveIntensity={0.3} />
-          </mesh>
-          <mesh geometry={sharedGeo.claw} position={[side * 0.6, -0.3, 0.4]} scale={[1.1, 0.8, 1]}>
-            <meshStandardMaterial color={0x00e676} emissive={0x00e676} emissiveIntensity={0.2} />
-          </mesh>
-        </group>
-      ))}
-      {/* Rainbow accent bands on body */}
+      <BaseLobsterFeatures accentColor={0x00e676} refs={refs} />
+      <group ref={(el) => clawRefs?.onLeftClaw?.(el)} position={[-2.5, 1.5, 1.2]}>
+        <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, -0.4]} scale={[1.1, 1, 1.1]}>
+          <meshStandardMaterial color={0x76ff03} emissive={0x00e676} emissiveIntensity={0.3} />
+        </mesh>
+        <mesh geometry={sharedGeo.claw} position={[-0.6, -0.3, 0.4]} scale={[1.1, 0.8, 1]}>
+          <meshStandardMaterial color={0x00e676} emissive={0x00e676} emissiveIntensity={0.2} />
+        </mesh>
+      </group>
+      <group ref={(el) => clawRefs?.onRightClaw?.(el)} position={[2.5, 1.5, 1.2]}>
+        <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, 0.4]} scale={[1.1, 1, 1.1]}>
+          <meshStandardMaterial color={0x76ff03} emissive={0x00e676} emissiveIntensity={0.3} />
+        </mesh>
+        <mesh geometry={sharedGeo.claw} position={[0.6, -0.3, 0.4]} scale={[1.1, 0.8, 1]}>
+          <meshStandardMaterial color={0x00e676} emissive={0x00e676} emissiveIntensity={0.2} />
+        </mesh>
+      </group>
+      {/* Rainbow accent bands */}
       {[0xff0000, 0xff9800, 0xffeb3b, 0x4caf50, 0x2196f3].map((c, i) => (
         <mesh key={`band-${i}`} position={[0, 1.5 - i * 0.6, 1.55]}>
           <boxGeometry args={[2.5, 0.15, 0.1]} />
@@ -298,31 +375,37 @@ function PhoenixFeatures() {
   );
 }
 
-// Iron Lobster (turtle) — heavily armored carapace plates
-function TurtleFeatures() {
+// Iron Lobster (turtle)
+function TurtleFeatures({ refs, clawRefs }: { refs?: AnimRefCallbacks; clawRefs?: ClawRefCallbacks }) {
   return (
     <group>
-      <BaseLobsterFeatures accentColor={0x455a64} />
-      {/* Heavy armor shell on back */}
+      <BaseLobsterFeatures accentColor={0x455a64} refs={refs} />
       <mesh geometry={sharedGeo.shell} position={[0, 0.8, -0.8]} rotation={[Math.PI / 6, 0, 0]} scale={[1.2, 1, 1.2]}>
         <meshStandardMaterial color={0x37474f} metalness={0.5} roughness={0.4} />
       </mesh>
-      {/* Armored claws */}
-      {[-1, 1].map((side) => (
-        <group key={`claw-${side}`} position={[side * 2.3, 1, 1]}>
-          <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, side * 0.35]}>
-            <meshStandardMaterial color={0x546e7a} metalness={0.4} roughness={0.4} />
-          </mesh>
-          <mesh geometry={sharedGeo.claw} position={[side * 0.7, -0.2, 0.4]} scale={[1.4, 1.2, 1.2]}>
-            <meshStandardMaterial color={0x455a64} metalness={0.5} roughness={0.35} />
-          </mesh>
-        </group>
-      ))}
+      <group ref={(el) => clawRefs?.onLeftClaw?.(el)} position={[-2.3, 1, 1]}>
+        <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, -0.35]}>
+          <meshStandardMaterial color={0x546e7a} metalness={0.4} roughness={0.4} />
+        </mesh>
+        <mesh geometry={sharedGeo.claw} position={[-0.7, -0.2, 0.4]} scale={[1.4, 1.2, 1.2]}>
+          <meshStandardMaterial color={0x455a64} metalness={0.5} roughness={0.35} />
+        </mesh>
+      </group>
+      <group ref={(el) => clawRefs?.onRightClaw?.(el)} position={[2.3, 1, 1]}>
+        <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, 0.35]}>
+          <meshStandardMaterial color={0x546e7a} metalness={0.4} roughness={0.4} />
+        </mesh>
+        <mesh geometry={sharedGeo.claw} position={[0.7, -0.2, 0.4]} scale={[1.4, 1.2, 1.2]}>
+          <meshStandardMaterial color={0x455a64} metalness={0.5} roughness={0.35} />
+        </mesh>
+      </group>
     </group>
   );
 }
 
-const speciesComponents: Record<string, React.FC> = {
+type SpeciesCompType = React.FC<{ refs?: AnimRefCallbacks; clawRefs?: ClawRefCallbacks }>;
+
+const speciesComponents: Record<string, SpeciesCompType> = {
   cat: CatFeatures,
   dragon: DragonFeatures,
   fox: FoxFeatures,
@@ -343,11 +426,36 @@ interface NpcMeshProps {
 
 const NpcMesh = memo(function NpcMesh({ npc }: NpcMeshProps) {
   const groupRef = useRef<THREE.Group>(null!);
-  const swordRef = useRef<THREE.Group>(null!);
   const hpFillRef = useRef<THREE.Mesh>(null!);
   const hpFillMatRef = useRef<THREE.MeshBasicMaterial>(null!);
   const glowRef = useRef<THREE.Mesh>(null!);
   const bodyMatRef = useRef<THREE.MeshStandardMaterial>(null!);
+
+  // Animation refs
+  const leftClawRef = useRef<THREE.Group | null>(null);
+  const rightClawRef = useRef<THREE.Group | null>(null);
+  const tailSegRefs = useRef<(THREE.Mesh | null)[]>([null, null]);
+  const tailFanRef = useRef<THREE.Mesh | null>(null);
+  const legRefs = useRef<(THREE.Mesh | null)[]>([null, null, null, null, null, null]);
+  const eyeStalkRefs = useRef<(THREE.Group | null)[]>([null, null]);
+  const antennaRefs = useRef<(THREE.Mesh | null)[]>([null, null]);
+  const animatorRef = useRef<LobsterAnimator | null>(null);
+  const prevCombatAction = useRef<string | null>(null);
+  const bodyMeshRef = useRef<THREE.Mesh>(null!);
+
+  // Ref callbacks for BaseLobsterFeatures
+  const animRefCallbacks: AnimRefCallbacks = useMemo(() => ({
+    onTailSeg: (index: number, el: THREE.Mesh | null) => { tailSegRefs.current[index] = el; },
+    onTailFan: (el: THREE.Mesh | null) => { tailFanRef.current = el; },
+    onLeg: (index: number, el: THREE.Mesh | null) => { legRefs.current[index] = el; },
+    onEyeStalk: (index: number, el: THREE.Group | null) => { eyeStalkRefs.current[index] = el; },
+    onAntenna: (index: number, el: THREE.Mesh | null) => { antennaRefs.current[index] = el; },
+  }), []);
+
+  const clawRefCallbacks: ClawRefCallbacks = useMemo(() => ({
+    onLeftClaw: (el: THREE.Group | null) => { leftClawRef.current = el; },
+    onRightClaw: (el: THREE.Group | null) => { rightClawRef.current = el; },
+  }), []);
 
   // Cache the NPC data in a ref so useFrame can access without reading the store
   const npcDataRef = useRef(npc);
@@ -377,7 +485,7 @@ const NpcMesh = memo(function NpcMesh({ npc }: NpcMeshProps) {
     const group = groupRef.current;
     if (!group) return;
 
-    const dt = Math.min(delta, 0.1); // clamp delta to avoid jumps
+    const dt = Math.min(delta, 0.1);
     const elapsed = state.clock.elapsedTime;
 
     // --- Position lerp ---
@@ -385,7 +493,7 @@ const NpcMesh = memo(function NpcMesh({ npc }: NpcMeshProps) {
     group.position.x = currentPos.current.x;
     group.position.z = currentPos.current.z;
 
-    // --- Walking bob (only when moving) ---
+    // --- Walking bob (only when moving and not dead) ---
     const isMoving = d.direction !== 'idle' && !d.isDead;
     const bob = isMoving ? Math.sin(elapsed * BOB_SPEED) * BOB_AMPLITUDE : 0;
     group.position.y = bob;
@@ -395,25 +503,14 @@ const NpcMesh = memo(function NpcMesh({ npc }: NpcMeshProps) {
     currentRotY.current += (targetRot - currentRotY.current) * Math.min(1, 8 * dt);
     group.rotation.y = currentRotY.current;
 
-    // --- Death state: tilt on Z, semi-transparent ---
+    // --- Body opacity for death ---
     if (d.isDead) {
-      group.rotation.z += (Math.PI / 2 - group.rotation.z) * Math.min(1, 4 * dt);
       if (bodyMatRef.current) {
         bodyMatRef.current.opacity += (0.4 - bodyMatRef.current.opacity) * Math.min(1, 4 * dt);
       }
     } else {
-      group.rotation.z *= 1 - Math.min(1, 8 * dt);
       if (bodyMatRef.current) {
         bodyMatRef.current.opacity += (1 - bodyMatRef.current.opacity) * Math.min(1, 4 * dt);
-      }
-    }
-
-    // --- Sword swing ---
-    if (swordRef.current) {
-      if (d.inCombat && d.hasSword) {
-        swordRef.current.rotation.z = Math.sin(elapsed * SWORD_SWING_SPEED) * 0.8;
-      } else {
-        swordRef.current.rotation.z *= 1 - Math.min(1, 6 * dt);
       }
     }
 
@@ -436,6 +533,42 @@ const NpcMesh = memo(function NpcMesh({ npc }: NpcMeshProps) {
         glowRef.current.visible = false;
       }
     }
+
+    // --- Procedural animation ---
+    if (!animatorRef.current) {
+      const refs: LobsterRefs = {
+        body: bodyMeshRef.current,
+        leftClaw: leftClawRef.current,
+        rightClaw: rightClawRef.current,
+        tailSegments: tailSegRefs.current,
+        tailFan: tailFanRef.current,
+        legs: legRefs.current,
+        eyeStalks: eyeStalkRefs.current,
+        antennae: antennaRefs.current,
+      };
+      animatorRef.current = new LobsterAnimator(refs);
+    }
+
+    const animState = resolveAnimState({
+      isDead: d.isDead,
+      inCombat: d.inCombat,
+      combatAction: d.combatAction ?? null,
+      direction: d.direction,
+      inConversation: d.inConversation,
+    });
+
+    // Trigger timed actions when combatAction changes
+    if (d.combatAction && d.combatAction !== prevCombatAction.current) {
+      animatorRef.current.startAction(animState, elapsed);
+    }
+    if (d.isDead && prevCombatAction.current !== '__dead__') {
+      animatorRef.current.startAction('death', elapsed);
+      prevCombatAction.current = '__dead__';
+    } else {
+      prevCombatAction.current = d.combatAction ?? null;
+    }
+
+    animatorRef.current.update(dt, elapsed, animState, d.direction);
   });
 
   const labelText = npc.isOpenClaw ? `[OC] ${npc.name}` : npc.name;
@@ -443,7 +576,7 @@ const NpcMesh = memo(function NpcMesh({ npc }: NpcMeshProps) {
   return (
     <group ref={groupRef}>
       {/* Body capsule */}
-      <mesh geometry={sharedGeo.capsule} castShadow>
+      <mesh ref={bodyMeshRef} geometry={sharedGeo.capsule} castShadow>
         <meshStandardMaterial
           ref={bodyMatRef}
           color={bodyColor}
@@ -452,16 +585,8 @@ const NpcMesh = memo(function NpcMesh({ npc }: NpcMeshProps) {
         />
       </mesh>
 
-      {/* Species-specific features */}
-      {SpeciesComp && <SpeciesComp />}
-
-      {/* Sword (when hasSword) */}
-      {npc.hasSword && (
-        <group ref={swordRef} position={[2.2, 1, 0]}>
-          <mesh geometry={sharedGeo.swordBlade} position={[0, 1.8, 0]} material={matSilver} />
-          <mesh geometry={sharedGeo.swordHandle} position={[0, -0.1, 0]} material={matBrown} />
-        </group>
-      )}
+      {/* Species-specific features (with animation refs) */}
+      {SpeciesComp && <SpeciesComp refs={animRefCallbacks} clawRefs={clawRefCallbacks} />}
 
       {/* HP bar background */}
       <mesh
@@ -515,7 +640,6 @@ const NpcMesh = memo(function NpcMesh({ npc }: NpcMeshProps) {
       {npc.inConversation && (
         <group position={[0, 8.5, 0]}>
           <mesh geometry={sharedGeo.bubble} material={matBubble} />
-          {/* Three small dots inside the bubble */}
           <mesh position={[-0.25, 0, 0.55]} scale={[0.12, 0.12, 0.12]}>
             <sphereGeometry args={[1, 6, 6]} />
             <meshBasicMaterial color={0x666666} />
@@ -528,7 +652,6 @@ const NpcMesh = memo(function NpcMesh({ npc }: NpcMeshProps) {
             <sphereGeometry args={[1, 6, 6]} />
             <meshBasicMaterial color={0x666666} />
           </mesh>
-          {/* Bubble tail */}
           <mesh
             geometry={sharedGeo.bubbleTail}
             position={[0, -0.7, 0]}

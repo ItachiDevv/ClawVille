@@ -13,6 +13,9 @@ const nextConfig = {
     '@legacyapp/agent-runtime',
     '@legacyapp/agent-templates',
   ],
+  turbopack: {
+    root: resolve(__dirname, '../..'),
+  },
 };
 
 export default nextConfig;

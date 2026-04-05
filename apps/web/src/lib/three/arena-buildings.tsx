@@ -3,7 +3,7 @@
 import { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Text, Billboard } from '@react-three/drei';
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import {
   MAP_WIDTH,
   MAP_HEIGHT,

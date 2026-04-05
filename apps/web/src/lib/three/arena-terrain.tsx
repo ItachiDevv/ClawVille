@@ -2,7 +2,7 @@
 
 import { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import {
   MAP_WIDTH,
   MAP_HEIGHT,
@@ -16,7 +16,7 @@ import {
 } from '@/lib/pixi/tilemap-data';
 
 // ---------------------------------------------------------------------------
-// Seeded random for deterministic placement
+// Seeded random
 // ---------------------------------------------------------------------------
 function seededRandom(seed: number): () => number {
   let s = seed;
@@ -27,43 +27,56 @@ function seededRandom(seed: number): () => number {
 }
 
 // ---------------------------------------------------------------------------
-// Color constants
+// UNDERWATER COLOR PALETTE — SpongeBob Bikini Bottom style
 // ---------------------------------------------------------------------------
-// Sea-floor sand colors (replacing grass)
-const GRASS_COLORS = [
-  new THREE.Color(0x2e6b62), // Sandy seafloor - dark teal
-  new THREE.Color(0x3d8b7a), // Lighter seafloor - medium teal
-  new THREE.Color(0x1a4a42), // Deep seafloor - dark marine
+
+// Sandy ocean floor (warm, bright sand — like Bikini Bottom)
+const SAND_COLORS = [
+  new THREE.Color(0xd4b896), // Warm sand
+  new THREE.Color(0xc9a97a), // Medium sand
+  new THREE.Color(0xe8d5b7), // Light sand
+  new THREE.Color(0xbfa06a), // Darker sand patches
 ];
 
+// Paths — smooth packed sand and sea-stones
 const PATH_COLORS: Record<number, THREE.Color> = {
-  [TILES.DIRT_PATH]: new THREE.Color(0xc2b280), // Sandy path
-  [TILES.STONE_PATH]: new THREE.Color(0x708090), // Slate stone path
+  [TILES.DIRT_PATH]: new THREE.Color(0xb89b71), // Packed sand path
+  [TILES.STONE_PATH]: new THREE.Color(0x8faaaa), // Smooth sea-stones
 };
 
-const WATER_COLOR = new THREE.Color(0x006994);
-const WATER_COLOR_DEEP = new THREE.Color(0x003366);
+// Water trench
+const WATER_COLOR = new THREE.Color(0x1a8bba);
+const WATER_COLOR_DEEP = new THREE.Color(0x0d6b9b);
 
-// Coral/kelp colors replacing trees
-const TREE_TRUNK_COLOR = new THREE.Color(0x5d4037); // Kelp stalk
-const TREE_CANOPY_COLORS = [
-  new THREE.Color(0xff6f61), // Coral pink
-  new THREE.Color(0xe65100), // Orange coral
+// Coral — vibrant reef colors
+const CORAL_COLORS = [
+  new THREE.Color(0xff6f61), // Living coral
+  new THREE.Color(0xff4081), // Hot pink
+  new THREE.Color(0xe65100), // Orange
+  new THREE.Color(0xffab40), // Amber
+  new THREE.Color(0x7c4dff), // Purple
+  new THREE.Color(0x00e5ff), // Cyan
 ];
-// Sea anemone colors replacing flowers
-const FLOWER_COLORS = [
-  new THREE.Color(0xff4081), // Pink anemone
-  new THREE.Color(0x7c4dff), // Purple anemone
-];
-const BUSH_COLOR = new THREE.Color(0x2e7d32); // Kelp bush
 
-// Centering offset: place map origin at world center
+// Kelp / seaweed
+const KELP_COLORS = [
+  new THREE.Color(0x2e7d32),
+  new THREE.Color(0x388e3c),
+  new THREE.Color(0x1b5e20),
+];
+
+// Anemone
+const ANEMONE_COLORS = [
+  new THREE.Color(0xff4081),
+  new THREE.Color(0x7c4dff),
+  new THREE.Color(0x00e5ff),
+  new THREE.Color(0xffeb3b),
+];
+
+// Centering
 const OFFSET_X = -MAP_WIDTH / 2;
 const OFFSET_Z = -MAP_HEIGHT / 2;
 
-// ---------------------------------------------------------------------------
-// Helper: tile world position (center of tile)
-// ---------------------------------------------------------------------------
 function tilePos(col: number, row: number): [number, number, number] {
   return [
     OFFSET_X + col * TILE_SIZE + TILE_SIZE / 2,
@@ -73,75 +86,43 @@ function tilePos(col: number, row: number): [number, number, number] {
 }
 
 // ---------------------------------------------------------------------------
-// Sub-component: Ground tiles (instanced)
+// Sand ripple detail — scattered small bumps for visual interest
 // ---------------------------------------------------------------------------
-function GroundTiles() {
-  const meshRef = useRef<THREE.InstancedMesh>(null);
-
-  const { count, matrices, colors } = useMemo(() => {
+function SandRipples() {
+  const ripples = useMemo(() => {
     const rand = seededRandom(42);
-    const totalTiles = MAP_COLS * MAP_ROWS;
-    const tempMatrix = new THREE.Matrix4();
-    const mats: THREE.Matrix4[] = [];
-    const cols: THREE.Color[] = [];
-
-    for (let i = 0; i < totalTiles; i++) {
-      const col = i % MAP_COLS;
-      const row = Math.floor(i / MAP_COLS);
-      const tile = groundLayer[i];
-
-      if (tile === TILES.WATER) continue; // water rendered separately
-
-      const [x, , z] = tilePos(col, row);
-      // Slight Y variation for natural feel
-      const yOffset = (rand() - 0.5) * 0.3;
-      tempMatrix.makeTranslation(x, yOffset, z);
-      mats.push(tempMatrix.clone());
-
-      // Pick grass color based on tile type with slight random variation
-      let baseColor: THREE.Color;
-      if (tile === TILES.GRASS_1) baseColor = GRASS_COLORS[0];
-      else if (tile === TILES.GRASS_2) baseColor = GRASS_COLORS[1];
-      else baseColor = GRASS_COLORS[2];
-
-      const variation = new THREE.Color(baseColor);
-      variation.offsetHSL(0, (rand() - 0.5) * 0.05, (rand() - 0.5) * 0.04);
-      cols.push(variation);
+    const items: { x: number; z: number; sx: number; sz: number; rot: number }[] = [];
+    for (let i = 0; i < 60; i++) {
+      items.push({
+        x: OFFSET_X + rand() * MAP_WIDTH,
+        z: OFFSET_Z + rand() * MAP_HEIGHT,
+        sx: 20 + rand() * 40,
+        sz: 10 + rand() * 20,
+        rot: rand() * Math.PI,
+      });
     }
-
-    return { count: mats.length, matrices: mats, colors: cols };
+    return items;
   }, []);
 
-  useMemo(() => {
-    const mesh = meshRef.current;
-    if (!mesh) return;
-    for (let i = 0; i < count; i++) {
-      mesh.setMatrixAt(i, matrices[i]);
-      mesh.setColorAt(i, colors[i]);
-    }
-    mesh.instanceMatrix.needsUpdate = true;
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  }, [count, matrices, colors]);
-
   return (
-    <instancedMesh ref={meshRef} args={[undefined, undefined, count]}>
-      <boxGeometry args={[TILE_SIZE, 1, TILE_SIZE]} />
-      <meshStandardMaterial vertexColors roughness={0.9} />
-    </instancedMesh>
+    <group>
+      {ripples.map((r, i) => (
+        <mesh key={i} rotation={[-Math.PI / 2, r.rot, 0]} position={[r.x, -0.5, r.z]} receiveShadow>
+          <planeGeometry args={[r.sx, r.sz]} />
+          <meshStandardMaterial color={0xc9a97a} roughness={1} transparent opacity={0.5} />
+        </mesh>
+      ))}
+    </group>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Sub-component: Path tiles (instanced)
+// Path Tiles — individual meshes for reliability
 // ---------------------------------------------------------------------------
 function PathTiles() {
-  const meshRef = useRef<THREE.InstancedMesh>(null);
-
-  const { count, matrices, colors } = useMemo(() => {
-    const tempMatrix = new THREE.Matrix4();
-    const mats: THREE.Matrix4[] = [];
-    const cols: THREE.Color[] = [];
+  const paths = useMemo(() => {
     const rand = seededRandom(99);
+    const items: { x: number; y: number; z: number; color: string }[] = [];
 
     for (let i = 0; i < pathLayer.length; i++) {
       const tile = pathLayer[i];
@@ -150,79 +131,60 @@ function PathTiles() {
       const col = i % MAP_COLS;
       const row = Math.floor(i / MAP_COLS);
       const [x, , z] = tilePos(col, row);
-
-      // Paths sit slightly above ground
-      const y = 0.6 + rand() * 0.1;
-      tempMatrix.makeTranslation(x, y, z);
-      mats.push(tempMatrix.clone());
-
-      const color = PATH_COLORS[tile] ?? new THREE.Color(0x8d6e63);
-      const varied = new THREE.Color(color);
-      varied.offsetHSL(0, 0, (rand() - 0.5) * 0.05);
-      cols.push(varied);
+      const y = 0.3 + rand() * 0.1;
+      const color = tile === TILES.STONE_PATH ? '#8faaaa' : '#b89b71';
+      items.push({ x, y, z, color });
     }
-
-    return { count: mats.length, matrices: mats, colors: cols };
+    return items;
   }, []);
 
-  useMemo(() => {
-    const mesh = meshRef.current;
-    if (!mesh) return;
-    for (let i = 0; i < count; i++) {
-      mesh.setMatrixAt(i, matrices[i]);
-      mesh.setColorAt(i, colors[i]);
-    }
-    mesh.instanceMatrix.needsUpdate = true;
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  }, [count, matrices, colors]);
-
+  // Group path tiles by color to reduce draw calls
   return (
-    <instancedMesh ref={meshRef} args={[undefined, undefined, count]}>
-      <boxGeometry args={[TILE_SIZE, 0.4, TILE_SIZE]} />
-      <meshStandardMaterial vertexColors roughness={0.85} />
-    </instancedMesh>
+    <group>
+      {paths.map((p, i) => (
+        <mesh key={i} position={[p.x, p.y, p.z]}>
+          <boxGeometry args={[TILE_SIZE, 0.5, TILE_SIZE]} />
+          <meshStandardMaterial color={p.color} roughness={0.8} />
+        </mesh>
+      ))}
+    </group>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Sub-component: Water surface (animated)
+// Animated Water (trench area)
 // ---------------------------------------------------------------------------
 function WaterSurface() {
   const meshRef = useRef<THREE.Mesh>(null);
   const materialRef = useRef<THREE.MeshStandardMaterial>(null);
 
-  // Collect water tile positions
   const waterTiles = useMemo(() => {
     const tiles: Array<[number, number]> = [];
     for (let i = 0; i < groundLayer.length; i++) {
       if (groundLayer[i] === TILES.WATER) {
-        const col = i % MAP_COLS;
-        const row = Math.floor(i / MAP_COLS);
-        tiles.push([col, row]);
+        tiles.push([i % MAP_COLS, Math.floor(i / MAP_COLS)]);
       }
     }
     return tiles;
   }, []);
 
-  // Calculate bounding box of water tiles
   const { centerX, centerZ, width, height } = useMemo(() => {
     if (waterTiles.length === 0) return { centerX: 0, centerZ: 0, width: 0, height: 0 };
-    let minCol = Infinity, maxCol = -Infinity;
-    let minRow = Infinity, maxRow = -Infinity;
+    let minCol = Infinity, maxCol = -Infinity, minRow = Infinity, maxRow = -Infinity;
     for (const [c, r] of waterTiles) {
       if (c < minCol) minCol = c;
       if (c > maxCol) maxCol = c;
       if (r < minRow) minRow = r;
       if (r > maxRow) maxRow = r;
     }
-    const w = (maxCol - minCol + 1) * TILE_SIZE;
-    const h = (maxRow - minRow + 1) * TILE_SIZE;
-    const cx = OFFSET_X + (minCol + (maxCol - minCol + 1) / 2) * TILE_SIZE;
-    const cz = OFFSET_Z + (minRow + (maxRow - minRow + 1) / 2) * TILE_SIZE;
-    return { centerX: cx, centerZ: cz, width: w, height: h };
+    return {
+      centerX: OFFSET_X + (minCol + (maxCol - minCol + 1) / 2) * TILE_SIZE,
+      centerZ: OFFSET_Z + (minRow + (maxRow - minRow + 1) / 2) * TILE_SIZE,
+      width: (maxCol - minCol + 1) * TILE_SIZE,
+      height: (maxRow - minRow + 1) * TILE_SIZE,
+    };
   }, [waterTiles]);
 
-  // Animate water color / opacity shimmer
   useFrame(({ clock }) => {
     if (materialRef.current) {
       const t = clock.getElapsedTime();
@@ -251,84 +213,145 @@ function WaterSurface() {
 }
 
 // ---------------------------------------------------------------------------
-// Sub-component: Procedural Tree
+// Branch Coral (replaces Tree)
 // ---------------------------------------------------------------------------
-function Tree({ position, variant }: { position: [number, number, number]; variant: number }) {
-  const trunkHeight = 10 + variant * 4;
-  const coralColor = TREE_CANOPY_COLORS[variant % 2];
+function BranchCoral({ position, variant }: { position: [number, number, number]; variant: number }) {
+  const color = CORAL_COLORS[variant % CORAL_COLORS.length];
+  const height = 10 + variant * 4;
 
   return (
     <group position={position}>
-      {/* Coral trunk / kelp stalk */}
-      <mesh position={[0, trunkHeight / 2, 0]}>
-        <cylinderGeometry args={[1.2, 2, trunkHeight, 6]} />
-        <meshStandardMaterial color={TREE_TRUNK_COLOR} roughness={0.8} />
+      {/* Coral trunk */}
+      <mesh position={[0, height / 2, 0]}>
+        <cylinderGeometry args={[1.5, 2.5, height, 8]} />
+        <meshStandardMaterial color={color} roughness={0.5} />
       </mesh>
-      {/* Coral branches (sphere cluster instead of cone canopy) */}
-      <mesh position={[0, trunkHeight + 2, 0]}>
-        <sphereGeometry args={[6 + variant * 2, 8, 6]} />
-        <meshStandardMaterial color={coralColor} roughness={0.6} />
+      {/* Coral branches */}
+      <mesh position={[3, height * 0.7, 1]} rotation={[0, 0, 0.4]}>
+        <cylinderGeometry args={[0.8, 1.2, height * 0.5, 6]} />
+        <meshStandardMaterial color={color} roughness={0.5} />
       </mesh>
-      <mesh position={[3, trunkHeight, 2]}>
-        <sphereGeometry args={[4 + variant, 8, 6]} />
-        <meshStandardMaterial color={coralColor} roughness={0.6} />
+      <mesh position={[-2, height * 0.8, -1]} rotation={[0, 0, -0.3]}>
+        <cylinderGeometry args={[0.6, 1, height * 0.4, 6]} />
+        <meshStandardMaterial color={color} roughness={0.5} />
       </mesh>
-      <mesh position={[-3, trunkHeight + 1, -1]}>
-        <sphereGeometry args={[3 + variant, 8, 6]} />
-        <meshStandardMaterial color={coralColor} roughness={0.6} />
+      {/* Bulbous tips */}
+      <mesh position={[0, height + 1, 0]}>
+        <sphereGeometry args={[2.5 + variant, 8, 6]} />
+        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.1} roughness={0.4} />
+      </mesh>
+      <mesh position={[4, height * 0.9, 1.5]}>
+        <sphereGeometry args={[1.8 + variant * 0.5, 8, 6]} />
+        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.1} roughness={0.4} />
       </mesh>
     </group>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Sub-component: Flower
+// Sea Anemone (replaces Flower)
 // ---------------------------------------------------------------------------
-function Flower({ position, variant }: { position: [number, number, number]; variant: number }) {
-  const color = FLOWER_COLORS[variant % 2];
+function SeaAnemone({ position, variant }: { position: [number, number, number]; variant: number }) {
+  const color = ANEMONE_COLORS[variant % ANEMONE_COLORS.length];
+  const groupRef = useRef<THREE.Group>(null);
+  const phase = useMemo(() => Math.random() * Math.PI * 2, []);
+
+  useFrame(({ clock }) => {
+    if (groupRef.current) {
+      const t = clock.getElapsedTime();
+      const s = 1 + Math.sin(t * 1.5 + phase) * 0.08;
+      groupRef.current.scale.set(s, s, s);
+    }
+  });
+
   return (
-    <group position={position}>
-      {/* Sea anemone base */}
-      <mesh position={[0, 0.8, 0]}>
-        <cylinderGeometry args={[0.6, 1, 1.6, 6]} />
+    <group position={position} ref={groupRef}>
+      {/* Base */}
+      <mesh position={[0, 1, 0]}>
+        <cylinderGeometry args={[1, 2, 2, 8]} />
         <meshStandardMaterial color={0x4a6741} roughness={0.7} />
       </mesh>
-      {/* Tentacle cluster */}
-      <mesh position={[0, 2.2, 0]}>
-        <sphereGeometry args={[1.4, 8, 6]} />
-        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.15} roughness={0.5} />
+      {/* Glowing tentacle cluster */}
+      <mesh position={[0, 3, 0]}>
+        <sphereGeometry args={[2, 10, 8]} />
+        <meshStandardMaterial
+          color={color}
+          emissive={color}
+          emissiveIntensity={0.25}
+          roughness={0.3}
+          transparent
+          opacity={0.9}
+        />
       </mesh>
+      {/* Smaller orbs */}
+      {[0, 1.2, 2.4, 3.6, 4.8].map((angle, i) => (
+        <mesh
+          key={i}
+          position={[
+            Math.cos(angle * Math.PI) * 1.6,
+            2.5,
+            Math.sin(angle * Math.PI) * 1.6,
+          ]}
+        >
+          <sphereGeometry args={[0.7, 6, 4]} />
+          <meshStandardMaterial
+            color={color}
+            emissive={color}
+            emissiveIntensity={0.3}
+            transparent
+            opacity={0.8}
+          />
+        </mesh>
+      ))}
     </group>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Sub-component: Bush
+// Kelp Bush (replaces Bush) — with gentle sway
 // ---------------------------------------------------------------------------
-function Bush({ position }: { position: [number, number, number] }) {
+function KelpBush({ position }: { position: [number, number, number] }) {
+  const groupRef = useRef<THREE.Group>(null);
+  const phaseOffset = useMemo(() => Math.random() * Math.PI * 2, []);
+  const kelpColor = KELP_COLORS[Math.floor(Math.random() * KELP_COLORS.length)];
+
+  useFrame(({ clock }) => {
+    if (groupRef.current) {
+      const t = clock.getElapsedTime();
+      groupRef.current.rotation.z = Math.sin(t * 0.8 + phaseOffset) * 0.1;
+      groupRef.current.rotation.x = Math.cos(t * 0.6 + phaseOffset * 0.7) * 0.05;
+    }
+  });
+
   return (
-    <group position={[position[0], position[1], position[2]]}>
-      {/* Kelp bush cluster */}
-      <mesh position={[0, 2, 0]}>
-        <sphereGeometry args={[3, 8, 6]} />
-        <meshStandardMaterial color={BUSH_COLOR} roughness={0.7} />
-      </mesh>
-      <mesh position={[1.5, 3, 0.5]}>
-        <sphereGeometry args={[2, 8, 6]} />
-        <meshStandardMaterial color={0x1b5e20} roughness={0.7} />
-      </mesh>
+    <group position={position}>
+      <group ref={groupRef}>
+        {/* Kelp fronds */}
+        <mesh position={[0, 4, 0]}>
+          <boxGeometry args={[2.5, 8, 0.8]} />
+          <meshStandardMaterial color={kelpColor} transparent opacity={0.85} roughness={0.6} side={THREE.DoubleSide} />
+        </mesh>
+        <mesh position={[1.5, 3.5, 0.5]} rotation={[0, 0.5, 0.15]}>
+          <boxGeometry args={[2, 7, 0.6]} />
+          <meshStandardMaterial color={kelpColor} transparent opacity={0.8} roughness={0.6} side={THREE.DoubleSide} />
+        </mesh>
+        <mesh position={[-1, 3, -0.5]} rotation={[0, -0.3, -0.1]}>
+          <boxGeometry args={[1.8, 6, 0.6]} />
+          <meshStandardMaterial color={kelpColor} transparent opacity={0.8} roughness={0.6} side={THREE.DoubleSide} />
+        </mesh>
+      </group>
     </group>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Sub-component: All decorations from the decoration layer
+// Decorations from tilemap
 // ---------------------------------------------------------------------------
 function Decorations() {
   const items = useMemo(() => {
     const rand = seededRandom(777);
     const result: Array<{
-      type: 'tree' | 'flower' | 'bush';
+      type: 'coral' | 'anemone' | 'kelp';
       position: [number, number, number];
       variant: number;
     }> = [];
@@ -340,17 +363,16 @@ function Decorations() {
       const col = i % MAP_COLS;
       const row = Math.floor(i / MAP_COLS);
       const [x, , z] = tilePos(col, row);
-      // Small random offset for natural feel
       const ox = (rand() - 0.5) * 6;
       const oz = (rand() - 0.5) * 6;
       const pos: [number, number, number] = [x + ox, 0, z + oz];
 
       if (tile === TILES.TREE_1 || tile === TILES.TREE_2) {
-        result.push({ type: 'tree', position: pos, variant: tile === TILES.TREE_1 ? 0 : 1 });
+        result.push({ type: 'coral', position: pos, variant: tile === TILES.TREE_1 ? 0 : 1 });
       } else if (tile === TILES.FLOWER_1 || tile === TILES.FLOWER_2) {
-        result.push({ type: 'flower', position: pos, variant: tile === TILES.FLOWER_1 ? 0 : 1 });
+        result.push({ type: 'anemone', position: pos, variant: tile === TILES.FLOWER_1 ? 0 : 1 });
       } else if (tile === TILES.BUSH) {
-        result.push({ type: 'bush', position: pos, variant: 0 });
+        result.push({ type: 'kelp', position: pos, variant: 0 });
       }
     }
 
@@ -361,12 +383,12 @@ function Decorations() {
     <group>
       {items.map((item, i) => {
         switch (item.type) {
-          case 'tree':
-            return <Tree key={`tree-${i}`} position={item.position} variant={item.variant} />;
-          case 'flower':
-            return <Flower key={`flower-${i}`} position={item.position} variant={item.variant} />;
-          case 'bush':
-            return <Bush key={`bush-${i}`} position={item.position} />;
+          case 'coral':
+            return <BranchCoral key={`c-${i}`} position={item.position} variant={item.variant} />;
+          case 'anemone':
+            return <SeaAnemone key={`a-${i}`} position={item.position} variant={item.variant} />;
+          case 'kelp':
+            return <KelpBush key={`k-${i}`} position={item.position} />;
           default:
             return null;
         }
@@ -376,13 +398,256 @@ function Decorations() {
 }
 
 // ---------------------------------------------------------------------------
-// Sub-component: Base plane beneath everything
+// Scattered shells, starfish, sea urchins on the sand
+// ---------------------------------------------------------------------------
+function SeaFloorDetails() {
+  const items = useMemo(() => {
+    const rand = seededRandom(555);
+    const details: Array<{
+      type: 'shell' | 'starfish' | 'rock' | 'urchin';
+      pos: [number, number, number];
+      rot: number;
+      scale: number;
+      color: THREE.Color;
+    }> = [];
+
+    for (let i = 0; i < 60; i++) {
+      const x = OFFSET_X + rand() * MAP_WIDTH;
+      const z = OFFSET_Z + rand() * MAP_HEIGHT;
+      const r = rand();
+      const type = r < 0.3 ? 'shell' : r < 0.5 ? 'starfish' : r < 0.75 ? 'rock' : 'urchin';
+      const colorMap: Record<string, THREE.Color[]> = {
+        shell: [new THREE.Color(0xfff5e1), new THREE.Color(0xffe0b2), new THREE.Color(0xffccbc)],
+        starfish: [new THREE.Color(0xff5722), new THREE.Color(0xff7043), new THREE.Color(0xffab91)],
+        rock: [new THREE.Color(0x78909c), new THREE.Color(0x90a4ae), new THREE.Color(0x607d8b)],
+        urchin: [new THREE.Color(0x311b92), new THREE.Color(0x4a148c), new THREE.Color(0x1a237e)],
+      };
+      details.push({
+        type,
+        pos: [x, 0.5, z],
+        rot: rand() * Math.PI * 2,
+        scale: 0.5 + rand() * 1.0,
+        color: colorMap[type][Math.floor(rand() * 3)],
+      });
+    }
+    return details;
+  }, []);
+
+  return (
+    <group>
+      {items.map((item, i) => {
+        if (item.type === 'shell') {
+          return (
+            <mesh key={i} position={item.pos} rotation={[0, item.rot, 0]} scale={item.scale}>
+              <sphereGeometry args={[1, 8, 4, 0, Math.PI]} />
+              <meshStandardMaterial color={item.color} roughness={0.6} />
+            </mesh>
+          );
+        }
+        if (item.type === 'starfish') {
+          return (
+            <mesh key={i} position={item.pos} rotation={[-Math.PI / 2, 0, item.rot]} scale={item.scale}>
+              <circleGeometry args={[1.5, 5]} />
+              <meshStandardMaterial color={item.color} roughness={0.7} side={THREE.DoubleSide} />
+            </mesh>
+          );
+        }
+        if (item.type === 'rock') {
+          return (
+            <mesh key={i} position={item.pos} rotation={[0, item.rot, 0]} scale={[item.scale, item.scale * 0.6, item.scale]}>
+              <dodecahedronGeometry args={[1.5, 0]} />
+              <meshStandardMaterial color={item.color} roughness={0.9} />
+            </mesh>
+          );
+        }
+        return (
+          <mesh key={i} position={item.pos} rotation={[0, item.rot, 0]} scale={item.scale * 0.8}>
+            <sphereGeometry args={[1.2, 8, 8]} />
+            <meshStandardMaterial color={item.color} roughness={0.3} metalness={0.2} />
+          </mesh>
+        );
+      })}
+    </group>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Animated Bubbles rising from the floor
+// ---------------------------------------------------------------------------
+function UnderwaterBubbles() {
+  const meshRef = useRef<THREE.InstancedMesh>(null);
+  const bubbleCount = 80;
+
+  const bubbleData = useMemo(() => {
+    const data: Array<{
+      x: number; y: number; z: number;
+      speed: number; wobblePhase: number; wobbleAmp: number;
+      baseX: number; baseZ: number; size: number;
+    }> = [];
+    for (let i = 0; i < bubbleCount; i++) {
+      const x = OFFSET_X + Math.random() * MAP_WIDTH;
+      const z = OFFSET_Z + Math.random() * MAP_HEIGHT;
+      data.push({
+        x, y: Math.random() * 150, z,
+        speed: 8 + Math.random() * 15,
+        wobblePhase: Math.random() * Math.PI * 2,
+        wobbleAmp: 1 + Math.random() * 2,
+        baseX: x, baseZ: z,
+        size: 0.3 + Math.random() * 1.0,
+      });
+    }
+    return data;
+  }, []);
+
+  useFrame(({ clock }) => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+    const t = clock.getElapsedTime();
+    const tempObj = new THREE.Object3D();
+
+    for (let i = 0; i < bubbleCount; i++) {
+      const b = bubbleData[i];
+      b.y += b.speed * 0.016;
+      if (b.y > 200) {
+        b.y = -5;
+        b.x = b.baseX + (Math.random() - 0.5) * 20;
+        b.z = b.baseZ + (Math.random() - 0.5) * 20;
+      }
+
+      const wx = Math.sin(t * 1.2 + b.wobblePhase) * b.wobbleAmp;
+      const wz = Math.cos(t * 0.9 + b.wobblePhase * 0.7) * b.wobbleAmp * 0.6;
+
+      tempObj.position.set(b.x + wx, b.y, b.z + wz);
+      tempObj.scale.setScalar(b.size);
+      tempObj.updateMatrix();
+      mesh.setMatrixAt(i, tempObj.matrix);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+  });
+
+  return (
+    <instancedMesh ref={meshRef} args={[undefined, undefined, bubbleCount]}>
+      <sphereGeometry args={[1, 8, 6]} />
+      <meshStandardMaterial
+        color={0xccf5ff}
+        transparent
+        opacity={0.3}
+        roughness={0.0}
+        metalness={0.8}
+      />
+    </instancedMesh>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Underwater Light Rays (god rays from surface)
+// ---------------------------------------------------------------------------
+function LightRays() {
+  const raysRef = useRef<THREE.Group>(null);
+
+  useFrame(({ clock }) => {
+    if (raysRef.current) {
+      const t = clock.getElapsedTime();
+      raysRef.current.children.forEach((child, i) => {
+        if (child instanceof THREE.Mesh && child.material instanceof THREE.MeshBasicMaterial) {
+          child.material.opacity = 0.04 + Math.sin(t * 0.5 + i * 1.2) * 0.025;
+        }
+      });
+    }
+  });
+
+  const rays = useMemo(() => {
+    const rand = seededRandom(333);
+    return Array.from({ length: 8 }).map(() => ({
+      x: OFFSET_X + rand() * MAP_WIDTH,
+      z: OFFSET_Z + rand() * MAP_HEIGHT,
+      width: 30 + rand() * 50,
+      rotation: rand() * 0.3 - 0.15,
+    }));
+  }, []);
+
+  return (
+    <group ref={raysRef}>
+      {rays.map((ray, i) => (
+        <mesh key={i} position={[ray.x, 80, ray.z]} rotation={[0, 0, ray.rotation]}>
+          <planeGeometry args={[ray.width, 200]} />
+          <meshBasicMaterial
+            color={0x88ddff}
+            transparent
+            opacity={0.05}
+            side={THREE.DoubleSide}
+            depthWrite={false}
+          />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Caustic Light Pattern on the floor
+// ---------------------------------------------------------------------------
+function CausticLight() {
+  const materialRef = useRef<THREE.ShaderMaterial>(null);
+
+  const uniforms = useMemo(() => ({
+    uTime: { value: 0 },
+    uColor: { value: new THREE.Color(0x66ccff) },
+  }), []);
+
+  useFrame(({ clock }) => {
+    if (materialRef.current) {
+      materialRef.current.uniforms.uTime.value = clock.getElapsedTime();
+    }
+  });
+
+  return (
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 1.2, 0]}>
+      <planeGeometry args={[MAP_WIDTH, MAP_HEIGHT]} />
+      <shaderMaterial
+        ref={materialRef}
+        transparent
+        depthWrite={false}
+        uniforms={uniforms}
+        vertexShader={`
+          varying vec2 vUv;
+          void main() {
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `}
+        fragmentShader={`
+          uniform float uTime;
+          uniform vec3 uColor;
+          varying vec2 vUv;
+
+          float caustic(vec2 uv, float time) {
+            vec2 p = uv * 8.0;
+            float c = 0.0;
+            c += sin(p.x * 3.0 + time * 0.8) * cos(p.y * 2.5 + time * 0.6) * 0.5;
+            c += sin(p.x * 1.5 - time * 0.4 + p.y * 2.0) * 0.3;
+            c += cos(p.y * 4.0 + time * 1.0 + p.x * 1.5) * 0.2;
+            return clamp(c, 0.0, 1.0);
+          }
+
+          void main() {
+            float c = caustic(vUv, uTime);
+            gl_FragColor = vec4(uColor, c * 0.1);
+          }
+        `}
+      />
+    </mesh>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Base plane (deep sand beneath tiles)
 // ---------------------------------------------------------------------------
 function BasePlane() {
   return (
-    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.6, 0]}>
-      <planeGeometry args={[MAP_WIDTH + 64, MAP_HEIGHT + 64]} />
-      <meshStandardMaterial color={0x0d3b3e} roughness={0.9} />
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1, 0]}>
+      <planeGeometry args={[MAP_WIDTH + 200, MAP_HEIGHT + 200]} />
+      <meshStandardMaterial color={0xe8d5b7} roughness={0.9} />
     </mesh>
   );
 }
@@ -393,12 +658,12 @@ function BasePlane() {
 export default function ArenaTerrain() {
   return (
     <group>
-      {/* Underwater ambient + directional lighting */}
-      <ambientLight intensity={0.5} color={0x88ccdd} />
+      {/* Underwater ambient + directional lighting — bright enough to see sandy floor */}
+      <ambientLight intensity={0.9} color={0xaaddee} />
       <directionalLight
-        position={[MAP_WIDTH * 0.4, 300, -MAP_HEIGHT * 0.3]}
-        intensity={0.8}
-        color={0x88ddee}
+        position={[MAP_WIDTH * 0.3, 400, -MAP_HEIGHT * 0.2]}
+        intensity={1.2}
+        color={0xffeedd}
         castShadow
         shadow-mapSize-width={2048}
         shadow-mapSize-height={2048}
@@ -407,21 +672,28 @@ export default function ArenaTerrain() {
         shadow-camera-top={MAP_HEIGHT / 2}
         shadow-camera-bottom={-MAP_HEIGHT / 2}
       />
-      <hemisphereLight args={[0x1a6e8a, 0x0d3b3e, 0.4]} />
+      {/* Sky light — blue above, warm sand below */}
+      <hemisphereLight args={[0x88bbdd, 0xe8d5b7, 0.6]} />
+      {/* Warm underwater sun column */}
+      <pointLight position={[0, 300, 0]} intensity={0.5} color={0x88eeff} distance={1200} />
 
-      {/* Base ocean floor plane */}
+      {/* Sandy ocean floor */}
       <BasePlane />
-
-      {/* Seafloor ground tiles */}
-      <GroundTiles />
-
-      {/* Sandy/stone paths */}
+      <SandRipples />
       <PathTiles />
 
-      {/* Animated deep water (trench area) */}
+      {/* Deep water trench */}
       <WaterSurface />
 
-      {/* Coral, anemones, kelp */}
+      {/* Underwater effects */}
+      <CausticLight />
+      <LightRays />
+      <UnderwaterBubbles />
+
+      {/* Floor scatter — shells, starfish, rocks */}
+      <SeaFloorDetails />
+
+      {/* Living reef — coral, kelp, anemones */}
       <Decorations />
     </group>
   );
