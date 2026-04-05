@@ -1,10 +1,13 @@
 'use client';
 
-import { useRef, useEffect, memo } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
+import { useRef, useEffect, useState, memo } from 'react';
+import { Canvas, useFrame, extend } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
+
+// Register three/webgpu elements with R3F
+extend(THREE as any);
 import ArenaTerrain from '@/lib/three/arena-terrain';
 import ArenaBuildings from '@/lib/three/arena-buildings';
 import ArenaNpcs from '@/lib/three/arena-npcs';
@@ -20,8 +23,8 @@ const MAP_HEIGHT = 800;
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 const CAM_PAN_SPEED = 300;
-const SKY_COLOR = new THREE.Color(0x0a3d5c); // Deep ocean blue
-const FOG_COLOR = new THREE.Color(0x0a3d5c);
+const SKY_COLOR = new THREE.Color(0x1a8ec8); // Bright SpongeBob ocean blue
+const FOG_COLOR = new THREE.Color(0x2090b8); // Lighter underwater haze
 
 export type WorldMode = 'game' | 'arena';
 
@@ -177,10 +180,10 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
         enablePan={true}
         enableZoom={true}
         enableRotate={true}
-        minDistance={isGame ? 150 : 200}
-        maxDistance={1000}
-        maxPolarAngle={Math.PI / 2.5}
-        target={[0, 0, 0]}
+        minDistance={isGame ? 80 : 100}
+        maxDistance={800}
+        maxPolarAngle={Math.PI / 2.1}
+        target={[0, -10, 0]}
       />
 
       {/* Camera controller: WASD free-cam (arena) vs avatar follow (game) */}
@@ -190,11 +193,12 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
         <WASDCameraController controlsRef={controlsRef} />
       )}
 
-      {/* Lighting */}
-      <ambientLight intensity={0.6} />
+      {/* Underwater lighting — bright enough to see sandy floor clearly */}
+      <ambientLight intensity={0.8} color={0xaaddee} />
       <directionalLight
         position={[200, 400, 200]}
-        intensity={1.0}
+        intensity={1.1}
+        color={0xffeedd}
         castShadow
         shadow-mapSize-width={2048}
         shadow-mapSize-height={2048}
@@ -206,8 +210,8 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
         shadow-camera-far={1200}
       />
 
-      {/* Fog */}
-      <fog attach="fog" args={[FOG_COLOR, 500, 1500]} />
+      {/* Underwater fog — gentle, not too dark */}
+      <fog attach="fog" args={[FOG_COLOR, 600, 1800]} />
 
       {/* Shared world geometry */}
       <ArenaTerrain />
@@ -224,7 +228,34 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
 // ---------------------------------------------------------------------------
 // Main exported Canvas component
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Detect WebGPU support
+// ---------------------------------------------------------------------------
+function supportsWebGPU(): boolean {
+  return typeof navigator !== 'undefined' && 'gpu' in navigator;
+}
+
+// ---------------------------------------------------------------------------
+// Main exported Canvas component
+// ---------------------------------------------------------------------------
 function World3DCanvas({ mode }: World3DCanvasProps) {
+  const [gpuAvailable, setGpuAvailable] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (!supportsWebGPU()) {
+      setGpuAvailable(false);
+      return;
+    }
+    // Probe actual adapter availability
+    navigator.gpu.requestAdapter().then(
+      (adapter) => setGpuAvailable(!!adapter),
+      () => setGpuAvailable(false)
+    );
+  }, []);
+
+  // Wait for GPU probe before rendering
+  if (gpuAvailable === null) return null;
+
   return (
     <div
       style={{
@@ -237,12 +268,23 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
     >
       <Canvas
         shadows
-        gl={{ antialias: true }}
+        gl={
+          gpuAvailable
+            ? async (props: any) => {
+                const renderer = new THREE.WebGPURenderer({
+                  ...props,
+                  antialias: true,
+                });
+                await renderer.init();
+                return renderer as any;
+              }
+            : { antialias: true }
+        }
         camera={{
-          fov: 50,
+          fov: 60,
           near: 1,
           far: 3000,
-          position: mode === 'game' ? [0, 300, 350] : [0, 400, 500],
+          position: mode === 'game' ? [0, 500, 100] : [0, 600, 120],
         }}
         onCreated={({ scene }) => {
           scene.background = SKY_COLOR;
@@ -254,4 +296,4 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
   );
 }
 
-export default memo(World3DCanvas);
+export default World3DCanvas;
