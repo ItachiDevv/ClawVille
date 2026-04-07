@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useEffect, useState, memo } from 'react';
+import { useRef, useEffect, useState, useMemo, memo } from 'react';
 import { Canvas, useFrame, extend } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
@@ -23,8 +23,8 @@ const MAP_HEIGHT = 800;
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 const CAM_PAN_SPEED = 300;
-const SKY_COLOR = new THREE.Color(0x1a8ec8); // Bright SpongeBob ocean blue
-const FOG_COLOR = new THREE.Color(0x2090b8); // Lighter underwater haze
+const SKY_COLOR = new THREE.Color(0x0a2a4a); // Deep ocean blue
+const FOG_COLOR = new THREE.Color(0x0d3050); // Dark underwater haze
 
 export type WorldMode = 'game' | 'arena';
 
@@ -166,6 +166,54 @@ function PetFollowCamera({
 }
 
 // ---------------------------------------------------------------------------
+// Underwater bubbles (1 instanced mesh = 1 draw call)
+// ---------------------------------------------------------------------------
+function UnderwaterBubbles() {
+  const ref = useRef<THREE.InstancedMesh>(null);
+  const count = 40;
+  const data = useMemo(() => {
+    const arr = [];
+    for (let i = 0; i < count; i++) {
+      arr.push({
+        x: (Math.random() - 0.5) * MAP_WIDTH,
+        y: Math.random() * 300 - 20,
+        z: (Math.random() - 0.5) * MAP_HEIGHT,
+        speed: 15 + Math.random() * 25,
+        wobble: Math.random() * Math.PI * 2,
+        size: 0.5 + Math.random() * 1.5,
+      });
+    }
+    return arr;
+  }, []);
+
+  const dummy = useMemo(() => new THREE.Object3D(), []);
+
+  useFrame(({ clock }) => {
+    if (!ref.current) return;
+    const t = clock.elapsedTime;
+    data.forEach((b, i) => {
+      const y = ((b.y + b.speed * t) % 320) - 20;
+      dummy.position.set(
+        b.x + Math.sin(t * 0.3 + b.wobble) * 5,
+        y,
+        b.z + Math.cos(t * 0.25 + b.wobble) * 4,
+      );
+      dummy.scale.setScalar(b.size);
+      dummy.updateMatrix();
+      ref.current!.setMatrixAt(i, dummy.matrix);
+    });
+    ref.current.instanceMatrix.needsUpdate = true;
+  });
+
+  return (
+    <instancedMesh ref={ref} args={[undefined, undefined, count]}>
+      <sphereGeometry args={[1, 6, 6]} />
+      <meshStandardMaterial color={0x88ddff} transparent opacity={0.2} roughness={0.1} />
+    </instancedMesh>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Scene contents (inside Canvas)
 // ---------------------------------------------------------------------------
 const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode }) {
@@ -193,21 +241,22 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
         <WASDCameraController controlsRef={controlsRef} />
       )}
 
-      {/* Underwater lighting — bright enough to see sandy floor clearly */}
-      <ambientLight intensity={1.0} color={0xaaddee} />
-      <directionalLight
-        position={[200, 400, 200]}
-        intensity={1.1}
-        color={0xffeedd}
-      />
+      {/* Underwater lighting */}
+      <ambientLight intensity={0.6} color={0x6699bb} />
+      <directionalLight position={[200, 400, 200]} intensity={0.8} color={0xaaddee} />
+      {/* Caustic light from above */}
+      <pointLight position={[0, 300, 0]} intensity={0.4} color={0x00ccff} distance={800} />
 
-      {/* Underwater fog — gentle, not too dark */}
-      <fog attach="fog" args={[FOG_COLOR, 600, 1800]} />
+      {/* Underwater fog — creates depth */}
+      <fog attach="fog" args={[FOG_COLOR, 200, 1200]} />
 
       {/* Shared world geometry */}
       <ArenaTerrain />
       <ArenaBuildings />
       <ArenaNpcs />
+
+      {/* Atmosphere */}
+      <UnderwaterBubbles />
 
       {/* Mode-specific content */}
       {isGame && <PlayerPet />}
