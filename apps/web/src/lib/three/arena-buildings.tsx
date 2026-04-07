@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, Suspense } from 'react';
 import { useGLTF } from '@react-three/drei';
 import { Text, Billboard } from '@react-three/drei';
 import * as THREE from 'three';
@@ -14,36 +14,33 @@ import {
 import { BUILDING_OPENCLAW_THEMES } from '@legacyapp/shared';
 
 // ---------------------------------------------------------------------------
-// Preload all building models
+// Building model paths + scales
 // ---------------------------------------------------------------------------
-const BUILDING_MODELS: Record<string, string> = {
-  'cron-hub': '/models/building-shell.glb',
-  'webhook-gateway': '/models/building-anchor.glb',
-  'memory-vault': '/models/building-cave.glb',
-  'skill-forge': '/models/building-barrel.glb',
-  'channel-bridge': '/models/building-lighthouse.glb',
-  'tool-workshop': '/models/building-shipwreck.glb',
-  'canvas-studio': '/models/building-lantern.glb',
-  'voice-tower': '/models/building-tower2.glb',
-  'security-fortress': '/models/building-seashell.glb',
-  'config-citadel': '/models/building-submarine.glb',
+const BUILDING_MODELS: Record<string, { path: string; scale: number }> = {
+  'cron-hub': { path: '/models/building-shell.glb', scale: 8 },
+  'webhook-gateway': { path: '/models/building-anchor.glb', scale: 12 },
+  'memory-vault': { path: '/models/building-cave.glb', scale: 3 },
+  'skill-forge': { path: '/models/building-barrel.glb', scale: 6 },
+  'channel-bridge': { path: '/models/building-lighthouse.glb', scale: 4 },
+  'tool-workshop': { path: '/models/building-shipwreck.glb', scale: 4 },
+  'canvas-studio': { path: '/models/building-lantern.glb', scale: 10 },
+  'voice-tower': { path: '/models/building-tower2.glb', scale: 5 },
+  'security-fortress': { path: '/models/building-seashell.glb', scale: 2 },
+  'config-citadel': { path: '/models/building-submarine.glb', scale: 4 },
 };
 
-// Preload all
-Object.values(BUILDING_MODELS).forEach((path) => useGLTF.preload(path));
-
-// Scale per model (tuned so buildings look good relative to lobsters)
-const BUILDING_SCALES: Record<string, number> = {
-  'cron-hub': 8,
-  'webhook-gateway': 12,
-  'memory-vault': 3,
-  'skill-forge': 6,
-  'channel-bridge': 4,
-  'tool-workshop': 4,
-  'canvas-studio': 10,
-  'voice-tower': 5,
-  'security-fortress': 2,
-  'config-citadel': 4,
+// Procedural building colors (used as fallback)
+const BUILDING_COLORS: Record<string, number> = {
+  'cron-hub': 0x00bcd4,
+  'webhook-gateway': 0x2196f3,
+  'memory-vault': 0x9c27b0,
+  'skill-forge': 0xff5722,
+  'channel-bridge': 0x4caf50,
+  'tool-workshop': 0xff9800,
+  'canvas-studio': 0xe91e63,
+  'voice-tower': 0x3f51b5,
+  'security-fortress': 0x607d8b,
+  'config-citadel': 0x009688,
 };
 
 // ---------------------------------------------------------------------------
@@ -59,53 +56,30 @@ function zoneCenter(zone: BuildingZone): [number, number, number] {
 }
 
 // ---------------------------------------------------------------------------
-// Floating label — dark glass sign with category subtitle
+// Floating label
 // ---------------------------------------------------------------------------
 function FloatingLabel({ text, subtitle, y }: { text: string; subtitle?: string; y: number }) {
   return (
     <group position={[0, y, 0]}>
-      {/* Kelp stalk post */}
       <mesh position={[0, -8, 0]}>
         <cylinderGeometry args={[0.7, 1, 14, 8]} />
         <meshStandardMaterial color={0x2e7d32} roughness={0.75} />
       </mesh>
       <Billboard follow lockX={false} lockY={false} lockZ={false}>
         <group>
-          {/* Dark glass sign background */}
           <mesh scale={[2.1, subtitle ? 1.5 : 1.18, 1]}>
             <circleGeometry args={[10.5, 32]} />
             <meshBasicMaterial color={0x0a1628} transparent opacity={0.9} depthTest={false} />
           </mesh>
-          {/* Cyan border ring */}
           <mesh scale={[2.2, subtitle ? 1.55 : 1.22, 1]}>
             <ringGeometry args={[10.2, 10.8, 32]} />
             <meshBasicMaterial color={0x00e5ff} transparent opacity={0.4} depthTest={false} />
           </mesh>
-          {/* Building name */}
-          <Text
-            position={[0, subtitle ? 2 : 0.05, 0.5]}
-            fontSize={3.6}
-            color="#00e5ff"
-            anchorX="center"
-            anchorY="middle"
-            outlineWidth={0.2}
-            outlineColor="#0a1628"
-            maxWidth={30}
-          >
+          <Text position={[0, subtitle ? 2 : 0.05, 0.5]} fontSize={3.6} color="#00e5ff" anchorX="center" anchorY="middle" outlineWidth={0.2} outlineColor="#0a1628" maxWidth={30}>
             {text}
           </Text>
-          {/* Category subtitle */}
           {subtitle && (
-            <Text
-              position={[0, -2.8, 0.5]}
-              fontSize={2.2}
-              color="#ffffff"
-              anchorX="center"
-              anchorY="middle"
-              outlineWidth={0.15}
-              outlineColor="#0a1628"
-              maxWidth={28}
-            >
+            <Text position={[0, -2.8, 0.5]} fontSize={2.2} color="#ffffff" anchorX="center" anchorY="middle" outlineWidth={0.15} outlineColor="#0a1628" maxWidth={28}>
               {subtitle}
             </Text>
           )}
@@ -116,26 +90,65 @@ function FloatingLabel({ text, subtitle, y }: { text: string; subtitle?: string;
 }
 
 // ---------------------------------------------------------------------------
-// Single building — loads GLB model
+// Simple procedural building (always loads, no GLB dependency)
 // ---------------------------------------------------------------------------
-function BuildingModel({ zone }: { zone: BuildingZone }) {
-  const modelPath = BUILDING_MODELS[zone.id];
-  if (!modelPath) return null;
+function ProceduralBuilding({ zone }: { zone: BuildingZone }) {
+  const color = BUILDING_COLORS[zone.id] ?? 0x888888;
+  const w = zone.width * TILE_SIZE * 0.7;
+  const h = 20 + (zone.width * 3);
+  const d = zone.height * TILE_SIZE * 0.7;
 
-  const { scene } = useGLTF(modelPath);
+  return (
+    <group>
+      {/* Main structure */}
+      <mesh position={[0, h / 2, 0]} castShadow>
+        <boxGeometry args={[w, h, d]} />
+        <meshStandardMaterial color={color} roughness={0.6} />
+      </mesh>
+      {/* Roof */}
+      <mesh position={[0, h + 4, 0]}>
+        <coneGeometry args={[w * 0.7, 8, 4]} />
+        <meshStandardMaterial color={color} roughness={0.5} />
+      </mesh>
+      {/* Glow accent at base */}
+      <mesh position={[0, 0.5, 0]}>
+        <boxGeometry args={[w + 4, 1, d + 4]} />
+        <meshStandardMaterial color={0x00e5ff} emissive={0x00e5ff} emissiveIntensity={0.3} transparent opacity={0.4} />
+      </mesh>
+    </group>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// GLB building (wrapped in Suspense, falls back to procedural)
+// ---------------------------------------------------------------------------
+function GLBModel({ path, scale }: { path: string; scale: number }) {
+  const { scene } = useGLTF(path);
   const cloned = useMemo(() => scene.clone(true), [scene]);
+  return (
+    <group scale={scale}>
+      <primitive object={cloned} />
+    </group>
+  );
+}
+
+function BuildingModel({ zone }: { zone: BuildingZone }) {
   const [cx, , cz] = zoneCenter(zone);
-  const scale = BUILDING_SCALES[zone.id] ?? 4;
   const theme = BUILDING_OPENCLAW_THEMES[zone.id];
   const label = theme?.label ?? zone.id;
   const category = theme?.category;
+  const model = BUILDING_MODELS[zone.id];
 
   return (
     <group position={[cx, 0, cz]}>
-      {/* GLB model */}
-      <group scale={scale} position={[0, 0, 0]}>
-        <primitive object={cloned} />
-      </group>
+      {/* Try GLB, fall back to procedural */}
+      <Suspense fallback={<ProceduralBuilding zone={zone} />}>
+        {model ? (
+          <GLBModel path={model.path} scale={model.scale} />
+        ) : (
+          <ProceduralBuilding zone={zone} />
+        )}
+      </Suspense>
 
       {/* Glowing base ring */}
       <mesh position={[0, 0.1, 0]} rotation={[-Math.PI / 2, 0, 0]}>
@@ -150,7 +163,7 @@ function BuildingModel({ zone }: { zone: BuildingZone }) {
 }
 
 // ---------------------------------------------------------------------------
-// Main component — renders all buildings
+// Main component
 // ---------------------------------------------------------------------------
 export default function ArenaBuildings() {
   return (
