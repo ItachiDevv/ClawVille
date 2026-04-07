@@ -1,0 +1,94 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import { useGameStore, type GameState } from '@/stores/game';
+import { api } from '@/lib/api';
+
+export default function DailyLoginModal() {
+  const dailyLoginClaimed = useGameStore((s: GameState) => s.dailyLoginClaimed);
+  const setDailyLoginClaimed = useGameStore((s: GameState) => s.setDailyLoginClaimed);
+  const [show, setShow] = useState(false);
+  const [streak, setStreak] = useState(0);
+  const [tokensEarned, setTokensEarned] = useState(0);
+  const [totalTokens, setTotalTokens] = useState(0);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (dailyLoginClaimed) return;
+
+    api.claimDailyLogin()
+      .then((res) => {
+        setStreak(res.streak);
+        setTokensEarned(res.tokensEarned);
+        setTotalTokens(res.totalTokens);
+        setDailyLoginClaimed(true, res.streak);
+
+        if (!res.alreadyClaimed) {
+          setShow(true);
+        }
+        setLoading(false);
+      })
+      .catch(() => {
+        setLoading(false);
+      });
+  }, [dailyLoginClaimed, setDailyLoginClaimed]);
+
+  if (!show || loading) return null;
+
+  // Milestones
+  const milestones = [
+    { day: 7, label: '7-Day Bonus', bonus: '+50 NT' },
+    { day: 14, label: '2-Week Bonus', bonus: '+100 NT' },
+    { day: 30, label: '30-Day Bonus', bonus: '+250 NT' },
+  ];
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="legacytheme-panel w-80 max-w-[90vw] text-center">
+        {/* Header */}
+        <div className="text-2xl mb-1">&#x1f381;</div>
+        <h2 className="text-lg font-bold text-black mb-1">
+          Day {streak} Reward!
+        </h2>
+        <p className="text-sm text-white/70 mb-3">
+          Login streak: {streak} {streak === 1 ? 'day' : 'days'}
+        </p>
+
+        {/* Reward */}
+        <div className="bg-yellow-100 rounded-lg px-4 py-3 mb-3 border-2 border-yellow-400">
+          <div className="text-3xl font-bold text-yellow-700">
+            +{tokensEarned} &#x1fa99;
+          </div>
+          <div className="text-xs text-yellow-600 mt-1">
+            ClawTokens earned! Total: {totalTokens}
+          </div>
+        </div>
+
+        {/* Streak milestones */}
+        <div className="space-y-1.5 mb-4">
+          {milestones.map((m) => (
+            <div
+              key={m.day}
+              className={`flex items-center justify-between text-xs px-3 py-1.5 rounded ${
+                streak >= m.day
+                  ? 'bg-green-100 text-green-800'
+                  : 'bg-white/5 text-white/40'
+              }`}
+            >
+              <span className="font-bold">{m.label}</span>
+              <span>{streak >= m.day ? '\u2713' : m.bonus}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Dismiss */}
+        <button
+          onClick={() => setShow(false)}
+          className="w-full py-2 rounded-lg bg-yellow-500 hover:bg-yellow-400 text-white font-bold text-sm transition-colors"
+        >
+          Collect & Continue
+        </button>
+      </div>
+    </div>
+  );
+}

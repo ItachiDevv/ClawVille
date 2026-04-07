@@ -127,7 +127,7 @@ export default function LocationConfigModal() {
             </div>
             <DialogClose asChild>
               <button
-                className="w-8 h-8 rounded-full bg-black/20 hover:bg-black/40 text-white flex items-center justify-center font-bold transition-colors"
+                className="w-8 h-8 rounded-full bg-white/10 hover:bg-black/40 text-white flex items-center justify-center font-bold transition-colors"
                 aria-label="Close"
               >
                 X
@@ -138,7 +138,7 @@ export default function LocationConfigModal() {
 
         {isLoading ? (
           <div className="flex items-center justify-center py-12">
-            <p className="text-black/60 text-sm animate-pulse">Loading...</p>
+            <p className="text-white/60 text-sm animate-pulse">Loading...</p>
           </div>
         ) : (
           <div className="overflow-y-auto flex-1 p-6 space-y-4">
@@ -248,7 +248,7 @@ export default function LocationConfigModal() {
             <div className="flex gap-3 pt-2">
               <button
                 onClick={closeLocationConfig}
-                className="flex-1 py-2.5 rounded-lg bg-black/10 text-black font-bold text-sm hover:bg-black/20 transition-colors"
+                className="flex-1 py-2.5 rounded-lg bg-white/10 text-white font-bold text-sm hover:bg-white/10 transition-colors"
               >
                 Cancel
               </button>

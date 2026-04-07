@@ -35,14 +35,14 @@ export default function InventoryModal() {
   const items = data?.inventory ?? [];
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-white/50 backdrop-blur-sm">
       <div className="legacytheme-panel w-full max-w-md mx-4 max-h-[80vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between mb-3">
-          <h2 className="text-black font-bold text-lg">Inventory</h2>
+          <h2 className="text-white font-bold text-lg">Inventory</h2>
           <button
             onClick={closeInventory}
-            className="w-7 h-7 flex items-center justify-center rounded-full bg-black/10 hover:bg-black/20 text-black font-bold text-sm transition-colors"
+            className="w-7 h-7 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/10 text-white font-bold text-sm transition-colors"
           >
             X
           </button>
@@ -51,9 +51,9 @@ export default function InventoryModal() {
         {/* Items list */}
         <div className="flex-1 overflow-y-auto space-y-2">
           {isLoading ? (
-            <p className="text-black/50 text-sm text-center py-8">Loading inventory...</p>
+            <p className="text-white/50 text-sm text-center py-8">Loading inventory...</p>
           ) : items.length === 0 ? (
-            <p className="text-black/50 text-sm text-center py-8">
+            <p className="text-white/50 text-sm text-center py-8">
               Your inventory is empty. Visit a shop to buy items!
             </p>
           ) : (
@@ -62,17 +62,17 @@ export default function InventoryModal() {
               return (
                 <div
                   key={item.id}
-                  className="flex items-start gap-3 p-3 rounded-lg bg-white/50 border border-black/10"
+                  className="flex items-start gap-3 p-3 rounded-lg bg-white/50 border border-white/10"
                 >
                   <span className="text-2xl">{item.icon}</span>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="font-bold text-black text-sm">{item.name}</span>
                       {item.quantity > 1 && (
-                        <span className="text-xs text-black/50">x{item.quantity}</span>
+                        <span className="text-xs text-white/50">x{item.quantity}</span>
                       )}
                     </div>
-                    <p className="text-black/60 text-xs mt-0.5 line-clamp-2">{item.description}</p>
+                    <p className="text-white/60 text-xs mt-0.5 line-clamp-2">{item.description}</p>
                   </div>
                   {item.isBook && (
                     <button
