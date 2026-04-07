@@ -3,7 +3,10 @@
 import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
+import dynamic from 'next/dynamic';
 import { api } from '@/lib/api';
+
+const LandingScene = dynamic(() => import('@/components/three/LandingScene'), { ssr: false });
 
 function LoginForm() {
   const router = useRouter();
@@ -199,14 +202,17 @@ function LoginForm() {
 
 export default function LoginPage() {
   return (
-    <div className="star-bg min-h-screen flex flex-col items-center justify-center px-4 py-12">
-      <Suspense fallback={
-        <div className="bg-[#0a1628]/90 border border-cyan-500/20 rounded-2xl max-w-md w-full p-8 text-center backdrop-blur-xl">
-          <p className="font-clawville text-xl text-cyan-400/60 animate-pulse">Diving in...</p>
-        </div>
-      }>
-        <LoginForm />
-      </Suspense>
+    <div className="relative min-h-screen flex flex-col items-center justify-center px-4 py-12 bg-[#061520]">
+      <LandingScene />
+      <div className="relative z-10 w-full">
+        <Suspense fallback={
+          <div className="bg-[#0a1628]/90 border border-cyan-500/20 rounded-2xl max-w-md w-full mx-auto p-8 text-center backdrop-blur-xl">
+            <p className="font-clawville text-xl text-cyan-400/60 animate-pulse">Diving in...</p>
+          </div>
+        }>
+          <LoginForm />
+        </Suspense>
+      </div>
     </div>
   );
 }
