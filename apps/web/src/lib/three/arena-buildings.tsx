@@ -11,6 +11,7 @@ import {
   buildingZones,
   type BuildingZone,
 } from '@/lib/pixi/tilemap-data';
+import { BUILDING_OPENCLAW_THEMES } from '@elizapets/shared';
 
 // ---------------------------------------------------------------------------
 // Centering offset (map centered at origin)
@@ -34,7 +35,7 @@ function zoneCenter(zone: BuildingZone): [number, number, number] {
   return [cx, 0, cz];
 }
 
-function FloatingLabel({ text, y }: { text: string; y: number }) {
+function FloatingLabel({ text, subtitle, y }: { text: string; subtitle?: string; y: number }) {
   return (
     <group position={[0, y, 0]}>
       {/* Kelp stalk post */}
@@ -44,27 +45,44 @@ function FloatingLabel({ text, y }: { text: string; y: number }) {
       </mesh>
       <Billboard follow lockX={false} lockY={false} lockZ={false}>
         <group>
-          {/* Shell-shaped sign background */}
-          <mesh scale={[1.95, 1.18, 1]}>
+          {/* Dark glass sign background */}
+          <mesh scale={[2.1, subtitle ? 1.5 : 1.18, 1]}>
             <circleGeometry args={[10.5, 32]} />
-            <meshBasicMaterial color={0x1a4a5a} depthTest={false} />
+            <meshBasicMaterial color={0x0a1628} transparent opacity={0.9} depthTest={false} />
           </mesh>
-          <mesh position={[0, 0, 0.2]} scale={[1.72, 1.02, 1]}>
-            <circleGeometry args={[9.4, 32]} />
-            <meshBasicMaterial color={0xe0f2f1} depthTest={false} />
+          {/* Cyan border ring */}
+          <mesh scale={[2.2, subtitle ? 1.55 : 1.22, 1]}>
+            <ringGeometry args={[10.2, 10.8, 32]} />
+            <meshBasicMaterial color={0x00e5ff} transparent opacity={0.4} depthTest={false} />
           </mesh>
+          {/* Building name */}
           <Text
-            position={[0, 0.05, 0.5]}
-            fontSize={3.9}
-            color="#0d3b3e"
+            position={[0, subtitle ? 2 : 0.05, 0.5]}
+            fontSize={3.6}
+            color="#00e5ff"
             anchorX="center"
             anchorY="middle"
-            outlineWidth={0.3}
-            outlineColor="#e0f2f1"
+            outlineWidth={0.2}
+            outlineColor="#0a1628"
             maxWidth={30}
           >
             {text}
           </Text>
+          {/* Category subtitle */}
+          {subtitle && (
+            <Text
+              position={[0, -2.8, 0.5]}
+              fontSize={2.2}
+              color="#ffffff"
+              anchorX="center"
+              anchorY="middle"
+              outlineWidth={0.15}
+              outlineColor="#0a1628"
+              maxWidth={28}
+            >
+              {subtitle}
+            </Text>
+          )}
         </group>
       </Billboard>
     </group>
@@ -317,7 +335,7 @@ function CronHubBuilding({ zone }: { zone: BuildingZone }) {
         <meshStandardMaterial color={0x1a3c34} roughness={0.85} />
       </mesh>
       <GroundScatter seedKey={zone.id} radius={w * 0.55} tone="warm" />
-      <FloatingLabel text="Tide Clock Grotto" y={78} />
+      <FloatingLabel text="Tide Clock Grotto" subtitle="Automation & Workflows" y={78} />
     </group>
   );
 }
@@ -397,7 +415,7 @@ function WebhookGatewayBuilding({ zone }: { zone: BuildingZone }) {
         <meshStandardMaterial color={0xc2b280} roughness={0.85} />
       </mesh>
       <GroundScatter seedKey={zone.id} radius={w * 0.5} tone="cool" />
-      <FloatingLabel text="Current Gateway" y={68} />
+      <FloatingLabel text="Current Gateway" subtitle="APIs & Integrations" y={68} />
     </group>
   );
 }
@@ -467,7 +485,7 @@ function MemoryVaultBuilding({ zone }: { zone: BuildingZone }) {
         </mesh>
       ))}
       <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.5} tone="cool" />
-      <FloatingLabel text="Abyssal Vault" y={62} />
+      <FloatingLabel text="Abyssal Vault" subtitle="Memory & Knowledge" y={62} />
     </group>
   );
 }
@@ -551,7 +569,7 @@ function SkillForgeBuilding({ zone }: { zone: BuildingZone }) {
         </mesh>
       ))}
       <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.5} tone="warm" />
-      <FloatingLabel text="Hydrothermal Forge" y={60} />
+      <FloatingLabel text="Hydrothermal Forge" subtitle="Code & Development" y={60} />
     </group>
   );
 }
@@ -628,7 +646,7 @@ function ChannelBridgeBuilding({ zone }: { zone: BuildingZone }) {
         <meshStandardMaterial color={0x00e5ff} emissive={0x00e5ff} emissiveIntensity={0.3} transparent opacity={0.5} side={THREE.DoubleSide} />
       </mesh>
       <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.5} tone="warm" />
-      <FloatingLabel text="Coral Bridge" y={70} />
+      <FloatingLabel text="Coral Bridge" subtitle="Communication" y={70} />
     </group>
   );
 }
@@ -705,7 +723,7 @@ function ToolWorkshopBuilding({ zone }: { zone: BuildingZone }) {
         <meshStandardMaterial color={0x3e2723} roughness={0.85} />
       </mesh>
       <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.48} tone="magic" />
-      <FloatingLabel text="Salvage Workshop" y={64} />
+      <FloatingLabel text="Salvage Workshop" subtitle="Tool Use & MCP" y={64} />
     </group>
   );
 }
@@ -794,7 +812,7 @@ function CanvasStudioBuilding({ zone }: { zone: BuildingZone }) {
         <meshStandardMaterial color={0x0d1b2a} roughness={0.85} />
       </mesh>
       <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.5} tone="magic" />
-      <FloatingLabel text="Biolume Studio" y={70} />
+      <FloatingLabel text="Biolume Studio" subtitle="Data & Analytics" y={70} />
     </group>
   );
 }
@@ -881,7 +899,7 @@ function VoiceTowerBuilding({ zone }: { zone: BuildingZone }) {
         <meshStandardMaterial color={0x0d1b2a} roughness={0.8} />
       </mesh>
       <GroundScatter seedKey={zone.id} radius={w * 0.55} tone="cool" />
-      <FloatingLabel text="Echo Spire" y={74} />
+      <FloatingLabel text="Echo Spire" subtitle="Research & Analysis" y={74} />
     </group>
   );
 }
@@ -965,7 +983,7 @@ function SecurityFortressBuilding({ zone }: { zone: BuildingZone }) {
         <meshStandardMaterial color={0x00897b} roughness={0.6} side={THREE.DoubleSide} />
       </mesh>
       <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.55} tone="cool" />
-      <FloatingLabel text="Shell Fortress" y={72} />
+      <FloatingLabel text="Shell Fortress" subtitle="Crypto & Web3" y={72} />
     </group>
   );
 }
@@ -1046,7 +1064,7 @@ function ConfigCitadelBuilding({ zone }: { zone: BuildingZone }) {
         </mesh>
       ))}
       <GroundScatter seedKey={zone.id} radius={Math.max(w, d) * 0.52} tone="mint" />
-      <FloatingLabel text="Nautilus Citadel" y={78} />
+      <FloatingLabel text="Nautilus Citadel" subtitle="Business & Productivity" y={78} />
     </group>
   );
 }
