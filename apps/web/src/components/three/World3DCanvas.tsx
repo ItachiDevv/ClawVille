@@ -1,10 +1,13 @@
 'use client';
 
 import { useRef, useEffect, useState, memo } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
+import { Canvas, useFrame, extend } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
+
+// Register Three.js elements with R3F 9
+extend(THREE as any);
 import ArenaTerrain from '@/lib/three/arena-terrain';
 import ArenaBuildings from '@/lib/three/arena-buildings';
 import ArenaNpcs from '@/lib/three/arena-npcs';
