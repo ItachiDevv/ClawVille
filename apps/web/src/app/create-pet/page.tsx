@@ -76,7 +76,7 @@ export default function CreatePetPage() {
   return (
     <div className="star-bg min-h-screen flex flex-col items-center px-4 py-6">
       {/* Title */}
-      <h1 className="font-legacyapp text-3xl text-white drop-shadow-md mb-4">
+      <h1 className="font-clawville text-3xl text-white drop-shadow-md mb-4">
         CREATE-A-PET
       </h1>
 
@@ -133,7 +133,7 @@ export default function CreatePetPage() {
           <span className="font-bold text-gray-800 uppercase tracking-wide">
             Species:{' '}
           </span>
-          <span className="font-legacyapp text-2xl text-gray-900">
+          <span className="font-clawville text-2xl text-gray-900">
             {currentSpecies.name}
           </span>
         </p>
@@ -142,7 +142,7 @@ export default function CreatePetPage() {
         <div className="flex flex-col sm:flex-row gap-4">
           <div className="flex-1">
             <label className="block font-bold text-gray-800 mb-1 uppercase text-sm">
-              LegacyApp Name
+              Agent Name
             </label>
             <input
               type="text"

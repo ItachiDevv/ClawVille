@@ -38,11 +38,11 @@ export default function ShopOverlay() {
   const tokens = pet?.clawTokens ?? 0;
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-white/50 backdrop-blur-sm">
       <div className="legacytheme-panel w-full max-w-md mx-4 max-h-[80vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between mb-3">
-          <h2 className="text-black font-bold text-lg">Shop</h2>
+          <h2 className="text-white font-bold text-lg">Shop</h2>
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1 text-xs font-bold text-yellow-700 bg-yellow-200/60 rounded-full px-2 py-0.5">
               <span className="text-sm">&#x1FA99;</span>
@@ -50,7 +50,7 @@ export default function ShopOverlay() {
             </span>
             <button
               onClick={closeShop}
-              className="w-7 h-7 flex items-center justify-center rounded-full bg-black/10 hover:bg-black/20 text-black font-bold text-sm transition-colors"
+              className="w-7 h-7 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/10 text-white font-bold text-sm transition-colors"
             >
               X
             </button>
@@ -60,9 +60,9 @@ export default function ShopOverlay() {
         {/* Items list */}
         <div className="flex-1 overflow-y-auto space-y-2">
           {isLoading ? (
-            <p className="text-black/50 text-sm text-center py-8">Loading shop...</p>
+            <p className="text-white/50 text-sm text-center py-8">Loading shop...</p>
           ) : items.length === 0 ? (
-            <p className="text-black/50 text-sm text-center py-8">No items available at this shop.</p>
+            <p className="text-white/50 text-sm text-center py-8">No items available at this shop.</p>
           ) : (
             items.map((item) => {
               const canAfford = tokens >= item.price;
@@ -70,12 +70,12 @@ export default function ShopOverlay() {
               return (
                 <div
                   key={item.id}
-                  className="flex items-start gap-3 p-3 rounded-lg bg-white/50 border border-black/10"
+                  className="flex items-start gap-3 p-3 rounded-lg bg-white/50 border border-white/10"
                 >
                   <span className="text-2xl">{item.icon}</span>
                   <div className="flex-1 min-w-0">
                     <div className="font-bold text-black text-sm">{item.name}</div>
-                    <p className="text-black/60 text-xs mt-0.5 line-clamp-2">{item.description}</p>
+                    <p className="text-white/60 text-xs mt-0.5 line-clamp-2">{item.description}</p>
                   </div>
                   <div className="flex flex-col items-end gap-1">
                     <span className="text-xs font-bold text-yellow-700">
