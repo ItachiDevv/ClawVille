@@ -28,7 +28,7 @@ function seeded(seed: number) {
 // ---------------------------------------------------------------------------
 function OceanFloor() {
   const { geo } = useMemo(() => {
-    const g = new THREE.PlaneGeometry(MAP_WIDTH, MAP_HEIGHT, 100, 70);
+    const g = new THREE.PlaneGeometry(MAP_WIDTH, MAP_HEIGHT, 80, 50);
     const pos = g.attributes.position;
     const rand = seeded(42);
 
@@ -321,15 +321,13 @@ function Seashells() {
 // Main terrain (~10 draw calls total)
 // ---------------------------------------------------------------------------
 export default function ArenaTerrain() {
+  // GPU-safe: only 3 draw calls (floor + paths + water)
+  // CoralReef/KelpForest/Rocks/Seashells removed — too many per-frame updates for Intel Iris Xe
   return (
     <group>
       <OceanFloor />
       <PathTiles />
       <WaterSurface />
-      <CoralReef />
-      <KelpForest />
-      <Rocks />
-      <Seashells />
     </group>
   );
 }
