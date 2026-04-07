@@ -1,12 +1,10 @@
 'use client';
 
-import { useRef, useMemo, useEffect } from 'react';
+import { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { Text, Billboard, useGLTF } from '@react-three/drei';
+import { Text, Billboard } from '@react-three/drei';
 import * as THREE from 'three';
 import { useGameStore } from '@/stores/game';
-
-useGLTF.preload('/models/lobster.glb');
 import {
   MAP_WIDTH,
   MAP_HEIGHT,
@@ -130,8 +128,6 @@ function mapToWorld(px: number, py: number): [number, number, number] {
 export default function PlayerAvatar() {
   const groupRef = useRef<THREE.Group>(null);
   const rotRef = useRef(0);
-  const { scene } = useGLTF('/models/lobster.glb');
-  const clonedScene = useMemo(() => scene.clone(true), [scene]);
 
   attachKeyListeners();
 
@@ -144,18 +140,6 @@ export default function PlayerAvatar() {
     c.lerp(new THREE.Color(tint), 0.4);
     return c;
   }, []);
-
-  // Apply species color to all model materials
-  useEffect(() => {
-    clonedScene.traverse((child: any) => {
-      if (child.isMesh && child.material) {
-        const mat = child.material.clone();
-        mat.color = bodyColor.clone();
-        child.material = mat;
-        child.castShadow = true;
-      }
-    });
-  }, [clonedScene, bodyColor]);
 
   useFrame((state, delta) => {
     const store = useGameStore.getState();
@@ -314,10 +298,59 @@ export default function PlayerAvatar() {
 
   return (
     <group ref={groupRef} position={[0, 0, 0]}>
-      {/* GLB lobster model */}
-      <group scale={0.35} position={[0, 0, 0]}>
-        <primitive object={clonedScene} />
+      {/* Procedural lobster (shared geometry, no GLB) */}
+      <mesh position={[0, 3, 0]} castShadow scale={[1, 0.7, 1.4]}>
+        <capsuleGeometry args={[2, 4, 8, 16]} />
+        <meshStandardMaterial color={bodyColor} roughness={0.6} />
+      </mesh>
+      {/* Shell */}
+      <mesh position={[0, 4.5, -1]} castShadow>
+        <sphereGeometry args={[2.5, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
+        <meshStandardMaterial color={bodyColor} roughness={0.5} />
+      </mesh>
+      {/* Eyes */}
+      <mesh position={[-1.2, 5.2, 2]}>
+        <sphereGeometry args={[0.5, 8, 8]} />
+        <meshBasicMaterial color={0xffffff} />
+      </mesh>
+      <mesh position={[1.2, 5.2, 2]}>
+        <sphereGeometry args={[0.5, 8, 8]} />
+        <meshBasicMaterial color={0xffffff} />
+      </mesh>
+      <mesh position={[-1.2, 5.2, 2.4]}>
+        <sphereGeometry args={[0.25, 6, 6]} />
+        <meshBasicMaterial color={0x111111} />
+      </mesh>
+      <mesh position={[1.2, 5.2, 2.4]}>
+        <sphereGeometry args={[0.25, 6, 6]} />
+        <meshBasicMaterial color={0x111111} />
+      </mesh>
+      {/* Claws */}
+      <group position={[-3.5, 2.5, 1.5]}>
+        <mesh rotation={[0, 0, -0.3]}>
+          <cylinderGeometry args={[0.4, 0.5, 2.5, 6]} />
+          <meshStandardMaterial color={bodyColor} roughness={0.6} />
+        </mesh>
+        <mesh position={[-1.2, -0.3, 0.8]}>
+          <boxGeometry args={[1.8, 0.6, 1]} />
+          <meshStandardMaterial color={bodyColor} roughness={0.55} />
+        </mesh>
       </group>
+      <group position={[3.5, 2.5, 1.5]}>
+        <mesh rotation={[0, 0, 0.3]}>
+          <cylinderGeometry args={[0.4, 0.5, 2.5, 6]} />
+          <meshStandardMaterial color={bodyColor} roughness={0.6} />
+        </mesh>
+        <mesh position={[1.2, -0.3, 0.8]}>
+          <boxGeometry args={[1.8, 0.6, 1]} />
+          <meshStandardMaterial color={bodyColor} roughness={0.55} />
+        </mesh>
+      </group>
+      {/* Tail */}
+      <mesh position={[0, 2, -4]}>
+        <coneGeometry args={[2, 3, 6]} />
+        <meshStandardMaterial color={bodyColor} roughness={0.6} />
+      </mesh>
 
       {/* Shadow */}
       <mesh position={[0, 0.05, 0]} rotation={[-Math.PI / 2, 0, 0]}>
