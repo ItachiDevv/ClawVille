@@ -1,11 +1,12 @@
 'use client';
 
-import { useRef, useMemo, memo, useCallback } from 'react';
+import { useRef, useMemo, memo, useCallback, useEffect } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { Text, Billboard } from '@react-three/drei';
+import { Text, Billboard, useGLTF } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
 import { useNpcStore, type NpcSpriteState } from '@/stores/npc';
-import { LobsterAnimator, type LobsterRefs, type AnimState, resolveAnimState } from '@/lib/three/lobster-animations';
+
+useGLTF.preload('/models/lobster.glb');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -429,55 +430,33 @@ const NpcMesh = memo(function NpcMesh({ npc }: NpcMeshProps) {
   const hpFillRef = useRef<THREE.Mesh>(null!);
   const hpFillMatRef = useRef<THREE.MeshBasicMaterial>(null!);
   const glowRef = useRef<THREE.Mesh>(null!);
-  const bodyMatRef = useRef<THREE.MeshStandardMaterial>(null!);
 
-  // Animation refs
-  const leftClawRef = useRef<THREE.Group | null>(null);
-  const rightClawRef = useRef<THREE.Group | null>(null);
-  const tailSegRefs = useRef<(THREE.Mesh | null)[]>([null, null]);
-  const tailFanRef = useRef<THREE.Mesh | null>(null);
-  const legRefs = useRef<(THREE.Mesh | null)[]>([null, null, null, null, null, null]);
-  const eyeStalkRefs = useRef<(THREE.Group | null)[]>([null, null]);
-  const antennaRefs = useRef<(THREE.Mesh | null)[]>([null, null]);
-  const animatorRef = useRef<LobsterAnimator | null>(null);
-  const prevCombatAction = useRef<string | null>(null);
-  const bodyMeshRef = useRef<THREE.Mesh>(null!);
+  const { scene } = useGLTF('/models/lobster.glb');
+  const clonedScene = useMemo(() => scene.clone(true), [scene]);
 
-  // Ref callbacks for BaseLobsterFeatures
-  const animRefCallbacks: AnimRefCallbacks = useMemo(() => ({
-    onTailSeg: (index: number, el: THREE.Mesh | null) => { tailSegRefs.current[index] = el; },
-    onTailFan: (el: THREE.Mesh | null) => { tailFanRef.current = el; },
-    onLeg: (index: number, el: THREE.Mesh | null) => { legRefs.current[index] = el; },
-    onEyeStalk: (index: number, el: THREE.Group | null) => { eyeStalkRefs.current[index] = el; },
-    onAntenna: (index: number, el: THREE.Mesh | null) => { antennaRefs.current[index] = el; },
-  }), []);
-
-  const clawRefCallbacks: ClawRefCallbacks = useMemo(() => ({
-    onLeftClaw: (el: THREE.Group | null) => { leftClawRef.current = el; },
-    onRightClaw: (el: THREE.Group | null) => { rightClawRef.current = el; },
-  }), []);
-
-  // Cache the NPC data in a ref so useFrame can access without reading the store
+  // Cache NPC data for useFrame
   const npcDataRef = useRef(npc);
   npcDataRef.current = npc;
 
-  // Target world position (updated from npc data each render)
   const targetPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
   targetPos.current.set(npc.x - HALF_W, 0, npc.y - HALF_H);
-
-  // Current interpolated position
   const currentPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
-
-  // Current facing rotation
   const currentRotY = useRef(DIR_ROTATION[npc.direction]);
 
-  // Body color as THREE.Color
   const bodyColor = useMemo(() => new THREE.Color(npc.color), [npc.color]);
 
-  // Species feature component
-  const SpeciesComp = speciesComponents[npc.species] ?? null;
+  // Apply NPC color to model materials
+  useEffect(() => {
+    clonedScene.traverse((child: any) => {
+      if (child.isMesh && child.material) {
+        const mat = child.material.clone();
+        mat.color = bodyColor.clone();
+        child.material = mat;
+        child.castShadow = true;
+      }
+    });
+  }, [clonedScene, bodyColor]);
 
-  // HP ratio for bar sizing
   const hpRatio = npc.maxHp > 0 ? npc.hp / npc.maxHp : 1;
 
   useFrame((state, delta) => {
@@ -488,112 +467,64 @@ const NpcMesh = memo(function NpcMesh({ npc }: NpcMeshProps) {
     const dt = Math.min(delta, 0.1);
     const elapsed = state.clock.elapsedTime;
 
-    // --- Position lerp ---
+    // Position lerp
     currentPos.current.lerp(targetPos.current, 1 - Math.exp(-LERP_SPEED * dt));
     group.position.x = currentPos.current.x;
     group.position.z = currentPos.current.z;
 
-    // --- Walking bob (only when moving and not dead) ---
+    // Walking bob
     const isMoving = d.direction !== 'idle' && !d.isDead;
-    const bob = isMoving ? Math.sin(elapsed * BOB_SPEED) * BOB_AMPLITUDE : 0;
-    group.position.y = bob;
+    group.position.y = isMoving ? Math.sin(elapsed * BOB_SPEED) * BOB_AMPLITUDE : 0;
 
-    // --- Facing direction rotation (smooth) ---
+    // Facing rotation
     const targetRot = DIR_ROTATION[d.direction];
     currentRotY.current += (targetRot - currentRotY.current) * Math.min(1, 8 * dt);
     group.rotation.y = currentRotY.current;
 
-    // --- Body opacity for death ---
+    // Death fade (scale down)
     if (d.isDead) {
-      if (bodyMatRef.current) {
-        bodyMatRef.current.opacity += (0.4 - bodyMatRef.current.opacity) * Math.min(1, 4 * dt);
-      }
+      group.scale.y += (0.3 - group.scale.y) * Math.min(1, 2 * dt);
     } else {
-      if (bodyMatRef.current) {
-        bodyMatRef.current.opacity += (1 - bodyMatRef.current.opacity) * Math.min(1, 4 * dt);
-      }
+      group.scale.y += (1 - group.scale.y) * Math.min(1, 4 * dt);
     }
 
-    // --- HP bar update ---
+    // Walk squash/stretch
+    if (isMoving) {
+      const walkCycle = Math.sin(elapsed * 8);
+      group.scale.x = 1;
+      group.scale.z = 1 + walkCycle * 0.02;
+    }
+
+    // HP bar
     if (hpFillRef.current && hpFillMatRef.current) {
       const ratio = d.maxHp > 0 ? d.hp / d.maxHp : 1;
       hpFillRef.current.scale.x = Math.max(0.001, ratio);
       hpFillRef.current.position.x = -(1 - ratio) * 2.5;
-      const col = hpColor(ratio);
-      hpFillMatRef.current.color.copy(col);
+      hpFillMatRef.current.color.copy(hpColor(ratio));
     }
 
-    // --- OpenClaw glow pulse ---
+    // OpenClaw glow
     if (glowRef.current) {
       if (d.isOpenClaw) {
         glowRef.current.visible = true;
-        const pulse = 0.7 + Math.sin(elapsed * GLOW_PULSE_SPEED) * 0.3;
-        glowRef.current.scale.setScalar(pulse);
+        glowRef.current.scale.setScalar(0.7 + Math.sin(elapsed * GLOW_PULSE_SPEED) * 0.3);
       } else {
         glowRef.current.visible = false;
       }
     }
-
-    // --- Procedural animation ---
-    if (!animatorRef.current) {
-      const refs: LobsterRefs = {
-        body: bodyMeshRef.current,
-        leftClaw: leftClawRef.current,
-        rightClaw: rightClawRef.current,
-        tailSegments: tailSegRefs.current,
-        tailFan: tailFanRef.current,
-        legs: legRefs.current,
-        eyeStalks: eyeStalkRefs.current,
-        antennae: antennaRefs.current,
-      };
-      animatorRef.current = new LobsterAnimator(refs);
-    }
-
-    const animState = resolveAnimState({
-      isDead: d.isDead,
-      inCombat: d.inCombat,
-      combatAction: d.combatAction ?? null,
-      direction: d.direction,
-      inConversation: d.inConversation,
-    });
-
-    // Trigger timed actions when combatAction changes
-    if (d.combatAction && d.combatAction !== prevCombatAction.current) {
-      animatorRef.current.startAction(animState, elapsed);
-    }
-    if (d.isDead && prevCombatAction.current !== '__dead__') {
-      animatorRef.current.startAction('death', elapsed);
-      prevCombatAction.current = '__dead__';
-    } else {
-      prevCombatAction.current = d.combatAction ?? null;
-    }
-
-    animatorRef.current.update(dt, elapsed, animState, d.direction);
   });
 
   const labelText = npc.isOpenClaw ? `[OC] ${npc.name}` : npc.name;
 
   return (
     <group ref={groupRef}>
-      {/* Body capsule */}
-      <mesh ref={bodyMeshRef} geometry={sharedGeo.capsule} castShadow>
-        <meshStandardMaterial
-          ref={bodyMatRef}
-          color={bodyColor}
-          transparent
-          opacity={npc.isDead ? 0.4 : 1}
-        />
-      </mesh>
-
-      {/* Species-specific features (with animation refs) */}
-      {SpeciesComp && <SpeciesComp refs={animRefCallbacks} clawRefs={clawRefCallbacks} />}
+      {/* GLB lobster model */}
+      <group scale={0.25} position={[0, 0, 0]}>
+        <primitive object={clonedScene} />
+      </group>
 
       {/* HP bar background */}
-      <mesh
-        geometry={sharedGeo.hpBarBg}
-        material={matHpBg}
-        position={[0, 6.5, 0]}
-      />
+      <mesh geometry={sharedGeo.hpBarBg} material={matHpBg} position={[0, 6.5, 0]} />
 
       {/* HP bar fill */}
       <mesh
@@ -607,36 +538,17 @@ const NpcMesh = memo(function NpcMesh({ npc }: NpcMeshProps) {
 
       {/* Name label */}
       <Billboard position={[0, 7.3, 0]}>
-        <Text
-          fontSize={1}
-          color="white"
-          anchorX="center"
-          anchorY="bottom"
-          outlineWidth={0.08}
-          outlineColor="#000000"
-        >
+        <Text fontSize={1} color="white" anchorX="center" anchorY="bottom" outlineWidth={0.08} outlineColor="#000000">
           {labelText}
         </Text>
       </Billboard>
 
       {/* OpenClaw glow ring */}
-      <mesh
-        ref={glowRef}
-        geometry={sharedGeo.glowRing}
-        position={[0, -1.8, 0]}
-        rotation={[Math.PI / 2, 0, 0]}
-        visible={npc.isOpenClaw}
-      >
-        <meshStandardMaterial
-          color={0x00ffff}
-          emissive={0x00ffff}
-          emissiveIntensity={1.5}
-          transparent
-          opacity={0.7}
-        />
+      <mesh ref={glowRef} geometry={sharedGeo.glowRing} position={[0, -1.8, 0]} rotation={[Math.PI / 2, 0, 0]} visible={npc.isOpenClaw}>
+        <meshStandardMaterial color={0x00ffff} emissive={0x00ffff} emissiveIntensity={1.5} transparent opacity={0.7} />
       </mesh>
 
-      {/* Speech bubble indicator (when in conversation) */}
+      {/* Speech bubble */}
       {npc.inConversation && (
         <group position={[0, 8.5, 0]}>
           <mesh geometry={sharedGeo.bubble} material={matBubble} />
@@ -652,12 +564,7 @@ const NpcMesh = memo(function NpcMesh({ npc }: NpcMeshProps) {
             <sphereGeometry args={[1, 6, 6]} />
             <meshBasicMaterial color={0x666666} />
           </mesh>
-          <mesh
-            geometry={sharedGeo.bubbleTail}
-            position={[0, -0.7, 0]}
-            rotation={[0, 0, Math.PI]}
-            material={matBubble}
-          />
+          <mesh geometry={sharedGeo.bubbleTail} position={[0, -0.7, 0]} rotation={[0, 0, Math.PI]} material={matBubble} />
         </group>
       )}
     </group>
