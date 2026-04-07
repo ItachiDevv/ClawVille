@@ -19,7 +19,7 @@ export default function ArenaHUD() {
       {/* Connection status */}
       <div className="flex items-center gap-2 text-xs">
         <span
-          className={`w-2 h-2 rounded-full ${connected ? 'bg-green-400' : 'bg-red-400'}`}
+          className={`w-2 h-2 rounded-full ${connected ? 'bg-cyan-400' : 'bg-red-400'}`}
         />
         <span className="text-white/60 font-mono">
           {connected ? 'Live' : 'Connecting...'}
@@ -27,12 +27,12 @@ export default function ArenaHUD() {
       </div>
 
       {/* Combat Log */}
-      <div className="bg-black/60 backdrop-blur-sm rounded-lg p-3 border border-white/10 max-h-40 overflow-y-auto">
-        <h3 className="text-xs font-bold text-claw-accent mb-2 uppercase tracking-wide">
-          Combat Log
+      <div className="bg-[#0a1628]/80 backdrop-blur-md rounded-lg p-3 border border-cyan-500/20 max-h-40 overflow-y-auto">
+        <h3 className="text-xs font-bold text-claw-accent font-mono mb-2 uppercase tracking-wide">
+          Agent Combat Log
         </h3>
         {combatLog.length === 0 ? (
-          <p className="text-white/40 text-xs">Waiting for battles...</p>
+          <p className="text-white/40 text-xs font-mono">Waiting for engagements...</p>
         ) : (
           <div className="space-y-1">
             {combatLog.slice(-5).reverse().map((entry, i) => (
@@ -45,30 +45,30 @@ export default function ArenaHUD() {
       </div>
 
       {/* Leaderboard */}
-      <div className="bg-black/60 backdrop-blur-sm rounded-lg p-3 border border-white/10">
-        <h3 className="text-xs font-bold text-claw-accent mb-2 uppercase tracking-wide">
-          Leaderboard
+      <div className="bg-[#0a1628]/80 backdrop-blur-md rounded-lg p-3 border border-cyan-500/20">
+        <h3 className="text-xs font-bold text-claw-accent font-mono mb-2 uppercase tracking-wide">
+          Agent Leaderboard
         </h3>
         <div className="space-y-1">
           {leaderboard.slice(0, 8).map((npc, i) => (
             <div key={npc.id} className="flex items-center gap-2 text-xs">
-              <span className="text-white/40 w-4 text-right">{i + 1}.</span>
+              <span className="text-white/40 font-mono w-4 text-right">{i + 1}.</span>
               <span className="text-white font-medium truncate flex-1">
                 {npc.name}
               </span>
-              <span className="text-red-300 w-8 text-right">
+              <span className="text-cyan-300 font-mono w-8 text-right">
                 {npc.hp}/{npc.maxHp}
               </span>
-              <span className="text-yellow-300 w-6 text-right">
+              <span className="text-claw-accent font-mono w-6 text-right">
                 {npc.inventory.length}
               </span>
             </div>
           ))}
         </div>
         {deadNpcs.length > 0 && (
-          <div className="mt-2 pt-2 border-t border-white/10">
-            <p className="text-white/30 text-xs">
-              {deadNpcs.length} defeated (respawning...)
+          <div className="mt-2 pt-2 border-t border-cyan-500/10">
+            <p className="text-white/30 text-xs font-mono">
+              {deadNpcs.length} agents defeated (rebooting...)
             </p>
           </div>
         )}

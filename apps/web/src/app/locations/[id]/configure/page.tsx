@@ -48,7 +48,7 @@ export default function ConfigureLocationPage() {
   if (!location) {
     return (
       <div className="star-bg min-h-screen flex items-center justify-center">
-        <div className="legacytheme-panel text-center">
+        <div className="claw-panel text-center">
           <p className="text-lg font-bold">Location not found</p>
         </div>
       </div>
@@ -87,7 +87,7 @@ export default function ConfigureLocationPage() {
   if (isLoading) {
     return (
       <div className="star-bg min-h-screen flex items-center justify-center">
-        <div className="legacytheme-panel">Loading...</div>
+        <div className="claw-panel">Loading...</div>
       </div>
     );
   }
@@ -96,7 +96,7 @@ export default function ConfigureLocationPage() {
     <div className="star-bg min-h-screen py-8 px-4">
       <div className="max-w-2xl mx-auto">
         {/* Header */}
-        <div className="legacytheme-panel mb-6 text-center">
+        <div className="claw-panel mb-6 text-center">
           <h1 className="text-2xl font-bold mb-1">
             {location.icon} Configure Agent: {location.name}
           </h1>
@@ -106,60 +106,60 @@ export default function ConfigureLocationPage() {
         {/* Form */}
         <div className="space-y-4">
           {/* Agent Name */}
-          <div className="legacytheme-panel">
+          <div className="claw-panel">
             <label className="block font-bold mb-1">Agent Name</label>
             <input
               type="text"
               value={agentName}
               onChange={(e) => setAgentName(e.target.value)}
               placeholder="e.g. Kauvara the Potion Master"
-              className="w-full px-3 py-2 rounded-lg border-2 border-legacytheme-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-claw-accent"
+              className="w-full px-3 py-2 rounded-lg border-2 border-claw-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-claw-accent"
             />
           </div>
 
           {/* Personality */}
-          <div className="legacytheme-panel">
+          <div className="claw-panel">
             <label className="block font-bold mb-1">Personality</label>
             <textarea
               value={personality}
               onChange={(e) => setPersonality(e.target.value)}
               placeholder="Describe the agent's personality..."
               rows={3}
-              className="w-full px-3 py-2 rounded-lg border-2 border-legacytheme-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-claw-accent resize-none"
+              className="w-full px-3 py-2 rounded-lg border-2 border-claw-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-claw-accent resize-none"
             />
           </div>
 
           {/* Bio */}
-          <div className="legacytheme-panel">
+          <div className="claw-panel">
             <label className="block font-bold mb-1">Bio</label>
             <textarea
               value={bio}
               onChange={(e) => setBio(e.target.value)}
               placeholder="Background story and lore..."
               rows={3}
-              className="w-full px-3 py-2 rounded-lg border-2 border-legacytheme-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-claw-accent resize-none"
+              className="w-full px-3 py-2 rounded-lg border-2 border-claw-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-claw-accent resize-none"
             />
           </div>
 
           {/* Greeting */}
-          <div className="legacytheme-panel">
+          <div className="claw-panel">
             <label className="block font-bold mb-1">Greeting</label>
             <input
               type="text"
               value={greeting}
               onChange={(e) => setGreeting(e.target.value)}
               placeholder="What does the agent say when you enter?"
-              className="w-full px-3 py-2 rounded-lg border-2 border-legacytheme-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-claw-accent"
+              className="w-full px-3 py-2 rounded-lg border-2 border-claw-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-claw-accent"
             />
           </div>
 
           {/* Tone */}
-          <div className="legacytheme-panel">
+          <div className="claw-panel">
             <label className="block font-bold mb-1">Tone</label>
             <select
               value={tone}
               onChange={(e) => setTone(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border-2 border-legacytheme-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-claw-accent"
+              className="w-full px-3 py-2 rounded-lg border-2 border-claw-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-claw-accent"
             >
               {TONE_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -170,38 +170,38 @@ export default function ConfigureLocationPage() {
           </div>
 
           {/* Topics */}
-          <div className="legacytheme-panel">
+          <div className="claw-panel">
             <label className="block font-bold mb-1">Topics (comma-separated)</label>
             <input
               type="text"
               value={topics}
               onChange={(e) => setTopics(e.target.value)}
               placeholder="potions, magic, ingredients"
-              className="w-full px-3 py-2 rounded-lg border-2 border-legacytheme-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-claw-accent"
+              className="w-full px-3 py-2 rounded-lg border-2 border-claw-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-claw-accent"
             />
           </div>
 
           {/* Rules */}
-          <div className="legacytheme-panel">
+          <div className="claw-panel">
             <label className="block font-bold mb-1">Rules (one per line)</label>
             <textarea
               value={rules}
               onChange={(e) => setRules(e.target.value)}
               placeholder="Always stay in character&#10;Never break the fourth wall"
               rows={3}
-              className="w-full px-3 py-2 rounded-lg border-2 border-legacytheme-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-claw-accent resize-none"
+              className="w-full px-3 py-2 rounded-lg border-2 border-claw-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-claw-accent resize-none"
             />
           </div>
 
           {/* Style */}
-          <div className="legacytheme-panel">
+          <div className="claw-panel">
             <label className="block font-bold mb-1">Style guidelines (one per line)</label>
             <textarea
               value={style}
               onChange={(e) => setStyle(e.target.value)}
               placeholder="Use archaic language&#10;Reference magical ingredients"
               rows={3}
-              className="w-full px-3 py-2 rounded-lg border-2 border-legacytheme-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-claw-accent resize-none"
+              className="w-full px-3 py-2 rounded-lg border-2 border-claw-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-claw-accent resize-none"
             />
           </div>
 
@@ -225,7 +225,7 @@ export default function ConfigureLocationPage() {
           </div>
 
           {saveMutation.error && (
-            <div className="legacytheme-panel bg-red-100 text-red-700 text-center">
+            <div className="claw-panel bg-red-100 text-red-700 text-center">
               {(saveMutation.error as Error).message}
             </div>
           )}
