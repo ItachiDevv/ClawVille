@@ -13,7 +13,7 @@ export default function ToastNotifications() {
       {toasts.map((toast) => (
         <div
           key={toast.id}
-          className="pointer-events-auto legacytheme-panel flex items-center gap-3 px-4 py-2 animate-in fade-in slide-in-from-top-2 duration-300 cursor-pointer hover:brightness-105"
+          className="pointer-events-auto claw-panel flex items-center gap-3 px-4 py-2 animate-in fade-in slide-in-from-top-2 duration-300 cursor-pointer hover:brightness-105"
           onClick={() => removeToast(toast.id)}
         >
           <span className="text-xl">{toast.icon}</span>

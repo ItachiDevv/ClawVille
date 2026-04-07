@@ -205,7 +205,7 @@ export default function AvatarChatBar() {
       {/* Toggle pill */}
       <button
         onClick={toggleExpand}
-        className="group flex items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-yellow-500 to-yellow-400 border-2 border-yellow-600 shadow-legacytheme hover:brightness-110 transition-all active:translate-y-0.5 active:shadow-none"
+        className="group flex items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-yellow-500 to-yellow-400 border-2 border-yellow-600 shadow-claw hover:brightness-110 transition-all active:translate-y-0.5 active:shadow-none"
       >
         <img
           src={spritePath}

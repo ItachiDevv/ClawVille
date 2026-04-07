@@ -15,7 +15,7 @@ export default function LocationHUD() {
   const theme = BUILDING_OPENCLAW_THEMES[nearLocation];
 
   return (
-    <div className="legacytheme-panel fixed top-28 left-1/2 -translate-x-1/2 z-40 text-center max-w-xs">
+    <div className="claw-panel fixed top-28 left-1/2 -translate-x-1/2 z-40 text-center max-w-xs">
       {theme && (
         <p className="text-white font-bold text-lg">
           {location.icon} {theme.label}
