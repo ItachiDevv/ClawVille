@@ -19,16 +19,16 @@ export function isShopBuilding(buildingId: string): boolean {
   return (SHOP_BUILDINGS as readonly string[]).includes(buildingId);
 }
 
-/** OpenClaw sea-themed building mappings for location agents */
-export const BUILDING_OPENCLAW_THEMES: Record<string, { label: string; focus: string }> = {
-  'cron-hub': { label: 'Tide Clock Grotto', focus: 'cron jobs, task scheduling, and automated agent workflows' },
-  'webhook-gateway': { label: 'Current Gateway', focus: 'webhooks, HTTP endpoints, and event-driven communication' },
-  'memory-vault': { label: 'Abyssal Vault', focus: 'memory systems, LanceDB vectors, and knowledge retrieval' },
-  'skill-forge': { label: 'Hydrothermal Forge', focus: 'skill creation, ClawHub marketplace, and agent capabilities' },
-  'channel-bridge': { label: 'Coral Bridge', focus: 'multi-channel messaging across Discord, Telegram, and Twitter' },
-  'tool-workshop': { label: 'Salvage Workshop', focus: 'tool and plugin development for AI agents' },
-  'canvas-studio': { label: 'Biolume Studio', focus: 'live canvas visualization and data rendering' },
-  'voice-tower': { label: 'Echo Spire', focus: 'voice and speech integration for agents' },
-  'security-fortress': { label: 'Shell Fortress', focus: 'security, permissions, and access control' },
-  'config-citadel': { label: 'Nautilus Citadel', focus: 'configuration, deployment, and environment management' },
+/** Sea-themed building skill categories — 10 domains agents can learn */
+export const BUILDING_OPENCLAW_THEMES: Record<string, { label: string; focus: string; category: string }> = {
+  'cron-hub': { label: 'Tide Clock Grotto', focus: 'cron jobs, task queues, workflow orchestration, CI/CD pipelines, and scheduled automation', category: 'Automation & Workflows' },
+  'webhook-gateway': { label: 'Current Gateway', focus: 'REST APIs, GraphQL, webhooks, OAuth, rate limiting, and system integrations', category: 'APIs & Integrations' },
+  'memory-vault': { label: 'Abyssal Vault', focus: 'RAG pipelines, vector databases, text embeddings, semantic search, and context management', category: 'Memory & Knowledge' },
+  'skill-forge': { label: 'Hydrothermal Forge', focus: 'code generation, debugging, testing, git workflows, and containerized development', category: 'Code & Development' },
+  'channel-bridge': { label: 'Coral Bridge', focus: 'email automation, Slack, Discord, Telegram bots, and multi-channel messaging', category: 'Communication' },
+  'tool-workshop': { label: 'Salvage Workshop', focus: 'function calling, MCP servers, tool chains, agentic loops, and custom tool development', category: 'Tool Use & MCP' },
+  'canvas-studio': { label: 'Biolume Studio', focus: 'SQL queries, data pipelines, web scraping, analytics, and structured data processing', category: 'Data & Analytics' },
+  'voice-tower': { label: 'Echo Spire', focus: 'web search APIs, fact-checking, summarization, structured outputs, and research automation', category: 'Research & Analysis' },
+  'security-fortress': { label: 'Shell Fortress', focus: 'Solana development, wallets, DeFi protocols, smart contracts, and on-chain data', category: 'Crypto & Web3' },
+  'config-citadel': { label: 'Nautilus Citadel', focus: 'project management APIs, invoicing, document automation, scheduling, and deployment config', category: 'Business & Productivity' },
 };
