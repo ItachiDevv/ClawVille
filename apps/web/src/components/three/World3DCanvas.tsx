@@ -249,36 +249,18 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [contextLost, setContextLost] = useState(false);
 
-  // Watch for context lost on any canvas in the container
+  // Poll for context lost every 2 seconds
   useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-
-    let cancelled = false;
-
-    const observer = new MutationObserver(() => {
-      const canvas = container.querySelector('canvas');
-      if (canvas && !cancelled) {
-        canvas.addEventListener('webglcontextlost', (e) => {
-          e.preventDefault();
-          if (!cancelled) setContextLost(true);
-        }, { once: true });
-
-        // Also check if context is already lost after a delay
-        setTimeout(() => {
-          if (cancelled) return;
-          const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
-          if (gl && gl.isContextLost()) {
-            setContextLost(true);
-          }
-        }, 3000);
-
-        observer.disconnect();
+    const id = setInterval(() => {
+      const canvas = containerRef.current?.querySelector('canvas');
+      if (!canvas) return;
+      const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+      if (gl && gl.isContextLost()) {
+        setContextLost(true);
+        clearInterval(id);
       }
-    });
-
-    observer.observe(container, { childList: true, subtree: true });
-    return () => { cancelled = true; observer.disconnect(); };
+    }, 2000);
+    return () => clearInterval(id);
   }, []);
 
   if (contextLost) return <ContextLostFallback />;
