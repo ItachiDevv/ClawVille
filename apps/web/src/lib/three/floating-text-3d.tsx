@@ -2,7 +2,7 @@
 
 import { useRef, memo } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { Text, Billboard } from '@react-three/drei';
+// Text removed
 import * as THREE from 'three';
 import { useGameStore } from '@/stores/game';
 
@@ -89,20 +89,10 @@ function FloatingTexts3D() {
   return (
     <group>
       {texts.map((ft) => (
-        <Billboard key={ft.id} position={[ft.x, ft.y, ft.z]}>
-          <Text
-            fontSize={4}
-            color={ft.color}
-            anchorX="center"
-            anchorY="middle"
-            outlineWidth={0.4}
-            outlineColor="#000000"
-            fillOpacity={ft.opacity}
-            outlineOpacity={ft.opacity}
-          >
-            {ft.text}
-          </Text>
-        </Billboard>
+        <mesh key={ft.id} position={[ft.x, ft.y, ft.z]}>
+          <sphereGeometry args={[1.5, 6, 6]} />
+          <meshBasicMaterial color={ft.color} transparent opacity={ft.opacity} />
+        </mesh>
       ))}
     </group>
   );

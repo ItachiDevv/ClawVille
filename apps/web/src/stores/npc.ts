@@ -115,8 +115,15 @@ export interface NpcStoreState {
   cleanupExpired: () => void;
 }
 
+// Demo NPCs shown when API server is not connected
+const DEMO_NPCS: NpcSpriteState[] = [
+  { id: 'demo-1', name: 'Captain Claw', x: 400, y: 300, prevX: 400, prevY: 300, direction: 'idle', species: 'cat', color: 0xff6347, hp: 100, maxHp: 100, isDead: false, hasSword: false, inCombat: false, inConversation: false, inventory: [], isOpenClaw: false, combatAction: null, combatActionAt: 0 },
+  { id: 'demo-2', name: 'Pearl', x: 700, y: 200, prevX: 700, prevY: 200, direction: 'idle', species: 'bunny', color: 0xff80ab, hp: 100, maxHp: 100, isDead: false, hasSword: false, inCombat: false, inConversation: false, inventory: [], isOpenClaw: false, combatAction: null, combatActionAt: 0 },
+  { id: 'demo-3', name: 'Rusty', x: 200, y: 500, prevX: 200, prevY: 500, direction: 'idle', species: 'fox', color: 0xff8c00, hp: 100, maxHp: 100, isDead: false, hasSword: false, inCombat: false, inConversation: false, inventory: [], isOpenClaw: false, combatAction: null, combatActionAt: 0 },
+];
+
 export const useNpcStore = create<NpcStoreState>((set, get) => ({
-  npcs: [],
+  npcs: DEMO_NPCS,
   chatBubbles: [],
   combatEvents: [],
   lootEvents: [],
