@@ -194,20 +194,11 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       )}
 
       {/* Underwater lighting — bright enough to see sandy floor clearly */}
-      <ambientLight intensity={0.8} color={0xaaddee} />
+      <ambientLight intensity={1.0} color={0xaaddee} />
       <directionalLight
         position={[200, 400, 200]}
         intensity={1.1}
         color={0xffeedd}
-        castShadow
-        shadow-mapSize-width={2048}
-        shadow-mapSize-height={2048}
-        shadow-camera-left={-HALF_W}
-        shadow-camera-right={HALF_W}
-        shadow-camera-top={HALF_H}
-        shadow-camera-bottom={-HALF_H}
-        shadow-camera-near={1}
-        shadow-camera-far={1200}
       />
 
       {/* Underwater fog — gentle, not too dark */}
@@ -260,7 +251,6 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
       }}
     >
       <Canvas
-        shadows
         gl={{ antialias: true }}
         camera={{
           fov: 60,
