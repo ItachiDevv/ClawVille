@@ -1,11 +1,9 @@
 'use client';
 
 import { useRef, useMemo, useState, useEffect } from 'react';
-import { Canvas, useFrame, extend } from '@react-three/fiber';
+import { Canvas, useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
-import * as THREE from 'three/webgpu';
-
-extend(THREE as any);
+import * as THREE from 'three';
 
 // Preload models
 useGLTF.preload('/models/lobster.glb');

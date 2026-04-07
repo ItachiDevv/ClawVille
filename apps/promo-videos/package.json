@@ -1,0 +1,27 @@
+{
+  "name": "@clawville/promo-videos",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "studio": "remotion studio",
+    "render": "remotion render",
+    "build": "echo 'Promo videos: use studio or render scripts directly'",
+    "render:all": "remotion render meet-the-claws-vertical out/meet-the-claws-vertical.mp4 && remotion render arena-battle-vertical out/arena-battle-vertical.mp4"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.421",
+    "@remotion/gif": "4.0.421",
+    "@remotion/google-fonts": "4.0.421",
+    "@remotion/media": "4.0.421",
+    "@remotion/transitions": "4.0.421",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "remotion": "4.0.421",
+    "zod": "3.22.3"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "typescript": "^5.5.0"
+  }
+}

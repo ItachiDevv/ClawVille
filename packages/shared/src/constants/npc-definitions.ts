@@ -33,7 +33,7 @@ function center(tileX: number, tileY: number, tileW: number, tileH: number) {
 }
 
 // Building zone tile coords from tilemap-data.ts (10 OpenClaw integrations)
-const BUILDING_TILE_ZONES: Record<string, { x: number; y: number; w: number; h: number }> = {
+export const BUILDING_TILE_ZONES: Record<string, { x: number; y: number; w: number; h: number }> = {
   'cron-hub':           { x: 3,  y: 2,  w: 4, h: 3 },
   'webhook-gateway':    { x: 9,  y: 1,  w: 4, h: 3 },
   'memory-vault':       { x: 16, y: 1,  w: 3, h: 3 },

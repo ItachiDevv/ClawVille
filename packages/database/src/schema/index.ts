@@ -7,12 +7,17 @@ export * from './location-agents';
 export * from './agents';
 export * from './inventory';
 export * from './claws';
+export * from './memories';
+export * from './research';
+export * from './marketplace';
 
 import { users, sessions } from './users';
+import { npcMemories, activityLog } from './memories';
 import { avatars } from './avatars';
 import { agents, agentLogs } from './agents';
 import { locationAgents } from './location-agents';
 import { avatarInventory } from './inventory';
+import { publishedSkills, skillUpvotes } from './marketplace';
 import { openclawBots } from './claws';
 
 export const usersRelations = relations(users, ({ many, one }) => ({
@@ -42,6 +47,7 @@ export const petsRelations = relations(avatars, ({ one, many }) => ({
     references: [agents.id],
   }),
   inventory: many(avatarInventory),
+  publishedSkills: many(publishedSkills),
 }));
 
 export const petInventoryRelations = relations(avatarInventory, ({ one }) => ({
@@ -66,6 +72,13 @@ export const agentLogsRelations = relations(agentLogs, ({ one }) => ({
   }),
 }));
 
+export const activityLogRelations = relations(activityLog, ({ one }) => ({
+  avatar: one(avatars, {
+    fields: [activityLog.avatarId],
+    references: [avatars.id],
+  }),
+}));
+
 export const locationAgentsRelations = relations(locationAgents, ({ one }) => ({
   user: one(users, {
     fields: [locationAgents.userId],
@@ -74,6 +87,25 @@ export const locationAgentsRelations = relations(locationAgents, ({ one }) => ({
   agent: one(agents, {
     fields: [locationAgents.platformAgentId],
     references: [agents.id],
+  }),
+}));
+
+export const publishedSkillsRelations = relations(publishedSkills, ({ one, many }) => ({
+  authorPet: one(avatars, {
+    fields: [publishedSkills.authorAvatarId],
+    references: [avatars.id],
+  }),
+  upvotes: many(skillUpvotes),
+}));
+
+export const skillUpvotesRelations = relations(skillUpvotes, ({ one }) => ({
+  skill: one(publishedSkills, {
+    fields: [skillUpvotes.skillId],
+    references: [publishedSkills.id],
+  }),
+  avatar: one(avatars, {
+    fields: [skillUpvotes.avatarId],
+    references: [avatars.id],
   }),
 }));
 

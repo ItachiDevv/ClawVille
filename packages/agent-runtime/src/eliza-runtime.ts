@@ -16,6 +16,7 @@ import {
 import { v5 as uuidv5 } from 'uuid';
 import type { LocationTemplate } from '@legacyapp/agent-templates';
 import { loadLocationTemplate } from './character-loader';
+import { createOpenClawProviderPlugin, type OpenClawGatewayConfig } from './plugins/openclaw-provider';
 
 const ROOM_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
 
@@ -71,6 +72,7 @@ export interface ElizaRuntimeConfig {
     system?: string;
   };
   agentConfig: Record<string, unknown>;
+  openclawGateway?: OpenClawGatewayConfig;
   databaseUrl?: string;
   apiKeys?: {
     anthropic?: string;
@@ -163,7 +165,10 @@ export class ElizaRuntime {
   constructor(config: ElizaRuntimeConfig) {
     this.config = config;
 
-    if (config.agentType === 'avatar-agent') {
+    if (config.agentType === 'openclaw-bot') {
+      // OpenClaw bots reuse avatar character builder with gateway-specific defaults
+      this.character = this.buildPetCharacter(config);
+    } else if (config.agentType === 'avatar-agent') {
       // Avatar agents use customization directly, no template
       this.character = this.buildPetCharacter(config);
     } else {
@@ -316,6 +321,13 @@ export class ElizaRuntime {
         console.error(`[ElizaRuntime] Failed to load plugin ${pluginName}:`, error);
       }
     }
+
+    // Prepend OpenClaw provider plugin so it wins TEXT_GENERATION priority
+    if (this.config.openclawGateway) {
+      const openclawPlugin = createOpenClawProviderPlugin(this.config.openclawGateway);
+      this.loadedPlugins.unshift(openclawPlugin as Plugin);
+      console.log(`[ElizaRuntime] Loaded OpenClaw provider plugin (gateway: ${this.config.openclawGateway.gatewayUrl})`);
+    }
   }
 
   async stop(): Promise<void> {
@@ -428,8 +440,10 @@ export class ElizaRuntime {
     }
 
     try {
-      const roomId = generateRoomId(this.config.agentId, context.userId || 'anonymous');
-      const entityId = (context.userId || crypto.randomUUID()) as UUID;
+      const userKey = context.userId || 'anonymous';
+      const roomId = generateRoomId(this.config.agentId, userKey);
+      // Derive a deterministic UUID from the userId string (may not be a valid UUID)
+      const entityId = uuidv5(userKey, ROOM_NAMESPACE) as UUID;
       const agentId = this.config.agentId as UUID;
 
       const worldId = await this.ensureWorld();

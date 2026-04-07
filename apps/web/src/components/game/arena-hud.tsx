@@ -28,7 +28,7 @@ export default function ArenaHUD() {
 
       {/* Combat Log */}
       <div className="bg-black/60 backdrop-blur-sm rounded-lg p-3 border border-white/10 max-h-40 overflow-y-auto">
-        <h3 className="text-xs font-bold text-legacytheme-yellow mb-2 uppercase tracking-wide">
+        <h3 className="text-xs font-bold text-claw-accent mb-2 uppercase tracking-wide">
           Combat Log
         </h3>
         {combatLog.length === 0 ? (
@@ -46,7 +46,7 @@ export default function ArenaHUD() {
 
       {/* Leaderboard */}
       <div className="bg-black/60 backdrop-blur-sm rounded-lg p-3 border border-white/10">
-        <h3 className="text-xs font-bold text-legacytheme-yellow mb-2 uppercase tracking-wide">
+        <h3 className="text-xs font-bold text-claw-accent mb-2 uppercase tracking-wide">
           Leaderboard
         </h3>
         <div className="space-y-1">

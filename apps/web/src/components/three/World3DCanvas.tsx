@@ -1,13 +1,10 @@
 'use client';
 
-import { useRef, useEffect, useState, memo } from 'react';
-import { Canvas, useFrame, extend } from '@react-three/fiber';
+import { useRef, useEffect, memo } from 'react';
+import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
-import * as THREE from 'three/webgpu';
+import * as THREE from 'three';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
-
-// Register three/webgpu elements with R3F
-extend(THREE as any);
 import ArenaTerrain from '@/lib/three/arena-terrain';
 import ArenaBuildings from '@/lib/three/arena-buildings';
 import ArenaNpcs from '@/lib/three/arena-npcs';
@@ -228,34 +225,7 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
 // ---------------------------------------------------------------------------
 // Main exported Canvas component
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// Detect WebGPU support
-// ---------------------------------------------------------------------------
-function supportsWebGPU(): boolean {
-  return typeof navigator !== 'undefined' && 'gpu' in navigator;
-}
-
-// ---------------------------------------------------------------------------
-// Main exported Canvas component
-// ---------------------------------------------------------------------------
 function World3DCanvas({ mode }: World3DCanvasProps) {
-  const [gpuAvailable, setGpuAvailable] = useState<boolean | null>(null);
-
-  useEffect(() => {
-    if (!supportsWebGPU()) {
-      setGpuAvailable(false);
-      return;
-    }
-    // Probe actual adapter availability
-    navigator.gpu.requestAdapter().then(
-      (adapter) => setGpuAvailable(!!adapter),
-      () => setGpuAvailable(false)
-    );
-  }, []);
-
-  // Wait for GPU probe before rendering
-  if (gpuAvailable === null) return null;
-
   return (
     <div
       style={{
@@ -268,18 +238,7 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
     >
       <Canvas
         shadows
-        gl={
-          gpuAvailable
-            ? async (props: any) => {
-                const renderer = new THREE.WebGPURenderer({
-                  ...props,
-                  antialias: true,
-                });
-                await renderer.init();
-                return renderer as any;
-              }
-            : { antialias: true }
-        }
+        gl={{ antialias: true }}
         camera={{
           fov: 60,
           near: 1,

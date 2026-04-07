@@ -18,6 +18,8 @@ export interface NpcSpriteState {
   inConversation: boolean;
   inventory: string[];
   isOpenClaw: boolean;
+  combatAction: 'attack' | 'heavy' | 'block' | 'dodge' | 'combo' | 'special' | null;
+  combatActionAt: number;
 }
 
 export interface NpcChatBubble {
@@ -82,9 +84,22 @@ interface ServerSnapshot {
     inConversation: boolean;
     inventory: string[];
     isOpenClaw?: boolean;
+    activity?: string;
+    activityEmoji?: string;
+    intentDescription?: string;
+    combatAction?: string | null;
+    combatActionAt?: number;
   }>;
   conversations: ServerConversation[];
   combats: ServerCombat[];
+  events?: Array<{
+    id: string;
+    type: string;
+    npcId: string;
+    npcName: string;
+    data: any;
+    timestamp: number;
+  }>;
   timestamp: number;
 }
 
@@ -136,6 +151,8 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
         inConversation: n.inConversation,
         inventory: n.inventory,
         isOpenClaw: n.isOpenClaw ?? false,
+        combatAction: (n.combatAction as NpcSpriteState['combatAction']) ?? null,
+        combatActionAt: n.combatActionAt ?? 0,
       };
     });
 
@@ -155,6 +172,26 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
           text: msg.text,
           expiresAt: now + 6000,
         });
+      }
+    }
+
+    // Process events (agent chat bubbles, etc.)
+    if (snapshot.events) {
+      for (const event of snapshot.events) {
+        // Agent chat bubbles
+        if (event.type === 'agent_chat' && event.data?.message) {
+          const exists = newBubbles.some(
+            (b) => b.npcId === event.npcId && b.text === event.data.message
+          );
+          if (!exists) {
+            newBubbles.push({
+              npcId: event.npcId,
+              speaker: event.npcName,
+              text: event.data.message,
+              expiresAt: now + 8000,
+            });
+          }
+        }
       }
     }
 

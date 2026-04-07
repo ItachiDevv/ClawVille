@@ -51,7 +51,7 @@ export async function POST(
     const response = await runtime.processMessage(result.data.content, {
       userId: user.id,
       roomId: `${locationId}-${user.id}`,
-      platform: 'legacyapp',
+      platform: 'clawville',
     });
 
     return json({
