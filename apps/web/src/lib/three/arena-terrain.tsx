@@ -32,22 +32,38 @@ function seeded(seed: number) {
 // ---------------------------------------------------------------------------
 function OceanFloor() {
   const geo = useMemo(() => {
-    const g = new THREE.PlaneGeometry(MAP_WIDTH, MAP_HEIGHT, MAP_COLS, MAP_ROWS);
+    // Higher subdivision for visible 3D dunes
+    const g = new THREE.PlaneGeometry(MAP_WIDTH, MAP_HEIGHT, 120, 80);
     const pos = g.attributes.position;
     const colors = new Float32Array(pos.count * 3);
     const rand = seeded(42);
     const sandColors = [
       new THREE.Color(0xd4b896), new THREE.Color(0xc9a97a),
       new THREE.Color(0xe8d5b7), new THREE.Color(0xbfa06a),
+      new THREE.Color(0xdec49e),
     ];
 
     for (let i = 0; i < pos.count; i++) {
-      // Gentle undulation
       const x = pos.getX(i);
       const z = pos.getY(i);
-      pos.setZ(i, Math.sin(x * 0.01) * 1.5 + Math.cos(z * 0.015) * 1 + rand() * 0.3);
-      const c = sandColors[Math.floor(rand() * sandColors.length)];
-      colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
+
+      // Multi-octave noise for realistic sand dunes
+      const dune1 = Math.sin(x * 0.008) * Math.cos(z * 0.012) * 8;
+      const dune2 = Math.sin(x * 0.025 + 1.5) * Math.cos(z * 0.02) * 3;
+      const ripple = Math.sin(x * 0.06) * Math.cos(z * 0.08) * 1.2;
+      const noise = (rand() - 0.5) * 1.5;
+
+      pos.setZ(i, dune1 + dune2 + ripple + noise);
+
+      // Color varies with height — lighter on tops, darker in valleys
+      const height = (dune1 + dune2) / 11; // normalized -1 to 1
+      const colorIdx = Math.floor(Math.abs(height * 2 + rand()) * sandColors.length) % sandColors.length;
+      const c = sandColors[colorIdx];
+      // Darken valleys slightly
+      const darkFactor = 0.85 + height * 0.15;
+      colors[i * 3] = c.r * darkFactor;
+      colors[i * 3 + 1] = c.g * darkFactor;
+      colors[i * 3 + 2] = c.b * darkFactor;
     }
     g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     g.computeVertexNormals();
@@ -55,8 +71,8 @@ function OceanFloor() {
   }, []);
 
   return (
-    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.5, 0]} receiveShadow geometry={geo}>
-      <meshStandardMaterial vertexColors roughness={0.85} />
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -2, 0]} receiveShadow geometry={geo}>
+      <meshStandardMaterial vertexColors roughness={0.9} />
     </mesh>
   );
 }
@@ -158,20 +174,20 @@ function WaterSurface() {
 // ---------------------------------------------------------------------------
 function CoralInstances() {
   const ref = useRef<THREE.InstancedMesh>(null);
-  const count = 25;
+  const count = 35;
 
   useMemo(() => {
     if (!ref.current) return;
     const rand = seeded(77);
     const dummy = new THREE.Object3D();
-    const coralColors = [0xff6f61, 0xff4081, 0xe65100, 0xffab40, 0x7c4dff, 0x00e5ff];
+    const coralColors = [0xff6f61, 0xff4081, 0xe65100, 0xffab40, 0x7c4dff, 0x00e5ff, 0xff7043, 0xab47bc];
     for (let i = 0; i < count; i++) {
       dummy.position.set(
         OFFSET_X + rand() * MAP_WIDTH,
-        rand() * 3,
+        rand() * 2,
         OFFSET_Z + rand() * MAP_HEIGHT,
       );
-      dummy.scale.setScalar(1 + rand() * 3);
+      dummy.scale.set(2 + rand() * 5, 3 + rand() * 8, 2 + rand() * 5);
       dummy.rotation.y = rand() * Math.PI * 2;
       dummy.updateMatrix();
       ref.current.setMatrixAt(i, dummy.matrix);
@@ -182,9 +198,9 @@ function CoralInstances() {
   }, []);
 
   return (
-    <instancedMesh ref={ref} args={[undefined, undefined, count]} castShadow>
+    <instancedMesh ref={ref} args={[undefined, undefined, count]}>
       <dodecahedronGeometry args={[1, 1]} />
-      <meshStandardMaterial roughness={0.6} />
+      <meshStandardMaterial roughness={0.5} emissive={0x331111} emissiveIntensity={0.3} />
     </instancedMesh>
   );
 }
@@ -194,20 +210,20 @@ function CoralInstances() {
 // ---------------------------------------------------------------------------
 function KelpInstances() {
   const ref = useRef<THREE.InstancedMesh>(null);
-  const count = 30;
+  const count = 40;
 
   useMemo(() => {
     if (!ref.current) return;
     const rand = seeded(55);
     const dummy = new THREE.Object3D();
-    const kelpColors = [0x2e7d32, 0x388e3c, 0x1b5e20];
+    const kelpColors = [0x2e7d32, 0x388e3c, 0x43a047, 0x66bb6a];
     for (let i = 0; i < count; i++) {
       dummy.position.set(
         OFFSET_X + rand() * MAP_WIDTH,
-        2 + rand() * 4,
+        5 + rand() * 10,
         OFFSET_Z + rand() * MAP_HEIGHT,
       );
-      dummy.scale.set(0.3 + rand() * 0.3, 2 + rand() * 4, 0.3 + rand() * 0.3);
+      dummy.scale.set(0.8 + rand() * 1, 8 + rand() * 15, 0.8 + rand() * 1);
       dummy.updateMatrix();
       ref.current.setMatrixAt(i, dummy.matrix);
       ref.current.setColorAt(i, new THREE.Color(kelpColors[Math.floor(rand() * kelpColors.length)]));
@@ -217,9 +233,9 @@ function KelpInstances() {
   }, []);
 
   return (
-    <instancedMesh ref={ref} args={[undefined, undefined, count]} castShadow>
+    <instancedMesh ref={ref} args={[undefined, undefined, count]}>
       <cylinderGeometry args={[0.5, 0.8, 1, 6]} />
-      <meshStandardMaterial roughness={0.7} />
+      <meshStandardMaterial roughness={0.6} emissive={0x112211} emissiveIntensity={0.2} />
     </instancedMesh>
   );
 }
@@ -241,11 +257,11 @@ function RockInstances() {
         rand() * 0.5,
         OFFSET_Z + rand() * MAP_HEIGHT,
       );
-      dummy.scale.setScalar(1 + rand() * 3);
+      dummy.scale.setScalar(2 + rand() * 6);
       dummy.rotation.set(rand(), rand(), rand());
       dummy.updateMatrix();
       ref.current.setMatrixAt(i, dummy.matrix);
-      ref.current.setColorAt(i, new THREE.Color().setHSL(0.08, 0.1, 0.35 + rand() * 0.15));
+      ref.current.setColorAt(i, new THREE.Color().setHSL(0.08, 0.15, 0.3 + rand() * 0.2));
     }
     ref.current.instanceMatrix.needsUpdate = true;
     if (ref.current.instanceColor) ref.current.instanceColor.needsUpdate = true;

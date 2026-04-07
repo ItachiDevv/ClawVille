@@ -201,7 +201,7 @@ function GroundScatter({
           {/* Anemone base */}
           <mesh position={[0, flower.stemH * 0.4, 0]}>
             <cylinderGeometry args={[0.3, 0.4, flower.stemH * 0.8, 4]} />
-            <meshStandardMaterial color={0x2e6b62} roughness={0.7} />
+            <meshStandardMaterial color={0x3e8b82} roughness={0.7} emissive={0x112222} emissiveIntensity={0.3} />
           </mesh>
           {/* Anemone tentacles */}
           <mesh position={[0, flower.stemH + flower.bloomR * 0.3, 0]}>
@@ -238,7 +238,7 @@ function CronHubBuilding({ zone }: { zone: BuildingZone }) {
       {/* Coral rock base */}
       <mesh position={[0, 12, 0]} castShadow>
         <boxGeometry args={[w * 0.5, 24, w * 0.5]} />
-        <meshStandardMaterial color={0x3e6b62} roughness={0.85} />
+        <meshStandardMaterial color={0x4e8b82} roughness={0.85} emissive={0x112222} emissiveIntensity={0.3} />
       </mesh>
       {/* Conch tower body */}
       <mesh position={[0, 38, 0]} castShadow>
@@ -258,11 +258,11 @@ function CronHubBuilding({ zone }: { zone: BuildingZone }) {
       {/* Clock hands */}
       <mesh position={[0, 45, -w * 0.21]} rotation={[0, 0, 0.4]}>
         <boxGeometry args={[0.8, 6, 0.3]} />
-        <meshStandardMaterial color={0x004d40} roughness={0.7} />
+        <meshStandardMaterial color={0x00897b} roughness={0.7} emissive={0x003333} emissiveIntensity={0.3} />
       </mesh>
       <mesh position={[0, 43, -w * 0.21]} rotation={[0, 0, -0.8]}>
         <boxGeometry args={[0.6, 4.5, 0.3]} />
-        <meshStandardMaterial color={0x004d40} roughness={0.7} />
+        <meshStandardMaterial color={0x00897b} roughness={0.7} emissive={0x003333} emissiveIntensity={0.3} />
       </mesh>
       {/* Spiral shell top */}
       <mesh position={[0, 58, 0]} castShadow>
@@ -297,7 +297,7 @@ function CronHubBuilding({ zone }: { zone: BuildingZone }) {
       {/* Cave entrance */}
       <mesh position={[0, 7, -w * 0.24]}>
         <boxGeometry args={[8, 14, 1.5]} />
-        <meshStandardMaterial color={0x1a3c34} roughness={0.85} />
+        <meshStandardMaterial color={0x2a5c54} roughness={0.85} emissive={0x112222} emissiveIntensity={0.4} />
       </mesh>
       <GroundScatter seedKey={zone.id} radius={w * 0.55} tone="warm" />
       <FloatingLabel text="Tide Clock Grotto" subtitle="Automation & Workflows" y={78} />
@@ -406,12 +406,12 @@ function MemoryVaultBuilding({ zone }: { zone: BuildingZone }) {
       {/* Abyssal rock base */}
       <mesh position={[0, 14, 0]} castShadow>
         <boxGeometry args={[w * 0.7, 28, d * 0.65]} />
-        <meshStandardMaterial color={0x1a3a4a} roughness={0.85} />
+        <meshStandardMaterial color={0x2a5a6a} roughness={0.85} emissive={0x112233} emissiveIntensity={0.3} />
       </mesh>
       {/* Nautilus dome */}
       <mesh position={[0, 30, 0]} castShadow>
         <sphereGeometry args={[w * 0.38, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
-        <meshStandardMaterial color={0x0d253a} roughness={0.5} />
+        <meshStandardMaterial color={0x1d4560} roughness={0.5} emissive={0x0a1a2a} emissiveIntensity={0.4} />
       </mesh>
       {/* Barnacle trim bands */}
       {[10, 20].map((y) => (
@@ -423,7 +423,7 @@ function MemoryVaultBuilding({ zone }: { zone: BuildingZone }) {
       {/* Heavy sealed hatch */}
       <mesh position={[0, 12, -d * 0.34]}>
         <boxGeometry args={[14, 20, 2]} />
-        <meshStandardMaterial color={0x263238} roughness={0.5} metalness={0.5} />
+        <meshStandardMaterial color={0x37474f} roughness={0.5} metalness={0.5} emissive={0x111822} emissiveIntensity={0.3} />
       </mesh>
       {/* Wheel lock */}
       <mesh position={[0, 14, -d * 0.36]}>
