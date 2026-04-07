@@ -2,7 +2,7 @@
 
 import { useRef, useMemo, useCallback } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
-import * as THREE from 'three/webgpu';
+import * as THREE from 'three';
 import { useGameStore } from '@/stores/game';
 import { findPath } from '@/lib/pixi/client-pathfinding';
 import {

@@ -3,7 +3,7 @@
 import { useRef, useMemo, memo, useCallback, useEffect } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Text, Billboard, useGLTF } from '@react-three/drei';
-import * as THREE from 'three/webgpu';
+import * as THREE from 'three';
 import { useNpcStore, type NpcSpriteState } from '@/stores/npc';
 
 useGLTF.preload('/models/lobster.glb');

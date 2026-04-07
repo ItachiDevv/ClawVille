@@ -10,6 +10,12 @@ import { chatRoutes } from './routes/chat';
 import { itemRoutes } from './routes/items';
 import { npcRoutes } from './routes/npc-sse';
 import { openclawRoutes } from './routes/openclaw';
+import { activityRoutes } from './routes/activity';
+import { researchSseRoutes } from './routes/research-sse';
+import { researchApiRoutes } from './routes/research';
+import { marketplaceRoutes } from './routes/marketplace';
+import { clawRoutes } from './routes/claws';
+import { agentGatewayRoutes } from './routes/agent-gateway';
 import { startSimulation } from './services/npc-simulation';
 import type { AppContext } from './types';
 
@@ -46,6 +52,12 @@ app.route('/api/locations', chatRoutes);
 app.route('/api/items', itemRoutes);
 app.route('/api/npc', npcRoutes);
 app.route('/api/openclaw', openclawRoutes);
+app.route('/api/pets', activityRoutes);
+app.route('/api/research', researchSseRoutes);
+app.route('/api/research', researchApiRoutes);
+app.route('/api/marketplace', marketplaceRoutes);
+app.route('/api/claws', clawRoutes);
+app.route('/api/agent', agentGatewayRoutes);
 
 // Error handler
 app.onError((err, c) => {

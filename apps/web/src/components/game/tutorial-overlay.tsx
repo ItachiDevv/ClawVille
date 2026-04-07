@@ -2,11 +2,11 @@
 
 import { useState, useEffect, useCallback } from 'react';
 
-const STORAGE_KEY = 'legacyapp-tutorial-seen';
+const STORAGE_KEY = 'clawville-tutorial-seen';
 
 const STEPS = [
   {
-    title: 'Welcome to LegacyApp!',
+    title: 'Welcome to ClawVille!',
     icon: '🎉',
     content:
       'You just adopted an AI-powered pet — a real ElizaOS agent with its own personality, memories, and way of speaking. This isn\'t a chatbot with a skin. Your pet thinks for itself.',
@@ -16,7 +16,7 @@ const STEPS = [
     title: 'Move Around',
     icon: '🗺️',
     content:
-      'Use WASD or arrow keys to walk your pet through ClawVille. On mobile, use the on-screen joystick.',
+      'Use WASD or arrow keys to walk your pet through The Depths. On mobile, use the on-screen joystick.',
     tip: 'WASD / Arrows to move',
   },
   {
@@ -112,7 +112,7 @@ export default function TutorialOverlay() {
       {/* Help button — always visible */}
       <button
         onClick={openTutorial}
-        className="fixed bottom-4 right-4 z-50 w-11 h-11 rounded-full bg-gradient-to-b from-blue-400 to-blue-600 border-3 border-blue-700 shadow-legacytheme flex items-center justify-center text-white font-legacyapp text-xl hover:brightness-110 transition-all active:translate-y-0.5 active:shadow-none"
+        className="fixed bottom-4 right-4 z-50 w-11 h-11 rounded-full bg-gradient-to-b from-blue-400 to-blue-600 border-3 border-blue-700 shadow-legacytheme flex items-center justify-center text-white font-clawville text-xl hover:brightness-110 transition-all active:translate-y-0.5 active:shadow-none"
         aria-label="How to play"
       >
         ?
@@ -161,7 +161,7 @@ export default function TutorialOverlay() {
               {/* Icon + Title */}
               <div className="text-center pt-2">
                 <span className="text-5xl block mb-3">{current.icon}</span>
-                <h2 className="font-legacyapp text-2xl text-gray-900">
+                <h2 className="font-clawville text-2xl text-gray-900">
                   {current.title}
                 </h2>
               </div>
