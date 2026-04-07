@@ -2,7 +2,7 @@
 
 import { useRef, useMemo, memo } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { Text } from '@react-three/drei';
+// Text removed
 import * as THREE from 'three';
 import { useNpcStore } from '@/stores/npc';
 import type { NpcSpriteState } from '@/stores/npc';
@@ -239,22 +239,12 @@ function ArenaFx() {
 
   return (
     <group>
-      {/* Damage number texts */}
+      {/* Damage indicators — red spheres instead of Text */}
       {damageNumbers.map((dn) => (
-        <Text
-          key={dn.id}
-          position={[dn.x, dn.y, dn.z]}
-          fontSize={10}
-          color="#ff4444"
-          anchorX="center"
-          anchorY="middle"
-          outlineWidth={1.5}
-          outlineColor="#000000"
-          fillOpacity={dn.opacity}
-          outlineOpacity={dn.opacity}
-        >
-          {`-${dn.damage}`}
-        </Text>
+        <mesh key={dn.id} position={[dn.x, dn.y, dn.z]}>
+          <sphereGeometry args={[2, 6, 6]} />
+          <meshBasicMaterial color={0xff4444} transparent opacity={dn.opacity} />
+        </mesh>
       ))}
 
       {/* Hit flashes (expanding red spheres) */}

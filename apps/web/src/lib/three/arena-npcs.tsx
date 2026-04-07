@@ -2,7 +2,7 @@
 
 import { useRef, useMemo, memo, useCallback } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { Text, Billboard } from '@react-three/drei';
+// Text/Billboard removed — crashes Intel GPUs
 import * as THREE from 'three';
 import { useNpcStore, type NpcSpriteState } from '@/stores/npc';
 import { LobsterAnimator, type LobsterRefs, type AnimState, resolveAnimState } from '@/lib/three/lobster-animations';
@@ -606,18 +606,11 @@ const NpcMesh = memo(function NpcMesh({ npc }: NpcMeshProps) {
       </mesh>
 
       {/* Name label */}
-      <Billboard position={[0, 7.3, 0]}>
-        <Text
-          fontSize={1}
-          color="white"
-          anchorX="center"
-          anchorY="bottom"
-          outlineWidth={0.08}
-          outlineColor="#000000"
-        >
-          {labelText}
-        </Text>
-      </Billboard>
+      {/* Name shown via HTML overlay */}
+      <mesh position={[0, 7, 0]}>
+        <sphereGeometry args={[0.8, 6, 6]} />
+        <meshBasicMaterial color={bodyColor} />
+      </mesh>
 
       {/* OpenClaw glow ring */}
       <mesh

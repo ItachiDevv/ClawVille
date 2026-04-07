@@ -2,7 +2,7 @@
 
 import { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { Text, Billboard } from '@react-three/drei';
+// Text removed — use HTML overlay for labels
 import * as THREE from 'three';
 import { useGameStore } from '@/stores/game';
 import {
@@ -452,19 +452,11 @@ export default function PlayerAvatar() {
         <meshBasicMaterial color={0x000000} transparent opacity={0.2} />
       </mesh>
 
-      {/* Name label */}
-      <Billboard position={[0, PET_HEIGHT + 5, 0]}>
-        <Text
-          fontSize={3}
-          color="white"
-          anchorX="center"
-          anchorY="bottom"
-          outlineWidth={0.3}
-          outlineColor="#000000"
-        >
-          {species.charAt(0).toUpperCase() + species.slice(1)}
-        </Text>
-      </Billboard>
+      {/* Name indicator dot (actual name shown in HTML HUD) */}
+      <mesh position={[0, PET_HEIGHT + 4, 0]}>
+        <sphereGeometry args={[1, 6, 6]} />
+        <meshBasicMaterial color={0x00e5ff} transparent opacity={0.5} />
+      </mesh>
     </group>
   );
 }
