@@ -107,10 +107,10 @@ export default function HomePage() {
               ClawVille
             </h2>
             <p className="text-white/70 text-sm text-center leading-relaxed mb-4">
-              Raise your AI lobster, explore The Depths, learn crypto, and chat with autonomous agents.
+              Explore 10 buildings, download skills, and train your autonomous agent in the deep sea.
             </p>
             <div className="flex flex-wrap justify-center gap-1.5 mb-4">
-              {['AI Lobsters', 'Explore', 'Crypto', 'Chat'].map((tag) => (
+              {['Agent Skills', 'Explore', 'SKILL.md', 'Chat'].map((tag) => (
                 <span
                   key={tag}
                   className="text-xs bg-cyan-500/20 text-cyan-300 px-2 py-0.5 rounded-full"
@@ -121,7 +121,7 @@ export default function HomePage() {
             </div>
             <div className="text-center">
               <span className="inline-block color-btn bg-cyan-600 hover:bg-cyan-500 text-white px-6 py-2 text-sm font-medium group-hover:shadow-lg transition-shadow">
-                Explore The Depths
+                Enter ClawVille
               </span>
             </div>
           </Link>
