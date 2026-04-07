@@ -2,47 +2,23 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-function FloatingIcons() {
-  const items = [
-    { icon: '🦞', x: '5%', y: '15%', delay: 0 },
-    { icon: '🔧', x: '85%', y: '20%', delay: 0.5 },
-    { icon: '🧠', x: '10%', y: '70%', delay: 1 },
-    { icon: '📡', x: '80%', y: '65%', delay: 1.5 },
-    { icon: '⚡', x: '90%', y: '42%', delay: 0.8 },
-    { icon: '🌊', x: '3%', y: '45%', delay: 1.2 },
-  ];
+import dynamic from 'next/dynamic';
 
-  return (
-    <div className="absolute inset-0 overflow-hidden pointer-events-none">
-      {items.map((p, i) => (
-        <div
-          key={i}
-          className="absolute opacity-15 text-4xl"
-          style={{
-            left: p.x,
-            top: p.y,
-            animation: `petFloat 3s ease-in-out ${p.delay}s infinite`,
-          }}
-        >
-          {p.icon}
-        </div>
-      ))}
-    </div>
-  );
-}
+const LandingScene = dynamic(() => import('@/components/three/LandingScene'), {
+  ssr: false,
+});
 
 export default function HomePage() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
   return (
-    <div className="star-bg min-h-screen overflow-x-hidden flex flex-col">
-      {/* Float animation keyframes */}
+    <div className="relative min-h-screen overflow-x-hidden flex flex-col bg-[#061520]">
+      {/* 3D underwater scene background */}
+      {mounted && <LandingScene />}
+
+      {/* Fade-in keyframes */}
       <style dangerouslySetInnerHTML={{ __html: `
-        @keyframes petFloat {
-          0%, 100% { transform: translateY(0px); }
-          50% { transform: translateY(-12px); }
-        }
         @keyframes fadeSlideUp {
           from { opacity: 0; transform: translateY(20px); }
           to { opacity: 1; transform: translateY(0); }
@@ -53,24 +29,21 @@ export default function HomePage() {
         }
       ` }} />
 
-      {/* Background avatars */}
-      {mounted && <FloatingIcons />}
-
-      {/* Main content */}
+      {/* Main content — overlaid on 3D scene */}
       <div className="flex-1 flex flex-col items-center justify-center px-4 py-16 relative z-10">
         {/* Logo */}
         <div className="animate-fade-up text-center mb-12" style={{ animationDelay: '0.1s' }}>
-          <h1 className="font-clawville text-5xl md:text-7xl text-white drop-shadow-[0_3px_6px_rgba(0,0,0,0.5)]">
+          <h1 className="font-clawville text-6xl md:text-8xl text-white drop-shadow-[0_0_40px_rgba(0,229,255,0.4)]">
             ClawVille
           </h1>
-          <p className="text-white/60 text-lg mt-2">
-            Choose your experience
+          <p className="text-cyan-300/60 text-lg mt-3 font-mono tracking-wider uppercase text-sm">
+            Where Agents Learn Skills
           </p>
         </div>
 
         {/* Four-card environment selector */}
         <div
-          className="animate-fade-up grid grid-cols-1 md:grid-cols-2 gap-6 max-w-3xl w-full"
+          className="animate-fade-up grid grid-cols-1 md:grid-cols-2 gap-5 max-w-3xl w-full backdrop-blur-sm bg-black/20 rounded-3xl p-5"
           style={{ animationDelay: '0.3s' }}
         >
           {/* ClawVille — Open World */}
