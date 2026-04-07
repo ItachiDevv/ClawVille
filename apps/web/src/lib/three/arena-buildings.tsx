@@ -2,7 +2,8 @@
 
 import { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { Text, Billboard } from '@react-three/drei';
+// Text/Billboard removed — they crash Iris Xe GPUs (20 SDF font textures)
+// Building names shown via HTML overlay (location-hud) instead
 import * as THREE from 'three';
 import {
   MAP_WIDTH,
@@ -35,56 +36,20 @@ function zoneCenter(zone: BuildingZone): [number, number, number] {
   return [cx, 0, cz];
 }
 
-function FloatingLabel({ text, subtitle, y }: { text: string; subtitle?: string; y: number }) {
+function FloatingLabel({ y }: { text: string; subtitle?: string; y: number }) {
+  // Simple glowing beacon — no Text/Billboard (saves 20 SDF draw calls)
   return (
     <group position={[0, y, 0]}>
-      {/* Kelp stalk post */}
+      {/* Post */}
       <mesh position={[0, -8, 0]}>
-        <cylinderGeometry args={[0.7, 1, 14, 8]} />
+        <cylinderGeometry args={[0.5, 0.8, 14, 6]} />
         <meshStandardMaterial color={0x2e7d32} roughness={0.75} />
       </mesh>
-      <Billboard follow lockX={false} lockY={false} lockZ={false}>
-        <group>
-          {/* Dark glass sign background */}
-          <mesh scale={[2.1, subtitle ? 1.5 : 1.18, 1]}>
-            <circleGeometry args={[10.5, 32]} />
-            <meshBasicMaterial color={0x0a1628} transparent opacity={0.9} depthTest={false} />
-          </mesh>
-          {/* Cyan border ring */}
-          <mesh scale={[2.2, subtitle ? 1.55 : 1.22, 1]}>
-            <ringGeometry args={[10.2, 10.8, 32]} />
-            <meshBasicMaterial color={0x00e5ff} transparent opacity={0.4} depthTest={false} />
-          </mesh>
-          {/* Building name */}
-          <Text
-            position={[0, subtitle ? 2 : 0.05, 0.5]}
-            fontSize={3.6}
-            color="#00e5ff"
-            anchorX="center"
-            anchorY="middle"
-            outlineWidth={0.2}
-            outlineColor="#0a1628"
-            maxWidth={30}
-          >
-            {text}
-          </Text>
-          {/* Category subtitle */}
-          {subtitle && (
-            <Text
-              position={[0, -2.8, 0.5]}
-              fontSize={2.2}
-              color="#ffffff"
-              anchorX="center"
-              anchorY="middle"
-              outlineWidth={0.15}
-              outlineColor="#0a1628"
-              maxWidth={28}
-            >
-              {subtitle}
-            </Text>
-          )}
-        </group>
-      </Billboard>
+      {/* Glowing orb */}
+      <mesh>
+        <sphereGeometry args={[3, 8, 8]} />
+        <meshStandardMaterial color={0x00e5ff} emissive={0x00e5ff} emissiveIntensity={0.6} transparent opacity={0.7} />
+      </mesh>
     </group>
   );
 }
