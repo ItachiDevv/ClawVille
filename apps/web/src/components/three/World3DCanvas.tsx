@@ -23,8 +23,8 @@ const MAP_HEIGHT = 800;
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 const CAM_PAN_SPEED = 300;
-const SKY_COLOR = new THREE.Color(0x0a2a4a); // Deep ocean blue
-const FOG_COLOR = new THREE.Color(0x0d3050); // Dark underwater haze
+const SKY_COLOR = new THREE.Color(0x0e3458); // Deep ocean blue
+const FOG_COLOR = new THREE.Color(0x123858); // Underwater haze — matches sky
 
 export type WorldMode = 'game' | 'arena';
 
@@ -241,25 +241,20 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
         <WASDCameraController controlsRef={controlsRef} />
       )}
 
-      {/* Underwater lighting — hemisphere for natural gradient */}
-      <hemisphereLight args={[0x4488cc, 0x223344, 0.8]} />
-      <ambientLight intensity={0.4} color={0x88bbdd} />
-      <directionalLight position={[200, 400, 100]} intensity={1.0} color={0xccddee} />
-      {/* Caustic point lights from above */}
-      <pointLight position={[0, 200, 0]} intensity={0.6} color={0x00ccff} distance={600} />
-      <pointLight position={[-300, 150, -200]} intensity={0.3} color={0x0088aa} distance={400} />
-      <pointLight position={[300, 150, 200]} intensity={0.3} color={0x00aacc} distance={400} />
+      {/* Underwater lighting — bright but GPU-safe (no extra point lights) */}
+      <hemisphereLight args={[0x88ccee, 0x445566, 1.2]} />
+      <ambientLight intensity={0.6} color={0xaaddff} />
+      <directionalLight position={[200, 400, 100]} intensity={1.5} color={0xeef4ff} />
 
-      {/* Underwater fog — softer for visibility */}
-      <fog attach="fog" args={[FOG_COLOR, 300, 1400]} />
+      {/* Underwater fog — pushed back for better building visibility */}
+      <fog attach="fog" args={[FOG_COLOR, 400, 1800]} />
 
       {/* Shared world geometry */}
       <ArenaTerrain />
       <ArenaBuildings />
       <ArenaNpcs />
 
-      {/* Atmosphere */}
-      <UnderwaterBubbles />
+      {/* Bubbles disabled — per-frame instanced updates stress Intel Iris Xe */}
 
       {/* Mode-specific content */}
       {isGame && <PlayerAvatar />}
@@ -303,15 +298,17 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
       }}
     >
       <Canvas
-        gl={{ antialias: true }}
+        gl={{ antialias: false, powerPreference: 'low-power' }}
+        dpr={[0.75, 1]}
         camera={{
-          fov: 60,
+          fov: 55,
           near: 1,
-          far: 3000,
-          position: mode === 'game' ? [0, 250, 350] : [0, 350, 400],
+          far: 2000,
+          position: mode === 'game' ? [0, 160, 240] : [0, 250, 320],
         }}
-        onCreated={({ scene }) => {
+        onCreated={({ scene, gl }) => {
           scene.background = SKY_COLOR;
+          gl.setPixelRatio(Math.min(window.devicePixelRatio, 1));
         }}
       >
         <SceneContents mode={mode} />
