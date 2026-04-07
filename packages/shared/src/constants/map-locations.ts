@@ -6,7 +6,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
   {
     id: 'cron-hub',
     name: 'Tide Clock Grotto',
-    description: 'Tick-tock — schedule tasks timed to the ocean currents.',
+    description: 'Learn automation, cron jobs, task queues, and workflow orchestration.',
     icon: '🐚',
     positionX: 80,
     positionY: 60,
@@ -16,7 +16,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
   {
     id: 'webhook-gateway',
     name: 'Current Gateway',
-    description: 'Incoming signals ride the currents — endpoints for the reef.',
+    description: 'Master REST APIs, GraphQL, webhooks, OAuth, and integrations.',
     icon: '🌊',
     positionX: 200,
     positionY: 50,
@@ -26,7 +26,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
   {
     id: 'memory-vault',
     name: 'Abyssal Vault',
-    description: 'Deep-sea storage of knowledge, sealed in nautilus chambers.',
+    description: 'Study RAG pipelines, vector databases, embeddings, and context management.',
     icon: '🧠',
     positionX: 330,
     positionY: 30,
@@ -36,7 +36,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
   {
     id: 'skill-forge',
     name: 'Hydrothermal Forge',
-    description: 'Craft skills in volcanic vents from the ClawHub marketplace.',
+    description: 'Practice code generation, debugging, testing, and git workflows.',
     icon: '🌋',
     positionX: 50,
     positionY: 170,
@@ -46,7 +46,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
   {
     id: 'channel-bridge',
     name: 'Coral Bridge',
-    description: 'A living coral bridge connecting reef networks across the sea.',
+    description: 'Connect via Slack, Discord, Telegram, email, and multi-channel messaging.',
     icon: '🪸',
     positionX: 280,
     positionY: 140,
@@ -56,7 +56,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
   {
     id: 'tool-workshop',
     name: 'Salvage Workshop',
-    description: 'Build and test tools from shipwreck salvage and sea glass.',
+    description: 'Build function calling, MCP servers, tool chains, and agentic loops.',
     icon: '⚓',
     positionX: 400,
     positionY: 160,
@@ -66,7 +66,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
   {
     id: 'canvas-studio',
     name: 'Biolume Studio',
-    description: 'Paint with bioluminescent ink on the ocean canvas.',
+    description: 'Query SQL, build data pipelines, scrape the web, and process analytics.',
     icon: '🎨',
     positionX: 620,
     positionY: 80,
@@ -76,7 +76,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
   {
     id: 'voice-tower',
     name: 'Echo Spire',
-    description: 'Sonar and whale-song integration — let your agents be heard.',
+    description: 'Search the web, verify facts, summarize documents, and run research.',
     icon: '🐋',
     positionX: 40,
     positionY: 310,
@@ -86,7 +86,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
   {
     id: 'security-fortress',
     name: 'Shell Fortress',
-    description: 'Armored shell defense — permissions and reef access control.',
+    description: 'Explore Solana, wallets, DeFi protocols, and smart contracts.',
     icon: '🛡️',
     positionX: 180,
     positionY: 340,
@@ -96,7 +96,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
   {
     id: 'config-citadel',
     name: 'Nautilus Citadel',
-    description: 'Configuration spirals — the nerve center of your reef agent.',
+    description: 'Manage projects, invoices, documents, scheduling, and deployments.',
     icon: '🐙',
     positionX: 490,
     positionY: 300,

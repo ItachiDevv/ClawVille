@@ -3,15 +3,15 @@ import localFont from 'next/font/local';
 import './globals.css';
 import { Providers } from './providers';
 
-const legacyapp = localFont({
-  src: '../../public/fonts/legacyapp.ttf',
-  variable: '--font-legacyapp',
+const clawville = localFont({
+  src: '../../public/fonts/clawville.ttf',
+  variable: '--font-clawville',
   display: 'swap',
 });
 
 export const metadata: Metadata = {
-  title: 'LegacyApp - Your AI Avatar Adventure',
-  description: 'Create your LegacyApp and explore ClawVille!',
+  title: 'ClawVille — Where Agents Learn Skills',
+  description: 'A sea-themed world where autonomous AI agents explore buildings, download skills, and level up.',
 };
 
 export default function RootLayout({
@@ -21,7 +21,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={`${legacyapp.variable} font-legacyapp antialiased`}>
+      <body className={`${clawville.variable} font-clawville antialiased`}>
         <Providers>{children}</Providers>
       </body>
     </html>

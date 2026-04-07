@@ -38,13 +38,13 @@ export default function ChatPanel() {
   return (
     <div className="chat-panel-enter fixed right-0 top-0 h-full w-full md:w-96 z-50 flex flex-col bg-black/80 backdrop-blur-sm border-l-2 border-yellow-500/50">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-yellow-600 to-yellow-500 text-black font-bold">
+      <div className="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-yellow-600 to-yellow-500 text-white font-bold">
         <span className="flex items-center gap-2">
           {location?.icon} {location?.name ?? 'Unknown'}
           {currentLocation && isShopBuilding(currentLocation) && (
             <button
               onClick={openShop}
-              className="text-[11px] font-bold px-2 py-0.5 rounded bg-black/10 hover:bg-black/30 transition-colors"
+              className="text-[11px] font-bold px-2 py-0.5 rounded bg-white/10 hover:bg-black/30 transition-colors"
               title="Browse shop items"
             >
               Shop
@@ -52,7 +52,7 @@ export default function ChatPanel() {
           )}
           <button
             onClick={() => currentLocation && openLocationConfig(currentLocation)}
-            className="w-7 h-7 flex items-center justify-center rounded-full bg-black/10 hover:bg-black/30 transition-colors"
+            className="w-7 h-7 flex items-center justify-center rounded-full bg-white/10 hover:bg-black/30 transition-colors"
             aria-label="Configure location agent"
             title="Configure agent"
           >
@@ -74,7 +74,7 @@ export default function ChatPanel() {
         </span>
         <button
           onClick={exitBuilding}
-          className="w-8 h-8 flex items-center justify-center rounded-full bg-black/20 hover:bg-black/40 text-white font-bold transition-colors"
+          className="w-8 h-8 flex items-center justify-center rounded-full bg-white/10 hover:bg-black/40 text-white font-bold transition-colors"
           aria-label="Close"
         >
           X
@@ -93,7 +93,7 @@ export default function ChatPanel() {
           </p>
           <button
             onClick={() => currentLocation && openLocationConfig(currentLocation)}
-            className="legacytheme-panel text-black font-bold px-4 py-2 hover:brightness-110 transition-all text-sm"
+            className="legacytheme-panel text-white font-bold px-4 py-2 hover:brightness-110 transition-all text-sm"
           >
             Configure Agent
           </button>
@@ -150,7 +150,7 @@ export default function ChatPanel() {
               <button
                 onClick={handleSend}
                 disabled={isLoading || !input.trim()}
-                className="bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 text-black font-bold rounded-lg px-4 py-2 text-sm transition-colors"
+                className="bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 text-white font-bold rounded-lg px-4 py-2 text-sm transition-colors"
               >
                 Send
               </button>
