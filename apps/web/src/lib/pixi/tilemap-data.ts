@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// Tilemap data for ElizaPets Neopia Central
+// Tilemap data for ClawVille The Depths
 // 40 x 25 grid of 32px tiles = 1280 x 800 pixel world
 // ---------------------------------------------------------------------------
 

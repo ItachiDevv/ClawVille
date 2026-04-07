@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 import { useGLTF } from '@react-three/drei';
 import { Text, Billboard } from '@react-three/drei';
-import * as THREE from 'three/webgpu';
+import * as THREE from 'three';
 import {
   MAP_WIDTH,
   MAP_HEIGHT,

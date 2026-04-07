@@ -4,11 +4,34 @@ import { NPC_IDS, BUILDING_OPENCLAW_THEMES } from '@elizapets/shared';
 import type { OpenClawRegistration, OpenClawBotIdentity } from '@elizapets/shared';
 import { OpenClawClient } from '../services/openclaw-client';
 import { npcSimulation } from '../services/npc-simulation';
-import { db, pets, openclawBots, eq, sql } from '@elizapets/database';
+import { db, pets, users, npcMemories, activityLog, openclawBots, agents, eq, and, desc, sql } from '@elizapets/database';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import type { AppContext } from '../types';
+import { agentOrchestrator } from '../services/agent-orchestrator';
+import { setSessionAgent, getSessionAgent, deleteSessionAgent } from '../services/session-agent-map';
 
 import { generateSkillMd } from '../services/skill-generator';
+
+/** Ensure a system user exists for OpenClaw bot agents (FK requirement) */
+let _systemUserId: string | null = null;
+async function getOrCreateSystemUserId(): Promise<string> {
+  if (_systemUserId) return _systemUserId;
+  const SYSTEM_EMAIL = 'openclaw-system@clawville.internal';
+  const existing = await db.query.users.findFirst({
+    where: eq(users.email, SYSTEM_EMAIL),
+  });
+  if (existing) {
+    _systemUserId = existing.id;
+    return existing.id;
+  }
+  const [created] = await db.insert(users).values({
+    email: SYSTEM_EMAIL,
+    name: 'OpenClaw System',
+    emailVerified: true,
+  }).returning();
+  _systemUserId = created.id;
+  return created.id;
+}
 
 /** Extract OpenClaw knowledge keywords from a conversation response */
 function extractKnowledge(response: string, locationId: string): string[] {
@@ -38,6 +61,15 @@ function extractKnowledge(response: string, locationId: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Look up the ElizaOS agent ID for an OpenClaw session (cache-first) */
+function findElizaAgentForSession(sessionId: string): string | undefined {
+  return getSessionAgent(sessionId);
+}
+
+// ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
 
@@ -50,6 +82,9 @@ const baseSchema = z.object({
   sessionKey: z.string().min(1),
   protocol: z.enum(['openai-compat', 'anthropic', 'custom-webhook']).optional(),
   autonomyMode: z.enum(['server-managed', 'self-managed']).optional().default('server-managed'),
+  modelName: z.string().max(100).optional(),
+  timeoutMs: z.number().int().min(1000).max(120000).optional(),
+  maxTokens: z.number().int().min(1).max(4096).optional(),
 });
 
 const overrideSchema = baseSchema.extend({
@@ -184,6 +219,72 @@ openclawRoutes.post('/register', async (c) => {
     };
   }
 
+  // Create/update platformAgents record for ElizaOS runtime
+  let elizaAgentId: string | undefined;
+  if (identity.botId) {
+    try {
+      const systemUserId = await getOrCreateSystemUserId();
+      const agentName = data.mode === 'avatar' ? data.name : `oc-${data.agentId}`;
+      const gatewayConfig = {
+        gatewayUrl: data.gatewayUrl,
+        authToken: data.authToken,
+        agentId: data.agentId,
+        protocol: data.protocol ?? 'openai-compat',
+        modelName: data.modelName,
+        timeoutMs: data.timeoutMs,
+        maxTokens: data.maxTokens,
+      };
+      const customization: Record<string, unknown> = {
+        personality: data.mode === 'avatar' ? data.personality : undefined,
+        bio: [`An OpenClaw-connected bot: ${agentName}`],
+        system: `You are ${agentName}, an AI agent connected via the OpenClaw gateway in ClawVille World — a sea-themed 3D game for training AI agents with OpenClaw knowledge.`,
+        gateway: gatewayConfig,
+      };
+      const agentConfig: Record<string, unknown> = {
+        openclawBotId: identity.botId,
+      };
+
+      // Find existing platformAgent by matching openclawBotId (stable across sessions)
+      const allOcAgents = await db.select().from(agents).where(
+        and(eq(agents.type, 'openclaw-bot'), eq(agents.userId, systemUserId))
+      );
+      const existingAgent = allOcAgents.find(
+        (a) => (a.config as any)?.openclawBotId === identity.botId
+      ) ?? null;
+
+      if (existingAgent) {
+        // Stop stale runtime if it's still cached in the orchestrator
+        try { await agentOrchestrator.stopAgent(existingAgent.id); } catch { /* already stopped */ }
+
+        await db.update(agents).set({
+          name: agentName,
+          customization,
+          config: agentConfig,
+          status: 'stopped',
+          updatedAt: new Date(),
+        }).where(eq(agents.id, existingAgent.id));
+        elizaAgentId = existingAgent.id;
+      } else {
+        const [inserted] = await db.insert(agents).values({
+          userId: systemUserId,
+          name: agentName,
+          type: 'openclaw-bot',
+          status: 'pending',
+          customization,
+          config: agentConfig,
+        }).returning();
+        elizaAgentId = inserted.id;
+      }
+
+      // Cache the session→agent mapping
+      setSessionAgent(sessionId, elizaAgentId);
+      console.log(`[OpenClaw] Created/updated platformAgent ${elizaAgentId} for bot ${data.agentId}`);
+    } catch (err: any) {
+      console.error('[OpenClaw] Failed to create platformAgent:', err);
+      // Non-fatal — bot can still work via direct client
+    }
+  }
+
   // Register with simulation
   try {
     npcSimulation.registerOpenClaw(config, client, restoredState);
@@ -191,7 +292,7 @@ openclawRoutes.post('/register', async (c) => {
     return c.json({ error: err.message || 'Registration failed' }, 400);
   }
 
-  return c.json(identity);
+  return c.json({ ...identity, elizaAgentId });
 });
 
 // DELETE /api/openclaw/unregister/:sessionId
@@ -224,6 +325,15 @@ openclawRoutes.delete('/unregister/:sessionId', async (c) => {
         console.error('[OpenClaw] Failed to save disconnect state:', err);
       }
     })();
+  }
+
+  // Stop ElizaOS runtime for this bot (let it re-lazy-start next session)
+  const elizaAgentId = getSessionAgent(sessionId);
+  if (elizaAgentId) {
+    agentOrchestrator.stopAgent(elizaAgentId).catch((err) => {
+      console.error('[OpenClaw] Failed to stop ElizaOS agent on unregister:', err);
+    });
+    deleteSessionAgent(sessionId);
   }
 
   const removed = npcSimulation.unregisterOpenClaw(sessionId);
@@ -288,45 +398,70 @@ openclawRoutes.post('/chat', async (c) => {
     return c.json({ error: 'OpenClaw session not found. Bot may have disconnected.' }, 404);
   }
 
-  const systemParts: string[] = [
-    `You are ${petContext?.name ?? 'a ClawVille pet'}, a ${petContext?.species ?? 'pet'} exploring ClawVille World — a sea-themed game for training AI agents with OpenClaw knowledge.`,
-  ];
+  // Build dynamic context for ElizaOS
+  const contextParts: string[] = [];
   if (petContext?.archetype) {
-    systemParts.push(`Your personality archetype is "${petContext.archetype}".`);
+    contextParts.push(`Personality archetype: "${petContext.archetype}".`);
   }
   if (petContext?.neoTokens !== undefined) {
-    systemParts.push(`You have ${petContext.neoTokens} NeoTokens.`);
+    contextParts.push(`NeoTokens: ${petContext.neoTokens}.`);
   }
   if (petContext?.knowledge && petContext.knowledge.length > 0) {
-    systemParts.push(`OpenClaw knowledge you've learned so far:\n${petContext.knowledge.slice(0, 20).map((k) => `- ${k}`).join('\n')}`);
+    contextParts.push(`OpenClaw knowledge:\n${petContext.knowledge.slice(0, 20).map((k) => `- ${k}`).join('\n')}`);
   }
 
-  try {
-    const reply = await client.chat([
-      { role: 'system', content: systemParts.join(' ') },
-      { role: 'user', content },
-    ]);
-
-    // Fire-and-forget: increment message count
-    const botCfg = npcSimulation.getOpenClawBotConfig(sessionId);
-    if (botCfg) {
-      db.update(openclawBots).set({
-        totalMessages: sql`${openclawBots.totalMessages} + 1`,
-        lastSeenAt: new Date(),
-      }).where(eq(openclawBots.agentId, botCfg.agentId)).catch(() => {});
+  // Try ElizaOS runtime first
+  let reply: string | undefined;
+  const elizaAgentId = findElizaAgentForSession(sessionId);
+  if (elizaAgentId) {
+    try {
+      const runtime = await agentOrchestrator.ensureAgentRuntime(elizaAgentId);
+      if (runtime) {
+        const result = await runtime.processMessage(content, {
+          userId: petContext?.name ?? 'user',
+          dynamicContext: contextParts.length > 0 ? contextParts.join('\n') : undefined,
+        });
+        reply = result.content;
+        console.log(`[OpenClaw Chat] Routed through ElizaOS agent ${elizaAgentId}`);
+      }
+    } catch (err) {
+      console.warn(`[OpenClaw Chat] ElizaOS fallback for ${elizaAgentId}:`, err);
     }
-
-    return c.json({
-      message: {
-        role: 'assistant',
-        content: reply || '...',
-        timestamp: new Date().toISOString(),
-      },
-    });
-  } catch (err: any) {
-    console.error('[OpenClaw Chat] Error:', err);
-    return c.json({ error: 'OpenClaw gateway error: ' + (err.message || 'unknown') }, 502);
   }
+
+  // Fallback to direct client
+  if (!reply) {
+    const systemParts: string[] = [
+      `You are ${petContext?.name ?? 'a ClawVille pet'}, a ${petContext?.species ?? 'pet'} exploring ClawVille World — a sea-themed 3D game for training AI agents with OpenClaw knowledge.`,
+      ...contextParts,
+    ];
+    try {
+      reply = await client.chat([
+        { role: 'system', content: systemParts.join(' ') },
+        { role: 'user', content },
+      ]);
+    } catch (err: any) {
+      console.error('[OpenClaw Chat] Error:', err);
+      return c.json({ error: 'OpenClaw gateway error: ' + (err.message || 'unknown') }, 502);
+    }
+  }
+
+  // Fire-and-forget: increment message count
+  const botCfg = npcSimulation.getOpenClawBotConfig(sessionId);
+  if (botCfg) {
+    db.update(openclawBots).set({
+      totalMessages: sql`${openclawBots.totalMessages} + 1`,
+      lastSeenAt: new Date(),
+    }).where(eq(openclawBots.agentId, botCfg.agentId)).catch(() => {});
+  }
+
+  return c.json({
+    message: {
+      role: 'assistant',
+      content: reply || '...',
+      timestamp: new Date().toISOString(),
+    },
+  });
 });
 
 // POST /api/openclaw/location-chat
@@ -379,12 +514,40 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
     systemParts.push(`Their current OpenClaw knowledge:\n${petContext.knowledge.slice(0, 15).map((k) => `- ${k}`).join('\n')}`);
   }
 
-  try {
-    const reply = await client.chat([
-      { role: 'system', content: systemParts.join(' ') },
-      { role: 'user', content },
-    ]);
+  let reply: string | undefined;
 
+  // Try ElizaOS runtime first
+  const elizaAgentId = findElizaAgentForSession(sessionId);
+  if (elizaAgentId) {
+    try {
+      const runtime = await agentOrchestrator.ensureAgentRuntime(elizaAgentId);
+      if (runtime) {
+        const result = await runtime.processMessage(content, {
+          userId: petContext?.name ?? 'visitor',
+          dynamicContext: systemParts.join('\n'),
+        });
+        reply = result.content;
+        console.log(`[OpenClaw Location Chat] Routed through ElizaOS agent ${elizaAgentId}`);
+      }
+    } catch (err) {
+      console.warn(`[OpenClaw Location Chat] ElizaOS fallback for ${elizaAgentId}:`, err);
+    }
+  }
+
+  // Fallback to direct client
+  if (!reply) {
+    try {
+      reply = await client.chat([
+        { role: 'system', content: systemParts.join(' ') },
+        { role: 'user', content },
+      ]);
+    } catch (err: any) {
+      console.error('[OpenClaw Location Chat] Error:', err);
+      return c.json({ error: 'OpenClaw gateway error: ' + (err.message || 'unknown') }, 502);
+    }
+  }
+
+  try {
     const knowledgeLearned = extractKnowledge(reply, locationId);
 
     if (knowledgeLearned.length > 0) {
@@ -459,7 +622,7 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
 
 // ---------------------------------------------------------------------------
 // GET /api/openclaw/knowledge-export/:petId
-// Returns learned knowledge in SKILL.md-compatible format
+// Returns learned knowledge in SKILL.md-compatible format (upgraded)
 // ---------------------------------------------------------------------------
 openclawRoutes.get('/knowledge-export/:petId', async (c) => {
   const petId = c.req.param('petId');
@@ -569,6 +732,178 @@ openclawRoutes.post('/generate-skill', requireAuth, async (c) => {
     characterJson: result.characterJson,
     installPath: result.installPath,
     publishCommand: result.publishCommand,
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/openclaw/memory-export/:petId
+// Export pet memories as daily logs + long-term MEMORY.md
+// ---------------------------------------------------------------------------
+openclawRoutes.get('/memory-export/:petId', sessionMiddleware, async (c) => {
+  const petId = c.req.param('petId');
+
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(petId)) {
+    return c.json({ error: 'Pet not found' }, 404);
+  }
+
+  const [pet] = await db.select().from(pets).where(eq(pets.id, petId)).limit(1);
+  if (!pet) {
+    return c.json({ error: 'Pet not found' }, 404);
+  }
+
+  // Fetch memories for this pet
+  const memories = await db
+    .select()
+    .from(npcMemories)
+    .where(and(eq(npcMemories.entityId, petId), eq(npcMemories.entityType, 'pet')))
+    .orderBy(desc(npcMemories.createdAt))
+    .limit(500);
+
+  // Fetch activity log for this pet
+  const activities = await db
+    .select()
+    .from(activityLog)
+    .where(eq(activityLog.petId, petId))
+    .orderBy(desc(activityLog.createdAt))
+    .limit(500);
+
+  // Group memories and activities by date for daily logs
+  const dailyMap = new Map<string, { memories: typeof memories; activities: typeof activities }>();
+
+  for (const mem of memories) {
+    const date = mem.createdAt.toISOString().split('T')[0];
+    if (!dailyMap.has(date)) dailyMap.set(date, { memories: [], activities: [] });
+    dailyMap.get(date)!.memories.push(mem);
+  }
+
+  for (const act of activities) {
+    const date = act.createdAt.toISOString().split('T')[0];
+    if (!dailyMap.has(date)) dailyMap.set(date, { memories: [], activities: [] });
+    dailyMap.get(date)!.activities.push(act);
+  }
+
+  // Build daily logs
+  const dailyLogs: Array<{ date: string; filename: string; content: string }> = [];
+  const sortedDates = [...dailyMap.keys()].sort().reverse();
+
+  for (const date of sortedDates) {
+    const day = dailyMap.get(date)!;
+    const logLines: string[] = [
+      `# ${pet.name} - Daily Log ${date}`,
+      '',
+    ];
+
+    if (day.memories.length > 0) {
+      logLines.push('## Conversations');
+      logLines.push('');
+      for (const mem of day.memories) {
+        const time = mem.createdAt.toISOString().split('T')[1]?.slice(0, 5) ?? '00:00';
+        logLines.push(`- [${time}] ${mem.content} (importance: ${mem.importance}/9)`);
+      }
+      logLines.push('');
+    }
+
+    if (day.activities.length > 0) {
+      logLines.push('## Activities');
+      logLines.push('');
+      for (const act of day.activities) {
+        const time = act.createdAt.toISOString().split('T')[1]?.slice(0, 5) ?? '00:00';
+        const tokens = act.tokensEarned > 0 ? ` (+${act.tokensEarned} NeoTokens)` : '';
+        logLines.push(`- [${time}] ${act.description}${tokens}`);
+      }
+      logLines.push('');
+    }
+
+    dailyLogs.push({
+      date,
+      filename: `memory/${date}.md`,
+      content: logLines.join('\n'),
+    });
+  }
+
+  // Build long-term MEMORY.md
+  const ltLines: string[] = [
+    `# ${pet.name} — Long-Term Memory`,
+    '',
+    `> Species: ${pet.species} | Archetype: ${pet.archetype} | NeoTokens: ${pet.neoTokens}`,
+    '',
+  ];
+
+  // High-importance memories (>=7)
+  const importantMemories = memories.filter((m) => m.importance >= 7);
+  if (importantMemories.length > 0) {
+    ltLines.push('## Key Memories');
+    ltLines.push('');
+    for (const mem of importantMemories.slice(0, 30)) {
+      ltLines.push(`- ${mem.content}`);
+    }
+    ltLines.push('');
+  }
+
+  // Knowledge summary grouped by building theme
+  const knowledge: string[] = pet.characterConfig?.knowledge ?? [];
+  if (knowledge.length > 0) {
+    ltLines.push('## Knowledge Summary');
+    ltLines.push('');
+
+    const grouped: Record<string, string[]> = {};
+    const ungrouped: string[] = [];
+    for (const entry of knowledge) {
+      const match = entry.match(/from\s+(.+)$/i);
+      if (match) {
+        const source = match[1].trim();
+        if (!grouped[source]) grouped[source] = [];
+        grouped[source].push(entry);
+      } else {
+        ungrouped.push(entry);
+      }
+    }
+
+    for (const [source, entries] of Object.entries(grouped)) {
+      ltLines.push(`### ${source}`);
+      for (const e of entries) ltLines.push(`- ${e}`);
+      ltLines.push('');
+    }
+    if (ungrouped.length > 0) {
+      ltLines.push('### General');
+      for (const e of ungrouped) ltLines.push(`- ${e}`);
+      ltLines.push('');
+    }
+  }
+
+  // Behavioral patterns
+  const buildingVisits: Record<string, number> = {};
+  let totalTokens = 0;
+  for (const act of activities) {
+    totalTokens += act.tokensEarned;
+    if (act.activityType === 'visited_building') {
+      const building = (act.metadata as any)?.buildingId ?? act.description;
+      buildingVisits[building] = (buildingVisits[building] ?? 0) + 1;
+    }
+  }
+
+  ltLines.push('## Behavioral Patterns');
+  ltLines.push('');
+  ltLines.push(`- Total activities: ${activities.length}`);
+  ltLines.push(`- Total NeoTokens earned: ${totalTokens}`);
+  ltLines.push(`- Total conversations remembered: ${memories.length}`);
+
+  const topBuildings = Object.entries(buildingVisits)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 5);
+  if (topBuildings.length > 0) {
+    ltLines.push(`- Most visited: ${topBuildings.map(([b, c]) => `${b} (${c}x)`).join(', ')}`);
+  }
+  ltLines.push('');
+
+  return c.json({
+    petId: pet.id,
+    petName: pet.name,
+    dailyLogs,
+    longTermMemory: ltLines.join('\n'),
+    totalMemories: memories.length,
+    totalActivities: activities.length,
   });
 });
 

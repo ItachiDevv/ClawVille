@@ -3,7 +3,7 @@
 import { useRef, useMemo, useEffect } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Text, Billboard, useGLTF } from '@react-three/drei';
-import * as THREE from 'three/webgpu';
+import * as THREE from 'three';
 import { useGameStore } from '@/stores/game';
 
 useGLTF.preload('/models/lobster.glb');

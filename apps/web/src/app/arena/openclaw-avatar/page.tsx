@@ -110,7 +110,7 @@ export default function OpenClawAvatarPage() {
   return (
     <div className="star-bg min-h-screen flex items-center justify-center px-4 py-8">
       <div className="w-full max-w-lg bg-white/5 border border-cyan-500/30 rounded-2xl p-8 backdrop-blur-sm">
-        <h1 className="font-elizapet text-3xl text-white text-center mb-2">
+        <h1 className="font-clawville text-3xl text-white text-center mb-2">
           OpenClaw: Bot Avatar
         </h1>
         <p className="text-white/60 text-sm text-center mb-6">

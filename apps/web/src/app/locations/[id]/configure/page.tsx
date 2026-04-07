@@ -113,7 +113,7 @@ export default function ConfigureLocationPage() {
               value={agentName}
               onChange={(e) => setAgentName(e.target.value)}
               placeholder="e.g. Kauvara the Potion Master"
-              className="w-full px-3 py-2 rounded-lg border-2 border-neopets-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-neopets-yellow"
+              className="w-full px-3 py-2 rounded-lg border-2 border-neopets-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-claw-accent"
             />
           </div>
 
@@ -125,7 +125,7 @@ export default function ConfigureLocationPage() {
               onChange={(e) => setPersonality(e.target.value)}
               placeholder="Describe the agent's personality..."
               rows={3}
-              className="w-full px-3 py-2 rounded-lg border-2 border-neopets-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-neopets-yellow resize-none"
+              className="w-full px-3 py-2 rounded-lg border-2 border-neopets-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-claw-accent resize-none"
             />
           </div>
 
@@ -137,7 +137,7 @@ export default function ConfigureLocationPage() {
               onChange={(e) => setBio(e.target.value)}
               placeholder="Background story and lore..."
               rows={3}
-              className="w-full px-3 py-2 rounded-lg border-2 border-neopets-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-neopets-yellow resize-none"
+              className="w-full px-3 py-2 rounded-lg border-2 border-neopets-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-claw-accent resize-none"
             />
           </div>
 
@@ -149,7 +149,7 @@ export default function ConfigureLocationPage() {
               value={greeting}
               onChange={(e) => setGreeting(e.target.value)}
               placeholder="What does the agent say when you enter?"
-              className="w-full px-3 py-2 rounded-lg border-2 border-neopets-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-neopets-yellow"
+              className="w-full px-3 py-2 rounded-lg border-2 border-neopets-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-claw-accent"
             />
           </div>
 
@@ -159,7 +159,7 @@ export default function ConfigureLocationPage() {
             <select
               value={tone}
               onChange={(e) => setTone(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border-2 border-neopets-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-neopets-yellow"
+              className="w-full px-3 py-2 rounded-lg border-2 border-neopets-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-claw-accent"
             >
               {TONE_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -177,7 +177,7 @@ export default function ConfigureLocationPage() {
               value={topics}
               onChange={(e) => setTopics(e.target.value)}
               placeholder="potions, magic, ingredients"
-              className="w-full px-3 py-2 rounded-lg border-2 border-neopets-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-neopets-yellow"
+              className="w-full px-3 py-2 rounded-lg border-2 border-neopets-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-claw-accent"
             />
           </div>
 
@@ -189,7 +189,7 @@ export default function ConfigureLocationPage() {
               onChange={(e) => setRules(e.target.value)}
               placeholder="Always stay in character&#10;Never break the fourth wall"
               rows={3}
-              className="w-full px-3 py-2 rounded-lg border-2 border-neopets-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-neopets-yellow resize-none"
+              className="w-full px-3 py-2 rounded-lg border-2 border-neopets-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-claw-accent resize-none"
             />
           </div>
 
@@ -201,7 +201,7 @@ export default function ConfigureLocationPage() {
               onChange={(e) => setStyle(e.target.value)}
               placeholder="Use archaic language&#10;Reference magical ingredients"
               rows={3}
-              className="w-full px-3 py-2 rounded-lg border-2 border-neopets-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-neopets-yellow resize-none"
+              className="w-full px-3 py-2 rounded-lg border-2 border-neopets-panel-border bg-white/90 focus:outline-none focus:ring-2 focus:ring-claw-accent resize-none"
             />
           </div>
 

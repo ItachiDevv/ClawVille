@@ -18,6 +18,7 @@
     "@elizapets/database": "workspace:*",
     "@elizapets/shared": "workspace:*",
     "@lucia-auth/adapter-drizzle": "^1.1.0",
+    "cheerio": "^1.2.0",
     "drizzle-orm": "^0.33.0",
     "hono": "^4.6.14",
     "lucia": "^3.2.2",

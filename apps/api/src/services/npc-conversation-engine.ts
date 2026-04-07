@@ -20,7 +20,8 @@ interface ConversationMessage {
 export async function generateNpcConversation(
   npc1: NpcDefinition,
   npc2: NpcDefinition,
-  arenaMode: boolean
+  arenaMode: boolean,
+  _cryptoContext?: string,
 ): Promise<ConversationMessage[]> {
   const template1 = templates[npc1.buildingId];
   const template2 = templates[npc2.buildingId];
@@ -115,7 +116,8 @@ export async function generateOpenClawConversation(
   npc2: NpcDefinition,
   client1: OpenClawClient | null,
   client2: OpenClawClient | null,
-  arenaMode: boolean
+  arenaMode: boolean,
+  _cryptoContext?: string,
 ): Promise<ConversationMessage[]> {
   const arenaContext = arenaMode
     ? ' You are in the ElizaPets Arena where NPCs battle each other.'

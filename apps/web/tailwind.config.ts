@@ -9,23 +9,43 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
+        // Ocean theme palette
+        claw: {
+          primary: '#1B4D89',
+          accent: '#00E5FF',
+          gold: '#FFD700',
+          'gold-light': '#FFF4B0',
+          'gold-dark': '#D4A900',
+          green: '#00E676',
+          'green-dark': '#00C853',
+          blue: '#42A5F5',
+          red: '#FF5252',
+          panel: '#E8F1F5',
+          'panel-border': '#2E6EB5',
+          bg: '#0A1628',
+          'bg-dark': '#060D17',
+          star: '#FFD700',
+          coral: '#FF6B35',
+        },
+        // Keep neopets aliases for backwards compatibility with existing classes
         neopets: {
           yellow: '#FFD700',
           'yellow-light': '#FFF4B0',
           'yellow-dark': '#D4A900',
-          green: '#4CAF50',
-          'green-dark': '#2E7D32',
-          blue: '#2196F3',
-          red: '#F44336',
-          panel: '#FFE066',
-          'panel-border': '#D4A900',
-          bg: '#3A7D44',
-          'bg-dark': '#2E5E34',
-          star: '#8BC34A',
+          green: '#00E676',
+          'green-dark': '#00C853',
+          blue: '#42A5F5',
+          red: '#FF5252',
+          panel: '#E8F1F5',
+          'panel-border': '#2E6EB5',
+          bg: '#0A1628',
+          'bg-dark': '#060D17',
+          star: '#FFD700',
         },
+        'claw-accent': '#00E5FF',
       },
       fontFamily: {
-        elizapet: ['var(--font-elizapet)', 'Comic Sans MS', 'cursive'],
+        clawville: ['var(--font-clawville)', 'Comic Sans MS', 'cursive'],
       },
       borderWidth: {
         '3': '3px',
@@ -39,4 +59,3 @@ const config: Config = {
   plugins: [require('tailwindcss-animate')],
 };
 export default config;
-// T

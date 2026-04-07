@@ -9,7 +9,7 @@ export interface Toast {
   expiresAt: number;
 }
 
-const VISITED_STORAGE_KEY = 'elizapets-visited-buildings';
+const VISITED_STORAGE_KEY = 'clawville-visited-buildings';
 
 function loadVisited(): Set<string> {
   try {
@@ -32,7 +32,8 @@ export interface GameState {
   // Pet appearance (species + color for sprite rendering)
   petSpecies: string;
   petColor: string;
-  setPetAppearance: (species: string, color: string) => void;
+  petName: string;
+  setPetAppearance: (species: string, color: string, name?: string) => void;
 
   // Pet position (written by game loop)
   petPosition: { x: number; y: number };
@@ -41,6 +42,10 @@ export interface GameState {
   // Movement direction for sprite animation
   movementDirection: MovementDirection;
   setMovementDirection: (dir: MovementDirection) => void;
+
+  // Pet speed (0-1 normalized, written by game loop)
+  petSpeed: number;
+  setPetSpeed: (speed: number) => void;
 
   // Near location (written by game loop when overlapping a building zone)
   nearLocation: string | null;
@@ -93,6 +98,14 @@ export interface GameState {
   visitedBuildings: Set<string>;
   markBuildingVisited: (id: string) => boolean; // returns true if newly discovered
 
+  // Pet autonomy
+  petIsAutonomous: boolean;
+  setPetIsAutonomous: (v: boolean) => void;
+
+  // Activity feed
+  activityFeedOpen: boolean;
+  toggleActivityFeed: () => void;
+
   // OpenClaw connection (World mode)
   openclawConnected: boolean;
   openclawSessionId: string | null;
@@ -104,21 +117,78 @@ export interface GameState {
   toasts: Toast[];
   addToast: (icon: string, message: string, durationMs?: number) => void;
   removeToast: (id: string) => void;
+
+  // Skill Builder
+  skillBuilderOpen: boolean;
+  setSkillBuilderOpen: (open: boolean) => void;
+
+  // Marketplace
+  marketplaceOpen: boolean;
+  openMarketplace: () => void;
+  closeMarketplace: () => void;
+
+  // Zoom
+  zoomLevel: number;
+  setZoomLevel: (z: number) => void;
+
+  // Click-to-move pathfinding
+  clickPath: { x: number; y: number }[] | null;
+  clickPathIndex: number;
+  clickPathTarget: string | null;
+  setClickPath: (path: { x: number; y: number }[], target?: string | null) => void;
+  advanceClickPath: () => void;
+  clearClickPath: () => void;
+
+  // Building hover tooltip
+  hoveredBuilding: string | null;
+  setHoveredBuilding: (id: string | null) => void;
+  mousePosition: { x: number; y: number };
+  setMousePosition: (x: number, y: number) => void;
+
+  // Floating text queue (consumed by PixiCanvas)
+  pendingFloatingTexts: Array<{ text: string; color: number }>;
+  addFloatingText: (text: string, color: number) => void;
+  consumeFloatingTexts: () => Array<{ text: string; color: number }>;
+
+  // Pet level & XP
+  petLevel: number;
+  petXp: number;
+  setPetLevel: (level: number, xp: number) => void;
+
+  // Daily login streak
+  dailyLoginClaimed: boolean;
+  loginStreak: number;
+  setDailyLoginClaimed: (claimed: boolean, streak?: number) => void;
+
+  // Arena settings
+  arenaSettings: {
+    combatSpeed: number;   // 0.5 - 3, default 1
+    moveSpeed: number;     // 0.5 - 3, default 1
+    maxFights: number;     // 1 - 10, default 3
+    respawnTime: number;   // 1 - 30, default 5 (seconds)
+  };
+  arenaSettingsOpen: boolean;
+  setArenaSettingsOpen: (open: boolean) => void;
+  updateArenaSetting: <K extends keyof GameState['arenaSettings']>(key: K, value: GameState['arenaSettings'][K]) => void;
 }
 
-export const useGameStore = create<GameState>((set) => ({
+export const useGameStore = create<GameState>((set, get) => ({
   isSpectator: false,
   setIsSpectator: (v) => set({ isSpectator: v }),
 
   petSpecies: 'cat',
   petColor: 'yellow',
-  setPetAppearance: (species, color) => set({ petSpecies: species, petColor: color }),
+  petName: '',
+  setPetAppearance: (species, color, name) => set({ petSpecies: species, petColor: color, ...(name ? { petName: name } : {}) }),
 
   petPosition: { x: 400, y: 250 },
   setPetPosition: (x, y) => set({ petPosition: { x, y } }),
 
   movementDirection: 'idle',
   setMovementDirection: (dir) => set({ movementDirection: dir }),
+
+  petSpeed: 0,
+  setPetSpeed: (speed) => set({ petSpeed: speed }),
 
   nearLocation: null,
   setNearLocation: (id) => set({ nearLocation: id }),
@@ -133,10 +203,12 @@ export const useGameStore = create<GameState>((set) => ({
       chatOpen: true,
       movementFrozen: true,
     });
+    // Floating "Welcome!" text
+    get().addFloatingText('Welcome!', 0xffffff);
     // Track discovery
-    const isNew = useGameStore.getState().markBuildingVisited(locationId);
+    const isNew = get().markBuildingVisited(locationId);
     if (isNew) {
-      useGameStore.getState().addToast('🏠', 'New location discovered!');
+      get().addToast('🏠', 'New location discovered!');
     }
   },
 
@@ -179,7 +251,7 @@ export const useGameStore = create<GameState>((set) => ({
 
   visitedBuildings: typeof window !== 'undefined' ? loadVisited() : new Set(),
   markBuildingVisited: (id) => {
-    const current = useGameStore.getState().visitedBuildings;
+    const current = get().visitedBuildings;
     if (current.has(id)) return false;
     const updated = new Set(current);
     updated.add(id);
@@ -187,6 +259,12 @@ export const useGameStore = create<GameState>((set) => ({
     set({ visitedBuildings: updated });
     return true;
   },
+
+  petIsAutonomous: false,
+  setPetIsAutonomous: (v) => set({ petIsAutonomous: v }),
+
+  activityFeedOpen: false,
+  toggleActivityFeed: () => set((s) => ({ activityFeedOpen: !s.activityFeedOpen })),
 
   openclawConnected: false,
   openclawSessionId: null,
@@ -213,4 +291,63 @@ export const useGameStore = create<GameState>((set) => ({
     }, durationMs);
   },
   removeToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
+
+  skillBuilderOpen: false,
+  setSkillBuilderOpen: (open) => set({ skillBuilderOpen: open }),
+
+  marketplaceOpen: false,
+  openMarketplace: () => set({ marketplaceOpen: true }),
+  closeMarketplace: () => set({ marketplaceOpen: false }),
+
+  zoomLevel: 1.7,
+  setZoomLevel: (z) => set({ zoomLevel: Math.max(0.6, Math.min(3.0, z)) }),
+
+  clickPath: null,
+  clickPathIndex: 0,
+  clickPathTarget: null,
+  setClickPath: (path, target = null) => set({ clickPath: path, clickPathIndex: 0, clickPathTarget: target }),
+  advanceClickPath: () => set((s) => {
+    const nextIndex = s.clickPathIndex + 1;
+    if (!s.clickPath || nextIndex >= s.clickPath.length) {
+      return { clickPath: null, clickPathIndex: 0, clickPathTarget: null };
+    }
+    return { clickPathIndex: nextIndex };
+  }),
+  clearClickPath: () => set({ clickPath: null, clickPathIndex: 0, clickPathTarget: null }),
+
+  hoveredBuilding: null,
+  setHoveredBuilding: (id) => set({ hoveredBuilding: id }),
+  mousePosition: { x: 0, y: 0 },
+  setMousePosition: (x, y) => set({ mousePosition: { x, y } }),
+
+  pendingFloatingTexts: [],
+  addFloatingText: (text, color) => set((s) => ({
+    pendingFloatingTexts: [...s.pendingFloatingTexts, { text, color }],
+  })),
+  consumeFloatingTexts: () => {
+    const texts = get().pendingFloatingTexts;
+    if (texts.length === 0) return [];
+    set({ pendingFloatingTexts: [] });
+    return texts;
+  },
+
+  petLevel: 1,
+  petXp: 0,
+  setPetLevel: (level, xp) => set({ petLevel: level, petXp: xp }),
+
+  dailyLoginClaimed: false,
+  loginStreak: 0,
+  setDailyLoginClaimed: (claimed, streak) => set({ dailyLoginClaimed: claimed, ...(streak !== undefined ? { loginStreak: streak } : {}) }),
+
+  arenaSettings: {
+    combatSpeed: 1,
+    moveSpeed: 1,
+    maxFights: 3,
+    respawnTime: 5,
+  },
+  arenaSettingsOpen: false,
+  setArenaSettingsOpen: (open) => set({ arenaSettingsOpen: open }),
+  updateArenaSetting: (key, value) => set((s) => ({
+    arenaSettings: { ...s.arenaSettings, [key]: value },
+  })),
 }));
