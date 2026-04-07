@@ -3,10 +3,7 @@
 import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import Image from 'next/image';
 import { api } from '@/lib/api';
-
-const SHOWCASE_PETS = ['dragon', 'cat', 'fox', 'phoenix'];
 
 function LoginForm() {
   const router = useRouter();
@@ -24,15 +21,6 @@ function LoginForm() {
   const [name, setName] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [activePet, setActivePet] = useState(0);
-
-  // Rotate showcase avatar
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setActivePet((p) => (p + 1) % SHOWCASE_PETS.length);
-    }, 3000);
-    return () => clearInterval(interval);
-  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -55,159 +43,155 @@ function LoginForm() {
   }
 
   return (
-    <div className="w-full max-w-5xl mx-auto flex flex-col lg:flex-row gap-8 items-center">
+    <div className="w-full max-w-5xl mx-auto flex flex-col lg:flex-row gap-12 items-center">
       {/* Left side: Game pitch */}
-      <div className="flex-1 text-center lg:text-left space-y-5 max-w-md">
-        <Link href="/" className="inline-block">
-          <h1 className="font-legacyapp text-4xl md:text-5xl text-white drop-shadow-[0_3px_6px_rgba(0,0,0,0.5)] hover:scale-105 transition-transform">
-            LegacyApp
+      <div className="flex-1 text-center lg:text-left space-y-6 max-w-md">
+        <Link href="/" className="inline-block group">
+          <h1 className="font-clawville text-5xl md:text-6xl text-white drop-shadow-[0_0_24px_rgba(0,229,255,0.3)] group-hover:drop-shadow-[0_0_32px_rgba(0,229,255,0.5)] transition-all">
+            ClawVille
           </h1>
         </Link>
 
-        <p className="text-white/90 text-lg leading-relaxed">
-          Adopt an <strong className="text-legacytheme-yellow">AI-powered avatar</strong> that
-          thinks, remembers, and develops its own personality.
+        <p className="text-white/80 text-lg leading-relaxed">
+          A deep-sea world where <strong className="text-cyan-400">autonomous agents</strong> explore
+          buildings, learn skills, and level up.
         </p>
 
-        {/* Animated avatar showcase */}
-        <div className="flex items-center gap-4 justify-center lg:justify-start">
-          <div className="relative w-20 h-20">
-            {SHOWCASE_PETS.map((species, i) => (
-              <Image
-                key={species}
-                src={`/sprites/avatars/${species}.png`}
-                alt={species}
-                width={80}
-                height={80}
-                className={`absolute inset-0 drop-shadow-lg transition-all duration-500 ${
-                  i === activePet
-                    ? 'opacity-100 scale-100'
-                    : 'opacity-0 scale-75'
-                }`}
-              />
-            ))}
+        {/* Animated lobster icon */}
+        <div className="flex items-center gap-5 justify-center lg:justify-start">
+          <div className="text-5xl animate-bounce" style={{ animationDuration: '2s' }}>
+            🦞
           </div>
-          <div className="text-white/70 text-sm space-y-1">
-            <p>8 species to choose from</p>
-            <p>14 unique personality archetypes</p>
-            <p>Every avatar is a real ElizaOS agent</p>
+          <div className="text-white/60 text-sm space-y-1.5 font-mono">
+            <p className="text-cyan-400/80">10 skill buildings to explore</p>
+            <p>50+ knowledge sources precompiled</p>
+            <p>Agents download SKILL.md to learn</p>
           </div>
         </div>
 
-        {/* Quick feature list */}
-        <div className="grid grid-cols-2 gap-3 text-sm">
+        {/* Skill categories preview */}
+        <div className="grid grid-cols-2 gap-2 text-xs">
           {[
-            { icon: '🗺️', text: 'Explore 15 locations' },
-            { icon: '💬', text: 'Chat with AI agents' },
-            { icon: '🎭', text: 'Custom personalities' },
-            { icon: '🧠', text: 'Persistent memory' },
+            { icon: '🔧', text: 'Tool Use & MCP' },
+            { icon: '🧠', text: 'Memory & RAG' },
+            { icon: '💬', text: 'Multi-Channel Comms' },
+            { icon: '🔍', text: 'Research & Analysis' },
+            { icon: '💻', text: 'Code & Development' },
+            { icon: '⛓️', text: 'Crypto & Web3' },
+            { icon: '📊', text: 'Data & Analytics' },
+            { icon: '🚀', text: 'APIs & Integrations' },
+            { icon: '⏰', text: 'Automation' },
+            { icon: '📋', text: 'Business & Productivity' },
           ].map((f) => (
             <div
               key={f.text}
-              className="flex items-center gap-2 bg-white/5 rounded-lg px-3 py-2 border border-white/10"
+              className="flex items-center gap-2 bg-white/[0.03] rounded-lg px-2.5 py-1.5 border border-white/[0.06] hover:border-cyan-500/20 transition-colors"
             >
               <span>{f.icon}</span>
-              <span className="text-white/80">{f.text}</span>
+              <span className="text-white/60">{f.text}</span>
             </div>
           ))}
         </div>
 
-        <p className="text-white/30 text-xs font-mono">
-          Powered by ElizaOS autonomous agent framework
+        <p className="text-cyan-500/30 text-[10px] font-mono tracking-wider uppercase">
+          Powered by ElizaOS agent runtime
         </p>
       </div>
 
       {/* Right side: Auth form */}
-      <div className="legacytheme-panel w-full max-w-md space-y-5">
-        <h2 className="font-legacyapp text-2xl text-gray-900 text-center">
-          {isSignup ? 'Create Account' : 'Welcome Back!'}
-        </h2>
+      <div className="w-full max-w-sm">
+        <div className="relative">
+          {/* Glow effect behind panel */}
+          <div className="absolute -inset-1 bg-gradient-to-b from-cyan-500/20 to-transparent rounded-2xl blur-xl" />
 
-        {/* Toggle */}
-        <div className="flex justify-center gap-4">
-          <button
-            type="button"
-            onClick={() => { setIsSignup(false); setError(''); }}
-            className={`font-legacyapp text-lg px-4 py-1 rounded-lg transition-colors ${
-              !isSignup
-                ? 'bg-legacytheme-green text-white shadow-legacytheme'
-                : 'text-gray-700 hover:text-gray-900'
-            }`}
-          >
-            Login
-          </button>
-          <button
-            type="button"
-            onClick={() => { setIsSignup(true); setError(''); }}
-            className={`font-legacyapp text-lg px-4 py-1 rounded-lg transition-colors ${
-              isSignup
-                ? 'bg-legacytheme-green text-white shadow-legacytheme'
-                : 'text-gray-700 hover:text-gray-900'
-            }`}
-          >
-            Sign Up
-          </button>
-        </div>
-
-        {/* Form */}
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {isSignup && (
-            <div>
-              <label className="block font-bold text-gray-800 mb-1">Display Name</label>
-              <input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                className="w-full px-3 py-2 rounded-lg border-3 border-legacytheme-panel-border bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-legacytheme-green"
-                placeholder="Your display name"
-              />
+          <div className="relative bg-[#0a1628]/95 border border-cyan-500/20 rounded-2xl p-8 backdrop-blur-xl shadow-[0_0_40px_rgba(0,229,255,0.08)]">
+            {/* Toggle */}
+            <div className="flex justify-center gap-1 mb-6 bg-white/[0.03] rounded-lg p-1">
+              <button
+                type="button"
+                onClick={() => { setIsSignup(false); setError(''); }}
+                className={`font-clawville text-sm px-5 py-2 rounded-md transition-all ${
+                  !isSignup
+                    ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 shadow-[0_0_12px_rgba(0,229,255,0.15)]'
+                    : 'text-white/40 hover:text-white/60'
+                }`}
+              >
+                Login
+              </button>
+              <button
+                type="button"
+                onClick={() => { setIsSignup(true); setError(''); }}
+                className={`font-clawville text-sm px-5 py-2 rounded-md transition-all ${
+                  isSignup
+                    ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 shadow-[0_0_12px_rgba(0,229,255,0.15)]'
+                    : 'text-white/40 hover:text-white/60'
+                }`}
+              >
+                Sign Up
+              </button>
             </div>
-          )}
 
-          <div>
-            <label className="block font-bold text-gray-800 mb-1">Email</label>
-            <input
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border-3 border-legacytheme-panel-border bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-legacytheme-green"
-              placeholder="you@example.com"
-            />
+            {/* Form */}
+            <form onSubmit={handleSubmit} className="space-y-4">
+              {isSignup && (
+                <div>
+                  <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1.5">Agent Name</label>
+                  <input
+                    type="text"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    className="w-full px-4 py-2.5 rounded-lg bg-white/[0.05] border border-white/10 text-white placeholder:text-white/20 focus:outline-none focus:border-cyan-500/50 focus:shadow-[0_0_12px_rgba(0,229,255,0.1)] transition-all"
+                    placeholder="Your display name"
+                  />
+                </div>
+              )}
+
+              <div>
+                <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1.5">Email</label>
+                <input
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full px-4 py-2.5 rounded-lg bg-white/[0.05] border border-white/10 text-white placeholder:text-white/20 focus:outline-none focus:border-cyan-500/50 focus:shadow-[0_0_12px_rgba(0,229,255,0.1)] transition-all"
+                  placeholder="agent@clawville.com"
+                />
+              </div>
+
+              <div>
+                <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1.5">Password</label>
+                <input
+                  type="password"
+                  required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full px-4 py-2.5 rounded-lg bg-white/[0.05] border border-white/10 text-white placeholder:text-white/20 focus:outline-none focus:border-cyan-500/50 focus:shadow-[0_0_12px_rgba(0,229,255,0.1)] transition-all"
+                  placeholder="Enter password"
+                  minLength={6}
+                />
+              </div>
+
+              {error && (
+                <p className="text-red-400 text-sm text-center bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{error}</p>
+              )}
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full py-3 rounded-lg font-clawville text-sm uppercase tracking-wider transition-all disabled:opacity-50 bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-white shadow-[0_0_20px_rgba(0,229,255,0.2)] hover:shadow-[0_0_28px_rgba(0,229,255,0.35)]"
+              >
+                {loading ? 'Connecting...' : isSignup ? 'Create Agent' : 'Enter ClawVille'}
+              </button>
+            </form>
+
+            {isSignup && (
+              <p className="text-center text-white/30 text-xs mt-4 leading-relaxed font-mono">
+                Pick your species and archetype next.
+                Your agent starts learning immediately.
+              </p>
+            )}
           </div>
-
-          <div>
-            <label className="block font-bold text-gray-800 mb-1">Password</label>
-            <input
-              type="password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border-3 border-legacytheme-panel-border bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-legacytheme-green"
-              placeholder="Enter password"
-              minLength={6}
-            />
-          </div>
-
-          {error && (
-            <p className="text-red-700 font-bold text-sm text-center">{error}</p>
-          )}
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full color-btn bg-legacytheme-green hover:bg-legacytheme-green-dark text-lg disabled:opacity-50"
-          >
-            {loading ? 'Loading...' : isSignup ? 'Create Account' : 'Login'}
-          </button>
-        </form>
-
-        {isSignup && (
-          <p className="text-center text-gray-700 text-xs leading-relaxed">
-            After signup you&apos;ll pick your avatar&apos;s species, personality, and name.
-            Your avatar starts chatting immediately.
-          </p>
-        )}
+        </div>
       </div>
     </div>
   );
@@ -217,8 +201,8 @@ export default function LoginPage() {
   return (
     <div className="star-bg min-h-screen flex flex-col items-center justify-center px-4 py-12">
       <Suspense fallback={
-        <div className="legacytheme-panel max-w-md w-full p-8 text-center">
-          <p className="font-legacyapp text-xl text-gray-700">Loading...</p>
+        <div className="bg-[#0a1628]/90 border border-cyan-500/20 rounded-2xl max-w-md w-full p-8 text-center backdrop-blur-xl">
+          <p className="font-clawville text-xl text-cyan-400/60 animate-pulse">Diving in...</p>
         </div>
       }>
         <LoginForm />
