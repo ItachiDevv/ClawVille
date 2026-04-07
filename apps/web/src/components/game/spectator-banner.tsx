@@ -9,28 +9,28 @@ export default function SpectatorBanner() {
   if (dismissed) return null;
 
   return (
-    <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 pointer-events-auto">
-      <div className="bg-black/70 backdrop-blur-sm rounded-lg px-5 py-3 border border-legacytheme-yellow/30 flex items-center gap-4 max-w-md">
+    <div className="fixed top-3 left-1/2 -translate-x-1/2 z-[60] pointer-events-auto">
+      <div className="bg-[#0a1628]/90 backdrop-blur-md rounded-xl px-5 py-3 border border-cyan-500/25 shadow-[0_0_24px_rgba(0,229,255,0.08)] flex items-center gap-4 max-w-md">
         <div className="flex-1">
           <p className="text-white text-sm font-medium">
-            You're spectating! Create a pet to play.
+            Spectating ClawVille — create an agent to explore.
           </p>
-          <p className="text-white/50 text-xs mt-0.5">
-            WASD to move camera. Watch NPCs wander and chat.
+          <p className="text-white/40 text-xs mt-0.5 font-mono">
+            WASD to pan camera. Watch agents learn skills.
           </p>
         </div>
         <Link
           href="/login?mode=signup"
-          className="color-btn bg-legacytheme-green hover:bg-legacytheme-green-dark text-sm px-4 py-1.5 whitespace-nowrap"
+          className="px-4 py-1.5 rounded-lg text-sm font-bold whitespace-nowrap bg-gradient-to-r from-cyan-600 to-cyan-500 text-white shadow-[0_0_12px_rgba(0,229,255,0.2)] hover:shadow-[0_0_20px_rgba(0,229,255,0.35)] transition-all"
         >
           Sign Up
         </Link>
         <button
           onClick={() => setDismissed(true)}
-          className="text-white/40 hover:text-white/70 text-lg leading-none"
+          className="text-white/30 hover:text-white/60 text-lg leading-none transition-colors"
           aria-label="Dismiss"
         >
-          x
+          &times;
         </button>
       </div>
     </div>

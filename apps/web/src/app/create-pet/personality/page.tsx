@@ -148,7 +148,7 @@ export default function PersonalityPage() {
     setError('');
 
     if (!selectedArchetype) {
-      setError('Please choose an archetype for your pet');
+      setError('Please choose an archetype for your agent');
       return;
     }
 
@@ -172,7 +172,7 @@ export default function PersonalityPage() {
   if (!step1) {
     return (
       <div className="star-bg min-h-screen flex items-center justify-center">
-        <p className="text-white font-legacyapp text-xl">Loading...</p>
+        <p className="text-white font-clawville text-xl">Loading...</p>
       </div>
     );
   }
@@ -216,12 +216,12 @@ export default function PersonalityPage() {
       {/* ARCHETYPE section */}
       <div className="w-full max-w-xl mb-4">
         <div className="flex justify-end mb-1">
-          <span className="legacytheme-panel px-4 py-1 font-bold text-gray-900 uppercase tracking-wide text-sm">
+          <span className="legacytheme-panel px-4 py-1 font-bold text-white uppercase tracking-wide text-sm">
             Choose Archetype
           </span>
         </div>
         <div className="legacytheme-panel">
-          <p className="text-gray-700 text-sm mb-3">
+          <p className="text-white/60 text-sm mb-3">
             Your pet's archetype determines their AI personality, knowledge, and speaking style.
           </p>
           <div className="grid grid-cols-2 gap-2">
@@ -235,8 +235,8 @@ export default function PersonalityPage() {
                   onClick={() => setSelectedArchetype(archetype.id)}
                   className={`text-left p-3 rounded-lg border-3 transition-all duration-200 ${
                     isSelected
-                      ? 'border-legacytheme-green bg-green-50 ring-2 ring-legacytheme-green'
-                      : 'border-gray-300 bg-white hover:border-gray-400 hover:bg-gray-50'
+                      ? 'border-cyan-500 bg-cyan-500/10 ring-1 ring-cyan-500/50'
+                      : 'border-white/10 bg-white/5 hover:border-white/10 hover:bg-cyan-500/5'
                   }`}
                 >
                   <div className="flex items-center gap-2 mb-1">
@@ -244,11 +244,11 @@ export default function PersonalityPage() {
                       className="w-3 h-3 rounded-full shrink-0"
                       style={{ backgroundColor: accentColor }}
                     />
-                    <span className="font-bold text-gray-900 text-sm leading-tight">
+                    <span className="font-bold text-white text-sm leading-tight">
                       {archetype.label}
                     </span>
                   </div>
-                  <p className="text-xs text-gray-600 leading-tight">
+                  <p className="text-xs text-white/50 leading-tight">
                     {archetype.description}
                   </p>
                 </button>
@@ -261,20 +261,20 @@ export default function PersonalityPage() {
       {/* PERSONALITY section (stats) */}
       <div className="w-full max-w-xl mb-4">
         <div className="flex justify-end mb-1">
-          <span className="legacytheme-panel px-4 py-1 font-bold text-gray-900 uppercase tracking-wide text-sm">
+          <span className="legacytheme-panel px-4 py-1 font-bold text-white uppercase tracking-wide text-sm">
             Personality
           </span>
         </div>
         <div className="legacytheme-panel space-y-4">
           {/* Habitat */}
           <div>
-            <label className="block font-bold text-gray-800 mb-1">
-              Where does your pet like to live?
+            <label className="block font-bold text-white/80 mb-1">
+              Where does your agent prefer to operate?
             </label>
             <select
               value={habitat}
               onChange={(e) => setHabitat(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border-3 border-legacytheme-panel-border bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-legacytheme-green"
+              className="w-full px-3 py-2 rounded-lg border-3 border-white/10 bg-white text-white focus:outline-none focus:ring-2 focus:ring-legacytheme-green"
             >
               {HABITAT_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -286,13 +286,13 @@ export default function PersonalityPage() {
 
           {/* Hobby */}
           <div>
-            <label className="block font-bold text-gray-800 mb-1">
-              What does your pet like doing?
+            <label className="block font-bold text-white/80 mb-1">
+              What does your agent specialize in?
             </label>
             <select
               value={hobby}
               onChange={(e) => setHobby(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border-3 border-legacytheme-panel-border bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-legacytheme-green"
+              className="w-full px-3 py-2 rounded-lg border-3 border-white/10 bg-white text-white focus:outline-none focus:ring-2 focus:ring-legacytheme-green"
             >
               {HOBBY_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -304,13 +304,13 @@ export default function PersonalityPage() {
 
           {/* Greeting Style */}
           <div>
-            <label className="block font-bold text-gray-800 mb-1">
-              How does your pet greet others?
+            <label className="block font-bold text-white/80 mb-1">
+              How does your agent introduce itself?
             </label>
             <select
               value={greetingStyle}
               onChange={(e) => setGreetingStyle(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border-3 border-legacytheme-panel-border bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-legacytheme-green"
+              className="w-full px-3 py-2 rounded-lg border-3 border-white/10 bg-white text-white focus:outline-none focus:ring-2 focus:ring-legacytheme-green"
             >
               {GREETING_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -325,7 +325,7 @@ export default function PersonalityPage() {
       {/* STATS section */}
       <div className="w-full max-w-xl mb-6">
         <div className="flex justify-end mb-1">
-          <span className="legacytheme-panel px-4 py-1 font-bold text-gray-900 uppercase tracking-wide text-sm">
+          <span className="legacytheme-panel px-4 py-1 font-bold text-white uppercase tracking-wide text-sm">
             Stats
           </span>
         </div>
@@ -334,42 +334,42 @@ export default function PersonalityPage() {
           <div className="space-y-3">
             {/* Strength */}
             <div className="flex items-center gap-3">
-              <span className="font-bold text-gray-800 w-6 text-right">S:</span>
-              <div className="flex-1 bg-gray-200 rounded-full h-5 overflow-hidden border-2 border-gray-400">
+              <span className="font-bold text-white/80 w-6 text-right">S:</span>
+              <div className="flex-1 bg-white/10 rounded-full h-5 overflow-hidden border-2 border-white/10">
                 <div
-                  className="h-full bg-purple-500 rounded-full transition-all duration-500"
+                  className="h-full bg-cyan-400 rounded-full transition-all duration-500"
                   style={{ width: `${(stats.strength / maxStat) * 100}%` }}
                 />
               </div>
-              <span className="font-bold text-gray-700 w-8 text-sm">
+              <span className="font-bold text-white/60 w-8 text-sm">
                 {stats.strength}
               </span>
             </div>
 
             {/* Defence */}
             <div className="flex items-center gap-3">
-              <span className="font-bold text-gray-800 w-6 text-right">D:</span>
-              <div className="flex-1 bg-gray-200 rounded-full h-5 overflow-hidden border-2 border-gray-400">
+              <span className="font-bold text-white/80 w-6 text-right">D:</span>
+              <div className="flex-1 bg-white/10 rounded-full h-5 overflow-hidden border-2 border-white/10">
                 <div
-                  className="h-full bg-purple-500 rounded-full transition-all duration-500"
+                  className="h-full bg-cyan-400 rounded-full transition-all duration-500"
                   style={{ width: `${(stats.defence / maxStat) * 100}%` }}
                 />
               </div>
-              <span className="font-bold text-gray-700 w-8 text-sm">
+              <span className="font-bold text-white/60 w-8 text-sm">
                 {stats.defence}
               </span>
             </div>
 
             {/* Movement */}
             <div className="flex items-center gap-3">
-              <span className="font-bold text-gray-800 w-6 text-right">M:</span>
-              <div className="flex-1 bg-gray-200 rounded-full h-5 overflow-hidden border-2 border-gray-400">
+              <span className="font-bold text-white/80 w-6 text-right">M:</span>
+              <div className="flex-1 bg-white/10 rounded-full h-5 overflow-hidden border-2 border-white/10">
                 <div
-                  className="h-full bg-purple-500 rounded-full transition-all duration-500"
+                  className="h-full bg-cyan-400 rounded-full transition-all duration-500"
                   style={{ width: `${(stats.movement / maxStat) * 100}%` }}
                 />
               </div>
-              <span className="font-bold text-gray-700 w-8 text-sm">
+              <span className="font-bold text-white/60 w-8 text-sm">
                 {stats.movement}
               </span>
             </div>
@@ -388,7 +388,7 @@ export default function PersonalityPage() {
       <button
         onClick={handleCreate}
         disabled={createPetMutation.isPending}
-        className="w-full max-w-xl color-btn bg-legacytheme-green hover:bg-legacytheme-green-dark text-xl disabled:opacity-50 disabled:cursor-not-allowed"
+        className="w-full max-w-xl py-3 rounded-lg font-clawville text-sm uppercase tracking-wider bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-white shadow-[0_0_20px_rgba(0,229,255,0.2)] text-xl disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {createPetMutation.isPending ? 'Creating...' : 'CREATE'}
       </button>
