@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useEffect, memo } from 'react';
+import { useRef, useEffect, useState, memo } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
@@ -226,6 +226,28 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
 // Main exported Canvas component
 // ---------------------------------------------------------------------------
 function World3DCanvas({ mode }: World3DCanvasProps) {
+  const [contextLost, setContextLost] = useState(false);
+
+  if (contextLost) {
+    return (
+      <div className="absolute inset-0 bg-[#061520] flex items-center justify-center">
+        <div className="text-center max-w-md px-6">
+          <div className="text-5xl mb-4">🦞</div>
+          <h2 className="font-clawville text-2xl text-cyan-300 mb-3">GPU Overloaded</h2>
+          <p className="text-white/50 text-sm mb-6">
+            Your graphics driver ran out of memory. Try refreshing or use a device with a dedicated GPU.
+          </p>
+          <button
+            onClick={() => window.location.reload()}
+            className="px-6 py-2 bg-cyan-600 text-white rounded-lg text-sm font-bold hover:bg-cyan-500 transition-colors"
+          >
+            Refresh
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       style={{
@@ -239,6 +261,13 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
       <Canvas
         shadows
         gl={{ antialias: true }}
+        onCreated={({ gl }) => {
+          const canvas = gl.domElement;
+          canvas.addEventListener('webglcontextlost', (e) => {
+            e.preventDefault();
+            setContextLost(true);
+          });
+        }}
         camera={{
           fov: 60,
           near: 1,
