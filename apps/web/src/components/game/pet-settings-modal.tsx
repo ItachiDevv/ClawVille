@@ -37,7 +37,7 @@ export default function PetSettingsModal() {
             </div>
             <DialogClose asChild>
               <button
-                className="w-8 h-8 rounded-full bg-black/20 hover:bg-black/40 text-white flex items-center justify-center font-bold transition-colors"
+                className="w-8 h-8 rounded-full bg-white/10 hover:bg-black/40 text-white flex items-center justify-center font-bold transition-colors"
                 aria-label="Close"
               >
                 X
@@ -74,10 +74,10 @@ export default function PetSettingsModal() {
           {/* Archetype details */}
           {archetype && (
             <div className="bg-white/30 rounded-lg p-3 space-y-2">
-              <h3 className="font-bold text-sm text-black">
+              <h3 className="font-bold text-sm text-white">
                 {archetype.label}
               </h3>
-              <p className="text-xs text-black/70">{archetype.description}</p>
+              <p className="text-xs text-white/70">{archetype.description}</p>
               <div className="flex flex-wrap gap-1.5 mt-2">
                 {archetype.adjectives.map((adj) => (
                   <span
@@ -93,7 +93,7 @@ export default function PetSettingsModal() {
 
           {/* Stats */}
           <div className="space-y-2">
-            <h3 className="font-bold text-sm text-black">Stats</h3>
+            <h3 className="font-bold text-sm text-white">Stats</h3>
             <div className="space-y-1.5">
               <StatBar label="Strength" value={pet.stats?.strength ?? 10} />
               <StatBar label="Defence" value={pet.stats?.defence ?? 10} />
@@ -104,7 +104,7 @@ export default function PetSettingsModal() {
           {/* Personality */}
           {pet.personality && (
             <div className="space-y-2">
-              <h3 className="font-bold text-sm text-black">Personality</h3>
+              <h3 className="font-bold text-sm text-white">Personality</h3>
               <div className="grid grid-cols-3 gap-2">
                 <PersonalityItem
                   label="Habitat"
@@ -130,8 +130,8 @@ export default function PetSettingsModal() {
 function InfoCard({ label, value }: { label: string; value: string }) {
   return (
     <div className="bg-white/30 rounded-lg px-3 py-2">
-      <p className="text-xs text-black/60 font-medium">{label}</p>
-      <p className="text-sm text-black font-bold">{value}</p>
+      <p className="text-xs text-white/60 font-medium">{label}</p>
+      <p className="text-sm text-white font-bold">{value}</p>
     </div>
   );
 }
@@ -142,14 +142,14 @@ function StatBar({ label, value }: { label: string; value: number }) {
 
   return (
     <div className="flex items-center gap-2">
-      <span className="text-xs text-black/70 font-medium w-16">{label}</span>
-      <div className="flex-1 h-3 bg-black/10 rounded-full overflow-hidden">
+      <span className="text-xs text-white/70 font-medium w-16">{label}</span>
+      <div className="flex-1 h-3 bg-white/10 rounded-full overflow-hidden">
         <div
           className="h-full bg-gradient-to-r from-yellow-500 to-yellow-600 rounded-full transition-all"
           style={{ width: `${percentage}%` }}
         />
       </div>
-      <span className="text-xs text-black/70 font-bold w-6 text-right">
+      <span className="text-xs text-white/70 font-bold w-6 text-right">
         {value}
       </span>
     </div>
@@ -159,8 +159,8 @@ function StatBar({ label, value }: { label: string; value: number }) {
 function PersonalityItem({ label, value }: { label: string; value: string }) {
   return (
     <div className="bg-white/30 rounded-lg px-2 py-1.5 text-center">
-      <p className="text-[10px] text-black/60 font-medium">{label}</p>
-      <p className="text-xs text-black font-bold truncate">{value}</p>
+      <p className="text-[10px] text-white/60 font-medium">{label}</p>
+      <p className="text-xs text-white font-bold truncate">{value}</p>
     </div>
   );
 }

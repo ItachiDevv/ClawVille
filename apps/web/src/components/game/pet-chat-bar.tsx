@@ -74,7 +74,7 @@ export default function PetChatBar() {
             name: pet.name,
             species: pet.species,
             archetype: (pet as any).archetype,
-            neoTokens: (pet as any).neoTokens,
+            clawTokens: (pet as any).clawTokens,
             knowledge: ((pet as any).characterConfig as any)?.knowledge,
           },
         });
@@ -134,8 +134,8 @@ export default function PetChatBar() {
               height={24}
               className="w-6 h-6 object-contain"
             />
-            <span className="text-black font-bold text-sm">{pet.name}</span>
-            <span className="text-black/50 text-xs ml-auto">
+            <span className="text-white font-bold text-sm">{pet.name}</span>
+            <span className="text-white/50 text-xs ml-auto">
               {knowledgeTopics.length > 0
                 ? `Knows: ${knowledgeTopics.slice(0, 3).join(', ')}${knowledgeTopics.length > 3 ? '...' : ''}`
                 : 'your pet'}
@@ -193,7 +193,7 @@ export default function PetChatBar() {
               <button
                 onClick={handleSend}
                 disabled={loading || !input.trim()}
-                className="bg-yellow-500 hover:bg-yellow-400 disabled:opacity-40 text-black font-bold rounded-lg px-3 py-1.5 text-sm transition-colors"
+                className="bg-yellow-500 hover:bg-yellow-400 disabled:opacity-40 text-white font-bold rounded-lg px-3 py-1.5 text-sm transition-colors"
               >
                 Send
               </button>
@@ -221,7 +221,7 @@ export default function PetChatBar() {
             </svg>
           </span>
         )}
-        <span className="text-black font-bold text-sm">
+        <span className="text-white font-bold text-sm">
           {expanded ? 'Close' : `Chat with ${pet.name}`}
         </span>
         {hasUnread && !expanded && (

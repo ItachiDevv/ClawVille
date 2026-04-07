@@ -22,7 +22,7 @@ type MenuView = 'main' | 'locations' | 'help';
 
 export default function GameMenu() {
   const router = useRouter();
-  const { menuOpen, setMenuOpen, setSettingsModalOpen, openLocationConfig } =
+  const { menuOpen, setMenuOpen, setSettingsModalOpen, openLocationConfig, openclawConnected, setOpenclawModalOpen, setSkillBuilderOpen, openMarketplace } =
     useGameStore();
   const [view, setView] = useState<MenuView>('main');
   const menuRef = useRef<HTMLDivElement>(null);
@@ -110,21 +110,68 @@ export default function GameMenu() {
             <div className="py-1">
               <button
                 onClick={handleOpenPetSettings}
-                className="w-full px-4 py-3 text-left text-black font-semibold hover:bg-yellow-400/50 transition-colors flex items-center gap-3"
+                className="w-full px-4 py-3 text-left text-white font-semibold hover:bg-yellow-400/50 transition-colors flex items-center gap-3"
               >
                 <span className="text-lg">🐾</span>
                 My Pet
               </button>
               <button
                 onClick={() => setView('locations')}
-                className="w-full px-4 py-3 text-left text-black font-semibold hover:bg-yellow-400/50 transition-colors flex items-center gap-3"
+                className="w-full px-4 py-3 text-left text-white font-semibold hover:bg-yellow-400/50 transition-colors flex items-center gap-3"
               >
                 <span className="text-lg">🗺️</span>
                 Locations
               </button>
               <button
+                onClick={() => {
+                  setMenuOpen(false);
+                  useGameStore.getState().toggleActivityFeed();
+                }}
+                className="w-full px-4 py-3 text-left text-white font-semibold hover:bg-yellow-400/50 transition-colors flex items-center gap-3"
+              >
+                <span className="text-lg">📋</span>
+                Activity Log
+              </button>
+              <button
+                onClick={() => {
+                  setMenuOpen(false);
+                  setOpenclawModalOpen(true);
+                }}
+                className="w-full px-4 py-3 text-left text-white font-semibold hover:bg-yellow-400/50 transition-colors flex items-center gap-3"
+              >
+                <span className="text-lg">🔌</span>
+                {openclawConnected ? (
+                  <span className="flex items-center gap-2">
+                    OpenClaw
+                    <span className="w-2.5 h-2.5 rounded-full bg-green-500 shadow-[0_0_4px_rgba(74,222,128,0.6)]" />
+                  </span>
+                ) : (
+                  'Connect OpenClaw'
+                )}
+              </button>
+              <button
+                onClick={() => {
+                  setMenuOpen(false);
+                  setSkillBuilderOpen(true);
+                }}
+                className="w-full px-4 py-3 text-left text-white font-semibold hover:bg-yellow-400/50 transition-colors flex items-center gap-3"
+              >
+                <span className="text-lg">🔧</span>
+                Skill Builder
+              </button>
+              <button
+                onClick={() => {
+                  setMenuOpen(false);
+                  openMarketplace();
+                }}
+                className="w-full px-4 py-3 text-left text-white font-semibold hover:bg-yellow-400/50 transition-colors flex items-center gap-3"
+              >
+                <span className="text-lg">🛒</span>
+                Marketplace
+              </button>
+              <button
                 onClick={() => setView('help')}
-                className="w-full px-4 py-3 text-left text-black font-semibold hover:bg-yellow-400/50 transition-colors flex items-center gap-3"
+                className="w-full px-4 py-3 text-left text-white font-semibold hover:bg-yellow-400/50 transition-colors flex items-center gap-3"
               >
                 <span className="text-lg">❓</span>
                 How to Play
@@ -146,7 +193,7 @@ export default function GameMenu() {
               <div className="flex items-center gap-2 px-4 py-3 border-b border-yellow-600/30">
                 <button
                   onClick={() => setView('main')}
-                  className="text-black/70 hover:text-black transition-colors font-bold"
+                  className="text-white/70 hover:text-white transition-colors font-bold"
                   aria-label="Back"
                 >
                   <svg
@@ -163,7 +210,7 @@ export default function GameMenu() {
                     <path d="m15 18-6-6 6-6" />
                   </svg>
                 </button>
-                <span className="font-bold text-black">Locations</span>
+                <span className="font-bold text-white">Locations</span>
               </div>
               <div className="max-h-80 overflow-y-auto py-1">
                 {MAP_LOCATIONS.map((loc) => (
@@ -174,7 +221,7 @@ export default function GameMenu() {
                   >
                     <LocationStatusDot locationId={loc.id} />
                     <span className="text-sm">{loc.icon}</span>
-                    <span className="text-sm text-black font-medium truncate">
+                    <span className="text-sm text-white font-medium truncate">
                       {loc.name}
                     </span>
                   </button>
@@ -188,7 +235,7 @@ export default function GameMenu() {
               <div className="flex items-center gap-2 px-4 py-3 border-b border-yellow-600/30">
                 <button
                   onClick={() => setView('main')}
-                  className="text-black/70 hover:text-black transition-colors font-bold"
+                  className="text-white/70 hover:text-white transition-colors font-bold"
                   aria-label="Back"
                 >
                   <svg
@@ -205,29 +252,29 @@ export default function GameMenu() {
                     <path d="m15 18-6-6 6-6" />
                   </svg>
                 </button>
-                <span className="font-bold text-black">How to Play</span>
+                <span className="font-bold text-white">How to Play</span>
               </div>
               <div className="px-4 py-3 space-y-3 text-sm text-black/90">
                 <div className="flex items-start gap-3">
-                  <span className="font-mono bg-black/10 rounded px-2 py-0.5 text-xs font-bold flex-shrink-0">
+                  <span className="font-mono bg-white/10 rounded px-2 py-0.5 text-xs font-bold flex-shrink-0">
                     WASD
                   </span>
-                  <span>Move your pet around Neopia Central</span>
+                  <span>Move your pet around The Depths</span>
                 </div>
                 <div className="flex items-start gap-3">
-                  <span className="font-mono bg-black/10 rounded px-2 py-0.5 text-xs font-bold flex-shrink-0">
+                  <span className="font-mono bg-white/10 rounded px-2 py-0.5 text-xs font-bold flex-shrink-0">
                     E
                   </span>
                   <span>Enter a building when nearby</span>
                 </div>
                 <div className="flex items-start gap-3">
-                  <span className="font-mono bg-black/10 rounded px-2 py-0.5 text-xs font-bold flex-shrink-0">
+                  <span className="font-mono bg-white/10 rounded px-2 py-0.5 text-xs font-bold flex-shrink-0">
                     ESC
                   </span>
                   <span>Exit a building / close chat</span>
                 </div>
                 <div className="border-t border-yellow-600/30 pt-3">
-                  <p className="text-black/70 text-xs">
+                  <p className="text-white/70 text-xs">
                     Walk near buildings to see their name. Enter to chat with the
                     AI agent inside. Configure agents through the Locations menu
                     or the gear icon in the chat panel.

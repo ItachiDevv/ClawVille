@@ -4,19 +4,19 @@ import { usePet } from '@/hooks/use-pet';
 import { PET_SPECIES } from '@elizapets/shared';
 import { useGameStore } from '@/stores/game';
 
-function StatBar({ label, value, max = 20 }: { label: string; value: number; max?: number }) {
+function StatBar({ label, value, max = 20, color = 'bg-emerald-400' }: { label: string; value: number; max?: number; color?: string }) {
   const pct = Math.min(100, Math.round((value / max) * 100));
 
   return (
     <div className="flex items-center gap-1.5">
-      <span className="text-black/70 text-xs font-bold w-4">{label}</span>
-      <div className="flex-1 h-2 bg-black/20 rounded-full overflow-hidden">
+      <span className="text-white/50 text-[10px] font-bold w-7 uppercase tracking-wide">{label}</span>
+      <div className="flex-1 h-1.5 bg-white/10 rounded-full overflow-hidden">
         <div
-          className="h-full bg-green-600 rounded-full transition-all"
+          className={`h-full ${color} rounded-full transition-all`}
           style={{ width: `${pct}%` }}
         />
       </div>
-      <span className="text-black/60 text-[10px] w-5 text-right">{value}</span>
+      <span className="text-white/40 text-[10px] w-5 text-right font-mono">{value}</span>
     </div>
   );
 }
@@ -33,41 +33,53 @@ export default function PetStatusBar() {
   const knowledgeCount = (pet.characterConfig as any)?.knowledge?.length ?? 0;
 
   return (
-    <div className="neopets-panel fixed bottom-4 left-4 z-40 w-auto md:w-52">
-      <div className="flex items-center gap-2 md:mb-2">
+    <div className="neopets-panel fixed bottom-4 left-4 z-40 w-auto md:w-56">
+      {/* Pet identity row */}
+      <div className="flex items-center gap-2 md:mb-3">
         <span className="text-xl">{emoji}</span>
-        <span className="text-black font-bold text-sm truncate">{pet.name}</span>
-        {/* NeoToken balance */}
-        <span className="ml-auto flex items-center gap-1 text-xs font-bold text-yellow-700 bg-yellow-200/60 rounded-full px-2 py-0.5">
-          <span className="text-sm">&#x1FA99;</span>
-          {pet.neoTokens ?? 100}
+        <div className="flex-1 min-w-0">
+          <span className="text-white font-bold text-sm truncate block">{pet.name}</span>
+          <span className="text-cyan-400/60 text-[10px] font-mono">Lv {pet.level ?? 1}</span>
+        </div>
+        {/* Token balance */}
+        <span className="flex items-center gap-1 text-[11px] font-bold text-amber-300 bg-amber-500/15 border border-amber-500/20 rounded-full px-2.5 py-0.5">
+          <span className="text-xs">&#x1FA99;</span>
+          {pet.clawTokens ?? 100}
         </span>
       </div>
-      <div className="hidden md:block space-y-1">
-        <StatBar label="S" value={pet.stats.strength} />
-        <StatBar label="D" value={pet.stats.defence} />
-        <StatBar label="M" value={pet.stats.movement} />
-        <div className="flex items-center gap-1.5 pt-1 border-t border-black/10 mt-1">
-          <span className="text-black/70 text-[10px] font-bold">Explored</span>
-          <div className="flex-1 h-2 bg-black/20 rounded-full overflow-hidden">
+
+      {/* Stats */}
+      <div className="hidden md:block space-y-1.5">
+        <StatBar label="STR" value={pet.stats.strength} color="bg-red-400" />
+        <StatBar label="DEF" value={pet.stats.defence} color="bg-blue-400" />
+        <StatBar label="SPD" value={pet.stats.movement} color="bg-amber-400" />
+
+        {/* Exploration progress */}
+        <div className="flex items-center gap-1.5 pt-2 border-t border-white/5 mt-2">
+          <span className="text-white/40 text-[10px] font-bold w-7">MAP</span>
+          <div className="flex-1 h-1.5 bg-white/10 rounded-full overflow-hidden">
             <div
-              className="h-full bg-blue-500 rounded-full transition-all"
-              style={{ width: `${Math.round((visitedCount / 15) * 100)}%` }}
+              className="h-full bg-cyan-400 rounded-full transition-all"
+              style={{ width: `${Math.round((visitedCount / 10) * 100)}%` }}
             />
           </div>
-          <span className="text-black/60 text-[10px] font-bold">{visitedCount}/15</span>
+          <span className="text-white/40 text-[10px] font-mono">{visitedCount}/10</span>
         </div>
+
+        {/* Knowledge counter */}
         {knowledgeCount > 0 && (
-          <div className="flex items-center gap-1.5 text-[10px] text-black/60">
-            <span className="font-bold">Learned:</span>
-            <span>{knowledgeCount} topics</span>
+          <div className="flex items-center gap-1.5 text-[10px] text-cyan-300/60">
+            <span>&#x1F4DA;</span>
+            <span className="font-bold">{knowledgeCount} skills learned</span>
           </div>
         )}
+
+        {/* Inventory button */}
         <button
           onClick={openInventory}
-          className="w-full mt-1 text-[11px] font-bold text-black/70 hover:text-black bg-black/5 hover:bg-black/10 rounded px-2 py-1 transition-colors text-center"
+          className="w-full mt-2 text-[11px] font-bold text-cyan-300/80 hover:text-cyan-200 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/20 hover:border-cyan-500/30 rounded-lg px-2 py-1.5 transition-all text-center"
         >
-          Inventory
+          Open Inventory
         </button>
       </div>
     </div>

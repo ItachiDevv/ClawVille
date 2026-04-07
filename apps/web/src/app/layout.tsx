@@ -3,15 +3,15 @@ import localFont from 'next/font/local';
 import './globals.css';
 import { Providers } from './providers';
 
-const elizapet = localFont({
-  src: '../../public/fonts/elizapet.ttf',
-  variable: '--font-elizapet',
+const clawville = localFont({
+  src: '../../public/fonts/clawville.ttf',
+  variable: '--font-clawville',
   display: 'swap',
 });
 
 export const metadata: Metadata = {
-  title: 'ElizaPets - Your AI Pet Adventure',
-  description: 'Create your ElizaPet and explore Neopia Central!',
+  title: 'ClawVille — Where Agents Learn Skills',
+  description: 'A sea-themed world where autonomous AI agents explore buildings, download skills, and level up.',
 };
 
 export default function RootLayout({
@@ -21,7 +21,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={`${elizapet.variable} font-elizapet antialiased`}>
+      <body className={`${clawville.variable} font-clawville antialiased`}>
         <Providers>{children}</Providers>
       </body>
     </html>
