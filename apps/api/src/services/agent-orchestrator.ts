@@ -32,7 +32,7 @@ class AgentOrchestrator {
    * Ensure an agent runtime is available (lazy-start).
    * Starts the runtime on first chat message, not on config save.
    */
-  async ensureAgentRuntime(agentId: string, userId: string): Promise<ElizaRuntime | null> {
+  async ensureAgentRuntime(agentId: string, userId?: string): Promise<ElizaRuntime | null> {
     // Check if already running
     const existing = this.runningAgents.get(agentId);
     if (existing) {
@@ -47,10 +47,14 @@ class AgentOrchestrator {
       return recovered?.runtime ?? null;
     }
 
-    // Verify agent exists
-    const agent = await db.query.agents.findFirst({
-      where: and(eq(agents.id, agentId), eq(agents.userId, userId)),
-    });
+    // Verify agent exists — openclaw-bot agents match by id only
+    const agent = userId
+      ? await db.query.agents.findFirst({
+          where: and(eq(agents.id, agentId), eq(agents.userId, userId)),
+        })
+      : await db.query.agents.findFirst({
+          where: eq(agents.id, agentId),
+        });
 
     if (!agent) return null;
 
@@ -62,7 +66,7 @@ class AgentOrchestrator {
       if (agent.status !== 'stopped' && agent.status !== 'pending') {
         await this.updateAgentStatus(agentId, 'stopped');
       }
-      await this.startAgent(agentId, userId);
+      await this.startAgent(agentId, agent.userId);
       const running = this.runningAgents.get(agentId);
       return running?.runtime ?? null;
     } catch (error) {
@@ -86,11 +90,29 @@ class AgentOrchestrator {
 
     try {
       const customization = (agent.customization as Record<string, unknown>) ?? {};
-      const isAvatarAgent = agent.type === 'avatar-agent';
+      const agentType = agent.type === 'avatar-agent'
+        ? 'avatar-agent'
+        : agent.type === 'openclaw-bot'
+          ? 'openclaw-bot'
+          : 'location-agent';
+
+      // Extract gateway config for openclaw-bot agents
+      const gatewayData = customization.gateway as Record<string, unknown> | undefined;
+      const openclawGateway = agentType === 'openclaw-bot' && gatewayData
+        ? {
+            gatewayUrl: gatewayData.gatewayUrl as string,
+            authToken: gatewayData.authToken as string,
+            agentId: gatewayData.agentId as string,
+            protocol: (gatewayData.protocol as 'openai-compat' | 'anthropic' | 'custom-webhook') ?? 'openai-compat',
+            modelName: gatewayData.modelName as string | undefined,
+            timeoutMs: gatewayData.timeoutMs as number | undefined,
+            maxTokens: gatewayData.maxTokens as number | undefined,
+          }
+        : undefined;
 
       const runtime: ElizaRuntime = createElizaRuntime({
         agentId,
-        agentType: isAvatarAgent ? 'avatar-agent' : 'location-agent',
+        agentType,
         customization: {
           name: agent.name,
           personality: customization.personality as string | undefined,
@@ -107,6 +129,7 @@ class AgentOrchestrator {
           system: customization.system as string | undefined,
         },
         agentConfig: (agent.config as Record<string, unknown>) ?? {},
+        openclawGateway,
         databaseUrl: process.env.DATABASE_URL,
         apiKeys: {
           anthropic: process.env.ANTHROPIC_API_KEY,

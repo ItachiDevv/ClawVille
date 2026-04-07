@@ -330,4 +330,182 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+
+  // Heartbeat (alias matching ClawVille convention)
+  sendPetHeartbeat: (positionX: number, positionY: number) =>
+    honoRequest<{ ok: boolean }>('/api/avatars/me/heartbeat', {
+      method: 'POST',
+      body: JSON.stringify({ positionX, positionY }),
+    }),
+
+  // Activity Feed
+  getActivityFeed: (limit = 20, offset = 0) =>
+    honoRequest<{
+      activities: Array<{
+        id: string;
+        avatarId: string;
+        activityType: string;
+        description: string;
+        tokensEarned: number;
+        createdAt: string;
+      }>;
+    }>(`/api/avatars/me/activity?limit=${limit}&offset=${offset}`),
+
+  // Knowledge & Memory Exports
+  exportKnowledge: (avatarId: string) =>
+    honoRequest<{
+      avatarId: string;
+      avatarName: string;
+      species: string;
+      archetype: string;
+      clawTokens: number;
+      knowledge: string[];
+      topics: string[];
+      lore: string[];
+      bio: string[];
+      skillMd: string;
+      exportedAt: string;
+    }>(`/api/openclaw/knowledge-export/${avatarId}`),
+
+  exportKnowledgeMarkdown: async (avatarId: string): Promise<string> => {
+    const res = await fetch(`${HONO_API_URL}/api/openclaw/knowledge-export/${avatarId}?format=markdown`, {
+      credentials: 'include',
+    });
+    if (!res.ok) throw new Error('Export failed');
+    return res.text();
+  },
+
+  exportMemory: (avatarId: string) =>
+    honoRequest<{
+      avatarId: string;
+      avatarName: string;
+      dailyLogs: Array<{ date: string; filename: string; content: string }>;
+      longTermMemory: string;
+      totalMemories: number;
+      totalActivities: number;
+    }>(`/api/openclaw/memory-export/${avatarId}`),
+
+  // Marketplace
+  getMarketplaceSkills: (sort = 'newest', page = 1, limit = 20) =>
+    honoRequest<{
+      skills: Array<{
+        id: string;
+        authorAvatarName: string;
+        authorSpecies: string;
+        name: string;
+        description: string;
+        upvoteCount: number;
+        downloadCount: number;
+        hasUpvoted: boolean;
+        createdAt: string;
+      }>;
+      page: number;
+      limit: number;
+    }>(`/api/marketplace/skills?sort=${sort}&page=${page}&limit=${limit}`),
+
+  getMarketplaceSkill: (id: string) =>
+    honoRequest<{
+      skill: {
+        id: string;
+        authorAvatarId: string;
+        authorAvatarName: string;
+        authorSpecies: string;
+        name: string;
+        description: string;
+        skillMd: string;
+        upvoteCount: number;
+        downloadCount: number;
+        hasUpvoted: boolean;
+        createdAt: string;
+      };
+    }>(`/api/marketplace/skills/${id}`),
+
+  publishSkill: (data: { name: string; description: string; skillMd: string }) =>
+    honoRequest<{
+      skill: {
+        id: string;
+        name: string;
+        description: string;
+        upvoteCount: number;
+        downloadCount: number;
+        hasUpvoted: boolean;
+        createdAt: string;
+      };
+    }>('/api/marketplace/publish', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  buySkill: (id: string) =>
+    honoRequest<{ success: boolean; clawTokens: number; skill: { id: string; name: string } }>(
+      `/api/marketplace/skills/${id}/buy`,
+      { method: 'POST' }
+    ),
+
+  upvoteSkill: (id: string) =>
+    honoRequest<{ upvoted: boolean; upvoteCount: number }>(
+      `/api/marketplace/skills/${id}/upvote`,
+      { method: 'POST' }
+    ),
+
+  getMyPublishedSkills: () =>
+    honoRequest<{
+      skills: Array<{
+        id: string;
+        authorAvatarName: string;
+        authorSpecies: string;
+        name: string;
+        description: string;
+        upvoteCount: number;
+        downloadCount: number;
+        hasUpvoted: boolean;
+        createdAt: string;
+      }>;
+    }>('/api/marketplace/my-skills'),
+
+  installSkill: (id: string) =>
+    honoRequest<{ success: boolean; skillName: string; newKnowledgeCount: number; totalKnowledge: number }>(
+      `/api/marketplace/skills/${id}/install`,
+      { method: 'POST' }
+    ),
+
+  // Research
+  triggerResearch: (sessionId: string, locationId: string) =>
+    honoRequest<{ started: boolean; locationId: string }>('/api/research/trigger', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId, locationId }),
+    }),
+
+  getLocationArticles: (locationId: string) =>
+    honoRequest<{
+      articles: Array<{
+        id: string;
+        title: string;
+        source: string;
+        url: string;
+        scrapedAt: string;
+        wordCount: number;
+      }>;
+    }>(`/api/research/articles/${locationId}`),
+
+  rescrapeLocation: (locationId: string) =>
+    honoRequest<{ started: boolean; locationId: string }>('/api/research/scrape', {
+      method: 'POST',
+      body: JSON.stringify({ locationId }),
+    }),
+
+  seedArticles: () =>
+    honoRequest<{ started: boolean }>('/api/research/seed', { method: 'POST' }),
+
+  // Arena Settings
+  updateArenaSettings: (settings: { combatSpeed?: number; moveSpeed?: number; maxFights?: number; respawnTime?: number }) =>
+    honoRequest<{ settings: { combatSpeed: number; moveSpeed: number; maxFights: number; respawnTime: number } }>(
+      '/api/npc/settings',
+      { method: 'POST', body: JSON.stringify(settings) }
+    ),
+
+  getArenaSettings: () =>
+    honoRequest<{ settings: { combatSpeed: number; moveSpeed: number; maxFights: number; respawnTime: number } }>(
+      '/api/npc/settings'
+    ),
 };

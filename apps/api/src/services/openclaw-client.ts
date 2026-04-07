@@ -29,12 +29,16 @@ export class OpenClawClient {
   private authToken: string;
   private model: string;
   private protocol: Protocol;
+  private timeoutMs: number;
+  private maxTokens: number;
 
   constructor(config: OpenClawBotConfig) {
     this.gatewayUrl = config.gatewayUrl.replace(/\/+$/, '');
     this.authToken = config.authToken;
-    this.model = `openclaw:${config.agentId}`;
+    this.model = config.modelName ?? `openclaw:${config.agentId}`;
     this.protocol = config.protocol ?? 'openai-compat';
+    this.timeoutMs = config.timeoutMs ?? 10000;
+    this.maxTokens = config.maxTokens ?? 150;
   }
 
   async chat(messages: ChatMessage[]): Promise<string> {
@@ -50,7 +54,7 @@ export class OpenClawClient {
 
   private async chatOpenAI(messages: ChatMessage[]): Promise<string> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
     try {
       const res = await fetch(`${this.gatewayUrl}/v1/chat/completions`, {
@@ -62,7 +66,7 @@ export class OpenClawClient {
         body: JSON.stringify({
           model: this.model,
           messages,
-          max_tokens: 150,
+          max_tokens: this.maxTokens,
           temperature: 0.8,
         }),
         signal: controller.signal,
@@ -82,7 +86,7 @@ export class OpenClawClient {
 
   private async chatAnthropic(messages: ChatMessage[]): Promise<string> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
     const systemMsg = messages.find((m) => m.role === 'system');
     const nonSystemMsgs = messages.filter((m) => m.role !== 'system');
@@ -97,7 +101,7 @@ export class OpenClawClient {
         },
         body: JSON.stringify({
           model: this.model,
-          max_tokens: 150,
+          max_tokens: this.maxTokens,
           system: systemMsg?.content,
           messages: nonSystemMsgs.map((m) => ({
             role: m.role,
@@ -121,7 +125,7 @@ export class OpenClawClient {
 
   private async chatCustomWebhook(messages: ChatMessage[]): Promise<string> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
     try {
       const res = await fetch(this.gatewayUrl, {

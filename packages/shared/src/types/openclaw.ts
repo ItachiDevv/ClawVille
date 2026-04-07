@@ -4,10 +4,16 @@ export interface OpenClawBotConfig {
   sessionId: string;
   gatewayUrl: string; // e.g. "https://my-openclaw.example.com"
   authToken: string;
-  agentId: string; // used as model: "openclaw:<agentId>"
+  agentId: string; // used as model: "openclaw:<agentId>" (override with modelName)
   sessionKey: string; // for memory persistence
   protocol?: 'openai-compat' | 'anthropic' | 'custom-webhook';
   autonomyMode?: AgentAutonomyMode;
+  /** Override model name sent to the gateway (default: "openclaw:<agentId>") */
+  modelName?: string;
+  /** Request timeout in ms (default: 10000) */
+  timeoutMs?: number;
+  /** Max tokens for chat responses (default: 150) */
+  maxTokens?: number;
 }
 
 export interface OpenClawBotIdentity {

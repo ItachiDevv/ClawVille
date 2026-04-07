@@ -3,7 +3,7 @@
 import { useRef, useMemo, memo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Text } from '@react-three/drei';
-import * as THREE from 'three/webgpu';
+import * as THREE from 'three';
 import { useNpcStore } from '@/stores/npc';
 import type { NpcSpriteState } from '@/stores/npc';
 

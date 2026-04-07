@@ -3,7 +3,7 @@
 import { useRef, memo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Text, Billboard } from '@react-three/drei';
-import * as THREE from 'three/webgpu';
+import * as THREE from 'three';
 import { useNpcStore } from '@/stores/npc';
 
 // ---------------------------------------------------------------------------

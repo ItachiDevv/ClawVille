@@ -2,7 +2,7 @@
 
 import { useRef, useMemo, useCallback, memo } from 'react';
 import { useFrame } from '@react-three/fiber';
-import * as THREE from 'three/webgpu';
+import * as THREE from 'three';
 
 // ---------------------------------------------------------------------------
 // Types
