@@ -254,19 +254,31 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
     const container = containerRef.current;
     if (!container) return;
 
+    let cancelled = false;
+
     const observer = new MutationObserver(() => {
       const canvas = container.querySelector('canvas');
-      if (canvas) {
+      if (canvas && !cancelled) {
         canvas.addEventListener('webglcontextlost', (e) => {
           e.preventDefault();
-          setContextLost(true);
+          if (!cancelled) setContextLost(true);
         }, { once: true });
+
+        // Also check if context is already lost after a delay
+        setTimeout(() => {
+          if (cancelled) return;
+          const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+          if (gl && gl.isContextLost()) {
+            setContextLost(true);
+          }
+        }, 3000);
+
         observer.disconnect();
       }
     });
 
     observer.observe(container, { childList: true, subtree: true });
-    return () => observer.disconnect();
+    return () => { cancelled = true; observer.disconnect(); };
   }, []);
 
   if (contextLost) return <ContextLostFallback />;
