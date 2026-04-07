@@ -2,38 +2,29 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import Image from 'next/image';
-
-const AVATAR_SPECIES = ['cat', 'dragon', 'fox', 'owl', 'wolf', 'bunny', 'phoenix', 'turtle'];
-
-function FloatingPets() {
-  const positions = [
-    { species: 'dragon', x: '5%', y: '15%', delay: 0 },
-    { species: 'fox', x: '85%', y: '20%', delay: 0.5 },
-    { species: 'owl', x: '10%', y: '70%', delay: 1 },
-    { species: 'phoenix', x: '80%', y: '65%', delay: 1.5 },
-    { species: 'wolf', x: '90%', y: '42%', delay: 0.8 },
-    { species: 'bunny', x: '3%', y: '45%', delay: 1.2 },
+function FloatingIcons() {
+  const items = [
+    { icon: '🦞', x: '5%', y: '15%', delay: 0 },
+    { icon: '🔧', x: '85%', y: '20%', delay: 0.5 },
+    { icon: '🧠', x: '10%', y: '70%', delay: 1 },
+    { icon: '📡', x: '80%', y: '65%', delay: 1.5 },
+    { icon: '⚡', x: '90%', y: '42%', delay: 0.8 },
+    { icon: '🌊', x: '3%', y: '45%', delay: 1.2 },
   ];
 
   return (
     <div className="absolute inset-0 overflow-hidden pointer-events-none">
-      {positions.map((p) => (
+      {items.map((p, i) => (
         <div
-          key={p.species}
-          className="absolute opacity-20"
+          key={i}
+          className="absolute opacity-15 text-4xl"
           style={{
             left: p.x,
             top: p.y,
             animation: `petFloat 3s ease-in-out ${p.delay}s infinite`,
           }}
         >
-          <Image
-            src={`/sprites/avatars/${p.species}.png`}
-            alt={p.species}
-            width={60}
-            height={60}
-          />
+          {p.icon}
         </div>
       ))}
     </div>
@@ -63,7 +54,7 @@ export default function HomePage() {
       ` }} />
 
       {/* Background avatars */}
-      {mounted && <FloatingPets />}
+      {mounted && <FloatingIcons />}
 
       {/* Main content */}
       <div className="flex-1 flex flex-col items-center justify-center px-4 py-16 relative z-10">
@@ -87,24 +78,13 @@ export default function HomePage() {
             href="/game"
             className="group relative bg-gradient-to-br from-blue-900/60 to-cyan-900/40 rounded-2xl p-8 border-2 border-cyan-500/20 hover:border-cyan-400/50 backdrop-blur-sm transition-all hover:scale-[1.02] hover:shadow-[0_0_30px_rgba(0,229,255,0.15)]"
           >
-            <div className="flex justify-center mb-4">
-              <div className="relative">
-                <div className="flex -space-x-2">
-                  {['cat', 'fox', 'owl'].map((s) => (
-                    <Image
-                      key={s}
-                      src={`/sprites/avatars/${s}.png`}
-                      alt={s}
-                      width={48}
-                      height={48}
-                      className="drop-shadow-md group-hover:scale-110 transition-transform"
-                    />
-                  ))}
-                </div>
-              </div>
+            <div className="flex justify-center mb-4 text-4xl gap-2">
+              <span className="group-hover:scale-110 transition-transform">🦞</span>
+              <span className="group-hover:scale-110 transition-transform delay-75">🔧</span>
+              <span className="group-hover:scale-110 transition-transform delay-150">🧠</span>
             </div>
             <h2 className="font-clawville text-2xl text-white text-center mb-2">
-              ClawVille
+              ClawVille World
             </h2>
             <p className="text-white/70 text-sm text-center leading-relaxed mb-4">
               Explore 10 buildings, download skills, and train your autonomous agent in the deep sea.
@@ -131,21 +111,10 @@ export default function HomePage() {
             href="/arena"
             className="group relative bg-gradient-to-br from-red-900/60 to-orange-900/40 rounded-2xl p-8 border-2 border-red-500/20 hover:border-red-400/50 backdrop-blur-sm transition-all hover:scale-[1.02] hover:shadow-[0_0_30px_rgba(239,68,68,0.15)]"
           >
-            <div className="flex justify-center mb-4">
-              <div className="relative">
-                <div className="flex -space-x-2">
-                  {['wolf', 'dragon', 'phoenix'].map((s) => (
-                    <Image
-                      key={s}
-                      src={`/sprites/avatars/${s}.png`}
-                      alt={s}
-                      width={48}
-                      height={48}
-                      className="drop-shadow-md group-hover:scale-110 transition-transform"
-                    />
-                  ))}
-                </div>
-              </div>
+            <div className="flex justify-center mb-4 text-4xl gap-2">
+              <span className="group-hover:scale-110 transition-transform">⚔️</span>
+              <span className="group-hover:scale-110 transition-transform delay-75">🤖</span>
+              <span className="group-hover:scale-110 transition-transform delay-150">💥</span>
             </div>
             <h2 className="font-clawville text-2xl text-white text-center mb-2">
               ClawVille Arena
@@ -175,21 +144,10 @@ export default function HomePage() {
             href="/arena/openclaw-override"
             className="group relative bg-gradient-to-br from-purple-900/60 to-violet-900/40 rounded-2xl p-8 border-2 border-purple-500/20 hover:border-purple-400/50 backdrop-blur-sm transition-all hover:scale-[1.02] hover:shadow-[0_0_30px_rgba(168,85,247,0.15)]"
           >
-            <div className="flex justify-center mb-4">
-              <div className="relative">
-                <div className="flex -space-x-2">
-                  {['cat', 'owl', 'bunny'].map((s) => (
-                    <Image
-                      key={s}
-                      src={`/sprites/avatars/${s}.png`}
-                      alt={s}
-                      width={48}
-                      height={48}
-                      className="drop-shadow-md group-hover:scale-110 transition-transform"
-                    />
-                  ))}
-                </div>
-              </div>
+            <div className="flex justify-center mb-4 text-4xl gap-2">
+              <span className="group-hover:scale-110 transition-transform">🔌</span>
+              <span className="group-hover:scale-110 transition-transform delay-75">🎭</span>
+              <span className="group-hover:scale-110 transition-transform delay-150">💬</span>
             </div>
             <h2 className="font-clawville text-2xl text-white text-center mb-2">
               OpenClaw: Override NPC
@@ -219,21 +177,10 @@ export default function HomePage() {
             href="/arena/openclaw-avatar"
             className="group relative bg-gradient-to-br from-cyan-900/60 to-teal-900/40 rounded-2xl p-8 border-2 border-cyan-500/20 hover:border-cyan-400/50 backdrop-blur-sm transition-all hover:scale-[1.02] hover:shadow-[0_0_30px_rgba(34,211,238,0.15)]"
           >
-            <div className="flex justify-center mb-4">
-              <div className="relative">
-                <div className="flex -space-x-2">
-                  {['dragon', 'turtle', 'phoenix'].map((s) => (
-                    <Image
-                      key={s}
-                      src={`/sprites/avatars/${s}.png`}
-                      alt={s}
-                      width={48}
-                      height={48}
-                      className="drop-shadow-md group-hover:scale-110 transition-transform"
-                    />
-                  ))}
-                </div>
-              </div>
+            <div className="flex justify-center mb-4 text-4xl gap-2">
+              <span className="group-hover:scale-110 transition-transform">🤖</span>
+              <span className="group-hover:scale-110 transition-transform delay-75">🌊</span>
+              <span className="group-hover:scale-110 transition-transform delay-150">📡</span>
             </div>
             <h2 className="font-clawville text-2xl text-white text-center mb-2">
               OpenClaw: Bot Avatar
