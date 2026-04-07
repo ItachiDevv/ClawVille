@@ -246,28 +246,12 @@ function ContextLostFallback() {
 }
 
 function World3DCanvas({ mode }: World3DCanvasProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
   const [contextLost, setContextLost] = useState(false);
-
-  // Poll for context lost every 2 seconds
-  useEffect(() => {
-    const id = setInterval(() => {
-      const canvas = containerRef.current?.querySelector('canvas');
-      if (!canvas) return;
-      const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
-      if (gl && gl.isContextLost()) {
-        setContextLost(true);
-        clearInterval(id);
-      }
-    }, 2000);
-    return () => clearInterval(id);
-  }, []);
 
   if (contextLost) return <ContextLostFallback />;
 
   return (
     <div
-      ref={containerRef}
       style={{
         width: '100%',
         height: '100%',
@@ -285,8 +269,12 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
           far: 3000,
           position: mode === 'game' ? [0, 500, 100] : [0, 600, 120],
         }}
-        onCreated={({ scene }) => {
+        onCreated={({ scene, gl }) => {
           scene.background = SKY_COLOR;
+          gl.domElement.addEventListener('webglcontextlost', (e) => {
+            e.preventDefault();
+            setContextLost(true);
+          });
         }}
       >
         <SceneContents mode={mode} />
