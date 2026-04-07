@@ -19,7 +19,7 @@ export default function Minimap() {
 
   return (
     <div
-      className="fixed top-4 left-4 z-40 rounded-lg overflow-hidden border-2 border-yellow-600/60 shadow-neopets hidden md:block"
+      className="fixed top-4 left-4 z-40 rounded-lg overflow-hidden border-2 border-yellow-600/60 shadow-claw hidden md:block"
       style={{ width: MM_W, height: MM_H }}
     >
       {/* Background */}

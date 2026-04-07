@@ -28,7 +28,7 @@ import { useResearchStream } from '@/hooks/use-research-stream';
 const World3DCanvas = dynamic(() => import('@/components/three/World3DCanvas'), {
   ssr: false,
   loading: () => (
-    <div className="w-full h-full flex items-center justify-center bg-neopets-bg-dark">
+    <div className="w-full h-full flex items-center justify-center bg-claw-bg-dark">
       <p className="font-clawville text-white text-xl animate-pulse">
         Loading 3D world...
       </p>
@@ -109,7 +109,7 @@ export default function GamePage() {
 
   if (isLoading) {
     return (
-      <div className="game-container flex items-center justify-center bg-neopets-bg-dark">
+      <div className="game-container flex items-center justify-center bg-claw-bg-dark">
         <p className="font-clawville text-white text-2xl animate-pulse">
           Loading world...
         </p>

@@ -29,7 +29,7 @@
 /* ─── Panel system ────────────────────────────────────────────────────── */
 
 /* Primary glass panel — used for status bars, menus, overlays */
-.neopets-panel {
+.claw-panel {
   background: linear-gradient(180deg, rgba(10, 22, 40, 0.92) 0%, rgba(6, 13, 23, 0.96) 100%);
   border: 1px solid rgba(0, 229, 255, 0.25);
   border-radius: 12px;

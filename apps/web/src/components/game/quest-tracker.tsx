@@ -120,8 +120,8 @@ function QuestPanel({
       {/* Collapsed header — always visible */}
       <button
         onClick={onToggle}
-        className={`w-full neopets-panel !p-4 !rounded-xl flex items-center gap-3 hover:brightness-105 transition-all group ${
-          isNew ? 'animate-pulse ring-4 ring-neopets-green ring-offset-2' : ''
+        className={`w-full claw-panel !p-4 !rounded-xl flex items-center gap-3 hover:brightness-105 transition-all group ${
+          isNew ? 'animate-pulse ring-4 ring-claw-green ring-offset-2' : ''
         }`}
       >
         {allDone ? (
@@ -150,7 +150,7 @@ function QuestPanel({
           {!allDone && activeQuest && (
             <div className="h-2.5 w-full bg-black/15 rounded-full mt-2 overflow-hidden border border-black/5">
               <div
-                className="h-full bg-neopets-green rounded-full transition-all duration-500"
+                className="h-full bg-claw-green rounded-full transition-all duration-500"
                 style={{ width: `${getProgress(activeQuest.id) * 100}%` }}
               />
             </div>
@@ -179,10 +179,10 @@ function QuestPanel({
 
       {/* Expanded quest list */}
       {expanded && (
-        <div className="mt-2 neopets-panel !p-3 !rounded-xl space-y-2 max-h-96 overflow-y-auto animate-in fade-in slide-in-from-top-2 duration-150 shadow-xl">
+        <div className="mt-2 claw-panel !p-3 !rounded-xl space-y-2 max-h-96 overflow-y-auto animate-in fade-in slide-in-from-top-2 duration-150 shadow-xl">
           {/* Active quest highlight */}
           {activeQuest && (
-            <div className="bg-white/50 rounded-lg px-3 py-3 mb-2 border-2 border-neopets-green/40 shadow-sm">
+            <div className="bg-white/50 rounded-lg px-3 py-3 mb-2 border-2 border-claw-green/40 shadow-sm">
               <div className="flex items-center gap-3">
                 <span className="text-2xl">{activeQuest.icon}</span>
                 <div className="flex-1 min-w-0">
@@ -194,7 +194,7 @@ function QuestPanel({
                   </div>
                   <div className="h-3 w-full bg-white/10 rounded-full mt-2 overflow-hidden border border-black/5">
                     <div
-                      className="h-full bg-neopets-green rounded-full transition-all duration-500"
+                      className="h-full bg-claw-green rounded-full transition-all duration-500"
                       style={{ width: `${getProgress(activeQuest.id) * 100}%` }}
                     />
                   </div>
@@ -219,7 +219,7 @@ function QuestPanel({
                 key={quest.id}
                 className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${
                   isCompleted
-                    ? 'bg-neopets-green/20'
+                    ? 'bg-claw-green/20'
                     : isLocked
                     ? 'opacity-50'
                     : 'bg-white/30'
@@ -245,7 +245,7 @@ function QuestPanel({
                   {isActive && (
                     <div className="h-2 w-full bg-white/10 rounded-full mt-1 overflow-hidden">
                       <div
-                        className="h-full bg-neopets-green rounded-full transition-all duration-500"
+                        className="h-full bg-claw-green rounded-full transition-all duration-500"
                         style={{ width: `${prog * 100}%` }}
                       />
                     </div>

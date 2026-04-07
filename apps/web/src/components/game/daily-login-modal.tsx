@@ -44,7 +44,7 @@ export default function DailyLoginModal() {
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="neopets-panel w-80 max-w-[90vw] text-center">
+      <div className="claw-panel w-80 max-w-[90vw] text-center">
         {/* Header */}
         <div className="text-2xl mb-1">&#x1f381;</div>
         <h2 className="text-lg font-bold text-black mb-1">

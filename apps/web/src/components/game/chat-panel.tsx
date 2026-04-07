@@ -93,7 +93,7 @@ export default function ChatPanel() {
           </p>
           <button
             onClick={() => currentLocation && openLocationConfig(currentLocation)}
-            className="neopets-panel text-white font-bold px-4 py-2 hover:brightness-110 transition-all text-sm"
+            className="claw-panel text-white font-bold px-4 py-2 hover:brightness-110 transition-all text-sm"
           >
             Configure Agent
           </button>

@@ -33,7 +33,7 @@ export default function PetStatusBar() {
   const knowledgeCount = (pet.characterConfig as any)?.knowledge?.length ?? 0;
 
   return (
-    <div className="neopets-panel fixed bottom-4 left-4 z-40 w-auto md:w-56">
+    <div className="claw-panel fixed bottom-4 left-4 z-40 w-auto md:w-56">
       {/* Pet identity row */}
       <div className="flex items-center gap-2 md:mb-3">
         <span className="text-xl">{emoji}</span>
