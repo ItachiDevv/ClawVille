@@ -2,7 +2,7 @@
 
 import { useRef, memo } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { Text, Billboard } from '@react-three/drei';
+// Text removed
 import * as THREE from 'three';
 import { useNpcStore } from '@/stores/npc';
 
@@ -90,18 +90,12 @@ const NpcIndicator = memo(function NpcIndicator({
 
   return (
     <group ref={groupRef} position={[worldX, 0, worldZ]}>
-      {/* Activity emoji */}
+      {/* Activity indicator — glowing sphere instead of Text */}
       {showEmoji && (
-        <Billboard position={[0, INDICATOR_Y, 0]}>
-          <Text
-            fontSize={3}
-            anchorX="center"
-            anchorY="middle"
-            color="#ffffff"
-          >
-            {emoji}
-          </Text>
-        </Billboard>
+        <mesh position={[0, INDICATOR_Y, 0]}>
+          <sphereGeometry args={[1.5, 8, 8]} />
+          <meshBasicMaterial color={0x00e5ff} transparent opacity={0.6} />
+        </mesh>
       )}
 
       {/* Typing indicator: animated "..." */}
@@ -142,7 +136,7 @@ const TypingDots = memo(function TypingDots({
   });
 
   return (
-    <Billboard position={[x, 0, z]}>
+    <group position={[x, 0, z]}>
       <mesh ref={dot1Ref} position={[-1.2, y, 0]}>
         <sphereGeometry args={[0.4, 6, 4]} />
         <meshBasicMaterial color={0xcccccc} />
@@ -155,7 +149,7 @@ const TypingDots = memo(function TypingDots({
         <sphereGeometry args={[0.4, 6, 4]} />
         <meshBasicMaterial color={0xcccccc} />
       </mesh>
-    </Billboard>
+    </group>
   );
 });
 
