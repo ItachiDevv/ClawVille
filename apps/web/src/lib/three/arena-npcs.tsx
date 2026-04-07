@@ -2,11 +2,9 @@
 
 import { useRef, useMemo, memo, useCallback, useEffect } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { Text, Billboard, useGLTF } from '@react-three/drei';
+import { Text, Billboard } from '@react-three/drei';
 import * as THREE from 'three';
 import { useNpcStore, type NpcSpriteState } from '@/stores/npc';
-
-useGLTF.preload('/models/lobster.glb');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -431,9 +429,6 @@ const NpcMesh = memo(function NpcMesh({ npc }: NpcMeshProps) {
   const hpFillMatRef = useRef<THREE.MeshBasicMaterial>(null!);
   const glowRef = useRef<THREE.Mesh>(null!);
 
-  const { scene } = useGLTF('/models/lobster.glb');
-  const clonedScene = useMemo(() => scene.clone(true), [scene]);
-
   // Cache NPC data for useFrame
   const npcDataRef = useRef(npc);
   npcDataRef.current = npc;
@@ -444,18 +439,6 @@ const NpcMesh = memo(function NpcMesh({ npc }: NpcMeshProps) {
   const currentRotY = useRef(DIR_ROTATION[npc.direction]);
 
   const bodyColor = useMemo(() => new THREE.Color(npc.color), [npc.color]);
-
-  // Apply NPC color to model materials
-  useEffect(() => {
-    clonedScene.traverse((child: any) => {
-      if (child.isMesh && child.material) {
-        const mat = child.material.clone();
-        mat.color = bodyColor.clone();
-        child.material = mat;
-        child.castShadow = true;
-      }
-    });
-  }, [clonedScene, bodyColor]);
 
   const hpRatio = npc.maxHp > 0 ? npc.hp / npc.maxHp : 1;
 
@@ -518,10 +501,42 @@ const NpcMesh = memo(function NpcMesh({ npc }: NpcMeshProps) {
 
   return (
     <group ref={groupRef}>
-      {/* GLB lobster model */}
-      <group scale={0.25} position={[0, 0, 0]}>
-        <primitive object={clonedScene} />
+      {/* Shared-geometry lobster body (no GLB, no GPU duplication) */}
+      <mesh geometry={sharedGeo.capsule} castShadow>
+        <meshStandardMaterial color={bodyColor} roughness={0.6} />
+      </mesh>
+      <mesh geometry={sharedGeo.shell} position={[0, 2.5, -0.5]} castShadow>
+        <meshStandardMaterial color={bodyColor} roughness={0.5} />
+      </mesh>
+      {/* Claws */}
+      <group position={[-2.5, 1.5, 1]}>
+        <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, -0.3]}>
+          <meshStandardMaterial color={bodyColor} roughness={0.6} />
+        </mesh>
+        <mesh geometry={sharedGeo.claw} position={[-0.8, -0.2, 0.5]}>
+          <meshStandardMaterial color={bodyColor} roughness={0.55} />
+        </mesh>
       </group>
+      <group position={[2.5, 1.5, 1]}>
+        <mesh geometry={sharedGeo.clawArm} rotation={[0, 0, 0.3]}>
+          <meshStandardMaterial color={bodyColor} roughness={0.6} />
+        </mesh>
+        <mesh geometry={sharedGeo.claw} position={[0.8, -0.2, 0.5]}>
+          <meshStandardMaterial color={bodyColor} roughness={0.55} />
+        </mesh>
+      </group>
+      {/* Eyes */}
+      <mesh geometry={sharedGeo.eye} position={[-0.8, 3.5, 1.5]}>
+        <meshBasicMaterial color={0xffffff} />
+      </mesh>
+      <mesh geometry={sharedGeo.eye} position={[0.8, 3.5, 1.5]}>
+        <meshBasicMaterial color={0xffffff} />
+      </mesh>
+      {/* Shadow */}
+      <mesh position={[0, -1.8, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <circleGeometry args={[2.5, 12]} />
+        <meshBasicMaterial color={0x000000} transparent opacity={0.15} />
+      </mesh>
 
       {/* HP bar background */}
       <mesh geometry={sharedGeo.hpBarBg} material={matHpBg} position={[0, 6.5, 0]} />
