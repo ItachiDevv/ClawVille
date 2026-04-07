@@ -1,11 +1,24 @@
 import type { Metadata } from 'next';
-import localFont from 'next/font/local';
+import { Orbitron, Oxanium, Space_Mono } from 'next/font/google';
 import './globals.css';
 import { Providers } from './providers';
 
-const clawville = localFont({
-  src: '../../public/fonts/clawville.ttf',
-  variable: '--font-clawville',
+const orbitron = Orbitron({
+  subsets: ['latin'],
+  variable: '--font-orbitron',
+  display: 'swap',
+});
+
+const oxanium = Oxanium({
+  subsets: ['latin'],
+  variable: '--font-oxanium',
+  display: 'swap',
+});
+
+const spaceMono = Space_Mono({
+  subsets: ['latin'],
+  weight: ['400', '700'],
+  variable: '--font-space-mono',
   display: 'swap',
 });
 
@@ -21,7 +34,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={`${clawville.variable} font-clawville antialiased`}>
+      <body className={`${orbitron.variable} ${oxanium.variable} ${spaceMono.variable} font-oxanium antialiased`}>
         <Providers>{children}</Providers>
       </body>
     </html>
