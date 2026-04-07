@@ -16,9 +16,9 @@ const SPECIES = [
 ] as const;
 
 const COLORS = [
-  { id: 'green', label: 'GREEN', bg: '#4CAF50' },
-  { id: 'red', label: 'RED', bg: '#F44336' },
-  { id: 'blue', label: 'BLUE', bg: '#2196F3' },
+  { id: 'green', label: 'GREEN', bg: '#00E676' },
+  { id: 'red', label: 'RED', bg: '#FF5252' },
+  { id: 'blue', label: 'BLUE', bg: '#42A5F5' },
   { id: 'yellow', label: 'YELLOW', bg: '#FFD700' },
 ] as const;
 
@@ -35,7 +35,6 @@ export default function CreatePetPage() {
     reason?: string;
   } | null>(null);
 
-  // Debounced name check
   useEffect(() => {
     if (!avatarName || avatarName.length < 3) {
       setNameStatus(null);
@@ -74,25 +73,28 @@ export default function CreatePetPage() {
   const currentColor = COLORS.find((c) => c.id === selectedColor)!;
 
   return (
-    <div className="star-bg min-h-screen flex flex-col items-center px-4 py-6">
+    <div className="star-bg min-h-screen flex flex-col items-center px-4 py-8">
       {/* Title */}
-      <h1 className="font-clawville text-3xl text-white drop-shadow-md mb-4">
-        CREATE-A-AVATAR
+      <h1 className="font-clawville text-3xl text-white drop-shadow-[0_0_16px_rgba(0,229,255,0.3)] mb-2">
+        Create Your Agent
       </h1>
+      <p className="text-white/40 text-xs font-mono uppercase tracking-widest mb-6">
+        Choose species, color, and identity
+      </p>
 
-      {/* Species selector - horizontal scrollable row */}
+      {/* Species selector */}
       <div className="w-full max-w-xl overflow-x-auto pb-2">
         <div className="flex gap-3 min-w-max px-2">
           {SPECIES.map((species) => (
             <button
               key={species.id}
               onClick={() => setSelectedSpecies(species.id)}
-              className={`species-card flex flex-col items-center min-w-[80px] bg-white/10 ${
+              className={`species-card flex flex-col items-center min-w-[80px] ${
                 selectedSpecies === species.id ? 'selected' : ''
               }`}
             >
               <span className="text-3xl">{species.emoji}</span>
-              <span className="text-xs font-bold text-white uppercase mt-1">
+              <span className="text-xs font-bold text-white/70 uppercase mt-1">
                 {species.name}
               </span>
             </button>
@@ -100,18 +102,18 @@ export default function CreatePetPage() {
         </div>
       </div>
 
-      {/* Large preview area */}
+      {/* Preview area */}
       <div
-        className="w-full max-w-xl aspect-square max-h-[300px] rounded-xl cartoon-border flex items-center justify-center my-4 transition-colors duration-300"
-        style={{ backgroundColor: currentColor.bg + '33' }}
+        className="w-full max-w-xl aspect-square max-h-[280px] rounded-xl border border-white/10 flex items-center justify-center my-4 transition-colors duration-300"
+        style={{ backgroundColor: currentColor.bg + '15' }}
       >
         <span className="text-[120px] md:text-[160px] leading-none select-none drop-shadow-lg">
           {currentSpecies.emoji}
         </span>
       </div>
 
-      {/* Color buttons row */}
-      <div className="flex gap-2 mb-4">
+      {/* Color buttons */}
+      <div className="flex gap-2 mb-5">
         {COLORS.map((color) => (
           <button
             key={color.id}
@@ -126,14 +128,14 @@ export default function CreatePetPage() {
         ))}
       </div>
 
-      {/* Bottom yellow panel */}
-      <div className="legacytheme-panel w-full max-w-xl space-y-4">
+      {/* Config panel */}
+      <div className="w-full max-w-xl bg-[#0a1628]/90 border border-cyan-500/20 rounded-2xl p-6 backdrop-blur-xl shadow-[0_0_30px_rgba(0,229,255,0.06)] space-y-4">
         {/* Species display */}
         <p className="text-center">
-          <span className="font-bold text-gray-800 uppercase tracking-wide">
+          <span className="text-white/40 text-xs font-mono uppercase tracking-wider">
             Species:{' '}
           </span>
-          <span className="font-clawville text-2xl text-gray-900">
+          <span className="font-clawville text-2xl text-cyan-300">
             {currentSpecies.name}
           </span>
         </p>
@@ -141,7 +143,7 @@ export default function CreatePetPage() {
         {/* Name + Gender row */}
         <div className="flex flex-col sm:flex-row gap-4">
           <div className="flex-1">
-            <label className="block font-bold text-gray-800 mb-1 uppercase text-sm">
+            <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1.5">
               Agent Name
             </label>
             <input
@@ -149,39 +151,38 @@ export default function CreatePetPage() {
               value={avatarName}
               onChange={(e) => setPetName(e.target.value)}
               maxLength={20}
-              className="w-full px-3 py-2 rounded-lg border-3 border-legacytheme-panel-border bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-legacytheme-green"
+              className="w-full px-4 py-2.5 rounded-lg bg-white/[0.05] border border-white/10 text-white placeholder:text-white/20 focus:outline-none focus:border-cyan-500/50 focus:shadow-[0_0_12px_rgba(0,229,255,0.1)] transition-all"
               placeholder="Enter a name..."
             />
-            {/* Name availability feedback */}
             {avatarName.length >= 3 && nameStatus && (
               <p
-                className={`text-sm mt-1 font-bold ${
-                  nameStatus.available ? 'text-green-700' : 'text-red-700'
+                className={`text-xs mt-1.5 font-bold ${
+                  nameStatus.available ? 'text-emerald-400' : 'text-red-400'
                 }`}
               >
                 {nameStatus.available
-                  ? `The name ${avatarName} is available!`
+                  ? `${avatarName} is available!`
                   : nameStatus.reason || 'That name is taken'}
               </p>
             )}
             {avatarName.length > 0 && avatarName.length < 3 && (
-              <p className="text-sm mt-1 text-gray-600">
+              <p className="text-xs mt-1.5 text-white/30 font-mono">
                 Name must be at least 3 characters
               </p>
             )}
           </div>
 
           <div className="sm:w-40">
-            <label className="block font-bold text-gray-800 mb-1 uppercase text-sm">
+            <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1.5">
               Gender
             </label>
             <select
               value={gender}
               onChange={(e) => setGender(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border-3 border-legacytheme-panel-border bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-legacytheme-green"
+              className="w-full px-4 py-2.5 rounded-lg bg-white/[0.05] border border-white/10 text-white focus:outline-none focus:border-cyan-500/50 transition-all"
             >
-              <option value="male">MALE</option>
-              <option value="female">FEMALE</option>
+              <option value="male" className="bg-[#0a1628]">MALE</option>
+              <option value="female" className="bg-[#0a1628]">FEMALE</option>
             </select>
           </div>
         </div>
@@ -194,9 +195,9 @@ export default function CreatePetPage() {
             avatarName.length < 3 ||
             (nameStatus !== null && !nameStatus.available)
           }
-          className="w-full color-btn bg-legacytheme-green hover:bg-legacytheme-green-dark text-xl disabled:opacity-50 disabled:cursor-not-allowed"
+          className="w-full py-3 rounded-lg font-clawville text-sm uppercase tracking-wider transition-all disabled:opacity-30 disabled:cursor-not-allowed bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-white shadow-[0_0_20px_rgba(0,229,255,0.2)] hover:shadow-[0_0_28px_rgba(0,229,255,0.35)]"
         >
-          NEXT
+          Choose Personality
         </button>
       </div>
     </div>
