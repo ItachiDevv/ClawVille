@@ -241,14 +241,17 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
         <WASDCameraController controlsRef={controlsRef} />
       )}
 
-      {/* Underwater lighting */}
-      <ambientLight intensity={0.6} color={0x6699bb} />
-      <directionalLight position={[200, 400, 200]} intensity={0.8} color={0xaaddee} />
-      {/* Caustic light from above */}
-      <pointLight position={[0, 300, 0]} intensity={0.4} color={0x00ccff} distance={800} />
+      {/* Underwater lighting — hemisphere for natural gradient */}
+      <hemisphereLight args={[0x4488cc, 0x223344, 0.8]} />
+      <ambientLight intensity={0.4} color={0x88bbdd} />
+      <directionalLight position={[200, 400, 100]} intensity={1.0} color={0xccddee} />
+      {/* Caustic point lights from above */}
+      <pointLight position={[0, 200, 0]} intensity={0.6} color={0x00ccff} distance={600} />
+      <pointLight position={[-300, 150, -200]} intensity={0.3} color={0x0088aa} distance={400} />
+      <pointLight position={[300, 150, 200]} intensity={0.3} color={0x00aacc} distance={400} />
 
-      {/* Underwater fog — creates depth */}
-      <fog attach="fog" args={[FOG_COLOR, 200, 1200]} />
+      {/* Underwater fog — softer for visibility */}
+      <fog attach="fog" args={[FOG_COLOR, 300, 1400]} />
 
       {/* Shared world geometry */}
       <ArenaTerrain />
