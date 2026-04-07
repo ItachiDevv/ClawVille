@@ -116,11 +116,88 @@ export interface NpcStoreState {
 }
 
 // Demo NPCs shown when API server is not connected
+function makeDemoNpc(id: string, name: string, x: number, y: number, species: string, color: number, isOpenClaw = false): NpcSpriteState {
+  return { id, name, x, y, prevX: x, prevY: y, direction: 'idle', species, color, hp: 100, maxHp: 100, isDead: false, hasSword: false, inCombat: false, inConversation: false, inventory: [], isOpenClaw, combatAction: null, combatActionAt: 0 };
+}
+
 const DEMO_NPCS: NpcSpriteState[] = [
-  { id: 'demo-1', name: 'Captain Claw', x: 400, y: 300, prevX: 400, prevY: 300, direction: 'idle', species: 'cat', color: 0xff6347, hp: 100, maxHp: 100, isDead: false, hasSword: false, inCombat: false, inConversation: false, inventory: [], isOpenClaw: false, combatAction: null, combatActionAt: 0 },
-  { id: 'demo-2', name: 'Pearl', x: 700, y: 200, prevX: 700, prevY: 200, direction: 'idle', species: 'bunny', color: 0xff80ab, hp: 100, maxHp: 100, isDead: false, hasSword: false, inCombat: false, inConversation: false, inventory: [], isOpenClaw: false, combatAction: null, combatActionAt: 0 },
-  { id: 'demo-3', name: 'Rusty', x: 200, y: 500, prevX: 200, prevY: 500, direction: 'idle', species: 'fox', color: 0xff8c00, hp: 100, maxHp: 100, isDead: false, hasSword: false, inCombat: false, inConversation: false, inventory: [], isOpenClaw: false, combatAction: null, combatActionAt: 0 },
+  makeDemoNpc('demo-1', 'Captain Claw', 400, 300, 'cat', 0xff6347),
+  makeDemoNpc('demo-2', 'Pearl', 700, 200, 'bunny', 0xff80ab),
+  makeDemoNpc('demo-3', 'Rusty', 200, 500, 'fox', 0xff8c00),
 ];
+
+// Demo NPC wandering — makes NPCs walk around when not connected to server
+const DIRS: NpcSpriteState['direction'][] = ['up', 'down', 'left', 'right'];
+interface WanderState { targetX: number; targetY: number; waitUntil: number; }
+const wanderStates = new Map<string, WanderState>();
+
+function pickNewTarget(npc: NpcSpriteState): WanderState {
+  const tx = 80 + Math.random() * 1120; // stay within map
+  const ty = 80 + Math.random() * 640;
+  return { targetX: tx, targetY: ty, waitUntil: 0 };
+}
+
+function tickDemoNpcs(npcs: NpcSpriteState[]): NpcSpriteState[] {
+  const now = Date.now();
+  const speed = 1.5; // pixels per tick
+
+  return npcs.map((npc) => {
+    let ws = wanderStates.get(npc.id);
+    if (!ws) {
+      ws = pickNewTarget(npc);
+      ws.waitUntil = now + Math.random() * 3000; // stagger initial movement
+      wanderStates.set(npc.id, ws);
+    }
+
+    // Waiting (idle pause between walks)
+    if (now < ws.waitUntil) {
+      return { ...npc, direction: 'idle' as const };
+    }
+
+    const dx = ws.targetX - npc.x;
+    const dy = ws.targetY - npc.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    // Reached target — pause then pick new one
+    if (dist < 10) {
+      const newWs = pickNewTarget(npc);
+      newWs.waitUntil = now + 2000 + Math.random() * 4000;
+      wanderStates.set(npc.id, newWs);
+      return { ...npc, direction: 'idle' as const };
+    }
+
+    // Move toward target
+    const mx = (dx / dist) * speed;
+    const my = (dy / dist) * speed;
+    const newX = npc.x + mx;
+    const newY = npc.y + my;
+
+    let dir: NpcSpriteState['direction'] = 'idle';
+    if (Math.abs(dx) > Math.abs(dy)) {
+      dir = dx > 0 ? 'right' : 'left';
+    } else {
+      dir = dy > 0 ? 'down' : 'up';
+    }
+
+    return { ...npc, prevX: npc.x, prevY: npc.y, x: newX, y: newY, direction: dir };
+  });
+}
+
+let demoInterval: ReturnType<typeof setInterval> | null = null;
+
+function startDemoWander() {
+  if (demoInterval) return;
+  demoInterval = setInterval(() => {
+    const state = useNpcStore.getState();
+    if (state.connected) {
+      // Stop demo when connected to real server
+      if (demoInterval) { clearInterval(demoInterval); demoInterval = null; }
+      return;
+    }
+    const updated = tickDemoNpcs(state.npcs);
+    useNpcStore.setState({ npcs: updated });
+  }, 200); // 5fps update — gentle on GPU
+}
 
 export const useNpcStore = create<NpcStoreState>((set, get) => ({
   npcs: DEMO_NPCS,
@@ -265,11 +342,14 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
   },
 
   cleanupExpired: () => {
-    const now = Date.now();
+    const ts = Date.now();
     set((s) => ({
-      chatBubbles: s.chatBubbles.filter((b) => b.expiresAt > now),
-      combatEvents: s.combatEvents.filter((e) => e.expiresAt > now),
-      lootEvents: s.lootEvents.filter((e) => e.expiresAt > now),
+      chatBubbles: s.chatBubbles.filter((b) => b.expiresAt > ts),
+      combatEvents: s.combatEvents.filter((e) => e.expiresAt > ts),
+      lootEvents: s.lootEvents.filter((e) => e.expiresAt > ts),
     }));
   },
 }));
+
+// Demo wander is available but NOT auto-started — call startDemoWander() manually
+// to avoid constant React re-renders that stress integrated GPUs
