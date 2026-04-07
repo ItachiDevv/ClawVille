@@ -1,7 +1,5 @@
 'use client';
 
-import { useMemo, Suspense } from 'react';
-import { useGLTF } from '@react-three/drei';
 import { Text, Billboard } from '@react-three/drei';
 import * as THREE from 'three';
 import {
@@ -119,18 +117,6 @@ function ProceduralBuilding({ zone }: { zone: BuildingZone }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// GLB building (wrapped in Suspense, falls back to procedural)
-// ---------------------------------------------------------------------------
-function GLBModel({ path, scale }: { path: string; scale: number }) {
-  const { scene } = useGLTF(path);
-  const cloned = useMemo(() => scene.clone(true), [scene]);
-  return (
-    <group scale={scale}>
-      <primitive object={cloned} />
-    </group>
-  );
-}
 
 function BuildingModel({ zone }: { zone: BuildingZone }) {
   const [cx, , cz] = zoneCenter(zone);
@@ -141,14 +127,8 @@ function BuildingModel({ zone }: { zone: BuildingZone }) {
 
   return (
     <group position={[cx, 0, cz]}>
-      {/* Try GLB, fall back to procedural */}
-      <Suspense fallback={<ProceduralBuilding zone={zone} />}>
-        {model ? (
-          <GLBModel path={model.path} scale={model.scale} />
-        ) : (
-          <ProceduralBuilding zone={zone} />
-        )}
-      </Suspense>
+      {/* Procedural buildings — lightweight, no GLB loading */}
+      <ProceduralBuilding zone={zone} />
 
       {/* Glowing base ring */}
       <mesh position={[0, 0.1, 0]} rotation={[-Math.PI / 2, 0, 0]}>
