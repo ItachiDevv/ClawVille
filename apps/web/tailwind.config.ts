@@ -45,7 +45,11 @@ const config: Config = {
         'claw-accent': '#00E5FF',
       },
       fontFamily: {
-        clawville: ['var(--font-clawville)', 'Comic Sans MS', 'cursive'],
+        orbitron: ['var(--font-orbitron)', 'sans-serif'],
+        oxanium: ['var(--font-oxanium)', 'sans-serif'],
+        mono: ['var(--font-space-mono)', 'monospace'],
+        // Legacy alias — maps old font-clawville classes to Orbitron
+        clawville: ['var(--font-orbitron)', 'sans-serif'],
       },
       borderWidth: {
         '3': '3px',
