@@ -171,7 +171,7 @@ export default function PersonalityPage() {
 
   if (!step1) {
     return (
-      <div className="star-bg min-h-screen flex items-center justify-center">
+      <div className="relative min-h-screen bg-[#061520] flex items-center justify-center">
         <p className="text-white font-clawville text-xl">Loading...</p>
       </div>
     );
@@ -181,7 +181,7 @@ export default function PersonalityPage() {
   const colorHex = COLOR_HEX[step1.color] || '#4CAF50';
 
   return (
-    <div className="star-bg min-h-screen flex flex-col items-center px-4 py-6">
+    <div className="relative min-h-screen bg-[#061520] flex flex-col items-center px-4 py-6">
       {/* Pet preview + info */}
       <div className="w-full max-w-xl flex flex-col sm:flex-row items-center gap-4 mb-6">
         {/* Large preview */}
