@@ -2,7 +2,10 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import dynamic from 'next/dynamic';
 import { useCheckPetName } from '@/hooks/use-avatar';
+
+const LandingScene = dynamic(() => import('@/components/three/LandingScene'), { ssr: false });
 
 const SPECIES = [
   { id: 'cat', name: 'Cat', emoji: '\u{1F431}' },
@@ -73,7 +76,9 @@ export default function CreatePetPage() {
   const currentColor = COLORS.find((c) => c.id === selectedColor)!;
 
   return (
-    <div className="star-bg min-h-screen flex flex-col items-center px-4 py-8">
+    <div className="relative min-h-screen flex flex-col items-center px-4 py-8 bg-[#061520]">
+      <LandingScene />
+      <div className="relative z-10 w-full flex flex-col items-center">
       {/* Title */}
       <h1 className="font-clawville text-3xl text-white drop-shadow-[0_0_16px_rgba(0,229,255,0.3)] mb-2">
         Create Your Agent
@@ -199,6 +204,7 @@ export default function CreatePetPage() {
         >
           Choose Personality
         </button>
+      </div>
       </div>
     </div>
   );
