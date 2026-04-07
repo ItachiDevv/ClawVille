@@ -3,40 +3,53 @@
 import { useEffect, useRef } from 'react';
 import { useNpcStore } from '@/stores/npc';
 
-// NPC SSE always goes to the Hono API server, not Next.js
 const NPC_API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 5000;
 
 export function useNpcStream() {
   const updateFromSnapshot = useNpcStore((s) => s.updateFromSnapshot);
   const setConnected = useNpcStore((s) => s.setConnected);
-  const esRef = useRef<EventSource | null>(null);
+  const retriesRef = useRef(0);
 
   useEffect(() => {
-    const url = `${NPC_API_URL}/api/npc/stream`;
-    const es = new EventSource(url);
-    esRef.current = es;
+    let es: EventSource | null = null;
+    let retryTimeout: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
 
-    es.addEventListener('snapshot', (event) => {
-      try {
-        const snapshot = JSON.parse(event.data);
-        updateFromSnapshot(snapshot);
-      } catch (err) {
-        console.error('[NPC Stream] Failed to parse snapshot:', err);
-      }
-    });
+    function connect() {
+      if (cancelled || retriesRef.current >= MAX_RETRIES) return;
 
-    es.onopen = () => {
-      setConnected(true);
-    };
+      const url = `${NPC_API_URL}/api/npc/stream`;
+      es = new EventSource(url);
 
-    es.onerror = () => {
-      setConnected(false);
-      // EventSource auto-reconnects
-    };
+      es.addEventListener('snapshot', (event) => {
+        try {
+          retriesRef.current = 0; // Reset on success
+          const snapshot = JSON.parse(event.data);
+          updateFromSnapshot(snapshot);
+        } catch { /* ignore parse errors */ }
+      });
+
+      es.onopen = () => setConnected(true);
+
+      es.onerror = () => {
+        setConnected(false);
+        es?.close();
+        es = null;
+        retriesRef.current++;
+        if (!cancelled && retriesRef.current < MAX_RETRIES) {
+          retryTimeout = setTimeout(connect, RETRY_DELAY);
+        }
+      };
+    }
+
+    connect();
 
     return () => {
-      es.close();
-      esRef.current = null;
+      cancelled = true;
+      es?.close();
+      if (retryTimeout) clearTimeout(retryTimeout);
       setConnected(false);
     };
   }, [updateFromSnapshot, setConnected]);
