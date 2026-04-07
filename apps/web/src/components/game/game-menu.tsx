@@ -84,7 +84,7 @@ export default function GameMenu() {
       {/* Gear button */}
       <button
         onClick={() => setMenuOpen(!menuOpen)}
-        className="w-12 h-12 rounded-full bg-gradient-to-b from-yellow-400 to-yellow-600 border-3 border-yellow-700 shadow-legacytheme flex items-center justify-center text-2xl hover:brightness-110 transition-all active:translate-y-0.5 active:shadow-none"
+        className="w-12 h-12 rounded-full bg-gradient-to-b from-yellow-400 to-yellow-600 border-3 border-yellow-700 shadow-claw flex items-center justify-center text-2xl hover:brightness-110 transition-all active:translate-y-0.5 active:shadow-none"
         aria-label="Game menu"
       >
         <svg
@@ -105,7 +105,7 @@ export default function GameMenu() {
 
       {/* Dropdown */}
       {menuOpen && (
-        <div className="absolute top-14 right-0 w-72 border-3 border-legacytheme-panel-border rounded-xl bg-gradient-to-b from-[#FFE066] to-[#FFD700] shadow-legacytheme overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
+        <div className="absolute top-14 right-0 w-72 border-3 border-claw-panel-border rounded-xl bg-gradient-to-b from-[#FFE066] to-[#FFD700] shadow-claw overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
           {view === 'main' && (
             <div className="py-1">
               <button

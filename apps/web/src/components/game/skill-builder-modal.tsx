@@ -225,7 +225,7 @@ export default function SkillBuilderModal() {
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setSkillBuilderOpen(false)} />
       <div className="relative w-full max-w-lg max-h-[85vh] flex flex-col">
-        <div className="legacytheme-panel flex flex-col overflow-hidden">
+        <div className="claw-panel flex flex-col overflow-hidden">
           {/* Header */}
           <div className="flex items-center justify-between px-4 pt-4 pb-2">
             <h2 className="font-clawville text-xl text-white">

@@ -36,7 +36,7 @@ export default function InventoryModal() {
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-white/50 backdrop-blur-sm">
-      <div className="legacytheme-panel w-full max-w-md mx-4 max-h-[80vh] flex flex-col">
+      <div className="claw-panel w-full max-w-md mx-4 max-h-[80vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-white font-bold text-lg">Inventory</h2>

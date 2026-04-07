@@ -130,7 +130,7 @@ export default function OpenClawConnectModal() {
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setOpenclawModalOpen(false)} />
       <div className="relative w-full max-w-md">
-        <div className="legacytheme-panel space-y-4">
+        <div className="claw-panel space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="font-clawville text-xl text-gray-900">
               🔌 Connect OpenClaw
@@ -366,7 +366,7 @@ export default function OpenClawConnectModal() {
               <button
                 onClick={handleConnect}
                 disabled={loading || !gatewayUrl || !authToken}
-                className="w-full color-btn bg-legacytheme-green hover:bg-legacytheme-green-dark text-sm py-2 disabled:opacity-50"
+                className="w-full color-btn bg-claw-green hover:bg-claw-green-dark text-sm py-2 disabled:opacity-50"
               >
                 {loading ? 'Connecting...' : 'Connect Bot'}
               </button>

@@ -37,7 +37,7 @@ const STEPS = [
     title: 'Customize Everything',
     icon: '⚙️',
     content:
-      'Open the gear menu (top right) to manage your pet, configure location agents with custom personalities, or view all 15 locations on the map.',
+      'Open the gear menu (top right) to manage your pet, configure location agents with custom personalities, or view all 10 buildings on the map.',
     tip: 'Gear icon = settings',
   },
   {
@@ -112,7 +112,7 @@ export default function TutorialOverlay() {
       {/* Help button — always visible */}
       <button
         onClick={openTutorial}
-        className="fixed bottom-4 right-4 z-50 w-11 h-11 rounded-full bg-gradient-to-b from-blue-400 to-blue-600 border-3 border-blue-700 shadow-legacytheme flex items-center justify-center text-white font-clawville text-xl hover:brightness-110 transition-all active:translate-y-0.5 active:shadow-none"
+        className="fixed bottom-4 right-4 z-50 w-11 h-11 rounded-full bg-gradient-to-b from-blue-400 to-blue-600 border-3 border-blue-700 shadow-claw flex items-center justify-center text-white font-clawville text-xl hover:brightness-110 transition-all active:translate-y-0.5 active:shadow-none"
         aria-label="How to play"
       >
         ?
@@ -133,7 +133,7 @@ export default function TutorialOverlay() {
               animating ? 'opacity-0 scale-95' : 'opacity-100 scale-100'
             }`}
           >
-            <div className="legacytheme-panel space-y-4">
+            <div className="claw-panel space-y-4">
               {/* Step indicator */}
               <div className="flex items-center justify-between">
                 <div className="flex gap-1.5">
@@ -142,9 +142,9 @@ export default function TutorialOverlay() {
                       key={i}
                       className={`h-2 rounded-full transition-all duration-300 ${
                         i === step
-                          ? 'w-6 bg-legacytheme-green'
+                          ? 'w-6 bg-claw-green'
                           : i < step
-                          ? 'w-2 bg-legacytheme-green/50'
+                          ? 'w-2 bg-claw-green/50'
                           : 'w-2 bg-black/15'
                       }`}
                     />
@@ -192,7 +192,7 @@ export default function TutorialOverlay() {
 
                 <button
                   onClick={nextStep}
-                  className="color-btn bg-legacytheme-green hover:bg-legacytheme-green-dark text-base px-8 py-2"
+                  className="color-btn bg-claw-green hover:bg-claw-green-dark text-base px-8 py-2"
                 >
                   {step >= STEPS.length - 1 ? "Let's Go!" : 'Next'}
                 </button>

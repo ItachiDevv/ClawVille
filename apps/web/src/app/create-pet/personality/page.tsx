@@ -216,11 +216,11 @@ export default function PersonalityPage() {
       {/* ARCHETYPE section */}
       <div className="w-full max-w-xl mb-4">
         <div className="flex justify-end mb-1">
-          <span className="legacytheme-panel px-4 py-1 font-bold text-white uppercase tracking-wide text-sm">
+          <span className="claw-panel px-4 py-1 font-bold text-white uppercase tracking-wide text-sm">
             Choose Archetype
           </span>
         </div>
-        <div className="legacytheme-panel">
+        <div className="claw-panel">
           <p className="text-white/60 text-sm mb-3">
             Your pet's archetype determines their AI personality, knowledge, and speaking style.
           </p>
@@ -261,11 +261,11 @@ export default function PersonalityPage() {
       {/* PERSONALITY section (stats) */}
       <div className="w-full max-w-xl mb-4">
         <div className="flex justify-end mb-1">
-          <span className="legacytheme-panel px-4 py-1 font-bold text-white uppercase tracking-wide text-sm">
+          <span className="claw-panel px-4 py-1 font-bold text-white uppercase tracking-wide text-sm">
             Personality
           </span>
         </div>
-        <div className="legacytheme-panel space-y-4">
+        <div className="claw-panel space-y-4">
           {/* Habitat */}
           <div>
             <label className="block font-bold text-white/80 mb-1">
@@ -274,7 +274,7 @@ export default function PersonalityPage() {
             <select
               value={habitat}
               onChange={(e) => setHabitat(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border-3 border-white/10 bg-white text-white focus:outline-none focus:ring-2 focus:ring-legacytheme-green"
+              className="w-full px-3 py-2 rounded-lg border-3 border-white/10 bg-white text-white focus:outline-none focus:ring-2 focus:ring-claw-green"
             >
               {HABITAT_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -292,7 +292,7 @@ export default function PersonalityPage() {
             <select
               value={hobby}
               onChange={(e) => setHobby(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border-3 border-white/10 bg-white text-white focus:outline-none focus:ring-2 focus:ring-legacytheme-green"
+              className="w-full px-3 py-2 rounded-lg border-3 border-white/10 bg-white text-white focus:outline-none focus:ring-2 focus:ring-claw-green"
             >
               {HOBBY_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -310,7 +310,7 @@ export default function PersonalityPage() {
             <select
               value={greetingStyle}
               onChange={(e) => setGreetingStyle(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border-3 border-white/10 bg-white text-white focus:outline-none focus:ring-2 focus:ring-legacytheme-green"
+              className="w-full px-3 py-2 rounded-lg border-3 border-white/10 bg-white text-white focus:outline-none focus:ring-2 focus:ring-claw-green"
             >
               {GREETING_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -325,11 +325,11 @@ export default function PersonalityPage() {
       {/* STATS section */}
       <div className="w-full max-w-xl mb-6">
         <div className="flex justify-end mb-1">
-          <span className="legacytheme-panel px-4 py-1 font-bold text-white uppercase tracking-wide text-sm">
+          <span className="claw-panel px-4 py-1 font-bold text-white uppercase tracking-wide text-sm">
             Stats
           </span>
         </div>
-        <div className="legacytheme-panel">
+        <div className="claw-panel">
           {/* Stat bars */}
           <div className="space-y-3">
             {/* Strength */}

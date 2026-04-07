@@ -32,7 +32,7 @@ export default function PetSettingsModal() {
                 {species?.emoji} {pet.name}
               </DialogTitle>
               <DialogDescription className="mt-1">
-                Your LegacyApp profile
+                Your agent profile
               </DialogDescription>
             </div>
             <DialogClose asChild>
