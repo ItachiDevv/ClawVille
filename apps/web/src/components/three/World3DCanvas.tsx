@@ -246,10 +246,6 @@ function ContextLostFallback() {
 }
 
 function World3DCanvas({ mode }: World3DCanvasProps) {
-  const [contextLost, setContextLost] = useState(false);
-
-  if (contextLost) return <ContextLostFallback />;
-
   return (
     <div
       style={{
@@ -269,12 +265,8 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
           far: 3000,
           position: mode === 'game' ? [0, 500, 100] : [0, 600, 120],
         }}
-        onCreated={({ scene, gl }) => {
+        onCreated={({ scene }) => {
           scene.background = SKY_COLOR;
-          gl.domElement.addEventListener('webglcontextlost', (e) => {
-            e.preventDefault();
-            setContextLost(true);
-          });
         }}
       >
         <SceneContents mode={mode} />
