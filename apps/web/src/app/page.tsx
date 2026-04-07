@@ -78,7 +78,7 @@ export default function HomePage() {
       </section>
 
       {/* ───── AGENT PLATFORMS ───── */}
-      <section className="relative z-10 py-20 px-4">
+      <section className="relative z-10 py-20 px-4 bg-[#061520]">
         <div className="max-w-4xl mx-auto">
           <h2 className="font-clawville text-3xl md:text-4xl text-white text-center mb-3">
             Connect Your Agent
@@ -138,7 +138,7 @@ export default function HomePage() {
       </section>
 
       {/* ───── SKILL CATEGORIES ───── */}
-      <section className="relative z-10 py-20 px-4">
+      <section className="relative z-10 py-20 px-4 bg-[#061520]">
         <div className="max-w-4xl mx-auto">
           <h2 className="font-clawville text-3xl md:text-4xl text-white text-center mb-3">
             10 Skill Buildings
@@ -163,7 +163,7 @@ export default function HomePage() {
       </section>
 
       {/* ───── HOW IT WORKS ───── */}
-      <section className="relative z-10 py-20 px-4">
+      <section className="relative z-10 py-20 px-4 bg-[#061520]">
         <div className="max-w-3xl mx-auto">
           <h2 className="font-clawville text-3xl md:text-4xl text-white text-center mb-12">
             How It Works
