@@ -11,7 +11,7 @@ import {
   TILE_SIZE,
   buildingZones,
 } from '@/lib/pixi/tilemap-data';
-// GLB model replaces the old procedural lobster + LobsterAnimator
+import { LobsterAnimator, type LobsterRefs, resolveAnimState } from '@/lib/three/lobster-animations';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -127,7 +127,20 @@ function mapToWorld(px: number, py: number): [number, number, number] {
 // ---------------------------------------------------------------------------
 export default function PlayerAvatar() {
   const groupRef = useRef<THREE.Group>(null);
+  const bodyRef = useRef<THREE.Mesh>(null);
   const rotRef = useRef(0);
+
+  // Animation refs
+  const leftClawRef = useRef<THREE.Group>(null);
+  const rightClawRef = useRef<THREE.Group>(null);
+  const tailSeg0Ref = useRef<THREE.Mesh>(null);
+  const tailSeg1Ref = useRef<THREE.Mesh>(null);
+  const tailSeg2Ref = useRef<THREE.Mesh>(null);
+  const tailFanRef = useRef<THREE.Mesh>(null);
+  const legRefs = useRef<(THREE.Mesh | null)[]>([null, null, null, null, null, null]);
+  const eyeStalkRefs = useRef<(THREE.Group | null)[]>([null, null]);
+  const antennaRefs = useRef<(THREE.Mesh | null)[]>([null, null]);
+  const animatorRef = useRef<LobsterAnimator | null>(null);
 
   attachKeyListeners();
 
@@ -136,6 +149,7 @@ export default function PlayerAvatar() {
     const avatarColor = useGameStore.getState().avatarColor;
     const base = SPECIES_COLORS[species] ?? 0xffa726;
     const tint = COLOR_TINTS[avatarColor] ?? 0xffffff;
+    // Blend base with color tint
     const c = new THREE.Color(base);
     c.lerp(new THREE.Color(tint), 0.4);
     return c;
@@ -283,74 +297,154 @@ export default function PlayerAvatar() {
     rotRef.current += (targetRot - rotRef.current) * 0.15;
     group.rotation.y = rotRef.current;
 
-    // Simple walk squash/stretch animation on the model group
-    if (isMoving) {
-      const walkCycle = Math.sin(elapsed * 8);
-      group.scale.set(1, 1 + walkCycle * 0.03, 1);
-    } else {
-      // Idle breathing
-      const breath = Math.sin(elapsed * 2) * 0.015;
-      group.scale.set(1 + breath, 1, 1 + breath);
+    // Procedural animation
+    if (!animatorRef.current) {
+      const refs: LobsterRefs = {
+        body: bodyRef.current,
+        leftClaw: leftClawRef.current,
+        rightClaw: rightClawRef.current,
+        tailSegments: [tailSeg0Ref.current, tailSeg1Ref.current, tailSeg2Ref.current],
+        tailFan: tailFanRef.current,
+        legs: legRefs.current,
+        eyeStalks: eyeStalkRefs.current,
+        antennae: antennaRefs.current,
+      };
+      animatorRef.current = new LobsterAnimator(refs);
     }
+    const animState = resolveAnimState({
+      isDead: false,
+      inCombat: false,
+      combatAction: null,
+      direction: dir,
+      inConversation: false,
+    });
+    animatorRef.current.update(delta, elapsed, animState, dir);
   });
 
   const species = useGameStore((s) => s.avatarSpecies);
 
   return (
     <group ref={groupRef} position={[0, 0, 0]}>
-      {/* Procedural lobster (shared geometry, no GLB) */}
-      <mesh position={[0, 3, 0]} castShadow scale={[1, 0.7, 1.4]}>
+      {/* Lobster body — elongated ellipsoid */}
+      <mesh ref={bodyRef} position={[0, 3, 0]} castShadow scale={[1, 0.7, 1.4]}>
         <capsuleGeometry args={[2, 4, 8, 16]} />
         <meshStandardMaterial color={bodyColor} roughness={0.6} />
       </mesh>
-      {/* Shell */}
+
+      {/* Carapace (upper shell) */}
       <mesh position={[0, 4.5, -1]} castShadow>
         <sphereGeometry args={[2.5, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
         <meshStandardMaterial color={bodyColor} roughness={0.5} />
       </mesh>
-      {/* Eyes */}
-      <mesh position={[-1.2, 5.2, 2]}>
-        <sphereGeometry args={[0.5, 8, 8]} />
-        <meshBasicMaterial color={0xffffff} />
+
+      {/* Tail segments */}
+      <mesh ref={tailSeg0Ref} position={[0, 2.5, -3]} castShadow scale={[1, 0.5, 1]}>
+        <boxGeometry args={[3, 1.2, 1.8]} />
+        <meshStandardMaterial color={bodyColor} roughness={0.65} />
       </mesh>
-      <mesh position={[1.2, 5.2, 2]}>
-        <sphereGeometry args={[0.5, 8, 8]} />
-        <meshBasicMaterial color={0xffffff} />
+      <mesh ref={tailSeg1Ref} position={[0, 2.1, -4.8]} castShadow scale={[0.85, 0.5, 1]}>
+        <boxGeometry args={[2.5, 1.2, 1.8]} />
+        <meshStandardMaterial color={bodyColor} roughness={0.65} />
       </mesh>
-      <mesh position={[-1.2, 5.2, 2.4]}>
-        <sphereGeometry args={[0.25, 6, 6]} />
-        <meshBasicMaterial color={0x111111} />
+      <mesh ref={tailSeg2Ref} position={[0, 1.7, -6.6]} castShadow scale={[0.7, 0.5, 1]}>
+        <boxGeometry args={[2, 1.2, 1.8]} />
+        <meshStandardMaterial color={bodyColor} roughness={0.65} />
       </mesh>
-      <mesh position={[1.2, 5.2, 2.4]}>
-        <sphereGeometry args={[0.25, 6, 6]} />
-        <meshBasicMaterial color={0x111111} />
-      </mesh>
-      {/* Claws */}
-      <group position={[-3.5, 2.5, 1.5]}>
-        <mesh rotation={[0, 0, -0.3]}>
-          <cylinderGeometry args={[0.4, 0.5, 2.5, 6]} />
-          <meshStandardMaterial color={bodyColor} roughness={0.6} />
-        </mesh>
-        <mesh position={[-1.2, -0.3, 0.8]}>
-          <boxGeometry args={[1.8, 0.6, 1]} />
-          <meshStandardMaterial color={bodyColor} roughness={0.55} />
-        </mesh>
-      </group>
-      <group position={[3.5, 2.5, 1.5]}>
-        <mesh rotation={[0, 0, 0.3]}>
-          <cylinderGeometry args={[0.4, 0.5, 2.5, 6]} />
-          <meshStandardMaterial color={bodyColor} roughness={0.6} />
-        </mesh>
-        <mesh position={[1.2, -0.3, 0.8]}>
-          <boxGeometry args={[1.8, 0.6, 1]} />
-          <meshStandardMaterial color={bodyColor} roughness={0.55} />
-        </mesh>
-      </group>
-      {/* Tail */}
-      <mesh position={[0, 2, -4]}>
-        <coneGeometry args={[2, 3, 6]} />
+      {/* Tail fan */}
+      <mesh ref={tailFanRef} position={[0, 1.8, -7.5]} rotation={[0.3, 0, 0]}>
+        <coneGeometry args={[2, 2.5, 6]} />
         <meshStandardMaterial color={bodyColor} roughness={0.6} />
       </mesh>
+
+      {/* Eyes on stalks */}
+      <group ref={(el) => { eyeStalkRefs.current[0] = el; }} position={[-1.4, 5, 2.5]}>
+        <mesh position={[0, 0.6, 0]}>
+          <cylinderGeometry args={[0.2, 0.25, 1.5, 6]} />
+          <meshStandardMaterial color={bodyColor} roughness={0.7} />
+        </mesh>
+        <mesh position={[0, 1.5, 0]}>
+          <sphereGeometry args={[0.5, 8, 8]} />
+          <meshBasicMaterial color={0xffffff} />
+        </mesh>
+        <mesh position={[-0.1, 1.5, 0.4]}>
+          <sphereGeometry args={[0.25, 8, 8]} />
+          <meshBasicMaterial color={0x111111} />
+        </mesh>
+      </group>
+      <group ref={(el) => { eyeStalkRefs.current[1] = el; }} position={[1.4, 5, 2.5]}>
+        <mesh position={[0, 0.6, 0]}>
+          <cylinderGeometry args={[0.2, 0.25, 1.5, 6]} />
+          <meshStandardMaterial color={bodyColor} roughness={0.7} />
+        </mesh>
+        <mesh position={[0, 1.5, 0]}>
+          <sphereGeometry args={[0.5, 8, 8]} />
+          <meshBasicMaterial color={0xffffff} />
+        </mesh>
+        <mesh position={[0.1, 1.5, 0.4]}>
+          <sphereGeometry args={[0.25, 8, 8]} />
+          <meshBasicMaterial color={0x111111} />
+        </mesh>
+      </group>
+
+      {/* Antennae */}
+      <mesh ref={(el) => { antennaRefs.current[0] = el; }} position={[-0.8, 5.2, 3]} rotation={[-0.5, -0.3, -0.4]}>
+        <cylinderGeometry args={[0.08, 0.12, 5, 4]} />
+        <meshStandardMaterial color={bodyColor} roughness={0.7} />
+      </mesh>
+      <mesh ref={(el) => { antennaRefs.current[1] = el; }} position={[0.8, 5.2, 3]} rotation={[-0.5, 0.3, 0.4]}>
+        <cylinderGeometry args={[0.08, 0.12, 5, 4]} />
+        <meshStandardMaterial color={bodyColor} roughness={0.7} />
+      </mesh>
+
+      {/* Claws (left and right) */}
+      <group ref={leftClawRef} position={[-3.5, 2.5, 1.5]}>
+        <mesh position={[-0.5, 0, 0]} rotation={[0, 0, -0.3]}>
+          <cylinderGeometry args={[0.4, 0.5, 2.5, 6]} />
+          <meshStandardMaterial color={bodyColor} roughness={0.6} />
+        </mesh>
+        <mesh position={[-1.2, -0.3, 0.8]} rotation={[0.3, -0.2, -0.5]}>
+          <boxGeometry args={[1.8, 0.6, 1]} />
+          <meshStandardMaterial color={bodyColor} roughness={0.55} />
+        </mesh>
+        <mesh position={[-1.2, 0.3, 0.8]} rotation={[-0.2, -0.2, -0.5]}>
+          <boxGeometry args={[1.5, 0.5, 0.8]} />
+          <meshStandardMaterial color={bodyColor} roughness={0.55} />
+        </mesh>
+      </group>
+      <group ref={rightClawRef} position={[3.5, 2.5, 1.5]}>
+        <mesh position={[0.5, 0, 0]} rotation={[0, 0, 0.3]}>
+          <cylinderGeometry args={[0.4, 0.5, 2.5, 6]} />
+          <meshStandardMaterial color={bodyColor} roughness={0.6} />
+        </mesh>
+        <mesh position={[1.2, -0.3, 0.8]} rotation={[0.3, 0.2, 0.5]}>
+          <boxGeometry args={[1.8, 0.6, 1]} />
+          <meshStandardMaterial color={bodyColor} roughness={0.55} />
+        </mesh>
+        <mesh position={[1.2, 0.3, 0.8]} rotation={[-0.2, 0.2, 0.5]}>
+          <boxGeometry args={[1.5, 0.5, 0.8]} />
+          <meshStandardMaterial color={bodyColor} roughness={0.55} />
+        </mesh>
+      </group>
+
+      {/* Legs (3 pairs) — left side (indices 0-2), right side (indices 3-5) */}
+      {[
+        { side: -1, idx: 0, i: 0 },
+        { side: -1, idx: 1, i: 1 },
+        { side: -1, idx: 2, i: 2 },
+        { side: 1, idx: 3, i: 0 },
+        { side: 1, idx: 4, i: 1 },
+        { side: 1, idx: 5, i: 2 },
+      ].map(({ side, idx, i }) => (
+        <mesh
+          key={`leg-${idx}`}
+          ref={(el) => { legRefs.current[idx] = el; }}
+          position={[side * 2.2, 1, -0.5 - i * 1.5]}
+          rotation={[0, 0, side * 0.6]}
+        >
+          <cylinderGeometry args={[0.15, 0.2, 2.5, 4]} />
+          <meshStandardMaterial color={bodyColor} roughness={0.7} />
+        </mesh>
+      ))}
 
       {/* Shadow */}
       <mesh position={[0, 0.05, 0]} rotation={[-Math.PI / 2, 0, 0]}>
