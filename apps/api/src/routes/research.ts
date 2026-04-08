@@ -5,7 +5,7 @@ import { articleScraper } from '../services/article-scraper';
 import { researchService } from '../services/research-service';
 import { researchEventBus } from './research-sse';
 import { npcSimulation } from '../services/npc-simulation';
-import { db, avatars, eq } from '@legacyapp/database';
+import { db, avatars, eq, and } from '@legacyapp/database';
 import type { AppContext } from '../types';
 
 export const researchApiRoutes = new Hono<AppContext>();
@@ -73,7 +73,7 @@ researchApiRoutes.post('/trigger', sessionMiddleware, async (c) => {
     return c.json({ error: 'Authentication required for avatar research' }, 401);
   }
 
-  const avatar = await db.query.avatars.findFirst({ where: eq(avatars.userId, user.id) });
+  const avatar = await db.query.avatars.findFirst({ where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)) });
   if (!avatar) {
     return c.json({ error: 'No avatar found' }, 404);
   }

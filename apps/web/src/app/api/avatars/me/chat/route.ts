@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
-import { db, avatars, eq } from '@legacyapp/database';
+import { db, avatars, eq, and } from '@legacyapp/database';
 import { json, error, requireAuth } from '@/lib/api-utils';
 import { agentOrchestrator } from '@/services/agent-orchestrator';
 
@@ -21,9 +21,9 @@ export async function POST(request: NextRequest) {
       return error('Message must be 1-4000 characters', 400);
     }
 
-    // Get user's avatar
+    // Get user's active avatar
     const avatar = await db.query.avatars.findFirst({
-      where: eq(avatars.userId, user.id),
+      where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
     });
 
     if (!avatar) {

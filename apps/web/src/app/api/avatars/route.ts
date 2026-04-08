@@ -97,13 +97,13 @@ export async function POST(request: NextRequest) {
       return error(result.error.issues[0].message, 400);
     }
 
-    // Check if user already has a avatar
-    const existingPet = await db.query.avatars.findFirst({
+    // Check how many agents this user already has (max 6)
+    const existingAvatars = await db.query.avatars.findMany({
       where: eq(avatars.userId, user.id),
     });
 
-    if (existingPet) {
-      return error('You already have a avatar', 400);
+    if (existingAvatars.length >= 6) {
+      return error('Maximum 6 agents allowed', 400);
     }
 
     // Check name uniqueness
@@ -148,6 +148,8 @@ export async function POST(request: NextRequest) {
       stats,
       characterConfig,
       platformAgentId: agent.id,
+      slotIndex: existingAvatars.length,
+      isActive: existingAvatars.length === 0,
     }).returning();
 
     return json({ avatar, agentId: agent.id });

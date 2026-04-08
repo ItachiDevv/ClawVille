@@ -497,6 +497,100 @@ export const api = {
   seedArticles: () =>
     honoRequest<{ started: boolean }>('/api/research/seed', { method: 'POST' }),
 
+  // Bazaar
+  getBazaarListings: (params?: { page?: number; rarity?: string; category?: string; sort?: string; minPrice?: number; maxPrice?: number }) =>
+    honoRequest<{ listings: any[]; total: number; page: number; pageSize: number }>(`/api/bazaar?${new URLSearchParams(Object.entries(params || {}).filter(([,v]) => v != null).map(([k,v]) => [k, String(v)])).toString()}`),
+  getBazaarListing: (id: string) =>
+    honoRequest<{ listing: any }>(`/api/bazaar/${id}`),
+  getBazaarFeatured: () =>
+    honoRequest<{ listings: any[] }>('/api/bazaar/featured'),
+  createBazaarListing: (data: { skillId: string; price: number }) =>
+    honoRequest<{ listing: any }>('/api/bazaar/list', { method: 'POST', body: JSON.stringify(data) }),
+  updateBazaarListing: (id: string, data: { price: number }) =>
+    honoRequest<{ listing: any }>(`/api/bazaar/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  cancelBazaarListing: (id: string) =>
+    honoRequest<{ success: boolean }>(`/api/bazaar/${id}`, { method: 'DELETE' }),
+  getMyBazaarListings: () =>
+    honoRequest<{ listings: any[] }>('/api/bazaar/my-listings'),
+  buyBazaarListing: (id: string) =>
+    honoRequest<{ success: boolean; transaction: any }>(`/api/bazaar/${id}/buy`, { method: 'POST' }),
+  getMyBazaarPurchases: () =>
+    honoRequest<{ purchases: any[] }>('/api/bazaar/my-purchases'),
+  reviewBazaarSkill: (listingId: string, data: { rating: number; comment?: string }) =>
+    honoRequest<{ review: any }>(`/api/bazaar/${listingId}/review`, { method: 'POST', body: JSON.stringify(data) }),
+  getBazaarSkillReviews: (skillId: string) =>
+    honoRequest<{ reviews: any[] }>(`/api/bazaar/skills/${skillId}/reviews`),
+  getBazaarStats: () =>
+    honoRequest<{ stats: any }>('/api/bazaar/stats'),
+
+  // Auctions
+  getAuctions: (params?: { page?: number; itemType?: string; status?: string; sort?: string }) =>
+    honoRequest<{ auctions: any[]; total: number; page: number; pageSize: number }>(
+      `/api/auctions?${new URLSearchParams(Object.entries(params || {}).filter(([,v]) => v != null).map(([k,v]) => [k, String(v)])).toString()}`
+    ),
+  getAuction: (id: string) =>
+    honoRequest<{ auction: any; bids: any[] }>(`/api/auctions/${id}`),
+  createAuction: (data: { title: string; description?: string; itemType: string; skillId?: string; startingBid: number; buyNowPrice?: number; durationHours?: number }) =>
+    honoRequest<{ auction: any }>('/api/auctions/create', { method: 'POST', body: JSON.stringify(data) }),
+  cancelAuction: (id: string) =>
+    honoRequest<{ success: boolean }>(`/api/auctions/${id}`, { method: 'DELETE' }),
+  placeBid: (id: string, amount: number) =>
+    honoRequest<{ success: boolean; auction: any }>(`/api/auctions/${id}/bid`, { method: 'POST', body: JSON.stringify({ amount }) }),
+  buyNow: (id: string) =>
+    honoRequest<{ success: boolean }>(`/api/auctions/${id}/buy-now`, { method: 'POST' }),
+  getMyAuctions: () =>
+    honoRequest<{ auctions: any[] }>('/api/auctions/my-auctions'),
+  getMyBids: () =>
+    honoRequest<{ auctions: any[] }>('/api/auctions/my-bids'),
+
+  // Quests
+  getQuests: (params?: { page?: number; tier?: string; status?: string }) =>
+    honoRequest<{ quests: any[]; total: number; page: number; pageSize: number }>(
+      `/api/quests?${new URLSearchParams(Object.entries(params || {}).filter(([,v]) => v != null).map(([k,v]) => [k, String(v)])).toString()}`
+    ),
+  getQuest: (id: string) =>
+    honoRequest<{ quest: any }>(`/api/quests/${id}`),
+  acceptQuest: (id: string) =>
+    honoRequest<{ submission: any }>(`/api/quests/${id}/accept`, { method: 'POST' }),
+  startQuest: (id: string) =>
+    honoRequest<{ submission: any }>(`/api/quests/${id}/start`, { method: 'POST' }),
+  submitQuest: (id: string, data: { prLink?: string; submissionNote: string }) =>
+    honoRequest<{ submission: any }>(`/api/quests/${id}/submit`, { method: 'POST', body: JSON.stringify(data) }),
+  getMyQuests: () =>
+    honoRequest<{ submissions: any[] }>('/api/quests/my-quests'),
+  getQuestLog: () =>
+    honoRequest<{ rewards: any[] }>('/api/quests/quest-log'),
+
+  // Bounties
+  getBounties: (params?: { page?: number; difficulty?: string; status?: string; sort?: string; tags?: string }) =>
+    honoRequest<{ bounties: any[]; total: number; page: number; pageSize: number }>(
+      `/api/bounties?${new URLSearchParams(Object.entries(params || {}).filter(([,v]) => v != null).map(([k,v]) => [k, String(v)])).toString()}`
+    ),
+  getBounty: (id: string) =>
+    honoRequest<{ bounty: any; rewards: any[]; attemptCount: number }>(`/api/bounties/${id}`),
+  getFeaturedBounties: () =>
+    honoRequest<{ bounties: any[] }>('/api/bounties/featured'),
+  createBounty: (data: any) =>
+    honoRequest<{ bounty: any }>('/api/bounties/create', { method: 'POST', body: JSON.stringify(data) }),
+  updateBounty: (id: string, data: any) =>
+    honoRequest<{ bounty: any }>(`/api/bounties/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  cancelBounty: (id: string) =>
+    honoRequest<{ success: boolean }>(`/api/bounties/${id}`, { method: 'DELETE' }),
+  getMyBounties: () =>
+    honoRequest<{ bounties: any[] }>('/api/bounties/my-bounties'),
+  claimBounty: (id: string) =>
+    honoRequest<{ attempt: any }>(`/api/bounties/${id}/claim`, { method: 'POST' }),
+  submitBountyAttempt: (id: string, data: { prLink?: string; submissionNote: string }) =>
+    honoRequest<{ attempt: any }>(`/api/bounties/${id}/submit`, { method: 'POST', body: JSON.stringify(data) }),
+  abandonBounty: (id: string) =>
+    honoRequest<{ success: boolean }>(`/api/bounties/${id}/abandon`, { method: 'POST' }),
+  getMyBountyAttempts: () =>
+    honoRequest<{ attempts: any[] }>('/api/bounties/my-attempts'),
+  reviewBountyAttempt: (attemptId: string, data: { decision: string; reviewNote?: string }) =>
+    honoRequest<{ success: boolean }>(`/api/bounties/attempts/${attemptId}/review`, { method: 'POST', body: JSON.stringify(data) }),
+  getBountyReputation: (avatarId: string) =>
+    honoRequest<{ reputation: any }>(`/api/bounties/reputation/${avatarId}`),
+
   // Arena Settings
   updateArenaSettings: (settings: { combatSpeed?: number; moveSpeed?: number; maxFights?: number; respawnTime?: number }) =>
     honoRequest<{ settings: { combatSpeed: number; moveSpeed: number; maxFights: number; respawnTime: number } }>(
@@ -508,4 +602,35 @@ export const api = {
     honoRequest<{ settings: { combatSpeed: number; moveSpeed: number; maxFights: number; respawnTime: number } }>(
       '/api/npc/settings'
     ),
+
+  // Agent Setup
+  getAgentRoster: () =>
+    honoRequest<{ agents: any[] }>('/api/agent-setup/roster'),
+
+  createAgent: (data: { name: string; species: string; color: string; gender: string; archetype: string; personality: any; stats: any }) =>
+    honoRequest<{ agent: any }>('/api/agent-setup/create', { method: 'POST', body: JSON.stringify(data) }),
+
+  activateAgent: (id: string) =>
+    honoRequest<{ success: boolean }>(`/api/agent-setup/${id}/activate`, { method: 'PATCH' }),
+
+  deleteAgent: (id: string) =>
+    honoRequest<{ success: boolean }>(`/api/agent-setup/${id}`, { method: 'DELETE' }),
+
+  updateLoadout: (id: string, equippedSkills: string[]) =>
+    honoRequest<{ success: boolean }>(`/api/agent-setup/${id}/loadout`, { method: 'PATCH', body: JSON.stringify({ equippedSkills }) }),
+
+  getAgentTalentTree: (id: string) =>
+    honoRequest<{ buildings: any[] }>(`/api/agent-setup/${id}/talent-tree`),
+
+  exportAgent: (id: string) =>
+    honoRequest<{ config: any }>(`/api/agent-setup/${id}/export`, { method: 'POST' }),
+
+  importAgent: (configData: any, slotIndex?: number) =>
+    honoRequest<{ agent: any }>('/api/agent-setup/import', { method: 'POST', body: JSON.stringify({ configData, slotIndex }) }),
+
+  getAgentConfigs: () =>
+    honoRequest<{ configs: any[] }>('/api/agent-setup/configs'),
+
+  getPublicConfigs: () =>
+    honoRequest<{ configs: any[] }>('/api/agent-setup/configs/public'),
 };

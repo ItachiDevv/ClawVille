@@ -56,7 +56,7 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
 
   // Get visitor's avatar info
   const avatar = await db.query.avatars.findFirst({
-    where: eq(avatars.userId, user.id),
+    where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
   });
 
   if (avatar) {

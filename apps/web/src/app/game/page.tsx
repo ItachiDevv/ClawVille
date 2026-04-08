@@ -2,9 +2,12 @@
 
 import { useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
+import { useRouter } from 'next/navigation';
+import { useQuery } from '@tanstack/react-query';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useNpcStream } from '@/hooks/use-npc-stream';
 import { useGameStore, type GameState } from '@/stores/game';
+import { api } from '@/lib/api';
 import GameMenu from '@/components/game/game-menu';
 import AvatarSettingsModal from '@/components/game/avatar-settings-modal';
 import LocationConfigModal from '@/components/game/location-config-modal';
@@ -19,6 +22,10 @@ import ActivityFeed from '@/components/game/activity-feed';
 import OpenClawConnectModal from '@/components/game/openclaw-connect-modal';
 import SkillBuilderModal from '@/components/game/skill-builder-modal';
 import MarketplaceModal from '@/components/game/marketplace-modal';
+import BazaarModal from '@/components/game/bazaar-modal';
+import AuctionModal from '@/components/game/auction-modal';
+import QuestBoardModal from '@/components/game/quest-board-modal';
+import BountyBoardModal from '@/components/game/bounty-board-modal';
 import BuildingTooltip from '@/components/game/building-tooltip';
 import DailyLoginModal from '@/components/game/daily-login-modal';
 import QuestTracker from '@/components/game/quest-tracker';
@@ -82,8 +89,24 @@ function NanoClawBanner({ isSpectator }: { isSpectator: boolean }) {
 }
 
 export default function GamePage() {
+  const router = useRouter();
   const { data: avatar, isLoading } = useAvatar();
   const [isSpectator, setIsSpectator] = useState(false);
+
+  // Check if user is authenticated (separate from avatar query)
+  const { data: authData, isLoading: authLoading } = useQuery({
+    queryKey: ['auth-me'],
+    queryFn: async () => {
+      try {
+        return await api.me();
+      } catch {
+        return null;
+      }
+    },
+    retry: false,
+  });
+
+  const isAuthenticated = !!authData?.user;
 
   // NPC SSE stream disabled — server sim sends idle NPCs that override client wander.
   // Re-enable when server-side NPC simulation is actively moving NPCs.
@@ -92,14 +115,21 @@ export default function GamePage() {
   // Connect to research thought stream
   useResearchStream();
 
+  // Redirect authenticated users with no active agent to /select-agent
+  useEffect(() => {
+    if (!isLoading && !authLoading && isAuthenticated && !avatar) {
+      router.push('/select-agent');
+    }
+  }, [avatar, isLoading, authLoading, isAuthenticated, router]);
+
   // Determine spectator mode
   useEffect(() => {
-    if (!isLoading) {
+    if (!isLoading && !authLoading) {
       const spectating = !avatar;
       setIsSpectator(spectating);
       useGameStore.getState().setIsSpectator(spectating);
     }
-  }, [avatar, isLoading]);
+  }, [avatar, isLoading, authLoading]);
 
   // Sync avatar appearance to game store for 3D rendering
   useEffect(() => {
@@ -108,7 +138,7 @@ export default function GamePage() {
     }
   }, [avatar]);
 
-  if (isLoading) {
+  if (isLoading || authLoading) {
     return (
       <div className="game-container flex items-center justify-center bg-claw-bg-dark">
         <p className="font-clawville text-white text-2xl animate-pulse">
@@ -126,6 +156,10 @@ export default function GamePage() {
       <OpenClawConnectModal />
       <SkillBuilderModal />
       <MarketplaceModal />
+      <BazaarModal />
+      <AuctionModal />
+      <QuestBoardModal />
+      <BountyBoardModal />
 
       {/* Spectator mode: show banner, hide avatar-specific UI */}
       {isSpectator && <SpectatorBanner />}

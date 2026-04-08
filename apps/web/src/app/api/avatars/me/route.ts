@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
-import { db, avatars, eq } from '@legacyapp/database';
+import { db, avatars, eq, and } from '@legacyapp/database';
 import { json, error, requireAuth } from '@/lib/api-utils';
 
 export async function GET() {
@@ -10,7 +10,7 @@ export async function GET() {
     const { user } = authResult;
 
     const avatar = await db.query.avatars.findFirst({
-      where: eq(avatars.userId, user.id),
+      where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
     });
 
     return json({ avatar: avatar ?? null });
@@ -45,7 +45,7 @@ export async function PATCH(request: NextRequest) {
         positionY: result.data.positionY,
         updatedAt: new Date(),
       })
-      .where(eq(avatars.userId, user.id))
+      .where(and(eq(avatars.userId, user.id), eq(avatars.isActive, true)))
       .returning();
 
     if (!updated) {

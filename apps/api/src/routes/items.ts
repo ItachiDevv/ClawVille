@@ -25,7 +25,7 @@ itemRoutes.get('/inventory', requireAuth, async (c) => {
   const user = c.get('user');
 
   const avatar = await db.query.avatars.findFirst({
-    where: eq(avatars.userId, user.id),
+    where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
   });
 
   if (!avatar) {
@@ -71,7 +71,7 @@ itemRoutes.post('/buy', requireAuth, async (c) => {
   }
 
   const avatar = await db.query.avatars.findFirst({
-    where: eq(avatars.userId, user.id),
+    where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
   });
 
   if (!avatar) {
@@ -140,7 +140,7 @@ itemRoutes.post('/learn', requireAuth, async (c) => {
   }
 
   const avatar = await db.query.avatars.findFirst({
-    where: eq(avatars.userId, user.id),
+    where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
   });
 
   if (!avatar) {

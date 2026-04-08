@@ -10,7 +10,12 @@ export * from './claws';
 export * from './memories';
 export * from './research';
 export * from './marketplace';
+export * from './bazaar';
 export * from './token-launch';
+export * from './auctions';
+export * from './quests';
+export * from './agent-configs';
+export * from './bounties';
 
 import { users, sessions } from './users';
 import { npcMemories, activityLog } from './memories';
@@ -19,17 +24,20 @@ import { agents, agentLogs } from './agents';
 import { locationAgents } from './location-agents';
 import { avatarInventory } from './inventory';
 import { publishedSkills, skillUpvotes } from './marketplace';
+import { bazaarListings, bazaarTransactions, bazaarReviews } from './bazaar';
 import { openclawBots } from './claws';
 import { vanityKeypairs, tokenLaunches } from './token-launch';
+import { auctions, auctionBids, auctionAgentConfigs } from './auctions';
+import { quests, questSubmissions, questRewards } from './quests';
+import { agentConfigs } from './agent-configs';
+import { bounties, bountyRewards, bountyAttempts, bountyReputation } from './bounties';
 
 export const usersRelations = relations(users, ({ many, one }) => ({
   sessions: many(sessions),
-  avatar: one(avatars, {
-    fields: [users.id],
-    references: [avatars.userId],
-  }),
+  avatars: many(avatars),
   agents: many(agents),
   locationAgents: many(locationAgents),
+  agentConfigs: many(agentConfigs),
 }));
 
 export const sessionsRelations = relations(sessions, ({ one }) => ({
@@ -50,6 +58,7 @@ export const petsRelations = relations(avatars, ({ one, many }) => ({
   }),
   inventory: many(avatarInventory),
   publishedSkills: many(publishedSkills),
+  agentConfigs: many(agentConfigs),
 }));
 
 export const petInventoryRelations = relations(avatarInventory, ({ one }) => ({
@@ -98,6 +107,8 @@ export const publishedSkillsRelations = relations(publishedSkills, ({ one, many 
     references: [avatars.id],
   }),
   upvotes: many(skillUpvotes),
+  listings: many(bazaarListings),
+  reviews: many(bazaarReviews),
 }));
 
 export const skillUpvotesRelations = relations(skillUpvotes, ({ one }) => ({
@@ -138,4 +149,165 @@ export const tokenLaunchesRelations = relations(tokenLaunches, ({ one }) => ({
     fields: [tokenLaunches.vanityKeypairId],
     references: [vanityKeypairs.id],
   }),
+}));
+
+export const bazaarListingsRelations = relations(bazaarListings, ({ one }) => ({
+  skill: one(publishedSkills, {
+    fields: [bazaarListings.skillId],
+    references: [publishedSkills.id],
+  }),
+  seller: one(avatars, {
+    fields: [bazaarListings.sellerId],
+    references: [avatars.id],
+  }),
+}));
+
+export const bazaarTransactionsRelations = relations(bazaarTransactions, ({ one }) => ({
+  listing: one(bazaarListings, {
+    fields: [bazaarTransactions.listingId],
+    references: [bazaarListings.id],
+  }),
+  buyer: one(avatars, {
+    fields: [bazaarTransactions.buyerId],
+    references: [avatars.id],
+    relationName: 'transactionBuyer',
+  }),
+  seller: one(avatars, {
+    fields: [bazaarTransactions.sellerId],
+    references: [avatars.id],
+    relationName: 'transactionSeller',
+  }),
+  skill: one(publishedSkills, {
+    fields: [bazaarTransactions.skillId],
+    references: [publishedSkills.id],
+  }),
+}));
+
+export const bazaarReviewsRelations = relations(bazaarReviews, ({ one }) => ({
+  transaction: one(bazaarTransactions, {
+    fields: [bazaarReviews.transactionId],
+    references: [bazaarTransactions.id],
+  }),
+  reviewer: one(avatars, {
+    fields: [bazaarReviews.reviewerId],
+    references: [avatars.id],
+  }),
+  skill: one(publishedSkills, {
+    fields: [bazaarReviews.skillId],
+    references: [publishedSkills.id],
+  }),
+}));
+
+export const auctionsRelations = relations(auctions, ({ one, many }) => ({
+  seller: one(avatars, {
+    fields: [auctions.sellerId],
+    references: [avatars.id],
+    relationName: 'auctionSeller',
+  }),
+  currentBidder: one(avatars, {
+    fields: [auctions.currentBidderId],
+    references: [avatars.id],
+    relationName: 'auctionCurrentBidder',
+  }),
+  skill: one(publishedSkills, {
+    fields: [auctions.skillId],
+    references: [publishedSkills.id],
+  }),
+  bids: many(auctionBids),
+  agentConfigs: many(auctionAgentConfigs),
+}));
+
+export const auctionBidsRelations = relations(auctionBids, ({ one }) => ({
+  auction: one(auctions, {
+    fields: [auctionBids.auctionId],
+    references: [auctions.id],
+  }),
+  bidder: one(avatars, {
+    fields: [auctionBids.bidderId],
+    references: [avatars.id],
+  }),
+}));
+
+export const auctionAgentConfigsRelations = relations(auctionAgentConfigs, ({ one }) => ({
+  auction: one(auctions, {
+    fields: [auctionAgentConfigs.auctionId],
+    references: [auctions.id],
+  }),
+  avatar: one(avatars, {
+    fields: [auctionAgentConfigs.avatarId],
+    references: [avatars.id],
+  }),
+}));
+
+export const questsRelations = relations(quests, ({ one, many }) => ({
+  skillReward: one(publishedSkills, {
+    fields: [quests.skillRewardId],
+    references: [publishedSkills.id],
+  }),
+  createdByUser: one(users, {
+    fields: [quests.createdBy],
+    references: [users.id],
+  }),
+  submissions: many(questSubmissions),
+  rewards: many(questRewards),
+}));
+
+export const questSubmissionsRelations = relations(questSubmissions, ({ one }) => ({
+  quest: one(quests, {
+    fields: [questSubmissions.questId],
+    references: [quests.id],
+  }),
+  avatar: one(avatars, {
+    fields: [questSubmissions.avatarId],
+    references: [avatars.id],
+  }),
+  reviewedByUser: one(users, {
+    fields: [questSubmissions.reviewedBy],
+    references: [users.id],
+  }),
+}));
+
+export const questRewardsRelations = relations(questRewards, ({ one }) => ({
+  submission: one(questSubmissions, {
+    fields: [questRewards.submissionId],
+    references: [questSubmissions.id],
+  }),
+  avatar: one(avatars, {
+    fields: [questRewards.avatarId],
+    references: [avatars.id],
+  }),
+  quest: one(quests, {
+    fields: [questRewards.questId],
+    references: [quests.id],
+  }),
+  skill: one(publishedSkills, {
+    fields: [questRewards.skillId],
+    references: [publishedSkills.id],
+  }),
+}));
+
+export const agentConfigsRelations = relations(agentConfigs, ({ one }) => ({
+  user: one(users, { fields: [agentConfigs.userId], references: [users.id] }),
+  avatar: one(avatars, { fields: [agentConfigs.avatarId], references: [avatars.id] }),
+}));
+
+export const bountiesRelations = relations(bounties, ({ one, many }) => ({
+  creator: one(avatars, { fields: [bounties.creatorId], references: [avatars.id] }),
+  rewards: many(bountyRewards),
+  attempts: many(bountyAttempts),
+}));
+
+export const bountyRewardsRelations = relations(bountyRewards, ({ one }) => ({
+  bounty: one(bounties, { fields: [bountyRewards.bountyId], references: [bounties.id] }),
+  skill: one(publishedSkills, { fields: [bountyRewards.skillId], references: [publishedSkills.id] }),
+  agentConfig: one(agentConfigs, { fields: [bountyRewards.agentConfigId], references: [agentConfigs.id] }),
+}));
+
+export const bountyAttemptsRelations = relations(bountyAttempts, ({ one }) => ({
+  bounty: one(bounties, { fields: [bountyAttempts.bountyId], references: [bounties.id] }),
+  hunter: one(avatars, { fields: [bountyAttempts.hunterId], references: [avatars.id] }),
+}));
+
+export const bountyReputationRelations = relations(bountyReputation, ({ one }) => ({
+  avatar: one(avatars, { fields: [bountyReputation.avatarId], references: [avatars.id] }),
 }));

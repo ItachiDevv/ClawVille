@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { db, avatars, agents, avatarInventory } from '@legacyapp/database';
 import { AVATAR_ARCHETYPES, ARCHETYPE_IDS, getBookById } from '@legacyapp/shared';
 import type { PetArchetypeId } from '@legacyapp/shared';
@@ -167,7 +167,7 @@ avatarRoutes.get('/me', requireAuth, async (c) => {
   const user = c.get('user');
 
   const avatar = await db.query.avatars.findFirst({
-    where: eq(avatars.userId, user.id),
+    where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
   });
 
   if (!avatar) {
@@ -199,7 +199,7 @@ avatarRoutes.patch('/me', requireAuth, async (c) => {
       positionY: result.data.positionY,
       updatedAt: new Date(),
     })
-    .where(eq(avatars.userId, user.id))
+    .where(and(eq(avatars.userId, user.id), eq(avatars.isActive, true)))
     .returning();
 
   if (!updated) {
@@ -240,7 +240,7 @@ avatarRoutes.post('/me/chat', requireAuth, async (c) => {
 
   // Get user's avatar
   const avatar = await db.query.avatars.findFirst({
-    where: eq(avatars.userId, user.id),
+    where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
   });
 
   if (!avatar) {
@@ -332,7 +332,7 @@ avatarRoutes.post('/me/heartbeat', requireAuth, async (c) => {
       lastActiveAt: new Date(),
       updatedAt: new Date(),
     })
-    .where(eq(avatars.userId, user.id))
+    .where(and(eq(avatars.userId, user.id), eq(avatars.isActive, true)))
     .catch(() => {});
 
   return c.json({ ok: true });
@@ -343,7 +343,7 @@ avatarRoutes.post('/me/daily-login', requireAuth, async (c) => {
   const user = c.get('user');
 
   const avatar = await db.query.avatars.findFirst({
-    where: eq(avatars.userId, user.id),
+    where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
   });
 
   if (!avatar) {
@@ -386,7 +386,7 @@ avatarRoutes.post('/me/daily-login', requireAuth, async (c) => {
       clawTokens: totalTokens,
       updatedAt: new Date(),
     })
-    .where(eq(avatars.userId, user.id));
+    .where(and(eq(avatars.userId, user.id), eq(avatars.isActive, true)));
 
   return c.json({ streak: newStreak, tokensEarned, totalTokens, alreadyClaimed: false });
 });
