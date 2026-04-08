@@ -36,8 +36,8 @@ function BikiniBottomTerrain() {
     <group ref={groupRef}>
       <primitive
         object={scene}
-        scale={30}
-        position={[0, -5, 0]}
+        scale={15}
+        position={[0, -3, 0]}
       />
     </group>
   );
