@@ -44,16 +44,16 @@ const BUILDING_TARGET_HEIGHT = 40;
 
 // Map each building ID to a GLB model + display config
 const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number }> = {
-  'cron-hub':          { model: '/models/boating-school.glb', yOffset: 0 },       // Mrs. Puff's Boating School
+  'cron-hub':          { model: '/models/downtown-building.glb', yOffset: 0 },    // Downtown clock tower
   'webhook-gateway':   { model: '/models/krusty-krab.glb', yOffset: 0 },        // Krusty Krab (SpongeBob)
   'memory-vault':      { model: '/models/squidward-house.glb', yOffset: 0 },    // Squidward's House
   'skill-forge':       { model: '/models/chum-bucket.glb', yOffset: 0 },        // Chum Bucket (Plankton)
-  'channel-bridge':    { model: '/models/patty-building.glb', yOffset: 0 },     // Bikini Bottom building
-  'tool-workshop':     { model: '/models/bb-building.glb', yOffset: 0 },        // Bikini Bottom Building
+  'channel-bridge':    { model: '/models/building-cave.glb', yOffset: 0 },       // Sea cave
+  'tool-workshop':     { model: '/models/building-chest.glb', yOffset: 0 },     // Treasure chest workshop
   'canvas-studio':     { model: '/models/pineapple-house.glb', yOffset: 0 },    // SpongeBob's Pineapple
-  'voice-tower':       { model: '/models/downtown-building.glb', yOffset: 0 },  // Downtown Building
+  'voice-tower':       { model: '/models/boating-school.glb', yOffset: 0 },     // Boating School tower
   'security-fortress': { model: '/models/patricks-rock.glb', yOffset: 0 },      // Patrick's Rock
-  'config-citadel':    { model: '/models/patty-building.glb', yOffset: 0 },     // Patty Pursuit Building
+  'config-citadel':    { model: '/models/building-lighthouse.glb', yOffset: 0 }, // Lighthouse citadel
 };
 
 /** Measure bounding box HEIGHT and return scale to reach target height.
