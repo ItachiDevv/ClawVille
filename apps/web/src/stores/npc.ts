@@ -121,11 +121,16 @@ function makeDemoNpc(id: string, name: string, x: number, y: number, species: st
 }
 
 const DEMO_NPCS: NpcSpriteState[] = [
-  makeDemoNpc('demo-1', 'Captain Claw', 400, 300, 'cat', 0xff6347),
-  makeDemoNpc('demo-2', 'Pearl', 700, 200, 'bunny', 0xff80ab),
-  makeDemoNpc('demo-3', 'Rusty', 200, 500, 'fox', 0xff8c00),
-  makeDemoNpc('demo-4', 'Abyssal', 900, 400, 'dragon', 0x4488ff, true),
-  makeDemoNpc('demo-5', 'Mantis', 300, 150, 'phoenix', 0x00e676),
+  makeDemoNpc('demo-1',  'Captain Claw',  400, 300, 'lobster',  0xff2020),       // bright red
+  makeDemoNpc('demo-2',  'Pearl',         700, 200, 'lobster',  0xff80ab),       // pink
+  makeDemoNpc('demo-3',  'Rusty',         200, 500, 'lobster',  0xff8c00),       // orange
+  makeDemoNpc('demo-4',  'Abyssal',       900, 400, 'lobster',  0x2244ff, true), // deep blue
+  makeDemoNpc('demo-5',  'Mantis',        300, 150, 'lobster',  0x00e676),       // green
+  makeDemoNpc('demo-6',  'Goldie',        600, 500, 'lobster',  0xffd700),       // gold
+  makeDemoNpc('demo-7',  'Shadow',        100, 350, 'lobster',  0x8844cc),       // purple
+  makeDemoNpc('demo-8',  'Coral',        1000, 300, 'lobster',  0xff4488),       // hot pink
+  makeDemoNpc('demo-9',  'Frost',         500, 100, 'lobster',  0x00ccdd),       // cyan/teal
+  makeDemoNpc('demo-10', 'Ember',         800, 600, 'lobster',  0xff5500),       // burnt orange
 ];
 
 // Demo NPC wandering — makes NPCs walk around when not connected to server
