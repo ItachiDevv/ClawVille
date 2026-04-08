@@ -40,7 +40,7 @@ const _buildRayOrigin = new THREE.Vector3();
 const _buildRayDir = new THREE.Vector3(0, -1, 0);
 
 // Target height for all buildings (world units) — auto-normalized from bounding box
-const BUILDING_TARGET_HEIGHT = 40;
+const BUILDING_TARGET_HEIGHT = 20;
 
 // Map each building ID to a GLB model + display config
 const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number }> = {
