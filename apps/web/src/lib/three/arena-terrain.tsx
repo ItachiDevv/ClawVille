@@ -17,17 +17,16 @@ useGLTF.preload('/models/underwater-scene.glb');
 function UnderwaterTerrain() {
   const { scene } = useGLTF('/models/underwater-scene.glb');
 
-  // Scale the scene to fill the map area
-  // The lowpoly scene is roughly 10x10 units, we need it to cover 1280x800
-  const scaleX = MAP_WIDTH / 10;
-  const scaleZ = MAP_HEIGHT / 10;
-  const scale = Math.max(scaleX, scaleZ) * 0.9;
+  // Scale much bigger so the flat sandy center covers the entire play area
+  // Rocky edges get pushed far out to the periphery (decorative border)
+  // The model is roughly 10x10 units, map is 1280x800
+  const scale = 200;
 
   return (
     <primitive
       object={scene}
       scale={scale}
-      position={[0, -5, 0]}
+      position={[0, -20, 0]}
     />
   );
 }

@@ -74,17 +74,17 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
 
     const dt = Math.min(delta, 0.1);
 
-    // Update target position
-    targetPos.current.set(d.x - HALF_W, 0, d.y - HALF_H);
+    // Update target position (y=5 keeps NPCs above terrain surface)
+    targetPos.current.set(d.x - HALF_W, 5, d.y - HALF_H);
 
     // Lerp position (no allocation — reuses currentPos ref)
     currentPos.current.lerp(targetPos.current, 1 - Math.exp(-LERP_SPEED * dt));
     group.position.x = currentPos.current.x;
     group.position.z = currentPos.current.z;
 
-    // Walking bob
+    // Walking bob (base at 5, bob ±0.8)
     const isMoving = d.direction !== 'idle' && !d.isDead;
-    group.position.y = isMoving ? Math.sin(Date.now() * 0.005) * 0.8 : 0;
+    group.position.y = 5 + (isMoving ? Math.sin(Date.now() * 0.005) * 0.8 : 0);
 
     // Rotation
     const targetRot = DIR_ROTATION[d.direction] ?? 0;
