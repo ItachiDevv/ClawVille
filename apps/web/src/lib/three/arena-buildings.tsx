@@ -57,32 +57,24 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
 };
 
 /** Strip ground planes from a cloned scene.
- *  Sketchfab SpongeBob GLBs bake in flat ground planes (pPlane, lambert, etc.)
- *  that dominate the bounding box and render as giant blue discs. */
+ *  Only removes meshes that are both: named like a plane AND geometrically flat.
+ *  "lambert" is a Maya material name used on real meshes — do NOT strip by that. */
 function stripGroundPlanes(scene: THREE.Object3D): void {
   const toRemove: THREE.Object3D[] = [];
   scene.traverse((child) => {
     if (!(child as THREE.Mesh).isMesh) return;
     const mesh = child as THREE.Mesh;
-    const name = (mesh.name || '').toLowerCase();
-    // Remove by known ground plane names from Maya/Sketchfab exports
-    if (name.includes('plane') || name.includes('lambert') || name.includes('ground') || name.includes('floor')) {
+    if (!mesh.geometry) return;
+    mesh.geometry.computeBoundingBox();
+    const bb = mesh.geometry.boundingBox;
+    if (!bb) return;
+    const sy = bb.max.y - bb.min.y;
+    const sx = bb.max.x - bb.min.x;
+    const sz = bb.max.z - bb.min.z;
+    const maxXZ = Math.max(sx, sz);
+    // Only strip if geometrically flat (height < 2% of width) AND wide
+    if (maxXZ > 2 && sy / maxXZ < 0.02) {
       toRemove.push(mesh);
-      return;
-    }
-    // Remove by geometry shape: very flat meshes (height < 5% of width)
-    if (mesh.geometry) {
-      mesh.geometry.computeBoundingBox();
-      const bb = mesh.geometry.boundingBox;
-      if (bb) {
-        const sy = bb.max.y - bb.min.y;
-        const sx = bb.max.x - bb.min.x;
-        const sz = bb.max.z - bb.min.z;
-        const maxXZ = Math.max(sx, sz);
-        if (maxXZ > 0 && sy / maxXZ < 0.05 && maxXZ > 1) {
-          toRemove.push(mesh);
-        }
-      }
     }
   });
   toRemove.forEach((obj) => obj.removeFromParent());
