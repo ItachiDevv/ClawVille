@@ -73,23 +73,11 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
 
   const cloned = useMemo(() => scene.clone(true), [scene]);
 
-  // Raycast once after terrain loads to find surface height
+  // Place on flat sand floor (y=-2)
   useFrame(() => {
     if (placed.current || !groupRef.current) return;
-
-    _buildRayOrigin.set(cx, 200, cz);
-    _buildRaycaster.set(_buildRayOrigin, _buildRayDir);
-    _buildRaycaster.layers.set(TERRAIN_LAYER);
-    _buildRaycaster.far = 400;
-
-    const intersects = _buildRaycaster.intersectObjects(threeScene.children, true);
-    if (intersects.length > 0) {
-      groupRef.current.position.y = intersects[0].point.y + config.yOffset;
-      placed.current = true;
-      return;
-    }
-    // Fallback if terrain not loaded yet
-    groupRef.current.position.y = -15 + config.yOffset;
+    groupRef.current.position.y = -2 + config.yOffset;
+    placed.current = true;
   });
 
   return (
