@@ -74,16 +74,16 @@ export interface BuildingZone {
 }
 
 export const buildingZones: BuildingZone[] = [
-  { id: 'cron-hub',            x: 3,  y: 2,  width: 4, height: 3 },
-  { id: 'webhook-gateway',     x: 9,  y: 1,  width: 4, height: 3 },
-  { id: 'memory-vault',        x: 16, y: 1,  width: 3, height: 3 },
-  { id: 'skill-forge',         x: 2,  y: 8,  width: 4, height: 3 },
-  { id: 'channel-bridge',      x: 14, y: 7,  width: 4, height: 4 },
-  { id: 'tool-workshop',       x: 20, y: 8,  width: 4, height: 3 },
-  { id: 'canvas-studio',       x: 32, y: 3,  width: 4, height: 3 },
-  { id: 'voice-tower',         x: 2,  y: 16, width: 4, height: 3 },
-  { id: 'security-fortress',   x: 9,  y: 18, width: 3, height: 3 },
-  { id: 'config-citadel',      x: 25, y: 16, width: 3, height: 3 },
+  { id: 'cron-hub',            x: 2,  y: 1,  width: 4, height: 3 },
+  { id: 'webhook-gateway',     x: 15, y: 1,  width: 4, height: 3 },
+  { id: 'memory-vault',        x: 34, y: 2,  width: 3, height: 3 },
+  { id: 'skill-forge',         x: 2,  y: 11, width: 4, height: 3 },
+  { id: 'channel-bridge',      x: 18, y: 10, width: 4, height: 4 },
+  { id: 'tool-workshop',       x: 34, y: 11, width: 4, height: 3 },
+  { id: 'canvas-studio',       x: 8,  y: 6,  width: 4, height: 3 },
+  { id: 'voice-tower',         x: 2,  y: 20, width: 4, height: 3 },
+  { id: 'security-fortress',   x: 18, y: 20, width: 3, height: 3 },
+  { id: 'config-citadel',      x: 34, y: 20, width: 3, height: 3 },
 ];
 
 // ---------------------------------------------------------------------------
