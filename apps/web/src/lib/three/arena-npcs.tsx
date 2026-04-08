@@ -1,15 +1,14 @@
 'use client';
 
 import { useRef, useMemo, memo, Suspense } from 'react';
-import { useFrame } from '@react-three/fiber';
+import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { useNpcStore, type NpcSpriteState } from '@/stores/npc';
 
 // ---------------------------------------------------------------------------
-// GLB-based NPC renderer — lobster.glb model = 1-2 draw calls per NPC
-// Original had ~30 meshes per NPC = 90 draw calls for 3 NPCs
-// Now: 5 NPCs × ~2 draw calls = ~10 total
+// GLB-based NPC renderer with terrain raycasting
+// NPCs walk on the actual terrain surface instead of a static Y level
 // ---------------------------------------------------------------------------
 
 const MAP_WIDTH = 1280;
@@ -19,7 +18,6 @@ const HALF_H = MAP_HEIGHT / 2;
 const LERP_SPEED = 5;
 const NPC_SCALE = 4;
 
-// Preload the model once
 useGLTF.preload('/models/lobster.glb');
 
 function mapToWorld(px: number, py: number): [number, number, number] {
@@ -30,24 +28,45 @@ const DIR_ROTATION: Record<string, number> = {
   down: 0, left: Math.PI / 2, up: Math.PI, right: -Math.PI / 2, idle: 0,
 };
 
-// Cached vectors — no per-frame allocation
-const _targetVec = new THREE.Vector3();
+// Shared raycaster + vectors — reused every frame (no allocation)
+const _raycaster = new THREE.Raycaster();
+const _rayOrigin = new THREE.Vector3();
+const _rayDir = new THREE.Vector3(0, -1, 0);
+
+/** Raycast down from (x, z) to find terrain surface Y */
+function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
+  _rayOrigin.set(x, 200, z); // start high above
+  _raycaster.set(_rayOrigin, _rayDir);
+  _raycaster.far = 400;
+
+  // Only intersect meshes (terrain), skip groups/lights
+  const intersects = _raycaster.intersectObjects(scene.children, true);
+  for (const hit of intersects) {
+    // Skip non-terrain hits (NPCs, buildings) by checking if it's below y=50
+    // Terrain surface should be the lowest large mesh
+    if (hit.point.y < 50) {
+      return hit.point.y;
+    }
+  }
+  return 0; // fallback
+}
 
 // ---------------------------------------------------------------------------
-// Single NPC using GLB model
+// Single NPC using GLB model with terrain following
 // ---------------------------------------------------------------------------
 const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
   const groupRef = useRef<THREE.Group>(null!);
   const npcRef = useRef(npc);
   npcRef.current = npc;
+  const { scene: threeScene } = useThree();
 
   const targetPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
   const currentPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
   const currentRotY = useRef(0);
+  const currentTerrainY = useRef(0);
 
   const { scene } = useGLTF('/models/lobster.glb');
 
-  // Clone per NPC and tint with species color
   const cloned = useMemo(() => {
     const c = scene.clone(true);
     const color = new THREE.Color(npc.color);
@@ -56,7 +75,6 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
         const mesh = child as THREE.Mesh;
         if (mesh.material) {
           const mat = (mesh.material as THREE.MeshStandardMaterial).clone();
-          // Tint the model with NPC's species color
           mat.color.lerp(color, 0.5);
           mat.emissive = color;
           mat.emissiveIntensity = 0.1;
@@ -74,17 +92,27 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
 
     const dt = Math.min(delta, 0.1);
 
-    // Update target position (y=5 keeps NPCs above terrain surface)
-    targetPos.current.set(d.x - HALF_W, 5, d.y - HALF_H);
+    // Update target XZ position
+    targetPos.current.set(d.x - HALF_W, 0, d.y - HALF_H);
 
-    // Lerp position (no allocation — reuses currentPos ref)
-    currentPos.current.lerp(targetPos.current, 1 - Math.exp(-LERP_SPEED * dt));
+    // Lerp XZ position
+    currentPos.current.x += (targetPos.current.x - currentPos.current.x) * (1 - Math.exp(-LERP_SPEED * dt));
+    currentPos.current.z += (targetPos.current.z - currentPos.current.z) * (1 - Math.exp(-LERP_SPEED * dt));
+
     group.position.x = currentPos.current.x;
     group.position.z = currentPos.current.z;
 
-    // Walking bob (base at 5, bob ±0.8)
+    // Raycast to find terrain surface Y (every 3rd frame to save perf)
+    const frame = Math.floor(Date.now() / 50);
+    if (frame % 3 === 0) {
+      const terrainY = getTerrainY(group.position.x, group.position.z, threeScene);
+      currentTerrainY.current += (terrainY - currentTerrainY.current) * 0.3; // smooth
+    }
+
+    // Walking bob on top of terrain height
     const isMoving = d.direction !== 'idle' && !d.isDead;
-    group.position.y = 5 + (isMoving ? Math.sin(Date.now() * 0.005) * 0.8 : 0);
+    const bob = isMoving ? Math.sin(Date.now() * 0.005) * 0.8 : 0;
+    group.position.y = currentTerrainY.current + 2 + bob;
 
     // Rotation
     const targetRot = DIR_ROTATION[d.direction] ?? 0;
