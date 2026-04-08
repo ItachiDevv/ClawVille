@@ -13,7 +13,10 @@ import * as THREE from 'three';
 export const TERRAIN_LAYER = 1;
 
 useGLTF.preload('/models/bikini-bottom.glb');
-useGLTF.preload('/models/underwater-decorations.glb');
+useGLTF.preload('/models/coral-reef1.glb');
+useGLTF.preload('/models/coral-reef2.glb');
+useGLTF.preload('/models/coral-reef3.glb');
+useGLTF.preload('/models/kelp.glb');
 
 function BikiniBottomTerrain() {
   const { scene } = useGLTF('/models/bikini-bottom.glb');
@@ -65,41 +68,52 @@ function SandFloor() {
 }
 
 // ---------------------------------------------------------------------------
-// Underwater decorations — scattered around map edges for visual richness
-// Loads the full GLB and clones it at several border positions
+// Varied coral/kelp decorations — uses 4 different models for visual variety
 // ---------------------------------------------------------------------------
-const DECO_POSITIONS: [number, number, number, number][] = [
-  // [x, z, scale, rotationY]
-  [-500, -300, 12, 0],
-  [500, -300, 10, Math.PI * 0.5],
-  [-500, 300, 11, Math.PI],
-  [500, 300, 10, Math.PI * 1.5],
-  [0, -350, 9, Math.PI * 0.3],
-  [0, 350, 10, Math.PI * 0.7],
-  [-550, 0, 11, Math.PI * 0.2],
-  [550, 0, 10, Math.PI * 1.1],
+interface DecoEntry {
+  model: string;
+  x: number;
+  z: number;
+  scale: number;
+  rotY: number;
+}
+
+const DECORATIONS: DecoEntry[] = [
+  // Coral reefs around the borders
+  { model: '/models/coral-reef1.glb', x: -500, z: -280, scale: 15, rotY: 0 },
+  { model: '/models/coral-reef2.glb', x: 480, z: -300, scale: 12, rotY: 1.2 },
+  { model: '/models/coral-reef3.glb', x: -480, z: 280, scale: 14, rotY: 2.5 },
+  { model: '/models/coral-reef1.glb', x: 500, z: 300, scale: 11, rotY: 3.8 },
+  // Kelp patches between buildings
+  { model: '/models/kelp.glb', x: -300, z: -100, scale: 18, rotY: 0.5 },
+  { model: '/models/kelp.glb', x: 300, z: 150, scale: 16, rotY: 2.0 },
+  { model: '/models/kelp.glb', x: -100, z: 300, scale: 20, rotY: 4.0 },
+  { model: '/models/kelp.glb', x: 200, z: -250, scale: 14, rotY: 1.0 },
+  // More coral to fill in
+  { model: '/models/coral-reef2.glb', x: 0, z: -350, scale: 10, rotY: 0.8 },
+  { model: '/models/coral-reef3.glb', x: -550, z: 0, scale: 13, rotY: 3.2 },
+  { model: '/models/coral-reef1.glb', x: 550, z: 0, scale: 11, rotY: 5.0 },
+  { model: '/models/coral-reef2.glb', x: 0, z: 350, scale: 12, rotY: 1.6 },
 ];
 
+function SingleDecoration({ entry }: { entry: DecoEntry }) {
+  const { scene } = useGLTF(entry.model);
+  const cloned = useMemo(() => scene.clone(true), [scene]);
+  return (
+    <primitive
+      object={cloned}
+      position={[entry.x, -5, entry.z]}
+      scale={entry.scale}
+      rotation={[0, entry.rotY, 0]}
+    />
+  );
+}
+
 function UnderwaterDecorations() {
-  const { scene } = useGLTF('/models/underwater-decorations.glb');
-
-  const clones = useMemo(() => {
-    return DECO_POSITIONS.map(([x, z, scale, rotY]) => {
-      const c = scene.clone(true);
-      return { clone: c, x, z, scale, rotY };
-    });
-  }, [scene]);
-
   return (
     <group>
-      {clones.map((d, i) => (
-        <primitive
-          key={i}
-          object={d.clone}
-          position={[d.x, -5, d.z]}
-          scale={d.scale}
-          rotation={[0, d.rotY, 0]}
-        />
+      {DECORATIONS.map((entry, i) => (
+        <SingleDecoration key={i} entry={entry} />
       ))}
     </group>
   );
