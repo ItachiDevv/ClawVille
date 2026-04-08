@@ -229,6 +229,7 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       {/* Camera controls */}
       <OrbitControls
         ref={controlsRef}
+        makeDefault
         enablePan={true}
         enableZoom={true}
         enableRotate={true}
