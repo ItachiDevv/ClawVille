@@ -1,7 +1,8 @@
 'use client';
 
-import { useRef, useMemo } from 'react';
+import { useRef, useMemo, Suspense } from 'react';
 import { useFrame } from '@react-three/fiber';
+import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import {
   MAP_WIDTH,
@@ -383,13 +384,76 @@ function StaticRocks() {
 // ---------------------------------------------------------------------------
 // Main terrain — 5 draw calls total (floor + paths + water + coral + rocks)
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// GLB coral reef decorations — 3 models scattered around map
+// Each GLB = 1-2 draw calls, placed statically (no useFrame)
+// ---------------------------------------------------------------------------
+function GLBCoralScatter() {
+  const coral1 = useGLTF('/models/coral-reef1.glb');
+  const coral2 = useGLTF('/models/coral-reef2.glb');
+  const coral3 = useGLTF('/models/coral-reef3.glb');
+  const kelpModel = useGLTF('/models/kelp.glb');
+
+  const placements = useMemo(() => {
+    const rand = seeded(88);
+    const items: { model: THREE.Group; x: number; z: number; scale: number; rotY: number }[] = [];
+    const models = [coral1.scene, coral2.scene, coral3.scene];
+    // Place 8 coral clusters
+    for (let i = 0; i < 8; i++) {
+      items.push({
+        model: models[i % 3],
+        x: OFFSET_X + 60 + rand() * (MAP_WIDTH - 120),
+        z: OFFSET_Z + 60 + rand() * (MAP_HEIGHT - 120),
+        scale: 3 + rand() * 5,
+        rotY: rand() * Math.PI * 2,
+      });
+    }
+    // Place 6 kelp
+    for (let i = 0; i < 6; i++) {
+      items.push({
+        model: kelpModel.scene,
+        x: OFFSET_X + 40 + rand() * (MAP_WIDTH - 80),
+        z: OFFSET_Z + 40 + rand() * (MAP_HEIGHT - 80),
+        scale: 4 + rand() * 6,
+        rotY: rand() * Math.PI * 2,
+      });
+    }
+    return items;
+  }, [coral1.scene, coral2.scene, coral3.scene, kelpModel.scene]);
+
+  return (
+    <group>
+      {placements.map((p, i) => (
+        <primitive
+          key={`deco-${i}`}
+          object={p.model.clone()}
+          position={[p.x, 0, p.z]}
+          scale={p.scale}
+          rotation={[0, p.rotY, 0]}
+        />
+      ))}
+    </group>
+  );
+}
+
+// Preload coral/kelp models
+useGLTF.preload('/models/coral-reef1.glb');
+useGLTF.preload('/models/coral-reef2.glb');
+useGLTF.preload('/models/coral-reef3.glb');
+useGLTF.preload('/models/kelp.glb');
+
+// ---------------------------------------------------------------------------
+// Main terrain — floor + paths + water + GLB coral/kelp + static instanced rocks
+// ---------------------------------------------------------------------------
 export default function ArenaTerrain() {
   return (
     <group>
       <OceanFloor />
       <PathTiles />
       <WaterSurface />
-      <StaticCoral />
+      <Suspense fallback={null}>
+        <GLBCoralScatter />
+      </Suspense>
       <StaticRocks />
     </group>
   );
