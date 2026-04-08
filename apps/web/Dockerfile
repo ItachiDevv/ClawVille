@@ -8,16 +8,18 @@ WORKDIR /app
 # Copy root workspace files
 COPY package.json bun.lock turbo.json tsconfig.json ./
 
-# Copy all workspace packages
+# Copy all workspace packages + web app
 COPY packages/ packages/
 COPY apps/web/ apps/web/
 
 # Install dependencies
 RUN bun install
 
-# Build workspace packages first
+# Build ALL workspace packages (web imports from all of them)
 RUN cd packages/shared && bun run build || true
 RUN cd packages/database && bun run build || true
+RUN cd packages/agent-templates && bun run build || true
+RUN cd packages/agent-runtime && bun run build || true
 
 # Build Next.js
 ARG NEXT_PUBLIC_API_URL
