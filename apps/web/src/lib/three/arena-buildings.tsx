@@ -27,16 +27,16 @@ function zoneCenter(zone: BuildingZone): [number, number, number] {
 
 // Map each building ID to a GLB model + display config
 const BUILDING_MODELS: Record<string, { model: string; scale: number; yOffset: number; rotY?: number }> = {
-  'cron-hub':          { model: '/models/building-lighthouse.glb', scale: 12, yOffset: 0 },
-  'webhook-gateway':   { model: '/models/building-anchor.glb', scale: 25, yOffset: 8 },
-  'memory-vault':      { model: '/models/building-chest.glb', scale: 18, yOffset: 5 },
-  'skill-forge':       { model: '/models/building-barrel.glb', scale: 22, yOffset: 5 },
-  'channel-bridge':    { model: '/models/building-shipwreck.glb', scale: 16, yOffset: 3 },
-  'tool-workshop':     { model: '/models/building-submarine.glb', scale: 14, yOffset: 8, rotY: -0.3 },
-  'canvas-studio':     { model: '/models/building-cave.glb', scale: 16, yOffset: 2 },
-  'voice-tower':       { model: '/models/building-tower2.glb', scale: 18, yOffset: 0 },
-  'security-fortress': { model: '/models/building-shell.glb', scale: 20, yOffset: 5 },
-  'config-citadel':    { model: '/models/building-seashell.glb', scale: 14, yOffset: 5 },
+  'cron-hub':          { model: '/models/building-lighthouse.glb', scale: 14, yOffset: 0 },
+  'webhook-gateway':   { model: '/models/building-anchor.glb', scale: 45, yOffset: 12 },
+  'memory-vault':      { model: '/models/building-chest.glb', scale: 30, yOffset: 8 },
+  'skill-forge':       { model: '/models/building-barrel.glb', scale: 40, yOffset: 8 },
+  'channel-bridge':    { model: '/models/building-shipwreck.glb', scale: 22, yOffset: 5 },
+  'tool-workshop':     { model: '/models/building-submarine.glb', scale: 20, yOffset: 10, rotY: -0.3 },
+  'canvas-studio':     { model: '/models/building-cave.glb', scale: 22, yOffset: 3 },
+  'voice-tower':       { model: '/models/building-tower2.glb', scale: 25, yOffset: 0 },
+  'security-fortress': { model: '/models/building-shell.glb', scale: 30, yOffset: 8 },
+  'config-citadel':    { model: '/models/building-seashell.glb', scale: 20, yOffset: 8 },
 };
 
 // Preload all models
