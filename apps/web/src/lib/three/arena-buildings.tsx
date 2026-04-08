@@ -26,8 +26,11 @@ function zoneCenter(zone: BuildingZone): [number, number, number] {
   return [cx, 0, cz];
 }
 
-// Shared raycaster for buildings (one-time placement)
+import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
+
+// Shared raycaster — only hits layer 1 (terrain)
 const _buildRaycaster = new THREE.Raycaster();
+_buildRaycaster.layers.set(TERRAIN_LAYER);
 const _buildRayOrigin = new THREE.Vector3();
 const _buildRayDir = new THREE.Vector3(0, -1, 0);
 
@@ -68,18 +71,17 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
 
     _buildRayOrigin.set(cx, 200, cz);
     _buildRaycaster.set(_buildRayOrigin, _buildRayDir);
+    _buildRaycaster.layers.set(TERRAIN_LAYER);
     _buildRaycaster.far = 400;
 
     const intersects = _buildRaycaster.intersectObjects(threeScene.children, true);
-    for (const hit of intersects) {
-      if (hit.point.y < 50) {
-        groupRef.current.position.y = hit.point.y + config.yOffset;
-        placed.current = true;
-        return;
-      }
+    if (intersects.length > 0) {
+      groupRef.current.position.y = intersects[0].point.y + config.yOffset;
+      placed.current = true;
+      return;
     }
-    // Fallback if no terrain hit yet (terrain still loading)
-    groupRef.current.position.y = config.yOffset;
+    // Fallback if terrain not loaded yet
+    groupRef.current.position.y = -15 + config.yOffset;
   });
 
   return (
