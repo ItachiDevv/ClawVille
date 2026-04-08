@@ -44,16 +44,16 @@ const BUILDING_TARGET_HEIGHT = 40;
 
 // Map each building ID to a GLB model + display config
 const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number }> = {
-  'cron-hub':          { model: '/models/building-lighthouse.glb', yOffset: 0 },
-  'webhook-gateway':   { model: '/models/krusty-krab.glb', yOffset: 0 },
-  'memory-vault':      { model: '/models/squidward-house.glb', yOffset: 0 },
-  'skill-forge':       { model: '/models/chum-bucket.glb', yOffset: 0 },
-  'channel-bridge':    { model: '/models/building-shipwreck.glb', yOffset: 0 },
-  'tool-workshop':     { model: '/models/building-submarine.glb', yOffset: 2, rotY: -0.3 },
-  'canvas-studio':     { model: '/models/pineapple-house.glb', yOffset: 0 },
-  'voice-tower':       { model: '/models/building-tower2.glb', yOffset: 0 },
-  'security-fortress': { model: '/models/patricks-rock.glb', yOffset: 0 },
-  'config-citadel':    { model: '/models/building-seashell.glb', yOffset: 1 },
+  'cron-hub':          { model: '/models/boating-school.glb', yOffset: 0 },       // Mrs. Puff's Boating School
+  'webhook-gateway':   { model: '/models/krusty-krab.glb', yOffset: 0 },        // Krusty Krab (SpongeBob)
+  'memory-vault':      { model: '/models/squidward-house.glb', yOffset: 0 },    // Squidward's House
+  'skill-forge':       { model: '/models/chum-bucket.glb', yOffset: 0 },        // Chum Bucket (Plankton)
+  'channel-bridge':    { model: '/models/salty-spitoon.glb', yOffset: 0 },      // Salty Spitoon
+  'tool-workshop':     { model: '/models/bb-building.glb', yOffset: 0 },        // Bikini Bottom Building
+  'canvas-studio':     { model: '/models/pineapple-house.glb', yOffset: 0 },    // SpongeBob's Pineapple
+  'voice-tower':       { model: '/models/downtown-building.glb', yOffset: 0 },  // Downtown Building
+  'security-fortress': { model: '/models/patricks-rock.glb', yOffset: 0 },      // Patrick's Rock
+  'config-citadel':    { model: '/models/patty-building.glb', yOffset: 0 },     // Patty Pursuit Building
 };
 
 /** Measure bounding box and return scale to reach target height */
