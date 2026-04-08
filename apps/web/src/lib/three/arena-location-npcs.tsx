@@ -13,40 +13,37 @@ import {
 import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
 
 // ---------------------------------------------------------------------------
-// Location NPCs — SpongeBob characters stationed at their canonical buildings
-// Each character is an AI agent that teaches skills from their building's
-// knowledge base. They ARE the agents — not decoration.
+// Location NPCs — SpongeBob characters at their canonical buildings
+// Auto-normalized: each GLB is measured and scaled to a target height
 // ---------------------------------------------------------------------------
 
 const OFFSET_X = -MAP_WIDTH / 2;
 const OFFSET_Z = -MAP_HEIGHT / 2;
 
-// Raycaster for terrain Y
+// Target height in world units for all character NPCs
+const CHARACTER_HEIGHT = 12;
+
 const _locRaycaster = new THREE.Raycaster();
 _locRaycaster.layers.set(TERRAIN_LAYER);
 const _locRayOrigin = new THREE.Vector3();
 const _locRayDir = new THREE.Vector3(0, -1, 0);
 
-// Character → Building mapping (SpongeBob themed)
 const LOCATION_NPCS: Record<string, {
   name: string;
   model: string;
-  scale: number;
-  yOffset: number;
   offsetX: number;
   offsetZ: number;
-  rotY?: number;
 }> = {
-  'canvas-studio':     { name: 'SpongeBob',  model: '/models/characters/spongebob.glb', scale: 0.5, yOffset: 0,  offsetX: 2, offsetZ: 2 },
-  'security-fortress': { name: 'Patrick',     model: '/models/characters/patrick.glb',   scale: 0.5, yOffset: 0,  offsetX: 2, offsetZ: 2 },
-  'memory-vault':      { name: 'Squidward',   model: '/models/characters/squidward.glb', scale: 0.5, yOffset: 0,  offsetX: 2, offsetZ: 2 },
-  'webhook-gateway':   { name: 'Mr. Krabs',   model: '/models/characters/mr-krabs.glb',  scale: 0.5, yOffset: 0,  offsetX: 2, offsetZ: 2 },
-  'skill-forge':       { name: 'Plankton',    model: '/models/characters/plankton.glb',  scale: 0.5, yOffset: 0,  offsetX: 2, offsetZ: 2 },
-  'cron-hub':          { name: 'Gary',         model: '/models/characters/gary.glb',      scale: 0.5, yOffset: 0,  offsetX: 2, offsetZ: 2 },
-  'channel-bridge':    { name: 'Sandy',        model: '/models/characters/sandy.glb',     scale: 0.5, yOffset: 0,  offsetX: 2, offsetZ: 2 },
-  'tool-workshop':     { name: 'Karen',        model: '/models/characters/karen.glb',     scale: 0.5, yOffset: 0,  offsetX: 2, offsetZ: 2 },
-  'voice-tower':       { name: 'Mrs. Puff',    model: '/models/characters/mrs-puff.glb',  scale: 0.5, yOffset: 0,  offsetX: 2, offsetZ: 2 },
-  'config-citadel':    { name: 'Larry',        model: '/models/characters/sandy.glb',     scale: 0.5, yOffset: 0,  offsetX: 2, offsetZ: 2 },
+  'canvas-studio':     { name: 'SpongeBob',  model: '/models/characters/spongebob.glb', offsetX: 2, offsetZ: 2 },
+  'security-fortress': { name: 'Patrick',     model: '/models/characters/patrick.glb',   offsetX: 2, offsetZ: 2 },
+  'memory-vault':      { name: 'Squidward',   model: '/models/characters/squidward.glb', offsetX: 2, offsetZ: 2 },
+  'webhook-gateway':   { name: 'Mr. Krabs',   model: '/models/characters/mr-krabs.glb',  offsetX: 2, offsetZ: 2 },
+  'skill-forge':       { name: 'Plankton',    model: '/models/characters/plankton.glb',  offsetX: 2, offsetZ: 2 },
+  'cron-hub':          { name: 'Gary',         model: '/models/characters/gary.glb',      offsetX: 2, offsetZ: 2 },
+  'channel-bridge':    { name: 'Sandy',        model: '/models/characters/sandy.glb',     offsetX: 2, offsetZ: 2 },
+  'tool-workshop':     { name: 'Karen',        model: '/models/characters/karen.glb',     offsetX: 2, offsetZ: 2 },
+  'voice-tower':       { name: 'Mrs. Puff',    model: '/models/characters/mrs-puff.glb',  offsetX: 2, offsetZ: 2 },
+  'config-citadel':    { name: 'Larry',        model: '/models/characters/sandy.glb',     offsetX: 2, offsetZ: 2 },
 };
 
 // Preload all character models
@@ -57,6 +54,16 @@ Object.values(LOCATION_NPCS).forEach(({ model }) => {
     preloaded.add(model);
   }
 });
+
+/** Measure a scene's bounding box height and return the scale needed for target height */
+function computeNormalizedScale(scene: THREE.Object3D, targetHeight: number): number {
+  const box = new THREE.Box3().setFromObject(scene);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  const maxDim = Math.max(size.x, size.y, size.z);
+  if (maxDim === 0) return 1;
+  return targetHeight / maxDim;
+}
 
 function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
   _locRayOrigin.set(x, 200, z);
@@ -82,12 +89,16 @@ const LocationNpc = memo(function LocationNpc({
   const groupRef = useRef<THREE.Group>(null);
   const { scene: threeScene } = useThree();
   const { scene } = useGLTF(config.model);
-  const terrainY = useRef(-15);
+  const terrainY = useRef(-2);
   const placed = useRef(false);
 
-  const cloned = useMemo(() => scene.clone(true), [scene]);
+  // Clone and compute normalized scale
+  const { cloned, npcScale } = useMemo(() => {
+    const c = scene.clone(true);
+    const s = computeNormalizedScale(c, CHARACTER_HEIGHT);
+    return { cloned: c, npcScale: s };
+  }, [scene]);
 
-  // Place on terrain + idle bob animation
   useFrame(({ clock }) => {
     if (!groupRef.current) return;
 
@@ -100,20 +111,17 @@ const LocationNpc = memo(function LocationNpc({
     }
 
     const bob = Math.sin(clock.elapsedTime * 1.5) * 0.5;
-    groupRef.current.position.set(worldX, terrainY.current + config.yOffset + 2 + bob, worldZ);
-    groupRef.current.rotation.y = config.rotY ?? Math.PI;
+    groupRef.current.position.set(worldX, terrainY.current + 2 + bob, worldZ);
+    groupRef.current.rotation.y = Math.PI;
   });
 
   return (
-    <group ref={groupRef} scale={[config.scale, config.scale, config.scale]}>
+    <group ref={groupRef} scale={[npcScale, npcScale, npcScale]}>
       <primitive object={cloned} />
     </group>
   );
 });
 
-// ---------------------------------------------------------------------------
-// Main export — renders one character NPC per building zone
-// ---------------------------------------------------------------------------
 export default function ArenaLocationNpcs() {
   const npcs = useMemo(() => {
     return buildingZones.map((zone) => {
