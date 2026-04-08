@@ -15,6 +15,15 @@ useGLTF.preload('/models/coral-reef1.glb');
 useGLTF.preload('/models/coral-reef2.glb');
 useGLTF.preload('/models/coral-reef3.glb');
 useGLTF.preload('/models/kelp.glb');
+// Border decorations — old generic buildings repurposed as scenery
+useGLTF.preload('/models/building-lighthouse.glb');
+useGLTF.preload('/models/building-shipwreck.glb');
+useGLTF.preload('/models/building-submarine.glb');
+useGLTF.preload('/models/building-tower2.glb');
+useGLTF.preload('/models/building-seashell.glb');
+useGLTF.preload('/models/building-anchor.glb');
+useGLTF.preload('/models/building-barrel.glb');
+useGLTF.preload('/models/building-chest.glb');
 
 const MAP_WIDTH = 1280;
 const MAP_HEIGHT = 800;
@@ -103,18 +112,36 @@ interface DecoEntry {
 }
 
 const DECORATIONS: DecoEntry[] = [
+  // Coral reefs scattered around
   { model: '/models/coral-reef1.glb', x: -500, z: -280, scale: 15, rotY: 0 },
   { model: '/models/coral-reef2.glb', x: 480, z: -300, scale: 12, rotY: 1.2 },
   { model: '/models/coral-reef3.glb', x: -480, z: 280, scale: 14, rotY: 2.5 },
   { model: '/models/coral-reef1.glb', x: 500, z: 300, scale: 11, rotY: 3.8 },
+  // Kelp patches
   { model: '/models/kelp.glb', x: -300, z: -100, scale: 18, rotY: 0.5 },
   { model: '/models/kelp.glb', x: 300, z: 150, scale: 16, rotY: 2.0 },
   { model: '/models/kelp.glb', x: -100, z: 300, scale: 20, rotY: 4.0 },
   { model: '/models/kelp.glb', x: 200, z: -250, scale: 14, rotY: 1.0 },
+  // More coral between buildings
   { model: '/models/coral-reef2.glb', x: 0, z: -350, scale: 10, rotY: 0.8 },
   { model: '/models/coral-reef3.glb', x: -550, z: 0, scale: 13, rotY: 3.2 },
   { model: '/models/coral-reef1.glb', x: 550, z: 0, scale: 11, rotY: 5.0 },
   { model: '/models/coral-reef2.glb', x: 0, z: 350, scale: 12, rotY: 1.6 },
+  // --- Border scenery: old generic buildings as map edge decorations ---
+  // North border
+  { model: '/models/building-lighthouse.glb', x: -600, z: -380, scale: 8, rotY: 0.3 },
+  { model: '/models/building-anchor.glb',     x: 0,    z: -400, scale: 12, rotY: 1.0 },
+  { model: '/models/building-barrel.glb',     x: 600,  z: -380, scale: 10, rotY: 2.5 },
+  // South border
+  { model: '/models/building-shipwreck.glb',  x: -500, z: 380,  scale: 10, rotY: 0.8 },
+  { model: '/models/building-chest.glb',      x: 100,  z: 400,  scale: 10, rotY: 3.0 },
+  { model: '/models/building-submarine.glb',  x: 550,  z: 370,  scale: 8,  rotY: 1.5 },
+  // East border
+  { model: '/models/building-tower2.glb',     x: 630,  z: -150, scale: 10, rotY: 0 },
+  { model: '/models/building-seashell.glb',   x: 640,  z: 150,  scale: 7, rotY: 2.0 },
+  // West border
+  { model: '/models/building-barrel.glb',     x: -630, z: -100, scale: 9, rotY: 4.0 },
+  { model: '/models/building-anchor.glb',     x: -620, z: 180,  scale: 11, rotY: 5.5 },
 ];
 
 function SingleDecoration({ entry }: { entry: DecoEntry }) {
