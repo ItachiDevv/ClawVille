@@ -77,20 +77,22 @@ function mapToWorld(px: number, py: number): [number, number, number] {
 // Preload
 useGLTF.preload('/models/lobster.glb');
 
-// Shared raycaster for terrain following
+import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
+
+// Shared raycaster — only hits layer 1 (terrain)
 const _petRaycaster = new THREE.Raycaster();
+_petRaycaster.layers.set(TERRAIN_LAYER);
 const _petRayOrigin = new THREE.Vector3();
 const _petRayDir = new THREE.Vector3(0, -1, 0);
 
 function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
   _petRayOrigin.set(x, 200, z);
   _petRaycaster.set(_petRayOrigin, _petRayDir);
+  _petRaycaster.layers.set(TERRAIN_LAYER);
   _petRaycaster.far = 400;
   const intersects = _petRaycaster.intersectObjects(scene.children, true);
-  for (const hit of intersects) {
-    if (hit.point.y < 50) return hit.point.y;
-  }
-  return 0;
+  if (intersects.length > 0) return intersects[0].point.y;
+  return -15; // fallback
 }
 
 function PlayerPetInner() {
