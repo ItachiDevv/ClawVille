@@ -320,14 +320,77 @@ function Seashells() {
 // ---------------------------------------------------------------------------
 // Main terrain (~10 draw calls total)
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Static instanced decorations — set once, no useFrame (0 per-frame cost)
+// ---------------------------------------------------------------------------
+function StaticCoral() {
+  const ref = useRef<THREE.InstancedMesh>(null);
+  const count = 25;
+
+  useMemo(() => {
+    if (!ref.current) return;
+    const rand = seeded(77);
+    const dummy = new THREE.Object3D();
+    const colors = [0xff6f61, 0xff4081, 0xe65100, 0xffab40, 0x7c4dff, 0x00e5ff];
+    for (let i = 0; i < count; i++) {
+      dummy.position.set(OFFSET_X + rand() * MAP_WIDTH, -1 + rand() * 3, OFFSET_Z + rand() * MAP_HEIGHT);
+      dummy.scale.set(2 + rand() * 4, 4 + rand() * 10, 2 + rand() * 4);
+      dummy.rotation.set(rand() * 0.3, rand() * Math.PI * 2, rand() * 0.3);
+      dummy.updateMatrix();
+      ref.current.setMatrixAt(i, dummy.matrix);
+      ref.current.setColorAt(i, new THREE.Color(colors[Math.floor(rand() * colors.length)]));
+    }
+    ref.current.instanceMatrix.needsUpdate = true;
+    if (ref.current.instanceColor) ref.current.instanceColor.needsUpdate = true;
+  }, []);
+
+  return (
+    <instancedMesh ref={ref} args={[undefined, undefined, count]}>
+      <icosahedronGeometry args={[1, 1]} />
+      <meshBasicMaterial vertexColors />
+    </instancedMesh>
+  );
+}
+
+function StaticRocks() {
+  const ref = useRef<THREE.InstancedMesh>(null);
+  const count = 15;
+
+  useMemo(() => {
+    if (!ref.current) return;
+    const rand = seeded(33);
+    const dummy = new THREE.Object3D();
+    for (let i = 0; i < count; i++) {
+      dummy.position.set(OFFSET_X + rand() * MAP_WIDTH, -1 + rand() * 2, OFFSET_Z + rand() * MAP_HEIGHT);
+      dummy.scale.set(3 + rand() * 8, 2 + rand() * 5, 3 + rand() * 8);
+      dummy.rotation.set(rand() * 0.5, rand() * Math.PI, rand() * 0.5);
+      dummy.updateMatrix();
+      ref.current.setMatrixAt(i, dummy.matrix);
+      ref.current.setColorAt(i, new THREE.Color().setHSL(0.08, 0.12 + rand() * 0.1, 0.25 + rand() * 0.15));
+    }
+    ref.current.instanceMatrix.needsUpdate = true;
+    if (ref.current.instanceColor) ref.current.instanceColor.needsUpdate = true;
+  }, []);
+
+  return (
+    <instancedMesh ref={ref} args={[undefined, undefined, count]}>
+      <icosahedronGeometry args={[1, 0]} />
+      <meshBasicMaterial vertexColors />
+    </instancedMesh>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main terrain — 5 draw calls total (floor + paths + water + coral + rocks)
+// ---------------------------------------------------------------------------
 export default function ArenaTerrain() {
-  // GPU-safe: only 3 draw calls (floor + paths + water)
-  // CoralReef/KelpForest/Rocks/Seashells removed — too many per-frame updates for Intel Iris Xe
   return (
     <group>
       <OceanFloor />
       <PathTiles />
       <WaterSurface />
+      <StaticCoral />
+      <StaticRocks />
     </group>
   );
 }
