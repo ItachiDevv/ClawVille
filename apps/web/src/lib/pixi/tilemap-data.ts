@@ -74,17 +74,20 @@ export interface BuildingZone {
 }
 
 export const buildingZones: BuildingZone[] = [
-  // Spread wide across full 40x25 grid — ring layout
-  { id: 'cron-hub',            x: 1,  y: 1,  width: 4, height: 3 },  // top-left
-  { id: 'webhook-gateway',     x: 17, y: 1,  width: 4, height: 3 },  // top-center
-  { id: 'memory-vault',        x: 34, y: 1,  width: 3, height: 3 },  // top-right
-  { id: 'canvas-studio',       x: 1,  y: 8,  width: 4, height: 3 },  // mid-left
-  { id: 'skill-forge',         x: 34, y: 8,  width: 4, height: 3 },  // mid-right
-  { id: 'channel-bridge',      x: 17, y: 11, width: 4, height: 4 },  // center
-  { id: 'tool-workshop',       x: 1,  y: 16, width: 4, height: 3 },  // lower-left
-  { id: 'voice-tower',         x: 34, y: 16, width: 4, height: 3 },  // lower-right
-  { id: 'security-fortress',   x: 8,  y: 21, width: 3, height: 3 },  // bottom-left
-  { id: 'config-citadel',      x: 28, y: 21, width: 3, height: 3 },  // bottom-right
+  // Main street layout — two rows, 5 per row, evenly spaced
+  // SpongeBob and new buildings mixed for cohesive town feel
+  // Top row (north side of street)
+  { id: 'cron-hub',            x: 1,  y: 4,  width: 4, height: 3 },  // Boating School
+  { id: 'webhook-gateway',     x: 9,  y: 4,  width: 4, height: 3 },  // Krusty Krab
+  { id: 'channel-bridge',      x: 17, y: 4,  width: 4, height: 4 },  // Salty Spitoon
+  { id: 'memory-vault',        x: 25, y: 4,  width: 3, height: 3 },  // Squidward's House
+  { id: 'voice-tower',         x: 33, y: 4,  width: 4, height: 3 },  // Downtown Building
+  // Bottom row (south side of street)
+  { id: 'canvas-studio',       x: 1,  y: 16, width: 4, height: 3 },  // SpongeBob's Pineapple
+  { id: 'skill-forge',         x: 9,  y: 16, width: 4, height: 3 },  // Chum Bucket
+  { id: 'tool-workshop',       x: 17, y: 16, width: 4, height: 3 },  // BB Building
+  { id: 'security-fortress',   x: 25, y: 16, width: 3, height: 3 },  // Patrick's Rock
+  { id: 'config-citadel',      x: 33, y: 16, width: 3, height: 3 },  // Patty Building
 ];
 
 // ---------------------------------------------------------------------------
