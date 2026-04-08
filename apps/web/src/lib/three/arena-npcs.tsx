@@ -28,27 +28,27 @@ const DIR_ROTATION: Record<string, number> = {
   down: 0, left: Math.PI / 2, up: Math.PI, right: -Math.PI / 2, idle: 0,
 };
 
-// Shared raycaster + vectors — reused every frame (no allocation)
+import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
+
+// Shared raycaster — set to only hit layer 1 (terrain)
 const _raycaster = new THREE.Raycaster();
+_raycaster.layers.set(TERRAIN_LAYER);
 const _rayOrigin = new THREE.Vector3();
 const _rayDir = new THREE.Vector3(0, -1, 0);
 
 /** Raycast down from (x, z) to find terrain surface Y */
 function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
-  _rayOrigin.set(x, 200, z); // start high above
+  _rayOrigin.set(x, 200, z);
   _raycaster.set(_rayOrigin, _rayDir);
+  // Re-apply layer after set() (set() resets layers)
+  _raycaster.layers.set(TERRAIN_LAYER);
   _raycaster.far = 400;
 
-  // Only intersect meshes (terrain), skip groups/lights
   const intersects = _raycaster.intersectObjects(scene.children, true);
-  for (const hit of intersects) {
-    // Skip non-terrain hits (NPCs, buildings) by checking if it's below y=50
-    // Terrain surface should be the lowest large mesh
-    if (hit.point.y < 50) {
-      return hit.point.y;
-    }
+  if (intersects.length > 0) {
+    return intersects[0].point.y;
   }
-  return 0; // fallback
+  return -15; // fallback — approximate terrain surface
 }
 
 // ---------------------------------------------------------------------------
