@@ -74,20 +74,20 @@ export interface BuildingZone {
 }
 
 export const buildingZones: BuildingZone[] = [
-  // Main street layout — two rows, 5 per row, evenly spaced
-  // SpongeBob and new buildings mixed for cohesive town feel
-  // Top row (north side of street)
-  { id: 'cron-hub',            x: 1,  y: 4,  width: 4, height: 3 },  // Boating School
-  { id: 'webhook-gateway',     x: 9,  y: 4,  width: 4, height: 3 },  // Krusty Krab
-  { id: 'channel-bridge',      x: 17, y: 4,  width: 4, height: 4 },  // Salty Spitoon
-  { id: 'memory-vault',        x: 25, y: 4,  width: 3, height: 3 },  // Squidward's House
-  { id: 'voice-tower',         x: 33, y: 4,  width: 4, height: 3 },  // Downtown Building
-  // Bottom row (south side of street)
-  { id: 'canvas-studio',       x: 1,  y: 16, width: 4, height: 3 },  // SpongeBob's Pineapple
-  { id: 'skill-forge',         x: 9,  y: 16, width: 4, height: 3 },  // Chum Bucket
-  { id: 'tool-workshop',       x: 17, y: 16, width: 4, height: 3 },  // BB Building
-  { id: 'security-fortress',   x: 25, y: 16, width: 3, height: 3 },  // Patrick's Rock
-  { id: 'config-citadel',      x: 33, y: 16, width: 3, height: 3 },  // Patty Building
+  // Compact village layout — staggered rows like a real Bikini Bottom town
+  // Row 1: top of village
+  { id: 'cron-hub',            x: 5,  y: 2,  width: 4, height: 3 },  // Boating School
+  { id: 'webhook-gateway',     x: 17, y: 2,  width: 4, height: 3 },  // Krusty Krab
+  { id: 'voice-tower',         x: 29, y: 2,  width: 4, height: 3 },  // Downtown Building
+  // Row 2: middle-left stagger
+  { id: 'canvas-studio',       x: 2,  y: 9,  width: 4, height: 3 },  // SpongeBob's Pineapple
+  { id: 'memory-vault',        x: 12, y: 9,  width: 3, height: 3 },  // Squidward's House
+  { id: 'security-fortress',   x: 21, y: 9,  width: 3, height: 3 },  // Patrick's Rock
+  { id: 'channel-bridge',      x: 31, y: 9,  width: 4, height: 4 },  // Coral Bridge
+  // Row 3: bottom of village
+  { id: 'skill-forge',         x: 5,  y: 17, width: 4, height: 3 },  // Chum Bucket
+  { id: 'tool-workshop',       x: 17, y: 17, width: 4, height: 3 },  // BB Building
+  { id: 'config-citadel',      x: 29, y: 17, width: 3, height: 3 },  // Patty Building
 ];
 
 // ---------------------------------------------------------------------------
