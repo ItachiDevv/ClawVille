@@ -1,7 +1,8 @@
 'use client';
 
-import { useRef, useMemo } from 'react';
+import { useRef, useMemo, Suspense } from 'react';
 import { useFrame } from '@react-three/fiber';
+import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { useGameStore } from '@/stores/game';
 import {
@@ -12,8 +13,8 @@ import {
 } from '@/lib/pixi/tilemap-data';
 
 // ---------------------------------------------------------------------------
-// GPU-SAFE player pet — 5 meshes total (body + 2 eyes + 2 claws)
-// Original had 46 meshes
+// GLB-based player pet — lobster.glb model = 1-2 draw calls
+// Original had 46 meshes built from primitives
 // ---------------------------------------------------------------------------
 
 const HALF_W = MAP_WIDTH / 2;
@@ -21,11 +22,7 @@ const HALF_H = MAP_HEIGHT / 2;
 const SPEED = 200;
 const BOB_SPEED = 5;
 const BOB_AMPLITUDE = 0.3;
-
-const SPECIES_COLORS: Record<string, number> = {
-  cat: 0xff6347, dragon: 0x1a237e, fox: 0xff8c00, owl: 0x8d6e63,
-  wolf: 0xb71c1c, bunny: 0xff80ab, phoenix: 0x00e676, turtle: 0x455a64,
-};
+const PET_SCALE = 5;
 
 const COLOR_TINTS: Record<string, number> = {
   blue: 0x42a5f5, red: 0xef5350, green: 0x66bb6a, yellow: 0xffee58,
@@ -77,26 +74,35 @@ function mapToWorld(px: number, py: number): [number, number, number] {
   return [px - HALF_W, 0, py - HALF_H];
 }
 
-// Shared geometry
-const bodyGeo = new THREE.CapsuleGeometry(2.5, 5, 6, 12);
-const eyeGeo = new THREE.SphereGeometry(0.6, 6, 6);
-const clawGeo = new THREE.BoxGeometry(1.5, 0.5, 0.8);
+// Preload
+useGLTF.preload('/models/lobster.glb');
 
-export default function PlayerPet() {
+function PlayerPetInner() {
   const groupRef = useRef<THREE.Group>(null);
   const rotRef = useRef(0);
 
   attachKeyListeners();
 
-  const bodyColor = useMemo(() => {
-    const species = useGameStore.getState().petSpecies;
+  const { scene } = useGLTF('/models/lobster.glb');
+
+  const cloned = useMemo(() => {
+    const c = scene.clone(true);
     const petColor = useGameStore.getState().petColor;
-    const base = SPECIES_COLORS[species] ?? 0xffa726;
-    const tint = COLOR_TINTS[petColor] ?? 0xffffff;
-    const c = new THREE.Color(base);
-    c.lerp(new THREE.Color(tint), 0.4);
+    const tint = new THREE.Color(COLOR_TINTS[petColor] ?? 0xffffff);
+    c.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh;
+        if (mesh.material) {
+          const mat = (mesh.material as THREE.MeshStandardMaterial).clone();
+          mat.color.lerp(tint, 0.3);
+          mat.emissive = tint;
+          mat.emissiveIntensity = 0.1;
+          mesh.material = mat;
+        }
+      }
+    });
     return c;
-  }, []);
+  }, [scene]);
 
   useFrame((state, delta) => {
     const store = useGameStore.getState();
@@ -190,27 +196,16 @@ export default function PlayerPet() {
   });
 
   return (
-    <group ref={groupRef} position={[0, 0, 0]}>
-      {/* Body — 1 mesh */}
-      <mesh geometry={bodyGeo} position={[0, 3, 0]} castShadow>
-        <meshStandardMaterial color={bodyColor} roughness={0.6} />
-      </mesh>
-
-      {/* Eyes — 2 meshes */}
-      <mesh geometry={eyeGeo} position={[-0.9, 5, 2]}>
-        <meshBasicMaterial color={0xffffff} />
-      </mesh>
-      <mesh geometry={eyeGeo} position={[0.9, 5, 2]}>
-        <meshBasicMaterial color={0xffffff} />
-      </mesh>
-
-      {/* Claws — 2 meshes */}
-      <mesh geometry={clawGeo} position={[-3, 2, 1]}>
-        <meshStandardMaterial color={bodyColor} roughness={0.55} />
-      </mesh>
-      <mesh geometry={clawGeo} position={[3, 2, 1]}>
-        <meshStandardMaterial color={bodyColor} roughness={0.55} />
-      </mesh>
+    <group ref={groupRef}>
+      <primitive object={cloned} scale={PET_SCALE} />
     </group>
+  );
+}
+
+export default function PlayerPet() {
+  return (
+    <Suspense fallback={null}>
+      <PlayerPetInner />
+    </Suspense>
   );
 }
