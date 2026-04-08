@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useEffect, useState, useMemo, memo } from 'react';
+import { useRef, useEffect, useMemo, useCallback, memo } from 'react';
 import { Canvas, useFrame, extend } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
@@ -264,6 +264,29 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
 });
 
 // ---------------------------------------------------------------------------
+// WebGPU renderer factory
+// ---------------------------------------------------------------------------
+// Three.js 0.182 ships a WebGPURenderer that auto-falls back to WebGL2.
+// R3F v9 supports async gl factory: (defaultProps) => Promise<Renderer>.
+// We dynamically import the WebGPU build to avoid bundling it when unsupported.
+// ---------------------------------------------------------------------------
+
+async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
+  // Dynamic import — tree-shakes out when WebGPU path isn't taken
+  const { WebGPURenderer } = await import('three/webgpu');
+  const renderer = new WebGPURenderer({
+    canvas,
+    antialias: false,
+    // powerPreference is not a WebGPURenderer option; low-power is handled
+    // by the browser's GPU adapter selection (it prefers integrated GPU by default)
+  });
+  // WebGPURenderer.render() throws if not initialized — must await init()
+  // init() internally: tries WebGPU backend → falls back to WebGL2 if unavailable
+  await renderer.init();
+  return renderer;
+}
+
+// ---------------------------------------------------------------------------
 // Main exported Canvas component
 // ---------------------------------------------------------------------------
 function ContextLostFallback() {
@@ -287,6 +310,25 @@ function ContextLostFallback() {
 }
 
 function World3DCanvas({ mode }: World3DCanvasProps) {
+  // Stable async gl factory — R3F v9 awaits this before rendering.
+  // Returns a WebGPURenderer (with automatic WebGL2 fallback built in).
+  // Falls back to standard WebGLRenderer if the dynamic import or init fails.
+  const glFactory = useCallback(
+    async (defaultProps: { canvas: HTMLCanvasElement }) => {
+      try {
+        return await createWebGPURenderer(defaultProps.canvas);
+      } catch (err) {
+        console.warn('[World3D] WebGPURenderer unavailable, falling back to WebGLRenderer:', err);
+        return new THREE.WebGLRenderer({
+          canvas: defaultProps.canvas,
+          antialias: false,
+          powerPreference: 'low-power',
+        });
+      }
+    },
+    [],
+  );
+
   return (
     <div
       style={{
@@ -298,8 +340,9 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
       }}
     >
       <Canvas
-        gl={{ antialias: false, powerPreference: 'low-power' }}
+        gl={glFactory as any}
         dpr={[0.75, 1]}
+        frameloop="always"
         camera={{
           fov: 55,
           near: 1,
@@ -309,6 +352,14 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
         onCreated={({ scene, gl }) => {
           scene.background = SKY_COLOR;
           gl.setPixelRatio(Math.min(window.devicePixelRatio, 1));
+          // Log which backend was selected
+          if ((gl as any).isWebGPURenderer) {
+            const backend = (gl as any).backend;
+            const name = backend?.constructor?.name ?? 'unknown';
+            console.log(`[World3D] Using WebGPURenderer (backend: ${name})`);
+          } else {
+            console.log('[World3D] Using WebGLRenderer');
+          }
         }}
       >
         <SceneContents mode={mode} />
