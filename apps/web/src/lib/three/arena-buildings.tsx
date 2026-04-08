@@ -4,6 +4,7 @@ import { useMemo, useRef, useState, useEffect, useCallback, Suspense } from 'rea
 import * as THREE from 'three';
 import { useGLTF, Html } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
+import { BUILDING_OPENCLAW_THEMES } from '@legacyapp/shared';
 import {
   MAP_WIDTH,
   MAP_HEIGHT,
@@ -98,9 +99,32 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
     placed.current = true;
   });
 
+  const theme = BUILDING_OPENCLAW_THEMES[zone.id];
+
   return (
     <group ref={groupRef} position={[cx, config.yOffset, cz]} rotation={[0, config.rotY ?? 0, 0]}>
       <primitive object={cloned} scale={buildingScale} />
+      {/* Floating building label */}
+      {theme && (
+        <Html position={[0, BUILDING_TARGET_HEIGHT + 8, 0]} center distanceFactor={400} style={{ pointerEvents: 'auto' }}>
+          <div
+            style={{
+              background: 'rgba(10, 22, 40, 0.85)',
+              backdropFilter: 'blur(4px)',
+              border: '1px solid rgba(56, 189, 248, 0.3)',
+              borderRadius: 8,
+              padding: '6px 12px',
+              cursor: 'pointer',
+              textAlign: 'center',
+              whiteSpace: 'nowrap',
+              userSelect: 'none',
+            }}
+          >
+            <div style={{ color: '#7dd3fc', fontWeight: 'bold', fontSize: 13 }}>{theme.label}</div>
+            <div style={{ color: 'rgba(148,163,184,0.7)', fontSize: 10, marginTop: 2 }}>{theme.category}</div>
+          </div>
+        </Html>
+      )}
     </group>
   );
 }

@@ -74,16 +74,17 @@ export interface BuildingZone {
 }
 
 export const buildingZones: BuildingZone[] = [
-  { id: 'cron-hub',            x: 2,  y: 1,  width: 4, height: 3 },
-  { id: 'webhook-gateway',     x: 15, y: 1,  width: 4, height: 3 },
-  { id: 'memory-vault',        x: 34, y: 2,  width: 3, height: 3 },
-  { id: 'skill-forge',         x: 2,  y: 11, width: 4, height: 3 },
-  { id: 'channel-bridge',      x: 18, y: 10, width: 4, height: 4 },
-  { id: 'tool-workshop',       x: 34, y: 11, width: 4, height: 3 },
-  { id: 'canvas-studio',       x: 8,  y: 6,  width: 4, height: 3 },
-  { id: 'voice-tower',         x: 2,  y: 20, width: 4, height: 3 },
-  { id: 'security-fortress',   x: 18, y: 20, width: 3, height: 3 },
-  { id: 'config-citadel',      x: 34, y: 20, width: 3, height: 3 },
+  // Spread wide across full 40x25 grid — ring layout
+  { id: 'cron-hub',            x: 1,  y: 1,  width: 4, height: 3 },  // top-left
+  { id: 'webhook-gateway',     x: 17, y: 1,  width: 4, height: 3 },  // top-center
+  { id: 'memory-vault',        x: 34, y: 1,  width: 3, height: 3 },  // top-right
+  { id: 'canvas-studio',       x: 1,  y: 8,  width: 4, height: 3 },  // mid-left
+  { id: 'skill-forge',         x: 34, y: 8,  width: 4, height: 3 },  // mid-right
+  { id: 'channel-bridge',      x: 17, y: 11, width: 4, height: 4 },  // center
+  { id: 'tool-workshop',       x: 1,  y: 16, width: 4, height: 3 },  // lower-left
+  { id: 'voice-tower',         x: 34, y: 16, width: 4, height: 3 },  // lower-right
+  { id: 'security-fortress',   x: 8,  y: 21, width: 3, height: 3 },  // bottom-left
+  { id: 'config-citadel',      x: 28, y: 21, width: 3, height: 3 },  // bottom-right
 ];
 
 // ---------------------------------------------------------------------------
