@@ -38,19 +38,32 @@ _buildRaycaster.layers.set(TERRAIN_LAYER);
 const _buildRayOrigin = new THREE.Vector3();
 const _buildRayDir = new THREE.Vector3(0, -1, 0);
 
+// Target height for all buildings (world units) — auto-normalized from bounding box
+const BUILDING_TARGET_HEIGHT = 40;
+
 // Map each building ID to a GLB model + display config
-const BUILDING_MODELS: Record<string, { model: string; scale: number; yOffset: number; rotY?: number }> = {
-  'cron-hub':          { model: '/models/building-lighthouse.glb', scale: 4,  yOffset: 0 },
-  'webhook-gateway':   { model: '/models/krusty-krab.glb', scale: 5,  yOffset: 0 },
-  'memory-vault':      { model: '/models/squidward-house.glb', scale: 4,  yOffset: 0 },
-  'skill-forge':       { model: '/models/chum-bucket.glb', scale: 5,  yOffset: 0 },
-  'channel-bridge':    { model: '/models/building-shipwreck.glb', scale: 6,  yOffset: 0 },
-  'tool-workshop':     { model: '/models/building-submarine.glb', scale: 6,  yOffset: 2, rotY: -0.3 },
-  'canvas-studio':     { model: '/models/pineapple-house.glb', scale: 4,  yOffset: 0 },
-  'voice-tower':       { model: '/models/building-tower2.glb', scale: 7,  yOffset: 0 },
-  'security-fortress': { model: '/models/patricks-rock.glb', scale: 4,  yOffset: 0 },
-  'config-citadel':    { model: '/models/building-seashell.glb', scale: 6,  yOffset: 1 },
+const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number }> = {
+  'cron-hub':          { model: '/models/building-lighthouse.glb', yOffset: 0 },
+  'webhook-gateway':   { model: '/models/krusty-krab.glb', yOffset: 0 },
+  'memory-vault':      { model: '/models/squidward-house.glb', yOffset: 0 },
+  'skill-forge':       { model: '/models/chum-bucket.glb', yOffset: 0 },
+  'channel-bridge':    { model: '/models/building-shipwreck.glb', yOffset: 0 },
+  'tool-workshop':     { model: '/models/building-submarine.glb', yOffset: 2, rotY: -0.3 },
+  'canvas-studio':     { model: '/models/pineapple-house.glb', yOffset: 0 },
+  'voice-tower':       { model: '/models/building-tower2.glb', yOffset: 0 },
+  'security-fortress': { model: '/models/patricks-rock.glb', yOffset: 0 },
+  'config-citadel':    { model: '/models/building-seashell.glb', yOffset: 1 },
 };
+
+/** Measure bounding box and return scale to reach target height */
+function computeBuildingScale(scene: THREE.Object3D): number {
+  const box = new THREE.Box3().setFromObject(scene);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  const maxDim = Math.max(size.x, size.y, size.z);
+  if (maxDim === 0) return 1;
+  return BUILDING_TARGET_HEIGHT / maxDim;
+}
 
 // Preload all models
 Object.values(BUILDING_MODELS).forEach(({ model }) => {
@@ -71,7 +84,12 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
   const groupRef = useRef<THREE.Group>(null);
   const placed = useRef(false);
 
-  const cloned = useMemo(() => scene.clone(true), [scene]);
+  // Clone and compute normalized scale from bounding box
+  const { cloned, buildingScale } = useMemo(() => {
+    const c = scene.clone(true);
+    const s = computeBuildingScale(c);
+    return { cloned: c, buildingScale: s };
+  }, [scene]);
 
   // Place on flat sand floor (y=-2)
   useFrame(() => {
@@ -82,7 +100,7 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
 
   return (
     <group ref={groupRef} position={[cx, config.yOffset, cz]} rotation={[0, config.rotY ?? 0, 0]}>
-      <primitive object={cloned} scale={config.scale} />
+      <primitive object={cloned} scale={buildingScale} />
     </group>
   );
 }
@@ -119,7 +137,11 @@ function EditableBuilding({
   const groupRef = useRef<THREE.Group>(null);
   const terrainY = useRef(-15);
 
-  const cloned = useMemo(() => scene.clone(true), [scene]);
+  const { cloned, buildingScale } = useMemo(() => {
+    const c = scene.clone(true);
+    const s = computeBuildingScale(c);
+    return { cloned: c, buildingScale: s };
+  }, [scene]);
 
   // Re-raycast terrain Y whenever position changes
   useFrame(() => {
@@ -138,7 +160,7 @@ function EditableBuilding({
 
   return (
     <group ref={groupRef} rotation={[0, config.rotY ?? 0, 0]}>
-      <primitive object={cloned} scale={config.scale} />
+      <primitive object={cloned} scale={buildingScale} />
       {/* Invisible click box for drag detection */}
       <mesh
         position={[0, 20, 0]}
