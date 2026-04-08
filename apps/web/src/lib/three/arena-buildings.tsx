@@ -40,7 +40,7 @@ const _buildRayOrigin = new THREE.Vector3();
 const _buildRayDir = new THREE.Vector3(0, -1, 0);
 
 // Target height for all buildings (world units) — auto-normalized from bounding box
-const BUILDING_TARGET_HEIGHT = 20;
+const BUILDING_TARGET_HEIGHT = 40;
 
 // Map each building ID to a GLB model + display config
 const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number }> = {
@@ -48,7 +48,7 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   'webhook-gateway':   { model: '/models/krusty-krab.glb', yOffset: 0 },        // Krusty Krab (SpongeBob)
   'memory-vault':      { model: '/models/squidward-house.glb', yOffset: 0 },    // Squidward's House
   'skill-forge':       { model: '/models/chum-bucket.glb', yOffset: 0 },        // Chum Bucket (Plankton)
-  'channel-bridge':    { model: '/models/salty-spitoon.glb', yOffset: 0 },      // Salty Spitoon
+  'channel-bridge':    { model: '/models/patty-building.glb', yOffset: 0 },     // Bikini Bottom building
   'tool-workshop':     { model: '/models/bb-building.glb', yOffset: 0 },        // Bikini Bottom Building
   'canvas-studio':     { model: '/models/pineapple-house.glb', yOffset: 0 },    // SpongeBob's Pineapple
   'voice-tower':       { model: '/models/downtown-building.glb', yOffset: 0 },  // Downtown Building
