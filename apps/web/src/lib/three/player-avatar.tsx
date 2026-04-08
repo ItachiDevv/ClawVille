@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useMemo, Suspense } from 'react';
-import { useFrame } from '@react-three/fiber';
+import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { useGameStore } from '@/stores/game';
@@ -77,9 +77,27 @@ function mapToWorld(px: number, py: number): [number, number, number] {
 // Preload
 useGLTF.preload('/models/lobster.glb');
 
+// Shared raycaster for terrain following
+const _petRaycaster = new THREE.Raycaster();
+const _petRayOrigin = new THREE.Vector3();
+const _petRayDir = new THREE.Vector3(0, -1, 0);
+
+function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
+  _petRayOrigin.set(x, 200, z);
+  _petRaycaster.set(_petRayOrigin, _petRayDir);
+  _petRaycaster.far = 400;
+  const intersects = _petRaycaster.intersectObjects(scene.children, true);
+  for (const hit of intersects) {
+    if (hit.point.y < 50) return hit.point.y;
+  }
+  return 0;
+}
+
 function PlayerPetInner() {
   const groupRef = useRef<THREE.Group>(null);
   const rotRef = useRef(0);
+  const terrainYRef = useRef(0);
+  const { scene: threeScene } = useThree();
 
   attachKeyListeners();
 
@@ -188,7 +206,14 @@ function PlayerPetInner() {
 
     const isMoving = dir !== 'idle';
     const elapsed = state.clock.elapsedTime;
-    group.position.y = 5 + (isMoving ? Math.abs(Math.sin(elapsed * BOB_SPEED)) * BOB_AMPLITUDE : Math.sin(elapsed * 2) * 0.15);
+    // Raycast terrain height (every 3rd frame)
+    const frame = Math.floor(Date.now() / 50);
+    if (frame % 3 === 0) {
+      const ty = getTerrainY(group.position.x, group.position.z, threeScene);
+      terrainYRef.current += (ty - terrainYRef.current) * 0.3;
+    }
+    const bob = isMoving ? Math.abs(Math.sin(elapsed * BOB_SPEED)) * BOB_AMPLITUDE : Math.sin(elapsed * 2) * 0.15;
+    group.position.y = terrainYRef.current + 2 + bob;
 
     const targetRot = DIR_ROTATION[dir] ?? 0;
     rotRef.current += (targetRot - rotRef.current) * 0.15;
