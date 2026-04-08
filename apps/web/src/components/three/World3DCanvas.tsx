@@ -356,7 +356,7 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
           fov: 55,
           near: 1,
           far: 2000,
-          position: mode === 'game' ? [0, 80, 150] : [0, 120, 250],
+          position: mode === 'game' ? [0, 150, 300] : [0, 400, 600],
         }}
         onCreated={({ scene, gl }) => {
           scene.background = SKY_COLOR;

@@ -5,13 +5,12 @@ import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 
 // ---------------------------------------------------------------------------
-// Terrain: flat sand floor + coral/kelp decorations
-// Bikini Bottom GLB removed — its rock dome was blocking the view
-// The sand floor IS the terrain for raycasting
+// Terrain: Bikini Bottom GLB + sand floor + coral/kelp decorations
 // ---------------------------------------------------------------------------
 
 export const TERRAIN_LAYER = 1;
 
+useGLTF.preload('/models/bikini-bottom.glb');
 useGLTF.preload('/models/coral-reef1.glb');
 useGLTF.preload('/models/coral-reef2.glb');
 useGLTF.preload('/models/coral-reef3.glb');
@@ -141,10 +140,29 @@ function UnderwaterDecorations() {
   );
 }
 
+function BikiniBottomTerrain() {
+  const { scene } = useGLTF('/models/bikini-bottom.glb');
+  const groupRef = useRef<THREE.Group>(null);
+
+  useEffect(() => {
+    if (!groupRef.current) return;
+    groupRef.current.traverse((child) => {
+      child.layers.enable(TERRAIN_LAYER);
+    });
+  }, []);
+
+  return (
+    <group ref={groupRef}>
+      <primitive object={scene} scale={30} position={[0, -5, 0]} />
+    </group>
+  );
+}
+
 export default function ArenaTerrain() {
   return (
     <Suspense fallback={null}>
       <SandFloor />
+      <BikiniBottomTerrain />
       <UnderwaterDecorations />
     </Suspense>
   );
