@@ -55,14 +55,15 @@ Object.values(LOCATION_NPCS).forEach(({ model }) => {
   }
 });
 
-/** Measure a scene's bounding box height and return the scale needed for target height */
+/** Measure bounding box HEIGHT and return scale for target height.
+ *  Uses Y dimension to avoid ground-plane inflation in X/Z. */
 function computeNormalizedScale(scene: THREE.Object3D, targetHeight: number): number {
   const box = new THREE.Box3().setFromObject(scene);
   const size = new THREE.Vector3();
   box.getSize(size);
-  const maxDim = Math.max(size.x, size.y, size.z);
-  if (maxDim === 0) return 1;
-  return targetHeight / maxDim;
+  const height = size.y > 0.01 ? size.y : Math.max(size.x, size.y, size.z);
+  if (height === 0) return 1;
+  return targetHeight / height;
 }
 
 function getTerrainY(x: number, z: number, scene: THREE.Scene): number {

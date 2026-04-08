@@ -56,14 +56,17 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   'config-citadel':    { model: '/models/patty-building.glb', yOffset: 0 },     // Patty Pursuit Building
 };
 
-/** Measure bounding box and return scale to reach target height */
+/** Measure bounding box HEIGHT and return scale to reach target height.
+ *  Uses Y dimension only — many Sketchfab GLBs include wide ground planes
+ *  that inflate X/Z, making max-dimension normalization shrink the building. */
 function computeBuildingScale(scene: THREE.Object3D): number {
   const box = new THREE.Box3().setFromObject(scene);
   const size = new THREE.Vector3();
   box.getSize(size);
-  const maxDim = Math.max(size.x, size.y, size.z);
-  if (maxDim === 0) return 1;
-  return BUILDING_TARGET_HEIGHT / maxDim;
+  // Use height (Y) if reasonable, otherwise fall back to max dimension
+  const height = size.y > 0.01 ? size.y : Math.max(size.x, size.y, size.z);
+  if (height === 0) return 1;
+  return BUILDING_TARGET_HEIGHT / height;
 }
 
 // Preload all models
