@@ -191,11 +191,9 @@ function startDemoWander() {
   if (demoInterval) return;
   demoInterval = setInterval(() => {
     const state = useNpcStore.getState();
-    if (state.connected) {
-      // Stop demo when connected to real server
-      if (demoInterval) { clearInterval(demoInterval); demoInterval = null; }
-      return;
-    }
+    // Skip ticking while connected to real server — but DON'T clear interval
+    // so demo resumes automatically if server disconnects
+    if (state.connected) return;
     const updated = tickDemoNpcs(state.npcs);
     useNpcStore.setState({ npcs: updated });
   }, 100); // 10fps update — smoother NPC movement
@@ -209,7 +207,13 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
   combatLog: [],
   connected: false,
 
-  setConnected: (v) => set({ connected: v }),
+  setConnected: (v) => {
+    set({ connected: v });
+    // Restore demo NPCs when server disconnects
+    if (!v && get().npcs.length === 0) {
+      set({ npcs: DEMO_NPCS });
+    }
+  },
 
   updateFromSnapshot: (snapshot) => {
     const state = get();
