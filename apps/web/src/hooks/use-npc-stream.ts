@@ -27,8 +27,12 @@ export function useNpcStream() {
         try {
           retriesRef.current = 0; // Reset on success
           const snapshot = JSON.parse(event.data);
-          // Only switch to server NPCs when the API actually sends NPC data
-          if (snapshot.npcs?.length > 0) {
+          // Only switch to server NPCs when at least one is actually moving
+          // If all NPCs are idle, the server simulation isn't running — keep demo wander
+          const hasMovement = snapshot.npcs?.some(
+            (n: any) => n.direction !== 'idle' || n.inCombat || n.inConversation
+          );
+          if (hasMovement) {
             setConnected(true);
             updateFromSnapshot(snapshot);
           }

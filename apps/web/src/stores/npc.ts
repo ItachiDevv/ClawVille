@@ -189,25 +189,12 @@ let demoInterval: ReturnType<typeof setInterval> | null = null;
 
 function startDemoWander() {
   if (demoInterval) return;
-  console.log('[NPC] Demo wander starting');
-  let logCounter = 0;
   demoInterval = setInterval(() => {
     const state = useNpcStore.getState();
-    // Skip ticking while connected to real server — but DON'T clear interval
-    // so demo resumes automatically if server disconnects
-    if (state.connected) {
-      if (logCounter % 50 === 0) console.log('[NPC] Wander skipped — connected=true');
-      logCounter++;
-      return;
-    }
+    if (state.connected) return;
     const updated = tickDemoNpcs(state.npcs);
-    if (logCounter % 50 === 0) {
-      const n = updated[0];
-      console.log(`[NPC] Tick #${logCounter} | ${n?.id} x=${n?.x.toFixed(1)} y=${n?.y.toFixed(1)} dir=${n?.direction}`);
-    }
-    logCounter++;
     useNpcStore.setState({ npcs: updated });
-  }, 100); // 10fps update — smoother NPC movement
+  }, 100);
 }
 
 export const useNpcStore = create<NpcStoreState>((set, get) => ({
@@ -371,6 +358,4 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
 // Auto-start demo wandering
 if (typeof window !== 'undefined') {
   startDemoWander();
-  // Expose store for debugging (remove later)
-  (window as any).__NPC_STORE = useNpcStore;
 }
