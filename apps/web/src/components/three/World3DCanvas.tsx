@@ -15,6 +15,7 @@ extend(THREE as any);
 import ArenaTerrain from '@/lib/three/arena-terrain';
 import ArenaBuildings from '@/lib/three/arena-buildings';
 import ArenaNpcs from '@/lib/three/arena-npcs';
+import ArenaLocationNpcs from '@/lib/three/arena-location-npcs';
 import ArenaFx from '@/lib/three/arena-fx';
 import PlayerPet from '@/lib/three/player-pet';
 import { useGameStore } from '@/stores/game';
@@ -258,6 +259,7 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       <ArenaTerrain />
       <ArenaBuildings />
       <ArenaNpcs />
+      <ArenaLocationNpcs />
 
       {/* Bubbles disabled — per-frame instanced updates stress Intel Iris Xe */}
 
