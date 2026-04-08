@@ -43,7 +43,7 @@ const LOCATION_NPCS: Record<string, {
   'channel-bridge':    { name: 'Sandy',        model: '/models/characters/sandy.glb',     offsetX: 2, offsetZ: 2 },
   'tool-workshop':     { name: 'Karen',        model: '/models/characters/karen.glb',     offsetX: 2, offsetZ: 2 },
   'voice-tower':       { name: 'Mrs. Puff',    model: '/models/characters/mrs-puff.glb',  offsetX: 2, offsetZ: 2 },
-  'config-citadel':    { name: 'Larry',        model: '/models/characters/sandy.glb',     offsetX: 2, offsetZ: 2 },
+  'config-citadel':    { name: 'Larry',        model: '/models/lobster.glb',              offsetX: 2, offsetZ: 2 },
 };
 
 // Preload all character models
@@ -55,15 +55,15 @@ Object.values(LOCATION_NPCS).forEach(({ model }) => {
   }
 });
 
-/** Measure bounding box HEIGHT and return scale for target height.
- *  Uses Y dimension to avoid ground-plane inflation in X/Z. */
+/** Measure bounding box and return scale for target height.
+ *  Characters use max dimension (no ground planes to worry about). */
 function computeNormalizedScale(scene: THREE.Object3D, targetHeight: number): number {
   const box = new THREE.Box3().setFromObject(scene);
   const size = new THREE.Vector3();
   box.getSize(size);
-  const height = size.y > 0.01 ? size.y : Math.max(size.x, size.y, size.z);
-  if (height === 0) return 1;
-  return targetHeight / height;
+  const maxDim = Math.max(size.x, size.y, size.z);
+  if (maxDim === 0) return 1;
+  return targetHeight / maxDim;
 }
 
 function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
