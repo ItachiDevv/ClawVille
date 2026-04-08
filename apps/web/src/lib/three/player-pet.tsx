@@ -188,7 +188,7 @@ function PlayerPetInner() {
 
     const isMoving = dir !== 'idle';
     const elapsed = state.clock.elapsedTime;
-    group.position.y = isMoving ? Math.abs(Math.sin(elapsed * BOB_SPEED)) * BOB_AMPLITUDE : Math.sin(elapsed * 2) * 0.15;
+    group.position.y = 5 + (isMoving ? Math.abs(Math.sin(elapsed * BOB_SPEED)) * BOB_AMPLITUDE : Math.sin(elapsed * 2) * 0.15);
 
     const targetRot = DIR_ROTATION[dir] ?? 0;
     rotRef.current += (targetRot - rotRef.current) * 0.15;

@@ -58,7 +58,7 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
   }, [scene]);
 
   return (
-    <group position={[cx, config.yOffset, cz]} rotation={[0, config.rotY ?? 0, 0]}>
+    <group position={[cx, config.yOffset + 5, cz]} rotation={[0, config.rotY ?? 0, 0]}>
       <primitive object={cloned} scale={config.scale} />
     </group>
   );
