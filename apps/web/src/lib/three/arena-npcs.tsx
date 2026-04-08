@@ -75,9 +75,9 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
         const mesh = child as THREE.Mesh;
         if (mesh.material) {
           const mat = (mesh.material as THREE.MeshStandardMaterial).clone();
-          mat.color.lerp(color, 0.5);
-          mat.emissive = color;
-          mat.emissiveIntensity = 0.1;
+          mat.color.lerp(color, 0.7);
+          mat.emissive = color.clone();
+          mat.emissiveIntensity = 0.25;
           mesh.material = mat;
         }
       }
