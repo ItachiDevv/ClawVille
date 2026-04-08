@@ -3,11 +3,22 @@
 ## Current State
 - Deployed to Railway: https://web-production-58aa7.up.railway.app/game
 - API: https://api-production-e9f2.up.railway.app
-- 3D scene gutted to ~46 draw calls for GPU safety (Intel Iris Xe was crashing at 350+)
-- Buildings are simple box+roof shapes, NPCs are tiny capsules
-- Root cause: original scene had 397 meshes with 182 PBR materials (eliza-kiz had ~70)
+- Using GLB models for buildings (11 models), NPCs (lobster.glb), and environment (coral/kelp)
+- 5 demo NPCs wandering the map with lobster models
+- Scene ~52 draw calls, stable on Intel Iris Xe
+- Root cause of original crashes: 397 meshes with 182 PBR materials (eliza-kiz had ~70)
 
-## Priority 0: GPU Optimization Architecture (DO FIRST)
+## Priority 0: WebGPU Renderer (NEXT — enables local testing)
+
+### Switch from WebGL to WebGPU
+- [ ] Import `WebGPURenderer` from three/examples/jsm/renderers/webgpu/WebGPURenderer
+- [ ] Create custom Canvas setup with WebGPU renderer (R3F doesn't have a built-in prop)
+- [ ] Fallback to WebGL on unsupported browsers (Firefox, older Safari)
+- [ ] WebGPU benefits: faster draw call batching, compute shaders, better memory management
+- [ ] This should allow local dev testing without GPU crashes on Intel Iris Xe
+- [ ] Reference: Three.js r182 WebGPU docs + R3F custom renderer setup
+
+## Priority 1: GPU Optimization Architecture (DONE — merged geometry + GLB models)
 
 ### Merge building geometry with BufferGeometryUtils
 - [ ] Import `mergeGeometries` from three/examples/jsm/utils/BufferGeometryUtils
