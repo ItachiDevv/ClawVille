@@ -85,8 +85,9 @@ export default function GamePage() {
   const { data: avatar, isLoading } = useAvatar();
   const [isSpectator, setIsSpectator] = useState(false);
 
-  // Connect to NPC simulation stream (always — NPCs visible in both modes)
-  useNpcStream();
+  // NPC SSE stream disabled — server sim sends idle NPCs that override client wander.
+  // Re-enable when server-side NPC simulation is actively moving NPCs.
+  // useNpcStream();
 
   // Connect to research thought stream
   useResearchStream();
