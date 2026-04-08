@@ -10,6 +10,7 @@ export * from './claws';
 export * from './memories';
 export * from './research';
 export * from './marketplace';
+export * from './token-launch';
 
 import { users, sessions } from './users';
 import { npcMemories, activityLog } from './memories';
@@ -19,6 +20,7 @@ import { locationAgents } from './location-agents';
 import { petInventory } from './inventory';
 import { publishedSkills, skillUpvotes } from './marketplace';
 import { openclawBots } from './claws';
+import { vanityKeypairs, tokenLaunches } from './token-launch';
 
 export const usersRelations = relations(users, ({ many, one }) => ({
   sessions: many(sessions),
@@ -113,5 +115,27 @@ export const openclawBotsRelations = relations(openclawBots, ({ one }) => ({
   user: one(users, {
     fields: [openclawBots.userId],
     references: [users.id],
+  }),
+}));
+
+export const vanityKeypairsRelations = relations(vanityKeypairs, ({ one }) => ({
+  reservedByUser: one(users, {
+    fields: [vanityKeypairs.reservedBy],
+    references: [users.id],
+  }),
+}));
+
+export const tokenLaunchesRelations = relations(tokenLaunches, ({ one }) => ({
+  user: one(users, {
+    fields: [tokenLaunches.userId],
+    references: [users.id],
+  }),
+  pet: one(pets, {
+    fields: [tokenLaunches.petId],
+    references: [pets.id],
+  }),
+  vanityKeypair: one(vanityKeypairs, {
+    fields: [tokenLaunches.vanityKeypairId],
+    references: [vanityKeypairs.id],
   }),
 }));
