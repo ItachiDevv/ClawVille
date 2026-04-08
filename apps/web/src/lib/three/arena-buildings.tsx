@@ -28,14 +28,14 @@ function zoneCenter(zone: BuildingZone): [number, number, number] {
 // Map each building ID to a GLB model + display config
 const BUILDING_MODELS: Record<string, { model: string; scale: number; yOffset: number; rotY?: number }> = {
   'cron-hub':          { model: '/models/building-lighthouse.glb', scale: 14, yOffset: 0 },
-  'webhook-gateway':   { model: '/models/building-anchor.glb', scale: 45, yOffset: 12 },
-  'memory-vault':      { model: '/models/building-chest.glb', scale: 30, yOffset: 8 },
-  'skill-forge':       { model: '/models/building-barrel.glb', scale: 40, yOffset: 8 },
+  'webhook-gateway':   { model: '/models/krusty-krab.glb', scale: 18, yOffset: 0 },
+  'memory-vault':      { model: '/models/squidward-house.glb', scale: 14, yOffset: 0 },
+  'skill-forge':       { model: '/models/chum-bucket.glb', scale: 16, yOffset: 0 },
   'channel-bridge':    { model: '/models/building-shipwreck.glb', scale: 22, yOffset: 5 },
   'tool-workshop':     { model: '/models/building-submarine.glb', scale: 20, yOffset: 10, rotY: -0.3 },
-  'canvas-studio':     { model: '/models/building-cave.glb', scale: 22, yOffset: 3 },
+  'canvas-studio':     { model: '/models/pineapple-house.glb', scale: 14, yOffset: 0 },
   'voice-tower':       { model: '/models/building-tower2.glb', scale: 25, yOffset: 0 },
-  'security-fortress': { model: '/models/building-shell.glb', scale: 30, yOffset: 8 },
+  'security-fortress': { model: '/models/patricks-rock.glb', scale: 14, yOffset: 0 },
   'config-citadel':    { model: '/models/building-seashell.glb', scale: 20, yOffset: 8 },
 };
 
