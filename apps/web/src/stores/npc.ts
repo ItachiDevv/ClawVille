@@ -124,6 +124,8 @@ const DEMO_NPCS: NpcSpriteState[] = [
   makeDemoNpc('demo-1', 'Captain Claw', 400, 300, 'cat', 0xff6347),
   makeDemoNpc('demo-2', 'Pearl', 700, 200, 'bunny', 0xff80ab),
   makeDemoNpc('demo-3', 'Rusty', 200, 500, 'fox', 0xff8c00),
+  makeDemoNpc('demo-4', 'Abyssal', 900, 400, 'dragon', 0x4488ff, true),
+  makeDemoNpc('demo-5', 'Mantis', 300, 150, 'phoenix', 0x00e676),
 ];
 
 // Demo NPC wandering — makes NPCs walk around when not connected to server
@@ -351,5 +353,7 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
   },
 }));
 
-// Demo wander is available but NOT auto-started — call startDemoWander() manually
-// to avoid constant React re-renders that stress integrated GPUs
+// Auto-start demo wandering (200ms = 5fps — low GPU pressure)
+if (typeof window !== 'undefined') {
+  startDemoWander();
+}
