@@ -234,10 +234,10 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
         enablePan={true}
         enableZoom={true}
         enableRotate={true}
-        minDistance={isGame ? 80 : 200}
-        maxDistance={1200}
+        minDistance={isGame ? 40 : 80}
+        maxDistance={800}
         maxPolarAngle={Math.PI / 2.1}
-        target={[0, 0, 0]}
+        target={[0, 10, 0]}
       />
 
       {/* Camera controller: WASD free-cam (arena) vs avatar follow (game) */}
@@ -356,7 +356,7 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
           fov: 55,
           near: 1,
           far: 2000,
-          position: mode === 'game' ? [0, 200, 300] : [0, 500, 650],
+          position: mode === 'game' ? [0, 80, 150] : [0, 120, 250],
         }}
         onCreated={({ scene, gl }) => {
           scene.background = SKY_COLOR;

@@ -16,7 +16,7 @@ const MAP_HEIGHT = 800;
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 const LERP_SPEED = 5;
-const NPC_SCALE = 8;
+const NPC_SCALE = 4;
 
 useGLTF.preload('/models/lobster.glb');
 
