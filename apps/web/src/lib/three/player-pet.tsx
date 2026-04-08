@@ -22,7 +22,7 @@ const HALF_H = MAP_HEIGHT / 2;
 const SPEED = 200;
 const BOB_SPEED = 5;
 const BOB_AMPLITUDE = 0.3;
-const PET_SCALE = 5;
+const PET_SCALE = 3;
 
 const COLOR_TINTS: Record<string, number> = {
   blue: 0x42a5f5, red: 0xef5350, green: 0x66bb6a, yellow: 0xffee58,
