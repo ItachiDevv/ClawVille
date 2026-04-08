@@ -141,7 +141,7 @@ function pickNewTarget(npc: NpcSpriteState): WanderState {
 
 function tickDemoNpcs(npcs: NpcSpriteState[]): NpcSpriteState[] {
   const now = Date.now();
-  const speed = 1.5; // pixels per tick
+  const speed = 4; // pixels per tick
 
   return npcs.map((npc) => {
     let ws = wanderStates.get(npc.id);
@@ -198,7 +198,7 @@ function startDemoWander() {
     }
     const updated = tickDemoNpcs(state.npcs);
     useNpcStore.setState({ npcs: updated });
-  }, 200); // 5fps update — gentle on GPU
+  }, 100); // 10fps update — smoother NPC movement
 }
 
 export const useNpcStore = create<NpcStoreState>((set, get) => ({
