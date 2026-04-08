@@ -3,10 +3,14 @@
 import { useRef, useEffect, useMemo, useCallback, memo } from 'react';
 import { Canvas, useFrame, extend } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
+import type { ThreeToJSXElements } from '@react-three/fiber';
 
-// Register Three.js elements with R3F 9
+// Register Three.js WebGPU elements with R3F 9
+declare module '@react-three/fiber' {
+  interface ThreeElements extends ThreeToJSXElements<typeof THREE> {}
+}
 extend(THREE as any);
 import ArenaTerrain from '@/lib/three/arena-terrain';
 import ArenaBuildings from '@/lib/three/arena-buildings';
@@ -319,7 +323,9 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
         return await createWebGPURenderer(defaultProps.canvas);
       } catch (err) {
         console.warn('[World3D] WebGPURenderer unavailable, falling back to WebGLRenderer:', err);
-        return new THREE.WebGLRenderer({
+        // Import classic WebGLRenderer from base three (not three/webgpu)
+        const { WebGLRenderer } = await import('three');
+        return new WebGLRenderer({
           canvas: defaultProps.canvas,
           antialias: false,
           powerPreference: 'low-power',
