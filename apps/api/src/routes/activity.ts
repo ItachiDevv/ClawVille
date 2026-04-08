@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { eq, desc } from 'drizzle-orm';
+import { eq, and, desc } from 'drizzle-orm';
 import { db, avatars, activityLog } from '@legacyapp/database';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
@@ -24,7 +24,7 @@ activityRoutes.get('/me/activity', requireAuth, async (c) => {
   const user = c.get('user');
 
   const avatar = await db.query.avatars.findFirst({
-    where: eq(avatars.userId, user.id),
+    where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
   });
 
   if (!avatar) {

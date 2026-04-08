@@ -127,6 +127,34 @@ export interface GameState {
   openMarketplace: () => void;
   closeMarketplace: () => void;
 
+  // Bazaar
+  bazaarOpen: boolean;
+  bazaarTab: 'browse' | 'my-listings' | 'my-purchases';
+  openBazaar: () => void;
+  closeBazaar: () => void;
+  setBazaarTab: (tab: 'browse' | 'my-listings' | 'my-purchases') => void;
+
+  // Auction House
+  auctionOpen: boolean;
+  auctionTab: 'browse' | 'my-auctions' | 'my-bids';
+  openAuction: () => void;
+  closeAuction: () => void;
+  setAuctionTab: (tab: 'browse' | 'my-auctions' | 'my-bids') => void;
+
+  // Quest Board
+  questBoardOpen: boolean;
+  questBoardTab: 'available' | 'active' | 'completed';
+  openQuestBoard: () => void;
+  closeQuestBoard: () => void;
+  setQuestBoardTab: (tab: 'available' | 'active' | 'completed') => void;
+
+  // Bounty Board
+  bountyBoardOpen: boolean;
+  bountyBoardTab: 'browse' | 'my-bounties' | 'my-attempts' | 'create';
+  openBountyBoard: () => void;
+  closeBountyBoard: () => void;
+  setBountyBoardTab: (tab: 'browse' | 'my-bounties' | 'my-attempts' | 'create') => void;
+
   // Zoom
   zoomLevel: number;
   setZoomLevel: (z: number) => void;
@@ -298,6 +326,30 @@ export const useGameStore = create<GameState>((set, get) => ({
   marketplaceOpen: false,
   openMarketplace: () => set({ marketplaceOpen: true }),
   closeMarketplace: () => set({ marketplaceOpen: false }),
+
+  bazaarOpen: false,
+  bazaarTab: 'browse' as const,
+  openBazaar: () => set({ bazaarOpen: true, bazaarTab: 'browse' }),
+  closeBazaar: () => set({ bazaarOpen: false }),
+  setBazaarTab: (tab: 'browse' | 'my-listings' | 'my-purchases') => set({ bazaarTab: tab }),
+
+  auctionOpen: false,
+  auctionTab: 'browse' as const,
+  openAuction: () => set({ auctionOpen: true, auctionTab: 'browse' }),
+  closeAuction: () => set({ auctionOpen: false }),
+  setAuctionTab: (tab: 'browse' | 'my-auctions' | 'my-bids') => set({ auctionTab: tab }),
+
+  questBoardOpen: false,
+  questBoardTab: 'available' as const,
+  openQuestBoard: () => set({ questBoardOpen: true, questBoardTab: 'available' }),
+  closeQuestBoard: () => set({ questBoardOpen: false }),
+  setQuestBoardTab: (tab: 'available' | 'active' | 'completed') => set({ questBoardTab: tab }),
+
+  bountyBoardOpen: false,
+  bountyBoardTab: 'browse' as const,
+  openBountyBoard: () => set({ bountyBoardOpen: true, bountyBoardTab: 'browse' }),
+  closeBountyBoard: () => set({ bountyBoardOpen: false }),
+  setBountyBoardTab: (tab: 'browse' | 'my-bounties' | 'my-attempts' | 'create') => set({ bountyBoardTab: tab }),
 
   zoomLevel: 1.7,
   setZoomLevel: (z) => set({ zoomLevel: Math.max(0.6, Math.min(3.0, z)) }),

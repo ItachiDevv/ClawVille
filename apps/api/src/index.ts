@@ -16,6 +16,11 @@ import { researchApiRoutes } from './routes/research';
 import { marketplaceRoutes } from './routes/marketplace';
 import { clawRoutes } from './routes/claws';
 import { agentGatewayRoutes } from './routes/agent-gateway';
+import { bazaarRoutes } from './routes/bazaar';
+import { auctionRoutes } from './routes/auctions';
+import { questRoutes } from './routes/quests';
+import { bountyRoutes } from './routes/bounties';
+import { agentSetupRoutes } from './routes/agent-setup';
 import { startSimulation } from './services/npc-simulation';
 import type { AppContext } from './types';
 
@@ -58,6 +63,11 @@ app.route('/api/research', researchApiRoutes);
 app.route('/api/marketplace', marketplaceRoutes);
 app.route('/api/claws', clawRoutes);
 app.route('/api/agent', agentGatewayRoutes);
+app.route('/api/bazaar', bazaarRoutes);
+app.route('/api/auctions', auctionRoutes);
+app.route('/api/quests', questRoutes);
+app.route('/api/bounties', bountyRoutes);
+app.route('/api/agent-setup', agentSetupRoutes);
 
 // Error handler
 app.onError((err, c) => {

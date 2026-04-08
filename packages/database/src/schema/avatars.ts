@@ -6,6 +6,7 @@ import {
   jsonb,
   pgEnum,
   integer,
+  boolean,
 } from 'drizzle-orm/pg-core';
 import { users } from './users';
 import { platformAgents } from './agents';
@@ -55,7 +56,6 @@ export const avatars = pgTable('avatars', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id')
     .notNull()
-    .unique()
     .references(() => users.id, { onDelete: 'cascade' }),
   name: varchar('name', { length: 100 }).notNull().unique(),
   species: petSpeciesEnum('species').notNull(),
@@ -76,6 +76,10 @@ export const avatars = pgTable('avatars', {
   lastActiveAt: timestamp('last_active_at'),
   loginStreak: integer('login_streak').default(0).notNull(),
   lastLoginDate: varchar('last_login_date', { length: 10 }),
+  slotIndex: integer('slot_index').default(0).notNull(),
+  isActive: boolean('is_active').default(true).notNull(),
+  equippedSkills: jsonb('equipped_skills').$type<string[]>().default([]),
+  totalXp: integer('total_xp').default(0).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
