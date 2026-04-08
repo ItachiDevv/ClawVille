@@ -56,17 +56,47 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   'config-citadel':    { model: '/models/building-lighthouse.glb', yOffset: 0 }, // Lighthouse citadel
 };
 
-/** Measure bounding box HEIGHT and return scale to reach target height.
- *  Uses Y dimension only — many Sketchfab GLBs include wide ground planes
- *  that inflate X/Z, making max-dimension normalization shrink the building. */
+/** Strip ground planes from a cloned scene.
+ *  Sketchfab SpongeBob GLBs bake in flat ground planes (pPlane, lambert, etc.)
+ *  that dominate the bounding box and render as giant blue discs. */
+function stripGroundPlanes(scene: THREE.Object3D): void {
+  const toRemove: THREE.Object3D[] = [];
+  scene.traverse((child) => {
+    if (!(child as THREE.Mesh).isMesh) return;
+    const mesh = child as THREE.Mesh;
+    const name = (mesh.name || '').toLowerCase();
+    // Remove by known ground plane names from Maya/Sketchfab exports
+    if (name.includes('plane') || name.includes('lambert') || name.includes('ground') || name.includes('floor')) {
+      toRemove.push(mesh);
+      return;
+    }
+    // Remove by geometry shape: very flat meshes (height < 5% of width)
+    if (mesh.geometry) {
+      mesh.geometry.computeBoundingBox();
+      const bb = mesh.geometry.boundingBox;
+      if (bb) {
+        const sy = bb.max.y - bb.min.y;
+        const sx = bb.max.x - bb.min.x;
+        const sz = bb.max.z - bb.min.z;
+        const maxXZ = Math.max(sx, sz);
+        if (maxXZ > 0 && sy / maxXZ < 0.05 && maxXZ > 1) {
+          toRemove.push(mesh);
+        }
+      }
+    }
+  });
+  toRemove.forEach((obj) => obj.removeFromParent());
+}
+
+/** Measure bounding box and return scale to reach target height.
+ *  Called AFTER stripping ground planes. */
 function computeBuildingScale(scene: THREE.Object3D): number {
   const box = new THREE.Box3().setFromObject(scene);
   const size = new THREE.Vector3();
   box.getSize(size);
-  // Use height (Y) if reasonable, otherwise fall back to max dimension
-  const height = size.y > 0.01 ? size.y : Math.max(size.x, size.y, size.z);
-  if (height === 0) return 1;
-  return BUILDING_TARGET_HEIGHT / height;
+  const maxDim = Math.max(size.x, size.y, size.z);
+  if (maxDim === 0) return 1;
+  return BUILDING_TARGET_HEIGHT / maxDim;
 }
 
 // Preload all models
@@ -91,6 +121,7 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
   // Clone and compute normalized scale from bounding box
   const { cloned, buildingScale } = useMemo(() => {
     const c = scene.clone(true);
+    stripGroundPlanes(c);
     const s = computeBuildingScale(c);
     return { cloned: c, buildingScale: s };
   }, [scene]);
@@ -166,6 +197,7 @@ function EditableBuilding({
 
   const { cloned, buildingScale } = useMemo(() => {
     const c = scene.clone(true);
+    stripGroundPlanes(c);
     const s = computeBuildingScale(c);
     return { cloned: c, buildingScale: s };
   }, [scene]);
