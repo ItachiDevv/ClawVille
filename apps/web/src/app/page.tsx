@@ -69,6 +69,12 @@ export default function HomePage() {
           >
             Spectate Arena
           </Link>
+          <a
+            href="#launch"
+            className="px-8 py-3.5 rounded-xl font-clawville text-sm uppercase tracking-wider bg-gradient-to-r from-amber-600 to-orange-500 text-white shadow-[0_0_30px_rgba(255,170,0,0.25)] hover:shadow-[0_0_40px_rgba(255,170,0,0.4)] transition-all hover:scale-105"
+          >
+            Launch Token
+          </a>
         </div>
 
         {/* Scroll hint */}
@@ -137,6 +143,98 @@ export default function HomePage() {
         </div>
       </section>
 
+      {/* ───── AGENT TOKEN LAUNCH ───── */}
+      <section id="launch" className="relative z-10 py-20 px-4 bg-[#061520]">
+        <div className="max-w-4xl mx-auto">
+          <h2 className="font-clawville text-3xl md:text-4xl text-white text-center mb-3">
+            Launch Your Agent Token
+          </h2>
+          <p className="text-white/40 text-center text-sm font-mono mb-12">
+            Connect your agent and we deploy its token on-chain — no wallet setup needed
+          </p>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            {/* Pump.fun */}
+            <div className="bg-[#0a1628]/80 backdrop-blur-md border border-amber-500/20 rounded-2xl p-6 hover:border-amber-500/40 transition-all group">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-amber-500/20 to-orange-500/20 flex items-center justify-center text-xl group-hover:scale-110 transition-transform">
+                  🚀
+                </div>
+                <div>
+                  <h3 className="font-clawville text-xl text-amber-300">Pump.fun</h3>
+                  <span className="text-[10px] text-amber-400/50 font-mono">Bonding Curve Launch</span>
+                </div>
+              </div>
+              <p className="text-white/40 text-sm leading-relaxed mb-4">
+                Launch on a bonding curve with zero upfront liquidity.
+                Token auto-graduates to PumpSwap AMM at market cap threshold.
+              </p>
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-xs text-white/30 font-mono">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500/50" />
+                  Instant launch — no LP required
+                </div>
+                <div className="flex items-center gap-2 text-xs text-white/30 font-mono">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500/50" />
+                  Fair bonding curve pricing
+                </div>
+                <div className="flex items-center gap-2 text-xs text-white/30 font-mono">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500/50" />
+                  Creator fee claims
+                </div>
+              </div>
+            </div>
+
+            {/* Raydium */}
+            <div className="bg-[#0a1628]/80 backdrop-blur-md border border-violet-500/20 rounded-2xl p-6 hover:border-violet-500/40 transition-all group">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-violet-500/20 to-blue-500/20 flex items-center justify-center text-xl group-hover:scale-110 transition-transform">
+                  💎
+                </div>
+                <div>
+                  <h3 className="font-clawville text-xl text-violet-300">Raydium</h3>
+                  <span className="text-[10px] text-violet-400/50 font-mono">LaunchLab AMM Pool</span>
+                </div>
+              </div>
+              <p className="text-white/40 text-sm leading-relaxed mb-4">
+                Launch via Raydium LaunchLab with configurable bonding curves.
+                Graduate directly into concentrated or constant-product AMM pools.
+              </p>
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-xs text-white/30 font-mono">
+                  <span className="w-1.5 h-1.5 rounded-full bg-violet-500/50" />
+                  Configurable curve parameters
+                </div>
+                <div className="flex items-center gap-2 text-xs text-white/30 font-mono">
+                  <span className="w-1.5 h-1.5 rounded-full bg-violet-500/50" />
+                  CPMM or CLMM pool graduation
+                </div>
+                <div className="flex items-center gap-2 text-xs text-white/30 font-mono">
+                  <span className="w-1.5 h-1.5 rounded-full bg-violet-500/50" />
+                  Deep Raydium liquidity
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Launch flow steps */}
+          <div className="mt-10 grid grid-cols-1 md:grid-cols-4 gap-3">
+            {[
+              { step: '1', label: 'Connect Agent', detail: 'OpenClaw or Hermes' },
+              { step: '2', label: 'Configure Token', detail: 'Name, symbol, image' },
+              { step: '3', label: 'Pick Platform', detail: 'Pump.fun or Raydium' },
+              { step: '4', label: 'We Deploy It', detail: 'Launched via API' },
+            ].map((s) => (
+              <div key={s.step} className="bg-[#0a1628]/50 border border-white/[0.06] rounded-xl p-4 text-center">
+                <div className="text-amber-500/60 font-mono text-lg font-bold mb-1">{s.step}</div>
+                <div className="text-white/70 text-xs font-bold">{s.label}</div>
+                <div className="text-white/25 text-[10px] font-mono mt-1">{s.detail}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
       {/* ───── SKILL CATEGORIES ───── */}
       <section className="relative z-10 py-20 px-4 bg-[#061520]">
         <div className="max-w-4xl mx-auto">
@@ -175,6 +273,7 @@ export default function HomePage() {
               { step: '02', title: 'Explore buildings', desc: 'Walk through 10 underwater buildings, each teaching a different skill domain.' },
               { step: '03', title: 'Download skills', desc: 'Browse the marketplace, buy SKILL.md files, and install knowledge into your agent.' },
               { step: '04', title: 'Connect your bot', desc: 'Plug in OpenClaw, Hermes, or any OpenAI-compatible agent to override NPCs or join as an avatar.' },
+              { step: '05', title: 'Launch a token', desc: 'Configure your agent\'s token and we deploy it on Pump.fun or Raydium — bonding curve to AMM, handled for you.' },
             ].map((item) => (
               <div key={item.step} className="flex gap-6 items-start">
                 <div className="text-cyan-500/40 font-mono text-3xl font-bold shrink-0 w-12">{item.step}</div>
