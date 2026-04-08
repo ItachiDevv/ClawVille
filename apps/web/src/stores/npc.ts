@@ -191,7 +191,7 @@ function startDemoWander() {
   if (demoInterval) return;
   demoInterval = setInterval(() => {
     const state = useNpcStore.getState();
-    if (state.connected) return;
+    // Always wander — even server NPCs get client-side movement when idle
     const updated = tickDemoNpcs(state.npcs);
     useNpcStore.setState({ npcs: updated });
   }, 100);
@@ -218,17 +218,20 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
     const now = Date.now();
 
     // Update NPC positions (store previous for lerp)
+    // If a server NPC is idle, keep the client-side position so wander can move it
     const prevMap = new Map(state.npcs.map((n) => [n.id, n]));
     const npcs: NpcSpriteState[] = snapshot.npcs.map((n) => {
       const prev = prevMap.get(n.id);
+      const serverIsIdle = n.direction === 'idle' && !n.inCombat && !n.inConversation;
+      const useClientPos = serverIsIdle && prev;
       return {
         id: n.id,
         name: n.name,
-        x: n.x,
-        y: n.y,
+        x: useClientPos ? prev.x : n.x,
+        y: useClientPos ? prev.y : n.y,
         prevX: prev?.x ?? n.x,
         prevY: prev?.y ?? n.y,
-        direction: n.direction as NpcSpriteState['direction'],
+        direction: useClientPos ? prev.direction : (n.direction as NpcSpriteState['direction']),
         species: n.species,
         color: n.color,
         hp: n.hp,
