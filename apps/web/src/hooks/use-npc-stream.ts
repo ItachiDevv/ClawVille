@@ -27,11 +27,13 @@ export function useNpcStream() {
         try {
           retriesRef.current = 0; // Reset on success
           const snapshot = JSON.parse(event.data);
-          updateFromSnapshot(snapshot);
+          // Only switch to server NPCs when the API actually sends NPC data
+          if (snapshot.npcs?.length > 0) {
+            setConnected(true);
+            updateFromSnapshot(snapshot);
+          }
         } catch { /* ignore parse errors */ }
       });
-
-      es.onopen = () => setConnected(true);
 
       es.onerror = () => {
         setConnected(false);
