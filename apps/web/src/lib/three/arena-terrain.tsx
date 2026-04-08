@@ -50,11 +50,63 @@ function BikiniBottomTerrain() {
 const MAP_WIDTH = 1280;
 const MAP_HEIGHT = 800;
 
+/** Generate a canvas-based sand texture with grain and color variation */
+function createSandTexture(): THREE.CanvasTexture {
+  const size = 512;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+
+  // Base sandy color
+  ctx.fillStyle = '#e8d5b0';
+  ctx.fillRect(0, 0, size, size);
+
+  // Add noise grains for sand texture
+  const imageData = ctx.getImageData(0, 0, size, size);
+  const data = imageData.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const noise = (Math.random() - 0.5) * 30;
+    // Occasional darker speckles
+    const speckle = Math.random() < 0.03 ? -25 : 0;
+    data[i] = Math.max(0, Math.min(255, data[i] + noise + speckle));       // R
+    data[i + 1] = Math.max(0, Math.min(255, data[i + 1] + noise + speckle)); // G
+    data[i + 2] = Math.max(0, Math.min(255, data[i + 2] + noise * 0.8 + speckle)); // B (less blue variance)
+  }
+  ctx.putImageData(imageData, 0, 0);
+
+  // Add some subtle wave-like ripples
+  ctx.globalAlpha = 0.06;
+  ctx.strokeStyle = '#c4a882';
+  ctx.lineWidth = 2;
+  for (let y = 20; y < size; y += 18 + Math.random() * 12) {
+    ctx.beginPath();
+    for (let x = 0; x < size; x += 4) {
+      const wave = Math.sin(x * 0.02 + y * 0.1) * 3;
+      if (x === 0) ctx.moveTo(x, y + wave);
+      else ctx.lineTo(x, y + wave);
+    }
+    ctx.stroke();
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(24, 16);
+  return texture;
+}
+
 function SandFloor() {
   const ref = useRef<THREE.Mesh>(null);
+  const sandTexture = useMemo(() => {
+    if (typeof document === 'undefined') return null;
+    return createSandTexture();
+  }, []);
+
   useEffect(() => {
     if (ref.current) ref.current.layers.enable(TERRAIN_LAYER);
   }, []);
+
   return (
     <mesh
       ref={ref}
@@ -62,7 +114,11 @@ function SandFloor() {
       position={[0, -6, 0]}
     >
       <planeGeometry args={[MAP_WIDTH * 3, MAP_HEIGHT * 3]} />
-      <meshBasicMaterial color={0xe8d5b0} />
+      {sandTexture ? (
+        <meshBasicMaterial map={sandTexture} />
+      ) : (
+        <meshBasicMaterial color={0xe8d5b0} />
+      )}
     </mesh>
   );
 }
