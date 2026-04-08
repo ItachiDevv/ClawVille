@@ -86,10 +86,10 @@ const SimpleNpcMesh = memo(function SimpleNpcMesh({ npc }: { npc: NpcSpriteState
   });
 
   return (
-    <group ref={groupRef}>
+    <group ref={groupRef} scale={[2, 2, 2]}>
       {/* Body — 1 mesh */}
       <mesh geometry={bodyGeo} castShadow>
-        <meshStandardMaterial color={bodyColor} roughness={0.6} />
+        <meshStandardMaterial color={bodyColor} roughness={0.6} emissive={bodyColor} emissiveIntensity={0.15} />
       </mesh>
 
       {/* Eyes — 2 meshes */}
