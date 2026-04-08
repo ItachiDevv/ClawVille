@@ -48,7 +48,7 @@ function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
   if (intersects.length > 0) {
     return intersects[0].point.y;
   }
-  return -15; // fallback — approximate terrain surface
+  return -2; // flat sand floor
 }
 
 // ---------------------------------------------------------------------------

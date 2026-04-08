@@ -64,7 +64,7 @@ function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
   _locRaycaster.layers.set(TERRAIN_LAYER);
   _locRaycaster.far = 400;
   const hits = _locRaycaster.intersectObjects(scene.children, true);
-  return hits.length > 0 ? hits[0].point.y : -15;
+  return hits.length > 0 ? hits[0].point.y : -2;
 }
 
 const LocationNpc = memo(function LocationNpc({
