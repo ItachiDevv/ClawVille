@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { db, pets, agents, petInventory } from '@legacyapp/database';
 import { PET_ARCHETYPES, ARCHETYPE_IDS, getBookById } from '@legacyapp/shared';
 import type { PetArchetypeId } from '@legacyapp/shared';
@@ -167,7 +167,7 @@ petRoutes.get('/me', requireAuth, async (c) => {
   const user = c.get('user');
 
   const pet = await db.query.pets.findFirst({
-    where: eq(pets.userId, user.id),
+    where: and(eq(pets.userId, user.id), eq(pets.isActive, true)),
   });
 
   if (!pet) {
@@ -199,7 +199,7 @@ petRoutes.patch('/me', requireAuth, async (c) => {
       positionY: result.data.positionY,
       updatedAt: new Date(),
     })
-    .where(eq(pets.userId, user.id))
+    .where(and(eq(pets.userId, user.id), eq(pets.isActive, true)))
     .returning();
 
   if (!updated) {
@@ -240,7 +240,7 @@ petRoutes.post('/me/chat', requireAuth, async (c) => {
 
   // Get user's pet
   const pet = await db.query.pets.findFirst({
-    where: eq(pets.userId, user.id),
+    where: and(eq(pets.userId, user.id), eq(pets.isActive, true)),
   });
 
   if (!pet) {
@@ -332,7 +332,7 @@ petRoutes.post('/me/heartbeat', requireAuth, async (c) => {
       lastActiveAt: new Date(),
       updatedAt: new Date(),
     })
-    .where(eq(pets.userId, user.id))
+    .where(and(eq(pets.userId, user.id), eq(pets.isActive, true)))
     .catch(() => {});
 
   return c.json({ ok: true });
@@ -343,7 +343,7 @@ petRoutes.post('/me/daily-login', requireAuth, async (c) => {
   const user = c.get('user');
 
   const pet = await db.query.pets.findFirst({
-    where: eq(pets.userId, user.id),
+    where: and(eq(pets.userId, user.id), eq(pets.isActive, true)),
   });
 
   if (!pet) {
@@ -386,7 +386,7 @@ petRoutes.post('/me/daily-login', requireAuth, async (c) => {
       clawTokens: totalTokens,
       updatedAt: new Date(),
     })
-    .where(eq(pets.userId, user.id));
+    .where(and(eq(pets.userId, user.id), eq(pets.isActive, true)));
 
   return c.json({ streak: newStreak, tokensEarned, totalTokens, alreadyClaimed: false });
 });

@@ -6,8 +6,17 @@ import {
   integer,
   timestamp,
   uniqueIndex,
+  pgEnum,
 } from 'drizzle-orm/pg-core';
 import { pets } from './pets';
+
+export const bazaarRarityEnum = pgEnum('bazaar_rarity', [
+  'common',
+  'uncommon',
+  'rare',
+  'epic',
+  'legendary',
+]);
 
 export const publishedSkills = pgTable('published_skills', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -23,6 +32,8 @@ export const publishedSkills = pgTable('published_skills', {
   upvoteCount: integer('upvote_count').notNull().default(0),
   downloadCount: integer('download_count').notNull().default(0),
   createdAt: timestamp('created_at').defaultNow().notNull(),
+  rarity: bazaarRarityEnum('rarity').default('common').notNull(),
+  category: varchar('category', { length: 50 }),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 

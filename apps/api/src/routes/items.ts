@@ -25,7 +25,7 @@ itemRoutes.get('/inventory', requireAuth, async (c) => {
   const user = c.get('user');
 
   const pet = await db.query.pets.findFirst({
-    where: eq(pets.userId, user.id),
+    where: and(eq(pets.userId, user.id), eq(pets.isActive, true)),
   });
 
   if (!pet) {
@@ -71,7 +71,7 @@ itemRoutes.post('/buy', requireAuth, async (c) => {
   }
 
   const pet = await db.query.pets.findFirst({
-    where: eq(pets.userId, user.id),
+    where: and(eq(pets.userId, user.id), eq(pets.isActive, true)),
   });
 
   if (!pet) {
@@ -140,7 +140,7 @@ itemRoutes.post('/learn', requireAuth, async (c) => {
   }
 
   const pet = await db.query.pets.findFirst({
-    where: eq(pets.userId, user.id),
+    where: and(eq(pets.userId, user.id), eq(pets.isActive, true)),
   });
 
   if (!pet) {
