@@ -37,16 +37,16 @@ const LOCATION_NPCS: Record<string, {
   offsetZ: number;
   rotY?: number;
 }> = {
-  'canvas-studio':     { name: 'SpongeBob',  model: '/models/characters/spongebob.glb', scale: 4,  yOffset: 0,  offsetX: 2, offsetZ: 2 },
-  'security-fortress': { name: 'Patrick',     model: '/models/characters/patrick.glb',   scale: 5,  yOffset: 0,  offsetX: 2, offsetZ: 2 },
-  'memory-vault':      { name: 'Squidward',   model: '/models/characters/squidward.glb', scale: 5,  yOffset: 0,  offsetX: 2, offsetZ: 2 },
-  'webhook-gateway':   { name: 'Mr. Krabs',   model: '/models/characters/mr-krabs.glb',  scale: 5,  yOffset: 0,  offsetX: 2, offsetZ: 2 },
-  'skill-forge':       { name: 'Plankton',    model: '/models/characters/plankton.glb',  scale: 6,  yOffset: 0,  offsetX: 2, offsetZ: 2 },
-  'cron-hub':          { name: 'Gary',         model: '/models/characters/gary.glb',      scale: 5,  yOffset: 0,  offsetX: 2, offsetZ: 2 },
-  'channel-bridge':    { name: 'Sandy',        model: '/models/characters/sandy.glb',     scale: 5,  yOffset: 0,  offsetX: 2, offsetZ: 2 },
-  'tool-workshop':     { name: 'Karen',        model: '/models/characters/karen.glb',     scale: 5,  yOffset: 0,  offsetX: 2, offsetZ: 2 },
-  'voice-tower':       { name: 'Mrs. Puff',    model: '/models/characters/mrs-puff.glb',  scale: 5,  yOffset: 0,  offsetX: 2, offsetZ: 2 },
-  'config-citadel':    { name: 'Larry',        model: '/models/characters/sandy.glb',     scale: 5,  yOffset: 0,  offsetX: 2, offsetZ: 2 },
+  'canvas-studio':     { name: 'SpongeBob',  model: '/models/characters/spongebob.glb', scale: 0.5, yOffset: 0,  offsetX: 2, offsetZ: 2 },
+  'security-fortress': { name: 'Patrick',     model: '/models/characters/patrick.glb',   scale: 0.5, yOffset: 0,  offsetX: 2, offsetZ: 2 },
+  'memory-vault':      { name: 'Squidward',   model: '/models/characters/squidward.glb', scale: 0.5, yOffset: 0,  offsetX: 2, offsetZ: 2 },
+  'webhook-gateway':   { name: 'Mr. Krabs',   model: '/models/characters/mr-krabs.glb',  scale: 0.5, yOffset: 0,  offsetX: 2, offsetZ: 2 },
+  'skill-forge':       { name: 'Plankton',    model: '/models/characters/plankton.glb',  scale: 0.5, yOffset: 0,  offsetX: 2, offsetZ: 2 },
+  'cron-hub':          { name: 'Gary',         model: '/models/characters/gary.glb',      scale: 0.5, yOffset: 0,  offsetX: 2, offsetZ: 2 },
+  'channel-bridge':    { name: 'Sandy',        model: '/models/characters/sandy.glb',     scale: 0.5, yOffset: 0,  offsetX: 2, offsetZ: 2 },
+  'tool-workshop':     { name: 'Karen',        model: '/models/characters/karen.glb',     scale: 0.5, yOffset: 0,  offsetX: 2, offsetZ: 2 },
+  'voice-tower':       { name: 'Mrs. Puff',    model: '/models/characters/mrs-puff.glb',  scale: 0.5, yOffset: 0,  offsetX: 2, offsetZ: 2 },
+  'config-citadel':    { name: 'Larry',        model: '/models/characters/sandy.glb',     scale: 0.5, yOffset: 0,  offsetX: 2, offsetZ: 2 },
 };
 
 // Preload all character models
