@@ -14,36 +14,51 @@
 - Terrain raycasting with Layer 1 isolation ✅
 - Deployed to Railway ✅
 
-## NEXT: Fix These 4 Issues (in order)
+## NEXT: Priority Issues
 
-### 1. BIGGEST: Extend sandy terrain
-The Bikini Bottom GLB has a small sandy patch — everything outside is dark ocean floor.
-- [ ] Add a large sand-colored plane (color ~0xe8d5b0) UNDER the Bikini Bottom GLB
-- [ ] Make it cover the entire map area (MAP_WIDTH * 3 x MAP_HEIGHT * 3)
-- [ ] Position at y=-6 or lower so it sits just below the Bikini Bottom terrain
-- [ ] This way the sandy patch blends into more sand, not dark void
-- File: `apps/web/src/lib/three/arena-terrain.tsx`
+### 1. ~~NPCs not moving~~ DONE
+- [x] Root cause: API SSE stream sending 10 idle NPCs overwriting client wander
+- [x] Fix: disabled SSE stream, demo wander runs freely with 10 colorful lobsters
 
-### 2. Spread buildings apart
-Buildings are clustered too close together — hard to distinguish them.
-- [ ] Adjust building zone positions in `apps/web/src/lib/pixi/tilemap-data.ts` (buildingZones array)
-- [ ] Spread the x,y tile coordinates further apart
-- [ ] Current map is 40x25 tiles — use more of that space
-- [ ] Consider reducing building count visible at once or making the map larger
+### 2. Location NPC models — unique character per building
+Each building needs a dedicated NPC that stands in front and teaches the building's skill.
+- [ ] Find/create 10 unique character GLB models (one per building theme)
+- [ ] Possible sources: Sketchfab, ReadyPlayerMe, Mixamo characters
+- [ ] Suggested characters per building:
+  - cron-hub (Tide Clock): clockwork robot / old sailor
+  - webhook-gateway (Krusty Krab): SpongeBob-style fry cook
+  - memory-vault (Squidward's): librarian / scholar
+  - skill-forge (Chum Bucket): blacksmith / mad scientist
+  - channel-bridge (Shipwreck): pirate captain
+  - tool-workshop (Submarine): mechanic / engineer
+  - canvas-studio (Pineapple): artist / painter
+  - voice-tower (Tower): bard / town crier
+  - security-fortress (Rock): knight / guard
+  - config-citadel (Seashell): wizard / sage
+- [ ] Place each NPC at the entrance of their building using buildingZones positions
+- [ ] Wire up interaction — clicking NPC opens the building's chat/shop
+- File: create `apps/web/src/lib/three/arena-location-npcs.tsx`
 
-### 3. NPCs bigger + actually moving
-NPCs are tiny dots and appear stationary.
-- [ ] Increase NPC_SCALE from 4 to 8 in `apps/web/src/lib/three/arena-npcs.tsx`
-- [ ] Increase wander speed from 1.5 to 4 in `apps/web/src/stores/npc.ts` (tickDemoNpcs function)
-- [ ] Increase wander tick rate from 200ms to 100ms for smoother movement
-- [ ] Verify demo wander auto-start is enabled (check bottom of npc.ts for startDemoWander call)
+### 3. ~~Ground texture + decorations~~ DONE
+- [x] Procedural sand texture (canvas noise + ripples, tiled 24x16)
+- [x] Replaced blue blob decorations with 12 coral-reef + kelp models
 
-### 4. Wire up underwater decorations
-Downloaded but not in scene yet: `apps/web/public/models/underwater-decorations.glb` (6MB)
-- [ ] Load with useGLTF in arena-terrain.tsx
-- [ ] Clone and scatter individual pieces (rocks, kelp, seaweed) around map edges
-- [ ] Or load the whole scene as one decoration cluster and place copies around the border
-- [ ] Keep draw calls low — the GLB is pre-baked so should be efficient
+## DONE (this session)
+
+### ~~Extend sandy terrain~~ DONE
+- [x] Added sand plane (0xe8d5b0) at y=-6, MAP_WIDTH*3 x MAP_HEIGHT*3
+
+### ~~Spread buildings apart~~ DONE
+- [x] Repositioned all 10 buildingZones across full 40x25 grid
+
+### ~~NPCs bigger~~ DONE
+- [x] NPC_SCALE 4->8, speed 1.5->4, tick 200->100ms
+
+### ~~Wire up underwater decorations~~ DONE
+- [x] underwater-decorations.glb loaded + 8 clones scattered at map edges
+
+### ~~Building edit mode~~ DONE
+- [x] Visit /game?edit=1 to drag-and-drop buildings, copy positions
 
 ## Completed
 - [x] WebGPU renderer with WebGL2 fallback
