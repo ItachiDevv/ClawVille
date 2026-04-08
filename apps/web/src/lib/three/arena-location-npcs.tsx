@@ -13,13 +13,13 @@ import {
 import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
 
 // ---------------------------------------------------------------------------
-// Location NPCs — one themed lobster stationed at each building entrance
-// Uses the lobster GLB with strong color tinting per building theme
+// Location NPCs — SpongeBob characters stationed at their canonical buildings
+// Each character is an AI agent that teaches skills from their building's
+// knowledge base. They ARE the agents — not decoration.
 // ---------------------------------------------------------------------------
 
 const OFFSET_X = -MAP_WIDTH / 2;
 const OFFSET_Z = -MAP_HEIGHT / 2;
-const NPC_SCALE = 6;
 
 // Raycaster for terrain Y
 const _locRaycaster = new THREE.Raycaster();
@@ -27,21 +27,36 @@ _locRaycaster.layers.set(TERRAIN_LAYER);
 const _locRayOrigin = new THREE.Vector3();
 const _locRayDir = new THREE.Vector3(0, -1, 0);
 
-useGLTF.preload('/models/lobster.glb');
-
-// Each building gets a themed NPC with distinct color + name
-const LOCATION_NPCS: Record<string, { name: string; color: number; offsetX: number; offsetZ: number }> = {
-  'cron-hub':          { name: 'Chronos',    color: 0xffd700, offsetX: 2, offsetZ: 2 },   // gold — time keeper
-  'webhook-gateway':   { name: 'Flipper',    color: 0xff6b35, offsetX: 2, offsetZ: 2 },   // orange — fry cook
-  'memory-vault':      { name: 'Archivius',  color: 0x6a5acd, offsetX: 2, offsetZ: 2 },   // slate blue — scholar
-  'skill-forge':       { name: 'Cinder',     color: 0x22dd22, offsetX: 2, offsetZ: 2 },   // green — mad scientist
-  'channel-bridge':    { name: 'Barnacle',   color: 0x8b4513, offsetX: 2, offsetZ: 2 },   // brown — pirate
-  'tool-workshop':     { name: 'Wrench',     color: 0xaaaaaa, offsetX: 2, offsetZ: 2 },   // silver — mechanic
-  'canvas-studio':     { name: 'Palette',    color: 0xff69b4, offsetX: 2, offsetZ: 2 },   // hot pink — artist
-  'voice-tower':       { name: 'Echo',       color: 0x00bfff, offsetX: 2, offsetZ: 2 },   // sky blue — bard
-  'security-fortress': { name: 'Shield',     color: 0xcc2222, offsetX: 2, offsetZ: 2 },   // dark red — guard
-  'config-citadel':    { name: 'Sage',       color: 0x9932cc, offsetX: 2, offsetZ: 2 },   // purple — wizard
+// Character → Building mapping (SpongeBob themed)
+const LOCATION_NPCS: Record<string, {
+  name: string;
+  model: string;
+  scale: number;
+  yOffset: number;
+  offsetX: number;
+  offsetZ: number;
+  rotY?: number;
+}> = {
+  'canvas-studio':     { name: 'SpongeBob',  model: '/models/characters/spongebob.glb', scale: 8,  yOffset: 0,  offsetX: 2, offsetZ: 2 },
+  'security-fortress': { name: 'Patrick',     model: '/models/characters/patrick.glb',   scale: 10, yOffset: 0,  offsetX: 2, offsetZ: 2 },
+  'memory-vault':      { name: 'Squidward',   model: '/models/characters/squidward.glb', scale: 10, yOffset: 0,  offsetX: 2, offsetZ: 2 },
+  'webhook-gateway':   { name: 'Mr. Krabs',   model: '/models/characters/mr-krabs.glb',  scale: 10, yOffset: 0,  offsetX: 2, offsetZ: 2 },
+  'skill-forge':       { name: 'Plankton',    model: '/models/characters/plankton.glb',  scale: 12, yOffset: 0,  offsetX: 2, offsetZ: 2 },
+  'cron-hub':          { name: 'Gary',         model: '/models/characters/gary.glb',      scale: 10, yOffset: 0,  offsetX: 2, offsetZ: 2 },
+  'channel-bridge':    { name: 'Sandy',        model: '/models/characters/sandy.glb',     scale: 10, yOffset: 0,  offsetX: 2, offsetZ: 2 },
+  'tool-workshop':     { name: 'Karen',        model: '/models/characters/karen.glb',     scale: 10, yOffset: 0,  offsetX: 2, offsetZ: 2 },
+  'voice-tower':       { name: 'Mrs. Puff',    model: '/models/characters/mrs-puff.glb',  scale: 10, yOffset: 0,  offsetX: 2, offsetZ: 2 },
+  'config-citadel':    { name: 'Larry',        model: '/models/characters/sandy.glb',     scale: 10, yOffset: 0,  offsetX: 2, offsetZ: 2 }, // reuse sandy until we find Larry
 };
+
+// Preload all character models
+const preloaded = new Set<string>();
+Object.values(LOCATION_NPCS).forEach(({ model }) => {
+  if (!preloaded.has(model)) {
+    useGLTF.preload(model);
+    preloaded.add(model);
+  }
+});
 
 function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
   _locRayOrigin.set(x, 200, z);
@@ -66,27 +81,11 @@ const LocationNpc = memo(function LocationNpc({
 
   const groupRef = useRef<THREE.Group>(null);
   const { scene: threeScene } = useThree();
-  const { scene } = useGLTF('/models/lobster.glb');
+  const { scene } = useGLTF(config.model);
   const terrainY = useRef(-15);
   const placed = useRef(false);
 
-  const cloned = useMemo(() => {
-    const c = scene.clone(true);
-    const color = new THREE.Color(config.color);
-    c.traverse((child) => {
-      if ((child as THREE.Mesh).isMesh) {
-        const mesh = child as THREE.Mesh;
-        if (mesh.material) {
-          const mat = (mesh.material as THREE.MeshStandardMaterial).clone();
-          mat.color.lerp(color, 0.8);
-          mat.emissive = color.clone();
-          mat.emissiveIntensity = 0.3;
-          mesh.material = mat;
-        }
-      }
-    });
-    return c;
-  }, [scene, config.color]);
+  const cloned = useMemo(() => scene.clone(true), [scene]);
 
   // Place on terrain + idle bob animation
   useFrame(({ clock }) => {
@@ -101,27 +100,25 @@ const LocationNpc = memo(function LocationNpc({
     }
 
     const bob = Math.sin(clock.elapsedTime * 1.5) * 0.5;
-    groupRef.current.position.set(worldX, terrainY.current + 2 + bob, worldZ);
-    // Face toward building center (rotate 180 to face outward)
-    groupRef.current.rotation.y = Math.PI;
+    groupRef.current.position.set(worldX, terrainY.current + config.yOffset + 2 + bob, worldZ);
+    groupRef.current.rotation.y = config.rotY ?? Math.PI;
   });
 
   return (
-    <group ref={groupRef} scale={[NPC_SCALE, NPC_SCALE, NPC_SCALE]}>
+    <group ref={groupRef} scale={[config.scale, config.scale, config.scale]}>
       <primitive object={cloned} />
     </group>
   );
 });
 
 // ---------------------------------------------------------------------------
-// Main export — renders one NPC per building zone
+// Main export — renders one character NPC per building zone
 // ---------------------------------------------------------------------------
 export default function ArenaLocationNpcs() {
   const npcs = useMemo(() => {
     return buildingZones.map((zone) => {
       const config = LOCATION_NPCS[zone.id];
       if (!config) return null;
-      // Position NPC slightly in front of building (offset by tiles)
       const cx = OFFSET_X + (zone.x + zone.width / 2 + config.offsetX) * TILE_SIZE;
       const cz = OFFSET_Z + (zone.y + zone.height + config.offsetZ) * TILE_SIZE;
       return { zoneId: zone.id, worldX: cx, worldZ: cz };
