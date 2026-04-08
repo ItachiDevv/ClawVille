@@ -97,13 +97,13 @@ export async function POST(request: NextRequest) {
       return error(result.error.issues[0].message, 400);
     }
 
-    // Check if user already has a pet
-    const existingPet = await db.query.pets.findFirst({
+    // Check how many agents this user already has (max 6)
+    const existingPets = await db.query.pets.findMany({
       where: eq(pets.userId, user.id),
     });
 
-    if (existingPet) {
-      return error('You already have a pet', 400);
+    if (existingPets.length >= 6) {
+      return error('Maximum 6 agents allowed', 400);
     }
 
     // Check name uniqueness
@@ -148,6 +148,8 @@ export async function POST(request: NextRequest) {
       stats,
       characterConfig,
       platformAgentId: agent.id,
+      slotIndex: existingPets.length,
+      isActive: existingPets.length === 0,
     }).returning();
 
     return json({ pet, agentId: agent.id });

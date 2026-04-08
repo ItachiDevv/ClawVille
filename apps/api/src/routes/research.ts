@@ -5,7 +5,7 @@ import { articleScraper } from '../services/article-scraper';
 import { researchService } from '../services/research-service';
 import { researchEventBus } from './research-sse';
 import { npcSimulation } from '../services/npc-simulation';
-import { db, pets, eq } from '@elizapets/database';
+import { db, pets, eq, and } from '@elizapets/database';
 import type { AppContext } from '../types';
 
 export const researchApiRoutes = new Hono<AppContext>();
@@ -73,7 +73,7 @@ researchApiRoutes.post('/trigger', sessionMiddleware, async (c) => {
     return c.json({ error: 'Authentication required for pet research' }, 401);
   }
 
-  const pet = await db.query.pets.findFirst({ where: eq(pets.userId, user.id) });
+  const pet = await db.query.pets.findFirst({ where: and(eq(pets.userId, user.id), eq(pets.isActive, true)) });
   if (!pet) {
     return c.json({ error: 'No pet found' }, 404);
   }

@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
-import { db, pets, eq } from '@elizapets/database';
+import { db, pets, eq, and } from '@elizapets/database';
 import { json, error, requireAuth } from '@/lib/api-utils';
 
 export async function GET() {
@@ -10,7 +10,7 @@ export async function GET() {
     const { user } = authResult;
 
     const pet = await db.query.pets.findFirst({
-      where: eq(pets.userId, user.id),
+      where: and(eq(pets.userId, user.id), eq(pets.isActive, true)),
     });
 
     return json({ pet: pet ?? null });
@@ -45,7 +45,7 @@ export async function PATCH(request: NextRequest) {
         positionY: result.data.positionY,
         updatedAt: new Date(),
       })
-      .where(eq(pets.userId, user.id))
+      .where(and(eq(pets.userId, user.id), eq(pets.isActive, true)))
       .returning();
 
     if (!updated) {

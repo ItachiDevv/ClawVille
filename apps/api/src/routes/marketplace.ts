@@ -13,7 +13,7 @@ export const marketplaceRoutes = new Hono<AppContext>();
 // Helper: get current user's pet (throws if not found)
 async function getUserPet(userId: string) {
   const pet = await db.query.pets.findFirst({
-    where: eq(pets.userId, userId),
+    where: and(eq(pets.userId, userId), eq(pets.isActive, true)),
   });
   if (!pet) throw new HTTPException(404, { message: 'No pet found' });
   return pet;
@@ -171,7 +171,7 @@ marketplaceRoutes.get('/skills', sessionMiddleware, async (c) => {
   // Check upvotes for current user's pet (if authenticated)
   let upvotedSet = new Set<string>();
   if (user) {
-    const pet = await db.query.pets.findFirst({ where: eq(pets.userId, user.id) });
+    const pet = await db.query.pets.findFirst({ where: and(eq(pets.userId, user.id), eq(pets.isActive, true)) });
     if (pet) {
       const skillIds = allSkills.map((s: any) => s.id);
       if (skillIds.length > 0) {
@@ -248,7 +248,7 @@ marketplaceRoutes.get('/skills/:id', sessionMiddleware, async (c) => {
   let hasUpvoted = false;
 
   if (user) {
-    const pet = await db.query.pets.findFirst({ where: eq(pets.userId, user.id) });
+    const pet = await db.query.pets.findFirst({ where: and(eq(pets.userId, user.id), eq(pets.isActive, true)) });
     if (pet) {
       const [upvote] = await db
         .select({ id: skillUpvotes.id })
@@ -307,7 +307,7 @@ marketplaceRoutes.post('/skills/:id/upvote', sessionMiddleware, async (c) => {
   const clawSessionId: string | undefined = body.clawSessionId;
 
   if (user) {
-    const pet = await db.query.pets.findFirst({ where: eq(pets.userId, user.id) });
+    const pet = await db.query.pets.findFirst({ where: and(eq(pets.userId, user.id), eq(pets.isActive, true)) });
     if (pet) petId = pet.id;
   }
 

@@ -56,7 +56,7 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
 
   // Get visitor's pet info
   const pet = await db.query.pets.findFirst({
-    where: eq(pets.userId, user.id),
+    where: and(eq(pets.userId, user.id), eq(pets.isActive, true)),
   });
 
   if (pet) {

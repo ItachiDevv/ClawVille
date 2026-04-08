@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
-import { db, pets, eq } from '@elizapets/database';
+import { db, pets, eq, and } from '@elizapets/database';
 import { json, error, requireAuth } from '@/lib/api-utils';
 import { agentOrchestrator } from '@/services/agent-orchestrator';
 
@@ -21,9 +21,9 @@ export async function POST(request: NextRequest) {
       return error('Message must be 1-4000 characters', 400);
     }
 
-    // Get user's pet
+    // Get user's active pet
     const pet = await db.query.pets.findFirst({
-      where: eq(pets.userId, user.id),
+      where: and(eq(pets.userId, user.id), eq(pets.isActive, true)),
     });
 
     if (!pet) {

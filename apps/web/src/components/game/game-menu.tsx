@@ -22,7 +22,7 @@ type MenuView = 'main' | 'locations' | 'help';
 
 export default function GameMenu() {
   const router = useRouter();
-  const { menuOpen, setMenuOpen, setSettingsModalOpen, openLocationConfig, openclawConnected, setOpenclawModalOpen, setSkillBuilderOpen, openMarketplace } =
+  const { menuOpen, setMenuOpen, setSettingsModalOpen, openLocationConfig, openclawConnected, setOpenclawModalOpen, setSkillBuilderOpen, openMarketplace, openBazaar, openAuction, openQuestBoard, openBountyBoard } =
     useGameStore();
   const [view, setView] = useState<MenuView>('main');
   const menuRef = useRef<HTMLDivElement>(null);
@@ -168,6 +168,46 @@ export default function GameMenu() {
               >
                 <span className="text-lg">🛒</span>
                 Marketplace
+              </button>
+              <button
+                onClick={() => {
+                  setMenuOpen(false);
+                  openBazaar();
+                }}
+                className="w-full px-4 py-3 text-left text-white font-semibold hover:bg-yellow-400/50 transition-colors flex items-center gap-3"
+              >
+                <span className="text-lg">⚖️</span>
+                Skill Bazaar
+              </button>
+              <button
+                onClick={() => {
+                  setMenuOpen(false);
+                  openAuction();
+                }}
+                className="w-full px-4 py-3 text-left text-white font-semibold hover:bg-yellow-400/50 transition-colors flex items-center gap-3"
+              >
+                <span className="text-lg">🔨</span>
+                Auction House
+              </button>
+              <button
+                onClick={() => {
+                  setMenuOpen(false);
+                  openQuestBoard();
+                }}
+                className="w-full px-4 py-3 text-left text-white font-semibold hover:bg-yellow-400/50 transition-colors flex items-center gap-3"
+              >
+                <span className="text-lg">📜</span>
+                Quest Board
+              </button>
+              <button
+                onClick={() => {
+                  setMenuOpen(false);
+                  openBountyBoard();
+                }}
+                className="w-full px-4 py-3 text-left text-white font-semibold hover:bg-yellow-400/50 transition-colors flex items-center gap-3"
+              >
+                <span className="text-lg">📌</span>
+                Bounty Board
               </button>
               <button
                 onClick={() => setView('help')}
