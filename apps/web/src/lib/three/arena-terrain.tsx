@@ -133,9 +133,9 @@ const DECORATIONS: DecoEntry[] = [
   { model: '/models/building-anchor.glb',     x: 0,    z: -400, scale: 3, rotY: 1.0 },
   { model: '/models/building-barrel.glb',     x: 600,  z: -380, scale: 2.5, rotY: 2.5 },
   // South border
-  { model: '/models/building-shipwreck.glb',  x: -500, z: 380,  scale: 2.5, rotY: 0.8 },
+  { model: '/models/building-shipwreck.glb',  x: -800, z: 500,  scale: 0.5, rotY: 0.8 },
   { model: '/models/building-chest.glb',      x: 100,  z: 400,  scale: 2, rotY: 3.0 },
-  { model: '/models/building-submarine.glb',  x: 550,  z: 370,  scale: 2,  rotY: 1.5 },
+  { model: '/models/building-submarine.glb',  x: 800,  z: 500,  scale: 0.5, rotY: 1.5 },
   // East border
   { model: '/models/building-tower2.glb',     x: 630,  z: -150, scale: 2.5, rotY: 0 },
   { model: '/models/building-seashell.glb',   x: 640,  z: 150,  scale: 2, rotY: 2.0 },
