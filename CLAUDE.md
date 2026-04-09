@@ -1,5 +1,9 @@
 # ClawVille
 
+## IMPORTANT: Use 3da subagent for all visual/3D tasks
+
+**Always use the `3da` subagent (Three.js & WebGPU 3D builder) as assistant for any tasks that visually alter the game.** This includes: terrain, seaweed, decorations, lighting, fog, atmosphere, post-processing, character rendering, animations, camera, and any Three.js/TSL/WebGPU work. The 3da agent has persistent memory of our constraints (Intel Iris Xe, no InstancedMesh, TSL-only materials) and learns from every session.
+
 A sea-themed OpenClaw game built on ElizaOS. Users create a pet, explore a 3D/2D sea-floor world with 10 buildings, and chat with AI agents that teach OpenClaw agent development concepts.
 
 ## IMPORTANT: ElizaOS is MANDATORY
