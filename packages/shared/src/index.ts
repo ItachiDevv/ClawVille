@@ -16,5 +16,6 @@ export * from './types/marketplace';
 export * from './types/claw';
 export * from './types/agent-gateway';
 export * from './types/quest';
+export * from './types/bounty';
 export * from './constants/article-seeds';
 export * from './constants/quest-seeds';

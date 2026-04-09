@@ -100,7 +100,7 @@ function BountyCard({
   const [expanded, setExpanded] = useState(false);
   const difficulty = bounty.difficulty || 'beginner';
   const diffConfig = DIFFICULTY_STYLES[difficulty] || DIFFICULTY_STYLES.beginner;
-  const claimedCount = bounty.claimedCount ?? 0;
+  const claimedCount = bounty.currentAttempts ?? 0;
   const maxAttempts = bounty.maxAttempts ?? 1;
   const isFull = claimedCount >= maxAttempts;
 
@@ -149,10 +149,9 @@ function BountyCard({
 
       <div className="flex items-center justify-between mt-2">
         <div className="flex items-center gap-3">
-          {bounty.creatorName && (
+          {bounty.creatorAvatarName && (
             <span className="flex items-center gap-1.5 text-[10px] text-gray-500">
-              by <span className="text-gray-300 font-medium">{bounty.creatorName}</span>
-              {bounty.creatorReputation && <ReputationBadge tier={bounty.creatorReputation} />}
+              by <span className="text-gray-300 font-medium">{bounty.creatorAvatarName}</span>
             </span>
           )}
           <span className="text-[10px] text-gray-500">
@@ -396,7 +395,7 @@ function CreatorBountyCard({
             {bounty.tokenReward ?? 0} <span className="text-xs">&#x1FA99;</span>
           </span>
           <span className="text-[10px] text-gray-500">
-            {bounty.claimedCount ?? 0}/{bounty.maxAttempts ?? 1} claimed
+            {bounty.currentAttempts ?? 0}/{bounty.maxAttempts ?? 1} claimed
           </span>
         </div>
       </div>
@@ -929,7 +928,7 @@ export default function BountyBoardModal() {
       />
 
       {/* Modal */}
-      <div className="relative w-full max-w-4xl max-h-[90vh] flex flex-col">
+      <div className="relative w-full max-w-4xl max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
         <div className="claw-panel flex flex-col overflow-hidden bg-gradient-to-b from-[#1a1208] to-[#0f1a2e] border-2 border-amber-500/30">
           {/* Header */}
           <div className="flex items-center justify-between px-5 pt-4 pb-3">
