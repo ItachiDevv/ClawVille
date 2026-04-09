@@ -215,16 +215,30 @@ export const useGameStore = create<GameState>((set, get) => ({
   controlMode: 'explore',
   hasAgent: false,
   possessedNpcId: null,
-  setControlMode: (mode) =>
+  setControlMode: (mode) => {
+    // Auto-select first NPC when entering npc mode; clear when leaving
+    let possessedNpcId: string | null = get().possessedNpcId;
+    if (mode === 'npc' && !possessedNpcId) {
+      // Lazy import — avoids circular module dep (both are plain Zustand stores)
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { useNpcStore } = require('@/stores/npc') as typeof import('@/stores/npc');
+      const firstNpc = useNpcStore.getState().npcs[0];
+      possessedNpcId = firstNpc?.id ?? null;
+    } else if (mode !== 'npc') {
+      possessedNpcId = null;
+    }
     set({
       controlMode: mode,
       isSpectator: mode === 'explore' || mode === 'npc',
-    }),
+      possessedNpcId,
+    });
+  },
   toggleControlMode: () => {
     const { hasAgent, controlMode } = get();
     if (!hasAgent) {
       const next: ControlMode = controlMode === 'explore' ? 'npc' : 'explore';
-      set({ controlMode: next, isSpectator: next === 'explore' || next === 'npc' });
+      // Reuse setControlMode so NPC auto-select / clear logic runs
+      get().setControlMode(next);
     } else {
       const next: ControlMode = controlMode === 'player' ? 'autonomous' : 'player';
       set({ controlMode: next, isSpectator: false });

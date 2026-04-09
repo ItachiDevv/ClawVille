@@ -113,6 +113,8 @@ export interface NpcStoreState {
   setConnected: (v: boolean) => void;
   updateFromSnapshot: (snapshot: ServerSnapshot) => void;
   cleanupExpired: () => void;
+  /** Directly move a possessed NPC — skips wander logic, updates prevX/prevY for interpolation */
+  moveNpc: (id: string, x: number, y: number, direction: NpcSpriteState['direction']) => void;
 }
 
 // Demo NPCs shown when API server is not connected
@@ -148,7 +150,14 @@ function tickDemoNpcs(npcs: NpcSpriteState[]): NpcSpriteState[] {
   const now = Date.now();
   const speed = 4; // pixels per tick
 
+  // Lazy import to avoid circular dep — both stores are plain Zustand, no circular JS modules
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { useGameStore } = require('@/stores/game') as typeof import('@/stores/game');
+  const possessedNpcId = useGameStore.getState().possessedNpcId;
+
   return npcs.map((npc) => {
+    // Skip wander for possessed NPC — player WASD drives it via moveNpc()
+    if (possessedNpcId && npc.id === possessedNpcId) return npc;
     let ws = wanderStates.get(npc.id);
     if (!ws) {
       ws = pickNewTarget(npc);
@@ -359,6 +368,16 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
       chatBubbles: s.chatBubbles.filter((b) => b.expiresAt > ts),
       combatEvents: s.combatEvents.filter((e) => e.expiresAt > ts),
       lootEvents: s.lootEvents.filter((e) => e.expiresAt > ts),
+    }));
+  },
+
+  moveNpc: (id, x, y, direction) => {
+    set((s) => ({
+      npcs: s.npcs.map((npc) =>
+        npc.id === id
+          ? { ...npc, prevX: npc.x, prevY: npc.y, x, y, direction }
+          : npc
+      ),
     }));
   },
 }));
