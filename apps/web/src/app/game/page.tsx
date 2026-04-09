@@ -31,6 +31,7 @@ import DailyLoginModal from '@/components/game/daily-login-modal';
 import QuestTracker from '@/components/game/quest-tracker';
 import ThoughtLog from '@/components/game/thought-log';
 import ControlModeToggle from '@/components/game/control-mode-toggle';
+import AutonomyHUD from '@/components/game/autonomy-hud';
 import { useResearchStream } from '@/hooks/use-research-stream';
 
 const World3DCanvas = dynamic(() => import('@/components/three/World3DCanvas'), {
@@ -192,6 +193,9 @@ export default function GamePage() {
 
       {/* Mobile controls also available for spectators to move camera */}
       {isSpectator && <MobileControls />}
+
+      {/* Autonomy HUD — visible when agent is in autonomous mode */}
+      <AutonomyHUD />
 
       {/* Research thought log — visible for all users */}
       <ThoughtLog />

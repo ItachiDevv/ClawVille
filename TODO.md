@@ -14,42 +14,23 @@
 - Terrain raycasting with Layer 1 isolation ✅
 - Deployed to Railway ✅
 
-## NEXT: Control System Redesign
+## Completed: Control System Redesign
 
-### Step 1. Game store — add control mode state
-- [ ] New state: `controlMode: 'explore' | 'npc' | 'player' | 'autonomous'`
-- [ ] New state: `hasAgent: boolean`
-- [ ] Actions: `setControlMode`, `toggleControlMode`
-- [ ] File: `apps/web/src/stores/game.ts`
+### Step 1. Game store — add control mode state ✅
+### Step 2. Separate WASD from Arrow Keys ✅
+### Step 3. New camera controllers (FPS follow + WASD pan + Arrow rotation) ✅
+### Step 4. NPC possession mode (WASD drives NPC, camera follows) ✅
+### Step 5. Autonomous mode ✅
+- [x] Goal-driven autonomy engine (`stores/autonomy.ts`) with state machine
+- [x] Scoring: unvisited buildings +50, proximity +20, variety bonus +25
+- [x] Reuses clickPath for movement (zero 3D changes)
+- [x] WASD/E/Escape disabled in autonomous mode
+- [x] Autonomy HUD showing goals, thoughts, session stats
+- [x] `enterBuilding` / `exitBuilding` with timed study sessions (8-15s)
+- [x] External goal injection via `injectGoal()` for OpenClaw/Hermes
+### Step 6. Mode toggle UI ✅
 
-### Step 2. Separate WASD from Arrow Keys
-- [ ] WASD = movement (camera pan in explore, character move in player/npc)
-- [ ] Arrow Keys = camera rotation (orbit azimuth/polar in ALL modes)
-- [ ] New `ArrowKeysCameraRotator` component
-- [ ] Files: `World3DCanvas.tsx`, `player-pet.tsx`
-
-### Step 3. New camera controllers
-- [ ] `FPSFollowCamera` — close behind character, arrow keys rotate orbit
-- [ ] Adapt `PetFollowCamera` for NPC follow mode
-- [ ] Keep `WASDCameraController` for Explore mode (WASD pan only)
-- [ ] File: `World3DCanvas.tsx`
-
-### Step 4. NPC possession mode
-- [ ] "NPC" mode: select nearest NPC, WASD overrides NPC movement
-- [ ] Camera follows possessed NPC from 3rd person
-- [ ] Files: `arena-npcs.tsx`, `stores/npc.ts`, `stores/game.ts`
-
-### Step 5. Autonomous mode
-- [ ] Agent character moves via NPC simulation (autonomous)
-- [ ] Camera follows from FPS perspective, no WASD input
-- [ ] Player sees what agent learns in real-time
-- [ ] Files: `player-pet.tsx`, `World3DCanvas.tsx`
-
-### Step 6. Mode toggle UI
-- [ ] `ControlModeToggle` component — top-center of screen
-- [ ] No agent: "Explore / NPC" toggle + agent connect button
-- [ ] With agent: "Player / Autonomous" toggle
-- [ ] File: new `apps/web/src/components/game/control-mode-toggle.tsx`
+## NEXT: Autonomous Agent Enhancements
 
 ---
 
