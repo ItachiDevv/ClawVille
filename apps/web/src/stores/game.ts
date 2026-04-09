@@ -216,6 +216,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   hasAgent: false,
   possessedNpcId: null,
   setControlMode: (mode) => {
+    const prev = get().controlMode;
     // Auto-select first NPC when entering npc mode; clear when leaving
     let possessedNpcId: string | null = get().possessedNpcId;
     if (mode === 'npc' && !possessedNpcId) {
@@ -226,6 +227,16 @@ export const useGameStore = create<GameState>((set, get) => ({
       possessedNpcId = firstNpc?.id ?? null;
     } else if (mode !== 'npc') {
       possessedNpcId = null;
+    }
+    // Stop autonomy engine when leaving autonomous mode
+    if (prev === 'autonomous' && mode !== 'autonomous') {
+      const { useAutonomyStore } = require('@/stores/autonomy') as typeof import('@/stores/autonomy');
+      useAutonomyStore.getState().stopAutonomy();
+    }
+    // Start autonomy engine when entering autonomous mode
+    if (mode === 'autonomous' && prev !== 'autonomous') {
+      const { useAutonomyStore } = require('@/stores/autonomy') as typeof import('@/stores/autonomy');
+      useAutonomyStore.getState().startAutonomy();
     }
     set({
       controlMode: mode,
@@ -242,6 +253,13 @@ export const useGameStore = create<GameState>((set, get) => ({
     } else {
       const next: ControlMode = controlMode === 'player' ? 'autonomous' : 'player';
       set({ controlMode: next, isSpectator: false });
+      // Start/stop autonomy engine when toggling autonomous mode
+      const { useAutonomyStore } = require('@/stores/autonomy') as typeof import('@/stores/autonomy');
+      if (next === 'autonomous') {
+        useAutonomyStore.getState().startAutonomy();
+      } else {
+        useAutonomyStore.getState().stopAutonomy();
+      }
     }
   },
   setHasAgent: (v) =>

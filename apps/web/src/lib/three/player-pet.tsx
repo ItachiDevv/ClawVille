@@ -135,32 +135,41 @@ function PlayerPetInner() {
   useFrame((state, delta) => {
     const store = useGameStore.getState();
     if (store.movementFrozen) {
-      const escNow = keyState.escape;
-      if (escNow && !lastEscState && store.chatOpen) store.exitBuilding();
-      lastEscState = escNow;
+      // In autonomous mode, don't let Escape exit buildings — the autonomy tick handles timing
+      if (store.controlMode !== 'autonomous') {
+        const escNow = keyState.escape;
+        if (escNow && !lastEscState && store.chatOpen) store.exitBuilding();
+        lastEscState = escNow;
+      }
       return;
     }
     lastEscState = keyState.escape;
 
-    const eNow = keyState.e;
-    if (eNow && !lastEState && store.nearLocation) {
-      store.enterBuilding(store.nearLocation);
+    // In autonomous mode, don't let E key enter buildings — the autonomy tick handles navigation
+    if (store.controlMode !== 'autonomous') {
+      const eNow = keyState.e;
+      if (eNow && !lastEState && store.nearLocation) {
+        store.enterBuilding(store.nearLocation);
+        lastEState = eNow;
+        return;
+      }
       lastEState = eNow;
-      return;
     }
-    lastEState = eNow;
 
     let vx = 0, vy = 0;
-    // Only WASD drives pet movement — arrow keys rotate the camera (ArrowKeyRotationController)
-    if (keyState.w) vy = -1;
-    if (keyState.s) vy = 1;
-    if (keyState.a) vx = -1;
-    if (keyState.d) vx = 1;
+    // In autonomous mode, skip WASD/joystick — the autonomy store drives movement via clickPath
+    if (store.controlMode !== 'autonomous') {
+      // Only WASD drives pet movement — arrow keys rotate the camera (ArrowKeyRotationController)
+      if (keyState.w) vy = -1;
+      if (keyState.s) vy = 1;
+      if (keyState.a) vx = -1;
+      if (keyState.d) vx = 1;
 
-    const { joystickVelocity } = store;
-    if (joystickVelocity.x !== 0 || joystickVelocity.y !== 0) {
-      vx = joystickVelocity.x;
-      vy = joystickVelocity.y;
+      const { joystickVelocity } = store;
+      if (joystickVelocity.x !== 0 || joystickVelocity.y !== 0) {
+        vx = joystickVelocity.x;
+        vy = joystickVelocity.y;
+      }
     }
 
     const hasInput = vx !== 0 || vy !== 0;
