@@ -96,8 +96,8 @@ function WASDCameraController({
     let dx = 0;
     let dz = 0;
 
-    if (keys.w || keys.arrowup) dz -= 1;
-    if (keys.s || keys.arrowdown) dz += 1;
+    if (keys.w || keys.arrowup) dz += 1;
+    if (keys.s || keys.arrowdown) dz -= 1;
     if (keys.a || keys.arrowleft) dx -= 1;
     if (keys.d || keys.arrowright) dx += 1;
 
