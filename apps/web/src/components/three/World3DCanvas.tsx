@@ -254,7 +254,7 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       <directionalLight position={[300, 500, 200]} intensity={1.8} color={0xfff4e0} />
 
       {/* Underwater fog — closer near/far for atmospheric depth */}
-      <fog attach="fog" args={[FOG_COLOR, 200, 1200]} />
+      <fog attach="fog" args={[FOG_COLOR, 400, 1400]} />
 
       {/* Shared world geometry */}
       <ArenaTerrain />
@@ -359,7 +359,7 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
           fov: 55,
           near: 1,
           far: 2000,
-          position: mode === 'game' ? [0, 80, 150] : [0, 180, 300],
+          position: mode === 'game' ? [0, 100, 180] : [0, 200, 350],
         }}
         onCreated={({ scene, gl }) => {
           scene.background = SKY_COLOR;
