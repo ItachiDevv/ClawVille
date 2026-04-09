@@ -39,8 +39,8 @@ _buildRaycaster.layers.set(TERRAIN_LAYER);
 const _buildRayOrigin = new THREE.Vector3();
 const _buildRayDir = new THREE.Vector3(0, -1, 0);
 
-// Target height for all buildings (world units) — auto-normalized from bounding box
-const BUILDING_TARGET_HEIGHT = 40;
+// Target height for all buildings (world units) — large enough to see details
+const BUILDING_TARGET_HEIGHT = 65;
 
 // Map each building ID to a GLB model + display config
 const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number }> = {
@@ -121,11 +121,10 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
   const groupRef = useRef<THREE.Group>(null);
   const placed = useRef(false);
 
-  // Clone and compute normalized scale from bounding box
-  // Include config.model in deps to ensure each building gets its own isolated clone
+  // Clone and compute normalized scale — NO ground plane stripping
+  // stripGroundPlanes was eating actual building geometry (Patrick's Rock, Krusty Krab)
   const { cloned, buildingScale } = useMemo(() => {
     const c = scene.clone(true);
-    stripGroundPlanes(c);
     const s = computeBuildingScale(c);
     return { cloned: c, buildingScale: s };
   }, [scene, config.model]);
@@ -201,7 +200,6 @@ function EditableBuilding({
 
   const { cloned, buildingScale } = useMemo(() => {
     const c = scene.clone(true);
-    stripGroundPlanes(c);
     const s = computeBuildingScale(c);
     return { cloned: c, buildingScale: s };
   }, [scene]);
