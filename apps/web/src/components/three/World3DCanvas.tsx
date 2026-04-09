@@ -64,8 +64,9 @@ const _arrowKeys: Pick<KeyState, 'arrowup' | 'arrowdown' | 'arrowleft' | 'arrowr
 };
 
 const ARROW_ROT_SPEED = 1.5; // radians/second
-const PHI_MIN = 0.05;                // nearly straight up (toward water surface)
-const PHI_MAX = Math.PI - 0.05;      // nearly straight down (toward sea floor)
+const PHI_MIN = 0.15;                // look up toward surface (but not straight up)
+const PHI_MAX = Math.PI / 1.8;       // look down at floor (steeper than before)
+const CAM_Y_MIN = 10;                // never go below this Y (above ground)
 
 // Spherical scratch objects — allocated once, reused every frame
 const _offset = new THREE.Vector3();
@@ -127,6 +128,12 @@ function ArrowKeyRotationController({
 
     _offset.setFromSpherical(_spherical);
     camera.position.copy(controls.target).add(_offset);
+
+    // Clamp camera Y so it never goes underground
+    if (camera.position.y < CAM_Y_MIN) {
+      camera.position.y = CAM_Y_MIN;
+    }
+
     controls.update();
   });
 
@@ -267,7 +274,7 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
         enableRotate={true}
         minDistance={isGame ? 40 : 80}
         maxDistance={800}
-        maxPolarAngle={Math.PI - 0.05}
+        maxPolarAngle={Math.PI / 1.8}
         target={[0, 10, 0]}
       />
 
