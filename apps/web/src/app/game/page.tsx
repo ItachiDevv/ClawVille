@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
@@ -17,7 +17,7 @@ import Minimap from '@/components/game/minimap';
 import PetChatBar from '@/components/game/pet-chat-bar';
 import ShopOverlay from '@/components/game/shop-overlay';
 import InventoryModal from '@/components/game/inventory-modal';
-import SpectatorBanner from '@/components/game/spectator-banner';
+// SpectatorBanner removed — /game is always game mode, explore handles no-agent case
 import ActivityFeed from '@/components/game/activity-feed';
 import OpenClawConnectModal from '@/components/game/openclaw-connect-modal';
 import SkillBuilderModal from '@/components/game/skill-builder-modal';
@@ -61,13 +61,13 @@ const MobileControls = dynamic(() => import('@/components/game/mobile-controls')
   ssr: false,
 });
 
-function NanoClawBanner({ isSpectator }: { isSpectator: boolean }) {
+function NanoClawBanner() {
   const openclawConnected = useGameStore((s: GameState) => s.openclawConnected);
   const openclawSessionId = useGameStore((s: GameState) => s.openclawSessionId);
   const setOpenclawModalOpen = useGameStore((s: GameState) => s.setOpenclawModalOpen);
 
   return (
-    <div className={`fixed left-1/2 -translate-x-1/2 z-50 ${isSpectator ? 'top-[4.5rem]' : 'top-3'}`}>
+    <div className="fixed left-1/2 -translate-x-1/2 z-50 top-3">
       {openclawConnected ? (
         <button
           onClick={() => setOpenclawModalOpen(true)}
@@ -93,7 +93,6 @@ function NanoClawBanner({ isSpectator }: { isSpectator: boolean }) {
 export default function GamePage() {
   const router = useRouter();
   const { data: pet, isLoading } = usePet();
-  const [isSpectator, setIsSpectator] = useState(false);
 
   // Check if user is authenticated (separate from pet query)
   const { data: authData, isLoading: authLoading } = useQuery({
@@ -124,12 +123,10 @@ export default function GamePage() {
     }
   }, [pet, isLoading, authLoading, isAuthenticated, router]);
 
-  // Determine spectator mode
+  // Sync spectator state to game store (no pet = explore mode, has pet = player mode)
   useEffect(() => {
     if (!isLoading && !authLoading) {
-      const spectating = !pet;
-      setIsSpectator(spectating);
-      useGameStore.getState().setIsSpectator(spectating);
+      useGameStore.getState().setIsSpectator(!pet);
     }
   }, [pet, isLoading, authLoading]);
 
@@ -150,11 +147,13 @@ export default function GamePage() {
     );
   }
 
+  const hasPet = !!pet;
+
   return (
     <div className="game-container">
-      <World3DCanvas mode={isSpectator ? 'arena' : 'game'} />
+      <World3DCanvas mode="game" />
       <BuildingTooltip />
-      <NanoClawBanner isSpectator={isSpectator} />
+      <NanoClawBanner />
       <OpenClawConnectModal />
       <SkillBuilderModal />
       <MarketplaceModal />
@@ -163,21 +162,19 @@ export default function GamePage() {
       <QuestBoardModal />
       <BountyBoardModal />
 
-      {/* Always visible — game menu and minimap for all visitors */}
+      {/* Always visible — game menu, minimap, controls for all visitors */}
       <GameMenu />
       <Minimap />
       <ControlModeToggle />
+      <MobileControls />
+      <ToastNotifications />
 
-      {/* Spectator mode: show banner, hide pet-specific UI */}
-      {isSpectator && <SpectatorBanner />}
-
-      {/* Authenticated/pet UI — only shown when pet exists */}
-      {!isSpectator && (
+      {/* Pet-specific UI — only when agent exists */}
+      {hasPet && (
         <>
           <ChatPanel />
           <LocationHUD />
           <PetStatusBar />
-          <MobileControls />
           <QuestTracker />
           <PetSettingsModal />
           <LocationConfigModal />
@@ -185,14 +182,10 @@ export default function GamePage() {
           <ShopOverlay />
           <InventoryModal />
           <TutorialOverlay />
-          <ToastNotifications />
           <ActivityFeed />
           <DailyLoginModal />
         </>
       )}
-
-      {/* Mobile controls also available for spectators to move camera */}
-      {isSpectator && <MobileControls />}
 
       {/* Autonomy HUD — visible when agent is in autonomous mode */}
       <AutonomyHUD />
