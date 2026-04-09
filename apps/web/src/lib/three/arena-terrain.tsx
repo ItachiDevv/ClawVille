@@ -224,25 +224,34 @@ interface DecoEntry {
   rotY: number;
 }
 
-// Decoration models — scales must be LARGE LANDMARKS visible from default camera
+// Decoration models — scale ranges intentionally wide for dramatic size variation.
+// Heavier weight = more frequent. Coral/kelp reduced to ~1/3; variety models fill the rest.
 const DECO_TYPES = [
-  // Coral — tall reef formations, almost building-sized
-  { model: '/models/coral-reef1.glb', weight: 5, minScale: 10, maxScale: 20 },
-  { model: '/models/coral-reef2.glb', weight: 5, minScale: 10, maxScale: 18 },
-  { model: '/models/coral-reef3.glb', weight: 5, minScale: 10, maxScale: 18 },
-  // Kelp — tall forest columns, biggest decorations
-  { model: '/models/kelp.glb', weight: 7, minScale: 14, maxScale: 25 },
-  // Props — clearly visible objects
-  { model: '/models/building-anchor.glb', weight: 2, minScale: 5, maxScale: 8 },
-  { model: '/models/building-barrel.glb', weight: 2, minScale: 5, maxScale: 8 },
-  { model: '/models/building-shell.glb', weight: 3, minScale: 6, maxScale: 12 },
-  { model: '/models/building-lantern.glb', weight: 2, minScale: 6, maxScale: 10 },
-  { model: '/models/crayfish.glb', weight: 2, minScale: 6, maxScale: 12 },
-  // Large set pieces — shipwrecks and submarines as real landmarks
-  { model: '/models/building-shipwreck.glb', weight: 1, minScale: 1.0, maxScale: 2.0 },
-  { model: '/models/building-submarine.glb', weight: 1, minScale: 0.8, maxScale: 1.5 },
-  { model: '/models/building-seashell.glb', weight: 2, minScale: 5, maxScale: 10 },
-  { model: '/models/building-tower2.glb', weight: 1, minScale: 3, maxScale: 6 },
+  // Coral — moderate presence, dramatic scale swing
+  { model: '/models/coral-reef1.glb', weight: 3, minScale: 6,   maxScale: 28  },
+  { model: '/models/coral-reef2.glb', weight: 3, minScale: 5,   maxScale: 24  },
+  { model: '/models/coral-reef3.glb', weight: 3, minScale: 5,   maxScale: 22  },
+  // Kelp — reduced to a moderate accent, still tall
+  { model: '/models/kelp.glb',        weight: 3, minScale: 10,  maxScale: 30  },
+  // Shells — clusters of tiny to large
+  { model: '/models/building-shell.glb',    weight: 5, minScale: 2,   maxScale: 18  },
+  { model: '/models/building-seashell.glb', weight: 5, minScale: 2,   maxScale: 20  },
+  // Anchors — scattered singles, some tiny/rusted, some huge
+  { model: '/models/building-anchor.glb', weight: 4, minScale: 3,   maxScale: 14  },
+  // Barrels — common ocean-floor clutter
+  { model: '/models/building-barrel.glb', weight: 4, minScale: 3,   maxScale: 10  },
+  // Chests — treasure accents
+  { model: '/models/building-chest.glb',  weight: 4, minScale: 3,   maxScale: 12  },
+  // Lanterns — ambient glow props, small to medium
+  { model: '/models/building-lantern.glb', weight: 3, minScale: 4,  maxScale: 12  },
+  // Crayfish — scattered critters, small
+  { model: '/models/crayfish.glb',         weight: 3, minScale: 3,  maxScale: 10  },
+  // Tower2 — distinctive landmark towers, rare
+  { model: '/models/building-tower2.glb',  weight: 2, minScale: 4,  maxScale: 14  },
+  // Shipwrecks — rare but enormous landmarks
+  { model: '/models/building-shipwreck.glb',  weight: 1, minScale: 1.2, maxScale: 3.5 },
+  // Submarines — ultra-rare, huge
+  { model: '/models/building-submarine.glb',  weight: 1, minScale: 1.0, maxScale: 2.5 },
 ];
 
 // Preload new decoration models
@@ -274,12 +283,39 @@ function isNearBuilding(x: number, z: number): boolean {
   return false;
 }
 
-/** Generate all decorations procedurally with seeded RNG */
+/** Generate all decorations with cluster-based organic scatter.
+ *
+ *  Algorithm (mirrors the merged-seaweed multivariant pattern):
+ *  1. Generate N_CLUSTERS cluster centres spread across the full map extents.
+ *  2. For each decoration attempt, pick a random cluster centre.
+ *  3. Sample distance from that centre using a triangular distribution
+ *     (rng() + rng()) * CLUSTER_RADIUS — biases placements toward the centre,
+ *     producing Gaussian-like falloff without an actual Gaussian.
+ *  4. Reject if inside a building zone, then accept.
+ *
+ *  This creates natural dense patches with sparse gaps between them instead of
+ *  the uniform "salt-and-pepper" look of pure random placement.
+ */
 function generateDecorations(): DecoEntry[] {
   const rng = seededRandom(12345);
   const totalWeight = DECO_TYPES.reduce((s, d) => s + d.weight, 0);
   const entries: DecoEntry[] = [];
-  const TARGET_COUNT = 80;
+  const TARGET_COUNT = 120;
+
+  // Map extents — same as current scatter range
+  const EXTENT_X = MAP_WIDTH  * 2.4;
+  const EXTENT_Z = MAP_HEIGHT * 2.4;
+
+  // ---- Cluster centres ----
+  const N_CLUSTERS    = 18;
+  const CLUSTER_RADIUS = 280; // world-space units; controls patch spread
+  const clusters: Array<{ x: number; z: number }> = [];
+  for (let i = 0; i < N_CLUSTERS; i++) {
+    clusters.push({
+      x: (rng() - 0.5) * EXTENT_X,
+      z: (rng() - 0.5) * EXTENT_Z,
+    });
+  }
 
   // Pick a model based on weighted random
   function pickModel() {
@@ -291,25 +327,37 @@ function generateDecorations(): DecoEntry[] {
     return DECO_TYPES[0];
   }
 
-  // Generate decorations spread across the full map — dense enough to feel populated
-  let attempts = 0;
-  while (entries.length < TARGET_COUNT && attempts < 500) {
-    attempts++;
-    const x = (rng() - 0.5) * MAP_WIDTH * 2.4;
-    const z = (rng() - 0.5) * MAP_HEIGHT * 2.4;
+  // Minimum spacing between decorations — tighter than before for denser look
+  const MIN_SPACING_SQ = 35 * 35;
 
-    // Skip if too close to a building
+  let attempts = 0;
+  while (entries.length < TARGET_COUNT && attempts < 1200) {
+    attempts++;
+
+    // Pick a random cluster centre
+    const cluster = clusters[Math.floor(rng() * N_CLUSTERS)];
+
+    // Triangular distribution for distance: (rng()+rng()) biases toward 0
+    const dist  = (rng() + rng()) * CLUSTER_RADIUS;
+    const angle = rng() * Math.PI * 2;
+    const x = cluster.x + Math.cos(angle) * dist;
+    const z = cluster.z + Math.sin(angle) * dist;
+
+    // Clamp to map extents so nothing spawns off the sand plane
+    if (Math.abs(x) > EXTENT_X * 0.5 || Math.abs(z) > EXTENT_Z * 0.5) continue;
+
+    // Skip if inside a building exclusion zone
     if (isNearBuilding(x, z)) continue;
 
-    // Min 40px apart — tighter spacing for denser coverage
+    // Minimum spacing check
     const tooClose = entries.some(e => {
       const dx = e.x - x;
       const dz = e.z - z;
-      return dx * dx + dz * dz < 40 * 40;
+      return dx * dx + dz * dz < MIN_SPACING_SQ;
     });
     if (tooClose) continue;
 
-    const dt = pickModel();
+    const dt    = pickModel();
     const scale = dt.minScale + rng() * (dt.maxScale - dt.minScale);
     entries.push({ model: dt.model, x, z, scale, rotY: rng() * Math.PI * 2 });
   }
