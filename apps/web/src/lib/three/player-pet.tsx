@@ -151,10 +151,11 @@ function PlayerPetInner() {
     lastEState = eNow;
 
     let vx = 0, vy = 0;
-    if (keyState.w || keyState.arrowup) vy = -1;
-    if (keyState.s || keyState.arrowdown) vy = 1;
-    if (keyState.a || keyState.arrowleft) vx = -1;
-    if (keyState.d || keyState.arrowright) vx = 1;
+    // Only WASD drives pet movement — arrow keys rotate the camera (ArrowKeyRotationController)
+    if (keyState.w) vy = -1;
+    if (keyState.s) vy = 1;
+    if (keyState.a) vx = -1;
+    if (keyState.d) vx = 1;
 
     const { joystickVelocity } = store;
     if (joystickVelocity.x !== 0 || joystickVelocity.y !== 0) {
