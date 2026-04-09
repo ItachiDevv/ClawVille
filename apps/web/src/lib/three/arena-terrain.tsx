@@ -2,7 +2,12 @@
 
 import { Suspense, useEffect, useRef, useMemo } from 'react';
 import { useGLTF } from '@react-three/drei';
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
+import {
+  float, vec3, sin, cos, fract,
+  positionLocal, vertexColor,
+  mix, smoothstep,
+} from 'three/tsl';
 
 // ---------------------------------------------------------------------------
 // Terrain: Bikini Bottom GLB + sand floor + coral/kelp decorations
@@ -110,27 +115,100 @@ function createSandGeometry(): THREE.PlaneGeometry {
   return geo;
 }
 
+// ---------------------------------------------------------------------------
+// TSL sand ripple helper — fract(sin(dot)) hash gives cheap 2D noise
+// ---------------------------------------------------------------------------
+function createSandMaterial(): THREE.MeshStandardNodeMaterial {
+  const mat = new THREE.MeshStandardNodeMaterial({
+    vertexColors: true,
+    metalness: 0.0,
+  });
+
+  // World-space XZ position of each fragment (before the -PI/2 rotation the
+  // mesh applies, positionLocal.xz gives us the geometry's pre-rotation XY —
+  // that's fine for a purely procedural pattern).
+  const px = positionLocal.x;
+  const py = positionLocal.y; // geometry Y = world Z before rotation
+
+  // ---- Sand ripple pattern ----
+  // Two overlapping sine waves at different angles simulate wind-blown ripples.
+  const rippleA = sin(px.mul(float(0.07)).add(py.mul(float(0.05))));
+  const rippleB = sin(px.mul(float(0.11)).sub(py.mul(float(0.08))).add(float(2.3)));
+  // Combine and remap to [0, 1]
+  const ripple = rippleA.add(rippleB).mul(float(0.25)).add(float(0.5));
+
+  // ---- Cheap 2D hash for grain noise ----
+  // fract(sin(dot(floor(p * scale), vec2(127.1, 311.7))) * 43758.5453)
+  // We approximate with two orthogonal high-freq sines combined via fract.
+  const grainScale = float(3.7);
+  const grainA = sin(px.mul(grainScale).add(py.mul(float(7.3))));
+  const grainB = sin(px.mul(float(5.1)).sub(py.mul(grainScale.mul(float(1.9)))));
+  const grain = fract(grainA.add(grainB).mul(float(43.758)));
+
+  // ---- Height-based color blend ----
+  // positionLocal.z holds the displaced height baked by createSandGeometry.
+  // Range is roughly -28..+28 → normalise to 0..1
+  const h = positionLocal.z;
+  const heightT = smoothstep(float(-28.0), float(28.0), h);
+
+  // Warm ridge tone vs cool deep-water valley tone
+  const warmSand = vec3(float(1.0), float(0.91), float(0.78));   // near-white peaks
+  const coolDeep = vec3(float(0.25), float(0.19), float(0.12));  // dark wet valley
+
+  // Blend vertex color with the height-driven warm/cool tint
+  const heightTint = mix(coolDeep, warmSand, heightT);
+  const baseColor = vertexColor();
+
+  // Mix vertex color with height tint (keep vertex color dominant)
+  const tintStrength = float(0.28);
+  const blendedColor = mix(baseColor, heightTint, tintStrength);
+
+  // Ripple pattern darkens the color slightly in troughs (multiply)
+  const rippleMul = ripple.mul(float(0.18)).add(float(0.82));
+
+  // Grain adds a very subtle speckling
+  const grainMul = grain.mul(float(0.06)).add(float(0.97));
+
+  mat.colorNode = blendedColor.mul(rippleMul).mul(grainMul);
+
+  // ---- Roughness: valleys are smoother (wet), ridges rougher (dry sand) ----
+  // heightT=0 → valley (smoother ~0.55), heightT=1 → ridge (rougher ~0.92)
+  mat.roughnessNode = mix(float(0.55), float(0.92), heightT);
+
+  // ---- Normal perturbation — sand grain feel ----
+  // Perturb the flat normals with a sin-based bump in XY, scaled very small
+  const bumpFreq = float(0.15);
+  const bumpAmp  = float(0.04);
+  const bumpX = sin(px.mul(bumpFreq).add(float(1.1))).mul(bumpAmp);
+  const bumpY = cos(py.mul(bumpFreq).add(float(0.7))).mul(bumpAmp);
+  // vec3(perturbX, perturbY, 1) normalised approximation — sufficient at low amp
+  const perturbedNormal = vec3(bumpX, bumpY, float(1.0));
+  mat.normalNode = perturbedNormal;
+
+  return mat;
+}
+
 function SandFloor() {
   const ref = useRef<THREE.Mesh>(null);
   const sandGeo = useMemo(() => createSandGeometry(), []);
+  const sandMat = useMemo(() => createSandMaterial(), []);
 
   useEffect(() => {
     if (ref.current) ref.current.layers.enable(TERRAIN_LAYER);
-  }, []);
+    // Dispose on unmount
+    return () => {
+      sandMat.dispose();
+    };
+  }, [sandMat]);
 
   return (
     <mesh
       ref={ref}
       geometry={sandGeo}
+      material={sandMat}
       rotation={[-Math.PI / 2, 0, 0]}
       position={[0, -2, 0]}
-    >
-      <meshStandardMaterial
-        vertexColors
-        roughness={0.8}
-        metalness={0.0}
-      />
-    </mesh>
+    />
   );
 }
 
