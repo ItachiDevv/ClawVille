@@ -2,7 +2,8 @@ import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and } from 'drizzle-orm';
 import { db, avatars, avatarInventory, agents } from '@legacyapp/database';
-import { getBookById, getBooksForBuilding, KNOWLEDGE_BOOKS } from '@legacyapp/shared';
+import { getBookById, getBooksForBuilding, KNOWLEDGE_BOOKS, BUILDING_MILADY_SKILLS } from '@legacyapp/shared';
+import { miladyGateway } from '../services/milady-gateway';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
@@ -212,5 +213,59 @@ itemRoutes.post('/learn', requireAuth, async (c) => {
     newKnowledgeCount: newKnowledge.length,
     totalKnowledge: mergedKnowledge.length,
     avatar: updatedPet,
+  });
+});
+
+// Export building knowledge as a Milady AI skill
+itemRoutes.post('/export-skill/:buildingId', requireAuth, async (c) => {
+  const user = c.get('user');
+  const buildingId = c.req.param('buildingId');
+
+  const skillDef = BUILDING_MILADY_SKILLS[buildingId];
+  if (!skillDef) {
+    throw new HTTPException(404, { message: 'No skill available for this building' });
+  }
+
+  const avatar = await db.query.avatars.findFirst({
+    where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
+  });
+
+  if (!avatar) {
+    throw new HTTPException(404, { message: 'No active avatar found' });
+  }
+
+  // Check if avatar has learned all books for this building
+  const buildingBooks = getBooksForBuilding(buildingId);
+  const inventory = await db.query.avatarInventory.findMany({
+    where: eq(avatarInventory.avatarId, avatar.id),
+  });
+
+  const ownedItemIds = new Set(inventory.map((i) => i.itemId));
+  const buildingBookIds = buildingBooks.map((b) => b.id);
+  const allLearned = buildingBookIds.every((id) => ownedItemIds.has(id));
+
+  if (!allLearned) {
+    return c.json({
+      success: false,
+      message: `Learn all ${buildingBooks.length} books at this building first`,
+      progress: {
+        learned: buildingBookIds.filter((id) => ownedItemIds.has(id)).length,
+        total: buildingBooks.length,
+      },
+    }, 400);
+  }
+
+  // Extract knowledge entries from avatar's characterConfig
+  const characterConfig = avatar.characterConfig as { knowledge?: string[] } | null;
+  const knowledge = characterConfig?.knowledge ?? [];
+
+  const result = await miladyGateway.exportSkill(buildingId, knowledge);
+
+  return c.json({
+    success: result.success,
+    skillId: result.skillId,
+    skillName: skillDef.name,
+    skillDescription: skillDef.description,
+    miladyConnected: miladyGateway.isAvailable(),
   });
 });
