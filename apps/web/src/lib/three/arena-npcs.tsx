@@ -27,8 +27,9 @@ function mapToWorld(px: number, py: number): [number, number, number] {
   return [px - HALF_W, 0, py - HALF_H];
 }
 
+// Lobster GLB faces -Z in local space, so add PI to flip it forward
 const DIR_ROTATION: Record<string, number> = {
-  down: 0, left: Math.PI / 2, up: Math.PI, right: -Math.PI / 2, idle: 0,
+  down: Math.PI, left: -Math.PI / 2, up: 0, right: Math.PI / 2, idle: Math.PI,
 };
 
 import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
