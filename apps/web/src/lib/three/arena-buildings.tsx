@@ -43,17 +43,16 @@ const _buildRayDir = new THREE.Vector3(0, -1, 0);
 const BUILDING_TARGET_HEIGHT = 100;
 
 // Map each building ID to a GLB model + display config
-// tint: color overlay to make dome-shaped buildings visually distinct from each other
-const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number; tint?: number }> = {
+const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number }> = {
   'cron-hub':          { model: '/models/downtown-building.glb', yOffset: 0 },
-  'webhook-gateway':   { model: '/models/krusty-krab.glb', yOffset: 0, tint: 0xff4444 },    // Red tint — Krusty Krab
-  'memory-vault':      { model: '/models/squidward-house.glb', yOffset: 0, tint: 0x44cc88 }, // Green tint — Squidward
+  'webhook-gateway':   { model: '/models/krusty-krab.glb', yOffset: 0 },
+  'memory-vault':      { model: '/models/salty-spitoon.glb', yOffset: 0 },
   'skill-forge':       { model: '/models/chum-bucket.glb', yOffset: 0 },
   'channel-bridge':    { model: '/models/building-cave.glb', yOffset: 0 },
-  'tool-workshop':     { model: '/models/building-chest.glb', yOffset: 0 },
+  'tool-workshop':     { model: '/models/bb-building.glb', yOffset: 0 },
   'canvas-studio':     { model: '/models/pineapple-house.glb', yOffset: 0 },
   'voice-tower':       { model: '/models/boating-school.glb', yOffset: 0 },
-  'security-fortress': { model: '/models/patricks-rock.glb', yOffset: 0, tint: 0xee88bb },   // Pink tint — Patrick
+  'security-fortress': { model: '/models/patty-building.glb', yOffset: 0 },
   'config-citadel':    { model: '/models/building-lighthouse.glb', yOffset: 0 },
 };
 
@@ -122,26 +121,12 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
   const groupRef = useRef<THREE.Group>(null);
   const placed = useRef(false);
 
-  // Clone, apply color tint if specified, and compute scale
+  // Clone and compute scale
   const { cloned, buildingScale } = useMemo(() => {
     const c = scene.clone(true);
-    // Apply per-building color tint to distinguish dome-shaped models
-    if (config.tint) {
-      const tintColor = new THREE.Color(config.tint);
-      c.traverse((child) => {
-        if ((child as THREE.Mesh).isMesh) {
-          const mesh = child as THREE.Mesh;
-          if (mesh.material) {
-            const mat = (mesh.material as THREE.MeshStandardMaterial).clone();
-            mat.color.lerp(tintColor, 0.45);
-            mesh.material = mat;
-          }
-        }
-      });
-    }
     const s = computeBuildingScale(c);
     return { cloned: c, buildingScale: s };
-  }, [scene, config.model, config.tint]);
+  }, [scene, config.model]);
 
   // Place on flat sand floor (y=-2)
   useFrame(() => {
