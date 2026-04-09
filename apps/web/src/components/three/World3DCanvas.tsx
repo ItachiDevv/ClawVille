@@ -18,6 +18,7 @@ import ArenaNpcs from '@/lib/three/arena-npcs';
 import ArenaLocationNpcs from '@/lib/three/arena-location-npcs';
 import ArenaFx from '@/lib/three/arena-fx';
 import PlayerPet from '@/lib/three/player-pet';
+import MergedSeaweed from '@/lib/three/merged-seaweed';
 import { useGameStore } from '@/stores/game';
 
 // ---------------------------------------------------------------------------
@@ -261,7 +262,8 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       <ArenaNpcs />
       <ArenaLocationNpcs />
 
-      {/* Bubbles disabled — per-frame instanced updates stress Intel Iris Xe */}
+      {/* Seaweed ground cover — merged geometry + TSL GPU animation (no InstancedMesh) */}
+      <MergedSeaweed />
 
       {/* Mode-specific content */}
       {isGame && <PlayerPet />}
@@ -290,6 +292,23 @@ async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
   // WebGPURenderer.render() throws if not initialized — must await init()
   // init() internally: tries WebGPU backend → falls back to WebGL2 if unavailable
   await renderer.init();
+
+  // Device-loss handler — log and attempt page reload on unexpected loss
+  try {
+    const device = (renderer as any).backend?.device;
+    if (device?.lost) {
+      device.lost.then((info: any) => {
+        console.error('[World3D] GPU device lost:', info.reason, info.message);
+        if (info.reason === 'unknown') {
+          // Unexpected loss (driver crash, resource pressure) — reload after delay
+          setTimeout(() => window.location.reload(), 500);
+        }
+      });
+    }
+  } catch {
+    // Device-loss API may not be available on WebGL fallback — safe to ignore
+  }
+
   return renderer;
 }
 
