@@ -12,6 +12,8 @@ import {
   buildingZones,
 } from '@/lib/pixi/tilemap-data';
 import { applyWalkAnimation, applyIdleAnimation } from '@/lib/three/procedural-animation';
+import { LobsterAnimator, resolveAnimState } from '@/lib/three/lobster-animations';
+import { discoverLobsterParts } from '@/lib/three/lobster-parts';
 
 // ---------------------------------------------------------------------------
 // GLB-based player avatar — lobster.glb model = 1-2 draw calls
@@ -23,7 +25,7 @@ const HALF_H = MAP_HEIGHT / 2;
 const SPEED = 200;
 const BOB_SPEED = 5;
 const BOB_AMPLITUDE = 0.3;
-const AVATAR_SCALE = 5;
+const AVATAR_SCALE = 10;
 
 const COLOR_TINTS: Record<string, number> = {
   blue: 0x42a5f5, red: 0xef5350, green: 0x66bb6a, yellow: 0xffee58,
@@ -126,6 +128,12 @@ function PlayerPetInner() {
     return c;
   }, [scene]);
 
+  // Discover lobster parts and create animator
+  const animator = useMemo(() => {
+    const refs = discoverLobsterParts(cloned);
+    return new LobsterAnimator(refs);
+  }, [cloned]);
+
   useFrame((state, delta) => {
     const store = useGameStore.getState();
     if (store.movementFrozen) {
@@ -223,10 +231,20 @@ function PlayerPetInner() {
     rotRef.current += (targetRot - rotRef.current) * 0.15;
     group.rotation.y = rotRef.current;
 
-    // Procedural animation (squash/stretch/tilt) on inner group
+    // Articulated lobster animation (claws, legs, tail, eyes, antennae)
+    const lobsterState = resolveAnimState({
+      isDead: false,
+      inCombat: false,
+      combatAction: null,
+      direction: dir,
+      inConversation: false,
+    });
+    animator.update(Math.min(delta, 0.1), elapsed, lobsterState, dir);
+
+    // Secondary layer: procedural squash/stretch/tilt on inner group
     const animGroup = animGroupRef.current;
     if (animGroup) {
-      const animState = {
+      const procState = {
         group: animGroup,
         isMoving,
         elapsed,
@@ -235,9 +253,9 @@ function PlayerPetInner() {
         seed: 0, // Player always seed 0
       };
       if (isMoving) {
-        applyWalkAnimation(animState);
+        applyWalkAnimation(procState);
       } else {
-        applyIdleAnimation(animState);
+        applyIdleAnimation(procState);
       }
     }
   });

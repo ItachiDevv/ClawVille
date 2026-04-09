@@ -18,6 +18,7 @@ import ArenaNpcs from '@/lib/three/arena-npcs';
 import ArenaLocationNpcs from '@/lib/three/arena-location-npcs';
 import ArenaFx from '@/lib/three/arena-fx';
 import PlayerAvatar from '@/lib/three/player-avatar';
+import InstancedSeaweed from '@/lib/three/instanced-seaweed';
 import { useGameStore } from '@/stores/game';
 
 // ---------------------------------------------------------------------------
@@ -28,8 +29,8 @@ const MAP_HEIGHT = 800;
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 const CAM_PAN_SPEED = 300;
-const SKY_COLOR = new THREE.Color(0x0e3458); // Deep ocean blue
-const FOG_COLOR = new THREE.Color(0x123858); // Underwater haze — matches sky
+const SKY_COLOR = new THREE.Color(0x0a2a48); // Deep ocean — darker, more immersive
+const FOG_COLOR = new THREE.Color(0x1a4a6a); // Deeper blue-green underwater haze
 
 export type WorldMode = 'game' | 'arena';
 
@@ -175,7 +176,7 @@ function PetFollowCamera({
 // ---------------------------------------------------------------------------
 function UnderwaterBubbles() {
   const ref = useRef<THREE.InstancedMesh>(null);
-  const count = 40;
+  const count = 25;
   const data = useMemo(() => {
     const arr = [];
     for (let i = 0; i < count; i++) {
@@ -234,8 +235,8 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
         enablePan={true}
         enableZoom={true}
         enableRotate={true}
-        minDistance={isGame ? 40 : 80}
-        maxDistance={800}
+        minDistance={isGame ? 30 : 80}
+        maxDistance={500}
         maxPolarAngle={Math.PI / 2.1}
         target={[0, 10, 0]}
       />
@@ -247,21 +248,23 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
         <WASDCameraController controlsRef={controlsRef} />
       )}
 
-      {/* Underwater lighting — bright but GPU-safe (no extra point lights) */}
-      <hemisphereLight args={[0x88ccee, 0x445566, 1.2]} />
-      <ambientLight intensity={0.6} color={0xaaddff} />
-      <directionalLight position={[200, 400, 100]} intensity={1.5} color={0xeef4ff} />
+      {/* Underwater lighting — warm sunlight through water, 3 lights max */}
+      <hemisphereLight args={[0x6699cc, 0x336644, 1.0]} />
+      <ambientLight intensity={0.4} color={0x88bbdd} />
+      <directionalLight position={[300, 500, 200]} intensity={1.8} color={0xfff4e0} />
 
-      {/* Underwater fog — pushed back for better building visibility */}
-      <fog attach="fog" args={[FOG_COLOR, 400, 1800]} />
+      {/* Underwater fog — closer near/far for atmospheric depth */}
+      <fog attach="fog" args={[FOG_COLOR, 200, 1200]} />
 
       {/* Shared world geometry */}
       <ArenaTerrain />
+      <InstancedSeaweed />
       <ArenaBuildings />
       <ArenaNpcs />
       <ArenaLocationNpcs />
 
-      {/* Bubbles disabled — per-frame instanced updates stress Intel Iris Xe */}
+      {/* Underwater bubbles — reduced count (25) safe for Intel Iris Xe */}
+      <UnderwaterBubbles />
 
       {/* Mode-specific content */}
       {isGame && <PlayerAvatar />}
@@ -356,7 +359,7 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
           fov: 55,
           near: 1,
           far: 2000,
-          position: mode === 'game' ? [0, 100, 200] : [0, 250, 400],
+          position: mode === 'game' ? [0, 80, 150] : [0, 180, 300],
         }}
         onCreated={({ scene, gl }) => {
           scene.background = SKY_COLOR;
