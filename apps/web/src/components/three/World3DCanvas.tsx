@@ -64,8 +64,8 @@ const _arrowKeys: Pick<KeyState, 'arrowup' | 'arrowdown' | 'arrowleft' | 'arrowr
 };
 
 const ARROW_ROT_SPEED = 1.5; // radians/second
-const PHI_MIN = 0.1;
-const PHI_MAX = Math.PI / 2.1; // matches OrbitControls maxPolarAngle
+const PHI_MIN = 0.05;                // nearly straight up (toward water surface)
+const PHI_MAX = Math.PI - 0.05;      // nearly straight down (toward sea floor)
 
 // Spherical scratch objects — allocated once, reused every frame
 const _offset = new THREE.Vector3();
@@ -267,7 +267,7 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
         enableRotate={true}
         minDistance={isGame ? 40 : 80}
         maxDistance={800}
-        maxPolarAngle={Math.PI / 2.1}
+        maxPolarAngle={Math.PI - 0.05}
         target={[0, 10, 0]}
       />
 
