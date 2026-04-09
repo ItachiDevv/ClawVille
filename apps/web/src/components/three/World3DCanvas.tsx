@@ -29,8 +29,8 @@ const MAP_HEIGHT = 800;
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 const CAM_PAN_SPEED = 300;
-const SKY_COLOR = new THREE.Color(0x0e3458); // Deep ocean blue
-const FOG_COLOR = new THREE.Color(0x123858); // Underwater haze — matches sky
+const SKY_COLOR = new THREE.Color(0x0a2a4a); // Deeper ocean blue
+const FOG_COLOR = new THREE.Color(0x0e3458); // Underwater haze — matches sky
 
 export type WorldMode = 'game' | 'arena';
 
@@ -248,13 +248,15 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
         <WASDCameraController controlsRef={controlsRef} />
       )}
 
-      {/* Underwater lighting — bright but GPU-safe (no extra point lights) */}
-      <hemisphereLight args={[0x88ccee, 0x445566, 1.2]} />
-      <ambientLight intensity={0.6} color={0xaaddff} />
-      <directionalLight position={[200, 400, 100]} intensity={1.5} color={0xeef4ff} />
+      {/* Underwater lighting — warm caustic tones with strong contrast */}
+      <hemisphereLight args={[0x66bbdd, 0x223344, 1.5]} />
+      <ambientLight intensity={0.4} color={0x88ccee} />
+      <directionalLight position={[150, 350, 80]} intensity={2.0} color={0xffeedd} />
+      {/* Secondary fill light from opposite side for depth */}
+      <directionalLight position={[-100, 200, -60]} intensity={0.5} color={0x88aacc} />
 
-      {/* Underwater fog — pushed back for better building visibility */}
-      <fog attach="fog" args={[FOG_COLOR, 400, 1800]} />
+      {/* Underwater fog — closer for atmospheric depth */}
+      <fog attach="fog" args={[FOG_COLOR, 200, 1200]} />
 
       {/* Shared world geometry */}
       <ArenaTerrain />
@@ -372,10 +374,10 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
         dpr={[0.75, 1]}
         frameloop="always"
         camera={{
-          fov: 55,
+          fov: 50,
           near: 1,
           far: 2000,
-          position: mode === 'game' ? [0, 100, 200] : [0, 250, 400],
+          position: mode === 'game' ? [0, 80, 150] : [0, 200, 350],
         }}
         onCreated={({ scene, gl }) => {
           scene.background = SKY_COLOR;
