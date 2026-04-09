@@ -6,6 +6,7 @@ import { MAP_LOCATIONS, BUILDING_OPENCLAW_THEMES, getBooksForBuilding, isShopBui
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
+import { awardXp } from '../services/xp-service';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 
@@ -101,6 +102,9 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
         updatedAt: new Date(),
       })
       .where(eq(pets.id, pet.id));
+
+    // Award +5 XP for NPC chat (non-blocking)
+    awardXp(pet.id, 5, 'npc-chat').catch(console.error);
   }
 
   return c.json({
