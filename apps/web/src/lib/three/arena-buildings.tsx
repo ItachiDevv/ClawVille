@@ -57,9 +57,16 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
 };
 
 /** Strip ground planes from a cloned scene.
- *  Only removes meshes that are both: named like a plane AND geometrically flat.
- *  "lambert" is a Maya material name used on real meshes — do NOT strip by that. */
+ *  ONLY removes meshes that are trivially thin (< 0.5% height ratio) AND sit at the
+ *  very bottom of the model (within 5% of min Y). This prevents eating actual building
+ *  geometry like Patrick's Rock (which is flat+wide but IS the building). */
 function stripGroundPlanes(scene: THREE.Object3D): void {
+  // First pass: measure the full model bounds
+  const fullBox = new THREE.Box3().setFromObject(scene);
+  const fullMinY = fullBox.min.y;
+  const fullHeight = fullBox.max.y - fullBox.min.y;
+  if (fullHeight === 0) return;
+
   const toRemove: THREE.Object3D[] = [];
   scene.traverse((child) => {
     if (!(child as THREE.Mesh).isMesh) return;
@@ -68,12 +75,16 @@ function stripGroundPlanes(scene: THREE.Object3D): void {
     mesh.geometry.computeBoundingBox();
     const bb = mesh.geometry.boundingBox;
     if (!bb) return;
+
     const sy = bb.max.y - bb.min.y;
     const sx = bb.max.x - bb.min.x;
     const sz = bb.max.z - bb.min.z;
     const maxXZ = Math.max(sx, sz);
-    // Only strip if geometrically flat (height < 2% of width) AND wide
-    if (maxXZ > 2 && sy / maxXZ < 0.02) {
+
+    // Must be: extremely flat (< 0.5% height ratio), wide, AND at the model's floor
+    const isFlat = maxXZ > 2 && sy / maxXZ < 0.005;
+    const isAtBottom = bb.max.y < fullMinY + fullHeight * 0.05;
+    if (isFlat && isAtBottom) {
       toRemove.push(mesh);
     }
   });
