@@ -161,6 +161,10 @@ export default function GamePage() {
       <QuestBoardModal />
       <BountyBoardModal />
 
+      {/* Always visible — game menu and minimap for all visitors */}
+      <GameMenu />
+      <Minimap />
+
       {/* Spectator mode: show banner, hide pet-specific UI */}
       {isSpectator && <SpectatorBanner />}
 
@@ -171,9 +175,7 @@ export default function GamePage() {
           <LocationHUD />
           <PetStatusBar />
           <MobileControls />
-          <Minimap />
           <QuestTracker />
-          <GameMenu />
           <PetSettingsModal />
           <LocationConfigModal />
           <PetChatBar />
