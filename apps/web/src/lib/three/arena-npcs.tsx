@@ -8,6 +8,12 @@ import { useNpcStore, type NpcSpriteState } from '@/stores/npc';
 import { applyWalkAnimation, applyIdleAnimation, idToSeed } from '@/lib/three/procedural-animation';
 import { LobsterAnimator, resolveAnimState } from '@/lib/three/lobster-animations';
 import { discoverLobsterParts } from '@/lib/three/lobster-parts';
+import {
+  createCharacterAnimator,
+  applyColorTint,
+  type CharacterAnimator,
+  MODEL_KEY_TO_TYPE,
+} from '@/lib/three/character-animations';
 
 // ---------------------------------------------------------------------------
 // GLB-based NPC renderer with terrain raycasting
@@ -55,6 +61,22 @@ function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
   return -2; // flat sand floor
 }
 
+// Map species strings to GLB paths + model keys for the new character system
+const SPECIES_MODEL: Record<string, { path: string; key: string }> = {
+  lobster:       { path: '/models/lobster.glb',                    key: 'lobster' },
+  crayfish:      { path: '/models/crayfish.glb',                   key: 'crayfish' },
+  sweet_crab:    { path: '/models/sweet_crab_sketchfabweekly.glb', key: 'sweet_crab' },
+  lobster_plush: { path: '/models/lobster_plush.glb',              key: 'lobster_plush' },
+  hermitcrab:    { path: '/models/hermitcrab.glb',                 key: 'hermitcrab' },
+  chihiro:       { path: '/models/spirited_away_senchihiro.glb',   key: 'chihiro' },
+  priestess:     { path: '/models/young_priestess.glb',            key: 'priestess' },
+  chibi_goku:    { path: '/models/chibi_goku.glb',                 key: 'chibi_goku' },
+  jellyfish:     { path: '/models/jellyfish.glb',                  key: 'jellyfish' },
+  octopus:       { path: '/models/octopus_toy.glb',                key: 'octopus' },
+  seahorse:      { path: '/models/sea_horse.glb',                  key: 'seahorse' },
+};
+const DEFAULT_SPECIES = SPECIES_MODEL.lobster;
+
 // ---------------------------------------------------------------------------
 // Single NPC using GLB model with terrain following
 // ---------------------------------------------------------------------------
@@ -71,28 +93,34 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
   const currentRotY = useRef(0);
   const currentTerrainY = useRef(0);
 
-  const { scene } = useGLTF('/models/lobster.glb');
+  const speciesInfo = SPECIES_MODEL[npc.species] ?? DEFAULT_SPECIES;
+  const { scene } = useGLTF(speciesInfo.path);
 
-  const { cloned, animator } = useMemo(() => {
+  // Determine which animation system to use
+  const useNewSystem = speciesInfo.key !== 'lobster' && speciesInfo.key !== 'crayfish';
+
+  const { cloned, lobsterAnimator, charAnimator } = useMemo(() => {
     const c = scene.clone(true);
-    const color = new THREE.Color(npc.color);
-    c.traverse((child) => {
-      if ((child as THREE.Mesh).isMesh) {
-        const mesh = child as THREE.Mesh;
-        if (mesh.material) {
-          const mat = (mesh.material as THREE.MeshStandardMaterial).clone();
-          mat.color.lerp(color, 0.7);
-          mat.emissive = color.clone();
-          mat.emissiveIntensity = 0.25;
-          mesh.material = mat;
-        }
-      }
-    });
-    // Discover body parts and create skeletal animator
-    const parts = discoverLobsterParts(c);
-    const anim = new LobsterAnimator(parts);
-    return { cloned: c, animator: anim };
-  }, [scene, npc.color]);
+    const tint = new THREE.Color(npc.color);
+    applyColorTint(c, tint, 0.7, 0.25);
+
+    if (useNewSystem) {
+      const anim = createCharacterAnimator(speciesInfo.key, c);
+      return {
+        cloned: c,
+        lobsterAnimator: null as LobsterAnimator | null,
+        charAnimator: anim as CharacterAnimator,
+      };
+    } else {
+      const parts = discoverLobsterParts(c);
+      const anim  = new LobsterAnimator(parts);
+      return {
+        cloned: c,
+        lobsterAnimator: anim,
+        charAnimator: null as CharacterAnimator | null,
+      };
+    }
+  }, [scene, npc.color, speciesInfo.key, useNewSystem]);
 
   useFrame(({ clock }, delta) => {
     const d = npcRef.current;
@@ -134,29 +162,34 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     currentRotY.current += diff * Math.min(1, 8 * dt);
     group.rotation.y = currentRotY.current;
 
-    // Skeletal animation — individual body part movement (claws, legs, tail)
-    const suggestedState = resolveAnimState({
-      isDead: d.isDead,
-      inCombat: false,
-      combatAction: null,
-      direction: d.direction,
-      inConversation: false,
-    });
-    animator.update(dt, clock.elapsedTime, suggestedState, d.direction);
+    if (useNewSystem && charAnimator) {
+      // Universal character animation system — handles all secondary motion internally
+      charAnimator.update(animGroup, clock.elapsedTime, dt, isMoving);
+    } else if (lobsterAnimator) {
+      // Legacy lobster skeletal animation
+      const suggestedState = resolveAnimState({
+        isDead: d.isDead,
+        inCombat: false,
+        combatAction: null,
+        direction: d.direction,
+        inConversation: false,
+      });
+      lobsterAnimator.update(dt, clock.elapsedTime, suggestedState, d.direction);
 
-    // Procedural animation on the inner group (squash/stretch/tilt)
-    const animStateData = {
-      group: animGroup,
-      isMoving,
-      elapsed: clock.elapsedTime,
-      delta: dt,
-      direction: d.direction,
-      seed,
-    };
-    if (isMoving) {
-      applyWalkAnimation(animStateData);
-    } else {
-      applyIdleAnimation(animStateData);
+      // Procedural group-level squash/stretch/tilt
+      const animStateData = {
+        group: animGroup,
+        isMoving,
+        elapsed: clock.elapsedTime,
+        delta: dt,
+        direction: d.direction,
+        seed,
+      };
+      if (isMoving) {
+        applyWalkAnimation(animStateData);
+      } else {
+        applyIdleAnimation(animStateData);
+      }
     }
   });
 
