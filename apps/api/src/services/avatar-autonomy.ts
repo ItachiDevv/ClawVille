@@ -325,7 +325,7 @@ export class PetAutonomyManager {
         }],
       });
 
-      const textBlock = response.content.find((b: any) => b.type === 'text');
+      const textBlock = response.content.find((b: any) => b.type === 'text') as { text: string } | undefined;
       const text = textBlock?.text ?? '';
       avatar.chatMessage = text.slice(0, 80).replace(/^["']|["']$/g, '').trim();
       avatar.lastChatAt = Date.now();
