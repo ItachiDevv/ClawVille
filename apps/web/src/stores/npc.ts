@@ -20,6 +20,8 @@ export interface NpcSpriteState {
   isOpenClaw: boolean;
   combatAction: 'attack' | 'heavy' | 'block' | 'dodge' | 'combo' | 'special' | null;
   combatActionAt: number;
+  /** Smooth facing angle (radians) — set by NPC controller for possessed NPCs */
+  facingAngle: number | null;
 }
 
 export interface NpcChatBubble {
@@ -114,12 +116,12 @@ export interface NpcStoreState {
   updateFromSnapshot: (snapshot: ServerSnapshot) => void;
   cleanupExpired: () => void;
   /** Directly move a possessed NPC — skips wander logic, updates prevX/prevY for interpolation */
-  moveNpc: (id: string, x: number, y: number, direction: NpcSpriteState['direction']) => void;
+  moveNpc: (id: string, x: number, y: number, direction: NpcSpriteState['direction'], facingAngle?: number | null) => void;
 }
 
 // Demo NPCs shown when API server is not connected
 function makeDemoNpc(id: string, name: string, x: number, y: number, species: string, color: number, isOpenClaw = false): NpcSpriteState {
-  return { id, name, x, y, prevX: x, prevY: y, direction: 'idle', species, color, hp: 100, maxHp: 100, isDead: false, hasSword: false, inCombat: false, inConversation: false, inventory: [], isOpenClaw, combatAction: null, combatActionAt: 0 };
+  return { id, name, x, y, prevX: x, prevY: y, direction: 'idle', species, color, hp: 100, maxHp: 100, isDead: false, hasSword: false, inCombat: false, inConversation: false, inventory: [], isOpenClaw, combatAction: null, combatActionAt: 0, facingAngle: null };
 }
 
 const DEMO_NPCS: NpcSpriteState[] = [
@@ -258,6 +260,7 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
         isOpenClaw: n.isOpenClaw ?? false,
         combatAction: (n.combatAction as NpcSpriteState['combatAction']) ?? null,
         combatActionAt: n.combatActionAt ?? 0,
+        facingAngle: prev?.facingAngle ?? null,
       };
     });
 
@@ -371,11 +374,11 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
     }));
   },
 
-  moveNpc: (id, x, y, direction) => {
+  moveNpc: (id, x, y, direction, facingAngle = null) => {
     set((s) => ({
       npcs: s.npcs.map((npc) =>
         npc.id === id
-          ? { ...npc, prevX: npc.x, prevY: npc.y, x, y, direction }
+          ? { ...npc, prevX: npc.x, prevY: npc.y, x, y, direction, facingAngle }
           : npc
       ),
     }));
