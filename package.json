@@ -14,7 +14,9 @@
     "db:push": "bun run --filter @legacyapp/database push",
     "db:seed": "bun run scripts/seed-locations.ts",
     "db:studio": "bun run --filter @legacyapp/database studio",
-    "clean": "turbo run clean && rm -rf node_modules"
+    "clean": "turbo run clean && rm -rf node_modules",
+    "test:mock-gateway": "bun run scripts/mock-openclaw.ts",
+    "test:agent-flow": "bun run scripts/test-agent-flow.ts"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
