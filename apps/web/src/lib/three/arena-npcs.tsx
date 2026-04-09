@@ -6,6 +6,8 @@ import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { useNpcStore, type NpcSpriteState } from '@/stores/npc';
 import { applyWalkAnimation, applyIdleAnimation, idToSeed } from '@/lib/three/procedural-animation';
+import { LobsterAnimator, resolveAnimState } from '@/lib/three/lobster-animations';
+import { discoverLobsterParts } from '@/lib/three/lobster-parts';
 
 // ---------------------------------------------------------------------------
 // GLB-based NPC renderer with terrain raycasting
@@ -17,7 +19,7 @@ const MAP_HEIGHT = 800;
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 const LERP_SPEED = 5;
-const NPC_SCALE = 4;
+const NPC_SCALE = 8;
 
 useGLTF.preload('/models/lobster.glb');
 
@@ -88,6 +90,12 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     return c;
   }, [scene, npc.color]);
 
+  // Discover lobster parts and create animator
+  const animator = useMemo(() => {
+    const refs = discoverLobsterParts(cloned);
+    return new LobsterAnimator(refs);
+  }, [cloned]);
+
   useFrame(({ clock }, delta) => {
     const d = npcRef.current;
     const group = groupRef.current;
@@ -95,6 +103,7 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     if (!group || !animGroup) return;
 
     const dt = Math.min(delta, 0.1);
+    const elapsed = clock.elapsedTime;
 
     // Update target XZ position
     targetPos.current.set(d.x - HALF_W, 0, d.y - HALF_H);
@@ -123,19 +132,29 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     currentRotY.current += (targetRot - currentRotY.current) * Math.min(1, 8 * dt);
     group.rotation.y = currentRotY.current;
 
-    // Procedural animation on the inner group (squash/stretch/tilt)
-    const animState = {
+    // Articulated lobster animation (claws, legs, tail, eyes, antennae)
+    const animState = resolveAnimState({
+      isDead: d.isDead,
+      inCombat: d.inCombat,
+      combatAction: d.combatAction,
+      direction: d.direction,
+      inConversation: d.inConversation,
+    });
+    animator.update(dt, elapsed, animState, d.direction);
+
+    // Secondary layer: procedural squash/stretch/tilt on outer animGroup
+    const procState = {
       group: animGroup,
       isMoving,
-      elapsed: clock.elapsedTime,
+      elapsed,
       delta: dt,
       direction: d.direction,
       seed,
     };
     if (isMoving) {
-      applyWalkAnimation(animState);
+      applyWalkAnimation(procState);
     } else {
-      applyIdleAnimation(animState);
+      applyIdleAnimation(procState);
     }
   });
 
