@@ -162,6 +162,28 @@ bountyRoutes.get('/my-bounties', requireAuth, async (c) => {
     .where(eq(bounties.creatorId, pet.id))
     .orderBy(desc(bounties.createdAt));
 
+  // Fetch attempts for all these bounties (with hunter names)
+  const bountyIds = rows.map((r) => r.id);
+  const attemptRows = bountyIds.length > 0
+    ? await db
+        .select({
+          attempt: bountyAttempts,
+          hunterName: pets.name,
+        })
+        .from(bountyAttempts)
+        .innerJoin(pets, eq(bountyAttempts.hunterId, pets.id))
+        .where(sql`${bountyAttempts.bountyId} IN ${bountyIds}`)
+        .orderBy(desc(bountyAttempts.createdAt))
+    : [];
+
+  // Group attempts by bounty ID
+  const attemptsByBounty = new Map<string, typeof attemptRows>();
+  for (const row of attemptRows) {
+    const arr = attemptsByBounty.get(row.attempt.bountyId) ?? [];
+    arr.push(row);
+    attemptsByBounty.set(row.attempt.bountyId, arr);
+  }
+
   const bountyList = rows.map((r) => ({
     id: r.id,
     title: r.title,
@@ -178,6 +200,17 @@ bountyRoutes.get('/my-bounties', requireAuth, async (c) => {
     completedAt: r.completedAt?.toISOString() ?? null,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
+    attempts: (attemptsByBounty.get(r.id) ?? []).map((a) => ({
+      id: a.attempt.id,
+      hunterId: a.attempt.hunterId,
+      hunterName: a.hunterName,
+      status: a.attempt.status,
+      prLink: a.attempt.prLink,
+      submissionNote: a.attempt.submissionNote,
+      reviewNote: a.attempt.reviewNote,
+      claimedAt: a.attempt.claimedAt.toISOString(),
+      submittedAt: a.attempt.submittedAt?.toISOString() ?? null,
+    })),
   }));
 
   return c.json({ bounties: bountyList });
@@ -1132,12 +1165,15 @@ bountyRoutes.get('/', async (c) => {
   let orderBy;
   switch (sort) {
     case 'reward':
+    case 'reward-high':
       orderBy = desc(bounties.tokenReward);
       break;
     case 'reward_asc':
+    case 'reward-low':
       orderBy = asc(bounties.tokenReward);
       break;
     case 'expiring':
+    case 'expiring-soon':
       orderBy = asc(bounties.expiresAt);
       break;
     case 'oldest':
