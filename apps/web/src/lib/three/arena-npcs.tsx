@@ -124,9 +124,14 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const bob = isMoving ? Math.sin(Date.now() * 0.005) * 0.6 : 0;
     group.position.y = currentTerrainY.current + 2 + bob;
 
-    // Direction rotation
-    const targetRot = DIR_ROTATION[d.direction] ?? 0;
-    currentRotY.current += (targetRot - currentRotY.current) * Math.min(1, 8 * dt);
+    // Direction rotation — use smooth facingAngle when set (possessed NPC),
+    // otherwise snap to cardinal DIR_ROTATION (autonomous wander NPCs).
+    const targetRot = d.facingAngle != null ? d.facingAngle : (DIR_ROTATION[d.direction] ?? 0);
+    // Shortest-path lerp (handle wrapping around ±PI)
+    let diff = targetRot - currentRotY.current;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    currentRotY.current += diff * Math.min(1, 8 * dt);
     group.rotation.y = currentRotY.current;
 
     // Skeletal animation — individual body part movement (claws, legs, tail)
