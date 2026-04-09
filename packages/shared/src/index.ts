@@ -19,3 +19,4 @@ export * from './types/quest';
 export * from './types/bounty';
 export * from './constants/article-seeds';
 export * from './constants/quest-seeds';
+export * from './types/collaboration';
