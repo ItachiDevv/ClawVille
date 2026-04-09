@@ -6,6 +6,8 @@ import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { useNpcStore, type NpcSpriteState } from '@/stores/npc';
 import { applyWalkAnimation, applyIdleAnimation, idToSeed } from '@/lib/three/procedural-animation';
+import { LobsterAnimator, resolveAnimState } from '@/lib/three/lobster-animations';
+import { discoverLobsterParts } from '@/lib/three/lobster-parts';
 
 // ---------------------------------------------------------------------------
 // GLB-based NPC renderer with terrain raycasting
@@ -17,7 +19,7 @@ const MAP_HEIGHT = 800;
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 const LERP_SPEED = 5;
-const NPC_SCALE = 4;
+const NPC_SCALE = 8;
 
 useGLTF.preload('/models/lobster.glb');
 
@@ -70,7 +72,7 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
 
   const { scene } = useGLTF('/models/lobster.glb');
 
-  const cloned = useMemo(() => {
+  const { cloned, animator } = useMemo(() => {
     const c = scene.clone(true);
     const color = new THREE.Color(npc.color);
     c.traverse((child) => {
@@ -85,7 +87,10 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
         }
       }
     });
-    return c;
+    // Discover body parts and create skeletal animator
+    const parts = discoverLobsterParts(c);
+    const anim = new LobsterAnimator(parts);
+    return { cloned: c, animator: anim };
   }, [scene, npc.color]);
 
   useFrame(({ clock }, delta) => {
@@ -123,8 +128,18 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     currentRotY.current += (targetRot - currentRotY.current) * Math.min(1, 8 * dt);
     group.rotation.y = currentRotY.current;
 
+    // Skeletal animation — individual body part movement (claws, legs, tail)
+    const suggestedState = resolveAnimState({
+      isDead: d.isDead,
+      inCombat: false,
+      combatAction: null,
+      direction: d.direction,
+      inConversation: false,
+    });
+    animator.update(dt, clock.elapsedTime, suggestedState, d.direction);
+
     // Procedural animation on the inner group (squash/stretch/tilt)
-    const animState = {
+    const animStateData = {
       group: animGroup,
       isMoving,
       elapsed: clock.elapsedTime,
@@ -133,9 +148,9 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
       seed,
     };
     if (isMoving) {
-      applyWalkAnimation(animState);
+      applyWalkAnimation(animStateData);
     } else {
-      applyIdleAnimation(animState);
+      applyIdleAnimation(animStateData);
     }
   });
 

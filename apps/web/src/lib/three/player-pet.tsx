@@ -12,6 +12,8 @@ import {
   buildingZones,
 } from '@/lib/pixi/tilemap-data';
 import { applyWalkAnimation, applyIdleAnimation } from '@/lib/three/procedural-animation';
+import { LobsterAnimator } from '@/lib/three/lobster-animations';
+import { discoverLobsterParts } from '@/lib/three/lobster-parts';
 
 // ---------------------------------------------------------------------------
 // GLB-based player pet — lobster.glb model = 1-2 draw calls
@@ -23,7 +25,7 @@ const HALF_H = MAP_HEIGHT / 2;
 const SPEED = 200;
 const BOB_SPEED = 5;
 const BOB_AMPLITUDE = 0.3;
-const PET_SCALE = 5;
+const PET_SCALE = 10;
 
 const COLOR_TINTS: Record<string, number> = {
   blue: 0x42a5f5, red: 0xef5350, green: 0x66bb6a, yellow: 0xffee58,
@@ -107,7 +109,7 @@ function PlayerPetInner() {
 
   const { scene } = useGLTF('/models/lobster.glb');
 
-  const cloned = useMemo(() => {
+  const { cloned, animator } = useMemo(() => {
     const c = scene.clone(true);
     const petColor = useGameStore.getState().petColor;
     const tint = new THREE.Color(COLOR_TINTS[petColor] ?? 0xffffff);
@@ -123,7 +125,10 @@ function PlayerPetInner() {
         }
       }
     });
-    return c;
+    // Discover body parts and create skeletal animator
+    const parts = discoverLobsterParts(c);
+    const anim = new LobsterAnimator(parts);
+    return { cloned: c, animator: anim };
   }, [scene]);
 
   useFrame((state, delta) => {
@@ -223,10 +228,14 @@ function PlayerPetInner() {
     rotRef.current += (targetRot - rotRef.current) * 0.15;
     group.rotation.y = rotRef.current;
 
+    // Skeletal animation — individual body parts (claws, legs, tail)
+    const suggestedAnim = isMoving ? 'walk' : 'idle';
+    animator.update(Math.min(delta, 0.1), elapsed, suggestedAnim as any, dir);
+
     // Procedural animation (squash/stretch/tilt) on inner group
     const animGroup = animGroupRef.current;
     if (animGroup) {
-      const animState = {
+      const animStateData = {
         group: animGroup,
         isMoving,
         elapsed,
@@ -235,9 +244,9 @@ function PlayerPetInner() {
         seed: 0, // Player always seed 0
       };
       if (isMoving) {
-        applyWalkAnimation(animState);
+        applyWalkAnimation(animStateData);
       } else {
-        applyIdleAnimation(animState);
+        applyIdleAnimation(animStateData);
       }
     }
   });
