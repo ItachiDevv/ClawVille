@@ -26,6 +26,12 @@ import UnderwaterLightRays from '@/lib/three/underwater-light-rays';
 import { discoverLobsterParts } from '@/lib/three/lobster-parts';
 import { LobsterAnimator, resolveAnimState } from '@/lib/three/lobster-animations';
 import { applyIdleAnimation, idToSeed } from '@/lib/three/procedural-animation';
+import {
+  createCharacterAnimator,
+  applyColorTint,
+  type CharacterAnimator,
+  MODEL_KEY_TO_TYPE,
+} from '@/lib/three/character-animations';
 
 // ---------------------------------------------------------------------------
 // Model Registry — maps agent type to GLB path
@@ -126,52 +132,48 @@ const PlatformModel = memo(function PlatformModel({
 }) {
   const reg = MODEL_REGISTRY[modelKey] ?? MODEL_REGISTRY.lobster;
   const { scene } = useGLTF(reg.path);
-  const groupRef = useRef<THREE.Group>(null!);
+  const groupRef     = useRef<THREE.Group>(null!);
   const animGroupRef = useRef<THREE.Group>(null!);
 
-  const { cloned, animator } = React.useMemo(() => {
+  // Determine if this model uses the new universal animator or the old lobster system.
+  // lobster + crayfish keep the LobsterAnimator which has full body-part discovery.
+  const useNewSystem = modelKey !== 'lobster' && modelKey !== 'crayfish';
+
+  const { cloned, lobsterAnimator, charAnimator } = React.useMemo(() => {
     const c = scene.clone(true);
     const tint = new THREE.Color(COLOR_TINTS[color] ?? 0x00ccdd);
-    c.traverse((child) => {
-      if ((child as THREE.Mesh).isMesh) {
-        const mesh = child as THREE.Mesh;
-        if (mesh.material) {
-          const mat = (mesh.material as THREE.MeshStandardMaterial).clone();
-          mat.color.lerp(tint, 0.6);
-          mat.emissive = tint.clone();
-          mat.emissiveIntensity = 0.2;
-          mesh.material = mat;
-        }
-      }
-    });
-    const parts = discoverLobsterParts(c);
-    const anim = new LobsterAnimator(parts);
-    return { cloned: c, animator: anim };
-  }, [scene, modelKey, color]);
+    // Use shared applyColorTint from character-animations
+    applyColorTint(c, tint, 0.6, 0.2);
+
+    if (useNewSystem) {
+      const anim = createCharacterAnimator(modelKey, c);
+      return { cloned: c, lobsterAnimator: null as LobsterAnimator | null, charAnimator: anim };
+    } else {
+      const parts = discoverLobsterParts(c);
+      const anim  = new LobsterAnimator(parts);
+      return { cloned: c, lobsterAnimator: anim, charAnimator: null as CharacterAnimator | null };
+    }
+  }, [scene, modelKey, color, useNewSystem]);
 
   const seed = React.useMemo(() => idToSeed(modelKey + color), [modelKey, color]);
 
   useFrame(({ clock }, delta) => {
-    const dt = Math.min(delta, 0.1);
+    const dt      = Math.min(delta, 0.1);
+    const elapsed = clock.elapsedTime;
 
-    // Idle animation
-    const animState = resolveAnimState({
-      isDead: false,
-      inCombat: false,
-      combatAction: null,
-      direction: 'idle',
-      inConversation: false,
-    });
-    animator.update(dt, clock.elapsedTime, animState, 'idle');
-
-    if (animGroupRef.current) {
+    if (useNewSystem && charAnimator && animGroupRef.current) {
+      // New universal system — handles group-level + per-mesh animation in one call
+      charAnimator.update(animGroupRef.current, elapsed, dt, false /* idle */);
+    } else if (lobsterAnimator && animGroupRef.current) {
+      // Legacy lobster system
+      const animState = resolveAnimState({
+        isDead: false, inCombat: false, combatAction: null,
+        direction: 'idle', inConversation: false,
+      });
+      lobsterAnimator.update(dt, elapsed, animState, 'idle');
       applyIdleAnimation({
         group: animGroupRef.current,
-        isMoving: false,
-        elapsed: clock.elapsedTime,
-        delta: dt,
-        direction: 'idle',
-        seed,
+        isMoving: false, elapsed, delta: dt, direction: 'idle', seed,
       });
     }
   });
