@@ -256,11 +256,12 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
   const center = NPC_BUILDING_CENTERS[buildingId];
   if (!center) return c.json({ error: `Unknown building: ${buildingId}` }, 400);
 
-  // Check proximity (80px radius)
+  // Check proximity — relaxed to 2000px for early testing (TODO: tighten to 80px)
+  const VISIT_RADIUS = 2000;
   const dx = npc.x - center.x;
   const dy = npc.y - center.y;
   const dist = Math.sqrt(dx * dx + dy * dy);
-  if (dist > 80) return c.json({ error: `Too far from ${buildingId} (${Math.round(dist)}px away, need <80px)` }, 400);
+  if (dist > VISIT_RADIUS) return c.json({ error: `Too far from ${buildingId} (${Math.round(dist)}px away, need <${VISIT_RADIUS}px)` }, 400);
 
   // Set building activity
   const activities = BUILDING_ACTIVITIES[buildingId] ?? ['thinking'];
