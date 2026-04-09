@@ -21,8 +21,8 @@ import { applyStationaryIdleAnimation, idToSeed } from '@/lib/three/procedural-a
 const OFFSET_X = -MAP_WIDTH / 2;
 const OFFSET_Z = -MAP_HEIGHT / 2;
 
-// Target height in world units for all character NPCs
-const CHARACTER_HEIGHT = 12;
+// Target height in world units for all character NPCs — visible next to 100-unit buildings
+const CHARACTER_HEIGHT = 20;
 
 const _locRaycaster = new THREE.Raycaster();
 _locRaycaster.layers.set(TERRAIN_LAYER);
