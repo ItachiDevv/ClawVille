@@ -17,6 +17,8 @@ import { v5 as uuidv5 } from 'uuid';
 import type { LocationTemplate } from '@legacyapp/agent-templates';
 import { loadLocationTemplate } from './character-loader';
 import { createOpenClawProviderPlugin, type OpenClawGatewayConfig } from './plugins/openclaw-provider';
+import { createUltrathinkProviderPlugin, type UltrathinkConfig } from './plugins/ultrathink-provider';
+import { AGENT_THINKING_DEFAULTS } from '@legacyapp/shared';
 
 const ROOM_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
 
@@ -73,6 +75,7 @@ export interface ElizaRuntimeConfig {
   };
   agentConfig: Record<string, unknown>;
   openclawGateway?: OpenClawGatewayConfig;
+  thinkingConfig?: Partial<UltrathinkConfig>;
   databaseUrl?: string;
   apiKeys?: {
     anthropic?: string;
@@ -322,7 +325,18 @@ export class ElizaRuntime {
       }
     }
 
-    // Prepend OpenClaw provider plugin so it wins TEXT_GENERATION priority
+    // Prepend Ultrathink provider (priority 90 — under OpenClaw 100, over default Anthropic)
+    const thinkingDefaults = AGENT_THINKING_DEFAULTS[this.config.agentType] ?? AGENT_THINKING_DEFAULTS['pet-agent'];
+    const ultrathinkPlugin = createUltrathinkProviderPlugin({
+      effort: this.config.thinkingConfig?.effort ?? thinkingDefaults.effort,
+      enableThinkTool: this.config.thinkingConfig?.enableThinkTool ?? thinkingDefaults.enableThinkTool,
+      model: thinkingDefaults.model,
+      apiKey: this.config.apiKeys?.anthropic,
+    });
+    this.loadedPlugins.unshift(ultrathinkPlugin as Plugin);
+    console.log(`[ElizaRuntime] Loaded Ultrathink provider (effort: ${thinkingDefaults.effort}, thinkTool: ${thinkingDefaults.enableThinkTool})`);
+
+    // Prepend OpenClaw provider plugin so it wins TEXT_GENERATION priority (priority 100 > 90)
     if (this.config.openclawGateway) {
       const openclawPlugin = createOpenClawProviderPlugin(this.config.openclawGateway);
       this.loadedPlugins.unshift(openclawPlugin as Plugin);
