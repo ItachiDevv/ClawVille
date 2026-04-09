@@ -22,6 +22,7 @@ import MergedSeaweed from '@/lib/three/merged-seaweed';
 import UnderwaterAtmosphere from '@/lib/three/underwater-atmosphere';
 import UnderwaterLightRays from '@/lib/three/underwater-light-rays';
 import { useGameStore } from '@/stores/game';
+import { useNpcStore } from '@/stores/npc';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -71,6 +72,16 @@ const CAM_Y_MIN = 10;                // never go below this Y (above ground)
 // Spherical scratch objects — allocated once, reused every frame
 const _offset = new THREE.Vector3();
 const _spherical = new THREE.Spherical();
+
+// Scratch objects for FPSFollowCamera — allocated once, reused every frame
+const _followOffset = new THREE.Vector3();
+const _followTarget = new THREE.Vector3();
+
+// Follow distance: how many units the camera sits behind/above the character.
+// OrbitControls manages the actual angle — we just enforce the radial distance.
+const FPS_FOLLOW_DISTANCE = 40;
+// How high above the 2D game-plane the character target sits (approximate)
+const CHAR_TARGET_Y = 15;
 
 // ---------------------------------------------------------------------------
 // Arrow key camera rotation — active in ALL modes
@@ -222,9 +233,12 @@ function WASDCameraController({
 }
 
 // ---------------------------------------------------------------------------
-// Camera follow controller (game mode — follows player avatar)
+// FPS-style follow camera — smooth 3rd-person follow for player/npc/autonomous modes.
+// Lerps the OrbitControls TARGET toward the character world position, then
+// rescales the camera-to-target offset to keep a fixed follow distance.
+// Arrow key orbit (ArrowKeyRotationController) adjusts the angle around the target.
 // ---------------------------------------------------------------------------
-function PetFollowCamera({
+function FPSFollowCamera({
   controlsRef,
 }: {
   controlsRef: React.RefObject<OrbitControlsImpl | null>;
@@ -233,22 +247,50 @@ function PetFollowCamera({
     const controls = controlsRef.current;
     if (!controls) return;
 
-    const store = useGameStore.getState();
-    const targetX = store.avatarPosition.x - HALF_W;
-    const targetZ = store.avatarPosition.y - HALF_H;
+    const { controlMode, avatarPosition, possessedNpcId } = useGameStore.getState();
 
-    // Smooth follow
-    const target = controls.target;
-    target.x += (targetX - target.x) * 0.08;
-    target.z += (targetZ - target.z) * 0.08;
+    // Determine the character's 2D game-space position
+    let gameX: number;
+    let gameY: number;
 
-    // Move camera to maintain relative offset
-    const camera = controls.object;
-    const offsetX = camera.position.x - target.x;
-    const offsetZ = camera.position.z - target.z;
+    if (controlMode === 'npc' && possessedNpcId) {
+      const npc = useNpcStore.getState().npcs.find((n) => n.id === possessedNpcId);
+      if (!npc) return;
+      gameX = npc.x;
+      gameY = npc.y;
+    } else {
+      // 'player' or 'autonomous' — follow player avatar
+      gameX = avatarPosition.x;
+      gameY = avatarPosition.y;
+    }
 
-    camera.position.x = target.x + offsetX;
-    camera.position.z = target.z + offsetZ;
+    // Convert to Three.js world coordinates (2D game plane → XZ)
+    const worldX = gameX - HALF_W;
+    const worldZ = gameY - HALF_H;
+
+    // Lerp the orbit target toward the character (smooth follow)
+    const tgt = controls.target;
+    tgt.x += (worldX  - tgt.x) * 0.1;
+    tgt.y += (CHAR_TARGET_Y - tgt.y) * 0.1;
+    tgt.z += (worldZ  - tgt.z) * 0.1;
+
+    // Compute current camera-to-target offset and rescale to follow distance.
+    // This keeps the camera at a consistent distance while preserving the orbit
+    // angle set by ArrowKeyRotationController or mouse drag.
+    _followOffset.subVectors(controls.object.position, tgt);
+    const currentDist = _followOffset.length();
+    if (currentDist > 0.001) {
+      // Gently nudge distance toward target rather than snapping — feels smoother
+      const lerpedDist = currentDist + (FPS_FOLLOW_DISTANCE - currentDist) * 0.1;
+      _followOffset.multiplyScalar(lerpedDist / currentDist);
+      _followTarget.copy(tgt).add(_followOffset);
+
+      // Clamp camera Y so it never goes below the ground floor
+      if (_followTarget.y < CAM_Y_MIN) {
+        _followTarget.y = CAM_Y_MIN;
+      }
+      controls.object.position.copy(_followTarget);
+    }
 
     controls.update();
   });
@@ -262,6 +304,15 @@ function PetFollowCamera({
 const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode }) {
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
   const isGame = mode === 'game';
+  // Read controlMode once at mount for camera routing; camera routing uses
+  // getState() inside useFrame so it always has the latest value at zero cost.
+  // We only need a reactive read here if we conditionally render JSX based on
+  // controlMode — which we do for the controller switch below.
+  const controlMode = useGameStore((s) => s.controlMode);
+
+  // Tight follow distance for any mode where the camera tracks a character.
+  // Explore mode ('explore' + arena) gets a wider minDistance for free-look.
+  const followMode = controlMode !== 'explore';
 
   return (
     <>
@@ -272,19 +323,23 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
         enablePan={true}
         enableZoom={true}
         enableRotate={true}
-        minDistance={isGame ? 40 : 80}
+        minDistance={followMode ? 20 : 80}
         maxDistance={800}
         maxPolarAngle={Math.PI / 1.8}
         target={[0, 10, 0]}
       />
 
-      {/* Camera controller: WASD free-cam (arena) vs avatar follow (game) */}
-      {isGame ? (
-        <PetFollowCamera controlsRef={controlsRef} />
-      ) : (
+      {/* Camera controller routing based on controlMode:
+            explore    → WASDCameraController (free cam, WASD pans world)
+            player     → FPSFollowCamera (follows player avatar)
+            autonomous → FPSFollowCamera (follows player avatar, WASD drives avatar not camera)
+            npc        → FPSFollowCamera (follows possessed NPC)
+          Arrow key rotation is always active in all modes. */}
+      {controlMode === 'explore' ? (
         <WASDCameraController controlsRef={controlsRef} />
+      ) : (
+        <FPSFollowCamera controlsRef={controlsRef} />
       )}
-      {/* Arrow key rotation — always active in both modes */}
       <ArrowKeyRotationController controlsRef={controlsRef} />
 
       {/* Underwater lighting — warm caustic tones with strong contrast */}
