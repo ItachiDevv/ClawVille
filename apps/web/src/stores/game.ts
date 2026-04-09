@@ -2,6 +2,8 @@ import { create } from 'zustand';
 
 export type MovementDirection = 'idle' | 'left' | 'right' | 'up' | 'down';
 
+export type ControlMode = 'explore' | 'npc' | 'player' | 'autonomous';
+
 export interface Toast {
   id: string;
   icon: string;
@@ -25,7 +27,16 @@ function saveVisited(visited: Set<string>) {
 }
 
 export interface GameState {
-  // Spectator mode (no pet, camera-only)
+  // Control mode — determines how input is routed and how the camera behaves
+  controlMode: ControlMode;
+  hasAgent: boolean;
+  possessedNpcId: string | null;
+  setControlMode: (mode: ControlMode) => void;
+  toggleControlMode: () => void;
+  setHasAgent: (v: boolean) => void;
+  setPossessedNpcId: (id: string | null) => void;
+
+  // Spectator mode (no pet, camera-only) — derived from controlMode; kept for backward compat
   isSpectator: boolean;
   setIsSpectator: (v: boolean) => void;
 
@@ -201,7 +212,35 @@ export interface GameState {
 }
 
 export const useGameStore = create<GameState>((set, get) => ({
-  isSpectator: false,
+  controlMode: 'explore',
+  hasAgent: false,
+  possessedNpcId: null,
+  setControlMode: (mode) =>
+    set({
+      controlMode: mode,
+      isSpectator: mode === 'explore' || mode === 'npc',
+    }),
+  toggleControlMode: () => {
+    const { hasAgent, controlMode } = get();
+    if (!hasAgent) {
+      const next: ControlMode = controlMode === 'explore' ? 'npc' : 'explore';
+      set({ controlMode: next, isSpectator: next === 'explore' || next === 'npc' });
+    } else {
+      const next: ControlMode = controlMode === 'player' ? 'autonomous' : 'player';
+      set({ controlMode: next, isSpectator: false });
+    }
+  },
+  setHasAgent: (v) =>
+    set((s) => ({
+      hasAgent: v,
+      controlMode: v ? 'player' : 'explore',
+      isSpectator: !v,
+      // clear possessed NPC when agent connects so modes don't conflict
+      possessedNpcId: v ? null : s.possessedNpcId,
+    })),
+  setPossessedNpcId: (id) => set({ possessedNpcId: id }),
+
+  isSpectator: true,
   setIsSpectator: (v) => set({ isSpectator: v }),
 
   petSpecies: 'cat',
