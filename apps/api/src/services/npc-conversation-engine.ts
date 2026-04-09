@@ -57,7 +57,7 @@ Keep responses short (1-2 sentences each). Be in character. Be playful and fun.`
       ],
     });
 
-    const textBlock = response.content.find((b: any) => b.type === 'text');
+    const textBlock = response.content.find((b: any) => b.type === 'text') as { text: string } | undefined;
     const text = textBlock?.text ?? '';
     return parseConversation(text, npc1, npc2);
   } catch (error) {
@@ -159,7 +159,7 @@ Reply as ${npc.name} with a single short sentence (1-2 sentences max). Stay in c
             thinking: { type: 'enabled', budget_tokens: 2048 },
             messages: [{ role: 'user', content: contextMsg }],
           });
-          const textBlock = response.content.find((b: any) => b.type === 'text');
+          const textBlock = response.content.find((b: any) => b.type === 'text') as { text: string } | undefined;
           reply = textBlock?.text ?? '';
         } catch {
           reply = '';

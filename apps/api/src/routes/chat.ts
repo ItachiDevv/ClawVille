@@ -7,6 +7,8 @@ import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { awardXp } from '../services/xp-service';
+import { shouldCollaborate, collaborateOnQuery } from '../services/agent-collaboration';
+import { miladyGateway } from '../services/milady-gateway';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 
@@ -79,6 +81,35 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
     dynamicContextParts.push(
       `You specialize in ${openClawTheme.focus}. Share OpenClaw insights and expertise naturally when relevant.`
     );
+  }
+
+  // Agent collaboration: consult specialists if question spans domains
+  if (shouldCollaborate(result.data.content, locationId)) {
+    try {
+      const collab = await collaborateOnQuery({
+        message: result.data.content,
+        sourceBuildingId: locationId,
+        maxExperts: 2,
+        timeoutMs: 4000,
+      });
+      if (collab.combinedContext) {
+        dynamicContextParts.push(collab.combinedContext);
+      }
+    } catch {
+      // Non-blocking — collaboration failure doesn't break chat
+    }
+  }
+
+  // Milady knowledge enrichment (if gateway available)
+  if (miladyGateway.isAvailable()) {
+    try {
+      const insights = await miladyGateway.fetchMiladyInsights(result.data.content, locationId);
+      if (insights.length > 0) {
+        dynamicContextParts.push(`[Milady Knowledge]\n${insights.join('\n')}`);
+      }
+    } catch {
+      // Non-blocking
+    }
   }
 
   const dynamicContext = dynamicContextParts.length > 0
