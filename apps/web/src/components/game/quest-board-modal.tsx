@@ -59,7 +59,7 @@ interface QuestReward {
 const TIER_CONFIG = {
   side_quest: {
     label: 'Side Quest',
-    icon: '\uD83D\uDCDC',
+    icon: '📜',
     color: 'text-slate-300',
     bg: 'bg-slate-500/15',
     border: 'border-slate-500/40',
@@ -76,7 +76,7 @@ const TIER_CONFIG = {
   },
   main_quest: {
     label: 'Main Quest',
-    icon: '\u2694\uFE0F',
+    icon: '⚔️',
     color: 'text-cyan-300',
     bg: 'bg-cyan-500/10',
     border: 'border-cyan-500/40',
@@ -93,7 +93,7 @@ const TIER_CONFIG = {
   },
   legendary: {
     label: 'Legendary',
-    icon: '\uD83D\uDC51',
+    icon: '👑',
     color: 'text-amber-300',
     bg: 'bg-amber-500/10',
     border: 'border-amber-500/40',
@@ -855,14 +855,14 @@ export default function QuestBoardModal() {
   const acceptMutation = useMutation({
     mutationFn: (questId: string) => api.acceptQuest(questId),
     onSuccess: () => {
-      addToast('\uD83D\uDCDC', 'Quest accepted! Check your Active Quests.');
+      addToast('📜', 'Quest accepted! Check your Active Quests.');
       queryClient.invalidateQueries({ queryKey: ['quests-available'] });
       queryClient.invalidateQueries({ queryKey: ['quests-my-quests'] });
       setAcceptingId(null);
       setSelectedQuestId(null);
     },
     onError: (err: Error) => {
-      addToast('\u274C', err.message || 'Failed to accept quest');
+      addToast('❌', err.message || 'Failed to accept quest');
       setAcceptingId(null);
     },
   });
@@ -870,12 +870,12 @@ export default function QuestBoardModal() {
   const startMutation = useMutation({
     mutationFn: (questId: string) => api.startQuest(questId),
     onSuccess: () => {
-      addToast('\uD83D\uDE80', 'Quest started! Get to work!');
+      addToast('🚀', 'Quest started! Get to work!');
       queryClient.invalidateQueries({ queryKey: ['quests-my-quests'] });
       setStartingId(null);
     },
     onError: (err: Error) => {
-      addToast('\u274C', err.message || 'Failed to start quest');
+      addToast('❌', err.message || 'Failed to start quest');
       setStartingId(null);
     },
   });
@@ -889,12 +889,12 @@ export default function QuestBoardModal() {
       data: { prLink?: string; submissionNote: string };
     }) => api.submitQuest(questId, data),
     onSuccess: () => {
-      addToast('\u2705', 'Work submitted for review!');
+      addToast('✅', 'Work submitted for review!');
       queryClient.invalidateQueries({ queryKey: ['quests-my-quests'] });
       setSubmittingId(null);
     },
     onError: (err: Error) => {
-      addToast('\u274C', err.message || 'Submission failed');
+      addToast('❌', err.message || 'Submission failed');
       setSubmittingId(null);
     },
   });
@@ -1096,7 +1096,7 @@ export default function QuestBoardModal() {
                     <LoadingSpinner color="border-cyan-300 border-t-transparent" />
                   ) : quests.length === 0 ? (
                     <EmptyState
-                      icon="\uD83D\uDCDC"
+                      icon="📜"
                       title="No quests available"
                       subtitle="The board is bare — check back later for new challenges from the deep."
                     />
@@ -1165,7 +1165,7 @@ export default function QuestBoardModal() {
                   <LoadingSpinner color="border-cyan-300 border-t-transparent" />
                 ) : myQuests.length === 0 ? (
                   <EmptyState
-                    icon="\u2694\uFE0F"
+                    icon="⚔️"
                     title="No active quests"
                     subtitle="Accept a quest from the Available tab to begin your journey."
                   />
@@ -1217,7 +1217,7 @@ export default function QuestBoardModal() {
                   <LoadingSpinner color="border-amber-300 border-t-transparent" />
                 ) : rewards.length === 0 ? (
                   <EmptyState
-                    icon="\uD83C\uDFC6"
+                    icon="🏆"
                     title="No completed quests yet"
                     subtitle="Complete quests to earn tokens, skills, and legendary titles."
                   />
