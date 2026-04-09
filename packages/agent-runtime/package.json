@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.74.0",
     "@legacyapp/agent-templates": "workspace:*",
     "@legacyapp/shared": "workspace:*",
     "@elizaos/core": "1.7.1",
