@@ -3,7 +3,9 @@
     "allow": [
       "Bash(bun add:*)",
       "Bash(bun install:*)",
-      "Bash(bun run build:*)"
+      "Bash(bun run build:*)",
+      "Bash(pkill -f \"next dev\")",
+      "Bash(pkill -f \"bun.*index.ts\")"
     ]
   }
 }
