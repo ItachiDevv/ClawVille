@@ -111,12 +111,13 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
   const placed = useRef(false);
 
   // Clone and compute normalized scale from bounding box
+  // Include config.model in deps to ensure each building gets its own isolated clone
   const { cloned, buildingScale } = useMemo(() => {
     const c = scene.clone(true);
     stripGroundPlanes(c);
     const s = computeBuildingScale(c);
     return { cloned: c, buildingScale: s };
-  }, [scene]);
+  }, [scene, config.model]);
 
   // Place on flat sand floor (y=-2)
   useFrame(() => {
