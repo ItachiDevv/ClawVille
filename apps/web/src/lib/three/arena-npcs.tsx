@@ -5,6 +5,7 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { useNpcStore, type NpcSpriteState } from '@/stores/npc';
+import { applyWalkAnimation, applyIdleAnimation, idToSeed } from '@/lib/three/procedural-animation';
 
 // ---------------------------------------------------------------------------
 // GLB-based NPC renderer with terrain raycasting
@@ -56,9 +57,11 @@ function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
 // ---------------------------------------------------------------------------
 const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
   const groupRef = useRef<THREE.Group>(null!);
+  const animGroupRef = useRef<THREE.Group>(null!);
   const npcRef = useRef(npc);
   npcRef.current = npc;
   const { scene: threeScene } = useThree();
+  const seed = useMemo(() => idToSeed(npc.id), [npc.id]);
 
   const targetPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
   const currentPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
@@ -85,10 +88,11 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     return c;
   }, [scene, npc.color]);
 
-  useFrame((_, delta) => {
+  useFrame(({ clock }, delta) => {
     const d = npcRef.current;
     const group = groupRef.current;
-    if (!group) return;
+    const animGroup = animGroupRef.current;
+    if (!group || !animGroup) return;
 
     const dt = Math.min(delta, 0.1);
 
@@ -106,23 +110,40 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const frame = Math.floor(Date.now() / 50);
     if (frame % 3 === 0) {
       const terrainY = getTerrainY(group.position.x, group.position.z, threeScene);
-      currentTerrainY.current += (terrainY - currentTerrainY.current) * 0.3; // smooth
+      currentTerrainY.current += (terrainY - currentTerrainY.current) * 0.3;
     }
 
-    // Walking bob on top of terrain height
+    // Base bob on top of terrain height
     const isMoving = d.direction !== 'idle' && !d.isDead;
-    const bob = isMoving ? Math.sin(Date.now() * 0.005) * 0.8 : 0;
+    const bob = isMoving ? Math.sin(Date.now() * 0.005) * 0.6 : 0;
     group.position.y = currentTerrainY.current + 2 + bob;
 
-    // Rotation
+    // Direction rotation
     const targetRot = DIR_ROTATION[d.direction] ?? 0;
     currentRotY.current += (targetRot - currentRotY.current) * Math.min(1, 8 * dt);
     group.rotation.y = currentRotY.current;
+
+    // Procedural animation on the inner group (squash/stretch/tilt)
+    const animState = {
+      group: animGroup,
+      isMoving,
+      elapsed: clock.elapsedTime,
+      delta: dt,
+      direction: d.direction,
+      seed,
+    };
+    if (isMoving) {
+      applyWalkAnimation(animState);
+    } else {
+      applyIdleAnimation(animState);
+    }
   });
 
   return (
     <group ref={groupRef} scale={[NPC_SCALE, NPC_SCALE, NPC_SCALE]}>
-      <primitive object={cloned} />
+      <group ref={animGroupRef}>
+        <primitive object={cloned} />
+      </group>
     </group>
   );
 });

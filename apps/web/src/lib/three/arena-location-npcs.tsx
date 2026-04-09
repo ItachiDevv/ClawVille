@@ -11,6 +11,7 @@ import {
   buildingZones,
 } from '@/lib/pixi/tilemap-data';
 import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
+import { applyStationaryIdleAnimation, idToSeed } from '@/lib/three/procedural-animation';
 
 // ---------------------------------------------------------------------------
 // Location NPCs — SpongeBob characters at their canonical buildings
@@ -88,10 +89,12 @@ const LocationNpc = memo(function LocationNpc({
   if (!config) return null;
 
   const groupRef = useRef<THREE.Group>(null);
+  const animGroupRef = useRef<THREE.Group>(null);
   const { scene: threeScene } = useThree();
   const { scene } = useGLTF(config.model);
   const terrainY = useRef(-2);
   const placed = useRef(false);
+  const seed = useMemo(() => idToSeed(zoneId), [zoneId]);
 
   // Clone and compute normalized scale
   const { cloned, npcScale } = useMemo(() => {
@@ -111,14 +114,28 @@ const LocationNpc = memo(function LocationNpc({
       }
     }
 
-    const bob = Math.sin(clock.elapsedTime * 1.5) * 0.5;
+    // Base position with gentle bob
+    const bob = Math.sin(clock.elapsedTime * 1.5 + seed) * 0.4;
     groupRef.current.position.set(worldX, terrainY.current + 2 + bob, worldZ);
-    groupRef.current.rotation.y = Math.PI;
+
+    // Procedural idle animation on inner group
+    if (animGroupRef.current) {
+      applyStationaryIdleAnimation({
+        group: animGroupRef.current,
+        isMoving: false,
+        elapsed: clock.elapsedTime,
+        delta: 0.016,
+        direction: 'idle',
+        seed,
+      });
+    }
   });
 
   return (
     <group ref={groupRef} scale={[npcScale, npcScale, npcScale]}>
-      <primitive object={cloned} />
+      <group ref={animGroupRef}>
+        <primitive object={cloned} />
+      </group>
     </group>
   );
 });
