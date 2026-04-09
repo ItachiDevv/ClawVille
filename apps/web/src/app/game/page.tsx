@@ -30,6 +30,7 @@ import BuildingTooltip from '@/components/game/building-tooltip';
 import DailyLoginModal from '@/components/game/daily-login-modal';
 import QuestTracker from '@/components/game/quest-tracker';
 import ThoughtLog from '@/components/game/thought-log';
+import ControlModeToggle from '@/components/game/control-mode-toggle';
 import { useResearchStream } from '@/hooks/use-research-stream';
 
 const World3DCanvas = dynamic(() => import('@/components/three/World3DCanvas'), {
@@ -164,6 +165,7 @@ export default function GamePage() {
       {/* Always visible — game menu and minimap for all visitors */}
       <GameMenu />
       <Minimap />
+      <ControlModeToggle />
 
       {/* Spectator mode: show banner, hide pet-specific UI */}
       {isSpectator && <SpectatorBanner />}
