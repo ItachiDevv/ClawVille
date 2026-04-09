@@ -30,11 +30,12 @@ useGLTF.preload('/models/building-chest.glb');
 const MAP_WIDTH = 1280;
 const MAP_HEIGHT = 800;
 
-// Sand colors — high contrast so they're visible from default camera (y=250, z=400)
-const SAND_RIDGE  = new THREE.Color(0xf5e6c8); // Bright sandy peaks
-const SAND_MID    = new THREE.Color(0xd4b896); // Mid-tone
-const SAND_VALLEY = new THREE.Color(0x9e8060); // Dark valleys/wet
-const SAND_DEEP   = new THREE.Color(0x7a6248); // Deepest troughs
+// Sand colors — GRAPHIC high-contrast palette, visible from any camera distance
+const SAND_RIDGE  = new THREE.Color(0xfff0d4); // Bright white-sand peaks
+const SAND_HIGH   = new THREE.Color(0xe8d0a8); // Warm sand
+const SAND_MID    = new THREE.Color(0xc4a878); // Golden mid-tone
+const SAND_VALLEY = new THREE.Color(0x8a7050); // Dark moody valleys
+const SAND_DEEP   = new THREE.Color(0x5c4a32); // Deep brown-black troughs
 
 /** Seeded PRNG for deterministic terrain */
 function seededRandom(seed: number): () => number {
@@ -63,32 +64,40 @@ function createSandGeometry(): THREE.PlaneGeometry {
     const x = pos.getX(i);
     const y = pos.getY(i);
 
-    // BIG visible dunes — 8-12 unit height swings, visible from 400+ units away
-    const dune1 = Math.sin(x * 0.005 + 1.3) * Math.cos(y * 0.007 + 0.7) * 10;
-    const dune2 = Math.sin(x * 0.012 + 3.1) * Math.sin(y * 0.015 + 2.4) * 6;
-    const dune3 = Math.sin(x * 0.025 + 0.5) * Math.cos(y * 0.03 + 1.2) * 3;
-    const ripple = Math.sin(x * 0.06 + y * 0.04) * 1.5;
-    const noise = (rng() - 0.5) * 1.2;
-    const totalHeight = dune1 + dune2 + dune3 + ripple + noise;
+    // Large dramatic dunes with multiple octaves
+    const dune1 = Math.sin(x * 0.004 + 1.3) * Math.cos(y * 0.006 + 0.7) * 14;
+    const dune2 = Math.sin(x * 0.01 + 3.1) * Math.sin(y * 0.013 + 2.4) * 8;
+    const dune3 = Math.sin(x * 0.025 + 0.5) * Math.cos(y * 0.03 + 1.2) * 4;
+    // Visible sand ripple pattern — tighter frequency, adds texture detail
+    const ripple = Math.sin(x * 0.08 + y * 0.06) * 2;
+    const ripple2 = Math.sin(x * 0.12 - y * 0.09) * 1;
+    const noise = (rng() - 0.5) * 1.5;
+    const totalHeight = dune1 + dune2 + dune3 + ripple + ripple2 + noise;
     pos.setZ(i, totalHeight);
 
-    // HIGH CONTRAST per-vertex color based on height
-    // Heights range roughly -20 to +20, normalize to 0..1
-    const t = Math.max(0, Math.min(1, (totalHeight + 20) / 40));
+    // GRAPHIC color bands — sharp contrast between heights
+    // Heights range roughly -28 to +28, normalize to 0..1
+    const t = Math.max(0, Math.min(1, (totalHeight + 28) / 56));
 
-    if (t < 0.25) {
-      tmpColor.lerpColors(SAND_DEEP, SAND_VALLEY, t / 0.25);
-    } else if (t < 0.5) {
-      tmpColor.lerpColors(SAND_VALLEY, SAND_MID, (t - 0.25) / 0.25);
-    } else if (t < 0.75) {
-      tmpColor.lerpColors(SAND_MID, SAND_RIDGE, (t - 0.5) / 0.25);
+    if (t < 0.15) {
+      tmpColor.lerpColors(SAND_DEEP, SAND_VALLEY, t / 0.15);
+    } else if (t < 0.35) {
+      tmpColor.lerpColors(SAND_VALLEY, SAND_MID, (t - 0.15) / 0.2);
+    } else if (t < 0.55) {
+      tmpColor.lerpColors(SAND_MID, SAND_HIGH, (t - 0.35) / 0.2);
+    } else if (t < 0.8) {
+      tmpColor.lerpColors(SAND_HIGH, SAND_RIDGE, (t - 0.55) / 0.25);
     } else {
       tmpColor.copy(SAND_RIDGE);
     }
 
-    // Random patches of darker wet sand
-    if (rng() < 0.08) {
-      tmpColor.lerp(SAND_DEEP, 0.4);
+    // Scattered dark wet patches for visual interest
+    if (rng() < 0.1) {
+      tmpColor.lerp(SAND_DEEP, 0.5);
+    }
+    // Occasional bright spots
+    if (rng() < 0.05) {
+      tmpColor.lerp(SAND_RIDGE, 0.3);
     }
 
     colors[i * 3] = tmpColor.r;
@@ -137,26 +146,25 @@ interface DecoEntry {
   rotY: number;
 }
 
-// Decoration models — LARGE scales so they're visible from default camera distance
+// Decoration models — scales must be LARGE LANDMARKS visible from default camera
 const DECO_TYPES = [
-  // Coral — big, visible reef formations
-  { model: '/models/coral-reef1.glb', weight: 5, minScale: 6, maxScale: 12 },
-  { model: '/models/coral-reef2.glb', weight: 5, minScale: 6, maxScale: 11 },
-  { model: '/models/coral-reef3.glb', weight: 5, minScale: 6, maxScale: 11 },
-  // Kelp — tall forest pillars
-  { model: '/models/kelp.glb', weight: 7, minScale: 8, maxScale: 15 },
-  // Props — medium sized, visible
-  { model: '/models/building-anchor.glb', weight: 2, minScale: 3, maxScale: 5 },
-  { model: '/models/building-barrel.glb', weight: 2, minScale: 3, maxScale: 5 },
-  { model: '/models/building-chest.glb', weight: 1, minScale: 2.5, maxScale: 4 },
-  { model: '/models/building-shell.glb', weight: 3, minScale: 4, maxScale: 7 },
-  { model: '/models/building-lantern.glb', weight: 2, minScale: 4, maxScale: 7 },
-  { model: '/models/crayfish.glb', weight: 2, minScale: 4, maxScale: 8 },
-  // Large scenery pieces
-  { model: '/models/building-shipwreck.glb', weight: 1, minScale: 0.5, maxScale: 1.0 },
-  { model: '/models/building-submarine.glb', weight: 1, minScale: 0.5, maxScale: 0.8 },
-  { model: '/models/building-seashell.glb', weight: 2, minScale: 3, maxScale: 6 },
-  { model: '/models/building-tower2.glb', weight: 1, minScale: 2, maxScale: 4 },
+  // Coral — tall reef formations, almost building-sized
+  { model: '/models/coral-reef1.glb', weight: 5, minScale: 10, maxScale: 20 },
+  { model: '/models/coral-reef2.glb', weight: 5, minScale: 10, maxScale: 18 },
+  { model: '/models/coral-reef3.glb', weight: 5, minScale: 10, maxScale: 18 },
+  // Kelp — tall forest columns, biggest decorations
+  { model: '/models/kelp.glb', weight: 7, minScale: 14, maxScale: 25 },
+  // Props — clearly visible objects
+  { model: '/models/building-anchor.glb', weight: 2, minScale: 5, maxScale: 8 },
+  { model: '/models/building-barrel.glb', weight: 2, minScale: 5, maxScale: 8 },
+  { model: '/models/building-shell.glb', weight: 3, minScale: 6, maxScale: 12 },
+  { model: '/models/building-lantern.glb', weight: 2, minScale: 6, maxScale: 10 },
+  { model: '/models/crayfish.glb', weight: 2, minScale: 6, maxScale: 12 },
+  // Large set pieces — shipwrecks and submarines as real landmarks
+  { model: '/models/building-shipwreck.glb', weight: 1, minScale: 1.0, maxScale: 2.0 },
+  { model: '/models/building-submarine.glb', weight: 1, minScale: 0.8, maxScale: 1.5 },
+  { model: '/models/building-seashell.glb', weight: 2, minScale: 5, maxScale: 10 },
+  { model: '/models/building-tower2.glb', weight: 1, minScale: 3, maxScale: 6 },
 ];
 
 // Preload new decoration models
