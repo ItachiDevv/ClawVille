@@ -54,29 +54,104 @@ interface KeyState {
   arrowright: boolean;
 }
 
+// Shared key state for arrow-key camera rotation — read by ArrowKeyRotationController
+// and written by whichever key listener is active.
+const _arrowKeys: Pick<KeyState, 'arrowup' | 'arrowdown' | 'arrowleft' | 'arrowright'> = {
+  arrowup: false,
+  arrowdown: false,
+  arrowleft: false,
+  arrowright: false,
+};
+
+const ARROW_ROT_SPEED = 1.5; // radians/second
+const PHI_MIN = 0.1;
+const PHI_MAX = Math.PI / 2.1; // matches OrbitControls maxPolarAngle
+
+// Spherical scratch objects — allocated once, reused every frame
+const _offset = new THREE.Vector3();
+const _spherical = new THREE.Spherical();
+
+// ---------------------------------------------------------------------------
+// Arrow key camera rotation — active in ALL modes
+// Reads _arrowKeys, adjusts orbit camera angles via spherical coordinates.
+// Must be rendered inside SceneContents so it always runs.
+// ---------------------------------------------------------------------------
+function ArrowKeyRotationController({
+  controlsRef,
+}: {
+  controlsRef: React.RefObject<OrbitControlsImpl | null>;
+}) {
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      switch (e.key) {
+        case 'ArrowUp':    _arrowKeys.arrowup    = true; e.preventDefault(); break;
+        case 'ArrowDown':  _arrowKeys.arrowdown  = true; e.preventDefault(); break;
+        case 'ArrowLeft':  _arrowKeys.arrowleft  = true; e.preventDefault(); break;
+        case 'ArrowRight': _arrowKeys.arrowright = true; e.preventDefault(); break;
+      }
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      switch (e.key) {
+        case 'ArrowUp':    _arrowKeys.arrowup    = false; break;
+        case 'ArrowDown':  _arrowKeys.arrowdown  = false; break;
+        case 'ArrowLeft':  _arrowKeys.arrowleft  = false; break;
+        case 'ArrowRight': _arrowKeys.arrowright = false; break;
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+  }, []);
+
+  useFrame((_, delta) => {
+    const controls = controlsRef.current;
+    if (!controls) return;
+
+    const dTheta =
+      (_arrowKeys.arrowleft ? 1 : 0) - (_arrowKeys.arrowright ? 1 : 0);
+    const dPhi =
+      (_arrowKeys.arrowup ? -1 : 0) + (_arrowKeys.arrowdown ? 1 : 0);
+
+    if (dTheta === 0 && dPhi === 0) return;
+
+    const camera = controls.object;
+    _offset.subVectors(camera.position, controls.target);
+    _spherical.setFromVector3(_offset);
+
+    _spherical.theta += dTheta * ARROW_ROT_SPEED * delta;
+    _spherical.phi   += dPhi   * ARROW_ROT_SPEED * delta;
+    _spherical.phi    = Math.max(PHI_MIN, Math.min(PHI_MAX, _spherical.phi));
+
+    _offset.setFromSpherical(_spherical);
+    camera.position.copy(controls.target).add(_offset);
+    controls.update();
+  });
+
+  return null;
+}
+
 function WASDCameraController({
   controlsRef,
 }: {
   controlsRef: React.RefObject<OrbitControlsImpl | null>;
 }) {
-  const keysRef = useRef<KeyState>({
+  const keysRef = useRef<Pick<KeyState, 'w' | 'a' | 's' | 'd'>>({
     w: false,
     a: false,
     s: false,
     d: false,
-    arrowup: false,
-    arrowdown: false,
-    arrowleft: false,
-    arrowright: false,
   });
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      const key = e.key.toLowerCase() as keyof KeyState;
+      const key = e.key.toLowerCase() as keyof typeof keysRef.current;
       if (key in keysRef.current) keysRef.current[key] = true;
     };
     const onKeyUp = (e: KeyboardEvent) => {
-      const key = e.key.toLowerCase() as keyof KeyState;
+      const key = e.key.toLowerCase() as keyof typeof keysRef.current;
       if (key in keysRef.current) keysRef.current[key] = false;
     };
 
@@ -96,10 +171,11 @@ function WASDCameraController({
     let dx = 0;
     let dz = 0;
 
-    if (keys.w || keys.arrowup) dz += 1;
-    if (keys.s || keys.arrowdown) dz -= 1;
-    if (keys.a || keys.arrowleft) dx -= 1;
-    if (keys.d || keys.arrowright) dx += 1;
+    // Only WASD drives panning — arrow keys are handled by ArrowKeyRotationController
+    if (keys.w) dz += 1;
+    if (keys.s) dz -= 1;
+    if (keys.a) dx -= 1;
+    if (keys.d) dx += 1;
 
     if (dx === 0 && dz === 0) return;
 
@@ -201,6 +277,8 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       ) : (
         <WASDCameraController controlsRef={controlsRef} />
       )}
+      {/* Arrow key rotation — always active in both modes */}
+      <ArrowKeyRotationController controlsRef={controlsRef} />
 
       {/* Underwater lighting — warm caustic tones with strong contrast */}
       <hemisphereLight args={[0x66bbdd, 0x223344, 1.5]} />
