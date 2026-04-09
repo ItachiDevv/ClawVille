@@ -121,6 +121,7 @@
       "name": "@legacyapp/agent-runtime",
       "version": "0.1.0",
       "dependencies": {
+        "@anthropic-ai/sdk": "^0.74.0",
         "@elizaos/core": "1.7.1",
         "@elizaos/plugin-anthropic": "1.5.12",
         "@elizaos/plugin-bootstrap": "1.7.1",
