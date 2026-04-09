@@ -11,6 +11,7 @@ import {
   TILE_SIZE,
   buildingZones,
 } from '@/lib/pixi/tilemap-data';
+import { applyWalkAnimation, applyIdleAnimation } from '@/lib/three/procedural-animation';
 
 // ---------------------------------------------------------------------------
 // GLB-based player avatar — lobster.glb model = 1-2 draw calls
@@ -97,6 +98,7 @@ function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
 
 function PlayerPetInner() {
   const groupRef = useRef<THREE.Group>(null);
+  const animGroupRef = useRef<THREE.Group>(null);
   const rotRef = useRef(0);
   const terrainYRef = useRef(0);
   const { scene: threeScene } = useThree();
@@ -220,11 +222,31 @@ function PlayerPetInner() {
     const targetRot = DIR_ROTATION[dir] ?? 0;
     rotRef.current += (targetRot - rotRef.current) * 0.15;
     group.rotation.y = rotRef.current;
+
+    // Procedural animation (squash/stretch/tilt) on inner group
+    const animGroup = animGroupRef.current;
+    if (animGroup) {
+      const animState = {
+        group: animGroup,
+        isMoving,
+        elapsed,
+        delta: Math.min(delta, 0.1),
+        direction: dir,
+        seed: 0, // Player always seed 0
+      };
+      if (isMoving) {
+        applyWalkAnimation(animState);
+      } else {
+        applyIdleAnimation(animState);
+      }
+    }
   });
 
   return (
     <group ref={groupRef}>
-      <primitive object={cloned} scale={AVATAR_SCALE} />
+      <group ref={animGroupRef}>
+        <primitive object={cloned} scale={AVATAR_SCALE} />
+      </group>
     </group>
   );
 }

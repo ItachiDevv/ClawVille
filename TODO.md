@@ -14,7 +14,35 @@
 - Terrain raycasting with Layer 1 isolation ✅
 - Deployed to Railway ✅
 
-## NEXT: Priority Issues
+## NEXT: Priority Issues — Visuals
+
+### V1. Fix buildings — wrong models rendering at some locations
+- [ ] Audit which buildings are rendering the wrong GLB model
+- [ ] Ensure each buildingZone maps to its correct GLB file
+- [ ] File: `apps/web/src/lib/three/arena-buildings.tsx`
+
+### V2. Fix decorations — bare map, clustered placement
+- [ ] Decorations currently sit in random clusters instead of spread across the map
+- [ ] Use ALL available decoration types (corals, kelp, rocks, etc.)
+- [ ] Spread evenly across the terrain for an exciting, populated map
+- [ ] File: `apps/web/src/lib/three/arena-terrain.tsx` or dedicated decorations file
+
+### V3. Fix floor — untextured sand
+- [ ] The ground is plain untextured sand, needs proper material for a 3D game
+- [ ] Add sand texture (normal map, roughness, color variation)
+- [ ] Consider underwater caustic/ripple effects
+- [ ] File: `apps/web/src/lib/three/arena-terrain.tsx`
+
+### V4. 🔴 Big Task: Fix character movement animations
+- [ ] GLB models exist for agents and NPCs but have NO movement animations
+- [ ] Need walk/idle animation cycles on the lobster GLBs
+- [ ] Options: Mixamo retarget, procedural animation, or swap to animated GLBs
+- [ ] Apply to both player avatar and NPC lobsters
+- [ ] Files: `apps/web/src/lib/three/arena-npcs.tsx`, `apps/web/src/lib/three/player-avatar.tsx`
+
+---
+
+## Previous Priority Issues
 
 ### 1. ~~NPCs not moving~~ DONE
 - [x] Root cause: API SSE stream sending 10 idle NPCs overwriting client wander
