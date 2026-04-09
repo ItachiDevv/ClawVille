@@ -46,7 +46,8 @@ Keep responses short (1-2 sentences each). Be in character. Be playful and fun.`
   try {
     const response = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 150,
+      max_tokens: 2200,
+      thinking: { type: 'enabled', budget_tokens: 2048 },
       system: systemPrompt,
       messages: [
         {
@@ -56,7 +57,8 @@ Keep responses short (1-2 sentences each). Be in character. Be playful and fun.`
       ],
     });
 
-    const text = response.content[0]?.type === 'text' ? response.content[0].text : '';
+    const textBlock = response.content.find((b: any) => b.type === 'text');
+    const text = textBlock?.text ?? '';
     return parseConversation(text, npc1, npc2);
   } catch (error) {
     console.error('NPC conversation generation failed:', error);
@@ -153,10 +155,12 @@ Reply as ${npc.name} with a single short sentence (1-2 sentences max). Stay in c
         try {
           const response = await anthropic.messages.create({
             model: 'claude-haiku-4-5-20251001',
-            max_tokens: 80,
+            max_tokens: 2130,
+            thinking: { type: 'enabled', budget_tokens: 2048 },
             messages: [{ role: 'user', content: contextMsg }],
           });
-          reply = response.content[0]?.type === 'text' ? response.content[0].text : '';
+          const textBlock = response.content.find((b: any) => b.type === 'text');
+          reply = textBlock?.text ?? '';
         } catch {
           reply = '';
         }
