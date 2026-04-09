@@ -30,11 +30,11 @@ useGLTF.preload('/models/building-chest.glb');
 const MAP_WIDTH = 1280;
 const MAP_HEIGHT = 800;
 
-// Sand colors for vertex color variation
-const SAND_LIGHT = new THREE.Color(0xf0dfc0);
-const SAND_MID   = new THREE.Color(0xe8d5b0);
-const SAND_DARK  = new THREE.Color(0xc4a882);
-const SAND_WET   = new THREE.Color(0xb09870);
+// Sand colors — high contrast so they're visible from default camera (y=250, z=400)
+const SAND_RIDGE  = new THREE.Color(0xf5e6c8); // Bright sandy peaks
+const SAND_MID    = new THREE.Color(0xd4b896); // Mid-tone
+const SAND_VALLEY = new THREE.Color(0x9e8060); // Dark valleys/wet
+const SAND_DEEP   = new THREE.Color(0x7a6248); // Deepest troughs
 
 /** Seeded PRNG for deterministic terrain */
 function seededRandom(seed: number): () => number {
@@ -45,101 +45,12 @@ function seededRandom(seed: number): () => number {
   };
 }
 
-/** Generate sand texture with grain + ripples for map/normalMap */
-function createSandTexture(): { colorMap: THREE.CanvasTexture; normalMap: THREE.CanvasTexture } {
-  const size = 1024;
-
-  // --- Color map ---
-  const colorCanvas = document.createElement('canvas');
-  colorCanvas.width = size;
-  colorCanvas.height = size;
-  const ctx = colorCanvas.getContext('2d')!;
-  ctx.fillStyle = '#e8d5b0';
-  ctx.fillRect(0, 0, size, size);
-
-  const imageData = ctx.getImageData(0, 0, size, size);
-  const data = imageData.data;
-  const heightMap = new Float32Array(size * size);
-
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const i = (y * size + x) * 4;
-      const noise = (Math.random() - 0.5) * 35;
-      const speckle = Math.random() < 0.03 ? -30 : 0;
-      // Larger-scale variation using sine waves
-      const largeNoise = Math.sin(x * 0.015) * Math.cos(y * 0.012) * 12;
-      const ripple = Math.sin(x * 0.04 + y * 0.02) * 4;
-
-      data[i]     = Math.max(0, Math.min(255, data[i] + noise + speckle + largeNoise));
-      data[i + 1] = Math.max(0, Math.min(255, data[i + 1] + noise + speckle + largeNoise));
-      data[i + 2] = Math.max(0, Math.min(255, data[i + 2] + noise * 0.8 + speckle + largeNoise * 0.6));
-
-      heightMap[y * size + x] = noise + largeNoise + ripple;
-    }
-  }
-
-  // Draw wave ripples
-  ctx.putImageData(imageData, 0, 0);
-  ctx.globalAlpha = 0.08;
-  ctx.strokeStyle = '#c4a882';
-  ctx.lineWidth = 1.5;
-  for (let y = 10; y < size; y += 14 + Math.random() * 8) {
-    ctx.beginPath();
-    for (let x = 0; x < size; x += 3) {
-      const wave = Math.sin(x * 0.025 + y * 0.08) * 3;
-      if (x === 0) ctx.moveTo(x, y + wave);
-      else ctx.lineTo(x, y + wave);
-    }
-    ctx.stroke();
-  }
-
-  const colorTex = new THREE.CanvasTexture(colorCanvas);
-  colorTex.wrapS = THREE.RepeatWrapping;
-  colorTex.wrapT = THREE.RepeatWrapping;
-  colorTex.repeat.set(16, 10);
-
-  // --- Normal map from height ---
-  const normCanvas = document.createElement('canvas');
-  normCanvas.width = size;
-  normCanvas.height = size;
-  const nCtx = normCanvas.getContext('2d')!;
-  const normData = nCtx.createImageData(size, size);
-  const nd = normData.data;
-  const strength = 2.0;
-
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const idx = y * size + x;
-      const l = heightMap[y * size + ((x - 1 + size) % size)];
-      const r = heightMap[y * size + ((x + 1) % size)];
-      const u = heightMap[((y - 1 + size) % size) * size + x];
-      const d = heightMap[((y + 1) % size) * size + x];
-
-      const dx = (l - r) * strength;
-      const dy = (u - d) * strength;
-      const i = idx * 4;
-      nd[i]     = Math.max(0, Math.min(255, (dx * 0.5 + 0.5) * 255));
-      nd[i + 1] = Math.max(0, Math.min(255, (dy * 0.5 + 0.5) * 255));
-      nd[i + 2] = 255;
-      nd[i + 3] = 255;
-    }
-  }
-  nCtx.putImageData(normData, 0, 0);
-
-  const normalTex = new THREE.CanvasTexture(normCanvas);
-  normalTex.wrapS = THREE.RepeatWrapping;
-  normalTex.wrapT = THREE.RepeatWrapping;
-  normalTex.repeat.set(16, 10);
-
-  return { colorMap: colorTex, normalMap: normalTex };
-}
-
-/** Build subdivided sand plane with vertex displacement and per-vertex colors */
+/** Build subdivided sand plane with LARGE visible dunes and strong per-vertex colors */
 function createSandGeometry(): THREE.PlaneGeometry {
   const w = MAP_WIDTH * 3;
   const h = MAP_HEIGHT * 3;
-  const segsX = 100;
-  const segsY = 66;
+  const segsX = 120;
+  const segsY = 80;
   const geo = new THREE.PlaneGeometry(w, h, segsX, segsY);
 
   const pos = geo.attributes.position;
@@ -152,28 +63,33 @@ function createSandGeometry(): THREE.PlaneGeometry {
     const x = pos.getX(i);
     const y = pos.getY(i);
 
-    // Gentle sand dune displacement (applied to Z since plane is XY before rotation)
-    const dune1 = Math.sin(x * 0.008 + 1.3) * Math.cos(y * 0.012 + 0.7) * 3;
-    const dune2 = Math.sin(x * 0.018 + 3.1) * Math.sin(y * 0.022 + 2.4) * 1.5;
-    const ripple = Math.sin(x * 0.05) * Math.cos(y * 0.04) * 0.5;
-    const noise = (rng() - 0.5) * 0.8;
-    pos.setZ(i, dune1 + dune2 + ripple + noise);
+    // BIG visible dunes — 8-12 unit height swings, visible from 400+ units away
+    const dune1 = Math.sin(x * 0.005 + 1.3) * Math.cos(y * 0.007 + 0.7) * 10;
+    const dune2 = Math.sin(x * 0.012 + 3.1) * Math.sin(y * 0.015 + 2.4) * 6;
+    const dune3 = Math.sin(x * 0.025 + 0.5) * Math.cos(y * 0.03 + 1.2) * 3;
+    const ripple = Math.sin(x * 0.06 + y * 0.04) * 1.5;
+    const noise = (rng() - 0.5) * 1.2;
+    const totalHeight = dune1 + dune2 + dune3 + ripple + noise;
+    pos.setZ(i, totalHeight);
 
-    // Per-vertex color: lerp between sand tones based on height + noise
-    const heightFactor = (dune1 + dune2 + 5) / 10; // ~0..1
-    const noiseFactor = rng();
-    if (noiseFactor < 0.15) {
-      tmpColor.copy(SAND_WET);
-    } else if (heightFactor > 0.65) {
-      tmpColor.lerpColors(SAND_MID, SAND_LIGHT, (heightFactor - 0.65) / 0.35);
+    // HIGH CONTRAST per-vertex color based on height
+    // Heights range roughly -20 to +20, normalize to 0..1
+    const t = Math.max(0, Math.min(1, (totalHeight + 20) / 40));
+
+    if (t < 0.25) {
+      tmpColor.lerpColors(SAND_DEEP, SAND_VALLEY, t / 0.25);
+    } else if (t < 0.5) {
+      tmpColor.lerpColors(SAND_VALLEY, SAND_MID, (t - 0.25) / 0.25);
+    } else if (t < 0.75) {
+      tmpColor.lerpColors(SAND_MID, SAND_RIDGE, (t - 0.5) / 0.25);
     } else {
-      tmpColor.lerpColors(SAND_DARK, SAND_MID, heightFactor / 0.65);
+      tmpColor.copy(SAND_RIDGE);
     }
-    // Add slight random variation
-    const jitter = (rng() - 0.5) * 0.04;
-    tmpColor.r = Math.max(0, Math.min(1, tmpColor.r + jitter));
-    tmpColor.g = Math.max(0, Math.min(1, tmpColor.g + jitter));
-    tmpColor.b = Math.max(0, Math.min(1, tmpColor.b + jitter * 0.6));
+
+    // Random patches of darker wet sand
+    if (rng() < 0.08) {
+      tmpColor.lerp(SAND_DEEP, 0.4);
+    }
 
     colors[i * 3] = tmpColor.r;
     colors[i * 3 + 1] = tmpColor.g;
@@ -187,12 +103,7 @@ function createSandGeometry(): THREE.PlaneGeometry {
 
 function SandFloor() {
   const ref = useRef<THREE.Mesh>(null);
-
   const sandGeo = useMemo(() => createSandGeometry(), []);
-  const textures = useMemo(() => {
-    if (typeof document === 'undefined') return null;
-    return createSandTexture();
-  }, []);
 
   useEffect(() => {
     if (ref.current) ref.current.layers.enable(TERRAIN_LAYER);
@@ -205,18 +116,11 @@ function SandFloor() {
       rotation={[-Math.PI / 2, 0, 0]}
       position={[0, -2, 0]}
     >
-      {textures ? (
-        <meshStandardMaterial
-          map={textures.colorMap}
-          normalMap={textures.normalMap}
-          normalScale={new THREE.Vector2(0.4, 0.4)}
-          vertexColors
-          roughness={0.85}
-          metalness={0.0}
-        />
-      ) : (
-        <meshStandardMaterial color={0xe8d5b0} roughness={0.85} metalness={0.0} />
-      )}
+      <meshStandardMaterial
+        vertexColors
+        roughness={0.8}
+        metalness={0.0}
+      />
     </mesh>
   );
 }
@@ -233,25 +137,26 @@ interface DecoEntry {
   rotY: number;
 }
 
-// All available decoration models with their spawn weights and scale ranges
+// Decoration models — LARGE scales so they're visible from default camera distance
 const DECO_TYPES = [
-  // Coral — common, spread everywhere
-  { model: '/models/coral-reef1.glb', weight: 5, minScale: 2.5, maxScale: 5 },
-  { model: '/models/coral-reef2.glb', weight: 5, minScale: 2.5, maxScale: 4.5 },
-  { model: '/models/coral-reef3.glb', weight: 5, minScale: 2.5, maxScale: 4.5 },
-  // Kelp — common, tall
-  { model: '/models/kelp.glb', weight: 6, minScale: 3.5, maxScale: 6 },
-  // Small props — less common
-  { model: '/models/building-anchor.glb', weight: 2, minScale: 1.5, maxScale: 2.5 },
-  { model: '/models/building-barrel.glb', weight: 2, minScale: 1.5, maxScale: 2.5 },
-  { model: '/models/building-chest.glb', weight: 1, minScale: 1.2, maxScale: 2 },
-  // Unused models now included
-  { model: '/models/building-shell.glb', weight: 2, minScale: 1.5, maxScale: 3 },
-  { model: '/models/building-lantern.glb', weight: 2, minScale: 2, maxScale: 3.5 },
-  { model: '/models/crayfish.glb', weight: 1, minScale: 2, maxScale: 4 },
-  // Large distant scenery
-  { model: '/models/building-shipwreck.glb', weight: 0.5, minScale: 0.3, maxScale: 0.6 },
-  { model: '/models/building-submarine.glb', weight: 0.5, minScale: 0.3, maxScale: 0.5 },
+  // Coral — big, visible reef formations
+  { model: '/models/coral-reef1.glb', weight: 5, minScale: 6, maxScale: 12 },
+  { model: '/models/coral-reef2.glb', weight: 5, minScale: 6, maxScale: 11 },
+  { model: '/models/coral-reef3.glb', weight: 5, minScale: 6, maxScale: 11 },
+  // Kelp — tall forest pillars
+  { model: '/models/kelp.glb', weight: 7, minScale: 8, maxScale: 15 },
+  // Props — medium sized, visible
+  { model: '/models/building-anchor.glb', weight: 2, minScale: 3, maxScale: 5 },
+  { model: '/models/building-barrel.glb', weight: 2, minScale: 3, maxScale: 5 },
+  { model: '/models/building-chest.glb', weight: 1, minScale: 2.5, maxScale: 4 },
+  { model: '/models/building-shell.glb', weight: 3, minScale: 4, maxScale: 7 },
+  { model: '/models/building-lantern.glb', weight: 2, minScale: 4, maxScale: 7 },
+  { model: '/models/crayfish.glb', weight: 2, minScale: 4, maxScale: 8 },
+  // Large scenery pieces
+  { model: '/models/building-shipwreck.glb', weight: 1, minScale: 0.5, maxScale: 1.0 },
+  { model: '/models/building-submarine.glb', weight: 1, minScale: 0.5, maxScale: 0.8 },
+  { model: '/models/building-seashell.glb', weight: 2, minScale: 3, maxScale: 6 },
+  { model: '/models/building-tower2.glb', weight: 1, minScale: 2, maxScale: 4 },
 ];
 
 // Preload new decoration models
@@ -288,7 +193,7 @@ function generateDecorations(): DecoEntry[] {
   const rng = seededRandom(12345);
   const totalWeight = DECO_TYPES.reduce((s, d) => s + d.weight, 0);
   const entries: DecoEntry[] = [];
-  const TARGET_COUNT = 50;
+  const TARGET_COUNT = 80;
 
   // Pick a model based on weighted random
   function pickModel() {
@@ -300,21 +205,21 @@ function generateDecorations(): DecoEntry[] {
     return DECO_TYPES[0];
   }
 
-  // Generate decorations spread across the full map
+  // Generate decorations spread across the full map — dense enough to feel populated
   let attempts = 0;
-  while (entries.length < TARGET_COUNT && attempts < 300) {
+  while (entries.length < TARGET_COUNT && attempts < 500) {
     attempts++;
-    const x = (rng() - 0.5) * MAP_WIDTH * 2.2;  // Extended beyond map for edges
-    const z = (rng() - 0.5) * MAP_HEIGHT * 2.2;
+    const x = (rng() - 0.5) * MAP_WIDTH * 2.4;
+    const z = (rng() - 0.5) * MAP_HEIGHT * 2.4;
 
     // Skip if too close to a building
     if (isNearBuilding(x, z)) continue;
 
-    // Skip if too close to existing decoration (min 50px apart)
+    // Min 40px apart — tighter spacing for denser coverage
     const tooClose = entries.some(e => {
       const dx = e.x - x;
       const dz = e.z - z;
-      return dx * dx + dz * dz < 50 * 50;
+      return dx * dx + dz * dz < 40 * 40;
     });
     if (tooClose) continue;
 
