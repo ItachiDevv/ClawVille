@@ -18,6 +18,7 @@ import ArenaNpcs from '@/lib/three/arena-npcs';
 import ArenaLocationNpcs from '@/lib/three/arena-location-npcs';
 import ArenaFx from '@/lib/three/arena-fx';
 import PlayerPet from '@/lib/three/player-pet';
+import NpcController from '@/lib/three/npc-controller';
 import MergedSeaweed from '@/lib/three/merged-seaweed';
 import UnderwaterAtmosphere from '@/lib/three/underwater-atmosphere';
 import UnderwaterLightRays from '@/lib/three/underwater-light-rays';
@@ -368,6 +369,9 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
 
       {/* Seaweed ground cover — merged geometry + TSL GPU animation (no InstancedMesh) */}
       <MergedSeaweed />
+
+      {/* NPC possession controller — active when controlMode === 'npc' */}
+      <NpcController />
 
       {/* Mode-specific content */}
       {isGame && <PlayerPet />}
