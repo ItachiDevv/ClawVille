@@ -2,17 +2,17 @@
 
 import { useMemo } from 'react';
 import * as THREE from 'three/webgpu';
-import { attribute, positionLocal, float, sin, vec3, time } from 'three/tsl';
+import { attribute, positionLocal, float, sin, cos, vec3, time } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 // ---------------------------------------------------------------------------
 // Merged Seaweed / Kelp Ground Cover
-// ~1500 blade geometries baked into ONE BufferGeometry = 1 draw call
+// ~3000 blades (3 shape variants) baked into ONE BufferGeometry = 1 draw call
 // Wind animation via TSL positionNode (GPU vertex shader, zero CPU cost)
 // NO InstancedMesh — avoids Intel Iris Xe WebGPU crash
 // ---------------------------------------------------------------------------
 
-const BLADE_COUNT = 1500;
+const BLADE_COUNT = 3000;
 const MAP_WIDTH = 1280;
 const MAP_HEIGHT = 800;
 const HALF_MW = MAP_WIDTH / 2;
@@ -20,6 +20,11 @@ const HALF_MH = MAP_HEIGHT / 2;
 const SPREAD_X = MAP_WIDTH * 2.2;
 const SPREAD_Z = MAP_HEIGHT * 2.2;
 const TILE_SIZE = 32;
+
+// Blade variant mix ratios (must sum to 1.0)
+const RATIO_SHORT_GRASS = 0.40;
+const RATIO_TALL_KELP   = 0.35;
+// Remaining 0.25 = medium fern
 
 // Building exclusion zones
 const BUILDING_ZONES = [
@@ -50,40 +55,66 @@ function seededRandom(seed: number): () => number {
   };
 }
 
-// Underwater color palette
-const COLORS = [
-  new THREE.Color(0x1a6b3a), // Deep green
-  new THREE.Color(0x2d8a4e), // Mid green
-  new THREE.Color(0x4a7741), // Olive green
-  new THREE.Color(0x1a8a6a), // Teal
-  new THREE.Color(0x3a9960), // Bright green
+// ---------------------------------------------------------------------------
+// Color palettes per variant
+// ---------------------------------------------------------------------------
+
+// Short grass — darker, more muted, ground-level tones
+const COLORS_GRASS = [
+  new THREE.Color(0x1a4d28), // Very dark forest green
+  new THREE.Color(0x1e5c30), // Dark forest green
+  new THREE.Color(0x2a5e38), // Deep olive green
+  new THREE.Color(0x1a4a3a), // Dark sea green
+  new THREE.Color(0x2d5540), // Dark teal-green
+  new THREE.Color(0x354a2a), // Muddy olive
 ];
 
-/** Create a single curved seaweed blade geometry (5-segment strip) */
-function createBladeGeometry(): THREE.BufferGeometry {
-  const segs = 5;
-  const width = 3;
-  const height = 30;
+// Tall kelp — brighter, more vibrant, saturated greens
+const COLORS_KELP = [
+  new THREE.Color(0x27ae60), // Emerald
+  new THREE.Color(0x1abc9c), // Jade / sea green
+  new THREE.Color(0x16a085), // Dark teal (vibrant)
+  new THREE.Color(0x2ecc71), // Bright emerald
+  new THREE.Color(0x148f77), // Deep jade
+  new THREE.Color(0x239b56), // Rich green
+];
+
+// Medium fern — mid-tones, earthy with blue-green cast
+const COLORS_FERN = [
+  new THREE.Color(0x1d6b4f), // Sea green
+  new THREE.Color(0x2e7d5a), // Mid forest
+  new THREE.Color(0x3a7d44), // Olive-emerald
+  new THREE.Color(0x1a6b5a), // Teal-green
+  new THREE.Color(0x4a7c59), // Muted jade
+  new THREE.Color(0x2d6a4f), // Deep fern
+];
+
+// ---------------------------------------------------------------------------
+// Blade geometry builders — each returns a flat-strip with segs segments
+// Vertices: (segs+1)*2 per blade
+// ---------------------------------------------------------------------------
+
+/** Short grass blade: low, slight curve, narrow */
+function createShortGrassGeo(): THREE.BufferGeometry {
+  const segs = 4; // fewer segments = fewer verts
+  const height = 10 + Math.random() * 5; // 10-15
+  const width = 1.5;
+  const curve = 0.8; // gentle bend
+
   const vertices: number[] = [];
   const indices: number[] = [];
 
   for (let i = 0; i <= segs; i++) {
     const t = i / segs;
     const y = t * height;
-    const w = width * (1 - t * 0.7);
-    const bendX = t * t * 1.5;
-
+    const w = width * (1 - t * 0.75);
+    const bendX = t * t * curve;
     vertices.push(-w + bendX, y, 0);
-    vertices.push(w + bendX, y, 0);
+    vertices.push( w + bendX, y, 0);
   }
-
   for (let i = 0; i < segs; i++) {
     const a = i * 2;
-    const b = a + 1;
-    const c = a + 2;
-    const d = a + 3;
-    indices.push(a, c, b);
-    indices.push(b, c, d);
+    indices.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
   }
 
   const geo = new THREE.BufferGeometry();
@@ -93,84 +124,226 @@ function createBladeGeometry(): THREE.BufferGeometry {
   return geo;
 }
 
+/** Tall kelp blade: tall, strong curve, medium width */
+function createTallKelpGeo(): THREE.BufferGeometry {
+  const segs = 6; // more segments for smooth tall curve
+  const height = 35 + Math.random() * 10; // 35-45
+  const width = 2.5;
+  const curve = 4.5; // strong sweep
+
+  const vertices: number[] = [];
+  const indices: number[] = [];
+
+  for (let i = 0; i <= segs; i++) {
+    const t = i / segs;
+    const y = t * height;
+    const w = width * (1 - t * 0.65);
+    // S-curve: cubic bend for more natural kelp shape
+    const bendX = (t * t * t * 2 - t * t * 0.5) * curve;
+    const bendZ = Math.sin(t * Math.PI * 0.6) * curve * 0.3;
+    vertices.push(-w + bendX, y, bendZ);
+    vertices.push( w + bendX, y, bendZ);
+  }
+  for (let i = 0; i < segs; i++) {
+    const a = i * 2;
+    indices.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/** Medium fern blade: mid height, wide spreading, flat arc */
+function createMediumFernGeo(): THREE.BufferGeometry {
+  const segs = 5;
+  const height = 20 + Math.random() * 5; // 20-25
+  const width = 4.0; // wider than others
+  const curve = 2.0;
+
+  const vertices: number[] = [];
+  const indices: number[] = [];
+
+  for (let i = 0; i <= segs; i++) {
+    const t = i / segs;
+    const y = t * height;
+    // Taper more aggressively for a leaf-like silhouette
+    const taper = t < 0.5 ? 1.0 - t * 0.2 : 1.0 - t * 0.9;
+    const w = width * taper;
+    // Gentle arc with slight lateral lean
+    const bendX = t * t * curve;
+    const bendZ = Math.sin(t * Math.PI) * curve * 0.4; // bulge in middle
+    vertices.push(-w + bendX, y, bendZ);
+    vertices.push( w + bendX, y, bendZ);
+  }
+  for (let i = 0; i < segs; i++) {
+    const a = i * 2;
+    indices.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// ---------------------------------------------------------------------------
+// Blade variant descriptor
+// ---------------------------------------------------------------------------
+
+type BladeVariant = 'grass' | 'kelp' | 'fern';
+
 interface BladeData {
   x: number;
   z: number;
   rotY: number;
   scale: number;
   color: THREE.Color;
+  variant: BladeVariant;
+  amplitude: number; // sway amplitude baked per-blade
+  segs: number;      // segment count for attribute generation
 }
 
-/** Generate blade placement data */
-function generateBlades(): BladeData[] {
-  const rng = seededRandom(77777);
-  const blades: BladeData[] = [];
-  let attempts = 0;
+// ---------------------------------------------------------------------------
+// Organic cluster distribution
+// Scatter a set of cluster centres, then place blades near them with
+// a Gaussian-like falloff. This avoids the uniform look of pure random.
+// ---------------------------------------------------------------------------
 
-  while (blades.length < BLADE_COUNT && attempts < BLADE_COUNT * 3) {
+function generateBlades(): BladeData[] {
+  const rng = seededRandom(99991);
+  const blades: BladeData[] = [];
+
+  // Generate cluster centres — one centre per ~50 blades
+  const clusterCount = Math.ceil(BLADE_COUNT / 50);
+  const clusters: Array<{ x: number; z: number; radius: number }> = [];
+  for (let i = 0; i < clusterCount; i++) {
+    const cx = (rng() - 0.5) * SPREAD_X;
+    const cz = (rng() - 0.5) * SPREAD_Z;
+    const radius = 40 + rng() * 120; // cluster spread radius
+    clusters.push({ x: cx, z: cz, radius });
+  }
+
+  let attempts = 0;
+  const maxAttempts = BLADE_COUNT * 6;
+
+  while (blades.length < BLADE_COUNT && attempts < maxAttempts) {
     attempts++;
-    const x = (rng() - 0.5) * SPREAD_X;
-    const z = (rng() - 0.5) * SPREAD_Z;
+
+    // Pick a random cluster to spawn near
+    const cluster = clusters[Math.floor(rng() * clusters.length)];
+
+    // Sample within cluster using 2D Gaussian approximation (Box-Muller lite)
+    const angle = rng() * Math.PI * 2;
+    // Use rng() - 0.5 summed twice for a triangular dist, scaled to cluster radius
+    const dist = (rng() + rng()) * cluster.radius;
+    const x = cluster.x + Math.cos(angle) * dist;
+    const z = cluster.z + Math.sin(angle) * dist;
+
+    // Keep within world bounds
+    if (Math.abs(x) > SPREAD_X / 2 || Math.abs(z) > SPREAD_Z / 2) continue;
     if (isNearBuilding(x, z)) continue;
 
-    const baseColor = COLORS[Math.floor(rng() * COLORS.length)];
-    const variation = 0.85 + rng() * 0.3;
+    // Determine variant by ratio thresholds
+    const variantRoll = rng();
+    let variant: BladeVariant;
+    let colors: THREE.Color[];
+    let amplitude: number;
+    let segs: number;
+
+    if (variantRoll < RATIO_SHORT_GRASS) {
+      variant = 'grass';
+      colors = COLORS_GRASS;
+      amplitude = 2.0 + rng() * 1.0; // 2–3 units sway
+      segs = 4;
+    } else if (variantRoll < RATIO_SHORT_GRASS + RATIO_TALL_KELP) {
+      variant = 'kelp';
+      colors = COLORS_KELP;
+      amplitude = 6.0 + rng() * 2.0; // 6–8 units sway
+      segs = 6;
+    } else {
+      variant = 'fern';
+      colors = COLORS_FERN;
+      amplitude = 3.5 + rng() * 1.5; // 3.5–5 units sway
+      segs = 5;
+    }
+
+    const baseColor = colors[Math.floor(rng() * colors.length)];
+    const variation = 0.80 + rng() * 0.35;
 
     blades.push({
       x, z,
       rotY: rng() * Math.PI * 2,
-      scale: 1.5 + rng() * 2.5,
+      scale: 0.9 + rng() * 1.6,
       color: new THREE.Color(
-        baseColor.r * variation,
-        baseColor.g * variation,
-        baseColor.b * variation,
+        Math.min(1, baseColor.r * variation),
+        Math.min(1, baseColor.g * variation),
+        Math.min(1, baseColor.b * variation),
       ),
+      variant,
+      amplitude,
+      segs,
     });
   }
+
   return blades;
 }
 
-/** Bake all blades into a single merged BufferGeometry with custom attributes */
+// ---------------------------------------------------------------------------
+// Merge all blades into a single BufferGeometry
+// ---------------------------------------------------------------------------
+
 function createMergedSeaweedGeometry(): THREE.BufferGeometry {
-  const baseGeo = createBladeGeometry();
   const blades = generateBlades();
   const geometries: THREE.BufferGeometry[] = [];
 
-  // Per-vertex custom attributes for the TSL vertex shader
   const allPhases: number[] = [];
   const allHeights: number[] = [];
   const allColors: number[] = [];
-
-  const segs = 5;
-  const vertsPerBlade = (segs + 1) * 2; // 12 vertices per blade
+  const allAmplitudes: number[] = [];
 
   for (const blade of blades) {
-    const geo = baseGeo.clone();
+    // Build the appropriate base geometry for this variant
+    let baseGeo: THREE.BufferGeometry;
+    switch (blade.variant) {
+      case 'grass': baseGeo = createShortGrassGeo(); break;
+      case 'kelp':  baseGeo = createTallKelpGeo();  break;
+      default:      baseGeo = createMediumFernGeo(); break;
+    }
 
-    // Apply transform: position, rotation, scale
+    const vertsPerBlade = (blade.segs + 1) * 2;
+
+    // Apply transform
     const matrix = new THREE.Matrix4();
     const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, blade.rotY, 0));
-    const s = new THREE.Vector3(blade.scale * 0.8, blade.scale, blade.scale * 0.8);
+    // Scale XZ slightly less than Y so blades stay slender when uniformly scaled
+    const s = new THREE.Vector3(blade.scale * 0.85, blade.scale, blade.scale * 0.85);
     const p = new THREE.Vector3(blade.x, 0, blade.z);
     matrix.compose(p, q, s);
-    geo.applyMatrix4(matrix);
+    baseGeo.applyMatrix4(matrix);
+
+    geometries.push(baseGeo);
 
     // Bake per-vertex attributes
     for (let v = 0; v < vertsPerBlade; v++) {
-      allPhases.push(blade.rotY); // Reuse rotation as phase offset
-      // Height factor: 0 at base, 1 at tip
       const row = Math.floor(v / 2);
-      allHeights.push(row / segs);
-      // Vertex color with brightness gradient (darker at base, lighter at tip)
-      const brightness = 0.5 + (row / segs) * 0.5;
+      const heightFactor = row / blade.segs;
+
+      allPhases.push(blade.rotY);          // unique phase per blade
+      allHeights.push(heightFactor);       // 0 at root, 1 at tip
+      allAmplitudes.push(blade.amplitude); // variant-specific sway
+
+      // Base-to-tip brightness gradient: darker roots, brighter tips
+      const brightness = 0.45 + heightFactor * 0.55;
       allColors.push(
-        blade.color.r * brightness,
-        blade.color.g * brightness,
-        blade.color.b * brightness,
+        Math.min(1, blade.color.r * brightness),
+        Math.min(1, blade.color.g * brightness),
+        Math.min(1, blade.color.b * brightness),
       );
     }
-
-    geometries.push(geo);
   }
 
   const merged = mergeGeometries(geometries, false);
@@ -179,41 +352,59 @@ function createMergedSeaweedGeometry(): THREE.BufferGeometry {
     return new THREE.BufferGeometry();
   }
 
-  // Attach custom attributes for TSL vertex shader
-  merged.setAttribute('aPhase', new THREE.Float32BufferAttribute(allPhases, 1));
-  merged.setAttribute('aHeight', new THREE.Float32BufferAttribute(allHeights, 1));
-  merged.setAttribute('color', new THREE.Float32BufferAttribute(allColors, 3));
+  merged.setAttribute('aPhase',     new THREE.Float32BufferAttribute(allPhases,     1));
+  merged.setAttribute('aHeight',    new THREE.Float32BufferAttribute(allHeights,    1));
+  merged.setAttribute('aAmplitude', new THREE.Float32BufferAttribute(allAmplitudes, 1));
+  merged.setAttribute('color',      new THREE.Float32BufferAttribute(allColors,     3));
 
   return merged;
 }
 
 // ---------------------------------------------------------------------------
 // TSL Material — GPU wind animation via positionNode
+// Two waves: fast sway + slow oceanic current drift
+// Amplitude is per-vertex (baked from variant type) — no CPU cost per frame
 // ---------------------------------------------------------------------------
+
 function createSeaweedMaterial(): THREE.MeshBasicNodeMaterial {
   const mat = new THREE.MeshBasicNodeMaterial({
     vertexColors: true,
     side: THREE.DoubleSide,
     transparent: true,
-    opacity: 0.85,
+    opacity: 0.88,
     depthWrite: false,
   });
 
-  // Read custom per-vertex attributes
-  const phase = attribute('aPhase', 'float');
-  const heightFactor = attribute('aHeight', 'float');
+  const phase     = attribute('aPhase',     'float');
+  const height    = attribute('aHeight',    'float');
+  const amplitude = attribute('aAmplitude', 'float');
 
-  // Wind sway — two sine waves at different frequencies for organic motion
-  // heightFactor ensures base stays planted, tips sway most
-  const swayX = sin(time.mul(float(0.8)).add(phase))
-    .mul(heightFactor)
-    .mul(float(5.0));
-  const swayZ = sin(time.mul(float(1.3)).add(phase.mul(float(1.5))))
-    .mul(heightFactor)
-    .mul(float(3.0));
+  // Wave 1 — primary sway (faster, directional)
+  const wave1X = sin(time.mul(float(0.9)).add(phase))
+    .mul(height)
+    .mul(amplitude);
 
-  // Displace vertices on the GPU — zero CPU cost per frame
-  mat.positionNode = positionLocal.add(vec3(swayX, float(0), swayZ));
+  const wave1Z = sin(time.mul(float(1.4)).add(phase.mul(float(1.7))))
+    .mul(height)
+    .mul(amplitude.mul(float(0.5)));
+
+  // Wave 2 — slow oceanic current (much lower frequency, whole-field drift)
+  const wave2X = cos(time.mul(float(0.18)).add(phase.mul(float(0.3))))
+    .mul(height)
+    .mul(amplitude.mul(float(0.4)));
+
+  const wave2Z = sin(time.mul(float(0.12)).add(phase.mul(float(0.5))))
+    .mul(height)
+    .mul(amplitude.mul(float(0.25)));
+
+  // Combine both waves and displace on GPU
+  mat.positionNode = positionLocal.add(
+    vec3(
+      wave1X.add(wave2X),
+      float(0),
+      wave1Z.add(wave2Z),
+    )
+  );
 
   return mat;
 }
@@ -221,6 +412,7 @@ function createSeaweedMaterial(): THREE.MeshBasicNodeMaterial {
 // ---------------------------------------------------------------------------
 // React component
 // ---------------------------------------------------------------------------
+
 export default function MergedSeaweed() {
   const { geometry, material } = useMemo(() => {
     const geo = createMergedSeaweedGeometry();
