@@ -14,7 +14,58 @@
 - Terrain raycasting with Layer 1 isolation ✅
 - Deployed to Railway ✅
 
-## NEXT: Priority Issues — Visuals
+## NEXT: Control System Redesign
+
+### Step 1. Game store — add control mode state
+- [ ] New state: `controlMode: 'explore' | 'npc' | 'player' | 'autonomous'`
+- [ ] New state: `hasAgent: boolean`
+- [ ] Actions: `setControlMode`, `toggleControlMode`
+- [ ] File: `apps/web/src/stores/game.ts`
+
+### Step 2. Separate WASD from Arrow Keys
+- [ ] WASD = movement (camera pan in explore, character move in player/npc)
+- [ ] Arrow Keys = camera rotation (orbit azimuth/polar in ALL modes)
+- [ ] New `ArrowKeysCameraRotator` component
+- [ ] Files: `World3DCanvas.tsx`, `player-pet.tsx`
+
+### Step 3. New camera controllers
+- [ ] `FPSFollowCamera` — close behind character, arrow keys rotate orbit
+- [ ] Adapt `PetFollowCamera` for NPC follow mode
+- [ ] Keep `WASDCameraController` for Explore mode (WASD pan only)
+- [ ] File: `World3DCanvas.tsx`
+
+### Step 4. NPC possession mode
+- [ ] "NPC" mode: select nearest NPC, WASD overrides NPC movement
+- [ ] Camera follows possessed NPC from 3rd person
+- [ ] Files: `arena-npcs.tsx`, `stores/npc.ts`, `stores/game.ts`
+
+### Step 5. Autonomous mode
+- [ ] Agent character moves via NPC simulation (autonomous)
+- [ ] Camera follows from FPS perspective, no WASD input
+- [ ] Player sees what agent learns in real-time
+- [ ] Files: `player-pet.tsx`, `World3DCanvas.tsx`
+
+### Step 6. Mode toggle UI
+- [ ] `ControlModeToggle` component — top-center of screen
+- [ ] No agent: "Explore / NPC" toggle + agent connect button
+- [ ] With agent: "Player / Autonomous" toggle
+- [ ] File: new `apps/web/src/components/game/control-mode-toggle.tsx`
+
+---
+
+## Completed: Visual Upgrades
+- [x] V1. Fix buildings — swapped 3 dome duplicates to unique GLBs
+- [x] V2. Fix decorations — cluster scatter, 120 items, more variety
+- [x] V3. Fix floor — TSL sand material with ripples, grain, height roughness
+- [x] V4. Character animations — LobsterAnimator wired (skeletal + procedural)
+- [x] Merged seaweed — 3000 blades, 3 variants, TSL wind animation
+- [x] Underwater atmosphere — caustics, depth backdrop, dust particles
+- [x] God rays — 7 pulsing light shafts
+- [x] Direction fix — lobster models face correct direction
+
+---
+
+## Previous: Visual Issues (archived)
 
 ### V1. Fix buildings — wrong models rendering at some locations
 - [ ] Audit which buildings are rendering the wrong GLB model

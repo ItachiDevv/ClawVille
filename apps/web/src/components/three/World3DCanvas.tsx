@@ -209,8 +209,8 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       {/* Secondary fill light from opposite side for depth */}
       <directionalLight position={[-100, 200, -60]} intensity={0.5} color={0x88aacc} />
 
-      {/* Underwater fog — closer for atmospheric depth */}
-      <fog attach="fog" args={[FOG_COLOR, 200, 1200]} />
+      {/* Underwater fog — pushed back for better visibility */}
+      <fog attach="fog" args={[FOG_COLOR, 400, 2000]} />
 
       {/* Underwater atmosphere — caustic light plane, depth backdrop, dust particles */}
       <UnderwaterAtmosphere />
