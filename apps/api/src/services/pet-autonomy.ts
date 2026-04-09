@@ -317,14 +317,16 @@ export class PetAutonomyManager {
     try {
       const response = await anthropic.messages.create({
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 60,
+        max_tokens: 2300,
+        thinking: { type: 'enabled', budget_tokens: 2048 },
         messages: [{
           role: 'user',
           content: `You are ${pet.name}, a ${pet.species} (${pet.archetype} personality) visiting the ${pet.destinationBuildingId} in the ClawVille reef. Say one short sentence about what you see or think. Be playful, under 50 characters.`,
         }],
       });
 
-      const text = response.content[0]?.type === 'text' ? response.content[0].text : '';
+      const textBlock = response.content.find((b: any) => b.type === 'text');
+      const text = textBlock?.text ?? '';
       pet.chatMessage = text.slice(0, 80).replace(/^["']|["']$/g, '').trim();
       pet.lastChatAt = Date.now();
     } catch {
