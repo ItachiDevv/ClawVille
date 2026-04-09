@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
@@ -11,6 +12,11 @@ import {
   MAP_LOCATIONS,
   KNOWLEDGE_BOOKS,
 } from '@legacyapp/shared';
+
+const SelectAgentCanvas = dynamic(
+  () => import('@/components/three/SelectAgentCanvas'),
+  { ssr: false }
+);
 
 // ---------------------------------------------------------------------------
 // Types
@@ -594,40 +600,33 @@ export default function SelectAgentPage() {
           <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[400px] h-[400px] rounded-full bg-cyan-500/[0.04] blur-[100px]" />
         </div>
 
-        {/* 3D Preview placeholder */}
-        <div className="relative w-full max-w-lg aspect-square max-h-[50vh] mx-auto flex items-center justify-center">
-          <div className="w-full h-full rounded-2xl border border-white/[0.06] bg-[#070f1f]/60 backdrop-blur-sm flex flex-col items-center justify-center gap-4">
+        {/* 3D Character Preview */}
+        <div className="relative w-full max-w-lg aspect-square max-h-[55vh] mx-auto">
+          <div className="w-full h-full rounded-2xl border border-white/[0.06] overflow-hidden">
             {selectedAgent ? (
-              <>
-                {/* Large species emoji on "pedestal" */}
-                <div className="relative">
-                  <div
-                    className="w-32 h-32 rounded-full flex items-center justify-center text-6xl shadow-[0_0_40px_rgba(0,229,255,0.1)]"
-                    style={{
-                      backgroundColor: (COLOR_HEX[selectedAgent.color] ?? '#888') + '25',
-                      border: `3px solid ${COLOR_HEX[selectedAgent.color] ?? '#888'}60`,
-                    }}
-                  >
-                    {PET_SPECIES.find((s) => s.id === selectedAgent.species)?.emoji ?? '?'}
-                  </div>
-                  {/* Spotlight glow below */}
-                  <div
-                    className="absolute -bottom-4 left-1/2 -translate-x-1/2 w-24 h-3 rounded-full blur-md"
-                    style={{ backgroundColor: (COLOR_HEX[selectedAgent.color] ?? '#0ff') + '40' }}
-                  />
-                </div>
-                <p className="font-clawville text-xl text-white mt-2">{selectedAgent.name}</p>
-                <p className="text-[10px] text-white/30 font-mono uppercase tracking-widest">
-                  3D Preview -- coming soon
-                </p>
-              </>
+              <SelectAgentCanvas
+                modelKey="lobster"
+                color={selectedAgent.color}
+              />
             ) : (
-              <>
+              <div className="w-full h-full bg-[#070f1f]/60 backdrop-blur-sm flex flex-col items-center justify-center gap-4">
                 <span className="text-5xl text-white/10">?</span>
                 <p className="text-white/20 text-sm font-mono">Select or create an agent</p>
-              </>
+              </div>
             )}
           </div>
+          {/* Agent name overlay */}
+          {selectedAgent && (
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-center">
+              <p className="font-clawville text-xl text-white drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)]">
+                {selectedAgent.name}
+              </p>
+              <p className="text-[10px] text-cyan-400/60 font-mono uppercase tracking-widest mt-0.5">
+                {SPECIES_NAME[selectedAgent.species] ?? selectedAgent.species}
+                {selectedAgent.archetype && ` \u00B7 ${ARCHETYPE_LABEL[selectedAgent.archetype] ?? selectedAgent.archetype}`}
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Enter World button */}
