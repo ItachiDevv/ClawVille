@@ -79,6 +79,8 @@ export const avatars = pgTable('avatars', {
   slotIndex: integer('slot_index').default(0).notNull(),
   isActive: boolean('is_active').default(true).notNull(),
   equippedSkills: jsonb('equipped_skills').$type<string[]>().default([]),
+  level: integer('level').default(1).notNull(),
+  xp: integer('xp').default(0).notNull(),
   totalXp: integer('total_xp').default(0).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
