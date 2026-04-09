@@ -29,17 +29,17 @@ export function applyWalkAnimation(state: AnimationState): void {
   const t = elapsed + seed;
   const walkSpeed = 8;
 
-  // Bouncy walk cycle — squash/stretch on Y
-  const bounce = Math.sin(t * walkSpeed) * 0.08;
+  // Bouncy walk cycle — exaggerated squash/stretch for cartoon feel
+  const bounce = Math.sin(t * walkSpeed) * 0.18;
   const squashY = 1.0 + bounce;
-  const squashXZ = 1.0 - bounce * 0.4; // compress width when stretching height
+  const squashXZ = 1.0 - bounce * 0.5;
   group.scale.set(squashXZ, squashY, squashXZ);
 
-  // Forward tilt when walking
-  group.rotation.x = -0.08;
+  // Forward tilt when walking — noticeable lean
+  group.rotation.x = -0.15;
 
-  // Lean into movement direction (subtle side tilt)
-  const lean = Math.sin(t * walkSpeed * 0.5) * 0.04;
+  // Lean into movement direction — visible side-to-side sway
+  const lean = Math.sin(t * walkSpeed * 0.5) * 0.1;
   group.rotation.z = lean;
 }
 
@@ -51,16 +51,16 @@ export function applyIdleAnimation(state: AnimationState): void {
   const { group, elapsed, seed } = state;
   const t = elapsed + seed;
 
-  // Gentle breathing — slow Y scale oscillation
-  const breathe = Math.sin(t * 1.5) * 0.02;
-  group.scale.set(1.0 - breathe * 0.3, 1.0 + breathe, 1.0 - breathe * 0.3);
+  // Visible breathing — scale oscillation you can actually see
+  const breathe = Math.sin(t * 1.5) * 0.06;
+  group.scale.set(1.0 - breathe * 0.4, 1.0 + breathe, 1.0 - breathe * 0.4);
 
-  // Subtle underwater sway
-  const sway = Math.sin(t * 0.7) * 0.02 + Math.sin(t * 1.1) * 0.01;
+  // Visible underwater sway — like floating in current
+  const sway = Math.sin(t * 0.7) * 0.06 + Math.sin(t * 1.1) * 0.03;
   group.rotation.z = sway;
 
-  // Slight forward/back rock
-  group.rotation.x = Math.sin(t * 0.9) * 0.015;
+  // Forward/back rock
+  group.rotation.x = Math.sin(t * 0.9) * 0.04;
 }
 
 /**
@@ -71,20 +71,20 @@ export function applyStationaryIdleAnimation(state: AnimationState): void {
   const { group, elapsed, seed } = state;
   const t = elapsed + seed;
 
-  // Breathing
-  const breathe = Math.sin(t * 1.2) * 0.025;
-  group.scale.set(1.0 - breathe * 0.3, 1.0 + breathe, 1.0 - breathe * 0.3);
+  // Visible breathing
+  const breathe = Math.sin(t * 1.2) * 0.07;
+  group.scale.set(1.0 - breathe * 0.4, 1.0 + breathe, 1.0 - breathe * 0.4);
 
-  // More pronounced sway — they're standing in one spot underwater
-  const sway = Math.sin(t * 0.6) * 0.03 + Math.sin(t * 1.3 + 1.5) * 0.015;
+  // Pronounced sway — floating in underwater current
+  const sway = Math.sin(t * 0.6) * 0.08 + Math.sin(t * 1.3 + 1.5) * 0.04;
   group.rotation.z = sway;
 
-  // Head bob / looking around — periodic rotation on Y axis
-  const lookAround = Math.sin(t * 0.3) * 0.12 + Math.sin(t * 0.7 + 2.0) * 0.06;
-  group.rotation.y = Math.PI + lookAround; // Base facing camera (PI) + look variation
+  // Looking around — visible head/body turns
+  const lookAround = Math.sin(t * 0.3) * 0.2 + Math.sin(t * 0.7 + 2.0) * 0.1;
+  group.rotation.y = Math.PI + lookAround;
 
-  // Occasional weight shift — forward lean
-  group.rotation.x = Math.sin(t * 0.5) * 0.02;
+  // Weight shift — forward lean
+  group.rotation.x = Math.sin(t * 0.5) * 0.05;
 }
 
 /**
