@@ -191,29 +191,29 @@ function WASDCameraController({
     dz = (dz / len) * CAM_PAN_SPEED * delta;
 
     const camera = controls.object;
+    // Full 3D forward direction (includes Y for swimming up/down)
     const forward = new THREE.Vector3();
     camera.getWorldDirection(forward);
-    forward.y = 0;
     forward.normalize();
 
+    // Right vector is always horizontal (cross forward with world up)
     const right = new THREE.Vector3();
-    right.crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+    const flatForward = new THREE.Vector3(forward.x, 0, forward.z).normalize();
+    right.crossVectors(flatForward, new THREE.Vector3(0, 1, 0)).normalize();
 
+    // Move in full 3D: W/S along camera direction (incl. Y), A/D strafe horizontal
     const moveX = right.x * dx + forward.x * dz;
+    const moveY = forward.y * dz; // swim up/down when looking up/down
     const moveZ = right.z * dx + forward.z * dz;
 
     const target = controls.target;
     target.x = Math.max(-HALF_W, Math.min(HALF_W, target.x + moveX));
+    target.y = Math.max(CAM_Y_MIN, target.y + moveY); // clamp above ground
     target.z = Math.max(-HALF_H, Math.min(HALF_H, target.z + moveZ));
 
-    camera.position.x = Math.max(
-      -HALF_W - 200,
-      Math.min(HALF_W + 200, camera.position.x + moveX)
-    );
-    camera.position.z = Math.max(
-      -HALF_H - 200,
-      Math.min(HALF_H + 200, camera.position.z + moveZ)
-    );
+    camera.position.x = Math.max(-HALF_W - 200, Math.min(HALF_W + 200, camera.position.x + moveX));
+    camera.position.y = Math.max(CAM_Y_MIN, camera.position.y + moveY);
+    camera.position.z = Math.max(-HALF_H - 200, Math.min(HALF_H + 200, camera.position.z + moveZ));
 
     controls.update();
   });
