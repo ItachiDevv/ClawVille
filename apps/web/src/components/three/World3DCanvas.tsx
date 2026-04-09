@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useEffect, useMemo, useCallback, memo } from 'react';
+import { useRef, useEffect, useCallback, memo } from 'react';
 import { Canvas, useFrame, extend } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
@@ -19,6 +19,7 @@ import ArenaLocationNpcs from '@/lib/three/arena-location-npcs';
 import ArenaFx from '@/lib/three/arena-fx';
 import PlayerPet from '@/lib/three/player-pet';
 import MergedSeaweed from '@/lib/three/merged-seaweed';
+import UnderwaterAtmosphere from '@/lib/three/underwater-atmosphere';
 import { useGameStore } from '@/stores/game';
 
 // ---------------------------------------------------------------------------
@@ -172,54 +173,6 @@ function PetFollowCamera({
 }
 
 // ---------------------------------------------------------------------------
-// Underwater bubbles (1 instanced mesh = 1 draw call)
-// ---------------------------------------------------------------------------
-function UnderwaterBubbles() {
-  const ref = useRef<THREE.InstancedMesh>(null);
-  const count = 40;
-  const data = useMemo(() => {
-    const arr = [];
-    for (let i = 0; i < count; i++) {
-      arr.push({
-        x: (Math.random() - 0.5) * MAP_WIDTH,
-        y: Math.random() * 300 - 20,
-        z: (Math.random() - 0.5) * MAP_HEIGHT,
-        speed: 15 + Math.random() * 25,
-        wobble: Math.random() * Math.PI * 2,
-        size: 0.5 + Math.random() * 1.5,
-      });
-    }
-    return arr;
-  }, []);
-
-  const dummy = useMemo(() => new THREE.Object3D(), []);
-
-  useFrame(({ clock }) => {
-    if (!ref.current) return;
-    const t = clock.elapsedTime;
-    data.forEach((b, i) => {
-      const y = ((b.y + b.speed * t) % 320) - 20;
-      dummy.position.set(
-        b.x + Math.sin(t * 0.3 + b.wobble) * 5,
-        y,
-        b.z + Math.cos(t * 0.25 + b.wobble) * 4,
-      );
-      dummy.scale.setScalar(b.size);
-      dummy.updateMatrix();
-      ref.current!.setMatrixAt(i, dummy.matrix);
-    });
-    ref.current.instanceMatrix.needsUpdate = true;
-  });
-
-  return (
-    <instancedMesh ref={ref} args={[undefined, undefined, count]}>
-      <sphereGeometry args={[1, 6, 6]} />
-      <meshStandardMaterial color={0x88ddff} transparent opacity={0.2} roughness={0.1} />
-    </instancedMesh>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Scene contents (inside Canvas)
 // ---------------------------------------------------------------------------
 const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode }) {
@@ -257,6 +210,9 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
 
       {/* Underwater fog — closer for atmospheric depth */}
       <fog attach="fog" args={[FOG_COLOR, 200, 1200]} />
+
+      {/* Underwater atmosphere — caustic light plane, depth backdrop, dust particles */}
+      <UnderwaterAtmosphere />
 
       {/* Shared world geometry */}
       <ArenaTerrain />
