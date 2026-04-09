@@ -135,7 +135,7 @@ const LocationNpc = memo(function LocationNpc({
   });
 
   return (
-    <group ref={groupRef} scale={[npcScale, npcScale, npcScale]}>
+    <group ref={groupRef} scale={[npcScale, npcScale, npcScale]} rotation={[0, Math.PI, 0]}>
       <group ref={animGroupRef}>
         <primitive object={cloned} />
       </group>
