@@ -18,7 +18,6 @@ import ArenaNpcs from '@/lib/three/arena-npcs';
 import ArenaLocationNpcs from '@/lib/three/arena-location-npcs';
 import ArenaFx from '@/lib/three/arena-fx';
 import PlayerAvatar from '@/lib/three/player-avatar';
-import InstancedSeaweed from '@/lib/three/instanced-seaweed';
 import { useGameStore } from '@/stores/game';
 
 // ---------------------------------------------------------------------------
@@ -258,7 +257,6 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
 
       {/* Shared world geometry */}
       <ArenaTerrain />
-      <InstancedSeaweed />
       <ArenaBuildings />
       <ArenaNpcs />
       <ArenaLocationNpcs />
