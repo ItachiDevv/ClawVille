@@ -65,9 +65,9 @@ const _arrowKeys: Pick<KeyState, 'arrowup' | 'arrowdown' | 'arrowleft' | 'arrowr
 };
 
 const ARROW_ROT_SPEED = 1.5; // radians/second
-const PHI_MIN = 0.15;                // look up toward surface (but not straight up)
-const PHI_MAX = Math.PI / 1.8;       // look down at floor (steeper than before)
-const CAM_Y_MIN = 10;                // never go below this Y (above ground)
+const PHI_MIN = 0.1;                 // nearly straight down (bird's eye)
+const PHI_MAX = Math.PI * 0.85;      // look steeply up toward surface (~153°)
+const CAM_Y_MIN = -5;                // allow camera slightly below ground for upward views
 
 // Spherical scratch objects — allocated once, reused every frame
 const _offset = new THREE.Vector3();
@@ -124,8 +124,10 @@ function ArrowKeyRotationController({
 
     const dTheta =
       (_arrowKeys.arrowleft ? 1 : 0) - (_arrowKeys.arrowright ? 1 : 0);
+    // ArrowUp = look up (phi increases toward PI = camera below target)
+    // ArrowDown = look down (phi decreases toward 0 = camera above target)
     const dPhi =
-      (_arrowKeys.arrowup ? -1 : 0) + (_arrowKeys.arrowdown ? 1 : 0);
+      (_arrowKeys.arrowup ? 1 : 0) + (_arrowKeys.arrowdown ? -1 : 0);
 
     if (dTheta === 0 && dPhi === 0) return;
 
@@ -325,7 +327,7 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
         enableRotate={true}
         minDistance={followMode ? 20 : 80}
         maxDistance={800}
-        maxPolarAngle={Math.PI / 1.8}
+        maxPolarAngle={Math.PI * 0.85}
         target={[0, 10, 0]}
       />
 
