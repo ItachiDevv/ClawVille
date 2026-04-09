@@ -3,16 +3,9 @@
 /**
  * NpcController — WASD possession of a single NPC in 'npc' control mode.
  *
- * Rendered inside the R3F Canvas (SceneContents). When controlMode === 'npc'
- * and possessedNpcId is set, every frame this reads WASD key state and calls
- * npcStore.moveNpc() to update the possessed NPC's position + direction.
- *
- * Speed: 200 units/sec — matches player-avatar.tsx SPEED constant.
- * Direction: same mapping as player-avatar (w=up, s=down, a=left, d=right in 2D game-space).
- * Bounds: clamped to [16, MAP_WIDTH-16] × [16, MAP_HEIGHT-16].
- *
- * The wander tick in npc.ts already skips the possessed NPC, so there is no
- * race between player input and autonomous movement.
+ * Camera-relative: W = forward from camera's perspective, S = back, A/D strafe.
+ * Smooth facing angle via atan2 (no cardinal snapping → no spinning).
+ * Building collision: slides along building walls, can't walk through.
  */
 
 import { useEffect, useRef } from 'react';
@@ -21,9 +14,10 @@ import * as THREE from 'three';
 import { useGameStore } from '@/stores/game';
 import { useNpcStore } from '@/stores/npc';
 import type { NpcSpriteState } from '@/stores/npc';
-import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
+import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tilemap-data';
 
 const SPEED = 200; // units/sec — matches player-avatar.tsx
+const COLLISION_PAD = 12; // pixels of padding around buildings for collision
 
 // Map pixel bounds (mirror player-avatar clamp)
 const X_MIN = 16;
@@ -47,6 +41,22 @@ const _camForward = new THREE.Vector3();
 const _camRight = new THREE.Vector3();
 const _worldUp = new THREE.Vector3(0, 1, 0);
 
+// Pre-compute building collision rects in pixel space (with padding)
+const buildingRects = buildingZones.map((z) => ({
+  id: z.id,
+  x1: z.x * TILE_SIZE - COLLISION_PAD,
+  y1: z.y * TILE_SIZE - COLLISION_PAD,
+  x2: (z.x + z.width) * TILE_SIZE + COLLISION_PAD,
+  y2: (z.y + z.height) * TILE_SIZE + COLLISION_PAD,
+}));
+
+function isInsideBuilding(px: number, py: number): boolean {
+  for (const r of buildingRects) {
+    if (px >= r.x1 && px <= r.x2 && py >= r.y1 && py <= r.y2) return true;
+  }
+  return false;
+}
+
 function attachNpcKeyListeners() {
   if (_listenersAttached) return;
   _listenersAttached = true;
@@ -64,7 +74,6 @@ function attachNpcKeyListeners() {
 
 function directionFromVelocity(vx: number, vy: number): NpcSpriteState['direction'] {
   if (vx === 0 && vy === 0) return 'idle';
-  // Dominant axis determines direction — same logic as player-avatar.tsx
   if (Math.abs(vx) >= Math.abs(vy)) {
     return vx > 0 ? 'right' : 'left';
   }
@@ -96,11 +105,11 @@ export default function NpcController() {
     if (_keys.a) inputRight -= 1;
     if (_keys.d) inputRight += 1;
 
-    // No input — set idle
+    // No input — set idle (keep last facingAngle so lobster doesn't snap)
     if (inputFwd === 0 && inputRight === 0) {
       const npc = useNpcStore.getState().npcs.find((n) => n.id === possessedNpcId);
       if (npc && npc.direction !== 'idle') {
-        useNpcStore.getState().moveNpc(possessedNpcId, npc.x, npc.y, 'idle');
+        useNpcStore.getState().moveNpc(possessedNpcId, npc.x, npc.y, 'idle', npc.facingAngle);
       }
       return;
     }
@@ -124,11 +133,13 @@ export default function NpcController() {
     const worldVx = _camForward.x * inputFwd + _camRight.x * inputRight;
     const worldVz = _camForward.z * inputFwd + _camRight.z * inputRight;
 
-    // Convert world deltas to game-space:
-    //   game X = world X + HALF_W  → delta gameX = delta worldX
-    //   game Y = world Z + HALF_H  → delta gameY = delta worldZ
+    // Game-space velocity: deltaGameX = deltaWorldX, deltaGameY = deltaWorldZ
     const vx = worldVx;
     const vy = worldVz;
+
+    // Smooth facing angle from velocity:
+    // Lobster faces -Z at rotation.y=0, so angle = atan2(worldVx, -worldVz)
+    const facingAngle = Math.atan2(vx, -vy);
 
     const dir = directionFromVelocity(vx, vy);
 
@@ -136,10 +147,32 @@ export default function NpcController() {
     const npc = useNpcStore.getState().npcs.find((n) => n.id === possessedNpcId);
     if (!npc) return;
 
-    const newX = Math.max(X_MIN, Math.min(X_MAX, npc.x + vx * SPEED * delta));
-    const newY = Math.max(Y_MIN, Math.min(Y_MAX, npc.y + vy * SPEED * delta));
+    // Compute desired position
+    let newX = Math.max(X_MIN, Math.min(X_MAX, npc.x + vx * SPEED * delta));
+    let newY = Math.max(Y_MIN, Math.min(Y_MAX, npc.y + vy * SPEED * delta));
 
-    useNpcStore.getState().moveNpc(possessedNpcId, newX, newY, dir);
+    // Building collision — slide along walls (check axes independently)
+    if (isInsideBuilding(newX, newY)) {
+      // Try X-only movement
+      const xOnly = isInsideBuilding(newX, npc.y);
+      // Try Y-only movement
+      const yOnly = isInsideBuilding(npc.x, newY);
+
+      if (xOnly && yOnly) {
+        // Both axes blocked — don't move
+        newX = npc.x;
+        newY = npc.y;
+      } else if (xOnly) {
+        // X blocked, slide along Y
+        newX = npc.x;
+      } else if (yOnly) {
+        // Y blocked, slide along X
+        newY = npc.y;
+      }
+      // else: neither axis alone is blocked, allow movement (corner case)
+    }
+
+    useNpcStore.getState().moveNpc(possessedNpcId, newX, newY, dir, facingAngle);
   });
 
   return null;
