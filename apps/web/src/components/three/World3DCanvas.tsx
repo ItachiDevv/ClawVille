@@ -80,7 +80,7 @@ const _followTarget = new THREE.Vector3();
 
 // Follow distance: how many units the camera sits behind/above the character.
 // OrbitControls manages the actual angle — we just enforce the radial distance.
-const FPS_FOLLOW_DISTANCE = 40;
+const FPS_FOLLOW_DISTANCE = 80;
 // How high above the 2D game-plane the character target sits (approximate)
 const CHAR_TARGET_Y = 15;
 
