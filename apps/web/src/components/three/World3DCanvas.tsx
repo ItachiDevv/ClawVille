@@ -20,6 +20,7 @@ import ArenaFx from '@/lib/three/arena-fx';
 import PlayerPet from '@/lib/three/player-pet';
 import MergedSeaweed from '@/lib/three/merged-seaweed';
 import UnderwaterAtmosphere from '@/lib/three/underwater-atmosphere';
+import UnderwaterLightRays from '@/lib/three/underwater-light-rays';
 import { useGameStore } from '@/stores/game';
 
 // ---------------------------------------------------------------------------
@@ -213,6 +214,9 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
 
       {/* Underwater atmosphere — caustic light plane, depth backdrop, dust particles */}
       <UnderwaterAtmosphere />
+
+      {/* Volumetric light rays — 7 cone shafts with pulsing TSL opacity, additive blending */}
+      <UnderwaterLightRays />
 
       {/* Shared world geometry */}
       <ArenaTerrain />
