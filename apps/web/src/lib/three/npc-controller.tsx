@@ -16,7 +16,8 @@
  */
 
 import { useEffect, useRef } from 'react';
-import { useFrame } from '@react-three/fiber';
+import { useFrame, useThree } from '@react-three/fiber';
+import * as THREE from 'three';
 import { useGameStore } from '@/stores/game';
 import { useNpcStore } from '@/stores/npc';
 import type { NpcSpriteState } from '@/stores/npc';
@@ -40,6 +41,11 @@ interface NpcKeyState {
 
 const _keys: NpcKeyState = { w: false, a: false, s: false, d: false };
 let _listenersAttached = false;
+
+// Scratch vectors — allocated once, reused every frame
+const _camForward = new THREE.Vector3();
+const _camRight = new THREE.Vector3();
+const _worldUp = new THREE.Vector3(0, 1, 0);
 
 function attachNpcKeyListeners() {
   if (_listenersAttached) return;
@@ -66,8 +72,8 @@ function directionFromVelocity(vx: number, vy: number): NpcSpriteState['directio
 }
 
 export default function NpcController() {
-  // Track whether we've attached key listeners inside the component lifecycle
   const attachedRef = useRef(false);
+  const { camera } = useThree();
 
   useEffect(() => {
     if (!attachedRef.current) {
@@ -82,32 +88,49 @@ export default function NpcController() {
     // Only active in npc mode with a possessed target
     if (controlMode !== 'npc' || !possessedNpcId) return;
 
-    // Build velocity vector from current key state
-    let vx = 0;
-    let vy = 0;
-    if (_keys.w) vy -= 1;
-    if (_keys.s) vy += 1;
-    if (_keys.a) vx -= 1;
-    if (_keys.d) vx += 1;
+    // Raw WASD input
+    let inputFwd = 0;
+    let inputRight = 0;
+    if (_keys.w) inputFwd += 1;
+    if (_keys.s) inputFwd -= 1;
+    if (_keys.a) inputRight -= 1;
+    if (_keys.d) inputRight += 1;
 
-    // Normalize diagonal movement
-    if (vx !== 0 && vy !== 0) {
-      const len = Math.sqrt(vx * vx + vy * vy);
-      vx /= len;
-      vy /= len;
-    }
-
-    const dir = directionFromVelocity(vx, vy);
-
-    // No input — just ensure direction is idle (don't move, don't write state every frame)
-    if (vx === 0 && vy === 0) {
-      // Only update direction to idle if npc is currently moving — avoids churning state
+    // No input — set idle
+    if (inputFwd === 0 && inputRight === 0) {
       const npc = useNpcStore.getState().npcs.find((n) => n.id === possessedNpcId);
       if (npc && npc.direction !== 'idle') {
         useNpcStore.getState().moveNpc(possessedNpcId, npc.x, npc.y, 'idle');
       }
       return;
     }
+
+    // Normalize diagonal
+    if (inputFwd !== 0 && inputRight !== 0) {
+      const len = Math.sqrt(inputFwd * inputFwd + inputRight * inputRight);
+      inputFwd /= len;
+      inputRight /= len;
+    }
+
+    // Camera-relative movement: project camera forward onto XZ ground plane
+    camera.getWorldDirection(_camForward);
+    _camForward.y = 0;
+    _camForward.normalize();
+
+    // Right vector: cross forward with world up
+    _camRight.crossVectors(_camForward, _worldUp).normalize();
+
+    // World-space velocity (XZ plane)
+    const worldVx = _camForward.x * inputFwd + _camRight.x * inputRight;
+    const worldVz = _camForward.z * inputFwd + _camRight.z * inputRight;
+
+    // Convert world deltas to game-space:
+    //   game X = world X + HALF_W  → delta gameX = delta worldX
+    //   game Y = world Z + HALF_H  → delta gameY = delta worldZ
+    const vx = worldVx;
+    const vy = worldVz;
+
+    const dir = directionFromVelocity(vx, vy);
 
     // Find current position
     const npc = useNpcStore.getState().npcs.find((n) => n.id === possessedNpcId);
@@ -119,6 +142,5 @@ export default function NpcController() {
     useNpcStore.getState().moveNpc(possessedNpcId, newX, newY, dir);
   });
 
-  // This component has no visual output — it's a pure controller
   return null;
 }
