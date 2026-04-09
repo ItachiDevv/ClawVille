@@ -127,11 +127,14 @@ openclawRoutes.post('/register', async (c) => {
     sessionId,
   } as OpenClawRegistration;
 
-  // Test connectivity
+  // Test connectivity (skip if skipPing query param is set — for testing)
   const client = new OpenClawClient(config);
-  const alive = await client.ping();
-  if (!alive) {
-    return c.json({ error: 'Cannot connect to OpenClaw gateway. Check URL and auth token.' }, 502);
+  const skipPing = c.req.query('skipPing') === '1';
+  if (!skipPing) {
+    const alive = await client.ping();
+    if (!alive) {
+      return c.json({ error: 'Cannot connect to OpenClaw gateway. Check URL and auth token.' }, 502);
+    }
   }
 
   // Upsert openclaw_bots by agentId
