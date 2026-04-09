@@ -150,8 +150,8 @@ function PlayerPetInner() {
     lastEState = eNow;
 
     let vx = 0, vy = 0;
-    if (keyState.w || keyState.arrowup) vy = -1;
-    if (keyState.s || keyState.arrowdown) vy = 1;
+    if (keyState.w || keyState.arrowup) vy = 1;
+    if (keyState.s || keyState.arrowdown) vy = -1;
     if (keyState.a || keyState.arrowleft) vx = -1;
     if (keyState.d || keyState.arrowright) vx = 1;
 
@@ -187,7 +187,7 @@ function PlayerPetInner() {
 
     let dir = 'idle';
     if (vx !== 0 || vy !== 0) {
-      dir = Math.abs(vx) > Math.abs(vy) ? (vx > 0 ? 'right' : 'left') : (vy > 0 ? 'down' : 'up');
+      dir = Math.abs(vx) > Math.abs(vy) ? (vx > 0 ? 'right' : 'left') : (vy > 0 ? 'up' : 'down');
     }
     store.setMovementDirection(dir as any);
 

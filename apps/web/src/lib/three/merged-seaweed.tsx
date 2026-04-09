@@ -62,8 +62,8 @@ const COLORS = [
 /** Create a single curved seaweed blade geometry (5-segment strip) */
 function createBladeGeometry(): THREE.BufferGeometry {
   const segs = 5;
-  const width = 0.5;
-  const height = 6;
+  const width = 3;
+  const height = 30;
   const vertices: number[] = [];
   const indices: number[] = [];
 
@@ -119,7 +119,7 @@ function generateBlades(): BladeData[] {
     blades.push({
       x, z,
       rotY: rng() * Math.PI * 2,
-      scale: 0.5 + rng() * 1.5,
+      scale: 1.5 + rng() * 2.5,
       color: new THREE.Color(
         baseColor.r * variation,
         baseColor.g * variation,
@@ -207,10 +207,10 @@ function createSeaweedMaterial(): THREE.MeshBasicNodeMaterial {
   // heightFactor ensures base stays planted, tips sway most
   const swayX = sin(time.mul(float(0.8)).add(phase))
     .mul(heightFactor)
-    .mul(float(1.2));
+    .mul(float(5.0));
   const swayZ = sin(time.mul(float(1.3)).add(phase.mul(float(1.5))))
     .mul(heightFactor)
-    .mul(float(0.6));
+    .mul(float(3.0));
 
   // Displace vertices on the GPU — zero CPU cost per frame
   mat.positionNode = positionLocal.add(vec3(swayX, float(0), swayZ));
