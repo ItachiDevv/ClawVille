@@ -35,16 +35,16 @@ const LOCATION_NPCS: Record<string, {
   offsetX: number;
   offsetZ: number;
 }> = {
-  'canvas-studio':     { name: 'SpongeBob',  model: '/models/characters/spongebob.glb', offsetX: 2, offsetZ: 2 },
-  'security-fortress': { name: 'Patrick',     model: '/models/characters/patrick.glb',   offsetX: 2, offsetZ: 2 },
-  'memory-vault':      { name: 'Squidward',   model: '/models/characters/squidward.glb', offsetX: 2, offsetZ: 2 },
-  'webhook-gateway':   { name: 'Mr. Krabs',   model: '/models/characters/mr-krabs.glb',  offsetX: 2, offsetZ: 2 },
-  'skill-forge':       { name: 'Plankton',    model: '/models/characters/plankton.glb',  offsetX: 2, offsetZ: 2 },
-  'cron-hub':          { name: 'Gary',         model: '/models/characters/gary.glb',      offsetX: 2, offsetZ: 2 },
-  'channel-bridge':    { name: 'Sandy',        model: '/models/characters/sandy.glb',     offsetX: 2, offsetZ: 2 },
-  'tool-workshop':     { name: 'Karen',        model: '/models/characters/karen.glb',     offsetX: 2, offsetZ: 2 },
-  'voice-tower':       { name: 'Mrs. Puff',    model: '/models/characters/mrs-puff.glb',  offsetX: 2, offsetZ: 2 },
-  'config-citadel':    { name: 'Larry',        model: '/models/lobster.glb',              offsetX: 2, offsetZ: 2 },
+  'canvas-studio':     { name: 'SpongeBob',  model: '/models/characters/spongebob.glb', offsetX: 0, offsetZ: 1 },
+  'security-fortress': { name: 'Patrick',     model: '/models/characters/patrick.glb',   offsetX: 0, offsetZ: 1 },
+  'memory-vault':      { name: 'Squidward',   model: '/models/characters/squidward.glb', offsetX: 0, offsetZ: 1 },
+  'webhook-gateway':   { name: 'Mr. Krabs',   model: '/models/characters/mr-krabs.glb',  offsetX: 0, offsetZ: 1 },
+  'skill-forge':       { name: 'Plankton',    model: '/models/characters/plankton.glb',  offsetX: 0, offsetZ: 1 },
+  'cron-hub':          { name: 'Gary',         model: '/models/characters/gary.glb',      offsetX: 0, offsetZ: 1 },
+  'channel-bridge':    { name: 'Sandy',        model: '/models/characters/sandy.glb',     offsetX: 0, offsetZ: 1 },
+  'tool-workshop':     { name: 'Karen',        model: '/models/characters/karen.glb',     offsetX: 0, offsetZ: 1 },
+  'voice-tower':       { name: 'Mrs. Puff',    model: '/models/characters/mrs-puff.glb',  offsetX: 0, offsetZ: 1 },
+  'config-citadel':    { name: 'Larry',        model: '/models/lobster.glb',              offsetX: 0, offsetZ: 1 },
 };
 
 // Preload all character models
@@ -106,7 +106,10 @@ const LocationNpc = memo(function LocationNpc({
   useFrame(({ clock }) => {
     if (!groupRef.current) return;
 
-    if (!placed.current) {
+    // Re-raycast terrain Y periodically (not just once) to handle late terrain loading
+    // and dune geometry. Check every ~20 frames.
+    const frame = Math.floor(clock.elapsedTime * 60);
+    if (!placed.current || frame % 20 === 0) {
       const y = getTerrainY(worldX, worldZ, threeScene);
       if (y > -100) {
         terrainY.current = y;
@@ -114,9 +117,9 @@ const LocationNpc = memo(function LocationNpc({
       }
     }
 
-    // Base position with gentle bob
-    const bob = Math.sin(clock.elapsedTime * 1.5 + seed) * 0.4;
-    groupRef.current.position.set(worldX, terrainY.current + 2 + bob, worldZ);
+    // Position well above terrain to prevent sinking into dunes
+    const bob = Math.sin(clock.elapsedTime * 1.5 + seed) * 0.5;
+    groupRef.current.position.set(worldX, terrainY.current + 6 + bob, worldZ);
 
     // Procedural idle animation on inner group
     if (animGroupRef.current) {
