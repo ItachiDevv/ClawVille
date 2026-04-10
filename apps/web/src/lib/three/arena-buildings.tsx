@@ -118,27 +118,24 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
 
   const [cx, , cz] = zoneCenter(zone);
   const { scene } = useGLTF(config.model);
-  const { scene: threeScene } = useThree();
   const groupRef = useRef<THREE.Group>(null);
-  const placed = useRef(false);
 
   const { cloned, buildingScale } = useMemo(() => {
     const c = scene.clone(true);
+    // Strip flat ground planes before measuring height so BUILDING_TARGET_HEIGHT
+    // is accurate — ground planes inflate the bounding box and make buildings appear
+    // shorter than 100 world units after scaling.
+    stripGroundPlanes(c);
     const s = computeBuildingScale(c);
     return { cloned: c, buildingScale: s };
   }, [scene, config.model]);
 
-  // Place on flat sand floor (y=-2)
-  useFrame(() => {
-    if (placed.current || !groupRef.current) return;
-    groupRef.current.position.y = -2 + config.yOffset;
-    placed.current = true;
-  });
-
   const theme = BUILDING_OPENCLAW_THEMES[zone.id];
 
+  // Buildings sit on the sand floor (y=-2). No raycasting needed — the sand floor
+  // is flat at y=-2 and buildings are large enough that dune ripples don't matter.
   return (
-    <group ref={groupRef} position={[cx, config.yOffset, cz]} rotation={[0, config.rotY ?? 0, 0]}>
+    <group ref={groupRef} position={[cx, -2 + config.yOffset, cz]} rotation={[0, config.rotY ?? 0, 0]}>
       <primitive object={cloned} scale={buildingScale} />
       {/* Floating building label */}
       {theme && (
@@ -199,6 +196,7 @@ function EditableBuilding({
 
   const { cloned, buildingScale } = useMemo(() => {
     const c = scene.clone(true);
+    stripGroundPlanes(c);
     const s = computeBuildingScale(c);
     return { cloned: c, buildingScale: s };
   }, [scene]);
