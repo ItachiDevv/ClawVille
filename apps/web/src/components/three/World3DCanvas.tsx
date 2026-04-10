@@ -1,10 +1,7 @@
 'use client';
 
-// eslint-disable-next-line no-console
-console.warn('[W3D:module] World3DCanvas module evaluated at', Date.now());
-
 import { useRef, useEffect, useCallback, memo } from 'react';
-import { Canvas, useFrame, extend } from '@react-three/fiber';
+import { Canvas, useFrame, useThree, extend } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
@@ -305,6 +302,43 @@ function FPSFollowCamera({
 }
 
 // ---------------------------------------------------------------------------
+// ManualRenderLoop — R3F v9 + WebGPURenderer workaround
+// ---------------------------------------------------------------------------
+// R3F v9's internal render loop never starts when paired with WebGPURenderer:
+// `state.internal.active` stays false even when `frameloop="always"` is set,
+// and nothing calls gl.renderAsync. But R3F's `state.advance(t, true)` DOES
+// drive a full frame correctly (useFrame subscribers + renderAsync). So we
+// set `frameloop="never"` on the Canvas and pump `advance` ourselves via
+// requestAnimationFrame. The first real fix should be an R3F upstream bug,
+// but this is the pragmatic workaround that unblocks the 3D world.
+// ---------------------------------------------------------------------------
+function ManualRenderLoop() {
+  const advance = useThree((s) => s.advance);
+
+  useEffect(() => {
+    let rafId = 0;
+    let mounted = true;
+    const loop = (t: number) => {
+      if (!mounted) return;
+      try {
+        advance(t / 1000, true);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('[W3D:manualLoop] advance threw', err);
+      }
+      rafId = requestAnimationFrame(loop);
+    };
+    rafId = requestAnimationFrame(loop);
+    return () => {
+      mounted = false;
+      if (rafId) cancelAnimationFrame(rafId);
+    };
+  }, [advance]);
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Scene contents (inside Canvas)
 // ---------------------------------------------------------------------------
 const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode }) {
@@ -392,25 +426,17 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
 // ---------------------------------------------------------------------------
 
 async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
-  console.warn('[W3D:gl.step1] dynamic import three/webgpu');
   // Dynamic import — tree-shakes out when WebGPU path isn't taken
   const { WebGPURenderer } = await import('three/webgpu');
-  console.warn('[W3D:gl.step2] import resolved, constructing WebGPURenderer');
   const renderer = new WebGPURenderer({
     canvas,
     antialias: false,
     // powerPreference is not a WebGPURenderer option; low-power is handled
     // by the browser's GPU adapter selection (it prefers integrated GPU by default)
   });
-  console.warn('[W3D:gl.step3] WebGPURenderer constructed, calling init()');
   // WebGPURenderer.render() throws if not initialized — must await init()
   // init() internally: tries WebGPU backend → falls back to WebGL2 if unavailable
-  // Add a 10s timeout so a hang is visible in the console instead of silently stalling R3F.
-  await Promise.race([
-    renderer.init(),
-    new Promise((_, rej) => setTimeout(() => rej(new Error('[W3D] renderer.init() timeout after 10s')), 10000)),
-  ]);
-  console.warn('[W3D:gl.step4] init() resolved');
+  await renderer.init();
 
   // Device-loss handler — log and attempt page reload on unexpected loss
   try {
@@ -455,37 +481,22 @@ function ContextLostFallback() {
 }
 
 function World3DCanvas({ mode }: World3DCanvasProps) {
-  // eslint-disable-next-line no-console
-  console.warn('[W3D:component] World3DCanvas render, mode=', mode);
-  useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.warn('[W3D:component] mounted useEffect fired');
-    return () => {
-      // eslint-disable-next-line no-console
-      console.warn('[W3D:component] unmounted');
-    };
-  }, []);
   // Stable async gl factory — R3F v9 awaits this before rendering.
   // Returns a WebGPURenderer (with automatic WebGL2 fallback built in).
   // Falls back to standard WebGLRenderer if the dynamic import or init fails.
   const glFactory = useCallback(
     async (defaultProps: { canvas: HTMLCanvasElement }) => {
-      console.warn('[W3D:glFactory] called with canvas', defaultProps?.canvas?.constructor?.name);
       try {
-        const r = await createWebGPURenderer(defaultProps.canvas);
-        console.warn('[W3D:glFactory] WebGPU path OK');
-        return r;
+        return await createWebGPURenderer(defaultProps.canvas);
       } catch (err) {
         console.warn('[World3D] WebGPURenderer unavailable, falling back to WebGLRenderer:', err);
         // Import classic WebGLRenderer from base three (not three/webgpu)
         const { WebGLRenderer } = await import('three');
-        const r = new WebGLRenderer({
+        return new WebGLRenderer({
           canvas: defaultProps.canvas,
           antialias: false,
           powerPreference: 'low-power',
         });
-        console.warn('[W3D:glFactory] WebGL fallback constructed');
-        return r;
       }
     },
     [],
@@ -504,69 +515,34 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
       <Canvas
         gl={glFactory as any}
         dpr={[0.75, 1]}
-        frameloop="always"
+        // IMPORTANT: R3F v9's own render loop never starts when paired with
+        // WebGPURenderer (state.internal.active stays false). We drive the
+        // loop ourselves via <ManualRenderLoop /> below, so Canvas frameloop
+        // MUST be "never" to avoid R3F's broken internal scheduler conflict.
+        frameloop="never"
         camera={{
           fov: 50,
           near: 1,
           far: 2000,
           position: mode === 'game' ? [0, 80, 150] : [0, 200, 350],
         }}
-        onCreated={(state) => {
-          const { scene, gl, camera, size } = state;
+        onCreated={({ scene, gl }) => {
           scene.background = SKY_COLOR;
           gl.setPixelRatio(Math.min(window.devicePixelRatio, 1));
-          // Expose state globally for browser diagnostics
-          (window as any).__W3D = state;
-          console.warn('[W3D:onCreated]', {
-            isWebGPU: !!(gl as any).isWebGPURenderer,
-            glType: gl.constructor?.name,
-            size,
-            camPos: camera.position.toArray(),
-            sceneChildren: scene.children.length,
-          });
-          // Intercept render to count frames
-          const origRender = gl.render?.bind(gl);
-          const origRenderAsync = (gl as any).renderAsync?.bind(gl);
-          (window as any).__W3D_frameCount = 0;
-          (window as any).__W3D_renderErrors = [];
-          if (origRender) {
-            gl.render = (s: any, c: any) => {
-              try {
-                (window as any).__W3D_frameCount++;
-                return origRender(s, c);
-              } catch (e) {
-                (window as any).__W3D_renderErrors.push(String(e).slice(0, 200));
-                console.error('[W3D:render.error]', e);
-                throw e;
-              }
-            };
+          if ((gl as any).isWebGPURenderer) {
+            const backend = (gl as any).backend;
+            const name = backend?.constructor?.name ?? 'unknown';
+            // eslint-disable-next-line no-console
+            console.warn(`[World3D] Using WebGPURenderer (backend: ${name})`);
+          } else {
+            // eslint-disable-next-line no-console
+            console.warn('[World3D] Using WebGLRenderer');
           }
-          if (origRenderAsync) {
-            (gl as any).renderAsync = async (s: any, c: any) => {
-              try {
-                (window as any).__W3D_frameCount++;
-                return await origRenderAsync(s, c);
-              } catch (e) {
-                (window as any).__W3D_renderErrors.push(String(e).slice(0, 200));
-                console.error('[W3D:renderAsync.error]', e);
-                throw e;
-              }
-            };
-          }
-          console.warn('[W3D:onCreated] render patched, origRender=' + !!origRender + ' origRenderAsync=' + !!origRenderAsync);
         }}
       >
-        {/* DIAGNOSTIC: minimal scene to isolate R3F/WebGPU init.
-            If magenta cube renders -> R3F+WebGPU works, real SceneContents is the problem.
-            If still black -> R3F+WebGPU init itself is broken.
-            SceneContents is commented out for this probe. */}
-        <ambientLight intensity={1.5} />
-        <directionalLight position={[5, 10, 5]} intensity={1.5} />
-        <mesh position={[0, 0, 0]} rotation={[0.4, 0.8, 0]}>
-          <boxGeometry args={[40, 40, 40]} />
-          <meshBasicMaterial color={0xff00ff} />
-        </mesh>
-        {/* <SceneContents mode={mode} /> */}
+        {/* Drive the render loop ourselves — see component comment for why */}
+        <ManualRenderLoop />
+        <SceneContents mode={mode} />
       </Canvas>
     </div>
   );
