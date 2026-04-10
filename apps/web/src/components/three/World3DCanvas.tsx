@@ -1,5 +1,8 @@
 'use client';
 
+// eslint-disable-next-line no-console
+console.log('[W3D:module] World3DCanvas module evaluated at', Date.now());
+
 import { useRef, useEffect, useCallback, memo } from 'react';
 import { Canvas, useFrame, extend } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
@@ -452,6 +455,16 @@ function ContextLostFallback() {
 }
 
 function World3DCanvas({ mode }: World3DCanvasProps) {
+  // eslint-disable-next-line no-console
+  console.log('[W3D:component] World3DCanvas render, mode=', mode);
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log('[W3D:component] mounted useEffect fired');
+    return () => {
+      // eslint-disable-next-line no-console
+      console.log('[W3D:component] unmounted');
+    };
+  }, []);
   // Stable async gl factory — R3F v9 awaits this before rendering.
   // Returns a WebGPURenderer (with automatic WebGL2 fallback built in).
   // Falls back to standard WebGLRenderer if the dynamic import or init fails.
