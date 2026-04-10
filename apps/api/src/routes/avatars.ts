@@ -8,6 +8,7 @@ import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { npcSimulation } from '../services/npc-simulation';
+import { creditClawTokens } from '../services/neo-token-ledger';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 
@@ -324,16 +325,49 @@ avatarRoutes.post('/me/heartbeat', requireAuth, async (c) => {
     throw new HTTPException(400, { message: 'Invalid position' });
   }
 
+  const positionX = Math.round(result.data.positionX);
+  const positionY = Math.round(result.data.positionY);
+
   // Update position + lastActiveAt in DB (fire and forget)
   db.update(avatars)
     .set({
-      positionX: Math.round(result.data.positionX),
-      positionY: Math.round(result.data.positionY),
+      positionX,
+      positionY,
       lastActiveAt: new Date(),
       updatedAt: new Date(),
     })
     .where(and(eq(avatars.userId, user.id), eq(avatars.isActive, true)))
     .catch(() => {});
+
+  // Phase 2: Ensure avatar is registered in the simulation bridge and
+  // report user activity so the avatar snaps back to user control.
+  const bridge = npcSimulation.petAutonomyManager;
+  if (!bridge.isRegistered(user.id)) {
+    // Lazy-load avatar data on first heartbeat (fire-and-forget)
+    db.query.avatars
+      .findFirst({
+        where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
+      })
+      .then((avatar) => {
+        if (!avatar) return;
+        bridge.register({
+          avatarId: avatar.id,
+          userId: user.id,
+          name: avatar.name,
+          species: avatar.species,
+          color: avatar.color,
+          archetype: avatar.archetype ?? 'curious',
+          positionX,
+          positionY,
+        });
+        bridge.reportUserActivity(user.id, positionX, positionY);
+      })
+      .catch((err) => {
+        console.error('[heartbeat] bridge register failed:', err);
+      });
+  } else {
+    bridge.reportUserActivity(user.id, positionX, positionY);
+  }
 
   return c.json({ ok: true });
 });
@@ -377,16 +411,24 @@ avatarRoutes.post('/me/daily-login', requireAuth, async (c) => {
 
   // Calculate reward: 10 + streak * 5, max 100
   const tokensEarned = Math.min(100, 10 + newStreak * 5);
-  const totalTokens = (avatar.clawTokens ?? 100) + tokensEarned;
 
+  // Update streak metadata first — the token credit goes through the ledger
   await db.update(avatars)
     .set({
       loginStreak: newStreak,
       lastLoginDate: today,
-      clawTokens: totalTokens,
       updatedAt: new Date(),
     })
     .where(and(eq(avatars.userId, user.id), eq(avatars.isActive, true)));
+
+  // Atomic + audited token credit
+  const { balanceAfter: totalTokens } = await creditClawTokens({
+    avatarId: avatar.id,
+    amount: tokensEarned,
+    reason: 'daily_login',
+    source: 'daily_login',
+    metadata: { streak: newStreak, date: today },
+  });
 
   return c.json({ streak: newStreak, tokensEarned, totalTokens, alreadyClaimed: false });
 });

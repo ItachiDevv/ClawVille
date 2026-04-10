@@ -3,6 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import type { AppContext } from '../types';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
+import { creditClawTokens } from '../services/neo-token-ledger';
 import {
   db,
   users,
@@ -464,13 +465,14 @@ questRoutes.post('/admin/:submissionId/review', requireAuth, async (c) => {
       throw new HTTPException(500, { message: 'Submission avatar not found' });
     }
 
-    await db
-      .update(avatars)
-      .set({
-        clawTokens: avatar.clawTokens + quest.tokenReward,
-        updatedAt: now,
-      })
-      .where(eq(avatars.id, avatar.id));
+    // Atomic + audited quest token reward
+    await creditClawTokens({
+      avatarId: avatar.id,
+      amount: quest.tokenReward,
+      reason: 'quest_complete',
+      source: 'quest',
+      metadata: { questId: quest.id, submissionId: submission.id },
+    });
 
     // 3. If quest has skillRewardId, add skill to avatar_inventory
     if (quest.skillRewardId) {
