@@ -556,12 +556,17 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
           console.warn('[W3D:onCreated] render patched, origRender=' + !!origRender + ' origRenderAsync=' + !!origRenderAsync);
         }}
       >
-        {/* DIAGNOSTIC: bright test mesh at origin — if this renders, WebGPU path works */}
-        <mesh position={[0, 30, 0]}>
+        {/* DIAGNOSTIC: minimal scene to isolate R3F/WebGPU init.
+            If magenta cube renders -> R3F+WebGPU works, real SceneContents is the problem.
+            If still black -> R3F+WebGPU init itself is broken.
+            SceneContents is commented out for this probe. */}
+        <ambientLight intensity={1.5} />
+        <directionalLight position={[5, 10, 5]} intensity={1.5} />
+        <mesh position={[0, 0, 0]} rotation={[0.4, 0.8, 0]}>
           <boxGeometry args={[40, 40, 40]} />
           <meshBasicMaterial color={0xff00ff} />
         </mesh>
-        <SceneContents mode={mode} />
+        {/* <SceneContents mode={mode} /> */}
       </Canvas>
     </div>
   );
