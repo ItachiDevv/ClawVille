@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { db, pets, eq } from '@legacyapp/database';
+import { db, pets, eq } from '@clawville/database';
 import { json } from '@/lib/api-utils';
 
 export async function GET(

@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useGameStore } from '@/stores/game';
 import { useLocationAgent, useSaveLocationAgent } from '@/hooks/use-locations';
-import { MAP_LOCATIONS } from '@legacyapp/shared';
+import { MAP_LOCATIONS } from '@clawville/shared';
 import {
   Dialog,
   DialogContent,

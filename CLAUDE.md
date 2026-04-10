@@ -10,7 +10,7 @@ A sea-themed OpenClaw game built on ElizaOS. Users create a pet, explore a 3D/2D
 
 **ElizaOS is a core requirement for this project - do NOT remove or stub it out.**
 
-- All pet and location chat MUST use the ElizaOS runtime (`@legacyapp/agent-runtime`)
+- All pet and location chat MUST use the ElizaOS runtime (`@clawville/agent-runtime`)
 - The agent orchestrator MUST use `createElizaRuntime` from the agent-runtime package
 - For deployment, use a platform that supports persistent servers (Railway, Render, Fly.io) - NOT Vercel serverless
 - Never replace ElizaOS with direct API calls or stub implementations
@@ -21,7 +21,7 @@ A sea-themed OpenClaw game built on ElizaOS. Users create a pet, explore a 3D/2D
 - **Frontend**: Next.js 14 (App Router), Three.js (3D world/arena) + PixiJS 8 (2D fallback), Zustand, TanStack Query, TailwindCSS
 - **Backend**: Hono 4.x on Bun
 - **Database**: PostgreSQL + Drizzle ORM
-- **AI Runtime**: ElizaOS 1.7.1 (plugin-anthropic, plugin-openai, plugin-bootstrap, plugin-sql)
+- **AI Runtime**: ElizaOS 2.0.0-alpha (plugin-anthropic, plugin-openai, plugin-sql; bootstrap is built into core)
 - **Auth**: Lucia 3.x + Drizzle adapter
 
 ## Project Structure
@@ -42,7 +42,7 @@ ClawVille/
 
 ## Package Naming
 
-All packages use `@legacyapp/*` prefix (e.g. `@legacyapp/shared`, `@legacyapp/database`).
+All packages use `@clawville/*` prefix (e.g. `@clawville/shared`, `@clawville/database`).
 
 ## Commands
 
@@ -175,16 +175,16 @@ All 10 buildings are shop buildings — each sells 2 knowledge books (20 total).
 - Bun as runtime for API, Next.js for web
 - Kebab-case filenames, PascalCase components
 - Zod validation on all API inputs
-- `@/` path alias in web app, `@legacyapp/*` for packages
+- `@/` path alias in web app, `@clawville/*` for packages
 
-## Relationship to LegacyApp
+## Project Notes
 
-ClawVille is a fork of LegacyApp with:
-- Sea-themed 3D world (vs LegacyTheme 2D)
-- 10 buildings (vs 15) with OpenClaw integration focus
-- Three.js 3D rendering (in addition to PixiJS 2D)
-- Knowledge books focused on OpenClaw agent development (vs Solana/crypto)
-- Lobster-themed avatars (PR #3 restyle)
+ClawVille is a sea-themed OpenClaw game with:
+- Sea-themed 3D world
+- 10 buildings with OpenClaw integration focus
+- Three.js 3D rendering (with PixiJS 2D fallback)
+- Knowledge books focused on OpenClaw agent development
+- Lobster-themed avatars
 
 ## Memory System
 

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useGameStore } from '@/stores/game';
 import { useLocationAgent } from '@/hooks/use-locations';
-import { MAP_LOCATIONS } from '@legacyapp/shared';
+import { MAP_LOCATIONS } from '@clawville/shared';
 import { api } from '@/lib/api';
 
 function LocationStatusDot({ locationId }: { locationId: string }) {

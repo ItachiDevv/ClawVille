@@ -1,12 +1,14 @@
 /**
- * ElizaOS Runtime Wrapper for LegacyApp
+ * ElizaOS Runtime Wrapper for ClawVille
  * Adapted from eliza-kiz for location-based agents.
  */
 
 import {
   AgentRuntime as ElizaAgentRuntime,
   ChannelType,
+  createCharacter,
   type Character,
+  type CharacterInput,
   type Plugin,
   type UUID,
   type Memory,
@@ -14,11 +16,11 @@ import {
   type IAgentRuntime,
 } from '@elizaos/core';
 import { v5 as uuidv5 } from 'uuid';
-import type { LocationTemplate } from '@legacyapp/agent-templates';
+import type { LocationTemplate } from '@clawville/agent-templates';
 import { loadLocationTemplate } from './character-loader';
 import { createOpenClawProviderPlugin, type OpenClawGatewayConfig } from './plugins/openclaw-provider';
 import { createUltrathinkProviderPlugin, type UltrathinkConfig } from './plugins/ultrathink-provider';
-import { AGENT_THINKING_DEFAULTS } from '@legacyapp/shared';
+import { AGENT_THINKING_DEFAULTS } from '@clawville/shared';
 
 const ROOM_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
 
@@ -117,8 +119,9 @@ function convertToElizaCharacter(
     system += `\n\nTone: ${customization.tone}`;
   }
 
-  const messageExamples = template.messageExamples?.map((conversation) =>
-    conversation.map((msg) => ({
+  // v2: legacy MessageExample[][] format is still accepted by createCharacter()
+  const messageExamples = template.messageExamples?.map((conversation: any) =>
+    conversation.map((msg: any) => ({
       name: msg.user === 'assistant' ? name : 'User',
       content: {
         text: typeof msg.content === 'string' ? msg.content : msg.content.text || '',
@@ -126,20 +129,20 @@ function convertToElizaCharacter(
     }))
   );
 
+  // v2: @elizaos/plugin-bootstrap is built into @elizaos/core — do NOT add it here
   const plugins: string[] = [
     '@elizaos/plugin-anthropic',
     '@elizaos/plugin-openai',
-    '@elizaos/plugin-bootstrap',
     '@elizaos/plugin-sql',
   ];
 
-  return {
-    id: undefined,
+  const input: CharacterInput & { name: string } = {
     name,
     username: name.toLowerCase().replace(/\s+/g, '-'),
     system,
-    bio,
-    messageExamples,
+    // v2 Character uses bio: string[] — split multi-line strings, or wrap single string
+    bio: typeof bio === 'string' ? [bio] : bio,
+    messageExamples: messageExamples as any,
     postExamples: [],
     topics: customization?.topics || template.topics || [],
     adjectives: template.adjectives || [],
@@ -148,13 +151,16 @@ function convertToElizaCharacter(
     settings: {
       ...(template.settings || {}),
       model: 'claude-3-5-haiku-20241022',
-    },
+    } as any,
     style: {
       all: [...(template.style?.all || []), ...(Array.isArray(customization?.style) ? customization.style : [])],
       chat: template.style?.chat || [],
       post: template.style?.post || [],
     },
   };
+
+  // createCharacter() converts loose CharacterInput to the strict protobuf Character
+  return createCharacter(input);
 }
 
 export class ElizaRuntime {
@@ -193,7 +199,7 @@ export class ElizaRuntime {
 
     // Use pre-built system prompt from archetype, or construct a basic one
     let system = customization?.system ||
-      `You are ${name}, a ${species} pet in the world of LegacyApp. You are a virtual companion who loves to chat with your owner.`;
+      `You are ${name}, a ${species} pet in the world of ClawVille. You are a virtual companion who loves to chat with your owner.`;
     if (!customization?.system) {
       if (customization?.personality) {
         system += `\n\nPersonality: ${customization.personality}`;
@@ -210,8 +216,8 @@ export class ElizaRuntime {
     }
 
     // Convert messageExamples from {user, content}[] to ElizaOS format
-    const messageExamples = customization?.messageExamples?.map((conversation) =>
-      conversation.map((msg) => ({
+    const messageExamples = customization?.messageExamples?.map((conversation: any) =>
+      conversation.map((msg: any) => ({
         name: msg.user === 'assistant' ? name : 'User',
         content: {
           text: msg.content,
@@ -219,10 +225,10 @@ export class ElizaRuntime {
       }))
     );
 
+    // v2: @elizaos/plugin-bootstrap is built into @elizaos/core — do NOT add it here
     const plugins: string[] = [
       '@elizaos/plugin-anthropic',
       '@elizaos/plugin-openai',
-      '@elizaos/plugin-bootstrap',
       '@elizaos/plugin-sql',
       '@elizaos/plugin-solana',
     ];
@@ -237,13 +243,13 @@ export class ElizaRuntime {
           post: [] as string[],
         };
 
-    return {
-      id: undefined,
+    const input: CharacterInput & { name: string } = {
       name,
       username: name.toLowerCase().replace(/\s+/g, '-'),
       system,
-      bio,
-      messageExamples: messageExamples || [],
+      // v2 Character uses bio: string[]
+      bio: typeof bio === 'string' ? [bio] : bio,
+      messageExamples: (messageExamples || []) as any,
       postExamples: [],
       topics: customization?.topics || ['pets', 'games', 'adventures'],
       adjectives: customization?.adjectives || ['friendly', 'playful', 'curious'],
@@ -251,9 +257,12 @@ export class ElizaRuntime {
       plugins,
       settings: {
         model: 'claude-3-5-haiku-20241022',
-      },
+      } as any,
       style,
     };
+
+    // createCharacter() converts loose CharacterInput to the strict protobuf Character
+    return createCharacter(input);
   }
 
   async start(): Promise<void> {
@@ -276,16 +285,36 @@ export class ElizaRuntime {
 
       await this.loadPlugins();
 
+      // v2: API keys live on character.secrets (not runtime.settings)
+      this.character.secrets = {
+        ...(this.character.secrets || {}),
+        ANTHROPIC_API_KEY: this.config.apiKeys?.anthropic || process.env.ANTHROPIC_API_KEY || '',
+        OPENAI_API_KEY: this.config.apiKeys?.openai || process.env.OPENAI_API_KEY || '',
+      };
+
+      // v2: Caller owns DB adapter lifecycle. createDatabaseAdapter() handles
+      // pool singletons internally (shared across all agents via global symbol),
+      // so we must NOT call adapter.close() on per-agent stop().
+      const sqlMod: any = await import('@elizaos/plugin-sql');
+      const createDatabaseAdapter = sqlMod.createDatabaseAdapter || sqlMod.default?.createDatabaseAdapter;
+      if (typeof createDatabaseAdapter !== 'function') {
+        throw new Error('[ElizaRuntime] @elizaos/plugin-sql did not export createDatabaseAdapter');
+      }
+      const adapter = createDatabaseAdapter(
+        { postgresUrl: this.config.databaseUrl || process.env.DATABASE_URL || '' },
+        this.config.agentId as UUID
+      );
+
       this.runtime = new ElizaAgentRuntime({
         agentId: this.config.agentId as UUID,
         character: this.character,
         plugins: this.loadedPlugins,
-        settings: {
-          ANTHROPIC_API_KEY: this.config.apiKeys?.anthropic || process.env.ANTHROPIC_API_KEY || '',
-          OPENAI_API_KEY: this.config.apiKeys?.openai || process.env.OPENAI_API_KEY || '',
-          POSTGRES_URL: this.config.databaseUrl || process.env.DATABASE_URL || '',
-        },
-      });
+        adapter,
+        // v2: For game agents, single-action-per-response is the recommended path
+        // per source comment — "performance optimization useful for game situations
+        // where state updates with every action"
+        actionPlanning: false,
+      } as any);
 
       await this.runtime.initialize();
       this.state = 'running';
@@ -302,10 +331,10 @@ export class ElizaRuntime {
 
   private async loadPlugins(): Promise<void> {
     this.loadedPlugins = [];
+    // v2: plugin-bootstrap is built into @elizaos/core (auto-registered during runtime.initialize())
     const pluginMap: Record<string, string> = {
       '@elizaos/plugin-anthropic': 'anthropicPlugin',
       '@elizaos/plugin-openai': 'openaiPlugin',
-      '@elizaos/plugin-bootstrap': 'bootstrapPlugin',
       '@elizaos/plugin-sql': 'sqlPlugin',
       '@elizaos/plugin-solana': 'solanaPlugin',
     };
@@ -424,8 +453,13 @@ export class ElizaRuntime {
   private async getConversationHistory(roomId: UUID, limit = 20): Promise<Memory[]> {
     if (!this.runtime) return [];
     try {
-      const memories = await this.runtime.getMemories({ roomId, count: limit, tableName: 'messages' });
-      return memories.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+      // v2: `count` is deprecated in favor of `limit` on getMemories params
+      const memories = await this.runtime.getMemories({ roomId, limit, tableName: 'messages' } as any);
+      return memories.sort((a, b) => {
+        const aTime = typeof a.createdAt === 'number' ? a.createdAt : Date.parse(String(a.createdAt || 0));
+        const bTime = typeof b.createdAt === 'number' ? b.createdAt : Date.parse(String(b.createdAt || 0));
+        return aTime - bTime;
+      });
     } catch {
       return [];
     }
@@ -493,8 +527,10 @@ export class ElizaRuntime {
       promptParts.push(`User: ${content}\n\nRespond to the user's latest message.`);
       const promptWithHistory = promptParts.join('\n\n');
 
+      // v2: GenerateTextOptions requires stopSequences (empty array is fine)
       const result = await this.runtime.generateText(promptWithHistory, {
         maxTokens: 1000,
+        stopSequences: [],
       });
 
       // Store assistant response

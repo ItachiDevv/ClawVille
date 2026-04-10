@@ -4,7 +4,7 @@
  * Uses keyword-based relevance (no vector DB dependency).
  */
 
-import { db, npcMemories } from '@legacyapp/database';
+import { db, npcMemories } from '@clawville/database';
 import { eq, and, desc, sql } from 'drizzle-orm';
 
 export interface CreateMemoryInput {

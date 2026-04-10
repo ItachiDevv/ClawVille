@@ -2,7 +2,7 @@
 
 import { useGameStore } from '@/stores/game';
 import { usePet } from '@/hooks/use-pet';
-import { PET_SPECIES, PET_COLORS, PET_ARCHETYPES } from '@legacyapp/shared';
+import { PET_SPECIES, PET_COLORS, PET_ARCHETYPES } from '@clawville/shared';
 import {
   Dialog,
   DialogContent,

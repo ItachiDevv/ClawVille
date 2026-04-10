@@ -3,7 +3,7 @@
  * Buildings are blocked tiles; NPCs navigate around them.
  */
 
-import { BUILDING_TILE_ZONES } from '@legacyapp/shared';
+import { BUILDING_TILE_ZONES } from '@clawville/shared';
 
 const COLS = 40;
 const ROWS = 25;

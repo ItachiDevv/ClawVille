@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
-import { db, users, pets, agents } from '@legacyapp/database';
+import { db, users, pets, agents } from '@clawville/database';
 import { petRoutes } from '../routes/pets';
 import { authRoutes } from '../routes/auth';
 import type { AppContext } from '../types';
 
 // Test user credentials
-const TEST_EMAIL = `test-${Date.now()}@legacyapp-test.com`;
+const TEST_EMAIL = `test-${Date.now()}@clawville-test.com`;
 const TEST_PASSWORD = 'testpassword123';
 let testUserId: string;
 let testSessionCookie: string;
