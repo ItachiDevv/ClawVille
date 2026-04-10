@@ -347,22 +347,26 @@ function startManualRenderLoop(state: any): void {
   if (state.__manualLoopRunning) return;
   state.__manualLoopRunning = true;
   status.manualLoopStarted = (status.manualLoopStarted || 0) + 1;
-  let rafId = 0;
-  const loop = (t: number) => {
+
+  // Use setInterval instead of requestAnimationFrame because browsers throttle
+  // RAF to 0 Hz in hidden / unfocused tabs, which would freeze the scene any
+  // time the user tabbed away. setInterval fires regardless (throttled to
+  // ~1 Hz in background tabs, which is fine — game state stays alive).
+  const step = () => {
     if (!state.__manualLoopRunning) return;
     try {
-      state.advance(t / 1000, true);
+      state.advance(performance.now() / 1000, true);
     } catch (err) {
       status.advanceErrors.push(String(err).slice(0, 200));
       status.lastErrorAt = Date.now();
     }
     status.loopTicks = (status.loopTicks || 0) + 1;
-    rafId = requestAnimationFrame(loop);
   };
-  rafId = requestAnimationFrame(loop);
+  const intervalId = setInterval(step, 16); // ~62 Hz in foreground
+
   state.__manualLoopCancel = () => {
     state.__manualLoopRunning = false;
-    if (rafId) cancelAnimationFrame(rafId);
+    clearInterval(intervalId);
   };
 }
 
