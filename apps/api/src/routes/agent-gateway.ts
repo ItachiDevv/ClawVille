@@ -19,6 +19,7 @@ import { db, openclawBots, eq, sql } from '@clawville/database';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { getSessionAgent } from '../services/session-agent-map';
 import { OpenClawClient } from '../services/openclaw-client';
+import { ensureWallet } from '../services/wallet-service';
 
 const agentGatewayRoutes = new Hono();
 
@@ -203,6 +204,19 @@ agentGatewayRoutes.post('/connect', async (c) => {
     return c.json({ error: 'Database error during agent registration' }, 500);
   }
 
+  // Step 2b: Ensure the bot has a custodial Solana wallet. Idempotent —
+  // returning agents keep their existing wallet across launches. Failure
+  // here is non-fatal (we log + continue without a wallet) because the
+  // agent can still play the game; only Phase 4 x402 payment features
+  // require the wallet.
+  let walletAddress: string | null = null;
+  try {
+    const wallet = await ensureWallet('agent', uuid);
+    walletAddress = wallet.publicKey;
+  } catch (err) {
+    console.error('[AgentConnect] Wallet auto-gen failed:', err);
+  }
+
   // Step 3: Register in npc-simulation so the bot actually spawns in the world.
   // Avatar mode requires name + species; override mode requires a valid targetNpcId.
   if (data.name && data.species) {
@@ -269,6 +283,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
     knowledge,
     identityType,
     autonomyMode,
+    walletAddress,
   });
 });
 

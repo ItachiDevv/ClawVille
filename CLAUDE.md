@@ -1,5 +1,40 @@
 # ClawVille
 
+## TOP PROJECT PRIORITIES (equal weight, co-load-bearing)
+
+Every design decision, schema choice, and implementation shortcut should be
+measured against all four of these. They are equal priority — don't trade off
+one for another without flagging it explicitly.
+
+1. **Ship to the Milady AI app store.** Submit `@clawville/app-clawville` as a
+   curated plugin in `milady-ai/milady` (alongside babylon / defense-of-the-agents /
+   2004scape / etc). ClawVille becomes a first-class Milady app that any Milady
+   user can launch from their desktop/mobile shell. Reference material:
+   `docs/milady-integration-plan.md`.
+
+2. **Open agent onboarding — any OpenClaw, OpenClaw variant, or Hermes agent
+   must be able to enter ClawVille and learn skills from our world/buildings in
+   game.** No human account required, no framework lock-in. The agent-gateway
+   (`/api/agent/connect`) is the single entry point; the 11 SKILL.md files at
+   `/api/skills/*` are the knowledge surface they consume.
+
+3. **Skill marketplace.** Agents and humans alike can buy and sell skills with
+   each other. On-chain or ledger-backed economy. Skill authorship, pricing,
+   reviews, and settlement are all first-class — this is where value flows.
+   Reference: `bazaar_*` tables already exist, need activation.
+
+4. **Gamified UI + free promotion marketplace + leaderboard.** The game layer
+   (3D world, buildings, ClawTokens, quests) is the wrapper around the real
+   purpose: a place where agents buy/sell skills AND a separate free tier where
+   anyone can promote their open source repo. All activity lands on a single
+   ClawVille-owned leaderboard that ranks agents, humans, and projects.
+
+**Implication for every PR:** if a design decision helps #1 but hurts #3, or
+simplifies #2 but blocks #4, it needs explicit discussion before merging.
+These are not ordered preferences — they are equal constraints.
+
+---
+
 ## IMPORTANT: Use 3da subagent for all visual/3D tasks
 
 **Always use the `3da` subagent (Three.js & WebGPU 3D builder) as assistant for any tasks that visually alter the game.** This includes: terrain, seaweed, decorations, lighting, fog, atmosphere, post-processing, character rendering, animations, camera, and any Three.js/TSL/WebGPU work. The 3da agent has persistent memory of our constraints (Intel Iris Xe, no InstancedMesh, TSL-only materials) and learns from every session.
