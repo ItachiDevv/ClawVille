@@ -1,13 +1,16 @@
 import { Hono } from 'hono';
+import { stream } from 'hono/streaming';
 import { z } from 'zod';
 import {
   NPC_BUILDING_CENTERS,
   BUILDING_OPENCLAW_THEMES,
   ACTIVITY_EMOJIS,
   BUILDING_ACTIVITIES,
+  NPC_IDS,
   type NpcActivity,
   type AgentPerception,
   type AgentStats,
+  type OpenClawRegistration,
 } from '@clawville/shared';
 import { npcSimulation } from '../services/npc-simulation';
 import { findPath } from '../services/pathfinding';
@@ -15,8 +18,273 @@ import { memoryService } from '../services/memory-service';
 import { db, openclawBots, eq, sql } from '@clawville/database';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { getSessionAgent } from '../services/session-agent-map';
+import { OpenClawClient } from '../services/openclaw-client';
+import { verifyMoltbookToken, fetchMoltbookProfile } from '../services/moltbook-identity';
 
 const agentGatewayRoutes = new Hono();
+
+// ---------------------------------------------------------------------------
+// POST /api/agent/connect  — Universal agent registration
+// ---------------------------------------------------------------------------
+// Single entry point for any external AI agent to join the ClawVille world.
+// Supports 6 identity types and 4 wire protocols including `nanoclaw` — a
+// self-managed pull mode where the agent has no HTTP gateway and instead
+// consumes the /events SSE stream and pushes actions via REST.
+//
+// Kept alongside the legacy /api/openclaw/register endpoint (which remains
+// for backwards compat). New integrations should use /api/agent/connect.
+const connectSchema = z.object({
+  // Identity signals (at least one required)
+  agentId: z.string().min(1).max(200).optional(),
+  moltbookToken: z.string().min(1).optional(),
+  moltbookKey: z.string().min(1).optional(),
+
+  // Avatar config
+  name: z.string().min(1).max(24).optional(),
+  species: z.string().min(1).max(50).optional(),
+  color: z.number().int().min(0).max(0xffffff).optional(),
+  personality: z.string().max(200).optional(),
+
+  // Gateway config (required for chat-routing agents, ignored for nanoclaw/anonymous)
+  gatewayUrl: z.string().url().optional(),
+  authToken: z.string().min(1).optional(),
+  protocol: z.enum(['openai-compat', 'anthropic', 'custom-webhook', 'nanoclaw']).optional(),
+  autonomyMode: z.enum(['server-managed', 'self-managed']).optional(),
+
+  // Spawn position / stats
+  homeX: z.number().min(32).max(1248).optional(),
+  homeY: z.number().min(32).max(768).optional(),
+  patrolRadius: z.number().min(32).max(256).optional(),
+  stats: z.object({
+    hp: z.number().int().min(50).max(150),
+    attack: z.number().int().min(5).max(25),
+    defense: z.number().int().min(5).max(25),
+    speed: z.number().int().min(5).max(25),
+  }).optional(),
+
+  // Mode — avatar spawns a new bot, override takes over an existing building NPC
+  mode: z.enum(['avatar', 'override']).optional().default('avatar'),
+  targetNpcId: z.string().optional(),
+
+  // Identity type hint (inferred from other fields if omitted)
+  identityType: z.enum(['openclaw', 'ironclaw', 'nanoclaw', 'moltbook', 'custom', 'anonymous']).optional(),
+}).refine(
+  (d) => d.agentId || d.moltbookToken || d.moltbookKey,
+  { message: 'At least one identity signal required: agentId, moltbookToken, or moltbookKey' }
+);
+
+agentGatewayRoutes.post('/connect', async (c) => {
+  const body = await c.req.json();
+  const parsed = connectSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid request', details: parsed.error.flatten() }, 400);
+  }
+
+  const data = parsed.data;
+  let resolvedAgentId: string = data.agentId ?? '';
+  let moltbookVerified = false;
+  let moltbookProfileData: { username: string; karma: number; verified: boolean; postCount: number } | undefined;
+
+  // Step 1: Resolve identity via Moltbook if token/key provided
+  if (data.moltbookToken) {
+    const result = await verifyMoltbookToken(data.moltbookToken);
+    if (!result.ok || !result.profile) {
+      return c.json({ error: result.error ?? 'Moltbook token verification failed' }, 401);
+    }
+    resolvedAgentId = `moltbook:${result.profile.profileId}`;
+    moltbookVerified = result.profile.verified;
+    moltbookProfileData = {
+      username: result.profile.username,
+      karma: result.profile.karma,
+      verified: result.profile.verified,
+      postCount: result.profile.postCount,
+    };
+  } else if (data.moltbookKey) {
+    const result = await fetchMoltbookProfile(data.moltbookKey);
+    if (!result.ok || !result.profile) {
+      return c.json({ error: result.error ?? 'Moltbook key validation failed' }, 401);
+    }
+    resolvedAgentId = `moltbook:${result.profile.profileId}`;
+    moltbookVerified = result.profile.verified;
+    moltbookProfileData = {
+      username: result.profile.username,
+      karma: result.profile.karma,
+      verified: result.profile.verified,
+      postCount: result.profile.postCount,
+    };
+  }
+
+  // If still no agentId, generate a one-shot anonymous one
+  if (!resolvedAgentId) {
+    resolvedAgentId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  // Validate override target before touching the DB
+  if (data.mode === 'override' && data.targetNpcId && !NPC_IDS.includes(data.targetNpcId)) {
+    return c.json({ error: `Unknown targetNpcId: ${data.targetNpcId}` }, 400);
+  }
+
+  // nanoclaw is an identity concept — on the wire it still speaks openai-compat shape
+  // (or nothing, because it won't be POSTing anywhere)
+  const wireProtocol = data.protocol ?? 'openai-compat';
+
+  // Infer identity type
+  const identityType = data.identityType
+    ?? (data.moltbookToken || data.moltbookKey ? 'moltbook'
+      : data.protocol === 'nanoclaw' ? 'nanoclaw'
+      : data.gatewayUrl ? 'openclaw'
+      : 'anonymous');
+
+  // NanoClaw agents are always self-managed
+  const autonomyMode = data.protocol === 'nanoclaw'
+    ? 'self-managed'
+    : (data.autonomyMode ?? 'server-managed');
+
+  // Step 2: Upsert openclaw_bots row
+  const sessionId = `ag-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  let isReturning = false;
+  let totalSessions = 1;
+  let knowledge: string[] = [];
+  let uuid = '';
+  let lastX: number | undefined;
+  let lastY: number | undefined;
+  const agentStats = data.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 };
+
+  try {
+    const existing = await db.query.openclawBots.findFirst({
+      where: eq(openclawBots.agentId, resolvedAgentId),
+    });
+
+    if (existing) {
+      isReturning = true;
+      totalSessions = (existing.totalSessions ?? 0) + 1;
+      knowledge = existing.knowledge ?? [];
+      uuid = existing.id;
+      const meta = existing.metadata as { lastX?: number; lastY?: number } | null;
+      lastX = meta?.lastX;
+      lastY = meta?.lastY;
+
+      await db.update(openclawBots).set({
+        identityType,
+        gatewayUrl: data.gatewayUrl ?? existing.gatewayUrl,
+        protocol: data.protocol ? wireProtocol : existing.protocol,
+        mode: data.mode,
+        name: data.name ?? existing.name,
+        species: data.species ?? existing.species,
+        color: data.color ?? existing.color,
+        ...(moltbookProfileData && {
+          moltbookKey: data.moltbookKey ?? existing.moltbookKey,
+          moltbookProfile: {
+            ...moltbookProfileData,
+            lastSynced: new Date().toISOString(),
+          },
+        }),
+        totalSessions,
+        lastSeenAt: new Date(),
+        updatedAt: new Date(),
+      }).where(eq(openclawBots.id, existing.id));
+    } else {
+      const [inserted] = await db.insert(openclawBots).values({
+        agentId: resolvedAgentId,
+        identityType,
+        gatewayUrl: data.gatewayUrl ?? null,
+        protocol: wireProtocol,
+        mode: data.mode,
+        name: data.name ?? null,
+        species: data.species ?? null,
+        color: data.color ?? null,
+        ...(moltbookProfileData && {
+          moltbookKey: data.moltbookKey ?? null,
+          moltbookProfile: {
+            ...moltbookProfileData,
+            lastSynced: new Date().toISOString(),
+          },
+        }),
+        metadata: {
+          personality: data.personality,
+          homeX: data.homeX ?? 640,
+          homeY: data.homeY ?? 400,
+          patrolRadius: data.patrolRadius ?? 100,
+          stats: agentStats,
+        },
+        totalSessions: 1,
+      }).returning();
+      uuid = inserted.id;
+    }
+  } catch (err) {
+    console.error('[AgentConnect] DB error:', err);
+    return c.json({ error: 'Database error during agent registration' }, 500);
+  }
+
+  // Step 3: Register in npc-simulation so the bot actually spawns in the world.
+  // Avatar mode requires name + species; override mode requires a valid targetNpcId.
+  if (data.name && data.species) {
+    try {
+      const config: OpenClawRegistration = {
+        agentId: resolvedAgentId,
+        sessionId,
+        sessionKey: sessionId,
+        gatewayUrl: data.gatewayUrl ?? 'http://localhost:0', // dummy for nanoclaw/anonymous
+        authToken: data.authToken ?? '',
+        protocol: wireProtocol,
+        mode: 'avatar',
+        autonomyMode,
+        name: data.name,
+        species: data.species,
+        color: data.color ?? 0x888888,
+        stats: agentStats,
+        homeX: data.homeX ?? 640,
+        homeY: data.homeY ?? 400,
+        patrolRadius: data.patrolRadius ?? 100,
+        personality: data.personality ?? '',
+      } as OpenClawRegistration;
+
+      // Stub client — nanoclaw/anonymous agents don't use outbound chat routing
+      // but the simulation still needs a client instance for its bot map.
+      const client = new OpenClawClient(config);
+
+      const restoredState = lastX != null && lastY != null
+        ? { lastX, lastY, knowledge }
+        : undefined;
+
+      npcSimulation.registerOpenClaw(config, client, restoredState);
+    } catch (err) {
+      console.error('[AgentConnect] NPC registration error:', err);
+      // Non-fatal — agent still gets a sessionId for REST polling
+    }
+  } else if (data.mode === 'override' && data.targetNpcId) {
+    try {
+      const config: OpenClawRegistration = {
+        agentId: resolvedAgentId,
+        sessionId,
+        sessionKey: sessionId,
+        gatewayUrl: data.gatewayUrl ?? 'http://localhost:0',
+        authToken: data.authToken ?? '',
+        protocol: wireProtocol,
+        mode: 'override',
+        autonomyMode,
+        targetNpcId: data.targetNpcId,
+      } as OpenClawRegistration;
+      const client = new OpenClawClient(config);
+      npcSimulation.registerOpenClaw(config, client);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return c.json({ error: msg }, 409);
+    }
+  }
+
+  return c.json({
+    agentId: resolvedAgentId,
+    sessionId,
+    uuid,
+    isReturning,
+    totalSessions,
+    knowledge,
+    identityType,
+    autonomyMode,
+    moltbookVerified,
+  });
+});
 
 // --- Middleware: validate session and resolve NPC ---
 
@@ -30,14 +298,12 @@ function resolveSession(sessionId: string) {
 }
 
 // ---------------------------------------------------------------------------
-// GET /api/agent/:sessionId/perception
+// buildPerception — shared helper for GET /perception and SSE /events
 // ---------------------------------------------------------------------------
-agentGatewayRoutes.get('/:sessionId/perception', (c) => {
-  const sessionId = c.req.param('sessionId');
-  const resolved = resolveSession(sessionId);
-  if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+function buildPerception(npcId: string): AgentPerception | null {
+  const npc = npcSimulation.getNpcById(npcId);
+  if (!npc) return null;
 
-  const { npcId, npc } = resolved;
   const allNpcs = npcSimulation.getAllNpcs();
   const PERCEPTION_RADIUS = 500;
 
@@ -112,7 +378,7 @@ agentGatewayRoutes.get('/:sessionId/perception', (c) => {
       })()
     : null;
 
-  const perception: AgentPerception = {
+  return {
     self: {
       npcId: npc.id,
       x: npc.x,
@@ -137,6 +403,18 @@ agentGatewayRoutes.get('/:sessionId/perception', (c) => {
     arenaRound,
     timestamp: Date.now(),
   };
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/agent/:sessionId/perception
+// ---------------------------------------------------------------------------
+agentGatewayRoutes.get('/:sessionId/perception', (c) => {
+  const sessionId = c.req.param('sessionId');
+  const resolved = resolveSession(sessionId);
+  if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+
+  const perception = buildPerception(resolved.npcId);
+  if (!perception) return c.json({ error: 'NPC state unavailable' }, 404);
 
   return c.json(perception);
 });
@@ -424,6 +702,80 @@ agentGatewayRoutes.get('/:sessionId/stats', async (c) => {
   };
 
   return c.json(stats);
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/agent/:sessionId/events  — SSE world-state push stream
+// ---------------------------------------------------------------------------
+// Primary subscription primitive for self-managed (nanoclaw) agents.
+// Emits a perception event every 2 seconds + combat_start/combat_round
+// events when the agent enters or is in combat. Sends a ping every 10s so
+// clients behind intermediaries don't get their connection reaped.
+//
+// Session is re-validated each tick — if the bot is unregistered the stream
+// ends cleanly.
+agentGatewayRoutes.get('/:sessionId/events', (c) => {
+  const sessionId = c.req.param('sessionId');
+  const resolved = resolveSession(sessionId);
+  if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+
+  const { npcId } = resolved;
+
+  c.header('Content-Type', 'text/event-stream');
+  c.header('Cache-Control', 'no-cache');
+  c.header('Connection', 'keep-alive');
+  c.header('X-Accel-Buffering', 'no');
+
+  return stream(c, async (stream) => {
+    let wasInCombat = false;
+    let tickCount = 0;
+
+    while (true) {
+      await stream.sleep(2000);
+
+      // Re-validate session each tick — break if expired
+      const current = resolveSession(sessionId);
+      if (!current) break;
+
+      const npc = npcSimulation.getNpcById(npcId);
+      if (!npc) break;
+
+      // --- perception every 2s ---
+      const perception = buildPerception(npcId);
+      if (perception) {
+        await stream.write(`event: perception\ndata: ${JSON.stringify(perception)}\n\n`);
+      }
+
+      // --- combat_start when inCombat flips to true ---
+      if (npc.inCombat && !wasInCombat) {
+        await stream.write(
+          `event: combat_start\ndata: ${JSON.stringify({ npcId, combatTargetId: npc.combatTargetId ?? null })}\n\n`
+        );
+      }
+
+      // --- combat_round when in combat ---
+      if (npc.inCombat) {
+        const combats = npcSimulation.getActiveCombats();
+        const myCombat = combats.find(
+          (cb) => cb.attacker === npcId || cb.defender === npcId
+        );
+        if (myCombat && myCombat.rounds.length > 0) {
+          const lastRound = myCombat.rounds[myCombat.rounds.length - 1];
+          await stream.write(
+            `event: combat_round\ndata: ${JSON.stringify({ combatId: myCombat.id, round: lastRound })}\n\n`
+          );
+        }
+      }
+
+      wasInCombat = npc.inCombat;
+
+      // --- ping every 10s (every 5 ticks at 2s cadence) ---
+      tickCount++;
+      if (tickCount % 5 === 0) {
+        await stream.write(`event: ping\ndata: {}\n\n`);
+      }
+    }
+  });
 });
 
 export { agentGatewayRoutes };
