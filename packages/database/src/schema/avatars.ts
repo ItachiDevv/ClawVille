@@ -21,6 +21,39 @@ export const petColorEnum = pgEnum('avatar_color', [
 
 export const petGenderEnum = pgEnum('avatar_gender', ['male', 'female']);
 
+/**
+ * Avatar model format for 3D rendering.
+ *
+ * - 'glb'  — default, loads /models/{species}.glb via existing species-keyed path
+ * - 'vrm'  — custom VRM model URL in avatars.avatarUrl; used by Milady agents that
+ *            bring their own avatar, and by clawville.world users who later
+ *            choose to upload one. Renderer (when shipped) uses @pixiv/three-vrm.
+ *
+ * Renderer falls back to 'glb' if avatarUrl is null or the VRM fails to load.
+ */
+export const petAvatarTypeEnum = pgEnum('pet_avatar_type', ['glb', 'vrm']);
+
+/**
+ * VRM-specific metadata — expression map, bone overrides, loading hints.
+ * Populated at connect time by the Milady plugin (if it has this info from
+ * the runtime character config) or by a future ClawVille avatar upload flow.
+ * Optional — the renderer uses sensible defaults if absent.
+ */
+export interface PetVrmMetadataJson {
+  /** Semantic version of the schema so we can migrate later */
+  version?: number;
+  /** Expression names available on the VRM (e.g. 'happy', 'sad', 'angry') */
+  expressions?: string[];
+  /** Custom bone mappings if the VRM doesn't follow the standard humanoid rig */
+  boneMap?: Record<string, string>;
+  /** Optional license string from the VRM file metadata */
+  license?: string;
+  /** Original author / creator attribution */
+  author?: string;
+  /** SHA-256 hash of the VRM file (for cache busting + integrity check) */
+  contentHash?: string;
+}
+
 export interface PetPersonalityJson {
   habitat: string;
   hobby: string;
@@ -82,6 +115,22 @@ export const avatars = pgTable('avatars', {
   level: integer('level').default(1).notNull(),
   xp: integer('xp').default(0).notNull(),
   totalXp: integer('total_xp').default(0).notNull(),
+  /**
+   * Avatar format + URL. Default 'glb' falls through to the existing
+   * species-keyed /models/{species}.glb loader. 'vrm' triggers the VRM
+   * renderer (Phase 5, not yet wired on the frontend) with avatarUrl as
+   * the source. Schema is ready today; renderer comes later.
+   */
+  avatarType: petAvatarTypeEnum('avatar_type').default('glb').notNull(),
+  avatarUrl: varchar('avatar_url', { length: 1024 }),
+  vrmMetadata: jsonb('vrm_metadata').$type<PetVrmMetadataJson>(),
+  /**
+   * Auto-generated custodial Solana wallet address (base58). NULL for avatars
+   * that existed before the C2 backfill; populated for new avatars (human or
+   * agent-created) via apps/api/src/services/avatar-wallet-service.ts.
+   * Secret key lives encrypted in the avatar_wallet table.
+   */
+  walletAddress: varchar('wallet_address', { length: 64 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
