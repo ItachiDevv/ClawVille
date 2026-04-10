@@ -83,7 +83,7 @@ app.notFound((c) => {
 });
 
 const port = parseInt(process.env.PORT || '4000', 10);
-console.log(`Starting LegacyApp API on port ${port}...`);
+console.log(`Starting ClawVille API on port ${port}...`);
 
 // Start NPC simulation (arena mode runs combat, world mode is peaceful)
 const arenaMode = process.env.NPC_ARENA_MODE === 'true';

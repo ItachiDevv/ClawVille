@@ -11,7 +11,7 @@ import {
   bazaarTransactions,
   bazaarReviews,
   avatarInventory,
-} from '@legacyapp/database';
+} from '@clawville/database';
 import { eq, and, desc, asc, sql } from 'drizzle-orm';
 import { gte, lte, isNotNull, count, avg } from 'drizzle-orm';
 

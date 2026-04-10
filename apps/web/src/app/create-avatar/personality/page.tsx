@@ -3,8 +3,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useCreatePet } from '@/hooks/use-avatar';
-import { AVATAR_ARCHETYPES } from '@legacyapp/shared';
-import type { PetArchetypeId } from '@legacyapp/shared';
+import { AVATAR_ARCHETYPES } from '@clawville/shared';
+import type { PetArchetypeId } from '@clawville/shared';
 
 const SPECIES_EMOJI: Record<string, string> = {
   cat: '\u{1F431}',

@@ -12,7 +12,7 @@ import {
   auctionBids,
   auctionAgentConfigs,
   avatarInventory,
-} from '@legacyapp/database';
+} from '@clawville/database';
 import { eq, and, desc, asc, lt, sql } from 'drizzle-orm';
 
 // ---------------------------------------------------------------------------

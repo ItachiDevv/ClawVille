@@ -3,7 +3,7 @@
  * Ported from apps/api/src/services/pathfinding.ts for instant responsiveness.
  */
 
-import { BUILDING_TILE_ZONES } from '@legacyapp/shared';
+import { BUILDING_TILE_ZONES } from '@clawville/shared';
 
 const COLS = 40;
 const ROWS = 25;

@@ -13,7 +13,7 @@ import {
   bountyRewards,
   bountyAttempts,
   bountyReputation,
-} from '@legacyapp/database';
+} from '@clawville/database';
 import { eq, and, desc, asc, sql } from 'drizzle-orm';
 import { count } from 'drizzle-orm';
 

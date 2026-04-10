@@ -2,7 +2,7 @@
 
 import { useGameStore } from '@/stores/game';
 import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tilemap-data';
-import { MAP_LOCATIONS } from '@legacyapp/shared';
+import { MAP_LOCATIONS } from '@clawville/shared';
 
 const MM_W = 160;
 const MM_H = MM_W * (MAP_HEIGHT / MAP_WIDTH); // preserve aspect ratio

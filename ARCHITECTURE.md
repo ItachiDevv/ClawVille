@@ -86,7 +86,7 @@ Hard rules:
 **Agent Orchestrator** (`apps/api/src/services/agent-orchestrator.ts`):
 - Lazy-starts ElizaOS agents on first chat message
 - Auto-stops after 30 minutes of inactivity
-- Uses `createElizaRuntime` from `@legacyapp/agent-runtime`
+- Uses `createElizaRuntime` from `@clawville/agent-runtime`
 - Plugins: Anthropic (text generation), OpenAI (text embedding), Bootstrap, SQL
 
 **NPC Simulation** (`apps/api/src/services/npc-simulation.ts`):
