@@ -306,52 +306,31 @@ function FPSFollowCamera({
 }
 
 // ---------------------------------------------------------------------------
-// startManualRenderLoop — R3F v9 + WebGPURenderer workaround
+// kickRenderLoop — small insurance wrapper around R3F's native render loop
 // ---------------------------------------------------------------------------
-// R3F v9's internal render loop never starts when paired with WebGPURenderer:
-// state.internal.active stays false even with frameloop="always", and nothing
-// calls gl.renderAsync. But state.advance(t, true) drives a full frame
-// correctly (useFrame subscribers + renderAsync).
+// R3F v9's native loop is RAF-based and kicks itself off from a zustand
+// subscriber (invalidate → requestAnimationFrame(loop)). That works in
+// foreground tabs. In hidden tabs RAF is throttled to 0 Hz, which pauses the
+// scene — which is the correct behavior for a game (don't waste cycles when
+// the user isn't looking).
 //
-// We can't run this loop from a child component inside the Canvas because R3F
-// wraps children in a Suspense; on first load SceneContents suspends while
-// GLBs load, so any child of the Canvas never gets to mount its useEffect
-// until loading completes — meanwhile zero frames render and the canvas is
-// black. Instead we start the RAF loop from onCreated (which fires once the
-// renderer is ready, regardless of suspended children) and attach a cancel
-// handle to the state so it can be stopped if the Canvas is ever torn down.
+// We expose `state` on window.__W3D for devtools diagnostics and explicitly
+// call state.invalidate() once after mount. R3F already calls invalidate
+// internally via its store subscriber, but belt-and-suspenders — if anything
+// races in future upgrades, the explicit kick keeps the scene alive.
 // ---------------------------------------------------------------------------
-function startManualRenderLoop(state: any): void {
-  // Expose the state on window.__W3D so it's available for devtools poking
-  // when diagnosing rendering issues. Stable across re-renders.
+function kickRenderLoop(state: any): void {
   if (typeof window !== 'undefined') {
     (window as any).__W3D = state;
-  }
-  if (state.__manualLoopRunning) return;
-  state.__manualLoopRunning = true;
-
-  // Use setInterval instead of requestAnimationFrame because browsers throttle
-  // RAF to 0 Hz in hidden / unfocused tabs, which would freeze the scene any
-  // time the user tabbed away. setInterval fires regardless (throttled to
-  // ~1 Hz in background tabs, which is fine — game state stays alive).
-  const step = () => {
-    if (!state.__manualLoopRunning) return;
-    try {
+    // Convenience helper for MCP browser automation / devtools — call
+    // window.__W3D_step() to manually advance one frame when the tab is
+    // hidden and RAF is throttled to 0 Hz.
+    (window as any).__W3D_step = () =>
       state.advance(performance.now() / 1000, true);
-    } catch (err) {
-      // Swallow — advance shouldn't throw under normal conditions. If it does,
-      // surface it once via console.error so it shows up in devtools but don't
-      // kill the loop (the next tick might succeed).
-      // eslint-disable-next-line no-console
-      console.error('[World3D] manual render loop advance threw', err);
-    }
-  };
-  const intervalId = setInterval(step, 16); // ~62 Hz in foreground
-
-  state.__manualLoopCancel = () => {
-    state.__manualLoopRunning = false;
-    clearInterval(intervalId);
-  };
+  }
+  if (typeof state.invalidate === 'function') {
+    state.invalidate();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -534,14 +513,9 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
       <Canvas
         gl={glFactory as any}
         dpr={[0.75, 1]}
-        // NOTE: R3F v9's own render loop never starts when paired with
-        // WebGPURenderer (state.internal.active stays false). We drive the
-        // loop ourselves via startManualRenderLoop() from onCreated below.
-        // MUST be "always" — setting frameloop="never" causes R3F v9 to skip
-        // calling the async gl factory entirely, so the Canvas never
-        // initializes and onCreated never fires. "always" triggers init
-        // normally; the fact that R3F's loop is broken just means it does
-        // nothing after init, which is fine because we drive ours manually.
+        // MUST be "always" — R3F v9 with an async gl factory appears to skip
+        // calling the factory entirely when frameloop="never" is set, so the
+        // Canvas never initializes. "always" drives the normal RAF loop.
         frameloop="always"
         camera={{
           fov: 50,
@@ -563,8 +537,7 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
           } else {
             console.log('[World3D] Using WebGLRenderer');
           }
-          // Drive the render loop ourselves — see startManualRenderLoop() for why.
-          startManualRenderLoop(state);
+          kickRenderLoop(state);
         }}
       >
         <SceneContents mode={mode} />
