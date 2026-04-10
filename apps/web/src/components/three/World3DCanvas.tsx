@@ -78,12 +78,6 @@ const _spherical = new THREE.Spherical();
 const _followOffset = new THREE.Vector3();
 const _followTarget = new THREE.Vector3();
 
-// Scratch objects for WASDCameraController — allocated once, reused every frame
-const _wasdForward = new THREE.Vector3();
-const _wasdRight = new THREE.Vector3();
-const _wasdFlatForward = new THREE.Vector3();
-const _wasdWorldUp = new THREE.Vector3(0, 1, 0);
-
 // Follow distance: how many units the camera sits behind/above the character.
 // OrbitControls manages the actual angle — we just enforce the radial distance.
 const FPS_FOLLOW_DISTANCE = 80;
@@ -211,18 +205,20 @@ function WASDCameraController({
     dz = (dz / len) * CAM_PAN_SPEED * delta;
 
     const camera = controls.object;
-    // Full 3D forward direction (includes Y for swimming up/down) — reuse scratch vectors
-    camera.getWorldDirection(_wasdForward);
-    _wasdForward.normalize();
+    // Full 3D forward direction (includes Y for swimming up/down)
+    const forward = new THREE.Vector3();
+    camera.getWorldDirection(forward);
+    forward.normalize();
 
     // Right vector is always horizontal (cross forward with world up)
-    _wasdFlatForward.set(_wasdForward.x, 0, _wasdForward.z).normalize();
-    _wasdRight.crossVectors(_wasdFlatForward, _wasdWorldUp).normalize();
+    const right = new THREE.Vector3();
+    const flatForward = new THREE.Vector3(forward.x, 0, forward.z).normalize();
+    right.crossVectors(flatForward, new THREE.Vector3(0, 1, 0)).normalize();
 
     // Move in full 3D: W/S along camera direction (incl. Y), A/D strafe horizontal
-    const moveX = _wasdRight.x * dx + _wasdForward.x * dz;
-    const moveY = _wasdForward.y * dz; // swim up/down when looking up/down
-    const moveZ = _wasdRight.z * dx + _wasdForward.z * dz;
+    const moveX = right.x * dx + forward.x * dz;
+    const moveY = forward.y * dz; // swim up/down when looking up/down
+    const moveZ = right.z * dx + forward.z * dz;
 
     const target = controls.target;
     target.x = Math.max(-HALF_W, Math.min(HALF_W, target.x + moveX));
@@ -324,8 +320,6 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
   return (
     <>
       {/* Camera controls */}
-      {/* OrbitControls target at z=-50 centres on the middle building row (z=-64)
-          so the initial overview shows all 3 rows symmetrically */}
       <OrbitControls
         ref={controlsRef}
         makeDefault
@@ -333,9 +327,9 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
         enableZoom={true}
         enableRotate={true}
         minDistance={followMode ? 20 : 80}
-        maxDistance={1200}
+        maxDistance={800}
         maxPolarAngle={Math.PI * 0.85}
-        target={[0, 10, -50]}
+        target={[0, 10, 0]}
       />
 
       {/* Camera controller routing based on controlMode:
@@ -351,12 +345,11 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       )}
       <ArrowKeyRotationController controlsRef={controlsRef} />
 
-      {/* Underwater lighting — warm caustic tones with strong contrast.
-          3 lights max for Intel Iris Xe budget:
-          hemisphereLight already provides ambient sky/ground fill → no separate ambientLight needed */}
-      <hemisphereLight args={[0x66bbdd, 0x223344, 1.8]} />
+      {/* Underwater lighting — warm caustic tones with strong contrast */}
+      <hemisphereLight args={[0x66bbdd, 0x223344, 1.5]} />
+      <ambientLight intensity={0.4} color={0x88ccee} />
       <directionalLight position={[150, 350, 80]} intensity={2.0} color={0xffeedd} />
-      {/* Secondary fill from opposite side for depth */}
+      {/* Secondary fill light from opposite side for depth */}
       <directionalLight position={[-100, 200, -60]} intensity={0.5} color={0x88aacc} />
 
       {/* Underwater fog — pushed back for better visibility */}
@@ -490,10 +483,7 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
           fov: 50,
           near: 1,
           far: 2000,
-          // Game mode: pull camera back to z=450 so all 3 building rows (z=-288 to z=192)
-          // are visible in the initial view. Row 3 sits at z=192, which was behind the
-          // old camera position of z=150.
-          position: mode === 'game' ? [0, 200, 450] : [0, 200, 350],
+          position: mode === 'game' ? [0, 80, 150] : [0, 200, 350],
         }}
         onCreated={({ scene, gl }) => {
           scene.background = SKY_COLOR;
