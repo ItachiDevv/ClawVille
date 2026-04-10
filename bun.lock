@@ -5,6 +5,8 @@
     "": {
       "name": "clawville",
       "dependencies": {
+        "@clawville/database": "workspace:*",
+        "@clawville/shared": "workspace:*",
         "pg": "^8.17.2",
         "three-stdlib": "^2.36.1",
       },
