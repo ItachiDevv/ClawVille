@@ -16,8 +16,12 @@ import {
 } from '@clawville/shared';
 import { generateNpcConversation, generateOpenClawConversation } from './npc-conversation-engine';
 import { findPath, type PathNode } from './pathfinding';
-import { PetAutonomyManager } from './pet-autonomy';
+import { PetSimulationBridge } from './pet-simulation-bridge';
 import { memoryService } from './memory-service';
+import {
+  getCollaborationBroker,
+  type CollaborationLogEntry,
+} from '@clawville/agent-runtime';
 import type { OpenClawClient } from './openclaw-client';
 
 // Map dimensions from tilemap-data
@@ -126,6 +130,7 @@ export interface SimulationSnapshot {
   browserClaws: BrowserClawSnapshot[];
   arenaRound: ArenaRoundState | null;
   arenaSettings: ArenaSettings;
+  collaborationEvents: CollaborationLogEntry[];
   timestamp: number;
 }
 
@@ -150,7 +155,7 @@ class NpcSimulation {
   private combatCooldown = 0;
   private idCounter = 0;
   private pendingEvents: SimulationEvent[] = [];
-  public petAutonomyManager = new PetAutonomyManager();
+  public petAutonomyManager = new PetSimulationBridge();
   private arenaSettings: ArenaSettings = { ...DEFAULT_ARENA_SETTINGS };
   private arenaRound: ArenaRoundState | null = null;
 
@@ -223,6 +228,11 @@ class NpcSimulation {
   addListener(listener: SSEListener) { this.listeners.add(listener); }
   removeListener(listener: SSEListener) { this.listeners.delete(listener); }
 
+  /**
+   * Read-only snapshot — safe for non-broadcast callers (pet chat context,
+   * agent gateway perception, REST /api/npc/state, etc.). Does NOT drain
+   * the collaboration broker queue; collaborationEvents is always empty.
+   */
   getSnapshot(): SimulationSnapshot {
     return {
       npcs: Array.from(this.npcs.values()),
@@ -233,8 +243,23 @@ class NpcSimulation {
       browserClaws: this.getBrowserClawSnapshots(),
       arenaRound: this.arenaRound ? { ...this.arenaRound } : null,
       arenaSettings: { ...this.arenaSettings },
+      collaborationEvents: [],
       timestamp: Date.now(),
     };
+  }
+
+  /**
+   * Snapshot + drain the broker queue. Call ONLY from SSE broadcast —
+   * drained entries are consumed and won't appear in any subsequent
+   * snapshot. If no SSE listeners are connected, entries are preserved
+   * so late-connecting clients can still see recent collaboration.
+   */
+  private buildBroadcastSnapshot(): SimulationSnapshot {
+    const snapshot = this.getSnapshot();
+    if (this.listeners.size > 0) {
+      snapshot.collaborationEvents = getCollaborationBroker().drainLogEntries();
+    }
+    return snapshot;
   }
 
   private initNpcs() {
@@ -539,7 +564,7 @@ class NpcSimulation {
       this.sweepOrphanedCombatFlags();
     }
 
-    // Autonomous pet behavior (world mode only)
+    // Autonomous pet behavior (world mode only) — Phase 2: via SimulationRuntime
     if (!this.arenaMode) {
       this.petAutonomyManager.tick();
     }
@@ -1227,7 +1252,10 @@ class NpcSimulation {
   }
 
   private broadcast() {
-    const snapshot = this.getSnapshot();
+    // Use the broadcast-specific snapshot that drains the collaboration
+    // broker queue. Non-broadcast callers (pet chat, agent gateway, REST)
+    // must NOT call this method to avoid losing collab events.
+    const snapshot = this.buildBroadcastSnapshot();
     for (const listener of this.listeners) {
       try {
         listener(snapshot);

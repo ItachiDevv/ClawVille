@@ -4,6 +4,7 @@ import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
 import type { AppContext } from '../types';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
+import { creditNeoTokens, debitNeoTokens } from '../services/neo-token-ledger';
 import {
   db,
   pets,
@@ -121,14 +122,19 @@ class AuctionResolver {
               const platformFee = Math.floor(price * 0.15);
               const sellerPayout = price - platformFee;
 
-              // Pay seller (bid was already escrowed from winner)
-              await db
-                .update(pets)
-                .set({
-                  neoTokens: sellerPet.neoTokens + sellerPayout,
-                  updatedAt: new Date(),
-                })
-                .where(eq(pets.id, sellerPet.id));
+              // Pay seller (bid was already escrowed from winner on place-bid)
+              await creditNeoTokens({
+                petId: sellerPet.id,
+                amount: sellerPayout,
+                reason: 'auction_settled',
+                source: 'api',
+                metadata: {
+                  auctionId: auction.id,
+                  winnerId: winnerPet.id,
+                  price,
+                  platformFee,
+                },
+              });
 
               // Transfer skill to winner's inventory if skill type
               if (auction.itemType === 'skill' && auction.skillId) {
@@ -743,29 +749,23 @@ auctionRoutes.post('/:id/bid', requireAuth, async (c) => {
   }
 
   // 5. Deduct bid amount from bidder (escrow)
-  await db
-    .update(pets)
-    .set({
-      neoTokens: bidderPet.neoTokens - amount,
-      updatedAt: new Date(),
-    })
-    .where(eq(pets.id, bidderPet.id));
+  await debitNeoTokens({
+    petId: bidderPet.id,
+    amount,
+    reason: 'auction_bid_escrow',
+    source: 'api',
+    metadata: { auctionId: id },
+  });
 
   // 6. Refund previous bidder if there was one
   if (auction.currentBidderId && auction.currentBid) {
-    const previousBidder = await db.query.pets.findFirst({
-      where: eq(pets.id, auction.currentBidderId),
+    await creditNeoTokens({
+      petId: auction.currentBidderId,
+      amount: auction.currentBid,
+      reason: 'auction_bid_refund',
+      source: 'api',
+      metadata: { auctionId: id, outbidBy: bidderPet.id },
     });
-
-    if (previousBidder) {
-      await db
-        .update(pets)
-        .set({
-          neoTokens: previousBidder.neoTokens + auction.currentBid,
-          updatedAt: new Date(),
-        })
-        .where(eq(pets.id, previousBidder.id));
-    }
   }
 
   // 7. SNIPE PROTECTION: If bid within 30s of endsAt, extend by 30s
@@ -894,49 +894,36 @@ auctionRoutes.post('/:id/buy-now', requireAuth, async (c) => {
   }
 
   // 6. Deduct buy-now price from buyer
-  const [updatedBuyer] = await db
-    .update(pets)
-    .set({
-      neoTokens: buyerPet.neoTokens - price,
-      updatedAt: new Date(),
-    })
-    .where(eq(pets.id, buyerPet.id))
-    .returning();
+  const { balanceAfter: buyerBalance } = await debitNeoTokens({
+    petId: buyerPet.id,
+    amount: price,
+    reason: 'auction_buy_now',
+    source: 'api',
+    metadata: { auctionId: id, sellerId: auction.sellerId },
+  });
 
   // 7. Refund previous bidder's escrowed bid if any
   if (auction.currentBidderId && auction.currentBid) {
-    const previousBidder = await db.query.pets.findFirst({
-      where: eq(pets.id, auction.currentBidderId),
+    await creditNeoTokens({
+      petId: auction.currentBidderId,
+      amount: auction.currentBid,
+      reason: 'auction_bid_refund',
+      source: 'api',
+      metadata: { auctionId: id, outbidBy: buyerPet.id, reason: 'buy_now' },
     });
-
-    if (previousBidder) {
-      await db
-        .update(pets)
-        .set({
-          neoTokens: previousBidder.neoTokens + auction.currentBid,
-          updatedAt: new Date(),
-        })
-        .where(eq(pets.id, previousBidder.id));
-    }
   }
 
   // 8. Pay seller (85% of buyNowPrice)
   const platformFee = Math.floor(price * 0.15);
   const sellerPayout = price - platformFee;
 
-  const sellerPet = await db.query.pets.findFirst({
-    where: eq(pets.id, auction.sellerId),
+  await creditNeoTokens({
+    petId: auction.sellerId,
+    amount: sellerPayout,
+    reason: 'auction_buy_now_settled',
+    source: 'api',
+    metadata: { auctionId: id, buyerId: buyerPet.id, price, platformFee },
   });
-
-  if (sellerPet) {
-    await db
-      .update(pets)
-      .set({
-        neoTokens: sellerPet.neoTokens + sellerPayout,
-        updatedAt: new Date(),
-      })
-      .where(eq(pets.id, sellerPet.id));
-  }
 
   // 9. Mark auction as resolved
   await db
@@ -998,7 +985,7 @@ auctionRoutes.post('/:id/buy-now', requireAuth, async (c) => {
     price,
     platformFee,
     sellerPayout,
-    neoTokens: updatedBuyer.neoTokens,
+    neoTokens: buyerBalance,
   });
 });
 

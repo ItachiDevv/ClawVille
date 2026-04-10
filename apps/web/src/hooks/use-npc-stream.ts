@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { useNpcStore } from '@/stores/npc';
+import { useResearchStore } from '@/stores/research';
 
 const NPC_API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
 const MAX_RETRIES = 3;
@@ -10,6 +11,7 @@ const RETRY_DELAY = 5000;
 export function useNpcStream() {
   const updateFromSnapshot = useNpcStore((s) => s.updateFromSnapshot);
   const setConnected = useNpcStore((s) => s.setConnected);
+  const addCollaborationEntries = useResearchStore((s) => s.addCollaborationEntries);
   const retriesRef = useRef(0);
 
   useEffect(() => {
@@ -23,15 +25,33 @@ export function useNpcStream() {
       const url = `${NPC_API_URL}/api/npc/stream`;
       es = new EventSource(url);
 
+      // Reset retry counter on successful open rather than on first snapshot —
+      // transient connect errors that fire before any event arrived would
+      // otherwise deplete the retry budget prematurely.
+      es.addEventListener('open', () => {
+        retriesRef.current = 0;
+        setConnected(true);
+      });
+
       es.addEventListener('snapshot', (event) => {
         try {
-          retriesRef.current = 0;
           const snapshot = JSON.parse(event.data);
+          // Mark connected whenever any valid snapshot arrives — not gated
+          // on npcs.length. A collab-only snapshot still means the stream
+          // is alive.
+          setConnected(true);
           if (snapshot.npcs?.length > 0) {
-            setConnected(true);
             updateFromSnapshot(snapshot);
           }
-        } catch { /* ignore parse errors */ }
+          // Phase 3: drain collaboration events into the research store
+          if (Array.isArray(snapshot.collaborationEvents) && snapshot.collaborationEvents.length > 0) {
+            addCollaborationEntries(snapshot.collaborationEvents);
+          }
+        } catch (err) {
+          if (process.env.NODE_ENV !== 'production') {
+            console.warn('[useNpcStream] snapshot parse/dispatch failed', err);
+          }
+        }
       });
 
       es.onerror = () => {
@@ -53,5 +73,5 @@ export function useNpcStream() {
       if (retryTimeout) clearTimeout(retryTimeout);
       setConnected(false);
     };
-  }, [updateFromSnapshot, setConnected]);
+  }, [updateFromSnapshot, setConnected, addCollaborationEntries]);
 }

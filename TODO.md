@@ -6,6 +6,75 @@
 - Production URL: https://web-production-58aa7.up.railway.app/game
 - API URL: https://api-production-e9f2.up.railway.app
 
+---
+
+## Cross-chain (deferred work)
+
+All cross-chain and on-chain work lives here until Hetzner/Coolify cutover is done. Each sub-section is independent — they can ship in any order.
+
+### x402 middleware activation (Solana-first)
+Phase 4 shipped the audit ledger + treasury keypair infra. This activates the actual HTTP 402 paywall on agent-facing endpoints.
+
+**Ready to activate (libs + infra exist):**
+- `@x402/hono@2.9.0` verified to support Solana via `SchemeRegistration { network: 'solana:mainnet' }`
+- `@x402/svm@2.9.0` exports `ExactSvmScheme` + `registerExactSvmScheme()` helper
+- `@x402/core@2.9.0` provides `x402ResourceServer`, `HTTPFacilitatorClient`
+- `treasury_wallets` table exists — run `bun run scripts/generate-treasury-keypair.ts x402-merchant "Phase 4 prod"` post-deploy
+- Existing `keypair-vault.ts` handles AES-256-GCM encryption for the merchant secret
+
+**Tasks:**
+- [ ] Post-Hetzner deploy: run `generate-treasury-keypair.ts` to populate a merchant wallet in treasury_wallets
+- [ ] Add `CLAWVILLE_MERCHANT_WALLET_PUBKEY` env var to Hetzner/Coolify config
+- [ ] Add deps: `@x402/hono`, `@x402/svm`, `@x402/core` to `apps/api/package.json`
+- [ ] Note: `@x402/svm` uses `@solana-program/token` (Web3.js v2) while `keypair-vault.ts` uses `@solana/web3.js@1.x` — either coexist or migrate vault to v2
+- [ ] Write `apps/api/src/services/x402-config.ts` — facilitator URL, prices, merchant address lookup
+- [ ] Write `apps/api/src/middleware/x402-solana.ts` — wraps `paymentMiddlewareFromConfig` with `ExactSvmScheme`
+- [ ] Wire middleware onto new `/api/v2/agent/*` routes (consult, knowledge export, simulation status)
+- [ ] Decision point: free tier limit (e.g. 3 consults/IP/day) vs hard 402 from first request
+- [ ] Verify CDP facilitator URL for Solana mainnet (check https://docs.cdp.coinbase.com/x402/welcome)
+
+### BSC migration
+User has partnerships and networks on BSC — first-class chain target alongside Solana.
+
+**Tasks:**
+- [ ] Decide: BEP-20 NeoToken mirror or x402 on BSC or both?
+- [ ] Add `@solana-program` equivalent for BSC (viem or ethers)
+- [ ] Duplicate treasury_wallets pattern for EVM keypairs (different encryption scheme — key storage format differs from Solana)
+- [ ] x402 on BSC: register `ExactEvmScheme` with `network: 'eip155:56'` (BSC mainnet chain ID)
+- [ ] Wallet custody for BSC funds — same cold-wallet pattern
+- [ ] BSC USDC or BSC-USD (USDT) or custom token — decide default settlement asset
+- [ ] Frontend: wallet connect for users with BSC wallets (Trust Wallet, MetaMask)
+
+### Base migration
+Base has the strongest agent ecosystem (ERC-8004, x402 default, Coinbase CDP). Good second EVM chain after BSC.
+
+**Tasks:**
+- [ ] Add Base as a third network alongside Solana + BSC
+- [ ] x402 on Base: `network: 'eip155:8453'`, USDC at `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`
+- [ ] Coinbase CDP facilitator + Base Paymaster for gasless user UX
+- [ ] Evaluate ERC-8004 canonical deployment on Base (Basescan lookup — may need to deploy our own fork)
+
+### Pet Identity NFTs (Phase 5 candidate — Solana first)
+**Tasks:**
+- [ ] Mint each pet as a Metaplex Core NFT or cNFT on Solana (cheap, ~$0.00005/mint via cNFTs)
+- [ ] `pets.walletAddress` column + Transfer event indexer
+- [ ] Dynamic metadata endpoint `/api/pets/:id/metadata.json`
+- [ ] BSC/Base: ERC-721 mint, ERC-8004 Identity Registry integration
+- [ ] Decision: custodial (keypair-vault) vs embedded wallet (Privy)
+
+### Pet Token Launches (Phase 5 candidate — Solana first, schema already exists)
+**Already done:** Schema (`vanityKeypairs`, `tokenLaunches`), encryption, keypair import CLI, docs at `docs/agent-token-launch-research.md`
+
+**Tasks:**
+- [ ] Wire POST `/api/tokens/launch/:petId` endpoint
+- [ ] Pump.fun integration — bonding curve interaction, SOL transfer, mint flow
+- [ ] Raydium LaunchLab integration (alternative platform)
+- [ ] Status polling for graduation
+- [ ] BSC: PancakeSwap launchpad equivalent
+- [ ] Base: Base memecoin launchpads (Zora, Uniswap V4)
+
+---
+
 ## Current State
 - WebGPU renderer active with WebGL2 fallback ✅
 - GLB model buildings (SpongeBob style: Krusty Krab, Pineapple, Patrick's Rock, etc.) ✅

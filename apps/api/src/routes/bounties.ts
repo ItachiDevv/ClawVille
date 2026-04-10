@@ -3,6 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import type { AppContext } from '../types';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
+import { creditNeoTokens, debitNeoTokens } from '../services/neo-token-ledger';
 import {
   db,
   pets,
@@ -312,14 +313,14 @@ bountyRoutes.post('/create', requireAuth, async (c) => {
     }
   }
 
-  // ESCROW: Deduct tokenReward from creator
-  await db
-    .update(pets)
-    .set({
-      neoTokens: pet.neoTokens - data.tokenReward,
-      updatedAt: new Date(),
-    })
-    .where(eq(pets.id, pet.id));
+  // ESCROW: Deduct tokenReward from creator (atomic + audited)
+  await debitNeoTokens({
+    petId: pet.id,
+    amount: data.tokenReward,
+    reason: 'bounty_escrow',
+    source: 'bounty',
+    metadata: { bountyTitle: data.title },
+  });
 
   // Create bounty
   const [bounty] = await db
@@ -390,6 +391,8 @@ bountyRoutes.post('/create', requireAuth, async (c) => {
       expiresAt: bounty.expiresAt?.toISOString() ?? null,
       createdAt: bounty.createdAt.toISOString(),
     },
+    // The debitNeoTokens call above already updated the balance — recompute
+    // the display value from pet.neoTokens (stale read) minus the debit
     neoTokens: pet.neoTokens - data.tokenReward,
   });
 });
@@ -509,13 +512,14 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuth, async (c) => {
       throw new HTTPException(500, { message: 'Hunter pet not found' });
     }
 
-    await db
-      .update(pets)
-      .set({
-        neoTokens: hunterPet.neoTokens + bounty.tokenReward,
-        updatedAt: now,
-      })
-      .where(eq(pets.id, hunterPet.id));
+    // Release escrowed tokenReward to hunter (atomic + audited)
+    await creditNeoTokens({
+      petId: hunterPet.id,
+      amount: bounty.tokenReward,
+      reason: 'bounty_reward',
+      source: 'bounty',
+      metadata: { bountyId: bounty.id, attemptId: attempt.id },
+    });
 
     // 3. Transfer bonus rewards to hunter
     const rewards = await db
@@ -1097,14 +1101,14 @@ bountyRoutes.delete('/:id', requireAuth, async (c) => {
     });
   }
 
-  // ESCROW REFUND: Return escrowed tokens to creator
-  await db
-    .update(pets)
-    .set({
-      neoTokens: pet.neoTokens + bounty.tokenReward,
-      updatedAt: new Date(),
-    })
-    .where(eq(pets.id, pet.id));
+  // ESCROW REFUND: Return escrowed tokens to creator (atomic + audited)
+  const { balanceAfter: refundedBalance } = await creditNeoTokens({
+    petId: pet.id,
+    amount: bounty.tokenReward,
+    reason: 'bounty_cancelled_refund',
+    source: 'bounty',
+    metadata: { bountyId: bounty.id },
+  });
 
   // Mark bounty as cancelled
   await db
@@ -1116,7 +1120,7 @@ bountyRoutes.delete('/:id', requireAuth, async (c) => {
     success: true,
     message: 'Bounty cancelled and tokens refunded',
     refunded: bounty.tokenReward,
-    neoTokens: pet.neoTokens + bounty.tokenReward,
+    neoTokens: refundedBalance,
   });
 });
 
