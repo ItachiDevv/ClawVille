@@ -9,7 +9,7 @@ export default function ControlModeToggle() {
   const toggleControlMode = useGameStore((s: GameState) => s.toggleControlMode);
 
   // Determine the two option labels and which is active
-  const optionA = hasAgent ? 'Manual' : 'Explore';
+  const optionA = hasAgent ? 'Play' : 'Explore';
   const optionB = hasAgent ? 'Autonomous' : 'NPC Mode';
 
   const aActive = hasAgent
