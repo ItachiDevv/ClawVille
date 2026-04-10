@@ -324,16 +324,49 @@ avatarRoutes.post('/me/heartbeat', requireAuth, async (c) => {
     throw new HTTPException(400, { message: 'Invalid position' });
   }
 
+  const positionX = Math.round(result.data.positionX);
+  const positionY = Math.round(result.data.positionY);
+
   // Update position + lastActiveAt in DB (fire and forget)
   db.update(avatars)
     .set({
-      positionX: Math.round(result.data.positionX),
-      positionY: Math.round(result.data.positionY),
+      positionX,
+      positionY,
       lastActiveAt: new Date(),
       updatedAt: new Date(),
     })
     .where(and(eq(avatars.userId, user.id), eq(avatars.isActive, true)))
     .catch(() => {});
+
+  // Phase 2: Ensure avatar is registered in the simulation bridge and
+  // report user activity so the avatar snaps back to user control.
+  const bridge = npcSimulation.petAutonomyManager;
+  if (!bridge.isRegistered(user.id)) {
+    // Lazy-load avatar data on first heartbeat (fire-and-forget)
+    db.query.avatars
+      .findFirst({
+        where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
+      })
+      .then((avatar) => {
+        if (!avatar) return;
+        bridge.register({
+          avatarId: avatar.id,
+          userId: user.id,
+          name: avatar.name,
+          species: avatar.species,
+          color: avatar.color,
+          archetype: avatar.archetype ?? 'curious',
+          positionX,
+          positionY,
+        });
+        bridge.reportUserActivity(user.id, positionX, positionY);
+      })
+      .catch((err) => {
+        console.error('[heartbeat] bridge register failed:', err);
+      });
+  } else {
+    bridge.reportUserActivity(user.id, positionX, positionY);
+  }
 
   return c.json({ ok: true });
 });
