@@ -89,6 +89,39 @@ console.log(`Starting ClawVille API on port ${port}...`);
 const arenaMode = process.env.NPC_ARENA_MODE === 'true';
 startSimulation(arenaMode);
 
+// Graceful shutdown — clean up the many long-lived runtimes and intervals
+// we accumulate across Phase 1/2/3. Without this, Hetzner/Coolify SIGTERM
+// leaks 10+ ElizaRuntime instances, their DB pools, and the broker/registry
+// setIntervals on every container restart.
+let shuttingDown = false;
+async function gracefulShutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[API] Received ${signal}, shutting down gracefully...`);
+
+  try {
+    // Import inside the handler so a failed import doesn't crash startup
+    const { stopSimulation, npcSimulation } = await import('./services/npc-simulation');
+    const { agentOrchestrator } = await import('./services/agent-orchestrator');
+    const { getCollaborationBroker } = await import('@clawville/agent-runtime');
+
+    stopSimulation();
+    await Promise.allSettled([
+      npcSimulation.petAutonomyManager.shutdown(),
+      getCollaborationBroker().shutdown(),
+      agentOrchestrator.shutdown(),
+    ]);
+    console.log('[API] Shutdown complete.');
+  } catch (err) {
+    console.error('[API] Shutdown error:', err);
+  } finally {
+    process.exit(0);
+  }
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
 export default {
   port,
   fetch: app.fetch,

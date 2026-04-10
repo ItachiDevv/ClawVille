@@ -33,28 +33,21 @@ import {
   NPC_BUILDING_CENTERS,
   BUILDING_ACTIVITIES,
   ACTIVITY_EMOJIS,
-  type NpcActivity,
 } from '@clawville/shared';
 import { db, avatars, activityLog } from '@clawville/database';
 import { sql } from 'drizzle-orm';
 
 import { findPath } from './pathfinding';
 
-/**
- * Convert shared's NpcActivity union into the ActivityEmojis map shape
- * expected by SimulationRuntime. Both types are structurally identical
- * — we just re-key to satisfy the strict agent-runtime type (which
- * mirrors the same union locally to avoid cross-package runtime deps).
- */
-const ACTIVITY_EMOJIS_TYPED: Record<NpcActivity, string> = ACTIVITY_EMOJIS;
-const BUILDING_ACTIVITIES_TYPED: Record<string, NpcActivity[]> = BUILDING_ACTIVITIES;
-
+// Single source of truth — agent-runtime re-exports NpcActivity from shared,
+// so these constants type-check without casting.
 const VISIT_CHAT_COOLDOWN_MS = 30_000;
+const IDLE_UNREGISTER_MS = 30 * 60 * 1000; // 30 min — auto-cleanup abandoned avatars
 
 export class PetSimulationBridge {
   private stateStore: AvatarStateStore;
   private runtime: SimulationRuntime | null = null;
-  private runtimeStartPromise: Promise<void> | null = null;
+  private runtimeReady = false;
 
   constructor() {
     this.stateStore = new AvatarStateStore();
@@ -67,8 +60,8 @@ export class PetSimulationBridge {
     this.runtime = new SimulationRuntime({
       stateStore: this.stateStore,
       buildingCenters: NPC_BUILDING_CENTERS,
-      buildingActivities: BUILDING_ACTIVITIES_TYPED as any,
-      activityEmojis: ACTIVITY_EMOJIS_TYPED as any,
+      buildingActivities: BUILDING_ACTIVITIES,
+      activityEmojis: ACTIVITY_EMOJIS,
       pathfind: findPath,
       dbHooks: {
         awardToken: async (avatarId: string) => {
@@ -91,16 +84,27 @@ export class PetSimulationBridge {
       databaseUrl: process.env.DATABASE_URL,
       apiKeys: {
         anthropic: process.env.ANTHROPIC_API_KEY,
-        openai: process.env.OPENAI_API_KEY,
+        gemini: process.env.GEMINI_API_KEY,
       },
     });
 
-    // Fire-and-forget startup; tick() will wait for this via runtimeStartPromise
-    this.runtimeStartPromise = this.runtime.start().catch((err) => {
-      console.error('[PetSimBridge] SimulationRuntime start failed:', err);
-      this.runtime = null;
-      this.runtimeStartPromise = null;
-    });
+    // Fire-and-forget startup; tick() guards on runtimeReady before touching
+    // the runtime. On failure, we clear everything so the next register()
+    // triggers a fresh cold-start.
+    this.runtime
+      .start()
+      .then(() => {
+        this.runtimeReady = true;
+      })
+      .catch((err) => {
+        console.error('[PetSimBridge] SimulationRuntime start failed:', err);
+        this.runtime = null;
+        this.runtimeReady = false;
+        // Clear state store so SSE doesn't show stale avatars during a degraded state
+        for (const avatar of this.stateStore.all()) {
+          this.stateStore.unregister(avatar.userId);
+        }
+      });
   }
 
   isRegistered(userId: string): boolean {
@@ -128,17 +132,26 @@ export class PetSimulationBridge {
    * Called every 500ms from npc-simulation.tick().
    *
    * Per-avatar flow:
-   *   1. Pure movement step if walking
-   *   2. Check activity transitions (arrival / expiration)
-   *   3. On arrival: dispatch AVATAR_VISIT_BUILDING via runtime
-   *   4. On idle + cooldown elapsed: plan next action via runtime LLM
+   *   1. Unregister abandoned avatars (no heartbeat for IDLE_UNREGISTER_MS)
+   *   2. Pure movement step if walking
+   *   3. Check activity transitions (arrival / expiration)
+   *   4. On arrival: dispatch AVATAR_VISIT_BUILDING via runtime
+   *   5. On idle + cooldown elapsed: plan next action via runtime LLM
    */
   tick(): void {
-    if (!this.runtime) return;
+    if (!this.runtime || !this.runtimeReady) return;
 
     const now = Date.now();
 
-    // Activate any avatars that just crossed the idle threshold
+    // 0. Sweep abandoned avatars — prevents unbounded growth of the state store
+    for (const avatar of this.stateStore.all()) {
+      if (now - avatar.lastUserInputAt > IDLE_UNREGISTER_MS) {
+        console.log(`[PetSimBridge] Unregistering abandoned avatar ${avatar.name} (${avatar.userId})`);
+        this.stateStore.unregister(avatar.userId);
+      }
+    }
+
+    // 1. Activate any avatars that just crossed the idle threshold
     activateIdlePets(this.stateStore, now);
 
     for (const avatar of this.stateStore.all()) {
@@ -148,16 +161,23 @@ export class PetSimulationBridge {
       stepMovement(avatar);
 
       // 2. Check transitions
-      const transition = handleActivityTransition(avatar, now, ACTIVITY_EMOJIS_TYPED as any);
+      const transition = handleActivityTransition(avatar, now, ACTIVITY_EMOJIS);
 
       if (transition === 'arrived') {
-        // Arrived at destination building — dispatch AVATAR_VISIT_BUILDING
+        // Clear arrival state IMMEDIATELY so the next tick doesn't see the
+        // same "arrived" condition and fire AVATAR_VISIT_BUILDING twice while
+        // the first dispatch is still in flight (fire-and-forget).
+        const destinationId = avatar.destinationBuildingId;
+        avatar.path = [];
+        avatar.pathIndex = 0;
+
+        // Dispatch AVATAR_VISIT_BUILDING (the action will set activity to a
+        // building-themed one and pick an activityEndsAt timer)
         this.runtime
           .dispatchAction({ action: 'AVATAR_VISIT_BUILDING', userId: avatar.userId })
           .catch((err) => console.error('[PetSimBridge] AVATAR_VISIT_BUILDING dispatch failed:', err));
 
         // Generate a visit chat line (throttled) via runtime
-        const destinationId = avatar.destinationBuildingId;
         if (destinationId && now - avatar.lastChatAt > VISIT_CHAT_COOLDOWN_MS) {
           avatar.lastChatAt = now;
           this.runtime
@@ -174,6 +194,9 @@ export class PetSimulationBridge {
       }
 
       if (transition === 'home') {
+        // Clear arrival state before dispatch (same reason as above)
+        avatar.path = [];
+        avatar.pathIndex = 0;
         // Arrived home — go to sleep
         this.runtime
           .dispatchAction({ action: 'AVATAR_SLEEP', userId: avatar.userId })

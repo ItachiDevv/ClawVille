@@ -56,6 +56,7 @@ export class BuildingRuntimeRegistry {
   private startingPromises: Map<string, Promise<ElizaRuntime | null>> = new Map();
   private inactivityInterval: ReturnType<typeof setInterval> | null = null;
   private config: BuildingRuntimeRegistryConfig;
+  private shuttingDown = false;
 
   constructor(config: BuildingRuntimeRegistryConfig = {}) {
     this.config = config;
@@ -65,6 +66,11 @@ export class BuildingRuntimeRegistry {
         console.error('[BuildingRegistry] stopInactive failed:', err),
       );
     }, INACTIVITY_CHECK_INTERVAL_MS);
+
+    // Let Node exit cleanly even if shutdown() isn't called explicitly
+    if (typeof (this.inactivityInterval as any).unref === 'function') {
+      (this.inactivityInterval as any).unref();
+    }
   }
 
   /**
@@ -72,6 +78,9 @@ export class BuildingRuntimeRegistry {
    * the warm runtime or null on startup failure.
    */
   async ensure(buildingId: string): Promise<ElizaRuntime | null> {
+    // Refuse new cold-starts during shutdown — prevents zombie runtimes
+    if (this.shuttingDown) return null;
+
     // Already warm — bump activity and return
     const existing = this.runtimes.get(buildingId);
     if (existing) {
@@ -131,11 +140,22 @@ export class BuildingRuntimeRegistry {
   /**
    * Stop all warm runtimes and clear the cleanup interval.
    * Call on API server shutdown.
+   *
+   * Awaits any in-flight cold-starts before stopping, so we don't leave
+   * zombie runtimes behind when a cold-start resolves after shutdown.
    */
   async shutdown(): Promise<void> {
+    this.shuttingDown = true;
+
     if (this.inactivityInterval) {
       clearInterval(this.inactivityInterval);
       this.inactivityInterval = null;
+    }
+
+    // Wait for any in-flight cold-starts to resolve so they land in
+    // this.runtimes (or fail) before we iterate.
+    if (this.startingPromises.size > 0) {
+      await Promise.allSettled(Array.from(this.startingPromises.values()));
     }
 
     const stops: Promise<void>[] = [];
@@ -166,6 +186,14 @@ export class BuildingRuntimeRegistry {
       });
 
       await runtime.start();
+
+      // If shutdown fired while we were starting, immediately stop the
+      // newly-warm runtime instead of leaving it orphaned
+      if (this.shuttingDown) {
+        console.log(`[BuildingRegistry] Cold-start completed during shutdown, stopping ${buildingId}`);
+        await runtime.stop().catch(() => {});
+        return null;
+      }
 
       this.runtimes.set(buildingId, {
         runtime,

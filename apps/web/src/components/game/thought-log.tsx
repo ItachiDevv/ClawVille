@@ -28,17 +28,14 @@ const COLLAB_TYPE_CONFIG: Record<
 };
 
 function formatTime(iso: string): string {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleTimeString('en-US', {
-      hour12: false,
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
-  } catch {
-    return '--:--:--';
-  }
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '--:--:--';
+  return d.toLocaleTimeString('en-US', {
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
 }
 
 interface UnifiedEntry {
@@ -72,36 +69,41 @@ export default function ThoughtLog() {
     progress,
     toggleMinimize,
     setThoughtLogOpen,
-    clearThoughts,
+    clearThoughtEntries,
     clearCollaborationEntries,
   } = useResearchStore();
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Build unified list based on active tab
+  // Build unified list based on active tab.
+  // Each slice is already append-order chronological, so we can skip sort
+  // on single-tab views. For 'all', we do a stable merge with insertion-order
+  // tiebreaker to preserve causal ordering when timestamps tie at ms precision.
   const unified = useMemo<UnifiedEntry[]>(() => {
     const entries: UnifiedEntry[] = [];
 
     if (activeTab === 'all' || activeTab === 'research') {
-      for (const t of thoughts) {
+      thoughts.forEach((t, idx) => {
         entries.push({
           id: `r-${t.id}`,
           kind: 'research',
           timestamp: t.timestamp,
-          sortKey: new Date(t.timestamp).getTime(),
+          // Multiply by 2 + 0 so research and collab share an interleaved
+          // secondary key when timestamps tie: research ties break research-first.
+          sortKey: new Date(t.timestamp).getTime() * 1000 + idx,
           phase: t.phase,
           message: t.message,
         });
-      }
+      });
     }
 
     if (activeTab === 'all' || activeTab === 'collaboration') {
-      for (const c of collaborationEntries) {
+      collaborationEntries.forEach((c, idx) => {
         entries.push({
           id: `c-${c.id}`,
           kind: 'collaboration',
           timestamp: c.timestamp,
-          sortKey: new Date(c.timestamp).getTime(),
+          sortKey: new Date(c.timestamp).getTime() * 1000 + idx + 500,
           collabType: c.type,
           sourceBuildingId: c.sourceBuildingId,
           targetBuildingId: c.targetBuildingId,
@@ -109,19 +111,26 @@ export default function ThoughtLog() {
           response: c.response,
           durationMs: c.durationMs,
         });
-      }
+      });
     }
 
-    entries.sort((a, b) => a.sortKey - b.sortKey);
+    // Skip the full sort when we're showing a single pre-sorted slice
+    if (activeTab === 'all') {
+      entries.sort((a, b) => a.sortKey - b.sortKey);
+    }
     return entries;
   }, [thoughts, collaborationEntries, activeTab]);
 
-  // Auto-scroll to bottom on new entries
+  // Auto-scroll to bottom only when the number of entries actually grows.
+  // Depending on [unified] directly would also fire on tab switches because
+  // the memo returns a fresh reference — this preserves user scroll position
+  // when switching tabs.
+  const unifiedLength = unified.length;
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [unified]);
+  }, [unifiedLength]);
 
   if (!thoughtLogOpen) return null;
 
@@ -147,7 +156,7 @@ export default function ThoughtLog() {
           </span>
         )}
         {totalEntries > 0 && (
-          <span className="ml-2 text-gray-500 font-mono text-xs">
+          <span className="ml-2 text-gray-500 font-mono text-xs tabular-nums">
             ({thoughts.length}R / {collaborationEntries.length}C)
           </span>
         )}
@@ -208,13 +217,13 @@ export default function ThoughtLog() {
           >
             _
           </button>
-          {/* Clear */}
+          {/* Clear — only clears entries, never cancels an active research run */}
           <button
             onClick={() => {
-              if (activeTab === 'research') clearThoughts();
+              if (activeTab === 'research') clearThoughtEntries();
               else if (activeTab === 'collaboration') clearCollaborationEntries();
               else {
-                clearThoughts();
+                clearThoughtEntries();
                 clearCollaborationEntries();
               }
             }}
@@ -253,11 +262,11 @@ export default function ThoughtLog() {
               const config = PHASE_CONFIG[entry.phase ?? 'idle'] ?? PHASE_CONFIG.idle;
               return (
                 <div key={entry.id} className="flex gap-2 py-0.5">
-                  <span className="text-gray-600 shrink-0">[{formatTime(entry.timestamp)}]</span>
+                  <span className="text-gray-600 shrink-0 tabular-nums">[{formatTime(entry.timestamp)}]</span>
                   <span className={`${config.color} shrink-0 w-14 text-right font-bold`}>
                     {config.label}
                   </span>
-                  <span className="text-gray-300">{entry.message}</span>
+                  <span className="text-gray-300 min-w-0 break-words">{entry.message}</span>
                 </div>
               );
             }
@@ -280,11 +289,11 @@ export default function ThoughtLog() {
 
             return (
               <div key={entry.id} className="flex gap-2 py-0.5">
-                <span className="text-gray-600 shrink-0">[{formatTime(entry.timestamp)}]</span>
+                <span className="text-gray-600 shrink-0 tabular-nums">[{formatTime(entry.timestamp)}]</span>
                 <span className={`${cfg.color} shrink-0 w-14 text-right font-bold`}>
                   {cfg.label}
                 </span>
-                <span className="text-gray-300">{body}</span>
+                <span className="text-gray-300 min-w-0 break-words">{body}</span>
               </div>
             );
           })
