@@ -20,6 +20,7 @@ import type { LocationTemplate } from '@clawville/agent-templates';
 import { loadLocationTemplate } from './character-loader';
 import { createOpenClawProviderPlugin, type OpenClawGatewayConfig } from './plugins/openclaw-provider';
 import { createUltrathinkProviderPlugin, type UltrathinkConfig } from './plugins/ultrathink-provider';
+import { createGeminiEmbeddingPlugin } from './plugins/gemini-embedding-provider';
 import { AGENT_THINKING_DEFAULTS } from '@clawville/shared';
 
 const ROOM_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
@@ -81,7 +82,8 @@ export interface ElizaRuntimeConfig {
   databaseUrl?: string;
   apiKeys?: {
     anthropic?: string;
-    openai?: string;
+    /** Gemini API key for TEXT_EMBEDDING (replaces openai). */
+    gemini?: string;
   };
   onMessage?: (message: ElizaMessage) => void | Promise<void>;
   onError?: (error: Error) => void | Promise<void>;
@@ -129,10 +131,11 @@ function convertToElizaCharacter(
     }))
   );
 
-  // v2: @elizaos/plugin-bootstrap is built into @elizaos/core — do NOT add it here
+  // v2: @elizaos/plugin-bootstrap is built into @elizaos/core — do NOT add it here.
+  // Embeddings are provided by our custom gemini-embedding-provider (prepended
+  // in loadPlugins), so plugin-openai is no longer needed.
   const plugins: string[] = [
     '@elizaos/plugin-anthropic',
-    '@elizaos/plugin-openai',
     '@elizaos/plugin-sql',
   ];
 
@@ -225,10 +228,11 @@ export class ElizaRuntime {
       }))
     );
 
-    // v2: @elizaos/plugin-bootstrap is built into @elizaos/core — do NOT add it here
+    // v2: @elizaos/plugin-bootstrap is built into @elizaos/core — do NOT add it here.
+    // Embeddings are provided by the prepended gemini-embedding-provider in
+    // loadPlugins, so plugin-openai is no longer needed.
     const plugins: string[] = [
       '@elizaos/plugin-anthropic',
-      '@elizaos/plugin-openai',
       '@elizaos/plugin-sql',
       '@elizaos/plugin-solana',
     ];
@@ -276,8 +280,8 @@ export class ElizaRuntime {
       if (this.config.apiKeys?.anthropic && !process.env.ANTHROPIC_API_KEY) {
         process.env.ANTHROPIC_API_KEY = this.config.apiKeys.anthropic;
       }
-      if (this.config.apiKeys?.openai && !process.env.OPENAI_API_KEY) {
-        process.env.OPENAI_API_KEY = this.config.apiKeys.openai;
+      if (this.config.apiKeys?.gemini && !process.env.GEMINI_API_KEY) {
+        process.env.GEMINI_API_KEY = this.config.apiKeys.gemini;
       }
       if (!process.env.PROVIDERS_TOTAL_TIMEOUT_MS) {
         process.env.PROVIDERS_TOTAL_TIMEOUT_MS = '60000';
@@ -289,7 +293,7 @@ export class ElizaRuntime {
       this.character.secrets = {
         ...(this.character.secrets || {}),
         ANTHROPIC_API_KEY: this.config.apiKeys?.anthropic || process.env.ANTHROPIC_API_KEY || '',
-        OPENAI_API_KEY: this.config.apiKeys?.openai || process.env.OPENAI_API_KEY || '',
+        GEMINI_API_KEY: this.config.apiKeys?.gemini || process.env.GEMINI_API_KEY || '',
       };
 
       // v2: Caller owns DB adapter lifecycle. createDatabaseAdapter() handles
@@ -332,9 +336,10 @@ export class ElizaRuntime {
   private async loadPlugins(): Promise<void> {
     this.loadedPlugins = [];
     // v2: plugin-bootstrap is built into @elizaos/core (auto-registered during runtime.initialize())
+    // plugin-openai is NOT listed here — embeddings come from the prepended
+    // gemini-embedding-provider below, and text generation comes from plugin-anthropic.
     const pluginMap: Record<string, string> = {
       '@elizaos/plugin-anthropic': 'anthropicPlugin',
-      '@elizaos/plugin-openai': 'openaiPlugin',
       '@elizaos/plugin-sql': 'sqlPlugin',
       '@elizaos/plugin-solana': 'solanaPlugin',
     };
@@ -353,6 +358,13 @@ export class ElizaRuntime {
         console.error(`[ElizaRuntime] Failed to load plugin ${pluginName}:`, error);
       }
     }
+
+    // Prepend Gemini embedding provider (priority 100 — replaces plugin-openai's TEXT_EMBEDDING)
+    const geminiEmbeddingPlugin = createGeminiEmbeddingPlugin({
+      apiKey: this.config.apiKeys?.gemini,
+    });
+    this.loadedPlugins.unshift(geminiEmbeddingPlugin as Plugin);
+    console.log(`[ElizaRuntime] Loaded Gemini embedding provider (text-embedding-004)`);
 
     // Prepend Ultrathink provider (priority 90 — under OpenClaw 100, over default Anthropic)
     const thinkingDefaults = AGENT_THINKING_DEFAULTS[this.config.agentType] ?? AGENT_THINKING_DEFAULTS['avatar-agent'];
