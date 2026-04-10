@@ -389,17 +389,25 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
 // ---------------------------------------------------------------------------
 
 async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
+  console.log('[W3D:gl.step1] dynamic import three/webgpu');
   // Dynamic import — tree-shakes out when WebGPU path isn't taken
   const { WebGPURenderer } = await import('three/webgpu');
+  console.log('[W3D:gl.step2] import resolved, constructing WebGPURenderer');
   const renderer = new WebGPURenderer({
     canvas,
     antialias: false,
     // powerPreference is not a WebGPURenderer option; low-power is handled
     // by the browser's GPU adapter selection (it prefers integrated GPU by default)
   });
+  console.log('[W3D:gl.step3] WebGPURenderer constructed, calling init()');
   // WebGPURenderer.render() throws if not initialized — must await init()
   // init() internally: tries WebGPU backend → falls back to WebGL2 if unavailable
-  await renderer.init();
+  // Add a 10s timeout so a hang is visible in the console instead of silently stalling R3F.
+  await Promise.race([
+    renderer.init(),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('[W3D] renderer.init() timeout after 10s')), 10000)),
+  ]);
+  console.log('[W3D:gl.step4] init() resolved');
 
   // Device-loss handler — log and attempt page reload on unexpected loss
   try {
@@ -449,17 +457,22 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
   // Falls back to standard WebGLRenderer if the dynamic import or init fails.
   const glFactory = useCallback(
     async (defaultProps: { canvas: HTMLCanvasElement }) => {
+      console.log('[W3D:glFactory] called with canvas', defaultProps?.canvas?.constructor?.name);
       try {
-        return await createWebGPURenderer(defaultProps.canvas);
+        const r = await createWebGPURenderer(defaultProps.canvas);
+        console.log('[W3D:glFactory] WebGPU path OK');
+        return r;
       } catch (err) {
         console.warn('[World3D] WebGPURenderer unavailable, falling back to WebGLRenderer:', err);
         // Import classic WebGLRenderer from base three (not three/webgpu)
         const { WebGLRenderer } = await import('three');
-        return new WebGLRenderer({
+        const r = new WebGLRenderer({
           canvas: defaultProps.canvas,
           antialias: false,
           powerPreference: 'low-power',
         });
+        console.log('[W3D:glFactory] WebGL fallback constructed');
+        return r;
       }
     },
     [],
