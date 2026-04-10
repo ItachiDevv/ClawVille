@@ -59,7 +59,7 @@ export interface SimulationRuntimeDeps {
   pathfind: PathfindFn;
   dbHooks: PetDbHooks;
   databaseUrl?: string;
-  apiKeys?: { anthropic?: string; openai?: string };
+  apiKeys?: { anthropic?: string; gemini?: string };
   /** Optional home spawn coordinates (defaults to center of 1280x800) */
   homeX?: number;
   homeY?: number;
@@ -74,6 +74,9 @@ interface ActionChoice {
 /**
  * The simulation agent character — lightweight, just needs a name and
  * system prompt so the LLM understands its role as "the world puppeteer".
+ *
+ * Only includes plugins we actually need. plugin-openai / plugin-solana
+ * are deliberately omitted (not installed).
  */
 function buildSimulationCharacter(): Character {
   const input: CharacterInput & { name: string } = {
@@ -84,13 +87,11 @@ function buildSimulationCharacter(): Character {
       'You are the autonomous avatar simulation controller for ClawVille. You decide what idle avatars should do next in the underwater reef world. Each tick, you are asked to choose one action for one avatar. Keep decisions varied: explore different buildings, eventually rest. Respond ONLY with a structured JSON action choice — no prose.',
     bio: ['The autonomous avatar simulation controller for ClawVille.'],
     plugins: [
-      // Plugins the eliza-runtime loader recognizes — sim only needs LLM
       '@elizaos/plugin-anthropic',
-      '@elizaos/plugin-openai',
       '@elizaos/plugin-sql',
     ],
     settings: {
-      model: 'claude-3-5-haiku-20241022',
+      model: 'gemini-2.5-flash',
     } as any,
     style: {
       all: ['Respond only with structured JSON — no prose, no explanation'],
@@ -145,10 +146,12 @@ export class SimulationRuntime {
       buildingCenters: deps.buildingCenters,
     });
 
-    // Instantiate the underlying ElizaRuntime with a simulation character
+    // Instantiate the underlying ElizaRuntime with a pre-built simulation
+    // character (escape hatch — skips template loading entirely).
     const config: ElizaRuntimeConfig = {
       agentId: SIM_AGENT_ID,
-      agentType: 'location-agent', // Reuse location-agent loader (same plugin set we need)
+      agentType: 'simulation-agent',
+      character: buildSimulationCharacter(),
       agentConfig: {},
       databaseUrl: deps.databaseUrl,
       apiKeys: deps.apiKeys,
@@ -158,13 +161,7 @@ export class SimulationRuntime {
       },
     };
 
-    // Override the character construction by providing customization that
-    // the location-agent loader will use. ElizaRuntime normally loads a
-    // template; we bypass that by setting the character directly after
-    // construction.
     this.eliza = new ElizaRuntime(config);
-    // Hack: swap in our simulation character after construction
-    (this.eliza as unknown as { character: Character }).character = buildSimulationCharacter();
   }
 
   async start(): Promise<void> {
@@ -216,7 +213,7 @@ export class SimulationRuntime {
         entityId: SIM_AGENT_ID,
         roomId: SIM_ROOM_ID,
         content: { text: `Plan next action for avatar`, source: 'simulation' },
-        createdAt: new Date(Date.now()).toISOString() as unknown as number,
+        createdAt: Date.now(),
         metadata: {
           type: 'message' as const,
           source: 'simulation',
