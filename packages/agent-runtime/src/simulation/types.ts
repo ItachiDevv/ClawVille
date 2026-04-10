@@ -1,37 +1,18 @@
 /**
  * Shared types for the simulation package.
  *
- * These are re-declarations / narrow types that avoid importing from
- * apps/api (which would create a cyclic dependency). The pathfinding and
- * activity constants live in @clawville/shared and apps/api — we only
- * redeclare the minimal shapes we need here.
+ * NpcActivity and related constants are imported directly from
+ * @clawville/shared — single source of truth. Pathfinding is still
+ * injected via PathfindFn to avoid depending on apps/api.
  */
+
+import type { NpcActivity as SharedNpcActivity } from '@clawville/shared';
 
 export type PetDirection = 'idle' | 'left' | 'right' | 'up' | 'down';
 
-// NpcActivity is defined in @clawville/shared. We mirror the type here to
-// avoid agent-runtime depending on shared at runtime (shared imports are
-// type-only in most code paths). If shared's NpcActivity ever expands, this
-// may need to be updated.
-export type NpcActivity =
-  | 'idle'
-  | 'walking'
-  | 'thinking'
-  | 'working'
-  | 'eating'
-  | 'drinking'
-  | 'sleeping'
-  | 'dancing'
-  | 'reading'
-  | 'chatting'
-  | 'shopping'
-  | 'exploring'
-  | 'fighting'
-  | 'celebrating'
-  | 'crafting'
-  | 'praying'
-  | 'training'
-  | 'resting';
+// Re-export the shared NpcActivity type so consumers within agent-runtime
+// have a stable local import without reaching into @clawville/shared
+export type NpcActivity = SharedNpcActivity;
 
 export interface PathNode {
   x: number;

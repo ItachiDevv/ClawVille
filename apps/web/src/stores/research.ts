@@ -18,6 +18,8 @@ interface ResearchState {
   thoughtLogOpen: boolean;
   thoughtLogMinimized: boolean;
   activeTab: ThoughtLogTab;
+  /** Sticky flag — once the user closes the log, don't auto-reopen */
+  userClosedLog: boolean;
   toggleThoughtLog: () => void;
   setThoughtLogOpen: (v: boolean) => void;
   toggleMinimize: () => void;
@@ -38,6 +40,9 @@ interface ResearchState {
   // Actions
   addThought: (event: ResearchThoughtEvent) => void;
   addCollaborationEntries: (entries: CollaborationLogEntry[]) => void;
+  /** Clear only the thought entries — does NOT reset research progress state */
+  clearThoughtEntries: () => void;
+  /** Full research state reset — only call from "cancel research" UX */
   clearThoughts: () => void;
   clearCollaborationEntries: () => void;
 
@@ -55,8 +60,19 @@ export const useResearchStore = create<ResearchState>((set) => ({
   thoughtLogOpen: false,
   thoughtLogMinimized: false,
   activeTab: 'all',
-  toggleThoughtLog: () => set((s) => ({ thoughtLogOpen: !s.thoughtLogOpen })),
-  setThoughtLogOpen: (v) => set({ thoughtLogOpen: v }),
+  userClosedLog: false,
+  toggleThoughtLog: () =>
+    set((s) => ({
+      thoughtLogOpen: !s.thoughtLogOpen,
+      // Mark user-closed when toggling off
+      userClosedLog: s.thoughtLogOpen ? true : s.userClosedLog,
+    })),
+  setThoughtLogOpen: (v) =>
+    set({
+      thoughtLogOpen: v,
+      // Mark user-closed when explicitly closing
+      userClosedLog: !v,
+    }),
   toggleMinimize: () => set((s) => ({ thoughtLogMinimized: !s.thoughtLogMinimized })),
   setActiveTab: (tab) => set({ activeTab: tab }),
 
@@ -71,7 +87,10 @@ export const useResearchStore = create<ResearchState>((set) => ({
   addThought: (event) =>
     set((s) => {
       const entry: ThoughtLogEntry = {
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id:
+          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
         phase: event.phase,
         message: event.message,
         timestamp: event.timestamp,
@@ -87,7 +106,8 @@ export const useResearchStore = create<ResearchState>((set) => ({
         currentPhase: event.phase,
         currentLocationId: event.locationId,
         progress: event.progress ?? s.progress,
-        thoughtLogOpen: true,
+        // Respect user close — only auto-open if they haven't closed it
+        thoughtLogOpen: s.thoughtLogOpen || !s.userClosedLog,
         thoughtLogMinimized: false,
         lastResult:
           event.phase === 'complete' && event.synthesizedKnowledge
@@ -98,15 +118,29 @@ export const useResearchStore = create<ResearchState>((set) => ({
 
   addCollaborationEntries: (entries) =>
     set((s) => {
-      if (!entries || entries.length === 0) return {};
-      const merged = [...s.collaborationEntries, ...entries].slice(-MAX_COLLABORATION);
+      if (!entries || entries.length === 0) return s;
+      // Dedupe by id against the existing slice (guards against SSE replay)
+      const existingIds = new Set(s.collaborationEntries.map((e) => e.id));
+      const fresh = entries.filter((e) => !existingIds.has(e.id));
+      if (fresh.length === 0) return s;
+
+      const merged = s.collaborationEntries.concat(fresh);
+      if (merged.length > MAX_COLLABORATION) {
+        merged.splice(0, merged.length - MAX_COLLABORATION);
+      }
+      // Auto-open only on first-ever collab activity AND only if user hasn't
+      // explicitly closed the log
+      const firstEver = s.collaborationEntries.length === 0;
       return {
         collaborationEntries: merged,
-        // Auto-open the log on first collaboration activity
-        thoughtLogOpen: s.thoughtLogOpen || entries.length > 0,
+        thoughtLogOpen: s.thoughtLogOpen || (firstEver && !s.userClosedLog),
       };
     }),
 
+  /** Clear just the thought entries array — preserves research run state */
+  clearThoughtEntries: () => set({ thoughts: [] }),
+
+  /** Full research state reset — use for "cancel research" UX only */
   clearThoughts: () =>
     set({
       thoughts: [],

@@ -99,34 +99,22 @@ export class CollaborationBroker {
       question: this.truncate(request.question, 80),
     });
 
-    // Fire all consultations in parallel
+    // Fire all consultations in parallel, each with its OWN timeout.
+    // Per-consult timeouts preserve completed insights that finished before
+    // the timeout fired — a global Promise.race around allSettled discards
+    // ALL results the moment any one times out, which we do NOT want.
     const consultations = request.experts.map((targetBuildingId) =>
-      this.consultOne(
+      this.consultOneWithTimeout(
         request.sourceBuildingId,
         targetBuildingId,
         request.question,
         request.sourceContext ?? '',
         requestId,
+        timeoutMs,
       ),
     );
 
-    // Race against timeout
-    const settled = await Promise.race([
-      Promise.allSettled(consultations),
-      new Promise<PromiseSettledResult<ConsultationInsight | null>[]>(
-        (resolve) =>
-          setTimeout(
-            () =>
-              resolve(
-                consultations.map(() => ({
-                  status: 'rejected' as const,
-                  reason: 'timeout',
-                })),
-              ),
-            timeoutMs,
-          ),
-      ),
-    ]);
+    const settled = await Promise.allSettled(consultations);
 
     const insights: ConsultationInsight[] = [];
     const consulted: string[] = [];
@@ -188,6 +176,28 @@ export class CollaborationBroker {
   }
 
   /* ===================== internals ===================== */
+
+  /**
+   * Wrap a single consultation with its own timeout. If it times out,
+   * the in-flight promise is abandoned (can't be cancelled mid-LLM-call
+   * in the current runtime) but the returned promise rejects so the
+   * caller's allSettled completes without waiting for the slow consult.
+   */
+  private async consultOneWithTimeout(
+    sourceBuildingId: string,
+    targetBuildingId: string,
+    question: string,
+    sourceContext: string,
+    requestId: string,
+    timeoutMs: number,
+  ): Promise<ConsultationInsight | null> {
+    return Promise.race([
+      this.consultOne(sourceBuildingId, targetBuildingId, question, sourceContext, requestId),
+      new Promise<ConsultationInsight | null>((_, reject) =>
+        setTimeout(() => reject(new Error(`Consultation timeout after ${timeoutMs}ms`)), timeoutMs),
+      ),
+    ]);
+  }
 
   private async consultOne(
     sourceBuildingId: string,

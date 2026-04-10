@@ -62,6 +62,12 @@ function generateRoomId(agentId: string, userId: string): UUID {
 export interface ElizaRuntimeConfig {
   agentId: string;
   agentType: 'location-agent' | 'pet-agent' | string;
+  /**
+   * Escape hatch for callers that want to supply a fully-built Character
+   * directly (e.g. SimulationRuntime, CollaborationBroker internals).
+   * When set, skips template loading and customization merging entirely.
+   */
+  character?: Character;
   customization?: {
     name?: string;
     personality?: string;
@@ -83,7 +89,7 @@ export interface ElizaRuntimeConfig {
   databaseUrl?: string;
   apiKeys?: {
     anthropic?: string;
-    /** Gemini API key for TEXT_EMBEDDING (replaces openai). */
+    /** Gemini API key for TEXT_EMBEDDING + TEXT_SMALL/LARGE. */
     gemini?: string;
   };
   onMessage?: (message: ElizaMessage) => void | Promise<void>;
@@ -184,6 +190,10 @@ export class ElizaRuntime {
     } else if (config.agentType === 'pet-agent') {
       // Pet agents use customization directly, no template
       this.character = this.buildPetCharacter(config);
+    } else if (config.character) {
+      // Caller provided a pre-built character (escape hatch for simulation
+      // runtime, collaboration broker, etc.) — skip template loading entirely
+      this.character = config.character;
     } else {
       // Location agents load from templates
       const locationId = (config.agentConfig?.locationId as string) || 'cron-hub';
@@ -229,13 +239,12 @@ export class ElizaRuntime {
       }))
     );
 
-    // v2: @elizaos/plugin-bootstrap is built into @elizaos/core — do NOT add it here.
-    // Embeddings are provided by the prepended gemini-embedding-provider in
-    // loadPlugins, so plugin-openai is no longer needed.
+    // v2: plugin-bootstrap is built into core. plugin-openai is replaced by
+    // the Gemini embedding provider. plugin-solana is a legacy ElizaPets dep
+    // that was never installed — omit to stop the silent import-error spam.
     const plugins: string[] = [
       '@elizaos/plugin-anthropic',
       '@elizaos/plugin-sql',
-      '@elizaos/plugin-solana',
     ];
 
     // Support structured style object from archetype data
@@ -290,11 +299,12 @@ export class ElizaRuntime {
 
       await this.loadPlugins();
 
-      // v2: API keys live on character.secrets (not runtime.settings)
+      // v2: plugin-anthropic reads ANTHROPIC_API_KEY from character.secrets.
+      // The Gemini plugins read from their own config or process.env directly —
+      // not character.secrets — so we don't expose the Gemini key here.
       this.character.secrets = {
         ...(this.character.secrets || {}),
         ANTHROPIC_API_KEY: this.config.apiKeys?.anthropic || process.env.ANTHROPIC_API_KEY || '',
-        GEMINI_API_KEY: this.config.apiKeys?.gemini || process.env.GEMINI_API_KEY || '',
       };
 
       // v2: Caller owns DB adapter lifecycle. createDatabaseAdapter() handles
@@ -336,13 +346,13 @@ export class ElizaRuntime {
 
   private async loadPlugins(): Promise<void> {
     this.loadedPlugins = [];
-    // v2: plugin-bootstrap is built into @elizaos/core (auto-registered during runtime.initialize())
-    // plugin-openai is NOT listed here — embeddings come from the prepended
-    // gemini-embedding-provider below, and text generation comes from plugin-anthropic.
+    // v2: plugin-bootstrap is built into @elizaos/core.
+    // plugin-openai replaced by gemini-embedding-provider below.
+    // plugin-solana is a legacy dep that was never installed — removed.
+    // Text generation priority chain: OpenClaw(100) > Gemini(95) > Ultrathink(90) > plugin-anthropic(0).
     const pluginMap: Record<string, string> = {
       '@elizaos/plugin-anthropic': 'anthropicPlugin',
       '@elizaos/plugin-sql': 'sqlPlugin',
-      '@elizaos/plugin-solana': 'solanaPlugin',
     };
 
     for (const pluginName of this.character.plugins || []) {
