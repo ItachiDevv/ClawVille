@@ -9,6 +9,7 @@ import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { npcSimulation } from '../services/npc-simulation';
 import { creditNeoTokens } from '../services/neo-token-ledger';
+import { ensurePetWallet } from '../services/pet-wallet-service';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 
@@ -159,6 +160,16 @@ petRoutes.post('/', requireAuth, async (c) => {
     characterConfig,
     platformAgentId: agent.id,
   }).returning();
+
+  // Auto-generate a custodial Solana wallet for the new pet. Fire and
+  // forget from the caller's perspective — if wallet gen fails, log it
+  // but don't block pet creation. The backfill script will catch stragglers.
+  try {
+    const wallet = await ensurePetWallet(pet.id);
+    pet.walletAddress = wallet.publicKey;
+  } catch (err) {
+    console.error('[pets] Failed to auto-generate wallet for new pet:', err);
+  }
 
   return c.json({ pet, agentId: agent.id });
 });

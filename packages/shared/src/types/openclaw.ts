@@ -24,7 +24,9 @@ export type AgentWireProtocol =
  *
  * - 'openclaw' / 'ironclaw' — classic chat-routing agents with a reachable HTTP gateway
  * - 'nanoclaw'              — self-managed pull-based agents (no HTTP server required)
- * - 'moltbook'              — identity comes from a Moltbook token/key (any gateway)
+ * - 'milady'                — running inside a Milady app plugin (runtime-trust,
+ *                             no external verification; agentId derived from the
+ *                             Milady runtime's agentId)
  * - 'custom'                — any other framework with a compatible gateway
  * - 'anonymous'             — one-off test agents with no persistent identity
  */
@@ -32,7 +34,7 @@ export type AgentIdentityType =
   | 'openclaw'
   | 'ironclaw'
   | 'nanoclaw'
-  | 'moltbook'
+  | 'milady'
   | 'custom'
   | 'anonymous';
 

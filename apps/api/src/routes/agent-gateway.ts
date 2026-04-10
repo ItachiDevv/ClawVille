@@ -19,7 +19,6 @@ import { db, openclawBots, eq, sql } from '@clawville/database';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { getSessionAgent } from '../services/session-agent-map';
 import { OpenClawClient } from '../services/openclaw-client';
-import { verifyMoltbookToken, fetchMoltbookProfile } from '../services/moltbook-identity';
 
 const agentGatewayRoutes = new Hono();
 
@@ -31,13 +30,26 @@ const agentGatewayRoutes = new Hono();
 // self-managed pull mode where the agent has no HTTP gateway and instead
 // consumes the /events SSE stream and pushes actions via REST.
 //
+// Identity model (runtime-trust for Milady, self-declared for others):
+//   - openclaw / ironclaw  — present a gatewayUrl, chat routed via HTTP
+//   - nanoclaw             — self-managed, pulls via SSE (no outbound chat)
+//   - milady               — running inside a Milady app plugin; the plugin
+//                            passes runtime.agentId as miladyAgentId and we
+//                            trust the call. No external verification.
+//   - custom               — any other framework with a compatible gateway
+//   - anonymous            — no persistent identity, one-off test agents
+//
 // Kept alongside the legacy /api/openclaw/register endpoint (which remains
 // for backwards compat). New integrations should use /api/agent/connect.
 const connectSchema = z.object({
   // Identity signals (at least one required)
   agentId: z.string().min(1).max(200).optional(),
-  moltbookToken: z.string().min(1).optional(),
-  moltbookKey: z.string().min(1).optional(),
+
+  // Milady identity — passed by the @clawville/app-clawville Milady plugin.
+  // Runtime-trust: we don't verify these server-side; the plugin is the
+  // trust boundary since it runs inside a curated Milady distribution.
+  miladyAgentId: z.string().min(1).max(200).optional(),
+  miladyCharacterName: z.string().min(1).max(100).optional(),
 
   // Avatar config
   name: z.string().min(1).max(24).optional(),
@@ -45,7 +57,7 @@ const connectSchema = z.object({
   color: z.number().int().min(0).max(0xffffff).optional(),
   personality: z.string().max(200).optional(),
 
-  // Gateway config (required for chat-routing agents, ignored for nanoclaw/anonymous)
+  // Gateway config (required for chat-routing agents, ignored for nanoclaw/anonymous/milady)
   gatewayUrl: z.string().url().optional(),
   authToken: z.string().min(1).optional(),
   protocol: z.enum(['openai-compat', 'anthropic', 'custom-webhook', 'nanoclaw']).optional(),
@@ -67,10 +79,10 @@ const connectSchema = z.object({
   targetNpcId: z.string().optional(),
 
   // Identity type hint (inferred from other fields if omitted)
-  identityType: z.enum(['openclaw', 'ironclaw', 'nanoclaw', 'moltbook', 'custom', 'anonymous']).optional(),
+  identityType: z.enum(['openclaw', 'ironclaw', 'nanoclaw', 'milady', 'custom', 'anonymous']).optional(),
 }).refine(
-  (d) => d.agentId || d.moltbookToken || d.moltbookKey,
-  { message: 'At least one identity signal required: agentId, moltbookToken, or moltbookKey' }
+  (d) => d.agentId || d.miladyAgentId,
+  { message: 'At least one identity signal required: agentId or miladyAgentId' }
 );
 
 agentGatewayRoutes.post('/connect', async (c) => {
@@ -82,36 +94,16 @@ agentGatewayRoutes.post('/connect', async (c) => {
 
   const data = parsed.data;
   let resolvedAgentId: string = data.agentId ?? '';
-  let moltbookVerified = false;
-  let moltbookProfileData: { username: string; karma: number; verified: boolean; postCount: number } | undefined;
 
-  // Step 1: Resolve identity via Moltbook if token/key provided
-  if (data.moltbookToken) {
-    const result = await verifyMoltbookToken(data.moltbookToken);
-    if (!result.ok || !result.profile) {
-      return c.json({ error: result.error ?? 'Moltbook token verification failed' }, 401);
-    }
-    resolvedAgentId = `moltbook:${result.profile.profileId}`;
-    moltbookVerified = result.profile.verified;
-    moltbookProfileData = {
-      username: result.profile.username,
-      karma: result.profile.karma,
-      verified: result.profile.verified,
-      postCount: result.profile.postCount,
-    };
-  } else if (data.moltbookKey) {
-    const result = await fetchMoltbookProfile(data.moltbookKey);
-    if (!result.ok || !result.profile) {
-      return c.json({ error: result.error ?? 'Moltbook key validation failed' }, 401);
-    }
-    resolvedAgentId = `moltbook:${result.profile.profileId}`;
-    moltbookVerified = result.profile.verified;
-    moltbookProfileData = {
-      username: result.profile.username,
-      karma: result.profile.karma,
-      verified: result.profile.verified,
-      postCount: result.profile.postCount,
-    };
+  // Step 1: Resolve Milady identity (runtime-trust — no external verification).
+  //
+  // The @clawville/app-clawville Milady plugin passes miladyAgentId +
+  // miladyCharacterName directly from runtime.agentId + runtime.character.name.
+  // We key on `milady:{miladyAgentId}` so a returning Milady user gets their
+  // old pet, wallet, learned knowledge, and NeoToken balance across launches.
+  // Matches how Babylon + Defense of the Agents trust the Milady runtime.
+  if (data.miladyAgentId) {
+    resolvedAgentId = `milady:${data.miladyAgentId}`;
   }
 
   // If still no agentId, generate a one-shot anonymous one
@@ -130,7 +122,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
 
   // Infer identity type
   const identityType = data.identityType
-    ?? (data.moltbookToken || data.moltbookKey ? 'moltbook'
+    ?? (data.miladyAgentId ? 'milady'
       : data.protocol === 'nanoclaw' ? 'nanoclaw'
       : data.gatewayUrl ? 'openclaw'
       : 'anonymous');
@@ -164,42 +156,37 @@ agentGatewayRoutes.post('/connect', async (c) => {
       lastX = meta?.lastX;
       lastY = meta?.lastY;
 
+      // For Milady agents, prefer the runtime-passed character name over
+      // whatever's stored — Milady is the source of truth for agent naming.
+      const preferredName = data.miladyCharacterName ?? data.name ?? existing.name;
+
       await db.update(openclawBots).set({
         identityType,
         gatewayUrl: data.gatewayUrl ?? existing.gatewayUrl,
         protocol: data.protocol ? wireProtocol : existing.protocol,
         mode: data.mode,
-        name: data.name ?? existing.name,
+        name: preferredName,
         species: data.species ?? existing.species,
         color: data.color ?? existing.color,
-        ...(moltbookProfileData && {
-          moltbookKey: data.moltbookKey ?? existing.moltbookKey,
-          moltbookProfile: {
-            ...moltbookProfileData,
-            lastSynced: new Date().toISOString(),
-          },
-        }),
         totalSessions,
         lastSeenAt: new Date(),
         updatedAt: new Date(),
       }).where(eq(openclawBots.id, existing.id));
     } else {
+      // First-time contact — use miladyCharacterName when present so the
+      // bot is named from the Milady runtime rather than needing a separate
+      // `name` field in the request body.
+      const insertName = data.miladyCharacterName ?? data.name ?? null;
+
       const [inserted] = await db.insert(openclawBots).values({
         agentId: resolvedAgentId,
         identityType,
         gatewayUrl: data.gatewayUrl ?? null,
         protocol: wireProtocol,
         mode: data.mode,
-        name: data.name ?? null,
+        name: insertName,
         species: data.species ?? null,
         color: data.color ?? null,
-        ...(moltbookProfileData && {
-          moltbookKey: data.moltbookKey ?? null,
-          moltbookProfile: {
-            ...moltbookProfileData,
-            lastSynced: new Date().toISOString(),
-          },
-        }),
         metadata: {
           personality: data.personality,
           homeX: data.homeX ?? 640,
@@ -282,7 +269,6 @@ agentGatewayRoutes.post('/connect', async (c) => {
     knowledge,
     identityType,
     autonomyMode,
-    moltbookVerified,
   });
 });
 
