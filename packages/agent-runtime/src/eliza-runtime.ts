@@ -21,6 +21,7 @@ import { loadLocationTemplate } from './character-loader';
 import { createOpenClawProviderPlugin, type OpenClawGatewayConfig } from './plugins/openclaw-provider';
 import { createUltrathinkProviderPlugin, type UltrathinkConfig } from './plugins/ultrathink-provider';
 import { createGeminiEmbeddingPlugin } from './plugins/gemini-embedding-provider';
+import { createGeminiTextPlugin } from './plugins/gemini-text-provider';
 import { AGENT_THINKING_DEFAULTS } from '@clawville/shared';
 
 const ROOM_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
@@ -365,6 +366,14 @@ export class ElizaRuntime {
     });
     this.loadedPlugins.unshift(geminiEmbeddingPlugin as Plugin);
     console.log(`[ElizaRuntime] Loaded Gemini embedding provider (text-embedding-004)`);
+
+    // Prepend Gemini text provider (priority 95 — global default for TEXT_SMALL/TEXT_LARGE)
+    // Sits between OpenClaw gateway (100) and Ultrathink (90) in the priority chain.
+    const geminiTextPlugin = createGeminiTextPlugin({
+      apiKey: this.config.apiKeys?.gemini,
+    });
+    this.loadedPlugins.unshift(geminiTextPlugin as Plugin);
+    console.log(`[ElizaRuntime] Loaded Gemini text provider (gemini-2.5-flash, priority 95)`);
 
     // Prepend Ultrathink provider (priority 90 — under OpenClaw 100, over default Anthropic)
     const thinkingDefaults = AGENT_THINKING_DEFAULTS[this.config.agentType] ?? AGENT_THINKING_DEFAULTS['pet-agent'];
