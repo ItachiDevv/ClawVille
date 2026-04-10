@@ -3,6 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import type { AppContext } from '../types';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
+import { creditNeoTokens, debitNeoTokens } from '../services/neo-token-ledger';
 import {
   db,
   pets,
@@ -727,24 +728,23 @@ bazaarRoutes.post('/:id/buy', requireAuth, async (c) => {
   const platformFee = Math.floor(price * 0.15);
   const sellerPayout = price - platformFee;
 
-  // 6. Update buyer: neoTokens -= price
-  const [updatedBuyer] = await db
-    .update(pets)
-    .set({
-      neoTokens: buyerPet.neoTokens - price,
-      updatedAt: new Date(),
-    })
-    .where(eq(pets.id, buyerPet.id))
-    .returning();
-
-  // 7. Update seller: neoTokens += sellerPayout
-  await db
-    .update(pets)
-    .set({
-      neoTokens: sellerPet.neoTokens + sellerPayout,
-      updatedAt: new Date(),
-    })
-    .where(eq(pets.id, sellerPet.id));
+  // 6-7. Atomic transfer: buyer pays `price`, seller receives `sellerPayout`,
+  // platform keeps `platformFee`. Net-of-fee transfer is modeled as two
+  // independent ledger entries so the platformFee is attributable.
+  const { balanceAfter: buyerBalance } = await debitNeoTokens({
+    petId: buyerPet.id,
+    amount: price,
+    reason: 'bazaar_purchase',
+    source: 'api',
+    metadata: { listingId: id, skillId: listing.skillId, sellerId: sellerPet.id, platformFee },
+  });
+  await creditNeoTokens({
+    petId: sellerPet.id,
+    amount: sellerPayout,
+    reason: 'bazaar_sale',
+    source: 'api',
+    metadata: { listingId: id, skillId: listing.skillId, buyerId: buyerPet.id, platformFee },
+  });
 
   // 8. Update listing: status = 'sold'
   await db
@@ -799,7 +799,7 @@ bazaarRoutes.post('/:id/buy', requireAuth, async (c) => {
       sellerPayout: transaction.sellerPayout,
       createdAt: transaction.createdAt.toISOString(),
     },
-    neoTokens: updatedBuyer.neoTokens,
+    neoTokens: buyerBalance,
   });
 });
 

@@ -34,10 +34,10 @@ import {
   BUILDING_ACTIVITIES,
   ACTIVITY_EMOJIS,
 } from '@clawville/shared';
-import { db, pets, activityLog } from '@clawville/database';
-import { sql } from 'drizzle-orm';
+import { db, activityLog } from '@clawville/database';
 
 import { findPath } from './pathfinding';
+import { creditNeoTokens } from './neo-token-ledger';
 
 // Single source of truth — agent-runtime re-exports NpcActivity from shared,
 // so these constants type-check without casting.
@@ -65,7 +65,13 @@ export class PetSimulationBridge {
       pathfind: findPath,
       dbHooks: {
         awardToken: async (petId: string) => {
-          await db.execute(sql`UPDATE pets SET neo_tokens = neo_tokens + 1 WHERE id = ${petId}`);
+          // Credit via ledger — atomic + audited (source: 'simulation')
+          await creditNeoTokens({
+            petId,
+            amount: 1,
+            reason: 'autonomous_visit',
+            source: 'simulation',
+          });
         },
         logActivity: async (
           petId: string,

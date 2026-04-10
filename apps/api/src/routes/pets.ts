@@ -8,6 +8,7 @@ import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { npcSimulation } from '../services/npc-simulation';
+import { creditNeoTokens } from '../services/neo-token-ledger';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 
@@ -410,16 +411,24 @@ petRoutes.post('/me/daily-login', requireAuth, async (c) => {
 
   // Calculate reward: 10 + streak * 5, max 100
   const tokensEarned = Math.min(100, 10 + newStreak * 5);
-  const totalTokens = (pet.neoTokens ?? 100) + tokensEarned;
 
+  // Update streak metadata first — the token credit goes through the ledger
   await db.update(pets)
     .set({
       loginStreak: newStreak,
       lastLoginDate: today,
-      neoTokens: totalTokens,
       updatedAt: new Date(),
     })
     .where(and(eq(pets.userId, user.id), eq(pets.isActive, true)));
+
+  // Atomic + audited token credit
+  const { balanceAfter: totalTokens } = await creditNeoTokens({
+    petId: pet.id,
+    amount: tokensEarned,
+    reason: 'daily_login',
+    source: 'daily_login',
+    metadata: { streak: newStreak, date: today },
+  });
 
   return c.json({ streak: newStreak, tokensEarned, totalTokens, alreadyClaimed: false });
 });

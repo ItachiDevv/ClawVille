@@ -3,6 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import type { AppContext } from '../types';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
+import { creditNeoTokens } from '../services/neo-token-ledger';
 import {
   db,
   users,
@@ -464,13 +465,14 @@ questRoutes.post('/admin/:submissionId/review', requireAuth, async (c) => {
       throw new HTTPException(500, { message: 'Submission pet not found' });
     }
 
-    await db
-      .update(pets)
-      .set({
-        neoTokens: pet.neoTokens + quest.tokenReward,
-        updatedAt: now,
-      })
-      .where(eq(pets.id, pet.id));
+    // Atomic + audited quest token reward
+    await creditNeoTokens({
+      petId: pet.id,
+      amount: quest.tokenReward,
+      reason: 'quest_complete',
+      source: 'quest',
+      metadata: { questId: quest.id, submissionId: submission.id },
+    });
 
     // 3. If quest has skillRewardId, add skill to pet_inventory
     if (quest.skillRewardId) {
