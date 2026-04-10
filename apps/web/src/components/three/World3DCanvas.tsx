@@ -1,5 +1,27 @@
 'use client';
 
+// --- window-global diagnostic object -----------------------------------------
+// Because console.log gets filtered in production and the MCP console listener
+// has timing issues, we surface key lifecycle events via window.__W3D_STATUS
+// so they can be inspected at any time from devtools. The values persist until
+// the page is reloaded.
+if (typeof window !== 'undefined') {
+  (window as any).__W3D_STATUS ??= {
+    moduleEval: false,
+    componentRender: 0,
+    componentMount: 0,
+    glFactoryCalled: 0,
+    glFactoryResolved: 0,
+    onCreatedFired: 0,
+    manualLoopStarted: 0,
+    loopTicks: 0,
+    advanceErrors: [] as string[],
+    lastErrorAt: 0,
+  };
+  (window as any).__W3D_STATUS.moduleEval = true;
+}
+// ------------------------------------------------------------------------------
+
 import { useRef, useEffect, useCallback, memo } from 'react';
 import { Canvas, useFrame, extend } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
@@ -318,32 +340,23 @@ function FPSFollowCamera({
 // handle to the state so it can be stopped if the Canvas is ever torn down.
 // ---------------------------------------------------------------------------
 function startManualRenderLoop(state: any): void {
+  const status = (window as any).__W3D_STATUS;
   // Expose the state globally so we can poke it from devtools if anything
   // goes wrong in production.
   (window as any).__W3D = state;
-  if (state.__manualLoopRunning) {
-    // eslint-disable-next-line no-console
-    console.warn('[World3D] manual render loop already running, skipping start');
-    return;
-  }
+  if (state.__manualLoopRunning) return;
   state.__manualLoopRunning = true;
+  status.manualLoopStarted = (status.manualLoopStarted || 0) + 1;
   let rafId = 0;
-  let tick = 0;
-  // eslint-disable-next-line no-console
-  console.warn('[World3D] starting manual render loop');
   const loop = (t: number) => {
     if (!state.__manualLoopRunning) return;
     try {
       state.advance(t / 1000, true);
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('[World3D] manual render loop advance threw', err);
+      status.advanceErrors.push(String(err).slice(0, 200));
+      status.lastErrorAt = Date.now();
     }
-    tick++;
-    if (tick === 1 || tick === 60 || tick === 300) {
-      // eslint-disable-next-line no-console
-      console.warn(`[World3D] manual loop tick ${tick}`);
-    }
+    status.loopTicks = (status.loopTicks || 0) + 1;
     rafId = requestAnimationFrame(loop);
   };
   rafId = requestAnimationFrame(loop);
@@ -496,22 +509,35 @@ function ContextLostFallback() {
 }
 
 function World3DCanvas({ mode }: World3DCanvasProps) {
+  const status = (typeof window !== 'undefined' ? (window as any).__W3D_STATUS : null);
+  if (status) status.componentRender = (status.componentRender || 0) + 1;
+
+  useEffect(() => {
+    if (status) status.componentMount = (status.componentMount || 0) + 1;
+  }, [status]);
+
   // Stable async gl factory — R3F v9 awaits this before rendering.
   // Returns a WebGPURenderer (with automatic WebGL2 fallback built in).
   // Falls back to standard WebGLRenderer if the dynamic import or init fails.
   const glFactory = useCallback(
     async (defaultProps: { canvas: HTMLCanvasElement }) => {
+      const s = (window as any).__W3D_STATUS;
+      if (s) s.glFactoryCalled = (s.glFactoryCalled || 0) + 1;
       try {
-        return await createWebGPURenderer(defaultProps.canvas);
+        const r = await createWebGPURenderer(defaultProps.canvas);
+        if (s) s.glFactoryResolved = (s.glFactoryResolved || 0) + 1;
+        return r;
       } catch (err) {
         console.warn('[World3D] WebGPURenderer unavailable, falling back to WebGLRenderer:', err);
         // Import classic WebGLRenderer from base three (not three/webgpu)
         const { WebGLRenderer } = await import('three');
-        return new WebGLRenderer({
+        const r = new WebGLRenderer({
           canvas: defaultProps.canvas,
           antialias: false,
           powerPreference: 'low-power',
         });
+        if (s) s.glFactoryResolved = (s.glFactoryResolved || 0) + 1;
+        return r;
       }
     },
     [],
@@ -542,6 +568,8 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
           position: mode === 'game' ? [0, 80, 150] : [0, 200, 350],
         }}
         onCreated={(state) => {
+          const s = (window as any).__W3D_STATUS;
+          if (s) s.onCreatedFired = (s.onCreatedFired || 0) + 1;
           const { scene, gl } = state;
           scene.background = SKY_COLOR;
           gl.setPixelRatio(Math.min(window.devicePixelRatio, 1));
