@@ -21,6 +21,7 @@ import { auctionRoutes } from './routes/auctions';
 import { questRoutes } from './routes/quests';
 import { bountyRoutes } from './routes/bounties';
 import { agentSetupRoutes } from './routes/agent-setup';
+import { skillsRoutes } from './routes/skills';
 import { startSimulation } from './services/npc-simulation';
 import type { AppContext } from './types';
 
@@ -68,6 +69,7 @@ app.route('/api/auctions', auctionRoutes);
 app.route('/api/quests', questRoutes);
 app.route('/api/bounties', bountyRoutes);
 app.route('/api/agent-setup', agentSetupRoutes);
+app.route('/api/skills', skillsRoutes);
 
 // Error handler
 app.onError((err, c) => {

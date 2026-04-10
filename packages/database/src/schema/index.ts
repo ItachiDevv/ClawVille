@@ -17,6 +17,7 @@ export * from './auctions';
 export * from './quests';
 export * from './agent-configs';
 export * from './bounties';
+export * from './building-skills';
 
 import { users, sessions } from './users';
 import { npcMemories, activityLog } from './memories';
