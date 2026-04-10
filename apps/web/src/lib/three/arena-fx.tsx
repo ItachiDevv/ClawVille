@@ -82,11 +82,16 @@ function ArenaFx() {
   // Hit flash geometry
   const flashGeo = useMemo(() => new THREE.SphereGeometry(1, 12, 8), []);
 
+  // Reuse a persistent map to avoid per-frame allocation
+  const npcMapRef = useRef(new Map<string, NpcSpriteState>());
+
   useFrame((_, delta) => {
     const state = useNpcStore.getState();
     const now = Date.now();
     const npcs = state.npcs;
-    const npcMap = new Map<string, NpcSpriteState>();
+    // Clear and repopulate the persistent map instead of allocating a new one
+    const npcMap = npcMapRef.current;
+    npcMap.clear();
     for (const npc of npcs) {
       npcMap.set(npc.id, npc);
     }
