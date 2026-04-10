@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useEffect, useCallback, memo } from 'react';
-import { Canvas, useFrame, useThree, extend } from '@react-three/fiber';
+import { Canvas, useFrame, extend } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
@@ -302,40 +302,40 @@ function FPSFollowCamera({
 }
 
 // ---------------------------------------------------------------------------
-// ManualRenderLoop — R3F v9 + WebGPURenderer workaround
+// startManualRenderLoop — R3F v9 + WebGPURenderer workaround
 // ---------------------------------------------------------------------------
 // R3F v9's internal render loop never starts when paired with WebGPURenderer:
-// `state.internal.active` stays false even when `frameloop="always"` is set,
-// and nothing calls gl.renderAsync. But R3F's `state.advance(t, true)` DOES
-// drive a full frame correctly (useFrame subscribers + renderAsync). So we
-// set `frameloop="never"` on the Canvas and pump `advance` ourselves via
-// requestAnimationFrame. The first real fix should be an R3F upstream bug,
-// but this is the pragmatic workaround that unblocks the 3D world.
+// state.internal.active stays false even with frameloop="always", and nothing
+// calls gl.renderAsync. But state.advance(t, true) drives a full frame
+// correctly (useFrame subscribers + renderAsync).
+//
+// We can't run this loop from a child component inside the Canvas because R3F
+// wraps children in a Suspense; on first load SceneContents suspends while
+// GLBs load, so any child of the Canvas never gets to mount its useEffect
+// until loading completes — meanwhile zero frames render and the canvas is
+// black. Instead we start the RAF loop from onCreated (which fires once the
+// renderer is ready, regardless of suspended children) and attach a cancel
+// handle to the state so it can be stopped if the Canvas is ever torn down.
 // ---------------------------------------------------------------------------
-function ManualRenderLoop() {
-  const advance = useThree((s) => s.advance);
-
-  useEffect(() => {
-    let rafId = 0;
-    let mounted = true;
-    const loop = (t: number) => {
-      if (!mounted) return;
-      try {
-        advance(t / 1000, true);
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error('[W3D:manualLoop] advance threw', err);
-      }
-      rafId = requestAnimationFrame(loop);
-    };
+function startManualRenderLoop(state: any): void {
+  if (state.__manualLoopRunning) return;
+  state.__manualLoopRunning = true;
+  let rafId = 0;
+  const loop = (t: number) => {
+    if (!state.__manualLoopRunning) return;
+    try {
+      state.advance(t / 1000, true);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[World3D] manual render loop advance threw', err);
+    }
     rafId = requestAnimationFrame(loop);
-    return () => {
-      mounted = false;
-      if (rafId) cancelAnimationFrame(rafId);
-    };
-  }, [advance]);
-
-  return null;
+  };
+  rafId = requestAnimationFrame(loop);
+  state.__manualLoopCancel = () => {
+    state.__manualLoopRunning = false;
+    if (rafId) cancelAnimationFrame(rafId);
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -526,7 +526,8 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
           far: 2000,
           position: mode === 'game' ? [0, 80, 150] : [0, 200, 350],
         }}
-        onCreated={({ scene, gl }) => {
+        onCreated={(state) => {
+          const { scene, gl } = state;
           scene.background = SKY_COLOR;
           gl.setPixelRatio(Math.min(window.devicePixelRatio, 1));
           if ((gl as any).isWebGPURenderer) {
@@ -538,10 +539,10 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
             // eslint-disable-next-line no-console
             console.warn('[World3D] Using WebGLRenderer');
           }
+          // Drive the render loop ourselves — see startManualRenderLoop() for why.
+          startManualRenderLoop(state);
         }}
       >
-        {/* Drive the render loop ourselves — see component comment for why */}
-        <ManualRenderLoop />
         <SceneContents mode={mode} />
       </Canvas>
     </div>
