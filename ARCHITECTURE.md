@@ -3,7 +3,7 @@
 ## System Overview
 
 ```
-Browser (Next.js)                         Railway
+Browser (Next.js)                         Hetzner CCX13 + Coolify
 +--------------------------+              +--------------------------+
 |  Next.js App Router      |              |  Hono API (Bun :4000)   |
 |  +--------------------+  |   REST/SSE   |  +--------------------+ |
@@ -164,11 +164,13 @@ Toggle via `ControlModeToggle` component. Without an agent: Explore/NPC. With an
 
 ## Deployment
 
-Hosted on **Railway** with two services:
+Self-hosted on a single **Hetzner CCX13** VPS (`<PROD_VPS_IP>`, Ashburn) orchestrated by **Coolify** (self-hosted PaaS), with **Cloudflare** in front for DNS + CDN + DDoS protection. Two apps:
 
-- **Web** (`apps/web/Dockerfile`): Next.js on port 3000
-- **API** (`apps/api/Dockerfile`): Hono on Bun on port 4000
+- **Web** (`apps/web/Dockerfile`): Next.js on port 3000 → `https://clawville.world`
+- **API** (`apps/api/Dockerfile`): Hono on Bun on port 4000 → `https://api.clawville.world`
 
-Environment variables set in Railway dashboard. Auto-deploys from git push to master.
+Database is **Supabase Postgres** (external — not hosted on the VPS). Environment variables are managed through Coolify's UI and encrypted at rest via Laravel's `Crypt` — bypassing the UI and writing to the `environment_variables` table directly WILL corrupt the encrypted payload, so always use the UI or the model's attribute assignment when writing programmatically.
 
-Testing rule: never run localhost (crashes Intel Iris Xe GPU). Always deploy to Railway and test on production URL.
+Both apps auto-deploy from `git push origin master` via a GitHub webhook. Manual redeploys can be queued by SSHing into the VPS and running `queue_application_deployment` inside the Coolify artisan tinker (documented in `CLAUDE.md`). Full playbook for migration / rebuild is in `docs/DEPLOY-HETZNER.md`.
+
+Testing rule: never run `bun run dev` locally — the Three.js/WebGPU scene crashes Intel Iris Xe and requires a PC restart. Always push → Coolify auto-deploys → test against the production URL.
