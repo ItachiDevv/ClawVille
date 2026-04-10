@@ -9,6 +9,7 @@ import { agentOrchestrator } from '../services/agent-orchestrator';
 import { awardXp } from '../services/xp-service';
 import { shouldCollaborate, collaborateOnQuery } from '../services/agent-collaboration';
 import { miladyGateway } from '../services/milady-gateway';
+import { creditClawTokens } from '../services/neo-token-ledger';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 
@@ -124,15 +125,15 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
     dynamicContext,
   });
 
-  // Award +1 ClawToken for chatting with a location agent
+  // Award +1 ClawToken for chatting with a location agent (atomic + audited)
   if (avatar) {
-    await db
-      .update(avatars)
-      .set({
-        clawTokens: avatar.clawTokens + 1,
-        updatedAt: new Date(),
-      })
-      .where(eq(avatars.id, avatar.id));
+    await creditClawTokens({
+      avatarId: avatar.id,
+      amount: 1,
+      reason: 'location_chat',
+      source: 'api',
+      metadata: { locationId },
+    }).catch((err) => console.error('[chat] creditClawTokens failed:', err));
 
     // Award +5 XP for NPC chat (non-blocking)
     awardXp(avatar.id, 5, 'npc-chat').catch(console.error);

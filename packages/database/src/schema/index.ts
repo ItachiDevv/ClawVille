@@ -12,6 +12,7 @@ export * from './research';
 export * from './marketplace';
 export * from './bazaar';
 export * from './token-launch';
+export * from './treasury';
 export * from './auctions';
 export * from './quests';
 export * from './agent-configs';
@@ -27,6 +28,7 @@ import { publishedSkills, skillUpvotes } from './marketplace';
 import { bazaarListings, bazaarTransactions, bazaarReviews } from './bazaar';
 import { openclawBots } from './claws';
 import { vanityKeypairs, tokenLaunches } from './token-launch';
+import { clawTokenTransactions } from './treasury';
 import { auctions, auctionBids, auctionAgentConfigs } from './auctions';
 import { quests, questSubmissions, questRewards } from './quests';
 import { agentConfigs } from './agent-configs';
@@ -310,4 +312,8 @@ export const bountyAttemptsRelations = relations(bountyAttempts, ({ one }) => ({
 
 export const bountyReputationRelations = relations(bountyReputation, ({ one }) => ({
   avatar: one(avatars, { fields: [bountyReputation.avatarId], references: [avatars.id] }),
+}));
+
+export const clawTokenTransactionsRelations = relations(clawTokenTransactions, ({ one }) => ({
+  avatar: one(avatars, { fields: [clawTokenTransactions.avatarId], references: [avatars.id] }),
 }));
