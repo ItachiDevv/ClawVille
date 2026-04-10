@@ -485,19 +485,56 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
           far: 2000,
           position: mode === 'game' ? [0, 80, 150] : [0, 200, 350],
         }}
-        onCreated={({ scene, gl }) => {
+        onCreated={(state) => {
+          const { scene, gl, camera, size } = state;
           scene.background = SKY_COLOR;
           gl.setPixelRatio(Math.min(window.devicePixelRatio, 1));
-          // Log which backend was selected
-          if ((gl as any).isWebGPURenderer) {
-            const backend = (gl as any).backend;
-            const name = backend?.constructor?.name ?? 'unknown';
-            console.log(`[World3D] Using WebGPURenderer (backend: ${name})`);
-          } else {
-            console.log('[World3D] Using WebGLRenderer');
+          // Expose state globally for browser diagnostics
+          (window as any).__W3D = state;
+          console.log('[W3D:onCreated]', {
+            isWebGPU: !!(gl as any).isWebGPURenderer,
+            glType: gl.constructor?.name,
+            size,
+            camPos: camera.position.toArray(),
+            sceneChildren: scene.children.length,
+          });
+          // Intercept render to count frames
+          const origRender = gl.render?.bind(gl);
+          const origRenderAsync = (gl as any).renderAsync?.bind(gl);
+          (window as any).__W3D_frameCount = 0;
+          (window as any).__W3D_renderErrors = [];
+          if (origRender) {
+            gl.render = (s: any, c: any) => {
+              try {
+                (window as any).__W3D_frameCount++;
+                return origRender(s, c);
+              } catch (e) {
+                (window as any).__W3D_renderErrors.push(String(e).slice(0, 200));
+                console.error('[W3D:render.error]', e);
+                throw e;
+              }
+            };
           }
+          if (origRenderAsync) {
+            (gl as any).renderAsync = async (s: any, c: any) => {
+              try {
+                (window as any).__W3D_frameCount++;
+                return await origRenderAsync(s, c);
+              } catch (e) {
+                (window as any).__W3D_renderErrors.push(String(e).slice(0, 200));
+                console.error('[W3D:renderAsync.error]', e);
+                throw e;
+              }
+            };
+          }
+          console.log('[W3D:onCreated] render patched, origRender=' + !!origRender + ' origRenderAsync=' + !!origRenderAsync);
         }}
       >
+        {/* DIAGNOSTIC: bright test mesh at origin — if this renders, WebGPU path works */}
+        <mesh position={[0, 30, 0]}>
+          <boxGeometry args={[40, 40, 40]} />
+          <meshBasicMaterial color={0xff00ff} />
+        </mesh>
         <SceneContents mode={mode} />
       </Canvas>
     </div>
