@@ -12,7 +12,7 @@ import {
   type IAgentRuntime,
   type GenerateTextParams,
 } from '@elizaos/core';
-import { type ThinkingEffort, THINKING_BUDGET } from '@elizapets/shared';
+import { type ThinkingEffort, THINKING_BUDGET } from '@clawville/shared';
 
 /* ------------------------------------------------------------------ */
 /*  Config                                                            */

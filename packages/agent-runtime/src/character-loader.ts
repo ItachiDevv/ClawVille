@@ -1,4 +1,4 @@
-import { templates, type LocationTemplate } from '@elizapets/agent-templates';
+import { templates, type LocationTemplate } from '@clawville/agent-templates';
 
 export function loadLocationTemplate(locationId: string): LocationTemplate {
   const template = templates[locationId];

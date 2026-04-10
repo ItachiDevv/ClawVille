@@ -4,7 +4,7 @@ import { useMemo, useRef, useState, useEffect, useCallback, Suspense } from 'rea
 import * as THREE from 'three';
 import { useGLTF, Html } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
-import { BUILDING_OPENCLAW_THEMES } from '@elizapets/shared';
+import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 import {
   MAP_WIDTH,
   MAP_HEIGHT,

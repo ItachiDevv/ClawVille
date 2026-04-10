@@ -7,10 +7,10 @@ import { useCamera } from '@/lib/pixi/use-camera';
 import { useGameLoop } from '@/lib/pixi/use-game-loop';
 import { useGameStore } from '@/stores/game';
 import { useNpcStore, type NpcSpriteState } from '@/stores/npc';
-import { MAP_LOCATIONS } from '@elizapets/shared';
+import { MAP_LOCATIONS } from '@clawville/shared';
 import { SPECIES_SPRITE_MAP, COLOR_TINT_MAP, blendColors } from '@/lib/pixi/pet-sprites';
 import { drawBuilding } from '@/lib/pixi/building-renderer';
-import type { PetColor, PetSpecies } from '@elizapets/shared';
+import type { PetColor, PetSpecies } from '@clawville/shared';
 import {
   MAP_WIDTH,
   MAP_HEIGHT,

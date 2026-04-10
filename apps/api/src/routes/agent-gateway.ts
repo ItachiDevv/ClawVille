@@ -8,11 +8,11 @@ import {
   type NpcActivity,
   type AgentPerception,
   type AgentStats,
-} from '@elizapets/shared';
+} from '@clawville/shared';
 import { npcSimulation } from '../services/npc-simulation';
 import { findPath } from '../services/pathfinding';
 import { memoryService } from '../services/memory-service';
-import { db, openclawBots, eq, sql } from '@elizapets/database';
+import { db, openclawBots, eq, sql } from '@clawville/database';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { getSessionAgent } from '../services/session-agent-map';
 

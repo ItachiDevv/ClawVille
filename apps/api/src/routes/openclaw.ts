@@ -1,10 +1,10 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { NPC_IDS, BUILDING_OPENCLAW_THEMES } from '@elizapets/shared';
-import type { OpenClawRegistration, OpenClawBotIdentity } from '@elizapets/shared';
+import { NPC_IDS, BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
+import type { OpenClawRegistration, OpenClawBotIdentity } from '@clawville/shared';
 import { OpenClawClient } from '../services/openclaw-client';
 import { npcSimulation } from '../services/npc-simulation';
-import { db, pets, users, npcMemories, activityLog, openclawBots, agents, eq, and, desc, sql } from '@elizapets/database';
+import { db, pets, users, npcMemories, activityLog, openclawBots, agents, eq, and, desc, sql } from '@clawville/database';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import type { AppContext } from '../types';
 import { agentOrchestrator } from '../services/agent-orchestrator';

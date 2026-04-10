@@ -9,7 +9,7 @@ import {
   agents,
   petInventory,
   agentConfigs,
-} from '@elizapets/database';
+} from '@clawville/database';
 import { eq, and, asc, desc, count } from 'drizzle-orm';
 import {
   PET_ARCHETYPES,
@@ -17,9 +17,9 @@ import {
   KNOWLEDGE_BOOKS,
   getBooksForBuilding,
   BUILDING_OPENCLAW_THEMES,
-} from '@elizapets/shared';
-import type { PetArchetypeId } from '@elizapets/shared';
-import type { AgentConfigExport } from '@elizapets/database';
+} from '@clawville/shared';
+import type { PetArchetypeId } from '@clawville/shared';
+import type { AgentConfigExport } from '@clawville/database';
 
 export const agentSetupRoutes = new Hono<AppContext>();
 agentSetupRoutes.use('*', sessionMiddleware);
@@ -99,7 +99,7 @@ function buildCharacterConfig(archetypeId: PetArchetypeId, petName: string, spec
   if (!archetype) throw new Error(`Unknown archetype: ${archetypeId}`);
 
   const system = [
-    `You are ${petName}, a ${species} in the world of ElizaPets — a Neopets-themed virtual pet universe on Solana.`,
+    `You are ${petName}, a ${species} in the sea-themed world of ClawVille — a virtual pet adventure where agents learn OpenClaw skills.`,
     `Your archetype is "${archetype.label}". Stay in character at all times.`,
     `You exist in Neopia Central and have deep knowledge of Neopets lore, culture, and locations.`,
     `You also have knowledge of Solana, cryptocurrency, and memecoin/degen culture — weave this naturally into conversation when relevant.`,

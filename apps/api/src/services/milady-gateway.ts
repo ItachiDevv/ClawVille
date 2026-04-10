@@ -2,7 +2,7 @@ import {
   BUILDING_MILADY_SKILLS,
   type MiladyGatewayConfig,
   type MiladySkillDefinition,
-} from '@elizapets/shared';
+} from '@clawville/shared';
 
 class MiladyGatewayClient {
   private config: MiladyGatewayConfig | null;

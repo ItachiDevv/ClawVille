@@ -1,9 +1,9 @@
-import { db, agents, eq, and } from '@elizapets/database';
+import { db, agents, eq, and } from '@clawville/database';
 import {
   ElizaRuntime,
   createElizaRuntime,
-} from '@elizapets/agent-runtime';
-import type { AgentStatus } from '@elizapets/shared';
+} from '@clawville/agent-runtime';
+import type { AgentStatus } from '@clawville/shared';
 
 interface RunningAgent {
   runtime: ElizaRuntime;

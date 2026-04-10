@@ -5,10 +5,10 @@ import { Application, Container, Graphics, Sprite, Assets, Text } from 'pixi.js'
 import { useViewport } from '@/lib/pixi/use-viewport';
 import { useGameStore } from '@/stores/game';
 import { useNpcStore, type NpcSpriteState } from '@/stores/npc';
-import { MAP_LOCATIONS } from '@elizapets/shared';
+import { MAP_LOCATIONS } from '@clawville/shared';
 import { SPECIES_SPRITE_MAP, blendColors } from '@/lib/pixi/pet-sprites';
 import { drawBuilding } from '@/lib/pixi/building-renderer';
-import type { PetSpecies } from '@elizapets/shared';
+import type { PetSpecies } from '@clawville/shared';
 import { useKeyboard } from '@/lib/pixi/use-keyboard';
 import {
   MAP_WIDTH,

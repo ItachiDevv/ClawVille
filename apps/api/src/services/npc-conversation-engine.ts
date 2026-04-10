@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { templates } from '@elizapets/agent-templates';
-import { NPC_DEFINITIONS, type NpcDefinition } from '@elizapets/shared';
+import { templates } from '@clawville/agent-templates';
+import { NPC_DEFINITIONS, type NpcDefinition } from '@clawville/shared';
 import type { OpenClawClient } from './openclaw-client';
 
 const anthropic = new Anthropic({
@@ -27,7 +27,7 @@ export async function generateNpcConversation(
   const template2 = templates[npc2.buildingId];
 
   const arenaContext = arenaMode
-    ? '\nYou are in the ElizaPets Arena where NPCs battle each other. You sometimes fight other NPCs. Reference combat, loot, rivalries, and battles naturally in conversation.'
+    ? '\nYou are in the ClawVille Arena where NPCs battle each other. You sometimes fight other NPCs. Reference combat, loot, rivalries, and battles naturally in conversation.'
     : '';
 
   const systemPrompt = `You are simulating a short conversation between two NPCs in Neopia Central.
@@ -122,7 +122,7 @@ export async function generateOpenClawConversation(
   _cryptoContext?: string,
 ): Promise<ConversationMessage[]> {
   const arenaContext = arenaMode
-    ? ' You are in the ElizaPets Arena where NPCs battle each other.'
+    ? ' You are in the ClawVille Arena where NPCs battle each other.'
     : '';
 
   const messages: ConversationMessage[] = [];

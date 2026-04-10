@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import type { AppContext } from '../types';
-import type { ResearchThoughtEvent } from '@elizapets/shared';
+import type { ResearchThoughtEvent } from '@clawville/shared';
 
 type ResearchListener = (event: ResearchThoughtEvent) => void;
 

@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
-import { db, users, eq } from '@elizapets/database';
+import { db, users, eq } from '@clawville/database';
 import { lucia } from '@/lib/auth';
 import { json, error, setSessionCookie } from '@/lib/api-utils';
 

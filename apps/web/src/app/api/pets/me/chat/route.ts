@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
-import { db, pets, eq, and } from '@elizapets/database';
+import { db, pets, eq, and } from '@clawville/database';
 import { json, error, requireAuth } from '@/lib/api-utils';
 import { agentOrchestrator } from '@/services/agent-orchestrator';
 

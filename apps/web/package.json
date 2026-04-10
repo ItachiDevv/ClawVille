@@ -1,5 +1,5 @@
 {
-  "name": "@elizapets/web",
+  "name": "@clawville/web",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -9,9 +9,9 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "@elizapets/agent-runtime": "workspace:*",
-    "@elizapets/database": "workspace:*",
-    "@elizapets/shared": "workspace:*",
+    "@clawville/agent-runtime": "workspace:*",
+    "@clawville/database": "workspace:*",
+    "@clawville/shared": "workspace:*",
     "@lucia-auth/adapter-drizzle": "^1.1.0",
     "@pixi/react": "^8.0.5",
     "@pixi/tilemap": "^5.0.2",

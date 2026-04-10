@@ -3,7 +3,7 @@
  * One instance per pet/NPC. No PixiJS deps — outputs numeric transforms.
  */
 
-import type { PetSpecies } from '@elizapets/shared';
+import type { PetSpecies } from '@clawville/shared';
 import type { AnimationState } from './pet-sprites';
 
 // ---- Species Personality Profiles ----
