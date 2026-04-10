@@ -5,8 +5,8 @@
  */
 
 import { findPath, type PathNode } from './pathfinding';
-import { NPC_BUILDING_CENTERS, BUILDING_ACTIVITIES, ACTIVITY_EMOJIS, type NpcActivity } from '@legacyapp/shared';
-import { db, avatars, activityLog } from '@legacyapp/database';
+import { NPC_BUILDING_CENTERS, BUILDING_ACTIVITIES, ACTIVITY_EMOJIS, type NpcActivity } from '@clawville/shared';
+import { db, avatars, activityLog } from '@clawville/database';
 import { sql } from 'drizzle-orm';
 import Anthropic from '@anthropic-ai/sdk';
 

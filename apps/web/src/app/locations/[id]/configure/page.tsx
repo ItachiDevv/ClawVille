@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { MAP_LOCATIONS } from '@legacyapp/shared';
+import { MAP_LOCATIONS } from '@clawville/shared';
 import { useLocationAgent, useSaveLocationAgent } from '@/hooks/use-locations';
 
 const TONE_OPTIONS = [

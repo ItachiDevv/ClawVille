@@ -1,4 +1,4 @@
-import { db } from '@legacyapp/database';
+import { db } from '@clawville/database';
 import { json, error } from '@/lib/api-utils';
 
 export const dynamic = 'force-dynamic';

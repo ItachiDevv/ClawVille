@@ -5,9 +5,9 @@ import Image from 'next/image';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useGameStore } from '@/stores/game';
 import { api } from '@/lib/api';
-import { AVATAR_SPECIES, KNOWLEDGE_BOOKS } from '@legacyapp/shared';
+import { AVATAR_SPECIES, KNOWLEDGE_BOOKS } from '@clawville/shared';
 import { SPECIES_SPRITE_MAP } from '@/lib/pixi/avatar-sprites';
-import type { AvatarSpecies } from '@legacyapp/shared';
+import type { AvatarSpecies } from '@clawville/shared';
 
 interface AvatarMessage {
   id: string;
