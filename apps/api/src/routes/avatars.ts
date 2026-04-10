@@ -9,7 +9,7 @@ import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { npcSimulation } from '../services/npc-simulation';
 import { creditClawTokens } from '../services/neo-token-ledger';
-import { ensurePetWallet } from '../services/avatar-wallet-service';
+import { ensureWallet } from '../services/wallet-service';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 
@@ -165,7 +165,7 @@ avatarRoutes.post('/', requireAuth, async (c) => {
   // forget from the caller's perspective — if wallet gen fails, log it
   // but don't block avatar creation. The backfill script will catch stragglers.
   try {
-    const wallet = await ensurePetWallet(avatar.id);
+    const wallet = await ensureWallet('avatar', avatar.id);
     avatar.walletAddress = wallet.publicKey;
   } catch (err) {
     console.error('[avatars] Failed to auto-generate wallet for new avatar:', err);
