@@ -318,9 +318,19 @@ function FPSFollowCamera({
 // handle to the state so it can be stopped if the Canvas is ever torn down.
 // ---------------------------------------------------------------------------
 function startManualRenderLoop(state: any): void {
-  if (state.__manualLoopRunning) return;
+  // Expose the state globally so we can poke it from devtools if anything
+  // goes wrong in production.
+  (window as any).__W3D = state;
+  if (state.__manualLoopRunning) {
+    // eslint-disable-next-line no-console
+    console.warn('[World3D] manual render loop already running, skipping start');
+    return;
+  }
   state.__manualLoopRunning = true;
   let rafId = 0;
+  let tick = 0;
+  // eslint-disable-next-line no-console
+  console.warn('[World3D] starting manual render loop');
   const loop = (t: number) => {
     if (!state.__manualLoopRunning) return;
     try {
@@ -328,6 +338,11 @@ function startManualRenderLoop(state: any): void {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('[World3D] manual render loop advance threw', err);
+    }
+    tick++;
+    if (tick === 1 || tick === 60 || tick === 300) {
+      // eslint-disable-next-line no-console
+      console.warn(`[World3D] manual loop tick ${tick}`);
     }
     rafId = requestAnimationFrame(loop);
   };
