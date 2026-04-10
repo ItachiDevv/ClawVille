@@ -369,12 +369,35 @@ export const useGameStore = create<GameState>((set, get) => ({
   openclawSessionId: null,
   openclawModalOpen: false,
   setOpenclawModalOpen: (open) => set({ openclawModalOpen: open }),
-  setOpenclawConnection: (sessionId) =>
-    set({
-      openclawConnected: !!sessionId,
+  setOpenclawConnection: (sessionId) => {
+    // A connected claw IS an agent driving the user's own pet (Option A
+    // architecture — the external claw takes over the user's avatar rather
+    // than spawning a parallel NPC). Flipping hasAgent here swaps the
+    // control-mode-toggle labels from Explore/NPC → Play/Autonomous and
+    // kicks the user into Play mode by default. On disconnect, we drop
+    // back to Explore (camera-only spectator).
+    const connected = !!sessionId;
+    const prev = get();
+
+    // If the user was mid-autonomous session and the claw is being disconnected,
+    // stop the autonomy engine's tick interval before wiping the mode — otherwise
+    // the 500ms interval would keep running and fire goal planning against a
+    // pet that nobody is driving.
+    if (!connected && prev.controlMode === 'autonomous') {
+      const { useAutonomyStore } = require('@/stores/autonomy') as typeof import('@/stores/autonomy');
+      useAutonomyStore.getState().stopAutonomy();
+    }
+
+    set((s) => ({
+      openclawConnected: connected,
       openclawSessionId: sessionId,
       openclawModalOpen: false,
-    }),
+      hasAgent: connected,
+      controlMode: connected ? 'player' : 'explore',
+      isSpectator: !connected,
+      possessedNpcId: connected ? null : s.possessedNpcId,
+    }));
+  },
 
   toasts: [],
   addToast: (icon, message, durationMs = 3000) => {
