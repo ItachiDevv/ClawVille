@@ -2,9 +2,39 @@
 
 ## CRITICAL RULES
 - **NEVER run localhost for testing** — crashes Intel Iris Xe GPU, requires PC restart
-- **Always push to git → Railway auto-deploys → test on production URL**
-- Production URL: https://web-production-58aa7.up.railway.app/game
-- API URL: https://api-production-e9f2.up.railway.app
+- **Always push to git → Coolify auto-deploys → test on production URL**
+- Production URL: https://clawville.world/game
+- API URL: https://api.clawville.world
+- Server: Hetzner CCX13 at <PROD_VPS_IP>, orchestrated by Coolify at https://coolify.clawville.world
+
+---
+
+## 🔴 IMMEDIATE — Treasury wallet import
+
+**Drop the file at exactly this path:**
+
+```
+C:\Users\newma\Documents\Crypto\ClawVille\scripts\deploy\treasury-wallet.json
+```
+
+Format must be the Solana CLI byte-array (64-integer JSON array). If your wallet is
+currently stored differently, tell Claude the format and it will explain how to convert
+it without exposing the key.
+
+Once the file is in place, tell Claude "imported" (or just "go") and it will run:
+
+```bash
+bun run scripts/import-treasury-wallet.ts scripts/deploy/treasury-wallet.json x402-merchant "Phase 4 prod merchant"
+```
+
+That will print the public key. Claude will then:
+- Stage `CLAWVILLE_MERCHANT_WALLET_PUBKEY=<pubkey>` on Coolify
+- Redeploy the api container
+- Confirm you can safely delete the local JSON file (and advise you to move the
+  original to cold storage)
+
+Claude will never cat, print, or log the contents of the file at any point. The only
+way the secret bytes leave memory is encrypted, into the DB.
 
 ---
 
@@ -15,23 +45,26 @@ All cross-chain and on-chain work lives here until Hetzner/Coolify cutover is do
 ### x402 middleware activation (Solana-first)
 Phase 4 shipped the audit ledger + treasury keypair infra. This activates the actual HTTP 402 paywall on agent-facing endpoints.
 
-**Ready to activate (libs + infra exist):**
-- `@x402/hono@2.9.0` verified to support Solana via `SchemeRegistration { network: 'solana:mainnet' }`
-- `@x402/svm@2.9.0` exports `ExactSvmScheme` + `registerExactSvmScheme()` helper
-- `@x402/core@2.9.0` provides `x402ResourceServer`, `HTTPFacilitatorClient`
-- `treasury_wallets` table exists — run `bun run scripts/generate-treasury-keypair.ts x402-merchant "Phase 4 prod"` post-deploy
-- Existing `keypair-vault.ts` handles AES-256-GCM encryption for the merchant secret
+**Status: scaffold shipped, paywall off by default.** The full wiring exists but is gated on `X402_ENABLED=true`. Activation is one env var flip away; the gate protects against accidental mainnet charges during dev iteration.
+
+**What's live:**
+- `@x402/hono@2.9.0`, `@x402/svm@2.9.0`, `@x402/core@2.9.0` installed in `apps/api`
+- `apps/api/src/services/x402-config.ts` — loads env, builds `x402ResourceServer` with `registerExactSvmScheme`, defines `RoutesConfig`
+- `apps/api/src/routes/agent-v2.ts` — `GET /api/v2/agent/ping` protected by `paymentMiddleware` when `X402_ENABLED=true`. When disabled, the route still responds with `{ x402Enabled: false }` so you can verify the route is mounted.
+- Merchant wallet in `treasury_wallets`: pubkey `79sH9jtT7EpWLCemadFZQb7sD1b6rCqkwTtSxDCViLLE`, encrypted secret in Supabase
+- `CLAWVILLE_MERCHANT_WALLET_PUBKEY` + `VANITY_ENCRYPTION_KEY` staged on Coolify api app
 
 **Tasks:**
-- [ ] Post-Hetzner deploy: run `generate-treasury-keypair.ts` to populate a merchant wallet in treasury_wallets
-- [ ] Add `CLAWVILLE_MERCHANT_WALLET_PUBKEY` env var to Hetzner/Coolify config
-- [ ] Add deps: `@x402/hono`, `@x402/svm`, `@x402/core` to `apps/api/package.json`
-- [ ] Note: `@x402/svm` uses `@solana-program/token` (Web3.js v2) while `keypair-vault.ts` uses `@solana/web3.js@1.x` — either coexist or migrate vault to v2
-- [ ] Write `apps/api/src/services/x402-config.ts` — facilitator URL, prices, merchant address lookup
-- [ ] Write `apps/api/src/middleware/x402-solana.ts` — wraps `paymentMiddlewareFromConfig` with `ExactSvmScheme`
-- [ ] Wire middleware onto new `/api/v2/agent/*` routes (consult, knowledge export, simulation status)
+- [x] Post-Hetzner deploy: import merchant wallet into treasury_wallets via `scripts/import-treasury-wallet.ts` (pubkey `79sH9jtT7EpWLCemadFZQb7sD1b6rCqkwTtSxDCViLLE`)
+- [x] Add `CLAWVILLE_MERCHANT_WALLET_PUBKEY` env var to Hetzner/Coolify config
+- [x] Add deps: `@x402/hono@2.9.0`, `@x402/svm@2.9.0`, `@x402/core@2.9.0` to `apps/api/package.json`
+- [x] v1/v2 Solana coexistence: no interop needed — server-side verification only uses the merchant *public key* as a string. `keypair-vault.ts` stays on v1, `@x402/svm` uses v2 internally. Peer-dep warning for `@solana/kit@6.8.0` is non-blocking; add it explicitly if/when we need client-side signing.
+- [x] Write `apps/api/src/services/x402-config.ts` — loads env, builds `x402ResourceServer`, defines `RoutesConfig`
+- [x] Skeleton: `/api/v2/agent/ping` route wired behind `X402_ENABLED` env flag (default off). Files: `apps/api/src/routes/agent-v2.ts`, registered at `apps/api/src/index.ts`.
+- [ ] **Next**: flip `X402_ENABLED=true` on Coolify once a Solana mainnet USDC wallet is funded + CDP facilitator account is set up
+- [ ] Wire middleware onto real endpoints (consult, knowledge export, simulation status) after the ping smoke-test passes
 - [ ] Decision point: free tier limit (e.g. 3 consults/IP/day) vs hard 402 from first request
-- [ ] Verify CDP facilitator URL for Solana mainnet (check https://docs.cdp.coinbase.com/x402/welcome)
+- [ ] Verify CDP facilitator URL for Solana mainnet (check https://docs.cdp.coinbase.com/x402/welcome — currently defaulting to `https://api.cdp.coinbase.com/platform/v2/x402`)
 
 ### BSC migration
 User has partnerships and networks on BSC — first-class chain target alongside Solana.
@@ -82,6 +115,95 @@ Base has the strongest agent ecosystem (ERC-8004, x402 default, Coinbase CDP). G
 - Bikini Bottom terrain GLB as sandy landscape ✅
 - Terrain raycasting with Layer 1 isolation ✅
 - Deployed to Railway ✅
+
+---
+
+## TOP PRIORITY: ElizaOS v2 Migration (4 Phases)
+
+Currently on `@elizaos/core@1.7.1`. Migrate to `2.0.0` in 4 bounded, independent phases. Each phase ships separately and is reversible. Phases 2-4 are enabled by Phase 1 but should NOT be bundled with it.
+
+**Key research findings (from collaborative agent team, 2026-04-10):**
+- `AgentRuntime` class name and `@elizaos/core` package name unchanged in v2
+- `adapter: IDatabaseAdapter` is now REQUIRED on AgentRuntime constructor (no longer lazy-loaded via plugin-sql)
+- `@elizaos/plugin-bootstrap` REMOVED — replaced by `createBootstrapPlugin(config)` built into core, auto-registered during `runtime.initialize()`. External code must NOT import `bootstrapPlugin` directly.
+- API keys move from runtime `settings` → `character.secrets` field
+- `getMemories({ count })` → `getMemories({ limit })` (count deprecated but still works)
+- `Plugin.models` remains single-handler-per-key (not array): `{ [ModelType.TEXT_LARGE]: handler }` pattern unchanged
+- `createMemory(memory, tableName)` second arg retained
+- `ChannelType.API` still valid
+- `runtime.generateText(prompt, opts)` still on IAgentRuntime (don't have to migrate to `useModel`)
+- Our OpenClaw + Ultrathink providers port ~unchanged (priority-based model selection preserved)
+
+### Phase 1 — Pure Runtime Port (CURRENT)
+Bump versions, rewrite `eliza-runtime.ts` to match v2 APIs, verify custom plugins still work, ensure existing chat/NPC/autonomy flows function unchanged. **No feature changes.** Ship boring, reversible parity.
+
+- [ ] Bump `@elizaos/core` 1.7.1 → 2.0.0
+- [ ] Bump `@elizaos/plugin-anthropic` 1.5.12 → 2.0.0 (still used as fallback; ultrathink bypasses it)
+- [ ] Bump `@elizaos/plugin-openai` 1.6.0 → 2.0.0 (embeddings)
+- [ ] Bump `@elizaos/plugin-sql` 1.7.1 → 2.0.0
+- [ ] Remove `@elizaos/plugin-bootstrap` from pluginMap + dynamic import (built into core in v2)
+- [ ] Construct + inject `IDatabaseAdapter` directly into AgentRuntime constructor
+- [ ] Move API keys from `settings` → `character.secrets`
+- [ ] Update `getMemories` to use `limit` instead of `count`
+- [ ] Verify OpenClaw provider plugin (`priority: 100`) still wins priority chain
+- [ ] Verify Ultrathink provider plugin (`priority: 90`) still wins over default Anthropic
+- [ ] Test all 10 building agents chat flow on Railway
+- [ ] Test pet chat, NPC conversations, pet autonomy
+- [ ] Verify Milady gateway + collaboration still inject dynamic context correctly
+- [ ] Rollback path: revert package.json + eliza-runtime.ts if anything breaks
+
+### Phase 2 — Autonomy System (HTN-driven pet behavior)
+Replace 336-line hand-rolled `pet-autonomy.ts` state machine with v2's ActionPlan + autonomy primitives. Pets pursue declarative goals like "visit 3 buildings, earn tokens, learn about cron jobs" via runtime-driven planning.
+
+**v2 primitives used:** `ActionPlan`, `ActionResult` (with `values` + `data` for chaining), `Action` interface, task-mode autonomy (if `ENABLE_AUTONOMY` ships in our build — otherwise wrap `agentloop` manually).
+
+- [ ] Verify `ENABLE_AUTONOMY` + `AutonomyService` are available in our v2 install (may be Eliza Cloud only)
+- [ ] If not available: build thin custom `AutonomyService` wrapping `agentloop` + `ActionPlan` type
+- [ ] Define actions: `MOVE_TO_BUILDING(id)`, `CHAT_WITH_BUILDING(id)`, `BUY_BOOK(bookId)`, `LEARN_BOOK(bookId)`, `RETURN_HOME`
+- [ ] Each action returns `ActionResult` with `values.tokensEarned`, `data.bookPurchased`, etc.
+- [ ] Move pathfinding (`findPath()`) into `MOVE_TO_BUILDING` handler body
+- [ ] Move token award + activity log DB writes into action handlers
+- [ ] Port `maxVisitsThreshold` + `MAX_TOKENS_PER_SESSION` to a cost-control Evaluator firing on `ACTION_COMPLETED`
+- [ ] Add `sendToAdmin` equivalent for failure reporting back to the owner
+- [ ] Delete `apps/api/src/services/pet-autonomy.ts` (336 lines → ~0)
+- [ ] Test: pet enters autonomous mode, completes 3-building task, returns home
+
+### Phase 3 — Event-Driven Agent Collaboration
+Replace 191-line `agent-collaboration.ts` bespoke keyword routing with v2 plugin events + a process-level broker service. Cross-building agents consult each other via events instead of ad-hoc Haiku calls.
+
+**v2 primitives used:** Plugin `events: { [EventType.X]: [handler] }`, `runtime.on/emit`, `ACTION_COMPLETED` evaluator, custom namespaced event `CLAWVILLE_NEED_SPECIALIST`.
+
+**Gotcha:** Event bus is per-runtime. Cross-agent delivery requires a process-level broker — NOT built into v2 core. Our `agent-orchestrator.ts` becomes the broker.
+
+- [ ] Add `CLAWVILLE_NEED_SPECIALIST` custom event constant
+- [ ] Build evaluator on building agents that fires event on keyword match (reuses `EXPERTISE_KEYWORDS`)
+- [ ] Extend `agent-orchestrator.ts` with cross-runtime event broker (listens on all runtimes, routes by target building, calls target `processMessage`, returns result)
+- [ ] Anti-recursion guard: consultation responses must NOT re-trigger evaluators
+- [ ] Per-conversation cooldown (e.g., max 2 consultations per user turn)
+- [ ] Result becomes provider output on the next source-agent tick
+- [ ] Remove ad-hoc `anthropic.messages.create` from collaboration service
+- [ ] Delete `apps/api/src/services/agent-collaboration.ts` (191 lines → replaced by broker in orchestrator)
+- [ ] Test: cron-hub receives webhook question → cross-consults webhook-gateway → answer enriched with specialist insight
+
+### Phase 4 — AgentID / On-Chain Identity (ERC-8004 + x402)
+Pets become ERC-721 NFTs with ERC-8004 Identity Registry entries. Buildings can charge ClawTokens or USDC-on-Base for teaching services via HTTP 402 payment protocol.
+
+**External deps:** ERC-8004 EIP, Coinbase x402 protocol, wallet custody (KMS or Privy-style embedded wallets), on-chain indexer.
+
+**Decoupled from v2 core.** Can ship after Phases 1-3. Real blockchain infra project, not a runtime port.
+
+- [ ] **Decision point:** custodial wallets (KMS) vs embedded wallets (Privy/Dynamic) vs user-held
+- [ ] **Decision point:** ClawTokens off-chain (cleaner) vs on-chain ERC-20 (composable)
+- [ ] Sub-phase 4a: Mint ERC-8004 Identity NFT at pet creation (Base or Solana)
+- [ ] Sub-phase 4a: `pets.walletAddress` DB column + Transfer event indexer updates `pets.userId`
+- [ ] Sub-phase 4a: Dynamic metadata endpoint `/api/pets/:id/metadata.json` serving live pet state
+- [ ] Sub-phase 4b: x402 paywall on building chat endpoints (returns 402 + price in ClawTokens/USDC)
+- [ ] Sub-phase 4b: Pet wallet service auto-pays for teaching requests
+- [ ] Sub-phase 4b: Evaluate 0xgasless/agent-sdk as reference implementation
+- [ ] **Prerequisite:** ServiceType.wallet ships in public v2 or we vendor a wallet plugin
+- [ ] Risks: ERC-8004 registries not yet canonically deployed; custodial wallet regulatory exposure
+
+---
 
 ## Completed: Control System Redesign
 
