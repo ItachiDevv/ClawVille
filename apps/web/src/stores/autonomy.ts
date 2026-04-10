@@ -1,6 +1,6 @@
 import { create } from 'zustand';
-import { NPC_BUILDING_CENTERS } from '@legacyapp/shared';
-import { BUILDING_OPENCLAW_THEMES } from '@legacyapp/shared';
+import { NPC_BUILDING_CENTERS } from '@clawville/shared';
+import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 import { findPath } from '@/lib/pixi/client-pathfinding';
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-import { templates, type LocationTemplate } from '@legacyapp/agent-templates';
+import { templates, type LocationTemplate } from '@clawville/agent-templates';
 
 export function loadLocationTemplate(locationId: string): LocationTemplate {
   const template = templates[locationId];

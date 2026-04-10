@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
-import { db, mapLocations, locationAgents, agents, eq, and } from '@legacyapp/database';
+import { db, mapLocations, locationAgents, agents, eq, and } from '@clawville/database';
 import { json, error, requireAuth } from '@/lib/api-utils';
 
 // GET - Get user's agent config for a location

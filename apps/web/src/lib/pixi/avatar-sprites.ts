@@ -1,4 +1,4 @@
-import type { AvatarSpecies, AvatarColor } from '@legacyapp/shared';
+import type { AvatarSpecies, AvatarColor } from '@clawville/shared';
 
 // --- Sprite sheet layout constants ---
 export const SPRITE_FRAME_WIDTH = 128;

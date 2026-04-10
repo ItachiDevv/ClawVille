@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq } from 'drizzle-orm';
 import { lucia } from '../lib/auth';
-import { db, users } from '@legacyapp/database';
+import { db, users } from '@clawville/database';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import type { AppContext } from '../types';
 import { z } from 'zod';

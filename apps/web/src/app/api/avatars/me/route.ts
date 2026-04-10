@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
-import { db, avatars, eq, and } from '@legacyapp/database';
+import { db, avatars, eq, and } from '@clawville/database';
 import { json, error, requireAuth } from '@/lib/api-utils';
 
 export async function GET() {

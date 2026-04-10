@@ -1,8 +1,8 @@
 'use client';
 
 import { useGameStore, type GameState } from '@/stores/game';
-import { BUILDING_OPENCLAW_THEMES } from '@legacyapp/shared';
-import { NPC_DEFINITIONS } from '@legacyapp/shared';
+import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
+import { NPC_DEFINITIONS } from '@clawville/shared';
 
 export default function BuildingTooltip() {
   const hoveredBuilding = useGameStore((s: GameState) => s.hoveredBuilding);

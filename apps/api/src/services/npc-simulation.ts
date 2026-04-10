@@ -13,7 +13,7 @@ import {
   type ArenaSettings,
   type ArenaRoundState,
   DEFAULT_ARENA_SETTINGS,
-} from '@legacyapp/shared';
+} from '@clawville/shared';
 import { generateNpcConversation, generateOpenClawConversation } from './npc-conversation-engine';
 import { findPath, type PathNode } from './pathfinding';
 import { PetAutonomyManager } from './avatar-autonomy';
