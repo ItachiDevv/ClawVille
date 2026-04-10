@@ -16,7 +16,7 @@ import {
 } from '@clawville/shared';
 import { generateNpcConversation, generateOpenClawConversation } from './npc-conversation-engine';
 import { findPath, type PathNode } from './pathfinding';
-import { PetAutonomyManager } from './avatar-autonomy';
+import { PetSimulationBridge } from './avatar-simulation-bridge';
 import { memoryService } from './memory-service';
 import type { OpenClawClient } from './openclaw-client';
 
@@ -150,7 +150,7 @@ class NpcSimulation {
   private combatCooldown = 0;
   private idCounter = 0;
   private pendingEvents: SimulationEvent[] = [];
-  public petAutonomyManager = new PetAutonomyManager();
+  public petAutonomyManager = new PetSimulationBridge();
   private arenaSettings: ArenaSettings = { ...DEFAULT_ARENA_SETTINGS };
   private arenaRound: ArenaRoundState | null = null;
 
@@ -539,7 +539,7 @@ class NpcSimulation {
       this.sweepOrphanedCombatFlags();
     }
 
-    // Autonomous avatar behavior (world mode only)
+    // Autonomous avatar behavior (world mode only) — Phase 2: via SimulationRuntime
     if (!this.arenaMode) {
       this.petAutonomyManager.tick();
     }
