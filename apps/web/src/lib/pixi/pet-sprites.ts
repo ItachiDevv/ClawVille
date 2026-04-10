@@ -1,4 +1,4 @@
-import type { PetSpecies, PetColor } from '@elizapets/shared';
+import type { PetSpecies, PetColor } from '@clawville/shared';
 
 // --- Sprite sheet layout constants ---
 export const SPRITE_FRAME_WIDTH = 128;

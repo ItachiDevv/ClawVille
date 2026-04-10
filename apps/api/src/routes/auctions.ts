@@ -12,7 +12,7 @@ import {
   auctionBids,
   auctionAgentConfigs,
   petInventory,
-} from '@elizapets/database';
+} from '@clawville/database';
 import { eq, and, desc, asc, lt, sql } from 'drizzle-orm';
 
 // ---------------------------------------------------------------------------

@@ -27,7 +27,7 @@
       "@/*": [
         "./src/*"
       ],
-      "@elizapets/shared": [
+      "@clawville/shared": [
         "../../packages/shared/src"
       ]
     }

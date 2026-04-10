@@ -1,5 +1,5 @@
 {
-  "name": "@elizapets/agent-runtime",
+  "name": "@clawville/agent-runtime",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -17,13 +17,12 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
-    "@elizapets/agent-templates": "workspace:*",
-    "@elizapets/shared": "workspace:*",
-    "@elizaos/core": "1.7.1",
-    "@elizaos/plugin-anthropic": "1.5.12",
-    "@elizaos/plugin-bootstrap": "1.7.1",
-    "@elizaos/plugin-openai": "1.6.0",
-    "@elizaos/plugin-sql": "1.7.1",
+    "@clawville/agent-templates": "workspace:*",
+    "@clawville/shared": "workspace:*",
+    "@elizaos/core": "2.0.0-alpha.3",
+    "@elizaos/plugin-anthropic": "2.0.0-alpha.6",
+    "@elizaos/plugin-openai": "2.0.0-alpha.6",
+    "@elizaos/plugin-sql": "2.0.0-alpha.7",
     "uuid": "^9.0.0"
   },
   "devDependencies": {

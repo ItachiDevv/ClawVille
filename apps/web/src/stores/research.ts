@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { ResearchPhase, ResearchThoughtEvent } from '@elizapets/shared';
+import type { ResearchPhase, ResearchThoughtEvent } from '@clawville/shared';
 
 export interface ThoughtLogEntry {
   id: string;

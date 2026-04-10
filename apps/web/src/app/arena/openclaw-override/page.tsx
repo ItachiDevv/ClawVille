@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import dynamic from 'next/dynamic';
-import { NPC_DEFINITIONS } from '@elizapets/shared';
+import { NPC_DEFINITIONS } from '@clawville/shared';
 import { api } from '@/lib/api';
 
 const ArenaCanvas = dynamic(() => import('@/components/pixi/ArenaCanvas'), { ssr: false });

@@ -1,4 +1,4 @@
-import type { OpenClawBotConfig } from '@elizapets/shared';
+import type { OpenClawBotConfig } from '@clawville/shared';
 
 type Protocol = 'openai-compat' | 'anthropic' | 'custom-webhook';
 

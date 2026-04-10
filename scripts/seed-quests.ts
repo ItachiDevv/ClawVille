@@ -2,8 +2,8 @@ import { config } from 'dotenv';
 import { resolve } from 'path';
 config({ path: resolve(__dirname, '../.env.local') });
 
-import { db, quests } from '@elizapets/database';
-import { QUEST_SEEDS } from '@elizapets/shared';
+import { db, quests } from '@clawville/database';
+import { QUEST_SEEDS } from '@clawville/shared';
 
 async function seedQuests() {
   console.log('=== Seeding Quest Board ===\n');

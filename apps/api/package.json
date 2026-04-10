@@ -1,5 +1,5 @@
 {
-  "name": "@elizapets/api",
+  "name": "@clawville/api",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -13,10 +13,10 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
-    "@elizapets/agent-runtime": "workspace:*",
-    "@elizapets/agent-templates": "workspace:*",
-    "@elizapets/database": "workspace:*",
-    "@elizapets/shared": "workspace:*",
+    "@clawville/agent-runtime": "workspace:*",
+    "@clawville/agent-templates": "workspace:*",
+    "@clawville/database": "workspace:*",
+    "@clawville/shared": "workspace:*",
     "@lucia-auth/adapter-drizzle": "^1.1.0",
     "cheerio": "^1.2.0",
     "drizzle-orm": "^0.33.0",

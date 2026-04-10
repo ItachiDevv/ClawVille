@@ -1,12 +1,12 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { templates } from '@elizapets/agent-templates';
+import { templates } from '@clawville/agent-templates';
 import {
   EXPERTISE_KEYWORDS,
   BUILDING_OPENCLAW_THEMES,
   type ConsultationInsight,
   type CollaborationRequest,
   type CollaborationResult,
-} from '@elizapets/shared';
+} from '@clawville/shared';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,

@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useGameStore } from '@/stores/game';
 import { useLocationChat } from '@/hooks/use-location-chat';
 import { useLocationAgent } from '@/hooks/use-locations';
-import { MAP_LOCATIONS, isShopBuilding } from '@elizapets/shared';
+import { MAP_LOCATIONS, isShopBuilding } from '@clawville/shared';
 
 export default function ChatPanel() {
   const { chatOpen, currentLocation, exitBuilding, openLocationConfig, openShop } = useGameStore();

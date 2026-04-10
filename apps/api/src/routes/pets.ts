@@ -1,9 +1,9 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and } from 'drizzle-orm';
-import { db, pets, agents, petInventory } from '@elizapets/database';
-import { PET_ARCHETYPES, ARCHETYPE_IDS, getBookById } from '@elizapets/shared';
-import type { PetArchetypeId } from '@elizapets/shared';
+import { db, pets, agents, petInventory } from '@clawville/database';
+import { PET_ARCHETYPES, ARCHETYPE_IDS, getBookById } from '@clawville/shared';
+import type { PetArchetypeId } from '@clawville/shared';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
@@ -74,7 +74,7 @@ function buildCharacterConfig(archetypeId: PetArchetypeId, petName: string, spec
   if (!archetype) throw new Error(`Unknown archetype: ${archetypeId}`);
 
   const system = [
-    `You are ${petName}, a ${species} in the world of ElizaPets — a Neopets-themed virtual pet universe on Solana.`,
+    `You are ${petName}, a ${species} in the sea-themed world of ClawVille — a virtual pet adventure where agents learn OpenClaw skills.`,
     `Your archetype is "${archetype.label}". Stay in character at all times.`,
     `You exist in Neopia Central and have deep knowledge of Neopets lore, culture, and locations.`,
     `You also have knowledge of Solana, cryptocurrency, and memecoin/degen culture — weave this naturally into conversation when relevant.`,
@@ -296,7 +296,7 @@ petRoutes.post('/me/chat', requireAuth, async (c) => {
   const response = await runtime.processMessage(result.data.content, {
     userId: user.id,
     roomId: `pet-${pet.id}-${user.id}`,
-    platform: 'elizapets',
+    platform: 'clawville',
     dynamicContext,
   });
 

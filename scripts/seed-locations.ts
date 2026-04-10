@@ -2,8 +2,8 @@ import { config } from 'dotenv';
 import { resolve } from 'path';
 config({ path: resolve(__dirname, '../.env.local') });
 
-import { db, mapLocations } from '@elizapets/database';
-import { MAP_LOCATIONS } from '@elizapets/shared';
+import { db, mapLocations } from '@clawville/database';
+import { MAP_LOCATIONS } from '@clawville/shared';
 
 async function seed() {
   console.log('Seeding map locations...');

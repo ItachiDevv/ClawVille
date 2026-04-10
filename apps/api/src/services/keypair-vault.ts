@@ -1,7 +1,7 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
 import { Keypair } from '@solana/web3.js';
-import { db, eq, and, vanityKeypairs } from '@elizapets/database';
-import type { vanitySuffixEnum } from '@elizapets/database';
+import { db, eq, and, vanityKeypairs } from '@clawville/database';
+import type { vanitySuffixEnum } from '@clawville/database';
 
 const ALGORITHM = 'aes-256-gcm';
 

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { npcSimulation } from '../services/npc-simulation';
-import { db, openclawBots, eq } from '@elizapets/database';
+import { db, openclawBots, eq } from '@clawville/database';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import type { AppContext, AuthenticatedContext } from '../types';
 

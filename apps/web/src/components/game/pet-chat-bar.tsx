@@ -5,9 +5,9 @@ import Image from 'next/image';
 import { usePet } from '@/hooks/use-pet';
 import { useGameStore } from '@/stores/game';
 import { api } from '@/lib/api';
-import { PET_SPECIES, KNOWLEDGE_BOOKS } from '@elizapets/shared';
+import { PET_SPECIES, KNOWLEDGE_BOOKS } from '@clawville/shared';
 import { SPECIES_SPRITE_MAP } from '@/lib/pixi/pet-sprites';
-import type { PetSpecies } from '@elizapets/shared';
+import type { PetSpecies } from '@clawville/shared';
 
 interface PetMessage {
   id: string;

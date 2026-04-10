@@ -1,8 +1,8 @@
 import * as cheerio from 'cheerio';
 import { createHash } from 'crypto';
-import { db, researchArticles, eq, and } from '@elizapets/database';
-import { LOCATION_ARTICLE_SEEDS } from '@elizapets/shared';
-import type { ResearchArticleSeed } from '@elizapets/shared';
+import { db, researchArticles, eq, and } from '@clawville/database';
+import { LOCATION_ARTICLE_SEEDS } from '@clawville/shared';
+import type { ResearchArticleSeed } from '@clawville/shared';
 
 export class ArticleScraper {
   /**

@@ -1,7 +1,7 @@
 'use client';
 
 import { useGameStore, type GameState } from '@/stores/game';
-import { MAP_LOCATIONS, BUILDING_OPENCLAW_THEMES } from '@elizapets/shared';
+import { MAP_LOCATIONS, BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 
 export default function LocationHUD() {
   const nearLocation = useGameStore((s: GameState) => s.nearLocation);
