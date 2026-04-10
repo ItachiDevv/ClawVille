@@ -1,27 +1,5 @@
 'use client';
 
-// --- window-global diagnostic object -----------------------------------------
-// Because console.log gets filtered in production and the MCP console listener
-// has timing issues, we surface key lifecycle events via window.__W3D_STATUS
-// so they can be inspected at any time from devtools. The values persist until
-// the page is reloaded.
-if (typeof window !== 'undefined') {
-  (window as any).__W3D_STATUS ??= {
-    moduleEval: false,
-    componentRender: 0,
-    componentMount: 0,
-    glFactoryCalled: 0,
-    glFactoryResolved: 0,
-    onCreatedFired: 0,
-    manualLoopStarted: 0,
-    loopTicks: 0,
-    advanceErrors: [] as string[],
-    lastErrorAt: 0,
-  };
-  (window as any).__W3D_STATUS.moduleEval = true;
-}
-// ------------------------------------------------------------------------------
-
 import { useRef, useEffect, useCallback, memo } from 'react';
 import { Canvas, useFrame, extend } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
@@ -99,6 +77,12 @@ const _spherical = new THREE.Spherical();
 // Scratch objects for FPSFollowCamera — allocated once, reused every frame
 const _followOffset = new THREE.Vector3();
 const _followTarget = new THREE.Vector3();
+
+// Scratch objects for WASDCameraController — allocated once, reused every frame
+const _wasdForward = new THREE.Vector3();
+const _wasdRight = new THREE.Vector3();
+const _wasdFlatForward = new THREE.Vector3();
+const _wasdWorldUp = new THREE.Vector3(0, 1, 0);
 
 // Follow distance: how many units the camera sits behind/above the character.
 // OrbitControls manages the actual angle — we just enforce the radial distance.
@@ -227,20 +211,18 @@ function WASDCameraController({
     dz = (dz / len) * CAM_PAN_SPEED * delta;
 
     const camera = controls.object;
-    // Full 3D forward direction (includes Y for swimming up/down)
-    const forward = new THREE.Vector3();
-    camera.getWorldDirection(forward);
-    forward.normalize();
+    // Full 3D forward direction (includes Y for swimming up/down) — reuse scratch vectors
+    camera.getWorldDirection(_wasdForward);
+    _wasdForward.normalize();
 
     // Right vector is always horizontal (cross forward with world up)
-    const right = new THREE.Vector3();
-    const flatForward = new THREE.Vector3(forward.x, 0, forward.z).normalize();
-    right.crossVectors(flatForward, new THREE.Vector3(0, 1, 0)).normalize();
+    _wasdFlatForward.set(_wasdForward.x, 0, _wasdForward.z).normalize();
+    _wasdRight.crossVectors(_wasdFlatForward, _wasdWorldUp).normalize();
 
     // Move in full 3D: W/S along camera direction (incl. Y), A/D strafe horizontal
-    const moveX = right.x * dx + forward.x * dz;
-    const moveY = forward.y * dz; // swim up/down when looking up/down
-    const moveZ = right.z * dx + forward.z * dz;
+    const moveX = _wasdRight.x * dx + _wasdForward.x * dz;
+    const moveY = _wasdForward.y * dz; // swim up/down when looking up/down
+    const moveZ = _wasdRight.z * dx + _wasdForward.z * dz;
 
     const target = controls.target;
     target.x = Math.max(-HALF_W, Math.min(HALF_W, target.x + moveX));
@@ -340,13 +322,13 @@ function FPSFollowCamera({
 // handle to the state so it can be stopped if the Canvas is ever torn down.
 // ---------------------------------------------------------------------------
 function startManualRenderLoop(state: any): void {
-  const status = (window as any).__W3D_STATUS;
-  // Expose the state globally so we can poke it from devtools if anything
-  // goes wrong in production.
-  (window as any).__W3D = state;
+  // Expose the state on window.__W3D so it's available for devtools poking
+  // when diagnosing rendering issues. Stable across re-renders.
+  if (typeof window !== 'undefined') {
+    (window as any).__W3D = state;
+  }
   if (state.__manualLoopRunning) return;
   state.__manualLoopRunning = true;
-  status.manualLoopStarted = (status.manualLoopStarted || 0) + 1;
 
   // Use setInterval instead of requestAnimationFrame because browsers throttle
   // RAF to 0 Hz in hidden / unfocused tabs, which would freeze the scene any
@@ -357,10 +339,12 @@ function startManualRenderLoop(state: any): void {
     try {
       state.advance(performance.now() / 1000, true);
     } catch (err) {
-      status.advanceErrors.push(String(err).slice(0, 200));
-      status.lastErrorAt = Date.now();
+      // Swallow — advance shouldn't throw under normal conditions. If it does,
+      // surface it once via console.error so it shows up in devtools but don't
+      // kill the loop (the next tick might succeed).
+      // eslint-disable-next-line no-console
+      console.error('[World3D] manual render loop advance threw', err);
     }
-    status.loopTicks = (status.loopTicks || 0) + 1;
   };
   const intervalId = setInterval(step, 16); // ~62 Hz in foreground
 
@@ -388,7 +372,9 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
 
   return (
     <>
-      {/* Camera controls */}
+      {/* Camera controls.
+          Target at z=-50 centres on the middle building row (z ≈ -64) so the
+          initial overview shows all 3 rows symmetrically. */}
       <OrbitControls
         ref={controlsRef}
         makeDefault
@@ -396,9 +382,9 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
         enableZoom={true}
         enableRotate={true}
         minDistance={followMode ? 20 : 80}
-        maxDistance={800}
+        maxDistance={1200}
         maxPolarAngle={Math.PI * 0.85}
-        target={[0, 10, 0]}
+        target={[0, 10, -50]}
       />
 
       {/* Camera controller routing based on controlMode:
@@ -414,11 +400,12 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       )}
       <ArrowKeyRotationController controlsRef={controlsRef} />
 
-      {/* Underwater lighting — warm caustic tones with strong contrast */}
-      <hemisphereLight args={[0x66bbdd, 0x223344, 1.5]} />
-      <ambientLight intensity={0.4} color={0x88ccee} />
+      {/* Underwater lighting — warm caustic tones with strong contrast.
+          3 lights max for Intel Iris Xe budget: hemisphereLight already
+          provides ambient sky/ground fill, so no separate ambientLight. */}
+      <hemisphereLight args={[0x66bbdd, 0x223344, 1.8]} />
       <directionalLight position={[150, 350, 80]} intensity={2.0} color={0xffeedd} />
-      {/* Secondary fill light from opposite side for depth */}
+      {/* Secondary fill from opposite side for depth */}
       <directionalLight position={[-100, 200, -60]} intensity={0.5} color={0x88aacc} />
 
       {/* Underwater fog — pushed back for better visibility */}
@@ -513,35 +500,22 @@ function ContextLostFallback() {
 }
 
 function World3DCanvas({ mode }: World3DCanvasProps) {
-  const status = (typeof window !== 'undefined' ? (window as any).__W3D_STATUS : null);
-  if (status) status.componentRender = (status.componentRender || 0) + 1;
-
-  useEffect(() => {
-    if (status) status.componentMount = (status.componentMount || 0) + 1;
-  }, [status]);
-
   // Stable async gl factory — R3F v9 awaits this before rendering.
   // Returns a WebGPURenderer (with automatic WebGL2 fallback built in).
   // Falls back to standard WebGLRenderer if the dynamic import or init fails.
   const glFactory = useCallback(
     async (defaultProps: { canvas: HTMLCanvasElement }) => {
-      const s = (window as any).__W3D_STATUS;
-      if (s) s.glFactoryCalled = (s.glFactoryCalled || 0) + 1;
       try {
-        const r = await createWebGPURenderer(defaultProps.canvas);
-        if (s) s.glFactoryResolved = (s.glFactoryResolved || 0) + 1;
-        return r;
+        return await createWebGPURenderer(defaultProps.canvas);
       } catch (err) {
         console.warn('[World3D] WebGPURenderer unavailable, falling back to WebGLRenderer:', err);
         // Import classic WebGLRenderer from base three (not three/webgpu)
         const { WebGLRenderer } = await import('three');
-        const r = new WebGLRenderer({
+        return new WebGLRenderer({
           canvas: defaultProps.canvas,
           antialias: false,
           powerPreference: 'low-power',
         });
-        if (s) s.glFactoryResolved = (s.glFactoryResolved || 0) + 1;
-        return r;
       }
     },
     [],
@@ -573,22 +547,21 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
           fov: 50,
           near: 1,
           far: 2000,
-          position: mode === 'game' ? [0, 80, 150] : [0, 200, 350],
+          // Game mode: pull the camera back to z=450 so all 3 building rows
+          // (z = -288 to z = 192) are visible in the initial view. Row 3 sits
+          // at z=192, which was behind the previous spawn position of z=150.
+          position: mode === 'game' ? [0, 200, 450] : [0, 200, 350],
         }}
         onCreated={(state) => {
-          const s = (window as any).__W3D_STATUS;
-          if (s) s.onCreatedFired = (s.onCreatedFired || 0) + 1;
           const { scene, gl } = state;
           scene.background = SKY_COLOR;
           gl.setPixelRatio(Math.min(window.devicePixelRatio, 1));
           if ((gl as any).isWebGPURenderer) {
             const backend = (gl as any).backend;
             const name = backend?.constructor?.name ?? 'unknown';
-            // eslint-disable-next-line no-console
-            console.warn(`[World3D] Using WebGPURenderer (backend: ${name})`);
+            console.log(`[World3D] Using WebGPURenderer (backend: ${name})`);
           } else {
-            // eslint-disable-next-line no-console
-            console.warn('[World3D] Using WebGLRenderer');
+            console.log('[World3D] Using WebGLRenderer');
           }
           // Drive the render loop ourselves — see startManualRenderLoop() for why.
           startManualRenderLoop(state);
