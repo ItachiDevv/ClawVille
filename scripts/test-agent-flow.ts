@@ -10,13 +10,13 @@
 //   7. Disconnect via /api/openclaw/unregister/:sessionId
 //
 // Prerequisites:
-//   1. API running at API_URL (default: https://api-production-e9f2.up.railway.app)
+//   1. API running at API_URL (default: https://api.clawville.world)
 //   2. Mock gateway running: bun run test:mock-gateway
 //
 // Run: bun run scripts/test-agent-flow.ts
 // Or:  bun run test:agent-flow
 
-const API_URL = process.env.API_URL || 'https://api-production-e9f2.up.railway.app';
+const API_URL = process.env.API_URL || 'https://api.clawville.world';
 const BOT_URL = process.env.BOT_URL || 'http://localhost:9876';
 
 // --- Helpers ---

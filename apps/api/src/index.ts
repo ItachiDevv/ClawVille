@@ -22,6 +22,7 @@ import { questRoutes } from './routes/quests';
 import { bountyRoutes } from './routes/bounties';
 import { agentSetupRoutes } from './routes/agent-setup';
 import { skillsRoutes } from './routes/skills';
+import { agentV2Routes } from './routes/agent-v2';
 import { startSimulation } from './services/npc-simulation';
 import type { AppContext } from './types';
 
@@ -70,6 +71,7 @@ app.route('/api/quests', questRoutes);
 app.route('/api/bounties', bountyRoutes);
 app.route('/api/agent-setup', agentSetupRoutes);
 app.route('/api/skills', skillsRoutes);
+app.route('/api/v2/agent', agentV2Routes);
 
 // Error handler
 app.onError((err, c) => {

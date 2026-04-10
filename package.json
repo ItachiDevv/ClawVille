@@ -40,6 +40,7 @@
   "dependencies": {
     "@clawville/database": "workspace:*",
     "@clawville/shared": "workspace:*",
+    "@solana/web3.js": "^1.95.0",
     "pg": "^8.17.2",
     "three-stdlib": "^2.36.1"
   }
