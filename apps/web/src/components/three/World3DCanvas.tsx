@@ -1,7 +1,7 @@
 'use client';
 
 // eslint-disable-next-line no-console
-console.log('[W3D:module] World3DCanvas module evaluated at', Date.now());
+console.warn('[W3D:module] World3DCanvas module evaluated at', Date.now());
 
 import { useRef, useEffect, useCallback, memo } from 'react';
 import { Canvas, useFrame, extend } from '@react-three/fiber';
@@ -392,17 +392,17 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
 // ---------------------------------------------------------------------------
 
 async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
-  console.log('[W3D:gl.step1] dynamic import three/webgpu');
+  console.warn('[W3D:gl.step1] dynamic import three/webgpu');
   // Dynamic import — tree-shakes out when WebGPU path isn't taken
   const { WebGPURenderer } = await import('three/webgpu');
-  console.log('[W3D:gl.step2] import resolved, constructing WebGPURenderer');
+  console.warn('[W3D:gl.step2] import resolved, constructing WebGPURenderer');
   const renderer = new WebGPURenderer({
     canvas,
     antialias: false,
     // powerPreference is not a WebGPURenderer option; low-power is handled
     // by the browser's GPU adapter selection (it prefers integrated GPU by default)
   });
-  console.log('[W3D:gl.step3] WebGPURenderer constructed, calling init()');
+  console.warn('[W3D:gl.step3] WebGPURenderer constructed, calling init()');
   // WebGPURenderer.render() throws if not initialized — must await init()
   // init() internally: tries WebGPU backend → falls back to WebGL2 if unavailable
   // Add a 10s timeout so a hang is visible in the console instead of silently stalling R3F.
@@ -410,7 +410,7 @@ async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
     renderer.init(),
     new Promise((_, rej) => setTimeout(() => rej(new Error('[W3D] renderer.init() timeout after 10s')), 10000)),
   ]);
-  console.log('[W3D:gl.step4] init() resolved');
+  console.warn('[W3D:gl.step4] init() resolved');
 
   // Device-loss handler — log and attempt page reload on unexpected loss
   try {
@@ -456,13 +456,13 @@ function ContextLostFallback() {
 
 function World3DCanvas({ mode }: World3DCanvasProps) {
   // eslint-disable-next-line no-console
-  console.log('[W3D:component] World3DCanvas render, mode=', mode);
+  console.warn('[W3D:component] World3DCanvas render, mode=', mode);
   useEffect(() => {
     // eslint-disable-next-line no-console
-    console.log('[W3D:component] mounted useEffect fired');
+    console.warn('[W3D:component] mounted useEffect fired');
     return () => {
       // eslint-disable-next-line no-console
-      console.log('[W3D:component] unmounted');
+      console.warn('[W3D:component] unmounted');
     };
   }, []);
   // Stable async gl factory — R3F v9 awaits this before rendering.
@@ -470,10 +470,10 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
   // Falls back to standard WebGLRenderer if the dynamic import or init fails.
   const glFactory = useCallback(
     async (defaultProps: { canvas: HTMLCanvasElement }) => {
-      console.log('[W3D:glFactory] called with canvas', defaultProps?.canvas?.constructor?.name);
+      console.warn('[W3D:glFactory] called with canvas', defaultProps?.canvas?.constructor?.name);
       try {
         const r = await createWebGPURenderer(defaultProps.canvas);
-        console.log('[W3D:glFactory] WebGPU path OK');
+        console.warn('[W3D:glFactory] WebGPU path OK');
         return r;
       } catch (err) {
         console.warn('[World3D] WebGPURenderer unavailable, falling back to WebGLRenderer:', err);
@@ -484,7 +484,7 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
           antialias: false,
           powerPreference: 'low-power',
         });
-        console.log('[W3D:glFactory] WebGL fallback constructed');
+        console.warn('[W3D:glFactory] WebGL fallback constructed');
         return r;
       }
     },
@@ -517,7 +517,7 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
           gl.setPixelRatio(Math.min(window.devicePixelRatio, 1));
           // Expose state globally for browser diagnostics
           (window as any).__W3D = state;
-          console.log('[W3D:onCreated]', {
+          console.warn('[W3D:onCreated]', {
             isWebGPU: !!(gl as any).isWebGPURenderer,
             glType: gl.constructor?.name,
             size,
@@ -553,7 +553,7 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
               }
             };
           }
-          console.log('[W3D:onCreated] render patched, origRender=' + !!origRender + ' origRenderAsync=' + !!origRenderAsync);
+          console.warn('[W3D:onCreated] render patched, origRender=' + !!origRender + ' origRenderAsync=' + !!origRenderAsync);
         }}
       >
         {/* DIAGNOSTIC: bright test mesh at origin — if this renders, WebGPU path works */}
