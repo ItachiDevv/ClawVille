@@ -18,6 +18,10 @@ import { generateNpcConversation, generateOpenClawConversation } from './npc-con
 import { findPath, type PathNode } from './pathfinding';
 import { PetSimulationBridge } from './pet-simulation-bridge';
 import { memoryService } from './memory-service';
+import {
+  getCollaborationBroker,
+  type CollaborationLogEntry,
+} from '@clawville/agent-runtime';
 import type { OpenClawClient } from './openclaw-client';
 
 // Map dimensions from tilemap-data
@@ -126,6 +130,7 @@ export interface SimulationSnapshot {
   browserClaws: BrowserClawSnapshot[];
   arenaRound: ArenaRoundState | null;
   arenaSettings: ArenaSettings;
+  collaborationEvents: CollaborationLogEntry[];
   timestamp: number;
 }
 
@@ -224,6 +229,11 @@ class NpcSimulation {
   removeListener(listener: SSEListener) { this.listeners.delete(listener); }
 
   getSnapshot(): SimulationSnapshot {
+    // Drain pending collaboration events from the broker so they ride
+    // along with the next SSE broadcast. This decouples broker emission
+    // from SSE timing.
+    const collaborationEvents = getCollaborationBroker().drainLogEntries();
+
     return {
       npcs: Array.from(this.npcs.values()),
       conversations: Array.from(this.conversations.values()).filter((c) => c.state === 'active'),
@@ -233,6 +243,7 @@ class NpcSimulation {
       browserClaws: this.getBrowserClawSnapshots(),
       arenaRound: this.arenaRound ? { ...this.arenaRound } : null,
       arenaSettings: { ...this.arenaSettings },
+      collaborationEvents,
       timestamp: Date.now(),
     };
   }
