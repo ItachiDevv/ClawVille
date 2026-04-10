@@ -13,6 +13,16 @@ const nextConfig = {
     '@clawville/agent-runtime',
     '@clawville/agent-templates',
   ],
+  // @elizaos/core + plugins use runtime dynamic imports (hook handlers) that
+  // can't be statically analyzed by Turbopack/webpack. Keep them external at
+  // runtime instead of bundling into server routes.
+  serverExternalPackages: [
+    '@elizaos/core',
+    '@elizaos/plugin-anthropic',
+    '@elizaos/plugin-sql',
+    '@elizaos/plugin-solana',
+    '@anthropic-ai/sdk',
+  ],
   turbopack: {
     root: resolve(__dirname, '../..'),
   },
