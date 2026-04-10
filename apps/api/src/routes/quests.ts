@@ -12,7 +12,7 @@ import {
   questSubmissions,
   questRewards,
   avatarInventory,
-} from '@legacyapp/database';
+} from '@clawville/database';
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { count } from 'drizzle-orm';
 

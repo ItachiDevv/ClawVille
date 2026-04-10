@@ -8,10 +8,10 @@ config({ path: resolve(__dirname, '../../.env.local') });
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   transpilePackages: [
-    '@legacyapp/shared',
-    '@legacyapp/database',
-    '@legacyapp/agent-runtime',
-    '@legacyapp/agent-templates',
+    '@clawville/shared',
+    '@clawville/database',
+    '@clawville/agent-runtime',
+    '@clawville/agent-templates',
   ],
   turbopack: {
     root: resolve(__dirname, '../..'),

@@ -9,7 +9,7 @@ import {
   agents,
   avatarInventory,
   agentConfigs,
-} from '@legacyapp/database';
+} from '@clawville/database';
 import { eq, and, asc, desc, count } from 'drizzle-orm';
 import {
   AVATAR_ARCHETYPES,
@@ -17,9 +17,9 @@ import {
   KNOWLEDGE_BOOKS,
   getBooksForBuilding,
   BUILDING_OPENCLAW_THEMES,
-} from '@legacyapp/shared';
-import type { PetArchetypeId } from '@legacyapp/shared';
-import type { AgentConfigExport } from '@legacyapp/database';
+} from '@clawville/shared';
+import type { PetArchetypeId } from '@clawville/shared';
+import type { AgentConfigExport } from '@clawville/database';
 
 export const agentSetupRoutes = new Hono<AppContext>();
 agentSetupRoutes.use('*', sessionMiddleware);
@@ -99,7 +99,7 @@ function buildCharacterConfig(archetypeId: PetArchetypeId, avatarName: string, s
   if (!archetype) throw new Error(`Unknown archetype: ${archetypeId}`);
 
   const system = [
-    `You are ${avatarName}, a ${species} in the world of LegacyApp — a LegacyTheme-themed virtual avatar universe on Solana.`,
+    `You are ${avatarName}, a ${species} in the sea-themed world of ClawVille — a virtual avatar adventure where agents learn OpenClaw skills.`,
     `Your archetype is "${archetype.label}". Stay in character at all times.`,
     `You exist in ClawVille and have deep knowledge of LegacyTheme lore, culture, and locations.`,
     `You also have knowledge of Solana, cryptocurrency, and memecoin/degen culture — weave this naturally into conversation when relevant.`,

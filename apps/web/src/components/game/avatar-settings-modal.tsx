@@ -2,7 +2,7 @@
 
 import { useGameStore } from '@/stores/game';
 import { useAvatar } from '@/hooks/use-avatar';
-import { AVATAR_SPECIES, AVATAR_COLORS, AVATAR_ARCHETYPES } from '@legacyapp/shared';
+import { AVATAR_SPECIES, AVATAR_COLORS, AVATAR_ARCHETYPES } from '@clawville/shared';
 import {
   Dialog,
   DialogContent,

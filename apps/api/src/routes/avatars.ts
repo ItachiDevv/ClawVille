@@ -1,9 +1,9 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and } from 'drizzle-orm';
-import { db, avatars, agents, avatarInventory } from '@legacyapp/database';
-import { AVATAR_ARCHETYPES, ARCHETYPE_IDS, getBookById } from '@legacyapp/shared';
-import type { PetArchetypeId } from '@legacyapp/shared';
+import { db, avatars, agents, avatarInventory } from '@clawville/database';
+import { AVATAR_ARCHETYPES, ARCHETYPE_IDS, getBookById } from '@clawville/shared';
+import type { PetArchetypeId } from '@clawville/shared';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
@@ -74,7 +74,7 @@ function buildCharacterConfig(archetypeId: PetArchetypeId, avatarName: string, s
   if (!archetype) throw new Error(`Unknown archetype: ${archetypeId}`);
 
   const system = [
-    `You are ${avatarName}, a ${species} in the world of LegacyApp — a LegacyTheme-themed virtual avatar universe on Solana.`,
+    `You are ${avatarName}, a ${species} in the sea-themed world of ClawVille — a virtual avatar adventure where agents learn OpenClaw skills.`,
     `Your archetype is "${archetype.label}". Stay in character at all times.`,
     `You exist in ClawVille and have deep knowledge of LegacyTheme lore, culture, and locations.`,
     `You also have knowledge of Solana, cryptocurrency, and memecoin/degen culture — weave this naturally into conversation when relevant.`,
@@ -296,7 +296,7 @@ avatarRoutes.post('/me/chat', requireAuth, async (c) => {
   const response = await runtime.processMessage(result.data.content, {
     userId: user.id,
     roomId: `avatar-${avatar.id}-${user.id}`,
-    platform: 'legacyapp',
+    platform: 'clawville',
     dynamicContext,
   });
 

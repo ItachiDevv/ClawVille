@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and, desc } from 'drizzle-orm';
-import { db, avatars, activityLog } from '@legacyapp/database';
+import { db, avatars, activityLog } from '@clawville/database';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import type { AppContext } from '../types';

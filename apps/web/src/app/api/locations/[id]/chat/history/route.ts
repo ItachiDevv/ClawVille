@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { db, locationAgents, eq, and } from '@legacyapp/database';
+import { db, locationAgents, eq, and } from '@clawville/database';
 import { json, error, requireAuth } from '@/lib/api-utils';
 import { agentOrchestrator } from '@/services/agent-orchestrator';
 

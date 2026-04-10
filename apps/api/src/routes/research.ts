@@ -5,7 +5,7 @@ import { articleScraper } from '../services/article-scraper';
 import { researchService } from '../services/research-service';
 import { researchEventBus } from './research-sse';
 import { npcSimulation } from '../services/npc-simulation';
-import { db, avatars, eq, and } from '@legacyapp/database';
+import { db, avatars, eq, and } from '@clawville/database';
 import type { AppContext } from '../types';
 
 export const researchApiRoutes = new Hono<AppContext>();

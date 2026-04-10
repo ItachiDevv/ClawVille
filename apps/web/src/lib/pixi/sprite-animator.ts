@@ -3,7 +3,7 @@
  * One instance per avatar/NPC. No PixiJS deps — outputs numeric transforms.
  */
 
-import type { AvatarSpecies } from '@legacyapp/shared';
+import type { AvatarSpecies } from '@clawville/shared';
 import type { AnimationState } from './avatar-sprites';
 
 // ---- Species Personality Profiles ----

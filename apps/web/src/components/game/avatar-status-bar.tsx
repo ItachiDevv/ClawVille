@@ -1,7 +1,7 @@
 'use client';
 
 import { useAvatar } from '@/hooks/use-avatar';
-import { AVATAR_SPECIES } from '@legacyapp/shared';
+import { AVATAR_SPECIES } from '@clawville/shared';
 import { useGameStore } from '@/stores/game';
 
 function StatBar({ label, value, max = 20, color = 'bg-emerald-400' }: { label: string; value: number; max?: number; color?: string }) {

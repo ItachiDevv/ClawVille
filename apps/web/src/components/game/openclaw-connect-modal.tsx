@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useGameStore } from '@/stores/game';
 import { useAvatar } from '@/hooks/use-avatar';
 import { api } from '@/lib/api';
-import { BUILDING_OPENCLAW_THEMES } from '@legacyapp/shared';
+import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 
 export default function OpenClawConnectModal() {
   const { openclawModalOpen, setOpenclawModalOpen, openclawConnected, openclawSessionId, setOpenclawConnection, addToast, setSkillBuilderOpen } = useGameStore();
