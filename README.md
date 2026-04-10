@@ -129,11 +129,12 @@ Each building has a dedicated AI agent NPC and sells 2 knowledge books focused o
 
 ## Deployment
 
-Deployed to [Railway](https://railway.app/) with separate services for web and API. Each app has its own Dockerfile in `apps/web/` and `apps/api/`.
+Self-hosted on a Hetzner CCX13 VPS running [Coolify](https://coolify.io/), with Cloudflare in front. Each app has its own Dockerfile in `apps/web/` and `apps/api/`, and both auto-deploy on push to `master` via a GitHub webhook. See [`docs/DEPLOY-HETZNER.md`](docs/DEPLOY-HETZNER.md) for the full playbook.
 
 Production URLs:
-- Web: `https://web-production-58aa7.up.railway.app/game`
-- API: `https://api-production-e9f2.up.railway.app`
+- Web: `https://clawville.world/game`
+- API: `https://api.clawville.world`
+- Coolify: `https://coolify.clawville.world`
 
 ## License
 

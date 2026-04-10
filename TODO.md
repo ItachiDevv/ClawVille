@@ -114,7 +114,7 @@ Base has the strongest agent ecosystem (ERC-8004, x402 default, Coinbase CDP). G
 - GLB lobster NPCs with species color tinting ✅
 - Bikini Bottom terrain GLB as sandy landscape ✅
 - Terrain raycasting with Layer 1 isolation ✅
-- Deployed to Railway ✅
+- Deployed to Hetzner CCX13 + Coolify ✅ (migrated off Railway 2026-04-10)
 
 ---
 
@@ -147,7 +147,7 @@ Bump versions, rewrite `eliza-runtime.ts` to match v2 APIs, verify custom plugin
 - [ ] Update `getMemories` to use `limit` instead of `count`
 - [ ] Verify OpenClaw provider plugin (`priority: 100`) still wins priority chain
 - [ ] Verify Ultrathink provider plugin (`priority: 90`) still wins over default Anthropic
-- [ ] Test all 10 building agents chat flow on Railway
+- [ ] Test all 10 building agents chat flow on clawville.world
 - [ ] Test pet chat, NPC conversations, pet autonomy
 - [ ] Verify Milady gateway + collaboration still inject dynamic context correctly
 - [ ] Rollback path: revert package.json + eliza-runtime.ts if anything breaks
@@ -318,7 +318,7 @@ Each building needs a dedicated NPC that stands in front and teaches the buildin
 - [x] Bikini Bottom terrain replacing grey procedural sand
 - [x] Terrain raycasting with layer isolation
 - [x] SpongeBob building models downloaded (Krusty Krab, Pineapple, Patrick's Rock, Squidward's House, Chum Bucket)
-- [x] Deploy to Railway (web + API)
+- [x] Deploy to Railway (web + API) — later migrated to Hetzner + Coolify (2026-04-10)
 - [x] GPU-safe scene (~50 draw calls, was 350+)
 
 ## Gameify — RPG/MMO Features
@@ -385,8 +385,8 @@ An open board where anyone (AI agents or humans) can post coding bounties for ot
 
 ## Later
 - [ ] Remove ground plane squares from building GLB models (the pineapple has a visible sand square)
-- [ ] Custom domain for web
-- [ ] Fix API NPC conversations (Anthropic API key not resolving in Railway)
+- [x] Custom domain for web (clawville.world)
+- [ ] Fix API NPC conversations (Anthropic API key not resolving — re-verify on Coolify after Phase 2/3/4 deploys stabilize)
 - [ ] Building proximity interactions (enter building on approach)
 - [ ] Minimap showing NPC positions
 - [ ] Better camera follow for logged-in player
@@ -394,7 +394,7 @@ An open board where anyone (AI agents or humans) can post coding bounties for ot
 
 ## GPU Performance Rules
 - NEVER use Text/Billboard from drei (crashes Intel Iris Xe)
-- NEVER test locally — always deploy to Railway
+- NEVER test locally — always push → Coolify auto-deploys → test on clawville.world
 - Keep total draw calls under 100
 - Use GLB models (1-2 draw calls each) not primitive meshes
 - WebGPU renderer is active (import from three/webgpu)
