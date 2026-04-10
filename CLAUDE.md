@@ -12,7 +12,7 @@ A sea-themed OpenClaw game built on ElizaOS. Users create a pet, explore a 3D/2D
 
 - All pet and location chat MUST use the ElizaOS runtime (`@clawville/agent-runtime`)
 - The agent orchestrator MUST use `createElizaRuntime` from the agent-runtime package
-- For deployment, use a platform that supports persistent servers (Railway, Render, Fly.io) - NOT Vercel serverless
+- For deployment, use a platform that supports persistent servers (Hetzner VPS + Coolify, Render, Fly.io) - NOT Vercel serverless
 - Never replace ElizaOS with direct API calls or stub implementations
 
 ## Tech Stack
@@ -58,11 +58,116 @@ bun run build            # Build all
 ## Environment Variables
 
 Required in `.env.local`:
-- `DATABASE_URL` - PostgreSQL connection string
+- `DATABASE_URL` - PostgreSQL connection string (Supabase pooler)
 - `ANTHROPIC_API_KEY` - For ElizaOS TEXT_GENERATION
-- `OPENAI_API_KEY` - For ElizaOS TEXT_EMBEDDING
-- `CORS_ORIGIN` - Frontend URL(s) for CORS
-- `NEXT_PUBLIC_API_URL` - Backend API URL for frontend
+- `GEMINI_API_KEY` - For text embeddings (replaced `plugin-openai`; see `packages/agent-runtime/src/plugins/gemini-embedding-provider.ts`)
+- `OPENAI_API_KEY` - Legacy, still referenced in a few places but no longer required for core runtime
+- `VANITY_ENCRYPTION_KEY` - 64-char hex (32 bytes). AES-256-GCM master key for `treasury_wallets` + `vanity_keypairs`. Must be identical on every machine that decrypts.
+- `CLAWVILLE_MERCHANT_WALLET_PUBKEY` - Base58 public key of the Phase 4 x402 merchant wallet (row in `treasury_wallets`)
+- `CORS_ORIGIN` - Frontend URL(s) for CORS (prod: `https://clawville.world`)
+- `NEXT_PUBLIC_API_URL` - Backend API URL for frontend (prod: `https://api.clawville.world`)
+
+## Deployment — Hetzner + Coolify
+
+**Production is a self-hosted Hetzner CCX13 VPS running Coolify. Railway has been decommissioned.**
+
+### Infrastructure
+
+- **VPS**: Hetzner CCX13 (2 dedicated AMD vCPU, 8 GB RAM, 80 GB NVMe, ~$20/mo gross)
+- **IPv4**: `87.99.142.34` (Ashburn VA — `ash-dc1`)
+- **Server name**: `clawville-prod` (label `project=clawville,managed-by=itachi-deploy`)
+- **Orchestrator**: Coolify v4.0.0-beta.472 at `https://coolify.clawville.world` (self-hosted PaaS)
+- **Reverse proxy**: Traefik with automatic Let's Encrypt certs
+- **DNS**: Cloudflare-proxied, nameservers on `aria.ns.cloudflare.com` / `rick.ns.cloudflare.com`
+- **Database**: Supabase Postgres (unchanged from Railway era — `aws-1-us-east-1.pooler.supabase.com:6543`)
+- **SSH key**: `~/.ssh/clawville_deploy` (passwordless, registered via `provision-hetzner.sh`)
+
+### Coolify app IDs
+
+| App | Coolify ID | UUID | Domain |
+|---|---|---|---|
+| web | 4 | `ju0n3sddhll3cuhbrspt4muy` | `clawville.world` |
+| api | 3 | `yvtwz7snaghxifkjhyxknffu` | `api.clawville.world` |
+
+Both apps pull from `github.com/ItachiDevv/ClawVille` via a deploy key, build via Dockerfile, auto-deploy on push to `master` via GitHub webhook.
+
+### Deploy workflow
+
+**Code changes**:
+1. Push to `master` → Coolify webhook triggers auto-deploy for both apps
+2. Build takes ~3-5 min for web (Next.js 14 + Turborepo), ~2-3 min for api (Hono on Bun)
+3. Verify via `curl -sS --ssl-no-revoke https://api.clawville.world/health`
+
+**Manually trigger a redeploy** (e.g. after env var change) via SSH into the Coolify container and Laravel tinker:
+
+```bash
+ssh -i ~/.ssh/clawville_deploy root@87.99.142.34 \
+  "docker exec coolify php artisan tinker --execute='
+    use App\\Models\\Application;
+    \$app = Application::find(3);  // 3=api, 4=web
+    \$uuid = (string) new \\Visus\\Cuid2\\Cuid2;
+    queue_application_deployment(application: \$app, deployment_uuid: \$uuid, is_api: true, no_questions_asked: true);
+    echo \$uuid . PHP_EOL;
+  '"
+```
+
+**Add/update an env var** via the same tinker pattern:
+
+```bash
+ssh -i ~/.ssh/clawville_deploy root@87.99.142.34 \
+  "docker exec coolify php artisan tinker --execute='
+    use App\\Models\\Application;
+    \$app = Application::find(3);
+    \$existing = \$app->environment_variables()->where(\"key\", \"MY_VAR\")->first();
+    if (\$existing) {
+      \$existing->update([\"value\" => \"new-value\"]);
+    } else {
+      \$app->environment_variables()->create([
+        \"key\" => \"MY_VAR\",
+        \"value\" => \"new-value\",
+        \"is_shown_once\" => false,
+        \"is_preview\" => false,
+        \"is_build_time\" => false
+      ]);
+    }
+  '"
+```
+
+**Rebuild the database package after schema changes**: Coolify builds from source, so any `packages/database/dist/` changes happen automatically on deploy. For local scripts that import from `@clawville/database`, run `cd packages/database && bun run build` to refresh `dist/` — otherwise you'll get "export not found" errors.
+
+### Provisioning scripts (in `scripts/deploy/`)
+
+- `provision-hetzner.sh` — Create the VPS via Hetzner Cloud API (uses `HCLOUD_TOKEN`)
+- `setup-cloudflare-dns.sh` — Upsert A records for web/api/coolify subdomains
+- `bootstrap-server.sh` — Install Docker, Coolify, configure firewall on a fresh Ubuntu VPS
+- `add-zone-to-cloudflare.sh` — Add a new domain as a Cloudflare zone + swap nameservers at Namecheap
+- `.env.deploy` — Gitignored secrets file (HCLOUD_TOKEN, CF_API_TOKEN, NAMECHEAP_API_KEY, GEMINI_API_KEY)
+- `railway-env-backup.json` — Gitignored snapshot of Railway env vars from before decommission (for rollback reference)
+
+### Database migrations
+
+**Always run `bun run db:push` from the root before a deploy if you've touched `packages/database/src/schema/*.ts`.** Coolify's build doesn't execute migrations automatically — Drizzle push is a separate manual step. Destructive migrations require `ELIZA_ALLOW_DESTRUCTIVE_MIGRATIONS=true` in `.env.local`.
+
+### Testing rule
+
+**NEVER run `bun run dev` locally.** Intel Iris Xe GPU crashes on the Three.js/WebGPU scene and requires a PC restart. Always push → Coolify auto-deploys → test against the production URL.
+
+### Emergency access
+
+- **SSH into VPS**: `ssh -i ~/.ssh/clawville_deploy root@87.99.142.34`
+- **Restart a container**: `docker restart <container-name>` (find via `docker ps`)
+- **Coolify UI**: `https://coolify.clawville.world` (admin login set during initial bootstrap)
+- **Container logs**: `docker logs --tail 200 <container-name>`
+- **Coolify DB direct query**: `docker exec coolify-db psql -U coolify -d coolify -c "<sql>"`
+- **Full playbook**: `docs/DEPLOY-HETZNER.md` (includes initial provisioning steps + rollback procedure)
+
+### Curl gotcha on Windows
+
+Git Bash on Windows uses schannel and rejects CRLs unless you pass `--ssl-no-revoke`. Use it in all curls from scripts on Windows dev boxes:
+
+```bash
+curl -sS --ssl-no-revoke https://api.clawville.world/health
+```
 
 ## Architecture Notes
 
