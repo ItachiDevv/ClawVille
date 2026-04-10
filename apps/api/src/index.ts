@@ -39,7 +39,22 @@ app.use(
         .split(',')
         .map((o) => o.trim());
       if (origin && allowedOrigins.includes(origin)) return origin;
+
+      // Local dev across any port (Next.js dev server, Milady port 2138, etc.)
       if (origin?.startsWith('http://localhost:')) return origin;
+      if (origin?.startsWith('http://127.0.0.1:')) return origin;
+
+      // Milady desktop shell origins — Electrobun / Capacitor / Tauri embed
+      // the Milady webview with these URL schemes. When the
+      // @clawville/app-clawville plugin fetches api.clawville.world from
+      // inside a Milady viewer, the Origin header looks like `electrobun://`
+      // or `capacitor://localhost` depending on the host platform.
+      if (origin === 'electrobun://localhost') return origin;
+      if (origin === 'capacitor://localhost') return origin;
+      if (origin === 'tauri://localhost') return origin;
+      if (origin === 'app://localhost') return origin;
+      // file:// has no explicit origin but some Electrobun builds send null
+
       return allowedOrigins[0];
     },
     credentials: true,

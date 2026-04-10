@@ -55,3 +55,7 @@ drizzle/*.sql
 # Railway env backup (pre-decommission snapshot — contains secrets)
 scripts/deploy/railway-env-backup.json
 scripts/deploy/treasury-*.json
+
+# Local scratch / prompt notes (never committed)
+miladyApp.txt
+*.scratch.md
