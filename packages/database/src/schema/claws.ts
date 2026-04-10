@@ -41,6 +41,13 @@ export const openclawBots = pgTable('openclaw_bots', {
   color: integer('color'),
   knowledge: jsonb('knowledge').$type<string[]>().default([]),
   metadata: jsonb('metadata').$type<OpenClawBotMetadata>(),
+  /**
+   * Mirror of the agent's custodial Solana wallet address (base58 public key).
+   * Secret key lives encrypted in the unified `wallets` table keyed on
+   * (subject_type='agent', subject_id=openclaw_bots.id). Auto-populated by
+   * ensureWallet() at /api/agent/connect time.
+   */
+  walletAddress: varchar('wallet_address', { length: 64 }),
   totalSessions: integer('total_sessions').default(0).notNull(),
   totalMessages: integer('total_messages').default(0).notNull(),
   userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
