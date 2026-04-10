@@ -4,6 +4,7 @@ import { eq, and } from 'drizzle-orm';
 import { db, pets, petInventory, agents } from '@clawville/database';
 import { getBookById, getBooksForBuilding, KNOWLEDGE_BOOKS, BUILDING_MILADY_SKILLS } from '@clawville/shared';
 import { miladyGateway } from '../services/milady-gateway';
+import { debitClawTokens } from '../services/neo-token-ledger';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
@@ -83,15 +84,14 @@ itemRoutes.post('/buy', requireAuth, async (c) => {
     throw new HTTPException(400, { message: `Not enough ClawTokens. Need ${book.price}, have ${pet.clawTokens}.` });
   }
 
-  // Deduct tokens
-  const [updatedPet] = await db
-    .update(pets)
-    .set({
-      clawTokens: pet.clawTokens - book.price,
-      updatedAt: new Date(),
-    })
-    .where(eq(pets.id, pet.id))
-    .returning();
+  // Deduct tokens via ledger (atomic + audited)
+  const { balanceAfter } = await debitClawTokens({
+    petId: pet.id,
+    amount: book.price,
+    reason: 'buy_book',
+    source: 'api',
+    metadata: { bookId: book.id, bookName: book.name },
+  });
 
   // Check if already in inventory
   const existingItem = await db.query.petInventory.findFirst({
@@ -116,7 +116,7 @@ itemRoutes.post('/buy', requireAuth, async (c) => {
 
   return c.json({
     success: true,
-    clawTokens: updatedPet.clawTokens,
+    clawTokens: balanceAfter,
     item: { id: book.id, name: book.name },
   });
 });
