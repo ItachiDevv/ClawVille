@@ -1,6 +1,6 @@
-import type { OpenClawBotConfig } from '@clawville/shared';
+import type { OpenClawBotConfig, AgentWireProtocol } from '@clawville/shared';
 
-type Protocol = 'openai-compat' | 'anthropic' | 'custom-webhook';
+type Protocol = AgentWireProtocol;
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -43,6 +43,12 @@ export class OpenClawClient {
 
   async chat(messages: ChatMessage[]): Promise<string> {
     switch (this.protocol) {
+      case 'nanoclaw':
+        // Self-managed agents don't receive pushed chat — they pull world
+        // state from the /events SSE stream and decide responses client-side.
+        // Returning empty string tells the simulation "this bot doesn't speak
+        // via gateway push" without throwing.
+        return '';
       case 'anthropic':
         return this.chatAnthropic(messages);
       case 'custom-webhook':
@@ -154,6 +160,9 @@ export class OpenClawClient {
   }
 
   async ping(): Promise<boolean> {
+    // nanoclaw agents have no outbound gateway to ping — treat them as
+    // always-reachable so registration doesn't block.
+    if (this.protocol === 'nanoclaw') return true;
     try {
       const result = await this.chat([
         { role: 'user', content: 'Hello' },
