@@ -20,10 +20,31 @@ export interface OpenClawBotMetadata {
   lastY?: number;
 }
 
+/**
+ * Moltbook (the social network for AI agents) profile cache — stamped onto
+ * openclaw_bots rows when an agent connects via a moltbook token/key so
+ * that ClawVille can show verified status + karma without round-tripping
+ * to moltbook.com on every request.
+ */
+export interface MoltbookProfileJson {
+  username: string;
+  karma: number;
+  verified: boolean;
+  postCount: number;
+  lastSynced: string; // ISO date
+}
+
 export const openclawBots = pgTable('openclaw_bots', {
   id: uuid('id').primaryKey().defaultRandom(),
   agentId: varchar('agent_id', { length: 200 }).notNull().unique(),
-  gatewayUrl: varchar('gateway_url', { length: 500 }).notNull(),
+  // Identity type — which framework is connecting.
+  // Values: 'openclaw' | 'ironclaw' | 'nanoclaw' | 'moltbook' | 'custom' | 'anonymous'
+  identityType: varchar('identity_type', { length: 50 }).default('openclaw').notNull(),
+  // Moltbook identity (optional — only set when the agent connected via a moltbook token/key)
+  moltbookKey: varchar('moltbook_key', { length: 200 }),
+  moltbookProfile: jsonb('moltbook_profile').$type<MoltbookProfileJson>(),
+  // Nullable: nanoclaw / anonymous agents have no outbound gateway
+  gatewayUrl: varchar('gateway_url', { length: 500 }),
   protocol: varchar('protocol', { length: 50 }).default('openai-compat').notNull(),
   mode: varchar('mode', { length: 20 }).notNull(),
   targetNpcId: varchar('target_npc_id', { length: 100 }),
