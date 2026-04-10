@@ -228,12 +228,12 @@ class NpcSimulation {
   addListener(listener: SSEListener) { this.listeners.add(listener); }
   removeListener(listener: SSEListener) { this.listeners.delete(listener); }
 
+  /**
+   * Read-only snapshot — safe for non-broadcast callers (pet chat context,
+   * agent gateway perception, REST /api/npc/state, etc.). Does NOT drain
+   * the collaboration broker queue; collaborationEvents is always empty.
+   */
   getSnapshot(): SimulationSnapshot {
-    // Drain pending collaboration events from the broker so they ride
-    // along with the next SSE broadcast. This decouples broker emission
-    // from SSE timing.
-    const collaborationEvents = getCollaborationBroker().drainLogEntries();
-
     return {
       npcs: Array.from(this.npcs.values()),
       conversations: Array.from(this.conversations.values()).filter((c) => c.state === 'active'),
@@ -243,9 +243,23 @@ class NpcSimulation {
       browserClaws: this.getBrowserClawSnapshots(),
       arenaRound: this.arenaRound ? { ...this.arenaRound } : null,
       arenaSettings: { ...this.arenaSettings },
-      collaborationEvents,
+      collaborationEvents: [],
       timestamp: Date.now(),
     };
+  }
+
+  /**
+   * Snapshot + drain the broker queue. Call ONLY from SSE broadcast —
+   * drained entries are consumed and won't appear in any subsequent
+   * snapshot. If no SSE listeners are connected, entries are preserved
+   * so late-connecting clients can still see recent collaboration.
+   */
+  private buildBroadcastSnapshot(): SimulationSnapshot {
+    const snapshot = this.getSnapshot();
+    if (this.listeners.size > 0) {
+      snapshot.collaborationEvents = getCollaborationBroker().drainLogEntries();
+    }
+    return snapshot;
   }
 
   private initNpcs() {
@@ -1238,7 +1252,10 @@ class NpcSimulation {
   }
 
   private broadcast() {
-    const snapshot = this.getSnapshot();
+    // Use the broadcast-specific snapshot that drains the collaboration
+    // broker queue. Non-broadcast callers (pet chat, agent gateway, REST)
+    // must NOT call this method to avoid losing collab events.
+    const snapshot = this.buildBroadcastSnapshot();
     for (const listener of this.listeners) {
       try {
         listener(snapshot);
