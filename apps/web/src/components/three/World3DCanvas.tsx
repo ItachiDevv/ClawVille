@@ -556,11 +556,15 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
       <Canvas
         gl={glFactory as any}
         dpr={[0.75, 1]}
-        // IMPORTANT: R3F v9's own render loop never starts when paired with
+        // NOTE: R3F v9's own render loop never starts when paired with
         // WebGPURenderer (state.internal.active stays false). We drive the
-        // loop ourselves via <ManualRenderLoop /> below, so Canvas frameloop
-        // MUST be "never" to avoid R3F's broken internal scheduler conflict.
-        frameloop="never"
+        // loop ourselves via startManualRenderLoop() from onCreated below.
+        // MUST be "always" — setting frameloop="never" causes R3F v9 to skip
+        // calling the async gl factory entirely, so the Canvas never
+        // initializes and onCreated never fires. "always" triggers init
+        // normally; the fact that R3F's loop is broken just means it does
+        // nothing after init, which is fine because we drive ours manually.
+        frameloop="always"
         camera={{
           fov: 50,
           near: 1,
