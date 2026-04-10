@@ -8,6 +8,7 @@ import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { npcSimulation } from '../services/npc-simulation';
+import { creditClawTokens } from '../services/neo-token-ledger';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 
@@ -410,16 +411,24 @@ avatarRoutes.post('/me/daily-login', requireAuth, async (c) => {
 
   // Calculate reward: 10 + streak * 5, max 100
   const tokensEarned = Math.min(100, 10 + newStreak * 5);
-  const totalTokens = (avatar.clawTokens ?? 100) + tokensEarned;
 
+  // Update streak metadata first — the token credit goes through the ledger
   await db.update(avatars)
     .set({
       loginStreak: newStreak,
       lastLoginDate: today,
-      clawTokens: totalTokens,
       updatedAt: new Date(),
     })
     .where(and(eq(avatars.userId, user.id), eq(avatars.isActive, true)));
+
+  // Atomic + audited token credit
+  const { balanceAfter: totalTokens } = await creditClawTokens({
+    avatarId: avatar.id,
+    amount: tokensEarned,
+    reason: 'daily_login',
+    source: 'daily_login',
+    metadata: { streak: newStreak, date: today },
+  });
 
   return c.json({ streak: newStreak, tokensEarned, totalTokens, alreadyClaimed: false });
 });
