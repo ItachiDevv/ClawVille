@@ -258,6 +258,8 @@ const DECO_TYPES = [
 useGLTF.preload('/models/building-shell.glb');
 useGLTF.preload('/models/building-lantern.glb');
 useGLTF.preload('/models/crayfish.glb');
+// Preload the large decoration set GLB — single draw call for many objects
+useGLTF.preload('/models/underwater-decorations.glb');
 
 // Building exclusion zones (world coords) — no decorations within 80px of building center
 const TILE_SIZE = 32;
@@ -300,7 +302,11 @@ function generateDecorations(): DecoEntry[] {
   const rng = seededRandom(12345);
   const totalWeight = DECO_TYPES.reduce((s, d) => s + d.weight, 0);
   const entries: DecoEntry[] = [];
-  const TARGET_COUNT = 120;
+  // Capped at 55 to keep draw calls within the ~100 total budget.
+  // Each decoration GLB typically has 2–5 submeshes, so 55 entries ≈ 110–275
+  // raw draw calls; frustum culling handles the ~70% that are off-screen at
+  // any time, bringing the on-screen count into the safe range.
+  const TARGET_COUNT = 55;
 
   // Map extents — same as current scatter range
   const EXTENT_X = MAP_WIDTH  * 2.4;
@@ -390,11 +396,34 @@ function UnderwaterDecorations() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// UnderwaterDecorationsGlb — places the 6MB underwater-decorations.glb as a
+// single scene primitive. It provides dense sea-floor props in one draw call,
+// in addition to the procedurally-scattered individual decorations above.
+// Scaled to cover the central map area.
+// ---------------------------------------------------------------------------
+function UnderwaterDecorationsGlb() {
+  const { scene } = useGLTF('/models/underwater-decorations.glb');
+  // Clone once so we own the scene (avoid mutating the cached original)
+  const cloned = useMemo(() => scene.clone(true), [scene]);
+  return (
+    <primitive
+      object={cloned}
+      position={[0, -2, 0]}
+      scale={8}
+      rotation={[0, 0, 0]}
+    />
+  );
+}
+
 export default function ArenaTerrain() {
   return (
     <Suspense fallback={null}>
       <SandFloor />
+      {/* Procedurally scattered individual GLB decorations */}
       <UnderwaterDecorations />
+      {/* The downloaded underwater-decorations.glb scene — single draw call */}
+      <UnderwaterDecorationsGlb />
     </Suspense>
   );
 }
