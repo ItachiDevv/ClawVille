@@ -1,0 +1,111 @@
+/**
+ * x402 payment middleware configuration for ClawVille.
+ *
+ * This module builds the facilitator client, the Solana-first
+ * `x402ResourceServer`, and the protected-routes map consumed by
+ * `paymentMiddleware` from `@x402/hono`.
+ *
+ * Activation is gated on the `X402_ENABLED=true` env var so that the rest of
+ * the API keeps working while we iterate on payment testing (we need funded
+ * wallets + a facilitator endpoint before we can actually serve paid traffic).
+ *
+ * Environment variables consumed:
+ *   X402_ENABLED                       — "true" to register the middleware on
+ *                                        /api/v2/* routes. Default: off.
+ *   X402_FACILITATOR_URL               — Base URL of the x402 facilitator. For
+ *                                        Solana mainnet use the Coinbase CDP
+ *                                        facilitator. Default: Coinbase CDP v2.
+ *   CLAWVILLE_MERCHANT_WALLET_PUBKEY   — Base58 Solana public key that receives
+ *                                        USDC settlements. Pulled from
+ *                                        treasury_wallets via
+ *                                        scripts/import-treasury-wallet.ts.
+ *   X402_NETWORK                       — CAIP-2 network id. Default:
+ *                                        solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp
+ *                                        (Solana mainnet).
+ *
+ * v1/v2 Solana coexistence note:
+ *   `@x402/svm` uses `@solana/kit` (Web3.js v2) internally. Our
+ *   `keypair-vault.ts` uses `@solana/web3.js@1.x`. The merchant wallet is
+ *   referenced here only as a base58 public key string, so neither SDK
+ *   touches the other's object graph — no v1↔v2 interop needed for the
+ *   server-side payment verification path. If and when we add x402-client
+ *   code that needs to sign payment payloads (e.g. the api paying out to
+ *   other agents), we'll need to decide on the migration at that point.
+ */
+
+import { x402ResourceServer, HTTPFacilitatorClient } from '@x402/core/server';
+import { registerExactSvmScheme } from '@x402/svm/exact/server';
+import type { paymentMiddleware } from '@x402/hono';
+
+export interface X402Config {
+  enabled: boolean;
+  facilitatorUrl: string;
+  merchantWalletPubkey: string;
+  network: string;
+}
+
+/**
+ * Read + validate the x402 env config. Always returns a config object even
+ * when disabled, so callers can distinguish "no env vars" from "explicitly
+ * disabled" in logs.
+ */
+export function loadX402Config(): X402Config {
+  const enabled = process.env.X402_ENABLED === 'true';
+  const facilitatorUrl =
+    process.env.X402_FACILITATOR_URL ?? 'https://api.cdp.coinbase.com/platform/v2/x402';
+  const merchantWalletPubkey = process.env.CLAWVILLE_MERCHANT_WALLET_PUBKEY ?? '';
+  const network = process.env.X402_NETWORK ?? 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
+
+  if (enabled && !merchantWalletPubkey) {
+    throw new Error(
+      '[x402] X402_ENABLED=true but CLAWVILLE_MERCHANT_WALLET_PUBKEY is not set. ' +
+        'Run scripts/import-treasury-wallet.ts or scripts/generate-treasury-keypair.ts first.',
+    );
+  }
+
+  return { enabled, facilitatorUrl, merchantWalletPubkey, network };
+}
+
+/**
+ * Build the x402ResourceServer with the Solana Exact scheme registered.
+ * Returns null if x402 is disabled — callers must short-circuit in that case.
+ */
+export function buildX402ResourceServer(config: X402Config): x402ResourceServer | null {
+  if (!config.enabled) return null;
+
+  const facilitator = new HTTPFacilitatorClient({
+    url: config.facilitatorUrl,
+  });
+
+  const server = new x402ResourceServer(facilitator);
+  registerExactSvmScheme(server);
+  return server;
+}
+
+/**
+ * Route → PaymentOption map consumed by paymentMiddleware. Prices are in USD
+ * decimal strings (the Exact scheme auto-converts to USDC smallest units
+ * based on network).
+ *
+ * Keep this list SHORT and well-reasoned — every entry here is a real paywall
+ * that will reject unpaid requests. Start with non-essential endpoints and
+ * graduate to core game actions once we're confident about UX.
+ */
+export function buildX402Routes(config: X402Config): Parameters<typeof paymentMiddleware>[0] {
+  return {
+    // Cheap demo endpoint — $0.001 per call to prove the middleware +
+    // facilitator chain is wired without risking real money on a
+    // production-critical path.
+    'GET /api/v2/agent/ping': {
+      accepts: {
+        scheme: 'exact',
+        payTo: config.merchantWalletPubkey,
+        price: '$0.001',
+        network: config.network as never,
+        maxTimeoutSeconds: 60,
+      },
+      description: 'Ping the ClawVille agent gateway to prove x402 is wired.',
+      mimeType: 'application/json',
+    },
+  };
+}
