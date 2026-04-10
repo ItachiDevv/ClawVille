@@ -2,8 +2,8 @@
 
 import { useEffect, useRef } from 'react';
 import { useResearchStore } from '@/stores/research';
-import { BUILDING_OPENCLAW_THEMES } from '@legacyapp/shared';
-import type { ResearchPhase } from '@legacyapp/shared';
+import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
+import type { ResearchPhase } from '@clawville/shared';
 
 const PHASE_CONFIG: Record<ResearchPhase, { label: string; color: string }> = {
   idle: { label: 'IDLE', color: 'text-gray-500' },

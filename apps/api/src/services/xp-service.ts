@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm';
-import { db, pets } from '@legacyapp/database';
+import { db, pets } from '@clawville/database';
 
 /** XP required to level up from a given level */
 export const XP_PER_LEVEL = (level: number): number => level * 100;

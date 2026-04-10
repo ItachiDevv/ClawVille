@@ -1,5 +1,5 @@
-import { BUILDING_OPENCLAW_THEMES } from '@legacyapp/shared';
-import type { ResearchThoughtEvent, ResearchPhase } from '@legacyapp/shared';
+import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
+import type { ResearchThoughtEvent, ResearchPhase } from '@clawville/shared';
 import { articleScraper } from './article-scraper';
 import { generateSkillMd } from './skill-generator';
 

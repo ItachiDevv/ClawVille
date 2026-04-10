@@ -1,5 +1,5 @@
 {
-  "name": "@legacyapp/api",
+  "name": "@clawville/api",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -13,10 +13,10 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
-    "@legacyapp/agent-runtime": "workspace:*",
-    "@legacyapp/agent-templates": "workspace:*",
-    "@legacyapp/database": "workspace:*",
-    "@legacyapp/shared": "workspace:*",
+    "@clawville/agent-runtime": "workspace:*",
+    "@clawville/agent-templates": "workspace:*",
+    "@clawville/database": "workspace:*",
+    "@clawville/shared": "workspace:*",
     "@lucia-auth/adapter-drizzle": "^1.1.0",
     "cheerio": "^1.2.0",
     "drizzle-orm": "^0.33.0",

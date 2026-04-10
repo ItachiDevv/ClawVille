@@ -11,7 +11,7 @@ import {
   PET_ARCHETYPES,
   MAP_LOCATIONS,
   KNOWLEDGE_BOOKS,
-} from '@legacyapp/shared';
+} from '@clawville/shared';
 
 const SelectAgentCanvas = dynamic(
   () => import('@/components/three/SelectAgentCanvas'),

@@ -1,8 +1,8 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
-import { db, pets, agents, eq } from '@legacyapp/database';
-import { PET_ARCHETYPES, ARCHETYPE_IDS } from '@legacyapp/shared';
-import type { PetArchetypeId } from '@legacyapp/shared';
+import { db, pets, agents, eq } from '@clawville/database';
+import { PET_ARCHETYPES, ARCHETYPE_IDS } from '@clawville/shared';
+import type { PetArchetypeId } from '@clawville/shared';
 import { json, error, requireAuth } from '@/lib/api-utils';
 
 const createPetSchema = z.object({

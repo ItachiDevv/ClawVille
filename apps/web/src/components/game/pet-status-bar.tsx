@@ -1,7 +1,7 @@
 'use client';
 
 import { usePet } from '@/hooks/use-pet';
-import { PET_SPECIES } from '@legacyapp/shared';
+import { PET_SPECIES } from '@clawville/shared';
 import { useGameStore } from '@/stores/game';
 
 function StatBar({ label, value, max = 20, color = 'bg-emerald-400' }: { label: string; value: number; max?: number; color?: string }) {

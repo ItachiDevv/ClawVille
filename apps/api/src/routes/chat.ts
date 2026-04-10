@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and } from 'drizzle-orm';
-import { db, locationAgents, pets } from '@legacyapp/database';
-import { MAP_LOCATIONS, BUILDING_OPENCLAW_THEMES, getBooksForBuilding, isShopBuilding } from '@legacyapp/shared';
+import { db, locationAgents, pets } from '@clawville/database';
+import { MAP_LOCATIONS, BUILDING_OPENCLAW_THEMES, getBooksForBuilding, isShopBuilding } from '@clawville/shared';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
@@ -120,7 +120,7 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
   const response = await runtime.processMessage(result.data.content, {
     userId: user.id,
     roomId: `${locationId}-${user.id}`,
-    platform: 'legacyapp',
+    platform: 'clawville',
     dynamicContext,
   });
 

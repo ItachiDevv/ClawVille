@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and, desc, inArray, isNull } from 'drizzle-orm';
-import { db, pets, petInventory, publishedSkills, skillUpvotes, agents } from '@legacyapp/database';
+import { db, pets, petInventory, publishedSkills, skillUpvotes, agents } from '@clawville/database';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import { npcSimulation } from '../services/npc-simulation';
 import { agentOrchestrator } from '../services/agent-orchestrator';

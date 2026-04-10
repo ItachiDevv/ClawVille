@@ -1,5 +1,5 @@
 {
-  "name": "legacyapp",
+  "name": "clawville",
   "private": true,
   "workspaces": [
     "apps/*",
@@ -10,11 +10,11 @@
     "build": "turbo run build",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
-    "db:migrate": "bun run --filter @legacyapp/database migrate",
-    "db:push": "bun run --filter @legacyapp/database push",
+    "db:migrate": "bun run --filter @clawville/database migrate",
+    "db:push": "bun run --filter @clawville/database push",
     "db:seed": "bun run scripts/seed-locations.ts",
     "db:seed:quests": "bun run scripts/seed-quests.ts",
-    "db:studio": "bun run --filter @legacyapp/database studio",
+    "db:studio": "bun run --filter @clawville/database studio",
     "clean": "turbo run clean && rm -rf node_modules",
     "test:mock-gateway": "bun run scripts/mock-openclaw.ts",
     "test:agent-flow": "bun run scripts/test-agent-flow.ts"

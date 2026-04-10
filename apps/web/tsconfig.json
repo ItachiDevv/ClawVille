@@ -27,7 +27,7 @@
       "@/*": [
         "./src/*"
       ],
-      "@legacyapp/shared": [
+      "@clawville/shared": [
         "../../packages/shared/src"
       ]
     }
