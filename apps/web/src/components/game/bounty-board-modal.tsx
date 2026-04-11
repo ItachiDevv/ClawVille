@@ -1,94 +1,543 @@
 'use client';
 
+/**
+ * BountyBoardModal — Team 3c reskin.
+ *
+ * Visual re-skin of the community bounty board using the shared RPG
+ * primitives from `@/components/rpg`. Data flow is byte-for-byte identical
+ * to the previous implementation: every useQuery / useMutation / store hook
+ * is preserved, only the presentation layer changed.
+ *
+ * Bounty-specific UX notes
+ * ------------------------
+ * - Anyone can post a bounty. Creator escrows `tokenReward` NT on post,
+ *   refunded on cancel, transferred on approve.
+ * - Bonus rewards (`skill`, `agent_config`, `knowledge_book`, `custom`)
+ *   render as inline pill chips in the card footer.
+ * - Reputation tier (newcomer → master) maps to rarity:
+ *     newcomer=common, apprentice=uncommon, journeyman=rare,
+ *     expert=epic, master=legendary.
+ *   Rendered as a `<RarityBadge>` with a ladder tooltip. Only shown when the
+ *   backend returns `creatorReputation` on the row (detail endpoint does, list
+ *   endpoint currently doesn't — we render defensively).
+ * - Featured bounties (`isFeatured`) get the legendary gold frame with glow.
+ * - Card rarity otherwise derives from difficulty:
+ *     beginner=uncommon, intermediate=rare, advanced=epic, expert=mythic.
+ *   Expired / cancelled bounties drop to `common` (grey).
+ * - Attempt lifecycle (claimed → in_progress → submitted → approved/rejected)
+ *   rendered as a horizontal rune-dot progression.
+ * - Disputed state reserved for `mythic` tier — backend enum doesn't ship
+ *   disputes yet; once it does, the code path is already in place.
+ *
+ * Post-bounty flow: kept as a `create` tab (the game store already has
+ * `bountyBoardTab: 'create'` so changing this would be a store migration).
+ * A big legendary "Post New Bounty" CTA also lives in the Browse tab header
+ * and just jumps the user to that tab.
+ */
+
 import { useState, useEffect, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useGameStore } from '@/stores/game';
 import { usePet } from '@/hooks/use-pet';
 import { api } from '@/lib/api';
+import {
+  RpgModal,
+  RpgButton,
+  RuneSpinner,
+  RuneFrame,
+  ItemCard,
+  RarityBadge,
+  RpgTooltip,
+  type RarityId,
+} from '@/components/rpg';
 
 type BountyTab = 'browse' | 'my-bounties' | 'my-attempts' | 'create';
 type DifficultyFilter = 'all' | 'beginner' | 'intermediate' | 'advanced' | 'expert';
 type SortMode = 'newest' | 'reward-high' | 'reward-low' | 'expiring-soon';
 
-const DIFFICULTY_STYLES: Record<string, { color: string; bg: string; border: string; label: string }> = {
-  beginner:     { color: 'text-green-400',  bg: 'bg-green-500/20',  border: 'border-green-500/40',  label: 'Beginner' },
-  intermediate: { color: 'text-blue-400',   bg: 'bg-blue-500/20',   border: 'border-blue-500/40',   label: 'Intermediate' },
-  advanced:     { color: 'text-purple-400', bg: 'bg-purple-500/20', border: 'border-purple-500/40', label: 'Advanced' },
-  expert:       { color: 'text-red-400',    bg: 'bg-red-500/20',    border: 'border-red-500/40',    label: 'Expert' },
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const DIFFICULTY_OPTIONS: { value: DifficultyFilter; label: string }[] = [
+  { value: 'all', label: 'All Difficulties' },
+  { value: 'beginner', label: 'Beginner' },
+  { value: 'intermediate', label: 'Intermediate' },
+  { value: 'advanced', label: 'Advanced' },
+  { value: 'expert', label: 'Expert' },
+];
+
+const SORT_OPTIONS: { value: SortMode; label: string }[] = [
+  { value: 'newest', label: 'Newest' },
+  { value: 'reward-high', label: 'Reward ↓' },
+  { value: 'reward-low', label: 'Reward ↑' },
+  { value: 'expiring-soon', label: 'Expiring' },
+];
+
+const DIFFICULTY_LABELS: Record<string, string> = {
+  beginner: 'Beginner',
+  intermediate: 'Intermediate',
+  advanced: 'Advanced',
+  expert: 'Expert',
 };
 
-const REPUTATION_STYLES: Record<string, { color: string; icon: string; label: string }> = {
-  newcomer:    { color: 'text-gray-400',   icon: '\uD83C\uDF31', label: 'Newcomer' },
-  apprentice:  { color: 'text-green-400',  icon: '\uD83D\uDD27', label: 'Apprentice' },
-  journeyman:  { color: 'text-blue-400',   icon: '\u2693',       label: 'Journeyman' },
-  expert:      { color: 'text-purple-400', icon: '\uD83D\uDD31', label: 'Expert' },
-  master:      { color: 'text-amber-400',  icon: '\uD83D\uDC51', label: 'Master' },
+// Reputation tier → rarity id. Ladder: newcomer → apprentice → journeyman →
+// expert → master. Backend stores as `reputation_tier` pgEnum; we mirror it.
+const REPUTATION_TO_RARITY: Record<string, RarityId> = {
+  newcomer: 'common',
+  apprentice: 'uncommon',
+  journeyman: 'rare',
+  expert: 'epic',
+  master: 'legendary',
 };
 
-const STATUS_STYLES: Record<string, { color: string; bg: string; border: string; label: string }> = {
-  open:         { color: 'text-green-400',   bg: 'bg-green-500/20',  border: 'border-green-500/40',  label: 'Open' },
-  in_progress:  { color: 'text-blue-400',    bg: 'bg-blue-500/20',   border: 'border-blue-500/40',   label: 'In Progress' },
-  completed:    { color: 'text-amber-400',   bg: 'bg-amber-500/20',  border: 'border-amber-500/40',  label: 'Completed' },
-  expired:      { color: 'text-gray-400',    bg: 'bg-gray-500/20',   border: 'border-gray-500/40',   label: 'Expired' },
-  cancelled:    { color: 'text-red-400',     bg: 'bg-red-500/20',    border: 'border-red-500/40',    label: 'Cancelled' },
+const REPUTATION_LABELS: Record<string, string> = {
+  newcomer: 'Newcomer',
+  apprentice: 'Apprentice',
+  journeyman: 'Journeyman',
+  expert: 'Expert',
+  master: 'Master',
 };
 
-const ATTEMPT_STATUS_STYLES: Record<string, { color: string; bg: string; border: string; label: string }> = {
-  claimed:      { color: 'text-cyan-400',    bg: 'bg-cyan-500/20',    border: 'border-cyan-500/40',    label: 'Claimed' },
-  in_progress:  { color: 'text-blue-400',    bg: 'bg-blue-500/20',    border: 'border-blue-500/40',    label: 'In Progress' },
-  submitted:    { color: 'text-purple-400',  bg: 'bg-purple-500/20',  border: 'border-purple-500/40',  label: 'Submitted' },
-  approved:     { color: 'text-green-400',   bg: 'bg-green-500/20',   border: 'border-green-500/40',   label: 'Approved' },
-  rejected:     { color: 'text-red-400',     bg: 'bg-red-500/20',     border: 'border-red-500/40',     label: 'Rejected' },
-  abandoned:    { color: 'text-gray-400',    bg: 'bg-gray-500/20',    border: 'border-gray-500/40',    label: 'Abandoned' },
-};
+const REPUTATION_LADDER = [
+  { tier: 'newcomer', threshold: '0 completed', rarity: 'common' as RarityId },
+  { tier: 'apprentice', threshold: '3 completed', rarity: 'uncommon' as RarityId },
+  { tier: 'journeyman', threshold: '10 completed', rarity: 'rare' as RarityId },
+  { tier: 'expert', threshold: '25 completed', rarity: 'epic' as RarityId },
+  { tier: 'master', threshold: '50+ completed', rarity: 'legendary' as RarityId },
+];
+
+// Attempt lifecycle steps for the progression indicator.
+const ATTEMPT_STEPS = [
+  { key: 'claimed', label: 'Claimed' },
+  { key: 'in_progress', label: 'Working' },
+  { key: 'submitted', label: 'Submitted' },
+  { key: 'approved', label: 'Approved' },
+] as const;
 
 const BONUS_REWARD_ICONS: Record<string, string> = {
-  skill: '\uD83D\uDCA1',
-  agent_config: '\u2699\uFE0F',
-  knowledge_book: '\uD83D\uDCD6',
-  custom: '\uD83C\uDF81',
+  skill: '💡',
+  agent_config: '⚙',
+  knowledge_book: '📖',
+  custom: '🎁',
 };
 
-function DifficultyBadge({ difficulty }: { difficulty: string }) {
-  const config = DIFFICULTY_STYLES[difficulty] || DIFFICULTY_STYLES.beginner;
+const BONUS_REWARD_LABELS: Record<string, string> = {
+  skill: 'Skill',
+  agent_config: 'Agent Config',
+  knowledge_book: 'Knowledge Book',
+  custom: 'Custom',
+};
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive a card's visual rarity from bounty metadata.
+ *
+ * Priority:
+ *   1. Featured bounty → legendary (team-promoted gold glow)
+ *   2. Disputed (future state) → mythic (crimson)
+ *   3. Cancelled / expired → common (grey)
+ *   4. Completed → uncommon (soft green seal)
+ *   5. Otherwise difficulty-scaled (beginner→uncommon … expert→mythic)
+ */
+function deriveBountyRarity(bounty: {
+  isFeatured?: boolean;
+  status?: string;
+  difficulty?: string;
+}): RarityId {
+  if (bounty.isFeatured) return 'legendary';
+  if (bounty.status === 'disputed') return 'mythic';
+  if (bounty.status === 'cancelled' || bounty.status === 'expired') return 'common';
+  if (bounty.status === 'completed') return 'uncommon';
+
+  switch (bounty.difficulty) {
+    case 'expert':
+      return 'mythic';
+    case 'advanced':
+      return 'epic';
+    case 'intermediate':
+      return 'rare';
+    case 'beginner':
+    default:
+      return 'uncommon';
+  }
+}
+
+function formatDate(value: string | null | undefined): string {
+  if (!value) return '';
+  try {
+    return new Date(value).toLocaleDateString();
+  } catch {
+    return '';
+  }
+}
+
+function normaliseReputationTier(value: unknown): string {
+  if (typeof value !== 'string') return 'newcomer';
+  if (value in REPUTATION_TO_RARITY) return value;
+  return 'newcomer';
+}
+
+// ---------------------------------------------------------------------------
+// Reputation badge (with ladder tooltip)
+// ---------------------------------------------------------------------------
+
+function ReputationPill({
+  tier,
+  role,
+}: {
+  tier: string;
+  role: 'Poster' | 'Hunter';
+}) {
+  const rarity = REPUTATION_TO_RARITY[tier] ?? 'common';
+  const label = REPUTATION_LABELS[tier] ?? 'Newcomer';
+
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${config.bg} ${config.border} ${config.color} border`}>
-      {config.label}
+    <RpgTooltip
+      content={
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div
+            style={{
+              fontSize: 10,
+              fontWeight: 700,
+              color: '#facc15',
+              textTransform: 'uppercase',
+              letterSpacing: '0.12em',
+              marginBottom: 2,
+            }}
+          >
+            {role} Reputation
+          </div>
+          {REPUTATION_LADDER.map((step) => {
+            const active = step.tier === tier;
+            return (
+              <div
+                key={step.tier}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                  fontSize: 10,
+                  color: active ? '#e2e8f0' : '#64748b',
+                  fontWeight: active ? 700 : 400,
+                }}
+              >
+                <span>
+                  {active ? '▸ ' : '  '}
+                  {REPUTATION_LABELS[step.tier]}
+                </span>
+                <span style={{ fontFamily: 'ui-monospace, Menlo, monospace' }}>
+                  {step.threshold}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      }
+    >
+      <RarityBadge tier={rarity} label={label} />
+    </RpgTooltip>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Status chip (used in-card for bounty / attempt status labels)
+// ---------------------------------------------------------------------------
+
+function StatusChip({
+  label,
+  tone = 'neutral',
+}: {
+  label: string;
+  tone?: 'neutral' | 'positive' | 'warning' | 'danger' | 'info';
+}) {
+  const palette: Record<string, { bg: string; border: string; color: string }> = {
+    neutral: {
+      bg: 'rgba(30, 41, 59, 0.6)',
+      border: 'rgba(148, 163, 184, 0.3)',
+      color: '#94a3b8',
+    },
+    positive: {
+      bg: 'rgba(34, 197, 94, 0.12)',
+      border: 'rgba(34, 197, 94, 0.45)',
+      color: '#4ade80',
+    },
+    warning: {
+      bg: 'rgba(250, 204, 21, 0.12)',
+      border: 'rgba(250, 204, 21, 0.45)',
+      color: '#facc15',
+    },
+    danger: {
+      bg: 'rgba(220, 38, 38, 0.14)',
+      border: 'rgba(220, 38, 38, 0.5)',
+      color: '#f87171',
+    },
+    info: {
+      bg: 'rgba(56, 189, 248, 0.12)',
+      border: 'rgba(56, 189, 248, 0.4)',
+      color: '#7dd3fc',
+    },
+  };
+  const p = palette[tone];
+
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        padding: '2px 8px',
+        borderRadius: 999,
+        fontSize: 9,
+        fontWeight: 700,
+        textTransform: 'uppercase',
+        letterSpacing: '0.12em',
+        background: p.bg,
+        border: `1px solid ${p.border}`,
+        color: p.color,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {label}
     </span>
   );
 }
 
-function BountyStatusBadge({ status }: { status: string }) {
-  const config = STATUS_STYLES[status] || STATUS_STYLES.open;
+function bountyStatusTone(
+  status: string
+): 'neutral' | 'positive' | 'warning' | 'danger' | 'info' {
+  switch (status) {
+    case 'open':
+      return 'positive';
+    case 'in_progress':
+      return 'info';
+    case 'completed':
+      return 'warning';
+    case 'cancelled':
+      return 'danger';
+    case 'expired':
+      return 'neutral';
+    default:
+      return 'neutral';
+  }
+}
+
+function attemptStatusTone(
+  status: string
+): 'neutral' | 'positive' | 'warning' | 'danger' | 'info' {
+  switch (status) {
+    case 'claimed':
+      return 'info';
+    case 'in_progress':
+      return 'info';
+    case 'submitted':
+      return 'warning';
+    case 'approved':
+      return 'positive';
+    case 'rejected':
+      return 'danger';
+    case 'abandoned':
+      return 'neutral';
+    default:
+      return 'neutral';
+  }
+}
+
+function bountyStatusLabel(status: string): string {
+  switch (status) {
+    case 'open':
+      return 'Open';
+    case 'in_progress':
+      return 'In Progress';
+    case 'completed':
+      return 'Completed';
+    case 'cancelled':
+      return 'Cancelled';
+    case 'expired':
+      return 'Expired';
+    case 'disputed':
+      return 'Disputed';
+    default:
+      return status;
+  }
+}
+
+function attemptStatusLabel(status: string): string {
+  switch (status) {
+    case 'claimed':
+      return 'Claimed';
+    case 'in_progress':
+      return 'Working';
+    case 'submitted':
+      return 'Submitted';
+    case 'approved':
+      return 'Approved';
+    case 'rejected':
+      return 'Rejected';
+    case 'abandoned':
+      return 'Abandoned';
+    default:
+      return status;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Bonus reward pill row
+// ---------------------------------------------------------------------------
+
+function BonusRewardPills({ rewards }: { rewards: any[] }) {
+  if (!rewards || rewards.length === 0) return null;
+
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${config.bg} ${config.border} ${config.color} border`}>
-      {config.label}
-    </span>
+    <div
+      style={{
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: 6,
+        paddingTop: 2,
+      }}
+    >
+      {rewards.map((r: any, i: number) => {
+        const type = r.rewardType || r.type || 'custom';
+        const icon = BONUS_REWARD_ICONS[type] || '🎁';
+        const label =
+          r.label ||
+          r.customDescription ||
+          BONUS_REWARD_LABELS[type] ||
+          type;
+        return (
+          <span
+            key={i}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+              padding: '3px 8px',
+              borderRadius: 6,
+              fontSize: 10,
+              fontWeight: 600,
+              background: 'rgba(249, 115, 22, 0.1)',
+              border: '1px solid rgba(249, 115, 22, 0.35)',
+              color: '#fb923c',
+              letterSpacing: '0.02em',
+            }}
+          >
+            <span aria-hidden>{icon}</span>
+            <span>{label}</span>
+          </span>
+        );
+      })}
+    </div>
   );
 }
 
-function AttemptStatusBadge({ status }: { status: string }) {
-  const config = ATTEMPT_STATUS_STYLES[status] || ATTEMPT_STATUS_STYLES.claimed;
+// ---------------------------------------------------------------------------
+// Attempt progression indicator (rune dots)
+// ---------------------------------------------------------------------------
+
+function AttemptProgression({ status }: { status: string }) {
+  const rejected = status === 'rejected';
+  const currentIndex = ATTEMPT_STEPS.findIndex((s) => s.key === status);
+
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${config.bg} ${config.border} ${config.color} border`}>
-      {config.label}
-    </span>
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 0,
+        padding: '8px 2px 4px',
+      }}
+    >
+      {ATTEMPT_STEPS.map((step, i) => {
+        const isActive = i <= currentIndex && !rejected;
+        const isCurrent = step.key === status;
+        const isLast = i === ATTEMPT_STEPS.length - 1;
+
+        const dotColor =
+          rejected && i === currentIndex
+            ? '#f87171'
+            : isCurrent
+              ? '#facc15'
+              : isActive
+                ? '#38bdf8'
+                : 'rgba(148, 163, 184, 0.25)';
+
+        const connectorColor =
+          i < currentIndex && !rejected
+            ? 'rgba(56, 189, 248, 0.45)'
+            : 'rgba(148, 163, 184, 0.15)';
+
+        return (
+          <div
+            key={step.key}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              flex: isLast ? '0 0 auto' : '1 1 auto',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 4,
+              }}
+            >
+              <span
+                aria-hidden
+                style={{
+                  width: 10,
+                  height: 10,
+                  borderRadius: 2,
+                  transform: 'rotate(45deg)',
+                  background: dotColor,
+                  boxShadow:
+                    isCurrent || (rejected && i === currentIndex)
+                      ? `0 0 8px ${dotColor}`
+                      : 'none',
+                  transition: 'all 220ms ease',
+                }}
+              />
+              <span
+                style={{
+                  fontSize: 8,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.1em',
+                  color: isActive || isCurrent ? '#cbd5e1' : '#475569',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {step.label}
+              </span>
+            </div>
+            {!isLast && (
+              <span
+                aria-hidden
+                style={{
+                  flex: 1,
+                  height: 1,
+                  background: connectorColor,
+                  margin: '0 6px',
+                  marginBottom: 14,
+                }}
+              />
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
-function ReputationBadge({ tier }: { tier: string }) {
-  const config = REPUTATION_STYLES[tier] || REPUTATION_STYLES.newcomer;
-  return (
-    <span className={`inline-flex items-center gap-1 text-[10px] font-bold ${config.color}`}>
-      <span>{config.icon}</span>
-      {config.label}
-    </span>
-  );
-}
+// ---------------------------------------------------------------------------
+// Browse tab: Bounty card
+// ---------------------------------------------------------------------------
 
-// ────────────────────── Browse Tab: Bounty Card ──────────────────────
-
-function BountyCard({
+function BrowseBountyCard({
   bounty,
   onClaim,
   claiming,
@@ -97,85 +546,137 @@ function BountyCard({
   onClaim: () => void;
   claiming: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false);
   const difficulty = bounty.difficulty || 'beginner';
-  const diffConfig = DIFFICULTY_STYLES[difficulty] || DIFFICULTY_STYLES.beginner;
+  const rarity = deriveBountyRarity(bounty);
   const claimedCount = bounty.currentAttempts ?? 0;
   const maxAttempts = bounty.maxAttempts ?? 1;
   const isFull = claimedCount >= maxAttempts;
+  const title = bounty.title || 'Untitled Bounty';
+  const creatorName = bounty.creatorPetName || 'Unknown';
+  const creatorRepTier = normaliseReputationTier(bounty.creatorReputation?.tier);
+
+  const stats: { label: string; value: React.ReactNode }[] = [
+    { label: 'Reward', value: `${bounty.tokenReward ?? 0} NT` },
+    { label: 'Difficulty', value: DIFFICULTY_LABELS[difficulty] ?? difficulty },
+    { label: 'Attempts', value: `${claimedCount} / ${maxAttempts}` },
+  ];
+  if (bounty.expiresAt) {
+    stats.push({ label: 'Expires', value: formatDate(bounty.expiresAt) });
+  }
+
+  const subtitle = (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        flexWrap: 'wrap',
+      }}
+    >
+      <span>by {creatorName}</span>
+      {bounty.creatorReputation && (
+        <ReputationPill tier={creatorRepTier} role="Poster" />
+      )}
+    </span>
+  );
 
   return (
-    <div className={`relative rounded-lg border p-3 transition-all hover:scale-[1.005] ${diffConfig.border} ${diffConfig.bg}`}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-bold text-white truncate">{bounty.title || 'Untitled Bounty'}</span>
-            <DifficultyBadge difficulty={difficulty} />
-          </div>
-          {bounty.description && (
-            <p
-              className={`text-xs text-gray-400 mt-1 ${!expanded ? 'line-clamp-2' : ''} cursor-pointer`}
-              onClick={() => setExpanded(!expanded)}
-            >
-              {bounty.description}
-            </p>
-          )}
-          {!expanded && bounty.description && bounty.description.length > 100 && (
-            <button onClick={() => setExpanded(true)} className="text-[10px] text-cyan-400 hover:text-cyan-300 mt-0.5">
-              Show more
-            </button>
-          )}
-        </div>
-        <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
-          <span className="flex items-center gap-1 text-sm font-bold text-amber-300">
-            {bounty.tokenReward ?? 0} <span className="text-xs">&#x1FA99;</span>
-          </span>
-        </div>
-      </div>
-
-      {/* Bonus rewards + metadata */}
-      <div className="flex flex-wrap items-center gap-2 mt-2">
-        {bounty.bonusRewards?.map((r: any, i: number) => (
-          <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 border border-amber-500/40 text-amber-300">
-            {BONUS_REWARD_ICONS[r.type] || '\uD83C\uDF81'} {r.label || r.type}
-          </span>
-        ))}
-        {bounty.tags?.map((tag: string) => (
-          <span key={tag} className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-white/5 border border-white/10 text-gray-500">
-            {tag}
-          </span>
-        ))}
-      </div>
-
-      <div className="flex items-center justify-between mt-2">
-        <div className="flex items-center gap-3">
-          {bounty.creatorPetName && (
-            <span className="flex items-center gap-1.5 text-[10px] text-gray-500">
-              by <span className="text-gray-300 font-medium">{bounty.creatorPetName}</span>
-            </span>
-          )}
-          <span className="text-[10px] text-gray-500">
-            {claimedCount}/{maxAttempts} claimed
-          </span>
-          {bounty.expiresAt && (
-            <span className="text-[10px] text-gray-500">
-              Expires: {new Date(bounty.expiresAt).toLocaleDateString()}
-            </span>
-          )}
-        </div>
-        <button
-          onClick={onClaim}
-          disabled={claiming || isFull}
-          className="text-xs font-bold px-4 py-1.5 rounded-lg bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+    <ItemCard
+      rarity={rarity}
+      glow={bounty.isFeatured ? 'strong' : undefined}
+      name={title}
+      subtitle={subtitle}
+      icon={<span>📌</span>}
+      description={bounty.description}
+      stats={stats}
+      price={bounty.tokenReward ?? 0}
+      priceUnit="NT"
+      badge={
+        <StatusChip
+          label={bountyStatusLabel(bounty.status || 'open')}
+          tone={bountyStatusTone(bounty.status || 'open')}
+        />
+      }
+      footer={
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+            width: '100%',
+          }}
         >
-          {claiming ? 'Claiming...' : isFull ? 'Fully Claimed' : 'Claim Bounty'}
-        </button>
-      </div>
-    </div>
+          {bounty.bonusRewards && bounty.bonusRewards.length > 0 && (
+            <BonusRewardPills rewards={bounty.bonusRewards} />
+          )}
+          {bounty.tags && bounty.tags.length > 0 && (
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 4,
+              }}
+            >
+              {bounty.tags.map((tag: string) => (
+                <span
+                  key={tag}
+                  style={{
+                    padding: '1px 6px',
+                    borderRadius: 4,
+                    fontSize: 9,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.1em',
+                    background: 'rgba(15, 23, 42, 0.6)',
+                    border: '1px solid rgba(148, 163, 184, 0.2)',
+                    color: '#64748b',
+                  }}
+                >
+                  {tag}
+                </span>
+              ))}
+            </div>
+          )}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 8,
+            }}
+          >
+            <span
+              style={{
+                fontSize: 10,
+                color: '#64748b',
+                textTransform: 'uppercase',
+                letterSpacing: '0.12em',
+              }}
+            >
+              {bounty.isFeatured ? 'Featured' : `${maxAttempts - claimedCount} slot${maxAttempts - claimedCount === 1 ? '' : 's'} left`}
+            </span>
+            <RpgButton
+              variant="primary"
+              size="sm"
+              rarity={bounty.isFeatured ? 'legendary' : undefined}
+              disabled={isFull}
+              loading={claiming}
+              onClick={(e) => {
+                e.stopPropagation();
+                onClaim();
+              }}
+            >
+              {isFull ? 'Fully Claimed' : 'Claim Bounty'}
+            </RpgButton>
+          </div>
+        </div>
+      }
+    />
   );
 }
 
-// ────────────────────── My Attempts Tab: Attempt Card ──────────────────────
+// ---------------------------------------------------------------------------
+// My Attempts tab: Attempt card
+// ---------------------------------------------------------------------------
 
 function AttemptCard({
   attempt,
@@ -193,10 +694,18 @@ function AttemptCard({
   const [showSubmitForm, setShowSubmitForm] = useState(false);
   const [prLink, setPrLink] = useState('');
   const [note, setNote] = useState('');
+
   const bounty = attempt.bounty || {};
   const status = attempt.status || 'claimed';
   const difficulty = bounty.difficulty || 'beginner';
-  const diffConfig = DIFFICULTY_STYLES[difficulty] || DIFFICULTY_STYLES.beginner;
+  const rarity = deriveBountyRarity({
+    difficulty,
+    status: bounty.status,
+    isFeatured: false,
+  });
+
+  const canSubmit = status === 'claimed' || status === 'in_progress';
+  const canAbandon = status === 'claimed' || status === 'in_progress';
 
   const handleSubmit = () => {
     if (note.length < 10) return;
@@ -206,150 +715,205 @@ function AttemptCard({
     setNote('');
   };
 
-  const canSubmit = status === 'claimed' || status === 'in_progress';
-  const canAbandon = status === 'claimed' || status === 'in_progress';
+  const stats: { label: string; value: React.ReactNode }[] = [
+    { label: 'Reward', value: `${bounty.tokenReward ?? '?'} NT` },
+    { label: 'Difficulty', value: DIFFICULTY_LABELS[difficulty] ?? difficulty },
+    { label: 'Status', value: attemptStatusLabel(status) },
+  ];
 
   return (
-    <div className={`rounded-lg border p-3 ${diffConfig.border} ${diffConfig.bg}`}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-bold text-white truncate">{bounty.title || attempt.bountyTitle || 'Bounty'}</span>
-            <DifficultyBadge difficulty={difficulty} />
-            <AttemptStatusBadge status={status} />
+    <ItemCard
+      rarity={rarity}
+      name={bounty.title || attempt.bountyTitle || 'Bounty'}
+      subtitle="Your attempt"
+      icon={<span>🎯</span>}
+      description={bounty.description}
+      stats={stats}
+      badge={
+        <StatusChip
+          label={attemptStatusLabel(status)}
+          tone={attemptStatusTone(status)}
+        />
+      }
+      footer={
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+            width: '100%',
+          }}
+        >
+          <AttemptProgression status={status} />
+
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'flex-end',
+              gap: 8,
+              flexWrap: 'wrap',
+            }}
+          >
+            {canSubmit && (
+              <>
+                <RpgButton
+                  variant="danger"
+                  size="sm"
+                  loading={abandoning}
+                  disabled={!canAbandon}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onAbandon();
+                  }}
+                >
+                  Abandon
+                </RpgButton>
+                <RpgButton
+                  variant="primary"
+                  size="sm"
+                  rarity="epic"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowSubmitForm((v) => !v);
+                  }}
+                >
+                  {showSubmitForm ? 'Close' : 'Submit Work'}
+                </RpgButton>
+              </>
+            )}
+            {status === 'submitted' && (
+              <span
+                style={{
+                  fontSize: 10,
+                  fontStyle: 'italic',
+                  color: '#94a3b8',
+                  padding: '6px 8px',
+                }}
+              >
+                Awaiting review...
+              </span>
+            )}
+            {status === 'approved' && (
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  color: '#4ade80',
+                  padding: '4px 8px',
+                }}
+              >
+                ✓ Approved
+              </span>
+            )}
+            {status === 'rejected' && (
+              <>
+                {attempt.reviewNote && (
+                  <RpgTooltip content={attempt.reviewNote}>
+                    <span
+                      style={{
+                        fontSize: 10,
+                        fontStyle: 'italic',
+                        color: '#f87171',
+                        maxWidth: 180,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {attempt.reviewNote}
+                    </span>
+                  </RpgTooltip>
+                )}
+                <RpgButton
+                  variant="danger"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowSubmitForm((v) => !v);
+                  }}
+                >
+                  Re-submit
+                </RpgButton>
+              </>
+            )}
           </div>
-          {bounty.description && (
-            <p className="text-xs text-gray-500 mt-1 line-clamp-2">{bounty.description}</p>
+
+          {showSubmitForm && (canSubmit || status === 'rejected') && (
+            <RuneFrame tier="epic" glow="subtle" style={{ marginTop: 4 }}>
+              <div
+                style={{
+                  padding: 12,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 8,
+                }}
+              >
+                <input
+                  type="url"
+                  placeholder="GitHub PR link (optional)"
+                  value={prLink}
+                  onChange={(e) => setPrLink(e.target.value)}
+                  style={INPUT_STYLE}
+                />
+                <textarea
+                  placeholder="Describe what you did (min 10 chars)..."
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                  rows={4}
+                  style={{ ...INPUT_STYLE, resize: 'none' }}
+                />
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 8,
+                  }}
+                >
+                  <span style={{ fontSize: 10, color: '#64748b' }}>
+                    {note.length}/10 min chars
+                  </span>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <RpgButton
+                      variant="ghost"
+                      size="sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowSubmitForm(false);
+                      }}
+                    >
+                      Cancel
+                    </RpgButton>
+                    <RpgButton
+                      variant="primary"
+                      size="sm"
+                      disabled={note.length < 10}
+                      loading={submitting}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleSubmit();
+                      }}
+                    >
+                      Submit for Review
+                    </RpgButton>
+                  </div>
+                </div>
+              </div>
+            </RuneFrame>
           )}
         </div>
-        <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
-          <span className="flex items-center gap-1 text-sm font-bold text-amber-300">
-            {bounty.tokenReward ?? '?'} <span className="text-xs">&#x1FA99;</span>
-          </span>
-        </div>
-      </div>
-
-      {/* Status progression bar */}
-      <div className="flex items-center gap-0 my-3">
-        {(['claimed', 'in_progress', 'submitted', 'approved'] as const).map((step, i, arr) => {
-          const stepConfig = ATTEMPT_STATUS_STYLES[step];
-          const steps = arr;
-          const currentIndex = steps.indexOf(status as any);
-          const isRejected = status === 'rejected';
-          const isActive = i <= currentIndex && !isRejected;
-          const isCurrent = step === status;
-          const isLast = i === steps.length - 1;
-
-          return (
-            <div key={step} className="flex items-center flex-1 last:flex-none">
-              <div className="flex flex-col items-center">
-                <div
-                  className={`w-3.5 h-3.5 rounded-full border-2 transition-all ${
-                    isRejected && i === currentIndex
-                      ? 'bg-red-500 border-red-400 shadow-[0_0_6px_rgba(239,68,68,0.5)]'
-                      : isCurrent
-                      ? `${stepConfig.bg} ${stepConfig.border} shadow-[0_0_6px_rgba(0,200,255,0.3)]`
-                      : isActive
-                      ? 'bg-cyan-500/60 border-cyan-400/60'
-                      : 'bg-white/5 border-white/20'
-                  }`}
-                />
-                <span className={`text-[8px] mt-1 whitespace-nowrap ${isActive || isCurrent ? 'text-gray-300' : 'text-gray-600'}`}>
-                  {stepConfig.label}
-                </span>
-              </div>
-              {!isLast && (
-                <div className={`flex-1 h-0.5 mx-1 ${i < currentIndex && !isRejected ? 'bg-cyan-500/40' : 'bg-white/10'}`} />
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Actions */}
-      <div className="flex items-center justify-end gap-2 mt-1">
-        {canSubmit && (
-          <>
-            <button
-              onClick={onAbandon}
-              disabled={abandoning}
-              className="text-xs px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 transition-all disabled:opacity-40"
-            >
-              {abandoning ? 'Abandoning...' : 'Abandon'}
-            </button>
-            <button
-              onClick={() => setShowSubmitForm(!showSubmitForm)}
-              className="text-xs font-bold px-4 py-1.5 rounded-lg bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-400 hover:to-pink-500 text-white transition-all"
-            >
-              Submit Work
-            </button>
-          </>
-        )}
-        {status === 'submitted' && (
-          <span className="text-xs text-gray-400 italic px-3 py-1.5">Awaiting Review...</span>
-        )}
-        {status === 'approved' && (
-          <span className="flex items-center gap-1.5 text-xs text-green-400 font-bold px-3 py-1.5">
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
-            Approved!
-          </span>
-        )}
-        {status === 'rejected' && (
-          <div className="flex items-center gap-2">
-            {attempt.reviewNote && (
-              <span className="text-[10px] text-red-400/70 italic max-w-[200px] truncate">{attempt.reviewNote}</span>
-            )}
-            <button
-              onClick={() => setShowSubmitForm(!showSubmitForm)}
-              className="text-xs font-bold px-3 py-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/40 transition-all"
-            >
-              Re-submit
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Submit form */}
-      {showSubmitForm && (canSubmit || status === 'rejected') && (
-        <div className="mt-4 space-y-3 border-t border-white/10 pt-4">
-          <input
-            type="url"
-            placeholder="GitHub PR link (optional)"
-            className="w-full bg-white/5 border border-white/10 rounded px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-amber-500/50"
-            value={prLink}
-            onChange={(e) => setPrLink(e.target.value)}
-          />
-          <textarea
-            placeholder="Describe what you did (min 10 chars)..."
-            className="w-full bg-white/5 border border-white/10 rounded px-3 py-2 text-sm text-white placeholder-gray-500 h-24 resize-none focus:outline-none focus:border-amber-500/50"
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-          />
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] text-gray-500">{note.length}/10 min chars</span>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setShowSubmitForm(false)}
-                className="text-xs text-gray-400 hover:text-gray-300 px-3 py-1.5"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSubmit}
-                disabled={submitting || note.length < 10}
-                className="text-xs font-bold px-4 py-2 rounded bg-amber-600 hover:bg-amber-500 text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                {submitting ? 'Submitting...' : 'Submit for Review'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
+      }
+    />
   );
 }
 
-// ────────────────────── My Bounties Tab: Creator Bounty Card ──────────────────────
+// ---------------------------------------------------------------------------
+// My Bounties tab: Creator bounty card (with submissions review)
+// ---------------------------------------------------------------------------
 
 function CreatorBountyCard({
   bounty,
@@ -365,142 +929,290 @@ function CreatorBountyCard({
   reviewing: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const [reviewingAttemptId, setReviewingAttemptId] = useState<string | null>(null);
+  const [reviewingAttemptId, setReviewingAttemptId] = useState<string | null>(
+    null
+  );
   const [reviewNote, setReviewNote] = useState('');
-  const difficulty = bounty.difficulty || 'beginner';
-  const diffConfig = DIFFICULTY_STYLES[difficulty] || DIFFICULTY_STYLES.beginner;
-  const status = bounty.status || 'open';
-  const attempts = bounty.attempts || [];
-  const hasActiveAttempts = attempts.some((a: any) => ['claimed', 'in_progress', 'submitted'].includes(a.status));
 
-  const handleReview = (attemptId: string, decision: string) => {
+  const rarity = deriveBountyRarity(bounty);
+  const status = bounty.status || 'open';
+  const difficulty = bounty.difficulty || 'beginner';
+  const attempts = bounty.attempts || [];
+  const hasActiveAttempts = attempts.some((a: any) =>
+    ['claimed', 'in_progress', 'submitted'].includes(a.status)
+  );
+
+  const handleReviewDecision = (attemptId: string, decision: string) => {
     onReview(attemptId, decision, reviewNote || undefined);
     setReviewingAttemptId(null);
     setReviewNote('');
   };
 
+  const stats: { label: string; value: React.ReactNode }[] = [
+    { label: 'Escrow', value: `${bounty.tokenReward ?? 0} NT` },
+    { label: 'Difficulty', value: DIFFICULTY_LABELS[difficulty] ?? difficulty },
+    {
+      label: 'Attempts',
+      value: `${bounty.currentAttempts ?? 0} / ${bounty.maxAttempts ?? 1}`,
+    },
+    { label: 'Submissions', value: attempts.length },
+  ];
+
   return (
-    <div className={`rounded-lg border p-3 ${diffConfig.border} ${diffConfig.bg}`}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-bold text-white truncate">{bounty.title}</span>
-            <DifficultyBadge difficulty={difficulty} />
-            <BountyStatusBadge status={status} />
-          </div>
-          <p className="text-xs text-gray-500 mt-1 line-clamp-1">{bounty.description}</p>
-        </div>
-        <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
-          <span className="flex items-center gap-1 text-sm font-bold text-amber-300">
-            {bounty.tokenReward ?? 0} <span className="text-xs">&#x1FA99;</span>
-          </span>
-          <span className="text-[10px] text-gray-500">
-            {bounty.currentAttempts ?? 0}/{bounty.maxAttempts ?? 1} claimed
-          </span>
-        </div>
-      </div>
-
-      {/* Submissions toggle */}
-      <div className="flex items-center justify-between mt-2">
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="text-[10px] text-cyan-400 hover:text-cyan-300 font-bold"
+    <ItemCard
+      rarity={rarity}
+      glow={bounty.isFeatured ? 'strong' : undefined}
+      name={bounty.title}
+      subtitle={
+        bounty.isFeatured ? 'Featured · Community promoted' : 'Your bounty'
+      }
+      icon={<span>📜</span>}
+      description={bounty.description}
+      stats={stats}
+      badge={
+        <StatusChip
+          label={bountyStatusLabel(status)}
+          tone={bountyStatusTone(status)}
+        />
+      }
+      footer={
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+            width: '100%',
+          }}
         >
-          {expanded ? 'Hide' : 'View'} Submissions ({attempts.length})
-        </button>
-        <div className="flex items-center gap-2">
-          {status === 'open' && !hasActiveAttempts && (
-            <button
-              onClick={onCancel}
-              disabled={cancelling}
-              className="text-xs px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 transition-all disabled:opacity-40"
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 8,
+            }}
+          >
+            <RpgButton
+              variant="ghost"
+              size="sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                setExpanded((v) => !v);
+              }}
             >
-              {cancelling ? 'Cancelling...' : 'Cancel Bounty'}
-            </button>
-          )}
-        </div>
-      </div>
+              {expanded ? 'Hide' : 'View'} Submissions ({attempts.length})
+            </RpgButton>
+            {status === 'open' && !hasActiveAttempts && (
+              <RpgButton
+                variant="danger"
+                size="sm"
+                loading={cancelling}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onCancel();
+                }}
+              >
+                Cancel Bounty
+              </RpgButton>
+            )}
+          </div>
 
-      {/* Expanded submissions list */}
-      {expanded && (
-        <div className="mt-3 space-y-2 border-t border-white/10 pt-3">
-          {attempts.length === 0 ? (
-            <p className="text-xs text-gray-500 italic">No submissions yet.</p>
-          ) : (
-            attempts.map((attempt: any) => (
-              <div key={attempt.id} className="rounded border border-white/10 bg-white/5 p-2.5">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-white font-medium">{attempt.hunterName || 'Hunter'}</span>
-                    <AttemptStatusBadge status={attempt.status} />
-                  </div>
-                  <span className="text-[10px] text-gray-500">
-                    {attempt.submittedAt ? new Date(attempt.submittedAt).toLocaleDateString() : ''}
-                  </span>
-                </div>
-                {attempt.submissionNote && (
-                  <p className="text-xs text-gray-400 mt-1.5">{attempt.submissionNote}</p>
-                )}
-                {attempt.prLink && (
-                  <a href={attempt.prLink} target="_blank" rel="noopener noreferrer" className="text-[10px] text-cyan-400 hover:text-cyan-300 mt-1 block truncate">
-                    {attempt.prLink}
-                  </a>
-                )}
-
-                {/* Review actions for submitted attempts */}
-                {attempt.status === 'submitted' && (
-                  <div className="mt-2">
-                    {reviewingAttemptId === attempt.id ? (
-                      <div className="space-y-2">
-                        <textarea
-                          placeholder="Review note (optional)..."
-                          className="w-full bg-white/5 border border-white/10 rounded px-2 py-1.5 text-xs text-white placeholder-gray-500 h-16 resize-none focus:outline-none focus:border-amber-500/50"
-                          value={reviewNote}
-                          onChange={(e) => setReviewNote(e.target.value)}
-                        />
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => handleReview(attempt.id, 'approve')}
-                            disabled={reviewing}
-                            className="text-xs font-bold px-3 py-1.5 rounded bg-green-600 hover:bg-green-500 text-white transition-all disabled:opacity-40"
-                          >
-                            Approve
-                          </button>
-                          <button
-                            onClick={() => handleReview(attempt.id, 'reject')}
-                            disabled={reviewing}
-                            className="text-xs font-bold px-3 py-1.5 rounded bg-red-600 hover:bg-red-500 text-white transition-all disabled:opacity-40"
-                          >
-                            Reject
-                          </button>
-                          <button
-                            onClick={() => { setReviewingAttemptId(null); setReviewNote(''); }}
-                            className="text-xs text-gray-400 hover:text-gray-300 px-2"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <button
-                        onClick={() => setReviewingAttemptId(attempt.id)}
-                        className="text-xs font-bold px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 transition-all"
+          {expanded && (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 8,
+                paddingTop: 8,
+                borderTop: '1px dashed rgba(148, 163, 184, 0.2)',
+              }}
+            >
+              {attempts.length === 0 ? (
+                <p
+                  style={{
+                    fontSize: 11,
+                    color: '#64748b',
+                    fontStyle: 'italic',
+                    margin: 0,
+                  }}
+                >
+                  No submissions yet.
+                </p>
+              ) : (
+                attempts.map((attempt: any) => (
+                  <RuneFrame
+                    key={attempt.id}
+                    tier="common"
+                    glow={false}
+                    style={{ padding: 0 }}
+                  >
+                    <div
+                      style={{
+                        padding: 10,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 6,
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 8,
+                        }}
                       >
-                        Review
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 8,
+                            minWidth: 0,
+                          }}
+                        >
+                          <span
+                            style={{
+                              fontSize: 11,
+                              fontWeight: 600,
+                              color: '#e2e8f0',
+                            }}
+                          >
+                            {attempt.hunterName || 'Hunter'}
+                          </span>
+                          <StatusChip
+                            label={attemptStatusLabel(attempt.status)}
+                            tone={attemptStatusTone(attempt.status)}
+                          />
+                        </div>
+                        <span style={{ fontSize: 9, color: '#64748b' }}>
+                          {attempt.submittedAt
+                            ? formatDate(attempt.submittedAt)
+                            : ''}
+                        </span>
+                      </div>
+                      {attempt.submissionNote && (
+                        <p
+                          style={{
+                            fontSize: 11,
+                            color: '#cbd5e1',
+                            margin: 0,
+                            lineHeight: 1.45,
+                          }}
+                        >
+                          {attempt.submissionNote}
+                        </p>
+                      )}
+                      {attempt.prLink && (
+                        <a
+                          href={attempt.prLink}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{
+                            fontSize: 10,
+                            color: '#7dd3fc',
+                            textDecoration: 'underline',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            display: 'block',
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {attempt.prLink}
+                        </a>
+                      )}
+
+                      {attempt.status === 'submitted' && (
+                        <div style={{ marginTop: 4 }}>
+                          {reviewingAttemptId === attempt.id ? (
+                            <div
+                              style={{
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: 6,
+                              }}
+                            >
+                              <textarea
+                                placeholder="Review note (optional)..."
+                                value={reviewNote}
+                                onChange={(e) => setReviewNote(e.target.value)}
+                                rows={3}
+                                style={{ ...INPUT_STYLE, resize: 'none' }}
+                              />
+                              <div
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 6,
+                                  justifyContent: 'flex-end',
+                                }}
+                              >
+                                <RpgButton
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setReviewingAttemptId(null);
+                                    setReviewNote('');
+                                  }}
+                                >
+                                  Cancel
+                                </RpgButton>
+                                <RpgButton
+                                  variant="danger"
+                                  size="sm"
+                                  loading={reviewing}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleReviewDecision(attempt.id, 'rejected');
+                                  }}
+                                >
+                                  Reject
+                                </RpgButton>
+                                <RpgButton
+                                  variant="primary"
+                                  size="sm"
+                                  rarity="uncommon"
+                                  loading={reviewing}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleReviewDecision(attempt.id, 'approved');
+                                  }}
+                                >
+                                  Approve
+                                </RpgButton>
+                              </div>
+                            </div>
+                          ) : (
+                            <RpgButton
+                              variant="primary"
+                              size="sm"
+                              rarity="legendary"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setReviewingAttemptId(attempt.id);
+                              }}
+                            >
+                              Review
+                            </RpgButton>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </RuneFrame>
+                ))
+              )}
+            </div>
           )}
         </div>
-      )}
-    </div>
+      }
+    />
   );
 }
 
-// ────────────────────── Create Tab: Bounty Form ──────────────────────
+// ---------------------------------------------------------------------------
+// Create tab: Bounty form
+// ---------------------------------------------------------------------------
 
 function CreateBountyForm({
   tokens,
@@ -520,19 +1232,21 @@ function CreateBountyForm({
   const [maxAttempts, setMaxAttempts] = useState<number>(3);
   const [tagsInput, setTagsInput] = useState('');
   const [expiresAt, setExpiresAt] = useState('');
-  const [bonusRewards, setBonusRewards] = useState<Array<{ type: string; label: string; value: string }>>([]);
+  const [bonusRewards, setBonusRewards] = useState<
+    Array<{ type: string; label: string; value: string }>
+  >([]);
 
   const createMutation = useMutation({
     mutationFn: (data: any) => api.createBounty(data),
     onSuccess: () => {
-      addToast('\uD83D\uDCCC', 'Bounty posted!');
+      addToast('📌', 'Bounty posted!');
       queryClient.invalidateQueries({ queryKey: ['bounties'] });
       queryClient.invalidateQueries({ queryKey: ['my-bounties'] });
       queryClient.invalidateQueries({ queryKey: ['pet'] });
       onCreated();
     },
     onError: (err: Error) => {
-      addToast('\u274C', err.message || 'Failed to post bounty');
+      addToast('❌', err.message || 'Failed to post bounty');
     },
   });
 
@@ -560,6 +1274,7 @@ function CreateBountyForm({
       .map((t) => t.trim())
       .filter(Boolean);
 
+    // Preserve exact payload shape of prior implementation.
     createMutation.mutate({
       title: title.trim(),
       description: description.trim(),
@@ -569,192 +1284,497 @@ function CreateBountyForm({
       maxAttempts,
       tags: tags.length > 0 ? tags : undefined,
       expiresAt: expiresAt || undefined,
-      bonusRewards: bonusRewards.length > 0 ? bonusRewards.filter((b) => b.label.trim()) : undefined,
+      bonusRewards:
+        bonusRewards.length > 0
+          ? bonusRewards.filter((b) => b.label.trim())
+          : undefined,
     });
   };
 
+  const canSubmit =
+    !createMutation.isPending &&
+    !!title.trim() &&
+    !!description.trim() &&
+    tokenReward >= 1 &&
+    tokenReward <= tokens;
+
   return (
-    <div className="px-5 py-4 space-y-4 max-h-[60vh] overflow-y-auto">
+    <div
+      style={{
+        padding: '14px 22px 18px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 14,
+        maxHeight: '60vh',
+        overflowY: 'auto',
+      }}
+    >
+      <RuneFrame tier="legendary" glow="subtle">
+        <div
+          style={{
+            padding: '12px 14px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 10,
+          }}
+        >
+          <div>
+            <h3
+              style={{
+                fontFamily: 'var(--font-orbitron), sans-serif',
+                fontSize: 13,
+                fontWeight: 700,
+                color: '#fb923c',
+                textTransform: 'uppercase',
+                letterSpacing: '0.12em',
+                margin: 0,
+              }}
+            >
+              Post New Bounty
+            </h3>
+            <p style={{ fontSize: 10, color: '#94a3b8', margin: '3px 0 0' }}>
+              Escrow ClawTokens and let the community (or AI agents) take the
+              task.
+            </p>
+          </div>
+          <RarityBadge tier="legendary" label="Open Call" />
+        </div>
+      </RuneFrame>
+
       {/* Title */}
-      <div>
-        <label className="block text-[10px] text-gray-400 uppercase tracking-wider font-bold mb-1">Title *</label>
+      <Field label="Title *">
         <input
           type="text"
           placeholder="e.g. Build a cron job scheduler plugin"
-          className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-amber-500/50"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           maxLength={120}
+          style={INPUT_STYLE}
         />
-      </div>
+      </Field>
 
       {/* Description */}
-      <div>
-        <label className="block text-[10px] text-gray-400 uppercase tracking-wider font-bold mb-1">Description *</label>
+      <Field label="Description *">
         <textarea
           placeholder="Detailed description of what needs to be done..."
-          className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 h-28 resize-none focus:outline-none focus:border-amber-500/50"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
+          rows={4}
+          style={{ ...INPUT_STYLE, resize: 'none' }}
         />
-      </div>
+      </Field>
 
       {/* Requirements */}
-      <div>
-        <label className="block text-[10px] text-gray-400 uppercase tracking-wider font-bold mb-1">Requirements (optional)</label>
+      <Field label="Requirements (optional)">
         <textarea
           placeholder="Specific requirements or acceptance criteria..."
-          className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 h-20 resize-none focus:outline-none focus:border-amber-500/50"
           value={requirements}
           onChange={(e) => setRequirements(e.target.value)}
+          rows={3}
+          style={{ ...INPUT_STYLE, resize: 'none' }}
         />
-      </div>
+      </Field>
 
       {/* Row: Difficulty + Token Reward + Max Attempts */}
-      <div className="grid grid-cols-3 gap-3">
-        <div>
-          <label className="block text-[10px] text-gray-400 uppercase tracking-wider font-bold mb-1">Difficulty</label>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(3, 1fr)',
+          gap: 10,
+        }}
+      >
+        <Field label="Difficulty">
           <select
             value={difficulty}
             onChange={(e) => setDifficulty(e.target.value)}
-            className="w-full bg-white/5 border border-white/10 rounded-lg px-2 py-2 text-sm text-gray-300 focus:outline-none focus:border-amber-500/50"
+            style={INPUT_STYLE}
           >
             <option value="beginner">Beginner</option>
             <option value="intermediate">Intermediate</option>
             <option value="advanced">Advanced</option>
             <option value="expert">Expert</option>
           </select>
-        </div>
-        <div>
-          <label className="block text-[10px] text-gray-400 uppercase tracking-wider font-bold mb-1">
-            Token Reward
-            <span className="text-amber-300 ml-1">(bal: {tokens})</span>
-          </label>
+        </Field>
+        <Field label={`Reward (bal: ${tokens} NT)`}>
           <input
             type="number"
             min={1}
             max={tokens}
             value={tokenReward}
             onChange={(e) => setTokenReward(Number(e.target.value))}
-            className="w-full bg-white/5 border border-white/10 rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-amber-500/50"
+            style={INPUT_STYLE}
           />
-        </div>
-        <div>
-          <label className="block text-[10px] text-gray-400 uppercase tracking-wider font-bold mb-1">Max Attempts</label>
+        </Field>
+        <Field label="Max Attempts">
           <input
             type="number"
             min={1}
             max={20}
             value={maxAttempts}
             onChange={(e) => setMaxAttempts(Number(e.target.value))}
-            className="w-full bg-white/5 border border-white/10 rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-amber-500/50"
+            style={INPUT_STYLE}
           />
-        </div>
+        </Field>
       </div>
 
       {/* Tags */}
-      <div>
-        <label className="block text-[10px] text-gray-400 uppercase tracking-wider font-bold mb-1">Tags (comma-separated)</label>
+      <Field label="Tags (comma-separated)">
         <input
           type="text"
           placeholder="e.g. plugin, cron, scheduling"
-          className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-amber-500/50"
           value={tagsInput}
           onChange={(e) => setTagsInput(e.target.value)}
+          style={INPUT_STYLE}
         />
-      </div>
+      </Field>
 
       {/* Expiry */}
-      <div>
-        <label className="block text-[10px] text-gray-400 uppercase tracking-wider font-bold mb-1">Expiry Date (optional)</label>
+      <Field label="Expiry Date (optional)">
         <input
           type="date"
-          className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-500/50"
           value={expiresAt}
           onChange={(e) => setExpiresAt(e.target.value)}
+          style={INPUT_STYLE}
         />
-      </div>
+      </Field>
 
       {/* Bonus Rewards */}
       <div>
-        <div className="flex items-center justify-between mb-2">
-          <label className="text-[10px] text-gray-400 uppercase tracking-wider font-bold">Bonus Rewards</label>
-          <button
-            onClick={handleAddBonus}
-            className="text-[10px] font-bold text-amber-400 hover:text-amber-300 transition-colors"
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            marginBottom: 6,
+          }}
+        >
+          <label
+            style={{
+              fontSize: 10,
+              color: '#94a3b8',
+              textTransform: 'uppercase',
+              letterSpacing: '0.12em',
+              fontWeight: 700,
+            }}
           >
-            + Add Bonus Reward
-          </button>
+            Bonus Rewards
+          </label>
+          <RpgButton variant="ghost" size="sm" onClick={handleAddBonus}>
+            + Add Bonus
+          </RpgButton>
         </div>
-        {bonusRewards.map((bonus, i) => (
-          <div key={i} className="flex items-center gap-2 mb-2">
-            <select
-              value={bonus.type}
-              onChange={(e) => handleBonusChange(i, 'type', e.target.value)}
-              className="bg-white/5 border border-white/10 rounded px-2 py-1.5 text-xs text-gray-300 focus:outline-none focus:border-amber-500/50"
-            >
-              <option value="skill">Skill</option>
-              <option value="agent_config">Agent Config</option>
-              <option value="knowledge_book">Knowledge Book</option>
-              <option value="custom">Custom</option>
-            </select>
-            <input
-              type="text"
-              placeholder="Label"
-              className="flex-1 bg-white/5 border border-white/10 rounded px-2 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-amber-500/50"
-              value={bonus.label}
-              onChange={(e) => handleBonusChange(i, 'label', e.target.value)}
-            />
-            <input
-              type="text"
-              placeholder="Value / ID"
-              className="flex-1 bg-white/5 border border-white/10 rounded px-2 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-amber-500/50"
-              value={bonus.value}
-              onChange={(e) => handleBonusChange(i, 'value', e.target.value)}
-            />
-            <button
-              onClick={() => handleRemoveBonus(i)}
-              className="text-red-400 hover:text-red-300 text-xs px-1"
-            >
-              {'\u2715'}
-            </button>
+        {bonusRewards.length === 0 ? (
+          <p style={{ fontSize: 10, color: '#475569', margin: 0 }}>
+            Optional. Layer in a skill, agent config, knowledge book, or
+            anything custom.
+          </p>
+        ) : (
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6,
+            }}
+          >
+            {bonusRewards.map((bonus, i) => (
+              <RuneFrame key={i} tier="legendary" glow={false}>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    padding: 8,
+                  }}
+                >
+                  <span aria-hidden style={{ fontSize: 16 }}>
+                    {BONUS_REWARD_ICONS[bonus.type] || '🎁'}
+                  </span>
+                  <select
+                    value={bonus.type}
+                    onChange={(e) =>
+                      handleBonusChange(i, 'type', e.target.value)
+                    }
+                    style={{ ...INPUT_STYLE, width: 130 }}
+                  >
+                    <option value="skill">Skill</option>
+                    <option value="agent_config">Agent Config</option>
+                    <option value="knowledge_book">Knowledge Book</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                  <input
+                    type="text"
+                    placeholder="Label"
+                    value={bonus.label}
+                    onChange={(e) =>
+                      handleBonusChange(i, 'label', e.target.value)
+                    }
+                    style={{ ...INPUT_STYLE, flex: 1 }}
+                  />
+                  <input
+                    type="text"
+                    placeholder="Value / ID"
+                    value={bonus.value}
+                    onChange={(e) =>
+                      handleBonusChange(i, 'value', e.target.value)
+                    }
+                    style={{ ...INPUT_STYLE, flex: 1 }}
+                  />
+                  <RpgButton
+                    variant="danger"
+                    size="sm"
+                    onClick={() => handleRemoveBonus(i)}
+                  >
+                    ✕
+                  </RpgButton>
+                </div>
+              </RuneFrame>
+            ))}
           </div>
-        ))}
+        )}
       </div>
 
-      {/* Escrow warning */}
-      <div className="rounded-lg bg-amber-500/10 border border-amber-500/30 p-3">
-        <p className="text-xs text-amber-300 font-bold">Escrow Notice</p>
-        <p className="text-[10px] text-amber-200/70 mt-1">
-          {tokenReward} tokens will be held in escrow when you post this bounty. Tokens are released to the hunter upon approval, or returned to you if cancelled (with no active attempts).
-        </p>
-      </div>
+      {/* Escrow notice */}
+      <RuneFrame tier="legendary" glow={false}>
+        <div style={{ padding: 12 }}>
+          <p
+            style={{
+              fontSize: 11,
+              fontWeight: 700,
+              color: '#fb923c',
+              margin: 0,
+              textTransform: 'uppercase',
+              letterSpacing: '0.1em',
+            }}
+          >
+            Escrow Notice
+          </p>
+          <p
+            style={{
+              fontSize: 10,
+              color: '#fcd34d',
+              margin: '6px 0 0',
+              lineHeight: 1.5,
+            }}
+          >
+            {tokenReward} NT will be held in escrow the moment you post. Tokens
+            release to the hunter on approval, refund to you on cancel (while
+            no attempts are active).
+          </p>
+        </div>
+      </RuneFrame>
 
       {/* Submit */}
-      <button
+      <RpgButton
+        variant="primary"
+        size="lg"
+        rarity="legendary"
+        disabled={!canSubmit}
+        loading={createMutation.isPending}
         onClick={handleSubmit}
-        disabled={createMutation.isPending || !title.trim() || !description.trim() || tokenReward < 1 || tokenReward > tokens}
-        className="w-full text-sm font-bold py-3 rounded-lg bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed"
       >
-        {createMutation.isPending ? 'Posting...' : `Post Bounty (${tokenReward} tokens escrowed)`}
-      </button>
+        {`Post Bounty · ${tokenReward} NT escrow`}
+      </RpgButton>
     </div>
   );
 }
 
-// ────────────────────── Main Modal ──────────────────────
+// ---------------------------------------------------------------------------
+// Shared input / field primitives
+// ---------------------------------------------------------------------------
+
+const INPUT_STYLE: React.CSSProperties = {
+  width: '100%',
+  background: 'rgba(10, 22, 40, 0.85)',
+  border: '1px solid rgba(56, 189, 248, 0.25)',
+  borderRadius: 6,
+  padding: '8px 12px',
+  fontSize: 12,
+  color: '#e2e8f0',
+  outline: 'none',
+  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+};
+
+const FILTER_INPUT_STYLE: React.CSSProperties = {
+  ...INPUT_STYLE,
+  padding: '6px 10px',
+  fontSize: 11,
+  width: 'auto',
+};
+
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <label
+        style={{
+          display: 'block',
+          fontSize: 10,
+          color: '#94a3b8',
+          textTransform: 'uppercase',
+          letterSpacing: '0.12em',
+          fontWeight: 700,
+          marginBottom: 4,
+        }}
+      >
+        {label}
+      </label>
+      {children}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Summary banner (stats strip shown on My Bounties / My Attempts tabs)
+// ---------------------------------------------------------------------------
+
+function SummaryBanner({
+  tier,
+  items,
+}: {
+  tier: RarityId;
+  items: { label: string; value: string | number; accent: string }[];
+}) {
+  return (
+    <RuneFrame tier={tier} glow={false}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 22,
+          padding: '12px 18px',
+          flexWrap: 'wrap',
+        }}
+      >
+        {items.map((it, idx) => (
+          <div key={it.label} style={{ display: 'flex', alignItems: 'center', gap: 22 }}>
+            <div>
+              <p
+                style={{
+                  fontSize: 9,
+                  color: 'rgba(148, 163, 184, 0.75)',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.14em',
+                  margin: 0,
+                  fontWeight: 700,
+                }}
+              >
+                {it.label}
+              </p>
+              <p
+                style={{
+                  fontFamily: 'var(--font-orbitron), sans-serif',
+                  fontSize: 20,
+                  fontWeight: 700,
+                  color: it.accent,
+                  margin: '2px 0 0',
+                }}
+              >
+                {it.value}
+              </p>
+            </div>
+            {idx < items.length - 1 && (
+              <div
+                style={{
+                  height: 36,
+                  width: 1,
+                  background: 'rgba(148, 163, 184, 0.25)',
+                }}
+              />
+            )}
+          </div>
+        ))}
+      </div>
+    </RuneFrame>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Empty state
+// ---------------------------------------------------------------------------
+
+function EmptyState({
+  icon,
+  title,
+  hint,
+}: {
+  icon: string;
+  title: string;
+  hint: string;
+}) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: 8,
+        padding: '60px 20px',
+        textAlign: 'center',
+      }}
+    >
+      <span
+        style={{
+          fontSize: 36,
+          filter: 'drop-shadow(0 0 16px rgba(249, 115, 22, 0.3))',
+        }}
+      >
+        {icon}
+      </span>
+      <h3
+        style={{
+          fontFamily: 'var(--font-orbitron), sans-serif',
+          fontSize: 14,
+          fontWeight: 700,
+          color: '#cbd5e1',
+          letterSpacing: '0.08em',
+          textTransform: 'uppercase',
+          margin: 0,
+        }}
+      >
+        {title}
+      </h3>
+      <p
+        style={{
+          fontSize: 11,
+          color: '#64748b',
+          maxWidth: 360,
+          margin: 0,
+        }}
+      >
+        {hint}
+      </p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main modal
+// ---------------------------------------------------------------------------
 
 export default function BountyBoardModal() {
-  const { bountyBoardOpen, closeBountyBoard, bountyBoardTab, setBountyBoardTab, addToast } = useGameStore();
+  const {
+    bountyBoardOpen,
+    closeBountyBoard,
+    bountyBoardTab,
+    setBountyBoardTab,
+    addToast,
+  } = useGameStore();
   const { data: pet } = usePet();
   const queryClient = useQueryClient();
 
   // Filters
-  const [difficultyFilter, setDifficultyFilter] = useState<DifficultyFilter>('all');
+  const [difficultyFilter, setDifficultyFilter] =
+    useState<DifficultyFilter>('all');
   const [sortMode, setSortMode] = useState<SortMode>('newest');
   const [page, setPage] = useState(1);
 
-  // Local state
+  // Local action state (per-row loading flags)
   const [claimingId, setClaimingId] = useState<string | null>(null);
   const [submittingId, setSubmittingId] = useState<string | null>(null);
   const [abandoningId, setAbandoningId] = useState<string | null>(null);
@@ -766,7 +1786,8 @@ export default function BountyBoardModal() {
     setPage(1);
   }, [bountyBoardTab, difficultyFilter, sortMode]);
 
-  // Build query params
+  // Build query params (preserved byte-for-byte from prior impl so cache keys
+  // line up across the visual rewrite).
   const queryParams = {
     page,
     difficulty: difficultyFilter !== 'all' ? difficultyFilter : undefined,
@@ -799,28 +1820,33 @@ export default function BountyBoardModal() {
   const claimMutation = useMutation({
     mutationFn: (bountyId: string) => api.claimBounty(bountyId),
     onSuccess: () => {
-      addToast('\uD83C\uDFAF', 'Bounty claimed! Get to work!');
+      addToast('🎯', 'Bounty claimed! Get to work!');
       queryClient.invalidateQueries({ queryKey: ['bounties'] });
       queryClient.invalidateQueries({ queryKey: ['my-bounty-attempts'] });
       setClaimingId(null);
     },
     onError: (err: Error) => {
-      addToast('\u274C', err.message || 'Failed to claim bounty');
+      addToast('❌', err.message || 'Failed to claim bounty');
       setClaimingId(null);
     },
   });
 
   // Submit mutation
   const submitMutation = useMutation({
-    mutationFn: ({ bountyId, data }: { bountyId: string; data: { prLink?: string; submissionNote: string } }) =>
-      api.submitBountyAttempt(bountyId, data),
+    mutationFn: ({
+      bountyId,
+      data,
+    }: {
+      bountyId: string;
+      data: { prLink?: string; submissionNote: string };
+    }) => api.submitBountyAttempt(bountyId, data),
     onSuccess: () => {
-      addToast('\u2705', 'Work submitted for review!');
+      addToast('✅', 'Work submitted for review!');
       queryClient.invalidateQueries({ queryKey: ['my-bounty-attempts'] });
       setSubmittingId(null);
     },
     onError: (err: Error) => {
-      addToast('\u274C', err.message || 'Submission failed');
+      addToast('❌', err.message || 'Submission failed');
       setSubmittingId(null);
     },
   });
@@ -829,13 +1855,13 @@ export default function BountyBoardModal() {
   const abandonMutation = useMutation({
     mutationFn: (bountyId: string) => api.abandonBounty(bountyId),
     onSuccess: () => {
-      addToast('\uD83D\uDEAA', 'Bounty abandoned');
+      addToast('🚪', 'Bounty abandoned');
       queryClient.invalidateQueries({ queryKey: ['my-bounty-attempts'] });
       queryClient.invalidateQueries({ queryKey: ['bounties'] });
       setAbandoningId(null);
     },
     onError: (err: Error) => {
-      addToast('\u274C', err.message || 'Failed to abandon');
+      addToast('❌', err.message || 'Failed to abandon');
       setAbandoningId(null);
     },
   });
@@ -844,24 +1870,29 @@ export default function BountyBoardModal() {
   const cancelMutation = useMutation({
     mutationFn: (bountyId: string) => api.cancelBounty(bountyId),
     onSuccess: () => {
-      addToast('\uD83D\uDDD1\uFE0F', 'Bounty cancelled. Tokens refunded.');
+      addToast('🗑️', 'Bounty cancelled. Tokens refunded.');
       queryClient.invalidateQueries({ queryKey: ['my-bounties'] });
       queryClient.invalidateQueries({ queryKey: ['bounties'] });
       queryClient.invalidateQueries({ queryKey: ['pet'] });
       setCancellingId(null);
     },
     onError: (err: Error) => {
-      addToast('\u274C', err.message || 'Failed to cancel');
+      addToast('❌', err.message || 'Failed to cancel');
       setCancellingId(null);
     },
   });
 
   // Review mutation
   const reviewMutation = useMutation({
-    mutationFn: ({ attemptId, data }: { attemptId: string; data: { decision: string; reviewNote?: string } }) =>
-      api.reviewBountyAttempt(attemptId, data),
+    mutationFn: ({
+      attemptId,
+      data,
+    }: {
+      attemptId: string;
+      data: { decision: string; reviewNote?: string };
+    }) => api.reviewBountyAttempt(attemptId, data),
     onSuccess: () => {
-      addToast('\u2705', 'Review submitted!');
+      addToast('✅', 'Review submitted!');
       queryClient.invalidateQueries({ queryKey: ['my-bounties'] });
       queryClient.invalidateQueries({ queryKey: ['my-bounty-attempts'] });
       queryClient.invalidateQueries({ queryKey: ['bounties'] });
@@ -869,45 +1900,50 @@ export default function BountyBoardModal() {
       setReviewingId(null);
     },
     onError: (err: Error) => {
-      addToast('\u274C', err.message || 'Review failed');
+      addToast('❌', err.message || 'Review failed');
       setReviewingId(null);
     },
   });
 
-  const handleClaim = useCallback((bountyId: string) => {
-    setClaimingId(bountyId);
-    claimMutation.mutate(bountyId);
-  }, [claimMutation]);
+  const handleClaim = useCallback(
+    (bountyId: string) => {
+      setClaimingId(bountyId);
+      claimMutation.mutate(bountyId);
+    },
+    [claimMutation]
+  );
 
-  const handleSubmit = useCallback((bountyId: string, data: { prLink?: string; submissionNote: string }) => {
-    setSubmittingId(bountyId);
-    submitMutation.mutate({ bountyId, data });
-  }, [submitMutation]);
+  const handleSubmit = useCallback(
+    (bountyId: string, data: { prLink?: string; submissionNote: string }) => {
+      setSubmittingId(bountyId);
+      submitMutation.mutate({ bountyId, data });
+    },
+    [submitMutation]
+  );
 
-  const handleAbandon = useCallback((bountyId: string) => {
-    setAbandoningId(bountyId);
-    abandonMutation.mutate(bountyId);
-  }, [abandonMutation]);
+  const handleAbandon = useCallback(
+    (bountyId: string) => {
+      setAbandoningId(bountyId);
+      abandonMutation.mutate(bountyId);
+    },
+    [abandonMutation]
+  );
 
-  const handleCancel = useCallback((bountyId: string) => {
-    setCancellingId(bountyId);
-    cancelMutation.mutate(bountyId);
-  }, [cancelMutation]);
+  const handleCancel = useCallback(
+    (bountyId: string) => {
+      setCancellingId(bountyId);
+      cancelMutation.mutate(bountyId);
+    },
+    [cancelMutation]
+  );
 
-  const handleReview = useCallback((attemptId: string, decision: string, reviewNote?: string) => {
-    setReviewingId(attemptId);
-    reviewMutation.mutate({ attemptId, data: { decision, reviewNote } });
-  }, [reviewMutation]);
-
-  // Close on Escape
-  useEffect(() => {
-    if (!bountyBoardOpen) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closeBountyBoard();
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [bountyBoardOpen, closeBountyBoard]);
+  const handleReview = useCallback(
+    (attemptId: string, decision: string, reviewNote?: string) => {
+      setReviewingId(attemptId);
+      reviewMutation.mutate({ attemptId, data: { decision, reviewNote } });
+    },
+    [reviewMutation]
+  );
 
   if (!bountyBoardOpen) return null;
 
@@ -919,264 +1955,481 @@ export default function BountyBoardModal() {
   const myAttempts = myAttemptsData?.attempts ?? [];
   const tokens = pet?.clawTokens ?? pet?.clawTokens ?? 0;
 
+  const totalEscrowed = myBounties
+    .filter((b: any) => b.status === 'open' || b.status === 'in_progress')
+    .reduce((sum: number, b: any) => sum + (b.tokenReward || 0), 0);
+  const activeCreatorCount = myBounties.filter(
+    (b: any) => b.status === 'open' || b.status === 'in_progress'
+  ).length;
+  const completedCreatorCount = myBounties.filter(
+    (b: any) => b.status === 'completed'
+  ).length;
+
+  const hunterInProgress = myAttempts.filter((a: any) =>
+    ['claimed', 'in_progress'].includes(a.status)
+  ).length;
+  const hunterAwaiting = myAttempts.filter(
+    (a: any) => a.status === 'submitted'
+  ).length;
+  const hunterApproved = myAttempts.filter(
+    (a: any) => a.status === 'approved'
+  ).length;
+
+  // -------------------------------------------------------------------------
+  // Render
+  // -------------------------------------------------------------------------
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-      {/* Backdrop */}
+    <RpgModal
+      open={bountyBoardOpen}
+      onClose={closeBountyBoard}
+      title="Bounty Board"
+      subtitle="Community Bounties · Escrow · Reputation"
+      tier="rare"
+      glow="subtle"
+      headerIcon={<span>📌</span>}
+      maxWidth={1040}
+      tokenBadge={
+        <RpgTooltip content="Your ClawToken balance — escrowed on post, released on approval.">
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '6px 14px',
+              borderRadius: 999,
+              background: 'rgba(249, 115, 22, 0.08)',
+              border: '1px solid rgba(249, 115, 22, 0.35)',
+              color: '#fb923c',
+              fontFamily: 'var(--font-orbitron), sans-serif',
+              fontSize: 12,
+              fontWeight: 700,
+              letterSpacing: '0.05em',
+              textShadow: '0 0 8px rgba(249, 115, 22, 0.35)',
+            }}
+          >
+            <span style={{ fontSize: 13 }}>◈</span>
+            {tokens} NT
+          </span>
+        </RpgTooltip>
+      }
+    >
+      {/* Tabs */}
       <div
-        className="absolute inset-0 bg-gradient-to-b from-[#1a1208]/90 via-[#0f1a2e]/90 to-[#1a1208]/90 backdrop-blur-sm"
-        onClick={closeBountyBoard}
-      />
-
-      {/* Modal */}
-      <div className="relative w-full max-w-4xl max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
-        <div className="claw-panel flex flex-col overflow-hidden bg-gradient-to-b from-[#1a1208] to-[#0f1a2e] border-2 border-amber-500/30">
-          {/* Header */}
-          <div className="flex items-center justify-between px-5 pt-4 pb-3">
-            <div className="flex items-center gap-3">
-              <span className="text-2xl">{'\uD83D\uDCCC'}</span>
-              <div>
-                <h2 className="font-bold text-lg text-white tracking-wide">Bounty Board</h2>
-                <p className="text-[10px] text-amber-400/60 uppercase tracking-widest">Community Bounties &middot; Escrow &middot; Reputation</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <span className="flex items-center gap-1.5 text-sm font-bold text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-full px-3 py-1">
-                <span className="text-base">&#x1FA99;</span>
-                {tokens}
-              </span>
-              <button
-                onClick={closeBountyBoard}
-                className="w-8 h-8 flex items-center justify-center rounded-full bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white font-bold text-sm transition-colors border border-white/10"
-              >
-                {'\u2715'}
-              </button>
-            </div>
-          </div>
-
-          {/* Tabs */}
-          <div className="flex border-b border-amber-500/20 px-5">
-            {([
-              { key: 'browse', label: 'Browse' },
-              { key: 'my-bounties', label: 'My Bounties' },
-              { key: 'my-attempts', label: 'My Attempts' },
-              { key: 'create', label: 'Post Bounty' },
-            ] as { key: BountyTab; label: string }[]).map((t) => (
-              <button
-                key={t.key}
-                onClick={() => setBountyBoardTab(t.key)}
-                className={`px-4 py-2.5 text-sm font-bold transition-colors border-b-2 ${
-                  bountyBoardTab === t.key
-                    ? 'text-amber-300 border-amber-400'
-                    : 'text-gray-500 border-transparent hover:text-gray-300'
-                }`}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Tab content */}
-          <div className="flex-1 overflow-y-auto">
-            {/* ===== BROWSE TAB ===== */}
-            {bountyBoardTab === 'browse' && (
-              <div className="flex flex-col">
-                {/* Filters bar */}
-                <div className="flex flex-wrap items-center gap-2 px-5 py-3 border-b border-white/5">
-                  <select
-                    value={difficultyFilter}
-                    onChange={(e) => setDifficultyFilter(e.target.value as DifficultyFilter)}
-                    className="bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300 focus:outline-none focus:border-amber-500/50"
-                  >
-                    <option value="all">All Difficulties</option>
-                    <option value="beginner">Beginner</option>
-                    <option value="intermediate">Intermediate</option>
-                    <option value="advanced">Advanced</option>
-                    <option value="expert">Expert</option>
-                  </select>
-                  <select
-                    value={sortMode}
-                    onChange={(e) => setSortMode(e.target.value as SortMode)}
-                    className="bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300 focus:outline-none focus:border-amber-500/50"
-                  >
-                    <option value="newest">Newest First</option>
-                    <option value="reward-high">Highest Reward</option>
-                    <option value="reward-low">Lowest Reward</option>
-                    <option value="expiring-soon">Expiring Soon</option>
-                  </select>
-                  <span className="ml-auto text-[10px] text-gray-500">
-                    {total} bount{total !== 1 ? 'ies' : 'y'} available
-                  </span>
-                </div>
-
-                {/* Bounty list */}
-                <div className="px-5 py-3 space-y-2 min-h-[200px] max-h-[55vh]">
-                  {bountiesLoading ? (
-                    <div className="flex items-center justify-center py-12">
-                      <div className="animate-spin w-6 h-6 border-2 border-amber-300 border-t-transparent rounded-full" />
-                    </div>
-                  ) : bounties.length === 0 ? (
-                    <div className="text-center py-12">
-                      <span className="text-3xl block mb-2">{'\uD83D\uDCCC'}</span>
-                      <p className="text-gray-500 text-sm">No bounties available right now.</p>
-                      <p className="text-gray-600 text-xs mt-1">Post one from the &quot;Post Bounty&quot; tab!</p>
-                    </div>
-                  ) : (
-                    <>
-                      {bounties.map((bounty: any) => (
-                        <BountyCard
-                          key={bounty.id}
-                          bounty={bounty}
-                          onClaim={() => handleClaim(bounty.id)}
-                          claiming={claimingId === bounty.id}
-                        />
-                      ))}
-
-                      {/* Pagination */}
-                      {totalPages > 1 && (
-                        <div className="flex items-center justify-center gap-2 pt-3">
-                          <button
-                            onClick={() => setPage((p) => Math.max(1, p - 1))}
-                            disabled={page <= 1}
-                            className="text-xs px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-gray-400 hover:bg-white/10 disabled:opacity-30 transition-colors"
-                          >
-                            Prev
-                          </button>
-                          <span className="text-xs text-gray-500">
-                            Page {page} of {totalPages}
-                          </span>
-                          <button
-                            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                            disabled={page >= totalPages}
-                            className="text-xs px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-gray-400 hover:bg-white/10 disabled:opacity-30 transition-colors"
-                          >
-                            Next
-                          </button>
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* ===== MY BOUNTIES TAB (CREATOR) ===== */}
-            {bountyBoardTab === 'my-bounties' && (
-              <div className="px-5 py-3 space-y-2 min-h-[200px] max-h-[55vh]">
-                {myBountiesLoading ? (
-                  <div className="flex items-center justify-center py-12">
-                    <div className="animate-spin w-6 h-6 border-2 border-amber-300 border-t-transparent rounded-full" />
-                  </div>
-                ) : myBounties.length === 0 ? (
-                  <div className="text-center py-12">
-                    <span className="text-3xl block mb-2">{'\uD83D\uDCCC'}</span>
-                    <p className="text-gray-500 text-sm">You haven&apos;t posted any bounties.</p>
-                    <p className="text-gray-600 text-xs mt-1">Switch to the &quot;Post Bounty&quot; tab to create one!</p>
-                  </div>
-                ) : (
-                  <>
-                    {/* Summary */}
-                    <div className="flex items-center gap-4 mb-3 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
-                      <div>
-                        <p className="text-[10px] text-amber-400/70 uppercase tracking-wider font-bold">Active</p>
-                        <p className="text-lg font-bold text-amber-400">
-                          {myBounties.filter((b: any) => b.status === 'open' || b.status === 'in_progress').length}
-                        </p>
-                      </div>
-                      <div className="h-8 w-px bg-amber-500/20" />
-                      <div>
-                        <p className="text-[10px] text-amber-400/70 uppercase tracking-wider font-bold">Completed</p>
-                        <p className="text-lg font-bold text-green-400">
-                          {myBounties.filter((b: any) => b.status === 'completed').length}
-                        </p>
-                      </div>
-                      <div className="h-8 w-px bg-amber-500/20" />
-                      <div>
-                        <p className="text-[10px] text-amber-400/70 uppercase tracking-wider font-bold">Total Escrowed</p>
-                        <p className="text-lg font-bold text-amber-300">
-                          {myBounties.filter((b: any) => b.status === 'open' || b.status === 'in_progress').reduce((sum: number, b: any) => sum + (b.tokenReward || 0), 0)} &#x1FA99;
-                        </p>
-                      </div>
-                    </div>
-
-                    {myBounties.map((bounty: any) => (
-                      <CreatorBountyCard
-                        key={bounty.id}
-                        bounty={bounty}
-                        onCancel={() => handleCancel(bounty.id)}
-                        onReview={(attemptId, decision, reviewNote) => handleReview(attemptId, decision, reviewNote)}
-                        cancelling={cancellingId === bounty.id}
-                        reviewing={reviewMutation.isPending}
-                      />
-                    ))}
-                  </>
-                )}
-              </div>
-            )}
-
-            {/* ===== MY ATTEMPTS TAB (HUNTER) ===== */}
-            {bountyBoardTab === 'my-attempts' && (
-              <div className="px-5 py-3 space-y-2 min-h-[200px] max-h-[55vh]">
-                {myAttemptsLoading ? (
-                  <div className="flex items-center justify-center py-12">
-                    <div className="animate-spin w-6 h-6 border-2 border-amber-300 border-t-transparent rounded-full" />
-                  </div>
-                ) : myAttempts.length === 0 ? (
-                  <div className="text-center py-12">
-                    <span className="text-3xl block mb-2">{'\uD83C\uDFAF'}</span>
-                    <p className="text-gray-500 text-sm">No bounty attempts yet.</p>
-                    <p className="text-gray-600 text-xs mt-1">Claim a bounty from the Browse tab to get started!</p>
-                  </div>
-                ) : (
-                  <>
-                    {/* Summary */}
-                    <div className="flex items-center gap-4 mb-3 p-3 rounded-lg bg-cyan-500/10 border border-cyan-500/20">
-                      <div>
-                        <p className="text-[10px] text-cyan-400/70 uppercase tracking-wider font-bold">In Progress</p>
-                        <p className="text-lg font-bold text-cyan-400">
-                          {myAttempts.filter((a: any) => ['claimed', 'in_progress'].includes(a.status)).length}
-                        </p>
-                      </div>
-                      <div className="h-8 w-px bg-cyan-500/20" />
-                      <div>
-                        <p className="text-[10px] text-cyan-400/70 uppercase tracking-wider font-bold">Awaiting Review</p>
-                        <p className="text-lg font-bold text-yellow-400">
-                          {myAttempts.filter((a: any) => a.status === 'submitted').length}
-                        </p>
-                      </div>
-                      <div className="h-8 w-px bg-cyan-500/20" />
-                      <div>
-                        <p className="text-[10px] text-cyan-400/70 uppercase tracking-wider font-bold">Approved</p>
-                        <p className="text-lg font-bold text-green-400">
-                          {myAttempts.filter((a: any) => a.status === 'approved').length}
-                        </p>
-                      </div>
-                    </div>
-
-                    {myAttempts.map((attempt: any) => (
-                      <AttemptCard
-                        key={attempt.id}
-                        attempt={attempt}
-                        onSubmit={(data) => handleSubmit(attempt.bountyId || attempt.id, data)}
-                        onAbandon={() => handleAbandon(attempt.bountyId || attempt.id)}
-                        submitting={submittingId === (attempt.bountyId || attempt.id)}
-                        abandoning={abandoningId === (attempt.bountyId || attempt.id)}
-                      />
-                    ))}
-                  </>
-                )}
-              </div>
-            )}
-
-            {/* ===== CREATE TAB ===== */}
-            {bountyBoardTab === 'create' && (
-              <CreateBountyForm
-                tokens={tokens}
-                onCreated={() => setBountyBoardTab('my-bounties')}
+        style={{
+          display: 'flex',
+          gap: 4,
+          padding: '10px 22px 0',
+          borderBottom: '1px solid rgba(56, 189, 248, 0.15)',
+        }}
+      >
+        {(
+          [
+            { key: 'browse', label: 'Browse' },
+            { key: 'my-bounties', label: 'My Bounties' },
+            { key: 'my-attempts', label: 'My Attempts' },
+            { key: 'create', label: 'Post Bounty' },
+          ] as { key: BountyTab; label: string }[]
+        ).map((t) => {
+          const isActive = bountyBoardTab === t.key;
+          return (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => setBountyBoardTab(t.key)}
+              style={{
+                position: 'relative',
+                padding: '10px 18px',
+                background: 'transparent',
+                border: 'none',
+                fontFamily: 'var(--font-orbitron), sans-serif',
+                fontSize: 11,
+                fontWeight: 700,
+                textTransform: 'uppercase',
+                letterSpacing: '0.12em',
+                color: isActive ? '#7dd3fc' : '#64748b',
+                cursor: 'pointer',
+                transition: 'color 180ms ease',
+              }}
+            >
+              {t.label}
+              <span
+                aria-hidden
+                style={{
+                  position: 'absolute',
+                  left: 12,
+                  right: 12,
+                  bottom: -1,
+                  height: 2,
+                  background: isActive
+                    ? 'linear-gradient(90deg, transparent 0%, #38bdf8 50%, transparent 100%)'
+                    : 'transparent',
+                  boxShadow: isActive
+                    ? '0 0 10px rgba(56, 189, 248, 0.55)'
+                    : 'none',
+                  transition: 'background 200ms ease',
+                }}
               />
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ============================== BROWSE TAB ============================== */}
+      {bountyBoardTab === 'browse' && (
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
+          {/* Filters */}
+          <div
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              gap: 8,
+              padding: '12px 22px',
+              borderBottom: '1px solid rgba(148, 163, 184, 0.1)',
+            }}
+          >
+            <select
+              value={difficultyFilter}
+              onChange={(e) =>
+                setDifficultyFilter(e.target.value as DifficultyFilter)
+              }
+              style={FILTER_INPUT_STYLE}
+            >
+              {DIFFICULTY_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 9,
+                  color: '#64748b',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.1em',
+                  fontWeight: 700,
+                }}
+              >
+                Sort
+              </span>
+              {SORT_OPTIONS.map((s) => (
+                <RpgButton
+                  key={s.value}
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setSortMode(s.value)}
+                  style={{
+                    fontSize: 9,
+                    padding: '4px 10px',
+                    background:
+                      sortMode === s.value
+                        ? 'rgba(56, 189, 248, 0.15)'
+                        : 'rgba(10, 22, 40, 0.4)',
+                    color: sortMode === s.value ? '#7dd3fc' : '#94a3b8',
+                    border: `1px solid ${sortMode === s.value ? 'rgba(56, 189, 248, 0.5)' : 'rgba(148, 163, 184, 0.2)'}`,
+                  }}
+                >
+                  {s.label}
+                </RpgButton>
+              ))}
+            </div>
+
+            <span
+              style={{
+                marginLeft: 'auto',
+                fontSize: 10,
+                color: '#64748b',
+                textTransform: 'uppercase',
+                letterSpacing: '0.1em',
+              }}
+            >
+              {total} bount{total !== 1 ? 'ies' : 'y'} pinned
+            </span>
+
+            <RpgButton
+              variant="primary"
+              size="sm"
+              rarity="legendary"
+              onClick={() => setBountyBoardTab('create')}
+            >
+              + Post New Bounty
+            </RpgButton>
+          </div>
+
+          {/* Bounty list */}
+          <div
+            style={{
+              padding: '14px 22px 18px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 12,
+              minHeight: 240,
+              maxHeight: '58vh',
+              overflowY: 'auto',
+            }}
+          >
+            {bountiesLoading ? (
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 10,
+                  padding: '60px 0',
+                }}
+              >
+                <RuneSpinner size={44} tier="legendary" />
+                <span
+                  style={{
+                    fontSize: 10,
+                    color: '#64748b',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.2em',
+                  }}
+                >
+                  Unfurling the notice board
+                </span>
+              </div>
+            ) : bounties.length === 0 ? (
+              <EmptyState
+                icon="📌"
+                title="The board is empty"
+                hint='No bounties match your filters. Try widening the difficulty or jump to "Post Bounty" to pin your own.'
+              />
+            ) : (
+              <>
+                {bounties.map((bounty: any) => (
+                  <BrowseBountyCard
+                    key={bounty.id}
+                    bounty={bounty}
+                    onClaim={() => handleClaim(bounty.id)}
+                    claiming={claimingId === bounty.id}
+                  />
+                ))}
+
+                {totalPages > 1 && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 10,
+                      paddingTop: 10,
+                    }}
+                  >
+                    <RpgButton
+                      variant="ghost"
+                      size="sm"
+                      disabled={page <= 1}
+                      onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    >
+                      ← Prev
+                    </RpgButton>
+                    <span style={{ fontSize: 11, color: '#94a3b8' }}>
+                      Page {page} of {totalPages}
+                    </span>
+                    <RpgButton
+                      variant="ghost"
+                      size="sm"
+                      disabled={page >= totalPages}
+                      onClick={() =>
+                        setPage((p) => Math.min(totalPages, p + 1))
+                      }
+                    >
+                      Next →
+                    </RpgButton>
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>
-      </div>
-    </div>
+      )}
+
+      {/* ============================== MY BOUNTIES TAB ============================== */}
+      {bountyBoardTab === 'my-bounties' && (
+        <div
+          style={{
+            padding: '14px 22px 18px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 12,
+            minHeight: 240,
+            maxHeight: '58vh',
+            overflowY: 'auto',
+          }}
+        >
+          {myBountiesLoading ? (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 10,
+                padding: '60px 0',
+              }}
+            >
+              <RuneSpinner size={44} tier="legendary" />
+              <span
+                style={{
+                  fontSize: 10,
+                  color: '#64748b',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.2em',
+                }}
+              >
+                Rolling up your scrolls
+              </span>
+            </div>
+          ) : myBounties.length === 0 ? (
+            <EmptyState
+              icon="📜"
+              title="No bounties posted"
+              hint='Switch to "Post Bounty" to pin your first community task.'
+            />
+          ) : (
+            <>
+              <SummaryBanner
+                tier="legendary"
+                items={[
+                  {
+                    label: 'Active',
+                    value: activeCreatorCount,
+                    accent: '#fb923c',
+                  },
+                  {
+                    label: 'Completed',
+                    value: completedCreatorCount,
+                    accent: '#4ade80',
+                  },
+                  {
+                    label: 'Total Escrowed',
+                    value: `${totalEscrowed} NT`,
+                    accent: '#facc15',
+                  },
+                ]}
+              />
+
+              {myBounties.map((bounty: any) => (
+                <CreatorBountyCard
+                  key={bounty.id}
+                  bounty={bounty}
+                  onCancel={() => handleCancel(bounty.id)}
+                  onReview={(attemptId, decision, reviewNote) =>
+                    handleReview(attemptId, decision, reviewNote)
+                  }
+                  cancelling={cancellingId === bounty.id}
+                  reviewing={reviewMutation.isPending}
+                />
+              ))}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ============================== MY ATTEMPTS TAB ============================== */}
+      {bountyBoardTab === 'my-attempts' && (
+        <div
+          style={{
+            padding: '14px 22px 18px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 12,
+            minHeight: 240,
+            maxHeight: '58vh',
+            overflowY: 'auto',
+          }}
+        >
+          {myAttemptsLoading ? (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 10,
+                padding: '60px 0',
+              }}
+            >
+              <RuneSpinner size={44} tier="rare" />
+              <span
+                style={{
+                  fontSize: 10,
+                  color: '#64748b',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.2em',
+                }}
+              >
+                Tracking your quarry
+              </span>
+            </div>
+          ) : myAttempts.length === 0 ? (
+            <EmptyState
+              icon="🎯"
+              title="No active hunts"
+              hint="Claim a bounty from the Browse tab and pin the quest to your ledger."
+            />
+          ) : (
+            <>
+              <SummaryBanner
+                tier="rare"
+                items={[
+                  {
+                    label: 'In Progress',
+                    value: hunterInProgress,
+                    accent: '#7dd3fc',
+                  },
+                  {
+                    label: 'Awaiting Review',
+                    value: hunterAwaiting,
+                    accent: '#facc15',
+                  },
+                  {
+                    label: 'Approved',
+                    value: hunterApproved,
+                    accent: '#4ade80',
+                  },
+                ]}
+              />
+
+              {myAttempts.map((attempt: any) => (
+                <AttemptCard
+                  key={attempt.id}
+                  attempt={attempt}
+                  onSubmit={(data) =>
+                    handleSubmit(attempt.bountyId || attempt.id, data)
+                  }
+                  onAbandon={() =>
+                    handleAbandon(attempt.bountyId || attempt.id)
+                  }
+                  submitting={
+                    submittingId === (attempt.bountyId || attempt.id)
+                  }
+                  abandoning={
+                    abandoningId === (attempt.bountyId || attempt.id)
+                  }
+                />
+              ))}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ============================== CREATE TAB ============================== */}
+      {bountyBoardTab === 'create' && (
+        <CreateBountyForm
+          tokens={tokens}
+          onCreated={() => setBountyBoardTab('my-bounties')}
+        />
+      )}
+    </RpgModal>
   );
 }
