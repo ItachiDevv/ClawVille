@@ -1,202 +1,463 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+/**
+ * AuctionModal — Team 3a Gameify reskin. Visual rewrite of the auction house
+ * using the shared RPG primitives from `@/components/rpg`, following the same
+ * structural pattern established by Team 1's `bazaar-modal.tsx` anchor.
+ *
+ * Data flow is preserved byte-for-byte: every useQuery / useMutation / store
+ * hook / query key / mutation function is identical to the previous
+ * implementation — only the presentation layer changed.
+ *
+ * Auction-specific UI touches layered on top of the Team 1 primitives:
+ *
+ *   • Live countdown rendered into ItemCard's `badge` slot. Formats as
+ *     `2h 34m`, `34m 17s`, `17s`, or a pulsing red `SNIPING` label in the
+ *     final 30 seconds of an auction.
+ *
+ *   • Snipe-protection flash: every card tracks its own `bidCount` across
+ *     query refetches and, when a new bid lands inside the 30s window, flashes
+ *     a transient `+30s` token beside the countdown (~2s visible). The
+ *     backend handles the actual timer extension; the modal just visualises
+ *     it against the polled query data.
+ *
+ *   • Buy Now premium: the Buy Now CTA uses `<RpgButton rarity="legendary">`
+ *     to inherit the gold palette from the rarity registry, giving it a
+ *     visually distinct "premium" treatment vs. the regular Place Bid button.
+ *
+ *   • Bid input floor: the bid input is disabled until `amount >= minBid`
+ *     (current highest + 1), with a "Minimum bid: X NT" hint below.
+ *
+ * Default tier for auction lots is `epic` per the brief — auctions should
+ * feel more dramatic than bazaar browses. Items that carry their own
+ * server-side rarity override this (e.g. an `agent-config` lot with
+ * `rarity === 'legendary'`).
+ */
+
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useGameStore } from '@/stores/game';
 import { usePet } from '@/hooks/use-pet';
 import { api } from '@/lib/api';
+import {
+  RpgModal,
+  RpgButton,
+  RuneSpinner,
+  RuneFrame,
+  ItemCard,
+  RarityBadge,
+  RpgTooltip,
+  getRarity,
+  type RarityId,
+} from '@/components/rpg';
 
 type AuctionTab = 'browse' | 'my-auctions' | 'my-bids';
 type SortMode = 'ending-soon' | 'newest' | 'highest-bid';
 type ItemTypeFilter = 'all' | 'skill' | 'agent-config';
 
-const ITEM_TYPE_COLORS: Record<string, { bg: string; border: string; text: string; label: string }> = {
-  skill:          { bg: 'bg-cyan-500/20',   border: 'border-cyan-500/50',   text: 'text-cyan-300',   label: 'Skill' },
-  'agent-config': { bg: 'bg-purple-500/20', border: 'border-purple-500/50', text: 'text-purple-300', label: 'Agent Config' },
-};
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-const STATUS_COLORS: Record<string, { bg: string; border: string; text: string; label: string }> = {
-  active:    { bg: 'bg-green-500/20',  border: 'border-green-500/50',  text: 'text-green-400',  label: 'Active' },
-  ended:     { bg: 'bg-gray-500/20',   border: 'border-gray-500/50',   text: 'text-gray-400',   label: 'Ended' },
-  resolved:  { bg: 'bg-amber-500/20',  border: 'border-amber-500/50',  text: 'text-amber-400',  label: 'Resolved' },
-  cancelled: { bg: 'bg-red-500/20',    border: 'border-red-500/50',    text: 'text-red-400',    label: 'Cancelled' },
-};
-
-function ItemTypeBadge({ itemType }: { itemType: string }) {
-  const config = ITEM_TYPE_COLORS[itemType] || ITEM_TYPE_COLORS.skill;
-  return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${config.bg} ${config.border} ${config.text} border`}>
-      {config.label}
-    </span>
-  );
+/**
+ * Normalise a server-side rarity into a known RarityId, defaulting to `epic`
+ * for auction lots (unlike bazaar's `common` default — auctions are more
+ * dramatic). An explicit `null`/`undefined`/unknown server rarity falls back
+ * to `epic`; a real server-side rarity always wins.
+ */
+function normaliseAuctionRarity(value: unknown): RarityId {
+  if (typeof value !== 'string') return 'epic';
+  const resolved = getRarity(value);
+  // getRarity falls back to 'common' for unknown strings — we upgrade that
+  // fallback to 'epic' for auctions, but honour any real match.
+  if (resolved.id === 'common' && value.toLowerCase() !== 'common') return 'epic';
+  return resolved.id;
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const config = STATUS_COLORS[status] || STATUS_COLORS.ended;
-  return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${config.bg} ${config.border} ${config.text} border`}>
-      {config.label}
-    </span>
-  );
+const ITEM_TYPE_LABELS: Record<string, string> = {
+  skill: 'Skill',
+  'agent-config': 'Agent Config',
+};
+
+function itemTypeLabel(itemType: string | undefined): string {
+  if (!itemType) return 'Skill';
+  return ITEM_TYPE_LABELS[itemType] ?? itemType;
 }
 
-function Countdown({ endsAt }: { endsAt: string }) {
-  const [timeLeft, setTimeLeft] = useState('');
-  const [isUrgent, setIsUrgent] = useState(false);
+// ---------------------------------------------------------------------------
+// Countdown — auction-specific, reads the backend `endsAt` and ticks every 1s.
+// Renders into ItemCard's `badge` slot or inline via a span wrapper.
+// ---------------------------------------------------------------------------
+
+type CountdownPhase = 'calm' | 'urgent' | 'sniping' | 'ended';
+
+function formatCountdown(ms: number): { label: string; phase: CountdownPhase } {
+  if (ms <= 0) return { label: 'Ended', phase: 'ended' };
+  if (ms <= 30_000) {
+    // Last 30 seconds — "SNIPING" pulse.
+    const s = Math.ceil(ms / 1000);
+    return { label: `${s}s`, phase: 'sniping' };
+  }
+  const h = Math.floor(ms / 3_600_000);
+  const m = Math.floor((ms % 3_600_000) / 60_000);
+  const s = Math.floor((ms % 60_000) / 1000);
+  if (h > 0) return { label: `${h}h ${m}m`, phase: 'calm' };
+  if (m > 0) return { label: `${m}m ${s}s`, phase: ms < 300_000 ? 'urgent' : 'calm' };
+  return { label: `${s}s`, phase: 'urgent' };
+}
+
+function useCountdown(endsAt: string | undefined | null) {
+  const [state, setState] = useState<{ label: string; phase: CountdownPhase }>(
+    () =>
+      endsAt
+        ? formatCountdown(new Date(endsAt).getTime() - Date.now())
+        : { label: '—', phase: 'ended' }
+  );
 
   useEffect(() => {
+    if (!endsAt) return;
     const tick = () => {
       const ms = new Date(endsAt).getTime() - Date.now();
-      if (ms <= 0) { setTimeLeft('Ended'); setIsUrgent(false); return; }
-      const h = Math.floor(ms / 3600000);
-      const m = Math.floor((ms % 3600000) / 60000);
-      const s = Math.floor((ms % 60000) / 1000);
-      setTimeLeft(h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${s}s` : `${s}s`);
-      setIsUrgent(ms < 300000); // < 5 min
+      setState(formatCountdown(ms));
     };
     tick();
     const iv = setInterval(tick, 1000);
     return () => clearInterval(iv);
   }, [endsAt]);
 
-  return <span className={isUrgent ? 'text-red-400 animate-pulse font-bold' : 'text-amber-300'}>{timeLeft}</span>;
+  return state;
 }
 
-function AuctionCard({
+function CountdownBadge({
+  endsAt,
+  snipeFlash,
+}: {
+  endsAt: string | undefined | null;
+  snipeFlash?: boolean;
+}) {
+  const { label, phase } = useCountdown(endsAt);
+
+  const colorByPhase: Record<CountdownPhase, { base: string; border: string; bg: string }> = {
+    calm: {
+      base: '#7dd3fc',
+      border: 'rgba(56, 189, 248, 0.45)',
+      bg: 'rgba(56, 189, 248, 0.12)',
+    },
+    urgent: {
+      base: '#fb923c',
+      border: 'rgba(249, 115, 22, 0.5)',
+      bg: 'rgba(249, 115, 22, 0.15)',
+    },
+    sniping: {
+      base: '#f87171',
+      border: 'rgba(220, 38, 38, 0.6)',
+      bg: 'rgba(220, 38, 38, 0.18)',
+    },
+    ended: {
+      base: '#94a3b8',
+      border: 'rgba(148, 163, 184, 0.35)',
+      bg: 'rgba(30, 41, 59, 0.6)',
+    },
+  };
+  const palette = colorByPhase[phase];
+  const display = phase === 'sniping' ? `SNIPING · ${label}` : label;
+
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        padding: '3px 10px',
+        borderRadius: 999,
+        fontFamily: 'var(--font-orbitron), sans-serif',
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: '0.12em',
+        textTransform: 'uppercase',
+        color: palette.base,
+        background: palette.bg,
+        border: `1px solid ${palette.border}`,
+        animation: phase === 'sniping' ? 'rpg-pulse-rarity 1.1s ease-in-out infinite' : undefined,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      <span aria-hidden style={{ fontSize: 10 }}>⧗</span>
+      {display}
+      {snipeFlash && (
+        <span
+          aria-hidden
+          style={{
+            marginLeft: 4,
+            padding: '1px 6px',
+            borderRadius: 999,
+            background: 'rgba(34, 197, 94, 0.25)',
+            border: '1px solid rgba(34, 197, 94, 0.55)',
+            color: '#4ade80',
+            fontSize: 9,
+            letterSpacing: '0.1em',
+          }}
+        >
+          +30s
+        </span>
+      )}
+    </span>
+  );
+}
+
+/**
+ * Track increments of `bidCount` across React Query refetches and flash a
+ * "snipe saved" indicator for ~1.8s whenever a new bid arrives inside the
+ * final 30s window. The backend handles the actual timer extension; this
+ * hook only surfaces the visual cue.
+ */
+function useSnipeFlash(
+  bidCount: number | undefined,
+  endsAt: string | undefined | null
+): boolean {
+  const [flash, setFlash] = useState(false);
+  const prevCount = useRef<number>(bidCount ?? 0);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    const nextCount = bidCount ?? 0;
+    if (nextCount > prevCount.current && endsAt) {
+      const remaining = new Date(endsAt).getTime() - Date.now();
+      if (remaining > 0 && remaining <= 60_000) {
+        // Bid landed inside the danger window — flash the +30s indicator.
+        setFlash(true);
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        timeoutRef.current = setTimeout(() => setFlash(false), 1800);
+      }
+    }
+    prevCount.current = nextCount;
+    return () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    };
+  }, [bidCount, endsAt]);
+
+  return flash;
+}
+
+// ---------------------------------------------------------------------------
+// Inline bid input — used inside both browse cards and the My Bids tab.
+// ---------------------------------------------------------------------------
+
+const INLINE_INPUT_STYLE: React.CSSProperties = {
+  background: 'rgba(10, 22, 40, 0.85)',
+  border: '1px solid rgba(56, 189, 248, 0.25)',
+  borderRadius: 6,
+  padding: '6px 10px',
+  fontSize: 11,
+  color: '#e2e8f0',
+  outline: 'none',
+  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+  width: '100%',
+};
+
+function BidInputRow({
+  minBid,
+  submitting,
+  onSubmit,
+  onCancel,
+  confirmLabel = 'Confirm',
+}: {
+  minBid: number;
+  submitting: boolean;
+  onSubmit: (amount: number) => void;
+  onCancel: () => void;
+  confirmLabel?: string;
+}) {
+  const [amount, setAmount] = useState<string>(String(minBid));
+  const numeric = Number(amount);
+  const valid = Number.isFinite(numeric) && numeric >= minBid;
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+        marginTop: 8,
+        padding: '10px 12px',
+        borderRadius: 8,
+        background: 'rgba(10, 22, 40, 0.7)',
+        border: '1px solid rgba(168, 85, 247, 0.35)',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <input
+          type="number"
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+          min={minBid}
+          placeholder={String(minBid)}
+          style={INLINE_INPUT_STYLE}
+          onClick={(e) => e.stopPropagation()}
+        />
+        <RpgButton
+          variant="primary"
+          size="sm"
+          disabled={!valid}
+          loading={submitting}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (valid) onSubmit(numeric);
+          }}
+        >
+          {confirmLabel}
+        </RpgButton>
+        <RpgButton
+          variant="ghost"
+          size="sm"
+          onClick={(e) => {
+            e.stopPropagation();
+            onCancel();
+          }}
+        >
+          Cancel
+        </RpgButton>
+      </div>
+      <span
+        style={{
+          fontSize: 9,
+          color: valid ? '#64748b' : '#fb923c',
+          textTransform: 'uppercase',
+          letterSpacing: '0.12em',
+          fontWeight: 700,
+        }}
+      >
+        Minimum bid: {minBid} NT
+      </span>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Browse tab — auction lot card
+// ---------------------------------------------------------------------------
+
+function BrowseAuctionCard({
   auction,
+  onOpenDetail,
   onBid,
   onBuyNow,
   bidding,
   buyingNow,
 }: {
   auction: any;
+  onOpenDetail: () => void;
   onBid: (amount: number) => void;
   onBuyNow?: () => void;
   bidding: boolean;
   buyingNow: boolean;
 }) {
   const [showBidInput, setShowBidInput] = useState(false);
-  const [bidAmount, setBidAmount] = useState('');
-  const currentBid = auction.currentBid || auction.startingBid || 0;
+  const rarity = normaliseAuctionRarity(auction.rarity);
+  const currentBid: number = auction.currentBid || auction.startingBid || 0;
   const minBid = currentBid + 1;
   const isEnded = new Date(auction.endsAt).getTime() <= Date.now();
-  const isEndingSoon = !isEnded && new Date(auction.endsAt).getTime() - Date.now() < 300000;
+  const snipeFlash = useSnipeFlash(auction.bidCount, auction.endsAt);
+  const bidCount: number = auction.bidCount ?? 0;
 
-  const handleSubmitBid = () => {
-    const amount = Number(bidAmount);
-    if (amount >= minBid) {
-      onBid(amount);
-      setShowBidInput(false);
-      setBidAmount('');
-    }
-  };
+  const stats: { label: string; value: React.ReactNode }[] = [
+    { label: 'Type', value: itemTypeLabel(auction.itemType) },
+    { label: bidCount > 0 ? 'Current' : 'Start', value: `${currentBid} NT` },
+    { label: 'Bids', value: bidCount },
+  ];
+  if (auction.buyNowPrice && !isEnded) {
+    stats.push({ label: 'Buy Now', value: `${auction.buyNowPrice} NT` });
+  }
+  if (auction.sellerName) {
+    stats.push({ label: 'Seller', value: auction.sellerName });
+  }
 
   return (
-    <div className="relative rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 transition-all hover:bg-amber-500/10">
-      {isEndingSoon && !isEnded && (
-        <div className="absolute top-2 right-2">
-          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-red-500/30 border border-red-500/50 text-red-400 animate-pulse">
-            ENDING SOON
+    <ItemCard
+      rarity={rarity}
+      name={auction.title || 'Untitled Auction'}
+      subtitle={`by ${auction.sellerName || 'Unknown'}`}
+      icon={<span>⚔</span>}
+      description={auction.description}
+      stats={stats}
+      price={currentBid}
+      priceUnit="NT"
+      badge={<CountdownBadge endsAt={auction.endsAt} snipeFlash={snipeFlash} />}
+      onClick={onOpenDetail}
+      footer={
+        isEnded ? (
+          <span
+            style={{
+              fontSize: 10,
+              color: '#64748b',
+              textTransform: 'uppercase',
+              letterSpacing: '0.12em',
+              fontWeight: 700,
+              marginLeft: 'auto',
+            }}
+          >
+            Auction Ended
           </span>
-        </div>
-      )}
-
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-bold text-white truncate">{auction.title || 'Untitled Auction'}</span>
-            <ItemTypeBadge itemType={auction.itemType || 'skill'} />
+        ) : showBidInput ? (
+          <div style={{ flex: 1 }}>
+            <BidInputRow
+              minBid={minBid}
+              submitting={bidding}
+              onSubmit={(amount) => {
+                onBid(amount);
+                setShowBidInput(false);
+              }}
+              onCancel={() => setShowBidInput(false)}
+            />
           </div>
-          <p className="text-xs text-gray-400 mt-0.5">
-            by {auction.sellerName || 'Unknown'}
-          </p>
-          {auction.description && (
-            <p className="text-xs text-gray-500 mt-1 line-clamp-2">{auction.description}</p>
-          )}
-        </div>
-        <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
-          {auction.bidCount > 0 ? (
-            <span className="flex items-center gap-1 text-sm font-bold text-amber-300">
-              {currentBid} <span className="text-xs">&#x1FA99;</span>
+        ) : (
+          <>
+            <span style={{ fontSize: 10, color: '#64748b' }}>
+              Min bid {minBid} NT
             </span>
-          ) : (
-            <span className="flex items-center gap-1 text-sm text-gray-400">
-              {auction.startingBid} <span className="text-xs">&#x1FA99;</span>
-              <span className="text-[10px] text-gray-500">start</span>
-            </span>
-          )}
-          {auction.bidCount != null && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 border border-white/10 text-gray-400">
-              {auction.bidCount} bid{auction.bidCount !== 1 ? 's' : ''}
-            </span>
-          )}
-        </div>
-      </div>
-
-      <div className="flex items-center justify-between mt-2">
-        <div className="flex items-center gap-3 text-[10px] text-gray-500">
-          <span className="flex items-center gap-1">
-            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-            <Countdown endsAt={auction.endsAt} />
-          </span>
-          {auction.buyNowPrice && !isEnded && (
-            <span className="text-amber-400/70">
-              Buy Now: {auction.buyNowPrice} &#x1FA99;
-            </span>
-          )}
-        </div>
-
-        {!isEnded && (
-          <div className="flex items-center gap-2">
-            {auction.buyNowPrice && onBuyNow && (
-              <button
-                onClick={onBuyNow}
-                disabled={buyingNow}
-                className="text-xs font-bold px-3 py-1.5 rounded-lg bg-gradient-to-r from-amber-500 to-yellow-600 hover:from-amber-400 hover:to-yellow-500 text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                {buyingNow ? 'Buying...' : 'Buy Now'}
-              </button>
-            )}
-            <button
-              onClick={() => { setShowBidInput(!showBidInput); setBidAmount(String(minBid)); }}
-              className="text-xs font-bold px-3 py-1.5 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white transition-all"
+            <div
+              style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}
+              onClick={(e) => e.stopPropagation()}
             >
-              Place Bid
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Inline bid input */}
-      {showBidInput && !isEnded && (
-        <div className="mt-2 flex items-center gap-2 p-2 rounded-lg bg-black/30 border border-amber-500/20">
-          <span className="text-[10px] text-gray-500">Min: {minBid} &#x1FA99;</span>
-          <input
-            type="number"
-            value={bidAmount}
-            onChange={(e) => setBidAmount(e.target.value)}
-            min={minBid}
-            placeholder={String(minBid)}
-            className="flex-1 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-amber-500/50 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-          />
-          <button
-            onClick={handleSubmitBid}
-            disabled={bidding || Number(bidAmount) < minBid}
-            className="text-xs font-bold px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {bidding ? 'Bidding...' : 'Confirm'}
-          </button>
-          <button
-            onClick={() => setShowBidInput(false)}
-            className="text-xs text-gray-400 hover:text-gray-300 px-1"
-          >
-            Cancel
-          </button>
-        </div>
-      )}
-    </div>
+              {auction.buyNowPrice && onBuyNow && (
+                <RpgTooltip
+                  content={`Skip the countdown and claim instantly for ${auction.buyNowPrice} NT.`}
+                >
+                  <RpgButton
+                    variant="primary"
+                    rarity="legendary"
+                    size="sm"
+                    loading={buyingNow}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onBuyNow();
+                    }}
+                  >
+                    Buy Now {auction.buyNowPrice} NT
+                  </RpgButton>
+                </RpgTooltip>
+              )}
+              <RpgButton
+                variant="primary"
+                size="sm"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowBidInput(true);
+                }}
+              >
+                Place Bid
+              </RpgButton>
+            </div>
+          </>
+        )
+      }
+    />
   );
 }
+
+// ---------------------------------------------------------------------------
+// My auctions card
+// ---------------------------------------------------------------------------
 
 function MyAuctionCard({
   auction,
@@ -207,154 +468,245 @@ function MyAuctionCard({
   onCancel: () => void;
   cancelling: boolean;
 }) {
-  const canCancel = auction.status === 'active' && (!auction.bidCount || auction.bidCount === 0);
+  const rarity = normaliseAuctionRarity(auction.rarity);
+  const canCancel =
+    auction.status === 'active' && (!auction.bidCount || auction.bidCount === 0);
+  const snipeFlash = useSnipeFlash(auction.bidCount, auction.endsAt);
+
+  const stats: { label: string; value: React.ReactNode }[] = [
+    { label: 'Type', value: itemTypeLabel(auction.itemType) },
+    { label: 'Start Bid', value: `${auction.startingBid} NT` },
+  ];
+  if (auction.currentBid > 0) {
+    stats.push({ label: 'Current', value: `${auction.currentBid} NT` });
+  }
+  if (auction.buyNowPrice) {
+    stats.push({ label: 'Buy Now', value: `${auction.buyNowPrice} NT` });
+  }
+  stats.push({ label: 'Bids', value: auction.bidCount ?? 0 });
+  if (auction.status === 'resolved' && auction.finalPrice != null) {
+    stats.push({ label: 'Sold For', value: `${auction.finalPrice} NT` });
+  }
+
+  const statusLabel = auction.status || 'active';
+  const statusPalette: Record<string, { color: string; bg: string; border: string }> = {
+    active: {
+      color: '#4ade80',
+      bg: 'rgba(34, 197, 94, 0.12)',
+      border: 'rgba(34, 197, 94, 0.5)',
+    },
+    ended: {
+      color: '#94a3b8',
+      bg: 'rgba(148, 163, 184, 0.12)',
+      border: 'rgba(148, 163, 184, 0.5)',
+    },
+    resolved: {
+      color: '#facc15',
+      bg: 'rgba(250, 204, 21, 0.12)',
+      border: 'rgba(250, 204, 21, 0.5)',
+    },
+    cancelled: {
+      color: '#f87171',
+      bg: 'rgba(220, 38, 38, 0.12)',
+      border: 'rgba(220, 38, 38, 0.5)',
+    },
+  };
+  const statusStyle = statusPalette[statusLabel] ?? statusPalette.ended;
 
   return (
-    <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-bold text-white truncate">{auction.title || 'Untitled Auction'}</span>
-            <ItemTypeBadge itemType={auction.itemType || 'skill'} />
-            <StatusBadge status={auction.status || 'active'} />
-          </div>
-          <p className="text-xs text-gray-400 mt-0.5">
-            Starting bid: <span className="text-amber-300 font-bold">{auction.startingBid} &#x1FA99;</span>
-            {auction.currentBid > 0 && (
-              <> &middot; Current: <span className="text-amber-300 font-bold">{auction.currentBid} &#x1FA99;</span></>
-            )}
-          </p>
-          {auction.status === 'active' && auction.endsAt && (
-            <p className="text-[10px] text-gray-500 mt-0.5 flex items-center gap-1">
-              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-              <Countdown endsAt={auction.endsAt} />
-            </p>
+    <ItemCard
+      rarity={rarity}
+      name={auction.title || 'Untitled Auction'}
+      subtitle={`${itemTypeLabel(auction.itemType)} · Your auction`}
+      icon={<span>📜</span>}
+      stats={stats}
+      badge={
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '2px 10px',
+            borderRadius: 999,
+            fontSize: 9,
+            fontWeight: 700,
+            textTransform: 'uppercase',
+            letterSpacing: '0.12em',
+            color: statusStyle.color,
+            background: statusStyle.bg,
+            border: `1px solid ${statusStyle.border}`,
+          }}
+        >
+          {statusLabel}
+        </span>
+      }
+      footer={
+        <>
+          {auction.status === 'active' && auction.endsAt ? (
+            <CountdownBadge endsAt={auction.endsAt} snipeFlash={snipeFlash} />
+          ) : (
+            <span
+              style={{
+                fontSize: 10,
+                color: '#64748b',
+                textTransform: 'uppercase',
+                letterSpacing: '0.12em',
+              }}
+            >
+              {auction.status === 'resolved'
+                ? `Sold ${auction.finalPrice ?? 0} NT`
+                : 'Not active'}
+            </span>
           )}
-          {auction.status === 'resolved' && auction.finalPrice != null && (
-            <p className="text-xs text-green-400 mt-0.5">
-              Sold for: {auction.finalPrice} &#x1FA99;
-            </p>
+          {canCancel && (
+            <RpgButton
+              variant="danger"
+              size="sm"
+              loading={cancelling}
+              onClick={(e) => {
+                e.stopPropagation();
+                onCancel();
+              }}
+            >
+              Cancel Auction
+            </RpgButton>
           )}
-        </div>
-        <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
-          {auction.bidCount != null && (
-            <span className="text-[10px] text-gray-500">{auction.bidCount} bid{auction.bidCount !== 1 ? 's' : ''}</span>
-          )}
-        </div>
-      </div>
-      {canCancel && (
-        <div className="flex items-center justify-end mt-2">
-          <button
-            onClick={onCancel}
-            disabled={cancelling}
-            className="text-xs font-bold px-3 py-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/40 transition-all disabled:opacity-40"
-          >
-            {cancelling ? 'Cancelling...' : 'Cancel Auction'}
-          </button>
-        </div>
-      )}
-    </div>
+        </>
+      }
+    />
   );
 }
+
+// ---------------------------------------------------------------------------
+// My bids card
+// ---------------------------------------------------------------------------
 
 function MyBidCard({
   auction,
   onIncreaseBid,
+  submitting,
 }: {
   auction: any;
   onIncreaseBid: (amount: number) => void;
+  submitting: boolean;
 }) {
   const [showBidInput, setShowBidInput] = useState(false);
-  const [bidAmount, setBidAmount] = useState('');
+  const rarity = normaliseAuctionRarity(auction.rarity);
   const isWinning = auction.isWinning || auction.bidStatus === 'winning';
   const isEnded = new Date(auction.endsAt).getTime() <= Date.now();
-  const currentBid = auction.currentBid || auction.startingBid || 0;
+  const currentBid: number = auction.currentBid || auction.startingBid || 0;
   const minBid = currentBid + 1;
+  const snipeFlash = useSnipeFlash(auction.bidCount, auction.endsAt);
 
-  const handleSubmitBid = () => {
-    const amount = Number(bidAmount);
-    if (amount >= minBid) {
-      onIncreaseBid(amount);
-      setShowBidInput(false);
-      setBidAmount('');
-    }
-  };
+  const stats: { label: string; value: React.ReactNode }[] = [
+    { label: 'Your Bid', value: `${auction.myBid || 0} NT` },
+    { label: 'Current', value: `${currentBid} NT` },
+    { label: 'Bids', value: auction.bidCount ?? 0 },
+    { label: 'Type', value: itemTypeLabel(auction.itemType) },
+  ];
+
+  const statusLabel = isEnded
+    ? isWinning
+      ? 'Won'
+      : 'Lost'
+    : isWinning
+      ? 'Winning'
+      : 'Outbid';
+  const statusPalette = {
+    Won: { color: '#4ade80', bg: 'rgba(34, 197, 94, 0.15)', border: 'rgba(34, 197, 94, 0.5)' },
+    Lost: { color: '#94a3b8', bg: 'rgba(148, 163, 184, 0.12)', border: 'rgba(148, 163, 184, 0.5)' },
+    Winning: {
+      color: '#4ade80',
+      bg: 'rgba(34, 197, 94, 0.15)',
+      border: 'rgba(34, 197, 94, 0.5)',
+    },
+    Outbid: {
+      color: '#fb923c',
+      bg: 'rgba(249, 115, 22, 0.15)',
+      border: 'rgba(249, 115, 22, 0.5)',
+    },
+  } as const;
+  const statusStyle = statusPalette[statusLabel];
 
   return (
-    <div className={`rounded-lg border p-3 ${isWinning ? 'border-green-500/30 bg-green-500/5' : 'border-orange-500/30 bg-orange-500/5'}`}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-bold text-white truncate">{auction.title || 'Untitled Auction'}</span>
-            <ItemTypeBadge itemType={auction.itemType || 'skill'} />
-          </div>
-          <p className="text-xs text-gray-400 mt-0.5">
-            by {auction.sellerName || 'Unknown'}
-          </p>
-          <p className="text-xs text-gray-400 mt-0.5">
-            Your bid: <span className="text-amber-300 font-bold">{auction.myBid || 0} &#x1FA99;</span>
-            {' '}&middot; Current: <span className="text-amber-300 font-bold">{currentBid} &#x1FA99;</span>
-          </p>
-          {!isEnded && auction.endsAt && (
-            <p className="text-[10px] text-gray-500 mt-0.5 flex items-center gap-1">
-              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-              <Countdown endsAt={auction.endsAt} />
-            </p>
-          )}
-        </div>
-        <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
-          <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${
-            isEnded
-              ? 'bg-gray-500/20 text-gray-400 border-gray-500/50'
-              : isWinning
-                ? 'bg-green-500/20 text-green-400 border-green-500/50'
-                : 'bg-orange-500/20 text-orange-400 border-orange-500/50'
-          }`}>
-            {isEnded ? (isWinning ? 'Won' : 'Lost') : isWinning ? 'Winning' : 'Outbid'}
-          </span>
-        </div>
-      </div>
-
-      {!isWinning && !isEnded && (
-        <div className="flex items-center justify-end mt-2">
-          {showBidInput ? (
-            <div className="flex items-center gap-2 w-full">
-              <span className="text-[10px] text-gray-500">Min: {minBid} &#x1FA99;</span>
-              <input
-                type="number"
-                value={bidAmount}
-                onChange={(e) => setBidAmount(e.target.value)}
-                min={minBid}
-                placeholder={String(minBid)}
-                className="flex-1 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-amber-500/50 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-              />
-              <button
-                onClick={handleSubmitBid}
-                disabled={Number(bidAmount) < minBid}
-                className="text-xs font-bold px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                Confirm
-              </button>
-              <button
-                onClick={() => setShowBidInput(false)}
-                className="text-xs text-gray-400 hover:text-gray-300 px-1"
-              >
-                Cancel
-              </button>
-            </div>
+    <ItemCard
+      rarity={rarity}
+      name={auction.title || 'Untitled Auction'}
+      subtitle={`by ${auction.sellerName || 'Unknown'}`}
+      icon={<span>🎯</span>}
+      stats={stats}
+      badge={
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '2px 10px',
+            borderRadius: 999,
+            fontSize: 9,
+            fontWeight: 700,
+            textTransform: 'uppercase',
+            letterSpacing: '0.12em',
+            color: statusStyle.color,
+            background: statusStyle.bg,
+            border: `1px solid ${statusStyle.border}`,
+          }}
+        >
+          {statusLabel}
+        </span>
+      }
+      footer={
+        <>
+          {!isEnded && auction.endsAt ? (
+            <CountdownBadge endsAt={auction.endsAt} snipeFlash={snipeFlash} />
           ) : (
-            <button
-              onClick={() => { setShowBidInput(true); setBidAmount(String(minBid)); }}
-              className="text-xs font-bold px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 border border-amber-500/40 transition-all"
+            <span
+              style={{
+                fontSize: 10,
+                color: '#64748b',
+                textTransform: 'uppercase',
+                letterSpacing: '0.12em',
+              }}
             >
-              Increase Bid
-            </button>
+              Ended
+            </span>
           )}
-        </div>
-      )}
-    </div>
+          {!isWinning && !isEnded && (
+            <div onClick={(e) => e.stopPropagation()} style={{ marginLeft: 'auto' }}>
+              {showBidInput ? (
+                <BidInputRow
+                  minBid={minBid}
+                  submitting={submitting}
+                  confirmLabel="Raise"
+                  onSubmit={(amount) => {
+                    onIncreaseBid(amount);
+                    setShowBidInput(false);
+                  }}
+                  onCancel={() => setShowBidInput(false)}
+                />
+              ) : (
+                <RpgButton
+                  variant="primary"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowBidInput(true);
+                  }}
+                >
+                  Increase Bid
+                </RpgButton>
+              )}
+            </div>
+          )}
+        </>
+      }
+    />
   );
 }
+
+// ---------------------------------------------------------------------------
+// Auction detail panel — drilldown view inside the Browse tab.
+// ---------------------------------------------------------------------------
 
 function AuctionDetail({
   auctionId,
@@ -376,145 +728,398 @@ function AuctionDetail({
   const bidMutation = useMutation({
     mutationFn: (amount: number) => api.placeBid(auctionId, amount),
     onSuccess: () => {
-      addToast('&#x2696;', 'Bid placed successfully!');
+      addToast('\u2696\uFE0F', 'Bid placed successfully!');
       queryClient.invalidateQueries({ queryKey: ['auction-detail', auctionId] });
       queryClient.invalidateQueries({ queryKey: ['auctions'] });
       queryClient.invalidateQueries({ queryKey: ['pet'] });
       setBidAmount('');
     },
     onError: (err: Error) => {
-      addToast('&#x274C;', err.message || 'Bid failed');
+      addToast('\u274C', err.message || 'Bid failed');
     },
   });
 
   const buyNowMutation = useMutation({
     mutationFn: () => api.buyNow(auctionId),
     onSuccess: () => {
-      addToast('&#x2696;', 'Auction won! Item purchased.');
+      addToast('\u2696\uFE0F', 'Auction won! Item purchased.');
       queryClient.invalidateQueries({ queryKey: ['auction-detail', auctionId] });
       queryClient.invalidateQueries({ queryKey: ['auctions'] });
       queryClient.invalidateQueries({ queryKey: ['pet'] });
     },
     onError: (err: Error) => {
-      addToast('&#x274C;', err.message || 'Buy failed');
+      addToast('\u274C', err.message || 'Buy failed');
     },
   });
 
+  const auction = data?.auction;
+  const bids: any[] = data?.bids ?? [];
+  const snipeFlash = useSnipeFlash(auction?.bidCount, auction?.endsAt);
+
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center py-12">
-        <div className="animate-spin w-6 h-6 border-2 border-amber-300 border-t-transparent rounded-full" />
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 10,
+          padding: '60px 0',
+        }}
+      >
+        <RuneSpinner size={44} tier="epic" />
+        <span
+          style={{
+            fontSize: 10,
+            color: '#64748b',
+            textTransform: 'uppercase',
+            letterSpacing: '0.2em',
+          }}
+        >
+          Summoning lot manifest
+        </span>
       </div>
     );
   }
 
-  const auction = data?.auction;
-  const bids = data?.bids ?? [];
   if (!auction) {
     return (
-      <div className="text-center py-12">
-        <p className="text-gray-500 text-sm">Auction not found.</p>
-        <button onClick={onBack} className="text-xs text-amber-400 hover:text-amber-300 mt-2">Back to Browse</button>
+      <div style={{ textAlign: 'center', padding: '60px 0' }}>
+        <p style={{ color: '#64748b', fontSize: 12 }}>Auction not found.</p>
+        <RpgButton variant="ghost" size="sm" onClick={onBack} style={{ marginTop: 10 }}>
+          ← Back to Browse
+        </RpgButton>
       </div>
     );
   }
 
-  const currentBid = auction.currentBid || auction.startingBid || 0;
+  const rarity = normaliseAuctionRarity(auction.rarity);
+  const currentBid: number = auction.currentBid || auction.startingBid || 0;
   const minBid = currentBid + 1;
   const isEnded = new Date(auction.endsAt).getTime() <= Date.now();
+  const numericBid = Number(bidAmount);
+  const bidValid = Number.isFinite(numericBid) && numericBid >= minBid;
 
   return (
-    <div className="px-5 py-3 space-y-4">
-      {/* Back button */}
-      <button
-        onClick={onBack}
-        className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-300 transition-colors"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-        Back to Browse
-      </button>
+    <div
+      style={{
+        padding: '14px 22px 18px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 14,
+      }}
+    >
+      <RpgButton variant="ghost" size="sm" onClick={onBack} style={{ alignSelf: 'flex-start' }}>
+        ← Back to Browse
+      </RpgButton>
 
-      {/* Auction header */}
-      <div className="p-4 rounded-lg border border-amber-500/30 bg-amber-500/10">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <h3 className="text-lg font-bold text-white">{auction.title}</h3>
-              <ItemTypeBadge itemType={auction.itemType || 'skill'} />
-            </div>
-            {auction.description && (
-              <p className="text-sm text-gray-400 mt-1">{auction.description}</p>
-            )}
-            <p className="text-xs text-gray-500 mt-1">by {auction.sellerName || 'Unknown'}</p>
-          </div>
-          <div className="flex flex-col items-end gap-2">
-            <div className="text-right">
-              <p className="text-[10px] text-gray-500 uppercase tracking-wider font-bold">Current Bid</p>
-              <p className="text-xl font-bold text-amber-300">{currentBid} <span className="text-sm">&#x1FA99;</span></p>
-            </div>
-            <div className="text-right">
-              <p className="text-[10px] text-gray-500 uppercase tracking-wider">Time Left</p>
-              <Countdown endsAt={auction.endsAt} />
-            </div>
-          </div>
-        </div>
-
-        {/* Bid / Buy Now actions */}
-        {!isEnded && (
-          <div className="flex items-center gap-3 mt-4 pt-3 border-t border-amber-500/20">
-            <div className="flex-1 flex items-center gap-2">
-              <input
-                type="number"
-                value={bidAmount}
-                onChange={(e) => setBidAmount(e.target.value)}
-                min={minBid}
-                placeholder={`Min bid: ${minBid}`}
-                className="flex-1 bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-amber-500/50 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-              />
-              <button
-                onClick={() => bidMutation.mutate(Number(bidAmount))}
-                disabled={bidMutation.isPending || Number(bidAmount) < minBid}
-                className="text-sm font-bold px-4 py-2 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                {bidMutation.isPending ? 'Bidding...' : 'Place Bid'}
-              </button>
-            </div>
-            {auction.buyNowPrice && (
-              <button
-                onClick={() => buyNowMutation.mutate()}
-                disabled={buyNowMutation.isPending}
-                className="text-sm font-bold px-4 py-2 rounded-lg bg-gradient-to-r from-amber-500 to-yellow-600 hover:from-amber-400 hover:to-yellow-500 text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                {buyNowMutation.isPending ? 'Buying...' : `Buy Now ${auction.buyNowPrice} \u{1FA99}`}
-              </button>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Bid history */}
-      <div>
-        <h4 className="text-sm font-bold text-amber-300/80 mb-2">Bid History ({bids.length})</h4>
-        {bids.length === 0 ? (
-          <p className="text-xs text-gray-500">No bids yet. Be the first!</p>
-        ) : (
-          <div className="space-y-1 max-h-[30vh] overflow-y-auto">
-            {bids.map((bid: any, i: number) => (
+      {/* Header lot card (feature block — uses RuneFrame directly for a taller hero) */}
+      <RuneFrame tier={rarity} glow={rarity === 'legendary' ? 'subtle' : false}>
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 14,
+            padding: '18px 20px',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              justifyContent: 'space-between',
+              gap: 14,
+              flexWrap: 'wrap',
+            }}
+          >
+            <div style={{ minWidth: 0, flex: 1 }}>
               <div
-                key={bid.id || i}
-                className={`flex items-center justify-between px-3 py-2 rounded-lg text-xs ${
-                  i === 0 ? 'bg-amber-500/10 border border-amber-500/20' : 'bg-white/5'
-                }`}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  flexWrap: 'wrap',
+                }}
               >
-                <div className="flex items-center gap-2">
-                  {i === 0 && <span className="text-amber-400 text-[10px] font-bold">HIGHEST</span>}
-                  <span className="text-gray-300">{bid.bidderName || 'Anonymous'}</span>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="font-bold text-amber-300">{bid.amount} &#x1FA99;</span>
-                  <span className="text-gray-600">{new Date(bid.createdAt).toLocaleString()}</span>
-                </div>
+                <h3
+                  style={{
+                    fontFamily: 'var(--font-orbitron), sans-serif',
+                    fontSize: 18,
+                    fontWeight: 700,
+                    color: '#f1f5f9',
+                    letterSpacing: '0.04em',
+                    margin: 0,
+                    textShadow: `0 0 14px ${getRarity(rarity).glow}`,
+                  }}
+                >
+                  {auction.title}
+                </h3>
+                <RarityBadge tier={rarity} size="md" />
+                <span
+                  style={{
+                    fontSize: 10,
+                    color: '#94a3b8',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.12em',
+                  }}
+                >
+                  {itemTypeLabel(auction.itemType)}
+                </span>
               </div>
+              {auction.description && (
+                <p
+                  style={{
+                    fontSize: 12,
+                    color: '#cbd5e1',
+                    margin: '8px 0 0',
+                    lineHeight: 1.5,
+                  }}
+                >
+                  {auction.description}
+                </p>
+              )}
+              <p
+                style={{
+                  fontSize: 11,
+                  color: '#64748b',
+                  margin: '6px 0 0',
+                }}
+              >
+                Offered by {auction.sellerName || 'Unknown'}
+              </p>
+            </div>
+
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'flex-end',
+                gap: 8,
+              }}
+            >
+              <div style={{ textAlign: 'right' }}>
+                <p
+                  style={{
+                    fontSize: 9,
+                    color: '#64748b',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.14em',
+                    margin: 0,
+                    fontWeight: 700,
+                  }}
+                >
+                  Current Bid
+                </p>
+                <p
+                  style={{
+                    fontFamily: 'var(--font-orbitron), sans-serif',
+                    fontSize: 22,
+                    fontWeight: 700,
+                    color: '#facc15',
+                    margin: '2px 0 0',
+                    textShadow: '0 0 12px rgba(250, 204, 21, 0.45)',
+                  }}
+                >
+                  {currentBid} <span style={{ fontSize: 11, color: '#ca8a04' }}>NT</span>
+                </p>
+              </div>
+              <CountdownBadge endsAt={auction.endsAt} snipeFlash={snipeFlash} />
+            </div>
+          </div>
+
+          {/* Bid / Buy Now actions */}
+          {!isEnded && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                flexWrap: 'wrap',
+                paddingTop: 14,
+                borderTop: '1px dashed rgba(148, 163, 184, 0.25)',
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 4,
+                  flex: 1,
+                  minWidth: 220,
+                }}
+              >
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <input
+                    type="number"
+                    value={bidAmount}
+                    onChange={(e) => setBidAmount(e.target.value)}
+                    min={minBid}
+                    placeholder={`Min bid: ${minBid}`}
+                    style={{ ...INLINE_INPUT_STYLE, flex: 1, fontSize: 13, padding: '8px 12px' }}
+                  />
+                  <RpgButton
+                    variant="primary"
+                    size="md"
+                    disabled={!bidValid}
+                    loading={bidMutation.isPending}
+                    onClick={() => bidMutation.mutate(numericBid)}
+                  >
+                    Place Bid
+                  </RpgButton>
+                </div>
+                <span
+                  style={{
+                    fontSize: 9,
+                    color: bidValid || !bidAmount ? '#64748b' : '#fb923c',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.12em',
+                    fontWeight: 700,
+                  }}
+                >
+                  Minimum bid: {minBid} NT
+                </span>
+              </div>
+              {auction.buyNowPrice && (
+                <RpgTooltip
+                  content={`Claim the lot instantly for ${auction.buyNowPrice} NT — skips the countdown.`}
+                >
+                  <RpgButton
+                    variant="primary"
+                    rarity="legendary"
+                    size="md"
+                    loading={buyNowMutation.isPending}
+                    onClick={() => buyNowMutation.mutate()}
+                  >
+                    Buy Now {auction.buyNowPrice} NT
+                  </RpgButton>
+                </RpgTooltip>
+              )}
+            </div>
+          )}
+        </div>
+      </RuneFrame>
+
+      {/* Bid history — each entry rendered as a slim RuneFrame mini-card */}
+      <div>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            marginBottom: 10,
+          }}
+        >
+          <h4
+            style={{
+              fontFamily: 'var(--font-orbitron), sans-serif',
+              fontSize: 13,
+              fontWeight: 700,
+              color: '#7dd3fc',
+              textTransform: 'uppercase',
+              letterSpacing: '0.1em',
+              margin: 0,
+            }}
+          >
+            Bid History
+          </h4>
+          <span
+            style={{
+              fontSize: 10,
+              color: '#64748b',
+              letterSpacing: '0.1em',
+              textTransform: 'uppercase',
+            }}
+          >
+            {bids.length} {bids.length === 1 ? 'bid' : 'bids'}
+          </span>
+        </div>
+        {bids.length === 0 ? (
+          <div
+            style={{
+              padding: '24px 0',
+              textAlign: 'center',
+              fontSize: 12,
+              color: '#64748b',
+            }}
+          >
+            No bids yet. Be the first to strike.
+          </div>
+        ) : (
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6,
+              maxHeight: '32vh',
+              overflowY: 'auto',
+              paddingRight: 4,
+            }}
+          >
+            {bids.map((bid, i) => (
+              <RuneFrame
+                key={bid.id || i}
+                tier={i === 0 ? 'legendary' : 'common'}
+                glow={false}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 10,
+                    padding: '8px 14px',
+                  }}
+                >
+                  <div
+                    style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}
+                  >
+                    {i === 0 && (
+                      <span
+                        style={{
+                          fontSize: 9,
+                          color: '#fb923c',
+                          fontWeight: 700,
+                          letterSpacing: '0.14em',
+                          textTransform: 'uppercase',
+                          textShadow: '0 0 6px rgba(249, 115, 22, 0.5)',
+                        }}
+                      >
+                        ★ Highest
+                      </span>
+                    )}
+                    <span
+                      style={{
+                        fontSize: 12,
+                        color: '#e2e8f0',
+                        fontWeight: 600,
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {bid.bidderName || 'Anonymous'}
+                    </span>
+                  </div>
+                  <div
+                    style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}
+                  >
+                    <span
+                      style={{
+                        fontFamily: 'var(--font-orbitron), sans-serif',
+                        fontSize: 13,
+                        fontWeight: 700,
+                        color: '#facc15',
+                        textShadow: '0 0 8px rgba(250, 204, 21, 0.35)',
+                      }}
+                    >
+                      {bid.amount} NT
+                    </span>
+                    <span style={{ fontSize: 10, color: '#64748b' }}>
+                      {bid.createdAt ? new Date(bid.createdAt).toLocaleString() : ''}
+                    </span>
+                  </div>
+                </div>
+              </RuneFrame>
             ))}
           </div>
         )}
@@ -522,6 +1127,139 @@ function AuctionDetail({
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Shared empty state (copied from the bazaar anchor pattern).
+// ---------------------------------------------------------------------------
+
+function EmptyState({
+  icon,
+  title,
+  hint,
+}: {
+  icon: string;
+  title: string;
+  hint: string;
+}) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: 8,
+        padding: '60px 20px',
+        textAlign: 'center',
+      }}
+    >
+      <span
+        style={{ fontSize: 36, filter: 'drop-shadow(0 0 16px rgba(168, 85, 247, 0.35))' }}
+      >
+        {icon}
+      </span>
+      <h3
+        style={{
+          fontFamily: 'var(--font-orbitron), sans-serif',
+          fontSize: 14,
+          fontWeight: 700,
+          color: '#cbd5e1',
+          letterSpacing: '0.08em',
+          textTransform: 'uppercase',
+          margin: 0,
+        }}
+      >
+        {title}
+      </h3>
+      <p style={{ fontSize: 11, color: '#64748b', maxWidth: 360, margin: 0 }}>{hint}</p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Summary stat block — small RuneFrame with three metric columns.
+// ---------------------------------------------------------------------------
+
+function SummaryStats({
+  tier,
+  items,
+}: {
+  tier: RarityId;
+  items: { label: string; value: React.ReactNode; color?: string }[];
+}) {
+  return (
+    <RuneFrame tier={tier} glow={false}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 22,
+          padding: '12px 18px',
+          flexWrap: 'wrap',
+        }}
+      >
+        {items.map((it, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 22 }}>
+            {i > 0 && (
+              <div
+                style={{
+                  height: 36,
+                  width: 1,
+                  background: 'rgba(148, 163, 184, 0.25)',
+                }}
+              />
+            )}
+            <div>
+              <p
+                style={{
+                  fontSize: 9,
+                  color: '#94a3b8',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.14em',
+                  margin: 0,
+                  fontWeight: 700,
+                }}
+              >
+                {it.label}
+              </p>
+              <p
+                style={{
+                  fontFamily: 'var(--font-orbitron), sans-serif',
+                  fontSize: 20,
+                  fontWeight: 700,
+                  color: it.color || '#facc15',
+                  margin: '2px 0 0',
+                  textShadow: it.color
+                    ? undefined
+                    : '0 0 10px rgba(250, 204, 21, 0.4)',
+                }}
+              >
+                {it.value}
+              </p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </RuneFrame>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Shared list-pane styles
+// ---------------------------------------------------------------------------
+
+const LIST_PANE_STYLE: React.CSSProperties = {
+  padding: '14px 22px 18px',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 12,
+  minHeight: 240,
+  maxHeight: '58vh',
+  overflowY: 'auto',
+};
+
+// ---------------------------------------------------------------------------
+// Main modal
+// ---------------------------------------------------------------------------
 
 export default function AuctionModal() {
   const { auctionOpen, closeAuction, auctionTab, setAuctionTab, addToast } = useGameStore();
@@ -549,7 +1287,8 @@ export default function AuctionModal() {
     setDetailAuctionId(null);
   }, [auctionTab]);
 
-  // Build query params
+  // Build query params — kept byte-for-byte identical to the previous
+  // implementation so every `useQuery` cache key lines up across versions.
   const queryParams = {
     page,
     itemType: itemType !== 'all' ? itemType : undefined,
@@ -627,311 +1366,468 @@ export default function AuctionModal() {
     },
   });
 
-  const handleBid = useCallback((auctionId: string, amount: number) => {
-    setBiddingId(auctionId);
-    bidMutation.mutate({ auctionId, amount });
-  }, [bidMutation]);
+  const handleBid = useCallback(
+    (auctionId: string, amount: number) => {
+      setBiddingId(auctionId);
+      bidMutation.mutate({ auctionId, amount });
+    },
+    [bidMutation]
+  );
 
-  const handleBuyNow = useCallback((auctionId: string) => {
-    setBuyingNowId(auctionId);
-    buyNowMutation.mutate(auctionId);
-  }, [buyNowMutation]);
+  const handleBuyNow = useCallback(
+    (auctionId: string) => {
+      setBuyingNowId(auctionId);
+      buyNowMutation.mutate(auctionId);
+    },
+    [buyNowMutation]
+  );
 
-  const handleCancel = useCallback((auctionId: string) => {
-    setCancellingId(auctionId);
-    cancelMutation.mutate(auctionId);
-  }, [cancelMutation]);
+  const handleCancel = useCallback(
+    (auctionId: string) => {
+      setCancellingId(auctionId);
+      cancelMutation.mutate(auctionId);
+    },
+    [cancelMutation]
+  );
 
-  // Close on Escape
+  // Nested escape: if a detail panel is open, escape closes it first, then
+  // the modal. We run capture-phase BEFORE RpgModal's own escape listener so
+  // the "go back" transition always wins when a drilldown is active.
   useEffect(() => {
-    if (!auctionOpen) return;
+    if (!auctionOpen || !detailAuctionId) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (detailAuctionId) setDetailAuctionId(null);
-        else closeAuction();
+        setDetailAuctionId(null);
+        e.stopPropagation();
       }
     };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [auctionOpen, closeAuction, detailAuctionId]);
+    window.addEventListener('keydown', handler, { capture: true });
+    return () => window.removeEventListener('keydown', handler, { capture: true });
+  }, [auctionOpen, detailAuctionId]);
 
   if (!auctionOpen) return null;
 
-  const auctions = browseData?.auctions ?? [];
-  const total = browseData?.total ?? 0;
-  const pageSize = browseData?.pageSize ?? 20;
+  const auctions: any[] = browseData?.auctions ?? [];
+  const total: number = browseData?.total ?? 0;
+  const pageSize: number = browseData?.pageSize ?? 20;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const myAuctions = myAuctionsData?.auctions ?? [];
-  const myBids = myBidsData?.auctions ?? [];
-  const tokens = pet?.clawTokens ?? pet?.neoTokens ?? 0;
+  const myAuctions: any[] = myAuctionsData?.auctions ?? [];
+  const myBids: any[] = myBidsData?.auctions ?? [];
+  const tokens: number = pet?.clawTokens ?? pet?.neoTokens ?? 0;
 
+  const winningCount = myBids.filter(
+    (a) =>
+      (a.isWinning || a.bidStatus === 'winning') &&
+      new Date(a.endsAt).getTime() > Date.now()
+  ).length;
+  const outbidCount = myBids.filter(
+    (a) =>
+      !(a.isWinning || a.bidStatus === 'winning') &&
+      new Date(a.endsAt).getTime() > Date.now()
+  ).length;
+  const totalBidAmount = myBids.reduce((sum, a) => sum + (a.myBid || 0), 0);
+  const activeAuctionCount = myAuctions.filter((a) => a.status === 'active').length;
+  const totalEarned = myAuctions.reduce((sum, a) => sum + (a.finalPrice || 0), 0);
+  const totalBidsReceived = myAuctions.reduce(
+    (sum, a) => sum + (a.bidCount || 0),
+    0
+  );
+
+  const SORT_OPTIONS: { value: SortMode; label: string }[] = [
+    { value: 'ending-soon', label: 'Ending Soon' },
+    { value: 'newest', label: 'Newest' },
+    { value: 'highest-bid', label: 'Highest Bid' },
+  ];
+
+  // ---------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-      {/* Backdrop */}
+    <RpgModal
+      open={auctionOpen}
+      onClose={closeAuction}
+      title="Auction House"
+      subtitle="Bid · Win · Collect"
+      tier="epic"
+      glow="subtle"
+      headerIcon={<span>⚖</span>}
+      maxWidth={1040}
+      tokenBadge={
+        <RpgTooltip content="Your NeoToken balance — spent on bids and Buy Now claims.">
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '6px 14px',
+              borderRadius: 999,
+              background: 'rgba(250, 204, 21, 0.08)',
+              border: '1px solid rgba(250, 204, 21, 0.35)',
+              color: '#facc15',
+              fontFamily: 'var(--font-orbitron), sans-serif',
+              fontSize: 12,
+              fontWeight: 700,
+              letterSpacing: '0.05em',
+              textShadow: '0 0 8px rgba(250, 204, 21, 0.35)',
+            }}
+          >
+            <span style={{ fontSize: 13 }}>◈</span>
+            {tokens} NT
+          </span>
+        </RpgTooltip>
+      }
+    >
+      {/* Tabs */}
       <div
-        className="absolute inset-0 bg-gradient-to-b from-[#1a1008]/90 via-[#12150f]/90 to-[#0f1a2e]/90 backdrop-blur-sm"
-        onClick={() => {
-          if (detailAuctionId) setDetailAuctionId(null);
-          else closeAuction();
+        style={{
+          display: 'flex',
+          gap: 4,
+          padding: '10px 22px 0',
+          borderBottom: '1px solid rgba(168, 85, 247, 0.18)',
         }}
-      />
+      >
+        {(['browse', 'my-auctions', 'my-bids'] as AuctionTab[]).map((t) => {
+          const isActive = auctionTab === t;
+          const label =
+            t === 'browse'
+              ? 'Browse Auctions'
+              : t === 'my-auctions'
+                ? 'My Auctions'
+                : 'My Bids';
+          return (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setAuctionTab(t)}
+              style={{
+                position: 'relative',
+                padding: '10px 18px',
+                background: 'transparent',
+                border: 'none',
+                fontFamily: 'var(--font-orbitron), sans-serif',
+                fontSize: 11,
+                fontWeight: 700,
+                textTransform: 'uppercase',
+                letterSpacing: '0.12em',
+                color: isActive ? '#c084fc' : '#64748b',
+                cursor: 'pointer',
+                transition: 'color 180ms ease',
+              }}
+            >
+              {label}
+              <span
+                aria-hidden
+                style={{
+                  position: 'absolute',
+                  left: 12,
+                  right: 12,
+                  bottom: -1,
+                  height: 2,
+                  background: isActive
+                    ? 'linear-gradient(90deg, transparent 0%, #a855f7 50%, transparent 100%)'
+                    : 'transparent',
+                  boxShadow: isActive ? '0 0 10px rgba(168, 85, 247, 0.55)' : 'none',
+                  transition: 'background 200ms ease',
+                }}
+              />
+            </button>
+          );
+        })}
+      </div>
 
-      {/* Modal */}
-      <div className="relative w-full max-w-4xl max-h-[90vh] flex flex-col">
-        <div className="claw-panel flex flex-col overflow-hidden bg-gradient-to-b from-[#1f1508] to-[#0f1a2e] border-2 border-amber-500/30">
-          {/* Header */}
-          <div className="flex items-center justify-between px-5 pt-4 pb-3">
-            <div className="flex items-center gap-3">
-              <span className="text-2xl">&#x2696;&#xFE0F;</span>
-              <div>
-                <h2 className="font-bold text-lg text-white tracking-wide">Auction House</h2>
-                <p className="text-[10px] text-amber-400/60 uppercase tracking-widest">Bid &middot; Win &middot; Collect</p>
+      {/* ============================== BROWSE TAB ============================== */}
+      {auctionTab === 'browse' && (
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
+          {detailAuctionId ? (
+            <AuctionDetail
+              auctionId={detailAuctionId}
+              onBack={() => setDetailAuctionId(null)}
+            />
+          ) : (
+            <>
+              {/* Filters */}
+              <div
+                style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '12px 22px',
+                  borderBottom: '1px solid rgba(148, 163, 184, 0.1)',
+                }}
+              >
+                <select
+                  value={itemType}
+                  onChange={(e) => setItemType(e.target.value as ItemTypeFilter)}
+                  style={{
+                    ...INLINE_INPUT_STYLE,
+                    width: 'auto',
+                  }}
+                >
+                  <option value="all">All Types</option>
+                  <option value="skill">Skills</option>
+                  <option value="agent-config">Agent Configs</option>
+                </select>
+
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    marginLeft: 'auto',
+                  }}
+                >
+                  <span
+                    style={{
+                      fontSize: 9,
+                      color: '#64748b',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.1em',
+                      fontWeight: 700,
+                    }}
+                  >
+                    Sort
+                  </span>
+                  {SORT_OPTIONS.map((s) => (
+                    <RpgButton
+                      key={s.value}
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setSort(s.value)}
+                      style={{
+                        fontSize: 9,
+                        padding: '4px 10px',
+                        background:
+                          sort === s.value
+                            ? 'rgba(168, 85, 247, 0.15)'
+                            : 'rgba(10, 22, 40, 0.4)',
+                        color: sort === s.value ? '#c084fc' : '#94a3b8',
+                        border: `1px solid ${sort === s.value ? 'rgba(168, 85, 247, 0.5)' : 'rgba(148, 163, 184, 0.2)'}`,
+                      }}
+                    >
+                      {s.label}
+                    </RpgButton>
+                  ))}
+                </div>
               </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <span className="flex items-center gap-1.5 text-sm font-bold text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-full px-3 py-1">
-                <span className="text-base">&#x1FA99;</span>
-                {tokens}
-              </span>
-              <button
-                onClick={closeAuction}
-                className="w-8 h-8 flex items-center justify-center rounded-full bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white font-bold text-sm transition-colors border border-white/10"
-              >
-                &#x2715;
-              </button>
-            </div>
-          </div>
 
-          {/* Tabs */}
-          <div className="flex border-b border-amber-500/20 px-5">
-            {(['browse', 'my-auctions', 'my-bids'] as AuctionTab[]).map((t) => (
-              <button
-                key={t}
-                onClick={() => setAuctionTab(t)}
-                className={`px-4 py-2.5 text-sm font-bold transition-colors border-b-2 ${
-                  auctionTab === t
-                    ? 'text-amber-300 border-amber-400'
-                    : 'text-gray-500 border-transparent hover:text-gray-300'
-                }`}
-              >
-                {t === 'browse' ? 'Browse Auctions' : t === 'my-auctions' ? 'My Auctions' : 'My Bids'}
-              </button>
-            ))}
-          </div>
-
-          {/* Tab content */}
-          <div className="flex-1 overflow-y-auto">
-            {/* ===== BROWSE TAB ===== */}
-            {auctionTab === 'browse' && (
-              <div className="flex flex-col">
-                {detailAuctionId ? (
-                  <AuctionDetail
-                    auctionId={detailAuctionId}
-                    onBack={() => setDetailAuctionId(null)}
+              {/* Auction grid */}
+              <div style={LIST_PANE_STYLE}>
+                {browseLoading ? (
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 10,
+                      padding: '60px 0',
+                    }}
+                  >
+                    <RuneSpinner size={44} tier="epic" />
+                    <span
+                      style={{
+                        fontSize: 10,
+                        color: '#64748b',
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.2em',
+                      }}
+                    >
+                      Calling the auctioneer
+                    </span>
+                  </div>
+                ) : auctions.length === 0 ? (
+                  <EmptyState
+                    icon="⚖"
+                    title="The gavel is silent"
+                    hint="No active auctions match your filters. Check back soon or widen the type filter."
                   />
                 ) : (
                   <>
-                    {/* Filters bar */}
-                    <div className="flex flex-wrap items-center gap-2 px-5 py-3 border-b border-white/5">
-                      {/* Item type filter */}
-                      <select
-                        value={itemType}
-                        onChange={(e) => setItemType(e.target.value as ItemTypeFilter)}
-                        className="bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300 focus:outline-none focus:border-amber-500/50"
+                    {auctions.map((auction) => (
+                      <BrowseAuctionCard
+                        key={auction.id}
+                        auction={auction}
+                        onOpenDetail={() => setDetailAuctionId(auction.id)}
+                        onBid={(amount) => handleBid(auction.id, amount)}
+                        onBuyNow={
+                          auction.buyNowPrice
+                            ? () => handleBuyNow(auction.id)
+                            : undefined
+                        }
+                        bidding={biddingId === auction.id}
+                        buyingNow={buyingNowId === auction.id}
+                      />
+                    ))}
+
+                    {totalPages > 1 && (
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: 10,
+                          paddingTop: 10,
+                        }}
                       >
-                        <option value="all">All Types</option>
-                        <option value="skill">Skills</option>
-                        <option value="agent-config">Agent Configs</option>
-                      </select>
-
-                      {/* Sort */}
-                      <div className="flex items-center gap-1 ml-auto">
-                        <span className="text-[10px] text-gray-500 font-bold">Sort:</span>
-                        {([
-                          { value: 'ending-soon', label: 'Ending Soon' },
-                          { value: 'newest', label: 'Newest' },
-                          { value: 'highest-bid', label: 'Highest Bid' },
-                        ] as { value: SortMode; label: string }[]).map((s) => (
-                          <button
-                            key={s.value}
-                            onClick={() => setSort(s.value)}
-                            className={`text-[10px] px-2 py-1 rounded-md font-bold transition-colors ${
-                              sort === s.value
-                                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
-                                : 'text-gray-500 hover:bg-white/5 border border-transparent'
-                            }`}
-                          >
-                            {s.label}
-                          </button>
-                        ))}
+                        <RpgButton
+                          variant="ghost"
+                          size="sm"
+                          disabled={page <= 1}
+                          onClick={() => setPage((p) => Math.max(1, p - 1))}
+                        >
+                          ← Prev
+                        </RpgButton>
+                        <span style={{ fontSize: 11, color: '#94a3b8' }}>
+                          Page {page} of {totalPages}
+                        </span>
+                        <RpgButton
+                          variant="ghost"
+                          size="sm"
+                          disabled={page >= totalPages}
+                          onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                        >
+                          Next →
+                        </RpgButton>
                       </div>
-                    </div>
-
-                    {/* Auction cards */}
-                    <div className="px-5 py-3 space-y-2 min-h-[200px] max-h-[55vh]">
-                      {browseLoading ? (
-                        <div className="flex items-center justify-center py-12">
-                          <div className="animate-spin w-6 h-6 border-2 border-amber-300 border-t-transparent rounded-full" />
-                        </div>
-                      ) : auctions.length === 0 ? (
-                        <div className="text-center py-12">
-                          <span className="text-3xl block mb-2">&#x2696;&#xFE0F;</span>
-                          <p className="text-gray-500 text-sm">No active auctions. Check back later!</p>
-                        </div>
-                      ) : (
-                        <>
-                          {auctions.map((auction: any) => (
-                            <div
-                              key={auction.id}
-                              className="cursor-pointer"
-                              onClick={(e) => {
-                                // Don't navigate to detail if clicking a button or input
-                                if ((e.target as HTMLElement).closest('button, input')) return;
-                                setDetailAuctionId(auction.id);
-                              }}
-                            >
-                              <AuctionCard
-                                auction={auction}
-                                onBid={(amount) => handleBid(auction.id, amount)}
-                                onBuyNow={auction.buyNowPrice ? () => handleBuyNow(auction.id) : undefined}
-                                bidding={biddingId === auction.id}
-                                buyingNow={buyingNowId === auction.id}
-                              />
-                            </div>
-                          ))}
-
-                          {/* Pagination */}
-                          {totalPages > 1 && (
-                            <div className="flex items-center justify-center gap-2 pt-3">
-                              <button
-                                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                                disabled={page <= 1}
-                                className="text-xs px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-gray-400 hover:bg-white/10 disabled:opacity-30 transition-colors"
-                              >
-                                Prev
-                              </button>
-                              <span className="text-xs text-gray-500">
-                                Page {page} of {totalPages}
-                              </span>
-                              <button
-                                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                                disabled={page >= totalPages}
-                                className="text-xs px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-gray-400 hover:bg-white/10 disabled:opacity-30 transition-colors"
-                              >
-                                Next
-                              </button>
-                            </div>
-                          )}
-                        </>
-                      )}
-                    </div>
+                    )}
                   </>
                 )}
               </div>
-            )}
-
-            {/* ===== MY AUCTIONS TAB ===== */}
-            {auctionTab === 'my-auctions' && (
-              <div className="px-5 py-3 space-y-2 min-h-[200px] max-h-[55vh]">
-                {myAuctionsLoading ? (
-                  <div className="flex items-center justify-center py-12">
-                    <div className="animate-spin w-6 h-6 border-2 border-amber-300 border-t-transparent rounded-full" />
-                  </div>
-                ) : myAuctions.length === 0 ? (
-                  <div className="text-center py-12">
-                    <span className="text-3xl block mb-2">&#x1F4E6;</span>
-                    <p className="text-gray-500 text-sm">You have no auctions yet.</p>
-                    <p className="text-gray-600 text-xs mt-1">Create a skill in the Skill Builder, then auction it here!</p>
-                  </div>
-                ) : (
-                  <>
-                    {/* Earnings summary */}
-                    <div className="flex items-center gap-4 mb-3 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
-                      <div>
-                        <p className="text-[10px] text-amber-400/70 uppercase tracking-wider font-bold">Active Auctions</p>
-                        <p className="text-lg font-bold text-amber-400">{myAuctions.filter((a: any) => a.status === 'active').length}</p>
-                      </div>
-                      <div className="h-8 w-px bg-amber-500/20" />
-                      <div>
-                        <p className="text-[10px] text-amber-400/70 uppercase tracking-wider font-bold">Total Earned</p>
-                        <p className="text-lg font-bold text-amber-300">
-                          {myAuctions.reduce((sum: number, a: any) => sum + (a.finalPrice || 0), 0)} &#x1FA99;
-                        </p>
-                      </div>
-                      <div className="h-8 w-px bg-amber-500/20" />
-                      <div>
-                        <p className="text-[10px] text-amber-400/70 uppercase tracking-wider font-bold">Total Bids Received</p>
-                        <p className="text-lg font-bold text-white">
-                          {myAuctions.reduce((sum: number, a: any) => sum + (a.bidCount || 0), 0)}
-                        </p>
-                      </div>
-                    </div>
-
-                    {myAuctions.map((auction: any) => (
-                      <MyAuctionCard
-                        key={auction.id}
-                        auction={auction}
-                        onCancel={() => handleCancel(auction.id)}
-                        cancelling={cancellingId === auction.id}
-                      />
-                    ))}
-                  </>
-                )}
-              </div>
-            )}
-
-            {/* ===== MY BIDS TAB ===== */}
-            {auctionTab === 'my-bids' && (
-              <div className="px-5 py-3 space-y-2 min-h-[200px] max-h-[55vh]">
-                {myBidsLoading ? (
-                  <div className="flex items-center justify-center py-12">
-                    <div className="animate-spin w-6 h-6 border-2 border-amber-300 border-t-transparent rounded-full" />
-                  </div>
-                ) : myBids.length === 0 ? (
-                  <div className="text-center py-12">
-                    <span className="text-3xl block mb-2">&#x1F3AF;</span>
-                    <p className="text-gray-500 text-sm">No bids yet. Browse auctions to start bidding!</p>
-                  </div>
-                ) : (
-                  <>
-                    {/* Bid summary */}
-                    <div className="flex items-center gap-4 mb-3 p-3 rounded-lg bg-cyan-500/10 border border-cyan-500/20">
-                      <div>
-                        <p className="text-[10px] text-cyan-400/70 uppercase tracking-wider font-bold">Winning</p>
-                        <p className="text-lg font-bold text-green-400">
-                          {myBids.filter((a: any) => (a.isWinning || a.bidStatus === 'winning') && new Date(a.endsAt).getTime() > Date.now()).length}
-                        </p>
-                      </div>
-                      <div className="h-8 w-px bg-cyan-500/20" />
-                      <div>
-                        <p className="text-[10px] text-cyan-400/70 uppercase tracking-wider font-bold">Outbid</p>
-                        <p className="text-lg font-bold text-orange-400">
-                          {myBids.filter((a: any) => !(a.isWinning || a.bidStatus === 'winning') && new Date(a.endsAt).getTime() > Date.now()).length}
-                        </p>
-                      </div>
-                      <div className="h-8 w-px bg-cyan-500/20" />
-                      <div>
-                        <p className="text-[10px] text-cyan-400/70 uppercase tracking-wider font-bold">Total Bid</p>
-                        <p className="text-lg font-bold text-amber-300">
-                          {myBids.reduce((sum: number, a: any) => sum + (a.myBid || 0), 0)} &#x1FA99;
-                        </p>
-                      </div>
-                    </div>
-
-                    {myBids.map((auction: any) => (
-                      <MyBidCard
-                        key={auction.id}
-                        auction={auction}
-                        onIncreaseBid={(amount) => handleBid(auction.id, amount)}
-                      />
-                    ))}
-                  </>
-                )}
-              </div>
-            )}
-          </div>
+            </>
+          )}
         </div>
-      </div>
-    </div>
+      )}
+
+      {/* ============================== MY AUCTIONS TAB ============================== */}
+      {auctionTab === 'my-auctions' && (
+        <div style={LIST_PANE_STYLE}>
+          {myAuctionsLoading ? (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 10,
+                padding: '60px 0',
+              }}
+            >
+              <RuneSpinner size={44} tier="epic" />
+              <span
+                style={{
+                  fontSize: 10,
+                  color: '#64748b',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.2em',
+                }}
+              >
+                Consulting your ledger
+              </span>
+            </div>
+          ) : myAuctions.length === 0 ? (
+            <EmptyState
+              icon="📦"
+              title="No auctions yet"
+              hint="Forge a skill, then list it here with a starting bid, duration, and optional Buy Now."
+            />
+          ) : (
+            <>
+              <SummaryStats
+                tier="legendary"
+                items={[
+                  {
+                    label: 'Active',
+                    value: activeAuctionCount,
+                    color: '#fb923c',
+                  },
+                  {
+                    label: 'Total Earned',
+                    value: `${totalEarned} NT`,
+                  },
+                  {
+                    label: 'Bids Received',
+                    value: totalBidsReceived,
+                    color: '#c084fc',
+                  },
+                ]}
+              />
+              {myAuctions.map((auction) => (
+                <MyAuctionCard
+                  key={auction.id}
+                  auction={auction}
+                  onCancel={() => handleCancel(auction.id)}
+                  cancelling={cancellingId === auction.id}
+                />
+              ))}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ============================== MY BIDS TAB ============================== */}
+      {auctionTab === 'my-bids' && (
+        <div style={LIST_PANE_STYLE}>
+          {myBidsLoading ? (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 10,
+                padding: '60px 0',
+              }}
+            >
+              <RuneSpinner size={44} tier="epic" />
+              <span
+                style={{
+                  fontSize: 10,
+                  color: '#64748b',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.2em',
+                }}
+              >
+                Checking the scoreboard
+              </span>
+            </div>
+          ) : myBids.length === 0 ? (
+            <EmptyState
+              icon="🎯"
+              title="No bids placed"
+              hint="Browse auctions and lay down a bid to appear on the leaderboard."
+            />
+          ) : (
+            <>
+              <SummaryStats
+                tier="epic"
+                items={[
+                  {
+                    label: 'Winning',
+                    value: winningCount,
+                    color: '#4ade80',
+                  },
+                  {
+                    label: 'Outbid',
+                    value: outbidCount,
+                    color: '#fb923c',
+                  },
+                  {
+                    label: 'Total Bid',
+                    value: `${totalBidAmount} NT`,
+                  },
+                ]}
+              />
+              {myBids.map((auction) => (
+                <MyBidCard
+                  key={auction.id}
+                  auction={auction}
+                  onIncreaseBid={(amount) => handleBid(auction.id, amount)}
+                  submitting={biddingId === auction.id}
+                />
+              ))}
+            </>
+          )}
+        </div>
+      )}
+    </RpgModal>
   );
 }
