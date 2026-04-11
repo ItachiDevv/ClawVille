@@ -8,7 +8,6 @@ import { useAvatar } from '@/hooks/use-avatar';
 import { useNpcStream } from '@/hooks/use-npc-stream';
 import { useGameStore, type GameState } from '@/stores/game';
 import { api } from '@/lib/api';
-import GameMenu from '@/components/game/game-menu';
 import AvatarSettingsModal from '@/components/game/avatar-settings-modal';
 import LocationConfigModal from '@/components/game/location-config-modal';
 import TutorialOverlay from '@/components/game/tutorial-overlay';
@@ -62,6 +61,10 @@ const MobileControls = dynamic(() => import('@/components/game/mobile-controls')
 });
 
 const PerfHud = dynamic(() => import('@/components/game/perf-hud'), {
+  ssr: false,
+});
+
+const SidebarMenu = dynamic(() => import('@/components/game/sidebar-menu'), {
   ssr: false,
 });
 
@@ -166,8 +169,8 @@ export default function GamePage() {
       <QuestBoardModal />
       <BountyBoardModal />
 
-      {/* Always visible — game menu, minimap, controls for all visitors */}
-      <GameMenu />
+      {/* Always visible — sidebar menu, minimap, controls for all visitors */}
+      <SidebarMenu />
       <Minimap />
       <ControlModeToggle />
       <MobileControls />
