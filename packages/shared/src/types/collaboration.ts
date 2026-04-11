@@ -1,29 +1,3 @@
-/** Effort level for Claude's extended thinking */
-export type ThinkingEffort = 'low' | 'medium' | 'high' | 'max';
-
-/** Thinking budget tokens by effort level */
-export const THINKING_BUDGET: Record<ThinkingEffort, number> = {
-  low: 2048,
-  medium: 5000,
-  high: 10000,
-  max: 20000,
-};
-
-/** Configuration for an agent's thinking capabilities */
-export interface AgentThinkingConfig {
-  effort: ThinkingEffort;
-  enableThinkTool: boolean;
-  model: string;
-}
-
-/** Default thinking configs per agent type */
-export const AGENT_THINKING_DEFAULTS: Record<string, AgentThinkingConfig> = {
-  'location-agent': { effort: 'high', enableThinkTool: true, model: 'claude-haiku-4-5-20251001' },
-  'avatar-agent': { effort: 'medium', enableThinkTool: false, model: 'claude-haiku-4-5-20251001' },
-  'openclaw-bot': { effort: 'medium', enableThinkTool: false, model: 'claude-haiku-4-5-20251001' },
-  'npc-ambient': { effort: 'low', enableThinkTool: false, model: 'claude-haiku-4-5-20251001' },
-};
-
 /** Result of consulting a specialist building agent */
 export interface ConsultationInsight {
   buildingId: string;
