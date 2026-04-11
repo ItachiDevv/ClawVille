@@ -40,3 +40,13 @@ export type { ItemCardProps, ItemCardStat } from './item-card';
 
 export { RpgModal } from './rpg-modal';
 export type { RpgModalProps } from './rpg-modal';
+
+export { ProgressSteps } from './progress-steps';
+export type {
+  ProgressStep,
+  ProgressStepShape,
+  ProgressStepsProps,
+} from './progress-steps';
+
+export { StatusChip } from './status-chip';
+export type { StatusChipProps, StatusChipSize, StatusChipTone } from './status-chip';
