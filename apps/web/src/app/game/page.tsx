@@ -61,6 +61,10 @@ const MobileControls = dynamic(() => import('@/components/game/mobile-controls')
   ssr: false,
 });
 
+const PerfHud = dynamic(() => import('@/components/game/perf-hud'), {
+  ssr: false,
+});
+
 function NanoClawBanner() {
   const openclawConnected = useGameStore((s: GameState) => s.openclawConnected);
   const openclawSessionId = useGameStore((s: GameState) => s.openclawSessionId);
@@ -167,6 +171,7 @@ export default function GamePage() {
       <Minimap />
       <ControlModeToggle />
       <MobileControls />
+      <PerfHud />
       <ToastNotifications />
 
       {/* Avatar-specific UI — only when agent exists */}
