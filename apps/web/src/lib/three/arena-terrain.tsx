@@ -22,10 +22,14 @@ useGLTF.preload('/models/coral-reef1.glb');
 useGLTF.preload('/models/coral-reef2.glb');
 useGLTF.preload('/models/coral-reef3.glb');
 useGLTF.preload('/models/kelp.glb');
-// Border decorations — old generic buildings repurposed as scenery
+// Border decorations — old generic buildings repurposed as scenery.
+// building-shipwreck.glb and building-submarine.glb are NOT preloaded here:
+// - shipwreck is no longer referenced anywhere (removed from scatter after
+//   CDP profiling showed 296 sub-meshes per instance)
+// - submarine is still used as the security-fortress building model and is
+//   preloaded by arena-buildings.tsx for that usage; we don't also want it
+//   scattered as decoration for the same density reason
 useGLTF.preload('/models/building-lighthouse.glb');
-useGLTF.preload('/models/building-shipwreck.glb');
-useGLTF.preload('/models/building-submarine.glb');
 useGLTF.preload('/models/building-tower2.glb');
 useGLTF.preload('/models/building-seashell.glb');
 useGLTF.preload('/models/building-anchor.glb');
@@ -248,10 +252,14 @@ const DECO_TYPES = [
   { model: '/models/crayfish.glb',         weight: 3, minScale: 3,  maxScale: 10  },
   // Tower2 — distinctive landmark towers, rare
   { model: '/models/building-tower2.glb',  weight: 2, minScale: 4,  maxScale: 14  },
-  // Shipwrecks — rare but enormous landmarks
-  { model: '/models/building-shipwreck.glb',  weight: 1, minScale: 1.2, maxScale: 3.5 },
-  // Submarines — ultra-rare, huge
-  { model: '/models/building-submarine.glb',  weight: 1, minScale: 1.0, maxScale: 2.5 },
+  // NOTE: building-shipwreck.glb and building-submarine.glb were removed from
+  // the scatter pool 2026-04-11 after a live CDP profiling session revealed
+  // each one contains 296 Sketchfab-auto-named sub-meshes. With the original
+  // weight=1 rarities, 4 instances ended up in the scene, contributing 1184
+  // meshes (84% of the decoration Group's 1343 total) and dominating the
+  // draw-call budget. Scatter keeps the other 12 models (corals, kelp,
+  // shells, anchors, barrels, chests, lanterns, crayfish, tower2) which
+  // average 1-10 sub-meshes each.
 ];
 
 // Preload new decoration models
