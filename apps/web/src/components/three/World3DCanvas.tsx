@@ -22,6 +22,10 @@ import NpcController from '@/lib/three/npc-controller';
 import MergedSeaweed from '@/lib/three/merged-seaweed';
 import UnderwaterAtmosphere from '@/lib/three/underwater-atmosphere';
 import UnderwaterLightRays from '@/lib/three/underwater-light-rays';
+import QuestNpc from '@/lib/three/quest-npc';
+import BountyBoardObject from '@/lib/three/bounty-board-object';
+import BazaarPedestals from '@/lib/three/bazaar-pedestals';
+import AuctionPodium from '@/lib/three/auction-podium';
 import { useGameStore } from '@/stores/game';
 import { useNpcStore } from '@/stores/npc';
 
@@ -407,6 +411,12 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
 
       {/* NPC possession controller — active when controlMode === 'npc' */}
       <NpcController />
+
+      {/* Gameify world-surface anchors — clickable objects that open Gameify modals */}
+      <QuestNpc />
+      <BountyBoardObject />
+      <BazaarPedestals />
+      <AuctionPodium />
 
       {/* Mode-specific content */}
       {isGame && <PlayerPet />}
