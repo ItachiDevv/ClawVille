@@ -33,6 +33,8 @@ import {
   ItemCard,
   RarityBadge,
   RpgTooltip,
+  ProgressSteps,
+  type ProgressStep,
   type RarityId,
 } from '@/components/rpg';
 
@@ -123,13 +125,30 @@ function tierLabel(tier: string): string {
 // Status machinery
 // ---------------------------------------------------------------------------
 
-const PROGRESS_STEPS: QuestStatus[] = [
+/** Happy-path quest lifecycle (excludes 'rejected' — it's a failure state). */
+type ActiveQuestStep = 'accepted' | 'in_progress' | 'submitted' | 'in_review' | 'approved';
+
+const PROGRESS_STEPS: ReadonlyArray<ActiveQuestStep> = [
   'accepted',
   'in_progress',
   'submitted',
   'in_review',
   'approved',
 ];
+
+const PROGRESS_STEP_SHORT_LABELS: Record<ActiveQuestStep, string> = {
+  accepted: 'Accepted',
+  in_progress: 'Active',
+  submitted: 'Submitted',
+  in_review: 'Review',
+  approved: 'Done',
+};
+
+/** Shape the progress steps for the shared ProgressSteps primitive. */
+const QUEST_PROGRESS_STEPS: ReadonlyArray<ProgressStep> = PROGRESS_STEPS.map((s) => ({
+  id: s,
+  label: PROGRESS_STEP_SHORT_LABELS[s],
+}));
 
 const STATUS_LABEL: Record<QuestStatus, string> = {
   accepted: 'Accepted',
@@ -426,86 +445,32 @@ function CompletionBar({
   );
 }
 
-/** Quest-lifecycle progress tracker (accepted → … → approved). */
+/**
+ * Quest-lifecycle progress tracker (accepted → … → approved).
+ *
+ * Thin wrapper around the shared @/components/rpg ProgressSteps primitive.
+ * Maps quest-specific statuses onto the rejected / current-index semantics
+ * the primitive exposes. If the current status is `rejected`, we anchor the
+ * failed marker at whatever step was last reached before rejection — the
+ * backend only tells us "rejected" without a historical step, so we land
+ * the red flag at the `in_review` dot which is the point a reviewer would
+ * have rejected from.
+ */
 function ProgressTracker({ currentStatus }: { currentStatus: QuestStatus }) {
-  const isRejected = currentStatus === 'rejected';
-  const currentIndex = PROGRESS_STEPS.indexOf(currentStatus);
+  const failed = currentStatus === 'rejected';
+  // When rejected, the "current" dot in the primitive should sit where
+  // the rejection happened — our state machine collapses that into the
+  // `in_review` step for visual purposes.
+  const primitiveCurrent = failed ? 'in_review' : currentStatus;
 
   return (
-    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 0, margin: '10px 0 6px' }}>
-      {PROGRESS_STEPS.map((step, i) => {
-        const isCompleted = i < currentIndex && !isRejected;
-        const isCurrent = step === currentStatus;
-        const isLast = i === PROGRESS_STEPS.length - 1;
-        const colour = STATUS_COLOR[step].base;
-        const dotBg = isRejected && isCurrent
-          ? '#ef4444'
-          : isCurrent
-            ? colour
-            : isCompleted
-              ? 'rgba(56, 189, 248, 0.6)'
-              : 'rgba(148, 163, 184, 0.18)';
-        const dotBorder = isRejected && isCurrent
-          ? '#fca5a5'
-          : isCurrent
-            ? colour
-            : isCompleted
-              ? 'rgba(56, 189, 248, 0.55)'
-              : 'rgba(148, 163, 184, 0.28)';
-        return (
-          <div
-            key={step}
-            style={{
-              display: 'flex',
-              alignItems: 'flex-start',
-              flex: isLast ? '0 0 auto' : '1 1 0',
-              minWidth: 0,
-            }}
-          >
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-              <div
-                style={{
-                  width: 11,
-                  height: 11,
-                  borderRadius: 999,
-                  background: dotBg,
-                  border: `2px solid ${dotBorder}`,
-                  boxShadow: isCurrent ? `0 0 8px ${colour}aa` : 'none',
-                  transform: isCurrent ? 'scale(1.1)' : 'scale(1)',
-                  transition: 'all 220ms ease',
-                }}
-              />
-              <span
-                style={{
-                  fontSize: 8,
-                  marginTop: 5,
-                  whiteSpace: 'nowrap',
-                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-                  color: isCompleted || isCurrent ? '#cbd5e1' : '#475569',
-                  letterSpacing: '0.06em',
-                }}
-              >
-                {STATUS_LABEL[step]}
-              </span>
-            </div>
-            {!isLast && (
-              <div
-                style={{
-                  flex: 1,
-                  height: 1,
-                  marginTop: 6,
-                  marginInline: 4,
-                  background: isCompleted
-                    ? 'linear-gradient(90deg, rgba(56, 189, 248, 0.55) 0%, rgba(56, 189, 248, 0.2) 100%)'
-                    : 'rgba(148, 163, 184, 0.18)',
-                  transition: 'background 500ms ease',
-                }}
-              />
-            )}
-          </div>
-        );
-      })}
-    </div>
+    <ProgressSteps
+      steps={QUEST_PROGRESS_STEPS}
+      current={primitiveCurrent}
+      failed={failed}
+      tier="legendary"
+      shape="circle"
+    />
   );
 }
 
