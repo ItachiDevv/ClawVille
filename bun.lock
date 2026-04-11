@@ -30,7 +30,6 @@
       "name": "@clawville/api",
       "version": "0.1.0",
       "dependencies": {
-        "@anthropic-ai/sdk": "^0.74.0",
         "@clawville/agent-runtime": "workspace:*",
         "@clawville/agent-templates": "workspace:*",
         "@clawville/database": "workspace:*",

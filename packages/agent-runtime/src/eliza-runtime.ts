@@ -140,9 +140,10 @@ function convertToElizaCharacter(
 
   // v2: @elizaos/plugin-bootstrap is built into @elizaos/core — do NOT add it here.
   // Embeddings are provided by our custom gemini-embedding-provider (prepended
-  // in loadPlugins), so plugin-openai is no longer needed.
+  // in loadPlugins), so plugin-openai is no longer needed. Text generation is
+  // handled by the Gemini text provider (priority 95); plugin-anthropic has been
+  // removed from the chain in favor of Gemini + Ultrathink.
   const plugins: string[] = [
-    '@elizaos/plugin-anthropic',
     '@elizaos/plugin-sql',
   ];
 
@@ -242,8 +243,9 @@ export class ElizaRuntime {
     // v2: plugin-bootstrap is built into core. plugin-openai is replaced by
     // the Gemini embedding provider. plugin-solana is a legacy LegacyApp dep
     // that was never installed — omit to stop the silent import-error spam.
+    // plugin-anthropic has been removed; Gemini text provider (priority 95)
+    // is now the default text-generation backend.
     const plugins: string[] = [
-      '@elizaos/plugin-anthropic',
       '@elizaos/plugin-sql',
     ];
 
@@ -299,7 +301,9 @@ export class ElizaRuntime {
 
       await this.loadPlugins();
 
-      // v2: plugin-anthropic reads ANTHROPIC_API_KEY from character.secrets.
+      // Anthropic key retained for ultrathink-provider.ts (optional deep-reasoning
+      // path). plugin-anthropic itself is no longer loaded — Gemini text provider
+      // (priority 95) handles all TEXT_SMALL/TEXT_LARGE calls by default.
       // The Gemini plugins read from their own config or process.env directly —
       // not character.secrets — so we don't expose the Gemini key here.
       this.character.secrets = {
@@ -349,9 +353,9 @@ export class ElizaRuntime {
     // v2: plugin-bootstrap is built into @elizaos/core.
     // plugin-openai replaced by gemini-embedding-provider below.
     // plugin-solana is a legacy dep that was never installed — removed.
-    // Text generation priority chain: OpenClaw(100) > Gemini(95) > Ultrathink(90) > plugin-anthropic(0).
+    // plugin-anthropic removed — Gemini text provider is now the default backend.
+    // Text generation priority chain: OpenClaw(100) > Gemini(95) > Ultrathink(90).
     const pluginMap: Record<string, string> = {
-      '@elizaos/plugin-anthropic': 'anthropicPlugin',
       '@elizaos/plugin-sql': 'sqlPlugin',
     };
 
