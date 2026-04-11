@@ -1,6 +1,34 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+/**
+ * Select Agent — WoW-style character select screen.
+ *
+ * Full visual re-skin built on the shared RPG primitives from
+ * `@/components/rpg`. Data flow is identical to the previous
+ * implementation: every useQuery / useMutation / router push is preserved,
+ * only the presentation layer changed.
+ *
+ * Layout
+ * ------
+ *   ┌────────── Roster ──────────┐┌──────── 3D Preview ────────┐┌──────── Details ────────┐
+ *   │  6 rune-framed slots       ││  SelectAgentCanvas +       ││  Stats · Talent Tree ·   │
+ *   │  (filled or empty)          ││  dramatic spotlight         ││  Loadout · Enter World  │
+ *   └────────────────────────────┘└────────────────────────────┘└──────────────────────────┘
+ *
+ * Backend truth
+ * -------------
+ * Knowledge books don't carry a rarity field in `packages/shared`, so rarity
+ * is derived client-side via `deriveRarityFromKnowledgeCount(book.knowledgeEntries.length)`.
+ * When the agent-setup API grows a per-book rarity column we'll swap the
+ * derivation for the backend value.
+ *
+ * NOTE: `components/three/SelectAgentCanvas.tsx` has a pre-existing React 19
+ * ReactNode vs ReactPortal typecheck error at line 105 that Team 4 / 3da owns.
+ * Do NOT patch that file from here.
+ */
+
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import type { CSSProperties, DragEvent, ReactNode } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -12,6 +40,16 @@ import {
   MAP_LOCATIONS,
   KNOWLEDGE_BOOKS,
 } from '@clawville/shared';
+import {
+  RuneFrame,
+  RpgButton,
+  RuneSpinner,
+  RarityBadge,
+  RpgTooltip,
+  getRarity,
+  deriveRarityFromKnowledgeCount,
+  type RarityId,
+} from '@/components/rpg';
 
 const SelectAgentCanvas = dynamic(
   () => import('@/components/three/SelectAgentCanvas'),
@@ -41,7 +79,7 @@ interface Agent {
 type Panel = 'details' | 'create' | 'import';
 
 // ---------------------------------------------------------------------------
-// Constants
+// Constants & lookups
 // ---------------------------------------------------------------------------
 
 const MAX_AGENTS = 6;
@@ -55,6 +93,10 @@ const SPECIES_NAME: Record<string, string> = Object.fromEntries(
   PET_SPECIES.map((s) => [s.id, s.name])
 );
 
+const SPECIES_EMOJI: Record<string, string> = Object.fromEntries(
+  PET_SPECIES.map((s) => [s.id, s.emoji])
+);
+
 const ARCHETYPE_LABEL: Record<string, string> = Object.fromEntries(
   PET_ARCHETYPES.map((a) => [a.id, a.label])
 );
@@ -63,20 +105,104 @@ const ARCHETYPE_LABEL: Record<string, string> = Object.fromEntries(
 const BOOKS_BY_BUILDING: Record<string, typeof KNOWLEDGE_BOOKS> = {};
 for (const book of KNOWLEDGE_BOOKS) {
   if (!BOOKS_BY_BUILDING[book.building]) BOOKS_BY_BUILDING[book.building] = [];
-  BOOKS_BY_BUILDING[book.building].push(book);
+  BOOKS_BY_BUILDING[book.building]!.push(book);
 }
 
+// Derive per-book rarity once — backend doesn't ship a rarity column for
+// knowledge books today, so we fall back to the shared derivation helper.
+const BOOK_RARITY: Record<string, RarityId> = Object.fromEntries(
+  KNOWLEDGE_BOOKS.map((b) => [
+    b.id,
+    deriveRarityFromKnowledgeCount(b.knowledgeEntries.length),
+  ])
+);
+
+const BOOK_BY_ID: Record<string, (typeof KNOWLEDGE_BOOKS)[number]> =
+  Object.fromEntries(KNOWLEDGE_BOOKS.map((b) => [b.id, b]));
+
 // ---------------------------------------------------------------------------
-// Sub-components
+// Background — dramatic character-select hall
 // ---------------------------------------------------------------------------
 
-function Spinner() {
+function StageBackdrop() {
   return (
-    <div className="animate-spin w-5 h-5 border-2 border-cyan-300 border-t-transparent rounded-full" />
+    <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden>
+      {/* Deep navy base + subtle vignette */}
+      <div
+        className="absolute inset-0"
+        style={{
+          background:
+            'radial-gradient(ellipse at 50% 35%, #0f2140 0%, #08132a 45%, #020713 100%)',
+        }}
+      />
+      {/* Soft spotlight beams — pure CSS, no framer */}
+      <div
+        className="absolute inset-0"
+        style={{
+          background:
+            'conic-gradient(from 260deg at 50% 0%, transparent 0deg, rgba(56,189,248,0.10) 18deg, transparent 36deg, transparent 324deg, rgba(250,204,21,0.08) 342deg, transparent 360deg)',
+          filter: 'blur(42px)',
+          mixBlendMode: 'screen',
+        }}
+      />
+      {/* Rising cyan spotlight behind the 3D stage */}
+      <div
+        className="absolute left-1/2 top-[8%] h-[620px] w-[620px] -translate-x-1/2 rounded-full"
+        style={{
+          background:
+            'radial-gradient(circle, rgba(56,189,248,0.18) 0%, rgba(56,189,248,0.06) 40%, transparent 70%)',
+          filter: 'blur(40px)',
+        }}
+      />
+      {/* Warm rim near the bottom (the "gold dais" spill) */}
+      <div
+        className="absolute left-1/2 bottom-[-10%] h-[520px] w-[720px] -translate-x-1/2 rounded-full"
+        style={{
+          background:
+            'radial-gradient(ellipse, rgba(249,115,22,0.18) 0%, rgba(249,115,22,0.05) 45%, transparent 75%)',
+          filter: 'blur(70px)',
+        }}
+      />
+      {/* Starfield — CSS radial-gradient trick, cheap on Intel Iris Xe */}
+      <div
+        className="absolute inset-0 opacity-[0.45]"
+        style={{
+          backgroundImage: [
+            'radial-gradient(circle at 12% 18%, rgba(255,255,255,0.8) 0, transparent 1.2px)',
+            'radial-gradient(circle at 72% 12%, rgba(255,255,255,0.55) 0, transparent 1px)',
+            'radial-gradient(circle at 23% 78%, rgba(255,255,255,0.5) 0, transparent 1.1px)',
+            'radial-gradient(circle at 91% 62%, rgba(255,255,255,0.7) 0, transparent 1px)',
+            'radial-gradient(circle at 44% 42%, rgba(255,255,255,0.4) 0, transparent 0.9px)',
+            'radial-gradient(circle at 60% 82%, rgba(255,255,255,0.6) 0, transparent 1px)',
+            'radial-gradient(circle at 7% 52%, rgba(255,255,255,0.45) 0, transparent 1px)',
+            'radial-gradient(circle at 85% 30%, rgba(255,255,255,0.55) 0, transparent 1px)',
+          ].join(','),
+          backgroundSize: '320px 320px',
+        }}
+      />
+      {/* Top + bottom horizon bars (gives "indoor hall" depth) */}
+      <div
+        className="absolute inset-x-0 top-0 h-24"
+        style={{
+          background:
+            'linear-gradient(180deg, rgba(3,8,18,0.95) 0%, rgba(3,8,18,0) 100%)',
+        }}
+      />
+      <div
+        className="absolute inset-x-0 bottom-0 h-36"
+        style={{
+          background:
+            'linear-gradient(0deg, rgba(3,8,18,0.92) 0%, rgba(3,8,18,0) 100%)',
+        }}
+      />
+    </div>
   );
 }
 
-/** Single roster slot (filled or empty). */
+// ---------------------------------------------------------------------------
+// Roster slot — rune-framed, rarity keyed to state
+// ---------------------------------------------------------------------------
+
 function RosterSlot({
   agent,
   selected,
@@ -86,93 +212,643 @@ function RosterSlot({
   selected: boolean;
   onSelect: () => void;
 }) {
+  // Empty slot — common tier, dashed feel via opacity
   if (!agent) {
     return (
-      <button
+      <RuneFrame
+        tier="common"
+        interactive
         onClick={onSelect}
-        className="w-full flex items-center gap-3 px-3 py-3 rounded-lg border border-dashed border-white/10 hover:border-cyan-500/30 transition-colors group"
+        glow={false}
+        style={{ cursor: 'pointer', opacity: 0.55 }}
       >
-        <div className="w-10 h-10 rounded-full bg-white/[0.03] border border-white/10 flex items-center justify-center text-white/20 group-hover:text-cyan-500/50 transition-colors text-lg">
-          +
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            padding: '12px 14px',
+            minHeight: 62,
+          }}
+        >
+          <div
+            style={{
+              width: 40,
+              height: 40,
+              borderRadius: 8,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              border: '1px dashed rgba(148,163,184,0.45)',
+              color: 'rgba(148,163,184,0.7)',
+              fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
+              fontSize: 20,
+            }}
+          >
+            +
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div
+              style={{
+                fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
+                fontSize: 11,
+                letterSpacing: '0.16em',
+                textTransform: 'uppercase',
+                color: '#cbd5e1',
+              }}
+            >
+              Empty Slot
+            </div>
+            <div
+              style={{
+                fontSize: 10,
+                color: '#64748b',
+                marginTop: 2,
+              }}
+            >
+              Forge a new agent
+            </div>
+          </div>
         </div>
-        <span className="text-white/20 text-xs font-mono uppercase tracking-wider group-hover:text-white/40 transition-colors">
-          Empty Slot
-        </span>
-      </button>
+      </RuneFrame>
     );
   }
 
-  const colorHex = COLOR_HEX[agent.color] ?? '#888';
+  // Filled slot — rarity escalates with state
+  //   active         → legendary + strong glow (the gold pulse)
+  //   selected only  → epic + subtle glow
+  //   default        → rare cyan baseline
+  const tier: RarityId = agent.isActive
+    ? 'legendary'
+    : selected
+      ? 'epic'
+      : 'rare';
+
+  const colorHex = COLOR_HEX[agent.color] ?? '#38bdf8';
+  const speciesEmoji = SPECIES_EMOJI[agent.species] ?? '🦞';
 
   return (
-    <button
+    <RuneFrame
+      tier={tier}
+      interactive
       onClick={onSelect}
-      className={`w-full flex items-center gap-3 px-3 py-3 rounded-lg border transition-all ${
-        selected
-          ? 'border-cyan-400/60 bg-cyan-500/10 shadow-[0_0_12px_rgba(0,229,255,0.12)]'
-          : 'border-white/10 hover:border-white/20 bg-white/[0.02]'
-      }`}
+      glow={agent.isActive ? 'strong' : selected ? 'subtle' : false}
+      style={{ cursor: 'pointer' }}
     >
-      {/* Avatar circle */}
       <div
-        className="relative w-10 h-10 rounded-full flex items-center justify-center text-lg shrink-0"
-        style={{ backgroundColor: colorHex + '30', borderColor: colorHex, borderWidth: 2 }}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          padding: '12px 14px',
+          minHeight: 62,
+        }}
       >
-        {agent.isActive && (
-          <span className="absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full bg-cyan-400 border-2 border-[#0a1628] shadow-[0_0_6px_rgba(0,229,255,0.6)]" />
-        )}
-        <span className="select-none">
-          {PET_SPECIES.find((s) => s.id === agent.species)?.emoji ?? '?'}
-        </span>
+        {/* Portrait */}
+        <div
+          style={{
+            position: 'relative',
+            width: 44,
+            height: 44,
+            flexShrink: 0,
+            borderRadius: 10,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: 22,
+            background: `radial-gradient(circle at 30% 30%, ${colorHex}33 0%, rgba(10,22,40,0.9) 75%)`,
+            border: `1px solid ${colorHex}80`,
+            boxShadow: `inset 0 0 12px ${colorHex}33`,
+          }}
+        >
+          <span style={{ filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.6))' }}>
+            {speciesEmoji}
+          </span>
+          {agent.isActive && (
+            <span
+              style={{
+                position: 'absolute',
+                top: -3,
+                right: -3,
+                width: 10,
+                height: 10,
+                borderRadius: '50%',
+                background: '#fb923c',
+                border: '2px solid #0a1628',
+                boxShadow: '0 0 8px #fb923c',
+              }}
+              aria-label="Active agent"
+            />
+          )}
+        </div>
+        {/* Info */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div
+            style={{
+              fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
+              fontSize: 13,
+              fontWeight: 700,
+              color: '#f1f5f9',
+              textShadow: `0 0 10px ${getRarity(tier).glow}44`,
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
+            {agent.name}
+          </div>
+          <div
+            style={{
+              fontSize: 10,
+              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+              color: '#64748b',
+              letterSpacing: '0.06em',
+              textTransform: 'uppercase',
+              marginTop: 2,
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
+            Lv {agent.level} · {SPECIES_NAME[agent.species] ?? agent.species}
+          </div>
+        </div>
+        {/* XP chip */}
+        <div
+          style={{
+            fontSize: 9,
+            fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
+            fontWeight: 700,
+            letterSpacing: '0.1em',
+            padding: '3px 7px',
+            borderRadius: 999,
+            background: 'rgba(56,189,248,0.12)',
+            border: '1px solid rgba(56,189,248,0.3)',
+            color: '#7dd3fc',
+            flexShrink: 0,
+          }}
+        >
+          {agent.xp} XP
+        </div>
       </div>
-
-      {/* Info */}
-      <div className="flex-1 min-w-0 text-left">
-        <p className="text-sm font-bold text-white truncate">{agent.name}</p>
-        <p className="text-[10px] text-white/40 font-mono uppercase tracking-wider">
-          {SPECIES_NAME[agent.species] ?? agent.species} &middot; Lv{agent.level}
-        </p>
-      </div>
-
-      {/* XP chip */}
-      <span className="text-[10px] font-bold text-cyan-400/60 bg-cyan-500/10 rounded-full px-2 py-0.5 shrink-0">
-        {agent.xp} XP
-      </span>
-    </button>
+    </RuneFrame>
   );
 }
 
-/** Talent tree row: one building with 2 book circles. */
+// ---------------------------------------------------------------------------
+// Stat card — tiny rune-framed readout
+// ---------------------------------------------------------------------------
+
+function StatCard({
+  label,
+  value,
+  tier = 'common',
+  icon,
+}: {
+  label: string;
+  value: ReactNode;
+  tier?: RarityId;
+  icon?: ReactNode;
+}) {
+  return (
+    <RuneFrame tier={tier} glow={false}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 4,
+          padding: '10px 12px',
+        }}
+      >
+        <div
+          style={{
+            fontSize: 9,
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+            letterSpacing: '0.14em',
+            textTransform: 'uppercase',
+            color: '#64748b',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 5,
+          }}
+        >
+          {icon && <span style={{ fontSize: 11 }}>{icon}</span>}
+          {label}
+        </div>
+        <div
+          style={{
+            fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
+            fontSize: 14,
+            fontWeight: 700,
+            color: getRarity(tier).base,
+            textShadow: `0 0 10px ${getRarity(tier).glow}55`,
+            lineHeight: 1.15,
+          }}
+        >
+          {value}
+        </div>
+      </div>
+    </RuneFrame>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Talent tree row — one building, two book cells
+// ---------------------------------------------------------------------------
+
+function TalentBookCell({
+  book,
+  learned,
+}: {
+  book: (typeof KNOWLEDGE_BOOKS)[number];
+  learned: boolean;
+}) {
+  const rarityId = BOOK_RARITY[book.id] ?? 'common';
+  const rarity = getRarity(rarityId);
+
+  return (
+    <RpgTooltip
+      content={
+        <div>
+          <div
+            style={{
+              fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
+              fontWeight: 700,
+              color: rarity.base,
+              marginBottom: 4,
+            }}
+          >
+            {book.name}
+          </div>
+          <div style={{ color: '#cbd5e1', marginBottom: 6 }}>
+            {book.description}
+          </div>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 8,
+              fontSize: 10,
+            }}
+          >
+            <RarityBadge tier={rarityId} />
+            {!learned && (
+              <span style={{ color: '#facc15', fontWeight: 700 }}>
+                {book.price} NT
+              </span>
+            )}
+            {learned && (
+              <span
+                style={{
+                  color: '#4ade80',
+                  fontWeight: 700,
+                  letterSpacing: '0.1em',
+                }}
+              >
+                LEARNED
+              </span>
+            )}
+          </div>
+        </div>
+      }
+      side="top"
+    >
+      <span style={{ display: 'inline-flex', flex: 1, minWidth: 0 }}>
+        <RuneFrame
+          tier={rarityId}
+          interactive
+          glow={learned && rarity.pulse ? 'strong' : learned ? 'subtle' : false}
+          style={{
+            flex: 1,
+            cursor: 'help',
+            opacity: learned ? 1 : 0.42,
+            filter: learned ? 'none' : 'grayscale(0.7)',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '7px 9px',
+              minHeight: 38,
+            }}
+          >
+            <span style={{ fontSize: 18, lineHeight: 1, flexShrink: 0 }}>
+              {book.icon}
+            </span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div
+                style={{
+                  fontSize: 10,
+                  fontFamily:
+                    'var(--font-orbitron, ui-sans-serif), sans-serif',
+                  fontWeight: 700,
+                  color: learned ? rarity.base : '#64748b',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  letterSpacing: '0.02em',
+                }}
+              >
+                {book.name}
+              </div>
+              <div
+                style={{
+                  fontSize: 9,
+                  fontFamily:
+                    'ui-monospace, SFMono-Regular, Menlo, monospace',
+                  color: learned ? '#94a3b8' : '#475569',
+                  marginTop: 1,
+                }}
+              >
+                {learned ? 'Learned' : `${book.price} NT`}
+              </div>
+            </div>
+          </div>
+        </RuneFrame>
+      </span>
+    </RpgTooltip>
+  );
+}
+
 function TalentRow({
-  buildingId,
   buildingName,
   buildingIcon,
   books,
   learnedBooks,
 }: {
-  buildingId: string;
   buildingName: string;
   buildingIcon: string;
   books: typeof KNOWLEDGE_BOOKS;
   learnedBooks: string[];
 }) {
   return (
-    <div className="flex items-center gap-2">
-      <span className="text-base shrink-0">{buildingIcon}</span>
-      <span className="text-[11px] text-white/60 truncate flex-1 min-w-0">{buildingName}</span>
-      <div className="flex items-center gap-1.5 shrink-0">
-        {books.map((book) => {
-          const learned = learnedBooks.includes(book.id);
+    <div style={{ display: 'flex', alignItems: 'stretch', gap: 8 }}>
+      {/* Building label column */}
+      <div
+        style={{
+          flexShrink: 0,
+          width: 96,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          paddingRight: 4,
+          borderRight: '1px solid rgba(56,189,248,0.14)',
+        }}
+      >
+        <span style={{ fontSize: 16 }}>{buildingIcon}</span>
+        <span
+          style={{
+            fontSize: 10,
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+            textTransform: 'uppercase',
+            letterSpacing: '0.06em',
+            color: '#94a3b8',
+            lineHeight: 1.2,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {buildingName}
+        </span>
+      </div>
+      {/* Two book cells */}
+      <div
+        style={{
+          flex: 1,
+          display: 'flex',
+          gap: 6,
+          minWidth: 0,
+        }}
+      >
+        {books.map((book) => (
+          <TalentBookCell
+            key={book.id}
+            book={book}
+            learned={learnedBooks.includes(book.id)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Loadout bar — 6 draggable skill slots
+// ---------------------------------------------------------------------------
+
+function LoadoutBar({
+  equippedSkills,
+  onSlotDrop,
+  onSlotClear,
+  onDragStartEquipped,
+}: {
+  equippedSkills: string[];
+  onSlotDrop: (bookId: string, slotIndex: number) => void;
+  onSlotClear: (bookId: string) => void;
+  onDragStartEquipped: (bookId: string) => void;
+}) {
+  const [hoverSlot, setHoverSlot] = useState<number | null>(null);
+  const slots = Array.from(
+    { length: MAX_LOADOUT_SLOTS },
+    (_, i) => equippedSkills[i] ?? null
+  );
+
+  const handleDragOver = (e: DragEvent<HTMLDivElement>, slot: number) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setHoverSlot(slot);
+  };
+
+  const handleDrop = (e: DragEvent<HTMLDivElement>, slot: number) => {
+    e.preventDefault();
+    const bookId = e.dataTransfer.getData('text/clawville-book');
+    setHoverSlot(null);
+    if (bookId) onSlotDrop(bookId, slot);
+  };
+
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(6, 1fr)',
+        gap: 6,
+      }}
+    >
+      {slots.map((bookId, i) => {
+        const book = bookId ? BOOK_BY_ID[bookId] : null;
+        const rarityId: RarityId = book
+          ? (BOOK_RARITY[book.id] ?? 'common')
+          : 'common';
+        const filled = !!book;
+        const hovering = hoverSlot === i;
+
+        return (
+          <div
+            key={i}
+            onDragOver={(e) => handleDragOver(e, i)}
+            onDragLeave={() => setHoverSlot((s) => (s === i ? null : s))}
+            onDrop={(e) => handleDrop(e, i)}
+            draggable={filled}
+            onDragStart={(e) => {
+              if (!book) return;
+              e.dataTransfer.setData('text/clawville-book', book.id);
+              e.dataTransfer.effectAllowed = 'move';
+              onDragStartEquipped(book.id);
+            }}
+            onClick={() => {
+              if (book) onSlotClear(book.id);
+            }}
+            title={
+              book
+                ? `${book.name} (click to unequip, drag to reorder)`
+                : 'Drop a skill here'
+            }
+            style={{ cursor: filled ? 'grab' : 'default' }}
+          >
+            <RuneFrame
+              tier={filled ? rarityId : 'common'}
+              glow={filled && getRarity(rarityId).pulse ? 'subtle' : false}
+              interactive={filled}
+              style={{
+                aspectRatio: '1 / 1',
+                opacity: filled ? 1 : 0.55,
+                transform: hovering ? 'scale(1.04)' : undefined,
+                transition: 'transform 140ms ease',
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  height: '100%',
+                  gap: 2,
+                  padding: 4,
+                  textAlign: 'center',
+                }}
+              >
+                {book ? (
+                  <>
+                    <span style={{ fontSize: 20 }}>{book.icon}</span>
+                    <span
+                      style={{
+                        fontSize: 8,
+                        fontFamily:
+                          'ui-monospace, SFMono-Regular, Menlo, monospace',
+                        color: getRarity(rarityId).base,
+                        lineHeight: 1.15,
+                        maxWidth: '100%',
+                        display: '-webkit-box',
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: 'vertical',
+                        overflow: 'hidden',
+                      }}
+                    >
+                      {book.name}
+                    </span>
+                  </>
+                ) : (
+                  <span
+                    style={{
+                      fontFamily:
+                        'var(--font-orbitron, ui-sans-serif), sans-serif',
+                      fontSize: 18,
+                      color: 'rgba(148,163,184,0.35)',
+                    }}
+                  >
+                    {i + 1}
+                  </span>
+                )}
+              </div>
+            </RuneFrame>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Available skills tray — learned-but-not-equipped, draggable source
+// ---------------------------------------------------------------------------
+
+function AvailableSkillsTray({
+  learnedBooks,
+  equippedSkills,
+  onEquip,
+}: {
+  learnedBooks: string[];
+  equippedSkills: string[];
+  onEquip: (bookId: string) => void;
+}) {
+  const unequipped = learnedBooks.filter((id) => !equippedSkills.includes(id));
+
+  if (unequipped.length === 0) return null;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div
+        style={{
+          fontSize: 9,
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+          color: '#64748b',
+          letterSpacing: '0.14em',
+          textTransform: 'uppercase',
+        }}
+      >
+        Drag to equip · Click to auto-slot
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+        {unequipped.map((bookId) => {
+          const book = BOOK_BY_ID[bookId];
+          if (!book) return null;
+          const rarityId: RarityId = BOOK_RARITY[book.id] ?? 'common';
           return (
-            <div
-              key={book.id}
-              title={book.name}
-              className={`w-4 h-4 rounded-full border-2 transition-colors ${
-                learned
-                  ? 'bg-cyan-400 border-cyan-300 shadow-[0_0_6px_rgba(0,229,255,0.5)]'
-                  : 'bg-transparent border-white/20'
-              }`}
-            />
+            <button
+              key={bookId}
+              type="button"
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.setData('text/clawville-book', book.id);
+                e.dataTransfer.effectAllowed = 'move';
+              }}
+              onClick={() => onEquip(bookId)}
+              disabled={equippedSkills.length >= MAX_LOADOUT_SLOTS}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 5,
+                padding: '4px 8px',
+                borderRadius: 6,
+                background: `color-mix(in srgb, ${getRarity(rarityId).base} 12%, rgba(10,22,40,0.7))`,
+                border: `1px solid ${getRarity(rarityId).base}55`,
+                color: getRarity(rarityId).base,
+                fontSize: 10,
+                fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
+                fontWeight: 700,
+                letterSpacing: '0.02em',
+                cursor: 'grab',
+                maxWidth: 160,
+                opacity:
+                  equippedSkills.length >= MAX_LOADOUT_SLOTS ? 0.4 : 1,
+              }}
+            >
+              <span>{book.icon}</span>
+              <span
+                style={{
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  maxWidth: 120,
+                }}
+              >
+                {book.name}
+              </span>
+            </button>
           );
         })}
       </div>
@@ -180,54 +856,10 @@ function TalentRow({
   );
 }
 
-/** Loadout grid: 6 equippable skill slots. */
-function LoadoutGrid({
-  equippedSkills,
-  learnedBooks,
-  onToggle,
-}: {
-  equippedSkills: string[];
-  learnedBooks: string[];
-  onToggle: (bookId: string) => void;
-}) {
-  const slots = Array.from({ length: MAX_LOADOUT_SLOTS }, (_, i) => equippedSkills[i] ?? null);
+// ---------------------------------------------------------------------------
+// Create / Import panels (inline)
+// ---------------------------------------------------------------------------
 
-  return (
-    <div className="grid grid-cols-3 gap-2">
-      {slots.map((bookId, i) => {
-        const book = bookId ? KNOWLEDGE_BOOKS.find((b) => b.id === bookId) : null;
-
-        return (
-          <button
-            key={i}
-            onClick={() => {
-              if (bookId) onToggle(bookId);
-            }}
-            className={`relative aspect-square rounded-lg border flex flex-col items-center justify-center gap-1 transition-all ${
-              book
-                ? 'border-cyan-500/40 bg-cyan-500/10 hover:bg-cyan-500/20'
-                : 'border-white/10 bg-white/[0.02]'
-            }`}
-            title={book ? `${book.name} (click to unequip)` : 'Empty slot'}
-          >
-            {book ? (
-              <>
-                <span className="text-base">{book.icon}</span>
-                <span className="text-[9px] text-white/60 font-mono leading-tight text-center line-clamp-2 px-1">
-                  {book.name}
-                </span>
-              </>
-            ) : (
-              <span className="text-white/10 text-lg">+</span>
-            )}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-/** Inline agent creation form. */
 function AgentCreationForm({
   onCreated,
   onCancel,
@@ -251,7 +883,11 @@ function AgentCreationForm({
         color,
         gender,
         archetype,
-        personality: { habitat: 'deep-sea', hobby: 'exploring', greeting: `Hi, I'm ${name}!` },
+        personality: {
+          habitat: 'deep-sea',
+          hobby: 'exploring',
+          greeting: `Hi, I'm ${name}!`,
+        },
         stats: { hp: 100, attack: 10, defense: 10, speed: 10 },
       }),
     onSuccess: () => {
@@ -261,123 +897,212 @@ function AgentCreationForm({
     onError: (err: Error) => setError(err.message),
   });
 
+  const inputStyle: CSSProperties = {
+    width: '100%',
+    padding: '9px 11px',
+    borderRadius: 6,
+    background: 'rgba(10,22,40,0.7)',
+    border: '1px solid rgba(56,189,248,0.25)',
+    color: '#e2e8f0',
+    fontSize: 12,
+    outline: 'none',
+  };
+  const labelStyle: CSSProperties = {
+    display: 'block',
+    fontSize: 9,
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+    color: '#64748b',
+    letterSpacing: '0.14em',
+    textTransform: 'uppercase',
+    marginBottom: 5,
+  };
+
   return (
-    <div className="space-y-3">
-      <h3 className="text-sm font-bold text-white tracking-wide">Create Agent</h3>
+    <RuneFrame tier="epic" glow="subtle">
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 12,
+          padding: '16px 18px',
+        }}
+      >
+        <div>
+          <div
+            style={{
+              fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
+              fontSize: 15,
+              fontWeight: 700,
+              color: '#c084fc',
+              textShadow: '0 0 12px rgba(192,132,252,0.4)',
+              letterSpacing: '0.04em',
+            }}
+          >
+            Forge New Agent
+          </div>
+          <div
+            style={{
+              fontSize: 9,
+              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+              color: '#94a3b8',
+              letterSpacing: '0.2em',
+              textTransform: 'uppercase',
+              marginTop: 3,
+            }}
+          >
+            Character Creation · Choose Your Path
+          </div>
+        </div>
 
-      {/* Name */}
-      <div>
-        <label className="block text-white/50 text-[10px] font-mono uppercase tracking-wider mb-1">Name</label>
-        <input
-          type="text"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          maxLength={20}
-          placeholder="Agent name..."
-          className="w-full px-3 py-2 rounded-lg bg-white/[0.05] border border-white/10 text-white text-sm placeholder:text-white/20 focus:outline-none focus:border-cyan-500/50 transition-all"
-        />
-      </div>
+        <div>
+          <label style={labelStyle}>True Name</label>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            maxLength={20}
+            placeholder="Name your agent…"
+            style={inputStyle}
+          />
+        </div>
 
-      {/* Species */}
-      <div>
-        <label className="block text-white/50 text-[10px] font-mono uppercase tracking-wider mb-1">Species</label>
-        <select
-          value={species}
-          onChange={(e) => setSpecies(e.target.value as typeof species)}
-          className="w-full px-3 py-2 rounded-lg bg-white/[0.05] border border-white/10 text-white text-sm focus:outline-none focus:border-cyan-500/50 transition-all"
-        >
-          {PET_SPECIES.map((s) => (
-            <option key={s.id} value={s.id} className="bg-[#0a1628]">
-              {s.emoji} {s.name}
-            </option>
-          ))}
-        </select>
-      </div>
+        <div>
+          <label style={labelStyle}>Species</label>
+          <select
+            value={species}
+            onChange={(e) => setSpecies(e.target.value as typeof species)}
+            style={inputStyle}
+          >
+            {PET_SPECIES.map((s) => (
+              <option key={s.id} value={s.id} style={{ background: '#0a1628' }}>
+                {s.emoji} {s.name}
+              </option>
+            ))}
+          </select>
+        </div>
 
-      {/* Color */}
-      <div>
-        <label className="block text-white/50 text-[10px] font-mono uppercase tracking-wider mb-1">Color</label>
-        <div className="flex gap-2">
-          {PET_COLORS.map((c) => (
-            <button
-              key={c.id}
-              onClick={() => setColor(c.id)}
-              className={`w-8 h-8 rounded-full border-2 transition-all ${
-                color === c.id
-                  ? 'border-white shadow-[0_0_8px_rgba(255,255,255,0.3)] scale-110'
-                  : 'border-transparent hover:border-white/30'
-              }`}
-              style={{ backgroundColor: c.hex }}
-              title={c.name}
-            />
-          ))}
+        <div>
+          <label style={labelStyle}>Shell Color</label>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {PET_COLORS.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => setColor(c.id)}
+                title={c.name}
+                style={{
+                  width: 30,
+                  height: 30,
+                  borderRadius: '50%',
+                  backgroundColor: c.hex,
+                  border:
+                    color === c.id
+                      ? `2px solid #f1f5f9`
+                      : '2px solid transparent',
+                  boxShadow:
+                    color === c.id
+                      ? `0 0 10px ${c.hex}, 0 0 0 1px rgba(255,255,255,0.3)`
+                      : 'none',
+                  cursor: 'pointer',
+                  transform: color === c.id ? 'scale(1.08)' : 'scale(1)',
+                  transition: 'transform 140ms ease, box-shadow 220ms ease',
+                }}
+              />
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <label style={labelStyle}>Gender</label>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {(['male', 'female'] as const).map((g) => (
+              <button
+                key={g}
+                type="button"
+                onClick={() => setGender(g)}
+                style={{
+                  flex: 1,
+                  padding: '6px 12px',
+                  borderRadius: 6,
+                  background:
+                    gender === g
+                      ? 'rgba(168,85,247,0.18)'
+                      : 'rgba(10,22,40,0.6)',
+                  border:
+                    gender === g
+                      ? '1px solid rgba(168,85,247,0.5)'
+                      : '1px solid rgba(148,163,184,0.2)',
+                  color: gender === g ? '#c084fc' : '#94a3b8',
+                  fontSize: 10,
+                  fontFamily:
+                    'var(--font-orbitron, ui-sans-serif), sans-serif',
+                  fontWeight: 700,
+                  letterSpacing: '0.14em',
+                  textTransform: 'uppercase',
+                  cursor: 'pointer',
+                  transition: 'all 160ms ease',
+                }}
+              >
+                {g}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <label style={labelStyle}>Archetype</label>
+          <select
+            value={archetype}
+            onChange={(e) =>
+              setArchetype(e.target.value as typeof archetype)
+            }
+            style={inputStyle}
+          >
+            {PET_ARCHETYPES.map((a) => (
+              <option key={a.id} value={a.id} style={{ background: '#0a1628' }}>
+                {a.label} — {a.description}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {error && (
+          <div
+            style={{
+              padding: '8px 10px',
+              borderRadius: 6,
+              background: 'rgba(220,38,38,0.12)',
+              border: '1px solid rgba(220,38,38,0.35)',
+              color: '#fca5a5',
+              fontSize: 11,
+            }}
+          >
+            {error}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 8, paddingTop: 2 }}>
+          <RpgButton
+            variant="primary"
+            size="md"
+            style={{ flex: 1 }}
+            onClick={() => createMut.mutate()}
+            disabled={!name || name.length < 3}
+            loading={createMut.isPending}
+          >
+            Forge Agent
+          </RpgButton>
+          <RpgButton variant="ghost" size="md" onClick={onCancel}>
+            Cancel
+          </RpgButton>
         </div>
       </div>
-
-      {/* Gender */}
-      <div>
-        <label className="block text-white/50 text-[10px] font-mono uppercase tracking-wider mb-1">Gender</label>
-        <div className="flex gap-2">
-          {['male', 'female'].map((g) => (
-            <button
-              key={g}
-              onClick={() => setGender(g)}
-              className={`px-4 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all ${
-                gender === g
-                  ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
-                  : 'bg-white/[0.03] text-white/40 border border-white/10 hover:border-white/20'
-              }`}
-            >
-              {g}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Archetype */}
-      <div>
-        <label className="block text-white/50 text-[10px] font-mono uppercase tracking-wider mb-1">Archetype</label>
-        <select
-          value={archetype}
-          onChange={(e) => setArchetype(e.target.value as typeof archetype)}
-          className="w-full px-3 py-2 rounded-lg bg-white/[0.05] border border-white/10 text-white text-sm focus:outline-none focus:border-cyan-500/50 transition-all"
-        >
-          {PET_ARCHETYPES.map((a) => (
-            <option key={a.id} value={a.id} className="bg-[#0a1628]">
-              {a.label} - {a.description}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {error && (
-        <p className="text-red-400 text-xs bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
-          {error}
-        </p>
-      )}
-
-      {/* Buttons */}
-      <div className="flex gap-2 pt-1">
-        <button
-          onClick={() => createMut.mutate()}
-          disabled={!name || name.length < 3 || createMut.isPending}
-          className="flex-1 py-2.5 rounded-lg font-bold text-xs uppercase tracking-wider transition-all disabled:opacity-30 disabled:cursor-not-allowed bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-white shadow-[0_0_16px_rgba(0,229,255,0.15)]"
-        >
-          {createMut.isPending ? 'Creating...' : 'Create Agent'}
-        </button>
-        <button
-          onClick={onCancel}
-          className="px-4 py-2.5 rounded-lg text-xs font-bold text-white/40 hover:text-white/60 bg-white/[0.03] border border-white/10 hover:border-white/20 transition-all"
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
+    </RuneFrame>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Main Page
+// Main page
 // ---------------------------------------------------------------------------
 
 export default function SelectAgentPage() {
@@ -385,22 +1110,23 @@ export default function SelectAgentPage() {
   const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // State
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [panel, setPanel] = useState<Panel>('details');
   const [importError, setImportError] = useState('');
 
-  // Queries
+  // -------------- Queries --------------
   const { data: rosterData, isLoading: rosterLoading } = useQuery({
     queryKey: ['agent-roster'],
     queryFn: () => api.getAgentRoster(),
   });
 
-  const agents: Agent[] = (rosterData?.agents as Agent[]) ?? [];
+  const agents: Agent[] = useMemo(
+    () => (rosterData?.agents as Agent[]) ?? [],
+    [rosterData]
+  );
   const selectedAgent = agents.find((a) => a.id === selectedId) ?? null;
   const activeAgent = agents.find((a) => a.isActive) ?? null;
 
-  // Auto-select the active agent or first agent on load
   useEffect(() => {
     if (agents.length > 0 && !selectedId) {
       const active = agents.find((a) => a.isActive);
@@ -408,17 +1134,18 @@ export default function SelectAgentPage() {
     }
   }, [agents, selectedId]);
 
-  // Talent tree query for selected agent
-  const { data: talentData } = useQuery({
+  // Talent tree query (intentionally preserved — future server-side talent data)
+  useQuery({
     queryKey: ['agent-talent-tree', selectedId],
     queryFn: () => api.getAgentTalentTree(selectedId!),
     enabled: !!selectedId,
   });
 
-  // Mutations
+  // -------------- Mutations --------------
   const activateMut = useMutation({
     mutationFn: (id: string) => api.activateAgent(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['agent-roster'] }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ['agent-roster'] }),
   });
 
   const deleteMut = useMutation({
@@ -430,14 +1157,18 @@ export default function SelectAgentPage() {
   });
 
   const loadoutMut = useMutation({
-    mutationFn: ({ id, skills }: { id: string; skills: string[] }) => api.updateLoadout(id, skills),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['agent-roster'] }),
+    mutationFn: ({ id, skills }: { id: string; skills: string[] }) =>
+      api.updateLoadout(id, skills),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ['agent-roster'] }),
   });
 
   const exportMut = useMutation({
     mutationFn: (id: string) => api.exportAgent(id),
     onSuccess: (data) => {
-      const blob = new Blob([JSON.stringify(data.config, null, 2)], { type: 'application/json' });
+      const blob = new Blob([JSON.stringify(data.config, null, 2)], {
+        type: 'application/json',
+      });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -457,7 +1188,7 @@ export default function SelectAgentPage() {
     onError: (err: Error) => setImportError(err.message),
   });
 
-  // Handlers
+  // -------------- Handlers --------------
   const handleToggleLoadout = useCallback(
     (bookId: string) => {
       if (!selectedAgent) return;
@@ -467,6 +1198,24 @@ export default function SelectAgentPage() {
         : current.length < MAX_LOADOUT_SLOTS
           ? [...current, bookId]
           : current;
+      loadoutMut.mutate({ id: selectedAgent.id, skills: next });
+    },
+    [selectedAgent, loadoutMut]
+  );
+
+  const handleSlotDrop = useCallback(
+    (bookId: string, slotIndex: number) => {
+      if (!selectedAgent) return;
+      const current = [...(selectedAgent.equippedSkills ?? [])];
+      // Remove the book from wherever it currently sits, then insert at target slot
+      const withoutBook = current.filter((id) => id !== bookId);
+      // Pad with nulls so slotIndex is reachable, then drop the book in
+      const padded: (string | null)[] = [...withoutBook];
+      while (padded.length < slotIndex) padded.push(null);
+      padded[slotIndex] = bookId;
+      const next = padded
+        .filter((id): id is string => !!id)
+        .slice(0, MAX_LOADOUT_SLOTS);
       loadoutMut.mutate({ id: selectedAgent.id, skills: next });
     },
     [selectedAgent, loadoutMut]
@@ -497,7 +1246,7 @@ export default function SelectAgentPage() {
     }
   }, [activeAgent, router]);
 
-  // Escape key handler
+  // Escape key → close subpanels
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && panel !== 'details') {
@@ -508,28 +1257,61 @@ export default function SelectAgentPage() {
     return () => window.removeEventListener('keydown', handler);
   }, [panel]);
 
-  // Computed
+  // -------------- Computed --------------
   const learnedBooks = selectedAgent?.learnedBooks ?? [];
   const totalLearned = learnedBooks.length;
   const equippedSkills = selectedAgent?.equippedSkills ?? [];
 
+  const totalBooks = KNOWLEDGE_BOOKS.length;
+  const progressPct = totalBooks > 0 ? (totalLearned / totalBooks) * 100 : 0;
+
   // =========================================================================
-  // RENDER
+  // RENDER — loading
   // =========================================================================
 
   if (rosterLoading) {
     return (
-      <div className="fixed inset-0 bg-gradient-to-b from-[#060d1a] via-[#0a1628] to-[#0e1f3a] flex items-center justify-center">
-        <div className="flex flex-col items-center gap-4">
-          <Spinner />
-          <p className="font-clawville text-white text-xl animate-pulse">Loading roster...</p>
+      <div
+        className="fixed inset-0"
+        style={{
+          background:
+            'radial-gradient(ellipse at 50% 30%, #0f2140 0%, #020713 100%)',
+        }}
+      >
+        <StageBackdrop />
+        <div
+          className="relative h-full w-full flex flex-col items-center justify-center"
+          style={{ gap: 24 }}
+        >
+          <RuneSpinner tier="legendary" size={80} />
+          <div
+            style={{
+              fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
+              fontSize: 14,
+              letterSpacing: '0.32em',
+              textTransform: 'uppercase',
+              color: '#fb923c',
+              textShadow: '0 0 18px rgba(251,146,60,0.6)',
+            }}
+          >
+            Summoning Roster…
+          </div>
         </div>
       </div>
     );
   }
 
+  // =========================================================================
+  // RENDER — main
+  // =========================================================================
+
   return (
-    <div className="fixed inset-0 bg-gradient-to-b from-[#060d1a] via-[#0a1628] to-[#0e1f3a] flex flex-col lg:flex-row overflow-hidden">
+    <div
+      className="fixed inset-0 flex flex-col lg:flex-row overflow-hidden"
+      style={{ color: '#e2e8f0' }}
+    >
+      <StageBackdrop />
+
       {/* Hidden file input for import */}
       <input
         ref={fileInputRef}
@@ -539,18 +1321,65 @@ export default function SelectAgentPage() {
         onChange={handleImportFile}
       />
 
-      {/* ====== LEFT: ROSTER SIDEBAR ====== */}
-      <aside className="w-full lg:w-64 shrink-0 border-b lg:border-b-0 lg:border-r border-white/[0.06] bg-[#080e1c]/80 flex flex-col overflow-hidden">
-        {/* Sidebar header */}
-        <div className="px-4 pt-5 pb-3">
-          <h2 className="font-clawville text-lg text-white tracking-wide">Agent Roster</h2>
-          <p className="text-[10px] text-cyan-400/50 font-mono uppercase tracking-widest mt-0.5">
-            {agents.length} / {MAX_AGENTS} slots
-          </p>
+      {/* ====== LEFT · ROSTER SIDEBAR ====== */}
+      <aside
+        className="relative shrink-0 overflow-hidden flex flex-col"
+        style={{
+          width: '100%',
+          maxWidth: 320,
+          borderRight: '1px solid rgba(56,189,248,0.12)',
+          background:
+            'linear-gradient(180deg, rgba(5,12,28,0.85) 0%, rgba(2,7,19,0.95) 100%)',
+          backdropFilter: 'blur(6px)',
+          WebkitBackdropFilter: 'blur(6px)',
+        }}
+      >
+        {/* Header */}
+        <div
+          style={{
+            padding: '18px 20px 14px',
+            borderBottom: '1px solid rgba(56,189,248,0.12)',
+          }}
+        >
+          <div
+            style={{
+              fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
+              fontSize: 16,
+              fontWeight: 700,
+              letterSpacing: '0.08em',
+              color: '#f1f5f9',
+              textShadow: '0 0 14px rgba(56,189,248,0.4)',
+            }}
+          >
+            Agent Roster
+          </div>
+          <div
+            style={{
+              fontSize: 9,
+              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+              letterSpacing: '0.26em',
+              textTransform: 'uppercase',
+              color: '#7dd3fc',
+              marginTop: 4,
+            }}
+          >
+            {agents.length} / {MAX_AGENTS} Champions
+          </div>
         </div>
 
-        {/* Agent list */}
-        <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-1.5 lg:max-h-none max-h-44">
+        {/* Roster slots */}
+        <div
+          className="flex-1"
+          style={{
+            overflowY: 'auto',
+            padding: '14px 16px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+            scrollbarWidth: 'thin',
+            scrollbarColor: 'rgba(56,189,248,0.35) transparent',
+          }}
+        >
           {Array.from({ length: MAX_AGENTS }, (_, i) => {
             const agent = agents[i] ?? null;
             return (
@@ -571,94 +1400,312 @@ export default function SelectAgentPage() {
           })}
         </div>
 
-        {/* Sidebar footer actions */}
-        <div className="px-3 pb-4 pt-2 space-y-1.5 border-t border-white/[0.04]">
+        {/* Footer actions */}
+        <div
+          style={{
+            padding: '12px 16px 18px',
+            borderTop: '1px solid rgba(56,189,248,0.12)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+          }}
+        >
           {agents.length < MAX_AGENTS && (
-            <button
+            <RpgButton
+              variant="ghost"
+              size="sm"
               onClick={() => setPanel('create')}
-              className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-bold text-cyan-300 bg-cyan-500/10 border border-cyan-500/20 hover:bg-cyan-500/20 hover:border-cyan-500/30 transition-all"
+              style={{ width: '100%' }}
             >
-              <span className="text-sm">+</span> New Agent
-            </button>
+              + New Agent
+            </RpgButton>
           )}
-          <button
+          <RpgButton
+            variant="ghost"
+            size="sm"
             onClick={() => fileInputRef.current?.click()}
-            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-bold text-white/40 bg-white/[0.03] border border-white/10 hover:bg-white/[0.06] hover:border-white/20 transition-all"
+            style={{ width: '100%' }}
           >
             Import Config
-          </button>
+          </RpgButton>
           {importError && (
-            <p className="text-red-400 text-[10px] text-center">{importError}</p>
+            <div
+              style={{
+                fontSize: 10,
+                color: '#fca5a5',
+                textAlign: 'center',
+                fontFamily:
+                  'ui-monospace, SFMono-Regular, Menlo, monospace',
+              }}
+            >
+              {importError}
+            </div>
           )}
         </div>
       </aside>
 
-      {/* ====== CENTER: 3D PREVIEW ====== */}
-      <main className="flex-1 flex flex-col items-center justify-center relative min-h-0">
-        {/* Background glow */}
-        <div className="absolute inset-0 pointer-events-none">
-          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[400px] h-[400px] rounded-full bg-cyan-500/[0.04] blur-[100px]" />
+      {/* ====== CENTER · 3D PREVIEW ====== */}
+      <main
+        className="relative flex-1 flex flex-col items-center justify-between"
+        style={{
+          minHeight: 0,
+          padding: '24px 28px',
+        }}
+      >
+        {/* Title banner */}
+        <div
+          style={{
+            textAlign: 'center',
+            position: 'relative',
+            zIndex: 2,
+          }}
+        >
+          <div
+            style={{
+              fontFamily:
+                'var(--font-clawville, var(--font-orbitron, ui-sans-serif)), sans-serif',
+              fontSize: 36,
+              fontWeight: 700,
+              letterSpacing: '0.14em',
+              textTransform: 'uppercase',
+              color: '#f1f5f9',
+              textShadow:
+                '0 0 24px rgba(56,189,248,0.55), 0 2px 6px rgba(0,0,0,0.8)',
+              lineHeight: 1,
+            }}
+          >
+            Choose Your Agent
+          </div>
+          <div
+            style={{
+              marginTop: 8,
+              display: 'inline-block',
+              height: 2,
+              width: 180,
+              background:
+                'linear-gradient(90deg, transparent 0%, #fb923c 50%, transparent 100%)',
+              boxShadow: '0 0 12px rgba(251,146,60,0.6)',
+            }}
+          />
+          <div
+            style={{
+              marginTop: 8,
+              fontSize: 10,
+              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+              letterSpacing: '0.32em',
+              textTransform: 'uppercase',
+              color: '#fb923c',
+            }}
+          >
+            ClawVille · Sea-Floor Chronicles
+          </div>
         </div>
 
-        {/* 3D Character Preview */}
-        <div className="relative w-full max-w-lg aspect-square max-h-[55vh] mx-auto">
-          <div className="w-full h-full rounded-2xl border border-white/[0.06] overflow-hidden">
+        {/* Stage vignette + 3D canvas */}
+        <div
+          style={{
+            position: 'relative',
+            width: '100%',
+            maxWidth: 620,
+            aspectRatio: '1 / 1',
+            maxHeight: '58vh',
+            zIndex: 2,
+          }}
+        >
+          {/* Spotlight halo behind the stage */}
+          <div
+            aria-hidden
+            style={{
+              position: 'absolute',
+              inset: '-12% -6% 0 -6%',
+              background:
+                'radial-gradient(ellipse at 50% 50%, rgba(56,189,248,0.22) 0%, rgba(56,189,248,0.05) 35%, transparent 70%)',
+              filter: 'blur(28px)',
+              pointerEvents: 'none',
+            }}
+          />
+          {/* Rune-framed canvas shell */}
+          <RuneFrame
+            tier={
+              selectedAgent?.isActive
+                ? 'legendary'
+                : selectedAgent
+                  ? 'epic'
+                  : 'rare'
+            }
+            glow={selectedAgent?.isActive ? 'strong' : 'subtle'}
+            style={{
+              position: 'absolute',
+              inset: 0,
+              overflow: 'hidden',
+            }}
+          >
             {selectedAgent ? (
-              <SelectAgentCanvas
-                modelKey="lobster"
-                color={selectedAgent.color}
-              />
+              <SelectAgentCanvas modelKey="lobster" color={selectedAgent.color} />
             ) : (
-              <div className="w-full h-full bg-[#070f1f]/60 backdrop-blur-sm flex flex-col items-center justify-center gap-4">
-                <span className="text-5xl text-white/10">?</span>
-                <p className="text-white/20 text-sm font-mono">Select or create an agent</p>
+              <div
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 14,
+                  background: 'rgba(3,13,26,0.6)',
+                }}
+              >
+                <div style={{ fontSize: 64, opacity: 0.2 }}>⚓</div>
+                <div
+                  style={{
+                    fontSize: 11,
+                    fontFamily:
+                      'ui-monospace, SFMono-Regular, Menlo, monospace',
+                    color: '#64748b',
+                    letterSpacing: '0.2em',
+                    textTransform: 'uppercase',
+                  }}
+                >
+                  No Agent Selected
+                </div>
               </div>
             )}
-          </div>
-          {/* Agent name overlay */}
-          {selectedAgent && (
-            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-center">
-              <p className="font-clawville text-xl text-white drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)]">
-                {selectedAgent.name}
-              </p>
-              <p className="text-[10px] text-cyan-400/60 font-mono uppercase tracking-widest mt-0.5">
-                {SPECIES_NAME[selectedAgent.species] ?? selectedAgent.species}
-                {selectedAgent.archetype && ` \u00B7 ${ARCHETYPE_LABEL[selectedAgent.archetype] ?? selectedAgent.archetype}`}
-              </p>
-            </div>
-          )}
+
+            {/* Name banner overlay inside vignette */}
+            {selectedAgent && (
+              <div
+                style={{
+                  position: 'absolute',
+                  left: '50%',
+                  bottom: 18,
+                  transform: 'translateX(-50%)',
+                  textAlign: 'center',
+                  padding: '6px 14px',
+                  borderRadius: 8,
+                  background: 'rgba(3,13,26,0.78)',
+                  border: '1px solid rgba(56,189,248,0.3)',
+                  backdropFilter: 'blur(4px)',
+                  WebkitBackdropFilter: 'blur(4px)',
+                  minWidth: 220,
+                  maxWidth: '80%',
+                }}
+              >
+                <div
+                  style={{
+                    fontFamily:
+                      'var(--font-clawville, var(--font-orbitron, ui-sans-serif)), sans-serif',
+                    fontSize: 20,
+                    fontWeight: 700,
+                    color: '#f1f5f9',
+                    textShadow: '0 2px 10px rgba(0,0,0,0.9)',
+                    letterSpacing: '0.06em',
+                  }}
+                >
+                  {selectedAgent.name}
+                </div>
+                <div
+                  style={{
+                    fontSize: 9,
+                    fontFamily:
+                      'ui-monospace, SFMono-Regular, Menlo, monospace',
+                    color: '#7dd3fc',
+                    letterSpacing: '0.2em',
+                    textTransform: 'uppercase',
+                    marginTop: 2,
+                  }}
+                >
+                  {SPECIES_NAME[selectedAgent.species] ?? selectedAgent.species}
+                  {' · '}
+                  {ARCHETYPE_LABEL[selectedAgent.archetype] ??
+                    selectedAgent.archetype}
+                </div>
+              </div>
+            )}
+          </RuneFrame>
         </div>
 
-        {/* Enter World button */}
-        <div className="mt-6 mb-4 px-4">
-          <button
+        {/* Enter World CTA */}
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: 6,
+            zIndex: 2,
+          }}
+        >
+          <RpgButton
+            variant="primary"
+            rarity="legendary"
+            size="lg"
             onClick={handleEnterWorld}
             disabled={!activeAgent}
-            className="px-12 py-3.5 rounded-xl font-clawville text-base uppercase tracking-wider transition-all disabled:opacity-20 disabled:cursor-not-allowed bg-gradient-to-r from-cyan-600 to-cyan-400 hover:from-cyan-500 hover:to-cyan-300 text-white shadow-[0_0_28px_rgba(0,229,255,0.25)] hover:shadow-[0_0_40px_rgba(0,229,255,0.4)]"
           >
             Enter World
-          </button>
+          </RpgButton>
           {!activeAgent && agents.length > 0 && (
-            <p className="text-center text-white/30 text-[10px] font-mono mt-2">
-              Activate an agent first
-            </p>
+            <div
+              style={{
+                fontSize: 10,
+                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                color: '#64748b',
+                letterSpacing: '0.18em',
+                textTransform: 'uppercase',
+              }}
+            >
+              Activate an agent to continue
+            </div>
+          )}
+          {agents.length === 0 && (
+            <div
+              style={{
+                fontSize: 10,
+                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                color: '#64748b',
+                letterSpacing: '0.18em',
+                textTransform: 'uppercase',
+              }}
+            >
+              Forge your first agent to begin
+            </div>
           )}
         </div>
       </main>
 
-      {/* ====== RIGHT: DETAILS PANEL ====== */}
-      <aside className="w-full lg:w-80 shrink-0 border-t lg:border-t-0 lg:border-l border-white/[0.06] bg-[#080e1c]/80 overflow-y-auto">
-        <div className="p-4 space-y-5">
-          {/* ---------- CREATE PANEL ---------- */}
+      {/* ====== RIGHT · DETAILS PANEL ====== */}
+      <aside
+        className="relative shrink-0 overflow-hidden flex flex-col"
+        style={{
+          width: '100%',
+          maxWidth: 400,
+          borderLeft: '1px solid rgba(56,189,248,0.12)',
+          background:
+            'linear-gradient(180deg, rgba(5,12,28,0.85) 0%, rgba(2,7,19,0.95) 100%)',
+          backdropFilter: 'blur(6px)',
+          WebkitBackdropFilter: 'blur(6px)',
+        }}
+      >
+        <div
+          style={{
+            flex: 1,
+            overflowY: 'auto',
+            padding: '18px 18px 20px',
+            scrollbarWidth: 'thin',
+            scrollbarColor: 'rgba(56,189,248,0.35) transparent',
+          }}
+        >
           {panel === 'create' && (
             <AgentCreationForm
               onCreated={() => {
                 setPanel('details');
-                // Auto-select the newest agent after a short delay for query refetch
                 setTimeout(() => {
-                  const latest = queryClient.getQueryData<{ agents: Agent[] }>(['agent-roster']);
+                  const latest = queryClient.getQueryData<{
+                    agents: Agent[];
+                  }>(['agent-roster']);
                   if (latest?.agents?.length) {
-                    setSelectedId(latest.agents[latest.agents.length - 1]!.id);
+                    setSelectedId(
+                      latest.agents[latest.agents.length - 1]!.id
+                    );
                   }
                 }, 500);
               }}
@@ -666,90 +1713,190 @@ export default function SelectAgentPage() {
             />
           )}
 
-          {/* ---------- DETAILS PANEL ---------- */}
           {panel === 'details' && selectedAgent && (
-            <>
-              {/* Agent info header */}
+            <div
+              style={{ display: 'flex', flexDirection: 'column', gap: 18 }}
+            >
+              {/* Header with name + active toggle */}
               <div>
-                <div className="flex items-center justify-between">
-                  <h3 className="font-clawville text-lg text-white">{selectedAgent.name}</h3>
-                  {selectedAgent.isActive ? (
-                    <span className="text-[10px] font-bold text-cyan-300 bg-cyan-500/20 border border-cyan-500/30 rounded-full px-2.5 py-0.5">
-                      ACTIVE
-                    </span>
-                  ) : (
-                    <button
-                      onClick={() => activateMut.mutate(selectedAgent.id)}
-                      disabled={activateMut.isPending}
-                      className="text-[10px] font-bold text-white/50 bg-white/[0.05] border border-white/10 rounded-full px-2.5 py-0.5 hover:bg-cyan-500/10 hover:text-cyan-300 hover:border-cyan-500/30 transition-all disabled:opacity-40"
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 10,
+                  }}
+                >
+                  <div>
+                    <div
+                      style={{
+                        fontFamily:
+                          'var(--font-clawville, var(--font-orbitron, ui-sans-serif)), sans-serif',
+                        fontSize: 20,
+                        fontWeight: 700,
+                        color: '#f1f5f9',
+                        textShadow: '0 0 14px rgba(56,189,248,0.4)',
+                        letterSpacing: '0.04em',
+                      }}
                     >
-                      {activateMut.isPending ? '...' : 'Activate'}
-                    </button>
+                      {selectedAgent.name}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 9,
+                        fontFamily:
+                          'ui-monospace, SFMono-Regular, Menlo, monospace',
+                        color: '#7dd3fc',
+                        letterSpacing: '0.2em',
+                        textTransform: 'uppercase',
+                        marginTop: 3,
+                      }}
+                    >
+                      Champion Dossier
+                    </div>
+                  </div>
+                  {selectedAgent.isActive ? (
+                    <RarityBadge
+                      tier="legendary"
+                      showDot
+                      size="md"
+                      label="Active"
+                    />
+                  ) : (
+                    <RpgButton
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => activateMut.mutate(selectedAgent.id)}
+                      loading={activateMut.isPending}
+                    >
+                      Activate
+                    </RpgButton>
                   )}
-                </div>
-
-                {/* Stats grid */}
-                <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 mt-3">
-                  <div>
-                    <span className="text-[10px] text-white/30 font-mono uppercase">Species</span>
-                    <p className="text-xs text-white/80">{SPECIES_NAME[selectedAgent.species] ?? selectedAgent.species}</p>
-                  </div>
-                  <div>
-                    <span className="text-[10px] text-white/30 font-mono uppercase">Color</span>
-                    <p className="text-xs text-white/80 flex items-center gap-1.5">
-                      <span
-                        className="inline-block w-2.5 h-2.5 rounded-full"
-                        style={{ backgroundColor: COLOR_HEX[selectedAgent.color] ?? '#888' }}
-                      />
-                      {PET_COLORS.find((c) => c.id === selectedAgent.color)?.name ?? selectedAgent.color}
-                    </p>
-                  </div>
-                  <div>
-                    <span className="text-[10px] text-white/30 font-mono uppercase">Archetype</span>
-                    <p className="text-xs text-white/80">{ARCHETYPE_LABEL[selectedAgent.archetype] ?? selectedAgent.archetype}</p>
-                  </div>
-                  <div>
-                    <span className="text-[10px] text-white/30 font-mono uppercase">Level</span>
-                    <p className="text-xs text-white/80">Lv {selectedAgent.level}</p>
-                  </div>
-                  <div>
-                    <span className="text-[10px] text-white/30 font-mono uppercase">XP</span>
-                    <p className="text-xs text-cyan-300">{selectedAgent.xp}</p>
-                  </div>
-                  <div>
-                    <span className="text-[10px] text-white/30 font-mono uppercase">Tokens</span>
-                    <p className="text-xs text-amber-300">{selectedAgent.clawTokens}</p>
-                  </div>
                 </div>
               </div>
 
-              {/* Divider */}
-              <div className="border-t border-white/[0.06]" />
+              {/* Stats grid */}
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(2, 1fr)',
+                  gap: 8,
+                }}
+              >
+                <StatCard
+                  label="Level"
+                  value={`Lv ${selectedAgent.level}`}
+                  tier="rare"
+                  icon="⚔"
+                />
+                <StatCard
+                  label="Experience"
+                  value={`${selectedAgent.xp} XP`}
+                  tier="epic"
+                  icon="✦"
+                />
+                <StatCard
+                  label="Neo Tokens"
+                  value={selectedAgent.clawTokens}
+                  tier="legendary"
+                  icon="◈"
+                />
+                <StatCard
+                  label="Knowledge"
+                  value={`${totalLearned}/${totalBooks}`}
+                  tier={totalLearned === totalBooks ? 'legendary' : 'uncommon'}
+                  icon="✧"
+                />
+                <StatCard
+                  label="Species"
+                  value={
+                    SPECIES_NAME[selectedAgent.species] ??
+                    selectedAgent.species
+                  }
+                  tier="common"
+                  icon="◆"
+                />
+                <StatCard
+                  label="Archetype"
+                  value={
+                    ARCHETYPE_LABEL[selectedAgent.archetype] ??
+                    selectedAgent.archetype
+                  }
+                  tier="rare"
+                  icon="◇"
+                />
+              </div>
 
-              {/* Talent Tree */}
+              {/* Talent tree */}
               <div>
-                <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-xs font-bold text-white/70 uppercase tracking-wider">Talent Tree</h4>
-                  <span className="text-[10px] text-cyan-400/60 font-mono">
-                    {totalLearned}/20 skills
-                  </span>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    marginBottom: 10,
+                  }}
+                >
+                  <div
+                    style={{
+                      fontFamily:
+                        'var(--font-orbitron, ui-sans-serif), sans-serif',
+                      fontSize: 11,
+                      fontWeight: 700,
+                      letterSpacing: '0.24em',
+                      textTransform: 'uppercase',
+                      color: '#cbd5e1',
+                    }}
+                  >
+                    Talent Tree
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 10,
+                      fontFamily:
+                        'ui-monospace, SFMono-Regular, Menlo, monospace',
+                      color: '#7dd3fc',
+                    }}
+                  >
+                    {totalLearned}/{totalBooks}
+                  </div>
                 </div>
 
                 {/* Progress bar */}
-                <div className="w-full h-1.5 rounded-full bg-white/[0.06] mb-3 overflow-hidden">
+                <div
+                  style={{
+                    height: 4,
+                    borderRadius: 999,
+                    background: 'rgba(56,189,248,0.1)',
+                    border: '1px solid rgba(56,189,248,0.15)',
+                    overflow: 'hidden',
+                    marginBottom: 12,
+                  }}
+                >
                   <div
-                    className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-cyan-300 transition-all"
-                    style={{ width: `${(totalLearned / 20) * 100}%` }}
+                    style={{
+                      height: '100%',
+                      width: `${progressPct}%`,
+                      background:
+                        'linear-gradient(90deg, #38bdf8 0%, #fb923c 100%)',
+                      boxShadow: '0 0 12px rgba(251,146,60,0.5)',
+                      transition: 'width 260ms ease',
+                    }}
                   />
                 </div>
 
-                <div className="space-y-2">
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 6,
+                  }}
+                >
                   {MAP_LOCATIONS.map((loc) => {
                     const books = BOOKS_BY_BUILDING[loc.id] ?? [];
                     return (
                       <TalentRow
                         key={loc.id}
-                        buildingId={loc.id}
                         buildingName={loc.name}
                         buildingIcon={loc.icon}
                         books={books}
@@ -760,87 +1907,157 @@ export default function SelectAgentPage() {
                 </div>
               </div>
 
-              {/* Divider */}
-              <div className="border-t border-white/[0.06]" />
-
               {/* Loadout */}
               <div>
-                <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-xs font-bold text-white/70 uppercase tracking-wider">Loadout</h4>
-                  <span className="text-[10px] text-white/30 font-mono">
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    marginBottom: 10,
+                  }}
+                >
+                  <div
+                    style={{
+                      fontFamily:
+                        'var(--font-orbitron, ui-sans-serif), sans-serif',
+                      fontSize: 11,
+                      fontWeight: 700,
+                      letterSpacing: '0.24em',
+                      textTransform: 'uppercase',
+                      color: '#cbd5e1',
+                    }}
+                  >
+                    Loadout
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 10,
+                      fontFamily:
+                        'ui-monospace, SFMono-Regular, Menlo, monospace',
+                      color: '#64748b',
+                    }}
+                  >
                     {equippedSkills.length}/{MAX_LOADOUT_SLOTS} equipped
-                  </span>
+                  </div>
                 </div>
-                <LoadoutGrid
+
+                <LoadoutBar
                   equippedSkills={equippedSkills}
-                  learnedBooks={learnedBooks}
-                  onToggle={handleToggleLoadout}
+                  onSlotDrop={handleSlotDrop}
+                  onSlotClear={handleToggleLoadout}
+                  onDragStartEquipped={() => {
+                    /* no-op for now — drag preview supplied by browser */
+                  }}
                 />
 
-                {/* Learned books that can be equipped */}
-                {learnedBooks.length > 0 && (
-                  <div className="mt-3">
-                    <p className="text-[10px] text-white/30 font-mono uppercase tracking-wider mb-1.5">
-                      Available Skills (click to equip)
-                    </p>
-                    <div className="flex flex-wrap gap-1">
-                      {learnedBooks
-                        .filter((id) => !equippedSkills.includes(id))
-                        .map((bookId) => {
-                          const book = KNOWLEDGE_BOOKS.find((b) => b.id === bookId);
-                          if (!book) return null;
-                          return (
-                            <button
-                              key={bookId}
-                              onClick={() => handleToggleLoadout(bookId)}
-                              disabled={equippedSkills.length >= MAX_LOADOUT_SLOTS}
-                              className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-bold bg-white/[0.04] border border-white/10 text-white/50 hover:bg-cyan-500/10 hover:text-cyan-300 hover:border-cyan-500/30 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-                            >
-                              <span>{book.icon}</span>
-                              <span className="truncate max-w-[80px]">{book.name}</span>
-                            </button>
-                          );
-                        })}
-                    </div>
-                  </div>
-                )}
+                <div style={{ marginTop: 12 }}>
+                  <AvailableSkillsTray
+                    learnedBooks={learnedBooks}
+                    equippedSkills={equippedSkills}
+                    onEquip={handleToggleLoadout}
+                  />
+                </div>
               </div>
 
-              {/* Divider */}
-              <div className="border-t border-white/[0.06]" />
-
-              {/* Actions */}
-              <div className="space-y-2">
-                <button
-                  onClick={() => exportMut.mutate(selectedAgent.id)}
-                  disabled={exportMut.isPending}
-                  className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-bold text-white/50 bg-white/[0.03] border border-white/10 hover:bg-white/[0.06] hover:text-white/70 hover:border-white/20 transition-all disabled:opacity-40"
+              {/* Config actions */}
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 6,
+                  paddingTop: 6,
+                  borderTop: '1px solid rgba(56,189,248,0.12)',
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 9,
+                    fontFamily:
+                      'ui-monospace, SFMono-Regular, Menlo, monospace',
+                    letterSpacing: '0.18em',
+                    textTransform: 'uppercase',
+                    color: '#64748b',
+                    marginBottom: 4,
+                  }}
                 >
-                  {exportMut.isPending ? 'Exporting...' : 'Export Config'}
-                </button>
-                <button
+                  Tome Management
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <RpgButton
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => exportMut.mutate(selectedAgent.id)}
+                    loading={exportMut.isPending}
+                    style={{ flex: 1 }}
+                  >
+                    Export
+                  </RpgButton>
+                  <RpgButton
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => fileInputRef.current?.click()}
+                    style={{ flex: 1 }}
+                  >
+                    Import
+                  </RpgButton>
+                </div>
+                <RpgButton
+                  variant="danger"
+                  size="sm"
                   onClick={() => {
-                    if (confirm(`Delete agent "${selectedAgent.name}"? This cannot be undone.`)) {
+                    if (
+                      confirm(
+                        `Delete agent "${selectedAgent.name}"? This cannot be undone.`
+                      )
+                    ) {
                       deleteMut.mutate(selectedAgent.id);
                     }
                   }}
-                  disabled={deleteMut.isPending}
-                  className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-bold text-red-400/60 bg-red-500/[0.05] border border-red-500/20 hover:bg-red-500/10 hover:text-red-400 hover:border-red-500/30 transition-all disabled:opacity-40"
+                  loading={deleteMut.isPending}
+                  style={{ width: '100%' }}
                 >
-                  {deleteMut.isPending ? 'Deleting...' : 'Delete Agent'}
-                </button>
+                  Delete Agent
+                </RpgButton>
               </div>
-            </>
+            </div>
           )}
 
-          {/* ---------- NO AGENT SELECTED ---------- */}
           {panel === 'details' && !selectedAgent && (
-            <div className="flex flex-col items-center justify-center py-12 text-center">
-              <span className="text-4xl text-white/10 mb-3">?</span>
-              <p className="text-white/30 text-sm">Select an agent to view details</p>
-              <p className="text-white/15 text-xs mt-1 font-mono">
-                Or create a new one from the sidebar
-              </p>
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: '48px 16px',
+                gap: 12,
+                textAlign: 'center',
+              }}
+            >
+              <div style={{ fontSize: 42, opacity: 0.25 }}>⚓</div>
+              <div
+                style={{
+                  fontFamily:
+                    'var(--font-orbitron, ui-sans-serif), sans-serif',
+                  fontSize: 12,
+                  letterSpacing: '0.22em',
+                  textTransform: 'uppercase',
+                  color: '#94a3b8',
+                }}
+              >
+                No Agent Selected
+              </div>
+              <div
+                style={{
+                  fontSize: 10,
+                  fontFamily:
+                    'ui-monospace, SFMono-Regular, Menlo, monospace',
+                  color: '#64748b',
+                }}
+              >
+                Choose a champion from the roster or forge a new one.
+              </div>
             </div>
           )}
         </div>
