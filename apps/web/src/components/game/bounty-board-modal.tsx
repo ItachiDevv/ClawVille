@@ -48,7 +48,11 @@ import {
   ItemCard,
   RarityBadge,
   RpgTooltip,
+  ProgressSteps,
+  StatusChip,
+  type ProgressStep,
   type RarityId,
+  type StatusChipTone,
 } from '@/components/rpg';
 
 type BountyTab = 'browse' | 'my-bounties' | 'my-attempts' | 'create';
@@ -108,12 +112,13 @@ const REPUTATION_LADDER = [
 ];
 
 // Attempt lifecycle steps for the progression indicator.
-const ATTEMPT_STEPS = [
-  { key: 'claimed', label: 'Claimed' },
-  { key: 'in_progress', label: 'Working' },
-  { key: 'submitted', label: 'Submitted' },
-  { key: 'approved', label: 'Approved' },
-] as const;
+// Shape matches the shared @/components/rpg ProgressSteps primitive.
+const ATTEMPT_STEPS: ReadonlyArray<ProgressStep> = [
+  { id: 'claimed', label: 'Claimed' },
+  { id: 'in_progress', label: 'Working' },
+  { id: 'submitted', label: 'Submitted' },
+  { id: 'approved', label: 'Approved' },
+];
 
 const BONUS_REWARD_ICONS: Record<string, string> = {
   skill: '💡',
@@ -245,70 +250,10 @@ function ReputationPill({
 }
 
 // ---------------------------------------------------------------------------
-// Status chip (used in-card for bounty / attempt status labels)
+// Status helpers — StatusChip itself now lives in @/components/rpg
 // ---------------------------------------------------------------------------
 
-function StatusChip({
-  label,
-  tone = 'neutral',
-}: {
-  label: string;
-  tone?: 'neutral' | 'positive' | 'warning' | 'danger' | 'info';
-}) {
-  const palette: Record<string, { bg: string; border: string; color: string }> = {
-    neutral: {
-      bg: 'rgba(30, 41, 59, 0.6)',
-      border: 'rgba(148, 163, 184, 0.3)',
-      color: '#94a3b8',
-    },
-    positive: {
-      bg: 'rgba(34, 197, 94, 0.12)',
-      border: 'rgba(34, 197, 94, 0.45)',
-      color: '#4ade80',
-    },
-    warning: {
-      bg: 'rgba(250, 204, 21, 0.12)',
-      border: 'rgba(250, 204, 21, 0.45)',
-      color: '#facc15',
-    },
-    danger: {
-      bg: 'rgba(220, 38, 38, 0.14)',
-      border: 'rgba(220, 38, 38, 0.5)',
-      color: '#f87171',
-    },
-    info: {
-      bg: 'rgba(56, 189, 248, 0.12)',
-      border: 'rgba(56, 189, 248, 0.4)',
-      color: '#7dd3fc',
-    },
-  };
-  const p = palette[tone];
-
-  return (
-    <span
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        padding: '2px 8px',
-        borderRadius: 999,
-        fontSize: 9,
-        fontWeight: 700,
-        textTransform: 'uppercase',
-        letterSpacing: '0.12em',
-        background: p.bg,
-        border: `1px solid ${p.border}`,
-        color: p.color,
-        whiteSpace: 'nowrap',
-      }}
-    >
-      {label}
-    </span>
-  );
-}
-
-function bountyStatusTone(
-  status: string
-): 'neutral' | 'positive' | 'warning' | 'danger' | 'info' {
+function bountyStatusTone(status: string): StatusChipTone {
   switch (status) {
     case 'open':
       return 'positive';
@@ -325,9 +270,7 @@ function bountyStatusTone(
   }
 }
 
-function attemptStatusTone(
-  status: string
-): 'neutral' | 'positive' | 'warning' | 'danger' | 'info' {
+function attemptStatusTone(status: string): StatusChipTone {
   switch (status) {
     case 'claimed':
       return 'info';
@@ -435,101 +378,25 @@ function BonusRewardPills({ rewards }: { rewards: any[] }) {
 }
 
 // ---------------------------------------------------------------------------
-// Attempt progression indicator (rune dots)
+// Attempt progression indicator — thin wrapper around the shared
+// @/components/rpg ProgressSteps primitive in diamond shape.
 // ---------------------------------------------------------------------------
 
 function AttemptProgression({ status }: { status: string }) {
-  const rejected = status === 'rejected';
-  const currentIndex = ATTEMPT_STEPS.findIndex((s) => s.key === status);
+  const failed = status === 'rejected';
+  // When rejected, anchor the failed marker at `submitted` (the review
+  // gate) since the backend doesn't tell us exactly where it failed.
+  const primitiveCurrent = failed ? 'submitted' : status;
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 0,
-        padding: '8px 2px 4px',
-      }}
-    >
-      {ATTEMPT_STEPS.map((step, i) => {
-        const isActive = i <= currentIndex && !rejected;
-        const isCurrent = step.key === status;
-        const isLast = i === ATTEMPT_STEPS.length - 1;
-
-        const dotColor =
-          rejected && i === currentIndex
-            ? '#f87171'
-            : isCurrent
-              ? '#facc15'
-              : isActive
-                ? '#38bdf8'
-                : 'rgba(148, 163, 184, 0.25)';
-
-        const connectorColor =
-          i < currentIndex && !rejected
-            ? 'rgba(56, 189, 248, 0.45)'
-            : 'rgba(148, 163, 184, 0.15)';
-
-        return (
-          <div
-            key={step.key}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              flex: isLast ? '0 0 auto' : '1 1 auto',
-            }}
-          >
-            <div
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                gap: 4,
-              }}
-            >
-              <span
-                aria-hidden
-                style={{
-                  width: 10,
-                  height: 10,
-                  borderRadius: 2,
-                  transform: 'rotate(45deg)',
-                  background: dotColor,
-                  boxShadow:
-                    isCurrent || (rejected && i === currentIndex)
-                      ? `0 0 8px ${dotColor}`
-                      : 'none',
-                  transition: 'all 220ms ease',
-                }}
-              />
-              <span
-                style={{
-                  fontSize: 8,
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.1em',
-                  color: isActive || isCurrent ? '#cbd5e1' : '#475569',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {step.label}
-              </span>
-            </div>
-            {!isLast && (
-              <span
-                aria-hidden
-                style={{
-                  flex: 1,
-                  height: 1,
-                  background: connectorColor,
-                  margin: '0 6px',
-                  marginBottom: 14,
-                }}
-              />
-            )}
-          </div>
-        );
-      })}
-    </div>
+    <ProgressSteps
+      steps={ATTEMPT_STEPS}
+      current={primitiveCurrent}
+      failed={failed}
+      shape="diamond"
+      tier="rare"
+      style={{ padding: '8px 2px 4px', margin: 0 }}
+    />
   );
 }
 
