@@ -21,6 +21,8 @@
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
     "autoprefixer": "^10.4.27",
     "dotenv": "^17.4.1",
     "gifenc": "^1.0.3",
