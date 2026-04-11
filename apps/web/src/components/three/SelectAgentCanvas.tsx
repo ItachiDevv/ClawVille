@@ -23,6 +23,7 @@ extend(THREE as any);
 
 import UnderwaterAtmosphere from '@/lib/three/underwater-atmosphere';
 import UnderwaterLightRays from '@/lib/three/underwater-light-rays';
+import { float, vec3, sin, time, uv, smoothstep, fract, positionLocal } from 'three/tsl';
 import { discoverLobsterParts } from '@/lib/three/lobster-parts';
 import { LobsterAnimator, resolveAnimState } from '@/lib/three/lobster-animations';
 import { applyIdleAnimation, idToSeed } from '@/lib/three/procedural-animation';
@@ -75,6 +76,150 @@ const COLOR_TINTS: Record<string, number> = {
 useGLTF.preload('/models/lobster.glb');
 
 // ---------------------------------------------------------------------------
+// RuneCircle — flat disc on the pedestal top with TSL radial rune gradient
+// 1 draw call. AdditiveBlending so it glows without obscuring the pedestal.
+// ---------------------------------------------------------------------------
+function RuneCircle() {
+  const mat = React.useMemo(() => {
+    const m = new THREE.MeshBasicNodeMaterial({
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+    });
+
+    // uv() gives 0..1 in both axes. Convert to polar radius 0..1 from center.
+    const u = uv().x.sub(float(0.5));
+    const v = uv().y.sub(float(0.5));
+    const radius = u.mul(u).add(v.mul(v)).sqrt(); // 0 at center, ~0.707 at corner
+
+    // Two concentric rings: inner ring at r≈0.25, outer ring at r≈0.45
+    const ring1 = smoothstep(float(0.20), float(0.25), radius)
+      .sub(smoothstep(float(0.25), float(0.30), radius));
+    const ring2 = smoothstep(float(0.40), float(0.45), radius)
+      .sub(smoothstep(float(0.45), float(0.50), radius));
+
+    // Rotating "rune" texture faked via angular sin waves
+    const angle = u.atan2(v); // -PI..PI
+    const runeWave = sin(angle.mul(float(8.0)).add(time.mul(float(0.8))))
+      .mul(float(0.5)).add(float(0.5));
+
+    const combined = ring1.add(ring2.mul(runeWave)).mul(float(1.0));
+
+    const pulse = sin(time.mul(float(1.5))).mul(float(0.3)).add(float(0.7));
+    m.colorNode = vec3(float(0.0), float(0.8), float(1.0)).mul(combined).mul(pulse);
+    m.opacity = 0.75;
+    return m;
+  }, []);
+
+  return (
+    <mesh position={[0, 0.2, 0]} rotation={[-Math.PI / 2, 0, 0]} material={mat}>
+      <planeGeometry args={[22, 22, 1, 1]} />
+    </mesh>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SpotlightConeSelect — fake spotlight shining DOWN from above the model.
+// Open CylinderGeometry (radiusBottom=0, inverted) with TSL additive falloff.
+// No actual SpotLight — the scene light budget is already at 3/3.
+// 1 draw call.
+// ---------------------------------------------------------------------------
+function SpotlightConeSelect() {
+  const mat = React.useMemo(() => {
+    const m = new THREE.MeshBasicNodeMaterial({
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.BackSide,
+    });
+
+    // uv().y goes 0→1 from narrow end (top) to wide end (bottom).
+    // Fade from bright at bottom (near model) to transparent at top.
+    const fade = smoothstep(float(0.0), float(0.5), uv().y);
+    const pulse = sin(time.mul(float(0.9))).mul(float(0.15)).add(float(0.85));
+
+    m.colorNode = vec3(float(0.2), float(0.7), float(1.0))
+      .mul(float(0.35))
+      .mul(fade)
+      .mul(pulse);
+    m.opacity = 0.5;
+    return m;
+  }, []);
+
+  return (
+    // Inverted cone: radiusTop = wide (at water-surface level), radiusBottom = 0 (tip points down at model)
+    // Position so the tip is near y=15 (above the model), open end at y=80
+    <mesh position={[0, 55, 0]} material={mat}>
+      <cylinderGeometry args={[20, 0, 70, 24, 1, true]} />
+    </mesh>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// EmberParticles — 80 upward-drifting ember points.
+// Uses a PointsNodeMaterial with TSL positionNode animation.
+// 1 draw call for all 80 particles.
+// ---------------------------------------------------------------------------
+const EMBER_COUNT = 80;
+
+function EmberParticles() {
+  // Build a small Float32Array of random seed offsets — done ONCE
+  const { positions, seeds } = React.useMemo(() => {
+    const pos  = new Float32Array(EMBER_COUNT * 3);
+    const seed = new Float32Array(EMBER_COUNT);
+    for (let i = 0; i < EMBER_COUNT; i++) {
+      // Random start in cylinder: radius 0..8, height 0..30
+      const r   = Math.random() * 8;
+      const ang = Math.random() * Math.PI * 2;
+      pos[i * 3 + 0] = Math.cos(ang) * r;
+      pos[i * 3 + 1] = Math.random() * 30;
+      pos[i * 3 + 2] = Math.sin(ang) * r;
+      seed[i] = Math.random() * 100; // per-particle random offset
+    }
+    return { positions: pos, seeds: seed };
+  }, []);
+
+  const geo = React.useMemo(() => {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    g.setAttribute('aSeed',    new THREE.BufferAttribute(seeds,     1));
+    return g;
+  }, [positions, seeds]);
+
+  const mat = React.useMemo(() => {
+    const m = new THREE.PointsNodeMaterial({
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      sizeAttenuation: true,
+    });
+
+    // Per-particle vertical drift using aSeed as phase offset
+    const seedAttr = float(1.0); // placeholder; per-particle drift via positionLocal.y
+    const drift = fract(positionLocal.y.div(float(30.0)).add(time.mul(float(0.18))));
+    const height = drift.mul(float(30.0));
+
+    // Override Y position to loop upward
+    const animPos = positionLocal.add(
+      vec3(float(0.0), height.sub(positionLocal.y), float(0.0))
+    );
+    m.positionNode = animPos;
+
+    // Glow: cyan→orange ember colors, fade out at top (drift near 1.0)
+    const fadeOut = smoothstep(float(0.8), float(1.0), drift).oneMinus();
+    const emberColor = vec3(float(1.0), float(0.45), float(0.1));
+    m.colorNode   = emberColor.mul(fadeOut);
+    m.opacityNode = fadeOut.mul(float(0.8));
+    m.sizeNode    = float(3.5);
+
+    return m;
+  }, []);
+
+  return <points geometry={geo} material={mat} />;
+}
+
+// ---------------------------------------------------------------------------
 // Rotating Platform
 // ---------------------------------------------------------------------------
 
@@ -100,6 +245,9 @@ function RotatingPlatform({ children }: { children?: React.ReactNode }) {
           opacity={0.8}
         />
       </mesh>
+
+      {/* Rune circle — glowing TSL disc on pedestal top */}
+      <RuneCircle />
 
       {/* Inner glow ring */}
       <mesh position={[0, -0.2, 0]} rotation={[Math.PI / 2, 0, 0]}>
@@ -226,6 +374,12 @@ const SceneContents = memo(function SceneContents({
       {/* Atmosphere effects */}
       <UnderwaterAtmosphere />
       <UnderwaterLightRays />
+
+      {/* Ember particles — 80 upward-drifting points (1 draw call, TSL GPU animation) */}
+      <EmberParticles />
+
+      {/* Fake spotlight cone from above (no SpotLight — light budget full) */}
+      <SpotlightConeSelect />
 
       {/* Rotating platform with model */}
       <Suspense fallback={null}>
