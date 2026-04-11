@@ -16,11 +16,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.74.0",
     "@clawville/agent-templates": "workspace:*",
     "@clawville/shared": "workspace:*",
     "@elizaos/core": "2.0.0-alpha.3",
-    "@elizaos/plugin-anthropic": "2.0.0-alpha.6",
     "@elizaos/plugin-sql": "2.0.0-alpha.7",
     "uuid": "^9.0.0"
   },

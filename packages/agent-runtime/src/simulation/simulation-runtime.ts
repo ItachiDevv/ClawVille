@@ -59,7 +59,7 @@ export interface SimulationRuntimeDeps {
   pathfind: PathfindFn;
   dbHooks: PetDbHooks;
   databaseUrl?: string;
-  apiKeys?: { anthropic?: string; gemini?: string };
+  apiKeys?: { gemini?: string };
   /** Optional home spawn coordinates (defaults to center of 1280x800) */
   homeX?: number;
   homeY?: number;
@@ -75,8 +75,9 @@ interface ActionChoice {
  * The simulation agent character — lightweight, just needs a name and
  * system prompt so the LLM understands its role as "the world puppeteer".
  *
- * Only includes plugins we actually need. plugin-openai / plugin-solana
- * are deliberately omitted (not installed).
+ * Only includes plugins we actually need. plugin-openai / plugin-solana /
+ * plugin-anthropic are deliberately omitted — Gemini text provider (priority
+ * 95, prepended by ElizaRuntime) handles all text generation.
  */
 function buildSimulationCharacter(): Character {
   const input: CharacterInput & { name: string } = {
@@ -87,7 +88,6 @@ function buildSimulationCharacter(): Character {
       'You are the autonomous avatar simulation controller for ClawVille. You decide what idle avatars should do next in the underwater reef world. Each tick, you are asked to choose one action for one avatar. Keep decisions varied: explore different buildings, eventually rest. Respond ONLY with a structured JSON action choice — no prose.',
     bio: ['The autonomous avatar simulation controller for ClawVille.'],
     plugins: [
-      '@elizaos/plugin-anthropic',
       '@elizaos/plugin-sql',
     ],
     settings: {
@@ -155,10 +155,6 @@ export class SimulationRuntime {
       agentConfig: {},
       databaseUrl: deps.databaseUrl,
       apiKeys: deps.apiKeys,
-      thinkingConfig: {
-        effort: 'low', // Planning is a small decision — low thinking budget
-        enableThinkTool: false,
-      },
     };
 
     this.eliza = new ElizaRuntime(config);

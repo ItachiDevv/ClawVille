@@ -19,10 +19,8 @@ import { v5 as uuidv5 } from 'uuid';
 import type { LocationTemplate } from '@clawville/agent-templates';
 import { loadLocationTemplate } from './character-loader';
 import { createOpenClawProviderPlugin, type OpenClawGatewayConfig } from './plugins/openclaw-provider';
-import { createUltrathinkProviderPlugin, type UltrathinkConfig } from './plugins/ultrathink-provider';
 import { createGeminiEmbeddingPlugin } from './plugins/gemini-embedding-provider';
 import { createGeminiTextPlugin } from './plugins/gemini-text-provider';
-import { AGENT_THINKING_DEFAULTS } from '@clawville/shared';
 
 const ROOM_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
 
@@ -85,10 +83,8 @@ export interface ElizaRuntimeConfig {
   };
   agentConfig: Record<string, unknown>;
   openclawGateway?: OpenClawGatewayConfig;
-  thinkingConfig?: Partial<UltrathinkConfig>;
   databaseUrl?: string;
   apiKeys?: {
-    anthropic?: string;
     /** Gemini API key for TEXT_EMBEDDING + TEXT_SMALL/LARGE. */
     gemini?: string;
   };
@@ -141,8 +137,9 @@ function convertToElizaCharacter(
   // v2: @elizaos/plugin-bootstrap is built into @elizaos/core — do NOT add it here.
   // Embeddings are provided by our custom gemini-embedding-provider (prepended
   // in loadPlugins), so plugin-openai is no longer needed. Text generation is
-  // handled by the Gemini text provider (priority 95); plugin-anthropic has been
-  // removed from the chain in favor of Gemini + Ultrathink.
+  // handled by the Gemini text provider (priority 95). plugin-anthropic and
+  // the ultrathink-provider have both been removed — Gemini is the single
+  // text-gen backend for all non-OpenClaw agents.
   const plugins: string[] = [
     '@elizaos/plugin-sql',
   ];
@@ -289,9 +286,6 @@ export class ElizaRuntime {
     console.log(`[ElizaRuntime] Agent ${this.config.agentId} acquired init mutex`);
 
     try {
-      if (this.config.apiKeys?.anthropic && !process.env.ANTHROPIC_API_KEY) {
-        process.env.ANTHROPIC_API_KEY = this.config.apiKeys.anthropic;
-      }
       if (this.config.apiKeys?.gemini && !process.env.GEMINI_API_KEY) {
         process.env.GEMINI_API_KEY = this.config.apiKeys.gemini;
       }
@@ -301,15 +295,9 @@ export class ElizaRuntime {
 
       await this.loadPlugins();
 
-      // Anthropic key retained for ultrathink-provider.ts (optional deep-reasoning
-      // path). plugin-anthropic itself is no longer loaded — Gemini text provider
-      // (priority 95) handles all TEXT_SMALL/TEXT_LARGE calls by default.
-      // The Gemini plugins read from their own config or process.env directly —
-      // not character.secrets — so we don't expose the Gemini key here.
-      this.character.secrets = {
-        ...(this.character.secrets || {}),
-        ANTHROPIC_API_KEY: this.config.apiKeys?.anthropic || process.env.ANTHROPIC_API_KEY || '',
-      };
+      // Gemini plugins read GEMINI_API_KEY from their own config or
+      // process.env directly — not character.secrets — so we don't need to
+      // stamp anything onto the character. Anthropic is fully removed.
 
       // v2: Caller owns DB adapter lifecycle. createDatabaseAdapter() handles
       // pool singletons internally (shared across all agents via global symbol),
@@ -353,8 +341,9 @@ export class ElizaRuntime {
     // v2: plugin-bootstrap is built into @elizaos/core.
     // plugin-openai replaced by gemini-embedding-provider below.
     // plugin-solana is a legacy dep that was never installed — removed.
-    // plugin-anthropic removed — Gemini text provider is now the default backend.
-    // Text generation priority chain: OpenClaw(100) > Gemini(95) > Ultrathink(90).
+    // plugin-anthropic + ultrathink-provider removed — Gemini text provider
+    // is now the single backend for all non-OpenClaw text generation.
+    // Text generation priority chain: OpenClaw(100) > Gemini(95).
     const pluginMap: Record<string, string> = {
       '@elizaos/plugin-sql': 'sqlPlugin',
     };
@@ -382,25 +371,14 @@ export class ElizaRuntime {
     console.log(`[ElizaRuntime] Loaded Gemini embedding provider (text-embedding-004)`);
 
     // Prepend Gemini text provider (priority 95 — global default for TEXT_SMALL/TEXT_LARGE)
-    // Sits between OpenClaw gateway (100) and Ultrathink (90) in the priority chain.
+    // Sits immediately below OpenClaw gateway (100) in the priority chain.
     const geminiTextPlugin = createGeminiTextPlugin({
       apiKey: this.config.apiKeys?.gemini,
     });
     this.loadedPlugins.unshift(geminiTextPlugin as Plugin);
     console.log(`[ElizaRuntime] Loaded Gemini text provider (gemini-2.5-flash, priority 95)`);
 
-    // Prepend Ultrathink provider (priority 90 — under OpenClaw 100, over default Anthropic)
-    const thinkingDefaults = AGENT_THINKING_DEFAULTS[this.config.agentType] ?? AGENT_THINKING_DEFAULTS['avatar-agent'];
-    const ultrathinkPlugin = createUltrathinkProviderPlugin({
-      effort: this.config.thinkingConfig?.effort ?? thinkingDefaults.effort,
-      enableThinkTool: this.config.thinkingConfig?.enableThinkTool ?? thinkingDefaults.enableThinkTool,
-      model: thinkingDefaults.model,
-      apiKey: this.config.apiKeys?.anthropic,
-    });
-    this.loadedPlugins.unshift(ultrathinkPlugin as Plugin);
-    console.log(`[ElizaRuntime] Loaded Ultrathink provider (effort: ${thinkingDefaults.effort}, thinkTool: ${thinkingDefaults.enableThinkTool})`);
-
-    // Prepend OpenClaw provider plugin so it wins TEXT_GENERATION priority (priority 100 > 90)
+    // Prepend OpenClaw provider plugin so it wins TEXT_GENERATION priority (priority 100 > 95)
     if (this.config.openclawGateway) {
       const openclawPlugin = createOpenClawProviderPlugin(this.config.openclawGateway);
       this.loadedPlugins.unshift(openclawPlugin as Plugin);

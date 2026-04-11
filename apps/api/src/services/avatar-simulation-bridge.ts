@@ -89,7 +89,6 @@ export class PetSimulationBridge {
       },
       databaseUrl: process.env.DATABASE_URL,
       apiKeys: {
-        anthropic: process.env.ANTHROPIC_API_KEY,
         gemini: process.env.GEMINI_API_KEY,
       },
     });

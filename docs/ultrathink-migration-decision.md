@@ -1,6 +1,29 @@
 # Ultrathink Migration Decision
 
-**Status:** Open decision, awaiting product call.
+> **DECISION TAKEN: Option A — Removed entirely (2026-04-10).**
+>
+> Ultrathink leaked into the codebase from an early prompt where Claude was
+> asked to "use ultra think" while building a feature and interpreted that
+> as "build an ultrathink feature into the product." It was never
+> measured, never had an A/B test, and the priority-chain analysis in §1
+> suggested it was dead code behind `gemini-text-provider` (priority 95).
+> This doc is retained for historical context explaining the alternative
+> paths and why Option A was chosen. If you want to add first-class
+> extended-reasoning support back later, start from §5 Option B
+> (port to Gemini 2.5 thinking mode).
+>
+> **What was removed:**
+> - `packages/agent-runtime/src/plugins/ultrathink-provider.ts` (deleted)
+> - `ThinkingEffort`, `THINKING_BUDGET`, `AgentThinkingConfig`, `AGENT_THINKING_DEFAULTS` from `packages/shared/src/types/collaboration.ts`
+> - `thinkingConfig` field from `ElizaRuntimeConfig` and all `thinkingConfig: {...}` call sites in `building-runtime-registry.ts` and `simulation-runtime.ts`
+> - `apiKeys.anthropic` field from `ElizaRuntimeConfig` and all passthrough sites (`agent-orchestrator.ts`, `avatar-simulation-bridge.ts`, `collaboration-broker.ts`)
+> - `@anthropic-ai/sdk` from `packages/agent-runtime/package.json` and `apps/api/package.json`
+> - `@elizaos/plugin-anthropic` from `packages/agent-runtime/package.json` and all plugin lists
+> - `@anthropic-ai/sdk` + `@elizaos/plugin-anthropic` from `apps/web/next.config.mjs` `serverExternalPackages`
+> - `ANTHROPIC_API_KEY` env var from Coolify api app
+> - `ANTHROPIC_API_KEY` documentation in `CLAUDE.md`
+
+**Original status:** Open decision, awaiting product call.
 **Context:** Phase of the Anthropic → Gemini migration. The "ultrathink" provider is the last Anthropic-locked piece of the ElizaOS runtime stack inside ClawVille and needs a decision before we can fully drop the Anthropic dependency.
 **Blocker for:** fully removing `@anthropic-ai/sdk` from `packages/agent-runtime/package.json` and removing `ANTHROPIC_API_KEY` from Coolify.
 

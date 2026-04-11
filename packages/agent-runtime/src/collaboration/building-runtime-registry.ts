@@ -46,7 +46,6 @@ const INACTIVITY_CHECK_INTERVAL_MS = 60 * 1000; // check every minute
 export interface BuildingRuntimeRegistryConfig {
   databaseUrl?: string;
   apiKeys?: {
-    anthropic?: string;
     gemini?: string;
   };
 }
@@ -177,12 +176,6 @@ export class BuildingRuntimeRegistry {
         agentConfig: { locationId: buildingId },
         databaseUrl: this.config.databaseUrl,
         apiKeys: this.config.apiKeys,
-        thinkingConfig: {
-          // Collaboration consultations don't need extended thinking —
-          // they're short 2-3 sentence specialist insights. Keep effort low.
-          effort: 'low',
-          enableThinkTool: false,
-        },
       });
 
       await runtime.start();

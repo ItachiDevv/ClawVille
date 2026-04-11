@@ -35,13 +35,12 @@ const nextConfig = {
   ],
   // @elizaos/core + plugins use runtime dynamic imports (hook handlers) that
   // can't be statically analyzed by Turbopack/webpack. Keep them external at
-  // runtime instead of bundling into server routes.
+  // runtime instead of bundling into server routes. @elizaos/plugin-anthropic
+  // and @anthropic-ai/sdk were removed alongside the ultrathink migration.
   serverExternalPackages: [
     '@elizaos/core',
-    '@elizaos/plugin-anthropic',
     '@elizaos/plugin-sql',
     '@elizaos/plugin-solana',
-    '@anthropic-ai/sdk',
   ],
   turbopack: {
     root: resolve(__dirname, '../..'),

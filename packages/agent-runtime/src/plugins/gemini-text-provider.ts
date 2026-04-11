@@ -1,14 +1,16 @@
 /**
  * Gemini Text Generation Provider Plugin for ElizaOS v2
  *
- * Global default for TEXT_SMALL / TEXT_LARGE. Routes all text generation
- * through Google's Gemini generateContent endpoint. Priority 95 places it
- * between OpenClaw gateway (100) and Ultrathink (90), so:
+ * Single backend for TEXT_SMALL / TEXT_LARGE in all non-OpenClaw runtimes.
+ * Routes all text generation through Google's Gemini generateContent endpoint.
+ * Priority 95 places it immediately below the OpenClaw gateway plugin (100),
+ * so:
  *
  *   OpenClaw override (100) ─► wins when gateway configured
- *   Gemini text (95) ─────────► default for all runtimes
- *   Ultrathink (90) ──────────► fallback if Gemini fails / key missing
- *   plugin-anthropic (~0) ───► deepest fallback
+ *   Gemini text (95) ─────────► default for all other runtimes
+ *
+ * plugin-anthropic and ultrathink-provider have both been removed from the
+ * chain — Gemini is the canonical backend.
  *
  * Env var: GEMINI_API_KEY (or pass via config.apiKey)
  *
@@ -159,7 +161,8 @@ async function generate(
 /**
  * Creates an ElizaOS plugin that provides TEXT_SMALL + TEXT_LARGE via Gemini.
  *
- * Default priority is 95 — above Ultrathink (90), below OpenClaw (100).
+ * Default priority is 95 — immediately below OpenClaw gateway (100) and the
+ * canonical text-gen backend for every other runtime.
  */
 export function createGeminiTextPlugin(config: GeminiTextConfig = {}): Plugin {
   const handler = async (

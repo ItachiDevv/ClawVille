@@ -94,13 +94,15 @@ bun run build            # Build all
 
 Required in `.env.local`:
 - `DATABASE_URL` - PostgreSQL connection string (Supabase pooler)
-- `ANTHROPIC_API_KEY` - For ElizaOS TEXT_GENERATION
-- `GEMINI_API_KEY` - For text embeddings (replaced `plugin-openai`; see `packages/agent-runtime/src/plugins/gemini-embedding-provider.ts`)
-- `OPENAI_API_KEY` - Legacy, still referenced in a few places but no longer required for core runtime
+- `GEMINI_API_KEY` - **Single LLM backend** for all text generation AND embeddings. Used by `gemini-text-provider` (priority 95) for TEXT_SMALL/TEXT_LARGE, `gemini-embedding-provider` (priority 100) for TEXT_EMBEDDING, and by `apps/api/src/services/npc-conversation-engine.ts` directly for NPC banter. Anthropic was fully removed in the ultrathink decommission (2026-04-10).
 - `VANITY_ENCRYPTION_KEY` - 64-char hex (32 bytes). AES-256-GCM master key for `treasury_wallets` + `vanity_keypairs`. Must be identical on every machine that decrypts.
 - `CLAWVILLE_MERCHANT_WALLET_PUBKEY` - Base58 public key of the Phase 4 x402 merchant wallet (row in `treasury_wallets`)
 - `CORS_ORIGIN` - Frontend URL(s) for CORS (prod: `https://clawville.world`)
 - `NEXT_PUBLIC_API_URL` - Backend API URL for frontend (prod: `https://api.clawville.world`)
+
+**Removed keys** (no longer used — safe to delete from `.env.local` and Coolify):
+- `ANTHROPIC_API_KEY` — removed with the ultrathink decommission. Previously used by `plugin-anthropic` (fallback) and `ultrathink-provider.ts` (deep reasoning). Both are gone. See `docs/ultrathink-migration-decision.md`.
+- `OPENAI_API_KEY` — legacy, replaced by Gemini embeddings earlier in 2026-04.
 
 ## Deployment — Hetzner + Coolify
 
