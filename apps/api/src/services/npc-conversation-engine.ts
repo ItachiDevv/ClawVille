@@ -1,11 +1,13 @@
-import Anthropic from '@anthropic-ai/sdk';
 import { templates } from '@clawville/agent-templates';
 import { NPC_DEFINITIONS, type NpcDefinition } from '@clawville/shared';
 import type { OpenClawClient } from './openclaw-client';
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
+// Gemini REST config — we hit generateContent directly instead of going through
+// a plugin chain. NPC banter is casual chat, so no extended thinking / no
+// reasoning budget — just a plain generateContent call at high temperature.
+const GEMINI_MODEL = 'gemini-flash-latest';
+const GEMINI_TEMPERATURE = 0.9;
+const GEMINI_MAX_OUTPUT_TOKENS = 400;
 
 interface ConversationMessage {
   npcId: string;
@@ -14,8 +16,68 @@ interface ConversationMessage {
 }
 
 /**
- * Generate an NPC-to-NPC conversation using direct Anthropic Haiku calls.
- * Returns 2-4 messages of banter between two NPCs.
+ * Call Gemini's generateContent endpoint directly via fetch.
+ * Returns the trimmed text on success, or an empty string on any failure
+ * (missing API key, non-2xx response, empty candidates). Never throws —
+ * callers use the empty string as the signal to fall back to canned lines.
+ */
+async function callGeminiForNpc(
+  systemPrompt: string | null,
+  userMessage: string,
+): Promise<string> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    console.warn('[NPC Convo] GEMINI_API_KEY missing — returning empty reply');
+    return '';
+  }
+
+  console.log(
+    `[NPC Convo] Gemini: model=${GEMINI_MODEL} temp=${GEMINI_TEMPERATURE} maxOutputTokens=${GEMINI_MAX_OUTPUT_TOKENS}`,
+  );
+
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
+    const body: Record<string, unknown> = {
+      contents: [{ role: 'user', parts: [{ text: userMessage }] }],
+      generationConfig: {
+        temperature: GEMINI_TEMPERATURE,
+        maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS,
+      },
+    };
+    if (systemPrompt) {
+      body.systemInstruction = { parts: [{ text: systemPrompt }] };
+    }
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error(`[NPC Convo] Gemini ${res.status}: ${errText.slice(0, 300)}`);
+      return '';
+    }
+
+    const data = (await res.json()) as any;
+    const text: string | undefined = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) {
+      console.error('[NPC Convo] Gemini returned no text');
+      return '';
+    }
+    return text.trim();
+  } catch (err) {
+    console.error('[NPC Convo] Gemini fetch failed:', err);
+    return '';
+  }
+}
+
+/**
+ * Generate an NPC-to-NPC conversation using direct Gemini generateContent calls.
+ * Returns 2-4 messages of banter between two NPCs. On any Gemini failure
+ * (missing key, non-2xx response, empty output) falls back to canned lines —
+ * never throws to the caller.
  */
 export async function generateNpcConversation(
   npc1: NpcDefinition,
@@ -43,27 +105,13 @@ Generate a short, natural conversation between these two characters. 2-4 lines t
 Each line should be in the format: NAME: dialogue text
 Keep responses short (1-2 sentences each). Be in character. Be playful and fun.`;
 
-  try {
-    const response = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 2200,
-      thinking: { type: 'enabled', budget_tokens: 2048 },
-      system: systemPrompt,
-      messages: [
-        {
-          role: 'user',
-          content: `${npc1.name} and ${npc2.name} run into each other near ${npc1.name}'s area. Generate their conversation.`,
-        },
-      ],
-    });
+  const userMessage = `${npc1.name} and ${npc2.name} run into each other near ${npc1.name}'s area. Generate their conversation.`;
 
-    const textBlock = response.content.find((b: any) => b.type === 'text') as { text: string } | undefined;
-    const text = textBlock?.text ?? '';
-    return parseConversation(text, npc1, npc2);
-  } catch (error) {
-    console.error('NPC conversation generation failed:', error);
+  const text = await callGeminiForNpc(systemPrompt, userMessage);
+  if (!text) {
     return getFallbackConversation(npc1, npc2);
   }
+  return parseConversation(text, npc1, npc2);
 }
 
 function parseConversation(
@@ -111,7 +159,9 @@ function parseConversation(
 
 /**
  * Generate a conversation where one or both participants are OpenClaw-controlled.
- * For each OpenClaw participant, call their bot; for non-OpenClaw, call Claude Haiku.
+ * For each OpenClaw participant, call their bot; for non-OpenClaw, call Gemini.
+ * Gemini failures produce empty replies (same behaviour as the old LLM path)
+ * so the loop degrades gracefully instead of throwing.
  */
 export async function generateOpenClawConversation(
   npc1: NpcDefinition,
@@ -151,19 +201,10 @@ Reply as ${npc.name} with a single short sentence (1-2 sentences max). Stay in c
           reply = '';
         }
       } else {
-        // Use Claude Haiku for non-OpenClaw participant
-        try {
-          const response = await anthropic.messages.create({
-            model: 'claude-haiku-4-5-20251001',
-            max_tokens: 2130,
-            thinking: { type: 'enabled', budget_tokens: 2048 },
-            messages: [{ role: 'user', content: contextMsg }],
-          });
-          const textBlock = response.content.find((b: any) => b.type === 'text') as { text: string } | undefined;
-          reply = textBlock?.text ?? '';
-        } catch {
-          reply = '';
-        }
+        // Use Gemini for the non-OpenClaw participant. No system instruction
+        // here — the original call shoved everything into the user message as
+        // well, so we keep that shape identical for parity.
+        reply = await callGeminiForNpc(null, contextMsg);
       }
 
       // Clean up — remove name prefix if the model added it
