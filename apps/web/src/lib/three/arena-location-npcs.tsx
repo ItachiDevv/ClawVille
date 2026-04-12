@@ -53,8 +53,7 @@ const VILLAGE_CENTER_TILE_Z = 12; // tile Y maps to world Z
  *
  *  Position: building_center_tile + normalize(toward_village_center) * 2.5 tiles,
  *            converted to world space.
- *  Facing: NPC model default faces -Z. rotation [0, 0, 0] → faces -Z.
- *          rotation [0, Math.PI, 0] → faces +Z (original static).
+ *  Facing: NPC model default faces +Z. rotation [0, 0, 0] → faces +Z.
  *          For arbitrary facing toward center we use atan2(dirX, dirZ) where
  *          dir = normalize(village_center_world - npc_world). */
 function computeNpcPlacement(zone: { x: number; y: number; width: number; height: number }): {
@@ -84,13 +83,9 @@ function computeNpcPlacement(zone: { x: number; y: number; width: number; height
   const worldZ = OFFSET_Z + npcTileZ * TILE_SIZE;
 
   // Facing toward village center from NPC position.
-  // The model faces -Z by default. To face +X direction: rotY = -PI/2.
-  // General formula: rotY = atan2(targetX - npcX, targetZ - npcZ) + PI
-  // (the +PI flips from -Z-forward to +Z convention then back).
-  // Equivalently: atan2(dirX, dirZ) directly gives the angle to rotate
-  // the -Z forward model to face along (dirX, dirZ). We add PI because
-  // the model natively faces -Z, not +Z.
-  const facingRotY = Math.atan2(dx, dz) + Math.PI;
+  // The model faces +Z by default. atan2(dirX, dirZ) rotates the +Z-forward
+  // model to face along (dirX, dirZ).
+  const facingRotY = Math.atan2(dx, dz);
 
   return { worldX, worldZ, facingRotY };
 }
