@@ -63,12 +63,22 @@ export interface SimulationRuntimeDeps {
   /** Optional home spawn coordinates (defaults to center of 1280x800) */
   homeX?: number;
   homeY?: number;
+  /** Phase 3: injected services for economic actions (BUY_ITEM, LEARN_SKILL) */
+  services?: SimulationServices;
 }
 
 interface ActionChoice {
-  action: 'PET_MOVE_TO_BUILDING' | 'PET_RETURN_HOME' | 'PET_SLEEP';
+  action: 'PET_MOVE_TO_BUILDING' | 'PET_RETURN_HOME' | 'PET_SLEEP' | 'BUY_ITEM' | 'LEARN_SKILL';
   userId: string;
   buildingId?: string;
+  itemId?: string;
+}
+
+/** Phase 3: Services passed to Phase 1 economic actions */
+export interface SimulationServices {
+  db: any;
+  creditNeoTokens: (params: any) => Promise<{ balanceAfter: number }>;
+  debitNeoTokens: (params: any) => Promise<{ balanceAfter: number }>;
 }
 
 /**
@@ -229,21 +239,57 @@ export class SimulationRuntime {
         providerText = result.text ?? '';
       }
 
+      // Phase 3: Check budget — if exceeded, force return home
+      const budgetExceeded = pet.budgetSpent >= pet.budgetMaxNt || pet.budgetPurchaseCount >= pet.budgetMaxPurchases;
+      if (budgetExceeded) {
+        console.log(`[SimulationRuntime] Budget exceeded for ${userId} (spent=${pet.budgetSpent}/${pet.budgetMaxNt}, purchases=${pet.budgetPurchaseCount}/${pet.budgetMaxPurchases}) — forcing return home`);
+        return await this.dispatchAction({ action: 'PET_RETURN_HOME', userId }, message);
+      }
+
+      // Phase 3: Determine if economic actions are available (pet is visiting a building + has services)
+      const isAtBuilding = pet.activity !== 'idle' && pet.activity !== 'sleeping' && pet.destinationBuildingId;
+      const hasEconomy = !!this.deps.services && !budgetExceeded;
+
       // Build the planning prompt
-      const prompt = [
-        providerText,
-        '',
-        'Decide what this pet should do next. Choose ONE of:',
+      const actionChoices = [
         '  1. PET_MOVE_TO_BUILDING — walk to a nearby building to explore it',
         '  2. PET_RETURN_HOME — head back to the spawn point',
         '  3. PET_SLEEP — rest (terminal state until user returns)',
-        '',
-        'Favor variety — pick buildings the pet has not visited yet. After several visits, return home and sleep.',
-        '',
-        `Respond ONLY with a single-line JSON object. Use userId="${userId}". Examples:`,
+      ];
+
+      const examples = [
         `  {"action":"PET_MOVE_TO_BUILDING","userId":"${userId}","buildingId":"cron-hub"}`,
         `  {"action":"PET_RETURN_HOME","userId":"${userId}"}`,
         `  {"action":"PET_SLEEP","userId":"${userId}"}`,
+      ];
+
+      // Phase 3: When at a building with budget remaining, offer BUY_ITEM / LEARN_SKILL
+      if (isAtBuilding && hasEconomy) {
+        actionChoices.push(
+          '  4. BUY_ITEM — buy a knowledge book from the current building shop (costs NeoTokens)',
+          '  5. LEARN_SKILL — read a book from inventory to learn its knowledge',
+        );
+        examples.push(
+          `  {"action":"BUY_ITEM","userId":"${userId}","itemId":"book-${pet.destinationBuildingId}-0"}`,
+          `  {"action":"LEARN_SKILL","userId":"${userId}","itemId":"book-${pet.destinationBuildingId}-0"}`,
+        );
+      }
+
+      const budgetLine = hasEconomy
+        ? `Budget remaining: ${pet.budgetMaxNt - pet.budgetSpent} NT, ${pet.budgetMaxPurchases - pet.budgetPurchaseCount} purchases.`
+        : '';
+
+      const prompt = [
+        providerText,
+        budgetLine,
+        '',
+        'Decide what this pet should do next. Choose ONE of:',
+        ...actionChoices,
+        '',
+        'Favor variety — pick buildings the pet has not visited yet. When visiting a building, try buying a book and learning from it before moving on. After several visits, return home and sleep.',
+        '',
+        `Respond ONLY with a single-line JSON object. Use userId="${userId}". Examples:`,
+        ...examples,
       ].join('\n');
 
       const response = await runtime.useModel(ModelType.TEXT_SMALL, {
@@ -259,7 +305,15 @@ export class SimulationRuntime {
       }
 
       // Dispatch the chosen action
-      return await this.dispatchAction(choice, message);
+      const result = await this.dispatchAction(choice, message);
+
+      // Phase 3: Track action on the pet state for SSE broadcast
+      if (result) {
+        pet.lastActionName = choice.action;
+        pet.lastActionResult = result.text ?? (result.success ? 'OK' : 'Failed');
+      }
+
+      return result;
     } catch (err) {
       console.error(`[SimulationRuntime] planPetNextAction(${userId}) failed:`, err);
       return null;
@@ -271,11 +325,17 @@ export class SimulationRuntime {
    * when a pet arrives at its destination (no LLM involvement).
    */
   async dispatchAction(
-    choice: { action: string; userId: string; buildingId?: string },
+    choice: { action: string; userId: string; buildingId?: string; itemId?: string },
     messageParam?: Memory,
   ): Promise<ActionResult | null> {
     const runtime = this.getRuntime();
     if (!runtime) return null;
+
+    // Phase 3: Route economic actions (BUY_ITEM, LEARN_SKILL) through Phase 1 action handlers
+    const isEconomicAction = choice.action === 'BUY_ITEM' || choice.action === 'LEARN_SKILL' || choice.action === 'CHECK_BALANCE';
+    if (isEconomicAction) {
+      return this.dispatchEconomicAction(choice);
+    }
 
     const action = this.actions.find((a) => a.name === choice.action);
     if (!action) {
@@ -346,6 +406,64 @@ export class SimulationRuntime {
     }
   }
 
+  /**
+   * Phase 3: Dispatch BUY_ITEM / LEARN_SKILL / CHECK_BALANCE via Phase 1 action handlers.
+   * These live in ../actions/ and need ClawvilleServices injected via state.
+   */
+  private async dispatchEconomicAction(
+    choice: { action: string; userId: string; itemId?: string },
+  ): Promise<ActionResult | null> {
+    if (!this.deps.services) {
+      console.warn('[SimulationRuntime] Cannot dispatch economic action — no services injected');
+      return null;
+    }
+
+    const pet = this.deps.stateStore.get(choice.userId);
+    if (!pet) return null;
+
+    try {
+      // Dynamic import the Phase 1 action
+      const { allActions } = await import('../actions/index');
+      const action = allActions.find((a: any) => a.name === choice.action);
+      if (!action) {
+        console.warn(`[SimulationRuntime] Phase 1 action not found: ${choice.action}`);
+        return null;
+      }
+
+      // Build state with services injected (same shape as processMessage state)
+      const state = {
+        petId: pet.petId,
+        userId: pet.userId,
+        services: this.deps.services,
+      };
+
+      // Build message with parameters
+      const params: Record<string, string> = {};
+      if (choice.itemId) params.itemId = choice.itemId;
+
+      const message = {
+        content: { text: '', parameters: params, data: { parameters: params } },
+        parameters: params,
+        ...params,
+      };
+
+      const result = await action.handler(null, message, state, { parameters: params });
+
+      // Track budget
+      if (result?.success && (choice.action === 'BUY_ITEM' || choice.action === 'BUY_BAZAAR_LISTING')) {
+        const spent = result.data?.price ?? 0;
+        pet.budgetSpent += spent;
+        pet.budgetPurchaseCount += 1;
+        console.log(`[SimulationRuntime] ${choice.action} for ${pet.name}: spent ${spent} NT (total: ${pet.budgetSpent}/${pet.budgetMaxNt})`);
+      }
+
+      return result ?? null;
+    } catch (err) {
+      console.error(`[SimulationRuntime] dispatchEconomicAction(${choice.action}) failed:`, err);
+      return { success: false, text: (err as Error).message };
+    }
+  }
+
   private parseActionChoice(response: string, userId: string): ActionChoice | null {
     if (!response) return null;
 
@@ -357,8 +475,11 @@ export class SimulationRuntime {
       const parsed = JSON.parse(match[0]) as Partial<ActionChoice>;
       if (!parsed.action) return null;
 
-      // Validate action name
-      const validActions = ['PET_MOVE_TO_BUILDING', 'PET_RETURN_HOME', 'PET_SLEEP'] as const;
+      // Validate action name — Phase 3: includes economic actions
+      const validActions = [
+        'PET_MOVE_TO_BUILDING', 'PET_RETURN_HOME', 'PET_SLEEP',
+        'BUY_ITEM', 'LEARN_SKILL',
+      ] as const;
       if (!validActions.includes(parsed.action as (typeof validActions)[number])) return null;
 
       // Always override userId with the one we know — don't trust LLM hallucinations
@@ -366,6 +487,7 @@ export class SimulationRuntime {
         action: parsed.action as ActionChoice['action'],
         userId,
         buildingId: parsed.buildingId,
+        itemId: parsed.itemId,
       };
     } catch {
       return null;
