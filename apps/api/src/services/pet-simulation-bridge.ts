@@ -37,7 +37,7 @@ import {
 import { db, activityLog } from '@clawville/database';
 
 import { findPath } from './pathfinding';
-import { creditClawTokens } from './neo-token-ledger';
+import { creditClawTokens, debitClawTokens } from './neo-token-ledger';
 
 // Single source of truth — agent-runtime re-exports NpcActivity from shared,
 // so these constants type-check without casting.
@@ -91,6 +91,8 @@ export class PetSimulationBridge {
       apiKeys: {
         gemini: process.env.GEMINI_API_KEY,
       },
+      // Phase 3: inject services so economic actions (BUY_ITEM, LEARN_SKILL) can execute
+      services: { db, creditClawTokens, debitClawTokens },
     });
 
     // Fire-and-forget startup; tick() guards on runtimeReady before touching
