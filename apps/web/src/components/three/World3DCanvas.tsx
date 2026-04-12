@@ -496,9 +496,8 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
   // controlMode — which we do for the controller switch below.
   const controlMode = useGameStore((s) => s.controlMode);
 
-  // On mobile/touch, always use follow camera so the joystick-driven avatar
-  // movement is visible. On desktop, explore mode gets free camera.
-  const useFollowCam = isTouchDevice || controlMode !== 'explore';
+  // Follow camera in all modes except explore (free camera for manual orbit/pan).
+  const useFollowCam = controlMode !== 'explore';
 
   // Tight follow distance for any mode where the camera tracks a character.
   // Explore mode ('explore' + arena) gets a wider minDistance for free-look.
@@ -538,8 +537,7 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       />
 
       {/* Camera controller routing based on controlMode:
-            explore (desktop) → WASDCameraController (free cam, WASD pans world)
-            explore (mobile)  → FPSFollowCamera (follows avatar so joystick works)
+            explore           → WASDCameraController (free cam, WASD pans world)
             player            → FPSFollowCamera (follows player avatar)
             autonomous        → FPSFollowCamera (follows player avatar)
             npc               → FPSFollowCamera (follows possessed NPC)

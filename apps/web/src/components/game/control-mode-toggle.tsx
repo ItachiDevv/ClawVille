@@ -1,18 +1,14 @@
 'use client';
 
 import { useGameStore, type GameState } from '@/stores/game';
-import { useIsMobile } from '@/hooks/use-is-mobile';
 
 export default function ControlModeToggle() {
   const controlMode = useGameStore((s: GameState) => s.controlMode);
   const hasAgent = useGameStore((s: GameState) => s.hasAgent);
   const isSpectator = useGameStore((s: GameState) => s.isSpectator);
   const toggleControlMode = useGameStore((s: GameState) => s.toggleControlMode);
-  const isMobile = useIsMobile();
 
-  // Determine the two option labels and which is active
-  // On mobile without agent: label "Explore" as "Walk" since camera always follows avatar
-  const optionA = hasAgent ? 'Play' : (isMobile ? 'Walk' : 'Explore');
+  const optionA = hasAgent ? 'Play' : 'Explore';
   const optionB = hasAgent ? 'Autonomous' : 'NPC Mode';
 
   const aActive = hasAgent
