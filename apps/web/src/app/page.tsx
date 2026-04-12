@@ -69,12 +69,32 @@ export default function HomePage() {
           >
             Explore World
           </Link>
-          <a
-            href="#launch"
-            className="px-8 py-3.5 rounded-xl font-clawville text-sm uppercase tracking-wider bg-gradient-to-r from-amber-600 to-orange-500 text-white shadow-[0_0_30px_rgba(255,170,0,0.25)] hover:shadow-[0_0_40px_rgba(255,170,0,0.4)] transition-all hover:scale-105"
-          >
-            Launch Token
-          </a>
+          <div className="flex flex-col items-center gap-1">
+            <span className="text-[9px] font-mono uppercase tracking-[0.3em] text-amber-400/60">Coming soon</span>
+            <a
+              href="#launch"
+              className="flex items-center gap-2.5 px-8 py-3.5 rounded-xl font-clawville text-sm uppercase tracking-wider bg-gradient-to-r from-amber-600 to-orange-500 text-white shadow-[0_0_30px_rgba(255,170,0,0.25)] hover:shadow-[0_0_40px_rgba(255,170,0,0.4)] transition-all hover:scale-105"
+            >
+              Launch Token
+              <span className="flex items-center gap-1.5 ml-1">
+                {/* Solana */}
+                <svg width="16" height="16" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M22.22 93.22a3.45 3.45 0 012.44-1.01h99.06a1.72 1.72 0 011.22 2.94l-19.16 19.16a3.45 3.45 0 01-2.44 1.01H4.28a1.72 1.72 0 01-1.22-2.94l19.16-19.16z" fill="currentColor" fillOpacity="0.8"/>
+                  <path d="M22.22 12.69a3.54 3.54 0 012.44-1.01h99.06a1.72 1.72 0 011.22 2.94L105.78 33.78a3.45 3.45 0 01-2.44 1.01H4.28a1.72 1.72 0 01-1.22-2.94l19.16-19.16z" fill="currentColor" fillOpacity="0.8"/>
+                  <path d="M105.78 52.69a3.45 3.45 0 00-2.44-1.01H4.28a1.72 1.72 0 00-1.22 2.94l19.16 19.16a3.45 3.45 0 002.44 1.01h99.06a1.72 1.72 0 001.22-2.94L105.78 52.69z" fill="currentColor" fillOpacity="0.8"/>
+                </svg>
+                {/* BSC / BNB */}
+                <svg width="16" height="16" viewBox="0 0 126 126" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M38.73 63l-24.32 24.32L0 72.91 63 9.91l63 63-14.41 14.41L63 38.73 38.73 63zm0 0L63 87.27 87.27 63l14.41 14.41L63 116.09 24.32 77.41 38.73 63z" fill="currentColor" fillOpacity="0.8"/>
+                </svg>
+                {/* Base */}
+                <svg width="16" height="16" viewBox="0 0 111 111" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <circle cx="55.5" cy="55.5" r="55.5" fill="currentColor" fillOpacity="0.15"/>
+                  <path d="M55.39 94.42c21.51 0 38.94-17.43 38.94-38.92 0-21.5-17.43-38.92-38.94-38.92-20.19 0-36.8 15.36-38.72 35.04h25.78v7.76H16.67c1.92 19.68 18.53 35.04 38.72 35.04z" fill="currentColor" fillOpacity="0.8"/>
+                </svg>
+              </span>
+            </a>
+          </div>
         </div>
 
         {/* Scroll hint */}
