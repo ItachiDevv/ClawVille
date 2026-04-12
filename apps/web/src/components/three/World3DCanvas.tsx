@@ -483,6 +483,10 @@ function StaggeredTextureUpload() {
 // ---------------------------------------------------------------------------
 // Scene contents (inside Canvas)
 // ---------------------------------------------------------------------------
+// Detect touch/mobile once (stable across re-renders)
+const isTouchDevice = typeof window !== 'undefined' &&
+  (window.matchMedia('(pointer: coarse)').matches || window.innerWidth < 768);
+
 const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode }) {
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
   const isGame = mode === 'game';
@@ -492,9 +496,13 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
   // controlMode — which we do for the controller switch below.
   const controlMode = useGameStore((s) => s.controlMode);
 
+  // On mobile/touch, always use follow camera so the joystick-driven avatar
+  // movement is visible. On desktop, explore mode gets free camera.
+  const useFollowCam = isTouchDevice || controlMode !== 'explore';
+
   // Tight follow distance for any mode where the camera tracks a character.
   // Explore mode ('explore' + arena) gets a wider minDistance for free-look.
-  const followMode = controlMode !== 'explore';
+  const followMode = useFollowCam;
 
   return (
     <>
@@ -518,22 +526,25 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       <OrbitControls
         ref={controlsRef}
         makeDefault
-        enablePan={true}
+        enablePan={!isTouchDevice}
         enableZoom={true}
         enableRotate={true}
         minDistance={followMode ? 20 : 80}
         maxDistance={1200}
         maxPolarAngle={Math.PI * 0.85}
+        rotateSpeed={isTouchDevice ? 0.4 : 1}
+        zoomSpeed={isTouchDevice ? 0.6 : 1}
         target={[0, 10, -50]}
       />
 
       {/* Camera controller routing based on controlMode:
-            explore    → WASDCameraController (free cam, WASD pans world)
-            player     → FPSFollowCamera (follows player avatar)
-            autonomous → FPSFollowCamera (follows player avatar, WASD drives avatar not camera)
-            npc        → FPSFollowCamera (follows possessed NPC)
+            explore (desktop) → WASDCameraController (free cam, WASD pans world)
+            explore (mobile)  → FPSFollowCamera (follows avatar so joystick works)
+            player            → FPSFollowCamera (follows player avatar)
+            autonomous        → FPSFollowCamera (follows player avatar)
+            npc               → FPSFollowCamera (follows possessed NPC)
           Arrow key rotation is always active in all modes. */}
-      {controlMode === 'explore' ? (
+      {!useFollowCam ? (
         <WASDCameraController controlsRef={controlsRef} />
       ) : (
         <FPSFollowCamera controlsRef={controlsRef} />
