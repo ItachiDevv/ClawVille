@@ -67,3 +67,5 @@ miladyApp.txt
 apps/web/public/models/.draco-backup/
 # WebP texture compression originals — same rationale as .draco-backup above.
 apps/web/public/models/.webp-backup/
+# KTX2 compression originals — pre-compression WebP backups.
+apps/web/public/models/.ktx2-backup/

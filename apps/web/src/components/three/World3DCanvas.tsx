@@ -26,6 +26,7 @@ import QuestNpc from '@/lib/three/quest-npc';
 import BountyBoardObject from '@/lib/three/bounty-board-object';
 import BazaarPedestals from '@/lib/three/bazaar-pedestals';
 import AuctionPodium from '@/lib/three/auction-podium';
+import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 import { useGameStore } from '@/stores/game';
 import { useNpcStore } from '@/stores/npc';
 
@@ -388,6 +389,11 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       {/* Pre-compile WebGPU render pipelines once after the first frame commit.
           Eliminates the 274ms post-mount main-thread hitch. No-ops on WebGL. */}
       <PreCompilePipelines />
+
+      {/* KTX2Loader initialisation — detects GPU compressed format support
+          (BC7 on Iris Xe via WebGPU) and arms the module-level singleton used
+          by useGLTFWithKTX2. Must render before any KTX2-textured GLB loads. */}
+      <KTX2LoaderSetup />
 
       {/* Camera controls.
           Target at z=-50 centres on the middle building row (z ≈ -64) so the
