@@ -678,7 +678,14 @@ export const api = {
   getAgentRoster: () =>
     honoRequest<{ agents: any[] }>('/api/agent-setup/roster'),
 
-  createAgent: (data: { name: string; species: string; color: string; gender: string; archetype: string; personality: any; stats: any }) =>
+  createAgent: (data: {
+    name: string;
+    species: string;
+    color: string;
+    gender: string;
+    archetypeId: string;
+    personality: { habitat: string; hobby: string; greeting: string };
+  }) =>
     honoRequest<{ agent: any }>('/api/agent-setup/create', { method: 'POST', body: JSON.stringify(data) }),
 
   activateAgent: (id: string) =>
