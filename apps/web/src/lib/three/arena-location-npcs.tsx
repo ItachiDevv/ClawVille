@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useMemo, memo, Suspense } from 'react';
+import { useRef, useMemo, memo, Suspense, useEffect, type ReactElement } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
@@ -47,14 +47,9 @@ const LOCATION_NPCS: Record<string, {
   'config-citadel':    { name: 'Larry',        model: '/models/lobster.glb',              offsetX: 0, offsetZ: 1 },
 };
 
-// Preload all character models
-const preloaded = new Set<string>();
-Object.values(LOCATION_NPCS).forEach(({ model }) => {
-  if (!preloaded.has(model)) {
-    useGLTF.preload(model);
-    preloaded.add(model);
-  }
-});
+// Character model preloads are deferred — see DeferredNpcPreloads exported below.
+// useGLTF() inside LocationNpc will Suspense-throw if the cache isn't warm yet;
+// the ArenaLocationNpcs Suspense fallback={null} wrapper absorbs that safely.
 
 /** Measure bounding box and return scale for target height.
  *  Characters use max dimension (no ground planes to worry about). */
@@ -142,6 +137,30 @@ const LocationNpc = memo(function LocationNpc({
     </group>
   );
 });
+
+// ---------------------------------------------------------------------------
+// DeferredNpcPreloads
+// Render OUTSIDE the Canvas — fires after first paint via requestAnimationFrame.
+// All 9 SpongeBob character GLBs + the lobster NPC are loaded here, not at
+// module-evaluation time, so they don't compete with buildings + player on the
+// initial frame. ArenaLocationNpcs is wrapped in Suspense fallback={null} so
+// NPCs render nothing until each model resolves.
+// ---------------------------------------------------------------------------
+export function DeferredNpcPreloads(): ReactElement | null {
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      const seen = new Set<string>();
+      Object.values(LOCATION_NPCS).forEach(({ model }) => {
+        if (!seen.has(model)) {
+          useGLTF.preload(model);
+          seen.add(model);
+        }
+      });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, []);
+  return null;
+}
 
 export default function ArenaLocationNpcs() {
   const npcs = useMemo(() => {
