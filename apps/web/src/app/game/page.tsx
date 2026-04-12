@@ -8,6 +8,7 @@ import { usePet } from '@/hooks/use-pet';
 import { useNpcStream } from '@/hooks/use-npc-stream';
 import { useGameStore, type GameState } from '@/stores/game';
 import { api } from '@/lib/api';
+import SeaLoadingScreen from '@/components/game/sea-loading-screen';
 import PetSettingsModal from '@/components/game/pet-settings-modal';
 import LocationConfigModal from '@/components/game/location-config-modal';
 import TutorialOverlay from '@/components/game/tutorial-overlay';
@@ -38,13 +39,8 @@ import { DeferredNpcPreloads } from '@/lib/three/arena-location-npcs';
 
 const World3DCanvas = dynamic(() => import('@/components/three/World3DCanvas'), {
   ssr: false,
-  loading: () => (
-    <div className="w-full h-full flex items-center justify-center bg-claw-bg-dark">
-      <p className="font-clawville text-white text-xl animate-pulse">
-        Loading 3D world...
-      </p>
-    </div>
-  ),
+  // SeaLoadingScreen handles the loading state — no separate fallback needed here
+  loading: () => null,
 });
 
 const ChatPanel = dynamic(() => import('@/components/game/chat-panel'), {
@@ -149,10 +145,8 @@ export default function GamePage() {
 
   if (isLoading || authLoading) {
     return (
-      <div className="game-container flex items-center justify-center bg-claw-bg-dark">
-        <p className="font-clawville text-white text-2xl animate-pulse">
-          Loading world...
-        </p>
+      <div className="game-container">
+        <SeaLoadingScreen />
       </div>
     );
   }
@@ -161,6 +155,8 @@ export default function GamePage() {
 
   return (
     <div className="game-container">
+      {/* Sea loading overlay — renders immediately, fades out once window.__W3D is set */}
+      <SeaLoadingScreen />
       <World3DCanvas mode="game" />
       <BuildingTooltip />
       <NanoClawBanner />
