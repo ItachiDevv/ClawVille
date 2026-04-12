@@ -504,13 +504,21 @@ export class ElizaRuntime {
    * Each provider contributes a text slice; they're concatenated in
    * position order (lower position = earlier in the prompt).
    */
-  private async runProviders(state: Record<string, any>): Promise<string> {
+  private async runProviders(state: Record<string, any>, userMessage?: string): Promise<string> {
     const providers = clawvillePlugin.providers as Provider[];
     const results: { position: number; text: string }[] = [];
 
+    // Inject userMessage into state so KnowledgeProvider can embed it
+    // for vector similarity search (Phase 2 RAG)
+    if (userMessage) {
+      state.userMessage = userMessage;
+    }
+
+    const message = userMessage ? { content: { text: userMessage } } : null;
+
     for (const provider of providers) {
       try {
-        const result: ProviderResult = await provider.get(this.runtime, null, state);
+        const result: ProviderResult = await provider.get(this.runtime, message, state);
         if (result.text && result.text.trim().length > 0) {
           results.push({ position: provider.position ?? 999, text: result.text });
         }
@@ -680,7 +688,7 @@ export class ElizaRuntime {
 
       // 1. Provider-generated context (replaces manual dynamicContext)
       const providerState = context.state ?? {};
-      const providerContext = await this.runProviders(providerState);
+      const providerContext = await this.runProviders(providerState, content);
       if (providerContext.length > 0) {
         promptParts.push(`[Current state context]\n${providerContext}`);
       }
