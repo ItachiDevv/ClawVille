@@ -1,5 +1,5 @@
 import type { Action, ActionResult } from './types';
-import { hasServices, getMessageText, getParam } from './types';
+import { hasServices, getMessageText, getParam , getDbModule } from './types';
 
 /**
  * CLAIM_BOUNTY — claim an open bounty and create an attempt record.
@@ -70,7 +70,7 @@ export const claimBountyAction: Action = {
         };
       }
 
-      const { bounties, bountyAttempts, eq, and } = await import('@clawville/database');
+      const { bounties, bountyAttempts, eq, and } = await getDbModule();
 
       // 1. Find the bounty
       const [bounty] = await db

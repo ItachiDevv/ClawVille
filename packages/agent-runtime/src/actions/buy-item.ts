@@ -1,6 +1,6 @@
 import { KNOWLEDGE_BOOKS, getBookById } from '@clawville/shared';
 import type { Action, ActionResult } from './types';
-import { hasServices, getMessageText, getParam } from './types';
+import { hasServices, getMessageText, getParam , getDbModule } from './types';
 
 /**
  * BUY_ITEM — purchase a knowledge book from the current building's shop.
@@ -91,7 +91,7 @@ export const buyItemAction: Action = {
       }
 
       // Check current balance
-      const { avatars, eq } = await import('@clawville/database');
+      const { avatars, eq } = await getDbModule();
 
       const [avatar] = await db
         .select({ clawTokens: avatars.clawTokens })
@@ -111,7 +111,7 @@ export const buyItemAction: Action = {
       }
 
       // Check if avatar already owns this book
-      const { avatarInventory, and } = await import('@clawville/database');
+      const { avatarInventory, and } = await getDbModule();
 
       const [existing] = await db
         .select({ id: avatarInventory.id, quantity: avatarInventory.quantity })
