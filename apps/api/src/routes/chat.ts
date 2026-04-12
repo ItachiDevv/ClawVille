@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and } from 'drizzle-orm';
-import { db, locationAgents, pets } from '@clawville/database';
+import { db, locationAgents, pets, petInventory } from '@clawville/database';
 import { MAP_LOCATIONS, BUILDING_OPENCLAW_THEMES, getBooksForBuilding, isShopBuilding } from '@clawville/shared';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
@@ -9,9 +9,10 @@ import { agentOrchestrator } from '../services/agent-orchestrator';
 import { awardXp } from '../services/xp-service';
 import { shouldCollaborate, collaborateOnQuery } from '../services/agent-collaboration';
 import { miladyGateway } from '../services/milady-gateway';
-import { creditClawTokens } from '../services/neo-token-ledger';
+import { creditClawTokens, debitClawTokens } from '../services/neo-token-ledger';
 import type { AppContext } from '../types';
 import { z } from 'zod';
+import type { ClawvilleServices } from '@clawville/agent-runtime';
 
 export const chatRoutes = new Hono<AppContext>();
 
@@ -54,32 +55,40 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
     throw new HTTPException(500, { message: 'Failed to start agent runtime' });
   }
 
-  // Build dynamic context for the location agent
-  const dynamicContextParts: string[] = [];
-  const location = MAP_LOCATIONS.find((l) => l.id === locationId);
-
   // Get visitor's pet info
   const pet = await db.query.pets.findFirst({
     where: and(eq(pets.userId, user.id), eq(pets.isActive, true)),
   });
 
+  // Build state object for Providers + Actions
+  const services = { db, creditClawTokens, debitClawTokens } as ClawvilleServices;
+  const state: Record<string, any> = {
+    petId: pet?.id,
+    userId: user.id,
+    services,
+    // Provider data
+    petData: pet ?? null,
+    nearLocation: locationId,
+    characterConfig: (pet?.characterConfig as any) ?? {},
+  };
+
+  // Fetch inventory for InventoryProvider (non-blocking on failure)
   if (pet) {
-    dynamicContextParts.push(`The visitor has a pet named ${pet.name} (a ${pet.species}).`);
+    try {
+      const inv = await db.query.petInventory.findMany({
+        where: eq(petInventory.petId, pet.id),
+      });
+      state.inventory = inv;
+    } catch { /* non-blocking */ }
   }
 
-  // Shop-specific context
-  if (isShopBuilding(locationId)) {
-    const books = getBooksForBuilding(locationId);
-    if (books.length > 0) {
-      const bookList = books.map((b) => `${b.name} (${b.price} ClawTokens)`).join(', ');
-      dynamicContextParts.push(`Your shop sells: ${bookList}. Recommend items naturally in conversation when relevant.`);
-    }
-  }
+  // Extra context that doesn't map to a Provider (collaboration + milady)
+  const extraContextParts: string[] = [];
 
   // OpenClaw theme context
   const openClawTheme = BUILDING_OPENCLAW_THEMES[locationId];
   if (openClawTheme) {
-    dynamicContextParts.push(
+    extraContextParts.push(
       `You specialize in ${openClawTheme.focus}. Share OpenClaw insights and expertise naturally when relevant.`
     );
   }
@@ -94,7 +103,7 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
         timeoutMs: 4000,
       });
       if (collab.combinedContext) {
-        dynamicContextParts.push(collab.combinedContext);
+        extraContextParts.push(collab.combinedContext);
       }
     } catch {
       // Non-blocking — collaboration failure doesn't break chat
@@ -106,23 +115,25 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
     try {
       const insights = await miladyGateway.fetchMiladyInsights(result.data.content, locationId);
       if (insights.length > 0) {
-        dynamicContextParts.push(`[Milady Knowledge]\n${insights.join('\n')}`);
+        extraContextParts.push(`[Milady Knowledge]\n${insights.join('\n')}`);
       }
     } catch {
       // Non-blocking
     }
   }
 
-  const dynamicContext = dynamicContextParts.length > 0
-    ? dynamicContextParts.join('\n')
+  const dynamicContext = extraContextParts.length > 0
+    ? extraContextParts.join('\n')
     : undefined;
 
-  // Process message with dynamic context
+  // Process message — Providers inject pet/world/inventory/quest/knowledge
+  // context automatically; dynamicContext carries collaboration + milady extras
   const response = await runtime.processMessage(result.data.content, {
     userId: user.id,
     roomId: `${locationId}-${user.id}`,
     platform: 'clawville',
     dynamicContext,
+    state,
   });
 
   // Award +1 ClawToken for chatting with a location agent (atomic + audited)
