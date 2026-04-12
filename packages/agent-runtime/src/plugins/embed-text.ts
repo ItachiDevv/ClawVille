@@ -43,6 +43,7 @@ export async function embedText(
     body: JSON.stringify({
       content: { parts: [{ text }] },
     }),
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!res.ok) {
