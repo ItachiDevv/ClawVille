@@ -7,8 +7,8 @@
  * a tall flat plank (BoxGeometry) with 3 smaller parchment planes pinned on.
  * Each parchment uses a rarity-tinted TSL MeshBasicNodeMaterial.
  *
- * Placed adjacent to the Quest NPC at tile (20, 13):
- *   worldX = -640 + 20*32 = 0, worldZ = -400 + 13*32 = 16
+ * Placed adjacent to the Quest NPC in the village center,
+ * 30 units right of center (0, -16).
  *
  * Clicking opens useGameStore().openBountyBoard().
  *
@@ -23,11 +23,11 @@ import { color, float, sin, time, mix } from 'three/tsl';
 import { useGameStore } from '@/stores/game';
 
 // ---------------------------------------------------------------------------
-// World position — adjacent to Quest NPC
-// Tile (20, 13) → worldX = 0, worldZ = 16
+// World position — adjacent to Quest NPC in village center
+// 30 units right of center (0, -16)
 // ---------------------------------------------------------------------------
-const BOARD_X = 0;
-const BOARD_Z = 16;
+const BOARD_X = 30;
+const BOARD_Z = -16;
 const BOARD_Y = -2;
 
 // ---------------------------------------------------------------------------
