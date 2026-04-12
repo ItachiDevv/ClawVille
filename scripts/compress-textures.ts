@@ -22,12 +22,26 @@
  * original even if you run the script multiple times).
  *
  * Targets (ordered by texture bytes, highest first):
- *   underwater-decorations.glb  ~5.97 MB  → estimated ~1.0 MB
- *   spongebob.glb               ~3.26 MB  → estimated ~1.5 MB
- *   pineapple-house.glb         ~3.46 MB  → estimated ~1.8 MB
- *   salty-spitoon.glb           ~3.06 MB  → estimated ~1.5 MB
- *   lobster.glb                 ~1.73 MB  → estimated ~0.9 MB
- *   chum-bucket.glb             ~1.72 MB  → estimated ~0.9 MB
+ *
+ * Pass 1 (2026-04-11) — original 6 heavy GLBs:
+ *   underwater-decorations.glb  ~5.97 MB  → 1.03 MB  (-81.9%)
+ *   spongebob.glb               ~3.26 MB  → 511 KB   (-84.7%)
+ *   pineapple-house.glb         ~3.46 MB  → 544 KB   (-84.6%)
+ *   salty-spitoon.glb           ~3.06 MB  → 379 KB   (-87.9%)
+ *   lobster.glb                 ~1.73 MB  → 195 KB   (-89.0%)
+ *   chum-bucket.glb             ~1.72 MB  → 606 KB   (-66.4%)
+ *
+ * Pass 2 (2026-04-11) — 9 remaining waterfall-tail GLBs (> 200 KB on wire):
+ *   building-seashell.glb       ~1.72 MB
+ *   patty-building.glb          ~1.24 MB
+ *   jellyfish.glb               ~1.19 MB
+ *   characters/gary.glb         ~927 KB
+ *   characters/plankton.glb     ~730 KB
+ *   characters/mrs-puff.glb     ~634 KB
+ *   downtown-building.glb       ~634 KB
+ *   building-chest.glb          ~1.01 MB
+ *   boating-school.glb          ~605 KB
+ *   characters/karen.glb        ~239 KB  (small but included for completeness)
  */
 
 import * as fs from 'fs';
@@ -45,14 +59,28 @@ import draco3d from 'draco3d';
 const MODELS_DIR = path.resolve('apps/web/public/models');
 const BACKUP_DIR = path.join(MODELS_DIR, '.webp-backup');
 
-// Targets ordered by texture byte weight (worst offenders first)
+// Targets ordered by texture byte weight (worst offenders first).
+// Pass 1 files are included so the script is re-runnable; the skip-if-already-WebP
+// guard inside compressTextures() will fast-path them with no disk writes.
 const TARGETS: Array<{ filename: string; subdir?: string }> = [
+  // --- Pass 1 (already compressed — will be skipped via WebP guard) ---
   { filename: 'underwater-decorations.glb' },
   { filename: 'spongebob.glb', subdir: 'characters' },
   { filename: 'pineapple-house.glb' },
   { filename: 'salty-spitoon.glb' },
   { filename: 'lobster.glb' },
   { filename: 'chum-bucket.glb' },
+  // --- Pass 2 (new targets — waterfall tail GLBs > 200 KB) ---
+  { filename: 'building-seashell.glb' },
+  { filename: 'patty-building.glb' },
+  { filename: 'jellyfish.glb' },
+  { filename: 'gary.glb', subdir: 'characters' },
+  { filename: 'plankton.glb', subdir: 'characters' },
+  { filename: 'mrs-puff.glb', subdir: 'characters' },
+  { filename: 'downtown-building.glb' },
+  { filename: 'building-chest.glb' },
+  { filename: 'boating-school.glb' },
+  { filename: 'karen.glb', subdir: 'characters' },
 ];
 
 // WebP quality for diffuse/colour textures.
