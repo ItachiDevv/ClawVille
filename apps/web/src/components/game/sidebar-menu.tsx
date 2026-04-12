@@ -515,7 +515,7 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
 
   const handleCreateAgent = () => {
     closeMenu();
-    router.push('/select-agent');
+    router.push('/create-avatar');
   };
 
   const handleLogout = async () => {
