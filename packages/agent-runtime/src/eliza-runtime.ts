@@ -21,6 +21,9 @@ import { loadLocationTemplate } from './character-loader';
 import { createOpenClawProviderPlugin, type OpenClawGatewayConfig } from './plugins/openclaw-provider';
 import { createGeminiEmbeddingPlugin } from './plugins/gemini-embedding-provider';
 import { createGeminiTextPlugin } from './plugins/gemini-text-provider';
+import { clawvillePlugin } from './plugins/clawville-plugin';
+import type { Provider, ProviderResult } from './providers/types';
+import type { Action, ActionResult, ClawvilleActionState } from './actions/types';
 
 const ROOM_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
 
@@ -492,9 +495,122 @@ export class ElizaRuntime {
     return `\n\nPrevious conversation:\n${lines.join('\n')}\n\n`;
   }
 
+  // ---------------------------------------------------------------------------
+  // Provider + Action integration
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Run all registered Providers to build context for the prompt.
+   * Each provider contributes a text slice; they're concatenated in
+   * position order (lower position = earlier in the prompt).
+   */
+  private async runProviders(state: Record<string, any>): Promise<string> {
+    const providers = clawvillePlugin.providers as Provider[];
+    const results: { position: number; text: string }[] = [];
+
+    for (const provider of providers) {
+      try {
+        const result: ProviderResult = await provider.get(this.runtime, null, state);
+        if (result.text && result.text.trim().length > 0) {
+          results.push({ position: provider.position ?? 999, text: result.text });
+        }
+      } catch (err) {
+        console.warn(`[ElizaRuntime] Provider ${provider.name} failed:`, err);
+      }
+    }
+
+    results.sort((a, b) => a.position - b.position);
+    return results.map((r) => r.text).join('\n');
+  }
+
+  /**
+   * Build a description block of available actions for the system prompt
+   * so the LLM knows what it can invoke.
+   */
+  private buildActionDescriptions(state: Record<string, any>): string {
+    const actions = clawvillePlugin.actions as Action[];
+    if (actions.length === 0) return '';
+
+    const lines = actions.map((a) => {
+      const params = a.parameters?.map((p) => `${p.name}: ${p.description}`).join(', ') ?? 'none';
+      return `- ${a.name}: ${a.description} (params: ${params})`;
+    });
+
+    return [
+      '[Available Actions]',
+      'You can execute game actions by including [ACTION: ACTION_NAME(param=value)] in your response.',
+      'Only use an action when the user clearly requests it. Most messages just need a normal conversational reply.',
+      ...lines,
+    ].join('\n');
+  }
+
+  /**
+   * Parse the LLM response for action invocations matching the pattern:
+   *   [ACTION: ACTION_NAME(param1=value1, param2=value2)]
+   * Returns the first match or null.
+   */
+  private parseActionInvocation(text: string): { actionName: string; params: Record<string, string> } | null {
+    const match = text.match(/\[ACTION:\s*(\w+)\(([^)]*)\)\]/);
+    if (!match) return null;
+
+    const actionName = match[1];
+    const paramStr = match[2].trim();
+    const params: Record<string, string> = {};
+
+    if (paramStr.length > 0) {
+      for (const part of paramStr.split(',')) {
+        const [key, ...rest] = part.split('=');
+        if (key && rest.length > 0) {
+          params[key.trim()] = rest.join('=').trim();
+        }
+      }
+    }
+
+    return { actionName, params };
+  }
+
+  /**
+   * Execute a parsed action invocation against the registered actions.
+   */
+  private async executeAction(
+    actionName: string,
+    params: Record<string, string>,
+    state: Record<string, any>,
+  ): Promise<ActionResult | null> {
+    const actions = clawvillePlugin.actions as Action[];
+    const action = actions.find((a) => a.name === actionName);
+    if (!action) {
+      console.warn(`[ElizaRuntime] Unknown action: ${actionName}`);
+      return null;
+    }
+
+    try {
+      const message = { content: { text: '' }, ...params };
+      const options = { parameters: params };
+      const result = await action.handler(this.runtime, message, state, options);
+      console.log(`[ElizaRuntime] Action ${actionName} result: success=${result.success}`);
+      return result;
+    } catch (err) {
+      console.error(`[ElizaRuntime] Action ${actionName} failed:`, err);
+      return { success: false, text: `Action failed: ${(err as Error).message}` };
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // processMessage — enhanced with Providers + Actions
+  // ---------------------------------------------------------------------------
+
   async processMessage(
     content: string,
-    context: { userId?: string; roomId?: string; platform?: string; dynamicContext?: string } = {}
+    context: {
+      userId?: string;
+      roomId?: string;
+      platform?: string;
+      /** @deprecated Use `state` + Providers instead. Still supported for backward compat. */
+      dynamicContext?: string;
+      /** State object for Providers and Actions (petData, worldSnapshot, services, etc.) */
+      state?: Record<string, any>;
+    } = {}
   ): Promise<ElizaMessage> {
     if (this.state !== 'running' || !this.runtime) {
       throw new Error(`Agent is not running (state: ${this.state})`);
@@ -503,7 +619,6 @@ export class ElizaRuntime {
     try {
       const userKey = context.userId || 'anonymous';
       const roomId = generateRoomId(this.config.agentId, userKey);
-      // Derive a deterministic UUID from the userId string (may not be a valid UUID)
       const entityId = uuidv5(userKey, ROOM_NAMESPACE) as UUID;
       const agentId = this.config.agentId as UUID;
 
@@ -529,22 +644,74 @@ export class ElizaRuntime {
         'messages'
       );
 
-      // Build prompt: dynamic context → conversation history → user message
-      let promptParts: string[] = [];
-      if (context.dynamicContext) {
-        promptParts.push(`[Current state context]\n${context.dynamicContext}`);
+      // --- Build prompt ---
+      const promptParts: string[] = [];
+
+      // 1. Provider-generated context (replaces manual dynamicContext)
+      const providerState = context.state ?? {};
+      const providerContext = await this.runProviders(providerState);
+      if (providerContext.length > 0) {
+        promptParts.push(`[Current state context]\n${providerContext}`);
       }
+
+      // 2. Backward compat: if dynamicContext is still passed directly, append it
+      if (context.dynamicContext) {
+        promptParts.push(context.dynamicContext);
+      }
+
+      // 3. Available actions (only if state has services — i.e., actions are executable)
+      if (providerState.services) {
+        const actionDescriptions = this.buildActionDescriptions(providerState);
+        if (actionDescriptions.length > 0) {
+          promptParts.push(actionDescriptions);
+        }
+      }
+
+      // 4. Conversation history
       if (historyContext) {
         promptParts.push(historyContext.trim());
       }
+
+      // 5. User message
       promptParts.push(`User: ${content}\n\nRespond to the user's latest message.`);
+
       const promptWithHistory = promptParts.join('\n\n');
 
-      // v2: GenerateTextOptions requires stopSequences (empty array is fine)
+      // --- Generate LLM response ---
       const result = await this.runtime.generateText(promptWithHistory, {
         maxTokens: 1000,
         stopSequences: [],
       });
+
+      let responseText = result.text;
+      let actionExecuted: { name: string; result: ActionResult } | undefined;
+
+      // --- Action dispatch ---
+      // If the LLM response contains [ACTION: ...], parse and execute it
+      if (providerState.services) {
+        const invocation = this.parseActionInvocation(responseText);
+        if (invocation) {
+          const actionResult = await this.executeAction(
+            invocation.actionName,
+            invocation.params,
+            providerState,
+          );
+
+          if (actionResult) {
+            actionExecuted = { name: invocation.actionName, result: actionResult };
+
+            // Strip the action tag from the response text
+            responseText = responseText.replace(/\[ACTION:\s*\w+\([^)]*\)\]/, '').trim();
+
+            // Append action result to the response
+            if (actionResult.text) {
+              responseText = responseText
+                ? `${responseText}\n\n${actionResult.text}`
+                : actionResult.text;
+            }
+          }
+        }
+      }
 
       // Store assistant response
       const assistantMemoryId = crypto.randomUUID() as UUID;
@@ -554,18 +721,26 @@ export class ElizaRuntime {
           agentId,
           entityId: agentId,
           roomId,
-          content: { text: result.text, source: 'agent' } as Content,
+          content: { text: responseText, source: 'agent' } as Content,
           createdAt: Date.now(),
-          metadata: { type: 'message', source: 'agent' },
+          metadata: {
+            type: 'message',
+            source: 'agent',
+            ...(actionExecuted ? { action: actionExecuted.name, actionSuccess: actionExecuted.result.success } : {}),
+          },
         },
         'messages'
       );
 
       const responseMessage: ElizaMessage = {
         role: 'assistant',
-        content: result.text,
+        content: responseText,
         timestamp: new Date(),
-        metadata: { agentId: this.config.agentId, memoryId: assistantMemoryId },
+        metadata: {
+          agentId: this.config.agentId,
+          memoryId: assistantMemoryId,
+          ...(actionExecuted ? { action: actionExecuted.name, actionResult: actionExecuted.result } : {}),
+        },
       };
 
       this.config.onMessage?.(responseMessage);

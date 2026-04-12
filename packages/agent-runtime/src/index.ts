@@ -4,6 +4,14 @@ export { createOpenClawProviderPlugin } from './plugins/openclaw-provider';
 export type { OpenClawGatewayConfig } from './plugins/openclaw-provider';
 export { loadLocationTemplate, mergeCustomizations } from './character-loader';
 
+// ClawVille game plugin (Actions + Providers — Phase 1 deeper ElizaOS integration)
+export { clawvillePlugin } from './plugins/clawville-plugin';
+export type { ClawvillePlugin } from './plugins/clawville-plugin';
+export { allActions } from './actions/index';
+export { allProviders } from './providers/index';
+export type { Action, ActionResult, ClawvilleActionState, ClawvilleServices } from './actions/types';
+export type { Provider, ProviderResult } from './providers/types';
+
 // Gemini text generation provider (Phase 3 — global default for text gen)
 export { createGeminiTextPlugin, createGeminiProTextPlugin } from './plugins/gemini-text-provider';
 export type { GeminiTextConfig } from './plugins/gemini-text-provider';
