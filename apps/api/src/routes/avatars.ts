@@ -8,7 +8,8 @@ import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { npcSimulation } from '../services/npc-simulation';
-import { creditClawTokens } from '../services/neo-token-ledger';
+import { creditClawTokens, debitClawTokens } from '../services/neo-token-ledger';
+import type { ClawvilleServices } from '@clawville/agent-runtime';
 import { ensureWallet } from '../services/wallet-service';
 import type { AppContext } from '../types';
 import { z } from 'zod';
@@ -273,43 +274,38 @@ avatarRoutes.post('/me/chat', requireAuth, async (c) => {
     throw new HTTPException(500, { message: 'Failed to start avatar agent runtime' });
   }
 
-  // Build dynamic context for the avatar
-  const dynamicContextParts: string[] = [];
+  // Build state for Providers + Actions
+  const services = { db, creditClawTokens, debitClawTokens } as ClawvilleServices;
 
-  // Token balance
-  dynamicContextParts.push(`Your owner has ${avatar.clawTokens} ClawTokens.`);
-
-  // Knowledge / learned books
-  const characterConfig = (avatar.characterConfig as any) ?? {};
-  const knowledgeCount = (characterConfig.knowledge as string[] | undefined)?.length ?? 0;
-  if (knowledgeCount > 0) {
-    dynamicContextParts.push(
-      `You have studied ${knowledgeCount} knowledge entries and can discuss them knowledgeably.`
-    );
-  }
-
-  // World state context (NPCs + activities)
+  let worldSnapshot: any = null;
   try {
-    const snapshot = npcSimulation.getSnapshot();
-    const npcSummaries = snapshot.npcs
-      .filter((n: any) => !n.isDead)
-      .slice(0, 8)
-      .map((n: any) => `${n.name} is ${n.activity ?? 'idle'}${n.destinationBuildingId ? ` near ${n.destinationBuildingId}` : ''}`);
-    if (npcSummaries.length > 0) {
-      dynamicContextParts.push(`[World activity]\n${npcSummaries.join('. ')}.`);
-    }
-  } catch (_) {
-    // NPC simulation may not be running
-  }
+    worldSnapshot = npcSimulation.getSnapshot();
+  } catch { /* NPC simulation may not be running */ }
 
-  const dynamicContext = dynamicContextParts.join('\n');
+  let inventory: any[] = [];
+  try {
+    inventory = await db.query.avatarInventory.findMany({
+      where: eq(avatarInventory.avatarId, avatar.id),
+    });
+  } catch { /* non-blocking */ }
 
-  // Process message with dynamic context
+  const state: Record<string, any> = {
+    avatarId: avatar.id,
+    userId: user.id,
+    services,
+    petData: avatar,
+    worldSnapshot,
+    inventory,
+    characterConfig: (avatar.characterConfig as any) ?? {},
+  };
+
+  // Process message — Providers inject avatar/world/inventory/quest/knowledge
+  // context automatically; no manual dynamicContext needed for avatar chat
   const response = await runtime.processMessage(result.data.content, {
     userId: user.id,
     roomId: `avatar-${avatar.id}-${user.id}`,
     platform: 'clawville',
-    dynamicContext,
+    state,
   });
 
   return c.json({
