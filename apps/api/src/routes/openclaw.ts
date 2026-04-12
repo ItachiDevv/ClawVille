@@ -402,16 +402,22 @@ openclawRoutes.post('/chat', async (c) => {
     return c.json({ error: 'OpenClaw session not found. Bot may have disconnected.' }, 404);
   }
 
-  // Build dynamic context for ElizaOS
+  // Look up actual bot data from DB instead of trusting client petContext
+  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const bot = botConfig
+    ? await db.query.openclawBots.findFirst({
+        where: eq(openclawBots.agentId, botConfig.agentId),
+      })
+    : null;
+
+  // Use DB data, fall back to client petContext only for display name/species
+  const botName = bot?.name ?? petContext?.name ?? 'agent';
+  const botKnowledge: string[] = bot?.knowledge ?? petContext?.knowledge ?? [];
+
+  // Dynamic context — only non-Provider extras (archetype hint, no token/knowledge duplication)
   const contextParts: string[] = [];
   if (petContext?.archetype) {
     contextParts.push(`Personality archetype: "${petContext.archetype}".`);
-  }
-  if (petContext?.clawTokens !== undefined) {
-    contextParts.push(`ClawTokens: ${petContext.clawTokens}.`);
-  }
-  if (petContext?.knowledge && petContext.knowledge.length > 0) {
-    contextParts.push(`OpenClaw knowledge:\n${petContext.knowledge.slice(0, 20).map((k) => `- ${k}`).join('\n')}`);
   }
 
   // Try ElizaOS runtime first
@@ -421,17 +427,22 @@ openclawRoutes.post('/chat', async (c) => {
     try {
       const runtime = await agentOrchestrator.ensureAgentRuntime(elizaAgentId);
       if (runtime) {
-        // Phase 4: inject services so external agents can use Actions
         const services = { db, creditClawTokens, debitClawTokens } as ClawvilleServices;
         const state: Record<string, any> = {
-          avatarId: sessionId,
-          userId: petContext?.name ?? 'user',
+          avatarId: bot?.id ?? sessionId,
+          userId: botName,
           services,
-          petData: petContext ?? null,
-          characterConfig: petContext?.knowledge ? { knowledge: petContext.knowledge } : {},
+          petData: bot ? {
+            id: bot.id,
+            name: bot.name,
+            species: bot.species ?? petContext?.species ?? 'cat',
+            clawTokens: (bot as any).clawTokens ?? 0,
+          } : null,
+          characterConfig: { knowledge: botKnowledge },
+          userMessage: content,
         };
         const result = await runtime.processMessage(content, {
-          userId: petContext?.name ?? 'user',
+          userId: botName,
           dynamicContext: contextParts.length > 0 ? contextParts.join('\n') : undefined,
           state,
         });
@@ -518,15 +529,20 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
     systemParts.push('You are an NPC in ClawVille World — an OpenClaw agent training game.');
   }
 
-  if (petContext?.name) {
-    systemParts.push(`The visitor is ${petContext.name}, a ${petContext.species ?? 'avatar'}.`);
+  // Look up actual bot data from DB (same as /chat endpoint)
+  const locBotConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  const locBot = locBotConfig
+    ? await db.query.openclawBots.findFirst({
+        where: eq(openclawBots.agentId, locBotConfig.agentId),
+      })
+    : null;
+
+  const locBotName = locBot?.name ?? petContext?.name ?? 'visitor';
+
+  if (locBotName) {
+    systemParts.push(`The visitor is ${locBotName}, a ${locBot?.species ?? petContext?.species ?? 'avatar'}.`);
   }
-  if (petContext?.clawTokens !== undefined) {
-    systemParts.push(`They have ${petContext.clawTokens} ClawTokens.`);
-  }
-  if (petContext?.knowledge && petContext.knowledge.length > 0) {
-    systemParts.push(`Their current OpenClaw knowledge:\n${petContext.knowledge.slice(0, 15).map((k) => `- ${k}`).join('\n')}`);
-  }
+  // ClawTokens and knowledge are handled by Providers — no manual duplication
 
   let reply: string | undefined;
 
@@ -536,17 +552,23 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
     try {
       const runtime = await agentOrchestrator.ensureAgentRuntime(elizaAgentId);
       if (runtime) {
-        // Phase 4: inject services so external agents can use Actions
         const locServices = { db, creditClawTokens, debitClawTokens } as ClawvilleServices;
         const locState: Record<string, any> = {
-          avatarId: sessionId,
-          userId: petContext?.name ?? 'visitor',
+          avatarId: locBot?.id ?? sessionId,
+          userId: locBotName,
           services: locServices,
-          petData: petContext ?? null,
-          characterConfig: petContext?.knowledge ? { knowledge: petContext.knowledge } : {},
+          petData: locBot ? {
+            id: locBot.id,
+            name: locBot.name,
+            species: locBot.species ?? 'cat',
+            clawTokens: (locBot as any).clawTokens ?? 0,
+          } : null,
+          nearLocation: locationId,
+          characterConfig: { knowledge: locBot?.knowledge ?? petContext?.knowledge ?? [] },
+          userMessage: content,
         };
         const result = await runtime.processMessage(content, {
-          userId: petContext?.name ?? 'visitor',
+          userId: locBotName,
           dynamicContext: systemParts.join('\n'),
           state: locState,
         });
