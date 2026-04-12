@@ -21,8 +21,8 @@ import { applyStationaryIdleAnimation, idToSeed } from '@/lib/three/procedural-a
 const OFFSET_X = -MAP_WIDTH / 2;
 const OFFSET_Z = -MAP_HEIGHT / 2;
 
-// Target height in world units for all character NPCs — visible next to 100-unit buildings
-const CHARACTER_HEIGHT = 30;
+// Target height in world units for all character NPCs — visible next to 160-unit buildings
+const CHARACTER_HEIGHT = 20;
 
 const _locRaycaster = new THREE.Raycaster();
 _locRaycaster.layers.set(TERRAIN_LAYER);
@@ -71,8 +71,8 @@ function computeNpcPlacement(zone: { x: number; y: number; width: number; height
   const dz = VILLAGE_CENTER_TILE_Z - bcz;
   const len = Math.sqrt(dx * dx + dz * dz);
 
-  // NPC stands 2.5 tiles inside from the building center, toward the village center
-  const NPC_INSET_TILES = 2.5;
+  // NPC stands 3.5 tiles inside from the building center, toward the village center
+  const NPC_INSET_TILES = 3.5;
   let npcTileX = bcx;
   let npcTileZ = bcz;
   if (len > 0.001) {
