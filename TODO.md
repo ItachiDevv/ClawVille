@@ -9,6 +9,20 @@
 
 ---
 
+## 🔴 BUGS — Must fix before anything else
+
+### ~~BUG 2: Landing page missing "Explore" button~~ FIXED
+Landing page now has "Enter ClawVille" + "Explore World" buttons.
+
+### ~~BUG 1: Agent creation fails with 4xx error on /select-agent~~ FIXED
+The onboarding flow now uses `/create-pet` (species/color/name) → `/create-pet/personality` (archetype/traits) → `/game`. Tested 2026-04-12: sign up → create pet → enter game works end-to-end. The old `/select-agent` 6-slot page still exists but is no longer the primary onboarding path.
+**Note:** The personality page has a layout bug — huge empty space between archetype cards and the CREATE button (habitat/hobby/greeting selectors not visible). UX issue, not a blocker.
+
+### ~~BUG 3: /select-agent allows 6-agent roster (should be 1 per user)~~ FIXED
+`/select-agent` now redirects to `/create-pet` (single-agent flow). All references in `game/page.tsx` and `sidebar-menu.tsx` updated to point to `/create-pet`. The old 6-slot roster code replaced with a redirect stub.
+
+---
+
 ## 🔴 IMMEDIATE — Treasury wallet import
 
 **Drop the file at exactly this path:**
