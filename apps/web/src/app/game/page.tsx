@@ -33,6 +33,8 @@ import ThoughtLog from '@/components/game/thought-log';
 import ControlModeToggle from '@/components/game/control-mode-toggle';
 import AutonomyHUD from '@/components/game/autonomy-hud';
 import { useResearchStream } from '@/hooks/use-research-stream';
+import { DeferredTerrainPreloads } from '@/lib/three/arena-terrain';
+import { DeferredNpcPreloads } from '@/lib/three/arena-location-npcs';
 
 const World3DCanvas = dynamic(() => import('@/components/three/World3DCanvas'), {
   ssr: false,
@@ -202,6 +204,13 @@ export default function GamePage() {
 
       {/* Research thought log — visible for all users */}
       <ThoughtLog />
+
+      {/* Deferred GLB preloads — fire after first paint via requestAnimationFrame.
+          These components render nothing; they only schedule useGLTF.preload()
+          calls for assets that aren't needed on the first frame (decorations,
+          location NPCs, underwater-decorations.glb). */}
+      <DeferredTerrainPreloads />
+      <DeferredNpcPreloads />
     </div>
   );
 }
