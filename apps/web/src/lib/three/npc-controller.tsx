@@ -11,7 +11,7 @@
 import { useEffect, useRef } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
-import { useGameStore } from '@/stores/game';
+import { useGameStore, type GameState } from '@/stores/game';
 import { useNpcStore } from '@/stores/npc';
 import type { NpcSpriteState } from '@/stores/npc';
 import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tilemap-data';
@@ -97,16 +97,55 @@ export default function NpcController() {
     // Only active in npc mode with a possessed target
     if (controlMode !== 'npc' || !possessedNpcId) return;
 
-    // Raw WASD input
-    let inputFwd = 0;
-    let inputRight = 0;
-    if (_keys.w) inputFwd += 1;
-    if (_keys.s) inputFwd -= 1;
-    if (_keys.a) inputRight -= 1;
-    if (_keys.d) inputRight += 1;
+    // Check joystick input first (mobile), then WASD (keyboard)
+    let vx = 0;
+    let vy = 0;
 
-    // No input — set idle (keep last facingAngle so lobster doesn't snap)
-    if (inputFwd === 0 && inputRight === 0) {
+    const { joystickVelocity } = useGameStore.getState() as GameState;
+    if (joystickVelocity.x !== 0 || joystickVelocity.y !== 0) {
+      // Screen-relative joystick: up=vy<0, right=vx>0
+      vx = joystickVelocity.x;
+      vy = joystickVelocity.y;
+    } else {
+      // Raw WASD input → camera-relative
+      let inputFwd = 0;
+      let inputRight = 0;
+      if (_keys.w) inputFwd += 1;
+      if (_keys.s) inputFwd -= 1;
+      if (_keys.a) inputRight -= 1;
+      if (_keys.d) inputRight += 1;
+
+      if (inputFwd === 0 && inputRight === 0) {
+        // No input — set idle (keep last facingAngle so lobster doesn't snap)
+        const npc = useNpcStore.getState().npcs.find((n) => n.id === possessedNpcId);
+        if (npc && npc.direction !== 'idle') {
+          useNpcStore.getState().moveNpc(possessedNpcId, npc.x, npc.y, 'idle', npc.facingAngle);
+        }
+        return;
+      }
+
+      // Normalize diagonal
+      if (inputFwd !== 0 && inputRight !== 0) {
+        const len = Math.sqrt(inputFwd * inputFwd + inputRight * inputRight);
+        inputFwd /= len;
+        inputRight /= len;
+      }
+
+      // Camera-relative movement: project camera forward onto XZ ground plane
+      camera.getWorldDirection(_camForward);
+      _camForward.y = 0;
+      _camForward.normalize();
+
+      // Right vector: cross forward with world up
+      _camRight.crossVectors(_camForward, _worldUp).normalize();
+
+      // World-space velocity (XZ plane)
+      vx = _camForward.x * inputFwd + _camRight.x * inputRight;
+      vy = _camForward.z * inputFwd + _camRight.z * inputRight;
+    }
+
+    // No movement after transform — set idle
+    if (vx === 0 && vy === 0) {
       const npc = useNpcStore.getState().npcs.find((n) => n.id === possessedNpcId);
       if (npc && npc.direction !== 'idle') {
         useNpcStore.getState().moveNpc(possessedNpcId, npc.x, npc.y, 'idle', npc.facingAngle);
@@ -114,45 +153,8 @@ export default function NpcController() {
       return;
     }
 
-    // Normalize diagonal
-    if (inputFwd !== 0 && inputRight !== 0) {
-      const len = Math.sqrt(inputFwd * inputFwd + inputRight * inputRight);
-      inputFwd /= len;
-      inputRight /= len;
-    }
-
-    // Camera-relative movement: project camera forward onto XZ ground plane
-    camera.getWorldDirection(_camForward);
-    _camForward.y = 0;
-    _camForward.normalize();
-
-    // Right vector: cross forward with world up
-    _camRight.crossVectors(_camForward, _worldUp).normalize();
-
-    // World-space velocity (XZ plane)
-    const worldVx = _camForward.x * inputFwd + _camRight.x * inputRight;
-    const worldVz = _camForward.z * inputFwd + _camRight.z * inputRight;
-
-    // Game-space velocity: deltaGameX = deltaWorldX, deltaGameY = deltaWorldZ
-    const vx = worldVx;
-    const vy = worldVz;
-
-    // Smooth facing angle from velocity.
-    //
-    // Derivation: the lobster GLB's local forward is -Z, so at rotation.y=0
-    // its world-space forward is (0, 0, -1). Three.js rotates CCW around +Y
-    // (right-hand rule), so rotating (0, 0, -1) by θ gives:
-    //   (-sin θ, 0, -cos θ)
-    // To face the movement direction (worldVx, 0, worldVz) we need
-    //   -sin θ = worldVx  →  sin θ = -worldVx
-    //   -cos θ = worldVz  →  cos θ = -worldVz
-    // ∴  θ = atan2(-worldVx, -worldVz)
-    //
-    // The previous formula (atan2(worldVx, -worldVz)) had the first arg
-    // un-negated, which left pure forward/back working but mirrored the
-    // facing angle across the Z axis for any lateral or diagonal movement
-    // — visible as "lobster walking forwards but facing the wrong way".
-    const facingAngle = Math.atan2(-vx, -vy);
+    // Lobster GLB faces +Z natively → θ = atan2(worldVx, worldVz)
+    const facingAngle = Math.atan2(vx, vy);
 
     const dir = directionFromVelocity(vx, vy);
 
