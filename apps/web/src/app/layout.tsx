@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { Orbitron, Oxanium, Space_Mono } from 'next/font/google';
 import './globals.css';
 import { Providers } from './providers';
+import { SWRegister } from '@/components/sw-register';
 
 const orbitron = Orbitron({
   subsets: ['latin'],
@@ -35,6 +36,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${orbitron.variable} ${oxanium.variable} ${spaceMono.variable} font-oxanium antialiased`}>
+        <SWRegister />
         <Providers>{children}</Providers>
       </body>
     </html>
