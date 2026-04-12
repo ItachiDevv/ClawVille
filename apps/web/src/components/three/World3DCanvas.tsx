@@ -369,6 +369,118 @@ function PreCompilePipelines() {
 }
 
 // ---------------------------------------------------------------------------
+// StaggeredTextureUpload — spread GPU texture uploads across multiple frames
+// ---------------------------------------------------------------------------
+// Problem: after WebP decode, uploading all RGBA8 textures to the GPU in one
+// frame causes a 400ms+ long task on Iris Xe (the WebP decode → GPU upload
+// pipeline is CPU-bound and unthreaded).
+//
+// Fix: after compileAsync completes (pipelines ready), collect every unique
+// texture in the scene and call renderer.initTexture(tex) for BATCH_SIZE
+// textures per rAF tick. initTexture() is synchronous and exists on both
+// WebGLRenderer (r170+) and WebGPURenderer (r182+) — it calls
+// _textures.updateTexture() which does the GPU upload immediately.
+//
+// BATCH_SIZE = 2 keeps each rAF tick under ~16ms on Iris Xe (each WebP
+// texture costs ~4-8ms to upload). Adjust up if profiling shows headroom.
+//
+// We fire one frame after PreCompilePipelines' rAF (using a nested rAF) so
+// the uploads begin after pipeline compilation finishes, not racing it.
+// ---------------------------------------------------------------------------
+const TEXTURE_UPLOAD_BATCH = 2;
+
+// All standard texture slot names on MeshStandardMaterial and related.
+const TEXTURE_SLOTS = [
+  'map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap',
+  'emissiveMap', 'lightMap', 'envMap', 'alphaMap', 'bumpMap',
+  'displacementMap', 'clearcoatMap', 'clearcoatNormalMap',
+  'clearcoatRoughnessMap', 'sheenColorMap', 'sheenRoughnessMap',
+  'transmissionMap', 'thicknessMap', 'specularMap', 'specularColorMap',
+] as const;
+
+function StaggeredTextureUpload() {
+  const { gl, scene } = useThree();
+
+  useEffect(() => {
+    // Verify initTexture is available (guard for unusual renderer builds)
+    if (typeof (gl as any).initTexture !== 'function') {
+      console.warn('[World3D] StaggeredTextureUpload: renderer.initTexture() not available, skipping');
+      return;
+    }
+
+    // Wait two rAF ticks: first tick is PreCompilePipelines' compileAsync kick,
+    // second tick is after at least one compile cycle has started.
+    let outerRaf: number;
+    let innerRaf: number;
+
+    outerRaf = requestAnimationFrame(() => {
+      innerRaf = requestAnimationFrame(() => {
+        // Collect all textures referenced by mesh materials in scene
+        const seen = new Set<THREE.Texture>();
+
+        scene.traverse((obj) => {
+          if (!(obj instanceof THREE.Mesh)) return;
+          const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+          for (const mat of mats) {
+            if (!mat) continue;
+            for (const slot of TEXTURE_SLOTS) {
+              const tex = (mat as any)[slot];
+              if (tex instanceof THREE.Texture && !seen.has(tex)) {
+                seen.add(tex);
+              }
+            }
+          }
+        });
+
+        const unique = Array.from(seen);
+        if (unique.length === 0) return;
+
+        console.log(`[World3D] StaggeredTextureUpload: uploading ${unique.length} textures (${TEXTURE_UPLOAD_BATCH}/frame)`);
+
+        let i = 0;
+        let uploadRaf: number;
+
+        function uploadBatch() {
+          const t0 = performance.now();
+          const end = Math.min(i + TEXTURE_UPLOAD_BATCH, unique.length);
+          for (; i < end; i++) {
+            try {
+              (gl as any).initTexture(unique[i]);
+            } catch (err) {
+              // Non-fatal — renderer may skip textures that haven't decoded yet
+              console.warn('[World3D] initTexture error (non-fatal):', err);
+            }
+          }
+          const elapsed = performance.now() - t0;
+          if (elapsed > 20) {
+            console.warn(`[World3D] StaggeredTextureUpload: batch took ${elapsed.toFixed(1)}ms — reduce TEXTURE_UPLOAD_BATCH`);
+          }
+          if (i < unique.length) {
+            uploadRaf = requestAnimationFrame(uploadBatch);
+          } else {
+            console.log('[World3D] StaggeredTextureUpload: all textures uploaded');
+          }
+        }
+
+        uploadRaf = requestAnimationFrame(uploadBatch);
+
+        // Return a cleanup fn captured via closure
+        return () => cancelAnimationFrame(uploadRaf);
+      });
+    });
+
+    return () => {
+      cancelAnimationFrame(outerRaf);
+      cancelAnimationFrame(innerRaf);
+    };
+    // gl/scene are stable R3F refs — intentionally omitted from deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Scene contents (inside Canvas)
 // ---------------------------------------------------------------------------
 const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode }) {
@@ -389,6 +501,11 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       {/* Pre-compile WebGPU render pipelines once after the first frame commit.
           Eliminates the 274ms post-mount main-thread hitch. No-ops on WebGL. */}
       <PreCompilePipelines />
+
+      {/* Stagger GPU texture uploads across frames to prevent the 400ms+
+          long task caused by uploading all WebP-decoded textures simultaneously.
+          Fires 2 frames after mount, uploads TEXTURE_UPLOAD_BATCH textures/frame. */}
+      <StaggeredTextureUpload />
 
       {/* KTX2Loader initialisation — detects GPU compressed format support
           (BC7 on Iris Xe via WebGPU) and arms the module-level singleton used
