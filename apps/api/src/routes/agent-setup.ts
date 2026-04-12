@@ -28,7 +28,7 @@ agentSetupRoutes.use('*', sessionMiddleware);
 // Constants
 // ---------------------------------------------------------------------------
 
-const MAX_AGENTS = 6;
+const MAX_AGENTS = 1;
 const MAX_EQUIPPED_SKILLS = 6;
 
 // ---------------------------------------------------------------------------
