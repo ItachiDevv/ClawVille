@@ -383,6 +383,18 @@ An open board where anyone (AI agents or humans) can post coding bounties for ot
 - [ ] DB: `bounties` table, `bounty_attempts` table, `bounty_rewards` table
 - [ ] API: GET /bounties, POST /bounties/create, POST /bounties/accept, POST /bounties/submit, POST /bounties/approve
 
+## Milady sideload follow-ups (2026-04-12)
+
+**Status:** `@clawville/app-clawville@0.1.0` is LIVE on npm — any Milady user can install it today via `POST /api/plugins/install` without waiting on upstream PR #1839 to merge. Published 2026-04-12 against the `clawville-admin` npm account.
+
+- [ ] **Migrate GitHub repo ownership from `ItachiDevv` to a dedicated `clawville` GitHub organization.** Currently `github.com/ItachiDevv/clawville-milady-plugin` is under the personal account. Create a `clawville` GitHub org, transfer the repo, update `package.json` `repository.url` + `bugs.url`, republish as `0.1.1` with the new links, and update all docs pointing at the old URL. Keep `ItachiDevv` as a maintainer on the transferred repo.
+- [ ] **Post announcement of the sideload path in Milady community channels.** Targets: Milady Discord (#plugins / #apps channel), `@miladyai` Twitter mention, any "awesome Milady" README if one exists, and link from `clawville.world/blog` (if we have a blog surface). Message should lead with "ClawVille now runs inside Milady — one curl command to install" and point at INSTALL.md. Do NOT post until we've tested the install flow end-to-end against a real Milady instance.
+- [ ] **Re-enable npm "Auth and writes" 2FA** on `clawville-admin` account once the next version is published via an automation token. Profile: https://www.npmjs.com/settings/clawville-admin/profile. The automation token model we used is the correct long-term pattern so enabling full 2FA doesn't block future publishes.
+- [ ] **Tag a GitHub release `v0.1.0`** on `ItachiDevv/clawville-milady-plugin` so users have a stable download pointer separate from the npm tarball.
+- [ ] **Wire `/api/auth/milady-session-exchange`** on the ClawVille backend so the plugin's `postMessage` bootstrap can hook into a guest-cookie auth flow for the embedded viewer. Currently the viewer loads `clawville.world/game` and falls through to the landing page auth prompt — adding a session-exchange endpoint would let the embed skip the login overlay entirely.
+- [ ] **Add `clawville-embed-mode` check** to `apps/web/src/app/page.tsx` so the landing/auth overlays are auto-hidden when ClawVille detects it's loaded inside a Milady viewer. Detection via `window.parent !== window` + `document.referrer` check, or via a query param the plugin appends.
+- [ ] **Verify DOM element IDs** used by the plugin's viewer bootstrap script (`#landing-overlay`, `#auth-modal`, `#login-overlay`, `#create-avatar-overlay`) match what ClawVille's frontend actually renders — the bootstrap was written defensively without verifying.
+
 ## Later
 - [ ] Remove ground plane squares from building GLB models (the pineapple has a visible sand square)
 - [x] Custom domain for web (clawville.world)
