@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useRef, useMemo } from 'react';
+import { Suspense, useEffect, useRef, useMemo, type ReactElement } from 'react';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
 import {
@@ -18,19 +18,11 @@ export const TERRAIN_LAYER = 1;
 // bikini-bottom.glb REMOVED — it contained duplicate buildings (Krusty Krab,
 // Pineapple, Squidward's, Patrick's Rock) baked into one scene, overlapping
 // with our individual building GLBs. Sand floor + individual buildings is cleaner.
-useGLTF.preload('/models/coral-reef1.glb');
-useGLTF.preload('/models/coral-reef2.glb');
-useGLTF.preload('/models/coral-reef3.glb');
-useGLTF.preload('/models/kelp.glb');
-// Border decorations — old generic buildings repurposed as scenery.
-useGLTF.preload('/models/building-lighthouse.glb');
-useGLTF.preload('/models/building-shipwreck.glb');
-useGLTF.preload('/models/building-submarine.glb');
-useGLTF.preload('/models/building-tower2.glb');
-useGLTF.preload('/models/building-seashell.glb');
-useGLTF.preload('/models/building-anchor.glb');
-useGLTF.preload('/models/building-barrel.glb');
-useGLTF.preload('/models/building-chest.glb');
+//
+// Decoration preloads have been MOVED to DeferredTerrainPreloads (exported below).
+// They are fired via requestAnimationFrame after first paint from the game page,
+// so they don't delay the initial scene mount.  The Suspense fallback={null} wrapper
+// on ArenaTerrain means decorations simply render nothing until the assets resolve.
 
 const MAP_WIDTH = 1280;
 const MAP_HEIGHT = 800;
@@ -259,12 +251,7 @@ const DECO_TYPES = [
   { model: '/models/building-submarine.glb',  weight: 1, minScale: 1.0, maxScale: 2.5 },
 ];
 
-// Preload new decoration models
-useGLTF.preload('/models/building-shell.glb');
-useGLTF.preload('/models/building-lantern.glb');
-useGLTF.preload('/models/crayfish.glb');
-// Preload the large decoration set GLB — single draw call for many objects
-useGLTF.preload('/models/underwater-decorations.glb');
+// All decoration preloads have been moved to DeferredTerrainPreloads() below.
 
 // Building exclusion zones (world coords) — no decorations within 80px of building center
 const TILE_SIZE = 32;
@@ -431,4 +418,40 @@ export default function ArenaTerrain() {
       <UnderwaterDecorationsGlb />
     </Suspense>
   );
+}
+
+// ---------------------------------------------------------------------------
+// DeferredTerrainPreloads
+// Render this component OUTSIDE the Canvas (e.g. in the game page HUD layer).
+// It fires useGLTF.preload() for all decoration + environment GLBs via
+// requestAnimationFrame so the calls land AFTER the first painted frame, not
+// at module-evaluation time. The ArenaTerrain Suspense fallback={null} means
+// the decorations simply render nothing until each asset resolves — safe.
+// ---------------------------------------------------------------------------
+export function DeferredTerrainPreloads(): ReactElement | null {
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      // Scatter decoration models
+      useGLTF.preload('/models/coral-reef1.glb');
+      useGLTF.preload('/models/coral-reef2.glb');
+      useGLTF.preload('/models/coral-reef3.glb');
+      useGLTF.preload('/models/kelp.glb');
+      useGLTF.preload('/models/building-shell.glb');
+      useGLTF.preload('/models/building-seashell.glb');
+      useGLTF.preload('/models/building-anchor.glb');
+      useGLTF.preload('/models/building-barrel.glb');
+      useGLTF.preload('/models/building-chest.glb');
+      useGLTF.preload('/models/building-lantern.glb');
+      useGLTF.preload('/models/crayfish.glb');
+      useGLTF.preload('/models/building-tower2.glb');
+      useGLTF.preload('/models/building-shipwreck.glb');
+      useGLTF.preload('/models/building-submarine.glb');
+      // Heavy 5.9 MB scene — also deferred (not visible until player is near center)
+      useGLTF.preload('/models/underwater-decorations.glb');
+      // Border scenery
+      useGLTF.preload('/models/building-lighthouse.glb');
+    });
+    return () => cancelAnimationFrame(raf);
+  }, []);
+  return null;
 }
