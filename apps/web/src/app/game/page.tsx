@@ -130,10 +130,14 @@ export default function GamePage() {
   useResearchStream();
 
   // Redirect authenticated users with no active agent to /select-agent
-  // EXCEPT in Milady embed mode — embedded viewers stay on /game and
-  // the Milady agent's bot acts as their "avatar" via the gateway.
+  // EXCEPT: embed mode, spectate mode (user explicitly chose to explore)
   useEffect(() => {
-    if (miladyEmbed.isEmbed) return; // Don't redirect in embed mode
+    if (miladyEmbed.isEmbed) return;
+    // Allow spectating via ?spectate=1 query param or localStorage flag
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('spectate') === '1' || localStorage.getItem('clawville-spectate-mode') === '1') {
+      return;
+    }
     if (!isLoading && !authLoading && isAuthenticated && !avatar) {
       router.push('/select-agent');
     }

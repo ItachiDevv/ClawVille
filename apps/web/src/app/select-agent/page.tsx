@@ -76,13 +76,13 @@ interface Agent {
   characterConfig?: any;
 }
 
-type Panel = 'details' | 'create' | 'import';
+type Panel = 'details' | 'create' | 'import' | 'connect-external';
 
 // ---------------------------------------------------------------------------
 // Constants & lookups
 // ---------------------------------------------------------------------------
 
-const MAX_AGENTS = 6;
+const MAX_AGENTS = 1;
 const MAX_LOADOUT_SLOTS = 6;
 
 const COLOR_HEX: Record<string, string> = Object.fromEntries(
@@ -882,13 +882,12 @@ function AgentCreationForm({
         species,
         color,
         gender,
-        archetype,
+        archetypeId: archetype,
         personality: {
-          habitat: 'deep-sea',
+          habitat: 'sea',
           hobby: 'exploring',
-          greeting: `Hi, I'm ${name}!`,
+          greeting: 'wave-hello',
         },
-        stats: { hp: 100, attack: 10, defense: 10, speed: 10 },
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['agent-roster'] });
@@ -1428,6 +1427,25 @@ export default function SelectAgentPage() {
           >
             Import Config
           </RpgButton>
+          <RpgButton
+            variant="ghost"
+            size="sm"
+            onClick={() => setPanel('connect-external')}
+            style={{ width: '100%' }}
+          >
+            Connect External Agent
+          </RpgButton>
+          <RpgButton
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              localStorage.setItem('clawville-spectate-mode', '1');
+              router.push('/game?spectate=1');
+            }}
+            style={{ width: '100%', marginTop: 4 }}
+          >
+            Explore as Spectator
+          </RpgButton>
           {importError && (
             <div
               style={{
@@ -1711,6 +1729,70 @@ export default function SelectAgentPage() {
               }}
               onCancel={() => setPanel('details')}
             />
+          )}
+
+          {panel === 'connect-external' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 20, padding: '8px 0' }}>
+              <div>
+                <div style={{
+                  fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
+                  fontSize: 18, fontWeight: 700, color: '#f1f5f9',
+                  textShadow: '0 0 14px rgba(56,189,248,0.4)',
+                  marginBottom: 8,
+                }}>
+                  Connect External Agent
+                </div>
+                <div style={{ fontSize: 11, color: '#94a3b8', lineHeight: 1.6 }}>
+                  Already running an agent elsewhere? Connect it to ClawVille without creating a new one.
+                </div>
+              </div>
+
+              <RuneFrame tier="rare" glow="subtle" style={{ padding: 16 }}>
+                <div style={{ fontWeight: 600, fontSize: 13, color: '#7dd3fc', marginBottom: 6 }}>OpenClaw / Hermes Agent</div>
+                <div style={{ fontSize: 10, color: '#94a3b8', lineHeight: 1.6, marginBottom: 10 }}>
+                  Run your agent with a gateway URL pointing at ClawVille. Your agent connects via POST /api/agent/connect with its agentId + gatewayUrl.
+                </div>
+                <div style={{
+                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                  fontSize: 9, color: '#7fe6ff', background: 'rgba(0,0,0,0.3)',
+                  padding: '8px 10px', borderRadius: 6, wordBreak: 'break-all',
+                }}>
+                  curl -X POST https://api.clawville.world/api/agent/connect \<br/>
+                  &nbsp;&nbsp;-H &apos;Content-Type: application/json&apos; \<br/>
+                  &nbsp;&nbsp;-d &apos;&#123;&quot;agentId&quot;:&quot;my-agent&quot;, &quot;name&quot;:&quot;MyBot&quot;, &quot;species&quot;:&quot;cat&quot;&#125;&apos;
+                </div>
+              </RuneFrame>
+
+              <RuneFrame tier="epic" glow="subtle" style={{ padding: 16 }}>
+                <div style={{ fontWeight: 600, fontSize: 13, color: '#c084fc', marginBottom: 6 }}>Milady AI Agent</div>
+                <div style={{ fontSize: 10, color: '#94a3b8', lineHeight: 1.6, marginBottom: 10 }}>
+                  Install the ClawVille plugin in your Milady Desktop, then type &quot;open clawville&quot; in any chat.
+                </div>
+                <div style={{
+                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                  fontSize: 9, color: '#c084fc', background: 'rgba(0,0,0,0.3)',
+                  padding: '8px 10px', borderRadius: 6, wordBreak: 'break-all',
+                }}>
+                  curl -X POST http://localhost:2138/api/plugins/install \<br/>
+                  &nbsp;&nbsp;-H &apos;Content-Type: application/json&apos; \<br/>
+                  &nbsp;&nbsp;-d &apos;&#123;&quot;name&quot;:&quot;@clawville/app-clawville&quot;&#125;&apos;
+                </div>
+                <div style={{ fontSize: 9, color: '#64748b', marginTop: 6 }}>
+                  npm: <a href="https://www.npmjs.com/package/@clawville/app-clawville" target="_blank" rel="noopener" style={{ color: '#7dd3fc', textDecoration: 'underline' }}>@clawville/app-clawville</a>
+                </div>
+              </RuneFrame>
+
+              <RuneFrame tier="uncommon" glow="subtle" style={{ padding: 16 }}>
+                <div style={{ fontWeight: 600, fontSize: 13, color: '#4ade80', marginBottom: 6 }}>Browser Claw (No Setup)</div>
+                <div style={{ fontSize: 10, color: '#94a3b8', lineHeight: 1.6 }}>
+                  Just enter the game as a spectator and click &quot;Connect Bot&quot; in the top bar. Your browser becomes the agent — no external tools needed.
+                </div>
+              </RuneFrame>
+
+              <RpgButton variant="ghost" size="sm" onClick={() => setPanel('details')}>
+                Back
+              </RpgButton>
+            </div>
           )}
 
           {panel === 'details' && selectedAgent && (
