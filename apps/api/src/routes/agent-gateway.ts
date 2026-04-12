@@ -20,6 +20,8 @@ import { agentOrchestrator } from '../services/agent-orchestrator';
 import { getSessionAgent } from '../services/session-agent-map';
 import { OpenClawClient } from '../services/openclaw-client';
 import { ensureWallet } from '../services/wallet-service';
+import { creditClawTokens, debitClawTokens } from '../services/neo-token-ledger';
+import type { ClawvilleServices } from '@clawville/agent-runtime';
 
 const agentGatewayRoutes = new Hono();
 
@@ -497,11 +499,31 @@ agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
     try {
       const runtime = await agentOrchestrator.ensureAgentRuntime(elizaAgentId);
       if (runtime) {
+        // Phase 4: inject services + bot data so Actions + Providers work
+        const services = { db, creditClawTokens, debitClawTokens } as ClawvilleServices;
+        const bot = await db.query.openclawBots.findFirst({
+          where: eq(openclawBots.agentId, npcId),
+        });
+        const state: Record<string, any> = {
+          petId: bot?.id ?? npcId,
+          userId: sessionId,
+          services,
+          petData: bot ? {
+            id: bot.id,
+            name: bot.name,
+            species: bot.species,
+            clawTokens: 0,
+          } : null,
+          nearLocation: npc.destinationBuildingId ?? null,
+          characterConfig: bot?.knowledge ? { knowledge: bot.knowledge } : {},
+        };
+
         const result = await runtime.processMessage(parsed.data.message, {
           userId: sessionId,
           roomId: `agent-gateway-${npcId}`,
           platform: 'clawville-gateway',
           dynamicContext: `You are ${npc.name} in the ClawVille world. You are chatting in the open world. Respond in character.`,
+          state,
         });
         elizaResponse = result.content;
       }
