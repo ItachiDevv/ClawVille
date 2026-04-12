@@ -48,6 +48,8 @@ export class PetSimulationBridge {
   private stateStore: AvatarStateStore;
   private runtime: SimulationRuntime | null = null;
   private runtimeReady = false;
+  /** Phase 3: tracks which avatars have an in-flight planner call to prevent double-dispatch */
+  private inFlightPlanners = new Set<string>();
 
   constructor() {
     this.stateStore = new AvatarStateStore();
@@ -211,14 +213,16 @@ export class PetSimulationBridge {
         continue;
       }
 
-      // 3. Plan next action when idle + cooldown elapsed
+      // 3. Plan next action when idle + cooldown elapsed (with in-flight guard)
       if (avatar.activity === 'idle') {
         avatar.behaviorCooldown--;
-        if (avatar.behaviorCooldown <= 0) {
-          avatar.behaviorCooldown = 100; // prevent re-planning on next tick while LLM runs
+        if (avatar.behaviorCooldown <= 0 && !this.inFlightPlanners.has(avatar.userId)) {
+          avatar.behaviorCooldown = 100;
+          this.inFlightPlanners.add(avatar.userId);
           this.runtime
             .planAvatarNextAction(avatar.userId)
-            .catch((err) => console.error('[PetSimBridge] planAvatarNextAction failed:', err));
+            .catch((err) => console.error('[PetSimBridge] planAvatarNextAction failed:', err))
+            .finally(() => this.inFlightPlanners.delete(avatar.userId));
         }
       }
     }

@@ -74,7 +74,13 @@ interface ActionChoice {
   itemId?: string;
 }
 
-/** Phase 3: Services passed to Phase 1 economic actions */
+/**
+ * Phase 3: Services passed to Phase 1 economic actions.
+ * Uses `any` for db and params because the exact Drizzle + ledger types live in
+ * apps/api (separate package), and importing them here would create a circular
+ * dependency. The types are enforced at the injection site (avatar-simulation-bridge.ts)
+ * where the real db + ledger functions are assigned.
+ */
 export interface SimulationServices {
   db: any;
   creditClawTokens: (params: any) => Promise<{ balanceAfter: number }>;
@@ -301,16 +307,18 @@ export class SimulationRuntime {
       const choice = this.parseActionChoice(response as string, userId);
       if (!choice) {
         console.warn(`[SimulationRuntime] Failed to parse planner response for ${userId}:`, response);
-        return null;
+        // Fallback: sleep on persistent parse failure so the avatar doesn't loop
+        return await this.dispatchAction({ action: 'AVATAR_SLEEP', userId }, message);
       }
 
       // Dispatch the chosen action
       const result = await this.dispatchAction(choice, message);
 
-      // Phase 3: Track action on the avatar state for SSE broadcast
+      // Phase 3: Track action on the avatar state for SSE broadcast + reset cooldown
       if (result) {
         avatar.lastActionName = choice.action;
         avatar.lastActionResult = result.text ?? (result.success ? 'OK' : 'Failed');
+        avatar.behaviorCooldown = 100; // prevent rapid re-planning after action
       }
 
       return result;
@@ -419,7 +427,10 @@ export class SimulationRuntime {
     }
 
     const avatar = this.deps.stateStore.get(choice.userId);
-    if (!avatar) return null;
+    if (!avatar) {
+      console.warn(`[SimulationRuntime] Avatar not found for user ${choice.userId}`);
+      return { success: false, text: 'Avatar not found' } as ActionResult;
+    }
 
     try {
       // Dynamic import the Phase 1 action
@@ -427,7 +438,7 @@ export class SimulationRuntime {
       const action = allActions.find((a: any) => a.name === choice.action);
       if (!action) {
         console.warn(`[SimulationRuntime] Phase 1 action not found: ${choice.action}`);
-        return null;
+        return { success: false, text: `Unknown action: ${choice.action}` } as ActionResult;
       }
 
       // Build state with services injected (same shape as processMessage state)
@@ -437,24 +448,29 @@ export class SimulationRuntime {
         services: this.deps.services,
       };
 
-      // Build message with parameters
+      // Build message with parameters (structured for getParam() lookup)
       const params: Record<string, string> = {};
       if (choice.itemId) params.itemId = choice.itemId;
 
       const message = {
-        content: { text: '', parameters: params, data: { parameters: params } },
+        content: {
+          text: `Execute ${choice.action}`,
+          parameters: params,
+        },
         parameters: params,
-        ...params,
       };
 
       const result = await action.handler(null, message, state, { parameters: params });
 
-      // Track budget
-      if (result?.success && (choice.action === 'BUY_ITEM' || choice.action === 'BUY_BAZAAR_LISTING')) {
-        const spent = result.data?.price ?? 0;
-        avatar.budgetSpent += spent;
-        avatar.budgetPurchaseCount += 1;
-        console.log(`[SimulationRuntime] ${choice.action} for ${avatar.name}: spent ${spent} NT (total: ${avatar.budgetSpent}/${avatar.budgetMaxNt})`);
+      // Track budget — increment on any purchase attempt, adjust if failed (compensating)
+      if (choice.action === 'BUY_ITEM' || choice.action === 'BUY_BAZAAR_LISTING') {
+        const spent = result?.data?.price ?? 0;
+        if (result?.success) {
+          avatar.budgetSpent = Math.min(avatar.budgetMaxNt, avatar.budgetSpent + spent);
+          avatar.budgetPurchaseCount = Math.min(avatar.budgetMaxPurchases, avatar.budgetPurchaseCount + 1);
+          console.log(`[SimulationRuntime] ${choice.action} for ${avatar.name}: spent ${spent} NT (total: ${avatar.budgetSpent}/${avatar.budgetMaxNt})`);
+        }
+        // If !result.success, the action handler's compensating credit has already refunded
       }
 
       return result ?? null;
