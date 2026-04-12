@@ -166,6 +166,29 @@ export interface GameState {
   closeBountyBoard: () => void;
   setBountyBoardTab: (tab: 'browse' | 'my-bounties' | 'my-attempts' | 'create') => void;
 
+  // Leaderboard — P4 single ClawVille-owned ranking board
+  leaderboardOpen: boolean;
+  leaderboardSort:
+    | 'composite'
+    | 'gold'
+    | 'earned'
+    | 'skills-sold'
+    | 'skills-authored'
+    | 'quests'
+    | 'bounties';
+  openLeaderboard: () => void;
+  closeLeaderboard: () => void;
+  setLeaderboardSort: (
+    sort:
+      | 'composite'
+      | 'gold'
+      | 'earned'
+      | 'skills-sold'
+      | 'skills-authored'
+      | 'quests'
+      | 'bounties'
+  ) => void;
+
   // Zoom
   zoomLevel: number;
   setZoomLevel: (z: number) => void;
@@ -444,6 +467,12 @@ export const useGameStore = create<GameState>((set, get) => ({
   openBountyBoard: () => set({ bountyBoardOpen: true, bountyBoardTab: 'browse' }),
   closeBountyBoard: () => set({ bountyBoardOpen: false }),
   setBountyBoardTab: (tab: 'browse' | 'my-bounties' | 'my-attempts' | 'create') => set({ bountyBoardTab: tab }),
+
+  leaderboardOpen: false,
+  leaderboardSort: 'composite' as const,
+  openLeaderboard: () => set({ leaderboardOpen: true, leaderboardSort: 'composite' }),
+  closeLeaderboard: () => set({ leaderboardOpen: false }),
+  setLeaderboardSort: (sort) => set({ leaderboardSort: sort }),
 
   zoomLevel: 1.7,
   setZoomLevel: (z) => set({ zoomLevel: Math.max(0.6, Math.min(3.0, z)) }),

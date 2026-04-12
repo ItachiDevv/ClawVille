@@ -7,7 +7,7 @@ export interface ClawPersonalityJson {
 }
 
 export interface ClawResearchConfig {
-  themes: Record<string, { label: string; focus: string }>;
+  themes?: Record<string, { label: string; focus: string }>;
   globalFocus?: string;
   articleSources?: string[];
 }
