@@ -32,20 +32,68 @@ const _locRayDir = new THREE.Vector3(0, -1, 0);
 const LOCATION_NPCS: Record<string, {
   name: string;
   model: string;
-  offsetX: number;
-  offsetZ: number;
 }> = {
-  'canvas-studio':     { name: 'SpongeBob',  model: '/models/characters/spongebob.glb', offsetX: 0, offsetZ: 1 },
-  'security-fortress': { name: 'Patrick',     model: '/models/characters/patrick.glb',   offsetX: 0, offsetZ: 1 },
-  'memory-vault':      { name: 'Squidward',   model: '/models/characters/squidward.glb', offsetX: 0, offsetZ: 1 },
-  'webhook-gateway':   { name: 'Mr. Krabs',   model: '/models/characters/mr-krabs.glb',  offsetX: 0, offsetZ: 1 },
-  'skill-forge':       { name: 'Plankton',    model: '/models/characters/plankton.glb',  offsetX: 0, offsetZ: 1 },
-  'cron-hub':          { name: 'Gary',         model: '/models/characters/gary.glb',      offsetX: 0, offsetZ: 1 },
-  'channel-bridge':    { name: 'Sandy',        model: '/models/characters/sandy.glb',     offsetX: 0, offsetZ: 1 },
-  'tool-workshop':     { name: 'Karen',        model: '/models/characters/karen.glb',     offsetX: 0, offsetZ: 1 },
-  'voice-tower':       { name: 'Mrs. Puff',    model: '/models/characters/mrs-puff.glb',  offsetX: 0, offsetZ: 1 },
-  'config-citadel':    { name: 'Larry',        model: '/models/lobster.glb',              offsetX: 0, offsetZ: 1 },
+  'canvas-studio':     { name: 'SpongeBob',  model: '/models/characters/spongebob.glb' },
+  'security-fortress': { name: 'Patrick',     model: '/models/characters/patrick.glb'   },
+  'memory-vault':      { name: 'Squidward',   model: '/models/characters/squidward.glb' },
+  'webhook-gateway':   { name: 'Mr. Krabs',   model: '/models/characters/mr-krabs.glb'  },
+  'skill-forge':       { name: 'Plankton',    model: '/models/characters/plankton.glb'  },
+  'cron-hub':          { name: 'Gary',         model: '/models/characters/gary.glb'      },
+  'channel-bridge':    { name: 'Sandy',        model: '/models/characters/sandy.glb'     },
+  'tool-workshop':     { name: 'Karen',        model: '/models/characters/karen.glb'     },
+  'voice-tower':       { name: 'Mrs. Puff',    model: '/models/characters/mrs-puff.glb'  },
+  'config-citadel':    { name: 'Larry',        model: '/models/lobster.glb'              },
 };
+
+// Village center in tile space — NPCs stand between their building and this point
+const VILLAGE_CENTER_TILE_X = 20;
+const VILLAGE_CENTER_TILE_Z = 12; // tile Y maps to world Z
+
+/** Compute NPC world position and facing angle for a given building zone.
+ *
+ *  Position: building_center_tile + normalize(toward_village_center) * 2.5 tiles,
+ *            converted to world space.
+ *  Facing: NPC model default faces -Z. rotation [0, 0, 0] → faces -Z.
+ *          rotation [0, Math.PI, 0] → faces +Z (original static).
+ *          For arbitrary facing toward center we use atan2(dirX, dirZ) where
+ *          dir = normalize(village_center_world - npc_world). */
+function computeNpcPlacement(zone: { x: number; y: number; width: number; height: number }): {
+  worldX: number;
+  worldZ: number;
+  facingRotY: number;
+} {
+  // Building center in tile space
+  const bcx = zone.x + zone.width  / 2;
+  const bcz = zone.y + zone.height / 2; // tile Y = world Z axis
+
+  // Direction from building center toward village center (tile space)
+  const dx = VILLAGE_CENTER_TILE_X - bcx;
+  const dz = VILLAGE_CENTER_TILE_Z - bcz;
+  const len = Math.sqrt(dx * dx + dz * dz);
+
+  // NPC stands 2.5 tiles inside from the building center, toward the village center
+  const NPC_INSET_TILES = 2.5;
+  let npcTileX = bcx;
+  let npcTileZ = bcz;
+  if (len > 0.001) {
+    npcTileX = bcx + (dx / len) * NPC_INSET_TILES;
+    npcTileZ = bcz + (dz / len) * NPC_INSET_TILES;
+  }
+
+  const worldX = OFFSET_X + npcTileX * TILE_SIZE;
+  const worldZ = OFFSET_Z + npcTileZ * TILE_SIZE;
+
+  // Facing toward village center from NPC position.
+  // The model faces -Z by default. To face +X direction: rotY = -PI/2.
+  // General formula: rotY = atan2(targetX - npcX, targetZ - npcZ) + PI
+  // (the +PI flips from -Z-forward to +Z convention then back).
+  // Equivalently: atan2(dirX, dirZ) directly gives the angle to rotate
+  // the -Z forward model to face along (dirX, dirZ). We add PI because
+  // the model natively faces -Z, not +Z.
+  const facingRotY = Math.atan2(dx, dz) + Math.PI;
+
+  return { worldX, worldZ, facingRotY };
+}
 
 // Character model preloads are deferred — see DeferredNpcPreloads exported below.
 // useGLTF() inside LocationNpc will Suspense-throw if the cache isn't warm yet;
@@ -75,10 +123,12 @@ const LocationNpc = memo(function LocationNpc({
   zoneId,
   worldX,
   worldZ,
+  facingRotY,
 }: {
   zoneId: string;
   worldX: number;
   worldZ: number;
+  facingRotY: number;
 }) {
   const config = LOCATION_NPCS[zoneId];
   if (!config) return null;
@@ -130,7 +180,7 @@ const LocationNpc = memo(function LocationNpc({
   });
 
   return (
-    <group ref={groupRef} scale={[npcScale, npcScale, npcScale]} rotation={[0, Math.PI, 0]}>
+    <group ref={groupRef} scale={[npcScale, npcScale, npcScale]} rotation={[0, facingRotY, 0]}>
       <group ref={animGroupRef}>
         <primitive object={cloned} />
       </group>
@@ -167,10 +217,9 @@ export default function ArenaLocationNpcs() {
     return buildingZones.map((zone) => {
       const config = LOCATION_NPCS[zone.id];
       if (!config) return null;
-      const cx = OFFSET_X + (zone.x + zone.width / 2 + config.offsetX) * TILE_SIZE;
-      const cz = OFFSET_Z + (zone.y + zone.height + config.offsetZ) * TILE_SIZE;
-      return { zoneId: zone.id, worldX: cx, worldZ: cz };
-    }).filter(Boolean) as { zoneId: string; worldX: number; worldZ: number }[];
+      const { worldX, worldZ, facingRotY } = computeNpcPlacement(zone);
+      return { zoneId: zone.id, worldX, worldZ, facingRotY };
+    }).filter(Boolean) as { zoneId: string; worldX: number; worldZ: number; facingRotY: number }[];
   }, []);
 
   return (
