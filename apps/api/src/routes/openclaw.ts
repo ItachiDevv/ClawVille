@@ -9,7 +9,8 @@ import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import type { AppContext } from '../types';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { setSessionAgent, getSessionAgent, deleteSessionAgent } from '../services/session-agent-map';
-
+import { creditNeoTokens, debitNeoTokens } from '../services/neo-token-ledger';
+import type { ClawvilleServices } from '@clawville/agent-runtime';
 import { generateSkillMd } from '../services/skill-generator';
 
 /** Ensure a system user exists for OpenClaw bot agents (FK requirement) */
@@ -420,9 +421,19 @@ openclawRoutes.post('/chat', async (c) => {
     try {
       const runtime = await agentOrchestrator.ensureAgentRuntime(elizaAgentId);
       if (runtime) {
+        // Phase 4: inject services so external agents can use Actions
+        const services = { db, creditNeoTokens, debitNeoTokens } as ClawvilleServices;
+        const state: Record<string, any> = {
+          petId: sessionId,
+          userId: petContext?.name ?? 'user',
+          services,
+          petData: petContext ?? null,
+          characterConfig: petContext?.knowledge ? { knowledge: petContext.knowledge } : {},
+        };
         const result = await runtime.processMessage(content, {
           userId: petContext?.name ?? 'user',
           dynamicContext: contextParts.length > 0 ? contextParts.join('\n') : undefined,
+          state,
         });
         reply = result.content;
         console.log(`[OpenClaw Chat] Routed through ElizaOS agent ${elizaAgentId}`);
@@ -525,9 +536,19 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
     try {
       const runtime = await agentOrchestrator.ensureAgentRuntime(elizaAgentId);
       if (runtime) {
+        // Phase 4: inject services so external agents can use Actions
+        const locServices = { db, creditNeoTokens, debitNeoTokens } as ClawvilleServices;
+        const locState: Record<string, any> = {
+          petId: sessionId,
+          userId: petContext?.name ?? 'visitor',
+          services: locServices,
+          petData: petContext ?? null,
+          characterConfig: petContext?.knowledge ? { knowledge: petContext.knowledge } : {},
+        };
         const result = await runtime.processMessage(content, {
           userId: petContext?.name ?? 'visitor',
           dynamicContext: systemParts.join('\n'),
+          state: locState,
         });
         reply = result.content;
         console.log(`[OpenClaw Location Chat] Routed through ElizaOS agent ${elizaAgentId}`);
