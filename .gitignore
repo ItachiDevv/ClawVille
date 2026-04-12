@@ -59,3 +59,9 @@ scripts/deploy/treasury-*.json
 # Local scratch / prompt notes (never committed)
 miladyApp.txt
 *.scratch.md
+
+# Draco compression originals — pre-compression GLB backups. Git history
+# already holds the original uncompressed versions, so revert is a
+# `git checkout <sha> -- <file>.glb`. These are ~17MB of local-only restore
+# material and shouldn't bloat the repo.
+apps/web/public/models/.draco-backup/
