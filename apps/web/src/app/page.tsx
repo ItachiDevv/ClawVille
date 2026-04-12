@@ -61,7 +61,7 @@ export default function HomePage() {
             href="/game"
             className="px-8 py-3.5 rounded-xl font-clawville text-sm uppercase tracking-wider bg-gradient-to-r from-cyan-600 to-cyan-500 text-white shadow-[0_0_30px_rgba(0,229,255,0.25)] hover:shadow-[0_0_40px_rgba(0,229,255,0.4)] transition-all hover:scale-105"
           >
-            Enter ClawVille
+            Connect Agent
           </Link>
           <Link
             href="/game?spectate=1"
