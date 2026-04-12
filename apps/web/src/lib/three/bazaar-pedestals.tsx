@@ -3,14 +3,8 @@
 /**
  * BazaarPedestals — world-surface anchor for the Skill Bazaar modal.
  *
- * 3 glowing cylindrical pedestals arranged in a semicircle at the entrance to
- * the Hydrothermal Forge (skill-forge building).
- *
- * skill-forge zone: tile (5, 17), width=4, height=3
- *   center tile = (7, 18.5)
- *   worldX = -640 + 7*32 = -416, worldZ = -400 + 18.5*32 = 192
- *   Pedestals placed ~40 units in front (toward camera, smaller Z) of the building:
- *   worldZ_front ≈ 192 - 50 = 142
+ * 3 glowing cylindrical pedestals arranged in a semicircle in the village
+ * center, slightly north and left of dead center.
  *
  * Each pedestal:
  *   - CylinderGeometry base with rarity-tinted TSL MeshBasicNodeMaterial
@@ -30,10 +24,10 @@ import { color, float, sin, time, mix } from 'three/tsl';
 import { useGameStore } from '@/stores/game';
 
 // ---------------------------------------------------------------------------
-// World position — in front of skill-forge building
+// World position — village center, 30 units left of center
 // ---------------------------------------------------------------------------
-const FORGE_CENTER_X = -416;
-const FORGE_FRONT_Z  = 142; // ~50 units in front of the building entrance
+const FORGE_CENTER_X = -30;
+const FORGE_FRONT_Z  = -50; // slightly north of dead center
 const BASE_Y         = -2;
 
 // ---------------------------------------------------------------------------

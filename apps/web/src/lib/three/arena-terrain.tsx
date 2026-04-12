@@ -240,15 +240,8 @@ const DECO_TYPES = [
   { model: '/models/crayfish.glb',         weight: 3, minScale: 3,  maxScale: 10  },
   // Tower2 — distinctive landmark towers, rare
   { model: '/models/building-tower2.glb',  weight: 2, minScale: 4,  maxScale: 14  },
-  // Shipwrecks — rare but enormous landmarks. Each is ~296 Sketchfab sub-meshes
-  // so they spike the mesh count whenever the scatter RNG picks one, but the
-  // real-browser FPS is capped well above our display rate anyway (109 FPS
-  // measured), so the draw-call overhead is a non-issue in production.
-  { model: '/models/building-shipwreck.glb',  weight: 1, minScale: 1.2, maxScale: 3.5 },
-  // Submarines — ultra-rare, huge. Also used as the security-fortress building
-  // model in arena-buildings.tsx; the scatter usage is ambient decoration on
-  // top of that.
-  { model: '/models/building-submarine.glb',  weight: 1, minScale: 1.0, maxScale: 2.5 },
+  // Shipwrecks and submarines are placed as FIXED LANDMARKS below (not scattered)
+  // so they always appear in visually meaningful spots rather than random.
 ];
 
 // All decoration preloads have been moved to DeferredTerrainPreloads() below.
@@ -258,14 +251,15 @@ const TILE_SIZE = 32;
 const HALF_MW = MAP_WIDTH / 2;
 const HALF_MH = MAP_HEIGHT / 2;
 const BUILDING_ZONES = [
-  { x: 5, y: 2, w: 4, h: 3 }, { x: 17, y: 2, w: 4, h: 3 }, { x: 29, y: 2, w: 4, h: 3 },
-  { x: 2, y: 9, w: 4, h: 3 }, { x: 12, y: 9, w: 3, h: 3 }, { x: 21, y: 9, w: 3, h: 3 },
-  { x: 31, y: 9, w: 4, h: 4 }, { x: 5, y: 17, w: 4, h: 3 }, { x: 17, y: 17, w: 4, h: 3 },
-  { x: 29, y: 17, w: 3, h: 3 },
+  // Circular village — must match buildingZones in tilemap-data.ts
+  { x: 18, y: 3, w: 4, h: 3 }, { x: 25, y: 5, w: 3, h: 3 }, { x: 29, y: 8, w: 4, h: 3 },
+  { x: 29, y: 13, w: 4, h: 3 }, { x: 25, y: 16, w: 4, h: 3 }, { x: 18, y: 18, w: 3, h: 3 },
+  { x: 11, y: 16, w: 4, h: 3 }, { x: 7, y: 13, w: 4, h: 3 }, { x: 7, y: 8, w: 4, h: 4 },
+  { x: 12, y: 5, w: 3, h: 3 },
 ].map(z => ({
   cx: -HALF_MW + (z.x + z.w / 2) * TILE_SIZE,
   cz: -HALF_MH + (z.y + z.h / 2) * TILE_SIZE,
-  radius: Math.max(z.w, z.h) * TILE_SIZE * 0.7,
+  radius: Math.max(z.w, z.h) * TILE_SIZE * 1.2,
 }));
 
 function isNearBuilding(x: number, z: number): boolean {
@@ -277,6 +271,13 @@ function isNearBuilding(x: number, z: number): boolean {
   return false;
 }
 
+// Village center world coordinates (OFFSET_X + 20*TILE_SIZE, OFFSET_Z + 12*TILE_SIZE)
+// = (-640 + 640, -400 + 384) = (0, -16)
+const VILLAGE_CX = 0;
+const VILLAGE_CZ = -16;
+// No decorations within this radius of village center — keeps the town plaza clear
+const DECO_INNER_EXCLUSION_R = 180;
+
 /** Generate all decorations with cluster-based organic scatter.
  *
  *  Algorithm (mirrors the merged-seaweed multivariant pattern):
@@ -285,7 +286,7 @@ function isNearBuilding(x: number, z: number): boolean {
  *  3. Sample distance from that centre using a triangular distribution
  *     (rng() + rng()) * CLUSTER_RADIUS — biases placements toward the centre,
  *     producing Gaussian-like falloff without an actual Gaussian.
- *  4. Reject if inside a building zone, then accept.
+ *  4. Reject if inside the inner village exclusion zone or a building zone.
  *
  *  This creates natural dense patches with sparse gaps between them instead of
  *  the uniform "salt-and-pepper" look of pure random placement.
@@ -344,6 +345,11 @@ function generateDecorations(): DecoEntry[] {
     // Clamp to map extents so nothing spawns off the sand plane
     if (Math.abs(x) > EXTENT_X * 0.5 || Math.abs(z) > EXTENT_Z * 0.5) continue;
 
+    // Skip if inside the inner village plaza — keep the town center clear
+    const dcx = x - VILLAGE_CX;
+    const dcz = z - VILLAGE_CZ;
+    if (dcx * dcx + dcz * dcz < DECO_INNER_EXCLUSION_R * DECO_INNER_EXCLUSION_R) continue;
+
     // Skip if inside a building exclusion zone
     if (isNearBuilding(x, z)) continue;
 
@@ -392,7 +398,7 @@ function UnderwaterDecorations() {
 // UnderwaterDecorationsGlb — places the 6MB underwater-decorations.glb as a
 // single scene primitive. It provides dense sea-floor props in one draw call,
 // in addition to the procedurally-scattered individual decorations above.
-// Scaled to cover the central map area.
+// Positioned OUTSIDE the village ring so it doesn't clutter the town center.
 // ---------------------------------------------------------------------------
 function UnderwaterDecorationsGlb() {
   const { scene } = useGLTF('/models/underwater-decorations.glb');
@@ -401,10 +407,41 @@ function UnderwaterDecorationsGlb() {
   return (
     <primitive
       object={cloned}
-      position={[0, -2, 0]}
+      position={[450, -2, -350]}
       scale={8}
       rotation={[0, 0, 0]}
     />
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Fixed landmark decorations — shipwreck + submarine placed at world-space
+// coordinates chosen to be visually dramatic without cluttering the village.
+// These are rendered as single cloned primitives (no instancing) — safe on
+// Intel Iris Xe WebGPU.
+// ---------------------------------------------------------------------------
+function FixedLandmarks() {
+  const { scene: shipwreckScene } = useGLTF('/models/building-shipwreck.glb');
+  const { scene: submarineScene } = useGLTF('/models/building-submarine.glb');
+  const shipwreckClone = useMemo(() => shipwreckScene.clone(true), [shipwreckScene]);
+  const submarineClone = useMemo(() => submarineScene.clone(true), [submarineScene]);
+  return (
+    <group>
+      {/* Shipwreck — northwest outer zone */}
+      <primitive
+        object={shipwreckClone}
+        position={[-550, -2, -320]}
+        scale={2.5}
+        rotation={[0, 0.8, 0]}
+      />
+      {/* Submarine — southeast outer zone */}
+      <primitive
+        object={submarineClone}
+        position={[500, -2, 280]}
+        scale={2.0}
+        rotation={[0, -0.5, 0]}
+      />
+    </group>
   );
 }
 
@@ -414,8 +451,10 @@ export default function ArenaTerrain() {
       <SandFloor />
       {/* Procedurally scattered individual GLB decorations */}
       <UnderwaterDecorations />
-      {/* The downloaded underwater-decorations.glb scene — single draw call */}
+      {/* The downloaded underwater-decorations.glb scene — single draw call, outer zone */}
       <UnderwaterDecorationsGlb />
+      {/* Fixed landmark decorations — shipwreck + submarine at curated world positions */}
+      <FixedLandmarks />
     </Suspense>
   );
 }
