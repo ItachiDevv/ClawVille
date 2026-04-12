@@ -137,9 +137,22 @@ export default function NpcController() {
     const vx = worldVx;
     const vy = worldVz;
 
-    // Smooth facing angle from velocity:
-    // Lobster faces -Z at rotation.y=0, so angle = atan2(worldVx, -worldVz)
-    const facingAngle = Math.atan2(vx, -vy);
+    // Smooth facing angle from velocity.
+    //
+    // Derivation: the lobster GLB's local forward is -Z, so at rotation.y=0
+    // its world-space forward is (0, 0, -1). Three.js rotates CCW around +Y
+    // (right-hand rule), so rotating (0, 0, -1) by θ gives:
+    //   (-sin θ, 0, -cos θ)
+    // To face the movement direction (worldVx, 0, worldVz) we need
+    //   -sin θ = worldVx  →  sin θ = -worldVx
+    //   -cos θ = worldVz  →  cos θ = -worldVz
+    // ∴  θ = atan2(-worldVx, -worldVz)
+    //
+    // The previous formula (atan2(worldVx, -worldVz)) had the first arg
+    // un-negated, which left pure forward/back working but mirrored the
+    // facing angle across the Z axis for any lateral or diagonal movement
+    // — visible as "lobster walking forwards but facing the wrong way".
+    const facingAngle = Math.atan2(-vx, -vy);
 
     const dir = directionFromVelocity(vx, vy);
 
