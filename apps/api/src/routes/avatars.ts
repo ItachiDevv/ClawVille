@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { db, avatars, agents, avatarInventory } from '@clawville/database';
 import { AVATAR_ARCHETYPES, ARCHETYPE_IDS, getBookById } from '@clawville/shared';
 import type { PetArchetypeId } from '@clawville/shared';
@@ -289,6 +289,26 @@ avatarRoutes.post('/me/chat', requireAuth, async (c) => {
     });
   } catch { /* non-blocking */ }
 
+  let activeQuests: any[] = [];
+  let availableQuests: any[] = [];
+  try {
+    const { quests, questSubmissions } = await import('@clawville/database');
+    activeQuests = await db
+      .select()
+      .from(questSubmissions)
+      .innerJoin(quests, eq(questSubmissions.questId, quests.id))
+      .where(and(
+        eq(questSubmissions.avatarId, avatar.id),
+        sql`${questSubmissions.status} IN ('accepted', 'in_progress')`
+      ))
+      .limit(10);
+    availableQuests = await db
+      .select()
+      .from(quests)
+      .where(eq(quests.status, 'active'))
+      .limit(5);
+  } catch { /* non-blocking */ }
+
   const state: Record<string, any> = {
     avatarId: avatar.id,
     userId: user.id,
@@ -296,6 +316,8 @@ avatarRoutes.post('/me/chat', requireAuth, async (c) => {
     petData: avatar,
     worldSnapshot,
     inventory,
+    activeQuests,
+    availableQuests,
     characterConfig: (avatar.characterConfig as any) ?? {},
   };
 

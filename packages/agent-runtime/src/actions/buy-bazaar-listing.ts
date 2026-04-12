@@ -179,51 +179,73 @@ export const buyBazaarListingAction: Action = {
         },
       });
 
-      // 6. Mark listing as sold
-      await db
-        .update(bazaarListings)
-        .set({ status: 'sold', updatedAt: new Date() })
-        .where(eq(bazaarListings.id, listingId));
-
-      // 7. Record transaction
-      await db.insert(bazaarTransactions).values({
-        listingId: listing.id,
-        buyerId: avatarId,
-        sellerId: listing.sellerId,
-        skillId: listing.skillId,
-        price: listing.price,
-        platformFee,
-        sellerPayout,
-      });
-
-      // 8. Get skill info for confirmation
-      const [skill] = await db
-        .select({ name: publishedSkills.name, description: publishedSkills.description })
-        .from(publishedSkills)
-        .where(eq(publishedSkills.id, listing.skillId))
-        .limit(1);
-
-      // 9. Add skill to buyer's inventory (use skill ID as itemId)
-      const skillItemId = `skill-${listing.skillId}`;
-      const [existingInv] = await db
-        .select({ id: avatarInventory.id, quantity: avatarInventory.quantity })
-        .from(avatarInventory)
-        .where(
-          and(eq(avatarInventory.avatarId, avatarId), eq(avatarInventory.itemId, skillItemId)),
-        )
-        .limit(1);
-
-      if (existingInv) {
+      // 6-9. Post-payment writes — if any fail, refund buyer and reverse seller credit
+      let skill: { name: string; description: string | null } | undefined;
+      try {
+        // 6. Mark listing as sold
         await db
-          .update(avatarInventory)
-          .set({ quantity: existingInv.quantity + 1 })
-          .where(eq(avatarInventory.id, existingInv.id));
-      } else {
-        await db.insert(avatarInventory).values({
-          avatarId,
-          itemId: skillItemId,
-          quantity: 1,
+          .update(bazaarListings)
+          .set({ status: 'sold', updatedAt: new Date() })
+          .where(eq(bazaarListings.id, listingId));
+
+        // 7. Record transaction
+        await db.insert(bazaarTransactions).values({
+          listingId: listing.id,
+          buyerId: avatarId,
+          sellerId: listing.sellerId,
+          skillId: listing.skillId,
+          price: listing.price,
+          platformFee,
+          sellerPayout,
         });
+
+        // 8. Get skill info for confirmation
+        const [skillRow] = await db
+          .select({ name: publishedSkills.name, description: publishedSkills.description })
+          .from(publishedSkills)
+          .where(eq(publishedSkills.id, listing.skillId))
+          .limit(1);
+        skill = skillRow;
+
+        // 9. Add skill to buyer's inventory
+        const skillItemId = `skill-${listing.skillId}`;
+        const [existingInv] = await db
+          .select({ id: avatarInventory.id, quantity: avatarInventory.quantity })
+          .from(avatarInventory)
+          .where(
+            and(eq(avatarInventory.avatarId, avatarId), eq(avatarInventory.itemId, skillItemId)),
+          )
+          .limit(1);
+
+        if (existingInv) {
+          await db
+            .update(avatarInventory)
+            .set({ quantity: existingInv.quantity + 1 })
+            .where(eq(avatarInventory.id, existingInv.id));
+        } else {
+          await db.insert(avatarInventory).values({
+            avatarId,
+            itemId: skillItemId,
+            quantity: 1,
+          });
+        }
+      } catch (postPayErr: any) {
+        // Compensating refunds: credit buyer back, debit seller back
+        await creditClawTokens({
+          avatarId,
+          amount: listing.price,
+          reason: 'bazaar_purchase_refund',
+          source: 'api',
+          metadata: { listingId, error: postPayErr.message },
+        }).catch(() => {});
+        await debitClawTokens({
+          avatarId: listing.sellerId,
+          amount: sellerPayout,
+          reason: 'bazaar_sale_refund',
+          source: 'api',
+          metadata: { listingId, error: postPayErr.message },
+        }).catch(() => {});
+        return { success: false, text: `Bazaar purchase failed after payment — tokens refunded. Error: ${postPayErr.message}` };
       }
 
       return {

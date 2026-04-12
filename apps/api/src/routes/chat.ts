@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { db, locationAgents, avatars, avatarInventory } from '@clawville/database';
 import { MAP_LOCATIONS, BUILDING_OPENCLAW_THEMES, getBooksForBuilding, isShopBuilding } from '@clawville/shared';
 import { requireAuth } from '../middleware/auth';
@@ -61,7 +61,10 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
   });
 
   // Build state object for Providers + Actions
-  const services = { db, creditClawTokens, debitClawTokens } as ClawvilleServices;
+  // Only inject services if avatar exists — actions require a avatarId to transact
+  const services = avatar
+    ? ({ db, creditClawTokens, debitClawTokens } as ClawvilleServices)
+    : undefined;
   const state: Record<string, any> = {
     avatarId: avatar?.id,
     userId: user.id,
@@ -72,13 +75,30 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
     characterConfig: (avatar?.characterConfig as any) ?? {},
   };
 
-  // Fetch inventory for InventoryProvider (non-blocking on failure)
+  // Fetch inventory + quests for Providers (non-blocking on failure)
   if (avatar) {
     try {
-      const inv = await db.query.avatarInventory.findMany({
+      state.inventory = await db.query.avatarInventory.findMany({
         where: eq(avatarInventory.avatarId, avatar.id),
       });
-      state.inventory = inv;
+    } catch { /* non-blocking */ }
+
+    try {
+      const { quests, questSubmissions } = await import('@clawville/database');
+      state.activeQuests = await db
+        .select()
+        .from(questSubmissions)
+        .innerJoin(quests, eq(questSubmissions.questId, quests.id))
+        .where(and(
+          eq(questSubmissions.avatarId, avatar.id),
+          sql`${questSubmissions.status} IN ('accepted', 'in_progress')`
+        ))
+        .limit(10);
+      state.availableQuests = await db
+        .select()
+        .from(quests)
+        .where(eq(quests.status, 'active'))
+        .limit(5);
     } catch { /* non-blocking */ }
   }
 

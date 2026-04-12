@@ -60,7 +60,7 @@ export const buyItemAction: Action = {
       }
 
       const { avatarId, services } = state;
-      const { db, debitClawTokens } = services;
+      const { db, debitClawTokens, creditClawTokens } = services;
 
       // Resolve itemId
       let itemId = getParam(message, 'itemId');
@@ -128,18 +128,30 @@ export const buyItemAction: Action = {
         metadata: { bookId: book.id, buildingId: book.building },
       });
 
-      // Add or increment inventory
-      if (existing) {
-        await db
-          .update(avatarInventory)
-          .set({ quantity: existing.quantity + 1 })
-          .where(eq(avatarInventory.id, existing.id));
-      } else {
-        await db.insert(avatarInventory).values({
+      // Add or increment inventory — compensating credit on failure
+      try {
+        if (existing) {
+          await db
+            .update(avatarInventory)
+            .set({ quantity: existing.quantity + 1 })
+            .where(eq(avatarInventory.id, existing.id));
+        } else {
+          await db.insert(avatarInventory).values({
+            avatarId,
+            itemId,
+            quantity: 1,
+          });
+        }
+      } catch (invErr: any) {
+        // Compensating credit — refund the debit so the avatar doesn't lose tokens
+        await creditClawTokens({
           avatarId,
-          itemId,
-          quantity: 1,
-        });
+          amount: book.price,
+          reason: 'buy_item_refund',
+          source: 'api',
+          metadata: { bookId: book.id, error: invErr.message },
+        }).catch(() => {});
+        return { success: false, text: `Purchase failed after payment — tokens refunded. Error: ${invErr.message}` };
       }
 
       return {

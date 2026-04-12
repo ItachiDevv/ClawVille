@@ -585,7 +585,20 @@ export class ElizaRuntime {
     }
 
     try {
-      const message = { content: { text: '' }, ...params };
+      const message = { content: { text: '', parameters: params, data: { parameters: params } }, parameters: params, ...params };
+
+      // Validate the action before executing — prevents LLM from triggering
+      // actions that don't pass the keyword/context check
+      try {
+        const isValid = await action.validate(this.runtime, message, state);
+        if (!isValid) {
+          console.warn(`[ElizaRuntime] Action ${actionName} failed validation — skipping`);
+          return null;
+        }
+      } catch {
+        // validate() failure is non-blocking — proceed with handler
+      }
+
       const options = { parameters: params };
       const result = await action.handler(this.runtime, message, state, options);
       console.log(`[ElizaRuntime] Action ${actionName} result: success=${result.success}`);
