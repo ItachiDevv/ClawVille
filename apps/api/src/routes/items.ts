@@ -8,6 +8,7 @@ import { debitClawTokens } from '../services/neo-token-ledger';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
+import { embedText } from '@clawville/agent-runtime';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 
@@ -195,6 +196,49 @@ itemRoutes.post('/learn', requireAuth, async (c) => {
 
     // Stop running agent so next chat message restarts with new knowledge
     await agentOrchestrator.stopAgent(avatar.platformAgentId);
+  }
+
+  // Phase 2 RAG: embed each new knowledge entry and store in the memories
+  // table for vector similarity retrieval. This runs in parallel for speed
+  // and is non-blocking — if embedding fails, the JSONB knowledge still
+  // works (the KnowledgeProvider falls back to characterConfig).
+  if (newKnowledge.length > 0) {
+    (async () => {
+      try {
+        const { v5: uuidv5 } = await import('uuid');
+        const KNOWLEDGE_NS = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
+
+        for (const entry of newKnowledge) {
+          try {
+            const embedding = await embedText(entry);
+            const memoryId = uuidv5(`${avatar.id}-${entry}`, KNOWLEDGE_NS) as any;
+            const agentId = (avatar.platformAgentId ?? avatar.id) as any;
+
+            // Use raw SQL via drizzle to insert into the memories table
+            // since we don't have the ElizaOS runtime available in the route
+            await db.execute({
+              sql: `INSERT INTO memories (id, type, content, embedding, "agentId", "roomId", "entityId", "createdAt", unique)
+                    VALUES ($1, 'knowledge', $2, $3, $4, $5, $6, $7, true)
+                    ON CONFLICT (id) DO NOTHING`,
+              params: [
+                memoryId,
+                JSON.stringify({ text: entry, source: 'book', bookId: book.id, bookName: book.name }),
+                JSON.stringify(embedding),
+                agentId,
+                agentId, // roomId = agentId for avatar-scoped knowledge
+                agentId, // entityId = agentId
+                Date.now(),
+              ],
+            } as any);
+          } catch (entryErr) {
+            console.warn(`[items/learn] Failed to embed knowledge entry: ${(entryErr as Error).message}`);
+          }
+        }
+        console.log(`[items/learn] Embedded ${newKnowledge.length} knowledge entries for avatar ${avatar.id}`);
+      } catch (err) {
+        console.warn(`[items/learn] Knowledge embedding failed (non-blocking): ${(err as Error).message}`);
+      }
+    })();
   }
 
   // Remove book from inventory (decrement or delete)
