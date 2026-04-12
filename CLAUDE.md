@@ -6,11 +6,9 @@ Every design decision, schema choice, and implementation shortcut should be
 measured against all four of these. They are equal priority — don't trade off
 one for another without flagging it explicitly.
 
-1. **Ship to the Milady AI app store.** Submit `@clawville/app-clawville` as a
-   curated plugin in `milady-ai/milady` (alongside babylon / defense-of-the-agents /
-   2004scape / etc). ClawVille becomes a first-class Milady app that any Milady
-   user can launch from their desktop/mobile shell. Reference material:
-   `docs/milady-integration-plan.md`.
+1. **Ship to the Milady AI app store.** Two-track strategy:
+   - **Sideload (LIVE as of 2026-04-12):** `@clawville/app-clawville@0.1.0` is published on npm at https://www.npmjs.com/package/@clawville/app-clawville. Any Milady user can install it today via `POST /api/plugins/install` against their local Milady HTTP API — no PR merge required. The plugin registers a `LAUNCH_CLAWVILLE` ElizaOS chat action so users can type "open clawville" from any chat surface even before the curated app grid entry exists. Standalone repo: https://github.com/ItachiDevv/clawville-milady-plugin.
+   - **Curated app grid:** PR `milady-ai/milady#1839` adds ClawVille to `MILADY_CURATED_APP_DEFINITIONS` so it renders as a clickable card in Milady's official app catalog alongside babylon / defense-of-the-agents / 2004scape / etc. Still pending upstream review; merges automatically unlock the grid entry for every Milady release thereafter. Reference material: `docs/milady-integration-plan.md`.
 
 2. **Open agent onboarding — any OpenClaw, OpenClaw variant, or Hermes agent
    must be able to enter ClawVille and learn skills from our world/buildings in
