@@ -25,6 +25,7 @@ import BazaarModal from '@/components/game/bazaar-modal';
 import AuctionModal from '@/components/game/auction-modal';
 import QuestBoardModal from '@/components/game/quest-board-modal';
 import BountyBoardModal from '@/components/game/bounty-board-modal';
+import LeaderboardModal from '@/components/game/leaderboard-modal';
 import BuildingTooltip from '@/components/game/building-tooltip';
 import DailyLoginModal from '@/components/game/daily-login-modal';
 import QuestTracker from '@/components/game/quest-tracker';
@@ -168,6 +169,7 @@ export default function GamePage() {
       <AuctionModal />
       <QuestBoardModal />
       <BountyBoardModal />
+      <LeaderboardModal />
 
       {/* Always visible — sidebar menu, minimap, controls for all visitors */}
       <SidebarMenu />
