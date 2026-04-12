@@ -8,7 +8,8 @@ import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { npcSimulation } from '../services/npc-simulation';
-import { creditNeoTokens } from '../services/neo-token-ledger';
+import { creditNeoTokens, debitNeoTokens } from '../services/neo-token-ledger';
+import type { ClawvilleServices } from '@clawville/agent-runtime';
 import { ensureWallet } from '../services/wallet-service';
 import type { AppContext } from '../types';
 import { z } from 'zod';
@@ -273,43 +274,38 @@ petRoutes.post('/me/chat', requireAuth, async (c) => {
     throw new HTTPException(500, { message: 'Failed to start pet agent runtime' });
   }
 
-  // Build dynamic context for the pet
-  const dynamicContextParts: string[] = [];
+  // Build state for Providers + Actions
+  const services = { db, creditNeoTokens, debitNeoTokens } as ClawvilleServices;
 
-  // Token balance
-  dynamicContextParts.push(`Your owner has ${pet.neoTokens} NeoTokens.`);
-
-  // Knowledge / learned books
-  const characterConfig = (pet.characterConfig as any) ?? {};
-  const knowledgeCount = (characterConfig.knowledge as string[] | undefined)?.length ?? 0;
-  if (knowledgeCount > 0) {
-    dynamicContextParts.push(
-      `You have studied ${knowledgeCount} knowledge entries and can discuss them knowledgeably.`
-    );
-  }
-
-  // World state context (NPCs + activities)
+  let worldSnapshot: any = null;
   try {
-    const snapshot = npcSimulation.getSnapshot();
-    const npcSummaries = snapshot.npcs
-      .filter((n: any) => !n.isDead)
-      .slice(0, 8)
-      .map((n: any) => `${n.name} is ${n.activity ?? 'idle'}${n.destinationBuildingId ? ` near ${n.destinationBuildingId}` : ''}`);
-    if (npcSummaries.length > 0) {
-      dynamicContextParts.push(`[World activity]\n${npcSummaries.join('. ')}.`);
-    }
-  } catch (_) {
-    // NPC simulation may not be running
-  }
+    worldSnapshot = npcSimulation.getSnapshot();
+  } catch { /* NPC simulation may not be running */ }
 
-  const dynamicContext = dynamicContextParts.join('\n');
+  let inventory: any[] = [];
+  try {
+    inventory = await db.query.petInventory.findMany({
+      where: eq(petInventory.petId, pet.id),
+    });
+  } catch { /* non-blocking */ }
 
-  // Process message with dynamic context
+  const state: Record<string, any> = {
+    petId: pet.id,
+    userId: user.id,
+    services,
+    petData: pet,
+    worldSnapshot,
+    inventory,
+    characterConfig: (pet.characterConfig as any) ?? {},
+  };
+
+  // Process message — Providers inject pet/world/inventory/quest/knowledge
+  // context automatically; no manual dynamicContext needed for pet chat
   const response = await runtime.processMessage(result.data.content, {
     userId: user.id,
     roomId: `pet-${pet.id}-${user.id}`,
     platform: 'clawville',
-    dynamicContext,
+    state,
   });
 
   return c.json({
