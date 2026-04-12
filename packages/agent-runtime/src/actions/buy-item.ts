@@ -60,7 +60,7 @@ export const buyItemAction: Action = {
       }
 
       const { petId, services } = state;
-      const { db, debitNeoTokens } = services;
+      const { db, debitNeoTokens, creditNeoTokens } = services;
 
       // Resolve itemId
       let itemId = getParam(message, 'itemId');
@@ -128,18 +128,30 @@ export const buyItemAction: Action = {
         metadata: { bookId: book.id, buildingId: book.building },
       });
 
-      // Add or increment inventory
-      if (existing) {
-        await db
-          .update(petInventory)
-          .set({ quantity: existing.quantity + 1 })
-          .where(eq(petInventory.id, existing.id));
-      } else {
-        await db.insert(petInventory).values({
+      // Add or increment inventory — compensating credit on failure
+      try {
+        if (existing) {
+          await db
+            .update(petInventory)
+            .set({ quantity: existing.quantity + 1 })
+            .where(eq(petInventory.id, existing.id));
+        } else {
+          await db.insert(petInventory).values({
+            petId,
+            itemId,
+            quantity: 1,
+          });
+        }
+      } catch (invErr: any) {
+        // Compensating credit — refund the debit so the pet doesn't lose tokens
+        await creditNeoTokens({
           petId,
-          itemId,
-          quantity: 1,
-        });
+          amount: book.price,
+          reason: 'buy_item_refund',
+          source: 'api',
+          metadata: { bookId: book.id, error: invErr.message },
+        }).catch(() => {});
+        return { success: false, text: `Purchase failed after payment — tokens refunded. Error: ${invErr.message}` };
       }
 
       return {
