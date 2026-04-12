@@ -74,20 +74,18 @@ export interface BuildingZone {
 }
 
 export const buildingZones: BuildingZone[] = [
-  // Compact village layout — staggered rows like a real Bikini Bottom town
-  // Row 1: top of village
-  { id: 'cron-hub',            x: 5,  y: 2,  width: 4, height: 3 },  // Boating School
-  { id: 'webhook-gateway',     x: 17, y: 2,  width: 4, height: 3 },  // Krusty Krab
-  { id: 'voice-tower',         x: 29, y: 2,  width: 4, height: 3 },  // Downtown Building
-  // Row 2: middle-left stagger
-  { id: 'canvas-studio',       x: 2,  y: 9,  width: 4, height: 3 },  // SpongeBob's Pineapple
-  { id: 'memory-vault',        x: 12, y: 9,  width: 3, height: 3 },  // Squidward's House
-  { id: 'security-fortress',   x: 21, y: 9,  width: 3, height: 3 },  // Patrick's Rock
-  { id: 'channel-bridge',      x: 31, y: 9,  width: 4, height: 4 },  // Coral Bridge
-  // Row 3: bottom of village
-  { id: 'skill-forge',         x: 5,  y: 17, width: 4, height: 3 },  // Chum Bucket
-  { id: 'tool-workshop',       x: 17, y: 17, width: 4, height: 3 },  // BB Building
-  { id: 'config-citadel',      x: 29, y: 17, width: 3, height: 3 },  // Patty Building
+  // Circular village layout — elliptical ring around town center (tile 20, 12)
+  // Clockwise from 12 o'clock, thematic neighbor grouping
+  { id: 'canvas-studio',       x: 18, y: 3,  width: 4, height: 3 },  // TOP CENTER  — Pineapple House (SpongeBob)
+  { id: 'memory-vault',        x: 25, y: 5,  width: 3, height: 3 },  // TOP RIGHT   — BB Building (Squidward)
+  { id: 'webhook-gateway',     x: 29, y: 8,  width: 4, height: 3 },  // RIGHT       — Salty Spitoon (Mr. Krabs)
+  { id: 'cron-hub',            x: 29, y: 13, width: 4, height: 3 },  // RIGHT LOW   — Downtown Building (Gary)
+  { id: 'voice-tower',         x: 25, y: 16, width: 4, height: 3 },  // BOTTOM RIGHT— Boating School (Mrs. Puff)
+  { id: 'config-citadel',      x: 18, y: 18, width: 3, height: 3 },  // BOTTOM CTR  — Lighthouse (Larry)
+  { id: 'tool-workshop',       x: 11, y: 16, width: 4, height: 3 },  // BOTTOM LEFT — Patty Building (Karen)
+  { id: 'skill-forge',         x: 7,  y: 13, width: 4, height: 3 },  // LEFT        — Chum Bucket (Plankton)
+  { id: 'channel-bridge',      x: 7,  y: 8,  width: 4, height: 4 },  // LEFT TOP    — Cave (Sandy)
+  { id: 'security-fortress',   x: 12, y: 5,  width: 3, height: 3 },  // TOP LEFT    — Submarine (Patrick)
 ];
 
 // ---------------------------------------------------------------------------

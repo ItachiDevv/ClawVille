@@ -3,8 +3,7 @@
 /**
  * AuctionPodium — world-surface anchor for the Auction House modal.
  *
- * A dramatic raised podium on the east edge of the map.
- * East edge: tile ~36 → worldX = -640 + 36*32 = 512, map mid Z = 0
+ * A dramatic raised podium in the village center, south of the quest NPC.
  *
  * Composition (keeping draw calls tight):
  *   - A large stepped cylinder base (solid dark material)     1 draw call
@@ -28,12 +27,10 @@ import { color, float, sin, time, uv, mix, smoothstep } from 'three/tsl';
 import { useGameStore } from '@/stores/game';
 
 // ---------------------------------------------------------------------------
-// World position — east edge of the map
-// Tile 36 x tile 12 (vertical center)
-// worldX = -640 + 36*32 = 512, worldZ = -400 + 12*32 = -16
+// World position — village center, 36 units south of center
 // ---------------------------------------------------------------------------
-const PODIUM_X = 512;
-const PODIUM_Z = -16;
+const PODIUM_X = 0;
+const PODIUM_Z = 20;
 const PODIUM_Y = -2;
 
 // Preload the floating item
