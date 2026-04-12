@@ -5,6 +5,7 @@ import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { usePet } from '@/hooks/use-pet';
+import { useMiladyEmbed } from '@/hooks/use-milady-embed';
 import { useNpcStream } from '@/hooks/use-npc-stream';
 import { useGameStore, type GameState } from '@/stores/game';
 import { api } from '@/lib/api';
@@ -100,6 +101,12 @@ export default function GamePage() {
   const router = useRouter();
   const { data: pet, isLoading } = usePet();
 
+  // Milady embed detection — auto-exchanges the agent session for a Lucia
+  // cookie so the viewer skips the login overlay. The hook invalidates
+  // auth-me + pet queries on success, causing the page to re-render
+  // with the guest user authenticated.
+  const miladyEmbed = useMiladyEmbed();
+
   // Check if user is authenticated (separate from pet query)
   const { data: authData, isLoading: authLoading } = useQuery({
     queryKey: ['auth-me'],
@@ -123,11 +130,14 @@ export default function GamePage() {
   useResearchStream();
 
   // Redirect authenticated users with no active agent to /select-agent
+  // EXCEPT in Milady embed mode — embedded viewers stay on /game and
+  // the Milady agent's bot acts as their "pet" via the gateway.
   useEffect(() => {
+    if (miladyEmbed.isEmbed) return; // Don't redirect in embed mode
     if (!isLoading && !authLoading && isAuthenticated && !pet) {
       router.push('/select-agent');
     }
-  }, [pet, isLoading, authLoading, isAuthenticated, router]);
+  }, [pet, isLoading, authLoading, isAuthenticated, miladyEmbed.isEmbed, router]);
 
   // Sync spectator state to game store (no pet = explore mode, has pet = player mode)
   useEffect(() => {
@@ -143,7 +153,8 @@ export default function GamePage() {
     }
   }, [pet]);
 
-  if (isLoading || authLoading) {
+  // While embed session exchange is in flight, show loading
+  if (isLoading || authLoading || miladyEmbed.exchanging) {
     return (
       <div className="game-container">
         <SeaLoadingScreen />
