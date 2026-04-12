@@ -40,7 +40,7 @@ const _buildRayOrigin = new THREE.Vector3();
 const _buildRayDir = new THREE.Vector3(0, -1, 0);
 
 // Target height for all buildings (world units) — must dominate the landscape
-const BUILDING_TARGET_HEIGHT = 100;
+const BUILDING_TARGET_HEIGHT = 160;
 
 // Map each building ID to a GLB model + display config
 // tint: color overlay to make dome-shaped buildings visually distinct from each other
@@ -139,7 +139,7 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
       <primitive object={cloned} scale={buildingScale} />
       {/* Floating building label */}
       {theme && (
-        <Html position={[0, BUILDING_TARGET_HEIGHT + 12, 0]} center distanceFactor={400} style={{ pointerEvents: 'auto' }}>
+        <Html position={[0, BUILDING_TARGET_HEIGHT + 20, 0]} center distanceFactor={400} style={{ pointerEvents: 'auto' }}>
           <div
             style={{
               background: 'rgba(10, 22, 40, 0.85)',

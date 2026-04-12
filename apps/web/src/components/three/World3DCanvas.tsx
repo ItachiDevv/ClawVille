@@ -534,7 +534,7 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
         maxPolarAngle={Math.PI * 0.85}
         rotateSpeed={isTouchDevice ? 0.4 : 1}
         zoomSpeed={isTouchDevice ? 0.6 : 1}
-        target={[0, 10, -50]}
+        target={[0, 10, -16]}
       />
 
       {/* Camera controller routing based on controlMode:
@@ -699,10 +699,9 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
           fov: 50,
           near: 1,
           far: 2000,
-          // Game mode: pull the camera back to z=450 so all 3 building rows
-          // (z = -288 to z = 192) are visible in the initial view. Row 3 sits
-          // at z=192, which was behind the previous spawn position of z=150.
-          position: mode === 'game' ? [0, 200, 450] : [0, 200, 350],
+          // Game mode: pull the camera back to z=550 to accommodate the wider
+          // building ring (semi-major X=14, semi-minor Y=9 tile layout).
+          position: mode === 'game' ? [0, 250, 550] : [0, 200, 350],
         }}
         onCreated={(state) => {
           const { scene, gl } = state;
