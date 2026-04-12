@@ -1,5 +1,5 @@
 import type { Action, ActionResult } from './types';
-import { hasServices, getMessageText } from './types';
+import { hasServices, getMessageText, getDbModule } from './types';
 
 /**
  * CHECK_BALANCE — query the pet's NeoToken balance, inventory count,
@@ -74,7 +74,7 @@ export const checkBalanceAction: Action = {
       const { petId, services } = state;
       const { db } = services;
 
-      const { pets, petInventory, eq, sql } = await import('@clawville/database');
+      const { pets, petInventory, eq, sql } = await getDbModule();
 
       // Get pet data
       const [pet] = await db

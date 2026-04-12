@@ -1,5 +1,5 @@
 import type { Action, ActionResult } from './types';
-import { hasServices, getMessageText, getParam } from './types';
+import { hasServices, getMessageText, getParam , getDbModule } from './types';
 
 /**
  * ACCEPT_QUEST — accept an active quest and create a submission record.
@@ -79,7 +79,7 @@ export const acceptQuestAction: Action = {
         };
       }
 
-      const { quests, questSubmissions, eq, and } = await import('@clawville/database');
+      const { quests, questSubmissions, eq, and } = await getDbModule();
 
       // 1. Find the quest
       const [quest] = await db

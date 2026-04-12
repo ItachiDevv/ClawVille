@@ -545,28 +545,46 @@ export class ElizaRuntime {
   }
 
   /**
-   * Parse the LLM response for action invocations matching the pattern:
+   * Parse ALL action invocations from the LLM response matching the pattern:
    *   [ACTION: ACTION_NAME(param1=value1, param2=value2)]
-   * Returns the first match or null.
+   * Returns an array of parsed invocations (empty if none found).
+   * Handles: multiple actions, params with `=` in values, missing params,
+   * and malformed tags (skipped with a warning).
    */
-  private parseActionInvocation(text: string): { actionName: string; params: Record<string, string> } | null {
-    const match = text.match(/\[ACTION:\s*(\w+)\(([^)]*)\)\]/);
-    if (!match) return null;
+  private parseActionInvocations(text: string): Array<{ actionName: string; params: Record<string, string> }> {
+    const results: Array<{ actionName: string; params: Record<string, string> }> = [];
+    const regex = /\[ACTION:\s*(\w+)\(([^)]*)\)\]/g;
+    let match: RegExpExecArray | null;
 
-    const actionName = match[1];
-    const paramStr = match[2].trim();
-    const params: Record<string, string> = {};
+    while ((match = regex.exec(text)) !== null) {
+      const actionName = match[1];
+      const paramStr = match[2].trim();
+      const params: Record<string, string> = {};
 
-    if (paramStr.length > 0) {
-      for (const part of paramStr.split(',')) {
-        const [key, ...rest] = part.split('=');
-        if (key && rest.length > 0) {
-          params[key.trim()] = rest.join('=').trim();
+      if (paramStr.length > 0) {
+        for (const part of paramStr.split(',')) {
+          const eqIndex = part.indexOf('=');
+          if (eqIndex > 0) {
+            const key = part.slice(0, eqIndex).trim();
+            const value = part.slice(eqIndex + 1).trim();
+            if (key.length > 0) {
+              params[key] = value;
+            }
+          } else {
+            // Malformed param (no `=`): treat the whole part as a flag
+            const flag = part.trim();
+            if (flag.length > 0) {
+              console.warn(`[ElizaRuntime] Malformed action param "${flag}" in ${actionName} — treating as flag`);
+              params[flag] = 'true';
+            }
+          }
         }
       }
+
+      results.push({ actionName, params });
     }
 
-    return { actionName, params };
+    return results;
   }
 
   /**
@@ -697,13 +715,14 @@ export class ElizaRuntime {
       });
 
       let responseText = result.text;
-      let actionExecuted: { name: string; result: ActionResult } | undefined;
+      const actionsExecuted: Array<{ name: string; result: ActionResult }> = [];
 
       // --- Action dispatch ---
-      // If the LLM response contains [ACTION: ...], parse and execute it
+      // Parse ALL [ACTION: ...] tags from the LLM response and execute sequentially
       if (providerState.services) {
-        const invocation = this.parseActionInvocation(responseText);
-        if (invocation) {
+        const invocations = this.parseActionInvocations(responseText);
+
+        for (const invocation of invocations) {
           const actionResult = await this.executeAction(
             invocation.actionName,
             invocation.params,
@@ -711,20 +730,29 @@ export class ElizaRuntime {
           );
 
           if (actionResult) {
-            actionExecuted = { name: invocation.actionName, result: actionResult };
+            actionsExecuted.push({ name: invocation.actionName, result: actionResult });
+          }
+        }
 
-            // Strip the action tag from the response text
-            responseText = responseText.replace(/\[ACTION:\s*\w+\([^)]*\)\]/, '').trim();
+        if (actionsExecuted.length > 0) {
+          // Strip ALL action tags from the response text
+          responseText = responseText.replace(/\[ACTION:\s*\w+\([^)]*\)\]/g, '').trim();
 
-            // Append action result to the response
-            if (actionResult.text) {
-              responseText = responseText
-                ? `${responseText}\n\n${actionResult.text}`
-                : actionResult.text;
-            }
+          // Append all action results
+          const actionTexts = actionsExecuted
+            .map((a) => a.result.text)
+            .filter(Boolean);
+          if (actionTexts.length > 0) {
+            responseText = responseText
+              ? `${responseText}\n\n${actionTexts.join('\n\n')}`
+              : actionTexts.join('\n\n');
           }
         }
       }
+
+      const actionExecuted = actionsExecuted.length > 0
+        ? actionsExecuted[actionsExecuted.length - 1]
+        : undefined;
 
       // Store assistant response
       const assistantMemoryId = crypto.randomUUID() as UUID;
