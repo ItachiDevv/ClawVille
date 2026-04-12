@@ -501,9 +501,32 @@ agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
       if (runtime) {
         // Phase 4: inject services + bot data so Actions + Providers work
         const services = { db, creditNeoTokens, debitNeoTokens } as ClawvilleServices;
-        const bot = await db.query.openclawBots.findFirst({
-          where: eq(openclawBots.agentId, npcId),
-        });
+
+        // Look up the bot via its resolved agentId (e.g. milady:xxx), NOT npcId
+        const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+        const bot = botConfig
+          ? await db.query.openclawBots.findFirst({
+              where: eq(openclawBots.agentId, botConfig.agentId),
+            })
+          : null;
+
+        // World snapshot for WorldStateProvider
+        let worldSnapshot: { npcs: any[] } | null = null;
+        try {
+          const allNpcs = npcSimulation.getAllNpcs();
+          worldSnapshot = {
+            npcs: allNpcs
+              .filter((n: any) => !n.isDead && n.id !== npcId)
+              .slice(0, 8)
+              .map((n: any) => ({
+                name: n.name,
+                activity: n.activity ?? 'idle',
+                destinationBuildingId: n.destinationBuildingId,
+                isDead: n.isDead,
+              })),
+          };
+        } catch { /* non-blocking */ }
+
         const state: Record<string, any> = {
           petId: bot?.id ?? npcId,
           userId: sessionId,
@@ -511,18 +534,21 @@ agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
           petData: bot ? {
             id: bot.id,
             name: bot.name,
-            species: bot.species,
-            neoTokens: 0,
+            species: bot.species ?? 'cat',
+            neoTokens: (bot as any).neoTokens ?? 0,
+            archetype: null,
           } : null,
           nearLocation: npc.destinationBuildingId ?? null,
+          worldSnapshot,
           characterConfig: bot?.knowledge ? { knowledge: bot.knowledge } : {},
+          userMessage: parsed.data.message,
         };
 
         const result = await runtime.processMessage(parsed.data.message, {
           userId: sessionId,
           roomId: `agent-gateway-${npcId}`,
           platform: 'clawville-gateway',
-          dynamicContext: `You are ${npc.name} in the ClawVille world. You are chatting in the open world. Respond in character.`,
+          dynamicContext: `You are ${npc.name} in the ClawVille world. Respond in character.`,
           state,
         });
         elizaResponse = result.content;
