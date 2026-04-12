@@ -63,6 +63,12 @@ export default function HomePage() {
           >
             Enter ClawVille
           </Link>
+          <Link
+            href="/game?spectate=1"
+            className="px-8 py-3.5 rounded-xl font-clawville text-sm uppercase tracking-wider bg-gradient-to-r from-emerald-600 to-teal-500 text-white shadow-[0_0_30px_rgba(0,200,150,0.25)] hover:shadow-[0_0_40px_rgba(0,200,150,0.4)] transition-all hover:scale-105"
+          >
+            Explore World
+          </Link>
           <a
             href="#launch"
             className="px-8 py-3.5 rounded-xl font-clawville text-sm uppercase tracking-wider bg-gradient-to-r from-amber-600 to-orange-500 text-white shadow-[0_0_30px_rgba(255,170,0,0.25)] hover:shadow-[0_0_40px_rgba(255,170,0,0.4)] transition-all hover:scale-105"
