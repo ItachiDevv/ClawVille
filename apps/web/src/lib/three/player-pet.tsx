@@ -33,9 +33,14 @@ const COLOR_TINTS: Record<string, number> = {
   black: 0x424242, brown: 0x8d6e63,
 };
 
-// Lobster GLB faces -Z in local space, so add PI to flip it forward
+// Lobster GLB faces -Z natively (rotation.y=0 → faces -Z).
+// To face world direction (worldVx, worldVz): θ = atan2(-worldVx, -worldVz)
+//   up    (vx=0, vy=-1 → worldZ-): atan2(0,  1) = 0
+//   down  (vx=0, vy=+1 → worldZ+): atan2(0, -1) = PI
+//   right (vx=+1, vy=0 → worldX+): atan2(-1, 0) = -PI/2
+//   left  (vx=-1, vy=0 → worldX-): atan2(+1, 0) = +PI/2
 const DIR_ROTATION: Record<string, number> = {
-  down: Math.PI, left: -Math.PI / 2, up: 0, right: Math.PI / 2, idle: Math.PI,
+  down: Math.PI, left: Math.PI / 2, up: 0, right: -Math.PI / 2, idle: Math.PI,
 };
 
 const pixelZones = buildingZones.map((z) => ({
@@ -82,6 +87,9 @@ function mapToWorld(px: number, py: number): [number, number, number] {
 useGLTF.preload('/models/lobster.glb');
 
 import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
+
+// Module-level scratch vectors — no per-frame allocations
+const _camDir = new THREE.Vector3();
 
 // Shared raycaster — only hits layer 1 (terrain)
 const _petRaycaster = new THREE.Raycaster();
@@ -167,8 +175,24 @@ function PlayerPetInner() {
 
       const { joystickVelocity } = store;
       if (joystickVelocity.x !== 0 || joystickVelocity.y !== 0) {
-        vx = joystickVelocity.x;
-        vy = joystickVelocity.y;
+        // Camera-relative joystick: rotate input by camera's XZ-plane orientation
+        // so "up on joystick" = "forward from camera's viewpoint"
+        state.camera.getWorldDirection(_camDir);
+        // Project onto XZ plane and normalize
+        const fLen = Math.sqrt(_camDir.x * _camDir.x + _camDir.z * _camDir.z);
+        const fwdX = fLen > 0.001 ? _camDir.x / fLen : 0;
+        const fwdZ = fLen > 0.001 ? _camDir.z / fLen : 0;
+        // Right vector (perpendicular on XZ plane)
+        const rightX = -fwdZ;
+        const rightZ = fwdX;
+
+        // joystick up (vy < 0) → camera forward, joystick right (vx > 0) → camera right
+        const joyFwd = -joystickVelocity.y;
+        const joyRight = joystickVelocity.x;
+
+        // Map to pixel-space: pixel X = world X, pixel Y = world Z
+        vx = rightX * joyRight + fwdX * joyFwd;
+        vy = rightZ * joyRight + fwdZ * joyFwd;
       }
     }
 
@@ -197,8 +221,11 @@ function PlayerPetInner() {
     }
 
     let dir = 'idle';
+    let continuousRot: number | null = null;
     if (vx !== 0 || vy !== 0) {
       dir = Math.abs(vx) > Math.abs(vy) ? (vx > 0 ? 'right' : 'left') : (vy > 0 ? 'down' : 'up');
+      // Continuous facing: atan2(-worldVx, -worldVz) where pixel X=worldX, pixel Y=worldZ
+      continuousRot = Math.atan2(-vx, -vy);
     }
     store.setMovementDirection(dir as any);
 
@@ -235,8 +262,12 @@ function PlayerPetInner() {
     const bob = isMoving ? Math.abs(Math.sin(elapsed * BOB_SPEED)) * BOB_AMPLITUDE : Math.sin(elapsed * 2) * 0.15;
     group.position.y = terrainYRef.current + 2 + bob;
 
-    const targetRot = DIR_ROTATION[dir] ?? 0;
-    rotRef.current += (targetRot - rotRef.current) * 0.15;
+    const targetRot = continuousRot ?? DIR_ROTATION[dir] ?? 0;
+    // Shortest-path lerp — prevents spinning the long way when crossing ±PI boundary
+    let rotDiff = targetRot - rotRef.current;
+    while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
+    while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
+    rotRef.current += rotDiff * 0.15;
     group.rotation.y = rotRef.current;
 
     // Skeletal animation — individual body parts (claws, legs, tail)
