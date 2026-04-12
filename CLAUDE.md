@@ -35,9 +35,33 @@ These are not ordered preferences — they are equal constraints.
 
 ---
 
-## IMPORTANT: Use 3da subagent for all visual/3D tasks
+## 💡 Itachi Suggestion (hood)
 
-**Always use the `3da` subagent (Three.js & WebGPU 3D builder) as assistant for any tasks that visually alter the game.** This includes: terrain, seaweed, decorations, lighting, fog, atmosphere, post-processing, character rendering, animations, camera, and any Three.js/TSL/WebGPU work. The 3da agent has persistent memory of our constraints (Intel Iris Xe, no InstancedMesh, TSL-only materials) and learns from every session.
+**WHEN** planning complex AI integrations, **DO** create a multi-phase plan
+document in `.claude/plans/` and a research deep-dive in `docs/` before
+modifying core services, **AVOID** direct implementation without architectural
+mapping.
+
+---
+
+## MANDATORY: Collaborate with the 3da subagent for ALL 3D work
+
+**This is not optional and not a "delegate when convenient" rule — it is a required collaboration pattern.** The `3da` subagent (Three.js & WebGPU 3D builder) has persistent cross-session memory of ClawVille's render constraints, previously-diagnosed bugs, asset quirks, and Iris Xe gotchas. It MUST be spawned as a co-working partner any time a task touches:
+
+- Three.js / R3F scene graph, materials, geometries, lights, fog, camera, controls
+- TSL node materials, WGSL, WebGPU pipelines, shader compilation
+- GLB / GLTF asset work — loading, preloading, compression (Draco, KTX2, meshopt), transform passes
+- Animations (skeletal, procedural, TSL vertex, keyframe), character rigs, bone discovery
+- Post-processing, atmosphere, particles, volumetrics, overdraw
+- Performance profiling or optimization of anything in `apps/web/src/lib/three/`, `apps/web/src/components/three/`, or `apps/web/public/models/`
+- Render-loop mechanics (RAF, frameloop, compileAsync, info.render, pipeline state)
+- Any new world-surface 3D object (NPCs, props, buildings, decorations, markers)
+
+**The pattern is co-execution, not handoff.** The orchestrator sets up the plan, runs CDP measurements, commits and deploys — the 3da subagent writes the actual 3D code and validates it against its accumulated memory of what works on Iris Xe. If you find yourself editing a file under `apps/web/src/lib/three/` or `apps/web/src/components/three/` without having spawned 3da, stop and spawn it.
+
+**Why this matters:** previous sessions have burned hours on issues 3da would have caught in minutes — InstancedMesh + ShaderMaterial silently crashing WebGPU, drei `<Text>` / `<Billboard>` killing Iris Xe, per-frame `new Vector3()` allocations tanking GC, pipeline compile spikes on first render, rotation-angle sign errors. 3da's memory file tracks every one of these and prevents re-learning.
+
+**Non-3D tasks** (API routes, database schemas, React modal UI, zustand stores, perf HUD DOM overlays, CI/CD, deploy scripts) do NOT require 3da collaboration — the rule scopes strictly to work that touches 3D rendering, assets, shaders, or WebGPU state.
 
 A sea-themed OpenClaw game built on ElizaOS. Users create a pet, explore a 3D/2D sea-floor world with 10 buildings, and chat with AI agents that teach OpenClaw agent development concepts.
 
