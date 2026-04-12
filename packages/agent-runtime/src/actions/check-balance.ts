@@ -1,5 +1,5 @@
 import type { Action, ActionResult } from './types';
-import { hasServices, getMessageText } from './types';
+import { hasServices, getMessageText, getDbModule } from './types';
 
 /**
  * CHECK_BALANCE — query the avatar's ClawToken balance, inventory count,
@@ -74,7 +74,7 @@ export const checkBalanceAction: Action = {
       const { avatarId, services } = state;
       const { db } = services;
 
-      const { avatars, avatarInventory, eq, sql } = await import('@clawville/database');
+      const { avatars, avatarInventory, eq, sql } = await getDbModule();
 
       // Get avatar data
       const [avatar] = await db
