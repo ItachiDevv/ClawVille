@@ -12,6 +12,10 @@ export { allProviders } from './providers/index';
 export type { Action, ActionResult, ClawvilleActionState, ClawvilleServices } from './actions/types';
 export type { Provider, ProviderResult } from './providers/types';
 
+// Embedding utility (Phase 2 — standalone embedText for knowledge RAG)
+export { embedText, embedTexts } from './plugins/embed-text';
+export type { EmbedTextOptions } from './plugins/embed-text';
+
 // Gemini text generation provider (Phase 3 — global default for text gen)
 export { createGeminiTextPlugin, createGeminiProTextPlugin } from './plugins/gemini-text-provider';
 export type { GeminiTextConfig } from './plugins/gemini-text-provider';
