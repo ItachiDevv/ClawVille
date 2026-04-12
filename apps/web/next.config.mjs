@@ -56,6 +56,31 @@ const nextConfig = {
           { key: 'Content-Security-Policy', value: FRAME_ANCESTORS },
         ],
       },
+      // Service worker must never be cached by the HTTP layer — the browser
+      // has its own 24h SW update check, and stale SW bytes would prevent
+      // cache busting from taking effect.
+      {
+        source: '/sw.js',
+        headers: [
+          { key: 'Cache-Control', value: 'no-cache, no-store, must-revalidate' },
+          { key: 'Service-Worker-Allowed', value: '/' },
+        ],
+      },
+      // GLB models and basis WASM: 1-year cache with immutable.
+      // The SW cache version acts as the busting mechanism; HTTP cache is
+      // a secondary speed boost for when the SW isn't controlling yet.
+      {
+        source: '/models/:path*.glb',
+        headers: [
+          { key: 'Cache-Control', value: 'public, max-age=31536000, immutable' },
+        ],
+      },
+      {
+        source: '/basis/:path*',
+        headers: [
+          { key: 'Cache-Control', value: 'public, max-age=31536000, immutable' },
+        ],
+      },
     ];
   },
 };
