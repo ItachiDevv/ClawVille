@@ -251,11 +251,11 @@ const TILE_SIZE = 32;
 const HALF_MW = MAP_WIDTH / 2;
 const HALF_MH = MAP_HEIGHT / 2;
 const BUILDING_ZONES = [
-  // Circular village — must match buildingZones in tilemap-data.ts
-  { x: 18, y: 3, w: 4, h: 3 }, { x: 25, y: 5, w: 3, h: 3 }, { x: 29, y: 8, w: 4, h: 3 },
-  { x: 29, y: 13, w: 4, h: 3 }, { x: 25, y: 16, w: 4, h: 3 }, { x: 18, y: 18, w: 3, h: 3 },
-  { x: 11, y: 16, w: 4, h: 3 }, { x: 7, y: 13, w: 4, h: 3 }, { x: 7, y: 8, w: 4, h: 4 },
-  { x: 12, y: 5, w: 3, h: 3 },
+  // Circular village — wider ring, must match buildingZones in tilemap-data.ts
+  { x: 18, y: 1, w: 4, h: 3 }, { x: 27, y: 3, w: 3, h: 3 }, { x: 31, y: 8, w: 4, h: 3 },
+  { x: 31, y: 13, w: 4, h: 3 }, { x: 26, y: 18, w: 4, h: 3 }, { x: 18, y: 20, w: 3, h: 3 },
+  { x: 10, y: 18, w: 4, h: 3 }, { x: 5, y: 13, w: 4, h: 3 }, { x: 5, y: 8, w: 4, h: 4 },
+  { x: 10, y: 3, w: 3, h: 3 },
 ].map(z => ({
   cx: -HALF_MW + (z.x + z.w / 2) * TILE_SIZE,
   cz: -HALF_MH + (z.y + z.h / 2) * TILE_SIZE,
@@ -276,7 +276,7 @@ function isNearBuilding(x: number, z: number): boolean {
 const VILLAGE_CX = 0;
 const VILLAGE_CZ = -16;
 // No decorations within this radius of village center — keeps the town plaza clear
-const DECO_INNER_EXCLUSION_R = 180;
+const DECO_INNER_EXCLUSION_R = 240;
 
 /** Generate all decorations with cluster-based organic scatter.
  *

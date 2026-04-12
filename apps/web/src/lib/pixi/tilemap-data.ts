@@ -74,18 +74,17 @@ export interface BuildingZone {
 }
 
 export const buildingZones: BuildingZone[] = [
-  // Circular village layout — elliptical ring around town center (tile 20, 12)
-  // Clockwise from 12 o'clock, thematic neighbor grouping
-  { id: 'canvas-studio',       x: 18, y: 3,  width: 4, height: 3 },  // TOP CENTER  — Pineapple House (SpongeBob)
-  { id: 'memory-vault',        x: 25, y: 5,  width: 3, height: 3 },  // TOP RIGHT   — BB Building (Squidward)
-  { id: 'webhook-gateway',     x: 29, y: 8,  width: 4, height: 3 },  // RIGHT       — Salty Spitoon (Mr. Krabs)
-  { id: 'cron-hub',            x: 29, y: 13, width: 4, height: 3 },  // RIGHT LOW   — Downtown Building (Gary)
-  { id: 'voice-tower',         x: 25, y: 16, width: 4, height: 3 },  // BOTTOM RIGHT— Boating School (Mrs. Puff)
-  { id: 'config-citadel',      x: 18, y: 18, width: 3, height: 3 },  // BOTTOM CTR  — Lighthouse (Larry)
-  { id: 'tool-workshop',       x: 11, y: 16, width: 4, height: 3 },  // BOTTOM LEFT — Patty Building (Karen)
-  { id: 'skill-forge',         x: 7,  y: 13, width: 4, height: 3 },  // LEFT        — Chum Bucket (Plankton)
-  { id: 'channel-bridge',      x: 7,  y: 8,  width: 4, height: 4 },  // LEFT TOP    — Cave (Sandy)
-  { id: 'security-fortress',   x: 12, y: 5,  width: 3, height: 3 },  // TOP LEFT    — Submarine (Patrick)
+  // Circular village — wider ring for bigger buildings (semi-major X=14, semi-minor Y=9)
+  { id: 'canvas-studio',       x: 18, y: 1,  width: 4, height: 3 },  // TOP CENTER
+  { id: 'memory-vault',        x: 27, y: 3,  width: 3, height: 3 },  // TOP RIGHT
+  { id: 'webhook-gateway',     x: 31, y: 8,  width: 4, height: 3 },  // RIGHT
+  { id: 'cron-hub',            x: 31, y: 13, width: 4, height: 3 },  // RIGHT LOW
+  { id: 'voice-tower',         x: 26, y: 18, width: 4, height: 3 },  // BOTTOM RIGHT
+  { id: 'config-citadel',      x: 18, y: 20, width: 3, height: 3 },  // BOTTOM CENTER
+  { id: 'tool-workshop',       x: 10, y: 18, width: 4, height: 3 },  // BOTTOM LEFT
+  { id: 'skill-forge',         x: 5,  y: 13, width: 4, height: 3 },  // LEFT
+  { id: 'channel-bridge',      x: 5,  y: 8,  width: 4, height: 4 },  // LEFT TOP
+  { id: 'security-fortress',   x: 10, y: 3,  width: 3, height: 3 },  // TOP LEFT
 ];
 
 // ---------------------------------------------------------------------------
