@@ -36,6 +36,20 @@ export interface PetSimState {
   behaviorCooldown: number;
   lastChatAt: number;
   chatMessage: string | null;
+
+  // Phase 3: Autonomy budget controls
+  /** Max ClawTokens the avatar may spend per autonomous session */
+  budgetMaxNt: number;
+  /** Max item purchases per autonomous session */
+  budgetMaxPurchases: number;
+  /** ClawTokens spent so far this session */
+  budgetSpent: number;
+  /** Purchases made this session */
+  budgetPurchaseCount: number;
+  /** Last action dispatched (for SSE broadcast) */
+  lastActionName: string | null;
+  /** Last action result text (for SSE broadcast) */
+  lastActionResult: string | null;
 }
 
 /** SSE broadcast shape — only the fields the client needs to render */
@@ -52,6 +66,11 @@ export interface AvatarSimBroadcast {
   activityEmoji: string;
   isAutonomous: boolean;
   chatMessage: string | null;
+  // Phase 3 enrichment
+  lastActionName: string | null;
+  lastActionResult: string | null;
+  budgetSpent: number;
+  budgetPurchaseCount: number;
 }
 
 export interface AvatarRegistrationInput {
@@ -98,6 +117,12 @@ export class AvatarStateStore {
       behaviorCooldown: 0,
       lastChatAt: 0,
       chatMessage: null,
+      budgetMaxNt: 100,
+      budgetMaxPurchases: 5,
+      budgetSpent: 0,
+      budgetPurchaseCount: 0,
+      lastActionName: null,
+      lastActionResult: null,
     });
   }
 
@@ -137,6 +162,10 @@ export class AvatarStateStore {
       avatar.tokensEarned = 0;
       avatar.visitCount = 0;
       avatar.chatMessage = null;
+      avatar.budgetSpent = 0;
+      avatar.budgetPurchaseCount = 0;
+      avatar.lastActionName = null;
+      avatar.lastActionResult = null;
     }
 
     if (x !== undefined && y !== undefined) {
@@ -162,6 +191,10 @@ export class AvatarStateStore {
         activityEmoji: p.activityEmoji,
         isAutonomous: p.isAutonomous,
         chatMessage: p.chatMessage,
+        lastActionName: p.lastActionName,
+        lastActionResult: p.lastActionResult,
+        budgetSpent: p.budgetSpent,
+        budgetPurchaseCount: p.budgetPurchaseCount,
       }));
   }
 }
