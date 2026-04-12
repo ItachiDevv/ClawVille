@@ -591,6 +591,77 @@ export const api = {
   getBountyReputation: (petId: string) =>
     honoRequest<{ reputation: any }>(`/api/bounties/reputation/${petId}`),
 
+  // Leaderboard (P4 — single ClawVille-owned ranking board)
+  getLeaderboard: (params?: {
+    sort?:
+      | 'composite'
+      | 'gold'
+      | 'earned'
+      | 'skills-sold'
+      | 'skills-authored'
+      | 'quests'
+      | 'bounties';
+    limit?: number;
+    offset?: number;
+    me?: boolean;
+  }) => {
+    const search = new URLSearchParams();
+    if (params?.sort) search.set('sort', params.sort);
+    if (params?.limit != null) search.set('limit', String(params.limit));
+    if (params?.offset != null) search.set('offset', String(params.offset));
+    if (params?.me) search.set('me', '1');
+    const qs = search.toString();
+    return honoRequest<{
+      entries: Array<{
+        rank: number;
+        petId: string;
+        petName: string;
+        species: string;
+        color: string | number | null;
+        archetype: string | null;
+        gold: number;
+        earned: number;
+        skillsSold: number;
+        skillsAuthored: number;
+        questsCompleted: number;
+        bountiesCompleted: number;
+        compositeScore: number;
+      }>;
+      sort: string;
+      limit: number;
+      offset: number;
+      totalPets: number;
+      rankedCount: number;
+      generatedAt: string;
+      me: {
+        rank: number;
+        petId: string;
+        petName: string;
+        species: string;
+        gold: number;
+        earned: number;
+        skillsSold: number;
+        skillsAuthored: number;
+        questsCompleted: number;
+        bountiesCompleted: number;
+        compositeScore: number;
+      } | null;
+    }>(`/api/leaderboard${qs ? '?' + qs : ''}`);
+  },
+
+  getLeaderboardStats: () =>
+    honoRequest<{
+      totalPets: number;
+      rankedPets: number;
+      totalGold: number;
+      totalEarned: number;
+      totalSkillsSold: number;
+      totalSkillsAuthored: number;
+      totalQuestsCompleted: number;
+      totalBountiesCompleted: number;
+      generatedAt: string;
+    }>('/api/leaderboard/stats'),
+
   // Arena Settings
   updateArenaSettings: (settings: { combatSpeed?: number; moveSpeed?: number; maxFights?: number; respawnTime?: number }) =>
     honoRequest<{ settings: { combatSpeed: number; moveSpeed: number; maxFights: number; respawnTime: number } }>(
