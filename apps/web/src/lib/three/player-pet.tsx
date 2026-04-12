@@ -88,9 +88,6 @@ useGLTF.preload('/models/lobster.glb');
 
 import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
 
-// Module-level scratch vectors — no per-frame allocations
-const _camDir = new THREE.Vector3();
-
 // Shared raycaster — only hits layer 1 (terrain)
 const _petRaycaster = new THREE.Raycaster();
 _petRaycaster.layers.set(TERRAIN_LAYER);
@@ -173,26 +170,12 @@ function PlayerPetInner() {
       if (keyState.a) vx = -1;
       if (keyState.d) vx = 1;
 
+      // Joystick uses screen-relative directions (same mapping as WASD):
+      // joystick up = vy<0 = screen up, joystick right = vx>0 = screen right
       const { joystickVelocity } = store;
       if (joystickVelocity.x !== 0 || joystickVelocity.y !== 0) {
-        // Camera-relative joystick: rotate input by camera's XZ-plane orientation
-        // so "up on joystick" = "forward from camera's viewpoint"
-        state.camera.getWorldDirection(_camDir);
-        // Project onto XZ plane and normalize
-        const fLen = Math.sqrt(_camDir.x * _camDir.x + _camDir.z * _camDir.z);
-        const fwdX = fLen > 0.001 ? _camDir.x / fLen : 0;
-        const fwdZ = fLen > 0.001 ? _camDir.z / fLen : 0;
-        // Right vector (perpendicular on XZ plane)
-        const rightX = -fwdZ;
-        const rightZ = fwdX;
-
-        // joystick up (vy < 0) → camera forward, joystick right (vx > 0) → camera right
-        const joyFwd = -joystickVelocity.y;
-        const joyRight = joystickVelocity.x;
-
-        // Map to pixel-space: pixel X = world X, pixel Y = world Z
-        vx = rightX * joyRight + fwdX * joyFwd;
-        vy = rightZ * joyRight + fwdZ * joyFwd;
+        vx = joystickVelocity.x;
+        vy = joystickVelocity.y;
       }
     }
 
