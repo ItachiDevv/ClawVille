@@ -39,12 +39,14 @@ export const knowledgeProvider: Provider = {
     if (runtime?.searchMemories && userMessage && petId) {
       try {
         const queryEmbedding = await embedText(userMessage);
+        const agentId = state?.platformAgentId ?? petId;
         const results = await runtime.searchMemories({
           embedding: queryEmbedding,
           tableName: 'knowledge',
           match_threshold: MATCH_THRESHOLD,
           count: TOP_K,
-          roomId: state.platformAgentId ?? petId,
+          roomId: agentId,
+          entityId: agentId,
           unique: true,
         });
 

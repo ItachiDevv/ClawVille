@@ -409,6 +409,12 @@ export class ElizaRuntime {
     return this.state;
   }
 
+  /** Access the underlying ElizaOS AgentRuntime for direct API calls
+   *  (e.g., createMemory for Phase 2 knowledge embedding). */
+  getElizaRuntime(): IAgentRuntime | null {
+    return this.runtime;
+  }
+
   private async ensureWorld(): Promise<UUID> {
     if (!this.runtime) throw new Error('Runtime not initialized');
     const worldId = this.config.agentId as UUID;

@@ -5,6 +5,7 @@ import { db, pets, petInventory, publishedSkills, skillUpvotes, agents } from '@
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import { npcSimulation } from '../services/npc-simulation';
 import { agentOrchestrator } from '../services/agent-orchestrator';
+import { embedText } from '@clawville/agent-runtime';
 import type { AppContext, AuthenticatedContext } from '../types';
 import { z } from 'zod';
 
@@ -507,6 +508,50 @@ marketplaceRoutes.post('/skills/:id/install', requireAuth, async (c) => {
       .update(agents)
       .set({ customization: updatedConfig, updatedAt: new Date() })
       .where(eq(agents.id, pet.platformAgentId));
+
+    // Phase 2 RAG: embed new knowledge entries via the ElizaOS runtime
+    if (newKnowledge.length > 0) {
+      try {
+        const runtime = await agentOrchestrator.ensureAgentRuntime(
+          pet.platformAgentId,
+          user.id,
+        );
+        if (runtime) {
+          const { v5: uuidv5 } = await import('uuid');
+          const KNOWLEDGE_NS = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+          const agentId = pet.platformAgentId as any;
+
+          for (const entry of newKnowledge) {
+            try {
+              const embedding = await embedText(entry);
+              const memoryId = uuidv5(`knowledge:${pet.id}:${entry}`, KNOWLEDGE_NS);
+              const elizaRuntime = runtime.getElizaRuntime();
+              if (elizaRuntime?.createMemory) {
+                await elizaRuntime.createMemory(
+                  {
+                    id: memoryId,
+                    agentId,
+                    entityId: agentId,
+                    roomId: agentId,
+                    content: { text: entry, source: 'marketplace-skill' } as any,
+                    embedding,
+                    createdAt: Date.now(),
+                    metadata: { type: 'custom', subtype: 'knowledge', source: 'marketplace', skillId },
+                  },
+                  'knowledge',
+                  true,
+                );
+              }
+            } catch (entryErr) {
+              console.warn(`[marketplace/install] Failed to embed entry: ${(entryErr as Error).message}`);
+            }
+          }
+          console.log(`[marketplace/install] Embedded ${newKnowledge.length} knowledge entries for pet ${pet.id}`);
+        }
+      } catch (err) {
+        console.warn(`[marketplace/install] Knowledge embedding failed (non-blocking): ${(err as Error).message}`);
+      }
+    }
 
     await agentOrchestrator.stopAgent(pet.platformAgentId);
   }
