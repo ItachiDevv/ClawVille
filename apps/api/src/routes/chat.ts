@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { db, locationAgents, pets, petInventory } from '@clawville/database';
 import { MAP_LOCATIONS, BUILDING_OPENCLAW_THEMES, getBooksForBuilding, isShopBuilding } from '@clawville/shared';
 import { requireAuth } from '../middleware/auth';
@@ -61,7 +61,10 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
   });
 
   // Build state object for Providers + Actions
-  const services = { db, creditClawTokens, debitClawTokens } as ClawvilleServices;
+  // Only inject services if pet exists — actions require a petId to transact
+  const services = pet
+    ? ({ db, creditClawTokens, debitClawTokens } as ClawvilleServices)
+    : undefined;
   const state: Record<string, any> = {
     petId: pet?.id,
     userId: user.id,
@@ -72,13 +75,30 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
     characterConfig: (pet?.characterConfig as any) ?? {},
   };
 
-  // Fetch inventory for InventoryProvider (non-blocking on failure)
+  // Fetch inventory + quests for Providers (non-blocking on failure)
   if (pet) {
     try {
-      const inv = await db.query.petInventory.findMany({
+      state.inventory = await db.query.petInventory.findMany({
         where: eq(petInventory.petId, pet.id),
       });
-      state.inventory = inv;
+    } catch { /* non-blocking */ }
+
+    try {
+      const { quests, questSubmissions } = await import('@clawville/database');
+      state.activeQuests = await db
+        .select()
+        .from(questSubmissions)
+        .innerJoin(quests, eq(questSubmissions.questId, quests.id))
+        .where(and(
+          eq(questSubmissions.petId, pet.id),
+          sql`${questSubmissions.status} IN ('accepted', 'in_progress')`
+        ))
+        .limit(10);
+      state.availableQuests = await db
+        .select()
+        .from(quests)
+        .where(eq(quests.status, 'active'))
+        .limit(5);
     } catch { /* non-blocking */ }
   }
 
