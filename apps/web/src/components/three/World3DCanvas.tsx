@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useEffect, useCallback, memo } from 'react';
-import { Canvas, useFrame, extend } from '@react-three/fiber';
+import { Canvas, useFrame, extend, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
@@ -338,6 +338,36 @@ function kickRenderLoop(state: any): void {
 }
 
 // ---------------------------------------------------------------------------
+// PreCompilePipelines — WebGPU pipeline pre-compilation
+// ---------------------------------------------------------------------------
+// Three.js WebGPURenderer.compileAsync(scene, camera) walks the scene graph
+// and asynchronously compiles every render pipeline needed for the current
+// scene. Calling it AFTER the first R3F commit (all child meshes are in the
+// scene) moves the 274ms post-mount main-thread block into the loading-spinner
+// phase so users never see the hitch.
+//
+// We use useEffect + requestAnimationFrame so the call fires after the first
+// React commit paint, by which point all sibling components (ArenaTerrain,
+// ArenaBuildings, etc.) have been added to scene.children.  Runs once only.
+// ---------------------------------------------------------------------------
+function PreCompilePipelines() {
+  const { gl, scene, camera } = useThree();
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      if (typeof (gl as any).compileAsync === 'function') {
+        (gl as any).compileAsync(scene, camera).catch((err: unknown) => {
+          console.warn('[World3D] compileAsync failed:', err);
+        });
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+    // gl/scene/camera are stable R3F refs — intentionally omitted from deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Scene contents (inside Canvas)
 // ---------------------------------------------------------------------------
 const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode }) {
@@ -355,6 +385,10 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
 
   return (
     <>
+      {/* Pre-compile WebGPU render pipelines once after the first frame commit.
+          Eliminates the 274ms post-mount main-thread hitch. No-ops on WebGL. */}
+      <PreCompilePipelines />
+
       {/* Camera controls.
           Target at z=-50 centres on the middle building row (z ≈ -64) so the
           initial overview shows all 3 rows symmetrically. */}
