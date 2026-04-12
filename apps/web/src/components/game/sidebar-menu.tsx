@@ -501,6 +501,7 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
   const openAuction = useGameStore((s: GameState) => s.openAuction);
   const openQuestBoard = useGameStore((s: GameState) => s.openQuestBoard);
   const openBountyBoard = useGameStore((s: GameState) => s.openBountyBoard);
+  const openLeaderboard = useGameStore((s: GameState) => s.openLeaderboard);
   const toggleActivityFeed = useGameStore((s: GameState) => s.toggleActivityFeed);
 
   const [locationsOpen, setLocationsOpen] = useState(false);
@@ -636,6 +637,12 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
             label="Bounty Board"
             onClick={runAction(openBountyBoard)}
             rarity="uncommon"
+          />
+          <SidebarRow
+            icon="🏆"
+            label="Leaderboard"
+            onClick={runAction(openLeaderboard)}
+            rarity="legendary"
           />
           <SidebarRow
             icon="📋"
