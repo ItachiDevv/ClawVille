@@ -20,11 +20,15 @@
     "test:agent-flow": "bun run scripts/test-agent-flow.ts"
   },
   "devDependencies": {
+    "@gltf-transform/core": "^4.3.0",
+    "@gltf-transform/extensions": "^4.3.0",
+    "@gltf-transform/functions": "^4.3.0",
     "@types/node": "^20.11.0",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "autoprefixer": "^10.4.27",
     "dotenv": "^17.4.1",
+    "draco3d": "^1.5.7",
     "gifenc": "^1.0.3",
     "gltf-pipeline": "^4.3.1",
     "obs-websocket-js": "^5.0.7",
