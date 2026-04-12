@@ -1,6 +1,6 @@
 import { KNOWLEDGE_BOOKS, getBookById } from '@clawville/shared';
 import type { Action, ActionResult } from './types';
-import { hasServices, getMessageText, getParam } from './types';
+import { hasServices, getMessageText, getParam , getDbModule } from './types';
 
 /**
  * LEARN_SKILL — read a knowledge book from inventory and absorb its entries
@@ -97,7 +97,7 @@ export const learnSkillAction: Action = {
         return { success: false, text: `Book "${itemId}" not found.` };
       }
 
-      const { petInventory, pets, eq, and } = await import('@clawville/database');
+      const { petInventory, pets, eq, and } = await getDbModule();
 
       // Check inventory
       const [inventoryItem] = await db

@@ -1,5 +1,5 @@
 import type { Action, ActionResult } from './types';
-import { hasServices, getMessageText, getParam } from './types';
+import { hasServices, getMessageText, getParam , getDbModule } from './types';
 
 /** Platform fee percentage for bazaar transactions (15%). */
 const PLATFORM_FEE_PERCENT = 15;
@@ -102,7 +102,7 @@ export const buyBazaarListingAction: Action = {
         pets,
         eq,
         and,
-      } = await import('@clawville/database');
+      } = await getDbModule();
 
       // 1. Find the listing
       const [listing] = await db

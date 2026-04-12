@@ -2,7 +2,7 @@ import { MAP_LOCATIONS, LOCATION_IDS } from '@clawville/shared';
 import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 import { getBooksForBuilding } from '@clawville/shared';
 import type { Action, ActionResult } from './types';
-import { hasServices, getMessageText, getParam } from './types';
+import { hasServices, getMessageText, getParam , getDbModule } from './types';
 
 const BUILDING_IDS = LOCATION_IDS;
 
@@ -116,7 +116,7 @@ export const visitBuildingAction: Action = {
       // Import schema tables dynamically from the injected db
       // We need the pets table reference — import from @clawville/database for types only
       // But we use raw SQL via db to avoid the direct import chain
-      const { pets, eq } = await import('@clawville/database');
+      const { pets, eq } = await getDbModule();
 
       // Update pet position to building entrance
       await db

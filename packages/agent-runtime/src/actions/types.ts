@@ -113,3 +113,39 @@ export function getParam(message: any, name: string): string | undefined {
   }
   return undefined;
 }
+
+/** Extract a named parameter as an integer. Returns undefined if missing or non-numeric. */
+export function getParamInt(message: any, name: string): number | undefined {
+  const val = getParam(message, name);
+  if (val === undefined) return undefined;
+  const num = parseInt(val, 10);
+  return isNaN(num) ? undefined : num;
+}
+
+/** Extract a named parameter as a float. Returns undefined if missing or non-numeric. */
+export function getParamFloat(message: any, name: string): number | undefined {
+  const val = getParam(message, name);
+  if (val === undefined) return undefined;
+  const num = parseFloat(val);
+  return isNaN(num) ? undefined : num;
+}
+
+// ---------------------------------------------------------------------------
+// Database import helper — all actions use dynamic import('@clawville/database')
+// to avoid circular dependency between packages/agent-runtime and apps/api.
+// This helper centralises the import + caches the module so it's only resolved
+// once per process lifetime instead of on every handler call.
+// ---------------------------------------------------------------------------
+
+let _dbModule: any = null;
+
+/**
+ * Lazily import and cache `@clawville/database`. All action handlers
+ * should use this instead of raw `await import('@clawville/database')`.
+ */
+export async function getDbModule(): Promise<any> {
+  if (!_dbModule) {
+    _dbModule = await import('@clawville/database');
+  }
+  return _dbModule;
+}
