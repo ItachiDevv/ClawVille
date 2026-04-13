@@ -21,13 +21,14 @@ import InventoryModal from '@/components/game/inventory-modal';
 // SpectatorBanner removed — /game is always game mode, explore handles no-agent case
 import ActivityFeed from '@/components/game/activity-feed';
 import OpenClawConnectModal from '@/components/game/openclaw-connect-modal';
-import SkillBuilderModal from '@/components/game/skill-builder-modal';
-import MarketplaceModal from '@/components/game/marketplace-modal';
-import BazaarModal from '@/components/game/bazaar-modal';
-import AuctionModal from '@/components/game/auction-modal';
-import QuestBoardModal from '@/components/game/quest-board-modal';
-import BountyBoardModal from '@/components/game/bounty-board-modal';
-import LeaderboardModal from '@/components/game/leaderboard-modal';
+
+const SkillBuilderModal = dynamic(() => import('@/components/game/skill-builder-modal'), { ssr: false });
+const MarketplaceModal = dynamic(() => import('@/components/game/marketplace-modal'), { ssr: false });
+const BazaarModal = dynamic(() => import('@/components/game/bazaar-modal'), { ssr: false });
+const AuctionModal = dynamic(() => import('@/components/game/auction-modal'), { ssr: false });
+const QuestBoardModal = dynamic(() => import('@/components/game/quest-board-modal'), { ssr: false });
+const BountyBoardModal = dynamic(() => import('@/components/game/bounty-board-modal'), { ssr: false });
+const LeaderboardModal = dynamic(() => import('@/components/game/leaderboard-modal'), { ssr: false });
 import BuildingTooltip from '@/components/game/building-tooltip';
 import DailyLoginModal from '@/components/game/daily-login-modal';
 import QuestTracker from '@/components/game/quest-tracker';
