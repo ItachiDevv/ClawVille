@@ -51,8 +51,11 @@ function calculateReputationTier(totalCompleted: number): string {
 }
 
 /** Recalculate successRate for a hunter based on their attempt history */
-async function recalculateSuccessRate(avatarId: string): Promise<number> {
-  const attemptCounts = await db
+type BountyTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+async function recalculateSuccessRate(avatarId: string, tx?: BountyTx): Promise<number> {
+  const qb = tx ?? db;
+  const attemptCounts = await qb
     .select({
       status: bountyAttempts.status,
       count: count(),
@@ -524,165 +527,171 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuth, async (c) => {
   const now = new Date();
 
   if (decision === 'approved') {
-    // 1. Update attempt status to 'approved'
-    await db
-      .update(bountyAttempts)
-      .set({
-        status: 'approved',
-        reviewNote: reviewNote ?? null,
-        reviewedAt: now,
-        updatedAt: now,
-      })
-      .where(eq(bountyAttempts.id, attemptId));
-
-    // 2. Transfer escrowed tokenReward to hunter's clawTokens
-    const hunterPet = await db.query.avatars.findFirst({
-      where: eq(avatars.id, attempt.hunterId),
-    });
-
-    if (!hunterPet) {
-      throw new HTTPException(500, { message: 'Hunter avatar not found' });
-    }
-
-    // Release escrowed tokenReward to hunter (atomic + audited)
-    await creditClawTokens({
-      avatarId: hunterPet.id,
-      amount: bounty.tokenReward,
-      reason: 'bounty_reward',
-      source: 'bounty',
-      metadata: { bountyId: bounty.id, attemptId: attempt.id },
-    });
-
-    // 3. Transfer bonus rewards to hunter
-    const rewards = await db
-      .select()
-      .from(bountyRewards)
-      .where(eq(bountyRewards.bountyId, bounty.id));
-
-    for (const reward of rewards) {
-      if (reward.rewardType === 'skill' && reward.skillId) {
-        const itemId = `skill-${reward.skillId}`;
-        const existingItem = await db.query.avatarInventory.findFirst({
-          where: and(
-            eq(avatarInventory.avatarId, hunterPet.id),
-            eq(avatarInventory.itemId, itemId)
-          ),
-        });
-
-        if (existingItem) {
-          await db
-            .update(avatarInventory)
-            .set({ quantity: existingItem.quantity + 1 })
-            .where(eq(avatarInventory.id, existingItem.id));
-        } else {
-          await db.insert(avatarInventory).values({
-            avatarId: hunterPet.id,
-            itemId,
-            quantity: 1,
-          });
-        }
-      }
-
-      if (reward.rewardType === 'knowledge_book' && reward.bookId) {
-        const itemId = `book-${reward.bookId}`;
-        const existingItem = await db.query.avatarInventory.findFirst({
-          where: and(
-            eq(avatarInventory.avatarId, hunterPet.id),
-            eq(avatarInventory.itemId, itemId)
-          ),
-        });
-
-        if (existingItem) {
-          await db
-            .update(avatarInventory)
-            .set({ quantity: existingItem.quantity + 1 })
-            .where(eq(avatarInventory.id, existingItem.id));
-        } else {
-          await db.insert(avatarInventory).values({
-            avatarId: hunterPet.id,
-            itemId,
-            quantity: 1,
-          });
-        }
-      }
-
-      // agent_config and custom rewards are noted but don't auto-transfer inventory
-    }
-
-    // 4. Mark bounty as 'completed'
-    await db
-      .update(bounties)
-      .set({
-        status: 'completed',
-        completedAt: now,
-        updatedAt: now,
-      })
-      .where(eq(bounties.id, bounty.id));
-
-    // 4b. Reject all other pending attempts for this bounty (prevent orphans)
-    await db
-      .update(bountyAttempts)
-      .set({
-        status: 'rejected',
-        reviewNote: 'Auto-rejected: bounty completed by another hunter',
-        reviewedAt: now,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(bountyAttempts.bountyId, bounty.id),
-          ne(bountyAttempts.id, attemptId),
-          sql`${bountyAttempts.status} IN ('claimed', 'in_progress', 'submitted')`
-        )
-      );
-
-    // 5. Update bounty reputation for hunter
-    const hunterRep = await db.query.bountyReputation.findFirst({
-      where: eq(bountyReputation.avatarId, hunterPet.id),
-    });
-
-    const newSuccessRate = await recalculateSuccessRate(hunterPet.id);
-
-    if (hunterRep) {
-      const newCompleted = hunterRep.totalCompleted + 1;
-      const newTier = calculateReputationTier(newCompleted);
-      await db
-        .update(bountyReputation)
+    // Entire approval flow in a single transaction to prevent partial
+    // state (e.g. tokens credited but bounty not marked completed).
+    const { rewards } = await db.transaction(async (tx) => {
+      // 1. Update attempt status to 'approved'
+      await tx
+        .update(bountyAttempts)
         .set({
-          totalCompleted: newCompleted,
-          totalEarned: hunterRep.totalEarned + bounty.tokenReward,
+          status: 'approved',
+          reviewNote: reviewNote ?? null,
+          reviewedAt: now,
+          updatedAt: now,
+        })
+        .where(eq(bountyAttempts.id, attemptId));
+
+      // 2. Transfer escrowed tokenReward to hunter's clawTokens
+      const hunterPet = await tx.query.avatars.findFirst({
+        where: eq(avatars.id, attempt.hunterId),
+      });
+
+      if (!hunterPet) {
+        throw new HTTPException(500, { message: 'Hunter avatar not found' });
+      }
+
+      // Release escrowed tokenReward to hunter (atomic + audited)
+      await creditClawTokens({
+        avatarId: hunterPet.id,
+        amount: bounty.tokenReward,
+        reason: 'bounty_reward',
+        source: 'bounty',
+        metadata: { bountyId: bounty.id, attemptId: attempt.id },
+      }, tx);
+
+      // 3. Transfer bonus rewards to hunter
+      const txRewards = await tx
+        .select()
+        .from(bountyRewards)
+        .where(eq(bountyRewards.bountyId, bounty.id));
+
+      for (const reward of txRewards) {
+        if (reward.rewardType === 'skill' && reward.skillId) {
+          const itemId = `skill-${reward.skillId}`;
+          const existingItem = await tx.query.avatarInventory.findFirst({
+            where: and(
+              eq(avatarInventory.avatarId, hunterPet.id),
+              eq(avatarInventory.itemId, itemId)
+            ),
+          });
+
+          if (existingItem) {
+            await tx
+              .update(avatarInventory)
+              .set({ quantity: existingItem.quantity + 1 })
+              .where(eq(avatarInventory.id, existingItem.id));
+          } else {
+            await tx.insert(avatarInventory).values({
+              avatarId: hunterPet.id,
+              itemId,
+              quantity: 1,
+            });
+          }
+        }
+
+        if (reward.rewardType === 'knowledge_book' && reward.bookId) {
+          const itemId = `book-${reward.bookId}`;
+          const existingItem = await tx.query.avatarInventory.findFirst({
+            where: and(
+              eq(avatarInventory.avatarId, hunterPet.id),
+              eq(avatarInventory.itemId, itemId)
+            ),
+          });
+
+          if (existingItem) {
+            await tx
+              .update(avatarInventory)
+              .set({ quantity: existingItem.quantity + 1 })
+              .where(eq(avatarInventory.id, existingItem.id));
+          } else {
+            await tx.insert(avatarInventory).values({
+              avatarId: hunterPet.id,
+              itemId,
+              quantity: 1,
+            });
+          }
+        }
+
+        // agent_config and custom rewards are noted but don't auto-transfer inventory
+      }
+
+      // 4. Mark bounty as 'completed'
+      await tx
+        .update(bounties)
+        .set({
+          status: 'completed',
+          completedAt: now,
+          updatedAt: now,
+        })
+        .where(eq(bounties.id, bounty.id));
+
+      // 4b. Reject all other pending attempts for this bounty (prevent orphans)
+      await tx
+        .update(bountyAttempts)
+        .set({
+          status: 'rejected',
+          reviewNote: 'Auto-rejected: bounty completed by another hunter',
+          reviewedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(bountyAttempts.bountyId, bounty.id),
+            ne(bountyAttempts.id, attemptId),
+            sql`${bountyAttempts.status} IN ('claimed', 'in_progress', 'submitted')`
+          )
+        );
+
+      // 5. Update bounty reputation for hunter
+      const hunterRep = await tx.query.bountyReputation.findFirst({
+        where: eq(bountyReputation.avatarId, hunterPet.id),
+      });
+
+      const newSuccessRate = await recalculateSuccessRate(hunterPet.id, tx);
+
+      if (hunterRep) {
+        const newCompleted = hunterRep.totalCompleted + 1;
+        const newTier = calculateReputationTier(newCompleted);
+        await tx
+          .update(bountyReputation)
+          .set({
+            totalCompleted: newCompleted,
+            totalEarned: hunterRep.totalEarned + bounty.tokenReward,
+            tier: newTier as any,
+            successRate: newSuccessRate,
+            lastActivityAt: now,
+            updatedAt: now,
+          })
+          .where(eq(bountyReputation.id, hunterRep.id));
+      } else {
+        const newTier = calculateReputationTier(1);
+        await tx.insert(bountyReputation).values({
+          avatarId: hunterPet.id,
+          totalCompleted: 1,
+          totalEarned: bounty.tokenReward,
           tier: newTier as any,
           successRate: newSuccessRate,
           lastActivityAt: now,
-          updatedAt: now,
-        })
-        .where(eq(bountyReputation.id, hunterRep.id));
-    } else {
-      const newTier = calculateReputationTier(1);
-      await db.insert(bountyReputation).values({
-        avatarId: hunterPet.id,
-        totalCompleted: 1,
-        totalEarned: bounty.tokenReward,
-        tier: newTier as any,
-        successRate: newSuccessRate,
-        lastActivityAt: now,
+        });
+      }
+
+      // 6. Update reputation for creator (track activity)
+      const creatorRep = await tx.query.bountyReputation.findFirst({
+        where: eq(bountyReputation.avatarId, reviewerPet.id),
       });
-    }
 
-    // 6. Update reputation for creator (track activity)
-    const creatorRep = await db.query.bountyReputation.findFirst({
-      where: eq(bountyReputation.avatarId, reviewerPet.id),
+      if (creatorRep) {
+        await tx
+          .update(bountyReputation)
+          .set({
+            lastActivityAt: now,
+            updatedAt: now,
+          })
+          .where(eq(bountyReputation.id, creatorRep.id));
+      }
+
+      return { rewards: txRewards };
     });
-
-    if (creatorRep) {
-      await db
-        .update(bountyReputation)
-        .set({
-          lastActivityAt: now,
-          updatedAt: now,
-        })
-        .where(eq(bountyReputation.id, creatorRep.id));
-    }
 
     return c.json({
       success: true,
