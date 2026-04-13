@@ -607,6 +607,30 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
     knowledgeGained = `Visited ${theme.label}: learned about ${theme.focus.split(',')[0]}`;
   }
 
+  // Award 1 NeoToken for visiting a building (best-effort — openclaw bots
+  // without a matching pets row will silently skip the credit)
+  let tokenAwarded = 0;
+  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  if (botConfig) {
+    try {
+      const bot = await db.query.openclawBots.findFirst({
+        where: eq(openclawBots.agentId, botConfig.agentId),
+      });
+      if (bot) {
+        await creditNeoTokens({
+          petId: bot.id,
+          amount: 1,
+          reason: 'building_visit',
+          source: 'api',
+          metadata: { buildingId, sessionId },
+        });
+        tokenAwarded = 1;
+      }
+    } catch {
+      // Pet row doesn't exist for this bot — skip token award
+    }
+  }
+
   // Create memory (fire-and-forget)
   memoryService.createMemory({
     entityId: npcId,
@@ -618,7 +642,6 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
   }).catch(() => {});
 
   // Persist knowledge to openclaw_bots table (fire-and-forget)
-  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
   if (botConfig && knowledgeGained) {
     (async () => {
       try {
@@ -643,7 +666,7 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
   return c.json({
     success: true,
     activity: picked,
-    tokenAwarded: 1,
+    tokenAwarded,
     knowledgeGained,
   });
 });
