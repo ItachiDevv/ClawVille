@@ -205,16 +205,23 @@ function tickDemoNpcs(npcs: NpcSpriteState[]): NpcSpriteState[] {
   });
 }
 
-let demoInterval: ReturnType<typeof setInterval> | null = null;
+let demoIntervalId: ReturnType<typeof setInterval> | null = null;
 
 function startDemoWander() {
-  if (demoInterval) return;
-  demoInterval = setInterval(() => {
+  if (demoIntervalId) return; // already running
+  demoIntervalId = setInterval(() => {
     const state = useNpcStore.getState();
-    // Always wander — even server NPCs get client-side movement when idle
+    // Only wander when not connected to server
     const updated = tickDemoNpcs(state.npcs);
     useNpcStore.setState({ npcs: updated });
   }, 100);
+}
+
+function stopDemoWander() {
+  if (demoIntervalId) {
+    clearInterval(demoIntervalId);
+    demoIntervalId = null;
+  }
 }
 
 export const useNpcStore = create<NpcStoreState>((set, get) => ({
@@ -227,9 +234,15 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
 
   setConnected: (v) => {
     set({ connected: v });
-    // Restore demo NPCs when server disconnects
-    if (!v && get().npcs.length === 0) {
-      set({ npcs: DEMO_NPCS });
+    if (v) {
+      // Server connected — stop demo wander so it doesn't overwrite server positions
+      stopDemoWander();
+    } else {
+      // Server disconnected — restore demo NPCs and restart wander
+      if (get().npcs.length === 0) {
+        set({ npcs: DEMO_NPCS });
+      }
+      startDemoWander();
     }
   },
 
