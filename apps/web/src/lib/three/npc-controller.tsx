@@ -153,8 +153,8 @@ export default function NpcController() {
       return;
     }
 
-    // Lobster GLB faces +Z natively → θ = atan2(worldVx, worldVz)
-    const facingAngle = Math.atan2(vx, vy);
+    // Lobster GLB faces -Z natively → θ = atan2(-worldVx, -worldVz)
+    const facingAngle = Math.atan2(-vx, -vy);
 
     const dir = directionFromVelocity(vx, vy);
 

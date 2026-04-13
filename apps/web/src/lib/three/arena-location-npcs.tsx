@@ -83,9 +83,9 @@ function computeNpcPlacement(zone: { x: number; y: number; width: number; height
   const worldZ = OFFSET_Z + npcTileZ * TILE_SIZE;
 
   // Facing toward village center from NPC position.
-  // The model faces +Z by default. atan2(dirX, dirZ) rotates the
-  // +Z-forward model to face along (dirX, dirZ).
-  const facingRotY = Math.atan2(dx, dz);
+  // The model faces -Z by default. atan2(dirX, dirZ) + PI rotates the
+  // -Z-forward model to face along (dirX, dirZ).
+  const facingRotY = Math.atan2(dx, dz) + Math.PI;
 
   return { worldX, worldZ, facingRotY };
 }
