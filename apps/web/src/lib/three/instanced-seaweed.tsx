@@ -12,20 +12,26 @@ import * as THREE from 'three';
 // ---------------------------------------------------------------------------
 
 const BLADE_COUNT = 3000;
-const MAP_WIDTH = 1280;
-const MAP_HEIGHT = 800;
+const MAP_WIDTH = 2048;
+const MAP_HEIGHT = 1280;
 const TILE_SIZE = 32;
 const HALF_MW = MAP_WIDTH / 2;
 const HALF_MH = MAP_HEIGHT / 2;
 const SPREAD_X = MAP_WIDTH * 2.2;
 const SPREAD_Z = MAP_HEIGHT * 2.2;
 
-// Building exclusion zones
+// Building exclusion zones — must match buildingZones in tilemap-data.ts (64×40 grid)
 const BUILDING_ZONES = [
-  { x: 5, y: 2, w: 4, h: 3 }, { x: 17, y: 2, w: 4, h: 3 }, { x: 29, y: 2, w: 4, h: 3 },
-  { x: 2, y: 9, w: 4, h: 3 }, { x: 12, y: 9, w: 3, h: 3 }, { x: 21, y: 9, w: 3, h: 3 },
-  { x: 31, y: 9, w: 4, h: 4 }, { x: 5, y: 17, w: 4, h: 3 }, { x: 17, y: 17, w: 4, h: 3 },
-  { x: 29, y: 17, w: 3, h: 3 },
+  { x: 29, y: 2,  w: 4, h: 3 }, // canvas-studio
+  { x: 45, y: 4,  w: 4, h: 3 }, // memory-vault
+  { x: 54, y: 12, w: 4, h: 3 }, // webhook-gateway
+  { x: 54, y: 22, w: 4, h: 3 }, // cron-hub
+  { x: 44, y: 32, w: 4, h: 3 }, // voice-tower
+  { x: 30, y: 35, w: 4, h: 3 }, // config-citadel
+  { x: 14, y: 32, w: 4, h: 3 }, // tool-workshop
+  { x: 6,  y: 22, w: 4, h: 3 }, // skill-forge
+  { x: 6,  y: 12, w: 4, h: 4 }, // channel-bridge
+  { x: 15, y: 4,  w: 4, h: 3 }, // security-fortress
 ].map((z) => ({
   cx: -HALF_MW + (z.x + z.w / 2) * TILE_SIZE,
   cz: -HALF_MH + (z.y + z.h / 2) * TILE_SIZE,

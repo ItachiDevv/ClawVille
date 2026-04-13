@@ -5,8 +5,8 @@
 
 import { BUILDING_TILE_ZONES } from '@clawville/shared';
 
-const COLS = 40;
-const ROWS = 25;
+const COLS = 64;
+const ROWS = 40;
 const TILE = 32;
 
 export interface PathNode {
