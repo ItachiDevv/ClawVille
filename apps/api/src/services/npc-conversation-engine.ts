@@ -16,7 +16,7 @@ const OPENAI_MAX_TOKENS = 400;
 let geminiConsecutiveFailures = 0;
 let geminiBackoffUntil = 0;
 const GEMINI_MAX_FAILURES = 3;
-const GEMINI_BACKOFF_MS = 5 * 60 * 1000; // 5 minutes
+const GEMINI_BACKOFF_MS = 30 * 1000; // 30 seconds
 
 interface ConversationMessage {
   npcId: string;
@@ -44,7 +44,7 @@ async function callLlmForNpc(
     geminiConsecutiveFailures++;
     if (geminiConsecutiveFailures >= GEMINI_MAX_FAILURES) {
       geminiBackoffUntil = now + GEMINI_BACKOFF_MS;
-      console.warn(`[NPC Convo] Gemini failed ${GEMINI_MAX_FAILURES}x — backing off for 5 min, using OpenAI`);
+      console.warn(`[NPC Convo] Gemini failed ${GEMINI_MAX_FAILURES}x — backing off for 30s, using OpenAI`);
     }
   }
 
