@@ -221,7 +221,11 @@ agentGatewayRoutes.post('/connect', async (c) => {
 
   // Step 3: Register in npc-simulation so the bot actually spawns in the world.
   // Avatar mode requires name + species; override mode requires a valid targetNpcId.
-  if (data.name && data.species) {
+  // Default species to 'lobster' and name to agentId so agents ALWAYS spawn even
+  // if the caller omits optional avatar fields.
+  const spawnName = data.name ?? data.miladyCharacterName ?? resolvedAgentId.slice(0, 24);
+  const spawnSpecies = data.species ?? 'lobster';
+  if (spawnName) {
     try {
       const config: OpenClawRegistration = {
         agentId: resolvedAgentId,
@@ -232,8 +236,8 @@ agentGatewayRoutes.post('/connect', async (c) => {
         protocol: wireProtocol,
         mode: 'avatar',
         autonomyMode,
-        name: data.name,
-        species: data.species,
+        name: spawnName,
+        species: spawnSpecies,
         color: data.color ?? 0x888888,
         stats: agentStats,
         homeX: data.homeX ?? 640,
