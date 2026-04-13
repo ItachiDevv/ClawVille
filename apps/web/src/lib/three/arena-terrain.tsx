@@ -8,6 +8,7 @@ import {
   positionLocal, vertexColor,
   mix, smoothstep,
 } from 'three/tsl';
+import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tilemap-data';
 
 // ---------------------------------------------------------------------------
 // Terrain: Bikini Bottom GLB + sand floor + coral/kelp decorations
@@ -23,9 +24,6 @@ export const TERRAIN_LAYER = 1;
 // They are fired via requestAnimationFrame after first paint from the game page,
 // so they don't delay the initial scene mount.  The Suspense fallback={null} wrapper
 // on ArenaTerrain means decorations simply render nothing until the assets resolve.
-
-const MAP_WIDTH = 2048;
-const MAP_HEIGHT = 1280;
 
 // Sand colors — GRAPHIC high-contrast palette, visible from any camera distance
 const SAND_RIDGE  = new THREE.Color(0xfff0d4); // Bright white-sand peaks
@@ -247,19 +245,13 @@ const DECO_TYPES = [
 // All decoration preloads have been moved to DeferredTerrainPreloads() below.
 
 // Building exclusion zones (world coords) — no decorations within 80px of building center
-const TILE_SIZE = 32;
 const HALF_MW = MAP_WIDTH / 2;
 const HALF_MH = MAP_HEIGHT / 2;
-const BUILDING_ZONES = [
-  // Circular village — wider ring in 64×40 grid, must match buildingZones in tilemap-data.ts
-  { x: 29, y: 2, w: 4, h: 3 }, { x: 45, y: 4, w: 4, h: 3 }, { x: 54, y: 12, w: 4, h: 3 },
-  { x: 54, y: 22, w: 4, h: 3 }, { x: 44, y: 32, w: 4, h: 3 }, { x: 30, y: 35, w: 4, h: 3 },
-  { x: 14, y: 32, w: 4, h: 3 }, { x: 6, y: 22, w: 4, h: 3 }, { x: 6, y: 12, w: 4, h: 4 },
-  { x: 15, y: 4, w: 4, h: 3 },
-].map(z => ({
-  cx: -HALF_MW + (z.x + z.w / 2) * TILE_SIZE,
-  cz: -HALF_MH + (z.y + z.h / 2) * TILE_SIZE,
-  radius: Math.max(z.w, z.h) * TILE_SIZE * 2.0,
+// Derive exclusion zones from canonical tilemap-data buildingZones (single source of truth)
+const BUILDING_ZONES = buildingZones.map(z => ({
+  cx: -HALF_MW + (z.x + z.width / 2) * TILE_SIZE,
+  cz: -HALF_MH + (z.y + z.height / 2) * TILE_SIZE,
+  radius: Math.max(z.width, z.height) * TILE_SIZE * 2.0,
 }));
 
 function isNearBuilding(x: number, z: number): boolean {

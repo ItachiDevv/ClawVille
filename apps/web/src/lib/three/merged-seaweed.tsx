@@ -4,6 +4,7 @@ import { useMemo } from 'react';
 import * as THREE from 'three/webgpu';
 import { attribute, positionLocal, float, sin, cos, vec3, time } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tilemap-data';
 
 // ---------------------------------------------------------------------------
 // Merged Seaweed / Kelp Ground Cover
@@ -13,30 +14,21 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 // ---------------------------------------------------------------------------
 
 const BLADE_COUNT = 3000;
-const MAP_WIDTH = 2048;
-const MAP_HEIGHT = 1280;
 const HALF_MW = MAP_WIDTH / 2;
 const HALF_MH = MAP_HEIGHT / 2;
 const SPREAD_X = MAP_WIDTH * 2.2;
 const SPREAD_Z = MAP_HEIGHT * 2.2;
-const TILE_SIZE = 32;
 
 // Blade variant mix ratios (must sum to 1.0)
 const RATIO_SHORT_GRASS = 0.40;
 const RATIO_TALL_KELP   = 0.35;
 // Remaining 0.25 = medium fern
 
-// Building exclusion zones
-const BUILDING_ZONES = [
-  // Circular village — wider ring in 64×40 grid, must match buildingZones in tilemap-data.ts
-  { x: 29, y: 2, w: 4, h: 3 }, { x: 45, y: 4, w: 4, h: 3 }, { x: 54, y: 12, w: 4, h: 3 },
-  { x: 54, y: 22, w: 4, h: 3 }, { x: 44, y: 32, w: 4, h: 3 }, { x: 30, y: 35, w: 4, h: 3 },
-  { x: 14, y: 32, w: 4, h: 3 }, { x: 6, y: 22, w: 4, h: 3 }, { x: 6, y: 12, w: 4, h: 4 },
-  { x: 15, y: 4, w: 4, h: 3 },
-].map((z) => ({
-  cx: -HALF_MW + (z.x + z.w / 2) * TILE_SIZE,
-  cz: -HALF_MH + (z.y + z.h / 2) * TILE_SIZE,
-  radius: Math.max(z.w, z.h) * TILE_SIZE * 2.0,
+// Building exclusion zones — derived from canonical tilemap-data source of truth
+const BUILDING_ZONES = buildingZones.map((z) => ({
+  cx: -HALF_MW + (z.x + z.width  / 2) * TILE_SIZE,
+  cz: -HALF_MH + (z.y + z.height / 2) * TILE_SIZE,
+  radius: Math.max(z.width, z.height) * TILE_SIZE * 2.0,
 }));
 
 function isNearBuilding(x: number, z: number): boolean {
