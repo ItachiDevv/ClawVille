@@ -143,7 +143,7 @@ function CharacterFrame({ onCreatePet }: { onCreatePet: () => void }) {
   const species = AVATAR_SPECIES.find((s) => s.id === avatar.species);
   const emoji = species?.emoji ?? '🦞';
   const level = avatar.level ?? 1;
-  const tokens = (avatar as any).clawTokens ?? 0;
+  const tokens = avatar.clawTokens ?? 0;
   const knowledgeCount =
     (avatar.characterConfig as { knowledge?: unknown[] } | null)?.knowledge?.length ?? 0;
 

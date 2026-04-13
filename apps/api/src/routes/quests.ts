@@ -3,7 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import type { AppContext } from '../types';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
-import { creditClawTokens } from '../services/neo-token-ledger';
+import { creditClawTokens } from '../services/claw-token-ledger';
 import {
   db,
   users,

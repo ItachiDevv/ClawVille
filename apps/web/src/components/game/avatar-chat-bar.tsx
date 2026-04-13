@@ -74,7 +74,7 @@ export default function AvatarChatBar() {
             name: avatar.name,
             species: avatar.species,
             archetype: (avatar as any).archetype,
-            clawTokens: (avatar as any).clawTokens,
+            clawTokens: avatar.clawTokens,
             knowledge: ((avatar as any).characterConfig as any)?.knowledge,
           },
         });

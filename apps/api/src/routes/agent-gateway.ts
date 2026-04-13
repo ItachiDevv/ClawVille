@@ -20,7 +20,7 @@ import { agentOrchestrator } from '../services/agent-orchestrator';
 import { getSessionAgent } from '../services/session-agent-map';
 import { OpenClawClient } from '../services/openclaw-client';
 import { ensureWallet } from '../services/wallet-service';
-import { creditClawTokens, debitClawTokens } from '../services/neo-token-ledger';
+import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import type { ClawvilleServices } from '@clawville/agent-runtime';
 
 const agentGatewayRoutes = new Hono();
