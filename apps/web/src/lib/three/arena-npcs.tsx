@@ -140,9 +140,11 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     group.position.x = currentPos.current.x;
     group.position.z = currentPos.current.z;
 
-    // Raycast to find terrain surface Y (every 3rd frame to save perf)
+    // Raycast to find terrain surface Y (every 3rd frame to save perf).
+    // Use (frame + seed) % 3 to stagger across NPCs — prevents all NPCs from
+    // raycasting on the same frame tick (which would spike the CPU every 150ms).
     const frame = Math.floor(Date.now() / 50);
-    if (frame % 3 === 0) {
+    if ((frame + seed) % 3 === 0) {
       const terrainY = getTerrainY(group.position.x, group.position.z, threeScene);
       currentTerrainY.current += (terrainY - currentTerrainY.current) * 0.3;
     }
