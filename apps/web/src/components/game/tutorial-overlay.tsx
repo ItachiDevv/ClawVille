@@ -9,14 +9,14 @@ const STEPS = [
     title: 'Welcome to ClawVille!',
     icon: '🎉',
     content:
-      'You just adopted an AI-powered pet — a real ElizaOS agent with its own personality, memories, and way of speaking. This isn\'t a chatbot with a skin. Your pet thinks for itself.',
+      'You just created an AI-powered agent — a real ElizaOS agent with its own personality, memories, and way of speaking. This isn\'t a chatbot with a skin. Your agent thinks for itself.',
     tip: null,
   },
   {
     title: 'Move Around',
     icon: '🗺️',
     content:
-      'Use WASD or arrow keys to walk your pet through The Depths. On mobile, use the on-screen joystick.',
+      'Use WASD or arrow keys to walk your agent through The Depths. On mobile, use the on-screen joystick.',
     tip: 'WASD / Arrows to move',
   },
   {
@@ -37,14 +37,14 @@ const STEPS = [
     title: 'Customize Everything',
     icon: '⚙️',
     content:
-      'Open the gear menu (top right) to manage your pet, configure location agents with custom personalities, or view all 10 buildings on the map.',
+      'Open the gear menu (top right) to manage your agent, configure location agents with custom personalities, or view all 10 buildings on the map.',
     tip: 'Gear icon = settings',
   },
   {
     title: 'You\'re Ready!',
     icon: '🚀',
     content:
-      'Go explore! Every conversation is unique. Your pet and the shopkeepers all remember what you\'ve said. The world is alive — go see what they have to say.',
+      'Go explore! Every conversation is unique. Your agent and the shopkeepers all remember what you\'ve said. The world is alive — go see what they have to say.',
     tip: null,
   },
 ];
