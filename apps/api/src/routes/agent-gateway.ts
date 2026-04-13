@@ -26,6 +26,34 @@ import type { ClawvilleServices } from '@clawville/agent-runtime';
 const agentGatewayRoutes = new Hono();
 
 // ---------------------------------------------------------------------------
+// Rate limiter for /connect — prevents unlimited bot registration spam
+// ---------------------------------------------------------------------------
+const connectRateMap = new Map<string, { count: number; resetAt: number }>();
+const CONNECT_MAX_PER_MIN = 10;
+const CONNECT_WINDOW_MS = 60_000;
+
+function checkConnectRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const entry = connectRateMap.get(ip);
+  if (!entry || now > entry.resetAt) {
+    connectRateMap.set(ip, { count: 1, resetAt: now + CONNECT_WINDOW_MS });
+    return true;
+  }
+  entry.count++;
+  if (entry.count > CONNECT_MAX_PER_MIN) return false;
+  return true;
+}
+// Lazy cleanup to prevent unbounded map growth
+function cleanupConnectRateMap() {
+  if (connectRateMap.size > 10_000) {
+    const now = Date.now();
+    for (const [k, v] of connectRateMap) {
+      if (now > v.resetAt) connectRateMap.delete(k);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // POST /api/agent/connect  — Universal agent registration
 // ---------------------------------------------------------------------------
 // Single entry point for any external AI agent to join the ClawVille world.
@@ -89,6 +117,15 @@ const connectSchema = z.object({
 );
 
 agentGatewayRoutes.post('/connect', async (c) => {
+  // Rate limit by IP
+  const ip = c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
+    ?? c.req.header('x-real-ip')
+    ?? 'unknown';
+  cleanupConnectRateMap();
+  if (!checkConnectRateLimit(ip)) {
+    return c.json({ error: 'Too many connection attempts. Try again in 1 minute.' }, 429);
+  }
+
   const body = await c.req.json();
   const parsed = connectSchema.safeParse(body);
   if (!parsed.success) {
@@ -627,7 +664,8 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
         tokenAwarded = 1;
       }
     } catch {
-      // Pet row doesn't exist for this bot — skip token award
+      // Pet row doesn't exist for this bot — credit failed, tokenAwarded stays 0
+      tokenAwarded = 0;
     }
   }
 
