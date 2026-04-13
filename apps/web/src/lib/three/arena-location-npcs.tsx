@@ -2,7 +2,7 @@
 
 import { useRef, useMemo, memo, Suspense, useEffect, type ReactElement } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
-import { useGLTF } from '@react-three/drei';
+import { useGLTF, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import {
   MAP_WIDTH,
@@ -181,10 +181,39 @@ const LocationNpc = memo(function LocationNpc({
   });
 
   return (
-    <group ref={groupRef} scale={[npcScale, npcScale, npcScale]} rotation={[0, facingRotY, 0]}>
-      <group ref={animGroupRef}>
-        <primitive object={cloned} />
+    <group ref={groupRef}>
+      {/* Scaled + rotated model sub-group */}
+      <group scale={[npcScale, npcScale, npcScale]} rotation={[0, facingRotY, 0]}>
+        <group ref={animGroupRef}>
+          <primitive object={cloned} />
+        </group>
       </group>
+      {/* Name label — OUTSIDE scaled group so position is in world units.
+          CHARACTER_HEIGHT (20) = model world height; +5 = clearance above head. */}
+      <Html
+        position={[0, CHARACTER_HEIGHT + 5, 0]}
+        center
+        distanceFactor={400}
+        style={{ pointerEvents: 'none' }}
+        zIndexRange={[10, 100]}
+      >
+        <div
+          style={{
+            background: 'rgba(8, 20, 38, 0.78)',
+            border: '1px solid rgba(100, 200, 255, 0.25)',
+            borderRadius: 6,
+            padding: '2px 8px',
+            color: '#fff',
+            fontWeight: 700,
+            fontSize: 11,
+            whiteSpace: 'nowrap',
+            userSelect: 'none',
+            letterSpacing: '0.03em',
+          }}
+        >
+          {config.name}
+        </div>
+      </Html>
     </group>
   );
 });

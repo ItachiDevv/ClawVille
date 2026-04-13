@@ -2,7 +2,7 @@
 
 import { useRef, useMemo, memo, Suspense } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
-import { useGLTF } from '@react-three/drei';
+import { useGLTF, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { useNpcStore, type NpcSpriteState } from '@/stores/npc';
 import { applyWalkAnimation, applyIdleAnimation, idToSeed } from '@/lib/three/procedural-animation';
@@ -198,10 +198,62 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
   });
 
   return (
-    <group ref={groupRef} scale={[NPC_SCALE, NPC_SCALE, NPC_SCALE]}>
-      <group ref={animGroupRef}>
-        <primitive object={cloned} />
+    <group ref={groupRef}>
+      {/* Scaled model sub-group */}
+      <group scale={[NPC_SCALE, NPC_SCALE, NPC_SCALE]}>
+        <group ref={animGroupRef}>
+          <primitive object={cloned} />
+        </group>
       </group>
+      {/* Name label — OUTSIDE scaled group so position is in world units.
+          NPC models are ~8-16 world units tall (NPC_SCALE=8); 14 = above head. */}
+      <Html
+        position={[0, 14, 0]}
+        center
+        distanceFactor={300}
+        style={{ pointerEvents: 'none' }}
+        zIndexRange={[10, 100]}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            background: 'rgba(8, 20, 38, 0.78)',
+            border: '1px solid rgba(100, 200, 255, 0.25)',
+            borderRadius: 6,
+            padding: '2px 8px',
+            whiteSpace: 'nowrap',
+            userSelect: 'none',
+          }}
+        >
+          <span
+            style={{
+              color: '#fff',
+              fontWeight: 700,
+              fontSize: 11,
+              letterSpacing: '0.03em',
+            }}
+          >
+            {npc.name}
+          </span>
+          {npc.isOpenClaw && (
+            <span
+              style={{
+                background: 'rgba(16, 185, 129, 0.85)',
+                color: '#fff',
+                fontWeight: 700,
+                fontSize: 9,
+                borderRadius: 4,
+                padding: '1px 4px',
+                letterSpacing: '0.04em',
+              }}
+            >
+              OpenClaw
+            </span>
+          )}
+        </div>
+      </Html>
     </group>
   );
 });
