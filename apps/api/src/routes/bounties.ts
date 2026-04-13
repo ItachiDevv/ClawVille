@@ -892,38 +892,44 @@ bountyRoutes.post('/:id/claim', requireAuth, async (c) => {
     });
   }
 
-  // Atomic increment: UPDATE ... WHERE currentAttempts < maxAttempts
-  // Prevents concurrent claims from exceeding maxAttempts
-  const [updated] = await db
-    .update(bounties)
-    .set({
-      currentAttempts: sql`${bounties.currentAttempts} + 1`,
-      updatedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(bounties.id, id),
-        eq(bounties.status, 'open'),
-        sql`${bounties.currentAttempts} < ${bounties.maxAttempts}`
+  // Wrap increment + insert in a transaction so a failed INSERT doesn't
+  // leave a phantom slot (currentAttempts incremented with no attempt row).
+  const attempt = await db.transaction(async (tx) => {
+    // Atomic increment: UPDATE ... WHERE currentAttempts < maxAttempts
+    // Prevents concurrent claims from exceeding maxAttempts
+    const [updated] = await tx
+      .update(bounties)
+      .set({
+        currentAttempts: sql`${bounties.currentAttempts} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(bounties.id, id),
+          eq(bounties.status, 'open'),
+          sql`${bounties.currentAttempts} < ${bounties.maxAttempts}`
+        )
       )
-    )
-    .returning();
+      .returning();
 
-  if (!updated) {
-    throw new HTTPException(400, {
-      message: 'This bounty has reached its maximum number of active attempts',
-    });
-  }
+    if (!updated) {
+      throw new HTTPException(400, {
+        message: 'This bounty has reached its maximum number of active attempts',
+      });
+    }
 
-  // Create attempt
-  const [attempt] = await db
-    .insert(bountyAttempts)
-    .values({
-      bountyId: id,
-      hunterId: pet.id,
-      status: 'claimed',
-    })
-    .returning();
+    // Create attempt
+    const [newAttempt] = await tx
+      .insert(bountyAttempts)
+      .values({
+        bountyId: id,
+        hunterId: pet.id,
+        status: 'claimed',
+      })
+      .returning();
+
+    return newAttempt;
+  });
 
   return c.json({
     success: true,
