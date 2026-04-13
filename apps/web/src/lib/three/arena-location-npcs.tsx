@@ -136,7 +136,9 @@ const LocationNpc = memo(function LocationNpc({
   const { scene } = useGLTF(config.model);
   const terrainY = useRef(-2);
   const placed = useRef(false);
-  const seed = useMemo(() => idToSeed(zoneId), [zoneId]);
+  // idToSeed returns a float (0..10). Convert to integer so (frame + seed) % N
+  // uses integer arithmetic — float modulo with strict === 0 never fires.
+  const seed = useMemo(() => Math.round(idToSeed(zoneId)), [zoneId]);
 
   // Clone and compute normalized scale
   const { cloned, npcScale } = useMemo(() => {
