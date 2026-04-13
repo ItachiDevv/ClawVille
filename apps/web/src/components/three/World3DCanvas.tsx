@@ -33,11 +33,11 @@ import { useNpcStore } from '@/stores/npc';
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-const MAP_WIDTH = 1280;
-const MAP_HEIGHT = 800;
+const MAP_WIDTH = 2048;
+const MAP_HEIGHT = 1280;
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
-const CAM_PAN_SPEED = 300;
+const CAM_PAN_SPEED = 500;
 const SKY_COLOR = new THREE.Color(0x0a2a4a); // Deeper ocean blue
 const FOG_COLOR = new THREE.Color(0x0e3458); // Underwater haze — matches sky
 
@@ -91,7 +91,7 @@ const _wasdWorldUp = new THREE.Vector3(0, 1, 0);
 
 // Follow distance: how many units the camera sits behind/above the character.
 // OrbitControls manages the actual angle — we just enforce the radial distance.
-const FPS_FOLLOW_DISTANCE = 80;
+const FPS_FOLLOW_DISTANCE = 160;
 // How high above the 2D game-plane the character target sits (approximate)
 const CHAR_TARGET_Y = 15;
 
@@ -134,12 +134,18 @@ function ArrowKeyRotationController({
     const controls = controlsRef.current;
     if (!controls) return;
 
-    const dTheta =
+    // Keyboard arrow keys
+    let dTheta =
       (_arrowKeys.arrowleft ? 1 : 0) - (_arrowKeys.arrowright ? 1 : 0);
-    // ArrowUp = look up (phi increases toward PI = camera below target)
-    // ArrowDown = look down (phi decreases toward 0 = camera above target)
-    const dPhi =
+    let dPhi =
       (_arrowKeys.arrowup ? 1 : 0) + (_arrowKeys.arrowdown ? -1 : 0);
+
+    // Right joystick (mobile camera stick) — analog, adds to keyboard delta
+    const { cameraJoystickVelocity } = useGameStore.getState();
+    if (cameraJoystickVelocity.x !== 0 || cameraJoystickVelocity.y !== 0) {
+      dTheta += -cameraJoystickVelocity.x; // stick right = orbit right = theta decreases
+      dPhi   +=  cameraJoystickVelocity.y;  // stick up = look up = phi increases
+    }
 
     if (dTheta === 0 && dPhi === 0) return;
 
@@ -528,12 +534,12 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
         enablePan={!isTouchDevice}
         enableZoom={true}
         enableRotate={true}
-        minDistance={followMode ? 20 : 80}
-        maxDistance={1200}
+        minDistance={followMode ? 40 : 160}
+        maxDistance={2400}
         maxPolarAngle={Math.PI * 0.85}
         rotateSpeed={isTouchDevice ? 0.4 : 1}
         zoomSpeed={isTouchDevice ? 0.6 : 1}
-        target={[0, 10, -16]}
+        target={[0, 10, 0]}
       />
 
       {/* Camera controller routing based on controlMode:
@@ -558,7 +564,7 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       <directionalLight position={[-100, 200, -60]} intensity={0.5} color={0x88aacc} />
 
       {/* Underwater fog — pushed back for better visibility */}
-      <fog attach="fog" args={[FOG_COLOR, 400, 2000]} />
+      <fog attach="fog" args={[FOG_COLOR, 600, 3200]} />
 
       {/* Underwater atmosphere — caustic light plane, depth backdrop, dust particles */}
       <UnderwaterAtmosphere />
@@ -699,7 +705,7 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
           far: 2000,
           // Game mode: pull the camera back to z=550 to accommodate the wider
           // building ring (semi-major X=14, semi-minor Y=9 tile layout).
-          position: mode === 'game' ? [0, 250, 550] : [0, 200, 350],
+          position: mode === 'game' ? [0, 400, 900] : [0, 320, 560],
         }}
         onCreated={(state) => {
           const { scene, gl } = state;
