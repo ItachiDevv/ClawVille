@@ -503,6 +503,7 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
   const openBountyBoard = useGameStore((s: GameState) => s.openBountyBoard);
   const openLeaderboard = useGameStore((s: GameState) => s.openLeaderboard);
   const toggleActivityFeed = useGameStore((s: GameState) => s.toggleActivityFeed);
+  const resetStore = useGameStore((s: GameState) => s.resetStore);
 
   const [locationsOpen, setLocationsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -522,6 +523,7 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
     setLoggingOut(true);
     try {
       await api.logout();
+      resetStore();
       router.push('/login');
     } catch {
       setLoggingOut(false);

@@ -236,6 +236,9 @@ export interface GameState {
   arenaSettingsOpen: boolean;
   setArenaSettingsOpen: (open: boolean) => void;
   updateArenaSetting: <K extends keyof GameState['arenaSettings']>(key: K, value: GameState['arenaSettings'][K]) => void;
+
+  // Reset user-specific state on logout
+  resetStore: () => void;
 }
 
 export const useGameStore = create<GameState>((set, get) => ({
@@ -532,4 +535,51 @@ export const useGameStore = create<GameState>((set, get) => ({
   updateArenaSetting: (key, value) => set((s) => ({
     arenaSettings: { ...s.arenaSettings, [key]: value },
   })),
+
+  resetStore: () => set({
+    controlMode: 'explore',
+    hasAgent: false,
+    possessedNpcId: null,
+    isSpectator: true,
+    petSpecies: 'cat',
+    petColor: 'yellow',
+    petName: '',
+    petPosition: { x: 400, y: 250 },
+    movementDirection: 'idle',
+    petSpeed: 0,
+    nearLocation: null,
+    currentLocation: null,
+    chatOpen: false,
+    movementFrozen: false,
+    menuOpen: false,
+    settingsModalOpen: false,
+    locationConfigModalOpen: false,
+    locationConfigTarget: null,
+    inventoryOpen: false,
+    shopOpen: false,
+    joystickVelocity: { x: 0, y: 0 },
+    cameraJoystickVelocity: { x: 0, y: 0 },
+    petIsAutonomous: false,
+    activityFeedOpen: false,
+    openclawConnected: false,
+    openclawSessionId: null,
+    openclawModalOpen: false,
+    toasts: [],
+    skillBuilderOpen: false,
+    marketplaceOpen: false,
+    bazaarOpen: false,
+    auctionOpen: false,
+    questBoardOpen: false,
+    bountyBoardOpen: false,
+    leaderboardOpen: false,
+    petLevel: 1,
+    petXp: 0,
+    dailyLoginClaimed: false,
+    loginStreak: 0,
+    clickPath: null,
+    clickPathIndex: 0,
+    clickPathTarget: null,
+    hoveredBuilding: null,
+    pendingFloatingTexts: [],
+  }),
 }));
