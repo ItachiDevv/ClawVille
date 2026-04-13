@@ -131,7 +131,46 @@ const miladyExchangeSchema = z.object({
   sessionId: z.string().min(1).max(200),
 });
 
+// ---------------------------------------------------------------------------
+// In-memory rate limiter for milady-session-exchange
+// Prevents brute-force attempts against the short session ID space.
+// Max 5 attempts per minute per IP. Map auto-cleans on each request.
+// ---------------------------------------------------------------------------
+const miladyRateLimitMap = new Map<string, { count: number; resetAt: number }>();
+
+function checkMiladyRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const entry = miladyRateLimitMap.get(ip);
+
+  // Lazy cleanup: remove expired entries on each call (bounded by request volume)
+  if (miladyRateLimitMap.size > 10000) {
+    for (const [key, val] of miladyRateLimitMap) {
+      if (val.resetAt <= now) miladyRateLimitMap.delete(key);
+    }
+  }
+
+  if (!entry || entry.resetAt <= now) {
+    miladyRateLimitMap.set(ip, { count: 1, resetAt: now + 60_000 });
+    return true;
+  }
+
+  entry.count++;
+  if (entry.count > 5) return false;
+  return true;
+}
+
 authRoutes.post('/milady-session-exchange', async (c) => {
+  // Rate limit: 5 attempts per minute per IP
+  const ip = c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
+    || c.req.header('x-real-ip')
+    || 'unknown';
+
+  if (!checkMiladyRateLimit(ip)) {
+    throw new HTTPException(429, {
+      message: 'Too many session exchange attempts. Try again in a minute.',
+    });
+  }
+
   const body = await c.req.json();
   const parsed = miladyExchangeSchema.safeParse(body);
   if (!parsed.success) {
