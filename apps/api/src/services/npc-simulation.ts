@@ -235,9 +235,9 @@ class NpcSimulation {
    */
   getSnapshot(): SimulationSnapshot {
     return {
-      npcs: Array.from(this.npcs.values()),
-      conversations: Array.from(this.conversations.values()).filter((c) => c.state === 'active'),
-      combats: Array.from(this.combats.values()).filter((c) => c.state === 'active'),
+      npcs: Array.from(this.npcs.values()).map((n) => ({ ...n })),
+      conversations: Array.from(this.conversations.values()).filter((c) => c.state === 'active').map((c) => ({ ...c, messages: [...c.messages] })),
+      combats: Array.from(this.combats.values()).filter((c) => c.state === 'active').map((c) => ({ ...c, rounds: [...c.rounds] })),
       events: [...this.pendingEvents],
       autonomousPets: this.petAutonomyManager.getAutonomousPets(),
       browserClaws: this.getBrowserClawSnapshots(),

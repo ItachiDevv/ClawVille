@@ -215,10 +215,17 @@ function PlayerPetInner() {
       newX = Math.max(16, Math.min(MAP_WIDTH - 16, newX));
       newY = Math.max(16, Math.min(MAP_HEIGHT - 16, newY));
       store.setPetPosition(newX, newY);
+    }
 
+    // Proximity check runs every frame (not just during movement) so
+    // nearLocation stays accurate even when the pet stops inside a zone
+    // or is repositioned externally (clickPath, setPetPosition).
+    {
+      const px = store.petPosition.x;
+      const py = store.petPosition.y;
       let nearZone: string | null = null;
       for (const zone of pixelZones) {
-        if (newX >= zone.x && newX <= zone.x + zone.width && newY >= zone.y && newY <= zone.y + zone.height) {
+        if (px >= zone.x && px <= zone.x + zone.width && py >= zone.y && py <= zone.y + zone.height) {
           nearZone = zone.id; break;
         }
       }

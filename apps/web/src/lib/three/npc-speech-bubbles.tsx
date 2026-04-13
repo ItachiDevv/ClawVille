@@ -148,7 +148,7 @@ function NpcSpeechBubbles() {
         const npc = npcMap.get(bubble.npcId)!;
         return (
           <SpeechBubble
-            key={`${bubble.npcId}-${bubble.expiresAt}`}
+            key={`${bubble.npcId}-${bubble.expiresAt}-${bubble.text.slice(0, 16)}`}
             npc={npc}
             bubble={bubble}
           />

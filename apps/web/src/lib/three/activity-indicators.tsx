@@ -80,7 +80,8 @@ const NpcIndicator = memo(function NpcIndicator({
     group.scale.setScalar(pulse);
   });
 
-  const showEmoji = emoji.length > 0 && !inConversation;
+  // Show activity emoji even during conversation (socializing speech bubble)
+  const showEmoji = emoji.length > 0;
   const showTyping = isTyping;
 
   if (!showEmoji && !showTyping) return null;

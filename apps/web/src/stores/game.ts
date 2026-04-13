@@ -282,14 +282,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       get().setControlMode(next);
     } else {
       const next: ControlMode = controlMode === 'player' ? 'autonomous' : 'player';
-      set({ controlMode: next, isSpectator: false });
-      // Start/stop autonomy engine when toggling autonomous mode
-      const { useAutonomyStore } = require('@/stores/autonomy') as typeof import('@/stores/autonomy');
-      if (next === 'autonomous') {
-        useAutonomyStore.getState().startAutonomy();
-      } else {
-        useAutonomyStore.getState().stopAutonomy();
-      }
+      // Use setControlMode so autonomy start/stop + possessedNpcId cleanup runs
+      get().setControlMode(next);
     }
   },
   setHasAgent: (v) =>
@@ -331,6 +325,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       currentLocation: locationId,
       chatOpen: true,
       movementFrozen: true,
+      nearLocation: null,
     });
     // Floating "Welcome!" text
     get().addFloatingText('Welcome!', 0xffffff);
@@ -538,7 +533,15 @@ export const useGameStore = create<GameState>((set, get) => ({
     arenaSettings: { ...s.arenaSettings, [key]: value },
   })),
 
-  resetStore: () => set({
+  resetStore: () => {
+    // Stop autonomy engine if running — resetStore is called on logout
+    if (get().controlMode === 'autonomous') {
+      try {
+        const { useAutonomyStore } = require('@/stores/autonomy') as typeof import('@/stores/autonomy');
+        useAutonomyStore.getState().stopAutonomy();
+      } catch { /* autonomy store may not be loaded */ }
+    }
+    set({
     controlMode: 'explore',
     hasAgent: false,
     possessedNpcId: null,
@@ -583,5 +586,6 @@ export const useGameStore = create<GameState>((set, get) => ({
     clickPathTarget: null,
     hoveredBuilding: null,
     pendingFloatingTexts: [],
-  }),
+  });
+  },
 }));
