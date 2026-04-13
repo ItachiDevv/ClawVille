@@ -5,8 +5,9 @@ import { useNpcStore } from '@/stores/npc';
 import { useResearchStore } from '@/stores/research';
 
 const NPC_API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
-const MAX_RETRIES = 3;
-const RETRY_DELAY = 5000;
+const MAX_RETRIES = 20;
+const RETRY_DELAY_BASE = 3000;
+const RETRY_DELAY_MAX = 60000;
 
 export function useNpcStream() {
   const updateFromSnapshot = useNpcStore((s) => s.updateFromSnapshot);
@@ -60,7 +61,9 @@ export function useNpcStream() {
         es = null;
         retriesRef.current++;
         if (!cancelled && retriesRef.current < MAX_RETRIES) {
-          retryTimeout = setTimeout(connect, RETRY_DELAY);
+          // Exponential backoff: 3s, 6s, 12s, ... capped at 60s
+          const delay = Math.min(RETRY_DELAY_BASE * Math.pow(2, retriesRef.current - 1), RETRY_DELAY_MAX);
+          retryTimeout = setTimeout(connect, delay);
         }
       };
     }

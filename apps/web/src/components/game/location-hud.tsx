@@ -6,6 +6,7 @@ import { MAP_LOCATIONS, BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 export default function LocationHUD() {
   const nearLocation = useGameStore((s: GameState) => s.nearLocation);
   const openclawConnected = useGameStore((s: GameState) => s.openclawConnected);
+  const enterBuilding = useGameStore((s: GameState) => s.enterBuilding);
 
   if (!nearLocation) return null;
 
@@ -14,8 +15,13 @@ export default function LocationHUD() {
 
   const theme = BUILDING_OPENCLAW_THEMES[nearLocation];
 
+  const handleTap = () => enterBuilding(nearLocation);
+
   return (
-    <div className="claw-panel fixed top-28 left-1/2 -translate-x-1/2 z-40 text-center max-w-xs">
+    <div
+      className="claw-panel fixed top-28 left-1/2 -translate-x-1/2 z-40 text-center max-w-xs cursor-pointer md:cursor-default"
+      onClick={handleTap}
+    >
       {theme && (
         <p className="text-white font-bold text-lg">
           {location.icon} {theme.label}
