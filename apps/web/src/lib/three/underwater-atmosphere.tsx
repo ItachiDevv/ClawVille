@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useEffect } from 'react';
 import * as THREE from 'three/webgpu';
 import {
   float,
@@ -83,6 +83,13 @@ function CausticPlane() {
     return { geometry: geo, material: mat };
   }, []);
 
+  useEffect(() => {
+    return () => {
+      geometry.dispose();
+      material.dispose();
+    };
+  }, [geometry, material]);
+
   return (
     <mesh
       geometry={geometry}
@@ -137,6 +144,13 @@ function DepthBackdrop() {
     const mat = createBackdropMaterial();
     return { geometry: geo, material: mat };
   }, []);
+
+  useEffect(() => {
+    return () => {
+      geometry.dispose();
+      material.dispose();
+    };
+  }, [geometry, material]);
 
   return (
     <mesh
@@ -224,6 +238,13 @@ function DustParticles() {
     const mat = createDustMaterial();
     return { geometry: geo, material: mat };
   }, []);
+
+  useEffect(() => {
+    return () => {
+      geometry.dispose();
+      material.dispose();
+    };
+  }, [geometry, material]);
 
   return (
     <points
