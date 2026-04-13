@@ -1,13 +1,13 @@
 // ---------------------------------------------------------------------------
 // Tilemap data for ClawVille The Depths
-// 40 x 25 grid of 32px tiles = 1280 x 800 pixel world
+// 64 x 40 grid of 32px tiles = 2048 x 1280 pixel world
 // ---------------------------------------------------------------------------
 
 export const TILE_SIZE = 32;
-export const MAP_COLS = 40;
-export const MAP_ROWS = 25;
-export const MAP_WIDTH = MAP_COLS * TILE_SIZE; // 1280
-export const MAP_HEIGHT = MAP_ROWS * TILE_SIZE; // 800
+export const MAP_COLS = 64;
+export const MAP_ROWS = 40;
+export const MAP_WIDTH = MAP_COLS * TILE_SIZE; // 2048
+export const MAP_HEIGHT = MAP_ROWS * TILE_SIZE; // 1280
 
 /** Tile indices matching the tileset spritesheet columns */
 export const TILES = {
@@ -63,7 +63,7 @@ const WN = TILES.WINDOW;
 
 // ---------------------------------------------------------------------------
 // Building positions (tile coords)
-// Mapped from MAP_LOCATIONS pixel coords (780x468 source) to 40x25 grid
+// Wider ring in 64×40 grid (semi-major X=26, semi-minor Y=16 from center 32,20)
 // ---------------------------------------------------------------------------
 export interface BuildingZone {
   id: string;
@@ -74,248 +74,124 @@ export interface BuildingZone {
 }
 
 export const buildingZones: BuildingZone[] = [
-  // Circular village — max-extent ring (semi-major X=18, semi-minor Y=11)
-  // Buildings pushed to the true edges of the 40×25 tile grid
-  { id: 'canvas-studio',       x: 18, y: 0,  width: 4, height: 3 },  // TOP CENTER
-  { id: 'memory-vault',        x: 29, y: 1,  width: 3, height: 3 },  // TOP RIGHT
-  { id: 'webhook-gateway',     x: 34, y: 7,  width: 4, height: 3 },  // RIGHT
-  { id: 'cron-hub',            x: 34, y: 13, width: 4, height: 3 },  // RIGHT LOW
-  { id: 'voice-tower',         x: 28, y: 20, width: 4, height: 3 },  // BOTTOM RIGHT
-  { id: 'config-citadel',      x: 18, y: 21, width: 3, height: 3 },  // BOTTOM CENTER
-  { id: 'tool-workshop',       x: 8,  y: 20, width: 4, height: 3 },  // BOTTOM LEFT
-  { id: 'skill-forge',         x: 2,  y: 13, width: 4, height: 3 },  // LEFT
-  { id: 'channel-bridge',      x: 2,  y: 7,  width: 4, height: 4 },  // LEFT TOP
-  { id: 'security-fortress',   x: 8,  y: 1,  width: 3, height: 3 },  // TOP LEFT
+  // Circular village — wider ring in 64×40 tile grid, village center at (32, 20)
+  { id: 'canvas-studio',       x: 29, y: 2,  width: 4, height: 3 },  // TOP CENTER
+  { id: 'memory-vault',        x: 45, y: 4,  width: 4, height: 3 },  // TOP RIGHT
+  { id: 'webhook-gateway',     x: 54, y: 12, width: 4, height: 3 },  // RIGHT
+  { id: 'cron-hub',            x: 54, y: 22, width: 4, height: 3 },  // RIGHT LOW
+  { id: 'voice-tower',         x: 44, y: 32, width: 4, height: 3 },  // BOTTOM RIGHT
+  { id: 'config-citadel',      x: 30, y: 35, width: 4, height: 3 },  // BOTTOM CENTER
+  { id: 'tool-workshop',       x: 14, y: 32, width: 4, height: 3 },  // BOTTOM LEFT
+  { id: 'skill-forge',         x: 6,  y: 22, width: 4, height: 3 },  // LEFT LOW
+  { id: 'channel-bridge',      x: 6,  y: 12, width: 4, height: 4 },  // LEFT
+  { id: 'security-fortress',   x: 15, y: 4,  width: 4, height: 3 },  // TOP LEFT
 ];
 
 // ---------------------------------------------------------------------------
 // Layer 1: GROUND  (grass base + water at Rainbow Pool area)
-// 40 cols x 25 rows = 1000 tiles
+// 64 cols x 40 rows = 2560 tiles
 // ---------------------------------------------------------------------------
 // prettier-ignore
 export const groundLayer: number[] = [
-  // Row 0 — top edge, varied grass
-  G1,G2,G1,G3,G1,G2,G1,G1,G2,G3,G1,G2,G1,G3,G2,G1,G1,G2,G3,G1,G2,G1,G3,G1,G2,G3,G1,G2,G1,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,
+  // Row 0
+  G1,G2,G1,G3,G1,G2,G1,G1,G2,G3,G1,G2,G1,G3,G2,G1,G1,G2,G3,G1,G2,G1,G3,G1,G2,G3,G1,G2,G1,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G3,G1,
   // Row 1
-  G2,G1,G3,G1,G2,G1,G3,G2,G1,G1,G2,G3,G1,G2,G1,G3,G1,G2,G1,G3,G2,G1,G2,G1,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,
+  G2,G1,G3,G1,G2,G1,G3,G2,G1,G1,G2,G3,G1,G2,G1,G3,G1,G2,G1,G3,G2,G1,G2,G1,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G1,G2,G3,G1,G3,G1,G2,G1,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G1,G3,
   // Row 2
-  G1,G3,G2,G1,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,
+  G1,G3,G2,G1,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G1,G2,G1,G3,G2,G1,G3,G1,G2,G3,G1,G2,G1,G3,G2,
   // Row 3
-  G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,
+  G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G1,G2,G3,G1,G2,G1,
   // Row 4
-  G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G3,
+  G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G3,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G2,G1,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,
   // Row 5
-  G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,
+  G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,
   // Row 6
-  G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,
+  G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G2,G3,G1,G3,G2,G1,G2,G3,G1,G2,
   // Row 7
-  G1,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G1,
-  // Row 8 — Rainbow Pool water area at cols 20-23
-  G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G2,WA,WA,WA,WA,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,
-  // Row 9 — Rainbow Pool water continues
-  G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,WA,WA,WA,WA,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,
+  G1,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G1,G2,G1,G3,G2,G1,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G3,G1,
+  // Row 8
+  G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,
+  // Row 9
+  G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G3,G1,G2,
   // Row 10
-  G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G2,G3,G1,G2,G3,WA,WA,WA,WA,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,
+  G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,
   // Row 11
-  G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G2,G1,G3,G2,G1,G2,G1,G3,
+  G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G2,G3,G1,
   // Row 12
-  G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G2,
+  G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,
   // Row 13
-  G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G1,
+  G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G1,G3,G2,G1,G3,G1,G2,G1,G3,G2,G1,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G1,G3,G2,
   // Row 14
-  G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G3,G2,G1,G3,G2,G3,
+  G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G3,G2,G1,G3,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,
   // Row 15
-  G1,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G1,G2,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G1,G2,G3,G1,G2,G1,
+  G1,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G1,G2,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G1,G2,G3,G1,G2,G1,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,
   // Row 16
-  G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G2,G3,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,
+  G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G2,G3,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,
   // Row 17
-  G2,G1,G3,G2,G1,G3,G2,G1,G3,G2,G1,G3,G1,G2,G3,G1,G2,G1,G3,G1,G2,G3,G2,G1,G3,G2,G1,G2,G3,G1,G3,G2,G1,G3,G1,G2,G1,G3,G2,G2,
-  // Row 18
-  G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G1,G3,G1,G2,G3,G2,G1,G2,G3,G1,G2,G3,G2,G1,G3,G2,G1,G3,G2,G1,G3,G1,
-  // Row 19
-  G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,
-  // Row 20
-  G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G2,
+  G2,G1,G3,G2,G1,G3,G2,G1,G3,G2,G1,G3,G1,G2,G3,G1,G2,G1,G3,G1,G2,G3,G2,G1,G3,G2,G1,G2,G3,G1,G3,G2,G1,G3,G1,G2,G1,G3,G2,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G2,G1,G3,G1,G2,G3,G1,G2,G1,G3,G1,G2,G3,G1,
+  // Row 18 — Rainbow Pool water area at cols 32-35
+  G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G1,G3,G1,G2,G3,G2,G1,G2,G3,G1,G2,G3,G2,G1,WA,WA,WA,WA,G2,G1,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G3,G1,G2,G3,G1,
+  // Row 19 — Rainbow Pool water continues
+  G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,WA,WA,WA,WA,G2,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G2,G1,G3,G1,
+  // Row 20 — Rainbow Pool water continues
+  G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,WA,WA,WA,WA,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G2,G3,G1,G2,G1,
   // Row 21
-  G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G1,
+  G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G1,G2,G3,G1,G2,
   // Row 22
-  G3,G1,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G3,
+  G3,G1,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,
   // Row 23
-  G2,G3,G1,G2,G1,G2,G3,G1,G2,G1,G2,G3,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G2,
-  // Row 24 — bottom edge
-  G1,G2,G3,G1,G3,G1,G2,G3,G1,G2,G3,G1,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G1,
+  G2,G3,G1,G2,G1,G2,G3,G1,G2,G1,G2,G3,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G2,G1,G3,G2,G1,
+  // Row 24
+  G1,G2,G3,G1,G3,G1,G2,G3,G1,G2,G3,G1,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,
+  // Row 25
+  G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,
+  // Row 26
+  G2,G1,G3,G2,G1,G2,G1,G3,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,
+  // Row 27
+  G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G1,G2,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,
+  // Row 28
+  G3,G2,G1,G2,G3,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G1,G3,G2,G1,G2,G3,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,
+  // Row 29
+  G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G1,G2,G3,G1,G2,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G1,G2,G3,G1,G2,G1,G3,
+  // Row 30
+  G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,
+  // Row 31
+  G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,
+  // Row 32
+  G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,
+  // Row 33
+  G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G1,G2,G3,G1,G2,G1,
+  // Row 34
+  G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G3,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G2,G1,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,
+  // Row 35
+  G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,
+  // Row 36
+  G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G2,G3,G1,G3,G2,G1,G2,G3,G1,G2,
+  // Row 37
+  G1,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G1,G2,G1,G3,G2,G1,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G3,G1,
+  // Row 38
+  G3,G1,G2,G1,G3,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G2,G1,G3,G2,G1,G2,G1,G3,G2,G1,G3,G2,G1,G3,G1,G2,G3,G1,G2,G1,G3,G1,G2,G3,G1,
+  // Row 39 — bottom edge
+  G2,G3,G1,G2,G1,G2,G3,G1,G2,G1,G2,G3,G1,G2,G3,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G2,G1,G3,G2,G1,G2,G3,G1,G2,G1,G3,G2,G1,G2,G3,G1,G2,G3,G1,G2,G2,G1,G3,G2,G1,
 ];
 
 // ---------------------------------------------------------------------------
 // Layer 2: PATHS  (dirt paths connecting buildings, stone at entrances)
-// -1 = transparent (no path tile)
+// 64 cols x 40 rows = 2560 tiles — all empty (paths handled by 3D world)
 // ---------------------------------------------------------------------------
 // prettier-ignore
-export const pathLayer: number[] = [
-  // Row 0
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 1
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 2
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 3
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 4 — horizontal path segment from cron-hub down toward center area
-  _,_,_,_,_,SP,_,_,_,_,_,SP,_,_,_,_,_,_,SP,_,_,_,_,_,SP,_,_,_,_,_,_,_,_,_,SP,_,_,_,_,_,
-  // Row 5 — main east-west path connecting top-row buildings
-  _,_,_,_,_,SP,DP,DP,DP,DP,DP,SP,DP,DP,DP,DP,DP,DP,SP,DP,DP,DP,DP,DP,SP,DP,DP,DP,DP,DP,DP,DP,DP,DP,SP,_,_,_,_,_,
-  // Row 6 — path continues, branch down to center
-  _,_,_,_,_,DP,_,_,_,_,_,DP,_,_,_,_,_,_,DP,_,_,_,_,_,DP,_,_,SP,_,_,_,_,_,_,DP,_,_,_,_,_,
-  // Row 7 — vertical paths going down from top buildings
-  _,_,_,_,_,DP,_,_,_,_,_,DP,_,_,_,_,SP,_,DP,_,_,_,_,_,DP,_,_,DP,_,_,_,_,_,_,DP,_,_,_,_,_,
-  // Row 8 — horizontal path at middle tier
-  _,_,_,_,_,DP,_,_,_,_,_,DP,_,_,_,_,SP,_,DP,_,_,_,_,_,DP,_,_,DP,_,_,_,_,_,_,DP,_,_,_,_,_,
-  // Row 9
-  _,_,_,_,_,DP,_,_,_,_,_,DP,_,_,_,_,SP,_,DP,_,_,_,_,_,DP,_,_,DP,_,_,_,_,_,_,DP,_,_,_,_,_,
-  // Row 10
-  _,_,_,_,_,DP,_,_,_,SP,_,DP,_,_,_,_,SP,_,DP,_,_,_,_,_,DP,_,_,DP,_,_,_,_,_,_,DP,_,_,_,_,_,
-  // Row 11 — main east-west path at mid level connecting middle buildings
-  _,_,_,_,_,SP,DP,DP,DP,SP,DP,SP,DP,DP,DP,DP,SP,DP,SP,DP,DP,DP,DP,DP,SP,DP,DP,SP,DP,DP,DP,DP,DP,DP,SP,_,_,_,_,_,
-  // Row 12 — vertical paths going down to lower buildings
-  _,_,_,_,_,DP,_,_,_,_,_,DP,_,_,_,_,_,_,DP,_,_,_,_,_,_,_,_,DP,_,_,_,_,_,_,DP,_,_,_,_,_,
-  // Row 13
-  _,_,_,_,_,DP,_,_,_,_,_,DP,_,_,_,_,_,_,DP,_,_,_,_,_,_,_,_,DP,_,_,_,_,_,_,DP,_,_,_,_,_,
-  // Row 14
-  _,_,_,_,_,DP,_,_,_,_,_,DP,_,_,_,_,_,_,DP,_,_,_,_,_,_,_,_,DP,_,_,_,_,_,_,DP,_,_,_,_,_,
-  // Row 15 — path along lower tier
-  _,_,_,_,_,DP,_,_,_,_,_,DP,_,_,_,_,_,_,DP,_,_,_,_,_,_,DP,_,DP,_,_,_,_,_,_,DP,_,_,_,_,_,
-  // Row 16
-  _,_,_,_,_,DP,_,_,_,_,_,DP,_,_,_,_,_,_,DP,_,_,_,_,_,_,DP,_,DP,_,_,_,_,_,_,DP,_,_,_,_,_,
-  // Row 17
-  _,_,_,_,_,DP,_,_,_,_,_,DP,_,_,_,_,_,_,DP,_,_,_,_,_,_,DP,_,DP,_,_,_,_,_,_,DP,_,_,_,_,_,
-  // Row 18 — horizontal path at bottom tier
-  _,_,_,_,_,SP,DP,DP,DP,DP,DP,SP,DP,DP,DP,DP,DP,DP,SP,DP,DP,DP,DP,DP,DP,SP,DP,SP,DP,DP,DP,DP,DP,DP,SP,_,_,_,_,_,
-  // Row 19
-  _,_,_,_,_,DP,_,_,_,_,_,_,_,_,_,_,_,_,DP,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,DP,_,_,_,_,_,
-  // Row 20 — lower horizontal connector
-  _,_,_,_,_,SP,DP,DP,DP,DP,DP,DP,DP,DP,DP,DP,DP,DP,SP,DP,DP,DP,DP,DP,DP,DP,DP,DP,DP,DP,DP,DP,DP,DP,SP,_,_,_,_,_,
-  // Row 21
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 22
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 23
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 24
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-];
+export const pathLayer: number[] = Array(MAP_COLS * MAP_ROWS).fill(TILES.EMPTY);
 
 // ---------------------------------------------------------------------------
 // Layer 3: DECORATIONS  (trees, flowers, bushes along edges and between buildings)
-// -1 = transparent
+// 64 cols x 40 rows = 2560 tiles — all empty (decorations handled by 3D world)
 // ---------------------------------------------------------------------------
 // prettier-ignore
-export const decorationLayer: number[] = [
-  // Row 0 — dense tree line along top edge
-  T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,
-  // Row 1 — trees with gaps for buildings
-  T2,T1,_,_,_,_,_,T1,_,_,_,_,_,T2,_,_,_,_,_,T1,_,_,_,_,_,_,T2,T1,T2,T1,T2,_,_,_,_,_,T1,T2,T1,T2,
-  // Row 2 — flowers near buildings
-  T1,_,_,_,_,_,_,_,F1,_,_,_,_,_,F2,_,_,_,_,_,F1,_,_,_,_,_,F2,_,_,_,T1,_,_,_,_,_,_,_,T1,T2,
-  // Row 3
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,T1,
-  // Row 4
-  _,BU,_,_,_,_,_,BU,_,_,_,_,_,BU,_,_,_,_,_,F2,_,_,_,_,_,F1,_,_,_,F2,_,BU,_,_,_,_,_,BU,_,T2,
-  // Row 5
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,T1,
-  // Row 6 — some bushes and flowers between buildings
-  T2,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,T2,
-  // Row 7 — Channel Bridge area decorations
-  T1,_,BU,_,_,_,_,_,_,_,F1,_,_,_,_,_,_,_,_,_,_,_,_,_,_,F2,_,_,_,BU,_,_,_,_,_,_,_,BU,_,T1,
-  // Row 8
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 9 — flowers around Tool Workshop
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,F1,_,_,_,_,F2,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 10
-  T2,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,F2,_,_,_,_,F1,_,_,_,_,_,_,_,_,_,_,_,_,_,_,T2,
-  // Row 11
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 12 — scattered decorations
-  T1,_,_,_,_,_,_,F1,_,_,_,_,_,_,_,F2,_,_,_,_,_,BU,_,_,_,_,_,_,_,BU,_,_,_,_,_,_,F1,_,_,T1,
-  // Row 13
-  _,_,_,_,_,_,_,_,_,_,BU,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 14
-  T2,_,BU,_,_,_,_,_,_,_,_,_,_,_,F1,_,_,_,_,_,F2,_,_,_,_,_,_,_,_,_,F1,_,_,_,_,_,_,BU,_,T2,
-  // Row 15 — above lower buildings
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 16
-  T1,_,_,_,_,_,_,_,F2,_,_,_,_,BU,_,_,_,_,_,_,BU,_,_,_,_,_,_,_,_,BU,_,_,_,_,_,_,_,_,_,T1,
-  // Row 17
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 18
-  T2,_,_,_,_,_,_,_,_,_,_,_,_,_,F1,_,_,_,_,_,_,_,_,F2,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,T2,
-  // Row 19
-  _,_,_,_,_,_,_,BU,_,_,_,_,_,_,_,_,_,_,_,_,_,BU,_,_,_,_,_,_,_,_,_,_,_,_,_,BU,_,_,_,_,
-  // Row 20
-  T1,_,_,_,_,_,_,_,_,_,F2,_,_,_,_,_,F1,_,_,_,_,_,_,_,F2,_,_,_,_,_,F1,_,_,_,_,_,_,_,_,T1,
-  // Row 21
-  _,BU,_,_,_,_,_,_,_,_,_,_,_,BU,_,_,_,_,BU,_,_,_,_,_,_,_,BU,_,_,_,_,_,_,BU,_,_,_,_,BU,_,
-  // Row 22
-  T2,_,F1,_,_,F2,_,_,T1,_,_,_,_,_,T2,_,_,_,_,T1,_,_,_,_,T2,_,_,_,T1,_,_,_,_,T2,_,_,_,F1,_,T2,
-  // Row 23
-  T1,T2,_,BU,_,_,BU,T1,T2,_,BU,_,T1,T2,_,BU,T1,_,T2,_,BU,T1,_,T2,_,BU,T1,T2,_,BU,T1,_,T2,_,BU,T1,T2,_,T1,T2,
-  // Row 24 — dense tree line along bottom edge
-  T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,T2,T1,
-];
+export const decorationLayer: number[] = Array(MAP_COLS * MAP_ROWS).fill(TILES.EMPTY);
 
 // ---------------------------------------------------------------------------
 // Layer 4: BUILDINGS  (building structures at each location)
-// -1 = transparent
+// 64 cols x 40 rows = 2560 tiles — all empty (buildings handled by 3D world)
 // ---------------------------------------------------------------------------
 // prettier-ignore
-export const buildingLayer: number[] = [
-  // Row 0
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 1 — roof line: webhook-gateway (9-12), memory-vault (16-18)
-  _,_,_,_,_,_,_,_,_,RR,RR,RR,RR,_,_,_,RB,RB,RB,_,_,_,_,RG,RG,RG,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 2 — walls: cron-hub (3-6), webhook-gateway, memory-vault
-  _,_,_,RR,RR,RR,RR,_,_,WN,BS,BS,WN,_,_,_,WN,BS,WN,_,_,_,_,WN,BS,WN,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 3 — walls + doors: cron-hub, webhook-gateway, memory-vault + canvas-studio roof (32-35)
-  _,_,_,WN,BS,BS,WN,_,_,BS,DR,DR,BS,_,_,_,BS,DR,BS,_,_,_,_,BS,DR,BS,_,_,_,_,_,_,RB,RB,RB,RB,_,_,_,_,
-  // Row 4 — cron-hub door row + canvas-studio walls
-  _,_,_,BS,DR,DR,BS,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,WN,BL,BL,WN,_,_,_,_,
-  // Row 5 — canvas-studio door
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,BL,DR,DR,BL,_,_,_,_,
-  // Row 6
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,RG,RG,RG,_,_,_,_,_,_,_,_,_,_,
-  // Row 7 — channel-bridge (14-17) special area
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,BX,BX,BX,BX,_,_,_,_,_,_,_,_,_,WN,SM,WN,_,_,_,_,_,_,_,_,_,_,
-  // Row 8 — skill-forge (2-5) roof + channel-bridge + tool-workshop (20-23)
-  _,_,RR,RR,RR,RR,_,_,_,_,_,_,_,_,BX,BX,BX,BX,_,_,WA,WA,WA,WA,_,_,_,SM,DR,SM,_,_,_,_,_,_,_,_,_,_,
-  // Row 9 — skill-forge walls + channel-bridge + tool-workshop
-  _,_,WN,BS,BS,WN,_,_,_,_,_,_,_,_,BX,DR,DR,BX,_,_,WA,WA,WA,WA,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 10 — skill-forge door + channel-bridge bottom + tool-workshop
-  _,_,BS,DR,DR,BS,_,RG,RG,RG,_,_,_,_,BX,BX,BX,BX,_,_,WA,WA,WA,WA,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 11
-  _,_,_,_,_,_,_,WN,SM,WN,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 12
-  _,_,_,_,_,_,_,SM,DR,SM,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 13
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 14
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 15 — config-citadel roof (25-27)
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,RB,RB,RB,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 16 — voice-tower roof (2-5) + config-citadel walls
-  _,_,RR,RR,RR,RR,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,WN,BS,WN,_,_,_,_,RG,RG,RG,_,_,_,_,_,
-  // Row 17 — voice-tower walls + config-citadel door
-  _,_,WN,BL,BL,WN,_,_,_,_,_,_,_,_,_,_,_,RR,RR,RR,_,_,_,_,_,BS,DR,BS,_,_,_,_,WN,SM,WN,_,_,_,_,_,
-  // Row 18 — voice-tower door + security-fortress roof (9-11)
-  _,_,BL,DR,DR,BL,_,_,_,RB,RB,RB,_,_,_,_,_,WN,BS,WN,_,_,_,_,_,_,_,_,_,_,_,_,SM,DR,SM,_,_,_,_,_,
-  // Row 19 — security-fortress walls
-  _,_,_,_,_,_,_,_,_,WN,SM,WN,_,_,_,_,_,BS,DR,BS,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 20 — security-fortress door
-  _,_,_,_,_,_,_,_,_,SM,DR,SM,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 21
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 22
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 23
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-  // Row 24
-  _,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,_,
-];
+export const buildingLayer: number[] = Array(MAP_COLS * MAP_ROWS).fill(TILES.EMPTY);
