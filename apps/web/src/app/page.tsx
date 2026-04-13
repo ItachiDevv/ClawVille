@@ -363,7 +363,7 @@ export default function HomePage() {
 
         {/* Tech stack badges */}
         <div className="flex flex-wrap justify-center gap-3 mt-12">
-          {['ElizaOS', 'Three.js', 'Next.js 16', 'OpenClaw', 'Hermes'].map((tech) => (
+          {['ElizaOS', 'Three.js', 'Next.js 14', 'OpenClaw', 'Hermes'].map((tech) => (
             <span key={tech} className="text-[10px] text-white/20 font-mono bg-white/[0.03] px-3 py-1 rounded-full border border-white/[0.06]">
               {tech}
             </span>
