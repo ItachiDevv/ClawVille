@@ -34,7 +34,7 @@ export const COLORS = {
   iron: "#455A64",         // Iron Lobster (turtle)
 
   // Token
-  clawToken: "#FFD700",     // Gold for ClawToken/currency
+  clawToken: "#FFD700",    // Gold for ClawToken/currency
 
   // Aliases (for compatibility with showcase videos)
   gold: "#FFD700",

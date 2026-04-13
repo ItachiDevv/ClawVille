@@ -5,7 +5,7 @@
  * sources of truth:
  *
  *   - pets.clawTokens ................ liquid balance ("gold" tab)
- *   - neo_token_transactions ........ lifetime earnings ("earned" tab)
+ *   - claw_token_transactions ........ lifetime earnings ("earned" tab)
  *   - bazaar_transactions ........... skill sales volume ("skills-sold" tab)
  *   - quest_rewards ................. quest completions ("quests" tab)
  *   - bounty_reputation.totalCompleted   bounty completions ("bounties" tab)

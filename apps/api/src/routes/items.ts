@@ -4,7 +4,7 @@ import { eq, and } from 'drizzle-orm';
 import { db, pets, petInventory, agents } from '@clawville/database';
 import { getBookById, getBooksForBuilding, KNOWLEDGE_BOOKS, BUILDING_MILADY_SKILLS } from '@clawville/shared';
 import { miladyGateway } from '../services/milady-gateway';
-import { debitClawTokens } from '../services/neo-token-ledger';
+import { debitClawTokens } from '../services/claw-token-ledger';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
@@ -85,35 +85,41 @@ itemRoutes.post('/buy', requireAuth, async (c) => {
     throw new HTTPException(400, { message: `Not enough ClawTokens. Need ${book.price}, have ${pet.clawTokens}.` });
   }
 
-  // Deduct tokens via ledger (atomic + audited)
-  const { balanceAfter } = await debitClawTokens({
-    petId: pet.id,
-    amount: book.price,
-    reason: 'buy_book',
-    source: 'api',
-    metadata: { bookId: book.id, bookName: book.name },
-  });
-
-  // Check if already in inventory
-  const existingItem = await db.query.petInventory.findFirst({
-    where: and(
-      eq(petInventory.petId, pet.id),
-      eq(petInventory.itemId, result.data.itemId)
-    ),
-  });
-
-  if (existingItem) {
-    await db
-      .update(petInventory)
-      .set({ quantity: existingItem.quantity + 1 })
-      .where(eq(petInventory.id, existingItem.id));
-  } else {
-    await db.insert(petInventory).values({
+  // Debit + inventory insert in a single transaction so if the insert
+  // fails, the debit rolls back and the buyer doesn't lose tokens.
+  const { balanceAfter } = await db.transaction(async (tx) => {
+    // 1. Deduct tokens via ledger (atomic + audited)
+    const { balanceAfter: bal } = await debitClawTokens({
       petId: pet.id,
-      itemId: result.data.itemId,
-      quantity: 1,
+      amount: book.price,
+      reason: 'buy_book',
+      source: 'api',
+      metadata: { bookId: book.id, bookName: book.name },
+    }, tx);
+
+    // 2. Check if already in inventory
+    const existingItem = await tx.query.petInventory.findFirst({
+      where: and(
+        eq(petInventory.petId, pet.id),
+        eq(petInventory.itemId, result.data.itemId)
+      ),
     });
-  }
+
+    if (existingItem) {
+      await tx
+        .update(petInventory)
+        .set({ quantity: existingItem.quantity + 1 })
+        .where(eq(petInventory.id, existingItem.id));
+    } else {
+      await tx.insert(petInventory).values({
+        petId: pet.id,
+        itemId: result.data.itemId,
+        quantity: 1,
+      });
+    }
+
+    return { balanceAfter: bal };
+  });
 
   return c.json({
     success: true,

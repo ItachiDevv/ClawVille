@@ -62,7 +62,7 @@ export const treasuryWallets = pgTable(
  * Source of a ClawToken transaction — used for observability and
  * replay-to-chain migrations.
  */
-export const clawTokenSourceEnum = pgEnum('neo_token_source', [
+export const clawTokenSourceEnum = pgEnum('claw_token_source', [
   'api',              // user-initiated via REST route
   'simulation',       // autonomous pet action (Phase 2 bridge)
   'quest',            // quest reward
@@ -79,14 +79,14 @@ export const clawTokenSourceEnum = pgEnum('neo_token_source', [
  * pets.clawTokens remains the authoritative balance column; this table
  * is the auditable history. Every write to pets.clawTokens MUST go
  * through creditClawTokens() / debitClawTokens() in
- * apps/api/src/services/neo-token-ledger.ts, which atomically
+ * apps/api/src/services/claw-token-ledger.ts, which atomically
  * UPDATEs the balance AND INSERTs a row here in the same transaction.
  *
  * When we eventually tokenize ClawTokens (Phase 5+), we replay this
  * ledger to establish opening on-chain balances.
  */
 export const clawTokenTransactions = pgTable(
-  'neo_token_transactions',
+  'claw_token_transactions',
   {
     id: uuid('id').primaryKey().defaultRandom(),
     petId: uuid('pet_id')
@@ -106,9 +106,9 @@ export const clawTokenTransactions = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
-    petIdx: index('neo_token_tx_pet_idx').on(t.petId, t.createdAt),
-    userIdx: index('neo_token_tx_user_idx').on(t.userId, t.createdAt),
-    sourceIdx: index('neo_token_tx_source_idx').on(t.source, t.createdAt),
+    petIdx: index('claw_token_tx_pet_idx').on(t.petId, t.createdAt),
+    userIdx: index('claw_token_tx_user_idx').on(t.userId, t.createdAt),
+    sourceIdx: index('claw_token_tx_source_idx').on(t.source, t.createdAt),
   }),
 );
 

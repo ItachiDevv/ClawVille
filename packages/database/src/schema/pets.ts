@@ -104,7 +104,7 @@ export const pets = pgTable('pets', {
   /** Link to platform_agents table for ElizaOS runtime */
   platformAgentId: uuid('platform_agent_id')
     .references(() => platformAgents.id, { onDelete: 'set null' }),
-  clawTokens: integer('neo_tokens').default(100).notNull(),
+  clawTokens: integer('claw_tokens').default(100).notNull(),
   positionX: integer('position_x').default(400).notNull(),
   positionY: integer('position_y').default(250).notNull(),
   lastActiveAt: timestamp('last_active_at'),

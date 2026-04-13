@@ -9,7 +9,7 @@ import { agentOrchestrator } from '../services/agent-orchestrator';
 import { awardXp } from '../services/xp-service';
 import { shouldCollaborate, collaborateOnQuery } from '../services/agent-collaboration';
 import { miladyGateway } from '../services/milady-gateway';
-import { creditClawTokens, debitClawTokens } from '../services/neo-token-ledger';
+import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 import type { ClawvilleServices } from '@clawville/agent-runtime';

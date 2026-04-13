@@ -74,7 +74,7 @@ export default function PetChatBar() {
             name: pet.name,
             species: pet.species,
             archetype: (pet as any).archetype,
-            clawTokens: (pet as any).clawTokens,
+            clawTokens: pet.clawTokens,
             knowledge: ((pet as any).characterConfig as any)?.knowledge,
           },
         });

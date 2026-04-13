@@ -359,7 +359,7 @@ Phase 1 Actions, Phase 2 Knowledge/RAG, Phase 3 Autonomy.
 | `apps/api/src/routes/quests.ts` | Quest accept/progress/complete |
 | `apps/api/src/routes/bounties.ts` | Bounty claim/reward |
 | `apps/api/src/routes/skills.ts` | Public SKILL.md serving for external agents |
-| `apps/api/src/services/neo-token-ledger.ts` | Atomic ClawToken credit/debit with audit trail |
+| `apps/api/src/services/claw-token-ledger.ts` | Atomic ClawToken credit/debit with audit trail |
 
 ### Phase 1 New Files
 
