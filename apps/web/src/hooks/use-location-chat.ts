@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useGameStore } from '@/stores/game';
@@ -16,16 +16,18 @@ export function useLocationChat(locationId: string | null) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
 
   // Load chat history
-  const { isLoading: isLoadingHistory } = useQuery({
+  const { data: historyData, isLoading: isLoadingHistory } = useQuery({
     queryKey: ['chat-history', locationId],
     queryFn: () => api.getChatHistory(locationId!),
     enabled: !!locationId,
-    onSuccess: (data: { messages: ChatMessage[] }) => {
-      if (data.messages.length > 0) {
-        setMessages(data.messages);
-      }
-    },
-  } as any);
+  });
+
+  // Sync fetched history into local messages state (onSuccess removed in TanStack Query v5)
+  useEffect(() => {
+    if (historyData?.messages?.length) {
+      setMessages(historyData.messages);
+    }
+  }, [historyData]);
 
   // Send message mutation
   const sendMutation = useMutation({
