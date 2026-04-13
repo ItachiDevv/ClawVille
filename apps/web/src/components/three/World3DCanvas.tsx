@@ -26,6 +26,9 @@ import QuestNpc from '@/lib/three/quest-npc';
 import BountyBoardObject from '@/lib/three/bounty-board-object';
 import BazaarPedestals from '@/lib/three/bazaar-pedestals';
 import AuctionPodium from '@/lib/three/auction-podium';
+import ActivityIndicators from '@/lib/three/activity-indicators';
+import FloatingTexts3D from '@/lib/three/floating-text-3d';
+import NpcSpeechBubbles from '@/lib/three/npc-speech-bubbles';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 import { useGameStore } from '@/stores/game';
 import { useNpcStore } from '@/stores/npc';
@@ -592,6 +595,15 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       <BountyBoardObject />
       <BazaarPedestals />
       <AuctionPodium />
+
+      {/* NPC speech bubbles — Dom overlay, renders chat from SSE stream */}
+      <NpcSpeechBubbles />
+
+      {/* NPC activity indicators — pulsing spheres + typing dots above NPCs */}
+      <ActivityIndicators />
+
+      {/* Floating reward texts — spheres that float upward on token earn */}
+      <FloatingTexts3D />
 
       {/* Mode-specific content */}
       {isGame && <PlayerAvatar />}
