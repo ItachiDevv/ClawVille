@@ -121,7 +121,7 @@ export default function AvatarChatBar() {
   };
 
   return (
-    <div className="fixed bottom-0 left-1/2 -translate-x-1/2 z-40 flex flex-col items-center w-full max-w-lg px-4 pb-3">
+    <div className="fixed bottom-0 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center w-full max-w-lg px-4 pb-3">
       {/* Expanded chat area */}
       {expanded && (
         <div className="w-full mb-2 bg-black/80 backdrop-blur-sm border border-yellow-500/40 rounded-xl overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-200">
