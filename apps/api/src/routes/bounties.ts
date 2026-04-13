@@ -313,44 +313,50 @@ bountyRoutes.post('/create', requireAuth, async (c) => {
     }
   }
 
-  // ESCROW: Deduct tokenReward from creator (atomic + audited)
-  await debitNeoTokens({
-    petId: pet.id,
-    amount: data.tokenReward,
-    reason: 'bounty_escrow',
-    source: 'bounty',
-    metadata: { bountyTitle: data.title },
+  // ESCROW: Debit + bounty INSERT in a single transaction so if INSERT
+  // fails, the debit rolls back and the creator doesn't lose tokens.
+  const bounty = await db.transaction(async (tx) => {
+    // Deduct tokenReward from creator (atomic + audited)
+    await debitNeoTokens({
+      petId: pet.id,
+      amount: data.tokenReward,
+      reason: 'bounty_escrow',
+      source: 'bounty',
+      metadata: { bountyTitle: data.title },
+    }, tx);
+
+    // Create bounty
+    const [created] = await tx
+      .insert(bounties)
+      .values({
+        creatorId: pet.id,
+        title: data.title,
+        description: data.description,
+        requirements: data.requirements ?? null,
+        difficulty: data.difficulty,
+        tokenReward: data.tokenReward,
+        maxAttempts: data.maxAttempts,
+        tags: data.tags ?? [],
+        expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
+      })
+      .returning();
+
+    // Create bonus reward records
+    if (data.bonusRewards && data.bonusRewards.length > 0) {
+      await tx.insert(bountyRewards).values(
+        data.bonusRewards.map((reward) => ({
+          bountyId: created.id,
+          rewardType: reward.rewardType,
+          skillId: reward.skillId ?? null,
+          agentConfigId: reward.agentConfigId ?? null,
+          bookId: reward.bookId ?? null,
+          customDescription: reward.customDescription ?? null,
+        }))
+      );
+    }
+
+    return created;
   });
-
-  // Create bounty
-  const [bounty] = await db
-    .insert(bounties)
-    .values({
-      creatorId: pet.id,
-      title: data.title,
-      description: data.description,
-      requirements: data.requirements ?? null,
-      difficulty: data.difficulty,
-      tokenReward: data.tokenReward,
-      maxAttempts: data.maxAttempts,
-      tags: data.tags ?? [],
-      expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
-    })
-    .returning();
-
-  // Create bonus reward records
-  if (data.bonusRewards && data.bonusRewards.length > 0) {
-    await db.insert(bountyRewards).values(
-      data.bonusRewards.map((reward) => ({
-        bountyId: bounty.id,
-        rewardType: reward.rewardType,
-        skillId: reward.skillId ?? null,
-        agentConfigId: reward.agentConfigId ?? null,
-        bookId: reward.bookId ?? null,
-        customDescription: reward.customDescription ?? null,
-      }))
-    );
-  }
 
   // Update reputation: increment totalPosted
   const existingRep = await db.query.bountyReputation.findFirst({
