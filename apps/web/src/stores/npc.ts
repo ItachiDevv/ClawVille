@@ -234,10 +234,16 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
     const now = Date.now();
 
     // Update NPC positions (store previous for lerp)
-    // If a server NPC is idle, keep the client-side position so wander can move it
+    // If a server NPC is idle, keep the client-side position so wander can move it.
+    // Skip the possessed NPC entirely so player input isn't overwritten by the server.
+    const { possessedNpcId } = (require('@/stores/game') as typeof import('@/stores/game')).useGameStore.getState();
     const prevMap = new Map(state.npcs.map((n) => [n.id, n]));
     const npcs: NpcSpriteState[] = snapshot.npcs.map((n) => {
       const prev = prevMap.get(n.id);
+      // Never overwrite the possessed NPC — player controls it via NpcController
+      if (n.id === possessedNpcId && prev) {
+        return prev;
+      }
       const serverIsIdle = n.direction === 'idle' && !n.inCombat && !n.inConversation;
       const useClientPos = serverIsIdle && prev;
       return {
