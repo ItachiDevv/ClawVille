@@ -39,18 +39,19 @@ let nextId = 0;
 
 function FloatingTexts3D() {
   // React state drives re-renders; useRef holds the mutable list so useFrame
-  // can mutate it without triggering extra re-renders mid-flight.
-  // Each useFrame tick: update physics on the ref, then call setTexts() with a
-  // shallow copy so React re-renders with the latest positions and opacities.
+  // can mutate it. Only call setTexts when the count changes (text added or
+  // expired) to avoid re-rendering every frame during the 1.5s lifetime.
   const textsRef = useRef<FloatingTextInstance[]>([]);
   const [texts, setTexts] = useState<FloatingTextInstance[]>([]);
+  const prevCountRef = useRef(0);
 
   useFrame((_, delta) => {
     const dt = Math.min(delta, 0.1);
 
     // Consume any pending floating texts from the game store
     const pending = useGameStore.getState().consumeFloatingTexts();
-    if (pending.length > 0) {
+    let dirty = pending.length > 0;
+    if (dirty) {
       const store = useGameStore.getState();
       const worldX = store.petPosition.x - HALF_W;
       const worldZ = store.petPosition.y - HALF_H;
@@ -69,7 +70,13 @@ function FloatingTexts3D() {
       }
     }
 
-    if (textsRef.current.length === 0) return;
+    if (textsRef.current.length === 0) {
+      if (prevCountRef.current > 0) {
+        prevCountRef.current = 0;
+        setTexts([]);
+      }
+      return;
+    }
 
     // Update existing texts
     const alive: FloatingTextInstance[] = [];
@@ -82,12 +89,17 @@ function FloatingTexts3D() {
 
       if (ft.life < LIFETIME) {
         alive.push(ft);
+      } else {
+        dirty = true; // a text expired
       }
     }
     textsRef.current = alive;
 
-    // Shallow-copy array to trigger React re-render with updated positions
-    setTexts([...alive]);
+    // Only trigger React re-render when texts are added or removed
+    if (dirty || alive.length !== prevCountRef.current) {
+      prevCountRef.current = alive.length;
+      setTexts([...alive]);
+    }
   });
 
   if (texts.length === 0) return null;
