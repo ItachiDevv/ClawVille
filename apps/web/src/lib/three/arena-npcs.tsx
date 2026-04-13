@@ -86,7 +86,9 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
   const npcRef = useRef(npc);
   npcRef.current = npc;
   const { scene: threeScene } = useThree();
-  const seed = useMemo(() => idToSeed(npc.id), [npc.id]);
+  // idToSeed returns a float (0..10). Convert to integer so (frame + seed) % N
+  // uses integer arithmetic — float modulo with strict === 0 never fires.
+  const seed = useMemo(() => Math.round(idToSeed(npc.id)), [npc.id]);
 
   const targetPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
   const currentPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
