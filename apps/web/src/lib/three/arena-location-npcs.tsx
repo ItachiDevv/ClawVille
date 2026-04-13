@@ -70,8 +70,8 @@ function computeNpcPlacement(zone: { x: number; y: number; width: number; height
   const dz = VILLAGE_CENTER_TILE_Z - bcz;
   const len = Math.sqrt(dx * dx + dz * dz);
 
-  // NPC stands 3.5 tiles inside from the building center, toward the village center
-  const NPC_INSET_TILES = 3.5;
+  // NPC stands 4 tiles inside from the building center, toward the village center
+  const NPC_INSET_TILES = 4.0;
   let npcTileX = bcx;
   let npcTileZ = bcz;
   if (len > 0.001) {
@@ -83,9 +83,9 @@ function computeNpcPlacement(zone: { x: number; y: number; width: number; height
   const worldZ = OFFSET_Z + npcTileZ * TILE_SIZE;
 
   // Facing toward village center from NPC position.
-  // The model faces -Z by default. atan2(dirX, dirZ) + PI rotates the
-  // -Z-forward model to face along (dirX, dirZ).
-  const facingRotY = Math.atan2(dx, dz) + Math.PI;
+  // The model faces +Z by default. atan2(dirX, dirZ) rotates the
+  // +Z-forward model to face along (dirX, dirZ).
+  const facingRotY = Math.atan2(dx, dz);
 
   return { worldX, worldZ, facingRotY };
 }
