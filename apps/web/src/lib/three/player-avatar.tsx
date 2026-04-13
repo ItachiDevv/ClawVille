@@ -158,17 +158,15 @@ function PlayerPetInner() {
     }
 
     let vx = 0, vy = 0;
-    // In autonomous mode the autonomy store drives movement via clickPath.
-    // In npc mode, NpcController handles input for the possessed NPC.
-    if (store.controlMode !== 'autonomous' && store.controlMode !== 'npc') {
-      // Only WASD drives avatar movement — arrow keys rotate the camera (ArrowKeyRotationController)
+    // Only 'player' mode allows direct WASD/joystick avatar movement.
+    // explore = spectator (camera-only), npc = NpcController drives possessed NPC,
+    // autonomous = autonomy store drives via clickPath.
+    if (store.controlMode === 'player') {
       if (keyState.w) vy = -1;
       if (keyState.s) vy = 1;
       if (keyState.a) vx = -1;
       if (keyState.d) vx = 1;
 
-      // Joystick uses screen-relative directions (same mapping as WASD):
-      // joystick up = vy<0 = screen up, joystick right = vx>0 = screen right
       const { joystickVelocity } = store;
       if (joystickVelocity.x !== 0 || joystickVelocity.y !== 0) {
         vx = joystickVelocity.x;
