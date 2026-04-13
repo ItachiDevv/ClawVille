@@ -150,8 +150,10 @@ const LocationNpc = memo(function LocationNpc({
 
     // Re-raycast terrain Y periodically (not just once) to handle late terrain loading
     // and dune geometry. Check every ~20 frames.
+    // Use (frame + seed) % 20 to stagger raycasts across the 10 NPCs — without
+    // the seed all 10 NPCs hit the same frame tick, spiking CPU every ~333ms.
     const frame = Math.floor(clock.elapsedTime * 60);
-    if (!placed.current || frame % 20 === 0) {
+    if (!placed.current || (frame + seed) % 20 === 0) {
       const y = getTerrainY(worldX, worldZ, threeScene);
       if (y > -100) {
         terrainY.current = y;
