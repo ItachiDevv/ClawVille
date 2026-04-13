@@ -854,148 +854,165 @@ auctionRoutes.post('/:id/buy-now', requireAuth, async (c) => {
 
   const buyerPet = await getUserPet(user.id);
 
-  // 1. Fetch auction
-  const [auction] = await db
-    .select()
-    .from(auctions)
-    .where(eq(auctions.id, id))
-    .limit(1);
+  // Entire buy-now flow in a single transaction with row-level locking to
+  // prevent two concurrent buy-now requests from racing on the same auction.
+  const result = await db.transaction(async (tx) => {
+    // 1. SELECT ... FOR UPDATE — row-lock the auction to serialize buy-now
+    const [auction] = await tx.execute<{
+      id: string;
+      seller_id: string;
+      status: string;
+      current_bid: number | null;
+      current_bidder_id: string | null;
+      bid_count: number;
+      buy_now_price: number | null;
+      ends_at: Date;
+      item_type: string;
+      skill_id: string | null;
+      agent_config_snapshot: any;
+    }>(
+      sql`SELECT * FROM auctions WHERE id = ${id} FOR UPDATE`
+    );
 
-  if (!auction) {
-    throw new HTTPException(404, { message: 'Auction not found' });
-  }
+    if (!auction) {
+      throw new HTTPException(404, { message: 'Auction not found' });
+    }
 
-  if (auction.status !== 'active') {
-    throw new HTTPException(400, { message: 'Auction is not active' });
-  }
+    if (auction.status !== 'active') {
+      throw new HTTPException(400, { message: 'Auction is not active' });
+    }
 
-  const now = new Date();
-  if (auction.endsAt < now) {
-    throw new HTTPException(400, { message: 'Auction has ended' });
-  }
+    const now = new Date();
+    const endsAt = new Date(auction.ends_at);
+    if (endsAt < now) {
+      throw new HTTPException(400, { message: 'Auction has ended' });
+    }
 
-  // 2. Verify auction has buy-now price
-  if (!auction.buyNowPrice) {
-    throw new HTTPException(400, {
-      message: 'This auction does not have a buy-now option',
-    });
-  }
-
-  // 3. Verify buy-now is still valid (must be > currentBid)
-  if (auction.currentBid && auction.buyNowPrice <= auction.currentBid) {
-    throw new HTTPException(400, {
-      message: 'Current bid has reached or exceeded buy-now price',
-    });
-  }
-
-  // 4. Prevent self-purchase
-  if (auction.sellerId === buyerPet.id) {
-    throw new HTTPException(400, {
-      message: 'Cannot buy your own auction',
-    });
-  }
-
-  // 5. Verify buyer has enough tokens
-  const price = auction.buyNowPrice;
-  if (buyerPet.clawTokens < price) {
-    throw new HTTPException(400, {
-      message: `Not enough ClawTokens. Need ${price}, have ${buyerPet.clawTokens}.`,
-    });
-  }
-
-  // 6. Deduct buy-now price from buyer
-  const { balanceAfter: buyerBalance } = await debitClawTokens({
-    avatarId: buyerPet.id,
-    amount: price,
-    reason: 'auction_buy_now',
-    source: 'api',
-    metadata: { auctionId: id, sellerId: auction.sellerId },
-  });
-
-  // 7. Refund previous bidder's escrowed bid if any
-  if (auction.currentBidderId && auction.currentBid) {
-    await creditClawTokens({
-      avatarId: auction.currentBidderId,
-      amount: auction.currentBid,
-      reason: 'auction_bid_refund',
-      source: 'api',
-      metadata: { auctionId: id, outbidBy: buyerPet.id, reason: 'buy_now' },
-    });
-  }
-
-  // 8. Pay seller (85% of buyNowPrice)
-  const platformFee = Math.floor(price * 0.15);
-  const sellerPayout = price - platformFee;
-
-  await creditClawTokens({
-    avatarId: auction.sellerId,
-    amount: sellerPayout,
-    reason: 'auction_buy_now_settled',
-    source: 'api',
-    metadata: { auctionId: id, buyerId: buyerPet.id, price, platformFee },
-  });
-
-  // 9. Mark auction as resolved
-  await db
-    .update(auctions)
-    .set({
-      currentBid: price,
-      currentBidderId: buyerPet.id,
-      status: 'resolved',
-      resolvedAt: new Date(),
-      updatedAt: new Date(),
-    })
-    .where(eq(auctions.id, id));
-
-  // 10. Transfer skill to buyer's inventory if skill type
-  if (auction.itemType === 'skill' && auction.skillId) {
-    const itemId = `skill-${auction.skillId}`;
-    const existingItem = await db.query.avatarInventory.findFirst({
-      where: and(
-        eq(avatarInventory.avatarId, buyerPet.id),
-        eq(avatarInventory.itemId, itemId)
-      ),
-    });
-
-    if (existingItem) {
-      await db
-        .update(avatarInventory)
-        .set({ quantity: existingItem.quantity + 1 })
-        .where(eq(avatarInventory.id, existingItem.id));
-    } else {
-      await db.insert(avatarInventory).values({
-        avatarId: buyerPet.id,
-        itemId,
-        quantity: 1,
+    // 2. Verify auction has buy-now price
+    if (!auction.buy_now_price) {
+      throw new HTTPException(400, {
+        message: 'This auction does not have a buy-now option',
       });
     }
-  }
 
-  // 11. Store agent config snapshot for buyer if agent_config type
-  if (auction.itemType === 'agent_config' && auction.agentConfigSnapshot) {
-    await db.insert(auctionAgentConfigs).values({
-      auctionId: auction.id,
+    // 3. Verify buy-now is still valid (must be > currentBid)
+    if (auction.current_bid && auction.buy_now_price <= auction.current_bid) {
+      throw new HTTPException(400, {
+        message: 'Current bid has reached or exceeded buy-now price',
+      });
+    }
+
+    // 4. Prevent self-purchase
+    if (auction.seller_id === buyerPet.id) {
+      throw new HTTPException(400, {
+        message: 'Cannot buy your own auction',
+      });
+    }
+
+    // 5. Verify buyer has enough tokens
+    const price = auction.buy_now_price;
+    if (buyerPet.clawTokens < price) {
+      throw new HTTPException(400, {
+        message: `Not enough ClawTokens. Need ${price}, have ${buyerPet.clawTokens}.`,
+      });
+    }
+
+    // 6. Deduct buy-now price from buyer — within transaction
+    const { balanceAfter: buyerBalance } = await debitClawTokens({
       avatarId: buyerPet.id,
-      configSnapshot: auction.agentConfigSnapshot,
-    });
-  }
+      amount: price,
+      reason: 'auction_buy_now',
+      source: 'api',
+      metadata: { auctionId: id, sellerId: auction.seller_id },
+    }, tx);
 
-  // 12. Emit SSE event
+    // 7. Refund previous bidder's escrowed bid if any — within transaction
+    if (auction.current_bidder_id && auction.current_bid) {
+      await creditClawTokens({
+        avatarId: auction.current_bidder_id,
+        amount: auction.current_bid,
+        reason: 'auction_bid_refund',
+        source: 'api',
+        metadata: { auctionId: id, outbidBy: buyerPet.id, reason: 'buy_now' },
+      }, tx);
+    }
+
+    // 8. Pay seller (85% of buyNowPrice) — within transaction
+    const platformFee = Math.floor(price * 0.15);
+    const sellerPayout = price - platformFee;
+
+    await creditClawTokens({
+      avatarId: auction.seller_id,
+      amount: sellerPayout,
+      reason: 'auction_buy_now_settled',
+      source: 'api',
+      metadata: { auctionId: id, buyerId: buyerPet.id, price, platformFee },
+    }, tx);
+
+    // 9. Mark auction as resolved — within transaction
+    await tx
+      .update(auctions)
+      .set({
+        currentBid: price,
+        currentBidderId: buyerPet.id,
+        status: 'resolved',
+        resolvedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(auctions.id, id));
+
+    // 10. Transfer skill to buyer's inventory if skill type — within transaction
+    if (auction.item_type === 'skill' && auction.skill_id) {
+      const itemId = `skill-${auction.skill_id}`;
+      const existingItem = await tx.query.avatarInventory.findFirst({
+        where: and(
+          eq(avatarInventory.avatarId, buyerPet.id),
+          eq(avatarInventory.itemId, itemId)
+        ),
+      });
+
+      if (existingItem) {
+        await tx
+          .update(avatarInventory)
+          .set({ quantity: existingItem.quantity + 1 })
+          .where(eq(avatarInventory.id, existingItem.id));
+      } else {
+        await tx.insert(avatarInventory).values({
+          avatarId: buyerPet.id,
+          itemId,
+          quantity: 1,
+        });
+      }
+    }
+
+    // 11. Store agent config snapshot for buyer if agent_config type — within transaction
+    if (auction.item_type === 'agent_config' && auction.agent_config_snapshot) {
+      await tx.insert(auctionAgentConfigs).values({
+        auctionId: auction.id,
+        avatarId: buyerPet.id,
+        configSnapshot: auction.agent_config_snapshot,
+      });
+    }
+
+    return { price, platformFee, sellerPayout, buyerBalance, endsAt, bidCount: auction.bid_count };
+  });
+
+  // 12. Emit SSE event (outside transaction — non-critical)
   auctionEventBus.emit({
     type: 'buy_now',
     auctionId: id,
-    currentBid: price,
+    currentBid: result.price,
     currentBidderId: buyerPet.id,
-    endsAt: auction.endsAt.toISOString(),
-    bidCount: auction.bidCount,
+    endsAt: result.endsAt.toISOString(),
+    bidCount: result.bidCount,
   });
 
   return c.json({
     success: true,
-    price,
-    platformFee,
-    sellerPayout,
-    clawTokens: buyerBalance,
+    price: result.price,
+    platformFee: result.platformFee,
+    sellerPayout: result.sellerPayout,
+    clawTokens: result.buyerBalance,
   });
 });
 
