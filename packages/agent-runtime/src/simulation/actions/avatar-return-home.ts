@@ -20,8 +20,8 @@ export interface PetReturnHomeDeps {
 
 export function createPetReturnHomeAction(deps: PetReturnHomeDeps): Action {
   const { stateStore, pathfind } = deps;
-  const homeX = deps.homeX ?? 640; // default: center of 1280x800 map
-  const homeY = deps.homeY ?? 400;
+  const homeX = deps.homeX ?? 1024; // default: center of 2048x1280 map
+  const homeY = deps.homeY ?? 640;
 
   return {
     name: 'AVATAR_RETURN_HOME',

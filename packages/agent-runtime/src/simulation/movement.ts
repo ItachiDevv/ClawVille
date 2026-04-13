@@ -12,8 +12,8 @@
 import type { AvatarStateStore, PetSimState } from './avatar-state-store';
 import type { ActivityEmojis } from './types';
 
-const MAP_WIDTH = 1280;
-const MAP_HEIGHT = 800;
+const MAP_WIDTH = 2048;
+const MAP_HEIGHT = 1280;
 const STEP_SIZE = 10;
 const IDLE_THRESHOLD_MS = 60_000; // 60s of no user input
 

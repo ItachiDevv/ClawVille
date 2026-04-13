@@ -53,11 +53,11 @@ const VILLAGE_CENTER_TILE_Z = 20; // tile Y maps to world Z
 
 /** Compute NPC world position and facing angle for a given building zone.
  *
- *  Position: building_center_tile + normalize(toward_village_center) * 2.5 tiles,
+ *  Position: building_center_tile + normalize(toward_village_center) * NPC_INSET_TILES (4.0),
  *            converted to world space.
- *  Facing: NPC model default faces +Z. rotation [0, 0, 0] → faces +Z.
- *          For arbitrary facing toward center we use atan2(dirX, dirZ) where
- *          dir = normalize(village_center_world - npc_world). */
+ *  Facing: All GLBs used here face -Z at rotation.y=0 (same as lobster.glb).
+ *          atan2(dx, dz) + PI rotates the -Z-forward model to face along (dx, dz).
+ *          The +PI flip is required; omitting it produces 180° wrong facing. */
 function computeNpcPlacement(zone: { x: number; y: number; width: number; height: number }): {
   worldX: number;
   worldZ: number;
