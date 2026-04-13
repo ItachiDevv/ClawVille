@@ -142,9 +142,13 @@ const DIRS: NpcSpriteState['direction'][] = ['up', 'down', 'left', 'right'];
 interface WanderState { targetX: number; targetY: number; waitUntil: number; }
 const wanderStates = new Map<string, WanderState>();
 
+const WANDER_MARGIN = 80;
+const WANDER_MAX_X = 2048 - WANDER_MARGIN; // MAP_WIDTH - margin
+const WANDER_MAX_Y = 1280 - WANDER_MARGIN; // MAP_HEIGHT - margin
+
 function pickNewTarget(npc: NpcSpriteState): WanderState {
-  const tx = 80 + Math.random() * 1120; // stay within map
-  const ty = 80 + Math.random() * 640;
+  const tx = WANDER_MARGIN + Math.random() * (WANDER_MAX_X - WANDER_MARGIN);
+  const ty = WANDER_MARGIN + Math.random() * (WANDER_MAX_Y - WANDER_MARGIN);
   return { targetX: tx, targetY: ty, waitUntil: 0 };
 }
 

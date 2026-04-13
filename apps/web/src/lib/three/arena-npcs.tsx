@@ -14,14 +14,13 @@ import {
   type CharacterAnimator,
   MODEL_KEY_TO_TYPE,
 } from '@/lib/three/character-animations';
+import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 
 // ---------------------------------------------------------------------------
 // GLB-based NPC renderer with terrain raycasting
 // NPCs walk on the actual terrain surface instead of a static Y level
 // ---------------------------------------------------------------------------
 
-const MAP_WIDTH = 2048;
-const MAP_HEIGHT = 1280;
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 const LERP_SPEED = 5;
