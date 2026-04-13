@@ -74,17 +74,18 @@ export interface BuildingZone {
 }
 
 export const buildingZones: BuildingZone[] = [
-  // Circular village — wider ring for bigger buildings (semi-major X=14, semi-minor Y=9)
-  { id: 'canvas-studio',       x: 18, y: 1,  width: 4, height: 3 },  // TOP CENTER
-  { id: 'memory-vault',        x: 27, y: 3,  width: 3, height: 3 },  // TOP RIGHT
-  { id: 'webhook-gateway',     x: 31, y: 8,  width: 4, height: 3 },  // RIGHT
-  { id: 'cron-hub',            x: 31, y: 13, width: 4, height: 3 },  // RIGHT LOW
-  { id: 'voice-tower',         x: 26, y: 18, width: 4, height: 3 },  // BOTTOM RIGHT
-  { id: 'config-citadel',      x: 18, y: 20, width: 3, height: 3 },  // BOTTOM CENTER
-  { id: 'tool-workshop',       x: 10, y: 18, width: 4, height: 3 },  // BOTTOM LEFT
-  { id: 'skill-forge',         x: 5,  y: 13, width: 4, height: 3 },  // LEFT
-  { id: 'channel-bridge',      x: 5,  y: 8,  width: 4, height: 4 },  // LEFT TOP
-  { id: 'security-fortress',   x: 10, y: 3,  width: 3, height: 3 },  // TOP LEFT
+  // Circular village — max-extent ring (semi-major X=18, semi-minor Y=11)
+  // Buildings pushed to the true edges of the 40×25 tile grid
+  { id: 'canvas-studio',       x: 18, y: 0,  width: 4, height: 3 },  // TOP CENTER
+  { id: 'memory-vault',        x: 29, y: 1,  width: 3, height: 3 },  // TOP RIGHT
+  { id: 'webhook-gateway',     x: 34, y: 7,  width: 4, height: 3 },  // RIGHT
+  { id: 'cron-hub',            x: 34, y: 13, width: 4, height: 3 },  // RIGHT LOW
+  { id: 'voice-tower',         x: 28, y: 20, width: 4, height: 3 },  // BOTTOM RIGHT
+  { id: 'config-citadel',      x: 18, y: 21, width: 3, height: 3 },  // BOTTOM CENTER
+  { id: 'tool-workshop',       x: 8,  y: 20, width: 4, height: 3 },  // BOTTOM LEFT
+  { id: 'skill-forge',         x: 2,  y: 13, width: 4, height: 3 },  // LEFT
+  { id: 'channel-bridge',      x: 2,  y: 7,  width: 4, height: 4 },  // LEFT TOP
+  { id: 'security-fortress',   x: 8,  y: 1,  width: 3, height: 3 },  // TOP LEFT
 ];
 
 // ---------------------------------------------------------------------------
