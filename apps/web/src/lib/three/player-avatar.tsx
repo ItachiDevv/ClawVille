@@ -97,7 +97,7 @@ function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
   _petRaycaster.far = 400;
   const intersects = _petRaycaster.intersectObjects(scene.children, true);
   if (intersects.length > 0) return intersects[0].point.y;
-  return -15; // fallback
+  return -2; // fallback — matches sand floor Y position
 }
 
 function PlayerPetInner() {
