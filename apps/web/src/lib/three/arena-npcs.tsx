@@ -206,9 +206,9 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
         </group>
       </group>
       {/* Name label — OUTSIDE scaled group so position is in world units.
-          NPC models are ~8-16 world units tall (NPC_SCALE=8); 14 = above head. */}
+          NPC models are ~8-16 world units tall (NPC_SCALE=8); 18 = safe above tallest species. */}
       <Html
-        position={[0, 14, 0]}
+        position={[0, 18, 0]}
         center
         distanceFactor={300}
         style={{ pointerEvents: 'none' }}

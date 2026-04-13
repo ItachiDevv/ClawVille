@@ -96,15 +96,16 @@ function computeNpcPlacement(zone: { x: number; y: number; width: number; height
 // useGLTF() inside LocationNpc will Suspense-throw if the cache isn't warm yet;
 // the ArenaLocationNpcs Suspense fallback={null} wrapper absorbs that safely.
 
-/** Measure bounding box and return scale for target height.
- *  Characters use max dimension (no ground planes to worry about). */
+/** Measure bounding box and return scale so the model's Y-height matches targetHeight.
+ *  Uses size.y (height) not maxDim so wide/deep models aren't shrunk below target. */
 function computeNormalizedScale(scene: THREE.Object3D, targetHeight: number): number {
   const box = new THREE.Box3().setFromObject(scene);
   const size = new THREE.Vector3();
   box.getSize(size);
-  const maxDim = Math.max(size.x, size.y, size.z);
-  if (maxDim === 0) return 1;
-  return targetHeight / maxDim;
+  // Use Y dimension (height) for normalization; fall back to max if Y is degenerate
+  const h = size.y > 0.001 ? size.y : Math.max(size.x, size.y, size.z);
+  if (h === 0) return 1;
+  return targetHeight / h;
 }
 
 function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
