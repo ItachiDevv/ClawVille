@@ -33,14 +33,14 @@ const COLOR_TINTS: Record<string, number> = {
   black: 0x424242, brown: 0x8d6e63,
 };
 
-// Lobster GLB faces -Z natively (rotation.y=0 → head toward -Z, tail toward +Z).
-// To face world direction (worldVx, worldVz): θ = atan2(-worldVx, -worldVz)
-//   up    (vx=0, vy=-1 → worldZ-): atan2(0,  1) = 0
-//   down  (vx=0, vy=+1 → worldZ+): atan2(0, -1) = PI
-//   right (vx=+1, vy=0 → worldX+): atan2(-1, 0) = -PI/2
-//   left  (vx=-1, vy=0 → worldX-): atan2(+1, 0) = +PI/2
+// Lobster GLB faces +Z natively (rotation.y=0 → head toward +Z, tail toward -Z).
+// To face world direction (worldVx, worldVz): θ = atan2(worldVx, worldVz)
+//   up    (vx=0, vy=-1 → worldZ-): atan2(0, -1) = PI   (rotate 180° to face -Z)
+//   down  (vx=0, vy=+1 → worldZ+): atan2(0,  1) = 0    (no rotation, face +Z)
+//   right (vx=+1, vy=0 → worldX+): atan2(1,  0) = PI/2
+//   left  (vx=-1, vy=0 → worldX-): atan2(-1, 0) = -PI/2
 const DIR_ROTATION: Record<string, number> = {
-  down: Math.PI, left: Math.PI / 2, up: 0, right: -Math.PI / 2, idle: Math.PI,
+  down: 0, left: -Math.PI / 2, up: Math.PI, right: Math.PI / 2, idle: 0,
 };
 
 const pixelZones = buildingZones.map((z) => ({
@@ -208,8 +208,8 @@ function PlayerPetInner() {
     let continuousRot: number | null = null;
     if (vx !== 0 || vy !== 0) {
       dir = Math.abs(vx) > Math.abs(vy) ? (vx > 0 ? 'right' : 'left') : (vy > 0 ? 'down' : 'up');
-      // Continuous facing: atan2(-worldVx, -worldVz) where pixel X=worldX, pixel Y=worldZ
-      continuousRot = Math.atan2(-vx, -vy);
+      // Continuous facing: atan2(worldVx, worldVz) — model faces +Z at rotation 0
+      continuousRot = Math.atan2(vx, vy);
     }
     store.setMovementDirection(dir as any);
 
