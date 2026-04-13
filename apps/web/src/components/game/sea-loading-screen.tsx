@@ -329,7 +329,7 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
             height="80"
             viewBox="0 0 64 64"
             fill="none"
-            aria-label="Your pet lobster"
+            aria-label="Your agent lobster"
           >
             {/* Body */}
             <ellipse cx="32" cy="36" rx="13" ry="16" fill={lobsterColor} />

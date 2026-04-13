@@ -94,7 +94,7 @@ export default function PetChatBar() {
       const errorMsg: PetMessage = {
         id: crypto.randomUUID(),
         role: 'assistant',
-        content: `(Error: ${err.message || 'Could not reach pet agent'})`,
+        content: `(Error: ${err.message || 'Could not reach agent'})`,
       };
       setMessages((prev) => [...prev, errorMsg]);
       scrollToBottom();
@@ -138,7 +138,7 @@ export default function PetChatBar() {
             <span className="text-white/50 text-xs ml-auto">
               {knowledgeTopics.length > 0
                 ? `Knows: ${knowledgeTopics.slice(0, 3).join(', ')}${knowledgeTopics.length > 3 ? '...' : ''}`
-                : 'your pet'}
+                : 'your agent'}
             </span>
           </div>
 

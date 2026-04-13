@@ -69,7 +69,7 @@ export default function CreatePetPage() {
       })
     );
 
-    router.push('/create-pet/personality');
+    router.push('/create-agent/personality');
   }, [petName, nameStatus, selectedSpecies, selectedColor, gender, router]);
 
   const currentSpecies = SPECIES.find((s) => s.id === selectedSpecies)!;
