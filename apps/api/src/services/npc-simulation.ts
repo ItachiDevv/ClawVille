@@ -24,9 +24,9 @@ import {
 } from '@clawville/agent-runtime';
 import type { OpenClawClient } from './openclaw-client';
 
-// Map dimensions from tilemap-data
-const MAP_WIDTH = 1280;
-const MAP_HEIGHT = 800;
+// Map dimensions from tilemap-data (64×40 grid of 32px tiles)
+const MAP_WIDTH = 2048;
+const MAP_HEIGHT = 1280;
 
 // --- Types ---
 

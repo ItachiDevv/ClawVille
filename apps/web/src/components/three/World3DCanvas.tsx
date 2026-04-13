@@ -29,12 +29,11 @@ import AuctionPodium from '@/lib/three/auction-podium';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 import { useGameStore } from '@/stores/game';
 import { useNpcStore } from '@/stores/npc';
+import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-const MAP_WIDTH = 2048;
-const MAP_HEIGHT = 1280;
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 const CAM_PAN_SPEED = 500;
@@ -137,14 +136,18 @@ function ArrowKeyRotationController({
     // Keyboard arrow keys
     let dTheta =
       (_arrowKeys.arrowleft ? 1 : 0) - (_arrowKeys.arrowright ? 1 : 0);
+    // Spherical phi: 0 = top (+Y), PI = bottom (-Y).
+    // ArrowUp = "look up" = camera moves higher = phi DECREASES → -1
+    // ArrowDown = "look down" = camera moves lower = phi INCREASES → +1
     let dPhi =
-      (_arrowKeys.arrowup ? 1 : 0) + (_arrowKeys.arrowdown ? -1 : 0);
+      (_arrowKeys.arrowdown ? 1 : 0) - (_arrowKeys.arrowup ? 1 : 0);
 
     // Right joystick (mobile camera stick) — analog, adds to keyboard delta
+    // Stick-up → vy = -1 (from nipplejs inversion) → phi decreases → look up ✓
     const { cameraJoystickVelocity } = useGameStore.getState();
     if (cameraJoystickVelocity.x !== 0 || cameraJoystickVelocity.y !== 0) {
       dTheta += -cameraJoystickVelocity.x; // stick right = orbit right = theta decreases
-      dPhi   +=  cameraJoystickVelocity.y;  // stick up = look up = phi increases
+      dPhi   +=  cameraJoystickVelocity.y;  // stick up (vy=-1) = look up = phi decreases
     }
 
     if (dTheta === 0 && dPhi === 0) return;
@@ -418,6 +421,8 @@ function StaggeredTextureUpload() {
     // second tick is after at least one compile cycle has started.
     let outerRaf: number;
     let innerRaf: number;
+    // Hoisted so the useEffect cleanup can cancel in-progress upload batches
+    let uploadRaf: number | undefined;
 
     outerRaf = requestAnimationFrame(() => {
       innerRaf = requestAnimationFrame(() => {
@@ -444,7 +449,6 @@ function StaggeredTextureUpload() {
         console.log(`[World3D] StaggeredTextureUpload: uploading ${unique.length} textures (${TEXTURE_UPLOAD_BATCH}/frame)`);
 
         let i = 0;
-        let uploadRaf: number;
 
         function uploadBatch() {
           const t0 = performance.now();
@@ -464,20 +468,19 @@ function StaggeredTextureUpload() {
           if (i < unique.length) {
             uploadRaf = requestAnimationFrame(uploadBatch);
           } else {
+            uploadRaf = undefined;
             console.log('[World3D] StaggeredTextureUpload: all textures uploaded');
           }
         }
 
         uploadRaf = requestAnimationFrame(uploadBatch);
-
-        // Return a cleanup fn captured via closure
-        return () => cancelAnimationFrame(uploadRaf);
       });
     });
 
     return () => {
       cancelAnimationFrame(outerRaf);
       cancelAnimationFrame(innerRaf);
+      if (uploadRaf !== undefined) cancelAnimationFrame(uploadRaf);
     };
     // gl/scene are stable R3F refs — intentionally omitted from deps
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -702,7 +705,7 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
         camera={{
           fov: 50,
           near: 1,
-          far: 2000,
+          far: 3400,
           // Game mode: pull the camera back to z=550 to accommodate the wider
           // building ring (semi-major X=14, semi-minor Y=9 tile layout).
           position: mode === 'game' ? [0, 400, 900] : [0, 320, 560],
