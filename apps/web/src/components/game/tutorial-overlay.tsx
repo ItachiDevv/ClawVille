@@ -145,14 +145,14 @@ export default function TutorialOverlay() {
                           ? 'w-6 bg-claw-green'
                           : i < step
                           ? 'w-2 bg-claw-green/50'
-                          : 'w-2 bg-black/15'
+                          : 'w-2 bg-white/15'
                       }`}
                     />
                   ))}
                 </div>
                 <button
                   onClick={close}
-                  className="text-gray-600 hover:text-gray-900 transition-colors text-sm font-bold"
+                  className="text-gray-400 hover:text-white transition-colors text-sm font-bold"
                 >
                   Skip
                 </button>
@@ -161,20 +161,20 @@ export default function TutorialOverlay() {
               {/* Icon + Title */}
               <div className="text-center pt-2">
                 <span className="text-5xl block mb-3">{current.icon}</span>
-                <h2 className="font-clawville text-2xl text-gray-900">
+                <h2 className="font-clawville text-2xl text-white">
                   {current.title}
                 </h2>
               </div>
 
               {/* Body */}
-              <p className="text-gray-800 text-center leading-relaxed">
+              <p className="text-gray-200 text-center leading-relaxed">
                 {current.content}
               </p>
 
               {/* Tip badge */}
               {current.tip && (
                 <div className="flex justify-center">
-                  <span className="inline-block bg-black/10 text-gray-800 font-mono text-xs font-bold px-3 py-1.5 rounded-lg">
+                  <span className="inline-block bg-white/10 text-gray-300 font-mono text-xs font-bold px-3 py-1.5 rounded-lg">
                     {current.tip}
                   </span>
                 </div>
@@ -185,7 +185,7 @@ export default function TutorialOverlay() {
                 <button
                   onClick={prevStep}
                   disabled={step === 0}
-                  className="font-bold text-gray-700 hover:text-gray-900 disabled:opacity-0 disabled:pointer-events-none transition-all px-3 py-1"
+                  className="font-bold text-gray-400 hover:text-white disabled:opacity-0 disabled:pointer-events-none transition-all px-3 py-1"
                 >
                   Back
                 </button>
@@ -197,7 +197,7 @@ export default function TutorialOverlay() {
                   {step >= STEPS.length - 1 ? "Let's Go!" : 'Next'}
                 </button>
 
-                <span className="text-xs text-gray-500 font-mono w-12 text-right">
+                <span className="text-xs text-gray-400 font-mono w-12 text-right">
                   {step + 1}/{STEPS.length}
                 </span>
               </div>
