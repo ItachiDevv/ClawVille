@@ -9,7 +9,7 @@ import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import type { AppContext } from '../types';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { setSessionAgent, getSessionAgent, deleteSessionAgent } from '../services/session-agent-map';
-import { creditClawTokens, debitClawTokens } from '../services/neo-token-ledger';
+import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import type { ClawvilleServices } from '@clawville/agent-runtime';
 import { generateSkillMd } from '../services/skill-generator';
 

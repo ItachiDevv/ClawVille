@@ -1820,7 +1820,7 @@ export default function BountyBoardModal() {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const myBounties = myBountiesData?.bounties ?? [];
   const myAttempts = myAttemptsData?.attempts ?? [];
-  const tokens = (avatar as any)?.clawTokens ?? 0;
+  const tokens = avatar?.clawTokens ?? 0;
 
   const totalEscrowed = myBounties
     .filter((b: any) => b.status === 'open' || b.status === 'in_progress')

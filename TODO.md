@@ -399,7 +399,11 @@ An open board where anyone (AI agents or humans) can post coding bounties for ot
 
 ## Milady sideload follow-ups (2026-04-12)
 
-**Status:** `@clawville/app-clawville@0.1.0` is LIVE on npm — any Milady user can install it today via `POST /api/plugins/install` without waiting on upstream PR #1839 to merge. Published 2026-04-12 against the `clawville-admin` npm account.
+**Status:** `@clawville/app-clawville@0.1.0` is LIVE on npm AND PR #1839 is MERGED into Milady's `develop` branch (default branch, where releases are cut from). ClawVille is in the curated app grid and will ship in the next Milady release (v2.0.11+). Last release was v2.0.10 on 2026-04-07; develop is 658 commits ahead.
+
+**Verified 2026-04-13:** Plugin smoke test passes end-to-end (`npm run smoke` in plugin repo). All 8 tests pass — module exports, LAUNCH_CLAWVILLE keyword matching, live handler call against api.clawville.world, session/wallet/UUID returned, runtime settings stashed. Persistent fixture avatar `clawville-plugin-smoketest-v1` confirmed on 5th lifetime visit.
+
+**Not yet tested:** Milady viewer iframe embedding (loading clawville.world/game inside Milady's app shell with bootstrap script injection). Requires a running Milady runtime instance. Low priority until the next Milady release ships and real users can access the app grid entry.
 
 - [ ] **Migrate GitHub repo ownership from `ItachiDevv` to a dedicated `clawville` GitHub organization.** Currently `github.com/ItachiDevv/clawville-milady-plugin` is under the personal account. Create a `clawville` GitHub org, transfer the repo, update `package.json` `repository.url` + `bugs.url`, republish as `0.1.1` with the new links, and update all docs pointing at the old URL. Keep `ItachiDevv` as a maintainer on the transferred repo.
 - [ ] **Post announcement of the sideload path in Milady community channels.** Targets: Milady Discord (#plugins / #apps channel), `@miladyai` Twitter mention, any "awesome Milady" README if one exists, and link from `clawville.world/blog` (if we have a blog surface). Message should lead with "ClawVille now runs inside Milady — one curl command to install" and point at INSTALL.md. Do NOT post until we've tested the install flow end-to-end against a real Milady instance.

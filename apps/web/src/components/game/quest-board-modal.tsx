@@ -1513,7 +1513,7 @@ export default function QuestBoardModal() {
   const myQuests: QuestSubmission[] = myQuestsData?.submissions ?? PLACEHOLDER_ACTIVE;
   const rewards: QuestReward[] = questLogData?.rewards ?? PLACEHOLDER_REWARDS;
 
-  const tokens = (avatar as any)?.clawTokens ?? 0;
+  const tokens = avatar?.clawTokens ?? 0;
 
   const totalTokensEarned = rewards.reduce((s, r) => s + (r.tokensAwarded || 0), 0);
   const skillsEarned = rewards.filter((r) => r.skillName);

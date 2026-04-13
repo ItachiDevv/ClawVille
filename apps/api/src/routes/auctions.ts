@@ -4,7 +4,7 @@ import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
 import type { AppContext } from '../types';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
-import { creditClawTokens, debitClawTokens } from '../services/neo-token-ledger';
+import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import {
   db,
   avatars,
@@ -108,101 +108,99 @@ class AuctionResolver {
 
       for (const auction of expiredAuctions) {
         try {
-          if (auction.currentBidderId && auction.currentBid) {
-            // Has a winner — resolve with payout
-            const winnerPet = await db.query.avatars.findFirst({
-              where: eq(avatars.id, auction.currentBidderId),
-            });
-            const sellerPet = await db.query.avatars.findFirst({
-              where: eq(avatars.id, auction.sellerId),
-            });
-
-            if (winnerPet && sellerPet) {
-              const price = auction.currentBid;
-              const platformFee = Math.floor(price * 0.15);
-              const sellerPayout = price - platformFee;
-
-              // Pay seller (bid was already escrowed from winner on place-bid)
-              await creditClawTokens({
-                avatarId: sellerPet.id,
-                amount: sellerPayout,
-                reason: 'auction_settled',
-                source: 'api',
-                metadata: {
-                  auctionId: auction.id,
-                  winnerId: winnerPet.id,
-                  price,
-                  platformFee,
-                },
-              });
-
-              // Transfer skill to winner's inventory if skill type
-              if (auction.itemType === 'skill' && auction.skillId) {
-                const itemId = `skill-${auction.skillId}`;
-                const existingItem = await db.query.avatarInventory.findFirst({
-                  where: and(
-                    eq(avatarInventory.avatarId, winnerPet.id),
-                    eq(avatarInventory.itemId, itemId)
-                  ),
-                });
-
-                if (existingItem) {
-                  await db
-                    .update(avatarInventory)
-                    .set({ quantity: existingItem.quantity + 1 })
-                    .where(eq(avatarInventory.id, existingItem.id));
-                } else {
-                  await db.insert(avatarInventory).values({
-                    avatarId: winnerPet.id,
-                    itemId,
-                    quantity: 1,
-                  });
-                }
-              }
-
-              // If agent_config type, store the snapshot for the winner
-              if (
-                auction.itemType === 'agent_config' &&
-                auction.agentConfigSnapshot
-              ) {
-                await db.insert(auctionAgentConfigs).values({
-                  auctionId: auction.id,
-                  avatarId: winnerPet.id,
-                  configSnapshot: auction.agentConfigSnapshot,
-                });
-              }
-
-              // Mark as resolved
-              await db
-                .update(auctions)
-                .set({
-                  status: 'resolved',
-                  resolvedAt: new Date(),
-                  updatedAt: new Date(),
-                })
-                .where(eq(auctions.id, auction.id));
-
-              console.log(
-                `[AuctionResolver] Resolved auction ${auction.id} — winner: ${winnerPet.id}, payout: ${sellerPayout}`
-              );
-            }
-          } else {
-            // No bids — mark as ended
-            await db
+          // Wrap the entire settlement in a transaction with an atomic claim
+          // to prevent double-processing by concurrent resolver ticks.
+          await db.transaction(async (tx) => {
+            // Atomic claim: UPDATE ... WHERE status='active' RETURNING.
+            // If 0 rows, another tick already claimed this auction.
+            const [claimed] = await tx
               .update(auctions)
               .set({
-                status: 'ended',
+                status: auction.currentBidderId && auction.currentBid ? 'resolved' : 'ended',
                 resolvedAt: new Date(),
                 updatedAt: new Date(),
               })
-              .where(eq(auctions.id, auction.id));
+              .where(and(eq(auctions.id, auction.id), eq(auctions.status, 'active')))
+              .returning();
 
-            console.log(
-              `[AuctionResolver] Ended auction ${auction.id} — no bids`
-            );
-          }
+            if (!claimed) return; // Already processed by another tick
 
-          // Emit event
+            if (auction.currentBidderId && auction.currentBid) {
+              // Has a winner — resolve with payout
+              const winnerPet = await tx.query.avatars.findFirst({
+                where: eq(avatars.id, auction.currentBidderId),
+              });
+              const sellerPet = await tx.query.avatars.findFirst({
+                where: eq(avatars.id, auction.sellerId),
+              });
+
+              if (winnerPet && sellerPet) {
+                const price = auction.currentBid;
+                const platformFee = Math.floor(price * 0.15);
+                const sellerPayout = price - platformFee;
+
+                // Pay seller (bid was already escrowed from winner on place-bid)
+                await creditClawTokens({
+                  avatarId: sellerPet.id,
+                  amount: sellerPayout,
+                  reason: 'auction_settled',
+                  source: 'api',
+                  metadata: {
+                    auctionId: auction.id,
+                    winnerId: winnerPet.id,
+                    price,
+                    platformFee,
+                  },
+                }, tx);
+
+                // Transfer skill to winner's inventory if skill type
+                if (auction.itemType === 'skill' && auction.skillId) {
+                  const itemId = `skill-${auction.skillId}`;
+                  const existingItem = await tx.query.avatarInventory.findFirst({
+                    where: and(
+                      eq(avatarInventory.avatarId, winnerPet.id),
+                      eq(avatarInventory.itemId, itemId)
+                    ),
+                  });
+
+                  if (existingItem) {
+                    await tx
+                      .update(avatarInventory)
+                      .set({ quantity: existingItem.quantity + 1 })
+                      .where(eq(avatarInventory.id, existingItem.id));
+                  } else {
+                    await tx.insert(avatarInventory).values({
+                      avatarId: winnerPet.id,
+                      itemId,
+                      quantity: 1,
+                    });
+                  }
+                }
+
+                // If agent_config type, store the snapshot for the winner
+                if (
+                  auction.itemType === 'agent_config' &&
+                  auction.agentConfigSnapshot
+                ) {
+                  await tx.insert(auctionAgentConfigs).values({
+                    auctionId: auction.id,
+                    avatarId: winnerPet.id,
+                    configSnapshot: auction.agentConfigSnapshot,
+                  });
+                }
+
+                console.log(
+                  `[AuctionResolver] Resolved auction ${auction.id} — winner: ${winnerPet.id}, payout: ${sellerPayout}`
+                );
+              }
+            } else {
+              console.log(
+                `[AuctionResolver] Ended auction ${auction.id} — no bids`
+              );
+            }
+          });
+
+          // Emit event (outside transaction — non-critical SSE notification)
           auctionEventBus.emit({
             type: 'auction_ended',
             auctionId: auction.id,

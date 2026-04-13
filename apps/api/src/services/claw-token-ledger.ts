@@ -6,13 +6,13 @@
  *   1. SELECT the current avatars row FOR UPDATE (row lock — prevents races)
  *   2. Compute the new balance (credit: add; debit: subtract, assert >= 0)
  *   3. UPDATE avatars.clawTokens
- *   4. INSERT a neo_token_transactions row with the new balanceAfter
+ *   4. INSERT a claw_token_transactions row with the new balanceAfter
  *
  * All four steps run in a single DB transaction. If any step fails, the
  * whole thing rolls back — invariant: `avatars.clawTokens` always matches the
  * latest `balanceAfter` in the ledger.
  *
- * Existing code that did `UPDATE avatars SET neo_tokens = neo_tokens + N` is
+ * Existing code that did `UPDATE avatars SET claw_tokens = claw_tokens + N` is
  * migrated to call these helpers instead. Grep for any remaining direct
  * updates — they're bugs.
  */
@@ -81,15 +81,15 @@ async function creditInTx(tx: LedgerTx, input: LedgerCreditInput): Promise<Ledge
   }
 
   // Row-lock the avatar and read current balance + userId
-  const [row] = await tx.execute<{ user_id: string; neo_tokens: number }>(
-    sql`SELECT user_id, neo_tokens FROM avatars WHERE id = ${input.avatarId} FOR UPDATE`,
+  const [row] = await tx.execute<{ user_id: string; claw_tokens: number }>(
+    sql`SELECT user_id, claw_tokens FROM avatars WHERE id = ${input.avatarId} FOR UPDATE`,
   );
 
   if (!row) {
     throw new Error(`creditClawTokens: avatar ${input.avatarId} not found`);
   }
 
-  const balanceAfter = row.neo_tokens + input.amount;
+  const balanceAfter = row.claw_tokens + input.amount;
 
   await tx.update(avatars).set({ clawTokens: balanceAfter }).where(eq(avatars.id, input.avatarId));
 
@@ -114,19 +114,19 @@ async function debitInTx(tx: LedgerTx, input: LedgerDebitInput): Promise<LedgerR
     throw new Error(`debitClawTokens amount must be a positive integer, got ${input.amount}`);
   }
 
-  const [row] = await tx.execute<{ user_id: string; neo_tokens: number }>(
-    sql`SELECT user_id, neo_tokens FROM avatars WHERE id = ${input.avatarId} FOR UPDATE`,
+  const [row] = await tx.execute<{ user_id: string; claw_tokens: number }>(
+    sql`SELECT user_id, claw_tokens FROM avatars WHERE id = ${input.avatarId} FOR UPDATE`,
   );
 
   if (!row) {
     throw new Error(`debitClawTokens: avatar ${input.avatarId} not found`);
   }
 
-  if (row.neo_tokens < input.amount) {
-    throw new InsufficientTokensError(input.avatarId, row.neo_tokens, input.amount);
+  if (row.claw_tokens < input.amount) {
+    throw new InsufficientTokensError(input.avatarId, row.claw_tokens, input.amount);
   }
 
-  const balanceAfter = row.neo_tokens - input.amount;
+  const balanceAfter = row.claw_tokens - input.amount;
 
   await tx.update(avatars).set({ clawTokens: balanceAfter }).where(eq(avatars.id, input.avatarId));
 

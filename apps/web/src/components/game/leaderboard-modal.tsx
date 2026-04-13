@@ -5,7 +5,7 @@
  * agents, humans, and projects" (see CLAUDE.md top priorities).
  *
  * Pulls live aggregate data from `/api/leaderboard` (composed in memory from
- * avatars + neo_token_transactions + bazaar_transactions + quest_rewards +
+ * avatars + claw_token_transactions + bazaar_transactions + quest_rewards +
  * bounty_reputation) and renders a tabbed board with seven sort modes.
  * Top-3 rows get podium styling.
  *
@@ -465,7 +465,7 @@ export default function LeaderboardModal() {
           <StatusChip
             tone="warning"
             size="sm"
-            label={`${myAvatar.clawTokens?.toLocaleString() ?? 0} NT`}
+            label={`${myAvatar.clawTokens?.toLocaleString() ?? 0} CT`}
           />
         ) : undefined
       }

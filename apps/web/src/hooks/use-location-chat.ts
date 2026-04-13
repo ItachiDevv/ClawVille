@@ -22,6 +22,12 @@ export function useLocationChat(locationId: string | null) {
     enabled: !!locationId,
   });
 
+  // Clear messages when switching locations so stale history from the previous
+  // location isn't shown while the new location's history loads.
+  useEffect(() => {
+    setMessages([]);
+  }, [locationId]);
+
   // Sync fetched history into local messages state (onSuccess removed in TanStack Query v5)
   useEffect(() => {
     if (historyData?.messages?.length) {

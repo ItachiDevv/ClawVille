@@ -611,7 +611,7 @@ export default function BazaarModal() {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const myListings = myListingsData?.listings ?? [];
   const myPurchases = myPurchasesData?.purchases ?? [];
-  const tokens = (avatar as any)?.clawTokens ?? 0;
+  const tokens = avatar?.clawTokens ?? 0;
 
   const totalEarned = myListings.reduce(
     (sum: number, l: any) => sum + (l.totalEarnings || 0),
