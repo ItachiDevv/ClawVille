@@ -13,7 +13,7 @@ import {
   bazaarReviews,
   petInventory,
 } from '@clawville/database';
-import { eq, and, desc, asc, sql } from 'drizzle-orm';
+import { eq, and, desc, asc, sql, ne } from 'drizzle-orm';
 import { gte, lte, isNotNull, count, avg } from 'drizzle-orm';
 
 export const bazaarRoutes = new Hono<AppContext>();
@@ -685,121 +685,105 @@ bazaarRoutes.post('/:id/buy', requireAuth, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Listing');
 
-  // 1. Find listing (active status)
-  const [listing] = await db
-    .select()
-    .from(bazaarListings)
-    .where(and(eq(bazaarListings.id, id), eq(bazaarListings.status, 'active')))
-    .limit(1);
-
-  if (!listing) {
-    throw new HTTPException(404, {
-      message: 'Listing not found or no longer active',
-    });
-  }
-
-  // 2. Find buyer's pet (check neoTokens >= price)
   const buyerPet = await getUserPet(user.id);
 
-  if (buyerPet.neoTokens < listing.price) {
-    throw new HTTPException(400, {
-      message: `Not enough NeoTokens. Need ${listing.price}, have ${buyerPet.neoTokens}.`,
-    });
-  }
+  // Entire buy flow runs in a single DB transaction to prevent double-buy
+  // races and ensure debit/credit atomicity.
+  const result = await db.transaction(async (tx) => {
+    // 1. Atomically claim the listing — UPDATE ... WHERE status='active'
+    //    If 0 rows returned, another buyer already got it.
+    const [claimed] = await tx
+      .update(bazaarListings)
+      .set({ status: 'sold', updatedAt: new Date() })
+      .where(and(eq(bazaarListings.id, id), eq(bazaarListings.status, 'active')))
+      .returning();
 
-  // 3. Find seller's pet
-  const sellerPet = await db.query.pets.findFirst({
-    where: eq(pets.id, listing.sellerId),
-  });
+    if (!claimed) {
+      throw new HTTPException(404, {
+        message: 'Listing not found or no longer active',
+      });
+    }
 
-  if (!sellerPet) {
-    throw new HTTPException(500, { message: 'Seller pet not found' });
-  }
+    // 2. Prevent self-purchase
+    if (buyerPet.id === claimed.sellerId) {
+      throw new HTTPException(400, {
+        message: 'Cannot buy your own listing',
+      });
+    }
 
-  // 4. Prevent self-purchase
-  if (buyerPet.id === sellerPet.id) {
-    throw new HTTPException(400, {
-      message: 'Cannot buy your own listing',
-    });
-  }
+    // 3. Calculate fee split
+    const price = claimed.price;
+    const platformFee = Math.floor(price * 0.15);
+    const sellerPayout = price - platformFee;
 
-  // 5. Calculate fee split
-  const price = listing.price;
-  const platformFee = Math.floor(price * 0.15);
-  const sellerPayout = price - platformFee;
-
-  // 6-7. Atomic transfer: buyer pays `price`, seller receives `sellerPayout`,
-  // platform keeps `platformFee`. Net-of-fee transfer is modeled as two
-  // independent ledger entries so the platformFee is attributable.
-  const { balanceAfter: buyerBalance } = await debitNeoTokens({
-    petId: buyerPet.id,
-    amount: price,
-    reason: 'bazaar_purchase',
-    source: 'api',
-    metadata: { listingId: id, skillId: listing.skillId, sellerId: sellerPet.id, platformFee },
-  });
-  await creditNeoTokens({
-    petId: sellerPet.id,
-    amount: sellerPayout,
-    reason: 'bazaar_sale',
-    source: 'api',
-    metadata: { listingId: id, skillId: listing.skillId, buyerId: buyerPet.id, platformFee },
-  });
-
-  // 8. Update listing: status = 'sold'
-  await db
-    .update(bazaarListings)
-    .set({ status: 'sold', updatedAt: new Date() })
-    .where(eq(bazaarListings.id, id));
-
-  // 9. Insert bazaar_transaction
-  const [transaction] = await db
-    .insert(bazaarTransactions)
-    .values({
-      listingId: id,
-      buyerId: buyerPet.id,
-      sellerId: sellerPet.id,
-      skillId: listing.skillId,
-      price,
-      platformFee,
-      sellerPayout,
-    })
-    .returning();
-
-  // 10. Add to buyer's pet_inventory (increment quantity if exists, else insert)
-  const itemId = `skill-${listing.skillId}`;
-  const existingItem = await db.query.petInventory.findFirst({
-    where: and(
-      eq(petInventory.petId, buyerPet.id),
-      eq(petInventory.itemId, itemId)
-    ),
-  });
-
-  if (existingItem) {
-    await db
-      .update(petInventory)
-      .set({ quantity: existingItem.quantity + 1 })
-      .where(eq(petInventory.id, existingItem.id));
-  } else {
-    await db.insert(petInventory).values({
+    // 4. Atomic debit buyer + credit seller within the same transaction
+    const { balanceAfter: buyerBalance } = await debitNeoTokens({
       petId: buyerPet.id,
-      itemId,
-      quantity: 1,
+      amount: price,
+      reason: 'bazaar_purchase',
+      source: 'api',
+      metadata: { listingId: id, skillId: claimed.skillId, sellerId: claimed.sellerId, platformFee },
+    }, tx);
+
+    await creditNeoTokens({
+      petId: claimed.sellerId,
+      amount: sellerPayout,
+      reason: 'bazaar_sale',
+      source: 'api',
+      metadata: { listingId: id, skillId: claimed.skillId, buyerId: buyerPet.id, platformFee },
+    }, tx);
+
+    // 5. Insert bazaar_transaction
+    const [transaction] = await tx
+      .insert(bazaarTransactions)
+      .values({
+        listingId: id,
+        buyerId: buyerPet.id,
+        sellerId: claimed.sellerId,
+        skillId: claimed.skillId,
+        price,
+        platformFee,
+        sellerPayout,
+      })
+      .returning();
+
+    // 6. Add to buyer's pet_inventory (increment quantity if exists, else insert)
+    const itemId = `skill-${claimed.skillId}`;
+    const existingItem = await tx.query.petInventory.findFirst({
+      where: and(
+        eq(petInventory.petId, buyerPet.id),
+        eq(petInventory.itemId, itemId)
+      ),
     });
-  }
+
+    if (existingItem) {
+      await tx
+        .update(petInventory)
+        .set({ quantity: existingItem.quantity + 1 })
+        .where(eq(petInventory.id, existingItem.id));
+    } else {
+      await tx.insert(petInventory).values({
+        petId: buyerPet.id,
+        itemId,
+        quantity: 1,
+      });
+    }
+
+    return { transaction, buyerBalance };
+  });
 
   return c.json({
     success: true,
     transaction: {
-      id: transaction.id,
-      listingId: transaction.listingId,
-      skillId: transaction.skillId,
-      price: transaction.price,
-      platformFee: transaction.platformFee,
-      sellerPayout: transaction.sellerPayout,
-      createdAt: transaction.createdAt.toISOString(),
+      id: result.transaction.id,
+      listingId: result.transaction.listingId,
+      skillId: result.transaction.skillId,
+      price: result.transaction.price,
+      platformFee: result.transaction.platformFee,
+      sellerPayout: result.transaction.sellerPayout,
+      createdAt: result.transaction.createdAt.toISOString(),
     },
-    neoTokens: buyerBalance,
+    neoTokens: result.buyerBalance,
   });
 });
 
