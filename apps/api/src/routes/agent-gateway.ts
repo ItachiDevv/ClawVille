@@ -220,12 +220,32 @@ agentGatewayRoutes.post('/connect', async (c) => {
   }
 
   // Step 3: Register in npc-simulation so the bot actually spawns in the world.
-  // Avatar mode requires name + species; override mode requires a valid targetNpcId.
-  // Default species to 'lobster' and name to agentId so agents ALWAYS spawn even
-  // if the caller omits optional avatar fields.
-  const spawnName = data.name ?? data.miladyCharacterName ?? resolvedAgentId.slice(0, 24);
-  const spawnSpecies = data.species ?? 'lobster';
-  if (spawnName) {
+  // Override mode takes over an existing NPC — check it FIRST before falling
+  // through to avatar mode. Avatar mode spawns a new bot (name + species).
+  if (data.mode === 'override' && data.targetNpcId) {
+    try {
+      const config: OpenClawRegistration = {
+        agentId: resolvedAgentId,
+        sessionId,
+        sessionKey: sessionId,
+        gatewayUrl: data.gatewayUrl ?? 'http://localhost:0',
+        authToken: data.authToken ?? '',
+        protocol: wireProtocol,
+        mode: 'override',
+        autonomyMode,
+        targetNpcId: data.targetNpcId,
+      } as OpenClawRegistration;
+      const client = new OpenClawClient(config);
+      npcSimulation.registerOpenClaw(config, client);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return c.json({ error: msg }, 409);
+    }
+  } else {
+    // Avatar mode — spawn a new bot. Default species to 'lobster' and name
+    // to agentId so agents ALWAYS spawn even if the caller omits optional fields.
+    const spawnName = data.name ?? data.miladyCharacterName ?? resolvedAgentId.slice(0, 24);
+    const spawnSpecies = data.species ?? 'lobster';
     try {
       const config: OpenClawRegistration = {
         agentId: resolvedAgentId,
@@ -258,25 +278,6 @@ agentGatewayRoutes.post('/connect', async (c) => {
     } catch (err) {
       console.error('[AgentConnect] NPC registration error:', err);
       // Non-fatal — agent still gets a sessionId for REST polling
-    }
-  } else if (data.mode === 'override' && data.targetNpcId) {
-    try {
-      const config: OpenClawRegistration = {
-        agentId: resolvedAgentId,
-        sessionId,
-        sessionKey: sessionId,
-        gatewayUrl: data.gatewayUrl ?? 'http://localhost:0',
-        authToken: data.authToken ?? '',
-        protocol: wireProtocol,
-        mode: 'override',
-        autonomyMode,
-        targetNpcId: data.targetNpcId,
-      } as OpenClawRegistration;
-      const client = new OpenClawClient(config);
-      npcSimulation.registerOpenClaw(config, client);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return c.json({ error: msg }, 409);
     }
   }
 
