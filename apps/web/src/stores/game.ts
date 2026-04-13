@@ -310,7 +310,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   petName: '',
   setPetAppearance: (species, color, name) => set({ petSpecies: species, petColor: color, ...(name ? { petName: name } : {}) }),
 
-  petPosition: { x: 1024, y: 640 },
+  petPosition: { x: 400, y: 250 },
   setPetPosition: (x, y) => set({ petPosition: { x, y } }),
 
   movementDirection: 'idle',
@@ -544,7 +544,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     petSpecies: 'cat',
     petColor: 'yellow',
     petName: '',
-    petPosition: { x: 1024, y: 640 },
+    petPosition: { x: 400, y: 250 },
     movementDirection: 'idle',
     petSpeed: 0,
     nearLocation: null,
