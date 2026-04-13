@@ -166,26 +166,25 @@ export default function NpcController() {
     let newX = Math.max(X_MIN, Math.min(X_MAX, npc.x + vx * SPEED * delta));
     let newY = Math.max(Y_MIN, Math.min(Y_MAX, npc.y + vy * SPEED * delta));
 
-    // Building collision — slide along walls (check axes independently)
-    if (isInsideBuilding(newX, newY)) {
-      // Try X-only movement
+    // Building collision — slide along walls, but always allow moving OUT.
+    // NPCs may start inside a building zone (their home position), so only
+    // block movement if ENTERING a building, not if already inside.
+    const alreadyInside = isInsideBuilding(npc.x, npc.y);
+    if (!alreadyInside && isInsideBuilding(newX, newY)) {
+      // Moving INTO a building — try sliding along walls
       const xOnly = isInsideBuilding(newX, npc.y);
-      // Try Y-only movement
       const yOnly = isInsideBuilding(npc.x, newY);
 
       if (xOnly && yOnly) {
-        // Both axes blocked — don't move
         newX = npc.x;
         newY = npc.y;
       } else if (xOnly) {
-        // X blocked, slide along Y
         newX = npc.x;
       } else if (yOnly) {
-        // Y blocked, slide along X
         newY = npc.y;
       }
-      // else: neither axis alone is blocked, allow movement (corner case)
     }
+    // If alreadyInside: always allow movement (escaping the building zone)
 
     useNpcStore.getState().moveNpc(possessedNpcId, newX, newY, dir, facingAngle);
   });
