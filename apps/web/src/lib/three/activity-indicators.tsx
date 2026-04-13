@@ -10,8 +10,8 @@ import { useNpcStore } from '@/stores/npc';
 // Constants
 // ---------------------------------------------------------------------------
 
-const MAP_WIDTH = 1280;
-const MAP_HEIGHT = 800;
+const MAP_WIDTH = 2048;
+const MAP_HEIGHT = 1280;
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 
