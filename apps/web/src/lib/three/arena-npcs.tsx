@@ -33,14 +33,14 @@ function mapToWorld(px: number, py: number): [number, number, number] {
   return [px - HALF_W, 0, py - HALF_H];
 }
 
-// Lobster GLB faces +Z natively (rotation.y=0 → faces +Z).
-// To face world direction (worldVx, worldVz): θ = atan2(worldVx, worldVz)
-//   up    (vx=0, vy=-1 → worldZ-): atan2(0, -1) = PI
-//   down  (vx=0, vy=+1 → worldZ+): atan2(0,  1) = 0
-//   right (vx=+1, vy=0 → worldX+): atan2(1,  0) = PI/2
-//   left  (vx=-1, vy=0 → worldX-): atan2(-1, 0) = -PI/2
+// Lobster GLB faces -Z natively (rotation.y=0 → head toward -Z, tail toward +Z).
+// To face world direction (worldVx, worldVz): θ = atan2(-worldVx, -worldVz)
+//   up    (vx=0, vy=-1 → worldZ-): atan2(0,  1) = 0
+//   down  (vx=0, vy=+1 → worldZ+): atan2(0, -1) = PI
+//   right (vx=+1, vy=0 → worldX+): atan2(-1, 0) = -PI/2
+//   left  (vx=-1, vy=0 → worldX-): atan2(+1, 0) = +PI/2
 const DIR_ROTATION: Record<string, number> = {
-  down: 0, left: -Math.PI / 2, up: Math.PI, right: Math.PI / 2, idle: 0,
+  down: Math.PI, left: Math.PI / 2, up: 0, right: -Math.PI / 2, idle: Math.PI,
 };
 
 import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
