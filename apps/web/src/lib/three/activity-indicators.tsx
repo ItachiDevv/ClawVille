@@ -1,17 +1,16 @@
 'use client';
 
-import { useRef, memo } from 'react';
+import { useRef, useEffect, memo } from 'react';
 import { useFrame } from '@react-three/fiber';
 // Text removed
 import * as THREE from 'three';
 import { useNpcStore } from '@/stores/npc';
+import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const MAP_WIDTH = 2048;
-const MAP_HEIGHT = 1280;
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 
@@ -49,7 +48,6 @@ const ACTIVITY_EMOJIS: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 interface NpcIndicatorProps {
-  npcId: string;
   x: number;
   y: number;
   activity?: string;
@@ -58,7 +56,6 @@ interface NpcIndicatorProps {
 }
 
 const NpcIndicator = memo(function NpcIndicator({
-  npcId,
   x,
   y,
   activity,
@@ -160,6 +157,16 @@ const TypingDots = memo(function TypingDots({
 function ActivityIndicators() {
   const npcs = useNpcStore((s) => s.npcs);
 
+  // Periodically evict expired chatBubbles / combatEvents / lootEvents.
+  // cleanupExpired() is defined in the store but was never called — in demo
+  // mode (no server) updateFromSnapshot never runs, so stale bubbles accumulate.
+  useEffect(() => {
+    const id = setInterval(() => {
+      useNpcStore.getState().cleanupExpired();
+    }, 5000);
+    return () => clearInterval(id);
+  }, []);
+
   // NPC store doesn't have typingNpcIds or activities in ClawVille's npc.ts,
   // but we can derive typing from inConversation and activity from direction.
   // For now, show conversation bubble indicators for NPCs in conversation.
@@ -177,7 +184,6 @@ function ActivityIndicators() {
         return (
           <NpcIndicator
             key={npc.id}
-            npcId={npc.id}
             x={npc.x}
             y={npc.y}
             activity={activity}

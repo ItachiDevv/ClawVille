@@ -1,17 +1,16 @@
 'use client';
 
-import { useRef, memo } from 'react';
+import { useRef, useState, memo } from 'react';
 import { useFrame } from '@react-three/fiber';
 // Text removed
 import * as THREE from 'three';
 import { useGameStore } from '@/stores/game';
+import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const MAP_WIDTH = 2048;
-const MAP_HEIGHT = 1280;
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 const FLOAT_SPEED = 30; // units per second upward
@@ -39,8 +38,12 @@ let nextId = 0;
 // ---------------------------------------------------------------------------
 
 function FloatingTexts3D() {
+  // React state drives re-renders; useRef holds the mutable list so useFrame
+  // can mutate it without triggering extra re-renders mid-flight.
+  // Each useFrame tick: update physics on the ref, then call setTexts() with a
+  // shallow copy so React re-renders with the latest positions and opacities.
   const textsRef = useRef<FloatingTextInstance[]>([]);
-  const renderTickRef = useRef(0);
+  const [texts, setTexts] = useState<FloatingTextInstance[]>([]);
 
   useFrame((_, delta) => {
     const dt = Math.min(delta, 0.1);
@@ -66,6 +69,8 @@ function FloatingTexts3D() {
       }
     }
 
+    if (textsRef.current.length === 0) return;
+
     // Update existing texts
     const alive: FloatingTextInstance[] = [];
     for (const ft of textsRef.current) {
@@ -81,10 +86,11 @@ function FloatingTexts3D() {
     }
     textsRef.current = alive;
 
-    renderTickRef.current += 1;
+    // Shallow-copy array to trigger React re-render with updated positions
+    setTexts([...alive]);
   });
 
-  const texts = textsRef.current;
+  if (texts.length === 0) return null;
 
   return (
     <group>
