@@ -9,7 +9,7 @@ import { agentOrchestrator } from '../services/agent-orchestrator';
 import { awardXp } from '../services/xp-service';
 import { shouldCollaborate, collaborateOnQuery } from '../services/agent-collaboration';
 import { miladyGateway } from '../services/milady-gateway';
-import { creditNeoTokens, debitNeoTokens } from '../services/neo-token-ledger';
+import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 import type { ClawvilleServices } from '@clawville/agent-runtime';
@@ -63,7 +63,7 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
   // Build state object for Providers + Actions
   // Only inject services if pet exists — actions require a petId to transact
   const services = pet
-    ? ({ db, creditNeoTokens, debitNeoTokens } as ClawvilleServices)
+    ? ({ db, creditClawTokens, debitClawTokens } as ClawvilleServices)
     : undefined;
   const state: Record<string, any> = {
     petId: pet?.id,
@@ -156,15 +156,15 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
     state,
   });
 
-  // Award +1 NeoToken for chatting with a location agent (atomic + audited)
+  // Award +1 ClawToken for chatting with a location agent (atomic + audited)
   if (pet) {
-    await creditNeoTokens({
+    await creditClawTokens({
       petId: pet.id,
       amount: 1,
       reason: 'location_chat',
       source: 'api',
       metadata: { locationId },
-    }).catch((err) => console.error('[chat] creditNeoTokens failed:', err));
+    }).catch((err) => console.error('[chat] creditClawTokens failed:', err));
 
     // Award +5 XP for NPC chat (non-blocking)
     awardXp(pet.id, 5, 'npc-chat').catch(console.error);

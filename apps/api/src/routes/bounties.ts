@@ -3,7 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import type { AppContext } from '../types';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
-import { creditNeoTokens, debitNeoTokens } from '../services/neo-token-ledger';
+import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import {
   db,
   pets,
@@ -310,9 +310,9 @@ bountyRoutes.post('/create', requireAuth, async (c) => {
   const pet = await getUserPet(user.id);
 
   // ESCROW: Verify creator has enough tokens
-  if (pet.neoTokens < data.tokenReward) {
+  if (pet.clawTokens < data.tokenReward) {
     throw new HTTPException(400, {
-      message: `Not enough NeoTokens. Need ${data.tokenReward}, have ${pet.neoTokens}.`,
+      message: `Not enough ClawTokens. Need ${data.tokenReward}, have ${pet.clawTokens}.`,
     });
   }
 
@@ -346,7 +346,7 @@ bountyRoutes.post('/create', requireAuth, async (c) => {
   // fails, the debit rolls back and the creator doesn't lose tokens.
   const bounty = await db.transaction(async (tx) => {
     // Deduct tokenReward from creator (atomic + audited)
-    await debitNeoTokens({
+    await debitClawTokens({
       petId: pet.id,
       amount: data.tokenReward,
       reason: 'bounty_escrow',
@@ -426,9 +426,9 @@ bountyRoutes.post('/create', requireAuth, async (c) => {
       expiresAt: bounty.expiresAt?.toISOString() ?? null,
       createdAt: bounty.createdAt.toISOString(),
     },
-    // The debitNeoTokens call above already updated the balance — recompute
-    // the display value from pet.neoTokens (stale read) minus the debit
-    neoTokens: pet.neoTokens - data.tokenReward,
+    // The debitClawTokens call above already updated the balance — recompute
+    // the display value from pet.clawTokens (stale read) minus the debit
+    clawTokens: pet.clawTokens - data.tokenReward,
   });
 });
 
@@ -541,7 +541,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuth, async (c) => {
         })
         .where(eq(bountyAttempts.id, attemptId));
 
-      // 2. Transfer escrowed tokenReward to hunter's neoTokens
+      // 2. Transfer escrowed tokenReward to hunter's clawTokens
       const hunterPet = await tx.query.pets.findFirst({
         where: eq(pets.id, attempt.hunterId),
       });
@@ -551,7 +551,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuth, async (c) => {
       }
 
       // Release escrowed tokenReward to hunter (atomic + audited)
-      await creditNeoTokens({
+      await creditClawTokens({
         petId: hunterPet.id,
         amount: bounty.tokenReward,
         reason: 'bounty_reward',
@@ -700,41 +700,44 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuth, async (c) => {
       bonusRewardsCount: rewards.length,
     });
   } else {
-    // Rejected
-    await db
-      .update(bountyAttempts)
-      .set({
-        status: 'rejected',
-        reviewNote: reviewNote ?? null,
-        reviewedAt: now,
-        updatedAt: now,
-      })
-      .where(eq(bountyAttempts.id, attemptId));
-
-    // Decrement currentAttempts to allow new attempts
-    await db
-      .update(bounties)
-      .set({
-        currentAttempts: sql`GREATEST(${bounties.currentAttempts} - 1, 0)`,
-        updatedAt: now,
-      })
-      .where(eq(bounties.id, bounty.id));
-
-    // Update hunter's successRate after rejection
-    const hunterRep = await db.query.bountyReputation.findFirst({
-      where: eq(bountyReputation.petId, attempt.hunterId),
-    });
-    const updatedSuccessRate = await recalculateSuccessRate(attempt.hunterId);
-    if (hunterRep) {
-      await db
-        .update(bountyReputation)
+    // Rejected — wrap in transaction so attempt rejection + slot release
+    // + reputation update are atomic (prevents orphaned slot on crash).
+    await db.transaction(async (tx) => {
+      await tx
+        .update(bountyAttempts)
         .set({
-          successRate: updatedSuccessRate,
-          lastActivityAt: now,
+          status: 'rejected',
+          reviewNote: reviewNote ?? null,
+          reviewedAt: now,
           updatedAt: now,
         })
-        .where(eq(bountyReputation.id, hunterRep.id));
-    }
+        .where(eq(bountyAttempts.id, attemptId));
+
+      // Decrement currentAttempts to allow new attempts
+      await tx
+        .update(bounties)
+        .set({
+          currentAttempts: sql`GREATEST(${bounties.currentAttempts} - 1, 0)`,
+          updatedAt: now,
+        })
+        .where(eq(bounties.id, bounty.id));
+
+      // Update hunter's successRate after rejection
+      const hunterRep = await tx.query.bountyReputation.findFirst({
+        where: eq(bountyReputation.petId, attempt.hunterId),
+      });
+      const updatedSuccessRate = await recalculateSuccessRate(attempt.hunterId, tx);
+      if (hunterRep) {
+        await tx
+          .update(bountyReputation)
+          .set({
+            successRate: updatedSuccessRate,
+            lastActivityAt: now,
+            updatedAt: now,
+          })
+          .where(eq(bountyReputation.id, hunterRep.id));
+      }
+    });
 
     return c.json({
       success: true,
@@ -1034,23 +1037,27 @@ bountyRoutes.post('/:id/abandon', requireAuth, async (c) => {
 
   const now = new Date();
 
-  // Update attempt to 'abandoned'
-  await db
-    .update(bountyAttempts)
-    .set({
-      status: 'abandoned',
-      updatedAt: now,
-    })
-    .where(eq(bountyAttempts.id, attempt.id));
+  // Wrap abandon + slot release in a transaction so a crash between
+  // them doesn't leave currentAttempts inflated (blocking new claims).
+  await db.transaction(async (tx) => {
+    // Update attempt to 'abandoned'
+    await tx
+      .update(bountyAttempts)
+      .set({
+        status: 'abandoned',
+        updatedAt: now,
+      })
+      .where(eq(bountyAttempts.id, attempt.id));
 
-  // Decrement bounty.currentAttempts
-  await db
-    .update(bounties)
-    .set({
-      currentAttempts: sql`GREATEST(${bounties.currentAttempts} - 1, 0)`,
-      updatedAt: now,
-    })
-    .where(eq(bounties.id, id));
+    // Decrement bounty.currentAttempts
+    await tx
+      .update(bounties)
+      .set({
+        currentAttempts: sql`GREATEST(${bounties.currentAttempts} - 1, 0)`,
+        updatedAt: now,
+      })
+      .where(eq(bounties.id, id));
+  });
 
   return c.json({
     success: true,
@@ -1192,26 +1199,39 @@ bountyRoutes.delete('/:id', requireAuth, async (c) => {
     });
   }
 
-  // ESCROW REFUND: Return escrowed tokens to creator (atomic + audited)
-  const { balanceAfter: refundedBalance } = await creditNeoTokens({
-    petId: pet.id,
-    amount: bounty.tokenReward,
-    reason: 'bounty_cancelled_refund',
-    source: 'bounty',
-    metadata: { bountyId: bounty.id },
-  });
+  // ESCROW REFUND + CANCEL in a single transaction to prevent double-refund
+  // if the status update were to fail after the credit succeeds.
+  const { refundedBalance } = await db.transaction(async (tx) => {
+    // 1. Atomically claim the bounty for cancellation
+    const [claimed] = await tx
+      .update(bounties)
+      .set({ status: 'cancelled', updatedAt: new Date() })
+      .where(and(eq(bounties.id, id), eq(bounties.status, 'open')))
+      .returning();
 
-  // Mark bounty as cancelled
-  await db
-    .update(bounties)
-    .set({ status: 'cancelled', updatedAt: new Date() })
-    .where(eq(bounties.id, id));
+    if (!claimed) {
+      throw new HTTPException(409, {
+        message: 'Bounty already cancelled or no longer open',
+      });
+    }
+
+    // 2. Return escrowed tokens to creator (atomic + audited)
+    const { balanceAfter } = await creditClawTokens({
+      petId: pet.id,
+      amount: bounty.tokenReward,
+      reason: 'bounty_cancelled_refund',
+      source: 'bounty',
+      metadata: { bountyId: bounty.id },
+    }, tx);
+
+    return { refundedBalance: balanceAfter };
+  });
 
   return c.json({
     success: true,
     message: 'Bounty cancelled and tokens refunded',
     refunded: bounty.tokenReward,
-    neoTokens: refundedBalance,
+    clawTokens: refundedBalance,
   });
 });
 

@@ -47,7 +47,7 @@ const LearnHook: React.FC = () => {
         gap: 20,
       }}
     >
-      <ParticleField count={20} color={COLORS.neoToken} speed={0.6} />
+      <ParticleField count={20} color={COLORS.clawToken} speed={0.6} />
 
       <div
         style={{
@@ -212,7 +212,7 @@ const LearningJourney: React.FC = () => {
           style={{
             fontFamily: lobster,
             fontSize: isVertical ? 24 : 28,
-            color: COLORS.neoToken,
+            color: COLORS.clawToken,
             textShadow: "2px 2px 4px rgba(0,0,0,0.5)",
           }}
         >
@@ -226,7 +226,7 @@ const LearningJourney: React.FC = () => {
             fontFamily: roboto,
             fontSize: isVertical ? 48 : 56,
             fontWeight: 700,
-            color: COLORS.neoToken,
+            color: COLORS.clawToken,
             textShadow: "2px 2px 6px rgba(0,0,0,0.5)",
           }}
         />
@@ -354,7 +354,7 @@ const SkillExport: React.FC = () => {
           style={{
             transform: `scale(${arrowScale}) translateY(${arrowBobY}px)`,
             fontSize: 40,
-            color: COLORS.neoToken,
+            color: COLORS.clawToken,
             textShadow: `0 0 12px rgba(255,215,0,0.5)`,
           }}
         >
@@ -399,7 +399,7 @@ const ExportCTA: React.FC = () => {
           style={{
             fontFamily: lobster,
             fontSize: 32,
-            color: COLORS.neoToken,
+            color: COLORS.clawToken,
             textShadow: "2px 2px 4px rgba(0,0,0,0.4)",
           }}
         >

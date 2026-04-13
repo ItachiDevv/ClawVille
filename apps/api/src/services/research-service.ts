@@ -170,7 +170,7 @@ export class ResearchService {
         species: 'unknown',
         archetype: 'researcher',
         petId,
-        neoTokens: 0,
+        clawTokens: 0,
         bio: [`${petName} is an AI agent trained at the ${themeName} in ClawVille World.`],
         knowledge: [...existingKnowledge, ...newEntries],
         topics: [themeFocus],

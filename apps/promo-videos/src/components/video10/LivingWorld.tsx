@@ -71,7 +71,7 @@ const Hook: React.FC = () => {
             style={{
               fontFamily: lobster,
               fontSize: 44,
-              color: COLORS.neoToken,
+              color: COLORS.clawToken,
               textShadow: `
                 2px 2px 0px ${COLORS.border},
                 4px 4px 0px rgba(0,0,0,0.3),
@@ -339,7 +339,7 @@ const MemoryFormation: React.FC = () => {
             style={{
               fontFamily: lobster,
               fontSize: 32,
-              color: COLORS.neoToken,
+              color: COLORS.clawToken,
               textShadow: `
                 2px 2px 0px rgba(0,0,0,0.4),
                 0 0 20px rgba(255,215,0,0.4)

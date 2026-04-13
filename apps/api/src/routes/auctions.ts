@@ -4,7 +4,7 @@ import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
 import type { AppContext } from '../types';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
-import { creditNeoTokens, debitNeoTokens } from '../services/neo-token-ledger';
+import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import {
   db,
   pets,
@@ -108,101 +108,99 @@ class AuctionResolver {
 
       for (const auction of expiredAuctions) {
         try {
-          if (auction.currentBidderId && auction.currentBid) {
-            // Has a winner — resolve with payout
-            const winnerPet = await db.query.pets.findFirst({
-              where: eq(pets.id, auction.currentBidderId),
-            });
-            const sellerPet = await db.query.pets.findFirst({
-              where: eq(pets.id, auction.sellerId),
-            });
-
-            if (winnerPet && sellerPet) {
-              const price = auction.currentBid;
-              const platformFee = Math.floor(price * 0.15);
-              const sellerPayout = price - platformFee;
-
-              // Pay seller (bid was already escrowed from winner on place-bid)
-              await creditNeoTokens({
-                petId: sellerPet.id,
-                amount: sellerPayout,
-                reason: 'auction_settled',
-                source: 'api',
-                metadata: {
-                  auctionId: auction.id,
-                  winnerId: winnerPet.id,
-                  price,
-                  platformFee,
-                },
-              });
-
-              // Transfer skill to winner's inventory if skill type
-              if (auction.itemType === 'skill' && auction.skillId) {
-                const itemId = `skill-${auction.skillId}`;
-                const existingItem = await db.query.petInventory.findFirst({
-                  where: and(
-                    eq(petInventory.petId, winnerPet.id),
-                    eq(petInventory.itemId, itemId)
-                  ),
-                });
-
-                if (existingItem) {
-                  await db
-                    .update(petInventory)
-                    .set({ quantity: existingItem.quantity + 1 })
-                    .where(eq(petInventory.id, existingItem.id));
-                } else {
-                  await db.insert(petInventory).values({
-                    petId: winnerPet.id,
-                    itemId,
-                    quantity: 1,
-                  });
-                }
-              }
-
-              // If agent_config type, store the snapshot for the winner
-              if (
-                auction.itemType === 'agent_config' &&
-                auction.agentConfigSnapshot
-              ) {
-                await db.insert(auctionAgentConfigs).values({
-                  auctionId: auction.id,
-                  petId: winnerPet.id,
-                  configSnapshot: auction.agentConfigSnapshot,
-                });
-              }
-
-              // Mark as resolved
-              await db
-                .update(auctions)
-                .set({
-                  status: 'resolved',
-                  resolvedAt: new Date(),
-                  updatedAt: new Date(),
-                })
-                .where(eq(auctions.id, auction.id));
-
-              console.log(
-                `[AuctionResolver] Resolved auction ${auction.id} — winner: ${winnerPet.id}, payout: ${sellerPayout}`
-              );
-            }
-          } else {
-            // No bids — mark as ended
-            await db
+          // Wrap the entire settlement in a transaction with an atomic claim
+          // to prevent double-processing by concurrent resolver ticks.
+          await db.transaction(async (tx) => {
+            // Atomic claim: UPDATE ... WHERE status='active' RETURNING.
+            // If 0 rows, another tick already claimed this auction.
+            const [claimed] = await tx
               .update(auctions)
               .set({
-                status: 'ended',
+                status: auction.currentBidderId && auction.currentBid ? 'resolved' : 'ended',
                 resolvedAt: new Date(),
                 updatedAt: new Date(),
               })
-              .where(eq(auctions.id, auction.id));
+              .where(and(eq(auctions.id, auction.id), eq(auctions.status, 'active')))
+              .returning();
 
-            console.log(
-              `[AuctionResolver] Ended auction ${auction.id} — no bids`
-            );
-          }
+            if (!claimed) return; // Already processed by another tick
 
-          // Emit event
+            if (auction.currentBidderId && auction.currentBid) {
+              // Has a winner — resolve with payout
+              const winnerPet = await tx.query.pets.findFirst({
+                where: eq(pets.id, auction.currentBidderId),
+              });
+              const sellerPet = await tx.query.pets.findFirst({
+                where: eq(pets.id, auction.sellerId),
+              });
+
+              if (winnerPet && sellerPet) {
+                const price = auction.currentBid;
+                const platformFee = Math.floor(price * 0.15);
+                const sellerPayout = price - platformFee;
+
+                // Pay seller (bid was already escrowed from winner on place-bid)
+                await creditClawTokens({
+                  petId: sellerPet.id,
+                  amount: sellerPayout,
+                  reason: 'auction_settled',
+                  source: 'api',
+                  metadata: {
+                    auctionId: auction.id,
+                    winnerId: winnerPet.id,
+                    price,
+                    platformFee,
+                  },
+                }, tx);
+
+                // Transfer skill to winner's inventory if skill type
+                if (auction.itemType === 'skill' && auction.skillId) {
+                  const itemId = `skill-${auction.skillId}`;
+                  const existingItem = await tx.query.petInventory.findFirst({
+                    where: and(
+                      eq(petInventory.petId, winnerPet.id),
+                      eq(petInventory.itemId, itemId)
+                    ),
+                  });
+
+                  if (existingItem) {
+                    await tx
+                      .update(petInventory)
+                      .set({ quantity: existingItem.quantity + 1 })
+                      .where(eq(petInventory.id, existingItem.id));
+                  } else {
+                    await tx.insert(petInventory).values({
+                      petId: winnerPet.id,
+                      itemId,
+                      quantity: 1,
+                    });
+                  }
+                }
+
+                // If agent_config type, store the snapshot for the winner
+                if (
+                  auction.itemType === 'agent_config' &&
+                  auction.agentConfigSnapshot
+                ) {
+                  await tx.insert(auctionAgentConfigs).values({
+                    auctionId: auction.id,
+                    petId: winnerPet.id,
+                    configSnapshot: auction.agentConfigSnapshot,
+                  });
+                }
+
+                console.log(
+                  `[AuctionResolver] Resolved auction ${auction.id} — winner: ${winnerPet.id}, payout: ${sellerPayout}`
+                );
+              }
+            } else {
+              console.log(
+                `[AuctionResolver] Ended auction ${auction.id} — no bids`
+              );
+            }
+          });
+
+          // Emit event (outside transaction — non-critical SSE notification)
           auctionEventBus.emit({
             type: 'auction_ended',
             auctionId: auction.id,
@@ -748,12 +746,12 @@ auctionRoutes.post('/:id/bid', requireAuth, async (c) => {
 
     if (amount < minimumBid) {
       throw new HTTPException(400, {
-        message: `Bid must be at least ${minimumBid} NeoTokens`,
+        message: `Bid must be at least ${minimumBid} ClawTokens`,
       });
     }
 
     // 4. Deduct bid amount from bidder (escrow) — within transaction
-    await debitNeoTokens({
+    await debitClawTokens({
       petId: bidderPet.id,
       amount,
       reason: 'auction_bid_escrow',
@@ -763,7 +761,7 @@ auctionRoutes.post('/:id/bid', requireAuth, async (c) => {
 
     // 5. Refund previous bidder if there was one — within same transaction
     if (auction.current_bidder_id && auction.current_bid) {
-      await creditNeoTokens({
+      await creditClawTokens({
         petId: auction.current_bidder_id,
         amount: auction.current_bid,
         reason: 'auction_bid_refund',
@@ -840,7 +838,7 @@ auctionRoutes.post('/:id/bid', requireAuth, async (c) => {
     },
     endsAt: result.newEndsAt.toISOString(),
     bidCount: result.newBidCount,
-    neoTokens: updatedBidder?.neoTokens ?? 0,
+    clawTokens: updatedBidder?.clawTokens ?? 0,
   });
 });
 
@@ -911,14 +909,14 @@ auctionRoutes.post('/:id/buy-now', requireAuth, async (c) => {
 
     // 5. Verify buyer has enough tokens
     const price = auction.buy_now_price;
-    if (buyerPet.neoTokens < price) {
+    if (buyerPet.clawTokens < price) {
       throw new HTTPException(400, {
-        message: `Not enough NeoTokens. Need ${price}, have ${buyerPet.neoTokens}.`,
+        message: `Not enough ClawTokens. Need ${price}, have ${buyerPet.clawTokens}.`,
       });
     }
 
     // 6. Deduct buy-now price from buyer — within transaction
-    const { balanceAfter: buyerBalance } = await debitNeoTokens({
+    const { balanceAfter: buyerBalance } = await debitClawTokens({
       petId: buyerPet.id,
       amount: price,
       reason: 'auction_buy_now',
@@ -928,7 +926,7 @@ auctionRoutes.post('/:id/buy-now', requireAuth, async (c) => {
 
     // 7. Refund previous bidder's escrowed bid if any — within transaction
     if (auction.current_bidder_id && auction.current_bid) {
-      await creditNeoTokens({
+      await creditClawTokens({
         petId: auction.current_bidder_id,
         amount: auction.current_bid,
         reason: 'auction_bid_refund',
@@ -941,7 +939,7 @@ auctionRoutes.post('/:id/buy-now', requireAuth, async (c) => {
     const platformFee = Math.floor(price * 0.15);
     const sellerPayout = price - platformFee;
 
-    await creditNeoTokens({
+    await creditClawTokens({
       petId: auction.seller_id,
       amount: sellerPayout,
       reason: 'auction_buy_now_settled',
@@ -1012,7 +1010,7 @@ auctionRoutes.post('/:id/buy-now', requireAuth, async (c) => {
     price: result.price,
     platformFee: result.platformFee,
     sellerPayout: result.sellerPayout,
-    neoTokens: result.buyerBalance,
+    clawTokens: result.buyerBalance,
   });
 });
 

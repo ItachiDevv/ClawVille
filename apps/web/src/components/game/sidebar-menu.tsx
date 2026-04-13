@@ -143,7 +143,7 @@ function CharacterFrame({ onCreatePet }: { onCreatePet: () => void }) {
   const species = PET_SPECIES.find((s) => s.id === pet.species);
   const emoji = species?.emoji ?? '🦞';
   const level = pet.level ?? 1;
-  const tokens = (pet as any).neoTokens ?? 0;
+  const tokens = pet.clawTokens ?? 0;
   const knowledgeCount =
     (pet.characterConfig as { knowledge?: unknown[] } | null)?.knowledge?.length ?? 0;
 
@@ -231,7 +231,7 @@ function CharacterFrame({ onCreatePet }: { onCreatePet: () => void }) {
             fontWeight: 700,
           }}
         >
-          NeoTokens
+          ClawTokens
         </span>
         <span
           style={{

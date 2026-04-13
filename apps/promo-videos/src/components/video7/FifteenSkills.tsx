@@ -9,7 +9,7 @@ import {
 } from "remotion";
 import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { NeopetsPanel } from "../shared/NeopetsPanel";
-import { NeoTokenIcon } from "../shared/NeoTokenIcon";
+import { ClawTokenIcon } from "../shared/ClawTokenIcon";
 import { AnimatedCounter } from "../shared/AnimatedCounter";
 import { CTAButton } from "../shared/CTAButton";
 import { ParticleField } from "../shared/ParticleField";
@@ -211,7 +211,7 @@ const CountersScene: React.FC = () => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
 
-  // NeoTokenIcon spin
+  // ClawTokenIcon spin
   const rotation = interpolate(frame, [0, fps * 2], [0, 360], {
     extrapolateRight: "clamp",
   });
@@ -244,7 +244,7 @@ const CountersScene: React.FC = () => {
           }}
         >
           <div style={{ transform: `rotate(${rotation}deg)` }}>
-            <NeoTokenIcon size={48} />
+            <ClawTokenIcon size={48} />
           </div>
           <AnimatedCounter
             from={0}

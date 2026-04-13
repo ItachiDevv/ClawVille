@@ -9,7 +9,7 @@ const PLATFORM_FEE_PERCENT = 15;
  *
  * Flow:
  *  1. Find the listing (must be active)
- *  2. Verify buyer has enough NeoTokens
+ *  2. Verify buyer has enough ClawTokens
  *  3. Debit buyer, credit seller (minus 15% platform fee)
  *  4. Mark listing as sold
  *  5. Record the transaction
@@ -84,7 +84,7 @@ export const buyBazaarListingAction: Action = {
       }
 
       const { petId, services } = state;
-      const { db, debitNeoTokens, creditNeoTokens } = services;
+      const { db, debitClawTokens, creditClawTokens } = services;
 
       const listingId = getParam(message, 'listingId');
       if (!listingId) {
@@ -135,7 +135,7 @@ export const buyBazaarListingAction: Action = {
 
       // 2. Check buyer balance
       const [buyer] = await db
-        .select({ neoTokens: pets.neoTokens })
+        .select({ clawTokens: pets.clawTokens })
         .from(pets)
         .where(eq(pets.id, petId))
         .limit(1);
@@ -144,10 +144,10 @@ export const buyBazaarListingAction: Action = {
         return { success: false, text: 'Pet not found.' };
       }
 
-      if (buyer.neoTokens < listing.price) {
+      if (buyer.clawTokens < listing.price) {
         return {
           success: false,
-          text: `Not enough NeoTokens. You have ${buyer.neoTokens} NT but this listing costs ${listing.price} NT.`,
+          text: `Not enough ClawTokens. You have ${buyer.clawTokens} NT but this listing costs ${listing.price} NT.`,
         };
       }
 
@@ -158,7 +158,7 @@ export const buyBazaarListingAction: Action = {
       const sellerPayout = listing.price - platformFee;
 
       // 4. Debit buyer
-      const { balanceAfter: buyerBalance } = await debitNeoTokens({
+      const { balanceAfter: buyerBalance } = await debitClawTokens({
         petId,
         amount: listing.price,
         reason: `Bazaar purchase: listing ${listingId}`,
@@ -167,7 +167,7 @@ export const buyBazaarListingAction: Action = {
       });
 
       // 5. Credit seller (minus platform fee)
-      await creditNeoTokens({
+      await creditClawTokens({
         petId: listing.sellerId,
         amount: sellerPayout,
         reason: `Bazaar sale: listing ${listingId}`,
@@ -231,14 +231,14 @@ export const buyBazaarListingAction: Action = {
         }
       } catch (postPayErr: any) {
         // Compensating refunds: credit buyer back, debit seller back
-        await creditNeoTokens({
+        await creditClawTokens({
           petId,
           amount: listing.price,
           reason: 'bazaar_purchase_refund',
           source: 'api',
           metadata: { listingId, error: postPayErr.message },
         }).catch(() => {});
-        await debitNeoTokens({
+        await debitClawTokens({
           petId: listing.sellerId,
           amount: sellerPayout,
           reason: 'bazaar_sale_refund',

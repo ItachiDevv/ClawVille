@@ -3,7 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import type { AppContext } from '../types';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
-import { creditNeoTokens, debitNeoTokens } from '../services/neo-token-ledger';
+import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import {
   db,
   pets,
@@ -717,7 +717,7 @@ bazaarRoutes.post('/:id/buy', requireAuth, async (c) => {
     const sellerPayout = price - platformFee;
 
     // 4. Atomic debit buyer + credit seller within the same transaction
-    const { balanceAfter: buyerBalance } = await debitNeoTokens({
+    const { balanceAfter: buyerBalance } = await debitClawTokens({
       petId: buyerPet.id,
       amount: price,
       reason: 'bazaar_purchase',
@@ -725,7 +725,7 @@ bazaarRoutes.post('/:id/buy', requireAuth, async (c) => {
       metadata: { listingId: id, skillId: claimed.skillId, sellerId: claimed.sellerId, platformFee },
     }, tx);
 
-    await creditNeoTokens({
+    await creditClawTokens({
       petId: claimed.sellerId,
       amount: sellerPayout,
       reason: 'bazaar_sale',
@@ -783,7 +783,7 @@ bazaarRoutes.post('/:id/buy', requireAuth, async (c) => {
       sellerPayout: result.transaction.sellerPayout,
       createdAt: result.transaction.createdAt.toISOString(),
     },
-    neoTokens: result.buyerBalance,
+    clawTokens: result.buyerBalance,
   });
 });
 

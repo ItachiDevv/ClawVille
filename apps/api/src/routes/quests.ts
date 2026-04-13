@@ -3,7 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import type { AppContext } from '../types';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
-import { creditNeoTokens } from '../services/neo-token-ledger';
+import { creditClawTokens } from '../services/claw-token-ledger';
 import {
   db,
   users,
@@ -458,7 +458,7 @@ questRoutes.post('/admin/:submissionId/review', requireAuth, async (c) => {
       }
 
       // 2. Award tokens to pet (within the same transaction)
-      await creditNeoTokens({
+      await creditClawTokens({
         petId: claimed.petId,
         amount: quest.tokenReward,
         reason: 'quest_complete',

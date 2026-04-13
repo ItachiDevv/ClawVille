@@ -11,7 +11,7 @@ import { hasServices, getMessageText, getParam , getDbModule } from './types';
 export const buyItemAction: Action = {
   name: 'BUY_ITEM',
   description:
-    'Purchase a knowledge book from a building shop using NeoTokens.',
+    'Purchase a knowledge book from a building shop using ClawTokens.',
   similes: ['PURCHASE_ITEM', 'BUY_BOOK', 'BUY_KNOWLEDGE', 'PURCHASE'],
 
   parameters: [
@@ -60,7 +60,7 @@ export const buyItemAction: Action = {
       }
 
       const { petId, services } = state;
-      const { db, debitNeoTokens, creditNeoTokens } = services;
+      const { db, debitClawTokens, creditClawTokens } = services;
 
       // Resolve itemId
       let itemId = getParam(message, 'itemId');
@@ -94,7 +94,7 @@ export const buyItemAction: Action = {
       const { pets, eq } = await getDbModule();
 
       const [pet] = await db
-        .select({ neoTokens: pets.neoTokens })
+        .select({ clawTokens: pets.clawTokens })
         .from(pets)
         .where(eq(pets.id, petId))
         .limit(1);
@@ -103,10 +103,10 @@ export const buyItemAction: Action = {
         return { success: false, text: 'Pet not found.' };
       }
 
-      if (pet.neoTokens < book.price) {
+      if (pet.clawTokens < book.price) {
         return {
           success: false,
-          text: `Not enough NeoTokens. You have ${pet.neoTokens} NT but "${book.name}" costs ${book.price} NT.`,
+          text: `Not enough ClawTokens. You have ${pet.clawTokens} NT but "${book.name}" costs ${book.price} NT.`,
         };
       }
 
@@ -119,8 +119,8 @@ export const buyItemAction: Action = {
         .where(and(eq(petInventory.petId, petId), eq(petInventory.itemId, itemId)))
         .limit(1);
 
-      // Debit NeoTokens
-      const { balanceAfter } = await debitNeoTokens({
+      // Debit ClawTokens
+      const { balanceAfter } = await debitClawTokens({
         petId,
         amount: book.price,
         reason: `Purchased book: ${book.name}`,
@@ -144,7 +144,7 @@ export const buyItemAction: Action = {
         }
       } catch (invErr: any) {
         // Compensating credit — refund the debit so the pet doesn't lose tokens
-        await creditNeoTokens({
+        await creditClawTokens({
           petId,
           amount: book.price,
           reason: 'buy_item_refund',

@@ -9,7 +9,7 @@ import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import type { AppContext } from '../types';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { setSessionAgent, getSessionAgent, deleteSessionAgent } from '../services/session-agent-map';
-import { creditNeoTokens, debitNeoTokens } from '../services/neo-token-ledger';
+import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import type { ClawvilleServices } from '@clawville/agent-runtime';
 import { generateSkillMd } from '../services/skill-generator';
 
@@ -384,7 +384,7 @@ const chatSchema = z.object({
     name: z.string(),
     species: z.string(),
     archetype: z.string().optional(),
-    neoTokens: z.number().optional(),
+    clawTokens: z.number().optional(),
     knowledge: z.array(z.string()).optional(),
   }).optional(),
 });
@@ -427,7 +427,7 @@ openclawRoutes.post('/chat', async (c) => {
     try {
       const runtime = await agentOrchestrator.ensureAgentRuntime(elizaAgentId);
       if (runtime) {
-        const services = { db, creditNeoTokens, debitNeoTokens } as ClawvilleServices;
+        const services = { db, creditClawTokens, debitClawTokens } as ClawvilleServices;
         const state: Record<string, any> = {
           petId: bot?.id ?? sessionId,
           userId: botName,
@@ -436,7 +436,7 @@ openclawRoutes.post('/chat', async (c) => {
             id: bot.id,
             name: bot.name,
             species: bot.species ?? petContext?.species ?? 'cat',
-            neoTokens: (bot as any).neoTokens ?? 0,
+            clawTokens: (bot as any).clawTokens ?? 0,
           } : null,
           characterConfig: { knowledge: botKnowledge },
           userMessage: content,
@@ -498,7 +498,7 @@ const locationChatSchema = z.object({
     name: z.string(),
     species: z.string(),
     archetype: z.string().optional(),
-    neoTokens: z.number().optional(),
+    clawTokens: z.number().optional(),
     knowledge: z.array(z.string()).optional(),
   }).optional(),
 });
@@ -542,7 +542,7 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
   if (locBotName) {
     systemParts.push(`The visitor is ${locBotName}, a ${locBot?.species ?? petContext?.species ?? 'pet'}.`);
   }
-  // NeoTokens and knowledge are handled by Providers — no manual duplication
+  // ClawTokens and knowledge are handled by Providers — no manual duplication
 
   let reply: string | undefined;
 
@@ -552,7 +552,7 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
     try {
       const runtime = await agentOrchestrator.ensureAgentRuntime(elizaAgentId);
       if (runtime) {
-        const locServices = { db, creditNeoTokens, debitNeoTokens } as ClawvilleServices;
+        const locServices = { db, creditClawTokens, debitClawTokens } as ClawvilleServices;
         const locState: Record<string, any> = {
           petId: locBot?.id ?? sessionId,
           userId: locBotName,
@@ -561,7 +561,7 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
             id: locBot.id,
             name: locBot.name,
             species: locBot.species ?? 'cat',
-            neoTokens: (locBot as any).neoTokens ?? 0,
+            clawTokens: (locBot as any).clawTokens ?? 0,
           } : null,
           nearLocation: locationId,
           characterConfig: { knowledge: locBot?.knowledge ?? petContext?.knowledge ?? [] },
@@ -695,7 +695,7 @@ openclawRoutes.get('/knowledge-export/:petId', async (c) => {
     species: pet.species,
     archetype: pet.archetype ?? 'unknown',
     petId: pet.id,
-    neoTokens: pet.neoTokens ?? 0,
+    clawTokens: pet.clawTokens ?? 0,
     bio,
     knowledge,
     topics,
@@ -713,7 +713,7 @@ openclawRoutes.get('/knowledge-export/:petId', async (c) => {
     petName: pet.name,
     species: pet.species,
     archetype: pet.archetype,
-    neoTokens: pet.neoTokens,
+    clawTokens: pet.clawTokens,
     knowledge,
     topics,
     lore,
@@ -760,7 +760,7 @@ openclawRoutes.post('/generate-skill', requireAuth, async (c) => {
     species: pet.species,
     archetype: pet.archetype ?? 'unknown',
     petId: pet.id,
-    neoTokens: pet.neoTokens ?? 0,
+    clawTokens: pet.clawTokens ?? 0,
     bio: config?.bio ?? [],
     knowledge: config?.knowledge ?? [],
     topics: config?.topics ?? [],
@@ -855,7 +855,7 @@ openclawRoutes.get('/memory-export/:petId', sessionMiddleware, async (c) => {
       logLines.push('');
       for (const act of day.activities) {
         const time = act.createdAt.toISOString().split('T')[1]?.slice(0, 5) ?? '00:00';
-        const tokens = act.tokensEarned > 0 ? ` (+${act.tokensEarned} NeoTokens)` : '';
+        const tokens = act.tokensEarned > 0 ? ` (+${act.tokensEarned} ClawTokens)` : '';
         logLines.push(`- [${time}] ${act.description}${tokens}`);
       }
       logLines.push('');
@@ -872,7 +872,7 @@ openclawRoutes.get('/memory-export/:petId', sessionMiddleware, async (c) => {
   const ltLines: string[] = [
     `# ${pet.name} — Long-Term Memory`,
     '',
-    `> Species: ${pet.species} | Archetype: ${pet.archetype} | NeoTokens: ${pet.neoTokens}`,
+    `> Species: ${pet.species} | Archetype: ${pet.archetype} | ClawTokens: ${pet.clawTokens}`,
     '',
   ];
 
@@ -932,7 +932,7 @@ openclawRoutes.get('/memory-export/:petId', sessionMiddleware, async (c) => {
   ltLines.push('## Behavioral Patterns');
   ltLines.push('');
   ltLines.push(`- Total activities: ${activities.length}`);
-  ltLines.push(`- Total NeoTokens earned: ${totalTokens}`);
+  ltLines.push(`- Total ClawTokens earned: ${totalTokens}`);
   ltLines.push(`- Total conversations remembered: ${memories.length}`);
 
   const topBuildings = Object.entries(buildingVisits)

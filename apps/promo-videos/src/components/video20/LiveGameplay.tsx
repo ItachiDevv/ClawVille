@@ -409,7 +409,7 @@ const IntroScene: React.FC = () => {
         gap: isVertical ? 24 : 20,
       }}
     >
-      <ParticleField count={30} color={COLORS.neoToken} speed={0.5} />
+      <ParticleField count={30} color={COLORS.clawToken} speed={0.5} />
 
       <div
         style={{
@@ -422,7 +422,7 @@ const IntroScene: React.FC = () => {
           style={{
             fontFamily: lobster,
             fontSize: isVertical ? 52 : 60,
-            color: COLORS.neoToken,
+            color: COLORS.clawToken,
             textShadow: "3px 3px 10px rgba(0,0,0,0.6)",
           }}
         >
@@ -545,7 +545,7 @@ const OutroScene: React.FC = () => {
         gap: isVertical ? 28 : 24,
       }}
     >
-      <ParticleField count={35} color={COLORS.neoToken} speed={0.6} />
+      <ParticleField count={35} color={COLORS.clawToken} speed={0.6} />
 
       <div
         style={{
@@ -558,7 +558,7 @@ const OutroScene: React.FC = () => {
           style={{
             fontFamily: lobster,
             fontSize: isVertical ? 42 : 48,
-            color: COLORS.neoToken,
+            color: COLORS.clawToken,
             textShadow: `2px 2px ${glow}px rgba(255,215,0,0.5)`,
           }}
         >

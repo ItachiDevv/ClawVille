@@ -3,7 +3,7 @@
  *
  * Called when a pet arrives at its destination building. Picks a
  * themed activity from BUILDING_ACTIVITIES, sets the activity timer,
- * awards a NeoToken, and inserts an activity log row.
+ * awards a ClawToken, and inserts an activity log row.
  *
  * This action is normally dispatched by the bridge's path-arrival
  * handler rather than chosen by the LLM planner — but it's still
@@ -27,7 +27,7 @@ export function createPetVisitBuildingAction(deps: PetVisitBuildingDeps): Action
   return {
     name: 'PET_VISIT_BUILDING',
     description:
-      "Pet arrives at its destination and performs a building-themed activity. Awards 1 NeoToken. Parameters: userId (whose pet). The building is inferred from the pet's destinationBuildingId.",
+      "Pet arrives at its destination and performs a building-themed activity. Awards 1 ClawToken. Parameters: userId (whose pet). The building is inferred from the pet's destinationBuildingId.",
     similes: ['ARRIVE_AT', 'ENTER_BUILDING', 'START_ACTIVITY'],
     parameters: [
       {
@@ -79,7 +79,7 @@ export function createPetVisitBuildingAction(deps: PetVisitBuildingDeps): Action
         .logActivity(
           pet.petId,
           'visit',
-          `Visited ${buildingId} and earned 1 NeoToken`,
+          `Visited ${buildingId} and earned 1 ClawToken`,
           1,
         )
         .catch((err) => {

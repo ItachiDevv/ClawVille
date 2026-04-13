@@ -35,7 +35,7 @@ export default function ShopOverlay() {
   if (!shopOpen || !currentLocation) return null;
 
   const items = data?.items ?? [];
-  const tokens = (pet as any)?.neoTokens ?? 0;
+  const tokens = pet?.clawTokens ?? 0;
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-white/50 backdrop-blur-sm">

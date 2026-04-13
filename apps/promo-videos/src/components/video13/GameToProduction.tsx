@@ -42,7 +42,7 @@ const HookScene: React.FC = () => {
         alignItems: "center",
       }}
     >
-      <ParticleField count={15} color={COLORS.neoToken} speed={0.4} />
+      <ParticleField count={15} color={COLORS.clawToken} speed={0.4} />
 
       <div
         style={{
@@ -158,7 +158,7 @@ const TrainingPipelineScene: React.FC = () => {
                     width: isVertical ? 56 : 64,
                     height: isVertical ? 56 : 64,
                     borderRadius: "50%",
-                    background: `linear-gradient(135deg, ${COLORS.panel}, ${COLORS.neoToken})`,
+                    background: `linear-gradient(135deg, ${COLORS.panel}, ${COLORS.clawToken})`,
                     border: `3px solid ${COLORS.border}`,
                     display: "flex",
                     alignItems: "center",
@@ -224,8 +224,8 @@ const TrainingPipelineScene: React.FC = () => {
                       width: "100%",
                       height: "100%",
                       backgroundImage: isVertical
-                        ? `repeating-linear-gradient(to bottom, ${COLORS.neoToken} 0px, ${COLORS.neoToken} 4px, transparent 4px, transparent 8px)`
-                        : `repeating-linear-gradient(to right, ${COLORS.neoToken} 0px, ${COLORS.neoToken} 4px, transparent 4px, transparent 8px)`,
+                        ? `repeating-linear-gradient(to bottom, ${COLORS.clawToken} 0px, ${COLORS.clawToken} 4px, transparent 4px, transparent 8px)`
+                        : `repeating-linear-gradient(to right, ${COLORS.clawToken} 0px, ${COLORS.clawToken} 4px, transparent 4px, transparent 8px)`,
                     }}
                   />
                 </div>
@@ -373,7 +373,7 @@ const BotLearnsScene: React.FC = () => {
                   fontFamily: roboto,
                   fontSize: 18,
                   fontWeight: 700,
-                  color: COLORS.neoToken,
+                  color: COLORS.clawToken,
                   textShadow: "0 0 8px rgba(255,215,0,0.3)",
                 }}
               >
@@ -413,7 +413,7 @@ const CTAScene: React.FC = () => {
         gap: 24,
       }}
     >
-      <ParticleField count={15} color={COLORS.neoToken} speed={0.5} />
+      <ParticleField count={15} color={COLORS.clawToken} speed={0.5} />
 
       <LogoReveal size={72} />
 

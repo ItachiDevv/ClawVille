@@ -4,7 +4,7 @@ import type { Provider, ProviderResult } from './types';
  * Pet State Provider — surfaces the pet's current stats into the agent prompt.
  *
  * Expects `state.petData` to contain the pet row from the DB with fields:
- *   name, species, color, neoTokens, level, xp, archetype, loginStreak,
+ *   name, species, color, clawTokens, level, xp, archetype, loginStreak,
  *   stats ({ strength, defence, movement })
  */
 export const petStateProvider: Provider = {
@@ -22,7 +22,7 @@ export const petStateProvider: Provider = {
     const species = pet.species ?? 'creature';
     const archetype = pet.archetype ?? '';
     const level = pet.level ?? 1;
-    const neoTokens = pet.neoTokens ?? 0;
+    const clawTokens = pet.clawTokens ?? 0;
     const loginStreak = pet.loginStreak ?? 0;
 
     const stats = pet.stats as { strength?: number; defence?: number; movement?: number } | null;
@@ -35,7 +35,7 @@ export const petStateProvider: Provider = {
     const text = [
       `[Pet Status]`,
       `Name: ${name} (${species}${archetypeLabel})`,
-      `Level ${level} | ${neoTokens} NeoTokens`,
+      `Level ${level} | ${clawTokens} ClawTokens`,
       `Stats: STR ${str} \u00b7 DEF ${def} \u00b7 MOV ${mov}`,
       `Login streak: ${loginStreak} day${loginStreak === 1 ? '' : 's'}`,
     ].join('\n');
@@ -46,7 +46,7 @@ export const petStateProvider: Provider = {
         petName: name,
         petSpecies: species,
         petLevel: level,
-        neoTokens,
+        clawTokens,
       },
       data: {
         petData: pet,

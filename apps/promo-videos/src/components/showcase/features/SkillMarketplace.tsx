@@ -12,7 +12,7 @@ import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { RecordingBackground, LiveBadge } from "../../shared/RecordingBackground";
 import { ParticleField } from "../../shared/ParticleField";
 import { NeopetsPanel } from "../../shared/NeopetsPanel";
-import { NeoTokenIcon } from "../../shared/NeoTokenIcon";
+import { ClawTokenIcon } from "../../shared/ClawTokenIcon";
 import { TerminalBlock } from "../../shared/TerminalBlock";
 import { AnimatedCounter } from "../../shared/AnimatedCounter";
 import { CTAButton } from "../../shared/CTAButton";
@@ -124,7 +124,7 @@ const MarketplaceOverview: React.FC = () => {
                       {item.name}
                     </span>
                     <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                      <NeoTokenIcon size={18} />
+                      <ClawTokenIcon size={18} />
                       <span
                         style={{
                           fontFamily: roboto,

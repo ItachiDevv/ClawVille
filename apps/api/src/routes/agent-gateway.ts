@@ -20,7 +20,7 @@ import { agentOrchestrator } from '../services/agent-orchestrator';
 import { getSessionAgent } from '../services/session-agent-map';
 import { OpenClawClient } from '../services/openclaw-client';
 import { ensureWallet } from '../services/wallet-service';
-import { creditNeoTokens, debitNeoTokens } from '../services/neo-token-ledger';
+import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import type { ClawvilleServices } from '@clawville/agent-runtime';
 
 const agentGatewayRoutes = new Hono();
@@ -140,7 +140,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
   // The @clawville/app-clawville Milady plugin passes miladyAgentId +
   // miladyCharacterName directly from runtime.agentId + runtime.character.name.
   // We key on `milady:{miladyAgentId}` so a returning Milady user gets their
-  // old pet, wallet, learned knowledge, and NeoToken balance across launches.
+  // old pet, wallet, learned knowledge, and ClawToken balance across launches.
   // Matches how Babylon + Defense of the Agents trust the Milady runtime.
   if (data.miladyAgentId) {
     resolvedAgentId = `milady:${data.miladyAgentId}`;
@@ -542,7 +542,7 @@ agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
       const runtime = await agentOrchestrator.ensureAgentRuntime(elizaAgentId);
       if (runtime) {
         // Phase 4: inject services + bot data so Actions + Providers work
-        const services = { db, creditNeoTokens, debitNeoTokens } as ClawvilleServices;
+        const services = { db, creditClawTokens, debitClawTokens } as ClawvilleServices;
 
         // Look up the bot via its resolved agentId (e.g. milady:xxx), NOT npcId
         const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
@@ -577,7 +577,7 @@ agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
             id: bot.id,
             name: bot.name,
             species: bot.species ?? 'cat',
-            neoTokens: (bot as any).neoTokens ?? 0,
+            clawTokens: (bot as any).clawTokens ?? 0,
             archetype: null,
           } : null,
           nearLocation: npc.destinationBuildingId ?? null,
@@ -644,7 +644,7 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
     knowledgeGained = `Visited ${theme.label}: learned about ${theme.focus.split(',')[0]}`;
   }
 
-  // Award 1 NeoToken for visiting a building (best-effort — openclaw bots
+  // Award 1 ClawToken for visiting a building (best-effort — openclaw bots
   // without a matching pets row will silently skip the credit)
   let tokenAwarded = 0;
   const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
@@ -654,7 +654,7 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
         where: eq(openclawBots.agentId, botConfig.agentId),
       });
       if (bot) {
-        await creditNeoTokens({
+        await creditClawTokens({
           petId: bot.id,
           amount: 1,
           reason: 'building_visit',

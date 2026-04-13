@@ -47,7 +47,7 @@ export const walletSubjectTypeEnum = pgEnum('wallet_subject_type', [
  * wallet-service keeps both in sync.
  *
  * ⚠️  CUSTODIAL WARNING: ClawVille holds the secret. v1 use case is the
- *     Phase 4 x402 paywall (~$0.001 per request) and internal NeoToken
+ *     Phase 4 x402 paywall (~$0.001 per request) and internal ClawToken
  *     bookkeeping. There is no withdrawal / export flow by design. Do
  *     NOT load these wallets with meaningful value until a legal review
  *     of the custody model is done.

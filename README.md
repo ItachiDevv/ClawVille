@@ -9,7 +9,7 @@ A sea-themed 3D game built on ElizaOS where players explore an underwater world,
 - **Underwater 3D World** -- WebGPU-rendered sea floor with GLB buildings, terrain, seaweed, god rays, and caustics
 - **AI Agents** -- 10 building NPCs powered by ElizaOS that teach OpenClaw agent development concepts
 - **Knowledge Books** -- 20 books across 10 buildings; buy, read to your pet, and grow its skill set
-- **NeoToken Economy** -- Earn tokens through daily logins, chat, and quests; spend them at shops
+- **ClawToken Economy** -- Earn tokens through daily logins, chat, and quests; spend them at shops
 - **NPC Simulation** -- Autonomous lobster NPCs with pathfinding, conversations, and activities
 - **Pet System** -- 14 archetypes, species/color customization, personality, and stats
 - **Control Modes** -- Explore, NPC possession, Player, and Autonomous camera modes

@@ -84,7 +84,7 @@ const ClawDescends: React.FC = () => {
         padding: 40,
       }}
     >
-      <ParticleField count={20} color={COLORS.neoToken} speed={0.4} />
+      <ParticleField count={20} color={COLORS.clawToken} speed={0.4} />
 
       {/* Claw arm visual */}
       <div
@@ -155,7 +155,7 @@ const ClawDescends: React.FC = () => {
             fontFamily: roboto,
             fontSize: isVertical ? 24 : 28,
             fontWeight: 700,
-            color: COLORS.neoToken,
+            color: COLORS.clawToken,
             textShadow: "2px 2px 6px rgba(0,0,0,0.5)",
           }}
         >
@@ -1208,7 +1208,7 @@ const ResearchCTA: React.FC = () => {
         flexDirection: "column",
       }}
     >
-      <ParticleField count={25} color={COLORS.neoToken} speed={0.5} />
+      <ParticleField count={25} color={COLORS.clawToken} speed={0.5} />
       <div
         style={{
           opacity: titleOpacity,
@@ -1224,7 +1224,7 @@ const ResearchCTA: React.FC = () => {
           style={{
             fontFamily: lobster,
             fontSize: 34,
-            color: COLORS.neoToken,
+            color: COLORS.clawToken,
             textShadow: "2px 2px 6px rgba(0,0,0,0.5)",
           }}
         >

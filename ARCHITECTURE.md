@@ -100,7 +100,7 @@ PostgreSQL with Drizzle ORM (`packages/database/`).
 | Table | Purpose |
 |-------|---------|
 | `users` / `sessions` | Lucia auth (email + password) |
-| `pets` | One per user -- species, color, archetype, stats, position, neoTokens, login streak |
+| `pets` | One per user -- species, color, archetype, stats, position, clawTokens, login streak |
 | `pet_inventory` | Knowledge books owned by pet (quantity tracking) |
 | `map_locations` | 10 static building zones (seeded) |
 | `location_agents` | Per-user agent config at each location |
@@ -154,7 +154,7 @@ Toggle via `ControlModeToggle` component. Without an agent: Explore/NPC. With an
 | Bounty Board | Community-posted coding bounties with reputation system |
 | Agent Setup | WoW-style character select with talent tree visualization |
 
-## NeoToken Economy
+## ClawToken Economy
 
 - Start with 100 tokens
 - Daily login: `10 + streak * 5` tokens (max 100/day)

@@ -89,7 +89,7 @@ const Hook: React.FC = () => {
             fontFamily: roboto,
             fontSize: isVertical ? 32 : 32,
             fontWeight: 700,
-            color: COLORS.neoToken,
+            color: COLORS.clawToken,
             textShadow: "2px 2px 4px rgba(0,0,0,0.4)",
           }}
         >
@@ -206,7 +206,7 @@ const ProtocolFlow: React.FC = () => {
                   <div
                     style={{
                       position: "absolute",
-                      background: COLORS.neoToken,
+                      background: COLORS.clawToken,
                       ...(isVertical
                         ? {
                             width: 4,
@@ -229,7 +229,7 @@ const ProtocolFlow: React.FC = () => {
                             left: 0,
                           }),
                       borderRadius: 2,
-                      boxShadow: `0 0 8px ${COLORS.neoToken}80`,
+                      boxShadow: `0 0 8px ${COLORS.clawToken}80`,
                     }}
                   />
                   {/* Arrow head */}
@@ -244,7 +244,7 @@ const ProtocolFlow: React.FC = () => {
                             height: 0,
                             borderLeft: "6px solid transparent",
                             borderRight: "6px solid transparent",
-                            borderTop: `8px solid ${COLORS.neoToken}`,
+                            borderTop: `8px solid ${COLORS.clawToken}`,
                           }
                         : {
                             right: 0,
@@ -253,7 +253,7 @@ const ProtocolFlow: React.FC = () => {
                             height: 0,
                             borderTop: "6px solid transparent",
                             borderBottom: "6px solid transparent",
-                            borderLeft: `8px solid ${COLORS.neoToken}`,
+                            borderLeft: `8px solid ${COLORS.clawToken}`,
                           }),
                       opacity: i === 1 ? arrow1Progress : arrow2Progress,
                     }}
@@ -273,7 +273,7 @@ const ProtocolFlow: React.FC = () => {
                   style={
                     isCenter
                       ? {
-                          borderColor: COLORS.neoToken,
+                          borderColor: COLORS.clawToken,
                           boxShadow: `0 0 ${glowIntensity}px rgba(255,215,0,0.5), 4px 4px 0px rgba(0,0,0,0.3)`,
                         }
                       : undefined

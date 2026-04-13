@@ -12,7 +12,7 @@ import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { RecordingBackground, LiveBadge } from "../../shared/RecordingBackground";
 import { ParticleField } from "../../shared/ParticleField";
 import { NeopetsPanel } from "../../shared/NeopetsPanel";
-import { NeoTokenIcon } from "../../shared/NeoTokenIcon";
+import { ClawTokenIcon } from "../../shared/ClawTokenIcon";
 import { AnimatedCounter } from "../../shared/AnimatedCounter";
 import { CTAButton } from "../../shared/CTAButton";
 import { LogoReveal } from "../../shared/LogoReveal";
@@ -221,7 +221,7 @@ const RewardCollection: React.FC = () => {
           gap: 16,
         }}
       >
-        <NeoTokenIcon size={isVertical ? 72 : 80} />
+        <ClawTokenIcon size={isVertical ? 72 : 80} />
         <AnimatedCounter
           from={0}
           to={20}

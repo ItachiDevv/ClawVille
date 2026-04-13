@@ -14,7 +14,7 @@ import { ParticleField } from "../../../shared/ParticleField";
 import { NeopetsPanel } from "../../../shared/NeopetsPanel";
 import { SpeechBubble } from "../../../shared/SpeechBubble";
 import { BookIcon } from "../../../shared/BookIcon";
-import { NeoTokenIcon } from "../../../shared/NeoTokenIcon";
+import { ClawTokenIcon } from "../../../shared/ClawTokenIcon";
 import { AnimatedCounter } from "../../../shared/AnimatedCounter";
 import { CTAButton } from "../../../shared/CTAButton";
 import { LogoReveal } from "../../../shared/LogoReveal";
@@ -458,7 +458,7 @@ const TokenReward: React.FC = () => {
           gap: 20,
         }}
       >
-        <NeoTokenIcon size={isVertical ? 72 : 80} />
+        <ClawTokenIcon size={isVertical ? 72 : 80} />
         <AnimatedCounter
           from={85}
           to={142}

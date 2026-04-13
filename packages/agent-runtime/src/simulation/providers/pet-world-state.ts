@@ -66,7 +66,7 @@ export function createPetWorldStateProvider(deps: PetWorldStateDeps): Provider {
         `Position: (${Math.round(pet.x)}, ${Math.round(pet.y)})`,
         `Current activity: ${pet.activity}${pet.destinationBuildingId ? ` → ${pet.destinationBuildingId}` : ''}`,
         `Visits this session: ${pet.visitCount}`,
-        `NeoTokens earned this session: ${pet.tokensEarned}`,
+        `ClawTokens earned this session: ${pet.tokensEarned}`,
         ``,
         `Nearest buildings:`,
         nearbyLines,

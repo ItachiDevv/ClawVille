@@ -2,12 +2,12 @@ import React from "react";
 import { interpolate, useCurrentFrame, useVideoConfig } from "remotion";
 import { COLORS } from "../../constants/colors";
 
-type NeoTokenIconProps = {
+type ClawTokenIconProps = {
   size?: number;
   style?: React.CSSProperties;
 };
 
-export const NeoTokenIcon: React.FC<NeoTokenIconProps> = ({
+export const ClawTokenIcon: React.FC<ClawTokenIconProps> = ({
   size = 40,
   style,
 }) => {
@@ -27,7 +27,7 @@ export const NeoTokenIcon: React.FC<NeoTokenIconProps> = ({
         width: size,
         height: size,
         borderRadius: "50%",
-        background: `radial-gradient(circle at 35% 35%, #FFE566, ${COLORS.neoToken}, #B8860B)`,
+        background: `radial-gradient(circle at 35% 35%, #FFE566, ${COLORS.clawToken}, #B8860B)`,
         border: `3px solid #B8860B`,
         display: "flex",
         alignItems: "center",

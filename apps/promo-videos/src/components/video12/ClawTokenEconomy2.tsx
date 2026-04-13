@@ -8,7 +8,7 @@ import {
   interpolate,
 } from "remotion";
 import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
-import { NeoTokenIcon } from "../shared/NeoTokenIcon";
+import { ClawTokenIcon } from "../shared/ClawTokenIcon";
 import { AnimatedCounter } from "../shared/AnimatedCounter";
 import { NeopetsPanel } from "../shared/NeopetsPanel";
 import { PetSprite } from "../shared/PetSprite";
@@ -34,7 +34,7 @@ const HookScene: React.FC = () => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
 
-  // Giant NeoTokenIcon entrance
+  // Giant ClawTokenIcon entrance
   const coinEntrance = spring({
     frame,
     fps,
@@ -74,7 +74,7 @@ const HookScene: React.FC = () => {
           marginBottom: 24,
         }}
       >
-        <NeoTokenIcon size={120} />
+        <ClawTokenIcon size={120} />
       </div>
 
       {/* Animated counter */}
@@ -86,7 +86,7 @@ const HookScene: React.FC = () => {
           fontFamily: roboto,
           fontSize: 64,
           fontWeight: 700,
-          color: COLORS.neoToken,
+          color: COLORS.clawToken,
           textShadow: "0 0 20px rgba(255,215,0,0.4)",
         }}
       />
@@ -191,7 +191,7 @@ const EarnMethodsScene: React.FC = () => {
                       fontFamily: roboto,
                       fontSize: 17,
                       fontWeight: 700,
-                      color: COLORS.neoToken,
+                      color: COLORS.clawToken,
                     }}
                   >
                     {method.reward}
@@ -434,7 +434,7 @@ const GrowthLoopScene: React.FC = () => {
                 left: midX - 12,
                 top: midY - 12,
                 fontSize: 24,
-                color: COLORS.neoToken,
+                color: COLORS.clawToken,
                 opacity: arrowOpacity,
                 transform: `scale(${arrowScale})`,
                 textShadow: "0 0 8px rgba(255,215,0,0.5)",

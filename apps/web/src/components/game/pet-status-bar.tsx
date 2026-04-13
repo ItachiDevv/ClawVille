@@ -44,7 +44,7 @@ export default function PetStatusBar() {
         {/* Token balance */}
         <span className="flex items-center gap-1 text-[11px] font-bold text-amber-300 bg-amber-500/15 border border-amber-500/20 rounded-full px-2.5 py-0.5">
           <span className="text-xs">&#x1FA99;</span>
-          {(pet as any).neoTokens ?? 100}
+          {pet.clawTokens ?? 100}
         </span>
       </div>
 

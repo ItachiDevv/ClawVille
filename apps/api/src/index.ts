@@ -96,6 +96,10 @@ app.onError((err, c) => {
   if (err instanceof HTTPException) {
     return c.json({ error: err.message, code: err.status }, err.status);
   }
+  // InsufficientTokensError from claw-token-ledger should return 400, not 500
+  if (err.name === 'InsufficientTokensError') {
+    return c.json({ error: err.message, code: 400 }, 400);
+  }
   return c.json({ error: 'Internal server error', code: 500 }, 500);
 });
 

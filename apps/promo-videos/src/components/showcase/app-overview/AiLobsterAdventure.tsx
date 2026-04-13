@@ -17,7 +17,7 @@ import { NeopetsPanel } from "../../shared/NeopetsPanel";
 import { SpeechBubble } from "../../shared/SpeechBubble";
 import { BookIcon } from "../../shared/BookIcon";
 import { AnimatedCounter } from "../../shared/AnimatedCounter";
-import { NeoTokenIcon } from "../../shared/NeoTokenIcon";
+import { ClawTokenIcon } from "../../shared/ClawTokenIcon";
 import { TerminalBlock } from "../../shared/TerminalBlock";
 import { LogoReveal } from "../../shared/LogoReveal";
 import { CTAButton } from "../../shared/CTAButton";
@@ -414,7 +414,7 @@ const LearningMontage: React.FC = () => {
             gap: 6,
           }}
         >
-          <NeoTokenIcon size={52} />
+          <ClawTokenIcon size={52} />
           <span
             style={{
               fontFamily: roboto,

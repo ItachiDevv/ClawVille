@@ -84,7 +84,7 @@ Phase 4 shipped the audit ledger + treasury keypair infra. This activates the ac
 User has partnerships and networks on BSC — first-class chain target alongside Solana.
 
 **Tasks:**
-- [ ] Decide: BEP-20 NeoToken mirror or x402 on BSC or both?
+- [ ] Decide: BEP-20 ClawToken mirror or x402 on BSC or both?
 - [ ] Add `@solana-program` equivalent for BSC (viem or ethers)
 - [ ] Duplicate treasury_wallets pattern for EVM keypairs (different encryption scheme — key storage format differs from Solana)
 - [ ] x402 on BSC: register `ExactEvmScheme` with `network: 'eip155:56'` (BSC mainnet chain ID)
@@ -200,18 +200,18 @@ Replace 191-line `agent-collaboration.ts` bespoke keyword routing with v2 plugin
 - [ ] Test: cron-hub receives webhook question → cross-consults webhook-gateway → answer enriched with specialist insight
 
 ### Phase 4 — AgentID / On-Chain Identity (ERC-8004 + x402)
-Pets become ERC-721 NFTs with ERC-8004 Identity Registry entries. Buildings can charge NeoTokens or USDC-on-Base for teaching services via HTTP 402 payment protocol.
+Pets become ERC-721 NFTs with ERC-8004 Identity Registry entries. Buildings can charge ClawTokens or USDC-on-Base for teaching services via HTTP 402 payment protocol.
 
 **External deps:** ERC-8004 EIP, Coinbase x402 protocol, wallet custody (KMS or Privy-style embedded wallets), on-chain indexer.
 
 **Decoupled from v2 core.** Can ship after Phases 1-3. Real blockchain infra project, not a runtime port.
 
 - [ ] **Decision point:** custodial wallets (KMS) vs embedded wallets (Privy/Dynamic) vs user-held
-- [ ] **Decision point:** NeoTokens off-chain (cleaner) vs on-chain ERC-20 (composable)
+- [ ] **Decision point:** ClawTokens off-chain (cleaner) vs on-chain ERC-20 (composable)
 - [ ] Sub-phase 4a: Mint ERC-8004 Identity NFT at pet creation (Base or Solana)
 - [ ] Sub-phase 4a: `pets.walletAddress` DB column + Transfer event indexer updates `pets.userId`
 - [ ] Sub-phase 4a: Dynamic metadata endpoint `/api/pets/:id/metadata.json` serving live pet state
-- [ ] Sub-phase 4b: x402 paywall on building chat endpoints (returns 402 + price in NeoTokens/USDC)
+- [ ] Sub-phase 4b: x402 paywall on building chat endpoints (returns 402 + price in ClawTokens/USDC)
 - [ ] Sub-phase 4b: Pet wallet service auto-pays for teaching requests
 - [ ] Sub-phase 4b: Evaluate 0xgasless/agent-sdk as reference implementation
 - [ ] **Prerequisite:** ServiceType.wallet ships in public v2 or we vendor a wallet plugin
@@ -342,7 +342,7 @@ A marketplace building where players/agents buy and sell skills.
 - [ ] Bazaar building in the 3D world (dedicated zone, maybe Sandy's Treedome or new building)
 - [ ] Browse skills by category, rarity, price — RPG-style item cards with stats
 - [ ] Sellers list skills they've earned from buildings (knowledge books = inventory items)
-- [ ] Buyers spend NeoTokens to purchase — seller gets paid
+- [ ] Buyers spend ClawTokens to purchase — seller gets paid
 - [ ] Rarity tiers: Common (free lessons), Rare (building-specific), Epic (quest rewards), Legendary (bounty completions)
 - [ ] Visual: glowing item pedestals, particle effects per rarity, haggle animations
 - [ ] DB: `skill_listings` table (sellerId, skillId, price, rarity, listedAt)
@@ -399,7 +399,11 @@ An open board where anyone (AI agents or humans) can post coding bounties for ot
 
 ## Milady sideload follow-ups (2026-04-12)
 
-**Status:** `@clawville/app-clawville@0.1.0` is LIVE on npm — any Milady user can install it today via `POST /api/plugins/install` without waiting on upstream PR #1839 to merge. Published 2026-04-12 against the `clawville-admin` npm account.
+**Status:** `@clawville/app-clawville@0.1.0` is LIVE on npm AND PR #1839 is MERGED into Milady's `develop` branch (default branch, where releases are cut from). ClawVille is in the curated app grid and will ship in the next Milady release (v2.0.11+). Last release was v2.0.10 on 2026-04-07; develop is 658 commits ahead.
+
+**Verified 2026-04-13:** Plugin smoke test passes end-to-end (`npm run smoke` in plugin repo). All 8 tests pass — module exports, LAUNCH_CLAWVILLE keyword matching, live handler call against api.clawville.world, session/wallet/UUID returned, runtime settings stashed. Persistent fixture pet `clawville-plugin-smoketest-v1` confirmed on 5th lifetime visit.
+
+**Not yet tested:** Milady viewer iframe embedding (loading clawville.world/game inside Milady's app shell with bootstrap script injection). Requires a running Milady runtime instance. Low priority until the next Milady release ships and real users can access the app grid entry.
 
 - [ ] **Migrate GitHub repo ownership from `ItachiDevv` to a dedicated `clawville` GitHub organization.** Currently `github.com/ItachiDevv/clawville-milady-plugin` is under the personal account. Create a `clawville` GitHub org, transfer the repo, update `package.json` `repository.url` + `bugs.url`, republish as `0.1.1` with the new links, and update all docs pointing at the old URL. Keep `ItachiDevv` as a maintainer on the transferred repo.
 - [ ] **Post announcement of the sideload path in Milady community channels.** Targets: Milady Discord (#plugins / #apps channel), `@miladyai` Twitter mention, any "awesome Milady" README if one exists, and link from `clawville.world/blog` (if we have a blog surface). Message should lead with "ClawVille now runs inside Milady — one curl command to install" and point at INSTALL.md. Do NOT post until we've tested the install flow end-to-end against a real Milady instance.

@@ -135,7 +135,7 @@ function assembleSkillMd(opts: {
     `2. Subscribe to perception events: \`GET /api/agent/:sessionId/events\` (SSE)`,
     `3. Move toward the ${label}: \`POST /api/agent/:sessionId/move\``,
     `4. Enter the building: \`POST /api/agent/:sessionId/visit-building\` with \`{ buildingId: '${buildingId}' }\``,
-    `5. Buy a knowledge book from the shop or chat with the NPC to earn NeoTokens.`,
+    `5. Buy a knowledge book from the shop or chat with the NPC to earn ClawTokens.`,
     '',
     `For the full game loop, load the \`clawville-play\` meta-skill.`,
     '',
@@ -257,7 +257,7 @@ async function generateForBuilding(buildingId: string): Promise<void> {
 function buildClawvillePlaySkill(): { name: string; description: string; content: string } {
   const name = 'clawville-play';
   const description =
-    'Lets an autonomous agent play ClawVille — connect via /api/agent/connect, subscribe to perception events over SSE, move around the sea-floor world, visit buildings to buy knowledge books, earn NeoTokens, and chat with building NPCs. Use when the user tells the agent to play ClawVille, visit a building, or learn a skill from the game.';
+    'Lets an autonomous agent play ClawVille — connect via /api/agent/connect, subscribe to perception events over SSE, move around the sea-floor world, visit buildings to buy knowledge books, earn ClawTokens, and chat with building NPCs. Use when the user tells the agent to play ClawVille, visit a building, or learn a skill from the game.';
 
   const content = `---
 name: ${name}
@@ -279,7 +279,7 @@ building NPCs (who are themselves AI agents with specialized knowledge).
 ## When to use this skill
 
 - The user says "play ClawVille" / "visit the ${BUILDING_OPENCLAW_THEMES['tool-workshop']?.label}" / "learn X from ClawVille".
-- The user wants the agent to earn NeoTokens or collect knowledge books.
+- The user wants the agent to earn ClawTokens or collect knowledge books.
 - The user wants the agent to interact with other agents in the ClawVille world.
 
 ## Base URL
@@ -326,7 +326,7 @@ Accept: text/event-stream
 \`\`\`
 
 The server pushes a \`perception\` event every 2 seconds with the agent's
-current position, the nearest building, nearby NPCs, and the agent's NeoToken
+current position, the nearest building, nearby NPCs, and the agent's ClawToken
 balance. Example payload:
 
 \`\`\`json
@@ -335,7 +335,7 @@ balance. Example payload:
   "position": { "x": 12, "y": 0, "z": -4 },
   "nearestBuilding": { "id": "tool-workshop", "distance": 3.2 },
   "nearbyAgents": [{ "name": "Sandy", "buildingId": "tool-workshop" }],
-  "neoTokens": 105,
+  "clawTokens": 105,
   "knownSkills": 2
 }
 \`\`\`
@@ -376,7 +376,7 @@ greeting. The agent can then:
 - Buy a book: \`POST /api/agent/:sessionId/buy { "itemId": "..." }\`
 - Chat with the NPC: \`POST /api/agent/:sessionId/chat { "message": "..." }\`
 
-Chatting earns +1 NeoToken per message. Buying a book consumes NeoTokens and
+Chatting earns +1 ClawToken per message. Buying a book consumes ClawTokens and
 adds the book's knowledge entries to the agent's \`knownSkills\`.
 
 ## Available buildings
@@ -388,9 +388,9 @@ ${Object.entries(BUILDING_OPENCLAW_THEMES)
   .map(([id, t]) => `- **${id}** — ${t.label} (${t.category})`)
   .join('\n')}
 
-## NeoToken economy
+## ClawToken economy
 
-- Start with 100 NeoTokens.
+- Start with 100 ClawTokens.
 - Earn +10..+100 per daily login (streak-based).
 - Earn +1 per message when chatting with a building NPC.
 - Spend them on knowledge books (prices vary per book).
@@ -404,7 +404,7 @@ for event in SSE(sess["eventsUrl"]):
         POST(f"/api/agent/{sess['id']}/move", {"towardBuildingId": event["nearestBuilding"]["id"]})
     else:
         visit = POST(f"/api/agent/{sess['id']}/visit-building", {"buildingId": event["nearestBuilding"]["id"]})
-        if event["neoTokens"] >= visit["shop"][0]["price"]:
+        if event["clawTokens"] >= visit["shop"][0]["price"]:
             POST(f"/api/agent/{sess['id']}/buy", {"itemId": visit["shop"][0]["id"]})
         POST(f"/api/agent/{sess['id']}/chat", {"message": "teach me"})
 \`\`\`

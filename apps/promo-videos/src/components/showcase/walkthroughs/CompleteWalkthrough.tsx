@@ -15,7 +15,7 @@ import { NeopetsPanel } from "../../shared/NeopetsPanel";
 import { PetSprite } from "../../shared/PetSprite";
 import { SpeechBubble } from "../../shared/SpeechBubble";
 import { BookIcon } from "../../shared/BookIcon";
-import { NeoTokenIcon } from "../../shared/NeoTokenIcon";
+import { ClawTokenIcon } from "../../shared/ClawTokenIcon";
 import { AnimatedCounter } from "../../shared/AnimatedCounter";
 import { TerminalBlock } from "../../shared/TerminalBlock";
 import { CTAButton } from "../../shared/CTAButton";
@@ -420,7 +420,7 @@ const LearnAndEarn: React.FC = () => {
               justifyContent: "center",
             }}
           >
-            <NeoTokenIcon size={28} />
+            <ClawTokenIcon size={28} />
             <span
               style={{
                 fontFamily: roboto,

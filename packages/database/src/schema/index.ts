@@ -30,7 +30,7 @@ import { publishedSkills, skillUpvotes } from './marketplace';
 import { bazaarListings, bazaarTransactions, bazaarReviews } from './bazaar';
 import { openclawBots } from './claws';
 import { vanityKeypairs, tokenLaunches } from './token-launch';
-import { neoTokenTransactions } from './treasury';
+import { clawTokenTransactions } from './treasury';
 import { auctions, auctionBids, auctionAgentConfigs } from './auctions';
 import { quests, questSubmissions, questRewards } from './quests';
 import { agentConfigs } from './agent-configs';
@@ -316,6 +316,6 @@ export const bountyReputationRelations = relations(bountyReputation, ({ one }) =
   pet: one(pets, { fields: [bountyReputation.petId], references: [pets.id] }),
 }));
 
-export const neoTokenTransactionsRelations = relations(neoTokenTransactions, ({ one }) => ({
-  pet: one(pets, { fields: [neoTokenTransactions.petId], references: [pets.id] }),
+export const clawTokenTransactionsRelations = relations(clawTokenTransactions, ({ one }) => ({
+  pet: one(pets, { fields: [clawTokenTransactions.petId], references: [pets.id] }),
 }));

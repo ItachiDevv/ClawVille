@@ -38,11 +38,11 @@ export interface PetSimState {
   chatMessage: string | null;
 
   // Phase 3: Autonomy budget controls
-  /** Max NeoTokens the pet may spend per autonomous session */
+  /** Max ClawTokens the pet may spend per autonomous session */
   budgetMaxNt: number;
   /** Max item purchases per autonomous session */
   budgetMaxPurchases: number;
-  /** NeoTokens spent so far this session */
+  /** ClawTokens spent so far this session */
   budgetSpent: number;
   /** Purchases made this session */
   budgetPurchaseCount: number;

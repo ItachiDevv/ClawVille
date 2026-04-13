@@ -11,7 +11,7 @@ import { loadFont as loadLobster } from "@remotion/google-fonts/Lobster";
 import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { ParticleField } from "../shared/ParticleField";
 import { NeopetsPanel } from "../shared/NeopetsPanel";
-import { NeoTokenIcon } from "../shared/NeoTokenIcon";
+import { ClawTokenIcon } from "../shared/ClawTokenIcon";
 import { PetSprite } from "../shared/PetSprite";
 import { StatBar } from "../shared/StatBar";
 import { AnimatedCounter } from "../shared/AnimatedCounter";
@@ -86,7 +86,7 @@ const CalendarHook: React.FC = () => {
           style={{
             fontFamily: lobster,
             fontSize: 40,
-            color: COLORS.neoToken,
+            color: COLORS.clawToken,
             textShadow: `
               2px 2px 0px rgba(0,0,0,0.3),
               0 0 20px rgba(255,215,0,0.4)
@@ -124,7 +124,7 @@ const CalendarHook: React.FC = () => {
               width: squareSize,
               height: squareSize,
               borderRadius: 6,
-              backgroundColor: isLit ? COLORS.neoToken : "rgba(255,255,255,0.08)",
+              backgroundColor: isLit ? COLORS.clawToken : "rgba(255,255,255,0.08)",
               border: `2px solid ${isLit ? COLORS.border : "rgba(255,255,255,0.15)"}`,
               transform: `scale(${isLit ? squareScale : 1})`,
               boxShadow: isLit
@@ -182,7 +182,7 @@ const StreakRewards: React.FC = () => {
         style={{
           fontFamily: lobster,
           fontSize: 34,
-          color: COLORS.neoToken,
+          color: COLORS.clawToken,
           textShadow: "2px 2px 0px rgba(0,0,0,0.3)",
           marginBottom: 12,
         }}
@@ -246,7 +246,7 @@ const StreakRewards: React.FC = () => {
                     gap: 16,
                   }}
                 >
-                  <NeoTokenIcon size={milestone.iconSize} />
+                  <ClawTokenIcon size={milestone.iconSize} />
                   <div style={{ flex: 1 }}>
                     <span
                       style={{
@@ -301,9 +301,9 @@ const StreakRewards: React.FC = () => {
                         width: p.size,
                         height: p.size,
                         borderRadius: "50%",
-                        backgroundColor: COLORS.neoToken,
+                        backgroundColor: COLORS.clawToken,
                         opacity: bOpacity,
-                        boxShadow: `0 0 ${p.size * 2}px ${COLORS.neoToken}`,
+                        boxShadow: `0 0 ${p.size * 2}px ${COLORS.clawToken}`,
                         pointerEvents: "none",
                       }}
                     />
@@ -370,7 +370,7 @@ const LevelProgression: React.FC = () => {
           width: 64,
           height: 64,
           borderRadius: "50%",
-          background: `radial-gradient(circle at 35% 35%, #FFE566, ${COLORS.neoToken}, #B8860B)`,
+          background: `radial-gradient(circle at 35% 35%, #FFE566, ${COLORS.clawToken}, #B8860B)`,
           border: `3px solid ${COLORS.border}`,
           display: "flex",
           alignItems: "center",
@@ -410,7 +410,7 @@ const LevelProgression: React.FC = () => {
         <StatBar
           label="Tokens"
           value={0.6}
-          color={COLORS.neoToken}
+          color={COLORS.clawToken}
           delay={Math.round(0.3 * fps)}
           width={220}
         />
@@ -458,7 +458,7 @@ const StreakCTA: React.FC = () => {
         style={{
           fontFamily: lobster,
           fontSize: 36,
-          color: COLORS.neoToken,
+          color: COLORS.clawToken,
           textShadow: `
             2px 2px 0px rgba(0,0,0,0.3),
             0 0 20px rgba(255,215,0,0.4)
@@ -493,7 +493,7 @@ export const DailyStreak: React.FC = () => {
 
   return (
     <AbsoluteFill style={{ backgroundColor: COLORS.bg }}>
-      <ParticleField count={12} color={COLORS.neoToken} speed={0.3} />
+      <ParticleField count={12} color={COLORS.clawToken} speed={0.3} />
 
       <Sequence durationInFrames={3 * fps} premountFor={fps}>
         <CalendarHook />

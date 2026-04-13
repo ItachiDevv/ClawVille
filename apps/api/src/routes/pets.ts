@@ -8,7 +8,7 @@ import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { npcSimulation } from '../services/npc-simulation';
-import { creditNeoTokens, debitNeoTokens } from '../services/neo-token-ledger';
+import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import type { ClawvilleServices } from '@clawville/agent-runtime';
 import { ensureWallet } from '../services/wallet-service';
 import type { AppContext } from '../types';
@@ -275,7 +275,7 @@ petRoutes.post('/me/chat', requireAuth, async (c) => {
   }
 
   // Build state for Providers + Actions
-  const services = { db, creditNeoTokens, debitNeoTokens } as ClawvilleServices;
+  const services = { db, creditClawTokens, debitClawTokens } as ClawvilleServices;
 
   let worldSnapshot: any = null;
   try {
@@ -421,7 +421,7 @@ petRoutes.post('/me/daily-login', requireAuth, async (c) => {
     return c.json({
       streak: pet.loginStreak,
       tokensEarned: 0,
-      totalTokens: pet.neoTokens,
+      totalTokens: pet.clawTokens,
       alreadyClaimed: true,
     });
   }
@@ -451,7 +451,7 @@ petRoutes.post('/me/daily-login', requireAuth, async (c) => {
     .where(and(eq(pets.userId, user.id), eq(pets.isActive, true)));
 
   // Atomic + audited token credit
-  const { balanceAfter: totalTokens } = await creditNeoTokens({
+  const { balanceAfter: totalTokens } = await creditClawTokens({
     petId: pet.id,
     amount: tokensEarned,
     reason: 'daily_login',

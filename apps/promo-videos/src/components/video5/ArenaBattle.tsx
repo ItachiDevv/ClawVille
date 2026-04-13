@@ -401,7 +401,7 @@ const VictoryScene: React.FC = () => {
 
   return (
     <AbsoluteFill>
-      <ParticleField count={30} color={COLORS.neoToken} speed={1.5} />
+      <ParticleField count={30} color={COLORS.clawToken} speed={1.5} />
 
       {/* Crusher defeated */}
       <div
@@ -467,7 +467,7 @@ const VictoryScene: React.FC = () => {
       >
         <div
           style={{
-            background: `linear-gradient(135deg, ${COLORS.neoToken}, ${COLORS.secondary})`,
+            background: `linear-gradient(135deg, ${COLORS.clawToken}, ${COLORS.secondary})`,
             borderRadius: 12,
             padding: "10px 24px",
             border: `3px solid ${COLORS.border}`,
@@ -548,7 +548,7 @@ const ArenaCTA: React.FC = () => {
                 textShadow: "1px 1px 2px rgba(0,0,0,0.5)",
               }}
             >
-              <span style={{ fontWeight: 700, color: COLORS.neoToken, width: 24 }}>
+              <span style={{ fontWeight: 700, color: COLORS.clawToken, width: 24 }}>
                 #{i + 1}
               </span>
               <span style={{ width: 80 }}>{entry.name}</span>

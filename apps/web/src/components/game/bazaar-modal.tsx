@@ -611,7 +611,7 @@ export default function BazaarModal() {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const myListings = myListingsData?.listings ?? [];
   const myPurchases = myPurchasesData?.purchases ?? [];
-  const tokens = (pet as any)?.neoTokens ?? 0;
+  const tokens = pet?.clawTokens ?? 0;
 
   const totalEarned = myListings.reduce(
     (sum: number, l: any) => sum + (l.totalEarnings || 0),
@@ -633,7 +633,7 @@ export default function BazaarModal() {
       headerIcon={<span>⚖</span>}
       maxWidth={980}
       tokenBadge={
-        <RpgTooltip content="Your NeoToken balance — spent on purchases, earned from sales.">
+        <RpgTooltip content="Your ClawToken balance — spent on purchases, earned from sales.">
           <span
             style={{
               display: 'inline-flex',
@@ -938,7 +938,7 @@ export default function BazaarModal() {
             <EmptyState
               icon="📦"
               title="No active listings"
-              hint="Craft a skill in the Forge, then list it here to earn NeoTokens."
+              hint="Craft a skill in the Forge, then list it here to earn ClawTokens."
             />
           ) : (
             <>

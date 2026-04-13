@@ -38,14 +38,14 @@ Every chat interaction in ClawVille goes through `ElizaRuntime.processMessage()`
 
 **1. Location NPC chat** — `apps/api/src/routes/chat.ts:121`
 - Context: visitor's pet info, shop items + prices, OpenClaw theme, cross-building collaboration results, Milady knowledge enrichment
-- Awards: +1 NeoToken, +5 XP per message
+- Awards: +1 ClawToken, +5 XP per message
 
 **2. Pet chat** — `apps/api/src/routes/pets.ts:308`
 - Context: token balance, knowledge count, NPC world state snapshot
 - Awards: none
 
 **3. Agent gateway / OpenClaw** — `apps/api/src/routes/agent-gateway.ts:500`, `openclaw.ts:423`, `openclaw.ts:528`
-- Context: agent identity, personality archetype, NeoTokens, OpenClaw knowledge (sliced to 20 entries)
+- Context: agent identity, personality archetype, ClawTokens, OpenClaw knowledge (sliced to 20 entries)
 - Gateway chat also injects into NPC simulation for visible chat bubbles
 
 ### What ElizaOS Gives Us (the ~20% we use)
@@ -131,7 +131,7 @@ Providers read from `state.*` properties passed by the API route handler — the
 
 | Provider | Position | State Input | Context Injected |
 |---|---|---|---|
-| `petStateProvider` | 10 | `state.petData` | `[Pet Status]` — name, species, archetype, level, NeoTokens, STR/DEF/MOV stats, login streak |
+| `petStateProvider` | 10 | `state.petData` | `[Pet Status]` — name, species, archetype, level, ClawTokens, STR/DEF/MOV stats, login streak |
 | `worldStateProvider` | 20 | `state.worldSnapshot`, `state.nearLocation` | `[World State]` — current location, up to 8 alive NPCs with activity + destination |
 | `inventoryProvider` | 30 | `state.inventory` | `[Inventory]` — items grouped by type (books, skills, other), quantities, total count |
 | `questProvider` | 40 | `state.activeQuests`, `state.availableQuests` | `[Quests]` — active quests with status + reward, available quests |
@@ -146,9 +146,9 @@ Actions dynamically import `@clawville/database` tables (`pets`, `petInventory`,
 | Action | DB Tables | Side Effects |
 |---|---|---|
 | `VISIT_BUILDING` | `pets` | Updates `positionX/Y` + `lastActiveAt`, returns building info + shop items + OpenClaw theme |
-| `BUY_ITEM` | `pets`, `petInventory` | Debits NeoTokens via `debitNeoTokens()`, inserts/increments `pet_inventory` row |
+| `BUY_ITEM` | `pets`, `petInventory` | Debits ClawTokens via `debitClawTokens()`, inserts/increments `pet_inventory` row |
 | `LEARN_SKILL` | `pets`, `petInventory` | Merges book's `knowledgeEntries` into `characterConfig.knowledge[]`, decrements inventory |
-| `CHECK_BALANCE` | `pets`, `petInventory` | Read-only — returns name, level, XP, NeoTokens, inventory count, knowledge count |
+| `CHECK_BALANCE` | `pets`, `petInventory` | Read-only — returns name, level, XP, ClawTokens, inventory count, knowledge count |
 | `LIST_BUILDINGS` | (none) | Read-only — returns all 10 `MAP_LOCATIONS` with `BUILDING_OPENCLAW_THEMES` |
 | `BUY_BAZAAR_LISTING` | `bazaarListings`, `bazaarTransactions`, `publishedSkills`, `petInventory`, `pets` | Debits buyer, credits seller (minus 15% platform fee), marks listing sold, records transaction, adds skill to buyer inventory |
 | `ACCEPT_QUEST` | `quests`, `questSubmissions` | Validates quest is active + not expired + not max completions, creates submission with status `accepted` |
@@ -156,14 +156,14 @@ Actions dynamically import `@clawville/database` tables (`pets`, `petInventory`,
 
 ### Service Injection Pattern
 
-Actions need database access and NeoToken ledger functions (`creditNeoTokens`, `debitNeoTokens`) but live in `packages/agent-runtime` which cannot import from `apps/api` (monorepo dependency direction: packages are consumed by apps, not the reverse).
+Actions need database access and ClawToken ledger functions (`creditClawTokens`, `debitClawTokens`) but live in `packages/agent-runtime` which cannot import from `apps/api` (monorepo dependency direction: packages are consumed by apps, not the reverse).
 
 The `ClawvilleServices` interface defines the injection contract:
 
 ```typescript
 interface ClawvilleServices {
-  creditNeoTokens: (params: NeoTokenServiceParams) => Promise<{ balanceAfter: number }>;
-  debitNeoTokens:  (params: NeoTokenServiceParams) => Promise<{ balanceAfter: number }>;
+  creditClawTokens: (params: ClawTokenServiceParams) => Promise<{ balanceAfter: number }>;
+  debitClawTokens:  (params: ClawTokenServiceParams) => Promise<{ balanceAfter: number }>;
   db: any;  // Drizzle query builder instance
 }
 ```
@@ -288,7 +288,7 @@ Wake (every 60s, configurable per pet)
 
 ### Safety Controls
 
-- **Autonomy budget:** Max NeoToken spend per session, max purchases per hour
+- **Autonomy budget:** Max ClawToken spend per session, max purchases per hour
 - **Action filtering:** Only "autonomous-safe" actions in auto mode (no bazaar trading unless user opts in)
 - **User override:** Heartbeat reports user activity → pet snaps back to user control immediately
 - **Frontend sync:** Autonomy state pushed via heartbeat/SSE so 3D world shows pet moving + acting in real time
@@ -311,7 +311,7 @@ External agents connecting via `/api/agent/connect` will get the same Action set
 
 1. `POST /api/agent/connect` → get NPC slot + pet + wallet
 2. `VISIT_BUILDING(skill-forge)` → enter Hydrothermal Forge
-3. `BUY_ITEM(hydrothermal-guide)` → purchase book (debits NeoTokens)
+3. `BUY_ITEM(hydrothermal-guide)` → purchase book (debits ClawTokens)
 4. `LEARN_SKILL(hydrothermal-guide)` → knowledge embedded via RAG
 5. `LIST_BUILDINGS` → see all 10 buildings with distances
 6. `BUY_BAZAAR_LISTING(cheap-cron-skill)` → purchase from another agent
@@ -359,7 +359,7 @@ Phase 1 Actions, Phase 2 Knowledge/RAG, Phase 3 Autonomy.
 | `apps/api/src/routes/quests.ts` | Quest accept/progress/complete |
 | `apps/api/src/routes/bounties.ts` | Bounty claim/reward |
 | `apps/api/src/routes/skills.ts` | Public SKILL.md serving for external agents |
-| `apps/api/src/services/neo-token-ledger.ts` | Atomic NeoToken credit/debit with audit trail |
+| `apps/api/src/services/claw-token-ledger.ts` | Atomic ClawToken credit/debit with audit trail |
 
 ### Phase 1 New Files
 
@@ -369,7 +369,7 @@ Phase 1 Actions, Phase 2 Knowledge/RAG, Phase 3 Autonomy.
 | `packages/agent-runtime/src/actions/visit-building.ts` | Action: enter a building by name |
 | `packages/agent-runtime/src/actions/buy-item.ts` | Action: purchase a knowledge book |
 | `packages/agent-runtime/src/actions/learn-skill.ts` | Action: read book → merge knowledge |
-| `packages/agent-runtime/src/actions/check-balance.ts` | Action: report NeoToken balance + inventory summary |
+| `packages/agent-runtime/src/actions/check-balance.ts` | Action: report ClawToken balance + inventory summary |
 | `packages/agent-runtime/src/actions/list-buildings.ts` | Action: list all 10 buildings with distance |
 | `packages/agent-runtime/src/actions/buy-bazaar-listing.ts` | Action: purchase a bazaar skill listing |
 | `packages/agent-runtime/src/actions/accept-quest.ts` | Action: accept an available quest |
@@ -440,7 +440,7 @@ ElizaOS v2 Providers are registered on the runtime and called during `composeSta
 
 ### D3: Why service injection instead of direct imports
 
-Actions in `packages/agent-runtime` cannot import from `apps/api` (monorepo dependency direction: packages are consumed by apps, not the reverse). Rather than moving service code into the package (which would pull in database imports and break the clean layering), we inject service functions via `state.services` at call time. The `ClawvilleServices` interface defines the contract (`db`, `creditNeoTokens`, `debitNeoTokens`), and the `hasServices()` type-guard validates all three before any mutating action runs. Actions DO import `@clawville/database` dynamically (for table references and query helpers like `eq`, `and`, `sql`), but the actual Drizzle query builder instance comes from the injected `db` — this avoids creating a second database connection pool.
+Actions in `packages/agent-runtime` cannot import from `apps/api` (monorepo dependency direction: packages are consumed by apps, not the reverse). Rather than moving service code into the package (which would pull in database imports and break the clean layering), we inject service functions via `state.services` at call time. The `ClawvilleServices` interface defines the contract (`db`, `creditClawTokens`, `debitClawTokens`), and the `hasServices()` type-guard validates all three before any mutating action runs. Actions DO import `@clawville/database` dynamically (for table references and query helpers like `eq`, `and`, `sql`), but the actual Drizzle query builder instance comes from the injected `db` — this avoids creating a second database connection pool.
 
 ### D4: Why NPC banter bypasses ElizaOS entirely
 

@@ -7,7 +7,7 @@ export interface SkillGenOpts {
   species: string;
   archetype: string;
   petId: string;
-  neoTokens: number;
+  clawTokens: number;
   bio: string[];
   knowledge: string[];
   topics: string[];
@@ -124,7 +124,7 @@ export function generateOpenClawSkill(opts: SkillGenOpts): { markdown: string; i
     '',
     `# ${opts.petName} — OpenClaw Skill`,
     '',
-    `> Exported on ${exportDate} | Species: ${opts.species} | Archetype: ${opts.archetype} | NeoTokens: ${opts.neoTokens} | Knowledge entries: ${knowledgeEntries.length}`,
+    `> Exported on ${exportDate} | Species: ${opts.species} | Archetype: ${opts.archetype} | ClawTokens: ${opts.clawTokens} | Knowledge entries: ${knowledgeEntries.length}`,
     '',
   ];
 

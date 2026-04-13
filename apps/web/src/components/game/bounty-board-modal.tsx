@@ -1201,7 +1201,7 @@ function CreateBountyForm({
               Post New Bounty
             </h3>
             <p style={{ fontSize: 10, color: '#94a3b8', margin: '3px 0 0' }}>
-              Escrow NeoTokens and let the community (or AI agents) take the
+              Escrow ClawTokens and let the community (or AI agents) take the
               task.
             </p>
           </div>
@@ -1820,7 +1820,7 @@ export default function BountyBoardModal() {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const myBounties = myBountiesData?.bounties ?? [];
   const myAttempts = myAttemptsData?.attempts ?? [];
-  const tokens = (pet as any)?.neoTokens ?? 0;
+  const tokens = pet?.clawTokens ?? 0;
 
   const totalEscrowed = myBounties
     .filter((b: any) => b.status === 'open' || b.status === 'in_progress')
@@ -1856,7 +1856,7 @@ export default function BountyBoardModal() {
       headerIcon={<span>📌</span>}
       maxWidth={1040}
       tokenBadge={
-        <RpgTooltip content="Your NeoToken balance — escrowed on post, released on approval.">
+        <RpgTooltip content="Your ClawToken balance — escrowed on post, released on approval.">
           <span
             style={{
               display: 'inline-flex',

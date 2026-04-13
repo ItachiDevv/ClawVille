@@ -84,7 +84,7 @@ export const BookIcon: React.FC<BookIconProps> = ({
           fontFamily: "Roboto, sans-serif",
           fontSize: 16,
           fontWeight: 700,
-          color: COLORS.neoToken,
+          color: COLORS.clawToken,
         }}
       >
         {price} NT

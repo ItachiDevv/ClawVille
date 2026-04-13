@@ -5,7 +5,7 @@
  * buy items, learn skills, check balances, browse the bazaar, accept quests,
  * and claim bounties.
  *
- * All actions receive their DB handle and NeoToken ledger functions via
+ * All actions receive their DB handle and ClawToken ledger functions via
  * `state.services` (injected by the API layer) to avoid circular deps
  * between packages/agent-runtime and apps/api.
  */

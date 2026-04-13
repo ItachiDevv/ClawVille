@@ -16,7 +16,7 @@ import { StatBar } from "../../shared/StatBar";
 import { AnimatedCounter } from "../../shared/AnimatedCounter";
 import { CTAButton } from "../../shared/CTAButton";
 import { LogoReveal } from "../../shared/LogoReveal";
-import { NeoTokenIcon } from "../../shared/NeoTokenIcon";
+import { ClawTokenIcon } from "../../shared/ClawTokenIcon";
 import { TitleScreen } from "../shared/TitleScreen";
 import { COLORS } from "../../../constants/colors";
 import {
@@ -416,7 +416,7 @@ const QuestComplete: React.FC = () => {
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-        <NeoTokenIcon size={40} />
+        <ClawTokenIcon size={40} />
         <AnimatedCounter
           from={0}
           to={75}

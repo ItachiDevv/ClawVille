@@ -2,7 +2,7 @@ import type { Action, ActionResult } from './types';
 import { hasServices, getMessageText, getDbModule } from './types';
 
 /**
- * CHECK_BALANCE — query the pet's NeoToken balance, inventory count,
+ * CHECK_BALANCE — query the pet's ClawToken balance, inventory count,
  * and knowledge count.
  *
  * Parameters: none
@@ -10,7 +10,7 @@ import { hasServices, getMessageText, getDbModule } from './types';
 export const checkBalanceAction: Action = {
   name: 'CHECK_BALANCE',
   description:
-    'Check your NeoToken balance, inventory count, and knowledge count.',
+    'Check your ClawToken balance, inventory count, and knowledge count.',
   similes: [
     'VIEW_BALANCE',
     'MY_TOKENS',
@@ -80,7 +80,7 @@ export const checkBalanceAction: Action = {
       const [pet] = await db
         .select({
           name: pets.name,
-          neoTokens: pets.neoTokens,
+          clawTokens: pets.clawTokens,
           level: pets.level,
           xp: pets.xp,
           characterConfig: pets.characterConfig,
@@ -111,12 +111,12 @@ export const checkBalanceAction: Action = {
         text: [
           `**${pet.name}'s Status**`,
           `Level: ${pet.level} (${pet.xp} XP)`,
-          `NeoTokens: ${pet.neoTokens} NT`,
+          `ClawTokens: ${pet.clawTokens} NT`,
           `Inventory: ${totalItems} items (${uniqueItems} unique)`,
           `Knowledge: ${knowledgeCount} entries`,
         ].join('\n'),
         data: {
-          neoTokens: pet.neoTokens,
+          clawTokens: pet.clawTokens,
           level: pet.level,
           xp: pet.xp,
           inventoryTotal: totalItems,

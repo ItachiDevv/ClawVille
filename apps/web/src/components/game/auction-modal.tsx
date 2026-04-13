@@ -1413,7 +1413,7 @@ export default function AuctionModal() {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const myAuctions: any[] = myAuctionsData?.auctions ?? [];
   const myBids: any[] = myBidsData?.auctions ?? [];
-  const tokens: number = (pet as any)?.neoTokens ?? 0;
+  const tokens: number = pet?.clawTokens ?? 0;
 
   const winningCount = myBids.filter(
     (a) =>
@@ -1453,7 +1453,7 @@ export default function AuctionModal() {
       headerIcon={<span>⚖</span>}
       maxWidth={1040}
       tokenBadge={
-        <RpgTooltip content="Your NeoToken balance — spent on bids and Buy Now claims.">
+        <RpgTooltip content="Your ClawToken balance — spent on bids and Buy Now claims.">
           <span
             style={{
               display: 'inline-flex',

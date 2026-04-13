@@ -64,7 +64,7 @@ const Hook: React.FC = () => {
         padding: 40,
       }}
     >
-      <ParticleField count={15} color={COLORS.neoToken} speed={0.5} />
+      <ParticleField count={15} color={COLORS.clawToken} speed={0.5} />
       <TypewriterText
         text="Your bot just walked into a building..."
         charsPerSecond={30}
@@ -89,7 +89,7 @@ const Hook: React.FC = () => {
             fontFamily: roboto,
             fontSize: isVertical ? 30 : 32,
             fontWeight: 700,
-            color: COLORS.neoToken,
+            color: COLORS.clawToken,
             textShadow: "2px 2px 4px rgba(0,0,0,0.4)",
           }}
         >
@@ -412,7 +412,7 @@ const LearningConversation: React.FC = () => {
             >
               <div
                 style={{
-                  background: `linear-gradient(135deg, ${COLORS.neoToken}, #FFA000)`,
+                  background: `linear-gradient(135deg, ${COLORS.clawToken}, #FFA000)`,
                   borderRadius: 20,
                   padding: "6px 16px",
                   boxShadow: "2px 2px 4px rgba(0,0,0,0.3)",
@@ -548,8 +548,8 @@ const KnowledgeSync: React.FC = () => {
                           width: 8,
                           height: 8,
                           borderRadius: "50%",
-                          background: COLORS.neoToken,
-                          boxShadow: `0 0 8px ${COLORS.neoToken}`,
+                          background: COLORS.clawToken,
+                          boxShadow: `0 0 8px ${COLORS.clawToken}`,
                           opacity: interpolate(packetPos, [0, 0.5, 1], [0.4, 1, 0.4]),
                         }}
                       />
@@ -679,7 +679,7 @@ const LearnSkillCTA: React.FC = () => {
           style={{
             fontFamily: lobster,
             fontSize: 32,
-            color: COLORS.neoToken,
+            color: COLORS.clawToken,
             textShadow: "2px 2px 4px rgba(0,0,0,0.4)",
           }}
         >

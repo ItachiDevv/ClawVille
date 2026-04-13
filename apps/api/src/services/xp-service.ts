@@ -1,11 +1,11 @@
 import { eq } from 'drizzle-orm';
 import { db, pets } from '@clawville/database';
-import { creditNeoTokens } from './neo-token-ledger';
+import { creditClawTokens } from './claw-token-ledger';
 
 /** XP required to level up from a given level */
 export const XP_PER_LEVEL = (level: number): number => level * 100;
 
-/** NeoTokens awarded per level-up */
+/** ClawTokens awarded per level-up */
 const TOKENS_PER_LEVEL_UP = 50;
 
 export interface XpAwardResult {
@@ -30,7 +30,7 @@ export async function awardXp(
   // Fetch current pet state
   const pet = await db.query.pets.findFirst({
     where: eq(pets.id, petId),
-    columns: { id: true, xp: true, level: true, totalXp: true, neoTokens: true },
+    columns: { id: true, xp: true, level: true, totalXp: true, clawTokens: true },
   });
 
   if (!pet) {
@@ -65,7 +65,7 @@ export async function awardXp(
 
   // Credit level-up tokens via ledger (atomic + audited)
   if (tokensAwarded > 0) {
-    await creditNeoTokens({
+    await creditClawTokens({
       petId,
       amount: tokensAwarded,
       reason: 'level_up',

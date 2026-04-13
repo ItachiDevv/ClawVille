@@ -12,7 +12,7 @@ import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { RecordingBackground, LiveBadge } from "../../shared/RecordingBackground";
 import { ParticleField } from "../../shared/ParticleField";
 import { NeopetsPanel } from "../../shared/NeopetsPanel";
-import { NeoTokenIcon } from "../../shared/NeoTokenIcon";
+import { ClawTokenIcon } from "../../shared/ClawTokenIcon";
 import { BookIcon } from "../../shared/BookIcon";
 import { AnimatedCounter } from "../../shared/AnimatedCounter";
 import { CTAButton } from "../../shared/CTAButton";
@@ -84,7 +84,7 @@ const TokenIntro: React.FC = () => {
       />
 
       <div style={{ transform: `scale(${coinScale})` }}>
-        <NeoTokenIcon size={isVertical ? 120 : 140} />
+        <ClawTokenIcon size={isVertical ? 120 : 140} />
       </div>
 
       <div
@@ -294,7 +294,7 @@ const SpendScene: React.FC = () => {
           ),
         }}
       >
-        <NeoTokenIcon size={28} />
+        <ClawTokenIcon size={28} />
         <span
           style={{
             fontFamily: roboto,

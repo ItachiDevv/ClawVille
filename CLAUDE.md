@@ -8,7 +8,7 @@ one for another without flagging it explicitly.
 
 1. **Ship to the Milady AI app store.** Two-track strategy:
    - **Sideload (LIVE as of 2026-04-12):** `@clawville/app-clawville@0.1.0` is published on npm at https://www.npmjs.com/package/@clawville/app-clawville. Any Milady user can install it today via `POST /api/plugins/install` against their local Milady HTTP API — no PR merge required. The plugin registers a `LAUNCH_CLAWVILLE` ElizaOS chat action so users can type "open clawville" from any chat surface even before the curated app grid entry exists. Standalone repo: https://github.com/ItachiDevv/clawville-milady-plugin.
-   - **Curated app grid:** PR `milady-ai/milady#1839` adds ClawVille to `MILADY_CURATED_APP_DEFINITIONS` so it renders as a clickable card in Milady's official app catalog alongside babylon / defense-of-the-agents / 2004scape / etc. Still pending upstream review; merges automatically unlock the grid entry for every Milady release thereafter. Reference material: `docs/milady-integration-plan.md`.
+   - **Curated app grid (MERGED):** PR `milady-ai/milady#1839` merged — ClawVille is now in `MILADY_CURATED_APP_DEFINITIONS` and renders as a clickable card in Milady's official app catalog alongside babylon / defense-of-the-agents / 2004scape / etc. Every Milady release from now on includes ClawVille in the grid. Reference material: `docs/milady-integration-plan.md`.
 
 2. **Open agent onboarding — any OpenClaw, OpenClaw variant, or Hermes agent
    must be able to enter ClawVille and learn skills from our world/buildings in
@@ -22,7 +22,7 @@ one for another without flagging it explicitly.
    Reference: `bazaar_*` tables already exist, need activation.
 
 4. **Gamified UI + free promotion marketplace + leaderboard.** The game layer
-   (3D world, buildings, NeoTokens, quests) is the wrapper around the real
+   (3D world, buildings, ClawTokens, quests) is the wrapper around the real
    purpose: a place where agents buy/sell skills AND a separate free tier where
    anyone can promote their open source repo. All activity lands on a single
    ClawVille-owned leaderboard that ranks agents, humans, and projects.
@@ -33,12 +33,9 @@ These are not ordered preferences — they are equal constraints.
 
 ---
 
-## 💡 Itachi Suggestion (hood)
+## Planning Guidelines
 
-**WHEN** planning complex AI integrations, **DO** create a multi-phase plan
-document in `.claude/plans/` and a research deep-dive in `docs/` before
-modifying core services, **AVOID** direct implementation without architectural
-mapping.
+WHEN planning complex AI integrations, DO create a multi-phase plan document in .claude/plans/ and a research deep-dive in docs/ before modifying core services, AVOID direct implementation without architectural mapping.
 
 ---
 
@@ -257,16 +254,16 @@ All 10 buildings are shop buildings — each sells 2 knowledge books (20 total).
 ## Database Schema
 
 - `users` + `sessions` (Lucia auth)
-- `pets` (one per user, species/color/gender/personality/stats/position/neoTokens/loginStreak/lastLoginDate/lastActiveAt)
+- `pets` (one per user, species/color/gender/personality/stats/position/clawTokens/loginStreak/lastLoginDate/lastActiveAt)
 - `pet_inventory` (books owned by pet, quantity tracking)
 - `map_locations` (static, seeded — 10 buildings)
 - `location_agents` (user's agent config per location)
 - `platform_agents` (ElizaOS agent records)
 - `platform_agent_logs`
 
-## NeoToken Economy & Knowledge Books
+## ClawToken Economy & Knowledge Books
 
-- `neoTokens` integer column (default 100) on `pets` table
+- `clawTokens` integer column (default 100) on `pets` table
 - 20 knowledge books in `packages/shared/src/constants/knowledge-books.ts` — ALL OpenClaw-focused, every building has 2 books
 - All 10 buildings have OpenClaw themes in `BUILDING_OPENCLAW_THEMES` (building-types.ts)
 - API routes: `apps/api/src/routes/items.ts` — GET /shop/:buildingId, GET /inventory, POST /buy, POST /learn
@@ -314,7 +311,7 @@ All 10 buildings are shop buildings — each sells 2 knowledge books (20 total).
 ### Game UI
 - `chat-panel.tsx` — Location agent chat with shop button
 - `pet-chat-bar.tsx` — Chat with own pet
-- `pet-status-bar.tsx` — Level, NeoTokens, stats, knowledge counter
+- `pet-status-bar.tsx` — Level, ClawTokens, stats, knowledge counter
 - `shop-overlay.tsx` — Buy books at buildings
 - `inventory-modal.tsx` — View/learn from owned books
 - `game-menu.tsx` — Settings, activity feed toggle
@@ -371,3 +368,15 @@ Changes are auto-categorized:
 ### Disable Memory
 
 To disable memory for this project, create a file called .no-memory in the project root.
+
+## Audit Guidelines
+
+After implementing a plan and you think you are done, use a collaborative agent team to audit the code against the plan to look for bugs, fix the bugs, and once the bugs are fixed audit the code against the plan again with a new collaborative agent team and look for more bugs to fix.
+
+## Bug Fix Policy
+
+If you find a bug or an issue, fix it, even if you didn't write it. Never skip over or ignore a bug.
+
+## 3D Graphics
+
+Always use subagent 3da when working with 3d graphics.

@@ -12,7 +12,7 @@ import { loadFont as loadLobster } from "@remotion/google-fonts/Lobster";
 import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { MapBackground } from "../shared/MapBackground";
 import { ParticleField } from "../shared/ParticleField";
-import { NeoTokenIcon } from "../shared/NeoTokenIcon";
+import { ClawTokenIcon } from "../shared/ClawTokenIcon";
 import { NeopetsPanel } from "../shared/NeopetsPanel";
 import { StatBar } from "../shared/StatBar";
 import { PetSprite } from "../shared/PetSprite";
@@ -83,7 +83,7 @@ const CoinRain: React.FC = () => {
               transform: `rotate(${rotation}deg)`,
             }}
           >
-            <NeoTokenIcon size={coin.size} />
+            <ClawTokenIcon size={coin.size} />
           </div>
         );
       })}
@@ -102,7 +102,7 @@ const CoinRain: React.FC = () => {
           style={{
             fontFamily: lobster,
             fontSize: 56,
-            color: COLORS.neoToken,
+            color: COLORS.clawToken,
             textShadow: `
               3px 3px 0px rgba(0,0,0,0.3),
               0 0 30px rgba(255,215,0,0.5)
@@ -140,7 +140,7 @@ const EarningMethods: React.FC = () => {
         style={{
           fontFamily: lobster,
           fontSize: 34,
-          color: COLORS.neoToken,
+          color: COLORS.clawToken,
           textShadow: "2px 2px 0px rgba(0,0,0,0.3)",
           marginBottom: 20,
         }}
@@ -204,7 +204,7 @@ const EarningMethods: React.FC = () => {
                       gap: 6,
                     }}
                   >
-                    <NeoTokenIcon size={24} />
+                    <ClawTokenIcon size={24} />
                     <span
                       style={{
                         fontFamily: roboto,
@@ -275,7 +275,7 @@ const ShopMockup: React.FC = () => {
       {/* Purchase flash */}
       <AbsoluteFill
         style={{
-          backgroundColor: COLORS.neoToken,
+          backgroundColor: COLORS.clawToken,
           opacity: purchaseFlash,
         }}
       />
@@ -294,13 +294,13 @@ const ShopMockup: React.FC = () => {
           padding: "8px 16px",
         }}
       >
-        <NeoTokenIcon size={28} />
+        <ClawTokenIcon size={28} />
         <span
           style={{
             fontFamily: roboto,
             fontSize: 24,
             fontWeight: 700,
-            color: COLORS.neoToken,
+            color: COLORS.clawToken,
           }}
         >
           {Math.round(tokenCount)}
@@ -352,7 +352,7 @@ const ShopMockup: React.FC = () => {
                 gap: 8,
               }}
             >
-              <NeoTokenIcon size={20} />
+              <ClawTokenIcon size={20} />
               <span
                 style={{
                   fontFamily: roboto,
@@ -368,7 +368,7 @@ const ShopMockup: React.FC = () => {
               style={{
                 background: purchaseHappened
                   ? COLORS.success
-                  : `linear-gradient(135deg, ${COLORS.neoToken}, ${COLORS.secondary})`,
+                  : `linear-gradient(135deg, ${COLORS.clawToken}, ${COLORS.secondary})`,
                 borderRadius: 8,
                 padding: "8px 24px",
                 border: `2px solid ${COLORS.border}`,
@@ -526,7 +526,7 @@ export const ClawTokenEconomy: React.FC = () => {
   return (
     <AbsoluteFill>
       <MapBackground zoom={1.3} tintColor={COLORS.bg} tintOpacity={0.35} panXRange={[-0.05, 0.05]} />
-      <ParticleField count={10} color={COLORS.neoToken} speed={0.3} />
+      <ParticleField count={10} color={COLORS.clawToken} speed={0.3} />
 
       <Sequence durationInFrames={Math.round(2.5 * fps)} premountFor={fps}>
         <CoinRain />

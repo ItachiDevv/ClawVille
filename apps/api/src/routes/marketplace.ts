@@ -414,7 +414,7 @@ marketplaceRoutes.post('/skills/:id/buy', requireAuth, async (c) => {
 
   return c.json({
     success: true,
-    neoTokens: pet.neoTokens,
+    clawTokens: pet.clawTokens,
     skill: { id: skill.id, name: skill.name },
   });
 });

@@ -37,7 +37,7 @@ import {
 import { db, activityLog } from '@clawville/database';
 
 import { findPath } from './pathfinding';
-import { creditNeoTokens, debitNeoTokens } from './neo-token-ledger';
+import { creditClawTokens, debitClawTokens } from './claw-token-ledger';
 
 // Single source of truth — agent-runtime re-exports NpcActivity from shared,
 // so these constants type-check without casting.
@@ -68,7 +68,7 @@ export class PetSimulationBridge {
       dbHooks: {
         awardToken: async (petId: string) => {
           // Credit via ledger — atomic + audited (source: 'simulation')
-          await creditNeoTokens({
+          await creditClawTokens({
             petId,
             amount: 1,
             reason: 'autonomous_visit',
@@ -94,7 +94,7 @@ export class PetSimulationBridge {
         gemini: process.env.GEMINI_API_KEY,
       },
       // Phase 3: inject services so economic actions (BUY_ITEM, LEARN_SKILL) can execute
-      services: { db, creditNeoTokens, debitNeoTokens },
+      services: { db, creditClawTokens, debitClawTokens },
     });
 
     // Fire-and-forget startup; tick() guards on runtimeReady before touching

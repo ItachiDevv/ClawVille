@@ -1513,7 +1513,7 @@ export default function QuestBoardModal() {
   const myQuests: QuestSubmission[] = myQuestsData?.submissions ?? PLACEHOLDER_ACTIVE;
   const rewards: QuestReward[] = questLogData?.rewards ?? PLACEHOLDER_REWARDS;
 
-  const tokens = (pet as any)?.neoTokens ?? 0;
+  const tokens = pet?.clawTokens ?? 0;
 
   const totalTokensEarned = rewards.reduce((s, r) => s + (r.tokensAwarded || 0), 0);
   const skillsEarned = rewards.filter((r) => r.skillName);
@@ -1566,7 +1566,7 @@ export default function QuestBoardModal() {
         headerIcon={<span>📜</span>}
         maxWidth={1060}
         tokenBadge={
-          <RpgTooltip content="Your NeoToken balance — spent on bounties, earned from quest completions.">
+          <RpgTooltip content="Your ClawToken balance — spent on bounties, earned from quest completions.">
             <span
               style={{
                 display: 'inline-flex',

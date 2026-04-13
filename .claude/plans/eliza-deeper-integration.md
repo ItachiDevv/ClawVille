@@ -23,7 +23,7 @@ Actions to implement:
 - `VISIT_BUILDING` — enter a building by name
 - `BUY_ITEM` — purchase a knowledge book from a building's shop
 - `LEARN_SKILL` — read a skill from inventory → merge knowledge into character
-- `CHECK_BALANCE` — report NeoToken balance + inventory summary
+- `CHECK_BALANCE` — report ClawToken balance + inventory summary
 - `LIST_BUILDINGS` — list all 10 buildings with current distance
 - `BUY_BAZAAR_LISTING` — purchase a skill listing from the bazaar
 - `ACCEPT_QUEST` — accept an available quest
@@ -37,7 +37,7 @@ composable ElizaOS Providers. Each provider returns a focused slice of
 context, and the runtime composes them automatically.
 
 Providers to implement:
-- `PetStateProvider` — name, species, level, NeoTokens, HP, stats, streak
+- `PetStateProvider` — name, species, level, ClawTokens, HP, stats, streak
 - `WorldStateProvider` — current building, nearby buildings + distance, pet
   position, time of day
 - `InventoryProvider` — owned items grouped by type (books, skills)

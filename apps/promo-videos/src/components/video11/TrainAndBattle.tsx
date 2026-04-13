@@ -14,7 +14,7 @@ import { MapBackground } from "../shared/MapBackground";
 import { PetSprite } from "../shared/PetSprite";
 import { NeopetsPanel } from "../shared/NeopetsPanel";
 import { SpeechBubble } from "../shared/SpeechBubble";
-import { NeoTokenIcon } from "../shared/NeoTokenIcon";
+import { ClawTokenIcon } from "../shared/ClawTokenIcon";
 import { BookIcon } from "../shared/BookIcon";
 import { DamageNumber } from "../shared/DamageNumber";
 import { HPBar } from "../shared/HPBar";
@@ -159,9 +159,9 @@ const SplitHook: React.FC = () => {
           top: 0,
           width: 4,
           height,
-          backgroundColor: COLORS.neoToken,
+          backgroundColor: COLORS.clawToken,
           opacity: dividerOpacity,
-          boxShadow: `0 0 15px ${COLORS.neoToken}`,
+          boxShadow: `0 0 15px ${COLORS.clawToken}`,
         }}
       />
     </AbsoluteFill>
@@ -295,13 +295,13 @@ const WorldMode: React.FC = () => {
                 transform: `scale(${tokenScale})`,
               }}
             >
-              <NeoTokenIcon size={28} />
+              <ClawTokenIcon size={28} />
               <span
                 style={{
                   fontFamily: roboto,
                   fontSize: 18,
                   fontWeight: 700,
-                  color: COLORS.neoToken,
+                  color: COLORS.clawToken,
                 }}
               >
                 +1 CT
@@ -430,7 +430,7 @@ const ArenaMode: React.FC = () => {
               fontFamily: roboto,
               fontSize: 24,
               fontWeight: 700,
-              color: COLORS.neoToken,
+              color: COLORS.clawToken,
               textShadow: `0 0 10px rgba(255,215,0,0.5)`,
             }}
           >

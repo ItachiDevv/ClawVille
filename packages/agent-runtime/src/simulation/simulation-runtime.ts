@@ -83,8 +83,8 @@ interface ActionChoice {
  */
 export interface SimulationServices {
   db: any;
-  creditNeoTokens: (params: any) => Promise<{ balanceAfter: number }>;
-  debitNeoTokens: (params: any) => Promise<{ balanceAfter: number }>;
+  creditClawTokens: (params: any) => Promise<{ balanceAfter: number }>;
+  debitClawTokens: (params: any) => Promise<{ balanceAfter: number }>;
 }
 
 /**
@@ -272,7 +272,7 @@ export class SimulationRuntime {
       // Phase 3: When at a building with budget remaining, offer BUY_ITEM / LEARN_SKILL
       if (isAtBuilding && hasEconomy) {
         actionChoices.push(
-          '  4. BUY_ITEM — buy a knowledge book from the current building shop (costs NeoTokens)',
+          '  4. BUY_ITEM — buy a knowledge book from the current building shop (costs ClawTokens)',
           '  5. LEARN_SKILL — read a book from inventory to learn its knowledge',
         );
         examples.push(

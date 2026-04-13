@@ -4,8 +4,8 @@
  * This does NOT require a new table. It aggregates live from existing
  * sources of truth:
  *
- *   - pets.neoTokens ................ liquid balance ("gold" tab)
- *   - neo_token_transactions ........ lifetime earnings ("earned" tab)
+ *   - pets.clawTokens ................ liquid balance ("gold" tab)
+ *   - claw_token_transactions ........ lifetime earnings ("earned" tab)
  *   - bazaar_transactions ........... skill sales volume ("skills-sold" tab)
  *   - quest_rewards ................. quest completions ("quests" tab)
  *   - bounty_reputation.totalCompleted   bounty completions ("bounties" tab)
@@ -28,7 +28,7 @@ import { eq, sql, desc, and, gt } from 'drizzle-orm';
 import {
   db,
   pets,
-  neoTokenTransactions,
+  clawTokenTransactions,
   bazaarTransactions,
   publishedSkills,
   questRewards,
@@ -89,8 +89,8 @@ const VALID_SORTS: SortMode[] = [
 // integer-friendly so the score is easy to reason about.
 // ---------------------------------------------------------------------------
 const COMPOSITE_WEIGHTS = {
-  gold: 1,            // 1 pt per NeoToken held
-  earned: 1,          // 1 pt per NeoToken ever earned (tracks activity, not hoarding)
+  gold: 1,            // 1 pt per ClawToken held
+  earned: 1,          // 1 pt per ClawToken ever earned (tracks activity, not hoarding)
   skillsSold: 500,    // skilled sellers get big credit
   skillsAuthored: 250, // publishing even without sales counts
   questsCompleted: 300,
@@ -156,7 +156,7 @@ async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
       species: pets.species,
       color: pets.color,
       archetype: pets.archetype,
-      neoTokens: pets.neoTokens,
+      clawTokens: pets.clawTokens,
     })
     .from(pets)
     .where(eq(pets.isActive, true));
@@ -168,14 +168,14 @@ async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
   // 2. Lifetime earnings — sum of positive amounts in the audit ledger.
   const earnedRows = await db
     .select({
-      petId: neoTokenTransactions.petId,
-      total: sql<number>`coalesce(sum(${neoTokenTransactions.amount}), 0)`.as(
+      petId: clawTokenTransactions.petId,
+      total: sql<number>`coalesce(sum(${clawTokenTransactions.amount}), 0)`.as(
         'total'
       ),
     })
-    .from(neoTokenTransactions)
-    .where(gt(neoTokenTransactions.amount, 0))
-    .groupBy(neoTokenTransactions.petId);
+    .from(clawTokenTransactions)
+    .where(gt(clawTokenTransactions.amount, 0))
+    .groupBy(clawTokenTransactions.petId);
 
   const earnedByPet = new Map<string, number>(
     earnedRows.map((r) => [r.petId, Number(r.total) || 0])
@@ -246,7 +246,7 @@ async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
       species: pet.species,
       color: pet.color ?? null,
       archetype: pet.archetype ?? null,
-      gold: pet.neoTokens || 0,
+      gold: pet.clawTokens || 0,
       earned: earnedByPet.get(pet.id) || 0,
       skillsSold: soldByPet.get(pet.id) || 0,
       skillsAuthored: authoredByPet.get(pet.id) || 0,

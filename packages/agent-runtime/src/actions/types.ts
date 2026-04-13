@@ -7,7 +7,7 @@
 // Service injection
 // ---------------------------------------------------------------------------
 
-export interface NeoTokenServiceParams {
+export interface ClawTokenServiceParams {
   petId: string;
   amount: number;
   reason: string;
@@ -16,10 +16,10 @@ export interface NeoTokenServiceParams {
 }
 
 export interface ClawvilleServices {
-  /** Credit NeoTokens to a pet (returns new balance) */
-  creditNeoTokens: (params: NeoTokenServiceParams) => Promise<{ balanceAfter: number }>;
-  /** Debit NeoTokens from a pet (returns new balance) */
-  debitNeoTokens: (params: NeoTokenServiceParams) => Promise<{ balanceAfter: number }>;
+  /** Credit ClawTokens to a pet (returns new balance) */
+  creditClawTokens: (params: ClawTokenServiceParams) => Promise<{ balanceAfter: number }>;
+  /** Debit ClawTokens from a pet (returns new balance) */
+  debitClawTokens: (params: ClawTokenServiceParams) => Promise<{ balanceAfter: number }>;
   /** Drizzle query builder instance (injected from the API layer) */
   db: any;
 }
@@ -83,8 +83,8 @@ export function hasServices(state: any): state is ClawvilleActionState {
     typeof state.petId === 'string' &&
     typeof state.userId === 'string' &&
     state.services &&
-    typeof state.services.creditNeoTokens === 'function' &&
-    typeof state.services.debitNeoTokens === 'function' &&
+    typeof state.services.creditClawTokens === 'function' &&
+    typeof state.services.debitClawTokens === 'function' &&
     state.services.db != null
   );
 }
