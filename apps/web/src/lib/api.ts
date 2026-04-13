@@ -165,7 +165,7 @@ export const api = {
     }>('/api/items/inventory'),
 
   buyItem: (itemId: string) =>
-    request<{ success: boolean; clawTokens: number; item: { id: string; name: string } }>(
+    request<{ success: boolean; neoTokens: number; item: { id: string; name: string } }>(
       '/api/items/buy',
       {
         method: 'POST',
@@ -265,7 +265,7 @@ export const api = {
       name: string;
       species: string;
       archetype?: string;
-      clawTokens?: number;
+      neoTokens?: number;
       knowledge?: string[];
     };
   }) =>
@@ -285,7 +285,7 @@ export const api = {
       name: string;
       species: string;
       archetype?: string;
-      clawTokens?: number;
+      neoTokens?: number;
       knowledge?: string[];
     };
   }) =>
@@ -303,7 +303,7 @@ export const api = {
       petName: string;
       species: string;
       archetype: string;
-      clawTokens: number;
+      neoTokens: number;
       knowledge: string[];
       topics: string[];
       lore: string[];
@@ -358,7 +358,7 @@ export const api = {
       petName: string;
       species: string;
       archetype: string;
-      clawTokens: number;
+      neoTokens: number;
       knowledge: string[];
       topics: string[];
       lore: string[];
@@ -437,7 +437,7 @@ export const api = {
     }),
 
   buySkill: (id: string) =>
-    honoRequest<{ success: boolean; clawTokens: number; skill: { id: string; name: string } }>(
+    honoRequest<{ success: boolean; neoTokens: number; skill: { id: string; name: string } }>(
       `/api/marketplace/skills/${id}/buy`,
       { method: 'POST' }
     ),
