@@ -143,7 +143,7 @@ function CharacterFrame({ onCreatePet }: { onCreatePet: () => void }) {
   const species = AVATAR_SPECIES.find((s) => s.id === avatar.species);
   const emoji = species?.emoji ?? '🦞';
   const level = avatar.level ?? 1;
-  const tokens = avatar.clawTokens ?? 0;
+  const tokens = (avatar as any).clawTokens ?? 0;
   const knowledgeCount =
     (avatar.characterConfig as { knowledge?: unknown[] } | null)?.knowledge?.length ?? 0;
 
@@ -522,6 +522,12 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
   const handleLogout = async () => {
     setLoggingOut(true);
     try {
+      // Stop autonomy engine before resetting store — resetStore uses raw
+      // set() which bypasses setControlMode's cleanup logic, so the autonomy
+      // interval would keep ticking against a logged-out state.
+      const { useAutonomyStore } = require('@/stores/autonomy') as typeof import('@/stores/autonomy');
+      useAutonomyStore.getState().stopAutonomy();
+
       await api.logout();
       resetStore();
       router.push('/login');
