@@ -274,7 +274,7 @@ export default function PersonalityPage() {
             <select
               value={habitat}
               onChange={(e) => setHabitat(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border-3 border-white/10 bg-white text-white focus:outline-none focus:ring-2 focus:ring-claw-green"
+              className="w-full px-3 py-2 rounded-lg border-3 border-white/10 bg-[#0a1628] text-white focus:outline-none focus:ring-2 focus:ring-claw-green"
             >
               {HABITAT_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -292,7 +292,7 @@ export default function PersonalityPage() {
             <select
               value={hobby}
               onChange={(e) => setHobby(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border-3 border-white/10 bg-white text-white focus:outline-none focus:ring-2 focus:ring-claw-green"
+              className="w-full px-3 py-2 rounded-lg border-3 border-white/10 bg-[#0a1628] text-white focus:outline-none focus:ring-2 focus:ring-claw-green"
             >
               {HOBBY_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -310,7 +310,7 @@ export default function PersonalityPage() {
             <select
               value={greetingStyle}
               onChange={(e) => setGreetingStyle(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border-3 border-white/10 bg-white text-white focus:outline-none focus:ring-2 focus:ring-claw-green"
+              className="w-full px-3 py-2 rounded-lg border-3 border-white/10 bg-[#0a1628] text-white focus:outline-none focus:ring-2 focus:ring-claw-green"
             >
               {GREETING_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
