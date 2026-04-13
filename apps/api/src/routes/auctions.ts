@@ -702,117 +702,127 @@ auctionRoutes.post('/:id/bid', requireAuth, async (c) => {
   const { amount } = parsed.data;
   const bidderPet = await getUserPet(user.id);
 
-  // 1. Fetch auction
-  const [auction] = await db
-    .select()
-    .from(auctions)
-    .where(eq(auctions.id, id))
-    .limit(1);
+  // Entire bid flow in a single transaction with row-level locking to
+  // prevent two concurrent bids from racing on the same auction row.
+  const result = await db.transaction(async (tx) => {
+    // 1. SELECT ... FOR UPDATE — row-lock the auction to serialize bids
+    const [auction] = await tx.execute<{
+      id: string;
+      seller_id: string;
+      status: string;
+      current_bid: number | null;
+      current_bidder_id: string | null;
+      bid_count: number;
+      starting_bid: number;
+      ends_at: Date;
+      original_ends_at: Date;
+    }>(
+      sql`SELECT * FROM auctions WHERE id = ${id} FOR UPDATE`
+    );
 
-  if (!auction) {
-    throw new HTTPException(404, { message: 'Auction not found' });
-  }
+    if (!auction) {
+      throw new HTTPException(404, { message: 'Auction not found' });
+    }
 
-  if (auction.status !== 'active') {
-    throw new HTTPException(400, { message: 'Auction is not active' });
-  }
+    if (auction.status !== 'active') {
+      throw new HTTPException(400, { message: 'Auction is not active' });
+    }
 
-  // Check if auction has expired
-  const now = new Date();
-  if (auction.endsAt < now) {
-    throw new HTTPException(400, { message: 'Auction has ended' });
-  }
+    const now = new Date();
+    const endsAt = new Date(auction.ends_at);
+    if (endsAt < now) {
+      throw new HTTPException(400, { message: 'Auction has ended' });
+    }
 
-  // 2. Prevent self-bidding
-  if (auction.sellerId === bidderPet.id) {
-    throw new HTTPException(400, {
-      message: 'Seller cannot bid on their own auction',
-    });
-  }
+    // 2. Prevent self-bidding
+    if (auction.seller_id === bidderPet.id) {
+      throw new HTTPException(400, {
+        message: 'Seller cannot bid on their own auction',
+      });
+    }
 
-  // 3. Verify bid amount
-  const minimumBid = auction.currentBid
-    ? auction.currentBid + 1
-    : auction.startingBid;
+    // 3. Verify bid amount
+    const minimumBid = auction.current_bid
+      ? auction.current_bid + 1
+      : auction.starting_bid;
 
-  if (amount < minimumBid) {
-    throw new HTTPException(400, {
-      message: `Bid must be at least ${minimumBid} ClawTokens`,
-    });
-  }
+    if (amount < minimumBid) {
+      throw new HTTPException(400, {
+        message: `Bid must be at least ${minimumBid} ClawTokens`,
+      });
+    }
 
-  // 4. ESCROW: Verify bidder has enough tokens
-  if (bidderPet.clawTokens < amount) {
-    throw new HTTPException(400, {
-      message: `Not enough ClawTokens. Need ${amount}, have ${bidderPet.clawTokens}.`,
-    });
-  }
+    // 4. Deduct bid amount from bidder (escrow) — within transaction
+    await debitClawTokens({
+      avatarId: bidderPet.id,
+      amount,
+      reason: 'auction_bid_escrow',
+      source: 'api',
+      metadata: { auctionId: id },
+    }, tx);
 
-  // 5. Deduct bid amount from bidder (escrow)
-  await debitClawTokens({
-    avatarId: bidderPet.id,
-    amount,
-    reason: 'auction_bid_escrow',
-    source: 'api',
-    metadata: { auctionId: id },
+    // 5. Refund previous bidder if there was one — within same transaction
+    if (auction.current_bidder_id && auction.current_bid) {
+      await creditClawTokens({
+        avatarId: auction.current_bidder_id,
+        amount: auction.current_bid,
+        reason: 'auction_bid_refund',
+        source: 'api',
+        metadata: { auctionId: id, outbidBy: bidderPet.id },
+      }, tx);
+    }
+
+    // 6. SNIPE PROTECTION: If bid within 30s of endsAt, extend by 30s
+    //    Max extension: +30 min from originalEndsAt
+    let newEndsAt = endsAt;
+    const originalEndsAt = new Date(auction.original_ends_at);
+    const timeRemaining = endsAt.getTime() - now.getTime();
+    const SNIPE_THRESHOLD_MS = 30 * 1000;
+    const MAX_EXTENSION_MS = 30 * 60 * 1000;
+
+    if (timeRemaining <= SNIPE_THRESHOLD_MS) {
+      const maxEndsAt = new Date(
+        originalEndsAt.getTime() + MAX_EXTENSION_MS
+      );
+      const proposedEndsAt = new Date(now.getTime() + SNIPE_THRESHOLD_MS);
+      newEndsAt = proposedEndsAt < maxEndsAt ? proposedEndsAt : maxEndsAt;
+    }
+
+    const newBidCount = auction.bid_count + 1;
+
+    // 7. Update auction state
+    await tx
+      .update(auctions)
+      .set({
+        currentBid: amount,
+        currentBidderId: bidderPet.id,
+        bidCount: newBidCount,
+        endsAt: newEndsAt,
+        updatedAt: new Date(),
+      })
+      .where(eq(auctions.id, id));
+
+    // 8. Insert bid record
+    const [bid] = await tx
+      .insert(auctionBids)
+      .values({
+        auctionId: id,
+        bidderId: bidderPet.id,
+        amount,
+      })
+      .returning();
+
+    return { bid, newEndsAt, newBidCount };
   });
 
-  // 6. Refund previous bidder if there was one
-  if (auction.currentBidderId && auction.currentBid) {
-    await creditClawTokens({
-      avatarId: auction.currentBidderId,
-      amount: auction.currentBid,
-      reason: 'auction_bid_refund',
-      source: 'api',
-      metadata: { auctionId: id, outbidBy: bidderPet.id },
-    });
-  }
-
-  // 7. SNIPE PROTECTION: If bid within 30s of endsAt, extend by 30s
-  //    Max extension: +30 min from originalEndsAt
-  let newEndsAt = auction.endsAt;
-  const timeRemaining = auction.endsAt.getTime() - now.getTime();
-  const SNIPE_THRESHOLD_MS = 30 * 1000; // 30 seconds
-  const MAX_EXTENSION_MS = 30 * 60 * 1000; // 30 minutes
-
-  if (timeRemaining <= SNIPE_THRESHOLD_MS) {
-    const maxEndsAt = new Date(
-      auction.originalEndsAt.getTime() + MAX_EXTENSION_MS
-    );
-    const proposedEndsAt = new Date(now.getTime() + SNIPE_THRESHOLD_MS);
-    newEndsAt = proposedEndsAt < maxEndsAt ? proposedEndsAt : maxEndsAt;
-  }
-
-  // 8. Update auction state
-  await db
-    .update(auctions)
-    .set({
-      currentBid: amount,
-      currentBidderId: bidderPet.id,
-      bidCount: auction.bidCount + 1,
-      endsAt: newEndsAt,
-      updatedAt: new Date(),
-    })
-    .where(eq(auctions.id, id));
-
-  // 9. Insert bid record
-  const [bid] = await db
-    .insert(auctionBids)
-    .values({
-      auctionId: id,
-      bidderId: bidderPet.id,
-      amount,
-    })
-    .returning();
-
-  // 10. Emit SSE event
+  // 9. Emit SSE event (outside transaction — non-critical)
   auctionEventBus.emit({
     type: 'bid_placed',
     auctionId: id,
     currentBid: amount,
     currentBidderId: bidderPet.id,
-    endsAt: newEndsAt.toISOString(),
-    bidCount: auction.bidCount + 1,
+    endsAt: result.newEndsAt.toISOString(),
+    bidCount: result.newBidCount,
   });
 
   // Re-fetch bidder's updated balance
@@ -823,13 +833,13 @@ auctionRoutes.post('/:id/bid', requireAuth, async (c) => {
   return c.json({
     success: true,
     bid: {
-      id: bid.id,
-      auctionId: bid.auctionId,
-      amount: bid.amount,
-      createdAt: bid.createdAt.toISOString(),
+      id: result.bid.id,
+      auctionId: result.bid.auctionId,
+      amount: result.bid.amount,
+      createdAt: result.bid.createdAt.toISOString(),
     },
-    endsAt: newEndsAt.toISOString(),
-    bidCount: auction.bidCount + 1,
+    endsAt: result.newEndsAt.toISOString(),
+    bidCount: result.newBidCount,
     clawTokens: updatedBidder?.clawTokens ?? 0,
   });
 });
