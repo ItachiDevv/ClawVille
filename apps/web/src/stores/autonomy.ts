@@ -33,7 +33,7 @@ type TickState = 'idle' | 'planning' | 'traveling' | 'entering' | 'inside' | 'ex
 // ---------------------------------------------------------------------------
 
 const ALL_BUILDING_IDS = Object.keys(NPC_BUILDING_CENTERS);
-const MAP_DIAGONAL = Math.sqrt(1280 * 1280 + 800 * 800);
+const MAP_DIAGONAL = Math.sqrt(2048 * 2048 + 1280 * 1280);
 
 // Thoughts the agent thinks while inside buildings
 const BUILDING_THOUGHTS: Record<string, string[]> = {};
