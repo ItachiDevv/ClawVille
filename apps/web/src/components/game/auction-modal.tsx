@@ -1413,7 +1413,7 @@ export default function AuctionModal() {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const myAuctions: any[] = myAuctionsData?.auctions ?? [];
   const myBids: any[] = myBidsData?.auctions ?? [];
-  const tokens: number = avatar?.clawTokens ?? avatar?.clawTokens ?? 0;
+  const tokens: number = (avatar as any)?.clawTokens ?? 0;
 
   const winningCount = myBids.filter(
     (a) =>
