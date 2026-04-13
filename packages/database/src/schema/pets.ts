@@ -89,6 +89,7 @@ export const pets = pgTable('pets', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id')
     .notNull()
+    .unique()
     .references(() => users.id, { onDelete: 'cascade' }),
   name: varchar('name', { length: 100 }).notNull().unique(),
   species: petSpeciesEnum('species').notNull(),
