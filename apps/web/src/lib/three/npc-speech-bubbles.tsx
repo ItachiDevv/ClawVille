@@ -1,16 +1,15 @@
 'use client';
 
-import { memo, useMemo } from 'react';
+import { memo, useMemo, useState, useEffect } from 'react';
 import { Html } from '@react-three/drei';
 import { useNpcStore, type NpcChatBubble, type NpcSpriteState } from '@/stores/npc';
+import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 
 // ---------------------------------------------------------------------------
 // NPC Speech Bubbles — Dom overlay speech bubbles for wandering NPCs
 // Uses <Html> from drei (DOM overlay, not GPU rendered — safe on Intel Iris Xe)
 // ---------------------------------------------------------------------------
 
-const MAP_WIDTH = 2048;
-const MAP_HEIGHT = 1280;
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 
@@ -113,7 +112,19 @@ function NpcSpeechBubbles() {
   const chatBubbles = useNpcStore((s) => s.chatBubbles);
   const npcs = useNpcStore((s) => s.npcs);
 
+  // Tick every second so expired bubbles are removed from the rendered output
+  // even when the zustand store stops updating (quiet demo mode or idle server).
+  // Without this, `now` would be stale from the last React render — bubbles
+  // would stay on screen past their expiresAt timestamp until the next store update.
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+
   const now = Date.now();
+  // tick is read so the effect dependency is correct and eslint doesn't strip it
+  void tick;
 
   // Build a lookup map from npcId -> NpcSpriteState for O(1) access
   const npcMap = useMemo(() => {
