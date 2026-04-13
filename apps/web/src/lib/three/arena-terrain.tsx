@@ -185,11 +185,13 @@ function SandFloor() {
 
   useEffect(() => {
     if (ref.current) ref.current.layers.enable(TERRAIN_LAYER);
-    // Dispose on unmount
+    // Dispose both geometry and material on unmount to prevent GPU memory leaks.
+    // sandGeo is a large subdivided plane (120×80 segs = ~9600 quads).
     return () => {
+      sandGeo.dispose();
       sandMat.dispose();
     };
-  }, [sandMat]);
+  }, [sandGeo, sandMat]);
 
   return (
     <mesh
@@ -480,8 +482,8 @@ export function DeferredTerrainPreloads(): ReactElement | null {
       useGLTF.preload('/models/building-submarine.glb');
       // Heavy 5.9 MB scene — also deferred (not visible until player is near center)
       useGLTF.preload('/models/underwater-decorations.glb');
-      // Border scenery
-      useGLTF.preload('/models/building-lighthouse.glb');
+      // Note: building-lighthouse.glb is intentionally omitted here — arena-buildings.tsx
+      // already preloads it via its module-scope loop over BUILDING_MODELS.
     });
     return () => cancelAnimationFrame(raf);
   }, []);

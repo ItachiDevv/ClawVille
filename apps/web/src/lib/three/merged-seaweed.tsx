@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useEffect } from 'react';
 import * as THREE from 'three/webgpu';
 import { attribute, positionLocal, float, sin, cos, vec3, time } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
@@ -428,6 +428,15 @@ export default function MergedSeaweed() {
     const mat = createSeaweedMaterial();
     return { geometry: geo, material: mat };
   }, []);
+
+  // Dispose merged geometry (~3000-blade buffer) and TSL material on unmount
+  // to prevent GPU memory leaks when navigating away from the game page.
+  useEffect(() => {
+    return () => {
+      geometry.dispose();
+      material.dispose();
+    };
+  }, [geometry, material]);
 
   return (
     <mesh

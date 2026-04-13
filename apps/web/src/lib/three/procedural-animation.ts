@@ -79,9 +79,11 @@ export function applyStationaryIdleAnimation(state: AnimationState): void {
   const sway = Math.sin(t * 0.6) * 0.08 + Math.sin(t * 1.3 + 1.5) * 0.04;
   group.rotation.z = sway;
 
-  // Looking around — visible head/body turns
+  // Looking around — relative sway around the parent group's current facing direction.
+  // Do NOT add Math.PI here: the outer groupRef already has facingRotY baked in
+  // (which includes the -Z model correction). Adding PI again would flip all NPCs 180°.
   const lookAround = Math.sin(t * 0.3) * 0.2 + Math.sin(t * 0.7 + 2.0) * 0.1;
-  group.rotation.y = Math.PI + lookAround;
+  group.rotation.y = lookAround;
 
   // Weight shift — forward lean
   group.rotation.x = Math.sin(t * 0.5) * 0.05;
