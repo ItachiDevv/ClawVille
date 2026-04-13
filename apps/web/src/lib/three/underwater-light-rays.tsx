@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useEffect } from 'react';
 import * as THREE from 'three/webgpu';
 import { float, vec3, sin, time } from 'three/tsl';
 
@@ -165,6 +165,13 @@ function LightRay({ def }: { def: RayDef }) {
     const mat = createRayMaterial(def);
     return { geometry: geo, material: mat };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps — def is a static constant
+
+  useEffect(() => {
+    return () => {
+      geometry.dispose();
+      material.dispose();
+    };
+  }, [geometry, material]);
 
   return (
     <mesh
