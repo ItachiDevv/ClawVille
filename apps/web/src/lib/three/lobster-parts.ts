@@ -81,7 +81,7 @@ export function discoverLobsterParts(root: THREE.Object3D): LobsterRefs {
     const isLeft = dx < -xThreshold;
     const isRight = dx > xThreshold;
     const isAbove = m.center.y > yUpperThreshold;
-    const isBehind = m.center.z > zMidpoint; // +Z = behind (tail)
+    const isBehind = m.center.z > zMidpoint; // +Z = tail side heuristic (for part classification only — model RENDERS facing +Z at rotation.y=0)
     const isFront = m.center.z < zMidpoint;
 
     if (isLeft) leftSide.push(m);
