@@ -82,7 +82,7 @@ export default function ActivityFeed() {
         )}
         {!loading && entries.length === 0 && (
           <p className="text-xs text-amber-600 text-center py-4">
-            No activity yet. Your avatar will log visits when it explores autonomously!
+            No activity yet. Your agent will log visits when it explores autonomously!
           </p>
         )}
         {entries.map((entry) => (

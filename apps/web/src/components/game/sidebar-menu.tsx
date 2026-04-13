@@ -15,8 +15,8 @@
  *     - Locations  — the 10 building zones where agents learn skills
  *     - OpenClaw   — external bot entry point
  *
- *   AVATAR     (Priority 1: Milady app store shipping surface)
- *     - My Avatar       — settings for the user's agent
+ *   AGENT   (Priority 1: Milady app store shipping surface)
+ *     - My Agent     — settings for the user's agent
  *     - Skill Forge  — skill authoring (renamed from Skill Builder)
  *
  *   ECONOMY (Priority 3: skill marketplace / value flow)
@@ -516,7 +516,7 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
 
   const handleCreateAgent = () => {
     closeMenu();
-    router.push('/create-avatar');
+    router.push('/create-agent');
   };
 
   const handleLogout = async () => {
@@ -594,12 +594,12 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
           />
         </div>
 
-        {/* AVATAR — Priority 1: Milady launch surface */}
-        <CategoryHeader label="Avatar" subtitle="Configure · Forge" />
+        {/* AGENT — Priority 1: Milady launch surface */}
+        <CategoryHeader label="Agent" subtitle="Configure · Forge" />
         <div className="rpg-sidebar-group">
           <SidebarRow
             icon="🐾"
-            label="My Avatar"
+            label="My Agent"
             onClick={runAction(() => setSettingsModalOpen(true))}
           />
           <SidebarRow
