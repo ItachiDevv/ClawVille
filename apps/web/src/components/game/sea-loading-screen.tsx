@@ -58,9 +58,13 @@ const SPLASH_RINGS = [
   { delay: '0.26s', size: 90 },
 ] as const;
 
+const SLOW_MS = 15_000;
+const TIMEOUT_MS = 30_000;
+
 export default function SeaLoadingScreen({ forceReady }: Props) {
   const [visible, setVisible]       = useState(true);
   const [fading, setFading]         = useState(false);
+  const [slow, setSlow]             = useState(false);
   const rafRef     = useRef<number | null>(null);
   const mountedRef = useRef(true);
 
@@ -72,6 +76,21 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
 
   useEffect(() => {
     mountedRef.current = true;
+
+    // Show "taking longer" hint after 15s
+    const slowTimer = setTimeout(() => {
+      if (mountedRef.current) setSlow(true);
+    }, SLOW_MS);
+
+    // Force-dismiss after 30s so user isn't stuck forever
+    const forceTimer = setTimeout(() => {
+      if (mountedRef.current) {
+        setFading(true);
+        setTimeout(() => {
+          if (mountedRef.current) setVisible(false);
+        }, 420);
+      }
+    }, TIMEOUT_MS);
 
     function check() {
       if (!mountedRef.current) return;
@@ -89,6 +108,8 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
     rafRef.current = requestAnimationFrame(check);
     return () => {
       mountedRef.current = false;
+      clearTimeout(slowTimer);
+      clearTimeout(forceTimer);
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
     };
   }, [forceReady]);
@@ -463,6 +484,20 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
               />
             ))}
           </div>
+
+          {/* Slow-load hint */}
+          {slow && (
+            <p
+              style={{
+                fontFamily: 'var(--font-oxanium), sans-serif',
+                fontSize: 'clamp(0.65rem, 1.4vw, 0.8rem)',
+                color: 'rgba(251,191,36,0.7)',
+                margin: 0,
+              }}
+            >
+              Taking longer than expected...
+            </p>
+          )}
         </div>
       </div>
     </>
