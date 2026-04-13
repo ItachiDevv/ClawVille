@@ -13,8 +13,8 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 // ---------------------------------------------------------------------------
 
 const BLADE_COUNT = 3000;
-const MAP_WIDTH = 1280;
-const MAP_HEIGHT = 800;
+const MAP_WIDTH = 2048;
+const MAP_HEIGHT = 1280;
 const HALF_MW = MAP_WIDTH / 2;
 const HALF_MH = MAP_HEIGHT / 2;
 const SPREAD_X = MAP_WIDTH * 2.2;
@@ -28,11 +28,11 @@ const RATIO_TALL_KELP   = 0.35;
 
 // Building exclusion zones
 const BUILDING_ZONES = [
-  // Circular village — max-extent ring, must match buildingZones in tilemap-data.ts
-  { x: 18, y: 0, w: 4, h: 3 }, { x: 29, y: 1, w: 3, h: 3 }, { x: 34, y: 7, w: 4, h: 3 },
-  { x: 34, y: 13, w: 4, h: 3 }, { x: 28, y: 20, w: 4, h: 3 }, { x: 18, y: 21, w: 3, h: 3 },
-  { x: 8, y: 20, w: 4, h: 3 }, { x: 2, y: 13, w: 4, h: 3 }, { x: 2, y: 7, w: 4, h: 4 },
-  { x: 8, y: 1, w: 3, h: 3 },
+  // Circular village — wider ring in 64×40 grid, must match buildingZones in tilemap-data.ts
+  { x: 29, y: 2, w: 4, h: 3 }, { x: 45, y: 4, w: 4, h: 3 }, { x: 54, y: 12, w: 4, h: 3 },
+  { x: 54, y: 22, w: 4, h: 3 }, { x: 44, y: 32, w: 4, h: 3 }, { x: 30, y: 35, w: 4, h: 3 },
+  { x: 14, y: 32, w: 4, h: 3 }, { x: 6, y: 22, w: 4, h: 3 }, { x: 6, y: 12, w: 4, h: 4 },
+  { x: 15, y: 4, w: 4, h: 3 },
 ].map((z) => ({
   cx: -HALF_MW + (z.x + z.w / 2) * TILE_SIZE,
   cz: -HALF_MH + (z.y + z.h / 2) * TILE_SIZE,

@@ -34,18 +34,18 @@ function center(tileX: number, tileY: number, tileW: number, tileH: number) {
 
 // Building zone tile coords from tilemap-data.ts (10 OpenClaw integrations)
 export const BUILDING_TILE_ZONES: Record<string, { x: number; y: number; w: number; h: number }> = {
-  // Circular village — max-extent ring (semi-major X=18, semi-minor Y=11)
+  // Circular village — wider ring (semi-major X=26, semi-minor Y=16) in 64×40 grid
   // Must match buildingZones in tilemap-data.ts exactly
-  'canvas-studio':      { x: 18, y: 0,  w: 4, h: 3 },
-  'memory-vault':       { x: 29, y: 1,  w: 3, h: 3 },
-  'webhook-gateway':    { x: 34, y: 7,  w: 4, h: 3 },
-  'cron-hub':           { x: 34, y: 13, w: 4, h: 3 },
-  'voice-tower':        { x: 28, y: 20, w: 4, h: 3 },
-  'config-citadel':     { x: 18, y: 21, w: 3, h: 3 },
-  'tool-workshop':      { x: 8,  y: 20, w: 4, h: 3 },
-  'skill-forge':        { x: 2,  y: 13, w: 4, h: 3 },
-  'channel-bridge':     { x: 2,  y: 7,  w: 4, h: 4 },
-  'security-fortress':  { x: 8,  y: 1,  w: 3, h: 3 },
+  'canvas-studio':      { x: 29, y: 2,  w: 4, h: 3 },
+  'memory-vault':       { x: 45, y: 4,  w: 4, h: 3 },
+  'webhook-gateway':    { x: 54, y: 12, w: 4, h: 3 },
+  'cron-hub':           { x: 54, y: 22, w: 4, h: 3 },
+  'voice-tower':        { x: 44, y: 32, w: 4, h: 3 },
+  'config-citadel':     { x: 30, y: 35, w: 4, h: 3 },
+  'tool-workshop':      { x: 14, y: 32, w: 4, h: 3 },
+  'skill-forge':        { x: 6,  y: 22, w: 4, h: 3 },
+  'channel-bridge':     { x: 6,  y: 12, w: 4, h: 4 },
+  'security-fortress':  { x: 15, y: 4,  w: 4, h: 3 },
 };
 
 /** Map of building ID to {homeX, homeY} for NPC definitions */

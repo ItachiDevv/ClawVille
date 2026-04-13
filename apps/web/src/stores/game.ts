@@ -105,6 +105,10 @@ export interface GameState {
   joystickVelocity: { x: number; y: number };
   setJoystickVelocity: (x: number, y: number) => void;
 
+  // Camera joystick velocity from mobile controls (0-1 range)
+  cameraJoystickVelocity: { x: number; y: number };
+  setCameraJoystickVelocity: (x: number, y: number) => void;
+
   // Discovery tracker
   visitedBuildings: Set<string>;
   markBuildingVisited: (id: string) => boolean; // returns true if newly discovered
@@ -370,6 +374,9 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   joystickVelocity: { x: 0, y: 0 },
   setJoystickVelocity: (x, y) => set({ joystickVelocity: { x, y } }),
+
+  cameraJoystickVelocity: { x: 0, y: 0 },
+  setCameraJoystickVelocity: (x, y) => set({ cameraJoystickVelocity: { x, y } }),
 
   visitedBuildings: typeof window !== 'undefined' ? loadVisited() : new Set(),
   markBuildingVisited: (id) => {
