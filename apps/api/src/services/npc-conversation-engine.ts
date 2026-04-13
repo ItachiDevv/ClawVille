@@ -2,12 +2,21 @@ import { templates } from '@clawville/agent-templates';
 import { NPC_DEFINITIONS, type NpcDefinition } from '@clawville/shared';
 import type { OpenClawClient } from './openclaw-client';
 
-// Gemini REST config — we hit generateContent directly instead of going through
-// a plugin chain. NPC banter is casual chat, so no extended thinking / no
-// reasoning budget — just a plain generateContent call at high temperature.
+// LLM config — try Gemini first (cheap/fast), fall back to OpenAI if Gemini
+// is unavailable or quota-exhausted. NPC banter is casual chat, so no extended
+// thinking — just a plain chat completion at high temperature.
 const GEMINI_MODEL = 'gemini-flash-latest';
-const GEMINI_TEMPERATURE = 0.9;
+const OPENAI_MODEL = 'gpt-4o-mini';
+const LLM_TEMPERATURE = 0.9;
 const GEMINI_MAX_OUTPUT_TOKENS = 400;
+const OPENAI_MAX_TOKENS = 400;
+
+// Track Gemini failures to avoid hammering a dead API. After 3 consecutive
+// failures, skip Gemini for 5 minutes and go straight to OpenAI.
+let geminiConsecutiveFailures = 0;
+let geminiBackoffUntil = 0;
+const GEMINI_MAX_FAILURES = 3;
+const GEMINI_BACKOFF_MS = 5 * 60 * 1000; // 5 minutes
 
 interface ConversationMessage {
   npcId: string;
@@ -16,31 +25,53 @@ interface ConversationMessage {
 }
 
 /**
+ * Call an LLM for NPC banter. Tries Gemini first, falls back to OpenAI.
+ * Returns the trimmed text on success, or an empty string on total failure.
+ * Never throws — callers use the empty string to fall back to canned lines.
+ */
+async function callLlmForNpc(
+  systemPrompt: string | null,
+  userMessage: string,
+): Promise<string> {
+  // Try Gemini first (unless in backoff)
+  const now = Date.now();
+  if (now >= geminiBackoffUntil) {
+    const geminiResult = await callGeminiForNpc(systemPrompt, userMessage);
+    if (geminiResult) {
+      geminiConsecutiveFailures = 0;
+      return geminiResult;
+    }
+    geminiConsecutiveFailures++;
+    if (geminiConsecutiveFailures >= GEMINI_MAX_FAILURES) {
+      geminiBackoffUntil = now + GEMINI_BACKOFF_MS;
+      console.warn(`[NPC Convo] Gemini failed ${GEMINI_MAX_FAILURES}x — backing off for 5 min, using OpenAI`);
+    }
+  }
+
+  // Fallback to OpenAI
+  const openaiResult = await callOpenAIForNpc(systemPrompt, userMessage);
+  if (openaiResult) return openaiResult;
+
+  return '';
+}
+
+/**
  * Call Gemini's generateContent endpoint directly via fetch.
- * Returns the trimmed text on success, or an empty string on any failure
- * (missing API key, non-2xx response, empty candidates). Never throws —
- * callers use the empty string as the signal to fall back to canned lines.
+ * Returns the trimmed text on success, or an empty string on any failure.
  */
 async function callGeminiForNpc(
   systemPrompt: string | null,
   userMessage: string,
 ): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    console.warn('[NPC Convo] GEMINI_API_KEY missing — returning empty reply');
-    return '';
-  }
-
-  console.log(
-    `[NPC Convo] Gemini: model=${GEMINI_MODEL} temp=${GEMINI_TEMPERATURE} maxOutputTokens=${GEMINI_MAX_OUTPUT_TOKENS}`,
-  );
+  if (!apiKey) return '';
 
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
     const body: Record<string, unknown> = {
       contents: [{ role: 'user', parts: [{ text: userMessage }] }],
       generationConfig: {
-        temperature: GEMINI_TEMPERATURE,
+        temperature: LLM_TEMPERATURE,
         maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS,
       },
     };
@@ -56,19 +87,71 @@ async function callGeminiForNpc(
 
     if (!res.ok) {
       const errText = await res.text();
-      console.error(`[NPC Convo] Gemini ${res.status}: ${errText.slice(0, 300)}`);
+      console.error(`[NPC Convo] Gemini ${res.status}: ${errText.slice(0, 200)}`);
       return '';
     }
 
     const data = (await res.json()) as any;
     const text: string | undefined = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) {
-      console.error('[NPC Convo] Gemini returned no text');
-      return '';
-    }
+    if (!text) return '';
     return text.trim();
   } catch (err) {
     console.error('[NPC Convo] Gemini fetch failed:', err);
+    return '';
+  }
+}
+
+/**
+ * Call OpenAI's chat completions endpoint as a fallback.
+ * Uses gpt-4o-mini for cost efficiency on NPC banter.
+ * Returns the trimmed text on success, or an empty string on any failure.
+ */
+async function callOpenAIForNpc(
+  systemPrompt: string | null,
+  userMessage: string,
+): Promise<string> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    // Only log once per backoff period to avoid spam
+    if (geminiConsecutiveFailures === GEMINI_MAX_FAILURES) {
+      console.warn('[NPC Convo] OPENAI_API_KEY missing — no LLM fallback available');
+    }
+    return '';
+  }
+
+  try {
+    const messages: Array<{ role: string; content: string }> = [];
+    if (systemPrompt) {
+      messages.push({ role: 'system', content: systemPrompt });
+    }
+    messages.push({ role: 'user', content: userMessage });
+
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: OPENAI_MODEL,
+        messages,
+        temperature: LLM_TEMPERATURE,
+        max_tokens: OPENAI_MAX_TOKENS,
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error(`[NPC Convo] OpenAI ${res.status}: ${errText.slice(0, 200)}`);
+      return '';
+    }
+
+    const data = (await res.json()) as any;
+    const text: string | undefined = data?.choices?.[0]?.message?.content;
+    if (!text) return '';
+    return text.trim();
+  } catch (err) {
+    console.error('[NPC Convo] OpenAI fetch failed:', err);
     return '';
   }
 }
@@ -107,7 +190,7 @@ Keep responses short (1-2 sentences each). Be in character. Be playful and fun.`
 
   const userMessage = `${npc1.name} and ${npc2.name} run into each other near ${npc1.name}'s area. Generate their conversation.`;
 
-  const text = await callGeminiForNpc(systemPrompt, userMessage);
+  const text = await callLlmForNpc(systemPrompt, userMessage);
   if (!text) {
     return getFallbackConversation(npc1, npc2);
   }
@@ -204,7 +287,7 @@ Reply as ${npc.name} with a single short sentence (1-2 sentences max). Stay in c
         // Use Gemini for the non-OpenClaw participant. No system instruction
         // here — the original call shoved everything into the user message as
         // well, so we keep that shape identical for parity.
-        reply = await callGeminiForNpc(null, contextMsg);
+        reply = await callLlmForNpc(null, contextMsg);
       }
 
       // Clean up — remove name prefix if the model added it
