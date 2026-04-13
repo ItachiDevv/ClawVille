@@ -104,7 +104,7 @@ function PlayerPetInner() {
   const groupRef = useRef<THREE.Group>(null);
   const animGroupRef = useRef<THREE.Group>(null);
   const rotRef = useRef(0);
-  const terrainYRef = useRef(0);
+  const terrainYRef = useRef(-2); // -2 matches sand floor Y so pet spawns flush with terrain
   const { scene: threeScene } = useThree();
 
   attachKeyListeners();
