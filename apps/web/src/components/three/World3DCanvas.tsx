@@ -29,6 +29,7 @@ import AuctionPodium from '@/lib/three/auction-podium';
 import ActivityIndicators from '@/lib/three/activity-indicators';
 import FloatingTexts3D from '@/lib/three/floating-text-3d';
 import NpcSpeechBubbles from '@/lib/three/npc-speech-bubbles';
+import ClickToMove from '@/lib/three/click-to-move';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 import { useGameStore } from '@/stores/game';
 import { useNpcStore } from '@/stores/npc';
@@ -604,6 +605,9 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
 
       {/* Floating reward texts — spheres that float upward on token earn */}
       <FloatingTexts3D />
+
+      {/* Click-to-move — invisible ground plane + path dots + destination marker */}
+      {isGame && <ClickToMove />}
 
       {/* Mode-specific content */}
       {isGame && <PlayerPet />}
