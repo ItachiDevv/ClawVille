@@ -415,125 +415,122 @@ questRoutes.post('/admin/:submissionId/review', requireAuth, async (c) => {
   }
 
   const { decision, reviewNote } = parsed.data;
-
-  // Fetch submission with quest details
-  const [submissionRow] = await db
-    .select({
-      submission: questSubmissions,
-      quest: quests,
-    })
-    .from(questSubmissions)
-    .innerJoin(quests, eq(questSubmissions.questId, quests.id))
-    .where(eq(questSubmissions.id, submissionId))
-    .limit(1);
-
-  if (!submissionRow) {
-    throw new HTTPException(404, { message: 'Submission not found' });
-  }
-
-  const submission = submissionRow.submission;
-  const quest = submissionRow.quest;
-
-  // Only review submissions in 'submitted' or 'in_review' status
-  if (submission.status !== 'submitted' && submission.status !== 'in_review') {
-    throw new HTTPException(400, {
-      message: `Cannot review submission with status '${submission.status}'`,
-    });
-  }
-
   const now = new Date();
 
   if (decision === 'approved') {
-    // 1. Update submission status to 'approved'
-    await db
-      .update(questSubmissions)
-      .set({
-        status: 'approved',
-        reviewNote: reviewNote ?? null,
-        reviewedBy: admin.id,
-        reviewedAt: now,
-        updatedAt: now,
-      })
-      .where(eq(questSubmissions.id, submissionId));
+    // Wrap the entire approval flow in a transaction to prevent double-approval
+    // races. The atomic UPDATE ... WHERE status IN (...) RETURNING * ensures
+    // only one concurrent request can claim the submission.
+    const result = await db.transaction(async (tx) => {
+      // 1. Atomically claim the submission — if 0 rows, another request got it
+      const [claimed] = await tx
+        .update(questSubmissions)
+        .set({
+          status: 'approved',
+          reviewNote: reviewNote ?? null,
+          reviewedBy: admin.id,
+          reviewedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(questSubmissions.id, submissionId),
+            sql`${questSubmissions.status} IN ('submitted', 'in_review')`
+          )
+        )
+        .returning();
 
-    // 2. Award tokens to pet
-    const pet = await db.query.pets.findFirst({
-      where: eq(pets.id, submission.petId),
-    });
-
-    if (!pet) {
-      throw new HTTPException(500, { message: 'Submission pet not found' });
-    }
-
-    // Atomic + audited quest token reward
-    await creditClawTokens({
-      petId: pet.id,
-      amount: quest.tokenReward,
-      reason: 'quest_complete',
-      source: 'quest',
-      metadata: { questId: quest.id, submissionId: submission.id },
-    });
-
-    // 3. If quest has skillRewardId, add skill to pet_inventory
-    if (quest.skillRewardId) {
-      const itemId = `skill-${quest.skillRewardId}`;
-      const existingItem = await db.query.petInventory.findFirst({
-        where: and(
-          eq(petInventory.petId, pet.id),
-          eq(petInventory.itemId, itemId)
-        ),
-      });
-
-      if (existingItem) {
-        await db
-          .update(petInventory)
-          .set({ quantity: existingItem.quantity + 1 })
-          .where(eq(petInventory.id, existingItem.id));
-      } else {
-        await db.insert(petInventory).values({
-          petId: pet.id,
-          itemId,
-          quantity: 1,
+      if (!claimed) {
+        throw new HTTPException(409, {
+          message: 'Submission already reviewed or not found',
         });
       }
-    }
 
-    // 4. Create quest_reward record
-    await db.insert(questRewards).values({
-      submissionId,
-      petId: pet.id,
-      questId: quest.id,
-      tokensAwarded: quest.tokenReward,
-      skillId: quest.skillRewardId ?? null,
-      titleAwarded: quest.titleReward ?? null,
+      // Fetch quest details
+      const [quest] = await tx
+        .select()
+        .from(quests)
+        .where(eq(quests.id, claimed.questId))
+        .limit(1);
+
+      if (!quest) {
+        throw new HTTPException(500, { message: 'Quest not found for submission' });
+      }
+
+      // 2. Award tokens to pet (within the same transaction)
+      await creditClawTokens({
+        petId: claimed.petId,
+        amount: quest.tokenReward,
+        reason: 'quest_complete',
+        source: 'quest',
+        metadata: { questId: quest.id, submissionId: claimed.id },
+      }, tx);
+
+      // 3. If quest has skillRewardId, add skill to pet_inventory
+      if (quest.skillRewardId) {
+        const itemId = `skill-${quest.skillRewardId}`;
+        const existingItem = await tx.query.petInventory.findFirst({
+          where: and(
+            eq(petInventory.petId, claimed.petId),
+            eq(petInventory.itemId, itemId)
+          ),
+        });
+
+        if (existingItem) {
+          await tx
+            .update(petInventory)
+            .set({ quantity: existingItem.quantity + 1 })
+            .where(eq(petInventory.id, existingItem.id));
+        } else {
+          await tx.insert(petInventory).values({
+            petId: claimed.petId,
+            itemId,
+            quantity: 1,
+          });
+        }
+      }
+
+      // 4. Create quest_reward record
+      await tx.insert(questRewards).values({
+        submissionId,
+        petId: claimed.petId,
+        questId: quest.id,
+        tokensAwarded: quest.tokenReward,
+        skillId: quest.skillRewardId ?? null,
+        titleAwarded: quest.titleReward ?? null,
+      });
+
+      // 5. Increment quest.currentCompletions
+      const newCompletions = (quest.currentCompletions ?? 0) + 1;
+      const questUpdates: Record<string, unknown> = {
+        currentCompletions: newCompletions,
+        updatedAt: now,
+      };
+
+      // 6. If currentCompletions >= maxCompletions, mark quest as 'completed'
+      if (quest.maxCompletions && newCompletions >= quest.maxCompletions) {
+        questUpdates.status = 'completed';
+      }
+
+      await tx.update(quests).set(questUpdates).where(eq(quests.id, quest.id));
+
+      return {
+        tokensAwarded: quest.tokenReward,
+        skillRewardId: quest.skillRewardId ?? null,
+        titleAwarded: quest.titleReward ?? null,
+        questCompleted:
+          quest.maxCompletions != null && newCompletions >= quest.maxCompletions,
+      };
     });
-
-    // 5. Increment quest.currentCompletions
-    const newCompletions = (quest.currentCompletions ?? 0) + 1;
-    const questUpdates: Record<string, unknown> = {
-      currentCompletions: newCompletions,
-      updatedAt: now,
-    };
-
-    // 6. If currentCompletions >= maxCompletions, mark quest as 'completed'
-    if (quest.maxCompletions && newCompletions >= quest.maxCompletions) {
-      questUpdates.status = 'completed';
-    }
-
-    await db.update(quests).set(questUpdates).where(eq(quests.id, quest.id));
 
     return c.json({
       success: true,
       decision: 'approved',
-      tokensAwarded: quest.tokenReward,
-      skillRewardId: quest.skillRewardId ?? null,
-      titleAwarded: quest.titleReward ?? null,
-      questCompleted:
-        quest.maxCompletions != null && newCompletions >= quest.maxCompletions,
+      ...result,
     });
   } else {
-    // Rejected
-    await db
+    // Rejected — also use atomic update to prevent double-review
+    const [claimed] = await db
       .update(questSubmissions)
       .set({
         status: 'rejected',
@@ -542,7 +539,19 @@ questRoutes.post('/admin/:submissionId/review', requireAuth, async (c) => {
         reviewedAt: now,
         updatedAt: now,
       })
-      .where(eq(questSubmissions.id, submissionId));
+      .where(
+        and(
+          eq(questSubmissions.id, submissionId),
+          sql`${questSubmissions.status} IN ('submitted', 'in_review')`
+        )
+      )
+      .returning();
+
+    if (!claimed) {
+      throw new HTTPException(409, {
+        message: 'Submission already reviewed or not found',
+      });
+    }
 
     return c.json({
       success: true,
