@@ -356,6 +356,8 @@ function createMergedSeaweedGeometry(): THREE.BufferGeometry {
   }
 
   const merged = mergeGeometries(geometries, false);
+  // Dispose per-blade source geometries — merged into one buffer, keeping them leaks ~300KB GPU
+  for (const g of geometries) g.dispose();
   if (!merged) {
     console.warn('[MergedSeaweed] mergeGeometries returned null');
     return new THREE.BufferGeometry();
