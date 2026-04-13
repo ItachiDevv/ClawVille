@@ -192,8 +192,8 @@ agentGatewayRoutes.post('/connect', async (c) => {
         color: data.color ?? null,
         metadata: {
           personality: data.personality,
-          homeX: data.homeX ?? 640,
-          homeY: data.homeY ?? 400,
+          homeX: data.homeX ?? 1024,
+          homeY: data.homeY ?? 640,
           patrolRadius: data.patrolRadius ?? 100,
           stats: agentStats,
         },
@@ -260,8 +260,8 @@ agentGatewayRoutes.post('/connect', async (c) => {
         species: spawnSpecies,
         color: data.color ?? 0x888888,
         stats: agentStats,
-        homeX: data.homeX ?? 640,
-        homeY: data.homeY ?? 400,
+        homeX: data.homeX ?? 1024,
+        homeY: data.homeY ?? 640,
         patrolRadius: data.patrolRadius ?? 100,
         personality: data.personality ?? '',
       } as OpenClawRegistration;

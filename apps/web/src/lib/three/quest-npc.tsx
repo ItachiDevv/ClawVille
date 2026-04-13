@@ -7,8 +7,8 @@
  * and 3). A slowly-rotating octahedron diamond marker floats above its head —
  * the "!" look-alike, gold TSL emissive, additive blending.
  *
- * Position: village center (tile 20, 12)
- *   worldX = -640 + 20*32 = 0, worldZ = -400 + 12*32 = -16
+ * Position: village center (tile ~32, ~20)
+ *   worldX = -1024 + 32*32 = 0, worldZ = -640 + 20*32 = 0 (approx)
  *
  * Clicking opens useGameStore().openQuestBoard().
  *

@@ -129,8 +129,8 @@ async function main() {
         color: 0xff4444,
         stats: { hp: 100, attack: 15, defense: 10, speed: 12 },
         personality: 'A curious test bot exploring ClawVille',
-        homeX: 640,
-        homeY: 400,
+        homeX: 1024,
+        homeY: 640,
         patrolRadius: 128,
       }),
     });

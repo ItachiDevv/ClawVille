@@ -60,7 +60,7 @@ export interface SimulationRuntimeDeps {
   dbHooks: PetDbHooks;
   databaseUrl?: string;
   apiKeys?: { gemini?: string };
-  /** Optional home spawn coordinates (defaults to center of 1280x800) */
+  /** Optional home spawn coordinates (defaults to center of 2048x1280) */
   homeX?: number;
   homeY?: number;
   /** Phase 3: injected services for economic actions (BUY_ITEM, LEARN_SKILL) */
