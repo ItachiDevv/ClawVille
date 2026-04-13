@@ -278,7 +278,7 @@ export default function SkillBuilderModal() {
                     value={customName}
                     onChange={(e) => setCustomName(e.target.value)}
                     className={inputClasses}
-                    placeholder="My Avatar's Name"
+                    placeholder="My Agent's Name"
                     maxLength={60}
                   />
                   <p className="text-gray-500 text-xs mt-1">

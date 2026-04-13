@@ -118,13 +118,13 @@ export default function PersonalityPage() {
   useEffect(() => {
     const raw = sessionStorage.getItem('createPetStep1');
     if (!raw) {
-      router.push('/create-avatar');
+      router.push('/create-agent');
       return;
     }
     try {
       setStep1(JSON.parse(raw));
     } catch {
-      router.push('/create-avatar');
+      router.push('/create-agent');
     }
   }, [router]);
 
@@ -165,7 +165,7 @@ export default function PersonalityPage() {
       sessionStorage.removeItem('createPetStep1');
       router.push('/game');
     } catch (err: any) {
-      setError(err.message || 'Failed to create avatar');
+      setError(err.message || 'Failed to create agent');
     }
   }
 
@@ -222,7 +222,7 @@ export default function PersonalityPage() {
         </div>
         <div className="claw-panel">
           <p className="text-white/60 text-sm mb-3">
-            Your avatar's archetype determines their AI personality, knowledge, and speaking style.
+            Your agent's archetype determines their AI personality, knowledge, and speaking style.
           </p>
           <div className="grid grid-cols-2 gap-2">
             {AVATAR_ARCHETYPES.map((archetype) => {

@@ -83,7 +83,7 @@ export default function InventoryModal() {
                       disabled={isLearning}
                       className="text-xs font-bold px-3 py-1 rounded bg-blue-500 hover:bg-blue-400 disabled:opacity-40 text-white transition-colors whitespace-nowrap"
                     >
-                      {isLearning ? '...' : 'Read to Avatar'}
+                      {isLearning ? '...' : 'Read to Agent'}
                     </button>
                   )}
                 </div>

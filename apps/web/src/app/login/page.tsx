@@ -33,7 +33,7 @@ function LoginForm() {
     try {
       if (isSignup) {
         await api.signup({ email, password, name: name || undefined });
-        router.push('/create-avatar');
+        router.push('/create-agent');
       } else {
         await api.login({ email, password });
         router.push('/game');

@@ -129,7 +129,7 @@ export default function GamePage() {
   // Connect to research thought stream
   useResearchStream();
 
-  // Redirect authenticated users with no active agent to /create-avatar
+  // Redirect authenticated users with no active agent to /create-agent
   // EXCEPT: embed mode, spectate mode (user explicitly chose to explore)
   useEffect(() => {
     if (miladyEmbed.isEmbed) return;
@@ -139,7 +139,7 @@ export default function GamePage() {
       return;
     }
     if (!isLoading && !authLoading && isAuthenticated && !avatar) {
-      router.push('/create-avatar');
+      router.push('/create-agent');
     }
   }, [avatar, isLoading, authLoading, isAuthenticated, miladyEmbed.isEmbed, router]);
 

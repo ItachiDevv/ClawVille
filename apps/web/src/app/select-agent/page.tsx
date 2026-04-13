@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * /select-agent now redirects to /create-avatar (single-agent creation flow).
+ * /select-agent now redirects to /create-agent (single-agent creation flow).
  * The old 6-slot roster page is no longer used.
  */
 
@@ -11,7 +11,7 @@ import { useRouter } from 'next/navigation';
 export default function SelectAgentPage() {
   const router = useRouter();
   useEffect(() => {
-    router.replace('/create-avatar');
+    router.replace('/create-agent');
   }, [router]);
   return null;
 }
