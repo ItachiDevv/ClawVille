@@ -31,7 +31,7 @@
  *   lobster.glb                 ~1.73 MB  → 195 KB   (-89.0%)
  *   chum-bucket.glb             ~1.72 MB  → 606 KB   (-66.4%)
  *
- * Pass 2 (2026-04-11) — 9 remaining waterfall-tail GLBs (> 200 KB on wire):
+ * Pass 2 (2026-04-11) — 10 remaining waterfall-tail GLBs (> 200 KB on wire):
  *   building-seashell.glb       ~1.72 MB
  *   patty-building.glb          ~1.24 MB
  *   jellyfish.glb               ~1.19 MB
