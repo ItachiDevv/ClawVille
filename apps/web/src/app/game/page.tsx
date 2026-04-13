@@ -122,9 +122,8 @@ export default function GamePage() {
 
   const isAuthenticated = !!authData?.user;
 
-  // NPC SSE stream disabled — server sim sends idle NPCs that override client wander.
-  // Re-enable when server-side NPC simulation is actively moving NPCs.
-  // useNpcStream();
+  // NPC SSE stream — populates npc store for NPC mode possession + rendering
+  useNpcStream();
 
   // Connect to research thought stream
   useResearchStream();
