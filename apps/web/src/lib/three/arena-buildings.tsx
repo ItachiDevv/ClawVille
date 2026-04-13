@@ -40,7 +40,7 @@ const _buildRayOrigin = new THREE.Vector3();
 const _buildRayDir = new THREE.Vector3(0, -1, 0);
 
 // Target height for all buildings (world units) — must dominate the landscape
-const BUILDING_TARGET_HEIGHT = 300;
+const BUILDING_TARGET_HEIGHT = 460;
 
 // Map each building ID to a GLB model + display config
 // tint: color overlay to make dome-shaped buildings visually distinct from each other
