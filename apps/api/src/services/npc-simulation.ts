@@ -550,7 +550,9 @@ class NpcSimulation {
     this.moveNpcs();
 
     if (this.conversationCooldown === 0 && this.tickCount % 40 === 0) {
-      this.tryStartConversation();
+      this.tryStartConversation().catch((err) => {
+        console.error('[NPC Simulation] tryStartConversation failed:', err);
+      });
     }
     if (this.arenaMode && this.combatCooldown === 0 && this.tickCount % 3 === 0) {
       this.tryStartCombat();
@@ -834,7 +836,7 @@ class NpcSimulation {
     let nearestDist = maxDist;
     const now = Date.now();
     for (const other of this.npcs.values()) {
-      if (other.id === npc.id || other.isDead || other.inConversation || other.inCombat || now < other.invulnerableUntil) continue;
+      if (other.id === npc.id || other.isDead || other.inConversation || other.inCombat || now < other.invulnerableUntil || now < other.conversationCooldownUntil) continue;
       const dx = other.x - npc.x;
       const dy = other.y - npc.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
@@ -858,34 +860,44 @@ class NpcSimulation {
     partner.path = []; partner.pathIndex = 0;
     this.conversationCooldown = 40;
 
-    const def1 = NPC_DEFINITIONS.find((d: NpcDefinition) => d.id === initiator.id) ?? this.buildAvatarDef(initiator);
-    const def2 = NPC_DEFINITIONS.find((d: NpcDefinition) => d.id === partner.id) ?? this.buildAvatarDef(partner);
-    const client1 = this.getOpenClawClient(initiator.id);
-    const client2 = this.getOpenClawClient(partner.id);
-
-    // Build conversation context with crypto speciality
-    const npc1Theme = BUILDING_OPENCLAW_THEMES[def1.buildingId ?? ''];
-    const npc2Theme = BUILDING_OPENCLAW_THEMES[def2.buildingId ?? ''];
-    const cryptoContext = [
-      npc1Theme ? `${def1.name} specializes in ${npc1Theme.focus.split(',')[0]}` : '',
-      npc2Theme ? `${def2.name} specializes in ${npc2Theme.focus.split(',')[0]}` : '',
-    ].filter(Boolean).join('. ') || undefined;
-
-    let messages;
-    if (client1 || client2) {
-      messages = await generateOpenClawConversation(def1, def2, client1, client2, this.arenaMode, cryptoContext);
-    } else {
-      messages = await generateNpcConversation(def1, def2, this.arenaMode, cryptoContext);
-    }
-
-    const firstSpeaker = messages.length > 0 ? messages[0].npcId : null;
-    const conversation: NpcConversation = {
-      id: this.nextId(), npc1Id: initiator.id, npc2Id: partner.id,
-      messages, currentIndex: 0, nextMessageAt: Date.now() + 2500,
-      state: 'active', typingNpcId: firstSpeaker, typingUntil: Date.now() + 2500,
+    const resetNpcsOnFailure = () => {
+      initiator.inConversation = false; initiator.activity = 'idle'; initiator.activityEmoji = '';
+      partner.inConversation = false; partner.activity = 'idle'; partner.activityEmoji = '';
     };
-    this.conversations.set(conversation.id, conversation);
-    console.log(`[NPC Simulation] Conversation started: ${initiator.name} <-> ${partner.name}`);
+
+    try {
+      const def1 = NPC_DEFINITIONS.find((d: NpcDefinition) => d.id === initiator.id) ?? this.buildAvatarDef(initiator);
+      const def2 = NPC_DEFINITIONS.find((d: NpcDefinition) => d.id === partner.id) ?? this.buildAvatarDef(partner);
+      const client1 = this.getOpenClawClient(initiator.id);
+      const client2 = this.getOpenClawClient(partner.id);
+
+      // Build conversation context with crypto speciality
+      const npc1Theme = BUILDING_OPENCLAW_THEMES[def1.buildingId ?? ''];
+      const npc2Theme = BUILDING_OPENCLAW_THEMES[def2.buildingId ?? ''];
+      const cryptoContext = [
+        npc1Theme ? `${def1.name} specializes in ${npc1Theme.focus.split(',')[0]}` : '',
+        npc2Theme ? `${def2.name} specializes in ${npc2Theme.focus.split(',')[0]}` : '',
+      ].filter(Boolean).join('. ') || undefined;
+
+      let messages;
+      if (client1 || client2) {
+        messages = await generateOpenClawConversation(def1, def2, client1, client2, this.arenaMode, cryptoContext);
+      } else {
+        messages = await generateNpcConversation(def1, def2, this.arenaMode, cryptoContext);
+      }
+
+      const firstSpeaker = messages.length > 0 ? messages[0].npcId : null;
+      const conversation: NpcConversation = {
+        id: this.nextId(), npc1Id: initiator.id, npc2Id: partner.id,
+        messages, currentIndex: 0, nextMessageAt: Date.now() + 2500,
+        state: 'active', typingNpcId: firstSpeaker, typingUntil: Date.now() + 2500,
+      };
+      this.conversations.set(conversation.id, conversation);
+      console.log(`[NPC Simulation] Conversation started: ${initiator.name} <-> ${partner.name}`);
+    } catch (err) {
+      console.error(`[NPC Simulation] Conversation generation failed, resetting NPCs:`, err);
+      resetNpcsOnFailure();
+    }
   }
 
   /** Build a minimal NpcDefinition for OpenClaw avatar NPCs */

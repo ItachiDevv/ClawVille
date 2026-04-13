@@ -5,7 +5,7 @@ import type { OpenClawClient } from './openclaw-client';
 // LLM config — try Gemini first (cheap/fast), fall back to OpenAI if Gemini
 // is unavailable or quota-exhausted. NPC banter is casual chat, so no extended
 // thinking — just a plain chat completion at high temperature.
-const GEMINI_MODEL = 'gemini-flash-latest';
+const GEMINI_MODEL = 'gemini-2.0-flash';
 const OPENAI_MODEL = 'gpt-4o-mini';
 const LLM_TEMPERATURE = 0.9;
 const GEMINI_MAX_OUTPUT_TOKENS = 400;
@@ -67,7 +67,7 @@ async function callGeminiForNpc(
   if (!apiKey) return '';
 
   try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
     const body: Record<string, unknown> = {
       contents: [{ role: 'user', parts: [{ text: userMessage }] }],
       generationConfig: {
@@ -81,7 +81,10 @@ async function callGeminiForNpc(
 
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,
+      },
       body: JSON.stringify(body),
     });
 

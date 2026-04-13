@@ -346,6 +346,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       currentLocation: null,
       chatOpen: false,
       movementFrozen: false,
+      shopOpen: false,
+      inventoryOpen: false,
     }),
 
   menuOpen: false,
