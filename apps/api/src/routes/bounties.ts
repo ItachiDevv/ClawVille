@@ -15,7 +15,7 @@ import {
   bountyAttempts,
   bountyReputation,
 } from '@clawville/database';
-import { eq, and, desc, asc, sql } from 'drizzle-orm';
+import { eq, and, desc, asc, sql, ne } from 'drizzle-orm';
 import { count } from 'drizzle-orm';
 
 export const bountyRoutes = new Hono<AppContext>();
@@ -48,6 +48,32 @@ function calculateReputationTier(totalCompleted: number): string {
   if (totalCompleted >= 10) return 'journeyman';
   if (totalCompleted >= 3) return 'apprentice';
   return 'newcomer';
+}
+
+/** Recalculate successRate for a hunter based on their attempt history */
+async function recalculateSuccessRate(avatarId: string): Promise<number> {
+  const attemptCounts = await db
+    .select({
+      status: bountyAttempts.status,
+      count: count(),
+    })
+    .from(bountyAttempts)
+    .where(
+      and(
+        eq(bountyAttempts.hunterId, avatarId),
+        sql`${bountyAttempts.status} IN ('approved', 'rejected')`
+      )
+    )
+    .groupBy(bountyAttempts.status);
+
+  let approved = 0;
+  let total = 0;
+  for (const row of attemptCounts) {
+    total += row.count;
+    if (row.status === 'approved') approved = row.count;
+  }
+
+  return total === 0 ? 100 : Math.round((approved / total) * 100);
 }
 
 // ---------------------------------------------------------------------------
@@ -593,10 +619,29 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuth, async (c) => {
       })
       .where(eq(bounties.id, bounty.id));
 
+    // 4b. Reject all other pending attempts for this bounty (prevent orphans)
+    await db
+      .update(bountyAttempts)
+      .set({
+        status: 'rejected',
+        reviewNote: 'Auto-rejected: bounty completed by another hunter',
+        reviewedAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(bountyAttempts.bountyId, bounty.id),
+          ne(bountyAttempts.id, attemptId),
+          sql`${bountyAttempts.status} IN ('claimed', 'in_progress', 'submitted')`
+        )
+      );
+
     // 5. Update bounty reputation for hunter
     const hunterRep = await db.query.bountyReputation.findFirst({
       where: eq(bountyReputation.avatarId, hunterPet.id),
     });
+
+    const newSuccessRate = await recalculateSuccessRate(hunterPet.id);
 
     if (hunterRep) {
       const newCompleted = hunterRep.totalCompleted + 1;
@@ -607,6 +652,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuth, async (c) => {
           totalCompleted: newCompleted,
           totalEarned: hunterRep.totalEarned + bounty.tokenReward,
           tier: newTier as any,
+          successRate: newSuccessRate,
           lastActivityAt: now,
           updatedAt: now,
         })
@@ -618,6 +664,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuth, async (c) => {
         totalCompleted: 1,
         totalEarned: bounty.tokenReward,
         tier: newTier as any,
+        successRate: newSuccessRate,
         lastActivityAt: now,
       });
     }
@@ -663,6 +710,22 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuth, async (c) => {
         updatedAt: now,
       })
       .where(eq(bounties.id, bounty.id));
+
+    // Update hunter's successRate after rejection
+    const hunterRep = await db.query.bountyReputation.findFirst({
+      where: eq(bountyReputation.avatarId, attempt.hunterId),
+    });
+    const updatedSuccessRate = await recalculateSuccessRate(attempt.hunterId);
+    if (hunterRep) {
+      await db
+        .update(bountyReputation)
+        .set({
+          successRate: updatedSuccessRate,
+          lastActivityAt: now,
+          updatedAt: now,
+        })
+        .where(eq(bountyReputation.id, hunterRep.id));
+    }
 
     return c.json({
       success: true,
@@ -805,13 +868,6 @@ bountyRoutes.post('/:id/claim', requireAuth, async (c) => {
     });
   }
 
-  // Verify currentAttempts < maxAttempts
-  if (bounty.currentAttempts >= bounty.maxAttempts) {
-    throw new HTTPException(400, {
-      message: 'This bounty has reached its maximum number of active attempts',
-    });
-  }
-
   // Verify hunter doesn't already have an active attempt
   const existingAttempt = await db.query.bountyAttempts.findFirst({
     where: and(
@@ -827,6 +883,29 @@ bountyRoutes.post('/:id/claim', requireAuth, async (c) => {
     });
   }
 
+  // Atomic increment: UPDATE ... WHERE currentAttempts < maxAttempts
+  // Prevents concurrent claims from exceeding maxAttempts
+  const [updated] = await db
+    .update(bounties)
+    .set({
+      currentAttempts: sql`${bounties.currentAttempts} + 1`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(bounties.id, id),
+        eq(bounties.status, 'open'),
+        sql`${bounties.currentAttempts} < ${bounties.maxAttempts}`
+      )
+    )
+    .returning();
+
+  if (!updated) {
+    throw new HTTPException(400, {
+      message: 'This bounty has reached its maximum number of active attempts',
+    });
+  }
+
   // Create attempt
   const [attempt] = await db
     .insert(bountyAttempts)
@@ -836,15 +915,6 @@ bountyRoutes.post('/:id/claim', requireAuth, async (c) => {
       status: 'claimed',
     })
     .returning();
-
-  // Increment currentAttempts
-  await db
-    .update(bounties)
-    .set({
-      currentAttempts: bounty.currentAttempts + 1,
-      updatedAt: new Date(),
-    })
-    .where(eq(bounties.id, id));
 
   return c.json({
     success: true,
