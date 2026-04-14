@@ -1,12 +1,12 @@
 /**
- * A* pathfinding for NPC navigation on the 64x40 tile grid.
+ * A* pathfinding for NPC navigation on the 80x80 tile grid.
  * Buildings are blocked tiles; NPCs navigate around them.
  */
 
 import { BUILDING_TILE_ZONES } from '@clawville/shared';
 
-const COLS = 64;
-const ROWS = 40;
+const COLS = 80;
+const ROWS = 80;
 const TILE = 32;
 
 export interface PathNode {

@@ -341,8 +341,8 @@ petRoutes.post('/me/chat', requireAuth, async (c) => {
 
 // Heartbeat — reports user activity + position
 const heartbeatSchema = z.object({
-  positionX: z.number().min(0).max(2048),
-  positionY: z.number().min(0).max(1280),
+  positionX: z.number().min(0).max(2560),
+  positionY: z.number().min(0).max(2560),
 });
 
 petRoutes.post('/me/heartbeat', requireAuth, async (c) => {
