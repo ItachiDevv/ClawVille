@@ -46,10 +46,10 @@ const LOCATION_NPCS: Record<string, {
 };
 
 // Village center in tile space — NPCs stand between their building and this point.
-// The 64×40 tile grid has its center at tile (32, 20).
-// worldX = -1024 + 32*32 = 0, worldZ = -640 + 20*32 = 0 — confirmed by arena-terrain.tsx.
-const VILLAGE_CENTER_TILE_X = 32;
-const VILLAGE_CENTER_TILE_Z = 20; // tile Y maps to world Z
+// The 80×80 tile grid has its center at tile (40, 40).
+// worldX = -1280 + 40*32 = 0, worldZ = -1280 + 40*32 = 0 — symmetric square map.
+const VILLAGE_CENTER_TILE_X = 40;
+const VILLAGE_CENTER_TILE_Z = 40; // tile Y maps to world Z
 
 /** Compute NPC world position and facing angle for a given building zone.
  *

@@ -13,7 +13,8 @@ import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tile
 // NO InstancedMesh — avoids Intel Iris Xe WebGPU crash
 // ---------------------------------------------------------------------------
 
-const BLADE_COUNT = 3000;
+// Increased from 3000→4500 for the expanded 80x80 map (2560x2560 vs old 2048x1280).
+const BLADE_COUNT = 4500;
 const HALF_MW = MAP_WIDTH / 2;
 const HALF_MH = MAP_HEIGHT / 2;
 const SPREAD_X = MAP_WIDTH * 2.2;
@@ -220,11 +221,11 @@ function generateBlades(): BladeData[] {
     clusters.push({ x: cx, z: cz, radius });
   }
 
-  // Village center world coords (OFFSET_X + 20*TILE_SIZE, OFFSET_Z + 12*TILE_SIZE)
+  // Village center world coords — symmetric square map (80x80 grid, center tile 40,40)
   const VILLAGE_CX        = 0;
-  const VILLAGE_CZ        = -16;
-  const SEAWEED_INNER_R   = 220; // Hard exclusion — no seaweed in town plaza (smaller with wider ring)
-  const SEAWEED_SPARSE_R  = 620; // Reduced density in building ring (25% kept — wider ring needs higher value)
+  const VILLAGE_CZ        = 0;  // was -16 (old non-symmetric 64x40 grid offset), now 0
+  const SEAWEED_INNER_R   = 280; // Increased from 220 — bigger town center on 2560x2560 map
+  const SEAWEED_SPARSE_R  = 800; // Increased from 620 — wider building ring on 80x80 grid
   const SEAWEED_INNER_R_SQ  = SEAWEED_INNER_R  * SEAWEED_INNER_R;
   const SEAWEED_SPARSE_R_SQ = SEAWEED_SPARSE_R * SEAWEED_SPARSE_R;
 
