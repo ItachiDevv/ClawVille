@@ -81,6 +81,15 @@ const TARGETS: Array<{ filename: string; subdir?: string }> = [
   { filename: 'building-chest.glb' },
   { filename: 'boating-school.glb' },
   { filename: 'karen.glb', subdir: 'characters' },
+  // --- Pass 3 (NPC species models — never compressed before) ---
+  { filename: 'sweet_crab_sketchfabweekly.glb' },
+  { filename: 'lobster_plush.glb' },
+  { filename: 'spirited_away_senchihiro.glb' },
+  { filename: 'young_priestess.glb' },
+  { filename: 'hermitcrab.glb' },
+  { filename: 'octopus_toy.glb' },
+  { filename: 'sea_horse.glb' },
+  { filename: 'chibi_goku.glb' },
 ];
 
 // WebP quality for diffuse/colour textures.
