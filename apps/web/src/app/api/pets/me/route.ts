@@ -21,8 +21,8 @@ export async function GET() {
 }
 
 const updatePositionSchema = z.object({
-  positionX: z.number().int().min(0).max(2048),
-  positionY: z.number().int().min(0).max(1280),
+  positionX: z.number().int().min(0).max(2560),
+  positionY: z.number().int().min(0).max(2560),
 });
 
 export async function PATCH(request: NextRequest) {
