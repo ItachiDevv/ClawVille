@@ -33,16 +33,17 @@ const COLOR_TINTS: Record<string, number> = {
   black: 0x424242, brown: 0x8d6e63,
 };
 
-// Lobster GLB faces +Z natively (rotation.y=0 → head toward +Z).
-// To face world direction (worldVx, worldVz): θ = atan2(worldVx, worldVz)
+// Lobster GLB faces -Z natively (rotation.y=0 → head toward -Z).
+// To face world direction (worldVx, worldVz): θ = atan2(-worldVx, -worldVz)
+// DIR_ROTATION for cardinal directions (screen-relative pixel-space vx/vy):
+//   up    vx=0,  vy=-1  → 0          (head faces -Z = screen-up)
+//   down  vx=0,  vy=+1  → PI         (rotate 180° to face +Z = screen-down)
+//   right vx=+1, vy=0   → -PI/2
+//   left  vx=-1, vy=0   → +PI/2
+//   idle: PI (faces +Z = toward camera when camera is at default +Z position)
 const DIR_ROTATION: Record<string, number> = {
-  down: 0, left: -Math.PI / 2, up: Math.PI, right: Math.PI / 2, idle: 0,
+  down: Math.PI, left: Math.PI / 2, up: 0, right: -Math.PI / 2, idle: Math.PI,
 };
-
-// Scratch vectors for camera-relative movement — allocated once, reused every frame
-const _ppCamForward = new THREE.Vector3();
-const _ppCamRight = new THREE.Vector3();
-const _ppWorldUp = new THREE.Vector3(0, 1, 0);
 
 const pixelZones = buildingZones.map((z) => ({
   id: z.id,
@@ -110,7 +111,7 @@ function PlayerPetInner() {
   const animGroupRef = useRef<THREE.Group>(null);
   const rotRef = useRef(0);
   const terrainYRef = useRef(-2); // -2 matches sand floor Y so pet spawns flush with terrain
-  const { scene: threeScene, camera } = useThree();
+  const { scene: threeScene } = useThree();
 
   attachKeyListeners();
 
@@ -167,31 +168,21 @@ function PlayerPetInner() {
     // explore = spectator (camera-only), npc = NpcController drives possessed NPC,
     // autonomous = autonomy store drives via clickPath.
     if (store.controlMode === 'player') {
-      // Camera-relative input — both joystick and WASD go through camera transform
-      // so movement always matches the screen direction regardless of orbit rotation
-      let inputFwd = 0, inputRight = 0;
-
+      // Screen-relative input: joystick and WASD map directly to world-X and world-Z
+      // movement in map/pixel space. This is intentionally NOT camera-relative —
+      // camera-relative was tried and reverted because touch orbiting via OrbitControls
+      // accumulates over ~10 seconds and inverts the camera direction, breaking movement.
+      // With screen-relative, joystick direction always matches the map orientation at
+      // the default camera angle, which is the dominant use case.
       const { joystickVelocity } = store;
       if (joystickVelocity.x !== 0 || joystickVelocity.y !== 0) {
-        inputRight = joystickVelocity.x;      // screen-right → camera right
-        inputFwd = -joystickVelocity.y;        // screen-up (vy<0) → camera forward
+        vx = joystickVelocity.x;
+        vy = joystickVelocity.y;
       } else {
-        if (keyState.w) inputFwd += 1;
-        if (keyState.s) inputFwd -= 1;
-        if (keyState.a) inputRight -= 1;
-        if (keyState.d) inputRight += 1;
-      }
-
-      if (inputFwd !== 0 || inputRight !== 0) {
-        camera.getWorldDirection(_ppCamForward);
-        _ppCamForward.y = 0;
-        const fwdLen = _ppCamForward.length();
-        if (fwdLen > 0.001) {
-          _ppCamForward.divideScalar(fwdLen);
-          _ppCamRight.crossVectors(_ppCamForward, _ppWorldUp).normalize();
-          vx = _ppCamForward.x * inputFwd + _ppCamRight.x * inputRight;
-          vy = _ppCamForward.z * inputFwd + _ppCamRight.z * inputRight;
-        }
+        if (keyState.w) vy = -1;
+        if (keyState.s) vy = 1;
+        if (keyState.a) vx = -1;
+        if (keyState.d) vx = 1;
       }
     }
 
@@ -223,8 +214,8 @@ function PlayerPetInner() {
     let continuousRot: number | null = null;
     if (vx !== 0 || vy !== 0) {
       dir = Math.abs(vx) > Math.abs(vy) ? (vx > 0 ? 'right' : 'left') : (vy > 0 ? 'down' : 'up');
-      // Continuous facing: atan2(worldVx, worldVz) — model faces +Z at rotation 0
-      continuousRot = Math.atan2(vx, vy);
+      // Continuous facing: atan2(-vx, -vy) — model faces -Z at rotation 0
+      continuousRot = Math.atan2(-vx, -vy);
     }
     store.setMovementDirection(dir as any);
 
