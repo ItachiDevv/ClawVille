@@ -143,8 +143,8 @@ interface WanderState { targetX: number; targetY: number; waitUntil: number; }
 const wanderStates = new Map<string, WanderState>();
 
 const WANDER_MARGIN = 80;
-const WANDER_MAX_X = 2048 - WANDER_MARGIN; // MAP_WIDTH - margin
-const WANDER_MAX_Y = 1280 - WANDER_MARGIN; // MAP_HEIGHT - margin
+const WANDER_MAX_X = 2560 - WANDER_MARGIN; // MAP_WIDTH - margin
+const WANDER_MAX_Y = 2560 - WANDER_MARGIN; // MAP_HEIGHT - margin
 
 function pickNewTarget(npc: NpcSpriteState): WanderState {
   const tx = WANDER_MARGIN + Math.random() * (WANDER_MAX_X - WANDER_MARGIN);
