@@ -40,21 +40,35 @@ const _buildRayOrigin = new THREE.Vector3();
 const _buildRayDir = new THREE.Vector3(0, -1, 0);
 
 // Target height for all buildings (world units) — must dominate the landscape
-const BUILDING_TARGET_HEIGHT = 460;
+// Increased from 460→580 for the expanded 80x80 map.
+const BUILDING_TARGET_HEIGHT = 580;
 
-// Map each building ID to a GLB model + display config
-// tint: color overlay to make dome-shaped buildings visually distinct from each other
+// Map each building ID to a GLB model + display config.
+// rotY: each building faces the village center at tile (40, 40) = world (0, 0).
+// Formula: cx = zone.x + zone.width/2, cz = zone.y + zone.height/2
+//          dx = 40 - cx, dz = 40 - cz
+//          rotY = Math.atan2(dx, dz)  (model faces +Z at rotY=0)
 const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number }> = {
-  'cron-hub':          { model: '/models/downtown-building.glb', yOffset: 0 },
-  'webhook-gateway':   { model: '/models/salty-spitoon.glb', yOffset: 0 },
-  'memory-vault':      { model: '/models/bb-building.glb', yOffset: 0 },
-  'skill-forge':       { model: '/models/chum-bucket.glb', yOffset: 0 },
-  'channel-bridge':    { model: '/models/building-cave.glb', yOffset: 0 },
-  'tool-workshop':     { model: '/models/patty-building.glb', yOffset: 0 },
-  'canvas-studio':     { model: '/models/pineapple-house.glb', yOffset: 0 },
-  'voice-tower':       { model: '/models/boating-school.glb', yOffset: 0 },
-  'security-fortress': { model: '/models/building-submarine.glb', yOffset: 0 },
-  'config-citadel':    { model: '/models/building-lighthouse.glb', yOffset: 0 },
+  // canvas-studio: cx=40.5, cz=12  → dx=-0.5, dz=28  → atan2(-0.5,28) ≈ -0.018 ≈ 0
+  'canvas-studio':     { model: '/models/pineapple-house.glb',    yOffset: 0, rotY:  0.00 },
+  // memory-vault: cx=56.5, cz=17  → dx=-16.5, dz=23  → atan2(-16.5,23) ≈ -0.62
+  'memory-vault':      { model: '/models/bb-building.glb',        yOffset: 0, rotY: -0.62 },
+  // webhook-gateway: cx=67.5, cz=31  → dx=-27.5, dz=9  → atan2(-27.5,9) ≈ -1.26
+  'webhook-gateway':   { model: '/models/salty-spitoon.glb',      yOffset: 0, rotY: -1.26 },
+  // cron-hub: cx=67.5, cz=49  → dx=-27.5, dz=-9  → atan2(-27.5,-9) ≈ -1.89
+  'cron-hub':          { model: '/models/downtown-building.glb',  yOffset: 0, rotY: -1.89 },
+  // voice-tower: cx=56.5, cz=63  → dx=-16.5, dz=-23  → atan2(-16.5,-23) ≈ -2.52
+  'voice-tower':       { model: '/models/boating-school.glb',     yOffset: 0, rotY: -2.52 },
+  // config-citadel: cx=40.5, cz=68  → dx=-0.5, dz=-28  → atan2(-0.5,-28) ≈ ±3.14
+  'config-citadel':    { model: '/models/building-lighthouse.glb', yOffset: 0, rotY:  3.14 },
+  // tool-workshop: cx=24.5, cz=63  → dx=15.5, dz=-23  → atan2(15.5,-23) ≈ 2.52
+  'tool-workshop':     { model: '/models/patty-building.glb',     yOffset: 0, rotY:  2.52 },
+  // skill-forge: cx=13.5, cz=49  → dx=26.5, dz=-9  → atan2(26.5,-9) ≈ 1.89
+  'skill-forge':       { model: '/models/chum-bucket.glb',        yOffset: 0, rotY:  1.89 },
+  // channel-bridge: cx=13.5, cz=31.5  → dx=26.5, dz=8.5  → atan2(26.5,8.5) ≈ 1.26
+  'channel-bridge':    { model: '/models/building-cave.glb',      yOffset: 0, rotY:  1.26 },
+  // security-fortress: cx=24.5, cz=17  → dx=15.5, dz=23  → atan2(15.5,23) ≈ 0.59 ≈ 0.62
+  'security-fortress': { model: '/models/building-submarine.glb', yOffset: 0, rotY:  0.62 },
 };
 
 /** Strip ground planes from a cloned scene.

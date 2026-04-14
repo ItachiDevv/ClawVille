@@ -3,7 +3,7 @@
 /**
  * AuctionPodium — world-surface anchor for the Auction House modal.
  *
- * A dramatic raised podium in the village center, south of the quest NPC.
+ * A dramatic raised podium in the village center, further south for the 80x80 map.
  *
  * Composition (keeping draw calls tight):
  *   - A large stepped cylinder base (solid dark material)     1 draw call
@@ -27,10 +27,12 @@ import { color, float, sin, time, uv, mix, smoothstep } from 'three/tsl';
 import { useGameStore } from '@/stores/game';
 
 // ---------------------------------------------------------------------------
-// World position — village center, 36 units south of center
+// World position — village center, further south for expanded 80x80 map.
+// Was PODIUM_Z = 20; increased to 50 so podium clears the quest NPC and
+// spreads town objects proportionally on the 2560x2560 world.
 // ---------------------------------------------------------------------------
 const PODIUM_X = 0;
-const PODIUM_Z = 20;
+const PODIUM_Z = 50;
 const PODIUM_Y = -2;
 
 // Preload the floating item
