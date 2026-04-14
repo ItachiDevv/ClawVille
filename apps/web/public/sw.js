@@ -2,7 +2,7 @@
 // Cache-first for GLBs + basis WASM; network-first for Next.js JS chunks.
 // Bump CACHE_VERSION whenever GLB content changes to bust the GLB cache.
 
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v2';
 const GLB_CACHE = `clawville-glb-${CACHE_VERSION}`;
 const STATIC_CACHE = `clawville-static-${CACHE_VERSION}`;
 
@@ -13,19 +13,26 @@ const MAX_INDIVIDUAL_BYTES = 10 * 1024 * 1024; // 10 MB
 const MAX_GLB_CACHE_BYTES = 20 * 1024 * 1024; // 20 MB
 
 // Critical-path GLBs pre-cached at install time.
-// Chosen by render-order importance + reasonable total size (~4.5 MB).
-// bikini-bottom.glb (9.4 MB) is intentionally excluded — over individual limit.
+// All 10 building models + player + terrain decorations (~6.2 MB total).
 const PRECACHE_GLBS = [
   '/models/lobster.glb',               // 196 KB — player character
-  '/models/underwater-decorations.glb', // 1.1 MB — terrain decoration layer
+  '/models/underwater-decorations.glb', // 1.0 MB — terrain decoration layer
   '/models/coral-reef1.glb',            // 388 KB
   '/models/coral-reef2.glb',            // 192 KB
   '/models/coral-reef3.glb',            // 260 KB
-  '/models/kelp.glb',                   //  28 KB
+  '/models/kelp.glb',                   //  25 KB
   '/models/building-seashell.glb',      // 108 KB
+  // All 10 building models — visible from any camera angle
   '/models/pineapple-house.glb',        // 544 KB
   '/models/salty-spitoon.glb',          // 380 KB
   '/models/chum-bucket.glb',            // 608 KB
+  '/models/downtown-building.glb',      // 289 KB
+  '/models/bb-building.glb',            // 209 KB
+  '/models/building-cave.glb',          // 309 KB
+  '/models/patty-building.glb',         // 506 KB
+  '/models/boating-school.glb',         // 548 KB
+  '/models/building-submarine.glb',     // 363 KB
+  '/models/building-lighthouse.glb',    // 197 KB
 ];
 
 // Basis KTX2 WASM transcoder — tiny but needed before any KTX2 texture loads.
