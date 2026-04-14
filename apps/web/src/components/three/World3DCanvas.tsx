@@ -16,7 +16,6 @@ import ArenaTerrain from '@/lib/three/arena-terrain';
 import ArenaBuildings from '@/lib/three/arena-buildings';
 import ArenaNpcs from '@/lib/three/arena-npcs';
 import ArenaLocationNpcs from '@/lib/three/arena-location-npcs';
-import ArenaFx from '@/lib/three/arena-fx';
 import PlayerPet from '@/lib/three/player-pet';
 import NpcController from '@/lib/three/npc-controller';
 import MergedSeaweed from '@/lib/three/merged-seaweed';
@@ -611,7 +610,6 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
 
       {/* Mode-specific content */}
       {isGame && <PlayerPet />}
-      {!isGame && <ArenaFx />}
     </>
   );
 });
