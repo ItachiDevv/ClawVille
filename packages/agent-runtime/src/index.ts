@@ -2,7 +2,26 @@ export { ElizaRuntime, createElizaRuntime } from './eliza-runtime';
 export type { ElizaRuntimeConfig, ElizaMessage, ElizaRuntimeState } from './eliza-runtime';
 export { createOpenClawProviderPlugin } from './plugins/openclaw-provider';
 export type { OpenClawGatewayConfig } from './plugins/openclaw-provider';
-export { loadLocationTemplate, mergeCustomizations } from './character-loader';
+export { loadLocationTemplate, loadCharacter, mergeCustomizations } from './character-loader';
+
+// ElizaOS Project export — standard entry point for `elizaos start`
+export { default as project, project as clawvilleProject } from './project';
+
+// ElizaOS Characters — proper Character objects for all 10 locations + avatar
+export {
+  CHARACTERS,
+  defaultPetCharacter,
+  garyCronHub,
+  relayWebhookGateway,
+  mnemaMemoryVault,
+  forgemasterSkillForge,
+  bridgetChannelBridge,
+  tinkererToolWorkshop,
+  pixelCanvasStudio,
+  echoVoiceTower,
+  sentinelSecurityFortress,
+  archonConfigCitadel,
+} from './characters';
 
 // ClawVille game plugin (Actions + Providers — Phase 1 deeper ElizaOS integration)
 export { clawvillePlugin } from './plugins/clawville-plugin';

@@ -1,9 +1,15 @@
-import { templates, type LocationTemplate } from '@clawville/agent-templates';
+import { CHARACTERS, defaultPetCharacter } from './characters';
+import type { LocationTemplate } from './characters';
+import { templates } from '@clawville/agent-templates';
+import type { Character } from '@elizaos/core';
 
+/**
+ * Load a location template by building ID.
+ * Returns the raw LocationTemplate for backward compat with customization merging.
+ */
 export function loadLocationTemplate(locationId: string): LocationTemplate {
   const template = templates[locationId];
   if (!template) {
-    // Fall back to a generic template
     return {
       name: 'Shop Keeper',
       description: 'A friendly shop keeper.',
@@ -18,6 +24,14 @@ export function loadLocationTemplate(locationId: string): LocationTemplate {
     };
   }
   return template;
+}
+
+/**
+ * Load a pre-built ElizaOS Character by building ID.
+ * Returns a full Character object ready for AgentRuntime.
+ */
+export function loadCharacter(locationId: string): Character {
+  return CHARACTERS[locationId] ?? defaultPetCharacter;
 }
 
 export function mergeCustomizations(
