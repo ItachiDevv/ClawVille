@@ -39,6 +39,11 @@ const DIR_ROTATION: Record<string, number> = {
   down: 0, left: -Math.PI / 2, up: Math.PI, right: Math.PI / 2, idle: 0,
 };
 
+// Scratch vectors for camera-relative movement — allocated once, reused every frame
+const _ppCamForward = new THREE.Vector3();
+const _ppCamRight = new THREE.Vector3();
+const _ppWorldUp = new THREE.Vector3(0, 1, 0);
+
 const pixelZones = buildingZones.map((z) => ({
   id: z.id,
   x: z.x * TILE_SIZE, y: z.y * TILE_SIZE,
@@ -105,7 +110,7 @@ function PlayerPetInner() {
   const animGroupRef = useRef<THREE.Group>(null);
   const rotRef = useRef(0);
   const terrainYRef = useRef(-2); // -2 matches sand floor Y so pet spawns flush with terrain
-  const { scene: threeScene } = useThree();
+  const { scene: threeScene, camera } = useThree();
 
   attachKeyListeners();
 
@@ -162,15 +167,31 @@ function PlayerPetInner() {
     // explore = spectator (camera-only), npc = NpcController drives possessed NPC,
     // autonomous = autonomy store drives via clickPath.
     if (store.controlMode === 'player') {
-      if (keyState.w) vy = -1;
-      if (keyState.s) vy = 1;
-      if (keyState.a) vx = -1;
-      if (keyState.d) vx = 1;
+      // Camera-relative input — both joystick and WASD go through camera transform
+      // so movement always matches the screen direction regardless of orbit rotation
+      let inputFwd = 0, inputRight = 0;
 
       const { joystickVelocity } = store;
       if (joystickVelocity.x !== 0 || joystickVelocity.y !== 0) {
-        vx = joystickVelocity.x;
-        vy = joystickVelocity.y;
+        inputRight = joystickVelocity.x;      // screen-right → camera right
+        inputFwd = -joystickVelocity.y;        // screen-up (vy<0) → camera forward
+      } else {
+        if (keyState.w) inputFwd += 1;
+        if (keyState.s) inputFwd -= 1;
+        if (keyState.a) inputRight -= 1;
+        if (keyState.d) inputRight += 1;
+      }
+
+      if (inputFwd !== 0 || inputRight !== 0) {
+        camera.getWorldDirection(_ppCamForward);
+        _ppCamForward.y = 0;
+        const fwdLen = _ppCamForward.length();
+        if (fwdLen > 0.001) {
+          _ppCamForward.divideScalar(fwdLen);
+          _ppCamRight.crossVectors(_ppCamForward, _ppWorldUp).normalize();
+          vx = _ppCamForward.x * inputFwd + _ppCamRight.x * inputRight;
+          vy = _ppCamForward.z * inputFwd + _ppCamRight.z * inputRight;
+        }
       }
     }
 
