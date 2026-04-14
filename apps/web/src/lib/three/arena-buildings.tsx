@@ -39,9 +39,9 @@ _buildRaycaster.layers.set(TERRAIN_LAYER);
 const _buildRayOrigin = new THREE.Vector3();
 const _buildRayDir = new THREE.Vector3(0, -1, 0);
 
-// Target height for all buildings (world units) — must dominate the landscape
-// Increased from 460→580 for the expanded 80x80 map.
-const BUILDING_TARGET_HEIGHT = 580;
+// Target height for all buildings (world units) — visible but not crowding neighbors.
+// 480 balances visibility on the 80x80 map without buildings overlapping visually.
+const BUILDING_TARGET_HEIGHT = 480;
 
 // Map each building ID to a GLB model + display config.
 // rotY: each building faces the village center at tile (40, 40) = world (0, 0).
