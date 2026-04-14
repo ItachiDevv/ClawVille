@@ -46,7 +46,7 @@ function createSandGeometry(): THREE.PlaneGeometry {
   const w = MAP_WIDTH * 3;
   const h = MAP_HEIGHT * 3;
   const segsX = 120;
-  const segsY = 80;
+  const segsY = 120;
   const geo = new THREE.PlaneGeometry(w, h, segsX, segsY);
 
   const pos = geo.attributes.position;
@@ -186,7 +186,7 @@ function SandFloor() {
   useEffect(() => {
     if (ref.current) ref.current.layers.enable(TERRAIN_LAYER);
     // Dispose both geometry and material on unmount to prevent GPU memory leaks.
-    // sandGeo is a large subdivided plane (120×80 segs = ~9600 quads).
+    // sandGeo is a large subdivided plane (120×120 segs = ~14400 quads).
     return () => {
       sandGeo.dispose();
       sandMat.dispose();
