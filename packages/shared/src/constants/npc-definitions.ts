@@ -34,18 +34,18 @@ function center(tileX: number, tileY: number, tileW: number, tileH: number) {
 
 // Building zone tile coords from tilemap-data.ts (10 OpenClaw integrations)
 export const BUILDING_TILE_ZONES: Record<string, { x: number; y: number; w: number; h: number }> = {
-  // Circular village — wider ring (semi-major X=26, semi-minor Y=16) in 64×40 grid
+  // Circular ring in 80×80 grid, radius 28 tiles from center (40,40)
   // Must match buildingZones in tilemap-data.ts exactly
-  'canvas-studio':      { x: 29, y: 2,  w: 4, h: 3 },
-  'memory-vault':       { x: 45, y: 4,  w: 4, h: 3 },
-  'webhook-gateway':    { x: 54, y: 12, w: 4, h: 3 },
-  'cron-hub':           { x: 54, y: 22, w: 4, h: 3 },
-  'voice-tower':        { x: 44, y: 32, w: 4, h: 3 },
-  'config-citadel':     { x: 30, y: 35, w: 4, h: 3 },
-  'tool-workshop':      { x: 14, y: 32, w: 4, h: 3 },
-  'skill-forge':        { x: 6,  y: 22, w: 4, h: 3 },
-  'channel-bridge':     { x: 6,  y: 12, w: 4, h: 4 },
-  'security-fortress':  { x: 15, y: 4,  w: 4, h: 3 },
+  'canvas-studio':     { x: 38, y: 10, w: 5, h: 4 },
+  'memory-vault':      { x: 54, y: 15, w: 5, h: 4 },
+  'webhook-gateway':   { x: 65, y: 29, w: 5, h: 4 },
+  'cron-hub':          { x: 65, y: 47, w: 5, h: 4 },
+  'voice-tower':       { x: 54, y: 61, w: 5, h: 4 },
+  'config-citadel':    { x: 38, y: 66, w: 5, h: 4 },
+  'tool-workshop':     { x: 22, y: 61, w: 5, h: 4 },
+  'skill-forge':       { x: 11, y: 47, w: 5, h: 4 },
+  'channel-bridge':    { x: 11, y: 29, w: 5, h: 5 },
+  'security-fortress': { x: 22, y: 15, w: 5, h: 4 },
 };
 
 /** Map of building ID to {homeX, homeY} for NPC definitions */
@@ -61,7 +61,7 @@ export const NPC_BUILDING_CENTERS: Record<string, { x: number; y: number }> = Ob
 export const NPC_DEFINITIONS: NpcDefinition[] = [
   {
     id: 'cron-hub',
-    name: 'Chronos',
+    name: 'Gary',
     species: 'owl',
     color: 0x795548,
     buildingId: 'cron-hub',
@@ -72,7 +72,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   },
   {
     id: 'webhook-gateway',
-    name: 'Relay',
+    name: 'Mr. Krabs',
     species: 'fox',
     color: 0xff9800,
     buildingId: 'webhook-gateway',
@@ -83,7 +83,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   },
   {
     id: 'memory-vault',
-    name: 'Mnema',
+    name: 'Squidward',
     species: 'turtle',
     color: 0x4caf50,
     buildingId: 'memory-vault',
@@ -94,7 +94,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   },
   {
     id: 'skill-forge',
-    name: 'Forgemaster Kai',
+    name: 'Plankton',
     species: 'dragon',
     color: 0xf44336,
     buildingId: 'skill-forge',
@@ -105,7 +105,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   },
   {
     id: 'channel-bridge',
-    name: 'Bridget',
+    name: 'Sandy',
     species: 'phoenix',
     color: 0x2196f3,
     buildingId: 'channel-bridge',
@@ -116,7 +116,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   },
   {
     id: 'tool-workshop',
-    name: 'Tinkerer Rex',
+    name: 'Karen',
     species: 'cat',
     color: 0x9c27b0,
     buildingId: 'tool-workshop',
@@ -127,7 +127,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   },
   {
     id: 'canvas-studio',
-    name: 'Pixel',
+    name: 'SpongeBob',
     species: 'bunny',
     color: 0xe91e63,
     buildingId: 'canvas-studio',
@@ -138,7 +138,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   },
   {
     id: 'voice-tower',
-    name: 'Echo',
+    name: 'Mrs. Puff',
     species: 'wolf',
     color: 0x607d8b,
     buildingId: 'voice-tower',
@@ -149,7 +149,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   },
   {
     id: 'security-fortress',
-    name: 'Sentinel',
+    name: 'Patrick',
     species: 'dragon',
     color: 0x00bcd4,
     buildingId: 'security-fortress',
@@ -160,7 +160,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   },
   {
     id: 'config-citadel',
-    name: 'Archon',
+    name: 'Larry',
     species: 'owl',
     color: 0x9e9e9e,
     buildingId: 'config-citadel',
