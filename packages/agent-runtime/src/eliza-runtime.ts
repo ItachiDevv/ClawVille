@@ -130,7 +130,7 @@ function convertToElizaCharacter(
   // v2: legacy MessageExample[][] format is still accepted by createCharacter()
   const messageExamples = template.messageExamples?.map((conversation: any) =>
     conversation.map((msg: any) => ({
-      name: msg.user === 'assistant' ? name : 'User',
+      name: msg.user.startsWith('{{') ? 'User' : msg.user,
       content: {
         text: typeof msg.content === 'string' ? msg.content : msg.content.text || '',
       },
@@ -152,16 +152,19 @@ function convertToElizaCharacter(
     username: name.toLowerCase().replace(/\s+/g, '-'),
     system,
     // v2 Character uses bio: string[] — split multi-line strings, or wrap single string
-    bio: typeof bio === 'string' ? [bio] : bio,
+    // Merge knowledge into bio — ElizaOS v2 treats knowledge[] strings as file paths
+    bio: [
+      ...(typeof bio === 'string' ? [bio] : bio),
+      ...(template.knowledge || []),
+    ],
     messageExamples: messageExamples as any,
     postExamples: [],
     topics: customization?.topics || template.topics || [],
     adjectives: template.adjectives || [],
-    knowledge: template.knowledge || [],
+    knowledge: [],
     plugins,
     settings: {
       ...(template.settings || {}),
-      model: 'claude-3-5-haiku-20241022',
     } as any,
     style: {
       all: [...(template.style?.all || []), ...(Array.isArray(customization?.style) ? customization.style : [])],

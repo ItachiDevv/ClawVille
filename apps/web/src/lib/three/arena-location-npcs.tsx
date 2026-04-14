@@ -55,9 +55,9 @@ const VILLAGE_CENTER_TILE_Z = 40; // tile Y maps to world Z
  *
  *  Position: building_center_tile + normalize(toward_village_center) * NPC_INSET_TILES (4.0),
  *            converted to world space.
- *  Facing: All GLBs used here face -Z at rotation.y=0 (same as lobster.glb).
- *          atan2(dx, dz) + PI rotates the -Z-forward model to face along (dx, dz).
- *          The +PI flip is required; omitting it produces 180° wrong facing. */
+ *  Facing: SpongeBob character GLBs face +Z at rotation.y=0.
+ *          atan2(dx, dz) rotates the +Z-forward model to face toward village center.
+ *          No +PI flip needed (unlike lobster.glb which faces -Z). */
 function computeNpcPlacement(zone: { x: number; y: number; width: number; height: number }): {
   worldX: number;
   worldZ: number;

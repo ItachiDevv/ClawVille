@@ -10,8 +10,7 @@ import type { NpcSpriteState } from '@/stores/npc';
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-const MAP_WIDTH = 2048;
-const MAP_HEIGHT = 1280;
+import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 
 /** Convert pixel X to Three.js world X */
 function toWorldX(px: number): number {

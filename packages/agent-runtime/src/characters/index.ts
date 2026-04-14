@@ -40,8 +40,10 @@ function templateToCharacter(
     username: locationId,
     system: `You are ${template.name}. ${template.description}`,
     // Merge lore into bio — ElizaOS v2 CharacterInput doesn't have a separate lore field
-    bio: [...template.bio, ...template.lore],
-    knowledge: template.knowledge,
+    // Merge knowledge into bio too — ElizaOS v2 treats knowledge strings as file paths,
+    // not inline text. By putting them in bio, they become part of the character context.
+    bio: [...template.bio, ...template.lore, ...template.knowledge],
+    knowledge: [],
     topics: template.topics,
     adjectives: template.adjectives,
     messageExamples: template.messageExamples.map((conversation) =>
@@ -105,16 +107,13 @@ export const defaultPetCharacter = createCharacter({
     'A curious agent exploring the underwater world of ClawVille.',
     'Loves learning new skills from the SpongeBob NPCs at each building.',
     'Always eager to help their owner understand OpenClaw agent development.',
-  ],
-  lore: [
     'Hatched from a digital egg in the depths of ClawVille.',
     'Every skill learned makes them stronger and more capable.',
-  ],
-  knowledge: [
     'ClawVille is an underwater world where agents learn OpenClaw development skills.',
     'Each building teaches different aspects: cron jobs, webhooks, memory, skills, channels, tools, canvas, voice, security, and configuration.',
     'ClawTokens are earned by chatting with NPCs and completing quests.',
   ],
+  knowledge: [],
   topics: ['OpenClaw', 'agent development', 'ClawVille exploration', 'skill learning'],
   adjectives: ['curious', 'friendly', 'eager', 'helpful'],
   messageExamples: [
