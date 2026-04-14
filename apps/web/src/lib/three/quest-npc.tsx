@@ -7,8 +7,8 @@
  * and 3). A slowly-rotating octahedron diamond marker floats above its head —
  * the "!" look-alike, gold TSL emissive, additive blending.
  *
- * Position: village center (tile ~32, ~20)
- *   worldX = -1024 + 32*32 = 0, worldZ = -640 + 20*32 = 0 (approx)
+ * Position: village center (tile 40, 40) on 80x80 square map
+ *   worldX = -1280 + 40*32 = 0, worldZ = -1280 + 40*32 = 0
  *
  * Clicking opens useGameStore().openQuestBoard().
  *
@@ -32,9 +32,11 @@ import { useGameStore } from '@/stores/game';
 
 // ---------------------------------------------------------------------------
 // World-space position
+// Village center is now (0, 0) — symmetric 80x80 square map.
+// Was QUEST_NPC_Z = -16 (old 64x40 grid had off-center Z due to MAP_HEIGHT=1280).
 // ---------------------------------------------------------------------------
 const QUEST_NPC_X = 0;
-const QUEST_NPC_Z = -16;
+const QUEST_NPC_Z = 0;
 const QUEST_NPC_FLOOR_Y = -2;
 
 // Preload so GLB is ready before first render

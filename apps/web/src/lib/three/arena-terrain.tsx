@@ -265,13 +265,14 @@ function isNearBuilding(x: number, z: number): boolean {
   return false;
 }
 
-// Village center world coordinates: center tile (32, 20) in 64×40 grid
-// worldX = -HALF_MW + 32*TILE_SIZE = -1024 + 1024 = 0
-// worldZ = -HALF_MH + 20*TILE_SIZE = -640 + 640 = 0
+// Village center world coordinates: center tile (40, 40) in 80×80 grid
+// worldX = -HALF_MW + 40*TILE_SIZE = -1280 + 1280 = 0
+// worldZ = -HALF_MH + 40*TILE_SIZE = -1280 + 1280 = 0
 const VILLAGE_CX = 0;
 const VILLAGE_CZ = 0;
-// No decorations within this radius of village center — keeps the town plaza clear
-const DECO_INNER_EXCLUSION_R = 200;
+// No decorations within this radius of village center — keeps the town plaza clear.
+// Increased from 200→250 for the expanded 80x80 map.
+const DECO_INNER_EXCLUSION_R = 250;
 
 /** Generate all decorations with cluster-based organic scatter.
  *
@@ -290,18 +291,19 @@ function generateDecorations(): DecoEntry[] {
   const rng = seededRandom(12345);
   const totalWeight = DECO_TYPES.reduce((s, d) => s + d.weight, 0);
   const entries: DecoEntry[] = [];
-  // Capped at 55 to keep draw calls within the ~100 total budget.
-  // Each decoration GLB typically has 2–5 submeshes, so 55 entries ≈ 110–275
+  // Increased from 55→80 for the expanded 80x80 map (2560x2560 vs old 2048x1280).
+  // Each decoration GLB typically has 2–5 submeshes, so 80 entries ≈ 160–400
   // raw draw calls; frustum culling handles the ~70% that are off-screen at
   // any time, bringing the on-screen count into the safe range.
-  const TARGET_COUNT = 55;
+  const TARGET_COUNT = 80;
 
-  // Map extents — same as current scatter range
+  // Map extents — auto-scales with MAP_WIDTH/MAP_HEIGHT imports
   const EXTENT_X = MAP_WIDTH  * 2.4;
   const EXTENT_Z = MAP_HEIGHT * 2.4;
 
   // ---- Cluster centres ----
-  const N_CLUSTERS    = 18;
+  // Increased from 18→24 to cover the larger square map evenly.
+  const N_CLUSTERS    = 24;
   const CLUSTER_RADIUS = 280; // world-space units; controls patch spread
   const clusters: Array<{ x: number; z: number }> = [];
   for (let i = 0; i < N_CLUSTERS; i++) {
@@ -402,7 +404,7 @@ function UnderwaterDecorationsGlb() {
   return (
     <primitive
       object={cloned}
-      position={[450, -2, -350]}
+      position={[600, -2, -500]}
       scale={8}
       rotation={[0, 0, 0]}
     />
@@ -422,17 +424,17 @@ function FixedLandmarks() {
   const submarineClone = useMemo(() => submarineScene.clone(true), [submarineScene]);
   return (
     <group>
-      {/* Shipwreck — northwest outer zone */}
+      {/* Shipwreck — northwest outer zone (scaled out for 2560x2560 map) */}
       <primitive
         object={shipwreckClone}
-        position={[-550, -2, -320]}
+        position={[-700, -2, -500]}
         scale={2.5}
         rotation={[0, 0.8, 0]}
       />
-      {/* Submarine — southeast outer zone */}
+      {/* Submarine — southeast outer zone (scaled out for 2560x2560 map) */}
       <primitive
         object={submarineClone}
-        position={[500, -2, 280]}
+        position={[700, -2, 500]}
         scale={2.0}
         rotation={[0, -0.5, 0]}
       />

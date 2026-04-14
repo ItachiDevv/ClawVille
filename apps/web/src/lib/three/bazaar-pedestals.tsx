@@ -4,7 +4,7 @@
  * BazaarPedestals — world-surface anchor for the Skill Bazaar modal.
  *
  * 3 glowing cylindrical pedestals arranged in a semicircle in the village
- * center, slightly north and left of dead center.
+ * center, north and left of dead center (further out on the 80x80 map).
  *
  * Each pedestal:
  *   - CylinderGeometry base with rarity-tinted TSL MeshBasicNodeMaterial
@@ -24,10 +24,11 @@ import { color, float, sin, time, mix } from 'three/tsl';
 import { useGameStore } from '@/stores/game';
 
 // ---------------------------------------------------------------------------
-// World position — village center, 30 units left of center
+// World position — village center, further left and north for expanded map.
+// Was (-30, -50); moved to (-50, -60) to spread town objects on 80x80 map.
 // ---------------------------------------------------------------------------
-const FORGE_CENTER_X = -30;
-const FORGE_FRONT_Z  = -50; // slightly north of dead center
+const FORGE_CENTER_X = -50;
+const FORGE_FRONT_Z  = -60; // north of dead center
 const BASE_Y         = -2;
 
 // ---------------------------------------------------------------------------
