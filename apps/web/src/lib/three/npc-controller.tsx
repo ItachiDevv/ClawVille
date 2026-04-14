@@ -122,8 +122,8 @@ export default function NpcController() {
     const worldVx = _camForward.x * inputFwd + _camRight.x * inputRight;
     const worldVz = _camForward.z * inputFwd + _camRight.z * inputRight;
 
-    // Facing angle for +Z-facing model: atan2(worldX, worldZ)
-    const facingAngle = Math.atan2(worldVx, worldVz);
+    // Facing angle for -Z-facing model: atan2(-worldX, -worldZ)
+    const facingAngle = Math.atan2(-worldVx, -worldVz);
 
     // Cardinal direction for sprite system
     const dir = directionFromVelocity(worldVx, worldVz);
