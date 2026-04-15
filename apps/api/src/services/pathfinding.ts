@@ -1,5 +1,5 @@
 /**
- * A* pathfinding for NPC navigation on the 80x80 tile grid.
+ * A* pathfinding for NPC navigation on the 160x160 tile grid.
  * Buildings are blocked tiles; NPCs navigate around them.
  */
 

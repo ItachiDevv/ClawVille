@@ -84,21 +84,21 @@ export const groundLayer: number[] = generateGroundLayer();
 
 // ---------------------------------------------------------------------------
 // Layer 2: PATHS  (dirt paths connecting buildings, stone at entrances)
-// 80 cols x 80 rows = 6400 tiles — all empty (paths handled by 3D world)
+// 160 cols x 160 rows = 25600 tiles — all empty (paths handled by 3D world)
 // ---------------------------------------------------------------------------
 // prettier-ignore
 export const pathLayer: number[] = Array(MAP_COLS * MAP_ROWS).fill(TILES.EMPTY);
 
 // ---------------------------------------------------------------------------
 // Layer 3: DECORATIONS  (trees, flowers, bushes along edges and between buildings)
-// 80 cols x 80 rows = 6400 tiles — all empty (decorations handled by 3D world)
+// 160 cols x 160 rows = 25600 tiles — all empty (decorations handled by 3D world)
 // ---------------------------------------------------------------------------
 // prettier-ignore
 export const decorationLayer: number[] = Array(MAP_COLS * MAP_ROWS).fill(TILES.EMPTY);
 
 // ---------------------------------------------------------------------------
 // Layer 4: BUILDINGS  (building structures at each location)
-// 80 cols x 80 rows = 6400 tiles — all empty (buildings handled by 3D world)
+// 160 cols x 160 rows = 25600 tiles — all empty (buildings handled by 3D world)
 // ---------------------------------------------------------------------------
 // prettier-ignore
 export const buildingLayer: number[] = Array(MAP_COLS * MAP_ROWS).fill(TILES.EMPTY);

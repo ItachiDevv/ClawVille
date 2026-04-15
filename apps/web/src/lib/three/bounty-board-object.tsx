@@ -8,7 +8,7 @@
  * Each parchment uses a rarity-tinted TSL MeshBasicNodeMaterial.
  *
  * Placed adjacent to the Quest NPC in the village center,
- * 50 units right of center (now symmetric at 0, 0 on 80x80 square map).
+ * 50 units right of center (now symmetric at 0, 0 on 160x160 square map).
  *
  * Clicking opens useGameStore().openBountyBoard().
  *
@@ -24,7 +24,7 @@ import { useGameStore } from '@/stores/game';
 
 // ---------------------------------------------------------------------------
 // World position — adjacent to Quest NPC in village center
-// Moved further right: 50 units right of center on 80x80 symmetric map.
+// Moved further right: 50 units right of center on 160x160 symmetric map.
 // Was (30, -16); BOARD_Z now 0 because the square map center is symmetric.
 // ---------------------------------------------------------------------------
 const BOARD_X = 50;

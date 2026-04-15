@@ -40,7 +40,7 @@ const _buildRayOrigin = new THREE.Vector3();
 const _buildRayDir = new THREE.Vector3(0, -1, 0);
 
 // Target height for all buildings (world units) — visible but not crowding neighbors.
-// 480 balances visibility on the 80x80 map without buildings overlapping visually.
+// 480 balances visibility on the 160x160 map without buildings overlapping visually.
 const BUILDING_TARGET_HEIGHT = 480;
 
 // Map each building ID to a GLB model + display config.
@@ -53,12 +53,12 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   'skill-forge':       { model: '/models/chum-bucket.glb',        yOffset: 0, rotY: -0.270 },
   'tool-workshop':     { model: '/models/patty-building.glb',     yOffset: 0, rotY: -0.150 },
   'channel-bridge':    { model: '/models/building-cave.glb',      yOffset: 0, rotY: -1.507 },
-  'webhook-gateway':   { model: '/models/salty-spitoon.glb',      yOffset: 0, rotY: -1.847 },
-  'voice-tower':       { model: '/models/boating-school.glb',     yOffset: 0, rotY: -1.720 },
-  'cron-hub':          { model: '/models/downtown-building.glb',  yOffset: 0, rotY:  3.077 },
-  'config-citadel':    { model: '/models/building-lighthouse.glb', yOffset: 0, rotY: -2.871 },
-  'security-fortress': { model: '/models/building-submarine.glb', yOffset: 0, rotY: -2.992 },
-  'memory-vault':      { model: '/models/bb-building.glb',        yOffset: 0, rotY:  0.613 },
+  'webhook-gateway':   { model: '/models/salty-spitoon.glb',      yOffset: 0, rotY: -1.841 },
+  'voice-tower':       { model: '/models/boating-school.glb',     yOffset: 0, rotY: -1.721 },
+  'cron-hub':          { model: '/models/downtown-building.glb',  yOffset: 0, rotY:  3.075 },
+  'config-citadel':    { model: '/models/building-lighthouse.glb', yOffset: 0, rotY: -2.860 },
+  'security-fortress': { model: '/models/building-submarine.glb', yOffset: 0, rotY: -2.982 },
+  'memory-vault':      { model: '/models/bb-building.glb',        yOffset: 0, rotY:  0.612 },
 };
 
 /** Strip ground planes from a cloned scene.
