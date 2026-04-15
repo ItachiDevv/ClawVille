@@ -291,20 +291,18 @@ function generateDecorations(): DecoEntry[] {
   const rng = seededRandom(12345);
   const totalWeight = DECO_TYPES.reduce((s, d) => s + d.weight, 0);
   const entries: DecoEntry[] = [];
-  // Increased from 80→120 for the expanded 160x160 map (5120x5120).
-  // Each decoration GLB typically has 2–5 submeshes, so 120 entries ≈ 240–600
-  // raw draw calls; frustum culling handles the ~70% that are off-screen at
-  // any time, bringing the on-screen count into the safe range.
-  const TARGET_COUNT = 120;
+  // Keep at 80 to maintain FPS on Intel Iris Xe — the larger map doesn't need
+  // more decorations because the camera view frustum is the same size.
+  const TARGET_COUNT = 80;
 
   // Map extents — auto-scales with MAP_WIDTH/MAP_HEIGHT imports
   const EXTENT_X = MAP_WIDTH  * 2.4;
   const EXTENT_Z = MAP_HEIGHT * 2.4;
 
   // ---- Cluster centres ----
-  // Increased from 24→36 to cover the larger 160x160 map evenly.
-  const N_CLUSTERS    = 36;
-  const CLUSTER_RADIUS = 500; // world-space units; controls patch spread
+  // Keep at 24 clusters — same density, just spread across larger area
+  const N_CLUSTERS    = 24;
+  const CLUSTER_RADIUS = 280; // world-space units; controls patch spread
   const clusters: Array<{ x: number; z: number }> = [];
   for (let i = 0; i < N_CLUSTERS; i++) {
     clusters.push({

@@ -77,10 +77,9 @@ function createCausticMaterial(): THREE.MeshBasicNodeMaterial {
 
 function CausticPlane() {
   const { geometry, material } = useMemo(() => {
-    // Large plane — covers the full 5120x5120 map + margin on all sides.
-    // Was 3200x3200: both dimensions were narrower than the 5120 map size,
-    // leaving the outer edges without caustic coverage.
-    const geo = new THREE.PlaneGeometry(6400, 6400, 1, 1);
+    // Caustic coverage — only needs to cover what the camera can see (fog far = 3600).
+    // 4000x4000 covers the visible area with margin. Larger wastes fragment shader work.
+    const geo = new THREE.PlaneGeometry(4000, 4000, 1, 1);
     const mat = createCausticMaterial();
     return { geometry: geo, material: mat };
   }, []);
@@ -170,8 +169,8 @@ function DepthBackdrop() {
 // 3. Underwater Dust Particles
 // ---------------------------------------------------------------------------
 const PARTICLE_COUNT = 300;
-const FIELD_W = 3600;
-const FIELD_D = 2400;
+const FIELD_W = 2000;
+const FIELD_D = 1400;
 const FIELD_H = 350; // vertical range the particles occupy
 
 function createDustGeometry(): THREE.BufferGeometry {
