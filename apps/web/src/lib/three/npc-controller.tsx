@@ -17,7 +17,7 @@ import * as THREE from 'three';
 import { useGameStore, type GameState } from '@/stores/game';
 import { useNpcStore } from '@/stores/npc';
 import type { NpcSpriteState } from '@/stores/npc';
-import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
+import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tilemap-data';
 
 const SPEED = 200; // pixels/sec
 
@@ -27,10 +27,19 @@ const X_MAX = MAP_WIDTH - 16;
 const Y_MIN = 16;
 const Y_MAX = MAP_HEIGHT - 16;
 
+// Building zones in pixel coords for proximity detection
+const pixelZones = buildingZones.map((z) => ({
+  id: z.id,
+  x: z.x * TILE_SIZE, y: z.y * TILE_SIZE,
+  width: z.width * TILE_SIZE, height: z.height * TILE_SIZE,
+}));
+
 // Module-level key state — avoids closure allocs
-interface NpcKeyState { w: boolean; a: boolean; s: boolean; d: boolean; }
-const _keys: NpcKeyState = { w: false, a: false, s: false, d: false };
+interface NpcKeyState { w: boolean; a: boolean; s: boolean; d: boolean; e: boolean; escape: boolean; }
+const _keys: NpcKeyState = { w: false, a: false, s: false, d: false, e: false, escape: false };
 let _listenersAttached = false;
+let _lastEState = false;
+let _lastEscState = false;
 
 // Scratch vectors — allocated once, reused every frame
 const _camForward = new THREE.Vector3();
@@ -72,16 +81,36 @@ export default function NpcController() {
   }, []);
 
   useFrame((_, delta) => {
-    const { controlMode, possessedNpcId } = useGameStore.getState();
+    const store = useGameStore.getState();
+    const { controlMode, possessedNpcId } = store;
 
     // Only active in npc mode with a possessed target
     if (controlMode !== 'npc' || !possessedNpcId) return;
+
+    // Handle Escape to exit building
+    const escNow = _keys.escape;
+    if (escNow && !_lastEscState && store.chatOpen) {
+      store.exitBuilding();
+    }
+    _lastEscState = escNow;
+
+    // If movement is frozen (inside a building), skip movement
+    if (store.movementFrozen) return;
+
+    // Handle E to enter building
+    const eNow = _keys.e;
+    if (eNow && !_lastEState && store.nearLocation) {
+      store.enterBuilding(store.nearLocation);
+      _lastEState = eNow;
+      return;
+    }
+    _lastEState = eNow;
 
     // ---- Unified input: joystick + WASD → camera-relative ----
     let inputFwd = 0;
     let inputRight = 0;
 
-    const { joystickVelocity } = useGameStore.getState() as GameState;
+    const { joystickVelocity } = store as GameState;
     if (joystickVelocity.x !== 0 || joystickVelocity.y !== 0) {
       // Joystick: x = screen-right, y < 0 = screen-up
       inputRight = joystickVelocity.x;
@@ -138,6 +167,16 @@ export default function NpcController() {
     const newY = Math.max(Y_MIN, Math.min(Y_MAX, npc.y + worldVz * SPEED * delta));
 
     useNpcStore.getState().moveNpc(possessedNpcId, newX, newY, dir, facingAngle);
+
+    // Proximity check — detect which building zone the NPC is in
+    let nearZone: string | null = null;
+    for (const zone of pixelZones) {
+      if (newX >= zone.x && newX <= zone.x + zone.width && newY >= zone.y && newY <= zone.y + zone.height) {
+        nearZone = zone.id;
+        break;
+      }
+    }
+    if (nearZone !== store.nearLocation) store.setNearLocation(nearZone);
   });
 
   return null;

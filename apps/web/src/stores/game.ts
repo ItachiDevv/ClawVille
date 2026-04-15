@@ -247,17 +247,22 @@ export const useGameStore = create<GameState>((set, get) => ({
   possessedNpcId: null,
   setControlMode: (mode) => {
     const prev = get().controlMode;
-    // Auto-select first NPC when entering npc mode; clear when leaving
     let possessedNpcId: string | null = get().possessedNpcId;
-    if (mode === 'npc' && !possessedNpcId) {
-      // Lazy import — avoids circular module dep (both are plain Zustand stores)
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { useNpcStore } = require('@/stores/npc') as typeof import('@/stores/npc');
-      const firstNpc = useNpcStore.getState().npcs[0];
-      possessedNpcId = firstNpc?.id ?? null;
-    } else if (mode !== 'npc') {
+
+    // Spawn/remove dedicated player NPC for NPC mode
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { useNpcStore, PLAYER_NPC_ID } = require('@/stores/npc') as typeof import('@/stores/npc');
+    if (mode === 'npc') {
+      useNpcStore.getState().spawnPlayerNpc();
+      possessedNpcId = PLAYER_NPC_ID;
+    } else {
+      // Leaving NPC mode — clean up player NPC
+      if (prev === 'npc') {
+        useNpcStore.getState().removePlayerNpc();
+      }
       possessedNpcId = null;
     }
+
     // Stop autonomy engine when leaving autonomous mode
     if (prev === 'autonomous' && mode !== 'autonomous') {
       const { useAutonomyStore } = require('@/stores/autonomy') as typeof import('@/stores/autonomy');
@@ -270,7 +275,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
     set({
       controlMode: mode,
-      isSpectator: mode === 'explore' || mode === 'npc',
+      isSpectator: mode === 'explore',
       possessedNpcId,
     });
   },
@@ -286,14 +291,19 @@ export const useGameStore = create<GameState>((set, get) => ({
       get().setControlMode(next);
     }
   },
-  setHasAgent: (v) =>
-    set((s) => ({
+  setHasAgent: (v) => {
+    // Remove player NPC if switching away from NPC mode
+    if (get().controlMode === 'npc') {
+      const { useNpcStore } = require('@/stores/npc') as typeof import('@/stores/npc');
+      useNpcStore.getState().removePlayerNpc();
+    }
+    set({
       hasAgent: v,
       controlMode: v ? 'player' : 'explore',
       isSpectator: !v,
-      // clear possessed NPC when agent connects so modes don't conflict
-      possessedNpcId: v ? null : s.possessedNpcId,
-    })),
+      possessedNpcId: null,
+    });
+  },
   setPossessedNpcId: (id) => set({ possessedNpcId: id }),
 
   isSpectator: true,
@@ -304,7 +314,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   avatarName: '',
   setPetAppearance: (species, color, name) => set({ avatarSpecies: species, avatarColor: color, ...(name ? { avatarName: name } : {}) }),
 
-  avatarPosition: { x: 400, y: 250 },
+  avatarPosition: { x: 1280, y: 1280 },
   setPetPosition: (x, y) => set({ avatarPosition: { x, y } }),
 
   movementDirection: 'idle',
@@ -416,6 +426,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (!connected && prev.controlMode === 'autonomous') {
       const { useAutonomyStore } = require('@/stores/autonomy') as typeof import('@/stores/autonomy');
       useAutonomyStore.getState().stopAutonomy();
+    }
+
+    // Remove player NPC if switching away from NPC mode
+    if (prev.controlMode === 'npc') {
+      const { useNpcStore } = require('@/stores/npc') as typeof import('@/stores/npc');
+      useNpcStore.getState().removePlayerNpc();
     }
 
     set((s) => ({
@@ -541,6 +557,13 @@ export const useGameStore = create<GameState>((set, get) => ({
         useAutonomyStore.getState().stopAutonomy();
       } catch { /* autonomy store may not be loaded */ }
     }
+    // Remove player NPC if in NPC mode
+    if (get().controlMode === 'npc') {
+      try {
+        const { useNpcStore } = require('@/stores/npc') as typeof import('@/stores/npc');
+        useNpcStore.getState().removePlayerNpc();
+      } catch { /* npc store may not be loaded */ }
+    }
     set({
     controlMode: 'explore',
     hasAgent: false,
@@ -549,7 +572,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     avatarSpecies: 'cat',
     avatarColor: 'yellow',
     avatarName: '',
-    avatarPosition: { x: 400, y: 250 },
+    avatarPosition: { x: 1280, y: 1280 },
     movementDirection: 'idle',
     petSpeed: 0,
     nearLocation: null,
