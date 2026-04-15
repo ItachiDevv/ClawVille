@@ -60,7 +60,7 @@ export interface SimulationRuntimeDeps {
   dbHooks: PetDbHooks;
   databaseUrl?: string;
   apiKeys?: { gemini?: string };
-  /** Optional home spawn coordinates (defaults to center of 2560x2560) */
+  /** Optional home spawn coordinates (defaults to center of 5120x5120) */
   homeX?: number;
   homeY?: number;
   /** Phase 3: injected services for economic actions (BUY_ITEM, LEARN_SKILL) */
@@ -387,7 +387,7 @@ export class SimulationRuntime {
 
   /**
    * Generate a short visit chat line via the runtime LLM.
-   * Per user decision: visit chat is routed through runtime, not raw Anthropic SDK.
+   * Per user decision: visit chat is routed through the ElizaOS runtime (Gemini backend).
    */
   async generateAvatarChat(userId: string, buildingId: string): Promise<string | null> {
     if (!this.initialized) return null;
