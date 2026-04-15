@@ -208,6 +208,16 @@ ssh -i ~/.ssh/clawville_deploy root@87.99.142.34 \
 
 **NEVER run `bun run dev` locally.** Intel Iris Xe GPU crashes on the Three.js/WebGPU scene and requires a PC restart. Always push → Coolify auto-deploys → test against the production URL.
 
+### MANDATORY: Browser verification after every deploy
+
+**After every push to master, you MUST verify the game visually in the browser.** This is not optional.
+
+1. Wait for Coolify deploy to complete (~3-5 min, or check `curl -sS --ssl-no-revoke https://api.clawville.world/health`)
+2. Open `https://clawville.world/game` using Chrome MCP tools (tabs_context_mcp → navigate) or ask the user to screenshot
+3. Check: buildings visible and not clipped by atmosphere planes, camera zoom works, player spawns at center, FPS > 50, no console errors
+4. If Chrome extension is disconnected, explicitly tell the user "I cannot verify in browser — please check and send a screenshot"
+5. **NEVER claim a visual fix is done without seeing it in the browser.** "I pushed the code" is not verification.
+
 ### Emergency access
 
 - **SSH into VPS**: `ssh -i ~/.ssh/clawville_deploy root@87.99.142.34`
