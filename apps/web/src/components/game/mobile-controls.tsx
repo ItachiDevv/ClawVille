@@ -14,10 +14,14 @@ export default function MobileControls() {
 
   const movementFrozen = useGameStore((s) => s.movementFrozen);
   const nearLocation = useGameStore((s) => s.nearLocation);
+  const controlMode = useGameStore((s) => s.controlMode);
 
-  // Left joystick — movement (WASD equivalent)
+  // Explore mode = pure spectator with no character — no movement joystick, no building entry
+  const isExplore = controlMode === 'explore';
+
+  // Left joystick — movement (WASD equivalent). Hidden in explore mode (camera-only spectator).
   useEffect(() => {
-    if (!isMobile || movementFrozen || !leftContainerRef.current) {
+    if (!isMobile || movementFrozen || isExplore || !leftContainerRef.current) {
       if (leftJoystickRef.current) {
         leftJoystickRef.current.destroy();
         leftJoystickRef.current = null;
@@ -65,7 +69,7 @@ export default function MobileControls() {
         useGameStore.getState().setJoystickVelocity(0, 0);
       }
     };
-  }, [isMobile, movementFrozen]);
+  }, [isMobile, movementFrozen, isExplore]);
 
   // Right joystick — camera orbit (arrow key equivalent)
   useEffect(() => {
@@ -133,8 +137,8 @@ export default function MobileControls() {
       className="fixed bottom-0 left-0 z-40 pointer-events-none"
       style={{ width: '100vw', height: '220px' }}
     >
-      {/* Left joystick zone — movement */}
-      {!movementFrozen && (
+      {/* Left joystick zone — movement (hidden in explore mode: camera-only spectator) */}
+      {!movementFrozen && !isExplore && (
         <div
           ref={leftContainerRef}
           className="absolute pointer-events-auto"
@@ -161,8 +165,8 @@ export default function MobileControls() {
         }}
       />
 
-      {/* Enter building button — centered between joysticks */}
-      {!movementFrozen && nearLocation && (
+      {/* Enter building button — centered between joysticks (hidden in explore mode) */}
+      {!movementFrozen && !isExplore && nearLocation && (
         <button
           onClick={handleEnterBuilding}
           className="pointer-events-auto absolute"
