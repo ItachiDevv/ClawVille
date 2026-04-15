@@ -59,8 +59,8 @@ export default function OpenClawAvatarPage() {
         color: hexToNumber(color),
         stats: { hp, attack, defense, speed },
         personality,
-        homeX: 1024,
-        homeY: 640,
+        homeX: 2560,
+        homeY: 2560,
         patrolRadius: 128,
       });
       setSessionId(result.sessionId);

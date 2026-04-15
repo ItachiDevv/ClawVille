@@ -93,7 +93,7 @@ const _wasdWorldUp = new THREE.Vector3(0, 1, 0);
 
 // Follow distance: how many units the camera sits behind/above the character.
 // OrbitControls manages the actual angle — we just enforce the radial distance.
-const FPS_FOLLOW_DISTANCE = 160;
+const FPS_FOLLOW_DISTANCE = 240;
 // How high above the 2D game-plane the character target sits (approximate)
 const CHAR_TARGET_Y = 15;
 
@@ -541,7 +541,7 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
         enableZoom={true}
         enableRotate={true}
         minDistance={followMode ? 40 : 160}
-        maxDistance={2400}
+        maxDistance={4800}
         maxPolarAngle={Math.PI * 0.85}
         rotateSpeed={isTouchDevice ? 0.4 : 1}
         zoomSpeed={isTouchDevice ? 0.6 : 1}
@@ -570,7 +570,7 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       <directionalLight position={[-100, 200, -60]} intensity={0.5} color={0x88aacc} />
 
       {/* Underwater fog — pushed back for better visibility */}
-      <fog attach="fog" args={[FOG_COLOR, 600, 3200]} />
+      <fog attach="fog" args={[FOG_COLOR, 1200, 6400]} />
 
       {/* Underwater atmosphere — caustic light plane, depth backdrop, dust particles */}
       <UnderwaterAtmosphere />
@@ -720,10 +720,9 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
         camera={{
           fov: 50,
           near: 1,
-          far: 3400,
-          // Game mode: pull the camera back to z=550 to accommodate the wider
-          // building ring (semi-major X=14, semi-minor Y=9 tile layout).
-          position: mode === 'game' ? [0, 400, 900] : [0, 320, 560],
+          far: 6800,
+          // Game mode: pull the camera back to accommodate the wider 160x160 map.
+          position: mode === 'game' ? [0, 700, 1600] : [0, 560, 1000],
         }}
         onCreated={(state) => {
           const { scene, gl } = state;

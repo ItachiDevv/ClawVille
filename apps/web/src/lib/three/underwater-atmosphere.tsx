@@ -21,7 +21,7 @@ import {
 // All animation is TSL node-based (runs entirely on GPU, zero CPU per frame).
 //
 // 1. CausticPlane  — large horizontal plane at y=150, animated light pattern
-// 2. DepthBackdrop — vertical plane at z=-600, blue-green gradient
+// 2. DepthBackdrop — vertical plane at z=-1200, blue-green gradient
 // 3. DustParticles — ~300 Points drifting upward via TSL positionNode
 // ---------------------------------------------------------------------------
 
@@ -77,8 +77,10 @@ function createCausticMaterial(): THREE.MeshBasicNodeMaterial {
 
 function CausticPlane() {
   const { geometry, material } = useMemo(() => {
-    // Large plane — covers the entire map + margin
-    const geo = new THREE.PlaneGeometry(3600, 2400, 1, 1);
+    // Large plane — covers the full 5120x5120 map + margin on all sides.
+    // Was 3200x3200: both dimensions were narrower than the 5120 map size,
+    // leaving the outer edges without caustic coverage.
+    const geo = new THREE.PlaneGeometry(6400, 6400, 1, 1);
     const mat = createCausticMaterial();
     return { geometry: geo, material: mat };
   }, []);
@@ -140,7 +142,7 @@ function createBackdropMaterial(): THREE.MeshBasicNodeMaterial {
 function DepthBackdrop() {
   const { geometry, material } = useMemo(() => {
     // Tall plane spanning the full scene height range
-    const geo = new THREE.PlaneGeometry(3600, 700, 1, 1);
+    const geo = new THREE.PlaneGeometry(7200, 700, 1, 1);
     const mat = createBackdropMaterial();
     return { geometry: geo, material: mat };
   }, []);
@@ -157,7 +159,7 @@ function DepthBackdrop() {
       geometry={geometry}
       material={material}
       // Vertical plane, centred at y=250 to span ground (y≈-2) to water surface (y≈500)
-      position={[0, 250, -600]}
+      position={[0, 250, -1200]}
       frustumCulled={false}
     />
   );
@@ -167,8 +169,8 @@ function DepthBackdrop() {
 // 3. Underwater Dust Particles
 // ---------------------------------------------------------------------------
 const PARTICLE_COUNT = 300;
-const FIELD_W = 1800;
-const FIELD_D = 1200;
+const FIELD_W = 3600;
+const FIELD_D = 2400;
 const FIELD_H = 350; // vertical range the particles occupy
 
 function createDustGeometry(): THREE.BufferGeometry {

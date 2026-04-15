@@ -192,8 +192,8 @@ petRoutes.get('/me', requireAuth, async (c) => {
 
 // Update pet position
 const updatePositionSchema = z.object({
-  positionX: z.number().int().min(0),
-  positionY: z.number().int().min(0),
+  positionX: z.number().int().min(0).max(5120),
+  positionY: z.number().int().min(0).max(5120),
 });
 
 petRoutes.patch('/me', requireAuth, async (c) => {
@@ -341,8 +341,8 @@ petRoutes.post('/me/chat', requireAuth, async (c) => {
 
 // Heartbeat — reports user activity + position
 const heartbeatSchema = z.object({
-  positionX: z.number().min(0).max(2560),
-  positionY: z.number().min(0).max(2560),
+  positionX: z.number().min(0).max(5120),
+  positionY: z.number().min(0).max(5120),
 });
 
 petRoutes.post('/me/heartbeat', requireAuth, async (c) => {
