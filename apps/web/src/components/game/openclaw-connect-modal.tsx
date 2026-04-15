@@ -9,8 +9,11 @@ import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 export default function OpenClawConnectModal() {
   const { openclawModalOpen, setOpenclawModalOpen, openclawConnected, openclawSessionId, setOpenclawConnection, addToast, setSkillBuilderOpen } = useGameStore();
   const { data: pet } = usePet();
+  // Detect production vs local dev — localhost gateways won't work on prod
+  const isProduction = typeof window !== 'undefined' && !window.location.hostname.includes('localhost');
+
   const [platform, setPlatform] = useState<'openclaw' | 'hermes' | 'custom'>('openclaw');
-  const [gatewayUrl, setGatewayUrl] = useState('http://localhost:18789');
+  const [gatewayUrl, setGatewayUrl] = useState(isProduction ? '' : 'http://localhost:18789');
   const [authToken, setAuthToken] = useState('');
   const [agentId, setAgentId] = useState('default');
   const [protocol, setProtocol] = useState<'openai-compat' | 'anthropic' | 'custom-webhook'>('openai-compat');
@@ -21,16 +24,16 @@ export default function OpenClawConnectModal() {
   const handlePlatformChange = (p: typeof platform) => {
     setPlatform(p);
     if (p === 'openclaw') {
-      setGatewayUrl('http://localhost:18789');
+      setGatewayUrl(isProduction ? '' : 'http://localhost:18789');
       setProtocol('openai-compat');
       setAgentId('default');
       setAuthToken('');
     } else if (p === 'hermes') {
-      setGatewayUrl('http://localhost:8642');
+      setGatewayUrl(isProduction ? '' : 'http://localhost:8642');
       setProtocol('openai-compat');
       setAgentId('hermes-agent');
       setModelName('hermes-agent');
-      setAuthToken('change-me-local-dev');
+      setAuthToken(isProduction ? '' : 'change-me-local-dev');
     } else {
       setGatewayUrl('');
       setProtocol('openai-compat');
@@ -268,9 +271,18 @@ export default function OpenClawConnectModal() {
               </div>
 
               {/* Platform info */}
+              {platform === 'openclaw' && isProduction && (
+                <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-lg px-3 py-2 text-xs text-cyan-300/80">
+                  Enter your OpenClaw gateway&apos;s public URL (e.g. <code className="bg-white/10 px-1 rounded">https://your-server.com:18789</code>). Your gateway must be accessible from the internet — localhost won&apos;t work here.
+                </div>
+              )}
               {platform === 'hermes' && (
                 <div className="bg-purple-500/10 border border-purple-500/20 rounded-lg px-3 py-2 text-xs text-purple-300/80">
-                  Hermes Agent by Nous Research. Enable API server with <code className="bg-white/10 px-1 rounded">API_SERVER_ENABLED=true</code> in your .env, then run <code className="bg-white/10 px-1 rounded">hermes gateway</code>.
+                  {isProduction ? (
+                    <>Hermes Agent by Nous Research. Enter your Hermes gateway&apos;s public URL. Use <code className="bg-white/10 px-1 rounded">hermes gateway --host 0.0.0.0</code> to expose it, or deploy behind a tunnel (ngrok, Cloudflare Tunnel).</>
+                  ) : (
+                    <>Hermes Agent by Nous Research. Enable API server with <code className="bg-white/10 px-1 rounded">API_SERVER_ENABLED=true</code> in your .env, then run <code className="bg-white/10 px-1 rounded">hermes gateway</code>.</>
+                  )}
                 </div>
               )}
 
@@ -291,7 +303,7 @@ export default function OpenClawConnectModal() {
                   value={gatewayUrl}
                   onChange={(e) => setGatewayUrl(e.target.value)}
                   className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:border-cyan-500/50 focus:outline-none"
-                  placeholder="http://localhost:18789"
+                  placeholder={isProduction ? 'https://your-gateway.com:18789' : 'http://localhost:18789'}
                 />
               </div>
 
@@ -365,7 +377,7 @@ export default function OpenClawConnectModal() {
 
               <button
                 onClick={handleConnect}
-                disabled={loading || !gatewayUrl || !authToken}
+                disabled={loading || !gatewayUrl}
                 className="w-full color-btn bg-claw-green hover:bg-claw-green-dark text-sm py-2 disabled:opacity-50"
               >
                 {loading ? 'Connecting...' : 'Connect Bot'}
