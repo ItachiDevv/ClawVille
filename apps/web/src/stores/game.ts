@@ -277,6 +277,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       controlMode: mode,
       isSpectator: mode === 'explore',
       possessedNpcId,
+      // Clear stale nearLocation when switching to explore (no character = no proximity)
+      ...(mode === 'explore' ? { nearLocation: null } : {}),
     });
   },
   toggleControlMode: () => {
