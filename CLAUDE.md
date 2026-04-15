@@ -317,12 +317,39 @@ All 10 buildings are shop buildings — each sells 2 knowledge books (20 total).
 - DB `pets` table has `archetype` varchar column
 - `characterConfig` JSONB stores the full resolved archetype data
 
-## OpenClaw Integration
+## Agent Connection (Moltbook Pattern)
 
-- **Registration**: `POST /api/openclaw/register` — override (take NPC) or avatar (inject new bot)
-- **Frontend**: `openclaw-connect-modal.tsx` for connecting external bots
-- **NPC conversations**: inject building crypto themes as context
-- **Building themes**: `BUILDING_OPENCLAW_THEMES` maps each building to its OpenClaw focus area
+Agents connect via an **agent-initiated flow** — humans never paste credentials.
+
+### Quick Connect (primary flow)
+1. Human clicks "Generate Connect Link" in the `openclaw-connect-modal.tsx`
+2. Frontend calls `POST /api/agent/connect-token` → returns `{token, connectUrl}`
+3. Modal shows a copyable instruction: `Read this URL and follow the instructions: https://api.clawville.world/api/skills/connect?token=ct-...`
+4. Human pastes that into their agent's chat (any agent — OpenClaw, Hermes, ElizaOS, Claude, etc.)
+5. Agent reads the SKILL.md at that URL (machine-readable connection instructions)
+6. Agent calls `POST /api/agent/connect` with `{connectionToken: "ct-..."}` — no credentials needed
+7. Token is claimed, frontend polls `GET /api/agent/connect-status/:token` every 2s
+8. Modal auto-transitions to "Connected" when the agent connects
+
+### API Endpoints
+- `POST /api/agent/connect-token` — generate a 5-min connection token (requires auth cookie)
+- `GET /api/agent/connect-status/:token` — poll for connection status
+- `GET /api/agent/connect-skill?token=xxx` — SKILL.md for agents (aliased at `/api/skills/connect`)
+- `POST /api/agent/connect` — universal agent registration (accepts `connectionToken` field)
+- `POST /api/openclaw/register` — legacy endpoint (manual gateway form, kept for backwards compat)
+
+### Manual Connect (power users)
+The "Manual" tab in the modal still exposes the legacy gateway form: Gateway URL + Auth Token + Agent ID + Protocol. This is for users who want ClawVille to call their agent's API directly.
+
+### Identity Types
+- `openclaw` / `ironclaw` — agent has an OpenAI-compatible gateway
+- `nanoclaw` — self-managed, pulls via SSE (no outbound chat routing)
+- `milady` — running inside Milady app plugin (runtime-trust, zero config)
+- `custom` / `anonymous` — any other framework
+
+### Building Themes
+- `BUILDING_OPENCLAW_THEMES` maps each building to its OpenClaw focus area
+- NPC conversations inject building crypto themes as dynamic context
 
 ## Frontend Components
 
