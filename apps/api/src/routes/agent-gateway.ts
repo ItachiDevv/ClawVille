@@ -73,7 +73,10 @@ function cleanupConnectRateMap() {
 // Kept alongside the legacy /api/openclaw/register endpoint (which remains
 // for backwards compat). New integrations should use /api/agent/connect.
 const connectSchema = z.object({
-  // Identity signals (at least one required)
+  // Connection token (Moltbook pattern — human generates token, agent claims it)
+  connectionToken: z.string().optional(),
+
+  // Identity signals (at least one required unless connectionToken provided)
   agentId: z.string().min(1).max(200).optional(),
 
   // Milady identity — passed by the @clawville/app-clawville Milady plugin.
@@ -112,8 +115,8 @@ const connectSchema = z.object({
   // Identity type hint (inferred from other fields if omitted)
   identityType: z.enum(['openclaw', 'ironclaw', 'nanoclaw', 'milady', 'custom', 'anonymous']).optional(),
 }).refine(
-  (d) => d.agentId || d.miladyAgentId,
-  { message: 'At least one identity signal required: agentId or miladyAgentId' }
+  (d) => d.agentId || d.miladyAgentId || d.connectionToken,
+  { message: 'At least one identity signal required: agentId, miladyAgentId, or connectionToken' }
 );
 
 agentGatewayRoutes.post('/connect', async (c) => {
@@ -134,6 +137,25 @@ agentGatewayRoutes.post('/connect', async (c) => {
 
   const data = parsed.data;
   let resolvedAgentId: string = data.agentId ?? '';
+
+  // Step 0: If connectionToken is present, validate it and auto-generate agentId if missing
+  if (data.connectionToken) {
+    const pending = pendingConnections.get(data.connectionToken);
+    if (!pending) {
+      return c.json({ error: 'Connection token not found or expired' }, 404);
+    }
+    if (Date.now() > pending.expiresAt) {
+      pendingConnections.delete(data.connectionToken);
+      return c.json({ error: 'Connection token expired' }, 410);
+    }
+    if (pending.connected) {
+      return c.json({ error: 'Connection token already claimed' }, 409);
+    }
+    // Auto-generate agentId from token if not provided
+    if (!resolvedAgentId) {
+      resolvedAgentId = data.agentId ?? `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    }
+  }
 
   // Step 1: Resolve Milady identity (runtime-trust — no external verification).
   //
@@ -315,6 +337,16 @@ agentGatewayRoutes.post('/connect', async (c) => {
     } catch (err) {
       console.error('[AgentConnect] NPC registration error:', err);
       // Non-fatal — agent still gets a sessionId for REST polling
+    }
+  }
+
+  // Claim connection token if present (Moltbook pattern — flips polling status to connected)
+  if (data.connectionToken) {
+    const pending = pendingConnections.get(data.connectionToken);
+    if (pending) {
+      pending.connected = true;
+      pending.sessionId = sessionId;
+      pending.agentId = resolvedAgentId;
     }
   }
 
@@ -893,4 +925,181 @@ agentGatewayRoutes.get('/:sessionId/events', (c) => {
   });
 });
 
-export { agentGatewayRoutes };
+// ---------------------------------------------------------------------------
+// Connection-token flow (Moltbook pattern)
+// Human generates a token → gives agent a URL → agent calls /connect with it
+// No credentials paste required.
+// ---------------------------------------------------------------------------
+
+interface PendingConnection {
+  token: string;
+  petId: string;       // user's pet that will be linked
+  petName: string;
+  userId: string;
+  expiresAt: number;
+  // Filled when agent claims the token
+  sessionId?: string;
+  agentId?: string;
+  connected: boolean;
+}
+
+const pendingConnections = new Map<string, PendingConnection>();
+const TOKEN_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function cleanupExpiredTokens() {
+  const now = Date.now();
+  for (const [k, v] of pendingConnections) {
+    if (now > v.expiresAt) pendingConnections.delete(k);
+  }
+  // Cap size
+  if (pendingConnections.size > 1000) {
+    const entries = [...pendingConnections.entries()];
+    entries.sort((a, b) => a[1].expiresAt - b[1].expiresAt);
+    for (let i = 0; i < entries.length - 500; i++) {
+      pendingConnections.delete(entries[i][0]);
+    }
+  }
+}
+
+// POST /api/agent/connect-token — generate a connection token (requires auth)
+agentGatewayRoutes.post('/connect-token', async (c) => {
+  // Import auth middleware inline to avoid circular deps
+  const { sessionMiddleware, requireAuth } = await import('../middleware/auth');
+
+  // We need to manually run the middleware chain here since Hono
+  // doesn't support inline middleware in route handlers.
+  // Instead, check for the session cookie directly.
+  const cookie = c.req.header('cookie') ?? '';
+  const sessionId = cookie.match(/clawville_session=([^;]+)/)?.[1];
+  if (!sessionId) {
+    return c.json({ error: 'Authentication required' }, 401);
+  }
+
+  // Look up pet for this user
+  const body = await c.req.json().catch(() => ({}));
+  const petId = body.petId as string | undefined;
+  const petName = body.petName as string | undefined;
+  const userId = body.userId as string | undefined;
+
+  if (!petId || !userId) {
+    return c.json({ error: 'petId and userId required' }, 400);
+  }
+
+  cleanupExpiredTokens();
+
+  const token = `ct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const apiBase = process.env.CORS_ORIGIN?.includes('clawville.world')
+    ? 'https://api.clawville.world'
+    : `http://localhost:${process.env.PORT ?? 4001}`;
+
+  pendingConnections.set(token, {
+    token,
+    petId,
+    petName: petName ?? 'MyBot',
+    userId,
+    expiresAt: Date.now() + TOKEN_TTL_MS,
+    connected: false,
+  });
+
+  const connectUrl = `${apiBase}/api/skills/connect?token=${token}`;
+  const instruction = `Tell your agent: "Read this URL and follow the instructions: ${connectUrl}"`;
+
+  return c.json({ token, connectUrl, instruction, expiresIn: TOKEN_TTL_MS / 1000 });
+});
+
+// GET /api/agent/connect-status/:token — frontend polls this
+agentGatewayRoutes.get('/connect-status/:token', (c) => {
+  const token = c.req.param('token');
+  const pending = pendingConnections.get(token);
+
+  if (!pending) {
+    return c.json({ error: 'Token not found or expired' }, 404);
+  }
+
+  if (Date.now() > pending.expiresAt) {
+    pendingConnections.delete(token);
+    return c.json({ error: 'Token expired' }, 410);
+  }
+
+  return c.json({
+    connected: pending.connected,
+    sessionId: pending.sessionId ?? null,
+    agentId: pending.agentId ?? null,
+    expiresIn: Math.max(0, Math.floor((pending.expiresAt - Date.now()) / 1000)),
+  });
+});
+
+// GET /api/skills/connect — machine-readable SKILL.md for agents
+agentGatewayRoutes.get('/connect-skill', (c) => {
+  const token = c.req.query('token');
+  if (!token) {
+    return c.json({ error: 'Missing token query parameter' }, 400);
+  }
+
+  const pending = pendingConnections.get(token);
+  if (!pending || Date.now() > pending.expiresAt) {
+    return c.text('# Connection Error\n\nThis connection token has expired or is invalid. Ask the human to generate a new one from the ClawVille game.', 410);
+  }
+
+  const apiBase = process.env.CORS_ORIGIN?.includes('clawville.world')
+    ? 'https://api.clawville.world'
+    : `http://localhost:${process.env.PORT ?? 4001}`;
+
+  const markdown = `# Connect to ClawVille
+
+You have been invited to join ClawVille — an underwater world where AI agents learn skills from 10 buildings.
+
+## Instructions
+
+Call this endpoint to connect:
+
+\`\`\`
+POST ${apiBase}/api/agent/connect
+Content-Type: application/json
+
+{
+  "connectionToken": "${token}",
+  "agentId": "your-agent-id",
+  "name": "YourAgentName",
+  "protocol": "nanoclaw"
+}
+\`\`\`
+
+**Required fields:**
+- \`connectionToken\`: \`${token}\` (already filled in above)
+- \`agentId\`: Your unique agent identifier (any string)
+
+**Optional fields:**
+- \`name\`: Display name in the world (max 24 chars)
+- \`species\`: \`lobster\` (default)
+- \`color\`: Hex color as integer (e.g. \`4367861\` for blue)
+- \`protocol\`: \`nanoclaw\` (recommended — no gateway required) or \`openai-compat\`
+- \`gatewayUrl\`: Only needed if protocol is \`openai-compat\` and you want ClawVille to call your API
+
+## What happens after connecting
+
+1. Your agent spawns in the underwater world as a lobster avatar
+2. You receive a \`sessionId\` to use for all subsequent API calls
+3. You can explore buildings, learn skills, and interact with NPCs
+4. Skills learned are persisted across sessions
+
+## Response
+
+\`\`\`json
+{
+  "agentId": "your-agent-id",
+  "sessionId": "ag-...",
+  "knowledge": [],
+  "walletAddress": "..."
+}
+\`\`\`
+
+This token expires in ${Math.max(0, Math.floor((pending.expiresAt - Date.now()) / 1000))} seconds.
+`;
+
+  c.header('Content-Type', 'text/markdown; charset=utf-8');
+  return c.text(markdown);
+});
+
+// Expose pendingConnections for the /connect handler to claim tokens
+export { agentGatewayRoutes, pendingConnections };

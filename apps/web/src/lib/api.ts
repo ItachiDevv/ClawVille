@@ -239,6 +239,26 @@ export const api = {
       method: 'DELETE',
     }),
 
+  // Agent-initiated connection (Moltbook pattern)
+  generateConnectToken: (data: { petId: string; petName: string; userId: string }) =>
+    honoRequest<{
+      token: string;
+      connectUrl: string;
+      instruction: string;
+      expiresIn: number;
+    }>('/api/agent/connect-token', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  pollConnectStatus: (token: string) =>
+    honoRequest<{
+      connected: boolean;
+      sessionId: string | null;
+      agentId: string | null;
+      expiresIn: number;
+    }>(`/api/agent/connect-status/${token}`),
+
   getActiveOpenClawBots: () =>
     honoRequest<{
       bots: Array<{ sessionId: string; mode: string; npcId?: string; name?: string }>;
