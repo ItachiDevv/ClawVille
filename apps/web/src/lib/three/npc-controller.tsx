@@ -129,6 +129,22 @@ export default function NpcController() {
       inputRight /= len;
     }
 
+    // Proximity check runs every frame — even when idle, so nearLocation
+    // stays accurate when the NPC stops inside a building zone.
+    {
+      const npc = useNpcStore.getState().npcs.find((n) => n.id === possessedNpcId);
+      if (npc) {
+        let nearZone: string | null = null;
+        for (const zone of pixelZones) {
+          if (npc.x >= zone.x && npc.x <= zone.x + zone.width && npc.y >= zone.y && npc.y <= zone.y + zone.height) {
+            nearZone = zone.id;
+            break;
+          }
+        }
+        if (nearZone !== store.nearLocation) store.setNearLocation(nearZone);
+      }
+    }
+
     // No input → set idle (keep last facingAngle so model doesn't snap)
     if (inputFwd === 0 && inputRight === 0) {
       const npc = useNpcStore.getState().npcs.find((n) => n.id === possessedNpcId);
@@ -167,16 +183,6 @@ export default function NpcController() {
     const newY = Math.max(Y_MIN, Math.min(Y_MAX, npc.y + worldVz * SPEED * delta));
 
     useNpcStore.getState().moveNpc(possessedNpcId, newX, newY, dir, facingAngle);
-
-    // Proximity check — detect which building zone the NPC is in
-    let nearZone: string | null = null;
-    for (const zone of pixelZones) {
-      if (newX >= zone.x && newX <= zone.x + zone.width && newY >= zone.y && newY <= zone.y + zone.height) {
-        nearZone = zone.id;
-        break;
-      }
-    }
-    if (nearZone !== store.nearLocation) store.setNearLocation(nearZone);
   });
 
   return null;
