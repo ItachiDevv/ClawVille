@@ -101,6 +101,7 @@ function NanoClawBanner() {
 export default function GamePage() {
   const router = useRouter();
   const { data: pet, isLoading } = usePet();
+  const controlMode = useGameStore((s: GameState) => s.controlMode);
 
   // Milady embed detection — auto-exchanges the agent session for a Lucia
   // cookie so the viewer skips the login overlay. The hook invalidates
@@ -192,8 +193,8 @@ export default function GamePage() {
       <PerfHud />
       <ToastNotifications />
 
-      {/* Pet-specific UI — only when agent exists */}
-      {hasPet && (
+      {/* Pet-specific UI — only when agent exists AND not in explore mode (pure spectator) */}
+      {hasPet && controlMode !== 'explore' && (
         <>
           <ChatPanel />
           <LocationHUD />
