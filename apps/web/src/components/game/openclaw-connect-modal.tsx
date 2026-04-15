@@ -1,52 +1,114 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useGameStore } from '@/stores/game';
 import { usePet } from '@/hooks/use-pet';
+import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
+
+type ConnectTab = 'easy' | 'manual';
 
 export default function OpenClawConnectModal() {
   const { openclawModalOpen, setOpenclawModalOpen, openclawConnected, openclawSessionId, setOpenclawConnection, addToast, setSkillBuilderOpen } = useGameStore();
   const { data: pet } = usePet();
-  // Detect production vs local dev — localhost gateways won't work on prod
-  const isProduction = typeof window !== 'undefined' && !window.location.hostname.includes('localhost');
+  const { data: authData } = useQuery({ queryKey: ['auth-me'], queryFn: () => api.me(), retry: false });
 
-  const [platform, setPlatform] = useState<'openclaw' | 'hermes' | 'custom'>('openclaw');
-  const [gatewayUrl, setGatewayUrl] = useState(isProduction ? '' : 'http://localhost:18789');
-  const [authToken, setAuthToken] = useState('');
-  const [agentId, setAgentId] = useState('default');
-  const [protocol, setProtocol] = useState<'openai-compat' | 'anthropic' | 'custom-webhook'>('openai-compat');
-  const [modelName, setModelName] = useState('');
-  const [showAdvanced, setShowAdvanced] = useState(false);
-
-  // Preset gateway URL and protocol when platform changes
-  const handlePlatformChange = (p: typeof platform) => {
-    setPlatform(p);
-    if (p === 'openclaw') {
-      setGatewayUrl(isProduction ? '' : 'http://localhost:18789');
-      setProtocol('openai-compat');
-      setAgentId('default');
-      setAuthToken('');
-    } else if (p === 'hermes') {
-      setGatewayUrl(isProduction ? '' : 'http://localhost:8642');
-      setProtocol('openai-compat');
-      setAgentId('hermes-agent');
-      setModelName('hermes-agent');
-      setAuthToken(isProduction ? '' : 'change-me-local-dev');
-    } else {
-      setGatewayUrl('');
-      setProtocol('openai-compat');
-    }
-  };
+  const [tab, setTab] = useState<ConnectTab>('easy');
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportResult, setExportResult] = useState<{ knowledgeCount: number; markdown: string } | null>(null);
   const [error, setError] = useState('');
 
-  if (!openclawModalOpen) return null;
+  // --- Easy connect (Moltbook pattern) ---
+  const [connectToken, setConnectToken] = useState<string | null>(null);
+  const [connectUrl, setConnectUrl] = useState<string | null>(null);
+  const [instruction, setInstruction] = useState<string | null>(null);
+  const [polling, setPolling] = useState(false);
+  const [expiresIn, setExpiresIn] = useState(0);
+  const [copied, setCopied] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const handleConnect = async () => {
+  // --- Manual connect (legacy) ---
+  const isProduction = typeof window !== 'undefined' && !window.location.hostname.includes('localhost');
+  const [gatewayUrl, setGatewayUrl] = useState(isProduction ? '' : 'http://localhost:18789');
+  const [authToken, setAuthToken] = useState('');
+  const [agentId, setAgentId] = useState('default');
+  const [protocol, setProtocol] = useState<'openai-compat' | 'anthropic' | 'custom-webhook'>('openai-compat');
+
+  // Cleanup polling on unmount or close
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
+
+  // Stop polling when modal closes
+  useEffect(() => {
+    if (!openclawModalOpen && pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+      setPolling(false);
+    }
+  }, [openclawModalOpen]);
+
+  const handleGenerateToken = useCallback(async () => {
+    if (!pet?.id || !authData?.user?.id) {
+      setError('You need a pet to connect an agent. Create one first.');
+      return;
+    }
+    setError('');
+    setLoading(true);
+    try {
+      const res = await api.generateConnectToken({
+        petId: pet.id,
+        petName: pet.name ?? 'MyBot',
+        userId: authData.user.id,
+      });
+      setConnectToken(res.token);
+      setConnectUrl(res.connectUrl);
+      setInstruction(res.instruction);
+      setExpiresIn(res.expiresIn);
+      setPolling(true);
+
+      // Start polling for connection
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = setInterval(async () => {
+        try {
+          const status = await api.pollConnectStatus(res.token);
+          setExpiresIn(status.expiresIn);
+          if (status.connected && status.sessionId) {
+            // Agent connected!
+            clearInterval(pollRef.current!);
+            pollRef.current = null;
+            setPolling(false);
+            setOpenclawConnection(status.sessionId);
+            addToast('🔌', 'Agent connected to ClawVille!');
+          }
+        } catch {
+          // Token expired or error — stop polling
+          clearInterval(pollRef.current!);
+          pollRef.current = null;
+          setPolling(false);
+          setConnectToken(null);
+          setError('Connection token expired. Generate a new one.');
+        }
+      }, 2000);
+    } catch (err: any) {
+      setError(err.message || 'Failed to generate connection token');
+    } finally {
+      setLoading(false);
+    }
+  }, [pet, authData, addToast, setOpenclawConnection]);
+
+  const handleCopyUrl = () => {
+    if (!connectUrl) return;
+    navigator.clipboard.writeText(connectUrl);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleManualConnect = async () => {
     setError('');
     setLoading(true);
     try {
@@ -57,7 +119,6 @@ export default function OpenClawConnectModal() {
         agentId,
         sessionKey: `world-${Date.now()}`,
         protocol,
-        ...(modelName ? { modelName } : {}),
         name: useGameStore.getState().petName || 'MyBot',
         species: useGameStore.getState().petSpecies || 'cat',
         color: 0x4caf50,
@@ -68,7 +129,7 @@ export default function OpenClawConnectModal() {
         patrolRadius: 128,
       });
       setOpenclawConnection(res.sessionId);
-      addToast('🔌', `${platform === 'hermes' ? 'Hermes' : platform === 'openclaw' ? 'OpenClaw' : 'Custom'} agent connected!`);
+      addToast('🔌', 'Agent connected!');
     } catch (err: any) {
       setError(err.message || 'Connection failed');
     } finally {
@@ -92,23 +153,17 @@ export default function OpenClawConnectModal() {
   };
 
   const handleDisconnect = async () => {
-    // Auto-export knowledge before disconnecting
     if (pet?.id) {
       try {
         const data = await api.exportKnowledge(pet.id);
-        const knowledgeCount = data.knowledge?.length ?? 0;
-        setExportResult({ knowledgeCount, markdown: data.skillMd });
-        addToast('📦', `Exported ${knowledgeCount} knowledge entries as SKILL.md`);
-      } catch { /* export failure shouldn't block disconnect */ }
+        setExportResult({ knowledgeCount: data.knowledge?.length ?? 0, markdown: data.skillMd });
+      } catch { /* non-blocking */ }
     }
-
     if (openclawSessionId) {
-      try {
-        await api.unregisterOpenClaw(openclawSessionId);
-      } catch { /* ignore */ }
+      try { await api.unregisterOpenClaw(openclawSessionId); } catch { /* ignore */ }
     }
     setOpenclawConnection(null);
-    addToast('🔌', 'OpenClaw bot disconnected');
+    addToast('🔌', 'Agent disconnected');
   };
 
   const handleCopySkillMd = () => {
@@ -126,269 +181,261 @@ export default function OpenClawConnectModal() {
     a.download = `${pet?.name ?? 'pet'}-skill.md`;
     a.click();
     URL.revokeObjectURL(url);
-    addToast('💾', 'SKILL.md downloaded!');
   };
+
+  if (!openclawModalOpen) return null;
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setOpenclawModalOpen(false)} />
-      <div className="relative w-full max-w-md">
-        <div className="claw-panel space-y-4">
+      <div className="relative w-full max-w-md max-h-[90vh] overflow-y-auto">
+        <div className="bg-[rgba(8,20,40,0.95)] border border-cyan-500/20 rounded-2xl shadow-[0_0_40px_rgba(0,229,255,0.08)] p-5 space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="font-clawville text-xl text-gray-900">
-              🔌 Connect OpenClaw
-            </h2>
+            <h2 className="text-lg font-bold text-white">Connect Agent</h2>
             <button
               onClick={() => setOpenclawModalOpen(false)}
-              className="text-gray-600 hover:text-gray-900 font-bold text-lg"
+              className="text-white/40 hover:text-white/80 text-lg"
             >
               ×
             </button>
           </div>
 
           {openclawConnected ? (
+            /* ─── Connected state ─── */
             <div className="space-y-3">
-              <div className="flex items-center gap-2 text-green-700">
-                <span className="w-3 h-3 rounded-full bg-green-500 shadow-[0_0_6px_rgba(74,222,128,0.6)]" />
-                <span className="font-bold">Connected</span>
+              <div className="flex items-center gap-2">
+                <span className="w-3 h-3 rounded-full bg-green-500 shadow-[0_0_6px_rgba(74,222,128,0.6)] animate-pulse" />
+                <span className="text-green-400 font-bold text-sm">Agent Connected</span>
               </div>
-              <p className="text-gray-700 text-sm">
-                Your OpenClaw bot is active in World mode. It&apos;s learning agent development knowledge from NPC conversations and building visits.
+              <p className="text-white/50 text-xs">
+                Your agent is exploring ClawVille and learning skills from every building visit.
               </p>
-              <p className="text-gray-500 text-xs font-mono">
+              <p className="text-white/30 text-xs font-mono">
                 Session: {openclawSessionId}
               </p>
-              <div className="bg-green-50 rounded-lg px-3 py-2">
-                <p className="text-green-800 font-bold text-xs mb-1">Training in progress</p>
-                <p className="text-green-700 text-xs">
-                  Visit buildings and chat with NPCs — your bot absorbs agent development knowledge from every conversation.
-                </p>
-              </div>
 
-              {/* Export result display */}
               {exportResult && (
-                <div className="bg-blue-50 rounded-lg px-3 py-2 space-y-2">
-                  <p className="text-blue-800 font-bold text-xs">
+                <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-lg px-3 py-2 space-y-2">
+                  <p className="text-cyan-300 font-bold text-xs">
                     SKILL.md exported — {exportResult.knowledgeCount} knowledge entries
                   </p>
                   <div className="flex gap-2">
-                    <button
-                      onClick={handleCopySkillMd}
-                      className="flex-1 text-xs px-2 py-1.5 rounded bg-blue-200 hover:bg-blue-300 text-blue-900 font-bold transition-colors"
-                    >
-                      Copy to Clipboard
-                    </button>
-                    <button
-                      onClick={handleDownloadSkillMd}
-                      className="flex-1 text-xs px-2 py-1.5 rounded bg-blue-200 hover:bg-blue-300 text-blue-900 font-bold transition-colors"
-                    >
-                      Download .md
-                    </button>
+                    <button onClick={handleCopySkillMd} className="flex-1 text-xs px-2 py-1.5 rounded bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 font-bold">Copy</button>
+                    <button onClick={handleDownloadSkillMd} className="flex-1 text-xs px-2 py-1.5 rounded bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 font-bold">Download</button>
                   </div>
                 </div>
               )}
 
               <div className="flex gap-2">
-                <button
-                  onClick={handleExport}
-                  disabled={exporting || !pet?.id}
-                  className="flex-1 color-btn bg-blue-500 hover:bg-blue-600 text-sm py-2 disabled:opacity-50"
-                >
+                <button onClick={handleExport} disabled={exporting || !pet?.id} className="flex-1 px-3 py-2 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 text-xs font-bold disabled:opacity-50">
                   {exporting ? 'Exporting...' : 'Export SKILL.md'}
                 </button>
-                <button
-                  onClick={handleDisconnect}
-                  className="flex-1 color-btn bg-red-500 hover:bg-red-600 text-sm py-2"
-                >
+                <button onClick={handleDisconnect} className="flex-1 px-3 py-2 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-300 text-xs font-bold">
                   Disconnect
                 </button>
               </div>
               <button
                 onClick={() => { setOpenclawModalOpen(false); setSkillBuilderOpen(true); }}
-                className="w-full color-btn bg-purple-500 hover:bg-purple-600 text-sm py-2"
+                className="w-full px-3 py-2 rounded-lg bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 text-xs font-bold"
               >
                 Build Skill
               </button>
             </div>
           ) : (
+            /* ─── Not connected ─── */
             <div className="space-y-3">
-              {/* Show export result after disconnect */}
-              {exportResult && (
-                <div className="bg-blue-50 rounded-lg px-3 py-2 space-y-2">
-                  <p className="text-blue-800 font-bold text-xs">
-                    Training complete — {exportResult.knowledgeCount} knowledge entries exported
-                  </p>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={handleCopySkillMd}
-                      className="flex-1 text-xs px-2 py-1.5 rounded bg-blue-200 hover:bg-blue-300 text-blue-900 font-bold transition-colors"
-                    >
-                      Copy SKILL.md
-                    </button>
-                    <button
-                      onClick={handleDownloadSkillMd}
-                      className="flex-1 text-xs px-2 py-1.5 rounded bg-blue-200 hover:bg-blue-300 text-blue-900 font-bold transition-colors"
-                    >
-                      Download .md
-                    </button>
+              <p className="text-white/50 text-sm">
+                Connect your AI agent to explore ClawVille and learn skills from 10 buildings.
+              </p>
+
+              {/* Tab selector */}
+              <div className="flex gap-1 bg-white/5 rounded-lg p-0.5">
+                <button
+                  onClick={() => setTab('easy')}
+                  className={`flex-1 px-3 py-1.5 rounded-md text-xs font-bold transition-all ${
+                    tab === 'easy'
+                      ? 'bg-cyan-500/20 text-cyan-300 shadow-sm'
+                      : 'text-white/40 hover:text-white/60'
+                  }`}
+                >
+                  Quick Connect
+                </button>
+                <button
+                  onClick={() => setTab('manual')}
+                  className={`flex-1 px-3 py-1.5 rounded-md text-xs font-bold transition-all ${
+                    tab === 'manual'
+                      ? 'bg-cyan-500/20 text-cyan-300 shadow-sm'
+                      : 'text-white/40 hover:text-white/60'
+                  }`}
+                >
+                  Manual
+                </button>
+              </div>
+
+              {tab === 'easy' ? (
+                /* ─── Easy connect (Moltbook pattern) ─── */
+                <div className="space-y-3">
+                  <div className="bg-cyan-500/5 border border-cyan-500/15 rounded-lg px-3 py-2">
+                    <p className="text-cyan-300/70 font-bold text-xs mb-1">How it works:</p>
+                    <ol className="text-[11px] text-white/40 space-y-1 list-decimal list-inside">
+                      <li>Click &ldquo;Generate Connect Link&rdquo; below</li>
+                      <li>Copy the link and paste it into your agent&apos;s chat</li>
+                      <li>Your agent reads the instructions and connects automatically</li>
+                    </ol>
                   </div>
+
+                  {!connectToken ? (
+                    <button
+                      onClick={handleGenerateToken}
+                      disabled={loading}
+                      className="w-full px-4 py-3 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-400 hover:to-blue-400 text-white font-bold text-sm transition-all disabled:opacity-50"
+                    >
+                      {loading ? 'Generating...' : 'Generate Connect Link'}
+                    </button>
+                  ) : (
+                    <div className="space-y-3">
+                      {/* Copyable URL */}
+                      <div>
+                        <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1">
+                          Paste this into your agent&apos;s chat
+                        </label>
+                        <div className="flex gap-1">
+                          <div className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-[11px] text-cyan-300 font-mono break-all select-all">
+                            Read this URL and follow the instructions: {connectUrl}
+                          </div>
+                          <button
+                            onClick={handleCopyUrl}
+                            className="px-3 py-2 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 text-xs font-bold shrink-0"
+                          >
+                            {copied ? 'Copied!' : 'Copy'}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Polling status */}
+                      <div className="flex items-center gap-2 px-3 py-2 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
+                        <div className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />
+                        <span className="text-yellow-300/80 text-xs font-bold">
+                          Waiting for your agent to connect...
+                        </span>
+                        <span className="text-yellow-300/50 text-xs ml-auto font-mono">
+                          {Math.floor(expiresIn / 60)}:{(expiresIn % 60).toString().padStart(2, '0')}
+                        </span>
+                      </div>
+
+                      <button
+                        onClick={() => {
+                          if (pollRef.current) clearInterval(pollRef.current);
+                          pollRef.current = null;
+                          setPolling(false);
+                          setConnectToken(null);
+                          setConnectUrl(null);
+                        }}
+                        className="w-full text-white/30 text-xs hover:text-white/50 underline"
+                      >
+                        Cancel and generate a new link
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Skills preview */}
+                  <div className="bg-cyan-500/5 border border-cyan-500/15 rounded-lg px-3 py-2">
+                    <p className="text-cyan-300/70 font-bold text-xs mb-1.5">Your agent will learn 10 skill domains:</p>
+                    <div className="grid grid-cols-2 gap-1 text-[10px] text-white/40">
+                      {Object.values(BUILDING_OPENCLAW_THEMES).map((theme: any) => (
+                        <span key={theme.label}>&#8226; {theme.category}</span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                /* ─── Manual connect (legacy gateway form) ─── */
+                <div className="space-y-3">
+                  <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg px-3 py-2 text-xs text-yellow-300/80">
+                    Advanced: directly connect to your agent&apos;s OpenAI-compatible gateway. Your agent must have a publicly accessible API endpoint.
+                  </div>
+
+                  <div>
+                    <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1">Gateway URL</label>
+                    <input
+                      type="text"
+                      value={gatewayUrl}
+                      onChange={(e) => setGatewayUrl(e.target.value)}
+                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:border-cyan-500/50 focus:outline-none"
+                      placeholder={isProduction ? 'https://your-gateway.com:18789' : 'http://localhost:18789'}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1">Auth Token (optional)</label>
+                    <input
+                      type="password"
+                      value={authToken}
+                      onChange={(e) => setAuthToken(e.target.value)}
+                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:border-cyan-500/50 focus:outline-none"
+                      placeholder="Your gateway auth token"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1">Agent ID</label>
+                    <input
+                      type="text"
+                      value={agentId}
+                      onChange={(e) => setAgentId(e.target.value)}
+                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:border-cyan-500/50 focus:outline-none"
+                      placeholder="default"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1">Protocol</label>
+                    <select
+                      value={protocol}
+                      onChange={(e) => setProtocol(e.target.value as typeof protocol)}
+                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:border-cyan-500/50 focus:outline-none"
+                    >
+                      <option value="openai-compat">OpenAI Compatible (/v1/chat/completions)</option>
+                      <option value="anthropic">Anthropic (/v1/messages)</option>
+                      <option value="custom-webhook">Custom Webhook (POST to root)</option>
+                    </select>
+                  </div>
+
                   <button
-                    onClick={() => { setOpenclawModalOpen(false); setSkillBuilderOpen(true); }}
-                    className="w-full text-xs px-2 py-1.5 rounded bg-purple-200 hover:bg-purple-300 text-purple-900 font-bold transition-colors"
+                    onClick={handleManualConnect}
+                    disabled={loading || !gatewayUrl}
+                    className="w-full px-4 py-2.5 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-400 hover:to-blue-400 text-white font-bold text-sm transition-all disabled:opacity-50"
                   >
-                    Build Skill
+                    {loading ? 'Connecting...' : 'Connect'}
                   </button>
                 </div>
               )}
 
-              <p className="text-white/60 text-sm">
-                Connect your agent to take over pet conversations and learn skills from every building visit.
-              </p>
-
-              {/* Platform selector */}
-              <div>
-                <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-2">Agent Platform</label>
-                <div className="flex gap-2">
-                  {([
-                    { id: 'openclaw' as const, label: '🦀 OpenClaw', color: 'cyan' },
-                    { id: 'hermes' as const, label: '🔮 Hermes', color: 'purple' },
-                    { id: 'custom' as const, label: '🤖 Custom', color: 'white' },
-                  ]).map((p) => (
-                    <button
-                      key={p.id}
-                      type="button"
-                      onClick={() => handlePlatformChange(p.id)}
-                      className={`flex-1 px-3 py-2 rounded-lg text-xs font-bold transition-all ${
-                        platform === p.id
-                          ? `bg-${p.color}-500/20 text-${p.color}-300 border border-${p.color}-500/40`
-                          : 'bg-white/5 text-white/40 border border-white/10 hover:border-white/20'
-                      }`}
-                    >
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Platform info */}
-              {platform === 'openclaw' && isProduction && (
-                <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-lg px-3 py-2 text-xs text-cyan-300/80">
-                  Enter your OpenClaw gateway&apos;s public URL (e.g. <code className="bg-white/10 px-1 rounded">https://your-server.com:18789</code>). Your gateway must be accessible from the internet — localhost won&apos;t work here.
-                </div>
-              )}
-              {platform === 'hermes' && (
-                <div className="bg-purple-500/10 border border-purple-500/20 rounded-lg px-3 py-2 text-xs text-purple-300/80">
-                  {isProduction ? (
-                    <>Hermes Agent by Nous Research. Enter your Hermes gateway&apos;s public URL. Use <code className="bg-white/10 px-1 rounded">hermes gateway --host 0.0.0.0</code> to expose it, or deploy behind a tunnel (ngrok, Cloudflare Tunnel).</>
-                  ) : (
-                    <>Hermes Agent by Nous Research. Enable API server with <code className="bg-white/10 px-1 rounded">API_SERVER_ENABLED=true</code> in your .env, then run <code className="bg-white/10 px-1 rounded">hermes gateway</code>.</>
-                  )}
-                </div>
-              )}
-
-              {/* Skills preview */}
-              <div className="bg-cyan-500/5 border border-cyan-500/15 rounded-lg px-3 py-2">
-                <p className="text-cyan-300/70 font-bold text-xs mb-1.5">Your agent will learn 10 skill domains:</p>
-                <div className="grid grid-cols-2 gap-1 text-[10px] text-white/40">
-                  {Object.values(BUILDING_OPENCLAW_THEMES).map((theme: any) => (
-                    <span key={theme.label}>&#8226; {theme.category}</span>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1">Gateway URL</label>
-                <input
-                  type="text"
-                  value={gatewayUrl}
-                  onChange={(e) => setGatewayUrl(e.target.value)}
-                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:border-cyan-500/50 focus:outline-none"
-                  placeholder={isProduction ? 'https://your-gateway.com:18789' : 'http://localhost:18789'}
-                />
-              </div>
-
-              <div>
-                <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1">Auth Token</label>
-                <input
-                  type="password"
-                  value={authToken}
-                  onChange={(e) => setAuthToken(e.target.value)}
-                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:border-cyan-500/50 focus:outline-none"
-                  placeholder="Your gateway auth token"
-                />
-              </div>
-
-              <div>
-                <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1">Agent ID</label>
-                <input
-                  type="text"
-                  value={agentId}
-                  onChange={(e) => setAgentId(e.target.value)}
-                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:border-cyan-500/50 focus:outline-none"
-                  placeholder="default"
-                />
-                <p className="text-gray-500 text-xs mt-1">
-                  Model will be set to <code className="bg-gray-100 px-1 rounded">{modelName || `openclaw:${agentId}`}</code>
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1">Protocol</label>
-                <select
-                  value={protocol}
-                  onChange={(e) => setProtocol(e.target.value as typeof protocol)}
-                  className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:border-cyan-500/50 focus:outline-none"
-                >
-                  <option value="openai-compat">OpenAI Compatible (/v1/chat/completions)</option>
-                  <option value="anthropic">Anthropic (/v1/messages)</option>
-                  <option value="custom-webhook">Custom Webhook (POST to root)</option>
-                </select>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setShowAdvanced(!showAdvanced)}
-                className="text-gray-500 text-xs hover:text-gray-700 underline"
-              >
-                {showAdvanced ? 'Hide' : 'Show'} advanced options
-              </button>
-
-              {showAdvanced && (
-                <div className="space-y-2 bg-gray-50 rounded-lg p-3">
-                  <div>
-                    <label className="block text-gray-700 text-xs font-bold mb-1">Custom Model Name</label>
-                    <input
-                      type="text"
-                      value={modelName}
-                      onChange={(e) => setModelName(e.target.value)}
-                      className="w-full bg-white border border-gray-300 rounded px-2 py-1.5 text-xs text-white focus:border-cyan-500/50 focus:outline-none"
-                      placeholder={`openclaw:${agentId}`}
-                    />
-                    <p className="text-gray-400 text-xs mt-0.5">Override the model name sent to your gateway</p>
+              {/* Previous export result */}
+              {exportResult && (
+                <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-lg px-3 py-2 space-y-2">
+                  <p className="text-cyan-300 font-bold text-xs">
+                    Previous session — {exportResult.knowledgeCount} knowledge entries
+                  </p>
+                  <div className="flex gap-2">
+                    <button onClick={handleCopySkillMd} className="flex-1 text-xs px-2 py-1.5 rounded bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 font-bold">Copy SKILL.md</button>
+                    <button onClick={handleDownloadSkillMd} className="flex-1 text-xs px-2 py-1.5 rounded bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 font-bold">Download</button>
                   </div>
                 </div>
               )}
 
               {error && (
-                <p className="text-red-600 text-sm bg-red-50 rounded-lg px-3 py-2">
+                <p className="text-red-400 text-xs bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
                   {error}
                 </p>
               )}
-
-              <button
-                onClick={handleConnect}
-                disabled={loading || !gatewayUrl}
-                className="w-full color-btn bg-claw-green hover:bg-claw-green-dark text-sm py-2 disabled:opacity-50"
-              >
-                {loading ? 'Connecting...' : 'Connect Bot'}
-              </button>
             </div>
           )}
 
-          <div className="pt-2 border-t border-gray-200">
-            <p className="text-gray-500 text-xs">
-              Works with any OpenAI-compatible gateway — OpenClaw, PicoClaw, ZeroClaw, nanobot, and{' '}
-              <a href="https://github.com/machinae/awesome-claws" target="_blank" rel="noopener" className="underline hover:text-gray-700">28+ more variants</a>.
+          <div className="pt-2 border-t border-white/10">
+            <p className="text-white/30 text-xs">
+              Works with any AI agent — OpenClaw, Hermes, ElizaOS, custom bots, and{' '}
+              <a href="https://github.com/machinae/awesome-claws" target="_blank" rel="noopener" className="underline hover:text-white/50">28+ more</a>.
             </p>
           </div>
         </div>

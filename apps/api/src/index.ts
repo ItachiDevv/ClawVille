@@ -16,6 +16,7 @@ import { researchApiRoutes } from './routes/research';
 import { marketplaceRoutes } from './routes/marketplace';
 import { clawRoutes } from './routes/claws';
 import { agentGatewayRoutes } from './routes/agent-gateway';
+// pendingConnections is exported but only used internally by agent-gateway routes
 import { bazaarRoutes } from './routes/bazaar';
 import { auctionRoutes } from './routes/auctions';
 import { questRoutes } from './routes/quests';
@@ -81,6 +82,12 @@ app.route('/api/research', researchApiRoutes);
 app.route('/api/marketplace', marketplaceRoutes);
 app.route('/api/claws', clawRoutes);
 app.route('/api/agent', agentGatewayRoutes);
+// Alias: /api/skills/connect → /api/agent/connect-skill (user-facing SKILL.md URL)
+app.get('/api/skills/connect', (c) => {
+  const token = c.req.query('token') ?? '';
+  const url = new URL(c.req.url);
+  return c.redirect(`${url.origin}/api/agent/connect-skill?token=${token}`);
+});
 app.route('/api/bazaar', bazaarRoutes);
 app.route('/api/auctions', auctionRoutes);
 app.route('/api/quests', questRoutes);
