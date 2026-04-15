@@ -78,7 +78,7 @@ const openclawRoutes = new Hono<AppContext>();
 
 const baseSchema = z.object({
   gatewayUrl: z.string().url(),
-  authToken: z.string().min(1),
+  authToken: z.string().optional().default(''),
   agentId: z.string().min(1),
   sessionKey: z.string().min(1),
   protocol: z.enum(['openai-compat', 'anthropic', 'custom-webhook']).optional(),
