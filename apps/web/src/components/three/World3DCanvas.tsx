@@ -563,7 +563,7 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       <directionalLight position={[-100, 200, -60]} intensity={0.5} color={0x88aacc} />
 
       {/* Underwater fog — pushed back for better visibility */}
-      <fog attach="fog" args={[FOG_COLOR, 1200, 6400]} />
+      <fog attach="fog" args={[FOG_COLOR, 800, 3600]} />
 
       {/* Underwater atmosphere — caustic light plane, depth backdrop, dust particles */}
       <UnderwaterAtmosphere />
@@ -713,7 +713,7 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
         camera={{
           fov: 50,
           near: 1,
-          far: 6800,
+          far: 4000,
           // Game mode: pull the camera back to accommodate the wider 160x160 map.
           position: mode === 'game' ? [0, 700, 1600] : [0, 560, 1000],
         }}
