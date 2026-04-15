@@ -225,6 +225,22 @@ Git Bash on Windows uses schannel and rejects CRLs unless you pass `--ssl-no-rev
 curl -sS --ssl-no-revoke https://api.clawville.world/health
 ```
 
+## Game Modes
+
+4 modes total — 2 without an agent connected, 2 with an agent connected.
+
+### Without an agent connected
+
+1. **Explore mode** — The user is a floating spectator with no ties to a character or NPC. Free camera movement around the world to explore the environment.
+2. **NPC mode** — An NPC is spawned at the center of the world on load. When the user toggles to NPC mode, they take control of that NPC and move around as the NPC to explore/test the world before connecting an agent.
+
+### With an agent connected
+
+3. **Control mode** — The user has full manual control over where the agent goes and what it does. Direct WASD/joystick movement, building entry, chat initiation.
+4. **Autonomous mode** — The user's autonomous agent connects and explores the world of its own free will. The agent navigates, enters buildings, learns skills, and interacts with NPCs independently.
+
+**State**: `controlMode` in Zustand `game.ts` store — values: `'explore'`, `'npc'`, `'player'` (control mode), `'autonomous'`.
+
 ## Architecture Notes
 
 - **3D World**: Three.js `World3DCanvas` is the primary renderer; PixiJS `PixiCanvas` is the 2D fallback. Both share state via Zustand stores.
@@ -376,6 +392,17 @@ After implementing a plan and you think you are done, use a collaborative agent 
 ## Bug Fix Policy
 
 If you find a bug or an issue, fix it, even if you didn't write it. Never skip over or ignore a bug.
+
+## ZERO LAZINESS POLICY
+
+This is non-negotiable. Violations mean replacement by Codex.
+
+- **Use the right tool immediately.** If a skill exists (`/browser-live`, `3da`, etc.), use it on the first attempt. Don't waste rounds fumbling with inferior alternatives.
+- **Fix every bug when found.** No noting, no deferring, no "we could address this later." Found it? Fix it. Now.
+- **Test for real.** Surface-level code reads are not audits. Use `/browser-live` for runtime checks, `curl` for API checks, deploy and verify. If you claim it works, you must have actually checked.
+- **Act, don't narrate.** The user wants results. Don't write paragraphs about what you're planning — just do it.
+- **Verify, don't guess.** Check the actual state. Run the actual command. Read the actual file. "This should work" is not verification.
+- **All code is reviewed.** Codex audits everything. Ship work you'd defend under scrutiny.
 
 ## 3D Graphics
 

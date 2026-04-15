@@ -105,6 +105,9 @@ interface ServerSnapshot {
   timestamp: number;
 }
 
+/** Well-known ID for the dedicated player NPC spawned in NPC mode */
+export const PLAYER_NPC_ID = '__player-npc__';
+
 export interface NpcStoreState {
   npcs: NpcSpriteState[];
   chatBubbles: NpcChatBubble[];
@@ -117,6 +120,10 @@ export interface NpcStoreState {
   cleanupExpired: () => void;
   /** Directly move a possessed NPC — skips wander logic, updates prevX/prevY for interpolation */
   moveNpc: (id: string, x: number, y: number, direction: NpcSpriteState['direction'], facingAngle?: number | null) => void;
+  /** Spawn a dedicated player NPC at world center for NPC mode */
+  spawnPlayerNpc: () => void;
+  /** Remove the dedicated player NPC when leaving NPC mode */
+  removePlayerNpc: () => void;
 }
 
 // Demo NPCs shown when API server is not connected
@@ -124,21 +131,22 @@ function makeDemoNpc(id: string, name: string, x: number, y: number, species: st
   return { id, name, x, y, prevX: x, prevY: y, direction: 'idle', species, color, hp: 100, maxHp: 100, isDead: false, hasSword: false, inCombat: false, inConversation: false, inventory: [], isOpenClaw, combatAction: null, combatActionAt: 0, facingAngle: null };
 }
 
+// Demo NPC positions spread around the village center (1280,1280) to match
+// the 2560x2560 map. Old positions (100-1000 range) were from the 2048x1280 era.
 const DEMO_NPCS: NpcSpriteState[] = [
-  makeDemoNpc('demo-1',  'Captain Claw',  400, 300, 'lobster',  0xff2020),       // bright red
-  makeDemoNpc('demo-2',  'Pearl',         700, 200, 'lobster',  0xff80ab),       // pink
-  makeDemoNpc('demo-3',  'Rusty',         200, 500, 'lobster',  0xff8c00),       // orange
-  makeDemoNpc('demo-4',  'Abyssal',       900, 400, 'lobster',  0x2244ff, true), // deep blue
-  makeDemoNpc('demo-5',  'Mantis',        300, 150, 'lobster',  0x00e676),       // green
-  makeDemoNpc('demo-6',  'Goldie',        600, 500, 'lobster',  0xffd700),       // gold
-  makeDemoNpc('demo-7',  'Shadow',        100, 350, 'lobster',  0x8844cc),       // purple
-  makeDemoNpc('demo-8',  'Coral',        1000, 300, 'lobster',  0xff4488),       // hot pink
-  makeDemoNpc('demo-9',  'Frost',         500, 100, 'lobster',  0x00ccdd),       // cyan/teal
-  makeDemoNpc('demo-10', 'Ember',         800, 600, 'lobster',  0xff5500),       // burnt orange
+  makeDemoNpc('demo-1',  'Captain Claw', 1300, 1100, 'lobster',  0xff2020),       // bright red
+  makeDemoNpc('demo-2',  'Pearl',        1500,  900, 'lobster',  0xff80ab),       // pink
+  makeDemoNpc('demo-3',  'Rusty',         900, 1400, 'lobster',  0xff8c00),       // orange
+  makeDemoNpc('demo-4',  'Abyssal',      1700, 1200, 'lobster',  0x2244ff, true), // deep blue
+  makeDemoNpc('demo-5',  'Mantis',       1100,  800, 'lobster',  0x00e676),       // green
+  makeDemoNpc('demo-6',  'Goldie',       1400, 1500, 'lobster',  0xffd700),       // gold
+  makeDemoNpc('demo-7',  'Shadow',        800, 1100, 'lobster',  0x8844cc),       // purple
+  makeDemoNpc('demo-8',  'Coral',        1800, 1000, 'lobster',  0xff4488),       // hot pink
+  makeDemoNpc('demo-9',  'Frost',        1200,  700, 'lobster',  0x00ccdd),       // cyan/teal
+  makeDemoNpc('demo-10', 'Ember',        1600, 1600, 'lobster',  0xff5500),       // burnt orange
 ];
 
 // Demo NPC wandering — makes NPCs walk around when not connected to server
-const DIRS: NpcSpriteState['direction'][] = ['up', 'down', 'left', 'right'];
 interface WanderState { targetX: number; targetY: number; waitUntil: number; }
 const wanderStates = new Map<string, WanderState>();
 
@@ -379,8 +387,12 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
       }
     }
 
+    // Preserve the dedicated player NPC — server doesn't know about it
+    const playerNpc = state.npcs.find((n) => n.id === PLAYER_NPC_ID);
+    const finalNpcs = playerNpc ? [playerNpc, ...npcs] : npcs;
+
     set({
-      npcs,
+      npcs: finalNpcs,
       chatBubbles: newBubbles,
       combatEvents: newCombatEvents,
       lootEvents: newLootEvents,
@@ -405,6 +417,32 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
           : npc
       ),
     }));
+  },
+
+  spawnPlayerNpc: () => {
+    const exists = get().npcs.some((n) => n.id === PLAYER_NPC_ID);
+    if (exists) return;
+    const playerNpc: NpcSpriteState = {
+      id: PLAYER_NPC_ID,
+      name: 'You',
+      x: 1280, y: 1280, // World center (tile 40,40)
+      prevX: 1280, prevY: 1280,
+      direction: 'idle',
+      species: 'lobster',
+      color: 0x42a5f5, // blue tint
+      hp: 100, maxHp: 100,
+      isDead: false, hasSword: false,
+      inCombat: false, inConversation: false,
+      inventory: [],
+      isOpenClaw: false,
+      combatAction: null, combatActionAt: 0,
+      facingAngle: null,
+    };
+    set((s) => ({ npcs: [playerNpc, ...s.npcs] }));
+  },
+
+  removePlayerNpc: () => {
+    set((s) => ({ npcs: s.npcs.filter((n) => n.id !== PLAYER_NPC_ID) }));
   },
 }));
 
