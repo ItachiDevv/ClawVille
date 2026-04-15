@@ -605,11 +605,12 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       {/* Floating reward texts — spheres that float upward on token earn */}
       <FloatingTexts3D />
 
-      {/* Click-to-move — invisible ground plane + path dots + destination marker */}
-      {isGame && <ClickToMove />}
+      {/* Click-to-move — only in modes where the user drives a character */}
+      {isGame && (controlMode === 'player' || controlMode === 'autonomous') && <ClickToMove />}
 
-      {/* Mode-specific content */}
-      {isGame && <PlayerAvatar />}
+      {/* Player avatar lobster — only renders when an agent is connected (player/autonomous).
+          Explore = floating spectator (no character), NPC = user controls a spawned NPC. */}
+      {isGame && (controlMode === 'player' || controlMode === 'autonomous') && <PlayerAvatar />}
     </>
   );
 });
