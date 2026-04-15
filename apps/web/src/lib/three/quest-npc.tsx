@@ -7,8 +7,8 @@
  * and 3). A slowly-rotating octahedron diamond marker floats above its head —
  * the "!" look-alike, gold TSL emissive, additive blending.
  *
- * Position: village center (tile 40, 40) on 80x80 square map
- *   worldX = -1280 + 40*32 = 0, worldZ = -1280 + 40*32 = 0
+ * Position: village center (tile 80, 80) on 160x160 square map
+ *   worldX = -2560 + 80*32 = 0, worldZ = -2560 + 80*32 = 0
  *
  * Clicking opens useGameStore().openQuestBoard().
  *
@@ -22,7 +22,7 @@
  *       once an artist produces one. The crayfish is a functional placeholder.
  */
 
-import { useRef, useMemo, memo, Suspense } from 'react';
+import { useRef, useMemo, useEffect, memo, Suspense } from 'react';
 import type { RefObject } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
@@ -32,7 +32,7 @@ import { useGameStore } from '@/stores/game';
 
 // ---------------------------------------------------------------------------
 // World-space position
-// Village center is now (0, 0) — symmetric 80x80 square map.
+// Village center is now (0, 0) — symmetric 160x160 square map.
 // Was QUEST_NPC_Z = -16 (old 64x40 grid had off-center Z due to MAP_HEIGHT=1280).
 // ---------------------------------------------------------------------------
 const QUEST_NPC_X = 0;
@@ -102,6 +102,19 @@ const QuestNpcInner = memo(function QuestNpcInner() {
     const maxDim = Math.max(sz.x, sz.y, sz.z);
     return { cloned: c, npcScale: maxDim > 0 ? 35 / maxDim : 1 };
   }, [scene]);
+
+  useEffect(() => {
+    return () => {
+      cloned.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if ((mesh as any).isMesh) {
+          mesh.geometry?.dispose();
+          if (Array.isArray(mesh.material)) mesh.material.forEach((m) => m.dispose());
+          else mesh.material?.dispose();
+        }
+      });
+    };
+  }, [cloned]);
 
   // Idle bob + gentle Y sway — pure math, no allocation
   useFrame(({ clock }) => {
