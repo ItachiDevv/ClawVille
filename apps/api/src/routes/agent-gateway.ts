@@ -95,8 +95,8 @@ const connectSchema = z.object({
   autonomyMode: z.enum(['server-managed', 'self-managed']).optional(),
 
   // Spawn position / stats
-  homeX: z.number().min(32).max(1248).optional(),
-  homeY: z.number().min(32).max(768).optional(),
+  homeX: z.number().min(32).max(5088).optional(),
+  homeY: z.number().min(32).max(5088).optional(),
   patrolRadius: z.number().min(32).max(256).optional(),
   stats: z.object({
     hp: z.number().int().min(50).max(150),
@@ -229,8 +229,8 @@ agentGatewayRoutes.post('/connect', async (c) => {
         color: data.color ?? null,
         metadata: {
           personality: data.personality,
-          homeX: data.homeX ?? 1024,
-          homeY: data.homeY ?? 640,
+          homeX: data.homeX ?? 2560,
+          homeY: data.homeY ?? 2560,
           patrolRadius: data.patrolRadius ?? 100,
           stats: agentStats,
         },
@@ -297,8 +297,8 @@ agentGatewayRoutes.post('/connect', async (c) => {
         species: spawnSpecies,
         color: data.color ?? 0x888888,
         stats: agentStats,
-        homeX: data.homeX ?? 1024,
-        homeY: data.homeY ?? 640,
+        homeX: data.homeX ?? 2560,
+        homeY: data.homeY ?? 2560,
         patrolRadius: data.patrolRadius ?? 100,
         personality: data.personality ?? '',
       } as OpenClawRegistration;
@@ -468,8 +468,8 @@ agentGatewayRoutes.get('/:sessionId/perception', (c) => {
 // POST /api/agent/:sessionId/move
 // ---------------------------------------------------------------------------
 const moveSchema = z.object({
-  targetX: z.number().min(16).max(1264).optional(),
-  targetY: z.number().min(16).max(784).optional(),
+  targetX: z.number().min(16).max(5104).optional(),
+  targetY: z.number().min(16).max(5104).optional(),
   buildingId: z.string().optional(),
 }).refine(
   (d) => (d.targetX !== undefined && d.targetY !== undefined) || d.buildingId !== undefined,

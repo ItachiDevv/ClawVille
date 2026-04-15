@@ -105,8 +105,8 @@ const avatarSchema = baseSchema.extend({
     speed: z.number().int().min(5).max(25),
   }),
   personality: z.string().min(1).max(200),
-  homeX: z.number().min(32).max(1248),
-  homeY: z.number().min(32).max(768),
+  homeX: z.number().min(32).max(5088),
+  homeY: z.number().min(32).max(5088),
   patrolRadius: z.number().min(32).max(256),
 });
 

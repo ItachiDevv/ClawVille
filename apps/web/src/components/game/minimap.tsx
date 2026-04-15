@@ -24,10 +24,10 @@ export default function Minimap() {
     >
       {/* Background */}
       <svg width={MM_W} height={MM_H} className="bg-[#3a7a3a]">
-        {/* Path grid — simplified horizontal/vertical lines */}
+        {/* Path grid — simplified horizontal/vertical lines (160x160 grid) */}
         <g opacity={0.3}>
           {/* Vertical paths at approx tile column positions */}
-          {[7, 14, 21, 28, 35].map((col) => (
+          {[32, 64, 96, 128].map((col) => (
             <line
               key={`v${col}`}
               x1={col * TILE_SIZE * SCALE_X}
@@ -39,7 +39,7 @@ export default function Minimap() {
             />
           ))}
           {/* Horizontal paths */}
-          {[5, 13, 20].map((row) => (
+          {[32, 64, 96, 128].map((row) => (
             <line
               key={`h${row}`}
               x1={0}

@@ -105,8 +105,8 @@ export const avatars = pgTable('avatars', {
   platformAgentId: uuid('platform_agent_id')
     .references(() => platformAgents.id, { onDelete: 'set null' }),
   clawTokens: integer('claw_tokens').default(100).notNull(),
-  positionX: integer('position_x').default(400).notNull(),
-  positionY: integer('position_y').default(250).notNull(),
+  positionX: integer('position_x').default(2560).notNull(),
+  positionY: integer('position_y').default(2560).notNull(),
   lastActiveAt: timestamp('last_active_at'),
   loginStreak: integer('login_streak').default(0).notNull(),
   lastLoginDate: varchar('last_login_date', { length: 10 }),

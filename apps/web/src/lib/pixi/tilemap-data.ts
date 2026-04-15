@@ -1,13 +1,13 @@
 // ---------------------------------------------------------------------------
 // Tilemap data for ClawVille The Depths
-// 80 x 80 grid of 32px tiles = 2560 x 2560 pixel world
+// 160 x 160 grid of 32px tiles = 5120 x 5120 pixel world
 // ---------------------------------------------------------------------------
 
 export const TILE_SIZE = 32;
-export const MAP_COLS = 80;
-export const MAP_ROWS = 80;
-export const MAP_WIDTH = MAP_COLS * TILE_SIZE; // 2560
-export const MAP_HEIGHT = MAP_ROWS * TILE_SIZE; // 2560
+export const MAP_COLS = 160;
+export const MAP_ROWS = 160;
+export const MAP_WIDTH = MAP_COLS * TILE_SIZE; // 5120
+export const MAP_HEIGHT = MAP_ROWS * TILE_SIZE; // 5120
 
 /** Tile indices matching the tileset spritesheet columns */
 export const TILES = {
@@ -39,7 +39,7 @@ export type TileIndex = (typeof TILES)[keyof typeof TILES];
 
 // ---------------------------------------------------------------------------
 // Building positions (tile coords)
-// Circular ring in 80×80 grid, radius 28 tiles from center (40,40)
+// 4 neighborhood clusters in 160×160 grid, center at (80,80)
 // ---------------------------------------------------------------------------
 export interface BuildingZone {
   id: string;
@@ -50,21 +50,25 @@ export interface BuildingZone {
 }
 
 export const buildingZones: BuildingZone[] = [
-  { id: 'canvas-studio',       x: 38, y: 10, width: 5, height: 4 },  // TOP CENTER
-  { id: 'memory-vault',        x: 54, y: 15, width: 5, height: 4 },  // TOP RIGHT
-  { id: 'webhook-gateway',     x: 65, y: 29, width: 5, height: 4 },  // RIGHT
-  { id: 'cron-hub',            x: 65, y: 47, width: 5, height: 4 },  // RIGHT LOW
-  { id: 'voice-tower',         x: 54, y: 61, width: 5, height: 4 },  // BOTTOM RIGHT
-  { id: 'config-citadel',      x: 38, y: 66, width: 5, height: 4 },  // BOTTOM CENTER
-  { id: 'tool-workshop',       x: 22, y: 61, width: 5, height: 4 },  // BOTTOM LEFT
-  { id: 'skill-forge',         x: 11, y: 47, width: 5, height: 4 },  // LEFT LOW
-  { id: 'channel-bridge',      x: 11, y: 29, width: 5, height: 5 },  // LEFT
-  { id: 'security-fortress',   x: 22, y: 15, width: 5, height: 4 },  // TOP LEFT
+  // Development Quarter (North)
+  { id: 'canvas-studio',       x:  72, y:  28, width: 10, height: 10 },
+  { id: 'skill-forge',         x:  88, y:  28, width: 10, height: 10 },
+  { id: 'tool-workshop',       x:  80, y:  42, width: 10, height: 10 },
+  // Communications Hub (East)
+  { id: 'channel-bridge',      x: 122, y:  72, width: 10, height: 10 },
+  { id: 'webhook-gateway',     x: 122, y:  88, width: 10, height: 10 },
+  { id: 'voice-tower',         x: 108, y:  80, width: 10, height: 10 },
+  // Infrastructure District (South)
+  { id: 'cron-hub',            x:  72, y: 120, width: 10, height: 10 },
+  { id: 'config-citadel',      x:  88, y: 120, width: 10, height: 10 },
+  { id: 'security-fortress',   x:  80, y: 106, width: 10, height: 10 },
+  // Knowledge Center (NW solo)
+  { id: 'memory-vault',        x:  42, y:  28, width: 10, height: 10 },
 ];
 
 // ---------------------------------------------------------------------------
 // Layer 1: GROUND  (grass base — deterministic seeded PRNG)
-// 80 cols x 80 rows = 6400 tiles
+// 160 cols x 160 rows = 25600 tiles
 // ---------------------------------------------------------------------------
 function generateGroundLayer(): number[] {
   const tiles = [TILES.GRASS_1, TILES.GRASS_2, TILES.GRASS_3];

@@ -192,8 +192,8 @@ avatarRoutes.get('/me', requireAuth, async (c) => {
 
 // Update avatar position
 const updatePositionSchema = z.object({
-  positionX: z.number().int().min(0),
-  positionY: z.number().int().min(0),
+  positionX: z.number().int().min(0).max(5120),
+  positionY: z.number().int().min(0).max(5120),
 });
 
 avatarRoutes.patch('/me', requireAuth, async (c) => {
@@ -341,8 +341,8 @@ avatarRoutes.post('/me/chat', requireAuth, async (c) => {
 
 // Heartbeat — reports user activity + position
 const heartbeatSchema = z.object({
-  positionX: z.number().min(0).max(2560),
-  positionY: z.number().min(0).max(2560),
+  positionX: z.number().min(0).max(5120),
+  positionY: z.number().min(0).max(5120),
 });
 
 avatarRoutes.post('/me/heartbeat', requireAuth, async (c) => {
