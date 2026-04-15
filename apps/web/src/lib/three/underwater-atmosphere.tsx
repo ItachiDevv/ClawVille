@@ -141,8 +141,8 @@ function createBackdropMaterial(): THREE.MeshBasicNodeMaterial {
 
 function DepthBackdrop() {
   const { geometry, material } = useMemo(() => {
-    // Tall plane spanning the full scene height range
-    const geo = new THREE.PlaneGeometry(7200, 700, 1, 1);
+    // Wide plane spanning the full expanded world horizon
+    const geo = new THREE.PlaneGeometry(12000, 700, 1, 1);
     const mat = createBackdropMaterial();
     return { geometry: geo, material: mat };
   }, []);
@@ -158,8 +158,9 @@ function DepthBackdrop() {
     <mesh
       geometry={geometry}
       material={material}
-      // Vertical plane, centred at y=250 to span ground (y≈-2) to water surface (y≈500)
-      position={[0, 250, -1200]}
+      // Vertical plane pushed far behind all buildings (northernmost is at z≈-1504).
+      // z=-3200 ensures the backdrop never clips in front of any building or decoration.
+      position={[0, 250, -3200]}
       frustumCulled={false}
     />
   );
