@@ -60,8 +60,8 @@ export default function OpenClawConnectModal() {
         color: 0x4caf50,
         stats: { hp: 100, attack: 15, defense: 10, speed: 12 },
         personality: 'A curious OpenClaw bot learning about agent development',
-        homeX: 1024,
-        homeY: 640,
+        homeX: 2560,
+        homeY: 2560,
         patrolRadius: 128,
       });
       setOpenclawConnection(res.sessionId);

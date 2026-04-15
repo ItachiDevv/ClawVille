@@ -46,10 +46,10 @@ const LOCATION_NPCS: Record<string, {
 };
 
 // Village center in tile space — NPCs stand between their building and this point.
-// The 80×80 tile grid has its center at tile (40, 40).
-// worldX = -1280 + 40*32 = 0, worldZ = -1280 + 40*32 = 0 — symmetric square map.
-const VILLAGE_CENTER_TILE_X = 40;
-const VILLAGE_CENTER_TILE_Z = 40; // tile Y maps to world Z
+// The 160×160 tile grid has its center at tile (80, 80).
+// worldX = -2560 + 80*32 = 0, worldZ = -2560 + 80*32 = 0 — symmetric square map.
+const VILLAGE_CENTER_TILE_X = 80;
+const VILLAGE_CENTER_TILE_Z = 80; // tile Y maps to world Z
 
 /** Compute NPC world position and facing angle for a given building zone.
  *
@@ -148,7 +148,21 @@ const LocationNpc = memo(function LocationNpc({
     return { cloned: c, npcScale: s };
   }, [scene]);
 
-  useFrame(({ clock }) => {
+  // Dispose cloned geometry + materials on unmount (navigation away / hot-reload)
+  useEffect(() => {
+    return () => {
+      cloned.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (mesh.isMesh) {
+          mesh.geometry?.dispose();
+          if (Array.isArray(mesh.material)) mesh.material.forEach((m) => m.dispose());
+          else mesh.material?.dispose();
+        }
+      });
+    };
+  }, [cloned]);
+
+  useFrame(({ clock }, delta) => {
     if (!groupRef.current) return;
 
     // Re-raycast terrain Y periodically (not just once) to handle late terrain loading
@@ -174,7 +188,7 @@ const LocationNpc = memo(function LocationNpc({
         group: animGroupRef.current,
         isMoving: false,
         elapsed: clock.elapsedTime,
-        delta: 0.016,
+        delta: Math.min(delta, 0.1),
         direction: 'idle',
         seed,
       });

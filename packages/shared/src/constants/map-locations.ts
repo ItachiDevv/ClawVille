@@ -1,107 +1,117 @@
 import type { MapLocation } from '../types/location';
 
-// Building zones calibrated for the sea-floor map (780x468 actual dimensions)
-// 10 OpenClaw integration-themed sea landmarks
+// Building zones derived from tilemap-data buildingZones (160x160 grid, 32px tiles = 5120x5120 world)
+// Pixel coords = tile coords * 32, dimensions = tile dims * 32
+// 10 OpenClaw integration-themed sea landmarks arranged in 4 neighborhood clusters
+//
+// Development Quarter (North): canvas-studio, skill-forge, tool-workshop
+// Communications Hub (East):   channel-bridge, webhook-gateway, voice-tower
+// Infrastructure District (South): cron-hub, config-citadel, security-fortress
+// Knowledge Center (NW solo):  memory-vault
 export const MAP_LOCATIONS: MapLocation[] = [
+  // === Development Quarter (North) ===
   {
-    id: 'cron-hub',
-    name: 'Tide Clock Grotto',
-    description: 'Learn automation, cron jobs, task queues, and workflow orchestration.',
-    icon: '🐚',
-    positionX: 80,
-    positionY: 60,
-    width: 80,
-    height: 80,
-  },
-  {
-    id: 'webhook-gateway',
-    name: 'Current Gateway',
-    description: 'Master REST APIs, GraphQL, webhooks, OAuth, and integrations.',
-    icon: '🌊',
-    positionX: 200,
-    positionY: 50,
-    width: 70,
-    height: 70,
-  },
-  {
-    id: 'memory-vault',
-    name: 'Abyssal Vault',
-    description: 'Study RAG pipelines, vector databases, embeddings, and context management.',
-    icon: '🧠',
-    positionX: 330,
-    positionY: 30,
-    width: 70,
-    height: 70,
+    id: 'canvas-studio',
+    name: 'Biolume Studio',
+    description: 'Query SQL, build data pipelines, scrape the web, and process analytics.',
+    icon: '🎨',
+    positionX: 2304, // tile x=72 * 32
+    positionY: 896,  // tile y=28 * 32
+    width: 320,      // 10 tiles * 32
+    height: 320,     // 10 tiles * 32
   },
   {
     id: 'skill-forge',
     name: 'Hydrothermal Forge',
     description: 'Practice code generation, debugging, testing, and git workflows.',
     icon: '🌋',
-    positionX: 50,
-    positionY: 170,
-    width: 70,
-    height: 70,
-  },
-  {
-    id: 'channel-bridge',
-    name: 'Coral Bridge',
-    description: 'Connect via Slack, Discord, Telegram, email, and multi-channel messaging.',
-    icon: '🪸',
-    positionX: 280,
-    positionY: 140,
-    width: 90,
-    height: 90,
+    positionX: 2816, // tile x=88 * 32
+    positionY: 896,  // tile y=28 * 32
+    width: 320,      // 10 tiles * 32
+    height: 320,     // 10 tiles * 32
   },
   {
     id: 'tool-workshop',
     name: 'Salvage Workshop',
     description: 'Build function calling, MCP servers, tool chains, and agentic loops.',
     icon: '⚓',
-    positionX: 400,
-    positionY: 160,
-    width: 80,
-    height: 70,
+    positionX: 2560, // tile x=80 * 32
+    positionY: 1344, // tile y=42 * 32
+    width: 320,      // 10 tiles * 32
+    height: 320,     // 10 tiles * 32
+  },
+  // === Communications Hub (East) ===
+  {
+    id: 'channel-bridge',
+    name: 'Coral Bridge',
+    description: 'Connect via Slack, Discord, Telegram, email, and multi-channel messaging.',
+    icon: '🪸',
+    positionX: 3904, // tile x=122 * 32
+    positionY: 2304, // tile y=72 * 32
+    width: 320,      // 10 tiles * 32
+    height: 320,     // 10 tiles * 32
   },
   {
-    id: 'canvas-studio',
-    name: 'Biolume Studio',
-    description: 'Query SQL, build data pipelines, scrape the web, and process analytics.',
-    icon: '🎨',
-    positionX: 620,
-    positionY: 80,
-    width: 80,
-    height: 80,
+    id: 'webhook-gateway',
+    name: 'Current Gateway',
+    description: 'Master REST APIs, GraphQL, webhooks, OAuth, and integrations.',
+    icon: '🌊',
+    positionX: 3904, // tile x=122 * 32
+    positionY: 2816, // tile y=88 * 32
+    width: 320,      // 10 tiles * 32
+    height: 320,     // 10 tiles * 32
   },
   {
     id: 'voice-tower',
     name: 'Echo Spire',
     description: 'Search the web, verify facts, summarize documents, and run research.',
     icon: '🐋',
-    positionX: 40,
-    positionY: 310,
-    width: 80,
-    height: 70,
+    positionX: 3456, // tile x=108 * 32
+    positionY: 2560, // tile y=80 * 32
+    width: 320,      // 10 tiles * 32
+    height: 320,     // 10 tiles * 32
   },
+  // === Infrastructure District (South) ===
   {
-    id: 'security-fortress',
-    name: 'Shell Fortress',
-    description: 'Explore Solana, wallets, DeFi protocols, and smart contracts.',
-    icon: '🛡️',
-    positionX: 180,
-    positionY: 340,
-    width: 70,
-    height: 70,
+    id: 'cron-hub',
+    name: 'Tide Clock Grotto',
+    description: 'Learn automation, cron jobs, task queues, and workflow orchestration.',
+    icon: '🐚',
+    positionX: 2304, // tile x=72 * 32
+    positionY: 3840, // tile y=120 * 32
+    width: 320,      // 10 tiles * 32
+    height: 320,     // 10 tiles * 32
   },
   {
     id: 'config-citadel',
     name: 'Nautilus Citadel',
     description: 'Manage projects, invoices, documents, scheduling, and deployments.',
     icon: '🐙',
-    positionX: 490,
-    positionY: 300,
-    width: 70,
-    height: 70,
+    positionX: 2816, // tile x=88 * 32
+    positionY: 3840, // tile y=120 * 32
+    width: 320,      // 10 tiles * 32
+    height: 320,     // 10 tiles * 32
+  },
+  {
+    id: 'security-fortress',
+    name: 'Shell Fortress',
+    description: 'Explore Solana, wallets, DeFi protocols, and smart contracts.',
+    icon: '🛡️',
+    positionX: 2560, // tile x=80 * 32
+    positionY: 3392, // tile y=106 * 32
+    width: 320,      // 10 tiles * 32
+    height: 320,     // 10 tiles * 32
+  },
+  // === Knowledge Center (NW solo) ===
+  {
+    id: 'memory-vault',
+    name: 'Abyssal Vault',
+    description: 'Study RAG pipelines, vector databases, embeddings, and context management.',
+    icon: '🧠',
+    positionX: 1344, // tile x=42 * 32
+    positionY: 896,  // tile y=28 * 32
+    width: 320,      // 10 tiles * 32
+    height: 320,     // 10 tiles * 32
   },
 ];
 
