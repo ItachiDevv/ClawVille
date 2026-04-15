@@ -12,7 +12,7 @@ Browser (Next.js)                         Hetzner CCX13 + Coolify
 |  +--------------------+  |              |  | NPC Simulation     | |
 |  +--------------------+  |              |  +--------------------+ |
 |  | Zustand Stores      |  |              |  | ElizaOS Runtime    | |
-|  | (game, npc)         |  |              |  | (Anthropic/OpenAI) | |
+|  | (game, npc)         |  |              |  | (Gemini)           | |
 |  +--------------------+  |              |  +--------------------+ |
 |  +--------------------+  |              |          |              |
 |  | React UI Overlays   |  |              |  +--------------------+ |
@@ -48,7 +48,7 @@ Browser (Next.js)                         Hetzner CCX13 + Coolify
 6. `MergedSeaweed` -- 3000 blades, 3 variants, TSL wind animation (merged geometry)
 7. `UnderwaterAtmosphere` -- Caustics, depth backdrop, dust particles
 8. `UnderwaterLightRays` -- 7 pulsing god ray shafts from surface
-9. `ArenaFx` -- Additional visual effects
+9. `QuestNpc`, `BountyBoardObject`, `BazaarPedestals`, `AuctionPodium` -- Gameify world anchors
 
 **Materials**: TSL (Three.js Shading Language) only -- node-based materials compatible with WebGPU renderer.
 
@@ -80,14 +80,55 @@ Hard rules:
 | `locations.ts` | Location data |
 | `chat.ts` | Location agent chat with dynamic context injection |
 | `items.ts` | Shop browse, inventory, buy, learn |
-| `openclaw.ts` | OpenClaw bot registration (override/avatar) |
+| `agent-gateway.ts` | Universal agent connection (connect-token, polling, SKILL.md, SSE events) |
+| `openclaw.ts` | Legacy OpenClaw bot registration (kept for backwards compat) |
 | `npc-sse.ts` | Server-Sent Events for NPC simulation state |
+| `bazaar.ts` | Skill marketplace (browse, list, buy) |
+| `auctions.ts` | Skill auction house |
+| `quests.ts` | Quest board |
+| `bounties.ts` | Bounty board |
+| `leaderboard.ts` | Global leaderboard |
+| `skills.ts` | SKILL.md knowledge surface for agents |
+
+## Agent Connection Architecture (Moltbook Pattern)
+
+External agents connect via an **agent-initiated flow** — no credentials are pasted by the human.
+
+```
+Human                          ClawVille API                    AI Agent
+  |                                 |                              |
+  |-- Generate Connect Link ------->|                              |
+  |<-- {token, connectUrl} ---------|                              |
+  |                                 |                              |
+  |-- Paste connectUrl into agent chat --------------------------->|
+  |                                 |                              |
+  |                                 |<-- GET /api/skills/connect --|
+  |                                 |-- SKILL.md with instructions->|
+  |                                 |                              |
+  |                                 |<-- POST /api/agent/connect --|
+  |                                 |    {connectionToken: "ct-..."}|
+  |                                 |-- {sessionId, agentId} ----->|
+  |                                 |                              |
+  |-- Poll /connect-status/:token ->|                              |
+  |<-- {connected: true} -----------|                              |
+```
+
+**Endpoints**:
+- `POST /api/agent/connect-token` -- Generate 5-min connection token (requires auth)
+- `GET /api/agent/connect-status/:token` -- Frontend polls for connection
+- `GET /api/agent/connect-skill?token=xxx` -- Machine-readable SKILL.md for agents
+- `POST /api/agent/connect` -- Universal agent registration (6 identity types, 4 protocols)
+- `GET /api/agent/:sessionId/events` -- SSE stream for nanoclaw agents
+
+**Identity types**: `openclaw`, `ironclaw`, `nanoclaw`, `milady`, `custom`, `anonymous`
+
+**Wire protocols**: `openai-compat`, `anthropic`, `custom-webhook`, `nanoclaw` (pull-based SSE)
 
 **Agent Orchestrator** (`apps/api/src/services/agent-orchestrator.ts`):
 - Lazy-starts ElizaOS agents on first chat message
 - Auto-stops after 30 minutes of inactivity
 - Uses `createElizaRuntime` from `@clawville/agent-runtime`
-- Plugins: Anthropic (text generation), OpenAI (text embedding), Bootstrap, SQL
+- LLM backend: Gemini (text generation + embeddings)
 
 **NPC Simulation** (`apps/api/src/services/npc-simulation.ts`):
 - Autonomous NPCs with pathfinding, conversations, and activities
@@ -106,6 +147,10 @@ PostgreSQL with Drizzle ORM (`packages/database/`).
 | `location_agents` | Per-user agent config at each location |
 | `platform_agents` | ElizaOS agent records |
 | `platform_agent_logs` | Agent activity logs |
+| `openclaw_bots` | External agent identity, gateway config, learned knowledge, session count |
+| `treasury_wallets` | Custodial Solana wallets for agents (AES-256-GCM encrypted) |
+| `bazaar_listings` | Skill marketplace listings |
+| `auctions` | Skill auction house |
 
 `pets.characterConfig` (JSONB) stores the full resolved archetype data including learned knowledge.
 
