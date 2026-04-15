@@ -298,22 +298,15 @@ function FPSFollowCamera({
     tgt.y += (CHAR_TARGET_Y - tgt.y) * 0.1;
     tgt.z += (worldZ  - tgt.z) * 0.1;
 
-    // Compute current camera-to-target offset and rescale to follow distance.
-    // This keeps the camera at a consistent distance while preserving the orbit
-    // angle set by ArrowKeyRotationController or mouse drag.
+    // Move camera position by the same delta as the target so the orbit
+    // angle and user-chosen zoom distance are preserved. OrbitControls'
+    // minDistance / maxDistance handle zoom bounds — we never override the
+    // radial distance here, which was causing scroll-zoom to snap back.
     _followOffset.subVectors(controls.object.position, tgt);
-    const currentDist = _followOffset.length();
-    if (currentDist > 0.001) {
-      // Gently nudge distance toward target rather than snapping — feels smoother
-      const lerpedDist = currentDist + (FPS_FOLLOW_DISTANCE - currentDist) * 0.1;
-      _followOffset.multiplyScalar(lerpedDist / currentDist);
-      _followTarget.copy(tgt).add(_followOffset);
 
-      // Clamp camera Y so it never goes below the ground floor
-      if (_followTarget.y < CAM_Y_MIN) {
-        _followTarget.y = CAM_Y_MIN;
-      }
-      controls.object.position.copy(_followTarget);
+    // Clamp camera Y so it never goes below the ground floor
+    if (controls.object.position.y < CAM_Y_MIN) {
+      controls.object.position.y = CAM_Y_MIN;
     }
 
     controls.update();
