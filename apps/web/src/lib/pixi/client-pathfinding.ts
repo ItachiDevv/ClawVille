@@ -5,8 +5,8 @@
 
 import { BUILDING_TILE_ZONES } from '@clawville/shared';
 
-const COLS = 80;
-const ROWS = 80;
+const COLS = 160;
+const ROWS = 160;
 const TILE = 32;
 
 export interface PathNode {
@@ -142,7 +142,7 @@ export function findPath(startX: number, startY: number, endX: number, endY: num
   gScores.set(key(startCol, startRow), 0);
 
   let iterations = 0;
-  const maxIterations = 3000;
+  const maxIterations = 6000;
 
   while (open.size > 0 && iterations < maxIterations) {
     iterations++;

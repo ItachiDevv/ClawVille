@@ -44,31 +44,21 @@ const _buildRayDir = new THREE.Vector3(0, -1, 0);
 const BUILDING_TARGET_HEIGHT = 480;
 
 // Map each building ID to a GLB model + display config.
-// rotY: each building faces the village center at tile (40, 40) = world (0, 0).
+// rotY: each building faces the village center at tile (80, 80) = world (0, 0).
 // Formula: cx = zone.x + zone.width/2, cz = zone.y + zone.height/2
-//          dx = 40 - cx, dz = 40 - cz
+//          dx = 80 - cx, dz = 80 - cz
 //          rotY = Math.atan2(dx, dz)  (model faces +Z at rotY=0)
 const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number }> = {
-  // canvas-studio: cx=40.5, cz=12  → dx=-0.5, dz=28  → atan2(-0.5,28) ≈ -0.018 ≈ 0
-  'canvas-studio':     { model: '/models/pineapple-house.glb',    yOffset: 0, rotY:  0.00 },
-  // memory-vault: cx=56.5, cz=17  → dx=-16.5, dz=23  → atan2(-16.5,23) ≈ -0.62
-  'memory-vault':      { model: '/models/bb-building.glb',        yOffset: 0, rotY: -0.62 },
-  // webhook-gateway: cx=67.5, cz=31  → dx=-27.5, dz=9  → atan2(-27.5,9) ≈ -1.26
-  'webhook-gateway':   { model: '/models/salty-spitoon.glb',      yOffset: 0, rotY: -1.26 },
-  // cron-hub: cx=67.5, cz=49  → dx=-27.5, dz=-9  → atan2(-27.5,-9) ≈ -1.89
-  'cron-hub':          { model: '/models/downtown-building.glb',  yOffset: 0, rotY: -1.89 },
-  // voice-tower: cx=56.5, cz=63  → dx=-16.5, dz=-23  → atan2(-16.5,-23) ≈ -2.52
-  'voice-tower':       { model: '/models/boating-school.glb',     yOffset: 0, rotY: -2.52 },
-  // config-citadel: cx=40.5, cz=68  → dx=-0.5, dz=-28  → atan2(-0.5,-28) ≈ ±3.14
-  'config-citadel':    { model: '/models/building-lighthouse.glb', yOffset: 0, rotY:  3.14 },
-  // tool-workshop: cx=24.5, cz=63  → dx=15.5, dz=-23  → atan2(15.5,-23) ≈ 2.52
-  'tool-workshop':     { model: '/models/patty-building.glb',     yOffset: 0, rotY:  2.52 },
-  // skill-forge: cx=13.5, cz=49  → dx=26.5, dz=-9  → atan2(26.5,-9) ≈ 1.89
-  'skill-forge':       { model: '/models/chum-bucket.glb',        yOffset: 0, rotY:  1.89 },
-  // channel-bridge: cx=13.5, cz=31.5  → dx=26.5, dz=8.5  → atan2(26.5,8.5) ≈ 1.26
-  'channel-bridge':    { model: '/models/building-cave.glb',      yOffset: 0, rotY:  1.26 },
-  // security-fortress: cx=24.5, cz=17  → dx=15.5, dz=23  → atan2(15.5,23) ≈ 0.59 ≈ 0.62
-  'security-fortress': { model: '/models/building-submarine.glb', yOffset: 0, rotY:  0.62 },
+  'canvas-studio':     { model: '/models/pineapple-house.glb',    yOffset: 0, rotY:  0.064 },
+  'skill-forge':       { model: '/models/chum-bucket.glb',        yOffset: 0, rotY: -0.270 },
+  'tool-workshop':     { model: '/models/patty-building.glb',     yOffset: 0, rotY: -0.150 },
+  'channel-bridge':    { model: '/models/building-cave.glb',      yOffset: 0, rotY: -1.507 },
+  'webhook-gateway':   { model: '/models/salty-spitoon.glb',      yOffset: 0, rotY: -1.847 },
+  'voice-tower':       { model: '/models/boating-school.glb',     yOffset: 0, rotY: -1.720 },
+  'cron-hub':          { model: '/models/downtown-building.glb',  yOffset: 0, rotY:  3.077 },
+  'config-citadel':    { model: '/models/building-lighthouse.glb', yOffset: 0, rotY: -2.871 },
+  'security-fortress': { model: '/models/building-submarine.glb', yOffset: 0, rotY: -2.992 },
+  'memory-vault':      { model: '/models/bb-building.glb',        yOffset: 0, rotY:  0.613 },
 };
 
 /** Strip ground planes from a cloned scene.
@@ -143,6 +133,20 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
     const s = computeBuildingScale(c);
     return { cloned: c, buildingScale: s };
   }, [scene, config.model]);
+
+  // Dispose cloned geometry + materials on unmount (navigation away / hot-reload)
+  useEffect(() => {
+    return () => {
+      cloned.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (mesh.isMesh) {
+          mesh.geometry?.dispose();
+          if (Array.isArray(mesh.material)) mesh.material.forEach((m) => m.dispose());
+          else mesh.material?.dispose();
+        }
+      });
+    };
+  }, [cloned]);
 
   const theme = BUILDING_OPENCLAW_THEMES[zone.id];
 

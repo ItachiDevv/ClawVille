@@ -131,19 +131,19 @@ function makeDemoNpc(id: string, name: string, x: number, y: number, species: st
   return { id, name, x, y, prevX: x, prevY: y, direction: 'idle', species, color, hp: 100, maxHp: 100, isDead: false, hasSword: false, inCombat: false, inConversation: false, inventory: [], isOpenClaw, combatAction: null, combatActionAt: 0, facingAngle: null };
 }
 
-// Demo NPC positions spread around the village center (1280,1280) to match
-// the 2560x2560 map. Old positions (100-1000 range) were from the 2048x1280 era.
+// Demo NPC positions spread around the village center (2560,2560) to match
+// the 5120x5120 map (160x160 tiles).
 const DEMO_NPCS: NpcSpriteState[] = [
-  makeDemoNpc('demo-1',  'Captain Claw', 1300, 1100, 'lobster',  0xff2020),       // bright red
-  makeDemoNpc('demo-2',  'Pearl',        1500,  900, 'lobster',  0xff80ab),       // pink
-  makeDemoNpc('demo-3',  'Rusty',         900, 1400, 'lobster',  0xff8c00),       // orange
-  makeDemoNpc('demo-4',  'Abyssal',      1700, 1200, 'lobster',  0x2244ff, true), // deep blue
-  makeDemoNpc('demo-5',  'Mantis',       1100,  800, 'lobster',  0x00e676),       // green
-  makeDemoNpc('demo-6',  'Goldie',       1400, 1500, 'lobster',  0xffd700),       // gold
-  makeDemoNpc('demo-7',  'Shadow',        800, 1100, 'lobster',  0x8844cc),       // purple
-  makeDemoNpc('demo-8',  'Coral',        1800, 1000, 'lobster',  0xff4488),       // hot pink
-  makeDemoNpc('demo-9',  'Frost',        1200,  700, 'lobster',  0x00ccdd),       // cyan/teal
-  makeDemoNpc('demo-10', 'Ember',        1600, 1600, 'lobster',  0xff5500),       // burnt orange
+  makeDemoNpc('demo-1',  'Captain Claw', 2600, 2200, 'lobster',  0xff2020),       // bright red
+  makeDemoNpc('demo-2',  'Pearl',        3000, 1800, 'lobster',  0xff80ab),       // pink
+  makeDemoNpc('demo-3',  'Rusty',        1800, 2800, 'lobster',  0xff8c00),       // orange
+  makeDemoNpc('demo-4',  'Abyssal',      3400, 2400, 'lobster',  0x2244ff, true), // deep blue
+  makeDemoNpc('demo-5',  'Mantis',       2200, 1600, 'lobster',  0x00e676),       // green
+  makeDemoNpc('demo-6',  'Goldie',       2800, 3000, 'lobster',  0xffd700),       // gold
+  makeDemoNpc('demo-7',  'Shadow',       1600, 2200, 'lobster',  0x8844cc),       // purple
+  makeDemoNpc('demo-8',  'Coral',        3600, 2000, 'lobster',  0xff4488),       // hot pink
+  makeDemoNpc('demo-9',  'Frost',        2400, 1400, 'lobster',  0x00ccdd),       // cyan/teal
+  makeDemoNpc('demo-10', 'Ember',        3200, 3200, 'lobster',  0xff5500),       // burnt orange
 ];
 
 // Demo NPC wandering — makes NPCs walk around when not connected to server
@@ -151,8 +151,8 @@ interface WanderState { targetX: number; targetY: number; waitUntil: number; }
 const wanderStates = new Map<string, WanderState>();
 
 const WANDER_MARGIN = 80;
-const WANDER_MAX_X = 2560 - WANDER_MARGIN; // MAP_WIDTH - margin
-const WANDER_MAX_Y = 2560 - WANDER_MARGIN; // MAP_HEIGHT - margin
+const WANDER_MAX_X = 5120 - WANDER_MARGIN; // MAP_WIDTH - margin
+const WANDER_MAX_Y = 5120 - WANDER_MARGIN; // MAP_HEIGHT - margin
 
 function pickNewTarget(npc: NpcSpriteState): WanderState {
   const tx = WANDER_MARGIN + Math.random() * (WANDER_MAX_X - WANDER_MARGIN);
@@ -425,8 +425,8 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
     const playerNpc: NpcSpriteState = {
       id: PLAYER_NPC_ID,
       name: 'You',
-      x: 1280, y: 1280, // World center (tile 40,40)
-      prevX: 1280, prevY: 1280,
+      x: 2560, y: 2560, // World center (tile 80,80)
+      prevX: 2560, prevY: 2560,
       direction: 'idle',
       species: 'lobster',
       color: 0x42a5f5, // blue tint

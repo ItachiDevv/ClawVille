@@ -265,14 +265,14 @@ function isNearBuilding(x: number, z: number): boolean {
   return false;
 }
 
-// Village center world coordinates: center tile (40, 40) in 80×80 grid
-// worldX = -HALF_MW + 40*TILE_SIZE = -1280 + 1280 = 0
-// worldZ = -HALF_MH + 40*TILE_SIZE = -1280 + 1280 = 0
+// Village center world coordinates: center tile (80, 80) in 160×160 grid
+// worldX = -HALF_MW + 80*TILE_SIZE = -2560 + 2560 = 0
+// worldZ = -HALF_MH + 80*TILE_SIZE = -2560 + 2560 = 0
 const VILLAGE_CX = 0;
 const VILLAGE_CZ = 0;
 // No decorations within this radius of village center — keeps the town plaza clear.
-// Increased from 200→250 for the expanded 80x80 map.
-const DECO_INNER_EXCLUSION_R = 250;
+// Increased from 250→600 for the expanded 160x160 map.
+const DECO_INNER_EXCLUSION_R = 600;
 
 /** Generate all decorations with cluster-based organic scatter.
  *
@@ -291,20 +291,20 @@ function generateDecorations(): DecoEntry[] {
   const rng = seededRandom(12345);
   const totalWeight = DECO_TYPES.reduce((s, d) => s + d.weight, 0);
   const entries: DecoEntry[] = [];
-  // Increased from 55→80 for the expanded 80x80 map (2560x2560 vs old 2048x1280).
-  // Each decoration GLB typically has 2–5 submeshes, so 80 entries ≈ 160–400
+  // Increased from 80→120 for the expanded 160x160 map (5120x5120).
+  // Each decoration GLB typically has 2–5 submeshes, so 120 entries ≈ 240–600
   // raw draw calls; frustum culling handles the ~70% that are off-screen at
   // any time, bringing the on-screen count into the safe range.
-  const TARGET_COUNT = 80;
+  const TARGET_COUNT = 120;
 
   // Map extents — auto-scales with MAP_WIDTH/MAP_HEIGHT imports
   const EXTENT_X = MAP_WIDTH  * 2.4;
   const EXTENT_Z = MAP_HEIGHT * 2.4;
 
   // ---- Cluster centres ----
-  // Increased from 18→24 to cover the larger square map evenly.
-  const N_CLUSTERS    = 24;
-  const CLUSTER_RADIUS = 280; // world-space units; controls patch spread
+  // Increased from 24→36 to cover the larger 160x160 map evenly.
+  const N_CLUSTERS    = 36;
+  const CLUSTER_RADIUS = 500; // world-space units; controls patch spread
   const clusters: Array<{ x: number; z: number }> = [];
   for (let i = 0; i < N_CLUSTERS; i++) {
     clusters.push({
@@ -368,9 +368,30 @@ function generateDecorations(): DecoEntry[] {
 
 const DECORATIONS: DecoEntry[] = generateDecorations();
 
+/** Recursively dispose all geometries and materials in a cloned THREE.Object3D tree. */
+function disposeClone(root: THREE.Object3D): void {
+  root.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (mesh.isMesh) {
+      mesh.geometry?.dispose();
+      if (Array.isArray(mesh.material)) {
+        mesh.material.forEach((m) => m.dispose());
+      } else {
+        mesh.material?.dispose();
+      }
+    }
+  });
+}
+
 function SingleDecoration({ entry }: { entry: DecoEntry }) {
   const { scene } = useGLTF(entry.model);
   const cloned = useMemo(() => scene.clone(true), [scene]);
+
+  // Dispose cloned scene geometry + materials on unmount to prevent GPU leaks.
+  // scene.clone(true) deep-clones all child geometries and materials, so they
+  // must be manually disposed — R3F does not know about them.
+  useEffect(() => () => disposeClone(cloned), [cloned]);
+
   return (
     <primitive
       object={cloned}
@@ -401,10 +422,13 @@ function UnderwaterDecorationsGlb() {
   const { scene } = useGLTF('/models/underwater-decorations.glb');
   // Clone once so we own the scene (avoid mutating the cached original)
   const cloned = useMemo(() => scene.clone(true), [scene]);
+
+  useEffect(() => () => disposeClone(cloned), [cloned]);
+
   return (
     <primitive
       object={cloned}
-      position={[600, -2, -500]}
+      position={[-600, -2, 1900]}
       scale={8}
       rotation={[0, 0, 0]}
     />
@@ -422,19 +446,27 @@ function FixedLandmarks() {
   const { scene: submarineScene } = useGLTF('/models/building-submarine.glb');
   const shipwreckClone = useMemo(() => shipwreckScene.clone(true), [shipwreckScene]);
   const submarineClone = useMemo(() => submarineScene.clone(true), [submarineScene]);
+
+  useEffect(() => {
+    return () => {
+      disposeClone(shipwreckClone);
+      disposeClone(submarineClone);
+    };
+  }, [shipwreckClone, submarineClone]);
+
   return (
     <group>
-      {/* Shipwreck — northwest outer zone (scaled out for 2560x2560 map) */}
+      {/* Shipwreck — northwest outer zone (scaled out for 5120x5120 map) */}
       <primitive
         object={shipwreckClone}
-        position={[-700, -2, -500]}
+        position={[-1900, -2, -700]}
         scale={2.5}
         rotation={[0, 0.8, 0]}
       />
-      {/* Submarine — southeast outer zone (scaled out for 2560x2560 map) */}
+      {/* Submarine — southeast outer zone (scaled out for 5120x5120 map) */}
       <primitive
         object={submarineClone}
-        position={[700, -2, 500]}
+        position={[1900, -2, 700]}
         scale={2.0}
         rotation={[0, -0.5, 0]}
       />
