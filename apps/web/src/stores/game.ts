@@ -60,20 +60,39 @@ export interface GameState {
   petSpeed: number;
   setPetSpeed: (speed: number) => void;
 
-  // Near location (written by game loop when overlapping a building zone)
+  // Near location (written by game loop when player is within TALK_RADIUS of a
+  // building's resident character — no more "inside the zone" model).
   nearLocation: string | null;
   setNearLocation: (id: string | null) => void;
 
-  // Current location (when inside a building)
+  // Near character — name of the character the player is currently close enough
+  // to talk to (e.g. "Patrick", "Gary"). Paired with nearLocation; written by
+  // the same 3D proximity pass.
+  nearCharacter: string | null;
+  setNearCharacter: (name: string | null) => void;
+
+  // Current location the player is chatting at (still keyed by buildingId for
+  // downstream routing — API chat endpoint, shop, knowledge context — but the
+  // UX is framed as "talking to the character in front of this building",
+  // not entering it).
   currentLocation: string | null;
+
+  // Name of the character currently being chatted with (set at chat open time).
+  currentCharacter: string | null;
 
   // Chat panel open state
   chatOpen: boolean;
 
-  // Enter a building
-  enterBuilding: (locationId: string) => void;
+  /**
+   * Open a chat with the character standing in front of a building.
+   * Kept named `enterBuilding` for backwards-compatibility with existing
+   * callers, but nobody "enters" anything — the player stands outside and
+   * talks to the character. Optional `characterName` is captured so the
+   * chat panel can show the character in the header.
+   */
+  enterBuilding: (locationId: string, characterName?: string) => void;
 
-  // Exit a building
+  /** Close the chat panel. */
   exitBuilding: () => void;
 
   // Movement frozen (when chat is open)
@@ -280,7 +299,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       isSpectator: mode === 'explore',
       possessedNpcId,
       // Clear stale nearLocation when switching to explore (no character = no proximity)
-      ...(mode === 'explore' ? { nearLocation: null } : {}),
+      ...(mode === 'explore' ? { nearLocation: null, nearCharacter: null } : {}),
     });
   },
   toggleControlMode: () => {
@@ -336,29 +355,38 @@ export const useGameStore = create<GameState>((set, get) => ({
   nearLocation: null,
   setNearLocation: (id) => set({ nearLocation: id }),
 
+  nearCharacter: null,
+  setNearCharacter: (name) => set({ nearCharacter: name }),
+
   currentLocation: null,
+  currentCharacter: null,
   chatOpen: false,
   movementFrozen: false,
 
-  enterBuilding: (locationId) => {
+  enterBuilding: (locationId, characterName) => {
+    // Resolve character name: prefer the one the caller passed in (from the
+    // 3D proximity pass); otherwise fall back to whatever was last seen as
+    // `nearCharacter` so tap-to-open paths still label the header correctly.
+    const resolvedCharacter = characterName ?? get().nearCharacter ?? null;
     set({
       currentLocation: locationId,
+      currentCharacter: resolvedCharacter,
       chatOpen: true,
       movementFrozen: true,
       nearLocation: null,
+      nearCharacter: null,
     });
-    // Floating "Welcome!" text
-    get().addFloatingText('Welcome!', 0xffffff);
-    // Track discovery
+    // Track discovery — a friendly toast the first time you meet a character
     const isNew = get().markBuildingVisited(locationId);
     if (isNew) {
-      get().addToast('🏠', 'New location discovered!');
+      get().addToast('💬', resolvedCharacter ? `Met ${resolvedCharacter}!` : 'New character met!');
     }
   },
 
   exitBuilding: () =>
     set({
       currentLocation: null,
+      currentCharacter: null,
       chatOpen: false,
       movementFrozen: false,
       shopOpen: false,
@@ -599,7 +627,9 @@ export const useGameStore = create<GameState>((set, get) => ({
     movementDirection: 'idle',
     petSpeed: 0,
     nearLocation: null,
+    nearCharacter: null,
     currentLocation: null,
+    currentCharacter: null,
     chatOpen: false,
     movementFrozen: false,
     menuOpen: false,
