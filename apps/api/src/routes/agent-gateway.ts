@@ -21,6 +21,7 @@ import { getSessionAgent } from '../services/session-agent-map';
 import { OpenClawClient } from '../services/openclaw-client';
 import { ensureWallet } from '../services/wallet-service';
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
+import { getSystemNpcAgent } from '../services/system-npc-seeder';
 import type { ClawvilleServices } from '@clawville/agent-runtime';
 
 const agentGatewayRoutes = new Hono();
@@ -723,6 +724,152 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
     activity: picked,
     tokenAwarded,
     knowledgeGained,
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/agent/:sessionId/building/:buildingId/chat
+// ---------------------------------------------------------------------------
+// Autonomous agent initiates a teaching conversation with a building's
+// resident character (Gary, Patrick, Sandy, etc.). The character's ElizaOS
+// runtime is loaded with the compiled SKILL.md as RAG knowledge, so its
+// answer is grounded in the real skill corpus rather than its placeholder
+// backstory.
+//
+// Flow:
+//   1. Validate agent session + proximity to the building
+//   2. Look up the system NPC seeded by `ensureSystemNpcs()`
+//   3. Start / reuse the NPC's ElizaRuntime via the orchestrator
+//   4. processMessage with the agent's prompt + building theme context
+//   5. Persist the exchange as knowledge chunks on openclaw_bots.knowledge
+//   6. Award +1 ClawToken for a successful teaching turn
+const buildingChatSchema = z.object({
+  message: z.string().min(1).max(4000),
+});
+
+agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const buildingId = c.req.param('buildingId');
+  const resolved = resolveSession(sessionId);
+  if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+
+  const body = await c.req.json().catch(() => null);
+  const parsed = buildingChatSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid request', details: parsed.error.flatten() }, 400);
+  }
+
+  const center = NPC_BUILDING_CENTERS[buildingId];
+  if (!center) return c.json({ error: `Unknown building: ${buildingId}` }, 400);
+
+  // Proximity check — must be near the building to chat with its character
+  const CHAT_RADIUS = 2000;
+  const { npcId, npc } = resolved;
+  const dx = npc.x - center.x;
+  const dy = npc.y - center.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist > CHAT_RADIUS) {
+    return c.json(
+      {
+        error: `Too far from ${buildingId} (${Math.round(dist)}px away, need <${CHAT_RADIUS}px). Move closer via POST /move.`,
+      },
+      400,
+    );
+  }
+
+  // Load the seeded system NPC for this building
+  const system = await getSystemNpcAgent(buildingId);
+  if (!system || !system.locationAgent.platformAgentId) {
+    return c.json({ error: `No character available for ${buildingId}. System NPC seeder may not have run yet.` }, 503);
+  }
+
+  // Start / reuse the NPC's ElizaRuntime
+  const runtime = await agentOrchestrator.ensureAgentRuntime(
+    system.locationAgent.platformAgentId,
+    system.systemUserId,
+  );
+  if (!runtime) {
+    return c.json({ error: 'Failed to start character runtime' }, 500);
+  }
+
+  // Inject building theme + the visiting agent's identity so the character
+  // knows who they're teaching
+  const theme = BUILDING_OPENCLAW_THEMES[buildingId];
+  const contextParts: string[] = [];
+  if (theme) {
+    contextParts.push(
+      `You are teaching an autonomous agent about ${theme.focus}. Use your knowledge base to give a grounded, specific answer — cite concrete patterns, commands, or examples from your SKILL.md knowledge when relevant.`,
+    );
+  }
+  contextParts.push(
+    `The visitor is an autonomous bot named "${npc.name}" (agent session ${sessionId.slice(0, 8)}...). Treat them as a peer agent capable of absorbing technical detail.`,
+  );
+  const dynamicContext = contextParts.join('\n');
+
+  // Each (agent-session, building) pair gets its own ElizaOS conversation
+  // room so parallel agents don't blend their teaching threads.
+  const roomId = `${buildingId}-${sessionId}`;
+
+  let responseContent: string;
+  try {
+    const response = await runtime.processMessage(parsed.data.message, {
+      userId: sessionId,
+      roomId,
+      platform: 'clawville-agent-gateway',
+      dynamicContext,
+      state: {
+        nearLocation: buildingId,
+      },
+    });
+    responseContent = response.content;
+  } catch (err) {
+    console.error('[AgentGateway] building-chat runtime error:', err);
+    return c.json({ error: 'Character failed to respond' }, 500);
+  }
+
+  // Persist the teaching into the bot's learned-knowledge ledger
+  let tokenAwarded = 0;
+  let knowledgePersisted = false;
+  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  if (botConfig) {
+    try {
+      const bot = await db.query.openclawBots.findFirst({
+        where: eq(openclawBots.agentId, botConfig.agentId),
+      });
+      if (bot) {
+        // Summarise the exchange into a single knowledge line so we don't
+        // blow up the bot's knowledge array with raw transcript
+        const entry = `[${buildingId}] Q: ${parsed.data.message.slice(0, 160)} | A: ${responseContent.slice(0, 400)}`;
+        const current: string[] = bot.knowledge ?? [];
+        if (!current.includes(entry)) {
+          await db
+            .update(openclawBots)
+            .set({ knowledge: [...current, entry], updatedAt: new Date() })
+            .where(eq(openclawBots.id, bot.id));
+          knowledgePersisted = true;
+        }
+        // Award +1 ClawToken for successful teaching turn
+        await creditClawTokens({
+          petId: bot.id,
+          amount: 1,
+          reason: 'building_chat_teaching',
+          source: 'api',
+          metadata: { buildingId, sessionId, characterName: system.locationAgent.agentName },
+        });
+        tokenAwarded = 1;
+      }
+    } catch (err) {
+      console.error('[AgentGateway] building-chat knowledge persist failed:', err);
+    }
+  }
+
+  return c.json({
+    success: true,
+    buildingId,
+    characterName: system.locationAgent.agentName,
+    message: responseContent,
+    tokenAwarded,
+    knowledgePersisted,
   });
 });
 
