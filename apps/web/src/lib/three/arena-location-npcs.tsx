@@ -21,8 +21,9 @@ import { applyStationaryIdleAnimation, idToSeed } from '@/lib/three/procedural-a
 const OFFSET_X = -MAP_WIDTH / 2;
 const OFFSET_Z = -MAP_HEIGHT / 2;
 
-// Target height in world units for all character NPCs — visible next to 160-unit buildings
-const CHARACTER_HEIGHT = 20;
+// Target height in world units for all character NPCs — scaled up to match BUILDING_TARGET_HEIGHT=800.
+// 32 keeps the building:character ratio consistent after the proportions pass (2026-04-16).
+const CHARACTER_HEIGHT = 32;
 
 const _locRaycaster = new THREE.Raycaster();
 _locRaycaster.layers.set(TERRAIN_LAYER);

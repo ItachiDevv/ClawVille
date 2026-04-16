@@ -714,8 +714,9 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
           fov: 50,
           near: 1,
           far: 6800,
-          // Game mode: pull the camera back to accommodate the wider 160x160 map.
-          position: mode === 'game' ? [0, 700, 1600] : [0, 560, 1000],
+          // Game mode: tighter starting position reinforces the bigger buildings/characters.
+          // Pulled in from [0,700,1600] after proportions pass (2026-04-16).
+          position: mode === 'game' ? [0, 600, 1300] : [0, 560, 1000],
         }}
         onCreated={(state) => {
           const { scene, gl } = state;
