@@ -8,9 +8,8 @@ import { useGameStore } from '@/stores/game';
 import {
   MAP_WIDTH,
   MAP_HEIGHT,
-  TILE_SIZE,
-  buildingZones,
 } from '@/lib/pixi/tilemap-data';
+import { findNearestCharacter } from '@/lib/three/character-positions';
 import { applyWalkAnimation, applyIdleAnimation } from '@/lib/three/procedural-animation';
 import { LobsterAnimator } from '@/lib/three/lobster-animations';
 import { discoverLobsterParts } from '@/lib/three/lobster-parts';
@@ -61,12 +60,6 @@ const COLOR_TINTS: Record<string, number> = {
 const DIR_ROTATION: Record<string, number> = {
   right: 0, down: -Math.PI / 2, left: Math.PI, up: Math.PI / 2, idle: -Math.PI / 2,
 };
-
-const pixelZones = buildingZones.map((z) => ({
-  id: z.id,
-  x: z.x * TILE_SIZE, y: z.y * TILE_SIZE,
-  width: z.width * TILE_SIZE, height: z.height * TILE_SIZE,
-}));
 
 interface KeyState {
   w: boolean; a: boolean; s: boolean; d: boolean;
@@ -323,19 +316,18 @@ function PlayerPetInner() {
       store.setPetPosition(newX, newY);
     }
 
-    // Proximity check runs every frame (not just during movement) so
-    // nearLocation stays accurate even when the pet stops inside a zone
-    // or is repositioned externally (clickPath, setPetPosition).
+    // Character proximity check — replaces building-zone area check.
+    // Runs every frame so nearLocation / nearCharacter stay accurate even when
+    // the pet stops or is repositioned externally (clickPath, setPetPosition).
+    // findNearestCharacter takes world-space primitives — zero allocation.
     {
-      const px = store.petPosition.x;
-      const py = store.petPosition.y;
-      let nearZone: string | null = null;
-      for (const zone of pixelZones) {
-        if (px >= zone.x && px <= zone.x + zone.width && py >= zone.y && py <= zone.y + zone.height) {
-          nearZone = zone.id; break;
-        }
-      }
-      if (nearZone !== store.nearLocation) store.setNearLocation(nearZone);
+      const wx = store.petPosition.x - HALF_W;
+      const wz = store.petPosition.y - HALF_H;
+      const nearest = findNearestCharacter(wx, wz);
+      const nearId = nearest ? nearest.buildingId : null;
+      const nearName = nearest ? nearest.characterName : null;
+      if (nearId !== store.nearLocation) store.setNearLocation(nearId);
+      if (nearName !== store.nearCharacter) store.setNearCharacter(nearName);
     }
 
     const group = groupRef.current;
