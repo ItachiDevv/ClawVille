@@ -18,7 +18,6 @@ import Minimap from '@/components/game/minimap';
 import AvatarChatBar from '@/components/game/avatar-chat-bar';
 import ShopOverlay from '@/components/game/shop-overlay';
 import InventoryModal from '@/components/game/inventory-modal';
-// SpectatorBanner removed — /game is always game mode, explore handles no-agent case
 import ActivityFeed from '@/components/game/activity-feed';
 import OpenClawConnectModal from '@/components/game/openclaw-connect-modal';
 
