@@ -5,6 +5,7 @@ import { MAP_LOCATIONS, BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 
 export default function LocationHUD() {
   const nearLocation = useGameStore((s: GameState) => s.nearLocation);
+  const nearCharacter = useGameStore((s: GameState) => s.nearCharacter);
   const agentConnected = useGameStore((s: GameState) => s.agentConnected);
   const enterBuilding = useGameStore((s: GameState) => s.enterBuilding);
 
@@ -14,25 +15,35 @@ export default function LocationHUD() {
   if (!location) return null;
 
   const theme = BUILDING_OPENCLAW_THEMES[nearLocation];
+  const characterName = nearCharacter;
 
-  const handleTap = () => enterBuilding(nearLocation);
+  const handleTap = () => enterBuilding(nearLocation, characterName ?? undefined);
 
   return (
     <div
       className="claw-panel fixed top-28 left-1/2 -translate-x-1/2 z-40 text-center max-w-xs cursor-pointer md:cursor-default"
       onClick={handleTap}
     >
-      {theme && (
+      {characterName ? (
+        <p className="text-white font-bold text-lg">
+          💬 {characterName}
+        </p>
+      ) : theme ? (
         <p className="text-white font-bold text-lg">
           {location.icon} {theme.label}
         </p>
-      )}
+      ) : null}
       <p className="text-white/60 text-xs mt-0.5">
-        {location.name}
+        {location.icon} {location.name}
       </p>
       <p className="text-white/70 text-sm mt-1">
-        <span className="hidden md:inline">Press <kbd className="font-mono bg-white/10 px-1.5 py-0.5 rounded text-xs">E</kbd> to enter</span>
-        <span className="md:hidden">Tap to enter</span>
+        <span className="hidden md:inline">
+          Press <kbd className="font-mono bg-white/10 px-1.5 py-0.5 rounded text-xs">E</kbd>
+          {characterName ? ` to talk to ${characterName}` : ' to talk'}
+        </span>
+        <span className="md:hidden">
+          {characterName ? `Tap to talk to ${characterName}` : 'Tap to talk'}
+        </span>
       </p>
       {theme && (
         <p className="text-white/50 text-xs mt-1">
