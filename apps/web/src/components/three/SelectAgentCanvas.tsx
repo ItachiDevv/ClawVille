@@ -360,21 +360,21 @@ const SceneContents = memo(function SceneContents({
 }) {
   return (
     <>
-      {/* Camera controls — limited rotation, no pan.
-          Camera is close-up for the 200px framed panel.
-          Position [0,3,8] gives a waist-level three-quarter shot.
-          target Y=1.5 centers on the model mid-body (platform top at y=0,
-          model group at y=1.5). OrbitControls drag-to-rotate is intentionally
-          enabled (pointer-events-auto on the Canvas). */}
+      {/* Camera controls — pulled back to fit the full ~20-unit-tall model
+          inside the 220px framed panel.
+          Math: fov=45° vertical, model height=20wu, target 50-60% of panel
+          → distance = 10/tan(11.25°) ≈ 50wu → use 45 for mild safety margin.
+          Target Y=8 gives head-centric framing (model spans y≈1.5 to y≈21.5).
+          OrbitControls drag-to-rotate is intentionally enabled. */}
       <OrbitControls
         makeDefault
         enablePan={false}
         enableZoom={true}
-        minDistance={5}
-        maxDistance={22}
+        minDistance={25}
+        maxDistance={80}
         minPolarAngle={Math.PI * 0.28}
         maxPolarAngle={Math.PI * 0.55}
-        target={[0, 1.5, 0]}
+        target={[0, 8, 0]}
       />
 
       {/* Dramatic underwater lighting */}
@@ -382,11 +382,10 @@ const SceneContents = memo(function SceneContents({
       <pointLight position={[0, -5, 10]} color={0x00aaff} intensity={0.8} distance={60} />
       <ambientLight color={0x05152b} intensity={0.4} />
 
-      {/* Underwater fog — tuned for the close-up framed panel.
-          Near=20 / far=60 keeps the model clear while still fading the
-          atmosphere backdrop. The old 80/220 was tuned for a full-viewport
-          camera at distance ~70 and would show zero fog in a 200px panel. */}
-      <fog attach="fog" args={[0x030d1a, 20, 60]} />
+      {/* Underwater fog — tuned for distance ~45 camera.
+          Near=30 keeps the model (at distance ~45) crystal clear.
+          Far=120 fades the atmosphere backdrop well beyond the camera. */}
+      <fog attach="fog" args={[0x030d1a, 30, 120]} />
 
       {/* Atmosphere effects */}
       <UnderwaterAtmosphere />
@@ -444,7 +443,7 @@ export default function SelectAgentCanvas({
     <div id="select-agent-canvas" className="w-full h-full">
       <Canvas
         className="w-full h-full"
-        camera={{ position: [0, 3, 8], fov: 45 }}
+        camera={{ position: [0, 12, 45], fov: 45 }}
         // WebGL-only: preserveDrawingBuffer enables toDataURL thumbnail capture
         // in create-agent/page.tsx. If this Canvas ever switches to
         // WebGPURenderer, replace thumbnail capture with a RenderTarget +
