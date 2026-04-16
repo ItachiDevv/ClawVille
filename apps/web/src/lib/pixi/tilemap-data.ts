@@ -51,19 +51,21 @@ export interface BuildingZone {
 
 export const buildingZones: BuildingZone[] = [
   // Development Quarter (North)
-  { id: 'canvas-studio',       x:  72, y:  28, width: 10, height: 10 },
-  { id: 'skill-forge',         x:  88, y:  28, width: 10, height: 10 },
-  { id: 'tool-workshop',       x:  80, y:  42, width: 10, height: 10 },
+  // Footprint expanded from 10×10 to 14×14 tiles (2026-04-16 proportions pass).
+  // Top-left tile offset adjusted by -2 so building CENTERS stay at the same world coords.
+  { id: 'canvas-studio',       x:  70, y:  26, width: 14, height: 14 },
+  { id: 'skill-forge',         x:  86, y:  26, width: 14, height: 14 },
+  { id: 'tool-workshop',       x:  78, y:  40, width: 14, height: 14 },
   // Communications Hub (East)
-  { id: 'channel-bridge',      x: 122, y:  72, width: 10, height: 10 },
-  { id: 'webhook-gateway',     x: 122, y:  88, width: 10, height: 10 },
-  { id: 'voice-tower',         x: 108, y:  80, width: 10, height: 10 },
+  { id: 'channel-bridge',      x: 120, y:  70, width: 14, height: 14 },
+  { id: 'webhook-gateway',     x: 120, y:  86, width: 14, height: 14 },
+  { id: 'voice-tower',         x: 106, y:  78, width: 14, height: 14 },
   // Infrastructure District (South)
-  { id: 'cron-hub',            x:  72, y: 120, width: 10, height: 10 },
-  { id: 'config-citadel',      x:  88, y: 120, width: 10, height: 10 },
-  { id: 'security-fortress',   x:  80, y: 106, width: 10, height: 10 },
+  { id: 'cron-hub',            x:  70, y: 118, width: 14, height: 14 },
+  { id: 'config-citadel',      x:  86, y: 118, width: 14, height: 14 },
+  { id: 'security-fortress',   x:  78, y: 104, width: 14, height: 14 },
   // Knowledge Center (NW solo)
-  { id: 'memory-vault',        x:  42, y:  28, width: 10, height: 10 },
+  { id: 'memory-vault',        x:  40, y:  26, width: 14, height: 14 },
 ];
 
 // ---------------------------------------------------------------------------

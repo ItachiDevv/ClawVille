@@ -34,21 +34,22 @@ function center(tileX: number, tileY: number, tileW: number, tileH: number) {
 
 // Building zone tile coords from tilemap-data.ts (10 OpenClaw integrations)
 // 160×160 grid, 4 neighborhood clusters around center (80,80)
+// 2026-04-16 proportions pass: expanded from 10×10 to 14×14 tiles; centers unchanged.
 export const BUILDING_TILE_ZONES: Record<string, { x: number; y: number; w: number; h: number }> = {
   // Development Quarter (North)
-  'canvas-studio':     { x:  72, y:  28, w: 10, h: 10 },
-  'skill-forge':       { x:  88, y:  28, w: 10, h: 10 },
-  'tool-workshop':     { x:  80, y:  42, w: 10, h: 10 },
+  'canvas-studio':     { x:  70, y:  26, w: 14, h: 14 },
+  'skill-forge':       { x:  86, y:  26, w: 14, h: 14 },
+  'tool-workshop':     { x:  78, y:  40, w: 14, h: 14 },
   // Communications Hub (East)
-  'channel-bridge':    { x: 122, y:  72, w: 10, h: 10 },
-  'webhook-gateway':   { x: 122, y:  88, w: 10, h: 10 },
-  'voice-tower':       { x: 108, y:  80, w: 10, h: 10 },
+  'channel-bridge':    { x: 120, y:  70, w: 14, h: 14 },
+  'webhook-gateway':   { x: 120, y:  86, w: 14, h: 14 },
+  'voice-tower':       { x: 106, y:  78, w: 14, h: 14 },
   // Infrastructure District (South)
-  'cron-hub':          { x:  72, y: 120, w: 10, h: 10 },
-  'config-citadel':    { x:  88, y: 120, w: 10, h: 10 },
-  'security-fortress': { x:  80, y: 106, w: 10, h: 10 },
+  'cron-hub':          { x:  70, y: 118, w: 14, h: 14 },
+  'config-citadel':    { x:  86, y: 118, w: 14, h: 14 },
+  'security-fortress': { x:  78, y: 104, w: 14, h: 14 },
   // Knowledge Center (NW solo)
-  'memory-vault':      { x:  42, y:  28, w: 10, h: 10 },
+  'memory-vault':      { x:  40, y:  26, w: 14, h: 14 },
 };
 
 /** Map of building ID to {homeX, homeY} for NPC definitions */

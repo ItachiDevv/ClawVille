@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useMemo, Suspense } from 'react';
+import { useRef, useMemo, useEffect, Suspense } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
@@ -25,7 +25,7 @@ const HALF_H = MAP_HEIGHT / 2;
 const SPEED = 200;
 const BOB_SPEED = 5;
 const BOB_AMPLITUDE = 0.3;
-const AVATAR_SCALE = 10;
+const AVATAR_SCALE = 16;
 
 const COLOR_TINTS: Record<string, number> = {
   blue: 0x42a5f5, red: 0xef5350, green: 0x66bb6a, yellow: 0xffee58,
@@ -139,6 +139,20 @@ function PlayerPetInner() {
     return { cloned: c, animator: anim };
   }, [scene]);
 
+  // Dispose cloned geometry + materials on unmount (navigation away / hot-reload)
+  useEffect(() => {
+    return () => {
+      cloned.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if ((mesh as any).isMesh) {
+          mesh.geometry?.dispose();
+          if (Array.isArray(mesh.material)) mesh.material.forEach((m) => m.dispose());
+          else mesh.material?.dispose();
+        }
+      });
+    };
+  }, [cloned]);
+
   useFrame((state, delta) => {
     const store = useGameStore.getState();
     if (store.movementFrozen) {
@@ -250,8 +264,10 @@ function PlayerPetInner() {
 
     const isMoving = dir !== 'idle';
     const elapsed = state.clock.elapsedTime;
-    // Raycast terrain height (every 3rd frame)
-    const frame = Math.floor(Date.now() / 50);
+    // Raycast terrain height (every 3rd frame).
+    // Use elapsed * 60 (render-clock frames) instead of Date.now() to avoid a
+    // syscall allocation in the hot path.
+    const frame = Math.floor(elapsed * 60);
     if (frame % 3 === 0) {
       const ty = getTerrainY(group.position.x, group.position.z, threeScene);
       terrainYRef.current += (ty - terrainYRef.current) * 0.3;
