@@ -22,19 +22,35 @@ import { applyColorTint } from '@/lib/three/character-animations';
 const OFFSET_X = -MAP_WIDTH / 2;
 const OFFSET_Z = -MAP_HEIGHT / 2;
 
-// Target height in world units for all character NPCs — scaled up to match BUILDING_TARGET_HEIGHT=800.
-// 32 keeps the building:character ratio consistent after the proportions pass (2026-04-16).
-const CHARACTER_HEIGHT = 32;
+// Target height in world units for character NPCs.
+// 140 gives a ~1:5.7 ratio against BUILDING_TARGET_HEIGHT=800 — readable at normal
+// camera distance and clearly visible against the 5120-unit sand floor.
+// Previous value of 32 (set in the 2026-04-16 proportions pass) was too small;
+// measurements showed NPCs rendering at 17-87 world units vs 800-unit buildings.
+const CHARACTER_HEIGHT = 140;
 
 const _locRaycaster = new THREE.Raycaster();
 _locRaycaster.layers.set(TERRAIN_LAYER);
 const _locRayOrigin = new THREE.Vector3();
 const _locRayDir = new THREE.Vector3(0, -1, 0);
 
+// Sanity bounds for computeNormalizedScale. Some GLBs have broken bounding boxes
+// (e.g. skinned meshes whose bind pose extends far beyond the visible geometry,
+// or meshes with helper objects that inflate the bbox). When the computed scale
+// falls outside [SCALE_MIN, SCALE_MAX], the scaleOverride value is used instead.
+// SCALE_MIN = CHARACTER_HEIGHT / 200  → implies native height > 200 world units
+//   after CHARACTER_HEIGHT normalization — bbox is almost certainly inflated.
+// SCALE_MAX = CHARACTER_HEIGHT / 0.01 → implies native height < 0.01 — degenerate.
+const NPC_SCALE_CLAMP_MIN = CHARACTER_HEIGHT / 200;  // ~0.70 at CHARACTER_HEIGHT=140
+const NPC_SCALE_CLAMP_MAX = CHARACTER_HEIGHT / 0.01; // 14000 — degenerate-bbox guard
+
 const LOCATION_NPCS: Record<string, {
   name: string;
   model: string;
   color?: number; // optional hex tint — applied via applyColorTint()
+  /** Per-model scale override used when computeNormalizedScale returns a
+   *  value outside [NPC_SCALE_CLAMP_MIN, NPC_SCALE_CLAMP_MAX] (broken bbox). */
+  scaleOverride?: number;
 }> = {
   'canvas-studio':     { name: 'SpongeBob',  model: '/models/characters/spongebob.glb' },
   'security-fortress': { name: 'Patrick',     model: '/models/characters/patrick.glb'   },
@@ -43,10 +59,17 @@ const LOCATION_NPCS: Record<string, {
   'skill-forge':       { name: 'Plankton',    model: '/models/characters/plankton.glb'  },
   'cron-hub':          { name: 'Gary',         model: '/models/characters/gary.glb'      },
   'channel-bridge':    { name: 'Sandy',        model: '/models/characters/sandy.glb'     },
-  'tool-workshop':     { name: 'Karen',        model: '/models/characters/karen.glb'     },
+  // Karen: karen.glb had a broken bbox (world height 1940 at CH=32) caused by
+  // SkinnedMesh bind-pose inflation. The improved computeNormalizedScale() excludes
+  // SkinnedMesh, which should fix the normalization automatically. scaleOverride=93
+  // is a fallback activated ONLY if the non-skinned geometry also gives a bad bbox
+  // (outside NPC_SCALE_CLAMP bounds). Assumes karen_visual_native_H ≈ 1.5 native units.
+  'tool-workshop':     { name: 'Karen',        model: '/models/characters/karen.glb',    scaleOverride: 93 },
   'voice-tower':       { name: 'Mrs. Puff',    model: '/models/characters/mrs-puff.glb'  },
-  // TODO: source proper larry.glb asset — currently using lobster_plush as a distinct stand-in
-  'config-citadel':    { name: 'Larry',        model: '/models/lobster_plush.glb', color: 0xff2020 },
+  // TODO: source proper larry.glb asset — currently using lobster_plush as a distinct stand-in.
+  // lobster_plush had a broken bbox (world height 331 at CH=32). SkinnedMesh exclusion
+  // should fix normalization; scaleOverride=140 is fallback assuming visual_native_H≈1.0.
+  'config-citadel':    { name: 'Larry',        model: '/models/lobster_plush.glb', color: 0xff2020, scaleOverride: 140 },
 };
 
 // Village center in tile space — NPCs stand between their building and this point.
@@ -100,16 +123,59 @@ function computeNpcPlacement(zone: { x: number; y: number; width: number; height
 // useGLTF() inside LocationNpc will Suspense-throw if the cache isn't warm yet;
 // the ArenaLocationNpcs Suspense fallback={null} wrapper absorbs that safely.
 
-/** Measure bounding box and return scale so the model's Y-height matches targetHeight.
- *  Uses size.y (height) not maxDim so wide/deep models aren't shrunk below target. */
-function computeNormalizedScale(scene: THREE.Object3D, targetHeight: number): number {
-  const box = new THREE.Box3().setFromObject(scene);
-  const size = new THREE.Vector3();
-  box.getSize(size);
-  // Use Y dimension (height) for normalization; fall back to max if Y is degenerate
-  const h = size.y > 0.001 ? size.y : Math.max(size.x, size.y, size.z);
-  if (h === 0) return 1;
-  return targetHeight / h;
+// Scratch vectors for computeNormalizedScale — allocated once to avoid GC in useMemo.
+const _npcBboxScratch = new THREE.Box3();
+const _npcSizeScratch = new THREE.Vector3();
+const _npcMeshBox = new THREE.Box3();
+
+/** Measure bounding box and return scale so the model's Y-height matches targetHeight,
+ *  plus the local-space min.y of the geometry (pivot offset).
+ *
+ *  Uses per-geometry vertex traversal restricted to regular Mesh nodes (NOT SkinnedMesh).
+ *  This avoids the most common bbox-inflation bug: Box3.setFromObject() on a scene
+ *  containing SkinnedMesh uses the bind-pose world matrix, which can extend the
+ *  bounding box far beyond the visible geometry. Regular Mesh children (clothes,
+ *  props, non-rigged parts) give a reliable geometry extent.
+ *
+ *  Fall back to full Box3.setFromObject() if no non-skinned geometry is found.
+ *  Returns raw computed scale AND the local min.y; caller applies scaleOverride if set.
+ *
+ *  localMinY: the lowest point of geometry in local space at scale=1.
+ *    - 0  → pivot at feet, no correction needed
+ *    - < 0 → pivot above feet (geometry extends below origin); multiply by final scale
+ *            and subtract from Y position to lift model so feet sit on terrain
+ *    - > 0 → pivot below feet (model floating); same correction lowers it */
+function computeNormalizedScale(scene: THREE.Object3D, targetHeight: number): { scale: number; localMinY: number } {
+  // Ensure world matrices are current on the cloned scene (not yet in a live Three.js
+  // scene graph, so updateWorldMatrix won't have been called automatically).
+  scene.updateMatrixWorld(true);
+  _npcBboxScratch.makeEmpty();
+
+  scene.traverse((child) => {
+    // Explicitly exclude SkinnedMesh — its world matrix reflects the bind pose
+    // which may inflate the bbox far beyond the visible rest pose.
+    if ((child as THREE.Mesh).isMesh && !(child as THREE.SkinnedMesh).isSkinnedMesh) {
+      const mesh = child as THREE.Mesh;
+      if (!mesh.geometry) return;
+      mesh.geometry.computeBoundingBox();
+      const geoBB = mesh.geometry.boundingBox;
+      if (!geoBB) return;
+      // Transform geo bbox into world space via mesh's world matrix
+      _npcMeshBox.copy(geoBB).applyMatrix4(mesh.matrixWorld);
+      _npcBboxScratch.union(_npcMeshBox);
+    }
+  });
+
+  // If no regular meshes found (all geometry is skinned), fall back to full scene bbox
+  if (_npcBboxScratch.isEmpty()) {
+    _npcBboxScratch.setFromObject(scene);
+  }
+
+  _npcBboxScratch.getSize(_npcSizeScratch);
+  const h = _npcSizeScratch.y > 0.001 ? _npcSizeScratch.y : Math.max(_npcSizeScratch.x, _npcSizeScratch.y, _npcSizeScratch.z);
+  const localMinY = _npcBboxScratch.isEmpty() ? 0 : _npcBboxScratch.min.y;
+  if (h === 0) return { scale: 1, localMinY };
+  return { scale: targetHeight / h, localMinY };
 }
 
 function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
@@ -145,15 +211,47 @@ const LocationNpc = memo(function LocationNpc({
   // uses integer arithmetic — float modulo with strict === 0 never fires.
   const seed = useMemo(() => Math.round(idToSeed(zoneId)), [zoneId]);
 
-  // Clone and compute normalized scale; apply optional color tint
-  const { cloned, npcScale } = useMemo(() => {
+  // Clone and compute normalized scale; apply optional color tint.
+  // scaleOverride is used for characters whose GLB bbox is broken (Karen, Larry):
+  //   - Karen: screen/helper geometry inflates bbox → computed scale too small → world height 1940
+  //   - Larry (lobster_plush): bbox too tall relative to visual form → computed scale too large
+  // If no scaleOverride, the raw computed scale is used unless it falls outside the
+  // sanity clamp [NPC_SCALE_CLAMP_MIN, NPC_SCALE_CLAMP_MAX].
+  //
+  // pivotOffsetY: world-space Y correction so each GLB's feet sit on the terrain.
+  //   = localMinY * finalScale
+  //   localMinY is the bbox min.y of non-skinned geometry at scale=1 (local space).
+  //   - If pivot is at feet (localMinY ≈ 0): no change.
+  //   - If pivot is at torso (localMinY < 0): pivotOffsetY is negative; we subtract it
+  //     (double negative = add) to raise the model so geometry bottom aligns with terrainY.
+  //   Applied each frame as: group.position.y = terrainY + BASE_LIFT + bob - pivotOffsetY
+  const { cloned, npcScale, pivotOffsetY } = useMemo(() => {
     const c = scene.clone(true);
     if (config.color != null) {
       applyColorTint(c, new THREE.Color(config.color), 0.7, 0.25);
     }
-    const s = computeNormalizedScale(c, CHARACTER_HEIGHT);
-    return { cloned: c, npcScale: s };
-  }, [scene, config.color]);
+    const { scale: computed, localMinY } = computeNormalizedScale(c, CHARACTER_HEIGHT);
+    // Use computed scale when it's within the sanity bounds, otherwise fall back
+    // to scaleOverride (if configured) or clamp to the nearest bound.
+    // Note: computeNormalizedScale now excludes SkinnedMesh bind pose from the bbox,
+    // which fixes most broken-bbox cases. scaleOverride is a last-resort manual
+    // escape hatch for characters where even the non-skinned geometry gives bad results.
+    let s: number;
+    if (computed >= NPC_SCALE_CLAMP_MIN && computed <= NPC_SCALE_CLAMP_MAX) {
+      // Computed scale is within sanity range — use it
+      s = computed;
+    } else if (config.scaleOverride != null) {
+      // Outside sanity range AND override defined — use the override
+      s = config.scaleOverride;
+    } else {
+      // Outside sanity range, no override — clamp to nearest bound as last resort
+      s = Math.max(NPC_SCALE_CLAMP_MIN, Math.min(NPC_SCALE_CLAMP_MAX, computed));
+    }
+    // Pivot offset: feet correction in world units. localMinY is at scale=1;
+    // multiply by final scale to get world-space distance below the group origin.
+    const offset = localMinY * s;
+    return { cloned: c, npcScale: s, pivotOffsetY: offset };
+  }, [scene, config.color, config.scaleOverride]);
 
   // Dispose cloned geometry + materials on unmount (navigation away / hot-reload)
   useEffect(() => {
@@ -185,9 +283,13 @@ const LocationNpc = memo(function LocationNpc({
       }
     }
 
-    // Position well above terrain to prevent sinking into dunes
+    // Position: terrainY + BASE_LIFT + bob - pivotOffsetY
+    // pivotOffsetY = localMinY * npcScale (world-space feet correction):
+    //   - pivotOffsetY < 0 → pivot above feet → subtracting a negative raises the model
+    //   - pivotOffsetY = 0 → pivot at feet → no change
+    //   - pivotOffsetY > 0 → pivot below feet → lowered to prevent floating
     const bob = Math.sin(clock.elapsedTime * 1.5 + seed) * 0.5;
-    groupRef.current.position.set(worldX, terrainY.current + 6 + bob, worldZ);
+    groupRef.current.position.set(worldX, terrainY.current + 6 + bob - pivotOffsetY, worldZ);
 
     // Procedural idle animation on inner group
     if (animGroupRef.current) {
@@ -211,9 +313,9 @@ const LocationNpc = memo(function LocationNpc({
         </group>
       </group>
       {/* Name label — OUTSIDE scaled group so position is in world units.
-          CHARACTER_HEIGHT (32) = model world height; +5 = clearance above head. */}
+          CHARACTER_HEIGHT (140) = target model world height; +10 = clearance above head. */}
       <Html
-        position={[0, CHARACTER_HEIGHT + 5, 0]}
+        position={[0, CHARACTER_HEIGHT + 10, 0]}
         center
         distanceFactor={400}
         style={{ pointerEvents: 'none' }}
