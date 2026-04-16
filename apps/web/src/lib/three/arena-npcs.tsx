@@ -86,23 +86,34 @@ function computeNpcScale(scene: THREE.Object3D): { scale: number; localMinY: num
     }
   });
 
-  if (_npcBbox.isEmpty()) {
-    _npcBbox.setFromObject(scene);
+  const nonSkinnedEmpty = _npcBbox.isEmpty();
+
+  if (nonSkinnedEmpty) {
+    // All geometry is SkinnedMesh (e.g. anime characters like chihiro, priestess,
+    // chibi_goku). setFromObject() here would use the bind-pose world matrix and
+    // inflate max.y / min.y by 100-600x, causing two related blowups:
+    //   1. inflated max.y → tiny computed scale → triggers fallback → scale = TARGET_NPC_HEIGHT
+    //   2. inflated min.y (large negative) × TARGET_NPC_HEIGHT → pivotOffsetY ≈ -72000
+    //      → position.y = terrainY - (-72000) = 72000 world units up
+    // Fix: when no non-skinned geometry found, treat pivot as feet (localMinY = 0) and
+    // use scale = TARGET_NPC_HEIGHT (assumes native body height ≈ 1.0 unit). The hard
+    // clamp below enforces this as a final safety net regardless of bbox path.
+    return { scale: Math.min(NPC_SCALE_CLAMP_MAX, TARGET_NPC_HEIGHT), localMinY: 0 };
   }
 
-  const localMinY = _npcBbox.isEmpty() ? 0 : _npcBbox.min.y;
-  const maxY = _npcBbox.isEmpty() ? 0 : _npcBbox.max.y;
+  // localMinY MUST come from the non-skinned bbox only — never from setFromObject.
+  // If we used the inflated setFromObject fallback bbox, localMinY would be wrong
+  // (bind-pose extends far below origin) and pivotOffsetY would launch NPCs skyward.
+  const localMinY = _npcBbox.min.y;
+  const maxY = _npcBbox.max.y;
 
   // Use bbox.max.y as normalizing height (above-pivot visual extent)
   const h = maxY > 0.001 ? maxY : 1.0;
-  let scale = TARGET_NPC_HEIGHT / h;
+  const computed = TARGET_NPC_HEIGHT / h;
 
-  // Clamp: if computed scale falls outside sanity range, the only non-skinned
-  // geometry is tiny props (scale too large) or inflated helpers (scale too small).
-  // Fall back to TARGET_NPC_HEIGHT which assumes native body height ≈ 1.0 unit.
-  if (scale < NPC_SCALE_CLAMP_MIN || scale > NPC_SCALE_CLAMP_MAX) {
-    scale = TARGET_NPC_HEIGHT;
-  }
+  // Hard cap — unconditional. Never allow scale to escape this range regardless of
+  // what the bbox measurement returns. This is the final safety net, not a conditional.
+  const scale = Math.max(NPC_SCALE_CLAMP_MIN, Math.min(NPC_SCALE_CLAMP_MAX, computed));
 
   return { scale, localMinY };
 }
