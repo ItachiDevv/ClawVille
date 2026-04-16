@@ -14,7 +14,14 @@ export interface PathNode {
   y: number; // pixel coord
 }
 
-/** Compute walkability grid: true = walkable, false = blocked (building tile) */
+/** Compute walkability grid: true = walkable, false = blocked.
+ *  BUILDING_TILE_ZONES is authoritative tile zone (14×14) but the rendered
+ *  building footprint can reach MAX_FOOTPRINT = 1000 wu = 31.25 tiles.
+ *  BUILDING_EXCLUSION_PAD expands the zone by 9 tiles in each direction so
+ *  pathfinding blocks the visual footprint and NPCs stop walking through
+ *  the rendered geometry. Effective half-extent = 7+9 = 16 tiles = 512 wu. */
+const BUILDING_EXCLUSION_PAD = 9;
+
 function buildWalkabilityGrid(): boolean[][] {
   const grid: boolean[][] = [];
   for (let r = 0; r < ROWS; r++) {
@@ -24,10 +31,14 @@ function buildWalkabilityGrid(): boolean[][] {
     }
   }
 
-  // Mark building tiles as blocked
+  // Mark building tiles as blocked — expanded by BUILDING_EXCLUSION_PAD
   for (const zone of Object.values(BUILDING_TILE_ZONES) as { x: number; y: number; w: number; h: number }[]) {
-    for (let r = zone.y; r < zone.y + zone.h; r++) {
-      for (let c = zone.x; c < zone.x + zone.w; c++) {
+    const r0 = zone.y - BUILDING_EXCLUSION_PAD;
+    const r1 = zone.y + zone.h + BUILDING_EXCLUSION_PAD;
+    const c0 = zone.x - BUILDING_EXCLUSION_PAD;
+    const c1 = zone.x + zone.w + BUILDING_EXCLUSION_PAD;
+    for (let r = r0; r < r1; r++) {
+      for (let c = c0; c < c1; c++) {
         if (r >= 0 && r < ROWS && c >= 0 && c < COLS) {
           grid[r][c] = false;
         }
