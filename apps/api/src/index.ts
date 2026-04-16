@@ -127,6 +127,24 @@ console.log(`Starting ClawVille API on port ${port}...`);
 const arenaMode = process.env.NPC_ARENA_MODE === 'true';
 startSimulation(arenaMode);
 
+// Seed system-owned building NPCs so every user can chat with Patrick/Gary/etc.
+// without configuring their own agent. Non-blocking — a seed failure must not
+// crash API startup, but every deploy gets the latest SKILL.md into the NPC
+// knowledge base.
+(async () => {
+  try {
+    const { ensureSystemNpcs } = await import('./services/system-npc-seeder');
+    const results = await ensureSystemNpcs();
+    const withSkills = results.filter((r) => r.skillLoaded).length;
+    const totalChunks = results.reduce((sum, r) => sum + r.knowledgeChunks, 0);
+    console.log(
+      `[API] Seeded ${results.length} system NPCs (${withSkills} with compiled SKILL.md, ${totalChunks} knowledge chunks)`,
+    );
+  } catch (err) {
+    console.error('[API] System NPC seeder failed:', err);
+  }
+})();
+
 // Graceful shutdown — clean up the many long-lived runtimes and intervals
 // we accumulate across Phase 1/2/3. Without this, Hetzner/Coolify SIGTERM
 // leaks 10+ ElizaRuntime instances, their DB pools, and the broker/registry

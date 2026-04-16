@@ -86,26 +86,25 @@ export default function ChatPanel() {
         <div className="flex-1 flex items-center justify-center text-yellow-300/70 text-sm">
           Loading...
         </div>
-      ) : !agent ? (
-        <div className="flex-1 flex flex-col items-center justify-center gap-4 px-6 text-center">
-          <p className="text-yellow-300/80 text-sm">
-            No agent has been configured for this location.
-          </p>
-          <button
-            onClick={() => currentLocation && openLocationConfig(currentLocation)}
-            className="claw-panel text-white font-bold px-4 py-2 hover:brightness-110 transition-all text-sm"
-          >
-            Configure Agent
-          </button>
-        </div>
       ) : (
         <>
           {/* Messages */}
           <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
             {messages.length === 0 && (
-              <p className="text-yellow-300/50 text-sm text-center mt-8">
-                Start a conversation...
-              </p>
+              <div className="text-center mt-8 space-y-2">
+                {agent?.agentName && (
+                  <p className="text-yellow-300 text-sm font-bold">
+                    {agent.agentName}
+                  </p>
+                )}
+                {agent?.characterConfig?.greeting ? (
+                  <p className="text-yellow-200/70 text-xs leading-relaxed px-4">
+                    {agent.characterConfig.greeting}
+                  </p>
+                ) : (
+                  <p className="text-yellow-300/50 text-sm">Start a conversation...</p>
+                )}
+              </div>
             )}
             {messages.map((msg) => (
               <div
