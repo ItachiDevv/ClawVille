@@ -28,31 +28,35 @@ export const MODEL_REGISTRY = {
   lobster_plush: { path: '/models/lobster_plush.glb',              scale: 10, label: 'Lobster Plush',   category: 'openclaw' },
   hermitcrab:    { path: '/models/hermitcrab.glb',                 scale: 10, label: 'Hermit Crab',     category: 'openclaw' },
 
-  // ── Hermes (anime — single representative) ────────────────────────────────
-  chihiro:       { path: '/models/spirited_away_senchihiro.glb',   scale: 10, label: 'Chihiro',         category: 'hermes' },
-
-  // ── Milady (anime — placeholder until Milady-branded GLBs ship) ───────────
-  priestess:     { path: '/models/young_priestess.glb',            scale: 10, label: 'Young Priestess', category: 'milady' },
-  chibi_goku:    { path: '/models/chibi_goku.glb',                 scale: 11, label: 'Chibi Goku',      category: 'milady' },
-
   // ── Other (sea creatures) ─────────────────────────────────────────────────
   jellyfish:     { path: '/models/jellyfish.glb',                  scale: 10, label: 'Jellyfish',       category: 'other', yOffset: 1.5 },
   octopus:       { path: '/models/octopus_toy.glb',                scale: 10, label: 'Octopus',         category: 'other' },
   seahorse:      { path: '/models/sea_horse.glb',                  scale: 8,  label: 'Sea Horse',       category: 'other' },
+
+  // NOTE: Hermes/Milady anime GLBs (chihiro / priestess / chibi_goku) were
+  // removed from the picker 2026-04-16 — those source meshes rendered poorly
+  // (pivot-not-at-feet Y offset + SkinnedMesh scale explosion). The anime
+  // GLB files still ship under /public/models/ and `arena-npcs.tsx` retains
+  // lookup entries for any legacy DB rows; new agents simply cannot choose
+  // them.
 } as const satisfies Record<string, ModelRegistryEntry>;
 
 export type ModelKey = keyof typeof MODEL_REGISTRY;
 
 // Category metadata for the picker UI tabs.
-export const CATEGORY_META: Record<AgentCategory, { label: string; description: string }> = {
+// Only categories that appear in CATEGORY_ORDER need an entry here; hermes
+// and milady were removed from the picker 2026-04-16 so they are typed as
+// optional. The agent HARNESS radio still offers all 4 harness options
+// (openclaw / hermes / milady / custom) — that's a separate control.
+export const CATEGORY_META: Partial<Record<AgentCategory, { label: string; description: string }>> = {
   openclaw: { label: 'OpenClaw',  description: 'Crustacean agents — external gateway or OpenClaw framework' },
-  hermes:   { label: 'Hermes',    description: 'Anime-style agents — Hermes framework' },
-  milady:   { label: 'Milady',    description: 'Milady AI runtime — Eliza-powered, app store native' },
   other:    { label: 'Other',     description: 'Sea-creature agents — any framework' },
 };
 
-// Ordered list of categories for tab rendering.
-export const CATEGORY_ORDER: AgentCategory[] = ['openclaw', 'hermes', 'milady', 'other'];
+// Ordered list of categories for tab rendering. Reduced to 2 tabs
+// (openclaw + other) 2026-04-16 — the anime GLBs in hermes/milady weren't
+// picker-quality. See MODEL_REGISTRY note above.
+export const CATEGORY_ORDER: AgentCategory[] = ['openclaw', 'other'];
 
 // Color presets — aligned with COLOR_TINTS hex values in SelectAgentCanvas so
 // the button background matches the actual GLB tint applied.
@@ -66,15 +70,17 @@ export const PICKER_COLORS = [
 export type PickerColorId = typeof PICKER_COLORS[number]['id'];
 
 // Default model per category — used when the user switches tabs.
-// `as const satisfies` keeps the exact ModelKey literals in the type so
-// typos like 'lobstar' fail at compile time, and downstream consumers can
-// drop the `as ModelKey` cast.
-export const CATEGORY_DEFAULT_MODEL = {
+// Typed as `Partial<Record<AgentCategory, ModelKey>>` because the picker
+// no longer exposes hermes/milady tabs (those AgentCategory values still
+// exist — the harness radio and DB CHECK constraint enforce them — but a
+// tab-switch will never fire for them). The explicit annotation (not
+// `as const satisfies`) lets consumers index by AgentCategory without a
+// literal-narrowing error; the consumer's `?? 'lobster'` fallback handles
+// the undefined case cleanly.
+export const CATEGORY_DEFAULT_MODEL: Partial<Record<AgentCategory, ModelKey>> = {
   openclaw: 'lobster',
-  hermes:   'chihiro',
-  milady:   'priestess',
   other:    'jellyfish',
-} as const satisfies Record<AgentCategory, ModelKey>;
+};
 
 // Agent harness options — controls which export format Phase 3 uses.
 export const HARNESS_OPTIONS = [
@@ -115,9 +121,6 @@ export const MODEL_KEY_TO_LEGACY_SPECIES: Record<ModelKey, LegacySpecies> = {
   sweet_crab:    'dragon',   // armored/fierce → dragon
   lobster_plush: 'bunny',    // cute/plush → bunny
   hermitcrab:    'turtle',   // shell-bearing → turtle
-  chihiro:       'fox',      // nimble/graceful → fox
-  priestess:     'owl',      // wise/gentle → owl
-  chibi_goku:    'wolf',     // strong/spirited → wolf
   jellyfish:     'phoenix',  // translucent/flowing → phoenix (residual bucket for sea creatures)
   octopus:       'phoenix',
   seahorse:      'phoenix',
