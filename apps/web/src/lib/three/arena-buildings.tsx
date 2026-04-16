@@ -143,7 +143,10 @@ function stripGroundPlanes(scene: THREE.Object3D): void {
 // Buildings wider than this get shrunk so their widest dimension = MAX_FOOTPRINT.
 // This prevents wide GLBs (pineapple, boating-school, salty-spitoon) from
 // dominating the scene — they'll stand shorter than 800 but won't sprawl.
-const MAX_FOOTPRINT = 1400;
+// Tightened 1400→1000 (2026-04-16 ring expansion): ring is now radius 68 tiles
+// (2176 wu), circumference/10 = 1367 wu per slot. MAX_FOOTPRINT=1000 gives a
+// 367 wu (~11 tile) gap between neighboring buildings — visually spread out.
+const MAX_FOOTPRINT = 1000;
 
 // Scratch objects for computeBuildingScale — module-scope to avoid per-call GC.
 const _buildBbox = new THREE.Box3();
