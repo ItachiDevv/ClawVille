@@ -29,8 +29,10 @@ Browser (Next.js)                         Hetzner CCX13 + Coolify
 
 **Key layers**:
 - **3D Renderer**: `World3DCanvas.tsx` -- Three.js WebGPU via React Three Fiber 9
+- **3D Agent Picker**: `SelectAgentCanvas.tsx` -- rotating pedestal + 11 GLB models for `/create-agent`. Replaces `LandingScene` on that page (never run both simultaneously on Iris Xe). Preloads all 11 agent GLBs (~3.5 MB) at module level. TSL node materials only.
 - **2D Fallback**: `PixiCanvas.tsx` -- PixiJS 8 for devices without WebGPU/WebGL2
 - **UI Overlays**: Chat panel, shop, inventory, minimap, HUD, quest tracker, daily login
+- **Agent connect modal**: `AgentConnectModal` (was `OpenClawConnectModal`) -- supports all agent types
 - **State**: Zustand stores bridge the 3D scene and React UI
 
 ## 3D Rendering Pipeline
@@ -154,7 +156,7 @@ PostgreSQL with Drizzle ORM (`packages/database/`).
 | Table | Purpose |
 |-------|---------|
 | `users` / `sessions` | Lucia auth (email + password) |
-| `pets` | One per user -- species, color, archetype, stats, position, clawTokens, login streak |
+| `pets` | One per user -- species, color, archetype, stats, position, clawTokens, login streak. Phase 2 adds `model_key` (3D GLB key), `agent_category` (openclaw/hermes/milady/other), `harness` (openclaw/hermes/milady/custom) — all NOT NULL with defaults `lobster`/`openclaw`/`milady` |
 | `pet_inventory` | Knowledge books owned by pet (quantity tracking) |
 | `map_locations` | 10 static building zones (seeded) |
 | `location_agents` | Per-user agent config at each location |
@@ -176,6 +178,7 @@ Two Zustand stores bridge the 3D scene and React UI:
 - `petPosition`, `petSpeed`, `movementDirection`
 - `nearLocation`, `currentLocation`, `chatOpen`
 - `possessedNpcId`, `hasAgent`, `isSpectator`
+- `agentConnected`, `agentSessionId`, `agentConnectModalOpen` -- agent connection state (renamed from openclaw* in Phase 1)
 - Building visit tracking (localStorage)
 
 **`npc.ts`** -- NPC simulation state:

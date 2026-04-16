@@ -9,7 +9,7 @@
  * GPU constraints: no InstancedMesh, no drei Text/Billboard, TSL only.
  */
 
-import { useRef, memo, Suspense } from 'react';
+import React, { useRef, memo, Suspense, useEffect } from 'react';
 import { Canvas, useFrame, extend } from '@react-three/fiber';
 import { OrbitControls, useGLTF } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
@@ -19,6 +19,9 @@ import type { ThreeToJSXElements } from '@react-three/fiber';
 declare module '@react-three/fiber' {
   interface ThreeElements extends ThreeToJSXElements<typeof THREE> {}
 }
+// R3F v9's extend() expects Catalogue (Record<string, Constructor>) or a ConstructorRepresentation.
+// We pass the WebGPU THREE module which contains mixed types — `any` is the pragmatic escape.
+// A narrower cast (Record<string, unknown>) loses the constructor signature and fails typecheck.
 extend(THREE as any);
 
 import UnderwaterAtmosphere from '@/lib/three/underwater-atmosphere';
@@ -31,49 +34,27 @@ import {
   createCharacterAnimator,
   applyColorTint,
   type CharacterAnimator,
-  MODEL_KEY_TO_TYPE,
 } from '@/lib/three/character-animations';
 
-// ---------------------------------------------------------------------------
-// Model Registry — maps agent type to GLB path
-// ---------------------------------------------------------------------------
+import {
+  MODEL_REGISTRY,
+  type ModelKey,
+  type ModelRegistryEntry,
+  type PickerColorId,
+} from '@/lib/three/agent-model-registry';
 
-export type AgentCategory = 'openclaw' | 'hermes' | 'other';
+// Module-scope scene background color — avoids a new THREE.Color allocation on
+// every render. R3F only reads the scene.background prop at Canvas creation time.
+const SCENE_BG = new THREE.Color(0x030d1a);
 
-export const MODEL_REGISTRY: Record<string, { path: string; scale: number; label: string; category: AgentCategory }> = {
-  // ── OpenClaw (crustaceans) ──
-  lobster:      { path: '/models/lobster.glb',                    scale: 14, label: 'Reef Lobster',    category: 'openclaw' },
-  crayfish:     { path: '/models/crayfish.glb',                   scale: 14, label: 'Crayfish',        category: 'openclaw' },
-  sweet_crab:   { path: '/models/sweet_crab_sketchfabweekly.glb', scale: 10, label: 'Sweet Crab',      category: 'openclaw' },
-  lobster_plush:{ path: '/models/lobster_plush.glb',              scale: 10, label: 'Lobster Plush',   category: 'openclaw' },
-  hermitcrab:   { path: '/models/hermitcrab.glb',                 scale: 10, label: 'Hermit Crab',     category: 'openclaw' },
-
-  // ── Hermes (anime characters) ──
-  chihiro:      { path: '/models/spirited_away_senchihiro.glb',   scale: 8,  label: 'Chihiro',         category: 'hermes' },
-  priestess:    { path: '/models/young_priestess.glb',            scale: 8,  label: 'Young Priestess', category: 'hermes' },
-  chibi_goku:   { path: '/models/chibi_goku.glb',                scale: 8,  label: 'Chibi Goku',      category: 'hermes' },
-
-  // ── Other Agents (sea creatures) ──
-  jellyfish:    { path: '/models/jellyfish.glb',                  scale: 10, label: 'Jellyfish',       category: 'other' },
-  octopus:      { path: '/models/octopus_toy.glb',                scale: 10, label: 'Octopus',         category: 'other' },
-  seahorse:     { path: '/models/sea_horse.glb',                  scale: 10, label: 'Sea Horse',       category: 'other' },
-};
-
-// Color tint presets
-const COLOR_TINTS: Record<string, number> = {
+// Color tint presets — exactly the 4 entries reachable via the picker UI.
+// Import PickerColorId for strict key typing.
+const COLOR_TINTS: Record<PickerColorId, number> = {
+  green:  0x30ff70,
   red:    0xff3030,
   blue:   0x3070ff,
-  green:  0x30ff70,
   yellow: 0xffd700,
-  purple: 0xaa44ff,
-  orange: 0xff8800,
-  pink:   0xff66aa,
-  cyan:   0x00ddff,
-  white:  0xeeeeee,
 };
-
-// Preload default model
-useGLTF.preload('/models/lobster.glb');
 
 // ---------------------------------------------------------------------------
 // RuneCircle — flat disc on the pedestal top with TSL radial rune gradient
@@ -195,8 +176,7 @@ function EmberParticles() {
       sizeAttenuation: true,
     });
 
-    // Per-particle vertical drift using aSeed as phase offset
-    const seedAttr = float(1.0); // placeholder; per-particle drift via positionLocal.y
+    // Per-particle vertical drift via positionLocal.y phase
     const drift = fract(positionLocal.y.div(float(30.0)).add(time.mul(float(0.18))));
     const height = drift.mul(float(30.0));
 
@@ -278,7 +258,14 @@ const PlatformModel = memo(function PlatformModel({
   modelKey: string;
   color: string;
 }) {
-  const reg = MODEL_REGISTRY[modelKey] ?? MODEL_REGISTRY.lobster;
+  // Cast to ModelKey for index safety; unknown keys fall back to lobster at runtime.
+  const reg: ModelRegistryEntry = MODEL_REGISTRY[modelKey as ModelKey] ?? MODEL_REGISTRY.lobster;
+
+  useEffect(() => {
+    if (!MODEL_REGISTRY[modelKey as ModelKey]) {
+      console.warn(`[SelectAgentCanvas] unknown modelKey "${modelKey}", falling back to lobster`);
+    }
+  }, [modelKey]);
   const { scene } = useGLTF(reg.path);
   const groupRef     = useRef<THREE.Group>(null!);
   const animGroupRef = useRef<THREE.Group>(null!);
@@ -289,7 +276,7 @@ const PlatformModel = memo(function PlatformModel({
 
   const { cloned, lobsterAnimator, charAnimator } = React.useMemo(() => {
     const c = scene.clone(true);
-    const tint = new THREE.Color(COLOR_TINTS[color] ?? 0x00ccdd);
+    const tint = new THREE.Color(COLOR_TINTS[color as PickerColorId] ?? 0x00ccdd);
     // Use shared applyColorTint from character-animations
     applyColorTint(c, tint, 0.6, 0.2);
 
@@ -301,7 +288,28 @@ const PlatformModel = memo(function PlatformModel({
       const anim  = new LobsterAnimator(parts);
       return { cloned: c, lobsterAnimator: anim, charAnimator: null as CharacterAnimator | null };
     }
-  }, [scene, modelKey, color, useNewSystem]);
+  }, [scene, modelKey, color]);
+
+  // Dispose materials only when modelKey/color changes or on unmount.
+  useEffect(() => {
+    return () => {
+      cloned.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if ((mesh as any).isMesh) {
+          // Dispose materials only — applyColorTint() in character-animations.ts
+          // clones the material per instance, so this clone owns its materials.
+          // NEVER dispose geometry: scene.clone(true) shares BufferGeometry with
+          // the useGLTF cache (Mesh.copy: this.geometry = source.geometry). If
+          // we disposed it, the cache would hand out a disposed buffer on the
+          // next load of this modelKey. Leave geometry cleanup to useGLTF's
+          // internal lifecycle or an explicit page-level useEffect(clear, [])
+          // if full cleanup is ever needed.
+          if (Array.isArray(mesh.material)) mesh.material.forEach((m) => m.dispose());
+          else mesh.material?.dispose();
+        }
+      });
+    };
+  }, [cloned]);
 
   const seed = React.useMemo(() => idToSeed(modelKey + color), [modelKey, color]);
 
@@ -326,17 +334,18 @@ const PlatformModel = memo(function PlatformModel({
     }
   });
 
+  // yOffset handles models that clip below the pedestal (e.g. jellyfish with
+  // origin at bell base). Defaults to 0 when not specified in registry.
+  const yOffset = reg.yOffset ?? 0;
+
   return (
-    <group ref={groupRef} position={[0, 1.5, 0]} scale={[reg.scale, reg.scale, reg.scale]}>
+    <group ref={groupRef} position={[0, 1.5 + yOffset, 0]} scale={[reg.scale, reg.scale, reg.scale]}>
       <group ref={animGroupRef}>
         <primitive object={cloned} />
       </group>
     </group>
   );
 });
-
-// Need React import for useMemo in the memo'd component
-import React from 'react';
 
 // ---------------------------------------------------------------------------
 // Scene Contents
@@ -398,25 +407,62 @@ const SceneContents = memo(function SceneContents({
 interface SelectAgentCanvasProps {
   modelKey?: string;
   color?: string;
+  /** Fired once when R3F finishes creating the renderer — guaranteed to have a
+   *  DOM element at this point. Use it to obtain the canvas for toDataURL()
+   *  capture instead of relying on DOM timing via getElementById. */
+  onCanvasReady?: (canvas: HTMLCanvasElement) => void;
 }
 
 export default function SelectAgentCanvas({
   modelKey = 'lobster',
-  color = 'cyan',
+  color = 'green',  // matches PICKER_COLORS default
+  onCanvasReady,
 }: SelectAgentCanvasProps) {
-  const hasWebGPU = typeof navigator !== 'undefined' && 'gpu' in navigator;
+  // Preload the 10 non-initial models in the background. The initial model
+  // (the one picked for the first render) already gets loaded via useGLTF()
+  // inside <PlatformModel>. This useEffect runs after the first commit, so
+  // the first-render model still suspends on cold load — only tab-switches
+  // to OTHER models benefit from this warm cache.
+  // Moved from module level to avoid pulling 3.5 MB of GLBs into any
+  // bundle that merely imports from this file.
+  useEffect(() => {
+    Object.values(MODEL_REGISTRY).forEach((m: ModelRegistryEntry) => useGLTF.preload(m.path));
+  }, []);
 
   return (
-    <Canvas
-      className="w-full h-full"
-      camera={{ position: [0, 18, 55], fov: 45 }}
-      gl={{
-        antialias: true,
-        ...(hasWebGPU ? {} : { forceWebGL: true } as any),
-      }}
-      scene={{ background: new THREE.Color(0x030d1a) }}
-    >
-      <SceneContents modelKey={modelKey} color={color} />
-    </Canvas>
+    // fixed inset-0 is viewport-relative — prevents the canvas from stretching
+    // to the full scroll height of a long-form parent on mobile.
+    // pointer-events-none on wrapper so UI overlays at z-10 receive clicks;
+    // pointer-events-auto on Canvas so OrbitControls remain functional.
+    <div id="select-agent-canvas" className="fixed inset-0 z-0 pointer-events-none">
+      <Canvas
+        className="w-full h-full pointer-events-auto"
+        camera={{ position: [0, 18, 55], fov: 45 }}
+        // WebGL-only: preserveDrawingBuffer enables toDataURL thumbnail capture
+        // in create-agent/page.tsx. If this Canvas ever switches to
+        // WebGPURenderer, replace thumbnail capture with a RenderTarget +
+        // readRenderTargetPixels + OffscreenCanvas encode path —
+        // WebGPURenderer discards the back buffer by default and
+        // preserveDrawingBuffer is a no-op.
+        gl={{ antialias: true, preserveDrawingBuffer: true }}
+        scene={{ background: SCENE_BG }}
+        onCreated={({ gl }) => {
+          // Expose renderer info for debug verification on production.
+          // Gated behind ?debug=1 query param — not available to anonymous users.
+          if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('debug')) {
+            (window as any).__clawSelectRenderer = gl;
+          }
+          // Dev guard: toDataURL thumbnail silently fails under WebGPURenderer.
+          if ((gl as any).isWebGPURenderer) {
+            console.warn('[SelectAgentCanvas] running under WebGPURenderer — toDataURL thumbnail will fail. See file header for migration notes.');
+          }
+          // Fire the onCanvasReady callback so callers get a direct reference
+          // to the canvas element without relying on DOM timing.
+          if (onCanvasReady && gl.domElement) onCanvasReady(gl.domElement);
+        }}
+      >
+        <SceneContents modelKey={modelKey} color={color} />
+      </Canvas>
+    </div>
   );
 }

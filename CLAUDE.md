@@ -282,12 +282,23 @@ All 10 buildings are shop buildings — each sells 2 knowledge books (20 total).
 ## Database Schema
 
 - `users` + `sessions` (Lucia auth)
-- `pets` (one per user, species/color/gender/personality/stats/position/clawTokens/loginStreak/lastLoginDate/lastActiveAt)
+- `pets` (one per user) — key columns:
+  - Identity: `name`, `species`, `color`, `gender`, `archetype`, `personality`, `stats`
+  - Agent framework (Phase 2): `model_key` (3D GLB key, default `lobster`), `agent_category` (`openclaw`/`hermes`/`milady`/`other`, default `openclaw`), `harness` (`openclaw`/`hermes`/`milady`/`custom`, default `milady`)
+  - Avatar (VRM-ready): `avatar_type` (`glb`/`vrm`), `avatar_url`, `vrm_metadata` JSONB
+  - Position + activity: `position_x`, `position_y`, `last_active_at`, `is_active`
+  - Economy: `claw_tokens`, `login_streak`, `last_login_date`
+  - Progression: `level`, `xp`, `total_xp`, `equipped_skills`
+  - Wallet: `wallet_address` (base58, auto-generated custodial Solana)
+  - Runtime link: `platform_agent_id` → `platform_agents`
 - `pet_inventory` (books owned by pet, quantity tracking)
 - `map_locations` (static, seeded — 10 buildings)
 - `location_agents` (user's agent config per location)
 - `platform_agents` (ElizaOS agent records)
 - `platform_agent_logs`
+- `openclaw_bots` (external agent identity, gateway config, learned knowledge)
+- `treasury_wallets` + `pet_wallets` (encrypted Solana keypairs)
+- `bazaar_listings` + `auctions` + `claw_token_transactions` (marketplace + economy)
 
 ## ClawToken Economy & Knowledge Books
 
@@ -324,7 +335,7 @@ All 10 buildings are shop buildings — each sells 2 knowledge books (20 total).
 Agents connect via an **agent-initiated flow** — humans never paste credentials.
 
 ### Quick Connect (primary flow)
-1. Human clicks "Generate Connect Link" in the `openclaw-connect-modal.tsx`
+1. Human clicks "Generate Connect Link" in `agent-connect-modal.tsx` (was `openclaw-connect-modal.tsx` — renamed in Phase 1)
 2. Frontend calls `POST /api/agent/connect-token` → returns `{token, connectUrl}`
 3. Modal shows a copyable instruction: `Read this URL and follow the instructions: https://api.clawville.world/api/skills/connect?token=ct-...`
 4. Human pastes that into their agent's chat (any agent — OpenClaw, Hermes, ElizaOS, Claude, etc.)
@@ -358,6 +369,7 @@ The "Manual" tab in the modal still exposes the legacy gateway form: Gateway URL
 ### 3D Rendering (Three.js)
 - `World3DCanvas.tsx` — Main 3D game world
 - `Arena3DCanvas.tsx` — 3D combat arena
+- `SelectAgentCanvas.tsx` — Agent creation picker; rotating pedestal + 11 GLB models; full-page background on `/create-agent` (replaces `LandingScene` on that page); preloads all 11 agent GLBs at module level
 
 ### 2D Rendering (PixiJS, fallback)
 - `PixiCanvas.tsx` — 2D world renderer
@@ -373,6 +385,7 @@ The "Manual" tab in the modal still exposes the legacy gateway form: Gateway URL
 - `location-hud.tsx` — Building zone indicator
 - `minimap.tsx` — Top-right world map
 - `mobile-controls.tsx` — Virtual joystick
+- `agent-connect-modal.tsx` — Connect any agent type (was `openclaw-connect-modal.tsx`); store fields renamed to `agentConnected`, `agentSessionId`, `agentConnectModalOpen`
 
 ## API Routes
 
