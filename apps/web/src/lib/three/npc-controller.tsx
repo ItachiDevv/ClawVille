@@ -200,8 +200,8 @@ export default function NpcController() {
     const worldVx = _camForward.x * inputFwd + _camRight.x * inputRight;
     const worldVz = _camForward.z * inputFwd + _camRight.z * inputRight;
 
-    // Facing angle for -Z-facing model: atan2(-worldX, -worldZ)
-    const facingAngle = Math.atan2(-worldVx, -worldVz);
+    // Facing angle for +X-facing model: atan2(-worldZ, worldX) — EMPIRICALLY VERIFIED 2026-04-16
+    const facingAngle = Math.atan2(-worldVz, worldVx);
 
     // Debug instrumentation — write frame data to window.__FACING_DEBUG
     if (typeof window !== 'undefined' && window.__DEBUG_FACING && window.__FACING_DEBUG) {
