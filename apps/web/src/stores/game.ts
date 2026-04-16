@@ -589,6 +589,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     avatarSpecies: 'cat',
     avatarColor: 'green',
     avatarName: '',
+    // Reset to the same default used in the initial store declaration
+    // (line 319). Omitting this was a cross-session leak — after logout,
+    // the next user's player-avatar would render with the previous user's
+    // GLB until setPetAppearance fired, which for an unauthenticated
+    // session may never happen.
+    petModelKey: 'lobster',
     avatarPosition: { x: 2560, y: 2560 },
     movementDirection: 'idle',
     petSpeed: 0,

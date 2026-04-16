@@ -49,7 +49,7 @@ export function useLocationChat(locationId: string | null) {
         },
       ]);
 
-      // Fire-and-forget: also route through OpenClaw if connected
+      // Fire-and-forget: also route through connected agent if present
       const { agentConnected, agentSessionId } = useGameStore.getState();
       if (agentConnected && agentSessionId && locationId) {
         api.openclawLocationChat({
