@@ -150,7 +150,7 @@ function PlayerPetInner() {
       return { cloned: c, lobsterAnimator: null as LobsterAnimator | null, charAnimator: anim };
     } else {
       // Legacy lobster/crayfish path: shallow lerp + emissive
-      c.traverse((child) => {
+      c.traverse((child: THREE.Object3D) => {
         if ((child as THREE.Mesh).isMesh) {
           const mesh = child as THREE.Mesh;
           if (mesh.material) {
@@ -171,7 +171,7 @@ function PlayerPetInner() {
   // Dispose cloned geometry + materials on unmount (navigation away / hot-reload)
   useEffect(() => {
     return () => {
-      cloned.traverse((obj) => {
+      cloned.traverse((obj: THREE.Object3D) => {
         const mesh = obj as THREE.Mesh;
         if ((mesh as any).isMesh) {
           mesh.geometry?.dispose();
