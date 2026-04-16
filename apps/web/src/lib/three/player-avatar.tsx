@@ -31,15 +31,18 @@ import {
 
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
-const SPEED = 320;
+const SPEED = 550;
 const BOB_SPEED = 5;
 const BOB_AMPLITUDE = 0.3;
-// AVATAR_SCALE=33 targets ~79 world-unit height for lobster.glb on the 5120-unit map.
-// Reduced from 55 (which looked too large in the zoomed-out 5120-unit world — lobster
-// filled ~1/6 of the viewport). 33 ≈ 60% of 55, matching the scale-down across all
-// avatar types. Deliberately slightly larger than TARGET_NPC_HEIGHT=75 so the
+// AVATAR_SCALE=20 targets ~48 world-unit height for lobster.glb on the 5120-unit map.
+// Pass 1 (2026-04-16): reduced 55→33 (too large at ~78 wu vs 800-wu building, ~1:10 ratio).
+// Pass 2 (2026-04-16): reduced 33→20 — user tested pass 1 and lobster still felt too big
+// relative to the NPC spawned in NPC mode. Target 1:16–1:20 ratio vs 800-wu building.
+// 20 ≈ 36% of original 55. Deliberately slightly larger than TARGET_NPC_HEIGHT=45 so the
 // player avatar still reads as bigger than wandering NPCs on screen.
-const AVATAR_SCALE = 33;
+// SPEED bumped 320→550 (pass 1 +60% wasn't perceivable at world scale of 5120 wu;
+// need ~3-4s to cross visible area ~2000 wu → 2000/550 ≈ 3.6s).
+const AVATAR_SCALE = 20;
 
 const COLOR_TINTS: Record<string, number> = {
   blue: 0x42a5f5, red: 0xef5350, green: 0x66bb6a, yellow: 0xffee58,
@@ -396,7 +399,7 @@ function PlayerPetInner() {
   return (
     <group ref={groupRef}>
       <group ref={animGroupRef}>
-        {/* Phase 2: lobster/crayfish use AVATAR_SCALE (16) for the slightly-larger
+        {/* Phase 2: lobster/crayfish use AVATAR_SCALE (20) for the slightly-larger
             player-avatar appearance. All other models use their registry scale. */}
         <primitive
           object={cloned}
