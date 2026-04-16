@@ -217,10 +217,16 @@ it in Phase 4a.
 - Returns 403 if the pet is owned by a different user.
 - Returns 404 if the pet doesn't exist.
 - Returns 400 with a Zod error if the payload is malformed.
-- The returned `character.knowledge.length` equals the pet's
-  `characterConfig.knowledge.length`.
+- The returned `character.knowledge` is **intentionally empty** (`[]`).
+  Rationale: ElizaOS v2's `normalizeKnowledgeItem` (`@elizaos/core`) treats
+  each string in `Character.knowledge` as a **filesystem path**, not
+  inline RAG content — so shipping raw markdown strings here would
+  silently break RAG on the Milady side. The `skillPack` emitted
+  alongside the character is the authoritative RAG carrier; the
+  `@clawville/app-clawville` plugin ingests from there on install.
 - The returned `skillPack.length` matches the count of fully-learned
-  buildings.
+  buildings, and `summary.knowledgeCount` equals the sum of
+  `skillPack[].knowledge.length` (the real chunk total).
 - The returned `installCommand` is a single shell-safe line.
 - `bun run build` passes.
 

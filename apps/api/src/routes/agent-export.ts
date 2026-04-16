@@ -41,13 +41,11 @@ import { requireAuth } from '../middleware/auth';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import type { AuthenticatedContext } from '../types';
 
-// Phase 3 audit C2 — `requireAuth` is a `createMiddleware<AuthenticatedContext>`
-// that validates the Lucia session AND sets `c.var.user` to a non-null `User`.
-// Typing the Hono instance as `AuthenticatedContext` lets `c.get('user')`
-// return `User` directly (no null guard), and we drop the redundant global
-// `sessionMiddleware` — it was validating the session twice per request
-// (once here, once inside `requireAuth`), burning an extra Lucia round-trip
-// on every hit. Per-route `requireAuth` is the single auth gate.
+// Per-route `requireAuth` is the single auth gate; we deliberately do NOT
+// add a global `sessionMiddleware` because that would double-validate the
+// Lucia session on every request for no benefit. `requireAuth` is typed as
+// `createMiddleware<AuthenticatedContext>` so `c.get('user')` returns a
+// non-null `User` when typing the Hono instance with the same context.
 export const agentExportRoutes = new Hono<AuthenticatedContext>();
 
 // 10 exports / IP / minute — spam-ceiling high enough that a human clicking
@@ -207,17 +205,25 @@ function buildSkillPack(
 
 // ─── Route ──────────────────────────────────────────────────────────────────
 
-agentExportRoutes.post('/export-character', requireAuth, async (c) => {
-  // --- Rate limit (before any DB work) ---
-  const ip = getClientIp({
-    get: (name) => c.req.header(name) ?? null,
-  });
-  if (!exportRateLimiter.check(ip)) {
-    throw new HTTPException(429, {
-      message: 'Too many export requests. Try again in 1 minute.',
+agentExportRoutes.post(
+  '/export-character',
+  // Rate-limit MUST run before `requireAuth` so unauthenticated spam
+  // never reaches Lucia. Otherwise a scraper hammering this endpoint with
+  // junk cookies would burn one `lucia.validateSession()` DB round-trip
+  // per request before being 401'd, defeating the purpose of the limiter.
+  async (c, next) => {
+    const ip = getClientIp({
+      get: (name) => c.req.header(name) ?? null,
     });
-  }
-
+    if (!exportRateLimiter.check(ip)) {
+      throw new HTTPException(429, {
+        message: 'Too many export requests. Try again in 1 minute.',
+      });
+    }
+    return next();
+  },
+  requireAuth,
+  async (c) => {
   const user = c.get('user');
 
   // --- Validate input ---
@@ -328,4 +334,5 @@ agentExportRoutes.post('/export-character', requireAuth, async (c) => {
       knowledgeCount,
     },
   });
-});
+  },
+);
