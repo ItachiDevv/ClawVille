@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useMemo, memo, Suspense } from 'react';
+import { useRef, useMemo, useEffect, memo, Suspense } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF, Html } from '@react-three/drei';
 import * as THREE from 'three';
@@ -24,7 +24,7 @@ import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 const LERP_SPEED = 5;
-const NPC_SCALE = 8;
+const NPC_SCALE = 13;
 
 useGLTF.preload('/models/lobster.glb');
 
@@ -124,6 +124,20 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     }
   }, [scene, npc.color, speciesInfo.key, useNewSystem]);
 
+  // Dispose cloned geometry + materials when the NPC is removed from the store
+  useEffect(() => {
+    return () => {
+      cloned.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (mesh.isMesh) {
+          mesh.geometry?.dispose();
+          if (Array.isArray(mesh.material)) mesh.material.forEach((m) => m.dispose());
+          else mesh.material?.dispose();
+        }
+      });
+    };
+  }, [cloned]);
+
   useFrame(({ clock }, delta) => {
     const d = npcRef.current;
     const group = groupRef.current;
@@ -145,7 +159,9 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // Raycast to find terrain surface Y (every 3rd frame to save perf).
     // Use (frame + seed) % 3 to stagger across NPCs — prevents all NPCs from
     // raycasting on the same frame tick (which would spike the CPU every 150ms).
-    const frame = Math.floor(Date.now() / 50);
+    // Use clock.elapsedTime (already available) instead of Date.now() to avoid
+    // a syscall allocation in the hot path.
+    const frame = Math.floor(clock.elapsedTime * 60);
     if ((frame + seed) % 3 === 0) {
       const terrainY = getTerrainY(group.position.x, group.position.z, threeScene);
       currentTerrainY.current += (terrainY - currentTerrainY.current) * 0.3;
@@ -153,7 +169,7 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
 
     // Base bob on top of terrain height
     const isMoving = d.direction !== 'idle' && !d.isDead;
-    const bob = isMoving ? Math.sin(Date.now() * 0.005) * 0.6 : 0;
+    const bob = isMoving ? Math.sin(clock.elapsedTime * 4.0 + seed) * 0.6 : 0;
     group.position.y = currentTerrainY.current + 2 + bob;
 
     // Direction rotation — use smooth facingAngle when set (possessed NPC),
