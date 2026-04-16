@@ -58,6 +58,8 @@ WHEN planning complex AI integrations, DO create a multi-phase plan document in 
 
 **Non-3D tasks** (API routes, database schemas, React modal UI, zustand stores, perf HUD DOM overlays, CI/CD, deploy scripts) do NOT require 3da collaboration — the rule scopes strictly to work that touches 3D rendering, assets, shaders, or WebGPU state.
 
+**Where 3da lives:** The agent definition is at `.claude/agents/3da.md` (project-scoped, committed to git). Its memory is at `.claude/memory/threejs/` with subdirs `gotchas/`, `patterns/`, `solutions/`, `performance/`, `webgpu/` and an index at `MEMORY.md`. Both are versioned with the repo so every session starts with the full accumulated knowledge from prior work on ClawVille. Do NOT use any user-level `~/.claude/agents/3da.md` or `~/.claude/memory/threejs/` — those were migrated into the project on 2026-04-16.
+
 A sea-themed OpenClaw game built on ElizaOS. Users create a pet, explore a 3D/2D sea-floor world with 10 buildings, and chat with AI agents that teach OpenClaw agent development concepts.
 
 ## IMPORTANT: ElizaOS is MANDATORY
