@@ -10,6 +10,11 @@ import {
   TILE_SIZE,
   buildingZones,
 } from '@/lib/pixi/tilemap-data';
+import {
+  VILLAGE_CENTER_TILE_X,
+  VILLAGE_CENTER_TILE_Z,
+  NPC_INSET_WORLD,
+} from '@/lib/three/character-positions';
 import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
 import { applyStationaryIdleAnimation, idToSeed } from '@/lib/three/procedural-animation';
 import { applyColorTint } from '@/lib/three/character-animations';
@@ -147,20 +152,6 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   // Slot 9 — security-fortress — building-cave (interim Patrick's Rock)
   'security-fortress': { name: 'Patrick', model: '/models/characters/patrick.glb' },
 };
-
-// Village center in tile space — NPCs stand between their building and this point.
-// The 160×160 tile grid has its center at tile (80, 80).
-// worldX = -2560 + 80*32 = 0, worldZ = -2560 + 80*32 = 0 — symmetric square map.
-const VILLAGE_CENTER_TILE_X = 80;
-const VILLAGE_CENTER_TILE_Z = 80; // tile Y maps to world Z
-
-// How far (in world units) NPCs stand from their building center toward village
-// center. Buildings can be up to MAX_FOOTPRINT=1000 wu wide (±500 half-extent).
-// 600 = 500 (half of MAX_FOOTPRINT) + 100 wu margin, placing NPCs clearly in
-// front of the widest possible building without clipping through its face.
-// Replaces the old NPC_INSET_TILES=4.0 (128 wu) which put NPCs inside the
-// footprint of wide buildings like pineapple-house.
-const NPC_INSET_WORLD = 600; // world units
 
 /** Compute NPC world position and facing angle for a given building zone.
  *
