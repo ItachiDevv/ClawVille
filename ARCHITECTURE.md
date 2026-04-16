@@ -154,7 +154,7 @@ PostgreSQL with Drizzle ORM (`packages/database/`).
 | Table | Purpose |
 |-------|---------|
 | `users` / `sessions` | Lucia auth (email + password) |
-| `avatars` | One per user -- species, color, archetype, stats, position, clawTokens, login streak |
+| `avatars` | One per user. Identity: species/color/archetype/stats/position. Phase 2 framework fields: `model_key` (default `lobster`), `agent_category` (openclaw/hermes/milady/other, default `openclaw`), `harness` (openclaw/hermes/milady/custom, default `milady`). All NOT NULL with DEFAULTs |
 | `avatar_inventory` | Knowledge books owned by avatar (quantity tracking) |
 | `map_locations` | 10 static building zones (seeded) |
 | `location_agents` | Per-user agent config at each location |
