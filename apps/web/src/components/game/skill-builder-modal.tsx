@@ -12,9 +12,9 @@ const inputClasses =
 const textareaClasses = `${inputClasses} resize-none`;
 
 export default function SkillBuilderModal() {
-  const { skillBuilderOpen, setSkillBuilderOpen, addToast, openclawConnected } = useGameStore();
+  const { skillBuilderOpen, setSkillBuilderOpen, addToast, agentConnected } = useGameStore();
   const { data: pet } = usePet();
-  const skillFormat = openclawConnected ? 'openclaw' as const : 'elizaos' as const;
+  const skillFormat = agentConnected ? 'openclaw' as const : 'elizaos' as const;
 
   const [step, setStep] = useState(0);
 

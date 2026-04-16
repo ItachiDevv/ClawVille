@@ -5,7 +5,7 @@ import { MAP_LOCATIONS, BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 
 export default function LocationHUD() {
   const nearLocation = useGameStore((s: GameState) => s.nearLocation);
-  const openclawConnected = useGameStore((s: GameState) => s.openclawConnected);
+  const agentConnected = useGameStore((s: GameState) => s.agentConnected);
   const enterBuilding = useGameStore((s: GameState) => s.enterBuilding);
 
   if (!nearLocation) return null;
@@ -36,7 +36,7 @@ export default function LocationHUD() {
       </p>
       {theme && (
         <p className="text-white/50 text-xs mt-1">
-          {openclawConnected ? '🔌 Your bot will learn: ' : 'Learn about '}
+          {agentConnected ? '🔌 Your bot will learn: ' : 'Learn about '}
           {theme.focus.split(',')[0]}
         </p>
       )}
