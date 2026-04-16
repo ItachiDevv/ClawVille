@@ -142,8 +142,11 @@ export const avatars = pgTable('avatars', {
    *
    * All three have NOT NULL DEFAULTs so existing avatar rows backfill to
    * `('openclaw','lobster','milady')` on migration without a separate
-   * backfill query. Enum values mirror the shared `AgentCategory` /
-   * `AgentHarness` types and the CHECK constraints applied in SQL.
+   * backfill query. Enum values are enforced at the API layer via Zod +
+   * the shared `AgentCategory` / `AgentHarness` types. No SQL CHECK
+   * constraints are applied here — if you add a direct-SQL writer, you
+   * MUST replicate the Zod validation or switch these columns to
+   * `pgEnum` types. For now, the API is the sole writer.
    */
   agentCategory: varchar('agent_category', { length: 16 })
     .notNull()
