@@ -14,7 +14,7 @@ const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 
 // Y height above ground in world units (wandering NPCs sit ~2 units above terrain,
-// scaled by NPC_SCALE=8, so their tops are roughly 16-20 units up).
+// scaled by NPC_SCALE=13, so their tops are roughly 26-36 units up).
 const BUBBLE_Y = 20;
 
 // Maximum concurrent speech bubbles to render

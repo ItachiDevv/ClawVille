@@ -26,7 +26,7 @@ const HALF_H = MAP_HEIGHT / 2;
 const LERP_SPEED = 5;
 const NPC_SCALE = 13;
 
-useGLTF.preload('/models/lobster.glb');
+// Preload deferred to after SPECIES_MODEL declaration — see below.
 
 function mapToWorld(px: number, py: number): [number, number, number] {
   return [px - HALF_W, 0, py - HALF_H];
@@ -76,6 +76,10 @@ const SPECIES_MODEL: Record<string, { path: string; key: string }> = {
   seahorse:      { path: '/models/sea_horse.glb',                  key: 'seahorse' },
 };
 const DEFAULT_SPECIES = SPECIES_MODEL.lobster;
+
+// Preload all species GLBs at module level (11 models, ~3-4 MB total) so
+// wandering NPCs don't cause network+parse pops when they first appear.
+Object.values(SPECIES_MODEL).forEach(({ path }) => useGLTF.preload(path));
 
 // ---------------------------------------------------------------------------
 // Single NPC using GLB model with terrain following
@@ -222,7 +226,7 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
         </group>
       </group>
       {/* Name label — OUTSIDE scaled group so position is in world units.
-          NPC models are ~8-16 world units tall (NPC_SCALE=8); 18 = safe above tallest species. */}
+          NPC models are ~13-26 world units tall (NPC_SCALE=13); 18 = safe above tallest species. */}
       <Html
         position={[0, 18, 0]}
         center
