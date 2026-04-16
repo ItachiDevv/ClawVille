@@ -2,85 +2,73 @@
 title: Lobster model facing + correct atan2 formula + screen-relative movement
 category: solution
 tags: [joystick, mobile, rotation, facing, atan2, lobster, model-orientation, camera-relative]
-date: 2026-04-13
+date: 2026-04-16
 confidence: high
 threejs_version: r170+
 ---
 
 ## Summary
-lobster.glb faces -Z at rotation.y=0. Use atan2(-vx, -vy). Movement MUST be screen-relative (NOT camera-relative) — camera-relative fails on mobile because OrbitControls touch orbit accumulates over ~10 seconds and inverts the camera direction, causing 180° movement inversion.
+lobster.glb faces **+X** at rotation.y=0 (EMPIRICALLY VERIFIED 2026-04-16 with debug overlay).
+Use `atan2(-vy, vx)` for screen-relative pixel input. Movement MUST be screen-relative (NOT
+camera-relative) — camera-relative fails on mobile because OrbitControls touch orbit accumulates
+over ~10 seconds and inverts the camera direction, causing 180° movement inversion.
 
-## Details
+## Facing formula — +X native model (empirically verified 2026-04-16)
 
-### CRITICAL: This has been flipped incorrectly three times — do not flip again
-
-**lobster.glb faces -Z at rotation.y=0. Head at -Z, tail at +Z.**
-
-### Correct formulas (verified by live user testing multiple times)
+See full proof in `gotchas/lobster-faces-plus-x-at-rot-zero-empirical.md`.
 
 **player-pet.tsx DIR_ROTATION table:**
 ```typescript
+// +X native: right=0, down=-PI/2, left=PI, up=PI/2, idle=-PI/2
 const DIR_ROTATION: Record<string, number> = {
-  down: Math.PI, left: Math.PI / 2, up: 0, right: -Math.PI / 2, idle: Math.PI,
+  right: 0, down: -Math.PI / 2, left: Math.PI, up: Math.PI / 2, idle: -Math.PI / 2,
 };
 ```
 
-**Continuous facing in player-pet.tsx:**
+**Continuous facing in player-pet.tsx (screen-relative vx/vy):**
 ```typescript
-continuousRot = Math.atan2(-vx, -vy);   // -Z model — CORRECT
-// NOT: Math.atan2(vx, vy)              // +Z assumption — WRONG, 180° off
+continuousRot = Math.atan2(-vy, vx);   // +X model — CORRECT
+// NOT: Math.atan2(-vx, -vy)           // -Z assumption — WRONG (prior incorrect state)
 ```
 
-**NPC controller facingAngle:**
+**NPC controller facingAngle (world-space worldVx/worldVz):**
 ```typescript
-const facingAngle = Math.atan2(-worldVx, -worldVz);   // -Z model — CORRECT
-// NOT: Math.atan2(worldVx, worldVz)                   // +Z assumption — WRONG
+const facingAngle = Math.atan2(-worldVz, worldVx);   // +X model — CORRECT
+// NOT: Math.atan2(-worldVx, -worldVz)                // -Z assumption — WRONG
 ```
 
-**arena-location-npcs.tsx computeNpcPlacement facing:**
-```typescript
-const facingRotY = Math.atan2(dx, dz) + Math.PI;   // -Z model needs +PI flip
-// NOT: Math.atan2(dx, dz)                          // that's for +Z model — wrong
-```
+**arena-npcs.tsx DIR_ROTATION: same as player-pet.tsx table above.**
 
-### Why camera-relative movement fails on mobile (CRITICAL)
+### atan2 sign table (+X native, rotation.y=0 → head faces +X)
+- right (vx=+1, vy=0): atan2(0,  +1) = 0         (+X = native forward)
+- down  (vx=0,  vy=+1): atan2(-1,  0) = -PI/2     (rotate -90° → faces +Z = screen-down)
+- left  (vx=-1, vy=0): atan2(0,  -1) = PI         (-X)
+- up    (vx=0,  vy=-1): atan2(+1,  0) = +PI/2     (-Z = screen-up)
+- idle: -PI/2 (faces +Z = toward camera at default +Z high angle position)
 
-Camera-relative movement was tried TWICE (commits f85a6d6 and 32f731a) and BOTH TIMES
-caused the exact same bug: "joystick pulled SE, lobster moves NW" after ~10 seconds.
+## Why camera-relative movement fails on mobile (CRITICAL — unchanged)
 
-Root cause: OrbitControls is enabled on the canvas with `enableRotate={true}`. On mobile,
-single-finger touch on the canvas (outside the joystick zones) causes OrbitControls to orbit
-the camera. After ~10 seconds of play, the camera has accumulated ~180° of unintentional
-orbit rotation. When theta shifts by π, camForward.xz is fully negated. Camera-relative
-movement then maps joystick direction to exactly the opposite world direction.
+Camera-relative movement was tried twice and BOTH TIMES caused "joystick pulled SE, lobster
+moves NW" after ~10 seconds.
 
-The math is correct (cross product gives right sign at all angles) but the USER BEHAVIOR
-on mobile causes the issue — fingers drift outside joystick zones and orbit the camera.
+Root cause: OrbitControls is enabled with `enableRotate={true}`. Single-finger touch outside
+joystick zones causes OrbitControls to orbit the camera. After ~10s, camera has accumulated
+~180° of unintentional orbit. camForward.xz is fully negated, mapping joystick to opposite
+world direction.
 
-Screen-relative movement is immune to this: joystick direction always maps to the same
-world-space direction regardless of camera angle. The trade-off is that after intentional
-camera orbit (right joystick), the movement direction may not match the new screen view.
-This is acceptable for ClawVille where the FPSFollowCamera keeps the default camera angle.
+Screen-relative movement is immune. The trade-off (movement doesn't follow intentional orbit)
+is acceptable because FPSFollowCamera keeps the default angle in normal play.
 
-### DO NOT switch to camera-relative again without:
-1. Disabling OrbitControls touch rotation on mobile (`enableRotate={isTouchDevice ? false : true}`)
-2. OR ensuring the right joystick is the ONLY way to orbit (prevents accidental orbit)
+**DO NOT switch to camera-relative again without:**
+1. Disabling OrbitControls touch rotation (`enableRotate={isTouchDevice ? false : true}`)
+2. OR ensuring right joystick is the only way to orbit
 
-### atan2 sign table (lobster faces -Z at rotY=0)
-- up    (vx=0, vy=-1 → worldZ-): atan2(0,  1) = 0
-- down  (vx=0, vy=+1 → worldZ+): atan2(0, -1) = PI
-- right (vx=+1, vy=0 → worldX+): atan2(-1, 0) = -PI/2
-- left  (vx=-1, vy=0 → worldX-): atan2(+1, 0) = +PI/2
-- idle: PI (face +Z = toward camera at default angle)
-
-### Joystick (nipplejs) convention
-- Nipplejs UP → angle.radian = π/2 (standard math convention)
+## Joystick (nipplejs) convention — unchanged
+- Nipplejs UP → angle.radian = π/2
 - mobile-controls.tsx: `vy = -Math.sin(rad)` → for UP gives vy=-1
 - vx = joystickVelocity.x, vy = joystickVelocity.y (direct mapping, screen-relative)
 
 ## Context
-ClawVille. The +Z assumption was introduced in commits f85a6d6, 97ac953 and the
-camera-relative movement in f85a6d6, 32f731a. Both were reverted/should be reverted.
-This solution file has been updated three times now. The -Z, screen-relative answer is
-the ONLY live-test-verified correct answer. Any future analysis concluding +Z or
-camera-relative should require live test evidence before acting.
+The +X facing was proven empirically on 2026-04-16 with a live debug overlay. All prior
+memory and commits claiming "-Z" were wrong. See the full proof and warning in
+`gotchas/lobster-faces-plus-x-at-rot-zero-empirical.md` before considering any change.
