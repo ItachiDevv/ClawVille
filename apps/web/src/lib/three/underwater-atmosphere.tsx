@@ -20,8 +20,8 @@ import {
 // Three GPU-driven effects — no post-processing, no InstancedMesh, no GLSL.
 // All animation is TSL node-based (runs entirely on GPU, zero CPU per frame).
 //
-// 1. CausticPlane  — large horizontal plane at y=150, animated light pattern
-// 2. DepthBackdrop — vertical plane at z=-1200, blue-green gradient
+// 1. CausticPlane  — large horizontal plane at y=150, 6400x6400, animated light pattern
+// 2. DepthBackdrop — vertical plane at z=-5500, 14400x900, blue-green gradient with edge fade
 // 3. DustParticles — ~300 Points drifting upward via TSL positionNode
 // ---------------------------------------------------------------------------
 
@@ -77,9 +77,9 @@ function createCausticMaterial(): THREE.MeshBasicNodeMaterial {
 
 function CausticPlane() {
   const { geometry, material } = useMemo(() => {
-    // Caustic coverage — only needs to cover what the camera can see (fog far = 3600).
-    // 4000x4000 covers the visible area with margin. Larger wastes fragment shader work.
-    const geo = new THREE.PlaneGeometry(4000, 4000, 1, 1);
+    // Caustic coverage — must cover full 5120x5120 map visible area (fog far = 6400).
+    // 6400x6400 covers the visible area with margin. Larger wastes fragment shader work.
+    const geo = new THREE.PlaneGeometry(6400, 6400, 1, 1);
     const mat = createCausticMaterial();
     return { geometry: geo, material: mat };
   }, []);
@@ -110,7 +110,7 @@ function createBackdropMaterial(): THREE.MeshBasicNodeMaterial {
   const mat = new THREE.MeshBasicNodeMaterial({
     transparent: true,
     depthWrite: false,
-    side: THREE.FrontSide,
+    side: THREE.DoubleSide,
   });
 
   // Deep ocean floor colour (dark blue-navy)
@@ -133,15 +133,28 @@ function createBackdropMaterial(): THREE.MeshBasicNodeMaterial {
   const gradient = mix(bottomHalf, topHalf, vCoord);
 
   mat.colorNode = gradient;
-  mat.opacityNode = float(0.88);
+
+  // Horizontal fade: uv().x goes 0→1 across the plane width.
+  // Map to a [-1, 1] centred range then take abs → 0 at centre, 1 at edges.
+  // Invert and smooth so opacity is full at centre, fades to 0 at the wings.
+  // This prevents the hard vertical edge that appears when orbiting.
+  const uCoord = uv().x;
+  const edgeDist = uCoord.sub(float(0.5)).mul(float(2.0)).abs(); // 0..1 (0=center, 1=edge)
+  // smoothstep-like: starts fading at 60% out, hits 0 at 100%
+  const edgeFade = edgeDist.sub(float(0.6)).div(float(0.4)).max(float(0.0)).min(float(1.0));
+  const baseOpacity = float(0.72).mul(float(1.0).sub(edgeFade));
+
+  mat.opacityNode = baseOpacity;
 
   return mat;
 }
 
 function DepthBackdrop() {
   const { geometry, material } = useMemo(() => {
-    // Wide plane spanning the full expanded world horizon
-    const geo = new THREE.PlaneGeometry(12000, 700, 1, 1);
+    // Width covers the full 5120-unit map with generous margin on each side.
+    // Height 900 spans from below terrain (y≈-50) to above player eye-level (y≈800).
+    // Extra height segments (4) give the edge-fade gradient smoother horizontal banding.
+    const geo = new THREE.PlaneGeometry(14400, 900, 1, 4);
     const mat = createBackdropMaterial();
     return { geometry: geo, material: mat };
   }, []);
@@ -157,9 +170,10 @@ function DepthBackdrop() {
     <mesh
       geometry={geometry}
       material={material}
-      // Vertical plane pushed far behind all buildings (northernmost is at z≈-1504).
-      // z=-3200 ensures the backdrop never clips in front of any building or decoration.
-      position={[0, 250, -3200]}
+      // Pushed to z=-5500 — well beyond the northernmost building (z≈-1504) and
+      // far enough that fog (far=6400) has almost fully faded it before the edge
+      // of the plane becomes visible. DoubleSide so it renders from any camera angle.
+      position={[0, 350, -5500]}
       frustumCulled={false}
     />
   );
@@ -169,8 +183,8 @@ function DepthBackdrop() {
 // 3. Underwater Dust Particles
 // ---------------------------------------------------------------------------
 const PARTICLE_COUNT = 300;
-const FIELD_W = 2000;
-const FIELD_D = 1400;
+const FIELD_W = 3600;
+const FIELD_D = 2400;
 const FIELD_H = 350; // vertical range the particles occupy
 
 function createDustGeometry(): THREE.BufferGeometry {

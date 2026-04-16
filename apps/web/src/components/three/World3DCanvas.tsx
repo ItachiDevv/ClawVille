@@ -534,7 +534,7 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
         enableZoom={true}
         enableRotate={true}
         minDistance={followMode ? 40 : 160}
-        maxDistance={4800}
+        maxDistance={5500}
         maxPolarAngle={Math.PI * 0.85}
         rotateSpeed={isTouchDevice ? 0.4 : 1}
         zoomSpeed={isTouchDevice ? 0.6 : 1}
@@ -562,8 +562,8 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       {/* Secondary fill from opposite side for depth */}
       <directionalLight position={[-100, 200, -60]} intensity={0.5} color={0x88aacc} />
 
-      {/* Underwater fog — pushed back for better visibility */}
-      <fog attach="fog" args={[FOG_COLOR, 800, 3600]} />
+      {/* Underwater fog — scaled for 160x160 map (5120x5120 world units) */}
+      <fog attach="fog" args={[FOG_COLOR, 1200, 6400]} />
 
       {/* Underwater atmosphere — caustic light plane, depth backdrop, dust particles */}
       <UnderwaterAtmosphere />
@@ -713,7 +713,7 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
         camera={{
           fov: 50,
           near: 1,
-          far: 4000,
+          far: 6800,
           // Game mode: pull the camera back to accommodate the wider 160x160 map.
           position: mode === 'game' ? [0, 700, 1600] : [0, 560, 1000],
         }}
