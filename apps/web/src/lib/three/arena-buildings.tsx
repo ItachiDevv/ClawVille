@@ -77,15 +77,40 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   'security-fortress': { model: '/models/building-cave.glb',       yOffset: 0, rotY:  0.632 },
 };
 
+// Scratch objects for stripGroundPlanes — reused across calls to avoid GC.
+const _stripBbox = new THREE.Box3();
+const _stripMeshBox = new THREE.Box3();
+
 /** Strip ground planes from a cloned scene.
  *  ONLY removes meshes that are trivially thin (< 0.5% height ratio) AND sit at the
  *  very bottom of the model (within 5% of min Y). This prevents eating actual building
- *  geometry like Patrick's Rock (which is flat+wide but IS the building). */
+ *  geometry like Patrick's Rock (which is flat+wide but IS the building).
+ *
+ *  Full-model bounds are computed from non-SkinnedMesh geometry only (same approach as
+ *  computeBuildingScale). Using Box3.setFromObject() here inflates fullHeight for scenes
+ *  that contain any rigged nodes, which incorrectly widens the "is at bottom" window and
+ *  can cause real structural geometry to be stripped. */
 function stripGroundPlanes(scene: THREE.Object3D): void {
-  // First pass: measure the full model bounds
-  const fullBox = new THREE.Box3().setFromObject(scene);
-  const fullMinY = fullBox.min.y;
-  const fullHeight = fullBox.max.y - fullBox.min.y;
+  // First pass: measure the full model bounds using NON-SkinnedMesh geometry only.
+  // This prevents bind-pose inflation from widening the "is at bottom" threshold and
+  // accidentally stripping real building geometry (roofs, walls with wide footprints).
+  scene.updateMatrixWorld(true);
+  _stripBbox.makeEmpty();
+  scene.traverse((child) => {
+    if ((child as THREE.Mesh).isMesh && !(child as THREE.SkinnedMesh).isSkinnedMesh) {
+      const mesh = child as THREE.Mesh;
+      if (!mesh.geometry) return;
+      mesh.geometry.computeBoundingBox();
+      const bb = mesh.geometry.boundingBox;
+      if (!bb) return;
+      _stripMeshBox.copy(bb).applyMatrix4(mesh.matrixWorld);
+      _stripBbox.union(_stripMeshBox);
+    }
+  });
+  // Fall back to setFromObject if no non-skinned geometry found (shouldn't happen for buildings)
+  if (_stripBbox.isEmpty()) _stripBbox.setFromObject(scene);
+  const fullMinY = _stripBbox.min.y;
+  const fullHeight = _stripBbox.max.y - _stripBbox.min.y;
   if (fullHeight === 0) return;
 
   const toRemove: THREE.Object3D[] = [];
