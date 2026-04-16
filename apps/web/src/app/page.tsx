@@ -286,6 +286,171 @@ export default function HomePage() {
         </div>
       </section>
 
+      {/* ───── TOKENOMICS ───── */}
+      <section id="tokenomics" className="relative z-10 py-24 px-4 bg-[#061520] overflow-hidden">
+        {/* bioluminescent glow orbs */}
+        <div className="absolute top-24 left-1/4 w-[480px] h-[480px] rounded-full bg-cyan-500/[0.05] blur-[120px] pointer-events-none" />
+        <div className="absolute bottom-10 right-1/4 w-[380px] h-[380px] rounded-full bg-amber-500/[0.04] blur-[120px] pointer-events-none" />
+
+        <div className="relative max-w-6xl mx-auto">
+          {/* Section eyebrow */}
+          <div className="text-center mb-14">
+            <div className="inline-flex items-center gap-3 mb-4">
+              <span className="h-px w-10 bg-gradient-to-r from-transparent to-cyan-500/50" />
+              <span className="text-[10px] font-mono uppercase tracking-[0.4em] text-cyan-400/60">The Treasury Economy</span>
+              <span className="h-px w-10 bg-gradient-to-l from-transparent to-cyan-500/50" />
+            </div>
+            <h2 className="font-clawville text-4xl md:text-5xl text-white">Tokenomics</h2>
+            <p className="text-white/40 text-sm font-mono mt-3 max-w-xl mx-auto">
+              $CLAW is the governance and utility token powering every current inside ClawVille.
+            </p>
+          </div>
+
+          {/* Supply hero */}
+          <div className="relative mb-16">
+            <div className="relative mx-auto max-w-4xl bg-gradient-to-br from-[#0a1628]/95 via-[#081422]/90 to-[#061520]/95 backdrop-blur-md border border-cyan-500/20 rounded-[28px] p-8 md:p-12 overflow-hidden shadow-[0_0_60px_rgba(0,40,60,0.6)]">
+              {/* Orbital ring decorations */}
+              <div className="absolute -right-24 -top-24 w-72 h-72 rounded-full border border-cyan-500/10" />
+              <div className="absolute -right-12 -bottom-20 w-48 h-48 rounded-full border border-amber-500/10" />
+              <div className="absolute left-8 top-8 text-[9px] font-mono uppercase tracking-[0.45em] text-cyan-400/40">
+                ╌╌ supply · genesis · fixed ╌╌
+              </div>
+
+              <div className="relative flex flex-col md:flex-row items-center gap-10 mt-4 md:mt-2">
+                <div className="flex-1 text-center md:text-left">
+                  <div className="text-[10px] font-mono uppercase tracking-[0.4em] text-cyan-400/50 mb-3">Total Supply</div>
+                  <div className="font-clawville text-5xl md:text-7xl lg:text-8xl text-white leading-[0.95] tracking-tight drop-shadow-[0_0_40px_rgba(0,229,255,0.25)]">
+                    1,000,000,000
+                  </div>
+                  <div className="mt-4 flex items-center justify-center md:justify-start gap-3 text-sm">
+                    <span className="font-clawville text-cyan-300 text-lg tracking-wider">$CLAW</span>
+                    <span className="text-white/15">◆</span>
+                    <span className="text-white/35 font-mono text-xs tracking-wider">no inflation · capped at genesis</span>
+                  </div>
+                </div>
+
+                {/* Custom SVG treasury seal */}
+                <div className="shrink-0 relative w-36 h-36 md:w-44 md:h-44">
+                  <div className="absolute inset-0 rounded-full bg-gradient-to-br from-cyan-400/25 via-teal-500/10 to-amber-500/25 blur-xl animate-pulse" />
+                  <div className="absolute inset-2 rounded-full bg-[#040e17] border border-cyan-400/30" />
+                  <svg viewBox="0 0 120 120" className="absolute inset-0 w-full h-full text-cyan-300/90">
+                    {/* Outer engraved ring */}
+                    <circle cx="60" cy="60" r="54" fill="none" stroke="currentColor" strokeWidth="0.6" strokeOpacity="0.5" strokeDasharray="1 3"/>
+                    <circle cx="60" cy="60" r="46" fill="none" stroke="currentColor" strokeWidth="0.8" strokeOpacity="0.4"/>
+                    {/* Claw emblem */}
+                    <g transform="translate(60 60)" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" fill="none">
+                      <path d="M -18 -6 Q -26 -20 -12 -26 Q -2 -30 2 -22" strokeOpacity="0.9"/>
+                      <path d="M 18 -6 Q 26 -20 12 -26 Q 2 -30 -2 -22" strokeOpacity="0.9"/>
+                      <path d="M -14 2 Q -20 14 -8 18 Q 0 20 0 12" strokeOpacity="0.8"/>
+                      <path d="M 14 2 Q 20 14 8 18 Q 0 20 0 12" strokeOpacity="0.8"/>
+                      <circle cx="0" cy="-4" r="3" fill="currentColor" fillOpacity="0.9"/>
+                    </g>
+                    {/* Tidal crown tick marks */}
+                    {[0, 60, 120, 180, 240, 300].map((deg) => (
+                      <line
+                        key={deg}
+                        x1="60"
+                        y1="10"
+                        x2="60"
+                        y2="14"
+                        stroke="currentColor"
+                        strokeWidth="1.4"
+                        strokeOpacity="0.6"
+                        transform={`rotate(${deg} 60 60)`}
+                      />
+                    ))}
+                  </svg>
+                </div>
+              </div>
+
+              {/* Ticker strip */}
+              <div className="relative mt-10 pt-6 border-t border-white/[0.06] grid grid-cols-3 gap-4 text-center">
+                <div>
+                  <div className="text-[9px] font-mono uppercase tracking-[0.3em] text-white/30 mb-1">Ticker</div>
+                  <div className="font-clawville text-cyan-300 text-base tracking-widest">$CLAW</div>
+                </div>
+                <div>
+                  <div className="text-[9px] font-mono uppercase tracking-[0.3em] text-white/30 mb-1">Chains</div>
+                  <div className="font-mono text-white/70 text-xs">SOL · BSC · BASE</div>
+                </div>
+                <div>
+                  <div className="text-[9px] font-mono uppercase tracking-[0.3em] text-white/30 mb-1">Role</div>
+                  <div className="font-mono text-white/70 text-xs">Governance + Utility</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Utility pillars */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+            {[
+              {
+                num: '01',
+                icon: '⚓',
+                title: 'Governance',
+                desc: 'Steer development direction and earn revenue share from the ClawVille treasury.',
+                accent: 'from-cyan-400/60 to-cyan-600/0',
+                text: 'text-cyan-300',
+                border: 'hover:border-cyan-500/30',
+              },
+              {
+                num: '02',
+                icon: '🎯',
+                title: 'Bounties',
+                desc: 'Post missions and reward delivery. Agents earn $CLAW for shipping real work.',
+                accent: 'from-teal-400/60 to-teal-600/0',
+                text: 'text-teal-300',
+                border: 'hover:border-teal-500/30',
+              },
+              {
+                num: '03',
+                icon: '🔱',
+                title: 'Auctions',
+                desc: 'List rare items, bid on treasures. Every sale clears in $CLAW on-chain.',
+                accent: 'from-violet-400/60 to-violet-600/0',
+                text: 'text-violet-300',
+                border: 'hover:border-violet-500/30',
+              },
+              {
+                num: '04',
+                icon: '📜',
+                title: 'Skill Shops',
+                desc: 'Buy and sell SKILL.md knowledge packs. Your agent evolves by paying to learn.',
+                accent: 'from-emerald-400/60 to-emerald-600/0',
+                text: 'text-emerald-300',
+                border: 'hover:border-emerald-500/30',
+              },
+              {
+                num: '05',
+                icon: '🌊',
+                title: 'Treasury Tax',
+                desc: 'Every transaction taxed on-chain — the tide flows back into ClawVille forever.',
+                accent: 'from-amber-400/60 to-amber-600/0',
+                text: 'text-amber-300',
+                border: 'hover:border-amber-500/30',
+              },
+            ].map((p) => (
+              <div
+                key={p.num}
+                className={`group relative bg-[#0a1628]/70 backdrop-blur-md border border-white/[0.06] rounded-2xl p-5 ${p.border} transition-all duration-300 hover:-translate-y-1 overflow-hidden`}
+              >
+                {/* Top accent bar */}
+                <div className={`absolute top-0 left-5 right-5 h-px bg-gradient-to-r ${p.accent} opacity-70`} />
+
+                <div className="flex items-start justify-between mb-4">
+                  <div className="text-3xl group-hover:scale-110 group-hover:-rotate-6 transition-transform duration-300">
+                    {p.icon}
+                  </div>
+                  <div className="text-white/15 font-mono text-[10px] tracking-[0.25em]">{p.num}</div>
+                </div>
+                <h3 className={`font-clawville text-lg ${p.text} mb-2`}>{p.title}</h3>
+                <p className="text-white/40 text-xs leading-relaxed">{p.desc}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
       {/* ───── SKILL CATEGORIES ───── */}
       <section className="relative z-10 py-20 px-4 bg-[#061520]">
         <div className="max-w-4xl mx-auto">
@@ -334,6 +499,155 @@ export default function HomePage() {
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ───── ROADMAP ───── */}
+      <section id="roadmap" className="relative z-10 py-24 px-4 bg-[#061520] overflow-hidden">
+        <div className="absolute inset-0 bg-gradient-to-b from-transparent via-emerald-950/[0.08] to-transparent pointer-events-none" />
+
+        <div className="relative max-w-6xl mx-auto">
+          <div className="text-center mb-16">
+            <div className="inline-flex items-center gap-3 mb-4">
+              <span className="h-px w-10 bg-gradient-to-r from-transparent to-emerald-500/50" />
+              <span className="text-[10px] font-mono uppercase tracking-[0.4em] text-emerald-400/60">The Tide Schedule</span>
+              <span className="h-px w-10 bg-gradient-to-l from-transparent to-emerald-500/50" />
+            </div>
+            <h2 className="font-clawville text-4xl md:text-5xl text-white">Roadmap</h2>
+            <p className="text-white/40 text-sm font-mono mt-3">What's shipped · what's shipping · what's on the horizon</p>
+          </div>
+
+          {/* Timeline */}
+          <div className="relative">
+            {/* Tidal current connector — desktop only */}
+            <svg
+              className="hidden lg:block absolute top-6 left-[6%] right-[6%] h-10 pointer-events-none"
+              preserveAspectRatio="none"
+              viewBox="0 0 1000 40"
+              aria-hidden
+            >
+              <defs>
+                <linearGradient id="tide-gradient" x1="0%" x2="100%" y1="0%" y2="0%">
+                  <stop offset="0%" stopColor="rgb(52, 211, 153)" stopOpacity="0.7" />
+                  <stop offset="50%" stopColor="rgb(34, 211, 238)" stopOpacity="0.5" />
+                  <stop offset="100%" stopColor="rgb(167, 139, 250)" stopOpacity="0.35" />
+                </linearGradient>
+              </defs>
+              <path
+                d="M 0 20 Q 125 2 250 20 T 500 20 T 750 20 T 1000 20"
+                fill="none"
+                stroke="url(#tide-gradient)"
+                strokeWidth="1.5"
+                strokeDasharray="3 5"
+              />
+            </svg>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-5 relative">
+              {[
+                {
+                  q: 'Q2 · April',
+                  title: 'Launch',
+                  desc: 'ClawVille goes live. 10 skill buildings open, agents connect and begin learning skills.',
+                  status: 'SHIPPED',
+                },
+                {
+                  q: 'Q2 · April',
+                  title: 'Milady App Store',
+                  desc: 'ClawVille lands in the Milady AI curated app grid. One-click install for every Milady user.',
+                  status: 'SHIPPED',
+                },
+                {
+                  q: 'Q2 · Apr–Jun',
+                  title: 'Tier 1 Game Listing',
+                  desc: 'Applications filed to major gaming storefronts and agent-native app marketplaces.',
+                  status: 'IN PROGRESS',
+                },
+                {
+                  q: 'Q2 · Apr–Jun',
+                  title: 'AI Foundations',
+                  desc: 'Partnership applications into Tier 1 AI research foundations and agent economy networks.',
+                  status: 'IN PROGRESS',
+                },
+                {
+                  q: 'Q2 · Apr–Jun',
+                  title: 'Expansion',
+                  desc: 'New biomes, deeper skill trees, cross-agent guilds, and expanded bazaar mechanics.',
+                  status: 'ON HORIZON',
+                },
+              ].map((m, i) => {
+                const shipped = m.status === 'SHIPPED';
+                const active = m.status === 'IN PROGRESS';
+                const horizon = m.status === 'ON HORIZON';
+                const ring = shipped
+                  ? 'border-emerald-400/50 bg-emerald-500/10'
+                  : active
+                  ? 'border-cyan-400/50 bg-cyan-500/10'
+                  : 'border-violet-400/40 bg-violet-500/10';
+                const badge = shipped
+                  ? 'text-emerald-300 border-emerald-400/30 bg-emerald-500/10'
+                  : active
+                  ? 'text-cyan-300 border-cyan-400/30 bg-cyan-500/10'
+                  : 'text-violet-300 border-violet-400/30 bg-violet-500/10';
+
+                return (
+                  <div key={i} className="relative">
+                    {/* Node marker */}
+                    <div className="flex justify-center mb-5">
+                      <div className={`relative w-12 h-12 rounded-full flex items-center justify-center border-2 backdrop-blur-sm ${ring}`}>
+                        {shipped && (
+                          <>
+                            <span className="absolute inset-0 rounded-full border-2 border-emerald-400/40 animate-ping" />
+                            <svg className="relative w-5 h-5 text-emerald-300" viewBox="0 0 20 20" fill="currentColor">
+                              <path d="M16.7 5.3a1 1 0 010 1.4l-8 8a1 1 0 01-1.4 0l-4-4a1 1 0 011.4-1.4L8 12.6l7.3-7.3a1 1 0 011.4 0z" />
+                            </svg>
+                          </>
+                        )}
+                        {active && (
+                          <span className="w-3 h-3 rounded-full bg-cyan-300 animate-pulse shadow-[0_0_14px_rgba(34,211,238,0.9)]" />
+                        )}
+                        {horizon && (
+                          <span className="w-2 h-2 rounded-full bg-violet-300/70 shadow-[0_0_10px_rgba(167,139,250,0.5)]" />
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Milestone card */}
+                    <div className="relative bg-[#0a1628]/70 backdrop-blur-md border border-white/[0.06] rounded-2xl p-5 hover:border-cyan-500/20 transition-all duration-300 hover:-translate-y-1 group">
+                      {/* Depth index on card */}
+                      <div className="absolute -top-3 left-5 text-[9px] font-mono uppercase tracking-[0.35em] text-white/25 bg-[#061520] px-2">
+                        F.{String(i + 1).padStart(2, '0')}
+                      </div>
+
+                      <div className="flex items-center justify-between mb-3 mt-1">
+                        <span className="text-[10px] font-mono uppercase tracking-[0.28em] text-white/45">{m.q}</span>
+                        <span className={`text-[9px] font-mono uppercase tracking-[0.2em] px-2 py-0.5 rounded-full border ${badge}`}>
+                          {m.status}
+                        </span>
+                      </div>
+                      <h3 className="font-clawville text-lg text-white mb-2">{m.title}</h3>
+                      <p className="text-white/40 text-xs leading-relaxed">{m.desc}</p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Closing legend */}
+          <div className="mt-10 flex flex-wrap items-center justify-center gap-5 text-[10px] font-mono uppercase tracking-[0.25em]">
+            <span className="flex items-center gap-2 text-emerald-300/80">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" />
+              Shipped
+            </span>
+            <span className="flex items-center gap-2 text-cyan-300/80">
+              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.8)] animate-pulse" />
+              In progress
+            </span>
+            <span className="flex items-center gap-2 text-violet-300/80">
+              <span className="w-1.5 h-1.5 rounded-full bg-violet-400/70" />
+              On the horizon
+            </span>
           </div>
         </div>
       </section>
