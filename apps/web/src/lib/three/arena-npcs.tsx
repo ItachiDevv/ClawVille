@@ -29,17 +29,18 @@ const LERP_SPEED = 5;
 // heights were 30-36 wu because species GLBs have native heights of 0.6-0.7 units
 // (0.65 × 50 = 32.5). Per-model normalization (computeNpcScale below) replaces the
 // flat multiplier — each species is measured at mount time and scaled to this target.
-// Reduced from 120 → 75 (63% of 120) to match the avatar-scale-down pass 2026-04-16:
-// lobsters at 120 wu looked too large against the 5120-unit world at normal zoom.
-const TARGET_NPC_HEIGHT = 75;
+// Pass 1 (2026-04-16): reduced 120→75. Pass 2 (2026-04-16): reduced 75→45.
+// User tested pass 1 and the lobster NPC was still too big relative to buildings (800 wu).
+// 45 wu gives a ~1:17.8 ratio vs 800-wu building — target was 1:16–1:20.
+const TARGET_NPC_HEIGHT = 45;
 
 // Sanity clamp for per-species computed scale (mirrors arena-location-npcs logic).
-// MAX = 120/0.5 = 240 — any computed scale > 240 implies native above-pivot height
-// < 0.5 units, which means only tiny props/accessories are non-skinned geometry.
+// MAX = TARGET_NPC_HEIGHT/0.5 = 90 — any computed scale > 90 implies native above-pivot
+// height < 0.5 units, which means only tiny props/accessories are non-skinned geometry.
 // In that case we fall back to a safe default scale of TARGET_NPC_HEIGHT (assumes
 // visual body native height ≈ 1.0 unit, which is true for the humanoid species).
-const NPC_SCALE_CLAMP_MIN = TARGET_NPC_HEIGHT / 200; // ~0.6
-const NPC_SCALE_CLAMP_MAX = TARGET_NPC_HEIGHT / 0.5; // 240
+const NPC_SCALE_CLAMP_MIN = TARGET_NPC_HEIGHT / 200; // ~0.225
+const NPC_SCALE_CLAMP_MAX = TARGET_NPC_HEIGHT / 0.5; // 90
 
 // Preload deferred to after SPECIES_MODEL declaration — see below.
 
@@ -321,12 +322,12 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // Layer 2: one-shot rendered-height hard cap.
     // Runs once after 0.5s so geometry/bones settle before measurement.
     // Guards against any NPC whose pivot offset blows up despite Layer 1 fixes.
-    // HARD_MAX = 160 wu — 2× TARGET_NPC_HEIGHT=75 headroom (reduced from 250 in scale-down pass).
+    // HARD_MAX = 95 wu — 2× TARGET_NPC_HEIGHT=45 headroom (pass 2: reduced from 160 on 2026-04-16).
     if (!rescaleAppliedRef.current && clock.elapsedTime > 0.5) {
       _renderedBbox.setFromObject(group);
       if (!_renderedBbox.isEmpty()) {
         const renderedH = _renderedBbox.max.y - _renderedBbox.min.y;
-        const HARD_MAX = 160;
+        const HARD_MAX = 95;
         if (renderedH > HARD_MAX) {
           const scaledSubGroup = group.children[0]; // the [npcScale, npcScale, npcScale] group
           if (scaledSubGroup) {
@@ -379,7 +380,7 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
         </group>
       </group>
       {/* Name label — OUTSIDE scaled group so position is in world units.
-          100 = clearance above TARGET_NPC_HEIGHT=75 for the tallest species. */}
+          100 = clearance above TARGET_NPC_HEIGHT=45 for the tallest species. */}
       <Html
         position={[0, 100, 0]}
         center
