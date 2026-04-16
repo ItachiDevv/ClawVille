@@ -275,10 +275,11 @@ function isNearBuilding(x: number, z: number): boolean {
 const VILLAGE_CX = 0;
 const VILLAGE_CZ = 0;
 // No decorations within this radius of village center — keeps the town plaza and ring clear.
-// Increased from 600→2300 (2026-04-16): ring buildings sit at radius 1792 (56 tiles × 32);
-// 2300 = 1792 + ~224 (one building zone, 7 tiles × 32) + buffer. Decorations now scatter
-// in the annulus outside the ring, not through it.
-const DECO_INNER_EXCLUSION_R = 2300;
+// Increased from 2300→2700 (2026-04-16 ring expansion 56→68 tiles):
+// ring buildings now sit at radius 2176 (68 tiles × 32);
+// 2700 = 2176 + 224 (one building zone half, 7 tiles × 32) + 300 wu buffer.
+// Decorations scatter in the annulus outside the ring, not through it.
+const DECO_INNER_EXCLUSION_R = 2700;
 
 /** Generate all decorations with cluster-based organic scatter.
  *

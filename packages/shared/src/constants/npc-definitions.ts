@@ -35,30 +35,30 @@ function center(tileX: number, tileY: number, tileW: number, tileH: number) {
 }
 
 // Building zone tile coords from tilemap-data.ts (10 OpenClaw integrations)
-// 160×160 grid, circular ring layout — radius 56 tiles from center (80,80),
+// 160×160 grid, circular ring layout — radius 68 tiles from center (80,80),
 // 10 buildings at 36° spacing starting at top-center (θ=-π/2), clockwise.
-// center_x = round(80 + 56*cos(θ)), zone x = center_x - 7  (14-tile width)
+// center_x = round(80 + 68*cos(θ)), zone x = center_x - 7  (14-tile width)
 export const BUILDING_TILE_ZONES: Record<string, { x: number; y: number; w: number; h: number }> = {
-  // Ring i=0  θ=-π/2        center=(80, 24)
-  'canvas-studio':     { x:  73, y:  17, w: 14, h: 14 },
-  // Ring i=1  θ=-3π/10      center=(113, 35)
-  'memory-vault':      { x: 106, y:  28, w: 14, h: 14 },
-  // Ring i=2  θ=-π/10       center=(133, 63)
-  'webhook-gateway':   { x: 126, y:  56, w: 14, h: 14 },
-  // Ring i=3  θ=+π/10       center=(133, 97)
-  'cron-hub':          { x: 126, y:  90, w: 14, h: 14 },
-  // Ring i=4  θ=+3π/10      center=(113,125)
-  'voice-tower':       { x: 106, y: 118, w: 14, h: 14 },
-  // Ring i=5  θ=+π/2        center=(80, 136)
-  'config-citadel':    { x:  73, y: 129, w: 14, h: 14 },
-  // Ring i=6  θ=+7π/10      center=(47, 125)
-  'tool-workshop':     { x:  40, y: 118, w: 14, h: 14 },
-  // Ring i=7  θ=+9π/10      center=(27,  97)
-  'skill-forge':       { x:  20, y:  90, w: 14, h: 14 },
-  // Ring i=8  θ=+11π/10     center=(27,  63)
-  'channel-bridge':    { x:  20, y:  56, w: 14, h: 14 },
-  // Ring i=9  θ=+13π/10     center=(47,  35)
-  'security-fortress': { x:  40, y:  28, w: 14, h: 14 },
+  // Ring i=0  θ=-π/2        center=(80, 12)
+  'canvas-studio':     { x:  73, y:   5, w: 14, h: 14 },
+  // Ring i=1  θ=-3π/10      center=(120, 25)
+  'memory-vault':      { x: 113, y:  18, w: 14, h: 14 },
+  // Ring i=2  θ=-π/10       center=(145, 59)
+  'webhook-gateway':   { x: 138, y:  52, w: 14, h: 14 },
+  // Ring i=3  θ=+π/10       center=(145,101)
+  'cron-hub':          { x: 138, y:  94, w: 14, h: 14 },
+  // Ring i=4  θ=+3π/10      center=(120,135)
+  'voice-tower':       { x: 113, y: 128, w: 14, h: 14 },
+  // Ring i=5  θ=+π/2        center=(80, 148)
+  'config-citadel':    { x:  73, y: 141, w: 14, h: 14 },
+  // Ring i=6  θ=+7π/10      center=(40, 135)
+  'tool-workshop':     { x:  33, y: 128, w: 14, h: 14 },
+  // Ring i=7  θ=+9π/10      center=(15,  101)
+  'skill-forge':       { x:   8, y:  94, w: 14, h: 14 },
+  // Ring i=8  θ=+11π/10     center=(15,  59)
+  'channel-bridge':    { x:   8, y:  52, w: 14, h: 14 },
+  // Ring i=9  θ=+13π/10     center=(40,  25)
+  'security-fortress': { x:  33, y:  18, w: 14, h: 14 },
 };
 
 /** Map of building ID to {homeX, homeY} for NPC definitions */
