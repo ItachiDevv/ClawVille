@@ -360,16 +360,20 @@ const SceneContents = memo(function SceneContents({
 }) {
   return (
     <>
-      {/* Camera controls — limited rotation, no pan */}
+      {/* Camera controls — limited rotation, no pan.
+          Camera is positioned high and aimed steeply downward so the model
+          appears in the upper ~25% of the viewport, above the config modal.
+          target Y=3 (below model center) steepens the look-down angle so the
+          character sits in the clear header zone rather than behind the UI. */}
       <OrbitControls
         makeDefault
         enablePan={false}
         enableZoom={true}
-        minDistance={25}
-        maxDistance={80}
-        minPolarAngle={Math.PI * 0.3}
-        maxPolarAngle={Math.PI * 0.55}
-        target={[0, 8, 0]}
+        minDistance={30}
+        maxDistance={90}
+        minPolarAngle={Math.PI * 0.28}
+        maxPolarAngle={Math.PI * 0.50}
+        target={[0, 3, 0]}
       />
 
       {/* Dramatic underwater lighting */}
@@ -437,7 +441,7 @@ export default function SelectAgentCanvas({
     <div id="select-agent-canvas" className="fixed inset-0 z-0 pointer-events-none">
       <Canvas
         className="w-full h-full pointer-events-auto"
-        camera={{ position: [0, 18, 55], fov: 45 }}
+        camera={{ position: [0, 40, 70], fov: 42 }}
         // WebGL-only: preserveDrawingBuffer enables toDataURL thumbnail capture
         // in create-agent/page.tsx. If this Canvas ever switches to
         // WebGPURenderer, replace thumbnail capture with a RenderTarget +
