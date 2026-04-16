@@ -31,14 +31,15 @@ import {
 
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
-const SPEED = 200;
+const SPEED = 320;
 const BOB_SPEED = 5;
 const BOB_AMPLITUDE = 0.3;
-// AVATAR_SCALE=55 targets ~131 world-unit height for lobster.glb on the 5120-unit map.
-// Previous value of 16 produced ~38 units — too small against 800-unit buildings.
-// Deliberately slightly larger than NPC_SCALE=50 so the player avatar reads as
-// slightly bigger than wandering NPCs on screen.
-const AVATAR_SCALE = 55;
+// AVATAR_SCALE=33 targets ~79 world-unit height for lobster.glb on the 5120-unit map.
+// Reduced from 55 (which looked too large in the zoomed-out 5120-unit world — lobster
+// filled ~1/6 of the viewport). 33 ≈ 60% of 55, matching the scale-down across all
+// avatar types. Deliberately slightly larger than TARGET_NPC_HEIGHT=75 so the
+// player avatar still reads as bigger than wandering NPCs on screen.
+const AVATAR_SCALE = 33;
 
 const COLOR_TINTS: Record<string, number> = {
   blue: 0x42a5f5, red: 0xef5350, green: 0x66bb6a, yellow: 0xffee58,
