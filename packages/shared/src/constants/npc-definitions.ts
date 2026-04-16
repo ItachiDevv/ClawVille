@@ -1,5 +1,3 @@
-import type { AvatarSpecies } from '../types/avatar';
-
 export interface NpcStats {
   hp: number;
   attack: number;
@@ -10,7 +8,11 @@ export interface NpcStats {
 export interface NpcDefinition {
   id: string;
   name: string;
-  species: AvatarSpecies;
+  /** Visual species key — maps to SPECIES_MODEL in arena-npcs.tsx for GLB selection.
+   *  Not constrained to AvatarSpecies (player avatar creation enum); NPCs use the broader
+   *  set: lobster, crayfish, sweet_crab, hermitcrab, chihiro, priestess, chibi_goku,
+   *  jellyfish, octopus, seahorse (plus legacy lobster). */
+  species: string;
   color: number; // hex tint
   buildingId: string;
   patrolRadius: number;
@@ -33,23 +35,30 @@ function center(tileX: number, tileY: number, tileW: number, tileH: number) {
 }
 
 // Building zone tile coords from tilemap-data.ts (10 OpenClaw integrations)
-// 160×160 grid, 4 neighborhood clusters around center (80,80)
-// 2026-04-16 proportions pass: expanded from 10×10 to 14×14 tiles; centers unchanged.
+// 160×160 grid, circular ring layout — radius 56 tiles from center (80,80),
+// 10 buildings at 36° spacing starting at top-center (θ=-π/2), clockwise.
+// center_x = round(80 + 56*cos(θ)), zone x = center_x - 7  (14-tile width)
 export const BUILDING_TILE_ZONES: Record<string, { x: number; y: number; w: number; h: number }> = {
-  // Development Quarter (North)
-  'canvas-studio':     { x:  70, y:  26, w: 14, h: 14 },
-  'skill-forge':       { x:  86, y:  26, w: 14, h: 14 },
-  'tool-workshop':     { x:  78, y:  40, w: 14, h: 14 },
-  // Communications Hub (East)
-  'channel-bridge':    { x: 120, y:  70, w: 14, h: 14 },
-  'webhook-gateway':   { x: 120, y:  86, w: 14, h: 14 },
-  'voice-tower':       { x: 106, y:  78, w: 14, h: 14 },
-  // Infrastructure District (South)
-  'cron-hub':          { x:  70, y: 118, w: 14, h: 14 },
-  'config-citadel':    { x:  86, y: 118, w: 14, h: 14 },
-  'security-fortress': { x:  78, y: 104, w: 14, h: 14 },
-  // Knowledge Center (NW solo)
-  'memory-vault':      { x:  40, y:  26, w: 14, h: 14 },
+  // Ring i=0  θ=-π/2        center=(80, 24)
+  'canvas-studio':     { x:  73, y:  17, w: 14, h: 14 },
+  // Ring i=1  θ=-3π/10      center=(113, 35)
+  'memory-vault':      { x: 106, y:  28, w: 14, h: 14 },
+  // Ring i=2  θ=-π/10       center=(133, 63)
+  'webhook-gateway':   { x: 126, y:  56, w: 14, h: 14 },
+  // Ring i=3  θ=+π/10       center=(133, 97)
+  'cron-hub':          { x: 126, y:  90, w: 14, h: 14 },
+  // Ring i=4  θ=+3π/10      center=(113,125)
+  'voice-tower':       { x: 106, y: 118, w: 14, h: 14 },
+  // Ring i=5  θ=+π/2        center=(80, 136)
+  'config-citadel':    { x:  73, y: 129, w: 14, h: 14 },
+  // Ring i=6  θ=+7π/10      center=(47, 125)
+  'tool-workshop':     { x:  40, y: 118, w: 14, h: 14 },
+  // Ring i=7  θ=+9π/10      center=(27,  97)
+  'skill-forge':       { x:  20, y:  90, w: 14, h: 14 },
+  // Ring i=8  θ=+11π/10     center=(27,  63)
+  'channel-bridge':    { x:  20, y:  56, w: 14, h: 14 },
+  // Ring i=9  θ=+13π/10     center=(47,  35)
+  'security-fortress': { x:  40, y:  28, w: 14, h: 14 },
 };
 
 /** Map of building ID to {homeX, homeY} for NPC definitions */
@@ -62,12 +71,17 @@ export const NPC_BUILDING_CENTERS: Record<string, { x: number; y: number }> = Ob
   Object.entries(NPC_HOME_POSITIONS).map(([id, p]) => [id, { x: p.homeX, y: p.homeY }])
 );
 
+// Wandering NPC species distribution — 3 agent categories rendered as visually distinct characters:
+//   openclaw (crustaceans): lobster, crayfish, sweet_crab, hermitcrab  (4 of 10)
+//   hermes   (anime humanoids): chihiro, priestess, chibi_goku          (3 of 10)
+//   other    (sea creatures): jellyfish, octopus, seahorse               (3 of 10)
+// Names kept as SpongeBob cast to preserve personality/lore alignment with LOCATION_NPCS.
 export const NPC_DEFINITIONS: NpcDefinition[] = [
   {
     id: 'cron-hub',
     name: 'Gary',
-    species: 'owl',
-    color: 0x795548,
+    species: 'hermitcrab',       // openclaw — hermit crab shell matches Gary's slow/methodical vibe
+    color: 0x795548,             // warm brown
     buildingId: 'cron-hub',
     patrolRadius: 400,
     ...NPC_HOME_POSITIONS['cron-hub'],
@@ -77,8 +91,8 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   {
     id: 'webhook-gateway',
     name: 'Mr. Krabs',
-    species: 'fox',
-    color: 0xff9800,
+    species: 'sweet_crab',       // openclaw — crab fits Mr. Krabs perfectly
+    color: 0xff6600,             // vivid orange-red
     buildingId: 'webhook-gateway',
     patrolRadius: 400,
     ...NPC_HOME_POSITIONS['webhook-gateway'],
@@ -88,8 +102,8 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   {
     id: 'memory-vault',
     name: 'Squidward',
-    species: 'turtle',
-    color: 0x4caf50,
+    species: 'octopus',          // other — octopus is the canonical Squidward animal
+    color: 0x4caf50,             // teal-green
     buildingId: 'memory-vault',
     patrolRadius: 500,
     ...NPC_HOME_POSITIONS['memory-vault'],
@@ -99,8 +113,8 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   {
     id: 'skill-forge',
     name: 'Plankton',
-    species: 'dragon',
-    color: 0xf44336,
+    species: 'chibi_goku',       // hermes — tiny fierce fighter matches Plankton's energy
+    color: 0xf44336,             // fiery red
     buildingId: 'skill-forge',
     patrolRadius: 400,
     ...NPC_HOME_POSITIONS['skill-forge'],
@@ -110,8 +124,8 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   {
     id: 'channel-bridge',
     name: 'Sandy',
-    species: 'phoenix',
-    color: 0x2196f3,
+    species: 'chihiro',          // hermes — adventurous anime girl suits Sandy's explorer personality
+    color: 0x2196f3,             // bright blue
     buildingId: 'channel-bridge',
     patrolRadius: 400,
     ...NPC_HOME_POSITIONS['channel-bridge'],
@@ -121,8 +135,8 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   {
     id: 'tool-workshop',
     name: 'Karen',
-    species: 'cat',
-    color: 0x9c27b0,
+    species: 'priestess',        // hermes — calm, knowledgeable priestess matches Karen's AI-oracle role
+    color: 0x9c27b0,             // deep purple
     buildingId: 'tool-workshop',
     patrolRadius: 380,
     ...NPC_HOME_POSITIONS['tool-workshop'],
@@ -132,8 +146,8 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   {
     id: 'canvas-studio',
     name: 'SpongeBob',
-    species: 'bunny',
-    color: 0xe91e63,
+    species: 'jellyfish',        // other — jellyfish are SpongeBob's iconic companions
+    color: 0xe91e63,             // hot pink
     buildingId: 'canvas-studio',
     patrolRadius: 400,
     ...NPC_HOME_POSITIONS['canvas-studio'],
@@ -143,8 +157,8 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   {
     id: 'voice-tower',
     name: 'Mrs. Puff',
-    species: 'wolf',
-    color: 0x607d8b,
+    species: 'seahorse',         // other — seahorse graceful floating suits Mrs. Puff's puffer aesthetic
+    color: 0x607d8b,             // cool blue-grey
     buildingId: 'voice-tower',
     patrolRadius: 380,
     ...NPC_HOME_POSITIONS['voice-tower'],
@@ -154,8 +168,8 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   {
     id: 'security-fortress',
     name: 'Patrick',
-    species: 'dragon',
-    color: 0x00bcd4,
+    species: 'crayfish',         // openclaw — bulky crayfish fits Patrick's imposing defensive build
+    color: 0x00bcd4,             // vivid cyan
     buildingId: 'security-fortress',
     patrolRadius: 380,
     ...NPC_HOME_POSITIONS['security-fortress'],
@@ -165,8 +179,8 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   {
     id: 'config-citadel',
     name: 'Larry',
-    species: 'owl',
-    color: 0x9e9e9e,
+    species: 'lobster',          // openclaw — Larry the Lobster, canonical lobster species
+    color: 0xff2020,             // bright red (Larry is canonically red in SpongeBob)
     buildingId: 'config-citadel',
     patrolRadius: 400,
     ...NPC_HOME_POSITIONS['config-citadel'],
