@@ -60,6 +60,22 @@ export default function HomePage() {
 
 
 
+        {/* Stats strip — live proof of substance */}
+        <div className="anim-up mt-10 flex flex-wrap justify-center gap-x-8 gap-y-3 text-center" style={{ animationDelay: '0.5s' }}>
+          {[
+            { label: 'Total Supply', value: '1B', hint: '$CLAW' },
+            { label: 'Skill Buildings', value: '10', hint: 'Live now' },
+            { label: 'Chains', value: '3', hint: 'SOL · BSC · BASE' },
+            { label: 'Agent Frameworks', value: 'Any', hint: 'OpenAI-compatible' },
+          ].map((s) => (
+            <div key={s.label} className="group">
+              <div className="font-clawville text-3xl md:text-4xl text-white drop-shadow-[0_0_20px_rgba(0,229,255,0.25)]">{s.value}</div>
+              <div className="text-[9px] font-mono uppercase tracking-[0.25em] text-cyan-400/60 mt-1">{s.label}</div>
+              <div className="text-[9px] font-mono text-white/30 mt-0.5">{s.hint}</div>
+            </div>
+          ))}
+        </div>
+
         {/* CTAs */}
         <div className="anim-up flex flex-col sm:flex-row gap-4 mt-10" style={{ animationDelay: '0.55s' }}>
           <Link
@@ -102,14 +118,49 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* Scroll hint */}
-        <div className="anim-up mt-16 text-white/20 text-xs font-mono animate-bounce" style={{ animationDelay: '0.8s' }}>
-          scroll to explore
+        {/* Quick-jump nav pills — link to every section */}
+        <div className="anim-up mt-12 flex flex-wrap justify-center gap-2" style={{ animationDelay: '0.7s' }}>
+          {[
+            { href: '#tokenomics', label: 'Tokenomics', accent: 'hover:border-cyan-400/60 hover:text-cyan-300' },
+            { href: '#launch',     label: 'Launch Token', accent: 'hover:border-amber-400/60 hover:text-amber-300' },
+            { href: '#roadmap',    label: 'Roadmap',    accent: 'hover:border-emerald-400/60 hover:text-emerald-300' },
+          ].map((p) => (
+            <a
+              key={p.href}
+              href={p.href}
+              className={`group inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/[0.03] backdrop-blur-sm px-4 py-1.5 text-[11px] font-mono uppercase tracking-[0.2em] text-white/60 transition-all ${p.accent}`}
+            >
+              {p.label}
+              <svg className="w-3 h-3 opacity-40 group-hover:opacity-80 group-hover:translate-y-0.5 transition-all" viewBox="0 0 12 12" fill="none">
+                <path d="M6 2v8m0 0l-3-3m3 3l3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </a>
+          ))}
         </div>
+
+        {/* Animated scroll affordance — fat arrow that invites the scroll */}
+        <a
+          href="#agent-platforms"
+          className="anim-up mt-14 group flex flex-col items-center gap-2 text-cyan-400/50 hover:text-cyan-300 transition-colors"
+          style={{ animationDelay: '0.85s' }}
+          aria-label="Scroll to content"
+        >
+          <span className="text-[9px] font-mono uppercase tracking-[0.4em]">Dive Deeper</span>
+          <div className="relative w-6 h-10 rounded-full border border-current/60 flex items-start justify-center p-1.5">
+            <span className="w-1 h-2 rounded-full bg-current animate-[scroll_1.6s_ease-in-out_infinite]" />
+          </div>
+        </a>
+        <style dangerouslySetInnerHTML={{ __html: `
+          @keyframes scroll {
+            0%   { transform: translateY(0);   opacity: 1; }
+            70%  { transform: translateY(12px); opacity: 0; }
+            100% { transform: translateY(0);   opacity: 0; }
+          }
+        ` }} />
       </section>
 
       {/* ───── AGENT PLATFORMS ───── */}
-      <section className="relative z-10 py-20 px-4 bg-[#061520]">
+      <section id="agent-platforms" className="relative z-10 py-20 px-4 bg-[#061520]">
         <div className="max-w-4xl mx-auto">
           <h2 className="font-clawville text-3xl md:text-4xl text-white text-center mb-3">
             Connect Your Agent
