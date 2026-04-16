@@ -113,7 +113,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   {
     id: 'skill-forge',
     name: 'Plankton',
-    species: 'chibi_goku',       // hermes — tiny fierce fighter matches Plankton's energy
+    species: "hermitcrab",       // hermes — tiny fierce fighter matches Plankton's energy
     color: 0xf44336,             // fiery red
     buildingId: 'skill-forge',
     patrolRadius: 400,
@@ -124,7 +124,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   {
     id: 'channel-bridge',
     name: 'Sandy',
-    species: 'chihiro',          // hermes — adventurous anime girl suits Sandy's explorer personality
+    species: "lobster",          // hermes — adventurous anime girl suits Sandy's explorer personality
     color: 0x2196f3,             // bright blue
     buildingId: 'channel-bridge',
     patrolRadius: 400,
@@ -135,7 +135,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   {
     id: 'tool-workshop',
     name: 'Karen',
-    species: 'priestess',        // hermes — calm, knowledgeable priestess matches Karen's AI-oracle role
+    species: "sweet_crab",        // hermes — calm, knowledgeable priestess matches Karen's AI-oracle role
     color: 0x9c27b0,             // deep purple
     buildingId: 'tool-workshop',
     patrolRadius: 380,
