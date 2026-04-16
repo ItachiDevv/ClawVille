@@ -48,10 +48,11 @@ function mapToWorld(px: number, py: number): [number, number, number] {
   return [px - HALF_W, 0, py - HALF_H];
 }
 
-// Lobster GLB faces +X natively (rotation.y=0 → head toward +X). EMPIRICALLY VERIFIED 2026-04-16.
-// To face direction (worldVx, worldVz): θ = atan2(-worldVz, worldVx)
+// Lobster GLB faces +Z natively (rotation.y=0 → head toward +Z). EMPIRICALLY VERIFIED 2026-04-16 (late PM, clean side-view screenshot).
+// Prior session concluded +X — that was WRONG (camera was orbited, misread as side-view).
+// To face direction (worldVx, worldVz): θ = atan2(worldVx, worldVz)  (no negations)
 const DIR_ROTATION: Record<string, number> = {
-  right: 0, down: -Math.PI / 2, left: Math.PI, up: Math.PI / 2, idle: -Math.PI / 2,
+  down: 0, up: Math.PI, right: Math.PI / 2, left: -Math.PI / 2, idle: 0,
 };
 
 import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
