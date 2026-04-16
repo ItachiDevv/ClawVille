@@ -314,7 +314,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   setIsSpectator: (v) => set({ isSpectator: v }),
 
   avatarSpecies: 'cat',
-  avatarColor: 'yellow',
+  avatarColor: 'green',
   avatarName: '',
   petModelKey: 'lobster',
   setPetAppearance: (species, color, name, modelKey) => set({

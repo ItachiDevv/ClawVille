@@ -7,7 +7,10 @@ import {
   pgEnum,
   integer,
   boolean,
+  check,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import type { AgentCategory, AgentHarness } from '@clawville/shared';
 import { users } from './users';
 import { platformAgents } from './agents';
 
@@ -142,23 +145,30 @@ export const avatars = pgTable('avatars', {
    *
    * All three have NOT NULL DEFAULTs so existing avatar rows backfill to
    * `('openclaw','lobster','milady')` on migration without a separate
-   * backfill query. Enum values are enforced at the API layer via Zod +
-   * the shared `AgentCategory` / `AgentHarness` types. No SQL CHECK
-   * constraints are applied here — if you add a direct-SQL writer, you
-   * MUST replicate the Zod validation or switch these columns to
-   * `pgEnum` types. For now, the API is the sole writer.
+   * backfill query. Enum values are enforced at three layers:
+   *   1. API — Zod `.enum(AGENT_CATEGORIES | AGENT_HARNESSES)` in
+   *      apps/api/src/routes/avatars.ts (also validated by `.refine`
+   *      against AGENT_MODEL_KEYS for modelKey).
+   *   2. TypeScript — `$type<AgentCategory>()` / `$type<AgentHarness>()`
+   *      below pull the union directly from @clawville/shared so any
+   *      registry change in the shared package cascades here at build.
+   *   3. Postgres — CHECK constraints `pets_agent_category_valid` and
+   *      `pets_harness_valid` (see constraint block at the end of the
+   *      table definition). This is defense-in-depth against direct-SQL
+   *      writers (admin tools, cron, backfill scripts) that bypass the
+   *      API. See Phase 2 plan §3.1.
    */
   agentCategory: varchar('agent_category', { length: 16 })
     .notNull()
     .default('openclaw')
-    .$type<'openclaw' | 'hermes' | 'milady' | 'other'>(),
+    .$type<AgentCategory>(),
   modelKey: varchar('model_key', { length: 64 })
     .notNull()
     .default('lobster'),
   harness: varchar('harness', { length: 16 })
     .notNull()
     .default('milady')
-    .$type<'openclaw' | 'hermes' | 'milady' | 'custom'>(),
+    .$type<AgentHarness>(),
   /**
    * Auto-generated custodial Solana wallet address (base58). NULL for avatars
    * that existed before the C2 backfill; populated for new avatars (human or
@@ -168,4 +178,26 @@ export const avatars = pgTable('avatars', {
   walletAddress: varchar('wallet_address', { length: 64 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
+}, (t) => ({
+  // Phase 2 §3.1 — Postgres CHECK constraints mirror the shared
+  // AGENT_CATEGORIES / AGENT_HARNESSES tuples. Literals are hardcoded
+  // here because `sql` template interpolation of a JS array is awkward
+  // and the emitted DDL must stay readable. The $type<> annotations on
+  // the columns above import the TS unions from @clawville/shared, so
+  // any drift between the shared tuple and this list fails to compile
+  // rather than silently diverging.
+  //
+  // After editing: run `bun run db:push` from the repo root to apply
+  // the ALTER TABLE ADD CONSTRAINT. Drizzle-kit 0.24 emits these
+  // constraints as part of the push. If push errors with "constraint
+  // already exists", drop the existing one manually (the name matches
+  // the first argument to check()).
+  agentCategoryCheck: check(
+    'pets_agent_category_valid',
+    sql`${t.agentCategory} IN ('openclaw','hermes','milady','other')`,
+  ),
+  harnessCheck: check(
+    'pets_harness_valid',
+    sql`${t.harness} IN ('openclaw','hermes','milady','custom')`,
+  ),
+}));

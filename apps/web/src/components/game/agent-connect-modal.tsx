@@ -9,11 +9,7 @@ import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 
 type ConnectTab = 'easy' | 'manual';
 
-<<<<<<<< HEAD:apps/web/src/components/game/agent-connect-modal.tsx
 export default function AgentConnectModal() {
-========
-export default function OpenClawConnectModal() {
->>>>>>>> master:apps/web/src/components/game/openclaw-connect-modal.tsx
   const { agentConnectModalOpen, setAgentConnectModalOpen, agentConnected, agentSessionId, setAgentConnection, addToast, setSkillBuilderOpen } = useGameStore();
   const { data: avatar } = useAvatar();
   const { data: authData } = useQuery({ queryKey: ['auth-me'], queryFn: () => api.me(), retry: false });
