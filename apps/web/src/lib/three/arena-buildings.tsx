@@ -99,7 +99,14 @@ const _stripMeshBox = new THREE.Box3();
  * DECORATIVE_PARENT_NAMES is intentionally narrow — only meshes whose parent
  * (or any ancestor) matches this set are removed. Expand as new GLBs require it.
  */
-const DECORATIVE_PARENT_NAMES = new Set(['Flowers', 'Path']);
+/** Names of authoring-time environmental / decorative groups to strip before
+ *  scale measurement. These meshes inflate the bbox and cause actual building
+ *  geometry to normalize tiny.
+ *    - Flowers, Path — pineapple-house.glb decorations (2.3× XZ inflation)
+ *    - Skybox, Road, Sand — chum-bucket.glb environmental shell (caused the
+ *      building to render inside a giant blue dome while the bucket itself
+ *      shrank to ~60wu tall) */
+const DECORATIVE_PARENT_NAMES = new Set(['Flowers', 'Path', 'Skybox', 'Road', 'Sand']);
 
 function stripDecorativeMeshes(scene: THREE.Object3D): void {
   const toRemove: THREE.Object3D[] = [];
