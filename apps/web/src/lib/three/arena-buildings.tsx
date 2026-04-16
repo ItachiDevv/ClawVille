@@ -69,9 +69,12 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // i=7  center=(27,97)    dx=53,  dz=-17  → atan2(53,-17)≈1.882
   'skill-forge':       { model: '/models/chum-bucket.glb',         yOffset: 0, rotY:  1.882 },
   // i=8  center=(27,63)    dx=53,  dz=17   → atan2(53,17)≈1.259
-  'channel-bridge':    { model: '/models/building-cave.glb',       yOffset: 0, rotY:  1.259 },
+  // building-shell.glb = dome shape (interim for sandy-treedome — see 3dStructure.md §2)
+  'channel-bridge':    { model: '/models/building-shell.glb',      yOffset: 0, rotY:  1.259 },
   // i=9  center=(47,35)    dx=33,  dz=45   → atan2(33,45)≈0.632
-  'security-fortress': { model: '/models/building-submarine.glb',  yOffset: 0, rotY:  0.632 },
+  // building-cave.glb = rocky cave (interim for patrick-rock — see 3dStructure.md §2)
+  // building-submarine.glb is now a fixed-landmark decoration only (arena-terrain.tsx FixedLandmarks)
+  'security-fortress': { model: '/models/building-cave.glb',       yOffset: 0, rotY:  0.632 },
 };
 
 /** Strip ground planes from a cloned scene.
@@ -204,7 +207,7 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
       <primitive object={cloned} scale={buildingScale} />
       {/* Floating building label */}
       {theme && (
-        <Html position={[0, BUILDING_TARGET_HEIGHT + 20, 0]} center distanceFactor={400} style={{ pointerEvents: 'auto' }}>
+        <Html position={[0, BUILDING_TARGET_HEIGHT + 20, 0]} center distanceFactor={1500} style={{ pointerEvents: 'auto' }}>
           <div
             style={{
               background: 'rgba(10, 22, 40, 0.85)',
