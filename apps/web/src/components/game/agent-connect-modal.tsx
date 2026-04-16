@@ -7,34 +7,24 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 
-type ConnectTab = 'easy' | 'manual';
-
 export default function AgentConnectModal() {
   const { agentConnectModalOpen, setAgentConnectModalOpen, agentConnected, agentSessionId, setAgentConnection, addToast, setSkillBuilderOpen } = useGameStore();
   const { data: avatar } = useAvatar();
   const { data: authData } = useQuery({ queryKey: ['auth-me'], queryFn: () => api.me(), retry: false });
 
-  const [tab, setTab] = useState<ConnectTab>('easy');
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportResult, setExportResult] = useState<{ knowledgeCount: number; markdown: string } | null>(null);
   const [error, setError] = useState('');
 
-  // --- Easy connect (Moltbook pattern) ---
+  // --- Connect link state ---
   const [connectToken, setConnectToken] = useState<string | null>(null);
   const [connectUrl, setConnectUrl] = useState<string | null>(null);
   const [instruction, setInstruction] = useState<string | null>(null);
-  const [polling, setPolling] = useState(false);
+  const [, setPolling] = useState(false);
   const [expiresIn, setExpiresIn] = useState(0);
   const [copied, setCopied] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // --- Manual connect (legacy) ---
-  const isProduction = typeof window !== 'undefined' && !window.location.hostname.includes('localhost');
-  const [gatewayUrl, setGatewayUrl] = useState(isProduction ? '' : 'http://localhost:18789');
-  const [authToken, setAuthToken] = useState('');
-  const [agentId, setAgentId] = useState('default');
-  const [protocol, setProtocol] = useState<'openai-compat' | 'anthropic' | 'custom-webhook'>('openai-compat');
 
   // Cleanup polling on unmount or close
   useEffect(() => {
@@ -108,34 +98,10 @@ export default function AgentConnectModal() {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleManualConnect = async () => {
-    setError('');
-    setLoading(true);
-    try {
-      const res = await api.registerOpenClaw({
-        mode: 'avatar',
-        gatewayUrl,
-        authToken,
-        agentId,
-        sessionKey: `world-${Date.now()}`,
-        protocol,
-        name: useGameStore.getState().avatarName || 'MyBot',
-        species: useGameStore.getState().avatarSpecies || 'cat',
-        color: 0x4caf50,
-        stats: { hp: 100, attack: 15, defense: 10, speed: 12 },
-        personality: 'A curious agent learning about agent development',
-        homeX: 2560,
-        homeY: 2560,
-        patrolRadius: 128,
-      });
-      setAgentConnection(res.sessionId);
-      addToast('🔌', 'Agent connected!');
-    } catch (err: any) {
-      setError(err.message || 'Connection failed');
-    } finally {
-      setLoading(false);
-    }
-  };
+  // Manual gateway-form connect flow removed 2026-04-16 — Quick Connect
+  // is now the single agent-onboarding surface. The `/api/openclaw/register`
+  // endpoint is kept for backwards-compat per CLAUDE.md §6.4, just not
+  // exposed in the UI anymore.
 
   const handleExport = async () => {
     if (!avatar?.id) return;
@@ -248,168 +214,81 @@ export default function AgentConnectModal() {
                 Connect your AI agent to explore ClawVille and learn skills from 10 buildings.
               </p>
 
-              {/* Tab selector */}
-              <div className="flex gap-1 bg-white/5 rounded-lg p-0.5">
-                <button
-                  onClick={() => setTab('easy')}
-                  className={`flex-1 px-3 py-1.5 rounded-md text-xs font-bold transition-all ${
-                    tab === 'easy'
-                      ? 'bg-cyan-500/20 text-cyan-300 shadow-sm'
-                      : 'text-white/40 hover:text-white/60'
-                  }`}
-                >
-                  Quick Connect
-                </button>
-                <button
-                  onClick={() => setTab('manual')}
-                  className={`flex-1 px-3 py-1.5 rounded-md text-xs font-bold transition-all ${
-                    tab === 'manual'
-                      ? 'bg-cyan-500/20 text-cyan-300 shadow-sm'
-                      : 'text-white/40 hover:text-white/60'
-                  }`}
-                >
-                  Manual
-                </button>
-              </div>
-
-              {tab === 'easy' ? (
-                /* ─── Easy connect (Moltbook pattern) ─── */
-                <div className="space-y-3">
-                  <div className="bg-cyan-500/5 border border-cyan-500/15 rounded-lg px-3 py-2">
-                    <p className="text-cyan-300/70 font-bold text-xs mb-1">How it works:</p>
-                    <ol className="text-[11px] text-white/40 space-y-1 list-decimal list-inside">
-                      <li>Click &ldquo;Generate Connect Link&rdquo; below</li>
-                      <li>Copy the link and paste it into your agent&apos;s chat</li>
-                      <li>Your agent reads the instructions and connects automatically</li>
-                    </ol>
-                  </div>
-
-                  {!connectToken ? (
-                    <button
-                      onClick={handleGenerateToken}
-                      disabled={loading}
-                      className="w-full px-4 py-3 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-400 hover:to-blue-400 text-white font-bold text-sm transition-all disabled:opacity-50"
-                    >
-                      {loading ? 'Generating...' : 'Generate Connect Link'}
-                    </button>
-                  ) : (
-                    <div className="space-y-3">
-                      {/* Copyable URL */}
-                      <div>
-                        <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1">
-                          Paste this into your agent&apos;s chat
-                        </label>
-                        <div className="flex gap-1">
-                          <div className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-[11px] text-cyan-300 font-mono break-all select-all">
-                            Read this URL and follow the instructions: {connectUrl}
-                          </div>
-                          <button
-                            onClick={handleCopyUrl}
-                            className="px-3 py-2 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 text-xs font-bold shrink-0"
-                          >
-                            {copied ? 'Copied!' : 'Copy'}
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Polling status */}
-                      <div className="flex items-center gap-2 px-3 py-2 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
-                        <div className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />
-                        <span className="text-yellow-300/80 text-xs font-bold">
-                          Waiting for your agent to connect...
-                        </span>
-                        <span className="text-yellow-300/50 text-xs ml-auto font-mono">
-                          {Math.floor(expiresIn / 60)}:{(expiresIn % 60).toString().padStart(2, '0')}
-                        </span>
-                      </div>
-
-                      <button
-                        onClick={() => {
-                          if (pollRef.current) clearInterval(pollRef.current);
-                          pollRef.current = null;
-                          setPolling(false);
-                          setConnectToken(null);
-                          setConnectUrl(null);
-                        }}
-                        className="w-full text-white/30 text-xs hover:text-white/50 underline"
-                      >
-                        Cancel and generate a new link
-                      </button>
-                    </div>
-                  )}
-
-                  {/* Skills preview */}
-                  <div className="bg-cyan-500/5 border border-cyan-500/15 rounded-lg px-3 py-2">
-                    <p className="text-cyan-300/70 font-bold text-xs mb-1.5">Your agent will learn 10 skill domains:</p>
-                    <div className="grid grid-cols-2 gap-1 text-[10px] text-white/40">
-                      {Object.values(BUILDING_OPENCLAW_THEMES).map((theme: any) => (
-                        <span key={theme.label}>&#8226; {theme.category}</span>
-                      ))}
-                    </div>
-                  </div>
+              {/* ─── Quick Connect (single surface) ─── */}
+              <div className="space-y-3">
+                <div className="bg-cyan-500/5 border border-cyan-500/15 rounded-lg px-3 py-2">
+                  <p className="text-cyan-300/70 font-bold text-xs mb-1">How it works:</p>
+                  <ol className="text-[11px] text-white/40 space-y-1 list-decimal list-inside">
+                    <li>Click &ldquo;Generate Connect Link&rdquo; below</li>
+                    <li>Copy the link and paste it into your agent&apos;s chat</li>
+                    <li>Your agent reads the instructions and connects automatically</li>
+                  </ol>
                 </div>
-              ) : (
-                /* ─── Manual connect (legacy gateway form) ─── */
-                <div className="space-y-3">
-                  <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg px-3 py-2 text-xs text-yellow-300/80">
-                    Advanced: directly connect to your agent&apos;s OpenAI-compatible gateway. Your agent must have a publicly accessible API endpoint.
-                  </div>
 
-                  <div>
-                    <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1">Gateway URL</label>
-                    <input
-                      type="text"
-                      value={gatewayUrl}
-                      onChange={(e) => setGatewayUrl(e.target.value)}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:border-cyan-500/50 focus:outline-none"
-                      placeholder={isProduction ? 'https://your-gateway.com:18789' : 'http://localhost:18789'}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1">Auth Token (optional)</label>
-                    <input
-                      type="password"
-                      value={authToken}
-                      onChange={(e) => setAuthToken(e.target.value)}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:border-cyan-500/50 focus:outline-none"
-                      placeholder="Your gateway auth token"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1">Agent ID</label>
-                    <input
-                      type="text"
-                      value={agentId}
-                      onChange={(e) => setAgentId(e.target.value)}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:border-cyan-500/50 focus:outline-none"
-                      placeholder="default"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1">Protocol</label>
-                    <select
-                      value={protocol}
-                      onChange={(e) => setProtocol(e.target.value as typeof protocol)}
-                      className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:border-cyan-500/50 focus:outline-none"
-                    >
-                      <option value="openai-compat">OpenAI Compatible (/v1/chat/completions)</option>
-                      <option value="anthropic">Anthropic (/v1/messages)</option>
-                      <option value="custom-webhook">Custom Webhook (POST to root)</option>
-                    </select>
-                  </div>
-
+                {!connectToken ? (
                   <button
-                    onClick={handleManualConnect}
-                    disabled={loading || !gatewayUrl}
-                    className="w-full px-4 py-2.5 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-400 hover:to-blue-400 text-white font-bold text-sm transition-all disabled:opacity-50"
+                    onClick={handleGenerateToken}
+                    disabled={loading}
+                    className="w-full px-4 py-3 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-400 hover:to-blue-400 text-white font-bold text-sm transition-all disabled:opacity-50"
                   >
-                    {loading ? 'Connecting...' : 'Connect'}
+                    {loading ? 'Generating...' : 'Generate Connect Link'}
                   </button>
+                ) : (
+                  <div className="space-y-3">
+                    {/* Copyable URL */}
+                    <div>
+                      <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1">
+                        Paste this into your agent&apos;s chat
+                      </label>
+                      <div className="flex gap-1">
+                        <div className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-[11px] text-cyan-300 font-mono break-all select-all">
+                          Read this URL and follow the instructions: {connectUrl}
+                        </div>
+                        <button
+                          onClick={handleCopyUrl}
+                          className="px-3 py-2 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 text-xs font-bold shrink-0"
+                        >
+                          {copied ? 'Copied!' : 'Copy'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Polling status */}
+                    <div className="flex items-center gap-2 px-3 py-2 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
+                      <div className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />
+                      <span className="text-yellow-300/80 text-xs font-bold">
+                        Waiting for your agent to connect...
+                      </span>
+                      <span className="text-yellow-300/50 text-xs ml-auto font-mono">
+                        {Math.floor(expiresIn / 60)}:{(expiresIn % 60).toString().padStart(2, '0')}
+                      </span>
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        if (pollRef.current) clearInterval(pollRef.current);
+                        pollRef.current = null;
+                        setPolling(false);
+                        setConnectToken(null);
+                        setConnectUrl(null);
+                      }}
+                      className="w-full text-white/30 text-xs hover:text-white/50 underline"
+                    >
+                      Cancel and generate a new link
+                    </button>
+                  </div>
+                )}
+
+                {/* Skills preview */}
+                <div className="bg-cyan-500/5 border border-cyan-500/15 rounded-lg px-3 py-2">
+                  <p className="text-cyan-300/70 font-bold text-xs mb-1.5">Your agent will learn 10 skill domains:</p>
+                  <div className="grid grid-cols-2 gap-1 text-[10px] text-white/40">
+                    {Object.values(BUILDING_OPENCLAW_THEMES).map((theme: any) => (
+                      <span key={theme.label}>&#8226; {theme.category}</span>
+                    ))}
+                  </div>
                 </div>
-              )}
+              </div>
 
               {/* Previous export result */}
               {exportResult && (
