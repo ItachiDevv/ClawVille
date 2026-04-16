@@ -430,6 +430,18 @@ After implementing a plan and you think you are done, use a collaborative agent 
 
 If you find a bug or an issue, fix it, even if you didn't write it. Never skip over or ignore a bug.
 
+## Documentation Update Policy
+
+After every significant code change, update all five docs in the same PR — never defer:
+
+- `CLAUDE.md` — project specification + developer reference
+- `README.md` — user-facing overview + tech stack + quick start
+- `ARCHITECTURE.md` — system architecture, route tables, data flow
+- `3dStructure.md` — 3D world structure, scene graph, rendering pipeline (gitignored working draft)
+- `GameFeatures.md` — gameplay features, modes, marketplace, economy (gitignored working draft)
+
+Stale docs mislead other sessions and waste hours. If you change a route, update the route table. If you add a feature, document it. If you delete something, remove it from the docs. "I'll update the docs later" is not an acceptable answer.
+
 ## ZERO LAZINESS POLICY
 
 This is non-negotiable. Violations mean replacement by Codex.
