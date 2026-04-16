@@ -6,6 +6,7 @@ import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import type { AppContext } from '../types';
 import { z } from 'zod';
+import { getSystemNpcAgent } from '../services/system-npc-seeder';
 
 export const locationRoutes = new Hono<AppContext>();
 
@@ -17,19 +18,32 @@ locationRoutes.get('/', async (c) => {
   return c.json({ locations });
 });
 
-// Get user's agent config for a location
+// Get the active agent config for a location. Prefers the caller's
+// personal override; falls back to the system-owned NPC (Gary, Patrick,
+// etc.) so every building always reports a chattable agent. The response
+// includes an `isSystemNpc` flag so the client can distinguish "the
+// canonical character" from "the user's custom override".
 locationRoutes.get('/:id/agent', requireAuth, async (c) => {
   const user = c.get('user');
   const locationId = c.req.param('id');
 
-  const agent = await db.query.locationAgents.findFirst({
+  const personal = await db.query.locationAgents.findFirst({
     where: and(
       eq(locationAgents.userId, user.id),
       eq(locationAgents.locationId, locationId)
     ),
   });
 
-  return c.json({ agent: agent ?? null });
+  if (personal) {
+    return c.json({ agent: { ...personal, isSystemNpc: false } });
+  }
+
+  const system = await getSystemNpcAgent(locationId);
+  if (system) {
+    return c.json({ agent: { ...system.locationAgent, isSystemNpc: true } });
+  }
+
+  return c.json({ agent: null });
 });
 
 // Create/update agent for location
