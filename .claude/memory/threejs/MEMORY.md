@@ -19,6 +19,8 @@
 - [Date.now() in render body is stale — bubbles never auto-expire](gotchas/stale-date-now-in-render.md) — Date.now() in JSX is only fresh on re-renders; add a 1s setInterval tick state to force re-renders for expiry checks
 - [Box3.setFromObject() inflates bbox on SkinnedMesh scenes](gotchas/skinned-mesh-bbox-inflation.md) — bind-pose world matrix can inflate Y by 60-100x; traverse only non-SkinnedMesh nodes with geometry bbox + matrixWorld instead
 - [Building GLB normalization must use height (size.y), not max(w,h,d)](gotchas/building-normalization-use-height-not-maxdim.md) — wide/squat buildings get width as max-dim, crushing height to 210-416 instead of 800; always normalize by size.y
+- [stripGroundPlanes full-bounds must use non-skinned bbox](gotchas/strip-ground-planes-skinned-mesh-inflation.md) — setFromObject inflates fullHeight for scenes with rigged nodes, causing real structural geometry to be wrongly stripped as a "ground plane"
+- [NPC bbox normalization must use bbox.max.y not size.y](gotchas/npc-scale-bbox-max-y-not-size-y.md) — size.y inflates h when geometry extends below pivot; use max.y for above-pivot visual height; also tighten CLAMP_MAX to CH/0.5; make scaleOverride unconditional
 - [GLB pivot not at feet — characters render underground](gotchas/pivot-not-at-feet-y-offset.md) — humanoid/anime GLBs pivot at waist; at NPC_SCALE=50 the offset is 25-75 world units underground; fix: measure localMinY * scale and subtract from position.y each frame
 
 ## WebGPU

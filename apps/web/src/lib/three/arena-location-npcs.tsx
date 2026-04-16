@@ -35,14 +35,19 @@ const _locRayOrigin = new THREE.Vector3();
 const _locRayDir = new THREE.Vector3(0, -1, 0);
 
 // Sanity bounds for computeNormalizedScale. Some GLBs have broken bounding boxes
-// (e.g. skinned meshes whose bind pose extends far beyond the visible geometry,
-// or meshes with helper objects that inflate the bbox). When the computed scale
+// (e.g. tiny non-skinned accessories inflate the scale because their bbox height
+// is small, or geometry extends far below the origin). When the computed scale
 // falls outside [SCALE_MIN, SCALE_MAX], the scaleOverride value is used instead.
-// SCALE_MIN = CHARACTER_HEIGHT / 200  → implies native height > 200 world units
-//   after CHARACTER_HEIGHT normalization — bbox is almost certainly inflated.
-// SCALE_MAX = CHARACTER_HEIGHT / 0.01 → implies native height < 0.01 — degenerate.
+//
+// NPC_SCALE_CLAMP_MIN = CHARACTER_HEIGHT / 200
+//   → computed scale < this implies native above-pivot height > 200 units (inflated).
+// NPC_SCALE_CLAMP_MAX = CHARACTER_HEIGHT / 0.5 = 280
+//   → computed scale > this implies native above-pivot height < 0.5 units. This catches
+//     GLBs where the only non-skinned geometry is a tiny prop (coin, screen pixel), which
+//     would otherwise produce scales of 2000+ and render the SkinnedMesh body at 1892 wu.
+//     Mr.Krabs and Sandy both hit this case without scaleOverride (measured 1892 + 482).
 const NPC_SCALE_CLAMP_MIN = CHARACTER_HEIGHT / 200;  // ~0.70 at CHARACTER_HEIGHT=140
-const NPC_SCALE_CLAMP_MAX = CHARACTER_HEIGHT / 0.01; // 14000 — degenerate-bbox guard
+const NPC_SCALE_CLAMP_MAX = CHARACTER_HEIGHT / 0.5;  // 280 — tiny-prop bbox guard
 
 /** Config for a single NPC model (primary or companion). */
 type NpcModelConfig = {
@@ -96,7 +101,10 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   'config-citadel': { name: 'Larry', model: '/models/lobster_plush.glb', color: 0xff2020, scaleOverride: 140 },
 
   // Slot 6 — tool-workshop — patty-building (Krusty Krab — Mr. Krabs's restaurant)
-  'tool-workshop': { name: 'Mr. Krabs', model: '/models/characters/mr-krabs.glb' },
+  // mr-krabs.glb: non-skinned geometry is only tiny accessories → computed scale ~2000
+  // (measured world height 1892). scaleOverride=148 derived from: 1892/2000 ≈ 0.946
+  // native body height → 140/0.946 ≈ 148.
+  'tool-workshop': { name: 'Mr. Krabs', model: '/models/characters/mr-krabs.glb', scaleOverride: 148 },
 
   // Slot 7 — skill-forge — Chum Bucket (Plankton + Karen both live here)
   // Karen: karen.glb had a broken bbox (world height 1940 at CH=32) caused by
@@ -117,7 +125,9 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   },
 
   // Slot 8 — channel-bridge — building-shell (interim Sandy's Treedome)
-  'channel-bridge': { name: 'Sandy', model: '/models/characters/sandy.glb' },
+  // sandy.glb: non-skinned accessories have bbox h≈0.29 → computed scale≈482
+  // (measured world height 482). Body appears to be native h≈1.0 → scaleOverride=140.
+  'channel-bridge': { name: 'Sandy', model: '/models/characters/sandy.glb', scaleOverride: 140 },
 
   // Slot 9 — security-fortress — building-cave (interim Patrick's Rock)
   'security-fortress': { name: 'Patrick', model: '/models/characters/patrick.glb' },
@@ -222,8 +232,14 @@ function computeNormalizedScale(scene: THREE.Object3D, targetHeight: number): { 
     _npcBboxScratch.setFromObject(scene);
   }
 
+  // Use bbox.max.y as the normalizing height — this is the above-pivot visual extent.
+  // Using size.y (max.y - min.y) inflates h when the geometry extends below the pivot
+  // (localMinY < 0), causing the scale to be too small and the rendered body shorter than
+  // targetHeight. bbox.max.y gives the true "height above ground" of the tallest point.
+  // Fall back to size.y only if max.y is non-positive (completely underground geometry).
+  const maxY = _npcBboxScratch.isEmpty() ? 0 : _npcBboxScratch.max.y;
   _npcBboxScratch.getSize(_npcSizeScratch);
-  const h = _npcSizeScratch.y > 0.001 ? _npcSizeScratch.y : Math.max(_npcSizeScratch.x, _npcSizeScratch.y, _npcSizeScratch.z);
+  const h = maxY > 0.001 ? maxY : (_npcSizeScratch.y > 0.001 ? _npcSizeScratch.y : Math.max(_npcSizeScratch.x, _npcSizeScratch.y, _npcSizeScratch.z));
   const localMinY = _npcBboxScratch.isEmpty() ? 0 : _npcBboxScratch.min.y;
   if (h === 0) return { scale: 1, localMinY };
   return { scale: targetHeight / h, localMinY };
@@ -286,14 +302,20 @@ const NpcMesh = memo(function NpcMesh({
       applyColorTint(c, new THREE.Color(modelCfg.color), 0.7, 0.25);
     }
     const { scale: computed, localMinY } = computeNormalizedScale(c, CHARACTER_HEIGHT);
-    // Use computed scale when it's within the sanity bounds, otherwise fall back
-    // to scaleOverride (if configured) or clamp to the nearest bound.
+    // scaleOverride takes UNCONDITIONAL priority — for characters whose GLB geometry
+    // cannot be reliably measured (all-skinned body, tiny accessories as only non-skinned
+    // geometry), the override encodes the empirically correct scale and must not be
+    // bypassed even when the computed value happens to fall inside the sanity clamp.
+    // Without this, Mr. Krabs (computed≈2000) and Sandy (computed≈482) slip past the
+    // old 14000 clamp and render at 1892 and 482 world units respectively.
     let s: number;
-    if (computed >= NPC_SCALE_CLAMP_MIN && computed <= NPC_SCALE_CLAMP_MAX) {
-      s = computed;
-    } else if (modelCfg.scaleOverride != null) {
+    if (modelCfg.scaleOverride != null) {
       s = modelCfg.scaleOverride;
+    } else if (computed >= NPC_SCALE_CLAMP_MIN && computed <= NPC_SCALE_CLAMP_MAX) {
+      s = computed;
     } else {
+      // Computed scale is outside sanity bounds and no override was provided.
+      // Clamp to the nearest bound as a best-effort fallback.
       s = Math.max(NPC_SCALE_CLAMP_MIN, Math.min(NPC_SCALE_CLAMP_MAX, computed));
     }
     const offset = localMinY * s;

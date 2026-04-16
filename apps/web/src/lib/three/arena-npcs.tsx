@@ -24,14 +24,20 @@ import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 const LERP_SPEED = 5;
-// NPC_SCALE=50 targets ~115-142 world-unit height for the species mix on the
-// 5120-unit map. Previous value of 13 produced 31-37 units — invisible against
-// 800-unit buildings at normal camera distance. Formula: 13 * (120/34) ≈ 46;
-// rounded to 50 for headroom. Measured per-species heights at scale=50 expected:
-//   lobster/crayfish (crustacean GLBs, ~2.4 native H): ~120 wu
-//   chihiro/priestess/chibi_goku (humanoid GLBs, ~2.0-2.8 native H): ~100-140 wu
-//   jellyfish/octopus/seahorse (sea-creature GLBs, ~2.0-3.5 native H): ~100-175 wu
-const NPC_SCALE = 50;
+// TARGET_NPC_HEIGHT: desired world-unit height for wandering NPCs.
+// Previously NPC_SCALE=50 was a flat multiplier applied to all species; measured
+// heights were 30-36 wu because species GLBs have native heights of 0.6-0.7 units
+// (0.65 × 50 = 32.5). Per-model normalization (computeNpcScale below) replaces the
+// flat multiplier — each species is measured at mount time and scaled to this target.
+const TARGET_NPC_HEIGHT = 120;
+
+// Sanity clamp for per-species computed scale (mirrors arena-location-npcs logic).
+// MAX = 120/0.5 = 240 — any computed scale > 240 implies native above-pivot height
+// < 0.5 units, which means only tiny props/accessories are non-skinned geometry.
+// In that case we fall back to a safe default scale of TARGET_NPC_HEIGHT (assumes
+// visual body native height ≈ 1.0 unit, which is true for the humanoid species).
+const NPC_SCALE_CLAMP_MIN = TARGET_NPC_HEIGHT / 200; // ~0.6
+const NPC_SCALE_CLAMP_MAX = TARGET_NPC_HEIGHT / 0.5; // 240
 
 // Preload deferred to after SPECIES_MODEL declaration — see below.
 
@@ -51,19 +57,20 @@ import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
 const _npcBbox = new THREE.Box3();
 const _npcMeshBbox = new THREE.Box3();
 
-/** Measure the local-space bbox min.y of non-SkinnedMesh geometry in a scene.
+/** Measure the non-SkinnedMesh bbox of a freshly cloned scene, returning both
+ *  the per-species normalized scale and the local min.y for pivot grounding.
  *
- *  The scene is assumed to be a freshly cloned GLB that is NOT yet parented into
- *  the live Three.js scene graph. Call updateMatrixWorld(true) first.
+ *  Normalizing dimension: bbox.max.y (above-pivot visual height). Using size.y
+ *  inflates h when geometry extends below the pivot, causing under-sized renders.
+ *  bbox.max.y gives the true "height above ground" of the tallest point.
  *
- *  Returns localMinY: the lowest point of geometry in local space at scale=1.
- *  - 0  → pivot at feet, no correction needed
- *  - < 0 → pivot above feet (geometry extends below group origin); multiply by
- *           NPC_SCALE and subtract from Y position to ground the model correctly
- *  - > 0 → pivot below feet (floating), same correction lowers it
+ *  Falls back to Box3.setFromObject() if no non-skinned geometry is found,
+ *  then falls back to TARGET_NPC_HEIGHT scale if the computed value is outside
+ *  the sanity clamp (implies only tiny accessory props are non-skinned).
  *
- *  Falls back to Box3.setFromObject() if no non-skinned geometry is found. */
-function computeLocalMinY(scene: THREE.Object3D): number {
+ *  pivotOffsetY = localMinY * finalScale — subtract from group.position.y each
+ *  frame so the model's geometry bottom aligns with terrain surface. */
+function computeNpcScale(scene: THREE.Object3D): { scale: number; localMinY: number } {
   scene.updateMatrixWorld(true);
   _npcBbox.makeEmpty();
 
@@ -83,7 +90,27 @@ function computeLocalMinY(scene: THREE.Object3D): number {
     _npcBbox.setFromObject(scene);
   }
 
-  return _npcBbox.isEmpty() ? 0 : _npcBbox.min.y;
+  const localMinY = _npcBbox.isEmpty() ? 0 : _npcBbox.min.y;
+  const maxY = _npcBbox.isEmpty() ? 0 : _npcBbox.max.y;
+
+  // Use bbox.max.y as normalizing height (above-pivot visual extent)
+  const h = maxY > 0.001 ? maxY : 1.0;
+  let scale = TARGET_NPC_HEIGHT / h;
+
+  // Clamp: if computed scale falls outside sanity range, the only non-skinned
+  // geometry is tiny props (scale too large) or inflated helpers (scale too small).
+  // Fall back to TARGET_NPC_HEIGHT which assumes native body height ≈ 1.0 unit.
+  if (scale < NPC_SCALE_CLAMP_MIN || scale > NPC_SCALE_CLAMP_MAX) {
+    scale = TARGET_NPC_HEIGHT;
+  }
+
+  return { scale, localMinY };
+}
+
+/** Legacy helper for computeLocalMinY — kept for call sites that only need minY.
+ *  @deprecated Use computeNpcScale instead when you also need the scale. */
+function computeLocalMinY(scene: THREE.Object3D): number {
+  return computeNpcScale(scene).localMinY;
 }
 
 // Shared raycaster — set to only hit layer 1 (terrain)
@@ -151,21 +178,23 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // Determine which animation system to use
   const useNewSystem = speciesInfo.key !== 'lobster' && speciesInfo.key !== 'crayfish';
 
-  const { cloned, lobsterAnimator, charAnimator, pivotOffsetY } = useMemo(() => {
+  const { cloned, npcScale, lobsterAnimator, charAnimator, pivotOffsetY } = useMemo(() => {
     const c = scene.clone(true);
     const tint = new THREE.Color(npc.color);
     applyColorTint(c, tint, 0.7, 0.25);
 
-    // Compute per-GLB pivot offset so feet sit on terrain regardless of pivot placement.
-    // localMinY is the bbox min.y of non-skinned geometry at scale=1 (local space).
-    // Multiply by NPC_SCALE to get the world-space correction to apply to group.position.y.
-    const localMinY = computeLocalMinY(c);
-    const pivotOffset = localMinY * NPC_SCALE;
+    // Compute per-species normalized scale + pivot offset.
+    // npcScale normalizes the model's above-pivot height to TARGET_NPC_HEIGHT.
+    // pivotOffset = localMinY * npcScale — subtracted from group.position.y so
+    // the geometry bottom aligns with terrain regardless of model pivot placement.
+    const { scale: npcScaleComputed, localMinY } = computeNpcScale(c);
+    const pivotOffset = localMinY * npcScaleComputed;
 
     if (useNewSystem) {
       const anim = createCharacterAnimator(speciesInfo.key, c);
       return {
         cloned: c,
+        npcScale: npcScaleComputed,
         lobsterAnimator: null as LobsterAnimator | null,
         charAnimator: anim as CharacterAnimator,
         pivotOffsetY: pivotOffset,
@@ -175,6 +204,7 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
       const anim  = new LobsterAnimator(parts);
       return {
         cloned: c,
+        npcScale: npcScaleComputed,
         lobsterAnimator: anim,
         charAnimator: null as CharacterAnimator | null,
         pivotOffsetY: pivotOffset,
@@ -227,7 +257,7 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
 
     // Base bob on top of terrain height.
     // Subtract pivotOffsetY to ground each GLB regardless of pivot placement:
-    //   pivotOffsetY = localMinY * NPC_SCALE
+    //   pivotOffsetY = localMinY * npcScale (per-species)
     //   - pivotOffsetY < 0 → pivot above feet → subtracting a negative raises the model
     //   - pivotOffsetY = 0 → no change
     //   - pivotOffsetY > 0 → pivot below feet (floating) → lowers it
@@ -278,14 +308,14 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
 
   return (
     <group ref={groupRef}>
-      {/* Scaled model sub-group */}
-      <group scale={[NPC_SCALE, NPC_SCALE, NPC_SCALE]}>
+      {/* Scaled model sub-group — per-species normalized scale */}
+      <group scale={[npcScale, npcScale, npcScale]}>
         <group ref={animGroupRef}>
           <primitive object={cloned} />
         </group>
       </group>
       {/* Name label — OUTSIDE scaled group so position is in world units.
-          NPC_SCALE=50 targets ~115-142 world-unit height; 150 = safe clearance above tallest species. */}
+          150 = clearance above TARGET_NPC_HEIGHT=120 for the tallest species. */}
       <Html
         position={[0, 150, 0]}
         center
