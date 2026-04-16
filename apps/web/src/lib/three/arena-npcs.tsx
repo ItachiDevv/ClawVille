@@ -319,6 +319,18 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     currentRotY.current += diff * Math.min(1, 8 * dt);
     group.rotation.y = currentRotY.current;
 
+    // Debug instrumentation — write actual renderer rotation to window.__FACING_DEBUG
+    // Only the possessed NPC writes here (facingAngle != null distinguishes it).
+    if (
+      d.facingAngle != null &&
+      typeof window !== 'undefined' &&
+      window.__DEBUG_FACING &&
+      window.__FACING_DEBUG
+    ) {
+      window.__FACING_DEBUG.rotationY = +currentRotY.current.toFixed(4);
+      window.__FACING_DEBUG.rotationDeg = +((currentRotY.current * 180) / Math.PI).toFixed(1);
+    }
+
     // Layer 2: one-shot rendered-height hard cap.
     // Runs once after 0.5s so geometry/bones settle before measurement.
     // Guards against any NPC whose pivot offset blows up despite Layer 1 fixes.
