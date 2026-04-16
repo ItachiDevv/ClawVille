@@ -14,6 +14,15 @@ import {
 import { applyWalkAnimation, applyIdleAnimation } from '@/lib/three/procedural-animation';
 import { LobsterAnimator } from '@/lib/three/lobster-animations';
 import { discoverLobsterParts } from '@/lib/three/lobster-parts';
+import {
+  MODEL_REGISTRY,
+  type ModelRegistryEntry,
+} from '@/lib/three/agent-model-registry';
+import {
+  createCharacterAnimator,
+  applyColorTint,
+  type CharacterAnimator,
+} from '@/lib/three/character-animations';
 
 // ---------------------------------------------------------------------------
 // GLB-based player pet — lobster.glb model = 1-2 draw calls
@@ -115,29 +124,49 @@ function PlayerPetInner() {
 
   attachKeyListeners();
 
-  const { scene } = useGLTF('/models/lobster.glb');
+  // Phase 2: resolve which GLB to load from the model registry.
+  // petModelKey is set by game/page.tsx via setPetAppearance when the pet
+  // loads from the API. Falls back to 'lobster' if null / unknown key.
+  const petModelKey = useGameStore((s) => s.petModelKey);
+  const reg: ModelRegistryEntry =
+    MODEL_REGISTRY[petModelKey as keyof typeof MODEL_REGISTRY] ?? MODEL_REGISTRY.lobster;
 
-  const { cloned, animator } = useMemo(() => {
+  const { scene } = useGLTF(reg.path);
+
+  // Whether to use the legacy LobsterAnimator (skeletal bone discovery) or
+  // the universal CharacterAnimator. Mirrors the same routing in arena-npcs.tsx
+  // and SelectAgentCanvas.tsx.
+  const useNewAnimSystem = petModelKey !== 'lobster' && petModelKey !== 'crayfish';
+
+  const { cloned, lobsterAnimator, charAnimator } = useMemo(() => {
     const c = scene.clone(true);
     const petColor = useGameStore.getState().petColor;
     const tint = new THREE.Color(COLOR_TINTS[petColor] ?? 0xffffff);
-    c.traverse((child) => {
-      if ((child as THREE.Mesh).isMesh) {
-        const mesh = child as THREE.Mesh;
-        if (mesh.material) {
-          const mat = (mesh.material as THREE.MeshStandardMaterial).clone();
-          mat.color.lerp(tint, 0.3);
-          mat.emissive = tint;
-          mat.emissiveIntensity = 0.1;
-          mesh.material = mat;
+
+    if (useNewAnimSystem) {
+      // Universal path: shared applyColorTint (stronger tint, matches NPC behaviour)
+      applyColorTint(c, tint, 0.6, 0.2);
+      const anim = createCharacterAnimator(petModelKey, c);
+      return { cloned: c, lobsterAnimator: null as LobsterAnimator | null, charAnimator: anim };
+    } else {
+      // Legacy lobster/crayfish path: shallow lerp + emissive
+      c.traverse((child) => {
+        if ((child as THREE.Mesh).isMesh) {
+          const mesh = child as THREE.Mesh;
+          if (mesh.material) {
+            const mat = (mesh.material as THREE.MeshStandardMaterial).clone();
+            mat.color.lerp(tint, 0.3);
+            mat.emissive = tint;
+            mat.emissiveIntensity = 0.1;
+            mesh.material = mat;
+          }
         }
-      }
-    });
-    // Discover body parts and create skeletal animator
-    const parts = discoverLobsterParts(c);
-    const anim = new LobsterAnimator(parts);
-    return { cloned: c, animator: anim };
-  }, [scene]);
+      });
+      const parts = discoverLobsterParts(c);
+      const anim = new LobsterAnimator(parts);
+      return { cloned: c, lobsterAnimator: anim, charAnimator: null as CharacterAnimator | null };
+    }
+  }, [scene, petModelKey, useNewAnimSystem]);
 
   // Dispose cloned geometry + materials on unmount (navigation away / hot-reload)
   useEffect(() => {
@@ -283,18 +312,22 @@ function PlayerPetInner() {
     rotRef.current += rotDiff * 0.15;
     group.rotation.y = rotRef.current;
 
-    // Skeletal animation — individual body parts (claws, legs, tail)
-    const suggestedAnim = isMoving ? 'walk' : 'idle';
-    animator.update(Math.min(delta, 0.1), elapsed, suggestedAnim as any, dir);
-
-    // Procedural animation (squash/stretch/tilt) on inner group
+    const dt = Math.min(delta, 0.1);
     const animGroup = animGroupRef.current;
-    if (animGroup) {
+
+    if (useNewAnimSystem && charAnimator && animGroup) {
+      // Universal animator handles both idle and walk in one call
+      charAnimator.update(animGroup, elapsed, dt, isMoving);
+    } else if (lobsterAnimator && animGroup) {
+      // Legacy lobster/crayfish path — skeletal + procedural squash/stretch
+      const suggestedAnim = isMoving ? 'walk' : 'idle';
+      lobsterAnimator.update(dt, elapsed, suggestedAnim as any, dir);
+
       const animStateData = {
         group: animGroup,
         isMoving,
         elapsed,
-        delta: Math.min(delta, 0.1),
+        delta: dt,
         direction: dir,
         seed: 0, // Player always seed 0
       };
@@ -309,7 +342,12 @@ function PlayerPetInner() {
   return (
     <group ref={groupRef}>
       <group ref={animGroupRef}>
-        <primitive object={cloned} scale={PET_SCALE} />
+        {/* Phase 2: lobster/crayfish use PET_SCALE (16) for the slightly-larger
+            player-pet appearance. All other models use their registry scale. */}
+        <primitive
+          object={cloned}
+          scale={!useNewAnimSystem ? PET_SCALE : reg.scale}
+        />
       </group>
     </group>
   );
