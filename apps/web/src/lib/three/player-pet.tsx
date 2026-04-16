@@ -49,16 +49,17 @@ const COLOR_TINTS: Record<string, number> = {
   black: 0x424242, brown: 0x8d6e63,
 };
 
-// Lobster GLB faces +X natively (rotation.y=0 → head toward +X). EMPIRICALLY VERIFIED 2026-04-16.
-// To face world direction (worldVx, worldVz): θ = atan2(-worldVz, worldVx)
+// Lobster GLB faces +Z natively (rotation.y=0 → head toward +Z). EMPIRICALLY VERIFIED 2026-04-16 (late PM, clean side-view screenshot).
+// Prior session concluded +X — that was WRONG (camera was orbited, misread as side-view).
+// To face world direction (worldVx, worldVz): θ = atan2(worldVx, worldVz)  (no negations)
 // DIR_ROTATION for cardinal directions (screen-relative pixel-space vx/vy):
-//   right vx=+1, vy=0  → 0       (+X = native forward)
-//   down  vx=0,  vy=+1 → -PI/2   (rotate -90° → faces +Z = screen-down)
-//   left  vx=-1, vy=0  → PI      (-X)
-//   up    vx=0,  vy=-1 → +PI/2   (-Z = screen-up)
-//   idle: -PI/2 (faces +Z = toward camera at default +Z high angle position)
+//   down  vx=0,  vy=+1 → 0        (+Z = native forward = screen-down)
+//   up    vx=0,  vy=-1 → PI       (-Z = screen-up)
+//   right vx=+1, vy=0  → PI/2     (+X = screen-right)
+//   left  vx=-1, vy=0  → -PI/2    (-X = screen-left)
+//   idle: 0 (faces +Z = toward default camera at positive +Z high angle position)
 const DIR_ROTATION: Record<string, number> = {
-  right: 0, down: -Math.PI / 2, left: Math.PI, up: Math.PI / 2, idle: -Math.PI / 2,
+  down: 0, up: Math.PI, right: Math.PI / 2, left: -Math.PI / 2, idle: 0,
 };
 
 interface KeyState {
@@ -303,8 +304,8 @@ function PlayerPetInner() {
     let continuousRot: number | null = null;
     if (vx !== 0 || vy !== 0) {
       dir = Math.abs(vx) > Math.abs(vy) ? (vx > 0 ? 'right' : 'left') : (vy > 0 ? 'down' : 'up');
-      // Continuous facing: atan2(-vy, vx) — model faces +X at rotation 0 (EMPIRICALLY VERIFIED 2026-04-16)
-      continuousRot = Math.atan2(-vy, vx);
+      // Continuous facing: atan2(vx, vy) — model faces +Z at rotation 0 (EMPIRICALLY VERIFIED 2026-04-16 late PM, clean side-view)
+      continuousRot = Math.atan2(vx, vy);
     }
     store.setMovementDirection(dir as any);
 
