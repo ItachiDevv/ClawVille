@@ -12,6 +12,7 @@ import {
 } from '@/lib/pixi/tilemap-data';
 import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
 import { applyStationaryIdleAnimation, idToSeed } from '@/lib/three/procedural-animation';
+import { applyColorTint } from '@/lib/three/character-animations';
 
 // ---------------------------------------------------------------------------
 // Location NPCs — SpongeBob characters at their canonical buildings
@@ -33,6 +34,7 @@ const _locRayDir = new THREE.Vector3(0, -1, 0);
 const LOCATION_NPCS: Record<string, {
   name: string;
   model: string;
+  color?: number; // optional hex tint — applied via applyColorTint()
 }> = {
   'canvas-studio':     { name: 'SpongeBob',  model: '/models/characters/spongebob.glb' },
   'security-fortress': { name: 'Patrick',     model: '/models/characters/patrick.glb'   },
@@ -43,7 +45,8 @@ const LOCATION_NPCS: Record<string, {
   'channel-bridge':    { name: 'Sandy',        model: '/models/characters/sandy.glb'     },
   'tool-workshop':     { name: 'Karen',        model: '/models/characters/karen.glb'     },
   'voice-tower':       { name: 'Mrs. Puff',    model: '/models/characters/mrs-puff.glb'  },
-  'config-citadel':    { name: 'Larry',        model: '/models/lobster.glb'              },
+  // TODO: source proper larry.glb asset — currently using lobster_plush as a distinct stand-in
+  'config-citadel':    { name: 'Larry',        model: '/models/lobster_plush.glb', color: 0xff2020 },
 };
 
 // Village center in tile space — NPCs stand between their building and this point.
@@ -142,12 +145,15 @@ const LocationNpc = memo(function LocationNpc({
   // uses integer arithmetic — float modulo with strict === 0 never fires.
   const seed = useMemo(() => Math.round(idToSeed(zoneId)), [zoneId]);
 
-  // Clone and compute normalized scale
+  // Clone and compute normalized scale; apply optional color tint
   const { cloned, npcScale } = useMemo(() => {
     const c = scene.clone(true);
+    if (config.color != null) {
+      applyColorTint(c, new THREE.Color(config.color), 0.7, 0.25);
+    }
     const s = computeNormalizedScale(c, CHARACTER_HEIGHT);
     return { cloned: c, npcScale: s };
-  }, [scene]);
+  }, [scene, config.color]);
 
   // Dispose cloned geometry + materials on unmount (navigation away / hot-reload)
   useEffect(() => {
