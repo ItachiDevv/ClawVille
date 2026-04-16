@@ -32,6 +32,12 @@ export interface Avatar {
   stats: PetStats;
   positionX: number;
   positionY: number;
+  /** Phase 2: stable 3D model key — drives GLB selection in player-avatar.tsx */
+  modelKey?: string;
+  /** Phase 2: agent framework category */
+  agentCategory?: string;
+  /** Phase 2: preferred runtime harness */
+  harness?: string;
   createdAt: string;
   updatedAt: string;
 }
