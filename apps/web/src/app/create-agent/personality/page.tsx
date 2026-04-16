@@ -3,8 +3,17 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useCreatePet } from '@/hooks/use-avatar';
-import { AVATAR_ARCHETYPES } from '@clawville/shared';
-import type { PetArchetypeId } from '@clawville/shared';
+import {
+  AVATAR_ARCHETYPES,
+  AGENT_CATEGORIES,
+  AGENT_HARNESSES,
+  AGENT_MODEL_KEYS,
+} from '@clawville/shared';
+import type {
+  PetArchetypeId,
+  AgentCategory,
+  AgentHarness,
+} from '@clawville/shared';
 
 // COLOR_HEX used for info display fallback only (no 3D canvas on this page)
 const COLOR_HEX: Record<string, string> = {
@@ -147,12 +156,34 @@ export default function PersonalityPage() {
     }
 
     try {
-      // Phase 1 — submit the legacy species + color + archetype payload only.
-      // The sessionStorage payload also carries modelKey/category/harness for
-      // forward compatibility, but we intentionally don't forward them here
-      // until Phase 2 extends the useCreatePet hook and the API to persist
-      // them. Server currently accepts them as optional fields and ignores
-      // them if `useCreatePet` doesn't send.
+      // Phase 2 audit Fix E — validate the Phase 2 fields loaded from
+      // sessionStorage against the current shared registry before
+      // forwarding them to the server. A stale step-1 draft could hold
+      // values that were valid in an earlier build (e.g. a long-since-
+      // removed `ironclaw` harness, or a color id from the 9-color era).
+      // The previous `as 'openclaw' | ...` cast was unsafe — it silently
+      // forwarded the stale value, which the server would then 400 on,
+      // leaving the user stuck on the personality screen with no
+      // actionable recovery. Here we drop invalid values to `undefined`
+      // and let the server fall back to its defaults
+      // (DEFAULT_AGENT_MODEL_KEY / DEFAULT_AGENT_CATEGORY /
+      // DEFAULT_AGENT_HARNESS — same values as the DB column DEFAULTs).
+      // Cross-validation with the modelKey's real category happens
+      // server-side (apps/api/src/routes/avatars.ts), so we don't need to
+      // re-derive here.
+      const safeModelKey =
+        step1.modelKey && (AGENT_MODEL_KEYS as readonly string[]).includes(step1.modelKey)
+          ? step1.modelKey
+          : undefined;
+      const safeAgentCategory: AgentCategory | undefined =
+        step1.category && (AGENT_CATEGORIES as readonly string[]).includes(step1.category)
+          ? (step1.category as AgentCategory)
+          : undefined;
+      const safeHarness: AgentHarness | undefined =
+        step1.harness && (AGENT_HARNESSES as readonly string[]).includes(step1.harness)
+          ? (step1.harness as AgentHarness)
+          : undefined;
+
       await createPetMutation.mutateAsync({
         name: step1.name,
         species: step1.species,
@@ -160,6 +191,9 @@ export default function PersonalityPage() {
         gender: step1.gender,
         archetypeId: selectedArchetype,
         personality: { habitat, hobby, greeting: greetingStyle },
+        modelKey: safeModelKey,
+        agentCategory: safeAgentCategory,
+        harness: safeHarness,
       });
 
       sessionStorage.removeItem('createPetStep1');

@@ -1,3 +1,5 @@
+import type { AgentCategory, AgentHarness } from '@clawville/shared';
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
 const HONO_API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
 
@@ -67,10 +69,13 @@ export const api = {
     personality: { habitat: string; hobby: string; greeting: string };
     /** Phase 2 — 3D model key from AGENT_MODELS registry */
     modelKey?: string;
-    /** Phase 2 — agent framework category */
-    agentCategory?: 'openclaw' | 'hermes' | 'milady' | 'other';
-    /** Phase 2 — preferred runtime harness */
-    harness?: 'openclaw' | 'hermes' | 'milady' | 'custom';
+    /**
+     * Phase 2 — agent framework category. Imported from @clawville/shared
+     * so the union widens automatically when the registry adds a category.
+     */
+    agentCategory?: AgentCategory;
+    /** Phase 2 — preferred runtime harness. Imported from @clawville/shared. */
+    harness?: AgentHarness;
   }) =>
     request<{ avatar: any; agentId: string }>('/api/avatars', {
       method: 'POST',
