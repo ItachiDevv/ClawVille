@@ -211,7 +211,7 @@ const LocationNpc = memo(function LocationNpc({
         </group>
       </group>
       {/* Name label — OUTSIDE scaled group so position is in world units.
-          CHARACTER_HEIGHT (20) = model world height; +5 = clearance above head. */}
+          CHARACTER_HEIGHT (32) = model world height; +5 = clearance above head. */}
       <Html
         position={[0, CHARACTER_HEIGHT + 5, 0]}
         center
