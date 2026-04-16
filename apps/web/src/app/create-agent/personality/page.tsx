@@ -6,22 +6,12 @@ import { useCreatePet } from '@/hooks/use-pet';
 import { PET_ARCHETYPES } from '@clawville/shared';
 import type { PetArchetypeId } from '@clawville/shared';
 
-const SPECIES_EMOJI: Record<string, string> = {
-  cat: '\u{1F431}',
-  dragon: '\u{1F409}',
-  fox: '\u{1F98A}',
-  owl: '\u{1F989}',
-  wolf: '\u{1F43A}',
-  bunny: '\u{1F430}',
-  phoenix: '\u{1F525}',
-  turtle: '\u{1F422}',
-};
-
+// COLOR_HEX used for info display fallback only (no 3D canvas on this page)
 const COLOR_HEX: Record<string, string> = {
-  green: '#4CAF50',
-  red: '#F44336',
-  blue: '#2196F3',
-  yellow: '#FFD700',
+  green:  '#30ff70',
+  red:    '#ff3030',
+  blue:   '#3070ff',
+  yellow: '#ffd700',
 };
 
 const HABITAT_OPTIONS = [
@@ -80,10 +70,14 @@ const GREETING_STATS: Record<string, { s: number; d: number; m: number }> = {
 };
 
 interface Step1Data {
-  species: string;
+  species: string;   // legacy field — equals modelKey for API compat
+  modelKey?: string;
+  category?: string;
   color: string;
   name: string;
   gender: string;
+  harness?: string;
+  thumb?: string;    // base64 JPEG thumbnail captured from SelectAgentCanvas
 }
 
 const ARCHETYPE_COLORS: Record<string, string> = {
@@ -153,6 +147,12 @@ export default function PersonalityPage() {
     }
 
     try {
+      // Phase 1 — submit the legacy species + color + archetype payload only.
+      // The sessionStorage payload also carries modelKey/category/harness for
+      // forward compatibility, but we intentionally don't forward them here
+      // until Phase 2 extends the useCreatePet hook and the API to persist
+      // them. Server currently accepts them as optional fields and ignores
+      // them if `useCreatePet` doesn't send.
       await createPetMutation.mutateAsync({
         name: step1.name,
         species: step1.species,
@@ -177,21 +177,45 @@ export default function PersonalityPage() {
     );
   }
 
-  const emoji = SPECIES_EMOJI[step1.species] || '\u{2753}';
-  const colorHex = COLOR_HEX[step1.color] || '#4CAF50';
+  const colorHex = COLOR_HEX[step1.color] || '#30ff70';
 
   return (
     <div className="relative min-h-screen bg-[#061520] flex flex-col items-center px-4 py-6">
-      {/* Pet preview + info */}
-      <div className="w-full max-w-xl flex flex-col sm:flex-row items-center gap-4 mb-6">
-        {/* Large preview */}
-        <div
-          className="w-48 h-48 rounded-xl cartoon-border flex items-center justify-center shrink-0 transition-colors duration-300"
-          style={{ backgroundColor: colorHex + '33' }}
+      {/* Back-to-avatar link — sessionStorage persists so step 1 re-hydrates. */}
+      <div className="w-full max-w-xl mb-3">
+        <button
+          type="button"
+          onClick={() => router.push('/create-agent')}
+          className="text-white/40 hover:text-cyan-300 text-xs font-mono uppercase tracking-wider transition-colors"
         >
-          <span className="text-[80px] leading-none select-none drop-shadow-lg">
-            {emoji}
-          </span>
+          &larr; Edit Avatar
+        </button>
+      </div>
+      {/* Agent preview + info */}
+      <div className="w-full max-w-xl flex flex-col sm:flex-row items-center gap-4 mb-6">
+        {/* 3D thumbnail captured from SelectAgentCanvas on step 1 */}
+        <div
+          className="w-48 h-48 rounded-xl overflow-hidden border border-white/10 shrink-0 flex items-center justify-center"
+          style={{ backgroundColor: colorHex + '22' }}
+        >
+          {step1.thumb ? (
+            <img
+              src={step1.thumb}
+              alt={`${step1.name} preview`}
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <div className="w-full h-full flex flex-col items-center justify-center gap-1.5 text-white/30 text-xs font-mono text-center px-2">
+              <span>Preview unavailable</span>
+              <button
+                type="button"
+                onClick={() => router.push('/create-agent')}
+                className="text-cyan-400/70 hover:text-cyan-300 underline text-[11px]"
+              >
+                Re-render
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Info display */}
@@ -203,8 +227,8 @@ export default function PersonalityPage() {
             <span className="font-bold">Gender:</span> {step1.gender}
           </p>
           <p>
-            <span className="font-bold">Species:</span>{' '}
-            {step1.species.charAt(0).toUpperCase() + step1.species.slice(1)}
+            <span className="font-bold">Model:</span>{' '}
+            {(step1.modelKey ?? step1.species).charAt(0).toUpperCase() + (step1.modelKey ?? step1.species).slice(1).replace(/_/g, ' ')}
           </p>
           <p>
             <span className="font-bold">Colour:</span>{' '}
