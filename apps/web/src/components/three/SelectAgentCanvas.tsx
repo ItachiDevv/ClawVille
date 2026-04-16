@@ -33,31 +33,13 @@ import {
   type CharacterAnimator,
   MODEL_KEY_TO_TYPE,
 } from '@/lib/three/character-animations';
+import {
+  MODEL_REGISTRY,
+  type AgentCategory,
+  type ModelRegistryEntry,
+} from '@/lib/three/agent-model-registry';
 
-// ---------------------------------------------------------------------------
-// Model Registry — maps agent type to GLB path
-// ---------------------------------------------------------------------------
-
-export type AgentCategory = 'openclaw' | 'hermes' | 'other';
-
-export const MODEL_REGISTRY: Record<string, { path: string; scale: number; label: string; category: AgentCategory }> = {
-  // ── OpenClaw (crustaceans) ──
-  lobster:      { path: '/models/lobster.glb',                    scale: 14, label: 'Reef Lobster',    category: 'openclaw' },
-  crayfish:     { path: '/models/crayfish.glb',                   scale: 14, label: 'Crayfish',        category: 'openclaw' },
-  sweet_crab:   { path: '/models/sweet_crab_sketchfabweekly.glb', scale: 10, label: 'Sweet Crab',      category: 'openclaw' },
-  lobster_plush:{ path: '/models/lobster_plush.glb',              scale: 10, label: 'Lobster Plush',   category: 'openclaw' },
-  hermitcrab:   { path: '/models/hermitcrab.glb',                 scale: 10, label: 'Hermit Crab',     category: 'openclaw' },
-
-  // ── Hermes (anime characters) ──
-  chihiro:      { path: '/models/spirited_away_senchihiro.glb',   scale: 8,  label: 'Chihiro',         category: 'hermes' },
-  priestess:    { path: '/models/young_priestess.glb',            scale: 8,  label: 'Young Priestess', category: 'hermes' },
-  chibi_goku:   { path: '/models/chibi_goku.glb',                scale: 8,  label: 'Chibi Goku',      category: 'hermes' },
-
-  // ── Other Agents (sea creatures) ──
-  jellyfish:    { path: '/models/jellyfish.glb',                  scale: 10, label: 'Jellyfish',       category: 'other' },
-  octopus:      { path: '/models/octopus_toy.glb',                scale: 10, label: 'Octopus',         category: 'other' },
-  seahorse:     { path: '/models/sea_horse.glb',                  scale: 10, label: 'Sea Horse',       category: 'other' },
-};
+export type { AgentCategory, ModelRegistryEntry };
 
 // Color tint presets
 const COLOR_TINTS: Record<string, number> = {
