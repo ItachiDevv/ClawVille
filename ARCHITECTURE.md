@@ -83,6 +83,7 @@ Hard rules:
 | `chat.ts` | Location agent chat with dynamic context injection |
 | `items.ts` | Shop browse, inventory, buy, learn |
 | `agent-gateway.ts` | Universal agent connection (connect-token, polling, SKILL.md, SSE events) |
+| `agent-export.ts` | `POST /api/agent/export-character` — emits Eliza `Character` JSON + `SkillPack` + Milady install payload + curl one-liner (Phase 3 of the create-agent rollout; Phase 4a UI consumes this) |
 | `openclaw.ts` | Legacy OpenClaw bot registration (kept for backwards compat) |
 | `npc-sse.ts` | Server-Sent Events for NPC simulation state |
 | `bazaar.ts` | Skill marketplace (browse, list, buy) |
