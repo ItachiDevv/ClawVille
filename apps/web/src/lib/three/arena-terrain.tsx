@@ -216,19 +216,23 @@ interface DecoEntry {
   rotY: number;
 }
 
-// Decoration models — scale ranges intentionally wide for dramatic size variation.
-// Heavier weight = more frequent. Coral/kelp reduced to ~1/3; variety models fill the rest.
+// Decoration models — scale ranges capped to keep max dimension ≤ 150 world units.
+// Rationale: at perspective from origin, a 600-unit wide coral cluster at distance
+// 3000-5000 dominates the view even though it's outside the village ring.
+// Coral/kelp native bboxes are ~5-10 units wide/tall; cap at 15 → max ~150 wu.
+// Shell/seashell native bboxes ~3-5 units; cap at 15 → max ~75 wu.
+// Small props (anchor, barrel, chest, lantern, tower2) already safe at their caps.
 const DECO_TYPES = [
-  // Coral — moderate presence, dramatic scale swing
-  { model: '/models/coral-reef1.glb', weight: 3, minScale: 6,   maxScale: 28  },
-  { model: '/models/coral-reef2.glb', weight: 3, minScale: 5,   maxScale: 24  },
-  { model: '/models/coral-reef3.glb', weight: 3, minScale: 5,   maxScale: 22  },
-  // Kelp — reduced to a moderate accent, still tall
-  { model: '/models/kelp.glb',        weight: 3, minScale: 10,  maxScale: 30  },
-  // Shells — clusters of tiny to large
-  { model: '/models/building-shell.glb',    weight: 5, minScale: 2,   maxScale: 18  },
-  { model: '/models/building-seashell.glb', weight: 5, minScale: 2,   maxScale: 20  },
-  // Anchors — scattered singles, some tiny/rusted, some huge
+  // Coral — moderate presence, capped at 15 to prevent 500+ wu wide clusters
+  { model: '/models/coral-reef1.glb', weight: 3, minScale: 4,   maxScale: 15  },
+  { model: '/models/coral-reef2.glb', weight: 3, minScale: 3,   maxScale: 13  },
+  { model: '/models/coral-reef3.glb', weight: 3, minScale: 3,   maxScale: 12  },
+  // Kelp — tall accent, capped at 15 (was 30; was producing 600+ wu wide blades)
+  { model: '/models/kelp.glb',        weight: 3, minScale: 6,   maxScale: 15  },
+  // Shells — clusters of tiny to medium (was maxScale 18-20, now 12)
+  { model: '/models/building-shell.glb',    weight: 5, minScale: 2,   maxScale: 12  },
+  { model: '/models/building-seashell.glb', weight: 5, minScale: 2,   maxScale: 12  },
+  // Anchors — scattered singles, small to moderate
   { model: '/models/building-anchor.glb', weight: 4, minScale: 3,   maxScale: 14  },
   // Barrels — common ocean-floor clutter
   { model: '/models/building-barrel.glb', weight: 4, minScale: 3,   maxScale: 10  },
