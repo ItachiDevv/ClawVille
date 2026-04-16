@@ -68,21 +68,16 @@ export const AGENT_MODELS = [
   { key: 'lobster_plush', label: 'Lobster Plush',   category: 'openclaw' },
   { key: 'hermitcrab',    label: 'Hermit Crab',     category: 'openclaw' },
 
-  // ── Hermes (anime — single representative) ──
-  { key: 'chihiro',       label: 'Chihiro',         category: 'hermes' },
-
-  // ── Milady (anime — placeholder until Milady-branded GLBs ship) ──
-  // Matches phase1-create-agent-3d.md §7.5 which placed both anime-style
-  // non-hermes models in this category so Milady has meaningful content
-  // while Hermes reduces to `chihiro` alone. Must stay in sync with the
-  // web-side `agent-model-registry.ts` category assignments.
-  { key: 'priestess',     label: 'Young Priestess', category: 'milady' },
-  { key: 'chibi_goku',    label: 'Chibi Goku',      category: 'milady' },
-
   // ── Other (sea creatures) ──
   { key: 'jellyfish',     label: 'Jellyfish',       category: 'other' },
   { key: 'octopus',       label: 'Octopus',         category: 'other' },
   { key: 'seahorse',      label: 'Sea Horse',       category: 'other' },
+
+  // NOTE: Hermes/Milady anime GLB entries (chihiro / priestess / chibi_goku)
+  // were removed 2026-04-16 because the source meshes didn't render reliably
+  // in the agent picker. The `AgentCategory` type keeps 'hermes' and 'milady'
+  // because the agent-HARNESS radio and DB CHECK constraint still use them
+  // — this change scopes strictly to the visual avatar picker content.
 ] as const satisfies readonly AgentModelMeta[];
 
 /** Union of every valid model `key` — e.g. `'lobster' | 'crayfish' | ...` */
@@ -134,7 +129,7 @@ export function getAgentModel(key: string): AgentModelMeta | undefined {
  * Returns the expected category for a `modelKey`, or undefined if the key
  * is unknown. Used server-side to cross-validate client-supplied
  * `(modelKey, agentCategory)` pairs so a mismatched payload (e.g.
- * `modelKey: 'priestess'` in category `'openclaw'`) is rejected early
+ * `modelKey: 'jellyfish'` in category `'openclaw'`) is rejected early
  * instead of drifting into the DB.
  */
 export function getAgentCategoryForModel(modelKey: string): AgentCategory | undefined {

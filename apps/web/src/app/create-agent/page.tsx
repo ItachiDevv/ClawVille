@@ -175,11 +175,13 @@ export default function CreateAgentPage() {
   // handlers. Do NOT make this async — an `await` between the two setters
   // breaks batching and would cause one render with the new category + stale
   // model, sending a mismatched modelKey to SelectAgentCanvas.
-  // CATEGORY_DEFAULT_MODEL is now typed via `as const satisfies` (Fix H) so
-  // the values are already ModelKey literals — no cast needed.
+  // CATEGORY_DEFAULT_MODEL is Partial<Record<AgentCategory, ModelKey>> since
+  // 2026-04-16 (hermes/milady tabs removed) — fall back to 'lobster' for any
+  // category that is no longer in the picker so the state can never be
+  // undefined even if stale sessionStorage pushes a retired category in.
   const handleCategoryChange = useCallback((cat: AgentCategory) => {
     setSelectedCategory(cat);
-    setSelectedModel(CATEGORY_DEFAULT_MODEL[cat]);
+    setSelectedModel(CATEGORY_DEFAULT_MODEL[cat] ?? 'lobster');
   }, []);
 
   // ── Thumbnail capture with bounded rAF poll (audit Fix F) ────────────────
@@ -293,6 +295,10 @@ export default function CreateAgentPage() {
         </p>
 
         {/* ── Category tabs ─────────────────────────────────────────────── */}
+        {/* CATEGORY_META is now Partial<Record<...>> — `cat` here is always
+            drawn from CATEGORY_ORDER which is guaranteed to have a matching
+            meta entry, but TS doesn't know that so we fall back on `cat`
+            itself as the label text. */}
         <div className="flex gap-1 bg-black/40 backdrop-blur-sm rounded-xl p-1 mb-4 border border-white/10">
           {CATEGORY_ORDER.map((cat) => (
             <button
@@ -304,7 +310,7 @@ export default function CreateAgentPage() {
                   : 'text-white/40 hover:text-white/70 hover:bg-white/5'
               }`}
             >
-              {CATEGORY_META[cat].label}
+              {CATEGORY_META[cat]?.label ?? cat}
             </button>
           ))}
         </div>
@@ -333,7 +339,7 @@ export default function CreateAgentPage() {
             ))}
           </div>
           <p className="text-white/30 text-[10px] text-center mt-1.5 font-mono">
-            {CATEGORY_META[selectedCategory].description}
+            {CATEGORY_META[selectedCategory]?.description ?? ''}
           </p>
         </div>
 
