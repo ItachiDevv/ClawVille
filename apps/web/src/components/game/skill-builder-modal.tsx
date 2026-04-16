@@ -341,7 +341,7 @@ export default function SkillBuilderModal() {
                   <div className="bg-yellow-50 rounded-lg px-3 py-3 text-center">
                     <p className="text-yellow-800 text-sm font-bold">No knowledge yet</p>
                     <p className="text-yellow-700 text-xs mt-1">
-                      Visit buildings and chat with NPCs to learn OpenClaw knowledge.
+                      Visit buildings and chat with their characters to learn OpenClaw knowledge.
                     </p>
                   </div>
                 ) : (
