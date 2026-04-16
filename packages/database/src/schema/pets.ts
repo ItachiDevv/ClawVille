@@ -7,7 +7,10 @@ import {
   pgEnum,
   integer,
   boolean,
+  check,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import type { AgentCategory, AgentHarness } from '@clawville/shared';
 import { users } from './users';
 import { platformAgents } from './agents';
 
@@ -126,6 +129,47 @@ export const pets = pgTable('pets', {
   avatarUrl: varchar('avatar_url', { length: 1024 }),
   vrmMetadata: jsonb('vrm_metadata').$type<PetVrmMetadataJson>(),
   /**
+   * Phase 2 fields — first-class agent-framework identity on the pet.
+   *
+   * - `modelKey` (Phase 2 §3.1): stable key into `@clawville/shared`
+   *   `AGENT_MODELS` (e.g. 'lobster', 'priestess'). Drives 3D GLB pick
+   *   on the web side. Replaces `species` as the visual-identity field
+   *   going forward; `species` stays populated for backwards compat
+   *   with the pixi 2D fallback.
+   * - `agentCategory`: which agent-framework bucket the pet belongs to.
+   *   Drives per-framework features (Hermes chat routing, Milady install).
+   * - `harness`: user's preferred agent runtime. Drives Phase 3 export
+   *   target (what character-bundle format we generate). DEFAULT 'milady'
+   *   so a freshly-created agent works autonomously in Phase 4a without
+   *   further config.
+   *
+   * All three have NOT NULL DEFAULTs so existing pet rows backfill to
+   * `('openclaw','lobster','milady')` on migration without a separate
+   * backfill query. Enum values are enforced at three layers:
+   *   1. API — Zod `.enum(AGENT_CATEGORIES | AGENT_HARNESSES)` in
+   *      apps/api/src/routes/pets.ts (also validated by `.refine`
+   *      against AGENT_MODEL_KEYS for modelKey).
+   *   2. TypeScript — `$type<AgentCategory>()` / `$type<AgentHarness>()`
+   *      below pull the union directly from @clawville/shared so any
+   *      registry change in the shared package cascades here at build.
+   *   3. Postgres — CHECK constraints `pets_agent_category_valid` and
+   *      `pets_harness_valid` (see constraint block at the end of the
+   *      table definition). This is defense-in-depth against direct-SQL
+   *      writers (admin tools, cron, backfill scripts) that bypass the
+   *      API. See Phase 2 plan §3.1.
+   */
+  agentCategory: varchar('agent_category', { length: 16 })
+    .notNull()
+    .default('openclaw')
+    .$type<AgentCategory>(),
+  modelKey: varchar('model_key', { length: 64 })
+    .notNull()
+    .default('lobster'),
+  harness: varchar('harness', { length: 16 })
+    .notNull()
+    .default('milady')
+    .$type<AgentHarness>(),
+  /**
    * Auto-generated custodial Solana wallet address (base58). NULL for pets
    * that existed before the C2 backfill; populated for new pets (human or
    * agent-created) via apps/api/src/services/pet-wallet-service.ts.
@@ -134,4 +178,26 @@ export const pets = pgTable('pets', {
   walletAddress: varchar('wallet_address', { length: 64 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
+}, (t) => ({
+  // Phase 2 §3.1 — Postgres CHECK constraints mirror the shared
+  // AGENT_CATEGORIES / AGENT_HARNESSES tuples. Literals are hardcoded
+  // here because `sql` template interpolation of a JS array is awkward
+  // and the emitted DDL must stay readable. The $type<> annotations on
+  // the columns above import the TS unions from @clawville/shared, so
+  // any drift between the shared tuple and this list fails to compile
+  // rather than silently diverging.
+  //
+  // After editing: run `bun run db:push` from the repo root to apply
+  // the ALTER TABLE ADD CONSTRAINT. Drizzle-kit 0.24 emits these
+  // constraints as part of the push. If push errors with "constraint
+  // already exists", drop the existing one manually (the name matches
+  // the first argument to check()).
+  agentCategoryCheck: check(
+    'pets_agent_category_valid',
+    sql`${t.agentCategory} IN ('openclaw','hermes','milady','other')`,
+  ),
+  harnessCheck: check(
+    'pets_harness_valid',
+    sql`${t.harness} IN ('openclaw','hermes','milady','custom')`,
+  ),
+}));

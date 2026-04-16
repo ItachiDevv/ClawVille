@@ -2,8 +2,23 @@ import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and, sql } from 'drizzle-orm';
 import { db, pets, agents, petInventory } from '@clawville/database';
-import { PET_ARCHETYPES, ARCHETYPE_IDS, getBookById } from '@clawville/shared';
-import type { PetArchetypeId } from '@clawville/shared';
+import {
+  PET_ARCHETYPES,
+  ARCHETYPE_IDS,
+  getBookById,
+  AGENT_MODEL_KEYS,
+  AGENT_CATEGORIES,
+  AGENT_HARNESSES,
+  DEFAULT_AGENT_MODEL_KEY,
+  DEFAULT_AGENT_HARNESS,
+  getAgentModel,
+} from '@clawville/shared';
+import type {
+  PetArchetypeId,
+  AgentCategory,
+  AgentHarness,
+  AgentModelKey,
+} from '@clawville/shared';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
@@ -19,6 +34,9 @@ export const petRoutes = new Hono<AppContext>();
 petRoutes.use('*', sessionMiddleware);
 
 // Create pet schema — archetype-based (no manual characterConfig)
+// Phase 2: modelKey / agentCategory / harness are optional on the wire so
+// older clients still work, but when present they're validated against the
+// shared AGENT_MODELS registry. Server applies the defaults if omitted.
 const createPetSchema = z.object({
   name: z.string().min(3).max(20).regex(/^[a-zA-Z0-9]+$/, 'Name must be alphanumeric'),
   species: z.enum(['cat', 'dragon', 'fox', 'owl', 'wolf', 'bunny', 'phoenix', 'turtle']),
@@ -30,6 +48,29 @@ const createPetSchema = z.object({
     hobby: z.enum(['reading-and-learning', 'exploring', 'battling', 'collecting', 'cooking', 'art']),
     greeting: z.enum(['run-away', 'wave-hello', 'tackle-hug', 'shy-peek', 'bow-politely', 'roar']),
   }),
+  /**
+   * Phase 2 — stable 3D model key from AGENT_MODELS. We use `.refine`
+   * instead of `z.enum` because modelKey is a `string` (not a literal
+   * union tuple) in shared, and `.refine` against the typed
+   * AGENT_MODEL_KEYS array gives both a runtime check and a clean error
+   * message. Cast-to-AgentModelKey happens inside the handler after
+   * validation narrows the value.
+   */
+  modelKey: z
+    .string()
+    .refine((k): k is AgentModelKey => (AGENT_MODEL_KEYS as readonly string[]).includes(k), {
+      message: `modelKey must be one of: ${AGENT_MODEL_KEYS.join(', ')}`,
+    })
+    .optional(),
+  /**
+   * Phase 2 — agent framework category. Drizzle CHECK constraint
+   * `pets_agent_category_valid` enforces the same enum at the DB layer.
+   * `z.enum` works directly because AGENT_CATEGORIES is a tuple literal
+   * (Phase 2 audit Fix A) — no `as unknown as [T, ...T[]]` cast needed.
+   */
+  agentCategory: z.enum(AGENT_CATEGORIES).optional(),
+  /** Phase 2 — preferred runtime harness. DB CHECK `pets_harness_valid`. */
+  harness: z.enum(AGENT_HARNESSES).optional(),
 });
 
 // Calculate stats from personality
@@ -72,12 +113,21 @@ function calculateStats(personality: z.infer<typeof createPetSchema>['personalit
   };
 }
 
-function buildCharacterConfig(archetypeId: PetArchetypeId, petName: string, species: string) {
+/**
+ * Build the ElizaOS character config for a new pet. Phase 2 audit Fix C:
+ * the third argument is now the human-readable `modelLabel` from
+ * AGENT_MODELS (e.g. "Reef Lobster") instead of the legacy `species`
+ * enum value (e.g. "cat"), so the system prompt describes the pet by
+ * what the 3D renderer actually shows rather than the legacy fantasy
+ * animal. Callers resolve the label from `getAgentModel(modelKey).label`
+ * before calling this.
+ */
+function buildCharacterConfig(archetypeId: PetArchetypeId, petName: string, modelLabel: string) {
   const archetype = PET_ARCHETYPES.find((a) => a.id === archetypeId);
   if (!archetype) throw new Error(`Unknown archetype: ${archetypeId}`);
 
   const system = [
-    `You are ${petName}, a ${species} in the sea-themed world of ClawVille — a virtual pet adventure where agents learn OpenClaw skills.`,
+    `You are ${petName}, a ${modelLabel} in the sea-themed world of ClawVille — a virtual pet adventure where agents learn OpenClaw skills.`,
     `Your archetype is "${archetype.label}". Stay in character at all times.`,
     `You exist in Neopia Central and have deep knowledge of Neopets lore, culture, and locations.`,
     `You also have knowledge of Solana, cryptocurrency, and memecoin/degen culture — weave this naturally into conversation when relevant.`,
@@ -128,43 +178,112 @@ petRoutes.post('/', requireAuth, async (c) => {
   }
 
   const stats = calculateStats(result.data.personality);
+
+  // Phase 2 — resolve agent framework identity BEFORE inserting
+  // anything. Client-omitted fields fall back to the DEFAULT_* constants
+  // in @clawville/shared, which match the DB column defaults so
+  // round-trip is stable. Zod already rejected unknown modelKeys via
+  // `.refine` against AGENT_MODEL_KEYS (audit Fix C §5 — the
+  // defense-in-depth `getAgentModel` recheck below is kept because it
+  // resolves the full metadata record we need for `modelMeta.label` and
+  // for cross-validating category; the previous defense-in-depth ONLY
+  // check is gone).
+  const modelKey = result.data.modelKey ?? DEFAULT_AGENT_MODEL_KEY;
+  const harness: AgentHarness = result.data.harness ?? DEFAULT_AGENT_HARNESS;
+
+  const modelMeta = getAgentModel(modelKey);
+  if (!modelMeta) {
+    // Unreachable if Zod .refine stayed in sync with the registry, but
+    // we keep the check so a shared-package registry rebuild without a
+    // corresponding API deploy fails loudly instead of inserting a bad
+    // row.
+    throw new HTTPException(400, { message: `Unknown modelKey: ${modelKey}` });
+  }
+
+  // Audit Fix C §3 — cross-validate the client's category claim against
+  // the registry. A payload like `{ modelKey: 'priestess', agentCategory:
+  // 'openclaw' }` is semantically broken (priestess is a milady model);
+  // reject it rather than trusting the client. When the client omits
+  // agentCategory, derive it from the model so the DB always gets a
+  // self-consistent triple.
+  if (
+    result.data.agentCategory &&
+    result.data.agentCategory !== modelMeta.category
+  ) {
+    throw new HTTPException(400, {
+      message: `modelKey '${modelKey}' belongs to category '${modelMeta.category}', not '${result.data.agentCategory}'`,
+    });
+  }
+  const agentCategory: AgentCategory =
+    result.data.agentCategory ?? modelMeta.category;
+
+  // Audit Fix C §4 — pass the model's display label (e.g. "Reef Lobster")
+  // to the character-config builder instead of the legacy `species`
+  // enum value. The system prompt now describes the pet by what the 3D
+  // renderer actually shows.
   const characterConfig = buildCharacterConfig(
     result.data.archetypeId as PetArchetypeId,
     result.data.name,
-    result.data.species,
+    modelMeta.label,
   );
 
-  // Create the platform agent record first
-  const [agent] = await db.insert(agents).values({
-    userId: user.id,
-    name: result.data.name,
-    type: 'pet-agent',
-    status: 'pending',
-    config: {
-      species: result.data.species,
-      color: result.data.color,
-      archetypeId: result.data.archetypeId,
-    },
-    customization: characterConfig,
-  }).returning();
+  // Audit Fix C §6 — wrap the agent + pet inserts in a transaction so a
+  // failed pet insert rolls back the orphan agent row. Before this
+  // change a DB constraint violation on `pets` (e.g. name race with a
+  // concurrent signup) would leave a stray `platform_agents` row tied
+  // to no pet, requiring manual cleanup.
+  const { pet, agent } = await db.transaction(async (tx) => {
+    const [insertedAgent] = await tx
+      .insert(agents)
+      .values({
+        userId: user.id,
+        name: result.data.name,
+        type: 'pet-agent',
+        status: 'pending',
+        config: {
+          species: result.data.species,
+          color: result.data.color,
+          archetypeId: result.data.archetypeId,
+          // Phase 2 — also persist modelKey/category/harness on the
+          // agent config so downstream readers of agents.config don't
+          // rely on the legacy species field alone. Keeps the pet row
+          // + agent config in sync from creation.
+          modelKey,
+          agentCategory,
+          harness,
+        },
+        customization: characterConfig,
+      })
+      .returning();
 
-  // Create pet linked to the agent
-  const [pet] = await db.insert(pets).values({
-    userId: user.id,
-    name: result.data.name,
-    species: result.data.species,
-    color: result.data.color,
-    gender: result.data.gender,
-    archetype: result.data.archetypeId,
-    personality: result.data.personality,
-    stats,
-    characterConfig,
-    platformAgentId: agent.id,
-  }).returning();
+    const [insertedPet] = await tx
+      .insert(pets)
+      .values({
+        userId: user.id,
+        name: result.data.name,
+        species: result.data.species,
+        color: result.data.color,
+        gender: result.data.gender,
+        archetype: result.data.archetypeId,
+        personality: result.data.personality,
+        stats,
+        characterConfig,
+        platformAgentId: insertedAgent.id,
+        modelKey,
+        agentCategory,
+        harness,
+      })
+      .returning();
+
+    return { pet: insertedPet, agent: insertedAgent };
+  });
 
   // Auto-generate a custodial Solana wallet for the new pet. Fire and
   // forget from the caller's perspective — if wallet gen fails, log it
   // but don't block pet creation. The backfill script will catch stragglers.
+  // Outside the transaction intentionally: wallet gen hits an external
+  // keypair store, and a slow external call shouldn't hold a pg
+  // transaction open.
   try {
     const wallet = await ensureWallet('pet', pet.id);
     pet.walletAddress = wallet.publicKey;

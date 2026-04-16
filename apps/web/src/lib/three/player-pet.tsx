@@ -168,13 +168,19 @@ function PlayerPetInner() {
     }
   }, [scene, petModelKey, useNewAnimSystem]);
 
-  // Dispose cloned geometry + materials on unmount (navigation away / hot-reload)
+  // Dispose cloned materials on unmount (navigation away / hot-reload)
   useEffect(() => {
     return () => {
       cloned.traverse((obj) => {
         const mesh = obj as THREE.Mesh;
         if ((mesh as any).isMesh) {
-          mesh.geometry?.dispose();
+          // Dispose materials only — applyColorTint() in character-animations.ts
+          // clones the material per instance, so this clone owns its materials.
+          // NEVER dispose geometry: scene.clone(true) shares BufferGeometry with
+          // the useGLTF cache (Mesh.copy: this.geometry = source.geometry). If
+          // we disposed it, the cache would hand out a disposed buffer to any
+          // other consumer of this GLB (e.g. arena-npcs wandering NPCs that
+          // load the same path).
           if (Array.isArray(mesh.material)) mesh.material.forEach((m) => m.dispose());
           else mesh.material?.dispose();
         }
