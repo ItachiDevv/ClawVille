@@ -19,7 +19,7 @@ import AvatarChatBar from '@/components/game/avatar-chat-bar';
 import ShopOverlay from '@/components/game/shop-overlay';
 import InventoryModal from '@/components/game/inventory-modal';
 import ActivityFeed from '@/components/game/activity-feed';
-import OpenClawConnectModal from '@/components/game/openclaw-connect-modal';
+import AgentConnectModal from '@/components/game/agent-connect-modal';
 
 const SkillBuilderModal = dynamic(() => import('@/components/game/skill-builder-modal'), { ssr: false });
 const MarketplaceModal = dynamic(() => import('@/components/game/marketplace-modal'), { ssr: false });
@@ -69,28 +69,28 @@ const SidebarMenu = dynamic(() => import('@/components/game/sidebar-menu'), {
 });
 
 function NanoClawBanner() {
-  const openclawConnected = useGameStore((s: GameState) => s.openclawConnected);
-  const openclawSessionId = useGameStore((s: GameState) => s.openclawSessionId);
-  const setOpenclawModalOpen = useGameStore((s: GameState) => s.setOpenclawModalOpen);
+  const agentConnected = useGameStore((s: GameState) => s.agentConnected);
+  const agentSessionId = useGameStore((s: GameState) => s.agentSessionId);
+  const setAgentConnectModalOpen = useGameStore((s: GameState) => s.setAgentConnectModalOpen);
 
   return (
     <div className="fixed left-1/2 -translate-x-1/2 z-50 top-3">
-      {openclawConnected ? (
+      {agentConnected ? (
         <button
-          onClick={() => setOpenclawModalOpen(true)}
+          onClick={() => setAgentConnectModalOpen(true)}
           className="flex items-center gap-2 px-4 py-2 rounded-full bg-green-600/90 backdrop-blur-sm border border-green-400/40 shadow-lg hover:bg-green-600 transition-colors"
         >
           <span className="w-2.5 h-2.5 rounded-full bg-green-300 shadow-[0_0_6px_rgba(74,222,128,0.6)] animate-pulse" />
           <span className="text-white font-bold text-sm">Bot Training Active</span>
-          <span className="text-green-200/70 text-xs font-mono hidden md:inline">{openclawSessionId?.slice(0, 12)}</span>
+          <span className="text-green-200/70 text-xs font-mono hidden md:inline">{agentSessionId?.slice(0, 12)}</span>
         </button>
       ) : (
         <button
-          onClick={() => setOpenclawModalOpen(true)}
+          onClick={() => setAgentConnectModalOpen(true)}
           className="flex items-center gap-2 px-4 py-2 rounded-full bg-black/60 backdrop-blur-sm border border-yellow-500/40 shadow-lg hover:bg-black/80 hover:border-yellow-400/60 transition-all animate-pulse-subtle"
         >
           <span className="text-lg">🔌</span>
-          <span className="text-yellow-300 font-bold text-sm">Connect Your OpenClaw Bot</span>
+          <span className="text-yellow-300 font-bold text-sm">Connect Your Agent</span>
         </button>
       )}
     </div>
@@ -153,7 +153,10 @@ export default function GamePage() {
   // Sync avatar appearance to game store for 3D rendering
   useEffect(() => {
     if (avatar) {
-      useGameStore.getState().setPetAppearance(avatar.species, avatar.color);
+      // Phase 2: pass modelKey so player-avatar.tsx renders the correct GLB.
+      // Falls back to 'lobster' inside setPetAppearance if modelKey is absent
+      // (pre-Phase-2 rows and any row where the column is null).
+      useGameStore.getState().setPetAppearance(avatar.species, avatar.color, undefined, avatar.modelKey);
     }
   }, [avatar]);
 
@@ -175,7 +178,7 @@ export default function GamePage() {
       <World3DCanvas mode="game" />
       <BuildingTooltip />
       <NanoClawBanner />
-      <OpenClawConnectModal />
+      <AgentConnectModal />
       <SkillBuilderModal />
       <MarketplaceModal />
       <BazaarModal />
