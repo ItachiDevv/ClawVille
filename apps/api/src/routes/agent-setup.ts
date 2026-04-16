@@ -155,6 +155,11 @@ const importSchema = z.object({
     equippedSkills: z.array(z.string()),
     totalXp: z.number(),
     exportedAt: z.string(),
+    // Phase 2 — optional on imports from older exports; fall back to
+    // DB DEFAULTs at insert time if omitted.
+    modelKey: z.string().optional(),
+    agentCategory: z.enum(['openclaw', 'hermes', 'milady', 'other']).optional(),
+    harness: z.enum(['openclaw', 'hermes', 'milady', 'custom']).optional(),
   }),
   slotIndex: z.number().int().min(0).max(5).optional(),
 });
@@ -344,6 +349,11 @@ agentSetupRoutes.post('/create', requireAuth, async (c) => {
     .returning();
 
   // Create avatar linked to the agent
+  // Phase 2: modelKey/agentCategory/harness rely on DB DEFAULTs here
+  // ('lobster', 'openclaw', 'milady') since this route predates Phase 2
+  // and doesn't collect those selections. New avatars created via the
+  // primary /create-agent flow (POST /api/avatars) go through the Phase 2
+  // wiring in avatars.ts:165-179.
   const [avatar] = await db
     .insert(avatars)
     .values({
@@ -641,6 +651,11 @@ agentSetupRoutes.post('/:id/export', requireAuth, async (c) => {
     equippedSkills: (avatar.equippedSkills as string[]) ?? [],
     totalXp: avatar.totalXp,
     exportedAt: new Date().toISOString(),
+    // Phase 2 — propagate the framework-identity fields so a re-import
+    // preserves the agent's 3D model and runtime harness.
+    modelKey: avatar.modelKey,
+    agentCategory: avatar.agentCategory,
+    harness: avatar.harness,
   };
 
   // Save to agent_configs table
@@ -749,6 +764,10 @@ agentSetupRoutes.post('/import', requireAuth, async (c) => {
     .returning();
 
   // Create avatar from imported config
+  // Phase 2: honor modelKey/agentCategory/harness from configData if
+  // present, otherwise fall back to DB DEFAULTs ('lobster', 'openclaw',
+  // 'milady'). Imports from older exports won't have these fields — the
+  // safety net is the NOT NULL DEFAULT clause on the columns.
   const [avatar] = await db
     .insert(avatars)
     .values({
@@ -766,6 +785,9 @@ agentSetupRoutes.post('/import', requireAuth, async (c) => {
       isActive: isFirstAgent,
       equippedSkills: configData.equippedSkills ?? [],
       totalXp: configData.totalXp ?? 0,
+      ...(configData.modelKey ? { modelKey: configData.modelKey } : {}),
+      ...(configData.agentCategory ? { agentCategory: configData.agentCategory } : {}),
+      ...(configData.harness ? { harness: configData.harness } : {}),
     })
     .returning();
 
