@@ -35,38 +35,6 @@ const pixelZones = buildingZones.map((z) => ({
   width: z.width * TILE_SIZE, height: z.height * TILE_SIZE,
 }));
 
-// ---------------------------------------------------------------------------
-// Debug overlay support — gated on window.__DEBUG_FACING (default true for this build)
-// Toggle at runtime: window.__DEBUG_FACING = false
-// Writes to window.__FACING_DEBUG each frame when possessed + debug is on.
-// ---------------------------------------------------------------------------
-declare global {
-  interface Window {
-    __DEBUG_FACING: boolean;
-    __FACING_DEBUG: {
-      inputFwd: number;
-      inputRight: number;
-      worldVx: number;
-      worldVz: number;
-      facingAngle: number;
-      facingDeg: number;
-      camFwdX: number;
-      camFwdZ: number;
-      direction: string;
-      rotationY: number;    // filled by arena-npcs.tsx renderer
-      rotationDeg: number;  // filled by arena-npcs.tsx renderer
-    };
-  }
-}
-if (typeof window !== 'undefined') {
-  if (window.__DEBUG_FACING === undefined) window.__DEBUG_FACING = true;
-  window.__FACING_DEBUG = window.__FACING_DEBUG ?? {
-    inputFwd: 0, inputRight: 0, worldVx: 0, worldVz: 0,
-    facingAngle: 0, facingDeg: 0, camFwdX: 0, camFwdZ: 0,
-    direction: 'idle', rotationY: 0, rotationDeg: 0,
-  };
-}
-
 // Module-level key state — avoids closure allocs
 interface NpcKeyState { w: boolean; a: boolean; s: boolean; d: boolean; e: boolean; escape: boolean; }
 const _keys: NpcKeyState = { w: false, a: false, s: false, d: false, e: false, escape: false };
@@ -204,18 +172,6 @@ export default function NpcController() {
     // Prior sessions concluded +X (wrong — camera was orbited in that screenshot). +Z is proven by unambiguous side-view.
     const facingAngle = Math.atan2(worldVx, worldVz);
 
-    // Debug instrumentation — write frame data to window.__FACING_DEBUG
-    if (typeof window !== 'undefined' && window.__DEBUG_FACING && window.__FACING_DEBUG) {
-      window.__FACING_DEBUG.inputFwd = +inputFwd.toFixed(3);
-      window.__FACING_DEBUG.inputRight = +inputRight.toFixed(3);
-      window.__FACING_DEBUG.worldVx = +worldVx.toFixed(4);
-      window.__FACING_DEBUG.worldVz = +worldVz.toFixed(4);
-      window.__FACING_DEBUG.camFwdX = +_camForward.x.toFixed(4);
-      window.__FACING_DEBUG.camFwdZ = +_camForward.z.toFixed(4);
-      window.__FACING_DEBUG.facingAngle = +facingAngle.toFixed(4);
-      window.__FACING_DEBUG.facingDeg = +((facingAngle * 180) / Math.PI).toFixed(1);
-    }
-
     // Cardinal direction for sprite system
     const dir = directionFromVelocity(worldVx, worldVz);
 
@@ -227,11 +183,6 @@ export default function NpcController() {
     // worldX maps to pixelX, worldZ maps to pixelY (same scale, different offset)
     const newX = Math.max(X_MIN, Math.min(X_MAX, npc.x + worldVx * SPEED * delta));
     const newY = Math.max(Y_MIN, Math.min(Y_MAX, npc.y + worldVz * SPEED * delta));
-
-    // Write direction to debug object (after dir is computed)
-    if (typeof window !== 'undefined' && window.__DEBUG_FACING && window.__FACING_DEBUG) {
-      window.__FACING_DEBUG.direction = dir;
-    }
 
     useNpcStore.getState().moveNpc(possessedNpcId, newX, newY, dir, facingAngle);
   });
