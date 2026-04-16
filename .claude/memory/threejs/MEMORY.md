@@ -42,6 +42,7 @@
 - [Multi-variant merged seaweed with per-blade TSL amplitude](patterns/merged-seaweed-multivariant.md) — 3 blade shapes, cluster distribution, aAmplitude attribute drives per-variant sway in TSL, two-wave oceanic motion
 
 - [Universal procedural character animation](patterns/universal-character-animation.md) — spatial mesh analysis + per-type motion profiles, softLerp hot path, routes 9 new GLBs while preserving LobsterAnimator
+- [Companion NPC pattern](patterns/companion-npc-pattern.md) — passive NPC beside primary; same NpcMesh with showLabel=false; seed+17 for staggered raycasts; preload companion GLBs in DeferredNpcPreloads
 - [KTX2Loader wiring for drei useGLTF with WebGPU support](patterns/ktx2-loader-wiring.md) — singleton + Canvas component + extendLoader; basis WASM from three/examples/jsm/libs/basis; three/addons KTX2Loader required (not three-stdlib)
 
 - [WebP texture compression for GLBs](performance/webp-texture-compression.md) — gltf-transform+sharp converts PNG→WebP in GLBs (83% P1 / 66% P2 wire savings); includes long-task regression warning
