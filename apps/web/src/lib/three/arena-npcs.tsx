@@ -86,19 +86,25 @@ function computeNpcScale(scene: THREE.Object3D): { scale: number; localMinY: num
     }
   });
 
-  const nonSkinnedEmpty = _npcBbox.isEmpty();
-
-  if (nonSkinnedEmpty) {
-    // All geometry is SkinnedMesh (e.g. anime characters like chihiro, priestess,
-    // chibi_goku). setFromObject() here would use the bind-pose world matrix and
-    // inflate max.y / min.y by 100-600x, causing two related blowups:
-    //   1. inflated max.y → tiny computed scale → triggers fallback → scale = TARGET_NPC_HEIGHT
-    //   2. inflated min.y (large negative) × TARGET_NPC_HEIGHT → pivotOffsetY ≈ -72000
-    //      → position.y = terrainY - (-72000) = 72000 world units up
-    // Fix: when no non-skinned geometry found, treat pivot as feet (localMinY = 0) and
-    // use scale = TARGET_NPC_HEIGHT (assumes native body height ≈ 1.0 unit). The hard
-    // clamp below enforces this as a final safety net regardless of bbox path.
-    return { scale: Math.min(NPC_SCALE_CLAMP_MAX, TARGET_NPC_HEIGHT), localMinY: 0 };
+  if (_npcBbox.isEmpty()) {
+    // All geometry is SkinnedMesh (chihiro, priestess, chibi_goku, etc.).
+    // Use the bind-pose bbox to measure the actual native geometry height — DO NOT
+    // assume native height ≈ 1.0 unit. Some GLBs are exported at 500–650 native units;
+    // applying scale=TARGET(120) on top would render them at 60000–78000 wu.
+    // setFromObject() uses bind-pose world matrices (inflated Y extents), but we only
+    // use it for SCALE computation (max.y / total height). We force localMinY=0 to avoid
+    // using the inflated min.y in the pivot-offset calculation (which caused skyward launch).
+    _npcBbox.setFromObject(scene);
+    if (_npcBbox.isEmpty()) {
+      // Truly empty scene (no geometry at all) — safe minimum
+      return { scale: NPC_SCALE_CLAMP_MIN, localMinY: 0 };
+    }
+    const bindH = _npcBbox.max.y > 0.001 ? _npcBbox.max.y : (_npcBbox.max.y - _npcBbox.min.y);
+    const bindScale = bindH > 0.001 ? TARGET_NPC_HEIGHT / bindH : TARGET_NPC_HEIGHT;
+    const scale = Math.max(NPC_SCALE_CLAMP_MIN, Math.min(NPC_SCALE_CLAMP_MAX, bindScale));
+    // localMinY=0: never use the bind-pose min.y for pivot offset — it inflates to hundreds
+    // of native units and would produce a catastrophic pivotOffsetY (scale * inflated_min).
+    return { scale, localMinY: 0 };
   }
 
   // localMinY MUST come from the non-skinned bbox only — never from setFromObject.
@@ -110,6 +116,23 @@ function computeNpcScale(scene: THREE.Object3D): { scale: number; localMinY: num
   // Use bbox.max.y as normalizing height (above-pivot visual extent)
   const h = maxY > 0.001 ? maxY : 1.0;
   const computed = TARGET_NPC_HEIGHT / h;
+
+  // If computed > CLAMP_MAX the non-skinned geometry is tiny accessories (not the body).
+  // Fall back to bind-pose bbox for a more reliable body height estimate.
+  // CRITICAL: force localMinY=0 here — localMinY came from a tiny accessory (e.g. a coin
+  // at y=-154 local space). Using that value × a large scale would launch the NPC skyward.
+  // (localMinY * 240 = -37000+ wu offset → NPC appears at +37000 above ground.)
+  if (computed > NPC_SCALE_CLAMP_MAX) {
+    const _bindBbox = new THREE.Box3().setFromObject(scene);
+    if (!_bindBbox.isEmpty()) {
+      const bindMaxY = _bindBbox.max.y > 0.001 ? _bindBbox.max.y : (_bindBbox.max.y - _bindBbox.min.y);
+      if (bindMaxY > 0.001) {
+        const bindScale = TARGET_NPC_HEIGHT / bindMaxY;
+        const scale = Math.max(NPC_SCALE_CLAMP_MIN, Math.min(NPC_SCALE_CLAMP_MAX, bindScale));
+        return { scale, localMinY: 0 };
+      }
+    }
+  }
 
   // Hard cap — unconditional. Never allow scale to escape this range regardless of
   // what the bbox measurement returns. This is the final safety net, not a conditional.
@@ -123,6 +146,10 @@ function computeNpcScale(scene: THREE.Object3D): { scale: number; localMinY: num
 function computeLocalMinY(scene: THREE.Object3D): number {
   return computeNpcScale(scene).localMinY;
 }
+
+// Module-scope scratch Box3 for the rendered-height hard cap (Layer 2 safety net).
+// Allocated once — never inside useFrame to avoid GC pressure.
+const _renderedBbox = new THREE.Box3();
 
 // Shared raycaster — set to only hit layer 1 (terrain)
 const _raycaster = new THREE.Raycaster();
@@ -171,6 +198,9 @@ Object.values(SPECIES_MODEL).forEach(({ path }) => useGLTF.preload(path));
 const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
   const groupRef = useRef<THREE.Group>(null!);
   const animGroupRef = useRef<THREE.Group>(null!);
+  // Layer 2 safety net: one-shot rendered-height hard cap applied after first render.
+  // Catches any NPC that slips through computeNpcScale with a wrong pivot offset.
+  const rescaleAppliedRef = useRef(false);
   const npcRef = useRef(npc);
   npcRef.current = npc;
   const { scene: threeScene } = useThree();
@@ -285,6 +315,27 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     while (diff < -Math.PI) diff += Math.PI * 2;
     currentRotY.current += diff * Math.min(1, 8 * dt);
     group.rotation.y = currentRotY.current;
+
+    // Layer 2: one-shot rendered-height hard cap.
+    // Runs once after 0.5s so geometry/bones settle before measurement.
+    // Guards against any NPC whose pivot offset blows up despite Layer 1 fixes.
+    // HARD_MAX = 250 wu — no correctly-scaled wandering NPC should exceed this.
+    if (!rescaleAppliedRef.current && clock.elapsedTime > 0.5) {
+      _renderedBbox.setFromObject(group);
+      if (!_renderedBbox.isEmpty()) {
+        const renderedH = _renderedBbox.max.y - _renderedBbox.min.y;
+        const HARD_MAX = 250;
+        if (renderedH > HARD_MAX) {
+          const scaledSubGroup = group.children[0]; // the [npcScale, npcScale, npcScale] group
+          if (scaledSubGroup) {
+            scaledSubGroup.scale.multiplyScalar(HARD_MAX / renderedH);
+          }
+          // Also reset vertical position to terrain surface so it's no longer floating
+          group.position.y = currentTerrainY.current + 2;
+        }
+        rescaleAppliedRef.current = true;
+      }
+    }
 
     if (useNewSystem && charAnimator) {
       // Universal character animation system — handles all secondary motion internally
