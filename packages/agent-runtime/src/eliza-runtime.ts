@@ -666,7 +666,16 @@ export class ElizaRuntime {
 
     try {
       const userKey = context.userId || 'anonymous';
-      const roomId = generateRoomId(this.config.agentId, userKey);
+      // Honor caller-supplied roomId ONLY when it's already a valid UUID. This
+      // preserves backward compatibility with legacy call sites (avatar chat,
+      // agent-gateway) that pass human-readable strings — those were always
+      // ignored in favor of the internal (agentId, userId) derivation, and we
+      // keep ignoring them here so existing memory rows remain reachable.
+      // Phase 6 opts in by passing a proper UUID from `characterRoomId()`.
+      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const roomId: UUID = context.roomId && UUID_RE.test(context.roomId)
+        ? (context.roomId as UUID)
+        : generateRoomId(this.config.agentId, userKey);
       const entityId = uuidv5(userKey, ROOM_NAMESPACE) as UUID;
       const agentId = this.config.agentId as UUID;
 

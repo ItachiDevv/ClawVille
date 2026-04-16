@@ -1,5 +1,8 @@
 export { ElizaRuntime, createElizaRuntime } from './eliza-runtime';
 export type { ElizaRuntimeConfig, ElizaMessage, ElizaRuntimeState } from './eliza-runtime';
+
+// Phase 6 — per-user character room scoping
+export { characterRoomId, CHARACTER_ROOM_NAMESPACE } from './room-scoping';
 export { createOpenClawProviderPlugin } from './plugins/openclaw-provider';
 export type { OpenClawGatewayConfig } from './plugins/openclaw-provider';
 export { loadLocationTemplate, loadCharacter, mergeCustomizations } from './character-loader';

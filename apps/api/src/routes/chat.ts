@@ -14,6 +14,7 @@ import { getSystemNpcAgent } from '../services/system-npc-seeder';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 import type { ClawvilleServices } from '@clawville/agent-runtime';
+import { characterRoomId } from '@clawville/agent-runtime';
 
 export const chatRoutes = new Hono<AppContext>();
 
@@ -161,7 +162,10 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
   // context automatically; dynamicContext carries collaboration + milady extras
   const response = await runtime.processMessage(result.data.content, {
     userId: user.id,
-    roomId: `${locationId}-${user.id}`,
+    // Phase 6 — per-user memory isolation: stable v5 UUID scoped to
+    // (locationId, userId) so every visitor has their own private chat
+    // room with the character, while still sharing the character itself.
+    roomId: characterRoomId(locationId, user.id),
     platform: 'clawville',
     dynamicContext,
     state,
