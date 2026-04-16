@@ -109,15 +109,49 @@ function stripGroundPlanes(scene: THREE.Object3D): void {
   toRemove.forEach((obj) => obj.removeFromParent());
 }
 
-/** Measure bounding box and return scale to reach target height.
+// Scratch objects for computeBuildingScale — module-scope to avoid per-call GC.
+const _buildBbox = new THREE.Box3();
+const _buildMeshBox = new THREE.Box3();
+const _buildSize = new THREE.Vector3();
+
+/** Measure bounding box and return scale so the building's Y-height = BUILDING_TARGET_HEIGHT.
+ *  Uses size.y (height) exclusively — NOT max(w,h,d).
+ *  Rationale: max-dim normalization crushes building HEIGHT on wide/squat GLBs
+ *  (salty-spitoon, boating-school) because their width exceeds their height and
+ *  becomes the normalizing dimension. Height is the architecturally salient axis —
+ *  a building should stand 800 units tall regardless of its aspect ratio.
+ *
+ *  Also excludes SkinnedMesh nodes from the bbox measurement to avoid bind-pose
+ *  inflation. Building GLBs are generally static, but any rigged prop in the scene
+ *  would otherwise skew the normalization.
+ *
  *  Called AFTER stripping ground planes. */
 function computeBuildingScale(scene: THREE.Object3D): number {
-  const box = new THREE.Box3().setFromObject(scene);
-  const size = new THREE.Vector3();
-  box.getSize(size);
-  const maxDim = Math.max(size.x, size.y, size.z);
-  if (maxDim === 0) return 1;
-  return BUILDING_TARGET_HEIGHT / maxDim;
+  scene.updateMatrixWorld(true);
+  _buildBbox.makeEmpty();
+
+  scene.traverse((child) => {
+    if ((child as THREE.Mesh).isMesh && !(child as THREE.SkinnedMesh).isSkinnedMesh) {
+      const mesh = child as THREE.Mesh;
+      if (!mesh.geometry) return;
+      mesh.geometry.computeBoundingBox();
+      const geoBB = mesh.geometry.boundingBox;
+      if (!geoBB) return;
+      _buildMeshBox.copy(geoBB).applyMatrix4(mesh.matrixWorld);
+      _buildBbox.union(_buildMeshBox);
+    }
+  });
+
+  if (_buildBbox.isEmpty()) {
+    _buildBbox.setFromObject(scene);
+  }
+
+  _buildBbox.getSize(_buildSize);
+  // Use Y (height) as the normalizing dimension. Fall back to maxDim only if Y
+  // is degenerate (e.g. a completely flat mesh or a scene with zero height content).
+  const h = _buildSize.y > 0.001 ? _buildSize.y : Math.max(_buildSize.x, _buildSize.y, _buildSize.z);
+  if (h === 0) return 1;
+  return BUILDING_TARGET_HEIGHT / h;
 }
 
 // Preload all models

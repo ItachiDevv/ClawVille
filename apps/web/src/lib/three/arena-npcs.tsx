@@ -24,7 +24,14 @@ import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 const LERP_SPEED = 5;
-const NPC_SCALE = 13;
+// NPC_SCALE=50 targets ~115-142 world-unit height for the species mix on the
+// 5120-unit map. Previous value of 13 produced 31-37 units — invisible against
+// 800-unit buildings at normal camera distance. Formula: 13 * (120/34) ≈ 46;
+// rounded to 50 for headroom. Measured per-species heights at scale=50 expected:
+//   lobster/crayfish (crustacean GLBs, ~2.4 native H): ~120 wu
+//   chihiro/priestess/chibi_goku (humanoid GLBs, ~2.0-2.8 native H): ~100-140 wu
+//   jellyfish/octopus/seahorse (sea-creature GLBs, ~2.0-3.5 native H): ~100-175 wu
+const NPC_SCALE = 50;
 
 // Preload deferred to after SPECIES_MODEL declaration — see below.
 
@@ -39,6 +46,45 @@ const DIR_ROTATION: Record<string, number> = {
 };
 
 import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
+
+// Scratch objects for computeLocalMinY — module-scope to avoid GC in useMemo.
+const _npcBbox = new THREE.Box3();
+const _npcMeshBbox = new THREE.Box3();
+
+/** Measure the local-space bbox min.y of non-SkinnedMesh geometry in a scene.
+ *
+ *  The scene is assumed to be a freshly cloned GLB that is NOT yet parented into
+ *  the live Three.js scene graph. Call updateMatrixWorld(true) first.
+ *
+ *  Returns localMinY: the lowest point of geometry in local space at scale=1.
+ *  - 0  → pivot at feet, no correction needed
+ *  - < 0 → pivot above feet (geometry extends below group origin); multiply by
+ *           NPC_SCALE and subtract from Y position to ground the model correctly
+ *  - > 0 → pivot below feet (floating), same correction lowers it
+ *
+ *  Falls back to Box3.setFromObject() if no non-skinned geometry is found. */
+function computeLocalMinY(scene: THREE.Object3D): number {
+  scene.updateMatrixWorld(true);
+  _npcBbox.makeEmpty();
+
+  scene.traverse((child) => {
+    if ((child as THREE.Mesh).isMesh && !(child as THREE.SkinnedMesh).isSkinnedMesh) {
+      const mesh = child as THREE.Mesh;
+      if (!mesh.geometry) return;
+      mesh.geometry.computeBoundingBox();
+      const geoBB = mesh.geometry.boundingBox;
+      if (!geoBB) return;
+      _npcMeshBbox.copy(geoBB).applyMatrix4(mesh.matrixWorld);
+      _npcBbox.union(_npcMeshBbox);
+    }
+  });
+
+  if (_npcBbox.isEmpty()) {
+    _npcBbox.setFromObject(scene);
+  }
+
+  return _npcBbox.isEmpty() ? 0 : _npcBbox.min.y;
+}
 
 // Shared raycaster — set to only hit layer 1 (terrain)
 const _raycaster = new THREE.Raycaster();
@@ -105,10 +151,16 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // Determine which animation system to use
   const useNewSystem = speciesInfo.key !== 'lobster' && speciesInfo.key !== 'crayfish';
 
-  const { cloned, lobsterAnimator, charAnimator } = useMemo(() => {
+  const { cloned, lobsterAnimator, charAnimator, pivotOffsetY } = useMemo(() => {
     const c = scene.clone(true);
     const tint = new THREE.Color(npc.color);
     applyColorTint(c, tint, 0.7, 0.25);
+
+    // Compute per-GLB pivot offset so feet sit on terrain regardless of pivot placement.
+    // localMinY is the bbox min.y of non-skinned geometry at scale=1 (local space).
+    // Multiply by NPC_SCALE to get the world-space correction to apply to group.position.y.
+    const localMinY = computeLocalMinY(c);
+    const pivotOffset = localMinY * NPC_SCALE;
 
     if (useNewSystem) {
       const anim = createCharacterAnimator(speciesInfo.key, c);
@@ -116,6 +168,7 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
         cloned: c,
         lobsterAnimator: null as LobsterAnimator | null,
         charAnimator: anim as CharacterAnimator,
+        pivotOffsetY: pivotOffset,
       };
     } else {
       const parts = discoverLobsterParts(c);
@@ -124,6 +177,7 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
         cloned: c,
         lobsterAnimator: anim,
         charAnimator: null as CharacterAnimator | null,
+        pivotOffsetY: pivotOffset,
       };
     }
   }, [scene, npc.color, speciesInfo.key, useNewSystem]);
@@ -171,10 +225,15 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
       currentTerrainY.current += (terrainY - currentTerrainY.current) * 0.3;
     }
 
-    // Base bob on top of terrain height
+    // Base bob on top of terrain height.
+    // Subtract pivotOffsetY to ground each GLB regardless of pivot placement:
+    //   pivotOffsetY = localMinY * NPC_SCALE
+    //   - pivotOffsetY < 0 → pivot above feet → subtracting a negative raises the model
+    //   - pivotOffsetY = 0 → no change
+    //   - pivotOffsetY > 0 → pivot below feet (floating) → lowers it
     const isMoving = d.direction !== 'idle' && !d.isDead;
     const bob = isMoving ? Math.sin(clock.elapsedTime * 4.0 + seed) * 0.6 : 0;
-    group.position.y = currentTerrainY.current + 2 + bob;
+    group.position.y = currentTerrainY.current + 2 + bob - pivotOffsetY;
 
     // Direction rotation — use smooth facingAngle when set (possessed NPC),
     // otherwise snap to cardinal DIR_ROTATION (autonomous wander NPCs).
@@ -226,9 +285,9 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
         </group>
       </group>
       {/* Name label — OUTSIDE scaled group so position is in world units.
-          NPC models are ~13-26 world units tall (NPC_SCALE=13); 18 = safe above tallest species. */}
+          NPC_SCALE=50 targets ~115-142 world-unit height; 150 = safe clearance above tallest species. */}
       <Html
-        position={[0, 18, 0]}
+        position={[0, 150, 0]}
         center
         distanceFactor={300}
         style={{ pointerEvents: 'none' }}
