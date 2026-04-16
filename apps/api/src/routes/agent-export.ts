@@ -34,6 +34,7 @@ import {
   type AgentCategory,
   type AgentHarness,
   type AgentModelMeta,
+  type KnowledgeBook,
   type SkillPackEntry,
 } from '@clawville/shared';
 import { buildCharacterExport } from '@clawville/agent-runtime';
@@ -109,9 +110,17 @@ function buildInstallCommand(payload: unknown, miladyBaseUrl: string): string {
   // Replace every `'` with `'\''` so the single-quoted wrapper stays intact.
   const escaped = json.replace(/'/g, `'\\''`);
   // Trim trailing slash so concatenation stays well-formed regardless
-  // of what the caller passes (`http://localhost:2138` vs `.../`).
-  const base = miladyBaseUrl.replace(/\/+$/, '');
-  return `curl -X POST ${base}/api/plugins/install -H 'Content-Type: application/json' -d '${escaped}'`;
+  // of what the caller passes (`http://localhost:2138` vs `.../`), then
+  // shell-single-quote-escape. `z.string().url()` accepts shell meta-
+  // chars like `$(cmd)` and backticks — since Phase 4a will display
+  // this command in a copy-to-clipboard UI, an attacker-controlled
+  // `miladyBaseUrl` could otherwise smuggle a command substitution
+  // into the user's terminal. Wrap in single quotes + escape embedded
+  // apostrophes the same way we do for the JSON payload.
+  const trimmed = miladyBaseUrl.replace(/\/+$/, '');
+  const fullUrl = `${trimmed}/api/plugins/install`;
+  const urlQuoted = `'${fullUrl.replace(/'/g, `'\\''`)}'`;
+  return `curl -X POST ${urlQuoted} -H 'Content-Type: application/json' -d '${escaped}'`;
 }
 
 /**
@@ -120,14 +129,16 @@ function buildInstallCommand(payload: unknown, miladyBaseUrl: string): string {
  * current spec; the fully-learned check below uses `.every(...)` so 3+
  * books per building would still work correctly (pet would need ALL of them).
  */
-const BOOKS_BY_BUILDING: Readonly<Record<string, typeof KNOWLEDGE_BOOKS>> = (() => {
-  const m: Record<string, typeof KNOWLEDGE_BOOKS> = {};
+const BOOKS_BY_BUILDING: Readonly<Record<string, readonly KnowledgeBook[]>> = (() => {
+  const m: Record<string, KnowledgeBook[]> = {};
   for (const book of KNOWLEDGE_BOOKS) {
-    if (!m[book.building]) m[book.building] = [];
-    m[book.building].push(book);
+    (m[book.building] ??= []).push(book);
   }
-  // Freeze the index so test-time mutations of `KNOWLEDGE_BOOKS` (or any
-  // accidental write here) fail loudly instead of silently drifting.
+  // Deep-freeze: the outer Record AND each inner array. `Object.freeze` is
+  // shallow, and `KNOWLEDGE_BOOKS` is typed as `KnowledgeBook[]` (mutable),
+  // so without this loop a test helper that does `BOOKS_BY_BUILDING['x']
+  // .push(fakeBook)` would succeed silently and corrupt skill-pack output.
+  for (const arr of Object.values(m)) Object.freeze(arr);
   return Object.freeze(m);
 })();
 
