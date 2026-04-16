@@ -15,7 +15,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
   // === Development Quarter (North) ===
   {
     id: 'canvas-studio',
-    name: 'Biolume Studio',
+    name: 'Pineapple House',
     description: 'Query SQL, build data pipelines, scrape the web, and process analytics.',
     icon: '🎨',
     positionX: 2240, // tile x=70 * 32  (center tile 77 unchanged)
@@ -25,7 +25,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
   },
   {
     id: 'skill-forge',
-    name: 'Hydrothermal Forge',
+    name: 'Chum Bucket',
     description: 'Practice code generation, debugging, testing, and git workflows.',
     icon: '🌋',
     positionX: 2752, // tile x=86 * 32  (center tile 93 unchanged)
@@ -35,7 +35,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
   },
   {
     id: 'tool-workshop',
-    name: 'Salvage Workshop',
+    name: 'Krusty Krab',
     description: 'Build function calling, MCP servers, tool chains, and agentic loops.',
     icon: '⚓',
     positionX: 2496, // tile x=78 * 32  (center tile 85 unchanged)
@@ -46,7 +46,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
   // === Communications Hub (East) ===
   {
     id: 'channel-bridge',
-    name: 'Coral Bridge',
+    name: "Sandy's Treedome",
     description: 'Connect via Slack, Discord, Telegram, email, and multi-channel messaging.',
     icon: '🪸',
     positionX: 3840, // tile x=120 * 32  (center tile 127 unchanged)
@@ -56,7 +56,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
   },
   {
     id: 'webhook-gateway',
-    name: 'Current Gateway',
+    name: 'Salty Spitoon',
     description: 'Master REST APIs, GraphQL, webhooks, OAuth, and integrations.',
     icon: '🌊',
     positionX: 3840, // tile x=120 * 32  (center tile 127 unchanged)
@@ -66,7 +66,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
   },
   {
     id: 'voice-tower',
-    name: 'Echo Spire',
+    name: 'Boating School',
     description: 'Search the web, verify facts, summarize documents, and run research.',
     icon: '🐋',
     positionX: 3392, // tile x=106 * 32  (center tile 113 unchanged)
@@ -77,7 +77,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
   // === Infrastructure District (South) ===
   {
     id: 'cron-hub',
-    name: 'Tide Clock Grotto',
+    name: 'Downtown Building',
     description: 'Learn automation, cron jobs, task queues, and workflow orchestration.',
     icon: '🐚',
     positionX: 2240, // tile x=70 * 32  (center tile 77 unchanged)
@@ -87,7 +87,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
   },
   {
     id: 'config-citadel',
-    name: 'Nautilus Citadel',
+    name: 'Lighthouse',
     description: 'Manage projects, invoices, documents, scheduling, and deployments.',
     icon: '🐙',
     positionX: 2752, // tile x=86 * 32  (center tile 93 unchanged)
@@ -97,7 +97,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
   },
   {
     id: 'security-fortress',
-    name: 'Shell Fortress',
+    name: "Patrick's Rock",
     description: 'Explore Solana, wallets, DeFi protocols, and smart contracts.',
     icon: '🛡️',
     positionX: 2496, // tile x=78 * 32  (center tile 85 unchanged)
@@ -108,7 +108,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
   // === Knowledge Center (NW solo) ===
   {
     id: 'memory-vault',
-    name: 'Abyssal Vault',
+    name: "Squidward's House",
     description: 'Study RAG pipelines, vector databases, embeddings, and context management.',
     icon: '🧠',
     positionX: 1280, // tile x=40 * 32  (center tile 47 unchanged)
