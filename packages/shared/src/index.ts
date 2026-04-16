@@ -21,3 +21,4 @@ export * from './constants/article-seeds';
 export * from './constants/quest-seeds';
 export * from './types/collaboration';
 export * from './constants/milady-skills';
+export * from './constants/agent-models';

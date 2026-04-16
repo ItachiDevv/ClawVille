@@ -65,6 +65,12 @@ export const api = {
     gender: string;
     archetypeId: string;
     personality: { habitat: string; hobby: string; greeting: string };
+    /** Phase 2 — 3D model key from AGENT_MODELS registry */
+    modelKey?: string;
+    /** Phase 2 — agent framework category */
+    agentCategory?: 'openclaw' | 'hermes' | 'milady' | 'other';
+    /** Phase 2 — preferred runtime harness */
+    harness?: 'openclaw' | 'hermes' | 'milady' | 'custom';
   }) =>
     request<{ avatar: any; agentId: string }>('/api/avatars', {
       method: 'POST',
