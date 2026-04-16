@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useEffect, useCallback, memo } from 'react';
+import { useRef, useEffect, useCallback, memo, useState } from 'react';
 import { Canvas, useFrame, extend, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
@@ -676,6 +676,63 @@ function ContextLostFallback() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// FacingDebugOverlay — polls window.__FACING_DEBUG every 100ms and renders
+// a monospace HUD in the top-left corner. Gated on window.__DEBUG_FACING.
+// Toggle off at runtime: window.__DEBUG_FACING = false
+// Default is ON for this debug build.
+// ---------------------------------------------------------------------------
+function FacingDebugOverlay() {
+  const [data, setData] = useState<Window['__FACING_DEBUG'] | null>(null);
+  const [visible, setVisible] = useState(true);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (typeof window === 'undefined') return;
+      const on = window.__DEBUG_FACING !== false;
+      setVisible(on);
+      if (on && window.__FACING_DEBUG) {
+        // Shallow clone so useState triggers a re-render
+        setData({ ...window.__FACING_DEBUG });
+      }
+    }, 100);
+    return () => clearInterval(id);
+  }, []);
+
+  if (!visible || !data) return null;
+
+  const fmt = (n: number, d = 3) => n.toFixed(d);
+
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        top: 8,
+        left: 8,
+        zIndex: 9999,
+        background: 'rgba(0,0,0,0.75)',
+        color: '#0ff',
+        fontFamily: 'monospace',
+        fontSize: 12,
+        lineHeight: '1.6',
+        padding: '6px 10px',
+        borderRadius: 4,
+        pointerEvents: 'none',
+        userSelect: 'none',
+        whiteSpace: 'pre',
+      }}
+    >
+      {`[DEBUG FACING]\n`}
+      {`inputFwd:   ${fmt(data.inputFwd)}   inputRight: ${fmt(data.inputRight)}\n`}
+      {`camFwd:     x=${fmt(data.camFwdX)}  z=${fmt(data.camFwdZ)}\n`}
+      {`worldVx:    ${fmt(data.worldVx, 4)}   worldVz: ${fmt(data.worldVz, 4)}\n`}
+      {`facingAngle:${fmt(data.facingAngle, 4)} rad  (${fmt(data.facingDeg, 1)}°)\n`}
+      {`rotation.y: ${fmt(data.rotationY, 4)} rad  (${fmt(data.rotationDeg, 1)}°)\n`}
+      {`direction:  ${data.direction}`}
+    </div>
+  );
+}
+
 function World3DCanvas({ mode }: World3DCanvasProps) {
   // Stable async gl factory — R3F v9 awaits this before rendering.
   // Returns a WebGPURenderer (with automatic WebGL2 fallback built in).
@@ -708,6 +765,7 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
         left: 0,
       }}
     >
+      <FacingDebugOverlay />
       <Canvas
         gl={glFactory as any}
         dpr={[0.75, 1]}
