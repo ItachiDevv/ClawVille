@@ -40,11 +40,13 @@ export interface GameState {
   isSpectator: boolean;
   setIsSpectator: (v: boolean) => void;
 
-  // Pet appearance (species + color for sprite rendering)
+  // Pet appearance (species + color for sprite rendering; modelKey for 3D GLB)
   petSpecies: string;
   petColor: string;
   petName: string;
-  setPetAppearance: (species: string, color: string, name?: string) => void;
+  /** Phase 2: stable model key from AGENT_MODELS registry — drives GLB in player-pet.tsx */
+  petModelKey: string;
+  setPetAppearance: (species: string, color: string, name?: string, modelKey?: string) => void;
 
   // Pet position (written by game loop)
   petPosition: { x: number; y: number };
@@ -121,12 +123,12 @@ export interface GameState {
   activityFeedOpen: boolean;
   toggleActivityFeed: () => void;
 
-  // OpenClaw connection (World mode)
-  openclawConnected: boolean;
-  openclawSessionId: string | null;
-  openclawModalOpen: boolean;
-  setOpenclawModalOpen: (open: boolean) => void;
-  setOpenclawConnection: (sessionId: string | null) => void;
+  // Agent connection (World mode) — supports any agent type, not just OpenClaw
+  agentConnected: boolean;
+  agentSessionId: string | null;
+  agentConnectModalOpen: boolean;
+  setAgentConnectModalOpen: (open: boolean) => void;
+  setAgentConnection: (sessionId: string | null) => void;
 
   // Toast notifications
   toasts: Toast[];
@@ -314,7 +316,13 @@ export const useGameStore = create<GameState>((set, get) => ({
   petSpecies: 'cat',
   petColor: 'yellow',
   petName: '',
-  setPetAppearance: (species, color, name) => set({ petSpecies: species, petColor: color, ...(name ? { petName: name } : {}) }),
+  petModelKey: 'lobster',
+  setPetAppearance: (species, color, name, modelKey) => set({
+    petSpecies: species,
+    petColor: color,
+    ...(name ? { petName: name } : {}),
+    petModelKey: modelKey ?? 'lobster',
+  }),
 
   petPosition: { x: 2560, y: 2560 },
   setPetPosition: (x, y) => set({ petPosition: { x, y } }),
@@ -407,11 +415,11 @@ export const useGameStore = create<GameState>((set, get) => ({
   activityFeedOpen: false,
   toggleActivityFeed: () => set((s) => ({ activityFeedOpen: !s.activityFeedOpen })),
 
-  openclawConnected: false,
-  openclawSessionId: null,
-  openclawModalOpen: false,
-  setOpenclawModalOpen: (open) => set({ openclawModalOpen: open }),
-  setOpenclawConnection: (sessionId) => {
+  agentConnected: false,
+  agentSessionId: null,
+  agentConnectModalOpen: false,
+  setAgentConnectModalOpen: (open) => set({ agentConnectModalOpen: open }),
+  setAgentConnection: (sessionId) => {
     // A connected claw IS an agent driving the user's own pet (Option A
     // architecture — the external claw takes over the user's avatar rather
     // than spawning a parallel NPC). Flipping hasAgent here swaps the
@@ -437,9 +445,9 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
 
     set((s) => ({
-      openclawConnected: connected,
-      openclawSessionId: sessionId,
-      openclawModalOpen: false,
+      agentConnected: connected,
+      agentSessionId: sessionId,
+      agentConnectModalOpen: false,
       hasAgent: connected,
       controlMode: connected ? 'player' : 'explore',
       isSpectator: !connected,
@@ -566,13 +574,20 @@ export const useGameStore = create<GameState>((set, get) => ({
         useNpcStore.getState().removePlayerNpc();
       } catch { /* npc store may not be loaded */ }
     }
+    // Clear any in-progress create-agent draft so a different user on the
+    // same browser doesn't see the previous user's half-filled form (name,
+    // thumbnail JPEG, model choice). sessionStorage is per-tab so this is
+    // defensive — covers the case where the same tab persists across login.
+    if (typeof window !== 'undefined') {
+      try { sessionStorage.removeItem('createPetStep1'); } catch { /* ignore storage errors */ }
+    }
     set({
     controlMode: 'explore',
     hasAgent: false,
     possessedNpcId: null,
     isSpectator: true,
     petSpecies: 'cat',
-    petColor: 'yellow',
+    petColor: 'green',
     petName: '',
     petPosition: { x: 2560, y: 2560 },
     movementDirection: 'idle',
@@ -591,9 +606,9 @@ export const useGameStore = create<GameState>((set, get) => ({
     cameraJoystickVelocity: { x: 0, y: 0 },
     petIsAutonomous: false,
     activityFeedOpen: false,
-    openclawConnected: false,
-    openclawSessionId: null,
-    openclawModalOpen: false,
+    agentConnected: false,
+    agentSessionId: null,
+    agentConnectModalOpen: false,
     toasts: [],
     skillBuilderOpen: false,
     marketplaceOpen: false,
