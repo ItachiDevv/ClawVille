@@ -63,7 +63,6 @@ export interface AgentModelMeta {
 export const AGENT_MODELS = [
   // ── OpenClaw (crustaceans) ──
   { key: 'lobster',       label: 'Reef Lobster',    category: 'openclaw' },
-  { key: 'crayfish',      label: 'Crayfish',        category: 'openclaw' },
   { key: 'sweet_crab',    label: 'Sweet Crab',      category: 'openclaw' },
   { key: 'lobster_plush', label: 'Lobster Plush',   category: 'openclaw' },
   { key: 'hermitcrab',    label: 'Hermit Crab',     category: 'openclaw' },
@@ -73,6 +72,11 @@ export const AGENT_MODELS = [
   { key: 'octopus',       label: 'Octopus',         category: 'other' },
   { key: 'seahorse',      label: 'Sea Horse',       category: 'other' },
 
+  // NOTE: `crayfish` entry removed 2026-04-16 — the GLB renders visually
+  // close to `lobster` but with a larger silhouette that clipped the
+  // modal card. The file still ships and `arena-npcs.tsx` retains its
+  // entry for any legacy DB rows; new agents cannot choose it.
+  //
   // NOTE: Hermes/Milady anime GLB entries (chihiro / priestess / chibi_goku)
   // were removed 2026-04-16 because the source meshes didn't render reliably
   // in the agent picker. The `AgentCategory` type keeps 'hermes' and 'milady'
