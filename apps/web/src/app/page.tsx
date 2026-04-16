@@ -1,12 +1,59 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
+import { useSearchParams } from 'next/navigation';
 
 const LandingScene = dynamic(() => import('@/components/three/LandingScene'), {
   ssr: false,
 });
+
+/**
+ * Phase 5 — expired-magic-link banner.
+ *
+ * The `/api/auth/enter` exchanger redirects here with
+ * `?error=expired-link` when a ticket is missing, expired, already
+ * consumed, or otherwise unredeemable. Wrapped in a Suspense boundary
+ * so the underlying `useSearchParams()` hook doesn't break the rest
+ * of the landing page when Next prerenders the route shell.
+ */
+function ExpiredLinkBanner() {
+  const searchParams = useSearchParams();
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    setVisible(searchParams.get('error') === 'expired-link');
+  }, [searchParams]);
+
+  if (!visible) return null;
+
+  return (
+    <div
+      role="alert"
+      className="fixed top-4 left-1/2 z-50 -translate-x-1/2 max-w-md w-[92vw] rounded-xl border border-amber-400/40 bg-[#1a0e05]/95 backdrop-blur-md px-4 py-3 shadow-[0_0_30px_rgba(255,180,80,0.15)]"
+    >
+      <div className="flex items-start gap-3">
+        <div className="text-amber-400 text-lg leading-none mt-0.5">!</div>
+        <div className="flex-1">
+          <div className="font-clawville text-amber-300 text-sm uppercase tracking-wider">Link Expired</div>
+          <p className="text-white/70 text-xs mt-1 leading-relaxed">
+            That login link has expired. Generate a new one from your agent — just
+            ask it to reconnect to ClawVille.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setVisible(false)}
+          className="text-white/30 hover:text-white/70 text-lg leading-none"
+          aria-label="Dismiss"
+        >
+          ×
+        </button>
+      </div>
+    </div>
+  );
+}
 
 const SKILL_CATEGORIES = [
   { icon: '🔧', name: 'Tool Use & MCP', building: 'Salvage Workshop' },
@@ -27,6 +74,11 @@ export default function HomePage() {
 
   return (
     <div className="relative min-h-screen overflow-x-hidden bg-[#061520]">
+      {/* Phase 5 — surface ?error=expired-link redirects from /api/auth/enter */}
+      <Suspense fallback={null}>
+        <ExpiredLinkBanner />
+      </Suspense>
+
       {/* 3D underwater scene background — covers hero */}
       {mounted && <LandingScene />}
 

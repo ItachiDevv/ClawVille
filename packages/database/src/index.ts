@@ -14,7 +14,7 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 export * from './schema';
-export { eq, and, or, not, sql, desc, asc } from 'drizzle-orm';
+export { eq, and, or, not, sql, desc, asc, lt, gt, lte, gte, isNull, isNotNull } from 'drizzle-orm';
 
 // Lazy database connection for Next.js build compatibility
 let _db: PostgresJsDatabase<typeof schema> | null = null;
