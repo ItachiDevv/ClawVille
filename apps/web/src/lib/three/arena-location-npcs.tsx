@@ -129,11 +129,11 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   'skill-forge': {
     name: 'Plankton',
     model: '/models/characters/plankton.glb',
-    // plankton.glb renders at ~28 wu without override (51% of CHARACTER_HEIGHT=55).
-    // scaleOverride=110 assumes native above-pivot height ≈ 0.5 units (55/0.5=110).
-    // Tuned from 110 → 55 (rendered at sy=118 + underground); localMinY=0 override
-    // now handled in useMemo so underground won't repeat. 55 matches target height.
-    scaleOverride: 55,
+    // plankton.glb native body ~2.14 units tall. Target render 55 wu → scale 55/2.14 ≈ 26.
+    // History: 110 (rendered sy=118 + underground), 55 (rendered sy=118, half underground
+    // because localMinY*55≈121 pushed group to terrain-117 but geometry went to terrain-35).
+    // 25 yields ~sy=53, offset≈55, position≈-49, feet at terrain+6.
+    scaleOverride: 25,
     companion: {
       name: 'Karen',
       model: '/models/characters/karen.glb',
