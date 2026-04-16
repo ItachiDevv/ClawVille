@@ -47,7 +47,7 @@
  *   └── (mobile)  GearFAB + RpgModal  — same SidebarShell contents
  *
  * Store contract — zero new actions, reads/writes the exact existing store:
- *   setSettingsModalOpen, openLocationConfig, setOpenclawModalOpen,
+ *   setSettingsModalOpen, openLocationConfig, setAgentConnectModalOpen,
  *   setSkillBuilderOpen, openMarketplace, openBazaar, openAuction,
  *   openQuestBoard, openBountyBoard, toggleActivityFeed.
  */
@@ -490,11 +490,11 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
   // Pull every store action we need with discrete selectors — this keeps the
   // zustand subscription surface tight so the sidebar re-renders only when
   // one of these flags actually changes.
-  const openclawConnected = useGameStore((s: GameState) => s.openclawConnected);
+  const agentConnected = useGameStore((s: GameState) => s.agentConnected);
   const activityFeedOpen = useGameStore((s: GameState) => s.activityFeedOpen);
   const setSettingsModalOpen = useGameStore((s: GameState) => s.setSettingsModalOpen);
   const openLocationConfig = useGameStore((s: GameState) => s.openLocationConfig);
-  const setOpenclawModalOpen = useGameStore((s: GameState) => s.setOpenclawModalOpen);
+  const setAgentConnectModalOpen = useGameStore((s: GameState) => s.setAgentConnectModalOpen);
   const setSkillBuilderOpen = useGameStore((s: GameState) => s.setSkillBuilderOpen);
   const openMarketplace = useGameStore((s: GameState) => s.openMarketplace);
   const openBazaar = useGameStore((s: GameState) => s.openBazaar);
@@ -573,10 +573,10 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
           <SidebarRow
             icon="🔌"
             label="OpenClaw"
-            onClick={runAction(() => setOpenclawModalOpen(true))}
-            active={openclawConnected}
+            onClick={runAction(() => setAgentConnectModalOpen(true))}
+            active={agentConnected}
             badge={
-              openclawConnected ? (
+              agentConnected ? (
                 <span
                   aria-label="Connected"
                   title="Bot training active"
