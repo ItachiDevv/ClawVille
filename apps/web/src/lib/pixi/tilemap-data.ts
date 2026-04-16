@@ -39,7 +39,10 @@ export type TileIndex = (typeof TILES)[keyof typeof TILES];
 
 // ---------------------------------------------------------------------------
 // Building positions (tile coords)
-// 4 neighborhood clusters in 160×160 grid, center at (80,80)
+// Circular ring layout in 160×160 grid, center at (80,80)
+// Radius: 56 tiles, 10 buildings at 36° spacing (2π/10), starting at top (θ=-π/2) clockwise.
+// center_x = round(80 + 56*cos(θ)), center_y = round(80 + 56*sin(θ))
+// zone upper-left = (center_x - 7, center_y - 7)  [14×14 tile footprint]
 // ---------------------------------------------------------------------------
 export interface BuildingZone {
   id: string;
@@ -50,22 +53,27 @@ export interface BuildingZone {
 }
 
 export const buildingZones: BuildingZone[] = [
-  // Development Quarter (North)
-  // Footprint expanded from 10×10 to 14×14 tiles (2026-04-16 proportions pass).
-  // Top-left tile offset adjusted by -2 so building CENTERS stay at the same world coords.
-  { id: 'canvas-studio',       x:  70, y:  26, width: 14, height: 14 },
-  { id: 'skill-forge',         x:  86, y:  26, width: 14, height: 14 },
-  { id: 'tool-workshop',       x:  78, y:  40, width: 14, height: 14 },
-  // Communications Hub (East)
-  { id: 'channel-bridge',      x: 120, y:  70, width: 14, height: 14 },
-  { id: 'webhook-gateway',     x: 120, y:  86, width: 14, height: 14 },
-  { id: 'voice-tower',         x: 106, y:  78, width: 14, height: 14 },
-  // Infrastructure District (South)
-  { id: 'cron-hub',            x:  70, y: 118, width: 14, height: 14 },
-  { id: 'config-citadel',      x:  86, y: 118, width: 14, height: 14 },
-  { id: 'security-fortress',   x:  78, y: 104, width: 14, height: 14 },
-  // Knowledge Center (NW solo)
-  { id: 'memory-vault',        x:  40, y:  26, width: 14, height: 14 },
+  // Ring order: θ = -π/2 + i*(π/5), i=0..9 (top-center, clockwise)
+  // i=0  θ=-π/2       center=(80, 24)  → canvas-studio    (Biolume Studio)
+  { id: 'canvas-studio',     x:  73, y:  17, width: 14, height: 14 },
+  // i=1  θ=-3π/10     center=(113, 35) → memory-vault      (Abyssal Vault)
+  { id: 'memory-vault',      x: 106, y:  28, width: 14, height: 14 },
+  // i=2  θ=-π/10      center=(133, 63) → webhook-gateway   (Current Gateway)
+  { id: 'webhook-gateway',   x: 126, y:  56, width: 14, height: 14 },
+  // i=3  θ=+π/10      center=(133, 97) → cron-hub          (Tide Clock Grotto)
+  { id: 'cron-hub',          x: 126, y:  90, width: 14, height: 14 },
+  // i=4  θ=+3π/10     center=(113,125) → voice-tower       (Echo Spire)
+  { id: 'voice-tower',       x: 106, y: 118, width: 14, height: 14 },
+  // i=5  θ=+π/2       center=(80, 136) → config-citadel    (Nautilus Citadel)
+  { id: 'config-citadel',    x:  73, y: 129, width: 14, height: 14 },
+  // i=6  θ=+7π/10     center=(47, 125) → tool-workshop     (Salvage Workshop)
+  { id: 'tool-workshop',     x:  40, y: 118, width: 14, height: 14 },
+  // i=7  θ=+9π/10     center=(27,  97) → skill-forge       (Hydrothermal Forge)
+  { id: 'skill-forge',       x:  20, y:  90, width: 14, height: 14 },
+  // i=8  θ=+11π/10    center=(27,  63) → channel-bridge    (Coral Bridge)
+  { id: 'channel-bridge',    x:  20, y:  56, width: 14, height: 14 },
+  // i=9  θ=+13π/10    center=(47,  35) → security-fortress (Shell Fortress)
+  { id: 'security-fortress', x:  40, y:  28, width: 14, height: 14 },
 ];
 
 // ---------------------------------------------------------------------------
