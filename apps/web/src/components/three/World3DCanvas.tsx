@@ -359,6 +359,11 @@ function kickRenderLoop(state: any): void {
 function PreCompilePipelines() {
   const { gl, scene, camera } = useThree();
   useEffect(() => {
+    // DEBUG PROBE: expose scene/camera/renderer globally so CDP can introspect
+    // scale issues without an extra deploy cycle. Safe — no runtime cost.
+    if (typeof window !== 'undefined') {
+      (window as any).__R3F = { scene, camera, gl };
+    }
     const raf = requestAnimationFrame(() => {
       if (typeof (gl as any).compileAsync === 'function') {
         (gl as any).compileAsync(scene, camera).catch((err: unknown) => {
