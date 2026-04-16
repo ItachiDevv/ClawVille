@@ -381,25 +381,17 @@ const NpcMesh = memo(function NpcMesh({
     // Without this, Mr. Krabs (computed≈2000) and Sandy (computed≈482) slip past the
     // old 14000 clamp and render at 1892 and 482 world units respectively.
     let s: number;
-    let offset: number;
     if (modelCfg.scaleOverride != null) {
       s = modelCfg.scaleOverride;
-      // When scaleOverride is applied, the measured localMinY came from a bbox
-      // that may not represent the rendered geometry floor (e.g. all-skinned body
-      // where non-skinned bbox is a tiny accessory at y > 0). Trust the override
-      // and assume feet-at-pivot (localMinY = 0) — matches the Y-grounding fix in
-      // the all-skinned fallback path. Without this Plankton (override=110,
-      // localMinY~0.5) rendered ~55wu underground.
-      offset = 0;
     } else if (computed >= NPC_SCALE_CLAMP_MIN && computed <= NPC_SCALE_CLAMP_MAX) {
       s = computed;
-      offset = localMinY * s;
     } else {
-      // Computed scale is outside sanity bounds and no override was provided.
-      // Clamp to the nearest bound as a best-effort fallback.
       s = Math.max(NPC_SCALE_CLAMP_MIN, Math.min(NPC_SCALE_CLAMP_MAX, computed));
-      offset = localMinY * s;
     }
+    // pivotOffsetY = localMinY × scale in both paths. For Plankton (override=55,
+    // localMinY≈2.3): offset=127 → position.y = terrainY-121 → geometry floor
+    // = position + localMinY*s = -121+127 = terrainY+6. Feet on ground.
+    const offset = localMinY * s;
     return { cloned: c, npcScale: s, pivotOffsetY: offset };
   }, [scene, modelCfg.color, modelCfg.scaleOverride]);
 
