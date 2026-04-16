@@ -126,6 +126,37 @@ export const avatars = pgTable('avatars', {
   avatarUrl: varchar('avatar_url', { length: 1024 }),
   vrmMetadata: jsonb('vrm_metadata').$type<PetVrmMetadataJson>(),
   /**
+   * Phase 2 fields — first-class agent-framework identity on the avatar.
+   *
+   * - `modelKey` (Phase 2 §3.1): stable key into `@clawville/shared`
+   *   `AGENT_MODELS` (e.g. 'lobster', 'priestess'). Drives 3D GLB pick
+   *   on the web side. Replaces `species` as the visual-identity field
+   *   going forward; `species` stays populated for backwards compat
+   *   with the pixi 2D fallback.
+   * - `agentCategory`: which agent-framework bucket the avatar belongs to.
+   *   Drives per-framework features (Hermes chat routing, Milady install).
+   * - `harness`: user's preferred agent runtime. Drives Phase 3 export
+   *   target (what character-bundle format we generate). DEFAULT 'milady'
+   *   so a freshly-created agent works autonomously in Phase 4a without
+   *   further config.
+   *
+   * All three have NOT NULL DEFAULTs so existing avatar rows backfill to
+   * `('openclaw','lobster','milady')` on migration without a separate
+   * backfill query. Enum values mirror the shared `AgentCategory` /
+   * `AgentHarness` types and the CHECK constraints applied in SQL.
+   */
+  agentCategory: varchar('agent_category', { length: 16 })
+    .notNull()
+    .default('openclaw')
+    .$type<'openclaw' | 'hermes' | 'milady' | 'other'>(),
+  modelKey: varchar('model_key', { length: 64 })
+    .notNull()
+    .default('lobster'),
+  harness: varchar('harness', { length: 16 })
+    .notNull()
+    .default('milady')
+    .$type<'openclaw' | 'hermes' | 'milady' | 'custom'>(),
+  /**
    * Auto-generated custodial Solana wallet address (base58). NULL for avatars
    * that existed before the C2 backfill; populated for new avatars (human or
    * agent-created) via apps/api/src/services/avatar-wallet-service.ts.

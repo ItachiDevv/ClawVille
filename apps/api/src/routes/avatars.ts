@@ -2,8 +2,20 @@ import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and, sql } from 'drizzle-orm';
 import { db, avatars, agents, avatarInventory } from '@clawville/database';
-import { AVATAR_ARCHETYPES, ARCHETYPE_IDS, getBookById } from '@clawville/shared';
-import type { PetArchetypeId } from '@clawville/shared';
+import {
+  AVATAR_ARCHETYPES,
+  ARCHETYPE_IDS,
+  getBookById,
+  AGENT_MODEL_KEYS,
+  AGENT_CATEGORIES,
+  AGENT_HARNESSES,
+  getAgentModel,
+} from '@clawville/shared';
+import type {
+  PetArchetypeId,
+  AgentCategory,
+  AgentHarness,
+} from '@clawville/shared';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
@@ -19,6 +31,9 @@ export const avatarRoutes = new Hono<AppContext>();
 avatarRoutes.use('*', sessionMiddleware);
 
 // Create avatar schema — archetype-based (no manual characterConfig)
+// Phase 2: modelKey / agentCategory / harness are optional on the wire so
+// older clients still work, but when present they're validated against the
+// shared AGENT_MODELS registry. Server applies the defaults if omitted.
 const createAvatarSchema = z.object({
   name: z.string().min(3).max(20).regex(/^[a-zA-Z0-9]+$/, 'Name must be alphanumeric'),
   species: z.enum(['cat', 'dragon', 'fox', 'owl', 'wolf', 'bunny', 'phoenix', 'turtle']),
@@ -30,6 +45,17 @@ const createAvatarSchema = z.object({
     hobby: z.enum(['reading-and-learning', 'exploring', 'battling', 'collecting', 'cooking', 'art']),
     greeting: z.enum(['run-away', 'wave-hello', 'tackle-hug', 'shy-peek', 'bow-politely', 'roar']),
   }),
+  /** Phase 2 — stable 3D model key from AGENT_MODELS */
+  modelKey: z
+    .string()
+    .refine((k) => AGENT_MODEL_KEYS.includes(k), {
+      message: `modelKey must be one of: ${AGENT_MODEL_KEYS.join(', ')}`,
+    })
+    .optional(),
+  /** Phase 2 — agent framework category. DB CHECK enforces same enum. */
+  agentCategory: z.enum(AGENT_CATEGORIES as unknown as [AgentCategory, ...AgentCategory[]]).optional(),
+  /** Phase 2 — preferred runtime harness */
+  harness: z.enum(AGENT_HARNESSES as unknown as [AgentHarness, ...AgentHarness[]]).optional(),
 });
 
 // Calculate stats from personality
