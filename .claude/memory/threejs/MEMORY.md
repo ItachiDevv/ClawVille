@@ -17,6 +17,9 @@
 - [useFrame ref mutation does not trigger React re-render](gotchas/useframe-mutation-no-react-rerender.md) — mutating useRef inside useFrame is invisible to React; pair with useState + setTexts([...alive]) to trigger renders
 - [useMemo geo/mat passed as props needs explicit useEffect dispose](gotchas/usememo-geo-mat-needs-dispose.md) — R3F only auto-disposes intrinsic attach syntax; geometry={geo} material={mat} props require manual useEffect cleanup
 - [Date.now() in render body is stale — bubbles never auto-expire](gotchas/stale-date-now-in-render.md) — Date.now() in JSX is only fresh on re-renders; add a 1s setInterval tick state to force re-renders for expiry checks
+- [Box3.setFromObject() inflates bbox on SkinnedMesh scenes](gotchas/skinned-mesh-bbox-inflation.md) — bind-pose world matrix can inflate Y by 60-100x; traverse only non-SkinnedMesh nodes with geometry bbox + matrixWorld instead
+- [Building GLB normalization must use height (size.y), not max(w,h,d)](gotchas/building-normalization-use-height-not-maxdim.md) — wide/squat buildings get width as max-dim, crushing height to 210-416 instead of 800; always normalize by size.y
+- [GLB pivot not at feet — characters render underground](gotchas/pivot-not-at-feet-y-offset.md) — humanoid/anime GLBs pivot at waist; at NPC_SCALE=50 the offset is 25-75 world units underground; fix: measure localMinY * scale and subtract from position.y each frame
 
 ## WebGPU
 - [WebGPU renderer setup with fallback](webgpu/renderer-setup-fallback.md) — detection, init, WebGL fallback pattern
