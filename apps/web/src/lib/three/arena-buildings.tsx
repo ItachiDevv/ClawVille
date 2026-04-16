@@ -51,7 +51,7 @@ const BUILDING_TARGET_HEIGHT = 800;
 //          rotY = Math.atan2(dx, dz)  (model faces +Z at rotY=0)
 // Ring layout (radius 56, 36° spacing): all angles are exactly atan2(−sin_i, −cos_i)
 // where θ_i = −π/2 + i*(π/5). Values recomputed for 2026-04-16 ring layout.
-const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number }> = {
+const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number; rotYOffset?: number }> = {
   // i=0  center=(80,24)    dx=0,   dz=56   → atan2(0,56)=0
   'canvas-studio':     { model: '/models/pineapple-house.glb',     yOffset: 0, rotY:  0.000 },
   // i=1  center=(113,35)   dx=-33, dz=45   → atan2(-33,45)≈-0.632
@@ -61,7 +61,9 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // i=3  center=(133,97)   dx=-53, dz=-17  → atan2(-53,-17)≈-1.882
   'cron-hub':          { model: '/models/downtown-building.glb',   yOffset: 0, rotY: -1.882 },
   // i=4  center=(113,125)  dx=-33, dz=-45  → atan2(-33,-45)≈-2.510
-  'voice-tower':       { model: '/models/boating-school.glb',      yOffset: 0, rotY: -2.510 },
+  // rotYOffset: boating-school.glb is authored facing +X (vehicle/boat convention),
+  // so we need an additional -π/2 to align it toward the village center.
+  'voice-tower':       { model: '/models/boating-school.glb',      yOffset: 0, rotY: -2.510, rotYOffset: -Math.PI / 2 },
   // i=5  center=(80,136)   dx=0,   dz=-56  → atan2(0,-56)=π≈3.142
   'config-citadel':    { model: '/models/building-lighthouse.glb', yOffset: 0, rotY:  3.142 },
   // i=6  center=(47,125)   dx=33,  dz=-45  → atan2(33,-45)≈2.510
@@ -137,24 +139,46 @@ function stripGroundPlanes(scene: THREE.Object3D): void {
   toRemove.forEach((obj) => obj.removeFromParent());
 }
 
+// Maximum footprint (XZ) allowed after height-based normalization (world units).
+// Buildings wider than this get shrunk so their widest dimension = MAX_FOOTPRINT.
+// This prevents wide GLBs (pineapple, boating-school, salty-spitoon) from
+// dominating the scene — they'll stand shorter than 800 but won't sprawl.
+const MAX_FOOTPRINT = 1400;
+
 // Scratch objects for computeBuildingScale — module-scope to avoid per-call GC.
 const _buildBbox = new THREE.Box3();
 const _buildMeshBox = new THREE.Box3();
 const _buildSize = new THREE.Vector3();
+const _buildCenter = new THREE.Vector3();
 
-/** Measure bounding box and return scale so the building's Y-height = BUILDING_TARGET_HEIGHT.
- *  Uses size.y (height) exclusively — NOT max(w,h,d).
- *  Rationale: max-dim normalization crushes building HEIGHT on wide/squat GLBs
- *  (salty-spitoon, boating-school) because their width exceeds their height and
- *  becomes the normalizing dimension. Height is the architecturally salient axis —
- *  a building should stand 800 units tall regardless of its aspect ratio.
+interface BuildingScaleResult {
+  scale: number;
+  /** World-space X offset to subtract from the assigned world position so the
+   *  bbox center lands exactly on the position rather than offset by authoring quirks. */
+  pivotOffsetX: number;
+  /** World-space Z offset to subtract from the assigned world position. */
+  pivotOffsetZ: number;
+}
+
+/** Measure bounding box and return scale + XZ pivot-correction offsets.
  *
- *  Also excludes SkinnedMesh nodes from the bbox measurement to avoid bind-pose
- *  inflation. Building GLBs are generally static, but any rigged prop in the scene
- *  would otherwise skew the normalization.
+ *  Scale: normalizes so the building's Y-height = BUILDING_TARGET_HEIGHT.
+ *  Uses size.y exclusively — NOT max(w,h,d). Wide/squat buildings (salty-spitoon,
+ *  boating-school) would otherwise have their width become the normalizing dim,
+ *  crushing actual height far below 800.
  *
+ *  Footprint cap: if after height normalization max(scaled_sx, scaled_sz) > MAX_FOOTPRINT,
+ *  scale is reduced so the widest XZ dimension = MAX_FOOTPRINT. Wide buildings will be
+ *  shorter than 800 but won't sprawl and dominate the scene.
+ *
+ *  Pivot correction: some GLBs (e.g. downtown-building.glb) have their geometry
+ *  authored far from the scene pivot. pivotOffsetX/Z = bbox_center_XZ * scale,
+ *  which the caller subtracts from the world position so the geometry's visual
+ *  center lands at the intended world coordinate.
+ *
+ *  Excludes SkinnedMesh nodes from the bbox to avoid bind-pose inflation.
  *  Called AFTER stripping ground planes. */
-function computeBuildingScale(scene: THREE.Object3D): number {
+function computeBuildingScale(scene: THREE.Object3D): BuildingScaleResult {
   scene.updateMatrixWorld(true);
   _buildBbox.makeEmpty();
 
@@ -178,8 +202,22 @@ function computeBuildingScale(scene: THREE.Object3D): number {
   // Use Y (height) as the normalizing dimension. Fall back to maxDim only if Y
   // is degenerate (e.g. a completely flat mesh or a scene with zero height content).
   const h = _buildSize.y > 0.001 ? _buildSize.y : Math.max(_buildSize.x, _buildSize.y, _buildSize.z);
-  if (h === 0) return 1;
-  return BUILDING_TARGET_HEIGHT / h;
+  let scale = h === 0 ? 1 : BUILDING_TARGET_HEIGHT / h;
+
+  // Footprint cap — shrink wide buildings so they don't dominate the scene.
+  const scaledMaxXZ = Math.max(_buildSize.x, _buildSize.z) * scale;
+  if (scaledMaxXZ > MAX_FOOTPRINT) {
+    scale *= MAX_FOOTPRINT / scaledMaxXZ;
+  }
+
+  // Pivot correction — compute bbox center XZ and scale to world space.
+  // Subtract from the assigned world position so geometry's visual center
+  // lands on the intended coordinate even when the GLB pivot is offset.
+  _buildBbox.getCenter(_buildCenter);
+  const pivotOffsetX = _buildCenter.x * scale;
+  const pivotOffsetZ = _buildCenter.z * scale;
+
+  return { scale, pivotOffsetX, pivotOffsetZ };
 }
 
 // Preload all models
@@ -199,14 +237,14 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
   const { scene } = useGLTF(config.model);
   const groupRef = useRef<THREE.Group>(null);
 
-  const { cloned, buildingScale } = useMemo(() => {
+  const { cloned, buildingScale, pivotOffsetX, pivotOffsetZ } = useMemo(() => {
     const c = scene.clone(true);
     // Strip flat ground planes before measuring height so BUILDING_TARGET_HEIGHT
     // is accurate — ground planes inflate the bounding box and make buildings
     // appear shorter than 100 world units after scaling.
     stripGroundPlanes(c);
-    const s = computeBuildingScale(c);
-    return { cloned: c, buildingScale: s };
+    const { scale: s, pivotOffsetX: px, pivotOffsetZ: pz } = computeBuildingScale(c);
+    return { cloned: c, buildingScale: s, pivotOffsetX: px, pivotOffsetZ: pz };
   }, [scene, config.model]);
 
   // Dispose cloned geometry + materials on unmount (navigation away / hot-reload)
@@ -227,8 +265,10 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
 
   // Buildings sit on the flat sand floor (y=-2). No raycasting needed —
   // dune ripples are small relative to the 100-unit building height.
+  // pivotOffsetX/Z corrects for GLBs authored with geometry far from their pivot
+  // (e.g. downtown-building.glb bbox center is ~4120wu east of scene origin).
   return (
-    <group ref={groupRef} position={[cx, -2 + config.yOffset, cz]} rotation={[0, config.rotY ?? 0, 0]}>
+    <group ref={groupRef} position={[cx - pivotOffsetX, -2 + config.yOffset, cz - pivotOffsetZ]} rotation={[0, (config.rotY ?? 0) + (config.rotYOffset ?? 0), 0]}>
       <primitive object={cloned} scale={buildingScale} />
       {/* Floating building label */}
       {theme && (
@@ -287,11 +327,11 @@ function EditableBuilding({
   const groupRef = useRef<THREE.Group>(null);
   const terrainY = useRef(-15);
 
-  const { cloned, buildingScale } = useMemo(() => {
+  const { cloned, buildingScale, pivotOffsetX, pivotOffsetZ } = useMemo(() => {
     const c = scene.clone(true);
     stripGroundPlanes(c);
-    const s = computeBuildingScale(c);
-    return { cloned: c, buildingScale: s };
+    const { scale: s, pivotOffsetX: px, pivotOffsetZ: pz } = computeBuildingScale(c);
+    return { cloned: c, buildingScale: s, pivotOffsetX: px, pivotOffsetZ: pz };
   }, [scene]);
 
   // Re-raycast terrain Y whenever position changes
@@ -306,11 +346,11 @@ function EditableBuilding({
     if (intersects.length > 0) {
       terrainY.current = intersects[0].point.y;
     }
-    groupRef.current.position.set(zone.worldX, terrainY.current + config.yOffset, zone.worldZ);
+    groupRef.current.position.set(zone.worldX - pivotOffsetX, terrainY.current + config.yOffset, zone.worldZ - pivotOffsetZ);
   });
 
   return (
-    <group ref={groupRef} rotation={[0, config.rotY ?? 0, 0]}>
+    <group ref={groupRef} rotation={[0, (config.rotY ?? 0) + (config.rotYOffset ?? 0), 0]}>
       <primitive object={cloned} scale={buildingScale} />
       {/* Invisible click box for drag detection */}
       <mesh
