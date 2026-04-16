@@ -156,6 +156,7 @@
       "name": "@clawville/database",
       "version": "0.1.0",
       "dependencies": {
+        "@clawville/shared": "*",
         "drizzle-orm": "^0.33.0",
         "postgres": "^3.4.3",
       },

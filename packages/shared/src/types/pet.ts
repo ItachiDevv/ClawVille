@@ -1,4 +1,5 @@
 export type { PetArchetypeId, PetTone } from '../constants/pet-archetypes';
+import type { AgentCategory, AgentHarness } from '../constants/agent-models';
 
 export type PetSpecies = 'cat' | 'dragon' | 'fox' | 'owl' | 'wolf' | 'bunny' | 'phoenix' | 'turtle';
 export type PetColor = 'green' | 'red' | 'blue' | 'yellow';
@@ -32,12 +33,16 @@ export interface Pet {
   stats: PetStats;
   positionX: number;
   positionY: number;
-  /** Phase 2: stable 3D model key — drives GLB selection in player-pet.tsx */
-  modelKey?: string;
-  /** Phase 2: agent framework category */
-  agentCategory?: string;
-  /** Phase 2: preferred runtime harness */
-  harness?: string;
+  /**
+   * Phase 2: stable 3D model key — drives GLB selection in player-pet.tsx.
+   * NOT NULL in DB (DEFAULT 'lobster'); required on the client type so
+   * consumers don't have to null-check every render.
+   */
+  modelKey: string;
+  /** Phase 2: agent framework category — NOT NULL in DB (DEFAULT 'openclaw') */
+  agentCategory: AgentCategory;
+  /** Phase 2: preferred runtime harness — NOT NULL in DB (DEFAULT 'milady') */
+  harness: AgentHarness;
   createdAt: string;
   updatedAt: string;
 }
