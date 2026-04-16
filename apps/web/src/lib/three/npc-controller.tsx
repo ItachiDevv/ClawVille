@@ -19,7 +19,8 @@ import { useNpcStore } from '@/stores/npc';
 import type { NpcSpriteState } from '@/stores/npc';
 import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tilemap-data';
 
-const SPEED = 320; // pixels/sec — increased from 200 (avatar-scale-down pass 2026-04-16)
+const SPEED = 550; // pixels/sec — pass 2 2026-04-16: bumped 320→550 (user tested pass 1 at 320,
+                   // still felt sluggish crossing ~2000-wu visible area; target 3-4s crossing time → 2000/550≈3.6s)
 
 // Map pixel bounds
 const X_MIN = 16;
