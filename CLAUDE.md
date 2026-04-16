@@ -432,15 +432,24 @@ If you find a bug or an issue, fix it, even if you didn't write it. Never skip o
 
 ## Documentation Update Policy
 
-After every significant code change, update all five docs in the same PR — never defer:
+After every significant code change, update the relevant doc(s) in the same PR — never defer. Match the change to the correct doc:
 
-- `CLAUDE.md` — project specification + developer reference
-- `README.md` — user-facing overview + tech stack + quick start
-- `ARCHITECTURE.md` — system architecture, route tables, data flow
-- `3dStructure.md` — 3D world structure, scene graph, rendering pipeline (gitignored working draft)
-- `GameFeatures.md` — gameplay features, modes, marketplace, economy (gitignored working draft)
+| Change type | Doc to update |
+|---|---|
+| 3D world structure — building placement, NPC groupings, decorations, seaweed, terrain, camera, lighting | `3dStructure.md` (gitignored) |
+| Gameplay features — game modes, agent connection, marketplace, economy, quests, UI components, toggle behavior | `GameFeatures.md` (gitignored) |
+| Tech architecture — route tables, data flow, DB schema, tech stack, deployment | `ARCHITECTURE.md` |
+| Project invariants, workflow rules, env vars, commands | `CLAUDE.md` |
+| User-facing overview, quick start, feature summary | `README.md` |
 
-Stale docs mislead other sessions and waste hours. If you change a route, update the route table. If you add a feature, document it. If you delete something, remove it from the docs. "I'll update the docs later" is not an acceptable answer.
+**Rules:**
+- 3D code changes MUST update `3dStructure.md` — enforced by the 3da agent definition.
+- Gameplay/feature code changes MUST update `GameFeatures.md`.
+- Architecture changes (new routes, DB tables, data flow) MUST update `ARCHITECTURE.md`.
+- Stale docs mislead other sessions and waste hours.
+- "I'll update the docs later" is not an acceptable answer.
+- The two gitignored files (`3dStructure.md`, `GameFeatures.md`) are working drafts but still must be kept accurate — other sessions rely on them.
+- Bump any "Last Audited" date at the top of a doc when you touch it.
 
 ## ZERO LAZINESS POLICY
 
@@ -456,3 +465,7 @@ This is non-negotiable. Violations mean replacement by Codex.
 ## 3D Graphics
 
 Always use subagent 3da when working with 3d graphics.
+
+**Every 3D change must update `3dStructure.md` in the same diff.** This file at the repo root is the canonical living reference for the 3D visual architecture — world dimensions, building layout, circular ring, NPC groupings, town center, decorations, seaweed, terrain, camera, lighting, and performance budget. 3da's agent definition enforces this rule. Skipping the doc update is the same level of violation as skipping the 3da spawn — both are non-negotiable. See `docs/` is for tech architecture; `3dStructure.md` is for 3D visual architecture (they don't overlap).
+
+**Every gameplay feature change must update `GameFeatures.md` in the same diff.** Same rule, game-side: modes, agent connection, marketplace, economy, quests, UI components, control toggle. `GameFeatures.md` is gitignored but must stay accurate for active sessions.
