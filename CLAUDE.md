@@ -282,12 +282,16 @@ All 10 buildings are shop buildings — each sells 2 knowledge books (20 total).
 ## Database Schema
 
 - `users` + `sessions` (Lucia auth)
-- `pets` (one per user, species/color/gender/personality/stats/position/clawTokens/loginStreak/lastLoginDate/lastActiveAt)
+- `pets` (one per user) — identity: `species`/`color`/`gender`/`archetype`/`personality`/`stats`. Phase 2 framework fields: `model_key` (3D GLB key, default `lobster`), `agent_category` (`openclaw`/`hermes`/`milady`/`other`, default `openclaw`), `harness` (`openclaw`/`hermes`/`milady`/`custom`, default `milady`) — all NOT NULL with DEFAULTs so existing rows backfill automatically. Also: `position_x/y`, `claw_tokens`, `login_streak`, `level`, `xp`, `total_xp`, `equipped_skills`, `wallet_address`, `avatar_type`/`avatar_url`/`vrm_metadata`, `platform_agent_id`
 - `pet_inventory` (books owned by pet, quantity tracking)
 - `map_locations` (static, seeded — 10 buildings)
 - `location_agents` (user's agent config per location)
 - `platform_agents` (ElizaOS agent records)
 - `platform_agent_logs`
+- `openclaw_bots` (external agent identity, gateway config, learned knowledge)
+- `treasury_wallets` + `pet_wallets` (encrypted Solana keypairs)
+- `agent_configs` (export/import bundle — includes `modelKey`/`agentCategory`/`harness` for round-trip)
+- `bazaar_listings` + `auctions` + `claw_token_transactions` (marketplace + economy)
 
 ## ClawToken Economy & Knowledge Books
 
