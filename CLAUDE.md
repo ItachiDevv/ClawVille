@@ -469,6 +469,28 @@ After every significant code change, update the relevant doc(s) in the same PR �
 - The two gitignored files (`3dStructure.md`, `GameFeatures.md`) are working drafts but still must be kept accurate — other sessions rely on them.
 - Bump any "Last Audited" date at the top of a doc when you touch it.
 
+### Anti-bypass clause — `GameFeatures.md` (mirrors the 3da rule for `3dStructure.md`)
+
+The main session owns gameplay/feature work, so it also owns `GameFeatures.md` maintenance. The same anti-bypass rule that `3da` follows for `3dStructure.md` applies here:
+
+**Memory is advisory, not authoritative — repo docs + live code win.**
+
+Precedence (highest to lowest authority) when judging the state of gameplay features:
+1. **Current source code** (stores, routes, components, constants). Grep/Read to confirm.
+2. **Repo docs** — `GameFeatures.md`, `CLAUDE.md`, `ARCHITECTURE.md`, `README.md`.
+3. **Memory files** under `~/.claude/projects/.../memory/`. Advisory only.
+
+If memory claims a UI behavior, mode toggle, marketplace flow, or token formula that disagrees with the code, the code wins — and the memory file must be updated in the same turn you spot the conflict.
+
+**Anti-bypass checklist — every time you ship a gameplay/feature change:**
+1. The code change itself (store, route, component, constant)
+2. A matching edit to `GameFeatures.md` reflecting the new reality
+3. *Optionally* a memory entry for non-obvious learnings (if reusable beyond this specific change)
+
+Skipping step 2 in favor of only step 3 is not acceptable — it's the same violation as skipping doc updates entirely.
+
+`GameFeatures.md` is the canonical source for: the 4 game modes, the Moltbook agent-connect flow, skill marketplace (bazaar/auctions/forge), knowledge books and learning, ClawToken economy, quests + bounties, leaderboard, daily login, pet system, Milady integration, every game UI component, control mode toggle, NPC simulation, tutorial, auth + spectate mode.
+
 ## ZERO LAZINESS POLICY
 
 This is non-negotiable. Violations mean replacement by Codex.
