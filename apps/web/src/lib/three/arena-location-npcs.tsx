@@ -44,32 +44,83 @@ const _locRayDir = new THREE.Vector3(0, -1, 0);
 const NPC_SCALE_CLAMP_MIN = CHARACTER_HEIGHT / 200;  // ~0.70 at CHARACTER_HEIGHT=140
 const NPC_SCALE_CLAMP_MAX = CHARACTER_HEIGHT / 0.01; // 14000 — degenerate-bbox guard
 
-const LOCATION_NPCS: Record<string, {
+/** Config for a single NPC model (primary or companion). */
+type NpcModelConfig = {
   name: string;
   model: string;
   color?: number; // optional hex tint — applied via applyColorTint()
   /** Per-model scale override used when computeNormalizedScale returns a
    *  value outside [NPC_SCALE_CLAMP_MIN, NPC_SCALE_CLAMP_MAX] (broken bbox). */
   scaleOverride?: number;
-}> = {
-  'canvas-studio':     { name: 'SpongeBob',  model: '/models/characters/spongebob.glb' },
-  'security-fortress': { name: 'Patrick',     model: '/models/characters/patrick.glb'   },
-  'memory-vault':      { name: 'Squidward',   model: '/models/characters/squidward.glb' },
-  'webhook-gateway':   { name: 'Mr. Krabs',   model: '/models/characters/mr-krabs.glb'  },
-  'skill-forge':       { name: 'Plankton',    model: '/models/characters/plankton.glb'  },
-  'cron-hub':          { name: 'Gary',         model: '/models/characters/gary.glb'      },
-  'channel-bridge':    { name: 'Sandy',        model: '/models/characters/sandy.glb'     },
+};
+
+/** Full config for a location slot. companion is an optional passive NPC that
+ *  stands beside the primary. It does NOT register as a chat target — interaction
+ *  always routes to the primary character. */
+type LocationNpcConfig = NpcModelConfig & {
+  companion?: NpcModelConfig & {
+    /** World-unit X offset from primary NPC position (default 80). */
+    offsetX?: number;
+    /** World-unit Z offset from primary NPC position (default 0). */
+    offsetZ?: number;
+  };
+};
+
+const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
+  // Slot 0 — canvas-studio — Pineapple House (SpongeBob's home)
+  // Gary lives here too: he's a passive companion (no chat target)
+  'canvas-studio': {
+    name: 'SpongeBob',
+    model: '/models/characters/spongebob.glb',
+    companion: {
+      name: 'Gary',
+      model: '/models/characters/gary.glb',
+      offsetX: 60,
+      offsetZ: 0,
+    },
+  },
+
+  // Slot 1 — memory-vault — bb-building (interim Squidward's house)
+  'memory-vault': { name: 'Squidward', model: '/models/characters/squidward.glb' },
+
+  // Slots 2 (webhook-gateway) and 3 (cron-hub) are intentionally unattended.
+  // No entry = no NPC rendered; the building shell is still there for gameplay.
+
+  // Slot 4 — voice-tower — Boating School (Mrs. Puff's workplace)
+  'voice-tower': { name: 'Mrs. Puff', model: '/models/characters/mrs-puff.glb' },
+
+  // Slot 5 — config-citadel — Lighthouse (Larry the Lobster as lighthouse keeper)
+  // TODO: source proper larry.glb asset — currently using lobster_plush as a distinct stand-in.
+  // lobster_plush had a broken bbox (world height 331 at CH=32). SkinnedMesh exclusion
+  // should fix normalization; scaleOverride=140 is fallback assuming visual_native_H≈1.0.
+  'config-citadel': { name: 'Larry', model: '/models/lobster_plush.glb', color: 0xff2020, scaleOverride: 140 },
+
+  // Slot 6 — tool-workshop — patty-building (Krusty Krab — Mr. Krabs's restaurant)
+  'tool-workshop': { name: 'Mr. Krabs', model: '/models/characters/mr-krabs.glb' },
+
+  // Slot 7 — skill-forge — Chum Bucket (Plankton + Karen both live here)
   // Karen: karen.glb had a broken bbox (world height 1940 at CH=32) caused by
   // SkinnedMesh bind-pose inflation. The improved computeNormalizedScale() excludes
   // SkinnedMesh, which should fix the normalization automatically. scaleOverride=93
   // is a fallback activated ONLY if the non-skinned geometry also gives a bad bbox
   // (outside NPC_SCALE_CLAMP bounds). Assumes karen_visual_native_H ≈ 1.5 native units.
-  'tool-workshop':     { name: 'Karen',        model: '/models/characters/karen.glb',    scaleOverride: 93 },
-  'voice-tower':       { name: 'Mrs. Puff',    model: '/models/characters/mrs-puff.glb'  },
-  // TODO: source proper larry.glb asset — currently using lobster_plush as a distinct stand-in.
-  // lobster_plush had a broken bbox (world height 331 at CH=32). SkinnedMesh exclusion
-  // should fix normalization; scaleOverride=140 is fallback assuming visual_native_H≈1.0.
-  'config-citadel':    { name: 'Larry',        model: '/models/lobster_plush.glb', color: 0xff2020, scaleOverride: 140 },
+  'skill-forge': {
+    name: 'Plankton',
+    model: '/models/characters/plankton.glb',
+    companion: {
+      name: 'Karen',
+      model: '/models/characters/karen.glb',
+      scaleOverride: 93,
+      offsetX: 80,
+      offsetZ: 0,
+    },
+  },
+
+  // Slot 8 — channel-bridge — building-shell (interim Sandy's Treedome)
+  'channel-bridge': { name: 'Sandy', model: '/models/characters/sandy.glb' },
+
+  // Slot 9 — security-fortress — building-cave (interim Patrick's Rock)
+  'security-fortress': { name: 'Patrick', model: '/models/characters/patrick.glb' },
 };
 
 // Village center in tile space — NPCs stand between their building and this point.
@@ -187,29 +238,33 @@ function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
   return hits.length > 0 ? hits[0].point.y : -2;
 }
 
-const LocationNpc = memo(function LocationNpc({
-  zoneId,
+/** NpcMesh — renders a single GLB (primary or companion) at the given world position.
+ *  Handles: GLB load, bbox-aware scale normalization (SkinnedMesh excluded), optional
+ *  color tint, pivot-offset grounding, idle bob + procedural animation, name label.
+ *
+ *  showLabel: primary NPCs show their name label; companions do not (passive presence).
+ *  seedBase: integer seed for staggered raycasting and procedural animation timing. */
+const NpcMesh = memo(function NpcMesh({
+  modelCfg,
   worldX,
   worldZ,
   facingRotY,
+  seedBase,
+  showLabel,
 }: {
-  zoneId: string;
+  modelCfg: NpcModelConfig;
   worldX: number;
   worldZ: number;
   facingRotY: number;
+  seedBase: number;
+  showLabel: boolean;
 }) {
-  const config = LOCATION_NPCS[zoneId];
-  if (!config) return null;
-
   const groupRef = useRef<THREE.Group>(null);
   const animGroupRef = useRef<THREE.Group>(null);
   const { scene: threeScene } = useThree();
-  const { scene } = useGLTF(config.model);
+  const { scene } = useGLTF(modelCfg.model);
   const terrainY = useRef(-2);
   const placed = useRef(false);
-  // idToSeed returns a float (0..10). Convert to integer so (frame + seed) % N
-  // uses integer arithmetic — float modulo with strict === 0 never fires.
-  const seed = useMemo(() => Math.round(idToSeed(zoneId)), [zoneId]);
 
   // Clone and compute normalized scale; apply optional color tint.
   // scaleOverride is used for characters whose GLB bbox is broken (Karen, Larry):
@@ -227,33 +282,25 @@ const LocationNpc = memo(function LocationNpc({
   //   Applied each frame as: group.position.y = terrainY + BASE_LIFT + bob - pivotOffsetY
   const { cloned, npcScale, pivotOffsetY } = useMemo(() => {
     const c = scene.clone(true);
-    if (config.color != null) {
-      applyColorTint(c, new THREE.Color(config.color), 0.7, 0.25);
+    if (modelCfg.color != null) {
+      applyColorTint(c, new THREE.Color(modelCfg.color), 0.7, 0.25);
     }
     const { scale: computed, localMinY } = computeNormalizedScale(c, CHARACTER_HEIGHT);
     // Use computed scale when it's within the sanity bounds, otherwise fall back
     // to scaleOverride (if configured) or clamp to the nearest bound.
-    // Note: computeNormalizedScale now excludes SkinnedMesh bind pose from the bbox,
-    // which fixes most broken-bbox cases. scaleOverride is a last-resort manual
-    // escape hatch for characters where even the non-skinned geometry gives bad results.
     let s: number;
     if (computed >= NPC_SCALE_CLAMP_MIN && computed <= NPC_SCALE_CLAMP_MAX) {
-      // Computed scale is within sanity range — use it
       s = computed;
-    } else if (config.scaleOverride != null) {
-      // Outside sanity range AND override defined — use the override
-      s = config.scaleOverride;
+    } else if (modelCfg.scaleOverride != null) {
+      s = modelCfg.scaleOverride;
     } else {
-      // Outside sanity range, no override — clamp to nearest bound as last resort
       s = Math.max(NPC_SCALE_CLAMP_MIN, Math.min(NPC_SCALE_CLAMP_MAX, computed));
     }
-    // Pivot offset: feet correction in world units. localMinY is at scale=1;
-    // multiply by final scale to get world-space distance below the group origin.
     const offset = localMinY * s;
     return { cloned: c, npcScale: s, pivotOffsetY: offset };
-  }, [scene, config.color, config.scaleOverride]);
+  }, [scene, modelCfg.color, modelCfg.scaleOverride]);
 
-  // Dispose cloned geometry + materials on unmount (navigation away / hot-reload)
+  // Dispose cloned geometry + materials on unmount
   useEffect(() => {
     return () => {
       cloned.traverse((obj) => {
@@ -270,12 +317,10 @@ const LocationNpc = memo(function LocationNpc({
   useFrame(({ clock }, delta) => {
     if (!groupRef.current) return;
 
-    // Re-raycast terrain Y periodically (not just once) to handle late terrain loading
-    // and dune geometry. Check every ~20 frames.
-    // Use (frame + seed) % 20 to stagger raycasts across the 10 NPCs — without
-    // the seed all 10 NPCs hit the same frame tick, spiking CPU every ~333ms.
+    // Re-raycast terrain Y periodically (not just once) to handle late terrain loading.
+    // Stagger by seedBase so NPCs don't all spike CPU on the same frame.
     const frame = Math.floor(clock.elapsedTime * 60);
-    if (!placed.current || (frame + seed) % 20 === 0) {
+    if (!placed.current || (frame + seedBase) % 20 === 0) {
       const y = getTerrainY(worldX, worldZ, threeScene);
       if (y > -100) {
         terrainY.current = y;
@@ -284,11 +329,7 @@ const LocationNpc = memo(function LocationNpc({
     }
 
     // Position: terrainY + BASE_LIFT + bob - pivotOffsetY
-    // pivotOffsetY = localMinY * npcScale (world-space feet correction):
-    //   - pivotOffsetY < 0 → pivot above feet → subtracting a negative raises the model
-    //   - pivotOffsetY = 0 → pivot at feet → no change
-    //   - pivotOffsetY > 0 → pivot below feet → lowered to prevent floating
-    const bob = Math.sin(clock.elapsedTime * 1.5 + seed) * 0.5;
+    const bob = Math.sin(clock.elapsedTime * 1.5 + seedBase) * 0.5;
     groupRef.current.position.set(worldX, terrainY.current + 6 + bob - pivotOffsetY, worldZ);
 
     // Procedural idle animation on inner group
@@ -299,7 +340,7 @@ const LocationNpc = memo(function LocationNpc({
         elapsed: clock.elapsedTime,
         delta: Math.min(delta, 0.1),
         direction: 'idle',
-        seed,
+        seed: seedBase,
       });
     }
   });
@@ -313,32 +354,84 @@ const LocationNpc = memo(function LocationNpc({
         </group>
       </group>
       {/* Name label — OUTSIDE scaled group so position is in world units.
-          CHARACTER_HEIGHT (140) = target model world height; +10 = clearance above head. */}
-      <Html
-        position={[0, CHARACTER_HEIGHT + 10, 0]}
-        center
-        distanceFactor={400}
-        style={{ pointerEvents: 'none' }}
-        zIndexRange={[10, 100]}
-      >
-        <div
-          style={{
-            background: 'rgba(8, 20, 38, 0.78)',
-            border: '1px solid rgba(100, 200, 255, 0.25)',
-            borderRadius: 6,
-            padding: '2px 8px',
-            color: '#fff',
-            fontWeight: 700,
-            fontSize: 11,
-            whiteSpace: 'nowrap',
-            userSelect: 'none',
-            letterSpacing: '0.03em',
-          }}
+          Only shown for primary NPCs; companions are passive (no label). */}
+      {showLabel && (
+        <Html
+          position={[0, CHARACTER_HEIGHT + 10, 0]}
+          center
+          distanceFactor={400}
+          style={{ pointerEvents: 'none' }}
+          zIndexRange={[10, 100]}
         >
-          {config.name}
-        </div>
-      </Html>
+          <div
+            style={{
+              background: 'rgba(8, 20, 38, 0.78)',
+              border: '1px solid rgba(100, 200, 255, 0.25)',
+              borderRadius: 6,
+              padding: '2px 8px',
+              color: '#fff',
+              fontWeight: 700,
+              fontSize: 11,
+              whiteSpace: 'nowrap',
+              userSelect: 'none',
+              letterSpacing: '0.03em',
+            }}
+          >
+            {modelCfg.name}
+          </div>
+        </Html>
+      )}
     </group>
+  );
+});
+
+const LocationNpc = memo(function LocationNpc({
+  zoneId,
+  worldX,
+  worldZ,
+  facingRotY,
+}: {
+  zoneId: string;
+  worldX: number;
+  worldZ: number;
+  facingRotY: number;
+}) {
+  const config = LOCATION_NPCS[zoneId];
+  if (!config) return null;
+
+  // idToSeed returns a float (0..10). Convert to integer so (frame + seed) % N
+  // uses integer arithmetic — float modulo with strict === 0 never fires.
+  const seed = useMemo(() => Math.round(idToSeed(zoneId)), [zoneId]);
+
+  const companion = config.companion;
+  const companionX = companion ? worldX + (companion.offsetX ?? 80) : 0;
+  const companionZ = companion ? worldZ + (companion.offsetZ ?? 0) : 0;
+  // Companion seed offset (+17) separates its raycast stagger from the primary
+  const companionSeed = seed + 17;
+
+  return (
+    <>
+      {/* Primary NPC — interactive chat target */}
+      <NpcMesh
+        modelCfg={config}
+        worldX={worldX}
+        worldZ={worldZ}
+        facingRotY={facingRotY}
+        seedBase={seed}
+        showLabel={true}
+      />
+      {/* Companion NPC (if any) — passive presence, no chat, no label */}
+      {companion && (
+        <NpcMesh
+          modelCfg={companion}
+          worldX={companionX}
+          worldZ={companionZ}
+          facingRotY={facingRotY}
+          seedBase={companionSeed}
+          showLabel={false}
+        />
+      )}
+    </>
   );
 });
 
@@ -354,10 +447,16 @@ export function DeferredNpcPreloads(): ReactElement | null {
   useEffect(() => {
     const raf = requestAnimationFrame(() => {
       const seen = new Set<string>();
-      Object.values(LOCATION_NPCS).forEach(({ model }) => {
-        if (!seen.has(model)) {
-          useGLTF.preload(model);
-          seen.add(model);
+      Object.values(LOCATION_NPCS).forEach((cfg) => {
+        // Primary model
+        if (!seen.has(cfg.model)) {
+          useGLTF.preload(cfg.model);
+          seen.add(cfg.model);
+        }
+        // Companion model (if any)
+        if (cfg.companion && !seen.has(cfg.companion.model)) {
+          useGLTF.preload(cfg.companion.model);
+          seen.add(cfg.companion.model);
         }
       });
     });
