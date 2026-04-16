@@ -14,6 +14,13 @@ export interface PathNode {
   y: number;
 }
 
+/** Rendered buildings can reach MAX_FOOTPRINT = 1000 wu = 31.25 tiles wide,
+ *  while BUILDING_TILE_ZONES entries are only 14×14. Expand the blocked
+ *  region by BUILDING_EXCLUSION_PAD so click-to-move and wander avoid the
+ *  visual footprint, not just the authoring zone. Must match the server-side
+ *  value in apps/api/src/services/pathfinding.ts. */
+const BUILDING_EXCLUSION_PAD = 9;
+
 function buildWalkabilityGrid(): boolean[][] {
   const grid: boolean[][] = [];
   for (let r = 0; r < ROWS; r++) {
@@ -23,8 +30,12 @@ function buildWalkabilityGrid(): boolean[][] {
     }
   }
   for (const zone of Object.values(BUILDING_TILE_ZONES)) {
-    for (let r = zone.y; r < zone.y + zone.h; r++) {
-      for (let c = zone.x; c < zone.x + zone.w; c++) {
+    const r0 = zone.y - BUILDING_EXCLUSION_PAD;
+    const r1 = zone.y + zone.h + BUILDING_EXCLUSION_PAD;
+    const c0 = zone.x - BUILDING_EXCLUSION_PAD;
+    const c1 = zone.x + zone.w + BUILDING_EXCLUSION_PAD;
+    for (let r = r0; r < r1; r++) {
+      for (let c = c0; c < c1; c++) {
         if (r >= 0 && r < ROWS && c >= 0 && c < COLS) {
           grid[r][c] = false;
         }
