@@ -5,6 +5,7 @@ import { lucia } from '../lib/auth';
 import { db, users, openclawBots } from '@clawville/database';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import { npcSimulation } from '../services/npc-simulation';
+import { consumeTicket } from '../services/session-ticket-service';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 
@@ -158,6 +159,74 @@ function checkMiladyRateLimit(ip: string): boolean {
   if (entry.count > 5) return false;
   return true;
 }
+
+// ---------------------------------------------------------------------------
+// GET /api/auth/enter?t=... — Phase 5 magic-link exchanger.
+// ---------------------------------------------------------------------------
+// Redeems a one-time agent-issued session ticket and swaps it for a
+// real Lucia session cookie, then 302-redirects the browser to `/game`.
+//
+// The click-through is always from a human's browser (the agent passes
+// the URL through chat), so setting `Set-Cookie` here is correct —
+// the browser follows the redirect AND keeps the cookie.
+//
+// Spec §4.3 + §7:
+//   - Atomic consume (UPDATE ... RETURNING * in session-ticket-service)
+//   - Short TTL, enforced at DB level (`expires_at > now()`)
+//   - One-time use
+//   - `Referrer-Policy: no-referrer` set on both success and failure
+//     redirects so the ticket never leaks through the Referer header
+//     when /game or the error page makes its first outbound request.
+// ---------------------------------------------------------------------------
+function webOriginForRedirect(): string {
+  if (process.env.WEB_ORIGIN) return process.env.WEB_ORIGIN.replace(/\/+$/, '');
+  const corsOrigin = process.env.CORS_ORIGIN?.split(',')[0]?.trim();
+  if (corsOrigin) return corsOrigin.replace(/\/+$/, '');
+  return 'https://clawville.world';
+}
+
+authRoutes.get('/enter', async (c) => {
+  const ticket = c.req.query('t');
+  const webOrigin = webOriginForRedirect();
+
+  // Always set Referrer-Policy before returning — on BOTH the happy
+  // path (redirect to /game) and the error path (redirect to /).
+  c.header('Referrer-Policy', 'no-referrer');
+
+  if (!ticket) {
+    return c.redirect(`${webOrigin}/?error=expired-link`, 302);
+  }
+
+  let consumed;
+  try {
+    consumed = await consumeTicket(ticket);
+  } catch (err) {
+    console.error('[AuthEnter] consume failed:', err);
+    return c.redirect(`${webOrigin}/?error=expired-link`, 302);
+  }
+
+  if (!consumed) {
+    // Invalid / expired / already-consumed — all three collapse to
+    // the same UX. We deliberately don't distinguish them so an
+    // attacker holding a stolen ticket can't probe for "was it
+    // valid?" before bailing.
+    return c.redirect(`${webOrigin}/?error=expired-link`, 302);
+  }
+
+  // Create the Lucia session — attributes match the form-login route
+  // exactly (same cookie domain, same sameSite/secure settings via
+  // `apps/api/src/lib/auth.ts`).
+  try {
+    const session = await lucia.createSession(consumed.userId, {});
+    const cookie = lucia.createSessionCookie(session.id);
+    c.header('Set-Cookie', cookie.serialize());
+  } catch (err) {
+    console.error('[AuthEnter] session create failed:', err);
+    return c.redirect(`${webOrigin}/?error=expired-link`, 302);
+  }
+
+  return c.redirect(`${webOrigin}/game`, 302);
+});
 
 authRoutes.post('/milady-session-exchange', async (c) => {
   // Rate limit: 5 attempts per minute per IP

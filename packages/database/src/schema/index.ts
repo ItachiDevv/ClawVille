@@ -19,6 +19,7 @@ export * from './agent-configs';
 export * from './bounties';
 export * from './building-skills';
 export * from './wallets';
+export * from './agent-session-tickets';
 
 import { users, sessions } from './users';
 import { npcMemories, activityLog } from './memories';

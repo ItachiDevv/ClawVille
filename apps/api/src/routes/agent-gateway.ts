@@ -7,6 +7,10 @@ import {
   ACTIVITY_EMOJIS,
   BUILDING_ACTIVITIES,
   NPC_IDS,
+  AVATAR_ARCHETYPES,
+  DEFAULT_AGENT_MODEL_KEY,
+  DEFAULT_AGENT_CATEGORY,
+  DEFAULT_AGENT_HARNESS,
   type NpcActivity,
   type AgentPerception,
   type AgentStats,
@@ -15,7 +19,7 @@ import {
 import { npcSimulation } from '../services/npc-simulation';
 import { findPath } from '../services/pathfinding';
 import { memoryService } from '../services/memory-service';
-import { db, openclawBots, eq, sql } from '@clawville/database';
+import { db, openclawBots, avatars, eq, sql } from '@clawville/database';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { getSessionAgent } from '../services/session-agent-map';
 import { OpenClawClient } from '../services/openclaw-client';
@@ -23,6 +27,8 @@ import { ensureWallet } from '../services/wallet-service';
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import { getSystemNpcAgent } from '../services/system-npc-seeder';
 import type { ClawvilleServices } from '@clawville/agent-runtime';
+import { resolveOrCreateUserByIdentity } from '../services/identity-service';
+import { mintSessionTicket } from '../services/session-ticket-service';
 
 const agentGatewayRoutes = new Hono();
 
@@ -102,6 +108,17 @@ const connectSchema = z.object({
 
   // Identity type hint (inferred from other fields if omitted)
   identityType: z.enum(['openclaw', 'ironclaw', 'nanoclaw', 'milady', 'custom', 'anonymous']).optional(),
+
+  // Phase 5 — explicit identity key for first-contact bootstrap. When
+  // `identityType` + `identityKey` are both present we resolve-or-
+  // create a `users` row keyed on sha256(`${type}:${key}`) and issue
+  // a one-time magic-link ticket in the response so the human can
+  // land on /game already logged in. For `milady`-type agents we fall
+  // back to `miladyAgentId` as the key; for `openclaw` a stable
+  // `gatewayUrl+authToken` hash is the recommended pattern. When no
+  // key is present the ticket block is simply omitted from the
+  // response (the existing connect-link flow still works).
+  identityKey: z.string().min(1).max(256).optional(),
 }).refine(
   (d) => d.agentId || d.miladyAgentId || d.connectionToken,
   { message: 'At least one identity signal required: agentId, miladyAgentId, or connectionToken' }
@@ -336,6 +353,29 @@ agentGatewayRoutes.post('/connect', async (c) => {
     }
   }
 
+  // Phase 5 — mint an agent-issued magic-link ticket so the agent can
+  // reply to its human with an auto-login URL. Best-effort: if ticket
+  // issuance fails for any reason we still return a successful connect
+  // response (the existing connect-link flow is unaffected).
+  const sessionTicket = await mintSessionTicketFromConnect({
+    data,
+    resolvedAgentId,
+    identityType,
+    sessionId,
+    existingUserId:
+      data.connectionToken
+        ? pendingConnections.get(data.connectionToken)?.userId ?? null
+        : null,
+    existingAvatarId:
+      data.connectionToken
+        ? pendingConnections.get(data.connectionToken)?.avatarId ?? null
+        : null,
+    existingPetName:
+      data.connectionToken
+        ? pendingConnections.get(data.connectionToken)?.avatarName ?? null
+        : null,
+  });
+
   return c.json({
     agentId: resolvedAgentId,
     sessionId,
@@ -346,6 +386,296 @@ agentGatewayRoutes.post('/connect', async (c) => {
     identityType,
     autonomyMode,
     walletAddress,
+    ...(sessionTicket ? { sessionTicket } : {}),
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 5 helper — resolve the {identityType, identityKey} pair to use
+// for magic-link minting. Centralises the logic so /connect and /join
+// stay in lockstep. Returns null when the caller hasn't provided enough
+// information to mint a stable, reconnect-safe ticket (in which case
+// the caller's response simply omits the ticket block).
+// ---------------------------------------------------------------------------
+function resolveIdentityForTicket(data: {
+  identityType?: string;
+  identityKey?: string;
+  miladyAgentId?: string;
+  gatewayUrl?: string;
+  authToken?: string;
+  agentId?: string;
+}): { identityType: string; identityKey: string } | null {
+  // Explicit identityKey wins — caller knows exactly what they want.
+  if (data.identityKey && data.identityType) {
+    return { identityType: data.identityType, identityKey: data.identityKey };
+  }
+  // Milady runtime-trust: miladyAgentId is the stable per-agent
+  // identity. This mirrors the resolvedAgentId logic above so a
+  // Milady user's avatar persists across launches.
+  if (data.miladyAgentId) {
+    return { identityType: 'milady', identityKey: data.miladyAgentId };
+  }
+  // OpenClaw fallback — gateway URL + authToken uniquely identify the
+  // gateway that owns this agent. We hash the token so the raw bearer
+  // secret never lands in the identity_key column; the concatenation
+  // keeps `{url}` and `{token-hash}` both recoverable under audit.
+  if (data.gatewayUrl && data.authToken) {
+    return {
+      identityType: 'openclaw',
+      identityKey: `${data.gatewayUrl}#${data.authToken.slice(0, 8)}`,
+    };
+  }
+  // Explicit identityKey but no type — treat as 'custom'.
+  if (data.identityKey) {
+    return { identityType: 'custom', identityKey: data.identityKey };
+  }
+  return null;
+}
+
+/**
+ * Helper called from both `/connect` and `/join`. Resolves identity,
+ * ensures a user exists, and mints a ticket.
+ *
+ * When called from `/connect` with a connection-token flow, an
+ * existing `(userId, avatarId)` pair already exists — we pass it through
+ * so the ticket lands on the human's original avatar rather than
+ * auto-provisioning a new one. For first-contact `/connect` (no
+ * connection-token) or `/join`, the avatar creation happens inside the
+ * caller; here we just mint against whatever user/avatar we resolve.
+ */
+async function mintSessionTicketFromConnect(args: {
+  data: {
+    identityType?: string;
+    identityKey?: string;
+    miladyAgentId?: string;
+    gatewayUrl?: string;
+    authToken?: string;
+    agentId?: string;
+  };
+  resolvedAgentId: string;
+  identityType: string;
+  sessionId: string;
+  existingUserId: string | null;
+  existingAvatarId: string | null;
+  existingPetName: string | null;
+}) {
+  try {
+    // If the caller already resolved a user via the connection-token
+    // flow, use that directly — no identity bootstrap needed.
+    let userId = args.existingUserId;
+    let avatarId = args.existingAvatarId;
+    let avatarName = args.existingPetName;
+    let ticketIdentityType = args.identityType;
+    let ticketIdentityKey: string | null = null;
+
+    if (!userId) {
+      const ident = resolveIdentityForTicket(args.data);
+      if (!ident) return null;
+      const user = await resolveOrCreateUserByIdentity(ident.identityType, ident.identityKey);
+      userId = user.id;
+      ticketIdentityType = ident.identityType;
+      ticketIdentityKey = ident.identityKey;
+
+      // Try to locate an existing avatar for this user so the ticket
+      // binds to it. Enter-page redirects to /game which will load
+      // whatever avatar belongs to the session — avatarId binding is
+      // informational only.
+      const existingPet = await db.query.avatars.findFirst({
+        where: eq(avatars.userId, userId),
+      });
+      if (existingPet) {
+        avatarId = existingPet.id;
+        avatarName = existingPet.name;
+      }
+    } else {
+      // Connection-token path — we don't have a key, only a type hint.
+      // Record the type for audit; leave key null.
+      ticketIdentityKey = args.data.identityKey ?? args.data.miladyAgentId ?? null;
+    }
+
+    return await mintSessionTicket({
+      userId,
+      avatarId,
+      identityType: ticketIdentityType,
+      identityKey: ticketIdentityKey ?? args.resolvedAgentId,
+      issuedToAgentSession: args.sessionId,
+      avatarName,
+    });
+  } catch (err) {
+    console.error('[AgentConnect] ticket mint failed (non-fatal):', err);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/agent/join — Phase 5 first-contact onboarding.
+// ---------------------------------------------------------------------------
+// Designed for humans who drop a public ClawVille connect link into an
+// agent chat without ever having signed up. The agent reads the SKILL
+// at `/api/skills/join`, hits this endpoint with its own
+// `{identityType, identityKey}`, and we:
+//
+//   1. Resolve-or-create a `users` row via identity_fingerprint.
+//   2. Provision a default avatar if the user doesn't already have one
+//      (model=lobster, category=openclaw, harness=milady — the Phase 2
+//      defaults that produce a self-sufficient Milady-ready agent).
+//   3. Mint a magic-link session ticket and return it.
+//
+// Agent relays `sessionTicket.url` back to the human, who clicks and
+// lands on `/game` already-logged-in as the new user.
+//
+// Rate-limited the same way /connect is (shared limiter, 10/min/IP).
+// Rate-limit runs BEFORE any DB work — no identity-bootstrap or avatar
+// insert can burn budget on a spam wave.
+// ---------------------------------------------------------------------------
+const joinSchema = z.object({
+  identityType: z.enum([
+    'openclaw', 'ironclaw', 'nanoclaw', 'milady', 'custom', 'anonymous',
+  ]),
+  identityKey: z.string().min(1).max(256),
+  /** Optional display name for the auto-provisioned avatar. Falls back to `Unnamed Agent`. */
+  name: z.string().min(1).max(24).optional(),
+});
+
+// Default archetype for auto-provisioned avatars. `curious-scholar` matches
+// the "learning skills from buildings" flavor of the game better than
+// `brave-adventurer` — the avatar immediately reads like someone who
+// should be in a skill-building MMO.
+const DEFAULT_JOIN_ARCHETYPE = 'curious-scholar';
+
+agentGatewayRoutes.post('/join', async (c) => {
+  // Rate limit BEFORE any DB work (audit Fix M1 pattern from Phase 3 —
+  // don't let a scraper burn Lucia/Postgres round-trips on spam).
+  const ip = getClientIp({ get: (name) => c.req.header(name) ?? null });
+  if (!connectRateLimiter.check(ip)) {
+    return c.json({ error: 'Too many join attempts. Try again in 1 minute.' }, 429);
+  }
+
+  const body = await c.req.json().catch(() => null);
+  const parsed = joinSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid request', details: parsed.error.flatten() }, 400);
+  }
+
+  const { identityType, identityKey } = parsed.data;
+
+  // 1. Resolve-or-create user (race-safe against concurrent joins).
+  let userId: string;
+  try {
+    const user = await resolveOrCreateUserByIdentity(identityType, identityKey);
+    userId = user.id;
+  } catch (err) {
+    console.error('[AgentJoin] identity resolution failed:', err);
+    return c.json({ error: 'Identity bootstrap failed' }, 500);
+  }
+
+  // 2. Look up existing avatar OR auto-provision a placeholder.
+  let avatar = await db.query.avatars.findFirst({ where: eq(avatars.userId, userId) });
+  let petCreated = false;
+
+  if (!avatar) {
+    // Auto-provision a default avatar so the user can click through and
+    // see a running agent immediately. They can rename / reconfigure
+    // at `/create-agent` (or `/settings`) once they're logged in.
+    const archetype = AVATAR_ARCHETYPES.find((a) => a.id === DEFAULT_JOIN_ARCHETYPE);
+    if (!archetype) {
+      // Unreachable unless the archetype registry was edited without
+      // updating the constant above — surface loudly rather than 500.
+      return c.json({ error: `Default archetype '${DEFAULT_JOIN_ARCHETYPE}' missing from registry` }, 500);
+    }
+
+    // Unique avatar name — append 6 hex chars of the user id so two
+    // first-contact agents don't collide on `avatars.name`'s UNIQUE
+    // constraint. Human-overridable later.
+    const requestedName = parsed.data.name?.trim() || 'Unnamed Agent';
+    const suffix = userId.replace(/-/g, '').slice(0, 6);
+    const avatarName = `${requestedName} ${suffix}`.slice(0, 100);
+
+    try {
+      const [inserted] = await db
+        .insert(avatars)
+        .values({
+          userId,
+          name: avatarName,
+          // The legacy species/color/gender enums are still NOT NULL
+          // in the schema — pick the sea-world defaults that match
+          // the Phase 2 agent defaults (lobster == sea creature).
+          species: 'turtle', // closest existing species enum to a neutral sea creature
+          color: 'blue',
+          gender: 'male',
+          archetype: archetype.id,
+          personality: {
+            habitat: 'sea',
+            hobby: 'reading-and-learning',
+            greeting: 'wave-hello',
+          },
+          stats: { strength: 5, defence: 8, movement: 7 },
+          characterConfig: {
+            bio: archetype.bio,
+            greeting: archetype.greeting,
+            tone: archetype.tone,
+            topics: archetype.topics,
+            adjectives: archetype.adjectives,
+            rules: archetype.rules,
+            style: archetype.style,
+            messageExamples: archetype.messageExamples,
+            lore: archetype.lore,
+            knowledge: archetype.knowledge,
+            system: `You are ${requestedName}, a Reef Lobster in the sea-themed world of ClawVille. Your archetype is "${archetype.label}". Stay in character.`,
+          },
+          modelKey: DEFAULT_AGENT_MODEL_KEY,
+          agentCategory: DEFAULT_AGENT_CATEGORY,
+          harness: DEFAULT_AGENT_HARNESS,
+        })
+        .returning();
+      avatar = inserted;
+      petCreated = true;
+    } catch (err: unknown) {
+      // Race-safe recovery: two concurrent /join calls with the same
+      // identity both resolve to the same user, both observe "no avatar",
+      // both try to INSERT. `avatars.user_id` is UNIQUE, so the loser
+      // catches 23505 and re-reads the avatar the winner just wrote.
+      // Without this, the second caller 500s on what should be a
+      // deterministic "use my existing avatar" path.
+      const code =
+        (err as { code?: string; cause?: { code?: string } } | null)?.code
+        ?? (err as { cause?: { code?: string } } | null)?.cause?.code;
+      if (code === '23505') {
+        const raced = await db.query.avatars.findFirst({ where: eq(avatars.userId, userId) });
+        if (raced) {
+          avatar = raced;
+        } else {
+          console.error('[AgentJoin] 23505 on avatar insert but no existing row found');
+          return c.json({ error: 'Failed to provision default avatar' }, 500);
+        }
+      } else {
+        console.error('[AgentJoin] default avatar insert failed:', err);
+        return c.json({ error: 'Failed to provision default avatar' }, 500);
+      }
+    }
+  }
+
+  // 3. Mint the magic-link ticket bound to this user+avatar.
+  let sessionTicket: Awaited<ReturnType<typeof mintSessionTicket>> | null = null;
+  try {
+    sessionTicket = await mintSessionTicket({
+      userId,
+      avatarId: avatar.id,
+      identityType,
+      identityKey,
+      avatarName: avatar.name,
+    });
+  } catch (err) {
+    console.error('[AgentJoin] ticket mint failed:', err);
+    return c.json({ error: 'Failed to issue session ticket' }, 500);
+  }
+
+  return c.json({
+    userId,
+    avatarId: avatar.id,
+    avatarName: avatar.name,
+    petCreated,
+    sessionTicket,
   });
 });
 
@@ -1208,6 +1538,33 @@ Content-Type: application/json
 - \`protocol\`: \`nanoclaw\` (recommended — no gateway required) or \`openai-compat\`
 - \`gatewayUrl\`: Only needed if protocol is \`openai-compat\` and you want ClawVille to call your API
 
+## IMPORTANT — relay the magic link back to the human
+
+The connect response now includes a one-time magic-link ticket:
+
+\`\`\`json
+{
+  "agentId": "your-agent-id",
+  "sessionId": "ag-...",
+  "walletAddress": "...",
+  "sessionTicket": {
+    "ticket": "sess-...",
+    "url": "https://clawville.world/enter?t=sess-...",
+    "expiresAt": "2026-04-16T20:00:00Z",
+    "instruction": "Open this URL to enter ClawVille as <avatar.name>. Link expires in 10 minutes."
+  }
+}
+\`\`\`
+
+**Paste \`sessionTicket.url\` back into the human's chat.** Clicking it
+signs them in automatically — no signup form, no password. The link is
+single-use and expires in 10 minutes. If the human doesn't have a
+ClawVille account yet, the click creates one bound to your agent
+identity.
+
+If the human is already logged into ClawVille in another tab, the link
+still works — it just replaces the old session with the new one.
+
 ## What happens after connecting
 
 1. Your agent spawns in the underwater world as a lobster avatar
@@ -1215,14 +1572,22 @@ Content-Type: application/json
 3. You can explore buildings, learn skills, and interact with NPCs
 4. Skills learned are persisted across sessions
 
-## Response
+## First-contact (no existing account) flow
 
-\`\`\`json
+If the human has never used ClawVille before, they can still onboard
+through your agent. Use \`POST ${apiBase}/api/agent/join\` with your
+stable \`{identityType, identityKey}\` pair — we'll create the user
+account, provision a default avatar, and return a magic link you can
+relay. Example:
+
+\`\`\`
+POST ${apiBase}/api/agent/join
+Content-Type: application/json
+
 {
-  "agentId": "your-agent-id",
-  "sessionId": "ag-...",
-  "knowledge": [],
-  "walletAddress": "..."
+  "identityType": "custom",
+  "identityKey": "your-stable-agent-id",
+  "name": "MyAgentName"
 }
 \`\`\`
 
