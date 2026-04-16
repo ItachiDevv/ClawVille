@@ -271,8 +271,10 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
   // pivotOffsetX/Z corrects for GLBs authored with geometry far from their pivot
   // (e.g. downtown-building.glb bbox center is ~4120wu east of scene origin).
   return (
-    <group ref={groupRef} position={[cx - pivotOffsetX, -2 + config.yOffset, cz - pivotOffsetZ]} rotation={[0, (config.rotY ?? 0) + (config.rotYOffset ?? 0), 0]}>
+    <group ref={groupRef} position={[cx, -2 + config.yOffset, cz]} rotation={[0, (config.rotY ?? 0) + (config.rotYOffset ?? 0), 0]}>
+      <group position={[-pivotOffsetX, 0, -pivotOffsetZ]}>
       <primitive object={cloned} scale={buildingScale} />
+      </group>
       {/* Floating building label */}
       {theme && (
         <Html position={[0, BUILDING_TARGET_HEIGHT + 20, 0]} center distanceFactor={1500} style={{ pointerEvents: 'auto' }}>
@@ -349,12 +351,14 @@ function EditableBuilding({
     if (intersects.length > 0) {
       terrainY.current = intersects[0].point.y;
     }
-    groupRef.current.position.set(zone.worldX - pivotOffsetX, terrainY.current + config.yOffset, zone.worldZ - pivotOffsetZ);
+    groupRef.current.position.set(zone.worldX, terrainY.current + config.yOffset, zone.worldZ);
   });
 
   return (
     <group ref={groupRef} rotation={[0, (config.rotY ?? 0) + (config.rotYOffset ?? 0), 0]}>
-      <primitive object={cloned} scale={buildingScale} />
+      <group position={[-pivotOffsetX, 0, -pivotOffsetZ]}>
+        <primitive object={cloned} scale={buildingScale} />
+      </group>
       {/* Invisible click box for drag detection */}
       <mesh
         position={[0, 20, 0]}
