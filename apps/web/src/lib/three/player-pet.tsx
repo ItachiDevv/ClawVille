@@ -34,7 +34,11 @@ const HALF_H = MAP_HEIGHT / 2;
 const SPEED = 200;
 const BOB_SPEED = 5;
 const BOB_AMPLITUDE = 0.3;
-const PET_SCALE = 16;
+// PET_SCALE=55 targets ~131 world-unit height for lobster.glb on the 5120-unit map.
+// Previous value of 16 produced ~38 units — too small against 800-unit buildings.
+// Deliberately slightly larger than NPC_SCALE=50 so the player pet reads as
+// slightly bigger than wandering NPCs on screen.
+const PET_SCALE = 55;
 
 const COLOR_TINTS: Record<string, number> = {
   blue: 0x42a5f5, red: 0xef5350, green: 0x66bb6a, yellow: 0xffee58,
@@ -99,6 +103,36 @@ useGLTF.preload('/models/lobster.glb');
 
 import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
 
+// Scratch objects for computeLocalMinY — module-scope to avoid GC in useMemo.
+const _petBbox = new THREE.Box3();
+const _petMeshBbox = new THREE.Box3();
+
+/** Measure local-space bbox min.y for non-SkinnedMesh geometry in a cloned GLB scene.
+ *  Returns 0 if no geometry found.
+ *  See arena-npcs.tsx computeLocalMinY for full rationale. */
+function computeLocalMinY(scene: THREE.Object3D): number {
+  scene.updateMatrixWorld(true);
+  _petBbox.makeEmpty();
+
+  scene.traverse((child) => {
+    if ((child as THREE.Mesh).isMesh && !(child as THREE.SkinnedMesh).isSkinnedMesh) {
+      const mesh = child as THREE.Mesh;
+      if (!mesh.geometry) return;
+      mesh.geometry.computeBoundingBox();
+      const geoBB = mesh.geometry.boundingBox;
+      if (!geoBB) return;
+      _petMeshBbox.copy(geoBB).applyMatrix4(mesh.matrixWorld);
+      _petBbox.union(_petMeshBbox);
+    }
+  });
+
+  if (_petBbox.isEmpty()) {
+    _petBbox.setFromObject(scene);
+  }
+
+  return _petBbox.isEmpty() ? 0 : _petBbox.min.y;
+}
+
 // Shared raycaster — only hits layer 1 (terrain)
 const _petRaycaster = new THREE.Raycaster();
 _petRaycaster.layers.set(TERRAIN_LAYER);
@@ -138,19 +172,28 @@ function PlayerPetInner() {
   // and SelectAgentCanvas.tsx.
   const useNewAnimSystem = petModelKey !== 'lobster' && petModelKey !== 'crayfish';
 
-  const { cloned, lobsterAnimator, charAnimator } = useMemo(() => {
+  const { cloned, lobsterAnimator, charAnimator, pivotOffsetY } = useMemo(() => {
     const c = scene.clone(true);
     const petColor = useGameStore.getState().petColor;
     const tint = new THREE.Color(COLOR_TINTS[petColor] ?? 0xffffff);
+
+    // Resolve final scale (same logic as the primitive scale prop below).
+    // Needed to convert localMinY (at scale=1) into world-space correction.
+    const finalScale = !useNewAnimSystem ? PET_SCALE : reg.scale;
+
+    // Compute per-GLB pivot offset so feet sit on terrain regardless of where
+    // the model's pivot is placed. See arena-npcs.tsx for full rationale.
+    const localMinY = computeLocalMinY(c);
+    const pivotOffset = localMinY * finalScale;
 
     if (useNewAnimSystem) {
       // Universal path: shared applyColorTint (stronger tint, matches NPC behaviour)
       applyColorTint(c, tint, 0.6, 0.2);
       const anim = createCharacterAnimator(petModelKey, c);
-      return { cloned: c, lobsterAnimator: null as LobsterAnimator | null, charAnimator: anim };
+      return { cloned: c, lobsterAnimator: null as LobsterAnimator | null, charAnimator: anim, pivotOffsetY: pivotOffset };
     } else {
       // Legacy lobster/crayfish path: shallow lerp + emissive
-      c.traverse((child) => {
+      c.traverse((child: THREE.Object3D) => {
         if ((child as THREE.Mesh).isMesh) {
           const mesh = child as THREE.Mesh;
           if (mesh.material) {
@@ -164,14 +207,14 @@ function PlayerPetInner() {
       });
       const parts = discoverLobsterParts(c);
       const anim = new LobsterAnimator(parts);
-      return { cloned: c, lobsterAnimator: anim, charAnimator: null as CharacterAnimator | null };
+      return { cloned: c, lobsterAnimator: anim, charAnimator: null as CharacterAnimator | null, pivotOffsetY: pivotOffset };
     }
-  }, [scene, petModelKey, useNewAnimSystem]);
+  }, [scene, petModelKey, useNewAnimSystem, reg.scale]);
 
   // Dispose cloned materials on unmount (navigation away / hot-reload)
   useEffect(() => {
     return () => {
-      cloned.traverse((obj) => {
+      cloned.traverse((obj: THREE.Object3D) => {
         const mesh = obj as THREE.Mesh;
         if ((mesh as any).isMesh) {
           // Dispose materials only — applyColorTint() in character-animations.ts
@@ -308,7 +351,11 @@ function PlayerPetInner() {
       terrainYRef.current += (ty - terrainYRef.current) * 0.3;
     }
     const bob = isMoving ? Math.abs(Math.sin(elapsed * BOB_SPEED)) * BOB_AMPLITUDE : Math.sin(elapsed * 2) * 0.15;
-    group.position.y = terrainYRef.current + 2 + bob;
+    // Subtract pivotOffsetY to ground the pet regardless of GLB pivot placement.
+    // pivotOffsetY = localMinY * finalScale (world units).
+    // If pivot is above feet (localMinY < 0), pivotOffsetY is negative —
+    // subtracting a negative raises the model so feet align with terrainY.
+    group.position.y = terrainYRef.current + 2 + bob - pivotOffsetY;
 
     const targetRot = continuousRot ?? DIR_ROTATION[dir] ?? 0;
     // Shortest-path lerp — prevents spinning the long way when crossing ±PI boundary

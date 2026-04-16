@@ -284,7 +284,7 @@ All 10 buildings are shop buildings — each sells 2 knowledge books (20 total).
 - `users` + `sessions` (Lucia auth)
 - `pets` (one per user) — key columns:
   - Identity: `name`, `species`, `color`, `gender`, `archetype`, `personality`, `stats`
-  - Agent framework (Phase 2): `model_key` (3D GLB key, default `lobster`), `agent_category` (`openclaw`/`hermes`/`milady`/`other`, default `openclaw`), `harness` (`openclaw`/`hermes`/`milady`/`custom`, default `milady`)
+  - Agent framework (Phase 2): `model_key` (3D GLB key, default `lobster`), `agent_category` (`openclaw`/`hermes`/`milady`/`other`, default `openclaw`), `harness` (`openclaw`/`hermes`/`milady`/`custom`, default `milady`) — all NOT NULL with DEFAULTs so existing rows backfill automatically; CHECK constraints on `agent_category` and `harness` enforce the enums at DB level
   - Avatar (VRM-ready): `avatar_type` (`glb`/`vrm`), `avatar_url`, `vrm_metadata` JSONB
   - Position + activity: `position_x`, `position_y`, `last_active_at`, `is_active`
   - Economy: `claw_tokens`, `login_streak`, `last_login_date`
@@ -298,6 +298,7 @@ All 10 buildings are shop buildings — each sells 2 knowledge books (20 total).
 - `platform_agent_logs`
 - `openclaw_bots` (external agent identity, gateway config, learned knowledge)
 - `treasury_wallets` + `pet_wallets` (encrypted Solana keypairs)
+- `agent_configs` (export/import bundle — includes `modelKey`/`agentCategory`/`harness` for round-trip)
 - `bazaar_listings` + `auctions` + `claw_token_transactions` (marketplace + economy)
 
 ## ClawToken Economy & Knowledge Books

@@ -38,12 +38,12 @@ rotY formula: cx = x + w/2, cz = y + h/2; dx = 80-cx, dz = 80-cz; rotY = atan2(d
 | memory-vault | 0.613 |
 
 ### Key constants
-| Constant | Value | File |
-|---|---|---|
-| BUILDING_TARGET_HEIGHT | 800 | arena-buildings.tsx |
-| CHARACTER_HEIGHT | 32 | arena-location-npcs.tsx |
-| PET_SCALE | 16 | player-pet.tsx |
-| NPC_SCALE | 13 | arena-npcs.tsx |
+| Constant | Value | File | Notes |
+|---|---|---|---|
+| BUILDING_TARGET_HEIGHT | 800 | arena-buildings.tsx | Normalizes by height (size.y) not max-dim — 2026-04-16 scale fix |
+| CHARACTER_HEIGHT | 140 | arena-location-npcs.tsx | Raised from 32 — 2026-04-16 scale regression fix |
+| PET_SCALE | 55 | player-pet.tsx | Raised from 16 — 2026-04-16 scale regression fix |
+| NPC_SCALE | 50 | arena-npcs.tsx | Raised from 13 — 2026-04-16 scale regression fix |
 | NPC_INSET_TILES | 4.0 | arena-location-npcs.tsx |
 | VILLAGE_CENTER_TILE_X/Z | 80, 80 | arena-location-npcs.tsx |
 | DECO_INNER_EXCLUSION_R | 600 | arena-terrain.tsx |
@@ -86,4 +86,16 @@ Map doubled 2026-04-15: 80x80 (2560x2560) → 160x160 (5120x5120).
 Fix: BUILDING_TARGET_HEIGHT 480→800, building footprint 10×10→14×14 tiles (centers unchanged),
 PET_SCALE 10→16, NPC_SCALE 8→13, CHARACTER_HEIGHT 20→32, camera start [0,700,1600]→[0,600,1300].
 No map width change. Building world positions unchanged (only footprint and visual scale grew).
-Previous 80x80 expansion was 2026-04-14.
+
+2026-04-16 scale regression fix (second pass — CDP bbox measurements):
+- Buildings: normalization changed from max(w,h,d) to size.y (height). Wide buildings
+  (salty-spitoon, boating-school) were having their width clamp to 800, crushing height.
+  All 10 buildings now normalized to BUILDING_TARGET_HEIGHT=800 by height only.
+- Buildings + Location NPCs: bbox measurement now excludes SkinnedMesh bind poses.
+  Box3.setFromObject() on rigged scenes can inflate bbox 100x; per-Mesh geometry
+  traversal gives the true visual extent.
+- Location NPCs: CHARACTER_HEIGHT 32→140. Per-model scaleOverride added for Karen (93)
+  and Larry (140) as fallback if non-skinned bbox also fails.
+- Wandering NPCs: NPC_SCALE 13→50. At scale=13, measured 31-37 world units — invisible
+  against 800-unit buildings. Scale=50 targets ~115-142 world units.
+- Player pet: PET_SCALE 16→55. Matches wandering NPC height range, slightly larger.

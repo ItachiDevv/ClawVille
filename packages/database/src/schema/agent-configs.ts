@@ -23,6 +23,11 @@ export interface AgentConfigExport {
   equippedSkills: string[];
   totalXp: number;
   exportedAt: string;
+  /** Phase 2 — optional. Older exports predate these fields; import falls
+   *  back to DB DEFAULTs ('lobster', 'openclaw', 'milady') when omitted. */
+  modelKey?: string;
+  agentCategory?: 'openclaw' | 'hermes' | 'milady' | 'other';
+  harness?: 'openclaw' | 'hermes' | 'milady' | 'custom';
 }
 
 export const agentConfigs = pgTable('agent_configs', {
