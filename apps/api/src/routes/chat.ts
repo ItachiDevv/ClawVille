@@ -10,6 +10,7 @@ import { awardXp } from '../services/xp-service';
 import { shouldCollaborate, collaborateOnQuery } from '../services/agent-collaboration';
 import { miladyGateway } from '../services/milady-gateway';
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
+import { getSystemNpcAgent } from '../services/system-npc-seeder';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 import type { ClawvilleServices } from '@clawville/agent-runtime';
@@ -33,22 +34,32 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
     throw new HTTPException(400, { message: 'Message must be 1-4000 characters' });
   }
 
-  // Find agent for this location
-  const locationAgent = await db.query.locationAgents.findFirst({
+  // Find agent for this location — first the caller's personal override,
+  // then fall back to the system-owned NPC (Gary, Patrick, Sandy, etc.)
+  // seeded on boot by `ensureSystemNpcs()`.
+  let locationAgent = await db.query.locationAgents.findFirst({
     where: and(
       eq(locationAgents.userId, user.id),
       eq(locationAgents.locationId, locationId)
     ),
   });
 
+  let runtimeOwnerUserId: string = user.id;
+
   if (!locationAgent || !locationAgent.platformAgentId) {
-    throw new HTTPException(404, { message: 'No agent configured for this location' });
+    const system = await getSystemNpcAgent(locationId);
+    if (!system) {
+      throw new HTTPException(404, { message: 'No agent available for this location' });
+    }
+    locationAgent = system.locationAgent;
+    runtimeOwnerUserId = system.systemUserId;
   }
 
-  // Ensure agent runtime is running
+  // Ensure agent runtime is running — must pass the agent's owner userId
+  // (not the caller) so the orchestrator's (id, userId) lookup succeeds.
   const runtime = await agentOrchestrator.ensureAgentRuntime(
-    locationAgent.platformAgentId,
-    user.id
+    locationAgent.platformAgentId!,
+    runtimeOwnerUserId
   );
 
   if (!runtime) {
