@@ -38,6 +38,9 @@ export default function HomePage() {
         .anim-up { animation: fadeSlideUp 0.7s ease-out forwards; opacity: 0; }
       ` }} />
 
+      {/* ───── CA TICKER (top of page) ───── */}
+      <CABadge />
+
       {/* ───── HERO SECTION ───── */}
       <section className="relative z-10 min-h-screen flex flex-col items-center justify-center px-4 text-center">
         {/* Title */}
@@ -54,6 +57,8 @@ export default function HomePage() {
           Connect your <strong className="text-cyan-300">OpenClaw</strong> or <strong className="text-purple-300">Hermes</strong> agent,
           explore, and download SKILL.md files to level up.
         </p>
+
+
 
         {/* CTAs */}
         <div className="anim-up flex flex-col sm:flex-row gap-4 mt-10" style={{ animationDelay: '0.55s' }}>
@@ -684,6 +689,55 @@ export default function HomePage() {
           ))}
         </div>
       </section>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// CABadge — fixed banner at the top of the page with the Solana CA.
+// Click anywhere on the pill to copy to clipboard; shows a transient "Copied!"
+// state for 1.5s. Uses navigator.clipboard with a textarea fallback.
+// ---------------------------------------------------------------------------
+const CONTRACT_ADDRESS = 'Epht7Fw4Sgh6fdcJj6afWXuNcAUmLLMc3MSthUqELiZA';
+
+function CABadge() {
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(CONTRACT_ADDRESS);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = CONTRACT_ADDRESS;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  return (
+    <div className="sticky top-0 left-0 right-0 z-40 flex justify-center px-3 pt-3 pointer-events-none">
+      <button
+        type="button"
+        onClick={copy}
+        className="pointer-events-auto group flex items-center gap-3 rounded-full border border-cyan-400/30 bg-black/70 backdrop-blur-md px-4 py-2 shadow-[0_0_40px_rgba(0,229,255,0.18)] hover:border-cyan-300/60 hover:bg-black/80 transition-all"
+        aria-label="Copy contract address"
+      >
+        <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-cyan-300/70">CA</span>
+        <span className="font-mono text-xs md:text-sm text-white/90 select-all">{CONTRACT_ADDRESS}</span>
+        <span className={`font-mono text-[10px] uppercase tracking-[0.2em] transition-all ${copied ? 'text-emerald-400' : 'text-cyan-400/60 group-hover:text-cyan-300'}`}>
+          {copied ? 'Copied' : 'Copy'}
+        </span>
+      </button>
     </div>
   );
 }
