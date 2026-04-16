@@ -6,9 +6,6 @@ import dynamic from 'next/dynamic';
 import { useCheckPetName } from '@/hooks/use-avatar';
 import {
   MODEL_REGISTRY,
-  CATEGORY_META,
-  CATEGORY_ORDER,
-  CATEGORY_DEFAULT_MODEL,
   PICKER_COLORS,
   HARNESS_OPTIONS,
   MODEL_KEY_TO_LEGACY_SPECIES,
@@ -85,13 +82,9 @@ export default function CreateAgentPage() {
     if (s?.modelKey && s.modelKey in MODEL_REGISTRY) return s.modelKey as ModelKey;
     return 'lobster';
   });
-  const [selectedCategory, setSelectedCategory] = useState<AgentCategory>(() => {
-    const s = readSessionStep1();
-    if (s?.modelKey && s.modelKey in MODEL_REGISTRY) {
-      return MODEL_REGISTRY[s.modelKey as ModelKey].category;
-    }
-    return 'openclaw';
-  });
+  // Category is derived from the selected model's registry entry — no longer
+  // a separate state since the category tabs were removed 2026-04-16 (user
+  // feedback: 2 tabs × 7 models wastes vertical space; show all models flat).
   const [selectedColor, setSelectedColor] = useState<PickerColorId>(() => {
     const s = readSessionStep1();
     if (s?.color && VALID_COLOR_IDS.has(s.color)) return s.color as PickerColorId;
@@ -135,10 +128,14 @@ export default function CreateAgentPage() {
     canvasElRef.current = canvas;
   }, []);
 
-  // ── Derived model list for current category ───────────────────────────────
-  const modelsInCategory = Object.entries(MODEL_REGISTRY).filter(
-    ([, entry]) => entry.category === selectedCategory
-  );
+  // ── Derived: current model's category + full flat model list ────────────
+  // Category is no longer a state — it's computed from the current model so
+  // the sessionStorage payload still carries an accurate `category` field
+  // for downstream consumers. The grid shows every model flat since the
+  // tabs were removed.
+  const selectedCategory: AgentCategory =
+    MODEL_REGISTRY[selectedModel]?.category ?? 'openclaw';
+  const allModels = Object.entries(MODEL_REGISTRY);
 
   // ── Name availability debounce with request cancellation ─────────────────
   // Fixes audit §2 (stale mutation response race) + §7 (unmount leak):
@@ -175,15 +172,6 @@ export default function CreateAgentPage() {
   // handlers. Do NOT make this async — an `await` between the two setters
   // breaks batching and would cause one render with the new category + stale
   // model, sending a mismatched modelKey to SelectAgentCanvas.
-  // CATEGORY_DEFAULT_MODEL is Partial<Record<AgentCategory, ModelKey>> since
-  // 2026-04-16 (hermes/milady tabs removed) — fall back to 'lobster' for any
-  // category that is no longer in the picker so the state can never be
-  // undefined even if stale sessionStorage pushes a retired category in.
-  const handleCategoryChange = useCallback((cat: AgentCategory) => {
-    setSelectedCategory(cat);
-    setSelectedModel(CATEGORY_DEFAULT_MODEL[cat] ?? 'lobster');
-  }, []);
-
   // ── Thumbnail capture with bounded rAF poll (audit Fix F) ────────────────
   // preserveDrawingBuffer is set on the Canvas so toDataURL returns the last
   // rendered frame. If the user clicks Next before the first frame paints
@@ -273,18 +261,11 @@ export default function CreateAgentPage() {
 
   return (
     <div className="relative min-h-screen flex flex-col items-center px-4 py-8 bg-[#061520] overflow-x-hidden">
-      {/* 3D scene — full-page background, replacing LandingScene.
-          Canvas is fixed inset-0 z-0 (set inside SelectAgentCanvas).
-          UI overlay is z-10. Never run alongside LandingScene on Iris Xe.
-          onCanvasReady gives us the <canvas> element ref so handleNext can
-          call toDataURL without resorting to document.getElementById. */}
-      <SelectAgentCanvas
-        modelKey={selectedModel}
-        color={selectedColor}
-        onCanvasReady={handleCanvasReady}
-      />
+      {/* NO full-page canvas mount here. The 3D preview is now a framed panel
+          in normal page flow between the color picker and config card so the
+          modal can never overlap the model. */}
 
-      <div className="relative z-10 w-full flex flex-col items-center">
+      <div className="w-full flex flex-col items-center">
 
         {/* Title */}
         <h1 className="font-clawville text-3xl text-white drop-shadow-[0_0_16px_rgba(0,229,255,0.3)] mb-1">
@@ -294,31 +275,13 @@ export default function CreateAgentPage() {
           Choose model, color, and identity
         </p>
 
-        {/* ── Category tabs ─────────────────────────────────────────────── */}
-        {/* CATEGORY_META is now Partial<Record<...>> — `cat` here is always
-            drawn from CATEGORY_ORDER which is guaranteed to have a matching
-            meta entry, but TS doesn't know that so we fall back on `cat`
-            itself as the label text. */}
-        <div className="flex gap-1 bg-black/40 backdrop-blur-sm rounded-xl p-1 mb-4 border border-white/10">
-          {CATEGORY_ORDER.map((cat) => (
-            <button
-              key={cat}
-              onClick={() => handleCategoryChange(cat)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all ${
-                selectedCategory === cat
-                  ? 'bg-cyan-500/30 text-cyan-300 border border-cyan-500/40'
-                  : 'text-white/40 hover:text-white/70 hover:bg-white/5'
-              }`}
-            >
-              {CATEGORY_META[cat]?.label ?? cat}
-            </button>
-          ))}
-        </div>
-
-        {/* ── Model picker grid ─────────────────────────────────────────── */}
+        {/* ── Model picker grid (flat — category tabs removed 2026-04-16) ── */}
+        {/* Previously split into OpenClaw + Other tabs with filtered grids.
+            Removed per user feedback — the ~7 available models fit cleanly
+            in a single row at desktop width (4-col on mobile). */}
         <div className="w-full max-w-xl mb-4">
-          <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
-            {modelsInCategory.map(([key, entry]) => (
+          <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
+            {allModels.map(([key, entry]) => (
               <button
                 key={key}
                 // `key` comes from Object.entries() which widens to string; MODEL_REGISTRY
@@ -338,9 +301,6 @@ export default function CreateAgentPage() {
               </button>
             ))}
           </div>
-          <p className="text-white/30 text-[10px] text-center mt-1.5 font-mono">
-            {CATEGORY_META[selectedCategory]?.description ?? ''}
-          </p>
         </div>
 
         {/* ── Color picker ──────────────────────────────────────────────── */}
@@ -359,6 +319,20 @@ export default function CreateAgentPage() {
               {color.label}
             </button>
           ))}
+        </div>
+
+        {/* ── 3D preview panel ──────────────────────────────────────────── */}
+        {/* Placed between the color picker and config card so the modal is
+            BELOW the canvas in normal page flow — the two regions can never
+            overlap regardless of viewport height or scroll position.
+            overflow-hidden clips the canvas border-radius cleanly.
+            onCanvasReady captures the <canvas> element ref for toDataURL. */}
+        <div className="w-full max-w-xl mb-5 rounded-2xl overflow-hidden border border-cyan-500/20 bg-black/40 h-[220px]">
+          <SelectAgentCanvas
+            modelKey={selectedModel}
+            color={selectedColor}
+            onCanvasReady={handleCanvasReady}
+          />
         </div>
 
         {/* ── Config panel ──────────────────────────────────────────────── */}

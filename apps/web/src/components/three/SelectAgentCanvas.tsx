@@ -361,19 +361,20 @@ const SceneContents = memo(function SceneContents({
   return (
     <>
       {/* Camera controls — limited rotation, no pan.
-          Camera is positioned high and aimed steeply downward so the model
-          appears in the upper ~25% of the viewport, above the config modal.
-          target Y=3 (below model center) steepens the look-down angle so the
-          character sits in the clear header zone rather than behind the UI. */}
+          Camera is close-up for the 200px framed panel.
+          Position [0,3,8] gives a waist-level three-quarter shot.
+          target Y=1.5 centers on the model mid-body (platform top at y=0,
+          model group at y=1.5). OrbitControls drag-to-rotate is intentionally
+          enabled (pointer-events-auto on the Canvas). */}
       <OrbitControls
         makeDefault
         enablePan={false}
         enableZoom={true}
-        minDistance={30}
-        maxDistance={90}
+        minDistance={5}
+        maxDistance={22}
         minPolarAngle={Math.PI * 0.28}
-        maxPolarAngle={Math.PI * 0.50}
-        target={[0, 3, 0]}
+        maxPolarAngle={Math.PI * 0.55}
+        target={[0, 1.5, 0]}
       />
 
       {/* Dramatic underwater lighting */}
@@ -381,8 +382,11 @@ const SceneContents = memo(function SceneContents({
       <pointLight position={[0, -5, 10]} color={0x00aaff} intensity={0.8} distance={60} />
       <ambientLight color={0x05152b} intensity={0.4} />
 
-      {/* Underwater fog */}
-      <fog attach="fog" args={[0x030d1a, 80, 220]} />
+      {/* Underwater fog — tuned for the close-up framed panel.
+          Near=20 / far=60 keeps the model clear while still fading the
+          atmosphere backdrop. The old 80/220 was tuned for a full-viewport
+          camera at distance ~70 and would show zero fog in a 200px panel. */}
+      <fog attach="fog" args={[0x030d1a, 20, 60]} />
 
       {/* Atmosphere effects */}
       <UnderwaterAtmosphere />
@@ -434,14 +438,13 @@ export default function SelectAgentCanvas({
   }, []);
 
   return (
-    // fixed inset-0 is viewport-relative — prevents the canvas from stretching
-    // to the full scroll height of a long-form parent on mobile.
-    // pointer-events-none on wrapper so UI overlays at z-10 receive clicks;
-    // pointer-events-auto on Canvas so OrbitControls remain functional.
-    <div id="select-agent-canvas" className="fixed inset-0 z-0 pointer-events-none">
+    // w-full h-full fills the parent framed panel (200px in create-agent/page.tsx).
+    // R3F's ResizeObserver handles the sized container automatically.
+    // No pointer-events-none — OrbitControls drag-to-rotate must stay active.
+    <div id="select-agent-canvas" className="w-full h-full">
       <Canvas
-        className="w-full h-full pointer-events-auto"
-        camera={{ position: [0, 40, 70], fov: 42 }}
+        className="w-full h-full"
+        camera={{ position: [0, 3, 8], fov: 45 }}
         // WebGL-only: preserveDrawingBuffer enables toDataURL thumbnail capture
         // in create-agent/page.tsx. If this Canvas ever switches to
         // WebGPURenderer, replace thumbnail capture with a RenderTarget +
