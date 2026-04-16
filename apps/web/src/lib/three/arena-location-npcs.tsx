@@ -82,7 +82,7 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
     companion: {
       name: 'Gary',
       model: '/models/characters/gary.glb',
-      offsetX: 60,
+      offsetX: 180,
       offsetZ: 0,
     },
   },
@@ -122,7 +122,7 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
       name: 'Karen',
       model: '/models/characters/karen.glb',
       scaleOverride: 93,
-      offsetX: 80,
+      offsetX: 180,
       offsetZ: 0,
     },
   },
@@ -143,10 +143,19 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
 const VILLAGE_CENTER_TILE_X = 80;
 const VILLAGE_CENTER_TILE_Z = 80; // tile Y maps to world Z
 
+// How far (in world units) NPCs stand from their building center toward village
+// center. Buildings can be up to MAX_FOOTPRINT=1000 wu wide (±500 half-extent).
+// 600 = 500 (half of MAX_FOOTPRINT) + 100 wu margin, placing NPCs clearly in
+// front of the widest possible building without clipping through its face.
+// Replaces the old NPC_INSET_TILES=4.0 (128 wu) which put NPCs inside the
+// footprint of wide buildings like pineapple-house.
+const NPC_INSET_WORLD = 600; // world units
+
 /** Compute NPC world position and facing angle for a given building zone.
  *
- *  Position: building_center_tile + normalize(toward_village_center) * NPC_INSET_TILES (4.0),
- *            converted to world space.
+ *  Position: moves NPC_INSET_WORLD world units from building center toward village
+ *            center. Inset in world units avoids the tile-count mismatch that placed
+ *            NPCs inside wide buildings (pineapple-house footprint is up to 1000 wu).
  *  Facing: SpongeBob character GLBs face +Z at rotation.y=0.
  *          atan2(dx, dz) rotates the +Z-forward model to face toward village center.
  *          No +PI flip needed (unlike lobster.glb which faces -Z). */
@@ -164,13 +173,16 @@ function computeNpcPlacement(zone: { x: number; y: number; width: number; height
   const dz = VILLAGE_CENTER_TILE_Z - bcz;
   const len = Math.sqrt(dx * dx + dz * dz);
 
-  // NPC stands 4 tiles inside from the building center, toward the village center
-  const NPC_INSET_TILES = 4.0;
+  // Convert NPC_INSET_WORLD to tile units and step along the normalized direction.
+  // len is in tile space; the normalized direction (dx/len, dz/len) is unit-length
+  // in tile space. Dividing world-unit inset by TILE_SIZE converts to tile steps.
   let npcTileX = bcx;
   let npcTileZ = bcz;
   if (len > 0.001) {
-    npcTileX = bcx + (dx / len) * NPC_INSET_TILES;
-    npcTileZ = bcz + (dz / len) * NPC_INSET_TILES;
+    const invLen = 1 / len;
+    const insetTiles = NPC_INSET_WORLD / TILE_SIZE;
+    npcTileX = bcx + (dx * invLen) * insetTiles;
+    npcTileZ = bcz + (dz * invLen) * insetTiles;
   }
 
   const worldX = OFFSET_X + npcTileX * TILE_SIZE;
