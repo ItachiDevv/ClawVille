@@ -10,7 +10,7 @@ import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 type ConnectTab = 'easy' | 'manual';
 
 export default function OpenClawConnectModal() {
-  const { openclawModalOpen, setOpenclawModalOpen, openclawConnected, openclawSessionId, setOpenclawConnection, addToast, setSkillBuilderOpen } = useGameStore();
+  const { agentConnectModalOpen, setAgentConnectModalOpen, agentConnected, agentSessionId, setAgentConnection, addToast, setSkillBuilderOpen } = useGameStore();
   const { data: avatar } = useAvatar();
   const { data: authData } = useQuery({ queryKey: ['auth-me'], queryFn: () => api.me(), retry: false });
 
@@ -45,12 +45,12 @@ export default function OpenClawConnectModal() {
 
   // Stop polling when modal closes
   useEffect(() => {
-    if (!openclawModalOpen && pollRef.current) {
+    if (!agentConnectModalOpen && pollRef.current) {
       clearInterval(pollRef.current);
       pollRef.current = null;
       setPolling(false);
     }
-  }, [openclawModalOpen]);
+  }, [agentConnectModalOpen]);
 
   const handleGenerateToken = useCallback(async () => {
     if (!avatar?.id || !authData?.user?.id) {
@@ -82,7 +82,7 @@ export default function OpenClawConnectModal() {
             clearInterval(pollRef.current!);
             pollRef.current = null;
             setPolling(false);
-            setOpenclawConnection(status.sessionId);
+            setAgentConnection(status.sessionId);
             addToast('🔌', 'Agent connected to ClawVille!');
           }
         } catch {
@@ -99,7 +99,7 @@ export default function OpenClawConnectModal() {
     } finally {
       setLoading(false);
     }
-  }, [avatar, authData, addToast, setOpenclawConnection]);
+  }, [avatar, authData, addToast, setAgentConnection]);
 
   const handleCopyUrl = () => {
     if (!connectUrl) return;
@@ -128,7 +128,7 @@ export default function OpenClawConnectModal() {
         homeY: 2560,
         patrolRadius: 128,
       });
-      setOpenclawConnection(res.sessionId);
+      setAgentConnection(res.sessionId);
       addToast('🔌', 'Agent connected!');
     } catch (err: any) {
       setError(err.message || 'Connection failed');
@@ -159,10 +159,10 @@ export default function OpenClawConnectModal() {
         setExportResult({ knowledgeCount: data.knowledge?.length ?? 0, markdown: data.skillMd });
       } catch { /* non-blocking */ }
     }
-    if (openclawSessionId) {
-      try { await api.unregisterOpenClaw(openclawSessionId); } catch { /* ignore */ }
+    if (agentSessionId) {
+      try { await api.unregisterOpenClaw(agentSessionId); } catch { /* ignore */ }
     }
-    setOpenclawConnection(null);
+    setAgentConnection(null);
     addToast('🔌', 'Agent disconnected');
   };
 
@@ -183,24 +183,24 @@ export default function OpenClawConnectModal() {
     URL.revokeObjectURL(url);
   };
 
-  if (!openclawModalOpen) return null;
+  if (!agentConnectModalOpen) return null;
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setOpenclawModalOpen(false)} />
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setAgentConnectModalOpen(false)} />
       <div className="relative w-full max-w-md max-h-[90vh] overflow-y-auto">
         <div className="bg-[rgba(8,20,40,0.95)] border border-cyan-500/20 rounded-2xl shadow-[0_0_40px_rgba(0,229,255,0.08)] p-5 space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-bold text-white">Connect Agent</h2>
             <button
-              onClick={() => setOpenclawModalOpen(false)}
+              onClick={() => setAgentConnectModalOpen(false)}
               className="text-white/40 hover:text-white/80 text-lg"
             >
               ×
             </button>
           </div>
 
-          {openclawConnected ? (
+          {agentConnected ? (
             /* ─── Connected state ─── */
             <div className="space-y-3">
               <div className="flex items-center gap-2">
@@ -211,7 +211,7 @@ export default function OpenClawConnectModal() {
                 Your agent is exploring ClawVille and learning skills from every building visit.
               </p>
               <p className="text-white/30 text-xs font-mono">
-                Session: {openclawSessionId}
+                Session: {agentSessionId}
               </p>
 
               {exportResult && (
@@ -235,7 +235,7 @@ export default function OpenClawConnectModal() {
                 </button>
               </div>
               <button
-                onClick={() => { setOpenclawModalOpen(false); setSkillBuilderOpen(true); }}
+                onClick={() => { setAgentConnectModalOpen(false); setSkillBuilderOpen(true); }}
                 className="w-full px-3 py-2 rounded-lg bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 text-xs font-bold"
               >
                 Build Skill
