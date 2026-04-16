@@ -41,13 +41,15 @@ const _locRayDir = new THREE.Vector3(0, -1, 0);
 //
 // NPC_SCALE_CLAMP_MIN = CHARACTER_HEIGHT / 200
 //   → computed scale < this implies native above-pivot height > 200 units (inflated).
-// NPC_SCALE_CLAMP_MAX = CHARACTER_HEIGHT / 0.5 = 280
-//   → computed scale > this implies native above-pivot height < 0.5 units. This catches
-//     GLBs where the only non-skinned geometry is a tiny prop (coin, screen pixel), which
-//     would otherwise produce scales of 2000+ and render the SkinnedMesh body at 1892 wu.
-//     Mr.Krabs and Sandy both hit this case without scaleOverride (measured 1892 + 482).
+// NPC_SCALE_CLAMP_MAX = CHARACTER_HEIGHT / 1.0 = 140
+//   → computed scale > this implies native above-pivot height < 1.0 unit. Tightened from
+//     280 (CHARACTER_HEIGHT/0.5) to 140 (CHARACTER_HEIGHT/1.0) so the worst-case post-clamp
+//     visual height is CHARACTER_HEIGHT * 1.0 = 140 wu (vs the old 280 * 0.5 = 140 — same
+//     worst case, but now reachable only at native h < 1.0, not < 0.5).
+//     Mr.Krabs and Sandy bypass this via scaleOverride anyway; the clamp guards unnamed future
+//     characters whose non-skinned accessories have sub-1-unit extent.
 const NPC_SCALE_CLAMP_MIN = CHARACTER_HEIGHT / 200;  // ~0.70 at CHARACTER_HEIGHT=140
-const NPC_SCALE_CLAMP_MAX = CHARACTER_HEIGHT / 0.5;  // 280 — tiny-prop bbox guard
+const NPC_SCALE_CLAMP_MAX = CHARACTER_HEIGHT / 1.0;  // 140 — tightened from 280
 
 /** Config for a single NPC model (primary or companion). */
 type NpcModelConfig = {
@@ -227,22 +229,35 @@ function computeNormalizedScale(scene: THREE.Object3D, targetHeight: number): { 
     }
   });
 
-  // If no regular meshes found (all geometry is skinned), fall back to full scene bbox
+  // CRITICAL: when no non-skinned geometry is found, do NOT call setFromObject().
+  // setFromObject() uses SkinnedMesh bind-pose world matrices, which inflate bbox by
+  // 100-600x. The inflated min.y (large negative) × finalScale produces a catastrophic
+  // pivotOffsetY (e.g. -600 * 140 = -84000), launching the NPC 84000 world units skyward.
+  // Fix: treat pivot as feet (localMinY = 0) and assume native body height ≈ 1.0 unit.
   if (_npcBboxScratch.isEmpty()) {
-    _npcBboxScratch.setFromObject(scene);
+    // Hard-cap at CLAMP_MAX as a final safety net.
+    const safeScale = Math.min(NPC_SCALE_CLAMP_MAX, targetHeight);
+    return { scale: safeScale, localMinY: 0 };
   }
+
+  // localMinY MUST come from the non-skinned bbox only.
+  const localMinY = _npcBboxScratch.min.y;
 
   // Use bbox.max.y as the normalizing height — this is the above-pivot visual extent.
   // Using size.y (max.y - min.y) inflates h when the geometry extends below the pivot
   // (localMinY < 0), causing the scale to be too small and the rendered body shorter than
   // targetHeight. bbox.max.y gives the true "height above ground" of the tallest point.
-  // Fall back to size.y only if max.y is non-positive (completely underground geometry).
-  const maxY = _npcBboxScratch.isEmpty() ? 0 : _npcBboxScratch.max.y;
+  const maxY = _npcBboxScratch.max.y;
   _npcBboxScratch.getSize(_npcSizeScratch);
   const h = maxY > 0.001 ? maxY : (_npcSizeScratch.y > 0.001 ? _npcSizeScratch.y : Math.max(_npcSizeScratch.x, _npcSizeScratch.y, _npcSizeScratch.z));
-  const localMinY = _npcBboxScratch.isEmpty() ? 0 : _npcBboxScratch.min.y;
   if (h === 0) return { scale: 1, localMinY };
-  return { scale: targetHeight / h, localMinY };
+
+  const computed = targetHeight / h;
+  // Hard cap — unconditional final safety net. scaleOverride at the call site takes
+  // priority over this returned value, but the clamp here guards against callers
+  // that forget to set scaleOverride for broken-bbox characters.
+  const scale = Math.max(NPC_SCALE_CLAMP_MIN, Math.min(NPC_SCALE_CLAMP_MAX, computed));
+  return { scale, localMinY };
 }
 
 function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
