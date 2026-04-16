@@ -484,10 +484,15 @@ export default function ArenaTerrain() {
       <SandFloor />
       {/* Procedurally scattered individual GLB decorations */}
       <UnderwaterDecorations />
-      {/* The downloaded underwater-decorations.glb scene — single draw call, outer zone */}
-      <UnderwaterDecorationsGlb />
-      {/* Fixed landmark decorations — shipwreck + submarine at curated world positions */}
-      <FixedLandmarks />
+      {/*
+        REMOVED 2026-04-16: `UnderwaterDecorationsGlb` (underwater-decorations.glb @ scale 8)
+        and `FixedLandmarks` (submarine @ scale 2.0 + shipwreck @ scale 2.5). All three were
+        authored for the old 2560x2560 world; in the current 5120x5120 world they appeared
+        as massive floating silhouettes dominating the scene. The submarine landmark was
+        the immediate user complaint ("this massive floating object needs to just be
+        removed"). If we want hero-scale landmarks later, they need proper bbox
+        normalization + positioning well outside the ring, like the procedural decorations.
+      */}
     </Suspense>
   );
 }
@@ -516,12 +521,13 @@ export function DeferredTerrainPreloads(): ReactElement | null {
       useGLTF.preload('/models/building-lantern.glb');
       useGLTF.preload('/models/crayfish.glb');
       useGLTF.preload('/models/building-tower2.glb');
-      useGLTF.preload('/models/building-shipwreck.glb');
-      useGLTF.preload('/models/building-submarine.glb');
-      // Heavy 5.9 MB scene — also deferred (not visible until player is near center)
-      useGLTF.preload('/models/underwater-decorations.glb');
       // Note: building-lighthouse.glb is intentionally omitted here — arena-buildings.tsx
       // already preloads it via its module-scope loop over BUILDING_MODELS.
+      // REMOVED 2026-04-16: preloads for building-shipwreck, building-submarine, and
+      // underwater-decorations.glb. The components that used them (FixedLandmarks +
+      // UnderwaterDecorationsGlb) were removed — those landmarks were authored for
+      // the old 2560x2560 world and appeared as massive floating silhouettes in the
+      // current 5120x5120 world.
     });
     return () => cancelAnimationFrame(raf);
   }, []);
