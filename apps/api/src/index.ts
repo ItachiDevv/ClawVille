@@ -127,11 +127,27 @@ console.log(`Starting ClawVille API on port ${port}...`);
 const arenaMode = process.env.NPC_ARENA_MODE === 'true';
 startSimulation(arenaMode);
 
-// Seed system-owned building NPCs so every user can chat with Patrick/Gary/etc.
-// without configuring their own agent. Non-blocking — a seed failure must not
-// crash API startup, but every deploy gets the latest SKILL.md into the NPC
-// knowledge base.
+// Pre-migrate ElizaOS schema + seed system-owned building NPCs so every user
+// can chat with Patrick/Gary/etc. without any setup. Non-blocking — a failure
+// must not crash API startup, but every deploy gets a fresh attempt.
+//
+// The migration step ensures plugin-sql's 20 tables (agents, memories, rooms,
+// ...) exist BEFORE any lazy-start runtime tries to query them — otherwise the
+// first user chat times out at Bun.serve's 10s idleTimeout while migrations
+// churn in the background.
 (async () => {
+  try {
+    const { ensureElizaMigrated } = await import('./services/eliza-migrator');
+    const migrated = await ensureElizaMigrated();
+    if (migrated.ok) {
+      console.log('[API] ElizaOS schema ready');
+    } else {
+      console.error('[API] ElizaOS migration failed:', migrated.error);
+    }
+  } catch (err) {
+    console.error('[API] ElizaOS migration crashed:', err);
+  }
+
   try {
     const { ensureSystemNpcs } = await import('./services/system-npc-seeder');
     const results = await ensureSystemNpcs();
