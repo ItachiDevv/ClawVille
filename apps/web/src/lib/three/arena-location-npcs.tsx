@@ -126,8 +126,9 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
     model: '/models/characters/plankton.glb',
     // plankton.glb renders at ~28 wu without override (51% of CHARACTER_HEIGHT=55).
     // scaleOverride=110 assumes native above-pivot height ≈ 0.5 units (55/0.5=110).
-    // Tune between 80–140 after live probe if he over/under-shoots.
-    scaleOverride: 110,
+    // Tuned from 110 → 55 (rendered at sy=118 + underground); localMinY=0 override
+    // now handled in useMemo so underground won't repeat. 55 matches target height.
+    scaleOverride: 55,
     companion: {
       name: 'Karen',
       model: '/models/characters/karen.glb',
@@ -380,16 +381,25 @@ const NpcMesh = memo(function NpcMesh({
     // Without this, Mr. Krabs (computed≈2000) and Sandy (computed≈482) slip past the
     // old 14000 clamp and render at 1892 and 482 world units respectively.
     let s: number;
+    let offset: number;
     if (modelCfg.scaleOverride != null) {
       s = modelCfg.scaleOverride;
+      // When scaleOverride is applied, the measured localMinY came from a bbox
+      // that may not represent the rendered geometry floor (e.g. all-skinned body
+      // where non-skinned bbox is a tiny accessory at y > 0). Trust the override
+      // and assume feet-at-pivot (localMinY = 0) — matches the Y-grounding fix in
+      // the all-skinned fallback path. Without this Plankton (override=110,
+      // localMinY~0.5) rendered ~55wu underground.
+      offset = 0;
     } else if (computed >= NPC_SCALE_CLAMP_MIN && computed <= NPC_SCALE_CLAMP_MAX) {
       s = computed;
+      offset = localMinY * s;
     } else {
       // Computed scale is outside sanity bounds and no override was provided.
       // Clamp to the nearest bound as a best-effort fallback.
       s = Math.max(NPC_SCALE_CLAMP_MIN, Math.min(NPC_SCALE_CLAMP_MAX, computed));
+      offset = localMinY * s;
     }
-    const offset = localMinY * s;
     return { cloned: c, npcScale: s, pivotOffsetY: offset };
   }, [scene, modelCfg.color, modelCfg.scaleOverride]);
 
