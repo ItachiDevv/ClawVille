@@ -19,7 +19,7 @@ import { useNpcStore } from '@/stores/npc';
 import type { NpcSpriteState } from '@/stores/npc';
 import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tilemap-data';
 
-const SPEED = 200; // pixels/sec
+const SPEED = 320; // pixels/sec — increased from 200 (avatar-scale-down pass 2026-04-16)
 
 // Map pixel bounds
 const X_MIN = 16;
