@@ -430,6 +430,22 @@ After implementing a plan and you think you are done, use a collaborative agent 
 
 If you find a bug or an issue, fix it, even if you didn't write it. Never skip over or ignore a bug.
 
+## Memory File Enforcement
+
+At session start, Claude Code loads `~/.claude/projects/C--Users-newma-documents-crypto-clawville/memory/MEMORY.md` into context. Every entry there is a durable rule that MUST be followed.
+
+**Precedence:** If a memory file contradicts a repo doc (`CLAUDE.md`, `3dStructure.md`, `GameFeatures.md`, `ARCHITECTURE.md`, `README.md`), the repo doc wins — memory is a pointer, not a source of truth. Stale memories must be deleted or updated, not relied on.
+
+**Enforcement checklist — every session, every significant action:**
+1. Read `MEMORY.md` — it's the rulebook for this project
+2. When touching 3D code: memory `Always Use 3da` means spawn 3da before editing. No exceptions.
+3. When shipping a 3D change: memory `3D+Feature Doc Sync` means update `3dStructure.md` in the same diff
+4. When shipping a feature change: update `GameFeatures.md` in the same diff
+5. Before writing a new memory: check if a repo doc already owns that info — link to it instead of duplicating
+6. If you catch a memory contradicting a repo doc: update or delete the memory in that same turn, don't let it rot
+
+Violations of these rules are why the user has burned hours across sessions — stale memory claiming 80×80 grid after rebuild to 160×160, stale Railway URLs after Hetzner migration, movement-system notes contradicting the actual revert. Every new memory entry is a liability if not maintained.
+
 ## Documentation Update Policy
 
 After every significant code change, update the relevant doc(s) in the same PR — never defer. Match the change to the correct doc:
