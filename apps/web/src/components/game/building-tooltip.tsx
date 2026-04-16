@@ -32,7 +32,7 @@ export default function BuildingTooltip() {
         {npc && (
           <div className="text-white/50 text-xs mt-1.5 flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full bg-green-400/60" />
-            {npc.name} (NPC)
+            {npc.name} (Character)
           </div>
         )}
         <div className="text-white/40 text-[10px] mt-1.5 leading-relaxed">

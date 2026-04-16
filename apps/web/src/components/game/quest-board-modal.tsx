@@ -201,7 +201,7 @@ const PLACEHOLDER_QUESTS: Quest[] = [
     tier: 'side_quest',
     tokenReward: 25,
     skillReward: 'Cron Basics',
-    requirements: ['Visit Tide Clock Grotto', 'Talk to the Cron Keeper NPC'],
+    requirements: ['Visit Tide Clock Grotto', 'Talk to the Cron Keeper character'],
     location: 'Tide Clock Grotto',
     expiresAt: new Date(Date.now() + 7 * 86400000).toISOString(),
     completedCount: 12,
