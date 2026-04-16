@@ -83,6 +83,41 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
 const _stripBbox = new THREE.Box3();
 const _stripMeshBox = new THREE.Box3();
 
+/**
+ * Authoring-aware: strip named decorative meshes from a cloned scene.
+ *
+ * Some GLBs contain flat non-structural planes (flowers, paths) as children of
+ * named parent groups. These meshes inflate the XZ bounding box without
+ * contributing to the visible building silhouette, triggering the MAX_FOOTPRINT
+ * cap and shrinking the building's rendered height below BUILDING_TARGET_HEIGHT.
+ *
+ * For pineapple-house.glb specifically: Flowers + Path inflate XZ to
+ * ~1852 × 1415 wu, triggering MAX_FOOTPRINT=1000 and scaling height down to ~432.
+ * Removing them lets SpongebobsHouse + Chimney produce a ~1:1 bbox that keeps
+ * height at the full 800 target.
+ *
+ * DECORATIVE_PARENT_NAMES is intentionally narrow — only meshes whose parent
+ * (or any ancestor) matches this set are removed. Expand as new GLBs require it.
+ */
+const DECORATIVE_PARENT_NAMES = new Set(['Flowers', 'Path']);
+
+function stripDecorativeMeshes(scene: THREE.Object3D): void {
+  const toRemove: THREE.Object3D[] = [];
+  scene.traverse((child) => {
+    if (!(child as THREE.Mesh).isMesh) return;
+    // Walk the parent chain looking for a named decorator group
+    let p: THREE.Object3D | null = child.parent;
+    while (p) {
+      if (p.name && DECORATIVE_PARENT_NAMES.has(p.name)) {
+        toRemove.push(child);
+        break;
+      }
+      p = p.parent;
+    }
+  });
+  toRemove.forEach((obj) => obj.removeFromParent());
+}
+
 /** Strip ground planes from a cloned scene.
  *  ONLY removes meshes that are trivially thin (< 0.5% height ratio) AND sit at the
  *  very bottom of the model (within 5% of min Y). This prevents eating actual building
@@ -253,6 +288,10 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
 
   const { cloned, buildingScale, pivotOffsetX, pivotOffsetY, pivotOffsetZ } = useMemo(() => {
     const c = scene.clone(true);
+    // Strip named decorative meshes (Flowers, Path, etc.) before measuring so
+    // flat non-structural planes don't inflate the XZ bbox and trigger the
+    // MAX_FOOTPRINT cap (pineapple-house.glb: removes Flowers+Path → height 800).
+    stripDecorativeMeshes(c);
     // Strip flat ground planes before measuring height so BUILDING_TARGET_HEIGHT
     // is accurate — ground planes inflate the bounding box and make buildings
     // appear shorter than 100 world units after scaling.
@@ -345,6 +384,7 @@ function EditableBuilding({
 
   const { cloned, buildingScale, pivotOffsetX, pivotOffsetY, pivotOffsetZ } = useMemo(() => {
     const c = scene.clone(true);
+    stripDecorativeMeshes(c);
     stripGroundPlanes(c);
     const { scale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz } = computeBuildingScale(c);
     return { cloned: c, buildingScale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz };
