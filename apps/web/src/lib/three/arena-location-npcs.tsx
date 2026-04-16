@@ -23,11 +23,11 @@ const OFFSET_X = -MAP_WIDTH / 2;
 const OFFSET_Z = -MAP_HEIGHT / 2;
 
 // Target height in world units for character NPCs.
-// Reduced from 140 → 90 (64% of 140) to match the avatar-scale-down pass 2026-04-16:
-// lobsters + SpongeBob cast at 140 wu looked too large against the 5120-unit world.
-// 90 wu gives a ~1:8.9 ratio against BUILDING_TARGET_HEIGHT=800. Still clearly
-// readable at normal camera distance; buildings remain the dominant visual elements.
-const CHARACTER_HEIGHT = 90;
+// Pass 1 (2026-04-16): reduced 140→90. Pass 2 (2026-04-16): reduced 90→55.
+// User tested pass 1 and character NPCs still felt too big relative to the buildings (800 wu).
+// 55 wu gives a ~1:14.5 ratio vs 800-wu building — deliberate 1–2 wu taller than
+// TARGET_NPC_HEIGHT=45 so SpongeBob cast reads as slightly bigger than wandering NPCs.
+const CHARACTER_HEIGHT = 55;
 
 const _locRaycaster = new THREE.Raycaster();
 _locRaycaster.layers.set(TERRAIN_LAYER);
@@ -41,14 +41,14 @@ const _locRayDir = new THREE.Vector3(0, -1, 0);
 //
 // NPC_SCALE_CLAMP_MIN = CHARACTER_HEIGHT / 200
 //   → computed scale < this implies native above-pivot height > 200 units (inflated).
-// NPC_SCALE_CLAMP_MAX = CHARACTER_HEIGHT / 1.0 = 140
+// NPC_SCALE_CLAMP_MAX = CHARACTER_HEIGHT / 1.0 = 55
 //   → computed scale > this implies native above-pivot height < 1.0 unit. Tightened from
-//     280 (CHARACTER_HEIGHT/0.5) to 140 (CHARACTER_HEIGHT/1.0) so the worst-case post-clamp
-//     visual height is CHARACTER_HEIGHT * 1.0 = 90 wu (scale-down from 140 on 2026-04-16).
+//     280 (CHARACTER_HEIGHT/0.5) to CHARACTER_HEIGHT/1.0 so the worst-case post-clamp
+//     visual height is CHARACTER_HEIGHT * 1.0 = 55 wu (pass 2 2026-04-16, reduced from 90).
 //     Mr.Krabs and Sandy bypass this via bind-pose fallback anyway; the clamp guards unnamed future
 //     characters whose non-skinned accessories have sub-1-unit extent.
-const NPC_SCALE_CLAMP_MIN = CHARACTER_HEIGHT / 200;  // ~0.45 at CHARACTER_HEIGHT=90
-const NPC_SCALE_CLAMP_MAX = CHARACTER_HEIGHT / 1.0;  //  90 at CHARACTER_HEIGHT=90
+const NPC_SCALE_CLAMP_MIN = CHARACTER_HEIGHT / 200;  // ~0.275 at CHARACTER_HEIGHT=55
+const NPC_SCALE_CLAMP_MAX = CHARACTER_HEIGHT / 1.0;  //  55 at CHARACTER_HEIGHT=55
 
 /** Config for a single NPC model (primary or companion). */
 type NpcModelConfig = {
@@ -98,8 +98,9 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   // Slot 5 — config-citadel — Lighthouse (Larry the Lobster as lighthouse keeper)
   // TODO: source proper larry.glb asset — currently using lobster_plush as a distinct stand-in.
   // lobster_plush had a broken bbox (world height 331 at CH=32). SkinnedMesh exclusion
-  // should fix normalization; scaleOverride=90 is fallback assuming visual_native_H≈1.0 (= CHARACTER_HEIGHT/1.0).
-  'config-citadel': { name: 'Larry', model: '/models/lobster_plush.glb', color: 0xff2020, scaleOverride: 90 },
+  // should fix normalization; scaleOverride=55 is fallback assuming visual_native_H≈1.0 (= CHARACTER_HEIGHT/1.0).
+  // Pass 2 (2026-04-16): reduced 90→55 to match CHARACTER_HEIGHT scale-down.
+  'config-citadel': { name: 'Larry', model: '/models/lobster_plush.glb', color: 0xff2020, scaleOverride: 55 },
 
   // Slot 6 — tool-workshop — patty-building (Krusty Krab — Mr. Krabs's restaurant)
   // mr-krabs.glb: non-skinned geometry is only tiny accessories → computed scale > CLAMP_MAX.
@@ -111,17 +112,17 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   // Slot 7 — skill-forge — Chum Bucket (Plankton + Karen both live here)
   // Karen: karen.glb had a broken bbox (world height 1940 at CH=32) caused by
   // SkinnedMesh bind-pose inflation. The improved computeNormalizedScale() excludes
-  // SkinnedMesh, which should fix the normalization automatically. scaleOverride=60
+  // SkinnedMesh, which should fix the normalization automatically. scaleOverride=37
   // is a fallback activated ONLY if the non-skinned geometry also gives a bad bbox
   // (outside NPC_SCALE_CLAMP bounds). Assumes karen_visual_native_H ≈ 1.5 native units
-  // (= CHARACTER_HEIGHT/1.5 = 90/1.5 = 60).
+  // (= CHARACTER_HEIGHT/1.5 = 55/1.5 ≈ 37). Pass 2 (2026-04-16): reduced 60→37.
   'skill-forge': {
     name: 'Plankton',
     model: '/models/characters/plankton.glb',
     companion: {
       name: 'Karen',
       model: '/models/characters/karen.glb',
-      scaleOverride: 60,
+      scaleOverride: 37,
       offsetX: 180,
       offsetZ: 0,
     },
@@ -418,12 +419,12 @@ const NpcMesh = memo(function NpcMesh({
     // Layer 2: one-shot rendered-height hard cap.
     // Runs once after 0.5s so geometry/bones settle before measurement.
     // Guards against any location NPC whose pivot offset produces a skyward launch.
-    // HARD_MAX = 190 wu — 2× CHARACTER_HEIGHT=90 headroom (reduced from 300 in scale-down pass).
+    // HARD_MAX = 115 wu — 2× CHARACTER_HEIGHT=55 headroom (pass 2: reduced from 190 on 2026-04-16).
     if (!rescaleAppliedRef.current && clock.elapsedTime > 0.5 && groupRef.current) {
       _locRenderedBbox.setFromObject(groupRef.current);
       if (!_locRenderedBbox.isEmpty()) {
         const renderedH = _locRenderedBbox.max.y - _locRenderedBbox.min.y;
-        const HARD_MAX = 190;
+        const HARD_MAX = 115;
         if (renderedH > HARD_MAX) {
           const scaledSubGroup = groupRef.current.children[0]; // the [npcScale,npcScale,npcScale] group
           if (scaledSubGroup) {
