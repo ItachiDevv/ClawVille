@@ -159,6 +159,13 @@ interface BuildingScaleResult {
   /** World-space X offset to subtract from the assigned world position so the
    *  bbox center lands exactly on the position rather than offset by authoring quirks. */
   pivotOffsetX: number;
+  /** World-space Y offset equal to bbox.min.y * scale.
+   *  Applied as -pivotOffsetY to the inner group so the geometry floor sits at
+   *  the outer group's Y regardless of how the GLB was authored:
+   *  - min.y > 0 (geometry above pivot): inner shifts down, cures floating
+   *  - min.y = 0 (pivot at floor):       offset is 0, no-op
+   *  - min.y < 0 (geometry below pivot): inner shifts up, cures underground */
+  pivotOffsetY: number;
   /** World-space Z offset to subtract from the assigned world position. */
   pivotOffsetZ: number;
 }
@@ -219,8 +226,12 @@ function computeBuildingScale(scene: THREE.Object3D): BuildingScaleResult {
   _buildBbox.getCenter(_buildCenter);
   const pivotOffsetX = _buildCenter.x * scale;
   const pivotOffsetZ = _buildCenter.z * scale;
+  // Y grounding — bbox.min.y * scale is the world-space distance from the GLB
+  // pivot down to the geometry floor. Applying -pivotOffsetY to the inner group
+  // ensures the geometry floor always lands at the outer group's Y (-2 = sand floor).
+  const pivotOffsetY = _buildBbox.min.y * scale;
 
-  return { scale, pivotOffsetX, pivotOffsetZ };
+  return { scale, pivotOffsetX, pivotOffsetY, pivotOffsetZ };
 }
 
 // Preload all models
@@ -240,14 +251,14 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
   const { scene } = useGLTF(config.model);
   const groupRef = useRef<THREE.Group>(null);
 
-  const { cloned, buildingScale, pivotOffsetX, pivotOffsetZ } = useMemo(() => {
+  const { cloned, buildingScale, pivotOffsetX, pivotOffsetY, pivotOffsetZ } = useMemo(() => {
     const c = scene.clone(true);
     // Strip flat ground planes before measuring height so BUILDING_TARGET_HEIGHT
     // is accurate — ground planes inflate the bounding box and make buildings
     // appear shorter than 100 world units after scaling.
     stripGroundPlanes(c);
-    const { scale: s, pivotOffsetX: px, pivotOffsetZ: pz } = computeBuildingScale(c);
-    return { cloned: c, buildingScale: s, pivotOffsetX: px, pivotOffsetZ: pz };
+    const { scale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz } = computeBuildingScale(c);
+    return { cloned: c, buildingScale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz };
   }, [scene, config.model]);
 
   // Dispose cloned geometry + materials on unmount (navigation away / hot-reload)
@@ -272,8 +283,8 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
   // (e.g. downtown-building.glb bbox center is ~4120wu east of scene origin).
   return (
     <group ref={groupRef} position={[cx, -2 + config.yOffset, cz]} rotation={[0, (config.rotY ?? 0) + (config.rotYOffset ?? 0), 0]}>
-      <group position={[-pivotOffsetX, 0, -pivotOffsetZ]}>
-      <primitive object={cloned} scale={buildingScale} />
+      <group position={[-pivotOffsetX, -pivotOffsetY, -pivotOffsetZ]}>
+        <primitive object={cloned} scale={buildingScale} />
       </group>
       {/* Floating building label */}
       {theme && (
@@ -332,11 +343,11 @@ function EditableBuilding({
   const groupRef = useRef<THREE.Group>(null);
   const terrainY = useRef(-15);
 
-  const { cloned, buildingScale, pivotOffsetX, pivotOffsetZ } = useMemo(() => {
+  const { cloned, buildingScale, pivotOffsetX, pivotOffsetY, pivotOffsetZ } = useMemo(() => {
     const c = scene.clone(true);
     stripGroundPlanes(c);
-    const { scale: s, pivotOffsetX: px, pivotOffsetZ: pz } = computeBuildingScale(c);
-    return { cloned: c, buildingScale: s, pivotOffsetX: px, pivotOffsetZ: pz };
+    const { scale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz } = computeBuildingScale(c);
+    return { cloned: c, buildingScale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz };
   }, [scene]);
 
   // Re-raycast terrain Y whenever position changes
@@ -356,7 +367,7 @@ function EditableBuilding({
 
   return (
     <group ref={groupRef} rotation={[0, (config.rotY ?? 0) + (config.rotYOffset ?? 0), 0]}>
-      <group position={[-pivotOffsetX, 0, -pivotOffsetZ]}>
+      <group position={[-pivotOffsetX, -pivotOffsetY, -pivotOffsetZ]}>
         <primitive object={cloned} scale={buildingScale} />
       </group>
       {/* Invisible click box for drag detection */}
