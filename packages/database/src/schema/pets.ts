@@ -126,6 +126,40 @@ export const pets = pgTable('pets', {
   avatarUrl: varchar('avatar_url', { length: 1024 }),
   vrmMetadata: jsonb('vrm_metadata').$type<PetVrmMetadataJson>(),
   /**
+   * Phase 2 fields — first-class agent-framework identity on the pet.
+   *
+   * - `modelKey` (Phase 2 §3.1): stable key into `@clawville/shared`
+   *   `AGENT_MODELS` (e.g. 'lobster', 'priestess'). Drives 3D GLB pick
+   *   on the web side. Replaces `species` as the visual-identity field
+   *   going forward; `species` stays populated for backwards compat
+   *   with the pixi 2D fallback.
+   * - `agentCategory`: which agent-framework bucket the pet belongs to.
+   *   Drives per-framework features (Hermes chat routing, Milady install).
+   * - `harness`: user's preferred agent runtime. Drives Phase 3 export
+   *   target (what character-bundle format we generate). DEFAULT 'milady'
+   *   so a freshly-created agent works autonomously in Phase 4a without
+   *   further config.
+   *
+   * All three have NOT NULL DEFAULTs so existing pet rows backfill to
+   * `('openclaw','lobster','milady')` on migration without a separate
+   * backfill query. Enum values are enforced at the API layer via Zod +
+   * the shared `AgentCategory` / `AgentHarness` types. No SQL CHECK
+   * constraints are applied here — if you add a direct-SQL writer, you
+   * MUST replicate the Zod validation or switch these columns to
+   * `pgEnum` types. For now, the API is the sole writer.
+   */
+  agentCategory: varchar('agent_category', { length: 16 })
+    .notNull()
+    .default('openclaw')
+    .$type<'openclaw' | 'hermes' | 'milady' | 'other'>(),
+  modelKey: varchar('model_key', { length: 64 })
+    .notNull()
+    .default('lobster'),
+  harness: varchar('harness', { length: 16 })
+    .notNull()
+    .default('milady')
+    .$type<'openclaw' | 'hermes' | 'milady' | 'custom'>(),
+  /**
    * Auto-generated custodial Solana wallet address (base58). NULL for pets
    * that existed before the C2 backfill; populated for new pets (human or
    * agent-created) via apps/api/src/services/pet-wallet-service.ts.

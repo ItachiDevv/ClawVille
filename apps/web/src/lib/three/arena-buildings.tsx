@@ -69,9 +69,12 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // i=7  center=(27,97)    dx=53,  dz=-17  → atan2(53,-17)≈1.882
   'skill-forge':       { model: '/models/chum-bucket.glb',         yOffset: 0, rotY:  1.882 },
   // i=8  center=(27,63)    dx=53,  dz=17   → atan2(53,17)≈1.259
-  'channel-bridge':    { model: '/models/building-cave.glb',       yOffset: 0, rotY:  1.259 },
+  // building-shell.glb = dome shape (interim for sandy-treedome — see 3dStructure.md §2)
+  'channel-bridge':    { model: '/models/building-shell.glb',      yOffset: 0, rotY:  1.259 },
   // i=9  center=(47,35)    dx=33,  dz=45   → atan2(33,45)≈0.632
-  'security-fortress': { model: '/models/building-submarine.glb',  yOffset: 0, rotY:  0.632 },
+  // building-cave.glb = rocky cave (interim for patrick-rock — see 3dStructure.md §2)
+  // building-submarine.glb is now a fixed-landmark decoration only (arena-terrain.tsx FixedLandmarks)
+  'security-fortress': { model: '/models/building-cave.glb',       yOffset: 0, rotY:  0.632 },
 };
 
 /** Strip ground planes from a cloned scene.
@@ -109,15 +112,49 @@ function stripGroundPlanes(scene: THREE.Object3D): void {
   toRemove.forEach((obj) => obj.removeFromParent());
 }
 
-/** Measure bounding box and return scale to reach target height.
+// Scratch objects for computeBuildingScale — module-scope to avoid per-call GC.
+const _buildBbox = new THREE.Box3();
+const _buildMeshBox = new THREE.Box3();
+const _buildSize = new THREE.Vector3();
+
+/** Measure bounding box and return scale so the building's Y-height = BUILDING_TARGET_HEIGHT.
+ *  Uses size.y (height) exclusively — NOT max(w,h,d).
+ *  Rationale: max-dim normalization crushes building HEIGHT on wide/squat GLBs
+ *  (salty-spitoon, boating-school) because their width exceeds their height and
+ *  becomes the normalizing dimension. Height is the architecturally salient axis —
+ *  a building should stand 800 units tall regardless of its aspect ratio.
+ *
+ *  Also excludes SkinnedMesh nodes from the bbox measurement to avoid bind-pose
+ *  inflation. Building GLBs are generally static, but any rigged prop in the scene
+ *  would otherwise skew the normalization.
+ *
  *  Called AFTER stripping ground planes. */
 function computeBuildingScale(scene: THREE.Object3D): number {
-  const box = new THREE.Box3().setFromObject(scene);
-  const size = new THREE.Vector3();
-  box.getSize(size);
-  const maxDim = Math.max(size.x, size.y, size.z);
-  if (maxDim === 0) return 1;
-  return BUILDING_TARGET_HEIGHT / maxDim;
+  scene.updateMatrixWorld(true);
+  _buildBbox.makeEmpty();
+
+  scene.traverse((child) => {
+    if ((child as THREE.Mesh).isMesh && !(child as THREE.SkinnedMesh).isSkinnedMesh) {
+      const mesh = child as THREE.Mesh;
+      if (!mesh.geometry) return;
+      mesh.geometry.computeBoundingBox();
+      const geoBB = mesh.geometry.boundingBox;
+      if (!geoBB) return;
+      _buildMeshBox.copy(geoBB).applyMatrix4(mesh.matrixWorld);
+      _buildBbox.union(_buildMeshBox);
+    }
+  });
+
+  if (_buildBbox.isEmpty()) {
+    _buildBbox.setFromObject(scene);
+  }
+
+  _buildBbox.getSize(_buildSize);
+  // Use Y (height) as the normalizing dimension. Fall back to maxDim only if Y
+  // is degenerate (e.g. a completely flat mesh or a scene with zero height content).
+  const h = _buildSize.y > 0.001 ? _buildSize.y : Math.max(_buildSize.x, _buildSize.y, _buildSize.z);
+  if (h === 0) return 1;
+  return BUILDING_TARGET_HEIGHT / h;
 }
 
 // Preload all models
@@ -170,7 +207,7 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
       <primitive object={cloned} scale={buildingScale} />
       {/* Floating building label */}
       {theme && (
-        <Html position={[0, BUILDING_TARGET_HEIGHT + 20, 0]} center distanceFactor={400} style={{ pointerEvents: 'auto' }}>
+        <Html position={[0, BUILDING_TARGET_HEIGHT + 20, 0]} center distanceFactor={1500} style={{ pointerEvents: 'auto' }}>
           <div
             style={{
               background: 'rgba(10, 22, 40, 0.85)',

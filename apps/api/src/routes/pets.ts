@@ -2,8 +2,20 @@ import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and, sql } from 'drizzle-orm';
 import { db, pets, agents, petInventory } from '@clawville/database';
-import { PET_ARCHETYPES, ARCHETYPE_IDS, getBookById } from '@clawville/shared';
-import type { PetArchetypeId } from '@clawville/shared';
+import {
+  PET_ARCHETYPES,
+  ARCHETYPE_IDS,
+  getBookById,
+  AGENT_MODEL_KEYS,
+  AGENT_CATEGORIES,
+  AGENT_HARNESSES,
+  getAgentModel,
+} from '@clawville/shared';
+import type {
+  PetArchetypeId,
+  AgentCategory,
+  AgentHarness,
+} from '@clawville/shared';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
@@ -19,6 +31,9 @@ export const petRoutes = new Hono<AppContext>();
 petRoutes.use('*', sessionMiddleware);
 
 // Create pet schema — archetype-based (no manual characterConfig)
+// Phase 2: modelKey / agentCategory / harness are optional on the wire so
+// older clients still work, but when present they're validated against the
+// shared AGENT_MODELS registry. Server applies the defaults if omitted.
 const createPetSchema = z.object({
   name: z.string().min(3).max(20).regex(/^[a-zA-Z0-9]+$/, 'Name must be alphanumeric'),
   species: z.enum(['cat', 'dragon', 'fox', 'owl', 'wolf', 'bunny', 'phoenix', 'turtle']),
@@ -30,6 +45,17 @@ const createPetSchema = z.object({
     hobby: z.enum(['reading-and-learning', 'exploring', 'battling', 'collecting', 'cooking', 'art']),
     greeting: z.enum(['run-away', 'wave-hello', 'tackle-hug', 'shy-peek', 'bow-politely', 'roar']),
   }),
+  /** Phase 2 — stable 3D model key from AGENT_MODELS */
+  modelKey: z
+    .string()
+    .refine((k) => AGENT_MODEL_KEYS.includes(k), {
+      message: `modelKey must be one of: ${AGENT_MODEL_KEYS.join(', ')}`,
+    })
+    .optional(),
+  /** Phase 2 — agent framework category. DB CHECK enforces same enum. */
+  agentCategory: z.enum(AGENT_CATEGORIES as unknown as [AgentCategory, ...AgentCategory[]]).optional(),
+  /** Phase 2 — preferred runtime harness */
+  harness: z.enum(AGENT_HARNESSES as unknown as [AgentHarness, ...AgentHarness[]]).optional(),
 });
 
 // Calculate stats from personality
@@ -148,6 +174,20 @@ petRoutes.post('/', requireAuth, async (c) => {
     customization: characterConfig,
   }).returning();
 
+  // Phase 2 — resolve agent framework identity. Client-omitted fields
+  // fall back to values that match the DB column DEFAULTs ('lobster',
+  // 'openclaw', 'milady'), so round-trip is stable. Zod already
+  // rejected unknown modelKeys via `.refine` + AGENT_MODEL_KEYS; the
+  // `getAgentModel` call is a defense-in-depth check against registry
+  // drift between this server and the shared package (shouldn't happen,
+  // but fails loudly if it does rather than silently inserting garbage).
+  const modelKey = result.data.modelKey ?? 'lobster';
+  const agentCategory: AgentCategory = result.data.agentCategory ?? 'openclaw';
+  const harness: AgentHarness = result.data.harness ?? 'milady';
+  if (!getAgentModel(modelKey)) {
+    throw new HTTPException(400, { message: `Unknown modelKey: ${modelKey}` });
+  }
+
   // Create pet linked to the agent
   const [pet] = await db.insert(pets).values({
     userId: user.id,
@@ -160,6 +200,9 @@ petRoutes.post('/', requireAuth, async (c) => {
     stats,
     characterConfig,
     platformAgentId: agent.id,
+    modelKey,
+    agentCategory,
+    harness,
   }).returning();
 
   // Auto-generate a custodial Solana wallet for the new pet. Fire and
