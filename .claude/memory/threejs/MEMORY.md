@@ -7,7 +7,7 @@
 - [drei Text/Billboard crashes Intel Iris Xe](gotchas/intel-iris-drei-text-crash.md) — hard GPU crash on integrated graphics
 - [Vegetation must use MeshBasicMaterial on WebGPU](gotchas/seaweed-meshbasic-webgpu.md) — ShaderMaterial vertex animation fails silently
 - [three-stdlib KTX2Loader.detectSupport() crashes on WebGPU](gotchas/three-stdlib-ktx2loader-webgpu-broken.md) — uses renderer.extensions.has() (WebGL only); use three/addons KTX2Loader instead
-- [lobster.glb faces +X at rotation.y=0 — EMPIRICALLY VERIFIED 2026-04-16](gotchas/lobster-faces-plus-x-at-rot-zero-empirical.md) — +X is correct (math-proven via debug overlay); formula: atan2(-worldVz, worldVx); DIR_ROTATION: right=0, down=-PI/2, left=PI, up=PI/2, idle=-PI/2; prior "-Z" memory was WRONG
+- [lobster.glb faces +Z at rotation.y=0 — THIRD REWRITE 2026-04-16 late PM](gotchas/lobster-faces-plus-z-at-rot-zero-empirical.md) — +Z proven by clean side-view screenshot (no orbit); formula: atan2(worldVx,worldVz); DIR_ROTATION: down=0,up=PI,right=PI/2,left=-PI/2,idle=0; +X claim from AM session was WRONG (camera orbited)
 - [Camera-relative movement breaks on mobile with OrbitControls](gotchas/camera-relative-movement-breaks-on-mobile-orbitcontrols.md) — touch orbiting accumulates ~180° over 10s, inverts camForward.xz, causes movement inversion; use screen-relative OR disable OrbitControls rotation on touch
 - [Local MAP_WIDTH/MAP_HEIGHT constants cause silent sync bugs](gotchas/local-constants-vs-imports-sync.md) — arena-terrain, arena-npcs, merged-seaweed all had local duplicates; import from tilemap-data.ts
 - [Location NPC village center tile coords must match grid center](gotchas/location-npc-village-center-tile-coords.md) — must always be MAP_COLS/2, MAP_ROWS/2; current is (80,80) for the 160x160 grid
@@ -55,7 +55,7 @@
 
 ## Solutions
 - [mergeGeometries dispose-after-merge is safe — data is copied](solutions/merge-geometries-dispose-order-safe.md) — mergeAttributes() uses TypedArray.set() to copy; dispose only removes GPU buffers; merged geo is independent
-- [Lobster model facing + correct atan2 formula + screen-relative movement](solutions/camera-relative-joystick-input.md) — lobster.glb faces +X (EMPIRICALLY VERIFIED 2026-04-16); use atan2(-vy,vx); movement must be SCREEN-RELATIVE not camera-relative; camera-relative breaks after ~10s mobile orbit
+- [Lobster model facing + correct atan2 formula + screen-relative movement](solutions/camera-relative-joystick-input.md) — lobster.glb faces +Z (THIRD REWRITE 2026-04-16 late PM — clean side-view); use atan2(vx,vy); DIR_ROTATION down=0,up=PI,right=PI/2,left=-PI/2,idle=0; movement SCREEN-RELATIVE
 - [Avatar scale-down pass 2026-04-16](solutions/avatar-scale-down-2026-04-16.md) — PET_SCALE 55→33, TARGET_NPC_HEIGHT 120→75, CHARACTER_HEIGHT 140→90, SPEED 200→320; HARD_MAX and scaleOverride must update proportionally when target heights change
 
 - [Full movement audit 2026-04-14 — screen-relative verified correct](patterns/full-movement-audit-2026-04-13.md) — screen-relative movement confirmed; camera-relative revert documented; -Z model formulas verified
