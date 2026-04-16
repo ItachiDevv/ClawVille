@@ -174,6 +174,20 @@ petRoutes.post('/', requireAuth, async (c) => {
     customization: characterConfig,
   }).returning();
 
+  // Phase 2 — resolve agent framework identity. Client-omitted fields
+  // fall back to values that match the DB column DEFAULTs ('lobster',
+  // 'openclaw', 'milady'), so round-trip is stable. Zod already
+  // rejected unknown modelKeys via `.refine` + AGENT_MODEL_KEYS; the
+  // `getAgentModel` call is a defense-in-depth check against registry
+  // drift between this server and the shared package (shouldn't happen,
+  // but fails loudly if it does rather than silently inserting garbage).
+  const modelKey = result.data.modelKey ?? 'lobster';
+  const agentCategory: AgentCategory = result.data.agentCategory ?? 'openclaw';
+  const harness: AgentHarness = result.data.harness ?? 'milady';
+  if (!getAgentModel(modelKey)) {
+    throw new HTTPException(400, { message: `Unknown modelKey: ${modelKey}` });
+  }
+
   // Create pet linked to the agent
   const [pet] = await db.insert(pets).values({
     userId: user.id,
@@ -186,6 +200,9 @@ petRoutes.post('/', requireAuth, async (c) => {
     stats,
     characterConfig,
     platformAgentId: agent.id,
+    modelKey,
+    agentCategory,
+    harness,
   }).returning();
 
   // Auto-generate a custodial Solana wallet for the new pet. Fire and
