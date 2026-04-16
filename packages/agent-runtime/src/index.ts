@@ -4,6 +4,18 @@ export { createOpenClawProviderPlugin } from './plugins/openclaw-provider';
 export type { OpenClawGatewayConfig } from './plugins/openclaw-provider';
 export { loadLocationTemplate, loadCharacter, mergeCustomizations } from './character-loader';
 
+// Character exporter (Phase 3 — "take my agent home" bundle builder)
+// The function is pure: given a Pet row + resolved model metadata +
+// target harness, it returns the ElizaOS Character JSON. No DB reads,
+// no async, no runtime start. The skill-pack builder that
+// accompanies it lives in the API route (needs DB access).
+export { buildCharacterExport } from './character-exporter';
+export type {
+  CharacterExportOptions,
+  PetExportInput,
+  SkillPackEntry,
+} from './character-exporter';
+
 // ElizaOS Project export — standard entry point for `elizaos start`
 export { default as project, project as clawvilleProject } from './project';
 

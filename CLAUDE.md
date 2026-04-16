@@ -350,6 +350,7 @@ Agents connect via an **agent-initiated flow** — humans never paste credential
 - `GET /api/agent/connect-status/:token` — poll for connection status
 - `GET /api/agent/connect-skill?token=xxx` — SKILL.md for agents (aliased at `/api/skills/connect`)
 - `POST /api/agent/connect` — universal agent registration (accepts `connectionToken` field)
+- `POST /api/agent/export-character` — **Phase 3** emits a Milady-installable bundle for a pet the caller owns: `{character, skillPack, miladyInstallPayload, installCommand, exportedAt, summary}`. Accepts `{petId, targetHarness?, miladyBaseUrl?}`. `character.knowledge` is intentionally empty (ElizaOS v2 normalizes knowledge strings as filesystem paths, so the skill pack is the authoritative RAG carrier). Phase 4a UI wraps this with the one-click install button.
 - `POST /api/openclaw/register` — legacy endpoint (manual gateway form, kept for backwards compat)
 
 ### Manual Connect (power users)

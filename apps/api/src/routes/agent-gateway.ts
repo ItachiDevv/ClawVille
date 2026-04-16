@@ -26,32 +26,19 @@ import type { ClawvilleServices } from '@clawville/agent-runtime';
 const agentGatewayRoutes = new Hono();
 
 // ---------------------------------------------------------------------------
-// Rate limiter for /connect — prevents unlimited bot registration spam
+// Rate limiter for /connect — prevents unlimited bot registration spam.
+// Phase 3 — migrated to the shared `createRateLimiter` + `getClientIp`
+// helpers so this route gets Cloudflare-safe IP resolution (cf-connecting-ip
+// preferred, LAST XFF token as fallback) and the same periodic cleanup as
+// /export-character. Previous inline implementation used first-XFF-token
+// which was trivially spoofable.
 // ---------------------------------------------------------------------------
-const connectRateMap = new Map<string, { count: number; resetAt: number }>();
-const CONNECT_MAX_PER_MIN = 10;
-const CONNECT_WINDOW_MS = 60_000;
+import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 
-function checkConnectRateLimit(ip: string): boolean {
-  const now = Date.now();
-  const entry = connectRateMap.get(ip);
-  if (!entry || now > entry.resetAt) {
-    connectRateMap.set(ip, { count: 1, resetAt: now + CONNECT_WINDOW_MS });
-    return true;
-  }
-  entry.count++;
-  if (entry.count > CONNECT_MAX_PER_MIN) return false;
-  return true;
-}
-// Lazy cleanup to prevent unbounded map growth
-function cleanupConnectRateMap() {
-  if (connectRateMap.size > 10_000) {
-    const now = Date.now();
-    for (const [k, v] of connectRateMap) {
-      if (now > v.resetAt) connectRateMap.delete(k);
-    }
-  }
-}
+const connectRateLimiter = createRateLimiter({
+  maxPerWindow: 10,
+  windowMs: 60_000,
+});
 
 // ---------------------------------------------------------------------------
 // POST /api/agent/connect  — Universal agent registration
@@ -120,12 +107,10 @@ const connectSchema = z.object({
 );
 
 agentGatewayRoutes.post('/connect', async (c) => {
-  // Rate limit by IP
-  const ip = c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
-    ?? c.req.header('x-real-ip')
-    ?? 'unknown';
-  cleanupConnectRateMap();
-  if (!checkConnectRateLimit(ip)) {
+  // Rate limit by IP — getClientIp is Cloudflare-safe (cf-connecting-ip
+  // preferred, LAST XFF token as fallback so spoofed headers don't win).
+  const ip = getClientIp({ get: (name) => c.req.header(name) ?? null });
+  if (!connectRateLimiter.check(ip)) {
     return c.json({ error: 'Too many connection attempts. Try again in 1 minute.' }, 429);
   }
 
