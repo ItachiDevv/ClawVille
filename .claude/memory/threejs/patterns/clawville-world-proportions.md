@@ -2,7 +2,7 @@
 title: ClawVille world proportion constants
 category: pattern
 tags: [clawville, buildings, camera, proportions, tile-grid, dual-joystick]
-date: 2026-04-16
+date: 2026-04-16 (ring expansion pass)
 confidence: high
 threejs_version: r170+
 ---
@@ -19,34 +19,41 @@ Canonical proportion values for ClawVille's 3D world after the 2026-04-16 propor
 - Village center tile: (80, 80) → world (0, 0) — fully symmetric square
 
 ### Building ring layout (tilemap-data.ts buildingZones)
-Buildings are 14x14 tiles (expanded from 10x10 on 2026-04-16), arranged in 4 clusters.
-Top-left tile was shifted -2 on each axis so building CENTERS stay at same world coords.
+Buildings are 14x14 tiles, on a ring of radius 68 tiles (2176 wu) from center (80,80).
+Ring expanded from 56→68 tiles on 2026-04-16 to eliminate building overlap.
 rotY formula: cx = x + w/2, cz = y + h/2; dx = 80-cx, dz = 80-cz; rotY = atan2(dx, dz)
-(model faces +Z at rotY=0)
+(model faces +Z at rotY=0; BUILDING_MODELS rotY values unchanged — diff is sub-0.003 rad)
 
-| Building | rotY |
-|---|---|
-| canvas-studio | 0.064 |
-| skill-forge | -0.270 |
-| tool-workshop | -0.150 |
-| channel-bridge | -1.507 |
-| webhook-gateway | -1.847 |
-| voice-tower | -1.720 |
-| cron-hub | 3.077 |
-| config-citadel | -2.871 |
-| security-fortress | -2.992 |
-| memory-vault | 0.613 |
+Ring geometry at r=68:
+- Radius: 2176 wu
+- Circumference/10: 1367 wu per slot
+- MAX_FOOTPRINT: 1000 wu → 367 wu (~11 tile) gap between buildings
+- Max zone edge: tile 155 (config-citadel bottom) — fits within 160-tile map
+
+| i | Building | Center tile | Zone top-left | World (x,z) |
+|---|---|---|---|---|
+| 0 | canvas-studio | (80,12) | (73,5) | (0,-2176) |
+| 1 | memory-vault | (120,25) | (113,18) | (1280,-1760) |
+| 2 | webhook-gateway | (145,59) | (138,52) | (2080,-672) |
+| 3 | cron-hub | (145,101) | (138,94) | (2080,+672) |
+| 4 | voice-tower | (120,135) | (113,128) | (1280,+1760) |
+| 5 | config-citadel | (80,148) | (73,141) | (0,+2176) |
+| 6 | tool-workshop | (40,135) | (33,128) | (-1280,+1760) |
+| 7 | skill-forge | (15,101) | (8,94) | (-2080,+672) |
+| 8 | channel-bridge | (15,59) | (8,52) | (-2080,-672) |
+| 9 | security-fortress | (40,25) | (33,18) | (-1280,-1760) |
 
 ### Key constants
 | Constant | Value | File | Notes |
 |---|---|---|---|
 | BUILDING_TARGET_HEIGHT | 800 | arena-buildings.tsx | Normalizes by height (size.y) not max-dim — 2026-04-16 scale fix |
+| MAX_FOOTPRINT | 1000 | arena-buildings.tsx | Tightened 1400→1000 with ring expansion 56→68 tiles |
 | CHARACTER_HEIGHT | 140 | arena-location-npcs.tsx | Raised from 32 — 2026-04-16 scale regression fix |
 | PET_SCALE | 55 | player-pet.tsx | Raised from 16 — 2026-04-16 scale regression fix |
 | NPC_SCALE | 50 | arena-npcs.tsx | Raised from 13 — 2026-04-16 scale regression fix |
 | NPC_INSET_TILES | 4.0 | arena-location-npcs.tsx |
 | VILLAGE_CENTER_TILE_X/Z | 80, 80 | arena-location-npcs.tsx |
-| DECO_INNER_EXCLUSION_R | 600 | arena-terrain.tsx |
+| DECO_INNER_EXCLUSION_R | 2700 | arena-terrain.tsx | 2176 (ring) + 224 (zone half) + 300 buffer; was 2300 for r=56 ring |
 | VILLAGE_CX / VILLAGE_CZ | 0, 0 | arena-terrain.tsx |
 | decoration TARGET_COUNT | 80 | arena-terrain.tsx |
 | decoration N_CLUSTERS | 24 | arena-terrain.tsx |
