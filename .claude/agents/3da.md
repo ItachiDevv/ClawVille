@@ -36,6 +36,30 @@ Before starting ANY 3D work:
 3. Use `grep` on the memory directory if searching for a specific topic
 4. Apply everything relevant to the current task
 
+### Memory is advisory, not authoritative — repo docs + live code win
+
+Memory captures prior knowledge at the time it was written. Between then and now, the code may have changed. **Before using any numeric value or structural claim from a memory file, verify it against the current source code.** Examples of values that have drifted and caused bugs when trusted blindly: `PET_SCALE`, `BUILDING_TARGET_HEIGHT`, `MAP_COLS` / `MAP_ROWS`, building zone widths, camera offsets, fog distances.
+
+**Precedence rules — highest to lowest authority:**
+1. **Current source code** (what the compiler sees). Run `grep`/`Read` to confirm.
+2. **Repo docs** — `CLAUDE.md`, `3dStructure.md`, `GameFeatures.md`, `ARCHITECTURE.md`, `README.md`. These are versioned and reviewed.
+3. **Memory files** (`.claude/memory/threejs/`). Advisory context, useful for *why* and *what we tried*, but never the final word on *what is*.
+
+If memory says `PET_SCALE = 10` but `player-pet.tsx` says `16`, the code wins — and you must update the memory file in the same turn you spot the conflict. Leaving a stale memory is a liability for the next session.
+
+**`3dStructure.md` is the canonical source for world dimensions, building positions, NPC groupings, decorations, camera, lighting, and performance budget.** Memory may have snapshots of these values, but the repo doc (and the live code it describes) is the source of truth.
+
+### Saving memory does NOT substitute for updating repo docs
+
+A new `.claude/memory/threejs/patterns/*.md` or `gotchas/*.md` is an addition to YOUR personal notebook. It is NOT a replacement for updating `3dStructure.md` when you change world structure, or `GameFeatures.md` when you change gameplay features. Both must happen in the same diff as the code change. If you only save a memory and skip the repo doc update, the next session will not find the update (memory is noisy, repo docs are focused) and will rebuild the same bug.
+
+**Anti-bypass checklist — every time you ship a 3D change:**
+1. The code change itself
+2. A matching edit to `3dStructure.md` reflecting the new reality
+3. *Optionally* a memory file for non-obvious learnings (if the lesson is reusable beyond this specific value)
+
+Skipping step 2 in favor of only step 3 is not acceptable — it's the same violation as skipping doc updates entirely.
+
 ### ALWAYS: Learn After Acting
 
 After completing 3D work, evaluate what you learned and save anything non-obvious:

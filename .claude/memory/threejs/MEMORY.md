@@ -10,7 +10,7 @@
 - [lobster.glb faces -Z — do NOT flip atan2 to +Z](gotchas/lobster-facing-direction-do-not-flip.md) — -Z is correct, +Z produces 180° wrong facing; has been incorrectly reversed THREE times; require live test before changing
 - [Camera-relative movement breaks on mobile with OrbitControls](gotchas/camera-relative-movement-breaks-on-mobile-orbitcontrols.md) — touch orbiting accumulates ~180° over 10s, inverts camForward.xz, causes movement inversion; use screen-relative OR disable OrbitControls rotation on touch
 - [Local MAP_WIDTH/MAP_HEIGHT constants cause silent sync bugs](gotchas/local-constants-vs-imports-sync.md) — arena-terrain, arena-npcs, merged-seaweed all had local duplicates; import from tilemap-data.ts
-- [Location NPC village center tile coords must match grid center](gotchas/location-npc-village-center-tile-coords.md) — must always be MAP_COLS/2, MAP_ROWS/2; was wrong (20,12), fixed to (32,20), updated to (40,40) with 80x80 map
+- [Location NPC village center tile coords must match grid center](gotchas/location-npc-village-center-tile-coords.md) — must always be MAP_COLS/2, MAP_ROWS/2; current is (80,80) for the 160x160 grid
 - [applyStationaryIdleAnimation must NOT add Math.PI to rotation.y](gotchas/location-npc-double-pi-facing.md) — inner animGroup gets +PI stacked on outer facingRotY (which already has +PI); NPCs face 180° wrong
 - [arena-location-npcs JSDoc said +Z model but code was -Z](gotchas/location-npc-comment-mismatch.md) — comment mismatch fixed 2026-04-13; code was always correct; SpongeBob GLBs assumed -Z
 - [NPC terrain-raycast stagger — seed MUST be integer](gotchas/synchronized-terrain-raycasts-spike.md) — idToSeed() returns FLOAT; (frame + float) % N === 0 never fires; must Math.round(seed)
