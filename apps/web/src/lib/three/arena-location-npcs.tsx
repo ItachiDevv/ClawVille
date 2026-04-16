@@ -58,6 +58,9 @@ type NpcModelConfig = {
   /** Per-model scale override used when computeNormalizedScale returns a
    *  value outside [NPC_SCALE_CLAMP_MIN, NPC_SCALE_CLAMP_MAX] (broken bbox). */
   scaleOverride?: number;
+  /** Extra Y-axis rotation (radians) added on top of facingRotY.
+   *  Use when a GLB is authored with a non-standard forward axis (+X instead of +Z). */
+  rotYOffset?: number;
 };
 
 /** Full config for a location slot. companion is an optional passive NPC that
@@ -83,6 +86,8 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
       model: '/models/characters/gary.glb',
       offsetX: 180,
       offsetZ: 0,
+      // gary.glb is authored facing +X; -π/2 rotates +X forward → +Z forward (toward center)
+      rotYOffset: -Math.PI / 2,
     },
   },
 
@@ -119,6 +124,10 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   'skill-forge': {
     name: 'Plankton',
     model: '/models/characters/plankton.glb',
+    // plankton.glb renders at ~28 wu without override (51% of CHARACTER_HEIGHT=55).
+    // scaleOverride=110 assumes native above-pivot height ≈ 0.5 units (55/0.5=110).
+    // Tune between 80–140 after live probe if he over/under-shoots.
+    scaleOverride: 110,
     companion: {
       name: 'Karen',
       model: '/models/characters/karen.glb',
@@ -453,7 +462,7 @@ const NpcMesh = memo(function NpcMesh({
   return (
     <group ref={groupRef}>
       {/* Scaled + rotated model sub-group */}
-      <group scale={[npcScale, npcScale, npcScale]} rotation={[0, facingRotY, 0]}>
+      <group scale={[npcScale, npcScale, npcScale]} rotation={[0, facingRotY + (modelCfg.rotYOffset ?? 0), 0]}>
         <group ref={animGroupRef}>
           <primitive object={cloned} />
         </group>
@@ -462,7 +471,7 @@ const NpcMesh = memo(function NpcMesh({
           Only shown for primary NPCs; companions are passive (no label). */}
       {showLabel && (
         <Html
-          position={[0, CHARACTER_HEIGHT + 10, 0]}
+          position={[0, 150, 0]}
           center
           distanceFactor={400}
           style={{ pointerEvents: 'none' }}

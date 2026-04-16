@@ -57,13 +57,14 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // i=1  center=(113,35)   dx=-33, dz=45   → atan2(-33,45)≈-0.632
   'memory-vault':      { model: '/models/bb-building.glb',         yOffset: 0, rotY: -0.632 },
   // i=2  center=(133,63)   dx=-53, dz=17   → atan2(-53,17)≈-1.259
-  'webhook-gateway':   { model: '/models/salty-spitoon.glb',       yOffset: 0, rotY: -1.259 },
+  // rotYOffset: salty-spitoon.glb is authored facing +X; -π/2 aligns it toward village center.
+  'webhook-gateway':   { model: '/models/salty-spitoon.glb',       yOffset: 0, rotY: -1.259, rotYOffset: -Math.PI / 2 },
   // i=3  center=(133,97)   dx=-53, dz=-17  → atan2(-53,-17)≈-1.882
   'cron-hub':          { model: '/models/downtown-building.glb',   yOffset: 0, rotY: -1.882 },
   // i=4  center=(113,125)  dx=-33, dz=-45  → atan2(-33,-45)≈-2.510
-  // rotYOffset: boating-school.glb is authored facing +X (vehicle/boat convention),
-  // so we need an additional -π/2 to align it toward the village center.
-  'voice-tower':       { model: '/models/boating-school.glb',      yOffset: 0, rotY: -2.510, rotYOffset: -Math.PI / 2 },
+  // rotYOffset: boating-school.glb classroom (open side with desks + door) must face center.
+  // Changed -π/2 → +π/2 (2026-04-16): flips 180° so classroom faces inward.
+  'voice-tower':       { model: '/models/boating-school.glb',      yOffset: 0, rotY: -2.510, rotYOffset: Math.PI / 2 },
   // i=5  center=(80,136)   dx=0,   dz=-56  → atan2(0,-56)=π≈3.142
   'config-citadel':    { model: '/models/building-lighthouse.glb', yOffset: 0, rotY:  3.142 },
   // i=6  center=(47,125)   dx=33,  dz=-45  → atan2(33,-45)≈2.510
