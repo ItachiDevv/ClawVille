@@ -21,4 +21,24 @@ export * from './constants/article-seeds';
 export * from './constants/quest-seeds';
 export * from './types/collaboration';
 export * from './constants/milady-skills';
-export * from './constants/agent-models';
+// `agent-models` uses type + value dual exports; explicit re-exports
+// guarantee every symbol is public (the earlier `export *` worked but
+// made the surface less obvious during Phase 2 audits).
+export {
+  AGENT_MODELS,
+  AGENT_MODEL_KEYS,
+  AGENT_CATEGORIES,
+  AGENT_HARNESSES,
+  DEFAULT_AGENT_MODEL,
+  DEFAULT_AGENT_MODEL_KEY,
+  DEFAULT_AGENT_CATEGORY,
+  DEFAULT_AGENT_HARNESS,
+  getAgentModel,
+  getAgentCategoryForModel,
+} from './constants/agent-models';
+export type {
+  AgentCategory,
+  AgentHarness,
+  AgentModelKey,
+  AgentModelMeta,
+} from './constants/agent-models';
