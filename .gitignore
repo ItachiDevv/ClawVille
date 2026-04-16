@@ -60,6 +60,10 @@ scripts/deploy/treasury-*.json
 miladyApp.txt
 *.scratch.md
 
+# Working drafts — local planning docs for the active rebuild
+3dStructure.md
+GameFeatures.md
+
 # Draco compression originals — pre-compression GLB backups. Git history
 # already holds the original uncompressed versions, so revert is a
 # `git checkout <sha> -- <file>.glb`. These are ~17MB of local-only restore
