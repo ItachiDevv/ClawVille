@@ -567,8 +567,10 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       {/* Secondary fill from opposite side for depth */}
       <directionalLight position={[-100, 200, -60]} intensity={0.5} color={0x88aacc} />
 
-      {/* Underwater fog — scaled for 160x160 map (5120x5120 world units) */}
-      <fog attach="fog" args={[FOG_COLOR, 1200, 6400]} />
+      {/* Underwater fog — scaled for 160x160 map (5120x5120 world units).
+          Near 1800 / far 9000 softens the falloff so distant ring buildings
+          stay readable instead of fading into a wall of blue. */}
+      <fog attach="fog" args={[FOG_COLOR, 1800, 9000]} />
 
       {/* Underwater atmosphere — caustic light plane, depth backdrop, dust particles */}
       <UnderwaterAtmosphere />
