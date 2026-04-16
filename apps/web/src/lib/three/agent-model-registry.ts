@@ -22,8 +22,10 @@ export interface ModelRegistryEntry {
 
 export const MODEL_REGISTRY = {
   // ── OpenClaw (crustaceans) ────────────────────────────────────────────────
-  lobster:       { path: '/models/lobster.glb',                    scale: 14, label: 'Reef Lobster',    category: 'openclaw' },
-  crayfish:      { path: '/models/crayfish.glb',                   scale: 14, label: 'Crayfish',        category: 'openclaw' },
+  // All scales normalized to 10 so models fit cleanly in the picker's clear
+  // zone above the config modal. Lobster was previously `scale: 14` which
+  // pushed its mid-section behind the modal card.
+  lobster:       { path: '/models/lobster.glb',                    scale: 10, label: 'Reef Lobster',    category: 'openclaw' },
   sweet_crab:    { path: '/models/sweet_crab_sketchfabweekly.glb', scale: 10, label: 'Sweet Crab',      category: 'openclaw' },
   lobster_plush: { path: '/models/lobster_plush.glb',              scale: 10, label: 'Lobster Plush',   category: 'openclaw' },
   hermitcrab:    { path: '/models/hermitcrab.glb',                 scale: 10, label: 'Hermit Crab',     category: 'openclaw' },
@@ -33,6 +35,12 @@ export const MODEL_REGISTRY = {
   octopus:       { path: '/models/octopus_toy.glb',                scale: 10, label: 'Octopus',         category: 'other' },
   seahorse:      { path: '/models/sea_horse.glb',                  scale: 8,  label: 'Sea Horse',       category: 'other' },
 
+  // NOTE: `crayfish` removed from the picker 2026-04-16 — the mesh renders
+  // noticeably larger than lobster at the same scale (different pivot) and
+  // consistently clipped the modal card. The GLB still ships under
+  // /public/models/ and `arena-npcs.tsx` retains its entry for any legacy
+  // DB rows; new agents simply cannot choose it.
+  //
   // NOTE: Hermes/Milady anime GLBs (chihiro / priestess / chibi_goku) were
   // removed from the picker 2026-04-16 — those source meshes rendered poorly
   // (pivot-not-at-feet Y offset + SkinnedMesh scale explosion). The anime
@@ -117,7 +125,6 @@ export type LegacySpecies =
 
 export const MODEL_KEY_TO_LEGACY_SPECIES: Record<ModelKey, LegacySpecies> = {
   lobster:       'cat',      // crustacean → "cat" is already aliased as "Reef Lobster" in avatar-species.ts
-  crayfish:      'cat',      // same family
   sweet_crab:    'dragon',   // armored/fierce → dragon
   lobster_plush: 'bunny',    // cute/plush → bunny
   hermitcrab:    'turtle',   // shell-bearing → turtle
