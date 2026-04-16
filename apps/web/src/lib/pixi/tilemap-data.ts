@@ -40,9 +40,12 @@ export type TileIndex = (typeof TILES)[keyof typeof TILES];
 // ---------------------------------------------------------------------------
 // Building positions (tile coords)
 // Circular ring layout in 160×160 grid, center at (80,80)
-// Radius: 56 tiles, 10 buildings at 36° spacing (2π/10), starting at top (θ=-π/2) clockwise.
-// center_x = round(80 + 56*cos(θ)), center_y = round(80 + 56*sin(θ))
+// Radius: 68 tiles, 10 buildings at 36° spacing (2π/10), starting at top (θ=-π/2) clockwise.
+// center_x = round(80 + 68*cos(θ)), center_y = round(80 + 68*sin(θ))
 // zone upper-left = (center_x - 7, center_y - 7)  [14×14 tile footprint]
+// Ring radius in world units: 68 × 32 = 2176 wu
+// Circumference / 10 = 1367 wu per slot; MAX_FOOTPRINT=1000 → 367 wu gap between buildings
+// Max zone edge: config-citadel bottom = tile 155 — fits within 160-tile map.
 // ---------------------------------------------------------------------------
 export interface BuildingZone {
   id: string;
@@ -54,26 +57,26 @@ export interface BuildingZone {
 
 export const buildingZones: BuildingZone[] = [
   // Ring order: θ = -π/2 + i*(π/5), i=0..9 (top-center, clockwise)
-  // i=0  θ=-π/2       center=(80, 24)  → canvas-studio    (Biolume Studio)
-  { id: 'canvas-studio',     x:  73, y:  17, width: 14, height: 14 },
-  // i=1  θ=-3π/10     center=(113, 35) → memory-vault      (Abyssal Vault)
-  { id: 'memory-vault',      x: 106, y:  28, width: 14, height: 14 },
-  // i=2  θ=-π/10      center=(133, 63) → webhook-gateway   (Current Gateway)
-  { id: 'webhook-gateway',   x: 126, y:  56, width: 14, height: 14 },
-  // i=3  θ=+π/10      center=(133, 97) → cron-hub          (Tide Clock Grotto)
-  { id: 'cron-hub',          x: 126, y:  90, width: 14, height: 14 },
-  // i=4  θ=+3π/10     center=(113,125) → voice-tower       (Echo Spire)
-  { id: 'voice-tower',       x: 106, y: 118, width: 14, height: 14 },
-  // i=5  θ=+π/2       center=(80, 136) → config-citadel    (Nautilus Citadel)
-  { id: 'config-citadel',    x:  73, y: 129, width: 14, height: 14 },
-  // i=6  θ=+7π/10     center=(47, 125) → tool-workshop     (Salvage Workshop)
-  { id: 'tool-workshop',     x:  40, y: 118, width: 14, height: 14 },
-  // i=7  θ=+9π/10     center=(27,  97) → skill-forge       (Hydrothermal Forge)
-  { id: 'skill-forge',       x:  20, y:  90, width: 14, height: 14 },
-  // i=8  θ=+11π/10    center=(27,  63) → channel-bridge    (Coral Bridge)
-  { id: 'channel-bridge',    x:  20, y:  56, width: 14, height: 14 },
-  // i=9  θ=+13π/10    center=(47,  35) → security-fortress (Shell Fortress)
-  { id: 'security-fortress', x:  40, y:  28, width: 14, height: 14 },
+  // i=0  θ=-π/2       center=(80, 12)  → canvas-studio    (Biolume Studio)
+  { id: 'canvas-studio',     x:  73, y:   5, width: 14, height: 14 },
+  // i=1  θ=-3π/10     center=(120, 25) → memory-vault      (Abyssal Vault)
+  { id: 'memory-vault',      x: 113, y:  18, width: 14, height: 14 },
+  // i=2  θ=-π/10      center=(145, 59) → webhook-gateway   (Current Gateway)
+  { id: 'webhook-gateway',   x: 138, y:  52, width: 14, height: 14 },
+  // i=3  θ=+π/10      center=(145,101) → cron-hub          (Tide Clock Grotto)
+  { id: 'cron-hub',          x: 138, y:  94, width: 14, height: 14 },
+  // i=4  θ=+3π/10     center=(120,135) → voice-tower       (Echo Spire)
+  { id: 'voice-tower',       x: 113, y: 128, width: 14, height: 14 },
+  // i=5  θ=+π/2       center=(80, 148) → config-citadel    (Nautilus Citadel)
+  { id: 'config-citadel',    x:  73, y: 141, width: 14, height: 14 },
+  // i=6  θ=+7π/10     center=(40, 135) → tool-workshop     (Salvage Workshop)
+  { id: 'tool-workshop',     x:  33, y: 128, width: 14, height: 14 },
+  // i=7  θ=+9π/10     center=(15, 101) → skill-forge       (Hydrothermal Forge)
+  { id: 'skill-forge',       x:   8, y:  94, width: 14, height: 14 },
+  // i=8  θ=+11π/10    center=(15,  59) → channel-bridge    (Coral Bridge)
+  { id: 'channel-bridge',    x:   8, y:  52, width: 14, height: 14 },
+  // i=9  θ=+13π/10    center=(40,  25) → security-fortress (Shell Fortress)
+  { id: 'security-fortress', x:  33, y:  18, width: 14, height: 14 },
 ];
 
 // ---------------------------------------------------------------------------
