@@ -103,10 +103,11 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   'config-citadel': { name: 'Larry', model: '/models/lobster_plush.glb', color: 0xff2020, scaleOverride: 140 },
 
   // Slot 6 — tool-workshop — patty-building (Krusty Krab — Mr. Krabs's restaurant)
-  // mr-krabs.glb: non-skinned geometry is only tiny accessories → computed scale ~2000
-  // (measured world height 1892). scaleOverride=148 derived from: 1892/2000 ≈ 0.946
-  // native body height → 140/0.946 ≈ 148.
-  'tool-workshop': { name: 'Mr. Krabs', model: '/models/characters/mr-krabs.glb', scaleOverride: 148 },
+  // mr-krabs.glb: non-skinned geometry is only tiny accessories → computed scale > CLAMP_MAX.
+  // The non-skinned path now falls back to bind-pose bbox when computed > CLAMP_MAX, which
+  // gives a reliable body height. scaleOverride removed (was 148, rendered at ~11487 wu
+  // because native body h ≈ 77–82 units × 148 = 11000+).
+  'tool-workshop': { name: 'Mr. Krabs', model: '/models/characters/mr-krabs.glb' },
 
   // Slot 7 — skill-forge — Chum Bucket (Plankton + Karen both live here)
   // Karen: karen.glb had a broken bbox (world height 1940 at CH=32) caused by
@@ -127,9 +128,10 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   },
 
   // Slot 8 — channel-bridge — building-shell (interim Sandy's Treedome)
-  // sandy.glb: non-skinned accessories have bbox h≈0.29 → computed scale≈482
-  // (measured world height 482). Body appears to be native h≈1.0 → scaleOverride=140.
-  'channel-bridge': { name: 'Sandy', model: '/models/characters/sandy.glb', scaleOverride: 140 },
+  // sandy.glb: non-skinned accessories have bbox h≈0.29 → computed > CLAMP_MAX → bind-pose
+  // fallback gives correct body height. scaleOverride removed (was 140, rendered at ~11487 wu
+  // because native body h ≈ 77–82 units × 140 = 10780+).
+  'channel-bridge': { name: 'Sandy', model: '/models/characters/sandy.glb' },
 
   // Slot 9 — security-fortress — building-cave (interim Patrick's Rock)
   'security-fortress': { name: 'Patrick', model: '/models/characters/patrick.glb' },
@@ -191,6 +193,10 @@ const _npcBboxScratch = new THREE.Box3();
 const _npcSizeScratch = new THREE.Vector3();
 const _npcMeshBox = new THREE.Box3();
 
+// Module-scope scratch Box3 for the rendered-height hard cap (Layer 2 safety net).
+// Allocated once — never inside useFrame to avoid GC pressure.
+const _locRenderedBbox = new THREE.Box3();
+
 /** Measure bounding box and return scale so the model's Y-height matches targetHeight,
  *  plus the local-space min.y of the geometry (pivot offset).
  *
@@ -229,15 +235,24 @@ function computeNormalizedScale(scene: THREE.Object3D, targetHeight: number): { 
     }
   });
 
-  // CRITICAL: when no non-skinned geometry is found, do NOT call setFromObject().
-  // setFromObject() uses SkinnedMesh bind-pose world matrices, which inflate bbox by
-  // 100-600x. The inflated min.y (large negative) × finalScale produces a catastrophic
-  // pivotOffsetY (e.g. -600 * 140 = -84000), launching the NPC 84000 world units skyward.
-  // Fix: treat pivot as feet (localMinY = 0) and assume native body height ≈ 1.0 unit.
+  // When no non-skinned geometry is found (all-SkinnedMesh GLB), use the bind-pose bbox
+  // for SCALE computation only. DO NOT assume native height ≈ 1.0 unit — some character
+  // GLBs are exported at 500–650 native units; applying scale=targetHeight on top produces
+  // rendered heights of 60000–84000 wu. The bind-pose bbox gives a reliable height proxy.
+  // Force localMinY=0: never derive pivot offset from the inflated bind-pose min.y, which
+  // can be hundreds of native units below origin (e.g. -600 × scale=140 = -84000 wu launch).
   if (_npcBboxScratch.isEmpty()) {
-    // Hard-cap at CLAMP_MAX as a final safety net.
-    const safeScale = Math.min(NPC_SCALE_CLAMP_MAX, targetHeight);
-    return { scale: safeScale, localMinY: 0 };
+    _npcBboxScratch.setFromObject(scene);
+    if (_npcBboxScratch.isEmpty()) {
+      // Truly empty scene — safe minimum scale
+      return { scale: NPC_SCALE_CLAMP_MIN, localMinY: 0 };
+    }
+    const bindH = _npcBboxScratch.max.y > 0.001
+      ? _npcBboxScratch.max.y
+      : (_npcBboxScratch.max.y - _npcBboxScratch.min.y);
+    const bindScale = bindH > 0.001 ? targetHeight / bindH : targetHeight;
+    const scale = Math.max(NPC_SCALE_CLAMP_MIN, Math.min(NPC_SCALE_CLAMP_MAX, bindScale));
+    return { scale, localMinY: 0 };
   }
 
   // localMinY MUST come from the non-skinned bbox only.
@@ -253,9 +268,25 @@ function computeNormalizedScale(scene: THREE.Object3D, targetHeight: number): { 
   if (h === 0) return { scale: 1, localMinY };
 
   const computed = targetHeight / h;
-  // Hard cap — unconditional final safety net. scaleOverride at the call site takes
-  // priority over this returned value, but the clamp here guards against callers
-  // that forget to set scaleOverride for broken-bbox characters.
+
+  // If computed > CLAMP_MAX the non-skinned geometry is tiny accessories (not the body).
+  // Fall back to the bind-pose bbox to get a more reliable body height estimate.
+  // CRITICAL: force localMinY=0 here. localMinY came from a tiny non-skinned accessory
+  // (e.g. a glass pixel at y=-154 local space). Using that value × a large scale produces
+  // a catastrophic pivot offset (localMinY * scale = -37000+ wu → NPC launches skyward).
+  if (computed > NPC_SCALE_CLAMP_MAX) {
+    const _bindBbox = new THREE.Box3().setFromObject(scene);
+    if (!_bindBbox.isEmpty()) {
+      const bindMaxY = _bindBbox.max.y > 0.001 ? _bindBbox.max.y : (_bindBbox.max.y - _bindBbox.min.y);
+      if (bindMaxY > 0.001) {
+        const bindScale = targetHeight / bindMaxY;
+        const scale = Math.max(NPC_SCALE_CLAMP_MIN, Math.min(NPC_SCALE_CLAMP_MAX, bindScale));
+        return { scale, localMinY: 0 };
+      }
+    }
+  }
+
+  // Hard cap — unconditional final safety net.
   const scale = Math.max(NPC_SCALE_CLAMP_MIN, Math.min(NPC_SCALE_CLAMP_MAX, computed));
   return { scale, localMinY };
 }
@@ -292,6 +323,9 @@ const NpcMesh = memo(function NpcMesh({
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const animGroupRef = useRef<THREE.Group>(null);
+  // Layer 2 safety net: one-shot rendered-height hard cap applied after first render.
+  // Catches any location NPC whose pivot offset slips through computeNormalizedScale.
+  const rescaleAppliedRef = useRef(false);
   const { scene: threeScene } = useThree();
   const { scene } = useGLTF(modelCfg.model);
   const terrainY = useRef(-2);
@@ -368,6 +402,27 @@ const NpcMesh = memo(function NpcMesh({
     // Position: terrainY + BASE_LIFT + bob - pivotOffsetY
     const bob = Math.sin(clock.elapsedTime * 1.5 + seedBase) * 0.5;
     groupRef.current.position.set(worldX, terrainY.current + 6 + bob - pivotOffsetY, worldZ);
+
+    // Layer 2: one-shot rendered-height hard cap.
+    // Runs once after 0.5s so geometry/bones settle before measurement.
+    // Guards against any location NPC whose pivot offset produces a skyward launch.
+    // HARD_MAX = 300 wu — location NPCs target CHARACTER_HEIGHT=140, this is 2× headroom.
+    if (!rescaleAppliedRef.current && clock.elapsedTime > 0.5 && groupRef.current) {
+      _locRenderedBbox.setFromObject(groupRef.current);
+      if (!_locRenderedBbox.isEmpty()) {
+        const renderedH = _locRenderedBbox.max.y - _locRenderedBbox.min.y;
+        const HARD_MAX = 300;
+        if (renderedH > HARD_MAX) {
+          const scaledSubGroup = groupRef.current.children[0]; // the [npcScale,npcScale,npcScale] group
+          if (scaledSubGroup) {
+            scaledSubGroup.scale.multiplyScalar(HARD_MAX / renderedH);
+          }
+          // Reset Y position to terrain so character isn't floating
+          groupRef.current.position.y = terrainY.current + 6;
+        }
+        rescaleAppliedRef.current = true;
+      }
+    }
 
     // Procedural idle animation on inner group
     if (animGroupRef.current) {
