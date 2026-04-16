@@ -17,6 +17,7 @@ import { marketplaceRoutes } from './routes/marketplace';
 import { clawRoutes } from './routes/claws';
 import { agentGatewayRoutes } from './routes/agent-gateway';
 // pendingConnections is exported but only used internally by agent-gateway routes
+import { agentExportRoutes } from './routes/agent-export';
 import { bazaarRoutes } from './routes/bazaar';
 import { auctionRoutes } from './routes/auctions';
 import { questRoutes } from './routes/quests';
@@ -82,6 +83,11 @@ app.route('/api/research', researchApiRoutes);
 app.route('/api/marketplace', marketplaceRoutes);
 app.route('/api/claws', clawRoutes);
 app.route('/api/agent', agentGatewayRoutes);
+// Phase 3 — character export ("take my agent home") endpoint. Mounted at
+// the same `/api/agent` prefix so the route path becomes
+// `POST /api/agent/export-character`, matching the path in
+// `.claude/plans/phase3-character-export-api.md`.
+app.route('/api/agent', agentExportRoutes);
 // Alias: /api/skills/connect → /api/agent/connect-skill (user-facing SKILL.md URL)
 app.get('/api/skills/connect', (c) => {
   const token = c.req.query('token') ?? '';

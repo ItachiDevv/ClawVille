@@ -20,6 +20,7 @@ export * from './types/bounty';
 export * from './constants/article-seeds';
 export * from './constants/quest-seeds';
 export * from './types/collaboration';
+export * from './types/skill-pack';
 export * from './constants/milady-skills';
 // `agent-models` uses type + value dual exports; explicit re-exports
 // guarantee every symbol is public (the earlier `export *` worked but
