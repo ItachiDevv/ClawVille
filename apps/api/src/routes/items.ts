@@ -292,22 +292,27 @@ itemRoutes.post('/export-skill/:buildingId', requireAuth, async (c) => {
     throw new HTTPException(404, { message: 'No active avatar found' });
   }
 
-  // Check if avatar has learned all books for this building
+  // Check if avatar has learned all books for this building by verifying
+  // that the avatar's characterConfig.knowledge contains at least one entry
+  // from each book. (Books are consumed from inventory when learned, so
+  // checking inventory would fail for avatars that already read the books.)
   const buildingBooks = getBooksForBuilding(buildingId);
-  const inventory = await db.query.avatarInventory.findMany({
-    where: eq(avatarInventory.avatarId, avatar.id),
-  });
-
-  const ownedItemIds = new Set(inventory.map((i) => i.itemId));
-  const buildingBookIds = buildingBooks.map((b) => b.id);
-  const allLearned = buildingBookIds.every((id) => ownedItemIds.has(id));
+  const petKnowledge = new Set<string>(
+    (avatar.characterConfig as { knowledge?: string[] } | null)?.knowledge ?? []
+  );
+  const allLearned = buildingBooks.every((book) =>
+    book.knowledgeEntries.some((entry) => petKnowledge.has(entry))
+  );
 
   if (!allLearned) {
+    const learnedCount = buildingBooks.filter((book) =>
+      book.knowledgeEntries.some((entry) => petKnowledge.has(entry))
+    ).length;
     return c.json({
       success: false,
       message: `Learn all ${buildingBooks.length} books at this building first`,
       progress: {
-        learned: buildingBookIds.filter((id) => ownedItemIds.has(id)).length,
+        learned: learnedCount,
         total: buildingBooks.length,
       },
     }, 400);
