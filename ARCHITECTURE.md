@@ -189,7 +189,9 @@ Two Zustand stores bridge the 3D scene and React UI:
 **`game.ts`** -- Player and world state:
 - `controlMode`: `'explore' | 'npc' | 'player' | 'autonomous'`
 - `petPosition`, `petSpeed`, `movementDirection`
-- `nearLocation`, `currentLocation`, `chatOpen`
+- `nearLocation` + `nearCharacter` -- buildingId and character name the player is currently within `TALK_RADIUS_WORLD` of (proximity-to-character, not proximity-to-building-zone)
+- `currentLocation` + `currentCharacter` -- active chat target; `enterBuilding(locationId, characterName?)` is a misnomer kept for backwards compat — nobody enters anything, it just opens the chat panel with the character standing outside
+- `chatOpen`
 - `possessedNpcId`, `hasAgent`, `isSpectator`
 - `agentConnected`, `agentSessionId`, `agentConnectModalOpen` -- agent connection state (renamed from openclaw* in Phase 1)
 - Building visit tracking (localStorage)

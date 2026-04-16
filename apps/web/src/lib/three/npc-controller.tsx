@@ -17,7 +17,8 @@ import * as THREE from 'three';
 import { useGameStore, type GameState } from '@/stores/game';
 import { useNpcStore } from '@/stores/npc';
 import type { NpcSpriteState } from '@/stores/npc';
-import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tilemap-data';
+import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
+import { findNearestCharacter } from '@/lib/three/character-positions';
 
 const SPEED = 550; // pixels/sec — pass 2 2026-04-16: bumped 320→550 (user tested pass 1 at 320,
                    // still felt sluggish crossing ~2000-wu visible area; target 3-4s crossing time → 2000/550≈3.6s)
@@ -27,13 +28,6 @@ const X_MIN = 16;
 const X_MAX = MAP_WIDTH - 16;
 const Y_MIN = 16;
 const Y_MAX = MAP_HEIGHT - 16;
-
-// Building zones in pixel coords for proximity detection
-const pixelZones = buildingZones.map((z) => ({
-  id: z.id,
-  x: z.x * TILE_SIZE, y: z.y * TILE_SIZE,
-  width: z.width * TILE_SIZE, height: z.height * TILE_SIZE,
-}));
 
 // ---------------------------------------------------------------------------
 // Debug overlay support — gated on window.__DEBUG_FACING (default true for this build)
@@ -162,19 +156,19 @@ export default function NpcController() {
       inputRight /= len;
     }
 
-    // Proximity check runs every frame — even when idle, so nearLocation
-    // stays accurate when the NPC stops inside a building zone.
+    // Character proximity check — replaces building-zone area check.
+    // findNearestCharacter takes world-space primitives — zero allocation.
+    // NPC pixel coords → world coords: worldX = npc.x - MAP_WIDTH/2, worldZ = npc.y - MAP_HEIGHT/2
     {
       const npc = useNpcStore.getState().npcs.find((n) => n.id === possessedNpcId);
       if (npc) {
-        let nearZone: string | null = null;
-        for (const zone of pixelZones) {
-          if (npc.x >= zone.x && npc.x <= zone.x + zone.width && npc.y >= zone.y && npc.y <= zone.y + zone.height) {
-            nearZone = zone.id;
-            break;
-          }
-        }
-        if (nearZone !== store.nearLocation) store.setNearLocation(nearZone);
+        const wx = npc.x - MAP_WIDTH  / 2;
+        const wz = npc.y - MAP_HEIGHT / 2;
+        const nearest = findNearestCharacter(wx, wz);
+        const nearId = nearest ? nearest.buildingId : null;
+        const nearName = nearest ? nearest.characterName : null;
+        if (nearId !== store.nearLocation) store.setNearLocation(nearId);
+        if (nearName !== store.nearCharacter) store.setNearCharacter(nearName);
       }
     }
 
