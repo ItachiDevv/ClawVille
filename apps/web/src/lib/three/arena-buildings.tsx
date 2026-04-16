@@ -49,17 +49,29 @@ const BUILDING_TARGET_HEIGHT = 800;
 // Formula: cx = zone.x + zone.width/2, cz = zone.y + zone.height/2
 //          dx = 80 - cx, dz = 80 - cz
 //          rotY = Math.atan2(dx, dz)  (model faces +Z at rotY=0)
+// Ring layout (radius 56, 36° spacing): all angles are exactly atan2(−sin_i, −cos_i)
+// where θ_i = −π/2 + i*(π/5). Values recomputed for 2026-04-16 ring layout.
 const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number }> = {
-  'canvas-studio':     { model: '/models/pineapple-house.glb',    yOffset: 0, rotY:  0.064 },
-  'skill-forge':       { model: '/models/chum-bucket.glb',        yOffset: 0, rotY: -0.270 },
-  'tool-workshop':     { model: '/models/patty-building.glb',     yOffset: 0, rotY: -0.150 },
-  'channel-bridge':    { model: '/models/building-cave.glb',      yOffset: 0, rotY: -1.507 },
-  'webhook-gateway':   { model: '/models/salty-spitoon.glb',      yOffset: 0, rotY: -1.841 },
-  'voice-tower':       { model: '/models/boating-school.glb',     yOffset: 0, rotY: -1.721 },
-  'cron-hub':          { model: '/models/downtown-building.glb',  yOffset: 0, rotY:  3.075 },
-  'config-citadel':    { model: '/models/building-lighthouse.glb', yOffset: 0, rotY: -2.860 },
-  'security-fortress': { model: '/models/building-submarine.glb', yOffset: 0, rotY: -2.982 },
-  'memory-vault':      { model: '/models/bb-building.glb',        yOffset: 0, rotY:  0.612 },
+  // i=0  center=(80,24)    dx=0,   dz=56   → atan2(0,56)=0
+  'canvas-studio':     { model: '/models/pineapple-house.glb',     yOffset: 0, rotY:  0.000 },
+  // i=1  center=(113,35)   dx=-33, dz=45   → atan2(-33,45)≈-0.632
+  'memory-vault':      { model: '/models/bb-building.glb',         yOffset: 0, rotY: -0.632 },
+  // i=2  center=(133,63)   dx=-53, dz=17   → atan2(-53,17)≈-1.259
+  'webhook-gateway':   { model: '/models/salty-spitoon.glb',       yOffset: 0, rotY: -1.259 },
+  // i=3  center=(133,97)   dx=-53, dz=-17  → atan2(-53,-17)≈-1.882
+  'cron-hub':          { model: '/models/downtown-building.glb',   yOffset: 0, rotY: -1.882 },
+  // i=4  center=(113,125)  dx=-33, dz=-45  → atan2(-33,-45)≈-2.510
+  'voice-tower':       { model: '/models/boating-school.glb',      yOffset: 0, rotY: -2.510 },
+  // i=5  center=(80,136)   dx=0,   dz=-56  → atan2(0,-56)=π≈3.142
+  'config-citadel':    { model: '/models/building-lighthouse.glb', yOffset: 0, rotY:  3.142 },
+  // i=6  center=(47,125)   dx=33,  dz=-45  → atan2(33,-45)≈2.510
+  'tool-workshop':     { model: '/models/patty-building.glb',      yOffset: 0, rotY:  2.510 },
+  // i=7  center=(27,97)    dx=53,  dz=-17  → atan2(53,-17)≈1.882
+  'skill-forge':       { model: '/models/chum-bucket.glb',         yOffset: 0, rotY:  1.882 },
+  // i=8  center=(27,63)    dx=53,  dz=17   → atan2(53,17)≈1.259
+  'channel-bridge':    { model: '/models/building-cave.glb',       yOffset: 0, rotY:  1.259 },
+  // i=9  center=(47,35)    dx=33,  dz=45   → atan2(33,45)≈0.632
+  'security-fortress': { model: '/models/building-submarine.glb',  yOffset: 0, rotY:  0.632 },
 };
 
 /** Strip ground planes from a cloned scene.
