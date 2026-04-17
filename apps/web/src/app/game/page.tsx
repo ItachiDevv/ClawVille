@@ -72,14 +72,6 @@ function NanoClawBanner() {
   const agentConnected = useGameStore((s: GameState) => s.agentConnected);
   const agentSessionId = useGameStore((s: GameState) => s.agentSessionId);
   const setAgentConnectModalOpen = useGameStore((s: GameState) => s.setAgentConnectModalOpen);
-  const { data: pet } = usePet();
-  const hasPet = !!pet;
-
-  // Hide the "Connect Your Agent" CTA once the user already owns a pet
-  // (they're logged in and operating an agent — the CTA would be noise).
-  // Keep the "Bot Training Active" indicator whenever a gateway session
-  // is wired up, since that's still useful to see at a glance.
-  if (!agentConnected && hasPet) return null;
 
   return (
     <div className="fixed left-1/2 -translate-x-1/2 z-50 top-3">
@@ -151,20 +143,14 @@ export default function GamePage() {
     }
   }, [pet, isLoading, authLoading, isAuthenticated, miladyEmbed.isEmbed, router]);
 
-  // Sync spectator state to game store (no pet = explore mode, has pet = player mode)
+  // Sync spectator state to game store. Pet ownership alone does NOT flip
+  // controlMode — GameFeatures.md §1 treats controlMode as gated by
+  // hasAgent (the Moltbook gateway handshake), not by pet existence. A
+  // logged-in user without a connected agent correctly stays in explore
+  // mode until they click Connect Your Agent.
   useEffect(() => {
     if (!isLoading && !authLoading) {
-      const store = useGameStore.getState();
-      store.setIsSpectator(!pet);
-      // Promote magic-link / fresh-login users out of `explore` so the
-      // camera isn't stuck in floating spectator over their own pet.
-      // setAgentConnection already handles the gateway-connect path; this
-      // covers the no-gateway case (Phase 5 magic-link, regular email
-      // login, Milady embed) where controlMode would otherwise stay at
-      // its initial 'explore'.
-      if (pet && store.controlMode === 'explore') {
-        store.setControlMode('player');
-      }
+      useGameStore.getState().setIsSpectator(!pet);
     }
   }, [pet, isLoading, authLoading]);
 
