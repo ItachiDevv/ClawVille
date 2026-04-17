@@ -1425,15 +1425,18 @@ function cleanupExpiredTokens() {
 
 // POST /api/agent/connect-token — generate a connection token (requires auth)
 agentGatewayRoutes.post('/connect-token', async (c) => {
-  // Import auth middleware inline to avoid circular deps
-  const { sessionMiddleware, requireAuth } = await import('../middleware/auth');
-
-  // We need to manually run the middleware chain here since Hono
-  // doesn't support inline middleware in route handlers.
-  // Instead, check for the session cookie directly.
-  const cookie = c.req.header('cookie') ?? '';
-  const sessionId = cookie.match(/clawville_session=([^;]+)/)?.[1];
+  // Use Lucia's own cookie reader (default name is `auth_session`, not the
+  // hardcoded `clawville_session` string this handler used to grep for —
+  // the hardcoded regex never matched any real cookie, so every caller
+  // got a stale 401 and the "Connect Your Agent" modal showed
+  // "Authentication required" for authenticated users).
+  const { lucia } = await import('../lib/auth');
+  const sessionId = lucia.readSessionCookie(c.req.header('Cookie') ?? '');
   if (!sessionId) {
+    return c.json({ error: 'Authentication required' }, 401);
+  }
+  const { session } = await lucia.validateSession(sessionId);
+  if (!session) {
     return c.json({ error: 'Authentication required' }, 401);
   }
 
