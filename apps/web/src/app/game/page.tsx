@@ -154,7 +154,17 @@ export default function GamePage() {
   // Sync spectator state to game store (no pet = explore mode, has pet = player mode)
   useEffect(() => {
     if (!isLoading && !authLoading) {
-      useGameStore.getState().setIsSpectator(!pet);
+      const store = useGameStore.getState();
+      store.setIsSpectator(!pet);
+      // Promote magic-link / fresh-login users out of `explore` so the
+      // camera isn't stuck in floating spectator over their own pet.
+      // setAgentConnection already handles the gateway-connect path; this
+      // covers the no-gateway case (Phase 5 magic-link, regular email
+      // login, Milady embed) where controlMode would otherwise stay at
+      // its initial 'explore'.
+      if (pet && store.controlMode === 'explore') {
+        store.setControlMode('player');
+      }
     }
   }, [pet, isLoading, authLoading]);
 
