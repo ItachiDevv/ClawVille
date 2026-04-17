@@ -28,7 +28,7 @@ const DialogContent = React.forwardRef<
     <DialogOverlay />
     <DialogPrimitive.Content
       ref={ref}
-      className={`fixed left-[50%] top-[50%] z-50 w-full max-w-lg translate-x-[-50%] translate-y-[-50%] border-3 border-claw-panel-border rounded-xl bg-gradient-to-b from-[#FFE066] to-[#FFD700] shadow-claw p-0 duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] ${className}`}
+      className={`fixed left-[50%] top-[50%] z-50 w-full max-w-lg translate-x-[-50%] translate-y-[-50%] rounded-2xl border border-cyan-400/25 bg-gradient-to-b from-[#0a1a2e] to-[#04111e] backdrop-blur-md shadow-[0_0_50px_rgba(0,229,255,0.18)] p-0 duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] ${className}`}
       {...props}
     >
       {children}
@@ -42,7 +42,7 @@ const DialogHeader = ({
   ...props
 }: React.HTMLAttributes<HTMLDivElement>) => (
   <div
-    className={`bg-gradient-to-r from-yellow-600 to-yellow-500 px-6 py-4 rounded-t-lg text-black ${className}`}
+    className={`bg-gradient-to-r from-cyan-600/25 via-cyan-500/15 to-transparent px-6 py-4 rounded-t-2xl border-b border-cyan-500/20 text-white ${className}`}
     {...props}
   />
 );
@@ -66,7 +66,7 @@ const DialogDescription = React.forwardRef<
 >(({ className = '', ...props }, ref) => (
   <DialogPrimitive.Description
     ref={ref}
-    className={`text-sm text-black/70 ${className}`}
+    className={`text-sm text-white/60 ${className}`}
     {...props}
   />
 ));
