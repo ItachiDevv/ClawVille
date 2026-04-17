@@ -4,9 +4,7 @@ import { useState, useRef, useMemo } from 'react';
 import { usePet } from '@/hooks/use-pet';
 import { useGameStore } from '@/stores/game';
 import { api } from '@/lib/api';
-import { PET_SPECIES, KNOWLEDGE_BOOKS } from '@clawville/shared';
-import { SPECIES_SPRITE_MAP } from '@/lib/pixi/pet-sprites';
-import type { PetSpecies } from '@clawville/shared';
+import { KNOWLEDGE_BOOKS } from '@clawville/shared';
 
 interface PetMessage {
   id: string;
@@ -42,10 +40,10 @@ export default function PetChatBar() {
   // Don't render when location chat is open or no pet
   if (chatOpen || !pet) return null;
 
-  const species = pet.species as PetSpecies;
-  const speciesData = PET_SPECIES.find((s) => s.id === species);
-  const emoji = speciesData?.emoji ?? '?';
-  const spritePath = SPECIES_SPRITE_MAP[species] ?? SPECIES_SPRITE_MAP.cat;
+  // Use lobster emoji as the agent icon — replaces ElizaPets cat sprite that
+  // used to render here via SPECIES_SPRITE_MAP (every agent backfills to 'cat'
+  // legacy species, producing the wrong visual). Lobster matches the 3D avatar.
+  const agentGlyph = '🦞';
 
   const scrollToBottom = () => {
     setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
@@ -126,13 +124,7 @@ export default function PetChatBar() {
         <div className="w-full mb-2 claw-panel !p-0 overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-200">
           {/* Chat header */}
           <div className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-cyan-600/25 to-cyan-500/10 border-b border-cyan-500/25">
-            <img
-              src={spritePath}
-              alt={pet.name}
-              width={24}
-              height={24}
-              className="w-6 h-6 object-contain"
-            />
+            <span className="text-xl leading-none drop-shadow-[0_0_6px_rgba(0,229,255,0.35)]" aria-hidden>{agentGlyph}</span>
             <span className="text-white font-bold text-sm">{pet.name}</span>
             <span className="text-white/45 text-xs ml-auto font-mono">
               {knowledgeTopics.length > 0
@@ -206,13 +198,7 @@ export default function PetChatBar() {
         onClick={toggleExpand}
         className="group flex items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-cyan-600 to-cyan-500 border border-cyan-400/40 shadow-[0_0_25px_rgba(0,229,255,0.35)] hover:shadow-[0_0_35px_rgba(0,229,255,0.55)] hover:brightness-110 transition-all active:translate-y-0.5"
       >
-        <img
-          src={spritePath}
-          alt={pet.name}
-          width={28}
-          height={28}
-          className="w-7 h-7 object-contain drop-shadow-sm"
-        />
+        <span className="text-2xl leading-none drop-shadow-[0_1px_2px_rgba(0,0,0,0.35)]" aria-hidden>{agentGlyph}</span>
         {agentConnected && (
           <span className="text-emerald-300 text-xs" title="Agent connected">
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
