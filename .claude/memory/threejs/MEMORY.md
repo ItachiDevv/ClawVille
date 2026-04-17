@@ -1,5 +1,8 @@
 # 3D Architect — Knowledge Base
 
+## Standing Rule (read first)
+- [Three-Doc Standing Rule](standing-rules/three-doc-standing-rule.md) — Abide by `3dStructure.md` for all visual/3D decisions; `GameFeatures.md` for gameplay; `ARCHITECTURE.md` for tech stack. Unless the main session tells you to change behavior, do NOT deviate from what these docs specify. Every 3D code change requires a same-diff update to `3dStructure.md` (and a "Last Audited" bump). Live code > doc > CLAUDE.md > memory; memory is advisory only. Set 2026-04-17.
+
 ## Gotchas
 - [MeshBasicNodeMaterial ignores scene fog — backdrop renders as hard wall](gotchas/meshbasicnodematerial-ignores-fog.md) — backdrop must be past camera.far or have its own opacityNode distance fade; fog does not apply
 - [terrainYRef init 0 causes 4-unit spawn float](gotchas/terrain-yref-init-zero-causes-spawn-float.md) — init to -2 (sand floor Y) so pet spawns flush; 0 causes visible 200ms drift down

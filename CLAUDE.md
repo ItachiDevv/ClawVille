@@ -39,6 +39,42 @@ WHEN planning complex AI integrations, DO create a multi-phase plan document in 
 
 ---
 
+## CANONICAL DOCS — THE THREE SOURCES OF TRUTH (READ THIS FIRST, EVERY SESSION)
+
+These three root-level markdown files are the **authoritative specification** for what ClawVille is right now. They are consulted before memory, before prior-session logs, before anything else. When in doubt, trust them over your assumptions.
+
+| Doc | Scope | Authority over |
+|---|---|---|
+| **`GameFeatures.md`** | Gameplay functionality | Game modes, agent connect flow, marketplace, skill economy, quests, bounties, daily login, pet system, tutorial, UI components, control-mode toggle, NPC simulation, talk-to-character, Phase 5 magic-link, Phase 6 memory isolation, landing-page surfaces |
+| **`3dStructure.md`** | Visual / 3D layout | World dimensions, building ring geometry + rotations, NPC scales + positions, town-center objects, decoration + seaweed zones, terrain, camera, lighting, fog, atmosphere, performance budget, GPU constraints |
+| **`ARCHITECTURE.md`** | Tech stack + infra | Route modules, DB schema tables, service-layer catalog, data flow, frontend/backend architecture, deployment (Hetzner + Coolify), agent identity types, Gemini-only LLM, Phase 5/6 plumbing |
+
+### The standing rule (applies unless the user explicitly overrides)
+
+**Unless the user tells you to change something, abide by what these docs specify.** If the code and the doc disagree, the **live code wins** — and you MUST update the doc in the same turn you spot the conflict. Never plan, refactor, or suggest changes that would break something documented in these files without explicit user consent.
+
+### When you add or change anything
+
+You MUST update the matching doc in the **same diff** as the code change. No "I'll update the docs later." No "it's a small change." No exceptions.
+
+- 3D code touched (`apps/web/src/lib/three/*`, `apps/web/src/components/three/*`, models, shaders, materials, cameras, lighting, post-processing) → `3dStructure.md` update required. Also spawn `3da` per the MANDATORY rule below.
+- Gameplay/feature code touched (stores, routes affecting gameplay, game UI components, game modes, economy, auth flows, landing page) → `GameFeatures.md` update required.
+- Tech-stack code touched (new Hono route files, new DB tables, new services, deployment/env changes) → `ARCHITECTURE.md` update required.
+- A single change can require updates to more than one doc (e.g. adding a new chat route updates both `GameFeatures.md` for the UX and `ARCHITECTURE.md` for the endpoint).
+- Bump the doc's "Last Audited" date every time you touch it, with a one-line note describing the drift you just closed.
+
+**Precedence** — highest to lowest authority when judging "what does ClawVille do right now":
+1. Current source code (grep/read to confirm).
+2. `GameFeatures.md` + `3dStructure.md` + `ARCHITECTURE.md`.
+3. `CLAUDE.md`, `README.md`.
+4. Memory files under `~/.claude/projects/.../memory/` and `.claude/memory/threejs/`. **Advisory only — never authoritative.**
+
+If a memory entry contradicts one of the three canonical docs, the doc wins AND the memory must be updated or deleted in the same turn. If a canonical doc contradicts live code, the code wins AND the doc must be updated in the same turn.
+
+Violating this rule has cost hours across sessions — stale claims about grid size, stale Railway URLs post-Hetzner, movement-system notes contradicting the live revert. Do not add to that list.
+
+---
+
 ## MANDATORY: Collaborate with the 3da subagent for ALL 3D work
 
 **This is not optional and not a "delegate when convenient" rule — it is a required collaboration pattern.** The `3da` subagent (Three.js & WebGPU 3D builder) has persistent cross-session memory of ClawVille's render constraints, previously-diagnosed bugs, asset quirks, and Iris Xe gotchas. It MUST be spawned as a co-working partner any time a task touches:

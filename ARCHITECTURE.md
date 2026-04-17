@@ -1,5 +1,7 @@
 # ClawVille Architecture
 
+> **Last Audited:** 2026-04-17 (drift sweep — added 7 missing route modules (activity, research, research-sse, marketplace, claws, agent-setup, agent-v2); added 13 missing schema tables (agent_session_tickets, building_skills, claw_token_transactions, unified `wallets`, auction_bids, auction_agent_configs, quests/bounties/rewards, published_skills/skill_upvotes, bazaar_transactions/reviews, vanity_keypairs, token_launches, npc_memories, activity_log, research_articles); added Phase 5 magic-link + Phase 6 memory isolation sections; added Service Layer catalog; noted ultrathink decommission — plugin-anthropic + plugin-openai removed 2026-04-10, Gemini-only.)
+
 ## System Overview
 
 ```
@@ -77,21 +79,28 @@ Hard rules:
 **Route modules** (`apps/api/src/routes/`):
 | Route | Purpose |
 |-------|---------|
-| `auth.ts` | Login, signup, logout (Lucia sessions) |
-| `pets.ts` | Pet CRUD, pet chat, heartbeat, daily login |
+| `auth.ts` | Login, signup, logout (Lucia sessions) + `GET /api/auth/enter?t=ticket` (Phase 5 magic-link exchanger) + `POST /api/auth/milady-session-exchange` |
+| `pets.ts` | Pet CRUD, pet chat, heartbeat (`POST /api/pets/me/heartbeat`), daily login (`POST /api/pets/me/daily-login`) |
 | `locations.ts` | Location data |
 | `chat.ts` | Location agent chat with dynamic context injection |
 | `items.ts` | Shop browse, inventory, buy, learn |
 | `agent-gateway.ts` | Universal agent connection (connect-token, polling, SKILL.md, SSE events) |
 | `agent-export.ts` | `POST /api/agent/export-character` — emits Eliza `Character` JSON + `SkillPack` + Milady install payload + curl one-liner (Phase 3 of the create-agent rollout; Phase 4a UI consumes this) |
-| `openclaw.ts` | Legacy OpenClaw bot registration (kept for backwards compat) |
+| `agent-setup.ts` | Multi-agent roster + loadout + import/export (`MAX_AGENTS = 1` currently enforced) |
+| `agent-v2.ts` | `/api/v2/agent` — experimental alternate agent gateway surface (new shape under review) |
+| `openclaw.ts` | Legacy OpenClaw bot registration (kept for backwards compat — the Manual tab was removed from the UI in commit `984627d` but this endpoint still accepts direct POSTs) |
 | `npc-sse.ts` | Server-Sent Events for NPC simulation state |
+| `activity.ts` | Activity feed backing the sidebar Activity Log |
+| `research.ts` | Research article fetch / scrape (powers the thought-log research stream) |
+| `research-sse.ts` | `/api/research` SSE stream feeding `ThoughtLog` component |
+| `claws.ts` | ClawToken ledger + balance surface (reads `claw_token_transactions`) |
 | `bazaar.ts` | Skill marketplace (browse, list, buy) |
-| `auctions.ts` | Skill auction house |
+| `marketplace.ts` | Published-skills marketplace w/ upvotes — distinct from `bazaar.ts` (bazaar = fixed-price listings, marketplace = free publish+upvote tier) |
+| `auctions.ts` | Skill auction house (timed auctions + bidding) |
 | `quests.ts` | Quest board |
 | `bounties.ts` | Bounty board |
 | `leaderboard.ts` | Global leaderboard |
-| `skills.ts` | SKILL.md knowledge surface for agents |
+| `skills.ts` | `GET /api/skills`, `GET /api/skills/:buildingId`, `GET /api/skills/:buildingId/skill.md` — served from cached `building_skills` table, NOT re-generated on every hit |
 
 ## Agent Connection Architecture (Moltbook Pattern)
 
@@ -145,7 +154,12 @@ Human                          ClawVille API                    AI Agent
 - Lazy-starts ElizaOS agents on first chat message
 - Auto-stops after 30 minutes of inactivity
 - Uses `createElizaRuntime` from `@clawville/agent-runtime`
-- LLM backend: Gemini (text generation + embeddings)
+- LLM backend: **Gemini only**. `plugin-anthropic` and `plugin-openai` were fully
+  removed in the ultrathink decommission on 2026-04-10 — `ANTHROPIC_API_KEY` and
+  `OPENAI_API_KEY` are no longer read anywhere. `gemini-text-provider` (priority
+  95) handles `TEXT_SMALL` / `TEXT_LARGE`, `gemini-embedding-provider` (priority
+  100) handles `TEXT_EMBEDDING`. Runtime plugins: `plugin-sql` + these two Gemini
+  providers. See `docs/ultrathink-migration-decision.md`.
 
 **System NPC Seeder** (`apps/api/src/services/system-npc-seeder.ts`):
 - On API boot, ensures every building has a system-owned ElizaOS character
@@ -162,6 +176,76 @@ Human                          ClawVille API                    AI Agent
 - Autonomous NPCs with pathfinding, conversations, and activities
 - State streamed to clients via SSE
 
+## Phase 5 — Agent-Issued Magic-Link Login (commit `b527636`)
+
+Lets a connected agent mint a one-time login URL for its human operator
+without exchanging passwords or OAuth.
+
+```
+Agent                        ClawVille API                  Human browser
+  |                               |                             |
+  |-- POST /api/agent/:s/issue ->|                             |
+  |                               | insert agent_session_tickets|
+  |<-- {url: /api/auth/enter?t=} -|                             |
+  |-- DM url to human -------------------------------------->   |
+  |                               |<-- GET /api/auth/enter?t=xxx|
+  |                               | ticket valid? consumed?      |
+  |                               | mint Lucia session cookie    |
+  |                               |-- 302 Location: /game ---->  |
+```
+
+- **Table**: `agent_session_tickets` (random 32-byte token, 5-min TTL, `consumed_at`).
+- **Service**: `apps/api/src/services/session-ticket-service.ts`.
+- **Exchanger**: `GET /api/auth/enter?t=<ticket>` (`auth.ts:188-229`) — validates, marks consumed, mints cookie, redirects.
+- **Failure path**: expired/consumed ticket → redirect with `?error=expired-link` → `ExpiredLinkBanner` on landing (`app/page.tsx:21-56`).
+
+## Phase 6 — Per-User Building-Character Memory Isolation (commit `51e97cb`)
+
+Every user who talks to the same building-resident agent gets an isolated
+memory partition. One ElizaOS runtime per character, partitioned rooms per
+(userId, locationId).
+
+- **Primitive**: `characterRoomId(locationId, userId) → UUIDv5` in
+  `packages/agent-runtime/src/room-scoping.ts`. Namespace
+  `8f3b1b27-5f2a-4a8d-9c1d-2e7b4d1f6a9c`.
+- **Read/write gate**: `processMessage` inside `@clawville/agent-runtime` keys
+  every memory lookup on the derived `roomId`. Legacy string `roomId`s are
+  ignored.
+- **Terminology**: the 10 building residents are called **characters**
+  (SpongeBob, Squidward, Mrs. Puff, Larry, Mr. Krabs, Plankton, Sandy,
+  Patrick, Karen-as-assistant, Gary-as-assistant); wandering NPCs stay NPCs.
+
+## Service Layer (`apps/api/src/services/`)
+
+The service catalog (alphabetical — these are the production dependencies the
+route layer composes against, not the route files themselves):
+
+| Service | Purpose |
+|---|---|
+| `agent-collaboration` | Helper for agent-to-agent co-op (used by autonomy) |
+| `agent-orchestrator` | Lazy-start / auto-stop Eliza runtimes (see above) |
+| `article-scraper` | Pulls + normalizes external research articles into `research_articles` |
+| `claw-token-ledger` | Canonical write path for `claw_token_transactions` — never bypass |
+| `eliza-migrator` | Pre-migrates ElizaOS internal schema at API boot (fixes v2 schema drift) |
+| `hermes-client` | Outbound bridge to a user-hosted Hermes agent (OpenAI-compat gateway) |
+| `identity-service` | Maps `openclaw_bots.identityType` + `agent_session_map` |
+| `keypair-vault` | AES-256-GCM wrap/unwrap for `wallets` + `vanity_keypairs` |
+| `memory-service` | RAG + embeddings helper for Eliza characters |
+| `milady-gateway` | Inbound dispatcher for Milady plugin traffic |
+| `npc-conversation-engine` | NPC ↔ NPC banter generator (Gemini, direct call bypassing Eliza) |
+| `npc-simulation` | Authoritative NPC-world tick + SSE fan-out |
+| `openclaw-client` | Outbound bridge to a user-hosted OpenClaw gateway |
+| `pathfinding` | A* grid pathfinding over `BUILDING_EXCLUSION_PAD`-aware tilemap |
+| `pet-simulation-bridge` | Wires pet state into the NPC-simulation world tick |
+| `research-service` | Owns the research stream (article fetch → Gemini summary → SSE) |
+| `session-agent-map` | In-memory `sessionId → agentId` resolver |
+| `session-ticket-service` | Phase 5 magic-link CRUD |
+| `skill-generator` | Builds `building_skills.content` (SKILL.md) from templates + character data |
+| `system-npc-seeder` | On boot, seeds each building with a system-owned character + compiled SKILL.md |
+| `wallet-service` | High-level wallet ops (create, transfer, balance) on top of `keypair-vault` |
+| `x402-config` | Phase 4 x402 merchant wallet config |
+| `xp-service` | Level/XP math + `pets.level / xp / total_xp` updates |
+
 ## Database Schema
 
 PostgreSQL with Drizzle ORM (`packages/database/`).
@@ -169,18 +253,41 @@ PostgreSQL with Drizzle ORM (`packages/database/`).
 | Table | Purpose |
 |-------|---------|
 | `users` / `sessions` | Lucia auth (email + password) |
+| `agent_session_tickets` | **Phase 5** magic-link: 32-byte token, 5-min TTL, `consumed_at` sentinel. Backing table for `GET /api/auth/enter` (`session-ticket-service.ts`) |
 | `pets` | One per user. Identity: species/color/archetype/stats/position. Phase 2 framework fields: `model_key` (default `lobster`), `agent_category` (openclaw/hermes/milady/other, default `openclaw`), `harness` (openclaw/hermes/milady/custom, default `milady`). All NOT NULL with DEFAULTs so existing rows backfill automatically. CHECK constraints on agent_category and harness enforce the enums at DB level |
 | `pet_inventory` | Knowledge books owned by pet (quantity tracking) |
 | `map_locations` | 10 static building zones (seeded) |
 | `location_agents` | Per-user agent config at each location |
 | `platform_agents` | ElizaOS agent records |
 | `platform_agent_logs` | Agent activity logs |
-| `openclaw_bots` | External agent identity, gateway config, learned knowledge, session count |
-| `treasury_wallets` | Custodial Solana wallets for agents (AES-256-GCM encrypted) |
-| `bazaar_listings` | Skill marketplace listings |
-| `auctions` | Skill auction house |
+| `openclaw_bots` | External agent identity, gateway config, learned knowledge, session count. Enum `identityType`: `openclaw | ironclaw | nanoclaw | milady | custom | anonymous` |
+| `agent_configs` | Export/import bundles (round-trip for `/api/agent/export-character`) |
+| `building_skills` | Compiled SKILL.md cache keyed by buildingId — served from `/api/skills/:buildingId/skill.md`; rebuilt via `skill-generator` service |
+| `npc_memories` | NPC conversation memory store used by `npc-conversation-engine.ts` |
+| `activity_log` | Append-only log powering the sidebar Activity Feed |
+| `research_articles` | Cached article scrapes used by `research-service` + `article-scraper` |
+| `wallets` | **Unified** wallet table replacing per-subject tables. `wallet_subject_type` enum: `pet | agent | treasury`. Encrypted Solana keypairs (AES-256-GCM, master key `VANITY_ENCRYPTION_KEY`) |
+| `treasury_wallets` | Treasury-scoped wallets (phase-4 x402 merchant wallet + vanity set). Coexists with `wallets` for legacy rows |
+| `vanity_keypairs` | Pre-generated vanity public keys, encrypted at rest |
+| `token_launches` | Per-agent token launch records (Phase 4 token-launch subsystem) |
+| `claw_token_transactions` | Canonical **ClawToken ledger** — single append-only source of truth for every token movement (daily login, chat reward, purchase, bazaar buy, auction win, quest reward, bounty payout) |
+| `bazaar_listings` | Fixed-price skill listings |
+| `bazaar_transactions` | Settled bazaar buys |
+| `bazaar_reviews` | Ratings/reviews on bazaar purchases |
+| `published_skills` | Free-tier marketplace (publish + upvote) — separate from bazaar paid tier |
+| `skill_upvotes` | Per-user upvotes for `published_skills` |
+| `auctions` | Skill auction house (metadata + current price) |
+| `auction_bids` | Bid history per auction |
+| `auction_agent_configs` | Agent-config snapshots attached to auction listings |
+| `quests` | Admin-created quest definitions |
+| `quest_submissions` | User submissions against quests |
+| `quest_rewards` | Payout records (links to `claw_token_transactions`) |
+| `bounties` | Community-posted bounties |
+| `bounty_rewards` | Bounty payout records |
+| `bounty_attempts` | User attempts / submissions |
+| `bounty_reputation` | Per-user reputation rollup |
 
-`pets.characterConfig` (JSONB) stores the full resolved archetype data including learned knowledge.
+`pets.characterConfig` (JSONB) stores the full resolved archetype data including learned knowledge. Full schema source: `packages/database/src/schema/*.ts` (21 files, all re-exported from `schema/index.ts`).
 
 ## State Management
 
@@ -232,11 +339,13 @@ Toggle via `ControlModeToggle` component. Without an agent: Explore/NPC. With an
 
 ## ClawToken Economy
 
-- Start with 100 tokens
-- Daily login: `10 + streak * 5` tokens (max 100/day)
-- Chat with building agents: +1 token per message
-- Spend at shops: 20 knowledge books across 10 buildings
-- Learning flow: buy book -> inventory -> "Read to Pet" -> knowledge merges into agent config
+- Start with 100 tokens (`pets.clawTokens` default)
+- Daily login: `10 + streak * 5` tokens (max 100/day) — endpoint `POST /api/pets/me/daily-login`
+- Chat with building agents: +1 token per message (routed through `/api/chat` or `/api/agent/:s/chat`)
+- Spend at shops: 20 knowledge books across 10 buildings (`/api/items/*`)
+- Learning flow: buy book → inventory → "Read to Pet" → knowledge merges into `pets.characterConfig.knowledge[]` → agent restart
+- Heartbeat: `POST /api/pets/me/heartbeat` — fire-and-forget position + activity ping, updates `pets.lastActiveAt`
+- **Ledger table**: every credit and debit is appended to `claw_token_transactions` via `claw-token-ledger` service. Never write `pets.clawTokens` directly — go through the ledger.
 
 ## Deployment
 
