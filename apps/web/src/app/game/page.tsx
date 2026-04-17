@@ -72,6 +72,14 @@ function NanoClawBanner() {
   const agentConnected = useGameStore((s: GameState) => s.agentConnected);
   const agentSessionId = useGameStore((s: GameState) => s.agentSessionId);
   const setAgentConnectModalOpen = useGameStore((s: GameState) => s.setAgentConnectModalOpen);
+  const { data: avatar } = useAvatar();
+  const hasAvatar = !!avatar;
+
+  // Hide the "Connect Your Agent" CTA once the user already owns a avatar
+  // (they're logged in and operating an agent — the CTA would be noise).
+  // Keep the "Bot Training Active" indicator whenever a gateway session
+  // is wired up, since that's still useful to see at a glance.
+  if (!agentConnected && hasAvatar) return null;
 
   return (
     <div className="fixed left-1/2 -translate-x-1/2 z-50 top-3">
