@@ -368,10 +368,6 @@ function MinimapPositionTracker() {
   const lastWriteRef = useRef(0);
   useFrame(({ clock }) => {
     const now = clock.elapsedTime;
-    // DEBUG — expose last-tick info to window so we can confirm tracker is firing
-    if (typeof window !== 'undefined') {
-      (window as any).__MM_TICK = { elapsed: now, camX: camera.position.x, camZ: camera.position.z };
-    }
     // 5×/sec throttle
     if (now - lastWriteRef.current < 0.2) return;
     lastWriteRef.current = now;
