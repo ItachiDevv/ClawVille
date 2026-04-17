@@ -27,7 +27,8 @@ import { redirect } from 'next/navigation';
 export const dynamic = 'force-dynamic'; // never statically prerender this page
 
 interface EnterPageProps {
-  searchParams: { t?: string };
+  // Next.js 15+ made route-segment `searchParams` async — must be awaited.
+  searchParams: Promise<{ t?: string }>;
 }
 
 function resolveApiUrl(): string {
@@ -39,8 +40,8 @@ function resolveApiUrl(): string {
   return base.replace(/\/+$/, '');
 }
 
-export default function EnterPage({ searchParams }: EnterPageProps) {
-  const ticket = searchParams.t;
+export default async function EnterPage({ searchParams }: EnterPageProps) {
+  const { t: ticket } = await searchParams;
 
   if (!ticket) {
     // No ticket → send them to the landing page with the expired-link
