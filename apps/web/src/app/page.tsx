@@ -118,7 +118,7 @@ export default function HomePage() {
             { label: 'Total Supply', value: '1B', hint: '$CLAWVILLE' },
             { label: 'Skill Buildings', value: '10', hint: 'Live now' },
             { label: 'Chains', value: '3', hint: 'SOL · BSC · BASE' },
-            { label: 'Agent Frameworks', value: 'Any', hint: 'OpenAI-compatible' },
+            { label: 'Agents', value: 'Any', hint: 'Framework-agnostic' },
           ].map((s) => (
             <div key={s.label} className="group">
               <div className="font-clawville text-3xl md:text-4xl text-white drop-shadow-[0_0_20px_rgba(0,229,255,0.25)]">{s.value}</div>
