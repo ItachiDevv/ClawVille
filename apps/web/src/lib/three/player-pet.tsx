@@ -33,15 +33,18 @@ const HALF_H = MAP_HEIGHT / 2;
 const SPEED = 550;
 const BOB_SPEED = 5;
 const BOB_AMPLITUDE = 0.3;
-// PET_SCALE=20 targets ~48 world-unit height for lobster.glb on the 5120-unit map.
-// Pass 1 (2026-04-16): reduced 55→33 (too large at ~78 wu vs 800-wu building, ~1:10 ratio).
-// Pass 2 (2026-04-16): reduced 33→20 — user tested pass 1 and lobster still felt too big
-// relative to the NPC spawned in NPC mode. Target 1:16–1:20 ratio vs 800-wu building.
-// 20 ≈ 36% of original 55. Deliberately slightly larger than TARGET_NPC_HEIGHT=45 so the
-// player pet still reads as bigger than wandering NPCs on screen.
+// PET_SCALE=40 targets ~45 world-unit height for lobster.glb on the 5120-unit map.
+// lobster.glb geometry has bbox max.y = 1.12 native units (verified 2026-04-17 via GLTF
+// accessor bounds). PET_SCALE=40 → 40 × 1.12 = 44.8 wu ≈ TARGET_NPC_HEIGHT=45.
+// Bug history: PET_SCALE was at 20 (from pass 2 of scale-down 2026-04-16), which was
+// calibrated when the lobster GLB had native height ~2.4 units (20 × 2.4 = 48 wu).
+// After the GLB was updated the native height became 1.12 units; 20 × 1.12 = 22.4 wu —
+// making the player pet appear ~2× smaller than wandering NPC lobsters (which use
+// computeNpcScale → TARGET_NPC_HEIGHT=45 → scale≈40.2 → 45 wu visual height).
+// Fix 2026-04-17: PET_SCALE 20→40. ~1:17.8 ratio vs 800-wu building.
 // SPEED bumped 320→550 (pass 1 +60% wasn't perceivable at world scale of 5120 wu;
 // need ~3-4s to cross visible area ~2000 wu → 2000/550 ≈ 3.6s).
-const PET_SCALE = 20;
+const PET_SCALE = 40;
 
 const COLOR_TINTS: Record<string, number> = {
   blue: 0x42a5f5, red: 0xef5350, green: 0x66bb6a, yellow: 0xffee58,
