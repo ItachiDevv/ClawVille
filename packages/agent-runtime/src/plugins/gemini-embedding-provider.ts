@@ -21,6 +21,13 @@ const GEMINI_API_BASE =
 // is the cheaper, faster default for most use cases.
 const DEFAULT_MODEL = 'text-embedding-004';
 
+// Output dimension for text-embedding-004. ElizaOS probes the model with null
+// input at boot to discover the embedding dimension (see AgentRuntime
+// initialization — calls `useModel(TEXT_EMBEDDING, null)` and asserts the
+// returned vector has non-zero length). Returning a zero vector of the right
+// dimension lets the probe succeed without burning a real Gemini API call.
+const DEFAULT_MODEL_DIMS = 768;
+
 export interface GeminiEmbeddingConfig {
   /** Fallback to process.env.GEMINI_API_KEY if omitted. */
   apiKey?: string;
@@ -82,7 +89,13 @@ export function createGeminiEmbeddingPlugin(
       typeof params === 'string'
         ? params
         : params?.text ?? params?.input ?? '';
-    if (!text) return [];
+    if (!text) {
+      // ElizaOS dimension probe (calls with `null` at runtime init).
+      // Return a zero vector of the right dimension — passes the
+      // `embedding.length > 0` validation and lets the runtime set up
+      // its embedding column without a wasted API call.
+      return new Array(DEFAULT_MODEL_DIMS).fill(0);
+    }
     return embed(text, config);
   };
 
