@@ -47,7 +47,7 @@ export default function DailyLoginModal() {
       <div className="claw-panel w-80 max-w-[90vw] text-center">
         {/* Header */}
         <div className="text-2xl mb-1">&#x1f381;</div>
-        <h2 className="text-lg font-bold text-black mb-1">
+        <h2 className="text-lg font-bold text-white mb-1">
           Day {streak} Reward!
         </h2>
         <p className="text-sm text-white/70 mb-3">
@@ -55,11 +55,11 @@ export default function DailyLoginModal() {
         </p>
 
         {/* Reward */}
-        <div className="bg-yellow-100 rounded-lg px-4 py-3 mb-3 border-2 border-yellow-400">
-          <div className="text-3xl font-bold text-yellow-700">
+        <div className="bg-cyan-500/10 rounded-lg px-4 py-3 mb-3 border-2 border-cyan-400/40 shadow-[0_0_20px_rgba(0,229,255,0.15)]">
+          <div className="text-3xl font-bold text-cyan-200">
             +{tokensEarned} &#x1fa99;
           </div>
-          <div className="text-xs text-yellow-600 mt-1">
+          <div className="text-xs text-cyan-300/70 mt-1">
             ClawTokens earned! Total: {totalTokens}
           </div>
         </div>
@@ -71,8 +71,8 @@ export default function DailyLoginModal() {
               key={m.day}
               className={`flex items-center justify-between text-xs px-3 py-1.5 rounded ${
                 streak >= m.day
-                  ? 'bg-green-100 text-green-800'
-                  : 'bg-white/5 text-white/40'
+                  ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-400/25'
+                  : 'bg-white/[0.04] text-white/40 border border-white/[0.06]'
               }`}
             >
               <span className="font-bold">{m.label}</span>
@@ -84,7 +84,7 @@ export default function DailyLoginModal() {
         {/* Dismiss */}
         <button
           onClick={() => setShow(false)}
-          className="w-full py-2 rounded-lg bg-yellow-500 hover:bg-yellow-400 text-white font-bold text-sm transition-colors"
+          className="w-full py-2 rounded-lg bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-white font-bold text-sm transition-colors shadow-[0_0_20px_rgba(0,229,255,0.25)]"
         >
           Collect & Continue
         </button>

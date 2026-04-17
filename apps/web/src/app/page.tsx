@@ -90,8 +90,8 @@ export default function HomePage() {
         .anim-up { animation: fadeSlideUp 0.7s ease-out forwards; opacity: 0; }
       ` }} />
 
-      {/* ───── CA TICKER (top of page) ───── */}
-      <CABadge />
+      {/* ───── STICKY HEADER (CA + socials) ───── */}
+      <SiteHeader />
 
       {/* ───── HERO SECTION ───── */}
       <section className="relative z-10 min-h-screen flex flex-col items-center justify-center px-4 text-center">
@@ -128,37 +128,25 @@ export default function HomePage() {
           ))}
         </div>
 
-        {/* CTAs */}
-        <div className="anim-up flex flex-col sm:flex-row gap-4 mt-10" style={{ animationDelay: '0.55s' }}>
+        {/* CTAs — both buttons share the same footprint (w-64 h-14) */}
+        <div className="anim-up flex flex-col sm:flex-row items-center gap-4 mt-10" style={{ animationDelay: '0.55s' }}>
           <Link
             href="/game"
-            className="px-10 py-4 rounded-xl font-clawville text-base uppercase tracking-wider bg-gradient-to-r from-cyan-600 to-cyan-500 text-white shadow-[0_0_30px_rgba(0,229,255,0.25)] hover:shadow-[0_0_40px_rgba(0,229,255,0.4)] transition-all hover:scale-105"
+            className="w-64 h-14 flex items-center justify-center rounded-xl font-clawville text-base uppercase tracking-wider bg-gradient-to-r from-cyan-600 to-cyan-500 text-white shadow-[0_0_30px_rgba(0,229,255,0.25)] hover:shadow-[0_0_40px_rgba(0,229,255,0.4)] transition-all hover:scale-105"
           >
             Enter ClawVille
           </Link>
-          <div className="flex flex-col items-center gap-1">
-            <span className="text-[9px] font-mono uppercase tracking-[0.3em] text-amber-400/60">Coming soon</span>
+          <div className="relative">
+            <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[9px] font-mono uppercase tracking-[0.3em] text-amber-400/70 whitespace-nowrap">Coming soon</span>
             <a
               href="#launch"
-              className="flex items-center gap-2.5 px-8 py-3.5 rounded-xl font-clawville text-sm uppercase tracking-wider bg-gradient-to-r from-amber-600 to-orange-500 text-white shadow-[0_0_30px_rgba(255,170,0,0.25)] hover:shadow-[0_0_40px_rgba(255,170,0,0.4)] transition-all hover:scale-105"
+              className="w-64 h-14 flex items-center justify-center gap-2 rounded-xl font-clawville text-base uppercase tracking-wider bg-gradient-to-r from-amber-600 to-orange-500 text-white shadow-[0_0_30px_rgba(255,170,0,0.25)] hover:shadow-[0_0_40px_rgba(255,170,0,0.4)] transition-all hover:scale-105"
             >
               Launch Token
-              <span className="flex items-center gap-1.5 ml-1">
-                {/* Solana */}
-                <svg width="16" height="16" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M22.22 93.22a3.45 3.45 0 012.44-1.01h99.06a1.72 1.72 0 011.22 2.94l-19.16 19.16a3.45 3.45 0 01-2.44 1.01H4.28a1.72 1.72 0 01-1.22-2.94l19.16-19.16z" fill="currentColor" fillOpacity="0.8"/>
-                  <path d="M22.22 12.69a3.54 3.54 0 012.44-1.01h99.06a1.72 1.72 0 011.22 2.94L105.78 33.78a3.45 3.45 0 01-2.44 1.01H4.28a1.72 1.72 0 01-1.22-2.94l19.16-19.16z" fill="currentColor" fillOpacity="0.8"/>
-                  <path d="M105.78 52.69a3.45 3.45 0 00-2.44-1.01H4.28a1.72 1.72 0 00-1.22 2.94l19.16 19.16a3.45 3.45 0 002.44 1.01h99.06a1.72 1.72 0 001.22-2.94L105.78 52.69z" fill="currentColor" fillOpacity="0.8"/>
-                </svg>
-                {/* BSC / BNB */}
-                <svg width="16" height="16" viewBox="0 0 126 126" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M38.73 63l-24.32 24.32L0 72.91 63 9.91l63 63-14.41 14.41L63 38.73 38.73 63zm0 0L63 87.27 87.27 63l14.41 14.41L63 116.09 24.32 77.41 38.73 63z" fill="currentColor" fillOpacity="0.8"/>
-                </svg>
-                {/* Base */}
-                <svg width="16" height="16" viewBox="0 0 111 111" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <circle cx="55.5" cy="55.5" r="55.5" fill="currentColor" fillOpacity="0.15"/>
-                  <path d="M55.39 94.42c21.51 0 38.94-17.43 38.94-38.92 0-21.5-17.43-38.92-38.94-38.92-20.19 0-36.8 15.36-38.72 35.04h25.78v7.76H16.67c1.92 19.68 18.53 35.04 38.72 35.04z" fill="currentColor" fillOpacity="0.8"/>
-                </svg>
+              <span className="flex items-center gap-1 opacity-80">
+                <svg width="14" height="14" viewBox="0 0 128 128" fill="none"><path d="M22.22 93.22a3.45 3.45 0 012.44-1.01h99.06a1.72 1.72 0 011.22 2.94l-19.16 19.16a3.45 3.45 0 01-2.44 1.01H4.28a1.72 1.72 0 01-1.22-2.94l19.16-19.16z" fill="currentColor"/><path d="M22.22 12.69a3.54 3.54 0 012.44-1.01h99.06a1.72 1.72 0 011.22 2.94L105.78 33.78a3.45 3.45 0 01-2.44 1.01H4.28a1.72 1.72 0 01-1.22-2.94l19.16-19.16z" fill="currentColor"/><path d="M105.78 52.69a3.45 3.45 0 00-2.44-1.01H4.28a1.72 1.72 0 00-1.22 2.94l19.16 19.16a3.45 3.45 0 002.44 1.01h99.06a1.72 1.72 0 001.22-2.94L105.78 52.69z" fill="currentColor"/></svg>
+                <svg width="14" height="14" viewBox="0 0 126 126" fill="none"><path d="M38.73 63l-24.32 24.32L0 72.91 63 9.91l63 63-14.41 14.41L63 38.73 38.73 63zm0 0L63 87.27 87.27 63l14.41 14.41L63 116.09 24.32 77.41 38.73 63z" fill="currentColor"/></svg>
+                <svg width="14" height="14" viewBox="0 0 111 111" fill="none"><circle cx="55.5" cy="55.5" r="55.5" fill="currentColor" fillOpacity="0.25"/><path d="M55.39 94.42c21.51 0 38.94-17.43 38.94-38.92 0-21.5-17.43-38.92-38.94-38.92-20.19 0-36.8 15.36-38.72 35.04h25.78v7.76H16.67c1.92 19.68 18.53 35.04 38.72 35.04z" fill="currentColor"/></svg>
               </span>
             </a>
           </div>
@@ -791,13 +779,54 @@ export default function HomePage() {
 }
 
 // ---------------------------------------------------------------------------
-// CABadge — fixed banner at the top of the page with the Solana CA.
-// Click anywhere on the pill to copy to clipboard; shows a transient "Copied!"
-// state for 1.5s. Uses navigator.clipboard with a textarea fallback.
+// SiteHeader — sticky top banner with the Solana CA (click-to-copy) and
+// four equally-sized social icon buttons. Every button is a 40×40 rounded
+// square with matching cyan border + hover glow for visual parity.
 // ---------------------------------------------------------------------------
 const CONTRACT_ADDRESS = 'Epht7Fw4Sgh6fdcJj6afWXuNcAUmLLMc3MSthUqELiZA';
 
-function CABadge() {
+const SOCIAL_LINKS = [
+  {
+    label: 'X',
+    href: 'https://x.com/Clawville_World',
+    icon: (
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden>
+        <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24h-6.66l-5.214-6.817-5.966 6.817H1.68l7.73-8.835L1.254 2.25h6.83l4.713 6.231 5.447-6.231zm-1.16 17.52h1.833L7.084 4.126H5.117L17.084 19.77z" />
+      </svg>
+    ),
+  },
+  {
+    label: 'Telegram',
+    href: 'https://t.me/clawvillesol',
+    icon: (
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden>
+        <path d="M9.78 18.65l.28-4.23 7.68-6.92c.34-.31-.07-.46-.52-.19L7.74 13.3 3.64 12c-.88-.25-.89-.86.2-1.3l15.97-6.16c.73-.33 1.43.18 1.15 1.3l-2.72 12.81c-.19.91-.74 1.13-1.5.71l-4.14-3.06-1.99 1.93c-.23.23-.42.42-.83.42z" />
+      </svg>
+    ),
+  },
+  {
+    label: 'Website',
+    href: 'https://clawville.world/',
+    icon: (
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+        <circle cx="12" cy="12" r="10" />
+        <line x1="2" y1="12" x2="22" y2="12" />
+        <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+      </svg>
+    ),
+  },
+  {
+    label: 'Discord',
+    href: 'https://discord.gg/KJfvM4VqQZ',
+    icon: (
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden>
+        <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.058a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.196.372.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z" />
+      </svg>
+    ),
+  },
+] as const;
+
+function SiteHeader() {
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
@@ -821,20 +850,41 @@ function CABadge() {
     }
   };
 
+  const shortCA = `${CONTRACT_ADDRESS.slice(0, 6)}…${CONTRACT_ADDRESS.slice(-6)}`;
+
   return (
-    <div className="sticky top-0 left-0 right-0 z-40 flex justify-center px-3 pt-3 pointer-events-none">
-      <button
-        type="button"
-        onClick={copy}
-        className="pointer-events-auto group flex items-center gap-3 rounded-full border border-cyan-400/30 bg-black/70 backdrop-blur-md px-4 py-2 shadow-[0_0_40px_rgba(0,229,255,0.18)] hover:border-cyan-300/60 hover:bg-black/80 transition-all"
-        aria-label="Copy contract address"
-      >
-        <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-cyan-300/70">CA</span>
-        <span className="font-mono text-xs md:text-sm text-white/90 select-all">{CONTRACT_ADDRESS}</span>
-        <span className={`font-mono text-[10px] uppercase tracking-[0.2em] transition-all ${copied ? 'text-emerald-400' : 'text-cyan-400/60 group-hover:text-cyan-300'}`}>
-          {copied ? 'Copied' : 'Copy'}
-        </span>
-      </button>
+    <div className="sticky top-0 left-0 right-0 z-40 px-3 pt-3 pointer-events-none">
+      <div className="pointer-events-auto mx-auto flex w-fit max-w-full flex-wrap items-center justify-center gap-2">
+        {/* CA pill — 40px height to match icon buttons */}
+        <button
+          type="button"
+          onClick={copy}
+          className="group flex h-10 items-center gap-2.5 rounded-full border border-cyan-400/30 bg-black/70 backdrop-blur-md px-4 shadow-[0_0_30px_rgba(0,229,255,0.18)] hover:border-cyan-300/60 hover:bg-black/80 transition-all"
+          aria-label="Copy contract address"
+        >
+          <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-cyan-300/70">CA</span>
+          <span className="font-mono text-xs text-white/90 select-all hidden sm:inline">{CONTRACT_ADDRESS}</span>
+          <span className="font-mono text-xs text-white/90 select-all sm:hidden">{shortCA}</span>
+          <span className={`font-mono text-[10px] uppercase tracking-[0.2em] transition-all ${copied ? 'text-emerald-400' : 'text-cyan-400/60 group-hover:text-cyan-300'}`}>
+            {copied ? 'Copied' : 'Copy'}
+          </span>
+        </button>
+
+        {/* Social icons — uniform 40×40 squares */}
+        {SOCIAL_LINKS.map((link) => (
+          <a
+            key={link.label}
+            href={link.href}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={link.label}
+            title={link.label}
+            className="h-10 w-10 flex items-center justify-center rounded-full border border-cyan-400/30 bg-black/70 backdrop-blur-md text-cyan-200/80 shadow-[0_0_30px_rgba(0,229,255,0.12)] hover:border-cyan-300/60 hover:text-cyan-200 hover:bg-black/80 transition-all"
+          >
+            {link.icon}
+          </a>
+        ))}
+      </div>
     </div>
   );
 }

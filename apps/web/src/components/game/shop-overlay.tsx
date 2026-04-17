@@ -38,19 +38,19 @@ export default function ShopOverlay() {
   const tokens = avatar?.clawTokens ?? 0;
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-white/50 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div className="claw-panel w-full max-w-md mx-4 max-h-[80vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-white font-bold text-lg">Shop</h2>
           <div className="flex items-center gap-3">
-            <span className="flex items-center gap-1 text-xs font-bold text-yellow-700 bg-yellow-200/60 rounded-full px-2 py-0.5">
+            <span className="flex items-center gap-1 text-xs font-bold text-cyan-200 bg-cyan-500/20 border border-cyan-400/30 rounded-full px-2 py-0.5">
               <span className="text-sm">&#x1FA99;</span>
               {tokens}
             </span>
             <button
               onClick={closeShop}
-              className="w-7 h-7 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/10 text-white font-bold text-sm transition-colors"
+              className="w-7 h-7 flex items-center justify-center rounded-full bg-white/10 hover:bg-black/40 text-white font-bold text-sm transition-colors"
             >
               X
             </button>
@@ -60,9 +60,9 @@ export default function ShopOverlay() {
         {/* Items list */}
         <div className="flex-1 overflow-y-auto space-y-2">
           {isLoading ? (
-            <p className="text-white/50 text-sm text-center py-8">Loading shop...</p>
+            <p className="text-cyan-300/60 text-sm text-center py-8 font-mono uppercase tracking-[0.2em]">Loading shop…</p>
           ) : items.length === 0 ? (
-            <p className="text-white/50 text-sm text-center py-8">No items available at this shop.</p>
+            <p className="text-cyan-300/60 text-sm text-center py-8 font-mono uppercase tracking-[0.2em]">No items available.</p>
           ) : (
             items.map((item) => {
               const canAfford = tokens >= item.price;
@@ -70,15 +70,15 @@ export default function ShopOverlay() {
               return (
                 <div
                   key={item.id}
-                  className="flex items-start gap-3 p-3 rounded-lg bg-white/50 border border-white/10"
+                  className="flex items-start gap-3 p-3 rounded-lg bg-white/[0.04] border border-white/[0.06] hover:border-cyan-500/30 transition-colors"
                 >
                   <span className="text-2xl">{item.icon}</span>
                   <div className="flex-1 min-w-0">
-                    <div className="font-bold text-black text-sm">{item.name}</div>
+                    <div className="font-bold text-white text-sm">{item.name}</div>
                     <p className="text-white/60 text-xs mt-0.5 line-clamp-2">{item.description}</p>
                   </div>
                   <div className="flex flex-col items-end gap-1">
-                    <span className="text-xs font-bold text-yellow-700">
+                    <span className="text-xs font-bold text-cyan-200">
                       {item.price} &#x1FA99;
                     </span>
                     <button
@@ -87,7 +87,7 @@ export default function ShopOverlay() {
                         buyMutation.mutate(item.id);
                       }}
                       disabled={!canAfford || isBuying}
-                      className="text-xs font-bold px-3 py-1 rounded bg-yellow-500 hover:bg-yellow-400 disabled:opacity-40 text-black transition-colors"
+                      className="text-xs font-bold px-3 py-1 rounded bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 disabled:opacity-40 text-white transition-colors shadow-[0_0_12px_rgba(0,229,255,0.2)]"
                     >
                       {isBuying ? '...' : canAfford ? 'Buy' : 'Need more'}
                     </button>
