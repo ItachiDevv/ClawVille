@@ -74,9 +74,9 @@ export default function ChatPanel() {
   };
 
   return (
-    <div className="chat-panel-enter fixed right-0 top-0 h-full w-full md:w-96 z-50 flex flex-col bg-black/80 backdrop-blur-sm border-l-2 border-yellow-500/50">
+    <div className="chat-panel-enter fixed right-0 top-0 h-full w-full md:w-96 z-50 flex flex-col bg-gradient-to-b from-[#0a1a2e]/95 to-[#04111e]/95 backdrop-blur-md border-l border-cyan-400/25 shadow-[0_0_40px_rgba(0,229,255,0.15)]">
       {/* Header — character name on top, building name as eyebrow subtitle */}
-      <div className="flex items-start justify-between px-4 py-3 bg-gradient-to-r from-yellow-600 to-yellow-500 text-white">
+      <div className="flex items-start justify-between px-4 py-3 bg-gradient-to-r from-cyan-600/25 via-cyan-500/10 to-transparent border-b border-cyan-500/25 text-white">
         <div className="flex flex-col gap-0.5 min-w-0 flex-1">
           <div className="flex items-center gap-2 min-w-0 font-bold">
             <span className="truncate">💬 {headerName}</span>
@@ -114,8 +114,8 @@ export default function ChatPanel() {
 
       {/* Body */}
       {isAgentLoading ? (
-        <div className="flex-1 flex items-center justify-center text-yellow-300/70 text-sm">
-          Loading...
+        <div className="flex-1 flex items-center justify-center text-cyan-300/70 text-sm font-mono uppercase tracking-[0.2em]">
+          Loading…
         </div>
       ) : (
         <>
@@ -124,16 +124,16 @@ export default function ChatPanel() {
             {messages.length === 0 && (
               <div className="text-center mt-8 space-y-2">
                 {agent?.agentName && (
-                  <p className="text-yellow-300 text-sm font-bold">
+                  <p className="text-cyan-300 text-sm font-bold">
                     {agent.agentName}
                   </p>
                 )}
                 {agent?.characterConfig?.greeting ? (
-                  <p className="text-yellow-200/70 text-xs leading-relaxed px-4">
+                  <p className="text-cyan-100/70 text-xs leading-relaxed px-4">
                     {agent.characterConfig.greeting}
                   </p>
                 ) : (
-                  <p className="text-yellow-300/50 text-sm">Start a conversation...</p>
+                  <p className="text-cyan-300/50 text-sm font-mono uppercase tracking-[0.2em]">Start a conversation…</p>
                 )}
               </div>
             )}
@@ -145,8 +145,8 @@ export default function ChatPanel() {
                 <div
                   className={`max-w-[80%] rounded-lg px-3 py-2 text-sm ${
                     msg.role === 'user'
-                      ? 'bg-yellow-500/90 text-black'
-                      : 'bg-white/10 text-yellow-100'
+                      ? 'bg-cyan-500/90 text-white shadow-[0_0_12px_rgba(0,229,255,0.25)]'
+                      : 'bg-white/[0.08] text-cyan-50 border border-white/[0.06]'
                   }`}
                 >
                   {msg.content}
@@ -155,10 +155,10 @@ export default function ChatPanel() {
             ))}
             {isLoading && (
               <div className="flex justify-start">
-                <div className="bg-white/10 rounded-lg px-4 py-3 flex gap-1.5 items-center">
-                  <span className="w-2 h-2 bg-yellow-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                  <span className="w-2 h-2 bg-yellow-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                  <span className="w-2 h-2 bg-yellow-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                <div className="bg-white/[0.08] rounded-lg px-4 py-3 flex gap-1.5 items-center">
+                  <span className="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                  <span className="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                  <span className="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
                 </div>
               </div>
             )}
@@ -166,21 +166,21 @@ export default function ChatPanel() {
           </div>
 
           {/* Input */}
-          <div className="px-4 py-3 border-t border-yellow-500/20">
+          <div className="px-4 py-3 border-t border-cyan-500/15">
             <div className="flex gap-2">
               <input
                 type="text"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="Type a message..."
-                className="flex-1 bg-white/10 text-white placeholder-white/40 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-yellow-500/50"
+                placeholder="Type a message…"
+                className="flex-1 bg-black/40 border border-cyan-500/15 text-white placeholder-white/30 rounded-lg px-3 py-2 text-sm outline-none focus:border-cyan-400/60 focus:ring-1 focus:ring-cyan-400/30 transition-colors"
                 disabled={isLoading}
               />
               <button
                 onClick={handleSend}
                 disabled={isLoading || !input.trim()}
-                className="bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 text-white font-bold rounded-lg px-4 py-2 text-sm transition-colors"
+                className="bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 disabled:opacity-40 text-white font-bold uppercase tracking-wider rounded-lg px-4 py-2 text-xs transition-all shadow-[0_0_15px_rgba(0,229,255,0.2)]"
               >
                 Send
               </button>
