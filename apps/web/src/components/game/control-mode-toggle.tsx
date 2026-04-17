@@ -1,18 +1,24 @@
 'use client';
 
 import { useGameStore, type GameState } from '@/stores/game';
+import { useAvatar } from '@/hooks/use-avatar';
 
 export default function ControlModeToggle() {
   const controlMode = useGameStore((s: GameState) => s.controlMode);
-  const hasAgent = useGameStore((s: GameState) => s.hasAgent);
   const isSpectator = useGameStore((s: GameState) => s.isSpectator);
+  const setControlMode = useGameStore((s: GameState) => s.setControlMode);
   const toggleControlMode = useGameStore((s: GameState) => s.toggleControlMode);
+  const { data: avatar } = useAvatar();
+  const hasAvatar = !!avatar;
 
-  const optionA = hasAgent ? 'Play' : 'Explore';
-  const optionB = hasAgent ? 'Autonomous' : 'NPC Mode';
+  // Logged-in avatar owner: Autonomous ↔ NPC (user owns an agent — they want
+  // to either let it run or step out and possess a world NPC).
+  // Spectator / not-logged-in: Explore ↔ NPC (original 2-mode toggle).
+  const optionA = hasAvatar ? 'Autonomous' : 'Explore';
+  const optionB = hasAvatar ? 'NPC' : 'NPC Mode';
 
-  const aActive = hasAgent
-    ? controlMode === 'player'
+  const aActive = hasAvatar
+    ? controlMode !== 'npc' // default to Autonomous when mode is anything but NPC
     : controlMode === 'explore';
 
   // Position below NanoClawBanner:
@@ -28,7 +34,8 @@ export default function ControlModeToggle() {
       <div className="flex items-center gap-0 rounded-full bg-[rgba(10,22,40,0.85)] backdrop-blur-md border border-cyan-500/20 shadow-[0_0_16px_rgba(0,229,255,0.07)] p-0.5">
         <button
           onClick={() => {
-            if (!aActive) toggleControlMode();
+            if (hasAvatar) setControlMode('autonomous');
+            else if (!aActive) toggleControlMode();
           }}
           className={`
             px-4 py-1.5 rounded-full text-xs font-semibold transition-all duration-200 whitespace-nowrap
@@ -42,7 +49,8 @@ export default function ControlModeToggle() {
         </button>
         <button
           onClick={() => {
-            if (aActive) toggleControlMode();
+            if (hasAvatar) setControlMode('npc');
+            else if (aActive) toggleControlMode();
           }}
           className={`
             px-4 py-1.5 rounded-full text-xs font-semibold transition-all duration-200 whitespace-nowrap
