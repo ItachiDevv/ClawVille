@@ -199,8 +199,13 @@ export default function GamePage() {
       <PerfHud />
       <ToastNotifications />
 
-      {/* Pet-specific UI — only when agent exists AND not in explore mode (pure spectator) */}
-      {hasPet && controlMode !== 'explore' && (
+      {/* Pet-specific UI — rendered whenever the user owns a pet, regardless of
+          controlMode. Phase 5 magic-link users land in explore mode with a pet
+          already provisioned but hasAgent=false; they need to see stats,
+          inventory, quests, and the pet chat bar the whole time. Gateway
+          connection (hasAgent=true) and the Autonomous/Controlled toggle are
+          orthogonal to pet UI visibility. */}
+      {hasPet && (
         <>
           <ChatPanel />
           <LocationHUD />
