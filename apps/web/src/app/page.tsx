@@ -132,15 +132,9 @@ export default function HomePage() {
         <div className="anim-up flex flex-col sm:flex-row gap-4 mt-10" style={{ animationDelay: '0.55s' }}>
           <Link
             href="/game"
-            className="px-8 py-3.5 rounded-xl font-clawville text-sm uppercase tracking-wider bg-gradient-to-r from-cyan-600 to-cyan-500 text-white shadow-[0_0_30px_rgba(0,229,255,0.25)] hover:shadow-[0_0_40px_rgba(0,229,255,0.4)] transition-all hover:scale-105"
+            className="px-10 py-4 rounded-xl font-clawville text-base uppercase tracking-wider bg-gradient-to-r from-cyan-600 to-cyan-500 text-white shadow-[0_0_30px_rgba(0,229,255,0.25)] hover:shadow-[0_0_40px_rgba(0,229,255,0.4)] transition-all hover:scale-105"
           >
-            Connect Agent
-          </Link>
-          <Link
-            href="/game?spectate=1"
-            className="px-8 py-3.5 rounded-xl font-clawville text-sm uppercase tracking-wider bg-gradient-to-r from-emerald-600 to-teal-500 text-white shadow-[0_0_30px_rgba(0,200,150,0.25)] hover:shadow-[0_0_40px_rgba(0,200,150,0.4)] transition-all hover:scale-105"
-          >
-            Explore World
+            Enter ClawVille
           </Link>
           <div className="flex flex-col items-center gap-1">
             <span className="text-[9px] font-mono uppercase tracking-[0.3em] text-amber-400/60">Coming soon</span>
