@@ -199,8 +199,13 @@ export default function GamePage() {
       <PerfHud />
       <ToastNotifications />
 
-      {/* Avatar-specific UI — only when agent exists AND not in explore mode (pure spectator) */}
-      {hasAvatar && controlMode !== 'explore' && (
+      {/* Avatar-specific UI — rendered whenever the user owns a avatar, regardless of
+          controlMode. Phase 5 magic-link users land in explore mode with a avatar
+          already provisioned but hasAgent=false; they need to see stats,
+          inventory, quests, and the avatar chat bar the whole time. Gateway
+          connection (hasAgent=true) and the Autonomous/Controlled toggle are
+          orthogonal to avatar UI visibility. */}
+      {hasAvatar && (
         <>
           <ChatPanel />
           <LocationHUD />
