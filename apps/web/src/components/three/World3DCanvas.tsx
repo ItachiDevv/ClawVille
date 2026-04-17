@@ -365,29 +365,40 @@ function kickRenderLoop(state: any): void {
 // ---------------------------------------------------------------------------
 function MinimapPositionTracker() {
   const { camera } = useThree();
-  // rAF-throttle: write at most 5×/sec (cheap, enough for a pulsing blip)
   const lastWriteRef = useRef(0);
   useFrame(({ clock }) => {
     const now = clock.elapsedTime;
+    // DEBUG — expose last-tick info to window so we can confirm tracker is firing
+    if (typeof window !== 'undefined') {
+      (window as any).__MM_TICK = { elapsed: now, camX: camera.position.x, camZ: camera.position.z };
+    }
+    // 5×/sec throttle
     if (now - lastWriteRef.current < 0.2) return;
     lastWriteRef.current = now;
 
     const store = useGameStore.getState();
     const mode = store.controlMode;
-    if (mode === 'player' || mode === 'autonomous') return; // player-avatar owns it
+
+    let mapX: number | null = null;
+    let mapY: number | null = null;
 
     if (mode === 'npc' && store.possessedNpcId) {
       const npc = useNpcStore.getState().npcs.find((n) => n.id === store.possessedNpcId);
-      if (npc && (npc.x !== store.avatarPosition.x || npc.y !== store.avatarPosition.y)) {
-        store.setPetPosition(npc.x, npc.y);
-      }
+      if (npc) { mapX = npc.x; mapY = npc.y; }
+    } else if (mode === 'player' || mode === 'autonomous') {
+      // Keep whatever player-avatar wrote; don't overwrite from camera (camera can
+      // be far from the avatar while orbiting). Only avatar mesh position is authoritative.
       return;
+    } else {
+      // explore — camera XZ projected to map coords
+      mapX = camera.position.x + HALF_W;
+      mapY = camera.position.z + HALF_H;
     }
 
-    // explore mode — use camera XZ as focus (where the user is flying over)
-    // Map X,Y coords: worldX + HALF_W, worldZ + HALF_H (inverse of toWorld)
-    const mapX = camera.position.x + HALF_W;
-    const mapY = camera.position.z + HALF_H;
+    if (mapX == null || mapY == null) return;
+    // Clamp to map bounds so stray camera positions don't break the minimap
+    mapX = Math.max(0, Math.min(MAP_WIDTH, mapX));
+    mapY = Math.max(0, Math.min(MAP_HEIGHT, mapY));
     if (
       Math.abs(mapX - store.avatarPosition.x) > 2 ||
       Math.abs(mapY - store.avatarPosition.y) > 2
