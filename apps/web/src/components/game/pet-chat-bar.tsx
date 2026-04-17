@@ -123,9 +123,9 @@ export default function PetChatBar() {
     <div className="fixed bottom-0 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center w-full max-w-lg px-4 pb-3">
       {/* Expanded chat area */}
       {expanded && (
-        <div className="w-full mb-2 bg-black/80 backdrop-blur-sm border border-yellow-500/40 rounded-xl overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-200">
+        <div className="w-full mb-2 claw-panel !p-0 overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-200">
           {/* Chat header */}
-          <div className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-yellow-600/80 to-yellow-500/80 border-b border-yellow-500/30">
+          <div className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-cyan-600/25 to-cyan-500/10 border-b border-cyan-500/25">
             <img
               src={spritePath}
               alt={pet.name}
@@ -134,9 +134,9 @@ export default function PetChatBar() {
               className="w-6 h-6 object-contain"
             />
             <span className="text-white font-bold text-sm">{pet.name}</span>
-            <span className="text-white/50 text-xs ml-auto">
+            <span className="text-white/45 text-xs ml-auto font-mono">
               {knowledgeTopics.length > 0
-                ? `Knows: ${knowledgeTopics.slice(0, 3).join(', ')}${knowledgeTopics.length > 3 ? '...' : ''}`
+                ? `Knows: ${knowledgeTopics.slice(0, 3).join(', ')}${knowledgeTopics.length > 3 ? '…' : ''}`
                 : 'your agent'}
             </span>
           </div>
@@ -144,8 +144,8 @@ export default function PetChatBar() {
           {/* Messages */}
           <div className="max-h-64 overflow-y-auto px-3 py-2 space-y-2">
             {messages.length === 0 && (
-              <p className="text-yellow-300/40 text-xs text-center py-4">
-                Say something to {pet.name}...
+              <p className="text-cyan-300/40 text-xs text-center py-4 font-mono uppercase tracking-[0.2em]">
+                Say something to {pet.name}…
               </p>
             )}
             {messages.map((msg) => (
@@ -156,8 +156,8 @@ export default function PetChatBar() {
                 <div
                   className={`max-w-[85%] rounded-lg px-3 py-1.5 text-sm ${
                     msg.role === 'user'
-                      ? 'bg-yellow-500/80 text-black'
-                      : 'bg-white/10 text-yellow-100'
+                      ? 'bg-cyan-500/90 text-white shadow-[0_0_12px_rgba(0,229,255,0.25)]'
+                      : 'bg-white/[0.08] text-cyan-50 border border-white/[0.06]'
                   }`}
                 >
                   {msg.content}
@@ -166,10 +166,10 @@ export default function PetChatBar() {
             ))}
             {loading && (
               <div className="flex justify-start">
-                <div className="bg-white/10 rounded-lg px-4 py-2 flex gap-1.5 items-center">
-                  <span className="w-1.5 h-1.5 bg-yellow-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                  <span className="w-1.5 h-1.5 bg-yellow-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                  <span className="w-1.5 h-1.5 bg-yellow-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                <div className="bg-white/[0.08] rounded-lg px-4 py-2 flex gap-1.5 items-center">
+                  <span className="w-1.5 h-1.5 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                  <span className="w-1.5 h-1.5 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                  <span className="w-1.5 h-1.5 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
                 </div>
               </div>
             )}
@@ -177,7 +177,7 @@ export default function PetChatBar() {
           </div>
 
           {/* Input */}
-          <div className="px-3 py-2 border-t border-yellow-500/20">
+          <div className="px-3 py-2 border-t border-cyan-500/15">
             <div className="flex gap-2">
               <input
                 ref={inputRef}
@@ -185,14 +185,14 @@ export default function PetChatBar() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder={`Talk to ${pet.name}...`}
-                className="flex-1 bg-white/10 text-white placeholder-white/30 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-yellow-500/50"
+                placeholder={`Talk to ${pet.name}…`}
+                className="flex-1 bg-black/40 border border-cyan-500/15 text-white placeholder-white/30 rounded-lg px-3 py-1.5 text-sm outline-none focus:border-cyan-400/60 focus:ring-1 focus:ring-cyan-400/30 transition-colors"
                 disabled={loading}
               />
               <button
                 onClick={handleSend}
                 disabled={loading || !input.trim()}
-                className="bg-yellow-500 hover:bg-yellow-400 disabled:opacity-40 text-white font-bold rounded-lg px-3 py-1.5 text-sm transition-colors"
+                className="bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 disabled:opacity-40 text-white font-bold uppercase tracking-wider rounded-lg px-4 py-1.5 text-xs transition-all shadow-[0_0_15px_rgba(0,229,255,0.2)]"
               >
                 Send
               </button>
@@ -204,7 +204,7 @@ export default function PetChatBar() {
       {/* Toggle pill */}
       <button
         onClick={toggleExpand}
-        className="group flex items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-yellow-500 to-yellow-400 border-2 border-yellow-600 shadow-claw hover:brightness-110 transition-all active:translate-y-0.5 active:shadow-none"
+        className="group flex items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-cyan-600 to-cyan-500 border border-cyan-400/40 shadow-[0_0_25px_rgba(0,229,255,0.35)] hover:shadow-[0_0_35px_rgba(0,229,255,0.55)] hover:brightness-110 transition-all active:translate-y-0.5"
       >
         <img
           src={spritePath}
@@ -214,7 +214,7 @@ export default function PetChatBar() {
           className="w-7 h-7 object-contain drop-shadow-sm"
         />
         {agentConnected && (
-          <span className="text-green-700 text-xs" title="Agent connected">
+          <span className="text-emerald-300 text-xs" title="Agent connected">
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" x2="12" y1="19" y2="22" />
             </svg>
