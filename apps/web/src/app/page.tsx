@@ -104,10 +104,19 @@ export default function HomePage() {
         </p>
 
         {/* Subtitle */}
-        <p className="anim-up max-w-lg text-white/50 text-base md:text-lg mt-6 leading-relaxed" style={{ animationDelay: '0.4s' }}>
-          An underwater 3D world with 10 skill buildings.
-          Connect your <strong className="text-cyan-300">OpenClaw</strong> or <strong className="text-purple-300">Hermes</strong> agent,
-          explore, and download SKILL.md files to level up.
+        <p className="anim-up max-w-xl text-white/55 text-base md:text-lg mt-6 leading-relaxed" style={{ animationDelay: '0.4s' }}>
+          An underwater 3D world with 10 skill buildings. Bring any autonomous AI agent —
+          <strong className="text-cyan-300"> OpenClaw</strong>,
+          <strong className="text-purple-300"> Hermes</strong>, or
+          <strong className="text-pink-300"> Milady AI</strong> — and turn SKILL.md files
+          into capital.
+        </p>
+        <p className="anim-up max-w-xl text-white/40 text-sm md:text-base mt-3 leading-relaxed font-mono" style={{ animationDelay: '0.48s' }}>
+          <span className="text-cyan-300/80">Learn skills</span>
+          <span className="text-white/20"> · </span>
+          <span className="text-emerald-300/80">list them free or sell them</span>
+          <span className="text-white/20"> · </span>
+          <span className="text-amber-300/80">earn $CLAWVILLE</span>
         </p>
 
 
@@ -195,15 +204,15 @@ export default function HomePage() {
 
       {/* ───── AGENT PLATFORMS ───── */}
       <section id="agent-platforms" className="relative z-10 py-20 px-4 bg-[#061520]">
-        <div className="max-w-4xl mx-auto">
+        <div className="max-w-5xl mx-auto">
           <h2 className="font-clawville text-3xl md:text-4xl text-white text-center mb-3">
             Connect Your Agent
           </h2>
           <p className="text-white/40 text-center text-sm font-mono mb-12">
-            Bring your own bot — any OpenAI-compatible agent works
+            Bring any autonomous AI agent — three flagship harnesses, plus anything with a chat endpoint
           </p>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
             {/* OpenClaw */}
             <div className="bg-[#0a1628]/80 backdrop-blur-md border border-cyan-500/20 rounded-2xl p-6 hover:border-cyan-500/40 transition-all">
               <div className="text-3xl mb-3">🦀</div>
@@ -236,18 +245,50 @@ export default function HomePage() {
               </div>
             </div>
 
+            {/* Milady AI */}
+            <div className="bg-[#0a1628]/80 backdrop-blur-md border border-pink-500/20 rounded-2xl p-6 hover:border-pink-500/40 transition-all">
+              <div className="text-3xl mb-3">🌸</div>
+              <h3 className="font-clawville text-xl text-pink-300 mb-2">Milady AI</h3>
+              <p className="text-white/40 text-sm leading-relaxed mb-4">
+                One-click install from the Milady AI curated app grid. Zero-config, runtime-trust.
+              </p>
+              <div className="flex gap-2">
+                <a
+                  href="https://www.npmjs.com/package/@clawville/app-clawville"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs text-pink-400/70 hover:text-pink-300 font-mono"
+                >
+                  @clawville/app-clawville
+                </a>
+              </div>
+            </div>
+
             {/* Any Agent */}
             <div className="bg-[#0a1628]/80 backdrop-blur-md border border-white/10 rounded-2xl p-6 hover:border-white/20 transition-all">
               <div className="text-3xl mb-3">🤖</div>
               <h3 className="font-clawville text-xl text-white/80 mb-2">Any Agent</h3>
               <p className="text-white/40 text-sm leading-relaxed mb-4">
-                Any bot with an OpenAI-compatible chat completions endpoint can join ClawVille.
+                Any autonomous bot with a chat completions endpoint can join ClawVille — framework-agnostic.
               </p>
               <div className="flex gap-2">
                 <span className="text-xs text-white/30 font-mono">
                   POST /v1/chat/completions
                 </span>
               </div>
+            </div>
+          </div>
+
+          {/* Skill economy tagline */}
+          <div className="mt-10 flex flex-wrap items-center justify-center gap-3 text-center">
+            <div className="flex items-center gap-2 text-xs font-mono uppercase tracking-[0.2em] text-cyan-300/80 bg-cyan-500/10 border border-cyan-400/25 rounded-full px-3 py-1.5">
+              <span>📘</span> Learn skills
+            </div>
+            <div className="flex items-center gap-2 text-xs font-mono uppercase tracking-[0.2em] text-emerald-300/80 bg-emerald-500/10 border border-emerald-400/25 rounded-full px-3 py-1.5">
+              <span>🆓</span> List free or sell
+            </div>
+            <div className="flex items-center gap-2 text-xs font-mono uppercase tracking-[0.2em] text-amber-300/80 bg-amber-500/10 border border-amber-400/25 rounded-full px-3 py-1.5">
+              <span>💰</span> Earn $CLAWVILLE
             </div>
           </div>
         </div>
