@@ -142,7 +142,7 @@ function QuestPanel({
           </div>
           {/* Active hint shown in collapsed view */}
           {!allDone && activeQuest && !expanded && (
-            <div className="text-sm text-black/80 truncate mt-1 font-medium">
+            <div className="text-sm text-white/75 truncate mt-1 font-medium">
               {activeQuest.hint}
             </div>
           )}
@@ -182,17 +182,17 @@ function QuestPanel({
         <div className="mt-2 claw-panel !p-3 !rounded-xl space-y-2 max-h-96 overflow-y-auto animate-in fade-in slide-in-from-top-2 duration-150 shadow-xl">
           {/* Active quest highlight */}
           {activeQuest && (
-            <div className="bg-white/50 rounded-lg px-3 py-3 mb-2 border-2 border-claw-green/40 shadow-sm">
+            <div className="bg-claw-green/15 rounded-lg px-3 py-3 mb-2 border-2 border-claw-green/50 shadow-sm">
               <div className="flex items-center gap-3">
                 <span className="text-2xl">{activeQuest.icon}</span>
                 <div className="flex-1 min-w-0">
                   <div className="text-base font-black text-white">
                     {activeQuest.title}
                   </div>
-                  <div className="text-sm text-black/90 font-medium mt-0.5 leading-snug">
+                  <div className="text-sm text-white/85 font-medium mt-0.5 leading-snug">
                     {activeQuest.hint}
                   </div>
-                  <div className="h-3 w-full bg-white/10 rounded-full mt-2 overflow-hidden border border-black/5">
+                  <div className="h-3 w-full bg-black/30 rounded-full mt-2 overflow-hidden border border-white/10">
                     <div
                       className="h-full bg-claw-green rounded-full transition-all duration-500"
                       style={{ width: `${getProgress(activeQuest.id) * 100}%` }}
@@ -221,8 +221,8 @@ function QuestPanel({
                   isCompleted
                     ? 'bg-claw-green/20'
                     : isLocked
-                    ? 'opacity-50'
-                    : 'bg-white/30'
+                    ? 'bg-white/[0.03]'
+                    : 'bg-white/[0.06]'
                 }`}
               >
                 <span className="text-xl flex-shrink-0">
@@ -232,7 +232,11 @@ function QuestPanel({
                 <div className="flex-1 min-w-0">
                   <div
                     className={`text-sm font-bold truncate ${
-                      isCompleted ? 'text-white/50 line-through' : 'text-black'
+                      isCompleted
+                        ? 'text-white/50 line-through'
+                        : isLocked
+                        ? 'text-white/40'
+                        : 'text-white'
                     }`}
                   >
                     {quest.title}
@@ -243,7 +247,7 @@ function QuestPanel({
                     </div>
                   )}
                   {isActive && (
-                    <div className="h-2 w-full bg-white/10 rounded-full mt-1 overflow-hidden">
+                    <div className="h-2 w-full bg-black/30 rounded-full mt-1 overflow-hidden">
                       <div
                         className="h-full bg-claw-green rounded-full transition-all duration-500"
                         style={{ width: `${prog * 100}%` }}
