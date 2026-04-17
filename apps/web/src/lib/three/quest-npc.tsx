@@ -32,11 +32,16 @@ import { useGameStore } from '@/stores/game';
 
 // ---------------------------------------------------------------------------
 // World-space position
-// Village center is now (0, 0) — symmetric 160x160 square map.
-// Was QUEST_NPC_Z = -16 (old 64x40 grid had off-center Z due to MAP_HEIGHT=1280).
+// Moved 2026-04-17: was at village center (0, 0) which placed the NPC directly
+// on top of the bazaar / marketplace pedestals cluster (center -50, -60).
+// Now positioned next to the bazaar cluster — 40 wu west of the leftmost
+// pedestal (x=-78) at the same Z row as the bazaar, so it flanks the
+// marketplace without overlapping any pedestal.
+//   Bazaar pedestals: x = -78, -50, -22  at  z = -60
+//   Quest NPC:        x = -110            at  z = -60
 // ---------------------------------------------------------------------------
-const QUEST_NPC_X = 0;
-const QUEST_NPC_Z = 0;
+const QUEST_NPC_X = -110;
+const QUEST_NPC_Z = -60;
 const QUEST_NPC_FLOOR_Y = -2;
 
 // Preload so GLB is ready before first render
