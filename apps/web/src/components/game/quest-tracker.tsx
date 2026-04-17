@@ -57,7 +57,7 @@ export default function QuestTracker() {
   return (
     <>
       {/* Desktop: top-left below minimap */}
-      <div className="fixed top-[calc(theme(spacing.4)+120px+8px)] left-4 z-40 hidden md:block w-60">
+      <div className="fixed top-[calc(theme(spacing.4)+232px+8px)] left-4 z-40 hidden md:block w-60">
         <QuestPanel
           expanded={expanded}
           onToggle={() => setExpanded((e) => !e)}
@@ -179,7 +179,7 @@ function QuestPanel({
 
       {/* Expanded quest list */}
       {expanded && (
-        <div className="mt-2 claw-panel !p-3 !rounded-xl space-y-2 max-h-96 overflow-y-auto animate-in fade-in slide-in-from-top-2 duration-150 shadow-xl">
+        <div className="mt-2 claw-panel !p-3 !rounded-xl space-y-2 max-h-[calc(100vh-640px)] min-h-[180px] overflow-y-auto animate-in fade-in slide-in-from-top-2 duration-150 shadow-xl">
           {/* Active quest highlight */}
           {activeQuest && (
             <div className="bg-claw-green/15 rounded-lg px-3 py-3 mb-2 border-2 border-claw-green/50 shadow-sm">
