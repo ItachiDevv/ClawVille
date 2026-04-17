@@ -32,11 +32,11 @@ After the world expansion to 160×160 tiles (5120×5120 world units), scales wer
 1. "The lobster is still too big for the npc I spawned" — 78-wu rendered lobster vs 800-wu building (1:10.3 ratio) still felt oversized. Target 1:16–1:20.
 2. "WASD movement is not faster" — 200→320 (+60%) was perceivable in the camera-follow feel but not in direct WASD feel. Push harder.
 
-### Pass 2 values (LIVE — confidence: high)
+### Pass 2 values → Pass 3 fix (LIVE — confidence: high)
 
-| Constant | File | After Pass 1 | After Pass 2 |
-|---|---|---|---|
-| `PET_SCALE` | `player-pet.tsx` | 33 | **20** |
+| Constant | File | After Pass 1 | After Pass 2 | After Fix 2026-04-17 |
+|---|---|---|---|---|
+| `PET_SCALE` | `player-pet.tsx` | 33 | 20 | **40** |
 | `TARGET_NPC_HEIGHT` | `arena-npcs.tsx` | 75 | **45** |
 | `CHARACTER_HEIGHT` | `arena-location-npcs.tsx` | 90 | **55** |
 | `SPEED` (player+NPC) | `player-pet.tsx`, `npc-controller.tsx` | 320 | **550** |
@@ -46,6 +46,8 @@ After the world expansion to 160×160 tiles (5120×5120 world units), scales wer
 | Larry `scaleOverride` | `arena-location-npcs.tsx` | 90 | **55** |
 
 Pass 2 ratios: lobster ~48 wu / 800-wu building ≈ 1:16.7; NPC 45 wu / 800 ≈ 1:17.8; char NPC 55 wu / 800 ≈ 1:14.5. SPEED 550: crosses ~2000 wu visible area in ~3.6s.
+
+**CORRECTION 2026-04-17:** Pass 2 comment was wrong. lobster.glb native height = 1.12 units (verified from GLTF accessor bounds). PET_SCALE=20 → 20 × 1.12 = 22.4 wu, NOT 48 wu. The player pet was 2× SMALLER than wandering NPC lobsters (45 wu). Fix: PET_SCALE 20→40 → 44.8 wu. Now player pet ≈ NPC height. Always verify GLB native height from GLTF accessor bounds before setting PET_SCALE.
 
 ### Speed increase rationale
 

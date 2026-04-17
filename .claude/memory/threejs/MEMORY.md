@@ -24,6 +24,7 @@
 - [stripGroundPlanes full-bounds must use non-skinned bbox](gotchas/strip-ground-planes-skinned-mesh-inflation.md) — setFromObject inflates fullHeight for scenes with rigged nodes, causing real structural geometry to be wrongly stripped as a "ground plane"
 - [NPC bbox normalization must use bbox.max.y not size.y](gotchas/npc-scale-bbox-max-y-not-size-y.md) — size.y inflates h when geometry extends below pivot; use max.y for above-pivot visual height; also tighten CLAMP_MAX to CH/0.5; make scaleOverride unconditional
 - [GLB pivot not at feet — characters render underground](gotchas/pivot-not-at-feet-y-offset.md) — humanoid/anime GLBs pivot at waist; at NPC_SCALE=50 the offset is 25-75 world units underground; fix: measure localMinY * scale and subtract from position.y each frame
+- [PET_SCALE must be calibrated against actual GLB bbox — never assume from comments](gotchas/pet-scale-vs-glb-native-height.md) — lobster.glb native height=1.12; PET_SCALE=20 gave 22.4 wu (2× smaller than NPC 45 wu); verify with GLTF accessor bounds before setting flat scale constants
 
 ## WebGPU
 - [WebGPU renderer setup with fallback](webgpu/renderer-setup-fallback.md) — detection, init, WebGL fallback pattern
