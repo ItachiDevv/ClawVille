@@ -241,7 +241,13 @@ function smoothPath(path: PathNode[]): PathNode[] {
 }
 
 function findNearestWalkable(col: number, row: number, grid: boolean[][]): { col: number; row: number } | null {
-  for (let radius = 1; radius < 10; radius++) {
+  // A building's center tile is half_w (7) tiles from the zone edge, plus
+  // BUILDING_EXCLUSION_PAD (9) more tiles of blocked margin — so the
+  // minimum Chebyshev distance from center to a walkable tile is 16. The
+  // old ceiling of 10 guaranteed failure on every building target, so
+  // autonomy looped "can't find a path" forever. 20 gives a safe margin.
+  const maxRadius = 20;
+  for (let radius = 1; radius <= maxRadius; radius++) {
     for (let dr = -radius; dr <= radius; dr++) {
       for (let dc = -radius; dc <= radius; dc++) {
         if (Math.abs(dr) !== radius && Math.abs(dc) !== radius) continue;
