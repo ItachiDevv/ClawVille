@@ -72,6 +72,16 @@ function NanoClawBanner() {
   const agentConnected = useGameStore((s: GameState) => s.agentConnected);
   const agentSessionId = useGameStore((s: GameState) => s.agentSessionId);
   const setAgentConnectModalOpen = useGameStore((s: GameState) => s.setAgentConnectModalOpen);
+  const { data: pet } = usePet();
+  const hasPet = !!pet;
+
+  // Hide the banner entirely for logged-in users who have a pet: the sidebar
+  // already shows their agent, the toggle already reads Controlled/Autonomous,
+  // and a "Connect Your Agent" CTA here would make the UI look inconsistent
+  // with itself. Only render when there's an active gateway session (to show
+  // the green "Bot Training Active" indicator) OR when the user has no pet
+  // (= not logged in, show the connect CTA so spectators can onboard).
+  if (hasPet && !agentConnected) return null;
 
   return (
     <div className="fixed left-1/2 -translate-x-1/2 z-50 top-3">
@@ -143,14 +153,22 @@ export default function GamePage() {
     }
   }, [pet, isLoading, authLoading, isAuthenticated, miladyEmbed.isEmbed, router]);
 
-  // Sync spectator state to game store. Pet ownership alone does NOT flip
-  // controlMode — GameFeatures.md §1 treats controlMode as gated by
-  // hasAgent (the Moltbook gateway handshake), not by pet existence. A
-  // logged-in user without a connected agent correctly stays in explore
-  // mode until they click Connect Your Agent.
+  // Sync store state to match auth/pet reality:
+  //   - No pet  → spectator (isSpectator=true), controlMode stays 'explore'
+  //   - Has pet → spectator=false, promote out of 'explore' into 'player' so
+  //               the camera follows the pet and the UI shows Controlled /
+  //               Autonomous modes. User mental model: "logged in with pet
+  //               = my agent is in the world" — pet ownership IS the signal
+  //               for the Autonomous/Controlled toggle set.
   useEffect(() => {
-    if (!isLoading && !authLoading) {
-      useGameStore.getState().setIsSpectator(!pet);
+    if (isLoading || authLoading) return;
+    const store = useGameStore.getState();
+    store.setIsSpectator(!pet);
+    if (pet && store.controlMode === 'explore') {
+      store.setControlMode('player');
+    }
+    if (!pet && store.controlMode !== 'explore' && store.controlMode !== 'npc') {
+      store.setControlMode('explore');
     }
   }, [pet, isLoading, authLoading]);
 
@@ -199,12 +217,11 @@ export default function GamePage() {
       <PerfHud />
       <ToastNotifications />
 
-      {/* Pet-specific UI — rendered whenever the user owns a pet, regardless of
-          controlMode. Phase 5 magic-link users land in explore mode with a pet
-          already provisioned but hasAgent=false; they need to see stats,
-          inventory, quests, and the pet chat bar the whole time. Gateway
-          connection (hasAgent=true) and the Autonomous/Controlled toggle are
-          orthogonal to pet UI visibility. */}
+      {/* Pet-specific UI — rendered whenever the user owns a pet. With the
+          Controlled/Autonomous toggle semantics, having a pet = "my agent is
+          in the world", so stats/quests/inventory/chat all belong on screen.
+          PetChatBar has its own `controlMode !== 'explore'` gate (user rule:
+          always visible except when floating as spectator). */}
       {hasPet && (
         <>
           <ChatPanel />
@@ -213,7 +230,7 @@ export default function GamePage() {
           <QuestTracker />
           <PetSettingsModal />
           <LocationConfigModal />
-          <PetChatBar />
+          {controlMode !== 'explore' && <PetChatBar />}
           <ShopOverlay />
           <InventoryModal />
           <TutorialOverlay />
