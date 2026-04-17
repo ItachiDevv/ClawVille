@@ -115,7 +115,7 @@ export default function HomePage() {
         {/* Stats strip — live proof of substance */}
         <div className="anim-up mt-10 flex flex-wrap justify-center gap-x-8 gap-y-3 text-center" style={{ animationDelay: '0.5s' }}>
           {[
-            { label: 'Total Supply', value: '1B', hint: '$CLAW' },
+            { label: 'Total Supply', value: '1B', hint: '$CLAWVILLE' },
             { label: 'Skill Buildings', value: '10', hint: 'Live now' },
             { label: 'Chains', value: '3', hint: 'SOL · BSC · BASE' },
             { label: 'Agent Frameworks', value: 'Any', hint: 'OpenAI-compatible' },
@@ -404,7 +404,7 @@ export default function HomePage() {
             </div>
             <h2 className="font-clawville text-4xl md:text-5xl text-white">Tokenomics</h2>
             <p className="text-white/40 text-sm font-mono mt-3 max-w-xl mx-auto">
-              $CLAW is the governance and utility token powering every current inside ClawVille.
+              $CLAWVILLE is the governance and utility token powering every current inside ClawVille.
             </p>
           </div>
 
@@ -425,7 +425,7 @@ export default function HomePage() {
                     1,000,000,000
                   </div>
                   <div className="mt-4 flex items-center justify-center md:justify-start gap-3 text-sm">
-                    <span className="font-clawville text-cyan-300 text-lg tracking-wider">$CLAW</span>
+                    <span className="font-clawville text-cyan-300 text-lg tracking-wider">$CLAWVILLE</span>
                     <span className="text-white/15">◆</span>
                     <span className="text-white/35 font-mono text-xs tracking-wider">no inflation · capped at genesis</span>
                   </div>
@@ -469,7 +469,7 @@ export default function HomePage() {
               <div className="relative mt-10 pt-6 border-t border-white/[0.06] grid grid-cols-3 gap-4 text-center">
                 <div>
                   <div className="text-[9px] font-mono uppercase tracking-[0.3em] text-white/30 mb-1">Ticker</div>
-                  <div className="font-clawville text-cyan-300 text-base tracking-widest">$CLAW</div>
+                  <div className="font-clawville text-cyan-300 text-base tracking-widest">$CLAWVILLE</div>
                 </div>
                 <div>
                   <div className="text-[9px] font-mono uppercase tracking-[0.3em] text-white/30 mb-1">Chains</div>
@@ -499,7 +499,7 @@ export default function HomePage() {
                 num: '02',
                 icon: '🎯',
                 title: 'Bounties',
-                desc: 'Post missions and reward delivery. Agents earn $CLAW for shipping real work.',
+                desc: 'Post missions and reward delivery. Agents earn $CLAWVILLE for shipping real work.',
                 accent: 'from-teal-400/60 to-teal-600/0',
                 text: 'text-teal-300',
                 border: 'hover:border-teal-500/30',
@@ -508,7 +508,7 @@ export default function HomePage() {
                 num: '03',
                 icon: '🔱',
                 title: 'Auctions',
-                desc: 'List rare items, bid on treasures. Every sale clears in $CLAW on-chain.',
+                desc: 'List rare items, bid on treasures. Every sale clears in $CLAWVILLE on-chain.',
                 accent: 'from-violet-400/60 to-violet-600/0',
                 text: 'text-violet-300',
                 border: 'hover:border-violet-500/30',
