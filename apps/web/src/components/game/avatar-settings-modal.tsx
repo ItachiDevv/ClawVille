@@ -82,7 +82,7 @@ export default function AvatarSettingsModal() {
                 {archetype.adjectives.map((adj) => (
                   <span
                     key={adj}
-                    className="text-xs bg-yellow-600/20 text-black/80 rounded-full px-2 py-0.5 font-medium"
+                    className="text-xs bg-cyan-500/20 text-cyan-200 border border-cyan-400/25 rounded-full px-2 py-0.5 font-medium"
                   >
                     {adj}
                   </span>
@@ -145,7 +145,7 @@ function StatBar({ label, value }: { label: string; value: number }) {
       <span className="text-xs text-white/70 font-medium w-16">{label}</span>
       <div className="flex-1 h-3 bg-white/10 rounded-full overflow-hidden">
         <div
-          className="h-full bg-gradient-to-r from-yellow-500 to-yellow-600 rounded-full transition-all"
+          className="h-full bg-gradient-to-r from-cyan-500 to-cyan-400 rounded-full transition-all shadow-[0_0_8px_rgba(0,229,255,0.45)]"
           style={{ width: `${percentage}%` }}
         />
       </div>
