@@ -387,8 +387,13 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
       }
     }
 
-    // Preserve the dedicated player NPC — server doesn't know about it
-    const playerNpc = state.npcs.find((n) => n.id === PLAYER_NPC_ID);
+    // Preserve the dedicated player NPC only when in NPC mode — server doesn't know about it.
+    // Do NOT re-inject when controlMode is 'player' or 'autonomous': doing so caused the
+    // player NPC (a full-size lobster at world center 2560,2560) to persist in agent mode
+    // and obscure the bazaar / town-center buildings.
+    const { useGameStore } = require('@/stores/game') as typeof import('@/stores/game');
+    const isNpcMode = useGameStore.getState().controlMode === 'npc';
+    const playerNpc = isNpcMode ? state.npcs.find((n) => n.id === PLAYER_NPC_ID) : undefined;
     const finalNpcs = playerNpc ? [playerNpc, ...npcs] : npcs;
 
     set({

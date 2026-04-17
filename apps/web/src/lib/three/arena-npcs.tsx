@@ -15,6 +15,8 @@ import {
   MODEL_KEY_TO_TYPE,
 } from '@/lib/three/character-animations';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
+import { useGameStore } from '@/stores/game';
+import { PLAYER_NPC_ID } from '@/stores/npc';
 
 // ---------------------------------------------------------------------------
 // GLB-based NPC renderer with terrain raycasting
@@ -437,7 +439,16 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
 // Main export
 // ---------------------------------------------------------------------------
 export default function ArenaNpcs() {
-  const npcs = useNpcStore((s) => s.npcs);
+  const allNpcs = useNpcStore((s) => s.npcs);
+  const controlMode = useGameStore((s) => s.controlMode);
+
+  // Filter out the dedicated player NPC when not in NPC mode.
+  // spawnPlayerNpc() places PLAYER_NPC_ID at world center (2560,2560) for NPC-mode
+  // possession. In agent modes ('player' / 'autonomous') this NPC must not render —
+  // it obscures the bazaar / town-center buildings at the world center.
+  const npcs = controlMode === 'npc'
+    ? allNpcs
+    : allNpcs.filter((n) => n.id !== PLAYER_NPC_ID);
 
   return (
     <Suspense fallback={null}>
