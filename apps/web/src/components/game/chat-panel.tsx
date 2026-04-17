@@ -6,8 +6,10 @@ import { useLocationChat } from '@/hooks/use-location-chat';
 import { useLocationAgent } from '@/hooks/use-locations';
 import { MAP_LOCATIONS, isShopBuilding } from '@clawville/shared';
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '';
+
 export default function ChatPanel() {
-  const { chatOpen, currentLocation, currentCharacter, exitBuilding, openLocationConfig, openShop } = useGameStore();
+  const { chatOpen, currentLocation, currentCharacter, exitBuilding, openShop, addToast } = useGameStore();
   const { messages, sendMessage, isLoading } = useLocationChat(currentLocation);
   const { data: agent, isLoading: isAgentLoading } = useLocationAgent(currentLocation);
 
@@ -39,6 +41,38 @@ export default function ChatPanel() {
     }
   };
 
+  /**
+   * Claim the building's compiled SKILL.md — works for humans (downloads
+   * the markdown file so they can hand it to their own agent) and is the
+   * same payload the agent-gateway returns to autonomous agents. The
+   * `/api/skills/:buildingId/skill.md` route serves it as text/markdown
+   * straight from `building_skills.content`.
+   */
+  const handleClaimSkill = async () => {
+    if (!currentLocation) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/skills/${currentLocation}/skill.md`);
+      if (!res.ok) {
+        addToast?.('⚠️', `No skill available for ${currentLocation}`);
+        return;
+      }
+      const md = await res.text();
+      const blob = new Blob([md], { type: 'text/markdown' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `clawville-${currentLocation}.skill.md`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      addToast?.('📥', `${headerName}'s skill claimed!`);
+    } catch (err) {
+      console.error('[ChatPanel] claim skill failed:', err);
+      addToast?.('⚠️', 'Skill download failed — check your connection');
+    }
+  };
+
   return (
     <div className="chat-panel-enter fixed right-0 top-0 h-full w-full md:w-96 z-50 flex flex-col bg-black/80 backdrop-blur-sm border-l-2 border-yellow-500/50">
       {/* Header — character name on top, building name as eyebrow subtitle */}
@@ -46,6 +80,13 @@ export default function ChatPanel() {
         <div className="flex flex-col gap-0.5 min-w-0 flex-1">
           <div className="flex items-center gap-2 min-w-0 font-bold">
             <span className="truncate">💬 {headerName}</span>
+            <button
+              onClick={handleClaimSkill}
+              className="text-[11px] font-bold px-2 py-0.5 rounded bg-emerald-500/30 hover:bg-emerald-400/50 transition-colors shrink-0 flex items-center gap-1"
+              title="Download this character's SKILL.md — drop it into your agent's skills folder"
+            >
+              <span aria-hidden>📥</span> Claim Skill
+            </button>
             {currentLocation && isShopBuilding(currentLocation) && (
               <button
                 onClick={openShop}
@@ -55,27 +96,6 @@ export default function ChatPanel() {
                 Shop
               </button>
             )}
-            <button
-              onClick={() => currentLocation && openLocationConfig(currentLocation)}
-              className="w-7 h-7 flex items-center justify-center rounded-full bg-white/10 hover:bg-black/30 transition-colors shrink-0"
-              aria-label="Configure location agent"
-              title="Configure agent"
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
-                <circle cx="12" cy="12" r="3" />
-              </svg>
-            </button>
           </div>
           {location?.name && (
             <span className="text-[10px] font-mono uppercase tracking-[0.15em] text-white/60 truncate">

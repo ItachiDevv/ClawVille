@@ -401,28 +401,6 @@ function LocationStatusDot({ locationId }: { locationId: string }) {
   );
 }
 
-function LocationsSubmenu({ onPick }: { onPick: (locationId: string) => void }) {
-  return (
-    <div className="rpg-sidebar-submenu">
-      {MAP_LOCATIONS.map((loc) => (
-        <button
-          key={loc.id}
-          type="button"
-          onClick={() => onPick(loc.id)}
-          className="rpg-sidebar-subrow"
-          aria-label={`Configure ${loc.name}`}
-        >
-          <LocationStatusDot locationId={loc.id} />
-          <span className="rpg-sidebar-subrow__icon" aria-hidden>
-            {loc.icon}
-          </span>
-          <span className="rpg-sidebar-subrow__label">{loc.name}</span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Help submenu — inline WASD / E / ESC hint block.
 // ---------------------------------------------------------------------------
@@ -493,7 +471,6 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
   const agentConnected = useGameStore((s: GameState) => s.agentConnected);
   const activityFeedOpen = useGameStore((s: GameState) => s.activityFeedOpen);
   const setSettingsModalOpen = useGameStore((s: GameState) => s.setSettingsModalOpen);
-  const openLocationConfig = useGameStore((s: GameState) => s.openLocationConfig);
   const setAgentConnectModalOpen = useGameStore((s: GameState) => s.setAgentConnectModalOpen);
   const setSkillBuilderOpen = useGameStore((s: GameState) => s.setSkillBuilderOpen);
   const openMarketplace = useGameStore((s: GameState) => s.openMarketplace);
@@ -505,7 +482,6 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
   const toggleActivityFeed = useGameStore((s: GameState) => s.toggleActivityFeed);
   const resetStore = useGameStore((s: GameState) => s.resetStore);
 
-  const [locationsOpen, setLocationsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
 
@@ -536,11 +512,6 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
     }
   };
 
-  const handleLocationPick = (locationId: string) => {
-    closeMenu();
-    openLocationConfig(locationId);
-  };
-
   return (
     <div
       style={{
@@ -563,13 +534,6 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
         {/* WORLD — Priority 2: open agent onboarding surface */}
         <CategoryHeader label="World" subtitle="Enter · Connect" />
         <div className="rpg-sidebar-group">
-          <SidebarRow
-            icon="🗺"
-            label="Locations"
-            onClick={() => setLocationsOpen((v) => !v)}
-            expandedIndicator={locationsOpen}
-          />
-          {locationsOpen && <LocationsSubmenu onPick={handleLocationPick} />}
           <SidebarRow
             icon="🔌"
             label="OpenClaw"
