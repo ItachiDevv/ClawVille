@@ -46,7 +46,7 @@ export default function AutonomyHUD() {
   const secs = elapsed % 60;
 
   return (
-    <div className="fixed bottom-4 left-4 z-50 pointer-events-auto w-80">
+    <div className="fixed bottom-[17rem] left-4 z-50 pointer-events-auto w-80 max-w-[calc(100vw-2rem)]">
       <div className="rounded-lg bg-[rgba(10,22,40,0.92)] backdrop-blur-md border border-cyan-500/20 shadow-[0_0_20px_rgba(0,229,255,0.08)] overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-3 py-2 border-b border-cyan-500/10">
