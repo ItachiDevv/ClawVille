@@ -356,6 +356,48 @@ function kickRenderLoop(state: any): void {
 // React commit paint, by which point all sibling components (ArenaTerrain,
 // ArenaBuildings, etc.) have been added to scene.children.  Runs once only.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// MinimapPositionTracker — writes the current follow-point to gameStore.petPosition
+// each frame when neither the player-pet nor the NPC-possession controller is
+// doing so (i.e. controlMode === 'explore'). Uses the OrbitControls target as
+// the focus point — that's what the user is actually looking at. Also handles
+// NPC-mode by copying the possessed NPC's map coordinates on each tick.
+// ---------------------------------------------------------------------------
+function MinimapPositionTracker() {
+  const { camera } = useThree();
+  // rAF-throttle: write at most 5×/sec (cheap, enough for a pulsing blip)
+  const lastWriteRef = useRef(0);
+  useFrame(({ clock }) => {
+    const now = clock.elapsedTime;
+    if (now - lastWriteRef.current < 0.2) return;
+    lastWriteRef.current = now;
+
+    const store = useGameStore.getState();
+    const mode = store.controlMode;
+    if (mode === 'player' || mode === 'autonomous') return; // player-pet owns it
+
+    if (mode === 'npc' && store.possessedNpcId) {
+      const npc = useNpcStore.getState().npcs.find((n) => n.id === store.possessedNpcId);
+      if (npc && (npc.x !== store.petPosition.x || npc.y !== store.petPosition.y)) {
+        store.setPetPosition(npc.x, npc.y);
+      }
+      return;
+    }
+
+    // explore mode — use camera XZ as focus (where the user is flying over)
+    // Map X,Y coords: worldX + HALF_W, worldZ + HALF_H (inverse of toWorld)
+    const mapX = camera.position.x + HALF_W;
+    const mapY = camera.position.z + HALF_H;
+    if (
+      Math.abs(mapX - store.petPosition.x) > 2 ||
+      Math.abs(mapY - store.petPosition.y) > 2
+    ) {
+      store.setPetPosition(mapX, mapY);
+    }
+  });
+  return null;
+}
+
 function PreCompilePipelines() {
   const { gl, scene, camera } = useThree();
   useEffect(() => {
@@ -589,6 +631,12 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
 
       {/* NPC possession controller — active when controlMode === 'npc' */}
       <NpcController />
+
+      {/* Minimap position tracker — updates petPosition in gameStore so the
+          minimap blip reflects whichever entity the user is currently following
+          (pet/NPC/camera). Player-pet + NPC controller update the pet position
+          themselves; this covers explore/spectator mode (no entity → camera target). */}
+      <MinimapPositionTracker />
 
       {/* Gameify world-surface anchors — clickable objects that open Gameify modals */}
       <QuestNpc />
