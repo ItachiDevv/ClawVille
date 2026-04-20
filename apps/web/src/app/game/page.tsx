@@ -72,8 +72,15 @@ function NanoClawBanner() {
   const agentConnected = useGameStore((s: GameState) => s.agentConnected);
   const agentSessionId = useGameStore((s: GameState) => s.agentSessionId);
   const setAgentConnectModalOpen = useGameStore((s: GameState) => s.setAgentConnectModalOpen);
-  const { data: avatar } = useAvatar();
+  const { data: avatar, isLoading: isPetLoading } = useAvatar();
   const hasAvatar = !!avatar;
+
+  // Suppress during initial avatar fetch — otherwise the banner renders
+  // "Connect Your Agent" for the ~300-800ms before useAvatar() resolves and then
+  // flips to hidden once the avatar loads, which flashes a misleading CTA at
+  // logged-in users and makes the UI look inconsistent with the sidebar
+  // (which already shows a loading skeleton during the same window).
+  if (isPetLoading) return null;
 
   // Hide the banner entirely for logged-in users who have a avatar: the sidebar
   // already shows their agent, the toggle already reads Controlled/Autonomous,
