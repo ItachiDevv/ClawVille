@@ -22,6 +22,7 @@ import {
   applyColorTint,
   type CharacterAnimator,
 } from '@/lib/three/character-animations';
+import { jumpState, isEditable } from '@/lib/three/jump-state';
 
 // ---------------------------------------------------------------------------
 // GLB-based player avatar — lobster.glb model = 1-2 draw calls
@@ -84,6 +85,11 @@ function attachKeyListeners() {
   if (keyListenersAttached) return;
   keyListenersAttached = true;
   const onKeyDown = (e: KeyboardEvent) => {
+    // Target guard: don't consume WASD/E/Escape when user is typing in a chat input.
+    // Fixes pre-existing bug: typing W/A/S/D in avatar chat moved the avatar.
+    // NOTE: keyup intentionally has NO target guard — it must always clear state
+    // so keys don't get stranded 'true' when the user taps into an input mid-move.
+    if (isEditable(e.target)) return;
     const key = e.key.toLowerCase() as keyof KeyState;
     if (key in keyState) keyState[key] = true;
   };
@@ -350,12 +356,18 @@ function PlayerPetInner() {
       const ty = getTerrainY(group.position.x, group.position.z, threeScene);
       terrainYRef.current += (ty - terrainYRef.current) * 0.3;
     }
-    const bob = isMoving ? Math.abs(Math.sin(elapsed * BOB_SPEED)) * BOB_AMPLITUDE : Math.sin(elapsed * 2) * 0.15;
+    // Suppress ambient bob when airborne — it looks wrong to bob while jumping.
+    // resetJump() guarantees heightOffset=0 outside player/npc modes, so reads
+    // here are unconditional (safe even when PlayerAvatar renders in autonomous mode).
+    const airborne = jumpState.phase !== 'grounded';
+    const finalBob = airborne
+      ? 0
+      : (isMoving ? Math.abs(Math.sin(elapsed * BOB_SPEED)) * BOB_AMPLITUDE : Math.sin(elapsed * 2) * 0.15);
     // Subtract pivotOffsetY to ground the avatar regardless of GLB pivot placement.
     // pivotOffsetY = localMinY * finalScale (world units).
     // If pivot is above feet (localMinY < 0), pivotOffsetY is negative —
     // subtracting a negative raises the model so feet align with terrainY.
-    group.position.y = terrainYRef.current + 2 + bob - pivotOffsetY;
+    group.position.y = terrainYRef.current + 2 + finalBob + jumpState.heightOffset - pivotOffsetY;
 
     const targetRot = continuousRot ?? DIR_ROTATION[dir] ?? 0;
     // Shortest-path lerp — prevents spinning the long way when crossing ±PI boundary

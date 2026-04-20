@@ -270,6 +270,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     const prev = get().controlMode;
     let possessedNpcId: string | null = get().possessedNpcId;
 
+    // Reset jump state on every mode transition — prevents avatar being stranded airborne
+    // across Moltbook handshake, NPC possession start/stop, or explicit mode switches.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { resetJump } = require('@/lib/three/jump-state') as typeof import('@/lib/three/jump-state');
+    resetJump();
+
     // Spawn/remove dedicated player NPC for NPC mode
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { useNpcStore, PLAYER_NPC_ID } = require('@/stores/npc') as typeof import('@/stores/npc');
@@ -315,6 +321,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
   },
   setHasAgent: (v) => {
+    // Reset jump state before mode change — prevents avatar being airborne on agent connect/disconnect
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { resetJump } = require('@/lib/three/jump-state') as typeof import('@/lib/three/jump-state');
+    resetJump();
     // Remove player NPC if switching away from NPC mode
     if (get().controlMode === 'npc') {
       const { useNpcStore } = require('@/stores/npc') as typeof import('@/stores/npc');
@@ -364,6 +374,12 @@ export const useGameStore = create<GameState>((set, get) => ({
   movementFrozen: false,
 
   enterBuilding: (locationId, characterName) => {
+    // Reset jump state synchronously — keeps any in-flight jump from persisting
+    // while the chat overlay is open and movement is frozen. Called before set()
+    // so heightOffset is 0 by the time movementFrozen=true takes effect.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { resetJump } = require('@/lib/three/jump-state') as typeof import('@/lib/three/jump-state');
+    resetJump();
     // Resolve character name: prefer the one the caller passed in (from the
     // 3D proximity pass); otherwise fall back to whatever was last seen as
     // `nearCharacter` so tap-to-open paths still label the header correctly.
@@ -471,6 +487,12 @@ export const useGameStore = create<GameState>((set, get) => ({
       const { useNpcStore } = require('@/stores/npc') as typeof import('@/stores/npc');
       useNpcStore.getState().removePlayerNpc();
     }
+
+    // Reset jump state on agent connect/disconnect — prevents avatar being stranded airborne
+    // across the Moltbook handshake flow.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { resetJump } = require('@/lib/three/jump-state') as typeof import('@/lib/three/jump-state');
+    resetJump();
 
     set((s) => ({
       agentConnected: connected,
@@ -588,6 +610,10 @@ export const useGameStore = create<GameState>((set, get) => ({
   })),
 
   resetStore: () => {
+    // Reset jump state first — snap any in-flight jump to grounded before clearing mode.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { resetJump } = require('@/lib/three/jump-state') as typeof import('@/lib/three/jump-state');
+    resetJump();
     // Stop autonomy engine if running — resetStore is called on logout
     if (get().controlMode === 'autonomous') {
       try {
