@@ -39,6 +39,7 @@
 - [Draco compression results + drei auto-decode](performance/draco-compression-results.md) — texture-heavy GLBs barely compress; geometry-heavy get 5-20%; drei DRACOLoader is zero-config
 
 ## Patterns
+- [Jump system: module-scoped state + JumpTicker](patterns/jump-system-module-scoped-state.md) — avoid Zustand for 60Hz physics; mount JumpTicker first so consumers read current-frame heightOffset; resetJump() in all 5 mode-transition paths
 - [drei Html for NPC labels and speech bubbles](patterns/drei-html-npc-labels-bubbles.md) — DOM overlay, safe on Iris Xe; use for all NPC name labels and chat bubbles (never use drei Text/Billboard)
 - [ClawVille world proportion constants](patterns/clawville-world-proportions.md) — canonical building ring coords, heights, camera, seaweed exclusion radii — updated 2026-04-15 for 160x160 square map (5120x5120)
 - [NPC possession WASD controller](patterns/npc-possession-controller.md) — WASD drives possessed NPC, wander skips it via lazy-require circular-dep workaround

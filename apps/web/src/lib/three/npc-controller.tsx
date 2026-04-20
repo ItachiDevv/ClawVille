@@ -19,6 +19,7 @@ import { useNpcStore } from '@/stores/npc';
 import type { NpcSpriteState } from '@/stores/npc';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 import { findNearestCharacter } from '@/lib/three/character-positions';
+import { isEditable } from '@/lib/three/jump-state';
 
 const SPEED = 550; // pixels/sec — pass 2 2026-04-16: bumped 320→550 (user tested pass 1 at 320,
                    // still felt sluggish crossing ~2000-wu visible area; target 3-4s crossing time → 2000/550≈3.6s)
@@ -46,6 +47,11 @@ function attachNpcKeyListeners() {
   if (_listenersAttached) return;
   _listenersAttached = true;
   const onDown = (e: KeyboardEvent) => {
+    // Target guard: don't consume WASD/E/Escape when user is typing in a chat input.
+    // Fixes pre-existing bug: typing W/A/S/D in chat moved the NPC.
+    // NOTE: onUp intentionally has NO target guard — it must always clear state
+    // so keys don't get stranded 'true' when the user taps into an input mid-move.
+    if (isEditable(e.target)) return;
     const k = e.key.toLowerCase() as keyof NpcKeyState;
     if (k in _keys) _keys[k] = true;
   };
