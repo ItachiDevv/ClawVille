@@ -8,8 +8,15 @@ export default function ControlModeToggle() {
   const isSpectator = useGameStore((s: GameState) => s.isSpectator);
   const setControlMode = useGameStore((s: GameState) => s.setControlMode);
   const toggleControlMode = useGameStore((s: GameState) => s.toggleControlMode);
-  const { data: avatar } = useAvatar();
+  const { data: avatar, isLoading: isPetLoading } = useAvatar();
   const hasAvatar = !!avatar;
+
+  // Suppress during initial avatar fetch — otherwise the toggle renders
+  // "Explore / NPC Mode" for the ~300-800ms before useAvatar() resolves, then
+  // flips to "Controlled / Autonomous" once the avatar loads. Users on a fresh
+  // reload see the wrong labels + the "Connect Your Agent" pill while the
+  // sidebar already shows their agent, which looks like a broken build.
+  if (isPetLoading) return null;
 
   // Toggle labels follow `hasAvatar` — per user mental model, logging in
   // (magic-link or otherwise) puts a avatar in the world = you have a
