@@ -8,8 +8,15 @@ export default function ControlModeToggle() {
   const isSpectator = useGameStore((s: GameState) => s.isSpectator);
   const setControlMode = useGameStore((s: GameState) => s.setControlMode);
   const toggleControlMode = useGameStore((s: GameState) => s.toggleControlMode);
-  const { data: pet } = usePet();
+  const { data: pet, isLoading: isPetLoading } = usePet();
   const hasPet = !!pet;
+
+  // Suppress during initial pet fetch — otherwise the toggle renders
+  // "Explore / NPC Mode" for the ~300-800ms before usePet() resolves, then
+  // flips to "Controlled / Autonomous" once the pet loads. Users on a fresh
+  // reload see the wrong labels + the "Connect Your Agent" pill while the
+  // sidebar already shows their agent, which looks like a broken build.
+  if (isPetLoading) return null;
 
   // Toggle labels follow `hasPet` — per user mental model, logging in
   // (magic-link or otherwise) puts a pet in the world = you have a
