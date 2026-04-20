@@ -30,6 +30,8 @@ import FloatingTexts3D from '@/lib/three/floating-text-3d';
 import NpcSpeechBubbles from '@/lib/three/npc-speech-bubbles';
 import ClickToMove from '@/lib/three/click-to-move';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
+import JumpTicker from '@/lib/three/jump-ticker';
+import { jumpState } from '@/lib/three/jump-state';
 import { useGameStore } from '@/stores/game';
 import { useNpcStore } from '@/stores/npc';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
@@ -292,10 +294,14 @@ function FPSFollowCamera({
     const worldX = gameX - HALF_W;
     const worldZ = gameY - HALF_H;
 
-    // Lerp the orbit target toward the character (smooth follow)
+    // Lerp the orbit target toward the character (smooth follow).
+    // jumpState.heightOffset raises the camera target during a jump so the
+    // avatar stays in frame. resetJump() guarantees heightOffset=0 outside
+    // player/npc modes, so the read is unconditional.
+    const extraY = jumpState.heightOffset;
     const tgt = controls.target;
     tgt.x += (worldX  - tgt.x) * 0.1;
-    tgt.y += (CHAR_TARGET_Y - tgt.y) * 0.1;
+    tgt.y += ((CHAR_TARGET_Y + extraY) - tgt.y) * 0.1;
     tgt.z += (worldZ  - tgt.z) * 0.1;
 
     // Move camera position by the same delta as the target so the orbit
@@ -577,6 +583,12 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
           (BC7 on Iris Xe via WebGPU) and arms the module-level singleton used
           by useGLTFWithKTX2. Must render before any KTX2-textured GLB loads. */}
       <KTX2LoaderSetup />
+
+      {/* Jump physics tick — mounted FIRST so its useFrame runs before every
+          consumer (FPSFollowCamera, ArenaNpcs, NpcController, PlayerAvatar).
+          R3F runs useFrame hooks in mount order; hoisting here ensures every
+          consumer reads current-frame heightOffset, not the prior frame's stale value. */}
+      <JumpTicker />
 
       {/* Camera controls.
           Target at z=-50 centres on the middle building row (z ≈ -64) so the

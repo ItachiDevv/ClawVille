@@ -17,6 +17,7 @@ import {
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 import { useGameStore } from '@/stores/game';
 import { PLAYER_NPC_ID } from '@/stores/npc';
+import { jumpState } from '@/lib/three/jump-state';
 
 // ---------------------------------------------------------------------------
 // GLB-based NPC renderer with terrain raycasting
@@ -308,9 +309,17 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     //   - pivotOffsetY < 0 → pivot above feet → subtracting a negative raises the model
     //   - pivotOffsetY = 0 → no change
     //   - pivotOffsetY > 0 → pivot below feet (floating) → lowers it
+    //
+    // Jump support: only the possessed player NPC (PLAYER_NPC_ID while controlMode='npc')
+    // reads jumpState. Wandering NPCs never jump. Bob is suppressed while airborne.
+    const isPossessedPlayerNpc =
+      d.id === PLAYER_NPC_ID &&
+      useGameStore.getState().controlMode === 'npc';
+    const airborne = isPossessedPlayerNpc && jumpState.phase !== 'grounded';
+    const jumpY = isPossessedPlayerNpc ? jumpState.heightOffset : 0;
     const isMoving = d.direction !== 'idle' && !d.isDead;
-    const bob = isMoving ? Math.sin(clock.elapsedTime * 4.0 + seed) * 0.6 : 0;
-    group.position.y = currentTerrainY.current + 2 + bob - pivotOffsetY;
+    const bob = (isMoving && !airborne) ? Math.sin(clock.elapsedTime * 4.0 + seed) * 0.6 : 0;
+    group.position.y = currentTerrainY.current + 2 + bob + jumpY - pivotOffsetY;
 
     // Direction rotation — use smooth facingAngle when set (possessed NPC),
     // otherwise snap to cardinal DIR_ROTATION (autonomous wander NPCs).
