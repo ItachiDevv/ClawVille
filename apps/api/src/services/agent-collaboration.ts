@@ -25,6 +25,7 @@ import {
   type CollaborationRequest,
   type CollaborationResult,
 } from '@clawville/shared';
+import { logEvent } from './event-logger';
 
 /**
  * Detect which buildings have expertise relevant to the user's message.
@@ -105,6 +106,24 @@ export async function collaborateOnQuery(
   };
 
   const result = await broker.collaborate(brokerRequest);
+
+  // Agent↔Agent collaboration telemetry — Brand Identity §3 axis #1.
+  // One event per consulted expert so the dashboard can surface both the
+  // source→target pairs and the raw collaboration volume.
+  for (const insight of result.insights) {
+    void logEvent({
+      eventType: 'agent.collaboration.turn',
+      buildingId: sourceBuildingId,
+      payload: {
+        sourceBuildingId,
+        targetBuildingId: insight.buildingId,
+        targetBuildingName: insight.buildingName,
+        questionLength: message.length,
+        answered: Boolean(insight.response),
+        kind: 'cross-building-consultation',
+      },
+    });
+  }
 
   let combinedContext = '';
   if (result.insights.length > 0) {

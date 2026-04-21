@@ -24,6 +24,7 @@ import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { npcSimulation } from '../services/npc-simulation';
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
+import { logEvent } from '../services/event-logger';
 import type { ClawvilleServices } from '@clawville/agent-runtime';
 import { ensureWallet } from '../services/wallet-service';
 import type { AppContext } from '../types';
@@ -447,6 +448,17 @@ petRoutes.post('/me/chat', requireAuth, async (c) => {
     roomId: `pet-${pet.id}-${user.id}`,
     platform: 'clawville',
     state,
+  });
+
+  void logEvent({
+    eventType: 'agent.chat.turn',
+    userId: user.id,
+    petId: pet.id,
+    payload: {
+      chatType: 'pet',
+      messageLength: result.data.content.length,
+      tokenAwarded: 0,
+    },
   });
 
   return c.json({

@@ -64,6 +64,7 @@ miladyApp.txt
 3dStructure.md
 GameFeatures.md
 AgentHosting.md
+improvements.md
 
 # Draco compression originals — pre-compression GLB backups. Git history
 # already holds the original uncompressed versions, so revert is a

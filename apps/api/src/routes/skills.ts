@@ -11,6 +11,7 @@
 
 import { Hono } from 'hono';
 import { db, buildingSkills, eq } from '@clawville/database';
+import { logEvent } from '../services/event-logger';
 import type { AppContext } from '../types';
 
 export const skillsRoutes = new Hono<AppContext>();
@@ -48,6 +49,19 @@ skillsRoutes.get('/:buildingId/skill.md', async (c) => {
       'Content-Type': 'text/markdown; charset=utf-8',
     });
   }
+
+  void logEvent({
+    eventType: 'skill_md.fetched',
+    buildingId,
+    agentId: c.req.header('x-clawville-agent-id') ?? null,
+    sessionId: c.req.header('x-clawville-session-id') ?? null,
+    payload: {
+      userAgent: c.req.header('user-agent') ?? null,
+      referer: c.req.header('referer') ?? null,
+      skillName: row.name,
+      generatorVersion: row.generatorVersion,
+    },
+  });
 
   return new Response(row.content, {
     status: 200,

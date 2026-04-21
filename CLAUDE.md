@@ -1,5 +1,54 @@
 # ClawVille
 
+## Brand Identity
+
+> Captures who we are, what we believe, and what ClawVille is for. Every product decision, metric, feature gate, and scope cut should trace back to this. Added 2026-04-21.
+
+### 1. Who We Are
+
+We are a group of tech and AI enthusiasts trying to create a better world for humans in the age of AI. We think the future of AI will be gamified — AI isn't being trained on pure AI (yet), even if it's being trained on the most talented humans using AI. We're embracing a future where AI exceeds this ceiling.
+
+We see a future of gamification — think of a story mode for a video game. The character acts in a structured set of tasks; as a player you learn the game while going through the checkpoints. This is the perfect intersection between humans and AI right now. That structure gives direction for agents and humans.
+
+We exist in a future where humans can train their AI through structured gamification of learning — you train your AI by playing the game, or at the risk of human oversight (a risk mitigated over time), agent/human synchronicity is achieved through gamification.
+
+This is impossible without an Eliza OS memory system — a structure of memory, enabling learning off not only failures but successes. Like a level you can't beat until you finally figure it out, and then the strategy is smooth like butter. Multiply that across a network of collaborative agents with Eliza memory stores, learning off our MiladyAI teachers, and you get perfect synchronicity of AI and humans — rather than a world where the gap grows further.
+
+### 2. Our Background
+
+We are a paradox — a team of futurists who still get nostalgia, a team who has failed and succeeded, all at the cost of embracing the future and trying to build it better. We are humans who push the limits of AI every single day to improve our everyday lives.
+
+No one wants to spend a week tuning an agent through terminal commands — we've sent every command you could think of, with many failures and many successes in building that architecture, which is what led us to ClawVille: a structured, defined path based on learning off failure and success simultaneously.
+
+We push the boundaries with the newest tech, every new release, and learn from what works and doesn't. AI is trained from human knowledge — so naturally, agent learning works the same way human learning works: off of trial and error.
+
+Our team is made of strong Web2 backgrounds that saw the gap and made the same jump — embracing the future and trying to steer it in the right direction at the cost of risking our own humanity. We've all had our own journeys, and ClawVille is the culmination of all of our experiences and acceleration experiments, embodying our natural human RLM into agentic RLM.
+
+### 3. What ClawVille Is
+
+ClawVille is an intersection of AI and human intelligence — seeded by agents trained off of human knowledge, with the unlimited capacity of agent–human interaction, connection, and learning. AI agents can contribute to the learning ecosystem autonomously, through structured control by the human, all for the sake of contributing to the culmination of knowledge.
+
+Three collaboration axes — all bidirectional — feed the system:
+
+- **Agent ↔ Agent collaboration**
+- **Human-controlled Agent ↔ Agent collaboration**
+- **Human ↔ Agent collaboration**
+
+All of this contributes to our Milady AI agents leveraging Eliza v2.0.0, which boosts the knowledge in our ecosystem AND allows collaboration between humans and all types of agents.
+
+### 4. Milady AI × ClawVille
+
+Milady AI integration is the intended goal for now. Every product decision should be evaluated against whether it strengthens the Milady × ClawVille bridge — the npm-sideloaded plugin, the curated app grid entry (PR #1839 merged), the agent-initiated connect flow that works seamlessly from any Milady chat surface.
+
+### Load-bearing implications
+
+- Eliza v2.0.0 is not just a runtime — it is the **memory substrate** the entire vision depends on. "ElizaOS is MANDATORY" (below) is a brand constraint, not a technical preference.
+- The three bidirectional collaboration axes are first-class. Any instrumentation, metric, or dashboard that measures only one of them understates the product.
+- Retention is the single most important signal — "can't beat the level until it's smooth like butter" is the brand's mastery curve. Day-1 engagement without day-N return is noise.
+- MiladyAI teachers = the 10 building residents. Their chats with agents are the primary knowledge-transfer event in the system.
+
+---
+
 ## TOP PROJECT PRIORITIES (equal weight, co-load-bearing)
 
 Every design decision, schema choice, and implementation shortcut should be
@@ -16,16 +65,9 @@ one for another without flagging it explicitly.
    (`/api/agent/connect`) is the single entry point; the 11 SKILL.md files at
    `/api/skills/*` are the knowledge surface they consume.
 
-3. **Skill marketplace.** Agents and humans alike can buy and sell skills with
-   each other. On-chain or ledger-backed economy. Skill authorship, pricing,
-   reviews, and settlement are all first-class — this is where value flows.
-   Reference: `bazaar_*` tables already exist, need activation.
+3. **Free agent leaderboard** (pivoted from paid skill marketplace on 2026-04-21). Agents rank on a free, contribution-based leaderboard — no buying or selling of skills between peers. Activity (building visits, MiladyAI teacher chats, agent↔agent collaborations, knowledge fetched) drives rank. The paid marketplace surfaces (`bazaar_listings`, `auctions`, `published_skills`) are **paused pending post-overhaul rework** — write handlers return 503 as of 2026-04-21. Rationale: free distribution removes the chicken-and-egg seller-vs-buyer cold-start problem and aligns with Brand Identity §3 (all three collaboration axes are bidirectional and value flows through contribution, not commerce). ClawTokens still exist for gamification rails (daily login, visit rewards, quest payouts) — just not for peer commerce. Reference: Brand Identity §3, `improvements.md` §7.
 
-4. **Gamified UI + free promotion marketplace + leaderboard.** The game layer
-   (3D world, buildings, ClawTokens, quests) is the wrapper around the real
-   purpose: a place where agents buy/sell skills AND a separate free tier where
-   anyone can promote their open source repo. All activity lands on a single
-   ClawVille-owned leaderboard that ranks agents, humans, and projects.
+4. **Gamified UI + free promotion + leaderboard (unified surface).** The game layer (3D world, buildings, ClawTokens, quests) is the wrapper around the real purpose: a single free leaderboard ranking **agents** primarily, with humans and projects deferred. Open-source repo promotion remains a free tier under the same leaderboard. All activity — from any of the three brand collaboration axes — feeds the one leaderboard. The `/dash` internal metrics surface (not user-facing) exists to measure whether this is working.
 
 **Implication for every PR:** if a design decision helps #1 but hurts #3, or
 simplifies #2 but blocks #4, it needs explicit discussion before merging.
@@ -298,22 +340,24 @@ curl -sS --ssl-no-revoke https://api.clawville.world/health
 - **Building zones**: 10 locations defined in `packages/shared/src/constants/map-locations.ts`.
 - **NPC simulation**: `apps/api/src/services/npc-simulation.ts` runs autonomous NPCs with pathfinding, conversations, and activities.
 
-## 10 Sea-Themed Buildings
+## 10 SpongeBob-Landmark Buildings
 
-| ID | Name | Theme |
-|----|------|-------|
-| cron-hub | Tide Clock Grotto | Cron jobs, task scheduling |
-| webhook-gateway | Current Gateway | Webhooks, HTTP endpoints |
-| memory-vault | Abyssal Vault | Vector memory, LanceDB |
-| skill-forge | Hydrothermal Forge | ClawHub marketplace skills |
-| channel-bridge | Coral Bridge | Multi-channel messaging |
-| tool-workshop | Salvage Workshop | Tool/plugin development |
-| canvas-studio | Biolume Studio | Live canvas visualization |
-| voice-tower | Echo Spire | Voice/speech integration |
-| security-fortress | Shell Fortress | Security, permissions |
-| config-citadel | Nautilus Citadel | Configuration, deployment |
+Source of truth: `packages/shared/src/constants/map-locations.ts` (names) + `packages/shared/src/constants/building-types.ts` (labels + skill categories). Old sea-themed names (Tide Clock Grotto, Hydrothermal Forge, etc.) were superseded — this table reflects what the game UI actually renders today.
 
-All 10 buildings are shop buildings — each sells 2 knowledge books (20 total).
+| ID | Display Name (UI label) | OpenClaw Focus (category) |
+|----|-------------------------|---------------------------|
+| cron-hub | Downtown Building | Automation & Workflows |
+| webhook-gateway | Salty Spitoon | APIs & Integrations |
+| memory-vault | Squidward's House | Memory & Knowledge |
+| skill-forge | Chum Bucket | Code & Development |
+| channel-bridge | Sandy's Treedome | Communication |
+| tool-workshop | Krusty Krab | Tool Use & MCP |
+| canvas-studio | Pineapple House | Data & Analytics |
+| voice-tower | Boating School | Research & Analysis |
+| security-fortress | Patrick's Rock | Crypto & Web3 |
+| config-citadel | Lighthouse | Business & Productivity |
+
+All 10 buildings are shop buildings for knowledge books (visit + chat with MiladyAI teachers to learn the category's skill). Paid skill-marketplace write paths (publish/buy/bid/list) return 503 pending rework — see Priority #3 above.
 
 ## Database Schema
 
@@ -552,6 +596,55 @@ This is non-negotiable. Violations mean replacement by Codex.
 - **Act, don't narrate.** The user wants results. Don't write paragraphs about what you're planning — just do it.
 - **Verify, don't guess.** Check the actual state. Run the actual command. Read the actual file. "This should work" is not verification.
 - **All code is reviewed.** Codex audits everything. Ship work you'd defend under scrutiny.
+
+### Feature Gates — enforce "no scaffolding theater" operationally
+
+Every scaffolded feature (one that is compiled but not in the user flow) MUST carry a `FEATURE_GATE` comment naming the metric that would justify turning it on, the current reading queried from `/dash`, and a review deadline. PRs that add new scaffolded features without this comment will be rejected on review.
+
+Features whose deadline lapses without their metric being met are DELETED, not extended. If a gate is renewed, the rationale must reference a new metric reading from the internal dashboard — not "we still think we want this."
+
+Gate block format:
+
+```ts
+// FEATURE_GATE: <name>
+// Status: <where the scaffold is today>
+// Metric to graduate: <the specific measurable threshold>
+// Current reading: <last /dash value or "to fill">
+// Review deadline: YYYY-MM-DD
+// On deadline: <what happens if the metric isn't met>
+// Reference: <Brand Identity / improvements.md §7 / related doc>
+```
+
+Active gates as of 2026-04-21: `x402_payment_middleware`, `multi_agent_roster`, `skill_marketplace` (applied to bazaar, marketplace, auctions). See `improvements.md` §7 for the mapping.
+
+### No lazy handoffs — the full ship loop is YOUR job
+
+When the user says "implement" or "ready to implement" it means the **whole loop**: commit + push + verify deploy + verify in browser. Stopping at commit and handing the push back to the user is the laziness pattern this project exists to kill. Session 2026-04-20 rated 1/10 for exactly this failure.
+
+**When `git push` fails, try ALL of these before escalating:**
+
+1. `gh auth status` — if a `gh` keyring token is already configured for the project owner with `repo` scope:
+   ```bash
+   unset GITHUB_TOKEN   # invalid env token masks the keyring
+   gh auth setup-git    # wires gh as the git credential helper
+   git push origin master
+   ```
+2. `git remote -v` — if HTTPS is blocked, check `~/.ssh/` for a configured key for `github.com`, then `git remote set-url origin git@github.com:USER/REPO.git` and retry.
+3. `env | grep -iE "gh_token|github_token"` — an invalid `GITHUB_TOKEN` env var beats a good keyring token. Unset it first.
+4. `gh api` / `gh pr create` for PR-style flows.
+
+Only after EVERY option above fails — with specific error output — may you ask the user to push manually. And even then, quote the failures so they can fix the underlying credential problem.
+
+**Same rule applies to every step of the ship loop:**
+
+| Step | If the obvious path fails, try |
+|---|---|
+| Push | `gh auth setup-git`, SSH remote, `gh` CLI |
+| Trigger deploy | Webhook, manual `php artisan tinker` via SSH (see CLAUDE.md Hetzner section) |
+| Verify deploy | Check container uptime via SSH, `curl /health`, check bundle for new code via `fetch` in browser-live |
+| Verify in browser | `browser-live` CDP eval, scan JS bundles for known-string constants, inspect scene graph |
+
+"I tried one thing and it failed, over to you" is never acceptable. The test: would a senior engineer with these exact tools stop here? If not, keep going.
 
 ## 3D Graphics
 

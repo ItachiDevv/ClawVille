@@ -1,3 +1,15 @@
+// FEATURE_GATE: x402_payment_middleware
+// Status: scaffold live, flag OFF (X402_ENABLED defaults to false).
+// Retained, not deleted, on 2026-04-21 per founder call — reserved for later
+// metered-access features unrelated to the (now-paused) skill marketplace.
+// Metric to graduate: any future feature requiring per-call metered access is
+//   proposed AND has a traction signal (e.g. gated API tier with visible
+//   demand on /dash).
+// Review deadline: 2026-07-21.
+// On deadline: if no metered feature is proposed, rip @x402/* + agent-v2.ts;
+//   if a feature IS proposed, convert this gate to a specific metric for that
+//   feature.
+// Reference: Brand Identity §4, CLAUDE.md Priority #3, improvements.md §7.
 /**
  * x402 payment middleware configuration for ClawVille.
  *
