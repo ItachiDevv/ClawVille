@@ -595,11 +595,11 @@ leaderboardRoutes.get('/agents', async (c) => {
 // ---- Legacy economy board (auth-gated) ------------------------------------
 //
 // Everything below here retains the pre-pivot contract consumed by
-// `leaderboard-modal.tsx`. The `sessionMiddleware` is scoped with `use('/',)`
-// and `use('/stats')` so it DOES NOT intercept the public `/agents` path above.
-
-leaderboardRoutes.use('/', sessionMiddleware);
-leaderboardRoutes.use('/stats', sessionMiddleware);
+// `leaderboard-modal.tsx`. `sessionMiddleware` is attached per-route (not via
+// `router.use('/', ...)`) because Hono treats a `/` path in `use()` as a
+// prefix that matches every nested path — including `/agents` — which would
+// silently re-gate the public endpoint. Passing the middleware as a route
+// argument scopes it to exactly this handler.
 
 /**
  * GET /api/leaderboard
@@ -612,7 +612,7 @@ leaderboardRoutes.use('/stats', sessionMiddleware);
  *             it's outside the cap (so a mid-pack pet can still see where
  *             they stand without paging through the whole board).
  */
-leaderboardRoutes.get('/', async (c) => {
+leaderboardRoutes.get('/', sessionMiddleware, async (c) => {
   const rawSort = (c.req.query('sort') || 'composite').toLowerCase();
   const sort = (VALID_SORTS.includes(rawSort as SortMode) ? rawSort : 'composite') as SortMode;
 
@@ -666,7 +666,7 @@ leaderboardRoutes.get('/', async (c) => {
  * Aggregate stats for the header banner — total pets, total gold in
  * circulation, total skills ever sold, total quests completed.
  */
-leaderboardRoutes.get('/stats', async (c) => {
+leaderboardRoutes.get('/stats', sessionMiddleware, async (c) => {
   let snapshot = getCache(DEFAULT_CAP);
   if (!snapshot) {
     snapshot = await buildSnapshot(DEFAULT_CAP);
