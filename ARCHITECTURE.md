@@ -94,9 +94,9 @@ Hard rules:
 | `research.ts` | Research article fetch / scrape (powers the thought-log research stream) |
 | `research-sse.ts` | `/api/research` SSE stream feeding `ThoughtLog` component |
 | `claws.ts` | ClawToken ledger + balance surface (reads `claw_token_transactions`) |
-| `bazaar.ts` | Skill marketplace (browse, list, buy) |
-| `marketplace.ts` | Published-skills marketplace w/ upvotes — distinct from `bazaar.ts` (bazaar = fixed-price listings, marketplace = free publish+upvote tier) |
-| `auctions.ts` | Skill auction house (timed auctions + bidding) |
+| `bazaar.ts` | Skill marketplace (browse, list, buy). **⏸ WRITES PAUSED (2026-04-21)** — a file-level middleware returns 503 for POST/PUT/PATCH/DELETE pending skill-marketplace rework. GET reads still work. See Brand Identity §3 + improvements.md §7. |
+| `marketplace.ts` | Published-skills marketplace w/ upvotes — distinct from `bazaar.ts` (bazaar = fixed-price listings, marketplace = free publish+upvote tier). **⏸ WRITES PAUSED (2026-04-21)** — same gate as bazaar. |
+| `auctions.ts` | Skill auction house (timed auctions + bidding). **⏸ WRITES PAUSED (2026-04-21)** — same gate as bazaar. The 10s resolution interval still runs but has nothing to resolve since no new auctions can be created. |
 | `quests.ts` | Quest board |
 | `bounties.ts` | Bounty board |
 | `leaderboard.ts` | Global leaderboard |
@@ -237,6 +237,14 @@ memory partition. One ElizaOS runtime per character, partitioned rooms per
   (SpongeBob, Squidward, Mrs. Puff, Larry, Mr. Krabs, Plankton, Sandy,
   Patrick, Karen-as-assistant, Gary-as-assistant); wandering NPCs stay NPCs.
 
+## Middleware (`apps/api/src/middleware/`)
+
+| File | Applied | Purpose |
+|---|---|---|
+| `auth.ts` | Global `sessionMiddleware` via `.use('*', ...)` on `app.ts` + per-route `requireAuth` | Resolves Lucia session cookie → `c.get('user')` / `c.get('session')`. `requireAuth` variant throws HTTPException(401) if no session. |
+| `rate-limit.ts` | `/connect` (10/min/IP), `/export-character` (Cloudflare-safe IP via `cf-connecting-ip` preferred over LAST XFF token) | Shared `createRateLimiter` + `getClientIp` helpers. Rate limiting is IP-based with periodic cleanup. |
+| `admin-only.ts` | `/api/dashboard/*` (via `dashboardRoutes.use` + `adminOnly` per route) | Reads `ADMIN_USER_IDS` env var at module load. Returns 401 when no user, 403 when user not on allowlist. Must run AFTER `sessionMiddleware` so `c.get('user')` is populated. |
+
 ## Service Layer (`apps/api/src/services/`)
 
 The service catalog (alphabetical — these are the production dependencies the
@@ -244,11 +252,13 @@ route layer composes against, not the route files themselves):
 
 | Service | Purpose |
 |---|---|
-| `agent-collaboration` | Helper for agent-to-agent co-op (used by autonomy) |
+| `agent-collaboration` | Helper for agent-to-agent co-op (used by autonomy). Emits `agent.collaboration.turn` event per consulted expert — see Observability. |
 | `agent-orchestrator` | Lazy-start / auto-stop Eliza runtimes (see above) |
+| `alert-error` | Immediate Telegram alerts via the itachi-debug bot. Rate-limited by `${source}::${message}` (1/60s with suppressed-count suffix). Called from `event-logger` (tier-3 DB down), Hono `onError` (uncaught exceptions), and any business-critical code path. Required env: `ITACHI_DEBUG_BOT_TOKEN`, `ITACHI_DEBUG_CHAT_ID`. Degrades to `console.warn` when creds missing. |
 | `article-scraper` | Pulls + normalizes external research articles into `research_articles` |
-| `claw-token-ledger` | Canonical write path for `claw_token_transactions` — never bypass |
+| `claw-token-ledger` | Canonical write path for `claw_token_transactions` — never bypass. `transferClawTokens()` wraps the atomic 2-avatar transfer + emits `tokens.settled` on success. |
 | `eliza-migrator` | Pre-migrates ElizaOS internal schema at API boot (fixes v2 schema drift) |
+| `event-logger` | Fire-and-forget analytics writer — `logEvent({...})` is the single entry for every emitted event. Three-tier fallback: `events` table → `event_write_failures` safety-net table → console + Telegram alert. Never throws. Sanitizes payload keys that look sensitive (word-list + danger-substring detector, verified against 43 edge cases). See Observability. |
 | `hermes-client` | Outbound bridge to a user-hosted Hermes agent (OpenAI-compat gateway) |
 | `identity-service` | Maps `openclaw_bots.identityType` + `agent_session_map` |
 | `keypair-vault` | AES-256-GCM wrap/unwrap for `wallets` + `vanity_keypairs` |
