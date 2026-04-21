@@ -17,7 +17,8 @@
     "db:studio": "bun run --filter @clawville/database studio",
     "clean": "turbo run clean && rm -rf node_modules",
     "test:mock-gateway": "bun run scripts/mock-openclaw.ts",
-    "test:agent-flow": "bun run scripts/test-agent-flow.ts"
+    "test:agent-flow": "bun run scripts/test-agent-flow.ts",
+    "deploy:cf-secrets": "cd infra/cf-secrets-worker && bunx wrangler deploy"
   },
   "devDependencies": {
     "@gltf-transform/core": "^4.3.0",
@@ -48,7 +49,9 @@
     "@clawville/database": "workspace:*",
     "@clawville/shared": "workspace:*",
     "@solana/web3.js": "^1.95.0",
+    "bs58": "^6.0.0",
     "pg": "^8.17.2",
-    "three-stdlib": "^2.36.1"
+    "three-stdlib": "^2.36.1",
+    "tweetnacl": "^1.0.3"
   }
 }

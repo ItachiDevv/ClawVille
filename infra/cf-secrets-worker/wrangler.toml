@@ -1,0 +1,30 @@
+#:schema node_modules/wrangler/config-schema.json
+# ---------------------------------------------------------------------------
+# Cloudflare Worker — ClawVille Secrets Store wrap/unwrap gateway
+# ---------------------------------------------------------------------------
+# Deploys to e.g. clawville-secrets.<account>.workers.dev and serves two
+# endpoints:
+#
+#   POST /wrap    -- body: { "plaintextDek": "<base64>" }
+#                 -- response: { "wrappedDek": "<base64>" }
+#   POST /unwrap  -- body: { "wrappedDek": "<base64>" }
+#                 -- response: { "plaintextDek": "<base64>" }
+#
+# Auth: bearer token in Authorization header. Worker refuses anything else.
+# Wrap algorithm: AES-KeyWrap (RFC 3394) via WebCrypto `AES-KW`.
+#
+# See ./README.md for deploy + secret-management instructions.
+# ---------------------------------------------------------------------------
+
+name = "clawville-secrets"
+main = "src/index.ts"
+compatibility_date = "2024-11-06"
+workers_dev = true
+
+# NOTE: `KEK_V1` and `WORKER_BEARER` are stored as encrypted secrets, not
+# in this file. Set them via:
+#   wrangler secret put KEK_V1
+#   wrangler secret put WORKER_BEARER
+#
+# KEK_V1 must be a 32-byte value, either base64-encoded (recommended) or
+# a 64-char hex string — the Worker auto-detects via length.
