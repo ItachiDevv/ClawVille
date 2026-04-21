@@ -94,7 +94,7 @@ function computeNpcScale(scene: THREE.Object3D): { scale: number; localMinY: num
   });
 
   if (_npcBbox.isEmpty()) {
-    // All geometry is SkinnedMesh (chihiro, priestess, chibi_goku, etc.).
+    // All geometry is SkinnedMesh (e.g. rigged humanoid models).
     // Use the bind-pose bbox to measure the actual native geometry height — DO NOT
     // assume native height ≈ 1.0 unit. Some GLBs are exported at 500–650 native units;
     // applying scale=TARGET(120) on top would render them at 60000–78000 wu.
@@ -186,9 +186,8 @@ const SPECIES_MODEL: Record<string, { path: string; key: string }> = {
   sweet_crab:    { path: '/models/sweet_crab_sketchfabweekly.glb', key: 'sweet_crab' },
   lobster_plush: { path: '/models/lobster_plush.glb',              key: 'lobster_plush' },
   hermitcrab:    { path: '/models/hermitcrab.glb',                 key: 'hermitcrab' },
-  chihiro:       { path: '/models/spirited_away_senchihiro.glb',   key: 'chihiro' },
-  priestess:     { path: '/models/young_priestess.glb',            key: 'priestess' },
-  chibi_goku:    { path: '/models/chibi_goku.glb',                 key: 'chibi_goku' },
+  // chihiro / priestess / chibi_goku removed 2026-04-21 — GLBs deleted from disk.
+  // Any legacy DB rows with these species values will fall back to DEFAULT_SPECIES (lobster).
   jellyfish:     { path: '/models/jellyfish.glb',                  key: 'jellyfish' },
   octopus:       { path: '/models/octopus_toy.glb',                key: 'octopus' },
   seahorse:      { path: '/models/sea_horse.glb',                  key: 'seahorse' },
