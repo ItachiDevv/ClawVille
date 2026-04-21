@@ -34,9 +34,8 @@ export const MODEL_KEY_TO_TYPE: Record<string, CharacterType> = {
   sweet_crab:    'crab',
   lobster_plush: 'lobster_plush',
   hermitcrab:    'hermit_crab',
-  chihiro:       'anime',
-  priestess:     'anime',
-  chibi_goku:    'anime',
+  // chihiro / priestess / chibi_goku removed 2026-04-21 — GLBs deleted from disk.
+  // Replaced by 8 Milady VRM avatars which use VRMCharacterAnimator, not this map.
   jellyfish:     'jellyfish',
   octopus:       'octopus',
   seahorse:      'seahorse',
