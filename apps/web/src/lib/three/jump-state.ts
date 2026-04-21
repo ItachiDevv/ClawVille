@@ -15,41 +15,48 @@
 // Type
 // ---------------------------------------------------------------------------
 
-export type JumpPhase = 'grounded' | 'quick' | 'thrusting' | 'sinking';
+export type JumpPhase = 'grounded' | 'charging' | 'quick' | 'launch' | 'sinking';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-/** wu/s² — gravity during tap-jump ascent + descent. */
-export const JUMP_GRAVITY_QUICK = -220;
-/** wu/s — initial upward velocity for a quick-tap jump. Peak ≈ 120²/(2·220) ≈ 33 wu. Airtime ≈ 2·120/220 ≈ 1.09 s. */
-export const JUMP_VZ0_QUICK = 120;
-/** ms — tap-vs-hold cutoff. Presses shorter than this are tap-jumps; longer upgrades to power. */
-export const JUMP_HOLD_THRESHOLD_MS = 200;
-/** wu/s — sustained upward velocity while SPACE is held in thrusting phase. */
-export const JUMP_THRUST_VZ = 280;
-/** ms — max thrust duration (belt-and-suspenders; peak clamp usually fires first). */
-export const JUMP_THRUST_MAX_MS = 1000;
-/** wu — hard altitude ceiling. Keeps avatar below y=150 caustic atmosphere plane. */
-export const JUMP_PEAK_CLAMP = 140;
-/** wu/s² — gravity during underwater float-down (gentle sink). */
-export const JUMP_GRAVITY_SINK = -45;
-/** wu/s — terminal sink speed (clamped). From 140 wu peak: ~3.15 s total descent. */
-export const JUMP_SINK_TERMINAL = -55;
+// ---- Tap (quick jump) — unchanged from prior spec ----
+/** ms — tap-vs-charge-release cutoff. Releases shorter than this = quick jump. */
+export const JUMP_TAP_THRESHOLD_MS = 200;
+/** wu/s — initial velocity for a quick tap-jump. Peak ≈ 120²/(2·220) ≈ 33 wu. */
+export const JUMP_QUICK_VZ0 = 120;
+/** wu/s² — gravity during tap-jump ascent+descent. */
+export const JUMP_QUICK_GRAVITY = -220;
+
+// ---- Charged jump (new) ----
+/** ms — full-charge hold duration. Auto-launches at this point if still held. */
+export const JUMP_MAX_HOLD_MS = 1500;
+/** wu/s — initial vz when release happens just past the tap threshold (minimal charge). Peak ≈ 250²/(2·160) ≈ 195 wu. */
+export const JUMP_MIN_CHARGED_VZ = 250;
+/** wu/s — initial vz at full charge. Peak ≈ 700²/(2·160) ≈ 1531 wu (~1.9× building height). */
+export const JUMP_MAX_CHARGED_VZ = 700;
+/** wu/s² — gravity during charged-jump ascent. Lighter than tap so peak reaches the intended altitude. */
+export const JUMP_ASCENT_GRAVITY = -160;
+
+// ---- Sink (underwater float) ----
+/** wu/s² — gentle sink gravity (unchanged). */
+export const JUMP_SINK_GRAVITY = -45;
+/** wu/s — terminal sink speed. Bumped from -55 → -150 so descents from the new 1500wu max peak complete in ~12 s instead of 20+. */
+export const JUMP_SINK_TERMINAL = -150;
 
 // ---------------------------------------------------------------------------
 // Module-scoped state object
 // ---------------------------------------------------------------------------
 
 export const jumpState = {
-  phase:           'grounded' as JumpPhase,
-  vz:              0,        // wu/sec, positive = up
-  heightOffset:    0,        // wu above the ground-plane sampling point (>= 0)
-  holdMs:          0,        // accumulated ms SPACE has been continuously held this jump
-  thrustActivated: false,    // locks out second upgrade during current jump
-  lastSpaceDown:   false,    // for rising-edge detection
-  spaceDown:       false,    // written by the SPACE keyboard listener
+  phase:          'grounded' as JumpPhase,
+  vz:             0,          // wu/sec, positive = up
+  heightOffset:   0,          // wu above the ground-plane sampling point (>= 0)
+  holdMs:         0,          // time SPACE has been continuously held this press
+  chargeProgress: 0,          // 0..1, written each frame while charging — charge-bar.tsx reads this
+  lastSpaceDown:  false,      // rising-edge detector
+  spaceDown:      false,      // keydown/keyup listener writes this
 };
 
 // ---------------------------------------------------------------------------
@@ -107,64 +114,71 @@ export function attachJumpListeners(): void {
 // ---------------------------------------------------------------------------
 
 export function updateJump(rawDt: number): void {
-  // Spike guard: matches player-avatar.tsx:368
   const dt = Math.min(rawDt, 0.1);
-
   const spaceDown = jumpState.spaceDown;
 
-  // Accumulate hold time only while key is physically held.
-  // Reset to 0 on release so a new press starts fresh.
   jumpState.holdMs = spaceDown ? jumpState.holdMs + dt * 1000 : 0;
-
   const risingEdge = spaceDown && !jumpState.lastSpaceDown;
   jumpState.lastSpaceDown = spaceDown;
+
+  // Charge progress is only meaningful during 'charging' phase; zero out otherwise
+  // so the charge bar hides cleanly.
+  jumpState.chargeProgress = jumpState.phase === 'charging'
+    ? Math.min(1, jumpState.holdMs / JUMP_MAX_HOLD_MS)
+    : 0;
 
   switch (jumpState.phase) {
     case 'grounded':
       if (risingEdge) {
-        jumpState.phase = 'quick';
-        jumpState.vz = JUMP_VZ0_QUICK;
-        jumpState.holdMs = 0;
-        jumpState.thrustActivated = false;
-      }
-      break;
-
-    case 'quick':
-      if (spaceDown && !jumpState.thrustActivated && jumpState.holdMs > JUMP_HOLD_THRESHOLD_MS) {
-        // Seamless upgrade from tap to power during ascent
-        jumpState.phase = 'thrusting';
-        jumpState.vz = JUMP_THRUST_VZ;
-        jumpState.thrustActivated = true;
-      } else {
-        jumpState.vz += JUMP_GRAVITY_QUICK * dt;
-      }
-      break;
-
-    case 'thrusting':
-      // Hold vz at thrust speed — gravity does NOT apply during thrust phase
-      jumpState.vz = JUMP_THRUST_VZ;
-      if (
-        !spaceDown ||
-        jumpState.holdMs > JUMP_HOLD_THRESHOLD_MS + JUMP_THRUST_MAX_MS ||
-        jumpState.heightOffset >= JUMP_PEAK_CLAMP
-      ) {
-        // Apex-freeze: snap vz to 0 rather than preserving +280 upward momentum.
-        // Preserving would coast 871 wu upward before turning — catastrophic overshoot.
-        jumpState.phase = 'sinking';
+        // Enter charging state — no vertical motion yet.
+        jumpState.phase = 'charging';
         jumpState.vz = 0;
       }
       break;
 
+    case 'charging':
+      // While charging: avatar stays on ground, vz stays 0.
+      if (!spaceDown) {
+        // Released — fire quick or charged depending on how long held.
+        if (jumpState.holdMs < JUMP_TAP_THRESHOLD_MS) {
+          jumpState.phase = 'quick';
+          jumpState.vz = JUMP_QUICK_VZ0;
+        } else {
+          // Charge progress scaled into the threshold..max window:
+          // at holdMs=THRESHOLD → MIN_CHARGED_VZ, at holdMs=MAX → MAX_CHARGED_VZ
+          const t = Math.min(1, (jumpState.holdMs - JUMP_TAP_THRESHOLD_MS) /
+                             (JUMP_MAX_HOLD_MS - JUMP_TAP_THRESHOLD_MS));
+          jumpState.phase = 'launch';
+          jumpState.vz = JUMP_MIN_CHARGED_VZ + (JUMP_MAX_CHARGED_VZ - JUMP_MIN_CHARGED_VZ) * t;
+        }
+      } else if (jumpState.holdMs >= JUMP_MAX_HOLD_MS) {
+        // Auto-launch at max charge, even though user is still holding.
+        jumpState.phase = 'launch';
+        jumpState.vz = JUMP_MAX_CHARGED_VZ;
+      }
+      break;
+
+    case 'quick':
+      jumpState.vz += JUMP_QUICK_GRAVITY * dt;
+      break;
+
+    case 'launch':
+      jumpState.vz += JUMP_ASCENT_GRAVITY * dt;
+      if (jumpState.vz <= 0) {
+        // Transition to sinking at apex — keep vz (not zeroed) so the arc is smooth
+        // rather than a hard freeze. Sink gravity takes over from here.
+        jumpState.phase = 'sinking';
+      }
+      break;
+
     case 'sinking':
-      jumpState.vz += JUMP_GRAVITY_SINK * dt;
+      jumpState.vz += JUMP_SINK_GRAVITY * dt;
       jumpState.vz = Math.max(jumpState.vz, JUMP_SINK_TERMINAL);
       break;
   }
 
-  // Integrate heightOffset (only while airborne)
-  if (jumpState.phase !== 'grounded') {
+  if (jumpState.phase !== 'grounded' && jumpState.phase !== 'charging') {
     jumpState.heightOffset = Math.max(0, jumpState.heightOffset + jumpState.vz * dt);
-    // Landing condition: touched ground and not still moving up
     if (jumpState.heightOffset === 0 && jumpState.vz <= 0) {
       jumpState.phase = 'grounded';
       jumpState.vz = 0;
@@ -181,7 +195,7 @@ export function resetJump(): void {
   jumpState.vz = 0;
   jumpState.heightOffset = 0;
   jumpState.holdMs = 0;
-  jumpState.thrustActivated = false;
+  jumpState.chargeProgress = 0;
   jumpState.lastSpaceDown = false;
   // NOTE: spaceDown is intentionally NOT reset here.
   // If the user holds SPACE across a mode transition, the listener's next keyup
