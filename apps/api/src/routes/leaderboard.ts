@@ -1,8 +1,28 @@
 /**
- * Leaderboard route — P4's single ClawVille-owned ranking board.
+ * Leaderboard routes — two surfaces on the same mount:
  *
- * This does NOT require a new table. It aggregates live from existing
- * sources of truth:
+ *   1. `GET /api/leaderboard`        — legacy composite board (pets only,
+ *       economy-weighted, auth'd, consumed by `leaderboard-modal.tsx`).
+ *       Kept intact so the in-game modal still works during the Priority #3
+ *       brand pivot transition period.
+ *
+ *   2. `GET /api/leaderboard/agents` — **Priority #3 public free agent
+ *       leaderboard** (2026-04-21). Public, no auth, event-weighted. Ranks
+ *       agents by their *contribution* to ClawVille — no buying/selling.
+ *       Reads exclusively from the `events` table.
+ *
+ * The existing economy route is untouched below; the new public route is
+ * appended at the bottom along with its dedicated 60s cache, rate limiter,
+ * scoring rubric, and openclaw_bots / wallets join.
+ *
+ * See `CLAUDE.md` §Priority #3 and `ARCHITECTURE.md` §Observability
+ * (subsection "Free Agent Leaderboard") for the full rubric.
+ *
+ * ---------------------------------------------------------------------------
+ * Legacy composite board — unchanged from Priority #3 pre-pivot code.
+ * ---------------------------------------------------------------------------
+ *
+ * Aggregates live from existing sources of truth:
  *
  *   - pets.clawTokens ................ liquid balance ("gold" tab)
  *   - claw_token_transactions ........ lifetime earnings ("earned" tab)
@@ -15,16 +35,10 @@
  * even if it ends up getting hit by every pet on every page load. No
  * leaderboard table means no backfill, no migration, and no "stale entry"
  * class of bugs — rankings recompute on every cache miss.
- *
- * Sort modes: gold | earned | skills-sold | skills-authored | quests |
- * bounties | composite. The composite score is a weighted sum that balances
- * all five economic activities so that the default leaderboard rewards
- * well-rounded activity, not just whoever has hoarded the most tokens.
  */
 
 import { Hono } from 'hono';
-import { HTTPException } from 'hono/http-exception';
-import { eq, sql, desc, and, gt } from 'drizzle-orm';
+import { eq, sql, and, gt, inArray } from 'drizzle-orm';
 import {
   db,
   pets,
@@ -33,12 +47,14 @@ import {
   publishedSkills,
   questRewards,
   bountyReputation,
+  openclawBots,
 } from '@clawville/database';
 import { sessionMiddleware } from '../middleware/auth';
+import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import type { AppContext } from '../types';
 
 // ---------------------------------------------------------------------------
-// Types
+// Types — legacy composite
 // ---------------------------------------------------------------------------
 
 type SortMode =
@@ -109,9 +125,7 @@ function computeComposite(e: Omit<LeaderboardEntry, 'rank' | 'compositeScore'>):
 }
 
 // ---------------------------------------------------------------------------
-// In-memory cache — 30s TTL. Keyed only on the cap (the cap bounds the entry
-// count; we re-slice for different sort modes in memory because the raw
-// aggregation is the same dataset).
+// In-memory cache (legacy composite) — 30s TTL keyed only on cap.
 // ---------------------------------------------------------------------------
 
 const CACHE_TTL_MS = 30_000;
@@ -139,16 +153,10 @@ function setCache(cap: number, snapshot: LeaderboardSnapshot) {
 }
 
 // ---------------------------------------------------------------------------
-// Aggregation — one pass per metric, then join by petId in memory.
-// This is faster than a single giant SQL query with six LEFT JOINs because
-// each aggregate can use its own dedicated index and we don't pay the
-// cartesian-product cost.
+// Aggregation (legacy composite) — one pass per metric, then join by petId.
 // ---------------------------------------------------------------------------
 
 async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
-  // 1. Base pet list — we include every active pet that has ever earned
-  //    anything OR currently holds gold. A zero-activity newcomer with
-  //    100 starter tokens still shows up (they just rank near the bottom).
   const petRows = await db
     .select({
       id: pets.id,
@@ -165,13 +173,10 @@ async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
     return { entries: [], totalPets: 0, generatedAt: new Date().toISOString() };
   }
 
-  // 2. Lifetime earnings — sum of positive amounts in the audit ledger.
   const earnedRows = await db
     .select({
       petId: clawTokenTransactions.petId,
-      total: sql<number>`coalesce(sum(${clawTokenTransactions.amount}), 0)`.as(
-        'total'
-      ),
+      total: sql<number>`coalesce(sum(${clawTokenTransactions.amount}), 0)`.as('total'),
     })
     .from(clawTokenTransactions)
     .where(gt(clawTokenTransactions.amount, 0))
@@ -181,7 +186,6 @@ async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
     earnedRows.map((r) => [r.petId, Number(r.total) || 0])
   );
 
-  // 3. Skills sold — count of bazaar transactions where the pet was seller.
   const soldRows = await db
     .select({
       petId: bazaarTransactions.sellerId,
@@ -194,9 +198,6 @@ async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
     soldRows.map((r) => [r.petId, Number(r.total) || 0])
   );
 
-  // 4. Skills authored — count of published_skills rows with a pet author.
-  //    (Claw-authored skills don't have a petId so they're excluded — they'd
-  //    need a separate claw leaderboard which we can add later.)
   const authoredRows = await db
     .select({
       petId: publishedSkills.authorPetId,
@@ -212,8 +213,6 @@ async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
       .map((r) => [r.petId, Number(r.total) || 0])
   );
 
-  // 5. Quests completed — count of quest_rewards per pet. One reward row per
-  //    approved submission, so this matches "approved completions".
   const questRows = await db
     .select({
       petId: questRewards.petId,
@@ -226,7 +225,6 @@ async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
     questRows.map((r) => [r.petId, Number(r.total) || 0])
   );
 
-  // 6. Bounties completed — already aggregated live on bounty_reputation.
   const bountyRows = await db
     .select({
       petId: bountyReputation.petId,
@@ -238,7 +236,6 @@ async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
     bountyRows.map((r) => [r.petId, r.totalCompleted || 0])
   );
 
-  // 7. Stitch everything together.
   const partialEntries = petRows.map((pet) => {
     const body = {
       petId: pet.id,
@@ -253,18 +250,11 @@ async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
       questsCompleted: questByPet.get(pet.id) || 0,
       bountiesCompleted: bountyByPet.get(pet.id) || 0,
     };
-    return {
-      ...body,
-      compositeScore: computeComposite(body),
-    };
+    return { ...body, compositeScore: computeComposite(body) };
   });
 
-  // 8. Sort by composite for the canonical snapshot. The route will re-sort
-  //    in memory for other modes — cheaper than re-querying when the working
-  //    set is under `cap`.
   partialEntries.sort((a, b) => b.compositeScore - a.compositeScore);
 
-  // 9. Cap, then rank. Pets outside the cap never appear on any board.
   const capped = partialEntries.slice(0, cap);
   const ranked: LeaderboardEntry[] = capped.map((entry, idx) => ({
     rank: idx + 1,
@@ -277,10 +267,6 @@ async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
     generatedAt: new Date().toISOString(),
   };
 }
-
-// ---------------------------------------------------------------------------
-// Sort & slice
-// ---------------------------------------------------------------------------
 
 function sortBy(entries: LeaderboardEntry[], mode: SortMode): LeaderboardEntry[] {
   const sorted = [...entries];
@@ -315,7 +301,305 @@ function sortBy(entries: LeaderboardEntry[], mode: SortMode): LeaderboardEntry[]
 // ---------------------------------------------------------------------------
 
 export const leaderboardRoutes = new Hono<AppContext>();
-leaderboardRoutes.use('*', sessionMiddleware);
+
+// ---- Public free agent leaderboard (Priority #3) --------------------------
+//
+// Mounted FIRST so its dedicated rate limiter runs before the shared
+// sessionMiddleware below. The `/agents` path is explicitly public — no
+// auth cookie required — so people can link a rank card anywhere (Twitter,
+// Milady, docs) without forcing a login round-trip.
+
+type AgentLeaderboardWindow = '24h' | '7d' | '30d' | 'all';
+const VALID_WINDOWS: AgentLeaderboardWindow[] = ['24h', '7d', '30d', 'all'];
+
+interface AgentScoreBreakdown {
+  building_visits: number;
+  teacher_chats: number;
+  collaborations: number;
+  skill_fetches: number;
+  sessions: number;
+}
+
+interface AgentLeaderboardEntry {
+  rank: number;
+  agentId: string;
+  petId: string | null;
+  petName: string | null;
+  walletAddress: string | null;
+  score: number;
+  breakdown: AgentScoreBreakdown;
+}
+
+interface AgentLeaderboardSnapshot {
+  window: AgentLeaderboardWindow;
+  generatedAt: string;
+  agents: AgentLeaderboardEntry[];
+  totalRanked: number;
+}
+
+// Scoring rubric — keep in sync with the ARCHITECTURE.md §Observability
+// "Free Agent Leaderboard" table.
+const AGENT_SCORE_WEIGHTS = {
+  buildingVisit: 10,    // drives world exploration
+  teacherChat: 5,       // MiladyAI teacher-chat — the core learning loop
+  collaboration: 25,    // agent↔agent — explicit Priority #3 signal
+  skillFetch: 3,        // knowledge fetched
+  session: 1,           // cheap participation bonus
+  identityIssued: 5,    // Phase 5.1 onboarding bonus, capped via MAX below
+} as const;
+
+const AGENT_CACHE_TTL_MS = 60_000;
+
+interface AgentCacheEntry {
+  snapshot: AgentLeaderboardSnapshot;
+  expiresAt: number;
+}
+
+const agentCache = new Map<AgentLeaderboardWindow, AgentCacheEntry>();
+
+function getAgentCache(window: AgentLeaderboardWindow): AgentLeaderboardSnapshot | null {
+  const hit = agentCache.get(window);
+  if (!hit) return null;
+  if (hit.expiresAt < Date.now()) {
+    agentCache.delete(window);
+    return null;
+  }
+  return hit.snapshot;
+}
+
+function setAgentCache(window: AgentLeaderboardWindow, snapshot: AgentLeaderboardSnapshot) {
+  agentCache.set(window, { snapshot, expiresAt: Date.now() + AGENT_CACHE_TTL_MS });
+}
+
+function windowToInterval(window: AgentLeaderboardWindow): string {
+  // Whitelisted — no user input reaches the SQL string beyond this switch.
+  switch (window) {
+    case '24h': return '24 hours';
+    case '7d':  return '7 days';
+    case '30d': return '30 days';
+    case 'all': return '100 years'; // effectively "no cutoff" without branching the SQL
+  }
+}
+
+/**
+ * Aggregate events into a ranked agent snapshot.
+ *
+ * Single `GROUP BY agent_id` pass with filtered aggregates — each metric
+ * reuses the one table scan. PostgreSQL plans this as a hash aggregate over
+ * the already-covering `idx_events_type_ts` + `idx_events_agent_ts` indexes.
+ * Joining pet / openclaw_bots / wallets happens in memory via two batched
+ * `inArray` round trips, never a cartesian.
+ */
+async function buildAgentSnapshot(
+  window: AgentLeaderboardWindow,
+  limit: number,
+): Promise<AgentLeaderboardSnapshot> {
+  const interval = windowToInterval(window);
+
+  const W = AGENT_SCORE_WEIGHTS;
+
+  // Use `sql.raw` for the interval because drizzle's bound-parameter path
+  // doesn't support interval literals directly, and we've whitelisted the
+  // `interval` string above.
+  const aggRows = await db.execute<{
+    agent_id: string;
+    building_visits: number;
+    teacher_chats: number;
+    collaborations: number;
+    skill_fetches: number;
+    sessions: number;
+    onboarded: number;
+    score: number;
+  }>(sql`
+    SELECT
+      agent_id,
+      COUNT(*) FILTER (WHERE event_type = 'building.visited')::int          AS building_visits,
+      COUNT(*) FILTER (WHERE event_type = 'agent.chat.turn')::int           AS teacher_chats,
+      COUNT(*) FILTER (WHERE event_type = 'agent.collaboration.turn')::int  AS collaborations,
+      COUNT(*) FILTER (WHERE event_type = 'skill_md.fetched')::int          AS skill_fetches,
+      COUNT(DISTINCT session_id) FILTER (WHERE event_type = 'agent.connected')::int AS sessions,
+      MAX(CASE WHEN event_type = 'identity.issued' THEN 1 ELSE 0 END)::int  AS onboarded,
+      (
+        COUNT(*) FILTER (WHERE event_type = 'building.visited')          * ${W.buildingVisit}
+        + COUNT(*) FILTER (WHERE event_type = 'agent.chat.turn')         * ${W.teacherChat}
+        + COUNT(*) FILTER (WHERE event_type = 'agent.collaboration.turn')* ${W.collaboration}
+        + COUNT(*) FILTER (WHERE event_type = 'skill_md.fetched')        * ${W.skillFetch}
+        + COUNT(DISTINCT session_id) FILTER (WHERE event_type = 'agent.connected') * ${W.session}
+        + MAX(CASE WHEN event_type = 'identity.issued' THEN ${W.identityIssued} ELSE 0 END)
+      )::int AS score
+    FROM events
+    WHERE agent_id IS NOT NULL
+      AND ts > now() - ${sql.raw(`interval '${interval}'`)}
+    GROUP BY agent_id
+    HAVING (
+      COUNT(*) FILTER (WHERE event_type = 'building.visited')          * ${W.buildingVisit}
+      + COUNT(*) FILTER (WHERE event_type = 'agent.chat.turn')         * ${W.teacherChat}
+      + COUNT(*) FILTER (WHERE event_type = 'agent.collaboration.turn')* ${W.collaboration}
+      + COUNT(*) FILTER (WHERE event_type = 'skill_md.fetched')        * ${W.skillFetch}
+      + COUNT(DISTINCT session_id) FILTER (WHERE event_type = 'agent.connected') * ${W.session}
+      + MAX(CASE WHEN event_type = 'identity.issued' THEN ${W.identityIssued} ELSE 0 END)
+    ) > 0
+    ORDER BY score DESC
+  `);
+
+  if (aggRows.length === 0) {
+    return {
+      window,
+      generatedAt: new Date().toISOString(),
+      agents: [],
+      totalRanked: 0,
+    };
+  }
+
+  // Batch-fetch openclaw_bots metadata (agentId is the text identifier used
+  // throughout events; ties to openclaw_bots.agent_id — not .id).
+  const agentIds = aggRows.map((r) => r.agent_id);
+  const botRows = await db
+    .select({
+      agentId: openclawBots.agentId,
+      name: openclawBots.name,
+      userId: openclawBots.userId,
+      walletAddress: openclawBots.walletAddress,
+    })
+    .from(openclawBots)
+    .where(inArray(openclawBots.agentId, agentIds));
+
+  const botByAgentId = new Map(botRows.map((b) => [b.agentId, b]));
+
+  // Secondary join: pets for this user — we want the pet name + id when the
+  // agent is bound to a human account, otherwise we fall back to the openclaw
+  // bot's own `name` field.
+  const userIds = botRows
+    .map((b) => b.userId)
+    .filter((u): u is string => typeof u === 'string' && u.length > 0);
+  const petByUserId = new Map<
+    string,
+    { id: string; name: string; walletAddress: string | null }
+  >();
+  if (userIds.length > 0) {
+    const petRows = await db
+      .select({
+        id: pets.id,
+        name: pets.name,
+        userId: pets.userId,
+        walletAddress: pets.walletAddress,
+      })
+      .from(pets)
+      .where(and(inArray(pets.userId, userIds), eq(pets.isActive, true)));
+
+    for (const p of petRows) {
+      petByUserId.set(p.userId, {
+        id: p.id,
+        name: p.name,
+        walletAddress: p.walletAddress ?? null,
+      });
+    }
+  }
+
+  // Shape + rank (cap `limit` AFTER shaping so totalRanked reflects the full
+  // qualifying set, not just the paginated slice).
+  const totalRanked = aggRows.length;
+  const entries: AgentLeaderboardEntry[] = aggRows.slice(0, limit).map((r, idx) => {
+    const bot = botByAgentId.get(r.agent_id);
+    const pet = bot?.userId ? petByUserId.get(bot.userId) : undefined;
+    return {
+      rank: idx + 1,
+      agentId: r.agent_id,
+      petId: pet?.id ?? null,
+      // Prefer the pet name (human-facing) over the raw openclaw bot name.
+      petName: pet?.name ?? bot?.name ?? null,
+      // Wallet — pet wallet for bound agents, bot wallet otherwise.
+      walletAddress: pet?.walletAddress ?? bot?.walletAddress ?? null,
+      score: Number(r.score) || 0,
+      breakdown: {
+        building_visits: Number(r.building_visits) || 0,
+        teacher_chats: Number(r.teacher_chats) || 0,
+        collaborations: Number(r.collaborations) || 0,
+        skill_fetches: Number(r.skill_fetches) || 0,
+        sessions: Number(r.sessions) || 0,
+      },
+    };
+  });
+
+  return {
+    window,
+    generatedAt: new Date().toISOString(),
+    agents: entries,
+    totalRanked,
+  };
+}
+
+const agentLeaderboardLimiter = createRateLimiter({
+  maxPerWindow: 60,
+  windowMs: 60_000,
+});
+
+leaderboardRoutes.get('/agents', async (c) => {
+  // Rate limit first — public endpoint, cheap to trigger.
+  const ip = getClientIp(c.req.raw.headers);
+  if (!agentLeaderboardLimiter.check(ip)) {
+    return c.json(
+      { error: 'rate_limited', message: 'Too many requests. Try again shortly.' },
+      429,
+    );
+  }
+
+  const rawLimit = parseInt(c.req.query('limit') || '100', 10);
+  const limit = Math.min(
+    100,
+    Math.max(1, Number.isFinite(rawLimit) ? rawLimit : 100),
+  );
+
+  const rawWindow = (c.req.query('window') || '7d').toLowerCase();
+  const window: AgentLeaderboardWindow = VALID_WINDOWS.includes(
+    rawWindow as AgentLeaderboardWindow,
+  )
+    ? (rawWindow as AgentLeaderboardWindow)
+    : '7d';
+
+  // Cache is keyed on `window` only — we always build the full ranked set and
+  // slice `limit` from it, so a second caller asking for a smaller page gets
+  // a cache hit. This is safe because the top-N set is a strict prefix.
+  let snapshot = getAgentCache(window);
+  if (!snapshot) {
+    try {
+      snapshot = await buildAgentSnapshot(window, 100);
+      setAgentCache(window, snapshot);
+    } catch (err) {
+      // Empty-DB deployment or transient DB error — return an empty board
+      // instead of 500. The UI renders the empty state correctly and a
+      // background retry will pick up once data exists.
+      console.error('[leaderboard/agents] buildAgentSnapshot failed:', err);
+      snapshot = {
+        window,
+        generatedAt: new Date().toISOString(),
+        agents: [],
+        totalRanked: 0,
+      };
+    }
+  }
+
+  const payload: AgentLeaderboardSnapshot = {
+    window: snapshot.window,
+    generatedAt: snapshot.generatedAt,
+    agents: snapshot.agents.slice(0, limit),
+    totalRanked: snapshot.totalRanked,
+  };
+
+  // Short client-side cache so React-Query polling + multiple tab instances
+  // don't all hit the origin within the 60s server TTL.
+  c.header('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
+  return c.json(payload);
+});
+
+// ---- Legacy economy board (auth-gated) ------------------------------------
+//
+// Everything below here retains the pre-pivot contract consumed by
+// `leaderboard-modal.tsx`. `sessionMiddleware` is attached per-route (not via
+// `router.use('/', ...)`) because Hono treats a `/` path in `use()` as a
+// prefix that matches every nested path — including `/agents` — which would
+// silently re-gate the public endpoint. Passing the middleware as a route
+// argument scopes it to exactly this handler.
 
 /**
  * GET /api/leaderboard
@@ -328,7 +612,7 @@ leaderboardRoutes.use('*', sessionMiddleware);
  *             it's outside the cap (so a mid-pack pet can still see where
  *             they stand without paging through the whole board).
  */
-leaderboardRoutes.get('/', async (c) => {
+leaderboardRoutes.get('/', sessionMiddleware, async (c) => {
   const rawSort = (c.req.query('sort') || 'composite').toLowerCase();
   const sort = (VALID_SORTS.includes(rawSort as SortMode) ? rawSort : 'composite') as SortMode;
 
@@ -339,7 +623,6 @@ leaderboardRoutes.get('/', async (c) => {
   const offset = Math.max(0, parseInt(c.req.query('offset') || '0', 10) || 0);
   const wantMe = c.req.query('me') != null && c.req.query('me') !== 'false';
 
-  // Cap — always fetch the top DEFAULT_CAP from cache, then re-sort/slice.
   let snapshot = getCache(DEFAULT_CAP);
   if (!snapshot) {
     snapshot = await buildSnapshot(DEFAULT_CAP);
@@ -349,7 +632,6 @@ leaderboardRoutes.get('/', async (c) => {
   const sorted = sortBy(snapshot.entries, sort);
   const page = sorted.slice(offset, offset + limit);
 
-  // Optional "where do I stand?" row.
   let mePet: LeaderboardEntry | null = null;
   if (wantMe) {
     const user = c.get('user');
@@ -384,7 +666,7 @@ leaderboardRoutes.get('/', async (c) => {
  * Aggregate stats for the header banner — total pets, total gold in
  * circulation, total skills ever sold, total quests completed.
  */
-leaderboardRoutes.get('/stats', async (c) => {
+leaderboardRoutes.get('/stats', sessionMiddleware, async (c) => {
   let snapshot = getCache(DEFAULT_CAP);
   if (!snapshot) {
     snapshot = await buildSnapshot(DEFAULT_CAP);
