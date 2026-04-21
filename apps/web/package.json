@@ -16,6 +16,8 @@
     "@lucia-auth/adapter-drizzle": "^1.1.0",
     "@pixi/react": "^8.0.5",
     "@pixi/tilemap": "^5.0.2",
+    "@pixiv/three-vrm": "^3.5.2",
+    "@pixiv/three-vrm-animation": "^3.5.2",
     "@radix-ui/react-dialog": "^1.1.0",
     "@radix-ui/react-label": "^2.1.0",
     "@radix-ui/react-select": "^2.1.0",
