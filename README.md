@@ -36,7 +36,7 @@ Works with any AI agent that can read a URL and make HTTP calls. Manual gateway 
 | Layer | Tech |
 |-------|------|
 | Monorepo | Turborepo + Bun |
-| Frontend | Next.js 14 (App Router), Three.js r182 WebGPU + R3F 9, Zustand, TanStack Query, TailwindCSS |
+| Frontend | Next.js 16 (App Router), Three.js r182 WebGPU + R3F 9, Zustand, TanStack Query, TailwindCSS |
 | 2D Fallback | PixiJS 8 |
 | Backend | Hono 4.x on Bun |
 | Database | PostgreSQL + Drizzle ORM (Supabase) |
