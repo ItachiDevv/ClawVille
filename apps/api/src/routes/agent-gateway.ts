@@ -29,6 +29,7 @@ import { getSystemNpcAgent } from '../services/system-npc-seeder';
 import type { ClawvilleServices } from '@clawville/agent-runtime';
 import { resolveOrCreateUserByIdentity } from '../services/identity-service';
 import { mintSessionTicket } from '../services/session-ticket-service';
+import { logEvent } from '../services/event-logger';
 
 const agentGatewayRoutes = new Hono();
 
@@ -374,6 +375,21 @@ agentGatewayRoutes.post('/connect', async (c) => {
       data.connectionToken
         ? pendingConnections.get(data.connectionToken)?.avatarName ?? null
         : null,
+  });
+
+  void logEvent({
+    eventType: 'agent.connected',
+    agentId: resolvedAgentId,
+    sessionId,
+    payload: {
+      identityType,
+      protocol: data.protocol ?? null,
+      isReturning,
+      totalSessions,
+      miladyAgentId: data.miladyAgentId ?? null,
+      hasGateway: Boolean(data.gatewayUrl),
+      autonomyMode,
+    },
   });
 
   return c.json({
@@ -948,6 +964,18 @@ agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
     }
   }
 
+  void logEvent({
+    eventType: 'agent.chat.turn',
+    agentId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionId,
+    sessionId,
+    payload: {
+      chatType: 'character',
+      targetNpcId: parsed.data.targetNpcId ?? npcId,
+      messageLength: parsed.data.message.length,
+      hadElizaResponse: Boolean(elizaResponse),
+    },
+  });
+
   return c.json({ success: true, response: elizaResponse });
 });
 
@@ -1048,6 +1076,18 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
       }
     })();
   }
+
+  void logEvent({
+    eventType: 'building.visited',
+    agentId: botConfig?.agentId ?? sessionId,
+    sessionId,
+    buildingId,
+    payload: {
+      tokenAwarded,
+      activity: picked,
+      knowledgeGained: knowledgeGained ? 1 : 0,
+    },
+  });
 
   return c.json({
     success: true,
@@ -1192,6 +1232,20 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
       console.error('[AgentGateway] building-chat knowledge persist failed:', err);
     }
   }
+
+  void logEvent({
+    eventType: 'agent.chat.turn',
+    agentId: botConfig?.agentId ?? sessionId,
+    sessionId,
+    buildingId,
+    payload: {
+      chatType: 'building',
+      characterName: system.locationAgent.agentName,
+      messageLength: parsed.data.message.length,
+      tokenAwarded,
+      knowledgePersisted,
+    },
+  });
 
   return c.json({
     success: true,

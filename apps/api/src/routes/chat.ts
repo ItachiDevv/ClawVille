@@ -8,6 +8,7 @@ import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { awardXp } from '../services/xp-service';
 import { shouldCollaborate, collaborateOnQuery } from '../services/agent-collaboration';
+import { logEvent } from '../services/event-logger';
 import { miladyGateway } from '../services/milady-gateway';
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import { getSystemNpcAgent } from '../services/system-npc-seeder';
@@ -184,6 +185,18 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
     // Award +5 XP for NPC chat (non-blocking)
     awardXp(avatar.id, 5, 'npc-chat').catch(console.error);
   }
+
+  void logEvent({
+    eventType: 'agent.chat.turn',
+    userId: user.id,
+    avatarId: avatar?.id ?? null,
+    buildingId: locationId,
+    payload: {
+      chatType: 'location',
+      messageLength: result.data.content.length,
+      tokenAwarded: avatar ? 1 : 0,
+    },
+  });
 
   return c.json({
     message: {

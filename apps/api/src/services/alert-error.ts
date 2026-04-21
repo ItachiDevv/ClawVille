@@ -1,0 +1,87 @@
+/**
+ * Immediate error/warning alerts via the itachi-debug Telegram bot.
+ *
+ * Three callers:
+ *   1. event-logger.ts — on DOUBLE FAILURE (both events + event_write_failures writes failed)
+ *   2. Hono onError middleware — any uncaught exception from a route handler
+ *   3. Explicit business-logic failures (e.g. token ledger insert failed)
+ *
+ * Never throws. A broken alert channel must not break user flows.
+ *
+ * Rate-limited: same `source::message` combo collapses to one alert per 60s,
+ * with suppressed-count appended when the next alert fires. Prevents a loud
+ * bug from drowning the Telegram chat.
+ */
+
+const TOKEN = process.env.ITACHI_DEBUG_BOT_TOKEN;
+const CHAT_ID = process.env.ITACHI_DEBUG_CHAT_ID;
+
+const WINDOW_MS = 60_000;
+const rateLimiter = new Map<string, { firstAt: number; suppressed: number }>();
+
+function shouldSend(key: string): { send: boolean; suppressedCount: number } {
+  const now = Date.now();
+  const existing = rateLimiter.get(key);
+
+  if (!existing || now - existing.firstAt > WINDOW_MS) {
+    rateLimiter.set(key, { firstAt: now, suppressed: 0 });
+    return { send: true, suppressedCount: 0 };
+  }
+
+  existing.suppressed += 1;
+  return { send: false, suppressedCount: existing.suppressed };
+}
+
+export interface AlertErrorParams {
+  severity: 'critical' | 'warning';
+  source: string;
+  message: string;
+  context?: Record<string, unknown>;
+}
+
+export async function alertError(params: AlertErrorParams): Promise<void> {
+  const { severity, source, message, context } = params;
+
+  if (!TOKEN || !CHAT_ID) {
+    console.warn('[alert-error] Telegram credentials not configured, skipping alert', {
+      source,
+      message,
+    });
+    return;
+  }
+
+  const key = `${source}::${message}`;
+  const { send, suppressedCount } = shouldSend(key);
+  if (!send) return;
+
+  const emoji = severity === 'critical' ? '🚨' : '⚠️';
+  const lines = [
+    `${emoji} *ClawVille API ${severity}*`,
+    `Source: \`${source}\``,
+    `Time: ${new Date().toISOString()}`,
+    '',
+    message,
+  ];
+  if (context) {
+    lines.push('```');
+    lines.push(JSON.stringify(context, null, 2));
+    lines.push('```');
+  }
+  if (suppressedCount > 0) {
+    lines.push(`_(+${suppressedCount} more in last 60s)_`);
+  }
+
+  try {
+    await fetch(`https://api.telegram.org/bot${TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: CHAT_ID,
+        text: lines.join('\n'),
+        parse_mode: 'Markdown',
+      }),
+    });
+  } catch (err) {
+    console.warn('[alert-error] Telegram send failed', err);
+  }
+}

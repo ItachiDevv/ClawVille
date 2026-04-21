@@ -232,6 +232,27 @@ auctionResolver.start();
 export const auctionRoutes = new Hono<AppContext>();
 auctionRoutes.use('*', sessionMiddleware);
 
+// FEATURE_GATE: skill_marketplace
+// Status: write handlers stubbed pending post-metrics-spine rework (pivoted
+//   to free agent leaderboard on 2026-04-21, see Brand Identity §3 + CLAUDE.md
+//   Priority #3 + improvements.md §7).
+// Metric to graduate: to be defined during rework.
+// Review deadline: after the architecture overhaul ships.
+auctionRoutes.use('*', async (c, next) => {
+  const writeMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+  if (writeMethods.has(c.req.method)) {
+    return c.json(
+      {
+        error:
+          'Skill marketplace paused pending rework. See brand identity §3 + improvements.md §7.',
+        code: 503,
+      },
+      503,
+    );
+  }
+  await next();
+});
+
 // ---------------------------------------------------------------------------
 // SSE: GET /stream — Live auction updates (no auth, spectator-friendly)
 // (Static route — must be before /:id)
