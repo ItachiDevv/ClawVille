@@ -5,7 +5,7 @@
  */
 
 import { db, npcMemories } from '@clawville/database';
-import { eq, and, desc, sql } from 'drizzle-orm';
+import { eq, and, desc, lt, sql } from 'drizzle-orm';
 
 export interface CreateMemoryInput {
   entityId: string;
@@ -106,8 +106,12 @@ export class MemoryService {
    */
   async cleanup(maxAgeDays = 14) {
     const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000);
-    await db.delete(npcMemories)
-      .where(sql`${npcMemories.createdAt} < ${cutoff}`);
+    // Use Drizzle's `lt` helper so the Date gets serialized via the column's
+    // pg type. Raw `sql\`...${cutoff}\`` bindings pass the Date straight to
+    // the postgres driver, which fails with "Received an instance of Date"
+    // on parameter bind. This ran every 30 min via npc-simulation.ts tick
+    // loop and flooded the logs.
+    await db.delete(npcMemories).where(lt(npcMemories.createdAt, cutoff));
   }
 }
 

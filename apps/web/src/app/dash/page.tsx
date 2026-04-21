@@ -45,7 +45,10 @@ async function fetchOverview(): Promise<FetchResult> {
   const apiBase = process.env.NEXT_PUBLIC_API_URL ?? '';
   if (!apiBase) return { error: 'NEXT_PUBLIC_API_URL is not configured.' };
 
-  const cookieHeader = cookies().toString();
+  // Next.js 15+: cookies() is async. Await before .toString() or the cookie
+  // header is literally "[object Promise]" and the API returns 401.
+  const cookieStore = await cookies();
+  const cookieHeader = cookieStore.toString();
   try {
     const res = await fetch(`${apiBase}/api/dashboard/overview`, {
       headers: { cookie: cookieHeader },
