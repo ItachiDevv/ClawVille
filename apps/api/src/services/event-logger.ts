@@ -17,7 +17,20 @@
 import { db, events, eventWriteFailures } from '@clawville/database';
 import { alertError } from './alert-error';
 
+// Keys matching this regex get [REDACTED] before insert. The (?!or) on `auth`
+// excludes `author` (writer credit) while keeping `authToken` / `auth` blocked.
+// Known hole: `authorization` is NOT blocked (also matches the lookahead). In
+// practice we never put HTTP Authorization headers in event payloads, so this
+// is acceptable — but if a future emitter does, tighten this regex first.
 const SENSITIVE_KEY = /token|secret|auth(?!or)|apiKey|password|privateKey/i;
+
+function sanitizeValue(v: unknown): unknown {
+  if (v && typeof v === 'object') {
+    if (Array.isArray(v)) return v.map(sanitizeValue);
+    return sanitize(v as Record<string, unknown>);
+  }
+  return v;
+}
 
 function sanitize(
   obj: Record<string, unknown> | undefined,
@@ -26,10 +39,7 @@ function sanitize(
   return Object.fromEntries(
     Object.entries(obj).map(([k, v]) => {
       if (SENSITIVE_KEY.test(k)) return [k, '[REDACTED]'];
-      if (v && typeof v === 'object' && !Array.isArray(v)) {
-        return [k, sanitize(v as Record<string, unknown>)];
-      }
-      return [k, v];
+      return [k, sanitizeValue(v)];
     }),
   );
 }
