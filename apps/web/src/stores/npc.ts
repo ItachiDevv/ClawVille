@@ -134,16 +134,22 @@ function makeDemoNpc(id: string, name: string, x: number, y: number, species: st
 // Demo NPC positions spread around the village center (2560,2560) to match
 // the 5120x5120 map (160x160 tiles).
 const DEMO_NPCS: NpcSpriteState[] = [
-  makeDemoNpc('demo-1',  'Captain Claw', 2600, 2200, 'lobster',  0xff2020),       // bright red
-  makeDemoNpc('demo-2',  'Pearl',        3000, 1800, 'lobster',  0xff80ab),       // pink
-  makeDemoNpc('demo-3',  'Rusty',        1800, 2800, 'lobster',  0xff8c00),       // orange
-  makeDemoNpc('demo-4',  'Abyssal',      3400, 2400, 'lobster',  0x2244ff, true), // deep blue
-  makeDemoNpc('demo-5',  'Mantis',       2200, 1600, 'lobster',  0x00e676),       // green
-  makeDemoNpc('demo-6',  'Goldie',       2800, 3000, 'lobster',  0xffd700),       // gold
-  makeDemoNpc('demo-7',  'Shadow',       1600, 2200, 'lobster',  0x8844cc),       // purple
-  makeDemoNpc('demo-8',  'Coral',        3600, 2000, 'lobster',  0xff4488),       // hot pink
-  makeDemoNpc('demo-9',  'Frost',        2400, 1400, 'lobster',  0x00ccdd),       // cyan/teal
-  makeDemoNpc('demo-10', 'Ember',        3200, 3200, 'lobster',  0xff5500),       // burnt orange
+  makeDemoNpc('demo-1',  'Captain Claw', 2600, 2200, 'lobster',          0xff2020),       // bright red
+  makeDemoNpc('demo-2',  'Pearl',        3000, 1800, 'lobster',          0xff80ab),       // pink
+  makeDemoNpc('demo-3',  'Rusty',        1800, 2800, 'lobster',          0xff8c00),       // orange
+  makeDemoNpc('demo-4',  'Abyssal',      3400, 2400, 'lobster',          0x2244ff, true), // deep blue
+  makeDemoNpc('demo-5',  'Mantis',       2200, 1600, 'lobster',          0x00e676),       // green
+  makeDemoNpc('demo-6',  'Goldie',       2800, 3000, 'lobster',          0xffd700),       // gold
+  makeDemoNpc('demo-7',  'Shadow',       1600, 2200, 'lobster',          0x8844cc),       // purple
+  makeDemoNpc('demo-8',  'Coral',        3600, 2000, 'lobster',          0xff4488),       // hot pink
+  makeDemoNpc('demo-9',  'Frost',        2400, 1400, 'lobster',          0x00ccdd),       // cyan/teal
+  makeDemoNpc('demo-10', 'Ember',        3200, 3200, 'lobster',          0xff5500),       // burnt orange
+  // Milady VRM wandering NPCs — use milady_official_7 and milady_official_8 to avoid
+  // sharing a VRM instance with the most-common player avatar picks (official_1 is the
+  // default; official_5 is popular). The vrm-loader caches one VRM per path — two NPCs
+  // sharing the same path would share vrm.scene and clobber each other's animation state.
+  makeDemoNpc('demo-vrm-1', 'Miu',   1400, 3400, 'milady_official_7', 0xffc0ff), // lavender (color ignored for VRM/MToon)
+  makeDemoNpc('demo-vrm-2', 'Kyoko', 3800, 1200, 'milady_official_8', 0xc0e8ff), // sky-blue  (color ignored for VRM/MToon)
 ];
 
 // Demo NPC wandering — makes NPCs walk around when not connected to server

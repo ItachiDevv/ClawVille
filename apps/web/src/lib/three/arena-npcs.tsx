@@ -18,6 +18,9 @@ import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 import { useGameStore } from '@/stores/game';
 import { PLAYER_NPC_ID } from '@/stores/npc';
 import { jumpState } from '@/lib/three/jump-state';
+import { useVRM, preloadVRM } from '@/lib/three/vrm-loader';
+import { VRMCharacterAnimator, preloadMixamoClips } from '@/lib/three/vrm-character-animator';
+import { MODEL_REGISTRY } from '@/lib/three/agent-model-registry';
 
 // ---------------------------------------------------------------------------
 // GLB-based NPC renderer with terrain raycasting
@@ -197,6 +200,40 @@ const DEFAULT_SPECIES = SPECIES_MODEL.lobster;
 // Preload all species GLBs at module level (11 models, ~3-4 MB total) so
 // wandering NPCs don't cause network+parse pops when they first appear.
 Object.values(SPECIES_MODEL).forEach(({ path }) => useGLTF.preload(path));
+
+// ---------------------------------------------------------------------------
+// VRM NPC constants
+// ---------------------------------------------------------------------------
+
+// VRM faces -Z natively (VRM 1.0 spec; VRM 0.x normalised via rotateVRM0 in vrm-loader).
+// This is OPPOSITE of lobster GLB (+Z forward). Separate DIR_ROTATION for cardinal dirs.
+//   down  vx=0,  vy=+1 → atan2(0, -1) = PI
+//   up    vx=0,  vy=-1 → atan2(0,  1) = 0
+//   right vx=+1, vy=0  → atan2(1,  0) = PI/2
+//   left  vx=-1, vy=0  → atan2(-1, 0) = -PI/2
+// See player-avatar.tsx VRM_DIR_ROTATION for verification.
+const VRM_DIR_ROTATION: Record<string, number> = {
+  down: Math.PI, up: 0, right: Math.PI / 2, left: -Math.PI / 2, idle: Math.PI,
+};
+
+// VRM_NPC_SCALE: target visual height = TARGET_NPC_HEIGHT (45 wu) for wandering Milady NPCs.
+// VRM native height ~1.6m → scale = 45 / 1.6 = 28.125 → use 28.
+// This differs from the registry scale=13 (calibrated for the SelectAgentCanvas picker at
+// ~21wu); wandering NPCs use 28 so they visually match lobster NPCs at 45wu.
+// VRM feet are at Y=0 per spec — no pivot offset calculation needed (unlike GLBs).
+const VRM_NPC_SCALE = 28;
+
+// Preload the 2 Milady VRM paths used by wandering NPCs + Mixamo animation clips.
+// These calls are module-scope so the cache is warm before any VRMNpcMesh mounts.
+// IMPORTANT: wandering NPCs use milady_official_7 and milady_official_8 intentionally —
+// the vrm-loader caches exactly one VRM instance per path. Sharing a path between
+// multiple concurrent NPC instances would cause them to share vrm.scene, making both
+// NPCs animate identically and clobber each other's animation state on every frame.
+// milady_official_7 and milady_official_8 are chosen to minimise collision with
+// player-avatar defaults (official_1 = category default, official_5 = popular pick).
+preloadVRM('/avatars/milady-official-7.vrm');
+preloadVRM('/avatars/milady-official-8.vrm');
+preloadMixamoClips();
 
 // ---------------------------------------------------------------------------
 // Single NPC using GLB model with terrain following
@@ -445,6 +482,149 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
 });
 
 // ---------------------------------------------------------------------------
+// VRM NPC renderer — parallel to GLBNpcMesh, for Milady wandering NPCs
+// ---------------------------------------------------------------------------
+// CRITICAL CONSTRAINT: vrm-loader caches exactly one VRM instance per path.
+// Do NOT render two VRMNpcMesh components with the same VRM path — they would
+// share vrm.scene and clobber each other's position/animation state every frame.
+// The 2 demo Milady NPCs intentionally use different paths (official_7 / official_8).
+const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
+  const groupRef = useRef<THREE.Group>(null!);
+  const { scene: threeScene } = useThree();
+  const npcRef = useRef(npc);
+  npcRef.current = npc;
+
+  // idToSeed returns float — round to int so (frame + seed) % 3 uses integer arithmetic.
+  const seed = useMemo(() => Math.round(idToSeed(npc.id)), [npc.id]);
+
+  const targetPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
+  const currentPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
+  const currentRotY = useRef(VRM_DIR_ROTATION.idle);
+  const currentTerrainY = useRef(-2);
+
+  // Resolve VRM path from the model registry (or use the species key directly as path suffix)
+  const regEntry = MODEL_REGISTRY[npc.species as keyof typeof MODEL_REGISTRY];
+  const vrmPath = regEntry?.path ?? `/avatars/${npc.species.replace('milady_official_', 'milady-official-')}.vrm`;
+
+  // Load VRM — suspends until resolved (parent Suspense absorbs the throw)
+  const vrm = useVRM(vrmPath);
+
+  // Per-instance VRM animator — each NPC gets its own AnimationMixer
+  const vrmAnimatorRef = useRef<VRMCharacterAnimator | null>(null);
+
+  useEffect(() => {
+    if (!vrm) return;
+    const animator = new VRMCharacterAnimator(vrm);
+    vrmAnimatorRef.current = animator;
+    animator.init().catch((err) => {
+      console.warn('[VRMNpcMesh] animator init failed:', err);
+    });
+    return () => {
+      vrmAnimatorRef.current = null;
+      animator.dispose();
+    };
+  }, [vrm]);
+
+  useFrame(({ clock }, delta) => {
+    const d = npcRef.current;
+    const group = groupRef.current;
+    if (!group) return;
+
+    const dt = Math.min(delta, 0.1);
+
+    // Lerp XZ position (mirrors GLBNpcMesh terrain-ride pattern)
+    targetPos.current.set(d.x - HALF_W, 0, d.y - HALF_H);
+    currentPos.current.x += (targetPos.current.x - currentPos.current.x) * (1 - Math.exp(-LERP_SPEED * dt));
+    currentPos.current.z += (targetPos.current.z - currentPos.current.z) * (1 - Math.exp(-LERP_SPEED * dt));
+    group.position.x = currentPos.current.x;
+    group.position.z = currentPos.current.z;
+
+    // Raycast terrain every 3rd frame (staggered by seed to avoid per-frame spikes)
+    const frame = Math.floor(clock.elapsedTime * 60);
+    if ((frame + seed) % 3 === 0) {
+      const terrainY = getTerrainY(group.position.x, group.position.z, threeScene);
+      currentTerrainY.current += (terrainY - currentTerrainY.current) * 0.3;
+    }
+
+    // VRM feet are at Y=0 per spec — no pivot offset needed.
+    // No procedural bob: VRMCharacterAnimator drives idle sway via spring bones + mixer.
+    group.position.y = currentTerrainY.current;
+
+    // VRM facing: -Z forward → atan2(vx, -vy) for screen-relative space.
+    // For cardinal directions, use VRM_DIR_ROTATION (mirrors player-avatar.tsx VRM fork).
+    const isMoving = d.direction !== 'idle' && !d.isDead;
+    const targetRot = VRM_DIR_ROTATION[d.direction] ?? VRM_DIR_ROTATION.idle;
+    let diff = targetRot - currentRotY.current;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    currentRotY.current += diff * Math.min(1, 8 * dt);
+    group.rotation.y = currentRotY.current;
+
+    // Drive VRM animation (idle ↔ walk crossfade, spring bones, look-at)
+    vrmAnimatorRef.current?.update(dt, isMoving);
+  });
+
+  return (
+    <group ref={groupRef}>
+      {/* VRM scale applied here — registry scale=13 is for the picker (21wu).
+          VRM_NPC_SCALE=28 targets TARGET_NPC_HEIGHT=45wu (28 × 1.6m ≈ 44.8wu). */}
+      <primitive
+        object={vrm.scene}
+        scale={[VRM_NPC_SCALE, VRM_NPC_SCALE, VRM_NPC_SCALE]}
+      />
+      {/* Name label — OUTSIDE scale so it's in world units. y=100 matches GLBNpcMesh. */}
+      <Html
+        position={[0, 100, 0]}
+        center
+        distanceFactor={300}
+        style={{ pointerEvents: 'none' }}
+        zIndexRange={[10, 100]}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            background: 'rgba(8, 20, 38, 0.78)',
+            border: '1px solid rgba(100, 200, 255, 0.25)',
+            borderRadius: 6,
+            padding: '2px 8px',
+            whiteSpace: 'nowrap',
+            userSelect: 'none',
+          }}
+        >
+          <span
+            style={{
+              color: '#fff',
+              fontWeight: 700,
+              fontSize: 11,
+              letterSpacing: '0.03em',
+            }}
+          >
+            {npc.name}
+          </span>
+          {npc.isOpenClaw && (
+            <span
+              style={{
+                background: 'rgba(16, 185, 129, 0.85)',
+                color: '#fff',
+                fontWeight: 700,
+                fontSize: 9,
+                borderRadius: 4,
+                padding: '1px 4px',
+                letterSpacing: '0.04em',
+              }}
+            >
+              OpenClaw
+            </span>
+          )}
+        </div>
+      </Html>
+    </group>
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Main export
 // ---------------------------------------------------------------------------
 export default function ArenaNpcs() {
@@ -462,9 +642,19 @@ export default function ArenaNpcs() {
   return (
     <Suspense fallback={null}>
       <group>
-        {npcs.map((npc) => (
-          <GLBNpcMesh key={npc.id} npc={npc} />
-        ))}
+        {npcs.map((npc) => {
+          // Route to VRM renderer if the species maps to a VRM entry in the registry.
+          // All other species fall through to the existing GLB renderer.
+          const regEntry = MODEL_REGISTRY[npc.species as keyof typeof MODEL_REGISTRY];
+          if (regEntry?.avatar_type === 'vrm') {
+            return (
+              <Suspense key={npc.id} fallback={null}>
+                <VRMNpcMesh npc={npc} />
+              </Suspense>
+            );
+          }
+          return <GLBNpcMesh key={npc.id} npc={npc} />;
+        })}
       </group>
     </Suspense>
   );
