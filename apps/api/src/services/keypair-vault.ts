@@ -1,7 +1,7 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
 import { Keypair } from '@solana/web3.js';
 import { db, eq, and, vanityKeypairs } from '@clawville/database';
-import type { vanitySuffixEnum } from '@clawville/database';
+import type { vanitySuffixEnum, Wallet } from '@clawville/database';
 
 const ALGORITHM = 'aes-256-gcm';
 
@@ -155,6 +155,157 @@ export async function releaseKeypair(keypairId: string): Promise<void> {
       reservedAt: null,
     })
     .where(eq(vanityKeypairs.id, keypairId));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5.1 — envelope encryption via Cloudflare Secrets Store Worker
+// ---------------------------------------------------------------------------
+// Version 2 of the encryption pipeline. Each secret is encrypted under a
+// fresh 32-byte per-row DEK (AES-256-GCM). The DEK itself is wrapped
+// (AES-KW, RFC 3394) by a master KEK that lives exclusively inside
+// Cloudflare Secrets Store, accessed via a tiny Worker exposing
+// POST /wrap and POST /unwrap.
+//
+// See:
+//   - Plan §4.3 (envelope storage summary)
+//   - Plan §5.1 (first-connect keypair generation)
+//   - infra/cf-secrets-worker/ (Worker source + deploy instructions)
+//
+// Threat-model note: a VPS-only dump yields ciphertexts + wrapped DEKs
+// but NOT the KEK — attacker would need a second compromise (Cloudflare)
+// to unwrap anything.
+// ---------------------------------------------------------------------------
+
+const WORKER_MISSING_MSG =
+  'Envelope encryption requires CLOUDFLARE_WORKER_URL and CLOUDFLARE_WORKER_BEARER. '
+  + 'Deploy the Worker first (see infra/cf-secrets-worker/README.md) and set both '
+  + 'env vars on the Hetzner API. Until this is done, only version-1 (legacy) '
+  + 'encryption works; any new-row write path will reject.';
+
+function requireWorkerEnv(): { url: string; bearer: string } {
+  const url = process.env.CLOUDFLARE_WORKER_URL;
+  const bearer = process.env.CLOUDFLARE_WORKER_BEARER;
+  if (!url || !bearer) throw new Error(WORKER_MISSING_MSG);
+  // Strip trailing slash so `${url}/wrap` doesn't become `.../ /wrap`
+  return { url: url.replace(/\/+$/, ''), bearer };
+}
+
+async function callWorker(
+  pathname: '/wrap' | '/unwrap',
+  body: Record<string, string>,
+): Promise<Record<string, string>> {
+  const { url, bearer } = requireWorkerEnv();
+  const res = await fetch(`${url}${pathname}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${bearer}`,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '<unreadable body>');
+    throw new Error(`CF secrets Worker ${pathname} failed: ${res.status} ${text}`);
+  }
+  return (await res.json()) as Record<string, string>;
+}
+
+/**
+ * Envelope-encrypt a 64-byte Solana secret key. Generates a fresh DEK,
+ * encrypts the secret with it, wraps the DEK via the Cloudflare Worker,
+ * returns the 5 values the caller persists on its row.
+ */
+export async function encryptSecretKeyEnveloped(secretKey: Uint8Array): Promise<{
+  encryptedSecretKey: string;
+  encryptionIv: string;
+  encryptionTag: string;
+  dekWrapped: string;
+  encryptionVersion: 2;
+}> {
+  // 1. Fresh per-row DEK.
+  const dek = randomBytes(32);
+
+  // 2. AES-GCM encrypt the secret under the DEK.
+  const iv = randomBytes(12);
+  const cipher = createCipheriv(ALGORITHM, dek, iv);
+  const encrypted = Buffer.concat([cipher.update(Buffer.from(secretKey)), cipher.final()]);
+  const tag = cipher.getAuthTag();
+
+  // 3. Wrap the DEK via the Cloudflare Worker.
+  const { wrappedDek } = await callWorker('/wrap', {
+    plaintextDek: dek.toString('base64'),
+  });
+  if (!wrappedDek) throw new Error('CF secrets Worker /wrap returned no wrappedDek');
+
+  return {
+    encryptedSecretKey: encrypted.toString('base64'),
+    encryptionIv: iv.toString('base64'),
+    encryptionTag: tag.toString('base64'),
+    dekWrapped: wrappedDek,
+    encryptionVersion: 2,
+  };
+}
+
+/**
+ * Decrypt an envelope-encrypted Solana secret key. Unwraps the DEK via
+ * the Cloudflare Worker, then AES-GCM decrypts the secret under the DEK.
+ */
+export async function decryptSecretKeyEnveloped(row: {
+  encryptedSecretKey: string;
+  encryptionIv: string;
+  encryptionTag: string;
+  dekWrapped: string;
+}): Promise<Keypair> {
+  const { plaintextDek } = await callWorker('/unwrap', {
+    wrappedDek: row.dekWrapped,
+  });
+  if (!plaintextDek) throw new Error('CF secrets Worker /unwrap returned no plaintextDek');
+
+  const dek = Buffer.from(plaintextDek, 'base64');
+  if (dek.length !== 32) {
+    throw new Error(`Unwrapped DEK has wrong length: got ${dek.length}, expected 32`);
+  }
+  const iv = Buffer.from(row.encryptionIv, 'base64');
+  const tag = Buffer.from(row.encryptionTag, 'base64');
+  const decipher = createDecipheriv(ALGORITHM, dek, iv);
+  decipher.setAuthTag(tag);
+  const decrypted = Buffer.concat([
+    decipher.update(Buffer.from(row.encryptedSecretKey, 'base64')),
+    decipher.final(),
+  ]);
+
+  return Keypair.fromSecretKey(new Uint8Array(decrypted));
+}
+
+/**
+ * Version-dispatching decrypt for a `wallets` row. Callers don't care
+ * whether the row was encrypted under the legacy VANITY_ENCRYPTION_KEY
+ * or via Cloudflare envelope — just pass the row and get back a Keypair.
+ *
+ * Throws if:
+ *   - encryptionVersion is 2 but dekWrapped is NULL (data corruption).
+ *   - encryptionVersion is an unknown value.
+ */
+export async function decryptWalletRow(row: Wallet): Promise<Keypair> {
+  if (row.encryptionVersion === 2) {
+    if (!row.dekWrapped) {
+      throw new Error(
+        `[wallet] row ${row.id} has encryption_version=2 but dek_wrapped IS NULL`,
+      );
+    }
+    return decryptSecretKeyEnveloped({
+      encryptedSecretKey: row.encryptedSecretKey,
+      encryptionIv: row.encryptionIv,
+      encryptionTag: row.encryptionTag,
+      dekWrapped: row.dekWrapped,
+    });
+  }
+  if (row.encryptionVersion === 1 || row.encryptionVersion == null) {
+    return decryptSecretKey(row.encryptedSecretKey, row.encryptionIv, row.encryptionTag);
+  }
+  throw new Error(
+    `[wallet] row ${row.id} has unsupported encryption_version=${row.encryptionVersion}`,
+  );
 }
 
 /** Get pool stats for monitoring */

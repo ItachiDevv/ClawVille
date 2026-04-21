@@ -1,0 +1,16 @@
+{
+  "name": "@clawville/cf-secrets-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Worker that wraps/unwraps per-row DEKs using a KEK bound via Secrets Store. Phase 5.1 envelope-encryption root of trust.",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241106.0",
+    "typescript": "^5.3.3",
+    "wrangler": "^3.86.0"
+  }
+}

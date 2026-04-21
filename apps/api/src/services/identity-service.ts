@@ -15,7 +15,10 @@
  */
 
 import { createHash } from 'crypto';
-import { db, users, eq } from '@clawville/database';
+import nacl from 'tweetnacl';
+import bs58 from 'bs58';
+import { db, users, eq, and, isNull, sql } from '@clawville/database';
+import { encryptSecretKeyEnveloped } from './keypair-vault';
 
 /**
  * Stable hash of `{type}:{key}` as hex SHA-256 (64 chars). The colon
@@ -122,4 +125,133 @@ export async function resolveOrCreateUserByIdentity(
       isNewUser: false,
     };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5.1 — ed25519 identity keypair bootstrap
+// ---------------------------------------------------------------------------
+// First-time `/api/agent/connect` for a user whose `identity_pubkey` is
+// still NULL generates an ed25519 keypair, envelope-encrypts the secret
+// via Cloudflare, and writes all five identity_* columns in a single
+// conditional UPDATE. The conditional guard `WHERE identity_pubkey IS
+// NULL` is the atomicity primitive — two concurrent /connect calls will
+// race on the UPDATE; one's WHERE clause matches 0 rows.
+//
+// Race-loser path: returns the winner's pubkey with isFirstTime=false
+// AND needsHumanReauth=true so the agent knows NOT to overwrite its
+// config (which already has an older identity secret) and the human
+// gets prompted to start a fresh connect-token flow.
+//
+// See plan §5.2 and §9.1.
+// ---------------------------------------------------------------------------
+
+export interface GeneratedIdentity {
+  /** Base58 ed25519 public key. Always present. */
+  publicKey: string;
+  /**
+   * Base58 ed25519 secret key (64-byte tweetnacl sign secretKey format).
+   * ONLY populated when isFirstTime=true — the caller returns this ONCE
+   * in the agent response and the server never re-exposes it.
+   */
+  secretKey: string;
+  /** True when this call wrote the keypair. False for race-losers. */
+  isFirstTime: boolean;
+  /**
+   * Race-loser signal — the user already had a pubkey and our generated
+   * secret was discarded. Caller must NOT overwrite the agent's config;
+   * instead it prompts the human to re-auth via the connect-token flow.
+   */
+  needsHumanReauth: boolean;
+}
+
+/**
+ * Generate and persist an ed25519 identity keypair for a user.
+ *
+ *   - If users.identity_pubkey IS NULL → generate + write, return
+ *     { secretKey, isFirstTime: true, needsHumanReauth: false }.
+ *   - If users.identity_pubkey IS NOT NULL → discard the generated
+ *     secret, return { secretKey: '', isFirstTime: false,
+ *     needsHumanReauth: true, publicKey: <the existing pubkey> }.
+ *
+ * The atomicity contract is that concurrent calls never both succeed.
+ * Implementation uses a single conditional UPDATE with RETURNING so we
+ * don't need an advisory lock or a SELECT-then-UPDATE window.
+ */
+export async function generateIdentityKeypairForUser(
+  userId: string,
+): Promise<GeneratedIdentity> {
+  // 1. Fast-path check: if the user already has a pubkey, skip the
+  //    expensive keypair generation + Worker round-trip entirely.
+  const existing = await db.query.users.findFirst({
+    where: eq(users.id, userId),
+    columns: { identityPubkey: true },
+  });
+  if (!existing) {
+    throw new Error(`generateIdentityKeypairForUser: user ${userId} not found`);
+  }
+  if (existing.identityPubkey) {
+    return {
+      publicKey: existing.identityPubkey,
+      secretKey: '',
+      isFirstTime: false,
+      needsHumanReauth: false,
+    };
+  }
+
+  // 2. Generate a fresh ed25519 keypair.
+  const kp = nacl.sign.keyPair();
+  const publicKeyBase58 = bs58.encode(kp.publicKey);
+  const secretKeyBase58 = bs58.encode(kp.secretKey);
+
+  // 3. Envelope-encrypt the secret. Failure here is fatal because
+  //    continuing would persist plaintext (unacceptable) or store a
+  //    row the read path couldn't decrypt.
+  const enc = await encryptSecretKeyEnveloped(kp.secretKey);
+
+  // 4. Atomic conditional UPDATE. `affectedRows === 1` ⇔ we won the
+  //    race (the NULL guard matched); === 0 ⇔ a concurrent caller
+  //    beat us to it.
+  const updated = await db
+    .update(users)
+    .set({
+      identityPubkey: publicKeyBase58,
+      identityEncryptedSk: enc.encryptedSecretKey,
+      identityIv: enc.encryptionIv,
+      identityTag: enc.encryptionTag,
+      identityDekWrapped: enc.dekWrapped,
+      identityEncryptionVersion: enc.encryptionVersion,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(users.id, userId), isNull(users.identityPubkey)))
+    .returning({ identityPubkey: users.identityPubkey });
+
+  if (updated.length === 1) {
+    return {
+      publicKey: publicKeyBase58,
+      secretKey: secretKeyBase58,
+      isFirstTime: true,
+      needsHumanReauth: false,
+    };
+  }
+
+  // 5. Race-loser — re-read the winner's pubkey so the caller can
+  //    surface it to the agent. The generated secret is discarded.
+  const raced = await db.query.users.findFirst({
+    where: eq(users.id, userId),
+    columns: { identityPubkey: true },
+  });
+  if (!raced?.identityPubkey) {
+    // Shouldn't happen — either the UPDATE succeeded (handled above) or
+    // the WHERE missed because a concurrent caller wrote the pubkey.
+    // If we see neither, surface loudly so we can investigate.
+    throw new Error(
+      `Identity race: update affected 0 rows but identity_pubkey is NULL for user ${userId}`,
+    );
+  }
+  return {
+    publicKey: raced.identityPubkey,
+    secretKey: '',
+    isFirstTime: false,
+    needsHumanReauth: true,
+  };
 }
