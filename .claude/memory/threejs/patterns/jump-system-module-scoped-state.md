@@ -1,14 +1,14 @@
 ---
-title: Module-scoped jump state + dedicated JumpTicker component
+title: Jump system: module-scoped state + JumpTicker (charge-and-release + 3D swim + quicksink)
 category: pattern
-tags: [jump, physics, useFrame, module-scoped, zustand-avoidance, keyboard, space, charge]
+tags: [jump, physics, useFrame, module-scoped, zustand-avoidance, keyboard, space, charge, quicksink, swim-altitude, playerAltitude]
 date: 2026-04-21
 confidence: high
 threejs_version: r170+
 ---
 
 ## Summary
-Jump physics state lives in a plain module-scoped object (not Zustand). A dedicated `<JumpTicker />` component runs the physics tick mounted FIRST in the scene so all consumers read current-frame state. As of 2026-04-21, the system is charge-and-release (5 phases).
+Jump physics state lives in a plain module-scoped object (not Zustand). A dedicated `<JumpTicker />` component runs the physics tick mounted FIRST in the scene so all consumers read current-frame state. As of 2026-04-21, the system is charge-and-release with 6 phases (added `quicksink`), camera-tilt 3D swim via `playerAltitude`, and mid-air SPACE quick-sink.
 
 ## Details
 
@@ -16,18 +16,20 @@ Jump physics state lives in a plain module-scoped object (not Zustand). A dedica
 
 **Why a dedicated component:** R3F runs `useFrame` hooks in mount order. If the tick ran inside `PlayerPet` (mounted last), `FPSFollowCamera` and `GLBNpcMesh` would read stale `heightOffset` from frame N-1 (~4.67 wu visible lag at peak thrust). Hoisting to `<JumpTicker />` mounted first fixes this.
 
-**State object shape (current — charge-and-release, 2026-04-21):**
+**State object shape (current — charge-and-release + 3D swim, 2026-04-21):**
 ```ts
-export type JumpPhase = 'grounded' | 'charging' | 'quick' | 'launch' | 'sinking';
+export type JumpPhase = 'grounded' | 'charging' | 'quick' | 'launch' | 'sinking' | 'quicksink';
 export const jumpState = {
-  phase:          'grounded' as JumpPhase,
-  vz:             0,          // wu/sec, positive = up
-  heightOffset:   0,          // wu above terrain (always >= 0)
-  holdMs:         0,          // time SPACE continuously held this press
-  chargeProgress: 0,          // 0..1 — charge-bar.tsx reads this via RAF
-  lastSpaceDown:  false,
-  spaceDown:      false,      // written by SPACE listener only
+  phase:           'grounded' as JumpPhase,
+  vz:              0,          // wu/sec, positive = up
+  heightOffset:    0,          // wu above terrain (always >= 0)
+  playerAltitude:  0,          // persistent swim altitude (wu, >= 0). Camera-tilt 3D swim.
+  holdMs:          0,          // time SPACE continuously held this press
+  chargeProgress:  0,          // 0..1 — charge-bar.tsx reads this via RAF
+  lastSpaceDown:   false,
+  spaceDown:       false,      // written by SPACE listener only
 };
+export const JUMP_QUICKSINK_VZ = -600; // wu/s constant descent
 ```
 
 **Phase flow:**
@@ -37,7 +39,18 @@ export const jumpState = {
 - `charging` + held 1500ms → auto-launch at `vz=700` (max charge)
 - `quick` → vz crosses 0 under QUICK_GRAVITY (-220) → `sinking` (smooth, no apex freeze)
 - `launch` → vz crosses 0 under ASCENT_GRAVITY (-160) → `sinking` (smooth, no apex freeze)
+- `quick` / `launch` / `sinking` + SPACE rising edge mid-air → `quicksink` (vz=-600, constant drop)
+- `quicksink` → heightOffset=0 → `grounded`
 - `sinking` → heightOffset=0 → `grounded`
+
+**3D swim (playerAltitude):**
+- `_playerCamForward.y = 0` line REMOVED in player-pet.tsx (GLB + VRM) and npc-controller.tsx.
+- `worldVy = camForward.y * inputFwd` accumulated into `jumpState.playerAltitude` before XZ normalisation.
+- Floor-clamped ≥ 0. No gravity. Persistent when input stops.
+- Strafe (A/D) contributes nothing: `camRight.y ≈ 0` by cross-product math.
+- Render-Y: `terrainY + 2 + bob + heightOffset + playerAltitude - pivotOffsetY`
+
+**quicksink fires BEFORE switch statement** so it takes priority over all other transitions this frame.
 
 **Key guardrails:**
 - `resetJump()` does NOT reset `spaceDown` — physical keyup clears it.
@@ -55,11 +68,13 @@ export const jumpState = {
 - Ascent gravity: -160 wu/s² (lighter than tap -220 to allow the large peak)
 - `JUMP_MIN_CHARGED_VZ` = 100 wu/s (lowered from 250 on 2026-04-21 to eliminate 6× step at 200ms boundary)
 
-**'charging' phase is NOT airborne.** Both consumers treat charging same as grounded:
+**'charging' phase is NOT airborne. `playerAltitude > 0` IS airborne.** Consumers:
 ```ts
-const airborne = jumpState.phase !== 'grounded' && jumpState.phase !== 'charging';
+const airborne = (jumpState.phase !== 'grounded' && jumpState.phase !== 'charging')
+              || jumpState.playerAltitude > 0;
 ```
-This prevents bob suppression and heightOffset=0 stays true during charge.
+This prevents bob suppression while on the ground or charging, but correctly suppresses
+it when the pet is swimming above the floor.
 
 **Charge bar UI.** `apps/web/src/components/game/charge-bar.tsx` — RAF loop, direct DOM mutation, zero React state. Reads `jumpState.holdMs` and `jumpState.phase` directly. Color: cyan → white at 95%.
 
@@ -77,3 +92,5 @@ This prevents bob suppression and heightOffset=0 stays true during charge.
 Originally shipped 2026-04-17 (two-phase immediate-launch + thrust clamp). Rewritten 2026-04-21 to charge-and-release per user spec: hold SPACE on ground → charge bar → release to launch proportionally. Simulation verified all 3 scenarios pass. TypeScript build clean.
 
 Updated 2026-04-21 (second patch): vz interpolation switched from linear to vz²-linear (square-root of linearly interpolated vz²). Reason: linear vz made peak altitude quadratic in t — at t=0.5, peak was only 46% of max (~706wu vs expected ~863wu midpoint). vz²-linear gives peak exactly linear in charge progress (midpoint=863wu confirmed by throwaway simulation script — all 5 samples within 0.32% of spec). FPSFollowCamera camera-position tracking added to prevent PHI clamp glitch at high jumps.
+
+Updated 2026-04-21 (third patch): camera-tilt 3D swim + mid-air SPACE quicksink. `playerAltitude` field added to jumpState. `JumpPhase` extended with `'quicksink'`. `resetJump()` now resets `playerAltitude`. Verified: 6 simulation tests pass, TypeScript build clean.

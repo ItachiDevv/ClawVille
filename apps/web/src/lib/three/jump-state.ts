@@ -15,7 +15,7 @@
 // Type
 // ---------------------------------------------------------------------------
 
-export type JumpPhase = 'grounded' | 'charging' | 'quick' | 'launch' | 'sinking';
+export type JumpPhase = 'grounded' | 'charging' | 'quick' | 'launch' | 'sinking' | 'quicksink';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -39,6 +39,11 @@ export const JUMP_MAX_CHARGED_VZ = 700;
 /** wu/s² — gravity during charged-jump ascent. Lighter than tap so peak reaches the intended altitude. */
 export const JUMP_ASCENT_GRAVITY = -160;
 
+// ---- Quick-sink (mid-air SPACE drops pet at constant velocity) ----
+/** wu/s — constant descent velocity during quicksink. Mid-air SPACE drops the pet at this rate.
+ *  From 1500wu peak → ~2.5s landing. Horizontal WASD still works during quicksink. */
+export const JUMP_QUICKSINK_VZ = -600;
+
 // ---- Sink (underwater float) ----
 /** wu/s² — gentle sink gravity (unchanged). */
 export const JUMP_SINK_GRAVITY = -45;
@@ -50,13 +55,16 @@ export const JUMP_SINK_TERMINAL = -150;
 // ---------------------------------------------------------------------------
 
 export const jumpState = {
-  phase:          'grounded' as JumpPhase,
-  vz:             0,          // wu/sec, positive = up
-  heightOffset:   0,          // wu above the ground-plane sampling point (>= 0)
-  holdMs:         0,          // time SPACE has been continuously held this press
-  chargeProgress: 0,          // 0..1, written each frame while charging — charge-bar.tsx reads this
-  lastSpaceDown:  false,      // rising-edge detector
-  spaceDown:      false,      // keydown/keyup listener writes this
+  phase:           'grounded' as JumpPhase,
+  vz:              0,          // wu/sec, positive = up
+  heightOffset:    0,          // wu above the ground-plane sampling point (>= 0)
+  playerAltitude:  0,          // persistent swim altitude (wu, >= 0). Accumulated by input
+                               // controllers from camera-forward Y component. Separate from
+                               // heightOffset (jump arc) — both stack at render time.
+  holdMs:          0,          // time SPACE has been continuously held this press
+  chargeProgress:  0,          // 0..1, written each frame while charging — charge-bar.tsx reads this
+  lastSpaceDown:   false,      // rising-edge detector
+  spaceDown:       false,      // keydown/keyup listener writes this
 };
 
 // ---------------------------------------------------------------------------
@@ -131,6 +139,16 @@ export function updateJump(rawDt: number): void {
     ? Math.min(1, jumpState.holdMs / JUMP_MAX_HOLD_MS)
     : 0;
 
+  // Mid-air quick-sink: pressing SPACE while airborne drops the pet fast.
+  // Takes precedence over any other phase transition this frame.
+  // Not allowed during 'grounded' (enter 'charging' instead) or 'charging'.
+  if (risingEdge && (jumpState.phase === 'quick'
+                  || jumpState.phase === 'launch'
+                  || jumpState.phase === 'sinking')) {
+    jumpState.phase = 'quicksink';
+    jumpState.vz = JUMP_QUICKSINK_VZ;
+  }
+
   switch (jumpState.phase) {
     case 'grounded':
       if (risingEdge) {
@@ -197,6 +215,11 @@ export function updateJump(rawDt: number): void {
       jumpState.vz += JUMP_SINK_GRAVITY * dt;
       jumpState.vz = Math.max(jumpState.vz, JUMP_SINK_TERMINAL);
       break;
+
+    case 'quicksink':
+      // Constant downward velocity. No gravity, no clamp — straight-line drop.
+      jumpState.vz = JUMP_QUICKSINK_VZ;
+      break;
   }
 
   if (jumpState.phase !== 'grounded' && jumpState.phase !== 'charging') {
@@ -216,6 +239,7 @@ export function resetJump(): void {
   jumpState.phase = 'grounded';
   jumpState.vz = 0;
   jumpState.heightOffset = 0;
+  jumpState.playerAltitude = 0;
   jumpState.holdMs = 0;
   jumpState.chargeProgress = 0;
   jumpState.lastSpaceDown = false;

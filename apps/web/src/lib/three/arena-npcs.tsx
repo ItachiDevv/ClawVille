@@ -352,8 +352,13 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
       d.id === PLAYER_NPC_ID &&
       useGameStore.getState().controlMode === 'npc';
     // 'charging' keeps the NPC on the ground (heightOffset=0), so it is not airborne.
-    const airborne = isPossessedPlayerNpc && jumpState.phase !== 'grounded' && jumpState.phase !== 'charging';
-    const jumpY = isPossessedPlayerNpc ? jumpState.heightOffset : 0;
+    // playerAltitude > 0 means the NPC is swimming above the ocean floor — also airborne.
+    const airborne = isPossessedPlayerNpc &&
+                     (jumpState.phase !== 'grounded' && jumpState.phase !== 'charging'
+                   || jumpState.playerAltitude > 0);
+    const jumpY = isPossessedPlayerNpc
+      ? (jumpState.heightOffset + jumpState.playerAltitude)
+      : 0;
     const isMoving = d.direction !== 'idle' && !d.isDead;
     const bob = (isMoving && !airborne) ? Math.sin(clock.elapsedTime * 4.0 + seed) * 0.6 : 0;
     group.position.y = currentTerrainY.current + 2 + bob + jumpY - pivotOffsetY;
