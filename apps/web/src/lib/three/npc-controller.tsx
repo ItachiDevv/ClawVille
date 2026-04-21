@@ -19,7 +19,7 @@ import { useNpcStore } from '@/stores/npc';
 import type { NpcSpriteState } from '@/stores/npc';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 import { findNearestCharacter } from '@/lib/three/character-positions';
-import { isEditable } from '@/lib/three/jump-state';
+import { isEditable, jumpState } from '@/lib/three/jump-state';
 
 const SPEED = 550; // pixels/sec — pass 2 2026-04-16: bumped 320→550 (user tested pass 1 at 320,
                    // still felt sluggish crossing ~2000-wu visible area; target 3-4s crossing time → 2000/550≈3.6s)
@@ -159,17 +159,26 @@ export default function NpcController() {
     }
 
     // ---- Camera-relative transform ----
+    // Full 3D camera forward — Y kept for camera-tilt 3D swim (mirrors player-avatar.tsx).
     camera.getWorldDirection(_camForward);
-    _camForward.y = 0;
     const fwdLen = _camForward.length();
     if (fwdLen < 0.001) return; // Camera nearly vertical — skip
     _camForward.divideScalar(fwdLen);
 
     _camRight.crossVectors(_camForward, _worldUp).normalize();
 
-    // World-space velocity (XZ plane)
+    // Extract full 3D components. worldVy drives swim altitude (not XZ movement).
     const worldVx = _camForward.x * inputFwd + _camRight.x * inputRight;
+    const worldVy = _camForward.y * inputFwd; // strafe contributes ~0 (camRight.y≈0)
     const worldVz = _camForward.z * inputFwd + _camRight.z * inputRight;
+
+    // Accumulate vertical offset from camera tilt.
+    if (worldVy !== 0) {
+      jumpState.playerAltitude = Math.max(
+        0,
+        jumpState.playerAltitude + worldVy * SPEED * delta
+      );
+    }
 
     // Facing angle for +Z-facing model: atan2(worldVx, worldVz) — EMPIRICALLY VERIFIED 2026-04-16 (late PM, clean side-view screenshot)
     // Prior sessions concluded +X (wrong — camera was orbited in that screenshot). +Z is proven by unambiguous side-view.
