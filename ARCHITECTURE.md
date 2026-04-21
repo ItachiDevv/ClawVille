@@ -25,7 +25,7 @@ Browser (Next.js)                         Hetzner CCX13 + Coolify
 
 ## Frontend Architecture
 
-**Framework**: Next.js 14 (App Router) with React 19
+**Framework**: Next.js 16 (App Router) with React 19. Note that in Next.js 15+, `cookies()`, `headers()`, and dynamic-route `params` are async — always `await` them. Server components that use `cookies().toString()` synchronously silently stringify to `"[object Promise]"` and forward garbage to downstream APIs (bit /dash once — see commit `6ac5da1`).
 
 **Entry point**: `apps/web/src/app/game/page.tsx` -- dynamically imports `World3DCanvas` (SSR disabled) and mounts all game UI overlays as React components.
 

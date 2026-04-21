@@ -298,7 +298,7 @@ Things I'm NOT sure about:
 
 6. **Cost of being wrong about the CSP/CORS details.** If our `frame-ancestors` list is too narrow, the viewer shows a blank frame with no error — incredibly hard to debug. Need to test against a real Milady build (ideally the Electrobun desktop one) before we submit.
 
-7. **Whether ClawVille's web app currently works in an iframe at all.** Next.js 14 can set `X-Frame-Options: DENY` by default via `next.config.mjs` security headers, and any third-party widget we load (Cloudflare Turnstile, Stripe, etc.) might add its own X-Frame-Options headers. **Need to test before submitting.**
+7. **Whether ClawVille's web app currently works in an iframe at all.** Next.js 16 can set `X-Frame-Options: DENY` by default via `next.config.mjs` security headers, and any third-party widget we load (Cloudflare Turnstile, Stripe, etc.) might add its own X-Frame-Options headers. **Need to test before submitting.**
 
 8. **The "custodial avatar wallet" proposal has legal/regulatory implications.** Holding user keys in a KYC-free game could attract MSB or money-transmitter scrutiny in some jurisdictions if the wallet ever holds real value. Worth a lightweight legal review before Phase 5 makes these wallets load-bearing. For v1 (empty wallets only used as x402 payment sources for ~$0.001 pings) the risk is nil.
 
