@@ -32,8 +32,8 @@ export const JUMP_QUICK_GRAVITY = -220;
 // ---- Charged jump (new) ----
 /** ms — full-charge hold duration. Auto-launches at this point if still held. */
 export const JUMP_MAX_HOLD_MS = 1500;
-/** wu/s — initial vz when release happens just past the tap threshold (minimal charge). Peak ≈ 250²/(2·160) ≈ 195 wu. */
-export const JUMP_MIN_CHARGED_VZ = 250;
+/** wu/s — initial vz when release happens just past the tap threshold (minimal charge). Peak ≈ 100²/(2·160) ≈ 31 wu — matches the ~33 wu tap peak so there's no visible step across the 200ms threshold. */
+export const JUMP_MIN_CHARGED_VZ = 100;
 /** wu/s — initial vz at full charge. Peak ≈ 700²/(2·160) ≈ 1531 wu (~1.9× building height). */
 export const JUMP_MAX_CHARGED_VZ = 700;
 /** wu/s² — gravity during charged-jump ascent. Lighter than tap so peak reaches the intended altitude. */
@@ -155,13 +155,12 @@ export function updateJump(rawDt: number): void {
           // felt flat across the low-mid bar range. Square-root interp fixes the
           // perception without changing min/max endpoints.
           //
-          // New peak-vs-charge table:
-          //   0%  (just past 200ms) → vz=250  → peak ≈  195 wu
-          //  25%                    → vz=412  → peak ≈  531 wu
-          //  50%                    → vz=525  → peak ≈  863 wu
-          //  75%                    → vz=618  → peak ≈ 1194 wu
+          // New peak-vs-charge table (JUMP_MIN_CHARGED_VZ=100 → matches ~33wu tap):
+          //   0%  (just past 200ms) → vz=100  → peak ≈   31 wu
+          //  25%                    → vz=360  → peak ≈  405 wu
+          //  50%                    → vz=500  → peak ≈  781 wu
+          //  75%                    → vz=608  → peak ≈ 1156 wu
           // 100% (1500ms)           → vz=700  → peak ≈ 1531 wu
-          // Midpoint ≈ 863 wu = (195 + 1531) / 2. Linear in height.
           const vzMinSq = JUMP_MIN_CHARGED_VZ * JUMP_MIN_CHARGED_VZ;
           const vzMaxSq = JUMP_MAX_CHARGED_VZ * JUMP_MAX_CHARGED_VZ;
           jumpState.vz = Math.sqrt(vzMinSq + (vzMaxSq - vzMinSq) * t);
