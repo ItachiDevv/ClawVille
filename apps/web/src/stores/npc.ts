@@ -248,16 +248,17 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
 
   setConnected: (v) => {
     set({ connected: v });
-    if (v) {
-      // Server connected — stop demo wander so it doesn't overwrite server positions
-      stopDemoWander();
-    } else {
-      // Server disconnected — restore demo NPCs and restart wander
+    // Wander tick stays running regardless of connection state — it now also
+    // drives the 2 client-only Milady VRM NPCs (demo-vrm-1 / demo-vrm-2) which
+    // the server doesn't know about. Server-sync snapshots overwrite lobster
+    // positions every ~100-500ms anyway, so the wander contribution to the
+    // lobsters is invisible — only the VRM NPCs retain the wander movement.
+    if (!v) {
       if (get().npcs.length === 0) {
         set({ npcs: DEMO_NPCS });
       }
-      startDemoWander();
     }
+    startDemoWander();
   },
 
   updateFromSnapshot: (snapshot) => {
@@ -400,7 +401,19 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
     const { useGameStore } = require('@/stores/game') as typeof import('@/stores/game');
     const isNpcMode = useGameStore.getState().controlMode === 'npc';
     const playerNpc = isNpcMode ? state.npcs.find((n) => n.id === PLAYER_NPC_ID) : undefined;
-    const finalNpcs = playerNpc ? [playerNpc, ...npcs] : npcs;
+
+    // Preserve client-only wandering NPCs (currently the 2 Milady VRMs: demo-vrm-1 / demo-vrm-2).
+    // These are local demo entities with no server counterpart; the server snapshot is
+    // authoritative for combat/chat lobsters but must NOT wipe the VRM wanderers.
+    // Filter by id prefix so adding more VRM demo NPCs in the future is a one-line
+    // DEMO_NPCS append with no store changes required.
+    const localVrmNpcs = state.npcs.filter((n) => n.id.startsWith('demo-vrm-'));
+
+    const finalNpcs = [
+      ...(playerNpc ? [playerNpc] : []),
+      ...npcs,
+      ...localVrmNpcs,
+    ];
 
     set({
       npcs: finalNpcs,
