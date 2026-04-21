@@ -84,7 +84,6 @@ const _offset = new THREE.Vector3();
 const _spherical = new THREE.Spherical();
 
 // Scratch objects for FPSFollowCamera — allocated once, reused every frame
-const _followOffset = new THREE.Vector3();
 const _followTarget = new THREE.Vector3();
 
 // Scratch objects for WASDCameraController — allocated once, reused every frame
@@ -295,20 +294,26 @@ function FPSFollowCamera({
     const worldZ = gameY - HALF_H;
 
     // Lerp the orbit target toward the character (smooth follow).
-    // jumpState.heightOffset raises the camera target during a jump so the
-    // avatar stays in frame. resetJump() guarantees heightOffset=0 outside
-    // player/npc modes, so the read is unconditional.
+    // jumpState.heightOffset raises the target during a jump so the avatar stays
+    // in frame. resetJump() guarantees heightOffset=0 outside player/npc modes.
     const extraY = jumpState.heightOffset;
     const tgt = controls.target;
-    tgt.x += (worldX  - tgt.x) * 0.1;
+    const prevTgtX = tgt.x;
+    const prevTgtY = tgt.y;
+    const prevTgtZ = tgt.z;
+    tgt.x += (worldX - tgt.x) * 0.1;
     tgt.y += ((CHAR_TARGET_Y + extraY) - tgt.y) * 0.1;
-    tgt.z += (worldZ  - tgt.z) * 0.1;
+    tgt.z += (worldZ - tgt.z) * 0.1;
 
-    // Move camera position by the same delta as the target so the orbit
-    // angle and user-chosen zoom distance are preserved. OrbitControls'
-    // minDistance / maxDistance handle zoom bounds — we never override the
-    // radial distance here, which was causing scroll-zoom to snap back.
-    _followOffset.subVectors(controls.object.position, tgt);
+    // Translate camera by the same delta as the target so the orbit geometry
+    // (angle, zoom distance, phi/theta) is preserved. Without this, a high jump
+    // (target.y → 1500+) leaves the camera at its old Y while the target soars
+    // above, forcing PHI near its clamp and making arrow-key rotation glitch at
+    // near-vertical angles. This mirrors OrbitControls' internal behavior when
+    // target moves programmatically.
+    controls.object.position.x += (tgt.x - prevTgtX);
+    controls.object.position.y += (tgt.y - prevTgtY);
+    controls.object.position.z += (tgt.z - prevTgtZ);
 
     // Clamp camera Y so it never goes below the ground floor
     if (controls.object.position.y < CAM_Y_MIN) {
