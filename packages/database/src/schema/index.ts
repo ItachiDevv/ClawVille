@@ -22,6 +22,7 @@ export * from './wallets';
 export * from './agent-session-tickets';
 export * from './events';
 export * from './event-write-failures';
+export * from './pending-account-links';
 
 import { users, sessions } from './users';
 import { npcMemories, activityLog } from './memories';

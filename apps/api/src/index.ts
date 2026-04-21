@@ -27,8 +27,11 @@ import { agentSetupRoutes } from './routes/agent-setup';
 import { skillsRoutes } from './routes/skills';
 import { agentV2Routes } from './routes/agent-v2';
 import { dashboardRoutes } from './routes/dashboard';
+import { portalRoutes } from './routes/portal';
+import { adminIdentityRoutes } from './routes/admin-identity';
 import { startSimulation } from './services/npc-simulation';
 import { alertError } from './services/alert-error';
+import { getPublishedIssuerInfo } from './services/service-issuer';
 import type { AppContext } from './types';
 
 const app = new Hono<AppContext>();
@@ -71,6 +74,25 @@ app.get('/health', (c) => {
   return c.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// ---------------------------------------------------------------------------
+// Phase 5.1 — Service issuer pubkey publication
+// ---------------------------------------------------------------------------
+// Partner worlds (scape, future partner games) verify outbound ClawVille
+// signatures by fetching this URL and comparing the key against the
+// X-Clawville-Issuer-Pubkey header on each request. Served by Hono (not
+// Next.js) to avoid Next's special-case handling of `.well-known/*`.
+// Safe to cache at CDN level — the pubkey is public.
+app.get('/.well-known/clawville-issuer.json', (c) => {
+  try {
+    const info = getPublishedIssuerInfo();
+    c.header('Cache-Control', 'public, max-age=300');
+    return c.json(info);
+  } catch (err) {
+    // Env var missing → 503 so partners know to retry after rotation.
+    return c.json({ error: 'issuer_key_unconfigured', detail: String(err) }, 503);
+  }
+});
+
 // API routes
 app.route('/api/auth', authRoutes);
 app.route('/api/pets', petRoutes);
@@ -105,6 +127,11 @@ app.route('/api/agent-setup', agentSetupRoutes);
 app.route('/api/skills', skillsRoutes);
 app.route('/api/v2/agent', agentV2Routes);
 app.route('/api/dashboard', dashboardRoutes);
+// Phase 5.1 — cross-world portal + account linking (see plan §6.2 + §15).
+app.route('/api/portal', portalRoutes);
+// Phase 5.1 — admin identity recovery stub. Returns 501 behind a
+// FEATURE_GATE until the support-chat verification workflow lights up.
+app.route('/api/admin', adminIdentityRoutes);
 
 // Error handler — expected errors (HTTPException, InsufficientTokens) return
 // typed responses without alerting; unexpected exceptions fire an immediate

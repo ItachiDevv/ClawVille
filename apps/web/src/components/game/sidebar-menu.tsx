@@ -302,6 +302,29 @@ function CategoryHeader({ label, subtitle }: { label: string; subtitle: string }
 }
 
 // ---------------------------------------------------------------------------
+// Small inline spinner — used while the Cross-to-'scape request is in-flight.
+// Keeps the surrounding row height stable so the sidebar doesn't reflow.
+// ---------------------------------------------------------------------------
+
+function SidebarSpinner() {
+  return (
+    <span
+      aria-hidden
+      className="rpg-sidebar-spinner"
+      style={{
+        display: 'inline-block',
+        width: 14,
+        height: 14,
+        borderRadius: '50%',
+        border: '2px solid rgba(45, 212, 191, 0.28)',
+        borderTopColor: '#2dd4bf',
+        animation: 'rpg-sidebar-spin 0.8s linear infinite',
+      }}
+    />
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Sidebar row — the unit button every category uses.
 // ---------------------------------------------------------------------------
 
@@ -314,8 +337,16 @@ interface SidebarRowProps {
   badge?: ReactNode;
   trailing?: ReactNode;
   danger?: boolean;
+  disabled?: boolean;
   ariaLabel?: string;
   expandedIndicator?: boolean;
+  /**
+   * Override the accent + glow CSS variables when neither `rarity` nor
+   * `danger` covers the desired palette. Used by the Phase 5.1 WORLDS
+   * section to paint "Cross to 'scape" in a cooler-aqua tint so it
+   * reads as a cross-world surface distinct from ClawVille's cyan.
+   */
+  accentOverride?: { accent: string; glow: string };
 }
 
 function SidebarRow({
@@ -327,16 +358,18 @@ function SidebarRow({
   badge,
   trailing,
   danger = false,
+  disabled = false,
   ariaLabel,
   expandedIndicator,
+  accentOverride,
 }: SidebarRowProps) {
   const tier = rarity ? getRarity(rarity) : null;
   const accent = danger
     ? '#f87171'
-    : (tier?.base ?? '#38bdf8');
+    : (accentOverride?.accent ?? tier?.base ?? '#38bdf8');
   const glow = danger
     ? 'rgba(248, 113, 113, 0.4)'
-    : (tier?.glow ?? 'rgba(56, 189, 248, 0.55)');
+    : (accentOverride?.glow ?? tier?.glow ?? 'rgba(56, 189, 248, 0.55)');
 
   return (
     <button
@@ -344,6 +377,8 @@ function SidebarRow({
       onClick={onClick}
       aria-label={ariaLabel ?? label}
       aria-pressed={active}
+      aria-busy={disabled || undefined}
+      disabled={disabled}
       className="rpg-sidebar-row"
       style={
         {
@@ -480,10 +515,18 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
   const openBountyBoard = useGameStore((s: GameState) => s.openBountyBoard);
   const openLeaderboard = useGameStore((s: GameState) => s.openLeaderboard);
   const toggleActivityFeed = useGameStore((s: GameState) => s.toggleActivityFeed);
+  const addToast = useGameStore((s: GameState) => s.addToast);
   const resetStore = useGameStore((s: GameState) => s.resetStore);
+
+  // Phase 5.1 — WORLDS section gates on the same pet presence signal the
+  // CharacterFrame uses, so cross-world options never flash to logged-out
+  // or unprovisioned users.
+  const { data: pet } = usePet();
+  const hasPet = !!pet;
 
   const [helpOpen, setHelpOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [crossingToScape, setCrossingToScape] = useState(false);
 
   const runAction = (fn: () => void) => () => {
     closeMenu();
@@ -493,6 +536,28 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
   const handleCreateAgent = () => {
     closeMenu();
     router.push('/create-agent');
+  };
+
+  const handleCrossToScape = async () => {
+    if (crossingToScape) return;
+    setCrossingToScape(true);
+    try {
+      const { redirectUrl } = await api.crossToScape();
+      // `noopener,noreferrer` per task spec — we're handing the user to a
+      // foreign origin and have no reason to leak `window.opener` to the
+      // scape tab.
+      window.open(redirectUrl, '_blank', 'noopener,noreferrer');
+      addToast(
+        '🌊',
+        "Opened 'scape in a new tab. Your progress there is separate from ClawVille.",
+        4500,
+      );
+    } catch (err) {
+      const msg = err instanceof Error && err.message ? err.message : "Couldn't reach 'scape";
+      addToast('⚠️', msg, 4500);
+    } finally {
+      setCrossingToScape(false);
+    }
   };
 
   const handleLogout = async () => {
@@ -623,6 +688,26 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
             active={activityFeedOpen}
           />
         </div>
+
+        {/* WORLDS — Phase 5.1 cross-world portal surface (hidden until a pet exists) */}
+        {hasPet && (
+          <>
+            <CategoryHeader label="Worlds" subtitle="Cross · Explore" />
+            <div className="rpg-sidebar-group">
+              <SidebarRow
+                icon={crossingToScape ? <SidebarSpinner /> : '🌊'}
+                label={crossingToScape ? "Opening portal…" : "Cross to 'scape"}
+                onClick={handleCrossToScape}
+                disabled={crossingToScape}
+                ariaLabel="Cross to 'scape — opens the partner world in a new tab"
+                accentOverride={{
+                  accent: '#2dd4bf',
+                  glow: 'rgba(45, 212, 191, 0.55)',
+                }}
+              />
+            </div>
+          </>
+        )}
 
         {/* SYSTEM — utility chrome */}
         <CategoryHeader label="System" subtitle="Help · Account" />
@@ -921,6 +1006,25 @@ const SIDEBAR_CSS = `
 @keyframes rpg-sidebar-pulse {
   0%, 100% { opacity: 0.55; }
   50% { opacity: 1; }
+}
+
+@keyframes rpg-sidebar-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.rpg-sidebar-row:disabled,
+.rpg-sidebar-row[aria-busy='true'] {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.rpg-sidebar-row:disabled:hover,
+.rpg-sidebar-row[aria-busy='true']:hover {
+  background: transparent;
+  border-color: transparent;
+  color: #cbd5e1;
+  box-shadow: none;
 }
 
 .rpg-sidebar-row__icon {

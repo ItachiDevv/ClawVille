@@ -4,6 +4,7 @@ import {
   varchar,
   text,
   timestamp,
+  integer,
   pgEnum,
   uniqueIndex,
   index,
@@ -38,19 +39,44 @@ export const walletSubjectTypeEnum = pgEnum('wallet_subject_type', [
  * `agent_wallets` table. Single source of truth for "who owns this
  * keypair" across the whole ClawVille economy.
  *
- * Encryption: secret keys are encrypted with the same AES-256-GCM master
- * key (VANITY_ENCRYPTION_KEY) used by `treasury_wallets` and
- * `vanity_keypairs`. See `apps/api/src/services/keypair-vault.ts`.
+ * Encryption (Phase 5.1): two versions coexist in-column.
+ *   encryption_version = 1  →  encrypted_secret_key is AES-GCM(sk, KEK)
+ *                              under `VANITY_ENCRYPTION_KEY` (legacy).
+ *                              dek_wrapped is NULL.
+ *   encryption_version = 2  →  envelope-encrypted. A random 32-byte DEK
+ *                              per row encrypts the secret via AES-GCM;
+ *                              the DEK itself is AES-KW-wrapped by the
+ *                              Cloudflare-held master KEK and stored in
+ *                              `dek_wrapped`.
+ * New wallet rows go to v2 going forward. `decryptWalletRow()` in
+ * `apps/api/src/services/keypair-vault.ts` dispatches on `encryption_version`.
+ * See Phase 5.1 plan §4.2 and §8.
  *
  * Mirror columns: `pets.wallet_address` and `openclaw_bots.wallet_address`
  * mirror the public key for O(1) lookups without a join. The
  * wallet-service keeps both in sync.
  *
- * ⚠️  CUSTODIAL WARNING: ClawVille holds the secret. v1 use case is the
- *     Phase 4 x402 paywall (~$0.001 per request) and internal ClawToken
- *     bookkeeping. There is no withdrawal / export flow by design. Do
- *     NOT load these wallets with meaningful value until a legal review
- *     of the custody model is done.
+ * ⚠️  CUSTODIAL — ONE approved export channel.
+ *     ClawVille holds the secret on the user's behalf. There is exactly
+ *     ONE server-side path that ever releases a plaintext secret key to a
+ *     caller: the first-time provisioning return value from
+ *     `ensureWalletWithFirstTimeSecret()` in
+ *     `apps/api/src/services/wallet-service.ts`. That function returns
+ *     the freshly-generated base58 secret in the SAME response that
+ *     creates the row, and the caller (the agent gateway) is contracted
+ *     to relay it to the human ONCE, in-chat, for self-custody backup.
+ *     On every subsequent call for the same subject the secret field is
+ *     omitted from the return type — the server will never re-export it.
+ *
+ *     There is no GET endpoint that returns the secret. There is no
+ *     admin panel that reveals it. There is no "export wallet" button.
+ *     If the user loses their one-time backup, their funds stay in
+ *     custodial server-signed storage — recoverable only via the
+ *     deferred support-chat identity-verification workflow (not v1).
+ *
+ *     Until legal review of the custody model completes, wallets on this
+ *     table should not hold meaningful on-chain value beyond the
+ *     ClawVille-native economy (ClawTokens, x402 ~$0.001 pings).
  *
  * Ownership model:
  *   Marketplace listings reference wallets via `subject_type` + `subject_id`
@@ -74,6 +100,18 @@ export const wallets = pgTable(
     encryptionIv: varchar('encryption_iv', { length: 32 }).notNull(),
     /** AES-256-GCM auth tag, base64-encoded */
     encryptionTag: varchar('encryption_tag', { length: 32 }).notNull(),
+    /**
+     * Phase 5.1 envelope encryption.
+     *
+     *   1 = legacy — encrypted_secret_key is AES-GCM(sk, KEK) under
+     *       VANITY_ENCRYPTION_KEY. dek_wrapped MUST be NULL.
+     *   2 = envelope — encrypted_secret_key is AES-GCM(sk, DEK) with
+     *       a random per-row 32-byte DEK. dek_wrapped is the DEK
+     *       wrapped by the Cloudflare-held master KEK (AES-KW).
+     */
+    encryptionVersion: integer('encryption_version').notNull().default(1),
+    /** Base64 of AES-KW-wrapped DEK. NULL iff encryption_version = 1. */
+    dekWrapped: text('dek_wrapped'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
   (t) => ({

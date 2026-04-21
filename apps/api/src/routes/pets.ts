@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and, sql } from 'drizzle-orm';
-import { db, pets, agents, petInventory } from '@clawville/database';
+import { db, pets, agents, petInventory, users } from '@clawville/database';
 import {
   PET_ARCHETYPES,
   ARCHETYPE_IDS,
@@ -307,7 +307,26 @@ petRoutes.get('/me', requireAuth, async (c) => {
     return c.json({ pet: null });
   }
 
-  return c.json({ pet });
+  // Phase 5.1 — surface the 'scape account-linking state onto the pet
+  // response so the frontend pet-settings modal can render the correct
+  // linked/unlinked branch without a second round-trip to /api/auth/me.
+  // These columns live on the `users` table (see plan §15.3 + schema
+  // users.ts), not on pets — we pull just the two fields the UI needs.
+  const userScape = await db.query.users.findFirst({
+    where: eq(users.id, user.id),
+    columns: {
+      linkedScapePrincipalId: true,
+      linkedScapeDisplayName: true,
+    },
+  });
+
+  return c.json({
+    pet: {
+      ...pet,
+      linkedScapePrincipalId: userScape?.linkedScapePrincipalId ?? null,
+      linkedScapeDisplayName: userScape?.linkedScapeDisplayName ?? null,
+    },
+  });
 });
 
 // Update pet position
