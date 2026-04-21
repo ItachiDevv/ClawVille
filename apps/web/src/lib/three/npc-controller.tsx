@@ -108,6 +108,25 @@ export default function NpcController() {
     }
     _lastEState = eNow;
 
+    // Single NPC lookup per frame — was duplicated 3× below (proximity, idle, movement).
+    // npcs is a flat array; a single .find() at the top avoids 2 redundant scans/frame.
+    const npcStore = useNpcStore.getState();
+    const npc = npcStore.npcs.find((n) => n.id === possessedNpcId);
+    if (!npc) return;
+
+    // Character proximity check — replaces building-zone area check.
+    // findNearestCharacter takes world-space primitives — zero allocation.
+    // NPC pixel coords → world coords: worldX = npc.x - MAP_WIDTH/2, worldZ = npc.y - MAP_HEIGHT/2
+    {
+      const wx = npc.x - MAP_WIDTH  / 2;
+      const wz = npc.y - MAP_HEIGHT / 2;
+      const nearest = findNearestCharacter(wx, wz);
+      const nearId = nearest ? nearest.buildingId : null;
+      const nearName = nearest ? nearest.characterName : null;
+      if (nearId !== store.nearLocation) store.setNearLocation(nearId);
+      if (nearName !== store.nearCharacter) store.setNearCharacter(nearName);
+    }
+
     // ---- Unified input: joystick + WASD → camera-relative ----
     let inputFwd = 0;
     let inputRight = 0;
@@ -131,27 +150,10 @@ export default function NpcController() {
       inputRight /= len;
     }
 
-    // Character proximity check — replaces building-zone area check.
-    // findNearestCharacter takes world-space primitives — zero allocation.
-    // NPC pixel coords → world coords: worldX = npc.x - MAP_WIDTH/2, worldZ = npc.y - MAP_HEIGHT/2
-    {
-      const npc = useNpcStore.getState().npcs.find((n) => n.id === possessedNpcId);
-      if (npc) {
-        const wx = npc.x - MAP_WIDTH  / 2;
-        const wz = npc.y - MAP_HEIGHT / 2;
-        const nearest = findNearestCharacter(wx, wz);
-        const nearId = nearest ? nearest.buildingId : null;
-        const nearName = nearest ? nearest.characterName : null;
-        if (nearId !== store.nearLocation) store.setNearLocation(nearId);
-        if (nearName !== store.nearCharacter) store.setNearCharacter(nearName);
-      }
-    }
-
     // No input → set idle (keep last facingAngle so model doesn't snap)
     if (inputFwd === 0 && inputRight === 0) {
-      const npc = useNpcStore.getState().npcs.find((n) => n.id === possessedNpcId);
-      if (npc && npc.direction !== 'idle') {
-        useNpcStore.getState().moveNpc(possessedNpcId, npc.x, npc.y, 'idle', npc.facingAngle);
+      if (npc.direction !== 'idle') {
+        npcStore.moveNpc(possessedNpcId, npc.x, npc.y, 'idle', npc.facingAngle);
       }
       return;
     }
@@ -176,16 +178,12 @@ export default function NpcController() {
     // Cardinal direction for sprite system
     const dir = directionFromVelocity(worldVx, worldVz);
 
-    // Find NPC
-    const npc = useNpcStore.getState().npcs.find((n) => n.id === possessedNpcId);
-    if (!npc) return;
-
     // Position update — map bounds only, no building collision
     // worldX maps to pixelX, worldZ maps to pixelY (same scale, different offset)
     const newX = Math.max(X_MIN, Math.min(X_MAX, npc.x + worldVx * SPEED * delta));
     const newY = Math.max(Y_MIN, Math.min(Y_MAX, npc.y + worldVz * SPEED * delta));
 
-    useNpcStore.getState().moveNpc(possessedNpcId, newX, newY, dir, facingAngle);
+    npcStore.moveNpc(possessedNpcId, newX, newY, dir, facingAngle);
   });
 
   return null;
