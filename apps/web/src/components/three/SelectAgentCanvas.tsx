@@ -286,7 +286,11 @@ const PlatformModelVRM = memo(function PlatformModelVRM({
   });
 
   return (
-    <group position={[0, 1.5, 0]} scale={[reg.scale, reg.scale, reg.scale]}>
+    // Bumped scale from registry (13) → larger effective size to fill the
+    // enlarged shrine panel. The per-registry scale stays authoritative for
+    // game-world rendering; the picker uses a visual multiplier to frame the
+    // avatar head-to-toe without requiring a per-row registry change.
+    <group position={[0, 1.5, 0]} scale={[reg.scale * 1.35, reg.scale * 1.35, reg.scale * 1.35]}>
       <primitive object={vrm.scene} />
     </group>
   );
@@ -428,43 +432,56 @@ const SceneContents = memo(function SceneContents({
   modelKey: string;
   color: string;
 }) {
+  const reg = MODEL_REGISTRY[modelKey as ModelKey] ?? MODEL_REGISTRY.lobster;
+  const isVRM = reg.avatar_type === 'vrm';
+
+  // Single unified atmosphere — underwater cyan, matching what the player
+  // actually sees in-game. Both GLB sea creatures AND VRM Milady avatars
+  // live in the same world; the picker should preview that world honestly.
+  //
+  // VRMs get boosted lighting on top of the base scene so the dark-haired
+  // neo-chibi faces don't disappear into the cyan murk — without breaking
+  // the theme. Camera framing also shifts for VRM so the taller humanoid
+  // silhouette fits the shrine panel.
   return (
     <>
-      {/* Camera controls — pulled back to fit the full ~20-unit-tall model
-          inside the 220px framed panel.
-          Math: fov=45° vertical, model height=20wu, target 50-60% of panel
-          → distance = 10/tan(11.25°) ≈ 50wu → use 45 for mild safety margin.
-          Target Y=8 gives head-centric framing (model spans y≈1.5 to y≈21.5).
-          OrbitControls drag-to-rotate is intentionally enabled. */}
+      {/* Camera — VRM target is higher (chest-level) + closer distance
+          because VRMs render taller than sea creatures at their respective
+          scales. GLB path keeps the prior sea-creature framing. */}
       <OrbitControls
         makeDefault
         enablePan={false}
         enableZoom={true}
-        minDistance={25}
-        maxDistance={80}
-        minPolarAngle={Math.PI * 0.28}
-        maxPolarAngle={Math.PI * 0.55}
-        target={[0, 8, 0]}
+        minDistance={isVRM ? 24 : 25}
+        maxDistance={isVRM ? 75 : 80}
+        minPolarAngle={Math.PI * (isVRM ? 0.32 : 0.28)}
+        maxPolarAngle={Math.PI * (isVRM ? 0.52 : 0.55)}
+        target={isVRM ? [0, 14, 0] : [0, 8, 0]}
       />
 
-      {/* Dramatic underwater lighting */}
-      <directionalLight position={[10, 40, 20]} intensity={1.2} color={0xfff5e0} />
-      <pointLight position={[0, -5, 10]} color={0x00aaff} intensity={0.8} distance={60} />
-      <ambientLight color={0x05152b} intensity={0.4} />
+      {/* Shared underwater base lighting */}
+      <directionalLight position={[10, 40, 20]} intensity={isVRM ? 1.6 : 1.2} color={0xfff5e0} />
+      <pointLight position={[0, -5, 10]} color={0x00aaff} intensity={isVRM ? 1.0 : 0.8} distance={60} />
+      <ambientLight color={0x05152b} intensity={isVRM ? 0.75 : 0.4} />
 
-      {/* Underwater fog — tuned for distance ~45 camera.
-          Near=30 keeps the model (at distance ~45) crystal clear.
-          Far=120 fades the atmosphere backdrop well beyond the camera. */}
-      <fog attach="fog" args={[0x030d1a, 30, 120]} />
+      {/* VRM-only extra lights — keep the underwater atmosphere, but add a
+          cyan rim behind the avatar + a warm fill from below so the face
+          reads cleanly. Brand-neutral (cyan / warm-white), not a pink shift. */}
+      {isVRM && (
+        <>
+          <directionalLight position={[-14, 18, -10]} intensity={0.85} color={0x8fe4ff} />
+          <pointLight position={[0, 6, 14]} color={0xffeee0} intensity={0.7} distance={40} />
+        </>
+      )}
 
-      {/* Atmosphere effects */}
+      {/* Underwater fog — softer for VRM so the avatar doesn't get washed
+          out at chest height. Near=30 still keeps the figure crystal clear. */}
+      <fog attach="fog" args={[0x030d1a, isVRM ? 40 : 30, isVRM ? 140 : 120]} />
+
+      {/* Atmosphere effects — always on. Consistent with in-game. */}
       <UnderwaterAtmosphere />
       <UnderwaterLightRays />
-
-      {/* Ember particles — 80 upward-drifting points (1 draw call, TSL GPU animation) */}
       <EmberParticles />
-
-      {/* Fake spotlight cone from above (no SpotLight — light budget full) */}
       <SpotlightConeSelect />
 
       {/* Rotating platform with model */}
