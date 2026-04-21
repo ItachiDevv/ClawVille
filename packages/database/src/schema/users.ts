@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, timestamp, boolean, check } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, boolean, integer, text, check } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
 /**
@@ -40,6 +40,58 @@ export const users = pgTable(
      * the same identity always map to the same user.
      */
     identityFingerprint: varchar('identity_fingerprint', { length: 64 }).unique(),
+
+    // -----------------------------------------------------------------
+    // Phase 5.1 — ed25519 identity keypair (replaces string-based
+    // identity_fingerprint as the primary reconnect anchor).
+    //
+    // The pubkey is rotatable; `users.id` (UUID PK) is the stable handle
+    // stored in the agent config. All columns use an `identity_` prefix
+    // to disambiguate from the wallets-row encryption columns when the
+    // two tables are joined for auditing.
+    // -----------------------------------------------------------------
+    /** Base58 ed25519 current pubkey (32 bytes). UNIQUE so one user = one active pubkey. */
+    identityPubkey: varchar('identity_pubkey', { length: 44 }).unique(),
+    /** AES-GCM(sk, DEK) — base64. Encryption-version-aware; see identity_encryption_version. */
+    identityEncryptedSk: text('identity_encrypted_sk'),
+    /** AES-GCM 12-byte IV, base64. */
+    identityIv: varchar('identity_iv', { length: 32 }),
+    /** AES-GCM 16-byte auth tag, base64. */
+    identityTag: varchar('identity_tag', { length: 32 }),
+    /** Base64 of the per-row DEK wrapped by the Cloudflare-held KEK. */
+    identityDekWrapped: text('identity_dek_wrapped'),
+    /**
+     * Envelope encryption version for the identity secret.
+     *   2 = envelope (Cloudflare-wrapped DEK; the day-1 default for
+     *       identity since there are no v1 rows).
+     * If we ever downgrade (emergency), bump schema + keep both
+     * branches in `decryptSecretKeyEnveloped`.
+     */
+    identityEncryptionVersion: integer('identity_encryption_version').notNull().default(2),
+
+    // -----------------------------------------------------------------
+    // Phase 5.1 — 'scape portal identity derivatives
+    //
+    // On first ClawVille → 'scape crossing we auto-provision a scape
+    // account keyed on principalId/worldCharacterId. These two columns
+    // cache those derivatives so subsequent crossings don't need to
+    // look them up or recompute.
+    // -----------------------------------------------------------------
+    scapePrincipalId: varchar('scape_principal_id', { length: 128 }).unique(),
+    scapeWorldCharacterId: varchar('scape_world_character_id', { length: 64 }).unique(),
+
+    // -----------------------------------------------------------------
+    // Phase 5.1 §15 — account linking (existing scape account ↔ ClawVille)
+    //
+    // Set by the mutual-challenge flow when a user pastes a ClawVille
+    // link code into scape. Once set, the portal minter uses these over
+    // the auto-provisioned scape_* columns above.
+    // -----------------------------------------------------------------
+    linkedScapePrincipalId: varchar('linked_scape_principal_id', { length: 128 }).unique(),
+    linkedScapeWorldCharacterId: varchar('linked_scape_world_character_id', { length: 64 }).unique(),
+    linkedScapeDisplayName: varchar('linked_scape_display_name', { length: 64 }),
+    linkedScapeAt: timestamp('linked_scape_at', { withTimezone: true }),
+
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },

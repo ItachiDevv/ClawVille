@@ -705,6 +705,19 @@ export const api = {
       '/api/npc/settings'
     ),
 
+  // Phase 5.1 — Portal (Cross to 'scape). See plan §9.6 + §15.
+  // Both endpoints are Lucia-authed; uses honoRequest because the Hono
+  // API owns `/api/portal/*`.
+  crossToScape: () =>
+    honoRequest<{ redirectUrl: string }>('/api/portal/scape', {
+      method: 'POST',
+    }),
+
+  generateScapeLinkCode: () =>
+    honoRequest<{ code: string; expiresAt: string }>('/api/portal/scape-link-code', {
+      method: 'POST',
+    }),
+
   // Agent Setup
   getAgentRoster: () =>
     honoRequest<{ agents: any[] }>('/api/agent-setup/roster'),
