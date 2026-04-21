@@ -4,6 +4,7 @@
 - [Three-Doc Standing Rule](standing-rules/three-doc-standing-rule.md) — Abide by `3dStructure.md` for all visual/3D decisions; `GameFeatures.md` for gameplay; `ARCHITECTURE.md` for tech stack. Unless the main session tells you to change behavior, do NOT deviate from what these docs specify. Every 3D code change requires a same-diff update to `3dStructure.md` (and a "Last Audited" bump). Live code > doc > CLAUDE.md > memory; memory is advisory only. Set 2026-04-17.
 
 ## Gotchas
+- [VRM MToon materials break under MeshStandardMaterial color lerp](gotchas/vrm-color-tinting-mtoon-breaks.md) — skip applyColorTint() entirely for VRM avatars; store petColor in Zustand but do not apply visually
 - [MeshBasicNodeMaterial ignores scene fog — backdrop renders as hard wall](gotchas/meshbasicnodematerial-ignores-fog.md) — backdrop must be past camera.far or have its own opacityNode distance fade; fog does not apply
 - [terrainYRef init 0 causes 4-unit spawn float](gotchas/terrain-yref-init-zero-causes-spawn-float.md) — init to -2 (sand floor Y) so pet spawns flush; 0 causes visible 200ms drift down
 - [InstancedMesh + ShaderMaterial crashes WebGPU](gotchas/webgpu-instancedmesh-shadermaterial.md) — silent crash, zero console errors
@@ -40,7 +41,7 @@
 - [Draco compression results + drei auto-decode](performance/draco-compression-results.md) — texture-heavy GLBs barely compress; geometry-heavy get 5-20%; drei DRACOLoader is zero-config
 
 ## Patterns
-- [Jump system: module-scoped state + JumpTicker](patterns/jump-system-module-scoped-state.md) — avoid Zustand for 60Hz physics; mount JumpTicker first so consumers read current-frame heightOffset; resetJump() in all 5 mode-transition paths
+- [Jump system: module-scoped state + JumpTicker](patterns/jump-system-module-scoped-state.md) — charge-and-release (2026-04-21): hold SPACE on ground → charge bar fills → release proportional launch (tap=33wu, full charge=1531wu); 5 phases: grounded/charging/quick/launch/sinking; no apex-freeze, no peak clamp; 'charging' is not airborne; idle rotation freeze preserves last facing
 - [drei Html for NPC labels and speech bubbles](patterns/drei-html-npc-labels-bubbles.md) — DOM overlay, safe on Iris Xe; use for all NPC name labels and chat bubbles (never use drei Text/Billboard)
 - [ClawVille world proportion constants](patterns/clawville-world-proportions.md) — canonical building ring coords, heights, camera, seaweed exclusion radii — updated 2026-04-15 for 160x160 square map (5120x5120)
 - [NPC possession WASD controller](patterns/npc-possession-controller.md) — WASD drives possessed NPC, wander skips it via lazy-require circular-dep workaround
@@ -51,6 +52,7 @@
 - [TSL volumetric light rays](patterns/tsl-volumetric-light-rays.md) — open-ended CylinderGeometry cones + AdditiveBlending + sin(time) pulsing opacityNode, 7 draw calls, zero CPU
 - [Multi-variant merged seaweed with per-blade TSL amplitude](patterns/merged-seaweed-multivariant.md) — 3 blade shapes, cluster distribution, aAmplitude attribute drives per-variant sway in TSL, two-wave oceanic motion
 
+- [Mixamo → VRM retarget pipeline](patterns/vrm-mixamo-retarget.md) — bone name map + track rewrite at load time, VRMCharacterAnimator crossfade, VRM faces -Z (opposite of lobster), no tinting, feet at origin
 - [Universal procedural character animation](patterns/universal-character-animation.md) — spatial mesh analysis + per-type motion profiles, softLerp hot path, routes 9 new GLBs while preserving LobsterAnimator
 - [Companion NPC pattern](patterns/companion-npc-pattern.md) — passive NPC beside primary; same NpcMesh with showLabel=false; seed+17 for staggered raycasts; rotYOffset field on NpcModelConfig corrects +X-forward GLBs (Gary=-π/2)
 - [KTX2Loader wiring for drei useGLTF with WebGPU support](patterns/ktx2-loader-wiring.md) — singleton + Canvas component + extendLoader; basis WASM from three/examples/jsm/libs/basis; three/addons KTX2Loader required (not three-stdlib)

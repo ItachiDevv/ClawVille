@@ -9,9 +9,10 @@ export interface NpcDefinition {
   id: string;
   name: string;
   /** Visual species key — maps to SPECIES_MODEL in arena-npcs.tsx for GLB selection.
-   *  Not constrained to PetSpecies (player pet creation enum); NPCs use the broader
-   *  set: lobster, crayfish, sweet_crab, hermitcrab, chihiro, priestess, chibi_goku,
-   *  jellyfish, octopus, seahorse (plus legacy lobster). */
+   *  Not constrained to PetSpecies (player pet creation enum); wandering NPCs use
+   *  sea-creature GLBs only: lobster, crayfish, sweet_crab, hermitcrab,
+   *  jellyfish, octopus, seahorse. VRM Milady avatars (milady_official_1..8) are
+   *  player-pet-only and do not appear as wandering NPCs. */
   species: string;
   color: number; // hex tint
   buildingId: string;
@@ -71,10 +72,11 @@ export const NPC_BUILDING_CENTERS: Record<string, { x: number; y: number }> = Ob
   Object.entries(NPC_HOME_POSITIONS).map(([id, p]) => [id, { x: p.homeX, y: p.homeY }])
 );
 
-// Wandering NPC species distribution — 3 agent categories rendered as visually distinct characters:
+// Wandering NPC species distribution — 2 model categories rendered as visually distinct characters:
 //   openclaw (crustaceans): lobster, crayfish, sweet_crab, hermitcrab  (4 of 10)
-//   hermes   (anime humanoids): chihiro, priestess, chibi_goku          (3 of 10)
 //   other    (sea creatures): jellyfish, octopus, seahorse               (3 of 10)
+// Anime humanoid GLBs (chihiro, priestess, chibi_goku) removed 2026-04-21 — files deleted.
+// Wandering NPCs now use only GLB sea-creature models; VRM Milady avatars are player-only.
 // Names kept as SpongeBob cast to preserve personality/lore alignment with LOCATION_NPCS.
 export const NPC_DEFINITIONS: NpcDefinition[] = [
   {

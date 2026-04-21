@@ -23,6 +23,8 @@ import {
   type CharacterAnimator,
 } from '@/lib/three/character-animations';
 import { jumpState, isEditable } from '@/lib/three/jump-state';
+import { useVRM, preloadVRM } from '@/lib/three/vrm-loader';
+import { VRMCharacterAnimator, preloadMixamoClips } from '@/lib/three/vrm-character-animator';
 
 // ---------------------------------------------------------------------------
 // GLB-based player pet — lobster.glb model = 1-2 draw calls
@@ -64,6 +66,18 @@ const COLOR_TINTS: Record<string, number> = {
 //   idle: 0 (faces +Z = toward default camera at positive +Z high angle position)
 const DIR_ROTATION: Record<string, number> = {
   down: 0, up: Math.PI, right: Math.PI / 2, left: -Math.PI / 2, idle: 0,
+};
+
+// VRM avatars face -Z natively (VRM 1.0 spec; VRM 0.x normalised to -Z by rotateVRM0).
+// For a -Z-forward model: to face direction (vx, vy) in screen space:
+//   θ = atan2(vx, -vy)
+// Cardinal direction rotations:
+//   down  vx=0,  vy=+1 → atan2(0, -1) = PI
+//   up    vx=0,  vy=-1 → atan2(0,  1) = 0
+//   right vx=+1, vy=0  → atan2(1,  0) = PI/2
+//   left  vx=-1, vy=0  → atan2(-1, 0) = -PI/2
+const VRM_DIR_ROTATION: Record<string, number> = {
+  down: Math.PI, up: 0, right: Math.PI / 2, left: -Math.PI / 2, idle: Math.PI,
 };
 
 interface KeyState {
@@ -156,7 +170,175 @@ function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
   return -2; // fallback — matches sand floor Y position
 }
 
-function PlayerPetInner() {
+// ---------------------------------------------------------------------------
+// VRM player pet — uses useVRM + VRMCharacterAnimator
+// Separated into its own inner component so Suspense handles VRM load
+// independently from the GLB path.
+// VRM feet are at Y=0 per spec — no pivot offset needed.
+// ---------------------------------------------------------------------------
+
+function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
+  const groupRef = useRef<THREE.Group>(null);
+  const rotRef = useRef(VRM_DIR_ROTATION.idle);
+  const terrainYRef = useRef(-2);
+  const { scene: threeScene } = useThree();
+
+  // Load VRM (suspends until resolved)
+  const vrm = useVRM(reg.path);
+
+  // VRM scene is a single live scene — we apply scale via the group, not the scene directly
+  // Note: We do NOT deep-clone VRMs the same way we clone GLBs.
+  // VRMUtils does not provide a deepCloneVRM in v3.5.2; instead each useVRM
+  // call returns the same cached VRM instance. For player-pet this is fine
+  // since only one player pet renders at a time. If multiple VRM instances of
+  // the same model were needed, a full re-load with a unique path suffix would
+  // be required. For now: one cached VRM per path, one player.
+
+  // VRM animator — created once per VRM instance
+  const vrmAnimatorRef = useRef<VRMCharacterAnimator | null>(null);
+
+  useEffect(() => {
+    if (!vrm) return;
+    const animator = new VRMCharacterAnimator(vrm);
+    vrmAnimatorRef.current = animator;
+    animator.init().catch((err) => {
+      console.warn('[PlayerPet VRM] animator init failed:', err);
+    });
+    return () => {
+      vrmAnimatorRef.current = null;
+      animator.dispose();
+    };
+  }, [vrm]);
+
+  useFrame((state, delta) => {
+    const store = useGameStore.getState();
+    if (store.movementFrozen) {
+      if (store.controlMode !== 'autonomous') {
+        const escNow = keyState.escape;
+        if (escNow && !lastEscState && store.chatOpen) store.exitBuilding();
+        lastEscState = escNow;
+      }
+      return;
+    }
+    lastEscState = keyState.escape;
+
+    if (store.controlMode !== 'autonomous') {
+      const eNow = keyState.e;
+      if (eNow && !lastEState && store.nearLocation) {
+        store.enterBuilding(store.nearLocation);
+        lastEState = eNow;
+        return;
+      }
+      lastEState = eNow;
+    }
+
+    let vx = 0, vy = 0;
+    if (store.controlMode === 'player') {
+      const { joystickVelocity } = store;
+      if (joystickVelocity.x !== 0 || joystickVelocity.y !== 0) {
+        vx = joystickVelocity.x;
+        vy = joystickVelocity.y;
+      } else {
+        if (keyState.w) vy = -1;
+        if (keyState.s) vy = 1;
+        if (keyState.a) vx = -1;
+        if (keyState.d) vx = 1;
+      }
+    }
+
+    const hasInput = vx !== 0 || vy !== 0;
+    if (hasInput && store.clickPath) store.clearClickPath();
+
+    if (!hasInput && store.clickPath && store.clickPath.length > 0) {
+      const waypoint = store.clickPath[store.clickPathIndex];
+      if (waypoint) {
+        const dx = waypoint.x - store.petPosition.x;
+        const dy = waypoint.y - store.petPosition.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 6) {
+          if (store.clickPathIndex >= store.clickPath.length - 1) {
+            const target = store.clickPathTarget;
+            store.clearClickPath();
+            if (target && store.nearLocation === target) { store.enterBuilding(target); return; }
+          } else { store.advanceClickPath(); }
+        } else { vx = dx / dist; vy = dy / dist; }
+      }
+    }
+
+    if (vx !== 0 && vy !== 0) {
+      const len = Math.sqrt(vx * vx + vy * vy);
+      if (len > 1) { vx /= len; vy /= len; }
+    }
+
+    let dir = 'idle';
+    let continuousRot: number | null = null;
+    if (vx !== 0 || vy !== 0) {
+      dir = Math.abs(vx) > Math.abs(vy) ? (vx > 0 ? 'right' : 'left') : (vy > 0 ? 'down' : 'up');
+      // VRM faces -Z: atan2(vx, -vy) gives correct facing for screen-relative input
+      continuousRot = Math.atan2(vx, -vy);
+    }
+    store.setMovementDirection(dir as any);
+
+    if (vx !== 0 || vy !== 0) {
+      let newX = store.petPosition.x + vx * SPEED * delta;
+      let newY = store.petPosition.y + vy * SPEED * delta;
+      newX = Math.max(16, Math.min(MAP_WIDTH - 16, newX));
+      newY = Math.max(16, Math.min(MAP_HEIGHT - 16, newY));
+      store.setPetPosition(newX, newY);
+    }
+
+    {
+      const wx = store.petPosition.x - HALF_W;
+      const wz = store.petPosition.y - HALF_H;
+      const nearest = findNearestCharacter(wx, wz);
+      const nearId = nearest ? nearest.buildingId : null;
+      const nearName = nearest ? nearest.characterName : null;
+      if (nearId !== store.nearLocation) store.setNearLocation(nearId);
+      if (nearName !== store.nearCharacter) store.setNearCharacter(nearName);
+    }
+
+    const group = groupRef.current;
+    if (!group) return;
+    const [wx, , wz] = mapToWorld(store.petPosition.x, store.petPosition.y);
+    group.position.x = wx;
+    group.position.z = wz;
+
+    const isMoving = dir !== 'idle';
+    const elapsed = state.clock.elapsedTime;
+    const frame = Math.floor(elapsed * 60);
+    if (frame % 3 === 0) {
+      const ty = getTerrainY(group.position.x, group.position.z, threeScene);
+      terrainYRef.current += (ty - terrainYRef.current) * 0.3;
+    }
+    // VRM feet at Y=0 per spec — no pivot offset, no bob (humanoid avatar)
+    const airborne = jumpState.phase !== 'grounded' && jumpState.phase !== 'charging';
+    const bob = airborne ? 0 : (isMoving ? 0 : Math.sin(elapsed * 2) * 0.08);
+    group.position.y = terrainYRef.current + bob + jumpState.heightOffset;
+
+    // Rotation: VRM faces -Z, use atan2(vx, -vy)
+    if (continuousRot !== null) {
+      let rotDiff = continuousRot - rotRef.current;
+      while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
+      while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
+      rotRef.current += rotDiff * 0.15;
+    }
+    group.rotation.y = rotRef.current;
+
+    const dt = Math.min(delta, 0.1);
+    vrmAnimatorRef.current?.update(dt, isMoving);
+  });
+
+  return (
+    <group ref={groupRef}>
+      <primitive
+        object={vrm.scene}
+        scale={[reg.scale, reg.scale, reg.scale]}
+      />
+    </group>
+  );
+}
+
+function PlayerPetGLBInner() {
   const groupRef = useRef<THREE.Group>(null);
   const animGroupRef = useRef<THREE.Group>(null);
   const rotRef = useRef(0);
@@ -414,7 +596,7 @@ function PlayerPetInner() {
   return (
     <group ref={groupRef}>
       <group ref={animGroupRef}>
-        {/* Phase 2: lobster/crayfish use PET_SCALE (20) for the slightly-larger
+        {/* Phase 2: lobster/crayfish use PET_SCALE (40) for the slightly-larger
             player-pet appearance. All other models use their registry scale. */}
         <primitive
           object={cloned}
@@ -425,10 +607,41 @@ function PlayerPetInner() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Route to the correct inner component based on avatar_type
+// ---------------------------------------------------------------------------
+
+function PlayerPetRouter() {
+  attachKeyListeners();
+
+  const petModelKey = useGameStore((s) => s.petModelKey);
+  const reg: ModelRegistryEntry =
+    MODEL_REGISTRY[petModelKey as keyof typeof MODEL_REGISTRY] ?? MODEL_REGISTRY.lobster;
+
+  if (reg.avatar_type === 'vrm') {
+    return (
+      <Suspense fallback={null}>
+        <PlayerPetVRMInner reg={reg} />
+      </Suspense>
+    );
+  }
+
+  return <PlayerPetGLBInner />;
+}
+
 export default function PlayerPet() {
+  // Preload VRM assets and Mixamo anim clips for fast switch if user picks a Milady avatar
+  useEffect(() => {
+    preloadMixamoClips();
+    // Preload all 8 VRM paths (non-blocking — errors swallowed in preloadVRM)
+    for (let i = 1; i <= 8; i++) {
+      preloadVRM(`/avatars/milady-official-${i}.vrm`);
+    }
+  }, []);
+
   return (
     <Suspense fallback={null}>
-      <PlayerPetInner />
+      <PlayerPetRouter />
     </Suspense>
   );
 }
