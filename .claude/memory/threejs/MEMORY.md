@@ -33,6 +33,7 @@
 - [WebGPU renderer setup with fallback](webgpu/renderer-setup-fallback.md) — detection, init, WebGL fallback pattern
 
 ## Performance
+- [Fog density directly controls fragment count on Iris Xe](performance/fog-density-iris-xe-regression.md) — fog far > camera.far wastes GPU; pushing 1200/6400→1800/9000 dropped FPS 90→50 on Iris Xe; always keep fog far ≤ camera.far
 - [Draw call reduction techniques](performance/draw-call-batching.md) — instancing, merging, LOD, measurement targets
 - [Deferred useGLTF.preload() via rAF](performance/deferred-preloads-pattern.md) — move non-critical preloads post-paint; rAF inside useEffect; Suspense fallback={null} absorbs cache-miss throws
 - [compileAsync eliminates post-mount pipeline hitch](performance/compile-async-precompile.md) — call AFTER first R3F commit (not in onCreated); rAF-gate inside child component; no-op guard for WebGL

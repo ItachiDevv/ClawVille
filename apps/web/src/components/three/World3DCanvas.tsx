@@ -629,9 +629,12 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       <directionalLight position={[-100, 200, -60]} intensity={0.5} color={0x88aacc} />
 
       {/* Underwater fog — scaled for 160x160 map (5120x5120 world units).
-          Near 1800 / far 9000 softens the falloff so distant ring buildings
-          stay readable instead of fading into a wall of blue. */}
-      <fog attach="fog" args={[FOG_COLOR, 1800, 9000]} />
+          Near 1200 / far 6400 is calibrated for Iris Xe: keeps distant geometry
+          fog-culled so the GPU stays under budget. Pushing to 1800/9000 caused a
+          ~40 FPS regression on Iris Xe (more rasterized fragments past fog cutoff).
+          camera.far=6800 already clips beyond 6800wu so fog far >6800 has no visual
+          effect but does waste GPU time computing fog for invisible fragments. */}
+      <fog attach="fog" args={[FOG_COLOR, 1200, 6400]} />
 
       {/* Underwater atmosphere — caustic light plane, depth backdrop, dust particles */}
       <UnderwaterAtmosphere />
