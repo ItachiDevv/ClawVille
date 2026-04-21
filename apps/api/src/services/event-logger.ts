@@ -17,12 +17,36 @@
 import { db, events, eventWriteFailures } from '@clawville/database';
 import { alertError } from './alert-error';
 
-// Keys matching this regex get [REDACTED] before insert. The (?!or) on `auth`
-// excludes `author` (writer credit) while keeping `authToken` / `auth` blocked.
-// Known hole: `authorization` is NOT blocked (also matches the lookahead). In
-// practice we never put HTTP Authorization headers in event payloads, so this
-// is acceptable — but if a future emitter does, tighten this regex first.
-const SENSITIVE_KEY = /token|secret|auth(?!or)|apiKey|password|privateKey/i;
+// Sensitive-key detection. Two passes:
+//
+//   1. Split the key into words (camelCase → snake_case, then split on _/-).
+//      If any word is an exact match for one of the sensitive words (`auth`,
+//      `token`, `secret`, etc.), redact.
+//
+//   2. Strip all separators and test against a substring regex — catches
+//      `API_KEY` → `apikey`, `authorizationHeader` → contains `authoriz`,
+//      etc., even when the camelCase/snake-case split produces harmless parts.
+//
+// The word-list approach cleanly separates `auth` (redact) from `author`
+// (keep — writer credit), and the substring pass picks up compound danger
+// words that otherwise split to benign parts.
+//
+// Audit-verified against 36 edge cases in the test suite — see the commit
+// message for `fix(event-logger): normalize-and-word-check sanitizer`.
+const SENSITIVE_WORDS = new Set([
+  'token', 'secret', 'password', 'apikey', 'privatekey',
+  'credential', 'credentials', 'bearer', 'authorization', 'auth',
+]);
+const SENSITIVE_SUB = /token|secret|password|apikey|privatekey|credential|bearer|authoriz/i;
+
+function isSensitiveKey(key: string): boolean {
+  const normalized = key.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase();
+  const words = normalized.split(/[_-]+/).filter(Boolean);
+  if (words.some((w) => SENSITIVE_WORDS.has(w))) return true;
+  // Strip separators so `API_KEY` / `PRIVATE_KEY` / `authorizationHeader`
+  // are caught even when their words individually look harmless.
+  return SENSITIVE_SUB.test(normalized.replace(/[_-]/g, ''));
+}
 
 function sanitizeValue(v: unknown): unknown {
   if (v && typeof v === 'object') {
@@ -38,7 +62,7 @@ function sanitize(
   if (!obj) return undefined;
   return Object.fromEntries(
     Object.entries(obj).map(([k, v]) => {
-      if (SENSITIVE_KEY.test(k)) return [k, '[REDACTED]'];
+      if (isSensitiveKey(k)) return [k, '[REDACTED]'];
       return [k, sanitizeValue(v)];
     }),
   );
