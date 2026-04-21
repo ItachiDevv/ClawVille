@@ -72,12 +72,12 @@ export const NPC_BUILDING_CENTERS: Record<string, { x: number; y: number }> = Ob
   Object.entries(NPC_HOME_POSITIONS).map(([id, p]) => [id, { x: p.homeX, y: p.homeY }])
 );
 
-// Wandering NPC species distribution — 2 model categories rendered as visually distinct characters:
-//   openclaw (crustaceans): lobster, crayfish, sweet_crab, hermitcrab  (4 of 10)
-//   other    (sea creatures): jellyfish, octopus, seahorse               (3 of 10)
-// Anime humanoid GLBs (chihiro, priestess, chibi_goku) removed 2026-04-21 — files deleted.
-// Wandering NPCs now use only GLB sea-creature models; VRM Milady avatars are player-only.
-// Names kept as SpongeBob cast to preserve personality/lore alignment with LOCATION_NPCS.
+// Wandering NPC species distribution — 3 model categories rendered as visually distinct characters:
+//   openclaw (crustaceans): lobster, crayfish, sweet_crab, hermitcrab  (4 of 12)
+//   other    (sea creatures): jellyfish, octopus, seahorse               (3 of 12)
+//   milady   (neo-chibi VRMs): milady_official_7, milady_official_8      (2 of 12) — added 2026-04-21
+// Names of the sea-creature 10 kept as SpongeBob cast to preserve personality/lore alignment
+// with LOCATION_NPCS. Milady NPCs (Miu, Kyoko) are brand wanderers not tied to a building.
 export const NPC_DEFINITIONS: NpcDefinition[] = [
   {
     id: 'cron-hub',
@@ -188,6 +188,37 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     ...NPC_HOME_POSITIONS['config-citadel'],
     stats: { hp: 100, attack: 12, defense: 16, speed: 11 },
     personality: 'A methodical hermit lobster architect who organizes every shell into perfect configuration hierarchies.',
+  },
+  // ─── Milady brand wanderers (VRM avatars) — added 2026-04-21 ──────────────
+  // No building attachment (buildingId: '') — these roam as brand ambassadors
+  // for the Milady × ClawVille integration. They participate in the full
+  // server NPC sim: wandering, NPC-to-NPC conversations, chat bubbles.
+  // Use milady_official_7 / _8 specifically to avoid VRM module-cache collision
+  // with the most common player-avatar picks (official_1 is category default,
+  // official_5 is a popular choice). See vrm-loader.ts — single-instance-per-path.
+  {
+    id: 'milady-miu',
+    name: 'Miu',
+    species: 'milady_official_7',
+    color: 0xffc0ff,             // lavender (ignored — VRM MToon pipeline skips tint)
+    buildingId: '',              // no building anchor; free wanderer
+    patrolRadius: 600,
+    homeX: 1400,
+    homeY: 3400,                 // SW quadrant of 5120×5120 map
+    stats: { hp: 95, attack: 14, defense: 12, speed: 15 },
+    personality: 'A soft-spoken Milady wanderer with a fascination for the neon-tide rhythms of the reef.',
+  },
+  {
+    id: 'milady-kyoko',
+    name: 'Kyoko',
+    species: 'milady_official_8',
+    color: 0xc0e8ff,             // sky-blue (ignored — VRM MToon)
+    buildingId: '',
+    patrolRadius: 600,
+    homeX: 3800,
+    homeY: 1200,                 // NE quadrant
+    stats: { hp: 90, attack: 13, defense: 14, speed: 16 },
+    personality: 'A curious Milady explorer cataloguing every agent signal she overhears across ClawVille.',
   },
 ];
 
