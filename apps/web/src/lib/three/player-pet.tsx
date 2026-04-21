@@ -256,14 +256,26 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
         if (keyState.d) inputRight += 1;
       }
       if (inputFwd !== 0 || inputRight !== 0) {
+        // Full 3D camera forward — Y kept for camera-tilt 3D swim (VRM path mirrors GLB path).
         camera.getWorldDirection(_playerCamForward);
-        _playerCamForward.y = 0;
         const fwdLen = _playerCamForward.length();
         if (fwdLen > 0.001) {
           _playerCamForward.divideScalar(fwdLen);
           _playerCamRight.crossVectors(_playerCamForward, _playerWorldUp).normalize();
-          vx = _playerCamForward.x * inputFwd + _playerCamRight.x * inputRight;
-          vy = _playerCamForward.z * inputFwd + _playerCamRight.z * inputRight;
+
+          const worldVx = _playerCamForward.x * inputFwd + _playerCamRight.x * inputRight;
+          const worldVy = _playerCamForward.y * inputFwd; // strafe contributes ~0 (camRight.y≈0)
+          const worldVz = _playerCamForward.z * inputFwd + _playerCamRight.z * inputRight;
+
+          if (worldVy !== 0) {
+            jumpState.playerAltitude = Math.max(
+              0,
+              jumpState.playerAltitude + worldVy * SPEED * delta
+            );
+          }
+
+          vx = worldVx;
+          vy = worldVz;
         }
       }
     }
@@ -332,10 +344,13 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
       const ty = getTerrainY(group.position.x, group.position.z, threeScene);
       terrainYRef.current += (ty - terrainYRef.current) * 0.3;
     }
-    // VRM feet at Y=0 per spec — no pivot offset, no bob (humanoid avatar)
-    const airborne = jumpState.phase !== 'grounded' && jumpState.phase !== 'charging';
+    // VRM feet at Y=0 per spec — no pivot offset, no bob (humanoid avatar).
+    // playerAltitude stacks on top of heightOffset for camera-tilt 3D swim.
+    const airborne = jumpState.phase !== 'grounded' && jumpState.phase !== 'charging'
+                  || jumpState.playerAltitude > 0;
     const bob = airborne ? 0 : (isMoving ? 0 : Math.sin(elapsed * 2) * 0.08);
-    group.position.y = terrainYRef.current + bob + jumpState.heightOffset;
+    group.position.y = terrainYRef.current + bob
+                     + jumpState.heightOffset + jumpState.playerAltitude;
 
     // Rotation: VRM faces -Z, use atan2(vx, -vy)
     if (continuousRot !== null) {
@@ -495,17 +510,28 @@ function PlayerPetGLBInner() {
       }
 
       if (inputFwd !== 0 || inputRight !== 0) {
-        // Project camera's forward onto the XZ plane (ignore pitch)
+        // Full 3D camera forward — Y is kept so pressing W while camera tilts
+        // down/up produces vertical swim movement (FEATURE: camera-tilt 3D swim).
         camera.getWorldDirection(_playerCamForward);
-        _playerCamForward.y = 0;
         const fwdLen = _playerCamForward.length();
         if (fwdLen > 0.001) {
           _playerCamForward.divideScalar(fwdLen);
+          // Strafe right stays horizontal: crossVectors(forward3d, worldUp) has y≈0 by property.
           _playerCamRight.crossVectors(_playerCamForward, _playerWorldUp).normalize();
 
-          // World-space velocity (XZ plane). worldVx → game-pixel x, worldVz → game-pixel y.
+          // Extract full 3D components. worldVy drives swim altitude (not XZ movement).
           const worldVx = _playerCamForward.x * inputFwd + _playerCamRight.x * inputRight;
+          const worldVy = _playerCamForward.y * inputFwd; // strafe contributes ~0 (camRight.y≈0)
           const worldVz = _playerCamForward.z * inputFwd + _playerCamRight.z * inputRight;
+
+          // Accumulate vertical offset from camera tilt BEFORE XZ normalization so the
+          // diagonal-speed-normalise below doesn't distort it.
+          if (worldVy !== 0) {
+            jumpState.playerAltitude = Math.max(
+              0,
+              jumpState.playerAltitude + worldVy * SPEED * delta
+            );
+          }
 
           vx = worldVx;
           vy = worldVz;
@@ -585,11 +611,11 @@ function PlayerPetGLBInner() {
       terrainYRef.current += (ty - terrainYRef.current) * 0.3;
     }
     // Suppress ambient bob when airborne — it looks wrong to bob while jumping.
-    // resetJump() guarantees heightOffset=0 outside player/npc modes, so reads
-    // here are unconditional (safe even when PlayerPet renders in autonomous mode).
-    // 'charging' keeps the pet on the ground (heightOffset stays 0), so treat it as
-    // grounded for bob purposes — only 'quick', 'launch', and 'sinking' are truly airborne.
-    const airborne = jumpState.phase !== 'grounded' && jumpState.phase !== 'charging';
+    // resetJump() guarantees heightOffset=0 and playerAltitude=0 outside player/npc modes.
+    // 'charging' keeps the pet on the ground (heightOffset=0), so it's not airborne.
+    // playerAltitude > 0 means the pet is swimming above the ocean floor — also airborne.
+    const airborne = jumpState.phase !== 'grounded' && jumpState.phase !== 'charging'
+                  || jumpState.playerAltitude > 0;
     const finalBob = airborne
       ? 0
       : (isMoving ? Math.abs(Math.sin(elapsed * BOB_SPEED)) * BOB_AMPLITUDE : Math.sin(elapsed * 2) * 0.15);
@@ -597,7 +623,9 @@ function PlayerPetGLBInner() {
     // pivotOffsetY = localMinY * finalScale (world units).
     // If pivot is above feet (localMinY < 0), pivotOffsetY is negative —
     // subtracting a negative raises the model so feet align with terrainY.
-    group.position.y = terrainYRef.current + 2 + finalBob + jumpState.heightOffset - pivotOffsetY;
+    // jumpState.playerAltitude stacks on top of heightOffset for full 3D swim.
+    group.position.y = terrainYRef.current + 2 + (airborne ? 0 : finalBob)
+                     + jumpState.heightOffset + jumpState.playerAltitude - pivotOffsetY;
 
     // Idle rotation freeze: don't snap back to +Z when movement stops — preserve last moved direction so the pet doesn't twist back after every WASD release.
     // When idle (no movement input), continuousRot is null — skip the lerp entirely
