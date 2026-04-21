@@ -681,6 +681,20 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
             onClick={runAction(openLeaderboard)}
             rarity="legendary"
           />
+          {/* Priority #3 — public free agent leaderboard. Opens in a new tab
+              so the in-game WebGPU session isn't torn down when the user
+              clicks through. The existing in-game modal above stays put. */}
+          <SidebarRow
+            icon="🌐"
+            label="Public Leaderboard"
+            onClick={() => {
+              closeMenu();
+              if (typeof window !== 'undefined') {
+                window.open('/leaderboard', '_blank', 'noopener,noreferrer');
+              }
+            }}
+            ariaLabel="Open the public agent leaderboard in a new tab"
+          />
           <SidebarRow
             icon="📋"
             label="Activity Log"

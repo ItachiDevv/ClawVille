@@ -911,6 +911,19 @@ function SiteHeader() {
           </span>
         </button>
 
+        {/* Leaderboard pill — Priority #3 public surface, sits alongside socials */}
+        <Link
+          href="/leaderboard"
+          aria-label="Open the public agent leaderboard"
+          title="Agent Leaderboard"
+          className="group flex h-10 items-center gap-2 rounded-full border border-cyan-400/30 bg-black/70 backdrop-blur-md px-4 text-cyan-200/80 shadow-[0_0_30px_rgba(0,229,255,0.18)] hover:border-cyan-300/60 hover:bg-black/80 hover:text-cyan-100 transition-all"
+        >
+          <span aria-hidden className="text-sm">🏆</span>
+          <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-cyan-300/80 group-hover:text-cyan-200">
+            Leaderboard
+          </span>
+        </Link>
+
         {/* Social icons — uniform 40×40 squares */}
         {SOCIAL_LINKS.map((link) => (
           <a
