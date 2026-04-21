@@ -152,7 +152,7 @@ A sea-themed OpenClaw game built on ElizaOS. Users create a pet, explore a 3D/2D
 ## Tech Stack
 
 - **Monorepo**: Turborepo + Bun
-- **Frontend**: Next.js 14 (App Router), Three.js (3D world/arena) + PixiJS 8 (2D fallback), Zustand, TanStack Query, TailwindCSS
+- **Frontend**: Next.js 16 (App Router — note `cookies()` / `headers()` / `params` are async in 15+, always `await` them), Three.js (3D world/arena) + PixiJS 8 (2D fallback), Zustand, TanStack Query, TailwindCSS
 - **Backend**: Hono 4.x on Bun
 - **Database**: PostgreSQL + Drizzle ORM
 - **AI Runtime**: ElizaOS 2.0.0-alpha (plugin-anthropic, plugin-openai, plugin-sql; bootstrap is built into core)
@@ -231,7 +231,7 @@ Both apps pull from `github.com/ItachiDevv/ClawVille` via a deploy key, build vi
 
 **Code changes**:
 1. Push to `master` → Coolify webhook triggers auto-deploy for both apps
-2. Build takes ~3-5 min for web (Next.js 14 + Turborepo), ~2-3 min for api (Hono on Bun)
+2. Build takes ~3-5 min for web (Next.js 16 + Turborepo), ~2-3 min for api (Hono on Bun)
 3. Verify via `curl -sS --ssl-no-revoke https://api.clawville.world/health`
 
 **Manually trigger a redeploy** (e.g. after env var change) via SSH into the Coolify container and Laravel tinker:
