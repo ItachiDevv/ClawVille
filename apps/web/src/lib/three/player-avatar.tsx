@@ -154,6 +154,12 @@ function computeLocalMinY(scene: THREE.Object3D): number {
   return _petBbox.isEmpty() ? 0 : _petBbox.min.y;
 }
 
+// Scratch vectors for camera-relative player movement — module-scope, zero GC.
+// Mirrors npc-controller.tsx scratch vector pattern.
+const _playerCamForward = new THREE.Vector3();
+const _playerCamRight = new THREE.Vector3();
+const _playerWorldUp = new THREE.Vector3(0, 1, 0);
+
 // Shared raycaster — only hits layer 1 (terrain)
 const _petRaycaster = new THREE.Raycaster();
 _petRaycaster.layers.set(TERRAIN_LAYER);
@@ -181,7 +187,7 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
   const groupRef = useRef<THREE.Group>(null);
   const rotRef = useRef(VRM_DIR_ROTATION.idle);
   const terrainYRef = useRef(-2);
-  const { scene: threeScene } = useThree();
+  const { scene: threeScene, camera } = useThree();
 
   // Load VRM (suspends until resolved)
   const vrm = useVRM(reg.path);
@@ -234,15 +240,31 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
 
     let vx = 0, vy = 0;
     if (store.controlMode === 'player') {
+      // Camera-relative input (mirrors npc-controller.tsx and GLB path below).
+      // Old screen-relative revert concern was mobile OrbitControls touch accumulation —
+      // does not apply to keyboard arrow-key orbit.
+      let inputFwd = 0;
+      let inputRight = 0;
       const { joystickVelocity } = store;
       if (joystickVelocity.x !== 0 || joystickVelocity.y !== 0) {
-        vx = joystickVelocity.x;
-        vy = joystickVelocity.y;
+        inputRight = joystickVelocity.x;
+        inputFwd = -joystickVelocity.y;
       } else {
-        if (keyState.w) vy = -1;
-        if (keyState.s) vy = 1;
-        if (keyState.a) vx = -1;
-        if (keyState.d) vx = 1;
+        if (keyState.w) inputFwd += 1;
+        if (keyState.s) inputFwd -= 1;
+        if (keyState.a) inputRight -= 1;
+        if (keyState.d) inputRight += 1;
+      }
+      if (inputFwd !== 0 || inputRight !== 0) {
+        camera.getWorldDirection(_playerCamForward);
+        _playerCamForward.y = 0;
+        const fwdLen = _playerCamForward.length();
+        if (fwdLen > 0.001) {
+          _playerCamForward.divideScalar(fwdLen);
+          _playerCamRight.crossVectors(_playerCamForward, _playerWorldUp).normalize();
+          vx = _playerCamForward.x * inputFwd + _playerCamRight.x * inputRight;
+          vy = _playerCamForward.z * inputFwd + _playerCamRight.z * inputRight;
+        }
       }
     }
 
@@ -343,7 +365,7 @@ function PlayerPetGLBInner() {
   const animGroupRef = useRef<THREE.Group>(null);
   const rotRef = useRef(0);
   const terrainYRef = useRef(-2); // -2 matches sand floor Y so avatar spawns flush with terrain
-  const { scene: threeScene } = useThree();
+  const { scene: threeScene, camera } = useThree();
 
   attachKeyListeners();
 
@@ -449,21 +471,45 @@ function PlayerPetGLBInner() {
     // explore = spectator (camera-only), npc = NpcController drives possessed NPC,
     // autonomous = autonomy store drives via clickPath.
     if (store.controlMode === 'player') {
-      // Screen-relative input: joystick and WASD map directly to world-X and world-Z
-      // movement in map/pixel space. This is intentionally NOT camera-relative —
-      // camera-relative was tried and reverted because touch orbiting via OrbitControls
-      // accumulates over ~10 seconds and inverts the camera direction, breaking movement.
-      // With screen-relative, joystick direction always matches the map orientation at
-      // the default camera angle, which is the dominant use case.
+      // Camera-relative input: WASD maps to forward/strafe in camera space so the
+      // avatar moves in the direction the camera is facing. This mirrors
+      // npc-controller.tsx camera-relative pattern — same scratch vectors, same
+      // camera.getWorldDirection() projection onto the XZ plane.
+      //
+      // The old screen-relative comment ("camera-relative was tried and reverted")
+      // referred to mobile OrbitControls TOUCH orbit accumulating ~180° over 10s and
+      // inverting direction (see gotchas/camera-relative-movement-breaks-on-mobile.md).
+      // That concern does NOT apply to keyboard arrow-key orbit — arrow keys rotate
+      // intentionally and users expect WASD to track the new camera orientation.
+      let inputFwd = 0;
+      let inputRight = 0;
       const { joystickVelocity } = store;
       if (joystickVelocity.x !== 0 || joystickVelocity.y !== 0) {
-        vx = joystickVelocity.x;
-        vy = joystickVelocity.y;
+        inputRight = joystickVelocity.x;
+        inputFwd = -joystickVelocity.y; // joystick up (y<0) = camera forward
       } else {
-        if (keyState.w) vy = -1;
-        if (keyState.s) vy = 1;
-        if (keyState.a) vx = -1;
-        if (keyState.d) vx = 1;
+        if (keyState.w) inputFwd += 1;
+        if (keyState.s) inputFwd -= 1;
+        if (keyState.a) inputRight -= 1;
+        if (keyState.d) inputRight += 1;
+      }
+
+      if (inputFwd !== 0 || inputRight !== 0) {
+        // Project camera's forward onto the XZ plane (ignore pitch)
+        camera.getWorldDirection(_playerCamForward);
+        _playerCamForward.y = 0;
+        const fwdLen = _playerCamForward.length();
+        if (fwdLen > 0.001) {
+          _playerCamForward.divideScalar(fwdLen);
+          _playerCamRight.crossVectors(_playerCamForward, _playerWorldUp).normalize();
+
+          // World-space velocity (XZ plane). worldVx → game-pixel x, worldVz → game-pixel y.
+          const worldVx = _playerCamForward.x * inputFwd + _playerCamRight.x * inputRight;
+          const worldVz = _playerCamForward.z * inputFwd + _playerCamRight.z * inputRight;
+
+          vx = worldVx;
+          vy = worldVz;
+        }
       }
     }
 

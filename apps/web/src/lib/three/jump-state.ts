@@ -116,10 +116,14 @@ export function attachJumpListeners(): void {
 export function updateJump(rawDt: number): void {
   const dt = Math.min(rawDt, 0.1);
   const spaceDown = jumpState.spaceDown;
-
-  jumpState.holdMs = spaceDown ? jumpState.holdMs + dt * 1000 : 0;
   const risingEdge = spaceDown && !jumpState.lastSpaceDown;
   jumpState.lastSpaceDown = spaceDown;
+
+  // Accumulate hold time only while held — DO NOT reset on release, or the
+  // release-classifier below reads holdMs=0 and always fires the tap path,
+  // making charged-launch unreachable except via auto-launch at max hold.
+  // holdMs is reset on the next rising edge when entering 'charging' below.
+  if (spaceDown) jumpState.holdMs += dt * 1000;
 
   // Charge progress is only meaningful during 'charging' phase; zero out otherwise
   // so the charge bar hides cleanly.
@@ -131,8 +135,12 @@ export function updateJump(rawDt: number): void {
     case 'grounded':
       if (risingEdge) {
         // Enter charging state — no vertical motion yet.
+        // Reset holdMs here (on the new press) rather than on release; resetting
+        // on release zeroed holdMs before the release-classifier could read it,
+        // causing the tap branch to always fire regardless of actual hold duration.
         jumpState.phase = 'charging';
         jumpState.vz = 0;
+        jumpState.holdMs = 0;
       }
       break;
 
