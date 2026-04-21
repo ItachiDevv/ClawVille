@@ -149,7 +149,22 @@ export function updateJump(rawDt: number): void {
           const t = Math.min(1, (jumpState.holdMs - JUMP_TAP_THRESHOLD_MS) /
                              (JUMP_MAX_HOLD_MS - JUMP_TAP_THRESHOLD_MS));
           jumpState.phase = 'launch';
-          jumpState.vz = JUMP_MIN_CHARGED_VZ + (JUMP_MAX_CHARGED_VZ - JUMP_MIN_CHARGED_VZ) * t;
+          // Interpolate vz² linearly so peak altitude = vz²/(2|g|) scales LINEARLY
+          // with charge progress. Plain vz-linear lerp makes peak quadratic —
+          // t=0.5 gave only 46% of max peak (≈706 wu instead of ≈863 wu), which
+          // felt flat across the low-mid bar range. Square-root interp fixes the
+          // perception without changing min/max endpoints.
+          //
+          // New peak-vs-charge table:
+          //   0%  (just past 200ms) → vz=250  → peak ≈  195 wu
+          //  25%                    → vz=412  → peak ≈  531 wu
+          //  50%                    → vz=525  → peak ≈  863 wu
+          //  75%                    → vz=618  → peak ≈ 1194 wu
+          // 100% (1500ms)           → vz=700  → peak ≈ 1531 wu
+          // Midpoint ≈ 863 wu = (195 + 1531) / 2. Linear in height.
+          const vzMinSq = JUMP_MIN_CHARGED_VZ * JUMP_MIN_CHARGED_VZ;
+          const vzMaxSq = JUMP_MAX_CHARGED_VZ * JUMP_MAX_CHARGED_VZ;
+          jumpState.vz = Math.sqrt(vzMinSq + (vzMaxSq - vzMinSq) * t);
         }
       } else if (jumpState.holdMs >= JUMP_MAX_HOLD_MS) {
         // Auto-launch at max charge, even though user is still holding.
