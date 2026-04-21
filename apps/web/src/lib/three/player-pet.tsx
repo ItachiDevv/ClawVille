@@ -359,7 +359,9 @@ function PlayerPetInner() {
     // Suppress ambient bob when airborne — it looks wrong to bob while jumping.
     // resetJump() guarantees heightOffset=0 outside player/npc modes, so reads
     // here are unconditional (safe even when PlayerPet renders in autonomous mode).
-    const airborne = jumpState.phase !== 'grounded';
+    // 'charging' keeps the pet on the ground (heightOffset stays 0), so treat it as
+    // grounded for bob purposes — only 'quick', 'launch', and 'sinking' are truly airborne.
+    const airborne = jumpState.phase !== 'grounded' && jumpState.phase !== 'charging';
     const finalBob = airborne
       ? 0
       : (isMoving ? Math.abs(Math.sin(elapsed * BOB_SPEED)) * BOB_AMPLITUDE : Math.sin(elapsed * 2) * 0.15);
@@ -369,12 +371,17 @@ function PlayerPetInner() {
     // subtracting a negative raises the model so feet align with terrainY.
     group.position.y = terrainYRef.current + 2 + finalBob + jumpState.heightOffset - pivotOffsetY;
 
-    const targetRot = continuousRot ?? DIR_ROTATION[dir] ?? 0;
-    // Shortest-path lerp — prevents spinning the long way when crossing ±PI boundary
-    let rotDiff = targetRot - rotRef.current;
-    while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
-    while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
-    rotRef.current += rotDiff * 0.15;
+    // Idle rotation freeze: don't snap back to +Z when movement stops — preserve last moved direction so the pet doesn't twist back after every WASD release.
+    // When idle (no movement input), continuousRot is null — skip the lerp entirely
+    // and leave rotRef.current unchanged.  This mirrors how npc-controller.tsx
+    // preserves facingAngle on idle via moveNpc(..., npc.facingAngle) at line ~148.
+    if (continuousRot !== null) {
+      // Shortest-path lerp — prevents spinning the long way when crossing ±PI boundary
+      let rotDiff = continuousRot - rotRef.current;
+      while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
+      while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
+      rotRef.current += rotDiff * 0.15;
+    }
     group.rotation.y = rotRef.current;
 
     const dt = Math.min(delta, 0.1);

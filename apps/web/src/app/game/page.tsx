@@ -16,6 +16,7 @@ import TutorialOverlay from '@/components/game/tutorial-overlay';
 import ToastNotifications from '@/components/game/toast-notifications';
 import Minimap from '@/components/game/minimap';
 import PetChatBar from '@/components/game/pet-chat-bar';
+import ChargeBar from '@/components/game/charge-bar';
 import ShopOverlay from '@/components/game/shop-overlay';
 import InventoryModal from '@/components/game/inventory-modal';
 import ActivityFeed from '@/components/game/activity-feed';
@@ -238,6 +239,7 @@ export default function GamePage() {
           <PetSettingsModal />
           <LocationConfigModal />
           {controlMode !== 'explore' && <PetChatBar />}
+          {controlMode !== 'explore' && <ChargeBar />}
           <ShopOverlay />
           <InventoryModal />
           <TutorialOverlay />
