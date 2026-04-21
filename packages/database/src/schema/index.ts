@@ -20,6 +20,8 @@ export * from './bounties';
 export * from './building-skills';
 export * from './wallets';
 export * from './agent-session-tickets';
+export * from './events';
+export * from './event-write-failures';
 
 import { users, sessions } from './users';
 import { npcMemories, activityLog } from './memories';

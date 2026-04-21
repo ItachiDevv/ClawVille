@@ -19,6 +19,7 @@
 
 import { eq, sql } from 'drizzle-orm';
 import { db, avatars, clawTokenTransactions } from '@clawville/database';
+import { logEvent } from './event-logger';
 
 /**
  * Drizzle transaction type — passing this lets the helpers compose into
@@ -185,7 +186,7 @@ export async function transferClawTokens(input: {
   source: ClawTokenSource;
   metadata?: Record<string, unknown>;
 }): Promise<{ fromBalance: number; toBalance: number }> {
-  return db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx) => {
     const debit = await debitInTx(tx, {
       avatarId: input.fromAvatarId,
       amount: input.amount,
@@ -202,4 +203,22 @@ export async function transferClawTokens(input: {
     });
     return { fromBalance: debit.balanceAfter, toBalance: credit.balanceAfter };
   });
+
+  // Agent↔agent settlement telemetry — fires only after the atomic transfer
+  // succeeds. Peer-to-peer transfers are currently paused (skill marketplace
+  // write handlers return 503) but ledger infra still supports it; the event
+  // keeps us informed if/when peer flows resume.
+  void logEvent({
+    eventType: 'tokens.settled',
+    avatarId: input.toAvatarId,
+    payload: {
+      amount: input.amount,
+      fromAvatarId: input.fromAvatarId,
+      toAvatarId: input.toAvatarId,
+      reason: input.reason,
+      source: input.source,
+    },
+  });
+
+  return result;
 }
