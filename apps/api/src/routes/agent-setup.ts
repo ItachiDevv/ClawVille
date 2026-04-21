@@ -28,6 +28,15 @@ agentSetupRoutes.use('*', sessionMiddleware);
 // Constants
 // ---------------------------------------------------------------------------
 
+// FEATURE_GATE: multi_agent_roster
+// Status: schema + routes support N agents; UI + this constant cap it at 1.
+// Metric to graduate: median session length > 15min AND returning-day rate > 20%
+//   (single-agent UX must be good before multi-agent adds value).
+// Current reading: to fill from /dash after 2 weeks of instrumented traffic.
+// Review deadline: 2026-06-21.
+// On deadline: if metrics met, raise MAX_AGENTS to 6; if not, delete the
+//   roster/loadout plumbing on lines 194–750 and keep single-pet only.
+// Reference: improvements.md §7 (Tier 2 deferred).
 const MAX_AGENTS = 1;
 const MAX_EQUIPPED_SKILLS = 6;
 

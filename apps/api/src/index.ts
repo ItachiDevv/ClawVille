@@ -26,7 +26,9 @@ import { leaderboardRoutes } from './routes/leaderboard';
 import { agentSetupRoutes } from './routes/agent-setup';
 import { skillsRoutes } from './routes/skills';
 import { agentV2Routes } from './routes/agent-v2';
+import { dashboardRoutes } from './routes/dashboard';
 import { startSimulation } from './services/npc-simulation';
+import { alertError } from './services/alert-error';
 import type { AppContext } from './types';
 
 const app = new Hono<AppContext>();
@@ -102,8 +104,11 @@ app.route('/api/leaderboard', leaderboardRoutes);
 app.route('/api/agent-setup', agentSetupRoutes);
 app.route('/api/skills', skillsRoutes);
 app.route('/api/v2/agent', agentV2Routes);
+app.route('/api/dashboard', dashboardRoutes);
 
-// Error handler
+// Error handler — expected errors (HTTPException, InsufficientTokens) return
+// typed responses without alerting; unexpected exceptions fire an immediate
+// Telegram alert via alertError so we catch 500s on their first occurrence.
 app.onError((err, c) => {
   console.error('API Error:', err);
   if (err instanceof HTTPException) {
@@ -113,6 +118,19 @@ app.onError((err, c) => {
   if (err.name === 'InsufficientTokensError') {
     return c.json({ error: err.message, code: 400 }, 400);
   }
+
+  // Genuinely unexpected — fire a critical alert (rate-limited in alertError).
+  void alertError({
+    severity: 'critical',
+    source: 'api-route',
+    message: `Uncaught error on ${c.req.method} ${c.req.path}`,
+    context: {
+      error: String(err),
+      stack: (err as Error)?.stack,
+      userId: c.get('user')?.id,
+    },
+  });
+
   return c.json({ error: 'Internal server error', code: 500 }, 500);
 });
 
