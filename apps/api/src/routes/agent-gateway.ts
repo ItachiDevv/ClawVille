@@ -377,8 +377,16 @@ agentGatewayRoutes.post('/connect', async (c) => {
         : null,
   });
 
+  // Event payload — enrich with userId/petId when we resolved them from a
+  // connection token. Dashboard funnels join events by userId/petId when
+  // available, by agentId otherwise.
+  const pendingForEvent = data.connectionToken
+    ? pendingConnections.get(data.connectionToken)
+    : null;
   void logEvent({
     eventType: 'agent.connected',
+    userId: pendingForEvent?.userId ?? null,
+    petId: pendingForEvent?.petId ?? null,
     agentId: resolvedAgentId,
     sessionId,
     payload: {
