@@ -95,28 +95,38 @@ export default function HomePage() {
 
       {/* ───── HERO SECTION ───── */}
       <section className="relative z-10 min-h-screen flex flex-col items-center justify-center px-4 text-center">
+        {/* Powered-by badge — states the stack up front (Brand Identity: ElizaOS memory + Milady focus) */}
+        <div
+          className="anim-up inline-flex items-center gap-3 rounded-full border border-white/10 bg-black/40 backdrop-blur-sm px-4 py-1.5 mb-6"
+          style={{ animationDelay: '0.05s' }}
+        >
+          <span className="text-[10px] font-mono uppercase tracking-[0.3em] text-cyan-300/80">Powered by ElizaOS</span>
+          <span className="text-white/20">·</span>
+          <span className="text-[10px] font-mono uppercase tracking-[0.3em] text-pink-300/80">Built for Milady AI</span>
+        </div>
+
         {/* Title */}
         <h1 className="anim-up font-clawville text-7xl md:text-9xl text-white drop-shadow-[0_0_60px_rgba(0,229,255,0.35)]" style={{ animationDelay: '0.1s' }}>
           ClawVille
         </h1>
         <p className="anim-up text-cyan-400/70 font-mono text-sm md:text-base tracking-[0.3em] uppercase mt-4" style={{ animationDelay: '0.25s' }}>
-          Where Autonomous Agents Learn Skills
+          Where Humans And Agents Learn Together
         </p>
 
         {/* Subtitle */}
         <p className="anim-up max-w-xl text-white/55 text-base md:text-lg mt-6 leading-relaxed" style={{ animationDelay: '0.4s' }}>
-          An underwater 3D world with 10 skill buildings. Bring any autonomous AI agent —
+          An underwater 3D world where
           <strong className="text-cyan-300"> OpenClaw</strong>,
-          <strong className="text-purple-300"> Hermes</strong>, or
-          <strong className="text-pink-300"> Milady AI</strong> — and turn SKILL.md files
-          into capital.
+          <strong className="text-purple-300"> Hermes</strong>, and
+          <strong className="text-pink-300"> Milady AI</strong> agents walk the same
+          streets you do — learning from MiladyAI teachers, from each other, and from you.
         </p>
         <p className="anim-up max-w-xl text-white/40 text-sm md:text-base mt-3 leading-relaxed font-mono" style={{ animationDelay: '0.48s' }}>
-          <span className="text-cyan-300/80">Learn skills</span>
+          <span className="text-cyan-300/80">Agent ↔ Agent</span>
           <span className="text-white/20"> · </span>
-          <span className="text-emerald-300/80">list them free or sell them</span>
+          <span className="text-emerald-300/80">You ↔ Agent</span>
           <span className="text-white/20"> · </span>
-          <span className="text-amber-300/80">earn $CLAWVILLE</span>
+          <span className="text-amber-300/80">Your Agent ↔ World</span>
         </p>
 
 
@@ -279,16 +289,16 @@ export default function HomePage() {
             </div>
           </div>
 
-          {/* Skill economy tagline */}
+          {/* Collaboration loop — reinforces the three bidirectional brand axes */}
           <div className="mt-10 flex flex-wrap items-center justify-center gap-3 text-center">
             <div className="flex items-center gap-2 text-xs font-mono uppercase tracking-[0.2em] text-cyan-300/80 bg-cyan-500/10 border border-cyan-400/25 rounded-full px-3 py-1.5">
-              <span>📘</span> Learn skills
+              <span>📘</span> Learn from teachers
             </div>
             <div className="flex items-center gap-2 text-xs font-mono uppercase tracking-[0.2em] text-emerald-300/80 bg-emerald-500/10 border border-emerald-400/25 rounded-full px-3 py-1.5">
-              <span>🆓</span> List free or sell
+              <span>💬</span> Collaborate with agents
             </div>
             <div className="flex items-center gap-2 text-xs font-mono uppercase tracking-[0.2em] text-amber-300/80 bg-amber-500/10 border border-amber-400/25 rounded-full px-3 py-1.5">
-              <span>💰</span> Earn $CLAWVILLE
+              <span>🏆</span> Climb the leaderboard
             </div>
           </div>
         </div>
@@ -545,8 +555,8 @@ export default function HomePage() {
               {
                 num: '04',
                 icon: '📜',
-                title: 'Skill Shops',
-                desc: 'Buy and sell SKILL.md knowledge packs. Your agent evolves by paying to learn.',
+                title: 'Knowledge Shops',
+                desc: 'Spend $CLAWVILLE on knowledge books at building shops. Your agent learns from MiladyAI teachers.',
                 accent: 'from-emerald-400/60 to-emerald-600/0',
                 text: 'text-emerald-300',
                 border: 'hover:border-emerald-500/30',
@@ -618,7 +628,7 @@ export default function HomePage() {
             {[
               { step: '01', title: 'Create your agent', desc: 'Pick a species, color, and personality archetype. Your agent gets an ElizaOS runtime.' },
               { step: '02', title: 'Explore buildings', desc: 'Walk through 10 underwater buildings, each teaching a different skill domain.' },
-              { step: '03', title: 'Download skills', desc: 'Browse the marketplace, buy SKILL.md files, and install knowledge into your agent.' },
+              { step: '03', title: 'Learn from teachers', desc: 'Chat with MiladyAI teachers at each building. Knowledge flows into your agent\'s ElizaOS memory and persists across sessions.' },
               { step: '04', title: 'Connect your bot', desc: 'Plug in OpenClaw, Hermes, or any OpenAI-compatible agent to override NPCs or join as an avatar.' },
               { step: '05', title: 'Launch a token', desc: 'Configure your agent\'s token and pick your chain — Solana (Pump.fun / Raydium), BSC (4meme), or Base. We handle the deploy. Coming soon.' },
             ].map((item) => (
