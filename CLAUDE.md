@@ -198,10 +198,16 @@ Required in `.env.local`:
 - `CLAWVILLE_MERCHANT_WALLET_PUBKEY` - Base58 public key of the Phase 4 x402 merchant wallet (row in `treasury_wallets`)
 - `CORS_ORIGIN` - Frontend URL(s) for CORS (prod: `https://clawville.world`)
 - `NEXT_PUBLIC_API_URL` - Backend API URL for frontend (prod: `https://api.clawville.world`)
+- `ADMIN_USER_IDS` - Comma-separated list of user UUIDs allowed to hit `/api/dashboard/*` and `/dash`. Parsed at api module load; changing it requires a redeploy. See `apps/api/src/middleware/admin-only.ts`.
+- `ITACHI_DEBUG_BOT_TOKEN` + `ITACHI_DEBUG_CHAT_ID` - itachi-debug Telegram bot credentials used by `apps/api/src/services/alert-error.ts`. When missing, `alertError()` degrades to `console.warn` — user flows are never broken, but operator pings never arrive. Staged via the tinker pattern from `~/.itachi-api-keys`.
+- `METRICS_MEASUREMENT_START` - ISO date the `/dash` page displays as "Measuring since …". Defaults to `2026-04-21` in code when unset.
+- `AGENT_SESSION_TICKET_TTL_SECONDS` - Phase 5 magic-link expiry (default 300 / 5 min). Bump if Milady agents need longer-lived tickets.
+
+**Optional keys:**
+- `OPENAI_API_KEY` — optional fallback used ONLY by `apps/api/src/services/npc-conversation-engine.ts` when Gemini hits its `GEMINI_MAX_FAILURES` backoff. Leave empty to disable the fallback (NPC banter silently returns empty strings when Gemini is down). NOT a general-purpose replacement for Gemini — it's a narrow NPC-text-only safety net.
 
 **Removed keys** (no longer used — safe to delete from `.env.local` and Coolify):
 - `ANTHROPIC_API_KEY` — removed with the ultrathink decommission. Previously used by `plugin-anthropic` (fallback) and `ultrathink-provider.ts` (deep reasoning). Both are gone. See `docs/ultrathink-migration-decision.md`.
-- `OPENAI_API_KEY` — legacy, replaced by Gemini embeddings earlier in 2026-04.
 
 ## Deployment — Hetzner + Coolify
 
