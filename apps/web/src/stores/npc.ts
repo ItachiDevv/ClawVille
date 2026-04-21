@@ -148,8 +148,12 @@ const DEMO_NPCS: NpcSpriteState[] = [
   // sharing a VRM instance with the most-common player avatar picks (official_1 is the
   // default; official_5 is popular). The vrm-loader caches one VRM per path — two NPCs
   // sharing the same path would share vrm.scene and clobber each other's animation state.
-  makeDemoNpc('demo-vrm-1', 'Miu',   1400, 3400, 'milady_official_7', 0xffc0ff), // lavender (color ignored for VRM/MToon)
-  makeDemoNpc('demo-vrm-2', 'Kyoko', 3800, 1200, 'milady_official_8', 0xc0e8ff), // sky-blue  (color ignored for VRM/MToon)
+  // IDs match NPC_DEFINITIONS entries in packages/shared — when a user connects
+  // to any agent and the server NPC sim streams snapshots, these entries get
+  // updated in place (same ids) instead of being duplicated. Disconnected mode
+  // uses the client-side wander loop on these same npcs.
+  makeDemoNpc('milady-miu',   'Miu',   1400, 3400, 'milady_official_7', 0xffc0ff),
+  makeDemoNpc('milady-kyoko', 'Kyoko', 3800, 1200, 'milady_official_8', 0xc0e8ff),
 ];
 
 // Demo NPC wandering — makes NPCs walk around when not connected to server
@@ -248,17 +252,20 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
 
   setConnected: (v) => {
     set({ connected: v });
-    // Wander tick stays running regardless of connection state — it now also
-    // drives the 2 client-only Milady VRM NPCs (demo-vrm-1 / demo-vrm-2) which
-    // the server doesn't know about. Server-sync snapshots overwrite lobster
-    // positions every ~100-500ms anyway, so the wander contribution to the
-    // lobsters is invisible — only the VRM NPCs retain the wander movement.
-    if (!v) {
+    if (v) {
+      // Server connected — stop client wander. The server NPC sim now drives
+      // ALL seeded NPCs (including the 2 Milady VRM brand wanderers, since
+      // they were added to NPC_DEFINITIONS 2026-04-21). Snapshots carry their
+      // positions, conversations, and chat bubbles.
+      stopDemoWander();
+    } else {
+      // Disconnected — restore DEMO_NPCS and run the client-side wander loop
+      // so the world still feels alive without a server connection.
       if (get().npcs.length === 0) {
         set({ npcs: DEMO_NPCS });
       }
+      startDemoWander();
     }
-    startDemoWander();
   },
 
   updateFromSnapshot: (snapshot) => {
@@ -401,19 +408,7 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
     const { useGameStore } = require('@/stores/game') as typeof import('@/stores/game');
     const isNpcMode = useGameStore.getState().controlMode === 'npc';
     const playerNpc = isNpcMode ? state.npcs.find((n) => n.id === PLAYER_NPC_ID) : undefined;
-
-    // Preserve client-only wandering NPCs (currently the 2 Milady VRMs: demo-vrm-1 / demo-vrm-2).
-    // These are local demo entities with no server counterpart; the server snapshot is
-    // authoritative for combat/chat lobsters but must NOT wipe the VRM wanderers.
-    // Filter by id prefix so adding more VRM demo NPCs in the future is a one-line
-    // DEMO_NPCS append with no store changes required.
-    const localVrmNpcs = state.npcs.filter((n) => n.id.startsWith('demo-vrm-'));
-
-    const finalNpcs = [
-      ...(playerNpc ? [playerNpc] : []),
-      ...npcs,
-      ...localVrmNpcs,
-    ];
+    const finalNpcs = playerNpc ? [playerNpc, ...npcs] : npcs;
 
     set({
       npcs: finalNpcs,
