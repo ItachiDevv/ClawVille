@@ -33,30 +33,44 @@ to a camera they accidentally moved.
 
 ### Fix options
 
-**Option A (used in ClawVille): Revert to screen-relative movement**
+**Option A (prev used, now reverted for keyboard): Screen-relative movement**
 ```typescript
-// player-pet.tsx — screen-relative
-vx = joystickVelocity.x;
-vy = joystickVelocity.y;
-// For WASD:
+// LEGACY — was used in player-pet.tsx to avoid the mobile orbit bug.
+// Reverted 2026-04-21 because screen-relative diverges from camera orientation
+// after arrow-key orbit, making WASD feel wrong for keyboard users.
 if (keyState.w) vy = -1;
 if (keyState.s) vy = 1;
 if (keyState.a) vx = -1;
 if (keyState.d) vx = 1;
 ```
-Trade-off: movement direction doesn't adapt to camera orbit, but the FPSFollowCamera
-keeps the default angle anyway, so this is acceptable.
 
-**Option B: Disable OrbitControls rotation on touch**
+**Option B: Camera-relative (used in ClawVille as of 2026-04-21)**
+```typescript
+// player-pet.tsx — camera-relative (matches npc-controller.tsx)
+camera.getWorldDirection(_playerCamForward);
+_playerCamForward.y = 0;
+_playerCamForward.normalize();
+_playerCamRight.crossVectors(_playerCamForward, _playerWorldUp).normalize();
+vx = _playerCamForward.x * inputFwd + _playerCamRight.x * inputRight;
+vy = _playerCamForward.z * inputFwd + _playerCamRight.z * inputRight;
+```
+This fixes the core bug — after arrow-key orbit, WASD moves in the camera direction.
+**CAVEAT:** The original mobile orbit bug (Option A revert reason) can resurface if
+`OrbitControls enableRotate={true}` is left on for touch devices. If that becomes a
+problem, disable touch rotation (`enableRotate={!isTouchDevice}`) rather than
+reverting to screen-relative.
+
+**Option C: Disable OrbitControls rotation on touch**
 ```tsx
 <OrbitControls enableRotate={!isTouchDevice} ... />
 ```
-This makes the right joystick the ONLY way to orbit on mobile, preventing accidental orbit.
-If using camera-relative movement, this option allows camera-relative to work correctly.
+Safe pairing with camera-relative movement — eliminates accidental orbit on mobile.
 
 ### History
-This exact bug occurred TWICE in ClawVille (commits f85a6d6 and 32f731a) before the root
-cause was fully understood. Both times were reverted in favor of screen-relative movement.
+- Screen-relative reverted TWICE (commits f85a6d6, 32f731a) for the mobile orbit bug.
+- Camera-relative restored 2026-04-21: the mobile concern only applies to touch OrbitControls
+  orbit — keyboard arrow-key orbit is intentional and bounded. NPC mode was always
+  camera-relative and never had issues.
 
 ## Context
 ClawVille. Three.js r182, R3F v9, nipplejs left joystick for movement, right joystick for

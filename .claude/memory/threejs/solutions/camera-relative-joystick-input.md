@@ -1,8 +1,8 @@
 ---
-title: Lobster model facing + correct atan2 formula + screen-relative movement
+title: Lobster model facing + correct atan2 formula + camera-relative movement (player + NPC)
 category: solution
 tags: [joystick, mobile, rotation, facing, atan2, lobster, model-orientation, camera-relative]
-date: 2026-04-16
+date: 2026-04-21
 confidence: high
 threejs_version: r170+
 ---
@@ -10,9 +10,9 @@ threejs_version: r170+
 ## Summary
 
 lobster.glb faces **+Z** at rotation.y=0 (EMPIRICALLY VERIFIED 2026-04-16 late PM, clean side-view).
-Use `atan2(vx, vy)` for screen-relative pixel input. Movement MUST be screen-relative (NOT
-camera-relative) — camera-relative fails on mobile because OrbitControls touch orbit accumulates
-over ~10 seconds and inverts the camera direction.
+Use `atan2(vx, vy)` where vx/vy are world-XZ velocities. **Both player and NPC modes now use
+camera-relative movement** (2026-04-21). Old screen-relative revert concerned mobile OrbitControls
+touch orbit — does NOT apply to keyboard arrow-key orbit.
 
 **WARNING — this is the THIRD conclusion about the native axis. The +X conclusion from the AM
 session was WRONG (camera was orbited). Only run the overlay with a pure side-view to re-verify.**
@@ -52,22 +52,32 @@ const facingAngle = Math.atan2(worldVx, worldVz);   // +Z model — CORRECT
 - left  (vx=-1, vy=0):  atan2(-1,  0) = -PI/2      (-X = screen-left)
 - idle: 0 (faces +Z = toward default camera at positive +Z high angle position)
 
-## Why camera-relative movement fails on mobile (CRITICAL — unchanged)
+## Camera-relative movement (current, 2026-04-21)
 
-Camera-relative movement was tried twice and BOTH TIMES caused "joystick pulled SE, lobster
-moves NW" after ~10 seconds.
+Both `player` mode (`player-pet.tsx`) and `npc` mode (`npc-controller.tsx`) now use
+camera-relative WASD. Pattern:
+```typescript
+camera.getWorldDirection(_playerCamForward);
+_playerCamForward.y = 0;
+_playerCamForward.normalize();
+_playerCamRight.crossVectors(_playerCamForward, _playerWorldUp).normalize();
+vx = _playerCamForward.x * inputFwd + _playerCamRight.x * inputRight;
+vy = _playerCamForward.z * inputFwd + _playerCamRight.z * inputRight;
+```
 
-Root cause: OrbitControls is enabled with `enableRotate={true}`. Single-finger touch outside
-joystick zones causes OrbitControls to orbit the camera. After ~10s, camera has accumulated
-~180° of unintentional orbit. camForward.xz is fully negated, mapping joystick to opposite
-world direction.
+## Why screen-relative was used before (and why it was wrong for keyboard users)
 
-Screen-relative movement is immune. The trade-off (movement doesn't follow intentional orbit)
-is acceptable because FPSFollowCamera keeps the default angle in normal play.
+Camera-relative was reverted TWICE for the mobile touch-orbit bug: OrbitControls with
+`enableRotate={true}` lets single-finger touch orbit the camera ~180° over 10s →
+`camForward.xz` negated → joystick SE moves lobster NW.
 
-**DO NOT switch to camera-relative again without:**
-1. Disabling OrbitControls touch rotation (`enableRotate={isTouchDevice ? false : true}`)
-2. OR ensuring right joystick is the only way to orbit
+Screen-relative was immune but broke for arrow-key orbit (intentional orbit, not accidental).
+After orbiting with arrows and pressing D, the lobster moved "world-east" instead of
+screen-right. Camera-relative is the correct behavior.
+
+**Mobile caveat still applies:** If OrbitControls touch rotation is enabled, camera-relative
+can still break on mobile after accidental orbit. Mitigation: disable touch rotation
+(`enableRotate={isTouchDevice ? false : true}`) or ensure right joystick is the only orbit path.
 
 ## Joystick (nipplejs) convention — unchanged
 - Nipplejs UP → angle.radian = π/2
