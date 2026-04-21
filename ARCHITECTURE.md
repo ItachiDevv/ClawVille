@@ -1,6 +1,6 @@
 # ClawVille Architecture
 
-> **Last Audited:** 2026-04-21 (metrics spine jump — added Observability section; new `events` + `event_write_failures` schemas; new `dashboard.ts` route mounted at `/api/dashboard`; Hono onError middleware now fires Telegram alerts via `alertError()`; new `event-logger.ts`, `alert-error.ts`, `admin-only.ts`; 6 event types emitted at 7 sites; `bazaar.ts`/`marketplace.ts`/`auctions.ts` write handlers stubbed to 503 pending post-overhaul skill-marketplace rework; FEATURE_GATE blocks on `x402-config.ts`, `agent-setup.ts`, and the three marketplace files. Previous 2026-04-17 audit: drift sweep — 7 missing route modules, 13 missing schema tables, Phase 5/6 sections, Service Layer catalog, ultrathink decommission noted.)
+> **Last Audited:** 2026-04-21 (Phase 5.1 — wallet identity + scape portal: 4 new event types (`identity.issued`, `identity.reconnected`, `portal.scape.crossed`, `portal.scape.linked`), new `/api/portal/*` + `/api/agent/{challenge,reconnect}` + `/.well-known/clawville-issuer.json` routes, new `pending_account_links` schema, new `users.identity_*` + `users.scape_*` + `users.linked_scape_*` columns, `wallets` table envelope-encryption columns (`dek_wrapped` + `encryption_version`), Cloudflare Secrets Store for crypto root-of-trust, new `service-issuer` + `auth-challenge` services. Previous same-day 2026-04-21 audit: metrics spine jump — added Observability section; new `events` + `event_write_failures` schemas; new `dashboard.ts` route mounted at `/api/dashboard`; Hono onError middleware now fires Telegram alerts via `alertError()`; new `event-logger.ts`, `alert-error.ts`, `admin-only.ts`; 6 event types emitted at 7 sites; `bazaar.ts`/`marketplace.ts`/`auctions.ts` write handlers stubbed to 503 pending post-overhaul skill-marketplace rework; FEATURE_GATE blocks on `x402-config.ts`, `agent-setup.ts`, and the three marketplace files. Previous 2026-04-17 audit: drift sweep — 7 missing route modules, 13 missing schema tables, Phase 5/6 sections, Service Layer catalog, ultrathink decommission noted.)
 
 ## System Overview
 
@@ -84,7 +84,9 @@ Hard rules:
 | `locations.ts` | Location data |
 | `chat.ts` | Location agent chat with dynamic context injection |
 | `items.ts` | Shop browse, inventory, buy, learn |
-| `agent-gateway.ts` | Universal agent connection (connect-token, polling, SKILL.md, SSE events) |
+| `agent-gateway.ts` | Universal agent connection (connect-token, polling, SKILL.md, SSE events). Phase 5.1 adds `POST /api/agent/challenge` (issue nonce for signed-challenge reconnect) and `POST /api/agent/reconnect` (signed-challenge auth, mints session ticket). `POST /api/agent/connect` + `POST /api/agent/join` also gain an `identity` block + a `wallet` block in the first-time response (see Phase 5.1 section below). |
+| `portal.ts` | Phase 5.1 cross-world portal. `POST /api/portal/scape` (ClawVille → 'scape, Lucia-authed, signs the outbound request with the service issuer keypair). `POST /api/portal/mint-for-scape` ('scape → ClawVille reverse portal, partner-signature-authed, mints a magic-link ticket). `POST /api/portal/accept-scape-link` ('scape → ClawVille, link existing 'scape account to existing ClawVille user — consumes a `pending_account_links` code). `POST /api/portal/scape-link-code` (Lucia-authed, ClawVille user generates a one-time code to paste in 'scape). `GET /.well-known/clawville-issuer.json` publishes the service issuer pubkey (served as a Hono route on the API — NOT a Next.js route — to avoid Next's special-case handling of `.well-known/*`). |
+| `admin/identity-recover.ts` | `POST /api/admin/identity-recover` — admin-gated stub. Returns 501 Not Implemented behind `FEATURE_GATE: admin_identity_recovery`. Support-chat identity-recovery workflow not launched; graduates when `support.identity_recovery_requests > 5/week` on the events table AND support-chat service is live. Review deadline 2026-07-01. |
 | `agent-export.ts` | `POST /api/agent/export-character` — emits Eliza `Character` JSON + `SkillPack` + Milady install payload + curl one-liner (Phase 3 of the create-agent rollout; Phase 4a UI consumes this) |
 | `agent-setup.ts` | Multi-agent roster + loadout + import/export (`MAX_AGENTS = 1` currently enforced) |
 | `agent-v2.ts` | `/api/v2/agent` — experimental alternate agent gateway surface (new shape under review) |
@@ -119,6 +121,10 @@ All meaningful app actions write a row into the `events` table via `logEvent()` 
 | `agent.chat.turn` | `chat.ts` (location), `avatars.ts` (avatar), `agent-gateway.ts` (`:sessionId/chat`, `:sessionId/building/:buildingId/chat`) | `chatType: 'avatar' \| 'location' \| 'character' \| 'building'`, `messageLength`, `tokenAwarded` |
 | `agent.collaboration.turn` | `agent-collaboration.ts` (one per consulted expert) | `sourceBuildingId`, `targetBuildingId`, `kind: 'cross-building-consultation'` — Brand Identity §3 axis #1 |
 | `tokens.settled` | Inside `transferClawTokens()` in `claw-token-ledger.ts`, after the atomic transfer | `amount`, `fromAvatarId`, `toAvatarId`, `reason` — off-dashboard telemetry |
+| `identity.issued` | `POST /api/agent/connect`, `POST /api/agent/join` (`agent-gateway.ts`) | `identityType`, `identityPubkey`, `via: 'connect' \| 'join'` — `userId` + `avatarId` + `agentId` + `sessionId` live on the top-level event columns, not the payload |
+| `identity.reconnected` | `POST /api/agent/reconnect` (`agent-gateway.ts`) | `via: 'signed-challenge'` |
+| `portal.scape.crossed` | `POST /api/portal/scape`, `POST /api/portal/mint-for-scape` (`portal.ts`) | Outbound: `direction: 'clawville_to_scape'`, `principalId`, `worldCharacterId`, `ticketRefHash`, `ttlMs`. Inbound: `direction: 'scape_to_clawville'`, `principalId`, `ticketRefHash`, `requestingScapePrefix` (16-char prefix). Companion `portal.scape.cross_failed` fires on fetch error / partner 4xx–5xx / bad JSON. |
+| `portal.scape.linked` | `POST /api/portal/accept-scape-link` (`portal.ts`) | `scapePrincipalPrefix` (16-char prefix), `scapeDisplayName`, `linkCodeHash` |
 
 **Alert system (`apps/api/src/services/alert-error.ts`):** rate-limited Telegram pings via the itachi-debug bot. Same `source::message` combo collapses to one alert per 60s with a suppressed-count suffix. Required env vars: `ITACHI_DEBUG_BOT_TOKEN`, `ITACHI_DEBUG_CHAT_ID`. Called from `event-logger.ts` on double failure, from the Hono `onError` middleware on uncaught exceptions, and from any business-critical code path that wants to page the admin.
 
@@ -237,6 +243,112 @@ memory partition. One ElizaOS runtime per character, partitioned rooms per
   (SpongeBob, Squidward, Mrs. Puff, Larry, Mr. Krabs, Plankton, Sandy,
   Patrick, Karen-as-assistant, Gary-as-assistant); wandering NPCs stay NPCs.
 
+## Phase 5.1 — Wallet Identity + 'scape Portal (plan `.claude/plans/phase5.1-wallet-identity-and-scape-portal.md`)
+
+Replaces the Phase 5 string-based `identity_fingerprint` anchor with an
+ed25519 keypair the user's agent owns, splits identity from wallet so agent
+config leakage cannot drain $CLAWVILLE, and wires a signed cross-world
+portal to 'scape (`github.com/Dexploarer/scape`).
+
+**Three keypair roles, per user:**
+
+```
+users.id (UUID PK, stable)                  ← identity handle; never rotates
+├── identity keypair (ed25519)
+│    pub: users.identity_pubkey             ← rotatable; may change without breaking users.id
+│    priv (primary): agent config           under `clawville:identity:<userId>`
+│    priv (backup):  users.identity_encrypted_sk  ← envelope-encrypted, support-recovery only
+│    purpose: sign reconnect challenges;
+│             derives portal principalId `principal:clawville:<user.id>`
+│
+└── avatar wallet keypair (Solana ed25519)
+     row: wallets{subject_type='avatar', subject_id=avatar.id}
+     pub: wallets.public_key                ← mirrored to avatars.walletAddress
+     priv (server): wallets.encrypted_secret_key  ← envelope-encrypted under Cloudflare KEK
+     priv (human):  disclosed ONCE in first-connect response (only approved export channel)
+     priv (agent):  does NOT hold
+     purpose: holds $CLAWVILLE; server signs transactions custodially;
+              human keeps a backup copy for eventual self-custody
+```
+
+Plus a **service issuer keypair** (ed25519 singleton, not per-user) whose
+private key lives in Cloudflare Secrets Store and whose public key is
+published at `GET /.well-known/clawville-issuer.json`. Used to sign outbound
+partner API calls (e.g. 'scape's `/hosted-session/issue`). The inbound
+mirror is `PARTNER_PUBKEYS` — a JSON allowlist env var — verified against
+incoming `X-Scape-Issuer-Pubkey` + `X-Scape-Signature` headers on
+`/api/portal/mint-for-scape` and `/api/portal/accept-scape-link`.
+
+**Reconnect (signed-challenge):**
+
+```
+Agent                              ClawVille API
+  |-- POST /api/agent/challenge -->|
+  |<-- { nonce, expiresAt } -------|   60 s TTL, single-use, in-memory Map
+  |                                |
+  |-- POST /api/agent/reconnect -->|
+  |   { userId, nonce,             |
+  |     signature: ed25519.sign(   |
+  |       nonce, identityPrivKey)} |
+  |                                |   Verify sig against users.identity_pubkey
+  |                                |   Mint Lucia session ticket (reuses Phase 5 pipeline)
+  |<-- { sessionTicket.url, ... }--|
+```
+
+The wallet private key is not involved in reconnect. It only ever signs
+on-chain transactions, which the server still does custodially.
+
+**Atomic identity bootstrap** handles the concurrent-first-connect race with
+a conditional update — `UPDATE users SET identity_pubkey = $1, ... WHERE
+id = $2 AND identity_pubkey IS NULL RETURNING`. Race losers get
+`needsHumanReauth: true` and don't overwrite their agent config.
+
+**Envelope encryption (`apps/api/src/services/keypair-vault.ts`):** every
+encrypted secret (identity sk, wallet sk) gets a random 32-byte DEK. The
+DEK is wrapped by the master KEK held exclusively in Cloudflare Secrets
+Store; wrapping happens via a tiny Cloudflare Worker at
+`CLOUDFLARE_WORKER_URL` (POST `/wrap`, `/unwrap`, bearer-authed against
+`CLOUDFLARE_WORKER_BEARER`). Hetzner never sees plaintext KEK. DB dump
+alone is non-decryptable; attacker needs KEK unwrap access too. Read path
+dispatches on `encryption_version` so v1 and v2 rows coexist cleanly.
+
+**Portal (ClawVille → 'scape):** authenticated ClawVille user clicks "Cross
+to 'scape" → `POST /api/portal/scape` → server builds a canonical-JSON
+payload (kind, principalId, worldCharacterId, displayName, agentId, ttlMs),
+signs `sha256(body)` with the service issuer private key, POSTs it to
+`SCAPE_HOSTED_SESSION_URL` with `X-Clawville-Issuer-Pubkey` +
+`X-Clawville-Signature` headers, emits `portal.scape.crossed`, and returns
+`{ redirectUrl }`. First crossing backfills `users.scape_principal_id` +
+`users.scape_world_character_id`. Frontend opens the redirect in a new tab.
+
+**Portal ('scape → ClawVille, reverse):** symmetric. 'scape POSTs to
+`/api/portal/mint-for-scape` with their signature; we verify against
+`PARTNER_PUBKEYS.scape`, mint a Phase 5 magic-link ticket, return
+`{ redirectUrl: "https://clawville.world/enter?t=..." }`.
+
+**Account linking (plan §15):** users with an existing 'scape account
+generate a one-time link code via `POST /api/portal/scape-link-code`
+(Lucia-authed). They paste it into 'scape's "Link External Account" UI;
+'scape posts the code + their signed payload to
+`/api/portal/accept-scape-link`. We consume the `pending_account_links`
+row atomically and set `users.linked_scape_principal_id /
+linked_scape_world_character_id / linked_scape_display_name /
+linked_scape_at`. Portal-minter priority: linked wins over auto-provisioned.
+
+**Migration from Phase 5 users.** Phase 5 users keep working. On their next
+`/api/agent/connect` call, if `users.identity_pubkey IS NULL`, the server
+generates + envelope-stores a fresh ed25519 keypair, returns it in the
+response, and the agent updates its config. Legacy `identityKey` string
+calls still resolve the same user via fingerprint fallback — no forced
+cutover.
+
+See also: `infra/cf-secrets-worker/README.md` (Worker deployment + KEK +
+bearer rotation runbook) and `scripts/generate-service-issuer-keypair.ts`
+(service issuer keypair generator — rotation procedure is documented in
+that script's JSDoc: generate fresh pair, paste into Coolify env,
+publish new pubkey via `/.well-known/clawville-issuer.json`, notify each
+partner so they hot-reload their allowlist).
+
 ## Middleware (`apps/api/src/middleware/`)
 
 | File | Applied | Purpose |
@@ -260,8 +372,10 @@ route layer composes against, not the route files themselves):
 | `eliza-migrator` | Pre-migrates ElizaOS internal schema at API boot (fixes v2 schema drift) |
 | `event-logger` | Fire-and-forget analytics writer — `logEvent({...})` is the single entry for every emitted event. Three-tier fallback: `events` table → `event_write_failures` safety-net table → console + Telegram alert. Never throws. Sanitizes payload keys that look sensitive (word-list + danger-substring detector, verified against 43 edge cases). See Observability. |
 | `hermes-client` | Outbound bridge to a user-hosted Hermes agent (OpenAI-compat gateway) |
-| `identity-service` | Maps `openclaw_bots.identityType` + `agent_session_map` |
-| `keypair-vault` | AES-256-GCM wrap/unwrap for `wallets` + `vanity_keypairs` |
+| `auth-challenge` | Phase 5.1 in-memory nonce store (`apps/api/src/services/auth-challenge.ts`) for the signed-challenge reconnect path. `issueChallenge()` returns `{ nonce, expiresAt }` (32-byte random nonce, 60 s TTL). `consumeNonce()` atomically deletes-on-read so every nonce is single-use. Periodic cleanup via `setInterval`; 10 k-entry spam cap. Same pattern as the existing `pendingConnections` Map in `agent-gateway.ts`. Migrate to Redis when we go multi-node. |
+| `identity-service` | Maps `sha256('{type}:{key}')` to a `users` row via the `identity_fingerprint` column. Phase 5.1 extends it with `generateIdentityKeypairForUser(userId)` — generates an ed25519 keypair, envelope-encrypts the secret via `keypair-vault.encryptSecretKeyEnveloped`, and writes it atomically to `users.identity_pubkey` using a conditional `UPDATE ... WHERE identity_pubkey IS NULL RETURNING` pattern. Race losers (concurrent first-connect) get `needsHumanReauth: true` so their agent doesn't overwrite its config with a losing keypair. |
+| `keypair-vault` | AES-256-GCM wrap/unwrap for `wallets` + `vanity_keypairs`. Phase 5.1 adds envelope-encryption helpers: `encryptSecretKeyEnveloped(sk)` → `{ encryptedSecretKey, encryptionIv, encryptionTag, dekWrapped, encryptionVersion: 2 }`, `decryptSecretKeyEnveloped(row)` → `Keypair`, and a `decryptWalletRow(row)` dispatcher that picks v1 vs v2 off `row.encryptionVersion`. Per-row DEKs are wrapped by a Cloudflare-held KEK via the Cloudflare Worker (`/wrap` + `/unwrap`, see Cloudflare integration below); plaintext KEK is never present on the Hetzner box. |
+| `service-issuer` | Phase 5.1 singleton service keypair at `apps/api/src/services/service-issuer.ts`. `signPayload(body)` signs outbound partner API calls (e.g. 'scape's `/hosted-session/issue`) with the ClawVille service issuer ed25519 private key — loaded from the `CLAWVILLE_SERVICE_ISSUER_SK` env on boot and cached in memory. `getPublishedIssuerInfo()` returns the pubkey for the `GET /.well-known/clawville-issuer.json` route. |
 | `memory-service` | RAG + embeddings helper for Eliza characters |
 | `milady-gateway` | Inbound dispatcher for Milady plugin traffic |
 | `npc-conversation-engine` | NPC ↔ NPC banter generator (Gemini, direct call bypassing Eliza) |
@@ -274,7 +388,7 @@ route layer composes against, not the route files themselves):
 | `session-ticket-service` | Phase 5 magic-link CRUD |
 | `skill-generator` | Builds `building_skills.content` (SKILL.md) from templates + character data |
 | `system-npc-seeder` | On boot, seeds each building with a system-owned character + compiled SKILL.md |
-| `wallet-service` | High-level wallet ops (create, transfer, balance) on top of `keypair-vault` |
+| `wallet-service` | High-level wallet ops (create, transfer, balance) on top of `keypair-vault`. Phase 5.1 adds `ensureWalletWithFirstTimeSecret(subjectType, subjectId)` — idempotent on `(subject_type, subject_id)`, generates + persists a Solana keypair if no row exists, and returns the plaintext base58 secret **exactly once** (`{ publicKey, alreadyExisted, firstTimeSecretKeyBase58? }`). `firstTimeSecretKeyBase58` is only populated when a row was freshly inserted — the only approved export channel for wallet secrets (see `packages/database/src/schema/wallets.ts` JSDoc). Existing `ensureWallet()` callers unaffected. |
 | `x402-config` | Phase 4 x402 merchant wallet config |
 | `xp-service` | Level/XP math + `avatars.level / xp / total_xp` updates |
 
@@ -284,7 +398,7 @@ PostgreSQL with Drizzle ORM (`packages/database/`).
 
 | Table | Purpose |
 |-------|---------|
-| `users` / `sessions` | Lucia auth (email + password) |
+| `users` / `sessions` | Lucia auth (email + password). Phase 5 added `identity_fingerprint` (sha256 hex, UNIQUE) — the legacy string-based anchor. Phase 5.1 adds the cryptographic identity columns: `identity_pubkey` (base58 ed25519, UNIQUE, rotatable), `identity_encrypted_sk` (base64 AES-GCM ciphertext of the private key), `identity_iv`, `identity_tag`, `identity_dek_wrapped` (base64 Cloudflare-wrapped DEK), `identity_encryption_version` (NOT NULL DEFAULT 2 — envelope from day 1). Also the 'scape portal columns: `scape_principal_id` (UNIQUE — `principal:clawville:<user.id>` after first auto-provision crossing), `scape_world_character_id` (UNIQUE — `cv-<avatar.id>`), plus the linking columns for users who already have a real 'scape account: `linked_scape_principal_id` (UNIQUE), `linked_scape_world_character_id` (UNIQUE), `linked_scape_display_name`, `linked_scape_at`. |
 | `agent_session_tickets` | **Phase 5** magic-link: 32-byte token, 5-min TTL, `consumed_at` sentinel. Backing table for `GET /api/auth/enter` (`session-ticket-service.ts`) |
 | `avatars` | One per user. Identity: species/color/archetype/stats/position. Phase 2 framework fields: `model_key` (default `lobster`), `agent_category` (openclaw/hermes/milady/other, default `openclaw`), `harness` (openclaw/hermes/milady/custom, default `milady`). All NOT NULL with DEFAULTs so existing rows backfill automatically. CHECK constraints on agent_category and harness enforce the enums at DB level |
 | `avatar_inventory` | Knowledge books owned by avatar (quantity tracking) |
@@ -298,7 +412,7 @@ PostgreSQL with Drizzle ORM (`packages/database/`).
 | `npc_memories` | NPC conversation memory store used by `npc-conversation-engine.ts` |
 | `activity_log` | Append-only log powering the sidebar Activity Feed |
 | `research_articles` | Cached article scrapes used by `research-service` + `article-scraper` |
-| `wallets` | **Unified** wallet table replacing per-subject tables. `wallet_subject_type` enum: `avatar | agent | treasury`. Encrypted Solana keypairs (AES-256-GCM, master key `VANITY_ENCRYPTION_KEY`) |
+| `wallets` | **Unified** wallet table replacing per-subject tables. `wallet_subject_type` enum: `avatar | agent | treasury`. Encrypted Solana keypairs. Phase 5.1 adds envelope-encryption columns for a dual-version read path: `dek_wrapped` (base64 DEK wrapped by the Cloudflare-held master KEK) + `encryption_version` (NOT NULL DEFAULT 1 — `1` = legacy AES-256-GCM under `VANITY_ENCRYPTION_KEY`, `2` = per-row DEK with KEK in Cloudflare). New writes always go to v2; the dispatcher `keypair-vault.decryptWalletRow(row)` picks the right unwrap route off `encryption_version` so callers never branch on the version. A one-time `scripts/migrate-wallets-to-envelope.ts` sweeps any v1 rows left after ship. |
 | `treasury_wallets` | Treasury-scoped wallets (phase-4 x402 merchant wallet + vanity set). Coexists with `wallets` for legacy rows |
 | `vanity_keypairs` | Pre-generated vanity public keys, encrypted at rest |
 | `token_launches` | Per-agent token launch records (Phase 4 token-launch subsystem) |
@@ -320,6 +434,7 @@ PostgreSQL with Drizzle ORM (`packages/database/`).
 | `bounty_reputation` | Per-user reputation rollup |
 | `events` | **Metrics spine (2026-04-21).** Append-only analytics. Every meaningful app action writes one row via `logEvent()`. Columns: `id` (bigserial), `ts`, `event_type`, `user_id` FK, `agent_id`, `avatar_id` FK, `building_id`, `session_id`, `payload` jsonb. Indexes on `(event_type, ts)`, `(agent_id, ts)`, `(avatar_id, ts)`, `(building_id, ts)`. Read-only from the dashboard at `/api/dashboard/overview`. See Observability section above. |
 | `event_write_failures` | **Safety net for the metrics spine (2026-04-21).** If the primary `events` insert fails, `logEvent()` persists the attempted row + error here. Columns: `id`, `ts`, `attempted_event_type`, `attempted_row` jsonb, `error_message`, `error_stack`, `retried_at`, `retry_succeeded`. Partial index on unretried rows for fast replay. |
+| `pending_account_links` | **Phase 5.1 cross-world account linking (plan §15).** One-time code store used when a user wants to link an *existing* 'scape account to their ClawVille user (instead of auto-provisioning a fresh `principal:clawville:<uuid>` on first crossing). Columns: `code` varchar(32) PK, `clawville_user_id` uuid FK → `users.id`, `remote_world` varchar(64) (`'scape'`), `issued_at` timestamptz, `expires_at` timestamptz (issued_at + 10 min), `consumed_at` timestamptz nullable. Indexes: `(clawville_user_id, issued_at DESC)` and a partial `(expires_at)` WHERE `consumed_at IS NULL` for active-code lookups. Consumed atomically by `POST /api/portal/accept-scape-link` under the partner signature check. |
 
 `avatars.characterConfig` (JSONB) stores the full resolved archetype data including learned knowledge. Full schema source: `packages/database/src/schema/*.ts` (23 files, all re-exported from `schema/index.ts`).
 

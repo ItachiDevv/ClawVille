@@ -201,7 +201,14 @@ Required in `.env.local`:
 - `ADMIN_USER_IDS` - Comma-separated list of user UUIDs allowed to hit `/api/dashboard/*` and `/dash`. Parsed at api module load; changing it requires a redeploy. See `apps/api/src/middleware/admin-only.ts`.
 - `ITACHI_DEBUG_BOT_TOKEN` + `ITACHI_DEBUG_CHAT_ID` - itachi-debug Telegram bot credentials used by `apps/api/src/services/alert-error.ts`. When missing, `alertError()` degrades to `console.warn` — user flows are never broken, but operator pings never arrive. Staged via the tinker pattern from `~/.itachi-api-keys`.
 - `METRICS_MEASUREMENT_START` - ISO date the `/dash` page displays as "Measuring since …". Defaults to `2026-04-21` in code when unset.
-- `AGENT_SESSION_TICKET_TTL_SECONDS` - Phase 5 magic-link expiry (default 300 / 5 min). Bump if Milady agents need longer-lived tickets.
+- `AGENT_SESSION_TICKET_TTL_SECONDS` - Phase 5 magic-link expiry (default 600 / 10 min, min 60, max 3600 — enforced in `apps/api/src/services/session-ticket-service.ts`). Bump if Milady agents need longer-lived tickets.
+- `CLOUDFLARE_WORKER_URL` - **Phase 5.1.** URL of the Cloudflare Secrets Store envelope-encryption Worker (no trailing slash). POST `/wrap` + `/unwrap` routes wrap/unwrap per-row DEKs with the master KEK. See `infra/cf-secrets-worker/`.
+- `CLOUDFLARE_WORKER_BEARER` - **Phase 5.1.** Bearer token authenticating the API → Worker calls (set via `wrangler secret put WORKER_BEARER` on the Worker). Rotatable independently of the KEK.
+- `CLAWVILLE_SERVICE_ISSUER_SK` - **Phase 5.1.** Base58 ed25519 private key of the service issuer. Loaded on boot by `service-issuer.ts` and cached in memory. Signs outbound partner API calls (e.g. 'scape `/hosted-session/issue`). NEVER committed; generate with `bun run scripts/generate-service-issuer-keypair.ts`.
+- `CLAWVILLE_SERVICE_ISSUER_PUBKEY` - **Phase 5.1.** Base58 ed25519 pubkey matching `CLAWVILLE_SERVICE_ISSUER_SK`. Published at `GET /.well-known/clawville-issuer.json` for partners to pin.
+- `SCAPE_HOSTED_SESSION_URL` - **Phase 5.1.** 'scape's `/hosted-session/issue` endpoint (e.g. `https://xrsps.com/hosted-session/issue`). Target of outbound signed portal crossings.
+- `SCAPE_WEB_ORIGIN` - **Phase 5.1.** 'scape's web origin (e.g. `https://xrsps.com`). Used to build the `?sessionToken=...` redirect URL after a successful outbound crossing.
+- `PARTNER_PUBKEYS` - **Phase 5.1.** JSON allowlist of partner ed25519 pubkeys keyed by partner id, e.g. `{"scape":"<base58>"}`. Empty/missing ⇒ inbound `/api/portal/mint-for-scape` + `/api/portal/accept-scape-link` reject with 401.
 
 **Optional keys:**
 - `OPENAI_API_KEY` — optional fallback used ONLY by `apps/api/src/services/npc-conversation-engine.ts` when Gemini hits its `GEMINI_MAX_FAILURES` backoff. Leave empty to disable the fallback (NPC banter silently returns empty strings when Gemini is down). NOT a general-purpose replacement for Gemini — it's a narrow NPC-text-only safety net.
@@ -383,7 +390,7 @@ All 10 buildings are shop buildings for knowledge books (visit + chat with Milad
 - `platform_agents` (ElizaOS agent records)
 - `platform_agent_logs`
 - `openclaw_bots` (external agent identity, gateway config, learned knowledge)
-- `treasury_wallets` + `avatar_wallet` (encrypted Solana keypairs)
+- `treasury_wallets` (team merchant supply — x402 receiver, per-purpose via `treasury_purpose` enum; never user-facing) + `wallets` (unified per-subject custodial, `subject_type='avatar'|'agent'|'treasury-reserved'` — encrypted Solana keypairs; Phase 5.1 added envelope encryption via a Cloudflare-held KEK with per-row DEKs, version-dispatched at read time)
 - `agent_configs` (export/import bundle — includes `modelKey`/`agentCategory`/`harness` for round-trip)
 - `bazaar_listings` + `auctions` + `claw_token_transactions` (marketplace + economy)
 
@@ -451,6 +458,81 @@ The "Manual" tab in the modal still exposes the legacy gateway form: Gateway URL
 ### Building Themes
 - `BUILDING_OPENCLAW_THEMES` maps each building to its OpenClaw focus area
 - NPC conversations inject building crypto themes as dynamic context
+
+## Phase 5.1 — Wallet Identity + 'scape Portal
+
+Full spec: `.claude/plans/phase5.1-wallet-identity-and-scape-portal.md`.
+Doc-side summary of the load-bearing invariants — rules, not rationale.
+
+### Identity/wallet split — two keypairs per user (both ed25519)
+
+From day 1, every user gets TWO distinct keypairs. No single-key shortcut.
+
+- **Identity keypair.** Anchored on the existing `users.id` UUID PK. The
+  pubkey lives at `users.identity_pubkey` (rotatable). The private key is
+  held by the user's agent under `clawville:identity:<userId>` — it is
+  what the agent signs reconnect challenges with. An envelope-encrypted
+  backup copy lives in `users.identity_encrypted_sk` strictly for the
+  future support-recovery workflow. The identity key is **never** on-chain,
+  **never** funded, **never** signs transactions.
+- **Avatar wallet keypair (Solana).** Lives in the unified `wallets` table as
+  `{subject_type='avatar', subject_id=avatar.id}`. The server keeps the only
+  authoritative private key — envelope-encrypted under the Cloudflare KEK
+  — and signs $CLAWVILLE transactions custodially. The plaintext secret
+  is shown to the human **exactly once**, in the first-connect response,
+  so they can keep a self-custody backup. The agent **never** stores this
+  secret — only the public address.
+- **Service issuer keypair** (singleton, not per-user). Private key in
+  Cloudflare Secrets Store; public key published at
+  `GET /.well-known/clawville-issuer.json`. Signs outbound partner API
+  calls.
+
+**Blast-radius guarantees.** Agent config leak ⇒ attacker can log in + cross
+to 'scape as the user; CANNOT drain $CLAWVILLE (wallet secret is server-side
+only, different key). DB dump alone ⇒ ciphertext only; unwrap requires
+Cloudflare KEK access (separate compromise). User's own wallet-secret
+backup leak ⇒ only the user's $CLAWVILLE at risk; nothing else.
+
+**First-connect semantics.** `POST /api/agent/connect` and `POST
+/api/agent/join` gain an `identity` block and a `wallet` block when the
+secrets are freshly generated. Subsequent calls for the same user omit the
+`secretKey` fields — the server NEVER returns either secret again. The
+SKILL.md (served by `/api/skills/connect`) instructs the agent to store
+the identity private key in config, store the wallet PUBLIC address in
+config, and display the wallet address + wallet secret to the human one
+time. The response's top-level `walletAddress` is the agent's internal
+bot wallet (bookkeeping only); the new `wallet.address` field is the
+human's avatar wallet (the one the human cares about).
+
+**Reconnect** uses `POST /api/agent/challenge` (nonce) + `POST
+/api/agent/reconnect` (signature). Wallet key is not involved.
+
+### 'scape portal — ClawVille ↔ `github.com/Dexploarer/scape`
+
+Two-direction cross-world portal. Auth is signature-based on both sides —
+no shared bearer secrets.
+
+- **Outbound (ClawVille → 'scape).** `POST /api/portal/scape` is Lucia-authed.
+  Server builds a canonical-JSON payload and signs `sha256(body)` with the
+  service issuer private key, then POSTs to `SCAPE_HOSTED_SESSION_URL`
+  with `X-Clawville-Issuer-Pubkey` + `X-Clawville-Signature` headers.
+  First crossing auto-provisions a 'scape account and character keyed to
+  `principalId = principal:clawville:<user.id>` and
+  `worldCharacterId = cv-<avatar.id>`, display name `<avatar.name>-cv`.
+- **Inbound ('scape → ClawVille).** `POST /api/portal/mint-for-scape`
+  verifies `X-Scape-*` headers against `PARTNER_PUBKEYS.scape`, mints a
+  Phase 5 magic-link ticket, returns `{ redirectUrl }`.
+- **Linking existing 'scape accounts.** Users who already play 'scape
+  generate a one-time code via `POST /api/portal/scape-link-code`, paste
+  it in 'scape's "Link External Account" UI, and 'scape posts it to
+  `POST /api/portal/accept-scape-link` with their signature. We consume
+  the `pending_account_links` row, set `users.linked_scape_*`, and the
+  portal-minter prefers linked over auto-provisioned on every subsequent
+  crossing.
+
+Every portal crossing + every link emits an event row (`portal.scape.crossed`
+/ `portal.scape.linked`) so the `/dash` admin surface tracks partner-world
+traffic with no extra UI code.
 
 ## Frontend Components
 

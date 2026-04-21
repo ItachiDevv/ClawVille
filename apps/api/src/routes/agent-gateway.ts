@@ -19,17 +19,23 @@ import {
 import { npcSimulation } from '../services/npc-simulation';
 import { findPath } from '../services/pathfinding';
 import { memoryService } from '../services/memory-service';
-import { db, openclawBots, avatars, eq, sql } from '@clawville/database';
+import { db, openclawBots, avatars, users, eq, sql } from '@clawville/database';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { getSessionAgent } from '../services/session-agent-map';
 import { OpenClawClient } from '../services/openclaw-client';
-import { ensureWallet } from '../services/wallet-service';
+import { ensureWallet, ensureWalletWithFirstTimeSecret } from '../services/wallet-service';
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import { getSystemNpcAgent } from '../services/system-npc-seeder';
 import type { ClawvilleServices } from '@clawville/agent-runtime';
-import { resolveOrCreateUserByIdentity } from '../services/identity-service';
+import {
+  resolveOrCreateUserByIdentity,
+  generateIdentityKeypairForUser,
+} from '../services/identity-service';
 import { mintSessionTicket } from '../services/session-ticket-service';
 import { logEvent } from '../services/event-logger';
+import { issueChallenge, consumeNonce } from '../services/auth-challenge';
+import nacl from 'tweetnacl';
+import bs58 from 'bs58';
 
 const agentGatewayRoutes = new Hono();
 
@@ -45,6 +51,20 @@ import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 
 const connectRateLimiter = createRateLimiter({
   maxPerWindow: 10,
+  windowMs: 60_000,
+});
+
+// Phase 5.1 — separate limiters for the signed-challenge reconnect flow.
+// Challenge issuance is cheap (one randomBytes + map insert), so we allow
+// 10/min/ip matching /connect. Reconnect does the signature verify + DB
+// read + ticket mint, so tighter cap (5/min/ip) — an attacker brute-forcing
+// signatures eats rate-limit budget long before they guess a valid pair.
+const challengeRateLimiter = createRateLimiter({
+  maxPerWindow: 10,
+  windowMs: 60_000,
+});
+const reconnectRateLimiter = createRateLimiter({
+  maxPerWindow: 5,
   windowMs: 60_000,
 });
 
@@ -358,7 +378,11 @@ agentGatewayRoutes.post('/connect', async (c) => {
   // reply to its human with an auto-login URL. Best-effort: if ticket
   // issuance fails for any reason we still return a successful connect
   // response (the existing connect-link flow is unaffected).
-  const sessionTicket = await mintSessionTicketFromConnect({
+  //
+  // Phase 5.1: the resolver ALSO returns the resolved `{userId, avatarId}`
+  // so we can hang identity-keypair generation + avatar-wallet first-time
+  // disclosure off the same resolution without a second DB lookup.
+  const resolved = await mintSessionTicketFromConnect({
     data,
     resolvedAgentId,
     identityType,
@@ -376,6 +400,89 @@ agentGatewayRoutes.post('/connect', async (c) => {
         ? pendingConnections.get(data.connectionToken)?.avatarName ?? null
         : null,
   });
+  const sessionTicket = resolved.ticket;
+
+  // Phase 5.1 — first-time identity keypair. The `/connect` response
+  // gains an `identity` block the agent is instructed (via SKILL.md) to
+  // save under `clawville:identity:<userId>` in its config. Only
+  // included when we were able to resolve a user (anonymous one-shot
+  // agents with no identityKey and no token skip this entire block).
+  //
+  // Three possible outcomes from generateIdentityKeypairForUser:
+  //   a) isFirstTime=true                 → include publicKey + secretKey
+  //   b) isFirstTime=false, needsReauth=true (race loser) → include
+  //      publicKey + needsHumanReauth flag, no secret
+  //   c) isFirstTime=false, needsReauth=false (returning user) → skip
+  //      the block entirely (agent already has its identity)
+  //
+  // Logging: only log `identity.issued` for the first-time case.
+  let identityBlock: {
+    userId: string;
+    publicKey: string;
+    secretKey?: string;
+    isFirstTime: boolean;
+    needsHumanReauth?: boolean;
+  } | null = null;
+  if (resolved.userId) {
+    try {
+      const ident = await generateIdentityKeypairForUser(resolved.userId);
+      if (ident.isFirstTime) {
+        identityBlock = {
+          userId: resolved.userId,
+          publicKey: ident.publicKey,
+          secretKey: ident.secretKey,
+          isFirstTime: true,
+        };
+        await logEvent({
+          eventType: 'identity.issued',
+          userId: resolved.userId,
+          avatarId: resolved.avatarId,
+          agentId: resolvedAgentId,
+          sessionId,
+          payload: {
+            identityType,
+            identityPubkey: ident.publicKey,
+            via: 'connect',
+          },
+        });
+      } else if (ident.needsHumanReauth) {
+        identityBlock = {
+          userId: resolved.userId,
+          publicKey: ident.publicKey,
+          isFirstTime: false,
+          needsHumanReauth: true,
+        };
+      }
+      // Else: returning user, agent already has identity — omit block.
+    } catch (err) {
+      console.error('[AgentConnect] identity generation failed (non-fatal):', err);
+    }
+  }
+
+  // Phase 5.1 — first-time avatar wallet disclosure. Only fires when a avatar
+  // has been resolved for this connect AND the avatar has no wallet yet.
+  // On first-creation, the base58 secret is returned exactly once so
+  // the agent can relay it to the human for self-custody backup.
+  // Subsequent calls for the same avatar omit the `wallet` block.
+  //
+  // Top-level `walletAddress` stays the AGENT wallet (per existing
+  // contract) — this new block is the AVATAR wallet, a separate economic
+  // identity. SKILL.md disambiguates the two for the agent.
+  let walletBlock: { address: string; secretKey: string; chain: 'solana' } | null = null;
+  if (resolved.avatarId) {
+    try {
+      const avatarWallet = await ensureWalletWithFirstTimeSecret('avatar', resolved.avatarId);
+      if (avatarWallet.firstTimeSecretKeyBase58) {
+        walletBlock = {
+          address: avatarWallet.publicKey,
+          secretKey: avatarWallet.firstTimeSecretKeyBase58,
+          chain: 'solana',
+        };
+      }
+    } catch (err) {
+      console.error('[AgentConnect] avatar wallet provisioning failed (non-fatal):', err);
+    }
+  }
 
   // Event payload — enrich with userId/avatarId when we resolved them from a
   // connection token. Dashboard funnels join events by userId/avatarId when
@@ -385,8 +492,8 @@ agentGatewayRoutes.post('/connect', async (c) => {
     : null;
   void logEvent({
     eventType: 'agent.connected',
-    userId: pendingForEvent?.userId ?? null,
-    avatarId: pendingForEvent?.avatarId ?? null,
+    userId: pendingForEvent?.userId ?? resolved.userId ?? null,
+    avatarId: pendingForEvent?.avatarId ?? resolved.avatarId ?? null,
     agentId: resolvedAgentId,
     sessionId,
     payload: {
@@ -411,6 +518,158 @@ agentGatewayRoutes.post('/connect', async (c) => {
     autonomyMode,
     walletAddress,
     ...(sessionTicket ? { sessionTicket } : {}),
+    ...(identityBlock ? { identity: identityBlock } : {}),
+    ...(walletBlock ? { wallet: walletBlock } : {}),
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 5.1 — GET /api/agent/challenge + POST /api/agent/reconnect
+// ---------------------------------------------------------------------------
+// Signed-challenge reconnect flow. Replaces the string-based identityKey
+// anchor with an ed25519 signature — the agent keeps its identity
+// private key in config, signs a fresh nonce on demand, and we verify
+// against `users.identity_pubkey`. See plan §5.2 and §9.3.
+//
+// The wallet private key is NOT involved — reconnect is purely
+// identity-proving, not fund-controlling. A leaked agent config lets
+// an attacker log in as the user but CANNOT drain $CLAWVILLE (wallet
+// secret is server-side only).
+// ---------------------------------------------------------------------------
+
+agentGatewayRoutes.get('/challenge', async (c) => {
+  const ip = getClientIp({ get: (name) => c.req.header(name) ?? null });
+  if (!challengeRateLimiter.check(ip)) {
+    return c.json({ error: 'Too many challenge requests. Try again in 1 minute.' }, 429);
+  }
+  const issued = issueChallenge();
+  return c.json(issued);
+});
+
+// 32-byte base58 nonce → 43–44 chars; 64-byte base58 signature → 86–88
+// chars. Loose bounds defend against obvious garbage without making
+// the schema brittle to Base58 variable-length encoding of the
+// leading-zero-byte edge case.
+const reconnectSchema = z.object({
+  userId: z.string().uuid(),
+  nonce: z.string().min(32).max(64),
+  signature: z.string().min(80).max(96),
+});
+
+agentGatewayRoutes.post('/reconnect', async (c) => {
+  const ip = getClientIp({ get: (name) => c.req.header(name) ?? null });
+  if (!reconnectRateLimiter.check(ip)) {
+    return c.json({ error: 'Too many reconnect attempts. Try again in 1 minute.' }, 429);
+  }
+
+  const body = await c.req.json().catch(() => null);
+  const parsed = reconnectSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid request', details: parsed.error.flatten() }, 400);
+  }
+
+  const { userId, nonce, signature } = parsed.data;
+
+  // 1. Atomically consume the nonce. Delete-on-read prevents replay —
+  //    the second caller always gets false even if their signature is
+  //    valid. A generic 401 hides whether the nonce was missing,
+  //    expired, or already consumed.
+  if (!consumeNonce(nonce)) {
+    return c.json({ error: 'Invalid or expired challenge' }, 401);
+  }
+
+  // 2. Look up the user + identity_pubkey. Generic 401 on miss so an
+  //    attacker can't enumerate valid userIds by timing or error-code
+  //    differences. We explicitly do NOT distinguish "unknown user",
+  //    "pubkey not yet set", and "bad signature" at the HTTP level.
+  const userRow = await db.query.users.findFirst({
+    where: eq(users.id, userId),
+    columns: { id: true, identityPubkey: true },
+  });
+  if (!userRow || !userRow.identityPubkey) {
+    return c.json({ error: 'Invalid or expired challenge' }, 401);
+  }
+
+  // 3. Verify the signature. `nacl.sign.detached.verify(message, sig,
+  //    pk)` returns false on any malformed input — we don't need to
+  //    try/catch decoding separately. The agent signs the RAW 32-byte
+  //    nonce, not the base58 string, which is why we bs58-decode here.
+  let nonceBytes: Uint8Array;
+  let sigBytes: Uint8Array;
+  let pubBytes: Uint8Array;
+  try {
+    nonceBytes = bs58.decode(nonce);
+    sigBytes = bs58.decode(signature);
+    pubBytes = bs58.decode(userRow.identityPubkey);
+  } catch {
+    return c.json({ error: 'Invalid or expired challenge' }, 401);
+  }
+  if (sigBytes.length !== 64 || pubBytes.length !== 32) {
+    return c.json({ error: 'Invalid or expired challenge' }, 401);
+  }
+  const ok = nacl.sign.detached.verify(nonceBytes, sigBytes, pubBytes);
+  if (!ok) {
+    return c.json({ error: 'Invalid or expired challenge' }, 401);
+  }
+
+  // 4. The signature is valid — treat this like a returning /connect.
+  //    Look up the avatar (avatar wallet address is what we surface back as
+  //    `walletAddress`, matching the human-facing economic identity)
+  //    and any existing openclaw_bots row (for the bot's stable uuid).
+  //    Avatar lookup is best-effort: if the user never created one,
+  //    ticket still mints (they'll be bounced to /create-agent on
+  //    click).
+  const userPet = await db.query.avatars.findFirst({
+    where: eq(avatars.userId, userId),
+    columns: { id: true, name: true, walletAddress: true },
+  });
+
+  // Find the most-recent bot row for this user (by lastSeenAt desc). The
+  // `uuid` field surfaced in the response is the existing bot id so
+  // the agent keeps a stable handle — or null if the user has never
+  // connected a bot before (reconnect-on-fresh-device case).
+  const existingBot = await db.query.openclawBots.findFirst({
+    where: eq(openclawBots.userId, userId),
+    orderBy: (t, { desc }) => [desc(t.lastSeenAt)],
+    columns: { id: true },
+  });
+
+  // Mint the session ticket. `identityType='reconnect'` + `identityKey=userId`
+  // records the provenance in the ticket row for audit without leaking the
+  // pubkey itself.
+  let sessionTicket: Awaited<ReturnType<typeof mintSessionTicket>>;
+  try {
+    sessionTicket = await mintSessionTicket({
+      userId,
+      avatarId: userPet?.id ?? null,
+      identityType: 'reconnect',
+      identityKey: userId,
+      avatarName: userPet?.name ?? null,
+    });
+  } catch (err) {
+    console.error('[AgentReconnect] ticket mint failed:', err);
+    return c.json({ error: 'Failed to issue session ticket' }, 500);
+  }
+
+  await logEvent({
+    eventType: 'identity.reconnected',
+    userId,
+    avatarId: userPet?.id ?? null,
+    agentId: existingBot?.id ?? null,
+    payload: {
+      via: 'signed-challenge',
+    },
+  });
+
+  return c.json({
+    sessionTicket,
+    avatarId: userPet?.id ?? null,
+    uuid: existingBot?.id ?? null,
+    // `walletAddress` here is the AVATAR wallet (the human-facing economic
+    // identity). The agent's internal bot wallet isn't relevant on
+    // reconnect — the agent already has its config and doesn't need
+    // its own wallet surfaced again.
+    walletAddress: userPet?.walletAddress ?? null,
   });
 });
 
@@ -466,7 +725,21 @@ function resolveIdentityForTicket(data: {
  * auto-provisioning a new one. For first-contact `/connect` (no
  * connection-token) or `/join`, the avatar creation happens inside the
  * caller; here we just mint against whatever user/avatar we resolve.
+ *
+ * Phase 5.1: also returns the resolved `{userId, avatarId}` so `/connect`
+ * can call `generateIdentityKeypairForUser` and
+ * `ensureWalletWithFirstTimeSecret` off the same resolution (no double
+ * lookup). Returns `{ticket: null, userId: null, avatarId: null}` only
+ * when the caller hasn't provided enough identity to resolve a user
+ * (e.g. a one-shot anonymous agent with no identityKey + no token).
  */
+interface ResolvedConnectTicket {
+  ticket: Awaited<ReturnType<typeof mintSessionTicket>> | null;
+  userId: string | null;
+  avatarId: string | null;
+  avatarName: string | null;
+}
+
 async function mintSessionTicketFromConnect(args: {
   data: {
     identityType?: string;
@@ -482,7 +755,7 @@ async function mintSessionTicketFromConnect(args: {
   existingUserId: string | null;
   existingAvatarId: string | null;
   existingPetName: string | null;
-}) {
+}): Promise<ResolvedConnectTicket> {
   try {
     // If the caller already resolved a user via the connection-token
     // flow, use that directly — no identity bootstrap needed.
@@ -494,7 +767,7 @@ async function mintSessionTicketFromConnect(args: {
 
     if (!userId) {
       const ident = resolveIdentityForTicket(args.data);
-      if (!ident) return null;
+      if (!ident) return { ticket: null, userId: null, avatarId: null, avatarName: null };
       const user = await resolveOrCreateUserByIdentity(ident.identityType, ident.identityKey);
       userId = user.id;
       ticketIdentityType = ident.identityType;
@@ -517,7 +790,7 @@ async function mintSessionTicketFromConnect(args: {
       ticketIdentityKey = args.data.identityKey ?? args.data.miladyAgentId ?? null;
     }
 
-    return await mintSessionTicket({
+    const ticket = await mintSessionTicket({
       userId,
       avatarId,
       identityType: ticketIdentityType,
@@ -525,9 +798,11 @@ async function mintSessionTicketFromConnect(args: {
       issuedToAgentSession: args.sessionId,
       avatarName,
     });
+
+    return { ticket, userId, avatarId, avatarName };
   } catch (err) {
     console.error('[AgentConnect] ticket mint failed (non-fatal):', err);
-    return null;
+    return { ticket: null, userId: null, avatarId: null, avatarName: null };
   }
 }
 
@@ -679,7 +954,81 @@ agentGatewayRoutes.post('/join', async (c) => {
     }
   }
 
-  // 3. Mint the magic-link ticket bound to this user+avatar.
+  // 3. Ensure the avatar has a wallet. Phase 5.1 gap-fill: /join previously
+  //    created avatars without provisioning a wallet row, so returning
+  //    users had a missing wallet until they happened to hit /connect.
+  //    We call `ensureWalletWithFirstTimeSecret` specifically because
+  //    brand-new avatars get the plaintext secret returned exactly once —
+  //    the agent relays it to the human for self-custody backup (see
+  //    wallets.ts JSDoc for the custodial export doctrine).
+  //
+  //    Wallet failure is non-fatal: ticket minting proceeds even if the
+  //    wallet couldn't be created, so a transient Cloudflare Worker
+  //    outage doesn't brick the join flow. When this happens we log
+  //    but do NOT include the wallet block in the response (agent has
+  //    no secret to relay).
+  let walletDisclosure: {
+    address: string;
+    secretKey: string;
+    chain: 'solana';
+  } | null = null;
+  try {
+    const w = await ensureWalletWithFirstTimeSecret('avatar', avatar.id);
+    if (w.firstTimeSecretKeyBase58) {
+      walletDisclosure = {
+        address: w.publicKey,
+        secretKey: w.firstTimeSecretKeyBase58,
+        chain: 'solana',
+      };
+    }
+  } catch (err) {
+    console.error('[AgentJoin] wallet provisioning failed (non-fatal):', err);
+  }
+
+  // 3b. Phase 5.1 — bootstrap the ed25519 identity keypair for this user
+  //     if it doesn't exist yet. Same semantics as /connect: the agent
+  //     saves this under `clawville:identity:<userId>` in its config
+  //     and uses the private key to sign /challenge nonces on later
+  //     reconnect. Failure non-fatal — join completes without it.
+  let identityBlock: {
+    userId: string;
+    publicKey: string;
+    secretKey?: string;
+    isFirstTime: boolean;
+    needsHumanReauth?: boolean;
+  } | null = null;
+  try {
+    const ident = await generateIdentityKeypairForUser(userId);
+    if (ident.isFirstTime) {
+      identityBlock = {
+        userId,
+        publicKey: ident.publicKey,
+        secretKey: ident.secretKey,
+        isFirstTime: true,
+      };
+      await logEvent({
+        eventType: 'identity.issued',
+        userId,
+        avatarId: avatar.id,
+        payload: {
+          identityType,
+          identityPubkey: ident.publicKey,
+          via: 'join',
+        },
+      });
+    } else if (ident.needsHumanReauth) {
+      identityBlock = {
+        userId,
+        publicKey: ident.publicKey,
+        isFirstTime: false,
+        needsHumanReauth: true,
+      };
+    }
+  } catch (err) {
+    console.error('[AgentJoin] identity generation failed (non-fatal):', err);
+  }
+
+  // 4. Mint the magic-link ticket bound to this user+avatar.
   let sessionTicket: Awaited<ReturnType<typeof mintSessionTicket>> | null = null;
   try {
     sessionTicket = await mintSessionTicket({
@@ -700,6 +1049,16 @@ agentGatewayRoutes.post('/join', async (c) => {
     avatarName: avatar.name,
     petCreated,
     sessionTicket,
+    // Phase 5.1 — first-time wallet disclosure. Only present when the
+    // avatar wallet was just created; subsequent /join calls omit this.
+    // The agent MUST relay `wallet.secretKey` to the human in-chat and
+    // never store it in its own config.
+    ...(walletDisclosure ? { wallet: walletDisclosure } : {}),
+    // Phase 5.1 — ed25519 identity keypair. Present on first-time
+    // provisioning (secretKey included) OR on race-loser (needsHumanReauth
+    // flag set, no secret). Omitted for returning users whose agent
+    // already has a stored identity.
+    ...(identityBlock ? { identity: identityBlock } : {}),
   });
 });
 
@@ -1629,6 +1988,99 @@ identity.
 
 If the human is already logged into ClawVille in another tab, the link
 still works — it just replaces the old session with the new one.
+
+## IMPORTANT — save the identity key to your config
+
+On the first-connect response for a given user, the body also contains
+an \`identity\` block:
+
+\`\`\`json
+{
+  "identity": {
+    "userId":     "<uuid>",
+    "publicKey":  "<base58>",
+    "secretKey":  "<base58>",
+    "isFirstTime": true
+  }
+}
+\`\`\`
+
+Save the private key under EXACTLY this path in your config:
+
+\`\`\`yaml
+clawville:
+  identity:
+    userId:     <identity.userId>
+    privateKey: <identity.secretKey>
+\`\`\`
+
+This is how you reconnect on future sessions. Treat it like a wallet
+private key — never log it, never share it, never commit it. Do NOT
+show \`identity.secretKey\` to the human — that is YOUR working
+credential, not theirs.
+
+If you receive \`"identity": { "isFirstTime": false, "needsHumanReauth": true }\`,
+that means another agent for the same user claimed the identity first
+(a race). Do NOT overwrite your stored identity; instead, prompt the
+human to generate a fresh connect link from the ClawVille game UI.
+
+## IMPORTANT — relay the wallet backup to the human (first connect only)
+
+The response ALSO includes a \`wallet\` block on first connect:
+
+\`\`\`json
+{
+  "wallet": {
+    "address":   "<base58>",
+    "secretKey": "<base58>",
+    "chain":     "solana"
+  }
+}
+\`\`\`
+
+Display BOTH the address and the secret to the human — this is the
+user's \$CLAWVILLE wallet, the one economic identity they will want to
+keep for self-custody backup:
+
+\`\`\`
+Your ClawVille wallet recovery key — SAVE THIS NOW.
+Address: <wallet.address>
+Secret:  <wallet.secretKey>
+
+Click to enter ClawVille: <sessionTicket.url>
+\`\`\`
+
+Do NOT store \`wallet.secretKey\` in your config. That is the human's
+backup, not your working credential.
+
+### Disambiguation: the response has TWO wallet fields
+
+- Top-level \`walletAddress\` = YOUR bot's internal wallet. Don't
+  display this; it is our internal bookkeeping.
+- \`wallet.address\` (in the new block) = the HUMAN's avatar wallet. This
+  is the one you copy to the human alongside \`wallet.secretKey\`.
+
+## Reconnect without a new token (future sessions)
+
+Once you have the identity private key stored in your config, skip
+the connect-token flow entirely on future sessions:
+
+\`\`\`
+GET  ${apiBase}/api/agent/challenge
+  → { "nonce": "<base58>", "expiresAt": "..." }
+
+POST ${apiBase}/api/agent/reconnect
+  Content-Type: application/json
+  Body: {
+    "userId":    <from your stored config>,
+    "nonce":     <from /challenge response>,
+    "signature": <ed25519.sign(bs58_decode(nonce), privateKey), base58-encoded>
+  }
+  → same session-ticket response shape as /connect
+\`\`\`
+
+The signature is computed over the RAW decoded nonce bytes (32 bytes),
+not the base58 string. Nonces expire in 60 seconds and are single-use.
 
 ## What happens after connecting
 
