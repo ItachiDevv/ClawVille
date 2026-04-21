@@ -104,12 +104,20 @@ dashboardRoutes.get('/overview', adminOnly, async (c) => {
           AND ts > now() - interval '7 days'
       `),
 
-      // Card 4 sublabel: MiladyAI teacher chats (7d)
+      // Card 4 sublabel: MiladyAI teacher chats (7d).
+      // Teacher chats = conversations with the 10 building residents:
+      //   'building' — an agent chats with a building's resident character
+      //                (POST /api/agent/:sessionId/building/:buildingId/chat)
+      //   'location' — a signed-in human chats with a building's resident
+      //                (POST /api/locations/:id/chat)
+      // We deliberately EXCLUDE 'character' (agent-to-any-NPC via
+      // /:sessionId/chat) — that fires for wandering NPCs too and would
+      // inflate teacher-engagement numbers.
       db.execute<{ count: number }>(sql`
         SELECT COUNT(*)::int AS count FROM events
         WHERE event_type = 'agent.chat.turn'
           AND ts > now() - interval '7 days'
-          AND payload->>'chatType' IN ('building', 'character')
+          AND payload->>'chatType' IN ('building', 'location')
       `),
 
       // Chart: Buildings by visits (7d)
