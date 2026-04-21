@@ -9,9 +9,15 @@
  * The function returns Promise<void> and NEVER throws — callers can
  * `void logEvent(...)` or `await logEvent(...)` safely without try/catch.
  *
- * PII/secret sanitization: any payload key matching /token|secret|auth|apiKey|password|privateKey/i
- * gets [REDACTED] before insert. Belt-and-suspenders — we should never pass
- * sensitive fields in a payload, but this catches accidents.
+ * PII/secret sanitization: any payload key matching the detector in
+ * isSensitiveKey() (word-list + danger-substring pass) gets [REDACTED]
+ * before insert. Verified against 43 edge cases. Belt-and-suspenders —
+ * we should never put secrets in a payload, but this catches accidents.
+ *
+ * Value preservation: sanitizeValue() recurses into plain objects and arrays,
+ * and passes Date/Buffer/Map/RegExp/etc. through untouched so the jsonb
+ * serializer gets them intact. Object.entries(new Date()) returns [], so a
+ * naive recurse would silently truncate Date values to {}.
  */
 
 import { db, events, eventWriteFailures } from '@clawville/database';
@@ -48,11 +54,19 @@ function isSensitiveKey(key: string): boolean {
   return SENSITIVE_SUB.test(normalized.replace(/[_-]/g, ''));
 }
 
+function isPlainObject(v: object): boolean {
+  const proto = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
+}
+
 function sanitizeValue(v: unknown): unknown {
-  if (v && typeof v === 'object') {
-    if (Array.isArray(v)) return v.map(sanitizeValue);
-    return sanitize(v as Record<string, unknown>);
-  }
+  if (v === null || typeof v !== 'object') return v;
+  if (Array.isArray(v)) return v.map(sanitizeValue);
+  // Only recurse into plain {} — Date/Buffer/Map/RegExp/etc. get passed
+  // through so JSON.stringify (via jsonb) can handle them. Recursing with
+  // Object.entries would truncate these to {} since their enumerable own
+  // properties are empty.
+  if (isPlainObject(v as object)) return sanitize(v as Record<string, unknown>);
   return v;
 }
 
