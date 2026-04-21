@@ -31,7 +31,9 @@ Browser (Next.js)                         Hetzner CCX13 + Coolify
 
 **Key layers**:
 - **3D Renderer**: `World3DCanvas.tsx` -- Three.js WebGPU via React Three Fiber 9
-- **3D Agent Picker**: `SelectAgentCanvas.tsx` -- rotating pedestal + 11 GLB models for `/create-agent`. Replaces `LandingScene` on that page (never run both simultaneously on Iris Xe). Preloads all 11 agent GLBs (~3.5 MB) at module level. TSL node materials only.
+- **3D Agent Picker**: `SelectAgentCanvas.tsx` -- rotating pedestal + 15 avatars for `/create-agent` (7 sea-creature GLBs + 8 Milady Official VRMs, added 2026-04-21). Replaces `LandingScene` on that page (never run both simultaneously on Iris Xe). Warm-preloads all 15 avatars at mount via `useGLTF.preload` (GLBs) and `preloadVRM` (VRMs). TSL node materials only for GLBs; VRMs use MToon pipeline unchanged (no color-tint clone — toon uniform system breaks when `.clone()`'d).
+- **VRM loader**: `apps/web/src/lib/three/vrm-loader.ts` — Suspense-compatible module-cached loader. Registers `VRMLoaderPlugin` from `@pixiv/three-vrm@3.5.2` on a shared GLTFLoader, runs `VRMUtils.removeUnnecessaryVertices` + `combineSkeletons` + `rotateVRM0` after load. VRMs face -Z per VRM 1.0 spec (flipped opposite of GLB lobster +Z facing); DIR_ROTATION constants forked per avatar_type.
+- **VRM animator**: `apps/web/src/lib/three/vrm-character-animator.ts` + `mixamo-retarget.ts` — loads 3 Mixamo clips once at module level (`/avatars/animations/{idle,walk,run}.glb`), retargets `mixamorig:*` bone tracks onto each VRM's VRMHumanBoneName via a canonical map, drives an AnimationMixer per VRM with 0.3s idle↔walk crossfade. Calls `vrm.update(dt)` each frame for spring-bone + look-at.
 - **2D Fallback**: `PixiCanvas.tsx` -- PixiJS 8 for devices without WebGPU/WebGL2
 - **UI Overlays**: Chat panel, shop, inventory, minimap, HUD, quest tracker, daily login
 - **Agent connect modal**: `AgentConnectModal` (was `OpenClawConnectModal`) -- supports all agent types
@@ -40,6 +42,11 @@ Browser (Next.js)                         Hetzner CCX13 + Coolify
 ## 3D Rendering Pipeline
 
 **Renderer**: Three.js r182 imported from `three/webgpu` with WebGL2 fallback.
+
+**Avatar asset layout**:
+- `apps/web/public/models/` — 7 sea-creature GLBs (lobster, sweet_crab, lobster_plush, hermitcrab, jellyfish, octopus_toy, sea_horse) + building/environment GLBs. Scale 10 via `MODEL_REGISTRY`. Color-tinted via `applyColorTint` (MeshStandardMaterial clone + emissive).
+- `apps/web/public/avatars/` — 8 Milady Official VRMs (`milady-official-{1..8}.vrm`, ~12MB total), `previews/milady-official-{1..8}.png` thumbnails (~950KB), `animations/idle.glb`/`walk.glb`/`run.glb` Mixamo clips (~330KB). Total ~13.3MB. Source: `github.com/milady-ai/avatars`. Scale 13 via registry (VRMs are ~1.6m native → ~21 world units tall). Feet-at-origin per VRM spec — no pivot-offset hack.
+- `@pixiv/three-vrm@3.5.2` + `@pixiv/three-vrm-animation@3.5.2` are the only non-three.js rendering deps. Peer-compatible with `three@0.182.0` (peer constraint `>=0.137`).
 
 **R3F 9 integration**: WebGPU elements registered via `extend(THREE)` with custom JSX type declarations.
 
