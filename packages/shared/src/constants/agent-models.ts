@@ -72,6 +72,19 @@ export const AGENT_MODELS = [
   { key: 'octopus',       label: 'Octopus',         category: 'other' },
   { key: 'seahorse',      label: 'Sea Horse',       category: 'other' },
 
+  // ── Milady (VRM humanoid avatars) — added 2026-04-21 ──
+  // 8 Milady Official VRM avatars. Assets at /avatars/milady-official-{1..8}.vrm.
+  // Previews at /avatars/previews/milady-official-{1..8}.png.
+  // Rendered via VRMCharacterAnimator (Mixamo retarget) in the web app.
+  { key: 'milady_official_1', label: 'Milady Official 1', category: 'milady' },
+  { key: 'milady_official_2', label: 'Milady Official 2', category: 'milady' },
+  { key: 'milady_official_3', label: 'Milady Official 3', category: 'milady' },
+  { key: 'milady_official_4', label: 'Milady Official 4', category: 'milady' },
+  { key: 'milady_official_5', label: 'Milady Official 5', category: 'milady' },
+  { key: 'milady_official_6', label: 'Milady Official 6', category: 'milady' },
+  { key: 'milady_official_7', label: 'Milady Official 7', category: 'milady' },
+  { key: 'milady_official_8', label: 'Milady Official 8', category: 'milady' },
+
   // NOTE: `crayfish` entry removed 2026-04-16 — the GLB renders visually
   // close to `lobster` but with a larger silhouette that clipped the
   // modal card. The file still ships and `arena-npcs.tsx` retains its
@@ -79,9 +92,9 @@ export const AGENT_MODELS = [
   //
   // NOTE: Hermes/Milady anime GLB entries (chihiro / priestess / chibi_goku)
   // were removed 2026-04-16 because the source meshes didn't render reliably
-  // in the agent picker. The `AgentCategory` type keeps 'hermes' and 'milady'
-  // because the agent-HARNESS radio and DB CHECK constraint still use them
-  // — this change scopes strictly to the visual avatar picker content.
+  // in the agent picker. Replaced by 8 Milady VRM avatars (2026-04-21).
+  // The `AgentCategory` type keeps 'hermes' and 'milady' because the
+  // agent-HARNESS radio and DB CHECK constraint still use them.
 ] as const satisfies readonly AgentModelMeta[];
 
 /** Union of every valid model `key` — e.g. `'lobster' | 'crayfish' | ...` */

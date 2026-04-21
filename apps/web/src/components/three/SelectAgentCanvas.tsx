@@ -42,6 +42,8 @@ import {
   type ModelRegistryEntry,
   type PickerColorId,
 } from '@/lib/three/agent-model-registry';
+import { useVRM, preloadVRM } from '@/lib/three/vrm-loader';
+import { VRMCharacterAnimator, preloadMixamoClips } from '@/lib/three/vrm-character-animator';
 
 // Module-scope scene background color — avoids a new THREE.Color allocation on
 // every render. R3F only reads the scene.background prop at Canvas creation time.
@@ -248,10 +250,53 @@ function RotatingPlatform({ children }: { children?: React.ReactNode }) {
 }
 
 // ---------------------------------------------------------------------------
+// VRM Model on Platform
+// Separate component so Suspense handles VRM load independently.
+// VRM feet at Y=0 — no pivot offset / yOffset needed.
+// Color tinting is NOT applied to VRM (MToon pipeline breaks under std lerp).
+// ---------------------------------------------------------------------------
+
+const PlatformModelVRM = memo(function PlatformModelVRM({
+  modelKey,
+}: {
+  modelKey: string;
+}) {
+  const reg: ModelRegistryEntry = MODEL_REGISTRY[modelKey as ModelKey] ?? MODEL_REGISTRY.milady_official_1;
+  const vrm = useVRM(reg.path);
+
+  const vrmAnimatorRef = React.useRef<VRMCharacterAnimator | null>(null);
+
+  React.useEffect(() => {
+    if (!vrm) return;
+    const animator = new VRMCharacterAnimator(vrm);
+    vrmAnimatorRef.current = animator;
+    animator.init().catch((err) => {
+      console.warn('[SelectAgentCanvas VRM] animator init failed:', err);
+    });
+    return () => {
+      vrmAnimatorRef.current = null;
+      animator.dispose();
+    };
+  }, [vrm]);
+
+  useFrame((_, delta) => {
+    const dt = Math.min(delta, 0.1);
+    // idle=false so the walk anim plays — gives a livelier preview on the pedestal
+    vrmAnimatorRef.current?.update(dt, false);
+  });
+
+  return (
+    <group position={[0, 1.5, 0]} scale={[reg.scale, reg.scale, reg.scale]}>
+      <primitive object={vrm.scene} />
+    </group>
+  );
+});
+
+// ---------------------------------------------------------------------------
 // GLB Model on Platform
 // ---------------------------------------------------------------------------
 
-const PlatformModel = memo(function PlatformModel({
+const PlatformModelGLB = memo(function PlatformModelGLB({
   modelKey,
   color,
 }: {
@@ -261,11 +306,6 @@ const PlatformModel = memo(function PlatformModel({
   // Cast to ModelKey for index safety; unknown keys fall back to lobster at runtime.
   const reg: ModelRegistryEntry = MODEL_REGISTRY[modelKey as ModelKey] ?? MODEL_REGISTRY.lobster;
 
-  useEffect(() => {
-    if (!MODEL_REGISTRY[modelKey as ModelKey]) {
-      console.warn(`[SelectAgentCanvas] unknown modelKey "${modelKey}", falling back to lobster`);
-    }
-  }, [modelKey]);
   const { scene } = useGLTF(reg.path);
   const groupRef     = useRef<THREE.Group>(null!);
   const animGroupRef = useRef<THREE.Group>(null!);
@@ -348,6 +388,36 @@ const PlatformModel = memo(function PlatformModel({
 });
 
 // ---------------------------------------------------------------------------
+// PlatformModel — routes to VRM or GLB path based on registry avatar_type
+// ---------------------------------------------------------------------------
+
+const PlatformModel = memo(function PlatformModel({
+  modelKey,
+  color,
+}: {
+  modelKey: string;
+  color: string;
+}) {
+  const reg: ModelRegistryEntry = MODEL_REGISTRY[modelKey as ModelKey] ?? MODEL_REGISTRY.lobster;
+
+  useEffect(() => {
+    if (!MODEL_REGISTRY[modelKey as ModelKey]) {
+      console.warn(`[SelectAgentCanvas] unknown modelKey "${modelKey}", falling back to lobster`);
+    }
+  }, [modelKey]);
+
+  if (reg.avatar_type === 'vrm') {
+    return (
+      <Suspense fallback={null}>
+        <PlatformModelVRM modelKey={modelKey} />
+      </Suspense>
+    );
+  }
+
+  return <PlatformModelGLB modelKey={modelKey} color={color} />;
+});
+
+// ---------------------------------------------------------------------------
 // Scene Contents
 // ---------------------------------------------------------------------------
 
@@ -425,15 +495,18 @@ export default function SelectAgentCanvas({
   color = 'green',  // matches PICKER_COLORS default
   onCanvasReady,
 }: SelectAgentCanvasProps) {
-  // Preload the 10 non-initial models in the background. The initial model
-  // (the one picked for the first render) already gets loaded via useGLTF()
-  // inside <PlatformModel>. This useEffect runs after the first commit, so
-  // the first-render model still suspends on cold load — only tab-switches
-  // to OTHER models benefit from this warm cache.
-  // Moved from module level to avoid pulling 3.5 MB of GLBs into any
-  // bundle that merely imports from this file.
+  // Preload all models in the background after first commit.
+  // GLB models use useGLTF.preload; VRM models use preloadVRM (different loader).
+  // Also preload Mixamo animation clips for VRM animators.
   useEffect(() => {
-    Object.values(MODEL_REGISTRY).forEach((m: ModelRegistryEntry) => useGLTF.preload(m.path));
+    preloadMixamoClips();
+    Object.values(MODEL_REGISTRY).forEach((m: ModelRegistryEntry) => {
+      if (m.avatar_type === 'vrm') {
+        preloadVRM(m.path);
+      } else {
+        useGLTF.preload(m.path);
+      }
+    });
   }, []);
 
   return (
