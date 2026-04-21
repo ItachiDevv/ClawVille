@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { useCheckPetName } from '@/hooks/use-pet';
@@ -17,26 +17,16 @@ import {
 } from '@/lib/three/agent-model-registry';
 
 // ── Enum validation sets (audit Fix D) ──────────────────────────────────────
-// Module-scope so they're computed once, not on every readSessionStep1 call.
-// Used to reject stale sessionStorage payloads whose color/harness came from a
-// previous version of the enums (e.g. 'cyan' from the 9-color era, 'ironclaw'
-// from an early harness draft). Without this validation, an invalid value
-// would set state to a string that no button highlights and that COLOR_TINTS
-// doesn't recognise, leaving the picker UI visually broken.
 const VALID_COLOR_IDS: ReadonlySet<string> = new Set(PICKER_COLORS.map((c) => c.id));
 const VALID_HARNESS_IDS: ReadonlySet<string> = new Set(HARNESS_OPTIONS.map((h) => h.id));
 
-// Lazy-load the Canvas — keeps the 3D pipeline out of the synchronous bundle
-// so first-paint is not blocked. ssr: false required (Canvas needs window).
+// Lazy-load the Canvas
 const SelectAgentCanvas = dynamic(
   () => import('@/components/three/SelectAgentCanvas'),
   { ssr: false }
 );
 
 // Shape of the sessionStorage payload that bridges step 1 → step 2 → POST /api/pets.
-// `species` is a LEGACY field (one of the Phase 0 fantasy enum) required by
-// pets.ts:24 Zod schema; modelKey carries the real Phase 1 value for 3D rendering.
-// When Phase 2 lands, `species` drops out of the payload.
 interface CreatePetStep1 {
   species: LegacySpecies;
   modelKey: ModelKey;
@@ -48,11 +38,6 @@ interface CreatePetStep1 {
   thumb: string;
 }
 
-// ── sessionStorage hydration helper (audit Fix E) ──────────────────────────
-// Read + parse the step-1 draft. SSR-safe — returns null when window is
-// unavailable so the lazy initializers below fall back to defaults during
-// server render. Catches JSON.parse errors from a malformed payload so a
-// stale cookie-era artifact can't blank the page.
 function readSessionStep1(): Partial<CreatePetStep1> | null {
   if (typeof window === 'undefined') return null;
   try {
@@ -64,27 +49,42 @@ function readSessionStep1(): Partial<CreatePetStep1> | null {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Per-GLB fallback sea-creature styling (no preview PNGs shipped for these).
+// Rather than inventing fake thumbnails, each GLB card gets a colored glyph on
+// a tinted backdrop so the grid feels curated instead of a generic text list.
+// ---------------------------------------------------------------------------
+const GLB_STYLE: Record<string, { glyph: string; tint: string; from: string; to: string }> = {
+  lobster:       { glyph: '🦞', tint: '#ff8566', from: 'rgba(255,80,60,0.18)',  to: 'rgba(255,160,120,0.04)' },
+  sweet_crab:    { glyph: '🦀', tint: '#ffb04a', from: 'rgba(255,140,50,0.18)', to: 'rgba(255,200,120,0.04)' },
+  lobster_plush: { glyph: '🧸', tint: '#ff9eb1', from: 'rgba(255,120,160,0.18)',to: 'rgba(255,180,200,0.04)' },
+  hermitcrab:    { glyph: '🐚', tint: '#d5c1a0', from: 'rgba(200,160,100,0.18)',to: 'rgba(240,220,180,0.04)' },
+  jellyfish:     { glyph: '🪼', tint: '#b589ff', from: 'rgba(140,90,220,0.18)', to: 'rgba(200,170,255,0.04)' },
+  octopus:       { glyph: '🐙', tint: '#ff6fae', from: 'rgba(255,100,170,0.18)',to: 'rgba(255,180,220,0.04)' },
+  seahorse:      { glyph: '🐉', tint: '#6fd8ff', from: 'rgba(80,190,255,0.18)', to: 'rgba(160,220,255,0.04)' },
+};
+
+// Romanised pseudo-kana tag per model — a decorative wink, not translated text.
+// Kept short so it fits the card corner. Milady gets stylized "m°N" badges.
+const MODEL_TAG: Record<string, string> = {
+  lobster:        '甲殻',
+  sweet_crab:     '蟹',
+  lobster_plush:  'ぬい',
+  hermitcrab:     '宿借',
+  jellyfish:      '水母',
+  octopus:        '章魚',
+  seahorse:       '海馬',
+};
+
 export default function CreateAgentPage() {
   const router = useRouter();
   const checkNameMutation = useCheckPetName();
 
-  // ── Model picker state (audit Fix E — lazy initializers) ──────────────────
-  // Hydrating from sessionStorage in a useEffect caused a visible one-frame
-  // flash of the default lobster model before the hydrated value rendered
-  // on the next tick, which also triggered a spurious <Suspense> fallback
-  // + dispose cycle on the GLB. Moving the hydration into lazy init
-  // functions means the first render already has the correct state.
-  // Each initializer validates against the current enum set (audit Fix D)
-  // so stale payloads (e.g. color 'cyan' from the 9-color era) fall back
-  // to defaults instead of putting the picker in an invalid state.
   const [selectedModel, setSelectedModel] = useState<ModelKey>(() => {
     const s = readSessionStep1();
     if (s?.modelKey && s.modelKey in MODEL_REGISTRY) return s.modelKey as ModelKey;
     return 'lobster';
   });
-  // Category is derived from the selected model's registry entry — no longer
-  // a separate state since the category tabs were removed 2026-04-16 (user
-  // feedback: 2 tabs × 7 models wastes vertical space; show all models flat).
   const [selectedColor, setSelectedColor] = useState<PickerColorId>(() => {
     const s = readSessionStep1();
     if (s?.color && VALID_COLOR_IDS.has(s.color)) return s.color as PickerColorId;
@@ -96,7 +96,6 @@ export default function CreateAgentPage() {
     return 'milady';
   });
 
-  // ── Agent identity state ──────────────────────────────────────────────────
   const [agentName, setAgentName] = useState<string>(() => readSessionStep1()?.name ?? '');
   const [gender, setGender] = useState<'male' | 'female'>(() => {
     const s = readSessionStep1();
@@ -107,42 +106,31 @@ export default function CreateAgentPage() {
     reason?: string;
   } | null>(null);
 
-  // ── Submission lock (audit Fix A) ─────────────────────────────────────────
-  // Prevents a double-click on Next from firing two concurrent handleNext
-  // invocations — each would await captureThumbnail, write sessionStorage,
-  // and router.push, racing in the route transition. The ref is the
-  // load-bearing piece (synchronous re-entry guard); the state drives the
-  // disabled prop so the user sees the button freeze during submission.
   const submittingRef = useRef(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-
-  // Release the ref on unmount so back-navigation to this page after a
-  // successful submit lets the user resubmit from the restored draft.
   useEffect(() => () => { submittingRef.current = false; }, []);
 
-  // ── Canvas ref — populated by SelectAgentCanvas.onCanvasReady ─────────────
-  // Replaces the fragile document.getElementById('select-agent-canvas') lookup.
-  // Guaranteed to be populated by the time R3F finishes creating the renderer.
   const canvasElRef = useRef<HTMLCanvasElement | null>(null);
   const handleCanvasReady = useCallback((canvas: HTMLCanvasElement) => {
     canvasElRef.current = canvas;
   }, []);
 
-  // ── Derived: current model's category + full flat model list ────────────
-  // Category is no longer a state — it's computed from the current model so
-  // the sessionStorage payload still carries an accurate `category` field
-  // for downstream consumers. The grid shows every model flat since the
-  // tabs were removed.
+  // Derived: current model + grouped registry
   const selectedCategory: AgentCategory =
     MODEL_REGISTRY[selectedModel]?.category ?? 'openclaw';
-  const allModels = Object.entries(MODEL_REGISTRY);
+  const selectedEntry = MODEL_REGISTRY[selectedModel];
+  const selectedIsVRM = selectedEntry?.avatar_type === 'vrm';
 
-  // ── Name availability debounce with request cancellation ─────────────────
-  // Fixes audit §2 (stale mutation response race) + §7 (unmount leak):
-  // drop all updates if the effect has been torn down. The previous
-  // `nameForRequest === agentName` comparison was redundant — both values
-  // come from the same closure, so they're always equal by construction.
-  // `cancelled` alone is sufficient to drop stale responses (fix G).
+  const modelsByCategory = useMemo(() => {
+    const all = Object.entries(MODEL_REGISTRY);
+    return {
+      openclaw: all.filter(([, e]) => e.category === 'openclaw'),
+      other:    all.filter(([, e]) => e.category === 'other'),
+      milady:   all.filter(([, e]) => e.category === 'milady'),
+    };
+  }, []);
+
+  // Name availability debounce
   useEffect(() => {
     if (!agentName || agentName.length < 3) {
       setNameStatus(null);
@@ -161,25 +149,9 @@ export default function CreateAgentPage() {
       cancelled = true;
       clearTimeout(timer);
     };
-    // checkNameMutation ref is stable across renders (TanStack v5); excluding
-    // it is deliberate — including it would re-run the debounce on every
-    // render and invalidate the cancellation flag.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentName]);
 
-  // Switch category — also switch to that category's default model.
-  // Both setters are batched under React 18's automatic batching for event
-  // handlers. Do NOT make this async — an `await` between the two setters
-  // breaks batching and would cause one render with the new category + stale
-  // model, sending a mismatched modelKey to SelectAgentCanvas.
-  // ── Thumbnail capture with bounded rAF poll (audit Fix F) ────────────────
-  // preserveDrawingBuffer is set on the Canvas so toDataURL returns the last
-  // rendered frame. If the user clicks Next before the first frame paints
-  // (or before SelectAgentCanvas's dynamic import has even finished
-  // populating canvasElRef on a cold load), toDataURL returns 'data:,' and
-  // the previous two-frame retry wasn't enough. Poll once per rAF until
-  // either a real frame is available or 1000ms have elapsed — then resolve
-  // with '' so the caller's router.push isn't blocked forever.
   const captureThumbnail = (): Promise<string> => {
     return new Promise((resolve) => {
       const startedAt = performance.now();
@@ -188,7 +160,6 @@ export default function CreateAgentPage() {
         if (!canvasEl) return '';
         try {
           const data = canvasEl.toDataURL('image/jpeg', 0.8);
-          // Detect empty frame: 'data:,' or suspiciously short data URL.
           if (data === 'data:,' || data.length < 200) return '';
           return data;
         } catch {
@@ -197,14 +168,8 @@ export default function CreateAgentPage() {
       };
       const poll = () => {
         const data = tryCapture();
-        if (data) {
-          resolve(data);
-          return;
-        }
-        if (performance.now() - startedAt > 1000) {
-          resolve('');
-          return;
-        }
+        if (data) { resolve(data); return; }
+        if (performance.now() - startedAt > 1000) { resolve(''); return; }
         requestAnimationFrame(poll);
       };
       poll();
@@ -212,28 +177,14 @@ export default function CreateAgentPage() {
   };
 
   const handleNext = useCallback(async () => {
-    // Fix A — in-flight lock. Double-click races were firing two concurrent
-    // handlers, each awaiting captureThumbnail, each writing sessionStorage
-    // and pushing the route. The ref is the synchronous guard; the state
-    // drives the button's disabled prop so the freeze is visible.
     if (submittingRef.current) return;
     if (!agentName || agentName.length < 3) return;
-    // Fix B — require explicit name availability before advancing. The old
-    // `nameStatus !== null && !nameStatus.available` was false when
-    // nameStatus was null (debounce pending or mutation in flight), so the
-    // button was enabled during that window and a fast click would ship an
-    // unverified name — the user wouldn't discover the collision until
-    // final CREATE after filling archetype + stats.
     if (nameStatus?.available !== true) return;
 
     submittingRef.current = true;
     setIsSubmitting(true);
     try {
       const thumb = await captureThumbnail();
-
-      // CRITICAL (audit #1): project modelKey down to the legacy species enum
-      // that POST /api/pets still validates against. Without this the server
-      // 400s on every Phase 1 model key.
       const legacySpecies = MODEL_KEY_TO_LEGACY_SPECIES[selectedModel];
 
       const payload: CreatePetStep1 = {
@@ -250,140 +201,351 @@ export default function CreateAgentPage() {
       sessionStorage.setItem('createPetStep1', JSON.stringify(payload));
       router.push('/create-agent/personality');
     } finally {
-      // Keep submittingRef true during the route transition so a rapid
-      // Back+Next can't re-fire mid-push. The unmount effect clears the
-      // ref when the component tears down, which happens on successful
-      // navigation. setIsSubmitting(false) is safe — if the component is
-      // unmounted the setter is a no-op (React 18 silently drops it).
       setIsSubmitting(false);
     }
   }, [agentName, nameStatus, selectedModel, selectedCategory, selectedColor, gender, selectedHarness, router]);
 
-  return (
-    <div className="relative min-h-screen flex flex-col items-center px-4 py-8 bg-[#061520] overflow-x-hidden">
-      {/* NO full-page canvas mount here. The 3D preview is now a framed panel
-          in normal page flow between the color picker and config card so the
-          modal can never overlap the model. */}
+  // Card renderer — one branch for VRM (thumbnail), one for GLB (glyph)
+  const renderCard = (key: string, entry: typeof MODEL_REGISTRY[ModelKey], index: number) => {
+    const isSelected = selectedModel === key;
+    const isVRM = entry.avatar_type === 'vrm';
+    const glbStyle = GLB_STYLE[key];
+    const tag = MODEL_TAG[key];
+    const numLabel = `N°${String(index + 1).padStart(2, '0')}`;
 
-      <div className="w-full flex flex-col items-center">
+    return (
+      <button
+        key={key}
+        onClick={() => setSelectedModel(key as ModelKey)}
+        className={`group relative aspect-[3/4] rounded-xl overflow-hidden border-2 transition-all duration-200 ${
+          isSelected
+            ? (isVRM
+                ? 'border-pink-400/80 shadow-[0_0_18px_rgba(255,130,200,0.45),inset_0_0_30px_rgba(255,130,200,0.12)] scale-[1.02]'
+                : 'border-cyan-400/80 shadow-[0_0_18px_rgba(0,229,255,0.45),inset_0_0_30px_rgba(0,229,255,0.12)] scale-[1.02]')
+            : 'border-white/8 hover:border-white/30 hover:scale-[1.01]'
+        }`}
+      >
+        {/* Card background */}
+        {isVRM ? (
+          <>
+            {/* VRM preview PNG */}
+            <img
+              src={entry.preview}
+              alt={entry.label}
+              className="absolute inset-0 w-full h-full object-cover object-top"
+              loading="lazy"
+            />
+            {/* Pink halftone overlay */}
+            <div
+              className="absolute inset-0 mix-blend-overlay opacity-60 pointer-events-none"
+              style={{
+                backgroundImage: `radial-gradient(circle at 30% 20%, rgba(255,130,200,0.35), transparent 60%), radial-gradient(circle at 80% 80%, rgba(0,229,255,0.22), transparent 55%)`,
+              }}
+            />
+            {/* Scanline hairlines */}
+            <div
+              className="absolute inset-0 opacity-25 pointer-events-none mix-blend-soft-light"
+              style={{ backgroundImage: `repeating-linear-gradient(0deg, rgba(255,255,255,0.22) 0px, rgba(255,255,255,0.22) 1px, transparent 1px, transparent 4px)` }}
+            />
+          </>
+        ) : (
+          <>
+            {/* GLB glyph backdrop */}
+            <div
+              className="absolute inset-0"
+              style={{
+                background: `radial-gradient(circle at 50% 38%, ${glbStyle?.from ?? 'rgba(0,229,255,0.14)'}, ${glbStyle?.to ?? 'rgba(0,0,0,0.8)'} 65%, #051220 95%)`,
+              }}
+            />
+            {/* Large glyph */}
+            <div className="absolute inset-0 flex items-center justify-center text-[58px] leading-none select-none grayscale-[0.25] group-hover:grayscale-0 transition-all">
+              <span style={{ filter: `drop-shadow(0 0 18px ${glbStyle?.tint ?? '#00e5ff'})` }}>
+                {glbStyle?.glyph ?? '◈'}
+              </span>
+            </div>
+            {/* Grid overlay */}
+            <div
+              className="absolute inset-0 opacity-30 pointer-events-none"
+              style={{
+                backgroundImage: `linear-gradient(to right, rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.04) 1px, transparent 1px)`,
+                backgroundSize: `16px 16px`,
+              }}
+            />
+          </>
+        )}
 
-        {/* Title */}
-        <h1 className="font-clawville text-3xl text-white drop-shadow-[0_0_16px_rgba(0,229,255,0.3)] mb-1">
-          Create Your Agent
-        </h1>
-        <p className="text-white/40 text-xs font-mono uppercase tracking-widest mb-5">
-          Choose model, color, and identity
-        </p>
+        {/* Corner bracket decorations — always visible, brighten on select */}
+        <div className={`pointer-events-none absolute top-1 left-1 w-2.5 h-2.5 border-t border-l ${isSelected ? (isVRM ? 'border-pink-300' : 'border-cyan-300') : 'border-white/30'}`} />
+        <div className={`pointer-events-none absolute top-1 right-1 w-2.5 h-2.5 border-t border-r ${isSelected ? (isVRM ? 'border-pink-300' : 'border-cyan-300') : 'border-white/30'}`} />
+        <div className={`pointer-events-none absolute bottom-1 left-1 w-2.5 h-2.5 border-b border-l ${isSelected ? (isVRM ? 'border-pink-300' : 'border-cyan-300') : 'border-white/30'}`} />
+        <div className={`pointer-events-none absolute bottom-1 right-1 w-2.5 h-2.5 border-b border-r ${isSelected ? (isVRM ? 'border-pink-300' : 'border-cyan-300') : 'border-white/30'}`} />
 
-        {/* ── Model picker grid (flat — category tabs removed 2026-04-16) ── */}
-        {/* Previously split into OpenClaw + Other tabs with filtered grids.
-            Removed per user feedback — the ~7 available models fit cleanly
-            in a single row at desktop width (4-col on mobile). */}
-        <div className="w-full max-w-xl mb-4">
-          <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
-            {allModels.map(([key, entry]) => (
-              <button
-                key={key}
-                // `key` comes from Object.entries() which widens to string; MODEL_REGISTRY
-                // is `satisfies Record<string, ModelRegistryEntry>` so every key IS a ModelKey.
-                onClick={() => setSelectedModel(key as ModelKey)}
-                className={`flex flex-col items-center py-2 px-1 rounded-xl border transition-all ${
-                  selectedModel === key
-                    ? 'bg-cyan-500/20 border-cyan-500/60 shadow-[0_0_10px_rgba(0,229,255,0.2)]'
-                    : 'bg-black/30 border-white/10 hover:bg-white/5 hover:border-white/20'
-                }`}
-              >
-                <span className={`text-xs font-bold text-center leading-tight mt-1 ${
-                  selectedModel === key ? 'text-cyan-300' : 'text-white/60'
-                }`}>
-                  {entry.label}
-                </span>
-              </button>
-            ))}
+        {/* Top-right numeric label */}
+        <div className="absolute top-1.5 right-2 font-mono text-[9px] tracking-wider text-white/45">
+          {numLabel}
+        </div>
+
+        {/* Top-left kana/tag — only for GLBs that have one; VRMs get category pill */}
+        {tag && (
+          <div className="absolute top-1.5 left-2 font-mono text-[9px] tracking-wider text-white/55" style={{ textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}>
+            {tag}
+          </div>
+        )}
+        {isVRM && (
+          <div className="absolute top-1.5 left-2 font-mono text-[8px] tracking-[0.15em] text-pink-200/90 uppercase bg-pink-500/20 backdrop-blur-sm px-1.5 py-0.5 rounded-full border border-pink-300/30">
+            Milady
+          </div>
+        )}
+
+        {/* Bottom label band */}
+        <div className="absolute inset-x-0 bottom-0 px-2 py-1.5 bg-gradient-to-t from-black/85 via-black/70 to-transparent">
+          <div className={`font-clawville text-[10px] leading-tight uppercase tracking-wide text-center ${
+            isSelected ? (isVRM ? 'text-pink-200' : 'text-cyan-200') : 'text-white/85'
+          }`}>
+            {entry.label}
           </div>
         </div>
 
-        {/* ── Color picker ──────────────────────────────────────────────── */}
-        <div className="flex gap-2 mb-5">
-          {PICKER_COLORS.map((color) => (
-            <button
-              key={color.id}
-              onClick={() => setSelectedColor(color.id)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border-2 ${
-                selectedColor === color.id
-                  ? 'border-white/60 shadow-[0_0_8px_rgba(255,255,255,0.3)] scale-105'
-                  : 'border-transparent opacity-70 hover:opacity-90'
-              }`}
-              style={{ backgroundColor: color.bg, color: '#000' }}
-            >
-              {color.label}
-            </button>
-          ))}
-        </div>
-
-        {/* ── 3D preview panel ──────────────────────────────────────────── */}
-        {/* Placed between the color picker and config card so the modal is
-            BELOW the canvas in normal page flow — the two regions can never
-            overlap regardless of viewport height or scroll position.
-            overflow-hidden clips the canvas border-radius cleanly.
-            onCanvasReady captures the <canvas> element ref for toDataURL. */}
-        <div className="w-full max-w-xl mb-5 rounded-2xl overflow-hidden border border-cyan-500/20 bg-black/40 h-[220px]">
-          <SelectAgentCanvas
-            modelKey={selectedModel}
-            color={selectedColor}
-            onCanvasReady={handleCanvasReady}
+        {/* Chromatic aberration ghost on selected VRM */}
+        {isSelected && isVRM && (
+          <div
+            className="pointer-events-none absolute inset-0 mix-blend-screen opacity-30"
+            style={{
+              background: 'linear-gradient(45deg, rgba(255,120,200,0.25) 0%, transparent 40%, transparent 60%, rgba(120,220,255,0.22) 100%)',
+            }}
           />
+        )}
+      </button>
+    );
+  };
+
+  // Model index tracker for stable N° numbering across all categories
+  let globalIdx = 0;
+
+  return (
+    <div className="relative min-h-screen px-4 py-8 bg-[#050d17] overflow-x-hidden">
+      {/* Ambient page-level atmosphere — consistent cyan, matches the in-game
+          underwater world. Previously shifted hue with avatar_type; removed
+          because it misrepresented the actual gameplay backdrop. */}
+      <div
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background:
+            'radial-gradient(ellipse at 20% 80%, rgba(0,220,255,0.08) 0%, transparent 50%), radial-gradient(ellipse at 80% 20%, rgba(0,140,220,0.06) 0%, transparent 55%)',
+        }}
+      />
+
+      {/* Subtle noise/grain overlay */}
+      <div
+        className="pointer-events-none absolute inset-0 opacity-[0.035] mix-blend-overlay"
+        style={{
+          backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")`,
+        }}
+      />
+
+      <div className="relative max-w-6xl mx-auto">
+        {/* ── Header ───────────────────────────────────────────────────── */}
+        <div className="flex flex-col items-center mb-8">
+          <div className="font-mono text-[10px] uppercase tracking-[0.4em] text-white/35 mb-2">
+            ClawVille <span className="text-white/15">//</span> Agent Forge
+          </div>
+          <h1 className="font-clawville text-3xl md:text-4xl text-white drop-shadow-[0_0_20px_rgba(0,229,255,0.25)] tracking-widest">
+            CAST YOUR AGENT
+          </h1>
+          <div className="mt-3 flex items-center gap-3 text-[10px] font-mono uppercase tracking-widest text-white/40">
+            <span className={selectedCategory === 'openclaw' ? 'text-cyan-300' : ''}>
+              OpenClaw · {modelsByCategory.openclaw.length}
+            </span>
+            <span className="text-white/15">//</span>
+            <span className={selectedCategory === 'other' ? 'text-cyan-300' : ''}>
+              Other · {modelsByCategory.other.length}
+            </span>
+            <span className="text-white/15">//</span>
+            <span className={selectedCategory === 'milady' ? 'text-pink-300' : ''}>
+              Milady · {modelsByCategory.milady.length}
+            </span>
+          </div>
         </div>
 
-        {/* ── Config panel ──────────────────────────────────────────────── */}
-        <div className="w-full max-w-xl bg-[#0a1628]/90 border border-cyan-500/20 rounded-2xl p-6 backdrop-blur-xl shadow-[0_0_30px_rgba(0,229,255,0.06)] space-y-4">
+        {/* ── Two-pane: picker (left) + shrine (right) ──────────────────── */}
+        <div className="grid lg:grid-cols-[minmax(0,360px)_minmax(0,1fr)] gap-6 mb-6">
 
-          {/* Selected model label */}
-          <p className="text-center">
-            <span className="text-white/40 text-xs font-mono uppercase tracking-wider">
-              Model:{' '}
-            </span>
-            <span className="font-clawville text-xl text-cyan-300">
-              {MODEL_REGISTRY[selectedModel]?.label ?? selectedModel}
-            </span>
-          </p>
+          {/* ─── Left pane: picker grid ─── */}
+          <div className="space-y-5">
+            {/* OpenClaw */}
+            <div>
+              <div className="flex items-baseline justify-between mb-2">
+                <div className="font-mono text-[10px] uppercase tracking-[0.25em] text-cyan-300/80">⟐ OpenClaw</div>
+                <div className="font-mono text-[9px] text-white/30">crustacean caste</div>
+              </div>
+              <div className="grid grid-cols-4 gap-2">
+                {modelsByCategory.openclaw.map(([key, entry]) => renderCard(key, entry, globalIdx++))}
+              </div>
+            </div>
+
+            {/* Other sea creatures */}
+            <div>
+              <div className="flex items-baseline justify-between mb-2">
+                <div className="font-mono text-[10px] uppercase tracking-[0.25em] text-cyan-300/80">⟐ Other</div>
+                <div className="font-mono text-[9px] text-white/30">reef dwellers</div>
+              </div>
+              <div className="grid grid-cols-4 gap-2">
+                {modelsByCategory.other.map(([key, entry]) => renderCard(key, entry, globalIdx++))}
+              </div>
+            </div>
+
+            {/* Milady VRMs — visually lifted with pink accent heading */}
+            <div className="relative">
+              <div className="flex items-baseline justify-between mb-2">
+                <div className="font-mono text-[10px] uppercase tracking-[0.25em] text-pink-300/90">♡ Milady</div>
+                <div className="font-mono text-[9px] text-pink-200/40">neo-chibi VRM</div>
+              </div>
+              <div className="grid grid-cols-4 gap-2">
+                {modelsByCategory.milady.map(([key, entry]) => renderCard(key, entry, globalIdx++))}
+              </div>
+            </div>
+          </div>
+
+          {/* ─── Right pane: shrine preview ─── */}
+          {/* One unified shrine background for all avatars — the picker shows
+              what the player will see in-game (underwater cyan), not a
+              category-specific theme. Milady branding lives on the picker
+              cards + the selected-state outline, NOT in the world backdrop. */}
+          <div className="flex flex-col min-w-0">
+            <div className="relative flex-1 min-h-[420px] lg:min-h-[560px] rounded-2xl overflow-hidden border border-white/8">
+              {/* Deep-sea cyan shrine backdrop — matches in-game atmosphere */}
+              <div
+                className="absolute inset-0"
+                style={{
+                  background: 'radial-gradient(ellipse at 50% 70%, rgba(0,200,255,0.18) 0%, rgba(5,25,45,0.70) 40%, #030d1a 80%)',
+                }}
+              />
+
+              {/* Canvas mounted on top of shrine background */}
+              <div className="absolute inset-0">
+                <SelectAgentCanvas
+                  modelKey={selectedModel}
+                  color={selectedColor}
+                  onCanvasReady={handleCanvasReady}
+                />
+              </div>
+
+              {/* Shrine corner brackets — cyan base, pink tint only when VRM
+                  selected (signals the Milady caste is active, not the world). */}
+              <div className={`pointer-events-none absolute top-3 left-3 w-6 h-6 border-t-2 border-l-2 ${selectedIsVRM ? 'border-pink-300/60' : 'border-cyan-300/60'}`} />
+              <div className={`pointer-events-none absolute top-3 right-3 w-6 h-6 border-t-2 border-r-2 ${selectedIsVRM ? 'border-pink-300/60' : 'border-cyan-300/60'}`} />
+              <div className={`pointer-events-none absolute bottom-3 left-3 w-6 h-6 border-b-2 border-l-2 ${selectedIsVRM ? 'border-pink-300/60' : 'border-cyan-300/60'}`} />
+              <div className={`pointer-events-none absolute bottom-3 right-3 w-6 h-6 border-b-2 border-r-2 ${selectedIsVRM ? 'border-pink-300/60' : 'border-cyan-300/60'}`} />
+
+              {/* Top-left diagnostic strip */}
+              <div className="pointer-events-none absolute top-4 left-12 font-mono text-[9px] uppercase tracking-[0.2em] text-white/40">
+                <div>REC · LIVE</div>
+                <div className="text-white/25">{selectedIsVRM ? 'MTOON//VRM' : 'PBR//GLB'}</div>
+              </div>
+
+              {/* Bottom-center model name + subtext */}
+              <div className="pointer-events-none absolute bottom-6 left-0 right-0 text-center px-6">
+                <div className={`font-mono text-[9px] uppercase tracking-[0.35em] mb-1 ${selectedIsVRM ? 'text-pink-300/70' : 'text-cyan-300/70'}`}>
+                  {selectedIsVRM ? '— Milady Avatar —' : '— Sea Creature Avatar —'}
+                </div>
+                <div className={`font-clawville text-xl md:text-2xl tracking-[0.2em] text-cyan-100`} style={{ textShadow: '0 0 12px rgba(0,229,255,0.4)' }}>
+                  {selectedEntry?.label ?? selectedModel}
+                </div>
+              </div>
+            </div>
+
+            {/* Color picker bar — transforms when VRM is selected */}
+            <div className="mt-3">
+              {selectedIsVRM ? (
+                <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-black/30 border border-pink-400/20">
+                  <div className="flex items-center gap-2">
+                    <div className="font-mono text-[9px] uppercase tracking-[0.25em] text-pink-200/70">⟡ tint_mode</div>
+                    <div className="font-mono text-[10px] text-pink-100/80">MToon · preserved</div>
+                  </div>
+                  <div className="font-mono text-[9px] text-white/30 uppercase tracking-wider hidden sm:block">
+                    vrm-native shading
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-black/30 border border-cyan-400/20">
+                  <div className="font-mono text-[9px] uppercase tracking-[0.25em] text-cyan-200/70 shrink-0">
+                    ⟡ tint
+                  </div>
+                  <div className="flex gap-2 flex-1">
+                    {PICKER_COLORS.map((c) => (
+                      <button
+                        key={c.id}
+                        onClick={() => setSelectedColor(c.id)}
+                        className={`group relative flex-1 h-8 rounded-md font-mono text-[10px] font-bold uppercase tracking-wider transition-all border ${
+                          selectedColor === c.id
+                            ? 'border-white/80 shadow-[0_0_10px_rgba(255,255,255,0.25)] scale-[1.03]'
+                            : 'border-transparent opacity-70 hover:opacity-100'
+                        }`}
+                        style={{
+                          backgroundColor: c.bg,
+                          color: '#0a0a10',
+                        }}
+                        aria-label={`Tint ${c.label}`}
+                      >
+                        {selectedColor === c.id ? c.label : ''}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* ── Identity config card ──────────────────────────────────────── */}
+        <div className="relative w-full max-w-3xl mx-auto bg-[#08111d]/95 border border-white/10 rounded-2xl p-6 backdrop-blur-xl shadow-[0_0_40px_rgba(0,0,0,0.4)] space-y-5">
+          {/* Decorative header strip */}
+          <div className="flex items-center justify-between pb-3 border-b border-white/8">
+            <div className="font-mono text-[9px] uppercase tracking-[0.3em] text-white/40">
+              § identity
+            </div>
+            <div className="flex items-center gap-1">
+              <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+              <div className="font-mono text-[9px] uppercase tracking-[0.3em] text-cyan-300/70">ready</div>
+            </div>
+          </div>
 
           {/* Name + Gender row */}
           <div className="flex flex-col sm:flex-row gap-4">
             <div className="flex-1">
-              <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1.5">
-                Agent Name
+              <label className="block text-white/45 text-[10px] font-mono uppercase tracking-[0.25em] mb-1.5">
+                ⟐ agent_name
               </label>
               <input
                 type="text"
                 value={agentName}
                 onChange={(e) => setAgentName(e.target.value)}
                 maxLength={20}
-                className="w-full px-4 py-2.5 rounded-lg bg-white/[0.05] border border-white/10 text-white placeholder:text-white/20 focus:outline-none focus:border-cyan-500/50 focus:shadow-[0_0_12px_rgba(0,229,255,0.1)] transition-all"
-                placeholder="Enter a name..."
+                className="w-full px-4 py-2.5 rounded-lg bg-white/[0.04] border border-white/10 text-white placeholder:text-white/20 focus:outline-none focus:border-cyan-400/60 focus:shadow-[0_0_14px_rgba(0,229,255,0.12)] transition-all font-mono text-sm"
+                placeholder="name your agent…"
               />
               {agentName.length >= 3 && nameStatus && (
-                <p className={`text-xs mt-1.5 font-bold ${nameStatus.available ? 'text-emerald-400' : 'text-red-400'}`}>
+                <p className={`text-[10px] mt-1.5 font-mono uppercase tracking-wider ${nameStatus.available ? 'text-emerald-400' : 'text-red-400'}`}>
                   {nameStatus.available
-                    ? `${agentName} is available!`
-                    : nameStatus.reason || 'That name is taken'}
+                    ? `✓ ${agentName} is available`
+                    : `✗ ${nameStatus.reason || 'name taken'}`}
                 </p>
               )}
               {agentName.length > 0 && agentName.length < 3 && (
-                <p className="text-xs mt-1.5 text-white/30 font-mono">
-                  Name must be at least 3 characters
+                <p className="text-[10px] mt-1.5 text-white/30 font-mono uppercase tracking-wider">
+                  min 3 characters
                 </p>
               )}
             </div>
 
-            <div className="sm:w-40">
-              <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1.5">
-                Gender
+            <div className="sm:w-44">
+              <label className="block text-white/45 text-[10px] font-mono uppercase tracking-[0.25em] mb-1.5">
+                ⟐ gender
               </label>
               <select
                 value={gender}
                 onChange={(e) => setGender(e.target.value as 'male' | 'female')}
-                className="w-full px-4 py-2.5 rounded-lg bg-white/[0.05] border border-white/10 text-white focus:outline-none focus:border-cyan-500/50 transition-all"
+                className="w-full px-4 py-2.5 rounded-lg bg-white/[0.04] border border-white/10 text-white focus:outline-none focus:border-cyan-400/60 transition-all font-mono text-sm uppercase tracking-wider"
               >
                 <option value="male" className="bg-[#0a1628]">MALE</option>
                 <option value="female" className="bg-[#0a1628]">FEMALE</option>
@@ -391,10 +553,10 @@ export default function CreateAgentPage() {
             </div>
           </div>
 
-          {/* ── Agent harness ───────────────────────────────────────────── */}
+          {/* Harness */}
           <div>
-            <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-2">
-              Agent Harness
+            <label className="block text-white/45 text-[10px] font-mono uppercase tracking-[0.25em] mb-2">
+              ⟐ harness
             </label>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {HARNESS_OPTIONS.map((h) => (
@@ -404,35 +566,37 @@ export default function CreateAgentPage() {
                   onClick={() => setSelectedHarness(h.id)}
                   className={`text-left px-3 py-2.5 rounded-lg border transition-all ${
                     selectedHarness === h.id
-                      ? 'border-cyan-500/60 bg-cyan-500/10 shadow-[0_0_8px_rgba(0,229,255,0.1)]'
-                      : 'border-white/10 bg-white/5 hover:border-white/20'
+                      ? (h.id === 'milady'
+                          ? 'border-pink-400/60 bg-pink-500/10 shadow-[0_0_10px_rgba(255,130,200,0.15)]'
+                          : 'border-cyan-400/60 bg-cyan-500/10 shadow-[0_0_10px_rgba(0,229,255,0.12)]')
+                      : 'border-white/8 bg-white/[0.02] hover:border-white/20'
                   }`}
                 >
                   <div className="flex items-center gap-2">
                     <div className={`w-3 h-3 rounded-full border-2 shrink-0 ${
                       selectedHarness === h.id
-                        ? 'border-cyan-400 bg-cyan-400'
-                        : 'border-white/30 bg-transparent'
+                        ? (h.id === 'milady' ? 'border-pink-300 bg-pink-300' : 'border-cyan-300 bg-cyan-300')
+                        : 'border-white/25 bg-transparent'
                     }`} />
-                    <span className={`text-xs font-bold ${selectedHarness === h.id ? 'text-cyan-300' : 'text-white/70'}`}>
+                    <span className={`text-[11px] font-bold tracking-wide uppercase ${
+                      selectedHarness === h.id
+                        ? (h.id === 'milady' ? 'text-pink-200' : 'text-cyan-200')
+                        : 'text-white/65'
+                    }`}>
                       {h.label}
                       {h.id === 'milady' && (
-                        <span className="ml-1 text-[9px] text-cyan-400/70 font-mono">(recommended)</span>
+                        <span className="ml-1 text-[9px] text-pink-300/80 font-mono">(rec)</span>
                       )}
                     </span>
                   </div>
-                  <p className="text-[10px] text-white/30 mt-0.5 ml-5">{h.description}</p>
+                  <p className="text-[10px] text-white/35 mt-0.5 ml-5 font-mono">{h.description}</p>
                 </button>
               ))}
             </div>
           </div>
 
-          {/* Next button — disabled unless name is verified-available AND
-              no submission is in flight (Fix A + B). Requiring
-              nameStatus.available === true means the user must wait for
-              the debounced check to return "available" before the button
-              lights up, which is the correct UX: tell them the name is
-              good BEFORE they spend 2 minutes on step 2. */}
+          {/* CTA — consistent cyan across all avatar types. The button is the
+              ClawVille primary action; its color is theme, not brand-selector. */}
           <button
             onClick={handleNext}
             disabled={
@@ -441,12 +605,15 @@ export default function CreateAgentPage() {
               agentName.length < 3 ||
               nameStatus?.available !== true
             }
-            className="w-full py-3 rounded-lg font-clawville text-sm uppercase tracking-wider transition-all disabled:opacity-30 disabled:cursor-not-allowed bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-white shadow-[0_0_20px_rgba(0,229,255,0.2)] hover:shadow-[0_0_28px_rgba(0,229,255,0.35)]"
+            className="w-full py-3.5 rounded-lg font-clawville text-sm uppercase tracking-[0.25em] transition-all disabled:opacity-25 disabled:cursor-not-allowed text-white bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 shadow-[0_0_20px_rgba(0,229,255,0.2)] hover:shadow-[0_0_28px_rgba(0,229,255,0.35)]"
           >
-            Choose Personality
+            <span className="inline-flex items-center gap-2">
+              <span className="opacity-60">→</span>
+              <span>Choose Personality</span>
+              <span className="opacity-60">→</span>
+            </span>
           </button>
         </div>
-
       </div>
     </div>
   );
