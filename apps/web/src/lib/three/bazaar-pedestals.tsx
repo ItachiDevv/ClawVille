@@ -63,9 +63,9 @@ interface PedestalDef {
 }
 
 const PEDESTALS: PedestalDef[] = [
-  { offsetX: -28, rarity: 'common', phaseOffset: 0.0,  itemRotSpeed: 0.8 },
-  { offsetX:   0, rarity: 'epic',   phaseOffset: 1.1,  itemRotSpeed: 1.2 },
-  { offsetX:  28, rarity: 'rare',   phaseOffset: 2.2,  itemRotSpeed: 0.9 },
+  { offsetX: -224, rarity: 'common', phaseOffset: 0.0,  itemRotSpeed: 0.8 },
+  { offsetX:    0, rarity: 'epic',   phaseOffset: 1.1,  itemRotSpeed: 1.2 },
+  { offsetX:  224, rarity: 'rare',   phaseOffset: 2.2,  itemRotSpeed: 0.9 },
 ];
 
 // ---------------------------------------------------------------------------
@@ -132,7 +132,7 @@ function Pedestal({ def }: { def: PedestalDef }) {
     // Float item: bob up/down and spin
     const t = clock.elapsedTime;
     floatRef.current.rotation.y = t * def.itemRotSpeed;
-    floatRef.current.position.y = 18 + Math.sin(t * 1.8 + def.phaseOffset) * 1.2;
+    floatRef.current.position.y = 144 + Math.sin(t * 1.8 + def.phaseOffset) * 9.6;
   });
 
   const worldX = FORGE_CENTER_X + def.offsetX;
@@ -153,24 +153,24 @@ function Pedestal({ def }: { def: PedestalDef }) {
         document.body.style.cursor = 'auto';
       }}
     >
-      {/* Solid dark base cylinder */}
-      <mesh position={[0, 5, 0]} material={solidBaseMat}>
-        <cylinderGeometry args={[4, 5, 10, 16, 1]} />
+      {/* Solid dark base cylinder — 8× scaled: top 32, bottom 40, height 80 */}
+      <mesh position={[0, 40, 0]} material={solidBaseMat}>
+        <cylinderGeometry args={[32, 40, 80, 24, 1]} />
       </mesh>
 
-      {/* Emissive glow overlay (additive) — slightly larger, sits on top */}
-      <mesh position={[0, 5.1, 0]} material={baseMat}>
-        <cylinderGeometry args={[4.1, 5.1, 10.2, 16, 1]} />
+      {/* Emissive glow overlay (additive) — slightly larger than base */}
+      <mesh position={[0, 40.8, 0]} material={baseMat}>
+        <cylinderGeometry args={[32.8, 40.8, 81.6, 24, 1]} />
       </mesh>
 
       {/* Top glow disc */}
-      <mesh position={[0, 10.5, 0]} rotation={[Math.PI / 2, 0, 0]} material={topGlowMat}>
-        <circleGeometry args={[4.5, 24]} />
+      <mesh position={[0, 84, 0]} rotation={[Math.PI / 2, 0, 0]} material={topGlowMat}>
+        <circleGeometry args={[36, 24]} />
       </mesh>
 
       {/* Floating item silhouette */}
-      <mesh ref={floatRef} position={[0, 18, 0]} material={itemMat}>
-        <icosahedronGeometry args={[3, 0]} />
+      <mesh ref={floatRef} position={[0, 144, 0]} material={itemMat}>
+        <icosahedronGeometry args={[24, 0]} />
       </mesh>
     </group>
   );

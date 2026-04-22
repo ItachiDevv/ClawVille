@@ -353,7 +353,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     petModelKey: modelKey ?? 'lobster',
   }),
 
-  avatarPosition: { x: 2560, y: 2560 },
+  // Spawn 120 world units south of center (world Z+120 = tile Y+120 = store y=2680)
+  // so the player appears south of the town guide, clear of the auction podium (z=50)
+  // and the bazaar pedestals (z=-60), facing the guide on first load.
+  avatarPosition: { x: 2560, y: 2680 },
   setPetPosition: (x, y) => set({ avatarPosition: { x, y } }),
 
   movementDirection: 'idle',
@@ -649,7 +652,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     // GLB until setPetAppearance fired, which for an unauthenticated
     // session may never happen.
     petModelKey: 'lobster',
-    avatarPosition: { x: 2560, y: 2560 },
+    avatarPosition: { x: 2560, y: 2680 }, // 120wu south of guide; matches initial spawn
     movementDirection: 'idle',
     petSpeed: 0,
     nearLocation: null,
