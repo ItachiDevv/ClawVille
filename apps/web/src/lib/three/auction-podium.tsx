@@ -68,10 +68,10 @@ function SpotlightCone() {
 
   return (
     // Open-top cone: radiusTop=0 makes a proper cone. radiusBottom=wide at podium.
-    // Tall and narrow — reaches up from podium toward water surface
-    <mesh position={[0, 120, 0]} material={mat}>
+    // 8× scaled: radiusBottom=144, height=1920. Beam extends high above podium.
+    <mesh position={[0, 960, 0]} material={mat}>
       {/* CylinderGeometry: radiusTop, radiusBottom, height, radialSeg, heightSeg, openEnded */}
-      <cylinderGeometry args={[0, 18, 240, 24, 1, true]} />
+      <cylinderGeometry args={[0, 144, 1920, 24, 1, true]} />
     </mesh>
   );
 }
@@ -85,12 +85,12 @@ function FloatingAuctionItem() {
 
   const cloned = useMemo(() => {
     const c = scene.clone(true);
-    // Normalize to a reasonable size
+    // Normalize to a reasonable size — 8× scaled target (18→144)
     const box = new THREE.Box3().setFromObject(c);
     const sz = new THREE.Vector3();
     box.getSize(sz);
     const maxDim = Math.max(sz.x, sz.y, sz.z);
-    const targetSize = 18;
+    const targetSize = 144;
     const s = maxDim > 0 ? targetSize / maxDim : 1;
     c.scale.setScalar(s);
     return c;
@@ -112,13 +112,13 @@ function FloatingAuctionItem() {
   useFrame(({ clock }) => {
     if (!floatRef.current) return;
     const t = clock.elapsedTime;
-    // Hover + rotate
+    // Hover + rotate — 8× scaled offsets
     floatRef.current.rotation.y = t * 0.5;
-    floatRef.current.position.y = 42 + Math.sin(t * 0.9) * 3.0;
+    floatRef.current.position.y = 336 + Math.sin(t * 0.9) * 24;
   });
 
   return (
-    <group ref={floatRef} position={[0, 42, 0]}>
+    <group ref={floatRef} position={[0, 336, 0]}>
       <primitive object={cloned} />
     </group>
   );
@@ -148,17 +148,17 @@ function PodiumBase() {
 
   return (
     <>
-      {/* Wide lower step */}
-      <mesh position={[0, 5, 0]} material={darkMat}>
-        <cylinderGeometry args={[14, 18, 10, 24, 1]} />
+      {/* Wide lower step — 8× scaled: top 112, bottom 144, height 80 */}
+      <mesh position={[0, 40, 0]} material={darkMat}>
+        <cylinderGeometry args={[112, 144, 80, 24, 1]} />
       </mesh>
-      {/* Narrower upper platform */}
-      <mesh position={[0, 13, 0]} material={darkMat}>
-        <cylinderGeometry args={[10, 14, 6, 24, 1]} />
+      {/* Narrower upper platform — 8× scaled: top 80, bottom 112, height 48 */}
+      <mesh position={[0, 104, 0]} material={darkMat}>
+        <cylinderGeometry args={[80, 112, 48, 24, 1]} />
       </mesh>
-      {/* Glowing rim ring at top */}
-      <mesh position={[0, 16.2, 0]} rotation={[Math.PI / 2, 0, 0]} material={rimMat}>
-        <torusGeometry args={[10, 0.5, 8, 32]} />
+      {/* Glowing rim ring at top — 8× scaled: torus radius 80, tube 4 */}
+      <mesh position={[0, 129.6, 0]} rotation={[Math.PI / 2, 0, 0]} material={rimMat}>
+        <torusGeometry args={[80, 4, 8, 32]} />
       </mesh>
     </>
   );
@@ -196,9 +196,9 @@ const AuctionPodiumInner = memo(function AuctionPodiumInner() {
         <FloatingAuctionItem />
       </Suspense>
 
-      {/* Invisible click volume */}
-      <mesh visible={false} position={[0, 20, 0]}>
-        <cylinderGeometry args={[16, 20, 40, 12, 1]} />
+      {/* Invisible click volume — 8× scaled */}
+      <mesh visible={false} position={[0, 160, 0]}>
+        <cylinderGeometry args={[128, 160, 320, 12, 1]} />
         <meshBasicMaterial />
       </mesh>
     </group>
