@@ -615,15 +615,19 @@ class NpcSimulation {
       npc.behaviorCooldown--;
       if (npc.behaviorCooldown > 0) continue;
 
-      // Milady brand wanderers (id prefix `milady-`) skip the 30% "idle near
-      // home" branch entirely. They're meant to be visibly roaming the world,
-      // not standing still 60-second stretches between behaviors. Bias their
-      // distribution to 60% visit-building, 20% approach-NPC, 20% wander —
-      // every plan results in a real path with measurable movement. Then
-      // halve their post-plan cooldown so they re-plan faster.
-      const isMiladyWanderer = npc.id.startsWith('milady-');
+      // Free-roaming wanderers (id prefix `milady-` or `wanderer-`) skip the
+      // 30% "idle near home" branch entirely. They're meant to be visibly
+      // roaming the world, not wiggling within 60px of a coordinate they share
+      // with no building. Bias to 60% visit-building / 20% approach-NPC / 20%
+      // wander, then halve post-plan cooldown so they re-plan faster.
+      // Building-anchored NPCs (Bubbles, Inky, Hazel, etc.) keep the original
+      // distribution — for them the idle-near-home wiggle is a meaningful
+      // behavior because they have a real anchor (their building).
+      // NpcRuntimeState doesn't carry buildingId — we use id prefix as the
+      // canonical "is free roamer" signal. Both prefixes are reserved.
+      const isFreeRoamer = npc.id.startsWith('milady-') || npc.id.startsWith('wanderer-');
       const roll = Math.random();
-      if (isMiladyWanderer) {
+      if (isFreeRoamer) {
         if (roll < 0.60) this.planVisitBuilding(npc);
         else if (roll < 0.80) this.planApproachNpc(npc);
         else this.planWander(npc);
