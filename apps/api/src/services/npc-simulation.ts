@@ -615,11 +615,25 @@ class NpcSimulation {
       npc.behaviorCooldown--;
       if (npc.behaviorCooldown > 0) continue;
 
+      // Milady brand wanderers (id prefix `milady-`) skip the 30% "idle near
+      // home" branch entirely. They're meant to be visibly roaming the world,
+      // not standing still 60-second stretches between behaviors. Bias their
+      // distribution to 60% visit-building, 20% approach-NPC, 20% wander —
+      // every plan results in a real path with measurable movement. Then
+      // halve their post-plan cooldown so they re-plan faster.
+      const isMiladyWanderer = npc.id.startsWith('milady-');
       const roll = Math.random();
-      if (roll < 0.40) this.planVisitBuilding(npc);
-      else if (roll < 0.60) this.planApproachNpc(npc);
-      else if (roll < 0.90) this.planIdleNearHome(npc);
-      else this.planWander(npc);
+      if (isMiladyWanderer) {
+        if (roll < 0.60) this.planVisitBuilding(npc);
+        else if (roll < 0.80) this.planApproachNpc(npc);
+        else this.planWander(npc);
+        npc.behaviorCooldown = Math.floor(npc.behaviorCooldown / 2);
+      } else {
+        if (roll < 0.40) this.planVisitBuilding(npc);
+        else if (roll < 0.60) this.planApproachNpc(npc);
+        else if (roll < 0.90) this.planIdleNearHome(npc);
+        else this.planWander(npc);
+      }
     }
   }
 
