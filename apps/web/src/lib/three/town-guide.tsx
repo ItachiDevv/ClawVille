@@ -97,9 +97,13 @@ const TownGuideInner = memo(function TownGuideInner() {
   const groupRef  = useRef<THREE.Group>(null!);
 
   // Bone refs — populated in useMemo after clone
-  const headBoneRef  = useRef<THREE.Bone | null>(null);
-  const chestBoneRef = useRef<THREE.Bone | null>(null);
-  const hipBoneRef   = useRef<THREE.Bone | null>(null);
+  const headBoneRef     = useRef<THREE.Bone | null>(null);
+  const chestBoneRef    = useRef<THREE.Bone | null>(null);
+  const hipBoneRef      = useRef<THREE.Bone | null>(null);
+  const upperArmLRef    = useRef<THREE.Bone | null>(null);
+  const upperArmRRef    = useRef<THREE.Bone | null>(null);
+  const lowerArmLRef    = useRef<THREE.Bone | null>(null);
+  const lowerArmRRef    = useRef<THREE.Bone | null>(null);
 
   // Skirt mesh ref — parented to Hips_04 after clone
   const skirtRef = useRef<THREE.Mesh | null>(null);
@@ -136,15 +140,38 @@ const TownGuideInner = memo(function TownGuideInner() {
       mesh.visible = false;
     });
 
-    // Find key bones
+    // Find key bones — exact match for known names, regex for mirror/index-suffixed
     clone.traverse((obj) => {
-      if ((obj as THREE.Bone).isBone) {
-        const bone = obj as THREE.Bone;
-        if (bone.name === 'Head_031')  headBoneRef.current  = bone;
-        if (bone.name === 'Chest_06')  chestBoneRef.current = bone;
-        if (bone.name === 'Hips_04')   hipBoneRef.current   = bone;
-      }
+      if (!(obj as THREE.Bone).isBone) return;
+      const bone = obj as THREE.Bone;
+      const n = bone.name;
+
+      if (n === 'Head_031')  headBoneRef.current  = bone;
+      if (n === 'Chest_06')  chestBoneRef.current = bone;
+      if (n === 'Hips_04')   hipBoneRef.current   = bone;
+
+      // Arm bones — Sketchfab export adds `_NNN` suffix. Left-side known exact,
+      // right-side uses regex since the index isn't predictable.
+      if (n === 'Upper_arm_L_08')                     upperArmLRef.current = bone;
+      if (n === 'Lower_arm_L_09')                     lowerArmLRef.current = bone;
+      if (/^Upper_arm_R(\.|_)/i.test(n) && !upperArmRRef.current) upperArmRRef.current = bone;
+      if (/^Lower_arm_R(\.|_)/i.test(n) && !lowerArmRRef.current) lowerArmRRef.current = bone;
     });
+
+    // -------------------------------------------------------------------------
+    // REST POSE — rotate arms down from the authored T-pose so she doesn't look
+    // like she's doing airplane arms. The rig is Sketchfab/Blender-exported with
+    // bone local Y along length; rotating the upper arm ~1.2 rad around local Z
+    // swings it from horizontal (T-pose) to near-vertical at the side.
+    // Mirrored sign for the right arm. Sub-rad values leave arms slightly away
+    // from the torso for a natural relaxed stance (not a rigid attention pose).
+    // If deploy shows the axis/sign is wrong, flip here and redeploy.
+    // -------------------------------------------------------------------------
+    if (upperArmLRef.current) upperArmLRef.current.rotation.z = -1.20;
+    if (upperArmRRef.current) upperArmRRef.current.rotation.z =  1.20;
+    // Slight forward bend at the elbows so forearms don't stick straight out
+    if (lowerArmLRef.current) lowerArmLRef.current.rotation.x =  0.15;
+    if (lowerArmRRef.current) lowerArmRRef.current.rotation.x =  0.15;
 
     // Attach procedural skirt to Hips_04
     const hipBone = hipBoneRef.current;
@@ -203,6 +230,19 @@ const TownGuideInner = memo(function TownGuideInner() {
     const chest = chestBoneRef.current;
     if (chest) {
       chest.scale.y = 1 + Math.sin(t * 1.8) * 0.008;
+    }
+
+    // Arms: tiny sway around the static rest pose so she's not a frozen statue.
+    // Stays additive with the rest-pose rotation.z values set at clone time.
+    const armL = upperArmLRef.current;
+    if (armL) {
+      armL.rotation.z = -1.20 + Math.sin(t * 0.9) * 0.025;
+      armL.rotation.x =         Math.sin(t * 1.1 + 0.7) * 0.02;
+    }
+    const armR = upperArmRRef.current;
+    if (armR) {
+      armR.rotation.z =  1.20 + Math.sin(t * 0.9 + Math.PI) * 0.025;
+      armR.rotation.x =         Math.sin(t * 1.1 + 2.1) * 0.02;
     }
   });
 
