@@ -223,18 +223,25 @@ const VRM_DIR_ROTATION: Record<string, number> = {
 // VRM feet are at Y=0 per spec — no pivot offset calculation needed (unlike GLBs).
 const VRM_NPC_SCALE = 28;
 
-// VRM LOD thresholds (squared world-unit distances from camera).
-// Each VRM costs ~1ms/frame on Iris Xe (AnimationMixer + spring bones + humanoid +
-// expressions). With multiple Milady NPCs simultaneously visible the cost adds up
-// fast — see the LOD branch in VRMNpcMesh.useFrame.
-//   Close (< 600 wu):  full 60Hz update — animator + spring bones + look-at
-//   Mid   (< 1200 wu): 30Hz animator update (every other frame)
-//   Far   (≥ 1200 wu): skip animator entirely; NPC keeps last pose
-// 1200 wu ≈ underwater fog far plane, beyond which the VRM is not visibly animating
-// to the player anyway. Position lerp + rotation still run every frame so the NPC
-// is correctly placed when they re-enter the close band.
+// NPC distance LOD thresholds (squared world-unit distances from camera).
+//
+// Applied uniformly to ALL wandering NPCs (GLB + VRM). Past NPC_CULL_DIST, we
+// flip the group's `visible = false` and early-return from useFrame — Three.js
+// then skips the entire render subtree (including the drei <Html> label
+// portal, which is the most expensive per-NPC DOM cost).
+//
+//   Close (< 600 wu):  full 60Hz — animator + raycast + label
+//   Mid   (< 1200 wu): VRM animator drops to 30Hz (GLB animators stay 60Hz
+//                      since they're much cheaper than VRM spring-bone physics)
+//   Far   (≥ 1200 wu): group.visible = false → no render, no label, no
+//                      matrix/animator/raycast/lerp work. Zero cost per frame.
+//
+// Position is still stored in the store (server + client) so when the NPC
+// re-enters the close band, it snaps to its current position and resumes.
+// 1200 wu ≈ underwater fog far plane — past that the NPC is not visible to
+// the player anyway, so the cull is invisible.
+const NPC_CULL_DIST_SQ          = 1200 * 1200;
 const VRM_NPC_HALF_RATE_DIST_SQ = 600 * 600;
-const VRM_NPC_CULL_DIST_SQ      = 1200 * 1200;
 
 // Preload the 2 Milady VRM paths used by wandering NPCs + Mixamo animation clips.
 // These calls are module-scope so the cache is warm before any VRMNpcMesh mounts.
@@ -323,7 +330,7 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     };
   }, [cloned]);
 
-  useFrame(({ clock }, delta) => {
+  useFrame(({ clock, camera }, delta) => {
     const d = npcRef.current;
     const group = groupRef.current;
     const animGroup = animGroupRef.current;
@@ -333,6 +340,23 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
 
     // Update target XZ position
     targetPos.current.set(d.x - HALF_W, 0, d.y - HALF_H);
+
+    // ── Distance-LOD cull ────────────────────────────────────────────────
+    // Perf: every NPC's useFrame ran terrain raycasts (scene-traverse), matrix
+    // updates, animator ticks, + a drei <Html> label that recomputes CSS per
+    // frame — all paid regardless of whether the NPC was visible. With 18 NPCs
+    // that dominated frametime even when most were off-camera. Now when an NPC
+    // is past the far-cull threshold, we hide the group (Three.js skips its
+    // entire render subtree, including the Html portal) and early-return —
+    // zero per-frame work until the NPC re-enters the view bubble.
+    const camDx = targetPos.current.x - camera.position.x;
+    const camDz = targetPos.current.z - camera.position.z;
+    const camDistSq = camDx * camDx + camDz * camDz;
+    if (camDistSq > NPC_CULL_DIST_SQ) {
+      if (group.visible) group.visible = false;
+      return;
+    }
+    if (!group.visible) group.visible = true;
 
     // Lerp XZ position
     currentPos.current.x += (targetPos.current.x - currentPos.current.x) * (1 - Math.exp(-LERP_SPEED * dt));
@@ -550,8 +574,22 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
 
     const dt = Math.min(delta, 0.1);
 
-    // Lerp XZ position (mirrors GLBNpcMesh terrain-ride pattern)
+    // Update target XZ position
     targetPos.current.set(d.x - HALF_W, 0, d.y - HALF_H);
+
+    // ── Distance-LOD cull (same policy as GLBNpcMesh) ────────────────────
+    // Far: hide group (Three.js skips render subtree + Html portal); return.
+    // Mid: animator throttles to 30Hz. Close: full 60Hz animator + spring.
+    const camDx = targetPos.current.x - camera.position.x;
+    const camDz = targetPos.current.z - camera.position.z;
+    const camDistSq = camDx * camDx + camDz * camDz;
+    if (camDistSq > NPC_CULL_DIST_SQ) {
+      if (group.visible) group.visible = false;
+      return;
+    }
+    if (!group.visible) group.visible = true;
+
+    // Lerp XZ position (mirrors GLBNpcMesh terrain-ride pattern)
     currentPos.current.x += (targetPos.current.x - currentPos.current.x) * (1 - Math.exp(-LERP_SPEED * dt));
     currentPos.current.z += (targetPos.current.z - currentPos.current.z) * (1 - Math.exp(-LERP_SPEED * dt));
     group.position.x = currentPos.current.x;
@@ -576,22 +614,8 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     currentRotY.current += diff * Math.min(1, 8 * dt);
     group.rotation.y = currentRotY.current;
 
-    // ── LOD: distance-based animator throttling ────────────────────────────
-    // Each VRM costs ~1ms/frame on Iris Xe (mixer.update + spring-bone physics
-    // + humanoid look-at + expression manager). With 5 wandering Milady VRMs
-    // that's ~5ms / 16ms budget — half the frame gone before we draw anything.
-    // Skip animator updates entirely when off-camera, throttle to 30Hz when
-    // far. Position lerp + rotation still tick every frame so the NPC's pose
-    // is correct the moment they re-enter the frustum.
-    const dx = group.position.x - camera.position.x;
-    const dz = group.position.z - camera.position.z;
-    const distSq = dx * dx + dz * dz;
-    if (distSq > VRM_NPC_CULL_DIST_SQ) {
-      // Off-camera — skip animator entirely. NPC stays in last pose.
-      return;
-    }
-    if (distSq > VRM_NPC_HALF_RATE_DIST_SQ && (frame + seed) % 2 !== 0) {
-      // Mid-distance — animator runs at 30Hz instead of 60Hz.
+    // Mid-distance: animator runs at 30Hz. Close: full 60Hz.
+    if (camDistSq > VRM_NPC_HALF_RATE_DIST_SQ && (frame + seed) % 2 !== 0) {
       return;
     }
     vrmAnimatorRef.current?.update(dt, isMoving);
