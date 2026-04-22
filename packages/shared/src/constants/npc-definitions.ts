@@ -73,9 +73,14 @@ export const NPC_BUILDING_CENTERS: Record<string, { x: number; y: number }> = Ob
 );
 
 // Wandering NPC species distribution — 3 model categories rendered as visually distinct characters:
-//   openclaw (crustaceans): lobster, crayfish, sweet_crab, hermitcrab  (4 of 12)
-//   other    (sea creatures): jellyfish, octopus, seahorse               (3 of 12)
-//   milady   (neo-chibi VRMs): milady_official_7, milady_official_8      (2 of 12) — added 2026-04-21
+//   openclaw (crustaceans): lobster, crayfish, sweet_crab, hermitcrab   (7 of 18) — 4 building-anchored + 3 free wanderers
+//   other    (sea creatures): jellyfish, octopus, seahorse              (3 of 18) — building-anchored
+//   milady   (neo-chibi VRMs): milady_official_2/3/4/7/8                (5 of 18) — free wanderers (added 2026-04-22 +3)
+//   Total: 18 NPCs (10 building-anchored + 8 free wanderers).
+//   Free wanderers (buildingId='') skip the "idle near home" plan branch
+//   and re-plan twice as fast — see planNpcBehaviors() in npc-simulation.ts.
+//   Each Milady NPC MUST use a unique VRM path due to the module-level
+//   single-instance-per-path cache in vrm-loader.ts.
 //
 // Wandering-NPC names DELIBERATELY DO NOT MATCH the 10 building characters
 // (SpongeBob, Patrick, Squidward, etc.) defined in arena-location-npcs.tsx
@@ -242,6 +247,85 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     homeY: 2000,                 // NE arc, inside ring, clear of all blocked zones
     stats: { hp: 90, attack: 13, defense: 14, speed: 16 },
     personality: 'A curious Milady explorer cataloguing every agent signal she overhears across ClawVille.',
+  },
+  // ─── Additional Milady wanderers (added 2026-04-22) ──────────────────────
+  // Use VRM paths official_2/3/4 — official_1 is the picker default and
+  // official_5/6 are most-frequently-picked, keeping NPC paths off the
+  // common player-pet picks to avoid VRM module-cache scene-sharing.
+  {
+    id: 'milady-vivi',
+    name: 'Vivi',
+    species: 'milady_official_2',
+    color: 0xffd0a0,             // peach (ignored — MToon)
+    buildingId: '',
+    patrolRadius: 700,
+    homeX: 1600,
+    homeY: 1500,                 // NW open quadrant
+    stats: { hp: 90, attack: 13, defense: 13, speed: 16 },
+    personality: 'A bookish Milady sketcher who maps every reef formation she encounters into her field journal.',
+  },
+  {
+    id: 'milady-maple',
+    name: 'Maple',
+    species: 'milady_official_3',
+    color: 0xffb0d0,             // pink (ignored — MToon)
+    buildingId: '',
+    patrolRadius: 700,
+    homeX: 3500,
+    homeY: 3500,                 // SE open quadrant
+    stats: { hp: 95, attack: 12, defense: 14, speed: 15 },
+    personality: 'A laid-back Milady cafe-hopper who treats every building like a new coffee bar to review.',
+  },
+  {
+    id: 'milady-ash',
+    name: 'Ash',
+    species: 'milady_official_4',
+    color: 0xd0c0ff,             // pale violet (ignored — MToon)
+    buildingId: '',
+    patrolRadius: 700,
+    homeX: 2700,
+    homeY: 1500,                 // N inner — between canvas-studio + memory-vault
+    stats: { hp: 92, attack: 14, defense: 12, speed: 17 },
+    personality: 'A restless Milady debugger who insists every glitch in the world has a poetic explanation.',
+  },
+  // ─── Additional free-roaming crustaceans (added 2026-04-22) ──────────────
+  // Sea-creature GLBs scale + clone per-instance, so multiple NPCs can share
+  // the same species path without cache collision (unlike VRMs).
+  {
+    id: 'wanderer-driftwood',
+    name: 'Driftwood',
+    species: 'lobster',
+    color: 0x8d6e63,             // driftwood brown
+    buildingId: '',
+    patrolRadius: 700,
+    homeX: 1500,
+    homeY: 2400,                 // W inner — between channel-bridge + skill-forge
+    stats: { hp: 100, attack: 14, defense: 14, speed: 12 },
+    personality: 'A weather-worn vagabond lobster who treats the whole reef as his personal backyard.',
+  },
+  {
+    id: 'wanderer-marlin',
+    name: 'Marlin',
+    species: 'sweet_crab',
+    color: 0x00acc1,             // teal
+    buildingId: '',
+    patrolRadius: 700,
+    homeX: 3700,
+    homeY: 2700,                 // E inner — between webhook-gateway + cron-hub
+    stats: { hp: 85, attack: 17, defense: 11, speed: 19 },
+    personality: 'A speedy crab courier who claims to know every tide pool shortcut on the map.',
+  },
+  {
+    id: 'wanderer-riptide',
+    name: 'Riptide',
+    species: 'hermitcrab',
+    color: 0xa1887f,             // sand
+    buildingId: '',
+    patrolRadius: 700,
+    homeX: 2600,
+    homeY: 3500,                 // S inner — between voice-tower + config-citadel
+    stats: { hp: 110, attack: 13, defense: 17, speed: 11 },
+    personality: 'A philosophical hermit crab who borrows shells from every building he visits and returns each one.',
   },
 ];
 
