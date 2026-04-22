@@ -148,12 +148,18 @@ const DEMO_NPCS: NpcSpriteState[] = [
   // sharing a VRM instance with the most-common player avatar picks (official_1 is the
   // default; official_5 is popular). The vrm-loader caches one VRM per path — two NPCs
   // sharing the same path would share vrm.scene and clobber each other's animation state.
-  // IDs + spawn coords match NPC_DEFINITIONS in packages/shared. Both spawns
-  // are clear of building pathfinding-blocked zones (was a bug at 3800,1200
-  // which sat inside memory-vault's padded exclusion area, deadlocking the
-  // server wander planner because A* returns empty paths from blocked tiles).
-  makeDemoNpc('milady-miu',   'Miu',   1400, 3000, 'milady_official_7', 0xffc0ff),
-  makeDemoNpc('milady-kyoko', 'Kyoko', 3700, 2000, 'milady_official_8', 0xc0e8ff),
+  // IDs + spawn coords match NPC_DEFINITIONS in packages/shared. All spawns
+  // are clear of building pathfinding-blocked zones. When connected, server
+  // snapshots replace these in place by id; disconnected mode runs them
+  // through the client wander loop.
+  makeDemoNpc('milady-miu',     'Miu',       1400, 3000, 'milady_official_7', 0xffc0ff),
+  makeDemoNpc('milady-kyoko',   'Kyoko',     3700, 2000, 'milady_official_8', 0xc0e8ff),
+  makeDemoNpc('milady-vivi',    'Vivi',      1600, 1500, 'milady_official_2', 0xffd0a0),
+  makeDemoNpc('milady-maple',   'Maple',     3500, 3500, 'milady_official_3', 0xffb0d0),
+  makeDemoNpc('milady-ash',     'Ash',       2700, 1500, 'milady_official_4', 0xd0c0ff),
+  makeDemoNpc('wanderer-driftwood', 'Driftwood', 1500, 2400, 'lobster',     0x8d6e63),
+  makeDemoNpc('wanderer-marlin',    'Marlin',    3700, 2700, 'sweet_crab',  0x00acc1),
+  makeDemoNpc('wanderer-riptide',   'Riptide',   2600, 3500, 'hermitcrab',  0xa1887f),
 ];
 
 // Demo NPC wandering — makes NPCs walk around when not connected to server
