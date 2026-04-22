@@ -49,12 +49,13 @@ useGLTF.preload('/models/guide.glb');
 // floor by bone offsets, so GROUND_Y=-2 gives correct floor contact.
 const GROUND_Y = -2;
 
-// GUIDE_Z = +100 puts her SOUTH of the auction podium center (z=+50), so the
-// podium sits BEHIND her from the default player POV (spawn at z=+200 looking -Z).
-// Was z=0 (dead center) — that placed her inside the scaled-up podium lower-step
-// footprint (z=-94 to z=+194 after 8× scale). Moving her forward gives a clean
-// "guide in front of podium" composition (2026-04-22 Option C placement).
-const GUIDE_Z = 100;
+// GUIDE_Z = +240 places her DECISIVELY south of the auction podium's ground-level
+// footprint (podium at z=+50 with 144u bottom radius → south edge at z=+194).
+// First Rev-3 attempt used z=+100 but her body half-depth (~37u) still put her
+// inside the podium's base ring; she rendered as "head peeking over podium" from
+// player POV. z=+240 clears the edge by ~46u so she stands fully in front, with
+// the podium visible as a landmark ~190u behind her from player spawn at z=+380.
+const GUIDE_Z = 240;
 
 // ---------------------------------------------------------------------------
 // Scale — native height 1.49m, target ~150 world units
