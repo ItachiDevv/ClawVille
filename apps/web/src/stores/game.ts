@@ -353,10 +353,11 @@ export const useGameStore = create<GameState>((set, get) => ({
     petModelKey: modelKey ?? 'lobster',
   }),
 
-  // Spawn 120 world units south of center (world Z+120 = tile Y+120 = store y=2680)
-  // so the player appears south of the town guide, clear of the auction podium (z=50)
-  // and the bazaar pedestals (z=-60), facing the guide on first load.
-  petPosition: { x: 2560, y: 2680 },
+  // Spawn 200 world units south of center (world Z+200 = store y=2760) so the
+  // player stands ~100wu south of the town guide (now at z=+100, Option C layout
+  // 2026-04-22) with a clear sightline forward to the guide and the auction podium
+  // behind her. Was (2560, 2680) when guide was at z=0.
+  petPosition: { x: 2560, y: 2760 },
   setPetPosition: (x, y) => set({ petPosition: { x, y } }),
 
   movementDirection: 'idle',
@@ -652,7 +653,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     // GLB until setPetAppearance fired, which for an unauthenticated
     // session may never happen.
     petModelKey: 'lobster',
-    petPosition: { x: 2560, y: 2680 }, // 120wu south of guide; matches initial spawn
+    petPosition: { x: 2560, y: 2760 }, // 200wu south of center; matches initial spawn (guide at z=+100)
     movementDirection: 'idle',
     petSpeed: 0,
     nearLocation: null,
