@@ -17,7 +17,7 @@
  *   - Head_031: gentle Y-axis drift (sin, 0.4 Hz, ±0.05 rad)
  *   - Chest_06: subtle scale.y breathing (sin, 1.8 Hz, ±0.008)
  *
- * Skirt: authored mesh `2` from guide.glb, overridden with dark navy #1e3a5f MeshStandardMaterial
+ * Skirt: CylinderGeometry(0.16, 0.30, 0.38) parented to Hips_04, dark navy #1e3a5f, DoubleSide
  *
  * GPU constraints:
  *   - Plain `three` imports (NOT three/webgpu) — skinned body/face/hair materials
@@ -73,7 +73,12 @@ const _shoeMaterial = new THREE.MeshStandardMaterial({
   metalness: 0.1,
 });
 
-// Skirt material — dark navy, double-sided, applied to authored mesh `2` from guide.glb
+// Skirt cone — top hugs hips, bottom flares out, ends mid-thigh.
+// Top radius 0.16m ≈ hip half-width; bottom 0.30m for A-line flare.
+// 3 height segments let the silhouette read as fabric, not plastic.
+const _skirtGeometry = new THREE.CylinderGeometry(0.16, 0.30, 0.38, 24, 3, true);
+
+// Skirt material — dark navy, double-sided, procedural cone mesh
 const _skirtMaterial = new THREE.MeshStandardMaterial({
   color: 0x1e3a5f,
   roughness: 0.7,
@@ -128,16 +133,7 @@ const TownGuideInner = memo(function TownGuideInner() {
         return;
       }
 
-      // Authored skirt mesh: override with navy material so it renders opaque
-      // (the original cloth material has alphaMode=BLEND opacity=0 — visible=true
-      // alone would render nothing; we must replace the material entirely)
-      if (mesh.name === '2') {
-        mesh.material = _skirtMaterial;
-        mesh.visible  = true;
-        return;
-      }
-
-      // All other cloth meshes (coat, scarf, buttons, pants waistband, torso deco):
+      // All other cloth meshes (coat, scarf, buttons, pants waistband, torso garment):
       // hide entirely — cheaper than opacity=0 on blended geometry
       mesh.visible = false;
     });
@@ -174,6 +170,25 @@ const TownGuideInner = memo(function TownGuideInner() {
     // Slight forward bend at the elbows so forearms don't stick straight out
     if (lowerArmLRef.current) lowerArmLRef.current.rotation.x =  0.15;
     if (lowerArmRRef.current) lowerArmRRef.current.rotation.x =  0.15;
+
+    // -------------------------------------------------------------------------
+    // Procedural skirt — parented to Hips_04 so it follows the rig automatically.
+    // The GLB has no skirt mesh (mesh `2` is a torso garment at y=0.85→1.30).
+    // CylinderGeometry pivot is at geometry center (y=0); shifting by -height/2
+    // puts the TOP of the cone at the bone origin, so the skirt visually
+    // "emerges from" the hip joint instead of floating below it.
+    // -------------------------------------------------------------------------
+    const hipBone = hipBoneRef.current;
+    if (hipBone) {
+      const skirtMesh = new THREE.Mesh(_skirtGeometry, _skirtMaterial);
+      // Top edge sits right at the hip joint (not 22cm below) so the cone
+      // visually "emerges from" the hip crease instead of floating below.
+      // Cylinder pivot is geometry center (y=0); shifting by -height/2 puts
+      // the TOP of the cone at the bone origin.
+      skirtMesh.position.set(0, -0.19, 0);
+      skirtMesh.name = 'ProceduralSkirt';
+      hipBone.add(skirtMesh);
+    }
 
     return clone;
   }, [gltfScene]);
