@@ -22,8 +22,9 @@ import MergedSeaweed from '@/lib/three/merged-seaweed';
 import UnderwaterAtmosphere from '@/lib/three/underwater-atmosphere';
 import UnderwaterLightRays from '@/lib/three/underwater-light-rays';
 import QuestNpc from '@/lib/three/quest-npc';
-import BountyBoardObject from '@/lib/three/bounty-board-object';
+import TownGuide from '@/lib/three/town-guide';
 import BazaarPedestals from '@/lib/three/bazaar-pedestals';
+import BountyBoardObject from '@/lib/three/bounty-board-object';
 import AuctionPodium from '@/lib/three/auction-podium';
 import ActivityIndicators from '@/lib/three/activity-indicators';
 import FloatingTexts3D from '@/lib/three/floating-text-3d';
@@ -665,10 +666,11 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
           themselves; this covers explore/spectator mode (no entity → camera target). */}
       <MinimapPositionTracker />
 
-      {/* Gameify world-surface anchors — clickable objects that open Gameify modals */}
+      {/* Town center — guide NPC + scaled marketplace anchors (8× from original sizes) */}
       <QuestNpc />
-      <BountyBoardObject />
+      <TownGuide />
       <BazaarPedestals />
+      <BountyBoardObject />
       <AuctionPodium />
 
       {/* NPC speech bubbles — Dom overlay, renders chat from SSE stream */}

@@ -52,9 +52,9 @@ interface ParchmentDef {
 }
 
 const PARCHMENTS: ParchmentDef[] = [
-  { localX: -1.2, localY:  3.5, rarityColor: RARITY_COLORS.rare,   angle: -0.08 },
-  { localX:  1.0, localY:  1.5, rarityColor: RARITY_COLORS.epic,   angle:  0.06 },
-  { localX: -0.5, localY: -1.0, rarityColor: RARITY_COLORS.common, angle: -0.04 },
+  { localX: -9.6, localY:  28, rarityColor: RARITY_COLORS.rare,   angle: -0.08 },
+  { localX:  8.0, localY:  12, rarityColor: RARITY_COLORS.epic,   angle:  0.06 },
+  { localX: -4.0, localY:  -8, rarityColor: RARITY_COLORS.common, angle: -0.04 },
 ];
 
 // ---------------------------------------------------------------------------
@@ -96,11 +96,11 @@ function Parchment({ def }: { def: ParchmentDef }) {
 
   return (
     <mesh
-      position={[def.localX, def.localY, 0.16]}
+      position={[def.localX, def.localY, 1.28]}
       rotation={[0, 0, def.angle]}
       material={material}
     >
-      <planeGeometry args={[2.8, 2.0]} />
+      <planeGeometry args={[22.4, 16]} />
     </mesh>
   );
 }
@@ -138,19 +138,19 @@ const BountyBoardInner = memo(function BountyBoardInner() {
         document.body.style.cursor = 'auto';
       }}
     >
-      {/* Left post */}
-      <mesh position={[-5.5, 8, 0]} material={postMat}>
-        <boxGeometry args={[1.2, 18, 1.2]} />
+      {/* Left post — 8× scaled: 9.6 wide, 144 tall */}
+      <mesh position={[-44, 64, 0]} material={postMat}>
+        <boxGeometry args={[9.6, 144, 9.6]} />
       </mesh>
       {/* Right post */}
-      <mesh position={[5.5, 8, 0]} material={postMat}>
-        <boxGeometry args={[1.2, 18, 1.2]} />
+      <mesh position={[44, 64, 0]} material={postMat}>
+        <boxGeometry args={[9.6, 144, 9.6]} />
       </mesh>
 
-      {/* Main plank board */}
+      {/* Main plank board — 8× scaled: 104 wide, 112 tall */}
       <group ref={groupRef}>
-        <mesh position={[0, 9, 0]} material={plankMat}>
-          <boxGeometry args={[13, 14, 1.0]} />
+        <mesh position={[0, 72, 0]} material={plankMat}>
+          <boxGeometry args={[104, 112, 8]} />
         </mesh>
         {/* Parchment notes pinned to the board */}
         {PARCHMENTS.map((def, i) => (
@@ -158,14 +158,14 @@ const BountyBoardInner = memo(function BountyBoardInner() {
         ))}
       </group>
 
-      {/* Top cross-bar */}
-      <mesh position={[0, 17, 0]} material={postMat}>
-        <boxGeometry args={[14, 1.5, 1.2]} />
+      {/* Top cross-bar — 8× scaled: 112 wide, 12 tall */}
+      <mesh position={[0, 136, 0]} material={postMat}>
+        <boxGeometry args={[112, 12, 9.6]} />
       </mesh>
 
       {/* Invisible click volume for easier interaction */}
-      <mesh visible={false} position={[0, 8, 0]}>
-        <boxGeometry args={[16, 20, 4]} />
+      <mesh visible={false} position={[0, 64, 0]}>
+        <boxGeometry args={[128, 160, 32]} />
         <meshBasicMaterial />
       </mesh>
     </group>
