@@ -223,6 +223,19 @@ const VRM_DIR_ROTATION: Record<string, number> = {
 // VRM feet are at Y=0 per spec — no pivot offset calculation needed (unlike GLBs).
 const VRM_NPC_SCALE = 28;
 
+// VRM LOD thresholds (squared world-unit distances from camera).
+// Each VRM costs ~1ms/frame on Iris Xe (AnimationMixer + spring bones + humanoid +
+// expressions). With multiple Milady NPCs simultaneously visible the cost adds up
+// fast — see the LOD branch in VRMNpcMesh.useFrame.
+//   Close (< 600 wu):  full 60Hz update — animator + spring bones + look-at
+//   Mid   (< 1200 wu): 30Hz animator update (every other frame)
+//   Far   (≥ 1200 wu): skip animator entirely; NPC keeps last pose
+// 1200 wu ≈ underwater fog far plane, beyond which the VRM is not visibly animating
+// to the player anyway. Position lerp + rotation still run every frame so the NPC
+// is correctly placed when they re-enter the close band.
+const VRM_NPC_HALF_RATE_DIST_SQ = 600 * 600;
+const VRM_NPC_CULL_DIST_SQ      = 1200 * 1200;
+
 // Preload the 2 Milady VRM paths used by wandering NPCs + Mixamo animation clips.
 // These calls are module-scope so the cache is warm before any VRMNpcMesh mounts.
 // IMPORTANT: wandering NPCs use milady_official_7 and milady_official_8 intentionally —
@@ -530,7 +543,7 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     };
   }, [vrm]);
 
-  useFrame(({ clock }, delta) => {
+  useFrame(({ clock, camera }, delta) => {
     const d = npcRef.current;
     const group = groupRef.current;
     if (!group) return;
@@ -552,11 +565,9 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     }
 
     // VRM feet are at Y=0 per spec — no pivot offset needed.
-    // No procedural bob: VRMCharacterAnimator drives idle sway via spring bones + mixer.
     group.position.y = currentTerrainY.current;
 
     // VRM facing: -Z forward → atan2(vx, -vy) for screen-relative space.
-    // For cardinal directions, use VRM_DIR_ROTATION (mirrors player-pet.tsx VRM fork).
     const isMoving = d.direction !== 'idle' && !d.isDead;
     const targetRot = VRM_DIR_ROTATION[d.direction] ?? VRM_DIR_ROTATION.idle;
     let diff = targetRot - currentRotY.current;
@@ -565,7 +576,24 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     currentRotY.current += diff * Math.min(1, 8 * dt);
     group.rotation.y = currentRotY.current;
 
-    // Drive VRM animation (idle ↔ walk crossfade, spring bones, look-at)
+    // ── LOD: distance-based animator throttling ────────────────────────────
+    // Each VRM costs ~1ms/frame on Iris Xe (mixer.update + spring-bone physics
+    // + humanoid look-at + expression manager). With 5 wandering Milady VRMs
+    // that's ~5ms / 16ms budget — half the frame gone before we draw anything.
+    // Skip animator updates entirely when off-camera, throttle to 30Hz when
+    // far. Position lerp + rotation still tick every frame so the NPC's pose
+    // is correct the moment they re-enter the frustum.
+    const dx = group.position.x - camera.position.x;
+    const dz = group.position.z - camera.position.z;
+    const distSq = dx * dx + dz * dz;
+    if (distSq > VRM_NPC_CULL_DIST_SQ) {
+      // Off-camera — skip animator entirely. NPC stays in last pose.
+      return;
+    }
+    if (distSq > VRM_NPC_HALF_RATE_DIST_SQ && (frame + seed) % 2 !== 0) {
+      // Mid-distance — animator runs at 30Hz instead of 60Hz.
+      return;
+    }
     vrmAnimatorRef.current?.update(dt, isMoving);
   });
 
