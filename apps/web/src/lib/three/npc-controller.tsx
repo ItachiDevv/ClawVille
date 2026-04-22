@@ -159,21 +159,27 @@ export default function NpcController() {
     }
 
     // ---- Camera-relative transform ----
-    // Full 3D camera forward — Y kept for camera-tilt 3D swim (mirrors player-pet.tsx).
     camera.getWorldDirection(_camForward);
+    // Capture the vertical component BEFORE flattening — applied to playerAltitude
+    // only when airborne (grounded walking stays pure XZ so the NPC/pet doesn't
+    // drift upward just because the camera is tilted).
+    const camForwardY = _camForward.y;
+    _camForward.y = 0;
     const fwdLen = _camForward.length();
     if (fwdLen < 0.001) return; // Camera nearly vertical — skip
     _camForward.divideScalar(fwdLen);
 
     _camRight.crossVectors(_camForward, _worldUp).normalize();
 
-    // Extract full 3D components. worldVy drives swim altitude (not XZ movement).
     const worldVx = _camForward.x * inputFwd + _camRight.x * inputRight;
-    const worldVy = _camForward.y * inputFwd; // strafe contributes ~0 (camRight.y≈0)
     const worldVz = _camForward.z * inputFwd + _camRight.z * inputRight;
 
-    // Accumulate vertical offset from camera tilt.
-    if (worldVy !== 0) {
+    // 3D swim: only active when the pet is airborne (jumped OR already swimming
+    // up from a prior airborne state). Grounded → no vertical motion from WASD.
+    const airborne =
+      jumpState.phase !== 'grounded' || jumpState.playerAltitude > 0;
+    if (airborne && inputFwd !== 0) {
+      const worldVy = camForwardY * inputFwd; // strafe doesn't contribute (camRight.y ≈ 0)
       jumpState.playerAltitude = Math.max(
         0,
         jumpState.playerAltitude + worldVy * SPEED * delta
