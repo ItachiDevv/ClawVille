@@ -353,11 +353,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     petModelKey: modelKey ?? 'lobster',
   }),
 
-  // Spawn 200 world units south of center (world Z+200 = store y=2760) so the
-  // player stands ~100wu south of the town guide (now at z=+100, Option C layout
-  // 2026-04-22) with a clear sightline forward to the guide and the auction podium
-  // behind her. Was (2560, 2680) when guide was at z=0.
-  petPosition: { x: 2560, y: 2760 },
+  // Spawn 380 world units south of center (world Z+380 = store y=2940) so the
+  // player stands ~140wu south of the town guide at z=+240, with the auction
+  // podium visible as a landmark ~190wu behind her. Earlier Rev-3 attempts at
+  // z=+200 (guide z=+100) rendered the podium wrapping the guide; z=+240 places
+  // the guide fully south of the podium's 144u bottom radius at ground level.
+  petPosition: { x: 2560, y: 2940 },
   setPetPosition: (x, y) => set({ petPosition: { x, y } }),
 
   movementDirection: 'idle',
@@ -653,7 +654,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     // GLB until setPetAppearance fired, which for an unauthenticated
     // session may never happen.
     petModelKey: 'lobster',
-    petPosition: { x: 2560, y: 2760 }, // 200wu south of center; matches initial spawn (guide at z=+100)
+    petPosition: { x: 2560, y: 2940 }, // 380wu south of center; matches initial spawn (guide at z=+240)
     movementDirection: 'idle',
     petSpeed: 0,
     nearLocation: null,
