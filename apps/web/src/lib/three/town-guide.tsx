@@ -17,7 +17,7 @@
  *   - Head_031: gentle Y-axis drift (sin, 0.4 Hz, ±0.05 rad)
  *   - Chest_06: subtle scale.y breathing (sin, 1.8 Hz, ±0.008)
  *
- * Skirt: CylinderGeometry(0.16, 0.30, 0.38) parented to Hips_04, dark navy #1e3a5f, DoubleSide
+ * Skirt: CylinderGeometry(topR=0.19, botR=0.32, h=0.38) parented to Hips_04 at local y=-0.04 (top edge at natural waist, ~15cm above hip bone). Dark navy #1e3a5f, DoubleSide
  *
  * GPU constraints:
  *   - Plain `three` imports (NOT three/webgpu) — skinned body/face/hair materials
@@ -73,10 +73,10 @@ const _shoeMaterial = new THREE.MeshStandardMaterial({
   metalness: 0.1,
 });
 
-// Skirt cone — top hugs hips, bottom flares out, ends mid-thigh.
-// Top radius 0.16m ≈ hip half-width; bottom 0.30m for A-line flare.
+// Skirt cone — top wraps natural waist, bottom flares out, ends upper thigh.
+// Top radius 0.19m ≈ waist half-width (wider than original 0.16 hip-only); bottom 0.32m A-line flare.
 // 3 height segments let the silhouette read as fabric, not plastic.
-const _skirtGeometry = new THREE.CylinderGeometry(0.16, 0.30, 0.38, 24, 3, true);
+const _skirtGeometry = new THREE.CylinderGeometry(0.19, 0.32, 0.38, 24, 3, true);
 
 // Skirt material — dark navy, double-sided, procedural cone mesh
 const _skirtMaterial = new THREE.MeshStandardMaterial({
@@ -181,11 +181,10 @@ const TownGuideInner = memo(function TownGuideInner() {
     const hipBone = hipBoneRef.current;
     if (hipBone) {
       const skirtMesh = new THREE.Mesh(_skirtGeometry, _skirtMaterial);
-      // Top edge sits right at the hip joint (not 22cm below) so the cone
-      // visually "emerges from" the hip crease instead of floating below.
-      // Cylinder pivot is geometry center (y=0); shifting by -height/2 puts
-      // the TOP of the cone at the bone origin.
-      skirtMesh.position.set(0, -0.19, 0);
+      // Top edge at natural waist (~15cm above the Hips_04 bone joint).
+      // Cylinder geometry center is y=0, height 0.38m → top at +0.19 from pivot.
+      // position.y = -0.04 puts the top edge at +0.15 (waist), bottom at -0.23 (upper thigh).
+      skirtMesh.position.set(0, -0.04, 0);
       skirtMesh.name = 'ProceduralSkirt';
       hipBone.add(skirtMesh);
     }
