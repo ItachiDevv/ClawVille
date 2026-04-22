@@ -32,8 +32,16 @@ const Y_MAX = MAP_HEIGHT - 16;
 
 
 // Module-level key state — avoids closure allocs
-interface NpcKeyState { w: boolean; a: boolean; s: boolean; d: boolean; e: boolean; escape: boolean; }
-const _keys: NpcKeyState = { w: false, a: false, s: false, d: false, e: false, escape: false };
+interface NpcKeyState {
+  w: boolean; a: boolean; s: boolean; d: boolean;
+  arrowup: boolean; arrowdown: boolean;
+  e: boolean; escape: boolean;
+}
+const _keys: NpcKeyState = {
+  w: false, a: false, s: false, d: false,
+  arrowup: false, arrowdown: false,
+  e: false, escape: false,
+};
 let _listenersAttached = false;
 let _lastEState = false;
 let _lastEscState = false;
@@ -160,11 +168,7 @@ export default function NpcController() {
 
     // ---- Camera-relative transform ----
     camera.getWorldDirection(_camForward);
-    // Capture the vertical component BEFORE flattening — applied to playerAltitude
-    // only when airborne (grounded walking stays pure XZ so the NPC/avatar doesn't
-    // drift upward just because the camera is tilted).
-    const camForwardY = _camForward.y;
-    _camForward.y = 0;
+    _camForward.y = 0; // WASD is always flat camera-relative XZ — never couples to camera pitch
     const fwdLen = _camForward.length();
     if (fwdLen < 0.001) return; // Camera nearly vertical — skip
     _camForward.divideScalar(fwdLen);
@@ -174,16 +178,22 @@ export default function NpcController() {
     const worldVx = _camForward.x * inputFwd + _camRight.x * inputRight;
     const worldVz = _camForward.z * inputFwd + _camRight.z * inputRight;
 
-    // 3D swim: only active when the avatar is airborne (jumped OR already swimming
-    // up from a prior airborne state). Grounded → no vertical motion from WASD.
+    // Vertical swim: arrow up/down only, gated on airborne.
+    // Decoupled from camera pitch — mouse orbit never causes altitude drift.
+    // Arrow keys continue to rotate the camera via ArrowKeyRotationController;
+    // they ALSO drive altitude here when the NPC/avatar is airborne.
     const airborne =
       jumpState.phase !== 'grounded' || jumpState.playerAltitude > 0;
-    if (airborne && inputFwd !== 0) {
-      const worldVy = camForwardY * inputFwd; // strafe doesn't contribute (camRight.y ≈ 0)
-      jumpState.playerAltitude = Math.max(
-        0,
-        jumpState.playerAltitude + worldVy * SPEED * delta
-      );
+    if (airborne) {
+      let verticalInput = 0;
+      if (_keys.arrowup) verticalInput += 1;
+      if (_keys.arrowdown) verticalInput -= 1;
+      if (verticalInput !== 0) {
+        jumpState.playerAltitude = Math.max(
+          0,
+          jumpState.playerAltitude + verticalInput * SPEED * delta
+        );
+      }
     }
 
     // Facing angle for +Z-facing model: atan2(worldVx, worldVz) — EMPIRICALLY VERIFIED 2026-04-16 (late PM, clean side-view screenshot)

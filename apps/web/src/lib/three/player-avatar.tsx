@@ -166,12 +166,31 @@ _petRaycaster.layers.set(TERRAIN_LAYER);
 const _petRayOrigin = new THREE.Vector3();
 const _petRayDir = new THREE.Vector3(0, -1, 0);
 
+// PERF: cache the terrain mesh — see arena-npcs.tsx for the full rationale.
+// intersectObjects(scene.children, true) recurses through 4549 objects per call
+// when only one mesh has TERRAIN_LAYER. Cache + intersectObject(mesh, false) is
+// O(1 mesh) instead of O(scene-graph).
+let _cachedPetTerrainMesh: THREE.Object3D | null = null;
+function findPetTerrainMesh(scene: THREE.Scene): THREE.Object3D | null {
+  if (_cachedPetTerrainMesh && _cachedPetTerrainMesh.parent) return _cachedPetTerrainMesh;
+  _cachedPetTerrainMesh = null;
+  scene.traverse((obj) => {
+    if (_cachedPetTerrainMesh) return;
+    if ((obj as THREE.Mesh).isMesh && obj.layers.test(_petRaycaster.layers)) {
+      _cachedPetTerrainMesh = obj;
+    }
+  });
+  return _cachedPetTerrainMesh;
+}
+
 function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
+  const terrain = findPetTerrainMesh(scene);
+  if (!terrain) return -2;
   _petRayOrigin.set(x, 200, z);
   _petRaycaster.set(_petRayOrigin, _petRayDir);
   _petRaycaster.layers.set(TERRAIN_LAYER);
   _petRaycaster.far = 400;
-  const intersects = _petRaycaster.intersectObjects(scene.children, true);
+  const intersects = _petRaycaster.intersectObject(terrain, false);
   if (intersects.length > 0) return intersects[0].point.y;
   return -2; // fallback — matches sand floor Y position
 }
@@ -257,11 +276,7 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
       }
       if (inputFwd !== 0 || inputRight !== 0) {
         camera.getWorldDirection(_playerCamForward);
-        // Capture the vertical component BEFORE flattening — applied to playerAltitude
-        // only when airborne (grounded walking stays pure XZ so the avatar doesn't drift
-        // upward just because the camera is tilted).
-        const camForwardY = _playerCamForward.y;
-        _playerCamForward.y = 0;
+        _playerCamForward.y = 0; // WASD is always flat camera-relative XZ — never couples to camera pitch
         const fwdLen = _playerCamForward.length();
         if (fwdLen > 0.001) {
           _playerCamForward.divideScalar(fwdLen);
@@ -271,18 +286,24 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
           const worldVz = _playerCamForward.z * inputFwd + _playerCamRight.z * inputRight;
           vx = worldVx;
           vy = worldVz;
+        }
+      }
 
-          // 3D swim: only active when the avatar is airborne (jumped OR already swimming
-          // up from a prior airborne state). Grounded → no vertical motion from WASD.
-          const airborne =
-            jumpState.phase !== 'grounded' || jumpState.playerAltitude > 0;
-          if (airborne && inputFwd !== 0) {
-            const worldVy = camForwardY * inputFwd; // strafe doesn't contribute (camRight.y ≈ 0)
-            jumpState.playerAltitude = Math.max(
-              0,
-              jumpState.playerAltitude + worldVy * SPEED * delta
-            );
-          }
+      // Vertical swim: arrow up/down only, gated on airborne.
+      // Decoupled from camera pitch — mouse orbit never causes altitude drift.
+      // Arrow keys continue to rotate the camera via ArrowKeyRotationController;
+      // they ALSO drive altitude here when the avatar is airborne.
+      const airborne =
+        jumpState.phase !== 'grounded' || jumpState.playerAltitude > 0;
+      if (airborne) {
+        let verticalInput = 0;
+        if (keyState.arrowup) verticalInput += 1;
+        if (keyState.arrowdown) verticalInput -= 1;
+        if (verticalInput !== 0) {
+          jumpState.playerAltitude = Math.max(
+            0,
+            jumpState.playerAltitude + verticalInput * SPEED * delta
+          );
         }
       }
     }
@@ -352,7 +373,7 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
       terrainYRef.current += (ty - terrainYRef.current) * 0.3;
     }
     // VRM feet at Y=0 per spec — no pivot offset, no bob (humanoid avatar).
-    // playerAltitude stacks on top of heightOffset for camera-tilt 3D swim.
+    // playerAltitude stacks on top of heightOffset for explicit arrow-key 3D swim.
     const airborne = jumpState.phase !== 'grounded' && jumpState.phase !== 'charging'
                   || jumpState.playerAltitude > 0;
     const bob = airborne ? 0 : (isMoving ? 0 : Math.sin(elapsed * 2) * 0.08);
@@ -518,12 +539,7 @@ function PlayerPetGLBInner() {
 
       if (inputFwd !== 0 || inputRight !== 0) {
         camera.getWorldDirection(_playerCamForward);
-        // Capture the vertical component BEFORE flattening — we apply it to
-        // playerAltitude, but only when the avatar is airborne (grounded walking
-        // stays pure XZ so the avatar doesn't drift upward just because the camera
-        // is tilted).
-        const camForwardY = _playerCamForward.y;
-        _playerCamForward.y = 0;
+        _playerCamForward.y = 0; // WASD is always flat camera-relative XZ — never couples to camera pitch
         const fwdLen = _playerCamForward.length();
         if (fwdLen > 0.001) {
           _playerCamForward.divideScalar(fwdLen);
@@ -534,18 +550,24 @@ function PlayerPetGLBInner() {
           const worldVz = _playerCamForward.z * inputFwd + _playerCamRight.z * inputRight;
           vx = worldVx;
           vy = worldVz;
+        }
+      }
 
-          // 3D swim: only active when the avatar is airborne (jumped OR already swimming
-          // up from a prior airborne state). Grounded → no vertical motion from WASD.
-          const airborne =
-            jumpState.phase !== 'grounded' || jumpState.playerAltitude > 0;
-          if (airborne && inputFwd !== 0) {
-            const worldVy = camForwardY * inputFwd; // strafe doesn't contribute (camRight.y ≈ 0)
-            jumpState.playerAltitude = Math.max(
-              0,
-              jumpState.playerAltitude + worldVy * SPEED * delta
-            );
-          }
+      // Vertical swim: arrow up/down only, gated on airborne.
+      // Decoupled from camera pitch — mouse orbit never causes altitude drift.
+      // Arrow keys continue to rotate the camera via ArrowKeyRotationController;
+      // they ALSO drive altitude here when the avatar is airborne.
+      const airborne =
+        jumpState.phase !== 'grounded' || jumpState.playerAltitude > 0;
+      if (airborne) {
+        let verticalInput = 0;
+        if (keyState.arrowup) verticalInput += 1;
+        if (keyState.arrowdown) verticalInput -= 1;
+        if (verticalInput !== 0) {
+          jumpState.playerAltitude = Math.max(
+            0,
+            jumpState.playerAltitude + verticalInput * SPEED * delta
+          );
         }
       }
     }
