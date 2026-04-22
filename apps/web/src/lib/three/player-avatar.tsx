@@ -256,26 +256,33 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
         if (keyState.d) inputRight += 1;
       }
       if (inputFwd !== 0 || inputRight !== 0) {
-        // Full 3D camera forward — Y kept for camera-tilt 3D swim (VRM path mirrors GLB path).
         camera.getWorldDirection(_playerCamForward);
+        // Capture the vertical component BEFORE flattening — applied to playerAltitude
+        // only when airborne (grounded walking stays pure XZ so the avatar doesn't drift
+        // upward just because the camera is tilted).
+        const camForwardY = _playerCamForward.y;
+        _playerCamForward.y = 0;
         const fwdLen = _playerCamForward.length();
         if (fwdLen > 0.001) {
           _playerCamForward.divideScalar(fwdLen);
           _playerCamRight.crossVectors(_playerCamForward, _playerWorldUp).normalize();
 
           const worldVx = _playerCamForward.x * inputFwd + _playerCamRight.x * inputRight;
-          const worldVy = _playerCamForward.y * inputFwd; // strafe contributes ~0 (camRight.y≈0)
           const worldVz = _playerCamForward.z * inputFwd + _playerCamRight.z * inputRight;
+          vx = worldVx;
+          vy = worldVz;
 
-          if (worldVy !== 0) {
+          // 3D swim: only active when the avatar is airborne (jumped OR already swimming
+          // up from a prior airborne state). Grounded → no vertical motion from WASD.
+          const airborne =
+            jumpState.phase !== 'grounded' || jumpState.playerAltitude > 0;
+          if (airborne && inputFwd !== 0) {
+            const worldVy = camForwardY * inputFwd; // strafe doesn't contribute (camRight.y ≈ 0)
             jumpState.playerAltitude = Math.max(
               0,
               jumpState.playerAltitude + worldVy * SPEED * delta
             );
           }
-
-          vx = worldVx;
-          vy = worldVz;
         }
       }
     }
@@ -510,31 +517,35 @@ function PlayerPetGLBInner() {
       }
 
       if (inputFwd !== 0 || inputRight !== 0) {
-        // Full 3D camera forward — Y is kept so pressing W while camera tilts
-        // down/up produces vertical swim movement (FEATURE: camera-tilt 3D swim).
         camera.getWorldDirection(_playerCamForward);
+        // Capture the vertical component BEFORE flattening — we apply it to
+        // playerAltitude, but only when the avatar is airborne (grounded walking
+        // stays pure XZ so the avatar doesn't drift upward just because the camera
+        // is tilted).
+        const camForwardY = _playerCamForward.y;
+        _playerCamForward.y = 0;
         const fwdLen = _playerCamForward.length();
         if (fwdLen > 0.001) {
           _playerCamForward.divideScalar(fwdLen);
-          // Strafe right stays horizontal: crossVectors(forward3d, worldUp) has y≈0 by property.
+          // Strafe right stays horizontal: crossVectors(forward_xz, worldUp) has y≈0 by property.
           _playerCamRight.crossVectors(_playerCamForward, _playerWorldUp).normalize();
 
-          // Extract full 3D components. worldVy drives swim altitude (not XZ movement).
           const worldVx = _playerCamForward.x * inputFwd + _playerCamRight.x * inputRight;
-          const worldVy = _playerCamForward.y * inputFwd; // strafe contributes ~0 (camRight.y≈0)
           const worldVz = _playerCamForward.z * inputFwd + _playerCamRight.z * inputRight;
+          vx = worldVx;
+          vy = worldVz;
 
-          // Accumulate vertical offset from camera tilt BEFORE XZ normalization so the
-          // diagonal-speed-normalise below doesn't distort it.
-          if (worldVy !== 0) {
+          // 3D swim: only active when the avatar is airborne (jumped OR already swimming
+          // up from a prior airborne state). Grounded → no vertical motion from WASD.
+          const airborne =
+            jumpState.phase !== 'grounded' || jumpState.playerAltitude > 0;
+          if (airborne && inputFwd !== 0) {
+            const worldVy = camForwardY * inputFwd; // strafe doesn't contribute (camRight.y ≈ 0)
             jumpState.playerAltitude = Math.max(
               0,
               jumpState.playerAltitude + worldVy * SPEED * delta
             );
           }
-
-          vx = worldVx;
-          vy = worldVz;
         }
       }
     }
