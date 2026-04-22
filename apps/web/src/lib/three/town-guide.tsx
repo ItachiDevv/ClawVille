@@ -10,14 +10,14 @@
  * Model: /models/guide.glb
  *   - Native height: ~1.49m, scale ≈ 100 → ~149 world units
  *   - Faces roughly -Z at rest
- *   - Key bones: Hips_04 (skirt parent), Chest_06 (breathing), Head_031 (look-around)
+ *   - Key bones: Hips_04 (drives authored skirt via vertex weights), Chest_06 (breathing), Head_031 (look-around)
  *   - Cloth material (opacity=0) hides most clothing; we selectively override Shoes
  *
  * Procedural idle:
  *   - Head_031: gentle Y-axis drift (sin, 0.4 Hz, ±0.05 rad)
  *   - Chest_06: subtle scale.y breathing (sin, 1.8 Hz, ±0.008)
  *
- * Skirt: CylinderGeometry cone parented to Hips_04, dark navy #1e3a5f, DoubleSide
+ * Skirt: authored mesh `2` from guide.glb, overridden with dark navy #1e3a5f MeshStandardMaterial
  *
  * GPU constraints:
  *   - Plain `three` imports (NOT three/webgpu) — skinned body/face/hair materials
@@ -73,17 +73,13 @@ const _shoeMaterial = new THREE.MeshStandardMaterial({
   metalness: 0.1,
 });
 
-// Procedural skirt — cone, double-sided, dark navy
+// Skirt material — dark navy, double-sided, applied to authored mesh `2` from guide.glb
 const _skirtMaterial = new THREE.MeshStandardMaterial({
   color: 0x1e3a5f,
   roughness: 0.7,
   metalness: 0.0,
   side: THREE.DoubleSide,
 });
-
-// Open-ended cone: top radius 0.08m, bottom radius 0.25m, height 0.42m, 20 segments
-// open=true so no caps (saves 2 fill triangles; skirt reads as fabric, not a solid)
-const _skirtGeometry = new THREE.CylinderGeometry(0.08, 0.25, 0.42, 20, 1, true);
 
 // ---------------------------------------------------------------------------
 // Module-scope scratch — NEVER allocate in useFrame
@@ -104,9 +100,6 @@ const TownGuideInner = memo(function TownGuideInner() {
   const upperArmRRef    = useRef<THREE.Bone | null>(null);
   const lowerArmLRef    = useRef<THREE.Bone | null>(null);
   const lowerArmRRef    = useRef<THREE.Bone | null>(null);
-
-  // Skirt mesh ref — parented to Hips_04 after clone
-  const skirtRef = useRef<THREE.Mesh | null>(null);
 
   const { scene: gltfScene } = useGLTF('/models/guide.glb');
 
@@ -131,6 +124,15 @@ const TownGuideInner = memo(function TownGuideInner() {
       // Shoes: make opaque with our shoe material
       if (mesh.name === 'Shoes_low_cloth_0') {
         mesh.material = _shoeMaterial;
+        mesh.visible  = true;
+        return;
+      }
+
+      // Authored skirt mesh: override with navy material so it renders opaque
+      // (the original cloth material has alphaMode=BLEND opacity=0 — visible=true
+      // alone would render nothing; we must replace the material entirely)
+      if (mesh.name === '2') {
+        mesh.material = _skirtMaterial;
         mesh.visible  = true;
         return;
       }
@@ -173,19 +175,6 @@ const TownGuideInner = memo(function TownGuideInner() {
     if (lowerArmLRef.current) lowerArmLRef.current.rotation.x =  0.15;
     if (lowerArmRRef.current) lowerArmRRef.current.rotation.x =  0.15;
 
-    // Attach procedural skirt to Hips_04
-    const hipBone = hipBoneRef.current;
-    if (hipBone) {
-      const skirtMesh = new THREE.Mesh(_skirtGeometry, _skirtMaterial);
-      // Hang 0.22m below the hip joint center in model (bone-local) space.
-      // guide.glb native height is 1.49m; hips are roughly at 0.85m (57% of height).
-      // 0.22m below hips → ~0.63m from floor = mid-thigh region at native scale.
-      skirtMesh.position.set(0, -0.22, 0);
-      skirtMesh.name = 'ProceduralSkirt';
-      hipBone.add(skirtMesh);
-      skirtRef.current = skirtMesh;
-    }
-
     return clone;
   }, [gltfScene]);
 
@@ -207,11 +196,7 @@ const TownGuideInner = memo(function TownGuideInner() {
             mesh.material?.dispose();
           }
         }
-        // Geometry: only dispose the skirt (all others belong to the cached GLTF)
-        if (mesh.name === 'ProceduralSkirt') {
-          // _skirtGeometry is module-scope and reused — do NOT dispose it here.
-          // The mesh itself is cloned, but geometry is shared. Leave it.
-        }
+        // All non-module-scope geometries belong to the cached GLTF — do not dispose them
       });
     };
   }, [cloned]);
