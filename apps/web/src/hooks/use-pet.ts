@@ -35,3 +35,19 @@ export function useCheckPetName() {
     mutationFn: (name: string) => api.checkPetName(name),
   });
 }
+
+/**
+ * Phase 4c Layer 1 — in-game appearance edits. Invalidates ['pet'] on
+ * success so the modal, PetStatusBar, and the 3D world re-render with
+ * the new avatar/color/gender.
+ */
+export function useEditPetAppearance() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: api.editPetAppearance,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pet'] });
+    },
+  });
+}
