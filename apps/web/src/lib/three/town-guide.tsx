@@ -189,6 +189,11 @@ const TownGuideInner = memo(function TownGuideInner() {
       hipBone.add(skirtMesh);
     }
 
+    // SkinnedMesh bounding spheres come from bind pose (T-pose); animated geometry
+    // extends past them, causing the guide to disappear when camera is close/angled.
+    // Must be applied at every rigged-clone site — not just arena-npcs.tsx.
+    clone.traverse((obj) => { obj.frustumCulled = false; });
+
     return clone;
   }, [gltfScene]);
 

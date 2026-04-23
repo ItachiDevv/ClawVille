@@ -101,8 +101,17 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   // Slot 1 — memory-vault — bb-building (interim Squidward's house)
   'memory-vault': { name: 'Squidward', model: '/models/characters/squidward.glb' },
 
-  // Slots 2 (webhook-gateway) and 3 (cron-hub) are intentionally unattended.
-  // No entry = no NPC rendered; the building shell is still there for gameplay.
+  // Slot 2 — webhook-gateway — Salty Spitoon (the tough fish bar)
+  // Flying Dutchman GLB sourced from Sketchfab (CC-BY 4.0) 2026-04-23 — the
+  // canonical "intimidating spectral pirate" who fits the Salty Spitoon vibe
+  // better than any tough-fish patron we could find. Iconic green ghost,
+  // pirate hat, beard, hook hands. ~17.9k tris, 2.2MB.
+  'webhook-gateway': { name: 'Flying Dutchman', model: '/models/characters/flying-dutchman.glb' },
+
+  // Slot 3 — cron-hub — Downtown Building (Pearl Krabs's downtown teen vibe)
+  // Pearl Krabs GLB sourced from Sketchfab (CC-BY 4.0) 2026-04-23 — official-look
+  // low-poly Pearl, rigged with 5 idle/talk animations. ~4k tris, 2.1MB.
+  'cron-hub': { name: 'Pearl', model: '/models/characters/pearl.glb' },
 
   // Slot 4 — voice-tower — Boating School (Mrs. Puff's workplace)
   'voice-tower': { name: 'Mrs. Puff', model: '/models/characters/mrs-puff.glb' },
@@ -384,6 +393,10 @@ const NpcMesh = memo(function NpcMesh({
   //   Applied each frame as: group.position.y = terrainY + BASE_LIFT + bob - pivotOffsetY
   const { cloned, npcScale, pivotOffsetY } = useMemo(() => {
     const c = scene.clone(true);
+    // SkinnedMesh bounding spheres come from bind pose (T-pose); animated geometry
+    // extends past them, causing the character to disappear when camera is close/angled.
+    // Must be applied at every clone site — not just arena-npcs.tsx.
+    c.traverse((obj) => { obj.frustumCulled = false; });
     if (modelCfg.color != null) {
       applyColorTint(c, new THREE.Color(modelCfg.color), 0.7, 0.25);
     }
