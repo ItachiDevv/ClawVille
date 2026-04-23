@@ -61,6 +61,58 @@ export interface ActivityAuthContext {
 const AGENT_SESSION_HEADER = 'X-Clawville-Agent-Session';
 
 /**
+ * Resolve a Lucia session cookie OR an agent-session id to a complete
+ * identity. Used by the activity WS hub (chunk #3), which has no Hono
+ * context and therefore can't run the middleware below.
+ *
+ * Same contract as the middleware:
+ *   - Lucia cookie → user-kind identity, pet must be active
+ *   - Agent session id → agent-kind identity, pet must be active
+ *
+ * Returns null on auth failure (caller responsible for closing the WS
+ * with 4001 — the helper doesn't throw HTTPException).
+ */
+export async function resolveActivityIdentity(input: {
+  /** Either Lucia session id (raw, NOT cookie header) or agent session id */
+  sessionToken: string;
+}): Promise<ActivityIdentity | null> {
+  const token = input.sessionToken;
+  if (!token) return null;
+
+  // Try Lucia first — sessionToken contract from `auth` frame is the raw
+  // session id, not the cookie header.
+  try {
+    const { lucia } = await import('../lib/auth');
+    const { session, user } = await lucia.validateSession(token);
+    if (session && user) {
+      const pet = await db.query.pets.findFirst({
+        where: and(eq(pets.userId, user.id), eq(pets.isActive, true)),
+      });
+      if (!pet) return null;
+      return {
+        kind: 'user',
+        userId: user.id,
+        petId: pet.id,
+        agentId: null,
+      };
+    }
+  } catch {
+    // Lucia validation throws on malformed tokens — fall through to agent path.
+  }
+
+  // Try agent-session path.
+  const resolved = await resolveAgentSession(token);
+  if (!resolved || !resolved.userId || !resolved.petId) return null;
+  return {
+    kind: 'agent',
+    userId: resolved.userId,
+    petId: resolved.petId,
+    agentId: resolved.agentId,
+    sessionId: token,
+  };
+}
+
+/**
  * Resolve an agent session id to `{userId, petId, agentId}` by looking
  * through the npc-simulation registry → openclaw_bots row → user's pet.
  *

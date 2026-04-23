@@ -34,6 +34,7 @@ mock.module('@clawville/database', () => ({
   activityQueueEntries: { id: 'id', leftAt: 'left_at' },
   activityParties: { id: 'id' },
   activityPartyMembers: { partyId: 'party_id' },
+  activityReplays: { id: 'id' },
 }));
 
 mock.module('../../alert-error', () => ({
@@ -43,6 +44,20 @@ mock.module('../../alert-error', () => ({
 mock.module('../../event-logger', () => ({
   logEvent: () => Promise.resolve(),
   ACTIVITY_EVENT_TYPES: {},
+}));
+
+// Chunk #3 wired the replay log into the room manager's RESULTS
+// transition. Mock it so this test doesn't need DB wires or touch the
+// replay write path.
+mock.module('../activity-replay-log', () => ({
+  activityReplayLog: {
+    appendInputFrame: () => {},
+    flushToDb: () => Promise.resolve(null),
+    dropRoom: () => {},
+    getReplayId: () => undefined,
+    bufferLength: () => 0,
+    __resetForTest: () => {},
+  },
 }));
 
 const { activityRoomManager, RoomCapacityError, MAX_ROOMS_PER_ACTIVITY, MAX_ROOMS_TOTAL } = await import(

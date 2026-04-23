@@ -39,11 +39,17 @@ import {
   MAX_PARTY_SIZE,
 } from '../services/activity/activity-queue';
 import {
+  activityWsHub,
+  type HubWs,
+} from '../services/activity/activity-ws-hub';
+import { bumperShellsSim } from '../services/activity/sim/bumper-shells-sim';
+import {
   ACTIVITY_REGISTRY,
   ACTIVITY_IDS,
   getActivityDefinition,
 } from '@clawville/shared';
 import type { AppContext } from '../types';
+import { getBunWebSocketHelper } from '../lib/bun-ws-adapter';
 
 // ─── Local types ───────────────────────────────────────────────────────────
 
@@ -160,9 +166,21 @@ activitiesV2Routes.post('/:id/queue', requireAuthOrAgentSession, async (c) => {
   if (!parsed.success) {
     throw new HTTPException(400, { message: 'Invalid request body' });
   }
-  const { partyId = null, allowBotBackfill = true, agentOnly = false } = parsed.data;
+  const bodyAgentOnly = parsed.data.agentOnly ?? false;
+  // Query-param variant `?matchType=agent-only` per plan locked-decisions.
+  const queryMatchType = c.req.query('matchType');
+  const queryAgentOnly = queryMatchType === 'agent-only';
+  const { partyId = null, allowBotBackfill = true } = parsed.data;
+  const agentOnly = bodyAgentOnly || queryAgentOnly;
 
   const identity = c.get('identity');
+  // Agent-only filter requires the caller's identity to BE an agent.
+  // Humans can't queue for an agent-only room (that defeats the point).
+  if (agentOnly && identity.kind !== 'agent') {
+    throw new HTTPException(403, {
+      message: 'agent-only matchmaking requires an agent session',
+    });
+  }
 
   // If a party is supplied, enforce leader-only enqueue (party joins
   // queue atomically as a unit).
@@ -256,7 +274,17 @@ activitiesV2Routes.get('/:id/queue-status', requireAuthOrAgentSession, async (c)
 
   const identity = c.get('identity');
   const status = activityQueueService.getQueueStatus(id, identity.petId);
-  return c.json(status);
+  // Chunk #3 match.found delivery — option (b) polling. Clients can
+  // pick up the room assignment through this field within one sweep
+  // cycle (1s). TODO chunk #?: extend the queue endpoint with a
+  // control-WS channel so match.found pushes instantly.
+  const matchedRoomId = activityQueueService.getMatchedRoomId(identity.petId);
+  const matchedRoom = matchedRoomId ? activityRoomManager.getRoom(matchedRoomId) : null;
+  return c.json({
+    ...status,
+    matchedRoomId,
+    matchedRoomShortCode: matchedRoom?.shortCode ?? null,
+  });
 });
 
 // ─── Party routes ──────────────────────────────────────────────────────────
@@ -361,6 +389,13 @@ activitiesV2Routes.get(
       throw new HTTPException(403, { message: 'Not a participant in this room' });
     }
 
+    // Include sim entities when the room is LIVE so reconnecting
+    // clients can reconcile without waiting for the next keyframe.
+    const simSnapshot =
+      room.state === 'live' && room.activityId === 'bumper-shells'
+        ? bumperShellsSim.getStateSnapshot(room.id)
+        : null;
+
     return c.json({
       room: {
         id: room.id,
@@ -376,6 +411,7 @@ activitiesV2Routes.get(
           subjectType: p.subjectType,
           connected: p.connected,
         })),
+        sim: simSnapshot,
       },
     });
   },
@@ -387,13 +423,105 @@ activitiesV2Routes.get(
 // when chunk #2 ships. Each call site stubs to its owning chunk for clean
 // PR-time grep + remove.
 
-activitiesV2Routes.all('/:id/rooms/:roomId/ws', (c) => {
-  // TODO chunk #3: WebSocket upgrade handler (Bun native via hono/bun).
-  return c.json(
-    { error: 'not_implemented', detail: 'WebSocket hub ships in chunk #3' },
-    501,
-  );
-});
+// ─── WS /api/activities/:id/rooms/:roomId/ws (chunk #3) ────────────────────
+//
+// Bun-native upgrade handler. Per backend §3.2:
+//   - Validate :id, :roomId BEFORE upgrade so rejected requests never
+//     hand a socket to Bun.
+//   - First client frame MUST be `auth` — the hub handles that; we just
+//     stash the roomId in ws.data.
+//   - Every frame post-upgrade routes through wsHub.handleMessage which
+//     Zod-validates the schema.
+
+const { upgradeWebSocket } = getBunWebSocketHelper();
+
+/**
+ * Per-WS adapter map — Hono's WSContext carries `raw` (Bun
+ * ServerWebSocket) but `raw.data` is already owned by Hono for its own
+ * event dispatch. We therefore maintain our own WeakMap keyed by the
+ * raw WS to stash per-connection state, and expose a `HubWsTransport`
+ * wrapper the hub can call.
+ */
+const hubAdapters = new WeakMap<object, HubWs>();
+
+function getOrMakeAdapter(
+  wsContext: {
+    send: (source: string) => void;
+    close: (code: number, reason: string) => void;
+    raw: unknown;
+  },
+  roomId: string,
+): HubWs {
+  const keyObj = (wsContext.raw as object) ?? (wsContext as object);
+  let existing = hubAdapters.get(keyObj);
+  if (existing) return existing;
+  const transport: HubWs = {
+    send: (frame: string) => wsContext.send(frame),
+    close: (code: number, reason: string) => wsContext.close(code, reason),
+    getBufferedAmount: () => {
+      const raw = wsContext.raw as { getBufferedAmount?: () => number } | null;
+      return raw?.getBufferedAmount?.() ?? 0;
+    },
+    data: activityWsHub.makeConnectionData(roomId),
+  };
+  hubAdapters.set(keyObj, transport);
+  return transport;
+}
+
+activitiesV2Routes.get(
+  '/:id/rooms/:roomId/ws',
+  upgradeWebSocket((c) => {
+    const activityId = c.req.param('id') ?? '';
+    const roomId = c.req.param('roomId') ?? '';
+
+    if (!activityId || !getActivityDefinition(activityId)) {
+      throw new HTTPException(404, { message: 'Activity not found' });
+    }
+    const room = activityRoomManager.getRoom(roomId);
+    if (!room) {
+      throw new HTTPException(404, { message: 'Room not found' });
+    }
+    if (room.activityId !== activityId) {
+      throw new HTTPException(404, { message: 'Room not in activity' });
+    }
+
+    return {
+      async onMessage(evt, ws) {
+        const adapter = getOrMakeAdapter(
+          {
+            send: (src: string) => ws.send(src),
+            close: (code: number, reason: string) => ws.close(code, reason),
+            raw: ws.raw ?? ws,
+          },
+          roomId,
+        );
+        const raw: string | ArrayBuffer | Uint8Array =
+          typeof evt.data === 'string'
+            ? evt.data
+            : evt.data instanceof ArrayBuffer
+              ? evt.data
+              : new Uint8Array(evt.data as ArrayBufferLike);
+        await activityWsHub.handleMessage(adapter, raw);
+      },
+      onClose(_evt, ws) {
+        const keyObj = (ws.raw as object | undefined) ?? (ws as unknown as object);
+        const adapter = hubAdapters.get(keyObj);
+        if (adapter) {
+          activityWsHub.unregisterConnection(adapter);
+          hubAdapters.delete(keyObj);
+        }
+      },
+      onError(_evt, ws) {
+        const keyObj = (ws.raw as object | undefined) ?? (ws as unknown as object);
+        const adapter = hubAdapters.get(keyObj);
+        if (adapter) {
+          activityWsHub.unregisterConnection(adapter);
+          hubAdapters.delete(keyObj);
+        }
+      },
+    };
+  }),
+);
 
 activitiesV2Routes.get('/:id/rooms/:roomId/results', (c) => {
   // TODO chunk #7: reward pipeline owns activity_results rows + this read.
