@@ -95,6 +95,14 @@ export interface GameState {
   /** Close the chat panel. */
   exitBuilding: () => void;
 
+  // Town Guide (system-agent) chat — W4. Separate flag from `chatOpen`
+  // because the guide has no `currentLocation` (she is not a building).
+  // Both flags share the same `movementFrozen` semantics so the two chat
+  // surfaces can never coexist.
+  guideChatOpen: boolean;
+  openGuideChat: () => void;
+  closeGuideChat: () => void;
+
   // Movement frozen (when chat is open)
   movementFrozen: boolean;
 
@@ -376,7 +384,21 @@ export const useGameStore = create<GameState>((set, get) => ({
   currentLocation: null,
   currentCharacter: null,
   chatOpen: false,
+  guideChatOpen: false,
   movementFrozen: false,
+
+  openGuideChat: () => {
+    // Mirror enterBuilding: freeze movement so the two chats can never coexist.
+    // Runtime assertion — if a location chat is already open, bail rather than
+    // silently stack two chat surfaces on the same movementFrozen flag.
+    if (get().chatOpen) return;
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { resetJump } = require('@/lib/three/jump-state') as typeof import('@/lib/three/jump-state');
+    resetJump();
+    set({ guideChatOpen: true, movementFrozen: true });
+  },
+
+  closeGuideChat: () => set({ guideChatOpen: false, movementFrozen: false }),
 
   enterBuilding: (locationId, characterName) => {
     // Reset jump state synchronously — keeps any in-flight jump from persisting
@@ -662,6 +684,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     currentLocation: null,
     currentCharacter: null,
     chatOpen: false,
+    guideChatOpen: false,
     movementFrozen: false,
     menuOpen: false,
     settingsModalOpen: false,

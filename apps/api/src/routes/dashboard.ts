@@ -110,9 +110,14 @@ dashboardRoutes.get('/overview', adminOnly, async (c) => {
       //                (POST /api/agent/:sessionId/building/:buildingId/chat)
       //   'location' — a signed-in human chats with a building's resident
       //                (POST /api/locations/:id/chat)
-      // We deliberately EXCLUDE 'character' (agent-to-any-NPC via
-      // /:sessionId/chat) — that fires for wandering NPCs too and would
-      // inflate teacher-engagement numbers.
+      // We deliberately EXCLUDE:
+      //   - 'character' — agent-to-any-NPC via /:sessionId/chat fires for
+      //                   wandering NPCs too, would inflate numbers.
+      //   - 'system-agent' — system agents (Town Guide et al.) are NOT
+      //                   teachers per CLAUDE.md Brand Identity §4. Tracked
+      //                   separately to avoid polluting the
+      //                   teacher-chat metric. Follow-up PR can add a
+      //                   dedicated card for system-agent chats.
       db.execute<{ count: number }>(sql`
         SELECT COUNT(*)::int AS count FROM events
         WHERE event_type = 'agent.chat.turn'
