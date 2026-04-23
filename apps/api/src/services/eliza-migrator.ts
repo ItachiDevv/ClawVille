@@ -1,7 +1,7 @@
 /**
  * ElizaOS schema pre-migrator
  * ---------------------------
- * Runs once at API boot to ensure `@elizaos/plugin-sql`'s 20-table schema
+ * Runs once at API boot to ensure `@elizaos/plugin-sql`'s ~20-table schema
  * (agents, memories, rooms, entities, components, embeddings, tasks, etc.)
  * exists in Postgres BEFORE any user triggers a chat.
  *
@@ -11,11 +11,17 @@
  * front-load the migration at boot so every user's first chat hits a warm
  * adapter.
  *
- * Also guards against a real incident (2026-04-16): a stale row in
- * `migrations._migrations` once convinced plugin-sql its schema was applied
- * when the tables were actually missing, silently breaking every location
- * chat. This pre-flight runs with the same migration service, so we get a
- * concrete success/error log for every deploy.
+ * Also guards against a real incident (2026-04-16, recurred 2026-04-23): a
+ * stale row in `migrations._migrations` once convinced plugin-sql its schema
+ * was applied when the tables were actually missing, silently breaking every
+ * location chat. The 2026-04-23 recurrence was caused by `drizzle-kit push`
+ * with ELIZA_ALLOW_DESTRUCTIVE_MIGRATIONS=true dropping the ElizaOS tables
+ * because they weren't in our own Drizzle schema. Fix lives in the
+ * tablesFilter negation list in `packages/database/drizzle.config.ts`, plus
+ * the hard assertAgentsTableExists() below that refuses to keep running if
+ * the guard ever slips.
+ *
+ * See also: scripts/recover-eliza-schema.mjs for the recovery playbook.
  */
 
 import { platformAgents } from '@clawville/database';
@@ -89,3 +95,48 @@ export async function ensureElizaMigrated(): Promise<{
 /** Suppress unused-import warning — the import is a type-safety tether to the
  *  table we care about existing after this runs. */
 void platformAgents;
+
+/**
+ * Loud post-migration assertion: if plugin-sql's `agents` table doesn't exist
+ * after we just ran its migrator, something has gone silently wrong (stale
+ * `_migrations` row, tables dropped by an unrelated `db:push`, snapshot-diff
+ * short-circuit). Throwing here refuses to seed system agents, keeps the
+ * container restart-looping, and puts the error front-and-center in logs.
+ *
+ * This is the last line of defense. Layer 1 is the tablesFilter in
+ * drizzle.config.ts; layer 3 is the scripts/recover-eliza-schema.mjs runbook.
+ */
+export async function assertAgentsTableExists(): Promise<{
+  ok: boolean;
+  error?: string;
+}> {
+  const postgresUrl = process.env.DATABASE_URL;
+  if (!postgresUrl) {
+    return { ok: false, error: 'DATABASE_URL not set' };
+  }
+
+  try {
+    const { default: postgres } = await import('postgres');
+    const sql = postgres(postgresUrl, { max: 1, prepare: false });
+    try {
+      // Any query against the `agents` table will throw
+      //   "relation \"agents\" does not exist"
+      // if plugin-sql's schema is gone. A COUNT(*) is cheap and doesn't depend
+      // on any specific row or column layout.
+      await sql`SELECT COUNT(*)::int FROM agents`;
+      await sql.end();
+      return { ok: true };
+    } catch (err) {
+      await sql.end();
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
