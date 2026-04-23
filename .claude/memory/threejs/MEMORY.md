@@ -76,6 +76,7 @@
 
 - [2026-04-21 perf sweep — static mesh freezing + scratch patterns](performance/perf-sweep-2026-04-21.md) — matrixAutoUpdate=false on all static scene objects; module-scope scratch vectors/matrices in hot loops; intersectObject(mesh,false) over scene traversal; distanceFactor removal from <Html>; narrowed Zustand subscriptions; gl.setPixelRatio() override removal. Est. ~4-6ms/frame saved → 60+ FPS target.
 - [Idle animation throttle to 20Hz](performance/idle-animation-throttle.md) — `(frame + seed) % 3 === 0` gate on slow procedural animations (≤1.3 rad/s); walk stays 60Hz; stagger by seed prevents batch spikes; saves ~40% trig ops on 12-30 NPC instances.
+- [VRM spring-bone physics throttle — 30Hz for idle NPCs](performance/vrm-spring-bone-throttle.md) — split VRMCharacterAnimator into updateMixerOnly (60Hz) + updateSpringOnly (30Hz idle); accumulate delta between spring ticks; walking stays full 60Hz; 50-100 spring joint ops/frame → halved for idle VRMs.
 
 ## Solutions
 - [mergeGeometries dispose-after-merge is safe — data is copied](solutions/merge-geometries-dispose-order-safe.md) — mergeAttributes() uses TypedArray.set() to copy; dispose only removes GPU buffers; merged geo is independent
