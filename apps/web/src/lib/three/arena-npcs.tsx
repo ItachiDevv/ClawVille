@@ -500,10 +500,14 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
       </group>
       {/* Name label — OUTSIDE scaled group so position is in world units.
           100 = clearance above TARGET_NPC_HEIGHT=45 for the tallest species. */}
+      {/* PERF: removed `distanceFactor={300}` — drei recomputes camera-distance
+          scale + writes a new CSS transform every frame for each Html, which
+          forces a full Layout pass per label per frame (~14% of frame budget
+          across 18 NPC labels per the DevTools profile). Labels now display
+          at constant CSS size; positioning still tracks the 3D point. */}
       <Html
         position={[0, 100, 0]}
         center
-        distanceFactor={300}
         style={{ pointerEvents: 'none' }}
         zIndexRange={[10, 100]}
       >
@@ -658,10 +662,14 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
         scale={[VRM_NPC_SCALE, VRM_NPC_SCALE, VRM_NPC_SCALE]}
       />
       {/* Name label — OUTSIDE scale so it's in world units. y=100 matches GLBNpcMesh. */}
+      {/* PERF: removed `distanceFactor={300}` — drei recomputes camera-distance
+          scale + writes a new CSS transform every frame for each Html, which
+          forces a full Layout pass per label per frame (~14% of frame budget
+          across 18 NPC labels per the DevTools profile). Labels now display
+          at constant CSS size; positioning still tracks the 3D point. */}
       <Html
         position={[0, 100, 0]}
         center
-        distanceFactor={300}
         style={{ pointerEvents: 'none' }}
         zIndexRange={[10, 100]}
       >

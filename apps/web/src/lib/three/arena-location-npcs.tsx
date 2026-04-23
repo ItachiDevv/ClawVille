@@ -463,10 +463,10 @@ const NpcMesh = memo(function NpcMesh({
       {/* Name label — OUTSIDE scaled group so position is in world units.
           Only shown for primary NPCs; companions are passive (no label). */}
       {showLabel && (
+        // PERF: removed distanceFactor — see arena-npcs.tsx PERF note
         <Html
           position={[0, 150, 0]}
           center
-          distanceFactor={400}
           style={{ pointerEvents: 'none' }}
           zIndexRange={[10, 100]}
         >
