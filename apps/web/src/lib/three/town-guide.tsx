@@ -10,20 +10,26 @@
  *
  * Animation system:
  *   - AnimationMixer on the cloned skeleton root.
- *   - Default idle: `pose-hand-on-hips` clip, LoopOnce, clampWhenFinished=true → holds at frame 0.
+ *   - Cycling idle: Nori continuously cycles through CYCLE_CLIPS (8 non-wave clips).
+ *     Each clip plays LoopOnce; long clips (bellydancing/samba) are capped at LONG_CLIP_MAX_SEC
+ *     via timeScale acceleration. On 'finished', the mixer advances to the next cycle slot.
  *   - Procedural breathing: useFrame drives mixamorig:Spine2 scale.y = 1 + sin(t*1.8)*0.008.
  *     Additive over the mixer — mixer doesn't touch scale, only rotation/position tracks.
- *   - Wave on click: crossfade idle → wave (LoopOnce, clampWhenFinished=false), then
- *     crossfade back to idle when finished. Phase 2 TODO: also open Eliza chat.
+ *   - Wave on click: crossfade current cycling action → wave (LoopOnce, clampWhenFinished=false).
+ *     On 'finished' (wave complete) → crossfade to next cycling clip and resume cycle.
  *
  * Available clips (all accessible by name via clips.find):
- *   - pose-hand-on-hips (default idle — frozen at frame 0)
- *   - pose-catwalk-idle, pose-dance, pose-laying
- *   - pose-standing-2, pose-standing-3, pose-standing-4
- *   - praying (58 frames)
- *   - wave (45 frames)
- *   - bellydancing (762 frames)
- *   - samba (595 frames)
+ *   - pose-hand-on-hips   ← included in cycle
+ *   - pose-catwalk-idle   ← included in cycle
+ *   - pose-dance          ← included in cycle
+ *   - pose-laying         ← EXCLUDED (looks broken standing)
+ *   - pose-standing-2     ← included in cycle
+ *   - pose-standing-3     ← included in cycle
+ *   - pose-standing-4     ← included in cycle
+ *   - praying (58 frames) ← included in cycle
+ *   - wave (45 frames)    ← greeting ONLY, never in cycle
+ *   - bellydancing (762 frames) ← included in cycle, capped at LONG_CLIP_MAX_SEC
+ *   - samba (595 frames)        ← included in cycle, capped at LONG_CLIP_MAX_SEC
  *
  * GPU constraints (Iris Xe invariants):
  *   - NO drei Text/Billboard — hard crash
@@ -31,7 +37,14 @@
  *   - frustumCulled=false on every mesh after SkeletonUtils.clone
  *   - No per-frame allocations — mixer/action refs at component scope
  *
- * Phase 2 TODO: wire onClick → open guide Eliza chat (11th teacher character)
+ * Clip cycle design decisions:
+ *   - pose-laying excluded: a lying-down pose at standing height renders as a
+ *     horizontal-floating character, which looks broken without floor context.
+ *   - bellydancing (762fr) and samba (595fr) are capped at LONG_CLIP_MAX_SEC=10s
+ *     by running timeScale = clip.duration / LONG_CLIP_MAX_SEC so the mixer
+ *     considers them "done" after 10s and fires the 'finished' event naturally.
+ *     No timers or manual interrupts needed — same LoopOnce/finished pattern.
+ *   - Cycle starts at index 0 (pose-hand-on-hips) so the initial look is familiar.
  */
 
 import { useRef, useMemo, useEffect, memo, Suspense } from 'react';
@@ -43,16 +56,38 @@ import { useGameStore } from '@/stores/game';
 
 useGLTF.preload('/models/guide-rigged.glb');
 
-const GROUND_Y   = -2;
-const GUIDE_Z    = 240;
+const GROUND_Y    = -2;
+const GUIDE_Z     = 240;
 const GUIDE_SCALE = 100;
 
-const CLIP_IDLE = 'pose-hand-on-hips';
+// Clip names — defined at module scope (no per-render allocation).
 const CLIP_WAVE = 'wave';
 
+// Ordered playlist that Nori cycles through continuously.
+// pose-laying is deliberately excluded (see module comment).
+const CYCLE_CLIPS = [
+  'pose-hand-on-hips',
+  'pose-catwalk-idle',
+  'pose-dance',
+  'pose-standing-2',
+  'pose-standing-3',
+  'pose-standing-4',
+  'praying',
+  'bellydancing',
+  'samba',
+] as const;
+
+// Long clips (bellydancing=762fr, samba=595fr) are capped at this many seconds
+// by boosting timeScale so the clip "plays out" faster and fires 'finished'.
+const LONG_CLIP_MAX_SEC = 10;
+
+// Clips that need timeScale boost — keyed by name for O(1) lookup.
+const LONG_CLIP_NAMES: ReadonlySet<string> = new Set(['bellydancing', 'samba']);
+
+const CYCLE_FADE = 0.5;   // crossfade duration between cycling clips (sec)
+const WAVE_FADE  = 0.35;  // crossfade duration for wave entry/exit (sec)
 const BREATH_FREQ = 1.8;
 const BREATH_AMP  = 0.008;
-const WAVE_FADE   = 0.35;
 
 const TownGuideInner = memo(function TownGuideInner() {
   const { scene: gltfScene, animations } = useGLTF('/models/guide-rigged.glb');
@@ -72,39 +107,72 @@ const TownGuideInner = memo(function TownGuideInner() {
 
   const mixer = useMemo(() => new THREE.AnimationMixer(cloned), [cloned]);
 
-  const idleActionRef = useRef<THREE.AnimationAction | null>(null);
-  const waveActionRef = useRef<THREE.AnimationAction | null>(null);
-  const wavingRef     = useRef(false);
-  const spineBoneRef  = useRef<THREE.Bone | null>(null);
+  // Pre-resolved cycling actions — filled once in useEffect.
+  // Index mirrors CYCLE_CLIPS order; null slots mean clip not found in GLB.
+  const cycleActionsRef = useRef<Array<THREE.AnimationAction | null>>(
+    new Array(CYCLE_CLIPS.length).fill(null)
+  );
+  const waveActionRef   = useRef<THREE.AnimationAction | null>(null);
+  const cycleIndexRef   = useRef<number>(0);
+  const wavingRef       = useRef<boolean>(false);
+  const spineBoneRef    = useRef<THREE.Bone | null>(null);
 
-  useEffect(() => {
-    const idleClip = animations.find((c) => c.name === CLIP_IDLE);
-    const waveClip = animations.find((c) => c.name === CLIP_WAVE);
-
-    if (idleClip) {
-      const action = mixer.clipAction(idleClip, cloned);
-      action.setLoop(THREE.LoopOnce, 1);
-      action.clampWhenFinished = true;
-      action.timeScale = 0;  // freeze — single-frame pose
-      action.weight = 1.0;
-      action.play();
-      idleActionRef.current = action;
+  // Helper: start the cycling action at index idx, crossfading from fromAction.
+  // Defined outside useEffect so the 'finished' listener can reference it via closure.
+  // Uses stable refs — no closure-capture of changing values.
+  function playCycleSlot(idx: number, fromAction: THREE.AnimationAction | null) {
+    const action = cycleActionsRef.current[idx];
+    if (!action) {
+      // Skip missing clips — advance to next.
+      const next = (idx + 1) % CYCLE_CLIPS.length;
+      cycleIndexRef.current = next;
+      playCycleSlot(next, fromAction);
+      return;
     }
 
+    const clipName = CYCLE_CLIPS[idx];
+    const clip = action.getClip();
+
+    // Compute timeScale so long clips cap at LONG_CLIP_MAX_SEC.
+    const ts = LONG_CLIP_NAMES.has(clipName)
+      ? clip.duration / LONG_CLIP_MAX_SEC
+      : 1;
+
+    action.reset();
+    action.enabled = true;
+    action.timeScale = ts;
+    action.setLoop(THREE.LoopOnce, 1);
+    action.clampWhenFinished = false;  // resets to frame 0 on finish → clean crossfade out
+    action.weight = fromAction ? 0 : 1;
+    action.play();
+
+    if (fromAction) {
+      fromAction.crossFadeTo(action, CYCLE_FADE, false);
+    }
+  }
+
+  useEffect(() => {
+    // Build cycle action list.
+    for (let i = 0; i < CYCLE_CLIPS.length; i++) {
+      const clip = animations.find((c) => c.name === CYCLE_CLIPS[i]);
+      if (clip) {
+        cycleActionsRef.current[i] = mixer.clipAction(clip, cloned);
+      } else {
+        console.warn(`[TownGuide] Clip not found: ${CYCLE_CLIPS[i]}`);
+      }
+    }
+
+    // Build wave action.
+    const waveClip = animations.find((c) => c.name === CLIP_WAVE);
     if (waveClip) {
-      const action = mixer.clipAction(waveClip, cloned);
-      action.setLoop(THREE.LoopOnce, 1);
-      // wave.clampWhenFinished=false is intentional. When LoopOnce completes,
-      // the action resets to frame 0 rather than freezing on the raised-hand
-      // final frame. The 'finished' event handler then fires crossFadeTo back
-      // to idle; during the 0.35s crossfade the wave action's `enabled` flag
-      // remains true (crossFadeTo doesn't reset it), so its weight fades from
-      // 1 → 0 while idle fades 0 → 1. The reset-to-frame-0 behavior means
-      // the fade-out wave contribution is its first-frame pose (neutral),
-      // not the raised-hand pose, producing a cleaner visual transition.
-      action.clampWhenFinished = false;
-      action.weight = 0;
-      waveActionRef.current = action;
+      const waveAction = mixer.clipAction(waveClip, cloned);
+      waveAction.setLoop(THREE.LoopOnce, 1);
+      // clampWhenFinished=false: on completion resets to frame 0 rather than
+      // holding the raised-hand pose. During the crossfade-out the first-frame
+      // (neutral) pose fades out, producing a clean transition.
+      waveAction.clampWhenFinished = false;
+      waveAction.weight = 0;
+      waveActionRef.current = waveAction;
     }
 
     // Scope bone search to MainArmature subtree — guards against orphan Armature
@@ -122,24 +190,42 @@ const TownGuideInner = memo(function TownGuideInner() {
     if (!spineBoneRef.current) {
       console.error('[TownGuide] spineBoneRef not resolved — breathing disabled');
     }
+
+    // Kick off the first cycling clip with no crossfade source.
+    cycleIndexRef.current = 0;
+    playCycleSlot(0, null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mixer, cloned, animations]);
 
   useEffect(() => {
     const onFinished = (e: { action: THREE.AnimationAction }) => {
-      if (e.action === waveActionRef.current) {
+      const wave  = waveActionRef.current;
+      const cycleActions = cycleActionsRef.current;
+
+      if (e.action === wave) {
+        // Wave completed — resume cycling from current index.
         wavingRef.current = false;
-        const idle = idleActionRef.current;
-        const wave = waveActionRef.current;
-        if (idle && wave) {
-          // crossFadeTo does not reset enabled on the incoming action — must re-enable manually
-          idle.enabled = true;
-          idle.weight  = 1;
-          wave.crossFadeTo(idle, WAVE_FADE, false);
+        const idx = cycleIndexRef.current;
+        playCycleSlot(idx, wave);
+        return;
+      }
+
+      // Check if finished action is a cycling clip.
+      const finishedIdx = cycleActions.indexOf(e.action);
+      if (finishedIdx !== -1) {
+        // Not currently waving — advance cycle.
+        if (!wavingRef.current) {
+          const nextIdx = (finishedIdx + 1) % CYCLE_CLIPS.length;
+          cycleIndexRef.current = nextIdx;
+          playCycleSlot(nextIdx, e.action);
         }
+        // If waving, do nothing — wave 'finished' handler above resumes cycle.
       }
     };
+
     mixer.addEventListener('finished', onFinished);
     return () => mixer.removeEventListener('finished', onFinished);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mixer]);
 
   useEffect(() => {
@@ -178,17 +264,26 @@ const TownGuideInner = memo(function TownGuideInner() {
     // player can't walk off mid-conversation.
     store.openGuideChat();
 
-    // Wave animation follows — only plays on first open.
-    const idle = idleActionRef.current;
+    // Interrupt current cycling clip and crossfade to wave (greeting).
     const wave = waveActionRef.current;
-    if (!idle || !wave || wavingRef.current) return;
+    if (!wave || wavingRef.current) return;
+
+    // Find whichever cycling action is currently playing to crossfade from it.
+    const cycleActions = cycleActionsRef.current;
+    const currentIdx = cycleIndexRef.current;
+    const currentCycleAction = cycleActions[currentIdx] ?? null;
 
     wavingRef.current = true;
     wave.reset();
     wave.enabled = true;
     wave.weight  = 0;
     wave.play();
-    idle.crossFadeTo(wave, WAVE_FADE, false);
+
+    if (currentCycleAction) {
+      currentCycleAction.crossFadeTo(wave, WAVE_FADE, false);
+    } else {
+      wave.weight = 1;
+    }
   }
 
   return (
