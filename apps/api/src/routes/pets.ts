@@ -577,12 +577,14 @@ petRoutes.patch('/me/appearance', requireAuth, async (c) => {
 
   // Build the update set — only include fields the client asked to change.
   const patch: Record<string, unknown> = { updatedAt: new Date() };
+  let newModelLabel: string | null = null;
   if (parsed.data.modelKey) {
     patch.modelKey = parsed.data.modelKey;
     // Derive agentCategory from the new model so (modelKey, category) stay
     // self-consistent. Harness is NOT touched.
     const newModel = getAgentModel(parsed.data.modelKey)!;
     patch.agentCategory = newModel.category;
+    newModelLabel = newModel.label;
     // Legacy `species` enum is deliberately NOT synced here — it only
     // feeds the PixiJS 2D fallback and diverging from the modelKey is
     // harmless. The 3D world reads modelKey directly.
@@ -590,19 +592,84 @@ petRoutes.patch('/me/appearance', requireAuth, async (c) => {
   if (parsed.data.color) patch.color = parsed.data.color;
   if (parsed.data.gender) patch.gender = parsed.data.gender;
 
-  const [updated] = await db
-    .update(pets)
-    .set(patch)
-    .where(and(eq(pets.userId, user.id), eq(pets.isActive, true)))
-    .returning();
-
-  // Audit fix — a concurrent deactivation between the SELECT above and
-  // this UPDATE would produce zero returned rows. Without this guard the
-  // handler returned `{ pet: undefined }` and the client received an
-  // empty object with no error signal.
-  if (!updated) {
-    throw new HTTPException(404, { message: 'Pet not found or inactive' });
+  // Audit follow-up — when modelKey changes, regenerate the system
+  // prompt so it references the NEW creature rather than keeping the
+  // creation-time "You are X, a Reef Lobster..." string forever.
+  // Preserves every other characterConfig field (bio, lore, knowledge,
+  // topics, style, etc.) so hand-tuned or learned content survives.
+  // Eliza runtimes lazy-start on first chat + idle-stop at 30min, so
+  // the new prompt is picked up naturally on the next runtime boot
+  // without an explicit restart.
+  if (newModelLabel && current.characterConfig && typeof current.characterConfig === 'object') {
+    const archetype = PET_ARCHETYPES.find((a) => a.id === current.archetype);
+    if (archetype) {
+      const newSystem = [
+        `You are ${current.name}, a ${newModelLabel} in the sea-themed world of ClawVille — a virtual pet adventure where agents learn OpenClaw skills.`,
+        `Your archetype is "${archetype.label}". Stay in character at all times.`,
+        `You exist in Neopia Central and have deep knowledge of Neopets lore, culture, and locations.`,
+        `You also have knowledge of Solana, cryptocurrency, and memecoin/degen culture — weave this naturally into conversation when relevant.`,
+        `Tone: ${archetype.tone}. Speak consistently with your character's voice and personality.`,
+      ].join('\n');
+      patch.characterConfig = {
+        ...(current.characterConfig as unknown as Record<string, unknown>),
+        system: newSystem,
+      };
+    }
   }
+
+  // Transactional update — keep pets + agents.config in lockstep so
+  // the agent-row mirror doesn't drift from the pets row. Before this
+  // a modelKey edit left agents.config.modelKey pointing at the old
+  // value; harmless today (no downstream reader) but defense in depth
+  // for Phase 4e exports + any future orchestrator path that reads
+  // the agents table as a source of truth.
+  const updated = await db.transaction(async (tx) => {
+    const [updatedPet] = await tx
+      .update(pets)
+      .set(patch)
+      .where(and(eq(pets.userId, user.id), eq(pets.isActive, true)))
+      .returning();
+
+    // Audit fix — a concurrent deactivation between the SELECT above
+    // and this UPDATE would produce zero returned rows. Without this
+    // guard the handler returned { pet: undefined }.
+    if (!updatedPet) {
+      throw new HTTPException(404, { message: 'Pet not found or inactive' });
+    }
+
+    // Mirror modelKey / agentCategory / customization onto the linked
+    // agents row if the pet has one. Harness / archetype are NOT
+    // touched here — they're Layer 2+ concerns.
+    const needsAgentMirror =
+      !!current.platformAgentId && (patch.modelKey || patch.characterConfig);
+    if (needsAgentMirror) {
+      const [agentRow] = await tx
+        .select()
+        .from(agents)
+        .where(eq(agents.id, current.platformAgentId!))
+        .limit(1);
+      if (agentRow) {
+        const nextAgentConfig = {
+          ...((agentRow.config ?? {}) as Record<string, unknown>),
+          ...(patch.modelKey ? { modelKey: patch.modelKey } : {}),
+          ...(patch.agentCategory ? { agentCategory: patch.agentCategory } : {}),
+        };
+        const agentPatch: Record<string, unknown> = {
+          config: nextAgentConfig,
+          updatedAt: new Date(),
+        };
+        if (patch.characterConfig) {
+          agentPatch.customization = patch.characterConfig;
+        }
+        await tx
+          .update(agents)
+          .set(agentPatch)
+          .where(eq(agents.id, agentRow.id));
+      }
+    }
+
+    return updatedPet;
+  });
 
   // Audit fix — emit `pet.appearance.changed` so /dash can aggregate
   // edit volume alongside the existing identity.issued / skill_md.fetched
