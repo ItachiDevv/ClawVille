@@ -522,7 +522,10 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
       });
       lobsterAnimator.update(dt, clock.elapsedTime, suggestedState, d.direction);
 
-      // Procedural group-level squash/stretch/tilt
+      // Procedural group-level squash/stretch/tilt.
+      // Walk animation needs full 60Hz — squash/stretch is fast (8 rad/s bob cycle).
+      // Idle animation is slow (max 1.5 rad/s) — 20Hz (every 3rd frame) is imperceptible.
+      // Stagger by seed so NPCs don't all update on the same frame.
       const animStateData = {
         group: animGroup,
         isMoving,
@@ -533,7 +536,9 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
       };
       if (isMoving) {
         applyWalkAnimation(animStateData);
-      } else {
+      } else if ((frame + seed) % 3 === 0) {
+        // PERF: idle animation throttled to 20Hz — 5 trig calls × 18 NPCs was
+        // ~90 sin/cos evaluations/frame at 60Hz; now ~30 (only idle NPCs in range).
         applyIdleAnimation(animStateData);
       }
     }
