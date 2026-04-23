@@ -292,6 +292,10 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // Layer 2 safety net: one-shot rendered-height hard cap applied after first render.
   // Catches any NPC that slips through computeNpcScale with a wrong pivot offset.
   const rescaleAppliedRef = useRef(false);
+  // drei <Html> uses a React DOM portal outside the Three.js scene graph — setting
+  // group.visible=false does NOT propagate to the DOM label. We imperatively sync
+  // label display in useFrame so the label disappears with the mesh.
+  const labelRef = useRef<HTMLDivElement>(null);
   const npcRef = useRef(npc);
   npcRef.current = npc;
   const { scene: threeScene } = useThree();
@@ -381,10 +385,19 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const camDz = targetPos.current.z - camera.position.z;
     const camDistSq = camDx * camDx + camDz * camDz;
     if (camDistSq > NPC_CULL_DIST_SQ) {
-      if (group.visible) group.visible = false;
+      if (group.visible) {
+        group.visible = false;
+        // drei <Html> DOM portal is outside the scene graph — visibility flag does NOT
+        // propagate to the DOM div. Imperatively hide the label so it doesn't float
+        // over empty world space while the 3D mesh is culled.
+        if (labelRef.current) labelRef.current.style.display = 'none';
+      }
       return;
     }
-    if (!group.visible) group.visible = true;
+    if (!group.visible) {
+      group.visible = true;
+      if (labelRef.current) labelRef.current.style.display = 'flex';
+    }
 
     // Lerp XZ position
     currentPos.current.x += (targetPos.current.x - currentPos.current.x) * (1 - Math.exp(-LERP_SPEED * dt));
@@ -511,7 +524,10 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
         style={{ pointerEvents: 'none' }}
         zIndexRange={[10, 100]}
       >
+        {/* ref attached so useFrame can imperatively sync display with group.visible.
+            drei <Html> is a DOM portal — Three.js visibility flag does NOT propagate. */}
         <div
+          ref={labelRef}
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -564,6 +580,9 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
 // The 2 demo Milady NPCs intentionally use different paths (official_7 / official_8).
 const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
   const groupRef = useRef<THREE.Group>(null!);
+  // Same DOM-portal caveat as GLBNpcMesh — drei <Html> is outside the scene graph.
+  // Imperatively sync label display with group.visible in the cull block.
+  const labelRef = useRef<HTMLDivElement>(null);
   const { scene: threeScene } = useThree();
   const npcRef = useRef(npc);
   npcRef.current = npc;
@@ -616,10 +635,17 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const camDz = targetPos.current.z - camera.position.z;
     const camDistSq = camDx * camDx + camDz * camDz;
     if (camDistSq > NPC_CULL_DIST_SQ) {
-      if (group.visible) group.visible = false;
+      if (group.visible) {
+        group.visible = false;
+        // drei <Html> DOM portal — Three.js visibility flag does NOT propagate.
+        if (labelRef.current) labelRef.current.style.display = 'none';
+      }
       return;
     }
-    if (!group.visible) group.visible = true;
+    if (!group.visible) {
+      group.visible = true;
+      if (labelRef.current) labelRef.current.style.display = 'flex';
+    }
 
     // Lerp XZ position (mirrors GLBNpcMesh terrain-ride pattern)
     currentPos.current.x += (targetPos.current.x - currentPos.current.x) * (1 - Math.exp(-LERP_SPEED * dt));
@@ -673,7 +699,10 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
         style={{ pointerEvents: 'none' }}
         zIndexRange={[10, 100]}
       >
+        {/* ref attached so useFrame can imperatively sync display with group.visible.
+            drei <Html> is a DOM portal — Three.js visibility flag does NOT propagate. */}
         <div
+          ref={labelRef}
           style={{
             display: 'flex',
             alignItems: 'center',
