@@ -1,0 +1,45 @@
+name: Auto-deploy to Coolify
+
+# Triggers a Coolify deploy for both the api (app 3) and web (app 4)
+# on every push to master. Coolify's built-in webhook delivery is not
+# configured for this repo (source_type/source_id are null on both apps;
+# only "Public GitHub" placeholder exists in coolify). Instead of
+# reconfiguring Coolify's GitHub App integration, this workflow SSHes
+# into the VPS and invokes the same `php artisan tinker` deploy command
+# we'd run manually.
+
+on:
+  push:
+    branches:
+      - master
+
+concurrency:
+  group: coolify-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Coolify deploys via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: 87.99.142.34
+          username: root
+          key: ${{ secrets.COOLIFY_SSH_KEY }}
+          port: 22
+          script_stop: true
+          command_timeout: 5m
+          script: |
+            set -eo pipefail
+            echo "Triggering Coolify deploys for commit ${{ github.sha }}"
+            docker exec coolify php artisan tinker --execute='
+              use App\Models\Application;
+              foreach ([3, 4] as $appId) {
+                $app = Application::find($appId);
+                $uuid = (string) new \Visus\Cuid2\Cuid2;
+                queue_application_deployment(application: $app, deployment_uuid: $uuid, is_api: true, no_questions_asked: true);
+                echo "triggered app:" . $appId . " deployment " . $uuid . PHP_EOL;
+              }
+            '
+            echo "Both deploys queued. Watch progress in Coolify UI or via API."
