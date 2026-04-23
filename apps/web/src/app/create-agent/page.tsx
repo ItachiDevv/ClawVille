@@ -606,7 +606,13 @@ export default function CreateAgentPage() {
                   <input
                     type="text"
                     value={agentName}
-                    onChange={(e) => setAgentName(e.target.value)}
+                    // Audit follow-up — strip non-alphanumeric on input so
+                    // the user can't type a name the server's Zod schema
+                    // (`/^[a-zA-Z0-9]+$/`) will silently reject. Without
+                    // this the check-name endpoint returned "available:
+                    // false" for a format violation and surfaced as
+                    // "name taken" — confusing.
+                    onChange={(e) => setAgentName(e.target.value.replace(/[^a-zA-Z0-9]/g, ''))}
                     maxLength={20}
                     className="w-full px-4 py-2.5 rounded-lg bg-white/[0.04] border border-white/10 text-white placeholder:text-white/20 focus:outline-none focus:border-cyan-400/60 focus:shadow-[0_0_14px_rgba(0,229,255,0.12)] transition-all font-mono text-sm"
                     placeholder="name your agent…"
@@ -621,6 +627,11 @@ export default function CreateAgentPage() {
                   {agentName.length > 0 && agentName.length < 3 && (
                     <p className="text-[10px] mt-1.5 text-white/30 font-mono uppercase tracking-wider">
                       min 3 characters
+                    </p>
+                  )}
+                  {agentName.length === 0 && (
+                    <p className="text-[10px] mt-1.5 text-white/25 font-mono uppercase tracking-wider">
+                      letters + numbers only · max 20
                     </p>
                   )}
                 </div>
