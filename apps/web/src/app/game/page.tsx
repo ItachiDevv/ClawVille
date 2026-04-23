@@ -11,6 +11,7 @@ import { useGameStore, type GameState } from '@/stores/game';
 import { api } from '@/lib/api';
 import SeaLoadingScreen from '@/components/game/sea-loading-screen';
 import PetSettingsModal from '@/components/game/pet-settings-modal';
+import FirstTimeBackupModal from '@/components/game/first-time-backup-modal';
 import LocationConfigModal from '@/components/game/location-config-modal';
 import TutorialOverlay from '@/components/game/tutorial-overlay';
 import ToastNotifications from '@/components/game/toast-notifications';
@@ -209,6 +210,7 @@ export default function GamePage() {
       <BuildingTooltip />
       <NanoClawBanner />
       <AgentConnectModal />
+      <FirstTimeBackupModal />
       <SkillBuilderModal />
       <MarketplaceModal />
       <BazaarModal />
