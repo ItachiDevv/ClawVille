@@ -184,9 +184,15 @@ function SandFloor() {
   const sandMat = useMemo(() => createSandMaterial(), []);
 
   useEffect(() => {
-    if (ref.current) ref.current.layers.enable(TERRAIN_LAYER);
+    if (ref.current) {
+      ref.current.layers.enable(TERRAIN_LAYER);
+      // PERF: terrain never moves after mount. Disable matrixAutoUpdate so
+      // Three.js skips the per-frame matrix re-multiply for this mesh
+      // (was contributing to the 9.9% updateMatrixWorld cost in the profile).
+      ref.current.matrixAutoUpdate = false;
+      ref.current.updateMatrix();
+    }
     // Dispose both geometry and material on unmount to prevent GPU memory leaks.
-    // sandGeo is a large subdivided plane (120×120 segs = ~14400 quads).
     return () => {
       sandGeo.dispose();
       sandMat.dispose();

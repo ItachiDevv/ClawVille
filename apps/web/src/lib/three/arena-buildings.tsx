@@ -322,6 +322,22 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
     };
   }, [cloned]);
 
+  // PERF: buildings never move at runtime in normal play (only EditableBuilding
+  // does, and that's a separate component). Disable matrixAutoUpdate on the
+  // group + every cloned mesh so Three.js doesn't re-multiply matrices for
+  // ~30+ static meshes per building × 10 buildings every frame.
+  // Was contributing to the 9.9% updateMatrixWorld cost in the DevTools profile.
+  useEffect(() => {
+    const g = groupRef.current;
+    if (!g) return;
+    g.matrixAutoUpdate = false;
+    g.updateMatrix();
+    cloned.traverse((obj) => {
+      obj.matrixAutoUpdate = false;
+      obj.updateMatrix();
+    });
+  }, [cloned]);
+
   const theme = BUILDING_OPENCLAW_THEMES[zone.id];
 
   // Buildings sit on the flat sand floor (y=-2). No raycasting needed —
@@ -333,9 +349,10 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
       <group position={[-pivotOffsetX, -pivotOffsetY, -pivotOffsetZ]}>
         <primitive object={cloned} scale={buildingScale} />
       </group>
-      {/* Floating building label */}
+      {/* Floating building label.
+          PERF: removed distanceFactor (was 1500) — see arena-npcs.tsx PERF note */}
       {theme && (
-        <Html position={[0, BUILDING_TARGET_HEIGHT + 20, 0]} center distanceFactor={1500} style={{ pointerEvents: 'auto' }}>
+        <Html position={[0, BUILDING_TARGET_HEIGHT + 20, 0]} center style={{ pointerEvents: 'auto' }}>
           <div
             style={{
               background: 'rgba(10, 22, 40, 0.85)',
@@ -430,7 +447,8 @@ function EditableBuilding({
         <meshBasicMaterial visible={false} />
       </mesh>
       {/* Label */}
-      <Html position={[0, 50, 0]} center distanceFactor={400} style={{ pointerEvents: 'none' }}>
+      {/* PERF: removed distanceFactor (was 400) — see arena-npcs.tsx PERF note */}
+      <Html position={[0, 50, 0]} center style={{ pointerEvents: 'none' }}>
         <div
           style={{
             background: isDragging ? '#d97706' : '#1e293b',
