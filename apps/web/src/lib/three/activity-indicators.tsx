@@ -155,8 +155,42 @@ const TypingDots = memo(function TypingDots({
 // ActivityIndicators — reads NPC store and renders indicators for all NPCs
 // ---------------------------------------------------------------------------
 
+// PERF: subscribe only to the activity-relevant NPC fields (isDead, inCombat,
+// inConversation, id, x, y) rather than the full NPC array. Full subscription
+// re-renders this component every 100ms SSE snapshot (NPC positions change
+// constantly), even though the emoji/typing state changes only rarely.
+// We use a shallow-equal selector on a derived array of activity snapshots.
+interface NpcActivitySnapshot {
+  id: string;
+  x: number;
+  y: number;
+  isDead: boolean;
+  inCombat: boolean;
+  inConversation: boolean;
+}
+
+// Stable empty array to avoid triggering re-renders when no NPCs are active
+const EMPTY_SNAPSHOTS: NpcActivitySnapshot[] = [];
+
 function ActivityIndicators() {
-  const npcs = useNpcStore((s) => s.npcs);
+  // Subscribe to a derived array that only contains the fields we care about.
+  // Zustand's shallow equality check on the array reference won't help here
+  // (new array reference on every SSE update), so we extract just the fields
+  // that affect rendering and compare them via a manual reference-stable selector.
+  const npcSnapshots = useNpcStore((s) => {
+    const arr = s.npcs;
+    if (arr.length === 0) return EMPTY_SNAPSHOTS;
+    // Only include NPCs that have a non-empty indicator to show
+    return arr.filter((n) => n.isDead || n.inCombat || n.inConversation)
+              .map((n): NpcActivitySnapshot => ({
+                id: n.id,
+                x: n.x,
+                y: n.y,
+                isDead: n.isDead,
+                inCombat: n.inCombat,
+                inConversation: n.inConversation,
+              }));
+  });
 
   // Periodically evict expired chatBubbles / combatEvents / lootEvents.
   // cleanupExpired() is defined in the store but was never called — in demo
@@ -168,18 +202,16 @@ function ActivityIndicators() {
     return () => clearInterval(id);
   }, []);
 
-  // NPC store doesn't have typingNpcIds or activities in ClawVille's npc.ts,
-  // but we can derive typing from inConversation and activity from direction.
-  // For now, show conversation bubble indicators for NPCs in conversation.
+  if (npcSnapshots.length === 0) return null;
+
   return (
     <group>
-      {npcs.map((npc) => {
+      {npcSnapshots.map((npc) => {
         // Derive simple activity from NPC state
         let activity: string | undefined;
         if (npc.isDead) activity = 'resting';
         else if (npc.inCombat) activity = 'fighting';
         else if (npc.inConversation) activity = 'socializing';
-        else if (npc.direction !== 'idle') activity = undefined; // walking, no emoji
         else activity = undefined;
 
         return (

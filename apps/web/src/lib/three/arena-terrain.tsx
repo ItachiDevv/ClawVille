@@ -397,19 +397,36 @@ function disposeClone(root: THREE.Object3D): void {
 function SingleDecoration({ entry }: { entry: DecoEntry }) {
   const { scene } = useGLTF(entry.model);
   const cloned = useMemo(() => scene.clone(true), [scene]);
+  const groupRef = useRef<THREE.Group>(null);
 
   // Dispose cloned scene geometry + materials on unmount to prevent GPU leaks.
   // scene.clone(true) deep-clones all child geometries and materials, so they
   // must be manually disposed — R3F does not know about them.
   useEffect(() => () => disposeClone(cloned), [cloned]);
 
+  // PERF: decorations never move at runtime. Disable matrixAutoUpdate on the
+  // group + every cloned mesh so Three.js skips per-frame matrix re-multiplies
+  // for 80 static decoration objects × ~5-30 meshes each.
+  useEffect(() => {
+    const g = groupRef.current;
+    if (!g) return;
+    g.matrixAutoUpdate = false;
+    g.updateMatrix();
+    cloned.traverse((obj) => {
+      obj.matrixAutoUpdate = false;
+      obj.updateMatrix();
+    });
+  }, [cloned]);
+
   return (
-    <primitive
-      object={cloned}
+    <group
+      ref={groupRef}
       position={[entry.x, -2, entry.z]}
       scale={entry.scale}
       rotation={[0, entry.rotY, 0]}
-    />
+    >
+      <primitive object={cloned} />
+    </group>
   );
 }
 

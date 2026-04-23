@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useMemo, useCallback, memo } from 'react';
+import { useRef, useMemo, useCallback, useState, memo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 
@@ -187,8 +187,11 @@ function ParticleSystem() {
   const sphereGeo = useMemo(() => new THREE.SphereGeometry(1, 6, 4), []);
   const boxGeo = useMemo(() => new THREE.BoxGeometry(1, 1, 1), []);
 
-  // Force re-render counter
-  const renderTickRef = useRef(0);
+  // PERF: track active particles in React state (only updated when count changes)
+  // so the render body never calls pool.filter() — that allocates a new array
+  // every React reconcile even when all particles are inactive.
+  const [activeParticles, setActiveParticles] = useState<Particle[]>([]);
+  const prevActiveCountRef = useRef(0);
 
   // Acquire a free particle from the pool
   const acquire = useCallback((): Particle | null => {
@@ -250,12 +253,19 @@ function ParticleSystem() {
       p.opacity = lifeRatio > 0.6 ? 1 - (lifeRatio - 0.6) / 0.4 : 1;
     }
 
-    renderTickRef.current += 1;
+    // Only trigger React re-render when active count changes — avoids calling
+    // pool.filter() in the render body every frame (costly array allocation).
+    const currentActive = pool.filter((p) => p.active);
+    const newCount = currentActive.length;
+    if (newCount !== prevActiveCountRef.current) {
+      prevActiveCountRef.current = newCount;
+      setActiveParticles([...currentActive]);
+    }
   });
 
-  // Render active particles
   const pool = poolRef.current as unknown as Particle[];
-  const active = pool.filter((p) => p.active);
+  // Use state-driven active list (updated lazily when count changes, not every frame)
+  const active = activeParticles;
 
   return (
     <group>

@@ -805,7 +805,11 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
         onCreated={(state) => {
           const { scene, gl } = state;
           scene.background = SKY_COLOR;
-          gl.setPixelRatio(Math.min(window.devicePixelRatio, 1));
+          // PERF: do NOT call gl.setPixelRatio() here — it overrides the Canvas
+          // dpr={[0.75, 1]} prop cap. R3F resolves the DPR from the prop before
+          // onCreated fires; a manual setPixelRatio resets it and can raise DPR
+          // above the intended cap on devices where devicePixelRatio > 1.0.
+          // The dpr prop handles clamping correctly without this call.
           if ((gl as any).isWebGPURenderer) {
             const backend = (gl as any).backend;
             const name = backend?.constructor?.name ?? 'unknown';
