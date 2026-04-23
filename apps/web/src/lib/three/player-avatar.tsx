@@ -428,6 +428,10 @@ function PlayerPetGLBInner() {
 
   const { cloned, lobsterAnimator, charAnimator, pivotOffsetY } = useMemo(() => {
     const c = scene.clone(true);
+    // SkinnedMesh bounding spheres come from bind pose (T-pose); animated geometry
+    // extends past them, causing the player avatar to disappear when camera is close/angled.
+    // Must be applied at every clone site — not just arena-npcs.tsx.
+    c.traverse((obj) => { obj.frustumCulled = false; });
     const avatarColor = useGameStore.getState().avatarColor;
     const tint = new THREE.Color(COLOR_TINTS[avatarColor] ?? 0xffffff);
 
