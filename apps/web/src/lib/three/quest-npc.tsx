@@ -106,6 +106,9 @@ const QuestNpcInner = memo(function QuestNpcInner() {
   // guide reads at the same prominence as building characters).
   const { cloned, npcScale } = useMemo(() => {
     const c = scene.clone(true);
+    // SkinnedMesh bounding spheres come from bind pose (T-pose); animated geometry
+    // extends past them, causing the NPC to disappear when camera is close/angled.
+    c.traverse((obj) => { obj.frustumCulled = false; });
     const box = new THREE.Box3().setFromObject(c);
     const sz  = new THREE.Vector3();
     box.getSize(sz);
