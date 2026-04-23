@@ -4,6 +4,7 @@ import { useRef, useMemo, memo, Suspense, useEffect, type ReactElement } from 'r
 import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF, Html } from '@react-three/drei';
 import * as THREE from 'three';
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import {
   MAP_WIDTH,
   MAP_HEIGHT,
@@ -403,7 +404,13 @@ const NpcMesh = memo(function NpcMesh({
   //     (double negative = add) to raise the model so geometry bottom aligns with terrainY.
   //   Applied each frame as: group.position.y = terrainY + BASE_LIFT + bob - pivotOffsetY
   const { cloned, npcScale, pivotOffsetY } = useMemo(() => {
-    const c = scene.clone(true);
+    // SkeletonUtils.clone deep-clones the skeleton along with the SkinnedMeshes,
+    // unlike scene.clone(true) which leaves cloned SkinnedMeshes pointing at the
+    // ORIGINAL bones. Without this, AnimationMixer drives the original skeleton
+    // (not visible in our scene) and the cloned mesh deforms into nothing —
+    // Pearl Krabs invisible in the Downtown building was the symptom that
+    // surfaced this. Safe for non-skinned scenes (falls back to standard clone).
+    const c = SkeletonUtils.clone(scene);
     // SkinnedMesh bounding spheres come from bind pose (T-pose); animated geometry
     // extends past them, causing the character to disappear when camera is close/angled.
     // Must be applied at every clone site — not just arena-npcs.tsx.
@@ -505,12 +512,13 @@ const NpcMesh = memo(function NpcMesh({
     // "ghost slowly drifts in the air" motion better than the small idle bob.
     const t = clock.elapsedTime;
     if (modelCfg.ghostFloat) {
-      // Base lift = 12wu so bbox bottom hovers ~12wu above terrain at the
-      // bob midpoint, range ~6-18wu above ground with the ±6 sin bob.
-      // The proper pivotOffsetY (now computed from real bbox.min.y for ghosts,
-      // not the >CLAMP_MAX fallback's forced 0) does the rest of the lifting.
-      const ghostBob = Math.sin(t * 0.8 + seedBase) * 6;
-      groupRef.current.position.set(worldX, terrainY.current + 12 + ghostBob - pivotOffsetY, worldZ);
+      // Base lift = 35wu so bbox bottom hovers ~35wu above terrain at bob
+      // midpoint, range ~28-42wu above ground with the ±7 sin bob — clearly
+      // floating, not standing. The proper pivotOffsetY (computed from real
+      // bbox.min.y for ghosts, not the >CLAMP_MAX fallback's forced 0) does
+      // the rest of the lifting.
+      const ghostBob = Math.sin(t * 0.8 + seedBase) * 7;
+      groupRef.current.position.set(worldX, terrainY.current + 35 + ghostBob - pivotOffsetY, worldZ);
       if (animGroupRef.current) {
         animGroupRef.current.rotation.z = Math.sin(t * 0.5 + seedBase * 0.7) * 0.06;
       }
