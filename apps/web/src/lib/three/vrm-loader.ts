@@ -20,6 +20,8 @@
 
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
+import { MToonMaterialLoaderPlugin } from '@pixiv/three-vrm-materials-mtoon';
+import { MToonNodeMaterial } from '@pixiv/three-vrm/nodes';
 import type { VRM } from '@pixiv/three-vrm';
 
 // ---------------------------------------------------------------------------
@@ -41,7 +43,21 @@ let _loader: GLTFLoader | null = null;
 function getLoader(): GLTFLoader {
   if (_loader) return _loader;
   _loader = new GLTFLoader();
-  _loader.register((parser) => new VRMLoaderPlugin(parser));
+  // Register VRMLoaderPlugin with MToonMaterialLoaderPlugin configured to emit
+  // MToonNodeMaterial instead of the default MToonMaterial. MToonNodeMaterial is
+  // a TSL-based material that works with both WebGPURenderer and WebGPURenderer's
+  // built-in WebGL2 backend (TSL → GLSL transpilation). It does NOT work with a
+  // plain WebGLRenderer (no TSL transpiler) — but World3DCanvas always uses
+  // WebGPURenderer (with WebGL2 backend fallback via renderer.init()), so this
+  // path is safe. SelectAgentCanvas uses plain WebGLRenderer and does NOT call
+  // getLoader() — it shows PNG billboard previews instead (see SelectAgentCanvas.tsx).
+  _loader.register((parser) =>
+    new VRMLoaderPlugin(parser, {
+      mtoonMaterialPlugin: new MToonMaterialLoaderPlugin(parser, {
+        materialType: MToonNodeMaterial,
+      }),
+    }),
+  );
   return _loader;
 }
 
