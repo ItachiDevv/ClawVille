@@ -120,6 +120,13 @@ class ActivityRoomManager {
    */
   private liveTransitionFn: ((room: Room) => void) | null = null;
 
+  /**
+   * Eviction hook registered by chunk #10's bot pool wiring so reserved
+   * bot petIds are returned to the pool when a room ends (any path —
+   * RESULTS→GC, ABORTED, ABORTED_CRASH). Chunk #10.
+   */
+  private evictionFn: ((room: Room) => void) | null = null;
+
   private sweeperHandle: ReturnType<typeof setInterval> | null = null;
 
   // ─── Public API ──────────────────────────────────────────────────────────
@@ -428,6 +435,17 @@ class ActivityRoomManager {
     this.liveTransitionFn = fn;
   }
 
+  /**
+   * Register a callback fired immediately before a room is evicted from
+   * memory (any terminal path). The receiver is responsible for cleaning
+   * up auxiliary state — e.g. returning bot reservations to the pool.
+   * Errors thrown here are logged but never rolled back; eviction must
+   * still proceed so the room map doesn't leak.
+   */
+  setEvictionFn(fn: (room: Room) => void): void {
+    this.evictionFn = fn;
+  }
+
   /** Boot-time: start the sweeper interval. Safe to call repeatedly. */
   startSweeper(): void {
     if (this.sweeperHandle) return;
@@ -596,6 +614,15 @@ class ActivityRoomManager {
     // credit ClawTokens via the existing ledger helper + emit one
     // `activity.match.placed` event per participant. That whole settlement
     // block is the reward pipeline's chunk.
+    //
+    // Chunk #10 carve-out — when chunk #7 lands, the reward issuance
+    // path MUST filter `participant.subjectType === 'bot'` BEFORE
+    // crediting ClawTokens or leaderboard points. Bots have system-user
+    // wallets and their participation is for solo-queue backfill only;
+    // crediting them silently inflates the system user's balance and
+    // pollutes the free-agent leaderboard. `activity_results` rows for
+    // bots ARE still written (placement display) but with `tokens=0`
+    // and `leaderboard_points=0`. Per backend §8.4.
 
     void logEvent({
       eventType: 'activity.match.ended',
@@ -656,6 +683,15 @@ class ActivityRoomManager {
   }
 
   private evictRoom(room: Room): void {
+    // Fire the eviction hook BEFORE clearing maps so receivers can still
+    // read participant info if they want to. Errors don't block eviction.
+    if (this.evictionFn) {
+      try {
+        this.evictionFn(room);
+      } catch (err) {
+        console.error('[activity-room-manager] evictionFn threw:', err);
+      }
+    }
     this.rooms.delete(room.id);
     this.shortCodeIndex.delete(room.shortCode);
     for (const petId of room.participants.keys()) {
