@@ -23,6 +23,17 @@ export * from './agent-session-tickets';
 export * from './events';
 export * from './event-write-failures';
 export * from './pending-account-links';
+// Q2 Activity Portals — schemas ship ahead of backend routes. Migration
+// (db:push) is a founder-review step; files compile today so downstream
+// packages can type-check against them.
+export * from './activities';
+export * from './activity-rooms';
+export * from './activity-room-participants';
+export * from './activity-results';
+export * from './activity-queue-entries';
+export * from './activity-parties';
+export * from './activity-replays';
+export * from './activity-seasons';
 
 import { users, sessions } from './users';
 import { npcMemories, activityLog } from './memories';
