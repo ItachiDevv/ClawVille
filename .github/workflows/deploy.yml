@@ -5,8 +5,15 @@ name: Auto-deploy to Coolify
 # configured for this repo (source_type/source_id are null on both apps;
 # only "Public GitHub" placeholder exists in coolify). Instead of
 # reconfiguring Coolify's GitHub App integration, this workflow SSHes
-# into the VPS and invokes the same `php artisan tinker` deploy command
-# we'd run manually.
+# into the VPS and invokes /root/clawville-deploy.sh, which runs the
+# same `php artisan tinker` deploy command we'd run manually.
+#
+# The script lives ON the VPS to avoid YAML→bash→tinker quote escaping
+# hell. Source of truth is in this repo at scripts/deploy/clawville-deploy.sh
+# — copy any changes there to /root/ on the VPS via:
+#   scp -i ~/.ssh/clawville_deploy scripts/deploy/clawville-deploy.sh \
+#     root@87.99.142.34:/root/ && \
+#   ssh ... 'chmod +x /root/clawville-deploy.sh'
 
 on:
   push:
@@ -33,13 +40,5 @@ jobs:
           script: |
             set -eo pipefail
             echo "Triggering Coolify deploys for commit ${{ github.sha }}"
-            docker exec -i coolify php artisan tinker <<'PHPEOF'
-            use App\Models\Application;
-            foreach ([3, 4] as $appId) {
-              $app = Application::find($appId);
-              $uuid = (string) new \Visus\Cuid2\Cuid2;
-              queue_application_deployment(application: $app, deployment_uuid: $uuid, is_api: true, no_questions_asked: true);
-              echo "triggered app:" . $appId . " deployment " . $uuid . PHP_EOL;
-            }
-            PHPEOF
-            echo "Both deploys queued. Watch progress in Coolify UI or via API."
+            /root/clawville-deploy.sh
+            echo "Both deploys queued."
