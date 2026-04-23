@@ -1,4 +1,4 @@
-FROM oven/bun:1.3.11
+FROM oven/bun:1
 WORKDIR /app
 
 # Copy root workspace files
@@ -11,10 +11,11 @@ COPY apps/api/ apps/api/
 # Install dependencies (includes workspace linking)
 RUN bun install
 
-# Build workspace packages — use bunx tsc directly (bun 1.3.13 has a bun-run-tsc
-# regression that mangles string literals during build; pinning to 1.3.11 + direct
-# bunx invocation sidesteps both issues). Fail build on real tsc errors so dist is
-# never corrupted silently.
+# Build workspace packages — fail-fast on tsc errors. Previously used
+# `bun run build || true`, which silently masked tsc failures and shipped
+# corrupt dist/*.js that crashed the api at import time. `bunx tsc` fails
+# the image build if the source doesn't compile — catch it at build, not
+# at runtime.
 RUN cd packages/shared && bunx tsc
 RUN cd packages/database && bunx tsc
 RUN cd packages/agent-templates && bunx tsc
