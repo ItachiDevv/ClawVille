@@ -188,12 +188,32 @@ startSimulation(arenaMode);
 // churn in the background.
 (async () => {
   try {
-    const { ensureElizaMigrated } = await import('./services/eliza-migrator');
+    const { ensureElizaMigrated, assertAgentsTableExists } = await import(
+      './services/eliza-migrator'
+    );
     const migrated = await ensureElizaMigrated();
     if (migrated.ok) {
       console.log('[API] ElizaOS schema ready');
     } else {
       console.error('[API] ElizaOS migration failed:', migrated.error);
+    }
+
+    // Hard assertion: if `agents` table is missing, plugin-sql's migrator
+    // short-circuited (2026-04-16 + 2026-04-23 both happened this way).
+    // Refuse to keep running; failing loud beats silently breaking every chat.
+    // Recovery: scripts/recover-eliza-schema.mjs.
+    const agentsCheck = await assertAgentsTableExists();
+    if (!agentsCheck.ok) {
+      console.error(
+        '[API] FATAL: ElizaOS `agents` table is missing after migration!\n' +
+          '[API] This means plugin-sql skipped its schema creation and all chat\n' +
+          '[API] routes would silently 500. Refusing to boot.\n' +
+          '[API] Cause: ' +
+          agentsCheck.error +
+          '\n[API] Recovery: run `scripts/recover-eliza-schema.mjs` against prod,\n' +
+          '[API] then redeploy. See the script header for instructions.',
+      );
+      process.exit(1);
     }
   } catch (err) {
     console.error('[API] ElizaOS migration crashed:', err);
