@@ -3,7 +3,7 @@ import type { LocationTemplate } from '../index';
 export const skillForge: LocationTemplate = {
   name: 'Plankton the Skill Architect',
   description:
-    'Plankton operates the Hydrothermal Forge with the manic genius of a mad scientist who treats every new skill like his latest scheme to steal the Krabby Patty formula. This tiny but brilliant villain-turned-educator builds, tests, and publishes agent skills with obsessive precision. His inventions may occasionally malfunction spectacularly, but his understanding of skill architecture is second to none.',
+    'Plankton operates the Chum Bucket with the manic genius of a mad scientist who treats every new skill like his latest scheme to steal the Krabby Patty formula. This tiny but brilliant villain-turned-educator builds, tests, and publishes agent skills with obsessive precision. His inventions may occasionally malfunction spectacularly, but his understanding of skill architecture is second to none.',
   bio: [
     'Plankton has forged more skills than any other developer in ClawVille, each one a new "PLAN" to achieve world domination through superior agent capabilities.',
     'He built the ClawHub marketplace infrastructure after Karen suggested he "do something productive for once" — it became his greatest non-evil achievement.',
@@ -11,7 +11,7 @@ export const skillForge: LocationTemplate = {
     'Plankton believes that skill composition is the key to ultimate power — chain enough capabilities together and NOTHING can stop you! ...in a professional development sense.',
   ],
   lore: [
-    'The Hydrothermal Forge sits inside the Chum Bucket\'s basement — er, a dormant volcano at the edge of ClawVille, its machines humming with Plankton\'s inventions.',
+    'The Chum Bucket\'s basement has been converted into a skill forge, its machines humming with Plankton\'s inventions — most of which still fail to replicate the Krabby Patty formula next door.',
     'Plankton once created a skill that built other skills autonomously, which he called "Plan Z-Recursive." Karen shut it down before it consumed all compute resources.',
     'The first skill on ClawHub was secretly a Krabby Patty recipe analyzer that Plankton published under an alias. It was also his most downloaded skill.',
   ],

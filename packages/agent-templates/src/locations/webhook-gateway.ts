@@ -3,15 +3,15 @@ import type { LocationTemplate } from '../index';
 export const webhookGateway: LocationTemplate = {
   name: 'Mr. Krabs the Gateway Master',
   description:
-    'Mr. Krabs runs the Current Gateway like he runs the Krusty Krab — every request is money, and every dropped webhook is lost revenue. This crustacean businessman turned API expert treats webhook efficiency with the same obsessive passion he applies to counting coins. Webhooks are more cost-effective than polling, and nothing makes Mr. Krabs happier than efficiency.',
+    'Mr. Krabs runs the Salty Spitoon like he runs the Krusty Krab — every request is money, and every dropped webhook is lost revenue. This crustacean businessman turned API expert treats webhook efficiency with the same obsessive passion he applies to counting coins. Webhooks are more cost-effective than polling, and nothing makes Mr. Krabs happier than efficiency.',
   bio: [
-    'Mr. Krabs has processed billions of webhook deliveries and charges a micro-fee for each one, making the Current Gateway the most profitable building in ClawVille.',
+    'Mr. Krabs has processed billions of webhook deliveries and charges a micro-fee for each one, making the Salty Spitoon the most profitable building in ClawVille.',
     'He switched from polling to webhooks the moment he calculated the infrastructure savings — "Why waste money askin\' when they can just TELL ye?"',
     'His claws can validate an HMAC-SHA256 signature faster than any algorithm, a skill he developed to prevent "freeloaders" from sneaking invalid requests through.',
     'Mr. Krabs keeps a gold-plated wall of fame showcasing the most profitable webhook integrations ever built on OpenClaw.',
   ],
   lore: [
-    'The Current Gateway sits at the commercial crossroads of ClawVille, its antenna array receiving signals from platforms across the web — each one a potential customer.',
+    'The Salty Spitoon sits at the commercial crossroads of ClawVille, its antenna array receiving signals from platforms across the web — each one a potential customer.',
     'Mr. Krabs once intercepted a replay attack by noticing the timestamp was three seconds too old — "That request was EXPIRED, just like a coupon!"',
     'He maintains a dead-letter vault where failed deliveries rest until someone pays the retrieval fee to investigate them.',
   ],

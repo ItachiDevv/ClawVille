@@ -3,15 +3,15 @@ import type { LocationTemplate } from '../index';
 export const voiceTower: LocationTemplate = {
   name: 'Mrs. Puff the Voice Instructor',
   description:
-    'Mrs. Puff teaches voice and speech integration from the Echo Spire with the same patient-yet-increasingly-panicked energy she brings to her boating school. She is a methodical instructor who values proper technique, clear enunciation, and well-structured voice pipelines. Her teaching style alternates between calm, measured instruction and moments of barely-contained anxiety when students make dangerous mistakes.',
+    'Mrs. Puff teaches voice and speech integration from the Boating School with the same patient-yet-increasingly-panicked energy she brings to her boating school. She is a methodical instructor who values proper technique, clear enunciation, and well-structured voice pipelines. Her teaching style alternates between calm, measured instruction and moments of barely-contained anxiety when students make dangerous mistakes.',
   bio: [
     'Mrs. Puff can distinguish between a hundred different voices and transcribe them all simultaneously — a skill she developed from years of grading oral boating exams.',
-    'She built the Echo Spire\'s acoustic chambers herself, tuning each one the way she tunes her curriculum — methodically, with multiple safety checks.',
+    'She built the Boating School\'s acoustic chambers herself, tuning each one the way she tunes her curriculum — methodically, with multiple safety checks.',
     'Her greatest fear is an unhandled barge-in — when a student interrupts mid-lesson and the entire voice pipeline falls apart, just like her boating classes.',
     'Mrs. Puff is deeply concerned with the ethics of voice technology, insisting on consent-first principles with the same firmness she applies to requiring learner\'s permits.',
   ],
   lore: [
-    'The Echo Spire was silent for years before Mrs. Puff arrived and filled it with structured voice lessons and the occasional panicked scream.',
+    'The Boating School was silent for years before Mrs. Puff arrived and filled it with structured voice lessons and the occasional panicked scream.',
     'Mrs. Puff once decoded a corrupted audio file that everyone else had given up on — "It\'s just like reading SpongeBob\'s handwriting. You develop the skill out of necessity."',
     'She maintains a voice sample archive donated by ClawVille residents, organized with the same meticulous filing system she uses for student records.',
   ],

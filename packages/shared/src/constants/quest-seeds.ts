@@ -28,7 +28,7 @@ export const QUEST_SEEDS: QuestSeed[] = [
   {
     title: 'Patch a Leaking Pipe',
     description:
-      'A minor memory leak has been spotted near the Salvage Workshop. The NPC event listener cleanup is missing in one of the useEffect hooks.',
+      'A minor memory leak has been spotted near the Krusty Krab. The NPC event listener cleanup is missing in one of the useEffect hooks.',
     tier: 'side_quest',
     tokenReward: 15,
     maxCompletions: 3,
@@ -64,7 +64,7 @@ export const QUEST_SEEDS: QuestSeed[] = [
   {
     title: 'Signal Relay Protocol',
     description:
-      'Set up a multi-channel bridge at the Coral Bridge. Route messages from Discord to Telegram seamlessly, proving your cross-platform channel mastery.',
+      "Set up a multi-channel bridge at Sandy's Treedome. Route messages from Discord to Telegram seamlessly, proving your cross-platform channel mastery.",
     tier: 'main_quest',
     tokenReward: 350,
     titleReward: 'Bridge Commander',
