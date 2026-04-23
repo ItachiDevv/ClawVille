@@ -41,12 +41,14 @@ const SpeechBubble = memo(function SpeechBubble({ npc, bubble }: SpeechBubblePro
 
   return (
     <group position={[worldX, BUBBLE_Y, worldZ]}>
-      {/* PERF: removed distanceFactor={300} — drei recomputes camera-distance
-          scale + writes a new CSS transform every frame for each Html, forcing a
-          full Layout pass per bubble per frame. Labels display at constant CSS
-          size; positioning still tracks the 3D point. */}
+      {/* distanceFactor is REQUIRED on speech bubbles — without it drei's
+          transform chain squeezes the wrapper and our inner `maxWidth: 180`
+          no longer holds, producing 1-char-per-line wrapping as seen in
+          bug report 2026-04-23. The per-frame CSS recompute cost is
+          negligible here (MAX_BUBBLES=10 concurrent, transient). Keep it. */}
       <Html
         center
+        distanceFactor={300}
         style={{ pointerEvents: 'none' }}
         zIndexRange={[10, 100]}
       >
