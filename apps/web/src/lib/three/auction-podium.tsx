@@ -94,6 +94,9 @@ function FloatingAuctionItem() {
 
   const cloned = useMemo(() => {
     const c = scene.clone(true);
+    // Disable frustum culling on all nodes — jellyfish.glb may contain SkinnedMesh
+    // whose bounding sphere (from bind pose) doesn't cover animated deformation.
+    c.traverse((obj) => { obj.frustumCulled = false; });
     // Normalize to a reasonable size — 8× scaled target (18→144)
     const box = new THREE.Box3().setFromObject(c);
     const sz = new THREE.Vector3();
