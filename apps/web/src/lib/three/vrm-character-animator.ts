@@ -155,8 +155,26 @@ export class VRMCharacterAnimator {
       }
 
       this.ready = true;
+      // Debug: track init completions on window for CDP diagnostics
+      if (typeof window !== 'undefined') {
+        const w = window as any;
+        w.__VRM_INIT_COUNT = (w.__VRM_INIT_COUNT || 0) + 1;
+        w.__VRM_INIT_LOG = w.__VRM_INIT_LOG || [];
+        const leftArm = this.vrm.humanoid.getNormalizedBoneNode('leftUpperArm' as any);
+        w.__VRM_INIT_LOG.push({
+          n: w.__VRM_INIT_COUNT,
+          idleAction: !!idle,
+          idleClip: idle ? idle.getClip().name : null,
+          leftArmNode: leftArm ? leftArm.name : null,
+        });
+      }
     } catch (err) {
       console.warn('[VRMCharacterAnimator] init failed:', err);
+      if (typeof window !== 'undefined') {
+        const w = window as any;
+        w.__VRM_INIT_ERRORS = w.__VRM_INIT_ERRORS || [];
+        w.__VRM_INIT_ERRORS.push(String(err));
+      }
       // ready stays false — update() will be a no-op
     }
   }
