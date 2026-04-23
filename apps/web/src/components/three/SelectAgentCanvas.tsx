@@ -6,27 +6,20 @@
  * Renders a rotating platform with the selected agent's GLB model,
  * underwater atmosphere effects, and dramatic lighting.
  *
- * GPU constraints: no InstancedMesh, no drei Text/Billboard, TSL only.
+ * GPU constraints: no InstancedMesh, no drei Text/Billboard, no three/webgpu or TSL.
+ * Uses plain WebGLRenderer (via R3F default) + plain Three.js materials only.
+ * TSL NodeMaterials were removed 2026-04-23 to fix per-frame VRM shader crash.
  */
 
 import React, { useRef, memo, Suspense, useEffect } from 'react';
-import { Canvas, useFrame, extend } from '@react-three/fiber';
+import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, useGLTF } from '@react-three/drei';
-import * as THREE from 'three/webgpu';
-import type { ThreeToJSXElements } from '@react-three/fiber';
-
-// Register Three.js WebGPU elements
-declare module '@react-three/fiber' {
-  interface ThreeElements extends ThreeToJSXElements<typeof THREE> {}
-}
-// R3F v9's extend() expects Catalogue (Record<string, Constructor>) or a ConstructorRepresentation.
-// We pass the WebGPU THREE module which contains mixed types — `any` is the pragmatic escape.
-// A narrower cast (Record<string, unknown>) loses the constructor signature and fails typecheck.
-extend(THREE as any);
-
-import UnderwaterAtmosphere from '@/lib/three/underwater-atmosphere';
-import UnderwaterLightRays from '@/lib/three/underwater-light-rays';
-import { float, vec3, sin, time, uv, smoothstep, fract, positionLocal } from 'three/tsl';
+import * as THREE from 'three';
+// UnderwaterAtmosphere and UnderwaterLightRays are TSL/three-webgpu-only components.
+// They cannot coexist with a plain WebGLRenderer Canvas — importing them would pull
+// three/webgpu into this module, creating a second THREE instance and causing
+// NodeMaterial.vertexShader=undefined crash in WebGLPrograms.acquireProgram.
+// Dropped from SelectAgentCanvas until a plain-three replacement is available.
 import { discoverLobsterParts } from '@/lib/three/lobster-parts';
 import { LobsterAnimator, resolveAnimState } from '@/lib/three/lobster-animations';
 import { applyIdleAnimation, idToSeed } from '@/lib/three/procedural-animation';
@@ -59,41 +52,24 @@ const COLOR_TINTS: Record<PickerColorId, number> = {
 };
 
 // ---------------------------------------------------------------------------
-// RuneCircle — flat disc on the pedestal top with TSL radial rune gradient
+// RuneCircle — flat disc on the pedestal top with a static glowing tint.
+// Previously used TSL MeshBasicNodeMaterial for animated rune waves + pulse;
+// replaced with plain MeshBasicMaterial to avoid the three/webgpu dual-instance
+// crash (NodeMaterial.vertexShader=undefined → WebGLPrograms.acquireProgram .replace() TypeError).
+// Rune-wave animation and pulse are sacrificed. Static glow is retained.
 // 1 draw call. AdditiveBlending so it glows without obscuring the pedestal.
 // ---------------------------------------------------------------------------
 function RuneCircle() {
-  const mat = React.useMemo(() => {
-    const m = new THREE.MeshBasicNodeMaterial({
-      transparent: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      side: THREE.DoubleSide,
-    });
+  const mat = React.useMemo(() => new THREE.MeshBasicMaterial({
+    color: 0x00ccff,
+    transparent: true,
+    opacity: 0.4,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  }), []);
 
-    // uv() gives 0..1 in both axes. Convert to polar radius 0..1 from center.
-    const u = uv().x.sub(float(0.5));
-    const v = uv().y.sub(float(0.5));
-    const radius = u.mul(u).add(v.mul(v)).sqrt(); // 0 at center, ~0.707 at corner
-
-    // Two concentric rings: inner ring at r≈0.25, outer ring at r≈0.45
-    const ring1 = smoothstep(float(0.20), float(0.25), radius)
-      .sub(smoothstep(float(0.25), float(0.30), radius));
-    const ring2 = smoothstep(float(0.40), float(0.45), radius)
-      .sub(smoothstep(float(0.45), float(0.50), radius));
-
-    // Rotating "rune" texture faked via angular sin waves
-    const angle = u.atan2(v); // -PI..PI
-    const runeWave = sin(angle.mul(float(8.0)).add(time.mul(float(0.8))))
-      .mul(float(0.5)).add(float(0.5));
-
-    const combined = ring1.add(ring2.mul(runeWave)).mul(float(1.0));
-
-    const pulse = sin(time.mul(float(1.5))).mul(float(0.3)).add(float(0.7));
-    m.colorNode = vec3(float(0.0), float(0.8), float(1.0)).mul(combined).mul(pulse);
-    m.opacity = 0.75;
-    return m;
-  }, []);
+  useEffect(() => () => mat.dispose(), [mat]);
 
   return (
     <mesh position={[0, 0.2, 0]} rotation={[-Math.PI / 2, 0, 0]} material={mat}>
@@ -104,31 +80,24 @@ function RuneCircle() {
 
 // ---------------------------------------------------------------------------
 // SpotlightConeSelect — fake spotlight shining DOWN from above the model.
-// Open CylinderGeometry (radiusBottom=0, inverted) with TSL additive falloff.
+// Open CylinderGeometry (radiusBottom=0, inverted) with additive blending.
 // No actual SpotLight — the scene light budget is already at 3/3.
+// Previously used TSL MeshBasicNodeMaterial for fade+pulse animation;
+// replaced with plain MeshBasicMaterial to fix the three/webgpu dual-instance
+// crash. Pulsing falloff is sacrificed. Static cone glow is retained.
 // 1 draw call.
 // ---------------------------------------------------------------------------
 function SpotlightConeSelect() {
-  const mat = React.useMemo(() => {
-    const m = new THREE.MeshBasicNodeMaterial({
-      transparent: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      side: THREE.BackSide,
-    });
+  const mat = React.useMemo(() => new THREE.MeshBasicMaterial({
+    color: 0x2db6ff,
+    transparent: true,
+    opacity: 0.18,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.BackSide,
+  }), []);
 
-    // uv().y goes 0→1 from narrow end (top) to wide end (bottom).
-    // Fade from bright at bottom (near model) to transparent at top.
-    const fade = smoothstep(float(0.0), float(0.5), uv().y);
-    const pulse = sin(time.mul(float(0.9))).mul(float(0.15)).add(float(0.85));
-
-    m.colorNode = vec3(float(0.2), float(0.7), float(1.0))
-      .mul(float(0.35))
-      .mul(fade)
-      .mul(pulse);
-    m.opacity = 0.5;
-    return m;
-  }, []);
+  useEffect(() => () => mat.dispose(), [mat]);
 
   return (
     // Inverted cone: radiusTop = wide (at water-surface level), radiusBottom = 0 (tip points down at model)
@@ -140,63 +109,39 @@ function SpotlightConeSelect() {
 }
 
 // ---------------------------------------------------------------------------
-// EmberParticles — 80 upward-drifting ember points.
-// Uses a PointsNodeMaterial with TSL positionNode animation.
-// 1 draw call for all 80 particles.
+// EmberParticles — 80 static ember points.
+// Previously used PointsNodeMaterial with TSL positionNode/colorNode/opacityNode
+// for upward-drift animation; replaced with plain PointsMaterial to fix the
+// three/webgpu dual-instance crash. Upward-drift animation is sacrificed.
+// Static orange glow particles remain. 1 draw call for all 80 particles.
 // ---------------------------------------------------------------------------
 const EMBER_COUNT = 80;
 
 function EmberParticles() {
-  // Build a small Float32Array of random seed offsets — done ONCE
-  const { positions, seeds } = React.useMemo(() => {
-    const pos  = new Float32Array(EMBER_COUNT * 3);
-    const seed = new Float32Array(EMBER_COUNT);
+  const geo = React.useMemo(() => {
+    const pos = new Float32Array(EMBER_COUNT * 3);
     for (let i = 0; i < EMBER_COUNT; i++) {
-      // Random start in cylinder: radius 0..8, height 0..30
       const r   = Math.random() * 8;
       const ang = Math.random() * Math.PI * 2;
       pos[i * 3 + 0] = Math.cos(ang) * r;
       pos[i * 3 + 1] = Math.random() * 30;
       pos[i * 3 + 2] = Math.sin(ang) * r;
-      seed[i] = Math.random() * 100; // per-particle random offset
     }
-    return { positions: pos, seeds: seed };
-  }, []);
-
-  const geo = React.useMemo(() => {
     const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    g.setAttribute('aSeed',    new THREE.BufferAttribute(seeds,     1));
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     return g;
-  }, [positions, seeds]);
-
-  const mat = React.useMemo(() => {
-    const m = new THREE.PointsNodeMaterial({
-      transparent: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      sizeAttenuation: true,
-    });
-
-    // Per-particle vertical drift via positionLocal.y phase
-    const drift = fract(positionLocal.y.div(float(30.0)).add(time.mul(float(0.18))));
-    const height = drift.mul(float(30.0));
-
-    // Override Y position to loop upward
-    const animPos = positionLocal.add(
-      vec3(float(0.0), height.sub(positionLocal.y), float(0.0))
-    );
-    m.positionNode = animPos;
-
-    // Glow: cyan→orange ember colors, fade out at top (drift near 1.0)
-    const fadeOut = smoothstep(float(0.8), float(1.0), drift).oneMinus();
-    const emberColor = vec3(float(1.0), float(0.45), float(0.1));
-    m.colorNode   = emberColor.mul(fadeOut);
-    m.opacityNode = fadeOut.mul(float(0.8));
-    m.sizeNode    = float(3.5);
-
-    return m;
   }, []);
+
+  const mat = React.useMemo(() => new THREE.PointsMaterial({
+    color: 0xff7219,
+    transparent: true,
+    size: 3.5,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    sizeAttenuation: true,
+  }), []);
+
+  useEffect(() => () => { geo.dispose(); mat.dispose(); }, [geo, mat]);
 
   return <points geometry={geo} material={mat} />;
 }
@@ -478,9 +423,10 @@ const SceneContents = memo(function SceneContents({
           out at chest height. Near=30 still keeps the figure crystal clear. */}
       <fog attach="fog" args={[0x030d1a, isVRM ? 40 : 30, isVRM ? 140 : 120]} />
 
-      {/* Atmosphere effects — always on. Consistent with in-game. */}
-      <UnderwaterAtmosphere />
-      <UnderwaterLightRays />
+      {/* Atmosphere effects — UnderwaterAtmosphere and UnderwaterLightRays
+          are TSL/three-webgpu components and cannot run in a plain WebGLRenderer
+          Canvas. They are intentionally excluded here to avoid the dual-THREE-
+          instance NodeMaterial.vertexShader crash. Static ember particles remain. */}
       <EmberParticles />
       <SpotlightConeSelect />
 
