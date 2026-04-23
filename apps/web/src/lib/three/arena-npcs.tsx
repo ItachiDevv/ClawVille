@@ -258,27 +258,48 @@ const VRM_NPC_SCALE = 28;
 // then skips the entire render subtree (including the drei <Html> label
 // portal, which is the most expensive per-NPC DOM cost).
 //
-//   Close (< 600 wu):  full 60Hz — animator + raycast + label
-//   Mid   (< 1200 wu): VRM animator drops to 30Hz (GLB animators stay 60Hz
+//   Close (< 800 wu):  full 60Hz — animator + raycast + label
+//   Mid   (< 2500 wu): VRM animator drops to 30Hz (GLB animators stay 60Hz
 //                      since they're much cheaper than VRM spring-bone physics)
-//   Far   (≥ 1200 wu): group.visible = false → no render, no label, no
+//   Far   (≥ 2500 wu): group.visible = false → no render, no label, no
 //                      matrix/animator/raycast/lerp work. Zero cost per frame.
 //
-// Position is still stored in the store (server + client) so when the NPC
-// re-enters the close band, it snaps to its current position and resumes.
-// 1200 wu ≈ underwater fog far plane — past that the NPC is not visible to
-// the player anyway, so the cull is invisible.
-const NPC_CULL_DIST_SQ          = 1200 * 1200;
-const VRM_NPC_HALF_RATE_DIST_SQ = 600 * 600;
+// NPC_CULL_DIST raised 1200→2000 (2026-04-21 bug fix): Maple/Miu spawned
+//   beyond the old 1200wu threshold and were T-posed permanently.
+// NPC_CULL_DIST raised 2000→2500 (2026-04-23 bug fix):
+//   The 5120×5120 world (−2560..+2560 in world space) places many wandering
+//   NPCs 1300–2500wu from any reasonable camera position (camera is at y≈600,
+//   not y=0, so even NPCs on adjacent quadrants are 1300–1600wu XZ-distance
+//   from the player). With the old 2000wu threshold, NPCs in the outer half of
+//   the world were culled whenever the player was anywhere near center — they
+//   would appear briefly as the camera approached and disappear again as it
+//   receded past the 2000wu sphere. 2500wu covers ~half the map radius
+//   (diagonal half = 3620wu) and matches the fog's effective visibility cutoff,
+//   keeping all nearby-quadrant NPCs live while the distant corners remain culled.
+//   VRM half-rate band raised 800→1000 proportionally.
+const NPC_CULL_DIST_SQ          = 2500 * 2500;
+const VRM_NPC_HALF_RATE_DIST_SQ = 1000 * 1000;
 
-// Preload the 2 Milady VRM paths used by wandering NPCs + Mixamo animation clips.
-// These calls are module-scope so the cache is warm before any VRMNpcMesh mounts.
-// IMPORTANT: wandering NPCs use milady_official_7 and milady_official_8 intentionally —
-// the vrm-loader caches exactly one VRM instance per path. Sharing a path between
-// multiple concurrent NPC instances would cause them to share vrm.scene, making both
-// NPCs animate identically and clobber each other's animation state on every frame.
-// milady_official_7 and milady_official_8 are chosen to minimise collision with
-// player-pet defaults (official_1 = category default, official_5 = popular pick).
+// Preload ALL Milady VRM paths used by wandering NPCs + Mixamo animation clips.
+// These calls are module-scope so the caches are warm before any VRMNpcMesh mounts.
+// IMPORTANT: each concurrent VRM NPC MUST use a distinct VRM path — vrm-loader caches
+// exactly one VRM instance (vrm.scene Object3D) per path. Two components sharing a path
+// would share vrm.scene; R3F's `<primitive>` would reparent the same Object3D between
+// groups each frame, and both AnimationMixers would fight over the same scene root —
+// causing T-pose / frozen animation on one of them.
+// Demo NPC → VRM path mapping (all distinct, no collision):
+//   Miu   → milady_official_7
+//   Kyoko → milady_official_8
+//   Vivi  → milady_official_2
+//   Maple → milady_official_3
+//   Ash   → milady_official_4
+// Only official_7/8 were preloaded before — official_2/3/4 cold-started, delaying
+// animator.init() by a full network round-trip and leaving Vivi/Maple/Ash in T-pose
+// until after their Suspense resolved AND the clip loads completed. Now all 5 are
+// preloaded at module scope so they are hot when the Suspense boundaries resolve.
+preloadVRM('/avatars/milady-official-2.vrm');
+preloadVRM('/avatars/milady-official-3.vrm');
+preloadVRM('/avatars/milady-official-4.vrm');
 preloadVRM('/avatars/milady-official-7.vrm');
 preloadVRM('/avatars/milady-official-8.vrm');
 preloadMixamoClips();
@@ -318,6 +339,14 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const c = scene.clone(true);
     const tint = new THREE.Color(npc.color);
     applyColorTint(c, tint, 0.7, 0.25);
+
+    // Disable frustum culling on every node in the clone.
+    // GLB NPCs with SkinnedMesh (animated crabs, hermit crabs, etc.) have their
+    // bounding spheres computed from the bind pose (T-pose). When the camera is
+    // close to the NPC or looking steeply down, the animated geometry extends
+    // outside the bind-pose sphere and Three.js wrongly culls the mesh, making
+    // the NPC disappear at close range. frustumCulled=false prevents this.
+    c.traverse((obj) => { obj.frustumCulled = false; });
 
     // Compute per-species normalized scale + pivot offset.
     // npcScale normalizes the model's above-pivot height to TARGET_NPC_HEIGHT.
@@ -385,18 +414,25 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const camDz = targetPos.current.z - camera.position.z;
     const camDistSq = camDx * camDx + camDz * camDz;
     if (camDistSq > NPC_CULL_DIST_SQ) {
-      if (group.visible) {
-        group.visible = false;
-        // drei <Html> DOM portal is outside the scene graph — visibility flag does NOT
-        // propagate to the DOM div. Imperatively hide the label so it doesn't float
-        // over empty world space while the 3D mesh is culled.
-        if (labelRef.current) labelRef.current.style.display = 'none';
-      }
+      // Always write — not transition-only. React memo shallow-compares the npc prop
+      // object reference; every SSE snapshot rebuilds the array so memo re-renders on
+      // every snapshot, re-applying the JSX inline `display: 'flex'` and clobbering
+      // any `display: 'none'` that a previous cull frame wrote. The transition-only
+      // guard (`if (group.visible)`) then skipped re-writing because group.visible was
+      // already false, so the label stayed visible at distance indefinitely.
+      // Always writing the style (cheap when value doesn't change) prevents the leak.
+      group.visible = false;
+      // drei <Html> DOM portal is outside the scene graph — visibility flag does NOT
+      // propagate to the DOM div. Imperatively hide the label so it doesn't float
+      // over empty world space while the 3D mesh is culled.
+      const label = labelRef.current;
+      if (label && label.style.display !== 'none') label.style.display = 'none';
       return;
     }
-    if (!group.visible) {
-      group.visible = true;
-      if (labelRef.current) labelRef.current.style.display = 'flex';
+    group.visible = true;
+    {
+      const label = labelRef.current;
+      if (label && label.style.display !== 'flex') label.style.display = 'flex';
     }
 
     // Lerp XZ position
@@ -525,11 +561,16 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
         zIndexRange={[10, 100]}
       >
         {/* ref attached so useFrame can imperatively sync display with group.visible.
-            drei <Html> is a DOM portal — Three.js visibility flag does NOT propagate. */}
+            drei <Html> is a DOM portal — Three.js visibility flag does NOT propagate.
+            Default display:'none' so labels start hidden; useFrame opens them when
+            the NPC enters range. This prevents ghost labels on the very first frames
+            before useFrame has had a chance to evaluate distance — and also ensures
+            that memo re-renders (which re-apply the JSX inline style) default to
+            hidden rather than overwriting a cull-frame 'none' with 'flex'. */}
         <div
           ref={labelRef}
           style={{
-            display: 'flex',
+            display: 'none',
             alignItems: 'center',
             gap: 4,
             background: 'rgba(8, 20, 38, 0.78)',
@@ -635,16 +676,18 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const camDz = targetPos.current.z - camera.position.z;
     const camDistSq = camDx * camDx + camDz * camDz;
     if (camDistSq > NPC_CULL_DIST_SQ) {
-      if (group.visible) {
-        group.visible = false;
-        // drei <Html> DOM portal — Three.js visibility flag does NOT propagate.
-        if (labelRef.current) labelRef.current.style.display = 'none';
-      }
+      // Always write — not transition-only. See GLBNpcMesh cull block for full rationale:
+      // memo re-renders restore JSX inline style; always-write prevents the leak.
+      group.visible = false;
+      // drei <Html> DOM portal — Three.js visibility flag does NOT propagate.
+      const label = labelRef.current;
+      if (label && label.style.display !== 'none') label.style.display = 'none';
       return;
     }
-    if (!group.visible) {
-      group.visible = true;
-      if (labelRef.current) labelRef.current.style.display = 'flex';
+    group.visible = true;
+    {
+      const label = labelRef.current;
+      if (label && label.style.display !== 'flex') label.style.display = 'flex';
     }
 
     // Lerp XZ position (mirrors GLBNpcMesh terrain-ride pattern)
@@ -700,11 +743,14 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
         zIndexRange={[10, 100]}
       >
         {/* ref attached so useFrame can imperatively sync display with group.visible.
-            drei <Html> is a DOM portal — Three.js visibility flag does NOT propagate. */}
+            drei <Html> is a DOM portal — Three.js visibility flag does NOT propagate.
+            Default display:'none' — same rationale as GLBNpcMesh: prevents ghost labels
+            on first frames and prevents memo re-renders from restoring 'flex' on culled
+            NPCs. useFrame opens the label when the NPC enters the cull radius. */}
         <div
           ref={labelRef}
           style={{
-            display: 'flex',
+            display: 'none',
             alignItems: 'center',
             gap: 4,
             background: 'rgba(8, 20, 38, 0.78)',
