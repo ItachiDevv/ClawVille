@@ -20,9 +20,22 @@
 
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
-import { MToonMaterialLoaderPlugin } from '@pixiv/three-vrm-materials-mtoon';
-import { MToonNodeMaterial } from '@pixiv/three-vrm/nodes';
 import type { VRM } from '@pixiv/three-vrm';
+
+// Note on @pixiv/three-vrm/nodes + MToonNodeMaterial:
+//   Turbopack static-analyses the MToonNodeMaterial bundle and fails on
+//   `THREE_WEBGPU.tslFn` — a symbol the MToon 3.5.2 FnCompat shim references
+//   but which three 0.168+ removed (renamed to `Fn`). At runtime the shim
+//   picks the `Fn` branch, but Turbopack's strict named-export check rejects
+//   the reference to `tslFn` and the build fails.
+//
+//   Workaround until @pixiv/three-vrm ships a patch release that drops the
+//   tslFn fallback (or Turbopack relaxes the static check): do NOT import
+//   `@pixiv/three-vrm/nodes` from this module. MToon defaults to its WebGL
+//   ShaderMaterial, which works under three 0.180.0 (this file's pinned
+//   version). When we eventually move to MToonNodeMaterial + WebGPURenderer,
+//   the import + VRMLoaderPlugin option below will gain the mtoonMaterialPlugin
+//   wiring. For now, the default material flows.
 
 // ---------------------------------------------------------------------------
 // Module-level VRM cache
@@ -43,21 +56,7 @@ let _loader: GLTFLoader | null = null;
 function getLoader(): GLTFLoader {
   if (_loader) return _loader;
   _loader = new GLTFLoader();
-  // Register VRMLoaderPlugin with MToonMaterialLoaderPlugin configured to emit
-  // MToonNodeMaterial instead of the default MToonMaterial. MToonNodeMaterial is
-  // a TSL-based material that works with both WebGPURenderer and WebGPURenderer's
-  // built-in WebGL2 backend (TSL → GLSL transpilation). It does NOT work with a
-  // plain WebGLRenderer (no TSL transpiler) — but World3DCanvas always uses
-  // WebGPURenderer (with WebGL2 backend fallback via renderer.init()), so this
-  // path is safe. SelectAgentCanvas uses plain WebGLRenderer and does NOT call
-  // getLoader() — it shows PNG billboard previews instead (see SelectAgentCanvas.tsx).
-  _loader.register((parser) =>
-    new VRMLoaderPlugin(parser, {
-      mtoonMaterialPlugin: new MToonMaterialLoaderPlugin(parser, {
-        materialType: MToonNodeMaterial,
-      }),
-    }),
-  );
+  _loader.register((parser) => new VRMLoaderPlugin(parser));
   return _loader;
 }
 
