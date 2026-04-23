@@ -116,7 +116,16 @@ export class VRMCharacterAnimator {
 
   constructor(vrm: VRM) {
     this.vrm   = vrm;
-    this.mixer = new THREE.AnimationMixer(vrm.scene);
+    // Mixer MUST be rooted at the normalized humanoid rig, NOT vrm.scene.
+    // retargetMixamoClip emits track names like "Normalized_mixamorigLeftArm.quaternion".
+    // In @pixiv/three-vrm v3 those nodes live under vrm.humanoid.normalizedHumanBonesRoot,
+    // which is a side rig not parented to vrm.scene. If the mixer searches vrm.scene it
+    // can't find the nodes → PropertyBinding falls through to a sentinel → writes go
+    // nowhere → bones stay at bind pose (T-pose). vrm.update() then propagates the
+    // (unchanged) normalized pose to raw bones, so the visible skeleton also stays in
+    // T-pose. Rooting the mixer at normalizedHumanBonesRoot lets PropertyBinding resolve.
+    const rigRoot = (vrm.humanoid as any)?.normalizedHumanBonesRoot as THREE.Object3D | undefined;
+    this.mixer = new THREE.AnimationMixer(rigRoot ?? vrm.scene);
   }
 
   /**
