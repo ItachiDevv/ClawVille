@@ -11,6 +11,12 @@ import { itemRoutes } from './routes/items';
 import { npcRoutes } from './routes/npc-sse';
 import { openclawRoutes } from './routes/openclaw';
 import { activityRoutes } from './routes/activity';
+import { activitiesV2Routes } from './routes/activities';
+import { activityRoomManager } from './services/activity/activity-room-manager';
+import { activityQueueService } from './services/activity/activity-queue';
+import { activityWsHub } from './services/activity/activity-ws-hub';
+import { bumperShellsSim } from './services/activity/sim/bumper-shells-sim';
+import { getBunWebSocketHelper } from './lib/bun-ws-adapter';
 import { researchSseRoutes } from './routes/research-sse';
 import { researchApiRoutes } from './routes/research';
 import { marketplaceRoutes } from './routes/marketplace';
@@ -108,6 +114,9 @@ app.route('/api/items', itemRoutes);
 app.route('/api/npc', npcRoutes);
 app.route('/api/openclaw', openclawRoutes);
 app.route('/api/avatars', activityRoutes);
+// Q2 Activity Portals — chunk #2 backend skeleton (REST routes; WS hub
+// + sim land in chunk #3). Mount path mirrors the Q2 plan §"API routes".
+app.route('/api/activities', activitiesV2Routes);
 app.route('/api/research', researchSseRoutes);
 app.route('/api/research', researchApiRoutes);
 app.route('/api/marketplace', marketplaceRoutes);
@@ -271,6 +280,67 @@ startSimulation(arenaMode);
   } catch (err) {
     console.error('[API] System NPC seeder failed:', err);
   }
+
+  // Q2 Activity Portals — recover orphaned LIVE/COUNTDOWN rooms (pod
+  // crash recovery per backend §12.1), hydrate persisted queue entries,
+  // then start the room sweeper + matchmaker intervals. Order matters:
+  // recovery must finish before the sweeper runs so it doesn't try to
+  // GC rows the recovery is mid-update on.
+  try {
+    // Wire chunk #3 hub + sim callbacks BEFORE starting the sweeper so
+    // the first FSM transition hits the real broadcast path.
+    activityRoomManager.setBroadcastFn((roomId, frame) => {
+      activityWsHub.broadcastEvent(roomId, frame);
+    });
+    activityRoomManager.setLiveTransitionFn((room) => {
+      if (room.activityId === 'bumper-shells') {
+        bumperShellsSim.startRoom(
+          room.id,
+          room.activityId,
+          Array.from(room.participants.keys()),
+        );
+      }
+    });
+    // Sim broadcast → WS hub, with snapshot frames routed through the
+    // backpressure-aware path.
+    bumperShellsSim.setBroadcastFn((roomId, frame) => {
+      if (frame.type === 'snapshot.delta' || frame.type === 'snapshot.keyframe') {
+        activityWsHub.broadcastSnapshot(roomId, frame);
+      } else {
+        activityWsHub.broadcastEvent(roomId, frame);
+      }
+    });
+    // Sim end → room manager LIVE→RESULTS transition.
+    bumperShellsSim.setEndedFn((roomId) => {
+      void activityRoomManager
+        .transitionRoom(roomId, 'results')
+        .then(() => {
+          bumperShellsSim.stopRoom(roomId);
+        })
+        .catch((err) => {
+          console.error('[API] Sim end → RESULTS transition failed:', err);
+        });
+    });
+    bumperShellsSim.setIntegrityForfeitFn((roomId, avatarId) => {
+      // Chunk #3 §4.7 — send a close frame and drop the connection.
+      activityWsHub.sendToAvatar(roomId, avatarId, {
+        type: 'error',
+        code: 'integrity',
+        message: 'anti-cheat forfeit (5 flags)',
+      });
+      // Unregister is triggered by the close; the hub's notifyForfeit
+      // path runs with reason='integrity' because we set internalCloseCode
+      // before safeClose.
+    });
+
+    await activityRoomManager.recoverOrphanedRooms();
+    await activityQueueService.hydrateFromDb();
+    activityRoomManager.startSweeper();
+    activityQueueService.startMatchmaker();
+    console.log('[API] Activity room manager + queue ready');
+  } catch (err) {
+    console.error('[API] Activity portal init failed:', err);
+  }
 })();
 
 // Graceful shutdown — clean up the many long-lived runtimes and intervals
@@ -290,6 +360,8 @@ async function gracefulShutdown(signal: string) {
     const { getCollaborationBroker } = await import('@clawville/agent-runtime');
 
     stopSimulation();
+    activityRoomManager.stopSweeper();
+    activityQueueService.stopMatchmaker();
     await Promise.allSettled([
       npcSimulation.petAutonomyManager.shutdown(),
       getCollaborationBroker().shutdown(),
@@ -306,7 +378,14 @@ async function gracefulShutdown(signal: string) {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
+// Q2 Activity Portals — WebSocket handler plumbing. The adapter is
+// shared with `apps/api/src/routes/activities.ts` so both halves see the
+// same `createBunWebSocket` instance. Bun.serve reads `websocket` off
+// the default export to drive the WS lifecycle.
+const { websocket: activityWebsocketHandler } = getBunWebSocketHelper();
+
 export default {
   port,
   fetch: app.fetch,
+  websocket: activityWebsocketHandler,
 };
