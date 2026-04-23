@@ -492,7 +492,11 @@ const NpcMesh = memo(function NpcMesh({
     if (!groupRef.current) return;
 
     // Drive built-in AnimationMixer if present (Pearl Krabs etc.).
-    // dt is clamped at the framework level — pass through directly.
+    // AnimationMixer runs every frame — its keyframe interpolation is already
+    // efficient (Float32Array lerp) and skipping it causes visible animation pops
+    // on GLBs with fast skeletal clips (Pearl's breathing idle ~0.5 Hz is fine at
+    // 60Hz; dropping to 20Hz would require per-frame caching of pose which is
+    // more complex than the cost saved).
     if (mixerRef.current) mixerRef.current.update(delta);
 
     // Re-raycast terrain Y periodically (not just once) to handle late terrain loading.
@@ -548,8 +552,15 @@ const NpcMesh = memo(function NpcMesh({
       }
     }
 
-    // Procedural idle animation on inner group
-    if (animGroupRef.current) {
+    // PERF: throttle procedural idle animation to 20Hz (every 3rd frame, staggered by seed).
+    //
+    // Rationale: applyStationaryIdleAnimation runs 5 Math.sin calls + writes 4 Object3D
+    // properties (scale.x/y/z + rotation.x/y/z). With 10-12 location NPC instances this
+    // was ~60 trig evaluations/frame at 60Hz. The animation frequencies are all ≤1.3 rad/s
+    // (max ≈ 0.21 Hz), so 20Hz sampling satisfies Nyquist with 48× margin — imperceptible
+    // difference at any screen refresh rate. stagger via seedBase prevents all 12 NPCs
+    // from updating on the same frame (each updates on its own 3-frame slot).
+    if (animGroupRef.current && (frame + seedBase) % 3 === 0) {
       applyStationaryIdleAnimation({
         group: animGroupRef.current,
         isMoving: false,
