@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useMemo, useCallback } from 'react';
+import { useRef, useMemo, useCallback, useEffect } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useGameStore } from '@/stores/game';
@@ -36,9 +36,14 @@ const pixelZones = buildingZones.map((z) => ({
   height: z.height * TILE_SIZE,
 }));
 
-/** Convert pixel coords to Three.js world coords */
+// Module-scope scratch vectors — avoid per-frame allocations in useFrame hot paths
+const _toWorldScratch = new THREE.Vector3();
+const _dotMatrix = new THREE.Matrix4();
+const _dotRotation = new THREE.Matrix4().makeRotationX(-Math.PI / 2);
+
+/** Convert pixel coords to Three.js world coords — writes into scratch, caller must copy immediately */
 function toWorld(px: number, py: number): THREE.Vector3 {
-  return new THREE.Vector3(px - HALF_W, PATH_DOT_Y, py - HALF_H);
+  return _toWorldScratch.set(px - HALF_W, PATH_DOT_Y, py - HALF_H);
 }
 
 /** Convert Three.js world coords to pixel coords */
@@ -54,6 +59,14 @@ function ClickPlane() {
   const planeRef = useRef<THREE.Mesh>(null);
   const groundPlane = useMemo(() => new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), []);
   const intersectPoint = useMemo(() => new THREE.Vector3(), []);
+
+  // PERF: ClickPlane never moves — disable matrixAutoUpdate so Three.js skips
+  // the per-frame matrix re-multiply for this invisible static mesh.
+  useEffect(() => {
+    if (!planeRef.current) return;
+    planeRef.current.matrixAutoUpdate = false;
+    planeRef.current.updateMatrix();
+  }, []);
 
   const handleClick = useCallback(
     (e: THREE.Event & { stopPropagation?: () => void }) => {
@@ -128,8 +141,6 @@ function PathDots() {
     []
   );
 
-  const tempMatrix = useMemo(() => new THREE.Matrix4(), []);
-
   useFrame(() => {
     const mesh = dotsRef.current;
     if (!mesh) return;
@@ -159,12 +170,12 @@ function PathDots() {
 
     for (let i = 0; i < mesh.count; i++) {
       const wp = dots[i];
+      // PERF: toWorld() writes into _toWorldScratch (module scope, no alloc).
+      // tempMatrix and _dotRotation are also module-scope — no per-dot allocation.
       const worldPos = toWorld(wp.x, wp.y);
-      tempMatrix.makeTranslation(worldPos.x, worldPos.y, worldPos.z);
-      // Rotate flat on ground
-      const rot = new THREE.Matrix4().makeRotationX(-Math.PI / 2);
-      tempMatrix.multiply(rot);
-      mesh.setMatrixAt(i, tempMatrix);
+      _dotMatrix.makeTranslation(worldPos.x, worldPos.y, worldPos.z);
+      _dotMatrix.multiply(_dotRotation);
+      mesh.setMatrixAt(i, _dotMatrix);
     }
     mesh.instanceMatrix.needsUpdate = true;
   });

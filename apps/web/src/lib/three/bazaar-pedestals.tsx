@@ -17,7 +17,7 @@
  * GPU constraints: TSL only, no GLSL, no Text/Billboard, no InstancedMesh+ShaderMaterial
  */
 
-import { useRef, useMemo, memo } from 'react';
+import { useRef, useMemo, useEffect, memo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three/webgpu';
 import { color, float, sin, time, mix } from 'three/tsl';
@@ -31,10 +31,7 @@ const FORGE_CENTER_X = -50;
 const FORGE_FRONT_Z  = -60; // north of dead center
 const BASE_Y         = -2;
 
-// ---------------------------------------------------------------------------
-// Module-scope scratch (avoid per-frame allocation)
-// ---------------------------------------------------------------------------
-const _pedestalRotScratch = new THREE.Euler();
+// (module-scope scratch removed — was declared but never used)
 
 // ---------------------------------------------------------------------------
 // Rarity colors from rarity.ts
@@ -72,7 +69,18 @@ const PEDESTALS: PedestalDef[] = [
 // Single pedestal + floating item
 // ---------------------------------------------------------------------------
 function Pedestal({ def }: { def: PedestalDef }) {
-  const floatRef = useRef<THREE.Mesh>(null!);
+  const floatRef    = useRef<THREE.Mesh>(null!);
+  const solidRef    = useRef<THREE.Mesh>(null);
+  const glowRef     = useRef<THREE.Mesh>(null);
+  const topGlowRef  = useRef<THREE.Mesh>(null);
+
+  // PERF: solid base, glow overlay, and top disc never move — disable
+  // matrixAutoUpdate after mount. Only floatRef bobs/spins each frame.
+  useEffect(() => {
+    for (const ref of [solidRef, glowRef, topGlowRef]) {
+      if (ref.current) { ref.current.matrixAutoUpdate = false; ref.current.updateMatrix(); }
+    }
+  }, []);
 
   // Base cylinder material — emissive TSL, additive blending
   const baseMat = useMemo(() => {
@@ -154,17 +162,17 @@ function Pedestal({ def }: { def: PedestalDef }) {
       }}
     >
       {/* Solid dark base cylinder — 8× scaled: top 32, bottom 40, height 80 */}
-      <mesh position={[0, 40, 0]} material={solidBaseMat}>
+      <mesh ref={solidRef} position={[0, 40, 0]} material={solidBaseMat}>
         <cylinderGeometry args={[32, 40, 80, 24, 1]} />
       </mesh>
 
       {/* Emissive glow overlay (additive) — slightly larger than base */}
-      <mesh position={[0, 40.8, 0]} material={baseMat}>
+      <mesh ref={glowRef} position={[0, 40.8, 0]} material={baseMat}>
         <cylinderGeometry args={[32.8, 40.8, 81.6, 24, 1]} />
       </mesh>
 
       {/* Top glow disc */}
-      <mesh position={[0, 84, 0]} rotation={[Math.PI / 2, 0, 0]} material={topGlowMat}>
+      <mesh ref={topGlowRef} position={[0, 84, 0]} rotation={[Math.PI / 2, 0, 0]} material={topGlowMat}>
         <circleGeometry args={[36, 24]} />
       </mesh>
 

@@ -12,6 +12,13 @@ const TRAIL_LENGTH = 5;
 const TRAIL_SPACING = 3; // frames between recorded positions
 const OPACITIES = [0.3, 0.22, 0.15, 0.1, 0.06];
 
+// PERF: module-scope scratch Vector3 — avoids allocating a new Vector3 inside
+// useFrame on every trail record tick (every TRAIL_SPACING frames).
+// Pre-allocated pool matching TRAIL_LENGTH so we can copy into it rather than
+// push new instances. Pool is reset each time a TrailEffect unmounts (via
+// historyRef clearing).
+const _trailScratch = new THREE.Vector3();
+
 // ---------------------------------------------------------------------------
 // TrailEffect Component
 // ---------------------------------------------------------------------------
@@ -53,14 +60,21 @@ function TrailEffect({ position, active, color, ghostScale = 1 }: TrailEffectPro
     frameCountRef.current += 1;
 
     if (active) {
-      // Record position every TRAIL_SPACING frames
+      // Record position every TRAIL_SPACING frames.
+      // PERF: reuse a pre-existing Vector3 from the pool when possible instead
+      // of allocating a new one — shift() returns the oldest entry which we
+      // can recycle. Only fallback to new Vector3 when pool is empty (fill phase).
       if (frameCountRef.current % TRAIL_SPACING === 0) {
-        historyRef.current.push(
-          new THREE.Vector3(position[0], position[1], position[2])
-        );
-        // Keep only TRAIL_LENGTH entries
-        if (historyRef.current.length > TRAIL_LENGTH) {
-          historyRef.current.shift();
+        if (historyRef.current.length >= TRAIL_LENGTH) {
+          // Recycle the oldest entry (shift from front, re-set values, push to back)
+          const recycled = historyRef.current.shift()!;
+          recycled.set(position[0], position[1], position[2]);
+          historyRef.current.push(recycled);
+        } else {
+          // Pool not yet full — must allocate (only happens for first TRAIL_LENGTH records)
+          historyRef.current.push(
+            _trailScratch.clone().set(position[0], position[1], position[2])
+          );
         }
       }
     } else {

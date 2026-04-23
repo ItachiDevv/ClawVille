@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useEffect } from 'react';
+import { useRef, useMemo, useEffect } from 'react';
 import * as THREE from 'three/webgpu';
 import {
   float,
@@ -76,6 +76,8 @@ function createCausticMaterial(): THREE.MeshBasicNodeMaterial {
 }
 
 function CausticPlane() {
+  const meshRef = useRef<THREE.Mesh>(null);
+
   const { geometry, material } = useMemo(() => {
     // Caustic coverage — must cover full 5120x5120 map visible area (fog far = 6400).
     // 6400x6400 covers the visible area with margin. Larger wastes fragment shader work.
@@ -85,6 +87,12 @@ function CausticPlane() {
   }, []);
 
   useEffect(() => {
+    // PERF: CausticPlane never moves — disable matrixAutoUpdate so Three.js skips
+    // the per-frame matrix re-multiply for this large static mesh.
+    if (meshRef.current) {
+      meshRef.current.matrixAutoUpdate = false;
+      meshRef.current.updateMatrix();
+    }
     return () => {
       geometry.dispose();
       material.dispose();
@@ -93,6 +101,7 @@ function CausticPlane() {
 
   return (
     <mesh
+      ref={meshRef}
       geometry={geometry}
       material={material}
       // Horizontal, facing down — rotated so +Y is up
@@ -150,6 +159,8 @@ function createBackdropMaterial(): THREE.MeshBasicNodeMaterial {
 }
 
 function DepthBackdrop() {
+  const meshRef = useRef<THREE.Mesh>(null);
+
   const { geometry, material } = useMemo(() => {
     // Width covers the full 5120-unit map with generous margin on each side.
     // Height 900 spans from below terrain (y≈-50) to above player eye-level (y≈800).
@@ -160,6 +171,11 @@ function DepthBackdrop() {
   }, []);
 
   useEffect(() => {
+    // PERF: DepthBackdrop never moves — disable matrixAutoUpdate.
+    if (meshRef.current) {
+      meshRef.current.matrixAutoUpdate = false;
+      meshRef.current.updateMatrix();
+    }
     return () => {
       geometry.dispose();
       material.dispose();
@@ -168,6 +184,7 @@ function DepthBackdrop() {
 
   return (
     <mesh
+      ref={meshRef}
       geometry={geometry}
       material={material}
       // Pushed to z=-5500 — well beyond the northernmost building (z≈-1504) and
@@ -249,6 +266,8 @@ function createDustMaterial(): THREE.PointsNodeMaterial {
 }
 
 function DustParticles() {
+  const pointsRef = useRef<THREE.Points>(null);
+
   const { geometry, material } = useMemo(() => {
     const geo = createDustGeometry();
     const mat = createDustMaterial();
@@ -256,6 +275,12 @@ function DustParticles() {
   }, []);
 
   useEffect(() => {
+    // PERF: DustParticles group never moves (animation is GPU-driven via positionNode).
+    // Disable matrixAutoUpdate on the Points object itself (position is [0,0,0]).
+    if (pointsRef.current) {
+      pointsRef.current.matrixAutoUpdate = false;
+      pointsRef.current.updateMatrix();
+    }
     return () => {
       geometry.dispose();
       material.dispose();
@@ -264,6 +289,7 @@ function DustParticles() {
 
   return (
     <points
+      ref={pointsRef as any}
       geometry={geometry}
       material={material}
       position={[0, 0, 0]}
