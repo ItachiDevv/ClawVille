@@ -1,0 +1,247 @@
+import { z } from 'zod';
+
+/**
+ * Q2 Activity Portals — WebSocket protocol shapes.
+ *
+ * Single source of truth for the Client ↔ Server frames used on the
+ * `wss://api.clawville.world/api/activities/:id/rooms/:roomId/ws`
+ * socket. Every frame is MessagePack-encoded over a binary WS in
+ * production (`@msgpack/msgpack`), but the logical shape is JSON.
+ *
+ * **Validation contract:**
+ *   - Server ingress validates inbound frames against the Zod schemas
+ *     below. Invalid frames → `error` reply, socket stays open for
+ *     soft faults; fatal faults close with 4xxx codes (see backend §3.2).
+ *   - Server egress is TYPED but NOT re-validated (trusted producer).
+ *   - Client consumers should trust egress types but defensively handle
+ *     unknown `type` fields for forward compatibility.
+ *
+ * The TypeScript union types are derived FROM the Zod schemas via
+ * `z.infer` so a schema change can't silently drift from the TS types.
+ */
+
+// ─── Shared scalar shapes ───────────────────────────────────────────────────
+
+export const vec2Schema = z.object({
+  x: z.number(),
+  y: z.number(),
+});
+export type Vec2 = z.infer<typeof vec2Schema>;
+
+// ─── Client → Server ────────────────────────────────────────────────────────
+
+export const clientAuthFrameSchema = z.object({
+  type: z.literal('auth'),
+  sessionToken: z.string().min(1),
+  shortCode: z.string().min(1),
+});
+
+export const clientInputFrameSchema = z.object({
+  type: z.literal('input'),
+  /** Monotonic client counter for input idempotency + replay ordering */
+  seq: z.number().int().nonnegative(),
+  /** Delta seconds since last input frame */
+  dt: z.number().nonnegative(),
+  dir: vec2Schema.optional(),
+  thrust: z.number().optional(),
+  /** Packed 16-bit bitfield of discrete actions (power-up use, brake, ...) */
+  actionBits: z.number().int().nonnegative().optional(),
+});
+
+export const clientPingFrameSchema = z.object({
+  type: z.literal('ping'),
+  sentAt: z.number(),
+});
+
+export const clientChatFrameSchema = z.object({
+  type: z.literal('chat'),
+  text: z.string().min(1).max(140),
+});
+
+export const clientEmoteFrameSchema = z.object({
+  type: z.literal('emote'),
+  emoteId: z.string().min(1).max(64),
+});
+
+export const clientLeaveFrameSchema = z.object({
+  type: z.literal('leave'),
+});
+
+export const clientFrameSchema = z.discriminatedUnion('type', [
+  clientAuthFrameSchema,
+  clientInputFrameSchema,
+  clientPingFrameSchema,
+  clientChatFrameSchema,
+  clientEmoteFrameSchema,
+  clientLeaveFrameSchema,
+]);
+
+export type ClientAuthFrame = z.infer<typeof clientAuthFrameSchema>;
+export type ClientInputFrame = z.infer<typeof clientInputFrameSchema>;
+export type ClientPingFrame = z.infer<typeof clientPingFrameSchema>;
+export type ClientChatFrame = z.infer<typeof clientChatFrameSchema>;
+export type ClientEmoteFrame = z.infer<typeof clientEmoteFrameSchema>;
+export type ClientLeaveFrame = z.infer<typeof clientLeaveFrameSchema>;
+export type ClientFrame = z.infer<typeof clientFrameSchema>;
+
+// ─── Server → Client — metadata shapes ──────────────────────────────────────
+
+/** Reward preview returned on `event.match_ended` — authoritative from DB */
+export interface RewardPreview {
+  placement: number;
+  tokens: number;
+  leaderboardPoints: number;
+  isPersonalBest?: boolean;
+  firstPlayOfDayBonus?: boolean;
+  focusBonus?: boolean;
+}
+
+/** Room-level metadata attached to `snapshot.init` */
+export interface RoomMeta {
+  roomId: string;
+  shortCode: string;
+  activityId: string;
+  status: 'countdown' | 'live' | 'results';
+  startedAt?: number;
+  endsAt?: number;
+}
+
+/** Per-entity delta — only changed fields are transmitted */
+export interface EntityDelta {
+  petId: string;
+  seq: number;
+  changed: {
+    x?: number;
+    y?: number;
+    vx?: number;
+    vy?: number;
+    rot?: number;
+    hp?: number;
+    state?: string;
+    [k: string]: unknown;
+  };
+}
+
+export interface PowerUpDelta {
+  spawnId: string;
+  kind: string;
+  position?: Vec2;
+  collectorPetId?: string;
+  /** Server-owned inventory — client mirrors this for HUD */
+  inventory?: Array<{
+    kind: string;
+    charges: number;
+    cooldownUntil?: number;
+  }>;
+}
+
+export interface ScoreDelta {
+  petId: string;
+  score: number;
+  placement?: number;
+}
+
+/** Full room state (for snapshot.init and snapshot.keyframe) */
+export interface WorldState {
+  tick: number;
+  entities: Array<{
+    petId: string;
+    position: Vec2;
+    velocity: Vec2;
+    rotation: number;
+    state: string;
+    hp?: number;
+  }>;
+  powerUps: Array<{
+    spawnId: string;
+    kind: string;
+    position: Vec2;
+  }>;
+  scores: Array<{ petId: string; score: number }>;
+}
+
+// ─── Server → Client frame union ────────────────────────────────────────────
+
+export type ServerFrame =
+  | {
+      type: 'snapshot.init';
+      room: RoomMeta;
+      world: WorldState;
+      seed: number;
+    }
+  | {
+      type: 'snapshot.delta';
+      baseSeq: number;
+      seq: number;
+      entities: EntityDelta[];
+      powerUps: PowerUpDelta[];
+      scores?: ScoreDelta[];
+    }
+  | {
+      type: 'snapshot.keyframe';
+      seq: number;
+      world: WorldState;
+    }
+  | { type: 'event.countdown'; secondsRemaining: number }
+  | { type: 'event.match_started'; startedAt: number }
+  | {
+      type: 'event.match_ended';
+      reason: 'complete' | 'forfeit' | 'aborted';
+      winners: Array<{ petId: string; placement: number }>;
+      rewardPreview: RewardPreview;
+    }
+  | { type: 'event.player_joined'; petId: string; displayName: string }
+  | {
+      type: 'event.player_left';
+      petId: string;
+      reason: 'voluntary' | 'timeout' | 'integrity';
+    }
+  | { type: 'event.eliminated'; petId: string; by?: string }
+  | {
+      type: 'event.hit';
+      srcPetId: string;
+      dstPetId: string;
+      position: Vec2;
+      power: number;
+    }
+  | {
+      type: 'event.lap_completed';
+      petId: string;
+      lap: number;
+      splitMs: number;
+      totalMs: number;
+    }
+  | {
+      type: 'event.power_up_spawned';
+      spawnId: string;
+      kind: string;
+      position: Vec2;
+    }
+  | {
+      type: 'event.power_up_collected';
+      spawnId: string;
+      collectorPetId: string;
+    }
+  | { type: 'chat'; petId: string; text: string }
+  | { type: 'pong'; sentAt: number; serverTime: number }
+  | { type: 'error'; code: string; message: string };
+
+// ─── Close codes ────────────────────────────────────────────────────────────
+
+/**
+ * WebSocket close codes used by the activity WS hub. Values in the
+ * 4000-4999 range are application-private (per RFC 6455).
+ */
+export const ACTIVITY_WS_CLOSE_CODES = {
+  /** auth frame missing, malformed, or sessionToken invalid */
+  UNAUTHORIZED: 4001,
+  /** client failed to drain send buffer for >8s */
+  SLOW_READ: 4002,
+  /** anti-cheat flag threshold exceeded (5 flags/match) */
+  INTEGRITY: 4003,
+  /** Sybil guard tripped (concurrent-room cap) */
+  CONCURRENCY_CAP: 4004,
+} as const;
+
+export type ActivityWsCloseCode =
+  (typeof ACTIVITY_WS_CLOSE_CODES)[keyof typeof ACTIVITY_WS_CLOSE_CODES];

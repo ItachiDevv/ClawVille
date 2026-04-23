@@ -43,3 +43,6 @@ export type {
   AgentModelKey,
   AgentModelMeta,
 } from './constants/agent-models';
+// Q2 Activity Portals — protocol types + activity registry. See
+// `packages/shared/src/activities/index.ts` for the surface.
+export * from './activities';
