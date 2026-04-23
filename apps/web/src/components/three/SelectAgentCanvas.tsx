@@ -231,11 +231,14 @@ const PlatformModelVRM = memo(function PlatformModelVRM({
   });
 
   return (
-    // Bumped scale from registry (13) → larger effective size to fill the
-    // enlarged shrine panel. The per-registry scale stays authoritative for
-    // game-world rendering; the picker uses a visual multiplier to frame the
-    // avatar head-to-toe without requiring a per-row registry change.
-    <group position={[0, 1.5, 0]} scale={[reg.scale * 1.35, reg.scale * 1.35, reg.scale * 1.35]}>
+    // reg.scale * 2.1 (≈ 27.3) — matches the VRM_NPC_SCALE=28 sizing used by
+    // wandering Milady NPCs in arena-npcs.tsx, so the picker preview renders at
+    // roughly the same apparent height as the in-world avatar. Previously used
+    // 1.35× which made Milady fill only ~60% of the shrine vs. OpenClaw GLBs
+    // filling ~90% — user flagged 2026-04-23 as "half as small as other
+    // avatars". The registry's per-row scale (13) is retained for the picker
+    // authoring context; this multiplier is a picker-only visual adjustment.
+    <group position={[0, 1.5, 0]} scale={[reg.scale * 2.1, reg.scale * 2.1, reg.scale * 2.1]}>
       <primitive object={vrm.scene} />
     </group>
   );
