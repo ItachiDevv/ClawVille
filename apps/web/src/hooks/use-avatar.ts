@@ -37,16 +37,43 @@ export function useCheckPetName() {
 }
 
 /**
- * Phase 4c Layer 1 — in-game appearance edits. Invalidates ['avatar'] on
- * success so the modal, AvatarStatusBar, and the 3D world re-render with
- * the new avatar/color/gender.
+ * Phase 4c Layer 1 — in-game appearance edits.
+ *
+ * Optimistic update pattern: we flip the avatar's modelKey/color/gender in
+ * the react-query cache immediately so the 3D world swaps avatars the
+ * frame the user hits Save. On server error we roll back to the
+ * pre-mutation snapshot. On success we invalidate so the server's
+ * authoritative avatar (with regenerated characterConfig.system + the
+ * agents.config mirror) replaces our local guess.
  */
 export function useEditPetAppearance() {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: api.editPetAppearance,
+    onMutate: async (patch) => {
+      // Cancel in-flight refetches so they don't race our optimistic write.
+      await queryClient.cancelQueries({ queryKey: ['avatar'] });
+      // Snapshot for rollback.
+      const previous = queryClient.getQueryData<{ avatar: Record<string, unknown> | null }>(['avatar']);
+      if (previous?.avatar) {
+        queryClient.setQueryData<{ avatar: Record<string, unknown> | null }>(['avatar'], {
+          ...previous,
+          avatar: { ...previous.avatar, ...patch },
+        });
+      }
+      return { previous };
+    },
+    onError: (_err, _patch, context) => {
+      // Roll back to pre-mutation state so the UI doesn't show the
+      // unapplied change after a server rejection (e.g. cross-pool 400).
+      if (context?.previous) {
+        queryClient.setQueryData(['avatar'], context.previous);
+      }
+    },
     onSuccess: () => {
+      // Server returns the authoritative avatar including the regenerated
+      // characterConfig.system — invalidate so we pick it up.
       queryClient.invalidateQueries({ queryKey: ['avatar'] });
     },
   });
