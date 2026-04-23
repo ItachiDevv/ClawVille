@@ -4,6 +4,7 @@ import { useState, useEffect, Suspense } from 'react';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { useSearchParams } from 'next/navigation';
+import { HowItWorksModal } from '@/components/landing/how-it-works-modal';
 
 const LandingScene = dynamic(() => import('@/components/three/LandingScene'), {
   ssr: false,
@@ -70,6 +71,7 @@ const SKILL_CATEGORIES = [
 
 export default function HomePage() {
   const [mounted, setMounted] = useState(false);
+  const [howItWorksOpen, setHowItWorksOpen] = useState(false);
   useEffect(() => setMounted(true), []);
 
   return (
@@ -78,6 +80,10 @@ export default function HomePage() {
       <Suspense fallback={null}>
         <ExpiredLinkBanner />
       </Suspense>
+
+      {/* How-it-works explainer modal — rendered at the root so it
+          overlays the full landing page when opened from any CTA. */}
+      <HowItWorksModal open={howItWorksOpen} onClose={() => setHowItWorksOpen(false)} />
 
       {/* 3D underwater scene background — covers hero */}
       {mounted && <LandingScene />}
@@ -91,7 +97,7 @@ export default function HomePage() {
       ` }} />
 
       {/* ───── STICKY HEADER (CA + socials) ───── */}
-      <SiteHeader />
+      <SiteHeader onOpenHowItWorks={() => setHowItWorksOpen(true)} />
 
       {/* ───── HERO SECTION ───── */}
       <section className="relative z-10 min-h-screen flex flex-col items-center justify-center px-4 text-center">
@@ -808,6 +814,13 @@ export default function HomePage() {
           >
             Create Agent
           </Link>
+          <button
+            type="button"
+            onClick={() => setHowItWorksOpen(true)}
+            className="px-10 py-4 rounded-xl font-clawville text-sm uppercase tracking-wider bg-white/[0.04] border border-white/15 text-white/75 hover:text-cyan-200 hover:border-cyan-400/50 transition-all"
+          >
+            How It Works
+          </button>
           <Link
             href="/login"
             className="px-10 py-4 rounded-xl font-clawville text-sm uppercase tracking-wider bg-white/[0.06] border border-white/15 text-white/70 hover:text-white hover:border-cyan-500/30 transition-all"
@@ -892,7 +905,7 @@ const SOCIAL_LINKS = [
   },
 ] as const;
 
-function SiteHeader() {
+function SiteHeader({ onOpenHowItWorks }: { onOpenHowItWorks: () => void }) {
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
@@ -933,6 +946,22 @@ function SiteHeader() {
           <span className="font-mono text-xs text-white/90 select-all sm:hidden">{shortCA}</span>
           <span className={`font-mono text-[10px] uppercase tracking-[0.2em] transition-all ${copied ? 'text-emerald-400' : 'text-cyan-400/60 group-hover:text-cyan-300'}`}>
             {copied ? 'Copied' : 'Copy'}
+          </span>
+        </button>
+
+        {/* How-it-works pill — opens the onboarding explainer modal.
+            Sticky so new users can click to demystify from any scroll
+            position before committing to signup. */}
+        <button
+          type="button"
+          onClick={onOpenHowItWorks}
+          aria-label="How ClawVille works"
+          title="How ClawVille works"
+          className="group flex h-10 items-center gap-2 rounded-full border border-cyan-400/30 bg-black/70 backdrop-blur-md px-4 text-cyan-200/80 shadow-[0_0_30px_rgba(0,229,255,0.18)] hover:border-cyan-300/60 hover:bg-black/80 hover:text-cyan-100 transition-all"
+        >
+          <span aria-hidden className="text-sm">💡</span>
+          <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-cyan-300/80 group-hover:text-cyan-200">
+            How It Works
           </span>
         </button>
 
