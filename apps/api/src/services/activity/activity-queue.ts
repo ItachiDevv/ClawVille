@@ -69,7 +69,15 @@ const PARTY_SHORT_CODE_RETRY = 16;
 // ─── Module state ──────────────────────────────────────────────────────────
 
 class ActivityQueueService {
-  /** SINGLE-POD: per-activity queue, FIFO by `queuedAt`. */
+  /**
+   * SINGLE-POD: per-activity queue, FIFO by `queuedAt`.
+   *
+   * Each activity has TWO logical queues — standard (mixed humans +
+   * agents) and agent-only — keyed as `${activityId}` and
+   * `${activityId}::agent-only`. Chunk #3 added the agent-only variant
+   * via the `?matchType=agent-only` queue param; each entry's
+   * `agentOnly: boolean` determines which bucket it lands in.
+   */
   private queues = new Map<string, QueueEntry[]>();
 
   /** SINGLE-POD: petId → entryId for O(1) leave-queue lookups. */
@@ -222,30 +230,85 @@ class ActivityQueueService {
   /**
    * Status snapshot for `GET /api/activities/:id/queue-status`.
    * Position is 1-indexed; null if the pet isn't queued.
+   *
+   * Searches BOTH the standard + agent-only queues so a caller doesn't
+   * need to know which bucket their entry landed in — the server is the
+   * source of truth.
    */
   getQueueStatus(activityId: string, petId: string): QueueStatus {
-    const queue = this.queues.get(activityId) ?? [];
-    const index = queue.findIndex((e) => e.petId === petId);
-    const position = index >= 0 ? index + 1 : null;
+    const standard = this.queues.get(this.queueKey(activityId, false)) ?? [];
+    const agentOnly = this.queues.get(this.queueKey(activityId, true)) ?? [];
+    let position: number | null = null;
+    let playersInQueue = standard.length + agentOnly.length;
+    const sIdx = standard.findIndex((e) => e.petId === petId);
+    if (sIdx >= 0) position = sIdx + 1;
+    else {
+      const aIdx = agentOnly.findIndex((e) => e.petId === petId);
+      if (aIdx >= 0) position = aIdx + 1;
+    }
+    void playersInQueue;
 
-    // Crude wait estimate — average inter-match time is ~30s for a
-    // healthy population; multiply position by that. Refined in chunk #3
-    // once we have real telemetry to back it.
     const estimatedWaitSec = position == null ? 0 : Math.max(5, position * 30);
-
     return {
       position,
       estimatedWaitSec,
       roomsActive: activityRoomManager.listActiveRooms(activityId).length,
-      playersInQueue: queue.length,
+      playersInQueue: standard.length + agentOnly.length,
       serverAtCapacity:
         activityRoomManager.totalActiveRooms() >= MAX_ROOMS_TOTAL,
     };
   }
 
-  /** Length only — for the public `/api/activities` summary cards. */
-  queueLength(activityId: string): number {
-    return (this.queues.get(activityId) ?? []).length;
+  /**
+   * Look up the room a freshly-matched pet was routed into — used by
+   * the queue-status polling path so a client can pick up `matchedRoomId`
+   * without a separate WS control channel. (Chunk #3 match.found
+   * delivery choice (b) per plan — polling for now.)
+   */
+  getMatchedRoomId(petId: string): string | null {
+    const roomId = this.matchedRooms.get(petId);
+    if (!roomId) return null;
+    // Auto-expire entries so a pet can re-queue later without carrying
+    // a stale matchedRoomId forward. Manager knows if the room is still
+    // active.
+    const room = activityRoomManager.getRoom(roomId);
+    if (!room) {
+      this.matchedRooms.delete(petId);
+      return null;
+    }
+    return roomId;
+  }
+
+  /**
+   * Short-lived (5-minute) map of petId → roomId, populated by the
+   * matcher so a client polling `/queue-status` can pick up their room
+   * assignment without a pre-match WS. Keys are dropped once the room
+   * is no longer active (`getMatchedRoomId` auto-cleans).
+   */
+  private matchedRooms = new Map<string, string>();
+
+  /**
+   * Length only — for the public `/api/activities` summary cards.
+   *
+   * Aggregates BOTH the standard and agent-only queues unless an
+   * explicit `agentOnly` filter is passed. Public surface shows the
+   * combined total by default.
+   */
+  queueLength(activityId: string, agentOnly: boolean | null = null): number {
+    if (agentOnly === true) {
+      return (this.queues.get(this.queueKey(activityId, true)) ?? []).length;
+    }
+    if (agentOnly === false) {
+      return (this.queues.get(this.queueKey(activityId, false)) ?? []).length;
+    }
+    return (
+      (this.queues.get(this.queueKey(activityId, false)) ?? []).length +
+      (this.queues.get(this.queueKey(activityId, true)) ?? []).length
+    );
+  }
+
+  private queueKey(activityId: string, agentOnly: boolean): string {
+    return agentOnly ? `${activityId}::agent-only` : activityId;
   }
 
   // ─── Party API ─────────────────────────────────────────────────────────
@@ -388,12 +451,17 @@ class ActivityQueueService {
    * doesn't kill the cron.
    */
   async runMatchmakerSweep(): Promise<void> {
-    for (const [activityId, queue] of this.queues.entries()) {
+    for (const [queueKey, queue] of this.queues.entries()) {
       try {
-        await this.matchActivity(activityId, queue);
+        // Decode the queue key — `${activityId}::agent-only` or bare
+        // `${activityId}`. matchActivity accepts the activityId + flag
+        // separately so it can look up ACTIVITY_REGISTRY without parsing.
+        const [activityId, suffix] = queueKey.split('::');
+        const agentOnly = suffix === 'agent-only';
+        await this.matchActivity(activityId, queue, agentOnly);
       } catch (err) {
         console.error(
-          `[activity-queue] sweep failed for ${activityId}:`,
+          `[activity-queue] sweep failed for ${queueKey}:`,
           err,
         );
       }
@@ -461,17 +529,29 @@ class ActivityQueueService {
     this.petToEntry.clear();
     this.parties.clear();
     this.partyShortCodeIndex.clear();
+    this.matchedRooms.clear();
     this.hydrated = false;
   }
 
   // ─── Internal: matcher core ────────────────────────────────────────────
 
-  private async matchActivity(activityId: string, queue: QueueEntry[]): Promise<void> {
+  private async matchActivity(activityId: string, queue: QueueEntry[], agentOnly: boolean): Promise<void> {
     if (queue.length === 0) return;
 
     const def = getActivityDefinition(activityId);
     if (!def) return; // unknown activity (e.g. coming-soon stub queued via dev tool)
     if (def.status !== 'live') return; // never match stubs
+
+    // Agent-only bucket: defensive filter — reject any entry whose
+    // subjectType somehow landed in the wrong bucket. Chunk #3 enqueue
+    // routes the entry by `agentOnly`, but an agent-only queue should
+    // never contain a human — so skip the whole sweep if any
+    // contradictions exist rather than match a mixed group.
+    if (agentOnly) {
+      for (const e of queue) {
+        if (e.subjectType !== 'agent') return;
+      }
+    }
 
     const minFill = def.queueMinPlayers ?? def.minPlayers;
     // preferredFill defaults to 6 for 4–8 activities (backend §2.3) but caps
@@ -567,6 +647,10 @@ class ActivityQueueService {
           .set({ leftAt: new Date(), matchedRoomId: room.id })
           .where(eq(activityQueueEntries.id, e.id));
         this.removeFromMemory(e.petId, e.id);
+        // Populate the petId → roomId map used by queue-status polling
+        // so clients can pick up `matchedRoomId` without a WS. Chunk #3
+        // match.found delivery option (b) per plan.
+        this.matchedRooms.set(e.petId, room.id);
         void logEvent({
           eventType: 'activity.queue.left',
           userId: e.userId,
@@ -614,10 +698,11 @@ class ActivityQueueService {
   // ─── Memory bookkeeping ────────────────────────────────────────────────
 
   private addToMemory(entry: QueueEntry): void {
-    let queue = this.queues.get(entry.activityId);
+    const key = this.queueKey(entry.activityId, entry.agentOnly);
+    let queue = this.queues.get(key);
     if (!queue) {
       queue = [];
-      this.queues.set(entry.activityId, queue);
+      this.queues.set(key, queue);
     }
     queue.push(entry);
     this.petToEntry.set(entry.petId, entry.id);
@@ -626,11 +711,11 @@ class ActivityQueueService {
   private removeFromMemory(petId: string, entryId: string): void {
     const knownEntryId = this.petToEntry.get(petId);
     if (knownEntryId === entryId) this.petToEntry.delete(petId);
-    for (const [activityId, queue] of this.queues.entries()) {
+    for (const [key, queue] of this.queues.entries()) {
       const idx = queue.findIndex((e) => e.id === entryId);
       if (idx >= 0) {
         queue.splice(idx, 1);
-        if (queue.length === 0) this.queues.delete(activityId);
+        if (queue.length === 0) this.queues.delete(key);
         return;
       }
     }
