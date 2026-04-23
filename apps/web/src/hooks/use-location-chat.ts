@@ -4,13 +4,7 @@ import { useState, useCallback, useEffect } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useGameStore } from '@/stores/game';
-
-interface ChatMessage {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  timestamp: string;
-}
+import type { ChatMessage } from '@/types/chat';
 
 export function useLocationChat(locationId: string | null) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);

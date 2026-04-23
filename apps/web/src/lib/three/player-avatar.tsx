@@ -240,7 +240,12 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
     if (store.movementFrozen) {
       if (store.controlMode !== 'autonomous') {
         const escNow = keyState.escape;
-        if (escNow && !lastEscState && store.chatOpen) store.exitBuilding();
+        if (escNow && !lastEscState) {
+          // ESC closes whichever chat is open. Teacher chat wins if both
+          // are true (should never happen — openGuideChat guards against it).
+          if (store.chatOpen) store.exitBuilding();
+          else if (store.guideChatOpen) store.closeGuideChat();
+        }
         lastEscState = escNow;
       }
       return;
@@ -495,7 +500,11 @@ function PlayerPetGLBInner() {
       // In autonomous mode, don't let Escape exit buildings — the autonomy tick handles timing
       if (store.controlMode !== 'autonomous') {
         const escNow = keyState.escape;
-        if (escNow && !lastEscState && store.chatOpen) store.exitBuilding();
+        if (escNow && !lastEscState) {
+          // ESC closes whichever chat is open (teacher > guide fallback).
+          if (store.chatOpen) store.exitBuilding();
+          else if (store.guideChatOpen) store.closeGuideChat();
+        }
         lastEscState = escNow;
       }
       return;

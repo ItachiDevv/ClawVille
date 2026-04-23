@@ -1,6 +1,7 @@
 # ClawVille Architecture
 
-> **Last Audited:** 2026-04-21 (free agent leaderboard — Priority #3 public surface live at `/leaderboard` + `GET /api/leaderboard/agents`; new event-weighted scoring rubric documented under Observability; `leaderboard.ts` route module description rewritten to reflect the dual-surface mount pattern. Prior audit same day: Phase 5.1 — wallet identity + scape portal: 4 new event types (`identity.issued`, `identity.reconnected`, `portal.scape.crossed`, `portal.scape.linked`), new `/api/portal/*` + `/api/agent/{challenge,reconnect}` + `/.well-known/clawville-issuer.json` routes, new `pending_account_links` schema, new `users.identity_*` + `users.scape_*` + `users.linked_scape_*` columns, `wallets` table envelope-encryption columns (`dek_wrapped` + `encryption_version`), Cloudflare Secrets Store for crypto root-of-trust, new `service-issuer` + `auth-challenge` services. Previous same-day 2026-04-21 audit: metrics spine jump — added Observability section; new `events` + `event_write_failures` schemas; new `dashboard.ts` route mounted at `/api/dashboard`; Hono onError middleware now fires Telegram alerts via `alertError()`; new `event-logger.ts`, `alert-error.ts`, `admin-only.ts`; 6 event types emitted at 7 sites; `bazaar.ts`/`marketplace.ts`/`auctions.ts` write handlers stubbed to 503 pending post-overhaul skill-marketplace rework; FEATURE_GATE blocks on `x402-config.ts`, `agent-setup.ts`, and the three marketplace files. Previous 2026-04-17 audit: drift sweep — 7 missing route modules, 13 missing schema tables, Phase 5/6 sections, Service Layer catalog, ultrathink decommission noted.)
+> **Last Audited:** 2026-04-23 (W1 — Town Guide generalized to system-agent pattern. `POST /api/chat/system/:slug` replaces `POST /api/chat/guide`. New `SYSTEM_AGENT_TEMPLATES` registry, `ensureSystemAgents()` / `getSystemAgent(slug)` services, `systemAgentRewardLimiter` (60s per-user-slug cooldown), partial unique index `platform_agents_system_singleton`. Inactivity sweep skips system agents. `chatType='system-agent'` logged separately; dashboard teacher-chat metric excludes it.)
+> Prior audit 2026-04-21 (free agent leaderboard — Priority #3 public surface live at `/leaderboard` + `GET /api/leaderboard/agents`; new event-weighted scoring rubric documented under Observability; `leaderboard.ts` route module description rewritten to reflect the dual-surface mount pattern. Prior audit same day: Phase 5.1 — wallet identity + scape portal: 4 new event types (`identity.issued`, `identity.reconnected`, `portal.scape.crossed`, `portal.scape.linked`), new `/api/portal/*` + `/api/agent/{challenge,reconnect}` + `/.well-known/clawville-issuer.json` routes, new `pending_account_links` schema, new `users.identity_*` + `users.scape_*` + `users.linked_scape_*` columns, `wallets` table envelope-encryption columns (`dek_wrapped` + `encryption_version`), Cloudflare Secrets Store for crypto root-of-trust, new `service-issuer` + `auth-challenge` services. Previous same-day 2026-04-21 audit: metrics spine jump — added Observability section; new `events` + `event_write_failures` schemas; new `dashboard.ts` route mounted at `/api/dashboard`; Hono onError middleware now fires Telegram alerts via `alertError()`; new `event-logger.ts`, `alert-error.ts`, `admin-only.ts`; 6 event types emitted at 7 sites; `bazaar.ts`/`marketplace.ts`/`auctions.ts` write handlers stubbed to 503 pending post-overhaul skill-marketplace rework; FEATURE_GATE blocks on `x402-config.ts`, `agent-setup.ts`, and the three marketplace files. Previous 2026-04-17 audit: drift sweep — 7 missing route modules, 13 missing schema tables, Phase 5/6 sections, Service Layer catalog, ultrathink decommission noted.)
 
 ## System Overview
 
@@ -89,7 +90,7 @@ Hard rules:
 | `auth.ts` | Login, signup, logout (Lucia sessions) + `GET /api/auth/enter?t=ticket` (Phase 5 magic-link exchanger) + `POST /api/auth/milady-session-exchange` |
 | `avatars.ts` | Avatar CRUD, avatar chat, heartbeat (`POST /api/avatars/me/heartbeat`), daily login (`POST /api/avatars/me/daily-login`) |
 | `locations.ts` | Location data |
-| `chat.ts` | Location agent chat with dynamic context injection |
+| `chat.ts` | Two surfaces: `POST /api/locations/:id/chat` (per-building location agent chat w/ dynamic context injection) + `POST /api/chat/system/:slug` (world-wide system-agent chat — today `town-guide`; future arena host / quest giver / etc.). System-agent route 503s with `Retry-After: 3` during boot-race, rate-limits rewards to one per `(userId, slug)` per 60s via `systemAgentRewardLimiter`, and logs events with `chatType='system-agent'` (deliberately excluded from `/dash` teacher-chat metric). |
 | `items.ts` | Shop browse, inventory, buy, learn |
 | `agent-gateway.ts` | Universal agent connection (connect-token, polling, SKILL.md, SSE events). Phase 5.1 adds `POST /api/agent/challenge` (issue nonce for signed-challenge reconnect) and `POST /api/agent/reconnect` (signed-challenge auth, mints session ticket). `POST /api/agent/connect` + `POST /api/agent/join` also gain an `identity` block + a `wallet` block in the first-time response (see Phase 5.1 section below). |
 | `portal.ts` | Phase 5.1 cross-world portal. `POST /api/portal/scape` (ClawVille → 'scape, Lucia-authed, signs the outbound request with the service issuer keypair). `POST /api/portal/mint-for-scape` ('scape → ClawVille reverse portal, partner-signature-authed, mints a magic-link ticket). `POST /api/portal/accept-scape-link` ('scape → ClawVille, link existing 'scape account to existing ClawVille user — consumes a `pending_account_links` code). `POST /api/portal/scape-link-code` (Lucia-authed, ClawVille user generates a one-time code to paste in 'scape). `GET /.well-known/clawville-issuer.json` publishes the service issuer pubkey (served as a Hono route on the API — NOT a Next.js route — to avoid Next's special-case handling of `.well-known/*`). |
@@ -125,7 +126,7 @@ All meaningful app actions write a row into the `events` table via `logEvent()` 
 | `agent.connected` | `POST /api/agent/connect` (`agent-gateway.ts`) | `identityType`, `protocol`, `isReturning`, `miladyAgentId`, `hasGateway` |
 | `skill_md.fetched` | `GET /api/skills/:buildingId/skill.md` (`skills.ts`) | `userAgent`, `referer`, `skillName`, `generatorVersion` |
 | `building.visited` | `POST /api/agent/:sessionId/visit-building` (`agent-gateway.ts`) | `tokenAwarded`, `activity`, `knowledgeGained` |
-| `agent.chat.turn` | `chat.ts` (location), `avatars.ts` (avatar), `agent-gateway.ts` (`:sessionId/chat`, `:sessionId/building/:buildingId/chat`) | `chatType: 'avatar' \| 'location' \| 'character' \| 'building'`, `messageLength`, `tokenAwarded` |
+| `agent.chat.turn` | `chat.ts` (location + system-agent), `avatars.ts` (avatar), `agent-gateway.ts` (`:sessionId/chat`, `:sessionId/building/:buildingId/chat`) | `chatType: 'avatar' \| 'location' \| 'character' \| 'building' \| 'system-agent'`, `messageLength`, `tokenAwarded`, optional `agentSlug` when `chatType='system-agent'`. Dashboard teacher-chat query filters to `chatType IN ('building','location')` only. |
 | `agent.collaboration.turn` | `agent-collaboration.ts` (one per consulted expert) | `sourceBuildingId`, `targetBuildingId`, `kind: 'cross-building-consultation'` — Brand Identity §3 axis #1 |
 | `tokens.settled` | Inside `transferClawTokens()` in `claw-token-ledger.ts`, after the atomic transfer | `amount`, `fromAvatarId`, `toAvatarId`, `reason` — off-dashboard telemetry |
 | `identity.issued` | `POST /api/agent/connect`, `POST /api/agent/join` (`agent-gateway.ts`) | `identityType`, `identityPubkey`, `via: 'connect' \| 'join'` — `userId` + `avatarId` + `agentId` + `sessionId` live on the top-level event columns, not the payload |
@@ -224,12 +225,32 @@ Human                          ClawVille API                    AI Agent
   providers. See `docs/ultrathink-migration-decision.md`.
 
 **System NPC Seeder** (`apps/api/src/services/system-npc-seeder.ts`):
-- On API boot, ensures every building has a system-owned ElizaOS character
-  loaded with its compiled SKILL.md as RAG knowledge
-- 10 SpongeBob-canon characters from `@clawville/agent-templates` → merged with
-  `building_skills.content` chunks → written to `platform_agents.customization.knowledge`
-- Seeded under the `openclaw-system@clawville.internal` user so existing
-  per-user `location_agents` rows never conflict
+
+Two seeders run on boot, both idempotent, both owned by the
+`openclaw-system@clawville.internal` user:
+
+1. **`ensureSystemAgents()`** — world-wide NPCs not tied to a building.
+   Today: Town Guide (slug `town-guide`). Future: arena host, quest giver,
+   etc. Each template is registered under its slug in `SYSTEM_AGENT_TEMPLATES`
+   (`packages/agent-templates/src/index.ts`). Rows go into `platform_agents`
+   as `type='system-agent'` with `customization.slug=<slug>`. Uniqueness is
+   enforced by the partial index `platform_agents_system_singleton` on
+   `(user_id, type, customization->>'slug') WHERE type='system-agent'`.
+   Lookups use `getSystemAgent(slug)` — NEVER by name. Chat surface is
+   `POST /api/chat/system/:slug`. On boot we run this seeder FIRST, then
+   eager-warmup each runtime via `agentOrchestrator.ensureAgentRuntime()` so
+   the first visitor doesn't eat lazy-start latency. The inactivity sweep
+   in `agent-orchestrator.ts` SKIPS system agents — they are singletons the
+   world depends on, stopping one would 503 the next visitor until boot.
+   **Adding a new system agent**: write a template file, register the slug
+   in `SYSTEM_AGENT_TEMPLATES`, ship — the seeder handles upsert + index
+   maintenance + warmup automatically on the next boot.
+2. **`ensureSystemNpcs()`** — ensures every one of the 10 buildings has a
+   system-owned ElizaOS character loaded with its compiled SKILL.md as RAG
+   knowledge. 10 SpongeBob-canon characters from `@clawville/agent-templates`
+   → merged with `building_skills.content` chunks → written to
+   `platform_agents.customization.knowledge`. Paired with a `location_agents`
+   row keyed by `(systemUserId, locationId)`.
 - Chat handlers (`chat.ts`, agent-gateway building-chat) fall through to these
   rows when the caller has no personal override, so every user and every
   autonomous agent can chat with Gary/Patrick/Sandy/etc. without any setup
@@ -421,7 +442,8 @@ route layer composes against, not the route files themselves):
 | `session-agent-map` | In-memory `sessionId → agentId` resolver |
 | `session-ticket-service` | Phase 5 magic-link CRUD |
 | `skill-generator` | Builds `building_skills.content` (SKILL.md) from templates + character data |
-| `system-npc-seeder` | On boot, seeds each building with a system-owned character + compiled SKILL.md |
+| `system-npc-seeder` | On boot, seeds each building with a system-owned character + compiled SKILL.md (`ensureSystemNpcs()`) AND seeds every world-wide system agent from `SYSTEM_AGENT_TEMPLATES` (`ensureSystemAgents()`, lookups via `getSystemAgent(slug)`). System agents use `type='system-agent' + customization.slug=<slug>` and are protected from the orchestrator inactivity sweep. |
+| `system-agent-reward-limiter` | In-memory 60s cooldown per `(userId, slug)` for system-agent chat rewards. LRU-capped at 1000 entries, swept every 10 min. Single-pod only — promote to Redis if we ever multi-pod the API. |
 | `wallet-service` | High-level wallet ops (create, transfer, balance) on top of `keypair-vault`. Phase 5.1 adds `ensureWalletWithFirstTimeSecret(subjectType, subjectId)` — idempotent on `(subject_type, subject_id)`, generates + persists a Solana keypair if no row exists, and returns the plaintext base58 secret **exactly once** (`{ publicKey, alreadyExisted, firstTimeSecretKeyBase58? }`). `firstTimeSecretKeyBase58` is only populated when a row was freshly inserted — the only approved export channel for wallet secrets (see `packages/database/src/schema/wallets.ts` JSDoc). Existing `ensureWallet()` callers unaffected. |
 | `x402-config` | Phase 4 x402 merchant wallet config |
 | `xp-service` | Level/XP math + `avatars.level / xp / total_xp` updates |

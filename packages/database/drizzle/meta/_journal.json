@@ -8,6 +8,13 @@
       "when": 1776769988234,
       "tag": "0000_noisy_raider",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1776943051601,
+      "tag": "0001_third_lightspeed",
+      "breakpoints": true
     }
   ]
 }

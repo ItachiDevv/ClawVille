@@ -182,6 +182,19 @@ export const api = {
       }
     ),
 
+  // System-agent chat (Town Guide, future arena host, quest giver, etc.).
+  // Target: Hono API at POST /api/chat/system/:slug. NOTE: backend schema
+  // requires { content: string }, NOT { message: string } — different from
+  // some sibling chat routes.
+  sendSystemChat: (slug: string, content: string) =>
+    honoRequest<{ message: { role: string; content: string; timestamp: string } }>(
+      `/api/chat/system/${slug}`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ content }),
+      }
+    ),
+
   getChatHistory: (locationId: string) =>
     request<{ messages: any[] }>(`/api/locations/${locationId}/chat/history`),
 
