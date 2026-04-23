@@ -30,8 +30,7 @@ import { config } from 'dotenv';
 import { resolve } from 'path';
 config({ path: resolve(__dirname, '../.env.local') });
 
-import { eq } from 'drizzle-orm';
-import { db, users, pets } from '@clawville/database';
+import { db, users, pets, eq } from '@clawville/database';
 
 const BOT_POOL_CAPACITY = 64;
 const BOT_USER_EMAIL_DOMAIN = '@bots.clawville.internal';
@@ -65,6 +64,14 @@ async function seed(): Promise<void> {
     const name = botPetName(i);
 
     // 1. Upsert the system bot user.
+    //
+    // The `users_has_auth_method` CHECK constraint requires every user
+    // to have EITHER (email + password_hash) OR identity_fingerprint.
+    // Bots never log in, but we still need a non-null password_hash to
+    // satisfy the constraint. We use a deterministic, unusable scrypt-
+    // shaped placeholder — long enough to never collide with a real hash
+    // and obvious enough at a glance that an admin won't try to guess it.
+    const placeholderPasswordHash = `$bot$disabled$${String(i).padStart(3, '0')}-${Buffer.from(email).toString('base64')}`;
     let userId: string;
     const existingUser = await db.query.users.findFirst({
       where: eq(users.email, email),
@@ -77,6 +84,7 @@ async function seed(): Promise<void> {
         .insert(users)
         .values({
           email,
+          passwordHash: placeholderPasswordHash,
           name: `Bot Owner ${String(i).padStart(3, '0')}`,
           emailVerified: true,
         })
