@@ -74,6 +74,17 @@ function loadVRM(path: string): Promise<VRM> {
       // so it faces -Z, matching VRM 1.0 convention.
       VRMUtils.rotateVRM0(vrm);
 
+      // Disable frustum culling on every node in the VRM scene.
+      // VRM models use SkinnedMesh nodes whose bounding spheres are computed
+      // from the bind pose (T-pose). When the avatar is animated the posed geometry
+      // extends outside the bind-pose bounding sphere, causing Three.js frustum
+      // culling to incorrectly hide the mesh when the camera is close or looking
+      // down from above. Setting frustumCulled=false on every node prevents this
+      // "disappears at close range" regression for all VRM NPCs and the player avatar.
+      vrm.scene.traverse((obj) => {
+        obj.frustumCulled = false;
+      });
+
       VRM_CACHE.set(path, { status: 'resolved', vrm });
       return vrm;
     })
