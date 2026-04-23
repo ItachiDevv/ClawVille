@@ -5,7 +5,7 @@ import type { OpenClawClient } from './openclaw-client';
 // LLM config — try Gemini first (cheap/fast), fall back to OpenAI if Gemini
 // is unavailable or quota-exhausted. NPC banter is casual chat, so no extended
 // thinking — just a plain chat completion at high temperature.
-const GEMINI_MODEL = 'gemini-2.0-flash';
+const GEMINI_MODEL = 'gemini-2.5-flash';
 const OPENAI_MODEL = 'gpt-4o-mini';
 const LLM_TEMPERATURE = 0.9;
 const GEMINI_MAX_OUTPUT_TOKENS = 400;
