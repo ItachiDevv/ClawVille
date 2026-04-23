@@ -121,10 +121,18 @@ export function retargetMixamoClip(
 ): THREE.AnimationClip | null {
   const humanoid = vrm.humanoid;
 
-  // Build a quick lookup: VRM bone name → raw Object3D node UUID
+  // IMPORTANT (@pixiv/three-vrm v3): use getNormalizedBoneNode, NOT getRawBoneNode.
+  // In three-vrm v3, the animation system drives the *normalized* bone hierarchy
+  // (Normalized_<name> nodes under VRMHumanoidRig). vrm.update() propagates the
+  // normalized pose to raw bones each frame. Targeting raw bones directly is
+  // bypassed by vrm.update() — the normalizer reads raw-bone rest poses and
+  // overwrites them, so any mixer writes to raw bones are silently lost.
+  // getNormalizedBoneNode returns the Normalized_* Object3D nodes which the mixer
+  // CAN drive correctly. vrm.scene.getObjectByName("Normalized_mixamorigHips")
+  // finds them since VRMHumanoidRig is a child of vrm.scene.
   const vrmBoneNodeByName = new Map<string, THREE.Object3D>();
   for (const boneName of Object.values(MIXAMO_TO_VRM_BONE)) {
-    const node = humanoid.getRawBoneNode(boneName as any);
+    const node = humanoid.getNormalizedBoneNode(boneName as any);
     if (node) vrmBoneNodeByName.set(boneName, node);
   }
 
