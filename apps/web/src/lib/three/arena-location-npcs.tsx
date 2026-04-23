@@ -28,11 +28,13 @@ const OFFSET_X = -MAP_WIDTH / 2;
 const OFFSET_Z = -MAP_HEIGHT / 2;
 
 // Target height in world units for character NPCs.
-// Pass 1 (2026-04-16): reduced 140→90. Pass 2 (2026-04-16): reduced 90→55.
-// User tested pass 1 and character NPCs still felt too big relative to the buildings (800 wu).
-// 55 wu gives a ~1:14.5 ratio vs 800-wu building — deliberate 1–2 wu taller than
-// TARGET_NPC_HEIGHT=45 so SpongeBob cast reads as slightly bigger than wandering NPCs.
-const CHARACTER_HEIGHT = 55;
+// Pass 3 (2026-04-23): bumped 55→96 (×1.75 user request — building characters
+//   should read more prominently in front of their buildings).
+// Pass 2 (2026-04-16): reduced 90→55.
+// Pass 1 (2026-04-16): reduced 140→90.
+// 96 wu gives a ~1:8.3 ratio vs 800-wu building — bigger than TARGET_NPC_HEIGHT=45
+// so SpongeBob cast reads as the heroes of each building.
+const CHARACTER_HEIGHT = 96;
 
 const _locRaycaster = new THREE.Raycaster();
 _locRaycaster.layers.set(TERRAIN_LAYER);
@@ -110,7 +112,7 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   // lobster_plush had a broken bbox (world height 331 at CH=32). SkinnedMesh exclusion
   // should fix normalization; scaleOverride=55 is fallback assuming visual_native_H≈1.0 (= CHARACTER_HEIGHT/1.0).
   // Pass 2 (2026-04-16): reduced 90→55 to match CHARACTER_HEIGHT scale-down.
-  'config-citadel': { name: 'Larry', model: '/models/lobster_plush.glb', color: 0xff2020, scaleOverride: 55 },
+  'config-citadel': { name: 'Larry', model: '/models/lobster_plush.glb', color: 0xff2020, scaleOverride: 96 },
 
   // Slot 6 — tool-workshop — patty-building (Krusty Krab — Mr. Krabs's restaurant)
   // mr-krabs.glb: non-skinned geometry is only tiny accessories → computed scale > CLAMP_MAX.
@@ -133,11 +135,11 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
     // History: 110 (rendered sy=118 + underground), 55 (rendered sy=118, half underground
     // because localMinY*55≈121 pushed group to terrain-117 but geometry went to terrain-35).
     // 25 yields ~sy=53, offset≈55, position≈-49, feet at terrain+6.
-    scaleOverride: 25,
+    scaleOverride: 44, // pass 3 (2026-04-23): bumped 25→44 (×1.75) with CHARACTER_HEIGHT 55→96.
     companion: {
       name: 'Karen',
       model: '/models/characters/karen.glb',
-      scaleOverride: 37,
+      scaleOverride: 65, // pass 3 (2026-04-23): bumped 37→65 (×1.75) with CHARACTER_HEIGHT 55→96.
       offsetX: 180,
       offsetZ: 0,
     },
@@ -442,12 +444,12 @@ const NpcMesh = memo(function NpcMesh({
     // Layer 2: one-shot rendered-height hard cap.
     // Runs once after 0.5s so geometry/bones settle before measurement.
     // Guards against any location NPC whose pivot offset produces a skyward launch.
-    // HARD_MAX = 115 wu — 2× CHARACTER_HEIGHT=55 headroom (pass 2: reduced from 190 on 2026-04-16).
+    // HARD_MAX = 201 wu — 2× CHARACTER_HEIGHT=96 headroom (pass 3: bumped 115→201 with CHARACTER_HEIGHT 55→96 on 2026-04-23).
     if (!rescaleAppliedRef.current && clock.elapsedTime > 0.5 && groupRef.current) {
       _locRenderedBbox.setFromObject(groupRef.current);
       if (!_locRenderedBbox.isEmpty()) {
         const renderedH = _locRenderedBbox.max.y - _locRenderedBbox.min.y;
-        const HARD_MAX = 115;
+        const HARD_MAX = 201;
         if (renderedH > HARD_MAX) {
           const scaledSubGroup = groupRef.current.children[0]; // the [npcScale,npcScale,npcScale] group
           if (scaledSubGroup) {
