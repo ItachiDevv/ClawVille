@@ -4,6 +4,8 @@
 - [Three-Doc Standing Rule](standing-rules/three-doc-standing-rule.md) — Abide by `3dStructure.md` for all visual/3D decisions; `GameFeatures.md` for gameplay; `ARCHITECTURE.md` for tech stack. Unless the main session tells you to change behavior, do NOT deviate from what these docs specify. Every 3D code change requires a same-diff update to `3dStructure.md` (and a "Last Audited" bump). Live code > doc > CLAUDE.md > memory; memory is advisory only. Set 2026-04-17.
 
 ## Gotchas
+- [drei Html DOM portal ignores parent group.visible](gotchas/drei-html-ignores-parent-visible.md) — setting `group.visible=false` does NOT hide `<Html>` DOM labels; fix: attach `labelRef` to inner div and imperatively set `display:none/flex` in useFrame alongside group.visible toggle (2026-04-23)
+- [camForward.y capture causes altitude drift on mouse orbit](gotchas/camera-forward-y-causes-orbit-altitude-drift.md) — capturing camForward.y before XZ zero and feeding it into playerAltitude couples vertical swim to incidental orbit; fix: zero y immediately, drive altitude only from arrowup/arrowdown (2026-04-17)
 - [VRM MToon materials break under MeshStandardMaterial color lerp](gotchas/vrm-color-tinting-mtoon-breaks.md) — skip applyColorTint() entirely for VRM avatars; store petColor in Zustand but do not apply visually
 - [MeshBasicNodeMaterial ignores scene fog — backdrop renders as hard wall](gotchas/meshbasicnodematerial-ignores-fog.md) — backdrop must be past camera.far or have its own opacityNode distance fade; fog does not apply
 - [terrainYRef init 0 causes 4-unit spawn float](gotchas/terrain-yref-init-zero-causes-spawn-float.md) — init to -2 (sand floor Y) so pet spawns flush; 0 causes visible 200ms drift down
@@ -53,6 +55,7 @@
 - [TSL volumetric light rays](patterns/tsl-volumetric-light-rays.md) — open-ended CylinderGeometry cones + AdditiveBlending + sin(time) pulsing opacityNode, 7 draw calls, zero CPU
 - [Multi-variant merged seaweed with per-blade TSL amplitude](patterns/merged-seaweed-multivariant.md) — 3 blade shapes, cluster distribution, aAmplitude attribute drives per-variant sway in TSL, two-wave oceanic motion
 
+- [Procedural skirt parented to hip bone](patterns/procedural-skirt-bone-parenting.md) — CylinderGeometry cone + bone.add(); follows rig without vertex weights; open=true for fabric look; DoubleSide; module-scope geo/mat (don't dispose)
 - [Mixamo → VRM retarget pipeline](patterns/vrm-mixamo-retarget.md) — bone name map + track rewrite at load time, VRMCharacterAnimator crossfade, VRM faces -Z (opposite of lobster), no tinting, feet at origin
 - [VRM wandering NPC pattern](patterns/vrm-wandering-npc.md) — VRMNpcMesh in arena-npcs, VRM_NPC_SCALE=28 (45wu target), VRM_DIR_ROTATION, no pivot offset, no tint, single-instance-per-path cache constraint, preload at module scope
 - [Universal procedural character animation](patterns/universal-character-animation.md) — spatial mesh analysis + per-type motion profiles, softLerp hot path, routes 9 new GLBs while preserving LobsterAnimator
@@ -62,6 +65,8 @@
 - [WebP texture compression for GLBs](performance/webp-texture-compression.md) — gltf-transform+sharp converts PNG→WebP in GLBs (83% P1 / 66% P2 wire savings); includes long-task regression warning
 - [KTX2 UASTC vs WebP wire size](performance/ktx2-uastc-vs-webp-sizing.md) — UASTC is 4-5x LARGER than WebP on wire for cartoon GLBs; ETC1S is wire-comparable but lower quality; UASTC only wins on GPU memory
 - [Staggered GPU texture uploads via initTexture()](performance/staggered-texture-upload.md) — renderer.initTexture(tex) per-frame (2/rAF) spreads 400ms+ WebP decode+upload long task; works on both WebGL r170 and WebGPU r182
+
+- [2026-04-21 perf sweep — static mesh freezing + scratch patterns](performance/perf-sweep-2026-04-21.md) — matrixAutoUpdate=false on all static scene objects; module-scope scratch vectors/matrices in hot loops; intersectObject(mesh,false) over scene traversal; distanceFactor removal from <Html>; narrowed Zustand subscriptions; gl.setPixelRatio() override removal. Est. ~4-6ms/frame saved → 60+ FPS target.
 
 ## Solutions
 - [mergeGeometries dispose-after-merge is safe — data is copied](solutions/merge-geometries-dispose-order-safe.md) — mergeAttributes() uses TypedArray.set() to copy; dispose only removes GPU buffers; merged geo is independent
