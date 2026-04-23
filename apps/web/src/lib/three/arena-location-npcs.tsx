@@ -429,9 +429,25 @@ const NpcMesh = memo(function NpcMesh({
     // pivotOffsetY = localMinY × scale in both paths. For Plankton (override=55,
     // localMinY≈2.3): offset=127 → position.y = terrainY-121 → geometry floor
     // = position + localMinY*s = -121+127 = terrainY+6. Feet on ground.
-    const offset = localMinY * s;
+    let offset = localMinY * s;
+
+    // GhostFloat patch: computeNormalizedScale's >CLAMP_MAX fallback forces
+    // localMinY=0 to guard against SkinnedMesh bind-pose inflation. That's
+    // correct for rigged characters but WRONG for static unrigged ghosts whose
+    // pivot is at the geometry center (not feet). Without this fix the Flying
+    // Dutchman appeared half-buried — his bbox y range is [-0.71, +0.69]
+    // native, so at scale 96 his geometry extends ~68wu below his transform.
+    // Recompute the real cloned bbox min.y so the ghost's bottom can be
+    // grounded properly (then ghostBob in useFrame lifts him to hover).
+    if (modelCfg.ghostFloat) {
+      const realBox = new THREE.Box3().setFromObject(c);
+      if (!realBox.isEmpty()) {
+        offset = realBox.min.y * s;
+      }
+    }
+
     return { cloned: c, npcScale: s, pivotOffsetY: offset };
-  }, [scene, modelCfg.color, modelCfg.scaleOverride]);
+  }, [scene, modelCfg.color, modelCfg.scaleOverride, modelCfg.ghostFloat]);
 
   // Dispose cloned geometry + materials on unmount
   useEffect(() => {
@@ -489,8 +505,12 @@ const NpcMesh = memo(function NpcMesh({
     // "ghost slowly drifts in the air" motion better than the small idle bob.
     const t = clock.elapsedTime;
     if (modelCfg.ghostFloat) {
-      const ghostBob = Math.sin(t * 0.8 + seedBase) * 4;
-      groupRef.current.position.set(worldX, terrainY.current + 18 + ghostBob - pivotOffsetY, worldZ);
+      // Base lift = 12wu so bbox bottom hovers ~12wu above terrain at the
+      // bob midpoint, range ~6-18wu above ground with the ±6 sin bob.
+      // The proper pivotOffsetY (now computed from real bbox.min.y for ghosts,
+      // not the >CLAMP_MAX fallback's forced 0) does the rest of the lifting.
+      const ghostBob = Math.sin(t * 0.8 + seedBase) * 6;
+      groupRef.current.position.set(worldX, terrainY.current + 12 + ghostBob - pivotOffsetY, worldZ);
       if (animGroupRef.current) {
         animGroupRef.current.rotation.z = Math.sin(t * 0.5 + seedBase * 0.7) * 0.06;
       }
