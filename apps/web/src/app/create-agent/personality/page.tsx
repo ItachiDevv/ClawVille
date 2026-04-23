@@ -184,7 +184,7 @@ export default function PersonalityPage() {
           ? (step1.harness as AgentHarness)
           : undefined;
 
-      await createPetMutation.mutateAsync({
+      const createRes = await createPetMutation.mutateAsync({
         name: step1.name,
         species: step1.species,
         color: step1.color,
@@ -195,6 +195,32 @@ export default function PersonalityPage() {
         agentCategory: safeAgentCategory,
         harness: safeHarness,
       });
+
+      // Phase 4d — capture one-time identity + wallet secrets for
+      // self-custody backup. Per Phase 5.1 doctrine, these are
+      // disclosed by the server EXACTLY ONCE on auto-provision; the
+      // server never re-exposes them after this response. We stash
+      // them in sessionStorage (not localStorage — intentional, so
+      // they're purged when the tab closes if the user dismissed the
+      // modal without saving). The /game page reads + renders the
+      // mandatory backup modal on first mount.
+      if (createRes.identity || createRes.wallet) {
+        try {
+          sessionStorage.setItem(
+            'clawville:firstTimeDisclosure',
+            JSON.stringify({
+              avatarId: createRes.avatar?.id,
+              avatarName: createRes.avatar?.name,
+              identity: createRes.identity ?? null,
+              wallet: createRes.wallet ?? null,
+              issuedAt: Date.now(),
+            }),
+          );
+        } catch {
+          // sessionStorage quota exceeded or disabled — fall through.
+          // User can still recover via the support-chat flow later.
+        }
+      }
 
       sessionStorage.removeItem('createPetStep1');
       router.push('/game');

@@ -77,7 +77,31 @@ export const api = {
     /** Phase 2 — preferred runtime harness. Imported from @clawville/shared. */
     harness?: AgentHarness;
   }) =>
-    request<{ avatar: any; agentId: string }>('/api/avatars', {
+    request<{
+      avatar: any;
+      agentId: string;
+      /**
+       * Phase 4d — first-time identity keypair disclosure. Present only
+       * when the avatar was created by an auto-provisioned (unauth) call.
+       * `secretKey` is base58 ed25519, shown exactly ONCE per Phase 5.1
+       * doctrine. The client MUST capture and surface it for backup.
+       */
+      identity?: {
+        userId: string;
+        publicKey: string;
+        secretKey: string;
+      };
+      /**
+       * Phase 4d — first-time custodial Solana wallet disclosure.
+       * Present only on auto-provision. `secretKey` is base58 Solana
+       * keypair, shown once — server never re-discloses.
+       */
+      wallet?: {
+        address: string;
+        secretKey: string;
+        chain: 'solana';
+      };
+    }>('/api/avatars', {
       method: 'POST',
       body: JSON.stringify(data),
     }),

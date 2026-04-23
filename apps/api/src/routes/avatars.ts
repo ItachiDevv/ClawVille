@@ -28,11 +28,23 @@ import { logEvent } from '../services/event-logger';
 import type { ClawvilleServices } from '@clawville/agent-runtime';
 import { ensureWallet, ensureWalletWithFirstTimeSecret } from '../services/wallet-service';
 import { resolveOrCreateUserByIdentity, generateIdentityKeypairForUser } from '../services/identity-service';
+import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { lucia } from '../lib/auth';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 
 export const avatarRoutes = new Hono<AppContext>();
+
+// Phase 4d — rate limit for unauth POST /api/avatars. Mirrors the budget
+// of `connectRateLimiter` in agent-gateway.ts: 5 new account mints per
+// IP per minute. Protects against name squatting + Cloudflare Worker
+// quota drain (each auto-provision wraps an identity + wallet key).
+// Only gates the auto-provision branch — authed callers are unlimited
+// since they're already session-bound.
+const autoProvisionRateLimiter = createRateLimiter({
+  maxPerWindow: 5,
+  windowMs: 60_000,
+});
 
 avatarRoutes.use('*', sessionMiddleware);
 
@@ -163,6 +175,7 @@ function buildCharacterConfig(archetypeId: PetArchetypeId, avatarName: string, m
 // optional recovery vector bolted on later.
 avatarRoutes.post('/', async (c) => {
   const sessionUser = c.get('user'); // populated by sessionMiddleware (nullable)
+  const isAutoProvision = !sessionUser;
   const body = await c.req.json();
   const result = createAvatarSchema.safeParse(body);
 
@@ -170,9 +183,23 @@ avatarRoutes.post('/', async (c) => {
     throw new HTTPException(400, { message: result.error.issues[0].message });
   }
 
-  // Name uniqueness — check FIRST, before any identity / wallet / avatar
-  // writes. Failing name check before auto-provisioning means a failed
-  // signup attempt doesn't leave an orphan user row behind.
+  // Audit CRITICAL #1 — rate limit the auto-provision branch. Each mint
+  // creates a user row, an ed25519 keypair (2 CF Worker wraps), a Solana
+  // wallet row, an agent row, a avatar row, and a Lucia session. Unbounded
+  // callers could DoS the Worker + fill the `users`/`wallets` tables +
+  // grief the project by squatting desirable avatar names. 5/min/IP matches
+  // `connectRateLimiter` in agent-gateway.ts.
+  if (isAutoProvision) {
+    const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
+    if (!autoProvisionRateLimiter.check(ip)) {
+      throw new HTTPException(429, {
+        message: 'Too many signups from this IP. Try again in 1 minute.',
+      });
+    }
+  }
+
+  // Name uniqueness — check FIRST, before any writes. Reduces the
+  // collision window so the transactional 23505 fallback below is rare.
   const existingName = await db.query.avatars.findFirst({
     where: eq(avatars.name, result.data.name),
   });
@@ -181,66 +208,23 @@ avatarRoutes.post('/', async (c) => {
     throw new HTTPException(400, { message: 'That name is already taken' });
   }
 
-  // Phase 4d auto-provision — if no active session, bootstrap a new
-  // user + ed25519 identity keypair + custodial avatar wallet, mint a
-  // Lucia session, and Set-Cookie in the response. Mirrors the
-  // /api/agent/join agent-first flow but runs inside the browser round-
-  // trip so the human lands in /game with a live cookie immediately
-  // (no ticket redirect hop needed — they're already in the tab).
-  let firstTimeIdentity: {
-    userId: string;
-    publicKey: string;
-    secretKey: string;
-  } | null = null;
-
   // The ID the rest of this handler uses — either the existing session
-  // user's id, or the freshly auto-provisioned one.
+  // user's id, or the freshly auto-provisioned one. On the auto-
+  // provision path the users row is created NOW, but identity keypair +
+  // wallet + Lucia session are deferred until AFTER the avatar insert
+  // succeeds (audit CRITICAL #2 — the /join reference only issues
+  // secrets post-success; doing otherwise leaks/loses the plaintext
+  // identity secret if the avatar transaction later fails).
   let ownerId: string;
 
-  if (!sessionUser) {
+  if (isAutoProvision) {
     // Anonymous identity — unique per submission, so each /create-agent
-    // POST without a session produces its own fresh user row. We use
-    // the 'anonymous' identityType (already in the enum used by
-    // resolveOrCreateUserByIdentity) to signal "no external framework."
+    // POST without a session produces its own fresh user row.
     const identityKey = crypto.randomUUID();
     const resolved = await resolveOrCreateUserByIdentity('anonymous', identityKey);
-
-    // Mint ed25519 identity keypair per Phase 5.1 (envelope-encrypted
-    // secret stored in users.identity_encrypted_sk, pubkey in
-    // identity_pubkey). First-time path returns the plaintext secret
-    // ONCE so the client can surface it for account backup; the server
-    // never re-exposes it after this call.
-    const ident = await generateIdentityKeypairForUser(resolved.id);
-    if (ident.isFirstTime && ident.secretKey) {
-      firstTimeIdentity = {
-        userId: resolved.id,
-        publicKey: ident.publicKey,
-        secretKey: ident.secretKey,
-      };
-    }
-
-    // Attach Lucia session cookie to the response. Lucia's
-    // createSessionCookie honors NODE_ENV (SameSite=None+Secure in
-    // prod, Lax+insecure in dev).
-    const session = await lucia.createSession(resolved.id, {});
-    const cookie = lucia.createSessionCookie(session.id);
-    c.header('Set-Cookie', cookie.serialize());
-
     ownerId = resolved.id;
-
-    await logEvent({
-      eventType: 'identity.issued',
-      userId: resolved.id,
-      payload: {
-        identityType: 'anonymous',
-        identityPubkey: ident.publicKey,
-        via: 'create-agent',
-      },
-    });
   } else {
     // Existing-session path — guard against creating a second avatar.
-    // Only applies when we didn't just auto-provision (brand-new users
-    // definitionally have no avatar).
     const existingPet = await db.query.avatars.findFirst({
       where: eq(avatars.userId, sessionUser.id),
     });
@@ -303,84 +287,149 @@ avatarRoutes.post('/', async (c) => {
   );
 
   // Audit Fix C §6 — wrap the agent + avatar inserts in a transaction so a
-  // failed avatar insert rolls back the orphan agent row. Before this
-  // change a DB constraint violation on `avatars` (e.g. name race with a
-  // concurrent signup) would leave a stray `platform_agents` row tied
-  // to no avatar, requiring manual cleanup.
-  const { avatar, agent } = await db.transaction(async (tx) => {
-    const [insertedAgent] = await tx
-      .insert(agents)
-      .values({
-        userId: ownerId,
-        name: result.data.name,
-        type: 'avatar-agent',
-        status: 'pending',
-        config: {
+  // failed avatar insert rolls back the orphan agent row.
+  //
+  // Audit HIGH #6 (2026-04-23) — catch the 23505 unique-violation on
+  // avatar name race INSIDE the try/catch so the caller gets a clean 400
+  // instead of a 500. Only maps 23505 → 400; any other error rethrows.
+  let avatar, agent;
+  try {
+    const txResult = await db.transaction(async (tx) => {
+      const [insertedAgent] = await tx
+        .insert(agents)
+        .values({
+          userId: ownerId,
+          name: result.data.name,
+          type: 'avatar-agent',
+          status: 'pending',
+          config: {
+            species: result.data.species,
+            color: result.data.color,
+            archetypeId: result.data.archetypeId,
+            modelKey,
+            agentCategory,
+            harness,
+          },
+          customization: characterConfig,
+        })
+        .returning();
+
+      const [insertedPet] = await tx
+        .insert(avatars)
+        .values({
+          userId: ownerId,
+          name: result.data.name,
           species: result.data.species,
           color: result.data.color,
-          archetypeId: result.data.archetypeId,
-          // Phase 2 — also persist modelKey/category/harness on the
-          // agent config so downstream readers of agents.config don't
-          // rely on the legacy species field alone. Keeps the avatar row
-          // + agent config in sync from creation.
+          gender: result.data.gender,
+          archetype: result.data.archetypeId,
+          personality: result.data.personality,
+          stats,
+          characterConfig,
+          platformAgentId: insertedAgent.id,
           modelKey,
           agentCategory,
           harness,
-        },
-        customization: characterConfig,
-      })
-      .returning();
+        })
+        .returning();
 
-    const [insertedPet] = await tx
-      .insert(avatars)
-      .values({
-        userId: ownerId,
-        name: result.data.name,
-        species: result.data.species,
-        color: result.data.color,
-        gender: result.data.gender,
-        archetype: result.data.archetypeId,
-        personality: result.data.personality,
-        stats,
-        characterConfig,
-        platformAgentId: insertedAgent.id,
-        modelKey,
-        agentCategory,
-        harness,
-      })
-      .returning();
+      return { avatar: insertedPet, agent: insertedAgent };
+    });
+    avatar = txResult.avatar;
+    agent = txResult.agent;
+  } catch (err) {
+    const code =
+      (err as { code?: string; cause?: { code?: string } } | null)?.code
+      ?? (err as { cause?: { code?: string } } | null)?.cause?.code;
+    if (code === '23505') {
+      // A concurrent signup claimed `avatars.name` (or `agents.name`) in the
+      // window between our SELECT and INSERT. Surface as 400 — the orphan
+      // `users` row on the auto-provision path is harmless (no identity,
+      // no wallet, no session bound to it yet).
+      throw new HTTPException(400, { message: 'That name is already taken' });
+    }
+    throw err;
+  }
 
-    return { avatar: insertedPet, agent: insertedAgent };
-  });
-
-  // Auto-generate a custodial Solana wallet for the new avatar. On the
-  // auto-provision path we disclose the plaintext secret ONCE so the
-  // client can surface it for self-custody backup; on the existing-
-  // session path we just ensure the wallet exists (secret stays
-  // server-held). Phase 5.1 doctrine: the plaintext key is returned
-  // exactly at the first-ever creation, never again.
+  // --- Post-success: identity + wallet + session (auto-provision only) ---
+  //
+  // Audit CRITICAL #2 — all three of these happen AFTER the avatar exists.
+  // If any of them throw here, we respond with 500 and the avatar lives;
+  // next request with a session cookie (if created) OR a recovery flow
+  // can resume. Crucially we never leak a plaintext identity secret
+  // into a response whose partner avatar row failed to insert.
+  let firstTimeIdentity: {
+    userId: string;
+    publicKey: string;
+    secretKey: string;
+  } | null = null;
   let firstTimeWallet: {
     address: string;
     secretKey: string;
     chain: 'solana';
   } | null = null;
-  try {
-    if (firstTimeIdentity) {
-      const w = await ensureWalletWithFirstTimeSecret('avatar', avatar.id);
-      avatar.walletAddress = w.publicKey;
-      if (w.firstTimeSecretKeyBase58) {
-        firstTimeWallet = {
-          address: w.publicKey,
-          secretKey: w.firstTimeSecretKeyBase58,
-          chain: 'solana',
-        };
-      }
+
+  if (isAutoProvision) {
+    // 1. Mint ed25519 identity keypair. On race-loser we throw (rather
+    //    than silently returning no identity), because a browser that
+    //    just auto-provisioned a user with NO identity is stuck.
+    const ident = await generateIdentityKeypairForUser(ownerId);
+    if (ident.isFirstTime && ident.secretKey) {
+      firstTimeIdentity = {
+        userId: ownerId,
+        publicKey: ident.publicKey,
+        secretKey: ident.secretKey,
+      };
     } else {
+      // Should be unreachable — the user row was created in THIS request,
+      // nothing else has touched it. But surface loudly if it happens.
+      console.error('[avatars] auto-provision identity not first-time for fresh user', ownerId);
+    }
+
+    // 2. Provision the Solana avatar wallet — FATAL on auto-provision path
+    //    (audit CRITICAL #3). If Cloudflare Worker is down we'd rather
+    //    500 than leave the user with a avatar that has no wallet + no
+    //    way to recover the plaintext secret later.
+    const w = await ensureWalletWithFirstTimeSecret('avatar', avatar.id);
+    avatar.walletAddress = w.publicKey;
+    if (w.firstTimeSecretKeyBase58) {
+      firstTimeWallet = {
+        address: w.publicKey,
+        secretKey: w.firstTimeSecretKeyBase58,
+        chain: 'solana',
+      };
+    }
+
+    // 3. Mint the Lucia session LAST, so the Set-Cookie header only
+    //    ships when everything above succeeded. Lucia's
+    //    createSessionCookie honors NODE_ENV (SameSite=None+Secure in
+    //    prod, Lax+insecure in dev).
+    const session = await lucia.createSession(ownerId, {});
+    const cookie = lucia.createSessionCookie(session.id);
+    c.header('Set-Cookie', cookie.serialize(), { append: true });
+
+    // 4. Audit HIGH #5 — emit `identity.issued` with `avatarId` populated,
+    //    mirroring agent-gateway /join so /dash tiles aggregate cleanly.
+    await logEvent({
+      eventType: 'identity.issued',
+      userId: ownerId,
+      avatarId: avatar.id,
+      payload: {
+        identityType: 'anonymous',
+        identityPubkey: firstTimeIdentity?.publicKey ?? ident.publicKey,
+        via: 'create-agent',
+      },
+    });
+  } else {
+    // Authed path — just ensure the wallet exists (non-fatal on failure,
+    // matches pre-Phase-4d behavior). Secret stays server-held; no
+    // first-time disclosure.
+    try {
       const wallet = await ensureWallet('avatar', avatar.id);
       avatar.walletAddress = wallet.publicKey;
+    } catch (err) {
+      console.error('[avatars] Failed to auto-generate wallet for new avatar:', err);
     }
-  } catch (err) {
-    console.error('[avatars] Failed to auto-generate wallet for new avatar:', err);
   }
 
   return c.json({
