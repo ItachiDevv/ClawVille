@@ -41,6 +41,8 @@ import { logEvent } from '../event-logger';
 import { alertError } from '../alert-error';
 import type { ServerFrame } from '@clawville/shared';
 import { v4 as uuidv4 } from 'uuid';
+import { activityReplayLog } from './activity-replay-log';
+import type { ActivityReplayParticipantsJson } from '@clawville/database';
 
 // ─── Constants (backend §1.5, §1.6) ────────────────────────────────────────
 
@@ -110,6 +112,13 @@ class ActivityRoomManager {
   private matchFoundFn: MatchFoundDeliveryFn = () => {
     /* no-op until WS hub registers (chunk #3) */
   };
+
+  /**
+   * LIVE-transition hook registered by the sim dispatcher. Called after
+   * the DB update so the sim sees an authoritative `startedAt`. Avoids a
+   * hard import of the sim from the manager.
+   */
+  private liveTransitionFn: ((room: Room) => void) | null = null;
 
   private sweeperHandle: ReturnType<typeof setInterval> | null = null;
 
@@ -410,6 +419,15 @@ class ActivityRoomManager {
     this.matchFoundFn = fn;
   }
 
+  /**
+   * Register the sim LIVE-transition hook. Called once per room after
+   * the COUNTDOWN→LIVE FSM transition persists, with the mutable Room
+   * so the sim can pull participant avatarIds without a second lookup.
+   */
+  setLiveTransitionFn(fn: (room: Room) => void): void {
+    this.liveTransitionFn = fn;
+  }
+
   /** Boot-time: start the sweeper interval. Safe to call repeatedly. */
   startSweeper(): void {
     if (this.sweeperHandle) return;
@@ -526,6 +544,16 @@ class ActivityRoomManager {
         hasAgents: room.hasAgents,
       },
     });
+    // Invoke the sim-start hook AFTER the DB row is live so the sim
+    // never runs against a countdown row. Registered by the sim
+    // dispatcher in `apps/api/src/index.ts` at boot.
+    if (this.liveTransitionFn) {
+      try {
+        this.liveTransitionFn(room);
+      } catch (err) {
+        console.error('[activity-room-manager] liveTransitionFn threw:', err);
+      }
+    }
   }
 
   private async persistResultsTransition(room: Room): Promise<void> {
@@ -538,10 +566,32 @@ class ActivityRoomManager {
       })
       .where(eq(activityRooms.id, room.id));
 
-    // TODO chunk #3: flush replay log (input frame ring buffer) into
-    // activity_replays.frames here. The buffer is owned by the WS hub,
-    // so the manager doesn't see it from this side of the cycle.
-    //
+    // Flush the replay log ring buffer to activity_replays. Swallow
+    // errors so the FSM transition doesn't roll back — the replay
+    // buffer is preserved in-memory on flush failure so a later retry
+    // can pick it up (chunk #7 hooks in during result settlement).
+    try {
+      const participantsSnapshot: ActivityReplayParticipantsJson = {};
+      for (const p of room.participants.values()) {
+        participantsSnapshot[p.avatarId] = {
+          subjectType: p.subjectType,
+        };
+      }
+      await activityReplayLog.flushToDb(
+        room.id,
+        room.activityId,
+        participantsSnapshot,
+      );
+    } catch (err) {
+      console.error('[activity-room-manager] replay flush failed:', err);
+      void alertError({
+        severity: 'warning',
+        source: 'activity-room-manager',
+        message: `Replay flush failed for room ${room.id}`,
+        context: { activityId: room.activityId, error: String(err) },
+      });
+    }
+
     // TODO chunk #7: derive placements + write activity_results rows +
     // credit ClawTokens via the existing ledger helper + emit one
     // `activity.match.placed` event per participant. That whole settlement
@@ -564,6 +614,10 @@ class ActivityRoomManager {
       .update(activityRooms)
       .set({ status: 'completed' satisfies RoomDbStatus })
       .where(eq(activityRooms.id, room.id));
+    // Drop the replay buffer + cached replay id — chunk #7 consumes the
+    // id during the RESULTS window, so by the time we GC it's safe to
+    // release.
+    activityReplayLog.dropRoom(room.id);
   }
 
   private async persistAbortedTransition(

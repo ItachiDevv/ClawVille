@@ -40,6 +40,7 @@ mock.module('@clawville/database', () => ({
   // Room manager mock dependencies (pulled in transitively by the queue's import).
   activityRooms: { id: 'id', activityId: 'activity_id', shortCode: 'short_code', status: 'status' },
   activityRoomParticipants: { roomId: 'room_id', avatarId: 'avatar_id' },
+  activityReplays: { id: 'id' },
 }));
 
 mock.module('../../alert-error', () => ({
@@ -49,6 +50,19 @@ mock.module('../../alert-error', () => ({
 mock.module('../../event-logger', () => ({
   logEvent: () => Promise.resolve(),
   ACTIVITY_EVENT_TYPES: {},
+}));
+
+// Chunk #3 wired the replay log into the room manager's RESULTS flush.
+// Mock it so the transitive import doesn't reach real DB wires.
+mock.module('../activity-replay-log', () => ({
+  activityReplayLog: {
+    appendInputFrame: () => {},
+    flushToDb: () => Promise.resolve(null),
+    dropRoom: () => {},
+    getReplayId: () => undefined,
+    bufferLength: () => 0,
+    __resetForTest: () => {},
+  },
 }));
 
 const { activityQueueService, MAX_PARTY_SIZE } = await import('../activity-queue');
