@@ -6,6 +6,7 @@ import { useGameStore } from '@/stores/game';
 import { useAvatar } from '@/hooks/use-avatar';
 import { api } from '@/lib/api';
 import { AVATAR_SPECIES, AVATAR_COLORS, AVATAR_ARCHETYPES } from '@clawville/shared';
+import { SetupInstructions } from '@/components/create-agent/setup-instructions';
 import {
   Dialog,
   DialogContent,
@@ -135,8 +136,11 @@ export default function AvatarSettingsModal() {
             }
           />
 
-          {/* Phase 4a — Take agent home to Milady */}
-          <TakeAgentHomeSection avatarId={avatar.id} />
+          {/* Phase 4a — Take agent home */}
+          <TakeAgentHomeSection
+            avatarId={avatar.id}
+            harness={(avatar as { harness?: string | null }).harness ?? 'milady'}
+          />
         </div>
 
         {/* Powered by ElizaOS — brand attribution. Every avatar runs on the
@@ -269,16 +273,23 @@ function LinkedScapeCard({ displayName }: { displayName: string }) {
 // ---------------------------------------------------------------------------
 //
 // Emits a copy-pasteable curl one-liner the user runs on the machine where
-// their local Milady HTTP API is reachable. We deliberately DO NOT attempt
-// to POST from the browser: Miladies are user-local (typically bound to
-// localhost on a port ClawVille has no way to verify), and guessing the
-// port produces a 404 UX that looks like a ClawVille bug rather than a
-// user-side port mismatch.
+// their local runtime is reachable. We deliberately DO NOT attempt to POST
+// from the browser: local ports are unknowable, and guessing produces a
+// 404 UX that looks like a ClawVille bug rather than a user-side port
+// mismatch.
 //
-// The port field is optional. Leave it blank to use the backend's default
-// (`http://localhost:2138` — Milady's documented dev port). Users running
-// on a custom port fill it in and regenerate.
-function TakeAgentHomeSection({ avatarId }: { avatarId: string }) {
+// Below the install command we render setup instructions branched by the
+// avatar's harness — Milady avatars see "run Milady AI locally", everyone else
+// sees the raw Eliza + Postgres setup (character JSON + DATABASE_URL + how
+// to keep the Eliza process alive after the browser closes).
+function TakeAgentHomeSection({
+  avatarId,
+  harness,
+}: {
+  avatarId: string;
+  harness: string;
+}) {
+  const isMilady = harness === 'milady';
   const addToast = useGameStore((s) => s.addToast);
 
   const [miladyUrl, setMiladyUrl] = useState<string>('');
@@ -407,6 +418,14 @@ function TakeAgentHomeSection({ avatarId }: { avatarId: string }) {
           </div>
         )}
       </div>
+
+      {/* Harness-branched setup instructions — Milady avatars see the "install
+          Milady AI locally" doc (Milady bundles Eliza), everyone else sees
+          the raw postgres + Eliza bootstrap doc + how-to-keep-Eliza-running. */}
+      <SetupInstructions
+        docKey={isMilady ? 'milady-export' : 'custom-export'}
+        accent={isMilady ? 'pink' : 'cyan'}
+      />
     </div>
   );
 }
