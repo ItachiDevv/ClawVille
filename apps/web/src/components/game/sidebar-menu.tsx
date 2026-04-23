@@ -527,6 +527,7 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
   const [helpOpen, setHelpOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [crossingToScape, setCrossingToScape] = useState(false);
+  const [queueingBumper, setQueueingBumper] = useState(false);
 
   const runAction = (fn: () => void) => () => {
     closeMenu();
@@ -536,6 +537,78 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
   const handleCreateAgent = () => {
     closeMenu();
     router.push('/create-agent');
+  };
+
+  /**
+   * Q2 Activity Portals — chunk #4 dev affordance.
+   *
+   * Quick Queue: Bumper Shells. Hits `/api/activities/bumper-shells/queue`,
+   * polls `/queue-status` every 2s for `matchedRoomId + matchedRoomShortCode`,
+   * navigates to the activity room page on match found. Replaced by the
+   * full portal+lobby UX in chunk #8.
+   */
+  const handleQuickQueueBumperShells = async () => {
+    if (queueingBumper) return;
+    setQueueingBumper(true);
+    closeMenu();
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+    let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+    const cleanup = () => {
+      if (pollTimer) clearInterval(pollTimer);
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      setQueueingBumper(false);
+    };
+    try {
+      const apiBase = process.env.NEXT_PUBLIC_API_URL || '';
+      const enqueueRes = await fetch(`${apiBase}/api/activities/bumper-shells/queue`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      if (!enqueueRes.ok) {
+        const err = await enqueueRes.json().catch(() => ({}));
+        addToast('⚠️', err?.error ?? `Queue failed (${enqueueRes.status})`, 4500);
+        cleanup();
+        return;
+      }
+      addToast('🎮', 'Queued for Bumper Shells — finding match…', 3000);
+
+      // Poll every 2s up to 90s for a match assignment.
+      const startedAt = Date.now();
+      pollTimer = setInterval(async () => {
+        try {
+          const statusRes = await fetch(
+            `${apiBase}/api/activities/bumper-shells/queue-status`,
+            { credentials: 'include' },
+          );
+          if (!statusRes.ok) return;
+          const data = (await statusRes.json()) as {
+            matchedRoomId?: string | null;
+            matchedRoomShortCode?: string | null;
+          };
+          if (data.matchedRoomId && data.matchedRoomShortCode) {
+            cleanup();
+            addToast('✨', 'Match found — entering arena!', 2500);
+            const url = `/activity/bumper-shells/${data.matchedRoomId}?shortCode=${encodeURIComponent(data.matchedRoomShortCode)}`;
+            router.push(url);
+          } else if (Date.now() - startedAt > 90_000) {
+            cleanup();
+            addToast('⏳', 'No match found — try again later', 4000);
+          }
+        } catch {
+          /* ignore transient poll errors */
+        }
+      }, 2000);
+
+      // Hard timeout safeguard.
+      timeoutTimer = setTimeout(() => {
+        cleanup();
+      }, 100_000);
+    } catch (err) {
+      addToast('⚠️', err instanceof Error ? err.message : 'Queue request failed', 4500);
+      cleanup();
+    }
   };
 
   const handleCrossToScape = async () => {
@@ -621,6 +694,24 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
               ) : null
             }
           />
+          {/*
+           * Q2 Activity Portals — chunk #4 dev affordance. Replaced by the
+           * full portal+lobby UX in chunk #8. Always visible so QA can
+           * smoke-test prod end-to-end without a feature flag toggle.
+           */}
+          {hasAvatar && (
+            <SidebarRow
+              icon={queueingBumper ? <SidebarSpinner /> : '🎮'}
+              label={queueingBumper ? 'Finding match…' : 'Quick Queue: Bumper Shells'}
+              onClick={handleQuickQueueBumperShells}
+              disabled={queueingBumper}
+              ariaLabel="Quick Queue: Bumper Shells (dev affordance — chunk #8 ships full portal/lobby UX)"
+              accentOverride={{
+                accent: '#facc15',
+                glow: 'rgba(250, 204, 21, 0.45)',
+              }}
+            />
+          )}
         </div>
 
         {/* AGENT — Priority 1: Milady launch surface */}
