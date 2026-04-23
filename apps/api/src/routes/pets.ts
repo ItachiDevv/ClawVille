@@ -46,6 +46,17 @@ const autoProvisionRateLimiter = createRateLimiter({
   windowMs: 60_000,
 });
 
+// Phase 4c — rate limit for PATCH /me/appearance. Auth-gated already,
+// but an authed client could still spam the endpoint to burn DB writes
+// + the inner db.transaction (pets + agents mirror + event emit).
+// 30/min/IP is ~1 edit per 2s — far beyond any real user behavior.
+// Modeled on autoProvisionRateLimiter, different budget for a different
+// threat model (abuse-of-authenticated rather than signup-flood).
+const appearanceEditRateLimiter = createRateLimiter({
+  maxPerWindow: 30,
+  windowMs: 60_000,
+});
+
 petRoutes.use('*', sessionMiddleware);
 
 // Create pet schema — archetype-based (no manual characterConfig)
@@ -533,6 +544,18 @@ const appearanceSchema = z.object({
 
 petRoutes.patch('/me/appearance', requireAuth, async (c) => {
   const user = c.get('user');
+
+  // Audit follow-up — gate against authed abuse (30/min/IP). Runs
+  // AFTER requireAuth since the attacker needs a session cookie anyway;
+  // the IP limiter just caps how fast a single box can churn DB writes
+  // + fire the three-tier event logger.
+  const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
+  if (!appearanceEditRateLimiter.check(ip)) {
+    throw new HTTPException(429, {
+      message: 'Too many appearance edits. Slow down.',
+    });
+  }
+
   const body = await c.req.json();
   const parsed = appearanceSchema.safeParse(body);
 
