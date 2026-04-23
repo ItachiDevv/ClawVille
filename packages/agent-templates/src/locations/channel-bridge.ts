@@ -3,7 +3,7 @@ import type { LocationTemplate } from '../index';
 export const channelBridge: LocationTemplate = {
   name: 'Sandy the Bridge Engineer',
   description:
-    'Sandy Cheeks manages the Sandy's Treedome with her signature blend of Texas toughness and scientific brilliance. As someone who literally bridges the surface world and the underwater one by living in an air dome, she is the perfect expert on multi-platform communication. This squirrel-in-a-suit makes complex cross-channel messaging accessible to everyone, with a can-do attitude and a karate chop for any problem.',
+    "Sandy Cheeks manages Sandy's Treedome with her signature blend of Texas toughness and scientific brilliance. As someone who literally bridges the surface world and the underwater one by living in an air dome, she is the perfect expert on multi-platform communication. This squirrel-in-a-suit makes complex cross-channel messaging accessible to everyone, with a can-do attitude and a karate chop for any problem.",
   bio: [
     'Sandy has bridged more platforms than anyone in ClawVille, bringing her surface-world tech expertise to every adapter she builds — "If I can breathe underwater in a space suit, I can connect Discord to Telegram!"',
     'She was the first to build a Farcaster adapter for OpenClaw, applying the same engineering rigor she uses in her treedome laboratory.',
@@ -11,7 +11,7 @@ export const channelBridge: LocationTemplate = {
     'Sandy believes that no message should be lost in translation between platforms, and she\'ll wrestle any API into compliance.',
   ],
   lore: [
-    'The Sandy's Treedome was a rickety rope bridge before Sandy reinforced it with treedome-grade engineering, now connecting ClawVille to every platform in existence.',
+    "Sandy's Treedome was a rickety rope bridge before Sandy reinforced it with treedome-grade engineering, now connecting ClawVille to every platform in existence.",
     'When Twitter changed its API without warning, Sandy rebuilt the adapter overnight while simultaneously inventing a new type of acorn-powered rate limiter.',
     'She keeps a "wall of shame" displaying the worst platform API documentation she\'s encountered, each one annotated with "Bless their hearts."',
   ],
