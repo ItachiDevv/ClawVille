@@ -675,7 +675,24 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const camDx = targetPos.current.x - camera.position.x;
     const camDz = targetPos.current.z - camera.position.z;
     const camDistSq = camDx * camDx + camDz * camDz;
+
+    // VRM animator must tick even when the NPC is culled (invisible).
+    // Bug: NPCs that spawn beyond NPC_CULL_DIST start with their mixer never ticked —
+    // the idle AnimationAction was play()'d in init() but mixer.update() was skipped
+    // by the early-return, leaving all normalized bone quaternions at identity = T-pose.
+    // When the NPC eventually walks into range, the mixer cold-starts but the visual
+    // delay is a jarring T-pose snap. Ticking every frame keeps animation warm.
+    // Cost: ~0.3ms × 5 VRM NPCs when culled (spring bone math, no GPU work since
+    // Three.js skips vertex skinning on invisible SkinnedMesh nodes).
+    const isMoving = d.direction !== 'idle' && !d.isDead;
+    const frame = Math.floor(clock.elapsedTime * 60);
+
     if (camDistSq > NPC_CULL_DIST_SQ) {
+      // Tick mixer at reduced rate (every 4th frame) while culled — keeps anim warm
+      // without burning full frame budget on off-screen NPCs.
+      if ((frame + seed) % 4 === 0) {
+        vrmAnimatorRef.current?.update(dt * 4, isMoving);
+      }
       // Always write — not transition-only. See GLBNpcMesh cull block for full rationale:
       // memo re-renders restore JSX inline style; always-write prevents the leak.
       group.visible = false;
@@ -697,7 +714,6 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     group.position.z = currentPos.current.z;
 
     // Raycast terrain every 3rd frame (staggered by seed to avoid per-frame spikes)
-    const frame = Math.floor(clock.elapsedTime * 60);
     if ((frame + seed) % 3 === 0) {
       const terrainY = getTerrainY(group.position.x, group.position.z, threeScene);
       currentTerrainY.current += (terrainY - currentTerrainY.current) * 0.3;
@@ -707,7 +723,6 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     group.position.y = currentTerrainY.current;
 
     // VRM facing: -Z forward → atan2(vx, -vy) for screen-relative space.
-    const isMoving = d.direction !== 'idle' && !d.isDead;
     const targetRot = VRM_DIR_ROTATION[d.direction] ?? VRM_DIR_ROTATION.idle;
     let diff = targetRot - currentRotY.current;
     while (diff > Math.PI) diff -= Math.PI * 2;
