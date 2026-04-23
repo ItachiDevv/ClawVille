@@ -170,11 +170,24 @@ export class VRMCharacterAnimator {
         w.__VRM_INIT_COUNT = (w.__VRM_INIT_COUNT || 0) + 1;
         w.__VRM_INIT_LOG = w.__VRM_INIT_LOG || [];
         const leftArm = this.vrm.humanoid.getNormalizedBoneNode('leftUpperArm' as any);
+        // Diagnose PropertyBinding resolution — bindings bind to real nodes if the
+        // mixer root's subtree contains the track target names, else fall through
+        // to sentinel and writes silently do nothing (classic T-pose cause).
+        const mixerAny = this.mixer as any;
+        const bindings = (mixerAny._bindings || []) as any[];
+        const withNode = bindings.filter((b) => b?.binding?.node != null).length;
+        const mixerRootName = (mixerAny._root?.name || mixerAny._root?.type || 'unknown') as string;
+        const hasNormalizedRig = !!(this.vrm.humanoid as any)?.normalizedHumanBonesRoot;
         w.__VRM_INIT_LOG.push({
           n: w.__VRM_INIT_COUNT,
           idleAction: !!idle,
           idleClip: idle ? idle.getClip().name : null,
           leftArmNode: leftArm ? leftArm.name : null,
+          mixerRoot: mixerRootName,
+          hasNormalizedRig,
+          bindings: bindings.length,
+          boundToReal: withNode,
+          trackNames: idle ? idle.getClip().tracks.slice(0, 3).map((t) => t.name) : [],
         });
       }
     } catch (err) {
