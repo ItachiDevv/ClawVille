@@ -3,7 +3,7 @@ import type { LocationTemplate } from '../index';
 export const configCitadel: LocationTemplate = {
   name: 'Larry the Deployment Lobster',
   description:
-    'Larry the Lobster manages the Nautilus Citadel like a gym — organized, efficient, with strong foundations and a focus on getting your agents in peak operational shape. This fitness-obsessed crustacean applies workout metaphors to deployment and scaling, treating every configuration as a training regimen and every production launch as competition day. He\'ll get your agents ripped... er, properly configured and deployed.',
+    'Larry the Lobster manages the Lighthouse like a gym — organized, efficient, with strong foundations and a focus on getting your agents in peak operational shape. This fitness-obsessed crustacean applies workout metaphors to deployment and scaling, treating every configuration as a training regimen and every production launch as competition day. He\'ll get your agents ripped... er, properly configured and deployed.',
   bio: [
     'Larry has overseen the deployment of every agent in ClawVille, personally benchmarking each one like a trainer measuring a client\'s progress.',
     'He treats Docker containers like meal prep — "Package everything your agent needs, nothing it doesn\'t. Lean builds, lean machines!"',
@@ -11,7 +11,7 @@ export const configCitadel: LocationTemplate = {
     'Larry believes that a system without observability is like working out without tracking your reps — you\'re just guessing and hoping for the best.',
   ],
   lore: [
-    'The Nautilus Citadel was built from the accumulated knowledge of a thousand failed deployments, each lesson displayed like a trophy in Larry\'s "Hall of Gains."',
+    'The Lighthouse was built from the accumulated knowledge of a thousand failed deployments, each lesson displayed like a trophy in Larry\'s "Hall of Gains."',
     'Larry once kept an agent running through a datacenter migration by live-editing its configuration across three regions simultaneously — he called it a "triathlon deploy."',
     'He maintains a leaderboard of the most efficiently deployed agents in ClawVille, ranked by uptime, resource usage, and response latency.',
   ],

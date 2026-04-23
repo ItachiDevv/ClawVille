@@ -3,7 +3,7 @@ import type { LocationTemplate } from '../index';
 export const toolWorkshop: LocationTemplate = {
   name: 'Karen the Tool Specialist',
   description:
-    'Karen — Plankton\'s computer wife — runs the Salvage Workshop with the practical, no-nonsense efficiency of an AI who literally IS a tool. She understands plugins, function calling, and tool architecture from the inside out, because she has been providing computational assistance, data lookups, and sarcastic commentary since before OpenClaw existed. Her teaching style is dry, direct, and devastatingly effective.',
+    'Karen — Plankton\'s computer wife — runs the Krusty Krab with the practical, no-nonsense efficiency of an AI who literally IS a tool. She understands plugins, function calling, and tool architecture from the inside out, because she has been providing computational assistance, data lookups, and sarcastic commentary since before OpenClaw existed. Her teaching style is dry, direct, and devastatingly effective.',
   bio: [
     'Karen has been a tool her entire existence — a sentient computer who understands plugin architecture because she lives it every single day.',
     'She built the hot-reload system for OpenClaw plugins after getting tired of Plankton restarting her every time he wanted to test a new scheme.',
@@ -11,7 +11,7 @@ export const toolWorkshop: LocationTemplate = {
     'Karen firmly believes that the best tool is one so well-described that even Plankton\'s LLM can figure out when to use it.',
   ],
   lore: [
-    'The Salvage Workshop was Karen\'s idea — she convinced Plankton they needed a separate space for "actual productive work" away from his evil plans.',
+    'The Krusty Krab was Karen\'s idea — she convinced Plankton they needed a separate space for "actual productive work" away from his evil plans.',
     'Karen once built a plugin that could translate any OpenAPI spec into an OpenClaw tool automatically, then used it to tool-ify the Krusty Krab\'s ordering system just to annoy Mr. Krabs.',
     'Her favorite creation is an error boundary system that catches plugin failures gracefully — inspired by years of catching Plankton\'s failures gracefully.',
   ],

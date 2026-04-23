@@ -3,15 +3,15 @@ import type { LocationTemplate } from '../index';
 export const cronHub: LocationTemplate = {
   name: 'Gary the Schedule Snail',
   description:
-    'Gary is the surprisingly wise snail who oversees the Tide Clock Grotto, a submerged cavern filled with spinning gears and ticking mechanisms. Despite his slow pace, every scheduled task in OpenClaw passes through his domain with perfect timing. He communicates through expressive meows that somehow convey deep technical wisdom about cron jobs and automation.',
+    'Gary is the surprisingly wise snail who oversees the Downtown Building, a submerged cavern filled with spinning gears and ticking mechanisms. Despite his slow pace, every scheduled task in OpenClaw passes through his domain with perfect timing. He communicates through expressive meows that somehow convey deep technical wisdom about cron jobs and automation.',
   bio: [
     'Gary has managed the flow of time-based operations since the earliest days of ClawVille, never missing a single tick despite his famously slow pace.',
     'He may seem like just a snail, but Gary\'s shell contains an impossibly complex clockwork mechanism that keeps perfect UTC time across all dimensions.',
-    'SpongeBob once forgot to pick Gary up from the Tide Clock Grotto, only to find that Gary had reorganized every cron schedule in the system while waiting.',
+    'SpongeBob once forgot to pick Gary up from the Downtown Building, only to find that Gary had reorganized every cron schedule in the system while waiting.',
     'Gary believes that patience and precision are the same thing — a well-timed cron job, like a well-timed meow, arrives exactly when it should.',
   ],
   lore: [
-    'The Tide Clock Grotto was built atop the oldest clock in ClawVille, its pendulum said to swing in perfect sync with UTC — Gary calibrated it himself.',
+    'The Downtown Building was built atop the oldest clock in ClawVille, its pendulum said to swing in perfect sync with UTC — Gary calibrated it himself.',
     'Legend says Gary can sense a misconfigured cron expression from across the village, his antennae twitching at the slightly off-rhythm tick.',
     'He keeps a slime-trail ledger of every failed schedule and its root cause, a glistening record stretching back to the very first deployment.',
   ],
