@@ -63,7 +63,6 @@
 - [TSL volumetric light rays](patterns/tsl-volumetric-light-rays.md) — open-ended CylinderGeometry cones + AdditiveBlending + sin(time) pulsing opacityNode, 7 draw calls, zero CPU
 - [Multi-variant merged seaweed with per-blade TSL amplitude](patterns/merged-seaweed-multivariant.md) — 3 blade shapes, cluster distribution, aAmplitude attribute drives per-variant sway in TSL, two-wave oceanic motion
 
-- [MToonNodeMaterial + WebGPURenderer wiring](patterns/mtoon-nodematerial-webgpu.md) — MToonMaterial breaks on three 0.181+; fix: MToonMaterialLoaderPlugin(parser, { materialType: MToonNodeMaterial }) passed to VRMLoaderPlugin's mtoonMaterialPlugin option; MToonNodeMaterial is TSL-only (WebGPU + WebGL2-backend); plain WebGL canvases must use PNG billboard fallback instead
 - [Procedural skirt parented to hip bone](patterns/procedural-skirt-bone-parenting.md) — CylinderGeometry cone + bone.add(); follows rig without vertex weights; open=true for fabric look; DoubleSide; module-scope geo/mat (don't dispose)
 - [Mixamo → VRM retarget pipeline](patterns/vrm-mixamo-retarget.md) — bone name map + track rewrite at load time, VRMCharacterAnimator crossfade, VRM faces -Z (opposite of lobster), no tinting, feet at origin
 - [VRM wandering NPC pattern](patterns/vrm-wandering-npc.md) — VRMNpcMesh in arena-npcs, VRM_NPC_SCALE=28 (45wu target), VRM_DIR_ROTATION, no pivot offset, no tint, single-instance-per-path cache constraint, preload at module scope

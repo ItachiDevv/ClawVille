@@ -12,10 +12,9 @@
  */
 
 import React, { useRef, memo, Suspense, useEffect } from 'react';
-import { Canvas, useFrame, useLoader } from '@react-three/fiber';
+import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
-import { TextureLoader } from 'three';
 // UnderwaterAtmosphere and UnderwaterLightRays are TSL/three-webgpu-only components.
 // They cannot coexist with a plain WebGLRenderer Canvas — importing them would pull
 // three/webgpu into this module, creating a second THREE instance and causing
@@ -36,6 +35,8 @@ import {
   type ModelRegistryEntry,
   type PickerColorId,
 } from '@/lib/three/agent-model-registry';
+import { useVRM, preloadVRM } from '@/lib/three/vrm-loader';
+import { VRMCharacterAnimator, preloadMixamoClips } from '@/lib/three/vrm-character-animator';
 
 // Module-scope scene background color — avoids a new THREE.Color allocation on
 // every render. R3F only reads the scene.background prop at Canvas creation time.
@@ -194,62 +195,11 @@ function RotatingPlatform({ children }: { children?: React.ReactNode }) {
 }
 
 // ---------------------------------------------------------------------------
-// VRM Model on Platform — PNG billboard fallback
-//
-// SelectAgentCanvas uses a plain WebGLRenderer (R3F default) because it needs
-// preserveDrawingBuffer for toDataURL thumbnail capture. MToonNodeMaterial (the
-// correct VRM material for three 0.181+) is TSL-based and requires WebGPURenderer
-// — it does NOT compile under a plain WebGLRenderer (no TSL→GLSL transpiler).
-//
-// Solution: instead of loading the VRM 3D model on this canvas, display the
-// VRM entry's preview PNG on a billboard plane. The plane rotates with the
-// platform (child of RotatingPlatform group) and is sized to fill the shrine
-// panel. This eliminates the blank-canvas / T-pose / broken-material problems
-// on /create-agent while keeping VRM 3D rendering exclusively on /game
-// (World3DCanvas uses WebGPURenderer which supports MToonNodeMaterial).
-//
-// The VRM binary is NOT downloaded on /create-agent — the preloadVRM calls
-// and useVRM hook have been removed from this file. VRM loads happen only in
-// World3DCanvas's component tree where the WebGPU path is wired.
+// VRM Model on Platform
+// Separate component so Suspense handles VRM load independently.
+// VRM feet at Y=0 — no pivot offset / yOffset needed.
+// Color tinting is NOT applied to VRM (MToon pipeline breaks under std lerp).
 // ---------------------------------------------------------------------------
-
-// Fallback texture for entries without a preview image — solid cyan square.
-// Created once at module scope; never disposed (tiny, shared across all instances).
-const FALLBACK_TEXTURE = (() => {
-  const canvas = typeof document !== 'undefined' ? document.createElement('canvas') : null;
-  if (!canvas) return null;
-  canvas.width = 4;
-  canvas.height = 4;
-  const ctx = canvas.getContext('2d');
-  if (ctx) { ctx.fillStyle = '#00aacc'; ctx.fillRect(0, 0, 4, 4); }
-  return new THREE.CanvasTexture(canvas);
-})();
-
-function VRMPreviewBillboard({ previewUrl }: { previewUrl: string }) {
-  // useLoader with TextureLoader is Suspense-compatible — throws the Promise
-  // while the texture is loading, resolves once the PNG is decoded.
-  const texture = useLoader(TextureLoader, previewUrl);
-
-  const mat = React.useMemo(() => new THREE.MeshBasicMaterial({
-    map: texture,
-    transparent: true,
-    alphaTest: 0.01,
-    side: THREE.DoubleSide,
-    depthWrite: false,
-  }), [texture]);
-
-  useEffect(() => () => mat.dispose(), [mat]);
-
-  // Portrait plane — 18×28 world units fills the shrine panel for a ~1.6m
-  // humanoid at the camera distance (minDistance=24, camera at z=45, fov=45).
-  // Position y=15 so the figure's mid-torso sits at the centre of the camera
-  // target (target=[0,14,0] in SceneContents when isVRM=true).
-  return (
-    <mesh position={[0, 15, 0]} material={mat}>
-      <planeGeometry args={[18, 28]} />
-    </mesh>
-  );
-}
 
 const PlatformModelVRM = memo(function PlatformModelVRM({
   modelKey,
@@ -257,28 +207,37 @@ const PlatformModelVRM = memo(function PlatformModelVRM({
   modelKey: string;
 }) {
   const reg: ModelRegistryEntry = MODEL_REGISTRY[modelKey as ModelKey] ?? MODEL_REGISTRY.milady_official_1;
-  const previewUrl = reg.preview ?? '';
+  const vrm = useVRM(reg.path);
 
-  if (!previewUrl) {
-    // No preview image — show a solid-colour placeholder plane
-    return (
-      <mesh position={[0, 15, 0]}>
-        <planeGeometry args={[18, 28]} />
-        <meshBasicMaterial
-          map={FALLBACK_TEXTURE ?? undefined}
-          color={FALLBACK_TEXTURE ? undefined : 0x00aacc}
-          side={THREE.DoubleSide}
-          transparent
-          opacity={0.85}
-        />
-      </mesh>
-    );
-  }
+  const vrmAnimatorRef = React.useRef<VRMCharacterAnimator | null>(null);
+
+  React.useEffect(() => {
+    if (!vrm) return;
+    const animator = new VRMCharacterAnimator(vrm);
+    vrmAnimatorRef.current = animator;
+    animator.init().catch((err) => {
+      console.warn('[SelectAgentCanvas VRM] animator init failed:', err);
+    });
+    return () => {
+      vrmAnimatorRef.current = null;
+      animator.dispose();
+    };
+  }, [vrm]);
+
+  useFrame((_, delta) => {
+    const dt = Math.min(delta, 0.1);
+    // idle=false so the walk anim plays — gives a livelier preview on the pedestal
+    vrmAnimatorRef.current?.update(dt, false);
+  });
 
   return (
-    <Suspense fallback={null}>
-      <VRMPreviewBillboard previewUrl={previewUrl} />
-    </Suspense>
+    // Bumped scale from registry (13) → larger effective size to fill the
+    // enlarged shrine panel. The per-registry scale stays authoritative for
+    // game-world rendering; the picker uses a visual multiplier to frame the
+    // avatar head-to-toe without requiring a per-row registry change.
+    <group position={[0, 1.5, 0]} scale={[reg.scale * 1.35, reg.scale * 1.35, reg.scale * 1.35]}>
+      <primitive object={vrm.scene} />
+    </group>
   );
 });
 
@@ -499,14 +458,15 @@ export default function SelectAgentCanvas({
   color = 'green',  // matches PICKER_COLORS default
   onCanvasReady,
 }: SelectAgentCanvasProps) {
-  // Preload GLB models in the background after first commit.
-  // VRM models are NOT preloaded here — this canvas is plain WebGL and uses
-  // PNG billboard previews for VRM entries. The VRM binaries are only loaded
-  // by World3DCanvas (WebGPU path). Preloading them here would waste ~50–80 MB
-  // of network and memory for assets that are never rendered 3D on this canvas.
+  // Preload all models in the background after first commit.
+  // GLB models use useGLTF.preload; VRM models use preloadVRM (different loader).
+  // Also preload Mixamo animation clips for VRM animators.
   useEffect(() => {
+    preloadMixamoClips();
     Object.values(MODEL_REGISTRY).forEach((m: ModelRegistryEntry) => {
-      if (m.avatar_type !== 'vrm') {
+      if (m.avatar_type === 'vrm') {
+        preloadVRM(m.path);
+      } else {
         useGLTF.preload(m.path);
       }
     });
