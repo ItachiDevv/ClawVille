@@ -12,7 +12,7 @@
  * harness's pool so the user can't even pick a cross-pool avatar.
  */
 
-import { useMemo, useState, useCallback } from 'react';
+import { useMemo, useState, useCallback, useEffect } from 'react';
 import {
   MODEL_REGISTRY,
   PICKER_COLORS,
@@ -39,7 +39,17 @@ export function EditAppearanceSection({ avatar }: EditAppearanceSectionProps) {
   const currentModelKey = (avatar.modelKey ?? 'lobster') as ModelKey;
   const currentColor = (avatar.color ?? 'green') as PickerColorId;
   const currentGender = (avatar.gender ?? 'male') as 'male' | 'female';
-  const currentIsMilady = avatar.harness === 'milady';
+
+  // Audit fix — `avatar.harness` is the server's source of truth for the
+  // pool, but a legacy row with a NULL harness or one that contradicts
+  // its modelKey (edge case before Phase 4d locked them together) would
+  // leave the user staring at an empty or wrong grid. Fall back to the
+  // current modelKey's category when harness is missing, so the pool
+  // always contains the user's current avatar.
+  const currentModelCategory = MODEL_REGISTRY[currentModelKey]?.category;
+  const currentIsMilady = avatar.harness
+    ? avatar.harness === 'milady'
+    : currentModelCategory === 'milady';
 
   // Draft state (only diffs vs. current avatar get sent).
   const [draftModelKey, setDraftModelKey] = useState<ModelKey>(currentModelKey);
@@ -47,6 +57,16 @@ export function EditAppearanceSection({ avatar }: EditAppearanceSectionProps) {
   const [draftGender, setDraftGender] = useState<'male' | 'female'>(currentGender);
   const [expanded, setExpanded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Audit fix — sync drafts when the avatar prop changes (after a successful
+  // save invalidates the react-query cache, or after a cross-tab edit).
+  // Without this the `dirty` check below would stay true against stale
+  // "current*" values and re-saving could POST outdated fields.
+  useEffect(() => {
+    setDraftModelKey(currentModelKey);
+    setDraftColor(currentColor);
+    setDraftGender(currentGender);
+  }, [currentModelKey, currentColor, currentGender]);
 
   // Filter the avatar pool by harness. Milady → only VRMs; non-Milady →
   // only GLBs. Mirrors the server-side guard in PATCH /me/appearance.
