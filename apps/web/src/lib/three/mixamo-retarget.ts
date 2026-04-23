@@ -101,10 +101,16 @@ export const MIXAMO_TO_VRM_BONE: Record<string, string> = {
   RightHandPinky3:  'rightLittleDistal',
 };
 
-// Strip mixamorig: prefix variant — some Mixamo exports use `mixamorig:Hips`,
-// others use `mixamorig_Hips` (underscore). Both are normalized.
+// Strip mixamorig prefix in all its variant forms:
+//   mixamorig:Hips   — raw GLTF export (colon separator)
+//   mixamorig_Hips   — some exporters use underscore
+//   mixamorigHips    — Three.js GLTFLoader sanitizes reserved chars (including `:`)
+//                      via PropertyBinding.sanitizeNodeName(), which removes `:` entirely,
+//                      leaving the bone name as "mixamorigHips" with no separator.
+// All three are normalized to just "Hips", "Spine", etc. for MIXAMO_TO_VRM_BONE lookup.
 function normalizeMixamoName(raw: string): string {
-  return raw.replace(/^mixamorig[_:]/, '');
+  // Strip separator variants first, then bare prefix as fallback
+  return raw.replace(/^mixamorig[_:]?/, '');
 }
 
 /**
