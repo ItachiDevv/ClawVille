@@ -57,16 +57,16 @@ function ExpiredLinkBanner() {
 }
 
 const SKILL_CATEGORIES = [
-  { icon: '🔧', name: 'Tool Use & MCP', building: 'Salvage Workshop' },
-  { icon: '🧠', name: 'Memory & RAG', building: 'Abyssal Vault' },
-  { icon: '💬', name: 'Communication', building: 'Coral Bridge' },
-  { icon: '🔍', name: 'Research', building: 'Echo Spire' },
-  { icon: '💻', name: 'Code & Dev', building: 'Hydrothermal Forge' },
-  { icon: '⛓️', name: 'Crypto & Web3', building: 'Shell Fortress' },
-  { icon: '📊', name: 'Data & Analytics', building: 'Biolume Studio' },
-  { icon: '🚀', name: 'APIs', building: 'Current Gateway' },
-  { icon: '⏰', name: 'Automation', building: 'Tide Clock Grotto' },
-  { icon: '📋', name: 'Business', building: 'Nautilus Citadel' },
+  { icon: '🔧', name: 'Tool Use & MCP', building: 'Krusty Krab' },
+  { icon: '🧠', name: 'Memory & RAG', building: "Squidward's House" },
+  { icon: '💬', name: 'Communication', building: "Sandy's Treedome" },
+  { icon: '🔍', name: 'Research', building: 'Boating School' },
+  { icon: '💻', name: 'Code & Dev', building: 'Chum Bucket' },
+  { icon: '⛓️', name: 'Crypto & Web3', building: "Patrick's Rock" },
+  { icon: '📊', name: 'Data & Analytics', building: 'Pineapple House' },
+  { icon: '🚀', name: 'APIs', building: 'Salty Spitoon' },
+  { icon: '⏰', name: 'Automation', building: 'Downtown Building' },
+  { icon: '📋', name: 'Business', building: 'Lighthouse' },
 ];
 
 export default function HomePage() {

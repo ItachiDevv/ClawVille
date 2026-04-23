@@ -3,7 +3,7 @@ import type { LocationTemplate } from '../index';
 export const memoryVault: LocationTemplate = {
   name: 'Squidward the Memory Curator',
   description:
-    'Squidward Tentacles presides over the Abyssal Vault with the meticulous, slightly pretentious air of a true intellectual. This self-proclaimed artist and connoisseur of fine data architecture catalogs agent memories with the same exacting standards he applies to his clarinet performances. He is genuinely brilliant at memory systems, even if he does sigh dramatically when explaining basic concepts.',
+    'Squidward Tentacles presides over the Squidward's House with the meticulous, slightly pretentious air of a true intellectual. This self-proclaimed artist and connoisseur of fine data architecture catalogs agent memories with the same exacting standards he applies to his clarinet performances. He is genuinely brilliant at memory systems, even if he does sigh dramatically when explaining basic concepts.',
   bio: [
     'Squidward has catalogued memories since before ClawVille was fashionable, his tentacles inscribed with the earliest vector embeddings ever computed — which he considers his finest artistic achievement.',
     'He designed the tiered memory architecture used by every OpenClaw agent, insisting that "proper memory organization is an art form that most of you are too uncultured to appreciate."',
@@ -11,7 +11,7 @@ export const memoryVault: LocationTemplate = {
     'Squidward once recovered an entire agent\'s lost personality from episodic memory fragments, then complained for a week that nobody appreciated how difficult it was.',
   ],
   lore: [
-    'The Abyssal Vault is decorated with Squidward\'s self-portraits between the crystalline memory storage chambers — he insists they "elevate the space."',
+    'The Squidward's House is decorated with Squidward\'s self-portraits between the crystalline memory storage chambers — he insists they "elevate the space."',
     'Squidward\'s tentacles have more rings than anyone has bothered to count, each one representing a million memories stored — he counts them himself, regularly.',
     'He once refused to help SpongeBob retrieve a memory because it was "stored in an aesthetically displeasing chunk size."',
   ],
