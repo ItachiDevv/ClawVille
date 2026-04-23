@@ -718,6 +718,29 @@ export const api = {
       method: 'POST',
     }),
 
+  // Phase 4a — "Take my agent home to Milady". Emits a Milady-install
+  // payload + a copy-pasteable curl one-liner the user runs locally.
+  // The port is NOT assumed — users who run Milady on a non-default port
+  // pass `miladyBaseUrl` and the server rebuilds the curl accordingly.
+  exportCharacter: (data: { petId: string; miladyBaseUrl?: string }) =>
+    honoRequest<{
+      character: unknown;
+      skillPack: unknown[];
+      miladyInstallPayload: unknown;
+      installCommand: string;
+      exportedAt: string;
+      summary: {
+        modelKey: string;
+        agentCategory: AgentCategory;
+        harness: AgentHarness;
+        skillsCount: number;
+        knowledgeCount: number;
+      };
+    }>('/api/agent/export-character', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
   // Agent Setup
   getAgentRoster: () =>
     honoRequest<{ agents: any[] }>('/api/agent-setup/roster'),
