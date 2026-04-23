@@ -397,21 +397,36 @@ function disposeClone(root: THREE.Object3D): void {
 
 // ---------------------------------------------------------------------------
 // MergedDecorations — replaces 80 × SingleDecoration (~3000+ individual meshes)
-// with geometry-merged draw calls bucketed by material (~20 merged meshes).
+// with geometry-merged draw calls bucketed by (spatialCell, materialUUID).
 //
 // Strategy:
 //   1. Load all 12 unique decoration models (fixed hook calls — count never changes).
-//   2. For each of the 80 DECORATIONS entries, traverse the source scene,
-//      apply the entry's world transform (position/scale/rotY) into each mesh's
-//      geometry clone, then collect {transformedGeo, material} pairs.
-//   3. Bucket by material UUID.
-//   4. mergeGeometries() per bucket → single Mesh per material.
+//   2. For each of the 80 DECORATIONS entries, determine its 3×3 spatial grid cell
+//      based on world-space X/Z position.
+//   3. For each mesh in that entry's source scene, apply the combined world transform
+//      (entry position/scale/rotY × GLB-internal matrixWorld) into a geometry clone.
+//   4. Bucket by `${cellIndex}_${materialUUID}`.
+//   5. mergeGeometries() per bucket → one Mesh per (cell, material).
+//   6. frustumCulled stays at THREE default (true) — each chunk has a tight AABB
+//      covering only its grid cell, so off-screen chunks are culled correctly.
+//      This restores the pre-merge frustum-cull behaviour that was broken by the
+//      single-merged-mesh iteration (which had to use frustumCulled=false because
+//      the AABB spanned the whole scene and Three.js would have wrongly culled it
+//      based on the spectator cam direction).
+//
+// Grid: 3×3 = 9 cells covering ±DECO_GRID_HALF (set to 8000wu, generously wrapping
+// the scatter extent of MAP_WIDTH * 2.4 = 12288wu half = 6144wu). Each cell is
+// ~5333wu wide. With 80 decorations / 9 cells ≈ 9 per cell → ~9×(materials/cell)
+// merged meshes total. Spectator cam facing town center: back 4-5 cells are culled,
+// leaving only ~40-50 meshes to draw rather than all 80 worth.
 //
 // Constraints respected:
 //   - No SkinnedMesh (decoration GLBs are all static)
 //   - No ShaderMaterial / NodeMaterial (guard present; GLBs use MeshStandardMaterial)
-//   - matrixAutoUpdate=false on all merged meshes (static, never move)
+//   - matrixAutoUpdate=false on all merged meshes (static, transforms baked in)
 //   - Temporary per-mesh geometry clones disposed after merge
+//   - computeBoundingBox() called on each merged geometry so Three.js frustum
+//     culling uses the actual tight AABB, not the default unset (infinite) box
 // ---------------------------------------------------------------------------
 
 // All 12 unique decoration model paths (must match DECO_TYPES exactly)
@@ -430,6 +445,23 @@ const DECO_MODEL_PATHS = [
   '/models/building-tower2.glb',
 ] as const;
 
+// 3×3 spatial grid for chunk-merged frustum culling.
+// Half-extent covers the full decoration scatter area: MAP_WIDTH * 2.4 / 2 = 6144wu.
+// We use 8000 to give a small margin beyond the scatter boundary.
+const DECO_GRID_CELLS = 3;
+const DECO_GRID_HALF  = 8000; // ±8000wu total 16000wu; each cell = 16000/3 ≈ 5333wu
+
+function decoGridCell(worldX: number, worldZ: number): number {
+  // Map worldX/worldZ from [-HALF, +HALF] → [0, CELLS)
+  const col = Math.min(DECO_GRID_CELLS - 1, Math.max(0,
+    Math.floor((worldX + DECO_GRID_HALF) / (DECO_GRID_HALF * 2) * DECO_GRID_CELLS)
+  ));
+  const row = Math.min(DECO_GRID_CELLS - 1, Math.max(0,
+    Math.floor((worldZ + DECO_GRID_HALF) / (DECO_GRID_HALF * 2) * DECO_GRID_CELLS)
+  ));
+  return row * DECO_GRID_CELLS + col;
+}
+
 // Scratch matrix for baking world transforms into geometry vertices.
 // Module-scope to avoid GC allocations inside the useMemo.
 const _decoMatrix = new THREE.Matrix4();
@@ -438,7 +470,6 @@ interface MergedBucket {
   geometry: THREE.BufferGeometry;
   material: THREE.Material;
 }
-
 
 /** Inner component — loaded inside a Suspense; receives all 12 scenes via hooks. */
 function MergedDecorationsInner() {
@@ -465,15 +496,18 @@ function MergedDecorationsInner() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11]);
 
-  // Compute merged buckets — runs once when all scenes are loaded.
+  // Compute spatially-chunked merged buckets — runs once when all scenes are loaded.
   const buckets = useMemo<MergedBucket[]>(() => {
-    // materialUUID → { geometries: BufferGeometry[], material: Material }
+    // key = `${cellIndex}_${materialUUID}` → { geometries, material }
     const bucketMap = new Map<string, { geometries: THREE.BufferGeometry[]; material: THREE.Material }>();
     const tempGeos: THREE.BufferGeometry[] = [];
 
     for (const entry of DECORATIONS) {
       const sourceScene = sceneMap.get(entry.model);
       if (!sourceScene) continue;
+
+      // Determine the 3×3 grid cell for this decoration's world position
+      const cell = decoGridCell(entry.x, entry.z);
 
       // Update world matrices of the source scene for correct mesh.matrixWorld
       sourceScene.updateMatrixWorld(true);
@@ -490,16 +524,11 @@ function MergedDecorationsInner() {
         // Skip ShaderMaterial / NodeMaterial — merging these causes WebGPU pipeline crashes
         if ((mat as any).isShaderMaterial || (mat as any).isNodeMaterial) return;
 
-        // The mesh's matrixWorld captures parent group transforms inside the GLB.
-        // We need to combine: (entry position/scale/rotY) * (mesh local worldMatrix inside GLB).
-        // Compose: entry_world * mesh_worldMatrix_local (mesh.matrixWorld is relative to scene root)
-        // Build entry's transform matrix
+        // Build entry's world transform matrix: T(ex,ey,ez) * Ry(rotY) * S(s)
         const cosY = Math.cos(entry.rotY);
         const sinY = Math.sin(entry.rotY);
         const s = entry.scale;
         const ex = entry.x, ey = -2, ez = entry.z;
-
-        // Entry matrix: T(ex,ey,ez) * Ry(rotY) * S(s)
         // prettier-ignore
         _decoMatrix.set(
           s * cosY,  0, s * sinY, ex,
@@ -507,14 +536,15 @@ function MergedDecorationsInner() {
           -s * sinY, 0, s * cosY, ez,
           0,         0, 0,        1,
         );
-        // Compose with the mesh's local world matrix inside the GLB
+        // Compose with the mesh's GLB-internal world matrix
         const combinedMatrix = _decoMatrix.clone().multiply(mesh.matrixWorld);
 
         const geo = mesh.geometry.clone();
         geo.applyMatrix4(combinedMatrix);
         tempGeos.push(geo);
 
-        const key = mat.uuid;
+        // Bucket key includes grid cell so each chunk gets its own tight AABB
+        const key = `${cell}_${mat.uuid}`;
         if (!bucketMap.has(key)) {
           bucketMap.set(key, { geometries: [], material: mat });
         }
@@ -522,7 +552,7 @@ function MergedDecorationsInner() {
       });
     }
 
-    // Merge each bucket
+    // Merge each bucket and compute a tight bounding box for frustum culling
     const result: MergedBucket[] = [];
     for (const { geometries, material } of bucketMap.values()) {
       if (geometries.length === 0) continue;
@@ -532,6 +562,11 @@ function MergedDecorationsInner() {
         geometries.forEach((g) => g.dispose());
         continue;
       }
+      // CRITICAL: compute bounding box/sphere so Three.js frustum culling uses
+      // the actual tight AABB for this spatial chunk, not the default null box.
+      // Without this, frustumCulled=true would behave as always-visible.
+      merged.computeBoundingBox();
+      merged.computeBoundingSphere();
       result.push({ geometry: merged, material });
     }
 
@@ -556,10 +591,11 @@ function MergedDecorationsInner() {
           key={i}
           geometry={geometry}
           material={material}
-          // matrixAutoUpdate=false: these merged meshes are at world origin with
-          // identity matrix — all transforms were baked into vertex positions above.
+          // matrixAutoUpdate=false: merged meshes sit at world origin with identity
+          // matrix — all transforms were baked into vertex positions.
+          // frustumCulled: default true — each chunk has a tight cell-local AABB
+          // computed above, so off-screen chunks are correctly skipped by the renderer.
           matrixAutoUpdate={false}
-          frustumCulled={false}
         />
       ))}
     </>
