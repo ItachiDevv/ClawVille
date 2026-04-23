@@ -261,6 +261,14 @@ export default function CreateAgentPage() {
       sessionStorage.setItem('createPetStep1', JSON.stringify(payload));
       router.push('/create-agent/personality');
     } finally {
+      // Reset BOTH the ref AND the state. The ref was previously only
+      // reset in a useEffect unmount cleanup, but Next.js keeps the page
+      // component mounted across same-route navigations (including the
+      // back-button return from /create-agent/personality), so the ref
+      // stayed `true` forever after the first click and every subsequent
+      // click no-op'd on the `if (submittingRef.current) return` guard.
+      // Caught by end-to-end test 2026-04-23.
+      submittingRef.current = false;
       setIsSubmitting(false);
     }
   }, [
