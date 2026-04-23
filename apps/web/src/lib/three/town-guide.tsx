@@ -58,7 +58,7 @@ useGLTF.preload('/models/guide-rigged.glb');
 
 const GROUND_Y    = -2;
 const GUIDE_Z     = 240;
-const GUIDE_SCALE = 100;
+const GUIDE_SCALE = 200;
 
 // Clip names — defined at module scope (no per-render allocation).
 const CLIP_WAVE = 'wave';
