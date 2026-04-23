@@ -65,9 +65,20 @@ function loadVRM(path: string): Promise<VRM> {
       const vrm: VRM | undefined = gltf.userData.vrm;
       if (!vrm) throw new Error(`[vrm-loader] No VRM data in ${path}`);
 
-      // Performance: remove skeleton joints that Three.js bones don't need
-      // (replaces the deprecated removeUnnecessaryJoints with combineSkeletons)
-      VRMUtils.combineSkeletons(vrm.scene);
+      // Do NOT call VRMUtils.combineSkeletons here — it merges SkinnedMesh
+      // skeletons into a single consolidated skeleton but leaves the original
+      // raw humanoid bones orphaned (parent === null). The Mixamo retargeter
+      // animates `humanoid.getNormalizedBoneNode(...)` which `vrm.update()`
+      // then copies to the raw humanoid bones — but those raw bones are no
+      // longer in the SkinnedMesh's active skeleton, so the character renders
+      // in T-pose even though the bones behind the scenes ARE moving.
+      //
+      // Confirmed via live CDP probe 2026-04-23: Normalized_mixamorigHips AND
+      // mixamorigHips quaternions changed over 500ms, but mixamorigHips.parent
+      // was null — orphaned by combineSkeletons. Removing this call restores
+      // the animation-skeleton binding so Mixamo idle/walk drives the visible
+      // mesh. We keep removeUnnecessaryVertices (it only culls unused verts,
+      // no skeleton-graph mutation).
       VRMUtils.removeUnnecessaryVertices(vrm.scene);
 
       // Normalise facing: VRM 0.x faces +Z at rest; rotateVRM0 adds π on scene
