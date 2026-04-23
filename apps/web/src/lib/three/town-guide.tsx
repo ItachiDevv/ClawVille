@@ -1,32 +1,37 @@
 'use client';
 
 /**
- * TownGuide — the new town-center anchor for ClawVille.
+ * TownGuide — town-center anchor NPC, Mixamo-rigged with 11-clip animation system.
  *
- * Replaces the paused Bazaar Pedestals, Bounty Board, and Auction Podium that
- * formerly occupied world center. She stands at (0, GROUND_Y, 0), is ~150 world
- * units tall, and will gain Eliza teacher chat wiring in Phase 2.
+ * Asset pipeline:
+ *   - Character: /models/guide-rigged.glb (Sketchfab anime girl → Blender edits → Mixamo auto-rig
+ *     → 11 animation FBXs imported as actions → pushed to NLA tracks → exported as single glb
+ *     with all animations baked in as named clips)
  *
- * Model: /models/guide.glb
- *   - Native height: ~1.49m, scale ≈ 100 → ~149 world units
- *   - Faces roughly -Z at rest
- *   - Key bones: Hips_04 (drives authored skirt via vertex weights), Chest_06 (breathing), Head_031 (look-around)
- *   - Cloth material (opacity=0) hides most clothing; we selectively override Shoes
+ * Animation system:
+ *   - AnimationMixer on the cloned skeleton root.
+ *   - Default idle: `pose-hand-on-hips` clip, LoopOnce, clampWhenFinished=true → holds at frame 0.
+ *   - Procedural breathing: useFrame drives mixamorig:Spine2 scale.y = 1 + sin(t*1.8)*0.008.
+ *     Additive over the mixer — mixer doesn't touch scale, only rotation/position tracks.
+ *   - Wave on click: crossfade idle → wave (LoopOnce, clampWhenFinished=false), then
+ *     crossfade back to idle when finished. Phase 2 TODO: also open Eliza chat.
  *
- * Procedural idle:
- *   - Head_031: gentle Y-axis drift (sin, 0.4 Hz, ±0.05 rad)
- *   - Chest_06: subtle scale.y breathing (sin, 1.8 Hz, ±0.008)
+ * Available clips (all accessible by name via clips.find):
+ *   - pose-hand-on-hips (default idle — frozen at frame 0)
+ *   - pose-catwalk-idle, pose-dance, pose-laying
+ *   - pose-standing-2, pose-standing-3, pose-standing-4
+ *   - praying (58 frames)
+ *   - wave (45 frames)
+ *   - bellydancing (762 frames)
+ *   - samba (595 frames)
  *
- * Skirt: CylinderGeometry(topR=0.19, botR=0.32, h=0.38) parented to Hips_04 at local y=-0.04 (top edge at natural waist, ~15cm above hip bone). Dark navy #1e3a5f, DoubleSide
+ * GPU constraints (Iris Xe invariants):
+ *   - NO drei Text/Billboard — hard crash
+ *   - NO InstancedMesh + ShaderMaterial — silent WebGPU crash
+ *   - frustumCulled=false on every mesh after SkeletonUtils.clone
+ *   - No per-frame allocations — mixer/action refs at component scope
  *
- * GPU constraints:
- *   - Plain `three` imports (NOT three/webgpu) — skinned body/face/hair materials
- *     are stock MeshStandardMaterial from the GLB loader; they work on either renderer
- *   - NO drei Text/Billboard — Iris Xe crash (documented in memory)
- *   - NO InstancedMesh + ShaderMaterial — WebGPU silent crash
- *   - No per-frame allocations — all scratch objects at module scope
- *
- * Phase 2 TODO: wire onClick to open guide chat (Eliza teacher, 11th character)
+ * Phase 2 TODO: wire onClick → open guide Eliza chat (11th teacher character)
  */
 
 import { useRef, useMemo, useEffect, memo, Suspense } from 'react';
@@ -34,231 +39,162 @@ import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
+import { useGameStore } from '@/stores/game';
 
-// ---------------------------------------------------------------------------
-// Preload at module scope — non-critical, deferred via Suspense fallback={null}
-// ---------------------------------------------------------------------------
-useGLTF.preload('/models/guide.glb');
+useGLTF.preload('/models/guide-rigged.glb');
 
-// ---------------------------------------------------------------------------
-// World position constants
-// ---------------------------------------------------------------------------
-// GROUND_Y = -2: matches the sand floor Y used by all other center objects
-// (bazaar-pedestals BASE_Y=-2, bounty-board BOARD_Y=-2, auction-podium floor=-2).
-// guide.glb feet sit at y≈0 in model space; the scale group lifts geometry above
-// floor by bone offsets, so GROUND_Y=-2 gives correct floor contact.
-const GROUND_Y = -2;
+const GROUND_Y   = -2;
+const GUIDE_Z    = 240;
+const GUIDE_SCALE = 100;
 
-// GUIDE_Z = +240 places her DECISIVELY south of the auction podium's ground-level
-// footprint (podium at z=+50 with 144u bottom radius → south edge at z=+194).
-// First Rev-3 attempt used z=+100 but her body half-depth (~37u) still put her
-// inside the podium's base ring; she rendered as "head peeking over podium" from
-// player POV. z=+240 clears the edge by ~46u so she stands fully in front, with
-// the podium visible as a landmark ~190u behind her from player spawn at z=+380.
-const GUIDE_Z = 240;
+const CLIP_IDLE = 'pose-hand-on-hips';
+const CLIP_WAVE = 'wave';
 
-// ---------------------------------------------------------------------------
-// Scale — native height 1.49m, target ~150 world units
-// ---------------------------------------------------------------------------
-const GUIDE_SCALE = 100; // 100 × 1.49 = 149 world units
+const BREATH_FREQ = 1.8;
+const BREATH_AMP  = 0.008;
+const WAVE_FADE   = 0.35;
 
-// ---------------------------------------------------------------------------
-// Materials — created once per module load, reused across mounts
-// ---------------------------------------------------------------------------
-
-// Replacement shoe material (the cloth material has opacity=0; we only show shoes)
-const _shoeMaterial = new THREE.MeshStandardMaterial({
-  color: 0x111111,
-  roughness: 0.5,
-  metalness: 0.1,
-});
-
-// Skirt cone — top wraps natural waist, bottom flares out, ends upper thigh.
-// Top radius 0.19m ≈ waist half-width (wider than original 0.16 hip-only); bottom 0.32m A-line flare.
-// 3 height segments let the silhouette read as fabric, not plastic.
-const _skirtGeometry = new THREE.CylinderGeometry(0.19, 0.32, 0.38, 24, 3, true);
-
-// Skirt material — dark navy, double-sided, procedural cone mesh
-const _skirtMaterial = new THREE.MeshStandardMaterial({
-  color: 0x1e3a5f,
-  roughness: 0.7,
-  metalness: 0.0,
-  side: THREE.DoubleSide,
-});
-
-// ---------------------------------------------------------------------------
-// Module-scope scratch — NEVER allocate in useFrame
-// ---------------------------------------------------------------------------
-const _scratchEuler = new THREE.Euler();
-
-// ---------------------------------------------------------------------------
-// TownGuideInner — loaded inside <Suspense fallback={null}>
-// ---------------------------------------------------------------------------
 const TownGuideInner = memo(function TownGuideInner() {
-  const groupRef  = useRef<THREE.Group>(null!);
+  const { scene: gltfScene, animations } = useGLTF('/models/guide-rigged.glb');
 
-  // Bone refs — populated in useMemo after clone
-  const headBoneRef     = useRef<THREE.Bone | null>(null);
-  const chestBoneRef    = useRef<THREE.Bone | null>(null);
-  const hipBoneRef      = useRef<THREE.Bone | null>(null);
-  const upperArmLRef    = useRef<THREE.Bone | null>(null);
-  const upperArmRRef    = useRef<THREE.Bone | null>(null);
-  const lowerArmLRef    = useRef<THREE.Bone | null>(null);
-  const lowerArmRRef    = useRef<THREE.Bone | null>(null);
-
-  const { scene: gltfScene } = useGLTF('/models/guide.glb');
-
-  // Clone the scene using SkeletonUtils to preserve the full skinned rig.
-  // Plain scene.clone(true) does not rebind SkinnedMesh.skeleton correctly —
-  // all clones share the same bones and stomp each other's pose matrices.
-  // SkeletonUtils.clone() creates independent bone trees + rebinds each SkinnedMesh.
+  // Clone the character per-mount so each instance gets its own bone tree.
+  // SkeletonUtils.clone rebinds SkinnedMesh.skeleton correctly — plain clone(true) shares bones.
   const cloned = useMemo(() => {
-    const clone = skeletonClone(gltfScene) as THREE.Group;
-
-    // Walk clone tree: fix cloth material visibility
-    clone.traverse((obj) => {
-      const mesh = obj as THREE.Mesh;
-      if (!mesh.isMesh) return;
-
-      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-      const hasCloth = mats.some(
-        (m) => m && (m as THREE.MeshStandardMaterial).name === 'cloth'
-      );
-      if (!hasCloth) return;
-
-      // Shoes: make opaque with our shoe material
-      if (mesh.name === 'Shoes_low_cloth_0') {
-        mesh.material = _shoeMaterial;
-        mesh.visible  = true;
-        return;
-      }
-
-      // All other cloth meshes (coat, scarf, buttons, pants waistband, torso garment):
-      // hide entirely — cheaper than opacity=0 on blended geometry
-      mesh.visible = false;
+    const c = skeletonClone(gltfScene) as THREE.Group;
+    // Bind-pose bounding sphere culls animated verts at close range — disable culling.
+    // Narrowed to isMesh: SkinnedMesh.isMesh===true (extends Mesh in r182), so all
+    // skinned meshes are covered. Bones, Groups, Object3Ds get no-op skipped.
+    c.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh) obj.frustumCulled = false;
     });
-
-    // Find key bones — exact match for known names, regex for mirror/index-suffixed
-    clone.traverse((obj) => {
-      if (!(obj as THREE.Bone).isBone) return;
-      const bone = obj as THREE.Bone;
-      const n = bone.name;
-
-      if (n === 'Head_031')  headBoneRef.current  = bone;
-      if (n === 'Chest_06')  chestBoneRef.current = bone;
-      if (n === 'Hips_04')   hipBoneRef.current   = bone;
-
-      // Arm bones — Sketchfab export adds `_NNN` suffix. Left-side known exact,
-      // right-side uses regex since the index isn't predictable.
-      if (n === 'Upper_arm_L_08')                     upperArmLRef.current = bone;
-      if (n === 'Lower_arm_L_09')                     lowerArmLRef.current = bone;
-      if (/^Upper_arm_R(\.|_)/i.test(n) && !upperArmRRef.current) upperArmRRef.current = bone;
-      if (/^Lower_arm_R(\.|_)/i.test(n) && !lowerArmRRef.current) lowerArmRRef.current = bone;
-    });
-
-    // -------------------------------------------------------------------------
-    // REST POSE — rotate arms down from the authored T-pose so she doesn't look
-    // like she's doing airplane arms. The rig is Sketchfab/Blender-exported with
-    // bone local Y along length; rotating the upper arm ~1.2 rad around local Z
-    // swings it from horizontal (T-pose) to near-vertical at the side.
-    // Mirrored sign for the right arm. Sub-rad values leave arms slightly away
-    // from the torso for a natural relaxed stance (not a rigid attention pose).
-    // If deploy shows the axis/sign is wrong, flip here and redeploy.
-    // -------------------------------------------------------------------------
-    if (upperArmLRef.current) upperArmLRef.current.rotation.z = -1.20;
-    if (upperArmRRef.current) upperArmRRef.current.rotation.z =  1.20;
-    // Slight forward bend at the elbows so forearms don't stick straight out
-    if (lowerArmLRef.current) lowerArmLRef.current.rotation.x =  0.15;
-    if (lowerArmRRef.current) lowerArmRRef.current.rotation.x =  0.15;
-
-    // -------------------------------------------------------------------------
-    // Procedural skirt — parented to Hips_04 so it follows the rig automatically.
-    // The GLB has no skirt mesh (mesh `2` is a torso garment at y=0.85→1.30).
-    // CylinderGeometry pivot is at geometry center (y=0); shifting by -height/2
-    // puts the TOP of the cone at the bone origin, so the skirt visually
-    // "emerges from" the hip joint instead of floating below it.
-    // -------------------------------------------------------------------------
-    const hipBone = hipBoneRef.current;
-    if (hipBone) {
-      const skirtMesh = new THREE.Mesh(_skirtGeometry, _skirtMaterial);
-      // Top edge at natural waist (~15cm above the Hips_04 bone joint).
-      // Cylinder geometry center is y=0, height 0.38m → top at +0.19 from pivot.
-      // position.y = -0.04 puts the top edge at +0.15 (waist), bottom at -0.23 (upper thigh).
-      skirtMesh.position.set(0, -0.04, 0);
-      skirtMesh.name = 'ProceduralSkirt';
-      hipBone.add(skirtMesh);
-    }
-
-    // SkinnedMesh bounding spheres come from bind pose (T-pose); animated geometry
-    // extends past them, causing the guide to disappear when camera is close/angled.
-    // Must be applied at every rigged-clone site — not just arena-npcs.tsx.
-    clone.traverse((obj) => { obj.frustumCulled = false; });
-
-    return clone;
+    return c;
   }, [gltfScene]);
 
-  // Dispose cloned geometry + materials on unmount
+  const mixer = useMemo(() => new THREE.AnimationMixer(cloned), [cloned]);
+
+  const idleActionRef = useRef<THREE.AnimationAction | null>(null);
+  const waveActionRef = useRef<THREE.AnimationAction | null>(null);
+  const wavingRef     = useRef(false);
+  const spineBoneRef  = useRef<THREE.Bone | null>(null);
+
+  useEffect(() => {
+    const idleClip = animations.find((c) => c.name === CLIP_IDLE);
+    const waveClip = animations.find((c) => c.name === CLIP_WAVE);
+
+    if (idleClip) {
+      const action = mixer.clipAction(idleClip, cloned);
+      action.setLoop(THREE.LoopOnce, 1);
+      action.clampWhenFinished = true;
+      action.timeScale = 0;  // freeze — single-frame pose
+      action.weight = 1.0;
+      action.play();
+      idleActionRef.current = action;
+    }
+
+    if (waveClip) {
+      const action = mixer.clipAction(waveClip, cloned);
+      action.setLoop(THREE.LoopOnce, 1);
+      // wave.clampWhenFinished=false is intentional. When LoopOnce completes,
+      // the action resets to frame 0 rather than freezing on the raised-hand
+      // final frame. The 'finished' event handler then fires crossFadeTo back
+      // to idle; during the 0.35s crossfade the wave action's `enabled` flag
+      // remains true (crossFadeTo doesn't reset it), so its weight fades from
+      // 1 → 0 while idle fades 0 → 1. The reset-to-frame-0 behavior means
+      // the fade-out wave contribution is its first-frame pose (neutral),
+      // not the raised-hand pose, producing a cleaner visual transition.
+      action.clampWhenFinished = false;
+      action.weight = 0;
+      waveActionRef.current = action;
+    }
+
+    // Scope bone search to MainArmature subtree — guards against orphan Armature
+    // nodes that Blender may export alongside the primary rig.
+    const mainArm = cloned.getObjectByName('MainArmature');
+    if (!mainArm) {
+      console.error('[TownGuide] MainArmature root missing — Blender export regression');
+    } else {
+      mainArm.traverse((obj) => {
+        if ((obj as THREE.Bone).isBone && obj.name === 'mixamorig:Spine2') {
+          spineBoneRef.current = obj as THREE.Bone;
+        }
+      });
+    }
+    if (!spineBoneRef.current) {
+      console.error('[TownGuide] spineBoneRef not resolved — breathing disabled');
+    }
+  }, [mixer, cloned, animations]);
+
+  useEffect(() => {
+    const onFinished = (e: { action: THREE.AnimationAction }) => {
+      if (e.action === waveActionRef.current) {
+        wavingRef.current = false;
+        const idle = idleActionRef.current;
+        const wave = waveActionRef.current;
+        if (idle && wave) {
+          // crossFadeTo does not reset enabled on the incoming action — must re-enable manually
+          idle.enabled = true;
+          idle.weight  = 1;
+          wave.crossFadeTo(idle, WAVE_FADE, false);
+        }
+      }
+    };
+    mixer.addEventListener('finished', onFinished);
+    return () => mixer.removeEventListener('finished', onFinished);
+  }, [mixer]);
+
   useEffect(() => {
     return () => {
-      cloned.traverse((obj) => {
-        const mesh = obj as THREE.Mesh;
-        if (!mesh.isMesh) return;
-        // Only dispose non-module-scope materials (the GLB's own materials, not
-        // _shoeMaterial or _skirtMaterial which live for the lifetime of the module)
-        if (
-          mesh.material !== _shoeMaterial &&
-          mesh.material !== _skirtMaterial
-        ) {
-          if (Array.isArray(mesh.material)) {
-            mesh.material.forEach((m) => m.dispose());
-          } else {
-            mesh.material?.dispose();
-          }
-        }
-        // All non-module-scope geometries belong to the cached GLTF — do not dispose them
-      });
+      // Do NOT dispose geometry or materials here.
+      // SkeletonUtils.clone reuses both geometry AND materials by reference
+      // (Mesh.copy() assigns .geometry and .material by ref, not by copy).
+      // Disposing either corrupts the useGLTF cache and causes black/errored
+      // meshes on next mount (React strict-mode double-invoke or route re-nav).
+      // The useGLTF cache owns these GPU resources and releases them when the
+      // asset is evicted. Only release mixer state.
+      mixer.stopAllAction();
+      mixer.uncacheRoot(cloned);
     };
-  }, [cloned]);
+  }, [mixer, cloned]);
 
-  // Procedural idle — no allocations, no matrix rebuilds beyond bone mutations
-  useFrame(({ clock }) => {
-    const t = clock.elapsedTime;
-
-    // Head: gentle Y-axis look-around drift — 0.4 Hz, ±0.05 rad
-    const head = headBoneRef.current;
-    if (head) {
-      head.rotation.y = Math.sin(t * (Math.PI * 2 * 0.4)) * 0.05;
-    }
-
-    // Chest: subtle breathing scale — 1.8 Hz, ±0.008
-    const chest = chestBoneRef.current;
-    if (chest) {
-      chest.scale.y = 1 + Math.sin(t * 1.8) * 0.008;
-    }
-
-    // Arms: tiny sway around the static rest pose so she's not a frozen statue.
-    // Stays additive with the rest-pose rotation.z values set at clone time.
-    const armL = upperArmLRef.current;
-    if (armL) {
-      armL.rotation.z = -1.20 + Math.sin(t * 0.9) * 0.025;
-      armL.rotation.x =         Math.sin(t * 1.1 + 0.7) * 0.02;
-    }
-    const armR = upperArmRRef.current;
-    if (armR) {
-      armR.rotation.z =  1.20 + Math.sin(t * 0.9 + Math.PI) * 0.025;
-      armR.rotation.x =         Math.sin(t * 1.1 + 2.1) * 0.02;
+  useFrame(({ clock }, delta) => {
+    mixer.update(delta);
+    const spine = spineBoneRef.current;
+    if (spine) {
+      spine.scale.y = 1 + Math.sin(clock.elapsedTime * BREATH_FREQ) * BREATH_AMP;
     }
   });
 
+  function handleClick(e: { stopPropagation: () => void }) {
+    e.stopPropagation();
+
+    // Idempotency guard — if either chat surface is already open, bail.
+    // Prevents re-opening + double-wave when the user clicks Nori twice,
+    // and stops guide chat from stacking on top of an active building chat.
+    const store = useGameStore.getState();
+    if (store.chatOpen || store.guideChatOpen) return;
+
+    // Open the Town Guide chat panel. `openGuideChat` sets
+    // `guideChatOpen=true` and `movementFrozen=true` atomically so the
+    // player can't walk off mid-conversation.
+    store.openGuideChat();
+
+    // Wave animation follows — only plays on first open.
+    const idle = idleActionRef.current;
+    const wave = waveActionRef.current;
+    if (!idle || !wave || wavingRef.current) return;
+
+    wavingRef.current = true;
+    wave.reset();
+    wave.enabled = true;
+    wave.weight  = 0;
+    wave.play();
+    idle.crossFadeTo(wave, WAVE_FADE, false);
+  }
+
   return (
     <group
-      ref={groupRef}
       position={[0, GROUND_Y, GUIDE_Z]}
-      onClick={(e) => {
-        e.stopPropagation();
-        // TODO Phase 2: open guide chat (Eliza teacher, 11th character)
-        console.log('[TownGuide] guide clicked — Phase 2 will wire chat here');
-      }}
+      onClick={handleClick}
       onPointerEnter={(e) => {
         e.stopPropagation();
         document.body.style.cursor = 'pointer';
@@ -275,9 +211,6 @@ const TownGuideInner = memo(function TownGuideInner() {
   );
 });
 
-// ---------------------------------------------------------------------------
-// Public export — Suspense boundary so GLB miss doesn't crash the scene
-// ---------------------------------------------------------------------------
 export default function TownGuide() {
   return (
     <Suspense fallback={null}>

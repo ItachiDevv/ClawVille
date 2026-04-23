@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS "platform_agents_system_singleton" ON "platform_agents" USING btree ("user_id","type",("customization"->>'slug')) WHERE "platform_agents"."type" = 'system-agent';
