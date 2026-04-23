@@ -7,6 +7,7 @@ import { usePet } from '@/hooks/use-pet';
 import { api } from '@/lib/api';
 import { PET_SPECIES, PET_COLORS, PET_ARCHETYPES } from '@clawville/shared';
 import { SetupInstructions } from '@/components/create-agent/setup-instructions';
+import { EditAppearanceSection } from '@/components/game/edit-appearance-section';
 import {
   Dialog,
   DialogContent,
@@ -125,6 +126,17 @@ export default function PetSettingsModal() {
               </div>
             </div>
           )}
+
+          {/* Phase 4c Layer 1 — in-game appearance edits */}
+          <EditAppearanceSection
+            pet={{
+              id: pet.id,
+              modelKey: (pet as { modelKey?: string | null }).modelKey,
+              color: pet.color,
+              gender: pet.gender,
+              harness: (pet as { harness?: string | null }).harness,
+            }}
+          />
 
           {/* Phase 5.1 — Cross-world accounts (plan §15) */}
           <CrossWorldAccountsSection

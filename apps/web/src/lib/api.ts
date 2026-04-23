@@ -124,6 +124,19 @@ export const api = {
       body: JSON.stringify({ positionX, positionY }),
     }),
 
+  // Phase 4c Layer 1 — in-game appearance edit. Backend validates modelKey
+  // stays within the current harness pool (Milady ↔ Milady, non-Milady ↔
+  // non-Milady) so appearance swaps can't bypass the hosting contract.
+  editPetAppearance: (data: {
+    modelKey?: string;
+    color?: 'green' | 'red' | 'blue' | 'yellow';
+    gender?: 'male' | 'female';
+  }) =>
+    request<{ pet: any }>('/api/pets/me/appearance', {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
   checkPetName: (name: string) =>
     request<{ available: boolean; reason?: string }>(`/api/pets/check-name/${name}`),
 
