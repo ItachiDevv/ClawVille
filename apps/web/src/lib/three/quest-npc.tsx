@@ -101,14 +101,16 @@ const QuestNpcInner = memo(function QuestNpcInner() {
 
   const { scene } = useGLTF('/models/crayfish.glb');
 
-  // Clone + normalize to ~35 world units (slightly larger than the 30-unit location NPCs)
+  // Clone + normalize to ~61 world units (×1.75 of original 35, matches 2026-04-23
+  // CHARACTER_HEIGHT bump 55→96 in arena-location-npcs.tsx so the town-center
+  // guide reads at the same prominence as building characters).
   const { cloned, npcScale } = useMemo(() => {
     const c = scene.clone(true);
     const box = new THREE.Box3().setFromObject(c);
     const sz  = new THREE.Vector3();
     box.getSize(sz);
     const maxDim = Math.max(sz.x, sz.y, sz.z);
-    return { cloned: c, npcScale: maxDim > 0 ? 35 / maxDim : 1 };
+    return { cloned: c, npcScale: maxDim > 0 ? 61 / maxDim : 1 };
   }, [scene]);
 
   useEffect(() => {
