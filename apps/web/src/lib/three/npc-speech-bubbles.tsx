@@ -41,9 +41,12 @@ const SpeechBubble = memo(function SpeechBubble({ npc, bubble }: SpeechBubblePro
 
   return (
     <group position={[worldX, BUBBLE_Y, worldZ]}>
+      {/* PERF: removed distanceFactor={300} — drei recomputes camera-distance
+          scale + writes a new CSS transform every frame for each Html, forcing a
+          full Layout pass per bubble per frame. Labels display at constant CSS
+          size; positioning still tracks the 3D point. */}
       <Html
         center
-        distanceFactor={300}
         style={{ pointerEvents: 'none' }}
         zIndexRange={[10, 100]}
       >
@@ -110,6 +113,11 @@ const SpeechBubble = memo(function SpeechBubble({ npc, bubble }: SpeechBubblePro
 
 function NpcSpeechBubbles() {
   const chatBubbles = useNpcStore((s) => s.chatBubbles);
+  // PERF: subscribe only to `npcs` for position data. chatBubbles drive which
+  // NPCs need a bubble — npcs subscription is needed only for XZ position lookup.
+  // Use getState() inside the map for position at render time to decouple
+  // position reads from the subscription. The chatBubbles selector already
+  // triggers re-renders when bubble state changes.
   const npcs = useNpcStore((s) => s.npcs);
 
   // Tick every second so expired bubbles are removed from the rendered output

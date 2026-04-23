@@ -48,6 +48,15 @@ const _floatRotScratch = new THREE.Euler();
 // TSL: additive blending + uv-based falloff so it fades toward the top
 // ---------------------------------------------------------------------------
 function SpotlightCone() {
+  const coneRef = useRef<THREE.Mesh>(null);
+  // PERF: spotlight cone never moves — disable matrixAutoUpdate after mount.
+  useEffect(() => {
+    if (coneRef.current) {
+      coneRef.current.matrixAutoUpdate = false;
+      coneRef.current.updateMatrix();
+    }
+  }, []);
+
   const mat = useMemo(() => {
     const m = new THREE.MeshBasicNodeMaterial({
       transparent: true,
@@ -69,7 +78,7 @@ function SpotlightCone() {
   return (
     // Open-top cone: radiusTop=0 makes a proper cone. radiusBottom=wide at podium.
     // 8× scaled: radiusBottom=144, height=1920. Beam extends high above podium.
-    <mesh position={[0, 960, 0]} material={mat}>
+    <mesh ref={coneRef} position={[0, 960, 0]} material={mat}>
       {/* CylinderGeometry: radiusTop, radiusBottom, height, radialSeg, heightSeg, openEnded */}
       <cylinderGeometry args={[0, 144, 1920, 24, 1, true]} />
     </mesh>
@@ -126,6 +135,7 @@ function FloatingAuctionItem() {
 
 // ---------------------------------------------------------------------------
 // Podium base — two stacked cylinders for a stepped look
+// Static geometry — matrixAutoUpdate disabled on all child meshes after mount
 // ---------------------------------------------------------------------------
 function PodiumBase() {
   const darkMat = useMemo(() => {
@@ -146,18 +156,28 @@ function PodiumBase() {
     return m;
   }, []);
 
+  // PERF: podium steps and rim ring never move — disable matrixAutoUpdate after mount.
+  const step1Ref = useRef<THREE.Mesh>(null);
+  const step2Ref = useRef<THREE.Mesh>(null);
+  const rimRef   = useRef<THREE.Mesh>(null);
+  useEffect(() => {
+    for (const ref of [step1Ref, step2Ref, rimRef]) {
+      if (ref.current) { ref.current.matrixAutoUpdate = false; ref.current.updateMatrix(); }
+    }
+  }, []);
+
   return (
     <>
       {/* Wide lower step — 8× scaled: top 112, bottom 144, height 80 */}
-      <mesh position={[0, 40, 0]} material={darkMat}>
+      <mesh ref={step1Ref} position={[0, 40, 0]} material={darkMat}>
         <cylinderGeometry args={[112, 144, 80, 24, 1]} />
       </mesh>
       {/* Narrower upper platform — 8× scaled: top 80, bottom 112, height 48 */}
-      <mesh position={[0, 104, 0]} material={darkMat}>
+      <mesh ref={step2Ref} position={[0, 104, 0]} material={darkMat}>
         <cylinderGeometry args={[80, 112, 48, 24, 1]} />
       </mesh>
       {/* Glowing rim ring at top — 8× scaled: torus radius 80, tube 4 */}
-      <mesh position={[0, 129.6, 0]} rotation={[Math.PI / 2, 0, 0]} material={rimMat}>
+      <mesh ref={rimRef} position={[0, 129.6, 0]} rotation={[Math.PI / 2, 0, 0]} material={rimMat}>
         <torusGeometry args={[80, 4, 8, 32]} />
       </mesh>
     </>
@@ -169,6 +189,13 @@ function PodiumBase() {
 // ---------------------------------------------------------------------------
 const AuctionPodiumInner = memo(function AuctionPodiumInner() {
   const openAuction = () => useGameStore.getState().openAuction();
+  const hitboxRef = useRef<THREE.Mesh>(null);
+  useEffect(() => {
+    if (hitboxRef.current) {
+      hitboxRef.current.matrixAutoUpdate = false;
+      hitboxRef.current.updateMatrix();
+    }
+  }, []);
 
   return (
     <group
@@ -197,7 +224,7 @@ const AuctionPodiumInner = memo(function AuctionPodiumInner() {
       </Suspense>
 
       {/* Invisible click volume — 8× scaled */}
-      <mesh visible={false} position={[0, 160, 0]}>
+      <mesh ref={hitboxRef} visible={false} position={[0, 160, 0]}>
         <cylinderGeometry args={[128, 160, 320, 12, 1]} />
         <meshBasicMaterial />
       </mesh>

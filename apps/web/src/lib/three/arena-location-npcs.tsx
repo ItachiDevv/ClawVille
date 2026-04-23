@@ -305,12 +305,33 @@ function computeNormalizedScale(scene: THREE.Object3D, targetHeight: number): { 
   return { scale, localMinY };
 }
 
+// PERF: cache the terrain mesh — see arena-npcs.tsx for the full rationale.
+// intersectObjects(scene.children, true) was the original call here, which
+// recurses through ~4549 objects for EVERY location NPC raycast (8 NPCs ×
+// every 20th frame). The layer filter runs AFTER the full traversal, so the
+// cost was fully paid. Cache + intersectObject(mesh, false) is O(1 mesh).
+let _locCachedTerrainMesh: THREE.Object3D | null = null;
+function findLocTerrainMesh(scene: THREE.Scene): THREE.Object3D | null {
+  if (_locCachedTerrainMesh && _locCachedTerrainMesh.parent) return _locCachedTerrainMesh;
+  _locCachedTerrainMesh = null;
+  scene.traverse((obj) => {
+    if (_locCachedTerrainMesh) return;
+    if ((obj as THREE.Mesh).isMesh && obj.layers.test(_locRaycaster.layers)) {
+      _locCachedTerrainMesh = obj;
+    }
+  });
+  return _locCachedTerrainMesh;
+}
+
 function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
+  const terrain = findLocTerrainMesh(scene);
+  if (!terrain) return -2;
   _locRayOrigin.set(x, 200, z);
   _locRaycaster.set(_locRayOrigin, _locRayDir);
   _locRaycaster.layers.set(TERRAIN_LAYER);
   _locRaycaster.far = 400;
-  const hits = _locRaycaster.intersectObjects(scene.children, true);
+  // intersectObject(mesh, false) = NO recursion, just this one mesh.
+  const hits = _locRaycaster.intersectObject(terrain, false);
   return hits.length > 0 ? hits[0].point.y : -2;
 }
 
