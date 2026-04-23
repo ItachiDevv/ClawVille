@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useRef, useMemo, type ReactElement } from 'react';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import {
   float, vec3, sin, cos, fract,
   positionLocal, vertexColor,
@@ -394,49 +395,182 @@ function disposeClone(root: THREE.Object3D): void {
   });
 }
 
-function SingleDecoration({ entry }: { entry: DecoEntry }) {
-  const { scene } = useGLTF(entry.model);
-  const cloned = useMemo(() => scene.clone(true), [scene]);
-  const groupRef = useRef<THREE.Group>(null);
+// ---------------------------------------------------------------------------
+// MergedDecorations — replaces 80 × SingleDecoration (~3000+ individual meshes)
+// with geometry-merged draw calls bucketed by material (~20 merged meshes).
+//
+// Strategy:
+//   1. Load all 12 unique decoration models (fixed hook calls — count never changes).
+//   2. For each of the 80 DECORATIONS entries, traverse the source scene,
+//      apply the entry's world transform (position/scale/rotY) into each mesh's
+//      geometry clone, then collect {transformedGeo, material} pairs.
+//   3. Bucket by material UUID.
+//   4. mergeGeometries() per bucket → single Mesh per material.
+//
+// Constraints respected:
+//   - No SkinnedMesh (decoration GLBs are all static)
+//   - No ShaderMaterial / NodeMaterial (guard present; GLBs use MeshStandardMaterial)
+//   - matrixAutoUpdate=false on all merged meshes (static, never move)
+//   - Temporary per-mesh geometry clones disposed after merge
+// ---------------------------------------------------------------------------
 
-  // Dispose cloned scene geometry + materials on unmount to prevent GPU leaks.
-  // scene.clone(true) deep-clones all child geometries and materials, so they
-  // must be manually disposed — R3F does not know about them.
-  useEffect(() => () => disposeClone(cloned), [cloned]);
+// All 12 unique decoration model paths (must match DECO_TYPES exactly)
+const DECO_MODEL_PATHS = [
+  '/models/coral-reef1.glb',
+  '/models/coral-reef2.glb',
+  '/models/coral-reef3.glb',
+  '/models/kelp.glb',
+  '/models/building-shell.glb',
+  '/models/building-seashell.glb',
+  '/models/building-anchor.glb',
+  '/models/building-barrel.glb',
+  '/models/building-chest.glb',
+  '/models/building-lantern.glb',
+  '/models/crayfish.glb',
+  '/models/building-tower2.glb',
+] as const;
 
-  // PERF: decorations never move at runtime. Disable matrixAutoUpdate on the
-  // group + every cloned mesh so Three.js skips per-frame matrix re-multiplies
-  // for 80 static decoration objects × ~5-30 meshes each.
+// Scratch matrix for baking world transforms into geometry vertices.
+// Module-scope to avoid GC allocations inside the useMemo.
+const _decoMatrix = new THREE.Matrix4();
+
+interface MergedBucket {
+  geometry: THREE.BufferGeometry;
+  material: THREE.Material;
+}
+
+
+/** Inner component — loaded inside a Suspense; receives all 12 scenes via hooks. */
+function MergedDecorationsInner() {
+  // Fixed-count hook calls — one per unique model path. Order is stable (constant array).
+  const { scene: s0  } = useGLTF(DECO_MODEL_PATHS[0]);
+  const { scene: s1  } = useGLTF(DECO_MODEL_PATHS[1]);
+  const { scene: s2  } = useGLTF(DECO_MODEL_PATHS[2]);
+  const { scene: s3  } = useGLTF(DECO_MODEL_PATHS[3]);
+  const { scene: s4  } = useGLTF(DECO_MODEL_PATHS[4]);
+  const { scene: s5  } = useGLTF(DECO_MODEL_PATHS[5]);
+  const { scene: s6  } = useGLTF(DECO_MODEL_PATHS[6]);
+  const { scene: s7  } = useGLTF(DECO_MODEL_PATHS[7]);
+  const { scene: s8  } = useGLTF(DECO_MODEL_PATHS[8]);
+  const { scene: s9  } = useGLTF(DECO_MODEL_PATHS[9]);
+  const { scene: s10 } = useGLTF(DECO_MODEL_PATHS[10]);
+  const { scene: s11 } = useGLTF(DECO_MODEL_PATHS[11]);
+
+  // Build a lookup: model path → GLTF scene
+  const sceneMap = useMemo<Map<string, THREE.Object3D>>(() => {
+    const m = new Map<string, THREE.Object3D>();
+    const scenes = [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11];
+    DECO_MODEL_PATHS.forEach((p, i) => m.set(p, scenes[i]));
+    return m;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11]);
+
+  // Compute merged buckets — runs once when all scenes are loaded.
+  const buckets = useMemo<MergedBucket[]>(() => {
+    // materialUUID → { geometries: BufferGeometry[], material: Material }
+    const bucketMap = new Map<string, { geometries: THREE.BufferGeometry[]; material: THREE.Material }>();
+    const tempGeos: THREE.BufferGeometry[] = [];
+
+    for (const entry of DECORATIONS) {
+      const sourceScene = sceneMap.get(entry.model);
+      if (!sourceScene) continue;
+
+      // Update world matrices of the source scene for correct mesh.matrixWorld
+      sourceScene.updateMatrixWorld(true);
+
+      sourceScene.traverse((child) => {
+        const mesh = child as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        // Skip SkinnedMesh (safety — decoration GLBs should not have any)
+        if ((mesh as THREE.SkinnedMesh).isSkinnedMesh) return;
+        if (!mesh.geometry) return;
+
+        const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+        if (!mat) return;
+        // Skip ShaderMaterial / NodeMaterial — merging these causes WebGPU pipeline crashes
+        if ((mat as any).isShaderMaterial || (mat as any).isNodeMaterial) return;
+
+        // The mesh's matrixWorld captures parent group transforms inside the GLB.
+        // We need to combine: (entry position/scale/rotY) * (mesh local worldMatrix inside GLB).
+        // Compose: entry_world * mesh_worldMatrix_local (mesh.matrixWorld is relative to scene root)
+        // Build entry's transform matrix
+        const cosY = Math.cos(entry.rotY);
+        const sinY = Math.sin(entry.rotY);
+        const s = entry.scale;
+        const ex = entry.x, ey = -2, ez = entry.z;
+
+        // Entry matrix: T(ex,ey,ez) * Ry(rotY) * S(s)
+        // prettier-ignore
+        _decoMatrix.set(
+          s * cosY,  0, s * sinY, ex,
+          0,         s, 0,        ey,
+          -s * sinY, 0, s * cosY, ez,
+          0,         0, 0,        1,
+        );
+        // Compose with the mesh's local world matrix inside the GLB
+        const combinedMatrix = _decoMatrix.clone().multiply(mesh.matrixWorld);
+
+        const geo = mesh.geometry.clone();
+        geo.applyMatrix4(combinedMatrix);
+        tempGeos.push(geo);
+
+        const key = mat.uuid;
+        if (!bucketMap.has(key)) {
+          bucketMap.set(key, { geometries: [], material: mat });
+        }
+        bucketMap.get(key)!.geometries.push(geo);
+      });
+    }
+
+    // Merge each bucket
+    const result: MergedBucket[] = [];
+    for (const { geometries, material } of bucketMap.values()) {
+      if (geometries.length === 0) continue;
+      const merged = mergeGeometries(geometries, false);
+      if (!merged) {
+        console.warn('[MergedDecorations] mergeGeometries returned null for material', material.name);
+        geometries.forEach((g) => g.dispose());
+        continue;
+      }
+      result.push({ geometry: merged, material });
+    }
+
+    // Dispose all temporary per-mesh geometry clones — the merged geometry has
+    // independent attribute buffers (mergeGeometries copies data via TypedArray.set)
+    tempGeos.forEach((g) => g.dispose());
+
+    return result;
+  }, [sceneMap]);
+
+  // Dispose merged geometries on unmount
   useEffect(() => {
-    const g = groupRef.current;
-    if (!g) return;
-    g.matrixAutoUpdate = false;
-    g.updateMatrix();
-    cloned.traverse((obj) => {
-      obj.matrixAutoUpdate = false;
-      obj.updateMatrix();
-    });
-  }, [cloned]);
+    return () => {
+      buckets.forEach(({ geometry }) => geometry.dispose());
+    };
+  }, [buckets]);
 
   return (
-    <group
-      ref={groupRef}
-      position={[entry.x, -2, entry.z]}
-      scale={entry.scale}
-      rotation={[0, entry.rotY, 0]}
-    >
-      <primitive object={cloned} />
-    </group>
+    <>
+      {buckets.map(({ geometry, material }, i) => (
+        <mesh
+          key={i}
+          geometry={geometry}
+          material={material}
+          // matrixAutoUpdate=false: these merged meshes are at world origin with
+          // identity matrix — all transforms were baked into vertex positions above.
+          matrixAutoUpdate={false}
+          frustumCulled={false}
+        />
+      ))}
+    </>
   );
 }
 
 function UnderwaterDecorations() {
   return (
-    <group>
-      {DECORATIONS.map((entry, i) => (
-        <SingleDecoration key={i} entry={entry} />
-      ))}
-    </group>
+    <Suspense fallback={null}>
+      <MergedDecorationsInner />
+    </Suspense>
   );
 }
 
