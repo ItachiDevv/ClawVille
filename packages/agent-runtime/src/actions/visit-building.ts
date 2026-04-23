@@ -41,7 +41,7 @@ export const visitBuildingAction: Action = {
     [
       {
         user: '{{user1}}',
-        content: { text: 'Take me to the Hydrothermal Forge', action: 'VISIT_BUILDING' },
+        content: { text: 'Take me to the Chum Bucket', action: 'VISIT_BUILDING' },
       },
     ],
     [

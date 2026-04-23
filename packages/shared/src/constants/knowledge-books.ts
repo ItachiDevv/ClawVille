@@ -9,7 +9,7 @@ export interface KnowledgeBook {
 }
 
 export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
-  // === Cron Hub (Tide Clock Grotto) ===
+  // === Cron Hub (Downtown Building) ===
   {
     id: 'cron-scheduling-101',
     name: 'Cron Scheduling 101',
@@ -39,7 +39,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
 
-  // === Webhook Gateway (Current Gateway) ===
+  // === Webhook Gateway (Salty Spitoon) ===
   {
     id: 'webhook-patterns',
     name: 'Webhook Patterns',
@@ -69,7 +69,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
 
-  // === Memory Vault (Abyssal Vault) ===
+  // === Memory Vault (Squidward's House) ===
   {
     id: 'vector-memory-guide',
     name: 'Vector Memory Guide',
@@ -100,7 +100,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
 
-  // === Skill Forge (Hydrothermal Forge) ===
+  // === Skill Forge (Chum Bucket) ===
   {
     id: 'skill-development-manual',
     name: 'Skill Development Manual',
@@ -130,7 +130,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
 
-  // === Channel Bridge (Coral Bridge) ===
+  // === Channel Bridge (Sandy's Treedome) ===
   {
     id: 'multi-platform-messaging',
     name: 'Multi-Platform Messaging',
@@ -160,7 +160,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
 
-  // === Tool Workshop (Salvage Workshop) ===
+  // === Tool Workshop (Krusty Krab) ===
   {
     id: 'plugin-architecture',
     name: 'Plugin Architecture',
@@ -190,7 +190,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
 
-  // === Canvas Studio (Biolume Studio) ===
+  // === Canvas Studio (Pineapple House) ===
   {
     id: 'live-canvas-rendering',
     name: 'Live Canvas Rendering',
@@ -219,7 +219,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
 
-  // === Voice Tower (Echo Spire) ===
+  // === Voice Tower (Boating School) ===
   {
     id: 'voice-speech-integration',
     name: 'Voice & Speech Integration',
@@ -249,7 +249,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
 
-  // === Security Fortress (Shell Fortress) ===
+  // === Security Fortress (Patrick's Rock) ===
   {
     id: 'agent-security-handbook',
     name: 'Agent Security Handbook',
@@ -279,7 +279,7 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
 
-  // === Config Citadel (Nautilus Citadel) ===
+  // === Config Citadel (Lighthouse) ===
   {
     id: 'deployment-config-guide',
     name: 'Deployment & Config Guide',

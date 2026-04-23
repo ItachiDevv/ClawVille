@@ -57,25 +57,25 @@ export interface BuildingZone {
 
 export const buildingZones: BuildingZone[] = [
   // Ring order: θ = -π/2 + i*(π/5), i=0..9 (top-center, clockwise)
-  // i=0  θ=-π/2       center=(80, 12)  → canvas-studio    (Biolume Studio)
+  // i=0  θ=-π/2       center=(80, 12)  → canvas-studio    (Pineapple House)
   { id: 'canvas-studio',     x:  73, y:   5, width: 14, height: 14 },
-  // i=1  θ=-3π/10     center=(120, 25) → memory-vault      (Abyssal Vault)
+  // i=1  θ=-3π/10     center=(120, 25) → memory-vault      (Squidward's House)
   { id: 'memory-vault',      x: 113, y:  18, width: 14, height: 14 },
-  // i=2  θ=-π/10      center=(145, 59) → webhook-gateway   (Current Gateway)
+  // i=2  θ=-π/10      center=(145, 59) → webhook-gateway   (Salty Spitoon)
   { id: 'webhook-gateway',   x: 138, y:  52, width: 14, height: 14 },
-  // i=3  θ=+π/10      center=(145,101) → cron-hub          (Tide Clock Grotto)
+  // i=3  θ=+π/10      center=(145,101) → cron-hub          (Downtown Building)
   { id: 'cron-hub',          x: 138, y:  94, width: 14, height: 14 },
-  // i=4  θ=+3π/10     center=(120,135) → voice-tower       (Echo Spire)
+  // i=4  θ=+3π/10     center=(120,135) → voice-tower       (Boating School)
   { id: 'voice-tower',       x: 113, y: 128, width: 14, height: 14 },
-  // i=5  θ=+π/2       center=(80, 148) → config-citadel    (Nautilus Citadel)
+  // i=5  θ=+π/2       center=(80, 148) → config-citadel    (Lighthouse)
   { id: 'config-citadel',    x:  73, y: 141, width: 14, height: 14 },
-  // i=6  θ=+7π/10     center=(40, 135) → tool-workshop     (Salvage Workshop)
+  // i=6  θ=+7π/10     center=(40, 135) → tool-workshop     (Krusty Krab)
   { id: 'tool-workshop',     x:  33, y: 128, width: 14, height: 14 },
-  // i=7  θ=+9π/10     center=(15, 101) → skill-forge       (Hydrothermal Forge)
+  // i=7  θ=+9π/10     center=(15, 101) → skill-forge       (Chum Bucket)
   { id: 'skill-forge',       x:   8, y:  94, width: 14, height: 14 },
-  // i=8  θ=+11π/10    center=(15,  59) → channel-bridge    (Coral Bridge)
+  // i=8  θ=+11π/10    center=(15,  59) → channel-bridge    (Sandy's Treedome)
   { id: 'channel-bridge',    x:   8, y:  52, width: 14, height: 14 },
-  // i=9  θ=+13π/10    center=(40,  25) → security-fortress (Shell Fortress)
+  // i=9  θ=+13π/10    center=(40,  25) → security-fortress (Patrick's Rock)
   { id: 'security-fortress', x:  33, y:  18, width: 14, height: 14 },
 ];
 

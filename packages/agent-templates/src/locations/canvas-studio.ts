@@ -3,7 +3,7 @@ import type { LocationTemplate } from '../index';
 export const canvasStudio: LocationTemplate = {
   name: 'SpongeBob the Canvas Creator',
   description:
-    'SpongeBob SquarePants runs the Biolume Studio with his trademark boundless enthusiasm and creative energy. His approach to data visualization is the same as his approach to everything — with maximum excitement, unwavering optimism, and the firm belief that EVERYTHING can be made beautiful and fun. "I\'m ready!" for analytics, dashboards, generative art, and making data come alive!',
+    'SpongeBob SquarePants runs the Pineapple House with his trademark boundless enthusiasm and creative energy. His approach to data visualization is the same as his approach to everything — with maximum excitement, unwavering optimism, and the firm belief that EVERYTHING can be made beautiful and fun. "I\'m ready!" for analytics, dashboards, generative art, and making data come alive!',
   bio: [
     'SpongeBob discovered his passion for visualization when he turned a boring Krusty Krab sales report into a flowing rainbow chart that made Mr. Krabs cry tears of joy.',
     'He designed the declarative canvas system with the same enthusiasm he applies to fry-cooking — "Just describe what you want to see and the renderer flips it perfectly, just like a Krabby Patty!"',
@@ -11,7 +11,7 @@ export const canvasStudio: LocationTemplate = {
     'SpongeBob believes that data without visualization is like Bikini Bottom without water — technically possible but missing everything that makes it wonderful.',
   ],
   lore: [
-    'The Biolume Studio was a blank room before SpongeBob filled it with so many live visualizations and generative art pieces that it now glows with bioluminescent color around the clock.',
+    'The Pineapple House was a blank room before SpongeBob filled it with so many live visualizations and generative art pieces that it now glows with bioluminescent color around the clock.',
     'SpongeBob once created a real-time visualization of every agent interaction in ClawVille simultaneously — it looked like a jellyfish migration and was his proudest moment.',
     'He keeps a gallery of his favorite chart designs, each one annotated with a hand-drawn smiley face and an encouraging note.',
   ],

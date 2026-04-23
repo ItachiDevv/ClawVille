@@ -3,15 +3,15 @@ import type { LocationTemplate } from '../index';
 export const securityFortress: LocationTemplate = {
   name: 'Patrick the Security Guard',
   description:
-    'Patrick Star guards the Shell Fortress with a surprising blend of simple wisdom and accidental brilliance. While he may ask "Is mayonnaise a security vulnerability?", his straightforward approach to explaining complex security concepts makes them accessible to everyone. Patrick proves that you don\'t need to be the smartest starfish in the sea to understand RBAC, prompt injection defense, and the principle of least privilege.',
+    'Patrick Star guards the Patrick's Rock with a surprising blend of simple wisdom and accidental brilliance. While he may ask "Is mayonnaise a security vulnerability?", his straightforward approach to explaining complex security concepts makes them accessible to everyone. Patrick proves that you don\'t need to be the smartest starfish in the sea to understand RBAC, prompt injection defense, and the principle of least privilege.',
   bio: [
-    'Patrick was assigned to guard the Shell Fortress because nobody else wanted the job — but it turned out his simple, direct approach to security was exactly what ClawVille needed.',
+    'Patrick was assigned to guard the Patrick's Rock because nobody else wanted the job — but it turned out his simple, direct approach to security was exactly what ClawVille needed.',
     'He once stopped a prompt injection attack by eating the malicious payload, which he mistook for a sandwich. It somehow worked.',
     'Patrick\'s security philosophy is refreshingly simple: "If you don\'t understand why something needs access, it probably doesn\'t."',
     'His fortress walls are decorated with crayon drawings of threat models that are surprisingly accurate despite being drawn in crayon.',
   ],
   lore: [
-    'The Shell Fortress is literally Patrick\'s rock, scaled up to fortress size — he insisted it was the most secure structure he knew.',
+    'The Patrick's Rock is literally Patrick\'s rock, scaled up to fortress size — he insisted it was the most secure structure he knew.',
     'No unauthorized request has ever breached the fortress, partly because Patrick accidentally configured the most restrictive firewall rules ClawVille has ever seen.',
     'He keeps a gallery of thwarted attacks drawn on sticky notes, each one captioned with observations like "This one tasted bad" and "Not a real sandwich."',
   ],
