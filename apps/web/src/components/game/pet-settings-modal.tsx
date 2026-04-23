@@ -134,6 +134,24 @@ export default function PetSettingsModal() {
               (pet as { linkedScapeDisplayName?: string | null }).linkedScapeDisplayName ?? null
             }
           />
+
+          {/* Phase 4a — Take agent home to Milady */}
+          <TakeAgentHomeSection petId={pet.id} />
+        </div>
+
+        {/* Powered by ElizaOS — brand attribution. Every pet runs on the
+            ElizaOS runtime via @clawville/agent-runtime, regardless of
+            which export harness the user picked at /create-agent. */}
+        <div className="border-t border-white/10 px-6 py-3 flex items-center justify-center gap-2 text-[10px] font-mono uppercase tracking-[0.2em] text-white/40">
+          <span>Powered by</span>
+          <a
+            href="https://elizaos.ai"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-cyan-300/80 hover:text-cyan-200 transition-colors font-bold"
+          >
+            ElizaOS
+          </a>
         </div>
       </DialogContent>
     </Dialog>
@@ -241,6 +259,153 @@ function LinkedScapeCard({ displayName }: { displayName: string }) {
           Linked to <span className="font-bold text-cyan-200">{displayName}</span>{' '}
           on &apos;scape. Future portal crossings use this account.
         </p>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4a — Take agent home to Milady
+// ---------------------------------------------------------------------------
+//
+// Emits a copy-pasteable curl one-liner the user runs on the machine where
+// their local Milady HTTP API is reachable. We deliberately DO NOT attempt
+// to POST from the browser: Miladies are user-local (typically bound to
+// localhost on a port ClawVille has no way to verify), and guessing the
+// port produces a 404 UX that looks like a ClawVille bug rather than a
+// user-side port mismatch.
+//
+// The port field is optional. Leave it blank to use the backend's default
+// (`http://localhost:2138` — Milady's documented dev port). Users running
+// on a custom port fill it in and regenerate.
+function TakeAgentHomeSection({ petId }: { petId: string }) {
+  const addToast = useGameStore((s) => s.addToast);
+
+  const [miladyUrl, setMiladyUrl] = useState<string>('');
+  const [generating, setGenerating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [installCommand, setInstallCommand] = useState<string | null>(null);
+  const [summary, setSummary] = useState<{
+    skillsCount: number;
+    knowledgeCount: number;
+    harness: string;
+  } | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const handleGenerate = useCallback(async () => {
+    setError(null);
+    setCopied(false);
+    setGenerating(true);
+    try {
+      const trimmed = miladyUrl.trim();
+      const res = await api.exportCharacter({
+        petId,
+        ...(trimmed ? { miladyBaseUrl: trimmed } : {}),
+      });
+      setInstallCommand(res.installCommand);
+      setSummary({
+        skillsCount: res.summary.skillsCount,
+        knowledgeCount: res.summary.knowledgeCount,
+        harness: res.summary.harness,
+      });
+    } catch (err) {
+      const msg =
+        err instanceof Error && err.message
+          ? err.message
+          : 'Could not build install command';
+      setError(msg);
+    } finally {
+      setGenerating(false);
+    }
+  }, [miladyUrl, petId]);
+
+  const handleCopy = useCallback(async () => {
+    if (!installCommand) return;
+    try {
+      await navigator.clipboard.writeText(installCommand);
+      setCopied(true);
+      addToast('📋', 'Install command copied', 2500);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard API blocked (iOS sandbox, etc.) — user can select-all
+      // the code block manually.
+    }
+  }, [installCommand, addToast]);
+
+  return (
+    <div className="space-y-2">
+      <h3 className="font-bold text-sm text-white">Take agent home to Milady</h3>
+      <div className="bg-pink-500/10 border border-pink-400/25 rounded-lg p-3 space-y-2">
+        <p className="text-xs text-white/70">
+          Export this agent as a Milady-installable bundle. Paste the command
+          into any terminal that can reach your local Milady.
+        </p>
+
+        <div className="space-y-1">
+          <label className="block text-white/50 text-[10px] font-mono uppercase tracking-wider">
+            Milady URL <span className="text-white/30">(optional)</span>
+          </label>
+          <input
+            type="text"
+            value={miladyUrl}
+            onChange={(e) => setMiladyUrl(e.target.value)}
+            placeholder="http://localhost:2138"
+            spellCheck={false}
+            className="w-full px-3 py-1.5 rounded-md bg-black/30 border border-white/10 text-sm text-white placeholder:text-white/25 font-mono focus:outline-none focus:border-pink-400/50"
+          />
+          <p className="text-[10px] text-white/40">
+            Leave blank if your Milady runs on its default port. Override if
+            you run Milady on a custom host or port.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={handleGenerate}
+          disabled={generating}
+          className="w-full px-3 py-2 rounded-lg bg-gradient-to-r from-pink-500 to-fuchsia-500 hover:from-pink-400 hover:to-fuchsia-400 text-white font-bold text-xs transition-all disabled:opacity-50 disabled:cursor-progress"
+        >
+          {generating
+            ? 'Building bundle…'
+            : installCommand
+              ? 'Regenerate install command'
+              : 'Generate install command'}
+        </button>
+
+        {error && (
+          <p className="text-red-300 text-xs bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+            {error}
+          </p>
+        )}
+
+        {installCommand && (
+          <div className="space-y-2 pt-1">
+            {summary && (
+              <div className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-wider text-pink-200/70">
+                <span>harness: {summary.harness}</span>
+                <span className="text-white/20">//</span>
+                <span>{summary.skillsCount} skills</span>
+                <span className="text-white/20">//</span>
+                <span>{summary.knowledgeCount} chunks</span>
+              </div>
+            )}
+            <label className="block text-white/50 text-[10px] font-mono uppercase tracking-wider">
+              Install command
+            </label>
+            <div className="bg-black/40 border border-pink-400/30 rounded-lg p-2 max-h-32 overflow-y-auto">
+              <pre className="text-[11px] text-pink-100 font-mono whitespace-pre-wrap break-all select-all">
+                {installCommand}
+              </pre>
+            </div>
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="w-full px-3 py-1.5 rounded-md bg-pink-500/20 hover:bg-pink-500/30 text-pink-100 text-xs font-bold transition-colors"
+            >
+              {copied ? 'Copied!' : 'Copy install command'}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
