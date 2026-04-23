@@ -816,13 +816,28 @@ export default function HomePage() {
           </Link>
         </div>
 
-        {/* Tech stack badges */}
-        <div className="flex flex-wrap justify-center gap-3 mt-12">
-          {['ElizaOS', 'Three.js', 'Next.js 14', 'OpenClaw', 'Hermes'].map((tech) => (
-            <span key={tech} className="text-[10px] text-white/20 font-mono bg-white/[0.03] px-3 py-1 rounded-full border border-white/[0.06]">
-              {tech}
-            </span>
-          ))}
+        {/* Powered by ElizaOS — brand attribution. Every agent in ClawVille
+            runs on the ElizaOS runtime; this is a first-class mention
+            (not a generic stack badge). */}
+        <div className="mt-12 flex flex-col items-center gap-4">
+          <a
+            href="https://elizaos.ai"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-cyan-400/25 bg-black/40 backdrop-blur-sm text-[11px] font-mono uppercase tracking-[0.25em] text-white/55 hover:text-cyan-200 hover:border-cyan-300/60 transition-colors"
+          >
+            <span>Powered by</span>
+            <span className="font-bold text-cyan-300">ElizaOS</span>
+          </a>
+
+          {/* Remaining tech stack badges — ElizaOS is promoted above */}
+          <div className="flex flex-wrap justify-center gap-3">
+            {['Three.js', 'Next.js 16', 'OpenClaw', 'Hermes', 'Milady'].map((tech) => (
+              <span key={tech} className="text-[10px] text-white/20 font-mono bg-white/[0.03] px-3 py-1 rounded-full border border-white/[0.06]">
+                {tech}
+              </span>
+            ))}
+          </div>
         </div>
       </section>
     </div>
