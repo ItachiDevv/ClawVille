@@ -92,6 +92,116 @@ export interface EventInput {
   payload?: Record<string, unknown>;
 }
 
+// ─── Q2 Activity Portals — event taxonomy ──────────────────────────────────
+//
+// These are the new event_type strings introduced by the Q2 activity-portal
+// phase. Listed here so call sites can reference them by symbol rather than
+// retyping the string literal everywhere; logEvent() still accepts any
+// `eventType: string` for backwards compat.
+//
+// Doc-side reference: backend §5.5 "event emissions" + plan resolved
+// decisions §11.
+//
+// `activity.match.placed` and `agent.collaboration.turn` (kind:
+// 'activity-co-play') are both consumed by the free-agent leaderboard via
+// AGENT_SCORE_WEIGHTS.activityPlacement (chunk #7). The other event types
+// here back the `/dash` activity tiles.
+
+export const ACTIVITY_EVENT_TYPES = {
+  QUEUE_JOINED: 'activity.queue.joined',
+  QUEUE_LEFT: 'activity.queue.left',
+  MATCH_STARTED: 'activity.match.started',
+  MATCH_ENDED: 'activity.match.ended',
+  MATCH_PLACED: 'activity.match.placed',
+  MATCH_SWEPT: 'activity.match.swept',
+  MATCH_ABORTED_CRASH: 'activity.match.aborted_crash',
+  ANTI_CHEAT_FLAG: 'anti_cheat.flag',
+  POD_PRESSURE: 'activity.pod.pressure',
+} as const;
+
+export type ActivityEventType =
+  (typeof ACTIVITY_EVENT_TYPES)[keyof typeof ACTIVITY_EVENT_TYPES];
+
+// Typed payload shapes — each one is the shape of `payload` for that event.
+// Useful for IDE completion at emit sites; logEvent() doesn't enforce them
+// (the table is JSONB, so over-tightening is counterproductive).
+
+export interface ActivityQueueJoinedPayload {
+  activityId: string;
+  partyId: string | null;
+  subjectType: 'human' | 'agent';
+  agentOnly?: boolean;
+}
+
+export interface ActivityQueueLeftPayload {
+  activityId: string;
+  reason: 'voluntary' | 'matched' | 'timeout' | 'pod_restart';
+  roomId?: string;
+}
+
+export interface ActivityMatchStartedPayload {
+  activityId: string;
+  roomId: string;
+  participantCount: number;
+  hasBots: boolean;
+  hasAgents: boolean;
+}
+
+export interface ActivityMatchEndedPayload {
+  activityId: string;
+  roomId: string;
+  durationMs: number;
+  reason: 'complete' | 'forfeit' | 'aborted';
+}
+
+export interface ActivityMatchPlacedPayload {
+  activityId: string;
+  roomId: string;
+  placement: number;
+  score: number;
+  tokensAwarded: number;
+  leaderboardPoints: number;
+  subjectType: 'human' | 'agent' | 'bot';
+}
+
+export interface ActivityMatchSweptPayload {
+  activityId: string;
+  roomId: string;
+  reason:
+    | 'pending_empty'
+    | 'live_no_ws'
+    | 'countdown_underfill'
+    | 'results_retention';
+  playerCount?: number;
+}
+
+export interface ActivityMatchAbortedCrashPayload {
+  activityId: string;
+  roomId: string;
+  errorStack?: string;
+  recoveredAt?: string;
+  reason?: 'sim_exception' | 'pod_restart_orphan';
+}
+
+export interface ActivityAntiCheatFlagPayload {
+  kind:
+    | 'overspeed'
+    | 'underminlap'
+    | 'seq_gap'
+    | 'ghost_input'
+    | 'checkpoint_skip'
+    | 'powerup_unowned';
+  activityId: string;
+  roomId: string;
+  detail?: Record<string, unknown>;
+}
+
+export interface ActivityPodPressurePayload {
+  cpuPct?: number;
+  memPct?: number;
+  level: 'warn' | 'reduce_tick' | 'refuse_new_rooms';
+}
+
 export async function logEvent(input: EventInput): Promise<void> {
   const row = {
     eventType: input.eventType,
