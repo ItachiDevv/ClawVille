@@ -1,4 +1,4 @@
-FROM oven/bun:1
+FROM oven/bun:1.3.11
 WORKDIR /app
 
 # Copy root workspace files
@@ -11,11 +11,14 @@ COPY apps/api/ apps/api/
 # Install dependencies (includes workspace linking)
 RUN bun install
 
-# Build workspace packages (database, shared, agent-runtime, agent-templates)
-RUN cd packages/shared && bun run build || true
-RUN cd packages/database && bun run build || true
-RUN cd packages/agent-templates && bun run build || true
-RUN cd packages/agent-runtime && bun run build || true
+# Build workspace packages — use bunx tsc directly (bun 1.3.13 has a bun-run-tsc
+# regression that mangles string literals during build; pinning to 1.3.11 + direct
+# bunx invocation sidesteps both issues). Fail build on real tsc errors so dist is
+# never corrupted silently.
+RUN cd packages/shared && bunx tsc
+RUN cd packages/database && bunx tsc
+RUN cd packages/agent-templates && bunx tsc
+RUN cd packages/agent-runtime && bunx tsc
 
 EXPOSE 4000
 
