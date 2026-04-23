@@ -596,6 +596,43 @@ petRoutes.patch('/me/appearance', requireAuth, async (c) => {
     .where(and(eq(pets.userId, user.id), eq(pets.isActive, true)))
     .returning();
 
+  // Audit fix — a concurrent deactivation between the SELECT above and
+  // this UPDATE would produce zero returned rows. Without this guard the
+  // handler returned `{ pet: undefined }` and the client received an
+  // empty object with no error signal.
+  if (!updated) {
+    throw new HTTPException(404, { message: 'Pet not found or inactive' });
+  }
+
+  // Audit fix — emit `pet.appearance.changed` so /dash can aggregate
+  // edit volume alongside the existing identity.issued / skill_md.fetched
+  // counters. Payload carries only the fields that actually changed, so
+  // downstream analyses can count avatar swaps vs. color tweaks vs.
+  // gender flips independently.
+  const changed: Record<string, unknown> = {};
+  if (patch.modelKey && patch.modelKey !== current.modelKey) {
+    changed.modelKey = { from: current.modelKey, to: patch.modelKey };
+  }
+  if (patch.color && patch.color !== current.color) {
+    changed.color = { from: current.color, to: patch.color };
+  }
+  if (patch.gender && patch.gender !== current.gender) {
+    changed.gender = { from: current.gender, to: patch.gender };
+  }
+  if (Object.keys(changed).length > 0) {
+    logEvent({
+      eventType: 'pet.appearance.changed',
+      userId: user.id,
+      petId: updated.id,
+      payload: { changed, harness: current.harness },
+    }).catch((err) => {
+      // Event logging is best-effort — a logger outage should never
+      // turn a successful edit into a 500. The event-logger has its
+      // own three-tier fallback (see apps/api/src/services/event-logger.ts).
+      console.error('[pets] appearance event log failed:', err);
+    });
+  }
+
   return c.json({ pet: updated });
 });
 
