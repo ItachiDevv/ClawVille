@@ -26,7 +26,9 @@ import { npcSimulation } from '../services/npc-simulation';
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import { logEvent } from '../services/event-logger';
 import type { ClawvilleServices } from '@clawville/agent-runtime';
-import { ensureWallet } from '../services/wallet-service';
+import { ensureWallet, ensureWalletWithFirstTimeSecret } from '../services/wallet-service';
+import { resolveOrCreateUserByIdentity, generateIdentityKeypairForUser } from '../services/identity-service';
+import { lucia } from '../lib/auth';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 
@@ -150,9 +152,17 @@ function buildCharacterConfig(archetypeId: PetArchetypeId, petName: string, mode
   };
 }
 
-// Create pet (one per user) - also creates ElizaOS agent
-petRoutes.post('/', requireAuth, async (c) => {
-  const user = c.get('user');
+// Create pet (one per user) - also creates ElizaOS agent.
+//
+// Phase 4d (2026-04-23): this route no longer requires a pre-existing
+// Lucia session. When called without a session, we auto-provision a new
+// user (identity keypair + custodial wallet) and attach a fresh Lucia
+// session via Set-Cookie — same model as POST /api/agent/join, but for
+// humans who hit /create-agent directly in the browser. Brand Identity:
+// "agent creation IS signup." No email required at signup; it's an
+// optional recovery vector bolted on later.
+petRoutes.post('/', async (c) => {
+  const sessionUser = c.get('user'); // populated by sessionMiddleware (nullable)
   const body = await c.req.json();
   const result = createPetSchema.safeParse(body);
 
@@ -160,22 +170,86 @@ petRoutes.post('/', requireAuth, async (c) => {
     throw new HTTPException(400, { message: result.error.issues[0].message });
   }
 
-  // Check if user already has a pet
-  const existingPet = await db.query.pets.findFirst({
-    where: eq(pets.userId, user.id),
-  });
-
-  if (existingPet) {
-    throw new HTTPException(400, { message: 'You already have a pet' });
-  }
-
-  // Check name uniqueness
+  // Name uniqueness — check FIRST, before any identity / wallet / pet
+  // writes. Failing name check before auto-provisioning means a failed
+  // signup attempt doesn't leave an orphan user row behind.
   const existingName = await db.query.pets.findFirst({
     where: eq(pets.name, result.data.name),
   });
 
   if (existingName) {
     throw new HTTPException(400, { message: 'That name is already taken' });
+  }
+
+  // Phase 4d auto-provision — if no active session, bootstrap a new
+  // user + ed25519 identity keypair + custodial pet wallet, mint a
+  // Lucia session, and Set-Cookie in the response. Mirrors the
+  // /api/agent/join agent-first flow but runs inside the browser round-
+  // trip so the human lands in /game with a live cookie immediately
+  // (no ticket redirect hop needed — they're already in the tab).
+  let firstTimeIdentity: {
+    userId: string;
+    publicKey: string;
+    secretKey: string;
+  } | null = null;
+
+  // The ID the rest of this handler uses — either the existing session
+  // user's id, or the freshly auto-provisioned one.
+  let ownerId: string;
+
+  if (!sessionUser) {
+    // Anonymous identity — unique per submission, so each /create-agent
+    // POST without a session produces its own fresh user row. We use
+    // the 'anonymous' identityType (already in the enum used by
+    // resolveOrCreateUserByIdentity) to signal "no external framework."
+    const identityKey = crypto.randomUUID();
+    const resolved = await resolveOrCreateUserByIdentity('anonymous', identityKey);
+
+    // Mint ed25519 identity keypair per Phase 5.1 (envelope-encrypted
+    // secret stored in users.identity_encrypted_sk, pubkey in
+    // identity_pubkey). First-time path returns the plaintext secret
+    // ONCE so the client can surface it for account backup; the server
+    // never re-exposes it after this call.
+    const ident = await generateIdentityKeypairForUser(resolved.id);
+    if (ident.isFirstTime && ident.secretKey) {
+      firstTimeIdentity = {
+        userId: resolved.id,
+        publicKey: ident.publicKey,
+        secretKey: ident.secretKey,
+      };
+    }
+
+    // Attach Lucia session cookie to the response. Lucia's
+    // createSessionCookie honors NODE_ENV (SameSite=None+Secure in
+    // prod, Lax+insecure in dev).
+    const session = await lucia.createSession(resolved.id, {});
+    const cookie = lucia.createSessionCookie(session.id);
+    c.header('Set-Cookie', cookie.serialize());
+
+    ownerId = resolved.id;
+
+    await logEvent({
+      eventType: 'identity.issued',
+      userId: resolved.id,
+      payload: {
+        identityType: 'anonymous',
+        identityPubkey: ident.publicKey,
+        via: 'create-agent',
+      },
+    });
+  } else {
+    // Existing-session path — guard against creating a second pet.
+    // Only applies when we didn't just auto-provision (brand-new users
+    // definitionally have no pet).
+    const existingPet = await db.query.pets.findFirst({
+      where: eq(pets.userId, sessionUser.id),
+    });
+
+    if (existingPet) {
+      throw new HTTPException(400, { message: 'You already have a pet' });
+    }
+
+    ownerId = sessionUser.id;
   }
 
   const stats = calculateStats(result.data.personality);
@@ -237,7 +311,7 @@ petRoutes.post('/', requireAuth, async (c) => {
     const [insertedAgent] = await tx
       .insert(agents)
       .values({
-        userId: user.id,
+        userId: ownerId,
         name: result.data.name,
         type: 'pet-agent',
         status: 'pending',
@@ -260,7 +334,7 @@ petRoutes.post('/', requireAuth, async (c) => {
     const [insertedPet] = await tx
       .insert(pets)
       .values({
-        userId: user.id,
+        userId: ownerId,
         name: result.data.name,
         species: result.data.species,
         color: result.data.color,
@@ -279,20 +353,46 @@ petRoutes.post('/', requireAuth, async (c) => {
     return { pet: insertedPet, agent: insertedAgent };
   });
 
-  // Auto-generate a custodial Solana wallet for the new pet. Fire and
-  // forget from the caller's perspective — if wallet gen fails, log it
-  // but don't block pet creation. The backfill script will catch stragglers.
-  // Outside the transaction intentionally: wallet gen hits an external
-  // keypair store, and a slow external call shouldn't hold a pg
-  // transaction open.
+  // Auto-generate a custodial Solana wallet for the new pet. On the
+  // auto-provision path we disclose the plaintext secret ONCE so the
+  // client can surface it for self-custody backup; on the existing-
+  // session path we just ensure the wallet exists (secret stays
+  // server-held). Phase 5.1 doctrine: the plaintext key is returned
+  // exactly at the first-ever creation, never again.
+  let firstTimeWallet: {
+    address: string;
+    secretKey: string;
+    chain: 'solana';
+  } | null = null;
   try {
-    const wallet = await ensureWallet('pet', pet.id);
-    pet.walletAddress = wallet.publicKey;
+    if (firstTimeIdentity) {
+      const w = await ensureWalletWithFirstTimeSecret('pet', pet.id);
+      pet.walletAddress = w.publicKey;
+      if (w.firstTimeSecretKeyBase58) {
+        firstTimeWallet = {
+          address: w.publicKey,
+          secretKey: w.firstTimeSecretKeyBase58,
+          chain: 'solana',
+        };
+      }
+    } else {
+      const wallet = await ensureWallet('pet', pet.id);
+      pet.walletAddress = wallet.publicKey;
+    }
   } catch (err) {
     console.error('[pets] Failed to auto-generate wallet for new pet:', err);
   }
 
-  return c.json({ pet, agentId: agent.id });
+  return c.json({
+    pet,
+    agentId: agent.id,
+    // Phase 4d — first-time identity + wallet disclosure. Present only
+    // when the pet was created by an auto-provisioned (unauth) call.
+    // Subsequent /api/pets POSTs by the same user would 400 ("already
+    // have a pet"), so these are truly one-time.
+    ...(firstTimeIdentity ? { identity: firstTimeIdentity } : {}),
+    ...(firstTimeWallet ? { wallet: firstTimeWallet } : {}),
+  });
 });
 
 // Get user's pet
