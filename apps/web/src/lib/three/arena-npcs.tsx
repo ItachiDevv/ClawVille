@@ -640,6 +640,10 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
   const currentPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
   const currentRotY = useRef(VRM_DIR_ROTATION.idle);
   const currentTerrainY = useRef(-2);
+  // PERF: accumulated spring delta — we tick spring bones at 30Hz (every 2nd frame for
+  // idle NPCs) by summing frame deltas and flushing them in a single vrm.update() call.
+  // The verlet integrator is time-step independent so passing 2× dt is physically correct.
+  const springDeltaAccRef = useRef(0);
 
   // Resolve VRM path from the model registry (or use the species key directly as path suffix)
   const regEntry = MODEL_REGISTRY[npc.species as keyof typeof MODEL_REGISTRY];
@@ -754,7 +758,38 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     if (!vrmAnimatorRef.current && frame % 120 === seed % 120) {
       console.warn('[VRMNpcMesh] animator ref null at update time', npc.id, npc.species);
     }
-    vrmAnimatorRef.current?.update(dt, isMoving);
+
+    // PERF: split mixer (60Hz) from spring-bone physics (30Hz for idle NPCs).
+    //
+    // Spring-bone update (vrm.update) is O(joints) with matrix ops, verlet
+    // integration, and quaternion arithmetic per joint. With 5 VRM NPCs × ~10-20
+    // spring joints each = 50-100 expensive physics ops/frame at 60Hz.
+    //
+    // Strategy: call updateMixerOnly() every frame (keeps keyframe animation
+    // smooth), accumulate delta, and call updateSpringOnly() every 2nd frame
+    // for idle NPCs (hair/cloth physics at 30Hz is imperceptible; Nyquist for
+    // visible spring frequencies <4 Hz needs only >8 Hz sampling rate).
+    //
+    // Walking NPCs keep full vrm.update() — movement causes large spring
+    // displacements where 30Hz would produce visible lag on hair/tail physics.
+    const animator = vrmAnimatorRef.current;
+    if (animator) {
+      springDeltaAccRef.current += dt;
+      if (isMoving) {
+        // Walking: full update every frame — spring displacements are large.
+        // Reset accumulator so the first post-walk spring tick isn't over-stepped.
+        animator.update(dt, isMoving);
+        springDeltaAccRef.current = 0;
+      } else {
+        // Idle: mixer at 60Hz, spring bones at 30Hz (every 2nd frame, staggered by seed).
+        animator.updateMixerOnly(dt, isMoving);
+        if ((frame + seed) % 2 === 0) {
+          const acc = Math.min(springDeltaAccRef.current, 0.1);
+          animator.updateSpringOnly(acc);
+          springDeltaAccRef.current = 0;
+        }
+      }
+    }
   });
 
   return (

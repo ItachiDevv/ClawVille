@@ -232,6 +232,56 @@ export class VRMCharacterAnimator {
   }
 
   /**
+   * PERF split: advance the AnimationMixer only (no spring-bone physics).
+   * Use this at 60Hz to keep keyframe animations smooth.
+   * Must be paired with updateSpringOnly() called at a lower rate.
+   *
+   * Also handles isMoving crossfade — crossfade state must be in sync with
+   * the mixer, so we handle it here rather than in updateSpringOnly.
+   *
+   * @param delta  Clamped frame delta
+   * @param isMoving  true when walking/running
+   */
+  updateMixerOnly(delta: number, isMoving: boolean): void {
+    if (!this.ready) return;
+
+    // Crossfade when movement state changes (mirrors the logic in update())
+    if (isMoving !== this.wasMoving) {
+      const next = this.actions[isMoving ? 'walk' : 'idle'];
+      if (next && next !== this.currentAction) {
+        if (this.currentAction) {
+          this.currentAction.crossFadeTo(next, CROSSFADE_DURATION, true);
+        } else {
+          next.play();
+        }
+        this.currentAction = next;
+      }
+      this.wasMoving = isMoving;
+    }
+
+    this.mixer.update(delta);
+    // Note: vrm.update() intentionally skipped — caller must call updateSpringOnly()
+    // at the desired spring-bone rate (e.g. every 2nd frame for idle NPCs).
+  }
+
+  /**
+   * PERF split: run VRM system updates (humanoid, lookAt, expressions, spring bones).
+   * Call this at a lower rate (30Hz / every 2nd frame) for idle NPCs to halve
+   * the spring-bone physics cost without visible visual degradation.
+   *
+   * The spring-bone verlet integrator is time-step independent (uses delta internally),
+   * so passing an accumulated delta (e.g. 2 × frame_dt) produces physically correct
+   * output — spring displacement is proportional to elapsed time regardless of call rate.
+   *
+   * @param accumulatedDelta  Sum of all deltas since last spring update. On a 30Hz
+   *   schedule this is approximately 2 × (1/60) ≈ 0.033s. Pass clamped to 0.1s max.
+   */
+  updateSpringOnly(accumulatedDelta: number): void {
+    if (!this.ready) return;
+    this.vrm.update(accumulatedDelta);
+  }
+
+  /**
    * Clean up — call on component unmount to release GPU resources.
    * The VRM scene itself is not disposed here — caller manages scene lifetime.
    */
