@@ -76,10 +76,14 @@ export async function resolveOrCreateUserByIdentity(
     };
   }
 
-  // 2. Not found — try to insert. Friendly default name: `Agent <first-8-of-key>`.
+  // 2. Not found — try to insert. Friendly default name: `Agent <first-12-of-key>`.
   //    The key might itself be a UUID or a long hash, so slicing keeps
   //    admin surfaces readable without leaking the full identity.
-  const displayName = `Agent ${identityKey.slice(0, 8)}`;
+  //    12-char slice (bumped from 8 on 2026-04-23 per audit HIGH #3)
+  //    reduces cross-user display-name collision in admin lists: 8 hex
+  //    chars gives birthday-paradox collisions around 65k users, 12
+  //    pushes that to ~16M.
+  const displayName = `Agent ${identityKey.slice(0, 12)}`;
 
   try {
     const [inserted] = await db
