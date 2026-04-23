@@ -650,11 +650,22 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     if (!vrm) return;
     const animator = new VRMCharacterAnimator(vrm);
     vrmAnimatorRef.current = animator;
+    // Debug: track useEffect mount/cleanup on window for CDP diagnostics
+    if (typeof window !== 'undefined') {
+      const w = window as any;
+      w.__VRM_NPC_EFFECT_LOG = w.__VRM_NPC_EFFECT_LOG || [];
+      w.__VRM_NPC_EFFECT_LOG.push({ event: 'mount', id: npc.id, species: npc.species, t: Date.now() });
+    }
     animator.init().catch((err) => {
       console.warn('[VRMNpcMesh] animator init failed:', err);
     });
     return () => {
       vrmAnimatorRef.current = null;
+      if (typeof window !== 'undefined') {
+        const w = window as any;
+        w.__VRM_NPC_EFFECT_LOG = w.__VRM_NPC_EFFECT_LOG || [];
+        w.__VRM_NPC_EFFECT_LOG.push({ event: 'cleanup', id: npc.id, species: npc.species, t: Date.now() });
+      }
       animator.dispose();
     };
   }, [vrm]);
@@ -733,6 +744,10 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // Mid-distance: animator runs at 30Hz. Close: full 60Hz.
     if (camDistSq > VRM_NPC_HALF_RATE_DIST_SQ && (frame + seed) % 2 !== 0) {
       return;
+    }
+    // Debug: log when animator ref is null at update time (should never happen post-init)
+    if (!vrmAnimatorRef.current && frame % 120 === seed % 120) {
+      console.warn('[VRMNpcMesh] animator ref null at update time', npc.id, npc.species);
     }
     vrmAnimatorRef.current?.update(dt, isMoving);
   });
