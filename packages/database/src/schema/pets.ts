@@ -176,6 +176,17 @@ export const pets = pgTable('pets', {
    * Secret key lives encrypted in the pet_wallets table.
    */
   walletAddress: varchar('wallet_address', { length: 64 }),
+  /**
+   * Q2 Activity Portals — admin-driven flags JSONB.
+   *
+   * Catch-all bag for low-volume per-pet flags that don't justify their
+   * own column. Today: anti-cheat banner thresholds (`anti_cheat_banned_
+   * until`), future: shadow-banned, beta-feature opt-ins, etc.
+   *
+   * Default empty object so existing rows backfill seamlessly. Reads
+   * should always tolerate missing keys.
+   */
+  flags: jsonb('flags').notNull().default(sql`'{}'::jsonb`),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (t) => ({
