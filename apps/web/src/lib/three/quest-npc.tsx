@@ -22,7 +22,7 @@
  *       once an artist produces one. The crayfish is a functional placeholder.
  */
 
-import { useRef, useMemo, useEffect, memo, Suspense } from 'react';
+import { useRef, useMemo, useEffect, memo, Suspense, useCallback } from 'react';
 import type { RefObject } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
@@ -91,6 +91,9 @@ function QuestNpcMarkerWrapper({ hoveredRef }: { hoveredRef: RefObject<boolean> 
 // ---------------------------------------------------------------------------
 // QuestNpcInner — the character body + marker
 // ---------------------------------------------------------------------------
+// Module-scope scratch for marker bob — avoids any per-frame closure captures
+const _markerBobScratch = new THREE.Vector3();
+
 const QuestNpcInner = memo(function QuestNpcInner() {
   const groupRef   = useRef<THREE.Group>(null!);
   const animRef    = useRef<THREE.Group>(null!);
@@ -121,13 +124,17 @@ const QuestNpcInner = memo(function QuestNpcInner() {
     };
   }, [cloned]);
 
-  // Idle bob + gentle Y sway — pure math, no allocation
+  // Idle bob + gentle Y sway — pure math, no allocation.
+  // Only the outer position Y and animRef rotation change — the XZ position is
+  // constant so we don't need to set it every frame.
   useFrame(({ clock }) => {
     if (!groupRef.current) return;
-    const bob = Math.sin(clock.elapsedTime * 1.3 + 0.42) * 0.6;
+    const t = clock.elapsedTime;
+    const bob = Math.sin(t * 1.3 + 0.42) * 0.6;
+    // Only update Y — X and Z are static and set via JSX position prop.
     groupRef.current.position.y = QUEST_NPC_FLOOR_Y + 6 + bob;
     if (animRef.current) {
-      animRef.current.rotation.y = Math.sin(clock.elapsedTime * 0.4) * 0.18;
+      animRef.current.rotation.y = Math.sin(t * 0.4) * 0.18;
     }
   });
 

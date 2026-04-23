@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useEffect } from 'react';
+import { useRef, useMemo, useEffect } from 'react';
 import * as THREE from 'three/webgpu';
 import { float, vec3, sin, time } from 'three/tsl';
 
@@ -152,6 +152,8 @@ function createRayMaterial(def: RayDef): THREE.MeshBasicNodeMaterial {
 
 // Single ray mesh — geometry + material created once in useMemo
 function LightRay({ def }: { def: RayDef }) {
+  const meshRef = useRef<THREE.Mesh>(null);
+
   const { geometry, material } = useMemo(() => {
     // 6 radial segments is enough for a soft cone — low polygon cost
     const geo = new THREE.CylinderGeometry(
@@ -167,6 +169,12 @@ function LightRay({ def }: { def: RayDef }) {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps — def is a static constant
 
   useEffect(() => {
+    // PERF: light ray meshes never move — disable matrixAutoUpdate so Three.js
+    // skips per-frame matrix re-multiplies for these 7 static cones.
+    if (meshRef.current) {
+      meshRef.current.matrixAutoUpdate = false;
+      meshRef.current.updateMatrix();
+    }
     return () => {
       geometry.dispose();
       material.dispose();
@@ -175,6 +183,7 @@ function LightRay({ def }: { def: RayDef }) {
 
   return (
     <mesh
+      ref={meshRef}
       geometry={geometry}
       material={material}
       position={def.position}

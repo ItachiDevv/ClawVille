@@ -16,7 +16,7 @@
  * GPU constraints: TSL materials only, no GLSL, no Text/Billboard.
  */
 
-import { useRef, useMemo, memo } from 'react';
+import { useRef, useMemo, useEffect, memo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three/webgpu';
 import { color, float, sin, time, mix } from 'three/tsl';
@@ -108,11 +108,28 @@ function Parchment({ def }: { def: ParchmentDef }) {
 // ---------------------------------------------------------------------------
 // Full board
 // ---------------------------------------------------------------------------
+// Refs for static meshes that need matrixAutoUpdate disabled after mount
+const _bbPost1Ref = { current: null as THREE.Mesh | null };
+const _bbPost2Ref = { current: null as THREE.Mesh | null };
+const _bbCrossbarRef = { current: null as THREE.Mesh | null };
+const _bbHitboxRef = { current: null as THREE.Mesh | null };
+
 const BountyBoardInner = memo(function BountyBoardInner() {
   const groupRef = useRef<THREE.Group>(null!);
 
   const plankMat = useMemo(() => createPlankMaterial(), []);
   const postMat  = useMemo(() => createPostMaterial(), []);
+
+  // PERF: posts, crossbar, and hitbox never move — disable matrixAutoUpdate so
+  // Three.js skips per-frame matrix re-multiplies on these 4 static meshes.
+  useEffect(() => {
+    for (const ref of [_bbPost1Ref, _bbPost2Ref, _bbCrossbarRef, _bbHitboxRef]) {
+      if (ref.current) {
+        ref.current.matrixAutoUpdate = false;
+        ref.current.updateMatrix();
+      }
+    }
+  }, []);
 
   const openBountyBoard = () => useGameStore.getState().openBountyBoard();
 
@@ -139,11 +156,11 @@ const BountyBoardInner = memo(function BountyBoardInner() {
       }}
     >
       {/* Left post — 8× scaled: 9.6 wide, 144 tall */}
-      <mesh position={[-44, 64, 0]} material={postMat}>
+      <mesh ref={(m) => { _bbPost1Ref.current = m; }} position={[-44, 64, 0]} material={postMat}>
         <boxGeometry args={[9.6, 144, 9.6]} />
       </mesh>
       {/* Right post */}
-      <mesh position={[44, 64, 0]} material={postMat}>
+      <mesh ref={(m) => { _bbPost2Ref.current = m; }} position={[44, 64, 0]} material={postMat}>
         <boxGeometry args={[9.6, 144, 9.6]} />
       </mesh>
 
@@ -159,12 +176,12 @@ const BountyBoardInner = memo(function BountyBoardInner() {
       </group>
 
       {/* Top cross-bar — 8× scaled: 112 wide, 12 tall */}
-      <mesh position={[0, 136, 0]} material={postMat}>
+      <mesh ref={(m) => { _bbCrossbarRef.current = m; }} position={[0, 136, 0]} material={postMat}>
         <boxGeometry args={[112, 12, 9.6]} />
       </mesh>
 
       {/* Invisible click volume for easier interaction */}
-      <mesh visible={false} position={[0, 64, 0]}>
+      <mesh ref={(m) => { _bbHitboxRef.current = m; }} visible={false} position={[0, 64, 0]}>
         <boxGeometry args={[128, 160, 32]} />
         <meshBasicMaterial />
       </mesh>
