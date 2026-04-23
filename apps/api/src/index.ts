@@ -11,6 +11,9 @@ import { itemRoutes } from './routes/items';
 import { npcRoutes } from './routes/npc-sse';
 import { openclawRoutes } from './routes/openclaw';
 import { activityRoutes } from './routes/activity';
+import { activitiesV2Routes } from './routes/activities';
+import { activityRoomManager } from './services/activity/activity-room-manager';
+import { activityQueueService } from './services/activity/activity-queue';
 import { researchSseRoutes } from './routes/research-sse';
 import { researchApiRoutes } from './routes/research';
 import { marketplaceRoutes } from './routes/marketplace';
@@ -102,6 +105,9 @@ app.route('/api/items', itemRoutes);
 app.route('/api/npc', npcRoutes);
 app.route('/api/openclaw', openclawRoutes);
 app.route('/api/pets', activityRoutes);
+// Q2 Activity Portals — chunk #2 backend skeleton (REST routes; WS hub
+// + sim land in chunk #3). Mount path mirrors the Q2 plan §"API routes".
+app.route('/api/activities', activitiesV2Routes);
 app.route('/api/research', researchSseRoutes);
 app.route('/api/research', researchApiRoutes);
 app.route('/api/marketplace', marketplaceRoutes);
@@ -204,6 +210,21 @@ startSimulation(arenaMode);
   } catch (err) {
     console.error('[API] System NPC seeder failed:', err);
   }
+
+  // Q2 Activity Portals — recover orphaned LIVE/COUNTDOWN rooms (pod
+  // crash recovery per backend §12.1), hydrate persisted queue entries,
+  // then start the room sweeper + matchmaker intervals. Order matters:
+  // recovery must finish before the sweeper runs so it doesn't try to
+  // GC rows the recovery is mid-update on.
+  try {
+    await activityRoomManager.recoverOrphanedRooms();
+    await activityQueueService.hydrateFromDb();
+    activityRoomManager.startSweeper();
+    activityQueueService.startMatchmaker();
+    console.log('[API] Activity room manager + queue ready');
+  } catch (err) {
+    console.error('[API] Activity portal init failed:', err);
+  }
 })();
 
 // Graceful shutdown — clean up the many long-lived runtimes and intervals
@@ -223,6 +244,8 @@ async function gracefulShutdown(signal: string) {
     const { getCollaborationBroker } = await import('@clawville/agent-runtime');
 
     stopSimulation();
+    activityRoomManager.stopSweeper();
+    activityQueueService.stopMatchmaker();
     await Promise.allSettled([
       npcSimulation.petAutonomyManager.shutdown(),
       getCollaborationBroker().shutdown(),
