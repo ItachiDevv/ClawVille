@@ -68,6 +68,10 @@ type NpcModelConfig = {
   /** Extra Y-axis rotation (radians) added on top of facingRotY.
    *  Use when a GLB is authored with a non-standard forward axis (+X instead of +Z). */
   rotYOffset?: number;
+  /** When true, apply the procedural ghost-float animation (large Y bob + Z sway
+   *  + slow Y-axis drift). For static-mesh ghost characters like Flying Dutchman
+   *  that have no skeleton/animations. Overrides the default small-bob behavior. */
+  ghostFloat?: boolean;
 };
 
 /** Full config for a location slot. companion is an optional passive NPC that
@@ -106,7 +110,10 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   // canonical "intimidating spectral pirate" who fits the Salty Spitoon vibe
   // better than any tough-fish patron we could find. Iconic green ghost,
   // pirate hat, beard, hook hands. ~17.9k tris, 2.2MB.
-  'webhook-gateway': { name: 'Flying Dutchman', model: '/models/characters/flying-dutchman.glb' },
+  // ghostFloat: static mesh with no skeleton — uses procedural ghost-float
+  // (large Y bob + Z sway) which is more thematic for a ghost than walk anims
+  // anyway. Compare to Pearl in cron-hub which ships with 5 built-in animations.
+  'webhook-gateway': { name: 'Flying Dutchman', model: '/models/characters/flying-dutchman.glb', ghostFloat: true },
 
   // Slot 3 — cron-hub — Downtown Building (Pearl Krabs's downtown teen vibe)
   // Pearl Krabs GLB sourced from Sketchfab (CC-BY 4.0) 2026-04-23 — official-look
@@ -372,8 +379,12 @@ const NpcMesh = memo(function NpcMesh({
   // Layer 2 safety net: one-shot rendered-height hard cap applied after first render.
   // Catches any location NPC whose pivot offset slips through computeNormalizedScale.
   const rescaleAppliedRef = useRef(false);
+  // AnimationMixer ref — populated for GLBs that ship with their own animations
+  // (Pearl Krabs has 5: Walk / Breathing Idle / Standard Run / Jump / Breakdance).
+  // Null for un-rigged GLBs (most of the canonical SpongeBob cast + Flying Dutchman).
+  const mixerRef = useRef<THREE.AnimationMixer | null>(null);
   const { scene: threeScene } = useThree();
-  const { scene } = useGLTF(modelCfg.model);
+  const { scene, animations } = useGLTF(modelCfg.model);
   const terrainY = useRef(-2);
   const placed = useRef(false);
 
@@ -436,8 +447,30 @@ const NpcMesh = memo(function NpcMesh({
     };
   }, [cloned]);
 
+  // Built-in AnimationMixer for GLBs that ship with their own clips.
+  // Pearl Krabs: 5 clips (Walk / Breathing Idle / Standard Run / Jump / Breakdance).
+  // Picks 'Breathing Idle' if present, else first clip. Plays on loop.
+  // Other location NPCs have no animations — this hook is a no-op for them.
+  useEffect(() => {
+    if (!animations || animations.length === 0) return;
+    const mixer = new THREE.AnimationMixer(cloned);
+    mixerRef.current = mixer;
+    const idleClip =
+      animations.find((c) => /idle|breathing/i.test(c.name)) ?? animations[0];
+    mixer.clipAction(idleClip).play();
+    return () => {
+      mixer.stopAllAction();
+      mixer.uncacheRoot(cloned);
+      mixerRef.current = null;
+    };
+  }, [cloned, animations]);
+
   useFrame(({ clock }, delta) => {
     if (!groupRef.current) return;
+
+    // Drive built-in AnimationMixer if present (Pearl Krabs etc.).
+    // dt is clamped at the framework level — pass through directly.
+    if (mixerRef.current) mixerRef.current.update(delta);
 
     // Re-raycast terrain Y periodically (not just once) to handle late terrain loading.
     // Stagger by seedBase so NPCs don't all spike CPU on the same frame.
@@ -450,9 +483,21 @@ const NpcMesh = memo(function NpcMesh({
       }
     }
 
-    // Position: terrainY + BASE_LIFT + bob - pivotOffsetY
-    const bob = Math.sin(clock.elapsedTime * 1.5 + seedBase) * 0.5;
-    groupRef.current.position.set(worldX, terrainY.current + 6 + bob - pivotOffsetY, worldZ);
+    // Position: terrainY + BASE_LIFT + bob - pivotOffsetY.
+    // ghostFloat NPCs (Flying Dutchman) get a much larger Y bob (4 wu vs 0.5)
+    // and a Z-axis sway on the inner anim group — matches the canonical
+    // "ghost slowly drifts in the air" motion better than the small idle bob.
+    const t = clock.elapsedTime;
+    if (modelCfg.ghostFloat) {
+      const ghostBob = Math.sin(t * 0.8 + seedBase) * 4;
+      groupRef.current.position.set(worldX, terrainY.current + 18 + ghostBob - pivotOffsetY, worldZ);
+      if (animGroupRef.current) {
+        animGroupRef.current.rotation.z = Math.sin(t * 0.5 + seedBase * 0.7) * 0.06;
+      }
+    } else {
+      const bob = Math.sin(t * 1.5 + seedBase) * 0.5;
+      groupRef.current.position.set(worldX, terrainY.current + 6 + bob - pivotOffsetY, worldZ);
+    }
 
     // Layer 2: one-shot rendered-height hard cap.
     // Runs once after 0.5s so geometry/bones settle before measurement.
