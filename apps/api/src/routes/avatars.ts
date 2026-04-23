@@ -510,6 +510,95 @@ avatarRoutes.patch('/me', requireAuth, async (c) => {
   return c.json({ avatar: updated });
 });
 
+// ---------------------------------------------------------------------------
+// Phase 4c Layer 1 — in-game appearance edits (avatar / color / gender).
+// ---------------------------------------------------------------------------
+// Purely cosmetic, no runtime restart needed. modelKey swap is constrained
+// to the current harness's pool so a user can't promote a self-hosted avatar
+// to a hosted Milady by swapping avatars. Color + gender are independent.
+//
+// Not bundled into the existing PATCH /me (position heartbeat) because that
+// route is a hot path and conflating it with appearance edits would make
+// it easier to accidentally overwrite fields on a partial body.
+// ---------------------------------------------------------------------------
+const appearanceSchema = z.object({
+  modelKey: z.string()
+    .refine((k): k is AgentModelKey => (AGENT_MODEL_KEYS as readonly string[]).includes(k), {
+      message: `modelKey must be one of: ${AGENT_MODEL_KEYS.join(', ')}`,
+    })
+    .optional(),
+  color: z.enum(['green', 'red', 'blue', 'yellow']).optional(),
+  gender: z.enum(['male', 'female']).optional(),
+});
+
+avatarRoutes.patch('/me/appearance', requireAuth, async (c) => {
+  const user = c.get('user');
+  const body = await c.req.json();
+  const parsed = appearanceSchema.safeParse(body);
+
+  if (!parsed.success) {
+    throw new HTTPException(400, {
+      message: parsed.error.issues[0]?.message ?? 'Invalid appearance payload',
+    });
+  }
+
+  const hasEdit = parsed.data.modelKey || parsed.data.color || parsed.data.gender;
+  if (!hasEdit) {
+    throw new HTTPException(400, { message: 'No fields to update' });
+  }
+
+  // Find current avatar — need its harness to validate the modelKey swap.
+  const current = await db.query.avatars.findFirst({
+    where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
+  });
+  if (!current) {
+    throw new HTTPException(404, { message: 'Avatar not found' });
+  }
+
+  // Harness-pool guard — a Milady-harness avatar can only swap between
+  // Milady VRM avatars; a non-Milady avatar can only pick non-Milady
+  // avatars. Prevents a user from bypassing the Milady-only hosting
+  // contract by swapping avatars mid-game.
+  if (parsed.data.modelKey) {
+    const newModel = getAgentModel(parsed.data.modelKey);
+    if (!newModel) {
+      throw new HTTPException(400, { message: `Unknown modelKey: ${parsed.data.modelKey}` });
+    }
+    const currentlyMilady = current.harness === 'milady';
+    const newIsMilady = newModel.category === 'milady';
+    if (currentlyMilady !== newIsMilady) {
+      throw new HTTPException(400, {
+        message: currentlyMilady
+          ? 'Milady-hosted agents can only swap between Milady avatars'
+          : 'Self-hosted agents cannot pick a Milady avatar — their framework runs externally',
+      });
+    }
+  }
+
+  // Build the update set — only include fields the client asked to change.
+  const patch: Record<string, unknown> = { updatedAt: new Date() };
+  if (parsed.data.modelKey) {
+    patch.modelKey = parsed.data.modelKey;
+    // Derive agentCategory from the new model so (modelKey, category) stay
+    // self-consistent. Harness is NOT touched.
+    const newModel = getAgentModel(parsed.data.modelKey)!;
+    patch.agentCategory = newModel.category;
+    // Legacy `species` enum is deliberately NOT synced here — it only
+    // feeds the PixiJS 2D fallback and diverging from the modelKey is
+    // harmless. The 3D world reads modelKey directly.
+  }
+  if (parsed.data.color) patch.color = parsed.data.color;
+  if (parsed.data.gender) patch.gender = parsed.data.gender;
+
+  const [updated] = await db
+    .update(avatars)
+    .set(patch)
+    .where(and(eq(avatars.userId, user.id), eq(avatars.isActive, true)))
+    .returning();
+
+  return c.json({ avatar: updated });
+});
+
 // Check name availability
 avatarRoutes.get('/check-name/:name', sessionMiddleware, async (c) => {
   const name = c.req.param('name');

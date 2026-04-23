@@ -7,6 +7,7 @@ import { useAvatar } from '@/hooks/use-avatar';
 import { api } from '@/lib/api';
 import { AVATAR_SPECIES, AVATAR_COLORS, AVATAR_ARCHETYPES } from '@clawville/shared';
 import { SetupInstructions } from '@/components/create-agent/setup-instructions';
+import { EditAppearanceSection } from '@/components/game/edit-appearance-section';
 import {
   Dialog,
   DialogContent,
@@ -125,6 +126,17 @@ export default function AvatarSettingsModal() {
               </div>
             </div>
           )}
+
+          {/* Phase 4c Layer 1 — in-game appearance edits */}
+          <EditAppearanceSection
+            avatar={{
+              id: avatar.id,
+              modelKey: (avatar as { modelKey?: string | null }).modelKey,
+              color: avatar.color,
+              gender: avatar.gender,
+              harness: (avatar as { harness?: string | null }).harness,
+            }}
+          />
 
           {/* Phase 5.1 — Cross-world accounts (plan §15) */}
           <CrossWorldAccountsSection
