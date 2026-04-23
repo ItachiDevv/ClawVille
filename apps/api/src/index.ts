@@ -16,6 +16,8 @@ import { activityRoomManager } from './services/activity/activity-room-manager';
 import { activityQueueService } from './services/activity/activity-queue';
 import { activityWsHub } from './services/activity/activity-ws-hub';
 import { bumperShellsSim } from './services/activity/sim/bumper-shells-sim';
+import { botPool } from './services/activity/bots/bot-pool';
+import { getBotControllerFactory } from './services/activity/bots/bot-controller';
 import { getBunWebSocketHelper } from './lib/bun-ws-adapter';
 import { researchSseRoutes } from './routes/research-sse';
 import { researchApiRoutes } from './routes/research';
@@ -294,12 +296,29 @@ startSimulation(arenaMode);
     });
     activityRoomManager.setLiveTransitionFn((room) => {
       if (room.activityId === 'bumper-shells') {
+        // Chunk #10 — instantiate bot controllers for any bot
+        // participants. The factory is per-activity so future activities
+        // (Reef Race, etc.) plug in via BOT_CONTROLLERS without
+        // touching this dispatcher.
+        const factory = getBotControllerFactory(room.activityId);
+        const bots = factory
+          ? Array.from(room.participants.values())
+              .filter((p) => p.subjectType === 'bot')
+              .map((p) => factory(p.avatarId))
+          : [];
         bumperShellsSim.startRoom(
           room.id,
           room.activityId,
           Array.from(room.participants.keys()),
+          { bots },
         );
       }
+    });
+
+    // Chunk #10 — return reserved bot avatarIds to the pool when ANY room
+    // ends (RESULTS→GC / ABORTED / ABORTED_CRASH). Idempotent.
+    activityRoomManager.setEvictionFn((room) => {
+      botPool.releaseRoom(room.id);
     });
     // Sim broadcast → WS hub, with snapshot frames routed through the
     // backpressure-aware path.
@@ -335,6 +354,15 @@ startSimulation(arenaMode);
 
     await activityRoomManager.recoverOrphanedRooms();
     await activityQueueService.hydrateFromDb();
+    // Chunk #10 — hydrate the bot avatarId pool BEFORE the matcher starts
+    // sweeping so the first solo-Bumper queuer at 45s gets bots, not a
+    // "pool empty" warning. Failure is non-fatal — the matcher will
+    // simply skip backfill and humans wait longer.
+    try {
+      await botPool.hydrate();
+    } catch (err) {
+      console.error('[API] Bot pool hydration failed:', err);
+    }
     activityRoomManager.startSweeper();
     activityQueueService.startMatchmaker();
     console.log('[API] Activity room manager + queue ready');

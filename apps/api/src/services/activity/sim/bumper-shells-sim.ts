@@ -51,6 +51,7 @@ import {
   type ActivityAntiCheatFlagPayload,
 } from '../../event-logger';
 import { activityReplayLog } from '../activity-replay-log';
+import type { BotController } from '../bots/bot-controller';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -204,6 +205,18 @@ interface BumperRoomState {
    * first-eliminated = 8th).
    */
   eliminationOrder: string[];
+  /**
+   * Bot controllers keyed by avatarId. Populated from the `bots` arg to
+   * `startRoom`. Each controller is invoked once per tick BEFORE
+   * `applyIntentForTick`, and its output is fed through the same
+   * `applyInput()` pipeline humans use (anti-cheat-clamped).
+   */
+  botControllers: Map<string, BotController>;
+  /**
+   * Per-tick monotonic input seq for bots. Bots have no client to track
+   * `seq`, so we synthesize it server-side. Keyed by avatarId.
+   */
+  botSeqs: Map<string, number>;
 }
 
 interface BumperSnapshot {
@@ -234,7 +247,22 @@ class BumperShellsSim {
    * Initialise a sim for a freshly-LIVE room. Caller (room manager)
    * ensures the room is in LIVE state when calling.
    */
-  startRoom(roomId: string, activityId: string, participantPetIds: string[], opts?: { seed?: number; isBot?: (avatarId: string) => boolean }): BumperRoomState {
+  startRoom(
+    roomId: string,
+    activityId: string,
+    participantPetIds: string[],
+    opts?: {
+      seed?: number;
+      isBot?: (avatarId: string) => boolean;
+      /**
+       * Bot controllers to install for this room. Their avatarIds MUST be
+       * a subset of `participantPetIds`. The sim ticks each one before
+       * applying intents so bots feed the same `applyInput()` validators
+       * as humans. Chunk #10.
+       */
+      bots?: BotController[];
+    },
+  ): BumperRoomState {
     if (this.rooms.has(roomId)) {
       // Idempotent — second call returns existing state. Defensive
       // against double-LIVE transitions.
@@ -242,6 +270,18 @@ class BumperShellsSim {
     }
     const seed = opts?.seed ?? this.deriveSeedFromRoomId(roomId);
     const startedAt = Date.now();
+    const botControllers = new Map<string, BotController>();
+    if (opts?.bots) {
+      for (const ctrl of opts.bots) {
+        if (!participantPetIds.includes(ctrl.avatarId)) {
+          console.warn(
+            `[bumper-shells-sim] bot controller for ${ctrl.avatarId} is not a participant — skipping`,
+          );
+          continue;
+        }
+        botControllers.set(ctrl.avatarId, ctrl);
+      }
+    }
     const state: BumperRoomState = {
       roomId,
       activityId,
@@ -257,6 +297,8 @@ class BumperShellsSim {
       intervalHandle: null,
       ended: false,
       eliminationOrder: [],
+      botControllers,
+      botSeqs: new Map(),
     };
 
     // Place bodies on a circle around origin so spawn isn't biased.
@@ -284,7 +326,7 @@ class BumperShellsSim {
           dt: 0,
           consumedSeq: -1,
         },
-        isBot: opts?.isBot?.(avatarId) ?? false,
+        isBot: opts?.isBot?.(avatarId) ?? botControllers.has(avatarId),
         forfeited: false,
       });
     });
@@ -296,6 +338,21 @@ class BumperShellsSim {
     }
 
     this.rooms.set(roomId, state);
+
+    // Bot lifecycle hooks — fire onSpawn with an initial room view so
+    // controllers can stash any per-room state. Errors are swallowed so
+    // a buggy bot doesn't crash the room boot.
+    if (state.botControllers.size > 0) {
+      const view = this.buildBotRoomView(state, '');
+      for (const [avatarId, ctrl] of state.botControllers) {
+        if (!ctrl.onSpawn) continue;
+        try {
+          ctrl.onSpawn({ ...view, selfAvatarId: avatarId });
+        } catch (err) {
+          console.error(`[bumper-shells-sim] bot onSpawn threw for ${avatarId}:`, err);
+        }
+      }
+    }
 
     // Emit match_started — also broadcast each initial spawn position.
     this.broadcastFn(roomId, { type: 'event.match_started', startedAt });
@@ -477,6 +534,13 @@ class BumperShellsSim {
     const now = Date.now();
     const dt = 1 / BUMPER_TICK_HZ;
 
+    // 0. Bot intent scheduling — runs BEFORE the integration pass so
+    //    bots feed the same applyInput pipeline humans use. Errors per
+    //    bot are isolated; a thrown controller doesn't break the tick.
+    if (state.botControllers.size > 0) {
+      this.runBotControllers(state, dt, now);
+    }
+
     // 1. Apply intents — inputs were already bound-checked at apply time.
     //    Here we INTEGRATE them into velocity + position with anti-cheat.
     for (const body of state.bodies.values()) {
@@ -574,6 +638,85 @@ class BumperShellsSim {
     if (intent.dir && (intent.dir.x !== 0 || intent.dir.y !== 0)) {
       body.rot = Math.atan2(intent.dir.y, intent.dir.x);
     }
+  }
+
+  /**
+   * Bot scheduler — invokes each registered controller's `computeInput`
+   * once per tick and feeds the result through the SAME `applyInput()`
+   * path human inputs use. Controllers see a trimmed `BotRoomView` (no
+   * WS handles, no DB refs).
+   *
+   * Per-tick allocation: one BotRoomView shared across all bots in the
+   * room (selfAvatarId is overwritten per-bot before pass-through). Cheap
+   * relative to the 60Hz physics step.
+   */
+  private runBotControllers(state: BumperRoomState, dt: number, now: number): void {
+    if (state.botControllers.size === 0) return;
+    const sharedView = this.buildBotRoomView(state, '');
+    for (const [avatarId, ctrl] of state.botControllers) {
+      const body = state.bodies.get(avatarId);
+      if (!body || !body.alive || body.forfeited) continue;
+      sharedView.selfAvatarId = avatarId;
+      sharedView.now = now;
+      let intent;
+      try {
+        intent = ctrl.computeInput(sharedView, dt);
+      } catch (err) {
+        console.error(`[bumper-shells-sim] bot ${avatarId} computeInput threw:`, err);
+        continue;
+      }
+      const seq = (state.botSeqs.get(avatarId) ?? 0) + 1;
+      state.botSeqs.set(avatarId, seq);
+      // Feed through applyInput so bots get the same anti-cheat clamps,
+      // dt validation, and replay-log capture as humans. Bots have no
+      // network latency so dt = 1 tick.
+      this.applyInput(state.roomId, avatarId, seq, dt, {
+        dir: intent.dir,
+        thrust: intent.thrust,
+        actionBits: intent.actionBits,
+      });
+    }
+  }
+
+  /**
+   * Build a snapshot of room state safe to pass to bot controllers.
+   * Inventory + body fields only — no WS, no DB, no mutation handles.
+   */
+  private buildBotRoomView(state: BumperRoomState, selfAvatarId: string): {
+    selfAvatarId: string;
+    bodies: Array<{
+      avatarId: string;
+      x: number;
+      y: number;
+      vx: number;
+      vy: number;
+      rot: number;
+      alive: boolean;
+      inventory: Array<{ kind: BumperPowerUpKind | null; charges: number; cooldownUntil: number }>;
+    }>;
+    arenaRadius: number;
+    now: number;
+  } {
+    const bodies = Array.from(state.bodies.values()).map((b) => ({
+      avatarId: b.avatarId,
+      x: b.x,
+      y: b.y,
+      vx: b.vx,
+      vy: b.vy,
+      rot: b.rot,
+      alive: b.alive,
+      inventory: b.inventory.map((slot) => ({
+        kind: slot.kind as BumperPowerUpKind | null,
+        charges: slot.charges,
+        cooldownUntil: slot.cooldownUntil,
+      })),
+    }));
+    return {
+      selfAvatarId,
+      bodies,
+      arenaRadius: BUMPER_ARENA_RADIUS,
+      now: Date.now(),
+    };
   }
 
   private integrateMotion(state: BumperRoomState, body: BumperBody, dt: number): void {
