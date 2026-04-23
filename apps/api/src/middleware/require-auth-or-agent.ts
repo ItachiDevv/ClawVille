@@ -61,6 +61,58 @@ export interface ActivityAuthContext {
 const AGENT_SESSION_HEADER = 'X-Clawville-Agent-Session';
 
 /**
+ * Resolve a Lucia session cookie OR an agent-session id to a complete
+ * identity. Used by the activity WS hub (chunk #3), which has no Hono
+ * context and therefore can't run the middleware below.
+ *
+ * Same contract as the middleware:
+ *   - Lucia cookie → user-kind identity, avatar must be active
+ *   - Agent session id → agent-kind identity, avatar must be active
+ *
+ * Returns null on auth failure (caller responsible for closing the WS
+ * with 4001 — the helper doesn't throw HTTPException).
+ */
+export async function resolveActivityIdentity(input: {
+  /** Either Lucia session id (raw, NOT cookie header) or agent session id */
+  sessionToken: string;
+}): Promise<ActivityIdentity | null> {
+  const token = input.sessionToken;
+  if (!token) return null;
+
+  // Try Lucia first — sessionToken contract from `auth` frame is the raw
+  // session id, not the cookie header.
+  try {
+    const { lucia } = await import('../lib/auth');
+    const { session, user } = await lucia.validateSession(token);
+    if (session && user) {
+      const avatar = await db.query.avatars.findFirst({
+        where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
+      });
+      if (!avatar) return null;
+      return {
+        kind: 'user',
+        userId: user.id,
+        avatarId: avatar.id,
+        agentId: null,
+      };
+    }
+  } catch {
+    // Lucia validation throws on malformed tokens — fall through to agent path.
+  }
+
+  // Try agent-session path.
+  const resolved = await resolveAgentSession(token);
+  if (!resolved || !resolved.userId || !resolved.avatarId) return null;
+  return {
+    kind: 'agent',
+    userId: resolved.userId,
+    avatarId: resolved.avatarId,
+    agentId: resolved.agentId,
+    sessionId: token,
+  };
+}
+
+/**
  * Resolve an agent session id to `{userId, avatarId, agentId}` by looking
  * through the npc-simulation registry → openclaw_bots row → user's avatar.
  *
