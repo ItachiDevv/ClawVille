@@ -98,6 +98,12 @@ app.route('/api/auth', authRoutes);
 app.route('/api/pets', petRoutes);
 app.route('/api/locations', locationRoutes);
 app.route('/api/locations', chatRoutes);
+// Also mount under `/api/chat` so the system-agent route is addressable as
+// `/api/chat/system/:slug` (canonical path for the generalized system-agent
+// chat surface — Town Guide today, future world-wide NPCs tomorrow). The
+// legacy `POST /api/locations/:id/chat` path continues to work under the
+// first mount above; nothing moves. Both mounts share the same handler map.
+app.route('/api/chat', chatRoutes);
 app.route('/api/items', itemRoutes);
 app.route('/api/npc', npcRoutes);
 app.route('/api/openclaw', openclawRoutes);
@@ -194,7 +200,48 @@ startSimulation(arenaMode);
   }
 
   try {
-    const { ensureSystemNpcs } = await import('./services/system-npc-seeder');
+    const {
+      ensureSystemAgents,
+      ensureSystemNpcs,
+      getSystemUserId,
+    } = await import('./services/system-npc-seeder');
+    const { SYSTEM_AGENT_TEMPLATES } = await import('@clawville/agent-templates');
+    const { agentOrchestrator } = await import('./services/agent-orchestrator');
+
+    // Seed system agents FIRST — they are world-wide (Town Guide et al.) and
+    // not tied to a map_location row, so their readiness is independent of
+    // (and should precede) the per-building seeder. Seeding them first cuts
+    // the boot-race window during which `POST /api/chat/system/:slug` 503s.
+    const systemAgents = await ensureSystemAgents();
+    const sysTotalChunks = systemAgents.reduce((sum, r) => sum + r.knowledgeChunks, 0);
+    console.log(
+      `[API] Seeded ${systemAgents.length} system agent(s) (${sysTotalChunks} knowledge chunks): ${systemAgents
+        .map((r) => `${r.slug}${r.created ? ':new' : ''}`)
+        .join(', ')}`,
+    );
+
+    // Eager warmup — pre-boot every system-agent runtime so the first visitor
+    // doesn't eat the lazy-start latency (~2-3s). Errors swallowed so a single
+    // warmup failure doesn't crash boot; the lazy-start path catches the next
+    // attempt on first chat.
+    const systemUserId = await getSystemUserId();
+    for (const { slug, platformAgentId } of systemAgents) {
+      void agentOrchestrator
+        .ensureAgentRuntime(platformAgentId, systemUserId)
+        .then(() => console.log(`[API] Warmed system agent runtime: ${slug}`))
+        .catch((err) => console.error(`[API] Warmup failed for ${slug}:`, err));
+    }
+
+    // Sanity: every template registered in SYSTEM_AGENT_TEMPLATES should
+    // have been seeded. If a future slug gets skipped (e.g. DB error), log
+    // it so the gap shows up in logs.
+    const seededSlugs = new Set(systemAgents.map((r) => r.slug));
+    for (const slug of Object.keys(SYSTEM_AGENT_TEMPLATES)) {
+      if (!seededSlugs.has(slug)) {
+        console.warn(`[API] SYSTEM_AGENT_TEMPLATES slug '${slug}' was NOT seeded`);
+      }
+    }
+
     const results = await ensureSystemNpcs();
     const withSkills = results.filter((r) => r.skillLoaded).length;
     const totalChunks = results.reduce((sum, r) => sum + r.knowledgeChunks, 0);

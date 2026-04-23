@@ -157,6 +157,38 @@ A sea-themed OpenClaw game built on ElizaOS. Users create a pet, explore a 3D/2D
 - For deployment, use a platform that supports persistent servers (Hetzner VPS + Coolify, Render, Fly.io) - NOT Vercel serverless
 - Never replace ElizaOS with direct API calls or stub implementations
 
+## MANDATORY: Every gameplay change updates system agents' expertise in the same diff
+
+**System agents are world-wide NPCs that aren't tied to a building.** Today the list is one — Nori the Town Guide, slug `town-guide` — but the scaffolding is plural from day 1. Future system agents (arena host, quest giver, lore-keeper) will add slugs to the same registry. Unlike the 10 building residents who each master one domain (cron, webhooks, memory, etc.), system agents' expertise is ClawVille ITSELF — the game modes, the 10 buildings + their teachers, the ClawToken economy, the agent connect flow, the daily-login loop, the tutorial path, paused features.
+
+**Their knowledge lives in template files:** `packages/agent-templates/src/locations/<slug>.ts` → `knowledge[]` array. Each template is registered under its slug in `SYSTEM_AGENT_TEMPLATES` (same file's `index.ts`). That array is chunked into ElizaOS RAG on every API boot via `ensureSystemAgents()` in `apps/api/src/services/system-npc-seeder.ts`.
+
+**The rule:** any gameplay or world change — a new mode, a new building, a changed token formula, a new quest type, a paused or un-paused feature, a new connect flow, a renamed building, a moved NPC, a new leaderboard weight — **MUST** update the appropriate system agent's `knowledge[]` in the same diff. For the Town Guide, that is `packages/agent-templates/src/locations/town-guide.ts`. If you skip this step, the guide teaches stale info and every first-time visitor gets broken tutorials.
+
+**Chat surface:** `POST /api/chat/system/:slug` (e.g. `/api/chat/system/town-guide`). Backend lookup: `getSystemAgent(slug)`. Platform agent type: `'system-agent'`; slug stored at `customization.slug`. No `location_agents` row — system agents are not buildings. The 3D click handler in `apps/web/src/lib/three/town-guide.tsx` opens her chat panel.
+
+**Rate limit:** +1 ClawToken + 5 XP per chat turn, capped at one reward per `(userId, slug)` every 60 seconds (`apps/api/src/services/system-agent-reward-limiter.ts`). The logged event uses `chatType: 'system-agent'` so it does NOT inflate the `/dash` teacher-chat metric (teacher chats are only the 10 building residents).
+
+**Adding a new system agent:**
+1. Write a template at `packages/agent-templates/src/locations/<your-slug>.ts`
+2. Register it in `SYSTEM_AGENT_TEMPLATES` under its slug
+3. Ship — `ensureSystemAgents()` upserts it on next boot. The partial unique index `platform_agents_system_singleton` guarantees one row per (userId, type='system-agent', slug).
+
+**What goes in her knowledge[]:**
+- "What ClawVille is" in one sentence
+- The 4 game modes (explore/NPC/control/autonomous)
+- The 10 buildings + their teachers by name + their focus
+- The Moltbook agent connect flow (SKILL.md + POST /api/agent/connect)
+- The Milady plugin sideload path (@clawville/app-clawville)
+- ClawToken earning rules + daily login formula + spending (knowledge books)
+- Leaderboard scoring (event weights)
+- Quest/bounty state (including paused surfaces)
+- Tutorial walkthrough (recommended first-time path)
+
+**What DOES NOT go in her knowledge[]:** domain-specific skill knowledge — cron internals, RAG strategies, MCP protocol, Solana signing, etc. Those live in the 10 building residents' templates. Nori's rule is "point at the teacher, don't replace the teacher."
+
+**When in doubt:** if the change touches anything a new user would see or a new agent would ask about during orientation, update her. If the change is purely internal (database migration, refactor, infra), skip.
+
 ## Tech Stack
 
 - **Monorepo**: Turborepo + Bun

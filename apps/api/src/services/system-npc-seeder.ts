@@ -15,9 +15,13 @@
  *
  * Idempotent — safe to run on every boot. Updates existing rows in place
  * when templates or SKILL.md content change.
+ *
+ * System agents (world-wide NPCs that aren't tied to a building, e.g. the
+ * Town Guide) use a separate upsert path: `ensureSystemAgents()` below, with
+ * rows identified by `type='system-agent'` + `customization.slug=<slug>`.
  */
 
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import {
   db,
   users,
@@ -26,7 +30,11 @@ import {
   buildingSkills,
   mapLocations,
 } from '@clawville/database';
-import { LOCATION_TEMPLATES, type LocationTemplate } from '@clawville/agent-templates';
+import {
+  LOCATION_TEMPLATES,
+  SYSTEM_AGENT_TEMPLATES,
+  type LocationTemplate,
+} from '@clawville/agent-templates';
 
 const SYSTEM_USER_EMAIL = 'openclaw-system@clawville.internal';
 const SYSTEM_USER_NAME = 'ClawVille System';
@@ -269,4 +277,131 @@ export async function getSystemNpcAgent(
 /** Expose system user lookup for other seeders / bot registrations. */
 export async function getSystemUserId(): Promise<string> {
   return getOrCreateSystemUser();
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// System agents — world-wide NPCs that aren't tied to a building
+// ───────────────────────────────────────────────────────────────────────────
+// These use `platform_agents.type = 'system-agent'` with
+// `customization.slug = <slug>` as the identifier. They have NO
+// `location_agents` row (they don't live in a building). Chat goes through
+// `POST /api/chat/system/:slug`.
+//
+// Adding a new system agent (e.g. an arena host, quest giver):
+//   1. Write a template under `packages/agent-templates/src/locations/`
+//   2. Register it under a slug in `SYSTEM_AGENT_TEMPLATES`
+//   3. Ship — the seeder loop below upserts it on next boot
+// ───────────────────────────────────────────────────────────────────────────
+
+export interface SystemAgentSeedResult {
+  slug: string;
+  platformAgentId: string;
+  knowledgeChunks: number;
+  created: boolean;
+}
+
+/**
+ * Build the customization payload for a system agent. Unlike building
+ * residents, there is no compiled SKILL.md to merge — the template's
+ * `knowledge[]` is the authoritative RAG carrier on its own.
+ */
+function buildSystemAgentCustomization(template: LocationTemplate, slug: string) {
+  return {
+    // `slug` is load-bearing — the partial unique index and every lookup
+    // key on `customization->>'slug'`. Keep it at top level.
+    slug,
+    name: template.name,
+    bio: template.bio,
+    lore: template.lore,
+    knowledge: template.knowledge,
+    topics: template.topics,
+    adjectives: template.adjectives,
+    messageExamples: template.messageExamples,
+    style: template.style,
+    system: `You are ${template.name}, a world-wide NPC at ClawVille. Your role is defined by your template: teach, orient, or host as your bio and knowledge prescribe. Stay in character. When a visitor asks about a specific building skill, redirect them to the relevant building teacher by name.`,
+    greeting: template.description,
+  };
+}
+
+/**
+ * Seed or update every system agent registered in `SYSTEM_AGENT_TEMPLATES`.
+ * Idempotent — safe to run on every boot. Call from the same boot hook as
+ * `ensureSystemNpcs()`.
+ */
+export async function ensureSystemAgents(): Promise<SystemAgentSeedResult[]> {
+  const systemUserId = await getOrCreateSystemUser();
+  const results: SystemAgentSeedResult[] = [];
+
+  for (const [slug, template] of Object.entries(SYSTEM_AGENT_TEMPLATES)) {
+    const customization = buildSystemAgentCustomization(template, slug);
+
+    // JSONB path comparison — drizzle's `eq` doesn't support operators like
+    // `->>`, so we drop to a `sql\`\`` fragment. Scoped to the
+    // (userId, type) pair so the partial unique index covers us on writes.
+    const existing = await db.query.platformAgents.findFirst({
+      where: and(
+        eq(platformAgents.userId, systemUserId),
+        eq(platformAgents.type, 'system-agent'),
+        sql`${platformAgents.customization}->>'slug' = ${slug}`,
+      ),
+    });
+
+    let platformAgentId: string;
+    let created = false;
+
+    if (existing) {
+      platformAgentId = existing.id;
+      await db
+        .update(platformAgents)
+        .set({
+          name: template.name,
+          customization,
+          updatedAt: new Date(),
+        })
+        .where(eq(platformAgents.id, existing.id));
+    } else {
+      const [inserted] = await db
+        .insert(platformAgents)
+        .values({
+          userId: systemUserId,
+          name: template.name,
+          type: 'system-agent',
+          status: 'stopped',
+          customization,
+          config: {},
+        })
+        .returning({ id: platformAgents.id });
+      platformAgentId = inserted.id;
+      created = true;
+    }
+
+    results.push({
+      slug,
+      platformAgentId,
+      knowledgeChunks: template.knowledge.length,
+      created,
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Look up a system agent by slug. NEVER look up by name — names are free-form
+ * and duplicate-prone; the slug + (type='system-agent') tuple is the
+ * authoritative identity. Returns null if no row is seeded.
+ */
+export async function getSystemAgent(
+  slug: string,
+): Promise<{ platformAgent: typeof platformAgents.$inferSelect; systemUserId: string } | null> {
+  const systemUserId = await getOrCreateSystemUser();
+  const row = await db.query.platformAgents.findFirst({
+    where: and(
+      eq(platformAgents.userId, systemUserId),
+      eq(platformAgents.type, 'system-agent'),
+      sql`${platformAgents.customization}->>'slug' = ${slug}`,
+    ),
+  });
+  if (!row) return null;
+  return { platformAgent: row, systemUserId };
 }

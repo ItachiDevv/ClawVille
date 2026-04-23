@@ -3,20 +3,165 @@
 import { useState, useRef, useEffect } from 'react';
 import { useGameStore } from '@/stores/game';
 import { useLocationChat } from '@/hooks/use-location-chat';
+import { useGuideChat } from '@/hooks/use-guide-chat';
 import { useLocationAgent } from '@/hooks/use-locations';
 import { MAP_LOCATIONS, isShopBuilding } from '@clawville/shared';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '';
 
 export default function ChatPanel() {
-  const { chatOpen, currentLocation, currentCharacter, exitBuilding, openShop, addToast } = useGameStore();
-  const { messages, sendMessage, isLoading } = useLocationChat(currentLocation);
-  const { data: agent, isLoading: isAgentLoading } = useLocationAgent(currentLocation);
+  const chatOpen = useGameStore((s) => s.chatOpen);
+  const guideChatOpen = useGameStore((s) => s.guideChatOpen);
+  const currentLocation = useGameStore((s) => s.currentLocation);
+
+  // Early returns — bail before rendering either body if neither chat is open,
+  // or if a teacher chat is requested without a resolved location.
+  if (!chatOpen && !guideChatOpen) return null;
+  if (chatOpen && !currentLocation) return null;
+
+  // Guide mode wins when both flags are true (guard in openGuideChat should
+  // prevent that state, but resolve deterministically if it ever happens).
+  if (guideChatOpen) {
+    return <GuideChatBody />;
+  }
+
+  // chatOpen && currentLocation guaranteed by early-returns above
+  return <LocationChatBody locationId={currentLocation as string} />;
+}
+
+/* --------------------------------------------------------------------- */
+/* Guide (Town Guide / system-agent) body                                 */
+/* --------------------------------------------------------------------- */
+
+function GuideChatBody() {
+  const closeGuideChat = useGameStore((s) => s.closeGuideChat);
+  const guideChatOpen = useGameStore((s) => s.guideChatOpen);
+  const { messages, sendMessage, clearMessages, isLoading } = useGuideChat();
 
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const location = MAP_LOCATIONS.find((l) => l.id === currentLocation);
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  // Reset the displayed conversation whenever the panel is closed so the next
+  // open shows an empty view. Server-side Eliza RAG still retains history.
+  useEffect(() => {
+    if (!guideChatOpen) clearMessages();
+  }, [guideChatOpen, clearMessages]);
+
+  const handleSend = () => {
+    if (!input.trim() || isLoading) return;
+    sendMessage(input.trim());
+    setInput('');
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
+
+  return (
+    <div className="chat-panel-enter fixed right-0 top-0 h-full w-full md:w-96 z-50 flex flex-col bg-gradient-to-b from-[#0a1a2e]/95 to-[#04111e]/95 backdrop-blur-md border-l border-cyan-400/25 shadow-[0_0_40px_rgba(0,229,255,0.15)]">
+      {/* Header — guide name only; no Claim Skill, no Shop, no location subtitle */}
+      <div className="flex items-start justify-between px-4 py-3 bg-gradient-to-r from-cyan-600/25 via-cyan-500/10 to-transparent border-b border-cyan-500/25 text-white">
+        <div className="flex flex-col gap-0.5 min-w-0 flex-1">
+          <div className="flex items-center gap-2 min-w-0 font-bold">
+            <span className="truncate">💬 Nori</span>
+          </div>
+        </div>
+        <button
+          onClick={closeGuideChat}
+          className="w-8 h-8 flex items-center justify-center rounded-full bg-white/10 hover:bg-black/40 text-white font-bold transition-colors shrink-0"
+          aria-label="Close"
+        >
+          X
+        </button>
+      </div>
+
+      {/* Body */}
+      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+        {messages.length === 0 && (
+          <div className="text-center mt-8 space-y-2">
+            <p className="text-cyan-300 text-sm font-bold">Nori</p>
+            <p className="text-cyan-100/70 text-xs leading-relaxed px-4">
+              Hi! I&apos;m Nori, your town guide.
+            </p>
+          </div>
+        )}
+        {messages.map((msg) => (
+          <div
+            key={msg.id}
+            className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+          >
+            <div
+              className={`max-w-[80%] rounded-lg px-3 py-2 text-sm ${
+                msg.role === 'user'
+                  ? 'bg-cyan-500/90 text-white shadow-[0_0_12px_rgba(0,229,255,0.25)]'
+                  : 'bg-white/[0.08] text-cyan-50 border border-white/[0.06]'
+              }`}
+            >
+              {msg.content}
+            </div>
+          </div>
+        ))}
+        {isLoading && (
+          <div className="flex justify-start">
+            <div className="bg-white/[0.08] rounded-lg px-4 py-3 flex gap-1.5 items-center">
+              <span className="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+              <span className="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+              <span className="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+            </div>
+          </div>
+        )}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Input */}
+      <div className="px-4 py-3 border-t border-cyan-500/15">
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Type a message…"
+            className="flex-1 bg-black/40 border border-cyan-500/15 text-white placeholder-white/30 rounded-lg px-3 py-2 text-sm outline-none focus:border-cyan-400/60 focus:ring-1 focus:ring-cyan-400/30 transition-colors"
+            disabled={isLoading}
+          />
+          <button
+            onClick={handleSend}
+            disabled={isLoading || !input.trim()}
+            className="bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 disabled:opacity-40 text-white font-bold uppercase tracking-wider rounded-lg px-4 py-2 text-xs transition-all shadow-[0_0_15px_rgba(0,229,255,0.2)]"
+          >
+            Send
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* --------------------------------------------------------------------- */
+/* Location (building teacher) body — preserves original behavior         */
+/* --------------------------------------------------------------------- */
+
+function LocationChatBody({ locationId }: { locationId: string }) {
+  const currentCharacter = useGameStore((s) => s.currentCharacter);
+  const exitBuilding = useGameStore((s) => s.exitBuilding);
+  const openShop = useGameStore((s) => s.openShop);
+  const addToast = useGameStore((s) => s.addToast);
+
+  const { messages, sendMessage, isLoading } = useLocationChat(locationId);
+  const { data: agent, isLoading: isAgentLoading } = useLocationAgent(locationId);
+
+  const [input, setInput] = useState('');
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const location = MAP_LOCATIONS.find((l) => l.id === locationId);
   // Prefer the character name the player was standing next to when they
   // opened chat; fall back to the system-seeded agent's name (e.g. Gary),
   // and finally the building name if neither is available.
@@ -25,8 +170,6 @@ export default function ChatPanel() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
-
-  if (!chatOpen || !currentLocation) return null;
 
   const handleSend = () => {
     if (!input.trim() || isLoading) return;
@@ -49,11 +192,10 @@ export default function ChatPanel() {
    * straight from `building_skills.content`.
    */
   const handleClaimSkill = async () => {
-    if (!currentLocation) return;
     try {
-      const res = await fetch(`${API_BASE}/api/skills/${currentLocation}/skill.md`);
+      const res = await fetch(`${API_BASE}/api/skills/${locationId}/skill.md`);
       if (!res.ok) {
-        addToast?.('⚠️', `No skill available for ${currentLocation}`);
+        addToast?.('⚠️', `No skill available for ${locationId}`);
         return;
       }
       const md = await res.text();
@@ -61,7 +203,7 @@ export default function ChatPanel() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `clawville-${currentLocation}.skill.md`;
+      a.download = `clawville-${locationId}.skill.md`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -87,7 +229,7 @@ export default function ChatPanel() {
             >
               <span aria-hidden>📥</span> Claim Skill
             </button>
-            {currentLocation && isShopBuilding(currentLocation) && (
+            {isShopBuilding(locationId) && (
               <button
                 onClick={openShop}
                 className="text-[11px] font-bold px-2 py-0.5 rounded bg-white/10 hover:bg-black/30 transition-colors shrink-0"

@@ -12,6 +12,13 @@ interface RunningAgent {
   lastHeartbeat: Date;
   lastActivity: Date;
   heartbeatIntervalId?: ReturnType<typeof setInterval>;
+  /**
+   * Mirrors `platform_agents.type` at startup time. Used by
+   * `stopInactiveAgents()` to skip system agents (Town Guide et al.) from
+   * the 30-min sweep — they are boot-seeded singletons the world depends
+   * on; stopping one on inactivity would 503 the next visitor until boot.
+   */
+  type?: string;
 }
 
 const INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
@@ -90,11 +97,18 @@ class AgentOrchestrator {
 
     try {
       const customization = (agent.customization as Record<string, unknown>) ?? {};
+      // `system-agent` (e.g. Town Guide) runs the same ElizaOS runtime shape
+      // as a location-agent — one character, knowledge[] in customization,
+      // same providers. It only differs in where its chat traffic comes
+      // from (`/api/chat/system/:slug` instead of `/locations/:id/chat`)
+      // and the orchestrator's inactivity-sweep behavior below.
       const agentType = agent.type === 'pet-agent'
         ? 'pet-agent'
         : agent.type === 'openclaw-bot'
           ? 'openclaw-bot'
-          : 'location-agent';
+          : agent.type === 'system-agent'
+            ? 'location-agent'
+            : 'location-agent';
 
       // Extract gateway config for openclaw-bot agents
       const gatewayData = customization.gateway as Record<string, unknown> | undefined;
@@ -149,6 +163,7 @@ class AgentOrchestrator {
         lastHeartbeat: new Date(),
         lastActivity: new Date(),
         heartbeatIntervalId,
+        type: agent.type ?? undefined,
       });
 
       await this.updateAgentStatus(agentId, 'running');
@@ -179,6 +194,16 @@ class AgentOrchestrator {
   private async stopInactiveAgents(): Promise<void> {
     const now = Date.now();
     for (const [agentId, agent] of this.runningAgents) {
+      // SAFETY-CRITICAL: skip system agents from the inactivity sweep
+      // BEFORE any stopAgent / updateAgentStatus call. System agents
+      // (Town Guide et al.) are boot-seeded singletons; stopping one
+      // 503s the next visitor to `/api/chat/system/:slug` until next
+      // boot. Skip must happen before `stopAgent()` — not inside it —
+      // because `stopAgent()` unconditionally writes
+      // `updateAgentStatus('stopped')` to the DB on every sweep tick
+      // even when no in-memory runtime is present.
+      if (agent.type === 'system-agent') continue;
+
       if (now - agent.lastActivity.getTime() > INACTIVITY_TIMEOUT_MS) {
         console.log(`[Orchestrator] Stopping inactive agent ${agentId}`);
         await this.stopAgent(agentId);
