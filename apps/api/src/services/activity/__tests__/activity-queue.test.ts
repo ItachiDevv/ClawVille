@@ -41,6 +41,11 @@ mock.module('@clawville/database', () => ({
   activityRooms: { id: 'id', activityId: 'activity_id', shortCode: 'short_code', status: 'status' },
   activityRoomParticipants: { roomId: 'room_id', avatarId: 'avatar_id' },
   activityReplays: { id: 'id' },
+  // Chunk #10 — bot-pool reads from `users` and `avatars` for hydration. Tests
+  // pre-load the pool via `__resetForTest`, so these only need to be present
+  // for module-level imports to resolve.
+  avatars: { id: 'id', userId: 'user_id', name: 'name' },
+  users: { id: 'id', email: 'email' },
 }));
 
 mock.module('../../alert-error', () => ({

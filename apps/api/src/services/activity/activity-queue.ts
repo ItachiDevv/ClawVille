@@ -40,6 +40,7 @@ import {
 } from './activity-room-manager';
 import { logEvent } from '../event-logger';
 import { getActivityDefinition } from '@clawville/shared';
+import { botPool } from './bots/bot-pool';
 
 // ─── Constants (backend §2.3) ──────────────────────────────────────────────
 
@@ -604,31 +605,70 @@ class ActivityQueueService {
       return;
     }
 
+    // Compute bot backfill if needed. Bots are reserved per-room from
+    // the seeded pool (`scripts/seed-bot-avatars.ts`). Reservation is
+    // released when the room manager evicts the room (see `releaseRoom`
+    // wiring in `apps/api/src/index.ts`).
+    //
+    // Eligibility: the queue must contain at least one human/agent AND
+    // every entry must individually allow bot backfill. A single
+    // `allowBotBackfill=false` entry blocks the whole match — that's
+    // the conservative read of "PvP-ranked slots" per backend §8.4.
+    let botAvatarIds: string[] = [];
     if (count < minFill) {
-      if (allowBots && selected.length > 0) {
-        // TODO chunk #10: spawn bot controllers via apps/api/src/services/activity/bots/
-        // to top up `selected` to minFill with `subject_type='bot'` participants.
-        // For chunk #2 we just emit a one-line warn + skip — humans keep waiting.
-        const now = Date.now();
-        if (now - this.lastBotBackfillWarn > 30_000) {
-          this.lastBotBackfillWarn = now;
+      const allConsentToBots = selected.every((e) => e.allowBotBackfill);
+      if (allowBots && selected.length > 0 && allConsentToBots) {
+        const need = minFill - count;
+        botAvatarIds = botPool.reserve('pending-room', need);
+        if (botAvatarIds.length < need) {
+          // Pool exhausted — wait for next sweep (a room finishing will
+          // free slots). Rate-limit the warning.
+          const now = Date.now();
+          if (now - this.lastBotBackfillWarn > 30_000) {
+            this.lastBotBackfillWarn = now;
+            console.warn(
+              `[activity-queue] bot pool exhausted for ${activityId} (need ${need}, capacity ${botPool.capacity()}, in-use ${botPool.inUseCount()})`,
+            );
+          }
+          // Release whatever we did grab — partial reserves leak slots.
+          if (botAvatarIds.length > 0) botPool.releaseRoom('pending-room');
+          botAvatarIds = [];
+          return;
+        }
+      } else {
+        if (allowBots && selected.length > 0 && !allConsentToBots) {
           console.warn(
-            `[activity-queue] bot backfill needed for ${activityId} (have ${count}/${minFill}); spawn deferred to chunk #10`,
+            `[activity-queue] bot backfill blocked for ${activityId}: at least one entry has allowBotBackfill=false`,
           );
         }
+        return;
       }
-      return;
     }
 
     // We have enough — allocate the room.
     try {
-      const participants = selected.map((e) => ({
+      const participants: Array<{
+        avatarId: string;
+        userId: string | null;
+        agentId: string | null;
+        subjectType: 'human' | 'agent' | 'bot';
+        partyId: string | null;
+      }> = selected.map((e) => ({
         avatarId: e.avatarId,
         userId: e.userId,
         agentId: e.agentId,
         subjectType: e.subjectType as 'human' | 'agent',
         partyId: e.partyId,
       }));
+      for (const botAvatarId of botAvatarIds) {
+        participants.push({
+          avatarId: botAvatarId,
+          userId: null,
+          agentId: null,
+          subjectType: 'bot',
+          partyId: null,
+        });
+      }
       const room = await activityRoomManager.createRoom(
         activityId,
         participants,
@@ -638,6 +678,16 @@ class ActivityQueueService {
           preferredPlayers: def.queueMinPlayers ?? def.minPlayers,
         },
       );
+
+      // Re-bind bot reservations from the placeholder room id to the
+      // actual roomId so `releaseRoom(actualId)` cleans them up later.
+      if (botAvatarIds.length > 0) {
+        try {
+          botPool.rebindReservation(botAvatarIds, 'pending-room', room.id);
+        } catch (err) {
+          console.error('[activity-queue] bot reservation rebind failed:', err);
+        }
+      }
 
       // Mark each selected entry as matched + write the room linkage to DB.
       for (const e of selected) {
@@ -664,6 +714,9 @@ class ActivityQueueService {
         });
       }
     } catch (err) {
+      // Release any pending bot reservations so the next sweep can
+      // re-grab them — leaks here would silently shrink the pool.
+      if (botAvatarIds.length > 0) botPool.releaseRoom('pending-room');
       if (err instanceof RoomCapacityError) {
         // Capacity hit between cap-check above and createRoom call —
         // back off, leave entries in queue, retry next sweep.
