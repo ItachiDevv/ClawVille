@@ -1,7 +1,9 @@
 FROM node:20-alpine AS base
 
-# Install bun
-RUN npm install -g bun
+# Pin bun to 1.3.11 — bun 1.3.13 has a bun-run-tsc regression that mangles
+# string literals during package builds (channel-bridge.ts etc produce corrupt
+# dist output). Stay on 1.3.11 until confirmed fixed upstream.
+RUN npm install -g bun@1.3.11
 
 WORKDIR /app
 
@@ -15,11 +17,12 @@ COPY apps/web/ apps/web/
 # Install dependencies
 RUN bun install
 
-# Build ALL workspace packages (web imports from all of them)
-RUN cd packages/shared && bun run build || true
-RUN cd packages/database && bun run build || true
-RUN cd packages/agent-templates && bun run build || true
-RUN cd packages/agent-runtime && bun run build || true
+# Build ALL workspace packages (web imports from all of them) — use bunx tsc
+# directly, fail-on-error, so corrupt dist never ships silently.
+RUN cd packages/shared && bunx tsc
+RUN cd packages/database && bunx tsc
+RUN cd packages/agent-templates && bunx tsc
+RUN cd packages/agent-runtime && bunx tsc
 
 # Build Next.js
 ARG NEXT_PUBLIC_API_URL
