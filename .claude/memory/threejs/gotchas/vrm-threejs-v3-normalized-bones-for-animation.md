@@ -44,5 +44,18 @@ After fix: normalized bones get animator writes, vrm.update() propagates to raw 
 ### Versions where this matters
 @pixiv/three-vrm v3.5.2 (ClawVille production). Likely all v3.x. May differ in v1.x/v2.x where the normalized hierarchy was introduced differently.
 
+## Additional gotcha: Three.js sanitizes bone names in GLTF
+
+Three.js `PropertyBinding.sanitizeNodeName()` removes reserved chars `[`, `]`, `.`, `:`, `/` from node names when building AnimationClip tracks. So `mixamorig:Hips` (raw GLTF) becomes `mixamorigHips` (no separator). The regex `/^mixamorig[_:]/` will NOT match `mixamorigHips` because there's no separator. Fixed by making the separator optional: `/^mixamorig[_:]?/`.
+
+All three forms that appear in practice:
+- `mixamorig:Hips` — raw GLTF export (colon separator)  
+- `mixamorig_Hips` — some exporters use underscore
+- `mixamorigHips` — Three.js GLTFLoader after `sanitizeNodeName()` strips `:`
+
+The fixed regex `/^mixamorig[_:]?/` handles all three.
+
 ## Context
-Surfaced 2026-04-23 when all 5 VRM Milady wandering NPCs (Miu, Kyoko, Vivi, Maple, Ash) were stuck in T-pose. CDP bone probe showed zero quaternion change over 4 seconds. Traced to `mixamo-retarget.ts` using `getRawBoneNode`. Fixed in `apps/web/src/lib/three/mixamo-retarget.ts`.
+Surfaced 2026-04-23 when all 5 VRM Milady wandering NPCs (Miu, Kyoko, Vivi, Maple, Ash) were stuck in T-pose. CDP bone probe showed zero quaternion change over 4 seconds. Two separate bugs:
+1. `getRawBoneNode` → fixed to `getNormalizedBoneNode` in `mixamo-retarget.ts`
+2. `normalizeMixamoName` regex `/^mixamorig[_:]/` didn't match sanitized `mixamorigHips` → fixed to `/^mixamorig[_:]?/` (optional separator)
