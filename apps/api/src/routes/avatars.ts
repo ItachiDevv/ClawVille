@@ -432,12 +432,26 @@ avatarRoutes.post('/', async (c) => {
       },
     });
   } else {
-    // Authed path — just ensure the wallet exists (non-fatal on failure,
-    // matches pre-Phase-4d behavior). Secret stays server-held; no
-    // first-time disclosure.
+    // Authed path — still use ensureWalletWithFirstTimeSecret so the new
+    // avatar's fresh wallet secret is disclosed to the user exactly once.
+    // Per Phase 5.1: secret shown once per wallet; each avatar gets its own
+    // wallet regardless of whether the user already had identity. Before
+    // 2026-04-24 this branch used ensureWallet() and never returned the
+    // secret — users creating a new Milady agent saw no wallet backup
+    // prompt at all. Fixed by switching to the same call as the unauth
+    // path. Non-fatal on failure (matches pre-Phase-4d behavior so flaky
+    // Cloudflare Worker connectivity doesn't block avatar creation for
+    // existing users).
     try {
-      const wallet = await ensureWallet('avatar', avatar.id);
-      avatar.walletAddress = wallet.publicKey;
+      const w = await ensureWalletWithFirstTimeSecret('avatar', avatar.id);
+      avatar.walletAddress = w.publicKey;
+      if (w.firstTimeSecretKeyBase58) {
+        firstTimeWallet = {
+          address: w.publicKey,
+          secretKey: w.firstTimeSecretKeyBase58,
+          chain: 'solana',
+        };
+      }
     } catch (err) {
       console.error('[avatars] Failed to auto-generate wallet for new avatar:', err);
     }

@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useCreatePet } from '@/hooks/use-avatar';
+import { useGameStore } from '@/stores/game';
 import {
   AVATAR_ARCHETYPES,
   AGENT_CATEGORIES,
@@ -223,6 +224,18 @@ export default function PersonalityPage() {
       }
 
       sessionStorage.removeItem('createPetStep1');
+
+      // Force control mode to 'player' before the redirect. The /game
+      // page has auto-promotion logic (explore → player on avatar detected),
+      // but a stale 'npc' mode from a prior spectator session sticks —
+      // the user lands in their new Milady agent's body but gets the
+      // NPC-mode minimal HUD instead of the full player chrome. Setting
+      // it explicitly here eliminates the race + the stale-state edge.
+      // User feedback 2026-04-24: "drops agent into the world in
+      // explore/npc mode when we are supposed to be hosting milady
+      // agents".
+      useGameStore.getState().setControlMode('player');
+
       router.push('/game');
     } catch (err: any) {
       setError(err.message || 'Failed to create agent');
