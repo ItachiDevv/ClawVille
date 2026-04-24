@@ -72,137 +72,20 @@ export const NPC_BUILDING_CENTERS: Record<string, { x: number; y: number }> = Ob
   Object.entries(NPC_HOME_POSITIONS).map(([id, p]) => [id, { x: p.homeX, y: p.homeY }])
 );
 
-// Wandering NPC species distribution — 3 model categories rendered as visually distinct characters:
-//   openclaw (crustaceans): lobster, crayfish, sweet_crab, hermitcrab   (7 of 18) — 4 building-anchored + 3 free wanderers
-//   other    (sea creatures): jellyfish, octopus, seahorse              (3 of 18) — building-anchored
-//   milady   (neo-chibi VRMs): milady_official_2/3/4/7/8                (5 of 18) — free wanderers (added 2026-04-22 +3)
-//   Total: 18 NPCs (10 building-anchored + 8 free wanderers).
-//   Free wanderers (buildingId='') skip the "idle near home" plan branch
-//   and re-plan twice as fast — see planNpcBehaviors() in npc-simulation.ts.
+// Wandering NPC species distribution — 2 model categories:
+//   milady   (neo-chibi VRMs): milady_official_2/3/4/7/8                (5 of 8) — free wanderers
+//   openclaw (crustaceans):    lobster, sweet_crab, hermitcrab          (3 of 8) — free wanderers
+//   Total: 8 NPCs — all free wanderers (buildingId='').
+//   The 10 SpongeBob building residents (SpongeBob, Patrick, Squidward, etc.)
+//   at each building entrance are rendered by arena-location-npcs.tsx and are
+//   the canonical per-building characters. Previously there was ALSO one
+//   crustacean per building (Pebbles/Crusty/Inky/Speck/Hazel/Whisk/Bubbles/
+//   Tide/Boulder/Coral) wandering nearby — removed 2026-04-24 because they
+//   were redundant with the SpongeBob residents: the user should see one
+//   character per building, not two.
 //   Each Milady NPC MUST use a unique VRM path due to the module-level
 //   single-instance-per-path cache in vrm-loader.ts.
-//
-// Wandering-NPC names DELIBERATELY DO NOT MATCH the 10 building characters
-// (SpongeBob, Patrick, Squidward, etc.) defined in arena-location-npcs.tsx
-// LOCATION_NPCS. The building characters are the canonical "characters" with
-// proper SpongeBob GLB models at each building entrance. The wandering NPCs
-// here are SEPARATE ambient ocean denizens with distinct nautical names —
-// before 2026-04-21 they shared the SpongeBob names which produced two
-// "Squidward" labels on screen (one octopus wanderer + one squidward.glb at
-// the memory-vault entrance). Renamed to avoid the visible name collision.
-// Building anchor (buildingId / homeX / homeY) is preserved so each wanderer
-// still has a hangout spot; their patrol radius keeps them in that area.
 export const NPC_DEFINITIONS: NpcDefinition[] = [
-  {
-    id: 'cron-hub',
-    name: 'Pebbles',
-    species: 'hermitcrab',       // openclaw — hermit crab shell, slow/methodical vibe
-    color: 0x795548,             // warm brown
-    buildingId: 'cron-hub',
-    patrolRadius: 400,
-    ...NPC_HOME_POSITIONS['cron-hub'],
-    stats: { hp: 100, attack: 12, defense: 14, speed: 10 },
-    personality: 'A precise, tide-counting hermit crab who speaks in rhythmic cadences timed to the ocean currents.',
-  },
-  {
-    id: 'webhook-gateway',
-    name: 'Crusty',
-    species: 'sweet_crab',       // openclaw — crab, lightning-fast signal relayer
-    color: 0xff6600,             // vivid orange-red
-    buildingId: 'webhook-gateway',
-    patrolRadius: 400,
-    ...NPC_HOME_POSITIONS['webhook-gateway'],
-    stats: { hp: 90, attack: 16, defense: 10, speed: 18 },
-    personality: 'A lightning-fast spiny crab who relays signals through the currents and never drops a message.',
-  },
-  {
-    id: 'memory-vault',
-    name: 'Inky',
-    species: 'octopus',
-    color: 0x4caf50,             // teal-green
-    buildingId: 'memory-vault',
-    patrolRadius: 500,
-    ...NPC_HOME_POSITIONS['memory-vault'],
-    stats: { hp: 120, attack: 8, defense: 20, speed: 6 },
-    personality: 'A patient ancient octopus who remembers every tide and speaks in careful, measured clicks.',
-  },
-  {
-    id: 'skill-forge',
-    name: 'Speck',
-    species: "hermitcrab",       // tiny fierce fighter
-    color: 0xf44336,             // fiery red
-    buildingId: 'skill-forge',
-    patrolRadius: 400,
-    ...NPC_HOME_POSITIONS['skill-forge'],
-    stats: { hp: 110, attack: 22, defense: 14, speed: 12 },
-    personality: 'A fierce abyssal hermit who forges skills in volcanic vents and tests every creation in combat.',
-  },
-  {
-    id: 'channel-bridge',
-    name: 'Hazel',
-    species: "lobster",
-    color: 0x2196f3,             // bright blue
-    buildingId: 'channel-bridge',
-    patrolRadius: 400,
-    ...NPC_HOME_POSITIONS['channel-bridge'],
-    stats: { hp: 100, attack: 18, defense: 12, speed: 16 },
-    personality: 'A dazzling mantis lobster who connects reef networks and speaks every current language fluently.',
-  },
-  {
-    id: 'tool-workshop',
-    name: 'Whisk',
-    species: "sweet_crab",
-    color: 0x9c27b0,             // deep purple
-    buildingId: 'tool-workshop',
-    patrolRadius: 380,
-    ...NPC_HOME_POSITIONS['tool-workshop'],
-    stats: { hp: 85, attack: 14, defense: 10, speed: 17 },
-    personality: 'A nimble reef crab inventor who tinkers with salvaged tools and gadgets on the ocean floor.',
-  },
-  {
-    id: 'canvas-studio',
-    name: 'Bubbles',
-    species: 'jellyfish',
-    color: 0xe91e63,             // hot pink
-    buildingId: 'canvas-studio',
-    patrolRadius: 400,
-    ...NPC_HOME_POSITIONS['canvas-studio'],
-    stats: { hp: 80, attack: 10, defense: 8, speed: 20 },
-    personality: 'A playful bubble jellyfish who paints with bioluminescent ink and sees art in every coral formation.',
-  },
-  {
-    id: 'voice-tower',
-    name: 'Tide',
-    species: 'seahorse',
-    color: 0x607d8b,             // cool blue-grey
-    buildingId: 'voice-tower',
-    patrolRadius: 380,
-    ...NPC_HOME_POSITIONS['voice-tower'],
-    stats: { hp: 95, attack: 15, defense: 13, speed: 14 },
-    personality: 'A powerful seahorse herald whose clicks echo across the deep and who can mimic any ocean sound.',
-  },
-  {
-    id: 'security-fortress',
-    name: 'Boulder',
-    species: 'crayfish',         // bulky crayfish, defensive build
-    color: 0x00bcd4,             // vivid cyan
-    buildingId: 'security-fortress',
-    patrolRadius: 380,
-    ...NPC_HOME_POSITIONS['security-fortress'],
-    stats: { hp: 130, attack: 20, defense: 22, speed: 8 },
-    personality: 'A vigilant abyssal crayfish guard who trusts no one and demands proper reef credentials.',
-  },
-  {
-    id: 'config-citadel',
-    name: 'Coral',
-    species: 'lobster',
-    color: 0xff2020,             // bright red
-    buildingId: 'config-citadel',
-    patrolRadius: 400,
-    ...NPC_HOME_POSITIONS['config-citadel'],
-    stats: { hp: 100, attack: 12, defense: 16, speed: 11 },
-    personality: 'A methodical lobster architect who organizes every shell into perfect configuration hierarchies.',
-  },
   // ─── Milady brand wanderers (VRM avatars) — added 2026-04-21 ──────────────
   // No building attachment (buildingId: '') — these roam as brand ambassadors
   // for the Milady × ClawVille integration. They participate in the full
