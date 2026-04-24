@@ -8,7 +8,9 @@ export type QuestId =
   | 'avatar-whisperer'
   | 'agent-scholar'
   | 'deep-explorer'
-  | 'bot-master';
+  | 'bot-master'
+  | 'first-match'
+  | 'first-win';
 
 export type QuestStatus = 'locked' | 'active' | 'completed';
 
@@ -17,7 +19,9 @@ export type CounterKey =
   | 'npcMessagesSent'
   | 'avatarMessagesSent'
   | 'booksBought'
-  | 'knowledgeLearned';
+  | 'knowledgeLearned'
+  | 'activityMatchesPlayed'
+  | 'activityMatchesWon';
 
 export interface QuestCondition {
   type: 'counter' | 'visitedBuildings' | 'openClaw';
@@ -108,5 +112,26 @@ export const QUEST_DEFINITIONS: QuestDefinition[] = [
     hint: 'Set up an OpenClaw bot to join the reef',
     condition: { type: 'openClaw' },
     prerequisites: ['deep-explorer'],
+  },
+  // ── Q2 Activity Portals tutorial quests (chunk #9) ────────────────────
+  // Per `.claude/plans/q2-research/frontend-spec.md` §9.1 — drive players
+  // into the activity loop and reward them for landing first place.
+  {
+    id: 'first-match',
+    title: 'First Match',
+    icon: '⚔️',
+    description: 'Play your first activity match.',
+    hint: 'Use the sidebar Quick Queue → Bumper Shells to find a match',
+    condition: { type: 'counter', counterKey: 'activityMatchesPlayed', threshold: 1 },
+    prerequisites: ['building-explorer'],
+  },
+  {
+    id: 'first-win',
+    title: 'First Victory',
+    icon: '🏆',
+    description: 'Place first in any activity.',
+    hint: 'Ram opponents off the edge in Bumper Shells — last shell standing wins.',
+    condition: { type: 'counter', counterKey: 'activityMatchesWon', threshold: 1 },
+    prerequisites: ['first-match'],
   },
 ];
