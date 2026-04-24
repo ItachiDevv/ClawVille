@@ -831,7 +831,10 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
       w.__VRM_NPC_DEBUG = w.__VRM_NPC_DEBUG || {};
       w.__VRM_NPC_DEBUG[npc.id] = { animator, vrm, species: npc.species };
     }
-    animator.init().catch((err) => {
+    // Pass the NPC's defaultIdleClip so Miu/Kyoko start on their assigned emote.
+    // Falls back to 'idle' inside init() when defaultIdleClip is undefined.
+    const startClip = (npc.defaultIdleClip as Parameters<typeof animator.init>[0]) ?? 'idle';
+    animator.init(startClip).catch((err) => {
       console.warn('[VRMNpcMesh] animator init failed:', err);
     });
     return () => {
