@@ -33,7 +33,9 @@
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { MeshoptDecoder } from 'three-stdlib';
+// See vrm-loader.ts — meshoptimizer's decoder object satisfies three's
+// strict setMeshoptDecoder signature; three-stdlib's callable does not.
+import { MeshoptDecoder } from 'meshoptimizer';
 import type { VRM } from '@pixiv/three-vrm';
 import { retargetMixamoClip, type MixamoGltf } from './mixamo-retarget';
 
@@ -78,7 +80,7 @@ function getAnimLoader(): GLTFLoader {
   // Mixamo-sourced anim GLBs may be meshopt-compressed (gltfpack -cc).
   // Same fix as vrm-loader.ts — without the decoder the whole /game
   // route bails at first loadBufferView call.
-  _animLoader.setMeshoptDecoder(MeshoptDecoder());
+  _animLoader.setMeshoptDecoder(MeshoptDecoder);
   return _animLoader;
 }
 
