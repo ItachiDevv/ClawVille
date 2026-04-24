@@ -109,10 +109,12 @@ export default function TutorialOverlay() {
 
   return (
     <>
-      {/* Help button — always visible */}
+      {/* Help button — always visible. Lifted above the mobile-controls
+          joystick zone (~220px tall) so it doesn't overlap the right
+          joystick on phones. Desktop keeps the bottom-4 position. */}
       <button
         onClick={openTutorial}
-        className="fixed bottom-4 right-4 z-50 w-11 h-11 rounded-full bg-gradient-to-b from-blue-400 to-blue-600 border-3 border-blue-700 shadow-claw flex items-center justify-center text-white font-clawville text-xl hover:brightness-110 transition-all active:translate-y-0.5 active:shadow-none"
+        className="fixed bottom-[14.5rem] md:bottom-4 right-4 z-50 w-11 h-11 rounded-full bg-gradient-to-b from-blue-400 to-blue-600 border-3 border-blue-700 shadow-claw flex items-center justify-center text-white font-clawville text-xl hover:brightness-110 transition-all active:translate-y-0.5 active:shadow-none"
         aria-label="How to play"
       >
         ?
