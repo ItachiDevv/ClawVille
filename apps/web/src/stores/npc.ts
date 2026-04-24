@@ -22,6 +22,8 @@ export interface NpcSpriteState {
   combatActionAt: number;
   /** Smooth facing angle (radians) — set by NPC controller for possessed NPCs */
   facingAngle: number | null;
+  /** Override the default idle clip for VRM NPCs. Undefined = use 'idle'. */
+  defaultIdleClip?: string;
 }
 
 export interface NpcChatBubble {
@@ -127,8 +129,8 @@ export interface NpcStoreState {
 }
 
 // Demo NPCs shown when API server is not connected
-function makeDemoNpc(id: string, name: string, x: number, y: number, species: string, color: number, isOpenClaw = false): NpcSpriteState {
-  return { id, name, x, y, prevX: x, prevY: y, direction: 'idle', species, color, hp: 100, maxHp: 100, isDead: false, hasSword: false, inCombat: false, inConversation: false, inventory: [], isOpenClaw, combatAction: null, combatActionAt: 0, facingAngle: null };
+function makeDemoNpc(id: string, name: string, x: number, y: number, species: string, color: number, isOpenClaw = false, defaultIdleClip?: string): NpcSpriteState {
+  return { id, name, x, y, prevX: x, prevY: y, direction: 'idle', species, color, hp: 100, maxHp: 100, isDead: false, hasSword: false, inCombat: false, inConversation: false, inventory: [], isOpenClaw, combatAction: null, combatActionAt: 0, facingAngle: null, defaultIdleClip };
 }
 
 // Demo NPC positions spread around the village center (2560,2560) to match
@@ -152,8 +154,8 @@ const DEMO_NPCS: NpcSpriteState[] = [
   // are clear of building pathfinding-blocked zones. When connected, server
   // snapshots replace these in place by id; disconnected mode runs them
   // through the client wander loop.
-  makeDemoNpc('milady-miu',     'Miu',       1400, 3000, 'milady_official_7', 0xffc0ff),
-  makeDemoNpc('milady-kyoko',   'Kyoko',     3700, 2000, 'milady_official_8', 0xc0e8ff),
+  makeDemoNpc('milady-miu',     'Miu',       1400, 3000, 'milady_official_7', 0xffc0ff, false, 'looking_around'),
+  makeDemoNpc('milady-kyoko',   'Kyoko',     3700, 2000, 'milady_official_8', 0xc0e8ff, false, 'squat'),
   makeDemoNpc('milady-vivi',    'Vivi',      1600, 1500, 'milady_official_2', 0xffd0a0),
   makeDemoNpc('milady-maple',   'Maple',     3500, 3500, 'milady_official_3', 0xffb0d0),
   makeDemoNpc('milady-ash',     'Ash',       2700, 1500, 'milady_official_4', 0xd0c0ff),
@@ -316,6 +318,8 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
         combatAction: (n.combatAction as NpcSpriteState['combatAction']) ?? null,
         combatActionAt: n.combatActionAt ?? 0,
         facingAngle: prev?.facingAngle ?? null,
+        // Preserve client-side seed value — server snapshots never carry defaultIdleClip.
+        defaultIdleClip: prev?.defaultIdleClip,
       };
       // Return the previous reference if nothing changed (identity preservation).
       if (prev && npcFieldsEqual(prev, candidate)) {
