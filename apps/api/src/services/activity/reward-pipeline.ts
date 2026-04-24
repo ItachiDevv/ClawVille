@@ -78,6 +78,8 @@ export interface IssuedResult {
   isPersonalBest: boolean;
   /** Bonus breakdown for UX — sums to `tokensAwarded` for non-bots */
   breakdown: RewardBreakdown;
+  /** True when this participant is an un-authed guest (carve-out flag) */
+  isGuest: boolean;
 }
 
 export interface RewardBreakdown {
@@ -177,6 +179,14 @@ interface PetContext {
   todayCount: number;
   /** Best (lowest) score_ms recorded for this avatar on this activity prior */
   priorBestMs: number | null;
+  /**
+   * True when this avatar belongs to a guest user (un-authed visitor who
+   * auto-created via POST /api/auth/guest). Brand carve-out: guests
+   * still earn ClawTokens (in-game dopamine works) but get
+   * `leaderboardPoints = 0` so they don't appear on per-activity boards.
+   * Same shape as the `subjectType='bot'` carve-out, different trigger.
+   */
+  isGuest: boolean;
 }
 
 /**
@@ -225,6 +235,7 @@ export async function issueRewardsForRoom(
         flags: null,
         todayCount: 0,
         priorBestMs: null,
+        isGuest: false,
       };
 
       const isBot = participant.subjectType === 'bot';
@@ -243,13 +254,17 @@ export async function issueRewardsForRoom(
         sim.scoreMs != null &&
         (ctx.priorBestMs == null || sim.scoreMs < ctx.priorBestMs);
 
+      // Guests still earn tokens (the dopamine works — they can spend
+      // them on books in-game and convert to a real account later),
+      // but get 0 leaderboard points so they don't pollute the ranking.
+      // Same shape as the bot carve-out, different trigger.
       const tokensAwarded = isBot
         ? 0
         : breakdown.base +
           breakdown.firstPlayOfDayBonus +
           breakdown.personalBestBonus +
           breakdown.focusBonus;
-      const leaderboardPoints = isBot
+      const leaderboardPoints = isBot || ctx.isGuest
         ? 0
         : computeLeaderboardPoints(rewardConfig, sim.placement);
 
@@ -310,6 +325,7 @@ export async function issueRewardsForRoom(
         leaderboardPoints,
         isPersonalBest,
         breakdown,
+        isGuest: ctx.isGuest,
       });
     }
   });
@@ -329,6 +345,7 @@ export async function issueRewardsForRoom(
         tokensAwarded: r.tokensAwarded,
         leaderboardPoints: r.leaderboardPoints,
         subjectType: r.subjectType,
+        isGuest: r.isGuest,
       } satisfies ActivityMatchPlacedPayload,
     });
   }
@@ -423,9 +440,10 @@ async function loadAvatarContexts(
   });
 
   const flagsByPet = new Map<string, Record<string, unknown> | null>();
+  const guestByPet = new Map<string, boolean>();
   if (nonBotAvatarIds.length > 0) {
     const flagRows = await db
-      .select({ id: avatars.id, flags: avatars.flags })
+      .select({ id: avatars.id, flags: avatars.flags, isGuest: avatars.isGuest })
       .from(avatars)
       .where(inArrayWhitelist(avatars.id, nonBotAvatarIds));
     for (const row of flagRows) {
@@ -433,6 +451,7 @@ async function loadAvatarContexts(
         row.id,
         (row.flags as Record<string, unknown> | null) ?? null,
       );
+      guestByPet.set(row.id, !!row.isGuest);
     }
   }
 
@@ -492,6 +511,7 @@ async function loadAvatarContexts(
       flags: flagsByPet.get(id) ?? null,
       todayCount: todayByPet.get(id) ?? 0,
       priorBestMs: bestByPet.get(id) ?? null,
+      isGuest: guestByPet.get(id) ?? false,
     });
   }
   return out;

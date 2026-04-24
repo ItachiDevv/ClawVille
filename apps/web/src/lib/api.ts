@@ -39,12 +39,42 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
+// Shape returned by POST /api/auth/guest — see auth.ts handler.
+export interface GuestSignupResponse {
+  user: {
+    id: string;
+    email: string | null;
+    name: string | null;
+    isGuest?: boolean;
+    guestExpiresAt?: string;
+  };
+  avatar: {
+    id: string;
+    name: string;
+  } | null;
+  reused: boolean;
+}
+
 export const api = {
   // Auth
   signup: (data: { email: string; password: string; name?: string }) =>
     request<{ success: boolean }>('/api/auth/signup', {
       method: 'POST',
       body: JSON.stringify(data),
+    }),
+
+  /**
+   * Guest avatar auto-create — un-authenticated visitors get a throwaway
+   * user + avatar so they can play activities + chat with NPCs. Idempotent
+   * for callers who already have a Lucia session.
+   *
+   * Brand carve-out: guests don't appear on leaderboards, but still
+   * earn ClawTokens in matches.
+   */
+  guestSignup: (data?: { requestedName?: string }) =>
+    request<GuestSignupResponse>('/api/auth/guest', {
+      method: 'POST',
+      body: JSON.stringify(data ?? {}),
     }),
 
   login: (data: { email: string; password: string }) =>

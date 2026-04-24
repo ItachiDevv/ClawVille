@@ -322,6 +322,10 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
       chatType: 'location',
       messageLength: result.data.content.length,
       tokenAwarded: avatar ? 1 : 0,
+      // Guest-avatar carve-out (2026-04-23) — flag for /dash teacher-chat
+      // metric so guest chats are excluded from the "real engagement"
+      // count. The dashboard SQL filters `payload->>'isGuest' <> 'true'`.
+      isGuest: avatar?.isGuest ?? false,
     },
   });
 

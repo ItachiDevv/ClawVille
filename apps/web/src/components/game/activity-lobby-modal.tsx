@@ -25,10 +25,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   ACTIVITY_REGISTRY,
   type ActivityDefinition,
 } from '@clawville/shared';
+import { ensureGuestPet } from '@/lib/guest-bootstrap';
 import {
   RpgModal,
   RpgButton,
@@ -612,6 +614,7 @@ export default function ActivityLobbyModal({
   const activityLobbyId = useGameStore((s) => s.activityLobbyId);
   const closeActivityLobby = useGameStore((s) => s.closeActivityLobby);
   const addToast = useGameStore((s) => s.addToast);
+  const queryClient = useQueryClient();
   const { data: avatar } = useAvatar();
 
   const [phase, setPhase] = useState<LobbyPhase>('idle');
@@ -667,8 +670,12 @@ export default function ActivityLobbyModal({
     // gesture — prime the audio bus here so SFX work in the match.
     primeActivitySounds();
     setQueueing(true);
-    try {
-      const res = await fetch(
+    /**
+     * Inner closure so we can retry once after a 401 → guest-bootstrap
+     * flow. Returns the Response so the caller can branch on status.
+     */
+    const postQueue = async (): Promise<Response> =>
+      fetch(
         `${API_BASE}/api/activities/${encodeURIComponent(activityLobbyId)}/queue`,
         {
           method: 'POST',
@@ -677,6 +684,24 @@ export default function ActivityLobbyModal({
           body: JSON.stringify({}),
         },
       );
+    try {
+      let res = await postQueue();
+
+      // Guest avatar auto-create — visitors who hit /queue without going
+      // through NPC mode (e.g. deep-link, quick-queue) get an automatic
+      // guest avatar here. This mirrors the NPC-mode bootstrap so the
+      // visitor never sees the raw 401.
+      if (res.status === 401) {
+        const guest = await ensureGuestPet();
+        if (guest) {
+          await queryClient.invalidateQueries({ queryKey: ['avatar'] });
+          if (!guest.reused && guest.user.isGuest) {
+            addToast('🎮', 'Welcome! Playing as a guest — no signup needed.', 4000);
+          }
+          res = await postQueue();
+        }
+      }
+
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         addToast(
@@ -693,7 +718,7 @@ export default function ActivityLobbyModal({
     } finally {
       setQueueing(false);
     }
-  }, [activityLobbyId, queueing, addToast]);
+  }, [activityLobbyId, queueing, addToast, queryClient]);
 
   const handleLeaveQueue = useCallback(async () => {
     if (!activityLobbyId) return;

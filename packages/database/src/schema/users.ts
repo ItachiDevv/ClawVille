@@ -92,6 +92,22 @@ export const users = pgTable(
     linkedScapeDisplayName: varchar('linked_scape_display_name', { length: 64 }),
     linkedScapeAt: timestamp('linked_scape_at', { withTimezone: true }),
 
+    // -----------------------------------------------------------------
+    // Guest-avatar auto-create (2026-04-23) — un-authenticated visitors get
+    // a throwaway user + avatar so they can play the Q2 activity games and
+    // chat with NPCs without signing up. Cleanup cron deletes rows where
+    // is_guest = true AND guest_expires_at < now() (TODO: scripts/prune-
+    // guest-avatars.ts — not in this PR).
+    //
+    // Brand carve-out: guest users are filtered out of the agent
+    // leaderboard, the per-activity leaderboards, and the /dash teacher-
+    // chat metric (same pattern as bot avatars in Q2 chunk #10). They still
+    // earn ClawTokens in-match — the dopamine works even pre-signup —
+    // but they get 0 leaderboard points.
+    // -----------------------------------------------------------------
+    isGuest: boolean('is_guest').notNull().default(false),
+    guestExpiresAt: timestamp('guest_expires_at', { withTimezone: true }),
+
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
