@@ -3,15 +3,18 @@
 /**
  * TownDirectorySign — wooden signboard at town center.
  *
- * Plank face = PlaneGeometry with PNG texture mapped directly onto it.
- * Text is physically baked into the sign's front surface.
+ * Plank face = PlaneGeometry with a PNG texture. Texture is loaded via raw
+ * Image API (not useLoader / useTexture) so we avoid Suspense machinery
+ * entirely — if Suspense traps the sign subtree, nothing renders.
  *
- * Debug: exposes window.__TOWN_SIGN_DEBUG with the texture + material refs
- * so we can diagnose texture binding issues at runtime.
+ * The sign posts + backing are always visible. When the PNG image resolves,
+ * the face plane's material swaps from a placeholder wood colour to the
+ * wood+text texture.
+ *
+ * Debug: window.__TOWN_SIGN_DEBUG exposes the state at runtime.
  */
 
-import { memo, useEffect, useMemo } from 'react';
-import { useLoader } from '@react-three/fiber';
+import { memo, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three/webgpu';
 
 const POST_W = 20;
@@ -22,7 +25,6 @@ const POST_SPACING = 420;
 const PLANK_W = 560;
 const PLANK_H = 280;
 const PLANK_Y = POST_H - PLANK_H / 2;
-
 const BACKING_D = 10;
 
 const SIGN_X = 0;
@@ -38,39 +40,56 @@ const plankFaceGeo = new THREE.PlaneGeometry(PLANK_W, PLANK_H);
 const woodMat = new THREE.MeshBasicMaterial({ color: WOOD_COLOR });
 
 const TownDirectorySignInner = memo(function TownDirectorySignInner() {
-  // Load the PNG via the core TextureLoader — same path useTexture uses
-  // internally but without drei's wrapping layer.
-  const texture = useLoader(THREE.TextureLoader, '/town-directory-sign.png');
+  const [faceMat, setFaceMat] = useState<THREE.MeshBasicMaterial>(woodMat);
+  const loadedRef = useRef(false);
 
-  const faceMat = useMemo(() => {
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.needsUpdate = true;
-    const mat = new THREE.MeshBasicMaterial({
-      map: texture,
-      color: 0xffffff,
-      side: THREE.DoubleSide, // visible from both sides — defends against
-                               // accidentally-back-face rendering
-      transparent: false,
-      toneMapped: false,
-    });
-    return mat;
-  }, [texture]);
-
-  // Expose debug refs on window so we can diagnose at runtime
   useEffect(() => {
+    if (loadedRef.current) return;
+    loadedRef.current = true;
+
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      try {
+        const texture = new THREE.Texture(img);
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.needsUpdate = true;
+        const mat = new THREE.MeshBasicMaterial({
+          map: texture,
+          color: 0xffffff,
+          side: THREE.DoubleSide,
+          transparent: false,
+          toneMapped: false,
+        });
+        setFaceMat(mat);
+        if (typeof window !== 'undefined') {
+          (window as any).__TOWN_SIGN_DEBUG = {
+            loaded: true,
+            imgW: img.width,
+            imgH: img.height,
+            hasMap: !!mat.map,
+            matType: mat.constructor.name,
+          };
+          console.log('[TownDirectorySign] PNG loaded', img.width, 'x', img.height);
+        }
+      } catch (err) {
+        console.error('[TownDirectorySign] Error creating texture:', err);
+      }
+    };
+    img.onerror = (err) => {
+      console.error('[TownDirectorySign] Image load failed:', err);
+      if (typeof window !== 'undefined') {
+        (window as any).__TOWN_SIGN_DEBUG = { loaded: false, err: String(err) };
+      }
+    };
+    img.src = '/town-directory-sign.png';
+
+    // Also record that the component mounted, even before image loads
     if (typeof window !== 'undefined') {
-      (window as any).__TOWN_SIGN_DEBUG = {
-        texture,
-        faceMat,
-        textureImg: texture.image
-          ? { w: texture.image.width, h: texture.image.height, src: texture.image.src || 'no-src' }
-          : null,
-        hasMap: !!faceMat.map,
-        colorSpace: texture.colorSpace,
-      };
-      console.log('[TownDirectorySign] mounted', (window as any).__TOWN_SIGN_DEBUG);
+      (window as any).__TOWN_SIGN_DEBUG = { mounted: true, imgLoading: true };
+      console.log('[TownDirectorySign] mounted, loading PNG...');
     }
-  }, [texture, faceMat]);
+  }, []);
 
   return (
     <group position={[SIGN_X, SIGN_Y, SIGN_Z]}>
@@ -92,9 +111,7 @@ const TownDirectorySignInner = memo(function TownDirectorySignInner() {
         position={[0, PLANK_Y, -BACKING_D / 2]}
         matrixAutoUpdate={false}
       />
-      {/* Plank face — textured plane with wood+text baked in.
-          Pushed forward to Z=+6 to ensure it's clearly in front of the backing
-          and the posts (posts span Z=-10 to +10, so face must be at Z>10). */}
+      {/* Plank face — textured plane, Z=+12 to clear posts */}
       <mesh
         geometry={plankFaceGeo}
         material={faceMat}
