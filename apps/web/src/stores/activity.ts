@@ -75,6 +75,21 @@ import type {
   BumperEliminationEvent,
   BumperMatchPhase,
 } from '@/lib/three/activities/bumper-shells/bumper-shells-types';
+import type { GhostFrame, RaceEntityLap } from '@/lib/three/activities/reef-race/reef-race-types';
+
+// ─── Reef Race lap/ghost slice ────────────────────────────────────────────────
+
+export interface ReefRaceState {
+  /** Lap completion records per avatarId. */
+  laps: Map<string, RaceEntityLap[]>;
+  /** Own personal-best ghost path (GhostFrame[] at 10Hz). null until a lap is complete. */
+  selfBestGhostPath: GhostFrame[] | null;
+}
+
+const EMPTY_REEF_RACE: ReefRaceState = {
+  laps: new Map(),
+  selfBestGhostPath: null,
+};
 
 // ─── Connection status ──────────────────────────────────────────────────────
 
@@ -177,6 +192,13 @@ export interface ActivityState {
    */
   chatLog: ActivityChatMessage[];
 
+  // ── Reef Race slice (additive — Bumper Shells consumers ignore this) ────
+  /**
+   * Reef Race lap/ghost state. Populated by `event.lap_completed` frames.
+   * Undefined on Bumper Shells sessions — always access via `?.reefRace`.
+   */
+  reefRace: ReefRaceState;
+
   // ── Writer API ──────────────────────────────────────────────────────────
 
   /** Single switchboard for `useActivityWs` to apply incoming server frames. */
@@ -197,6 +219,10 @@ export interface ActivityState {
    * until the spectator channel ships).
    */
   pushChatLocal: (msg: Omit<ActivityChatMessage, 'at'> & { at?: number }) => void;
+  /** Reef Race: record a lap completion from `event.lap_completed`. */
+  pushLap: (avatarId: string, lap: number, splitMs: number, totalMs: number) => void;
+  /** Reef Race: update the self-best ghost path (call after beating personal best). */
+  setGhostPath: (path: GhostFrame[]) => void;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -336,6 +362,7 @@ function emptyState(): Pick<
   | 'room'
   | 'ping'
   | 'chatLog'
+  | 'reefRace'
 > {
   return {
     entities: new Map(),
@@ -356,6 +383,7 @@ function emptyState(): Pick<
     room: null,
     ping: 0,
     chatLog: [],
+    reefRace: { laps: new Map(), selfBestGhostPath: null },
   };
 }
 
@@ -372,6 +400,22 @@ export const useActivityStore = create<ActivityState>()(
     setConnectionStatus: (status) => set({ connectionStatus: status }),
     setPing: (ms) => set({ ping: ms }),
     clearError: () => set({ errorBanner: null }),
+
+    pushLap: (avatarId, lap, splitMs, totalMs) => {
+      const state = get();
+      const laps  = new Map(state.reefRace.laps);
+      const existing = laps.get(avatarId) ?? [];
+      laps.set(avatarId, [
+        ...existing,
+        { avatarId, lap, splitMs, totalMs, recordedAt: Date.now() },
+      ]);
+      set({ reefRace: { ...state.reefRace, laps } });
+    },
+
+    setGhostPath: (path) => {
+      const state = get();
+      set({ reefRace: { ...state.reefRace, selfBestGhostPath: path } });
+    },
 
     pushHit: (hit) => {
       const next = get().events.hits.slice(-HIT_RING_BUFFER + 1);
@@ -618,12 +662,19 @@ export const useActivityStore = create<ActivityState>()(
           break;
         }
 
-        // Reef Race-only event — Bumper Shells doesn't use it but the
-        // discriminated union needs a branch so future code-shifts compile.
-        case 'event.lap_completed':
-          // No-op for Bumper Shells; chunk #6 (Reef Race route) will route
-          // this into a separate `reefRaceLaps` slice on the same store.
+        // Reef Race-only event — recorded into the reefRace.laps slice.
+        // Bumper Shells sessions never receive this frame type.
+        case 'event.lap_completed': {
+          const { avatarId, lap, splitMs, totalMs } = frame;
+          const laps = new Map(state.reefRace.laps);
+          const existing = laps.get(avatarId) ?? [];
+          laps.set(avatarId, [
+            ...existing,
+            { avatarId, lap, splitMs, totalMs, recordedAt: Date.now() },
+          ]);
+          set({ reefRace: { ...state.reefRace, laps } });
           break;
+        }
 
         // ── Chat / pong / error ─────────────────────────────────────────
         case 'chat': {
