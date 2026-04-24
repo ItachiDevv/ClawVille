@@ -7,7 +7,7 @@
  * SpatialNeglect, CC-BY). Optimised with gltf-transform WebP@512 — DO NOT
  * re-optimise.
  *
- * Position: (260, -2, -60) — east of town center, mirror of BazaarStall to
+ * Position: (600, -2, -60) — east of town center, mirror of BazaarStall to
  * the west.
  *
  * GPU constraints (Iris Xe invariants):
@@ -31,7 +31,7 @@ useGLTF.preload('/models/marketplace-food-stall.glb');
 // ---------------------------------------------------------------------------
 // World position
 // ---------------------------------------------------------------------------
-const STALL_X = 260;
+const STALL_X = 600;
 const STALL_Y = -2;
 const STALL_Z = -60;
 
