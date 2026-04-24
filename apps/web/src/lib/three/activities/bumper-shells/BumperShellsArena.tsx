@@ -10,9 +10,11 @@
  * Iris Xe invariants:
  *   - MeshBasicNodeMaterial for the rim glow (no lighting = no ShaderMaterial needed).
  *   - MeshStandardMaterial for platform and danger ring (no ShaderMaterial).
- *   - Void backdrop at y=-2000 — MeshBasicNodeMaterial ignores fog, so we place it
- *     far enough that the edge is never visible (fog kills everything past 900wu).
+ *   - Void backdrop at y=-2000 — MeshBasicNodeMaterial ignores fog, safe at any depth.
  *   - matrixAutoUpdate=false on every mesh — these never move.
+ *
+ * 2026-04-24 visibility fix: platform colour brightened from '#1a2a3a' (near-black)
+ * to '#1e3a5f' (readable ocean-blue). See bumper-shells-config.ts fog/light comments.
  */
 
 import { useRef, useEffect, useMemo } from 'react';
@@ -64,10 +66,12 @@ const dangerGeo = new THREE.CylinderGeometry(
 
 const voidGeo = new THREE.PlaneGeometry(VOID_BACKDROP_SIZE, VOID_BACKDROP_SIZE);
 
+// Platform disc colour: brighter blue-grey so it reads clearly under the PBR
+// lighting rig. Old '#1a2a3a' was near-black — invisible at this light level.
 const platformMat = new THREE.MeshStandardMaterial({
-  color: new THREE.Color('#1a2a3a'),
+  color: new THREE.Color('#1e3a5f'),
   roughness: 0.85,
-  metalness: 0.0,
+  metalness: 0.1,
 });
 
 const dangerMat = new THREE.MeshStandardMaterial({
