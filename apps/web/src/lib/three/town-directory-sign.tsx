@@ -3,73 +3,120 @@
 /**
  * TownDirectorySign — wooden signboard at town center.
  *
- * Purely procedural (no GLB). Two vertical post BoxGeometries + one
- * horizontal plank BoxGeometry, coloured with MeshBasicNodeMaterial (TSL).
- * Text rendered via drei <Html> DOM portal (transform mode) — safe on
- * Intel Iris Xe.
- *
- * DO NOT use drei Text or Billboard — hard GPU crash on Iris Xe.
- *
- * Position: (0, -2, -50) — center of the stall row axis, north-facing.
- * Posts stand 140wu above their base, plank spans the top.
+ * All-procedural. Two vertical posts + one horizontal plank (BoxGeometry).
+ * Text is BAKED into a CanvasTexture applied to a thin plane on the plank's
+ * front face — no drei <Html> portal, no <Text>/<Billboard> (both banned
+ * on Iris Xe), just a textured quad. Guaranteed to render.
  *
  * GPU constraints (Iris Xe invariants):
- *   - NO drei Text/Billboard
- *   - NO InstancedMesh + ShaderMaterial
- *   - NO per-frame allocations — all geo/mat are module-scope
- *   - matrixAutoUpdate=false after mount (static, never moves)
+ *   - NO drei Text/Billboard — hard GPU crash
+ *   - NO InstancedMesh + ShaderMaterial — silent WebGPU crash
+ *   - NO per-frame allocations — all geo/mat/texture are module-scope
  */
 
-import { useEffect, memo } from 'react';
-import { Html } from '@react-three/drei';
+import { memo } from 'react';
 import * as THREE from 'three/webgpu';
-import { MeshBasicNodeMaterial } from 'three/webgpu';
-import { color } from 'three/tsl';
 
 // ---------------------------------------------------------------------------
-// Geometry + material — module scope so they're created once, never re-alloc.
+// Post / plank dims
 // ---------------------------------------------------------------------------
+const POST_W = 20;
+const POST_H = 420;
+const POST_D = 20;
+const POST_SPACING = 420;
 
-// Wood colour: warm oak brown
-const WOOD_COLOR = '#7c4a1b';
+const PLANK_W = POST_SPACING + POST_W + 80;
+const PLANK_H = 240;
+const PLANK_D = 12;
+const PLANK_Y = POST_H - PLANK_H / 2; // plank top aligns with post tops
 
-const woodMat = new MeshBasicNodeMaterial();
-woodMat.colorNode = color(WOOD_COLOR);
-
-// Post dims (world units) — BIGGER so the sign reads as a proper landmark
-const POST_W = 16;
-const POST_H = 360;
-const POST_D = 16;
-const POST_SPACING = 340;
-
-const postGeo = new THREE.BoxGeometry(POST_W, POST_H, POST_D);
-
-// Plank dims — spans between post tops with overhang
-const PLANK_W = POST_SPACING + POST_W + 60; // wide with overhang
-const PLANK_H = 200;
-const PLANK_D = 10;
-// Plank top aligns with post tops: plank center at Y = POST_H - PLANK_H/2
-const PLANK_Y = POST_H - PLANK_H / 2;
-
-const plankGeo = new THREE.BoxGeometry(PLANK_W, PLANK_H, PLANK_D);
-
-// World position — raised well above sand to clear terrain bumps.
+// World position — raised well above sand to stay clear of terrain bumps
 const SIGN_X = 0;
-const SIGN_Y = 40; // posts base well above sand (Y=-2); was 0 which looked half-buried
+const SIGN_Y = 150;
 const SIGN_Z = -120;
 
+const WOOD_COLOR = 0x7c4a1b;
+
 // ---------------------------------------------------------------------------
-// Inner component
+// Text canvas texture — rendered ONCE at module load, cached for all mounts
+// ---------------------------------------------------------------------------
+function buildTextTexture(): THREE.Texture {
+  // Use a placeholder during SSR / non-browser contexts
+  if (typeof document === 'undefined') {
+    return new THREE.Texture();
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = 1024;
+  canvas.height = 512;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return new THREE.Texture();
+
+  // Wood-grain background (matches the plank)
+  ctx.fillStyle = '#7c4a1b';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Subtle grain stripes
+  ctx.fillStyle = 'rgba(60, 35, 15, 0.18)';
+  for (let y = 30; y < canvas.height; y += 60) {
+    ctx.fillRect(0, y, canvas.width, 6);
+  }
+
+  // Dark border
+  ctx.strokeStyle = '#3c230f';
+  ctx.lineWidth = 16;
+  ctx.strokeRect(8, 8, canvas.width - 16, canvas.height - 16);
+
+  // Text
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#f5e6c8';
+
+  // Title
+  ctx.font = 'bold 140px Georgia, serif';
+  ctx.fillText('TOWN CENTER', canvas.width / 2, 130);
+
+  // Divider
+  ctx.strokeStyle = '#f5e6c8';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(canvas.width / 2 - 260, 210);
+  ctx.lineTo(canvas.width / 2 + 260, 210);
+  ctx.stroke();
+
+  // Subheaders
+  ctx.font = '80px Georgia, serif';
+  ctx.fillText('Auction', canvas.width / 2, 290);
+  ctx.fillText('Bazaar', canvas.width / 2, 370);
+  ctx.fillText('Marketplace', canvas.width / 2, 450);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  tex.anisotropy = 4;
+  return tex;
+}
+
+const textTexture = buildTextTexture();
+
+// ---------------------------------------------------------------------------
+// Shared module-scope geometries + materials
+// ---------------------------------------------------------------------------
+const postGeo = new THREE.BoxGeometry(POST_W, POST_H, POST_D);
+const plankGeo = new THREE.BoxGeometry(PLANK_W, PLANK_H, PLANK_D);
+const textPlaneGeo = new THREE.PlaneGeometry(PLANK_W - 40, PLANK_H - 40);
+
+const woodMat = new THREE.MeshBasicNodeMaterial();
+// @ts-expect-error — TSL color setter on node material
+woodMat.color = new THREE.Color(WOOD_COLOR);
+
+const textMat = new THREE.MeshBasicNodeMaterial();
+// @ts-expect-error — TSL material exposes `map` like WebGL path
+textMat.map = textTexture;
+textMat.transparent = false;
+
+// ---------------------------------------------------------------------------
+// Component
 // ---------------------------------------------------------------------------
 const TownDirectorySignInner = memo(function TownDirectorySignInner() {
-  // Freeze world matrix after mount — sign never moves.
-  useEffect(() => {
-    // nothing to traverse here (static primitives); the group freeze is handled
-    // by setting matrixAutoUpdate via ref — we use a no-op here and rely on R3F
-    // primitives being static; matrixAutoUpdate defaults to true but the group
-    // never moves so it's low-cost. For strict freeze we'd need a groupRef.
-  }, []);
-
   return (
     <group position={[SIGN_X, SIGN_Y, SIGN_Z]}>
       {/* Left post */}
@@ -88,7 +135,7 @@ const TownDirectorySignInner = memo(function TownDirectorySignInner() {
         matrixAutoUpdate={false}
       />
 
-      {/* Horizontal plank — centered so its TOP aligns with post tops */}
+      {/* Horizontal plank */}
       <mesh
         geometry={plankGeo}
         material={woodMat}
@@ -96,36 +143,13 @@ const TownDirectorySignInner = memo(function TownDirectorySignInner() {
         matrixAutoUpdate={false}
       />
 
-      {/* Text label — Html in `transform` mode so it CSS-3Ds onto the plank
-          face at world scale. Position is the plank's FRONT face (+Z side) so
-          the text reads from the south where the player approaches. */}
-      <Html
+      {/* Text plane — on the front (+Z) face of the plank, with baked text */}
+      <mesh
+        geometry={textPlaneGeo}
+        material={textMat}
         position={[0, PLANK_Y, PLANK_D / 2 + 0.5]}
-        center
-        transform
-        distanceFactor={10}
-        style={{ pointerEvents: 'none' }}
-        zIndexRange={[10, 100]}
-      >
-        <div
-          style={{
-            fontFamily: 'serif',
-            color: '#2a1800',
-            textAlign: 'center',
-            padding: '12px 20px',
-            lineHeight: 1.25,
-            userSelect: 'none',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          <div style={{ fontWeight: 'bold', fontSize: '36px', marginBottom: '6px', letterSpacing: '2px' }}>
-            TOWN CENTER
-          </div>
-          <div style={{ fontSize: '22px' }}>Auction</div>
-          <div style={{ fontSize: '22px' }}>Bazaar</div>
-          <div style={{ fontSize: '22px' }}>Marketplace</div>
-        </div>
-      </Html>
+        matrixAutoUpdate={false}
+      />
     </group>
   );
 });
