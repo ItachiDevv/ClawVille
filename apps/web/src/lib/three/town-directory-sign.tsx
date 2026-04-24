@@ -99,33 +99,37 @@ const TownDirectorySignInner = memo(function TownDirectorySignInner() {
         matrixAutoUpdate={false}
       />
 
-      {/* Text label — Html DOM portal, transform mode, centred on plank face.
-          Positioned on the plank's front face (slightly forward in +Z so it
-          doesn't z-fight). */}
+      {/* Text label — Html DOM portal in SCREEN-space mode (no `transform`).
+          Same pattern the building labels use — projects to the 3D position
+          and renders as normal DOM overlay. `transform` mode was causing the
+          text to render inside/behind the plank via CSS-3D clipping. */}
       <Html
-        position={[0, PLANK_Y, PLANK_D / 2 + 1]}
+        position={[0, PLANK_Y + 20, 0]}
         center
-        transform
         style={{ pointerEvents: 'none' }}
         zIndexRange={[10, 100]}
       >
         <div
           style={{
             fontFamily: 'serif',
-            color: '#2a1800',
+            color: '#f5e6c8',
+            backgroundColor: 'rgba(60, 35, 15, 0.92)',
+            border: '3px solid #7c4a1b',
+            borderRadius: '6px',
             textAlign: 'center',
-            padding: '8px 12px',
+            padding: '14px 22px',
             lineHeight: 1.3,
             userSelect: 'none',
             whiteSpace: 'nowrap',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.6)',
           }}
         >
-          <div style={{ fontWeight: 'bold', fontSize: '40px', marginBottom: '8px' }}>
+          <div style={{ fontWeight: 'bold', fontSize: '24px', marginBottom: '8px', letterSpacing: '2px' }}>
             TOWN CENTER
           </div>
-          <div style={{ fontSize: '28px' }}>Auction</div>
-          <div style={{ fontSize: '28px' }}>Bazaar</div>
-          <div style={{ fontSize: '28px' }}>Marketplace</div>
+          <div style={{ fontSize: '16px' }}>Auction</div>
+          <div style={{ fontSize: '16px' }}>Bazaar</div>
+          <div style={{ fontSize: '16px' }}>Marketplace</div>
         </div>
       </Html>
     </group>
