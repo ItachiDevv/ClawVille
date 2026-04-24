@@ -292,6 +292,11 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
         return prev;
       }
       const serverIsIdle = n.direction === 'idle' && !n.inCombat && !n.inConversation;
+      // useClientPos: when server is idle, keep the client's previous position
+      // (so demo-mode wander animations don't snap NPCs back). BUT direction
+      // is ALWAYS authoritative from the server — keeping prev.direction caused
+      // NPCs to play walk-cycle animation forever after server transitioned to
+      // idle (user-reported "walking in place" 2026-04-25).
       const useClientPos = serverIsIdle && prev;
       // Build the candidate object first, then check identity against prev.
       // If every field is equal we return the PREVIOUS reference — this preserves
@@ -304,7 +309,8 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
         y: useClientPos ? prev.y : n.y,
         prevX: prev?.x ?? n.x,
         prevY: prev?.y ?? n.y,
-        direction: useClientPos ? prev.direction : (n.direction as NpcSpriteState['direction']),
+        // direction always from server — never sticky (see comment above).
+        direction: n.direction as NpcSpriteState['direction'],
         species: n.species,
         color: n.color,
         hp: n.hp,
