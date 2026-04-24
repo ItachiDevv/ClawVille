@@ -3,18 +3,12 @@
 /**
  * TownDirectorySign — wooden signboard at town center.
  *
- * Plank face = PlaneGeometry with a PNG texture. Texture is loaded via raw
- * Image API (not useLoader / useTexture) so we avoid Suspense machinery
- * entirely — if Suspense traps the sign subtree, nothing renders.
- *
- * The sign posts + backing are always visible. When the PNG image resolves,
- * the face plane's material swaps from a placeholder wood colour to the
- * wood+text texture.
- *
- * Debug: window.__TOWN_SIGN_DEBUG exposes the state at runtime.
+ * Plank face = Plane with baked wood+text PNG texture. The texture is
+ * loaded via raw Image API and stored in React state; when it arrives,
+ * R3F's JSX primitive material reconciles to bind it to the mesh.
  */
 
-import { memo, useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import * as THREE from 'three/webgpu';
 
 const POST_W = 20;
@@ -37,87 +31,66 @@ const postGeo = new THREE.BoxGeometry(POST_W, POST_H, POST_D);
 const plankBackGeo = new THREE.BoxGeometry(PLANK_W, PLANK_H, BACKING_D);
 const plankFaceGeo = new THREE.PlaneGeometry(PLANK_W, PLANK_H);
 
-const woodMat = new THREE.MeshBasicMaterial({ color: WOOD_COLOR });
-
 const TownDirectorySignInner = memo(function TownDirectorySignInner() {
-  const [faceMat, setFaceMat] = useState<THREE.MeshBasicMaterial>(woodMat);
-  const loadedRef = useRef(false);
+  const [texture, setTexture] = useState<THREE.Texture | null>(null);
 
   useEffect(() => {
-    if (loadedRef.current) return;
-    loadedRef.current = true;
-
+    if (typeof window === 'undefined') return;
     const img = new Image();
-    img.crossOrigin = 'anonymous';
     img.onload = () => {
-      try {
-        const texture = new THREE.Texture(img);
-        texture.colorSpace = THREE.SRGBColorSpace;
-        texture.needsUpdate = true;
-        const mat = new THREE.MeshBasicMaterial({
-          map: texture,
-          color: 0xffffff,
-          side: THREE.DoubleSide,
-          transparent: false,
-          toneMapped: false,
-        });
-        setFaceMat(mat);
-        if (typeof window !== 'undefined') {
-          (window as any).__TOWN_SIGN_DEBUG = {
-            loaded: true,
-            imgW: img.width,
-            imgH: img.height,
-            hasMap: !!mat.map,
-            matType: mat.constructor.name,
-          };
-          console.log('[TownDirectorySign] PNG loaded', img.width, 'x', img.height);
-        }
-      } catch (err) {
-        console.error('[TownDirectorySign] Error creating texture:', err);
-      }
+      const tex = new THREE.Texture(img);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.needsUpdate = true;
+      setTexture(tex);
+      console.log('[TownDirectorySign] texture bound', img.width, 'x', img.height);
+      (window as any).__TOWN_SIGN_DEBUG = { loaded: true, w: img.width, h: img.height };
     };
     img.onerror = (err) => {
-      console.error('[TownDirectorySign] Image load failed:', err);
-      if (typeof window !== 'undefined') {
-        (window as any).__TOWN_SIGN_DEBUG = { loaded: false, err: String(err) };
-      }
+      console.error('[TownDirectorySign] image load failed', err);
     };
     img.src = '/town-directory-sign.png';
-
-    // Also record that the component mounted, even before image loads
-    if (typeof window !== 'undefined') {
-      (window as any).__TOWN_SIGN_DEBUG = { mounted: true, imgLoading: true };
-      console.log('[TownDirectorySign] mounted, loading PNG...');
-    }
   }, []);
 
   return (
     <group position={[SIGN_X, SIGN_Y, SIGN_Z]}>
+      {/* Left post */}
       <mesh
         geometry={postGeo}
-        material={woodMat}
         position={[-POST_SPACING / 2, POST_H / 2, 0]}
         matrixAutoUpdate={false}
-      />
+      >
+        <meshBasicMaterial color={WOOD_COLOR} />
+      </mesh>
+      {/* Right post */}
       <mesh
         geometry={postGeo}
-        material={woodMat}
         position={[POST_SPACING / 2, POST_H / 2, 0]}
         matrixAutoUpdate={false}
-      />
+      >
+        <meshBasicMaterial color={WOOD_COLOR} />
+      </mesh>
+      {/* Plank backing */}
       <mesh
         geometry={plankBackGeo}
-        material={woodMat}
         position={[0, PLANK_Y, -BACKING_D / 2]}
         matrixAutoUpdate={false}
-      />
-      {/* Plank face — textured plane, Z=+12 to clear posts */}
+      >
+        <meshBasicMaterial color={WOOD_COLOR} />
+      </mesh>
+      {/* Plank face with baked text — JSX material so R3F reconciles when
+          texture state updates after the PNG loads */}
       <mesh
         geometry={plankFaceGeo}
-        material={faceMat}
         position={[0, PLANK_Y, 12]}
         matrixAutoUpdate={false}
-      />
+      >
+        <meshBasicMaterial
+          map={texture ?? undefined}
+          color={texture ? 0xffffff : WOOD_COLOR}
+          side={THREE.DoubleSide}
+          toneMapped={false}
+        />
+      </mesh>
     </group>
   );
 });
