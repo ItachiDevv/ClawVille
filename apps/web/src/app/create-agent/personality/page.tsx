@@ -225,16 +225,35 @@ export default function PersonalityPage() {
 
       sessionStorage.removeItem('createPetStep1');
 
-      // Force control mode to 'player' before the redirect. The /game
-      // page has auto-promotion logic (explore → player on pet detected),
-      // but a stale 'npc' mode from a prior spectator session sticks —
-      // the user lands in their new Milady agent's body but gets the
-      // NPC-mode minimal HUD instead of the full player chrome. Setting
-      // it explicitly here eliminates the race + the stale-state edge.
-      // User feedback 2026-04-24: "drops agent into the world in
-      // explore/npc mode when we are supposed to be hosting milady
-      // agents".
-      useGameStore.getState().setControlMode('player');
+      // Mark the agent as connected before the redirect. User feedback
+      // 2026-04-24: "drops agent into the world in explore/npc mode when
+      // we are supposed to be hosting milady agents". Root cause: the
+      // game store treats `agentConnected` as the source of truth for
+      // the mode-toggle labels — false shows "Explore / NPC Mode", true
+      // shows "Play / Autonomous". A fresh Milady pet has no gateway
+      // session (the agent IS the pet's Eliza runtime), so nothing was
+      // ever flipping agentConnected=true and the UI kept offering
+      // "Connect Your Agent" even though the agent was already alive
+      // server-side.
+      //
+      // Fix: for Milady-harnessed pets we auto-connect with the pet's
+      // platformAgentId as the session id — the Eliza runtime is the
+      // session. For OpenClaw/Hermes self-hosted agents we skip this
+      // (those still need the Moltbook handshake via the Connect Agent
+      // modal to hand us their gateway URL + token).
+      //
+      // setAgentConnection also flips hasAgent=true, sets
+      // controlMode='player', and drops isSpectator — so a single call
+      // does all the promotions we need.
+      const agentIdForSession = createRes.agentId ?? createRes.pet?.id;
+      if (safeHarness === 'milady' && agentIdForSession) {
+        useGameStore.getState().setAgentConnection(agentIdForSession);
+      } else {
+        // Non-Milady fallback: still normalise the mode so a stale
+        // spectator/npc state from a prior session doesn't leak into
+        // the new pet's first frame.
+        useGameStore.getState().setControlMode('player');
+      }
 
       router.push('/game');
     } catch (err: any) {
