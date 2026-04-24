@@ -32,6 +32,7 @@ function zoneCenter(zone: BuildingZone): [number, number, number] {
 }
 
 import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
+import { anchorInFrontOfCamera } from '@/lib/three/utils/camera-cull';
 
 // Shared raycaster -- only hits layer 1 (terrain)
 const _buildRaycaster = new THREE.Raycaster();
@@ -43,6 +44,9 @@ const _buildRayDir = new THREE.Vector3(0, -1, 0);
 // 800 gives buildings proper visual weight on the 160x160 (5120 world-unit) map —
 // previously 480 made buildings feel like tiny props relative to the vast sand floor.
 const BUILDING_TARGET_HEIGHT = 800;
+
+// Module-scope scratch for getWorldPosition in the building label behind-camera cull.
+const _buildAnchorWorldPos = new THREE.Vector3();
 
 // Map each building ID to a GLB model + display config.
 // rotY: each building faces the village center at tile (80, 80) = world (0, 0).
@@ -293,11 +297,8 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
   const [cx, , cz] = zoneCenter(zone);
   const { scene } = useGLTF(config.model);
   const groupRef = useRef<THREE.Group>(null);
-  // labelDivRef: imperative behind-camera DOM cull for the building theme label.
-  // drei <Html> is a DOM portal — Three.js visibility flags do NOT propagate to DOM.
-  // Starts hidden (display:'none'); useFrame below opens it only when the building
-  // is in front of the camera to prevent ghost labels when buildings are behind the
-  // player. Uses the same zero-allocation matrixWorldInverse test as arena-npcs.tsx.
+  // Ref for the label div — needed for behind-camera imperative cull (see useFrame below).
+  // drei <Html> is a DOM portal; Three.js visibility flags do NOT propagate to DOM.
   const labelDivRef = useRef<HTMLDivElement>(null);
   const { camera } = useThree();
 
@@ -347,29 +348,6 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
 
   const theme = BUILDING_OPENCLAW_THEMES[zone.id];
 
-  // Behind-camera cull for building theme label.
-  // Buildings are static (matrixAutoUpdate=false) so matrixWorld was set once in the
-  // useEffect above. camera.matrixWorldInverse transforms world→view; viewZ < 0
-  // means the building's world position is in front of the camera. Zero allocation:
-  // reads matrix elements directly (elements[12/13/14] = world translation, no Vector3).
-  // 10 buildings × 1 useFrame tick ≈ 10 matrix element reads per frame (negligible).
-  useFrame(() => {
-    const label = labelDivRef.current;
-    const group = groupRef.current;
-    if (!label || !group || !theme) return;
-    const m = camera.matrixWorldInverse.elements;
-    const wx = group.matrixWorld.elements[12];
-    const wy = group.matrixWorld.elements[13];
-    const wz = group.matrixWorld.elements[14];
-    const viewZ = m[2] * wx + m[6] * wy + m[10] * wz + m[14];
-    const inFront = viewZ < 0;
-    if (!inFront) {
-      if (label.style.display !== 'none') label.style.display = 'none';
-    } else {
-      if (label.style.display !== 'block') label.style.display = 'block';
-    }
-  });
-
   // Buildings sit on the flat sand floor (y=-2). No raycasting needed —
   // dune ripples are small relative to the 100-unit building height.
   // pivotOffsetX/Z corrects for GLBs authored with geometry far from their pivot
@@ -380,15 +358,11 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
         <primitive object={cloned} scale={buildingScale} />
       </group>
       {/* Floating building label.
-          PERF: removed distanceFactor (was 1500) — see arena-npcs.tsx PERF note.
-          labelDivRef: imperative behind-camera cull via useFrame above.
-          Starts hidden (display:'none') — useFrame opens it on first in-front frame. */}
+          PERF: removed distanceFactor (was 1500) — see arena-npcs.tsx PERF note */}
       {theme && (
         <Html position={[0, BUILDING_TARGET_HEIGHT + 20, 0]} center style={{ pointerEvents: 'auto' }}>
           <div
-            ref={labelDivRef}
             style={{
-              display: 'none',
               background: 'rgba(10, 22, 40, 0.85)',
               backdropFilter: 'blur(4px)',
               border: '1px solid rgba(56, 189, 248, 0.3)',
