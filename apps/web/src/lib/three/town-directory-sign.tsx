@@ -35,6 +35,11 @@ const TownDirectorySignInner = memo(function TownDirectorySignInner() {
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
 
   useEffect(() => {
+    // SYNCHRONOUS marker — fires the moment useEffect runs, regardless of image
+    if (typeof window !== 'undefined') {
+      (window as any).__TOWN_SIGN_DEBUG = { effectRan: true, stage: 'pre-img' };
+      console.log('[TownDirectorySign] useEffect fired');
+    }
     if (typeof window === 'undefined') return;
     const img = new Image();
     img.onload = () => {
@@ -42,10 +47,11 @@ const TownDirectorySignInner = memo(function TownDirectorySignInner() {
       tex.colorSpace = THREE.SRGBColorSpace;
       tex.needsUpdate = true;
       setTexture(tex);
+      (window as any).__TOWN_SIGN_DEBUG = { effectRan: true, stage: 'loaded', w: img.width, h: img.height };
       console.log('[TownDirectorySign] texture bound', img.width, 'x', img.height);
-      (window as any).__TOWN_SIGN_DEBUG = { loaded: true, w: img.width, h: img.height };
     };
     img.onerror = (err) => {
+      (window as any).__TOWN_SIGN_DEBUG = { effectRan: true, stage: 'error', err: String(err) };
       console.error('[TownDirectorySign] image load failed', err);
     };
     img.src = '/town-directory-sign.png';
