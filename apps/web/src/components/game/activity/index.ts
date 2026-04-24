@@ -3,6 +3,9 @@
  *
  * Re-exports the reusable status / score / power-up components used by
  * `<BumperShellsHud>` (chunk #4) and `<ReefRaceHud>` (chunk #6).
+ *
+ * Chunk #11 adds the spectator-mode atoms:
+ *   SpectatorCamSelector, SpectatorChatPanel, EmoteButton.
  */
 export { default as HudTile } from './HudTile';
 export type { HudTileProps, HudTileTone } from './HudTile';
@@ -23,3 +26,9 @@ export { default as EliminatedOverlay } from './EliminatedOverlay';
 export type { EliminatedOverlayProps } from './EliminatedOverlay';
 export { default as PingIndicator } from './PingIndicator';
 export type { PingIndicatorProps } from './PingIndicator';
+export { default as SpectatorCamSelector } from './SpectatorCamSelector';
+export type { SpectatorCamMode, SpectatorCamSelectorProps } from './SpectatorCamSelector';
+export { default as SpectatorChatPanel } from './SpectatorChatPanel';
+export type { SpectatorChatPanelProps } from './SpectatorChatPanel';
+export { default as EmoteButton } from './EmoteButton';
+export type { EmoteButtonProps } from './EmoteButton';
