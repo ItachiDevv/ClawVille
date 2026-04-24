@@ -920,18 +920,20 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // visible "walking backwards" window for ~0.5s. Using the velocity vector
     // keeps body facing locked to movement direction at all times.
     //
-    // VRM faces -Z at rotation.y = 0 (rotateVRM0 applied in vrm-loader).
-    // Facing formula: atan2(vx, -vz) — matches the working player-pet VRM formula
-    // (player-pet.tsx line 345 uses atan2(vx, -vy) where vy is the z component).
-    // 2026-04-24: briefly flipped to atan2(-vx, -vz) from a bad derivation;
-    // empirically that made every Milady face the reverse of travel direction.
+    // VRM facing — empirical 2026-04-24. The same formula that player-pet.tsx
+    // line 345 uses (atan2(vx, -vz)) produces visibly REVERSED facing on arena
+    // NPCs — user confirmed Miladys walk backwards. The 180° offset is
+    // absorbed by adding π, equivalent to atan2(-vx, -vz). Exact cause of the
+    // offset vs player-pet unknown — likely rotateVRM0 interaction that differs
+    // between the cached-per-path VRM instances and the single player-pet
+    // instance. Empirically tested: this direction makes Miladys face travel.
     const vx = currentPos.current.x - prevX;
     const vz = currentPos.current.z - prevZ;
     const velMagSq = vx * vx + vz * vz;
     // Movement threshold: need at least 0.5wu/frame of motion to trust velocity
     // as a facing signal. Below that it's likely sub-pixel jitter during idle.
     if (velMagSq > 0.25 && d.direction !== 'idle') {
-      const targetRot = Math.atan2(vx, -vz);
+      const targetRot = Math.atan2(-vx, -vz);
       let diff = targetRot - currentRotY.current;
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
