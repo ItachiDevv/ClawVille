@@ -19,7 +19,7 @@ const PLANK_Y = POST_H - PLANK_H / 2;
 const BACKING_D = 10;
 
 const SIGN_X = 0;
-const SIGN_Y = 150;
+const SIGN_Y = 0; // posts rest just above sand (sand at Y=-2); was 150 — too high
 const SIGN_Z = -120;
 
 const WOOD_COLOR = 0x7c4a1b;
