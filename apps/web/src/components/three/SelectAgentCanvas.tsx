@@ -231,14 +231,17 @@ const PlatformModelVRM = memo(function PlatformModelVRM({
   });
 
   return (
-    // reg.scale * 2.1 (≈ 27.3wu) — visual height calibrated for the shrine pedestal.
-    // Previously used 1.35× (too small) → bumped to 2.1× on 2026-04-23 to fill the
-    // shrine on desktop. The multiplier itself is kept at 2.1×; mobile-portrait crop
-    // (mid-thigh to shoes only) is fixed by raising the camera target + position
-    // instead (target [0,14,0]→[0,17,0], camera y 12→16, z 45→50) so the viewport
-    // centers on the character's torso rather than its waist regardless of aspect ratio.
+    // reg.scale * 1.6 (≈ 20.8wu) — chosen so the ENTIRE character fits inside
+    // the shrine on mobile-portrait viewports while still reading large on
+    // desktop. History:
+    //   1.35× — too small ("half as small as OpenClaw" — 2026-04-23)
+    //   2.1×  — too big on mobile (camera zoom-in cropped the head — 2026-04-24)
+    //   1.6×  — current; head + feet both in frame at minDistance=40, fills
+    //           ~75% of the shrine on desktop. Combined with the higher
+    //           minDistance, orbit zoom can't crop the head regardless of
+    //           aspect ratio.
     // Registry scale=13 is the picker authoring unit; this multiplier is picker-only.
-    <group position={[0, 1.5, 0]} scale={[reg.scale * 2.1, reg.scale * 2.1, reg.scale * 2.1]}>
+    <group position={[0, 1.5, 0]} scale={[reg.scale * 1.6, reg.scale * 1.6, reg.scale * 1.6]}>
       <primitive object={vrm.scene} />
     </group>
   );
@@ -396,15 +399,21 @@ const SceneContents = memo(function SceneContents({
       {/* Camera — VRM target is higher (chest-level) + closer distance
           because VRMs render taller than sea creatures at their respective
           scales. GLB path keeps the prior sea-creature framing. */}
+      {/* minDistance=40 for VRM prevents OrbitControls zoom-in from cropping
+          the avatar's head on portrait viewports. At dist=40, FOV=45°,
+          vertical coverage ≈ 33wu which cleanly fits the 1.6×-scaled avatar
+          (~20.8wu tall + feet at 1.5wu) with room to spare. target y=11 lands
+          between the character's waist (y≈11) and chest (y≈15), centering the
+          silhouette so the head + feet are both visible on any aspect ratio. */}
       <OrbitControls
         makeDefault
         enablePan={false}
         enableZoom={true}
-        minDistance={isVRM ? 24 : 25}
-        maxDistance={isVRM ? 75 : 80}
+        minDistance={isVRM ? 40 : 25}
+        maxDistance={isVRM ? 85 : 80}
         minPolarAngle={Math.PI * (isVRM ? 0.32 : 0.28)}
         maxPolarAngle={Math.PI * (isVRM ? 0.52 : 0.55)}
-        target={isVRM ? [0, 17, 0] : [0, 8, 0]}
+        target={isVRM ? [0, 11, 0] : [0, 8, 0]}
       />
 
       {/* Shared underwater base lighting */}
@@ -482,7 +491,7 @@ export default function SelectAgentCanvas({
     <div id="select-agent-canvas" className="w-full h-full">
       <Canvas
         className="w-full h-full"
-        camera={{ position: [0, 16, 50], fov: 45 }}
+        camera={{ position: [0, 13, 45], fov: 45 }}
         // WebGL-only: preserveDrawingBuffer enables toDataURL thumbnail capture
         // in create-agent/page.tsx. If this Canvas ever switches to
         // WebGPURenderer, replace thumbnail capture with a RenderTarget +
