@@ -14,7 +14,7 @@
  * "featured lot". It spins slowly on the Y axis and floats at 60% of dome
  * height (~228wu off the dome group origin).
  *
- * Position: (0, -2, 150) — pushed south so it doesn't overlap the two flank stalls.
+ * Position: (0, -8, -160) — north of the stall row (Z=-60), behind the town center from the camera's south-facing POV.
  *
  * GPU constraints (Iris Xe invariants):
  *   - NO drei Text/Billboard — hard crash
@@ -41,8 +41,8 @@ useGLTF.preload('/models/jellyfish.glb');
 // World position — unchanged from old podium
 // ---------------------------------------------------------------------------
 const DOME_X = 0;
-const DOME_Y = -18; // sunk 16wu into sand to hide the GLB's circular base plate
-const DOME_Z = 280; // pushed further south (+130wu) to clear the player spawn zone
+const DOME_Y = -8;  // sunk 6wu below sand (Y=-2) — enough to hide the rim disc without burying the dome body
+const DOME_Z = -160; // -Z is north (away from camera/player spawn); Z=-160 puts dome 100wu north of stalls (Z=-60) and well south of the buildings (Z≈-300)
 
 // Target visual height for the dome (the centerpiece — give it presence)
 const DOME_TARGET_HEIGHT_WU = 380;
