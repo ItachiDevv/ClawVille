@@ -3,107 +3,78 @@
 /**
  * AuctionPodium — world-surface anchor for the Auction House modal.
  *
- * A dramatic raised podium in the village center, further south for the 160x160 map.
+ * Asset: /models/auction-dome.glb (Space Dome Showcase by dylanheyes, CC-BY).
+ * Optimised with gltf-transform WebP@512 — DO NOT re-optimise.
  *
- * Composition (keeping draw calls tight):
- *   - A large stepped cylinder base (solid dark material)     1 draw call
- *   - An emissive glow ring at the podium rim (additive)      1 draw call
- *   - A floating jellyfish.glb above the podium (the "lot")   1–3 draw calls
- *   - A fake "spotlight" — upward-facing open cone with       1 draw call
- *     AdditiveBlending + TSL emissive falloff. No SpotLight.
+ * The dome GLB handles its own visual materials via glTF → Three.js auto-mapping.
+ * No custom TSL materials. Old stepped-cylinder base, torus rim, and spotlight
+ * cone were all removed — the dome is the whole visual.
  *
- * Total: ~5–6 draw calls
+ * Inside the dome: floating jellyfish.glb (already preloaded) acts as the
+ * "featured lot". It spins slowly on the Y axis and hovers in place.
  *
- * Clicking: useGameStore().openAuction()
+ * Position: (0, -2, 50) — unchanged from the old podium.
  *
- * GPU constraints: TSL only, no GLSL, no Text/Billboard, no SpotLight (light budget 3/3 full)
+ * GPU constraints (Iris Xe invariants):
+ *   - NO drei Text/Billboard — hard crash
+ *   - NO InstancedMesh + ShaderMaterial — silent WebGPU crash
+ *   - NO per-frame allocations inside useFrame — use refs + module-scope scratch
+ *   - frustumCulled=false on jellyfish (SkinnedMesh bounding sphere from bind pose
+ *     may not cover animated deformation — safe default)
+ *   - matrixAutoUpdate=false on dome group after mount (never moves)
  */
 
 import { useRef, useMemo, useEffect, memo, Suspense } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
-import { color, float, sin, time, uv, mix, smoothstep } from 'three/tsl';
 import { useGameStore } from '@/stores/game';
 
 // ---------------------------------------------------------------------------
-// World position — village center, further south for expanded 160x160 map.
-// Was PODIUM_Z = 20; increased to 50 so podium clears the quest NPC and
-// spreads town objects proportionally on the 5120x5120 world.
+// Preloads at module scope
 // ---------------------------------------------------------------------------
-const PODIUM_X = 0;
-const PODIUM_Z = 50;
-const PODIUM_Y = -2;
-
-// Preload the floating item
+useGLTF.preload('/models/auction-dome.glb');
 useGLTF.preload('/models/jellyfish.glb');
 
 // ---------------------------------------------------------------------------
-// Module-scope scratch
+// World position — unchanged from old podium
 // ---------------------------------------------------------------------------
-const _floatRotScratch = new THREE.Euler();
+const DOME_X = 0;
+const DOME_Y = -2;
+const DOME_Z = 50;
+
+// Target visual height for the dome (the centerpiece — give it presence)
+const DOME_TARGET_HEIGHT_WU = 150;
+
+// Target size for the floating jellyfish inside the dome
+const JELLY_TARGET_SIZE_WU = 50;
 
 // ---------------------------------------------------------------------------
-// Fake spotlight cone — open CylinderGeometry pointing upward
-// TSL: additive blending + uv-based falloff so it fades toward the top
+// Scale helper
 // ---------------------------------------------------------------------------
-function SpotlightCone() {
-  const coneRef = useRef<THREE.Mesh>(null);
-  // PERF: spotlight cone never moves — disable matrixAutoUpdate after mount.
-  useEffect(() => {
-    if (coneRef.current) {
-      coneRef.current.matrixAutoUpdate = false;
-      coneRef.current.updateMatrix();
-    }
-  }, []);
-
-  const mat = useMemo(() => {
-    const m = new THREE.MeshBasicNodeMaterial({
-      transparent: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      side: THREE.BackSide, // inside of cone visible from outside
-    });
-
-    // uv().y goes 0→1 from bottom to top. Fade out toward top (far end of cone).
-    const fade = smoothstep(float(0.0), float(0.6), uv().y).oneMinus();
-    const pulse = sin(time.mul(float(1.0))).mul(float(0.15)).add(float(0.85));
-
-    // Legendary gold spotlight tint
-    m.colorNode = color(0xf97316).mul(float(0.25)).mul(fade).mul(pulse);
-    m.opacity = 0.6;
-    return m;
-  }, []);
-
-  return (
-    // Open-top cone: radiusTop=0 makes a proper cone. radiusBottom=wide at podium.
-    // 8× scaled: radiusBottom=144, height=1920. Beam extends high above podium.
-    <mesh ref={coneRef} position={[0, 960, 0]} material={mat}>
-      {/* CylinderGeometry: radiusTop, radiusBottom, height, radialSeg, heightSeg, openEnded */}
-      <cylinderGeometry args={[0, 144, 1920, 24, 1, true]} />
-    </mesh>
-  );
+function computeScale(root: THREE.Group, targetHeight: number): number {
+  const bbox = new THREE.Box3().setFromObject(root);
+  if (bbox.isEmpty()) return 1;
+  const size = new THREE.Vector3();
+  bbox.getSize(size);
+  const maxDim = Math.max(size.x, size.y, size.z);
+  return maxDim > 0 ? targetHeight / maxDim : 1;
 }
 
 // ---------------------------------------------------------------------------
-// Floating item above the podium
+// Floating jellyfish inside the dome — the "featured lot"
 // ---------------------------------------------------------------------------
-function FloatingAuctionItem() {
+function FloatingJellyfish() {
   const floatRef = useRef<THREE.Group>(null!);
   const { scene } = useGLTF('/models/jellyfish.glb');
 
   const cloned = useMemo(() => {
     const c = scene.clone(true);
-    // Disable frustum culling on all nodes — jellyfish.glb may contain SkinnedMesh
-    // whose bounding sphere (from bind pose) doesn't cover animated deformation.
+    // Disable frustum culling: jellyfish may contain SkinnedMesh whose
+    // bounding sphere (bind pose) doesn't cover animated deformation.
     c.traverse((obj) => { obj.frustumCulled = false; });
-    // Normalize to a reasonable size — 8× scaled target (18→144)
-    const box = new THREE.Box3().setFromObject(c);
-    const sz = new THREE.Vector3();
-    box.getSize(sz);
-    const maxDim = Math.max(sz.x, sz.y, sz.z);
-    const targetSize = 144;
-    const s = maxDim > 0 ? targetSize / maxDim : 1;
+    // Normalize scale
+    const s = computeScale(c as THREE.Group, JELLY_TARGET_SIZE_WU);
     c.scale.setScalar(s);
     return c;
   }, [scene]);
@@ -121,91 +92,63 @@ function FloatingAuctionItem() {
     };
   }, [cloned]);
 
+  // Spin only the jellyfish ref — no allocations, single useFrame for both anchors.
   useFrame(({ clock }) => {
     if (!floatRef.current) return;
-    const t = clock.elapsedTime;
-    // Hover + rotate — 8× scaled offsets
-    floatRef.current.rotation.y = t * 0.5;
-    floatRef.current.position.y = 336 + Math.sin(t * 0.9) * 24;
+    floatRef.current.rotation.y = clock.elapsedTime * 0.8;
   });
 
   return (
-    <group ref={floatRef} position={[0, 336, 0]}>
+    <group ref={floatRef}>
       <primitive object={cloned} />
     </group>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Podium base — two stacked cylinders for a stepped look
-// Static geometry — matrixAutoUpdate disabled on all child meshes after mount
+// Dome GLB — the main visual
 // ---------------------------------------------------------------------------
-function PodiumBase() {
-  const darkMat = useMemo(() => {
-    const m = new THREE.MeshBasicNodeMaterial();
-    m.colorNode = color(0x071525);
-    return m;
-  }, []);
+function DomeGlb() {
+  const { scene } = useGLTF('/models/auction-dome.glb');
 
-  const rimMat = useMemo(() => {
-    const m = new THREE.MeshBasicNodeMaterial({
-      transparent: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-    });
-    const pulse = sin(time.mul(float(1.2))).mul(float(0.3)).add(float(0.7));
-    m.colorNode = color(0xf97316).mul(float(0.6)).mul(pulse);
-    m.opacity = 0.8;
-    return m;
-  }, []);
+  const cloned = useMemo(() => scene.clone(true), [scene]);
 
-  // PERF: podium steps and rim ring never move — disable matrixAutoUpdate after mount.
-  const step1Ref = useRef<THREE.Mesh>(null);
-  const step2Ref = useRef<THREE.Mesh>(null);
-  const rimRef   = useRef<THREE.Mesh>(null);
+  const scale = useMemo(() => computeScale(cloned as THREE.Group, DOME_TARGET_HEIGHT_WU), [cloned]);
+
   useEffect(() => {
-    for (const ref of [step1Ref, step2Ref, rimRef]) {
-      if (ref.current) { ref.current.matrixAutoUpdate = false; ref.current.updateMatrix(); }
-    }
-  }, []);
+    return () => {
+      cloned.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if ((mesh as any).isMesh) {
+          mesh.geometry?.dispose();
+          if (Array.isArray(mesh.material)) mesh.material.forEach((m) => m.dispose());
+          else mesh.material?.dispose();
+        }
+      });
+    };
+  }, [cloned]);
 
-  return (
-    <>
-      {/* Wide lower step — 8× scaled: top 112, bottom 144, height 80 */}
-      <mesh ref={step1Ref} position={[0, 40, 0]} material={darkMat}>
-        <cylinderGeometry args={[112, 144, 80, 24, 1]} />
-      </mesh>
-      {/* Narrower upper platform — 8× scaled: top 80, bottom 112, height 48 */}
-      <mesh ref={step2Ref} position={[0, 104, 0]} material={darkMat}>
-        <cylinderGeometry args={[80, 112, 48, 24, 1]} />
-      </mesh>
-      {/* Glowing rim ring at top — 8× scaled: torus radius 80, tube 4 */}
-      <mesh ref={rimRef} position={[0, 129.6, 0]} rotation={[Math.PI / 2, 0, 0]} material={rimMat}>
-        <torusGeometry args={[80, 4, 8, 32]} />
-      </mesh>
-    </>
-  );
+  // Freeze world matrix — dome never moves.
+  useEffect(() => {
+    cloned.traverse((obj) => {
+      obj.matrixAutoUpdate = false;
+      obj.updateMatrix();
+    });
+  }, [cloned]);
+
+  return <primitive object={cloned} scale={[scale, scale, scale]} />;
 }
 
 // ---------------------------------------------------------------------------
 // Full auction podium
 // ---------------------------------------------------------------------------
 const AuctionPodiumInner = memo(function AuctionPodiumInner() {
-  const openAuction = () => useGameStore.getState().openAuction();
-  const hitboxRef = useRef<THREE.Mesh>(null);
-  useEffect(() => {
-    if (hitboxRef.current) {
-      hitboxRef.current.matrixAutoUpdate = false;
-      hitboxRef.current.updateMatrix();
-    }
-  }, []);
-
   return (
     <group
-      position={[PODIUM_X, PODIUM_Y, PODIUM_Z]}
+      position={[DOME_X, DOME_Y, DOME_Z]}
       onClick={(e) => {
         e.stopPropagation();
-        openAuction();
+        useGameStore.getState().openAuction();
       }}
       onPointerEnter={(e) => {
         e.stopPropagation();
@@ -216,21 +159,15 @@ const AuctionPodiumInner = memo(function AuctionPodiumInner() {
         document.body.style.cursor = 'auto';
       }}
     >
-      <PodiumBase />
-
-      {/* Fake spotlight shaft */}
-      <SpotlightCone />
-
-      {/* Floating auction lot */}
+      {/* Glass dome showcase */}
       <Suspense fallback={null}>
-        <FloatingAuctionItem />
+        <DomeGlb />
       </Suspense>
 
-      {/* Invisible click volume — 8× scaled */}
-      <mesh ref={hitboxRef} visible={false} position={[0, 160, 0]}>
-        <cylinderGeometry args={[128, 160, 320, 12, 1]} />
-        <meshBasicMaterial />
-      </mesh>
+      {/* Floating featured lot inside the dome */}
+      <Suspense fallback={null}>
+        <FloatingJellyfish />
+      </Suspense>
     </group>
   );
 });
