@@ -448,6 +448,8 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     }
 
     // Lerp XZ position
+    const glbPrevX = currentPos.current.x;
+    const glbPrevZ = currentPos.current.z;
     currentPos.current.x += (targetPos.current.x - currentPos.current.x) * (1 - Math.exp(-LERP_SPEED * dt));
     currentPos.current.z += (targetPos.current.z - currentPos.current.z) * (1 - Math.exp(-LERP_SPEED * dt));
 
@@ -489,14 +491,29 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const bob = (isMoving && !airborne) ? Math.sin(clock.elapsedTime * 4.0 + seed) * 0.6 : 0;
     group.position.y = currentTerrainY.current + 2 + bob + jumpY - pivotOffsetY;
 
-    // Direction rotation — use smooth facingAngle when set (possessed NPC),
-    // otherwise snap to cardinal DIR_ROTATION (autonomous wander NPCs).
-    const targetRot = d.facingAngle != null ? d.facingAngle : (DIR_ROTATION[d.direction] ?? 0);
-    // Shortest-path lerp (handle wrapping around ±PI)
-    let diff = targetRot - currentRotY.current;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    currentRotY.current += diff * Math.min(1, 8 * dt);
+    // Direction rotation. Possessed NPC uses server-provided facingAngle for
+    // smooth camera-relative input. Autonomous wanderers use per-frame velocity
+    // (more accurate than the discrete server direction, avoids "walking
+    // backwards" during 180° direction flips — see VRMNpcMesh for full rationale).
+    let targetRot: number | null = null;
+    if (d.facingAngle != null) {
+      targetRot = d.facingAngle;
+    } else {
+      const glbVx = currentPos.current.x - glbPrevX;
+      const glbVz = currentPos.current.z - glbPrevZ;
+      const velMagSq = glbVx * glbVx + glbVz * glbVz;
+      if (velMagSq > 0.25 && d.direction !== 'idle') {
+        // GLB crustaceans face +Z at rest (model faces +Z after preview calibration
+        // 2026-04-16 late PM). For velocity (vx, vz), targetRot = atan2(vx, vz).
+        targetRot = Math.atan2(glbVx, glbVz);
+      }
+    }
+    if (targetRot != null) {
+      let diff = targetRot - currentRotY.current;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      currentRotY.current += diff * Math.min(1, 12 * dt);
+    }
     group.rotation.y = currentRotY.current;
 
     // Layer 2: one-shot rendered-height hard cap.
@@ -749,6 +766,8 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     }
 
     // Lerp XZ position (mirrors GLBNpcMesh terrain-ride pattern)
+    const prevX = currentPos.current.x;
+    const prevZ = currentPos.current.z;
     currentPos.current.x += (targetPos.current.x - currentPos.current.x) * (1 - Math.exp(-LERP_SPEED * dt));
     currentPos.current.z += (targetPos.current.z - currentPos.current.z) * (1 - Math.exp(-LERP_SPEED * dt));
     group.position.x = currentPos.current.x;
@@ -763,12 +782,31 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // VRM feet are at Y=0 per spec — no pivot offset needed.
     group.position.y = currentTerrainY.current;
 
-    // VRM facing: -Z forward → atan2(vx, -vy) for screen-relative space.
-    const targetRot = VRM_DIR_ROTATION[d.direction] ?? VRM_DIR_ROTATION.idle;
-    let diff = targetRot - currentRotY.current;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    currentRotY.current += diff * Math.min(1, 8 * dt);
+    // Facing: compute continuous rotation from actual per-frame velocity rather
+    // than the server's discrete 'up'/'down'/'left'/'right' direction. The
+    // discrete version snaps to 4 cardinals and lerps at 8*dt, so when a
+    // pathfinding waypoint flips the direction 180°, the NPC's position moves
+    // fast (LERP_SPEED=6 catch-up) while its body rotates slowly — producing a
+    // visible "walking backwards" window for ~0.5s. Using the velocity vector
+    // keeps body facing locked to movement direction at all times.
+    //
+    // VRM faces -Z at rotation.y = 0 (rotateVRM0 applied in vrm-loader).
+    // For world velocity (vx, vz), target rotation = atan2(vx, -vz) places
+    // the -Z forward along the velocity vector.
+    const vx = currentPos.current.x - prevX;
+    const vz = currentPos.current.z - prevZ;
+    const velMagSq = vx * vx + vz * vz;
+    // Movement threshold: need at least 0.5wu/frame of motion to trust velocity
+    // as a facing signal. Below that it's likely sub-pixel jitter during idle.
+    if (velMagSq > 0.25 && d.direction !== 'idle') {
+      const targetRot = Math.atan2(vx, -vz);
+      let diff = targetRot - currentRotY.current;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      // Faster rotation lerp (12*dt vs previous 8*dt) so 180° flips complete
+      // in ~0.25s instead of ~0.4s — effectively eliminates the moonwalk window.
+      currentRotY.current += diff * Math.min(1, 12 * dt);
+    }
     group.rotation.y = currentRotY.current;
 
     // Mid-distance: animator runs at 30Hz. Close: full 60Hz.
