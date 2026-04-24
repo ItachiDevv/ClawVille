@@ -5,9 +5,16 @@
  * pregame phase. Spec: frontend-spec.md §3.4. Driven by the store's
  * `countdownSecondsRemaining` (server-authoritative; we just animate the
  * value as it changes).
+ *
+ * Chunk #12 — fires `countdown-tick` SFX on every integer change while
+ * counting down (3 / 2 / 1) and `round-start` on the GO! transition.
+ * `playActivitySound` is a best-effort no-op when the AudioContext is
+ * suspended (caller forgot `primeActivitySounds()`) or when the user
+ * prefers reduced motion, so this stays safe.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { playActivitySound } from '@/lib/activity-audio';
 
 export interface RoundCountdownProps {
   /** Seconds remaining (server-driven). 0 → render "GO!". */
@@ -19,16 +26,32 @@ export interface RoundCountdownProps {
 export default function RoundCountdown({ secondsRemaining, onComplete }: RoundCountdownProps) {
   const [showGo, setShowGo] = useState(false);
   const [pulseKey, setPulseKey] = useState(0);
+  const lastTickRef = useRef<number | null>(null);
 
   // Bump pulse key when integer seconds change so CSS animation re-fires.
   useEffect(() => {
     setPulseKey((k) => k + 1);
   }, [secondsRemaining]);
 
+  // SFX — tick on each integer change (3, 2, 1) while counting down.
+  useEffect(() => {
+    if (secondsRemaining > 0 && secondsRemaining <= 3) {
+      const intSec = Math.max(1, secondsRemaining);
+      if (lastTickRef.current !== intSec) {
+        lastTickRef.current = intSec;
+        playActivitySound('countdown-tick');
+      }
+    } else if (secondsRemaining > 3) {
+      // Reset ticker so a new countdown starts cleanly.
+      lastTickRef.current = null;
+    }
+  }, [secondsRemaining]);
+
   // GO splash on transition to 0.
   useEffect(() => {
     if (secondsRemaining === 0) {
       setShowGo(true);
+      playActivitySound('round-start');
       onComplete?.();
       const t = setTimeout(() => setShowGo(false), 800);
       return () => clearTimeout(t);

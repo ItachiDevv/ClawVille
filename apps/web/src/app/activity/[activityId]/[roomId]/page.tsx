@@ -28,6 +28,9 @@ import { useActivityWs } from '@/hooks/useActivityWs';
 import { useActivityInput } from '@/hooks/useActivityInput';
 import BumperShellsHud from '@/components/game/bumper-shells-hud';
 import ReefRaceHud from '@/components/game/reef-race-hud';
+import ActivityMobileControls from '@/components/game/activity-mobile-controls';
+import { primeActivitySounds, preloadActivitySounds } from '@/lib/activity-audio';
+import type { SpectatorCamMode } from '@/components/game/activity';
 
 // 3da-owned scenes — dynamic-imported so WebGPU context only initializes
 // after the page mounts (avoids bundling Three.js WebGPU into the entry
@@ -174,6 +177,49 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
 
   useActivityInput({ send, enabled: inputEnabled });
 
+  // ── Chunk #12 — spectator camera state lifted from HUD to page ─────────
+  // The HUD owns the *picker* + *target cycle*; the page owns the *scene
+  // prop bridge*. We only feed the props to the scene when the player is
+  // actually spectating (selfAlive === false during a live match), so
+  // active players keep the static OrthographicCamera (Iris Xe perf
+  // invariant — see BumperShellsScene.tsx §31).
+  const [spectatorCamMode, setSpectatorCamMode] =
+    useState<SpectatorCamMode>('action');
+  const [spectatorTargetPetId, setSpectatorTargetPetId] = useState<string | null>(
+    null,
+  );
+  const handleSpectatorStateChange = useCallback(
+    (next: { camMode: SpectatorCamMode; targetPetId: string | null }) => {
+      setSpectatorCamMode(next.camMode);
+      setSpectatorTargetPetId(next.targetPetId);
+    },
+    [],
+  );
+  const isSpectating = matchPhase === 'live' && !selfAlive;
+  const sceneSpectatorCamMode = isSpectating ? spectatorCamMode : undefined;
+  const sceneSpectatorTargetPetId = isSpectating ? spectatorTargetPetId : null;
+
+  // ── Chunk #12 — prime SFX bus on first user interaction ────────────────
+  // The route mount itself isn't a user gesture, so AudioContext.resume()
+  // would be denied. We prime on the first pointer/key event instead.
+  useEffect(() => {
+    function unlock() {
+      primeActivitySounds();
+      preloadActivitySounds();
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('keydown', unlock);
+      window.removeEventListener('touchstart', unlock);
+    }
+    window.addEventListener('pointerdown', unlock, { passive: true });
+    window.addEventListener('keydown', unlock);
+    window.addEventListener('touchstart', unlock, { passive: true });
+    return () => {
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('keydown', unlock);
+      window.removeEventListener('touchstart', unlock);
+    };
+  }, []);
+
   // Surface ping into local state already — no extra wiring needed
   // (BumperShellsHud reads from the store).
   void ping;
@@ -294,7 +340,12 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
       }}
     >
       <div style={{ position: 'absolute', inset: 0 }}>
-        <BumperShellsScene roomId={roomId} selfAvatarId={avatarId} />
+        <BumperShellsScene
+          roomId={roomId}
+          selfAvatarId={avatarId}
+          spectatorCamMode={sceneSpectatorCamMode}
+          spectatorTargetPetId={sceneSpectatorTargetPetId}
+        />
       </div>
       <BumperShellsHud
         onLeave={handleLeave}
@@ -303,7 +354,12 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
         roomId={roomId}
         sendChat={handleSendChat}
         sendEmote={handleSendEmote}
+        onSpectatorStateChange={handleSpectatorStateChange}
       />
+      {/* Chunk #12 — mobile A (boost) + B (power-up) thumb buttons.
+          Only renders on touch devices; replaces the open-world E button
+          while we're on the activity route. */}
+      <ActivityMobileControls active={inputEnabled} />
     </main>
   );
 }
