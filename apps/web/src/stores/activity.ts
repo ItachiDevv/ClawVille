@@ -110,6 +110,27 @@ export interface MatchWinner {
   placement: number;
 }
 
+// ─── Chat / emote messages (chunk #11 spectator channel) ────────────────────
+
+/**
+ * Chat or emote message captured from a server `chat` frame. Chunk #11
+ * keeps these in a small ring buffer so the spectator overlay can render
+ * a transcript even though the server doesn't yet fan out a separate
+ * spectator channel — local-self echo only at this chunk.
+ */
+export interface ActivityChatMessage {
+  /** Wall-clock millis the message landed locally. */
+  at: number;
+  /** Sender avatar id (server fills this in). */
+  avatarId: string;
+  /** Either chat text or rendered emote glyph + label. */
+  text: string;
+  /** When true, message belongs to the spectator-only channel. */
+  spectator: boolean;
+  /** Set when this row originated from an `emote` (cheer/taunt). */
+  emoteId?: string;
+}
+
 // ─── Store interface ────────────────────────────────────────────────────────
 
 export interface ActivityState {
@@ -149,6 +170,12 @@ export interface ActivityState {
   rewardPreview: RewardPreview | null;
   /** Last server `error` frame (HUD displays inline if set). */
   errorBanner: { code: string; message: string } | null;
+  /**
+   * Chunk #11 — chat + emote ring buffer for the spectator overlay.
+   * Stored client-side only at this chunk (server-side spectator-channel
+   * fan-out is a future chunk). The HUD reads via `selectSpectatorChat`.
+   */
+  chatLog: ActivityChatMessage[];
 
   // ── Writer API ──────────────────────────────────────────────────────────
 
@@ -163,6 +190,13 @@ export interface ActivityState {
   pushHit: (hit: BumperHitEvent) => void;
   pushElimination: (ev: BumperEliminationEvent) => void;
   clearError: () => void;
+  /**
+   * Chunk #11 — local-only chat append. Used by the HUD when the user
+   * sends a spectator chat / emote so the transcript shows immediately
+   * without waiting for the server echo (server may not echo at all
+   * until the spectator channel ships).
+   */
+  pushChatLocal: (msg: Omit<ActivityChatMessage, 'at'> & { at?: number }) => void;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -170,6 +204,8 @@ export interface ActivityState {
 /** Trim the events.* arrays so they don't grow unbounded across a long match. */
 const HIT_RING_BUFFER = 64;
 const ELIM_RING_BUFFER = 32;
+/** Chat ring buffer size — covers a typical 90s round + spectator phase. */
+const CHAT_RING_BUFFER = 64;
 
 /** Map server `kind` strings (free-form for forward-compat) onto our enum. */
 function normalizePickupKind(raw: string): BumperPickupKind {
@@ -299,6 +335,7 @@ function emptyState(): Pick<
   | 'errorBanner'
   | 'room'
   | 'ping'
+  | 'chatLog'
 > {
   return {
     entities: new Map(),
@@ -318,6 +355,7 @@ function emptyState(): Pick<
     errorBanner: null,
     room: null,
     ping: 0,
+    chatLog: [],
   };
 }
 
@@ -345,6 +383,18 @@ export const useActivityStore = create<ActivityState>()(
       const next = get().events.eliminations.slice(-ELIM_RING_BUFFER + 1);
       next.push(ev);
       set({ events: { ...get().events, eliminations: next } });
+    },
+
+    pushChatLocal: (msg) => {
+      const next = get().chatLog.slice(-CHAT_RING_BUFFER + 1);
+      next.push({
+        at: msg.at ?? Date.now(),
+        avatarId: msg.avatarId,
+        text: msg.text,
+        spectator: msg.spectator,
+        emoteId: msg.emoteId,
+      });
+      set({ chatLog: next });
     },
 
     reset: (roomId) => {
@@ -576,9 +626,22 @@ export const useActivityStore = create<ActivityState>()(
           break;
 
         // ── Chat / pong / error ─────────────────────────────────────────
-        case 'chat':
-          // Chat surface ships in chunk #8 polish — capture for future wiring.
+        case 'chat': {
+          // Chunk #11: append to ring buffer so the spectator overlay can
+          // render a transcript. The active-player chat surface itself is
+          // not rendered yet (chunk #8 polish), but spectators MUST see at
+          // minimum their own outbound messages — captured here on echo.
+          const next = state.chatLog.slice(-CHAT_RING_BUFFER + 1);
+          next.push({
+            at: Date.now(),
+            avatarId: frame.avatarId,
+            text: frame.text,
+            spectator: Boolean(frame.spectator),
+            emoteId: frame.emote?.emoteId,
+          });
+          set({ chatLog: next });
           break;
+        }
 
         case 'pong':
           // Ping computation lives in `useActivityWs` because it tracks the
@@ -629,4 +692,27 @@ export function selectSelfAlive(state: ActivityState): boolean {
   const e = state.entities.get(state.selfAvatarId);
   if (!e) return true;
   return e.alive;
+}
+
+/**
+ * Chunk #11 — spectator-channel chat slice. Filters the chat ring buffer
+ * to only spectator-tagged rows (chat + emote echoes from the spectator
+ * overlay). Used by `<SpectatorChatPanel>`.
+ */
+export function selectSpectatorChat(state: ActivityState): ActivityChatMessage[] {
+  return state.chatLog.filter((m) => m.spectator);
+}
+
+/**
+ * Chunk #11 — list of currently-alive entities, used by the spectator
+ * overlay's prev/next focus cycler. Stable order by avatarId so cycling
+ * through is predictable across snapshot ticks.
+ */
+export function selectAliveEntities(state: ActivityState): BumperShellEntity[] {
+  const out: BumperShellEntity[] = [];
+  state.entities.forEach((e) => {
+    if (e.alive) out.push(e);
+  });
+  out.sort((a, b) => (a.avatarId < b.avatarId ? -1 : a.avatarId > b.avatarId ? 1 : 0));
+  return out;
 }
