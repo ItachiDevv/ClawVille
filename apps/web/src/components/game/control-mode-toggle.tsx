@@ -1,32 +1,26 @@
 'use client';
 
 import { useGameStore, type GameState } from '@/stores/game';
-import { useAvatar } from '@/hooks/use-avatar';
 
 export default function ControlModeToggle() {
   const controlMode = useGameStore((s: GameState) => s.controlMode);
   const isSpectator = useGameStore((s: GameState) => s.isSpectator);
+  const agentConnected = useGameStore((s: GameState) => s.agentConnected);
   const setControlMode = useGameStore((s: GameState) => s.setControlMode);
   const toggleControlMode = useGameStore((s: GameState) => s.toggleControlMode);
-  const { data: avatar, isLoading: isPetLoading } = useAvatar();
-  const hasAvatar = !!avatar;
 
-  // Suppress during initial avatar fetch — otherwise the toggle renders
-  // "Explore / NPC Mode" for the ~300-800ms before useAvatar() resolves, then
-  // flips to "Controlled / Autonomous" once the avatar loads. Users on a fresh
-  // reload see the wrong labels + the "Connect Your Agent" pill while the
-  // sidebar already shows their agent, which looks like a broken build.
-  if (isPetLoading) return null;
+  // Toggle labels gate strictly on `agentConnected` (the real Moltbook
+  // handshake completed), NOT on `hasAvatar`. Guest auto-create mints a
+  // throwaway avatar for unauthenticated visitors so they can play activity
+  // games — but they remain NPC-mode visitors. The toggle is the
+  // "I have an agent in the world" switch, which only flips after a
+  // real connect.
+  //   agentConnected=false → Explore    ↔ NPC Mode    (spectator / possess NPC)
+  //   agentConnected=true  → Controlled ↔ Autonomous  (manual / autonomy engine)
+  const optionA = agentConnected ? 'Controlled' : 'Explore';
+  const optionB = agentConnected ? 'Autonomous' : 'NPC Mode';
 
-  // Toggle labels follow `hasAvatar` — per user mental model, logging in
-  // (magic-link or otherwise) puts a avatar in the world = you have a
-  // connected agent. Explore/NPC is for pre-login visitors only.
-  //   hasAvatar=false → Explore    ↔ NPC Mode    (spectator / possess NPC)
-  //   hasAvatar=true  → Controlled ↔ Autonomous  (manual / autonomy engine)
-  const optionA = hasAvatar ? 'Controlled' : 'Explore';
-  const optionB = hasAvatar ? 'Autonomous' : 'NPC Mode';
-
-  const aActive = hasAvatar
+  const aActive = agentConnected
     ? controlMode !== 'autonomous' // default: Controlled highlighted when mode isn't autonomous
     : controlMode === 'explore';
 
@@ -43,7 +37,7 @@ export default function ControlModeToggle() {
       <div className="flex items-center gap-0 rounded-full bg-[rgba(10,22,40,0.85)] backdrop-blur-md border border-cyan-500/20 shadow-[0_0_16px_rgba(0,229,255,0.07)] p-0.5">
         <button
           onClick={() => {
-            if (hasAvatar) setControlMode('player');
+            if (agentConnected) setControlMode('player');
             else if (!aActive) toggleControlMode();
           }}
           className={`
@@ -58,7 +52,7 @@ export default function ControlModeToggle() {
         </button>
         <button
           onClick={() => {
-            if (hasAvatar) setControlMode('autonomous');
+            if (agentConnected) setControlMode('autonomous');
             else if (aActive) toggleControlMode();
           }}
           className={`
