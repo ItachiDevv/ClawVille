@@ -17,10 +17,17 @@ export interface PathNode {
 /** Compute walkability grid: true = walkable, false = blocked.
  *  BUILDING_TILE_ZONES is authoritative tile zone (14×14) but the rendered
  *  building footprint can reach MAX_FOOTPRINT = 1000 wu = 31.25 tiles.
- *  BUILDING_EXCLUSION_PAD expands the zone by 9 tiles in each direction so
- *  pathfinding blocks the visual footprint and NPCs stop walking through
- *  the rendered geometry. Effective half-extent = 7+9 = 16 tiles = 512 wu. */
-const BUILDING_EXCLUSION_PAD = 9;
+ *  BUILDING_EXCLUSION_PAD expands the zone by N tiles in each direction so
+ *  pathfinding blocks the visual footprint AND keeps a buffer so NPCs don't
+ *  walk right up to the wall and stop there.
+ *
+ *  2026-04-24: bumped 9 → 14. At pad=9, Miladys were clustering pressed
+ *  against the Pineapple House and other buildings per user screenshot —
+ *  A* routes them to the exclusion edge which happens to be 1-2 tiles
+ *  from the visible wall. Bumping pad to 14 tiles (448 wu) means final
+ *  waypoints land well clear of any building geometry. Effective
+ *  half-extent = 7+14 = 21 tiles = 672 wu per building. */
+const BUILDING_EXCLUSION_PAD = 14;
 
 function buildWalkabilityGrid(): boolean[][] {
   const grid: boolean[][] = [];
@@ -54,6 +61,27 @@ let cachedGrid: boolean[][] | null = null;
 function getGrid(): boolean[][] {
   if (!cachedGrid) cachedGrid = buildWalkabilityGrid();
   return cachedGrid;
+}
+
+/**
+ * Returns true if the given world-pixel coord is walkable AND has clearance
+ * of `margin` tiles from any blocked tile. Used to reject wander targets
+ * that land right at a building's exclusion boundary — NPCs otherwise
+ * pathfind to that edge and stop there (cluster against building walls).
+ */
+export function hasClearance(x: number, y: number, margin: number = 3): boolean {
+  const grid = getGrid();
+  const c = Math.floor(x / TILE);
+  const r = Math.floor(y / TILE);
+  for (let dr = -margin; dr <= margin; dr++) {
+    for (let dc = -margin; dc <= margin; dc++) {
+      const rr = r + dr;
+      const cc = c + dc;
+      if (rr < 0 || rr >= ROWS || cc < 0 || cc >= COLS) return false;
+      if (!grid[rr][cc]) return false;
+    }
+  }
+  return true;
 }
 
 interface AStarNode {
