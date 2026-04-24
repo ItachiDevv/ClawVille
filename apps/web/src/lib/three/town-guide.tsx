@@ -126,6 +126,15 @@ const TownGuideInner = memo(function TownGuideInner() {
     cycleActionsRef.current = actions;
     cycleIndexRef.current   = 0;
     slotAdvanceAtRef.current = SLOT_DURATION_SEC;
+    if (typeof window !== 'undefined') {
+      (window as any).__NORI_DEBUG = {
+        mixer,
+        actions,
+        cycleIndexRef,
+        slotAdvanceAtRef,
+        wavingRef,
+      };
+    }
 
     const waveClip = animations.find((c) => c.name === CLIP_WAVE);
     if (waveClip) {
