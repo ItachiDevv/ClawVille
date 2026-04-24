@@ -15,6 +15,7 @@ import FirstTimeBackupModal from '@/components/game/first-time-backup-modal';
 import LocationConfigModal from '@/components/game/location-config-modal';
 import TutorialOverlay from '@/components/game/tutorial-overlay';
 import ToastNotifications from '@/components/game/toast-notifications';
+import { GuestPetBootstrap } from '@/components/game/guest-pet-bootstrap';
 import Minimap from '@/components/game/minimap';
 import PetChatBar from '@/components/game/pet-chat-bar';
 import ChargeBar from '@/components/game/charge-bar';
@@ -275,6 +276,10 @@ export default function GamePage() {
       <MobileControls />
       <PerfHud />
       <ToastNotifications />
+      {/* Listens for `clawville:ensure-guest-pet` window events from the
+          game store and bootstraps a guest pet for un-authenticated
+          visitors. No UI of its own. */}
+      <GuestPetBootstrap />
 
       {/* Pet-specific UI — rendered whenever the user owns a pet. With the
           Controlled/Autonomous toggle semantics, having a pet = "my agent is

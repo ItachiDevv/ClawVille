@@ -123,6 +123,11 @@ dashboardRoutes.get('/overview', adminOnly, async (c) => {
         WHERE event_type = 'agent.chat.turn'
           AND ts > now() - interval '7 days'
           AND payload->>'chatType' IN ('building', 'location')
+          -- Guest-pet carve-out (2026-04-23) — un-authed visitor chats
+          -- are flagged with payload.isGuest so the teacher-chat metric
+          -- only counts real-account engagement. Older events without
+          -- the field coalesce to '' which fails the equality test.
+          AND coalesce(payload->>'isGuest', '') <> 'true'
       `),
 
       // Chart: Buildings by visits (7d)

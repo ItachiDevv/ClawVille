@@ -162,6 +162,16 @@ export interface ActivityMatchPlacedPayload {
   tokensAwarded: number;
   leaderboardPoints: number;
   subjectType: 'human' | 'agent' | 'bot';
+  /**
+   * True when the participant is an un-authed guest (created via
+   * `POST /api/auth/guest`). The agent leaderboard SQL filters on
+   * `payload->>'isGuest' <> 'true'` to keep guest results out of the
+   * placement-tier credit, mirroring the existing bot exclusion.
+   * Defaults to undefined (omitted) for non-guest writers — the JSON
+   * filter coalesces a missing key to `''` which fails the `=` 'true'
+   * test, so it's safe to leave off legacy emitters.
+   */
+  isGuest?: boolean;
 }
 
 export interface ActivityMatchSweptPayload {
