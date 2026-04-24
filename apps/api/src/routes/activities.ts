@@ -144,6 +144,79 @@ activitiesV2Routes.get('/', async (c) => {
   return c.json({ activities: items });
 });
 
+// ─── Specific GET routes that MUST precede /:id ────────────────────────────
+// Hono matches in registration order; without these here, GET /seasons would
+// match the /:id parameter as id='seasons' and 404 with "activity not found".
+// Same trap for /me/recent-results.
+
+/**
+ * `GET /api/activities/seasons` — public catalog. Auto-creates the first
+ * season (`2026-Q2-S1`, 30 days) on first call so the route never returns
+ * an empty `active`. 60s cached at the service layer.
+ */
+activitiesV2Routes.get('/seasons', async (c) => {
+  const ip = getClientIp(c.req.raw.headers);
+  if (!publicReadLimiter.check(ip)) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  const { active, past } = await getSeasonsCatalog();
+  return c.json({
+    active,
+    past,
+  });
+});
+
+/**
+ * `GET /api/activities/me/recent-results?limit=20` — auth'd; returns the
+ * caller's pet's recent match results. Sorted DESC by createdAt.
+ */
+activitiesV2Routes.get(
+  '/me/recent-results',
+  requireAuthOrAgentSession,
+  async (c) => {
+    const identity = c.get('identity');
+    const rawLimit = parseInt(c.req.query('limit') || '20', 10);
+    const limit = Math.min(50, Math.max(1, Number.isFinite(rawLimit) ? rawLimit : 20));
+
+    const rows = await db
+      .select({
+        id: activityResults.id,
+        roomId: activityResults.roomId,
+        activityId: activityResults.activityId,
+        placement: activityResults.placement,
+        score: activityResults.score,
+        scoreMs: activityResults.scoreMs,
+        tokensAwarded: activityResults.tokensAwarded,
+        leaderboardPoints: activityResults.leaderboardPoints,
+        isPersonalBest: activityResults.isPersonalBest,
+        acknowledgedAt: activityResults.acknowledgedAt,
+        createdAt: activityResults.createdAt,
+      })
+      .from(activityResults)
+      .where(eq(activityResults.petId, identity.petId))
+      .orderBy(desc(activityResults.createdAt))
+      .limit(limit);
+
+    const results = rows.map((r) => ({
+      resultId: r.id,
+      roomId: r.roomId,
+      activityId: r.activityId,
+      activityName:
+        getActivityDefinition(r.activityId)?.title ?? r.activityId,
+      placement: r.placement,
+      score: r.score,
+      scoreMs: r.scoreMs,
+      tokensAwarded: r.tokensAwarded,
+      leaderboardPoints: r.leaderboardPoints,
+      isPersonalBest: r.isPersonalBest,
+      acknowledged: r.acknowledgedAt != null,
+      createdAt: r.createdAt,
+    }));
+
+    return c.json({ results });
+  },
+);
+
 // ─── GET /api/activities/:id (public) ──────────────────────────────────────
 
 activitiesV2Routes.get('/:id', async (c) => {
@@ -538,74 +611,8 @@ activitiesV2Routes.get(
 );
 
 // ─── Chunk #7 — reward pipeline + per-activity leaderboards ────────────────
-
-/**
- * `GET /api/activities/seasons` — public catalog. Auto-creates the first
- * season (`2026-Q2-S1`, 30 days) on first call so the route never returns
- * an empty `active`. 60s cached at the service layer.
- */
-activitiesV2Routes.get('/seasons', async (c) => {
-  const ip = getClientIp(c.req.raw.headers);
-  if (!publicReadLimiter.check(ip)) {
-    return c.json({ error: 'rate_limited' }, 429);
-  }
-  const { active, past } = await getSeasonsCatalog();
-  return c.json({
-    active,
-    past,
-  });
-});
-
-/**
- * `GET /api/activities/me/recent-results?limit=20` — auth'd; returns the
- * caller's pet's recent match results. Sorted DESC by createdAt.
- */
-activitiesV2Routes.get(
-  '/me/recent-results',
-  requireAuthOrAgentSession,
-  async (c) => {
-    const identity = c.get('identity');
-    const rawLimit = parseInt(c.req.query('limit') || '20', 10);
-    const limit = Math.min(50, Math.max(1, Number.isFinite(rawLimit) ? rawLimit : 20));
-
-    const rows = await db
-      .select({
-        id: activityResults.id,
-        roomId: activityResults.roomId,
-        activityId: activityResults.activityId,
-        placement: activityResults.placement,
-        score: activityResults.score,
-        scoreMs: activityResults.scoreMs,
-        tokensAwarded: activityResults.tokensAwarded,
-        leaderboardPoints: activityResults.leaderboardPoints,
-        isPersonalBest: activityResults.isPersonalBest,
-        acknowledgedAt: activityResults.acknowledgedAt,
-        createdAt: activityResults.createdAt,
-      })
-      .from(activityResults)
-      .where(eq(activityResults.petId, identity.petId))
-      .orderBy(desc(activityResults.createdAt))
-      .limit(limit);
-
-    const results = rows.map((r) => ({
-      resultId: r.id,
-      roomId: r.roomId,
-      activityId: r.activityId,
-      activityName:
-        getActivityDefinition(r.activityId)?.title ?? r.activityId,
-      placement: r.placement,
-      score: r.score,
-      scoreMs: r.scoreMs,
-      tokensAwarded: r.tokensAwarded,
-      leaderboardPoints: r.leaderboardPoints,
-      isPersonalBest: r.isPersonalBest,
-      acknowledged: r.acknowledgedAt != null,
-      createdAt: r.createdAt,
-    }));
-
-    return c.json({ results });
-  },
-);
+// (Specific GET routes /seasons and /me/recent-results were hoisted above
+// /:id at the top of this file — Hono matches in registration order.)
 
 /**
  * `GET /api/activities/:id/rooms/:roomId/results` — auth'd; returns the
