@@ -28,13 +28,18 @@ import type { OpenClawClient } from './openclaw-client';
 const MAP_WIDTH = 5120;
 const MAP_HEIGHT = 5120;
 
-// Town-center anchor and the radius free-roaming wanderers stay inside.
-// Buildings are on a ring at ~2176wu from center; this keeps Miladys and
-// crustacean wanderers visibly inside the inner ring so they read as
-// "town residents" instead of walking off toward the map edge.
-const TOWN_CENTER_X = MAP_WIDTH / 2;   // 2560
-const TOWN_CENTER_Y = MAP_HEIGHT / 2;  // 2560
-const FREE_ROAMER_MAX_RADIUS = 900;
+// Town-center anchor and the annulus (ring) free-roaming wanderers stay inside.
+// Buildings are on a ring at ~2176wu from center. The annulus keeps free
+// roamers (Miladys + crustacean wanderers) in the OPEN BAND between the
+// town-center furniture (Nori, auction podium, bazaar pedestals, bounty
+// board, quest NPC — all within ~300wu of center) and the outer building
+// ring. They read as "town residents patrolling the commons" instead of
+// either crowding on top of the podium (previous disk sampling) or
+// walking off toward the map edge (original behavior before the fix).
+const TOWN_CENTER_X = MAP_WIDTH / 2;       // 2560
+const TOWN_CENTER_Y = MAP_HEIGHT / 2;      // 2560
+const FREE_ROAMER_MIN_RADIUS = 500;        // outside town-center furniture cluster
+const FREE_ROAMER_MAX_RADIUS = 1700;       // comfortably inside the 2176wu building ring
 
 // --- Types ---
 
@@ -730,21 +735,27 @@ class NpcSimulation {
     }
   }
 
-  // Free-roamer wander that picks a point inside the town ring
-  // (FREE_ROAMER_MAX_RADIUS from TOWN_CENTER). Prevents Miladys and
-  // crustacean wanderers from drifting to the map edge / into the
-  // outer building ring.
+  // Free-roamer wander that picks a point inside the town RING (annulus
+  // between FREE_ROAMER_MIN_RADIUS and FREE_ROAMER_MAX_RADIUS). Prevents
+  // Miladys and crustacean wanderers both from crowding on top of the
+  // town-center furniture AND from drifting to the map edge / outer
+  // building ring.
   private planCenterWander(npc: NpcRuntimeState) {
-    // Random point in a disk — use sqrt(u) for uniform area sampling.
+    // Uniform area sampling in an annulus:
+    //   r = sqrt(u * (R² - r²) + r²)
+    // preserves equal area density at every radius — without the sqrt
+    // more points would cluster near the inner edge.
     const angle = Math.random() * Math.PI * 2;
-    const radius = Math.sqrt(Math.random()) * FREE_ROAMER_MAX_RADIUS;
+    const rMinSq = FREE_ROAMER_MIN_RADIUS * FREE_ROAMER_MIN_RADIUS;
+    const rMaxSq = FREE_ROAMER_MAX_RADIUS * FREE_ROAMER_MAX_RADIUS;
+    const radius = Math.sqrt(Math.random() * (rMaxSq - rMinSq) + rMinSq);
     const tx = TOWN_CENTER_X + Math.cos(angle) * radius;
     const ty = TOWN_CENTER_Y + Math.sin(angle) * radius;
     const path = findPath(npc.x, npc.y, tx, ty);
     if (path.length > 0) {
       npc.activity = 'walking'; npc.activityEmoji = '';
       npc.path = path; npc.pathIndex = 0;
-      npc.intentDescription = 'Strolling the town';
+      npc.intentDescription = 'Strolling the town ring';
       npc.behaviorCooldown = 80 + Math.floor(Math.random() * 60);
     } else {
       npc.behaviorCooldown = 20;
@@ -752,16 +763,21 @@ class NpcSimulation {
   }
 
   // Free-roamer approach: only considers NPCs that are ALSO inside the
-  // town ring, so a Milady never chases a building resident out to the
-  // outer ring. Falls back to a center-wander if no suitable target.
+  // outer ring bound (MAX_RADIUS), so a Milady never chases a building
+  // resident past the building ring. Approach targets may be closer to
+  // center than MIN_RADIUS (e.g. another wanderer passing through the
+  // inner circle) — the approacher's next planCenterWander will snap
+  // them back out to the ring. Falls back to a center-wander if no
+  // suitable target.
   private planApproachNearbyNpc(npc: NpcRuntimeState) {
+    const rMaxSq = FREE_ROAMER_MAX_RADIUS * FREE_ROAMER_MAX_RADIUS;
     const others = Array.from(this.npcs.values()).filter((o) => {
       if (o.id === npc.id) return false;
       if (o.isDead || o.inCombat || o.inConversation) return false;
       if (o.activity === 'sleeping') return false;
       const dx = o.x - TOWN_CENTER_X;
       const dy = o.y - TOWN_CENTER_Y;
-      return dx * dx + dy * dy <= FREE_ROAMER_MAX_RADIUS * FREE_ROAMER_MAX_RADIUS;
+      return dx * dx + dy * dy <= rMaxSq;
     });
     if (others.length === 0) { this.planCenterWander(npc); return; }
     const target = others[Math.floor(Math.random() * others.length)];
