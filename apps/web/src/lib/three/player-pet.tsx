@@ -49,6 +49,17 @@ const BOB_AMPLITUDE = 0.3;
 // need ~3-4s to cross visible area ~2000 wu → 2000/550 ≈ 3.6s).
 const PET_SCALE = 40;
 
+// PET_VRM_SCALE: scale for the player-controlled VRM avatar (Milady) in the main world.
+// Matches VRM_NPC_SCALE = 112 from arena-npcs.tsx so the player's Milady reads at the
+// same size as the wandering Milady NPCs (Miu / Kyoko / etc.) rather than the lobster
+// PET_SCALE height. User feedback 2026-04-24: "should match the size of the milady NPCs,
+// it's about 1/10th the size of a regular one now" — at scale=13 (reg.scale) the
+// player-pet was 13/112 ≈ 11.6% of the wandering-Milady size, confirming "1/10th".
+// Brand direction: Milady is the hero silhouette of the world, so the player pet
+// matches the wandering Miladys, not the crustacean player pets.
+// Do NOT use reg.scale (=13, picker-only).
+const PET_VRM_SCALE = 112;
+
 const COLOR_TINTS: Record<string, number> = {
   blue: 0x42a5f5, red: 0xef5350, green: 0x66bb6a, yellow: 0xffee58,
   purple: 0xab47bc, orange: 0xffa726, pink: 0xf48fb1, white: 0xeeeeee,
@@ -404,7 +415,7 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
     <group ref={groupRef}>
       <primitive
         object={vrm.scene}
-        scale={[reg.scale, reg.scale, reg.scale]}
+        scale={[PET_VRM_SCALE, PET_VRM_SCALE, PET_VRM_SCALE]}
       />
     </group>
   );

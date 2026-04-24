@@ -231,13 +231,13 @@ const PlatformModelVRM = memo(function PlatformModelVRM({
   });
 
   return (
-    // reg.scale * 2.1 (≈ 27.3) — matches the VRM_NPC_SCALE=28 sizing used by
-    // wandering Milady NPCs in arena-npcs.tsx, so the picker preview renders at
-    // roughly the same apparent height as the in-world avatar. Previously used
-    // 1.35× which made Milady fill only ~60% of the shrine vs. OpenClaw GLBs
-    // filling ~90% — user flagged 2026-04-23 as "half as small as other
-    // avatars". The registry's per-row scale (13) is retained for the picker
-    // authoring context; this multiplier is a picker-only visual adjustment.
+    // reg.scale * 2.1 (≈ 27.3wu) — visual height calibrated for the shrine pedestal.
+    // Previously used 1.35× (too small) → bumped to 2.1× on 2026-04-23 to fill the
+    // shrine on desktop. The multiplier itself is kept at 2.1×; mobile-portrait crop
+    // (mid-thigh to shoes only) is fixed by raising the camera target + position
+    // instead (target [0,14,0]→[0,17,0], camera y 12→16, z 45→50) so the viewport
+    // centers on the character's torso rather than its waist regardless of aspect ratio.
+    // Registry scale=13 is the picker authoring unit; this multiplier is picker-only.
     <group position={[0, 1.5, 0]} scale={[reg.scale * 2.1, reg.scale * 2.1, reg.scale * 2.1]}>
       <primitive object={vrm.scene} />
     </group>
@@ -404,7 +404,7 @@ const SceneContents = memo(function SceneContents({
         maxDistance={isVRM ? 75 : 80}
         minPolarAngle={Math.PI * (isVRM ? 0.32 : 0.28)}
         maxPolarAngle={Math.PI * (isVRM ? 0.52 : 0.55)}
-        target={isVRM ? [0, 14, 0] : [0, 8, 0]}
+        target={isVRM ? [0, 17, 0] : [0, 8, 0]}
       />
 
       {/* Shared underwater base lighting */}
@@ -482,7 +482,7 @@ export default function SelectAgentCanvas({
     <div id="select-agent-canvas" className="w-full h-full">
       <Canvas
         className="w-full h-full"
-        camera={{ position: [0, 12, 45], fov: 45 }}
+        camera={{ position: [0, 16, 50], fov: 45 }}
         // WebGL-only: preserveDrawingBuffer enables toDataURL thumbnail capture
         // in create-agent/page.tsx. If this Canvas ever switches to
         // WebGPURenderer, replace thumbnail capture with a RenderTarget +
