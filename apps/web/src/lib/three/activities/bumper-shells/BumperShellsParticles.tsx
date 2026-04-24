@@ -3,19 +3,22 @@
 /**
  * BumperShellsParticles.tsx
  *
- * Module-scope burst particle pool for knockback hit VFX.
- * Pool: BURST_POOL_SIZE (4) simultaneous bursts × BURST_POINT_COUNT (16) points each.
+ * REBUILT 2026-04-24 — Module-scope burst particle pool for impact VFX.
+ *
+ * Pool: BURST_POOL_SIZE (6) simultaneous bursts × BURST_POINT_COUNT (12) points each.
+ * Each burst: quads scatter outward + upward from impact point over BURST_LIFETIME_MS.
+ * Additive blending gives a hot-plasma look without alpha sorting.
  *
  * Iris Xe invariants:
- *   - PointsNodeMaterial (TSL) — safe on WebGPU. Falls back gracefully.
- *   - 16 points per burst max — Iris Xe fragment throughput constraint.
+ *   - PointsMaterial (standard) — safe on WebGPU (no ShaderMaterial).
+ *   - ≤12 points per burst — Iris Xe fragment throughput constraint.
  *   - Float32BufferAttribute mutated in-place — no new attribute per frame.
- *   - Pool slots are mounted at scene init as visible=false — no dynamic mesh creation.
+ *   - Pool slots mounted at scene init as visible=false — no dynamic mesh creation.
  *   - No new THREE.Vector3() inside useFrame — module-scope scratch only.
  *
  * Public API:
- *   - `triggerBurst(x, y, z, color)` — imperative, called from BumperShellsScene.
- *   - `<BumperShellsParticles />` — JSX component, mount once at scene root.
+ *   - `triggerBurst(x, y, z, color)` — imperative.
+ *   - `<BumperShellsParticles />` — mount once at scene root.
  */
 
 import { useRef, useEffect } from 'react';
@@ -44,15 +47,20 @@ const _pool: BurstSlot[] = Array.from({ length: BURST_POOL_SIZE }, () => ({
   colorHex: '#ffffff',
 }));
 
-// Pre-computed random XZ directions for each slot×point.
-// Computed once at module load — no per-frame random calls.
-const _directions: Float32Array[] = Array.from({ length: BURST_POOL_SIZE }, () => {
+// Pre-computed deterministic spread directions for each slot×point.
+// Computed once at module load — no per-frame random calls, deterministic seed.
+const _directions: Float32Array[] = Array.from({ length: BURST_POOL_SIZE }, (_, si) => {
   const d = new Float32Array(BURST_POINT_COUNT * 3);
   for (let i = 0; i < BURST_POINT_COUNT; i++) {
-    const angle = (i / BURST_POINT_COUNT) * Math.PI * 2 + Math.random() * 0.5;
-    d[i * 3 + 0] = Math.cos(angle);
-    d[i * 3 + 1] = (Math.random() - 0.5) * 0.6; // slight Y scatter
-    d[i * 3 + 2] = Math.sin(angle);
+    const seed = (si * 1000 + i * 137);
+    const angle = (i / BURST_POINT_COUNT) * Math.PI * 2 + (seed % 100) * 0.063;
+    const upBias = ((seed * 7) % 100) / 100; // 0..1, biased upward for aerial look
+    d[i * 3 + 0] = Math.cos(angle) * (0.6 + upBias * 0.4);
+    d[i * 3 + 1] = 0.3 + upBias * 0.7; // more pronounced upward scatter
+    d[i * 3 + 2] = Math.sin(angle) * (0.6 + upBias * 0.4);
+    // Normalise
+    const len = Math.sqrt(d[i*3]*d[i*3] + d[i*3+1]*d[i*3+1] + d[i*3+2]*d[i*3+2]);
+    d[i*3] /= len; d[i*3+1] /= len; d[i*3+2] /= len;
   }
   return d;
 });
@@ -120,14 +128,13 @@ function BurstPoints({ slotIndex }: { slotIndex: number }) {
     );
     geometry.current = geo;
 
-    // PointsMaterial as fallback — PointsNodeMaterial would need TSL setup.
-    // Using standard PointsMaterial: transparent + additive = acceptable on Iris Xe.
+    // PointsMaterial — safe on WebGPU/WebGL; additive blending = hot-plasma look.
     const mat = new THREE.PointsMaterial({
       size: BURST_POINT_SIZE,
       sizeAttenuation: true,
       transparent: true,
       opacity: 0,
-      color: new THREE.Color('#ffffff'),
+      color: new THREE.Color('#ff8800'),
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     });

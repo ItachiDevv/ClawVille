@@ -3,51 +3,45 @@
 /**
  * BumperShellsScene.tsx
  *
- * Root R3F Canvas for the Bumper Shells minigame.
+ * REBUILT 2026-04-24 — Perspective chase camera + full VFX pipeline.
  *
- * Route: /activity/bumper-shells/[roomId] (page.tsx — owned by general-purpose agent)
+ * Route: /activity/bumper-shells/[roomId]
  *
  * Architecture:
- *   - Isolated from the open world — mounts on its own Next.js route.
+ *   - Isolated from open world — mounts on its own Next.js route.
  *   - `key={roomId}` on Canvas forces full WebGPU context recreation between rooms.
- *   - Static OrthographicCamera (top-down with slight isometric tilt) when no spectator mode.
- *   - Spectator modes (chunk #12a): 'follow' | 'free' | 'action' — single PerspectiveCamera,
- *     swapped in when spectatorCamMode is set. Active players always use the static ortho camera.
+ *   - ACTIVE PLAYERS: Perspective chase camera (ChaseCameraController) follows selfAvatarId.
+ *     Camera lerps behind player in velocity direction, tilts on acceleration.
+ *     Camera shake on hits involving self (SHAKE_MAX_DISPLACEMENT, SHAKE_DECAY).
+ *     Screen-edge red DOM flash when self is hit (FLASH_DURATION_S).
+ *   - SPECTATOR: SpectatorCamera (follow/free/action) — unchanged from chunk #12a.
  *   - <PreCompilePipelines> fires compileAsync after first R3F commit.
- *   - Reads `useActivityStore` for entity/pickup/event state (written by general-purpose WS hook).
+ *   - Reads `useActivityStore` for entity/pickup/event state.
  *
- * Iris Xe invariants enforced here:
- *   - No drei Text/Billboard anywhere.
- *   - No InstancedMesh + ShaderMaterial.
- *   - No per-frame allocations in useFrame (module-scope scratch vectors only).
- *   - 1 shadow map at 512×512.
+ * Iris Xe invariants:
+ *   - No drei Text/Billboard (hard GPU crash on integrated graphics).
+ *   - No InstancedMesh + ShaderMaterial (silent WebGPU blank canvas).
+ *   - No per-frame allocations (module-scope scratch vectors only).
+ *   - 1 shadow map at 1024×1024 (up from 512 — chase cam is much closer).
  *   - 0 post-processing passes.
- *   - Fog near (1400) / far (1500) — pushed past camera distance (~1140wu) so
- *     fog only touches clip-plane fringe, not the arena. Old 200/900 made the
- *     entire arena invisible (all geometry was > FOG_FAR from the ortho cam).
- *   - OrbitControls added only for 'free' mode; disabled on mode exit.
- *   - ONE camera per client across all modes — no extra shadow frusta.
+ *   - Fog near 900 / far 1800 — safe behind camera.far=2500.
+ *   - ONE perspective camera per client regardless of mode.
  *
  * Performance budget: ≤60 draw calls / ≤180k tris.
  *
- * Spectator camera modes (chunk #12a):
- *   undefined           → static ortho camera (default for active players)
- *   'follow'            → perspective, lerps toward spectatorTarget + offset
- *   'free'              → perspective + OrbitControls, bounded 600–1500wu
- *   'action'            → perspective, auto-follows highest kill-count / most-recent kill
- *
- * Props accepted by parent route:
+ * Props:
  *   <BumperShellsScene roomId={roomId} selfAvatarId={selfAvatarId} />
  *   <BumperShellsScene roomId={roomId} selfAvatarId={selfAvatarId}
  *     spectatorCamMode="follow" spectatorTargetPetId={avatarId} />
  */
 
-import { Suspense, useEffect, useRef, useMemo, useCallback } from 'react';
+import { Suspense, useEffect, useRef, useMemo, useCallback, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { extend } from '@react-three/fiber';
 import type { ThreeToJSXElements } from '@react-three/fiber';
+import { playActivitySound } from '@/lib/activity-audio';
 
 // Register Three.js WebGPU elements with R3F.
 declare module '@react-three/fiber' {
@@ -64,10 +58,14 @@ import {
   FOG_COLOR,
   FOG_NEAR,
   FOG_FAR,
-  CAMERA_ORTHO_SIZE,
+  CAMERA_FOV,
   CAMERA_NEAR,
   CAMERA_FAR,
-  CAMERA_POSITION,
+  SPECTATOR_FOV,
+  CHASE_CAM_DISTANCE,
+  CHASE_CAM_HEIGHT,
+  CHASE_CAM_LOOK_AHEAD,
+  CHASE_CAM_LERP_ALPHA,
   HEMI_SKY_COLOR,
   HEMI_GROUND_COLOR,
   HEMI_INTENSITY,
@@ -78,8 +76,13 @@ import {
   DIR_SHADOW_NEAR,
   DIR_SHADOW_FAR,
   DIR_SHADOW_CAM_BOUNDS,
+  SHAKE_MAX_DISPLACEMENT,
+  SHAKE_DECAY,
+  SHAKE_FREQ,
+  FLASH_DURATION_S,
   HAZARD_ENABLED,
   MAX_PLAYERS,
+  ARENA_HEIGHT,
 } from './bumper-shells-config';
 import type { BumperShellEntity, BumperPickup, BumperHitEvent } from './bumper-shells-types';
 
@@ -95,26 +98,29 @@ export type SpectatorCamMode = 'follow' | 'free' | 'action';
 
 // ─── Module-scope scratch — NO per-frame allocations ─────────────────────────
 const _hitCheckScratch = { lastHitCount: 0 };
+const _elimCheckScratch = { lastElimCount: 0 };
 
-// Spectator camera scratch vectors (shared across all modes).
+// Chase camera scratch vectors
+const _chaseDesiredPos = new THREE.Vector3();
+const _chaseLookAt     = new THREE.Vector3();
+const _chaseEntityPos  = new THREE.Vector3();
+const _chaseVel        = new THREE.Vector3();
+const _chaseFwd        = new THREE.Vector3();
+const _chaseShake      = new THREE.Vector3();
+
+// Spectator camera scratch vectors
 const _camTargetPos  = new THREE.Vector3();
 const _camDesiredPos = new THREE.Vector3();
-const _camOffset     = new THREE.Vector3();
 const _camLookAt     = new THREE.Vector3();
 const _entityPos     = new THREE.Vector3();
 
-// Spectator 'follow' mode: offset from target in world space.
-// Above (Y) + behind (Z in world space, since arena is top-down).
+// Spectator 'follow' offset (high up + back in world space)
 const FOLLOW_OFFSET = new THREE.Vector3(0, 400, 350);
 
-// 'action' mode: re-sample target every N seconds.
-const ACTION_RETARGET_INTERVAL = 3.0; // seconds
+// 'action' mode re-sample interval
+const ACTION_RETARGET_INTERVAL = 3.0;
 
-// Perspective camera FOV for spectator modes.
-const SPECTATOR_FOV = 55;
-
-// Lerp alpha per second for smooth camera movement.
-// 1 - Math.exp(-alpha * dt) gives frame-rate independent lerp.
+// Lerp alpha for spectator camera smoothing
 const CAMERA_LERP_ALPHA = 4.0;
 
 // ─── PreCompilePipelines ──────────────────────────────────────────────────────
@@ -135,27 +141,92 @@ function PreCompilePipelines() {
   return null;
 }
 
-// ─── Static Orthographic Camera ────────────────────────────────────────────────
-// Used when spectatorCamMode is undefined (active player default).
-// Camera never moves after mount — matrixAutoUpdate=false.
-function BumperOrthoCamera() {
-  const { camera, size } = useThree();
+// ─── Chase Camera Controller ──────────────────────────────────────────────────
+// Follows selfAvatarId with a CHASE_CAM_DISTANCE arm and CHASE_CAM_HEIGHT elevation.
+// Camera lerps position + lookAt with CHASE_CAM_LERP_ALPHA exp decay.
+// Camera shake applied on top of the lerped position via _chaseShake.
+
+interface ChaseCameraProps {
+  selfAvatarId: string | null;
+  entities: Map<string, BumperShellEntity>;
+  shakeRef: React.MutableRefObject<number>; // current shake magnitude
+}
+
+function ChaseCameraController({ selfAvatarId, entities, shakeRef }: ChaseCameraProps) {
+  const { camera } = useThree();
+  const cameraYawRef = useRef(0); // persists last known yaw for dead-reckoning
 
   useEffect(() => {
-    const ortho = camera as THREE.OrthographicCamera;
-    ortho.left   = -CAMERA_ORTHO_SIZE;
-    ortho.right  =  CAMERA_ORTHO_SIZE;
-    ortho.top    =  CAMERA_ORTHO_SIZE;
-    ortho.bottom = -CAMERA_ORTHO_SIZE;
-    ortho.near   = CAMERA_NEAR;
-    ortho.far    = CAMERA_FAR;
-    ortho.position.set(CAMERA_POSITION[0], CAMERA_POSITION[1], CAMERA_POSITION[2]);
-    ortho.lookAt(0, 0, 0);
-    ortho.updateProjectionMatrix();
-    // Camera is static — disable per-frame matrix updates.
-    ortho.matrixAutoUpdate = false;
-    ortho.updateMatrix();
-  }, [camera, size]);
+    const p = camera as THREE.PerspectiveCamera;
+    p.fov  = CAMERA_FOV;
+    p.near = CAMERA_NEAR;
+    p.far  = CAMERA_FAR;
+    p.updateProjectionMatrix();
+    // Initial position — behind where a player would start
+    p.position.set(0, CHASE_CAM_HEIGHT, CHASE_CAM_DISTANCE);
+    p.lookAt(0, ARENA_HEIGHT / 2, 0);
+  }, [camera]);
+
+  useFrame((_, delta) => {
+    const dt = Math.min(delta, 0.1);
+
+    // Find self entity
+    const self = selfAvatarId ? entities.get(selfAvatarId) : null;
+
+    if (!self || !self.alive) {
+      // No target — orbit to a birds-eye view above center
+      _chaseDesiredPos.set(0, CHASE_CAM_HEIGHT * 1.5, CHASE_CAM_DISTANCE * 0.5);
+      _chaseLookAt.set(0, ARENA_HEIGHT / 2, 0);
+    } else {
+      _chaseEntityPos.set(self.x, ARENA_HEIGHT / 2, self.y);
+
+      // Derive camera yaw from velocity when moving, dead-reckon otherwise
+      const speed = Math.sqrt(self.vx * self.vx + self.vy * self.vy);
+      if (speed > 20) {
+        cameraYawRef.current = Math.atan2(self.vx, self.vy);
+      }
+      const yaw = cameraYawRef.current;
+
+      // Camera arm: CHASE_CAM_DISTANCE behind player in velocity direction
+      const sinY = Math.sin(yaw);
+      const cosY = Math.cos(yaw);
+      _chaseDesiredPos.set(
+        _chaseEntityPos.x - sinY * CHASE_CAM_DISTANCE,
+        CHASE_CAM_HEIGHT,
+        _chaseEntityPos.z - cosY * CHASE_CAM_DISTANCE,
+      );
+
+      // Look-ahead: aim slightly in front of player
+      const lookAheadFrac = Math.min(speed / 200, 1) * CHASE_CAM_LOOK_AHEAD;
+      _chaseLookAt.set(
+        _chaseEntityPos.x + sinY * lookAheadFrac,
+        ARENA_HEIGHT / 2 + 30,
+        _chaseEntityPos.z + cosY * lookAheadFrac,
+      );
+    }
+
+    // Camera shake: attenuate shake ref each frame
+    const shakeAmt = shakeRef.current;
+    if (shakeAmt > 0.01) {
+      shakeRef.current = Math.max(0, shakeAmt - shakeAmt * SHAKE_DECAY * dt);
+      const t = performance.now() * SHAKE_FREQ * 0.001;
+      _chaseShake.set(
+        Math.sin(t * 1.3) * shakeAmt,
+        Math.cos(t * 0.9) * shakeAmt * 0.5,
+        Math.sin(t * 1.7) * shakeAmt * 0.3,
+      );
+    } else {
+      shakeRef.current = 0;
+      _chaseShake.set(0, 0, 0);
+    }
+
+    // Exp-decay lerp for position + lookAt
+    const alpha = 1.0 - Math.exp(-CHASE_CAM_LERP_ALPHA * dt);
+    camera.position.lerp(_chaseDesiredPos, alpha);
+    camera.position.add(_chaseShake);
+    camera.lookAt(_chaseLookAt);
+    camera.updateProjectionMatrix();
+  });
 
   return null;
 }
@@ -375,30 +446,57 @@ function BumperLight() {
 }
 
 // ─── Hit event processor ──────────────────────────────────────────────────────
-// Processes hit events from the store and calls triggerBurst imperatively.
-// Runs in useFrame to avoid re-renders.
-function HitEventProcessor() {
-  const hitsRef = useRef<BumperHitEvent[]>([]);
+// Processes hit + elimination events from the store.
+// Calls triggerBurst imperatively — no React re-renders.
 
+interface HitEventProcessorProps {
+  selfAvatarId: string | null;
+  onSelfHit: () => void;
+}
+
+function HitEventProcessor({ selfAvatarId, onSelfHit }: HitEventProcessorProps) {
   useFrame(() => {
-    const hits = useActivityStore.getState().events?.hits;
-    if (!hits) return;
+    const state = useActivityStore.getState();
 
-    // Only process new hits (appended to the array by the store).
-    const len = hits.length;
-    if (len <= _hitCheckScratch.lastHitCount) return;
-
-    for (let i = _hitCheckScratch.lastHitCount; i < len; i++) {
-      const h = hits[i];
-      triggerBurst(h.x, 6, h.y, '#ff6600');
+    // ─ Hits ─
+    const hits = state.events?.hits;
+    if (hits) {
+      const len = hits.length;
+      if (len > _hitCheckScratch.lastHitCount) {
+        for (let i = _hitCheckScratch.lastHitCount; i < len; i++) {
+          const h = hits[i];
+          triggerBurst(h.x, ARENA_HEIGHT / 2 + 4, h.y, '#ff8800');
+        }
+        _hitCheckScratch.lastHitCount = len;
+      }
     }
-    _hitCheckScratch.lastHitCount = len;
+
+    // ─ Eliminations ─ play knockout sound + self-hit callback
+    const elims = state.events?.eliminations;
+    if (elims) {
+      const len = elims.length;
+      if (len > _elimCheckScratch.lastElimCount) {
+        for (let i = _elimCheckScratch.lastElimCount; i < len; i++) {
+          const e = elims[i];
+          playActivitySound('knockout').catch(() => {});
+          // Bigger burst for elimination impact
+          triggerBurst(
+            state.entities?.get(e.avatarId)?.x ?? 0,
+            ARENA_HEIGHT / 2 + 4,
+            state.entities?.get(e.avatarId)?.y ?? 0,
+            '#ff3300',
+          );
+          if (e.avatarId === selfAvatarId) onSelfHit();
+        }
+        _elimCheckScratch.lastElimCount = len;
+      }
+    }
   });
 
   return null;
 }
 
-// ─── Scene contents (shared between ortho + perspective canvas) ───────────────
+// ─── Scene contents ────────────────────────────────────────────────────────────
 
 interface SceneContentsProps {
   entities: Map<string, BumperShellEntity>;
@@ -406,6 +504,8 @@ interface SceneContentsProps {
   selfAvatarId: string | null;
   spectatorCamMode?: SpectatorCamMode;
   spectatorTargetPetId?: string | null;
+  shakeRef: React.MutableRefObject<number>;
+  onSelfHit: () => void;
 }
 
 function SceneContents({
@@ -414,10 +514,12 @@ function SceneContents({
   selfAvatarId,
   spectatorCamMode,
   spectatorTargetPetId,
+  shakeRef,
+  onSelfHit,
 }: SceneContentsProps) {
   return (
     <>
-      {/* Camera — ortho for active play, perspective for spectators. */}
+      {/* Camera — perspective chase for active play, spectator cam when spectating */}
       {spectatorCamMode ? (
         <SpectatorCamera
           mode={spectatorCamMode}
@@ -425,29 +527,35 @@ function SceneContents({
           entities={entities}
         />
       ) : (
-        <BumperOrthoCamera />
+        <ChaseCameraController
+          selfAvatarId={selfAvatarId}
+          entities={entities}
+          shakeRef={shakeRef}
+        />
       )}
 
       {/* Atmosphere */}
       <fog args={[FOG_COLOR, FOG_NEAR, FOG_FAR]} />
       <color attach="background" args={[FOG_COLOR]} />
 
-      {/* Lighting — 1 shadow map at 512×512, 3 point lights (no shadows) */}
+      {/* Lighting — 1 shadow map, hemisphere fill */}
       <BumperLight />
 
-      {/* Arena geometry — 4 draw calls */}
+      {/* Arena geometry — 8 draw calls (platform, tile, rim, bumper wall, danger, void, stars, [lights=0]) */}
       <BumperShellsArena />
 
       {/* Central hazard — 2 draw calls */}
       <BumperShellsHazard enabled={HAZARD_ENABLED} />
 
-      {/* Player shells — up to 8 draw calls */}
+      {/* Player shells — up to 8 draw calls (1 per GLB clone) */}
       <Suspense fallback={null}>
         {Array.from(entities.values()).map((entity) => (
           <BumperShellsPlayer
             key={entity.avatarId}
             entity={entity}
             isSelf={entity.avatarId === selfAvatarId}
+            onSelfHit={onSelfHit}
+            displayName={entity.avatarId.slice(0, 10)}
           />
         ))}
       </Suspense>
@@ -455,13 +563,13 @@ function SceneContents({
       {/* Power-up pickups — up to 6 draw calls */}
       <BumperShellsPickups pickups={pickups} />
 
-      {/* Particle burst pool — 4 Points objects, max 16 pts each */}
+      {/* Particle burst pool — 6 Points objects */}
       <BumperShellsParticles />
 
-      {/* Hit event → burst trigger (no React re-renders) */}
-      <HitEventProcessor />
+      {/* Hit + elimination event processor (no React re-renders) */}
+      <HitEventProcessor selfAvatarId={selfAvatarId} onSelfHit={onSelfHit} />
 
-      {/* Pipeline pre-compilation — must be LAST inside SceneContents */}
+      {/* Pipeline pre-compilation — MUST be LAST inside SceneContents */}
       <PreCompilePipelines />
     </>
   );
@@ -472,18 +580,17 @@ function SceneContents({
 export interface BumperShellsSceneProps {
   /** Room ID — used as Canvas key to force context recreation between rooms. */
   roomId: string;
-  /** The current user's avatar ID, used for self-highlighting. */
+  /** The current user's avatar ID, used for chase camera + self-hit flash. */
   selfAvatarId?: string | null;
   /**
-   * Spectator camera mode. When undefined, the default static orthographic
-   * camera is used (active player view — Iris Xe budget: one fixed frustum).
+   * Spectator camera mode. When undefined, the perspective chase camera follows selfAvatarId.
    *
-   * When set, a single PerspectiveCamera replaces the ortho camera:
+   * When set, spectator camera is used:
    *   'follow' — lerps toward spectatorTargetPetId (or first alive entity).
    *   'free'   — OrbitControls, distance bounded 600–1500wu.
    *   'action' — auto-follows arena center entity, retargets every 3s.
    *
-   * ONE camera per client regardless of mode — no extra shadow frusta.
+   * ONE PerspectiveCamera per client regardless of mode.
    */
   spectatorCamMode?: SpectatorCamMode;
   /**
@@ -499,25 +606,48 @@ export default function BumperShellsScene({
   spectatorCamMode,
   spectatorTargetPetId,
 }: BumperShellsSceneProps) {
-  // Subscribe to activity store — high-frequency path, keep subscriptions narrow.
   const entities = useActivityStore((s) => s.entities as Map<string, BumperShellEntity>);
   const pickups  = useActivityStore((s) => s.pickups  as Map<string, BumperPickup>);
 
-  // Spectator camera: use a PerspectiveCamera canvas; active play uses OrthographicCamera.
-  // The canvas `orthographic` prop is static — we mount two different canvas configs.
-  // The `key` on Canvas forces context recreation when switching modes or rooms.
-  const canvasKey = `${roomId}-${spectatorCamMode ?? 'ortho'}`;
+  // Camera shake magnitude (shared between ChaseCameraController and HitEventProcessor)
+  // Stored as a mutable ref to avoid React re-renders in the hot useFrame path.
+  const shakeRef = useRef(0);
 
-  if (spectatorCamMode) {
-    // Spectator canvas: PerspectiveCamera (R3F default when orthographic is omitted).
-    return (
+  // Screen flash state — DOM overlay, not Three.js.
+  const [flashOpacity, setFlashOpacity] = useState(0);
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleSelfHit = useCallback(() => {
+    // Trigger camera shake
+    shakeRef.current = SHAKE_MAX_DISPLACEMENT;
+
+    // Trigger red screen flash
+    setFlashOpacity(0.45);
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = setTimeout(() => {
+      setFlashOpacity(0);
+    }, FLASH_DURATION_S * 1000);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    };
+  }, []);
+
+  // ALL canvas instances use PerspectiveCamera — no orthographic in the rebuild.
+  // The `key` forces context recreation between rooms and spectator mode changes.
+  const canvasKey = `${roomId}-${spectatorCamMode ?? 'chase'}`;
+
+  return (
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       <Canvas
         key={canvasKey}
         camera={{
-          fov: SPECTATOR_FOV,
+          fov: spectatorCamMode ? SPECTATOR_FOV : CAMERA_FOV,
           near: CAMERA_NEAR,
           far: CAMERA_FAR,
-          position: [0, 900, 600],
+          position: [0, CHASE_CAM_HEIGHT, CHASE_CAM_DISTANCE],
         }}
         shadows
         gl={{ antialias: false }} // Disable MSAA for Iris Xe perf budget
@@ -530,35 +660,27 @@ export default function BumperShellsScene({
           selfAvatarId={selfAvatarId}
           spectatorCamMode={spectatorCamMode}
           spectatorTargetPetId={spectatorTargetPetId}
+          shakeRef={shakeRef}
+          onSelfHit={handleSelfHit}
         />
       </Canvas>
-    );
-  }
 
-  // Active-play canvas: OrthographicCamera (static, Iris Xe budget — one fixed frustum).
-  return (
-    <Canvas
-      key={canvasKey}
-      camera={
-        {
-          // R3F will create an OrthographicCamera when these are passed:
-          // (orthographic=true is not a valid R3F prop — we configure it in BumperOrthoCamera)
-          // Use PerspectiveCamera as default; BumperOrthoCamera overrides projection.
-          near: CAMERA_NEAR,
-          far: CAMERA_FAR,
-        } as any
-      }
-      orthographic
-      shadows
-      gl={{ antialias: false }} // Disable MSAA for Iris Xe perf budget
-      style={{ width: '100%', height: '100%' }}
-      dpr={[1, 1.5]} // Clamp pixel ratio for Iris Xe
-    >
-      <SceneContents
-        entities={entities ?? new Map()}
-        pickups={pickups ?? new Map()}
-        selfAvatarId={selfAvatarId}
+      {/* Screen-edge red flash — DOM overlay, transitions via CSS opacity.
+          Appears on self-hit, fades to 0 after FLASH_DURATION_S.
+          This is a DOM overlay on top of the canvas, not inside Three.js. */}
+      <div
+        aria-hidden="true"
+        style={{
+          position: 'absolute',
+          inset: 0,
+          pointerEvents: 'none',
+          background: 'radial-gradient(ellipse at center, transparent 40%, rgba(200,0,0,0.7) 100%)',
+          opacity: flashOpacity,
+          transition: flashOpacity > 0
+            ? 'opacity 0.05s ease-in'
+            : `opacity ${FLASH_DURATION_S * 0.8}s ease-out`,
+        }}
       />
-    </Canvas>
+    </div>
   );
 }

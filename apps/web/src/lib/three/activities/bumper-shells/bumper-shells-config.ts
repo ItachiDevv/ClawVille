@@ -5,31 +5,39 @@
  * Centralised here so BumperShellsArena, BumperShellsHazard, BumperShellsPlayer,
  * BumperShellsPickups, and BumperShellsParticles all read from one source.
  *
- * Performance budget: ≤60 draw calls / ≤180k tris / 1×512² shadow map / 0 post-processing.
- * Target GPU: Intel Iris Xe (integrated).
+ * REBUILD 2026-04-24: Perspective chase camera, real arena geometry, VFX pipeline.
+ *
+ * Performance budget: ≤60 draw calls / ≤180k tris / 1×1024² shadow map / 0 post-processing.
+ * Target GPU: Intel Iris Xe (integrated) @ 30fps mobile minimum, 60fps desktop target.
  */
 
 // ─── Arena geometry ──────────────────────────────────────────────────────────
 
-/** Flat disc radius in world-units (wu). */
+/** Flat disc radius in world-units (wu). Sim boundary unchanged. */
 export const ARENA_RADIUS = 500;
 
-/** Platform cylinder height. */
-export const ARENA_HEIGHT = 12;
+/** Platform cylinder height — thicker for visual depth from perspective cam. */
+export const ARENA_HEIGHT = 24;
 
-/** Radial segments for the platform disc — 48 keeps the rim smooth at 500wu. */
-export const ARENA_RADIAL_SEGMENTS = 48;
+/** Radial segments for the platform disc — 64 for smooth silhouette. */
+export const ARENA_RADIAL_SEGMENTS = 64;
 
 // ─── Boundary / rim ──────────────────────────────────────────────────────────
 
-/** Rim glow torus outer-tube radius. */
-export const RIM_TUBE_RADIUS = 8;
+/** Rim glow torus outer-tube radius — thicker for perspective readability. */
+export const RIM_TUBE_RADIUS = 14;
 
-/** Rim glow torus radial segments (lower = fewer draw-call verts). */
+/** Rim glow torus radial segments. */
 export const RIM_RADIAL_SEGMENTS = 16;
 
 /** Rim glow torus tubular segments. */
-export const RIM_TUBULAR_SEGMENTS = 64;
+export const RIM_TUBULAR_SEGMENTS = 80;
+
+/** Bumper wall height — knee-high guardrail at arena edge visible from chase cam. */
+export const BUMPER_WALL_HEIGHT = 44;
+
+/** Bumper wall tube radius — visual thickness of the guardrail. */
+export const BUMPER_WALL_TUBE_RADIUS = 10;
 
 /** Outer fraction of arena radius considered a "danger zone" (0–1). */
 export const DANGER_ZONE_FRACTION = 0.15;
@@ -51,76 +59,111 @@ export const HAZARD_SPIKE_COUNT = 8;
 /** Hazard rotation speed in radians per second. */
 export const HAZARD_SPIN_SPEED = 0.5;
 
-// ─── Camera ──────────────────────────────────────────────────────────────────
+// ─── Camera — perspective chase ───────────────────────────────────────────────
 
-/** Orthographic camera frustum half-width/height in wu. */
-export const CAMERA_ORTHO_SIZE = 700;
+/**
+ * Perspective camera FOV in degrees.
+ * 55° gives a natural-feeling game view for competitive bumper gameplay.
+ */
+export const CAMERA_FOV = 55;
 
 /** Camera near clip plane. */
 export const CAMERA_NEAR = 1;
 
-/** Camera far clip plane. Must be > FOG_FAR. */
-export const CAMERA_FAR = 1500;
+/**
+ * Camera far clip plane.
+ * Chase cam sits ~300wu above player at ~420wu back. The void is at -2000wu.
+ * 2500wu gives margin. Fog dissolves before the clip plane.
+ */
+export const CAMERA_FAR = 2500;
 
-/** Camera position — slight isometric tilt (not pure top-down). */
-export const CAMERA_POSITION = [0, 1100, 300] as const;
+/** Chase camera horizontal arm length in wu. */
+export const CHASE_CAM_DISTANCE = 420;
 
-/** Camera look-at target. */
-export const CAMERA_LOOK_AT = [0, 0, 0] as const;
+/** Chase camera height above arena floor in wu. */
+export const CHASE_CAM_HEIGHT = 280;
+
+/** Look-ahead distance: the camera aims ahead of the player in their velocity direction. */
+export const CHASE_CAM_LOOK_AHEAD = 60;
+
+/** Camera position lerp alpha per second (frame-rate independent exp decay). */
+export const CHASE_CAM_LERP_ALPHA = 5.0;
+
+/** Spectator camera FOV in degrees (same as player for consistency). */
+export const SPECTATOR_FOV = 55;
 
 // ─── Fog ─────────────────────────────────────────────────────────────────────
 
-/** Fog color hex — deep ocean dark blue. */
-export const FOG_COLOR = '#050a14';
+/** Fog color hex — deep abyss. */
+export const FOG_COLOR = '#020508';
 
 /**
- * Fog near distance.
+ * Fog near/far for the perspective chase camera.
  *
- * BUG FIX (2026-04-24): The ortho camera sits at [0, 1100, 300] → distance to
- * arena floor ≈ sqrt(1100²+300²) ≈ 1140wu. The old FOG_NEAR=200/FOG_FAR=900
- * made every scene object 100% fogged (all ≥1140wu from camera > FAR=900).
- * Result: black void on mobile. Fix: push fog well past CAMERA_FAR so it only
- * kills geometry right at the clip plane, not the visible arena.
+ * Chase cam is ~300wu above the disc, at ~420wu behind the player.
+ * The arena disc is 500wu radius — fully visible within ~600wu of the player.
+ * Fog starts at 900wu (beyond arena edge) and completes at 1800wu.
+ * This preserves full arena visibility while hiding the void seam.
  *
- * Iris Xe perf note: fog.far > camera.far IS a fragment-count risk in the open
- * world (see performance/fog-density-iris-xe-regression.md). In THIS scene it's
- * fine — fog.far=CAMERA_FAR-50 clamps fog to clip-plane fringe only.
+ * Iris Xe perf: fog.far (1800) < camera.far (2500) — safe, no overdraw spike.
+ * See performance/fog-density-iris-xe-regression.md.
  */
-export const FOG_NEAR = 1400;
-export const FOG_FAR  = 1500; // == CAMERA_FAR — fog only touches clip-plane geometry
+export const FOG_NEAR = 900;
+export const FOG_FAR  = 1800;
 
 // ─── Lighting ────────────────────────────────────────────────────────────────
 
-/**
- * Lighting fix (2026-04-24): previous values were tuned as if the camera were
- * close to the arena (normal scene). With a ~1140wu camera-to-floor distance
- * and PBR materials that receive ambient + diffuse, the old HEMI_INTENSITY=0.4
- * with a near-black sky colour (#1a3a5c) produced near-black lobsters even when
- * the fog bug was absent. Brightness raised to match what looks correct at this
- * distance with MeshStandardMaterial.
- */
-export const HEMI_SKY_COLOR    = '#4488cc'; // visible blue — was '#1a3a5c' (near-black)
-export const HEMI_GROUND_COLOR = '#1a2a3a'; // dark ocean floor — was '#050a14'
-export const HEMI_INTENSITY    = 1.4;       // was 0.4 — PBR models need ≥1.0 to read clearly
+/** Hemisphere sky color — deep ocean blue fill. */
+export const HEMI_SKY_COLOR    = '#1a3a6a';
 
-export const DIR_COLOR     = '#ffffff';     // white — was '#80d4ff' (dim blue)
-export const DIR_INTENSITY = 2.0;           // was 1.1 — need strong key for lobster PBR shells
-export const DIR_POSITION  = [200, 600, 150] as const;
-export const DIR_SHADOW_MAP_SIZE = 512;
+/** Hemisphere ground color — dark abyss. */
+export const HEMI_GROUND_COLOR = '#050a14';
+
+/** Hemisphere intensity — fills the shadow side of shells so they read clearly. */
+export const HEMI_INTENSITY    = 1.2;
+
+/** Key directional light color — warm white for PBR shell sheen. */
+export const DIR_COLOR     = '#fff8f0';
+
+/** Key directional light intensity — strong for lobster PBR shells. */
+export const DIR_INTENSITY = 2.2;
+
+/** Key light position — above and to side for dramatic angle + good shadow direction. */
+export const DIR_POSITION  = [300, 500, 200] as const;
+
+/** Shadow map size — 1024 for soft PCF shadows visible from chase cam. */
+export const DIR_SHADOW_MAP_SIZE = 1024;
+
 export const DIR_SHADOW_NEAR = 1;
 export const DIR_SHADOW_FAR = 1200;
-export const DIR_SHADOW_CAM_BOUNDS = 600;
+
+/** Shadow frustum covers the full arena disc + some margin. */
+export const DIR_SHADOW_CAM_BOUNDS = 560;
+
+/** Rim accent point light color — cyan underwater glow. */
+export const RIM_LIGHT_COLOR = '#00ccff';
+
+/** Rim accent light intensity. */
+export const RIM_LIGHT_INTENSITY = 1.5;
+
+/** Rim accent light decay distance in wu. */
+export const RIM_LIGHT_DISTANCE = 800;
 
 // ─── Player shells ───────────────────────────────────────────────────────────
 
 /**
  * Scale applied to lobster.glb / crayfish.glb clones.
- * Matches AVATAR_SCALE=40 from player-avatar.tsx (lobster.glb bbox.max.y ≈ 1.12 native → 44.8 wu).
+ * lobster.glb native height ≈ 1.12 → SHELL_SCALE=40 → 44.8wu.
  */
 export const SHELL_SCALE = 40;
 
 /** Maximum simultaneously-rendered player shells. */
 export const MAX_PLAYERS = 8;
+
+// ─── Player name labels ───────────────────────────────────────────────────────
+
+/** Y offset of name label above player shell group origin (in wu). */
+export const LABEL_Y_OFFSET = 72;
 
 // ─── Squash/stretch animation ────────────────────────────────────────────────
 
@@ -152,19 +195,19 @@ export const PICKUP_BOB_FREQ = 2;
 export const PICKUP_SPIN_SPEED = 1.2;
 
 /** Y position of pickups above arena surface. */
-export const PICKUP_BASE_Y = 40;
+export const PICKUP_BASE_Y = 50;
 
 /**
  * Emissive colour per power-up kind.
  * Used on MeshStandardMaterial — never ShaderMaterial.
  */
 export const PICKUP_EMISSIVE: Record<string, string> = {
-  speed:       '#00e5ff',
-  shield:      '#69f0ae',
+  speed:         '#00e5ff',
+  shield:        '#69f0ae',
   'sticky-bomb': '#ff6d00',
-  whirlpool:   '#9c27b0',
-  ghost:       '#e0e0e0',
-  tractor:     '#f9a825',
+  whirlpool:     '#9c27b0',
+  ghost:         '#e0e0e0',
+  tractor:       '#f9a825',
 };
 
 /**
@@ -172,35 +215,69 @@ export const PICKUP_EMISSIVE: Record<string, string> = {
  * NO drei <Text> — Iris Xe crash.
  */
 export const PICKUP_EMOJI: Record<string, string> = {
-  speed:       '⚡',
-  shield:      '🛡',
+  speed:         '⚡',
+  shield:        '🛡',
   'sticky-bomb': '💣',
-  whirlpool:   '🌊',
-  ghost:       '👻',
-  tractor:     '🧜',
+  whirlpool:     '🌊',
+  ghost:         '👻',
+  tractor:       '🧲',
 };
 
 // ─── Particle bursts ─────────────────────────────────────────────────────────
 
 /** Number of burst pool slots — max simultaneous bursts visible. */
-export const BURST_POOL_SIZE = 4;
+export const BURST_POOL_SIZE = 6;
 
 /** Points per burst instance. Keep ≤ 16 for Iris Xe fragment budget. */
-export const BURST_POINT_COUNT = 16;
+export const BURST_POINT_COUNT = 12;
 
-/** Burst radius in wu — how far points scatter from impact point. */
-export const BURST_RADIUS = 80;
+/** Burst radius in wu — how far points scatter from impact. */
+export const BURST_RADIUS = 100;
 
 /** Burst lifetime in milliseconds. */
-export const BURST_LIFETIME_MS = 400;
+export const BURST_LIFETIME_MS = 500;
 
 /** Burst point size in pixels. */
-export const BURST_POINT_SIZE = 6;
+export const BURST_POINT_SIZE = 8;
 
-// ─── Void backdrop ───────────────────────────────────────────────────────────
+// ─── Camera shake ─────────────────────────────────────────────────────────────
 
-/** Y position of the infinite void plane below the arena. */
+/** Maximum camera shake displacement in wu on a direct hit. */
+export const SHAKE_MAX_DISPLACEMENT = 18;
+
+/** Shake decay rate per second (exp). */
+export const SHAKE_DECAY = 8.0;
+
+/** Shake oscillation frequency in Hz. */
+export const SHAKE_FREQ = 30;
+
+// ─── Screen flash ─────────────────────────────────────────────────────────────
+
+/** Red screen-edge flash duration on self-hit in seconds. */
+export const FLASH_DURATION_S = 0.35;
+
+// ─── Elimination drop ─────────────────────────────────────────────────────────
+
+/** Gravitational acceleration for eliminated player drop in wu/s². */
+export const DROP_GRAVITY = 980;
+
+/** Time to full transparent fade after drop starts. */
+export const DROP_FADE_DURATION = 1.0;
+
+// ─── Void / starfield ─────────────────────────────────────────────────────────
+
+/** Y position of the void plane below the arena. */
 export const VOID_BACKDROP_Y = -2000;
 
-/** Void backdrop quad size in wu — large enough to fill the view at CAMERA_FAR. */
-export const VOID_BACKDROP_SIZE = 8000;
+/** Void backdrop quad size in wu. */
+export const VOID_BACKDROP_SIZE = 10000;
+
+/** Number of stars in the void starfield (Points object, 1 draw call). */
+export const STAR_COUNT = 300;
+
+/** Starfield spawn radius in wu from arena center. */
+export const STAR_RADIUS = 1800;
+
+/** Y range of stars — scattered below the arena surface. */
+export const STAR_Y_MIN = -2000;
+export const STAR_Y_MAX = -100;
