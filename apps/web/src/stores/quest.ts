@@ -20,6 +20,10 @@ interface QuestCounters {
   petMessagesSent: number;
   booksBought: number;
   knowledgeLearned: number;
+  /** Q2 chunk #9 — incremented in ActivityResultsModal for the first-match quest */
+  activityMatchesPlayed: number;
+  /** Q2 chunk #9 — incremented when player placement === 1 */
+  activityMatchesWon: number;
 }
 
 interface QuestStoreState {
@@ -54,6 +58,8 @@ export const useQuestStore = create<QuestStoreState>()(
         petMessagesSent: 0,
         booksBought: 0,
         knowledgeLearned: 0,
+        activityMatchesPlayed: 0,
+        activityMatchesWon: 0,
       },
 
       incrementCounter: (key, amount = 1) => {
@@ -167,10 +173,29 @@ export const useQuestStore = create<QuestStoreState>()(
     }),
     {
       name: 'clawville-quest-progress',
+      // Bump version when adding counters/quests so the merge fn below can
+      // backfill missing fields without nuking returning users' progress.
+      version: 2,
       partialize: (state) => ({
         progress: state.progress,
         counters: state.counters,
       }),
+      // Forward-compatible merge: backfill any new counter keys that older
+      // persisted state is missing (added in Q2 chunk #9 — `activityMatchesPlayed`
+      // / `activityMatchesWon`). Without this, returning users would crash on
+      // `state.counters[condition.counterKey]` returning undefined ⇒ NaN >= 1
+      // is `false`, which is harmless, but the typesystem would still flag it.
+      merge: (persisted, current) => {
+        const safe = persisted as Partial<{
+          progress: Record<QuestId, QuestProgress>;
+          counters: Partial<QuestCounters>;
+        }> | undefined;
+        return {
+          ...current,
+          progress: { ...current.progress, ...(safe?.progress ?? {}) },
+          counters: { ...current.counters, ...(safe?.counters ?? {}) },
+        };
+      },
     }
   )
 );

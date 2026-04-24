@@ -52,8 +52,8 @@
  *   openQuestBoard, openBountyBoard, toggleActivityFeed.
  */
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { MAP_LOCATIONS, PET_SPECIES } from '@clawville/shared';
 import { RuneFrame, RpgButton, RpgModal, RpgTooltip, getRarity, type RarityId } from '@/components/rpg';
 import { useGameStore, type GameState } from '@/stores/game';
@@ -499,6 +499,7 @@ interface SidebarContentProps {
 
 function SidebarContent({ closeMenu }: SidebarContentProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   // Pull every store action we need with discrete selectors — this keeps the
   // zustand subscription surface tight so the sidebar re-renders only when
@@ -610,6 +611,33 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
       cleanup();
     }
   };
+
+  /**
+   * Q2 chunk #9 — Play Again deep link.
+   *
+   * The Activity Results modal's Play Again button navigates to
+   * `/game?quickQueue=bumper-shells`. When the sidebar mounts and sees that
+   * param, it auto-fires the existing Quick Queue handler ONCE and strips
+   * the param from the URL so refresh doesn't re-queue. Requires `hasPet`
+   * because the queue endpoint returns 401 without one.
+   */
+  const autoQueueFiredRef = useRef(false);
+  useEffect(() => {
+    if (autoQueueFiredRef.current) return;
+    if (!hasPet) return;
+    if (!searchParams) return;
+    if (searchParams.get('quickQueue') !== 'bumper-shells') return;
+    autoQueueFiredRef.current = true;
+    // Strip the param so a refresh doesn't re-fire and the URL stays clean.
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('quickQueue');
+      window.history.replaceState({}, '', url.toString());
+    }
+    // Fire the existing queue handler — it shows toasts + polls + navigates.
+    void handleQuickQueueBumperShells();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasPet, searchParams]);
 
   const handleCrossToScape = async () => {
     if (crossingToScape) return;
