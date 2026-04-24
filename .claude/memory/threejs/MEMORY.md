@@ -78,8 +78,15 @@
 - [Staggered GPU texture uploads via initTexture()](performance/staggered-texture-upload.md) — renderer.initTexture(tex) per-frame (2/rAF) spreads 400ms+ WebP decode+upload long task; works on both WebGL r170 and WebGPU r182
 
 - [2026-04-21 perf sweep — static mesh freezing + scratch patterns](performance/perf-sweep-2026-04-21.md) — matrixAutoUpdate=false on all static scene objects; module-scope scratch vectors/matrices in hot loops; intersectObject(mesh,false) over scene traversal; distanceFactor removal from <Html>; narrowed Zustand subscriptions; gl.setPixelRatio() override removal. Est. ~4-6ms/frame saved → 60+ FPS target.
+- [Zustand re-render storm fixes (B5+B6+B7)](performance/zustand-re-render-storm-fixes.md) — useShallow on array selectors; petPositionRef module-scope + 10Hz throttled reactive write eliminates 60Hz Minimap rebuild; NPC object identity preservation in updateFromSnapshot restores React.memo bailout. (2026-04-24)
 - [Idle animation throttle to 20Hz](performance/idle-animation-throttle.md) — `(frame + seed) % 3 === 0` gate on slow procedural animations (≤1.3 rad/s); walk stays 60Hz; stagger by seed prevents batch spikes; saves ~40% trig ops on 12-30 NPC instances.
 - [VRM spring-bone physics throttle — 30Hz for idle NPCs](performance/vrm-spring-bone-throttle.md) — split VRMCharacterAnimator into updateMixerOnly (60Hz) + updateSpringOnly (30Hz idle); accumulate delta between spring ticks; walking stays full 60Hz; 50-100 spring joint ops/frame → halved for idle VRMs.
+- [VRM draw-call reductions — MToon outline off, removeUnnecessaryJoints, lookAt/expressionManager disable, skeleton.update batching](performance/vrm-draw-call-reductions.md) — 4 load/init-time techniques; halves draw calls per VRM mesh; cuts bone CPU 20-40%; eliminates 3× redundant skeleton.update calls per VRM. Do NOT apply to SpongeBob GLBs — they are not VRMs.
+
+## Gotchas (continued)
+- [VRM half-rate early-return gate kills mixer at mid-distance](gotchas/vrm-half-rate-gate-kills-mixer.md) — early-return above animator calls throttles the mixer too, not just spring bones; always gate spring-bone only, keep mixer call unconditional at 60Hz.
+- [skeleton.update restore must use Map, not index-aligned Array](gotchas/skeleton-update-array-traversal-order.md) — index-aligned Array misaligns if scene graph mutates between construction and disposal; use Map<THREE.Skeleton, fn> + Map.forEach in dispose; also `for...of map` iterates [k,v] pairs — use `.values()` to iterate functions.
+- [useLayoutEffect not useEffect for VRM property mutations — closes 1-frame R3F race](gotchas/uselayouteffect-vs-useeffect-vrm-frame-race.md) — R3F useFrame runs in rAF before useEffect fires; use useLayoutEffect to null vrm.lookAt/expressionManager before first frame paints.
 
 ## Solutions
 - [mergeGeometries dispose-after-merge is safe — data is copied](solutions/merge-geometries-dispose-order-safe.md) — mergeAttributes() uses TypedArray.set() to copy; dispose only removes GPU buffers; merged geo is independent
@@ -87,3 +94,4 @@
 - [Avatar scale-down pass 2026-04-16](solutions/avatar-scale-down-2026-04-16.md) — PET_SCALE 55→33, TARGET_NPC_HEIGHT 120→75, CHARACTER_HEIGHT 140→90, SPEED 200→320; HARD_MAX and scaleOverride must update proportionally when target heights change
 
 - [Full movement audit 2026-04-14 — screen-relative verified correct](patterns/full-movement-audit-2026-04-13.md) — screen-relative movement confirmed; camera-relative revert documented; -Z model formulas verified
+- [merged-seaweed already uses MeshBasicNodeMaterial — no Lambert swap needed](gotchas/merged-seaweed-already-meshbasic.md) — merged-seaweed.tsx uses MeshBasicNodeMaterial (zero lighting cost, cheaper than Lambert); verified 2026-04-24; B8 "Lambert swap" was already superseded.
