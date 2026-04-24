@@ -58,6 +58,34 @@ type CacheEntry =
   | { status: 'resolved'; vrm:     VRM }
   | { status: 'rejected'; error:   unknown };
 
+/**
+ * @invariant VRM_CACHE — one VRM instance per path, shared across all consumers.
+ *
+ * VRM_CACHE stores exactly ONE `VRM` object per path string. Every call to
+ * `useVRM(path)` or `preloadVRM(path)` returns — or eventually resolves to —
+ * that same object. This means `vrm.scene` is a **shared Object3D**; any
+ * mutation made by one consumer (e.g. nulling `vrm.lookAt`) is immediately
+ * visible to all others.
+ *
+ * Enforced constraints for all consumers:
+ *   1. Never render two R3F components with the same VRM path — they would
+ *      share `vrm.scene` and R3F's `<primitive>` would reparent it between
+ *      groups each frame, clobbering both components' transforms.
+ *   2. Mutations on the shared VRM instance (e.g. setting `vrm.lookAt = null`
+ *      in VRMNpcMesh) affect every consumer using that path. Today player-pet.tsx
+ *      (PlayerPetVRMInner) does NOT use `lookAt` or `expressionManager`, so the
+ *      wanderer null-assignments in arena-npcs.tsx are safe for current paths
+ *      (official_2/3/4/7/8). If `lookAt` is ever added to player-pet, those paths
+ *      must be kept disjoint from any VRMNpcMesh path — or the null-assignment must
+ *      be guarded by a per-consumer clone.
+ *   3. Dispose of the VRM scene via VRMUtils.deepDispose at the correct lifetime
+ *      boundary (the outermost component that owns the VRM). Do NOT dispose from
+ *      an inner per-instance animator — the cache still holds a reference.
+ *
+ * Player-selectable paths:  official_1 … official_8 (agent-model-registry.ts)
+ * Wandering NPC paths:       official_2, official_3, official_4, official_7, official_8
+ * Overlap (constraint #2):   official_2/3/4/7/8 — player-pet and wanderers share these.
+ */
 const VRM_CACHE = new Map<string, CacheEntry>();
 
 // Single shared GLTFLoader instance — VRMLoaderPlugin registered once.
