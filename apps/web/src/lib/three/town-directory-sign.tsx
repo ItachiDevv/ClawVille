@@ -16,7 +16,6 @@
 
 import { memo } from 'react';
 import * as THREE from 'three/webgpu';
-import { color, texture } from 'three/tsl';
 
 // ---------------------------------------------------------------------------
 // Post / plank dims
@@ -95,14 +94,11 @@ const postGeo = new THREE.BoxGeometry(POST_W, POST_H, POST_D);
 const plankGeo = new THREE.BoxGeometry(PLANK_W, PLANK_H, PLANK_D);
 const textPlaneGeo = new THREE.PlaneGeometry(PLANK_W - 40, PLANK_H - 40);
 
-const woodMat = new THREE.MeshBasicNodeMaterial();
-woodMat.colorNode = color(WOOD_COLOR);
-
-// TSL node materials IGNORE `.map`. Must use `colorNode = texture(tex)`
-// to sample from a texture — otherwise the plane renders as solid white.
-const textMat = new THREE.MeshBasicNodeMaterial();
-textMat.colorNode = texture(textTexture);
-textMat.transparent = false;
+// Using standard MeshBasicMaterial (not NodeMaterial) — the WebGPU renderer
+// auto-wraps it. TSL node materials with texture() weren't rendering the
+// canvas texture in practice; plain MeshBasicMaterial.map works reliably.
+const woodMat = new THREE.MeshBasicMaterial({ color: WOOD_COLOR });
+const textMat = new THREE.MeshBasicMaterial({ map: textTexture });
 
 // ---------------------------------------------------------------------------
 // Component
