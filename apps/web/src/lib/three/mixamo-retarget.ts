@@ -219,16 +219,25 @@ export function retargetMixamoClip(
 
   const vrm0 = isVrm0(vrm);
 
+  // Compute hip position scale (vrmHipsHeight / motionHipsHeight) so that
+  // the hip vertical bob in the clip lands at the VRM's hip height. Without
+  // this the bob is in Mixamo-rig units (character ~1.5m tall) applied to a
+  // VRM that may be taller/shorter → disproportionate vertical movement.
+  const motionHipsNode = findNode(animation.scene, 'mixamorigHips', 'mixamorigHips');
+  const motionHipsHeight = Math.abs(motionHipsNode?.position.y ?? 0);
+  const vrmHipsHeight = Math.abs(
+    (vrm.humanoid as any)?.normalizedRestPose?.hips?.position?.[1] ?? 0,
+  );
+  const hipsPositionScale =
+    motionHipsHeight > 1e-6 && vrmHipsHeight > 1e-6
+      ? vrmHipsHeight / motionHipsHeight
+      : 1;
+
   for (const track of sourceClip.tracks) {
     const parts        = track.name.split('.');
     const rawRigName   = parts[0];
     const propertyName = parts[1];
     if (!rawRigName || !propertyName) continue;
-
-    // Only quaternion tracks — skip position/scale which would fight the VRM
-    // coordinate system and produce jitter or root drift.
-    if (propertyName !== 'quaternion') continue;
-    if (!(track instanceof THREE.QuaternionKeyframeTrack)) continue;
 
     const normalizedRigName = normalizeMixamoRigName(rawRigName);
     const vrmBoneName       = mixamoVRMRigMap[normalizedRigName];
@@ -243,35 +252,50 @@ export function retargetMixamoClip(
     const mixamoRigNode = findNode(animation.scene, rawRigName, normalizedRigName);
     if (!mixamoRigNode || !mixamoRigNode.parent) continue;
 
-    // Compute the rest-pose-differential transform for this bone.
-    // restRotationInverse:      inverse of the Mixamo bone's world rotation at rest
-    // parentRestWorldRotation:  world rotation of its parent at rest
-    //
-    // For each keyframe quaternion q (Mixamo-rest-relative):
-    //   q' = parentRestWorldRotation * q * restRotationInverse
-    //
-    // This converts q from "relative to Mixamo rest pose" into the space the VRM
-    // AnimationMixer expects (normalized bone space, relative to VRM rest pose).
-    mixamoRigNode.getWorldQuaternion(restRotationInverse).invert();
-    mixamoRigNode.parent.getWorldQuaternion(parentRestWorldRotation);
+    // Quaternion tracks: rest-pose-differential transform + VRM 0.x axis flip.
+    if (propertyName === 'quaternion' && track instanceof THREE.QuaternionKeyframeTrack) {
+      mixamoRigNode.getWorldQuaternion(restRotationInverse).invert();
+      mixamoRigNode.parent.getWorldQuaternion(parentRestWorldRotation);
 
-    const values = track.values.slice();
-    for (let i = 0; i < values.length; i += 4) {
-      q.fromArray(values, i);
-      q.premultiply(parentRestWorldRotation).multiply(restRotationInverse);
-      q.toArray(values, i);
+      const values = track.values.slice();
+      for (let i = 0; i < values.length; i += 4) {
+        q.fromArray(values, i);
+        q.premultiply(parentRestWorldRotation).multiply(restRotationInverse);
+        q.toArray(values, i);
+      }
+
+      tracks.push(
+        new THREE.QuaternionKeyframeTrack(
+          `${vrmNode.name}.quaternion`,
+          track.times,
+          // VRM 0.x axis flip: VRMUtils.rotateVRM0 adds π rotation to vrm.scene,
+          // which inverts the X and Z axes of every bone. Every even-indexed component
+          // (x, z in each xyzw tuple) must be negated to compensate.
+          values.map((v, i) => (vrm0 && i % 2 === 0 ? -v : v)),
+        ),
+      );
+      continue;
     }
 
-    tracks.push(
-      new THREE.QuaternionKeyframeTrack(
-        `${vrmNode.name}.quaternion`,
-        track.times,
-        // VRM 0.x axis flip: VRMUtils.rotateVRM0 adds π rotation to vrm.scene,
-        // which inverts the X and Z axes of every bone. Every even-indexed component
-        // (x, z in each xyzw tuple) must be negated to compensate.
-        values.map((v, i) => (vrm0 && i % 2 === 0 ? -v : v)),
-      ),
-    );
+    // Position tracks (typically only on hips): scale by hipsPositionScale +
+    // VRM 0.x coord flip (negate X & Z, keep Y). This is the natural body-bob
+    // during walk/idle — without it, hips stay frozen, spring-bones (hair/skirt)
+    // don't get the vertical shock they need to swing naturally, and the
+    // character visually glides stiffly instead of bouncing.
+    //
+    // Ported verbatim from Milady's retargetMixamoGltfToVrm.ts (MIT).
+    if (propertyName === 'position' && track instanceof THREE.VectorKeyframeTrack) {
+      const values = track.values.map(
+        (v, i) => (vrm0 && i % 3 !== 1 ? -v : v) * hipsPositionScale,
+      );
+      tracks.push(
+        new THREE.VectorKeyframeTrack(
+          `${vrmNode.name}.position`,
+          track.times,
+          values,
+        ),
+      );
+    }
   }
 
   // Validate that at least the hips bone was mapped — without it the entire
