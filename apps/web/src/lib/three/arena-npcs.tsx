@@ -548,25 +548,11 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     }
     group.visible = true;
     {
-<<<<<<< Updated upstream
-      // Behind-camera cull: drei <Html> calculatePosition still projects a screen
-      // XY when the anchor NDC z > 1 (anchor behind near plane), producing ghost
-      // labels for buildings/NPCs behind the camera. Zero-allocation test using
-      // camera.matrixWorldInverse — viewZ < 0 means the anchor is in front.
-      // group.matrixWorld.elements[12/13/14] = world translation (no Vector3 alloc).
-      const m = camera.matrixWorldInverse.elements;
-      const wx = group.matrixWorld.elements[12];
-      const wy = group.matrixWorld.elements[13];
-      const wz = group.matrixWorld.elements[14];
-      const viewZ = m[2] * wx + m[6] * wy + m[10] * wz + m[14];
-      const inFront = viewZ < 0;
-=======
       // Behind-camera cull: drei <Html> does not hide when the 3D anchor is behind
       // the near plane — calculatePosition still emits a screen XY, producing ghost
       // labels. Dot-product test hides the label when the anchor is behind the camera.
       group.getWorldPosition(_npcAnchorWorldPos);
       const inFront = anchorInFrontOfCamera(_npcAnchorWorldPos, camera);
->>>>>>> Stashed changes
       const label = labelRef.current;
       if (!inFront) {
         if (label && label.style.display !== 'none') label.style.display = 'none';
@@ -916,22 +902,11 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     }
     group.visible = true;
     {
-<<<<<<< Updated upstream
-      // Behind-camera cull: same zero-allocation test as GLBNpcMesh above.
-      // viewZ < 0 → anchor is in front of camera → show label.
-      const m = camera.matrixWorldInverse.elements;
-      const wx = group.matrixWorld.elements[12];
-      const wy = group.matrixWorld.elements[13];
-      const wz = group.matrixWorld.elements[14];
-      const viewZ = m[2] * wx + m[6] * wy + m[10] * wz + m[14];
-      const inFront = viewZ < 0;
-=======
       // Behind-camera cull: drei <Html> does not hide when the 3D anchor is behind
       // the near plane — calculatePosition still emits a screen XY, producing ghost
       // labels. Dot-product test hides the label when the anchor is behind the camera.
       group.getWorldPosition(_npcAnchorWorldPos);
       const inFront = anchorInFrontOfCamera(_npcAnchorWorldPos, camera);
->>>>>>> Stashed changes
       const label = labelRef.current;
       if (!inFront) {
         if (label && label.style.display !== 'none') label.style.display = 'none';
