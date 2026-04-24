@@ -797,6 +797,20 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // Load VRM — suspends until resolved (parent Suspense absorbs the throw)
   const vrm = useVRM(vrmPath);
 
+  // Disable VRM optional modules that wandering NPCs never use (B4 2026-04-24).
+  // lookAt tracks and moves the eye bones to follow the camera every frame.
+  // expressionManager drives facial morph targets (blink, lipsync, etc.).
+  // Neither is used for wandering Milady NPCs — they don't speak or look at the
+  // player. Disabling them skips their per-frame update work inside vrm.update().
+  // Three-vrm checks for truthiness before calling each module, so setting to
+  // undefined/null is safe at runtime. Does NOT affect the player pet
+  // (player-pet.tsx is a separate component; this effect is scoped to VRMNpcMesh).
+  useEffect(() => {
+    if (!vrm) return;
+    (vrm as any).lookAt = undefined;
+    (vrm as any).expressionManager = undefined;
+  }, [vrm]);
+
   // Per-instance VRM animator — each NPC gets its own AnimationMixer
   const vrmAnimatorRef = useRef<VRMCharacterAnimator | null>(null);
 
@@ -943,28 +957,34 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     }
     group.rotation.y = currentRotY.current;
 
-    // Mid-distance: animator runs at 30Hz. Close: full 60Hz.
-    if (camDistSq > VRM_NPC_HALF_RATE_DIST_SQ && (frame + seed) % 2 !== 0) {
-      return;
-    }
+    // PERF: split mixer (60Hz unconditional) from spring-bone physics (tiered rate).
+    //
+    // FIX (B9 2026-04-24): The previous early-return gate
+    //   `if (camDistSq > VRM_NPC_HALF_RATE_DIST_SQ && (frame+seed)%2!==0) return;`
+    // killed the ENTIRE useFrame on odd mid-distance frames — including the
+    // updateMixerOnly call below. Result: keyframe animation ran at ~30Hz for
+    // Miu/Kyoko whenever they were in the 1000–10000wu band, causing visible
+    // jank that Nori (unconditional 60Hz mixer in town-guide.tsx) did not exhibit.
+    //
+    // FIX: The early-return gate is REMOVED entirely.
+    // The AnimationMixer MUST run every frame at 60Hz (Nori parity). Only the
+    // spring-bone physics is tiered:
+    //   close  (camDistSq ≤ VRM_NPC_HALF_RATE_DIST_SQ): every 2nd frame = 30Hz
+    //   mid-dist (camDistSq > VRM_NPC_HALF_RATE_DIST_SQ): every 4th frame = 15Hz
+    //
+    // Spring-bone update (vrm.update) is O(joints) with matrix ops, verlet
+    // integration, and quaternion arithmetic per joint. With 5 VRM NPCs × ~10-20
+    // spring joints each = 50-100 expensive physics ops/frame at 60Hz. Hair/cloth
+    // frequencies are <4 Hz — 15Hz is 3.75× Nyquist margin even at mid-distance.
+    //
+    // Walking NPCs keep full vrm.update() — movement causes large spring
+    // displacements where sub-30Hz would produce visible lag on hair/tail physics.
+
     // Debug: log when animator ref is null at update time (should never happen post-init)
     if (!vrmAnimatorRef.current && frame % 120 === seed % 120) {
       console.warn('[VRMNpcMesh] animator ref null at update time', npc.id, npc.species);
     }
 
-    // PERF: split mixer (60Hz) from spring-bone physics (30Hz for idle NPCs).
-    //
-    // Spring-bone update (vrm.update) is O(joints) with matrix ops, verlet
-    // integration, and quaternion arithmetic per joint. With 5 VRM NPCs × ~10-20
-    // spring joints each = 50-100 expensive physics ops/frame at 60Hz.
-    //
-    // Strategy: call updateMixerOnly() every frame (keeps keyframe animation
-    // smooth), accumulate delta, and call updateSpringOnly() every 2nd frame
-    // for idle NPCs (hair/cloth physics at 30Hz is imperceptible; Nyquist for
-    // visible spring frequencies <4 Hz needs only >8 Hz sampling rate).
-    //
-    // Walking NPCs keep full vrm.update() — movement causes large spring
-    // displacements where 30Hz would produce visible lag on hair/tail physics.
     const animator = vrmAnimatorRef.current;
     if (animator) {
       springDeltaAccRef.current += dt;
@@ -974,9 +994,11 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
         animator.update(dt, isMoving);
         springDeltaAccRef.current = 0;
       } else {
-        // Idle: mixer at 60Hz, spring bones at 30Hz (every 2nd frame, staggered by seed).
+        // Idle: mixer ALWAYS at 60Hz (keyframe smoothness, Nori parity).
         animator.updateMixerOnly(dt, isMoving);
-        if ((frame + seed) % 2 === 0) {
+        // Tiered spring-bone rate: close = 30Hz (every 2nd frame), mid-dist = 15Hz (every 4th).
+        const springMod = camDistSq > VRM_NPC_HALF_RATE_DIST_SQ ? 4 : 2;
+        if ((frame + seed) % springMod === 0) {
           const acc = Math.min(springDeltaAccRef.current, 0.1);
           animator.updateSpringOnly(acc);
           springDeltaAccRef.current = 0;
