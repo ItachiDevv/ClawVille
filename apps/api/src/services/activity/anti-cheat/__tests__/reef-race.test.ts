@@ -1,0 +1,173 @@
+/**
+ * Q2 Activity Portals — Reef Race anti-cheat unit tests (chunk #5).
+ *
+ * Pure-function coverage for the validators in `anti-cheat/reef-race.ts`:
+ *   - position-delta clamp at REEF_MAX_SPEED triggers flag + preserves direction
+ *   - velocity-delta clamp at REEF_MAX_ACCEL triggers flag + caps speed
+ *   - lap-time validator flags under-min laps
+ *   - checkpoint-sequence validator silent-rejects out-of-order single hits
+ *   - skip-tracker trips on REEF_SKIP_PATTERN_THRESHOLD in window
+ *   - flag counter inherits 5-flag forfeit threshold from Bumper counter
+ */
+
+import { describe, expect, it } from 'bun:test';
+import {
+  validateReefPositionDelta,
+  validateReefVelocityDelta,
+  validateLapTime,
+  validateCheckpointSequence,
+  ReefCheckpointSkipTracker,
+  ReefFlagCounter,
+  FLAG_FORFEIT_THRESHOLD,
+} from '../reef-race';
+import {
+  REEF_MAX_SPEED,
+  REEF_MAX_ACCEL,
+  MIN_LAP_MS,
+  REEF_SKIP_PATTERN_THRESHOLD,
+  REEF_CHECKPOINT_COUNT,
+} from '../../sim/reef-race-config';
+
+const DT_30HZ = 1 / 30;
+
+// ─── Position-delta ────────────────────────────────────────────────────────
+
+describe('validateReefPositionDelta — overspeed', () => {
+  it('passes through a legitimate velocity integration', () => {
+    const prev = { x: 0, y: 0 };
+    const next = { x: REEF_MAX_SPEED * DT_30HZ * 0.9, y: 0 };
+    const v = validateReefPositionDelta(prev, next, DT_30HZ);
+    expect(v.ok).toBe(true);
+    expect(v.flagged).toBe(false);
+  });
+
+  it('clamps an over-limit position delta and flags', () => {
+    const prev = { x: 0, y: 0 };
+    const next = { x: REEF_MAX_SPEED * DT_30HZ * 4, y: 0 };
+    const v = validateReefPositionDelta(prev, next, DT_30HZ);
+    expect(v.ok).toBe(false);
+    expect(v.flagged).toBe(true);
+    expect(v.flagKind).toBe('overspeed');
+    const dist = Math.hypot(v.value.x - prev.x, v.value.y - prev.y);
+    expect(dist).toBeCloseTo(REEF_MAX_SPEED * DT_30HZ, 4);
+  });
+
+  it('preserves direction when clamping diagonal motion', () => {
+    const prev = { x: 0, y: 0 };
+    const next = { x: 99999, y: 99999 };
+    const v = validateReefPositionDelta(prev, next, DT_30HZ);
+    expect(v.flagged).toBe(true);
+    const angle = Math.atan2(v.value.y - prev.y, v.value.x - prev.x);
+    expect(angle).toBeCloseTo(Math.PI / 4, 4);
+  });
+});
+
+// ─── Velocity-delta ─────────────────────────────────────────────────────────
+
+describe('validateReefVelocityDelta — overaccel + speed cap', () => {
+  it('passes through a legitimate accel step', () => {
+    const v = validateReefVelocityDelta({ x: 0, y: 0 }, { x: REEF_MAX_ACCEL * DT_30HZ * 0.5, y: 0 }, DT_30HZ);
+    expect(v.ok).toBe(true);
+    expect(v.flagged).toBe(false);
+  });
+
+  it('clamps over-limit velocity delta and caps absolute speed', () => {
+    const v = validateReefVelocityDelta(
+      { x: 0, y: 0 },
+      { x: REEF_MAX_ACCEL * DT_30HZ * 5, y: 0 },
+      DT_30HZ,
+    );
+    expect(v.ok).toBe(false);
+    expect(v.flagged).toBe(true);
+    expect(Math.hypot(v.value.x, v.value.y)).toBeLessThanOrEqual(REEF_MAX_SPEED + 1e-6);
+  });
+});
+
+// ─── Lap time ───────────────────────────────────────────────────────────────
+
+describe('validateLapTime', () => {
+  it('flags a sub-MIN_LAP_MS lap', () => {
+    const v = validateLapTime(MIN_LAP_MS - 1);
+    expect(v.ok).toBe(false);
+    expect(v.flagged).toBe(true);
+    expect(v.flagKind).toBe('underminlap');
+  });
+
+  it('accepts a lap exactly at MIN_LAP_MS', () => {
+    const v = validateLapTime(MIN_LAP_MS);
+    expect(v.ok).toBe(true);
+    expect(v.flagged).toBe(false);
+  });
+
+  it('flags negative lap time', () => {
+    const v = validateLapTime(-100);
+    expect(v.ok).toBe(false);
+    expect(v.flagged).toBe(true);
+  });
+});
+
+// ─── Checkpoint sequence ────────────────────────────────────────────────────
+
+describe('validateCheckpointSequence', () => {
+  it('accepts a hit on the expected next checkpoint', () => {
+    const v = validateCheckpointSequence(3, 3);
+    expect(v.ok).toBe(true);
+    expect(v.flagged).toBe(false);
+  });
+
+  it('silently rejects a single out-of-order hit (no flag)', () => {
+    const v = validateCheckpointSequence(5, 3);
+    expect(v.ok).toBe(false);
+    expect(v.flagged).toBe(false);
+  });
+
+  it('flags an out-of-range checkpoint index', () => {
+    const v = validateCheckpointSequence(REEF_CHECKPOINT_COUNT + 1, 0);
+    expect(v.ok).toBe(false);
+    expect(v.flagged).toBe(true);
+    expect(v.flagKind).toBe('checkpoint_skip');
+  });
+});
+
+describe('ReefCheckpointSkipTracker', () => {
+  it('trips at the REEF_SKIP_PATTERN_THRESHOLD-th skip in the window', () => {
+    const t = new ReefCheckpointSkipTracker();
+    const now = 1_000_000;
+    for (let i = 1; i < REEF_SKIP_PATTERN_THRESHOLD; i++) {
+      expect(t.recordSkip('pet-a', now + i)).toBe(false);
+    }
+    expect(t.recordSkip('pet-a', now + REEF_SKIP_PATTERN_THRESHOLD)).toBe(true);
+  });
+
+  it('forgets stale skips outside the window', () => {
+    const t = new ReefCheckpointSkipTracker();
+    // Pile up old skips well outside window.
+    t.recordSkip('pet-a', 0);
+    t.recordSkip('pet-a', 1);
+    // Now far in the future — old timestamps drop, new one is alone.
+    const trippedNow = t.recordSkip('pet-a', 999_999_999);
+    expect(trippedNow).toBe(false);
+  });
+});
+
+// ─── Flag counter forfeit ───────────────────────────────────────────────────
+
+describe('ReefFlagCounter (inherits BumperFlagCounter)', () => {
+  it('reports forfeit at exactly the 5th flag', () => {
+    const counter = new ReefFlagCounter();
+    for (let i = 1; i < FLAG_FORFEIT_THRESHOLD; i++) {
+      expect(counter.bump('pet-a')).toBe(false);
+    }
+    expect(counter.bump('pet-a')).toBe(true);
+    expect(counter.countFor('pet-a')).toBe(FLAG_FORFEIT_THRESHOLD);
+  });
+
+  it('tracks pets independently', () => {
+    const counter = new ReefFlagCounter();
+    counter.bump('pet-a');
+    counter.bump('pet-a');
+    counter.bump('pet-b');
+    expect(counter.countFor('pet-a')).toBe(2);
+    expect(counter.countFor('pet-b')).toBe(1);
+  });
+});
