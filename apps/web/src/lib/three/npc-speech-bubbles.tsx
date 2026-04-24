@@ -1,7 +1,8 @@
 'use client';
 
-import { memo, useMemo, useState, useEffect } from 'react';
+import { memo, useMemo, useState, useEffect, useRef } from 'react';
 import { Html } from '@react-three/drei';
+import { useFrame, useThree } from '@react-three/fiber';
 import { useNpcStore, type NpcChatBubble, type NpcSpriteState } from '@/stores/npc';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 
@@ -39,6 +40,38 @@ const SpeechBubble = memo(function SpeechBubble({ npc, bubble }: SpeechBubblePro
     ? bubble.text.slice(0, MAX_CHARS) + '…'
     : bubble.text;
 
+  // bubbleDivRef: imperative behind-camera cull — drei <Html> does not hide its
+  // DOM portal when the 3D anchor is behind the camera (NDC z > 1 still produces
+  // a screen XY), so ghost bubbles float over empty world space. Starts hidden
+  // (display:'none'); useFrame below opens it only when the NPC is in front.
+  // Zero-allocation: camera.matrixWorldInverse viewZ test (no Vector3 alloc).
+  const bubbleDivRef = useRef<HTMLDivElement>(null);
+  const { camera } = useThree();
+
+  // Keep world coords in refs so useFrame reads fresh values without closure capture.
+  const worldXRef = useRef(worldX);
+  const worldZRef = useRef(worldZ);
+  worldXRef.current = worldX;
+  worldZRef.current = worldZ;
+
+  useFrame(() => {
+    const div = bubbleDivRef.current;
+    if (!div) return;
+    // camera.matrixWorldInverse transforms world→view; viewZ < 0 = in front of camera.
+    // Anchor world position: (worldX, BUBBLE_Y, worldZ) — no group.matrixWorld needed.
+    const m = camera.matrixWorldInverse.elements;
+    const wx = worldXRef.current;
+    const wy = BUBBLE_Y;
+    const wz = worldZRef.current;
+    const viewZ = m[2] * wx + m[6] * wy + m[10] * wz + m[14];
+    const inFront = viewZ < 0;
+    if (!inFront) {
+      if (div.style.display !== 'none') div.style.display = 'none';
+    } else {
+      if (div.style.display !== 'block') div.style.display = 'block';
+    }
+  });
+
   return (
     <group position={[worldX, BUBBLE_Y, worldZ]}>
       {/* NO distanceFactor. Earlier version set distanceFactor={300} claiming
@@ -56,7 +89,9 @@ const SpeechBubble = memo(function SpeechBubble({ npc, bubble }: SpeechBubblePro
         zIndexRange={[10, 100]}
       >
         <div
+          ref={bubbleDivRef}
           style={{
+            display: 'none',
             background: 'rgba(8, 20, 38, 0.88)',
             border: '1px solid rgba(100, 200, 255, 0.3)',
             borderRadius: 8,
