@@ -36,29 +36,26 @@ const WOOD_COLOR = '#7c4a1b';
 const woodMat = new MeshBasicNodeMaterial();
 woodMat.colorNode = color(WOOD_COLOR);
 
-// Post dims (world units)
-const POST_W = 8;
-const POST_H = 280;
-const POST_D = 8;
-const POST_SPACING = 220; // centre-to-centre X distance between the two posts
+// Post dims (world units) — BIGGER so the sign reads as a proper landmark
+const POST_W = 16;
+const POST_H = 360;
+const POST_D = 16;
+const POST_SPACING = 340;
 
 const postGeo = new THREE.BoxGeometry(POST_W, POST_H, POST_D);
 
 // Plank dims — spans between post tops with overhang
-const PLANK_W = POST_SPACING + POST_W + 30; // 258wu wide — slight overhang
-const PLANK_H = 160;
-const PLANK_D = 6;
-// Plank center should sit so the plank TOP aligns with post tops.
-// Posts extend from local Y=0 to Y=POST_H. Plank top at Y=POST_H means
-// plank center at Y = POST_H - PLANK_H/2.
+const PLANK_W = POST_SPACING + POST_W + 60; // wide with overhang
+const PLANK_H = 200;
+const PLANK_D = 10;
+// Plank top aligns with post tops: plank center at Y = POST_H - PLANK_H/2
 const PLANK_Y = POST_H - PLANK_H / 2;
 
 const plankGeo = new THREE.BoxGeometry(PLANK_W, PLANK_H, PLANK_D);
 
-// World position of the sign group — raise Y enough to clearly stand above
-// any terrain bumps and be obviously visible.
+// World position — raised well above sand to clear terrain bumps.
 const SIGN_X = 0;
-const SIGN_Y = 0; // base of posts at world Y=0 (sand is at Y=-2; posts rest just above)
+const SIGN_Y = 40; // posts base well above sand (Y=-2); was 0 which looked half-buried
 const SIGN_Z = -120;
 
 // ---------------------------------------------------------------------------
@@ -99,37 +96,34 @@ const TownDirectorySignInner = memo(function TownDirectorySignInner() {
         matrixAutoUpdate={false}
       />
 
-      {/* Text label — Html DOM portal in SCREEN-space mode (no `transform`).
-          Same pattern the building labels use — projects to the 3D position
-          and renders as normal DOM overlay. `transform` mode was causing the
-          text to render inside/behind the plank via CSS-3D clipping. */}
+      {/* Text label — Html in `transform` mode so it CSS-3Ds onto the plank
+          face at world scale. Position is the plank's FRONT face (+Z side) so
+          the text reads from the south where the player approaches. */}
       <Html
-        position={[0, PLANK_Y + 20, 0]}
+        position={[0, PLANK_Y, PLANK_D / 2 + 0.5]}
         center
+        transform
+        distanceFactor={10}
         style={{ pointerEvents: 'none' }}
         zIndexRange={[10, 100]}
       >
         <div
           style={{
             fontFamily: 'serif',
-            color: '#f5e6c8',
-            backgroundColor: 'rgba(60, 35, 15, 0.92)',
-            border: '3px solid #7c4a1b',
-            borderRadius: '6px',
+            color: '#2a1800',
             textAlign: 'center',
-            padding: '14px 22px',
-            lineHeight: 1.3,
+            padding: '12px 20px',
+            lineHeight: 1.25,
             userSelect: 'none',
             whiteSpace: 'nowrap',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.6)',
           }}
         >
-          <div style={{ fontWeight: 'bold', fontSize: '24px', marginBottom: '8px', letterSpacing: '2px' }}>
+          <div style={{ fontWeight: 'bold', fontSize: '36px', marginBottom: '6px', letterSpacing: '2px' }}>
             TOWN CENTER
           </div>
-          <div style={{ fontSize: '16px' }}>Auction</div>
-          <div style={{ fontSize: '16px' }}>Bazaar</div>
-          <div style={{ fontSize: '16px' }}>Marketplace</div>
+          <div style={{ fontSize: '22px' }}>Auction</div>
+          <div style={{ fontSize: '22px' }}>Bazaar</div>
+          <div style={{ fontSize: '22px' }}>Marketplace</div>
         </div>
       </Html>
     </group>
