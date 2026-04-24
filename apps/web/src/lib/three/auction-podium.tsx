@@ -42,7 +42,7 @@ useGLTF.preload('/models/jellyfish.glb');
 // ---------------------------------------------------------------------------
 const DOME_X = 0;
 const DOME_Y = -2;  // flush with sand surface (Y=-2); Y=-8 caused a visible pit/hole in the sand around the base
-const DOME_Z = -280; // -Z is north (away from camera/player spawn); Z=-280 puts dome 220wu north of stalls (Z=-60), near the back of the play area but still south of the building ring (Z≈-300 to -500)
+const DOME_Z = -500; // -Z is north; pushed well back near the building ring for visual depth
 
 // Target visual height for the dome (the centerpiece — give it presence)
 const DOME_TARGET_HEIGHT_WU = 380;
