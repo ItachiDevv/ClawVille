@@ -16,6 +16,7 @@
 
 import { memo } from 'react';
 import * as THREE from 'three/webgpu';
+import { color, texture } from 'three/tsl';
 
 // ---------------------------------------------------------------------------
 // Post / plank dims
@@ -41,41 +42,32 @@ const WOOD_COLOR = 0x7c4a1b;
 // Text canvas texture — rendered ONCE at module load, cached for all mounts
 // ---------------------------------------------------------------------------
 function buildTextTexture(): THREE.Texture {
-  // Use a placeholder during SSR / non-browser contexts
-  if (typeof document === 'undefined') {
-    return new THREE.Texture();
-  }
+  if (typeof document === 'undefined') return new THREE.Texture();
   const canvas = document.createElement('canvas');
   canvas.width = 1024;
   canvas.height = 512;
   const ctx = canvas.getContext('2d');
   if (!ctx) return new THREE.Texture();
 
-  // Wood-grain background (matches the plank)
   ctx.fillStyle = '#7c4a1b';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // Subtle grain stripes
   ctx.fillStyle = 'rgba(60, 35, 15, 0.18)';
   for (let y = 30; y < canvas.height; y += 60) {
     ctx.fillRect(0, y, canvas.width, 6);
   }
 
-  // Dark border
   ctx.strokeStyle = '#3c230f';
   ctx.lineWidth = 16;
   ctx.strokeRect(8, 8, canvas.width - 16, canvas.height - 16);
 
-  // Text
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = '#f5e6c8';
 
-  // Title
   ctx.font = 'bold 140px Georgia, serif';
   ctx.fillText('TOWN CENTER', canvas.width / 2, 130);
 
-  // Divider
   ctx.strokeStyle = '#f5e6c8';
   ctx.lineWidth = 4;
   ctx.beginPath();
@@ -83,7 +75,6 @@ function buildTextTexture(): THREE.Texture {
   ctx.lineTo(canvas.width / 2 + 260, 210);
   ctx.stroke();
 
-  // Subheaders
   ctx.font = '80px Georgia, serif';
   ctx.fillText('Auction', canvas.width / 2, 290);
   ctx.fillText('Bazaar', canvas.width / 2, 370);
@@ -105,10 +96,12 @@ const plankGeo = new THREE.BoxGeometry(PLANK_W, PLANK_H, PLANK_D);
 const textPlaneGeo = new THREE.PlaneGeometry(PLANK_W - 40, PLANK_H - 40);
 
 const woodMat = new THREE.MeshBasicNodeMaterial();
-woodMat.color = new THREE.Color(WOOD_COLOR);
+woodMat.colorNode = color(WOOD_COLOR);
 
+// TSL node materials IGNORE `.map`. Must use `colorNode = texture(tex)`
+// to sample from a texture — otherwise the plane renders as solid white.
 const textMat = new THREE.MeshBasicNodeMaterial();
-textMat.map = textTexture;
+textMat.colorNode = texture(textTexture);
 textMat.transparent = false;
 
 // ---------------------------------------------------------------------------
@@ -117,31 +110,24 @@ textMat.transparent = false;
 const TownDirectorySignInner = memo(function TownDirectorySignInner() {
   return (
     <group position={[SIGN_X, SIGN_Y, SIGN_Z]}>
-      {/* Left post */}
       <mesh
         geometry={postGeo}
         material={woodMat}
         position={[-POST_SPACING / 2, POST_H / 2, 0]}
         matrixAutoUpdate={false}
       />
-
-      {/* Right post */}
       <mesh
         geometry={postGeo}
         material={woodMat}
         position={[POST_SPACING / 2, POST_H / 2, 0]}
         matrixAutoUpdate={false}
       />
-
-      {/* Horizontal plank */}
       <mesh
         geometry={plankGeo}
         material={woodMat}
         position={[0, PLANK_Y, 0]}
         matrixAutoUpdate={false}
       />
-
-      {/* Text plane — on the front (+Z) face of the plank, with baked text */}
       <mesh
         geometry={textPlaneGeo}
         material={textMat}
