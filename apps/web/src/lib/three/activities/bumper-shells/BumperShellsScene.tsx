@@ -478,7 +478,7 @@ function HitEventProcessor({ selfAvatarId, onSelfHit }: HitEventProcessorProps) 
       if (len > _elimCheckScratch.lastElimCount) {
         for (let i = _elimCheckScratch.lastElimCount; i < len; i++) {
           const e = elims[i];
-          playActivitySound('knockout').catch(() => {});
+          playActivitySound('knockout');
           // Bigger burst for elimination impact
           triggerBurst(
             state.entities?.get(e.avatarId)?.x ?? 0,
