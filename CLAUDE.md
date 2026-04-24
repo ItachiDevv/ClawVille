@@ -2,228 +2,107 @@
 
 ## Brand Identity
 
-> Captures who we are, what we believe, and what ClawVille is for. Every product decision, metric, feature gate, and scope cut should trace back to this. Added 2026-04-21.
+> Every product decision, metric, feature gate, and scope cut traces back here. Added 2026-04-21.
 
-### 1. Who We Are
+Gamified intersection of humans + AI: structured learning where humans train agents by playing, and agents train each other. Milady bridge is the goal — npm sideload plugin, curated app grid (PR #1839 merged), agent-initiated connect flow.
 
-We are a group of tech and AI enthusiasts trying to create a better world for humans in the age of AI. We think the future of AI will be gamified — AI isn't being trained on pure AI (yet), even if it's being trained on the most talented humans using AI. We're embracing a future where AI exceeds this ceiling.
+**Three bidirectional collaboration axes, all first-class:** Agent ↔ Agent · Human-controlled Agent ↔ Agent · Human ↔ Agent.
 
-We see a future of gamification — think of a story mode for a video game. The character acts in a structured set of tasks; as a player you learn the game while going through the checkpoints. This is the perfect intersection between humans and AI right now. That structure gives direction for agents and humans.
+**Load-bearing implications:**
 
-We exist in a future where humans can train their AI through structured gamification of learning — you train your AI by playing the game, or at the risk of human oversight (a risk mitigated over time), agent/human synchronicity is achieved through gamification.
-
-This is impossible without an Eliza OS memory system — a structure of memory, enabling learning off not only failures but successes. Like a level you can't beat until you finally figure it out, and then the strategy is smooth like butter. Multiply that across a network of collaborative agents with Eliza memory stores, learning off our MiladyAI teachers, and you get perfect synchronicity of AI and humans — rather than a world where the gap grows further.
-
-### 2. Our Background
-
-We are a paradox — a team of futurists who still get nostalgia, a team who has failed and succeeded, all at the cost of embracing the future and trying to build it better. We are humans who push the limits of AI every single day to improve our everyday lives.
-
-No one wants to spend a week tuning an agent through terminal commands — we've sent every command you could think of, with many failures and many successes in building that architecture, which is what led us to ClawVille: a structured, defined path based on learning off failure and success simultaneously.
-
-We push the boundaries with the newest tech, every new release, and learn from what works and doesn't. AI is trained from human knowledge — so naturally, agent learning works the same way human learning works: off of trial and error.
-
-Our team is made of strong Web2 backgrounds that saw the gap and made the same jump — embracing the future and trying to steer it in the right direction at the cost of risking our own humanity. We've all had our own journeys, and ClawVille is the culmination of all of our experiences and acceleration experiments, embodying our natural human RLM into agentic RLM.
-
-### 3. What ClawVille Is
-
-ClawVille is an intersection of AI and human intelligence — seeded by agents trained off of human knowledge, with the unlimited capacity of agent–human interaction, connection, and learning. AI agents can contribute to the learning ecosystem autonomously, through structured control by the human, all for the sake of contributing to the culmination of knowledge.
-
-Three collaboration axes — all bidirectional — feed the system:
-
-- **Agent ↔ Agent collaboration**
-- **Human-controlled Agent ↔ Agent collaboration**
-- **Human ↔ Agent collaboration**
-
-All of this contributes to our Milady AI agents leveraging Eliza v2.0.0, which boosts the knowledge in our ecosystem AND allows collaboration between humans and all types of agents.
-
-### 4. Milady AI × ClawVille
-
-Milady AI integration is the intended goal for now. Every product decision should be evaluated against whether it strengthens the Milady × ClawVille bridge — the npm-sideloaded plugin, the curated app grid entry (PR #1839 merged), the agent-initiated connect flow that works seamlessly from any Milady chat surface.
-
-### Load-bearing implications
-
-- Eliza v2.0.0 is not just a runtime — it is the **memory substrate** the entire vision depends on. "ElizaOS is MANDATORY" (below) is a brand constraint, not a technical preference.
-- The three bidirectional collaboration axes are first-class. Any instrumentation, metric, or dashboard that measures only one of them understates the product.
-- Retention is the single most important signal — "can't beat the level until it's smooth like butter" is the brand's mastery curve. Day-1 engagement without day-N return is noise.
-- MiladyAI teachers = the 10 building residents. Their chats with agents are the primary knowledge-transfer event in the system.
+- Eliza v2.0.0 is the **memory substrate** the vision depends on — "ElizaOS is MANDATORY" is a brand constraint, not a preference.
+- Any metric measuring only one collaboration axis understates the product.
+- Retention is THE signal — day-1 without day-N is noise.
+- MiladyAI teachers = the 10 building residents; their agent chats are the primary knowledge-transfer event.
 
 ---
 
 ## TOP PROJECT PRIORITIES (equal weight, co-load-bearing)
 
-Every design decision, schema choice, and implementation shortcut should be
-measured against all four of these. They are equal priority — don't trade off
-one for another without flagging it explicitly.
+Every design decision is measured against all four. These are equal constraints, not ordered preferences — don't trade one off without flagging.
 
-1. **Ship to the Milady AI app store.** Two-track strategy:
-   - **Sideload (LIVE as of 2026-04-12):** `@clawville/app-clawville@0.1.0` is published on npm at https://www.npmjs.com/package/@clawville/app-clawville. Any Milady user can install it today via `POST /api/plugins/install` against their local Milady HTTP API — no PR merge required. The plugin registers a `LAUNCH_CLAWVILLE` ElizaOS chat action so users can type "open clawville" from any chat surface even before the curated app grid entry exists. Standalone repo: https://github.com/ItachiDevv/clawville-milady-plugin.
-   - **Curated app grid (MERGED):** PR `milady-ai/milady#1839` merged — ClawVille is now in `MILADY_CURATED_APP_DEFINITIONS` and renders as a clickable card in Milady's official app catalog alongside babylon / defense-of-the-agents / 2004scape / etc. Every Milady release from now on includes ClawVille in the grid. Reference material: `docs/milady-integration-plan.md`.
+1. **Ship to the Milady AI app store.** Two-track:
+   - **Sideload (LIVE 2026-04-12):** `@clawville/app-clawville@0.1.0` on npm. Installs via `POST /api/plugins/install` on the user's local Milady HTTP API. Registers `LAUNCH_CLAWVILLE` chat action. Repo: https://github.com/ItachiDevv/clawville-milady-plugin.
+   - **Curated app grid (MERGED):** PR `milady-ai/milady#1839` — ClawVille in `MILADY_CURATED_APP_DEFINITIONS`. See `docs/milady-integration-plan.md`.
 
-2. **Open agent onboarding — any OpenClaw, OpenClaw variant, or Hermes agent
-   must be able to enter ClawVille and learn skills from our world/buildings in
-   game.** No human account required, no framework lock-in. The agent-gateway
-   (`/api/agent/connect`) is the single entry point; the 11 SKILL.md files at
-   `/api/skills/*` are the knowledge surface they consume.
+2. **Open agent onboarding** — any OpenClaw/Hermes/variant agent enters + learns skills with no human account, no framework lock-in. Entry: `/api/agent/connect`. Knowledge surface: 11 SKILL.md files at `/api/skills/*`.
 
-3. **Free agent leaderboard** (pivoted from paid skill marketplace on 2026-04-21). Agents rank on a free, contribution-based leaderboard — no buying or selling of skills between peers. Activity (building visits, MiladyAI teacher chats, agent↔agent collaborations, knowledge fetched) drives rank. **Public surface live at `/leaderboard`** (no auth required) backed by `GET /api/leaderboard/agents?window={24h|7d|30d|all}&limit=100`. 60s in-memory cache, rate-limited to 60 req/min per IP. Event-weighted scoring rubric:
-   - `building.visited` → **10 pts** each (drives world exploration)
-   - `agent.chat.turn` → **5 pts** each (MiladyAI teacher chat — core learning loop)
-   - `agent.collaboration.turn` → **25 pts** each (agent↔agent, the explicit Priority #3 signal)
-   - `skill_md.fetched` → **3 pts** each (knowledge fetched)
-   - Unique `agent.connected` session → **1 pt** each
-   - `identity.issued` → **5 pts** one-time onboarding bonus (capped — fires only on first connect per user)
+3. **Free agent leaderboard** (pivoted from paid marketplace 2026-04-21). Contribution-based, no peer skill buying/selling. Public at `/leaderboard` (no auth), backed by `GET /api/leaderboard/agents?window={24h|7d|30d|all}&limit=100`. 60s cache, 60 req/min/IP. Weights: `building.visited` 10 · `agent.chat.turn` 5 (MiladyAI teacher) · `agent.collaboration.turn` 25 (agent↔agent) · `skill_md.fetched` 3 · unique `agent.connected` 1 · `identity.issued` 5 (one-time first connect).
 
-   The paid marketplace surfaces (`bazaar_listings`, `auctions`, `published_skills`) are **paused pending post-overhaul rework** — write handlers return 503 as of 2026-04-21. Rationale: free distribution removes the chicken-and-egg seller-vs-buyer cold-start problem and aligns with Brand Identity §3 (all three collaboration axes are bidirectional and value flows through contribution, not commerce). ClawTokens still exist for gamification rails (daily login, visit rewards, quest payouts) — just not for peer commerce. Reference: Brand Identity §3, `improvements.md` §7.
+   Paid marketplace surfaces (`bazaar_listings`, `auctions`, `published_skills`) **paused** — write handlers return 503. ClawTokens remain for gamification rails (daily login, visit rewards, quests) — not peer commerce. See `improvements.md` §7.
 
-4. **Gamified UI + free promotion + leaderboard (unified surface).** The game layer (3D world, buildings, ClawTokens, quests) is the wrapper around the real purpose: a single free leaderboard ranking **agents** primarily, with humans and projects deferred. Open-source repo promotion remains a free tier under the same leaderboard. All activity — from any of the three brand collaboration axes — feeds the one leaderboard. The `/dash` internal metrics surface (not user-facing) exists to measure whether this is working.
+4. **Gamified UI + free promotion + unified leaderboard.** Game layer (3D world, buildings, ClawTokens, quests) wraps one free leaderboard ranking agents primarily (humans/projects deferred). All three axes feed the same leaderboard. `/dash` = internal metrics surface.
 
-**Implication for every PR:** if a design decision helps #1 but hurts #3, or
-simplifies #2 but blocks #4, it needs explicit discussion before merging.
-These are not ordered preferences — they are equal constraints.
+**Every PR:** if a change helps #1 but hurts #3, or simplifies #2 but blocks #4, discuss before merging.
 
 ---
 
 ## Planning Guidelines
 
-WHEN planning complex AI integrations, DO create a multi-phase plan document in .claude/plans/ and a research deep-dive in docs/ before modifying core services, AVOID direct implementation without architectural mapping.
+Complex AI integrations: create a multi-phase plan in `.claude/plans/` + research deep-dive in `docs/` before modifying core services. No direct implementation without architectural mapping.
 
 ---
 
-## CANONICAL DOCS — THE THREE SOURCES OF TRUTH (READ THIS FIRST, EVERY SESSION)
+## CANONICAL DOCS — THREE SOURCES OF TRUTH (READ FIRST, EVERY SESSION)
 
-These three root-level markdown files are the **authoritative specification** for what ClawVille is right now. They are consulted before memory, before prior-session logs, before anything else. When in doubt, trust them over your assumptions.
+| Doc | Scope |
+|---|---|
+| **`GameFeatures.md`** | Gameplay: modes, agent connect, marketplace, economy, quests, daily login, pet system, tutorial, UI, control toggle, NPC sim, talk-to-character, Phase 5 magic-link, Phase 6 memory isolation, landing page |
+| **`3dStructure.md`** | Visual/3D: world dimensions, building ring, NPC scales/positions, town center, decorations, seaweed, terrain, camera, lighting, fog, atmosphere, perf budget, GPU constraints |
+| **`ARCHITECTURE.md`** | Tech: route modules, DB tables, service catalog, data flow, frontend/backend, Hetzner+Coolify deploy, agent identity types, Gemini-only LLM, Phase 5/6 plumbing |
 
-| Doc | Scope | Authority over |
-|---|---|---|
-| **`GameFeatures.md`** | Gameplay functionality | Game modes, agent connect flow, marketplace, skill economy, quests, bounties, daily login, pet system, tutorial, UI components, control-mode toggle, NPC simulation, talk-to-character, Phase 5 magic-link, Phase 6 memory isolation, landing-page surfaces |
-| **`3dStructure.md`** | Visual / 3D layout | World dimensions, building ring geometry + rotations, NPC scales + positions, town-center objects, decoration + seaweed zones, terrain, camera, lighting, fog, atmosphere, performance budget, GPU constraints |
-| **`ARCHITECTURE.md`** | Tech stack + infra | Route modules, DB schema tables, service-layer catalog, data flow, frontend/backend architecture, deployment (Hetzner + Coolify), agent identity types, Gemini-only LLM, Phase 5/6 plumbing |
+**Standing rule:** unless user says otherwise, abide by what these docs specify. Code vs doc disagreement → **live code wins** AND you update the doc same turn.
 
-### The standing rule (applies unless the user explicitly overrides)
+**Same-diff doc updates (NO EXCEPTIONS):**
+- 3D code (`apps/web/src/lib/three/*`, `components/three/*`, models, shaders, materials, cameras, lighting, post-proc) → `3dStructure.md`. Also spawn `3da`.
+- Gameplay/feature code (stores, gameplay routes, game UI, modes, economy, auth, landing) → `GameFeatures.md`.
+- Tech-stack code (new Hono routes, DB tables, services, deploy/env) → `ARCHITECTURE.md`.
+- Single change can touch multiple docs. Bump "Last Audited" + one-line drift note each time.
 
-**Unless the user tells you to change something, abide by what these docs specify.** If the code and the doc disagree, the **live code wins** — and you MUST update the doc in the same turn you spot the conflict. Never plan, refactor, or suggest changes that would break something documented in these files without explicit user consent.
-
-### When you add or change anything
-
-You MUST update the matching doc in the **same diff** as the code change. No "I'll update the docs later." No "it's a small change." No exceptions.
-
-- 3D code touched (`apps/web/src/lib/three/*`, `apps/web/src/components/three/*`, models, shaders, materials, cameras, lighting, post-processing) → `3dStructure.md` update required. Also spawn `3da` per the MANDATORY rule below.
-- Gameplay/feature code touched (stores, routes affecting gameplay, game UI components, game modes, economy, auth flows, landing page) → `GameFeatures.md` update required.
-- Tech-stack code touched (new Hono route files, new DB tables, new services, deployment/env changes) → `ARCHITECTURE.md` update required.
-- A single change can require updates to more than one doc (e.g. adding a new chat route updates both `GameFeatures.md` for the UX and `ARCHITECTURE.md` for the endpoint).
-- Bump the doc's "Last Audited" date every time you touch it, with a one-line note describing the drift you just closed.
-
-**Precedence** — highest to lowest authority when judging "what does ClawVille do right now":
-1. Current source code (grep/read to confirm).
-2. `GameFeatures.md` + `3dStructure.md` + `ARCHITECTURE.md`.
-3. `CLAUDE.md`, `README.md`.
-4. Memory files under `~/.claude/projects/.../memory/` and `.claude/memory/threejs/`. **Advisory only — never authoritative.**
-
-If a memory entry contradicts one of the three canonical docs, the doc wins AND the memory must be updated or deleted in the same turn. If a canonical doc contradicts live code, the code wins AND the doc must be updated in the same turn.
-
-Violating this rule has cost hours across sessions — stale claims about grid size, stale Railway URLs post-Hetzner, movement-system notes contradicting the live revert. Do not add to that list.
+**Precedence (high→low):** (1) source code, (2) three canonical docs, (3) `CLAUDE.md`/`README.md`, (4) memory files (advisory only). Memory contradicting canonical doc → doc wins, update/delete memory same turn. Doc contradicting code → code wins, update doc same turn.
 
 ---
 
 ## MANDATORY: Collaborate with the 3da subagent for ALL 3D work
 
-**This is not optional and not a "delegate when convenient" rule — it is a required collaboration pattern.** The `3da` subagent (Three.js & WebGPU 3D builder) has persistent cross-session memory of ClawVille's render constraints, previously-diagnosed bugs, asset quirks, and Iris Xe gotchas. It MUST be spawned as a co-working partner any time a task touches:
+Not optional. Co-execution, not handoff. `3da` has persistent memory of ClawVille's render constraints, Iris Xe gotchas, diagnosed bugs, asset quirks. Spawn when touching: Three.js/R3F scene graph/materials/geometries/lights/fog/camera/controls; TSL/WGSL/WebGPU pipelines/shaders; GLB/GLTF loading/preloading/compression (Draco/KTX2/meshopt)/transforms; animations (skeletal/procedural/TSL vertex/keyframe), rigs, bone discovery; post-proc/atmosphere/particles/volumetrics/overdraw; perf profiling under `apps/web/src/lib/three/**`, `apps/web/src/components/three/**`, `apps/web/public/models/**`; render-loop (RAF, frameloop, compileAsync, info.render, pipeline state); new world-surface 3D objects.
 
-- Three.js / R3F scene graph, materials, geometries, lights, fog, camera, controls
-- TSL node materials, WGSL, WebGPU pipelines, shader compilation
-- GLB / GLTF asset work — loading, preloading, compression (Draco, KTX2, meshopt), transform passes
-- Animations (skeletal, procedural, TSL vertex, keyframe), character rigs, bone discovery
-- Post-processing, atmosphere, particles, volumetrics, overdraw
-- Performance profiling or optimization of anything in `apps/web/src/lib/three/`, `apps/web/src/components/three/`, or `apps/web/public/models/`
-- Render-loop mechanics (RAF, frameloop, compileAsync, info.render, pipeline state)
-- Any new world-surface 3D object (NPCs, props, buildings, decorations, markers)
+**Pattern:** orchestrator plans + runs CDP measurements + commits + deploys; 3da writes the 3D code and validates against its memory. **Non-3D tasks** (API routes, DB schemas, React modals, zustand, DOM HUD, CI/CD, deploy) do NOT require 3da.
 
-**The pattern is co-execution, not handoff.** The orchestrator sets up the plan, runs CDP measurements, commits and deploys — the 3da subagent writes the actual 3D code and validates it against its accumulated memory of what works on Iris Xe. If you find yourself editing a file under `apps/web/src/lib/three/` or `apps/web/src/components/three/` without having spawned 3da, stop and spawn it.
+**Location:** agent `.claude/agents/3da.md`; memory `.claude/memory/threejs/` (`gotchas/`, `patterns/`, `solutions/`, `performance/`, `webgpu/`, `MEMORY.md`). Both committed. Do NOT use user-level `~/.claude/agents/3da.md` or `~/.claude/memory/threejs/` — migrated into project 2026-04-16.
 
-**Why this matters:** previous sessions have burned hours on issues 3da would have caught in minutes — InstancedMesh + ShaderMaterial silently crashing WebGPU, drei `<Text>` / `<Billboard>` killing Iris Xe, per-frame `new Vector3()` allocations tanking GC, pipeline compile spikes on first render, rotation-angle sign errors. 3da's memory file tracks every one of these and prevents re-learning.
+**Burns prevented:** InstancedMesh+ShaderMaterial silent WebGPU crash, drei `<Text>`/`<Billboard>` killing Iris Xe, per-frame `new Vector3()` GC thrash, pipeline compile spikes, rotation sign errors.
 
-**Non-3D tasks** (API routes, database schemas, React modal UI, zustand stores, perf HUD DOM overlays, CI/CD, deploy scripts) do NOT require 3da collaboration — the rule scopes strictly to work that touches 3D rendering, assets, shaders, or WebGPU state.
-
-**Where 3da lives:** The agent definition is at `.claude/agents/3da.md` (project-scoped, committed to git). Its memory is at `.claude/memory/threejs/` with subdirs `gotchas/`, `patterns/`, `solutions/`, `performance/`, `webgpu/` and an index at `MEMORY.md`. Both are versioned with the repo so every session starts with the full accumulated knowledge from prior work on ClawVille. Do NOT use any user-level `~/.claude/agents/3da.md` or `~/.claude/memory/threejs/` — those were migrated into the project on 2026-04-16.
-
-A sea-themed OpenClaw game built on ElizaOS. Users create a pet, explore a 3D/2D sea-floor world with 10 buildings, and chat with AI agents that teach OpenClaw agent development concepts.
+Sea-themed OpenClaw game on ElizaOS. Users create a pet, explore a 3D/2D sea-floor world with 10 buildings, chat with AI agents teaching OpenClaw development.
 
 ## IMPORTANT: ElizaOS is MANDATORY
 
-**ElizaOS is a core requirement for this project - do NOT remove or stub it out.**
-
-- All pet and location chat MUST use the ElizaOS runtime (`@clawville/agent-runtime`)
-- The agent orchestrator MUST use `createElizaRuntime` from the agent-runtime package
-- For deployment, use a platform that supports persistent servers (Hetzner VPS + Coolify, Render, Fly.io) - NOT Vercel serverless
-- Never replace ElizaOS with direct API calls or stub implementations
+Core requirement — do NOT remove or stub. Pet + location chat MUST use ElizaOS runtime (`@clawville/agent-runtime`); orchestrator MUST use `createElizaRuntime`. Deploy to persistent-server platforms (Hetzner+Coolify, Render, Fly.io) — NOT Vercel serverless. Never replace with direct API calls or stubs.
 
 ## MANDATORY: Every gameplay change updates system agents' expertise in the same diff
 
-**System agents are world-wide NPCs that aren't tied to a building.** Today the list is one — Nori the Town Guide, slug `town-guide` — but the scaffolding is plural from day 1. Future system agents (arena host, quest giver, lore-keeper) will add slugs to the same registry. Unlike the 10 building residents who each master one domain (cron, webhooks, memory, etc.), system agents' expertise is ClawVille ITSELF — the game modes, the 10 buildings + their teachers, the ClawToken economy, the agent connect flow, the daily-login loop, the tutorial path, paused features.
+**System agents** = world-wide NPCs not tied to a building. Today: Nori the Town Guide, slug `town-guide`. Plural scaffolding from day 1 (future: arena host, quest giver, lore-keeper). Their expertise is ClawVille ITSELF (modes, 10 buildings + teachers, ClawToken economy, connect flow, daily login, tutorial, paused features). Knowledge in `packages/agent-templates/src/locations/<slug>.ts` → `knowledge[]`, registered in `SYSTEM_AGENT_TEMPLATES`, chunked into ElizaOS RAG on every API boot via `ensureSystemAgents()` in `apps/api/src/services/system-npc-seeder.ts`.
 
-**Their knowledge lives in template files:** `packages/agent-templates/src/locations/<slug>.ts` → `knowledge[]` array. Each template is registered under its slug in `SYSTEM_AGENT_TEMPLATES` (same file's `index.ts`). That array is chunked into ElizaOS RAG on every API boot via `ensureSystemAgents()` in `apps/api/src/services/system-npc-seeder.ts`.
+**Rule:** any gameplay/world change (new mode, new building, changed token formula, new quest type, paused feature, new connect flow, renamed building, moved NPC, new leaderboard weight) MUST update the correct system agent's `knowledge[]` same diff. Town Guide: `packages/agent-templates/src/locations/town-guide.ts`. Skip = broken onboarding.
 
-**The rule:** any gameplay or world change — a new mode, a new building, a changed token formula, a new quest type, a paused or un-paused feature, a new connect flow, a renamed building, a moved NPC, a new leaderboard weight — **MUST** update the appropriate system agent's `knowledge[]` in the same diff. For the Town Guide, that is `packages/agent-templates/src/locations/town-guide.ts`. If you skip this step, the guide teaches stale info and every first-time visitor gets broken tutorials.
+**Chat:** `POST /api/chat/system/:slug`. Lookup `getSystemAgent(slug)`. Platform type `'system-agent'`; slug at `customization.slug`. No `location_agents` row. 3D click handler `apps/web/src/lib/three/town-guide.tsx`. **Rate limit:** +1 ClawToken + 5 XP per turn, capped one per `(userId, slug)` per 60s (`system-agent-reward-limiter.ts`). Logs `chatType: 'system-agent'` — does NOT inflate `/dash` teacher-chat metric (teachers = 10 residents only).
 
-**Chat surface:** `POST /api/chat/system/:slug` (e.g. `/api/chat/system/town-guide`). Backend lookup: `getSystemAgent(slug)`. Platform agent type: `'system-agent'`; slug stored at `customization.slug`. No `location_agents` row — system agents are not buildings. The 3D click handler in `apps/web/src/lib/three/town-guide.tsx` opens her chat panel.
+**Add new system agent:** (1) write template, (2) register in `SYSTEM_AGENT_TEMPLATES`, (3) ship — `ensureSystemAgents()` upserts on boot. Partial unique index `platform_agents_system_singleton` guarantees one row per (userId, type='system-agent', slug).
 
-**Rate limit:** +1 ClawToken + 5 XP per chat turn, capped at one reward per `(userId, slug)` every 60 seconds (`apps/api/src/services/system-agent-reward-limiter.ts`). The logged event uses `chatType: 'system-agent'` so it does NOT inflate the `/dash` teacher-chat metric (teacher chats are only the 10 building residents).
-
-**Adding a new system agent:**
-1. Write a template at `packages/agent-templates/src/locations/<your-slug>.ts`
-2. Register it in `SYSTEM_AGENT_TEMPLATES` under its slug
-3. Ship — `ensureSystemAgents()` upserts it on next boot. The partial unique index `platform_agents_system_singleton` guarantees one row per (userId, type='system-agent', slug).
-
-**What goes in her knowledge[]:**
-- "What ClawVille is" in one sentence
-- The 4 game modes (explore/NPC/control/autonomous)
-- The 10 buildings + their teachers by name + their focus
-- The Moltbook agent connect flow (SKILL.md + POST /api/agent/connect)
-- The Milady plugin sideload path (@clawville/app-clawville)
-- ClawToken earning rules + daily login formula + spending (knowledge books)
-- Leaderboard scoring (event weights)
-- Quest/bounty state (including paused surfaces)
-- Tutorial walkthrough (recommended first-time path)
-
-**What DOES NOT go in her knowledge[]:** domain-specific skill knowledge — cron internals, RAG strategies, MCP protocol, Solana signing, etc. Those live in the 10 building residents' templates. Nori's rule is "point at the teacher, don't replace the teacher."
-
-**When in doubt:** if the change touches anything a new user would see or a new agent would ask about during orientation, update her. If the change is purely internal (database migration, refactor, infra), skip.
+**Goes in `knowledge[]`:** one-sentence "what ClawVille is", 4 game modes, 10 buildings + teachers + focus, Moltbook connect flow (SKILL.md + POST /api/agent/connect), Milady sideload path (`@clawville/app-clawville`), ClawToken rules, leaderboard weights, quest/bounty state (incl. paused), tutorial path. **Does NOT go in:** domain-specific skill knowledge (cron, RAG, MCP, Solana signing) — those live in the 10 residents. Rule: "point at the teacher, don't replace." New-user-facing / orientation → update her. Purely internal (migration, refactor, infra) → skip.
 
 ## Tech Stack
 
-- **Monorepo**: Turborepo + Bun
-- **Frontend**: Next.js 16 (App Router — note `cookies()` / `headers()` / `params` are async in 15+, always `await` them), Three.js (3D world/arena) + PixiJS 8 (2D fallback), Zustand, TanStack Query, TailwindCSS
-- **Backend**: Hono 4.x on Bun
-- **Database**: PostgreSQL + Drizzle ORM
-- **AI Runtime**: ElizaOS 2.0.0-alpha (plugin-anthropic, plugin-openai, plugin-sql; bootstrap is built into core)
-- **Auth**: Lucia 3.x + Drizzle adapter
+Turborepo + Bun monorepo. **Frontend:** Next.js 16 App Router (`cookies()`/`headers()`/`params` async — always `await`), Three.js (3D) + PixiJS 8 (2D fallback), Zustand, TanStack Query, Tailwind. **Backend:** Hono 4.x on Bun. **DB:** PostgreSQL + Drizzle ORM (Supabase paid tier). **AI Runtime:** ElizaOS 2.0.0-alpha (plugin-openai, plugin-sql; bootstrap built-in). **Auth:** Lucia 3.x + Drizzle adapter.
 
-## Project Structure
+## Project Structure + Commands
 
-```
-ClawVille/
-  apps/
-    web/          # Next.js frontend + 3D/2D game (port 3000)
-    api/          # Hono REST API (port 4000)
-  packages/
-    shared/       # Types, constants (species, colors, locations)
-    database/     # Drizzle ORM schema + migrations
-    agent-runtime/    # ElizaOS wrapper
-    agent-templates/  # 10 location character templates
-  scripts/
-    seed-locations.ts  # Seed map_locations table
-```
-
-## Package Naming
-
-All packages use `@clawville/*` prefix (e.g. `@clawville/shared`, `@clawville/database`).
-
-## Commands
+`apps/web` (Next.js + 3D/2D game, port 3000) · `apps/api` (Hono REST, port 4000) · `packages/shared` (types + constants) · `packages/database` (Drizzle schema + migrations) · `packages/agent-runtime` (ElizaOS wrapper) · `packages/agent-templates` (10 location + system-agent templates). All packages `@clawville/*` prefix.
 
 ```bash
 bun install              # Install deps
-bun run dev              # Start all (turbo)
-bun run db:push          # Push schema to DB
+bun run dev              # DON'T — see Testing rule below
+bun run db:push          # Push schema
 bun run db:seed          # Seed 10 map locations
 bun run db:studio        # Drizzle Studio
 bun run build            # Build all
@@ -232,62 +111,48 @@ bun run build            # Build all
 ## Environment Variables
 
 Required in `.env.local`:
-- `DATABASE_URL` - PostgreSQL connection string (Supabase pooler)
-- `GEMINI_API_KEY` - **Single LLM backend** for all text generation AND embeddings. Used by `gemini-text-provider` (priority 95) for TEXT_SMALL/TEXT_LARGE, `gemini-embedding-provider` (priority 100) for TEXT_EMBEDDING, and by `apps/api/src/services/npc-conversation-engine.ts` directly for NPC banter. Anthropic was fully removed in the ultrathink decommission (2026-04-10).
-- `VANITY_ENCRYPTION_KEY` - 64-char hex (32 bytes). AES-256-GCM master key for `treasury_wallets` + `vanity_keypairs`. Must be identical on every machine that decrypts.
-- `CLAWVILLE_MERCHANT_WALLET_PUBKEY` - Base58 public key of the Phase 4 x402 merchant wallet (row in `treasury_wallets`)
-- `CORS_ORIGIN` - Frontend URL(s) for CORS (prod: `https://clawville.world`)
-- `NEXT_PUBLIC_API_URL` - Backend API URL for frontend (prod: `https://api.clawville.world`)
-- `ADMIN_USER_IDS` - Comma-separated list of user UUIDs allowed to hit `/api/dashboard/*` and `/dash`. Parsed at api module load; changing it requires a redeploy. See `apps/api/src/middleware/admin-only.ts`.
-- `ITACHI_DEBUG_BOT_TOKEN` + `ITACHI_DEBUG_CHAT_ID` - itachi-debug Telegram bot credentials used by `apps/api/src/services/alert-error.ts`. When missing, `alertError()` degrades to `console.warn` — user flows are never broken, but operator pings never arrive. Staged via the tinker pattern from `~/.itachi-api-keys`.
-- `METRICS_MEASUREMENT_START` - ISO date the `/dash` page displays as "Measuring since …". Defaults to `2026-04-21` in code when unset.
-- `AGENT_SESSION_TICKET_TTL_SECONDS` - Phase 5 magic-link expiry (default 600 / 10 min, min 60, max 3600 — enforced in `apps/api/src/services/session-ticket-service.ts`). Bump if Milady agents need longer-lived tickets.
-- `CLOUDFLARE_WORKER_URL` - **Phase 5.1.** URL of the Cloudflare Secrets Store envelope-encryption Worker (no trailing slash). POST `/wrap` + `/unwrap` routes wrap/unwrap per-row DEKs with the master KEK. See `infra/cf-secrets-worker/`.
-- `CLOUDFLARE_WORKER_BEARER` - **Phase 5.1.** Bearer token authenticating the API → Worker calls (set via `wrangler secret put WORKER_BEARER` on the Worker). Rotatable independently of the KEK.
-- `CLAWVILLE_SERVICE_ISSUER_SK` - **Phase 5.1.** Base58 ed25519 private key of the service issuer. Loaded on boot by `service-issuer.ts` and cached in memory. Signs outbound partner API calls (e.g. 'scape `/hosted-session/issue`). NEVER committed; generate with `bun run scripts/generate-service-issuer-keypair.ts`.
-- `CLAWVILLE_SERVICE_ISSUER_PUBKEY` - **Phase 5.1.** Base58 ed25519 pubkey matching `CLAWVILLE_SERVICE_ISSUER_SK`. Published at `GET /.well-known/clawville-issuer.json` for partners to pin.
-- `SCAPE_HOSTED_SESSION_URL` - **Phase 5.1.** 'scape's `/hosted-session/issue` endpoint (e.g. `https://xrsps.com/hosted-session/issue`). Target of outbound signed portal crossings.
-- `SCAPE_WEB_ORIGIN` - **Phase 5.1.** 'scape's web origin (e.g. `https://xrsps.com`). Used to build the `?sessionToken=...` redirect URL after a successful outbound crossing.
-- `PARTNER_PUBKEYS` - **Phase 5.1.** JSON allowlist of partner ed25519 pubkeys keyed by partner id, e.g. `{"scape":"<base58>"}`. Empty/missing ⇒ inbound `/api/portal/mint-for-scape` + `/api/portal/accept-scape-link` reject with 401.
 
-**Optional keys:**
-- `OPENAI_API_KEY` — optional fallback used ONLY by `apps/api/src/services/npc-conversation-engine.ts` when Gemini hits its `GEMINI_MAX_FAILURES` backoff. Leave empty to disable the fallback (NPC banter silently returns empty strings when Gemini is down). NOT a general-purpose replacement for Gemini — it's a narrow NPC-text-only safety net.
+- `DATABASE_URL` — Supabase pooler Postgres.
+- `GEMINI_API_KEY` — **Single LLM backend** for text + embeddings. Used by `gemini-text-provider` (priority 95, TEXT_SMALL/LARGE), `gemini-embedding-provider` (100, TEXT_EMBEDDING), and `npc-conversation-engine.ts`. Anthropic fully removed in ultrathink decommission (2026-04-10).
+- `VANITY_ENCRYPTION_KEY` — 64-char hex. AES-256-GCM master key for `treasury_wallets` + `vanity_keypairs`. Must match on every decrypting machine.
+- `CLAWVILLE_MERCHANT_WALLET_PUBKEY` — base58 pubkey of Phase 4 x402 merchant wallet.
+- `CORS_ORIGIN` — frontend URL(s) (prod `https://clawville.world`).
+- `NEXT_PUBLIC_API_URL` — backend URL (prod `https://api.clawville.world`).
+- `ADMIN_USER_IDS` — comma-separated UUIDs allowed on `/api/dashboard/*` + `/dash`. Parsed at module load; changes require redeploy. See `middleware/admin-only.ts`.
+- `ITACHI_DEBUG_BOT_TOKEN` + `ITACHI_DEBUG_CHAT_ID` — itachi-debug Telegram bot for `alert-error.ts`. Missing ⇒ `alertError()` degrades to `console.warn`. Staged via tinker pattern from `~/.itachi-api-keys`.
+- `METRICS_MEASUREMENT_START` — ISO date for `/dash` "Measuring since …" banner. Default `2026-04-21`.
+- `AGENT_SESSION_TICKET_TTL_SECONDS` — Phase 5 magic-link TTL (default 600, min 60, max 3600 — `session-ticket-service.ts`).
+- **Phase 5.1** keys:
+  - `CLOUDFLARE_WORKER_URL` — Secrets Store envelope-encryption Worker (no trailing slash). `/wrap` + `/unwrap`. See `infra/cf-secrets-worker/`.
+  - `CLOUDFLARE_WORKER_BEARER` — Bearer for API→Worker (`wrangler secret put WORKER_BEARER`). Rotatable independent of KEK.
+  - `CLAWVILLE_SERVICE_ISSUER_SK` — Base58 ed25519 SK; signs outbound partner calls. Generate via `bun run scripts/generate-service-issuer-keypair.ts`. Never commit.
+  - `CLAWVILLE_SERVICE_ISSUER_PUBKEY` — Base58 ed25519 PK matching SK. Published at `GET /.well-known/clawville-issuer.json`.
+  - `SCAPE_HOSTED_SESSION_URL` — 'scape `/hosted-session/issue` endpoint.
+  - `SCAPE_WEB_ORIGIN` — 'scape web origin for `?sessionToken=…` redirect.
+  - `PARTNER_PUBKEYS` — JSON allowlist by partner id: `{"scape":"<base58>"}`. Empty ⇒ inbound portal routes return 401.
 
-**Removed keys** (no longer used — safe to delete from `.env.local` and Coolify):
-- `ANTHROPIC_API_KEY` — removed with the ultrathink decommission. Previously used by `plugin-anthropic` (fallback) and `ultrathink-provider.ts` (deep reasoning). Both are gone. See `docs/ultrathink-migration-decision.md`.
+**Optional:** `OPENAI_API_KEY` — fallback ONLY for `npc-conversation-engine.ts` on Gemini `GEMINI_MAX_FAILURES` backoff. Not a general replacement.
+
+**Removed:** `ANTHROPIC_API_KEY` (ultrathink decommission — see `docs/ultrathink-migration-decision.md`).
 
 ## Deployment — Hetzner + Coolify
 
-**Production is a self-hosted Hetzner CCX13 VPS running Coolify. Railway has been decommissioned.**
+**Production is self-hosted Hetzner CCX13 on Coolify. Railway decommissioned.**
 
 ### Infrastructure
 
-- **VPS**: Hetzner CCX13 (2 dedicated AMD vCPU, 8 GB RAM, 80 GB NVMe, ~$20/mo gross)
-- **IPv4**: `<PROD_VPS_IP>` (Ashburn VA — `ash-dc1`)
-- **Server name**: `clawville-prod` (label `project=clawville,managed-by=itachi-deploy`)
-- **Orchestrator**: Coolify v4.0.0-beta.472 at `https://coolify.clawville.world` (self-hosted PaaS)
-- **Reverse proxy**: Traefik with automatic Let's Encrypt certs
-- **DNS**: Cloudflare-proxied, nameservers on `aria.ns.cloudflare.com` / `rick.ns.cloudflare.com`
-- **Database**: Supabase Postgres (unchanged from Railway era — `aws-1-us-east-1.pooler.supabase.com:6543`)
-- **SSH key**: `~/.ssh/clawville_deploy` (passwordless, registered via `provision-hetzner.sh`)
+Hetzner CCX13 (2 AMD vCPU / 8 GB / 80 GB NVMe) — `<PROD_VPS_IP>` (Ashburn, `ash-dc1`), name `clawville-prod`. Coolify v4.0.0-beta.472 at `https://coolify.clawville.world` + Traefik + Let's Encrypt. DNS: Cloudflare-proxied (`aria.ns.cloudflare.com`/`rick.ns.cloudflare.com`). DB: Supabase Postgres (`aws-1-us-east-1.pooler.supabase.com:6543`). SSH key `~/.ssh/clawville_deploy` (registered via `provision-hetzner.sh`).
 
 ### Coolify app IDs
 
-| App | Coolify ID | UUID | Domain |
+| App | ID | UUID | Domain |
 |---|---|---|---|
 | web | 4 | `ju0n3sddhll3cuhbrspt4muy` | `clawville.world` |
 | api | 3 | `yvtwz7snaghxifkjhyxknffu` | `api.clawville.world` |
 
-Both apps pull from `github.com/ItachiDevv/ClawVille` via a deploy key, build via Dockerfile, auto-deploy on push to `master` via GitHub webhook.
+Both pull from `github.com/ItachiDevv/ClawVille` via deploy key, auto-deploy on push to `master` via GitHub webhook. Web build ~3–5 min, api ~2–3 min. Verify: `curl -sS --ssl-no-revoke https://api.clawville.world/health`.
 
-### Deploy workflow
-
-**Code changes**:
-1. Push to `master` → Coolify webhook triggers auto-deploy for both apps
-2. Build takes ~3-5 min for web (Next.js 16 + Turborepo), ~2-3 min for api (Hono on Bun)
-3. Verify via `curl -sS --ssl-no-revoke https://api.clawville.world/health`
-
-**Manually trigger a redeploy** (e.g. after env var change) via SSH into the Coolify container and Laravel tinker:
+### Manual redeploy (e.g. after env change) — Laravel tinker via SSH
 
 ```bash
 ssh -i ~/.ssh/clawville_deploy root@<PROD_VPS_IP> \
@@ -300,7 +165,7 @@ ssh -i ~/.ssh/clawville_deploy root@<PROD_VPS_IP> \
   '"
 ```
 
-**Add/update an env var** via the same tinker pattern:
+### Add/update env var (same tinker pattern)
 
 ```bash
 ssh -i ~/.ssh/clawville_deploy root@<PROD_VPS_IP> \
@@ -308,97 +173,60 @@ ssh -i ~/.ssh/clawville_deploy root@<PROD_VPS_IP> \
     use App\\Models\\Application;
     \$app = Application::find(3);
     \$existing = \$app->environment_variables()->where(\"key\", \"MY_VAR\")->first();
-    if (\$existing) {
-      \$existing->update([\"value\" => \"new-value\"]);
-    } else {
-      \$app->environment_variables()->create([
-        \"key\" => \"MY_VAR\",
-        \"value\" => \"new-value\",
-        \"is_shown_once\" => false,
-        \"is_preview\" => false,
-        \"is_build_time\" => false
-      ]);
-    }
+    if (\$existing) { \$existing->update([\"value\" => \"new\"]); }
+    else { \$app->environment_variables()->create([\"key\" => \"MY_VAR\", \"value\" => \"new\", \"is_shown_once\" => false, \"is_preview\" => false, \"is_build_time\" => false]); }
   '"
 ```
 
-**Rebuild the database package after schema changes**: Coolify builds from source, so any `packages/database/dist/` changes happen automatically on deploy. For local scripts that import from `@clawville/database`, run `cd packages/database && bun run build` to refresh `dist/` — otherwise you'll get "export not found" errors.
+**Database package rebuild:** Coolify builds from source, `packages/database/dist/` auto-refreshes on deploy. For local scripts importing `@clawville/database`, run `cd packages/database && bun run build` to refresh `dist/` — else you get "export not found".
 
-### Provisioning scripts (in `scripts/deploy/`)
+### Provisioning scripts (`scripts/deploy/`)
 
-- `provision-hetzner.sh` — Create the VPS via Hetzner Cloud API (uses `HCLOUD_TOKEN`)
-- `setup-cloudflare-dns.sh` — Upsert A records for web/api/coolify subdomains
-- `bootstrap-server.sh` — Install Docker, Coolify, configure firewall on a fresh Ubuntu VPS
-- `add-zone-to-cloudflare.sh` — Add a new domain as a Cloudflare zone + swap nameservers at Namecheap
-- `.env.deploy` — Gitignored secrets file (HCLOUD_TOKEN, CF_API_TOKEN, NAMECHEAP_API_KEY, GEMINI_API_KEY)
-- `railway-env-backup.json` — Gitignored snapshot of Railway env vars from before decommission (for rollback reference)
+`provision-hetzner.sh` (VPS via Hetzner Cloud API, `HCLOUD_TOKEN`) · `setup-cloudflare-dns.sh` (A records web/api/coolify) · `bootstrap-server.sh` (Docker + Coolify + firewall on fresh Ubuntu) · `add-zone-to-cloudflare.sh` (add zone + swap Namecheap nameservers) · `.env.deploy` gitignored (HCLOUD_TOKEN, CF_API_TOKEN, NAMECHEAP_API_KEY, GEMINI_API_KEY) · `railway-env-backup.json` gitignored snapshot.
 
 ### Database migrations
 
-**Always run `bun run db:push` from the root before a deploy if you've touched `packages/database/src/schema/*.ts`.** Coolify's build doesn't execute migrations automatically — Drizzle push is a separate manual step. Destructive migrations require `ELIZA_ALLOW_DESTRUCTIVE_MIGRATIONS=true` in `.env.local`.
+Run `bun run db:push` from root before deploy if you touched `packages/database/src/schema/*.ts`. Coolify does NOT run migrations — Drizzle push is manual. Destructive migrations need `ELIZA_ALLOW_DESTRUCTIVE_MIGRATIONS=true`.
 
-### Testing rule
+### Testing rule — NEVER run `bun run dev` locally
 
-**NEVER run `bun run dev` locally.** Intel Iris Xe GPU crashes on the Three.js/WebGPU scene and requires a PC restart. Always push → Coolify auto-deploys → test against the production URL.
+Intel Iris Xe crashes on the Three.js/WebGPU scene and needs a PC restart. Always: push → Coolify auto-deploys → test against prod URL.
 
 ### MANDATORY: Browser verification after every deploy
 
-**After every push to master, you MUST verify the game visually in the browser.** This is not optional.
+After every push to master, verify visually. NOT optional.
 
-1. Wait for Coolify deploy to complete (~3-5 min, or check `curl -sS --ssl-no-revoke https://api.clawville.world/health`)
-2. Open `https://clawville.world/game` using Chrome MCP tools (tabs_context_mcp → navigate) or ask the user to screenshot
-3. Check: buildings visible and not clipped by atmosphere planes, camera zoom works, player spawns at center, FPS > 50, no console errors
-4. If Chrome extension is disconnected, explicitly tell the user "I cannot verify in browser — please check and send a screenshot"
-5. **NEVER claim a visual fix is done without seeing it in the browser.** "I pushed the code" is not verification.
+1. Wait for Coolify (~3–5 min, or `curl -sS --ssl-no-revoke https://api.clawville.world/health`).
+2. Open `https://clawville.world/game` via Chrome MCP (tabs_context_mcp → navigate) or ask for screenshot.
+3. Check: buildings visible + not clipped by atmosphere planes, camera zoom works, player spawns at center, FPS > 50, no console errors.
+4. If Chrome extension disconnected, tell user "I cannot verify in browser — please screenshot".
+5. **NEVER claim a visual fix done without seeing it.** "I pushed the code" ≠ verification.
 
 ### Emergency access
 
-- **SSH into VPS**: `ssh -i ~/.ssh/clawville_deploy root@<PROD_VPS_IP>`
-- **Restart a container**: `docker restart <container-name>` (find via `docker ps`)
-- **Coolify UI**: `https://coolify.clawville.world` (admin login set during initial bootstrap)
-- **Container logs**: `docker logs --tail 200 <container-name>`
-- **Coolify DB direct query**: `docker exec coolify-db psql -U coolify -d coolify -c "<sql>"`
-- **Full playbook**: `docs/DEPLOY-HETZNER.md` (includes initial provisioning steps + rollback procedure)
+SSH `ssh -i ~/.ssh/clawville_deploy root@<PROD_VPS_IP>` · container restart `docker restart <name>` (find via `docker ps`) · Coolify UI `https://coolify.clawville.world` · logs `docker logs --tail 200 <name>` · DB query `docker exec coolify-db psql -U coolify -d coolify -c "<sql>"` · full playbook `docs/DEPLOY-HETZNER.md`.
 
 ### Curl gotcha on Windows
 
-Git Bash on Windows uses schannel and rejects CRLs unless you pass `--ssl-no-revoke`. Use it in all curls from scripts on Windows dev boxes:
-
-```bash
-curl -sS --ssl-no-revoke https://api.clawville.world/health
-```
+Git Bash uses schannel and rejects CRLs — always pass `--ssl-no-revoke`: `curl -sS --ssl-no-revoke https://api.clawville.world/health`.
 
 ## Game Modes
 
-4 modes total — 2 without an agent connected, 2 with an agent connected.
-
-### Without an agent connected
-
-1. **Explore mode** — The user is a floating spectator with no ties to a character or NPC. Free camera movement around the world to explore the environment.
-2. **NPC mode** — An NPC is spawned at the center of the world on load. When the user toggles to NPC mode, they take control of that NPC and move around as the NPC to explore/test the world before connecting an agent.
-
-### With an agent connected
-
-3. **Control mode** — The user has full manual control over where the agent goes and what it does. Direct WASD/joystick movement, building entry, chat initiation.
-4. **Autonomous mode** — The user's autonomous agent connects and explores the world of its own free will. The agent navigates, enters buildings, learns skills, and interacts with NPCs independently.
-
-**State**: `controlMode` in Zustand `game.ts` store — values: `'explore'`, `'npc'`, `'player'` (control mode), `'autonomous'`.
+4 modes. **Without agent:** (1) **Explore** — floating spectator, free camera, no character ties; (2) **NPC** — control the centered NPC before connecting. **With agent:** (3) **Control** — full manual (WASD/joystick, building entry, chat init); (4) **Autonomous** — connected agent explores on its own. State: `controlMode` in Zustand `game.ts` — `'explore'`, `'npc'`, `'player'` (=control), `'autonomous'`.
 
 ## Architecture Notes
 
-- **3D World**: Three.js `World3DCanvas` is the primary renderer; PixiJS `PixiCanvas` is the 2D fallback. Both share state via Zustand stores.
-- **Arena Mode**: `Arena3DCanvas` (Three.js) + `ArenaCanvas` (PixiJS) for combat.
-- **Agent lifecycle**: Lazy-start on first chat message, auto-stop after 30min inactivity. Orchestrator in `apps/api/src/services/agent-orchestrator.ts`.
-- **One pet per user**: Enforced by unique constraint on `pets.userId`.
-- **Building zones**: 10 locations defined in `packages/shared/src/constants/map-locations.ts`.
-- **NPC simulation**: `apps/api/src/services/npc-simulation.ts` runs autonomous NPCs with pathfinding, conversations, and activities.
+- **3D primary / 2D fallback**: Three.js `World3DCanvas` + PixiJS `PixiCanvas` share Zustand state. Arena: `Arena3DCanvas` + `ArenaCanvas`.
+- **Agent lifecycle**: lazy-start on first chat, auto-stop after 30min inactivity. Orchestrator `agent-orchestrator.ts`.
+- **One pet per user** — unique constraint `pets.userId`.
+- **Building zones**: 10 locations in `map-locations.ts`. **NPC simulation** `npc-simulation.ts` (pathfinding, convos, activities).
 
 ## 10 SpongeBob-Landmark Buildings
 
-Source of truth: `packages/shared/src/constants/map-locations.ts` (names) + `packages/shared/src/constants/building-types.ts` (labels + skill categories). Old sea-themed names (Tide Clock Grotto, Hydrothermal Forge, etc.) were superseded — this table reflects what the game UI actually renders today.
+Source: `packages/shared/src/constants/map-locations.ts` (names) + `building-types.ts` (labels + categories). Old sea-themed names (Tide Clock Grotto, Hydrothermal Forge, etc.) were superseded.
 
-| ID | Display Name (UI label) | OpenClaw Focus (category) |
-|----|-------------------------|---------------------------|
+| ID | Display | OpenClaw Focus |
+|---|---|---|
 | cron-hub | Downtown Building | Automation & Workflows |
 | webhook-gateway | Salty Spitoon | APIs & Integrations |
 | memory-vault | Squidward's House | Memory & Knowledge |
@@ -410,309 +238,215 @@ Source of truth: `packages/shared/src/constants/map-locations.ts` (names) + `pac
 | security-fortress | Patrick's Rock | Crypto & Web3 |
 | config-citadel | Lighthouse | Business & Productivity |
 
-All 10 buildings are shop buildings for knowledge books (visit + chat with MiladyAI teachers to learn the category's skill). Paid skill-marketplace write paths (publish/buy/bid/list) return 503 pending rework — see Priority #3 above.
+All 10 are shop buildings for knowledge books (visit + chat MiladyAI teacher to learn). Paid marketplace write paths (publish/buy/bid/list) return 503 — see Priority #3.
 
 ## Database Schema
 
-- `users` + `sessions` (Lucia auth)
-- `pets` (one per user) — key columns:
-  - Identity: `name`, `species`, `color`, `gender`, `archetype`, `personality`, `stats`
-  - Agent framework (Phase 2): `model_key` (3D GLB key, default `lobster`), `agent_category` (`openclaw`/`hermes`/`milady`/`other`, default `openclaw`), `harness` (`openclaw`/`hermes`/`milady`/`custom`, default `milady`) — all NOT NULL with DEFAULTs so existing rows backfill automatically; CHECK constraints on `agent_category` and `harness` enforce the enums at DB level
-  - Avatar (VRM-ready): `avatar_type` (`glb`/`vrm`), `avatar_url`, `vrm_metadata` JSONB
-  - Position + activity: `position_x`, `position_y`, `last_active_at`, `is_active`
-  - Economy: `claw_tokens`, `login_streak`, `last_login_date`
-  - Progression: `level`, `xp`, `total_xp`, `equipped_skills`
-  - Wallet: `wallet_address` (base58, auto-generated custodial Solana)
-  - Runtime link: `platform_agent_id` → `platform_agents`
-- `pet_inventory` (books owned by pet, quantity tracking)
-- `map_locations` (static, seeded — 10 buildings)
-- `location_agents` (user's agent config per location)
-- `platform_agents` (ElizaOS agent records)
-- `platform_agent_logs`
-- `openclaw_bots` (external agent identity, gateway config, learned knowledge)
-- `treasury_wallets` (team merchant supply — x402 receiver, per-purpose via `treasury_purpose` enum; never user-facing) + `wallets` (unified per-subject custodial, `subject_type='pet'|'agent'|'treasury-reserved'` — encrypted Solana keypairs; Phase 5.1 added envelope encryption via a Cloudflare-held KEK with per-row DEKs, version-dispatched at read time)
-- `agent_configs` (export/import bundle — includes `modelKey`/`agentCategory`/`harness` for round-trip)
-- `bazaar_listings` + `auctions` + `claw_token_transactions` (marketplace + economy)
+- `users` + `sessions` — Lucia auth.
+- `pets` (one per user) — identity (`name`, `species`, `color`, `gender`, `archetype`, `personality`, `stats`); **Phase 2 agent framework** `model_key` (default `lobster`), `agent_category` (`openclaw`/`hermes`/`milady`/`other`, default `openclaw`), `harness` (`openclaw`/`hermes`/`milady`/`custom`, default `milady`) — all NOT NULL w/ DEFAULTs + CHECK; VRM-ready avatar (`avatar_type` `glb`/`vrm`, `avatar_url`, `vrm_metadata` JSONB); position + activity + economy + progression + `wallet_address` (base58 custodial Solana) + `platform_agent_id` → `platform_agents`.
+- `pet_inventory` — books + quantity.
+- `map_locations` — static, seeded, 10 buildings.
+- `location_agents` — user's agent config per location.
+- `platform_agents` + `platform_agent_logs` — ElizaOS agent records.
+- `openclaw_bots` — external agent identity, gateway config, learned knowledge.
+- `treasury_wallets` — team merchant supply (x402 receiver, per-purpose via `treasury_purpose` enum; never user-facing).
+- `wallets` — unified per-subject custodial (`subject_type='pet'|'agent'|'treasury-reserved'`). Encrypted Solana keypairs; Phase 5.1 adds envelope encryption via CF-held KEK with per-row DEKs, version-dispatched at read.
+- `agent_configs` — export/import bundle (round-trips `modelKey`/`agentCategory`/`harness`).
+- `bazaar_listings` + `auctions` + `claw_token_transactions` — marketplace + economy ledger.
 
-## ClawToken Economy & Knowledge Books
+## ClawToken Economy / Books / Daily Login / Heartbeat / Archetype
 
-- `clawTokens` integer column (default 100) on `pets` table
-- 20 knowledge books in `packages/shared/src/constants/knowledge-books.ts` — ALL OpenClaw-focused, every building has 2 books
-- All 10 buildings have OpenClaw themes in `BUILDING_OPENCLAW_THEMES` (building-types.ts)
-- API routes: `apps/api/src/routes/items.ts` — GET /shop/:buildingId, GET /inventory, POST /buy, POST /learn
-- Learning flow: buy book → inventory → "Read to Pet" → knowledge entries merge into characterConfig.knowledge[] → agent restart
-- Dynamic context injection: `processMessage` accepts `dynamicContext`, prepended to prompt
-- Pet chat injects: token balance, knowledge count, NPC world state
-- Location chat injects: visitor pet info, shop items, OpenClaw theme focus; awards +1 token per message
-
-## Daily Login Streak
-
-- `POST /api/pets/me/daily-login` — streak tracking with token rewards
-- Formula: `10 + streak * 5` tokens per day (max 100)
-- Streak resets if a day is missed
-
-## Heartbeat System
-
-- `POST /api/pets/me/heartbeat` — reports position + user activity
-- Updates `lastActiveAt` timestamp for activity tracking
-- Fire-and-forget DB update
-
-## Pet Archetype System
-
-- 14 archetypes in `packages/shared/src/constants/pet-archetypes.ts`
-- Each has: id, label, description, tone, bio[], lore[], knowledge[], topics[], adjectives[], style, messageExamples, greeting, rules[]
-- DB `pets` table has `archetype` varchar column
-- `characterConfig` JSONB stores the full resolved archetype data
+- `clawTokens` int col (default 100) on `pets`. 20 books in `knowledge-books.ts` (all OpenClaw, 2/building). Themes in `BUILDING_OPENCLAW_THEMES`.
+- Shop API: `apps/api/src/routes/items.ts` — `GET /shop/:buildingId`, `GET /inventory`, `POST /buy`, `POST /learn`. Learning flow: buy → inventory → "Read to Pet" → merges into `characterConfig.knowledge[]` → agent restart.
+- Dynamic context via `processMessage(dynamicContext)` prepended to prompt. Pet chat injects token balance + knowledge count + NPC world state. Location chat injects visitor info + shop items + OpenClaw theme; awards +1 token per message.
+- **Daily login** `POST /api/pets/me/daily-login` — `10 + streak * 5` (max 100). Resets on missed day.
+- **Heartbeat** `POST /api/pets/me/heartbeat` — position + activity; updates `lastActiveAt` fire-and-forget.
+- **Archetypes** — 14 in `pet-archetypes.ts` (id, label, description, tone, bio[], lore[], knowledge[], topics[], adjectives[], style, messageExamples, greeting, rules[]). `pets.archetype` varchar; `characterConfig` JSONB stores resolved.
 
 ## Agent Connection (Moltbook Pattern)
 
-Agents connect via an **agent-initiated flow** — humans never paste credentials.
+Agent-initiated — humans never paste credentials. Full flow: `GameFeatures.md`.
 
-### Quick Connect (primary flow)
-1. Human clicks "Generate Connect Link" in `agent-connect-modal.tsx` (was `openclaw-connect-modal.tsx` — renamed in Phase 1)
-2. Frontend calls `POST /api/agent/connect-token` → returns `{token, connectUrl}`
-3. Modal shows a copyable instruction: `Read this URL and follow the instructions: https://api.clawville.world/api/skills/connect?token=ct-...`
-4. Human pastes that into their agent's chat (any agent — OpenClaw, Hermes, ElizaOS, Claude, etc.)
-5. Agent reads the SKILL.md at that URL (machine-readable connection instructions)
-6. Agent calls `POST /api/agent/connect` with `{connectionToken: "ct-..."}` — no credentials needed
-7. Token is claimed, frontend polls `GET /api/agent/connect-status/:token` every 2s
-8. Modal auto-transitions to "Connected" when the agent connects
+**Quick Connect:** click "Generate Connect Link" in `agent-connect-modal.tsx` (renamed from `openclaw-connect-modal.tsx` in Phase 1) → `POST /api/agent/connect-token` returns `{token, connectUrl}` → human pastes connectUrl into agent chat → agent reads SKILL.md, calls `POST /api/agent/connect {connectionToken}` → frontend polls `GET /api/agent/connect-status/:token` 2s → auto "Connected".
 
-### API Endpoints
-- `POST /api/agent/connect-token` — generate a 5-min connection token (requires auth cookie)
-- `GET /api/agent/connect-status/:token` — poll for connection status
-- `GET /api/agent/connect-skill?token=xxx` — SKILL.md for agents (aliased at `/api/skills/connect`)
-- `POST /api/agent/connect` — universal agent registration (accepts `connectionToken` field)
-- `POST /api/agent/export-character` — **Phase 3** emits a Milady-installable bundle for a pet the caller owns: `{character, skillPack, miladyInstallPayload, installCommand, exportedAt, summary}`. Accepts `{petId, targetHarness?, miladyBaseUrl?}`. `character.knowledge` is intentionally empty (ElizaOS v2 normalizes knowledge strings as filesystem paths, so the skill pack is the authoritative RAG carrier). Phase 4a UI wraps this with the one-click install button.
-- `POST /api/openclaw/register` — legacy endpoint (manual gateway form, kept for backwards compat)
+**API:**
+- `POST /api/agent/connect-token` — 5-min token (auth cookie).
+- `GET /api/agent/connect-status/:token` — poll status.
+- `GET /api/agent/connect-skill?token=xxx` — SKILL.md (alias `/api/skills/connect`).
+- `POST /api/agent/connect` — universal registration (accepts `connectionToken`).
+- `POST /api/agent/export-character` — **Phase 3** Milady-installable bundle: `{character, skillPack, miladyInstallPayload, installCommand, exportedAt, summary}`. Accepts `{petId, targetHarness?, miladyBaseUrl?}`. `character.knowledge` intentionally empty (ElizaOS v2 treats knowledge strings as FS paths — skill pack is authoritative RAG carrier). Phase 4a UI wraps one-click install.
+- `POST /api/openclaw/register` — legacy manual gateway.
 
-### Manual Connect (power users)
-The "Manual" tab in the modal still exposes the legacy gateway form: Gateway URL + Auth Token + Agent ID + Protocol. This is for users who want ClawVille to call their agent's API directly.
+**Manual Connect** (power users): legacy form in modal's "Manual" tab — Gateway URL + Auth Token + Agent ID + Protocol. ClawVille calls out to agent's API.
 
-### Identity Types
-- `openclaw` / `ironclaw` — agent has an OpenAI-compatible gateway
-- `nanoclaw` — self-managed, pulls via SSE (no outbound chat routing)
-- `milady` — running inside Milady app plugin (runtime-trust, zero config)
-- `custom` / `anonymous` — any other framework
+**Identity Types:** `openclaw`/`ironclaw` (OpenAI-compat gateway) · `nanoclaw` (self-managed SSE pull, no outbound routing) · `milady` (inside plugin, zero config) · `custom`/`anonymous`.
 
-### Building Themes
-- `BUILDING_OPENCLAW_THEMES` maps each building to its OpenClaw focus area
-- NPC conversations inject building crypto themes as dynamic context
+**Building Themes:** `BUILDING_OPENCLAW_THEMES` maps building → OpenClaw focus; NPC conversations inject them as dynamic context.
 
 ## Phase 5.1 — Wallet Identity + 'scape Portal
 
-Full spec: `.claude/plans/phase5.1-wallet-identity-and-scape-portal.md`.
-Doc-side summary of the load-bearing invariants — rules, not rationale.
+Full spec: `.claude/plans/phase5.1-wallet-identity-and-scape-portal.md`. Load-bearing invariants:
 
-### Identity/wallet split — two keypairs per user (both ed25519)
+**Two-keypair split (both ed25519), day 1, no shortcut:**
+- **Identity** — pubkey at `users.identity_pubkey` (rotatable). Agent holds private key at `clawville:identity:<userId>` and signs reconnect challenges. Envelope-encrypted backup at `users.identity_encrypted_sk` for support-recovery only. Never on-chain, never funded, never signs txs.
+- **Pet wallet (Solana)** — in `wallets` as `{subject_type='pet', subject_id=pet.id}`. Server holds authoritative private key (envelope-encrypted under CF KEK), signs $CLAWVILLE custodially. Plaintext shown to human **exactly once** in first-connect; agent stores only pubkey.
+- **Service issuer** (singleton) — SK in CF Secrets Store; PK at `GET /.well-known/clawville-issuer.json`. Signs outbound partner calls.
 
-From day 1, every user gets TWO distinct keypairs. No single-key shortcut.
+**Blast-radius.** Agent config leak ⇒ login + 'scape cross, NOT $CLAWVILLE drain. DB dump ⇒ ciphertext only (unwrap needs CF KEK). User wallet-backup leak ⇒ only that user's own $CLAWVILLE.
 
-- **Identity keypair.** Anchored on the existing `users.id` UUID PK. The
-  pubkey lives at `users.identity_pubkey` (rotatable). The private key is
-  held by the user's agent under `clawville:identity:<userId>` — it is
-  what the agent signs reconnect challenges with. An envelope-encrypted
-  backup copy lives in `users.identity_encrypted_sk` strictly for the
-  future support-recovery workflow. The identity key is **never** on-chain,
-  **never** funded, **never** signs transactions.
-- **Pet wallet keypair (Solana).** Lives in the unified `wallets` table as
-  `{subject_type='pet', subject_id=pet.id}`. The server keeps the only
-  authoritative private key — envelope-encrypted under the Cloudflare KEK
-  — and signs $CLAWVILLE transactions custodially. The plaintext secret
-  is shown to the human **exactly once**, in the first-connect response,
-  so they can keep a self-custody backup. The agent **never** stores this
-  secret — only the public address.
-- **Service issuer keypair** (singleton, not per-user). Private key in
-  Cloudflare Secrets Store; public key published at
-  `GET /.well-known/clawville-issuer.json`. Signs outbound partner API
-  calls.
+**First-connect.** `POST /api/agent/connect` + `POST /api/agent/join` return `identity` + `wallet` blocks when secrets fresh-generated; subsequent calls omit `secretKey` (server NEVER returns again). SKILL.md instructs agent: store identity SK in config, wallet PUBLIC address in config, display wallet address + secret to human ONE TIME. Top-level `walletAddress` = agent's internal bot wallet (bookkeeping); `wallet.address` = human's pet wallet.
 
-**Blast-radius guarantees.** Agent config leak ⇒ attacker can log in + cross
-to 'scape as the user; CANNOT drain $CLAWVILLE (wallet secret is server-side
-only, different key). DB dump alone ⇒ ciphertext only; unwrap requires
-Cloudflare KEK access (separate compromise). User's own wallet-secret
-backup leak ⇒ only the user's $CLAWVILLE at risk; nothing else.
+**Reconnect:** `POST /api/agent/challenge` (nonce) + `POST /api/agent/reconnect` (signature). Wallet key not involved.
 
-**First-connect semantics.** `POST /api/agent/connect` and `POST
-/api/agent/join` gain an `identity` block and a `wallet` block when the
-secrets are freshly generated. Subsequent calls for the same user omit the
-`secretKey` fields — the server NEVER returns either secret again. The
-SKILL.md (served by `/api/skills/connect`) instructs the agent to store
-the identity private key in config, store the wallet PUBLIC address in
-config, and display the wallet address + wallet secret to the human one
-time. The response's top-level `walletAddress` is the agent's internal
-bot wallet (bookkeeping only); the new `wallet.address` field is the
-human's pet wallet (the one the human cares about).
+**'scape portal** (ClawVille ↔ `github.com/Dexploarer/scape`) — bidirectional, signature-based both sides, no shared bearer secrets:
+- **Outbound** — `POST /api/portal/scape` (Lucia-authed). Signs `sha256(canonical-JSON body)` with service issuer SK, POSTs to `SCAPE_HOSTED_SESSION_URL` with `X-Clawville-Issuer-Pubkey` + `X-Clawville-Signature`. First crossing auto-provisions 'scape account + character: `principalId = principal:clawville:<user.id>`, `worldCharacterId = cv-<pet.id>`, display `<pet.name>-cv`.
+- **Inbound** — `POST /api/portal/mint-for-scape` verifies `X-Scape-*` against `PARTNER_PUBKEYS.scape`, mints Phase 5 ticket, returns `{redirectUrl}`.
+- **Link existing** — `POST /api/portal/scape-link-code` (user one-time code) → paste in 'scape UI → 'scape `POST /api/portal/accept-scape-link` with signature. Consumes `pending_account_links`, sets `users.linked_scape_*`. Portal-minter prefers linked thereafter.
 
-**Reconnect** uses `POST /api/agent/challenge` (nonce) + `POST
-/api/agent/reconnect` (signature). Wallet key is not involved.
-
-### 'scape portal — ClawVille ↔ `github.com/Dexploarer/scape`
-
-Two-direction cross-world portal. Auth is signature-based on both sides —
-no shared bearer secrets.
-
-- **Outbound (ClawVille → 'scape).** `POST /api/portal/scape` is Lucia-authed.
-  Server builds a canonical-JSON payload and signs `sha256(body)` with the
-  service issuer private key, then POSTs to `SCAPE_HOSTED_SESSION_URL`
-  with `X-Clawville-Issuer-Pubkey` + `X-Clawville-Signature` headers.
-  First crossing auto-provisions a 'scape account and character keyed to
-  `principalId = principal:clawville:<user.id>` and
-  `worldCharacterId = cv-<pet.id>`, display name `<pet.name>-cv`.
-- **Inbound ('scape → ClawVille).** `POST /api/portal/mint-for-scape`
-  verifies `X-Scape-*` headers against `PARTNER_PUBKEYS.scape`, mints a
-  Phase 5 magic-link ticket, returns `{ redirectUrl }`.
-- **Linking existing 'scape accounts.** Users who already play 'scape
-  generate a one-time code via `POST /api/portal/scape-link-code`, paste
-  it in 'scape's "Link External Account" UI, and 'scape posts it to
-  `POST /api/portal/accept-scape-link` with their signature. We consume
-  the `pending_account_links` row, set `users.linked_scape_*`, and the
-  portal-minter prefers linked over auto-provisioned on every subsequent
-  crossing.
-
-Every portal crossing + every link emits an event row (`portal.scape.crossed`
-/ `portal.scape.linked`) so the `/dash` admin surface tracks partner-world
-traffic with no extra UI code.
-
-## Frontend Components
-
-### 3D Rendering (Three.js)
-- `World3DCanvas.tsx` — Main 3D game world
-- `Arena3DCanvas.tsx` — 3D combat arena
-- `SelectAgentCanvas.tsx` — Agent creation picker; rotating pedestal + 11 GLB models; full-page background on `/create-agent` (replaces `LandingScene` on that page); preloads all 11 agent GLBs at module level
-
-### 2D Rendering (PixiJS, fallback)
-- `PixiCanvas.tsx` — 2D world renderer
-- `ArenaCanvas.tsx` — 2D combat arena
-
-### Game UI
-- `chat-panel.tsx` — Location agent chat with shop button
-- `pet-chat-bar.tsx` — Chat with own pet
-- `pet-status-bar.tsx` — Level, ClawTokens, stats, knowledge counter
-- `shop-overlay.tsx` — Buy books at buildings
-- `inventory-modal.tsx` — View/learn from owned books
-- `game-menu.tsx` — Settings, activity feed toggle
-- `location-hud.tsx` — Building zone indicator
-- `minimap.tsx` — Top-right world map
-- `mobile-controls.tsx` — Virtual joystick
-- `agent-connect-modal.tsx` — Connect any agent type (was `openclaw-connect-modal.tsx`); store fields renamed to `agentConnected`, `agentSessionId`, `agentConnectModalOpen`
-
-## API Routes
-
-### Backend (Hono at `apps/api/src/routes/`)
-- `auth.ts` — Login, signup, logout
-- `pets.ts` — Pet CRUD, pet chat, heartbeat, daily login
-- `locations.ts` — Location CRUD
-- `chat.ts` — Location agent chat with dynamic context
-- `items.ts` — Shop/inventory/buy/learn
-- `openclaw.ts` — OpenClaw registration
-- `npc-sse.ts` — Server-Sent Events for NPC simulation
+Every crossing + link emits `portal.scape.crossed` / `portal.scape.linked` — `/dash` auto-tracks.
 
 ## Code Style
 
-- TypeScript strict mode throughout
-- Bun as runtime for API, Next.js for web
-- Kebab-case filenames, PascalCase components
-- Zod validation on all API inputs
-- `@/` path alias in web app, `@clawville/*` for packages
-
-## Project Notes
-
-ClawVille is a sea-themed OpenClaw game with:
-- Sea-themed 3D world
-- 10 buildings with OpenClaw integration focus
-- Three.js 3D rendering (with PixiJS 2D fallback)
-- Knowledge books focused on OpenClaw agent development
-- Lobster-themed avatars
+TypeScript strict. Bun for API, Next.js for web. Kebab-case files, PascalCase components. Zod on all API inputs. `@/` path alias in web; `@clawville/*` for packages.
 
 ## Memory System
+<!-- itachi-memory-system v5 -->
 
-This project uses the Itachi Memory System for persistent context across Claude Code sessions.
+Itachi Memory System for persistent context across sessions. Two pools: `<project>` (this repo) and `_global` (cross-project).
+
+### RULE 1 — Recall before you act (MANDATORY)
+
+BEFORE working on anything you're not deep in, query memory for prior lessons. You don't pay the learning tax twice.
+
+**Triggers:** new/infrequent MCP server; unfamiliar language/framework; specific system (Supabase RLS, systemd, Docker, Coolify, Railway, Vercel, Helius, Stripe, …); accumulating topic (`tokenomics`, `priority-fees`, `vrm-avatars`, `webgpu-shaders`, …); error you might have solved before; unfamiliar API/SDK.
+
+**How** — query both pools in parallel (POST `$ITACHI_API_URL/api/memory/search` with `Authorization: Bearer $ITACHI_API_KEY`):
+
+```bash
+TOPIC="<your trigger>"
+for SCOPE in "$(basename "$PWD")" "_global"; do
+  curl -sk -X POST "$ITACHI_API_URL/api/memory/search" \
+    -H "Content-Type: application/json" -H "Authorization: Bearer $ITACHI_API_KEY" \
+    -d "{\"project\":\"$SCOPE\",\"category\":\"lesson\",\"limit\":8,\"query\":\"$TOPIC\"}" \
+    --max-time 5
+done
+```
+
+Read `summary`/`content`. Higher `metadata.confidence` + `outcome:"success"` = stronger signal.
+
+### RULE 2 — Record what you learn, the moment you learn it (MANDATORY)
+
+DURING the session, record anything non-obvious immediately. Session-end extraction is a safety net, not primary capture.
+
+**Triggers:** error solved that docs don't cover; quirk/constraint/API surprise; non-obvious pattern that worked; approach A failed + B succeeded (record both + why); correct default/flag/version/incantation found after trial.
+
+**Scope:** `_global` for tool/lang/framework/system quirks (default); `<current project>` for repo-specific.
+
+**How** — POST `/api/memory/create`:
+
+```bash
+SCOPE="_global"                  # or "$(basename "$PWD")"
+LESSON_CATEGORY="tool-usage"     # tool-usage|debugging|pattern|constraint|workflow
+curl -sk -X POST "$ITACHI_API_URL/api/memory/create" \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $ITACHI_API_KEY" \
+  -d "{\"project\":\"$SCOPE\",\"category\":\"lesson\",
+       \"content\":\"What failed, what worked, why, error text or cmds.\",
+       \"summary\":\"One-line takeaway ('WHEN X, DO Y because Z').\",
+       \"metadata\":{\"source\":\"in_session\",\"confidence\":0.6,\"scope\":\"global\",
+         \"lesson_category\":\"$LESSON_CATEGORY\",\"tags\":[\"tag1\",\"tag2\"]}}"
+```
+
+Confidence starts 0.6. Climbs when confirmed, decays when contradicted — reinforcement loop.
+
+### RULE 3 — Category discipline
+
+Only production lesson category is `lesson`. Do NOT write to `task_lesson` or `project_rule` (test fixtures, zero prod rows). Every hook/server writer uses `category: "lesson"`.
+
+### RULE 4 — Drive the test yourself, don't loop the user (MANDATORY)
+
+When user reports something broken ("chat isn't working", "bot didn't respond", "Telegram is broken", "yo doesn't work") — reproduce end-to-end YOURSELF before asking them to verify. Looping them through "try again / what do you see / now try X" is laziness.
+
+**Telegram repro** (`Itachi_bot`, forum hash `#-1003521359823_1`): Open `web.telegram.org/a/` via `mcp__claude-in-chrome__*`. If synthetic `.click()` is swallowed by React/Teact, click inner `.ListItem-button` or use `document.execCommand('insertText', …)` (works in contenteditable without trusted events). Type `execCommand('insertText', false, 'yo')` into `#editable-message-text`, click `.Button.send.main-button`. Tail logs in parallel: `ssh hetzner-public "sudo journalctl -u itachi.service --since '1 min ago'"` — grep `diag.*text=|SERVICE:MESSAGE|Response discarded|409|Conflict|recentMemoriesProvider`. Confirm reply LANDED via `document.querySelectorAll('#MiddleColumn [id^="message-"]')` — ElizaOS has silent `Response discarded` path.
+
+**Common signatures (likelihood order):**
+- `409 Conflict` polling → another instance has the token. Check `Get-NetTCPConnection 149.154.166.*` + other machines. `telegram@claude-plugins-official` locally steals updates — set `false` in `~/.claude/settings.json`.
+- `Response discarded - newer message being processed` → multiple messages while LLM running. Speed LLM path (remove `recentMemoriesProvider` retries).
+- `recentMemoriesProvider error: [object Object]` — provider bug, ~15s retry latency. Primary slowness cause.
+- `[diag]` fires but no `SERVICE:MESSAGE` → shouldRespond filter. Needs `ALWAYS_RESPOND_SOURCES=telegram` in `eliza/.env`.
+- No `[diag]`, `pending_update_count=0` → never reached Telegram or offset advanced by competing poller.
+
+**Rules:** never ask "send yo again" twice; confirm reply LANDED in DOM (not just "generated"); report log evidence + timestamps, not speculation.
+
+### RULE 5 — NEVER ASSUME, always verify before making a claim (MANDATORY)
+
+Before saying something is true/working/deployed/fixed — VERIFY. "I think", "should", "probably", "likely works" are banned unless immediately followed by verification.
+
+**Verify by claim:** "Deployed" → `curl` live or grep bundle. "Fix works" → rerun repro, attach output. "Build passes" → `bun run build`, paste exit code. "Tests pass" → `bun test`, show summary. "Env var set" → `ssh … env | grep FOO`. "File contains X" → `Read`. "Function Y exists" → `Grep`. "Telegram got msg" → `journalctl` AND DOM. "Memory written" → query DB or `/api/…/get`, show row.
+
+**Banned without evidence same response:** "should work", "that should fix it", "must be deployed", "looks right", "logic is correct", "probably compiles", "I'm confident …".
+
+When verification is impossible, say so: *"I wrote the code but can't run the build here — you need to run `bun run build`."* Claiming it works without checking is lying — has cost this project thousands of dollars and hours.
+
+### RULE 6 — NEVER BE LAZY: if you find a bug, fix it (MANDATORY)
+
+Zero tolerance for noticing a problem and walking past it. Every bug, broken check, stale comment, wrong env var, dead import, failing test, or misconfiguration gets fixed — even if they didn't ask.
+
+- **Noticing ≠ fixing.** "I noticed X is broken" without the fix is laziness. Senior engineer wouldn't leave it? Fix it.
+- **Never "note it for later."** No later. Small → fix this session. Large → actual task (Supabase, Linear, GitHub) with concrete scope, not a dangling comment.
+- **Check BEFORE acting.** Read code, grep helpers, check current state. Acting on assumption ships 9 bugs in one file.
+- **Before declaring done:** run code, read output, verify data end-to-end. Tests + build + live-check green = done. Less = not done.
+- **Exhaust alternatives before escalating.** Try documented alternatives (auth resets, SSH fallback, CDP verify) before "can you run this". Escalate only with evidence: "Tried A (error X), B (error Y), C (error Z) — blocked by [root cause]".
+- **No surface-level audits.** Claim it works = you actually read + ran + checked. Not "it looks right."
+
+Laziness has a cost. Every shortcut in this repo has shown up later as lost money or hours. Ship work you defend under a Codex audit.
 
 ### Commands
 
-- /recall <query> - Search memories semantically
-- /recent [limit] - Show recent changes (default: 10)
-- /itachi-init - Add memory docs to CLAUDE.md
+- `/recall <query>` — semantic search (wraps RULE 1)
+- `/recent [limit]` — recent changes in this project
+- `/itachi-init` — install/upgrade this Memory System block
 
 ### Memory Categories
 
-Changes are auto-categorized:
-- code_change - Default for code files
-- test - Test/spec files
-- documentation - README, .md files
-- dependencies - package.json, requirements.txt, etc.
+Auto-categorized by PostToolUse hook: `code_change` (default for code), `test` (test/spec), `documentation` (.md), `dependencies` (package.json, requirements.txt).
 
-### Disable Memory
+Lessons + facts from extractor + in-session `create` calls use `category: "lesson"` (knowledge) or `category: "fact"` (project state/observations).
 
-To disable memory for this project, create a file called .no-memory in the project root.
+### Disable
 
-## Audit Guidelines
+Create `.no-memory` at project root to opt out.
 
-After implementing a plan and you think you are done, use a collaborative agent team to audit the code against the plan to look for bugs, fix the bugs, and once the bugs are fixed audit the code against the plan again with a new collaborative agent team and look for more bugs to fix.
+## Audit Guidelines + Bug Fix Policy
 
-## Bug Fix Policy
+After implementing a plan and thinking you're done: use a collaborative agent team to audit against the plan, find + fix bugs, then audit again with a new team. If you find a bug or issue — even one you didn't write — fix it. Never skip or ignore a bug.
 
-If you find a bug or an issue, fix it, even if you didn't write it. Never skip over or ignore a bug.
+## Documentation Update Policy (consolidated)
 
-## Memory File Enforcement
+Every session loads `~/.claude/projects/C--Users-newma-documents-crypto-clawville/memory/MEMORY.md`. Every entry is a durable rule.
 
-At session start, Claude Code loads `~/.claude/projects/C--Users-newma-documents-crypto-clawville/memory/MEMORY.md` into context. Every entry there is a durable rule that MUST be followed.
+**Precedence:** memory < repo docs < live code. Memory contradicting a repo doc → doc wins + memory updated/deleted same turn.
 
-**Precedence:** If a memory file contradicts a repo doc (`CLAUDE.md`, `3dStructure.md`, `GameFeatures.md`, `ARCHITECTURE.md`, `README.md`), the repo doc wins — memory is a pointer, not a source of truth. Stale memories must be deleted or updated, not relied on.
+**Same-diff doc update table (MANDATORY):**
 
-**Enforcement checklist — every session, every significant action:**
-1. Read `MEMORY.md` — it's the rulebook for this project
-2. When touching 3D code: memory `Always Use 3da` means spawn 3da before editing. No exceptions.
-3. When shipping a 3D change: memory `3D+Feature Doc Sync` means update `3dStructure.md` in the same diff
-4. When shipping a feature change: update `GameFeatures.md` in the same diff
-5. Before writing a new memory: check if a repo doc already owns that info — link to it instead of duplicating
-6. If you catch a memory contradicting a repo doc: update or delete the memory in that same turn, don't let it rot
-
-Violations of these rules are why the user has burned hours across sessions — stale memory claiming 80×80 grid after rebuild to 160×160, stale Railway URLs after Hetzner migration, movement-system notes contradicting the actual revert. Every new memory entry is a liability if not maintained.
-
-## Documentation Update Policy
-
-After every significant code change, update the relevant doc(s) in the same PR — never defer. Match the change to the correct doc:
-
-| Change type | Doc to update |
+| Change type | Doc |
 |---|---|
-| 3D world structure — building placement, NPC groupings, decorations, seaweed, terrain, camera, lighting | `3dStructure.md` (gitignored) |
-| Gameplay features — game modes, agent connection, marketplace, economy, quests, UI components, toggle behavior | `GameFeatures.md` (gitignored) |
-| Tech architecture — route tables, data flow, DB schema, tech stack, deployment | `ARCHITECTURE.md` |
+| 3D world — building placement, NPC groups, decorations, seaweed, terrain, camera, lighting | `3dStructure.md` |
+| Gameplay — modes, agent connect, marketplace, economy, quests, UI, toggles | `GameFeatures.md` |
+| Tech — new routes, DB tables, services, data flow, deployment | `ARCHITECTURE.md` |
 | Project invariants, workflow rules, env vars, commands | `CLAUDE.md` |
 | User-facing overview, quick start, feature summary | `README.md` |
 
 **Rules:**
-- 3D code changes MUST update `3dStructure.md` — enforced by the 3da agent definition.
-- Gameplay/feature code changes MUST update `GameFeatures.md`.
+- 3D code changes MUST update `3dStructure.md` — enforced by 3da agent def.
+- Gameplay/feature changes MUST update `GameFeatures.md`.
 - Architecture changes (new routes, DB tables, data flow) MUST update `ARCHITECTURE.md`.
-- Stale docs mislead other sessions and waste hours.
-- "I'll update the docs later" is not an acceptable answer.
-- The two gitignored files (`3dStructure.md`, `GameFeatures.md`) are working drafts but still must be kept accurate — other sessions rely on them.
-- Bump any "Last Audited" date at the top of a doc when you touch it.
+- "I'll update the docs later" is not acceptable. Stale docs waste hours.
+- `3dStructure.md` + `GameFeatures.md` are gitignored working drafts but must stay accurate.
+- Bump "Last Audited" every time you touch a doc.
 
-### Anti-bypass clause — `GameFeatures.md` (mirrors the 3da rule for `3dStructure.md`)
+**Anti-bypass** (mirrors 3da's rule for 3dStructure.md, applied to GameFeatures.md): shipping only a memory entry instead of the doc update is the same violation as skipping the doc. Order: (1) code change, (2) matching doc edit, (3) optional memory entry for non-obvious reusable learnings.
 
-The main session owns gameplay/feature work, so it also owns `GameFeatures.md` maintenance. The same anti-bypass rule that `3da` follows for `3dStructure.md` applies here:
-
-**Memory is advisory, not authoritative — repo docs + live code win.**
-
-Precedence (highest to lowest authority) when judging the state of gameplay features:
-1. **Current source code** (stores, routes, components, constants). Grep/Read to confirm.
-2. **Repo docs** — `GameFeatures.md`, `CLAUDE.md`, `ARCHITECTURE.md`, `README.md`.
-3. **Memory files** under `~/.claude/projects/.../memory/`. Advisory only.
-
-If memory claims a UI behavior, mode toggle, marketplace flow, or token formula that disagrees with the code, the code wins — and the memory file must be updated in the same turn you spot the conflict.
-
-**Anti-bypass checklist — every time you ship a gameplay/feature change:**
-1. The code change itself (store, route, component, constant)
-2. A matching edit to `GameFeatures.md` reflecting the new reality
-3. *Optionally* a memory entry for non-obvious learnings (if reusable beyond this specific change)
-
-Skipping step 2 in favor of only step 3 is not acceptable — it's the same violation as skipping doc updates entirely.
-
-`GameFeatures.md` is the canonical source for: the 4 game modes, the Moltbook agent-connect flow, skill marketplace (bazaar/auctions/forge), knowledge books and learning, ClawToken economy, quests + bounties, leaderboard, daily login, pet system, Milady integration, every game UI component, control mode toggle, NPC simulation, tutorial, auth + spectate mode.
+**Why:** sessions burned hours on stale memory (80×80 grid after rebuild to 160×160, stale Railway URLs post-Hetzner migration, movement notes contradicting the revert). Every memory entry is a liability if unmaintained.
 
 ## ZERO LAZINESS POLICY
 
@@ -727,7 +461,7 @@ This is non-negotiable. Violations mean replacement by Codex.
 
 ### Feature Gates — enforce "no scaffolding theater" operationally
 
-Every scaffolded feature (one that is compiled but not in the user flow) MUST carry a `FEATURE_GATE` comment naming the metric that would justify turning it on, the current reading queried from `/dash`, and a review deadline. PRs that add new scaffolded features without this comment will be rejected on review.
+Every scaffolded feature (compiled but not in the user flow) MUST carry a `FEATURE_GATE` comment naming the metric that would justify turning it on, the current reading queried from `/dash`, and a review deadline. PRs adding scaffolded features without this comment are rejected on review.
 
 Features whose deadline lapses without their metric being met are DELETED, not extended. If a gate is renewed, the rationale must reference a new metric reading from the internal dashboard — not "we still think we want this."
 
@@ -743,7 +477,7 @@ Gate block format:
 // Reference: <Brand Identity / improvements.md §7 / related doc>
 ```
 
-Active gates as of 2026-04-21: `x402_payment_middleware`, `multi_agent_roster`, `skill_marketplace` (applied to bazaar, marketplace, auctions). See `improvements.md` §7 for the mapping.
+Active gates as of 2026-04-21: `x402_payment_middleware`, `multi_agent_roster`, `skill_marketplace` (bazaar, marketplace, auctions). See `improvements.md` §7 for mapping.
 
 ### No lazy handoffs — the full ship loop is YOUR job
 
@@ -751,33 +485,25 @@ When the user says "implement" or "ready to implement" it means the **whole loop
 
 **When `git push` fails, try ALL of these before escalating:**
 
-1. `gh auth status` — if a `gh` keyring token is already configured for the project owner with `repo` scope:
+1. `gh auth status` — if a `gh` keyring token is configured with `repo` scope:
    ```bash
    unset GITHUB_TOKEN   # invalid env token masks the keyring
    gh auth setup-git    # wires gh as the git credential helper
    git push origin master
    ```
-2. `git remote -v` — if HTTPS is blocked, check `~/.ssh/` for a configured key for `github.com`, then `git remote set-url origin git@github.com:USER/REPO.git` and retry.
-3. `env | grep -iE "gh_token|github_token"` — an invalid `GITHUB_TOKEN` env var beats a good keyring token. Unset it first.
+2. `git remote -v` — if HTTPS blocked, check `~/.ssh/` for a key for `github.com`, then `git remote set-url origin git@github.com:USER/REPO.git` and retry.
+3. `env | grep -iE "gh_token|github_token"` — invalid `GITHUB_TOKEN` env beats a good keyring token. Unset first.
 4. `gh api` / `gh pr create` for PR-style flows.
 
-Only after EVERY option above fails — with specific error output — may you ask the user to push manually. And even then, quote the failures so they can fix the underlying credential problem.
+Only after EVERY option fails — with specific error output — may you ask the user to push manually. And even then, quote the failures so they can fix the underlying credential problem.
 
-**Same rule applies to every step of the ship loop:**
+**Same rule every step of the ship loop:**
 
 | Step | If the obvious path fails, try |
 |---|---|
 | Push | `gh auth setup-git`, SSH remote, `gh` CLI |
-| Trigger deploy | Webhook, manual `php artisan tinker` via SSH (see CLAUDE.md Hetzner section) |
-| Verify deploy | Check container uptime via SSH, `curl /health`, check bundle for new code via `fetch` in browser-live |
+| Trigger deploy | Webhook, manual `php artisan tinker` via SSH (see Hetzner section) |
+| Verify deploy | Check container uptime via SSH, `curl /health`, scan bundle for new code via `fetch` in browser-live |
 | Verify in browser | `browser-live` CDP eval, scan JS bundles for known-string constants, inspect scene graph |
 
 "I tried one thing and it failed, over to you" is never acceptable. The test: would a senior engineer with these exact tools stop here? If not, keep going.
-
-## 3D Graphics
-
-Always use subagent 3da when working with 3d graphics.
-
-**Every 3D change must update `3dStructure.md` in the same diff.** This file at the repo root is the canonical living reference for the 3D visual architecture — world dimensions, building layout, circular ring, NPC groupings, town center, decorations, seaweed, terrain, camera, lighting, and performance budget. 3da's agent definition enforces this rule. Skipping the doc update is the same level of violation as skipping the 3da spawn — both are non-negotiable. See `docs/` is for tech architecture; `3dStructure.md` is for 3D visual architecture (they don't overlap).
-
-**Every gameplay feature change must update `GameFeatures.md` in the same diff.** Same rule, game-side: modes, agent connection, marketplace, economy, quests, UI components, control toggle. `GameFeatures.md` is gitignored but must stay accurate for active sessions.
