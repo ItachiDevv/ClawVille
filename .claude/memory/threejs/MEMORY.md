@@ -51,6 +51,7 @@
 - [Draco compression results + drei auto-decode](performance/draco-compression-results.md) — texture-heavy GLBs barely compress; geometry-heavy get 5-20%; drei DRACOLoader is zero-config
 
 ## Patterns
+- [Spectator camera modes — follow/free/action](patterns/spectator-camera-modes.md) — Dual-canvas strategy (ortho for active play, PerspectiveCamera canvas for spectators); OrbitControls created/disposed on mode change; module-scope scratch vectors; action mode retargets to arena-center entity every 3s
 - [Route-isolated activity scene pattern](patterns/route-isolated-activity-scene.md) — Canvas key={roomId} isolation, static ortho camera, module-scope burst pool, InstancedMesh+MeshStandardMaterial safety, Html label imperative pattern, PreCompilePipelines last-child rule
 - [Reef Race 3D scene](patterns/reef-race-scene.md) — Per-client chase-cam, TubeGeometry track (radialSegs=4), merged checkpoint gates (2 draw calls), InstancedMesh zero-scale hiding, ghost kart 10Hz lerp path, boost BufferGeometry ring-buffer trail, additive store extension pattern
 - [FBXLoader parallel multi-file clip extraction](patterns/fbx-loader-parallel-clips.md) — Promise.all loads character + N animation FBXs; rename clips from "mixamo.com"; attach to template.animations; SkeletonUtils.clone; AnimationMixer; React 19 `use()` for suspension; Mixamo bone-name resolution automatic
