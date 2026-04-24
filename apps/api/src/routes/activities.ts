@@ -26,6 +26,13 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
+import { and, desc, eq, sql } from 'drizzle-orm';
+import {
+  db,
+  activityResults,
+  activityRooms,
+  pets,
+} from '@clawville/database';
 import { sessionMiddleware } from '../middleware/auth';
 import { requireAuthOrAgentSession } from '../middleware/require-auth-or-agent';
 import type { ActivityAuthContext } from '../middleware/require-auth-or-agent';
@@ -43,6 +50,13 @@ import {
   type HubWs,
 } from '../services/activity/activity-ws-hub';
 import { bumperShellsSim } from '../services/activity/sim/bumper-shells-sim';
+import {
+  getLeaderboardSnapshot,
+  getLeaderboardForPet,
+  VALID_WINDOWS,
+  type ActivityLeaderboardWindow,
+} from '../services/activity/activity-leaderboard-service';
+import { getSeasonsCatalog } from '../services/activity/activity-season-service';
 import {
   ACTIVITY_REGISTRY,
   ACTIVITY_IDS,
@@ -523,58 +537,282 @@ activitiesV2Routes.get(
   }),
 );
 
-activitiesV2Routes.get('/:id/rooms/:roomId/results', (c) => {
-  // TODO chunk #7: reward pipeline owns activity_results rows + this read.
-  return c.json(
-    { error: 'not_implemented', detail: 'Match results ship in chunk #7 (reward pipeline)' },
-    501,
-  );
+// ─── Chunk #7 — reward pipeline + per-activity leaderboards ────────────────
+
+/**
+ * `GET /api/activities/seasons` — public catalog. Auto-creates the first
+ * season (`2026-Q2-S1`, 30 days) on first call so the route never returns
+ * an empty `active`. 60s cached at the service layer.
+ */
+activitiesV2Routes.get('/seasons', async (c) => {
+  const ip = getClientIp(c.req.raw.headers);
+  if (!publicReadLimiter.check(ip)) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  const { active, past } = await getSeasonsCatalog();
+  return c.json({
+    active,
+    past,
+  });
 });
 
-activitiesV2Routes.get('/me/recent-results', (c) => {
-  // TODO chunk #7
-  return c.json(
-    { error: 'not_implemented', detail: 'Recent results ship in chunk #7' },
-    501,
-  );
+/**
+ * `GET /api/activities/me/recent-results?limit=20` — auth'd; returns the
+ * caller's pet's recent match results. Sorted DESC by createdAt.
+ */
+activitiesV2Routes.get(
+  '/me/recent-results',
+  requireAuthOrAgentSession,
+  async (c) => {
+    const identity = c.get('identity');
+    const rawLimit = parseInt(c.req.query('limit') || '20', 10);
+    const limit = Math.min(50, Math.max(1, Number.isFinite(rawLimit) ? rawLimit : 20));
+
+    const rows = await db
+      .select({
+        id: activityResults.id,
+        roomId: activityResults.roomId,
+        activityId: activityResults.activityId,
+        placement: activityResults.placement,
+        score: activityResults.score,
+        scoreMs: activityResults.scoreMs,
+        tokensAwarded: activityResults.tokensAwarded,
+        leaderboardPoints: activityResults.leaderboardPoints,
+        isPersonalBest: activityResults.isPersonalBest,
+        acknowledgedAt: activityResults.acknowledgedAt,
+        createdAt: activityResults.createdAt,
+      })
+      .from(activityResults)
+      .where(eq(activityResults.petId, identity.petId))
+      .orderBy(desc(activityResults.createdAt))
+      .limit(limit);
+
+    const results = rows.map((r) => ({
+      resultId: r.id,
+      roomId: r.roomId,
+      activityId: r.activityId,
+      activityName:
+        getActivityDefinition(r.activityId)?.title ?? r.activityId,
+      placement: r.placement,
+      score: r.score,
+      scoreMs: r.scoreMs,
+      tokensAwarded: r.tokensAwarded,
+      leaderboardPoints: r.leaderboardPoints,
+      isPersonalBest: r.isPersonalBest,
+      acknowledged: r.acknowledgedAt != null,
+      createdAt: r.createdAt,
+    }));
+
+    return c.json({ results });
+  },
+);
+
+/**
+ * `GET /api/activities/:id/rooms/:roomId/results` — auth'd; returns the
+ * full result roster for a room. Caller must have been a participant OR
+ * an admin (admin gating left for the dashboard surface — chunk #7
+ * scope = participant-only).
+ */
+activitiesV2Routes.get(
+  '/:id/rooms/:roomId/results',
+  requireAuthOrAgentSession,
+  async (c) => {
+    const id = c.req.param('id');
+    const roomIdRaw = c.req.param('roomId');
+    const roomIdParse = roomIdParamSchema.safeParse(roomIdRaw);
+    if (!roomIdParse.success) {
+      throw new HTTPException(400, { message: 'Invalid roomId' });
+    }
+    const identity = c.get('identity');
+    const roomId = roomIdParse.data;
+
+    // Participant gate: prefer the in-memory map (covers the RESULTS
+    // retention window); fall back to DB query for already-GC'd rooms.
+    const memRoom = activityRoomManager.getRoom(roomId);
+    let isParticipant = false;
+    if (memRoom) {
+      isParticipant = memRoom.participants.has(identity.petId);
+    } else {
+      const [own] = await db
+        .select({ id: activityResults.id })
+        .from(activityResults)
+        .where(
+          and(
+            eq(activityResults.roomId, roomId),
+            eq(activityResults.petId, identity.petId),
+          ),
+        )
+        .limit(1);
+      isParticipant = !!own;
+    }
+    if (!isParticipant) {
+      throw new HTTPException(403, {
+        message: 'Not a participant in this room',
+      });
+    }
+
+    const [roomRow] = await db
+      .select()
+      .from(activityRooms)
+      .where(eq(activityRooms.id, roomId))
+      .limit(1);
+    if (!roomRow) throw new HTTPException(404, { message: 'Room not found' });
+    if (roomRow.activityId !== id) {
+      throw new HTTPException(404, { message: 'Room not in activity' });
+    }
+
+    const resultRows = await db
+      .select({
+        id: activityResults.id,
+        petId: activityResults.petId,
+        agentId: activityResults.agentId,
+        subjectType: activityResults.subjectType,
+        placement: activityResults.placement,
+        score: activityResults.score,
+        scoreMs: activityResults.scoreMs,
+        tokensAwarded: activityResults.tokensAwarded,
+        leaderboardPoints: activityResults.leaderboardPoints,
+        isPersonalBest: activityResults.isPersonalBest,
+        createdAt: activityResults.createdAt,
+      })
+      .from(activityResults)
+      .where(eq(activityResults.roomId, roomId))
+      .orderBy(activityResults.placement);
+
+    // Join pet display names so the UI doesn't have to round-trip per row.
+    const petIds = resultRows.map((r) => r.petId);
+    const namesById = new Map<string, string>();
+    if (petIds.length > 0) {
+      const petRows = await db
+        .select({ id: pets.id, name: pets.name })
+        .from(pets)
+        .where(petInList(petIds));
+      for (const p of petRows) namesById.set(p.id, p.name);
+    }
+
+    return c.json({
+      room: {
+        id: roomRow.id,
+        activityId: roomRow.activityId,
+        shortCode: roomRow.shortCode,
+        status: roomRow.status,
+        startedAt: roomRow.startedAt,
+        endedAt: roomRow.endedAt,
+      },
+      results: resultRows.map((r) => ({
+        resultId: r.id,
+        petId: r.petId,
+        agentId: r.agentId,
+        displayName: namesById.get(r.petId) ?? r.petId.slice(0, 8),
+        subjectType: r.subjectType,
+        placement: r.placement,
+        score: r.score,
+        scoreMs: r.scoreMs,
+        tokensAwarded: r.tokensAwarded,
+        leaderboardPoints: r.leaderboardPoints,
+        isPersonalBest: r.isPersonalBest,
+        createdAt: r.createdAt,
+      })),
+    });
+  },
+);
+
+/**
+ * `POST /api/activities/results/:resultId/acknowledge` — caller marks
+ * their own result row as seen. Idempotent — second call is a no-op.
+ */
+activitiesV2Routes.post(
+  '/results/:resultId/acknowledge',
+  requireAuthOrAgentSession,
+  async (c) => {
+    const resultIdParse = z.string().uuid().safeParse(c.req.param('resultId'));
+    if (!resultIdParse.success) {
+      throw new HTTPException(400, { message: 'Invalid resultId' });
+    }
+    const identity = c.get('identity');
+
+    const [row] = await db
+      .select({
+        id: activityResults.id,
+        petId: activityResults.petId,
+        acknowledgedAt: activityResults.acknowledgedAt,
+      })
+      .from(activityResults)
+      .where(eq(activityResults.id, resultIdParse.data))
+      .limit(1);
+    if (!row) throw new HTTPException(404, { message: 'Result not found' });
+    if (row.petId !== identity.petId) {
+      throw new HTTPException(403, { message: 'Not your result' });
+    }
+    if (row.acknowledgedAt) {
+      return c.json({ ok: true, alreadyAcknowledged: true });
+    }
+
+    await db
+      .update(activityResults)
+      .set({ acknowledgedAt: new Date() })
+      .where(eq(activityResults.id, row.id));
+
+    return c.json({ ok: true });
+  },
+);
+
+/**
+ * `GET /api/activities/:id/leaderboard?window=...&limit=&offset=` — public.
+ * 60s cached, rate-limited 60/min/IP, bots excluded.
+ */
+activitiesV2Routes.get('/:id/leaderboard', async (c) => {
+  const ip = getClientIp(c.req.raw.headers);
+  if (!publicReadLimiter.check(ip)) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+
+  const id = c.req.param('id');
+  if (!getActivityDefinition(id)) {
+    throw new HTTPException(404, { message: 'Activity not found' });
+  }
+  const window = parseWindow(c.req.query('window'));
+  const limit = clampInt(c.req.query('limit'), 100, 1, 100);
+  const offset = clampInt(c.req.query('offset'), 0, 0, 10_000);
+
+  const snapshot = await getLeaderboardSnapshot(id, window, limit, offset);
+  c.header('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
+  return c.json(snapshot);
 });
 
-activitiesV2Routes.post('/results/:resultId/acknowledge', (c) => {
-  // TODO chunk #7
-  return c.json(
-    { error: 'not_implemented', detail: 'Result acknowledgement ships in chunk #7' },
-    501,
-  );
-});
+/**
+ * `GET /api/activities/:id/leaderboard/me?window=...&context=N` — auth'd.
+ * Returns caller's row + N above + N below (default N=5).
+ */
+activitiesV2Routes.get(
+  '/:id/leaderboard/me',
+  requireAuthOrAgentSession,
+  async (c) => {
+    const id = c.req.param('id');
+    if (!getActivityDefinition(id)) {
+      throw new HTTPException(404, { message: 'Activity not found' });
+    }
+    const window = parseWindow(c.req.query('window'));
+    const context = clampInt(c.req.query('context'), 5, 0, 25);
+    const identity = c.get('identity');
 
-activitiesV2Routes.get('/:id/leaderboard', (c) => {
-  // TODO chunk #7: per-activity leaderboard with daily/weekly/all/season windows.
-  return c.json(
-    { error: 'not_implemented', detail: 'Per-activity leaderboard ships in chunk #7' },
-    501,
-  );
-});
-
-activitiesV2Routes.get('/:id/leaderboard/me', (c) => {
-  // TODO chunk #7
-  return c.json(
-    { error: 'not_implemented', detail: 'Include-me leaderboard ships in chunk #7' },
-    501,
-  );
-});
+    const result = await getLeaderboardForPet(id, window, identity.petId, context);
+    return c.json({
+      activityId: id,
+      window,
+      season: result.snapshot.season,
+      generatedAt: result.snapshot.generatedAt,
+      myRank: result.myRank,
+      myEntry: result.myEntry,
+      context: result.context,
+    });
+  },
+);
 
 activitiesV2Routes.get('/:id/replays/:replayId', (c) => {
   // TODO chunk #5: replay log owns activity_replays.frames flush + read.
   return c.json(
     { error: 'not_implemented', detail: 'Replay download ships in chunk #5' },
-    501,
-  );
-});
-
-activitiesV2Routes.get('/seasons', (c) => {
-  // TODO chunk #7: season catalog read against activity_seasons.
-  return c.json(
-    { error: 'not_implemented', detail: 'Season catalog ships in chunk #7' },
     501,
   );
 });
@@ -616,4 +854,32 @@ function asHttpException(err: unknown, defaultStatus: 400 | 403 | 404 | 409): HT
   if (err instanceof HTTPException) return err;
   const message = err instanceof Error ? err.message : 'Request failed';
   return new HTTPException(defaultStatus, { message });
+}
+
+// ─── Chunk #7 helpers ──────────────────────────────────────────────────────
+
+function parseWindow(raw: string | undefined): ActivityLeaderboardWindow {
+  const v = (raw ?? 'all').toLowerCase();
+  return (VALID_WINDOWS as readonly string[]).includes(v)
+    ? (v as ActivityLeaderboardWindow)
+    : 'all';
+}
+
+function clampInt(
+  raw: string | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const n = parseInt(raw ?? '', 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
+function petInList(petIds: string[]): ReturnType<typeof sql> {
+  if (petIds.length === 0) return sql`false`;
+  return sql`${pets.id} in (${sql.join(
+    petIds.map((id) => sql`${id}`),
+    sql.raw(', '),
+  )})`;
 }
