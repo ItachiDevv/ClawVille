@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
@@ -23,6 +23,14 @@ import InventoryModal from '@/components/game/inventory-modal';
 import ActivityFeed from '@/components/game/activity-feed';
 import AgentConnectModal from '@/components/game/agent-connect-modal';
 
+const BuildingPortalModal = dynamic(
+  () => import('@/components/game/building-portal-modal'),
+  { ssr: false },
+);
+const ActivityLobbyModal = dynamic(
+  () => import('@/components/game/activity-lobby-modal'),
+  { ssr: false },
+);
 const SkillBuilderModal = dynamic(() => import('@/components/game/skill-builder-modal'), { ssr: false });
 const MarketplaceModal = dynamic(() => import('@/components/game/marketplace-modal'), { ssr: false });
 const BazaarModal = dynamic(() => import('@/components/game/bazaar-modal'), { ssr: false });
@@ -120,6 +128,38 @@ export default function GamePage() {
   const router = useRouter();
   const { data: avatar, isLoading } = useAvatar();
   const controlMode = useGameStore((s: GameState) => s.controlMode);
+  const openActivityLobby = useGameStore((s: GameState) => s.openActivityLobby);
+  const activityLobbyId = useGameStore((s: GameState) => s.activityLobbyId);
+
+  /**
+   * Q2 Activity Portals — chunk #8.
+   *
+   * The Results screen "Play Again" button (chunk #9) deep-links back to
+   * `/game?quickQueue=<activityId>`. With the portal flow live we route
+   * that through the proper lobby + auto-fire Queue Solo (instead of the
+   * legacy sidebar dev button — see sidebar-menu.tsx for that path's
+   * deprecation behind NEXT_PUBLIC_ENABLE_DEV_QUEUE).
+   *
+   * NOTE: we read `window.location.search` directly instead of
+   * `useSearchParams()` to avoid the Next 16 prerender bailout that
+   * forces the entire `/game` route into a Suspense boundary. The page
+   * is already `'use client'` and uses other window-only APIs throughout,
+   * so this stays consistent.
+   */
+  const [autoQueuePending, setAutoQueuePending] = useState(false);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!avatar) return; // wait for the avatar to load — queue endpoint requires auth
+    const params = new URLSearchParams(window.location.search);
+    const target = params.get('quickQueue');
+    if (!target) return;
+    // Strip the param so refresh doesn't re-fire; preserve the rest.
+    const url = new URL(window.location.href);
+    url.searchParams.delete('quickQueue');
+    window.history.replaceState({}, '', url.toString());
+    openActivityLobby(target);
+    setAutoQueuePending(true);
+  }, [avatar, openActivityLobby]);
 
   // Milady embed detection — auto-exchanges the agent session for a Lucia
   // cookie so the viewer skips the login overlay. The hook invalidates
@@ -210,6 +250,15 @@ export default function GamePage() {
       <BuildingTooltip />
       <NanoClawBanner />
       <AgentConnectModal />
+      <BuildingPortalModal />
+      {/* Lobby modal mounts whenever activityLobbyId is set; reads
+          autoQueue from the local quickQueue deep-link guard. */}
+      {activityLobbyId && (
+        <ActivityLobbyModal
+          autoQueue={autoQueuePending}
+          onAutoQueueConsumed={() => setAutoQueuePending(false)}
+        />
+      )}
       <FirstTimeBackupModal />
       <SkillBuilderModal />
       <MarketplaceModal />
