@@ -749,21 +749,30 @@ class NpcSimulation {
     //   r = sqrt(u * (R² - r²) + r²)
     // preserves equal area density at every radius — without the sqrt
     // more points would cluster near the inner edge.
-    const angle = Math.random() * Math.PI * 2;
+    //
+    // The 1400-2600 wander ring (expanded 2026-04-24 per user request) OVERLAPS
+    // the 2176wu building ring. Random samples frequently land on blocked
+    // building tiles, findPath returns empty, and the NPC idles for a full
+    // planning cycle. Retry up to 8 times per plan call so a single failed
+    // sample doesn't freeze movement for 10+ seconds.
     const rMinSq = FREE_ROAMER_MIN_RADIUS * FREE_ROAMER_MIN_RADIUS;
     const rMaxSq = FREE_ROAMER_MAX_RADIUS * FREE_ROAMER_MAX_RADIUS;
-    const radius = Math.sqrt(Math.random() * (rMaxSq - rMinSq) + rMinSq);
-    const tx = TOWN_CENTER_X + Math.cos(angle) * radius;
-    const ty = TOWN_CENTER_Y + Math.sin(angle) * radius;
-    const path = findPath(npc.x, npc.y, tx, ty);
-    if (path.length > 0) {
-      npc.activity = 'walking'; npc.activityEmoji = '';
-      npc.path = path; npc.pathIndex = 0;
-      npc.intentDescription = 'Strolling the town ring';
-      npc.behaviorCooldown = 80 + Math.floor(Math.random() * 60);
-    } else {
-      npc.behaviorCooldown = 20;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const angle = Math.random() * Math.PI * 2;
+      const radius = Math.sqrt(Math.random() * (rMaxSq - rMinSq) + rMinSq);
+      const tx = TOWN_CENTER_X + Math.cos(angle) * radius;
+      const ty = TOWN_CENTER_Y + Math.sin(angle) * radius;
+      const path = findPath(npc.x, npc.y, tx, ty);
+      if (path.length > 0) {
+        npc.activity = 'walking'; npc.activityEmoji = '';
+        npc.path = path; npc.pathIndex = 0;
+        npc.intentDescription = 'Strolling the town ring';
+        npc.behaviorCooldown = 80 + Math.floor(Math.random() * 60);
+        return;
+      }
     }
+    // All 8 samples blocked — give up this tick but replan soon.
+    npc.behaviorCooldown = 10;
   }
 
   // Free-roamer approach: only considers NPCs that are ALSO inside the
@@ -809,16 +818,23 @@ class NpcSimulation {
     // other into an ~100wu cluster. 250wu is roughly 2.5× a Milady's visible
     // height (112 * 1.6m ≈ 180 wu), enough daylight between NPCs that they
     // read as distinct.
-    const approachAngle = Math.random() * Math.PI * 2;
-    const tx = target.x + Math.cos(approachAngle) * standOff;
-    const ty = target.y + Math.sin(approachAngle) * standOff;
-    const path = findPath(npc.x, npc.y, tx, ty);
-    if (path.length > 0) {
-      npc.activity = 'walking'; npc.activityEmoji = '';
-      npc.path = path; npc.pathIndex = 0;
-      npc.intentDescription = `Approaching ${target.name}`;
-      npc.behaviorCooldown = 80;
-    } else {
+    // Try up to 6 stand-off angles before giving up — a single angle may land
+    // in a building tile, especially now that NPCs roam the 1400-2600 ring
+    // which overlaps buildings.
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const approachAngle = Math.random() * Math.PI * 2;
+      const tx = target.x + Math.cos(approachAngle) * standOff;
+      const ty = target.y + Math.sin(approachAngle) * standOff;
+      const path = findPath(npc.x, npc.y, tx, ty);
+      if (path.length > 0) {
+        npc.activity = 'walking'; npc.activityEmoji = '';
+        npc.path = path; npc.pathIndex = 0;
+        npc.intentDescription = `Approaching ${target.name}`;
+        npc.behaviorCooldown = 80;
+        return;
+      }
+    }
+    {
       // Pathfinding failed (stand-off point may be inside a blocked tile or
       // off-map). Fall back to a center-wander instead of sitting idle —
       // otherwise the NPC just loops back into the same failing approach.
@@ -861,10 +877,11 @@ class NpcSimulation {
   }
 
   private moveNpcs() {
-    // 2026-04-24: bumped baseStep 20 → 70. Server ticks at 2Hz (500ms), so with
-    // baseStep=20 world NPCs moved 40 wu/s — user reported "insanely slow and
-    // unnatural pace". 70 yields 140 wu/s which is ~jog pace on the 5120 map.
-    const baseStep = this.arenaMode ? (14 + Math.random() * 4) * this.arenaSettings.moveSpeed : 70;
+    // 2026-04-24: baseStep 20 → 70 → 110. Server ticks at 2Hz (500ms), so 110
+    // yields 220 wu/s on the 5120 map — ~run pace. Previous 70 still felt
+    // slow per user. 110 × 0.5 = 55 wu/snapshot so client lerp (LERP_SPEED=5)
+    // has a visible step between snapshots without "teleporting".
+    const baseStep = this.arenaMode ? (14 + Math.random() * 4) * this.arenaSettings.moveSpeed : 110;
 
     for (const npc of this.npcs.values()) {
       if (npc.isDead || npc.inConversation) continue;
