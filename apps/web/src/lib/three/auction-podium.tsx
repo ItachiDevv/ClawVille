@@ -41,11 +41,9 @@ useGLTF.preload('/models/jellyfish.glb');
 // World position — unchanged from old podium
 // ---------------------------------------------------------------------------
 const DOME_X = 0;
-// Raised to +80 because +12 was still leaving the dome half-buried — the Space
-// Dome GLB's base geometry extends far below its root origin (Dome_Rim_0 /
-// Dome_Metal_0 sub-meshes live well below local Y=0). Going big to guarantee
-// the base plate clears the sand.
-const DOME_Y = 80;
+// Kept climbing Y — 12 and 80 both still looked buried. Going way up to +200
+// because the GLB's geometry extends dramatically below its pivot point.
+const DOME_Y = 200;
 const DOME_Z = -500; // -Z is north; pushed well back near the building ring for visual depth
 
 // Target visual height for the dome (the centerpiece — give it presence)
