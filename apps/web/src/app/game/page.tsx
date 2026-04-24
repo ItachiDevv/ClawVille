@@ -273,33 +273,39 @@ export default function GamePage() {
 
       {/* World UI that's useful for ALL avatar-bearing visitors — including
           guests minted by the auto-create flow. Shows building labels, the
-          ? help button, and the global activity feed. None of these imply
-          a connected agent. */}
+          ? help button, the global activity feed, AND the chat panel so
+          NPC-mode guests can talk to building teachers (brand priority #2:
+          open agent onboarding — no human account required). ChatPanel
+          gates internally on chatOpen / guideChatOpen so it stays hidden
+          until the guest actually taps a character. Backend /chat accepts
+          guest avatars (isGuest carve-out in chat.ts). */}
       {hasAvatar && (
         <>
           <LocationHUD />
           <TutorialOverlay />
           <ActivityFeed />
+          <ChatPanel />
         </>
       )}
 
       {/* Player-mode (agent-connected) UI — hidden in NPC/Explore mode.
           Per the brand structure: the toggle reads Explore/NPC for guests,
-          Controlled/Autonomous for connected agents. All of the chat, quest,
-          progression, and shop surfaces below belong to the agent's
-          Controlled/Autonomous flow — not to a guest controlling an NPC.
-          Showing them in NPC mode (because guest auto-create gives hasAvatar=
-          true) collapses the modes into a single "you're a player" UI and
-          breaks the fundamental structure. */}
-      {agentConnected && (
+          Controlled/Autonomous for connected agents. Quest, progression,
+          and shop surfaces below belong to the agent's Controlled/
+          Autonomous flow — not to a guest controlling an NPC. The inner
+          controlMode guard is defense-in-depth: in normal flow,
+          agentConnected=true implies controlMode='player'|'autonomous'
+          (setAgentConnection enforces it), but if any code path leaves
+          controlMode='npc' while an agent is connected, we still hide the
+          agent-only UI. (Chat moved up into the hasAvatar block.) */}
+      {agentConnected && controlMode !== 'npc' && controlMode !== 'explore' && (
         <>
-          <ChatPanel />
           <AvatarStatusBar />
           <QuestTracker />
           <AvatarSettingsModal />
           <LocationConfigModal />
-          {controlMode !== 'explore' && <AvatarChatBar />}
-          {controlMode !== 'explore' && <ChargeBar />}
+          <AvatarChatBar />
+          <ChargeBar />
           <ShopOverlay />
           <InventoryModal />
           <DailyLoginModal />
