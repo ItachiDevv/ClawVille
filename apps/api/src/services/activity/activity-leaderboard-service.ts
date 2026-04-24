@@ -108,6 +108,16 @@ export async function buildLeaderboardSnapshot(
   const conditions = [
     eq(activityResults.activityId, activityId),
     ne(activityResults.subjectType, 'bot'),
+    // Guest pet carve-out (2026-04-23) — un-authed visitors play matches
+    // and earn ClawTokens, but their results don't enter per-activity
+    // leaderboards. Mirrors the bot exclusion above. The pre-fetch of
+    // guest petIds is cheap (small index, partial WHERE clause) and lets
+    // us keep the existing GROUP BY shape unchanged.
+    sql`NOT EXISTS (
+      SELECT 1 FROM ${pets} AS gp
+      WHERE gp.id = ${activityResults.petId}
+        AND gp.is_guest = true
+    )`,
   ];
   if (startedAt) conditions.push(gte(activityResults.createdAt, startedAt));
 
