@@ -43,6 +43,11 @@ import type { ServerFrame } from '@clawville/shared';
 import { v4 as uuidv4 } from 'uuid';
 import { activityReplayLog } from './activity-replay-log';
 import type { ActivityReplayParticipantsJson } from '@clawville/database';
+import {
+  issueRewardsForRoom,
+  type SimResultRow,
+  type IssuedResult,
+} from './reward-pipeline';
 
 // ─── Constants (backend §1.5, §1.6) ────────────────────────────────────────
 
@@ -126,6 +131,27 @@ class ActivityRoomManager {
    * RESULTS→GC, ABORTED, ABORTED_CRASH). Chunk #10.
    */
   private evictionFn: ((room: Room) => void) | null = null;
+
+  /**
+   * Per-activity sim → placement-list resolver. Registered at boot from
+   * `apps/api/src/index.ts` so the room manager can reach the sim's
+   * `computeResults()` without importing the sim directly (avoids the
+   * circular-dep + lets future activities plug their own resolvers in).
+   *
+   * Returns an empty array when the activity has no registered resolver
+   * (e.g. a sim wasn't started for this room — defensive). The reward
+   * pipeline treats an empty list as "nothing to credit".
+   */
+  private computeResultsFn: ((room: Room) => SimResultRow[]) | null = null;
+
+  /**
+   * Latest issued-rewards snapshot per room. Populated immediately after
+   * `issueRewardsForRoom` succeeds inside `persistResultsTransition`. The
+   * REST `/results` route reads from here while the room is still in the
+   * RESULTS retention window, then falls back to a DB query once the
+   * room GCs.
+   */
+  private lastResults = new Map<string, IssuedResult[]>();
 
   private sweeperHandle: ReturnType<typeof setInterval> | null = null;
 
@@ -446,6 +472,21 @@ class ActivityRoomManager {
     this.evictionFn = fn;
   }
 
+  /**
+   * Register the sim's placement resolver. Called at boot from index.ts
+   * with a function that dispatches on `room.activityId` to the right
+   * sim's `computeResults()`. Until registered, RESULTS transitions
+   * skip reward issuance (logged as a warning so the gap surfaces).
+   */
+  setComputeResultsFn(fn: (room: Room) => SimResultRow[]): void {
+    this.computeResultsFn = fn;
+  }
+
+  /** Read-back of the latest issued result list for a room (chunk #7). */
+  getLastResults(roomId: string): IssuedResult[] | undefined {
+    return this.lastResults.get(roomId);
+  }
+
   /** Boot-time: start the sweeper interval. Safe to call repeatedly. */
   startSweeper(): void {
     if (this.sweeperHandle) return;
@@ -518,6 +559,7 @@ class ActivityRoomManager {
     this.rooms.clear();
     this.shortCodeIndex.clear();
     this.playerToRoom.clear();
+    this.lastResults.clear();
   }
 
   // ─── Persistence helpers ────────────────────────────────────────────────
@@ -610,19 +652,49 @@ class ActivityRoomManager {
       });
     }
 
-    // TODO chunk #7: derive placements + write activity_results rows +
-    // credit ClawTokens via the existing ledger helper + emit one
-    // `activity.match.placed` event per participant. That whole settlement
-    // block is the reward pipeline's chunk.
+    // Chunk #7 — reward issuance pipeline. The sim resolver yields the
+    // placement list (one entry per participant including bots); the
+    // reward pipeline writes `activity_results` rows + credits non-bot
+    // tokens + emits `activity.match.placed` events, all in one composed
+    // DB transaction. Bot filtering (subjectType==='bot' → tokens=0,
+    // leaderboardPoints=0, no creditClawTokens) lives inside the
+    // pipeline per the chunk #10 carve-out.
     //
-    // Chunk #10 carve-out — when chunk #7 lands, the reward issuance
-    // path MUST filter `participant.subjectType === 'bot'` BEFORE
-    // crediting ClawTokens or leaderboard points. Bots have system-user
-    // wallets and their participation is for solo-queue backfill only;
-    // crediting them silently inflates the system user's balance and
-    // pollutes the free-agent leaderboard. `activity_results` rows for
-    // bots ARE still written (placement display) but with `tokens=0`
-    // and `leaderboard_points=0`. Per backend §8.4.
+    // Throws are caught here (not bubbled) so a reward-issue failure
+    // doesn't roll back the FSM transition. The room still completes;
+    // the failure surfaces via alertError + a warning log so we can
+    // manually compensate. Per backend §5.1 — rewards must be best-effort
+    // at the FSM boundary because the sim already broadcast the round
+    // outcome to clients before the manager observed it.
+    let issued: IssuedResult[] = [];
+    if (this.computeResultsFn) {
+      try {
+        const simResults = this.computeResultsFn(room);
+        if (simResults.length === 0) {
+          console.warn(
+            `[activity-room-manager] no sim results for room ${room.id} — skipping reward issuance`,
+          );
+        } else {
+          issued = await issueRewardsForRoom({ room, simResults });
+          this.lastResults.set(room.id, issued);
+        }
+      } catch (err) {
+        console.error(
+          '[activity-room-manager] reward issuance failed:',
+          err,
+        );
+        void alertError({
+          severity: 'critical',
+          source: 'activity-room-manager',
+          message: `Reward issuance failed for room ${room.id}`,
+          context: { activityId: room.activityId, error: String(err) },
+        });
+      }
+    } else {
+      console.warn(
+        '[activity-room-manager] no computeResultsFn registered — rewards not issued',
+      );
+    }
 
     void logEvent({
       eventType: 'activity.match.ended',
@@ -630,10 +702,16 @@ class ActivityRoomManager {
         activityId: room.activityId,
         roomId: room.id,
         durationMs: (room.endedAt ?? Date.now()) - (room.startedAt ?? room.createdAt),
-        // `complete` is the default — chunk #7 derives the actual reason.
+        // `complete` is the default — sim end conditions other than
+        // 'complete' (forfeit / aborted) currently route through the
+        // ABORTED FSM transitions, not RESULTS.
         reason: 'complete',
       },
     });
+    // Re-export the issued count for callers that want the broadcast
+    // payload (chunk #7 — no current consumer; lastResults map serves
+    // the REST /results route + future WS rewardPreview enrichment).
+    void issued;
   }
 
   private async persistGcTransition(room: Room): Promise<void> {
@@ -694,6 +772,12 @@ class ActivityRoomManager {
     }
     this.rooms.delete(room.id);
     this.shortCodeIndex.delete(room.shortCode);
+    // Chunk #7 — release the in-memory result snapshot. The DB row is
+    // the long-term source of truth; this map is only populated for the
+    // RESULTS retention window so the REST `/results` route can return
+    // breakdown metadata without a join. After GC, the route falls back
+    // to the DB.
+    this.lastResults.delete(room.id);
     for (const petId of room.participants.keys()) {
       // Only clear the index if it still points at this room — concurrent
       // requeue can have already updated it.

@@ -318,6 +318,13 @@ interface AgentScoreBreakdown {
   collaborations: number;
   skill_fetches: number;
   sessions: number;
+  // Q2 chunk #7 — per-placement activity match counts. Driven by
+  // `activity.match.placed` events; bots filtered out at SQL level so
+  // these only reflect human + user-agent contributions.
+  activity_wins: number;
+  activity_silver: number;
+  activity_bronze: number;
+  activity_other: number;
 }
 
 interface AgentLeaderboardEntry {
@@ -346,6 +353,24 @@ const AGENT_SCORE_WEIGHTS = {
   skillFetch: 3,        // knowledge fetched
   session: 1,           // cheap participation bonus
   identityIssued: 5,    // Phase 5.1 onboarding bonus, capped via MAX below
+} as const;
+
+/**
+ * Q2 Activity Portals — placement-tier weights for `activity.match.placed`
+ * events (chunk #7). Below collab (25) intentionally — winning matches
+ * < contributing knowledge transfer; a 1st-place match (30) > a single
+ * teacher chat (5). See backend §6.3 + Brand Identity §1.
+ *
+ * Bots are filtered at SQL level via `payload->>'subjectType' != 'bot'`
+ * — bot rows DO emit `activity.match.placed` for telemetry, but their
+ * agentId is null + subjectType='bot' so a non-bot filter excludes them
+ * from leaderboard credit. Per chunk #10 carve-out.
+ */
+const ACTIVITY_PLACEMENT_WEIGHTS = {
+  1: 30,
+  2: 15,
+  3: 8,
+  default: 2,
 } as const;
 
 const AGENT_CACHE_TTL_MS = 60_000;
@@ -401,6 +426,7 @@ async function buildAgentSnapshot(
   // Use `sql.raw` for the interval because drizzle's bound-parameter path
   // doesn't support interval literals directly, and we've whitelisted the
   // `interval` string above.
+  const A = ACTIVITY_PLACEMENT_WEIGHTS;
   const aggRows = await db.execute<{
     agent_id: string;
     building_visits: number;
@@ -409,6 +435,10 @@ async function buildAgentSnapshot(
     skill_fetches: number;
     sessions: number;
     onboarded: number;
+    activity_wins: number;
+    activity_silver: number;
+    activity_bronze: number;
+    activity_other: number;
     score: number;
   }>(sql`
     SELECT
@@ -419,6 +449,29 @@ async function buildAgentSnapshot(
       COUNT(*) FILTER (WHERE event_type = 'skill_md.fetched')::int          AS skill_fetches,
       COUNT(DISTINCT session_id) FILTER (WHERE event_type = 'agent.connected')::int AS sessions,
       MAX(CASE WHEN event_type = 'identity.issued' THEN 1 ELSE 0 END)::int  AS onboarded,
+      -- Q2 chunk #7 — per-placement counts for activity.match.placed.
+      -- Bots are excluded via the subjectType filter so the agent
+      -- leaderboard only credits human-bound or user-agent participants.
+      COUNT(*) FILTER (
+        WHERE event_type = 'activity.match.placed'
+          AND payload->>'placement' = '1'
+          AND coalesce(payload->>'subjectType','') <> 'bot'
+      )::int AS activity_wins,
+      COUNT(*) FILTER (
+        WHERE event_type = 'activity.match.placed'
+          AND payload->>'placement' = '2'
+          AND coalesce(payload->>'subjectType','') <> 'bot'
+      )::int AS activity_silver,
+      COUNT(*) FILTER (
+        WHERE event_type = 'activity.match.placed'
+          AND payload->>'placement' = '3'
+          AND coalesce(payload->>'subjectType','') <> 'bot'
+      )::int AS activity_bronze,
+      COUNT(*) FILTER (
+        WHERE event_type = 'activity.match.placed'
+          AND payload->>'placement' NOT IN ('1','2','3')
+          AND coalesce(payload->>'subjectType','') <> 'bot'
+      )::int AS activity_other,
       (
         COUNT(*) FILTER (WHERE event_type = 'building.visited')          * ${W.buildingVisit}
         + COUNT(*) FILTER (WHERE event_type = 'agent.chat.turn')         * ${W.teacherChat}
@@ -426,6 +479,26 @@ async function buildAgentSnapshot(
         + COUNT(*) FILTER (WHERE event_type = 'skill_md.fetched')        * ${W.skillFetch}
         + COUNT(DISTINCT session_id) FILTER (WHERE event_type = 'agent.connected') * ${W.session}
         + MAX(CASE WHEN event_type = 'identity.issued' THEN ${W.identityIssued} ELSE 0 END)
+        + COUNT(*) FILTER (
+            WHERE event_type = 'activity.match.placed'
+              AND payload->>'placement' = '1'
+              AND coalesce(payload->>'subjectType','') <> 'bot'
+          ) * ${A[1]}
+        + COUNT(*) FILTER (
+            WHERE event_type = 'activity.match.placed'
+              AND payload->>'placement' = '2'
+              AND coalesce(payload->>'subjectType','') <> 'bot'
+          ) * ${A[2]}
+        + COUNT(*) FILTER (
+            WHERE event_type = 'activity.match.placed'
+              AND payload->>'placement' = '3'
+              AND coalesce(payload->>'subjectType','') <> 'bot'
+          ) * ${A[3]}
+        + COUNT(*) FILTER (
+            WHERE event_type = 'activity.match.placed'
+              AND payload->>'placement' NOT IN ('1','2','3')
+              AND coalesce(payload->>'subjectType','') <> 'bot'
+          ) * ${A.default}
       )::int AS score
     FROM events
     WHERE agent_id IS NOT NULL
@@ -438,6 +511,10 @@ async function buildAgentSnapshot(
       + COUNT(*) FILTER (WHERE event_type = 'skill_md.fetched')        * ${W.skillFetch}
       + COUNT(DISTINCT session_id) FILTER (WHERE event_type = 'agent.connected') * ${W.session}
       + MAX(CASE WHEN event_type = 'identity.issued' THEN ${W.identityIssued} ELSE 0 END)
+      + COUNT(*) FILTER (
+          WHERE event_type = 'activity.match.placed'
+            AND coalesce(payload->>'subjectType','') <> 'bot'
+        ) * ${A.default}
     ) > 0
     ORDER BY score DESC
   `);
@@ -517,6 +594,10 @@ async function buildAgentSnapshot(
         collaborations: Number(r.collaborations) || 0,
         skill_fetches: Number(r.skill_fetches) || 0,
         sessions: Number(r.sessions) || 0,
+        activity_wins: Number(r.activity_wins) || 0,
+        activity_silver: Number(r.activity_silver) || 0,
+        activity_bronze: Number(r.activity_bronze) || 0,
+        activity_other: Number(r.activity_other) || 0,
       },
     };
   });

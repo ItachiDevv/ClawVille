@@ -58,6 +58,16 @@ export const activityResults = pgTable(
     tokensAwarded: integer('tokens_awarded').notNull().default(0),
     leaderboardPoints: integer('leaderboard_points').notNull().default(0),
     isPersonalBest: boolean('is_personal_best').notNull().default(false),
+    /**
+     * Chunk #7 — set when the result owner has acknowledged seeing this
+     * row in the recent-results UX (POST
+     * /api/activities/results/:resultId/acknowledge). Idempotent — second
+     * call is a no-op. Drives the "new results!" badge.
+     *
+     * Nullable + defaults missing so the additive 0003 migration backfills
+     * existing rows as "unseen".
+     */
+    acknowledgedAt: timestamp('acknowledged_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({

@@ -35,6 +35,10 @@ mock.module('@clawville/database', () => ({
   activityParties: { id: 'id' },
   activityPartyMembers: { partyId: 'party_id' },
   activityReplays: { id: 'id' },
+  // Chunk #7 — reward pipeline imports these.
+  activityResults: { id: 'id', petId: 'pet_id', activityId: 'activity_id' },
+  pets: { id: 'id', flags: 'flags' },
+  clawTokenTransactions: { id: 'id' },
 }));
 
 mock.module('../../alert-error', () => ({
@@ -43,7 +47,15 @@ mock.module('../../alert-error', () => ({
 
 mock.module('../../event-logger', () => ({
   logEvent: () => Promise.resolve(),
-  ACTIVITY_EVENT_TYPES: {},
+  ACTIVITY_EVENT_TYPES: { MATCH_PLACED: 'activity.match.placed' },
+}));
+
+// Chunk #7 — claw-token-ledger is imported transitively via the reward
+// pipeline. Stub it so the room-manager tests that drive RESULTS
+// transitions don't try to hit the real ledger SQL.
+mock.module('../../claw-token-ledger', () => ({
+  creditClawTokens: () =>
+    Promise.resolve({ balanceAfter: 100, ledgerId: 'ledger-1' }),
 }));
 
 // Chunk #3 wired the replay log into the room manager's RESULTS
