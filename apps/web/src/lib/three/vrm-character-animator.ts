@@ -178,9 +178,16 @@ export class VRMCharacterAnimator {
       // skeleton permanently disabled. Low risk in ClawVille given our architecture
       // (one animator per VRM instance, always disposed before a new one is created),
       // but flag it in dev mode so double-patching is visible immediately.
-      // (Sakura review finding #2)
+      //
+      // Dev-mode guard portability (Sakura review finding #1): `typeof process`
+      // check short-circuits cleanly in environments where `process` isn't defined
+      // (pure browser without a Node polyfill, Deno, etc.). Without it, consumers
+      // outside Next.js's build-time substitution would either ReferenceError or
+      // leak the warn when NODE_ENV is unset. Next.js still DCE-strips this
+      // branch in client production bundles because the substitution happens
+      // before the typeof check is evaluated.
       if (sm.skeleton.update !== THREE.Skeleton.prototype.update &&
-          process.env.NODE_ENV !== 'production') {
+          typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production') {
         console.warn(
           '[VRMCharacterAnimator] skeleton.update already patched — double-patch risk;' +
           ' ensure the previous animator was disposed before constructing a new one.'
