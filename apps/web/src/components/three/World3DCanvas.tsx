@@ -35,7 +35,7 @@ import ClickToMove from '@/lib/three/click-to-move';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 import JumpTicker from '@/lib/three/jump-ticker';
 import { jumpState } from '@/lib/three/jump-state';
-import { useGameStore } from '@/stores/game';
+import { useGameStore, petPositionRef } from '@/stores/game';
 import { useNpcStore } from '@/stores/npc';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 
@@ -275,9 +275,11 @@ function FPSFollowCamera({
     const controls = controlsRef.current;
     if (!controls) return;
 
-    const { controlMode, petPosition, possessedNpcId } = useGameStore.getState();
+    const { controlMode, possessedNpcId } = useGameStore.getState();
 
-    // Determine the character's 2D game-space position
+    // Determine the character's 2D game-space position.
+    // Use petPositionRef (module-scope, zero React overhead) for the player path —
+    // the ref is always up-to-date at 60 Hz even when the reactive store is throttled.
     let gameX: number;
     let gameY: number;
 
@@ -288,8 +290,8 @@ function FPSFollowCamera({
       gameY = npc.y;
     } else {
       // 'player' or 'autonomous' — follow player pet
-      gameX = petPosition.x;
-      gameY = petPosition.y;
+      gameX = petPositionRef.x;
+      gameY = petPositionRef.y;
     }
 
     // Convert to Three.js world coordinates (2D game plane → XZ)
@@ -409,9 +411,10 @@ function MinimapPositionTracker() {
     // Clamp to map bounds so stray camera positions don't break the minimap
     mapX = Math.max(0, Math.min(MAP_WIDTH, mapX));
     mapY = Math.max(0, Math.min(MAP_HEIGHT, mapY));
+    // Use petPositionRef for the diff-check — it's always current at 60 Hz.
     if (
-      Math.abs(mapX - store.petPosition.x) > 2 ||
-      Math.abs(mapY - store.petPosition.y) > 2
+      Math.abs(mapX - petPositionRef.x) > 2 ||
+      Math.abs(mapY - petPositionRef.y) > 2
     ) {
       store.setPetPosition(mapX, mapY);
     }

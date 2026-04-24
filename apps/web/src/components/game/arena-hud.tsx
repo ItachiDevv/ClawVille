@@ -1,11 +1,16 @@
 'use client';
 
 import { useNpcStore } from '@/stores/npc';
+import { useShallow } from 'zustand/react/shallow';
 
 export default function ArenaHUD() {
-  const npcs = useNpcStore((s) => s.npcs);
-  const combatLog = useNpcStore((s) => s.combatLog);
-  const connected = useNpcStore((s) => s.connected);
+  // Consolidate into a single shallow selector — avoids three separate
+  // subscriptions and prevents re-renders when unrelated store fields change.
+  // useShallow does element-wise comparison so array identity changes from
+  // SSE ticks don't trigger re-renders when the content is unchanged.
+  const { npcs, combatLog, connected } = useNpcStore(
+    useShallow((s) => ({ npcs: s.npcs, combatLog: s.combatLog, connected: s.connected }))
+  );
 
   // Leaderboard: sort by inventory size (loot), then HP
   const leaderboard = [...npcs]

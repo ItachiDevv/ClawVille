@@ -291,7 +291,11 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
       }
       const serverIsIdle = n.direction === 'idle' && !n.inCombat && !n.inConversation;
       const useClientPos = serverIsIdle && prev;
-      return {
+      // Build the candidate object first, then check identity against prev.
+      // If every field is equal we return the PREVIOUS reference — this preserves
+      // React.memo's shallow-prop bailout in GLBNpcMesh / VRMNpcMesh and prevents
+      // 13-18 needless re-renders per SSE tick when nothing actually changed.
+      const candidate: NpcSpriteState = {
         id: n.id,
         name: n.name,
         x: useClientPos ? prev.x : n.x,
@@ -313,6 +317,11 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
         combatActionAt: n.combatActionAt ?? 0,
         facingAngle: prev?.facingAngle ?? null,
       };
+      // Return the previous reference if nothing changed (identity preservation).
+      if (prev && npcFieldsEqual(prev, candidate)) {
+        return prev;
+      }
+      return candidate;
     });
 
     // Process conversations into chat bubbles
@@ -470,6 +479,41 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
     set((s) => ({ npcs: s.npcs.filter((n) => n.id !== PLAYER_NPC_ID) }));
   },
 }));
+
+// ---------------------------------------------------------------------------
+// B7 — NPC object identity helper
+// Compare every field that drives rendering in GLBNpcMesh / VRMNpcMesh.
+// Used by updateFromSnapshot to preserve object references when nothing changed,
+// restoring React.memo's shallow-prop bailout on unchanged NPCs.
+// facingAngle is intentionally excluded — it is set by NpcController
+// (client-side) and is NOT in the server snapshot; server path always keeps
+// the prev value so it never changes from snapshot processing.
+// ---------------------------------------------------------------------------
+function npcFieldsEqual(a: NpcSpriteState, b: NpcSpriteState): boolean {
+  return (
+    Object.is(a.id, b.id) &&
+    Object.is(a.name, b.name) &&
+    Object.is(a.x, b.x) &&
+    Object.is(a.y, b.y) &&
+    Object.is(a.prevX, b.prevX) &&
+    Object.is(a.prevY, b.prevY) &&
+    Object.is(a.direction, b.direction) &&
+    Object.is(a.species, b.species) &&
+    Object.is(a.color, b.color) &&
+    Object.is(a.hp, b.hp) &&
+    Object.is(a.maxHp, b.maxHp) &&
+    Object.is(a.isDead, b.isDead) &&
+    Object.is(a.hasSword, b.hasSword) &&
+    Object.is(a.inCombat, b.inCombat) &&
+    Object.is(a.inConversation, b.inConversation) &&
+    Object.is(a.isOpenClaw, b.isOpenClaw) &&
+    Object.is(a.combatAction, b.combatAction) &&
+    Object.is(a.combatActionAt, b.combatActionAt) &&
+    // inventory: compare length then each item (string[])
+    a.inventory.length === b.inventory.length &&
+    a.inventory.every((item, i) => item === b.inventory[i])
+  );
+}
 
 // Auto-start demo wandering
 if (typeof window !== 'undefined') {
