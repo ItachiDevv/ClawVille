@@ -20,6 +20,7 @@
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three-stdlib';
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 import { MToonMaterialLoaderPlugin } from '@pixiv/three-vrm-materials-mtoon';
 import type { VRM } from '@pixiv/three-vrm';
@@ -94,6 +95,15 @@ let _loader: GLTFLoader | null = null;
 function getLoader(): GLTFLoader {
   if (_loader) return _loader;
   _loader = new GLTFLoader();
+  // VRM files may ship with EXT_meshopt_compression buffers (the asset
+  // pipeline runs gltfpack -cc for skinned meshes). Without this line
+  // GLTFLoader throws "setMeshoptDecoder must be called before loading
+  // compressed files" at loadBufferView, which blocks the whole /game
+  // route and shows Next's "This page couldn't load" error page.
+  // three-stdlib's MeshoptDecoder is a callable that returns the decoder
+  // object; GLTFLoader accepts either, but three-stdlib's signature is
+  // `() => API` so we invoke it.
+  _loader.setMeshoptDecoder(MeshoptDecoder());
   _loader.register((parser) => new VRMLoaderPlugin(parser, {
     mtoonMaterialPlugin: new MToonMaterialLoaderPlugin(parser),
   }));
