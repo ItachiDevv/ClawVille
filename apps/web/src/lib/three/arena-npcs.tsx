@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useMemo, useEffect, memo, Suspense } from 'react';
+import { useRef, useMemo, useEffect, useLayoutEffect, memo, Suspense } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF, Html } from '@react-three/drei';
 import * as THREE from 'three';
@@ -802,13 +802,37 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // expressionManager drives facial morph targets (blink, lipsync, etc.).
   // Neither is used for wandering Milady NPCs — they don't speak or look at the
   // player. Disabling them skips their per-frame update work inside vrm.update().
-  // Three-vrm checks for truthiness before calling each module, so setting to
-  // undefined/null is safe at runtime. Does NOT affect the player pet
-  // (player-pet.tsx is a separate component; this effect is scoped to VRMNpcMesh).
-  useEffect(() => {
+  //
+  // null vs undefined: three-vrm guards calls with `if (this.lookAt)` (truthiness),
+  // so both null and undefined are safe at runtime. null is preferred here — it
+  // explicitly signals "deliberately cleared" rather than "never assigned", and
+  // aligns more clearly with TypeScript's optional-field semantics. Neither
+  // VRMLookAt nor VRMExpressionManager expose a dispose() method in three-vrm 3.5.2
+  // (verified against the bundled module source — no such method exists on either class).
+  //
+  // VRM cache sharing constraint (extends the invariant at line ~769 below):
+  // vrm-loader caches one VRM instance per path. This effect mutates lookAt and
+  // expressionManager on the shared instance. player-pet.tsx (PlayerPetVRMInner)
+  // uses the same cache. Therefore: if a player's selected VRM path matches any
+  // wandering NPC path (official_2/3/4/7/8), the player-pet would share the same
+  // VRM instance and our null-assignment would apply to it too. Today player-pet.tsx
+  // does NOT use lookAt or expressionManager anywhere, so this is functionally moot
+  // for current code — but if lookAt is ever added to player-pet, the path-collision
+  // constraint must be enforced. The existing comment at ~line 769 already bans two
+  // VRMNpcMesh components from sharing a path; the same ban extends to player-pet.
+  // (Sakura review finding #3 and #4)
+  //
+  // useLayoutEffect (not useEffect): runs synchronously after React commit, before
+  // the browser paints. This eliminates the 1-frame window where vrm.update() could
+  // run lookAt/expressionManager BEFORE the null-assignment took effect.
+  // With useEffect, the VRM's update() could fire in the R3F frame loop (which runs
+  // inside a rAF before the microtask queue drains useEffect) and process lookAt for
+  // one frame. useLayoutEffect runs before the browser hands control to the RAF.
+  // (Sakura review finding #4)
+  useLayoutEffect(() => {
     if (!vrm) return;
-    (vrm as any).lookAt = undefined;
-    (vrm as any).expressionManager = undefined;
+    (vrm as any).lookAt = null;
+    (vrm as any).expressionManager = null;
   }, [vrm]);
 
   // Per-instance VRM animator — each NPC gets its own AnimationMixer

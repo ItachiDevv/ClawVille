@@ -143,8 +143,13 @@ export class VRMCharacterAnimator {
   //   replace each mesh's skeleton.update with a no-op, cache the original,
   //   and invoke it once per unique skeleton per tick from our update methods.
   // Declared here; populated in constructor after VRM is available.
+  //
+  // Map<Skeleton, originalUpdateFn> — keyed by skeleton object so that dispose()
+  // can restore each skeleton's update function without relying on traversal order
+  // being stable. An Array would misalign if any scene graph mutation (reparenting,
+  // node removal) happened between construction and disposal (Sakura review finding #1).
   // Reference: https://github.com/VerseEngine/three-avatar/blob/main/src/avatar.ts#L614
-  private _skeletonUpdateFns: Array<() => void> = [];
+  private _skeletonUpdateFns: Map<THREE.Skeleton, () => void> = new Map();
 
   constructor(vrm: VRM) {
     this.vrm = vrm;
@@ -158,19 +163,31 @@ export class VRMCharacterAnimator {
     // Wire skeleton batching: collect one update fn per unique skeleton,
     // replace each SkinnedMesh's skeleton.update with a no-op so the renderer
     // doesn't call it N times per frame (once per mesh that shares the skeleton).
-    const seenSkeletons = new Set<THREE.Skeleton>();
     vrm.scene.traverse((obj) => {
       const sm = obj as THREE.SkinnedMesh;
       if (!sm.isSkinnedMesh || !sm.skeleton) return;
-      if (seenSkeletons.has(sm.skeleton)) {
+      if (this._skeletonUpdateFns.has(sm.skeleton)) {
         // Second+ mesh sharing this skeleton — no-op its update too so the
         // renderer skips it, but we already have the original fn cached.
         sm.skeleton.update = () => {};
         return;
       }
-      seenSkeletons.add(sm.skeleton);
+      // Assumption: skeleton.update has NOT been monkey-patched by another system.
+      // If it has (e.g. a prior VRMCharacterAnimator that was not disposed), we will
+      // cache the already-patched no-op and restore it on dispose — leaving the
+      // skeleton permanently disabled. Low risk in ClawVille given our architecture
+      // (one animator per VRM instance, always disposed before a new one is created),
+      // but flag it in dev mode so double-patching is visible immediately.
+      // (Sakura review finding #2)
+      if (sm.skeleton.update !== THREE.Skeleton.prototype.update &&
+          process.env.NODE_ENV !== 'production') {
+        console.warn(
+          '[VRMCharacterAnimator] skeleton.update already patched — double-patch risk;' +
+          ' ensure the previous animator was disposed before constructing a new one.'
+        );
+      }
       const originalUpdate = sm.skeleton.update.bind(sm.skeleton);
-      this._skeletonUpdateFns.push(originalUpdate);
+      this._skeletonUpdateFns.set(sm.skeleton, originalUpdate);
       sm.skeleton.update = () => {}; // renderer skips; we call manually below
     });
   }
@@ -275,7 +292,7 @@ export class VRMCharacterAnimator {
     this.mixer.update(delta);
     // Flush batched skeleton.update() once per unique skeleton (Verse Engine pattern).
     // The renderer's per-mesh calls are no-ops; we run each unique skeleton exactly once.
-    for (const fn of this._skeletonUpdateFns) fn();
+    for (const fn of this._skeletonUpdateFns.values()) fn();
     this.vrm.update(delta);
   }
 
@@ -333,7 +350,7 @@ export class VRMCharacterAnimator {
     this.mixer.update(delta);
     // Flush batched skeleton.update() once per unique skeleton (Verse Engine pattern).
     // Must run after mixer.update() so bone world matrices are current before draw.
-    for (const fn of this._skeletonUpdateFns) fn();
+    for (const fn of this._skeletonUpdateFns.values()) fn();
     // Note: vrm.update() intentionally skipped — caller must call updateSpringOnly()
     // at the desired spring-bone rate (e.g. every 2nd frame for idle NPCs).
   }
@@ -363,23 +380,14 @@ export class VRMCharacterAnimator {
     this.mixer.stopAllAction();
     this.mixer.uncacheRoot(this.vrm.scene);
 
-    // Restore skeleton.update on all SkinnedMesh nodes so the VRM is safe
-    // if a new animator is constructed from the same VRM instance (hot-reload
-    // or re-mount). The restored fns are the original bound methods captured
-    // in the constructor.
-    let fnIdx = 0;
-    const seenSkeletons = new Set<THREE.Skeleton>();
-    this.vrm.scene.traverse((obj) => {
-      const sm = obj as THREE.SkinnedMesh;
-      if (!sm.isSkinnedMesh || !sm.skeleton) return;
-      if (seenSkeletons.has(sm.skeleton)) return;
-      seenSkeletons.add(sm.skeleton);
-      if (this._skeletonUpdateFns[fnIdx]) {
-        sm.skeleton.update = this._skeletonUpdateFns[fnIdx]!;
-        fnIdx++;
-      }
+    // Restore skeleton.update on all skeletons that were patched in the constructor.
+    // Uses the Map<Skeleton, originalFn> directly — no second scene traversal, no
+    // index alignment, safe regardless of any scene graph mutations since construction.
+    // (Sakura review finding #1)
+    this._skeletonUpdateFns.forEach((fn, skel) => {
+      skel.update = fn;
     });
-    this._skeletonUpdateFns = [];
+    this._skeletonUpdateFns.clear();
 
     // VRMUtils.deepDispose on the VRM scene is the caller's responsibility
     // (matches the pattern used in player-pet.tsx for GLB material disposal)
