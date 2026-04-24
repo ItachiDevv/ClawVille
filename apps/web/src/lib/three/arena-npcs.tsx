@@ -964,7 +964,13 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const velMagSq = vx * vx + vz * vz;
     let targetRot: number | null = null;
     if (velMagSq > 0.1 && d.direction !== 'idle') {
-      targetRot = Math.atan2(-vx, -vz);
+      // Math note (verified live 2026-04-25): the Milady VRMs in this project are
+      // rigged with Mixamo bones facing -Z natively — opposite of the VRM 0.x spec
+      // (+Z forward). rotateVRM0() then over-rotates them, so body world-forward at
+      // outer.rotation.y=θ ends up at (sin θ, cos θ), not (-sin θ, -cos θ).
+      // Solving for body forward = (vx, vz): θ = atan2(vx, vz). User's red/purple
+      // arrow screenshot proved the previous atan2(-vx, -vz) flipped 180°.
+      targetRot = Math.atan2(vx, vz);
     }
     if (targetRot != null) {
       let diff = targetRot - currentRotY.current;
