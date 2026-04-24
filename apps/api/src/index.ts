@@ -320,6 +320,26 @@ startSimulation(arenaMode);
     activityRoomManager.setEvictionFn((room) => {
       botPool.releaseRoom(room.id);
     });
+    // Chunk #7 — register the per-activity placement resolver so the
+    // room manager's RESULTS transition can pull placements without
+    // importing each sim directly. Future activities (Reef Race, …)
+    // plug in additional cases here.
+    activityRoomManager.setComputeResultsFn((room) => {
+      switch (room.activityId) {
+        case 'bumper-shells':
+          return bumperShellsSim
+            .computeResults(room.id)
+            .map((r) => ({
+              petId: r.petId,
+              placement: r.placement,
+              score: r.score,
+              scoreMs: null,
+            }));
+        // case 'reef-race': return reefRaceSim.computeResults(...).map(...)
+        default:
+          return [];
+      }
+    });
     // Sim broadcast → WS hub, with snapshot frames routed through the
     // backpressure-aware path.
     bumperShellsSim.setBroadcastFn((roomId, frame) => {
