@@ -268,7 +268,7 @@ Object.values(SPECIES_MODEL).forEach(({ path }) => useGLTF.preload(path));
 // frozen pose. Now bones animate correctly and the extent is larger — values
 // reduced to ~TARGET_NPC_HEIGHT=45 Y extent with Milady-comparable footprint.
 const SPECIES_WANDER_SCALE_OVERRIDE: Partial<Record<string, number>> = {
-  hermitcrab: 4,   // was 16 — shell-size crab, walked to ~5× too big after clone fix
+  hermitcrab: 2,   // was 4 — user reports still "HUGE" after SkeletonUtils skeleton exposed full shell extent
   sweet_crab:  7.6, // unchanged — bbox 56×53×67 reads acceptable in-game
   lobster:     22, // was computed 40.17 — 278wu width too wide; 22 yields ~150wu width
 };
@@ -921,15 +921,18 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // keeps body facing locked to movement direction at all times.
     //
     // VRM faces -Z at rotation.y = 0 (rotateVRM0 applied in vrm-loader).
-    // For world velocity (vx, vz), target rotation = atan2(vx, -vz) places
-    // the -Z forward along the velocity vector.
+    // Three.js right-hand rotation: +rotation.y is CCW viewed from above.
+    // For the -Z-facing VRM to face velocity direction (vx, 0, vz), we need
+    // rotation.y = atan2(-vx, -vz). Negation on vx is essential — previous
+    // atan2(vx, -vz) put the VRM facing the REVERSE of travel direction on
+    // any east/west component (user reported "Miladys walk backwards" 2026-04-24).
     const vx = currentPos.current.x - prevX;
     const vz = currentPos.current.z - prevZ;
     const velMagSq = vx * vx + vz * vz;
     // Movement threshold: need at least 0.5wu/frame of motion to trust velocity
     // as a facing signal. Below that it's likely sub-pixel jitter during idle.
     if (velMagSq > 0.25 && d.direction !== 'idle') {
-      const targetRot = Math.atan2(vx, -vz);
+      const targetRot = Math.atan2(-vx, -vz);
       let diff = targetRot - currentRotY.current;
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
