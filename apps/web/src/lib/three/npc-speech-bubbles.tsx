@@ -41,14 +41,17 @@ const SpeechBubble = memo(function SpeechBubble({ npc, bubble }: SpeechBubblePro
 
   return (
     <group position={[worldX, BUBBLE_Y, worldZ]}>
-      {/* distanceFactor is REQUIRED on speech bubbles — without it drei's
-          transform chain squeezes the wrapper and our inner `maxWidth: 180`
-          no longer holds, producing 1-char-per-line wrapping as seen in
-          bug report 2026-04-23. The per-frame CSS recompute cost is
-          negligible here (MAX_BUBBLES=10 concurrent, transient). Keep it. */}
+      {/* NO distanceFactor. Earlier version set distanceFactor={300} claiming
+          it was required to preserve maxWidth — in practice the opposite was
+          true. drei computes `scale = distanceFactor / cameraDistance`. At
+          the default spectate camera ~1217wu from town center, scale ≈ 0.25,
+          which shrunk the inner `maxWidth: 180` to ~45px visual — narrow
+          enough to force 1-char-per-line wrapping (the tall skinny column
+          the user reported 2026-04-24). Constant CSS size (no
+          distanceFactor) matches the NPC name-label pattern and keeps the
+          bubble readable at all camera distances. */}
       <Html
         center
-        distanceFactor={300}
         style={{ pointerEvents: 'none' }}
         zIndexRange={[10, 100]}
       >
