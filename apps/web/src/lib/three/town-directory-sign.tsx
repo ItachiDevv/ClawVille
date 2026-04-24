@@ -3,10 +3,11 @@
 /**
  * TownDirectorySign — wooden signboard at town center.
  *
- * Text uses the SAME pattern as building labels in arena-buildings.tsx:
- * drei <Html> (no transform, no distanceFactor) with a compact
- * div + background. Renders as screen-space DOM at the 3D position,
- * guaranteed to show.
+ * The plank face IS the text — a PlaneGeometry with the wood+text PNG
+ * as its material map. The text is physically part of the sign, not a
+ * floating overlay. Posts are simple wood-coloured BoxGeometry.
+ *
+ * Requires <Suspense> wrapper at mount site (useTexture suspends).
  *
  * GPU constraints (Iris Xe invariants):
  *   - NO drei Text/Billboard
@@ -14,8 +15,8 @@
  *   - NO per-frame allocations
  */
 
-import { memo } from 'react';
-import { Html } from '@react-three/drei';
+import { memo, useMemo } from 'react';
+import { useTexture } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
 
 const POST_W = 20;
@@ -23,10 +24,13 @@ const POST_H = 420;
 const POST_D = 20;
 const POST_SPACING = 420;
 
-const PLANK_W = POST_SPACING + POST_W + 80;
-const PLANK_H = 240;
-const PLANK_D = 12;
+// Plank face — 2:1 aspect to match the PNG's 1024x512.
+const PLANK_W = 560;
+const PLANK_H = 280;
 const PLANK_Y = POST_H - PLANK_H / 2;
+
+// Small back-plate behind the face so the sign has some depth
+const BACKING_D = 10;
 
 const SIGN_X = 0;
 const SIGN_Y = 150;
@@ -35,56 +39,51 @@ const SIGN_Z = -120;
 const WOOD_COLOR = 0x7c4a1b;
 
 const postGeo = new THREE.BoxGeometry(POST_W, POST_H, POST_D);
-const plankGeo = new THREE.BoxGeometry(PLANK_W, PLANK_H, PLANK_D);
+const plankBackGeo = new THREE.BoxGeometry(PLANK_W, PLANK_H, BACKING_D);
+const plankFaceGeo = new THREE.PlaneGeometry(PLANK_W, PLANK_H);
 
 const woodMat = new THREE.MeshBasicMaterial({ color: WOOD_COLOR });
 
 const TownDirectorySignInner = memo(function TownDirectorySignInner() {
+  const texture = useTexture('/town-directory-sign.png');
+
+  const faceMat = useMemo(() => {
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.needsUpdate = true;
+    return new THREE.MeshBasicMaterial({ map: texture, color: 0xffffff });
+  }, [texture]);
+
   return (
     <group position={[SIGN_X, SIGN_Y, SIGN_Z]}>
+      {/* Left post */}
       <mesh
         geometry={postGeo}
         material={woodMat}
         position={[-POST_SPACING / 2, POST_H / 2, 0]}
         matrixAutoUpdate={false}
       />
+      {/* Right post */}
       <mesh
         geometry={postGeo}
         material={woodMat}
         position={[POST_SPACING / 2, POST_H / 2, 0]}
         matrixAutoUpdate={false}
       />
+      {/* Plank backing — gives the sign depth; wood-coloured */}
       <mesh
-        geometry={plankGeo}
+        geometry={plankBackGeo}
         material={woodMat}
-        position={[0, PLANK_Y, 0]}
+        position={[0, PLANK_Y, -BACKING_D / 2]}
         matrixAutoUpdate={false}
       />
-
-      {/* Text label — same Html pattern as building labels (arena-buildings.tsx).
-          Positioned at the plank's center height. */}
-      <Html position={[0, PLANK_Y, 0]} center style={{ pointerEvents: 'none' }}>
-        <div
-          style={{
-            background: 'rgba(124, 74, 27, 0.95)',
-            border: '2px solid rgba(60, 35, 15, 0.9)',
-            borderRadius: 6,
-            padding: '10px 18px',
-            textAlign: 'center',
-            whiteSpace: 'nowrap',
-            userSelect: 'none',
-            fontFamily: 'Georgia, serif',
-            color: '#f5e6c8',
-          }}
-        >
-          <div style={{ fontWeight: 'bold', fontSize: 18, letterSpacing: 2, marginBottom: 4 }}>
-            TOWN CENTER
-          </div>
-          <div style={{ fontSize: 13, lineHeight: 1.3 }}>Auction</div>
-          <div style={{ fontSize: 13, lineHeight: 1.3 }}>Bazaar</div>
-          <div style={{ fontSize: 13, lineHeight: 1.3 }}>Marketplace</div>
-        </div>
-      </Html>
+      {/* Plank front face — flat plane with the wood+text texture baked on.
+          Text IS the face of the sign, not a floating overlay. */}
+      <mesh
+        geometry={plankFaceGeo}
+        material={faceMat}
+        position={[0, PLANK_Y, 0.5]}
+        matrixAutoUpdate={false}
+      />
     </group>
   );
 });

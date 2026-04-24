@@ -684,8 +684,11 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       <BazaarStall />
       <MarketplaceStall />
       <AuctionPodium />
-      {/* Wooden signboard directory — informational landmark at centre of stall row */}
-      <TownDirectorySign />
+      {/* Wooden signboard directory — informational landmark at centre of stall row.
+          Wrapped in Suspense because useTexture loads the PNG asynchronously. */}
+      <Suspense fallback={null}>
+        <TownDirectorySign />
+      </Suspense>
 
       {/* NPC speech bubbles — Dom overlay, renders chat from SSE stream */}
       <NpcSpeechBubbles />
