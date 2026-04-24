@@ -3,44 +3,42 @@
 /**
  * BumperShellsPlayer.tsx
  *
- * Single player shell component. Clones lobster.glb or crayfish.glb, applies
- * squash/stretch on hit, fades out on elimination.
+ * REBUILT 2026-04-24 — Player shell with full perspective-camera VFX pipeline.
  *
- * One instance per player, up to MAX_PLAYERS=8 simultaneously.
+ * Per-player features:
+ *   - Three.js GLB clone (lobster / crayfish) with LobsterAnimator locomotion
+ *   - drei <Html> name label above shell (camera-cull gated; NO drei Text — Iris Xe crash)
+ *   - Squash/stretch on hit (meshRootRef scale; orthogonal to bone rotations)
+ *   - Elimination: gravity drop (DROP_GRAVITY wu/s²) + fade over DROP_FADE_DURATION
+ *   - Self-hit flash: fires onSelfHit callback so BumperShellsScene flashes the DOM overlay
+ *   - PR #51 position interpolation fully preserved (15Hz → 60fps lerp)
  *
  * Iris Xe invariants:
  *   - SkeletonUtils.clone() + frustumCulled=false traverse immediately after clone.
  *   - Squash/stretch applied to ROOT GROUP (meshRootRef) not SkinnedMesh bones.
- *   - LobsterAnimator works on clonedScene parts — composes with squash (no bone conflict).
+ *   - NO drei Text/Billboard — Iris Xe hard GPU crash.
+ *   - drei <Html> with anchorInFrontOfCamera dot-product cull.
  *   - No per-frame allocations — module-scope scratch primitives only.
- *   - applyColorTint skipped for GLB shells (matches VRM-tinting convention from player-avatar.tsx).
  *
- * Chunk #12a: LobsterAnimator wired. Locomotion blend driven by entity velocity
- * from activity store. Animator composes with squash/stretch — both applied to
- * separate groups so bone transforms and root scale never collide.
- *
- * Chunk #13 (interpolation): client-side position + facing interpolation eliminates
- * the 15Hz teleport jitter. Strategy:
- *   - Stamp each incoming entity snapshot with performance.now() at the moment the
- *     prop changes (detected by ref comparison in useFrame).
- *   - Maintain a per-component history ring of up to INTERP_HISTORY_SIZE snapshots.
- *   - Render at (now - INTERP_DELAY_MS), finding the two bracket snapshots and lerping.
- *   - Rotation uses shortest-angle lerp (never spins through 0/2π boundary).
- *   - Velocity is lerped in parallel — drives the locomotion blend smoothly.
- *   - If only one snapshot in buffer (startup), snap directly to it; no extrapolation.
- *
- * Draw calls: 1 per player (lobster.glb is 1 SkinnedMesh draw call).
+ * Draw calls: 1 per player (lobster.glb = 1 SkinnedMesh draw call).
  */
 
 import { useRef, useEffect, useMemo } from 'react';
-import { useFrame } from '@react-three/fiber';
-import { useGLTF } from '@react-three/drei';
+import { useFrame, useThree } from '@react-three/fiber';
+import { useGLTF, Html } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { LobsterAnimator } from '@/lib/three/lobster-animations';
 import { discoverLobsterParts } from '@/lib/three/lobster-parts';
+import { anchorInFrontOfCamera } from '@/lib/three/utils/camera-cull';
 import type { BumperShellEntity, ShellHitAnimState } from './bumper-shells-types';
-import { SHELL_SCALE, HIT_ANIM_FRAMES } from './bumper-shells-config';
+import {
+  SHELL_SCALE,
+  HIT_ANIM_FRAMES,
+  LABEL_Y_OFFSET,
+  DROP_GRAVITY,
+  DROP_FADE_DURATION,
+} from './bumper-shells-config';
 
 // ─── Preloads — fire at module scope so GLBs are warm before a round starts ──
 useGLTF.preload('/models/lobster.glb');
@@ -101,23 +99,42 @@ function lerpAngle(a: number, b: number, t: number): number {
   return a + diff * t;
 }
 
+// ─── Module-scope anchor temp (shared by all player instances) ───────────────
+// anchorInFrontOfCamera uses its own module-scope temporaries — safe.
+const _anchorPos = new THREE.Vector3();
+
 interface BumperShellsPlayerProps {
   entity: BumperShellEntity;
-  /** True if this is the local player (used for highlight, not yet used in 3D). */
+  /** True if this is the local player — triggers self-hit flash via callback. */
   isSelf?: boolean;
+  /** Called when this shell gets hit AND isSelf=true — parent adds screen flash. */
+  onSelfHit?: () => void;
+  /** Player display name — rendered as HTML label above shell. */
+  displayName?: string;
 }
 
-function BumperShellsPlayerInner({ entity, isSelf = false }: BumperShellsPlayerProps) {
+function BumperShellsPlayerInner({
+  entity,
+  isSelf = false,
+  onSelfHit,
+  displayName,
+}: BumperShellsPlayerProps) {
   const species = entity.species ?? 'lobster';
   const glbPath = species === 'crayfish' ? '/models/crayfish.glb' : '/models/lobster.glb';
 
   const { scene: srcScene } = useGLTF(glbPath);
 
+  const { camera } = useThree();
+
   const groupRef    = useRef<THREE.Group>(null);
   const meshRootRef = useRef<THREE.Group>(null);
+  const labelRef    = useRef<HTMLDivElement>(null);
 
   // Hit animation state — managed via ref (no React re-render needed).
   const hitAnim = useRef<ShellHitAnimState>({ active: false, elapsed: 0 });
+
+  // Elimination drop state
+  const dropRef = useRef({ active: false, elapsed: 0, velocityY: 0 });
 
   // Fade state for elimination.
   const fadeRef = useRef({ active: false, opacity: 1 });
@@ -321,16 +338,34 @@ function BumperShellsPlayerInner({ entity, isSelf = false }: BumperShellsPlayerP
       }
     }
 
-    // ─── Elimination fade ─────────────────────────────────────────────────
+    // ─── Elimination: gravity drop + fade ────────────────────────────────────
     if (wasAlive.current && !entity.alive) {
-      // Just eliminated — start fade.
+      // Just eliminated — start physics drop.
       wasAlive.current = false;
+      dropRef.current.active = true;
+      dropRef.current.elapsed = 0;
+      dropRef.current.velocityY = 0;
       fadeRef.current.active = true;
       fadeRef.current.opacity = 1;
+      // Fire knockout sound + hide label immediately
+      if (isSelf) onSelfHit?.();
+      if (labelRef.current) labelRef.current.style.display = 'none';
+    }
+
+    if (dropRef.current.active) {
+      dropRef.current.elapsed += dt;
+      dropRef.current.velocityY -= DROP_GRAVITY * dt;
+      group.position.y += dropRef.current.velocityY * dt;
+      if (dropRef.current.elapsed >= DROP_FADE_DURATION) {
+        dropRef.current.active = false;
+      }
     }
 
     if (fadeRef.current.active) {
-      fadeRef.current.opacity = Math.max(0, fadeRef.current.opacity - dt * 1.0);
+      fadeRef.current.opacity = Math.max(
+        0,
+        fadeRef.current.opacity - dt / DROP_FADE_DURATION,
+      );
       clonedScene.traverse((o) => {
         if ((o as THREE.Mesh).isMesh) {
           const mat = (o as THREE.Mesh).material as THREE.MeshStandardMaterial;
@@ -346,12 +381,27 @@ function BumperShellsPlayerInner({ entity, isSelf = false }: BumperShellsPlayerP
       }
     }
 
+    // ─── Name label: dot-product cull via anchorInFrontOfCamera ──────────────
+    if (labelRef.current && entity.alive && group.visible) {
+      _anchorPos.set(
+        group.position.x,
+        group.position.y + LABEL_Y_OFFSET,
+        group.position.z,
+      );
+      const inFront = anchorInFrontOfCamera(_anchorPos, camera);
+      const display = inFront ? 'flex' : 'none';
+      if (labelRef.current.style.display !== display) {
+        labelRef.current.style.display = display;
+      }
+    }
+
     // Show/hide based on alive state (after any fade completes).
     if (entity.alive && !wasAlive.current) {
       // Re-spawned (future: respawn support).
       wasAlive.current = true;
       group.visible = true;
       fadeRef.current.opacity = 1;
+      dropRef.current.active = false;
     }
   });
 
@@ -369,12 +419,57 @@ function BumperShellsPlayerInner({ entity, isSelf = false }: BumperShellsPlayerP
     };
   });
 
+  const labelText = displayName ?? entity.avatarId.slice(0, 8);
+
   return (
     <group ref={groupRef} scale={[SHELL_SCALE, SHELL_SCALE, SHELL_SCALE]}>
-      {/* meshRoot receives squash/stretch scale — separate from the position group.
-          clonedScene is a child of meshRoot so the animator's bone mutations
-          and the squash scale compose cleanly: worldScale = outerGroupScale × meshRootScale × boneLocal */}
+      {/* meshRoot receives squash/stretch scale — separate from position group.
+          bone mutations from animator + root scale compose cleanly. */}
       <group ref={meshRootRef} />
+
+      {/* Name label — drei <Html> DOM portal, safe on Iris Xe.
+          NO drei Text/Billboard — hard GPU crash on integrated graphics.
+          Visibility controlled imperatively via labelRef in useFrame.
+          NO distanceFactor — per-frame camera distance recompute (perf hit). */}
+      <Html
+        position={[0, LABEL_Y_OFFSET / SHELL_SCALE, 0]}
+        center
+        occlude={false}
+        zIndexRange={[20, 100]}
+        style={{ pointerEvents: 'none' }}
+      >
+        <div
+          ref={labelRef}
+          style={{
+            display: 'none',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: 2,
+            userSelect: 'none',
+            pointerEvents: 'none',
+          }}
+        >
+          <span
+            style={{
+              color: isSelf ? '#00e5ff' : '#ffffff',
+              fontSize: '11px',
+              fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+              fontWeight: isSelf ? 700 : 500,
+              textShadow: '0 1px 4px rgba(0,0,0,0.9), 0 0 8px rgba(0,0,0,0.7)',
+              letterSpacing: '0.04em',
+              whiteSpace: 'nowrap',
+              background: isSelf
+                ? 'rgba(0,20,40,0.75)'
+                : 'rgba(0,0,0,0.55)',
+              padding: '2px 7px',
+              borderRadius: 4,
+              border: isSelf ? '1px solid rgba(0,229,255,0.5)' : 'none',
+            }}
+          >
+            {labelText}
+          </span>
+        </div>
+      </Html>
     </group>
   );
 }
