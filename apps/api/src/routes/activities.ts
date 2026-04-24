@@ -34,6 +34,7 @@ import {
   pets,
 } from '@clawville/database';
 import { sessionMiddleware } from '../middleware/auth';
+import { lucia } from '../lib/auth';
 import { requireAuthOrAgentSession } from '../middleware/require-auth-or-agent';
 import type { ActivityAuthContext } from '../middleware/require-auth-or-agent';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
@@ -545,6 +546,7 @@ function getOrMakeAdapter(
     raw: unknown;
   },
   roomId: string,
+  preauthLuciaSessionId: string | null,
 ): HubWs {
   const keyObj = (wsContext.raw as object) ?? (wsContext as object);
   let existing = hubAdapters.get(keyObj);
@@ -556,7 +558,7 @@ function getOrMakeAdapter(
       const raw = wsContext.raw as { getBufferedAmount?: () => number } | null;
       return raw?.getBufferedAmount?.() ?? 0;
     },
-    data: activityWsHub.makeConnectionData(roomId),
+    data: activityWsHub.makeConnectionData(roomId, preauthLuciaSessionId),
   };
   hubAdapters.set(keyObj, transport);
   return transport;
@@ -579,6 +581,18 @@ activitiesV2Routes.get(
       throw new HTTPException(404, { message: 'Room not in activity' });
     }
 
+    // Snapshot the Lucia session id from the upgrade request's Cookie
+    // header. The handshake auth-frame sends a literal `'cookie'`
+    // placeholder when the browser cookie is the auth source (the WS
+    // upgrade attaches it automatically), and the hub swaps in this
+    // resolved session id. Headless agent callers will leave this null
+    // and pass their own session id in the auth frame instead. Captured
+    // in this closure so each per-connection `onMessage` call sees the
+    // same value (Hono's `c` is request-scoped, so the cookie reading
+    // must happen here, not inside the message handler).
+    const luciaCookieSessionId =
+      lucia.readSessionCookie(c.req.header('Cookie') ?? '') ?? null;
+
     return {
       async onMessage(evt, ws) {
         const adapter = getOrMakeAdapter(
@@ -588,6 +602,7 @@ activitiesV2Routes.get(
             raw: ws.raw ?? ws,
           },
           roomId,
+          luciaCookieSessionId,
         );
         const raw: string | ArrayBuffer | Uint8Array =
           typeof evt.data === 'string'
