@@ -41,9 +41,15 @@ import { retargetMixamoClip, type MixamoGltf } from './mixamo-retarget';
 // ---------------------------------------------------------------------------
 
 const ANIM_PATHS = {
-  idle: '/avatars/animations/idle.glb',
-  walk: '/avatars/animations/walk.glb',
-  run:  '/avatars/animations/run.glb',
+  idle:            '/avatars/animations/idle.glb',
+  walk:            '/avatars/animations/walk.glb',
+  run:             '/avatars/animations/run.glb',
+  looking_around:  '/avatars/animations/emotes/looking-around.glb',
+  squat:           '/avatars/animations/emotes/squat.glb',
+  waving:          '/avatars/animations/emotes/waving-both-hands.glb',
+  talk:            '/avatars/animations/emotes/talk.glb',
+  dance_happy:     '/avatars/animations/emotes/dance-happy.glb',
+  float:           '/avatars/animations/emotes/float.glb',
 } as const;
 
 type AnimName = keyof typeof ANIM_PATHS;
@@ -110,7 +116,7 @@ function loadRawGltf(name: AnimName): Promise<MixamoGltf> {
 }
 
 /**
- * Preload all 3 Mixamo animation GLBs.
+ * Preload all Mixamo animation GLBs (locomotion + emotes).
  * Call once from the component that renders VRM avatars.
  * Errors are swallowed — they will surface when VRMCharacterAnimator.init() is called.
  */
@@ -200,19 +206,28 @@ export class VRMCharacterAnimator {
   }
 
   /**
-   * Async initialisation — retargets all 3 clips for this VRM.
-   * Called once after construction. Returns a Promise that resolves when
-   * all clips are loaded and retargeted. Calling update() before init()
-   * resolves is safe — it's a no-op until ready=true.
+   * Async initialisation — retargets the 3 locomotion clips (idle/walk/run) for
+   * this VRM, plus the requested startClip if it is an emote (not already in the
+   * locomotion set). The emote clips are loaded lazily on first request — only the
+   * startClip is pre-loaded here so there is no cold-start T-pose delay.
+   *
+   * @param startClip  Which animation to play immediately after init.
+   *   Defaults to 'idle'. Pass any AnimName to override (e.g. 'looking_around').
+   *   Player-avatar.tsx callers pass no argument and continue to start on 'idle'.
    */
-  async init(): Promise<void> {
-    const names: AnimName[] = ['idle', 'walk', 'run'];
+  async init(startClip: AnimName = 'idle'): Promise<void> {
+    // Always load the 3 locomotion clips. Also pre-load the startClip if it is
+    // an emote (not already in the locomotion set) so it is ready before first tick.
+    const locomotion: AnimName[] = ['idle', 'walk', 'run'];
+    const toLoad: AnimName[] = locomotion.includes(startClip)
+      ? locomotion
+      : [...locomotion, startClip];
 
     try {
-      const rawGltfs = await Promise.all(names.map((n) => loadRawGltf(n)));
+      const rawGltfs = await Promise.all(toLoad.map((n) => loadRawGltf(n)));
 
-      for (let i = 0; i < names.length; i++) {
-        const name = names[i]!;
+      for (let i = 0; i < toLoad.length; i++) {
+        const name = toLoad[i]!;
         const gltf = rawGltfs[i]!;
 
         let retargeted: THREE.AnimationClip;
@@ -229,11 +244,11 @@ export class VRMCharacterAnimator {
         this.actions[name] = action;
       }
 
-      // Start idle immediately
-      const idle = this.actions.idle;
-      if (idle) {
-        idle.play();
-        this.currentAction = idle;
+      // Start on startClip; fall back to idle if it failed to retarget
+      const startAction = this.actions[startClip] ?? this.actions.idle;
+      if (startAction) {
+        startAction.play();
+        this.currentAction = startAction;
       }
 
       this.ready = true;
@@ -254,17 +269,19 @@ export class VRMCharacterAnimator {
         // hasNormalizedRig: still true — we just no longer use it as the mixer root
         const hasNormalizedRig = !!(this.vrm.humanoid as any)?.normalizedHumanBonesRoot;
 
+        const idleAction = this.actions.idle;
         w.__VRM_INIT_LOG.push({
           n:             w.__VRM_INIT_COUNT,
-          idleAction:    !!idle,
-          idleClip:      idle ? idle.getClip().name : null,
+          startClip,
+          idleAction:    !!idleAction,
+          idleClip:      idleAction ? idleAction.getClip().name : null,
           leftArmNode:   leftArm ? leftArm.name : null,
           mixerRoot:     mixerRootName,
           hasNormalizedRig,
           mixerRootIsScene: true,
           bindings:      bindings.length,
           boundToReal:   withNode,
-          trackNames:    idle ? idle.getClip().tracks.slice(0, 3).map((t) => t.name) : [],
+          trackNames:    idleAction ? idleAction.getClip().tracks.slice(0, 3).map((t) => t.name) : [],
         });
       }
     } catch (err) {
