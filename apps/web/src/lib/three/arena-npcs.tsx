@@ -32,7 +32,13 @@ import { anchorInFrontOfCamera } from '@/lib/three/utils/camera-cull';
 
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
-const LERP_SPEED = 5;
+// LERP_SPEED controls how fast currentPos catches up to targetPos from server.
+// 5 = exponential 92% convergence per 500ms snapshot window → client BURSTS
+// forward then STOPS waiting for next snapshot. That accelerate-decelerate
+// pattern is what whipped hair spring bones (visible as "hair out of sync").
+// 2.5 = 71% convergence per 500ms — smoother continuous motion, ~22wu of lag
+// which is imperceptible against 110wu server step.
+const LERP_SPEED = 2.5;
 // TARGET_NPC_HEIGHT: desired world-unit height for wandering NPCs.
 // Previously NPC_SCALE=50 was a flat multiplier applied to all species; measured
 // heights were 30-36 wu because species GLBs have native heights of 0.6-0.7 units
@@ -934,21 +940,31 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // visible "walking backwards" window for ~0.5s. Using the velocity vector
     // keeps body facing locked to movement direction at all times.
     //
-    // VRM facing: Math.atan2(vx, -vz). FINAL LOCKED FORMULA 2026-04-24 —
-    // user confirmed this after multiple sign-flip sessions. Matches the
-    // player-avatar.tsx line 345 formula exactly. DO NOT CHANGE — the negated
-    // `-vx` variant makes Miladys walk backwards.
+    // VRM facing — CORRECTED 2026-04-24 after Kyoko-walking-diagonally-backwards
+    // screenshot proved earlier formula wrong.
     //
-    // Use velocity whenever there's ANY motion above sub-pixel jitter.
-    // Cardinal fallback (VRM_DIR_ROTATION) was tried but produced wrong facing
-    // on diagonal movement — server's discrete 4-direction doesn't know NW/NE/etc.
-    // If velocity is below threshold, leave rotation unchanged (no cardinal snap).
+    // VRM faces -Z at rest. Three.js R_y(θ) applied to (0,0,-1) = (-sin θ, 0, -cos θ).
+    // For the VRM to face world velocity direction (vx, 0, vz), we need:
+    //   -sin θ = vx_norm  →  sin θ = -vx_norm
+    //   -cos θ = vz_norm  →  cos θ = -vz_norm
+    //   θ = atan2(-vx, -vz)
+    //
+    // Cardinal verification:
+    //   east   (vx=+1, vz=0):  θ = atan2(-1, 0) = -π/2. Rotated(-Z) = (1,0,0) = east ✓
+    //   north  (vx=0, vz=-1):  θ = atan2(0, 1) = 0.     Rotated(-Z) = (0,0,-1) = north ✓
+    //   NW     (vx=-0.7,-0.7): θ = atan2(0.7, 0.7) = π/4. Rotated(-Z) = (-0.7,0,-0.7) = NW ✓
+    //
+    // Earlier atan2(vx, -vz) was right for N/S only (180° off on E/W/diagonals).
+    // Player-avatar "worked" with the wrong formula because 3rd-person camera
+    // orbits with movement — user sees avatar from behind, so 180° facing error
+    // is invisible. Arena Miladys are viewed from fixed spectate — the bug
+    // was plainly visible (Kyoko moving NW while facing SE).
     const vx = currentPos.current.x - prevX;
     const vz = currentPos.current.z - prevZ;
     const velMagSq = vx * vx + vz * vz;
     let targetRot: number | null = null;
     if (velMagSq > 0.1 && d.direction !== 'idle') {
-      targetRot = Math.atan2(vx, -vz);
+      targetRot = Math.atan2(-vx, -vz);
     }
     if (targetRot != null) {
       let diff = targetRot - currentRotY.current;
