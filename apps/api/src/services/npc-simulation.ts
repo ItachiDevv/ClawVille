@@ -38,8 +38,12 @@ const MAP_HEIGHT = 5120;
 // walking off toward the map edge (original behavior before the fix).
 const TOWN_CENTER_X = MAP_WIDTH / 2;       // 2560
 const TOWN_CENTER_Y = MAP_HEIGHT / 2;      // 2560
-const FREE_ROAMER_MIN_RADIUS = 500;        // outside town-center furniture cluster
-const FREE_ROAMER_MAX_RADIUS = 1700;       // comfortably inside the 2176wu building ring
+// Ring of wander bounds centered ON the building ring (radius ~2176wu).
+// 2026-04-24: expanded from 500-1700 (NPCs clustered around town square, looked
+// empty) to 1400-2600 — inner edge just inside buildings, outer edge just behind
+// them. NPCs now wander between/behind the buildings, not in the empty town core.
+const FREE_ROAMER_MIN_RADIUS = 1400;
+const FREE_ROAMER_MAX_RADIUS = 2600;
 
 // --- Types ---
 
@@ -857,7 +861,10 @@ class NpcSimulation {
   }
 
   private moveNpcs() {
-    const baseStep = this.arenaMode ? (14 + Math.random() * 4) * this.arenaSettings.moveSpeed : 20;
+    // 2026-04-24: bumped baseStep 20 → 70. Server ticks at 2Hz (500ms), so with
+    // baseStep=20 world NPCs moved 40 wu/s — user reported "insanely slow and
+    // unnatural pace". 70 yields 140 wu/s which is ~jog pace on the 5120 map.
+    const baseStep = this.arenaMode ? (14 + Math.random() * 4) * this.arenaSettings.moveSpeed : 70;
 
     for (const npc of this.npcs.values()) {
       if (npc.isDead || npc.inConversation) continue;
