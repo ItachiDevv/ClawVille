@@ -23,6 +23,7 @@ import { jumpState } from '@/lib/three/jump-state';
 import { useVRM, preloadVRM } from '@/lib/three/vrm-loader';
 import { VRMCharacterAnimator, preloadMixamoClips } from '@/lib/three/vrm-character-animator';
 import { MODEL_REGISTRY } from '@/lib/three/agent-model-registry';
+import { anchorInFrontOfCamera } from '@/lib/three/utils/camera-cull';
 
 // ---------------------------------------------------------------------------
 // GLB-based NPC renderer with terrain raycasting
@@ -367,6 +368,10 @@ preloadVRM('/avatars/milady-official-7.vrm');
 preloadVRM('/avatars/milady-official-8.vrm');
 preloadMixamoClips();
 
+// Module-scope scratch for getWorldPosition in behind-camera cull checks.
+// Shared by GLBNpcMesh + VRMNpcMesh — each call overwrites before reading.
+const _npcAnchorWorldPos = new THREE.Vector3();
+
 // ---------------------------------------------------------------------------
 // Single NPC using GLB model with terrain following
 // ---------------------------------------------------------------------------
@@ -543,6 +548,7 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     }
     group.visible = true;
     {
+<<<<<<< Updated upstream
       // Behind-camera cull: drei <Html> calculatePosition still projects a screen
       // XY when the anchor NDC z > 1 (anchor behind near plane), producing ghost
       // labels for buildings/NPCs behind the camera. Zero-allocation test using
@@ -554,6 +560,13 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
       const wz = group.matrixWorld.elements[14];
       const viewZ = m[2] * wx + m[6] * wy + m[10] * wz + m[14];
       const inFront = viewZ < 0;
+=======
+      // Behind-camera cull: drei <Html> does not hide when the 3D anchor is behind
+      // the near plane — calculatePosition still emits a screen XY, producing ghost
+      // labels. Dot-product test hides the label when the anchor is behind the camera.
+      group.getWorldPosition(_npcAnchorWorldPos);
+      const inFront = anchorInFrontOfCamera(_npcAnchorWorldPos, camera);
+>>>>>>> Stashed changes
       const label = labelRef.current;
       if (!inFront) {
         if (label && label.style.display !== 'none') label.style.display = 'none';
@@ -903,6 +916,7 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     }
     group.visible = true;
     {
+<<<<<<< Updated upstream
       // Behind-camera cull: same zero-allocation test as GLBNpcMesh above.
       // viewZ < 0 → anchor is in front of camera → show label.
       const m = camera.matrixWorldInverse.elements;
@@ -911,6 +925,13 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
       const wz = group.matrixWorld.elements[14];
       const viewZ = m[2] * wx + m[6] * wy + m[10] * wz + m[14];
       const inFront = viewZ < 0;
+=======
+      // Behind-camera cull: drei <Html> does not hide when the 3D anchor is behind
+      // the near plane — calculatePosition still emits a screen XY, producing ghost
+      // labels. Dot-product test hides the label when the anchor is behind the camera.
+      group.getWorldPosition(_npcAnchorWorldPos);
+      const inFront = anchorInFrontOfCamera(_npcAnchorWorldPos, camera);
+>>>>>>> Stashed changes
       const label = labelRef.current;
       if (!inFront) {
         if (label && label.style.display !== 'none') label.style.display = 'none';
@@ -936,19 +957,17 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // visible "walking backwards" window for ~0.5s. Using the velocity vector
     // keeps body facing locked to movement direction at all times.
     //
-    // VRM facing for arena NPCs: atan2(-vx, -vz). CONFIRMED CORRECT 2026-04-24
-    // by the user — earlier revert back to atan2(vx, -vz) made Miladys face
-    // backwards. The 180° offset vs player-avatar.tsx is empirical; don't unify
-    // these two formulas no matter how identical they look on paper. Other
-    // sessions HAVE overwritten this — if a future merge flips the sign,
-    // flip it back, don't re-derive.
+    // VRM facing: Math.atan2(vx, -vz). FINAL LOCKED FORMULA 2026-04-24 —
+    // user confirmed this after multiple sign-flip sessions. Matches the
+    // player-avatar.tsx line 345 formula exactly. DO NOT CHANGE — the negated
+    // `-vx` variant makes Miladys walk backwards.
     const vx = currentPos.current.x - prevX;
     const vz = currentPos.current.z - prevZ;
     const velMagSq = vx * vx + vz * vz;
     // Movement threshold: need at least 0.5wu/frame of motion to trust velocity
     // as a facing signal. Below that it's likely sub-pixel jitter during idle.
     if (velMagSq > 0.25 && d.direction !== 'idle') {
-      const targetRot = Math.atan2(-vx, -vz);
+      const targetRot = Math.atan2(vx, -vz);
       let diff = targetRot - currentRotY.current;
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
