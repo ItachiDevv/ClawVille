@@ -277,17 +277,28 @@ export function retargetMixamoClip(
       continue;
     }
 
-    // Position tracks (typically only on hips): scale by hipsPositionScale +
-    // VRM 0.x coord flip (negate X & Z, keep Y). This is the natural body-bob
-    // during walk/idle — without it, hips stay frozen, spring-bones (hair/skirt)
-    // don't get the vertical shock they need to swing naturally, and the
-    // character visually glides stiffly instead of bouncing.
+    // Position tracks (typically only on hips): keep ONLY the Y axis
+    // (vertical hip bob). Rationale: Mixamo walk/run clips encode forward
+    // motion as positive Z on the hip bone. After the VRM 0.x coord flip
+    // (i%3!=1 → negate X and Z) that becomes -Z locally; combined with
+    // rotateVRM0's scene.rotation.y = π that flips -Z back to +Z in world.
+    // Result: hips drift +Z in world independent of the game-driven group
+    // rotation. Since our facing formula points the VRM's "forward" (-Z
+    // after rotateVRM0) along the velocity direction, the HIPS then drift
+    // OPPOSITE the facing direction → character skates backwards while
+    // feet walk forward. User-visible as "Miladys walk backwards 2026-04-24".
     //
-    // Ported verbatim from Milady's retargetMixamoGltfToVrm.ts (MIT).
+    // Y axis is safe — vertical bob doesn't conflict with horizontal
+    // game-position. We keep it so hair/skirt spring bones receive the
+    // vertical shock they need to swing naturally.
     if (propertyName === 'position' && track instanceof THREE.VectorKeyframeTrack) {
-      const values = track.values.map(
-        (v, i) => (vrm0 && i % 3 !== 1 ? -v : v) * hipsPositionScale,
-      );
+      const src = track.values;
+      const values = new Float32Array(src.length);
+      for (let i = 0; i < src.length; i += 3) {
+        values[i    ] = 0; // X: zeroed (no lateral drift)
+        values[i + 1] = src[i + 1] * hipsPositionScale; // Y: keep, scale for hip height
+        values[i + 2] = 0; // Z: zeroed (no forward drift)
+      }
       tracks.push(
         new THREE.VectorKeyframeTrack(
           `${vrmNode.name}.position`,
