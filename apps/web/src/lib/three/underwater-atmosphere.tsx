@@ -10,19 +10,17 @@ import {
   time,
   positionLocal,
   uv,
-  mix,
   fract,
 } from 'three/tsl';
 
 // ---------------------------------------------------------------------------
 // UnderwaterAtmosphere
 //
-// Three GPU-driven effects — no post-processing, no InstancedMesh, no GLSL.
+// Two GPU-driven effects — no post-processing, no InstancedMesh, no GLSL.
 // All animation is TSL node-based (runs entirely on GPU, zero CPU per frame).
 //
 // 1. CausticPlane  — large horizontal plane at y=150, 6400x6400, animated light pattern
-// 2. DepthBackdrop — vertical plane at z=-5500, 14400x900, blue-green gradient with edge fade
-// 3. DustParticles — ~300 Points drifting upward via TSL positionNode
+// 2. DustParticles — ~300 Points drifting upward via TSL positionNode
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -113,91 +111,7 @@ function CausticPlane() {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Depth Gradient Backdrop
-// ---------------------------------------------------------------------------
-function createBackdropMaterial(): THREE.MeshBasicNodeMaterial {
-  const mat = new THREE.MeshBasicNodeMaterial({
-    transparent: true,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-  });
-
-  // Deep ocean floor colour (dark blue-navy)
-  const deepColor = vec3(float(0.02), float(0.08), float(0.18));
-  // Mid-water colour (muted teal)
-  const midColor = vec3(float(0.06), float(0.22), float(0.38));
-  // Near-surface colour (lighter blue-green)
-  const shallowColor = vec3(float(0.10), float(0.35), float(0.52));
-
-  // uv().y is 0 at the bottom of the plane, 1 at the top.
-  const vCoord = uv().y;
-
-  // Two-step gradient: deep → mid → shallow
-  const bottomHalf = mix(deepColor, midColor, vCoord.mul(float(2.0)).min(float(1.0)));
-  const topHalf = mix(
-    midColor,
-    shallowColor,
-    vCoord.sub(float(0.5)).mul(float(2.0)).max(float(0.0)),
-  );
-  const gradient = mix(bottomHalf, topHalf, vCoord);
-
-  mat.colorNode = gradient;
-
-  // Horizontal fade: uv().x goes 0→1 across the plane width.
-  // Map to a [-1, 1] centred range then take abs → 0 at centre, 1 at edges.
-  // Invert and smooth so opacity is full at centre, fades to 0 at the wings.
-  // This prevents the hard vertical edge that appears when orbiting.
-  const uCoord = uv().x;
-  const edgeDist = uCoord.sub(float(0.5)).mul(float(2.0)).abs(); // 0..1 (0=center, 1=edge)
-  // smoothstep-like: starts fading at 60% out, hits 0 at 100%
-  const edgeFade = edgeDist.sub(float(0.6)).div(float(0.4)).max(float(0.0)).min(float(1.0));
-  const baseOpacity = float(0.72).mul(float(1.0).sub(edgeFade));
-
-  mat.opacityNode = baseOpacity;
-
-  return mat;
-}
-
-function DepthBackdrop() {
-  const meshRef = useRef<THREE.Mesh>(null);
-
-  const { geometry, material } = useMemo(() => {
-    // Width covers the full 5120-unit map with generous margin on each side.
-    // Height 900 spans from below terrain (y≈-50) to above player eye-level (y≈800).
-    // Extra height segments (4) give the edge-fade gradient smoother horizontal banding.
-    const geo = new THREE.PlaneGeometry(14400, 900, 1, 4);
-    const mat = createBackdropMaterial();
-    return { geometry: geo, material: mat };
-  }, []);
-
-  useEffect(() => {
-    // PERF: DepthBackdrop never moves — disable matrixAutoUpdate.
-    if (meshRef.current) {
-      meshRef.current.matrixAutoUpdate = false;
-      meshRef.current.updateMatrix();
-    }
-    return () => {
-      geometry.dispose();
-      material.dispose();
-    };
-  }, [geometry, material]);
-
-  return (
-    <mesh
-      ref={meshRef}
-      geometry={geometry}
-      material={material}
-      // Pushed to z=-5500 — well beyond the northernmost building (z≈-1504) and
-      // far enough that fog (far=6400) has almost fully faded it before the edge
-      // of the plane becomes visible. DoubleSide so it renders from any camera angle.
-      position={[0, 350, -5500]}
-      frustumCulled={false}
-    />
-  );
-}
-
-// ---------------------------------------------------------------------------
-// 3. Underwater Dust Particles
+// 2. Underwater Dust Particles
 // ---------------------------------------------------------------------------
 const PARTICLE_COUNT = 300;
 const FIELD_W = 3600;
@@ -305,7 +219,6 @@ export default function UnderwaterAtmosphere() {
   return (
     <>
       <CausticPlane />
-      <DepthBackdrop />
       <DustParticles />
     </>
   );
