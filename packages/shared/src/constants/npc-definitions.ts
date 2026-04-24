@@ -230,9 +230,9 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     species: 'milady_official_7',
     color: 0xffc0ff,             // lavender (ignored — VRM MToon pipeline skips tint)
     buildingId: '',              // no building anchor; free wanderer
-    patrolRadius: 600,
-    homeX: 1400,
-    homeY: 3000,                 // SW arc, inside ring, clear of all blocked zones
+    patrolRadius: 400,
+    homeX: 2200,
+    homeY: 2900,                 // inside town-center ring, SW of Nori
     stats: { hp: 95, attack: 14, defense: 12, speed: 15 },
     personality: 'A soft-spoken Milady wanderer with a fascination for the neon-tide rhythms of the reef.',
   },
@@ -242,9 +242,9 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     species: 'milady_official_8',
     color: 0xc0e8ff,             // sky-blue (ignored — VRM MToon)
     buildingId: '',
-    patrolRadius: 600,
-    homeX: 3700,
-    homeY: 2000,                 // NE arc, inside ring, clear of all blocked zones
+    patrolRadius: 400,
+    homeX: 2900,
+    homeY: 2200,                 // NE of center, inside town ring
     stats: { hp: 90, attack: 13, defense: 14, speed: 16 },
     personality: 'A curious Milady explorer cataloguing every agent signal she overhears across ClawVille.',
   },
@@ -258,9 +258,9 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     species: 'milady_official_2',
     color: 0xffd0a0,             // peach (ignored — MToon)
     buildingId: '',
-    patrolRadius: 700,
-    homeX: 1600,
-    homeY: 1500,                 // NW open quadrant
+    patrolRadius: 400,
+    homeX: 2200,
+    homeY: 2200,                 // NW of center, inside town ring
     stats: { hp: 90, attack: 13, defense: 13, speed: 16 },
     personality: 'A bookish Milady sketcher who maps every reef formation she encounters into her field journal.',
   },
@@ -270,9 +270,9 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     species: 'milady_official_3',
     color: 0xffb0d0,             // pink (ignored — MToon)
     buildingId: '',
-    patrolRadius: 700,
-    homeX: 3500,
-    homeY: 3500,                 // SE open quadrant
+    patrolRadius: 400,
+    homeX: 2900,
+    homeY: 2900,                 // SE of center, inside town ring
     stats: { hp: 95, attack: 12, defense: 14, speed: 15 },
     personality: 'A laid-back Milady cafe-hopper who treats every building like a new coffee bar to review.',
   },
@@ -282,9 +282,9 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     species: 'milady_official_4',
     color: 0xd0c0ff,             // pale violet (ignored — MToon)
     buildingId: '',
-    patrolRadius: 700,
-    homeX: 2700,
-    homeY: 1500,                 // N inner — between canvas-studio + memory-vault
+    patrolRadius: 400,
+    homeX: 2560,
+    homeY: 2000,                 // N of center, just above town center
     stats: { hp: 92, attack: 14, defense: 12, speed: 17 },
     personality: 'A restless Milady debugger who insists every glitch in the world has a poetic explanation.',
   },

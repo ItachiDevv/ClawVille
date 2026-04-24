@@ -244,14 +244,15 @@ const VRM_DIR_ROTATION: Record<string, number> = {
   down: Math.PI, up: 0, right: Math.PI / 2, left: -Math.PI / 2, idle: Math.PI,
 };
 
-// VRM_NPC_SCALE: target visual height ≈ 90 wu for wandering Milady NPCs (2× the
-// 45wu lobster/crab baseline). VRM native height ~1.6m → scale 56 ⇒ 89.6 wu.
-// Doubled on 2026-04-23 per user request: the 45-wu match-the-lobster target made
-// Miladys look small on screen relative to the environment; at 90 wu they read
-// properly as human-scale characters. Registry scale=13 remains for the
-// SelectAgentCanvas picker (~21 wu, a much smaller surface). VRM feet are at
-// Y=0 per spec — no pivot offset calculation needed (unlike GLBs).
-const VRM_NPC_SCALE = 56;
+// VRM_NPC_SCALE: target visual height ≈ 180 wu for wandering Milady NPCs (4× the
+// 45wu lobster/crab baseline). VRM native height ~1.6m → scale 112 ⇒ 179.2 wu.
+// Doubled twice on 2026-04-23 per user request: the 45-wu "match the lobster"
+// target read as too small on screen, and the first 2× bump (scale 56 ⇒ 90 wu)
+// still wasn't reading as the world's main cast. At scale 112 the Miladys are
+// the dominant human-scale figures the town is built around. Registry scale=13
+// remains for the SelectAgentCanvas picker (~21 wu pedestal surface). VRM feet
+// are at Y=0 per spec — no pivot offset calculation needed (unlike GLBs).
+const VRM_NPC_SCALE = 112;
 
 // NPC distance LOD thresholds (squared world-unit distances from camera).
 //
