@@ -83,23 +83,12 @@ function NanoClawBanner() {
   const agentConnected = useGameStore((s: GameState) => s.agentConnected);
   const agentSessionId = useGameStore((s: GameState) => s.agentSessionId);
   const setAgentConnectModalOpen = useGameStore((s: GameState) => s.setAgentConnectModalOpen);
-  const { data: pet, isLoading: isPetLoading } = usePet();
-  const hasPet = !!pet;
 
-  // Suppress during initial pet fetch — otherwise the banner renders
-  // "Connect Your Agent" for the ~300-800ms before usePet() resolves and then
-  // flips to hidden once the pet loads, which flashes a misleading CTA at
-  // logged-in users and makes the UI look inconsistent with the sidebar
-  // (which already shows a loading skeleton during the same window).
-  if (isPetLoading) return null;
-
-  // Hide the banner entirely for logged-in users who have a pet: the sidebar
-  // already shows their agent, the toggle already reads Controlled/Autonomous,
-  // and a "Connect Your Agent" CTA here would make the UI look inconsistent
-  // with itself. Only render when there's an active gateway session (to show
-  // the green "Bot Training Active" indicator) OR when the user has no pet
-  // (= not logged in, show the connect CTA so spectators can onboard).
-  if (hasPet && !agentConnected) return null;
+  // Banner gates strictly on `agentConnected`:
+  //   true  → green "Bot Training Active" pill (with session id)
+  //   false → "Connect Your Agent" CTA (visible to guests + logged-in users
+  //           who haven't connected yet — guest-pet auto-create no longer
+  //           hides this; the guest needs the upgrade path)
 
   return (
     <div className="fixed left-1/2 -translate-x-1/2 z-50 top-3">
@@ -129,6 +118,7 @@ export default function GamePage() {
   const router = useRouter();
   const { data: pet, isLoading } = usePet();
   const controlMode = useGameStore((s: GameState) => s.controlMode);
+  const agentConnected = useGameStore((s: GameState) => s.agentConnected);
   const openActivityLobby = useGameStore((s: GameState) => s.openActivityLobby);
   const activityLobbyId = useGameStore((s: GameState) => s.activityLobbyId);
 
@@ -281,15 +271,29 @@ export default function GamePage() {
           visitors. No UI of its own. */}
       <GuestPetBootstrap />
 
-      {/* Pet-specific UI — rendered whenever the user owns a pet. With the
-          Controlled/Autonomous toggle semantics, having a pet = "my agent is
-          in the world", so stats/quests/inventory/chat all belong on screen.
-          PetChatBar has its own `controlMode !== 'explore'` gate (user rule:
-          always visible except when floating as spectator). */}
+      {/* World UI that's useful for ALL pet-bearing visitors — including
+          guests minted by the auto-create flow. Shows building labels, the
+          ? help button, and the global activity feed. None of these imply
+          a connected agent. */}
       {hasPet && (
         <>
-          <ChatPanel />
           <LocationHUD />
+          <TutorialOverlay />
+          <ActivityFeed />
+        </>
+      )}
+
+      {/* Player-mode (agent-connected) UI — hidden in NPC/Explore mode.
+          Per the brand structure: the toggle reads Explore/NPC for guests,
+          Controlled/Autonomous for connected agents. All of the chat, quest,
+          progression, and shop surfaces below belong to the agent's
+          Controlled/Autonomous flow — not to a guest controlling an NPC.
+          Showing them in NPC mode (because guest auto-create gives hasPet=
+          true) collapses the modes into a single "you're a player" UI and
+          breaks the fundamental structure. */}
+      {agentConnected && (
+        <>
+          <ChatPanel />
           <PetStatusBar />
           <QuestTracker />
           <PetSettingsModal />
@@ -298,8 +302,6 @@ export default function GamePage() {
           {controlMode !== 'explore' && <ChargeBar />}
           <ShopOverlay />
           <InventoryModal />
-          <TutorialOverlay />
-          <ActivityFeed />
           <DailyLoginModal />
         </>
       )}
