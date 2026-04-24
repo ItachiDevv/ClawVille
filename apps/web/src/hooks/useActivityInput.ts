@@ -260,16 +260,30 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       oneShotBitsRef.current = 0;
 
       const dir = dirRef.current;
-      const moving = dir.x !== 0 || dir.y !== 0;
+      const dirMag = Math.hypot(dir.x, dir.y);
+      const moving = dirMag > 0;
 
       seqRef.current = (seqRef.current + 1) >>> 0;
+
+      // Thrust derives from joystick magnitude when moving — analog mobile
+      // input + WASD (which writes a unit vector) both produce sensible
+      // values. Boost overrides to full thrust regardless of stick deflection.
+      // Previously thrust was ONLY set on boost, which made joystick + WASD
+      // alone send dir={x,y} with thrust=undefined → server clamped to 0 →
+      // body never moved. That's why "the controls don't work" on mobile and
+      // desktop alike — players had to hold the boost key to make the player
+      // move at all.
+      const thrust = moving
+        ? bits & ACTION_BIT_BOOST
+          ? 1
+          : Math.min(1, dirMag)
+        : 0;
 
       const frame: ClientFrame = {
         type: 'input',
         seq: seqRef.current,
         dt,
-        ...(moving ? { dir: { x: dir.x, y: dir.y } } : {}),
-        ...(bits & ACTION_BIT_BOOST ? { thrust: 1 } : {}),
+        ...(moving ? { dir: { x: dir.x, y: dir.y }, thrust } : {}),
         ...(bits ? { actionBits: bits } : {}),
       };
 
