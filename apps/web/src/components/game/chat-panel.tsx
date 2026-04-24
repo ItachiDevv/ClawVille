@@ -14,10 +14,36 @@ export default function ChatPanel() {
   const guideChatOpen = useGameStore((s) => s.guideChatOpen);
   const currentLocation = useGameStore((s) => s.currentLocation);
 
+  // Global ESC handler — closes whichever chat is open. Prevents the
+  // "movementFrozen stuck on" state: if a code path ever opens chat
+  // without rendering a close button (old bug: ChatPanel was gated on
+  // agentConnected; mobile LocationHUD tap in NPC mode froze movement
+  // with no way to recover), ESC is always an escape hatch. Registered
+  // unconditionally so it also catches the chatOpen-without-location
+  // degenerate case below.
+  useEffect(() => {
+    if (!chatOpen && !guideChatOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      const store = useGameStore.getState();
+      if (store.guideChatOpen) store.closeGuideChat();
+      else if (store.chatOpen) store.exitBuilding();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [chatOpen, guideChatOpen]);
+
   // Early returns — bail before rendering either body if neither chat is open,
-  // or if a teacher chat is requested without a resolved location.
+  // or if a teacher chat is requested without a resolved location. Note: the
+  // ESC hook above still fires for the chatOpen-without-location case so the
+  // user can always unfreeze movement.
   if (!chatOpen && !guideChatOpen) return null;
-  if (chatOpen && !currentLocation) return null;
+  if (chatOpen && !currentLocation) {
+    // Degenerate state — chat was opened but currentLocation never resolved.
+    // Render a minimal close button rather than nothing, so the user can
+    // recover without keyboard (mobile has no ESC key).
+    return <RecoveryCloseButton />;
+  }
 
   // Guide mode wins when both flags are true (guard in openGuideChat should
   // prevent that state, but resolve deterministically if it ever happens).
@@ -27,6 +53,26 @@ export default function ChatPanel() {
 
   // chatOpen && currentLocation guaranteed by early-returns above
   return <LocationChatBody locationId={currentLocation as string} />;
+}
+
+/* --------------------------------------------------------------------- */
+/* Recovery close — rendered when chatOpen=true but currentLocation is    */
+/* null (degenerate state). A single floating button so the user — who    */
+/* has movementFrozen=true — can unstick themselves on touch devices      */
+/* where ESC isn't available.                                             */
+/* --------------------------------------------------------------------- */
+
+function RecoveryCloseButton() {
+  const exitBuilding = useGameStore((s) => s.exitBuilding);
+  return (
+    <button
+      onClick={exitBuilding}
+      className="fixed top-4 right-4 z-50 w-11 h-11 rounded-full bg-red-500/90 hover:bg-red-500 text-white font-bold shadow-lg flex items-center justify-center"
+      aria-label="Close chat"
+    >
+      X
+    </button>
+  );
 }
 
 /* --------------------------------------------------------------------- */
