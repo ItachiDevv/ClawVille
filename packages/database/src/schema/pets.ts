@@ -187,6 +187,13 @@ export const pets = pgTable('pets', {
    * should always tolerate missing keys.
    */
   flags: jsonb('flags').notNull().default(sql`'{}'::jsonb`),
+  /**
+   * Guest-pet auto-create (2026-04-23) — true when this pet was created
+   * for an un-authenticated visitor via `POST /api/auth/guest`. Mirrors
+   * `users.is_guest` for fast joinless filtering on the activity
+   * leaderboards + reward pipeline. Existing pets default to false.
+   */
+  isGuest: boolean('is_guest').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (t) => ({
