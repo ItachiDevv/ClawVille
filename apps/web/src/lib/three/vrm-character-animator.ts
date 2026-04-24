@@ -238,20 +238,44 @@ export class VRMCharacterAnimator {
     if (!this.ready) return;
 
     if (isMoving !== this.wasMoving) {
-      const next = this.actions[isMoving ? 'walk' : 'idle'];
-      if (next && next !== this.currentAction) {
-        if (this.currentAction) {
-          this.currentAction.crossFadeTo(next, CROSSFADE_DURATION, true);
-        } else {
-          next.play();
-        }
-        this.currentAction = next;
-      }
+      this.applyCrossfade(isMoving);
       this.wasMoving = isMoving;
     }
 
     this.mixer.update(delta);
     this.vrm.update(delta);
+  }
+
+  /**
+   * Transition to the action matching `isMoving`.
+   *
+   * three.js's `crossFadeTo` schedules weight changes but does NOT call `.play()`
+   * on the incoming action — it assumes both actions are already running. At
+   * init() only `idle.play()` is called; `walk` and `run` are constructed
+   * stopped. Without an explicit `.play()` on the incoming action here, the
+   * first idle→walk transition silently fails: the mixer ticks, weights fade,
+   * but the walk action's `isRunning` stays false so its tracks never write
+   * to the bone nodes. Symptom observed 2026-04-23: VRM NPCs that the server
+   * marked as walking held identity quaternions on Normalized_mixamorigHips
+   * forever — bones appeared frozen, NPC locomotion looked broken.
+   *
+   * Fix: `next.reset()` clears time/weight/timeScale/enabled/paused back to
+   * defaults (also undoing any `warp` timeScale residual from prior crossfades),
+   * then `next.fadeIn(duration)` schedules the weight ramp, then `next.play()`
+   * actually starts the action ticking. The outgoing action gets a matching
+   * `fadeOut` so both weights cross at 50%. `warp=true` on the old crossFadeTo
+   * was dropped because the Mixamo clip durations (walk=1.03s, idle=12.04s)
+   * produced a warp ratio of ~11.65× that persisted on the idle action after
+   * every transition, accumulating drift across repeated idle↔walk toggles.
+   */
+  private applyCrossfade(isMoving: boolean): void {
+    const next = this.actions[isMoving ? 'walk' : 'idle'];
+    if (!next || next === this.currentAction) return;
+    next.reset().fadeIn(CROSSFADE_DURATION).play();
+    if (this.currentAction) {
+      this.currentAction.fadeOut(CROSSFADE_DURATION);
+    }
+    this.currentAction = next;
   }
 
   /**
@@ -269,15 +293,7 @@ export class VRMCharacterAnimator {
     if (!this.ready) return;
 
     if (isMoving !== this.wasMoving) {
-      const next = this.actions[isMoving ? 'walk' : 'idle'];
-      if (next && next !== this.currentAction) {
-        if (this.currentAction) {
-          this.currentAction.crossFadeTo(next, CROSSFADE_DURATION, true);
-        } else {
-          next.play();
-        }
-        this.currentAction = next;
-      }
+      this.applyCrossfade(isMoving);
       this.wasMoving = isMoving;
     }
 
