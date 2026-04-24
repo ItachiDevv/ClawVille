@@ -31,9 +31,12 @@ Retarget Mixamo AnimationClips to VRM humanoid skeletons by rewriting track name
 - Only retarget `quaternion` and `position` tracks — skip `scale` tracks (interfere with rest-pose)
 
 **Three-vrm v3.5.2 API**
-- Use `humanoid.getRawBoneNode(vrmBoneName)` to get the actual scene Object3D for each bone
-- `removeUnnecessaryJoints` is deprecated → use `combineSkeletons` instead
+- Use `humanoid.getNormalizedBoneNode(vrmBoneName)` — NOT getRawBoneNode (raw bones are clobbered by vrm.update() every frame). Track names become `Normalized_<rawBoneName>.quaternion`.
+- Do NOT call `VRMUtils.combineSkeletons()` — it orphans raw humanoid bones (parent=null), breaking the SkinnedMesh skinning even when normalized bones are moving correctly. Confirmed via CDP probe 2026-04-23.
+- `removeUnnecessaryVertices` is safe (no bone graph mutation); keep it.
 - No `deepCloneVRM` in this version → module-level cache (one VRM per path), one player pet
+- Mixer rooted at `vrm.humanoid.normalizedHumanBonesRoot` (VRMHumanoidRig.root Object3D) OR `vrm.scene` — both work because VRMHumanoidRig is a direct child of vrm.scene and PropertyBinding.findNode does recursive subtree search. Code in vrm-character-animator.ts prefers normalizedHumanBonesRoot via `(vrm.humanoid as any)?.normalizedHumanBonesRoot`.
+- **dispose() bug**: `mixer.uncacheRoot(vrm.scene)` is WRONG when mixer was created with `normalizedHumanBonesRoot` as root — uncacheRoot looks up by root.uuid, so the wrong UUID means nothing is cleaned up. Fix: `const rigRoot = (this.vrm.humanoid as any)?.normalizedHumanBonesRoot; this.mixer.uncacheRoot(rigRoot ?? this.vrm.scene)`. This is a memory leak, not a T-pose cause on first load, but matters on unmount+remount cycles.
 
 **VRM feet at Y=0**
 - VRM spec mandates feet at origin. Skip `computeLocalMinY` / `pivotOffsetY` entirely.
