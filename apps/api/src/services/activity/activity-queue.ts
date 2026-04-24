@@ -43,15 +43,29 @@ import { getActivityDefinition } from '@clawville/shared';
 import { botPool } from './bots/bot-pool';
 
 // ─── Constants (backend §2.3) ──────────────────────────────────────────────
+//
+// Demo-mode tuning (2026-04-24): we are publicly demoing with low concurrent
+// traffic. Solo humans queue + nobody else shows up. The original 20s/45s
+// timeouts were sized for a busy production lobby where waiting longer
+// improves match quality (more humans, fewer bot fillers); in demo mode they
+// just turn the queue into a 45-second loading screen and people leave.
+//
+// New values: ~3s grace for any other humans, ~6s before bot backfill kicks
+// in. With the matchmaker sweep at 1s, a solo player sees their match start
+// inside 7 seconds — fast enough to feel responsive, slow enough that a
+// near-simultaneous second human still gets joined to the same room.
+//
+// Revisit when concurrent-queue counts climb. The original 20s/45s comment
+// block lives in git for reference (commit before this one).
 
 /** Drop to minFill if preferredFill not reached by this point */
-const QUEUE_TIMEOUT_MS = 20_000;
+const QUEUE_TIMEOUT_MS = 3_000;
 
 /** Activate bot backfill if minFill not met by this point */
-const EXTENDED_TIMEOUT_MS = 45_000;
+const EXTENDED_TIMEOUT_MS = 6_000;
 
 /** Hard kill / suggest-other-activity timeout */
-const QUEUE_HARD_TIMEOUT_MS = 60_000;
+const QUEUE_HARD_TIMEOUT_MS = 30_000;
 
 /** Matchmaker sweep cadence */
 const MATCH_SWEEP_INTERVAL_MS = 1_000;
