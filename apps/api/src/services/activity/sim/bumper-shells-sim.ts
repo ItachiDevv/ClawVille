@@ -365,12 +365,24 @@ class BumperShellsSim {
       });
     }
 
+    console.log(
+      `[bumper-shells-sim] startRoom ${roomId} — ${participantPetIds.length} participants (${botControllers.size} bots) — tick=${BUMPER_TICK_MS.toFixed(2)}ms`,
+    );
+
     // Boot the tick loop. Drift-correcting via Date.now() inside the
     // handler instead of a high-resolution accumulator — ample at 60Hz
     // for the round length we care about.
     state.intervalHandle = setInterval(() => {
       try {
         this.tickRoom(state);
+        // One-shot diagnostic: log first tick so we can confirm the sim
+        // is actually advancing. Subsequent ticks are silent (60Hz =
+        // log spam). Remove once stable in prod.
+        if (state.tick === 1) {
+          console.log(
+            `[bumper-shells-sim] room ${roomId} first tick complete — ${state.bodies.size} bodies, ${state.botControllers.size} bots active`,
+          );
+        }
       } catch (err) {
         console.error('[bumper-shells-sim] tick exception:', err);
         // Mark ended so the WS hub stops trying to broadcast — chunk #2's

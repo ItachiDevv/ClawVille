@@ -351,11 +351,17 @@ class ActivityRoomManager {
           // actually advances state, so before this fix every match sat
           // in COUNTDOWN forever. The timer is room-scoped + cleared on
           // any transition out of countdown (above) and on evictRoom().
+          console.log(
+            `[activity-room-manager] room ${roomId} → COUNTDOWN (will auto-advance to LIVE in ${COUNTDOWN_DURATION_MS}ms; ${room.participants.size} participants, hasBots=${room.hasBots})`,
+          );
           {
             const timer = setTimeout(() => {
               this.countdownTimers.delete(roomId);
               const r = this.rooms.get(roomId);
               if (!r || r.state !== 'countdown') return; // already aborted/transitioned
+              console.log(
+                `[activity-room-manager] room ${roomId} countdown timer fired → transitioning to LIVE (connectedCount=${this.connectedCount(r)})`,
+              );
               this.transitionRoom(roomId, 'live').catch((err) => {
                 console.error(
                   `[activity-room-manager] auto countdown→live failed for ${roomId}:`,
@@ -413,6 +419,11 @@ class ActivityRoomManager {
   async roomSweeper(): Promise<void> {
     const now = Date.now();
     const toAbort: Room[] = [];
+    // LIVE rooms with no WS connections must use `aborted_crash` (the
+    // FSM does not allow live → aborted; only live → aborted_crash).
+    // Tracked separately so the dispatch loop below picks the right
+    // target state per room.
+    const toAbortCrash: Room[] = [];
     const toGc: Room[] = [];
 
     for (const room of this.rooms.values()) {
@@ -427,7 +438,17 @@ class ActivityRoomManager {
           break;
         }
         case 'countdown': {
-          if (this.connectedCount(room) === 0) {
+          // Grace period — the client has to navigate from the lobby
+          // page to /activity/.../<roomId> and open a WebSocket. On
+          // mobile that easily takes 1-3 seconds. The original
+          // unguarded check raced the client and aborted rooms before
+          // the user could connect (manifested as "Match Starting…"
+          // sticking forever after the client finally connected to a
+          // room that was already aborted server-side).
+          if (
+            this.connectedCount(room) === 0 &&
+            now - (room.countdownStartedAt ?? room.createdAt) > 10_000
+          ) {
             toAbort.push(room);
           }
           break;
@@ -437,7 +458,7 @@ class ActivityRoomManager {
             this.connectedCount(room) === 0 &&
             now - room.lastTouchedAt > LIVE_NO_WS_TTL_MS
           ) {
-            toAbort.push(room);
+            toAbortCrash.push(room);
           }
           break;
         }
@@ -466,12 +487,28 @@ class ActivityRoomManager {
           payload: {
             activityId: room.activityId,
             roomId: room.id,
-            reason: room.state === 'live' ? 'live_no_ws' : 'pending_empty',
+            reason: 'pending_empty',
             playerCount: room.participants.size,
           },
         });
       } catch (err) {
         console.error('[activity-room-manager] sweeper abort failed:', err);
+      }
+    }
+    for (const room of toAbortCrash) {
+      try {
+        await this.transitionRoom(room.id, 'aborted_crash');
+        await logEvent({
+          eventType: 'activity.match.swept',
+          payload: {
+            activityId: room.activityId,
+            roomId: room.id,
+            reason: 'live_no_ws',
+            playerCount: room.participants.size,
+          },
+        });
+      } catch (err) {
+        console.error('[activity-room-manager] sweeper abort_crash failed:', err);
       }
     }
     for (const room of toGc) {
@@ -651,12 +688,19 @@ class ActivityRoomManager {
     // Invoke the sim-start hook AFTER the DB row is live so the sim
     // never runs against a countdown row. Registered by the sim
     // dispatcher in `apps/api/src/index.ts` at boot.
+    console.log(
+      `[activity-room-manager] room ${room.id} → LIVE — invoking liveTransitionFn (registered=${!!this.liveTransitionFn}, activityId=${room.activityId}, participantCount=${room.participants.size})`,
+    );
     if (this.liveTransitionFn) {
       try {
         this.liveTransitionFn(room);
       } catch (err) {
         console.error('[activity-room-manager] liveTransitionFn threw:', err);
       }
+    } else {
+      console.error(
+        `[activity-room-manager] CRITICAL: room ${room.id} reached LIVE but no liveTransitionFn registered — sim will never start`,
+      );
     }
   }
 
