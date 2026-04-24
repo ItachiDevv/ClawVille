@@ -14,7 +14,7 @@
  * "featured lot". It spins slowly on the Y axis and floats at 60% of dome
  * height (~228wu off the dome group origin).
  *
- * Position: (0, -2, 50) — unchanged from the old podium.
+ * Position: (0, -2, 150) — pushed south so it doesn't overlap the two flank stalls.
  *
  * GPU constraints (Iris Xe invariants):
  *   - NO drei Text/Billboard — hard crash
@@ -42,7 +42,7 @@ useGLTF.preload('/models/jellyfish.glb');
 // ---------------------------------------------------------------------------
 const DOME_X = 0;
 const DOME_Y = -2;
-const DOME_Z = 50;
+const DOME_Z = 150;
 
 // Target visual height for the dome (the centerpiece — give it presence)
 const DOME_TARGET_HEIGHT_WU = 380;

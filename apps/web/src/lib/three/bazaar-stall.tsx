@@ -7,7 +7,7 @@
  * duckcracker02, CC-BY). Optimised with gltf-transform WebP@512 — DO NOT
  * re-optimise.
  *
- * Position: (-260, -2, -60) — west of town center, mirrored by MarketplaceStall
+ * Position: (-600, -2, -60) — west of town center, mirrored by MarketplaceStall
  * to the east.
  *
  * GPU constraints (Iris Xe invariants):
@@ -31,7 +31,7 @@ useGLTF.preload('/models/bazaar-fish-stall.glb');
 // ---------------------------------------------------------------------------
 // World position
 // ---------------------------------------------------------------------------
-const STALL_X = -260;
+const STALL_X = -600;
 const STALL_Y = -2;
 const STALL_Z = -60;
 
