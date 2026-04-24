@@ -3,18 +3,19 @@
 /**
  * TownDirectorySign — wooden signboard at town center.
  *
- * Text is a PNG asset at /town-directory-sign.png. Loaded via drei
- * useTexture, which suspends — MUST be wrapped in <Suspense> at the
- * mount site (see World3DCanvas.tsx).
+ * Text uses the SAME pattern as building labels in arena-buildings.tsx:
+ * drei <Html> (no transform, no distanceFactor) with a compact
+ * div + background. Renders as screen-space DOM at the 3D position,
+ * guaranteed to show.
  *
  * GPU constraints (Iris Xe invariants):
  *   - NO drei Text/Billboard
  *   - NO InstancedMesh + ShaderMaterial
- *   - NO per-frame allocations — all geo/mat are module-scope
+ *   - NO per-frame allocations
  */
 
-import { memo, useMemo } from 'react';
-import { useTexture } from '@react-three/drei';
+import { memo } from 'react';
+import { Html } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
 
 const POST_W = 20;
@@ -35,19 +36,10 @@ const WOOD_COLOR = 0x7c4a1b;
 
 const postGeo = new THREE.BoxGeometry(POST_W, POST_H, POST_D);
 const plankGeo = new THREE.BoxGeometry(PLANK_W, PLANK_H, PLANK_D);
-const textPlaneGeo = new THREE.PlaneGeometry(PLANK_W - 40, PLANK_H - 40);
 
 const woodMat = new THREE.MeshBasicMaterial({ color: WOOD_COLOR });
 
 const TownDirectorySignInner = memo(function TownDirectorySignInner() {
-  const texture = useTexture('/town-directory-sign.png');
-
-  const textMat = useMemo(() => {
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.needsUpdate = true;
-    return new THREE.MeshBasicMaterial({ map: texture, color: 0xffffff });
-  }, [texture]);
-
   return (
     <group position={[SIGN_X, SIGN_Y, SIGN_Z]}>
       <mesh
@@ -68,12 +60,31 @@ const TownDirectorySignInner = memo(function TownDirectorySignInner() {
         position={[0, PLANK_Y, 0]}
         matrixAutoUpdate={false}
       />
-      <mesh
-        geometry={textPlaneGeo}
-        material={textMat}
-        position={[0, PLANK_Y, PLANK_D / 2 + 1]}
-        matrixAutoUpdate={false}
-      />
+
+      {/* Text label — same Html pattern as building labels (arena-buildings.tsx).
+          Positioned at the plank's center height. */}
+      <Html position={[0, PLANK_Y, 0]} center style={{ pointerEvents: 'none' }}>
+        <div
+          style={{
+            background: 'rgba(124, 74, 27, 0.95)',
+            border: '2px solid rgba(60, 35, 15, 0.9)',
+            borderRadius: 6,
+            padding: '10px 18px',
+            textAlign: 'center',
+            whiteSpace: 'nowrap',
+            userSelect: 'none',
+            fontFamily: 'Georgia, serif',
+            color: '#f5e6c8',
+          }}
+        >
+          <div style={{ fontWeight: 'bold', fontSize: 18, letterSpacing: 2, marginBottom: 4 }}>
+            TOWN CENTER
+          </div>
+          <div style={{ fontSize: 13, lineHeight: 1.3 }}>Auction</div>
+          <div style={{ fontSize: 13, lineHeight: 1.3 }}>Bazaar</div>
+          <div style={{ fontSize: 13, lineHeight: 1.3 }}>Marketplace</div>
+        </div>
+      </Html>
     </group>
   );
 });
