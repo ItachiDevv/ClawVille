@@ -270,9 +270,11 @@ Object.values(SPECIES_MODEL).forEach(({ path }) => useGLTF.preload(path));
 // frozen pose. Now bones animate correctly and the extent is larger — values
 // reduced to ~TARGET_NPC_HEIGHT=45 Y extent with Milady-comparable footprint.
 const SPECIES_WANDER_SCALE_OVERRIDE: Partial<Record<string, number>> = {
-  hermitcrab: 4,   // 2 was too small — Riptide rendered invisible. 4 gives ~54 wu Y-extent = near TARGET_NPC_HEIGHT=45.
-  sweet_crab:  7.6, // unchanged — bbox 56×53×67 reads acceptable in-game
-  lobster:     22, // was computed 40.17 — 278wu width too wide; 22 yields ~150wu width
+  hermitcrab: 4,   // ~54 wu Y-extent with the pre-C6 hermitcrab.glb
+  sweet_crab:  7.6, // bbox 56×53×67 reads acceptable in-game
+  // lobster override removed 2026-04-24 — was 22, calibrated against the
+  // meshopt-compressed lobster.glb. C6 compression was reverted for crustaceans;
+  // computeNpcScale now returns ~40 (matches player-pet PET_SCALE=40) which is correct.
 };
 
 // ---------------------------------------------------------------------------
