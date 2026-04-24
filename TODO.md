@@ -23,6 +23,67 @@ The onboarding flow now uses `/create-pet` (species/color/name) → `/create-pet
 
 ---
 
+## AuthenticationFlow
+
+Follow-ons from Phase 5 + Phase 5.1 (magic-link login, wallet identity, 'scape portal). Phase 5.1 is shipped + deployed. Everything below is natural next-step work that didn't need to block the 5.1 PR.
+
+### Support-chat + admin-identity-recovery (BLOCKED on support-chat infra)
+- `POST /api/admin/identity-recover` currently returns 501 with `FEATURE_GATE: admin_identity_recovery`.
+- Ships when: `support.identity_recovery_requests > 5/week` (metric tracked on `events` table).
+- Prereqs: support-chat service exists, identity-verification workflow defined, admin approval UI built.
+- Until then, users who lose both their agent config AND wallet-key backup AND Lucia cookie are permanently locked out of their pet.
+- Review deadline in the FEATURE_GATE comment: 2026-07-01.
+
+### Self-custody wallet graduation
+- Users who want to pull their pet wallet's funds to their own Phantom/Solflare.
+- No UI today. First-connect disclosure of the wallet secret is the *only* export path per the updated `wallets.ts` custodial doctrine.
+- Triggers: when pet wallets actually hold meaningful $CLAWVILLE. None do today — the SPL is live but no airdrops yet.
+- Scope: "Export my wallet to Phantom" button in pet-settings → one-time confirm + legal copy → displays the secret once (re-runs `ensureWalletWithFirstTimeSecret`-style disclosure against an existing row? or lifts the "no subsequent retrieval" rule with a second explicit gate?). Needs legal review before shipping per the custodial WARNING block in `wallets.ts`.
+
+### KEK rotation dry-run
+- Cloudflare Secrets Store holds `KEK_V1`. No rotation procedure has been exercised.
+- Runbook lives at `infra/cf-secrets-worker/README.md`: provision `KEK_V2`, re-wrap every DB row, flip `encryption_version`.
+- Should dry-run against a throwaway encrypted-column fixture once before we need it for real (e.g. suspected KEK compromise).
+- Non-urgent; noted so we don't discover gaps mid-incident.
+
+### Agent plugin cohort (candidate "Phase 5.2")
+- Hermes plugin shipped locally at `C:/Users/newma/documents/crypto/hermes` branch `clawville-integration` (commit `1fc55d78`, not pushed). Tested end-to-end: `hermes clawville login` → `reconnect` → `wallet` all work.
+- **Milady plugin** — `@clawville/app-clawville` on npm needs the new identity-keypair flow. Currently uses old Phase 5 string-based `identityKey`. Mirror of Hermes plugin.
+- **OpenClaw / IronClaw** — same pattern, for any agent framework that wants `clawville:identity:<userId>` + signed-challenge reconnect as their own CLI command.
+- If bundled as "Phase 5.2", ships as a batch PR across the plugin repos.
+
+### 'scape portal — external (BLOCKED on dex)
+- Our side (Phase 5.1) is 100% deployed.
+- 'scape's `/hosted-session/issue` accepts shared-secret bearer only — doesn't accept our signature headers yet.
+- Unblock requires one of:
+  - Dex merges the signature-auth PR (preferred, ~30 LOC)
+  - Dex shares his `HOSTED_SESSION_ISSUER_SECRET` → we add `SCAPE_SHARED_BEARER` env var + fallback auth path (~20 LOC on our side)
+- Reverse direction ('scape → ClawVille) also needs dex to add "Cross to ClawVille" button + "Link External Account" UI on his side.
+- Our `PARTNER_PUBKEYS` env is `{}` — populate once dex sends his pubkey.
+
+### Dashboard surfacing for Phase 5.1 events
+- Four new event types live on `events` table but `/dash` has no cards showing them.
+- Low-effort: add 4 cards to `apps/api/src/routes/dashboard.ts` matching the existing pattern (DAU card, engagement funnel, etc.).
+- Event types: `identity.issued`, `identity.reconnected`, `portal.scape.crossed` (+ `cross_failed`), `portal.scape.linked`.
+
+### Retry-After header on 429
+- Rate limiter currently returns 429 without a `Retry-After` header — well-behaved clients can't auto-back-off.
+- One-line change: surface `resetAt` from the limiter, compute remaining seconds, set `Retry-After: <seconds>`.
+- Small quality-of-life, no urgency.
+
+### Per-user rate limits (vs current per-IP)
+- Shared-egress users (office NAT, VPN, corporate) collectively share the same bucket.
+- For Lucia-authed endpoints (`/portal/scape`, `/portal/scape-link-code`, future `/admin/*`), key by `user.id` instead of IP.
+- Public endpoints stay per-IP.
+- Requires `resolveIdentity(c)` helper that prefers user.id → falls back to IP.
+
+### Sliding-window rate limiter via Redis
+- Only matters when we go multi-node on Hetzner. Single-node today so the in-memory Map is fine.
+- When needed: swap `createRateLimiter` impl to a Redis-backed sliding-window log.
+- Deferred until second API container exists.
+
+---
+
 ## 🔴 IMMEDIATE — Treasury wallet import
 
 **Drop the file at exactly this path:**
@@ -49,6 +110,27 @@ That will print the public key. Claude will then:
 
 Claude will never cat, print, or log the contents of the file at any point. The only
 way the secret bytes leave memory is encrypted, into the DB.
+
+---
+
+## 🔧 Infrastructure — VPS disk hygiene
+
+Coolify VPS (<PROD_VPS_IP>) hit 100% disk on 2026-04-16 from accumulated Docker images + build cache during rapid iteration. Pruned to 71% used / 22 GB free.
+
+**Root cause:** each push to master creates a new Docker image layer + build cache. Next.js + Turborepo builds are ~2 GB each; 30+ deploys in a session → 60 GB+ of reclaimable.
+
+**Tasks:**
+- [ ] **Docker log rotation** — add `/etc/docker/daemon.json`:
+  ```json
+  { "log-driver": "json-file", "log-opts": { "max-size": "50m", "max-file": "3" } }
+  ```
+  Then `systemctl restart docker`. Caps each container log at 150 MB (high-traffic api/web would otherwise balloon over weeks).
+- [ ] **Weekly prune cron** (Sunday 3 AM):
+  ```bash
+  echo '0 3 * * 0 docker system prune -af --filter "until=168h" >/dev/null 2>&1' | ssh root@<PROD_VPS_IP> "tee -a /etc/cron.d/clawville-prune"
+  ```
+  Keeps last 7 days of images for rollback; reclaims everything older.
+- [ ] **Disk >85% Telegram alert** — requires bot token + chat ID. Once supplied, cron hourly `df / | awk 'NR==2{if (+$5+0 > 85) send_push()}'` via `curl` to Bot API.
 
 ---
 
