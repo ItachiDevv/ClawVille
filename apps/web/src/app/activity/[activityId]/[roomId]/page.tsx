@@ -27,10 +27,11 @@ import { useActivityStore, selectSelfAlive } from '@/stores/activity';
 import { useActivityWs } from '@/hooks/useActivityWs';
 import { useActivityInput } from '@/hooks/useActivityInput';
 import BumperShellsHud from '@/components/game/bumper-shells-hud';
+import ReefRaceHud from '@/components/game/reef-race-hud';
 
-// 3da-owned scene — dynamic-imported so the WebGPU context only initializes
-// after the page mounts (avoids bundling Three.js WebGPU into the entry chunk
-// of every other route).
+// 3da-owned scenes — dynamic-imported so WebGPU context only initializes
+// after the page mounts (avoids bundling Three.js WebGPU into the entry
+// chunk of every other route).
 const BumperShellsScene = dynamic(
   () => import('@/lib/three/activities/bumper-shells/BumperShellsScene'),
   {
@@ -51,6 +52,31 @@ const BumperShellsScene = dynamic(
         }}
       >
         ENTERING ARENA…
+      </div>
+    ),
+  },
+);
+
+const ReefRaceScene = dynamic(
+  () => import('@/lib/three/activities/reef-race/ReefRaceScene'),
+  {
+    ssr: false,
+    loading: () => (
+      <div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: '#061020',
+          color: '#00E5FF',
+          fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
+          letterSpacing: '0.2em',
+          fontSize: 12,
+        }}
+      >
+        ENTERING REEF RACE…
       </div>
     ),
   },
@@ -125,12 +151,14 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
     };
   }, [shortCode, avatarId, activityId, roomId]);
 
-  // Activity gate — only `bumper-shells` is wired this chunk.
+  // Activity gate — bumper-shells and reef-race are wired.
   const activityIsLive = useMemo(() => isActivityLive(activityId), [activityId]);
   const activityDef = useMemo(() => getActivityDefinition(activityId), [activityId]);
 
+  const isSupportedActivity = activityId === 'bumper-shells' || activityId === 'reef-race';
+
   // Open WS as soon as we have everything.
-  const wsEnabled = !!avatarId && !!shortCode && activityIsLive && activityId === 'bumper-shells';
+  const wsEnabled = !!avatarId && !!shortCode && activityIsLive && isSupportedActivity;
   const { send, ping, status } = useActivityWs({
     activityId,
     roomId,
@@ -207,10 +235,10 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
     );
   }
 
-  if (activityId !== 'bumper-shells') {
+  if (!isSupportedActivity) {
     return (
       <FullScreenStatus
-        message={`${activityDef.title} ships in a later chunk — only Bumper Shells is wired today`}
+        message={`${activityDef.title} ships in a later chunk`}
         tone="warning"
         action={{ label: 'BACK TO LOBBY', onClick: () => router.push('/game') }}
       />
@@ -231,6 +259,31 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
     return <FullScreenStatus message="RESOLVING ROOM…" tone="neutral" />;
   }
 
+  // Reef Race
+  if (activityId === 'reef-race') {
+    return (
+      <main
+        style={{
+          position: 'fixed',
+          inset: 0,
+          background: '#061020',
+          overflow: 'hidden',
+        }}
+      >
+        <div style={{ position: 'absolute', inset: 0 }}>
+          <ReefRaceScene roomId={roomId} selfAvatarId={avatarId} />
+        </div>
+        <ReefRaceHud
+          onLeave={handleLeave}
+          onPlayAgain={() => router.push('/game?quickQueue=reef-race')}
+          activityId={activityId}
+          roomId={roomId}
+        />
+      </main>
+    );
+  }
+
+  // Bumper Shells (default)
   return (
     <main
       style={{
