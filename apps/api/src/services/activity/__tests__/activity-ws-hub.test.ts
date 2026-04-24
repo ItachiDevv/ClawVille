@@ -72,6 +72,17 @@ mock.module('@clawville/database', () => ({
   activityParties: {},
   activityPartyMembers: {},
   activityReplays: { id: 'id' },
+  // Chunk #7 — reward pipeline (transitively imported by room manager)
+  // needs these schemas + ledger table to resolve.
+  activityResults: { id: 'id', avatarId: 'avatar_id', activityId: 'activity_id' },
+  avatars: { id: 'id', flags: 'flags' },
+  clawTokenTransactions: { id: 'id' },
+}));
+
+// Chunk #7 — claw-token-ledger import chain.
+mock.module('../../claw-token-ledger', () => ({
+  creditClawTokens: () =>
+    Promise.resolve({ balanceAfter: 100, ledgerId: 'ledger-1' }),
 }));
 
 const { activityWsHub } = await import('../activity-ws-hub');
