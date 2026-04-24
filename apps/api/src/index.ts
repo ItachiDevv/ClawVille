@@ -16,6 +16,7 @@ import { activityRoomManager } from './services/activity/activity-room-manager';
 import { activityQueueService } from './services/activity/activity-queue';
 import { activityWsHub } from './services/activity/activity-ws-hub';
 import { bumperShellsSim } from './services/activity/sim/bumper-shells-sim';
+import { reefRaceSim } from './services/activity/sim/reef-race-sim';
 import { botPool } from './services/activity/bots/bot-pool';
 import { getBotControllerFactory } from './services/activity/bots/bot-controller';
 import { getBunWebSocketHelper } from './lib/bun-ws-adapter';
@@ -295,23 +296,37 @@ startSimulation(arenaMode);
       activityWsHub.broadcastEvent(roomId, frame);
     });
     activityRoomManager.setLiveTransitionFn((room) => {
-      if (room.activityId === 'bumper-shells') {
-        // Chunk #10 — instantiate bot controllers for any bot
-        // participants. The factory is per-activity so future activities
-        // (Reef Race, etc.) plug in via BOT_CONTROLLERS without
-        // touching this dispatcher.
-        const factory = getBotControllerFactory(room.activityId);
-        const bots = factory
-          ? Array.from(room.participants.values())
-              .filter((p) => p.subjectType === 'bot')
-              .map((p) => factory(p.avatarId))
-          : [];
-        bumperShellsSim.startRoom(
-          room.id,
-          room.activityId,
-          Array.from(room.participants.keys()),
-          { bots },
-        );
+      // Chunk #10 — instantiate bot controllers for any bot participants.
+      // The factory is per-activity so each sim (Bumper, Reef, future)
+      // pulls its own controller class without touching this dispatcher.
+      const factory = getBotControllerFactory(room.activityId);
+      const bots = factory
+        ? Array.from(room.participants.values())
+            .filter((p) => p.subjectType === 'bot')
+            .map((p) => factory(p.avatarId))
+        : [];
+      const participantIds = Array.from(room.participants.keys());
+      switch (room.activityId) {
+        case 'bumper-shells':
+          bumperShellsSim.startRoom(
+            room.id,
+            room.activityId,
+            participantIds,
+            { bots },
+          );
+          break;
+        case 'reef-race':
+          reefRaceSim.startRoom(
+            room.id,
+            room.activityId,
+            participantIds,
+            { bots },
+          );
+          break;
+        default:
+          console.warn(
+            `[API] No sim registered for activityId='${room.activityId}' — room ${room.id} will sit LIVE without a sim`,
+          );
       }
     });
 
@@ -335,7 +350,15 @@ startSimulation(arenaMode);
               score: r.score,
               scoreMs: null,
             }));
-        // case 'reef-race': return reefRaceSim.computeResults(...).map(...)
+        case 'reef-race':
+          return reefRaceSim
+            .computeResults(room.id)
+            .map((r) => ({
+              avatarId: r.avatarId,
+              placement: r.placement,
+              score: r.score,
+              scoreMs: r.scoreMs,
+            }));
         default:
           return [];
       }
@@ -370,6 +393,32 @@ startSimulation(arenaMode);
       // Unregister is triggered by the close; the hub's notifyForfeit
       // path runs with reason='integrity' because we set internalCloseCode
       // before safeClose.
+    });
+
+    // ─── Chunk #5 — Reef Race sim wiring (mirrors Bumper above) ─────────
+    reefRaceSim.setBroadcastFn((roomId, frame) => {
+      if (frame.type === 'snapshot.delta' || frame.type === 'snapshot.keyframe') {
+        activityWsHub.broadcastSnapshot(roomId, frame);
+      } else {
+        activityWsHub.broadcastEvent(roomId, frame);
+      }
+    });
+    reefRaceSim.setEndedFn((roomId) => {
+      void activityRoomManager
+        .transitionRoom(roomId, 'results')
+        .then(() => {
+          reefRaceSim.stopRoom(roomId);
+        })
+        .catch((err) => {
+          console.error('[API] Reef sim end → RESULTS transition failed:', err);
+        });
+    });
+    reefRaceSim.setIntegrityForfeitFn((roomId, avatarId) => {
+      activityWsHub.sendToAvatar(roomId, avatarId, {
+        type: 'error',
+        code: 'integrity',
+        message: 'anti-cheat forfeit (5 flags)',
+      });
     });
 
     await activityRoomManager.recoverOrphanedRooms();
