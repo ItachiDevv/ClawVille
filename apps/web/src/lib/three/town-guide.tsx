@@ -104,7 +104,21 @@ const TownGuideInner = memo(function TownGuideInner() {
   const spineBoneRef    = useRef<THREE.Bone | null>(null);
 
   useEffect(() => {
-    // Build all cycle actions: LoopRepeat, weight=0, always playing. Slot 0 gets weight=1.
+    // Build all cycle actions: LoopRepeat, weight=1 (default), enabled=false.
+    //
+    // three.js gotcha — fadeIn/fadeOut multiply the action's `weight` property
+    // by an interpolant ramping 0→1 (or 1→0). If we set `weight = 0` up front
+    // and then call `fadeIn()`, effective weight = 0 × (0→1) = 0 forever. The
+    // previous revision of this code hit exactly that trap and produced a
+    // deceptively-instrumented scene: all 9 actions "running" with mixer ticking
+    // time normally, zero bone output. Keep `weight = 1` and use `enabled` as
+    // the on/off switch for each slot.
+    //
+    // Non-active actions: enabled=false prevents `_update` from advancing time
+    // AND from writing tracks. When a slot becomes current via `reset()`, reset
+    // re-enables the action and zeros its time (so multi-frame clips like
+    // bellydancing restart from frame 0). Fade in schedules effective weight
+    // 0→1 via interpolant, which multiplies by weight=1 to give the full 0→1.
     const actions: THREE.AnimationAction[] = [];
     for (const name of CYCLE_CLIPS) {
       const clip = animations.find((c) => c.name === name);
@@ -115,14 +129,15 @@ const TownGuideInner = memo(function TownGuideInner() {
       const action = mixer.clipAction(clip, cloned);
       action.setLoop(THREE.LoopRepeat, Infinity);
       action.clampWhenFinished = false;
-      action.enabled = true;
-      action.weight  = 0;
       action.timeScale = 1;
-      action.play();
+      action.enabled = false;   // gated off initially
+      action.play();            // register with mixer; enabled=false keeps it silent
       actions.push(action);
     }
-    // Slot 0 starts at full weight.
-    if (actions[0]) actions[0].weight = 1;
+    // Slot 0 starts active.
+    if (actions[0]) {
+      actions[0].enabled = true;
+    }
     cycleActionsRef.current = actions;
     cycleIndexRef.current   = 0;
     slotAdvanceAtRef.current = SLOT_DURATION_SEC;
