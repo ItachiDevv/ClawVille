@@ -56,11 +56,27 @@ export const clientPingFrameSchema = z.object({
 export const clientChatFrameSchema = z.object({
   type: z.literal('chat'),
   text: z.string().min(1).max(140),
+  /**
+   * Chunk #11 (spectator mode) — when `true`, the server should route
+   * this chat to spectator-only subscribers (eliminated players watching
+   * the round). When omitted/false the chat targets the active-player
+   * room channel (existing behavior). Server-side filtering is deferred
+   * to a future chunk; the client tags every spectator-channel message
+   * with `spectator: true` so the backend can split the channels later.
+   */
+  spectator: z.boolean().optional(),
 });
 
 export const clientEmoteFrameSchema = z.object({
   type: z.literal('emote'),
   emoteId: z.string().min(1).max(64),
+  /**
+   * Chunk #11 — spectator-originated emotes (cheers / taunts) tagged so
+   * the server can later choose to broadcast them above the spectated
+   * player's avatar instead of the spectator. 3D rendering of cheers is
+   * deferred to chunk #12 polish.
+   */
+  spectator: z.boolean().optional(),
 });
 
 export const clientLeaveFrameSchema = z.object({
@@ -222,7 +238,24 @@ export type ServerFrame =
       spawnId: string;
       collectorAvatarId: string;
     }
-  | { type: 'chat'; avatarId: string; text: string }
+  | {
+      type: 'chat';
+      avatarId: string;
+      text: string;
+      /**
+       * Chunk #11 — when `true`, indicates the chat originated on the
+       * spectator channel. Clients route to the spectator chat panel
+       * instead of the active-player chat. Backwards-compatible (legacy
+       * server emissions omit the field, treated as active-player chat).
+       */
+      spectator?: boolean;
+      /**
+       * Chunk #11 — emote channel marker. When set, the chat is the
+       * server's broadcast of an `emote` frame (cheer/taunt). Clients
+       * may render with an emote icon instead of a chat bubble.
+       */
+      emote?: { emoteId: string };
+    }
   | { type: 'pong'; sentAt: number; serverTime: number }
   | { type: 'error'; code: string; message: string };
 
