@@ -135,6 +135,17 @@ export class VRMCharacterAnimator {
   private ready = false;
   private wasMoving = false;
 
+  // Verse Engine skeleton.update batching (B2 2026-04-24).
+  // Three.js WebGLRenderer calls skeleton.update() once per SkinnedMesh before
+  // drawing it — but a VRM typically shares one skeleton across 3-4 SkinnedMeshes
+  // (body, hair, face, outfit). That's 3× redundant calls per VRM per frame.
+  // Pattern from VerseEngine/three-avatar avatar.ts:614:
+  //   replace each mesh's skeleton.update with a no-op, cache the original,
+  //   and invoke it once per unique skeleton per tick from our update methods.
+  // Declared here; populated in constructor after VRM is available.
+  // Reference: https://github.com/VerseEngine/three-avatar/blob/main/src/avatar.ts#L614
+  private _skeletonUpdateFns: Array<() => void> = [];
+
   constructor(vrm: VRM) {
     this.vrm = vrm;
     // Mixer is rooted at vrm.scene so PropertyBinding can resolve
@@ -143,6 +154,25 @@ export class VRMCharacterAnimator {
     // (Previous workaround rooted at normalizedHumanBonesRoot; removed because
     //  the retargeter now applies the correct rest-pose-differential transform.)
     this.mixer = new THREE.AnimationMixer(vrm.scene);
+
+    // Wire skeleton batching: collect one update fn per unique skeleton,
+    // replace each SkinnedMesh's skeleton.update with a no-op so the renderer
+    // doesn't call it N times per frame (once per mesh that shares the skeleton).
+    const seenSkeletons = new Set<THREE.Skeleton>();
+    vrm.scene.traverse((obj) => {
+      const sm = obj as THREE.SkinnedMesh;
+      if (!sm.isSkinnedMesh || !sm.skeleton) return;
+      if (seenSkeletons.has(sm.skeleton)) {
+        // Second+ mesh sharing this skeleton — no-op its update too so the
+        // renderer skips it, but we already have the original fn cached.
+        sm.skeleton.update = () => {};
+        return;
+      }
+      seenSkeletons.add(sm.skeleton);
+      const originalUpdate = sm.skeleton.update.bind(sm.skeleton);
+      this._skeletonUpdateFns.push(originalUpdate);
+      sm.skeleton.update = () => {}; // renderer skips; we call manually below
+    });
   }
 
   /**
@@ -243,6 +273,9 @@ export class VRMCharacterAnimator {
     }
 
     this.mixer.update(delta);
+    // Flush batched skeleton.update() once per unique skeleton (Verse Engine pattern).
+    // The renderer's per-mesh calls are no-ops; we run each unique skeleton exactly once.
+    for (const fn of this._skeletonUpdateFns) fn();
     this.vrm.update(delta);
   }
 
@@ -298,6 +331,9 @@ export class VRMCharacterAnimator {
     }
 
     this.mixer.update(delta);
+    // Flush batched skeleton.update() once per unique skeleton (Verse Engine pattern).
+    // Must run after mixer.update() so bone world matrices are current before draw.
+    for (const fn of this._skeletonUpdateFns) fn();
     // Note: vrm.update() intentionally skipped — caller must call updateSpringOnly()
     // at the desired spring-bone rate (e.g. every 2nd frame for idle NPCs).
   }
@@ -326,6 +362,25 @@ export class VRMCharacterAnimator {
   dispose(): void {
     this.mixer.stopAllAction();
     this.mixer.uncacheRoot(this.vrm.scene);
+
+    // Restore skeleton.update on all SkinnedMesh nodes so the VRM is safe
+    // if a new animator is constructed from the same VRM instance (hot-reload
+    // or re-mount). The restored fns are the original bound methods captured
+    // in the constructor.
+    let fnIdx = 0;
+    const seenSkeletons = new Set<THREE.Skeleton>();
+    this.vrm.scene.traverse((obj) => {
+      const sm = obj as THREE.SkinnedMesh;
+      if (!sm.isSkinnedMesh || !sm.skeleton) return;
+      if (seenSkeletons.has(sm.skeleton)) return;
+      seenSkeletons.add(sm.skeleton);
+      if (this._skeletonUpdateFns[fnIdx]) {
+        sm.skeleton.update = this._skeletonUpdateFns[fnIdx]!;
+        fnIdx++;
+      }
+    });
+    this._skeletonUpdateFns = [];
+
     // VRMUtils.deepDispose on the VRM scene is the caller's responsibility
     // (matches the pattern used in player-avatar.tsx for GLB material disposal)
   }
