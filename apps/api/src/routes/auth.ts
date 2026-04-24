@@ -41,7 +41,16 @@ authRoutes.post('/signup', async (c) => {
   const result = signupSchema.safeParse(body);
 
   if (!result.success) {
-    throw new HTTPException(400, { message: 'Invalid input' });
+    // Surface the specific validation issue so the user knows WHY they
+    // were rejected (wrong email format? password too short?). Previously
+    // the generic "Invalid input" left users staring at a form that
+    // looked fine to them. Zod's first issue is enough context: we only
+    // validate 3 fields and any single failure is user-actionable.
+    const first = result.error.issues[0];
+    const field = first.path.join('.') || 'input';
+    throw new HTTPException(400, {
+      message: `Invalid ${field}: ${first.message}`,
+    });
   }
 
   const { email: rawEmail, password, name } = result.data;
