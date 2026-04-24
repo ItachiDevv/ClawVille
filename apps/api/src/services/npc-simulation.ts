@@ -790,8 +790,21 @@ class NpcSimulation {
     });
     if (others.length === 0) { this.planCenterWander(npc); return; }
     const target = others[Math.floor(Math.random() * others.length)];
-    // Stand-off: aim 80wu from the target at a random angle, not AT the target.
-    const standOff = 80;
+    // If approacher is already within the stand-off radius of this target,
+    // approaching them again just keeps us clustered. Wander instead.
+    const dx0 = target.x - npc.x; const dy0 = target.y - npc.y;
+    const distToTargetSq = dx0 * dx0 + dy0 * dy0;
+    const standOff = 250;
+    if (distToTargetSq <= standOff * standOff) {
+      this.planCenterWander(npc);
+      return;
+    }
+    // Stand-off: aim `standOff` wu from the target at a random angle, not AT
+    // the target. 2026-04-24: bumped 80 → 250 because the 80wu gap wasn't
+    // enough separation — all 3 crustaceans + 5 Miladys chain-approached each
+    // other into an ~100wu cluster. 250wu is roughly 2.5× a Milady's visible
+    // height (112 * 1.6m ≈ 180 wu), enough daylight between NPCs that they
+    // read as distinct.
     const approachAngle = Math.random() * Math.PI * 2;
     const tx = target.x + Math.cos(approachAngle) * standOff;
     const ty = target.y + Math.sin(approachAngle) * standOff;
@@ -802,7 +815,10 @@ class NpcSimulation {
       npc.intentDescription = `Approaching ${target.name}`;
       npc.behaviorCooldown = 80;
     } else {
-      npc.behaviorCooldown = 20;
+      // Pathfinding failed (stand-off point may be inside a blocked tile or
+      // off-map). Fall back to a center-wander instead of sitting idle —
+      // otherwise the NPC just loops back into the same failing approach.
+      this.planCenterWander(npc);
     }
   }
 
