@@ -4,6 +4,7 @@ import { memo, useMemo, useState, useEffect, useRef } from 'react';
 import { Html } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
 import { useNpcStore, type NpcChatBubble, type NpcSpriteState } from '@/stores/npc';
+import { useShallow } from 'zustand/react/shallow';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 
 // ---------------------------------------------------------------------------
@@ -160,13 +161,12 @@ const SpeechBubble = memo(function SpeechBubble({ npc, bubble }: SpeechBubblePro
 // ---------------------------------------------------------------------------
 
 function NpcSpeechBubbles() {
-  const chatBubbles = useNpcStore((s) => s.chatBubbles);
-  // PERF: subscribe only to `npcs` for position data. chatBubbles drive which
-  // NPCs need a bubble — npcs subscription is needed only for XZ position lookup.
-  // Use getState() inside the map for position at render time to decouple
-  // position reads from the subscription. The chatBubbles selector already
-  // triggers re-renders when bubble state changes.
-  const npcs = useNpcStore((s) => s.npcs);
+  // useShallow on both array selectors so that SSE ticks where chatBubbles or
+  // npcs array content is unchanged (same element references) don't cause re-renders.
+  // Combined with B7 (NPC object identity preservation), npcs stays stable when
+  // no NPC fields changed — preventing the useMemo(npcMap) from rebuilding each tick.
+  const chatBubbles = useNpcStore(useShallow((s) => s.chatBubbles));
+  const npcs = useNpcStore(useShallow((s) => s.npcs));
 
   // Tick every second so expired bubbles are removed from the rendered output
   // even when the zustand store stops updating (quiet demo mode or idle server).

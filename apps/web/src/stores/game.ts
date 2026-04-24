@@ -1,6 +1,18 @@
 import { create } from 'zustand';
 import { ACTIVITY_REGISTRY } from '@clawville/shared';
 
+// ---------------------------------------------------------------------------
+// B6 — module-scope mutable position ref
+// Callers that need per-frame position accuracy (movement physics, click-path
+// following, proximity checks) read from this ref without triggering React
+// re-renders. The reactive zustand field (petPosition) is throttled to 10 Hz
+// via setPetPosition so that subscribers like Minimap rebuild at most 10×/sec
+// instead of 60×/sec during movement.
+// ---------------------------------------------------------------------------
+export const petPositionRef: { x: number; y: number } = { x: 2560, y: 2940 };
+// Module-scope timestamp of the last reactive (zustand set) write.
+let lastReactiveWriteAt = 0;
+
 export type MovementDirection = 'idle' | 'left' | 'right' | 'up' | 'down';
 
 export type ControlMode = 'explore' | 'npc' | 'player' | 'autonomous';
@@ -401,7 +413,20 @@ export const useGameStore = create<GameState>((set, get) => ({
   // z=+200 (guide z=+100) rendered the podium wrapping the guide; z=+240 places
   // the guide fully south of the podium's 144u bottom radius at ground level.
   petPosition: { x: 2560, y: 2940 },
-  setPetPosition: (x, y) => set({ petPosition: { x, y } }),
+  setPetPosition: (x, y) => {
+    // Always update the module-scope ref — zero React overhead, safe to call
+    // at 60 Hz from useFrame / rAF loops. Per-frame readers (player-pet.tsx,
+    // use-game-loop.ts) switch to petPositionRef so they never touch React.
+    petPositionRef.x = x;
+    petPositionRef.y = y;
+    // Throttle the reactive zustand write to 10 Hz (100 ms) to prevent the
+    // Minimap SVG (and any other subscriber) from rebuilding on every frame.
+    const now = performance.now();
+    if (now - lastReactiveWriteAt >= 100) {
+      lastReactiveWriteAt = now;
+      set({ petPosition: { x, y } });
+    }
+  },
 
   movementDirection: 'idle',
   setMovementDirection: (dir) => set({ movementDirection: dir }),
