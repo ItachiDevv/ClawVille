@@ -22,7 +22,9 @@
  *   - No per-frame allocations in useFrame (module-scope scratch vectors only).
  *   - 1 shadow map at 512×512.
  *   - 0 post-processing passes.
- *   - Fog far (900) < camera.far (1500).
+ *   - Fog near (1400) / far (1500) — pushed past camera distance (~1140wu) so
+ *     fog only touches clip-plane fringe, not the arena. Old 200/900 made the
+ *     entire arena invisible (all geometry was > FOG_FAR from the ortho cam).
  *   - OrbitControls added only for 'free' mode; disabled on mode exit.
  *   - ONE camera per client across all modes — no extra shadow frusta.
  *
@@ -352,10 +354,22 @@ function BumperLight() {
         position={DIR_POSITION}
         castShadow
       />
+      {/*
+       * Fill light: secondary directional from below/behind — no shadow cast.
+       * Lifts PBR lobster shells out of shadow on their underside when viewed
+       * top-down from the ortho camera. Intensity kept low (0.6) to avoid
+       * washing out the key light's depth cues.
+       */}
+      <directionalLight
+        color="#aaccff"
+        intensity={0.6}
+        position={[-150, -200, -100]}
+        castShadow={false}
+      />
       {/* Neon accent point lights — no shadows, static position. */}
-      <pointLight color="#00ccff" intensity={0.6} distance={400} decay={2} position={[400,  80,  0]}  castShadow={false} />
-      <pointLight color="#ff66aa" intensity={0.6} distance={400} decay={2} position={[-300, 80, 350]} castShadow={false} />
-      <pointLight color="#aa44ff" intensity={0.5} distance={350} decay={2} position={[0,    80, -400]} castShadow={false} />
+      <pointLight color="#00ccff" intensity={1.2} distance={600} decay={2} position={[400,  80,  0]}  castShadow={false} />
+      <pointLight color="#ff66aa" intensity={1.2} distance={600} decay={2} position={[-300, 80, 350]} castShadow={false} />
+      <pointLight color="#aa44ff" intensity={1.0} distance={550} decay={2} position={[0,    80, -400]} castShadow={false} />
     </>
   );
 }
