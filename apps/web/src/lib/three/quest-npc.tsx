@@ -113,7 +113,7 @@ const QuestNpcInner = memo(function QuestNpcInner() {
     const sz  = new THREE.Vector3();
     box.getSize(sz);
     const maxDim = Math.max(sz.x, sz.y, sz.z);
-    return { cloned: c, npcScale: maxDim > 0 ? 61 / maxDim : 1 };
+    return { cloned: c, npcScale: maxDim > 0 ? 80 / maxDim : 1 };
   }, [scene]);
 
   useEffect(() => {

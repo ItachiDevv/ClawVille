@@ -27,6 +27,7 @@ import BazaarStall from '@/lib/three/bazaar-stall';
 import MarketplaceStall from '@/lib/three/marketplace-stall';
 import BountyBoardObject from '@/lib/three/bounty-board-object';
 import AuctionPodium from '@/lib/three/auction-podium';
+import TownDirectorySign from '@/lib/three/town-directory-sign';
 import ActivityIndicators from '@/lib/three/activity-indicators';
 import FloatingTexts3D from '@/lib/three/floating-text-3d';
 import NpcSpeechBubbles from '@/lib/three/npc-speech-bubbles';
@@ -672,8 +673,9 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       <TownGuide />
       <BazaarStall />
       <MarketplaceStall />
-      <BountyBoardObject />
       <AuctionPodium />
+      {/* Wooden signboard directory — informational landmark at centre of stall row */}
+      <TownDirectorySign />
 
       {/* NPC speech bubbles — Dom overlay, renders chat from SSE stream */}
       <NpcSpeechBubbles />
