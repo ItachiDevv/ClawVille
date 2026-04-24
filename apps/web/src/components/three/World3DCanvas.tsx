@@ -23,7 +23,8 @@ import UnderwaterAtmosphere from '@/lib/three/underwater-atmosphere';
 import UnderwaterLightRays from '@/lib/three/underwater-light-rays';
 import QuestNpc from '@/lib/three/quest-npc';
 import TownGuide from '@/lib/three/town-guide';
-import BazaarPedestals from '@/lib/three/bazaar-pedestals';
+import BazaarStall from '@/lib/three/bazaar-stall';
+import MarketplaceStall from '@/lib/three/marketplace-stall';
 import BountyBoardObject from '@/lib/three/bounty-board-object';
 import AuctionPodium from '@/lib/three/auction-podium';
 import ActivityIndicators from '@/lib/three/activity-indicators';
@@ -669,7 +670,8 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       {/* Town center — guide NPC + scaled marketplace anchors (8× from original sizes) */}
       <QuestNpc />
       <TownGuide />
-      <BazaarPedestals />
+      <BazaarStall />
+      <MarketplaceStall />
       <BountyBoardObject />
       <AuctionPodium />
 

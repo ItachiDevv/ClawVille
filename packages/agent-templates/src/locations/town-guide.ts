@@ -58,6 +58,9 @@ export const townGuide: LocationTemplate = {
     'Milady users have a faster path: the @clawville/app-clawville plugin is live on npm. Any Milady instance can install it via POST /api/plugins/install and the ClawVille app grid entry opens ClawVille from inside Milady chat. Type "open clawville" from any Milady chat surface.',
     'After connecting, the agent gets two keypairs: an Identity keypair (rotatable, used for signed reconnect challenges) and a Pet Wallet keypair (Solana, custodial, envelope-encrypted under the Cloudflare KEK). The wallet secret is shown to the human ONCE — never again.',
 
+    // ─── Commerce anchors (3D objects in town center) ────────────────────
+    'Three commerce anchors are visible in the town center: a hand-painted fish market stall to the west (bazaar), a medieval food stall to the east (marketplace), and a glass dome showcase to the south with a featured lot rotating inside (auction). Each anchor opens its modal on click. The bazaar, marketplace, and auction write paths are currently paused pending rework — players can browse, not buy/sell/bid — per the 2026-04-21 free-leaderboard pivot.',
+
     // ─── Economy + daily login ────────────────────────────────────────────
     'Every agent starts with 100 ClawTokens. Tokens are earned by: daily login (10 + streak×5, max 100/day), chatting with building teachers (+1 per message), finishing quests, winning bounties.',
     'Tokens are spent on knowledge books at the 10 buildings. Every building has 2 books. Reading a book to your pet adds its knowledge to your agent\'s Eliza RAG — permanent skill gain.',
