@@ -4,7 +4,7 @@ import { useRef, useMemo, useEffect, Suspense } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
-import { useGameStore } from '@/stores/game';
+import { useGameStore, petPositionRef } from '@/stores/game';
 import {
   MAP_WIDTH,
   MAP_HEIGHT,
@@ -319,8 +319,8 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
     if (!hasInput && store.clickPath && store.clickPath.length > 0) {
       const waypoint = store.clickPath[store.clickPathIndex];
       if (waypoint) {
-        const dx = waypoint.x - store.avatarPosition.x;
-        const dy = waypoint.y - store.avatarPosition.y;
+        const dx = waypoint.x - petPositionRef.x;
+        const dy = waypoint.y - petPositionRef.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
         if (dist < 6) {
           if (store.clickPathIndex >= store.clickPath.length - 1) {
@@ -347,16 +347,18 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
     store.setMovementDirection(dir as any);
 
     if (vx !== 0 || vy !== 0) {
-      let newX = store.avatarPosition.x + vx * SPEED * delta;
-      let newY = store.avatarPosition.y + vy * SPEED * delta;
+      // Read from ref (zero React overhead) for current position, write via
+      // setPetPosition which updates both ref + throttled reactive store.
+      let newX = petPositionRef.x + vx * SPEED * delta;
+      let newY = petPositionRef.y + vy * SPEED * delta;
       newX = Math.max(16, Math.min(MAP_WIDTH - 16, newX));
       newY = Math.max(16, Math.min(MAP_HEIGHT - 16, newY));
       store.setPetPosition(newX, newY);
     }
 
     {
-      const wx = store.avatarPosition.x - HALF_W;
-      const wz = store.avatarPosition.y - HALF_H;
+      const wx = petPositionRef.x - HALF_W;
+      const wz = petPositionRef.y - HALF_H;
       const nearest = findNearestCharacter(wx, wz);
       const nearId = nearest ? nearest.buildingId : null;
       const nearName = nearest ? nearest.characterName : null;
@@ -366,7 +368,7 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
 
     const group = groupRef.current;
     if (!group) return;
-    const [wx, , wz] = mapToWorld(store.avatarPosition.x, store.avatarPosition.y);
+    const [wx, , wz] = mapToWorld(petPositionRef.x, petPositionRef.y);
     group.position.x = wx;
     group.position.z = wz;
 
@@ -591,8 +593,8 @@ function PlayerPetGLBInner() {
     if (!hasInput && store.clickPath && store.clickPath.length > 0) {
       const waypoint = store.clickPath[store.clickPathIndex];
       if (waypoint) {
-        const dx = waypoint.x - store.avatarPosition.x;
-        const dy = waypoint.y - store.avatarPosition.y;
+        const dx = waypoint.x - petPositionRef.x;
+        const dy = waypoint.y - petPositionRef.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
         if (dist < 6) {
           if (store.clickPathIndex >= store.clickPath.length - 1) {
@@ -619,8 +621,10 @@ function PlayerPetGLBInner() {
     store.setMovementDirection(dir as any);
 
     if (vx !== 0 || vy !== 0) {
-      let newX = store.avatarPosition.x + vx * SPEED * delta;
-      let newY = store.avatarPosition.y + vy * SPEED * delta;
+      // Read from ref (zero React overhead) for current position, write via
+      // setPetPosition which updates both ref + throttled reactive store.
+      let newX = petPositionRef.x + vx * SPEED * delta;
+      let newY = petPositionRef.y + vy * SPEED * delta;
       newX = Math.max(16, Math.min(MAP_WIDTH - 16, newX));
       newY = Math.max(16, Math.min(MAP_HEIGHT - 16, newY));
       store.setPetPosition(newX, newY);
@@ -631,8 +635,8 @@ function PlayerPetGLBInner() {
     // the avatar stops or is repositioned externally (clickPath, setPetPosition).
     // findNearestCharacter takes world-space primitives — zero allocation.
     {
-      const wx = store.avatarPosition.x - HALF_W;
-      const wz = store.avatarPosition.y - HALF_H;
+      const wx = petPositionRef.x - HALF_W;
+      const wz = petPositionRef.y - HALF_H;
       const nearest = findNearestCharacter(wx, wz);
       const nearId = nearest ? nearest.buildingId : null;
       const nearName = nearest ? nearest.characterName : null;
@@ -642,7 +646,7 @@ function PlayerPetGLBInner() {
 
     const group = groupRef.current;
     if (!group) return;
-    const [wx, , wz] = mapToWorld(store.avatarPosition.x, store.avatarPosition.y);
+    const [wx, , wz] = mapToWorld(petPositionRef.x, petPositionRef.y);
     group.position.x = wx;
     group.position.z = wz;
 

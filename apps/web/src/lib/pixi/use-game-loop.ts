@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import { useGameStore, type MovementDirection } from '@/stores/game';
+import { useGameStore, petPositionRef, type MovementDirection } from '@/stores/game';
 import { useKeyboard } from './use-keyboard';
 
 const SPEED = 200; // pixels per second
@@ -66,8 +66,8 @@ export function useGameLoop({ mapWidth, mapHeight, buildingZones, isSpectator = 
         store.setMovementDirection(dir);
 
         const dt = delta / 60;
-        let newX = store.avatarPosition.x + vx * SPEED * dt;
-        let newY = store.avatarPosition.y + vy * SPEED * dt;
+        let newX = petPositionRef.x + vx * SPEED * dt;
+        let newY = petPositionRef.y + vy * SPEED * dt;
         newX = Math.max(16, Math.min(mapWidth - 16, newX));
         newY = Math.max(16, Math.min(mapHeight - 16, newY));
         store.setPetPosition(newX, newY);
@@ -127,8 +127,8 @@ export function useGameLoop({ mapWidth, mapHeight, buildingZones, isSpectator = 
 
       // Apply velocity (delta is in frames at 60fps, so delta/60 gives seconds)
       const dt = delta / 60;
-      let newX = store.avatarPosition.x + vx * SPEED * dt;
-      let newY = store.avatarPosition.y + vy * SPEED * dt;
+      let newX = petPositionRef.x + vx * SPEED * dt;
+      let newY = petPositionRef.y + vy * SPEED * dt;
 
       // Clamp to map bounds (with 16px margin for avatar size)
       newX = Math.max(16, Math.min(mapWidth - 16, newX));
