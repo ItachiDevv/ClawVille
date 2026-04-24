@@ -105,11 +105,9 @@ const plankGeo = new THREE.BoxGeometry(PLANK_W, PLANK_H, PLANK_D);
 const textPlaneGeo = new THREE.PlaneGeometry(PLANK_W - 40, PLANK_H - 40);
 
 const woodMat = new THREE.MeshBasicNodeMaterial();
-// @ts-expect-error — TSL color setter on node material
 woodMat.color = new THREE.Color(WOOD_COLOR);
 
 const textMat = new THREE.MeshBasicNodeMaterial();
-// @ts-expect-error — TSL material exposes `map` like WebGL path
 textMat.map = textTexture;
 textMat.transparent = false;
 
