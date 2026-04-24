@@ -939,23 +939,16 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // player-avatar.tsx line 345 formula exactly. DO NOT CHANGE — the negated
     // `-vx` variant makes Miladys walk backwards.
     //
-    // HYBRID SOURCE: server direction is AUTHORITATIVE when provided
-    // ('up'/'down'/'left'/'right'). Use continuous velocity-derived rotation
-    // ONLY when velocity is clearly above noise (magSq > 4 = 2 wu/frame). The
-    // lower 0.25 threshold let sub-pixel jitter during lerp-convergence pick
-    // random facing directions — user saw "some walk sideways, some backwards"
-    // because Miladys at-destination had near-zero velocity with random sign.
+    // Use velocity whenever there's ANY motion above sub-pixel jitter.
+    // Cardinal fallback (VRM_DIR_ROTATION) was tried but produced wrong facing
+    // on diagonal movement — server's discrete 4-direction doesn't know NW/NE/etc.
+    // If velocity is below threshold, leave rotation unchanged (no cardinal snap).
     const vx = currentPos.current.x - prevX;
     const vz = currentPos.current.z - prevZ;
     const velMagSq = vx * vx + vz * vz;
     let targetRot: number | null = null;
-    if (velMagSq > 4 && d.direction !== 'idle') {
-      // Moving faster than 2 wu/frame — velocity is reliable.
+    if (velMagSq > 0.1 && d.direction !== 'idle') {
       targetRot = Math.atan2(vx, -vz);
-    } else if (d.direction !== 'idle') {
-      // Moving but slow (between waypoints, converged to target) — trust server's
-      // cardinal direction. VRM faces -Z at rest, so down=PI, up=0, right=PI/2, left=-PI/2.
-      targetRot = VRM_DIR_ROTATION[d.direction] ?? null;
     }
     if (targetRot != null) {
       let diff = targetRot - currentRotY.current;
