@@ -3,182 +3,294 @@
  *
  * Retargets a Mixamo AnimationClip to a VRM humanoid skeleton.
  *
- * Mixamo bones are named `mixamorig:Hips`, `mixamorig:Head`, etc.
- * VRM humanoid bones use the VRMHumanBoneName enum (`hips`, `head`, etc.)
- * connected to arbitrary Object3D names in the actual scene graph.
+ * This is a direct port of Milady's retargetMixamoGltfToVrm (MIT-licensed):
+ *   milady-ai/milady/packages/app-core/src/components/avatar/retargetMixamoGltfToVrm.ts
  *
- * Strategy (the VRoid Studio published approach, adapted):
- *   1. Build a map: mixamoBoneName → VRM raw bone Object3D
- *   2. Walk every KeyframeTrack in the clip
- *   3. Parse the bone name from the track name (e.g. `mixamorig:Hips.quaternion`)
- *   4. Find the corresponding VRM raw bone node
- *   5. Rewrite the track name to target the VRM node's UUID path
- *   6. Return a new AnimationClip bound to the VRM's scene
+ * Root cause of the permanent T-pose bug (naive clone+rename approach):
+ *   A Mixamo bone's keyframe quaternions are stored relative to the Mixamo
+ *   skeleton's rest pose (T-pose). A VRM skeleton has a DIFFERENT rest pose.
+ *   If you simply rename the track to point at the VRM bone without transforming
+ *   the quaternion values, the AnimationMixer applies Mixamo-space rotations to
+ *   VRM-space bones. Since the reference frames disagree, the character stays
+ *   frozen at whatever pose results from interpreting Mixamo-T-pose quaternions
+ *   in VRM-rest-pose space — which is T-pose.
  *
- * VRM 0.x models face -Z (same as +Z forward with a π rotation applied by
- * rotateVRM0). VRM 1.0 models face -Z natively. Both cases are handled because
- * we load and call VRMUtils.rotateVRM0() before retargeting, so the scene
- * rotation is already π for VRM 0 models.
+ * The fix — rest-pose-differential quaternion transform:
+ *   For each Mixamo bone, compute:
+ *     restRotationInverse   = world rotation of the Mixamo rig node at rest, inverted
+ *     parentRestWorldRotation = world rotation of its parent node at rest
+ *   Then transform every quaternion keyframe q:
+ *     q' = parentRestWorldRotation * q * restRotationInverse
+ *   This converts q from Mixamo-rest-relative space into the coordinate frame that
+ *   the VRM AnimationMixer expects. Additionally, VRM 0.x models require an axis
+ *   flip on every other component (i%2===0 → negate) to account for the coordinate
+ *   system rotation applied by VRMUtils.rotateVRM0().
  *
- * No allocations in the hot path — this function runs once at load time per
- * (VRM, AnimationClip) pair, not per frame.
+ * Mixer root:
+ *   The AnimationMixer MUST be rooted at vrm.scene (not normalizedHumanBonesRoot).
+ *   getNormalizedBoneNode() returns Normalized_* Object3D nodes that live under
+ *   VRMHumanoidRig, which is a child of vrm.scene. The mixer searches by node
+ *   .name, so rooting at vrm.scene lets PropertyBinding find them. Rooting at
+ *   normalizedHumanBonesRoot was a workaround for the broken naive retargeter —
+ *   now that the quaternion transform is correct, that workaround is removed.
+ *
+ * References:
+ *   - Milady: milady-ai/milady retargetMixamoGltfToVrm.ts (MIT)
+ *   - pixiv:  humanoidAnimation/loadMixamoAnimation.js (MIT)
+ *
+ * No per-frame allocations — this function runs once at load time per
+ * (VRM, AnimationClip) pair.
  */
 
 import * as THREE from 'three';
-import type { VRM } from '@pixiv/three-vrm';
+import type { VRM, VRMHumanBoneName } from '@pixiv/three-vrm';
 
 // ---------------------------------------------------------------------------
 // Mixamo bone name → VRMHumanBoneName
-// Canonical map published by the VRoid Studio team and community.
-// mixamorig: prefix is stripped before lookup.
+//
+// Ported directly from Milady's mixamoVRMRigMap.ts.
+// Keys are the full mixamorig-prefixed names (as they appear after
+// normalizeMixamoRigName strips the pipe/path prefix).
 // ---------------------------------------------------------------------------
 
-export const MIXAMO_TO_VRM_BONE: Record<string, string> = {
-  // Core spine
-  Hips:            'hips',
-  Spine:           'spine',
-  Spine1:          'chest',
-  Spine2:          'upperChest',
-  Neck:            'neck',
-  Head:            'head',
-
-  // Left leg
-  LeftUpLeg:       'leftUpperLeg',
-  LeftLeg:         'leftLowerLeg',
-  LeftFoot:        'leftFoot',
-  LeftToeBase:     'leftToes',
-
-  // Right leg
-  RightUpLeg:      'rightUpperLeg',
-  RightLeg:        'rightLowerLeg',
-  RightFoot:       'rightFoot',
-  RightToeBase:    'rightToes',
-
-  // Left arm
-  LeftShoulder:    'leftShoulder',
-  LeftArm:         'leftUpperArm',
-  LeftForeArm:     'leftLowerArm',
-  LeftHand:        'leftHand',
-
-  // Right arm
-  RightShoulder:   'rightShoulder',
-  RightArm:        'rightUpperArm',
-  RightForeArm:    'rightLowerArm',
-  RightHand:       'rightHand',
-
-  // Left hand fingers
-  LeftHandThumb1:  'leftThumbMetacarpal',
-  LeftHandThumb2:  'leftThumbProximal',
-  LeftHandThumb3:  'leftThumbDistal',
-  LeftHandIndex1:  'leftIndexProximal',
-  LeftHandIndex2:  'leftIndexIntermediate',
-  LeftHandIndex3:  'leftIndexDistal',
-  LeftHandMiddle1: 'leftMiddleProximal',
-  LeftHandMiddle2: 'leftMiddleIntermediate',
-  LeftHandMiddle3: 'leftMiddleDistal',
-  LeftHandRing1:   'leftRingProximal',
-  LeftHandRing2:   'leftRingIntermediate',
-  LeftHandRing3:   'leftRingDistal',
-  LeftHandPinky1:  'leftLittleProximal',
-  LeftHandPinky2:  'leftLittleIntermediate',
-  LeftHandPinky3:  'leftLittleDistal',
-
-  // Right hand fingers
-  RightHandThumb1:  'rightThumbMetacarpal',
-  RightHandThumb2:  'rightThumbProximal',
-  RightHandThumb3:  'rightThumbDistal',
-  RightHandIndex1:  'rightIndexProximal',
-  RightHandIndex2:  'rightIndexIntermediate',
-  RightHandIndex3:  'rightIndexDistal',
-  RightHandMiddle1: 'rightMiddleProximal',
-  RightHandMiddle2: 'rightMiddleIntermediate',
-  RightHandMiddle3: 'rightMiddleDistal',
-  RightHandRing1:   'rightRingProximal',
-  RightHandRing2:   'rightRingIntermediate',
-  RightHandRing3:   'rightRingDistal',
-  RightHandPinky1:  'rightLittleProximal',
-  RightHandPinky2:  'rightLittleIntermediate',
-  RightHandPinky3:  'rightLittleDistal',
+export const mixamoVRMRigMap: Record<string, VRMHumanBoneName> = {
+  mixamorigHips:              'hips',
+  mixamorigSpine:             'spine',
+  mixamorigSpine1:            'chest',
+  mixamorigSpine2:            'upperChest',
+  mixamorigNeck:              'neck',
+  mixamorigHead:              'head',
+  mixamorigLeftShoulder:      'leftShoulder',
+  mixamorigLeftArm:           'leftUpperArm',
+  mixamorigLeftForeArm:       'leftLowerArm',
+  mixamorigLeftHand:          'leftHand',
+  mixamorigLeftHandThumb1:    'leftThumbMetacarpal',
+  mixamorigLeftHandThumb2:    'leftThumbProximal',
+  mixamorigLeftHandThumb3:    'leftThumbDistal',
+  mixamorigLeftHandIndex1:    'leftIndexProximal',
+  mixamorigLeftHandIndex2:    'leftIndexIntermediate',
+  mixamorigLeftHandIndex3:    'leftIndexDistal',
+  mixamorigLeftHandMiddle1:   'leftMiddleProximal',
+  mixamorigLeftHandMiddle2:   'leftMiddleIntermediate',
+  mixamorigLeftHandMiddle3:   'leftMiddleDistal',
+  mixamorigLeftHandRing1:     'leftRingProximal',
+  mixamorigLeftHandRing2:     'leftRingIntermediate',
+  mixamorigLeftHandRing3:     'leftRingDistal',
+  mixamorigLeftHandPinky1:    'leftLittleProximal',
+  mixamorigLeftHandPinky2:    'leftLittleIntermediate',
+  mixamorigLeftHandPinky3:    'leftLittleDistal',
+  mixamorigRightShoulder:     'rightShoulder',
+  mixamorigRightArm:          'rightUpperArm',
+  mixamorigRightForeArm:      'rightLowerArm',
+  mixamorigRightHand:         'rightHand',
+  mixamorigRightHandPinky1:   'rightLittleProximal',
+  mixamorigRightHandPinky2:   'rightLittleIntermediate',
+  mixamorigRightHandPinky3:   'rightLittleDistal',
+  mixamorigRightHandRing1:    'rightRingProximal',
+  mixamorigRightHandRing2:    'rightRingIntermediate',
+  mixamorigRightHandRing3:    'rightRingDistal',
+  mixamorigRightHandMiddle1:  'rightMiddleProximal',
+  mixamorigRightHandMiddle2:  'rightMiddleIntermediate',
+  mixamorigRightHandMiddle3:  'rightMiddleDistal',
+  mixamorigRightHandIndex1:   'rightIndexProximal',
+  mixamorigRightHandIndex2:   'rightIndexIntermediate',
+  mixamorigRightHandIndex3:   'rightIndexDistal',
+  mixamorigRightHandThumb1:   'rightThumbMetacarpal',
+  mixamorigRightHandThumb2:   'rightThumbProximal',
+  mixamorigRightHandThumb3:   'rightThumbDistal',
+  mixamorigLeftUpLeg:         'leftUpperLeg',
+  mixamorigLeftLeg:           'leftLowerLeg',
+  mixamorigLeftFoot:          'leftFoot',
+  mixamorigLeftToeBase:       'leftToes',
+  mixamorigRightUpLeg:        'rightUpperLeg',
+  mixamorigRightLeg:          'rightLowerLeg',
+  mixamorigRightFoot:         'rightFoot',
+  mixamorigRightToeBase:      'rightToes',
 };
 
-// Strip mixamorig prefix in all its variant forms:
-//   mixamorig:Hips   — raw GLTF export (colon separator)
-//   mixamorig_Hips   — some exporters use underscore
-//   mixamorigHips    — Three.js GLTFLoader sanitizes reserved chars (including `:`)
-//                      via PropertyBinding.sanitizeNodeName(), which removes `:` entirely,
-//                      leaving the bone name as "mixamorigHips" with no separator.
-// All three are normalized to just "Hips", "Spine", etc. for MIXAMO_TO_VRM_BONE lookup.
-function normalizeMixamoName(raw: string): string {
-  // Strip separator variants first, then bare prefix as fallback
-  return raw.replace(/^mixamorig[_:]?/, '');
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalise a raw Mixamo rig name to the `mixamorig<BoneName>` form that
+ * mixamoVRMRigMap keys on.
+ *
+ * Handles these variants produced by different exporters / Three.js sanitization:
+ *   "Armature|mixamorig:Hips"  → strip pipe prefix  → "mixamorig:Hips"
+ *   "mixamorig:Hips"           → colon + ns=mixamorig → return "mixamorigHips"
+ *   "mixamorigHips"            → no colon → return as-is ("mixamorigHips")
+ *   "Hips"                     → no known prefix → return "Hips" (won't match map)
+ *
+ * Three.js GLTFLoader calls PropertyBinding.sanitizeNodeName() which strips `:`,
+ * so tracks in a loaded GLTF will usually already be "mixamorigHips". The colon
+ * branch handles raw GLTF exports before Three.js sanitizes them.
+ */
+function normalizeMixamoRigName(name: string): string {
+  // Strip leading pipe path ("Armature|..." etc.)
+  const pipe = name.lastIndexOf('|');
+  const base = pipe >= 0 ? name.slice(pipe + 1) : name;
+
+  const colon = base.indexOf(':');
+  if (colon >= 0) {
+    const ns   = base.slice(0, colon);   // e.g. "mixamorig"
+    const rest = base.slice(colon + 1);  // e.g. "Hips"
+    if (ns === 'mixamorig') return `mixamorig${rest}`;
+    // Unknown namespace — drop it and return the tail
+    return rest;
+  }
+
+  return base;
+}
+
+function isVrm0(vrm: VRM): boolean {
+  const mv = String((vrm.meta as any)?.metaVersion ?? '');
+  return mv.startsWith('0');
 }
 
 /**
- * Retarget a Mixamo AnimationClip to target a specific VRM instance.
+ * Try to locate a Mixamo rig node in the animation source scene.
+ * Tries (in order): exact raw name, normalized name, name after stripping namespace.
+ */
+function findNode(
+  scene: THREE.Object3D,
+  rawName: string,
+  normalizedName: string,
+): THREE.Object3D | null {
+  return (
+    scene.getObjectByName(rawName) ??
+    scene.getObjectByName(normalizedName) ??
+    scene.getObjectByName(
+      rawName.includes(':') ? (rawName.split(':')[1] ?? rawName) : rawName,
+    ) ??
+    null
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Public interface
+// ---------------------------------------------------------------------------
+
+/**
+ * The shape of a loaded Mixamo animation GLB — holds both the scene (needed
+ * to query rest-pose world quaternions) and the animation clips.
+ */
+export interface MixamoGltf {
+  scene: THREE.Group;
+  animations: THREE.AnimationClip[];
+}
+
+/**
+ * Retarget a Mixamo animation GLB to a VRM humanoid skeleton.
  *
- * Returns null if no tracks could be retargeted (wrong clip format).
+ * @param animation  The loaded Mixamo GLB ({ scene, animations }).
+ *                   animation.scene must have its matrixWorld updated before
+ *                   calling (call animation.scene.updateMatrixWorld(true)).
+ * @param vrm        The target VRM instance (vrm.scene.updateMatrixWorld(true)
+ *                   called internally).
+ * @param clipName   Optional name for the returned clip (defaults to source clip name).
  *
- * The returned clip targets the VRM's raw humanoid bone nodes by UUID path
- * (e.g. `.bones[uuid=...]`). AnimationMixer must be created on `vrm.scene`.
+ * @throws if the GLB has no animation clips, or if no hips track could be mapped.
+ *
+ * The returned AnimationClip targets `vrmNode.name + '.quaternion'` tracks.
+ * The AnimationMixer MUST be rooted at `vrm.scene` (not normalizedHumanBonesRoot)
+ * so that PropertyBinding can resolve Normalized_* node names via
+ * vrm.scene.getObjectByName().
  */
 export function retargetMixamoClip(
-  clip: THREE.AnimationClip,
+  animation: MixamoGltf,
   vrm: VRM,
-): THREE.AnimationClip | null {
-  const humanoid = vrm.humanoid;
+  clipName?: string,
+): THREE.AnimationClip {
+  animation.scene.updateMatrixWorld(true);
+  vrm.scene.updateMatrixWorld(true);
 
-  // IMPORTANT (@pixiv/three-vrm v3): use getNormalizedBoneNode, NOT getRawBoneNode.
-  // In three-vrm v3, the animation system drives the *normalized* bone hierarchy
-  // (Normalized_<name> nodes under VRMHumanoidRig). vrm.update() propagates the
-  // normalized pose to raw bones each frame. Targeting raw bones directly is
-  // bypassed by vrm.update() — the normalizer reads raw-bone rest poses and
-  // overwrites them, so any mixer writes to raw bones are silently lost.
-  // getNormalizedBoneNode returns the Normalized_* Object3D nodes which the mixer
-  // CAN drive correctly. vrm.scene.getObjectByName("Normalized_mixamorigHips")
-  // finds them since VRMHumanoidRig is a child of vrm.scene.
-  const vrmBoneNodeByName = new Map<string, THREE.Object3D>();
-  for (const boneName of Object.values(MIXAMO_TO_VRM_BONE)) {
-    const node = humanoid.getNormalizedBoneNode(boneName as any);
-    if (node) vrmBoneNodeByName.set(boneName, node);
+  const sourceClip = animation.animations[0];
+  if (!sourceClip) {
+    throw new Error('[mixamo-retarget] GLB contains no animation clips');
   }
 
-  const retargetedTracks: THREE.KeyframeTrack[] = [];
+  const tracks: THREE.QuaternionKeyframeTrack[] = [];
 
-  for (const track of clip.tracks) {
-    // Track names follow the pattern `BoneName.property` or
-    // `BoneName.position` etc. The separator is always `.`.
-    const dotIdx = track.name.lastIndexOf('.');
-    if (dotIdx === -1) continue;
+  // Scratch quaternions — allocated once, reused across all bones/keyframes.
+  const restRotationInverse      = new THREE.Quaternion();
+  const parentRestWorldRotation  = new THREE.Quaternion();
+  const q                        = new THREE.Quaternion();
 
-    const rawBonePart = track.name.slice(0, dotIdx);
-    const property    = track.name.slice(dotIdx + 1);
+  const vrm0 = isVrm0(vrm);
 
-    // Only handle quaternion (rotation) and position tracks — scale tracks
-    // on root hips are skipped because they interfere with VRM rest-pose.
-    if (property !== 'quaternion' && property !== 'position') continue;
+  for (const track of sourceClip.tracks) {
+    const parts        = track.name.split('.');
+    const rawRigName   = parts[0];
+    const propertyName = parts[1];
+    if (!rawRigName || !propertyName) continue;
 
-    const simpleName   = normalizeMixamoName(rawBonePart);
-    const vrmBoneName  = MIXAMO_TO_VRM_BONE[simpleName];
+    // Only quaternion tracks — skip position/scale which would fight the VRM
+    // coordinate system and produce jitter or root drift.
+    if (propertyName !== 'quaternion') continue;
+    if (!(track instanceof THREE.QuaternionKeyframeTrack)) continue;
+
+    const normalizedRigName = normalizeMixamoRigName(rawRigName);
+    const vrmBoneName       = mixamoVRMRigMap[normalizedRigName];
     if (!vrmBoneName) continue;
 
-    const boneNode = vrmBoneNodeByName.get(vrmBoneName);
-    if (!boneNode) continue;
+    // IMPORTANT: getNormalizedBoneNode, not getRawBoneNode.
+    // three-vrm v3 drives the Normalized_* hierarchy; vrm.update() propagates
+    // normalized → raw each frame. The mixer must write to normalized nodes.
+    const vrmNode = vrm.humanoid?.getNormalizedBoneNode(vrmBoneName);
+    if (!vrmNode) continue;
 
-    // Use the node's UUID to build an AnimationMixer-compatible path.
-    // THREE.PropertyBinding resolves `.bones[uuid=<uuid>]` correctly.
-    const newName = `${boneNode.name}.${property}`;
+    const mixamoRigNode = findNode(animation.scene, rawRigName, normalizedRigName);
+    if (!mixamoRigNode || !mixamoRigNode.parent) continue;
 
-    // Clone the track with the new name but the same keyframe data.
-    const newTrack = track.clone();
-    newTrack.name = newName;
+    // Compute the rest-pose-differential transform for this bone.
+    // restRotationInverse:      inverse of the Mixamo bone's world rotation at rest
+    // parentRestWorldRotation:  world rotation of its parent at rest
+    //
+    // For each keyframe quaternion q (Mixamo-rest-relative):
+    //   q' = parentRestWorldRotation * q * restRotationInverse
+    //
+    // This converts q from "relative to Mixamo rest pose" into the space the VRM
+    // AnimationMixer expects (normalized bone space, relative to VRM rest pose).
+    mixamoRigNode.getWorldQuaternion(restRotationInverse).invert();
+    mixamoRigNode.parent.getWorldQuaternion(parentRestWorldRotation);
 
-    retargetedTracks.push(newTrack);
+    const values = track.values.slice();
+    for (let i = 0; i < values.length; i += 4) {
+      q.fromArray(values, i);
+      q.premultiply(parentRestWorldRotation).multiply(restRotationInverse);
+      q.toArray(values, i);
+    }
+
+    tracks.push(
+      new THREE.QuaternionKeyframeTrack(
+        `${vrmNode.name}.quaternion`,
+        track.times,
+        // VRM 0.x axis flip: VRMUtils.rotateVRM0 adds π rotation to vrm.scene,
+        // which inverts the X and Z axes of every bone. Every even-indexed component
+        // (x, z in each xyzw tuple) must be negated to compensate.
+        values.map((v, i) => (vrm0 && i % 2 === 0 ? -v : v)),
+      ),
+    );
   }
 
-  if (retargetedTracks.length === 0) {
-    console.warn('[mixamo-retarget] No tracks retargeted from clip:', clip.name);
-    return null;
+  // Validate that at least the hips bone was mapped — without it the entire
+  // skeleton has no root drive and the character stays in T-pose.
+  const hipsBone = vrm.humanoid?.getNormalizedBoneNode('hips' as VRMHumanBoneName);
+  const hasHipsTrack = hipsBone
+    ? tracks.some((t) => t.name.startsWith(`${hipsBone.name}.`))
+    : false;
+
+  if (!hasHipsTrack) {
+    throw new Error(
+      `[mixamo-retarget] Retargeting failed: no hips bone track found ` +
+        `(mapped ${tracks.length} tracks total). ` +
+        'Expected Mixamo bone names like mixamorigHips / mixamorigSpine...',
+    );
   }
 
-  return new THREE.AnimationClip(clip.name, clip.duration, retargetedTracks);
+  const name = clipName ?? sourceClip.name ?? 'retargeted';
+  const clip = new THREE.AnimationClip(name, sourceClip.duration, tracks);
+  clip.optimize();
+  return clip;
 }
