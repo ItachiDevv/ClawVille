@@ -137,10 +137,23 @@ export function findPath(startX: number, startY: number, endX: number, endY: num
   const er = Math.floor(endY / TILE);
 
   // Clamp to grid
-  const startCol = Math.max(0, Math.min(COLS - 1, sc));
-  const startRow = Math.max(0, Math.min(ROWS - 1, sr));
+  let startCol = Math.max(0, Math.min(COLS - 1, sc));
+  let startRow = Math.max(0, Math.min(ROWS - 1, sr));
   let endCol = Math.max(0, Math.min(COLS - 1, ec));
   let endRow = Math.max(0, Math.min(ROWS - 1, er));
+
+  // If start is blocked, hop to nearest walkable tile. Observed 2026-04-24:
+  // NPCs that wandered into a 32-tile-wide building exclusion zone got
+  // stranded — A* expands only into walkable neighbors, so a blocked-start
+  // deep inside an exclusion zone has zero reachable neighbors and returns
+  // empty. Treating a blocked start the same as a blocked end unsticks
+  // NPCs automatically on their next plan tick.
+  if (!grid[startRow][startCol]) {
+    const nearest = findNearestWalkable(startCol, startRow, grid);
+    if (!nearest) return [];
+    startCol = nearest.col;
+    startRow = nearest.row;
+  }
 
   // If end is blocked, find nearest walkable tile
   if (!grid[endRow][endCol]) {
