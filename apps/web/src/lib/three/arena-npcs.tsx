@@ -4,6 +4,7 @@ import { useRef, useMemo, useEffect, memo, Suspense } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF, Html } from '@react-three/drei';
 import * as THREE from 'three';
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { useNpcStore, type NpcSpriteState } from '@/stores/npc';
 import { applyWalkAnimation, applyIdleAnimation, idToSeed } from '@/lib/three/procedural-animation';
 import { LobsterAnimator, resolveAnimState } from '@/lib/three/lobster-animations';
@@ -400,7 +401,12 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
   const useNewSystem = speciesInfo.key !== 'lobster' && speciesInfo.key !== 'crayfish';
 
   const { cloned, npcScale, lobsterAnimator, charAnimator, pivotOffsetY } = useMemo(() => {
-    const c = scene.clone(true);
+    // SkeletonUtils.clone rebinds SkinnedMesh.skeleton correctly — plain scene.clone(true)
+    // shares bones across instances, which causes every instance after the first to render
+    // bound to another NPC's skeleton (observed 2026-04-24: Driftwood/Marlin/Riptide + the
+    // 10 building-canvas GLB NPCs silently invisible despite valid scene-graph state).
+    // Safe for plain-Mesh models too — SkeletonUtils falls through to THREE clone.
+    const c = SkeletonUtils.clone(scene);
     const tint = new THREE.Color(npc.color);
     applyColorTint(c, tint, 0.7, 0.25);
 
@@ -538,8 +544,23 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     }
     group.visible = true;
     {
+      // Behind-camera cull: drei <Html> calculatePosition still projects a screen
+      // XY when the anchor NDC z > 1 (anchor behind near plane), producing ghost
+      // labels for buildings/NPCs behind the camera. Zero-allocation test using
+      // camera.matrixWorldInverse — viewZ < 0 means the anchor is in front.
+      // group.matrixWorld.elements[12/13/14] = world translation (no Vector3 alloc).
+      const m = camera.matrixWorldInverse.elements;
+      const wx = group.matrixWorld.elements[12];
+      const wy = group.matrixWorld.elements[13];
+      const wz = group.matrixWorld.elements[14];
+      const viewZ = m[2] * wx + m[6] * wy + m[10] * wz + m[14];
+      const inFront = viewZ < 0;
       const label = labelRef.current;
-      if (label && label.style.display !== 'flex') label.style.display = 'flex';
+      if (!inFront) {
+        if (label && label.style.display !== 'none') label.style.display = 'none';
+      } else {
+        if (label && label.style.display !== 'flex') label.style.display = 'flex';
+      }
     }
 
     // Raycast to find terrain surface Y (every 3rd frame to save perf).
@@ -868,8 +889,20 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     }
     group.visible = true;
     {
+      // Behind-camera cull: same zero-allocation test as GLBNpcMesh above.
+      // viewZ < 0 → anchor is in front of camera → show label.
+      const m = camera.matrixWorldInverse.elements;
+      const wx = group.matrixWorld.elements[12];
+      const wy = group.matrixWorld.elements[13];
+      const wz = group.matrixWorld.elements[14];
+      const viewZ = m[2] * wx + m[6] * wy + m[10] * wz + m[14];
+      const inFront = viewZ < 0;
       const label = labelRef.current;
-      if (label && label.style.display !== 'flex') label.style.display = 'flex';
+      if (!inFront) {
+        if (label && label.style.display !== 'none') label.style.display = 'none';
+      } else {
+        if (label && label.style.display !== 'flex') label.style.display = 'flex';
+      }
     }
 
     // Raycast terrain every 3rd frame (staggered by seed to avoid per-frame spikes)
