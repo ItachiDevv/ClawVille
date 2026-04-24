@@ -61,12 +61,20 @@ const SpeechBubble = memo(function SpeechBubble({ npc, bubble }: SpeechBubblePro
             border: '1px solid rgba(100, 200, 255, 0.3)',
             borderRadius: 8,
             padding: '5px 9px',
-            maxWidth: 180,
+            // width (not maxWidth!): drei's <Html center> wrapper collapses
+            // to min-content around this div. With only `maxWidth: 180`,
+            // the actual computed width becomes 1 character (min-content of
+            // `word-break: break-word` broken text) and text renders as a
+            // vertical column of letters. Setting `width: 180` forces the
+            // div to be exactly that wide, and text wraps normally inside.
+            width: 180,
+            boxSizing: 'border-box',
             backdropFilter: 'blur(4px)',
             boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
             userSelect: 'none',
             whiteSpace: 'normal',
-            wordBreak: 'break-word',
+            wordBreak: 'normal',
+            overflowWrap: 'break-word',
           }}
         >
           {/* Speaker name */}
