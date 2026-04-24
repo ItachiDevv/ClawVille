@@ -11,7 +11,8 @@
  * cone were all removed — the dome is the whole visual.
  *
  * Inside the dome: floating jellyfish.glb (already preloaded) acts as the
- * "featured lot". It spins slowly on the Y axis and hovers in place.
+ * "featured lot". It spins slowly on the Y axis and floats at 60% of dome
+ * height (~228wu off the dome group origin).
  *
  * Position: (0, -2, 50) — unchanged from the old podium.
  *
@@ -44,10 +45,13 @@ const DOME_Y = -2;
 const DOME_Z = 50;
 
 // Target visual height for the dome (the centerpiece — give it presence)
-const DOME_TARGET_HEIGHT_WU = 150;
+const DOME_TARGET_HEIGHT_WU = 380;
 
 // Target size for the floating jellyfish inside the dome
-const JELLY_TARGET_SIZE_WU = 50;
+const JELLY_TARGET_SIZE_WU = 130;
+
+// Jellyfish floats at 60 % of dome height above the dome's local origin
+const JELLY_Y_OFFSET = DOME_TARGET_HEIGHT_WU * 0.6; // 228 wu
 
 // ---------------------------------------------------------------------------
 // Scale helper
@@ -164,9 +168,11 @@ const AuctionPodiumInner = memo(function AuctionPodiumInner() {
         <DomeGlb />
       </Suspense>
 
-      {/* Floating featured lot inside the dome */}
+      {/* Floating featured lot inside the dome — offset to 60 % of dome height */}
       <Suspense fallback={null}>
-        <FloatingJellyfish />
+        <group position={[0, JELLY_Y_OFFSET, 0]}>
+          <FloatingJellyfish />
+        </group>
       </Suspense>
     </group>
   );
