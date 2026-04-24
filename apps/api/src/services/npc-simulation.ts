@@ -769,6 +769,15 @@ class NpcSimulation {
   // inner circle) — the approacher's next planCenterWander will snap
   // them back out to the ring. Falls back to a center-wander if no
   // suitable target.
+  //
+  // IMPORTANT: pathfinds to a STAND-OFF position 80wu from the target,
+  // not the target's exact position. Without the offset, multiple
+  // approachers all converge to a single world coordinate — observed
+  // 2026-04-24 with Driftwood/Marlin/Riptide all frozen at exactly
+  // x=4195.9919, y=2823.1967, so Marlin and Riptide rendered INSIDE
+  // Driftwood's mesh and looked missing. Each approacher picks a random
+  // angle around the target so multiple approachers spread around the
+  // target instead of stacking.
   private planApproachNearbyNpc(npc: NpcRuntimeState) {
     const rMaxSq = FREE_ROAMER_MAX_RADIUS * FREE_ROAMER_MAX_RADIUS;
     const others = Array.from(this.npcs.values()).filter((o) => {
@@ -781,7 +790,12 @@ class NpcSimulation {
     });
     if (others.length === 0) { this.planCenterWander(npc); return; }
     const target = others[Math.floor(Math.random() * others.length)];
-    const path = findPath(npc.x, npc.y, target.x, target.y);
+    // Stand-off: aim 80wu from the target at a random angle, not AT the target.
+    const standOff = 80;
+    const approachAngle = Math.random() * Math.PI * 2;
+    const tx = target.x + Math.cos(approachAngle) * standOff;
+    const ty = target.y + Math.sin(approachAngle) * standOff;
+    const path = findPath(npc.x, npc.y, tx, ty);
     if (path.length > 0) {
       npc.activity = 'walking'; npc.activityEmoji = '';
       npc.path = path; npc.pathIndex = 0;

@@ -229,6 +229,24 @@ const DEFAULT_SPECIES = SPECIES_MODEL.lobster;
 // wandering NPCs don't cause network+parse pops when they first appear.
 Object.values(SPECIES_MODEL).forEach(({ path }) => useGLTF.preload(path));
 
+// Per-species npcScale override. computeNpcScale measures the bind-pose
+// bounding box via Box3.setFromObject which, for rigged GLBs with
+// pre-skin parent transforms (transform1 scale ≈ 0.042, nurbsCircleMover
+// scale ≈ 24.053 cancelling to ~1) reads the SKELETON extent rather than
+// the actual rendered mesh extent. On hermitcrab that produced
+// npcScale = 2.14 → rendered mesh only ~6 wu tall (invisible from the
+// spectate camera). These overrides are measured from the rendered
+// mesh centers + bboxes after the full rig pipeline is applied:
+//   - hermitcrab: rendered cluster ~6 wu → 16× = 45 wu (TARGET_NPC_HEIGHT)
+//   - sweet_crab: native Y 5.90 → computeNpcScale lands at 13.19 (rendered
+//     78 wu, too tall); 7.6 keeps it at 45 wu matching lobsters
+// 2026-04-24 — added alongside the server-side approach stand-off fix
+// that unstuck the 3 crustacean wanderers from a single world coordinate.
+const SPECIES_WANDER_SCALE_OVERRIDE: Partial<Record<string, number>> = {
+  hermitcrab: 16,
+  sweet_crab: 7.6,
+};
+
 // ---------------------------------------------------------------------------
 // VRM NPC constants
 // ---------------------------------------------------------------------------
@@ -370,14 +388,18 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // npcScale normalizes the model's above-pivot height to TARGET_NPC_HEIGHT.
     // pivotOffset = localMinY * npcScale — subtracted from group.position.y so
     // the geometry bottom aligns with terrain regardless of model pivot placement.
+    // SPECIES_WANDER_SCALE_OVERRIDE takes precedence for models whose
+    // bind-pose bbox fools computeNpcScale (see override map comment).
     const { scale: npcScaleComputed, localMinY } = computeNpcScale(c);
-    const pivotOffset = localMinY * npcScaleComputed;
+    const override = SPECIES_WANDER_SCALE_OVERRIDE[speciesInfo.key];
+    const npcScaleFinal = override != null ? override : npcScaleComputed;
+    const pivotOffset = localMinY * npcScaleFinal;
 
     if (useNewSystem) {
       const anim = createCharacterAnimator(speciesInfo.key, c);
       return {
         cloned: c,
-        npcScale: npcScaleComputed,
+        npcScale: npcScaleFinal,
         lobsterAnimator: null as LobsterAnimator | null,
         charAnimator: anim as CharacterAnimator,
         pivotOffsetY: pivotOffset,
@@ -387,7 +409,7 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
       const anim  = new LobsterAnimator(parts);
       return {
         cloned: c,
-        npcScale: npcScaleComputed,
+        npcScale: npcScaleFinal,
         lobsterAnimator: anim,
         charAnimator: null as CharacterAnimator | null,
         pivotOffsetY: pivotOffset,
