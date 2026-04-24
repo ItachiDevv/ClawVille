@@ -18,7 +18,8 @@
     "clean": "turbo run clean && rm -rf node_modules",
     "test:mock-gateway": "bun run scripts/mock-openclaw.ts",
     "test:agent-flow": "bun run scripts/test-agent-flow.ts",
-    "deploy:cf-secrets": "cd infra/cf-secrets-worker && bunx wrangler deploy"
+    "deploy:cf-secrets": "cd infra/cf-secrets-worker && bunx wrangler deploy",
+    "assets:optimize": "bun run scripts/assets-optimize.ts"
   },
   "devDependencies": {
     "@gltf-transform/core": "^4.3.0",
@@ -32,6 +33,7 @@
     "draco3d": "^1.5.7",
     "gifenc": "^1.0.3",
     "gltf-pipeline": "^4.3.1",
+    "meshoptimizer": "^0.22.0",
     "obs-websocket-js": "^5.0.7",
     "postcss": "^8.5.8",
     "prettier": "^3.2.0",
