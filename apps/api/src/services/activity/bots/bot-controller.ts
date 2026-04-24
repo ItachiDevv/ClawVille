@@ -28,6 +28,20 @@
  */
 
 import type { BumperPowerUpKind } from '../sim/bumper-shells-sim';
+import type { ReefPowerUpKind } from '../sim/reef-race-config';
+
+/**
+ * Cross-activity power-up kind union surfaced through the trimmed
+ * `BotRoomView` bot controllers see. Each per-activity sim populates
+ * the field with its own narrower type at build time; the union here
+ * keeps both sims TS-compatible without a runtime cost.
+ *
+ * Adding a new activity that produces a different power-up kind union
+ * requires extending this union — but the bot controllers themselves
+ * receive only the kinds their host sim emits, so the widening here is
+ * structural-only and does not require per-bot logic changes.
+ */
+export type AnyActivityPowerUpKind = BumperPowerUpKind | ReefPowerUpKind;
 
 // ─── Controller interface ──────────────────────────────────────────────────
 
@@ -60,10 +74,11 @@ export interface BotRoomView {
     alive: boolean;
     /**
      * Power-up inventory snapshot, indexed by slot.
-     * `kind === null` means the slot is empty.
+     * `kind === null` means the slot is empty. Union widens across all
+     * activities that ship a sim (Bumper Shells + Reef Race today).
      */
     inventory: Array<{
-      kind: BumperPowerUpKind | null;
+      kind: AnyActivityPowerUpKind | null;
       charges: number;
       cooldownUntil: number;
     }>;
@@ -96,9 +111,11 @@ export interface BotController {
 export type BotControllerFactory = (avatarId: string) => BotController;
 
 import { createBumperShellsBot } from './bumper-shells-bot';
+import { createReefRaceBot } from './reef-race-bot';
 
 export const BOT_CONTROLLERS: Record<string, BotControllerFactory> = {
   'bumper-shells': createBumperShellsBot,
+  'reef-race': createReefRaceBot,
 };
 
 export function getBotControllerFactory(activityId: string): BotControllerFactory | null {
