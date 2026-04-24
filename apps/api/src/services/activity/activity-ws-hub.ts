@@ -90,6 +90,16 @@ export interface WsConnectionData {
   shortCode: string | null;
   /** Close code the hub set internally — Bun close events don't always carry it */
   internalCloseCode: number | null;
+  /**
+   * Lucia session id extracted from the upgrade request's Cookie header.
+   * The client sends the literal placeholder `'cookie'` in the auth frame
+   * when relying on the browser cookie (see `useActivityWs.ts` — the WS
+   * upgrade attaches the cookie automatically, but the auth-frame schema
+   * requires a non-empty string). The hub then resolves identity using
+   * this value instead of the placeholder. Null when no Lucia cookie was
+   * attached (agent-session callers, who pass their own session id).
+   */
+  preauthLuciaSessionId: string | null;
 }
 
 export type HubWs = HubWsTransport;
@@ -117,8 +127,18 @@ class ActivityWsHub {
       this.safeClose(ws, ACTIVITY_WS_CLOSE_CODES.UNAUTHORIZED, 'first frame must be auth');
       return false;
     }
+    // The client sends the literal string `'cookie'` (see
+    // `useActivityWs.ts:166`) when relying on the browser cookie that the
+    // WS upgrade attaches automatically. In that case, swap in the Lucia
+    // session id we resolved at upgrade time. Real session tokens (raw
+    // Lucia ids minted via `/api/auth/guest` or magic-link, or agent
+    // session ids passed by headless callers) pass through unchanged.
+    const tokenForResolve =
+      firstFrame.sessionToken === 'cookie' && ws.data.preauthLuciaSessionId
+        ? ws.data.preauthLuciaSessionId
+        : firstFrame.sessionToken;
     const identity = await resolveActivityIdentity({
-      sessionToken: firstFrame.sessionToken,
+      sessionToken: tokenForResolve,
     });
     if (!identity) {
       this.safeClose(ws, ACTIVITY_WS_CLOSE_CODES.UNAUTHORIZED, 'invalid session');
@@ -571,7 +591,10 @@ class ActivityWsHub {
    * Factory used by the route's upgradeWebSocket factory. Called for
    * every incoming WS upgrade to bootstrap the per-connection state.
    */
-  makeConnectionData(roomId: string): WsConnectionData {
+  makeConnectionData(
+    roomId: string,
+    preauthLuciaSessionId: string | null = null,
+  ): WsConnectionData {
     return {
       identity: null,
       roomId,
@@ -584,6 +607,7 @@ class ActivityWsHub {
       skippedBroadcasts: 0,
       shortCode: null,
       internalCloseCode: null,
+      preauthLuciaSessionId,
     };
   }
 }
