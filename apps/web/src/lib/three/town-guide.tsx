@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * TownGuide — town-center anchor NPC, Mixamo-rigged with a frozen-pose idle + wave-on-click.
+ * TownGuide — town-center anchor NPC, Mixamo-rigged with a timer-driven pose cycle.
  *
  * Asset pipeline:
  *   - Character: /models/guide-rigged.glb (Sketchfab anime girl → Blender edits → Mixamo auto-rig
@@ -10,16 +10,29 @@
  *
  * Animation system:
  *   - AnimationMixer on the cloned skeleton root.
- *   - Frozen idle pose: `pose-hand-on-hips` plays LoopOnce with timeScale=0 so it
- *     holds its single evaluated frame forever — mixer never advances time.
- *     This is the pre-commit-8281162 pattern. An earlier 9-clip cycle silently
- *     regressed because 1-frame POSE clips fire LoopOnce 'finished' instantly and
- *     both actions in the crossfade were at time=0 = T-pose neutral (visible as
- *     reversion to T-pose every slot change).
+ *   - Every cycle clip plays LoopRepeat from init with weight=0. One action's weight is
+ *     raised to 1 as the "current" pose. A time-based timer crossfades current → next every
+ *     SLOT_DURATION_SEC. Because every action is always ticking, 1-frame POSE clips render
+ *     their single keyframe at any sample time and multi-frame clips (bellydancing, samba)
+ *     animate naturally. No LoopOnce 'finished' events involved — that was the 8281162
+ *     regression path that produced T-pose interpolation during crossfade.
  *   - Procedural breathing: useFrame drives mixamorigSpine2 scale.y = 1 + sin(t*1.8)*0.008.
  *     Additive over the mixer — mixer doesn't touch scale, only rotation/position tracks.
- *   - Wave on click: crossfade frozen idle → wave (LoopOnce, clampWhenFinished=false).
- *     On 'finished' (wave complete) → crossfade back to the frozen idle pose.
+ *   - Wave on click: suspend the cycle, crossfade current cycle action → wave (LoopOnce),
+ *     on wave 'finished' crossfade back into the cycle at the next slot.
+ *
+ * Available clips:
+ *   - pose-hand-on-hips   ← in cycle (1-frame POSE)
+ *   - pose-catwalk-idle   ← in cycle (1-frame POSE)
+ *   - pose-dance          ← in cycle (1-frame POSE)
+ *   - pose-laying         ← EXCLUDED (looks broken at standing height)
+ *   - pose-standing-2     ← in cycle (1-frame POSE)
+ *   - pose-standing-3     ← in cycle (1-frame POSE)
+ *   - pose-standing-4     ← in cycle (1-frame POSE)
+ *   - praying (58 frames) ← in cycle
+ *   - bellydancing (762 frames) ← in cycle
+ *   - samba (595 frames)        ← in cycle
+ *   - wave (45 frames)    ← greeting ONLY, never in cycle
  *
  * GPU constraints (Iris Xe invariants):
  *   - NO drei Text/Billboard — hard crash
@@ -41,29 +54,40 @@ const GROUND_Y    = -2;
 const GUIDE_Z     = 240;
 const GUIDE_SCALE = 200;
 
-// Clip names — defined at module scope (no per-render allocation).
 const CLIP_WAVE = 'wave';
 
-// CLIP_IDLE is the single frozen pose Nori holds between interactions.
-// 2026-04-23: cycling logic (commit 8281162) silently regressed — 1-frame
-// POSE clips fire LoopOnce 'finished' almost immediately, and during the
-// 0.5s crossfade BOTH actions happen to be at time=0 = T-pose neutral.
-// The pre-cycle pattern (single frozen pose via timeScale=0) was what worked.
-const CLIP_IDLE  = 'pose-hand-on-hips';
-const WAVE_FADE  = 0.35;  // crossfade duration for wave entry/exit (sec)
+// Ordered playlist. pose-laying excluded (looks broken at standing height —
+// horizontal-floating character without floor context).
+const CYCLE_CLIPS = [
+  'pose-hand-on-hips',
+  'pose-catwalk-idle',
+  'pose-dance',
+  'pose-standing-2',
+  'pose-standing-3',
+  'pose-standing-4',
+  'praying',
+  'bellydancing',
+  'samba',
+] as const;
+
+// How long to hold each slot before crossfading to the next.
+// Long clips (bellydancing 762fr @30fps ≈ 25s, samba 595fr @30fps ≈ 20s) are truncated
+// to SLOT_DURATION_SEC so the cycle keeps moving — visitors see variety every few
+// seconds rather than a 25-second dance solo.
+const SLOT_DURATION_SEC = 5;
+const CYCLE_FADE  = 0.5;   // crossfade between cycle slots (sec)
+const WAVE_FADE   = 0.35;  // crossfade into/out of wave (sec)
 const BREATH_FREQ = 1.8;
 const BREATH_AMP  = 0.008;
 
 const TownGuideInner = memo(function TownGuideInner() {
   const { scene: gltfScene, animations } = useGLTF('/models/guide-rigged.glb');
 
-  // Clone the character per-mount so each instance gets its own bone tree.
+  // Clone per-mount so each instance gets its own bone tree.
   // SkeletonUtils.clone rebinds SkinnedMesh.skeleton correctly — plain clone(true) shares bones.
   const cloned = useMemo(() => {
     const c = skeletonClone(gltfScene) as THREE.Group;
     // Bind-pose bounding sphere culls animated verts at close range — disable culling.
-    // Narrowed to isMesh: SkinnedMesh.isMesh===true (extends Mesh in r182), so all
-    // skinned meshes are covered. Bones, Groups, Object3Ds get no-op skipped.
     c.traverse((obj) => {
       if ((obj as THREE.Mesh).isMesh) obj.frustumCulled = false;
     });
@@ -72,28 +96,38 @@ const TownGuideInner = memo(function TownGuideInner() {
 
   const mixer = useMemo(() => new THREE.AnimationMixer(cloned), [cloned]);
 
-  // Frozen-pose idle (pre-8281162 working pattern) + wave-on-click.
-  const idleActionRef = useRef<THREE.AnimationAction | null>(null);
-  const waveActionRef = useRef<THREE.AnimationAction | null>(null);
-  const wavingRef     = useRef<boolean>(false);
-  const spineBoneRef  = useRef<THREE.Bone | null>(null);
+  const cycleActionsRef = useRef<THREE.AnimationAction[]>([]);
+  const cycleIndexRef   = useRef<number>(0);
+  const slotAdvanceAtRef = useRef<number>(0);  // clock time when next advance happens
+  const waveActionRef   = useRef<THREE.AnimationAction | null>(null);
+  const wavingRef       = useRef<boolean>(false);
+  const spineBoneRef    = useRef<THREE.Bone | null>(null);
 
   useEffect(() => {
-    const idleClip = animations.find((c) => c.name === CLIP_IDLE);
-    const waveClip = animations.find((c) => c.name === CLIP_WAVE);
-
-    if (idleClip) {
-      const action = mixer.clipAction(idleClip, cloned);
-      action.setLoop(THREE.LoopOnce, 1);
-      action.clampWhenFinished = true;
-      action.timeScale = 0;   // freeze — single-frame pose
-      action.weight   = 1.0;
+    // Build all cycle actions: LoopRepeat, weight=0, always playing. Slot 0 gets weight=1.
+    const actions: THREE.AnimationAction[] = [];
+    for (const name of CYCLE_CLIPS) {
+      const clip = animations.find((c) => c.name === name);
+      if (!clip) {
+        console.error(`[TownGuide] Cycle clip "${name}" not found in GLB`);
+        continue;
+      }
+      const action = mixer.clipAction(clip, cloned);
+      action.setLoop(THREE.LoopRepeat, Infinity);
+      action.clampWhenFinished = false;
+      action.enabled = true;
+      action.weight  = 0;
+      action.timeScale = 1;
       action.play();
-      idleActionRef.current = action;
-    } else {
-      console.error(`[TownGuide] Idle clip "${CLIP_IDLE}" not found in GLB`);
+      actions.push(action);
     }
+    // Slot 0 starts at full weight.
+    if (actions[0]) actions[0].weight = 1;
+    cycleActionsRef.current = actions;
+    cycleIndexRef.current   = 0;
+    slotAdvanceAtRef.current = SLOT_DURATION_SEC;
 
+    const waveClip = animations.find((c) => c.name === CLIP_WAVE);
     if (waveClip) {
       const waveAction = mixer.clipAction(waveClip, cloned);
       waveAction.setLoop(THREE.LoopOnce, 1);
@@ -101,18 +135,17 @@ const TownGuideInner = memo(function TownGuideInner() {
       // holding the raised-hand pose. During the crossfade-out the first-frame
       // (neutral) pose fades out, producing a clean transition back to idle.
       waveAction.clampWhenFinished = false;
-      waveAction.weight = 0;
+      waveAction.weight  = 0;
+      waveAction.enabled = true;
       waveActionRef.current = waveAction;
     }
 
     // Scope bone search to MainArmature subtree — guards against orphan Armature
     // nodes that Blender may export alongside the primary rig.
     //
-    // 2026-04-23 sanitization fix: three.js GLTFLoader sanitizes node names,
-    // stripping colons. The GLB stores `mixamorig:Spine2` but after load the
-    // bone Object3D is named `mixamorigSpine2`. Looking up the colon form
-    // silently failed — spineBoneRef never resolved → breathing animation
-    // disabled silently. Checking both names covers either sanitization state.
+    // three.js GLTFLoader sanitizes node names, stripping colons. The GLB stores
+    // `mixamorig:Spine2` but after load the bone is named `mixamorigSpine2`.
+    // Check both forms to cover either sanitization state.
     const mainArm = cloned.getObjectByName('MainArmature');
     if (!mainArm) {
       console.error('[TownGuide] MainArmature root missing — Blender export regression');
@@ -134,38 +167,65 @@ const TownGuideInner = memo(function TownGuideInner() {
 
   useEffect(() => {
     const onFinished = (e: { action: THREE.AnimationAction }) => {
-      // Only the wave action emits 'finished' in this pattern (idle is frozen).
+      // Only the wave action emits 'finished' (cycle clips are LoopRepeat).
       if (e.action !== waveActionRef.current) return;
       wavingRef.current = false;
-      const idle = idleActionRef.current;
-      const wave = waveActionRef.current;
-      if (idle && wave) {
-        // crossFadeTo doesn't reset `enabled` on the incoming action.
-        idle.enabled = true;
-        idle.weight  = 1;
-        wave.crossFadeTo(idle, WAVE_FADE, false);
-      }
+      resumeCycleFromWave();
     };
     mixer.addEventListener('finished', onFinished);
     return () => mixer.removeEventListener('finished', onFinished);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mixer]);
 
   useEffect(() => {
     return () => {
-      // Do NOT dispose geometry or materials here.
-      // SkeletonUtils.clone reuses both geometry AND materials by reference
-      // (Mesh.copy() assigns .geometry and .material by ref, not by copy).
-      // Disposing either corrupts the useGLTF cache and causes black/errored
-      // meshes on next mount (React strict-mode double-invoke or route re-nav).
-      // The useGLTF cache owns these GPU resources and releases them when the
-      // asset is evicted. Only release mixer state.
+      // Do NOT dispose geometry or materials — SkeletonUtils.clone reuses them
+      // from the useGLTF cache by reference. Disposing corrupts the cache and
+      // causes black meshes on remount (strict-mode double-invoke, route re-nav).
       mixer.stopAllAction();
       mixer.uncacheRoot(cloned);
     };
   }, [mixer, cloned]);
 
+  function advanceCycle() {
+    const actions = cycleActionsRef.current;
+    if (actions.length < 2) return;
+    const curIdx  = cycleIndexRef.current;
+    const nextIdx = (curIdx + 1) % actions.length;
+    const cur  = actions[curIdx];
+    const next = actions[nextIdx];
+    if (!cur || !next) return;
+    // Both actions are already .play()-ing (LoopRepeat). Crossfade via fadeOut/fadeIn
+    // — safer than crossFadeTo which expects both running AND doesn't start stopped
+    // actions. Reset the incoming to keyframe 0 so multi-frame clips (bellydancing,
+    // samba) start fresh each cycle instead of picking up where they left off.
+    next.reset().fadeIn(CYCLE_FADE);
+    cur.fadeOut(CYCLE_FADE);
+    cycleIndexRef.current = nextIdx;
+  }
+
+  function resumeCycleFromWave() {
+    const wave = waveActionRef.current;
+    const actions = cycleActionsRef.current;
+    if (!wave || actions.length === 0) return;
+    const nextIdx = (cycleIndexRef.current + 1) % actions.length;
+    const next = actions[nextIdx];
+    if (!next) return;
+    next.reset().fadeIn(WAVE_FADE);
+    wave.fadeOut(WAVE_FADE);
+    cycleIndexRef.current = nextIdx;
+  }
+
   useFrame(({ clock }, delta) => {
     mixer.update(delta);
+
+    // Timer-driven cycle advance — only while NOT waving.
+    if (!wavingRef.current && clock.elapsedTime >= slotAdvanceAtRef.current) {
+      advanceCycle();
+      slotAdvanceAtRef.current = clock.elapsedTime + SLOT_DURATION_SEC;
+    }
+
+    // Procedural breathing on top of mixer output.
     const spine = spineBoneRef.current;
     if (spine) {
       spine.scale.y = 1 + Math.sin(clock.elapsedTime * BREATH_FREQ) * BREATH_AMP;
@@ -176,32 +236,27 @@ const TownGuideInner = memo(function TownGuideInner() {
     e.stopPropagation();
 
     // Idempotency guard — if either chat surface is already open, bail.
-    // Prevents re-opening + double-wave when the user clicks Nori twice,
-    // and stops guide chat from stacking on top of an active building chat.
+    // Prevents double-open + double-wave on rapid clicks and stops guide chat
+    // from stacking on top of an active building chat.
     const store = useGameStore.getState();
     if (store.chatOpen || store.guideChatOpen) return;
 
     // Open the Town Guide chat panel. `openGuideChat` sets
-    // `guideChatOpen=true` and `movementFrozen=true` atomically so the
-    // player can't walk off mid-conversation.
+    // `guideChatOpen=true` and `movementFrozen=true` atomically.
     store.openGuideChat();
 
-    // Crossfade frozen idle pose → wave (greeting).
     const wave = waveActionRef.current;
-    const idle = idleActionRef.current;
+    const actions = cycleActionsRef.current;
     if (!wave || wavingRef.current) return;
+
+    // Crossfade current cycle slot → wave.
+    const cur = actions[cycleIndexRef.current] ?? null;
 
     wavingRef.current = true;
     wave.reset();
-    wave.enabled = true;
-    wave.weight  = 0;
+    wave.fadeIn(WAVE_FADE);
     wave.play();
-
-    if (idle) {
-      idle.crossFadeTo(wave, WAVE_FADE, false);
-    } else {
-      wave.weight = 1;
-    }
+    if (cur) cur.fadeOut(WAVE_FADE);
   }
 
   return (

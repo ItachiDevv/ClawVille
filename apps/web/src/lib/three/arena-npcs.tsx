@@ -280,6 +280,15 @@ const VRM_NPC_SCALE = 28;
 const NPC_CULL_DIST_SQ          = 2500 * 2500;
 const VRM_NPC_HALF_RATE_DIST_SQ = 1000 * 1000;
 
+// VRM NPCs never far-cull. 5 Milady wanderers is a small, bounded set — the cost
+// of keeping them all ticking is ~5 × ~1ms spring-bone (half-rate) + ~5 × ~0.3ms
+// mixer. Camera panning on a 5120wu map routinely pushes NPCs across the 2500wu
+// ring used for GLB NPCs, producing a visible "appear / disappear" flicker as the
+// user rotates. Value kept as squared-distance for consistency; Number.POSITIVE_INFINITY
+// would work equivalently but reads opaque in comparisons. 10000wu² = 100M covers
+// the fog end (6800wu) + full map diagonal with margin.
+const VRM_NPC_CULL_DIST_SQ      = 10000 * 10000;
+
 // Preload ALL Milady VRM paths used by wandering NPCs + Mixamo animation clips.
 // These calls are module-scope so the caches are warm before any VRMNpcMesh mounts.
 // IMPORTANT: each concurrent VRM NPC MUST use a distinct VRM path — vrm-loader caches
@@ -657,6 +666,11 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
 
   useEffect(() => {
     if (!vrm) return;
+    // Defensive re-apply of frustumCulled=false on every node in vrm.scene.
+    // vrm-loader already does this once per path at load, but this guards
+    // against any three-vrm / three-stdlib / post-processing pass that
+    // toggles frustumCulled back on. Cheap (no-op if already false).
+    vrm.scene.traverse((o) => { o.frustumCulled = false; });
     const animator = new VRMCharacterAnimator(vrm);
     vrmAnimatorRef.current = animator;
     // Debug: track useEffect mount/cleanup on window for CDP diagnostics
@@ -711,7 +725,7 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const isMoving = d.direction !== 'idle' && !d.isDead;
     const frame = Math.floor(clock.elapsedTime * 60);
 
-    if (camDistSq > NPC_CULL_DIST_SQ) {
+    if (camDistSq > VRM_NPC_CULL_DIST_SQ) {
       // Tick mixer at reduced rate (every 4th frame) while culled — keeps anim warm
       // without burning full frame budget on off-screen NPCs.
       if ((frame + seed) % 4 === 0) {
