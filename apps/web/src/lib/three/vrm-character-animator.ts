@@ -6,14 +6,25 @@
  *
  * Design:
  *   - 3 Mixamo GLBs (idle/walk/run) are loaded ONCE at module level and cached.
- *   - For each VRM instance, retargetMixamoClip() rewrites track names to
- *     target that VRM's specific bone nodes.
- *   - Each VRM gets its own AnimationMixer + 3 retargeted clips.
+ *   - The cache stores the full GLTF ({ scene, animations }) — the retargeter
+ *     needs animation.scene to query rest-pose world quaternions on source rig nodes.
+ *   - For each VRM instance, retargetMixamoClip() applies the rest-pose-differential
+ *     quaternion transform and emits tracks keyed to that VRM's normalized bone names.
+ *   - Each VRM gets its own AnimationMixer (rooted at vrm.scene) + 3 retargeted clips.
  *   - idle ↔ walk crossfade via mixer.crossFadeTo() when isMoving changes.
  *
+ * Mixer root — vrm.scene (NOT normalizedHumanBonesRoot):
+ *   retargetMixamoClip emits tracks like "Normalized_J_Bip_C_Hips.quaternion".
+ *   VRMHumanoidRig (containing those Normalized_* nodes) is a child of vrm.scene,
+ *   so PropertyBinding can resolve them when the mixer is rooted at vrm.scene.
+ *   The old workaround of rooting at normalizedHumanBonesRoot was only needed
+ *   because the previous naive clone+rename retargeter produced stale T-pose
+ *   data — the new rest-pose-differential transform makes that workaround
+ *   unnecessary and incorrect.
+ *
  * Performance:
- *   - Animation data (Float32Arrays) is shared between VRMs — retargetion only
- *     rewrites track.name strings, not the keyframe data itself.
+ *   - Animation keyframe data (Float32Arrays) is shared between VRMs via the
+ *     MixamoGltf cache — retargeting only allocates the transformed values slice.
  *   - No per-frame allocations — all scratch objects are class-scoped.
  *   - On Iris Xe budget ~0.3ms per VRM per frame for mixer.update + vrm.update.
  *
@@ -23,7 +34,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import type { VRM } from '@pixiv/three-vrm';
-import { retargetMixamoClip } from './mixamo-retarget';
+import { retargetMixamoClip, type MixamoGltf } from './mixamo-retarget';
 
 // ---------------------------------------------------------------------------
 // Mixamo animation asset paths
@@ -38,17 +49,19 @@ const ANIM_PATHS = {
 type AnimName = keyof typeof ANIM_PATHS;
 
 // ---------------------------------------------------------------------------
-// Module-level raw clip cache
-// Each Mixamo GLB is loaded once; clips are shared across all VRM instances.
-// Retargeting creates per-VRM copies (name strings only, not data).
+// Module-level raw GLTF cache
+//
+// Each Mixamo animation GLB is loaded once. The cache stores the full GLTF
+// ({ scene, animations }) — the retargeter needs animation.scene to query
+// rest-pose world quaternions on the source Mixamo rig nodes.
 // ---------------------------------------------------------------------------
 
-type RawClipEntry =
-  | { status: 'pending';  promise: Promise<THREE.AnimationClip> }
-  | { status: 'resolved'; clip: THREE.AnimationClip }
-  | { status: 'rejected'; error: unknown };
+type RawGltfEntry =
+  | { status: 'pending';  promise: Promise<MixamoGltf> }
+  | { status: 'resolved'; gltf:    MixamoGltf }
+  | { status: 'rejected'; error:   unknown };
 
-const RAW_CLIP_CACHE = new Map<AnimName, RawClipEntry>();
+const RAW_CLIP_CACHE = new Map<AnimName, RawGltfEntry>();
 
 // Separate loader for anim GLBs — no VRMLoaderPlugin needed
 let _animLoader: GLTFLoader | null = null;
@@ -59,13 +72,13 @@ function getAnimLoader(): GLTFLoader {
 }
 
 /**
- * Load a raw Mixamo clip from a GLB. Returns the first AnimationClip found.
+ * Load a Mixamo animation GLB and return the full GLTF bundle ({ scene, animations }).
  * Promise is cached at module level — each path loads only once.
  */
-function loadRawClip(name: AnimName): Promise<THREE.AnimationClip> {
+function loadRawGltf(name: AnimName): Promise<MixamoGltf> {
   const cached = RAW_CLIP_CACHE.get(name);
   if (cached) {
-    if (cached.status === 'resolved') return Promise.resolve(cached.clip);
+    if (cached.status === 'resolved') return Promise.resolve(cached.gltf);
     if (cached.status === 'rejected') return Promise.reject(cached.error);
     return cached.promise;
   }
@@ -74,10 +87,18 @@ function loadRawClip(name: AnimName): Promise<THREE.AnimationClip> {
   const promise = getAnimLoader()
     .loadAsync(path)
     .then((gltf) => {
-      const clip = gltf.animations[0];
-      if (!clip) throw new Error(`[vrm-animator] No animation clip in ${path}`);
-      RAW_CLIP_CACHE.set(name, { status: 'resolved', clip });
-      return clip;
+      if (!gltf.animations.length) {
+        throw new Error(`[vrm-animator] No animation clips in ${path}`);
+      }
+      const entry: MixamoGltf = {
+        scene:      gltf.scene as THREE.Group,
+        animations: gltf.animations,
+      };
+      // Force matrix world computation once at load time so the retargeter
+      // gets accurate rest-pose world quaternions from the source rig nodes.
+      entry.scene.updateMatrixWorld(true);
+      RAW_CLIP_CACHE.set(name, { status: 'resolved', gltf: entry });
+      return entry;
     })
     .catch((err) => {
       RAW_CLIP_CACHE.set(name, { status: 'rejected', error: err });
@@ -95,7 +116,7 @@ function loadRawClip(name: AnimName): Promise<THREE.AnimationClip> {
  */
 export function preloadMixamoClips(): void {
   for (const name of Object.keys(ANIM_PATHS) as AnimName[]) {
-    loadRawClip(name).catch(() => undefined);
+    loadRawGltf(name).catch(() => undefined);
   }
 }
 
@@ -115,17 +136,13 @@ export class VRMCharacterAnimator {
   private wasMoving = false;
 
   constructor(vrm: VRM) {
-    this.vrm   = vrm;
-    // Mixer MUST be rooted at the normalized humanoid rig, NOT vrm.scene.
-    // retargetMixamoClip emits track names like "Normalized_mixamorigLeftArm.quaternion".
-    // In @pixiv/three-vrm v3 those nodes live under vrm.humanoid.normalizedHumanBonesRoot,
-    // which is a side rig not parented to vrm.scene. If the mixer searches vrm.scene it
-    // can't find the nodes → PropertyBinding falls through to a sentinel → writes go
-    // nowhere → bones stay at bind pose (T-pose). vrm.update() then propagates the
-    // (unchanged) normalized pose to raw bones, so the visible skeleton also stays in
-    // T-pose. Rooting the mixer at normalizedHumanBonesRoot lets PropertyBinding resolve.
-    const rigRoot = (vrm.humanoid as any)?.normalizedHumanBonesRoot as THREE.Object3D | undefined;
-    this.mixer = new THREE.AnimationMixer(rigRoot ?? vrm.scene);
+    this.vrm = vrm;
+    // Mixer is rooted at vrm.scene so PropertyBinding can resolve
+    // Normalized_* node names. VRMHumanoidRig (containing those nodes)
+    // is a child of vrm.scene — scene.getObjectByName() finds them from here.
+    // (Previous workaround rooted at normalizedHumanBonesRoot; removed because
+    //  the retargeter now applies the correct rest-pose-differential transform.)
+    this.mixer = new THREE.AnimationMixer(vrm.scene);
   }
 
   /**
@@ -138,15 +155,17 @@ export class VRMCharacterAnimator {
     const names: AnimName[] = ['idle', 'walk', 'run'];
 
     try {
-      const rawClips = await Promise.all(names.map((n) => loadRawClip(n)));
+      const rawGltfs = await Promise.all(names.map((n) => loadRawGltf(n)));
 
       for (let i = 0; i < names.length; i++) {
-        const name = names[i];
-        const raw  = rawClips[i];
+        const name = names[i]!;
+        const gltf = rawGltfs[i]!;
 
-        const retargeted = retargetMixamoClip(raw, this.vrm);
-        if (!retargeted) {
-          console.warn(`[VRMCharacterAnimator] retarget failed for clip: ${name}`);
+        let retargeted: THREE.AnimationClip;
+        try {
+          retargeted = retargetMixamoClip(gltf, this.vrm, name);
+        } catch (err) {
+          console.warn(`[VRMCharacterAnimator] retarget failed for clip "${name}":`, err);
           continue;
         }
 
@@ -164,30 +183,34 @@ export class VRMCharacterAnimator {
       }
 
       this.ready = true;
-      // Debug: track init completions on window for CDP diagnostics
+
+      // Debug instrumentation — preserved for CDP diagnostics
       if (typeof window !== 'undefined') {
         const w = window as any;
         w.__VRM_INIT_COUNT = (w.__VRM_INIT_COUNT || 0) + 1;
-        w.__VRM_INIT_LOG = w.__VRM_INIT_LOG || [];
+        w.__VRM_INIT_LOG   = w.__VRM_INIT_LOG || [];
+
         const leftArm = this.vrm.humanoid.getNormalizedBoneNode('leftUpperArm' as any);
-        // Diagnose PropertyBinding resolution — bindings bind to real nodes if the
-        // mixer root's subtree contains the track target names, else fall through
-        // to sentinel and writes silently do nothing (classic T-pose cause).
-        const mixerAny = this.mixer as any;
-        const bindings = (mixerAny._bindings || []) as any[];
-        const withNode = bindings.filter((b) => b?.binding?.node != null).length;
-        const mixerRootName = (mixerAny._root?.name || mixerAny._root?.type || 'unknown') as string;
+
+        const mixerAny   = this.mixer as any;
+        const bindings   = (mixerAny._bindings || []) as any[];
+        const withNode   = bindings.filter((b: any) => b?.binding?.node != null).length;
+        // mixerRoot is vrm.scene — name/type varies by VRM, use uuid as stable id
+        const mixerRootName = (mixerAny._root?.name || mixerAny._root?.type || 'vrm.scene') as string;
+        // hasNormalizedRig: still true — we just no longer use it as the mixer root
         const hasNormalizedRig = !!(this.vrm.humanoid as any)?.normalizedHumanBonesRoot;
+
         w.__VRM_INIT_LOG.push({
-          n: w.__VRM_INIT_COUNT,
-          idleAction: !!idle,
-          idleClip: idle ? idle.getClip().name : null,
-          leftArmNode: leftArm ? leftArm.name : null,
-          mixerRoot: mixerRootName,
+          n:             w.__VRM_INIT_COUNT,
+          idleAction:    !!idle,
+          idleClip:      idle ? idle.getClip().name : null,
+          leftArmNode:   leftArm ? leftArm.name : null,
+          mixerRoot:     mixerRootName,
           hasNormalizedRig,
-          bindings: bindings.length,
-          boundToReal: withNode,
-          trackNames: idle ? idle.getClip().tracks.slice(0, 3).map((t) => t.name) : [],
+          mixerRootIsScene: true,
+          bindings:      bindings.length,
+          boundToReal:   withNode,
+          trackNames:    idle ? idle.getClip().tracks.slice(0, 3).map((t) => t.name) : [],
         });
       }
     } catch (err) {
@@ -204,13 +227,16 @@ export class VRMCharacterAnimator {
   /**
    * Main update — call every frame inside useFrame.
    *
-   * @param delta   Clamped frame delta (Math.min(rawDelta, 0.1))
-   * @param isMoving  true when the avatar is walking/running
+   * Order: mixer.update() → vrm.update() (matches Milady's VrmEngine.ts).
+   * mixer.update advances keyframe actions; vrm.update propagates normalized
+   * bone poses to raw bones + runs spring-bone physics.
+   *
+   * @param delta    Clamped frame delta (Math.min(rawDelta, 0.1))
+   * @param isMoving true when the avatar is walking/running
    */
   update(delta: number, isMoving: boolean): void {
     if (!this.ready) return;
 
-    // Crossfade when movement state changes
     if (isMoving !== this.wasMoving) {
       const next = this.actions[isMoving ? 'walk' : 'idle'];
       if (next && next !== this.currentAction) {
@@ -224,10 +250,7 @@ export class VRMCharacterAnimator {
       this.wasMoving = isMoving;
     }
 
-    // Update mixer — advances all active AnimationActions
     this.mixer.update(delta);
-
-    // Update VRM-specific systems: expressions, spring bones, look-at
     this.vrm.update(delta);
   }
 
@@ -239,13 +262,12 @@ export class VRMCharacterAnimator {
    * Also handles isMoving crossfade — crossfade state must be in sync with
    * the mixer, so we handle it here rather than in updateSpringOnly.
    *
-   * @param delta  Clamped frame delta
-   * @param isMoving  true when walking/running
+   * @param delta    Clamped frame delta
+   * @param isMoving true when walking/running
    */
   updateMixerOnly(delta: number, isMoving: boolean): void {
     if (!this.ready) return;
 
-    // Crossfade when movement state changes (mirrors the logic in update())
     if (isMoving !== this.wasMoving) {
       const next = this.actions[isMoving ? 'walk' : 'idle'];
       if (next && next !== this.currentAction) {
