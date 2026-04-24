@@ -32,7 +32,11 @@ useGLTF.preload('/models/marketplace-food-stall.glb');
 // World position
 // ---------------------------------------------------------------------------
 const STALL_X = 600;
-const STALL_Y = -2;
+// Raised to +4 so the stall base clears the sand terrain (Y=-2). The food
+// stall GLB's pivot is not at the very bottom of its geometry — the wooden
+// frame / stand extends slightly below the root origin, causing a visible
+// clip when placed flush at sand level. Sitting 6wu above sand hides this.
+const STALL_Y = 4;
 const STALL_Z = -60;
 
 // Target visual height — slightly larger than the bazaar to give the more
