@@ -31,6 +31,7 @@ import {
   bumperShellsSim,
   BUMPER_TICK_HZ,
 } from './sim/bumper-shells-sim';
+import { reefRaceSim } from './sim/reef-race-sim';
 import { InputRateTracker, validateChatBounds } from './anti-cheat/shared';
 import { logEvent } from '../event-logger';
 import type { Room, RoomParticipant } from './types';
@@ -390,8 +391,21 @@ class ActivityWsHub {
         },
       );
       void out; // flag handling routed via the sim's integrityForfeitFn
+    } else if (room.activityId === 'reef-race') {
+      const out = reefRaceSim.applyInput(
+        ws.data.roomId,
+        identity.avatarId,
+        frame.seq,
+        frame.dt,
+        {
+          dir: frame.dir,
+          thrust: frame.thrust,
+          actionBits: frame.actionBits,
+        },
+      );
+      void out;
     }
-    // else: unknown activity — defer to chunk #5
+    // else: unknown activity — sim missing for this activityId
   }
 
   private handleChat(ws: HubWs, frame: Extract<ClientFrame, { type: 'chat' }>): void {
@@ -416,17 +430,55 @@ class ActivityWsHub {
       rotation: 0,
       state: p.connected ? 'alive' : 'disconnected',
     }));
-    const bumperState = bumperShellsSim.getStateSnapshot(room.id);
-    if (bumperState) {
-      entities.length = 0;
-      for (const b of bumperState.bodies) {
-        entities.push({
-          avatarId: b.avatarId,
-          position: { x: b.x, y: b.y },
-          velocity: { x: b.vx, y: b.vy },
-          rotation: b.rot,
-          state: b.alive ? 'alive' : 'eliminated',
-        });
+    let tick = 0;
+    let powerUps: Array<{ spawnId: string; kind: string; position: { x: number; y: number } }> = [];
+    if (room.activityId === 'bumper-shells') {
+      const bumperState = bumperShellsSim.getStateSnapshot(room.id);
+      if (bumperState) {
+        tick = bumperState.tick;
+        entities.length = 0;
+        for (const b of bumperState.bodies) {
+          entities.push({
+            avatarId: b.avatarId,
+            position: { x: b.x, y: b.y },
+            velocity: { x: b.vx, y: b.vy },
+            rotation: b.rot,
+            state: b.alive ? 'alive' : 'eliminated',
+          });
+        }
+        powerUps = bumperState.spawns
+          .filter((s) => s.active)
+          .map((s) => ({
+            spawnId: s.spawnId,
+            kind: s.kind,
+            position: { x: s.x, y: s.y },
+          }));
+      }
+    } else if (room.activityId === 'reef-race') {
+      const reefState = reefRaceSim.getStateSnapshot(room.id);
+      if (reefState) {
+        tick = reefState.tick;
+        entities.length = 0;
+        for (const b of reefState.bodies) {
+          entities.push({
+            avatarId: b.avatarId,
+            position: { x: b.x, y: b.y },
+            velocity: { x: b.vx, y: b.vy },
+            rotation: b.rot,
+            state: b.dnf
+              ? 'dnf'
+              : b.finishedAt !== null
+                ? 'finished'
+                : 'racing',
+          });
+        }
+        powerUps = reefState.pickups
+          .filter((p) => p.active)
+          .map((p) => ({
+            spawnId: p.spawnId,
+            kind: p.kind,
+            position: { x: p.x, y: p.y },
+          }));
       }
     }
     this.safeSend(ws, {
@@ -439,15 +491,9 @@ class ActivityWsHub {
         startedAt: room.startedAt ?? undefined,
       },
       world: {
-        tick: bumperState?.tick ?? 0,
+        tick,
         entities,
-        powerUps: (bumperState?.spawns ?? [])
-          .filter((s) => s.active)
-          .map((s) => ({
-            spawnId: s.spawnId,
-            kind: s.kind,
-            position: { x: s.x, y: s.y },
-          })),
+        powerUps,
         scores: [],
       },
       seed: 0,
@@ -485,6 +531,8 @@ class ActivityWsHub {
     // Forfeit the body in the sim if one is running.
     if (room.activityId === 'bumper-shells' && room.state === 'live') {
       bumperShellsSim.forfeit(room.id, avatarId, reason);
+    } else if (room.activityId === 'reef-race' && room.state === 'live') {
+      reefRaceSim.forfeit(room.id, avatarId, reason);
     }
     this.broadcastEvent(room.id, {
       type: 'event.player_left',
