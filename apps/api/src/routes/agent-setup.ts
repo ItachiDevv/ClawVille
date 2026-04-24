@@ -134,6 +134,12 @@ function buildCharacterConfig(archetypeId: PetArchetypeId, avatarName: string, s
 // Schemas
 // ---------------------------------------------------------------------------
 
+// Species enum still matches the DB avatar_species pg_enum (8 land species from a
+// pre-ocean-theme codebase). Converting to ocean species requires a full DB
+// migration; for now the client LEGACY_SPECIES_REMAP in arena-npcs.tsx maps
+// these land strings to actual ocean GLBs (cat→lobster, dragon→sweet_crab,
+// fox→hermitcrab, owl→seahorse, wolf→octopus, bunny→jellyfish, phoenix→crayfish,
+// turtle→lobster_plush). Follow-up: migrate avatar_species enum to ocean keys.
 const createAgentSchema = z.object({
   name: z.string().min(3).max(20).regex(/^[a-zA-Z0-9]+$/, 'Name must be alphanumeric'),
   species: z.enum(['cat', 'dragon', 'fox', 'owl', 'wolf', 'bunny', 'phoenix', 'turtle']),
