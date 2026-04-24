@@ -225,6 +225,33 @@ const SPECIES_MODEL: Record<string, { path: string; key: string }> = {
 };
 const DEFAULT_SPECIES = SPECIES_MODEL.lobster;
 
+// Legacy land-themed species from pre-ocean-theme agent registration
+// (apps/api/src/routes/agent-setup.ts and apps/web/src/stores/game.ts default
+// to 'cat'). Every OpenClaw bot registered through agent-setup's `/configure`
+// endpoint persisted with species ∈ {cat, dragon, fox, owl, wolf, bunny,
+// phoenix, turtle} which are LAND animals that have never existed in this
+// underwater world. Those species fall through SPECIES_MODEL lookup and land
+// on DEFAULT_SPECIES (lobster), turning every registered bot into a red
+// lobster — observed 2026-04-24 as "~15 lobsters on screen" with only the
+// three real sea-creature wanderers meant to exist.
+//
+// Remap each legacy land species to a flavourful ocean equivalent so the
+// existing DB rows render correctly. New registrations will use proper
+// ocean species once the api side is updated separately.
+const LEGACY_SPECIES_REMAP: Record<string, string> = {
+  cat:     'lobster',       // default → bread-and-butter red lobster
+  dragon:  'sweet_crab',    // big claws, fighty
+  fox:     'hermitcrab',    // sneaky, tucked inside a shell
+  owl:     'seahorse',      // vertical posture, perched
+  wolf:    'octopus',       // pack hunter / many limbs
+  bunny:   'jellyfish',     // hoppy → floaty
+  phoenix: 'crayfish',      // fiery red claws
+  turtle:  'lobster_plush', // soft/slow
+};
+function resolveSpecies(raw: string): string {
+  return LEGACY_SPECIES_REMAP[raw] ?? raw;
+}
+
 // Preload all species GLBs at module level (11 models, ~3-4 MB total) so
 // wandering NPCs don't cause network+parse pops when they first appear.
 Object.values(SPECIES_MODEL).forEach(({ path }) => useGLTF.preload(path));
@@ -365,7 +392,8 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
   const currentRotY = useRef(0);
   const currentTerrainY = useRef(0);
 
-  const speciesInfo = SPECIES_MODEL[npc.species] ?? DEFAULT_SPECIES;
+  const resolvedSpecies = resolveSpecies(npc.species);
+  const speciesInfo = SPECIES_MODEL[resolvedSpecies] ?? DEFAULT_SPECIES;
   const { scene } = useGLTF(speciesInfo.path);
 
   // Determine which animation system to use
