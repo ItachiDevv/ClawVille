@@ -41,8 +41,8 @@ useGLTF.preload('/models/jellyfish.glb');
 // World position — unchanged from old podium
 // ---------------------------------------------------------------------------
 const DOME_X = 0;
-const DOME_Y = -2;
-const DOME_Z = 150;
+const DOME_Y = -18; // sunk 16wu into sand to hide the GLB's circular base plate
+const DOME_Z = 280; // pushed further south (+130wu) to clear the player spawn zone
 
 // Target visual height for the dome (the centerpiece — give it presence)
 const DOME_TARGET_HEIGHT_WU = 380;
