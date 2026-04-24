@@ -262,17 +262,15 @@ Object.values(SPECIES_MODEL).forEach(({ path }) => useGLTF.preload(path));
 // pre-skin parent transforms (transform1 scale ≈ 0.042, nurbsCircleMover
 // scale ≈ 24.053 cancelling to ~1) reads the SKELETON extent rather than
 // the actual rendered mesh extent. On hermitcrab that produced
-// npcScale = 2.14 → rendered mesh only ~6 wu tall (invisible from the
-// spectate camera). These overrides are measured from the rendered
-// mesh centers + bboxes after the full rig pipeline is applied:
-//   - hermitcrab: rendered cluster ~6 wu → 16× = 45 wu (TARGET_NPC_HEIGHT)
-//   - sweet_crab: native Y 5.90 → computeNpcScale lands at 13.19 (rendered
-//     78 wu, too tall); 7.6 keeps it at 45 wu matching lobsters
-// 2026-04-24 — added alongside the server-side approach stand-off fix
-// that unstuck the 3 crustacean wanderers from a single world coordinate.
+// Species scale overrides calibrated AFTER the 2026-04-24 SkeletonUtils.clone fix.
+// Before that fix the SkinnedMesh was bind-pose-only (bones bound to another
+// instance), so old overrides (hermitcrab: 16) were calibrated against a
+// frozen pose. Now bones animate correctly and the extent is larger — values
+// reduced to ~TARGET_NPC_HEIGHT=45 Y extent with Milady-comparable footprint.
 const SPECIES_WANDER_SCALE_OVERRIDE: Partial<Record<string, number>> = {
-  hermitcrab: 16,
-  sweet_crab: 7.6,
+  hermitcrab: 4,   // was 16 — shell-size crab, walked to ~5× too big after clone fix
+  sweet_crab:  7.6, // unchanged — bbox 56×53×67 reads acceptable in-game
+  lobster:     22, // was computed 40.17 — 278wu width too wide; 22 yields ~150wu width
 };
 
 // ---------------------------------------------------------------------------
