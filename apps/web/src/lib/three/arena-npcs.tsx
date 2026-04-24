@@ -280,17 +280,23 @@ const VRM_NPC_SCALE = 112;
 //   (diagonal half = 3620wu) and matches the fog's effective visibility cutoff,
 //   keeping all nearby-quadrant NPCs live while the distant corners remain culled.
 //   VRM half-rate band raised 800→1000 proportionally.
-const NPC_CULL_DIST_SQ          = 2500 * 2500;
+const NPC_CULL_DIST_SQ          = 10000 * 10000;  // see rationale below
 const VRM_NPC_HALF_RATE_DIST_SQ = 1000 * 1000;
 
-// VRM NPCs never far-cull. 5 Milady wanderers is a small, bounded set — the cost
-// of keeping them all ticking is ~5 × ~1ms spring-bone (half-rate) + ~5 × ~0.3ms
-// mixer. Camera panning on a 5120wu map routinely pushes NPCs across the 2500wu
-// ring used for GLB NPCs, producing a visible "appear / disappear" flicker as the
-// user rotates. Value kept as squared-distance for consistency; Number.POSITIVE_INFINITY
-// would work equivalently but reads opaque in comparisons. 10000wu² = 100M covers
-// the fog end (6800wu) + full map diagonal with margin.
-const VRM_NPC_CULL_DIST_SQ      = 10000 * 10000;
+// 2026-04-24: NPC_CULL_DIST_SQ widened 2500²→10000² (effectively disabled).
+// The old 2500wu sphere caused two visible bugs on a 5120wu map:
+//   1. Building residents on the far side of the ring (~2100wu from center)
+//      would be culled whenever the camera was on the opposite side — their
+//      group.position never got set, and they stayed invisible at (0,0,0)
+//      even after they should have reappeared.
+//   2. Crustacean wanderers (Driftwood/Marlin/Riptide) wander through the
+//      whole town ring and crossed the 2500wu threshold routinely as the
+//      user rotated the camera — their avatars flickered in and out despite
+//      their labels being shown.
+// 13 GLB NPCs (10 building residents + 3 wanderers) is a bounded set that
+// can all render all the time without visible perf degradation. The VRM and
+// GLB cull constants now match — neither far-culls in normal camera ranges.
+const VRM_NPC_CULL_DIST_SQ      = NPC_CULL_DIST_SQ;
 
 // Preload ALL Milady VRM paths used by wandering NPCs + Mixamo animation clips.
 // These calls are module-scope so the caches are warm before any VRMNpcMesh mounts.
@@ -440,6 +446,19 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // Update target XZ position
     targetPos.current.set(d.x - HALF_W, 0, d.y - HALF_H);
 
+    // Lerp + set group.position unconditionally so culled NPCs still track
+    // their real world position. Previously group.position was only updated
+    // inside the visible branch — a far-culled NPC's group stayed at (0,0,0)
+    // throughout the culled window, causing users to see NPCs "teleport in
+    // at origin" when the camera panned toward them. Capture pre-lerp x/z
+    // for the velocity-based facing calculation below.
+    const glbPrevX = currentPos.current.x;
+    const glbPrevZ = currentPos.current.z;
+    currentPos.current.x += (targetPos.current.x - currentPos.current.x) * (1 - Math.exp(-LERP_SPEED * dt));
+    currentPos.current.z += (targetPos.current.z - currentPos.current.z) * (1 - Math.exp(-LERP_SPEED * dt));
+    group.position.x = currentPos.current.x;
+    group.position.z = currentPos.current.z;
+
     // ── Distance-LOD cull ────────────────────────────────────────────────
     // Perf: every NPC's useFrame ran terrain raycasts (scene-traverse), matrix
     // updates, animator ticks, + a drei <Html> label that recomputes CSS per
@@ -472,15 +491,6 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
       const label = labelRef.current;
       if (label && label.style.display !== 'flex') label.style.display = 'flex';
     }
-
-    // Lerp XZ position
-    const glbPrevX = currentPos.current.x;
-    const glbPrevZ = currentPos.current.z;
-    currentPos.current.x += (targetPos.current.x - currentPos.current.x) * (1 - Math.exp(-LERP_SPEED * dt));
-    currentPos.current.z += (targetPos.current.z - currentPos.current.z) * (1 - Math.exp(-LERP_SPEED * dt));
-
-    group.position.x = currentPos.current.x;
-    group.position.z = currentPos.current.z;
 
     // Raycast to find terrain surface Y (every 3rd frame to save perf).
     // Use (frame + seed) % 3 to stagger across NPCs — prevents all NPCs from
@@ -753,6 +763,16 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // Update target XZ position
     targetPos.current.set(d.x - HALF_W, 0, d.y - HALF_H);
 
+    // Lerp + set group.position unconditionally (same reasoning as GLBNpcMesh):
+    // culled NPCs still need their group at the correct world position so that
+    // on un-cull they don't flash in at origin.
+    const prevX = currentPos.current.x;
+    const prevZ = currentPos.current.z;
+    currentPos.current.x += (targetPos.current.x - currentPos.current.x) * (1 - Math.exp(-LERP_SPEED * dt));
+    currentPos.current.z += (targetPos.current.z - currentPos.current.z) * (1 - Math.exp(-LERP_SPEED * dt));
+    group.position.x = currentPos.current.x;
+    group.position.z = currentPos.current.z;
+
     // ── Distance-LOD cull (same policy as GLBNpcMesh) ────────────────────
     // Far: hide group (Three.js skips render subtree + Html portal); return.
     // Mid: animator throttles to 30Hz. Close: full 60Hz animator + spring.
@@ -790,14 +810,6 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
       const label = labelRef.current;
       if (label && label.style.display !== 'flex') label.style.display = 'flex';
     }
-
-    // Lerp XZ position (mirrors GLBNpcMesh terrain-ride pattern)
-    const prevX = currentPos.current.x;
-    const prevZ = currentPos.current.z;
-    currentPos.current.x += (targetPos.current.x - currentPos.current.x) * (1 - Math.exp(-LERP_SPEED * dt));
-    currentPos.current.z += (targetPos.current.z - currentPos.current.z) * (1 - Math.exp(-LERP_SPEED * dt));
-    group.position.x = currentPos.current.x;
-    group.position.z = currentPos.current.z;
 
     // Raycast terrain every 3rd frame (staggered by seed to avoid per-frame spikes)
     if ((frame + seed) % 3 === 0) {
