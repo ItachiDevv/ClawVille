@@ -15,7 +15,7 @@ import {
   DEFAULT_ARENA_SETTINGS,
 } from '@clawville/shared';
 import { generateNpcConversation, generateOpenClawConversation } from './npc-conversation-engine';
-import { findPath, type PathNode } from './pathfinding';
+import { findPath, hasClearance, type PathNode } from './pathfinding';
 import { PetSimulationBridge } from './avatar-simulation-bridge';
 import { memoryService } from './memory-service';
 import {
@@ -757,11 +757,15 @@ class NpcSimulation {
     // sample doesn't freeze movement for 10+ seconds.
     const rMinSq = FREE_ROAMER_MIN_RADIUS * FREE_ROAMER_MIN_RADIUS;
     const rMaxSq = FREE_ROAMER_MAX_RADIUS * FREE_ROAMER_MAX_RADIUS;
-    for (let attempt = 0; attempt < 8; attempt++) {
+    for (let attempt = 0; attempt < 12; attempt++) {
       const angle = Math.random() * Math.PI * 2;
       const radius = Math.sqrt(Math.random() * (rMaxSq - rMinSq) + rMinSq);
       const tx = TOWN_CENTER_X + Math.cos(angle) * radius;
       const ty = TOWN_CENTER_Y + Math.sin(angle) * radius;
+      // Reject targets with < 3 tiles of clearance from any blocked tile —
+      // prevents NPCs pathfinding to the edge of a building exclusion zone
+      // where they then stop pressed against the visible wall.
+      if (!hasClearance(tx, ty, 3)) continue;
       const path = findPath(npc.x, npc.y, tx, ty);
       if (path.length > 0) {
         npc.activity = 'walking'; npc.activityEmoji = '';
@@ -771,7 +775,7 @@ class NpcSimulation {
         return;
       }
     }
-    // All 8 samples blocked — give up this tick but replan soon.
+    // All 12 samples blocked — give up this tick but replan soon.
     npc.behaviorCooldown = 10;
   }
 
@@ -818,13 +822,16 @@ class NpcSimulation {
     // other into an ~100wu cluster. 250wu is roughly 2.5× a Milady's visible
     // height (112 * 1.6m ≈ 180 wu), enough daylight between NPCs that they
     // read as distinct.
-    // Try up to 6 stand-off angles before giving up — a single angle may land
+    // Try up to 8 stand-off angles before giving up — a single angle may land
     // in a building tile, especially now that NPCs roam the 1400-2600 ring
-    // which overlaps buildings.
-    for (let attempt = 0; attempt < 6; attempt++) {
+    // which overlaps buildings. Reject targets without ≥3 tiles of clearance
+    // so approachers don't end up pressed against a building wall near the
+    // target NPC.
+    for (let attempt = 0; attempt < 8; attempt++) {
       const approachAngle = Math.random() * Math.PI * 2;
       const tx = target.x + Math.cos(approachAngle) * standOff;
       const ty = target.y + Math.sin(approachAngle) * standOff;
+      if (!hasClearance(tx, ty, 3)) continue;
       const path = findPath(npc.x, npc.y, tx, ty);
       if (path.length > 0) {
         npc.activity = 'walking'; npc.activityEmoji = '';
