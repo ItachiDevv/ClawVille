@@ -270,7 +270,7 @@ Object.values(SPECIES_MODEL).forEach(({ path }) => useGLTF.preload(path));
 // frozen pose. Now bones animate correctly and the extent is larger — values
 // reduced to ~TARGET_NPC_HEIGHT=45 Y extent with Milady-comparable footprint.
 const SPECIES_WANDER_SCALE_OVERRIDE: Partial<Record<string, number>> = {
-  hermitcrab: 2,   // was 4 — user reports still "HUGE" after SkeletonUtils skeleton exposed full shell extent
+  hermitcrab: 4,   // 2 was too small — Riptide rendered invisible. 4 gives ~54 wu Y-extent = near TARGET_NPC_HEIGHT=45.
   sweet_crab:  7.6, // unchanged — bbox 56×53×67 reads acceptable in-game
   lobster:     22, // was computed 40.17 — 278wu width too wide; 22 yields ~150wu width
 };
@@ -936,13 +936,26 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // user confirmed this after multiple sign-flip sessions. Matches the
     // player-pet.tsx line 345 formula exactly. DO NOT CHANGE — the negated
     // `-vx` variant makes Miladys walk backwards.
+    //
+    // HYBRID SOURCE: server direction is AUTHORITATIVE when provided
+    // ('up'/'down'/'left'/'right'). Use continuous velocity-derived rotation
+    // ONLY when velocity is clearly above noise (magSq > 4 = 2 wu/frame). The
+    // lower 0.25 threshold let sub-pixel jitter during lerp-convergence pick
+    // random facing directions — user saw "some walk sideways, some backwards"
+    // because Miladys at-destination had near-zero velocity with random sign.
     const vx = currentPos.current.x - prevX;
     const vz = currentPos.current.z - prevZ;
     const velMagSq = vx * vx + vz * vz;
-    // Movement threshold: need at least 0.5wu/frame of motion to trust velocity
-    // as a facing signal. Below that it's likely sub-pixel jitter during idle.
-    if (velMagSq > 0.25 && d.direction !== 'idle') {
-      const targetRot = Math.atan2(vx, -vz);
+    let targetRot: number | null = null;
+    if (velMagSq > 4 && d.direction !== 'idle') {
+      // Moving faster than 2 wu/frame — velocity is reliable.
+      targetRot = Math.atan2(vx, -vz);
+    } else if (d.direction !== 'idle') {
+      // Moving but slow (between waypoints, converged to target) — trust server's
+      // cardinal direction. VRM faces -Z at rest, so down=PI, up=0, right=PI/2, left=-PI/2.
+      targetRot = VRM_DIR_ROTATION[d.direction] ?? null;
+    }
+    if (targetRot != null) {
       let diff = targetRot - currentRotY.current;
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
