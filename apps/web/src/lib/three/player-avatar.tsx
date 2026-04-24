@@ -352,8 +352,13 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
     let continuousRot: number | null = null;
     if (vx !== 0 || vy !== 0) {
       dir = Math.abs(vx) > Math.abs(vy) ? (vx > 0 ? 'right' : 'left') : (vy > 0 ? 'down' : 'up');
-      // VRM faces -Z: atan2(vx, -vy) gives correct facing for screen-relative input
-      continuousRot = Math.atan2(vx, -vy);
+      // VRM faces -Z. Math: R_y(θ) applied to (0,0,-1) = (-sinθ, 0, -cosθ).
+      // For that to point at (vx, 0, vy), need sinθ = -vx, cosθ = -vy, i.e.
+      // θ = atan2(-vx, -vy). Old formula atan2(vx, -vy) was 180° wrong on
+      // east/west/diagonals; invisible here only because the 3rd-person camera
+      // orbits with the player (back-of-avatar view hides the error). Corrected
+      // to match arena-npcs.tsx 2026-04-24.
+      continuousRot = Math.atan2(-vx, -vy);
     }
     store.setMovementDirection(dir as any);
 
@@ -398,7 +403,7 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
     group.position.y = terrainYRef.current + bob
                      + jumpState.heightOffset + jumpState.playerAltitude;
 
-    // Rotation: VRM faces -Z, use atan2(vx, -vy)
+    // Rotation: see atan2(-vx, -vy) derivation above (VRM faces -Z, need sign negation).
     if (continuousRot !== null) {
       let rotDiff = continuousRot - rotRef.current;
       while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
