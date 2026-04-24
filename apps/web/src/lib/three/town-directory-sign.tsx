@@ -93,6 +93,12 @@ const TownDirectorySignInner = memo(function TownDirectorySignInner() {
 
   return (
     <group position={[SIGN_X, SIGN_Y, SIGN_Z]}>
+      {/* DIAGNOSTIC: bright red cube — if visible, component mounts.
+          If not visible, the sign subtree is being culled/errored upstream. */}
+      <mesh position={[0, 100, 200]}>
+        <boxGeometry args={[200, 200, 200]} />
+        <meshBasicMaterial color={0xff0000} />
+      </mesh>
       <mesh
         geometry={postGeo}
         material={woodMat}
