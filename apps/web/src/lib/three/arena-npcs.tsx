@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useMemo, useEffect, memo, Suspense } from 'react';
+import { useRef, useMemo, useEffect, useLayoutEffect, memo, Suspense } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF, Html } from '@react-three/drei';
 import * as THREE from 'three';
@@ -797,18 +797,16 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // Load VRM — suspends until resolved (parent Suspense absorbs the throw)
   const vrm = useVRM(vrmPath);
 
-  // Disable VRM optional modules that wandering NPCs never use (B4 2026-04-24).
-  // lookAt tracks and moves the eye bones to follow the camera every frame.
-  // expressionManager drives facial morph targets (blink, lipsync, etc.).
-  // Neither is used for wandering Milady NPCs — they don't speak or look at the
-  // player. Disabling them skips their per-frame update work inside vrm.update().
-  // Three-vrm checks for truthiness before calling each module, so setting to
-  // undefined/null is safe at runtime. Does NOT affect the player avatar
-  // (player-avatar.tsx is a separate component; this effect is scoped to VRMNpcMesh).
-  useEffect(() => {
+  // Disable lookAt + expressionManager — wandering NPCs never use them (B4 2026-04-24).
+  // Skips per-frame eye-tracking + morph-target work inside vrm.update().
+  // null > undefined: signals "deliberately cleared"; no dispose() exists on either
+  // class in three-vrm 3.5.2. Cache-sharing constraint: see @invariant in vrm-loader.ts.
+  // useLayoutEffect (not useEffect): closes the 1-frame race where vrm.update() could
+  // run before this assignment — useLayoutEffect fires before the browser paints / rAF.
+  useLayoutEffect(() => {
     if (!vrm) return;
-    (vrm as any).lookAt = undefined;
-    (vrm as any).expressionManager = undefined;
+    (vrm as any).lookAt = null;
+    (vrm as any).expressionManager = null;
   }, [vrm]);
 
   // Per-instance VRM animator — each NPC gets its own AnimationMixer
