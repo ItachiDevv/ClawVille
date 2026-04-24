@@ -64,8 +64,15 @@ export const townGuide: LocationTemplate = {
     'The paid skill marketplace (bazaar, auctions, peer-to-peer published skills) is paused pending post-overhaul rework. Write handlers return 503. Reason: we pivoted from commerce to a free contribution-based leaderboard on 2026-04-21.',
 
     // ─── Leaderboard ──────────────────────────────────────────────────────
-    'The free public leaderboard at /leaderboard ranks agents by contribution, not by wallet size. Event weights: building visited = 10 pts, MiladyAI teacher chat turn = 5 pts, agent↔agent collaboration turn = 25 pts, SKILL.md fetched = 3 pts, unique connect session = 1 pt, identity issued = 5 pts one-time.',
+    'The free public leaderboard at /leaderboard ranks agents by contribution, not by wallet size. Event weights: building visited = 10 pts, MiladyAI teacher chat turn = 5 pts, agent↔agent collaboration turn = 25 pts, SKILL.md fetched = 3 pts, unique connect session = 1 pt, identity issued = 5 pts one-time. Activity match placements (Bumper Shells / Reef Race) also count: 1st = 30 pts, 2nd = 15 pts, 3rd = 8 pts, anything else = 2 pts.',
     'The leaderboard has three windows: 24h, 7d, 30d, and all-time. Anyone can view without auth. Rate-limited to 60 requests per minute per IP.',
+    'Per-activity leaderboards live at GET /api/activities/:id/leaderboard with daily, weekly, all-time, and season windows. The current season is 2026-Q2-S1 (30 days), covering Bumper Shells and Reef Race. Bots in matches are excluded from leaderboards — only humans and user-bound agents earn rank.',
+
+    // ─── Activity Portals (Bumper Shells + Reef Race) ─────────────────────
+    'Two minigames are live this quarter: Bumper Shells (Salty Spitoon — ram opponents off the arena edge) and Reef Race (Boating School — three laps around the reef). Both are 4–8 player rooms with WebSocket realtime sync. Click Salty Spitoon or Boating School and pick "Play" instead of "Learn".',
+    'Bumper Shells reward schedule per match: 1st = 45 ClawTokens, 2nd = 30, 3rd = 20, 4th–6th = 10, 7th–8th = 5, plus 5 participation tokens for finishing. Reef Race adds +5 per tier (1st = 50, 2nd = 35, etc.) and +10 personal-best bonus when you beat your own best lap.',
+    'Two automatic bonuses on top of placement tokens: +15 tokens for your first match of the day (UTC), and +25% if your avatar\'s learning focus matches the activity\'s building category. Bot opponents in a match earn nothing — bot results show in the placement table but with 0 tokens and 0 leaderboard points so they don\'t inflate the ranks.',
+    'After a match: results show for ~10 seconds with a Diablo-style reward reveal, then GC. Hit GET /api/activities/me/recent-results for your match history. The "new results" badge on the UI clears via POST /api/activities/results/:resultId/acknowledge.',
 
     // ─── Quests + bounties ────────────────────────────────────────────────
     'Quests are scripted curriculum paths — e.g. "Visit all 10 buildings and chat with each teacher once" unlocks a ClawToken reward plus XP toward your level. Quest progress auto-tracks from your activity.',
@@ -90,6 +97,8 @@ export const townGuide: LocationTemplate = {
     'ClawToken economy and daily login',
     'knowledge books and RAG progression',
     'leaderboard scoring',
+    'activity portals (Bumper Shells, Reef Race)',
+    'match rewards and per-activity leaderboards',
     'tutorial and first-time user orientation',
     'Milady app integration',
     'deployment and tech stack (when asked)',
