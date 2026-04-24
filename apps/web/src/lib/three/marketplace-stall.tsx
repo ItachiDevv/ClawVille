@@ -7,7 +7,7 @@
  * SpatialNeglect, CC-BY). Optimised with gltf-transform WebP@512 — DO NOT
  * re-optimise.
  *
- * Position: (150, -2, -60) — east of town center, mirror of BazaarStall to
+ * Position: (260, -2, -60) — east of town center, mirror of BazaarStall to
  * the west.
  *
  * GPU constraints (Iris Xe invariants):
@@ -31,13 +31,13 @@ useGLTF.preload('/models/marketplace-food-stall.glb');
 // ---------------------------------------------------------------------------
 // World position
 // ---------------------------------------------------------------------------
-const STALL_X = 150;
+const STALL_X = 260;
 const STALL_Y = -2;
 const STALL_Z = -60;
 
 // Target visual height — slightly larger than the bazaar to give the more
 // elaborate food stall structure visual presence.
-const TARGET_HEIGHT_WU = 140;
+const TARGET_HEIGHT_WU = 450;
 
 // ---------------------------------------------------------------------------
 // Scale helper — same algorithm as arena-location-npcs.tsx computeNormalizedScale.
