@@ -20,7 +20,10 @@
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { MeshoptDecoder } from 'three-stdlib';
+// meshoptimizer's decoder object satisfies three's strict `setMeshoptDecoder`
+// type (has useWorkers + decodeGltfBufferAsync); three-stdlib's variant is
+// missing those methods and fails tsc. meshoptimizer@^0.22.0 is a root dep.
+import { MeshoptDecoder } from 'meshoptimizer';
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 import { MToonMaterialLoaderPlugin } from '@pixiv/three-vrm-materials-mtoon';
 import type { VRM } from '@pixiv/three-vrm';
@@ -103,7 +106,10 @@ function getLoader(): GLTFLoader {
   // three-stdlib's MeshoptDecoder is a callable that returns the decoder
   // object; GLTFLoader accepts either, but three-stdlib's signature is
   // `() => API` so we invoke it.
-  _loader.setMeshoptDecoder(MeshoptDecoder());
+  // meshoptimizer's MeshoptDecoder is the decoder object itself (NOT a
+  // callable — three-stdlib's is `() => API`, which is what caused the
+  // PR #47 tsc break). Pass the object directly.
+  _loader.setMeshoptDecoder(MeshoptDecoder);
   _loader.register((parser) => new VRMLoaderPlugin(parser, {
     mtoonMaterialPlugin: new MToonMaterialLoaderPlugin(parser),
   }));
