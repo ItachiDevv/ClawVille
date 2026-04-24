@@ -125,16 +125,19 @@ function loadVRM(path: string): Promise<VRM> {
       // MToon renders each mesh twice: once for the fill, once for an outset
       // silhouette (the "outline pass"). For ClawVille's wandering Milady VRMs
       // the ink-line aesthetic is not a core requirement; cel-shading look is
-      // preserved by the fill pass alone. outlineWidthMode=0 = "None" per MToon
-      // spec — no outline geometry is emitted. Reversible: set to 1 (World) or
-      // 2 (Screen) to restore outlines. Applied once per VRM at load time; safe
-      // for both WebGLRenderer and WebGPURenderer.
+      // preserved by the fill pass alone. outlineWidthMode='none' per MToon
+      // spec — no outline geometry is emitted. Reversible: set to
+      // 'worldCoordinates' or 'screenCoordinates' to restore outlines.
+      // Applied once per VRM at load time; safe for both renderers.
+      //
+      // NOTE: three-vrm 3.5.x uses STRING literals, not numeric enums.
+      // Earlier `= 0` assignment silently did nothing at runtime.
       vrm.scene.traverse((obj) => {
         const mat = (obj as THREE.Mesh).material as any;
         if (!mat) return;
         const mats: any[] = Array.isArray(mat) ? mat : [mat];
         for (const m of mats) {
-          if (m?.isMToonMaterial) m.outlineWidthMode = 0; // None
+          if (m?.isMToonMaterial) m.outlineWidthMode = 'none';
         }
       });
 
