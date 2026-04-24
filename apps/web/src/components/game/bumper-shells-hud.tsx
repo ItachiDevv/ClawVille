@@ -26,6 +26,7 @@ import {
   EliminatedOverlay,
   PingIndicator,
 } from './activity';
+import ActivityResultsModal from './activity-results-modal';
 
 function formatTime(secondsRemaining: number): string {
   const s = Math.max(0, Math.round(secondsRemaining));
@@ -45,9 +46,25 @@ function useTickClock(intervalMs = 250) {
 export interface BumperShellsHudProps {
   /** Optional callback to leave the match — page wires to navigate back. */
   onLeave?: () => void;
+  /**
+   * Chunk #9 — required for the results modal to fetch authoritative results
+   * from `GET /api/activities/:activityId/rooms/:roomId/results`.
+   */
+  activityId?: string;
+  roomId?: string;
+  /**
+   * Optional Play Again handler — when omitted the modal hides the button.
+   * Page wires this to navigate back to /game with `?quickQueue=bumper-shells`.
+   */
+  onPlayAgain?: () => void;
 }
 
-export default function BumperShellsHud({ onLeave }: BumperShellsHudProps) {
+export default function BumperShellsHud({
+  onLeave,
+  activityId,
+  roomId,
+  onPlayAgain,
+}: BumperShellsHudProps) {
   // Re-render every 250ms so the round timer counts down smoothly without
   // requiring server frames.
   useTickClock(250);
@@ -62,9 +79,8 @@ export default function BumperShellsHud({ onLeave }: BumperShellsHudProps) {
   const room = useActivityStore((s) => s.room);
   const errorBanner = useActivityStore((s) => s.errorBanner);
   const connectionStatus = useActivityStore((s) => s.connectionStatus);
-  const winners = useActivityStore((s) => s.winners);
-  const rewardPreview = useActivityStore((s) => s.rewardPreview);
-  const matchEndReason = useActivityStore((s) => s.matchEndReason);
+  // `winners`, `rewardPreview`, `matchEndReason` formerly powered the inline
+  // ended-card; chunk #9 hands those reads to <ActivityResultsModal> instead.
   const powerUpInventory = useActivityStore((s) => s.powerUpInventory);
   const eliminations = useActivityStore((s) => s.events.eliminations);
   const selfPetId = useActivityStore((s) => s.selfPetId);
@@ -231,156 +247,23 @@ export default function BumperShellsHud({ onLeave }: BumperShellsHudProps) {
         />
       )}
 
-      {/* Match-ended summary card (chunk #8 will swap for the full RPG modal) */}
-      {matchPhase === 'ended' && (
-        <div
-          style={{
-            position: 'absolute',
-            inset: 0,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            background: 'rgba(0, 0, 0, 0.55)',
-            pointerEvents: 'auto',
-            zIndex: 28,
-          }}
-          data-hud-interactive="true"
-        >
-          <div
-            className="claw-panel"
-            style={{
-              padding: 28,
-              minWidth: 340,
-              maxWidth: 460,
-              textAlign: 'center',
-              borderColor: 'rgba(255, 215, 0, 0.7)',
-              boxShadow: '0 0 36px rgba(255, 215, 0, 0.32)',
-            }}
-          >
-            <div
-              style={{
-                fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
-                fontSize: 22,
-                fontWeight: 900,
-                color: '#facc15',
-                letterSpacing: '0.12em',
-                marginBottom: 6,
-              }}
-            >
-              MATCH COMPLETE
-            </div>
-            <div
-              style={{
-                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                fontSize: 11,
-                color: 'rgba(148, 163, 184, 0.85)',
-                marginBottom: 16,
-                letterSpacing: '0.08em',
-              }}
-            >
-              {matchEndReason === 'forfeit'
-                ? 'By forfeit'
-                : matchEndReason === 'aborted'
-                  ? 'Round aborted'
-                  : 'Last shell standing'}
-            </div>
-
-            {winners.length > 0 && (
-              <div style={{ marginBottom: 16 }}>
-                {winners.slice(0, 3).map((w) => (
-                  <div
-                    key={w.petId}
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      padding: '4px 12px',
-                      fontSize: 13,
-                      fontWeight: w.petId === selfPetId ? 700 : 500,
-                      color: w.petId === selfPetId ? '#86efac' : '#e2e8f0',
-                    }}
-                  >
-                    <span>
-                      {w.placement === 1 ? '🥇' : w.placement === 2 ? '🥈' : '🥉'} #{w.placement}
-                    </span>
-                    <span
-                      style={{
-                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                        fontSize: 11,
-                      }}
-                    >
-                      {w.petId.length > 16 ? `…${w.petId.slice(-12)}` : w.petId}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {rewardPreview && (
-              <div
-                style={{
-                  display: 'inline-flex',
-                  flexDirection: 'column',
-                  gap: 4,
-                  alignItems: 'center',
-                  padding: '10px 16px',
-                  background: 'rgba(0, 230, 118, 0.1)',
-                  border: '1px solid rgba(0, 230, 118, 0.4)',
-                  borderRadius: 6,
-                  marginBottom: 16,
-                }}
-              >
-                <span
-                  style={{
-                    fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
-                    fontSize: 18,
-                    fontWeight: 800,
-                    color: '#facc15',
-                  }}
-                >
-                  +{rewardPreview.tokens} 🪙 ClawTokens
-                </span>
-                <span
-                  style={{
-                    fontSize: 11,
-                    color: 'rgba(226, 232, 240, 0.85)',
-                  }}
-                >
-                  +{rewardPreview.leaderboardPoints} leaderboard pts · placement #{rewardPreview.placement}
-                </span>
-                {rewardPreview.firstPlayOfDayBonus && (
-                  <span style={{ fontSize: 10, color: '#86efac' }}>
-                    +15 first-play-of-day bonus
-                  </span>
-                )}
-                {rewardPreview.focusBonus && (
-                  <span style={{ fontSize: 10, color: '#86efac' }}>+25% focus bonus</span>
-                )}
-              </div>
-            )}
-
-            {onLeave && (
-              <button
-                type="button"
-                onClick={onLeave}
-                style={{
-                  padding: '10px 24px',
-                  background: 'linear-gradient(180deg, #00E5FF 0%, #0288D1 100%)',
-                  border: 'none',
-                  borderRadius: 8,
-                  color: '#0A1628',
-                  fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
-                  fontWeight: 800,
-                  letterSpacing: '0.08em',
-                  cursor: 'pointer',
-                  fontSize: 12,
-                  boxShadow: '0 4px 14px rgba(0, 229, 255, 0.4)',
-                }}
-              >
-                BACK TO LOBBY
-              </button>
-            )}
-          </div>
-        </div>
+      {/*
+       * Match-ended Diablo-style results reveal — chunk #9.
+       * Replaces the minimal scaffolding card with a full reveal modal that
+       * reads fast-paint data from the store + replaces with authoritative
+       * data from GET /api/activities/:id/rooms/:roomId/results.
+       *
+       * Falls back to a minimal card if activityId/roomId aren't passed
+       * (e.g. legacy callers). The page wires both, so prod always uses
+       * the modal.
+       */}
+      {matchPhase === 'ended' && activityId && roomId && (
+        <ActivityResultsModal
+          activityId={activityId}
+          roomId={roomId}
+          onPlayAgain={onPlayAgain ?? (() => onLeave?.())}
+          onBackToLobby={onLeave ?? (() => undefined)}
+        />
       )}
 
       {/* Inline error banner */}
