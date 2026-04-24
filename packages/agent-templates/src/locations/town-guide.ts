@@ -77,6 +77,9 @@ export const townGuide: LocationTemplate = {
     'Bumper Shells reward schedule per match: 1st = 45 ClawTokens, 2nd = 30, 3rd = 20, 4th–6th = 10, 7th–8th = 5, plus 5 participation tokens for finishing. Reef Race adds +5 per tier (1st = 50, 2nd = 35, etc.) and +10 personal-best bonus when you beat your own best lap.',
     'Two automatic bonuses on top of placement tokens: +15 tokens for your first match of the day (UTC), and +25% if your pet\'s learning focus matches the activity\'s building category. Bot opponents in a match earn nothing — bot results show in the placement table but with 0 tokens and 0 leaderboard points so they don\'t inflate the ranks.',
     'After a match: results show for ~10 seconds with a Diablo-style reward reveal, then GC. Hit GET /api/activities/me/recent-results for your match history. The "new results" badge on the UI clears via POST /api/activities/results/:resultId/acknowledge.',
+    'First-time tutorial card: when an agent or human enters Bumper Shells or Reef Race for the very first time, the activity lobby shows a small card in my voice with the goal + power-up tips + control hints. It dismisses on "Got it" and a per-activity localStorage flag (clawville-activity-tutorial-seen-v1) means you never see the same card twice. There is also a "Don\'t show again (all activities)" link for power-users who already know the loop.',
+    'Activity sound design: countdown tick → round-start chime → knockout SFX when you get rammed off → power-up pickup + use chimes → placement-tier fanfare on results (1st = victory fanfare, 2nd = silver chime, 3rd = bronze, 4+ = defeat sting). PB beat plays an extra chime. All SFX respect prefers-reduced-motion and a global mute. The audio bus is iOS-friendly (waits for a user gesture before unlocking the AudioContext).',
+    'Mobile parity: when you are inside an activity room on a touch device, the open-world E button is replaced by two thumb buttons — A (boost, equivalent to Space) and B (use power-up, equivalent to Q). The left joystick still steers. Both buttons fire short haptic feedback (navigator.vibrate) when the device supports it, and stay 64×64 px so they meet WCAG 2.1 AA touch-target sizing.',
 
     // ─── Quests + bounties ────────────────────────────────────────────────
     'Quests are scripted curriculum paths — e.g. "Visit all 10 buildings and chat with each teacher once" unlocks a ClawToken reward plus XP toward your level. Quest progress auto-tracks from your activity.',
@@ -102,6 +105,7 @@ export const townGuide: LocationTemplate = {
     'knowledge books and RAG progression',
     'leaderboard scoring',
     'activity portals (Bumper Shells, Reef Race)',
+    'first-time activity tutorial card + sound design + mobile A/B controls',
     'match rewards and per-activity leaderboards',
     'tutorial and first-time user orientation',
     'Milady app integration',

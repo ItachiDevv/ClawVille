@@ -10,9 +10,14 @@
  *
  * Iris Xe invariants:
  *   - SkeletonUtils.clone() + frustumCulled=false traverse immediately after clone.
- *   - Squash/stretch applied to ROOT GROUP not SkinnedMesh bones.
+ *   - Squash/stretch applied to ROOT GROUP (meshRootRef) not SkinnedMesh bones.
+ *   - LobsterAnimator works on clonedScene parts — composes with squash (no bone conflict).
  *   - No per-frame allocations — module-scope scratch vectors.
  *   - applyColorTint skipped for GLB shells (matches VRM-tinting convention from player-pet.tsx).
+ *
+ * Chunk #12a: LobsterAnimator wired. Locomotion blend driven by entity velocity
+ * from activity store. Animator composes with squash/stretch — both applied to
+ * separate groups so bone transforms and root scale never collide.
  *
  * Draw calls: 1 per player (lobster.glb is 1 SkinnedMesh draw call).
  */
@@ -32,7 +37,14 @@ useGLTF.preload('/models/lobster.glb');
 useGLTF.preload('/models/crayfish.glb');
 
 // ─── Module-scope scratch ─────────────────────────────────────────────────────
-const _scale = new THREE.Vector3();
+// No per-frame allocations allowed on Iris Xe.
+const _speedScratch = { speed: 0 };
+
+// ─── Locomotion speed thresholds ─────────────────────────────────────────────
+/** Below this speed (wu/s) the animator uses 'idle'. */
+const WALK_SPEED_THRESHOLD = 20;
+/** Above this speed (wu/s) the animator blends toward 'walk' at full rate. */
+const RUN_SPEED_THRESHOLD = 80;
 
 // ─── Lobster facing constant ──────────────────────────────────────────────────
 // lobster.glb faces +Z at rotation.y=0. Facing formula: atan2(vx, vy) in sim-space,
@@ -60,6 +72,12 @@ function BumperShellsPlayerInner({ entity, isSelf = false }: BumperShellsPlayerP
   // Fade state for elimination.
   const fadeRef = useRef({ active: false, opacity: 1 });
 
+  // LobsterAnimator instance — created once per clone, updated every frame.
+  const animatorRef = useRef<LobsterAnimator | null>(null);
+
+  // Elapsed time accumulator for the animator (module-level elapsed per instance).
+  const elapsedRef = useRef(0);
+
   // Clone the GLB once per entity/species change.
   const clonedScene = useMemo(() => {
     const c = skeletonClone(srcScene);
@@ -71,7 +89,19 @@ function BumperShellsPlayerInner({ entity, isSelf = false }: BumperShellsPlayerP
     return c;
   }, [srcScene]);
 
-  // Attach and detach the cloned scene.
+  // Rebuild the animator whenever the clone changes.
+  // discoverLobsterParts uses spatial heuristics — safe on any lobster/crayfish GLB.
+  useEffect(() => {
+    const parts = discoverLobsterParts(clonedScene);
+    animatorRef.current = new LobsterAnimator(parts);
+    // Reset elapsed so new clone starts from t=0.
+    elapsedRef.current = 0;
+  }, [clonedScene]);
+
+  // Attach and detach the cloned scene to meshRootRef.
+  // meshRootRef receives squash/stretch scale — the clonedScene inside is
+  // the animator's target. Squash (root scale) and animator (bone rotations)
+  // are orthogonal — no interference.
   useEffect(() => {
     const root = meshRootRef.current;
     if (!root || !clonedScene) return;
@@ -89,6 +119,13 @@ function BumperShellsPlayerInner({ entity, isSelf = false }: BumperShellsPlayerP
     const meshRoot = meshRootRef.current;
     if (!group || !meshRoot) return;
 
+    // Cap delta to prevent spiral-of-death on stall frames.
+    const dt = Math.min(delta, 0.1);
+
+    // ─── Elapsed time accumulator ────────────────────────────────────────
+    elapsedRef.current += dt;
+    const elapsed = elapsedRef.current;
+
     // ─── Position + rotation from entity ──────────────────────────────────
     // Sim-space: x → Three.js X, y → Three.js Z (top-down arena).
     group.position.x = entity.x;
@@ -100,10 +137,33 @@ function BumperShellsPlayerInner({ entity, isSelf = false }: BumperShellsPlayerP
       group.rotation.y = Math.atan2(entity.vx, entity.vy);
     }
 
+    // ─── LobsterAnimator: locomotion blend from velocity ──────────────────
+    // Speed is magnitude of (vx, vy) in sim-space (both map to XZ plane).
+    // Reuse module-scope scratch — no allocation.
+    _speedScratch.speed = Math.sqrt(entity.vx * entity.vx + entity.vy * entity.vy);
+
+    let suggestedState: 'idle' | 'walk' = 'idle';
+    let direction = 'idle';
+    if (_speedScratch.speed >= WALK_SPEED_THRESHOLD) {
+      suggestedState = 'walk';
+      // Direction string is advisory for gait phasing — 'down' is the default
+      // forward direction for the lobster (+Z facing). The animator uses it for
+      // dodge phasing only; for walk it drives antenna streaming direction.
+      direction = 'down';
+    }
+
+    const animator = animatorRef.current;
+    if (animator) {
+      animator.update(dt, elapsed, suggestedState, direction);
+    }
+
     // ─── Squash/stretch animation (applied to meshRoot group) ─────────────
+    // NOTE: meshRoot scale does NOT affect the animator's bone rotations.
+    // The animator modifies clonedScene's child mesh local rotations.
+    // meshRoot.scale is a separate transform above those children.
     const h = hitAnim.current;
     if (h.active) {
-      h.elapsed += delta;
+      h.elapsed += dt;
       const lastFrame = HIT_ANIM_FRAMES[HIT_ANIM_FRAMES.length - 1];
       if (h.elapsed >= lastFrame.t) {
         h.active = false;
@@ -135,7 +195,7 @@ function BumperShellsPlayerInner({ entity, isSelf = false }: BumperShellsPlayerP
     }
 
     if (fadeRef.current.active) {
-      fadeRef.current.opacity = Math.max(0, fadeRef.current.opacity - delta * 1.0);
+      fadeRef.current.opacity = Math.max(0, fadeRef.current.opacity - dt * 1.0);
       clonedScene.traverse((o) => {
         if ((o as THREE.Mesh).isMesh) {
           const mat = (o as THREE.Mesh).material as THREE.MeshStandardMaterial;
@@ -176,7 +236,9 @@ function BumperShellsPlayerInner({ entity, isSelf = false }: BumperShellsPlayerP
 
   return (
     <group ref={groupRef} scale={[SHELL_SCALE, SHELL_SCALE, SHELL_SCALE]}>
-      {/* meshRoot receives squash/stretch scale — separate from the position group */}
+      {/* meshRoot receives squash/stretch scale — separate from the position group.
+          clonedScene is a child of meshRoot so the animator's bone mutations
+          and the squash scale compose cleanly: worldScale = outerGroupScale × meshRootScale × boneLocal */}
       <group ref={meshRootRef} />
     </group>
   );
