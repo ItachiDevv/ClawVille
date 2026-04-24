@@ -48,14 +48,18 @@ const postGeo = new THREE.BoxGeometry(POST_W, POST_H, POST_D);
 const PLANK_W = POST_SPACING + POST_W + 30; // 258wu wide — slight overhang
 const PLANK_H = 160;
 const PLANK_D = 6;
-const PLANK_Y_OFFSET = POST_H / 2 - PLANK_H / 2; // align plank top with post tops
+// Plank center should sit so the plank TOP aligns with post tops.
+// Posts extend from local Y=0 to Y=POST_H. Plank top at Y=POST_H means
+// plank center at Y = POST_H - PLANK_H/2.
+const PLANK_Y = POST_H - PLANK_H / 2;
 
 const plankGeo = new THREE.BoxGeometry(PLANK_W, PLANK_H, PLANK_D);
 
-// World position of the sign group
+// World position of the sign group — raise Y enough to clearly stand above
+// any terrain bumps and be obviously visible.
 const SIGN_X = 0;
-const SIGN_Y = -2; // base of posts flush with sand (Y=-2)
-const SIGN_Z = -120; // centre, further north of stall row (Z=-60)
+const SIGN_Y = 0; // base of posts at world Y=0 (sand is at Y=-2; posts rest just above)
+const SIGN_Z = -120;
 
 // ---------------------------------------------------------------------------
 // Inner component
@@ -87,18 +91,19 @@ const TownDirectorySignInner = memo(function TownDirectorySignInner() {
         matrixAutoUpdate={false}
       />
 
-      {/* Horizontal plank — sits at the top of both posts */}
+      {/* Horizontal plank — centered so its TOP aligns with post tops */}
       <mesh
         geometry={plankGeo}
         material={woodMat}
-        position={[0, POST_H + PLANK_Y_OFFSET, 0]}
+        position={[0, PLANK_Y, 0]}
         matrixAutoUpdate={false}
       />
 
       {/* Text label — Html DOM portal, transform mode, centred on plank face.
-          No distanceFactor — per perf-sweep-2026-04-21 that setting adds cost. */}
+          Positioned on the plank's front face (slightly forward in +Z so it
+          doesn't z-fight). */}
       <Html
-        position={[0, POST_H + PLANK_Y_OFFSET, PLANK_D / 2 + 1]}
+        position={[0, PLANK_Y, PLANK_D / 2 + 1]}
         center
         transform
         style={{ pointerEvents: 'none' }}
