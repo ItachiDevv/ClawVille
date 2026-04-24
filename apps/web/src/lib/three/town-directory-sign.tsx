@@ -32,6 +32,14 @@ const plankBackGeo = new THREE.BoxGeometry(PLANK_W, PLANK_H, BACKING_D);
 const plankFaceGeo = new THREE.PlaneGeometry(PLANK_W, PLANK_H);
 
 const TownDirectorySignInner = memo(function TownDirectorySignInner() {
+  // Marker: fires on EVERY render, inside component body (not useEffect).
+  if (typeof window !== 'undefined') {
+    (window as any).__TOWN_SIGN_DEBUG_RENDER = {
+      renderAt: Date.now(),
+      renderCount: ((window as any).__TOWN_SIGN_DEBUG_RENDER?.renderCount ?? 0) + 1,
+    };
+  }
+
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
 
   useEffect(() => {
