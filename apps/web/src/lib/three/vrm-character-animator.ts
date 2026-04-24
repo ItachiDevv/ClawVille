@@ -389,6 +389,16 @@ export class VRMCharacterAnimator {
     });
     this._skeletonUpdateFns.clear();
 
+    // Drop strong refs so a long-lived closure or ref holding the animator
+    // doesn't keep the VRM scene, mixer, clips, or actions alive after disposal.
+    // The instance is dead post-dispose — if anything touches it after this
+    // point it will throw immediately (null dereference) rather than silently
+    // leaking GPU/CPU resources. (Sakura review follow-up suggestion B)
+    this.actions = {};
+    this.currentAction = null;
+    this.mixer = null as any;
+    this.vrm = null as any;
+
     // VRMUtils.deepDispose on the VRM scene is the caller's responsibility
     // (matches the pattern used in player-pet.tsx for GLB material disposal)
   }
