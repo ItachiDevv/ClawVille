@@ -126,6 +126,20 @@ class ActivityRoomManager {
   private liveTransitionFn: ((room: Room) => void) | null = null;
 
   /**
+   * Per-room countdown timers. Set when a room transitions into COUNTDOWN
+   * and cleared when it transitions out (LIVE / ABORTED). Each timer
+   * fires `transitionRoom(roomId, 'live')` after `COUNTDOWN_DURATION_MS`
+   * — without this, the FSM would sit in COUNTDOWN forever (no other
+   * code path moves rooms to LIVE in production; chunk #3 added the
+   * COUNTDOWN state machine but never wired the timer that exits it).
+   * Discovered 2026-04-24 when the first guests actually queued matches.
+   */
+  private countdownTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
+
+  /**
    * Eviction hook registered by chunk #10's bot pool wiring so reserved
    * bot avatarIds are returned to the pool when a room ends (any path —
    * RESULTS→GC, ABORTED, ABORTED_CRASH). Chunk #10.
@@ -316,11 +330,41 @@ class ActivityRoomManager {
     room.state = toState;
     room.lastTouchedAt = now;
 
+    // Any transition out of COUNTDOWN must cancel the pending auto-live
+    // timer — otherwise an aborted-during-countdown room would still
+    // try to flip itself to LIVE after the participant fled.
+    if (fromState === 'countdown' && toState !== 'countdown') {
+      const pending = this.countdownTimers.get(roomId);
+      if (pending) {
+        clearTimeout(pending);
+        this.countdownTimers.delete(roomId);
+      }
+    }
+
     try {
       switch (toState) {
         case 'countdown':
           room.countdownStartedAt = now;
           await this.persistCountdownTransition(room);
+          // Schedule the COUNTDOWN→LIVE auto-transition. Chunk #3 added
+          // every other piece of this FSM but missed the timer that
+          // actually advances state, so before this fix every match sat
+          // in COUNTDOWN forever. The timer is room-scoped + cleared on
+          // any transition out of countdown (above) and on evictRoom().
+          {
+            const timer = setTimeout(() => {
+              this.countdownTimers.delete(roomId);
+              const r = this.rooms.get(roomId);
+              if (!r || r.state !== 'countdown') return; // already aborted/transitioned
+              this.transitionRoom(roomId, 'live').catch((err) => {
+                console.error(
+                  `[activity-room-manager] auto countdown→live failed for ${roomId}:`,
+                  err,
+                );
+              });
+            }, COUNTDOWN_DURATION_MS);
+            this.countdownTimers.set(roomId, timer);
+          }
           break;
         case 'live':
           room.startedAt = now;
@@ -769,6 +813,15 @@ class ActivityRoomManager {
       } catch (err) {
         console.error('[activity-room-manager] evictionFn threw:', err);
       }
+    }
+    // Defense in depth — a room being evicted while still mid-countdown
+    // (e.g. ABORTED during the 5s window) would otherwise leave its
+    // setTimeout dangling. The transitionRoom guard above handles the
+    // happy path; this catches eviction paths that bypass it.
+    const pendingTimer = this.countdownTimers.get(room.id);
+    if (pendingTimer) {
+      clearTimeout(pendingTimer);
+      this.countdownTimers.delete(room.id);
     }
     this.rooms.delete(room.id);
     this.shortCodeIndex.delete(room.shortCode);
