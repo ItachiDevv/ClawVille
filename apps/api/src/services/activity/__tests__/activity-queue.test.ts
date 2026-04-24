@@ -44,8 +44,12 @@ mock.module('@clawville/database', () => ({
   // Chunk #10 — bot-pool reads from `users` and `avatars` for hydration. Tests
   // pre-load the pool via `__resetForTest`, so these only need to be present
   // for module-level imports to resolve.
-  avatars: { id: 'id', userId: 'user_id', name: 'name' },
+  avatars: { id: 'id', userId: 'user_id', name: 'name', flags: 'flags' },
   users: { id: 'id', email: 'email' },
+  // Chunk #7 — reward pipeline (transitively imported by room manager)
+  // needs these schemas to resolve at import time.
+  activityResults: { id: 'id', avatarId: 'avatar_id', activityId: 'activity_id' },
+  clawTokenTransactions: { id: 'id' },
 }));
 
 mock.module('../../alert-error', () => ({
@@ -55,6 +59,12 @@ mock.module('../../alert-error', () => ({
 mock.module('../../event-logger', () => ({
   logEvent: () => Promise.resolve(),
   ACTIVITY_EVENT_TYPES: {},
+}));
+
+// Chunk #7 — claw-token-ledger import chain.
+mock.module('../../claw-token-ledger', () => ({
+  creditClawTokens: () =>
+    Promise.resolve({ balanceAfter: 100, ledgerId: 'ledger-1' }),
 }));
 
 // Chunk #3 wired the replay log into the room manager's RESULTS flush.
