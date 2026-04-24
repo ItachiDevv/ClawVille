@@ -666,7 +666,7 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
       w.__VRM_NPC_EFFECT_LOG.push({ event: 'mount', id: npc.id, species: npc.species, t: Date.now() });
       // Expose each animator keyed by NPC id so CDP can inspect mixer/actions per NPC.
       w.__VRM_NPC_DEBUG = w.__VRM_NPC_DEBUG || {};
-      w.__VRM_NPC_DEBUG[npc.id] = { animator, vrm, species: npc.species, frameCalls: 0, cullFarCalls: 0, fullCalls: 0, midSkipCalls: 0 };
+      w.__VRM_NPC_DEBUG[npc.id] = { animator, vrm, species: npc.species };
     }
     animator.init().catch((err) => {
       console.warn('[VRMNpcMesh] animator init failed:', err);
@@ -687,12 +687,6 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const d = npcRef.current;
     const group = groupRef.current;
     if (!group) return;
-
-    // Debug counter — expose useFrame invocations per NPC id.
-    if (typeof window !== 'undefined') {
-      const dbg = (window as any).__VRM_NPC_DEBUG?.[npc.id];
-      if (dbg) dbg.frameCalls++;
-    }
 
     const dt = Math.min(delta, 0.1);
 
@@ -718,10 +712,6 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const frame = Math.floor(clock.elapsedTime * 60);
 
     if (camDistSq > NPC_CULL_DIST_SQ) {
-      if (typeof window !== 'undefined') {
-        const dbg = (window as any).__VRM_NPC_DEBUG?.[npc.id];
-        if (dbg) dbg.cullFarCalls++;
-      }
       // Tick mixer at reduced rate (every 4th frame) while culled — keeps anim warm
       // without burning full frame budget on off-screen NPCs.
       if ((frame + seed) % 4 === 0) {
@@ -766,15 +756,7 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
 
     // Mid-distance: animator runs at 30Hz. Close: full 60Hz.
     if (camDistSq > VRM_NPC_HALF_RATE_DIST_SQ && (frame + seed) % 2 !== 0) {
-      if (typeof window !== 'undefined') {
-        const dbg = (window as any).__VRM_NPC_DEBUG?.[npc.id];
-        if (dbg) dbg.midSkipCalls++;
-      }
       return;
-    }
-    if (typeof window !== 'undefined') {
-      const dbg = (window as any).__VRM_NPC_DEBUG?.[npc.id];
-      if (dbg) dbg.fullCalls++;
     }
     // Debug: log when animator ref is null at update time (should never happen post-init)
     if (!vrmAnimatorRef.current && frame % 120 === seed % 120) {
