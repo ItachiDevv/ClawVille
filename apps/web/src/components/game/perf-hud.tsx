@@ -40,10 +40,31 @@ function fpsColor(fps: number): string {
  * Observational only — never calls state.advance() or state.invalidate(), so
  * it can't interfere with R3F's native render loop.
  */
+/**
+ * Dev/debug-only — the HUD covers ~30% of mobile real estate and leaks
+ * internal triangle/draw counts to end users. Show only when:
+ *   - NODE_ENV !== 'production' (local + preview deploys), OR
+ *   - URL has `?debug=1` / `?perf=1` (prod opt-in for shareable diagnostic).
+ */
+function shouldRenderPerfHud(): boolean {
+  if (process.env.NODE_ENV !== 'production') return true;
+  if (typeof window === 'undefined') return false;
+  const params = new URLSearchParams(window.location.search);
+  return params.get('debug') === '1' || params.get('perf') === '1';
+}
+
 export default function PerfHud() {
+  const [enabled, setEnabled] = useState(false);
   const [stats, setStats] = useState<PerfStats>(INITIAL_STATS);
 
+  // Resolve the dev/debug gate after mount — `window` isn't available
+  // during SSR, and we don't want hydration mismatches.
   useEffect(() => {
+    setEnabled(shouldRenderPerfHud());
+  }, []);
+
+  useEffect(() => {
+    if (!enabled) return;
     let rafId = 0;
     let lastSampleTime = performance.now();
     let frameCount = 0;
@@ -92,7 +113,9 @@ export default function PerfHud() {
 
     rafId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafId);
-  }, []);
+  }, [enabled]);
+
+  if (!enabled) return null;
 
   return (
     <div

@@ -83,23 +83,12 @@ function NanoClawBanner() {
   const agentConnected = useGameStore((s: GameState) => s.agentConnected);
   const agentSessionId = useGameStore((s: GameState) => s.agentSessionId);
   const setAgentConnectModalOpen = useGameStore((s: GameState) => s.setAgentConnectModalOpen);
-  const { data: avatar, isLoading: isPetLoading } = useAvatar();
-  const hasAvatar = !!avatar;
 
-  // Suppress during initial avatar fetch — otherwise the banner renders
-  // "Connect Your Agent" for the ~300-800ms before useAvatar() resolves and then
-  // flips to hidden once the avatar loads, which flashes a misleading CTA at
-  // logged-in users and makes the UI look inconsistent with the sidebar
-  // (which already shows a loading skeleton during the same window).
-  if (isPetLoading) return null;
-
-  // Hide the banner entirely for logged-in users who have a avatar: the sidebar
-  // already shows their agent, the toggle already reads Controlled/Autonomous,
-  // and a "Connect Your Agent" CTA here would make the UI look inconsistent
-  // with itself. Only render when there's an active gateway session (to show
-  // the green "Bot Training Active" indicator) OR when the user has no avatar
-  // (= not logged in, show the connect CTA so spectators can onboard).
-  if (hasAvatar && !agentConnected) return null;
+  // Banner gates strictly on `agentConnected`:
+  //   true  → green "Bot Training Active" pill (with session id)
+  //   false → "Connect Your Agent" CTA (visible to guests + logged-in users
+  //           who haven't connected yet — guest-avatar auto-create no longer
+  //           hides this; the guest needs the upgrade path)
 
   return (
     <div className="fixed left-1/2 -translate-x-1/2 z-50 top-3">
@@ -129,6 +118,7 @@ export default function GamePage() {
   const router = useRouter();
   const { data: avatar, isLoading } = useAvatar();
   const controlMode = useGameStore((s: GameState) => s.controlMode);
+  const agentConnected = useGameStore((s: GameState) => s.agentConnected);
   const openActivityLobby = useGameStore((s: GameState) => s.openActivityLobby);
   const activityLobbyId = useGameStore((s: GameState) => s.activityLobbyId);
 
@@ -281,15 +271,29 @@ export default function GamePage() {
           visitors. No UI of its own. */}
       <GuestAvatarBootstrap />
 
-      {/* Avatar-specific UI — rendered whenever the user owns a avatar. With the
-          Controlled/Autonomous toggle semantics, having a avatar = "my agent is
-          in the world", so stats/quests/inventory/chat all belong on screen.
-          AvatarChatBar has its own `controlMode !== 'explore'` gate (user rule:
-          always visible except when floating as spectator). */}
+      {/* World UI that's useful for ALL avatar-bearing visitors — including
+          guests minted by the auto-create flow. Shows building labels, the
+          ? help button, and the global activity feed. None of these imply
+          a connected agent. */}
       {hasAvatar && (
         <>
-          <ChatPanel />
           <LocationHUD />
+          <TutorialOverlay />
+          <ActivityFeed />
+        </>
+      )}
+
+      {/* Player-mode (agent-connected) UI — hidden in NPC/Explore mode.
+          Per the brand structure: the toggle reads Explore/NPC for guests,
+          Controlled/Autonomous for connected agents. All of the chat, quest,
+          progression, and shop surfaces below belong to the agent's
+          Controlled/Autonomous flow — not to a guest controlling an NPC.
+          Showing them in NPC mode (because guest auto-create gives hasAvatar=
+          true) collapses the modes into a single "you're a player" UI and
+          breaks the fundamental structure. */}
+      {agentConnected && (
+        <>
+          <ChatPanel />
           <AvatarStatusBar />
           <QuestTracker />
           <AvatarSettingsModal />
@@ -298,8 +302,6 @@ export default function GamePage() {
           {controlMode !== 'explore' && <ChargeBar />}
           <ShopOverlay />
           <InventoryModal />
-          <TutorialOverlay />
-          <ActivityFeed />
           <DailyLoginModal />
         </>
       )}
