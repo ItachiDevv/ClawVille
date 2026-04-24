@@ -50,6 +50,7 @@ import {
   type HubWs,
 } from '../services/activity/activity-ws-hub';
 import { bumperShellsSim } from '../services/activity/sim/bumper-shells-sim';
+import { reefRaceSim } from '../services/activity/sim/reef-race-sim';
 import {
   getLeaderboardSnapshot,
   getLeaderboardForPet,
@@ -478,10 +479,16 @@ activitiesV2Routes.get(
 
     // Include sim entities when the room is LIVE so reconnecting
     // clients can reconcile without waiting for the next keyframe.
-    const simSnapshot =
-      room.state === 'live' && room.activityId === 'bumper-shells'
-        ? bumperShellsSim.getStateSnapshot(room.id)
-        : null;
+    let simSnapshot: ReturnType<typeof bumperShellsSim.getStateSnapshot>
+      | ReturnType<typeof reefRaceSim.getStateSnapshot>
+      | null = null;
+    if (room.state === 'live') {
+      if (room.activityId === 'bumper-shells') {
+        simSnapshot = bumperShellsSim.getStateSnapshot(room.id);
+      } else if (room.activityId === 'reef-race') {
+        simSnapshot = reefRaceSim.getStateSnapshot(room.id);
+      }
+    }
 
     return c.json({
       room: {
