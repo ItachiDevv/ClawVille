@@ -578,21 +578,32 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // Runs once after 0.5s so geometry/bones settle before measurement.
     // Guards against any NPC whose pivot offset blows up despite Layer 1 fixes.
     // HARD_MAX = 95 wu — 2× TARGET_NPC_HEIGHT=45 headroom (pass 2: reduced from 160 on 2026-04-16).
+    //
+    // IMPORTANT: Box3.setFromObject on a skinned-rig cloned scene measures the
+    // bind-pose skeleton extent (for hermitcrab with transform1×nurbsCircleMover
+    // chain this reads 336 wu with npcScale=16), NOT the actual rendered mesh
+    // extent (~30 wu). That triggers the cap and scales the NPC DOWN by ~4.5×,
+    // making it invisible. When a SPECIES_WANDER_SCALE_OVERRIDE is applied
+    // we trust the measured override and skip the cap entirely — the override
+    // was measured against the rendered mesh, not bind-pose.
     if (!rescaleAppliedRef.current && clock.elapsedTime > 0.5) {
-      _renderedBbox.setFromObject(group);
-      if (!_renderedBbox.isEmpty()) {
-        const renderedH = _renderedBbox.max.y - _renderedBbox.min.y;
-        const HARD_MAX = 95;
-        if (renderedH > HARD_MAX) {
-          const scaledSubGroup = group.children[0]; // the [npcScale, npcScale, npcScale] group
-          if (scaledSubGroup) {
-            scaledSubGroup.scale.multiplyScalar(HARD_MAX / renderedH);
+      const speciesHasOverride = SPECIES_WANDER_SCALE_OVERRIDE[speciesInfo.key] != null;
+      if (!speciesHasOverride) {
+        _renderedBbox.setFromObject(group);
+        if (!_renderedBbox.isEmpty()) {
+          const renderedH = _renderedBbox.max.y - _renderedBbox.min.y;
+          const HARD_MAX = 95;
+          if (renderedH > HARD_MAX) {
+            const scaledSubGroup = group.children[0]; // the [npcScale, npcScale, npcScale] group
+            if (scaledSubGroup) {
+              scaledSubGroup.scale.multiplyScalar(HARD_MAX / renderedH);
+            }
+            // Also reset vertical position to terrain surface so it's no longer floating
+            group.position.y = currentTerrainY.current + 2;
           }
-          // Also reset vertical position to terrain surface so it's no longer floating
-          group.position.y = currentTerrainY.current + 2;
         }
-        rescaleAppliedRef.current = true;
       }
+      rescaleAppliedRef.current = true;
     }
 
     if (useNewSystem && charAnimator) {
