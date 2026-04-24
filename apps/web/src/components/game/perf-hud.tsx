@@ -7,6 +7,7 @@ interface PerfStats {
   draws: number;
   triangles: number;
   meshes: number;
+  pipes: number;
   backend: string;
 }
 
@@ -15,6 +16,7 @@ const INITIAL_STATS: PerfStats = {
   draws: 0,
   triangles: 0,
   meshes: 0,
+  pipes: 0,
   backend: '—',
 };
 
@@ -64,11 +66,19 @@ export default function PerfHud() {
           } catch {
             // ignore — scene might be mid-mutation
           }
+          // Pipeline/program count: WebGL exposes programs array; WebGPU exposes
+          // info.render.pipelines (numeric). High pipeline counts (>80) indicate
+          // too many unique shader variants — diagnostic for A2 WebGL vs WebGPU comparison.
+          const pipes: number =
+            (gl.info?.render as any)?.pipelines ??
+            (gl.info?.programs?.length) ??
+            0;
           setStats({
             fps,
             draws: info?.calls ?? 0,
             triangles: info?.triangles ?? 0,
             meshes,
+            pipes,
             backend: gl.isWebGPURenderer ? 'WebGPU' : 'WebGL',
           });
         } else {
@@ -122,6 +132,10 @@ export default function PerfHud() {
       <span style={{ color: '#334155' }}>·</span>
       <span>
         <span style={{ color: '#fff' }}>{stats.meshes}</span> objs
+      </span>
+      <span style={{ color: '#334155' }}>·</span>
+      <span>
+        <span style={{ color: '#fff' }}>{stats.pipes}</span> pipes
       </span>
       <span style={{ color: '#334155' }}>·</span>
       <span style={{ color: '#64748b' }}>{stats.backend}</span>
