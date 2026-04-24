@@ -33,6 +33,7 @@ import FloatingTexts3D from '@/lib/three/floating-text-3d';
 import NpcSpeechBubbles from '@/lib/three/npc-speech-bubbles';
 import ClickToMove from '@/lib/three/click-to-move';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
+import { MeshoptLoaderSetup } from '@/lib/three/meshopt-loader-setup';
 import JumpTicker from '@/lib/three/jump-ticker';
 import { jumpState } from '@/lib/three/jump-state';
 import { useGameStore, petPositionRef } from '@/stores/game';
@@ -594,6 +595,12 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
           (BC7 on Iris Xe via WebGPU) and arms the module-level singleton used
           by useGLTFWithKTX2. Must render before any KTX2-textured GLB loads. */}
       <KTX2LoaderSetup />
+
+      {/* MeshoptDecoder initialisation — registers the WASM decoder so that
+          GLBs compressed with EXT_meshopt_compression (C6 asset pipeline)
+          decode correctly. Belt-and-suspenders alongside the module-scope init
+          in meshopt-loader-setup.tsx. Must render before any meshopt GLB loads. */}
+      <MeshoptLoaderSetup />
 
       {/* Jump physics tick — mounted FIRST so its useFrame runs before every
           consumer (FPSFollowCamera, ArenaNpcs, NpcController, PlayerPet).
