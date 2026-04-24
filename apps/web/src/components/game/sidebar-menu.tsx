@@ -52,8 +52,8 @@
  *   openQuestBoard, openBountyBoard, toggleActivityFeed.
  */
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useRouter } from 'next/navigation';
 import { MAP_LOCATIONS, PET_SPECIES } from '@clawville/shared';
 import { RuneFrame, RpgButton, RpgModal, RpgTooltip, getRarity, type RarityId } from '@/components/rpg';
 import { useGameStore, type GameState } from '@/stores/game';
@@ -499,7 +499,6 @@ interface SidebarContentProps {
 
 function SidebarContent({ closeMenu }: SidebarContentProps) {
   const router = useRouter();
-  const searchParams = useSearchParams();
 
   // Pull every store action we need with discrete selectors — this keeps the
   // zustand subscription surface tight so the sidebar re-renders only when
@@ -541,12 +540,23 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
   };
 
   /**
-   * Q2 Activity Portals — chunk #4 dev affordance.
+   * Q2 Activity Portals — chunk #4 dev affordance (DEPRECATED in chunk #8).
    *
-   * Quick Queue: Bumper Shells. Hits `/api/activities/bumper-shells/queue`,
-   * polls `/queue-status` every 2s for `matchedRoomId + matchedRoomShortCode`,
-   * navigates to the activity room page on match found. Replaced by the
-   * full portal+lobby UX in chunk #8.
+   * Hidden by default behind `NEXT_PUBLIC_ENABLE_DEV_QUEUE === '1'` — the
+   * portal+lobby flow (`BuildingPortalModal` → `ActivityLobbyModal`) is
+   * now the primary path. This button stays compiled for QA smoke tests
+   * that need a one-click queue without driving through the 3D world,
+   * and the deep-link `?quickQueue=<activityId>` is now handled by the
+   * game page directly (see `app/game/page.tsx`) — it routes through the
+   * lobby modal with auto-fire Queue Solo, NOT through this handler.
+   *
+   * FEATURE_GATE: dev_quick_queue_button
+   * Status: Hidden by default; enabled via NEXT_PUBLIC_ENABLE_DEV_QUEUE=1
+   * Metric to graduate: never — this is a dev-only path
+   * Current reading: gate is OFF in prod
+   * Review deadline: 2026-06-15
+   * On deadline: delete the handler + button; portal flow is the only path
+   * Reference: frontend-spec §1.2; chunk #8
    */
   const handleQuickQueueBumperShells = async () => {
     if (queueingBumper) return;
@@ -613,31 +623,12 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
   };
 
   /**
-   * Q2 chunk #9 — Play Again deep link.
-   *
-   * The Activity Results modal's Play Again button navigates to
-   * `/game?quickQueue=bumper-shells`. When the sidebar mounts and sees that
-   * param, it auto-fires the existing Quick Queue handler ONCE and strips
-   * the param from the URL so refresh doesn't re-queue. Requires `hasPet`
-   * because the queue endpoint returns 401 without one.
+   * Q2 chunk #8 — `?quickQueue=<id>` deep link is now owned by
+   * `apps/web/src/app/game/page.tsx`. It routes through the
+   * BuildingPortalModal → ActivityLobbyModal stack with auto-fire
+   * Queue Solo. The legacy sidebar auto-fire effect was removed
+   * because it would race the page's handler.
    */
-  const autoQueueFiredRef = useRef(false);
-  useEffect(() => {
-    if (autoQueueFiredRef.current) return;
-    if (!hasPet) return;
-    if (!searchParams) return;
-    if (searchParams.get('quickQueue') !== 'bumper-shells') return;
-    autoQueueFiredRef.current = true;
-    // Strip the param so a refresh doesn't re-fire and the URL stays clean.
-    if (typeof window !== 'undefined') {
-      const url = new URL(window.location.href);
-      url.searchParams.delete('quickQueue');
-      window.history.replaceState({}, '', url.toString());
-    }
-    // Fire the existing queue handler — it shows toasts + polls + navigates.
-    void handleQuickQueueBumperShells();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasPet, searchParams]);
 
   const handleCrossToScape = async () => {
     if (crossingToScape) return;
@@ -723,17 +714,18 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
             }
           />
           {/*
-           * Q2 Activity Portals — chunk #4 dev affordance. Replaced by the
-           * full portal+lobby UX in chunk #8. Always visible so QA can
-           * smoke-test prod end-to-end without a feature flag toggle.
+           * Q2 Activity Portals — DEPRECATED dev affordance (chunk #4).
+           * Hidden by default in chunk #8; the portal modal is the
+           * primary path. Set NEXT_PUBLIC_ENABLE_DEV_QUEUE=1 to re-enable
+           * for QA smoke tests.
            */}
-          {hasPet && (
+          {hasPet && process.env.NEXT_PUBLIC_ENABLE_DEV_QUEUE === '1' && (
             <SidebarRow
               icon={queueingBumper ? <SidebarSpinner /> : '🎮'}
-              label={queueingBumper ? 'Finding match…' : 'Quick Queue: Bumper Shells'}
+              label={queueingBumper ? 'Finding match…' : 'Quick Queue: Bumper Shells (dev)'}
               onClick={handleQuickQueueBumperShells}
               disabled={queueingBumper}
-              ariaLabel="Quick Queue: Bumper Shells (dev affordance — chunk #8 ships full portal/lobby UX)"
+              ariaLabel="Quick Queue: Bumper Shells (dev affordance — gated behind NEXT_PUBLIC_ENABLE_DEV_QUEUE)"
               accentOverride={{
                 accent: '#facc15',
                 glow: 'rgba(250, 204, 21, 0.45)',

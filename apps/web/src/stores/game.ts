@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { ACTIVITY_REGISTRY } from '@clawville/shared';
 
 export type MovementDirection = 'idle' | 'left' | 'right' | 'up' | 'down';
 
@@ -102,6 +103,25 @@ export interface GameState {
   guideChatOpen: boolean;
   openGuideChat: () => void;
   closeGuideChat: () => void;
+
+  // ── Q2 Activity Portals — chunk #8 ────────────────────────────────────
+  /**
+   * Building id whose portal modal ("Learn or Play?") is open. `null`
+   * when no portal is showing. Set by `enterBuilding()` when the clicked
+   * building has at least one `live` activity in `ACTIVITY_REGISTRY`;
+   * otherwise enterBuilding() falls through to the chat path unchanged.
+   */
+  currentPortalBuildingId: string | null;
+  /**
+   * Active activity lobby modal id. `null` when the lobby is not open.
+   * Set when the user clicks "Play Now" on the BuildingPortalModal,
+   * cleared when the lobby closes (queue cancelled OR match started).
+   */
+  activityLobbyId: string | null;
+  openBuildingPortal: (buildingId: string) => void;
+  closeBuildingPortal: () => void;
+  openActivityLobby: (activityId: string) => void;
+  closeActivityLobby: () => void;
 
   // Movement frozen (when chat is open)
   movementFrozen: boolean;
@@ -400,7 +420,66 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   closeGuideChat: () => set({ guideChatOpen: false, movementFrozen: false }),
 
+  // ── Q2 Activity Portals — chunk #8 ────────────────────────────────────
+  currentPortalBuildingId: null,
+  activityLobbyId: null,
+
+  openBuildingPortal: (buildingId) => {
+    // Mirror enterBuilding's hygiene: reset any in-flight jump and freeze
+    // movement so the portal modal is the only foreground surface. The
+    // movementFrozen flag is shared with the chat path; closing either
+    // one clears it.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { resetJump } = require('@/lib/three/jump-state') as typeof import('@/lib/three/jump-state');
+    resetJump();
+    set({
+      currentPortalBuildingId: buildingId,
+      movementFrozen: true,
+      nearLocation: null,
+      nearCharacter: null,
+    });
+    // Same discovery-toast semantic as enterBuilding's chat path — clicking
+    // a portal-bearing building also "meets" the character behind it.
+    const isNew = get().markBuildingVisited(buildingId);
+    if (isNew) {
+      get().addToast('🎮', 'New activity unlocked!');
+    }
+  },
+
+  closeBuildingPortal: () =>
+    set({
+      currentPortalBuildingId: null,
+      // Only release movement if we're not handing off to the lobby; the
+      // lobby reasserts movementFrozen=true in openActivityLobby below.
+      movementFrozen: false,
+    }),
+
+  openActivityLobby: (activityId) =>
+    set({
+      activityLobbyId: activityId,
+      currentPortalBuildingId: null,
+      movementFrozen: true,
+    }),
+
+  closeActivityLobby: () =>
+    set({
+      activityLobbyId: null,
+      movementFrozen: false,
+    }),
+
   enterBuilding: (locationId, characterName) => {
+    // Q2 Activity Portals — chunk #8. Buildings hosting at least one
+    // `live` activity (Bumper Shells → webhook-gateway, Reef Race →
+    // voice-tower at Q2 launch) divert into the BuildingPortalModal
+    // first; the chat path remains the default for the other 8.
+    const hasLiveActivity = ACTIVITY_REGISTRY.some(
+      (a) => a.buildingId === locationId && a.status === 'live',
+    );
+    if (hasLiveActivity) {
+      get().openBuildingPortal(locationId);
+      return;
+    }
+
     // Reset jump state synchronously — keeps any in-flight jump from persisting
     // while the chat overlay is open and movement is frozen. Called before set()
     // so heightOffset is 0 by the time movementFrozen=true takes effect.
@@ -685,6 +764,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     currentCharacter: null,
     chatOpen: false,
     guideChatOpen: false,
+    currentPortalBuildingId: null,
+    activityLobbyId: null,
     movementFrozen: false,
     menuOpen: false,
     settingsModalOpen: false,

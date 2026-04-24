@@ -26,9 +26,26 @@ export { default as EliminatedOverlay } from './EliminatedOverlay';
 export type { EliminatedOverlayProps } from './EliminatedOverlay';
 export { default as PingIndicator } from './PingIndicator';
 export type { PingIndicatorProps } from './PingIndicator';
+// Chunk #11 — spectator atoms
 export { default as SpectatorCamSelector } from './SpectatorCamSelector';
 export type { SpectatorCamMode, SpectatorCamSelectorProps } from './SpectatorCamSelector';
 export { default as SpectatorChatPanel } from './SpectatorChatPanel';
 export type { SpectatorChatPanelProps } from './SpectatorChatPanel';
 export { default as EmoteButton } from './EmoteButton';
 export type { EmoteButtonProps } from './EmoteButton';
+
+// Chunk #8 — portal + lobby atoms
+export { default as ActivityThumbnail } from './ActivityThumbnail';
+export type {
+  ActivityThumbnailProps,
+  ActivityThumbnailSize,
+} from './ActivityThumbnail';
+export { default as QueueStatusBar } from './QueueStatusBar';
+export type { QueueStatusBarProps } from './QueueStatusBar';
+export { default as PartySlot } from './PartySlot';
+export type { PartySlotProps, PartySlotMember } from './PartySlot';
+export { default as InviteSearchPopover } from './InviteSearchPopover';
+export type {
+  InviteSearchPopoverProps,
+  InviteFilter,
+} from './InviteSearchPopover';
