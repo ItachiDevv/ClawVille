@@ -12,12 +12,22 @@
  *   - SkeletonUtils.clone() + frustumCulled=false traverse immediately after clone.
  *   - Squash/stretch applied to ROOT GROUP (meshRootRef) not SkinnedMesh bones.
  *   - LobsterAnimator works on clonedScene parts — composes with squash (no bone conflict).
- *   - No per-frame allocations — module-scope scratch vectors.
+ *   - No per-frame allocations — module-scope scratch primitives only.
  *   - applyColorTint skipped for GLB shells (matches VRM-tinting convention from player-pet.tsx).
  *
  * Chunk #12a: LobsterAnimator wired. Locomotion blend driven by entity velocity
  * from activity store. Animator composes with squash/stretch — both applied to
  * separate groups so bone transforms and root scale never collide.
+ *
+ * Chunk #13 (interpolation): client-side position + facing interpolation eliminates
+ * the 15Hz teleport jitter. Strategy:
+ *   - Stamp each incoming entity snapshot with performance.now() at the moment the
+ *     prop changes (detected by ref comparison in useFrame).
+ *   - Maintain a per-component history ring of up to INTERP_HISTORY_SIZE snapshots.
+ *   - Render at (now - INTERP_DELAY_MS), finding the two bracket snapshots and lerping.
+ *   - Rotation uses shortest-angle lerp (never spins through 0/2π boundary).
+ *   - Velocity is lerped in parallel — drives the locomotion blend smoothly.
+ *   - If only one snapshot in buffer (startup), snap directly to it; no extrapolation.
  *
  * Draw calls: 1 per player (lobster.glb is 1 SkinnedMesh draw call).
  */
@@ -36,8 +46,23 @@ import { SHELL_SCALE, HIT_ANIM_FRAMES } from './bumper-shells-config';
 useGLTF.preload('/models/lobster.glb');
 useGLTF.preload('/models/crayfish.glb');
 
-// ─── Module-scope scratch ─────────────────────────────────────────────────────
-// No per-frame allocations allowed on Iris Xe.
+// ─── Interpolation constants ──────────────────────────────────────────────────
+/**
+ * How far behind real-time we render (ms).
+ * = 1.5× the 15Hz snapshot interval (66.67ms) → 100ms gives us a comfortable
+ * bracket window with at least one "future" snapshot available whenever
+ * the server has been running for > 1 snapshot period.
+ */
+const INTERP_DELAY_MS = 100;
+
+/**
+ * Maximum snapshot history kept per entity.
+ * 4 entries covers 4 × 66ms ≈ 265ms of history — comfortably past INTERP_DELAY_MS.
+ */
+const INTERP_HISTORY_SIZE = 4;
+
+// ─── Module-scope scratch — NO per-frame allocations ─────────────────────────
+// All values are plain number primitives — safe on Iris Xe.
 const _speedScratch = { speed: 0 };
 
 // ─── Locomotion speed thresholds ─────────────────────────────────────────────
@@ -48,8 +73,33 @@ const RUN_SPEED_THRESHOLD = 80;
 
 // ─── Lobster facing constant ──────────────────────────────────────────────────
 // lobster.glb faces +Z at rotation.y=0. Facing formula: atan2(vx, vy) in sim-space,
-// which maps to atan2(vx, vz) in 3D.
+// which maps to atan2(vx, vz) in 3D (sim-y → Three.js Z).
 // idle default = 0 (faces +Z toward default camera).
+
+// ─── Per-snapshot record ─────────────────────────────────────────────────────
+
+interface SnapRecord {
+  /** performance.now() timestamp when this snapshot was received (ms). */
+  t: number;
+  x: number;
+  z: number; // sim-space y → Three.js z
+  /** Facing angle in radians: atan2(vx, vy). NaN if velocity is zero (use prev). */
+  rot: number;
+  vx: number;
+  vz: number; // sim-space vy → Three.js vz
+}
+
+// ─── Shortest-angle lerp ──────────────────────────────────────────────────────
+/**
+ * Lerps between two angles (radians) along the shortest arc.
+ * Avoids spinning backwards through the 0/±π boundary.
+ * No allocations — pure primitive math.
+ */
+function lerpAngle(a: number, b: number, t: number): number {
+  // Bring difference into (-π, π].
+  let diff = ((b - a) % (Math.PI * 2) + Math.PI * 3) % (Math.PI * 2) - Math.PI;
+  return a + diff * t;
+}
 
 interface BumperShellsPlayerProps {
   entity: BumperShellEntity;
@@ -77,6 +127,14 @@ function BumperShellsPlayerInner({ entity, isSelf = false }: BumperShellsPlayerP
 
   // Elapsed time accumulator for the animator (module-level elapsed per instance).
   const elapsedRef = useRef(0);
+
+  // ─── Interpolation state ────────────────────────────────────────────────────
+  // Ring buffer of received snapshots. We preallocate INTERP_HISTORY_SIZE slots.
+  const historyRef = useRef<SnapRecord[]>([]);
+  // Pointer to the last entity object we saw (identity compare to detect new snapshot).
+  const lastEntityRef = useRef<BumperShellEntity | null>(null);
+  // Last interpolated rotation — used when velocity is zero (no new facing info).
+  const lastRotRef = useRef(0);
 
   // Clone the GLB once per entity/species change.
   const clonedScene = useMemo(() => {
@@ -126,21 +184,98 @@ function BumperShellsPlayerInner({ entity, isSelf = false }: BumperShellsPlayerP
     elapsedRef.current += dt;
     const elapsed = elapsedRef.current;
 
-    // ─── Position + rotation from entity ──────────────────────────────────
-    // Sim-space: x → Three.js X, y → Three.js Z (top-down arena).
-    group.position.x = entity.x;
-    group.position.y = 6; // top of disc
-    group.position.z = entity.y;
+    // ─── Snapshot ingestion ───────────────────────────────────────────────
+    // Detect new entity object by identity (store builds a new object per delta).
+    if (entity !== lastEntityRef.current) {
+      lastEntityRef.current = entity;
 
-    // Facing: lobster faces +Z at rot=0 → atan2(vx, vz).
-    if (entity.vx !== 0 || entity.vy !== 0) {
-      group.rotation.y = Math.atan2(entity.vx, entity.vy);
+      // Compute facing from velocity. NaN when both are zero — we'll fall back
+      // to the last rendered rotation so the lobster doesn't snap to 0.
+      const hasVelocity = entity.vx !== 0 || entity.vy !== 0;
+      const rot = hasVelocity ? Math.atan2(entity.vx, entity.vy) : NaN;
+
+      const snap: SnapRecord = {
+        t: performance.now(),
+        x: entity.x,
+        z: entity.y, // sim-space y → Three.js Z
+        rot,
+        vx: entity.vx,
+        vz: entity.vy, // sim-space vy → Three.js vz
+      };
+
+      const h = historyRef.current;
+      h.push(snap);
+      // Trim to keep only the latest INTERP_HISTORY_SIZE entries.
+      if (h.length > INTERP_HISTORY_SIZE) {
+        h.splice(0, h.length - INTERP_HISTORY_SIZE);
+      }
     }
 
-    // ─── LobsterAnimator: locomotion blend from velocity ──────────────────
-    // Speed is magnitude of (vx, vy) in sim-space (both map to XZ plane).
+    // ─── Interpolation ────────────────────────────────────────────────────
+    const history = historyRef.current;
+    let interpX  = entity.x;
+    let interpZ  = entity.y;
+    let interpRot = lastRotRef.current;
+    let interpVx = entity.vx;
+    let interpVz = entity.vy;
+
+    if (history.length === 1) {
+      // Only one snapshot — snap directly to it (startup case).
+      interpX   = history[0].x;
+      interpZ   = history[0].z;
+      interpVx  = history[0].vx;
+      interpVz  = history[0].vz;
+      if (!isNaN(history[0].rot)) {
+        interpRot = history[0].rot;
+      }
+    } else if (history.length >= 2) {
+      // Render at (now - INTERP_DELAY_MS).
+      const renderTime = performance.now() - INTERP_DELAY_MS;
+
+      // Find the pair of snapshots that bracket renderTime.
+      // history is sorted ascending by t (push-only).
+      let a = history[0];
+      let b = history[1];
+      for (let i = 1; i < history.length; i++) {
+        if (history[i].t >= renderTime) {
+          a = history[i - 1];
+          b = history[i];
+          break;
+        }
+        // renderTime is past the last snapshot — clamp to the last two.
+        a = history[history.length - 2];
+        b = history[history.length - 1];
+      }
+
+      // Interpolation factor in [0, 1]. Clamped so we never extrapolate.
+      const span = b.t - a.t;
+      const rawT = span > 0 ? (renderTime - a.t) / span : 1;
+      const t = rawT < 0 ? 0 : rawT > 1 ? 1 : rawT;
+
+      interpX  = a.x  + (b.x  - a.x)  * t;
+      interpZ  = a.z  + (b.z  - a.z)  * t;
+      interpVx = a.vx + (b.vx - a.vx) * t;
+      interpVz = a.vz + (b.vz - a.vz) * t;
+
+      // Rotation: prefer velocity-derived angle; skip NaN (zero-velocity) frames.
+      const rotA = isNaN(a.rot) ? lastRotRef.current : a.rot;
+      const rotB = isNaN(b.rot) ? rotA               : b.rot;
+      interpRot = lerpAngle(rotA, rotB, t);
+    }
+
+    // Persist the interpolated rotation for the next zero-velocity frame.
+    lastRotRef.current = interpRot;
+
+    // ─── Apply interpolated transform to group ────────────────────────────
+    group.position.x = interpX;
+    group.position.y = 6; // top of disc
+    group.position.z = interpZ;
+    group.rotation.y = interpRot;
+
+    // ─── LobsterAnimator: locomotion blend from interpolated velocity ──────
+    // Speed is magnitude of (vx, vz) in sim-space (both map to XZ plane).
     // Reuse module-scope scratch — no allocation.
-    _speedScratch.speed = Math.sqrt(entity.vx * entity.vx + entity.vy * entity.vy);
+    _speedScratch.speed = Math.sqrt(interpVx * interpVx + interpVz * interpVz);
 
     let suggestedState: 'idle' | 'walk' = 'idle';
     let direction = 'idle';
