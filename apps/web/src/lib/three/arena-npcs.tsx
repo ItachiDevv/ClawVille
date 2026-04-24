@@ -6,6 +6,7 @@ import { useGLTF, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { useNpcStore, type NpcSpriteState } from '@/stores/npc';
+import { useShallow } from 'zustand/react/shallow';
 import { applyWalkAnimation, applyIdleAnimation, idToSeed } from '@/lib/three/procedural-animation';
 import { LobsterAnimator, resolveAnimState } from '@/lib/three/lobster-animations';
 import { discoverLobsterParts } from '@/lib/three/lobster-parts';
@@ -1079,7 +1080,10 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
 // Main export
 // ---------------------------------------------------------------------------
 export default function ArenaNpcs() {
-  const allNpcs = useNpcStore((s) => s.npcs);
+  // useShallow performs element-wise reference comparison on the array.
+  // Combined with B7 (object identity preservation in updateFromSnapshot),
+  // this prevents ArenaNpcs from re-rendering on SSE ticks where no NPC changed.
+  const allNpcs = useNpcStore(useShallow((s) => s.npcs));
   const controlMode = useGameStore((s) => s.controlMode);
 
   // Filter out the dedicated player NPC when not in NPC mode.

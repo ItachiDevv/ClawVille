@@ -5,6 +5,7 @@ import { useFrame } from '@react-three/fiber';
 // Text removed
 import * as THREE from 'three';
 import { useNpcStore } from '@/stores/npc';
+import { useShallow } from 'zustand/react/shallow';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 
 // ---------------------------------------------------------------------------
@@ -174,10 +175,11 @@ const EMPTY_SNAPSHOTS: NpcActivitySnapshot[] = [];
 
 function ActivityIndicators() {
   // Subscribe to a derived array that only contains the fields we care about.
-  // Zustand's shallow equality check on the array reference won't help here
-  // (new array reference on every SSE update), so we extract just the fields
-  // that affect rendering and compare them via a manual reference-stable selector.
-  const npcSnapshots = useNpcStore((s) => {
+  // useShallow performs element-by-element shallow comparison on the returned
+  // array, so a new array with identical elements does NOT trigger a re-render.
+  // Without useShallow every SSE tick (10 Hz) caused a full re-render even when
+  // no activity indicators changed.
+  const npcSnapshots = useNpcStore(useShallow((s) => {
     const arr = s.npcs;
     if (arr.length === 0) return EMPTY_SNAPSHOTS;
     // Only include NPCs that have a non-empty indicator to show
@@ -190,7 +192,7 @@ function ActivityIndicators() {
                 inCombat: n.inCombat,
                 inConversation: n.inConversation,
               }));
-  });
+  }));
 
   // Periodically evict expired chatBubbles / combatEvents / lootEvents.
   // cleanupExpired() is defined in the store but was never called — in demo
