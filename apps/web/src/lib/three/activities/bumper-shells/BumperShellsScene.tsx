@@ -3,51 +3,34 @@
 /**
  * BumperShellsScene.tsx
  *
- * REBUILT 2026-04-24 — Perspective chase camera + full VFX pipeline.
+ * PERF FIX 2026-04-24: Killed GPU context loss on Iris Xe.
  *
- * Route: /activity/bumper-shells/[roomId]
+ * Root cause: `import * as THREE from 'three/webgpu'` in all bumper-shells files
+ * while the Canvas uses R3F's default WebGLRenderer (plain 'three'). Two THREE
+ * instances = NodeMaterial.vertexShader=undefined crash every frame.
+ * See gotchas/two-three-instances-nodemat-webgl-crash.md
  *
- * Architecture:
- *   - Isolated from open world — mounts on its own Next.js route.
- *   - `key={roomId}` on Canvas forces full WebGPU context recreation between rooms.
- *   - ACTIVE PLAYERS: Perspective chase camera (ChaseCameraController) follows selfPetId.
- *     Camera lerps behind player in velocity direction, tilts on acceleration.
- *     Camera shake on hits involving self (SHAKE_MAX_DISPLACEMENT, SHAKE_DECAY).
- *     Screen-edge red DOM flash when self is hit (FLASH_DURATION_S).
- *   - SPECTATOR: SpectatorCamera (follow/free/action) — unchanged from chunk #12a.
- *   - <PreCompilePipelines> fires compileAsync after first R3F commit.
- *   - Reads `useActivityStore` for entity/pickup/event state.
+ * Also removed: PCF shadow map (4ms/frame GPU depth-prepass eliminated),
+ * all 7 point lights (= 7× lighting shader passes per fragment eliminated),
+ * starfield reduced 300→60 pts, SHELL_SCALE 40→22, camera pulled back for
+ * full-arena readability.
  *
  * Iris Xe invariants:
- *   - No drei Text/Billboard (hard GPU crash on integrated graphics).
+ *   - import from 'three' (plain), NOT 'three/webgpu' — R3F Canvas uses WebGLRenderer.
+ *   - No drei Text/Billboard (hard GPU crash).
  *   - No InstancedMesh + ShaderMaterial (silent WebGPU blank canvas).
  *   - No per-frame allocations (module-scope scratch vectors only).
- *   - 1 shadow map at 1024×1024 (up from 512 — chase cam is much closer).
- *   - 0 post-processing passes.
- *   - Fog near 900 / far 1800 — safe behind camera.far=2500.
+ *   - 0 shadow maps, 0 post-processing passes.
  *   - ONE perspective camera per client regardless of mode.
  *
- * Performance budget: ≤60 draw calls / ≤180k tris.
- *
- * Props:
- *   <BumperShellsScene roomId={roomId} selfPetId={selfPetId} />
- *   <BumperShellsScene roomId={roomId} selfPetId={selfPetId}
- *     spectatorCamMode="follow" spectatorTargetPetId={petId} />
+ * Performance budget: ≤30 draw calls / ≤60k tris.
  */
 
-import { Suspense, useEffect, useRef, useMemo, useCallback, useState } from 'react';
+import { Suspense, useEffect, useRef, useCallback, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import * as THREE from 'three/webgpu';
+import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { extend } from '@react-three/fiber';
-import type { ThreeToJSXElements } from '@react-three/fiber';
 import { playActivitySound } from '@/lib/activity-audio';
-
-// Register Three.js WebGPU elements with R3F.
-declare module '@react-three/fiber' {
-  interface ThreeElements extends ThreeToJSXElements<typeof THREE> {}
-}
-extend(THREE as any);
 
 import BumperShellsArena    from './BumperShellsArena';
 import BumperShellsHazard   from './BumperShellsHazard';
@@ -72,19 +55,14 @@ import {
   DIR_COLOR,
   DIR_INTENSITY,
   DIR_POSITION,
-  DIR_SHADOW_MAP_SIZE,
-  DIR_SHADOW_NEAR,
-  DIR_SHADOW_FAR,
-  DIR_SHADOW_CAM_BOUNDS,
   SHAKE_MAX_DISPLACEMENT,
   SHAKE_DECAY,
   SHAKE_FREQ,
   FLASH_DURATION_S,
   HAZARD_ENABLED,
-  MAX_PLAYERS,
   ARENA_HEIGHT,
 } from './bumper-shells-config';
-import type { BumperShellEntity, BumperPickup, BumperHitEvent } from './bumper-shells-types';
+import type { BumperShellEntity, BumperPickup } from './bumper-shells-types';
 
 // ─── Activity store import ────────────────────────────────────────────────────
 // NOTE: This file does not exist yet — general-purpose will land it.
@@ -100,12 +78,10 @@ export type SpectatorCamMode = 'follow' | 'free' | 'action';
 const _hitCheckScratch = { lastHitCount: 0 };
 const _elimCheckScratch = { lastElimCount: 0 };
 
-// Chase camera scratch vectors
+// Chase camera scratch vectors — NO per-frame allocations
 const _chaseDesiredPos = new THREE.Vector3();
 const _chaseLookAt     = new THREE.Vector3();
 const _chaseEntityPos  = new THREE.Vector3();
-const _chaseVel        = new THREE.Vector3();
-const _chaseFwd        = new THREE.Vector3();
 const _chaseShake      = new THREE.Vector3();
 
 // Spectator camera scratch vectors
@@ -393,22 +369,23 @@ function SpectatorCamera({ mode, targetPetId, entities }: SpectatorCameraProps) 
   return null;
 }
 
-// ─── Directional light + shadow setup ────────────────────────────────────────
+// ─── Lighting: hemisphere fill + one no-shadow directional ───────────────────
+//
+// PERF FIX 2026-04-24: No shadow map, no point lights.
+// - PCF shadow map cost on Iris Xe: ~4ms/frame (depth-prepass at 1024×1024).
+// - 7 point lights × per-fragment lighting pass = GPU overdraw saturation.
+// - Result: WebGL context loss. All removed. Hemisphere+directional is sufficient.
+//
+// Two lights total: hemisphereLight (no GPU pass, baked into ambient) +
+// directionalLight no-shadow (one lighting pass per fragment). Zero extra cost.
+
 function BumperLight() {
   const dirRef = useRef<THREE.DirectionalLight>(null);
 
   useEffect(() => {
     const d = dirRef.current;
     if (!d) return;
-    d.shadow.mapSize.set(DIR_SHADOW_MAP_SIZE, DIR_SHADOW_MAP_SIZE);
-    d.shadow.camera.near   = DIR_SHADOW_NEAR;
-    d.shadow.camera.far    = DIR_SHADOW_FAR;
-    (d.shadow.camera as THREE.OrthographicCamera).left   = -DIR_SHADOW_CAM_BOUNDS;
-    (d.shadow.camera as THREE.OrthographicCamera).right  =  DIR_SHADOW_CAM_BOUNDS;
-    (d.shadow.camera as THREE.OrthographicCamera).top    =  DIR_SHADOW_CAM_BOUNDS;
-    (d.shadow.camera as THREE.OrthographicCamera).bottom = -DIR_SHADOW_CAM_BOUNDS;
-    d.shadow.camera.updateProjectionMatrix();
-    // Static light — freeze matrix.
+    // Static light — freeze matrix so Three.js never recomputes world transform.
     d.matrixAutoUpdate = false;
     d.updateMatrix();
   }, []);
@@ -418,29 +395,17 @@ function BumperLight() {
       <hemisphereLight
         args={[HEMI_SKY_COLOR, HEMI_GROUND_COLOR, HEMI_INTENSITY]}
       />
+      {/*
+       * Key directional — no castShadow. Shells still read clearly from this
+       * angle with the hemisphere filling their shadow side.
+       */}
       <directionalLight
         ref={dirRef}
         color={DIR_COLOR}
         intensity={DIR_INTENSITY}
         position={DIR_POSITION}
-        castShadow
-      />
-      {/*
-       * Fill light: secondary directional from below/behind — no shadow cast.
-       * Lifts PBR lobster shells out of shadow on their underside when viewed
-       * top-down from the ortho camera. Intensity kept low (0.6) to avoid
-       * washing out the key light's depth cues.
-       */}
-      <directionalLight
-        color="#aaccff"
-        intensity={0.6}
-        position={[-150, -200, -100]}
         castShadow={false}
       />
-      {/* Neon accent point lights — no shadows, static position. */}
-      <pointLight color="#00ccff" intensity={1.2} distance={600} decay={2} position={[400,  80,  0]}  castShadow={false} />
-      <pointLight color="#ff66aa" intensity={1.2} distance={600} decay={2} position={[-300, 80, 350]} castShadow={false} />
-      <pointLight color="#aa44ff" intensity={1.0} distance={550} decay={2} position={[0,    80, -400]} castShadow={false} />
     </>
   );
 }
@@ -649,8 +614,7 @@ export default function BumperShellsScene({
           far: CAMERA_FAR,
           position: [0, CHASE_CAM_HEIGHT, CHASE_CAM_DISTANCE],
         }}
-        shadows
-        gl={{ antialias: false }} // Disable MSAA for Iris Xe perf budget
+        gl={{ antialias: false }} // Disable MSAA for Iris Xe perf budget; no shadow pipeline
         style={{ width: '100%', height: '100%' }}
         dpr={[1, 1.5]} // Clamp pixel ratio for Iris Xe
       >

@@ -22,7 +22,8 @@
 import { useRef, useEffect, useMemo, Suspense } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
-import * as THREE from 'three/webgpu';
+// PERF FIX 2026-04-24: 'three' not 'three/webgpu' — two THREE instances = GPU context loss
+import * as THREE from 'three';
 import type { BumperPickup } from './bumper-shells-types';
 import {
   MAX_PICKUPS,
