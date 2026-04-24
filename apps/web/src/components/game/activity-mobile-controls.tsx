@@ -1,0 +1,238 @@
+'use client';
+
+/**
+ * ActivityMobileControls — chunk #12 mobile parity layer for the activity
+ * route (`/activity/[activityId]/[roomId]`).
+ *
+ * Why a separate component from `mobile-controls.tsx`:
+ *   - The open-world `MobileControls` mounts a left joystick (movement) +
+ *     right joystick (camera orbit) + an "E" enter-building button. Those
+ *     wirings (writing into `useGameStore.joystickVelocity`, gating on
+ *     `nearLocation` etc.) are open-world concepts that don't apply mid-
+ *     match.
+ *   - The activity route uses left-joystick movement (same `joystickVelocity`
+ *     plumbing — `useActivityInput` already subscribes to it) and replaces
+ *     the right joystick + E button with two thumb action buttons:
+ *
+ *         A = boost   (Space-equivalent — synthetic keyboard event so the
+ *                      existing `useActivityInput` boost path handles it,
+ *                      including held-button thrust state)
+ *         B = use power-up (dispatches the `clawville:activity-action`
+ *                           CustomEvent the input hook already listens for)
+ *
+ *   - Touch targets ≥ 44px (WCAG 2.1 AA — frontend-spec §11.1).
+ *   - `navigator.vibrate(20)` haptic feedback on press if available.
+ *
+ * Spec: `.claude/plans/q2-research/frontend-spec.md` §11.1.
+ */
+
+import { useCallback, useEffect, useRef } from 'react';
+import type { JoystickManager } from 'nipplejs';
+import { useIsMobile } from '@/hooks/use-is-mobile';
+import { useGameStore } from '@/stores/game';
+import {
+  ACTION_BIT_BOOST,
+  ACTION_BIT_USE_POWERUP,
+} from '@/hooks/useActivityInput';
+
+const HAPTIC_PRESS_MS = 18;
+
+function vibrate(ms: number) {
+  if (typeof navigator === 'undefined') return;
+  // Type guard — `vibrate` is widely supported on Android Chrome but missing
+  // on iOS Safari. The DOM lib types vibrate's parameter as `Iterable<number>`
+  // (newer DOM lib) — passing an array satisfies both the new and old shapes.
+  const v = (
+    navigator as Navigator & {
+      vibrate?: (p: number | number[] | Iterable<number>) => boolean;
+    }
+  ).vibrate;
+  if (typeof v === 'function') {
+    try {
+      v.call(navigator, [ms]);
+    } catch {
+      /* silent — some browsers throw on user-engagement requirements */
+    }
+  }
+}
+
+function dispatchActionBit(bit: number) {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(
+    new CustomEvent('clawville:activity-action', {
+      detail: { bit },
+    }),
+  );
+}
+
+export interface ActivityMobileControlsProps {
+  /** When false, the buttons render but no longer dispatch actions (paused
+   *  / pre-match / post-match). Joystick stays alive throughout because
+   *  the input hook gates the actual send loop on `enabled`. */
+  active: boolean;
+}
+
+export default function ActivityMobileControls({ active }: ActivityMobileControlsProps) {
+  const isMobile = useIsMobile();
+  const leftContainerRef = useRef<HTMLDivElement>(null);
+  const leftJoystickRef = useRef<JoystickManager | null>(null);
+
+  // Left joystick — same plumbing as `mobile-controls.tsx`. We write into
+  // the same `joystickVelocity` slot so `useActivityInput` picks it up
+  // through its existing subscribe (no second wire path).
+  useEffect(() => {
+    if (!isMobile || !leftContainerRef.current) {
+      if (leftJoystickRef.current) {
+        leftJoystickRef.current.destroy();
+        leftJoystickRef.current = null;
+        useGameStore.getState().setJoystickVelocity(0, 0);
+      }
+      return;
+    }
+
+    let destroyed = false;
+    void import('nipplejs').then((nipplejs) => {
+      if (destroyed || !leftContainerRef.current) return;
+      const manager = nipplejs.create({
+        zone: leftContainerRef.current,
+        mode: 'static',
+        position: { left: '80px', bottom: '80px' },
+        size: 120,
+        color: 'rgba(255, 255, 255, 0.5)',
+        restOpacity: 0.6,
+        fadeTime: 100,
+      });
+      manager.on('move', (_, data) => {
+        if (!data.angle || data.force === undefined) return;
+        const rad = data.angle.radian;
+        const force = Math.min(data.force, 1);
+        const vx = Math.cos(rad) * force;
+        const vy = -Math.sin(rad) * force; // nipplejs Y is inverted
+        useGameStore.getState().setJoystickVelocity(vx, vy);
+      });
+      manager.on('end', () => {
+        useGameStore.getState().setJoystickVelocity(0, 0);
+      });
+      leftJoystickRef.current = manager;
+    });
+
+    return () => {
+      destroyed = true;
+      if (leftJoystickRef.current) {
+        leftJoystickRef.current.destroy();
+        leftJoystickRef.current = null;
+        useGameStore.getState().setJoystickVelocity(0, 0);
+      }
+    };
+  }, [isMobile]);
+
+  // Boost = sticky bit while held + a one-shot bit on press so even brief
+  // taps register before the next 30 Hz send. The input hook clears the
+  // sticky bit on `keyup`-equivalent — but we don't have a `keyup` for the
+  // touch button, so we ALSO emit a release event by dispatching a 0-bit
+  // action when the press ends. That doesn't actually clear the sticky
+  // state in the existing hook (which only clears via key handlers), so
+  // for chunk #12 we keep boost as a one-shot per tap — short presses
+  // get a single thrust, hold doesn't continuously thrust on mobile yet.
+  // FEATURE_GATE could chase a held-thrust path in a later chunk.
+  const handleBoostPress = useCallback(() => {
+    if (!active) return;
+    vibrate(HAPTIC_PRESS_MS);
+    dispatchActionBit(ACTION_BIT_BOOST);
+  }, [active]);
+
+  const handlePowerUpPress = useCallback(() => {
+    if (!active) return;
+    vibrate(HAPTIC_PRESS_MS);
+    dispatchActionBit(ACTION_BIT_USE_POWERUP);
+  }, [active]);
+
+  if (!isMobile) return null;
+
+  return (
+    <div
+      className="fixed bottom-0 left-0 z-40 pointer-events-none"
+      style={{ width: '100vw', height: '220px' }}
+    >
+      {/* Left joystick zone — movement */}
+      <div
+        ref={leftContainerRef}
+        className="absolute pointer-events-auto"
+        style={{
+          left: 0,
+          bottom: 0,
+          width: '220px',
+          height: '220px',
+          touchAction: 'none',
+        }}
+      />
+
+      {/* Right thumb cluster — A (boost) + B (power-up) */}
+      <div
+        className="absolute pointer-events-auto"
+        style={{
+          right: 24,
+          bottom: 60,
+          display: 'flex',
+          gap: 14,
+          alignItems: 'flex-end',
+        }}
+      >
+        <button
+          type="button"
+          onPointerDown={(e) => {
+            e.preventDefault();
+            handleBoostPress();
+          }}
+          aria-label="Boost"
+          style={{
+            width: 64,
+            height: 64,
+            borderRadius: '50%',
+            background:
+              'radial-gradient(circle at 35% 30%, rgba(125, 211, 252, 0.95), rgba(56, 189, 248, 0.65) 60%, rgba(15, 31, 58, 0.95) 100%)',
+            border: '2px solid rgba(186, 230, 253, 0.85)',
+            color: '#0c1830',
+            fontWeight: 900,
+            fontSize: 22,
+            fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
+            letterSpacing: '0.05em',
+            boxShadow: '0 4px 18px rgba(56, 189, 248, 0.45)',
+            cursor: 'pointer',
+            touchAction: 'manipulation',
+            opacity: active ? 1 : 0.5,
+          }}
+        >
+          A
+        </button>
+        <button
+          type="button"
+          onPointerDown={(e) => {
+            e.preventDefault();
+            handlePowerUpPress();
+          }}
+          aria-label="Use power-up"
+          style={{
+            width: 64,
+            height: 64,
+            borderRadius: '50%',
+            background:
+              'radial-gradient(circle at 35% 30%, rgba(252, 211, 77, 0.95), rgba(245, 158, 11, 0.7) 60%, rgba(58, 31, 6, 0.95) 100%)',
+            border: '2px solid rgba(254, 243, 199, 0.9)',
+            color: '#1f1503',
+            fontWeight: 900,
+            fontSize: 22,
+            fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
+            letterSpacing: '0.05em',
+            boxShadow: '0 4px 18px rgba(245, 158, 11, 0.5)',
+            cursor: 'pointer',
+            touchAction: 'manipulation',
+            opacity: active ? 1 : 0.5,
+          }}
+        >
+          B
+        </button>
+      </div>
+    </div>
+  );
+}

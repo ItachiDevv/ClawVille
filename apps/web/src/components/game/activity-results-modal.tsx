@@ -33,6 +33,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { usePet } from '@/hooks/use-pet';
 import { useActivityStore } from '@/stores/activity';
 import { useQuestStore, triggerQuestCheck } from '@/stores/quest';
+import { playActivitySound } from '@/lib/activity-audio';
 
 // ─── API types (mirror of `GET /api/activities/:id/rooms/:roomId/results`) ──
 
@@ -367,12 +368,32 @@ export default function ActivityResultsModal({
   // ── Sound triggers wired to phase activation ─────────────────────────
   const playedVictoryRef = useRef(false);
   const playedRewardChimesRef = useRef(0);
+  const playedPbRef = useRef(false);
   useEffect(() => {
     if (phases.banner && !playedVictoryRef.current) {
       playedVictoryRef.current = true;
+      // Legacy quest-complete one-shot — kept for backwards compat with
+      // the previous sound system.
       sounds.play('victory');
+      // Chunk #12 — placement-tier-aware fanfare from the activity bus.
+      // 1st = victory-fanfare; 2nd = silver; 3rd = bronze; 4+ = defeat.
+      if (placement === 1) {
+        playActivitySound('victory-fanfare');
+      } else if (placement === 2) {
+        playActivitySound('placement-silver');
+      } else if (placement === 3) {
+        playActivitySound('placement-bronze');
+      } else if (placement >= 4) {
+        playActivitySound('defeat');
+      }
     }
-  }, [phases.banner, sounds]);
+  }, [phases.banner, sounds, placement]);
+  useEffect(() => {
+    if (phases.rewards && isPersonalBest && !playedPbRef.current) {
+      playedPbRef.current = true;
+      playActivitySound('pb-chime');
+    }
+  }, [phases.rewards, isPersonalBest]);
   useEffect(() => {
     if (phases.rewards && playedRewardChimesRef.current === 0) {
       // Tick once for tokens, once for leaderboard points (capped at 3 chimes).
