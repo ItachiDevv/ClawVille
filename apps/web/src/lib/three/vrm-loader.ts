@@ -20,22 +20,31 @@
 
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
+import { MToonMaterialLoaderPlugin } from '@pixiv/three-vrm-materials-mtoon';
 import type { VRM } from '@pixiv/three-vrm';
 
-// Note on @pixiv/three-vrm/nodes + MToonNodeMaterial:
-//   Turbopack static-analyses the MToonNodeMaterial bundle and fails on
-//   `THREE_WEBGPU.tslFn` — a symbol the MToon 3.5.2 FnCompat shim references
-//   but which three 0.168+ removed (renamed to `Fn`). At runtime the shim
-//   picks the `Fn` branch, but Turbopack's strict named-export check rejects
-//   the reference to `tslFn` and the build fails.
+// MToon plugin registration (2026-04-23):
+//   Explicitly register MToonMaterialLoaderPlugin so VRMLoaderPlugin produces
+//   MToonMaterial instances (the WebGL ShaderMaterial variant) for all VRM
+//   meshes. Without this line, CDP-probe confirmed that Milady VRMs were
+//   loading with default MeshStandardMaterial + no diffuse maps, rendering
+//   as black silhouettes (see
+//   .claude/memory/threejs/gotchas/mixamo-retarget-rest-pose-transform.md
+//   for the T-pose investigation that surfaced this).
 //
-//   Workaround until @pixiv/three-vrm ships a patch release that drops the
-//   tslFn fallback (or Turbopack relaxes the static check): do NOT import
-//   `@pixiv/three-vrm/nodes` from this module. MToon defaults to its WebGL
-//   ShaderMaterial, which works under three 0.180.0 (this file's pinned
-//   version). When we eventually move to MToonNodeMaterial + WebGPURenderer,
-//   the import + VRMLoaderPlugin option below will gain the mtoonMaterialPlugin
-//   wiring. For now, the default material flows.
+//   We intentionally import from '@pixiv/three-vrm-materials-mtoon' (main
+//   package) rather than '@pixiv/three-vrm/nodes'. The /nodes subpath re-
+//   exports MToonNodeMaterial which references THREE_WEBGPU.tslFn — a symbol
+//   removed from three in r168+ (renamed to Fn). At runtime MToon's FnCompat
+//   shim picks the Fn branch, but Turbopack's strict static-export analysis
+//   rejects the reference to tslFn and fails the build. The non-nodes path
+//   has no such reference.
+//
+//   The MToon WebGL ShaderMaterial path runs under both WebGLRenderer and
+//   WebGPURenderer's WebGL2 backend (via TSL transpilation in three/webgpu).
+//   World3DCanvas attempts WebGPURenderer first and falls back to WebGL if
+//   init fails — either path renders MToon correctly with this plugin
+//   registered.
 
 // ---------------------------------------------------------------------------
 // Module-level VRM cache
@@ -56,7 +65,9 @@ let _loader: GLTFLoader | null = null;
 function getLoader(): GLTFLoader {
   if (_loader) return _loader;
   _loader = new GLTFLoader();
-  _loader.register((parser) => new VRMLoaderPlugin(parser));
+  _loader.register((parser) => new VRMLoaderPlugin(parser, {
+    mtoonMaterialPlugin: new MToonMaterialLoaderPlugin(parser),
+  }));
   return _loader;
 }
 
