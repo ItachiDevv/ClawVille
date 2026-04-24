@@ -22,11 +22,17 @@ export default function QuestTracker() {
       const tutorialSeen = localStorage.getItem(TUTORIAL_KEY) === 'true';
       if (tutorialSeen && !visible) {
         setVisible(true);
-        // Auto-expand and pulse on first ever appearance
+        // Auto-expand and pulse on first ever appearance — but NOT on
+        // mobile. On mobile the expanded card eats ~30% of the viewport
+        // and blocks the game world (user report 2026-04-24). Mobile
+        // users still get the pulse + toast so they know the tracker is
+        // there; they can tap to expand on demand.
         const introSeen = localStorage.getItem(QUEST_INTRO_KEY);
         if (!introSeen && !shownIntro.current) {
           shownIntro.current = true;
-          setExpanded(true);
+          const isMobile =
+            typeof window !== 'undefined' && window.innerWidth < 768;
+          if (!isMobile) setExpanded(true);
           setIsNew(true);
           localStorage.setItem(QUEST_INTRO_KEY, 'true');
           // Show welcome toast
@@ -115,39 +121,46 @@ function QuestPanel({
   isNew,
   mobile,
 }: QuestPanelProps) {
+  // Mobile collapsed is a compact one-line pill (icon + title + count + chevron).
+  // Desktop / expanded keep the chunky card with hint + progress bar.
+  // User report 2026-04-24: the fat mobile card took ~30% of viewport; pared
+  // back to a tap target only while collapsed.
+  const isCompactMobile = mobile && !expanded;
+
   return (
-    <div className={mobile ? 'w-96' : 'w-80'}>
+    <div className={mobile ? 'w-[220px] max-w-[75vw]' : 'w-80'}>
       {/* Collapsed header — always visible */}
       <button
         onClick={onToggle}
-        className={`w-full claw-panel !p-4 !rounded-xl flex items-center gap-3 hover:brightness-105 transition-all group ${
+        className={`w-full claw-panel ${isCompactMobile ? '!p-2 !rounded-lg' : '!p-4 !rounded-xl'} flex items-center gap-2 hover:brightness-105 transition-all group ${
           isNew ? 'animate-pulse ring-4 ring-claw-green ring-offset-2' : ''
         }`}
       >
         {allDone ? (
-          <span className="text-2xl">🏆</span>
+          <span className={isCompactMobile ? 'text-lg' : 'text-2xl'}>🏆</span>
         ) : activeQuest ? (
-          <span className="text-2xl">{activeQuest.icon}</span>
+          <span className={isCompactMobile ? 'text-lg' : 'text-2xl'}>{activeQuest.icon}</span>
         ) : (
-          <span className="text-2xl">📋</span>
+          <span className={isCompactMobile ? 'text-lg' : 'text-2xl'}>📋</span>
         )}
 
         <div className="flex-1 min-w-0 text-left">
-          <div className="text-white font-black text-base truncate">
+          <div className={`text-white font-black truncate ${isCompactMobile ? 'text-xs' : 'text-base'}`}>
             {allDone
               ? 'All Quests Complete!'
               : activeQuest
               ? activeQuest.title
               : 'Quests'}
           </div>
-          {/* Active hint shown in collapsed view */}
-          {!allDone && activeQuest && !expanded && (
+          {/* Active hint — desktop collapsed only. Mobile collapsed hides it
+              to keep the pill small; user taps to expand for details. */}
+          {!isCompactMobile && !allDone && activeQuest && !expanded && (
             <div className="text-sm text-white/75 truncate mt-1 font-medium">
               {activeQuest.hint}
             </div>
           )}
-          {/* Mini progress bar */}
-          {!allDone && activeQuest && (
+          {/* Mini progress bar — desktop-only in collapsed view. */}
+          {!isCompactMobile && !allDone && activeQuest && (
             <div className="h-2.5 w-full bg-black/15 rounded-full mt-2 overflow-hidden border border-black/5">
               <div
                 className="h-full bg-claw-green rounded-full transition-all duration-500"
@@ -157,7 +170,7 @@ function QuestPanel({
           )}
         </div>
 
-        <span className="text-sm font-black text-white/60 whitespace-nowrap ml-2">
+        <span className={`font-black text-white/60 whitespace-nowrap ${isCompactMobile ? 'text-[10px] ml-1' : 'text-sm ml-2'}`}>
           {completedCount}/{totalCount}
         </span>
 
