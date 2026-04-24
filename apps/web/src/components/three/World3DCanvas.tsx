@@ -226,11 +226,24 @@ function WASDCameraController({
     if (keys.a) dx -= 1;
     if (keys.d) dx += 1;
 
+    // Mobile joystick — parallel input for explore-mode camera pan.
+    // joystickVelocity.y is negative when pushing up (nipplejs convention, see
+    // npc-controller.tsx:146 which uses the same sign flip), so negate it to
+    // match the WASD convention where +dz = forward.
+    const { joystickVelocity } = useGameStore.getState();
+    if (joystickVelocity.x !== 0 || joystickVelocity.y !== 0) {
+      dx += joystickVelocity.x;
+      dz += -joystickVelocity.y;
+    }
+
     if (dx === 0 && dz === 0) return;
 
+    // Clamp magnitude to ≤1 so WASD stays full-speed and analog joystick
+    // preserves partial-press proportionality (a 0.4 push pans at 40% speed).
     const len = Math.sqrt(dx * dx + dz * dz);
-    dx = (dx / len) * CAM_PAN_SPEED * delta;
-    dz = (dz / len) * CAM_PAN_SPEED * delta;
+    if (len > 1) { dx /= len; dz /= len; }
+    dx *= CAM_PAN_SPEED * delta;
+    dz *= CAM_PAN_SPEED * delta;
 
     const camera = controls.object;
     // Full 3D forward direction (includes Y for swimming up/down) — reuse scratch vectors
