@@ -45,6 +45,14 @@ import PartySlot, {
 import InviteSearchPopover, {
   type InviteFilter,
 } from '@/components/game/activity/InviteSearchPopover';
+import ActivityTutorialCard, {
+  shouldShowActivityTutorial,
+  type ActivityTutorialActivityId,
+} from '@/components/game/activity/ActivityTutorialCard';
+import {
+  preloadActivitySounds,
+  primeActivitySounds,
+} from '@/lib/activity-audio';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
 /** Locked Q2 decision — mirrors `MAX_PARTY_SIZE = 4` on the server. */
@@ -272,14 +280,34 @@ function IdleBody({
   status: QueueStatusResponse;
 }) {
   const [openInvite, setOpenInvite] = useState<InviteFilter | null>(null);
+  // Tutorial card visibility — initialised once per mount so a re-render
+  // (after dismiss) doesn't immediately re-show the card.
+  const [showTutorial, setShowTutorial] = useState(false);
+  useEffect(() => {
+    setShowTutorial(shouldShowActivityTutorial(activity.id));
+  }, [activity.id]);
   const partySize = selfMember ? 1 : 0;
   const playerRange =
     activity.minPlayers === activity.maxPlayers
       ? `${activity.minPlayers} players`
       : `${activity.minPlayers}–${activity.maxPlayers} players`;
 
+  // Only the two live activities have copy; future activities can be added
+  // by extending COPY in ActivityTutorialCard.tsx + the union type below.
+  const tutorialId: ActivityTutorialActivityId | null =
+    activity.id === 'bumper-shells' || activity.id === 'reef-race'
+      ? activity.id
+      : null;
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {showTutorial && tutorialId && (
+        <ActivityTutorialCard
+          activityId={tutorialId}
+          onDismiss={() => setShowTutorial(false)}
+        />
+      )}
+
       <ActivityThumbnail activity={activity} size="lg" showTitleOverlay />
 
       <div
@@ -603,6 +631,9 @@ export default function ActivityLobbyModal({
     if (activityLobbyId) {
       setPhase('idle');
       autoQueueFiredRef.current = false;
+      // Best-effort preload — actual decode is deferred until the
+      // AudioContext is unlocked by a user gesture (Queue Solo click).
+      preloadActivitySounds();
     }
   }, [activityLobbyId]);
 
@@ -632,6 +663,9 @@ export default function ActivityLobbyModal({
 
   const handleQueue = useCallback(async () => {
     if (!activityLobbyId || queueing) return;
+    // The click that triggers `handleQueue` is the AudioContext unlock
+    // gesture — prime the audio bus here so SFX work in the match.
+    primeActivitySounds();
     setQueueing(true);
     try {
       const res = await fetch(

@@ -19,7 +19,7 @@
  *     `chat` / `emote` WS frames without the HUD owning the WS hook.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   useActivityStore,
   selectLeaderboard,
@@ -39,6 +39,7 @@ import {
   type SpectatorCamMode,
 } from './activity';
 import ActivityResultsModal from './activity-results-modal';
+import { playActivitySound } from '@/lib/activity-audio';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -102,6 +103,16 @@ export interface BumperShellsHudProps {
    * UX feels responsive even without a wire.
    */
   sendEmote?: (emoteId: string, opts: { spectator: boolean }) => boolean;
+  /**
+   * Chunk #12 — when set, the HUD reports its spectator state (cam mode +
+   * target avatarId) up to the parent so the parent can pass it to the 3D
+   * scene as spectator camera props. Optional — when omitted, the HUD
+   * keeps state local and the scene falls back to the static camera.
+   */
+  onSpectatorStateChange?: (state: {
+    camMode: SpectatorCamMode;
+    targetPetId: string | null;
+  }) => void;
 }
 
 export default function BumperShellsHud({
@@ -111,6 +122,7 @@ export default function BumperShellsHud({
   onPlayAgain,
   sendChat,
   sendEmote,
+  onSpectatorStateChange,
 }: BumperShellsHudProps) {
   // Re-render every 250ms so the round timer counts down smoothly without
   // requiring server frames.
@@ -153,6 +165,44 @@ export default function BumperShellsHud({
   const [spectatorTargetPetId, setSpectatorTargetPetId] = useState<string | null>(null);
   const [cheerCooldownUntil, setCheerCooldownUntil] = useState<number | null>(null);
   const [tauntCooldownUntil, setTauntCooldownUntil] = useState<number | null>(null);
+
+  // Bridge spectator state to parent (chunk #12) so the scene can swap to
+  // the perspective camera. Fires only when a spectator is active OR
+  // returns to alive — parent decides whether to actually pass props.
+  useEffect(() => {
+    if (!onSpectatorStateChange) return;
+    onSpectatorStateChange({
+      camMode: spectatorCamMode,
+      targetPetId: spectatorTargetPetId,
+    });
+  }, [spectatorCamMode, spectatorTargetPetId, onSpectatorStateChange]);
+
+  // ── SFX: knockout sound when self is eliminated (chunk #12) ────────────
+  const lastElimAtRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!selfAvatarId) return;
+    if (eliminations.length === 0) return;
+    const latest = eliminations[eliminations.length - 1];
+    if (latest.avatarId !== selfAvatarId) return;
+    if (lastElimAtRef.current === latest.at) return;
+    lastElimAtRef.current = latest.at;
+    playActivitySound('knockout');
+  }, [eliminations, selfAvatarId]);
+
+  // ── SFX: power-up pickup / use chimes on inventory delta (chunk #12) ────
+  // Inventory grows after a pickup, shrinks after a successful use; we fire
+  // the matching SFX on the next render. First mount establishes baseline
+  // (no sound) so re-entering a match doesn't blip on hydration.
+  const prevInventorySizeRef = useRef<number | null>(null);
+  useEffect(() => {
+    const size = powerUpInventory.length;
+    const prev = prevInventorySizeRef.current;
+    if (prev !== null) {
+      if (size > prev) playActivitySound('item-pickup');
+      else if (size < prev) playActivitySound('item-use');
+    }
+    prevInventorySizeRef.current = size;
+  }, [powerUpInventory]);
 
   // Auto-pick an initial spectator target when we first become a spectator
   // (action-cam mode picks server-side per spec §7.3, but we still hold a
