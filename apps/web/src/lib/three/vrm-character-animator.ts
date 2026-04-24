@@ -44,15 +44,31 @@ import { retargetMixamoClip, type MixamoGltf } from './mixamo-retarget';
 // ---------------------------------------------------------------------------
 
 const ANIM_PATHS = {
+  // Locomotion
   idle:            '/avatars/animations/idle.glb',
   walk:            '/avatars/animations/walk.glb',
   run:             '/avatars/animations/run.glb',
+  // Emotes — original 6 (PR #37)
   looking_around:  '/avatars/animations/emotes/looking-around.glb',
   squat:           '/avatars/animations/emotes/squat.glb',
   waving:          '/avatars/animations/emotes/waving-both-hands.glb',
   talk:            '/avatars/animations/emotes/talk.glb',
   dance_happy:     '/avatars/animations/emotes/dance-happy.glb',
   float:           '/avatars/animations/emotes/float.glb',
+  // Emotes — 13 new peaceful clips (imported from Milady fork)
+  crawling:        '/avatars/animations/emotes/crawling.glb',
+  crying:          '/avatars/animations/emotes/crying.glb',
+  dance_breaking:  '/avatars/animations/emotes/dance-breaking.glb',
+  dance_hiphop:    '/avatars/animations/emotes/dance-hiphop.glb',
+  dance_popping:   '/avatars/animations/emotes/dance-popping.glb',
+  fall:            '/avatars/animations/emotes/fall.glb',
+  fishing:         '/avatars/animations/emotes/fishing.glb',
+  flip:            '/avatars/animations/emotes/flip.glb',
+  jump:            '/avatars/animations/emotes/jump.glb',
+  kiss:            '/avatars/animations/emotes/kiss.glb',
+  rude_gesture:    '/avatars/animations/emotes/rude-gesture.glb',
+  sorrow:          '/avatars/animations/emotes/sorrow.glb',
+  spell_cast:      '/avatars/animations/emotes/spell-cast.glb',
 } as const;
 
 type AnimName = keyof typeof ANIM_PATHS;
