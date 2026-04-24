@@ -18,6 +18,7 @@
  * GPU constraints: no InstancedMesh, no ShaderMaterial, no drei Text/Billboard.
  */
 
+import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 import { MToonMaterialLoaderPlugin } from '@pixiv/three-vrm-materials-mtoon';
@@ -107,9 +108,38 @@ function loadVRM(path: string): Promise<VRM> {
       // no skeleton-graph mutation).
       VRMUtils.removeUnnecessaryVertices(vrm.scene);
 
+      // Prune finger / toe / face bones that the game never animates.
+      // VRoid VRMs ship with a full avatar skeleton; unused joints still pay
+      // skeleton.update() cost every frame even when no clips reference them.
+      // VRMUtils.removeUnnecessaryJoints drops these while preserving all
+      // mandatory humanoid bones — safe for Mixamo retarget which only drives
+      // the core 54-bone set. Reduces bone count 20-40% on typical VRoid exports.
+      // (B3 2026-04-24)
+      VRMUtils.removeUnnecessaryJoints(vrm.scene);
+
       // Normalise facing: VRM 0.x faces +Z at rest; rotateVRM0 adds π on scene
       // so it faces -Z, matching VRM 1.0 convention.
       VRMUtils.rotateVRM0(vrm);
+
+      // MToon outline pass — disable to halve VRM draw calls (B1 2026-04-24).
+      // MToon renders each mesh twice: once for the fill, once for an outset
+      // silhouette (the "outline pass"). For ClawVille's wandering Milady VRMs
+      // the ink-line aesthetic is not a core requirement; cel-shading look is
+      // preserved by the fill pass alone. outlineWidthMode='none' per MToon
+      // spec — no outline geometry is emitted. Reversible: set to
+      // 'worldCoordinates' or 'screenCoordinates' to restore outlines.
+      // Applied once per VRM at load time; safe for both renderers.
+      //
+      // NOTE: three-vrm 3.5.x uses STRING literals, not numeric enums.
+      // Earlier `= 0` assignment silently did nothing at runtime.
+      vrm.scene.traverse((obj) => {
+        const mat = (obj as THREE.Mesh).material as any;
+        if (!mat) return;
+        const mats: any[] = Array.isArray(mat) ? mat : [mat];
+        for (const m of mats) {
+          if (m?.isMToonMaterial) m.outlineWidthMode = 'none';
+        }
+      });
 
       // Disable frustum culling on every node in the VRM scene.
       // VRM models use SkinnedMesh nodes whose bounding spheres are computed
