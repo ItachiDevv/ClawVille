@@ -651,6 +651,9 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       )}
       <ArrowKeyRotationController controlsRef={controlsRef} />
 
+      {/* DIAGNOSTIC: put sign FIRST to isolate if sibling position matters */}
+      <TownDirectorySign />
+
       {/* Underwater lighting — warm caustic tones with strong contrast.
           3 lights max for Intel Iris Xe budget: hemisphereLight already
           provides ambient sky/ground fill, so no separate ambientLight. */}
