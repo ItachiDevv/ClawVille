@@ -82,6 +82,7 @@
 - [Idle animation throttle to 20Hz](performance/idle-animation-throttle.md) — `(frame + seed) % 3 === 0` gate on slow procedural animations (≤1.3 rad/s); walk stays 60Hz; stagger by seed prevents batch spikes; saves ~40% trig ops on 12-30 NPC instances.
 - [VRM spring-bone physics throttle — 30Hz for idle NPCs](performance/vrm-spring-bone-throttle.md) — split VRMCharacterAnimator into updateMixerOnly (60Hz) + updateSpringOnly (30Hz idle); accumulate delta between spring ticks; walking stays full 60Hz; 50-100 spring joint ops/frame → halved for idle VRMs.
 - [VRM draw-call reductions — MToon outline off, removeUnnecessaryJoints, lookAt/expressionManager disable, skeleton.update batching](performance/vrm-draw-call-reductions.md) — 4 load/init-time techniques; halves draw calls per VRM mesh; cuts bone CPU 20-40%; eliminates 3× redundant skeleton.update calls per VRM. Do NOT apply to SpongeBob GLBs — they are not VRMs.
+- [meshopt + WebP asset pipeline (C6)](performance/meshopt-webp-asset-pipeline.md) — `bun run assets:optimize` compresses all GLBs/VRMs: 45.9 MB → 14.5 MB (-68%). VRM extension reinject required; temp path must end in .glb; prune skipped for VRMs.
 
 ## Gotchas (continued)
 - [VRM half-rate early-return gate kills mixer at mid-distance](gotchas/vrm-half-rate-gate-kills-mixer.md) — early-return above animator calls throttles the mixer too, not just spring bones; always gate spring-bone only, keep mixer call unconditional at 60Hz.

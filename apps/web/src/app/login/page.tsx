@@ -169,8 +169,8 @@ function LoginForm() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   className="w-full px-4 py-2.5 rounded-lg bg-white/[0.05] border border-white/10 text-white placeholder:text-white/20 focus:outline-none focus:border-cyan-500/50 focus:shadow-[0_0_12px_rgba(0,229,255,0.1)] transition-all"
-                  placeholder="Enter password"
-                  minLength={6}
+                  placeholder={isSignup ? 'Min. 8 characters' : 'Enter password'}
+                  minLength={isSignup ? 8 : 6}
                 />
               </div>
 
