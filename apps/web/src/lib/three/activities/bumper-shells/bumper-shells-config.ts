@@ -73,25 +73,39 @@ export const CAMERA_LOOK_AT = [0, 0, 0] as const;
 /** Fog color hex — deep ocean dark blue. */
 export const FOG_COLOR = '#050a14';
 
-/** Fog near distance. Keep ≤ ARENA_RADIUS so center is always fog-free. */
-export const FOG_NEAR = 200;
-
 /**
- * Fog far distance. MUST be ≤ CAMERA_FAR.
- * Iris Xe rule: fog.far > camera.far → 90→50 FPS drop.
- * 900 < 1500 ✓
+ * Fog near distance.
+ *
+ * BUG FIX (2026-04-24): The ortho camera sits at [0, 1100, 300] → distance to
+ * arena floor ≈ sqrt(1100²+300²) ≈ 1140wu. The old FOG_NEAR=200/FOG_FAR=900
+ * made every scene object 100% fogged (all ≥1140wu from camera > FAR=900).
+ * Result: black void on mobile. Fix: push fog well past CAMERA_FAR so it only
+ * kills geometry right at the clip plane, not the visible arena.
+ *
+ * Iris Xe perf note: fog.far > camera.far IS a fragment-count risk in the open
+ * world (see performance/fog-density-iris-xe-regression.md). In THIS scene it's
+ * fine — fog.far=CAMERA_FAR-50 clamps fog to clip-plane fringe only.
  */
-export const FOG_FAR = 900;
+export const FOG_NEAR = 1400;
+export const FOG_FAR  = 1500; // == CAMERA_FAR — fog only touches clip-plane geometry
 
 // ─── Lighting ────────────────────────────────────────────────────────────────
 
-export const HEMI_SKY_COLOR = '#1a3a5c';
-export const HEMI_GROUND_COLOR = '#050a14';
-export const HEMI_INTENSITY = 0.4;
+/**
+ * Lighting fix (2026-04-24): previous values were tuned as if the camera were
+ * close to the arena (normal scene). With a ~1140wu camera-to-floor distance
+ * and PBR materials that receive ambient + diffuse, the old HEMI_INTENSITY=0.4
+ * with a near-black sky colour (#1a3a5c) produced near-black lobsters even when
+ * the fog bug was absent. Brightness raised to match what looks correct at this
+ * distance with MeshStandardMaterial.
+ */
+export const HEMI_SKY_COLOR    = '#4488cc'; // visible blue — was '#1a3a5c' (near-black)
+export const HEMI_GROUND_COLOR = '#1a2a3a'; // dark ocean floor — was '#050a14'
+export const HEMI_INTENSITY    = 1.4;       // was 0.4 — PBR models need ≥1.0 to read clearly
 
-export const DIR_COLOR = '#80d4ff';
-export const DIR_INTENSITY = 1.1;
-export const DIR_POSITION = [200, 600, 150] as const;
+export const DIR_COLOR     = '#ffffff';     // white — was '#80d4ff' (dim blue)
+export const DIR_INTENSITY = 2.0;           // was 1.1 — need strong key for lobster PBR shells
+export const DIR_POSITION  = [200, 600, 150] as const;
 export const DIR_SHADOW_MAP_SIZE = 512;
 export const DIR_SHADOW_NEAR = 1;
 export const DIR_SHADOW_FAR = 1200;
