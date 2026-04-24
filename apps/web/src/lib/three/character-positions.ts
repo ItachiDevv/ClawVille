@@ -89,6 +89,8 @@ const CHARACTER_NAMES: Record<string, string> = {
   'skill-forge':       'Plankton',
   'channel-bridge':    'Sandy',
   'security-fortress': 'Patrick',
+  'webhook-gateway':   'Flying Dutchman',
+  'cron-hub':          'Pearl',
 };
 
 // ---------------------------------------------------------------------------
