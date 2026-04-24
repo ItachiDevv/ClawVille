@@ -106,5 +106,8 @@ const TownDirectorySignInner = memo(function TownDirectorySignInner() {
 });
 
 export default function TownDirectorySign() {
+  if (typeof window !== 'undefined') {
+    (window as any).__TOWN_SIGN_WRAPPER_RAN = Date.now();
+  }
   return <TownDirectorySignInner />;
 }
