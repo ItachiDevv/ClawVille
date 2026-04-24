@@ -18,7 +18,7 @@
  * same — full-screen black background + scene + HUD overlay.
  */
 
-import { useEffect, useMemo, useState, use } from 'react';
+import { useCallback, useEffect, useMemo, useState, use } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { isActivityLive, getActivityDefinition } from '@clawville/shared';
@@ -150,6 +150,22 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
   // (BumperShellsHud reads from the store).
   void ping;
 
+  // Chunk #11 — wire spectator chat + emote sends to the WS hook. The HUD
+  // owns the rate-limit + local-echo; we just bridge the frame to the wire.
+  const handleSendChat = useCallback(
+    (text: string, opts: { spectator: boolean }): boolean => {
+      return send({ type: 'chat', text, spectator: opts.spectator });
+    },
+    [send],
+  );
+
+  const handleSendEmote = useCallback(
+    (emoteId: string, opts: { spectator: boolean }): boolean => {
+      return send({ type: 'emote', emoteId, spectator: opts.spectator });
+    },
+    [send],
+  );
+
   function handleLeave() {
     // Best-effort `leave` frame goes out via the WS hook's unmount cleanup.
     router.push('/game');
@@ -232,6 +248,8 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
         onPlayAgain={handlePlayAgain}
         activityId={activityId}
         roomId={roomId}
+        sendChat={handleSendChat}
+        sendEmote={handleSendEmote}
       />
     </main>
   );
