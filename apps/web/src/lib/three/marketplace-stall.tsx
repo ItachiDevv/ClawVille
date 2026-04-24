@@ -79,10 +79,16 @@ const MarketplaceStallInner = memo(function MarketplaceStallInner() {
   }, [cloned]);
 
   // After mount: freeze world matrix (static object, never moves).
+  // Also hide the GLB's ground plane mesh — it pokes through the sand terrain.
   useEffect(() => {
     cloned.traverse((obj) => {
       obj.matrixAutoUpdate = false;
       obj.updateMatrix();
+      // ground_ground_0 is a 2-triangle floor plate baked into the GLB; hiding
+      // it prevents the cobblestone base from clipping through the sand terrain.
+      if (/^ground/i.test(obj.name)) {
+        obj.visible = false;
+      }
     });
   }, [cloned]);
 
