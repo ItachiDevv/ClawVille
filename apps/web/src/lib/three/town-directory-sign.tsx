@@ -3,20 +3,15 @@
 /**
  * TownDirectorySign — wooden signboard at town center.
  *
- * The plank face IS the text — a PlaneGeometry with the wood+text PNG
- * as its material map. The text is physically part of the sign, not a
- * floating overlay. Posts are simple wood-coloured BoxGeometry.
+ * Plank face = PlaneGeometry with PNG texture mapped directly onto it.
+ * Text is physically baked into the sign's front surface.
  *
- * Requires <Suspense> wrapper at mount site (useTexture suspends).
- *
- * GPU constraints (Iris Xe invariants):
- *   - NO drei Text/Billboard
- *   - NO InstancedMesh + ShaderMaterial
- *   - NO per-frame allocations
+ * Debug: exposes window.__TOWN_SIGN_DEBUG with the texture + material refs
+ * so we can diagnose texture binding issues at runtime.
  */
 
-import { memo, useMemo } from 'react';
-import { useTexture } from '@react-three/drei';
+import { memo, useEffect, useMemo } from 'react';
+import { useLoader } from '@react-three/fiber';
 import * as THREE from 'three/webgpu';
 
 const POST_W = 20;
@@ -24,12 +19,10 @@ const POST_H = 420;
 const POST_D = 20;
 const POST_SPACING = 420;
 
-// Plank face — 2:1 aspect to match the PNG's 1024x512.
 const PLANK_W = 560;
 const PLANK_H = 280;
 const PLANK_Y = POST_H - PLANK_H / 2;
 
-// Small back-plate behind the face so the sign has some depth
 const BACKING_D = 10;
 
 const SIGN_X = 0;
@@ -45,43 +38,67 @@ const plankFaceGeo = new THREE.PlaneGeometry(PLANK_W, PLANK_H);
 const woodMat = new THREE.MeshBasicMaterial({ color: WOOD_COLOR });
 
 const TownDirectorySignInner = memo(function TownDirectorySignInner() {
-  const texture = useTexture('/town-directory-sign.png');
+  // Load the PNG via the core TextureLoader — same path useTexture uses
+  // internally but without drei's wrapping layer.
+  const texture = useLoader(THREE.TextureLoader, '/town-directory-sign.png');
 
   const faceMat = useMemo(() => {
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.needsUpdate = true;
-    return new THREE.MeshBasicMaterial({ map: texture, color: 0xffffff });
+    const mat = new THREE.MeshBasicMaterial({
+      map: texture,
+      color: 0xffffff,
+      side: THREE.DoubleSide, // visible from both sides — defends against
+                               // accidentally-back-face rendering
+      transparent: false,
+      toneMapped: false,
+    });
+    return mat;
   }, [texture]);
+
+  // Expose debug refs on window so we can diagnose at runtime
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      (window as any).__TOWN_SIGN_DEBUG = {
+        texture,
+        faceMat,
+        textureImg: texture.image
+          ? { w: texture.image.width, h: texture.image.height, src: texture.image.src || 'no-src' }
+          : null,
+        hasMap: !!faceMat.map,
+        colorSpace: texture.colorSpace,
+      };
+      console.log('[TownDirectorySign] mounted', (window as any).__TOWN_SIGN_DEBUG);
+    }
+  }, [texture, faceMat]);
 
   return (
     <group position={[SIGN_X, SIGN_Y, SIGN_Z]}>
-      {/* Left post */}
       <mesh
         geometry={postGeo}
         material={woodMat}
         position={[-POST_SPACING / 2, POST_H / 2, 0]}
         matrixAutoUpdate={false}
       />
-      {/* Right post */}
       <mesh
         geometry={postGeo}
         material={woodMat}
         position={[POST_SPACING / 2, POST_H / 2, 0]}
         matrixAutoUpdate={false}
       />
-      {/* Plank backing — gives the sign depth; wood-coloured */}
       <mesh
         geometry={plankBackGeo}
         material={woodMat}
         position={[0, PLANK_Y, -BACKING_D / 2]}
         matrixAutoUpdate={false}
       />
-      {/* Plank front face — flat plane with the wood+text texture baked on.
-          Text IS the face of the sign, not a floating overlay. */}
+      {/* Plank face — textured plane with wood+text baked in.
+          Pushed forward to Z=+6 to ensure it's clearly in front of the backing
+          and the posts (posts span Z=-10 to +10, so face must be at Z>10). */}
       <mesh
         geometry={plankFaceGeo}
         material={faceMat}
-        position={[0, PLANK_Y, 0.5]}
+        position={[0, PLANK_Y, 12]}
         matrixAutoUpdate={false}
       />
     </group>
