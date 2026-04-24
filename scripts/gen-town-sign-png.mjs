@@ -28,21 +28,21 @@ ctx.textAlign = 'center';
 ctx.textBaseline = 'middle';
 ctx.fillStyle = '#f5e6c8';
 
-ctx.font = 'bold 140px serif';
-ctx.fillText('TOWN CENTER', W / 2, 130);
+ctx.font = 'bold 100px serif';
+ctx.fillText('TOWN CENTER', W / 2, 110);
 
 // Divider
 ctx.strokeStyle = '#f5e6c8';
 ctx.lineWidth = 4;
 ctx.beginPath();
-ctx.moveTo(W / 2 - 260, 210);
-ctx.lineTo(W / 2 + 260, 210);
+ctx.moveTo(W / 2 - 220, 180);
+ctx.lineTo(W / 2 + 220, 180);
 ctx.stroke();
 
-ctx.font = '80px serif';
-ctx.fillText('Auction', W / 2, 290);
-ctx.fillText('Bazaar', W / 2, 370);
-ctx.fillText('Marketplace', W / 2, 450);
+ctx.font = '60px serif';
+ctx.fillText('Auction', W / 2, 260);
+ctx.fillText('Bazaar', W / 2, 340);
+ctx.fillText('Marketplace', W / 2, 420);
 
 const out = 'apps/web/public/town-directory-sign.png';
 writeFileSync(out, canvas.toBuffer('image/png'));
