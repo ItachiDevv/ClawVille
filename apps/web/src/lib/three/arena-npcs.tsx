@@ -403,6 +403,32 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     };
   }, [cloned]);
 
+  // Debug: expose each GLB NPC's mount metadata + refs to window so CDP can
+  // probe whether the mesh actually rendered at expected world position.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const w = window as any;
+    w.__GLB_NPC_DEBUG = w.__GLB_NPC_DEBUG || {};
+    let meshCount = 0, skinnedCount = 0;
+    cloned.traverse((o) => {
+      if ((o as any).isSkinnedMesh) skinnedCount++;
+      else if ((o as any).isMesh) meshCount++;
+    });
+    w.__GLB_NPC_DEBUG[npc.id] = {
+      species: npc.species,
+      speciesPath: speciesInfo.path,
+      npcScale,
+      pivotOffsetY,
+      cloned,
+      groupRef,
+      clonedMeshCount: meshCount,
+      clonedSkinnedCount: skinnedCount,
+    };
+    return () => {
+      if (w.__GLB_NPC_DEBUG) delete w.__GLB_NPC_DEBUG[npc.id];
+    };
+  }, [cloned, npc.id, npc.species, speciesInfo.path, npcScale, pivotOffsetY]);
+
   useFrame(({ clock, camera }, delta) => {
     const d = npcRef.current;
     const group = groupRef.current;
