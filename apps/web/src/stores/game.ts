@@ -304,6 +304,20 @@ export const useGameStore = create<GameState>((set, get) => ({
     const { resetJump } = require('@/lib/three/jump-state') as typeof import('@/lib/three/jump-state');
     resetJump();
 
+    // Guest-avatar auto-create (2026-04-23) — entering NPC mode without a
+    // avatar means the visitor is "test-driving" before signup. Mint a
+    // throwaway guest avatar in the background so the activity portals,
+    // chat, and inventory all just work. The bootstrap is idempotent
+    // and single-flight, so it's safe to fire on every transition.
+    //
+    // We dispatch a window event rather than calling react-query
+    // directly because the store has no QueryClient access. The
+    // GuestAvatarBootstrap component (mounted at /game and /activity) does
+    // the actual API call + cache invalidation + welcome toast.
+    if (mode === 'npc' && prev !== 'npc' && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('clawville:ensure-guest-avatar'));
+    }
+
     // Spawn/remove dedicated player NPC for NPC mode
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { useNpcStore, PLAYER_NPC_ID } = require('@/stores/npc') as typeof import('@/stores/npc');

@@ -1,11 +1,12 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { lucia } from '../lib/auth';
-import { db, users, openclawBots } from '@clawville/database';
+import { db, users, openclawBots, avatars } from '@clawville/database';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import { npcSimulation } from '../services/npc-simulation';
 import { consumeTicket } from '../services/session-ticket-service';
+import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 
@@ -309,5 +310,199 @@ authRoutes.post('/milady-session-exchange', async (c) => {
     agentId: botConfig.agentId,
     botName: bot.name,
     botUuid: bot.id,
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/auth/guest — guest avatar auto-create (2026-04-23).
+//
+// Lets an un-authenticated visitor play the Q2 activity games + chat with
+// NPCs as a throwaway "Guest Avatar" — no email, no signup. Use case:
+// "test-drive the game before deciding to make an account."
+//
+// Behaviour:
+//   - Idempotent: if the caller already has a Lucia cookie, return their
+//     existing user + avatar (handler does NOT create a second guest).
+//   - Else: create a (users, avatars) pair with is_guest=true,
+//     guest_expires_at = now() + 24h. Issues a Lucia session cookie.
+//
+// Brand carve-outs (mirroring the Q2 chunk #10 bot pattern — see
+// services/activity/reward-pipeline.ts and routes/leaderboard.ts):
+//   - Guest avatars do NOT appear on the agent leaderboard
+//   - Guest avatars do NOT appear on per-activity leaderboards
+//   - Guest match results still credit ClawTokens (in-game dopamine
+//     works) but with leaderboardPoints = 0
+//   - Guest events are excluded from the /dash teacher-chat metric
+//
+// Rate-limited to 5 mints/IP/min — same budget as the auto-provision
+// branch in avatars.ts. Each mint creates a (users, avatars) pair so the cap
+// matters even though guests cost less than a full identity+wallet mint.
+// ---------------------------------------------------------------------------
+
+const guestRateLimiter = createRateLimiter({
+  maxPerWindow: 5,
+  windowMs: 60_000,
+});
+
+const guestBodySchema = z.object({
+  /** Optional — caller-suggested display name. Ignored if name collides. */
+  requestedName: z
+    .string()
+    .min(3)
+    .max(20)
+    .regex(/^[a-zA-Z0-9 ]+$/)
+    .optional(),
+});
+
+const GUEST_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+const GUEST_SPECIES = ['cat', 'dragon', 'fox', 'owl', 'wolf', 'bunny', 'phoenix', 'turtle'] as const;
+const GUEST_COLORS = ['green', 'red', 'blue', 'yellow'] as const;
+const GUEST_GENDERS = ['male', 'female'] as const;
+const GUEST_ARCHETYPE = 'brave-adventurer';
+
+function pickRandom<T>(arr: readonly T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+/**
+ * Try INSERTing the avatar up to N times — on a 23505 unique-violation
+ * (name collision) we re-roll the random suffix and retry. The 5-digit
+ * suffix space is 100k entries; a collision needs >316 concurrent guests
+ * with the same first roll, so a small retry budget is sufficient.
+ */
+async function insertGuestPet(
+  ownerId: string,
+  requestedName: string | undefined,
+): Promise<{ id: string; name: string }> {
+  const species = pickRandom(GUEST_SPECIES);
+  const color = pickRandom(GUEST_COLORS);
+  const gender = pickRandom(GUEST_GENDERS);
+
+  // Sanitise + cap the requestedName at 14 chars so the suffix fits in
+  // the 20-char `avatars.name` column.
+  const baseRaw = requestedName?.replace(/[^a-zA-Z0-9]/g, '').slice(0, 14);
+  const base = baseRaw && baseRaw.length >= 3 ? baseRaw : 'Guest';
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const suffix = Math.floor(1000 + Math.random() * 9000).toString();
+    const candidate = `${base}${suffix}`;
+    try {
+      const [row] = await db
+        .insert(avatars)
+        .values({
+          userId: ownerId,
+          name: candidate,
+          species,
+          color,
+          gender,
+          archetype: GUEST_ARCHETYPE,
+          personality: {
+            habitat: 'Town Center',
+            hobby: 'Visiting ClawVille',
+            greeting: 'Hi! Just visiting.',
+          },
+          stats: { strength: 5, defence: 5, movement: 5 },
+          // No characterConfig — guests don't run Eliza chat as their avatar.
+          // characterConfig is hydrated later if/when they convert to a
+          // real account. Leaving it null is safe — the avatar routes
+          // tolerate a null characterConfig (chat is gated to non-guests
+          // by other checks in the chat surfaces, not enforced here).
+          clawTokens: 100,
+          isActive: true,
+          modelKey: 'lobster',
+          agentCategory: 'openclaw',
+          harness: 'milady',
+          isGuest: true,
+        })
+        .returning({ id: avatars.id, name: avatars.name });
+      return row;
+    } catch (err) {
+      const code =
+        (err as { code?: string; cause?: { code?: string } } | null)?.code ??
+        (err as { cause?: { code?: string } } | null)?.cause?.code;
+      if (code === '23505') continue;
+      throw err;
+    }
+  }
+  throw new HTTPException(503, {
+    message: 'Could not generate a unique guest name — please retry',
+  });
+}
+
+authRoutes.post('/guest', async (c) => {
+  // Rate limit FIRST — public endpoint, no auth required.
+  const ip = getClientIp(c.req.raw.headers);
+  if (!guestRateLimiter.check(ip)) {
+    throw new HTTPException(429, {
+      message: 'Too many guest signups from this IP. Try again in 1 minute.',
+    });
+  }
+
+  // Idempotent: if the caller already has a Lucia session, return their
+  // current user + avatar rather than minting a second guest.
+  const existingUser = c.get('user');
+  if (existingUser) {
+    const existingPet = await db.query.avatars.findFirst({
+      where: and(eq(avatars.userId, existingUser.id), eq(avatars.isActive, true)),
+    });
+    return c.json({
+      user: {
+        id: existingUser.id,
+        email: existingUser.email,
+        name: existingUser.name,
+        // Read isGuest off the raw row so we don't trust the user attribute mapping.
+        isGuest: !!(await db.query.users.findFirst({
+          where: eq(users.id, existingUser.id),
+          columns: { isGuest: true },
+        }))?.isGuest,
+      },
+      avatar: existingPet ?? null,
+      reused: true,
+    });
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = guestBodySchema.safeParse(body);
+  if (!parsed.success) {
+    throw new HTTPException(400, { message: 'Invalid request body' });
+  }
+
+  // Mint the guest user. Email + password_hash are populated with
+  // unique placeholders so the `users_has_auth_method` CHECK passes
+  // (same pattern as scripts/seed-bot-avatars.ts). The placeholder
+  // password_hash is shaped like "$bot$disabled$..." so an admin can
+  // tell at a glance the row was never meant to log in via email/pwd.
+  const userId = crypto.randomUUID();
+  const guestEmail = `guest+${userId}@guest.clawville`;
+  const placeholderPasswordHash = `$guest$disabled$${userId}`;
+  const expiresAt = new Date(Date.now() + GUEST_TTL_MS);
+
+  await db.insert(users).values({
+    id: userId,
+    email: guestEmail,
+    passwordHash: placeholderPasswordHash,
+    name: 'Guest',
+    isGuest: true,
+    guestExpiresAt: expiresAt,
+  });
+
+  const avatar = await insertGuestPet(userId, parsed.data.requestedName);
+
+  // Lucia session cookie — same attributes as signup/login (sameSite +
+  // secure flags driven by NODE_ENV via lib/auth.ts).
+  const session = await lucia.createSession(userId, {});
+  const cookie = lucia.createSessionCookie(session.id);
+  c.header('Set-Cookie', cookie.serialize());
+
+  return c.json({
+    user: {
+      id: userId,
+      email: guestEmail,
+      name: 'Guest',
+      isGuest: true,
+      guestExpiresAt: expiresAt.toISOString(),
+    },
+    avatar: { id: avatar.id, name: avatar.name },
+    reused: false,
   });
 });

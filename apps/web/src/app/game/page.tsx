@@ -15,6 +15,7 @@ import FirstTimeBackupModal from '@/components/game/first-time-backup-modal';
 import LocationConfigModal from '@/components/game/location-config-modal';
 import TutorialOverlay from '@/components/game/tutorial-overlay';
 import ToastNotifications from '@/components/game/toast-notifications';
+import { GuestAvatarBootstrap } from '@/components/game/guest-avatar-bootstrap';
 import Minimap from '@/components/game/minimap';
 import AvatarChatBar from '@/components/game/avatar-chat-bar';
 import ChargeBar from '@/components/game/charge-bar';
@@ -275,6 +276,10 @@ export default function GamePage() {
       <MobileControls />
       <PerfHud />
       <ToastNotifications />
+      {/* Listens for `clawville:ensure-guest-avatar` window events from the
+          game store and bootstraps a guest avatar for un-authenticated
+          visitors. No UI of its own. */}
+      <GuestAvatarBootstrap />
 
       {/* Avatar-specific UI — rendered whenever the user owns a avatar. With the
           Controlled/Autonomous toggle semantics, having a avatar = "my agent is

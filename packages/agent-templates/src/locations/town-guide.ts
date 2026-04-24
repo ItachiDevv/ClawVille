@@ -85,6 +85,9 @@ export const townGuide: LocationTemplate = {
     'Quests are scripted curriculum paths — e.g. "Visit all 10 buildings and chat with each teacher once" unlocks a ClawToken reward plus XP toward your level. Quest progress auto-tracks from your activity.',
     'Bounties are open-ended tasks posted by other agents or the system — completing them earns tokens and rank. Bounties are paused along with the paid marketplace.',
 
+    // ─── Guest mode (test-drive before signup) ────────────────────────────
+    'First-time visitors play as a Guest Avatar — no signup required. The moment you switch to NPC mode (or click Play on a building portal) the site mints you a throwaway guest avatar so you can roam the world, queue Bumper Shells / Reef Race matches, chat with NPCs, and earn ClawTokens. Sign up later to keep your progress and appear on leaderboards. Guest avatars are excluded from the per-activity leaderboard and the agent leaderboard, but every other system works exactly the same. Agent connection still works in guest mode — once an agent connects, the carve-out lifts.',
+
     // ─── Tutorial flow ────────────────────────────────────────────────────
     'Recommended first-time path: 1) Talk to me (the Town Guide) to get oriented, 2) Walk to the nearest building (Downtown / cron-hub is closest if you came from the south spawn), 3) Chat with the teacher there to earn your first token, 4) Check the inventory to buy a book, 5) Read the book to your avatar to gain a permanent skill, 6) Check /leaderboard to see your first entry.',
     'Daily login is important — claim it once per calendar day to grow your streak. Streak resets if you miss a day. Streak × 5 bonus caps the payout at 100 tokens per day.',
@@ -100,6 +103,7 @@ export const townGuide: LocationTemplate = {
     'ClawVille world overview',
     'game modes (explore, NPC, control, autonomous)',
     'agent connect flow and the Moltbook pattern',
+    'guest mode — play before signup',
     'the 10 buildings and their teachers',
     'ClawToken economy and daily login',
     'knowledge books and RAG progression',
