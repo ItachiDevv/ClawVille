@@ -155,6 +155,16 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
     router.push('/game');
   }
 
+  /**
+   * Chunk #9 — Play Again. Until chunk #8 ships the full lobby, deep-link
+   * back to /game with `?quickQueue=bumper-shells`. The sidebar reads that
+   * param and auto-fires its existing Quick Queue button (one-shot — strips
+   * the param after firing).
+   */
+  function handlePlayAgain() {
+    router.push('/game?quickQueue=bumper-shells');
+  }
+
   // ── Render ────────────────────────────────────────────────────────────
 
   if (avatarLoading) {
@@ -217,7 +227,12 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
       <div style={{ position: 'absolute', inset: 0 }}>
         <BumperShellsScene roomId={roomId} selfAvatarId={avatarId} />
       </div>
-      <BumperShellsHud onLeave={handleLeave} />
+      <BumperShellsHud
+        onLeave={handleLeave}
+        onPlayAgain={handlePlayAgain}
+        activityId={activityId}
+        roomId={roomId}
+      />
     </main>
   );
 }
