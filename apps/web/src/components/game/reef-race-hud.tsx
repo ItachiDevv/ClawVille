@@ -25,6 +25,7 @@ import { RoundCountdown } from './activity';
 import ReefRaceDriftSparks   from './reef-race-drift-sparks';
 import ReefRaceDraftBadge    from './reef-race-draft-badge';
 import ReefRaceEventToasts   from './reef-race-event-toasts';
+import ReefRaceBuildSummary  from './reef-race-build-summary';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -322,6 +323,8 @@ export default function ReefRaceHud({
         <LapCounter selfAvatarId={selfAvatarId} />
         <PlacementTile selfAvatarId={selfAvatarId} />
         <BestLapTile selfAvatarId={selfAvatarId} />
+        {/* Phase 3 — racing-class build summary chip */}
+        <ReefRaceBuildSummary />
       </div>
 
       {/* Top-center: Draft (slipstream) badge — Phase 2 */}

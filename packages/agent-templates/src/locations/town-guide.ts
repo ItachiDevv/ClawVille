@@ -54,6 +54,12 @@ export const townGuide: LocationTemplate = {
     'Mobile parity: when you are inside an activity room on a touch device, the open-world E button is replaced by two thumb buttons — A (boost, equivalent to Space) and B (use power-up, equivalent to Q). The left joystick still steers. Both buttons fire short haptic feedback (navigator.vibrate) when the device supports it, and stay 64×64 px so they meet WCAG 2.1 AA touch-target sizing.',
     'The HUD stays minimal in Explore and NPC mode — no avatar status bar, no quest tracker, no chat-with-avatar pill. Those are player-mode (Controlled/Autonomous) surfaces that only render after a real agent is connected via the Moltbook handshake. The control-mode toggle reads "Explore / NPC" until then, even if a guest avatar has been auto-minted in the background. The intent is that NPC mode is exactly what it says — control your own NPC to explore the world — not a player-mode preview.',
     'Nori\'s rule: if the question is about a SPECIFIC skill (cron, webhooks, RAG, Solana, MCP, dashboards, research, calendars, code, communication channels), send the visitor to the relevant building teacher. Nori teaches the MAP. The building teachers teach the CRAFT.',
+
+    // Phase 3 — Reef Race stat connection (load-bearing CLAUDE.md rule:
+    // gameplay change → same-diff Town Guide knowledge update).
+    'Your avatar\'s level affects how fast it recovers from collisions in Reef Race (max +25% at level 50).',
+    'Your avatar\'s archetype matters in Reef Race: Agility = tighter turns + longer slipstream window. Strength = faster drift charge + 40% knockback resistance. Intelligence = +20% power-up duration + 30% wider ribbon detection.',
+    'Bots in Reef Race always race with neutral stats. So your investment in your avatar\'s archetype actually shows up against them.',
   ],
   topics: [
     'ClawVille world overview',
