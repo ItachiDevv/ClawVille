@@ -521,6 +521,13 @@ class ActivityWsHub {
           }));
       }
     }
+    // Phase 2 — pull static-zone positions for reef-race rooms so the client
+    // can build visual meshes (ribbons, apex markers, hazards) from a single
+    // server-authoritative source. `null` for non-reef-race rooms.
+    const reefStaticZones =
+      room.activityId === 'reef-race'
+        ? reefRaceSim.getStaticZones(room.id) ?? undefined
+        : undefined;
     this.safeSend(ws, {
       type: 'snapshot.init',
       room: {
@@ -533,6 +540,9 @@ class ActivityWsHub {
         // locally from this so it doesn't depend on a per-second countdown
         // event the room manager doesn't currently emit (audit S9 fix).
         countdownStartedAt: room.countdownStartedAt ?? undefined,
+        // Reef Race Phase 2 — server-authoritative static-zone positions
+        // for ribbons / apex markers / hazards. Sent ONCE per snapshot.init.
+        reefStaticZones,
       },
       world: {
         tick,
