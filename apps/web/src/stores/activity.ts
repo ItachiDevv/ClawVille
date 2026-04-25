@@ -543,14 +543,21 @@ export const useActivityStore = create<ActivityState>()(
           // alongside the per-entity application loop. applyEntityDelta has
           // no access to selfPetId, so the caller hoists the bookkeeping.
           let nextDriftSparks: 0 | 1 | 2 | 3 = state.driftSparks;
+          // Phase 2 — same pattern for live placement on the SELF pet. The
+          // server's per-tick `placement` field on EntityDelta is more
+          // reliable than the ScoreDelta-derived placement (which today uses
+          // `score: b.lap`, an undercount of progress). Score-derived
+          // placement stays as a fallback if a delta omits the field.
+          let nextPlacement: number | null = state.placement;
           for (const d of frame.entities) {
             applyEntityDelta(entities, d);
-            if (
-              state.selfPetId &&
-              d.petId === state.selfPetId &&
-              typeof d.changed.driftSparks === 'number'
-            ) {
-              nextDriftSparks = d.changed.driftSparks as 0 | 1 | 2 | 3;
+            if (state.selfPetId && d.petId === state.selfPetId) {
+              if (typeof d.changed.driftSparks === 'number') {
+                nextDriftSparks = d.changed.driftSparks as 0 | 1 | 2 | 3;
+              }
+              if (typeof d.changed.placement === 'number') {
+                nextPlacement = d.changed.placement;
+              }
             }
           }
 
@@ -582,7 +589,9 @@ export const useActivityStore = create<ActivityState>()(
 
           // Score deltas — recompute placements + self placement.
           let scores = state.scores;
-          let placement = state.placement;
+          // Start placement from the EntityDelta-hoisted value (Phase 2 — server
+          // authoritative). Score-derived placement is a fallback below.
+          let placement = nextPlacement;
           if (frame.scores && frame.scores.length > 0) {
             scores = new Map(state.scores);
             for (const s of frame.scores) {
@@ -596,7 +605,12 @@ export const useActivityStore = create<ActivityState>()(
             }
             if (state.selfPetId) {
               const self = scores.get(state.selfPetId);
-              placement = self?.placement ?? placement;
+              // Only fall back to score-derived placement if the entity-delta
+              // hoist didn't produce one (i.e. the server-authoritative
+              // placement is missing on this delta).
+              if (placement === state.placement) {
+                placement = self?.placement ?? placement;
+              }
             }
           }
 
