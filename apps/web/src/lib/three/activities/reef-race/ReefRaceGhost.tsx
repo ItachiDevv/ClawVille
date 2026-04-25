@@ -22,7 +22,7 @@ import { useRef, useEffect, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import { Html } from '@react-three/drei';
-import * as THREE from 'three/webgpu';
+import * as THREE from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { useActivityStore } from '@/stores/activity';
 import { GHOST_OPACITY, KART_SCALE, KART_Y_ABOVE_TRACK } from './reef-race-config';

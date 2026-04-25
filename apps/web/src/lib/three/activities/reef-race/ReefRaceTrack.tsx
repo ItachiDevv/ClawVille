@@ -21,7 +21,7 @@
 import { useRef, useEffect, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
-import * as THREE from 'three/webgpu';
+import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
   TRACK_CURVE_POINTS,
