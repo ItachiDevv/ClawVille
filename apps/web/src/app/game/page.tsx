@@ -322,6 +322,14 @@ export default function GamePage() {
           <TutorialOverlay />
           <ActivityFeed />
           <ChatPanel />
+          {/* Phase 6.1 — persistent chat-with-avatar bar. Was previously
+              agent-connected-only (hidden in NPC/explore/guest modes),
+              but the itachi suggestion was right: a human giving
+              continuous feedback to their avatar is the whole point of the
+              persistent interaction axis, and it's the only way to
+              steer an autonomous agent mid-session. Backend /api/avatars/
+              me/chat already accepts guest avatars + any mode. */}
+          <AvatarChatBar />
         </>
       )}
 
@@ -341,7 +349,9 @@ export default function GamePage() {
           <QuestTracker />
           <AvatarSettingsModal />
           <LocationConfigModal />
-          <AvatarChatBar />
+          {/* AvatarChatBar moved up into the hasAvatar block (Phase 6.1) — it
+              renders any time the user has a avatar, not only when an
+              agent is connected. */}
           <ChargeBar />
           <ShopOverlay />
           <InventoryModal />

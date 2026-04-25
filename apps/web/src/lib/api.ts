@@ -344,7 +344,13 @@ export const api = {
     }),
 
   // Agent-initiated connection (Moltbook pattern)
-  generateConnectToken: (data: { avatarId: string; avatarName: string; userId: string }) =>
+  generateConnectToken: (data: {
+    avatarId: string;
+    avatarName: string;
+    userId: string;
+    /** Phase 6.1 — optional free-text focus ("cron jobs", "solana signing"). Server clamps to 120 chars. */
+    learningFocus?: string;
+  }) =>
     honoRequest<{
       token: string;
       connectUrl: string;
