@@ -26,6 +26,7 @@ import ReefRaceDriftSparks   from './reef-race-drift-sparks';
 import ReefRaceDraftBadge    from './reef-race-draft-badge';
 import ReefRaceEventToasts   from './reef-race-event-toasts';
 import ReefRaceBuildSummary  from './reef-race-build-summary';
+import ReefRaceStreakCounter from './reef-race-streak-counter';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -322,6 +323,11 @@ export default function ReefRaceHud({
       >
         <LapCounter selfPetId={selfPetId} />
         <PlacementTile selfPetId={selfPetId} />
+        {/* Phase 4 — clean-checkpoint streak chip (C-IMPL-3 fix). Only
+            renders mid-match; auto-dismisses on streak=0. Tier glow tracks
+            the shared `streakMilestoneKind` enum so it stays in lock-step
+            with the server's edge-trigger broadcast. */}
+        <ReefRaceStreakCounter />
         <BestLapTile selfPetId={selfPetId} />
         {/* Phase 3 — racing-class build summary chip */}
         <ReefRaceBuildSummary />

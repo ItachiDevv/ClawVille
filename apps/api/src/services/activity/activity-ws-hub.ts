@@ -35,6 +35,10 @@ import { reefRaceSim } from './sim/reef-race-sim';
 import { InputRateTracker, validateChatBounds } from './anti-cheat/shared';
 import { logEvent } from '../event-logger';
 import type { Room, RoomParticipant } from './types';
+// Phase 4 — self pet's PB ghost frames (sent once per snapshot.init,
+// per-recipient — the WS hub is the only server-side surface that
+// resolves the connecting identity, so the gating lives here).
+import { loadPersonalBestGhostFrames } from './reef-race-personal-best-service';
 
 // ─── Constants — backend §3.6 ──────────────────────────────────────────────
 
@@ -191,7 +195,10 @@ class ActivityWsHub {
     //   COUNTDOWN → participant roster + empty world
     //   LIVE      → actual sim snapshot
     //   RESULTS   → last snapshot + match_ended preview
-    this.sendInit(ws, room);
+    // Phase 4 — sendInit now async (1 PB-ghost DB read for Reef Race
+    // self pet). Awaiting here keeps the snapshot.init delivery ordered
+    // BEFORE the countdown event below.
+    await this.sendInit(ws, room);
 
     // If the room is in COUNTDOWN, also send the countdown seconds remaining.
     if (room.state === 'countdown') {
@@ -461,7 +468,7 @@ class ActivityWsHub {
     });
   }
 
-  private sendInit(ws: HubWs, room: Room): void {
+  private async sendInit(ws: HubWs, room: Room): Promise<void> {
     // Build a WorldState snapshot from the current room members.
     const entities = Array.from(room.participants.values()).map((p) => ({
       petId: p.petId,
@@ -536,6 +543,30 @@ class ActivityWsHub {
       room.activityId === 'reef-race'
         ? reefRaceSim.getRacingProfiles(room.id) ?? undefined
         : undefined;
+
+    // Phase 4 — self pet's PB ghost replay frames. Sent ONCE per
+    // snapshot.init for the SELF pet only (no rivals — too crowded per
+    // spec §2). Per-recipient by construction: the WS hub gates on
+    // ws.data.identity.petId, so other connections never see this pet's
+    // ghost on their snapshot.init. Skipped for guests (identity may be
+    // unset early) + non-Reef-Race rooms.
+    let selfBestLapGhost: Awaited<ReturnType<typeof loadPersonalBestGhostFrames>> = undefined;
+    if (room.activityId === 'reef-race' && ws.data.identity?.petId) {
+      try {
+        selfBestLapGhost = await loadPersonalBestGhostFrames(
+          ws.data.identity.petId,
+        );
+      } catch (err) {
+        // Logged in the loader; defensive double-catch so a transient
+        // DB hiccup never blocks snapshot.init.
+        console.warn(
+          '[activity-ws-hub] PB ghost load failed; sending snapshot.init without ghost:',
+          err,
+        );
+        selfBestLapGhost = undefined;
+      }
+    }
+
     this.safeSend(ws, {
       type: 'snapshot.init',
       room: {
@@ -554,6 +585,8 @@ class ActivityWsHub {
         // Reef Race Phase 3 — per-pet (class, level). Sent ONCE per
         // snapshot.init. Client filters by self petId.
         reefRacingProfiles,
+        // Reef Race Phase 4 — self pet's PB ghost replay frames.
+        selfBestLapGhost,
       },
       world: {
         tick,

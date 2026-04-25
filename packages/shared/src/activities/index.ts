@@ -6,3 +6,4 @@
  */
 export * from './activities';
 export * from './protocol';
+export * from './reef-race-streak';

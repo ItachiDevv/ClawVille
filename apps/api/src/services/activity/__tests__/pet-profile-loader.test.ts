@@ -48,6 +48,14 @@ mock.module('@clawville/database', () => {
     activityResults: { id: {}, petId: {}, activityId: {}, createdAt: {}, scoreMs: {} },
     activityRooms: { id: {}, status: {}, startedAt: {}, endedAt: {} },
     activityRoomParticipants: { roomId: {}, petId: {} },
+    // Phase 4 — PB service is transitively imported by reward-pipeline.
+    reefRacePersonalBests: {
+      id: {},
+      petId: {},
+      activityId: {},
+      bestLapMs: {},
+      ghostReplayData: {},
+    },
   };
 });
 

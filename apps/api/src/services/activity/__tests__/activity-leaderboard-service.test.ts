@@ -154,6 +154,14 @@ mock.module('@clawville/database', () => ({
   activityResults: { __name: 'activityResults', petId: 'pet_id' },
   activitySeasons: { __name: 'activitySeasons' },
   pets: { __name: 'pets', id: 'id', name: 'name' },
+  // Phase 4 — defensive: PB service is transitively imported by other
+  // tests sharing this Bun process.
+  reefRacePersonalBests: {
+    __name: 'reefRacePersonalBests',
+    petId: 'pet_id',
+    activityId: 'activity_id',
+    bestLapMs: 'best_lap_ms',
+  },
 }));
 
 // SUT

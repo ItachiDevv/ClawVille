@@ -99,17 +99,79 @@ async function fetchLeaderboard(window: LeaderboardWindow): Promise<AgentLeaderb
 }
 
 // ---------------------------------------------------------------------------
+// Lobster of the Day — types + fetcher
+// ---------------------------------------------------------------------------
+//
+// Phase 4 (C-IMPL-2 fix 2026-04-25). The endpoint is implemented at
+// `apps/api/src/routes/leaderboard.ts → /reef-race/daily-best-lap` (60s
+// cache, 60 req/min/IP separate bucket). This UI is the FIRST consumer.
+
+interface LobsterOfDayEntry {
+  rank: number;
+  petId: string;
+  petName: string;
+  bestLapMs: number;
+  bestLapRecordedAt: string; // ISO
+  walletAddress: string | null;
+}
+
+interface LobsterOfDayResponse {
+  generatedAt: string;
+  windowStart: string;
+  totalEntries: number;
+  entries: LobsterOfDayEntry[];
+}
+
+async function fetchLobsterOfDay(): Promise<LobsterOfDayResponse> {
+  const base = process.env.NEXT_PUBLIC_API_URL || '';
+  const res = await fetch(
+    `${base}/api/leaderboard/reef-race/daily-best-lap?limit=10`,
+    {
+      credentials: 'omit',
+      cache: 'no-store',
+    },
+  );
+  if (!res.ok) throw new Error(`Daily-best-lap request failed: ${res.status}`);
+  return (await res.json()) as LobsterOfDayResponse;
+}
+
+// ---------------------------------------------------------------------------
+// Board mode (Agents vs Lobster of the Day)
+// ---------------------------------------------------------------------------
+
+type BoardMode = 'agents' | 'lobster';
+
+const BOARD_MODES: { id: BoardMode; label: string; emoji: string }[] = [
+  { id: 'agents',  label: 'Agents',            emoji: '🤖' },
+  { id: 'lobster', label: 'Lobster of the Day', emoji: '🦞' },
+];
+
+// ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
 export default function LeaderboardPage() {
+  const [board, setBoard] = useState<BoardMode>('agents');
   const [window, setWindow] = useState<LeaderboardWindow>('7d');
 
-  const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
+  // Agents board (existing).
+  const agentsQ = useQuery({
     queryKey: ['leaderboard', 'agents', window],
     queryFn: () => fetchLeaderboard(window),
     staleTime: 60_000,
     retry: 1,
+    enabled: board === 'agents',
+  });
+
+  // Lobster of the Day (Phase 4 C-IMPL-2 fix). Match server's 60s cache
+  // window so multi-tab browsing doesn't re-blast the (separate-bucket)
+  // rate limiter — a refetch only fires when staleTime is exceeded.
+  const lobsterQ = useQuery({
+    queryKey: ['leaderboard', 'reef-race', 'daily-best-lap'],
+    queryFn: fetchLobsterOfDay,
+    staleTime: 60_000,
+    retry: 1,
+    enabled: board === 'lobster',
   });
 
   return (
@@ -130,35 +192,273 @@ export default function LeaderboardPage() {
 
         <Header />
 
-        <WindowTabs
-          current={window}
-          onChange={setWindow}
-          refreshing={isFetching}
-          onRefresh={() => refetch()}
-        />
+        <BoardTabs current={board} onChange={setBoard} />
 
-        <div className="mt-8">
-          {isLoading ? (
-            <LoadingState />
-          ) : isError ? (
-            <ErrorState message={(error as Error)?.message ?? 'Unknown error'} onRetry={() => refetch()} />
-          ) : !data || data.agents.length === 0 ? (
-            <EmptyState window={window} />
-          ) : (
-            <>
-              <MetaBar data={data} />
-              <PodiumSection agents={data.agents.slice(0, 3)} />
-              {data.agents.length > 3 && (
-                <TableSection agents={data.agents.slice(3)} />
+        {board === 'agents' ? (
+          <>
+            <WindowTabs
+              current={window}
+              onChange={setWindow}
+              refreshing={agentsQ.isFetching}
+              onRefresh={() => agentsQ.refetch()}
+            />
+
+            <div className="mt-8">
+              {agentsQ.isLoading ? (
+                <LoadingState />
+              ) : agentsQ.isError ? (
+                <ErrorState
+                  message={(agentsQ.error as Error)?.message ?? 'Unknown error'}
+                  onRetry={() => agentsQ.refetch()}
+                />
+              ) : !agentsQ.data || agentsQ.data.agents.length === 0 ? (
+                <EmptyState window={window} />
+              ) : (
+                <>
+                  <MetaBar data={agentsQ.data} />
+                  <PodiumSection agents={agentsQ.data.agents.slice(0, 3)} />
+                  {agentsQ.data.agents.length > 3 && (
+                    <TableSection agents={agentsQ.data.agents.slice(3)} />
+                  )}
+                </>
               )}
-            </>
-          )}
-        </div>
+            </div>
 
-        <ScoringLegend />
+            <ScoringLegend />
+          </>
+        ) : (
+          <LobsterOfDaySection
+            data={lobsterQ.data}
+            isLoading={lobsterQ.isLoading}
+            isError={lobsterQ.isError}
+            error={lobsterQ.error as Error | undefined}
+            isFetching={lobsterQ.isFetching}
+            onRetry={() => lobsterQ.refetch()}
+            onRefresh={() => lobsterQ.refetch()}
+          />
+        )}
       </main>
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Board tabs (Agents vs Lobster of the Day)
+// ---------------------------------------------------------------------------
+
+function BoardTabs({
+  current,
+  onChange,
+}: {
+  current: BoardMode;
+  onChange: (b: BoardMode) => void;
+}) {
+  return (
+    <div className="mt-10 flex flex-wrap items-center justify-center gap-2">
+      <div
+        role="tablist"
+        aria-label="Leaderboard board"
+        className="inline-flex rounded-full border border-cyan-400/25 bg-black/50 p-1 backdrop-blur-md"
+      >
+        {BOARD_MODES.map((b) => {
+          const active = b.id === current;
+          return (
+            <button
+              key={b.id}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              onClick={() => onChange(b.id)}
+              className={`inline-flex h-9 items-center gap-2 rounded-full px-4 text-[11px] font-mono uppercase tracking-[0.2em] transition-all ${
+                active
+                  ? 'bg-gradient-to-r from-cyan-500/80 to-cyan-400/70 text-white shadow-[0_0_18px_rgba(0,229,255,0.28)]'
+                  : 'text-cyan-200/60 hover:text-cyan-100'
+              }`}
+            >
+              <span aria-hidden>{b.emoji}</span>
+              <span>{b.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Lobster of the Day — section
+// ---------------------------------------------------------------------------
+
+function LobsterOfDaySection({
+  data,
+  isLoading,
+  isError,
+  error,
+  isFetching,
+  onRetry,
+  onRefresh,
+}: {
+  data: LobsterOfDayResponse | undefined;
+  isLoading: boolean;
+  isError: boolean;
+  error: Error | undefined;
+  isFetching: boolean;
+  onRetry: () => void;
+  onRefresh: () => void;
+}) {
+  return (
+    <section className="mt-8" aria-labelledby="lobster-heading">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2
+            id="lobster-heading"
+            className="font-clawville text-3xl text-white drop-shadow-[0_0_24px_rgba(0,229,255,0.32)]"
+          >
+            🦞 Lobster of the Day
+          </h2>
+          <p className="mt-1 text-sm text-white/60">
+            Top 10 fastest single laps in Reef Race over the last 24 hours.
+            Updated every 60 seconds.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={isFetching}
+          aria-label="Refresh Lobster of the Day"
+          className="inline-flex h-8 items-center gap-2 rounded-full border border-cyan-400/25 bg-black/50 px-3 text-[11px] font-mono uppercase tracking-[0.2em] text-cyan-200/70 backdrop-blur-md transition-all hover:border-cyan-300/50 hover:text-cyan-100 disabled:opacity-50"
+        >
+          <span aria-hidden className={isFetching ? 'animate-spin' : undefined}>↻</span>
+          {isFetching ? 'Refreshing' : 'Refresh'}
+        </button>
+      </div>
+
+      {isLoading ? (
+        <LoadingState />
+      ) : isError ? (
+        <ErrorState
+          message={error?.message ?? 'Unknown error'}
+          onRetry={onRetry}
+        />
+      ) : !data || data.entries.length === 0 ? (
+        <LobsterEmptyState />
+      ) : (
+        <LobsterTable data={data} />
+      )}
+    </section>
+  );
+}
+
+function LobsterEmptyState() {
+  return (
+    <div className="mx-auto max-w-lg rounded-2xl border border-cyan-400/20 bg-black/40 p-10 text-center backdrop-blur-md">
+      <div aria-hidden className="text-5xl">🦞</div>
+      <div className="mt-3 font-clawville text-2xl text-white">
+        No laps in the last 24h yet
+      </div>
+      <p className="mt-3 text-sm text-white/60">
+        The Lobster of the Day board lights up the moment a single fast lap
+        lands in Reef Race. Be the first.
+      </p>
+      <div className="mt-5 flex flex-wrap justify-center gap-2">
+        <Link
+          href="/game"
+          className="inline-flex h-9 items-center gap-2 rounded-full border border-cyan-400/40 bg-gradient-to-r from-cyan-700/70 to-cyan-500/70 px-4 text-[11px] font-mono uppercase tracking-[0.2em] text-white transition-all hover:from-cyan-600 hover:to-cyan-400"
+        >
+          Race Reef Race
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+function LobsterTable({ data }: { data: LobsterOfDayResponse }) {
+  const generatedRel = useMemo(
+    () => relativeTime(data.generatedAt),
+    [data.generatedAt],
+  );
+  return (
+    <>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono uppercase tracking-[0.2em] text-cyan-200/50">
+        <div>
+          {data.totalEntries} ranked lap{data.totalEntries === 1 ? '' : 's'} ·
+          last 24h
+        </div>
+        <div>Generated {generatedRel}</div>
+      </div>
+      <div className="overflow-hidden rounded-2xl border border-cyan-400/15 bg-black/40 backdrop-blur-md">
+        <div className="grid grid-cols-[64px_1fr_140px_140px] items-center gap-x-3 border-b border-cyan-400/10 bg-cyan-500/5 px-4 py-2.5 font-mono text-[9px] uppercase tracking-[0.22em] text-cyan-300/60">
+          <div>Rank</div>
+          <div>Pet</div>
+          <div className="text-right">Best Lap</div>
+          <div className="text-right">Recorded</div>
+        </div>
+        <ul className="divide-y divide-cyan-400/5">
+          {data.entries.map((e) => (
+            <LobsterRow key={`${e.petId}-${e.bestLapRecordedAt}`} entry={e} />
+          ))}
+        </ul>
+      </div>
+    </>
+  );
+}
+
+function LobsterRow({ entry }: { entry: LobsterOfDayEntry }) {
+  const isFirst = entry.rank === 1;
+  const recordedRel = useMemo(
+    () => relativeTime(entry.bestLapRecordedAt),
+    [entry.bestLapRecordedAt],
+  );
+  return (
+    <li
+      className={`grid grid-cols-[64px_1fr_140px_140px] items-center gap-x-3 px-4 py-3 transition-colors ${
+        isFirst
+          ? 'bg-gradient-to-r from-amber-500/10 via-yellow-400/[0.04] to-transparent'
+          : 'hover:bg-cyan-500/5'
+      }`}
+    >
+      <div
+        className={`font-clawville text-lg ${
+          isFirst ? 'text-amber-300' : 'text-cyan-200/70'
+        }`}
+      >
+        {isFirst ? '🥇 #1' : `#${entry.rank}`}
+      </div>
+      <div className="flex items-center gap-2.5 min-w-0">
+        <span aria-hidden className="text-lg">🦞</span>
+        <div className="min-w-0">
+          <div className="truncate text-sm text-white">{entry.petName}</div>
+          {entry.walletAddress && (
+            <div
+              className="truncate font-mono text-[10px] text-cyan-300/40"
+              title={entry.walletAddress}
+            >
+              {shortAddress(entry.walletAddress)}
+            </div>
+          )}
+        </div>
+      </div>
+      <div
+        className={`text-right font-mono text-base font-semibold tabular-nums ${
+          isFirst ? 'text-amber-200' : 'text-white'
+        }`}
+      >
+        {formatBestLapMs(entry.bestLapMs)}
+      </div>
+      <div className="text-right font-mono text-[11px] uppercase tracking-[0.18em] text-cyan-200/55">
+        {recordedRel}
+      </div>
+    </li>
+  );
+}
+
+function formatBestLapMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return '—';
+  if (ms < 60_000) return `${(ms / 1000).toFixed(2)}s`;
+  const totalSec = ms / 1000;
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec - min * 60;
+  return `${min}:${sec.toFixed(2).padStart(5, '0')}`;
 }
 
 // ---------------------------------------------------------------------------
