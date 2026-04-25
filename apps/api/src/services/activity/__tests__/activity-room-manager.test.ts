@@ -340,6 +340,319 @@ describe('Player active-room lookup', () => {
   });
 });
 
+// ─── Reef Race — pre-launch capture + verdict resolution ─────────────────
+//
+// Phase 1.1 (audit I1 + I2 fix). These tests exercise the actual
+// `activityRoomManager.recordPreLaunchInput` + `computeLaunchVerdicts`
+// methods (T21 in reef-race-sim.test.ts only mirrors the math because
+// importing the room manager pulls @clawville/database — already mocked
+// above in this file, so we get the real path here).
+
+const { synthesizeBotLaunchVerdict } = await import('../activity-room-manager');
+const { LAUNCH_WINDOW_MS, LAUNCH_STALL_WINDOW_MS } = await import(
+  '../sim/reef-race-config'
+);
+
+function makeMixedParticipants(
+  spec: Array<'human' | 'bot'>,
+): Array<{
+  petId: string;
+  userId: string | null;
+  agentId: null;
+  subjectType: 'human' | 'bot';
+  partyId: null;
+}> {
+  return spec.map((kind, i) => ({
+    petId: `00000000-0000-0000-0000-${String(i).padStart(12, '0')}`,
+    userId: kind === 'human' ? `user-${i}` : null,
+    agentId: null,
+    subjectType: kind,
+    partyId: null,
+  }));
+}
+
+describe('Reef Race — pre-launch capture (T-LAUNCH-CAPTURE)', () => {
+  const REEF_ACTIVITY_CONFIG = { minPlayers: 2, maxPlayers: 8, preferredPlayers: 4 };
+
+  it('records a thrust=1.0 input when the room is in COUNTDOWN', async () => {
+    const ps = makeMixedParticipants(['human', 'human']);
+    const room = await activityRoomManager.createRoom(
+      'reef-race',
+      ps,
+      REEF_ACTIVITY_CONFIG,
+    );
+    expect(room.state).toBe('countdown');
+    activityRoomManager.recordPreLaunchInput(room.id, ps[0].petId, 12345, 1.0);
+    expect(room.preLaunchBuffer?.get(ps[0].petId)).toEqual({
+      timestamp: 12345,
+      thrust: 1.0,
+    });
+  });
+
+  it('ignores thrust < 1.0 (no buffer entry)', async () => {
+    const ps = makeMixedParticipants(['human']);
+    const room = await activityRoomManager.createRoom(
+      'reef-race',
+      ps,
+      REEF_ACTIVITY_CONFIG,
+    );
+    activityRoomManager.recordPreLaunchInput(room.id, ps[0].petId, 12345, 0.99);
+    expect(room.preLaunchBuffer).toBeNull();
+  });
+
+  it('ignores presses outside COUNTDOWN', async () => {
+    const ps = makeMixedParticipants(['human']);
+    const room = await activityRoomManager.createRoom(
+      'reef-race',
+      ps,
+      REEF_ACTIVITY_CONFIG,
+    );
+    await activityRoomManager.transitionRoom(room.id, 'live');
+    activityRoomManager.recordPreLaunchInput(room.id, ps[0].petId, 12345, 1.0);
+    expect(room.preLaunchBuffer).toBeFalsy();
+  });
+
+  it('overwrites prior input — only the LAST qualifying press counts', async () => {
+    const ps = makeMixedParticipants(['human']);
+    const room = await activityRoomManager.createRoom(
+      'reef-race',
+      ps,
+      REEF_ACTIVITY_CONFIG,
+    );
+    activityRoomManager.recordPreLaunchInput(room.id, ps[0].petId, 100, 1.0);
+    activityRoomManager.recordPreLaunchInput(room.id, ps[0].petId, 200, 1.0);
+    expect(room.preLaunchBuffer?.get(ps[0].petId)?.timestamp).toBe(200);
+  });
+});
+
+describe('Reef Race — computeLaunchVerdicts (T-LAUNCH-VERDICT)', () => {
+  const REEF_ACTIVITY_CONFIG = { minPlayers: 2, maxPlayers: 8, preferredPlayers: 4 };
+
+  it('empty buffer + humans-only → empty verdict map', async () => {
+    const ps = makeMixedParticipants(['human', 'human']);
+    const room = await activityRoomManager.createRoom(
+      'reef-race',
+      ps,
+      REEF_ACTIVITY_CONFIG,
+    );
+    room.startedAt = 100_000; // simulate persistLiveTransition having run
+    const verdicts = activityRoomManager.computeLaunchVerdicts(room);
+    expect(verdicts.size).toBe(0);
+    expect(room.preLaunchBuffer).toBeNull();
+  });
+
+  it('startedAt missing → empty verdict + buffer cleared', async () => {
+    const ps = makeMixedParticipants(['human']);
+    const room = await activityRoomManager.createRoom(
+      'reef-race',
+      ps,
+      REEF_ACTIVITY_CONFIG,
+    );
+    activityRoomManager.recordPreLaunchInput(room.id, ps[0].petId, 12345, 1.0);
+    expect(room.preLaunchBuffer?.size).toBe(1);
+    // Defensive: startedAt is null here — should yield empty + clear buffer.
+    const verdicts = activityRoomManager.computeLaunchVerdicts(room);
+    expect(verdicts.size).toBe(0);
+    expect(room.preLaunchBuffer).toBeNull();
+  });
+
+  it('thrust pressed at green ±150ms → boost (inside window)', async () => {
+    const ps = makeMixedParticipants(['human']);
+    const room = await activityRoomManager.createRoom(
+      'reef-race',
+      ps,
+      REEF_ACTIVITY_CONFIG,
+    );
+    room.startedAt = 100_000;
+    // Push timestamps directly to bypass the COUNTDOWN gate after we
+    // forced startedAt above.
+    room.preLaunchBuffer = new Map([
+      ['p-on-green', { timestamp: 100_000, thrust: 1.0 }],
+      ['p-late-edge', { timestamp: 100_000 + LAUNCH_WINDOW_MS, thrust: 1.0 }],
+      ['p-early-edge', { timestamp: 100_000 - LAUNCH_WINDOW_MS, thrust: 1.0 }],
+    ]);
+    const verdicts = activityRoomManager.computeLaunchVerdicts(room);
+    expect(verdicts.get('p-on-green')).toBe('boost');
+    expect(verdicts.get('p-late-edge')).toBe('boost');
+    expect(verdicts.get('p-early-edge')).toBe('boost');
+  });
+
+  it('thrust pressed >150ms but ≤350ms early → stall', async () => {
+    const ps = makeMixedParticipants(['human']);
+    const room = await activityRoomManager.createRoom(
+      'reef-race',
+      ps,
+      REEF_ACTIVITY_CONFIG,
+    );
+    room.startedAt = 100_000;
+    room.preLaunchBuffer = new Map([
+      ['p-just-stall', { timestamp: 100_000 - (LAUNCH_WINDOW_MS + 1), thrust: 1.0 }],
+      [
+        'p-stall-edge',
+        {
+          timestamp: 100_000 - (LAUNCH_WINDOW_MS + LAUNCH_STALL_WINDOW_MS),
+          thrust: 1.0,
+        },
+      ],
+    ]);
+    const verdicts = activityRoomManager.computeLaunchVerdicts(room);
+    expect(verdicts.get('p-just-stall')).toBe('stall');
+    expect(verdicts.get('p-stall-edge')).toBe('stall');
+  });
+
+  it('thrust pressed >350ms early → no verdict (whiff, not stall)', async () => {
+    const ps = makeMixedParticipants(['human']);
+    const room = await activityRoomManager.createRoom(
+      'reef-race',
+      ps,
+      REEF_ACTIVITY_CONFIG,
+    );
+    room.startedAt = 100_000;
+    room.preLaunchBuffer = new Map([
+      [
+        'p-too-early',
+        {
+          timestamp: 100_000 - (LAUNCH_WINDOW_MS + LAUNCH_STALL_WINDOW_MS + 1),
+          thrust: 1.0,
+        },
+      ],
+    ]);
+    const verdicts = activityRoomManager.computeLaunchVerdicts(room);
+    expect(verdicts.has('p-too-early')).toBe(false);
+  });
+
+  it('thrust pressed >150ms LATE → no verdict (whiff)', async () => {
+    const ps = makeMixedParticipants(['human']);
+    const room = await activityRoomManager.createRoom(
+      'reef-race',
+      ps,
+      REEF_ACTIVITY_CONFIG,
+    );
+    room.startedAt = 100_000;
+    room.preLaunchBuffer = new Map([
+      ['p-late', { timestamp: 100_000 + LAUNCH_WINDOW_MS + 1, thrust: 1.0 }],
+    ]);
+    const verdicts = activityRoomManager.computeLaunchVerdicts(room);
+    expect(verdicts.has('p-late')).toBe(false);
+  });
+
+  it('clears the buffer even when verdicts is empty', async () => {
+    const ps = makeMixedParticipants(['human']);
+    const room = await activityRoomManager.createRoom(
+      'reef-race',
+      ps,
+      REEF_ACTIVITY_CONFIG,
+    );
+    room.startedAt = 100_000;
+    // All entries fall outside both windows → no verdicts but buffer must clear.
+    room.preLaunchBuffer = new Map([
+      ['p1', { timestamp: 100_000 + 10_000, thrust: 1.0 }],
+    ]);
+    activityRoomManager.computeLaunchVerdicts(room);
+    expect(room.preLaunchBuffer).toBeNull();
+  });
+
+  // ── Bot launch verdict synthesis (audit I1 fix) ────────────────────────
+
+  it('bots NOT in buffer get a synthesized verdict (audit I1)', async () => {
+    const ps = makeMixedParticipants(['human', 'bot', 'bot']);
+    const room = await activityRoomManager.createRoom(
+      'reef-race',
+      ps,
+      REEF_ACTIVITY_CONFIG,
+    );
+    room.startedAt = 100_000;
+    // Human at +50ms (boost zone). Bots NEVER write to preLaunchBuffer
+    // in production — verify they still get a verdict.
+    room.preLaunchBuffer = new Map([
+      [ps[0].petId, { timestamp: 100_050, thrust: 1.0 }],
+    ]);
+    const verdicts = activityRoomManager.computeLaunchVerdicts(room);
+    expect(verdicts.get(ps[0].petId)).toBe('boost');
+    expect(verdicts.has(ps[1].petId)).toBe(true); // bot 1 has a verdict
+    expect(verdicts.has(ps[2].petId)).toBe(true); // bot 2 has a verdict
+    const bot1 = verdicts.get(ps[1].petId);
+    const bot2 = verdicts.get(ps[2].petId);
+    expect(bot1 === 'boost' || bot1 === 'stall').toBe(true);
+    expect(bot2 === 'boost' || bot2 === 'stall').toBe(true);
+  });
+
+  it('bot synthesis is deterministic for same (roomId, petId)', () => {
+    expect(synthesizeBotLaunchVerdict('room-X', 'pet-A')).toBe(
+      synthesizeBotLaunchVerdict('room-X', 'pet-A'),
+    );
+    expect(synthesizeBotLaunchVerdict('room-Y', 'pet-A')).toBe(
+      synthesizeBotLaunchVerdict('room-Y', 'pet-A'),
+    );
+  });
+
+  it('bot synthesis distribution is roughly 50/50 over 10000 rolls', () => {
+    let boost = 0;
+    let stall = 0;
+    const N = 10_000;
+    for (let i = 0; i < N; i++) {
+      // Vary BOTH roomId and petId so the keyspace is realistic — tests
+      // the hash, not just the mod.
+      const verdict = synthesizeBotLaunchVerdict(
+        `room-${i % 137}`,
+        `pet-${i}-${(i * 31) & 0xffff}`,
+      );
+      if (verdict === 'boost') boost++;
+      else stall++;
+    }
+    // Allow a generous ±2% slop — pure 50/50 over 10k samples has a
+    // standard deviation of ~50, so ±200 is ~4σ.
+    expect(boost + stall).toBe(N);
+    const ratio = boost / N;
+    expect(ratio).toBeGreaterThan(0.45);
+    expect(ratio).toBeLessThan(0.55);
+  });
+
+  it('mixed bot+human room — both subject types get verdicts', async () => {
+    const ps = makeMixedParticipants(['human', 'human', 'bot', 'bot']);
+    const room = await activityRoomManager.createRoom(
+      'reef-race',
+      ps,
+      REEF_ACTIVITY_CONFIG,
+    );
+    room.startedAt = 200_000;
+    room.preLaunchBuffer = new Map([
+      [ps[0].petId, { timestamp: 200_000, thrust: 1.0 }], // human boost
+      [
+        ps[1].petId,
+        { timestamp: 200_000 - (LAUNCH_WINDOW_MS + 50), thrust: 1.0 },
+      ], // human stall
+    ]);
+    const verdicts = activityRoomManager.computeLaunchVerdicts(room);
+    expect(verdicts.get(ps[0].petId)).toBe('boost');
+    expect(verdicts.get(ps[1].petId)).toBe('stall');
+    expect(verdicts.has(ps[2].petId)).toBe(true);
+    expect(verdicts.has(ps[3].petId)).toBe(true);
+    expect(verdicts.size).toBe(4);
+  });
+
+  it('humans without a buffer entry stay un-verdicted (no synthesis)', async () => {
+    // The synthesis path is BOT-ONLY. A human who never pressed thrust
+    // during COUNTDOWN must remain without a verdict — the launch
+    // mechanic is opt-in for humans.
+    const ps = makeMixedParticipants(['human', 'human']);
+    const room = await activityRoomManager.createRoom(
+      'reef-race',
+      ps,
+      REEF_ACTIVITY_CONFIG,
+    );
+    room.startedAt = 100_000;
+    // Only ps[0] presses, ps[1] stays silent.
+    room.preLaunchBuffer = new Map([
+      [ps[0].petId, { timestamp: 100_000, thrust: 1.0 }],
+    ]);
+    const verdicts = activityRoomManager.computeLaunchVerdicts(room);
+    expect(verdicts.size).toBe(1);
+    expect(verdicts.has(ps[0].petId)).toBe(true);
+    expect(verdicts.has(ps[1].petId)).toBe(false);
+  });
+});
+
 // ─── DB mock factory ──────────────────────────────────────────────────────
 
 /**

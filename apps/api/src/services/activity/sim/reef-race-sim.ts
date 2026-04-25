@@ -764,9 +764,13 @@ class ReefRaceSim {
     if (actionBits & 0b01) this.tryUsePowerUp(state, body, 0, now);
     if (actionBits & 0b10) this.tryUsePowerUp(state, body, 1, now);
 
-    // 3. activeEffects + activeBoosts expiry sweep happens in tickRoom step
-    //    3 BEFORE applyIntentForTick on the same tick. Reading them here is
-    //    safe — anything past `now` is already cleared.
+    // 3. NOTE: activeEffects + activeBoosts expiry sweep runs in
+    //    `tickRoom` step 3 — which is AFTER this function (step 1). A
+    //    boost that expires mid-frame therefore stays active for the
+    //    rest of THIS tick (~33ms at 30Hz) and is removed on the next.
+    //    Behaviour: drift-boost lasts ~1233ms instead of 1200ms, stall
+    //    ~1033ms, launch ~2033ms. Within the 33ms-tick tolerance and
+    //    matches the pre-Phase-1 `activeEffects` sweep timing.
 
     // 4. Compute speedMod from activeEffects + activeBoosts (audit C2/S4/S5).
     //    Pickup-only flags (existing):

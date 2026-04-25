@@ -98,6 +98,38 @@ const NON_BLOCKING_ROOM_STATES: ReadonlySet<RoomState> = new Set<RoomState>([
   'aborted_crash',
 ]);
 
+/**
+ * Deterministic LCG launch-verdict synthesis for bot participants.
+ *
+ * Why deterministic: replays + leaderboard reproducibility. The same
+ * (roomId, petId) pair always yields the same verdict, so a re-run of
+ * the recorded inputs produces the same race shape.
+ *
+ * Why 50/50 boost/stall: half the bots get the launch advantage, half
+ * eat the early-press penalty. Reads as "imperfect timing", same overall
+ * pace as a human-only field where humans land in the boost window
+ * roughly half the time and miss into the stall window the other half.
+ *
+ * Hash: djb2 (`(h*33) ^ char`) over `roomId|petId` → 32-bit unsigned.
+ * Verdict: low bit determines boost (0) vs stall (1). djb2 already
+ * decorrelates input bytes well; the low-bit slice is enough for a
+ * fair coin flip across the petId space.
+ *
+ * Exported for direct unit testing — the room-manager singleton is
+ * harder to set up in tests, but the function is pure.
+ */
+export function synthesizeBotLaunchVerdict(
+  roomId: string,
+  petId: string,
+): 'boost' | 'stall' {
+  const key = `${roomId}|${petId}`;
+  let h = 5381;
+  for (let i = 0; i < key.length; i++) {
+    h = (((h << 5) + h) ^ key.charCodeAt(i)) >>> 0;
+  }
+  return (h & 1) === 0 ? 'boost' : 'stall';
+}
+
 /** Allowed FSM transitions — guard against typos in code paths */
 const VALID_TRANSITIONS: Record<RoomState, ReadonlySet<RoomState>> = {
   pending: new Set<RoomState>(['countdown', 'aborted']),
@@ -576,32 +608,63 @@ class ActivityRoomManager {
    * `reefRaceSim.startRoom` is invoked. Returns a per-pet verdict map.
    * Clears `room.preLaunchBuffer` on completion.
    *
-   * Verdict windows (audit C4 + S10 fix — uses room manager's startedAt):
+   * Human verdict windows (audit C4 + S10 fix — uses room manager's startedAt):
    *   |offset| ≤ LAUNCH_WINDOW_MS                           → 'boost'
    *   offset ∈ [-(WINDOW + STALL_WINDOW), -WINDOW)          → 'stall'
    *   offset > +LAUNCH_WINDOW_MS or further early           → no verdict
+   *
+   * Bot verdict synthesis (Phase 1.1 fix — audit I1):
+   *   Bots produce input through `runBotControllers` inside the sim's
+   *   tickRoom, which only fires post-LIVE. So bot LAUNCH presses NEVER
+   *   reach `recordPreLaunchInput` (hub-only, COUNTDOWN-only). Without
+   *   synthesis the bot's launch path is dead code and bots always start
+   *   without a verdict — a quiet handicap relative to humans who get
+   *   either boost or stall.
+   *
+   *   For every bot participant NOT already in the buffer, we synthesize
+   *   a verdict via a deterministic LCG keyed on `roomId + petId`:
+   *     low bit = 0 → 'boost'
+   *     low bit = 1 → 'stall'
+   *   Half get the launch advantage, half eat the penalty. Reads as
+   *   "imperfect timing", same statistical shape as human variance.
+   *   Determinism keyed on roomId+petId means replays reproduce.
    */
   computeLaunchVerdicts(room: Room): Map<string, 'boost' | 'stall'> {
     const verdicts = new Map<string, 'boost' | 'stall'>();
-    if (!room.preLaunchBuffer || !room.startedAt) {
+    if (!room.startedAt) {
       // Always release the buffer — even when empty — so a stale Map
       // doesn't survive into the LIVE phase if startedAt was never set.
       room.preLaunchBuffer = null;
       return verdicts;
     }
 
-    for (const [petId, entry] of room.preLaunchBuffer) {
-      const offset = entry.timestamp - room.startedAt;
-      if (Math.abs(offset) <= LAUNCH_WINDOW_MS) {
-        verdicts.set(petId, 'boost');
-      } else if (
-        offset < -LAUNCH_WINDOW_MS &&
-        offset >= -(LAUNCH_WINDOW_MS + LAUNCH_STALL_WINDOW_MS)
-      ) {
-        verdicts.set(petId, 'stall');
+    // 1. Resolve human verdicts from the captured buffer.
+    if (room.preLaunchBuffer) {
+      for (const [petId, entry] of room.preLaunchBuffer) {
+        const offset = entry.timestamp - room.startedAt;
+        if (Math.abs(offset) <= LAUNCH_WINDOW_MS) {
+          verdicts.set(petId, 'boost');
+        } else if (
+          offset < -LAUNCH_WINDOW_MS &&
+          offset >= -(LAUNCH_WINDOW_MS + LAUNCH_STALL_WINDOW_MS)
+        ) {
+          verdicts.set(petId, 'stall');
+        }
+        // else: outside both windows → no verdict (normal start)
       }
-      // else: outside both windows → no verdict (normal start)
     }
+
+    // 2. Synthesize bot verdicts (audit I1 fix). Bots that already have
+    //    a verdict from the buffer (impossible today — bots never write
+    //    to the buffer — but kept defensive in case a future bot harness
+    //    hits the WS hub) are skipped.
+    for (const participant of room.participants.values()) {
+      if (participant.subjectType !== 'bot') continue;
+      if (verdicts.has(participant.petId)) continue;
+      const verdict = synthesizeBotLaunchVerdict(room.id, participant.petId);
+      verdicts.set(participant.petId, verdict);
+    }
+
     room.preLaunchBuffer = null;
     return verdicts;
   }
