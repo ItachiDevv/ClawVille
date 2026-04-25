@@ -120,6 +120,13 @@ export interface RoomMeta {
   status: 'countdown' | 'live' | 'results';
   startedAt?: number;
   endsAt?: number;
+  /**
+   * Wall-clock millis when the COUNTDOWN→LIVE timer started. Reef Race
+   * Phase 1 — HUD computes seconds-remaining locally from this rather
+   * than relying on a single one-shot `event.countdown` (audit S9 fix).
+   * Optional so older clients tolerating its absence aren't broken.
+   */
+  countdownStartedAt?: number;
 }
 
 /** Per-entity delta — only changed fields are transmitted */
@@ -237,6 +244,30 @@ export type ServerFrame =
       type: 'event.power_up_collected';
       spawnId: string;
       collectorAvatarId: string;
+    }
+  | {
+      /**
+       * Reef Race Phase 1 — drift boost fired at release. `sparks` ∈ {1,2,3}
+       * indicates the tier reached during the charge. Phase 1 clients drive
+       * HUD off `EntityDelta.changed.driftSparks` (already 0 by the time this
+       * event lands); event reserved for future scene VFX (boost flash, audio
+       * sting). Backwards compat: old clients hit `default: never` → no-op.
+       */
+      type: 'event.drift_boost';
+      avatarId: string;
+      sparks: 1 | 2 | 3;
+    }
+  | {
+      /**
+       * Reef Race Phase 1 — launch verdict at COUNTDOWN→LIVE. `kind: 'boost'`
+       * means the player pressed within ±LAUNCH_WINDOW_MS of green; `'stall'`
+       * means they pressed earlier (in the [-(WINDOW+STALL_WINDOW), -WINDOW)
+       * range) and incurred a 1s thrust cap. Phase 1 HUD glow ring is local-
+       * countdown-driven; event reserved for future per-player VFX.
+       */
+      type: 'event.launch';
+      avatarId: string;
+      kind: 'boost' | 'stall';
     }
   | {
       type: 'chat';

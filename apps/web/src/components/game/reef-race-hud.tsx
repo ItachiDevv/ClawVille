@@ -22,6 +22,7 @@ import { TOTAL_LAPS } from '@/lib/three/activities/reef-race/reef-race-config';
 import ActivityResultsModal from './activity-results-modal';
 import ReefRaceInstructions from './reef-race-instructions';
 import { RoundCountdown } from './activity';
+import ReefRaceDriftSparks from './reef-race-drift-sparks';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -224,6 +225,24 @@ export default function ReefRaceHud({
   const countdownSecondsRemaining = useActivityStore(
     (s) => s.countdownSecondsRemaining,
   );
+  // Phase 1 (audit S9) — HUD launch glow ring computes seconds-remaining
+  // locally from `room.countdownStartedAt` because the server only emits
+  // a single one-shot `event.countdown` at COUNTDOWN entry. Without this,
+  // the ring would never trip mid-countdown.
+  const countdownStartedAt = useActivityStore(
+    (s) => s.room?.countdownStartedAt ?? null,
+  );
+  const [localSecondsRemaining, setLocalSecondsRemaining] = useState(5);
+  useEffect(() => {
+    if (!countdownStartedAt) return;
+    const tick = () => {
+      const elapsed = (Date.now() - countdownStartedAt) / 1000;
+      setLocalSecondsRemaining(Math.max(0, Math.ceil(5 - elapsed)));
+    };
+    tick();
+    const id = setInterval(tick, 200); // 5Hz is plenty for a 1s countdown
+    return () => clearInterval(id);
+  }, [countdownStartedAt]);
 
   const baseStyle: React.CSSProperties = {
     position: 'absolute',
@@ -250,6 +269,9 @@ export default function ReefRaceHud({
         <PlacementTile selfAvatarId={selfAvatarId} />
         <BestLapTile selfAvatarId={selfAvatarId} />
       </div>
+
+      {/* Bottom-center: Drift charge sparks (above PowerUpBar) */}
+      <ReefRaceDriftSparks />
 
       {/* Bottom-center: Power-up bar */}
       <div
@@ -285,6 +307,34 @@ export default function ReefRaceHud({
           />
         </>
       )}
+
+      {/* Phase 1 launch-glow ring — overlaid at the very last second of the
+          countdown so a player priming a launch press sees a clear "go now"
+          cue. Local-countdown-driven (audit S9). */}
+      {matchPhase === 'pregame-countdown' && localSecondsRemaining === 1 && (
+        <div
+          style={{
+            position: 'absolute',
+            top: '50%',
+            left: '50%',
+            width: 240,
+            height: 240,
+            marginLeft: -120,
+            marginTop: -120,
+            borderRadius: '50%',
+            border: '4px solid #00e676',
+            boxShadow: '0 0 32px #00e67688, inset 0 0 24px #00e67644',
+            animation: 'reefLaunchPulse 0.4s ease-in-out infinite',
+            pointerEvents: 'none',
+          }}
+        />
+      )}
+      <style jsx>{`
+        @keyframes reefLaunchPulse {
+          0%, 100% { transform: scale(1); opacity: 0.85; }
+          50%      { transform: scale(1.08); opacity: 1; }
+        }
+      `}</style>
 
       {/* Results modal — same as BumperShells, reused */}
       {matchPhase === 'ended' && activityId && roomId && onLeave && onPlayAgain && (
