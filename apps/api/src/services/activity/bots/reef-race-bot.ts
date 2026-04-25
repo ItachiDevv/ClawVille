@@ -22,6 +22,13 @@ import { REEF_TRACK_HALF_WIDTH, type ReefCheckpointAabb } from '../sim/reef-race
 
 const POWERUP_USE_CHANCE = 0.3;
 const JITTER_MAGNITUDE = 0.08;
+/**
+ * Opening grace window — bots cruise at low thrust toward the next
+ * checkpoint without firing power-ups for the first 2.5s. Mirrors the
+ * Bumper Shells grace; gives a human time to read the start line + HUD
+ * before the bots accelerate to cruise speed.
+ */
+const BOT_OPENING_GRACE_MS = 2_500;
 
 /**
  * Extension of the generic `BotRoomView` with Reef-specific fields the
@@ -97,22 +104,30 @@ class ReefRaceBot implements BotController {
       thrust = 1.0;
     }
 
-    // Power-up usage — fire any off-cooldown slot at the configured probability.
+    // Opening grace — coast toward the checkpoint at low thrust + no
+    // power-ups so the human has 2.5s to orient. This branch overrides
+    // the cruise/cornering thrust calculations above with a steady 0.4.
+    const matchAge = view.now - view.matchStartedAt;
+    const inGrace = matchAge < BOT_OPENING_GRACE_MS;
+
+    // Power-up usage — skipped during grace.
     let actionBits = 0;
-    const inv = self.inventory;
-    for (let i = 0; i < inv.length; i++) {
-      const slot = inv[i];
-      if (slot.kind === null) continue;
-      if (slot.cooldownUntil > view.now) continue;
-      if (Math.random() < POWERUP_USE_CHANCE) {
-        actionBits |= 1 << i;
-        break;
+    if (!inGrace) {
+      const inv = self.inventory;
+      for (let i = 0; i < inv.length; i++) {
+        const slot = inv[i];
+        if (slot.kind === null) continue;
+        if (slot.cooldownUntil > view.now) continue;
+        if (Math.random() < POWERUP_USE_CHANCE) {
+          actionBits |= 1 << i;
+          break;
+        }
       }
     }
 
     return {
       dir: { x: dx, y: dy },
-      thrust,
+      thrust: inGrace ? 0.4 : thrust,
       actionBits,
     };
   }

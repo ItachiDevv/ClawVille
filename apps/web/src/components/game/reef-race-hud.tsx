@@ -20,6 +20,8 @@ import {
 } from '@/stores/activity';
 import { TOTAL_LAPS } from '@/lib/three/activities/reef-race/reef-race-config';
 import ActivityResultsModal from './activity-results-modal';
+import ReefRaceInstructions from './reef-race-instructions';
+import { RoundCountdown } from './activity';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -219,6 +221,9 @@ export default function ReefRaceHud({
 }: ReefRaceHudProps) {
   const selfAvatarId  = useActivityStore((s) => s.selfAvatarId);
   const matchPhase = useActivityStore((s) => s.matchPhase);
+  const countdownSecondsRemaining = useActivityStore(
+    (s) => s.countdownSecondsRemaining,
+  );
 
   const baseStyle: React.CSSProperties = {
     position: 'absolute',
@@ -269,6 +274,17 @@ export default function ReefRaceHud({
       >
         <LeaveButton onLeave={onLeave} />
       </div>
+
+      {/* Pregame countdown overlay + how-to-play card. Both auto-dismiss
+          when the match goes live (parent conditional). */}
+      {matchPhase === 'pregame-countdown' && countdownSecondsRemaining > 0 && (
+        <>
+          <RoundCountdown secondsRemaining={countdownSecondsRemaining} />
+          <ReefRaceInstructions
+            countdownSecondsRemaining={countdownSecondsRemaining}
+          />
+        </>
+      )}
 
       {/* Results modal — same as BumperShells, reused */}
       {matchPhase === 'ended' && activityId && roomId && onLeave && onPlayAgain && (

@@ -325,6 +325,9 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
           activityId={activityId}
           roomId={roomId}
         />
+        {/* Mobile A (boost) + B (power-up) thumb buttons — same component
+            Bumper Shells uses; reef-race input also uses dir + actionBits. */}
+        <ActivityMobileControls active={inputEnabled} />
       </main>
     );
   }
