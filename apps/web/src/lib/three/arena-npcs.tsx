@@ -381,6 +381,82 @@ preloadMixamoClips();
 const _npcAnchorWorldPos = new THREE.Vector3();
 
 // ---------------------------------------------------------------------------
+// Label occlusion — raycast against a small cached set of scene occluders
+// (buildings + NPC groups) to hide labels when the anchor is blocked by closer
+// geometry. Much cheaper than drei occlude={true} (full-scene traversal).
+// ---------------------------------------------------------------------------
+
+// Raycaster dedicated to occlusion tests (separate from terrain _raycaster so
+// layer masks don't bleed — occlusion tests hit ALL layers).
+const _occRaycaster = new THREE.Raycaster();
+// Direction scratch — set fresh per call from camera→anchor.
+const _occDir = new THREE.Vector3();
+// Cache of meshes that can occlude labels. Null = not yet populated.
+// Rebuilt whenever _occluderVersion changes (e.g. a building mounts/unmounts).
+let _occluderMeshes: THREE.Mesh[] | null = null;
+// The scene these meshes were extracted from — invalidate cache on scene change.
+let _occluderScene: THREE.Scene | null = null;
+
+/** Collect every Mesh that is a descendant of an Object3D tagged
+ *  userData.isOccluder = true.  Call once; result is stable for the session. */
+function buildOccluderList(scene: THREE.Scene): THREE.Mesh[] {
+  const meshes: THREE.Mesh[] = [];
+  scene.traverse((obj) => {
+    if (!obj.userData.isOccluder) return;
+    obj.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) meshes.push(child as THREE.Mesh);
+    });
+  });
+  return meshes;
+}
+
+/** Returns true when the camera→anchor ray is blocked by an occluder mesh
+ *  that is closer to the camera than the anchor itself.
+ *
+ *  selfNpcId: skip meshes belonging to this NPC's own group so the NPC never
+ *  self-occludes its own label.
+ *
+ *  Perf notes:
+ *  - Called at most every 6th frame per NPC (10Hz at 60fps), staggered by seed.
+ *  - Intersects only meshes in _occluderMeshes — never traverses the full scene.
+ *  - Zero per-frame allocations (all scratch objects are module-scope). */
+function checkLabelOcclusion(
+  cameraPos: THREE.Vector3,
+  anchorWorldPos: THREE.Vector3,
+  selfNpcId: string,
+  scene: THREE.Scene,
+): boolean {
+  // Rebuild mesh list if scene changed or cache is empty.
+  if (!_occluderMeshes || _occluderScene !== scene) {
+    _occluderMeshes = buildOccluderList(scene);
+    _occluderScene = scene;
+  }
+
+  const anchorDist = cameraPos.distanceTo(anchorWorldPos);
+  if (anchorDist < 1) return false; // degenerate — camera inside anchor
+
+  _occDir.subVectors(anchorWorldPos, cameraPos).normalize();
+  _occRaycaster.set(cameraPos, _occDir);
+  _occRaycaster.far = anchorDist - 1; // stop 1wu before the anchor itself
+
+  // Filter out self-meshes at intersection time by checking ancestor userData.
+  // We need a filtered list per call — but it's a lightweight slice, not per-frame
+  // unless this NPC's label is actually visible (double-gated by inFront check).
+  const filtered = _occluderMeshes.filter((m) => {
+    // Walk up to the top-level tagged group; if it carries this NPC's id, skip.
+    let p: THREE.Object3D | null = m;
+    while (p) {
+      if (p.userData.isOccluder && p.userData.npcId === selfNpcId) return false;
+      p = p.parent;
+    }
+    return true;
+  });
+
+  const hits = _occRaycaster.intersectObjects(filtered, false);
+  return hits.length > 0;
+}
+
+// ---------------------------------------------------------------------------
 // Single NPC using GLB model with terrain following
 // ---------------------------------------------------------------------------
 const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
@@ -503,6 +579,27 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     };
   }, [cloned, npc.id, npc.species, speciesInfo.path, npcScale, pivotOffsetY]);
 
+  // Tag this group as an occluder so checkLabelOcclusion can find it.
+  // npcId is stored so the NPC can skip its own meshes during self-occlusion filtering.
+  // useLayoutEffect: fires before first rAF so _occluderMeshes cache rebuild on frame 1
+  // already includes this NPC's group.
+  useLayoutEffect(() => {
+    const g = groupRef.current;
+    if (!g) return;
+    g.userData.isOccluder = true;
+    g.userData.npcId = npc.id;
+    // Invalidate the occluder mesh cache so the new group is included next time it's built.
+    _occluderMeshes = null;
+    return () => {
+      // On unmount, invalidate again so the removed group doesn't stay in the list.
+      _occluderMeshes = null;
+    };
+  }, [npc.id]);
+
+  // Per-NPC occlusion state: whether the label was occluded on the last raycast tick.
+  // Stored as a ref (not state) — we only need it for the next imperative display write.
+  const occludedRef = useRef(false);
+
   useFrame(({ clock, camera }, delta) => {
     const d = npcRef.current;
     const group = groupRef.current;
@@ -555,6 +652,9 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
       return;
     }
     group.visible = true;
+    // frame is needed by both the label-occlusion gate (6-frame stagger) and the
+    // terrain raycast gate (3-frame stagger). Declare once here for both blocks.
+    const frame = Math.floor(clock.elapsedTime * 60);
     {
       // Behind-camera cull: drei <Html> does not hide when the 3D anchor is behind
       // the near plane — calculatePosition still emits a screen XY, producing ghost
@@ -565,7 +665,23 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
       if (!inFront) {
         if (label && label.style.display !== 'none') label.style.display = 'none';
       } else {
-        if (label && label.style.display !== 'flex') label.style.display = 'flex';
+        // Occlusion gate: raycast from camera to anchor every 6th frame (10Hz, staggered).
+        // Only runs when the anchor is already confirmed in-front-of-camera, so we don't
+        // burn raycast budget on labels that are already hidden by the dot-product gate.
+        // 10Hz is enough — label flicker tolerance is high; buildings don't move.
+        if ((frame + seed) % 6 === 0) {
+          occludedRef.current = checkLabelOcclusion(
+            camera.position,
+            _npcAnchorWorldPos,
+            npc.id,
+            threeScene,
+          );
+        }
+        if (occludedRef.current) {
+          if (label && label.style.display !== 'none') label.style.display = 'none';
+        } else {
+          if (label && label.style.display !== 'flex') label.style.display = 'flex';
+        }
       }
     }
 
@@ -574,7 +690,6 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // raycasting on the same frame tick (which would spike the CPU every 150ms).
     // Use clock.elapsedTime (already available) instead of Date.now() to avoid
     // a syscall allocation in the hot path.
-    const frame = Math.floor(clock.elapsedTime * 60);
     if ((frame + seed) % 3 === 0) {
       const terrainY = getTerrainY(group.position.x, group.position.z, threeScene);
       currentTerrainY.current += (terrainY - currentTerrainY.current) * 0.3;
@@ -856,6 +971,20 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     };
   }, [vrm]);
 
+  // Tag this group as an occluder (same as GLBNpcMesh) — lets checkLabelOcclusion
+  // include the VRM body as a potential occluder for other NPCs' labels.
+  useLayoutEffect(() => {
+    const g = groupRef.current;
+    if (!g) return;
+    g.userData.isOccluder = true;
+    g.userData.npcId = npc.id;
+    _occluderMeshes = null;
+    return () => { _occluderMeshes = null; };
+  }, [npc.id]);
+
+  // Per-NPC occlusion state — same pattern as GLBNpcMesh.
+  const occludedRef = useRef(false);
+
   useFrame(({ clock, camera }, delta) => {
     const d = npcRef.current;
     const group = groupRef.current;
@@ -919,7 +1048,20 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
       if (!inFront) {
         if (label && label.style.display !== 'none') label.style.display = 'none';
       } else {
-        if (label && label.style.display !== 'flex') label.style.display = 'flex';
+        // Occlusion gate: same pattern as GLBNpcMesh — 10Hz staggered raycast.
+        if ((frame + seed) % 6 === 0) {
+          occludedRef.current = checkLabelOcclusion(
+            camera.position,
+            _npcAnchorWorldPos,
+            npc.id,
+            threeScene,
+          );
+        }
+        if (occludedRef.current) {
+          if (label && label.style.display !== 'none') label.style.display = 'none';
+        } else {
+          if (label && label.style.display !== 'flex') label.style.display = 'flex';
+        }
       }
     }
 

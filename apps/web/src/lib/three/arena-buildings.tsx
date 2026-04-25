@@ -335,9 +335,14 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
   // group + every cloned mesh so Three.js doesn't re-multiply matrices for
   // ~30+ static meshes per building × 10 buildings every frame.
   // Was contributing to the 9.9% updateMatrixWorld cost in the DevTools profile.
+  //
+  // Also tag the group as an occluder so arena-npcs.tsx label-occlusion raycast
+  // can find building geometry via scene traversal without a hardcoded name list.
+  // The tag is read once on first useFrame call in ArenaNpcs and cached.
   useEffect(() => {
     const g = groupRef.current;
     if (!g) return;
+    g.userData.isOccluder = true;
     g.matrixAutoUpdate = false;
     g.updateMatrix();
     cloned.traverse((obj) => {
