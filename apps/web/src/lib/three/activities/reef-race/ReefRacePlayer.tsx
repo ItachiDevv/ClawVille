@@ -21,7 +21,7 @@
 import { useRef, useEffect, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
-import * as THREE from 'three/webgpu';
+import * as THREE from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { KART_SCALE, KART_Y_ABOVE_TRACK } from './reef-race-config';
 import type { ReefRaceEntity } from './reef-race-types';

@@ -20,7 +20,7 @@
  */
 
 import { useRef, useEffect, useMemo } from 'react';
-import * as THREE from 'three/webgpu';
+import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
   CHECKPOINT_T_VALUES,
