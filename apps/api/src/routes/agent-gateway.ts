@@ -19,7 +19,7 @@ import {
 import { npcSimulation } from '../services/npc-simulation';
 import { findPath } from '../services/pathfinding';
 import { memoryService } from '../services/memory-service';
-import { db, openclawBots, pets, users, eq, sql } from '@clawville/database';
+import { db, openclawBots, pets, users, eq, and, sql } from '@clawville/database';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { getSessionAgent } from '../services/session-agent-map';
 import { OpenClawClient } from '../services/openclaw-client';
@@ -264,6 +264,12 @@ agentGatewayRoutes.post('/connect', async (c) => {
         // liveness contract. Without this, returning bots kept whatever
         // stale expiry was on the row from their last connect.
         sessionExpiresAt: computeSessionExpiresAt(),
+        // Phase 6.1 — clear the sweeper's "already-processed" stamp so
+        // the next genuine expiration fires `agent.session.expired`
+        // exactly once. Without this clear, a bot that expired, got
+        // swept, then reconnected would never emit another expiration
+        // event for the rest of its life.
+        sessionSweptAt: null,
         updatedAt: new Date(),
       }).where(eq(openclawBots.id, existing.id));
     } else {
@@ -680,6 +686,30 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
     orderBy: (t, { desc }) => [desc(t.lastSeenAt)],
     columns: { id: true },
   });
+
+  // Phase 6.1 — refresh the bot's session TTL on signed-challenge
+  // reconnect so an expired+swept row pops back alive without needing
+  // to re-do the magic-link /connect dance. Without this update, the
+  // SKILL.md promise "Reconnecting after disconnect is free" was
+  // misleading: /reconnect was re-issuing the Lucia session for the
+  // human but leaving openclaw_bots.session_expires_at frozen at the
+  // last /connect time, so /api/agent/session-status would still
+  // report 410 Gone after a successful /reconnect.
+  if (existingBot) {
+    try {
+      await db
+        .update(openclawBots)
+        .set({
+          sessionExpiresAt: computeSessionExpiresAt(),
+          sessionSweptAt: null,
+          lastSeenAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(openclawBots.id, existingBot.id));
+    } catch (err) {
+      console.error('[AgentReconnect] TTL refresh failed (non-fatal):', err);
+    }
+  }
 
   // Mint the session ticket. `identityType='reconnect'` + `identityKey=userId`
   // records the provenance in the ticket row for audit without leaking the
@@ -2163,8 +2193,8 @@ agentGatewayRoutes.post('/connect-token', async (c) => {
   if (!sessionId) {
     return c.json({ error: 'Authentication required' }, 401);
   }
-  const { session } = await lucia.validateSession(sessionId);
-  if (!session) {
+  const { session, user } = await lucia.validateSession(sessionId);
+  if (!session || !user) {
     return c.json({ error: 'Authentication required' }, 401);
   }
 
@@ -2182,6 +2212,27 @@ agentGatewayRoutes.post('/connect-token', async (c) => {
 
   if (!petId || !userId) {
     return c.json({ error: 'petId and userId required' }, 400);
+  }
+
+  // Phase 6.1 audit fix — pre-existing security gap closed: the body's
+  // userId/petId were taken at face value, so a malicious caller with a
+  // valid Lucia cookie could mint a connect token for ANOTHER user's
+  // pet. Once their own agent claimed the token, the Moltbook flow
+  // would bind the agent to the victim's user identity and a
+  // subsequent magic-link click would mint a Lucia session for the
+  // victim — full account takeover. Now require body.userId to match
+  // the authenticated session user, AND verify body.petId belongs to
+  // them. Both are 403 (not 404) so a probing attacker doesn't get
+  // confirmation of which petIds exist.
+  if (userId !== user.id) {
+    return c.json({ error: 'userId mismatch' }, 403);
+  }
+  const ownedPet = await db.query.pets.findFirst({
+    where: and(eq(pets.id, petId), eq(pets.userId, user.id)),
+    columns: { id: true },
+  });
+  if (!ownedPet) {
+    return c.json({ error: 'Pet not owned by authenticated user' }, 403);
   }
 
   cleanupExpiredTokens();

@@ -162,6 +162,9 @@ openclawRoutes.post('/register', async (c) => {
         lastSeenAt: new Date(),
         // Phase 6 — fresh 24h TTL on every legacy /openclaw/register too.
         sessionExpiresAt: computeSessionExpiresAt(),
+        // Phase 6.1 — clear sweptAt so the next expiration emits exactly
+        // one event. Same rationale as the /api/agent/connect path.
+        sessionSweptAt: null,
         updatedAt: new Date(),
       }).where(eq(openclawBots.id, existing.id));
 
@@ -331,6 +334,11 @@ openclawRoutes.delete('/unregister/:sessionId', async (c) => {
             // immediately so /session-status answers 410 on the next
             // poll without waiting for the 24h TTL.
             sessionExpiresAt: new Date(),
+            // Phase 6.1 — also stamp sweptAt so the sweeper doesn't
+            // re-emit `agent.session.expired` for a row that was
+            // explicitly disconnected (the unregister handler is the
+            // canonical "gone" signal here).
+            sessionSweptAt: new Date(),
             updatedAt: new Date(),
           }).where(eq(openclawBots.id, existing.id));
         }
