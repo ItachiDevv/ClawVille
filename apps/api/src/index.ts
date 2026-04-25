@@ -527,4 +527,11 @@ export default {
   port,
   fetch: app.fetch,
   websocket: activityWebsocketHandler,
+  // Bun.serve idleTimeout — DO NOT lower below 30. SSE keepalives fire every
+  // 15s on /api/research/stream and /api/npc/stream; with the default 10s,
+  // Bun reaps the socket between writes and the client surfaces
+  // ERR_HTTP2_PROTOCOL_ERROR 200. Verified live 2026-04-25 via in-container
+  // probe: ECONNRESET on localhost:4000 after the initial 'connected' event,
+  // never reaching even the upstream proxy. 255 is Bun's max value.
+  idleTimeout: 255,
 };

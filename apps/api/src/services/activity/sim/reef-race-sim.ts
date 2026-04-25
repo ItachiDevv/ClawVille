@@ -857,6 +857,12 @@ class ReefRaceSim {
    * Phase 1 — drift state machine. Runs as step 7 of `applyIntentForTick`.
    * Pure-state-mutation; never broadcasts more than one event.drift_boost
    * per release (audit-proofed via `lastDriftBit` edge detection).
+   *
+   * Note: master's PR #62 added a separate `body.rot = atan2(intent.dir.x,
+   * intent.dir.y)` block here ("Three.js Y-rotation convention"). Phase 1
+   * subsumed that into step 6 of `applyIntentForTick` (line 814-826) so the
+   * drift angular bias can be applied INSIDE the same atan2 assignment
+   * (audit C1). Re-applying it here would clobber the drift lean — dropped.
    */
   private tickDriftState(state: ReefRoomState, body: ReefBody, now: number): void {
     const driftBit   = (body.intent.actionBits & ACTION_BIT_DRIFT) !== 0;

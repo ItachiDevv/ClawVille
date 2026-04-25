@@ -159,6 +159,10 @@ interface ReefRacePlayerProps {
 function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
   // entity.species deferred per C8 fix — Phase 1 uses lobster.glb as sole default.
   // Phase 1.5 will restore species branching once the server populates the field.
+  // (Note: master's PR #62 reintroduced the `species ?? 'lobster'` branch, but
+  // `species` is NOT in `EntityDelta` or `WorldState.entities` per the audit, so
+  // the branch always falls through to lobster.glb anyway — and the Milady-default
+  // flip in `a50bb28` only affects `model_key` / VRM avatars, not Reef Race GLBs.)
   const glbPath = '/models/lobster.glb';
 
   const { scene: srcScene } = useGLTF(glbPath);
