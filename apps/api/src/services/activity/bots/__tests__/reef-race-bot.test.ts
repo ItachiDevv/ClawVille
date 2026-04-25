@@ -53,6 +53,7 @@ function makeReefView(opts: {
     bodies: [makeBody('bot-self', opts.selfPos.x, opts.selfPos.y, opts.selfPos.alive ?? true, opts.inventory)],
     arenaRadius: 2000,
     now: 1000,
+    matchStartedAt: 0,
     nextCheckpoint: opts.nextCheckpoint ?? 1,
     checkpoints,
   };

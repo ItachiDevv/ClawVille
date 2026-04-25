@@ -39,6 +39,7 @@ import {
   type SpectatorCamMode,
 } from './activity';
 import ActivityResultsModal from './activity-results-modal';
+import BumperShellsInstructions from './bumper-shells-instructions';
 import { playActivitySound } from '@/lib/activity-audio';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -451,9 +452,16 @@ export default function BumperShellsHud({
         </button>
       )}
 
-      {/* Pregame countdown overlay */}
+      {/* Pregame countdown overlay + how-to-play card. The instructions
+          auto-dismiss on first input or when the match goes live, so a
+          returning player who already knows the controls isn't blocked. */}
       {matchPhase === 'pregame-countdown' && countdownSecondsRemaining > 0 && (
-        <RoundCountdown secondsRemaining={countdownSecondsRemaining} />
+        <>
+          <RoundCountdown secondsRemaining={countdownSecondsRemaining} />
+          <BumperShellsInstructions
+            countdownSecondsRemaining={countdownSecondsRemaining}
+          />
+        </>
       )}
 
       {/* Eliminated/spectator overlay — chunk #11 upgrade. */}

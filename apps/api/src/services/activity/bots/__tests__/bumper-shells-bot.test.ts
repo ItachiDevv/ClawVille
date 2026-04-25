@@ -47,6 +47,10 @@ function makeView(self: { x: number; y: number; inventory?: BotRoomView['bodies'
     ],
     arenaRadius: 500,
     now: 1000,
+    // matchStartedAt: 0 ⇒ matchAge = 1000ms, well past the 2.5s opening
+    // grace, so existing test expectations (chase nearest, edge avoid,
+    // power-up usage) all run in the post-grace branch as before.
+    matchStartedAt: 0,
   };
 }
 
@@ -131,6 +135,7 @@ describe('BumperShellsBot.computeInput', () => {
       bodies: [makeBody('bot-self', 0, 0, false), makeBody('opp', 100, 0, true)],
       arenaRadius: 500,
       now: 1000,
+      matchStartedAt: 0,
     };
     const intent = bot.computeInput(view, 1 / 60);
     expect(intent.thrust).toBe(0);
@@ -144,6 +149,7 @@ describe('BumperShellsBot.computeInput', () => {
       bodies: [makeBody('bot-self', 200, 0, true)],
       arenaRadius: 500,
       now: 1000,
+      matchStartedAt: 0,
     };
     const intent = bot.computeInput(view, 1 / 60);
     expect(intent).toBeDefined();
@@ -151,6 +157,35 @@ describe('BumperShellsBot.computeInput', () => {
     // With no opponents and inside the edge buffer, bot should head
     // toward origin (negative x because self is at +200).
     expect(intent.dir!.x).toBeLessThan(0);
+  });
+
+  it('respects the opening grace window — no ramming or power-ups in first 2.5s', () => {
+    const bot = createBumperShellsBot('bot-self');
+    const inv: BotRoomView['bodies'][number]['inventory'] = [
+      { kind: 'bs-speed-boost' as BumperPowerUpKind, charges: 1, cooldownUntil: 0 },
+      { kind: null, charges: 0, cooldownUntil: 0 },
+    ];
+    // Self at +x=150 with an opponent right next to us at +x=200 — would
+    // normally trigger the RAM_DISTANCE branch with thrust=1. During grace
+    // we expect bot to head toward origin (negative x) at 0.4 thrust and
+    // never fire the power-up.
+    const view = makeView({ x: 150, y: 0, inventory: inv }, [{ avatarId: 'opp', x: 200, y: 0 }]);
+    view.now = 1500;
+    view.matchStartedAt = 0; // matchAge = 1500ms < 2500ms ⇒ grace active
+    let firedPowerUp = 0;
+    const xs: number[] = [];
+    const thrusts: number[] = [];
+    for (let i = 0; i < 200; i++) {
+      const intent = bot.computeInput(view, 1 / 60);
+      if ((intent.actionBits ?? 0) !== 0) firedPowerUp++;
+      xs.push(intent.dir!.x);
+      thrusts.push(intent.thrust ?? 0);
+    }
+    expect(firedPowerUp).toBe(0);
+    const avgX = xs.reduce((s, v) => s + v, 0) / xs.length;
+    expect(avgX).toBeLessThan(0); // toward origin (negative x), not the opponent
+    const avgThrust = thrusts.reduce((s, v) => s + v, 0) / thrusts.length;
+    expect(avgThrust).toBeCloseTo(0.4, 1);
   });
 
   it('skips eliminated opponents when picking the nearest', () => {
