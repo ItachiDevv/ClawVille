@@ -214,12 +214,6 @@ export interface ActivityState {
    */
   slipstreamActive: boolean;
   /**
-   * Phase 2 — wall-clock millis of the last `event.slipstream` received.
-   * Advisory only — used for diagnostic / Phase 3 fallback timing.
-   * Audit C3 fix: field present so future code can fall back to timeout.
-   */
-  lastSlipstreamEventAt: number;
-  /**
    * Phase 2 — last apex verdict for the self pet. Replaced (not appended)
    * on each `event.apex_verdict` arrival; the toast subscribes to this
    * primitive object reference (a new object fires re-renders).
@@ -412,7 +406,6 @@ function emptyState(): Pick<
   | 'chatLog'
   | 'reefRace'
   | 'slipstreamActive'
-  | 'lastSlipstreamEventAt'
   | 'lastApexVerdict'
   | 'lastRibbonCollectedAt'
   | 'lastHazardHitAt'
@@ -440,7 +433,6 @@ function emptyState(): Pick<
     reefRace: { laps: new Map(), selfBestGhostPath: null },
     // Phase 2 — Reef Race slipstream / apex / ribbon / hazard
     slipstreamActive: false,
-    lastSlipstreamEventAt: 0,
     lastApexVerdict: null,
     lastRibbonCollectedAt: 0,
     lastHazardHitAt: 0,
@@ -783,7 +775,10 @@ export const useActivityStore = create<ActivityState>()(
         case 'event.slipstream': {
           // Only update HUD state for the self pet.
           if (state.selfPetId && frame.dstPetId === state.selfPetId) {
-            set({ slipstreamActive: true, lastSlipstreamEventAt: Date.now() });
+            // impl-audit M2: dropped `lastSlipstreamEventAt` — was set but
+            // never read. Server-driven event.slipstream_end clears the badge
+            // (audit S4 flow) so a wall-clock fallback is unneeded.
+            set({ slipstreamActive: true });
           }
           break;
         }

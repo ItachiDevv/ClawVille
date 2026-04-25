@@ -231,13 +231,17 @@ export function isInsideCheckpoint(
 
 // ─── Power-up catalog (3d-spec + master plan §"Reef Race power-ups") ────────
 
-export type ReefPowerUpKind =
-  | 'rr-turbo-bubble'
-  | 'rr-ink-slick'
-  | 'rr-bubble-shield'
-  | 'rr-seeker-jelly'
-  | 'rr-tide-wave'
-  | 'rr-whirlpool';
+/**
+ * impl-audit M1 — `ReefPowerUpKind` lives in `@clawville/shared` so the
+ * client-facing protocol's `event.power_up_collected.kind` field can narrow
+ * to the same union (was `string`). Re-exported here so server code that
+ * already imports `from './reef-race-config'` keeps working unchanged.
+ *
+ * A new kind MUST be added in the shared `protocol.ts` definition first;
+ * the server union below derives from it so any drift fails to compile.
+ */
+import type { ReefPowerUpKind as SharedReefPowerUpKind } from '@clawville/shared';
+export type ReefPowerUpKind = SharedReefPowerUpKind;
 
 export interface ReefPowerUpDef {
   kind: ReefPowerUpKind;

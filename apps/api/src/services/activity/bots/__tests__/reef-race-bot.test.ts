@@ -576,4 +576,214 @@ describe('ReefRaceBot — Phase 2 heuristics (P2-T30..P2-T34)', () => {
     void ys;
     expect(true).toBe(true); // smoke pass — no exception is the assertion
   });
+
+  it('P2-T35-bot — ribbon-aware steering: bot dir pulls toward a nearby ribbon (impl-audit S6)', () => {
+    // Place a synthetic ribbon 80wu off the bot's checkpoint axis (forward but
+    // off-center). Bot should bias dir TOWARD the ribbon when it's available
+    // and NOT bias when it isn't.
+    const checkpoints = buildReefCheckpoints();
+
+    type Pt = { x: number; y: number };
+    function ribbonView(opts: {
+      withRibbons: boolean;
+      bot: ReturnType<typeof createReefRaceBot>;
+    }): BotRoomView & {
+      nextCheckpoint?: number;
+      checkpoints?: typeof checkpoints;
+      ribbons?: ReadonlyArray<{ id: string; a: Pt; b: Pt }>;
+    } {
+      // Pick a non-hairpin checkpoint so the apex bias doesn't fire.
+      const targetIdx = 1;
+      const cp = checkpoints[targetIdx];
+      // Bot at origin, target ahead. Place a synthetic ribbon segment off
+      // to the side of the bot's straight-line path so a bias is detectable.
+      const dir = { x: cp.center.x, y: cp.center.y };
+      const dlen = Math.hypot(dir.x, dir.y) || 1;
+      const fx = dir.x / dlen;
+      const fy = dir.y / dlen;
+      // Perpendicular for the lateral offset.
+      const px = -fy;
+      const py = fx;
+      // Ribbon segment 100wu ahead of bot, offset 60wu to the +perp side.
+      // 60wu < BOT_RIBBON_LOOKAHEAD_WU (150) and the segment is in the
+      // forward cone (cos(angle) ≈ cos(31°) ≈ 0.86 ≥ 0.5).
+      const midX = fx * 100 + px * 60;
+      const midY = fy * 100 + py * 60;
+      const ribbonHalfLen = 30;
+      const ribbon = {
+        id: 'rib-test',
+        a: { x: midX - fx * ribbonHalfLen, y: midY - fy * ribbonHalfLen },
+        b: { x: midX + fx * ribbonHalfLen, y: midY + fy * ribbonHalfLen },
+      };
+      void opts.bot;
+      return {
+        selfPetId: 'bot-self',
+        bodies: [
+          {
+            petId: 'bot-self',
+            x: 0, y: 0,
+            // Move toward checkpoint so forward cone aligns.
+            vx: fx * 250, vy: fy * 250,
+            rot: 0,
+            alive: true,
+            inventory: [
+              { kind: null, charges: 0, cooldownUntil: 0 },
+              { kind: null, charges: 0, cooldownUntil: 0 },
+            ],
+            lap: 0,
+            nextCheckpoint: targetIdx,
+            currentPlacement: 4,
+            finishedAt: null,
+            dnf: false,
+          } as any,
+        ],
+        arenaRadius: 2000,
+        now: 5_000,
+        matchStartedAt: 0,
+        nextCheckpoint: targetIdx,
+        checkpoints,
+        ribbons: opts.withRibbons ? [ribbon] : [],
+      };
+    }
+
+    // Build a unit perp vector matching the helper above so we can project
+    // dir samples onto it and see the lateral pull.
+    const cp = checkpoints[1];
+    const dlen = Math.hypot(cp.center.x, cp.center.y);
+    const fx = cp.center.x / dlen;
+    const fy = cp.center.y / dlen;
+    const perpX = -fy;
+    const perpY = fx;
+
+    // Sample bot dir over many trials with FRESH bots — each trial mounts the
+    // launch attempted flag so the launch early-return doesn't fire.
+    const TRIALS = 100;
+    let perpSumWith = 0;
+    let perpSumWithout = 0;
+    for (let trial = 0; trial < TRIALS; trial++) {
+      const botWith = createReefRaceBot('bot-self');
+      (botWith as any).launchAttempted = true;
+      const intentWith = botWith.computeInput(ribbonView({ withRibbons: true, bot: botWith }), 1 / 30);
+      perpSumWith += intentWith.dir!.x * perpX + intentWith.dir!.y * perpY;
+    }
+    for (let trial = 0; trial < TRIALS; trial++) {
+      const botWithout = createReefRaceBot('bot-self');
+      (botWithout as any).launchAttempted = true;
+      const intentWithout = botWithout.computeInput(ribbonView({ withRibbons: false, bot: botWithout }), 1 / 30);
+      perpSumWithout += intentWithout.dir!.x * perpX + intentWithout.dir!.y * perpY;
+    }
+    const avgPerpWith = perpSumWith / TRIALS;
+    const avgPerpWithout = perpSumWithout / TRIALS;
+    // With ribbons, average dir should be biased toward the ribbon (positive
+    // perp). Without, it should average near the un-biased target dir
+    // (perp ≈ 0 ± jitter). Lower bound on the gap is the ribbon-pull
+    // magnitude minus jitter.
+    expect(avgPerpWith).toBeGreaterThan(avgPerpWithout + 0.05);
+    // Bot also shouldn't fully abandon forward motion — sanity bound.
+    expect(avgPerpWith).toBeLessThan(0.6);
+  });
+
+  it('P2-T35-bot-coverage — ribbon-aware bot gets meaningfully closer to the ribbon than ribbon-blind bot', () => {
+    // Drive each bot for a 1s straight-line approach near a ribbon centerline
+    // and measure the MINIMUM segment-distance achieved during the run. The
+    // aware bot should get measurably closer (its dir bias pulls the path
+    // toward the ribbon centerline) — overlap ("collected") is too noisy to
+    // assert directly because path geometry depends on the random jitter,
+    // but minimum-distance is a reliable proxy for "the steering bias works".
+    const checkpoints = buildReefCheckpoints();
+
+    type Pt = { x: number; y: number };
+    interface Ribbon { id: string; a: Pt; b: Pt }
+
+    function segDist(p: Pt, r: Ribbon): number {
+      const sx = r.b.x - r.a.x;
+      const sy = r.b.y - r.a.y;
+      const segLenSq = sx * sx + sy * sy;
+      if (segLenSq <= 0) return Infinity;
+      const px = p.x - r.a.x;
+      const py = p.y - r.a.y;
+      let t = (px * sx + py * sy) / segLenSq;
+      if (t < 0) t = 0; else if (t > 1) t = 1;
+      const cx = r.a.x + sx * t;
+      const cy = r.a.y + sy * t;
+      return Math.hypot(p.x - cx, p.y - cy);
+    }
+
+    function runBot(withRibbons: boolean): number {
+      const targetIdx = 1;
+      const cp = checkpoints[targetIdx];
+      const dlen = Math.hypot(cp.center.x, cp.center.y);
+      const fx = cp.center.x / dlen;
+      const fy = cp.center.y / dlen;
+      const perpX = -fy;
+      const perpY = fx;
+      // Ribbon 100wu ahead of bot, offset 40wu to the +perp side.
+      const midX = fx * 100 + perpX * 40;
+      const midY = fy * 100 + perpY * 40;
+      const ribbon: Ribbon = {
+        id: 'rib-test',
+        a: { x: midX - fx * 30, y: midY - fy * 30 },
+        b: { x: midX + fx * 30, y: midY + fy * 30 },
+      };
+      const bot = createReefRaceBot('bot-self');
+      (bot as any).launchAttempted = true;
+      let x = 0, y = 0;
+      let vx = fx * 250, vy = fy * 250;
+      let minDist = Infinity;
+      const TICKS = 30;
+      for (let i = 0; i < TICKS; i++) {
+        const view: BotRoomView & {
+          nextCheckpoint?: number;
+          checkpoints?: typeof checkpoints;
+          ribbons?: ReadonlyArray<Ribbon>;
+        } = {
+          selfPetId: 'bot-self',
+          bodies: [
+            {
+              petId: 'bot-self',
+              x, y, vx, vy, rot: 0, alive: true,
+              inventory: [
+                { kind: null, charges: 0, cooldownUntil: 0 },
+                { kind: null, charges: 0, cooldownUntil: 0 },
+              ],
+              lap: 0,
+              nextCheckpoint: targetIdx,
+              currentPlacement: 4,
+              finishedAt: null,
+              dnf: false,
+            } as any,
+          ],
+          arenaRadius: 2000,
+          now: 5_000,
+          matchStartedAt: 0,
+          nextCheckpoint: targetIdx,
+          checkpoints,
+          ribbons: withRibbons ? [ribbon] : [],
+        };
+        const intent = bot.computeInput(view, 1 / 30);
+        vx = intent.dir!.x * 250;
+        vy = intent.dir!.y * 250;
+        x += vx * (1 / 30);
+        y += vy * (1 / 30);
+        const d = segDist({ x, y }, ribbon);
+        if (d < minDist) minDist = d;
+      }
+      return minDist;
+    }
+
+    // Average over multiple trials to dampen the per-tick jitter (0.08).
+    const TRIALS = 30;
+    let awareSumMin = 0;
+    let blindSumMin = 0;
+    for (let i = 0; i < TRIALS; i++) {
+      awareSumMin += runBot(true);
+      blindSumMin += runBot(false);
+    }
+    const awareAvgMin = awareSumMin / TRIALS;
+    const blindAvgMin = blindSumMin / TRIALS;
+    // Aware bot gets measurably closer. Conservative lift requirement: at
+    // least 5wu closer on average (ribbon pull weight is 0.30 over a ~30-tick
+    // approach window; observed lift in practice is much larger).
+    expect(awareAvgMin).toBeLessThan(blindAvgMin - 5);
+  });
 });

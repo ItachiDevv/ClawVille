@@ -28,6 +28,28 @@ export const vec2Schema = z.object({
 });
 export type Vec2 = z.infer<typeof vec2Schema>;
 
+/**
+ * Reef Race power-up kinds — string-literal union mirroring the server-side
+ * `ReefPowerUpKind` in `apps/api/src/services/activity/sim/reef-race-config.ts`.
+ * Lives in @clawville/shared so the protocol's `event.power_up_collected.kind`
+ * (impl-audit M1) can narrow it to the legitimate set rather than `string`,
+ * blocking any future server change from silently writing rogue kinds into
+ * the client-side inventory.
+ *
+ * Phase 2 (impl-audit M1): `event.power_up_collected.kind` is now typed
+ * `ReefPowerUpKind` (was `string`).
+ *
+ * If a new kind is added on the server, ADD IT HERE in the same diff or the
+ * type will fail to compile — that's the intended fence.
+ */
+export type ReefPowerUpKind =
+  | 'rr-turbo-bubble'
+  | 'rr-ink-slick'
+  | 'rr-bubble-shield'
+  | 'rr-seeker-jelly'
+  | 'rr-tide-wave'
+  | 'rr-whirlpool';
+
 // ─── Client → Server ────────────────────────────────────────────────────────
 
 export const clientAuthFrameSchema = z.object({
@@ -263,8 +285,13 @@ export type ServerFrame =
        * Phase 2 — kind of the item placed into inventory. May differ from the
        * spawn-time kind when the placement-aware re-roll fires (audit C2 fix).
        * Old clients silently drop this field. `undefined` on Phase 1 servers.
+       *
+       * impl-audit M1: narrowed from `string` to `ReefPowerUpKind` so a
+       * rogue server can't slip an unknown string into the client inventory
+       * slot. Old Phase 1 servers omit this field — `?` keeps backward
+       * compat with the Phase 1 broadcast shape.
        */
-      kind?: string;
+      kind?: ReefPowerUpKind;
     }
   | {
       /**

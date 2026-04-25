@@ -1569,10 +1569,21 @@ describe('ReefRaceSim — Phase 2 audit-gap tests (P2-T36..P2-T42)', () => {
     expect(speed).toBeLessThanOrEqual(REEF_MAX_SPEED * 0.5 * LAUNCH_STALL_THRUST_CAP * 1.1);
   });
 
-  it('P2-T40 — drift-3 + hazard → 0.98×, +turbo → 1.00× (audit G8 + C4/C5 fix)', () => {
-    // Drift-3 + hazard (no turbo): asymptote near REEF_MAX_SPEED * 0.98.
+  it('P2-T40 — drift-3 + hazard → 0.98×, +turbo → 1.00× (audit G8 + C4/C5 fix, impl-audit S7 tightened)', () => {
+    // Asymptotic-velocity check at thrust=1.0. integrateMotion applies drag
+    // (REEF_DRAG = 0.97) AFTER each tick so the steady-state SPEED is
+    //   v_eq = REEF_MAX_SPEED * speedMod * REEF_DRAG
+    // not REEF_MAX_SPEED * speedMod. We back the speedMod out by dividing
+    // by REEF_DRAG before comparing.
+    //
+    // impl-audit S7: original bound `< 1.05× baseline` would have passed
+    // even with the v1 bug that erased hazard slow (1.00×). Tightened to
+    // ±0.002 so the test FAILS if the bug ever returns:
+    //   - v2 (correct):  drift-3 (+0.38) + hazard (-0.40) → 0.98×
+    //   - v1 (buggy):    Math.max erased hazard → 1.00× (FAILS the bound)
     captureBroadcasts();
     const { body } = bootDriftRoom({ vx: 0, vy: 300 });
+    const REEF_DRAG = 0.97; // mirrors reef-race-config.ts
     body.activeBoosts.set('drift-boost', {
       expiresAt: Date.now() + 30_000,
       mult: DRIFT_BOOST_MULTS[2],
@@ -1596,11 +1607,14 @@ describe('ReefRaceSim — Phase 2 audit-gap tests (P2-T36..P2-T42)', () => {
       reefRaceSim.__tickOnceForTest('room-drift');
     }
     const speedNoTurbo = Math.hypot(body.vx, body.vy);
-    // Asymptote near 490; allow generous slack.
-    expect(speedNoTurbo).toBeGreaterThan(REEF_MAX_SPEED * 0.85);
-    expect(speedNoTurbo).toBeLessThan(REEF_MAX_SPEED * 1.05);
+    const inferredSpeedModNoTurbo = speedNoTurbo / (REEF_MAX_SPEED * REEF_DRAG);
+    // Drift-3 (+0.38) + hazard (-0.40) → kineticDelta = -0.02 → speedMod = 0.98.
+    // v1 BUG (hazard erased by Math.max with positive) would yield 1.00× — must FAIL here.
+    expect(inferredSpeedModNoTurbo).toBeGreaterThan(0.978);
+    expect(inferredSpeedModNoTurbo).toBeLessThan(0.982);
 
-    // Now add turbo — should approach REEF_MAX_SPEED * 1.0.
+    // Now add turbo — turbo +0.40 wins positive slot vs drift +0.38 via Math.max,
+    // hazard -0.40 lives in negative slot, kineticDelta = 0.40 - 0.40 = 0.00 → 1.00×.
     body.activeEffects.set('rr-turbo-bubble', Date.now() + 30_000);
     for (let i = 0; i < 60; i++) {
       body.activeEffects.set('rr-turbo-bubble', Date.now() + 30_000);
@@ -1617,9 +1631,9 @@ describe('ReefRaceSim — Phase 2 audit-gap tests (P2-T36..P2-T42)', () => {
       reefRaceSim.__tickOnceForTest('room-drift');
     }
     const speedTurbo = Math.hypot(body.vx, body.vy);
-    // Asymptote near REEF_MAX_SPEED * 1.0 (turbo +0.40 wins positive slot,
-    // hazard -0.40 in negative slot, net 0.0 → 1.0×).
-    expect(speedTurbo).toBeGreaterThan(REEF_MAX_SPEED * 0.85);
+    const inferredSpeedModTurbo = speedTurbo / (REEF_MAX_SPEED * REEF_DRAG);
+    expect(inferredSpeedModTurbo).toBeGreaterThan(0.998);
+    expect(inferredSpeedModTurbo).toBeLessThan(1.002);
     void REEF_BOOST_MULT;
   });
 
@@ -1669,5 +1683,64 @@ describe('ReefRaceSim — Phase 2 audit-gap tests (P2-T36..P2-T42)', () => {
     void APEX_OUTSIDE_OFFSET;
     void HAZARD_INSIDE_OFFSET;
     void REEF_BODY_RADIUS;
+  });
+
+  // ─── Phase 2 (impl-audit S4) — snapshot bandwidth ceiling ────────────────
+  //
+  // P2-T35 — assert Phase 2 keeps the per-second broadcast budget under the
+  // documented frontend-spec ceiling. Phase 2 added per-tick `placement`
+  // hoist into snapshot deltas + edge-triggered events (slipstream,
+  // ribbon_collected, apex_verdict, hazard_hit) — the worry is that the
+  // delta size growth is unbounded.
+  //
+  // Budget rationale (from frontend-spec § snapshot bandwidth):
+  //   - 8 players × 5Hz snapshot rate = 40 entity deltas / sec
+  //   - target ~2KB / snapshot at 8 players (post-Phase-2)
+  //   - 5Hz × 2KB = 10KB / sec / room sustained
+  //   - 30s match → 300KB sustained payload
+  //   - + edge events (slipstream, ribbon, apex, hazard) at conservative
+  //     20 events/sec across 8 players = 600 events × ~100 bytes = 60KB
+  //   - => total budget = 360KB over 30s; we set the ceiling at 600KB to
+  //     allow burst growth and still catch a 2× regression.
+  //
+  // Sized as JSON byte length of every broadcast frame to mirror the
+  // wire-format cost the WebSocket actually pays.
+  it('P2-T35 — 30s 8-player simulation stays under broadcast bandwidth ceiling', () => {
+    const { broadcasts } = captureBroadcasts();
+    const petIds = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8'];
+    const state = bootMultiBodyRoom(petIds);
+    // Drive 30s of simulation = 30 * REEF_SIM_HZ ticks = 900 ticks.
+    const TICKS = 30 * REEF_SIM_HZ;
+    for (let i = 0; i < TICKS; i++) {
+      // Plant each body in a different position with a steady velocity so
+      // the snapshot delta has non-zero entity changes most ticks (worst-
+      // case bandwidth, not best-case).
+      let idx = 0;
+      for (const petId of petIds) {
+        const body = state.bodies.get(petId)!;
+        body.vx = 200 + (idx % 4) * 30;
+        body.vy = 200 - (idx % 3) * 20;
+        idx++;
+        setIntent(body, { dir: { x: 0.5, y: 0.5 }, thrust: 0.85 });
+      }
+      reefRaceSim.__tickOnceForTest('room-p2');
+    }
+    let totalBytes = 0;
+    let snapshotDeltas = 0;
+    let eventFrames = 0;
+    for (const frame of broadcasts) {
+      totalBytes += JSON.stringify(frame).length;
+      if (frame.type === 'snapshot.delta') snapshotDeltas++;
+      else if (frame.type.startsWith('event.')) eventFrames++;
+    }
+    // Ceiling: 600KB / 30s / 8 players.
+    const CEILING_BYTES = 600 * 1024;
+    expect(totalBytes).toBeLessThan(CEILING_BYTES);
+    // Lower bound — sanity: must have actually broadcast something. Prevents a
+    // future regression where broadcasts are silently dropped (test would
+    // otherwise pass trivially at 0 bytes).
+    expect(totalBytes).toBeGreaterThan(10_000);
+    expect(snapshotDeltas).toBeGreaterThan(100); // 30s @ 5Hz ≈ 150
+    void eventFrames;
   });
 });

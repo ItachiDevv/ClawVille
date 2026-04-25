@@ -1148,6 +1148,15 @@ class ReefRaceSim {
     nextCheckpoint?: number;
     /** Centerline points for the 12 checkpoints — bots use these for steering. */
     checkpoints?: ReefCheckpointAabb[];
+    /**
+     * Phase 2 (impl-audit S6, M4) — server-authoritative static zones so the
+     * bot can ribbon-steer and hazard-avoid against ACTUAL geometry, not the
+     * old `APEX_INSIDE_OFFSET * 0.73` approximation. Same shape as
+     * `getStaticZones` / `RoomMeta.reefStaticZones`. Read-only references —
+     * the bot must never mutate.
+     */
+    ribbons?: ReadonlyArray<{ id: string; a: Vec2; b: Vec2 }>;
+    hazards?: ReadonlyArray<{ id: string; center: Vec2; radius: number }>;
   } {
     const placementMap = state.lastPlacementMap;
     const bodies = Array.from(state.bodies.values()).map((b) => ({
@@ -1181,6 +1190,11 @@ class ReefRaceSim {
       matchStartedAt: state.startedAt,
       nextCheckpoint: self?.nextCheckpoint ?? 1,
       checkpoints: state.checkpoints,
+      // Phase 2 (impl-audit S6, M4) — read-only references. Bot must NOT
+      // mutate. These let the bot opportunistically steer through ribbons
+      // and dodge actual hazards rather than approximating from APEX offsets.
+      ribbons: state.ribbons,
+      hazards: state.hazards,
     };
   }
 

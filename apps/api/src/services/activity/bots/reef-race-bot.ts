@@ -32,6 +32,8 @@ import {
   APEX_INSIDE_OFFSET,
   SLIPSTREAM_MAX_DISTANCE,
   type ReefCheckpointAabb,
+  type ReefBoostRibbon,
+  type ReefHazardPatch,
 } from '../sim/reef-race-config';
 
 const POWERUP_USE_CHANCE = 0.3;
@@ -87,7 +89,36 @@ interface ReefBotRoomView extends Omit<BotRoomView, 'bodies'> {
   nextCheckpoint?: number;
   checkpoints?: ReefCheckpointAabb[];
   bodies: ReefBotBody[];
+  /**
+   * Phase 2 (impl-audit S6, M4) — server-authoritative static zones. Read-only.
+   * `ribbons` lets the bot opportunistically steer through boost ribbons
+   * (plan §8.2 — previously skipped, see audit S6). `hazards` lets the bot
+   * dodge actual urchin centers instead of an APEX-derived approximation
+   * that drifts when the placement formula retunes (audit M4).
+   */
+  ribbons?: ReadonlyArray<Pick<ReefBoostRibbon, 'id' | 'a' | 'b'>>;
+  hazards?: ReadonlyArray<Pick<ReefHazardPatch, 'id' | 'center' | 'radius'>>;
 }
+
+/**
+ * Phase 2 (impl-audit S6) — ribbon-aware steering tuning.
+ *
+ * The bot scans ribbons within `BOT_RIBBON_LOOKAHEAD_WU` of self that lie in
+ * its forward cone (cos(angle) ≥ `BOT_RIBBON_FORWARD_COS`). If found, the
+ * dir vector blends `BOT_RIBBON_PULL_WEIGHT` toward the nearest ribbon point.
+ *
+ * Lookahead 150wu = ~0.5s of cruise travel — long enough to commit, short
+ * enough that the bot doesn't lock onto a ribbon halfway across the track.
+ * Forward cone cos(60°) = 0.5 — wider than draft cone (cos(30°)) because
+ * ribbons are static targets, not moving targets.
+ * Pull weight 0.30 = same magnitude as the apex-inside pull, so a hairpin
+ * apex still wins when both fire (apex check runs after ribbon — see order
+ * in computeInput). Net effect: bots collect ribbons on the long straights
+ * but don't sacrifice apex line through hairpins.
+ */
+const BOT_RIBBON_LOOKAHEAD_WU = 150;
+const BOT_RIBBON_FORWARD_COS = 0.5;
+const BOT_RIBBON_PULL_WEIGHT = 0.30;
 
 class ReefRaceBot implements BotController {
   readonly activityId = 'reef-race';
@@ -270,32 +301,81 @@ class ReefRaceBot implements BotController {
       this.lineMode = 'mid';
     }
 
+    // ── Phase 2 (impl-audit S6) — ribbon-aware steering ──
+    //    Opportunistically blend the dir vector toward the nearest boost ribbon
+    //    that lies in the bot's forward cone within BOT_RIBBON_LOOKAHEAD_WU.
+    //    Bots run after grace + after apex so a hairpin apex pull ALWAYS beats
+    //    a ribbon pull; ribbons live on the long straights so the two zones
+    //    don't overlap in practice. Without this, plan §8.2 was unimplemented
+    //    and bots collected ribbons only by accident on the centerline path.
+    if (!inGrace) {
+      const ribbon = this.pickRibbonTarget(view, self, dx, dy);
+      if (ribbon) {
+        const rdx = ribbon.x - self.x;
+        const rdy = ribbon.y - self.y;
+        const rlen = Math.hypot(rdx, rdy) || 1;
+        dx = dx * (1 - BOT_RIBBON_PULL_WEIGHT) + (rdx / rlen) * BOT_RIBBON_PULL_WEIGHT;
+        dy = dy * (1 - BOT_RIBBON_PULL_WEIGHT) + (rdy / rlen) * BOT_RIBBON_PULL_WEIGHT;
+        const mr = Math.hypot(dx, dy) || 1;
+        dx /= mr;
+        dy /= mr;
+      }
+    }
+
     // ── Phase 2 — hazard avoidance: bias AWAY from hazard centers ahead.
     //    Hazards are colocated near hairpin apex inside lines, so bots that
     //    take the inside line will naturally clip them — opt out via this
-    //    cheap proximity check. We can't see hazards through the view today
-    //    (server doesn't project them onto BotRoomView), so we approximate
-    //    by treating the hairpin "inside line" itself as the hazard center
-    //    when the target is a hairpin. Same heuristic as resolveHazards.
-    if (!inGrace && isHairpinTarget) {
-      const hzX = target.center.x + target.normal.x * APEX_INSIDE_OFFSET * 0.73; // ~60wu inside
-      const hzY = target.center.y + target.normal.y * APEX_INSIDE_OFFSET * 0.73;
-      const hdx = hzX - self.x;
-      const hdy = hzY - self.y;
-      const hdist = Math.hypot(hdx, hdy);
-      if (hdist > 0 && hdist < 60) {
-        // Ahead-of-self check: positive dot vs self velocity (or vs dir if
-        // velocity is too small).
-        const refX = speed > 1 ? self.vx : dx;
-        const refY = speed > 1 ? self.vy : dy;
-        const refMag = Math.hypot(refX, refY) || 1;
-        const ahead = (hdx * refX + hdy * refY) / refMag;
-        if (ahead > 0) {
+    //    cheap proximity check.
+    //
+    //    impl-audit M4 fix: read ACTUAL hazards from the projected view rather
+    //    than approximating with `APEX_INSIDE_OFFSET * 0.73`. Old approximation
+    //    silently drifted off the actual hazard center if HAZARD_INSIDE_OFFSET
+    //    retuned. Falls back to the approximation if `view.hazards` is absent
+    //    (test harnesses that don't fill the field).
+    if (!inGrace) {
+      const hazardCenters = view.hazards;
+      if (hazardCenters && hazardCenters.length > 0) {
+        // Nearest-hazard check — typically only 2 hazards on the track so
+        // O(N) is fine. Bias away if within (radius + 30wu) reaction band.
+        for (const haz of hazardCenters) {
+          const hdx = haz.center.x - self.x;
+          const hdy = haz.center.y - self.y;
+          const hdist = Math.hypot(hdx, hdy);
+          if (hdist <= 0) continue;
+          const reactionRange = haz.radius + 30;
+          if (hdist >= reactionRange) continue;
+          // Ahead-of-self check.
+          const refX = speed > 1 ? self.vx : dx;
+          const refY = speed > 1 ? self.vy : dy;
+          const refMag = Math.hypot(refX, refY) || 1;
+          const ahead = (hdx * refX + hdy * refY) / refMag;
+          if (ahead <= 0) continue;
           dx -= (hdx / hdist) * 0.10;
           dy -= (hdy / hdist) * 0.10;
           const m4 = Math.hypot(dx, dy) || 1;
           dx /= m4;
           dy /= m4;
+        }
+      } else if (isHairpinTarget) {
+        // Legacy approximation path — only fires when view.hazards is absent
+        // (test harnesses). Same numbers as before the M4 fix.
+        const hzX = target.center.x + target.normal.x * APEX_INSIDE_OFFSET * 0.73;
+        const hzY = target.center.y + target.normal.y * APEX_INSIDE_OFFSET * 0.73;
+        const hdx = hzX - self.x;
+        const hdy = hzY - self.y;
+        const hdist = Math.hypot(hdx, hdy);
+        if (hdist > 0 && hdist < 60) {
+          const refX = speed > 1 ? self.vx : dx;
+          const refY = speed > 1 ? self.vy : dy;
+          const refMag = Math.hypot(refX, refY) || 1;
+          const ahead = (hdx * refX + hdy * refY) / refMag;
+          if (ahead > 0) {
+            dx -= (hdx / hdist) * 0.10;
+            dy -= (hdy / hdist) * 0.10;
+            const m4 = Math.hypot(dx, dy) || 1;
+            dx /= m4;
+            dy /= m4;
+          }
         }
       }
     }
@@ -407,6 +487,56 @@ class ReefRaceBot implements BotController {
   private getOwnPlacement(view: ReefBotRoomView): number | null {
     const self = view.bodies.find((b) => b.petId === this.petId);
     return self?.currentPlacement ?? null;
+  }
+
+  /**
+   * Phase 2 (impl-audit S6) — find the nearest boost ribbon worth steering
+   * toward. A ribbon counts when its closest segment-point is:
+   *
+   *   1. within `BOT_RIBBON_LOOKAHEAD_WU` of self,
+   *   2. in the bot's forward cone (cos(angle) ≥ `BOT_RIBBON_FORWARD_COS`),
+   *      where forward is the current dir vector (post-draft, post-apex —
+   *      already biased toward the next checkpoint),
+   *   3. on the same side as forward motion (positive dot vs ref vector).
+   *
+   * Returns `{x, y}` of the closest segment-point on the chosen ribbon, or
+   * `null` if no ribbon qualifies. We intentionally aim at the segment-
+   * closest-point, not the segment midpoint, so a bot already centered on
+   * a ribbon doesn't oscillate left-right toward a fixed midpoint.
+   */
+  private pickRibbonTarget(
+    view: ReefBotRoomView,
+    self: ReefBotBody,
+    forwardDx: number,
+    forwardDy: number,
+  ): { x: number; y: number } | null {
+    if (!view.ribbons || view.ribbons.length === 0) return null;
+    const fmag = Math.hypot(forwardDx, forwardDy) || 1;
+    let best: { x: number; y: number; dist: number } | null = null;
+    for (const r of view.ribbons) {
+      // Project self onto segment a→b, clamp t to [0, 1] for closest-point.
+      const sx = r.b.x - r.a.x;
+      const sy = r.b.y - r.a.y;
+      const segLenSq = sx * sx + sy * sy;
+      if (segLenSq <= 0) continue;
+      const px = self.x - r.a.x;
+      const py = self.y - r.a.y;
+      let t = (px * sx + py * sy) / segLenSq;
+      if (t < 0) t = 0; else if (t > 1) t = 1;
+      const cx = r.a.x + sx * t;
+      const cy = r.a.y + sy * t;
+      const ddx = cx - self.x;
+      const ddy = cy - self.y;
+      const dist = Math.hypot(ddx, ddy);
+      if (dist <= 0 || dist > BOT_RIBBON_LOOKAHEAD_WU) continue;
+      // Forward-cone check vs current dir (already biased toward checkpoint).
+      const cosAngle = (ddx * forwardDx + ddy * forwardDy) / (dist * fmag);
+      if (cosAngle < BOT_RIBBON_FORWARD_COS) continue;
+      if (!best || dist < best.dist) {
+        best = { x: cx, y: cy, dist };
+      }
+    }
+    return best ? { x: best.x, y: best.y } : null;
   }
 }
 
