@@ -200,7 +200,12 @@ class NpcSimulation {
     this.initNpcs();
     if (arenaMode) this.initRounds();
     console.log(`[NPC Simulation] Starting in ${arenaMode ? 'arena' : 'world'} mode with ${this.npcs.size} NPCs`);
-    this.intervalId = setInterval(() => this.tick(), 500);
+    // Tick rate 200ms (5Hz). 2026-04-25: bumped from 500ms because client lerp
+    // produced visible burst-stop pattern between snapshots — at 2Hz the client
+    // converged ~70% in 500ms then sat for 100ms+ waiting for the next update.
+    // 5Hz with proportionally smaller per-tick deltas (baseStep 110 → 44)
+    // keeps total speed constant but motion reads as continuous, not stepped.
+    this.intervalId = setInterval(() => this.tick(), 200);
   }
 
   switchMode(arenaMode: boolean) {
@@ -886,11 +891,11 @@ class NpcSimulation {
   }
 
   private moveNpcs() {
-    // 2026-04-24: baseStep 20 → 70 → 110. Server ticks at 2Hz (500ms), so 110
-    // yields 220 wu/s on the 5120 map — ~run pace. Previous 70 still felt
-    // slow per user. 110 × 0.5 = 55 wu/snapshot so client lerp (LERP_SPEED=5)
-    // has a visible step between snapshots without "teleporting".
-    const baseStep = this.arenaMode ? (14 + Math.random() * 4) * this.arenaSettings.moveSpeed : 110;
+    // World-mode baseStep × tickRate = wu/s.
+    // 2026-04-25: tick rate moved 2Hz → 5Hz, baseStep scaled 110 → 44 to keep
+    // speed at 220 wu/s (44 / 0.2s = 220). Smaller per-tick deltas = smoother
+    // client lerp = motion reads closer to Nori (who has zero net translation).
+    const baseStep = this.arenaMode ? (14 + Math.random() * 4) * this.arenaSettings.moveSpeed : 44;
 
     for (const npc of this.npcs.values()) {
       if (npc.isDead || npc.inConversation) continue;
