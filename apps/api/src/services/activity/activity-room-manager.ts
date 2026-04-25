@@ -171,8 +171,14 @@ class ActivityRoomManager {
    * LIVE-transition hook registered by the sim dispatcher. Called after
    * the DB update so the sim sees an authoritative `startedAt`. Avoids a
    * hard import of the sim from the manager.
+   *
+   * Phase 3 (audit C2) — signature widened to `Promise<void> | void` so
+   * the matchmaker can `await loadRacingProfiles(...)` BEFORE invoking
+   * `reefRaceSim.startRoom(...)`. Existing sync callers (bumper-shells,
+   * arena) keep returning `void` and `await`-ing `void` is a no-op.
    */
-  private liveTransitionFn: ((room: Room) => void) | null = null;
+  private liveTransitionFn: ((room: Room) => Promise<void> | void) | null =
+    null;
 
   /**
    * Per-room countdown timers. Set when a room transitions into COUNTDOWN
@@ -687,7 +693,7 @@ class ActivityRoomManager {
    * the COUNTDOWN→LIVE FSM transition persists, with the mutable Room
    * so the sim can pull participant petIds without a second lookup.
    */
-  setLiveTransitionFn(fn: (room: Room) => void): void {
+  setLiveTransitionFn(fn: (room: Room) => Promise<void> | void): void {
     this.liveTransitionFn = fn;
   }
 
@@ -842,7 +848,11 @@ class ActivityRoomManager {
     );
     if (this.liveTransitionFn) {
       try {
-        this.liveTransitionFn(room);
+        // Phase 3 (audit C2) — await the hook so Reef Race can pre-load
+        // racing profiles BEFORE startRoom (~1-2 ms blocking on the
+        // Drizzle pool, well below the 33 ms tick budget). Sync callers
+        // (bumper-shells, arena) await `void` — no-op.
+        await this.liveTransitionFn(room);
       } catch (err) {
         console.error('[activity-room-manager] liveTransitionFn threw:', err);
       }

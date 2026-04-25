@@ -231,6 +231,20 @@ export interface ActivityState {
    */
   lastHazardHitAt: number;
 
+  // ── Reef Race Phase 3 — self pet's racing class + level (HUD chip) ─────
+  /**
+   * Phase 3 — racing class derived from `pets.archetype` for the SELF pet,
+   * populated once on `snapshot.init` from
+   * `frame.room.reefRacingProfiles[selfPetId]`. `null` when room is not
+   * Reef Race or the profile map is missing.
+   */
+  selfRacingClass: 'agility' | 'strength' | 'intelligence' | 'balanced' | null;
+  /**
+   * Phase 3 — `pets.level` (1..50) for the SELF pet, populated alongside
+   * `selfRacingClass`. Defaults to 1 when missing.
+   */
+  selfLevel: number;
+
   // ── Writer API ──────────────────────────────────────────────────────────
 
   /** Single switchboard for `useActivityWs` to apply incoming server frames. */
@@ -409,6 +423,8 @@ function emptyState(): Pick<
   | 'lastApexVerdict'
   | 'lastRibbonCollectedAt'
   | 'lastHazardHitAt'
+  | 'selfRacingClass'
+  | 'selfLevel'
 > {
   return {
     entities: new Map(),
@@ -436,6 +452,9 @@ function emptyState(): Pick<
     lastApexVerdict: null,
     lastRibbonCollectedAt: 0,
     lastHazardHitAt: 0,
+    // Phase 3 — Reef Race self-pet build summary (populated on snapshot.init)
+    selfRacingClass: null,
+    selfLevel: 1,
   };
 }
 
@@ -508,6 +527,13 @@ export const useActivityStore = create<ActivityState>()(
         // ── Snapshot init ───────────────────────────────────────────────
         case 'snapshot.init': {
           const hydrated = hydrateFromWorld(frame.world);
+          // Phase 3 — pluck self pet's racing profile from the room map
+          // (S5 wire format). Falls back to (null, 1) so non-Reef rooms
+          // and missing profiles render the chip as neutral / hidden.
+          const selfPetId = state.selfPetId;
+          const profileMap = frame.room.reefRacingProfiles;
+          const myProfile =
+            selfPetId && profileMap ? profileMap[selfPetId] : undefined;
           set({
             room: frame.room,
             entities: hydrated.entities,
@@ -524,6 +550,8 @@ export const useActivityStore = create<ActivityState>()(
             roundEndsAt: frame.room.endsAt ?? null,
             connectionStatus: 'connected',
             errorBanner: null,
+            selfRacingClass: myProfile?.class ?? null,
+            selfLevel: myProfile?.level ?? 1,
           });
           break;
         }
