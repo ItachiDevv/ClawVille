@@ -302,7 +302,19 @@ class ActivityRoomManager {
     const id = this.playerToRoom.get(petId);
     if (!id) return undefined;
     const room = this.rooms.get(id);
-    if (!room || room.state === 'gc' || room.state === 'aborted' || room.state === 'aborted_crash') {
+    // A room is no longer "active" the moment it leaves the play loop.
+    // `results` is included in the not-blocking set: the match is over,
+    // the player has seen the results modal, and they should be able
+    // to re-queue immediately without waiting for the GC sweep. Without
+    // this, a player who closes the tab right after the results screen
+    // gets stuck in queue jail until the next sweeper run + GC tick.
+    if (
+      !room ||
+      room.state === 'results' ||
+      room.state === 'gc' ||
+      room.state === 'aborted' ||
+      room.state === 'aborted_crash'
+    ) {
       this.playerToRoom.delete(petId);
       return undefined;
     }
