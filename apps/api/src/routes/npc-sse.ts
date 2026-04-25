@@ -38,10 +38,21 @@ npcRoutes.get('/stream', (c) => {
       npcSimulation.removeListener(listener);
     });
 
-    // Keep the stream open until client disconnects
-    // Use a long-running loop with sleep
+    // Keep the stream open until client disconnects. Cloudflare resets
+    // idle HTTP/2 streams at ~100s — without periodic bytes the client
+    // surfaces ERR_HTTP2_PROTOCOL_ERROR (status 200, but the stream
+    // frame layer dies). SSE comment lines start with `:` and are
+    // explicitly ignored by EventSource — perfect keep-alive.
     while (true) {
       await stream.sleep(30000);
+      try {
+        await stream.writeSSE({ data: '', event: 'keepalive' });
+      } catch {
+        // Stream closed — listener teardown happens via stream.onAbort
+        // above. Exit the loop so the handler resolves cleanly.
+        npcSimulation.removeListener(listener);
+        return;
+      }
     }
   });
 });

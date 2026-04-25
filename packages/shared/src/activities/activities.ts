@@ -71,8 +71,10 @@ export interface ActivityDefinition {
   queueMinPlayers: number;
   /** Round length in seconds (Bumper = 90; Reef lap-based, target ~110) */
   roundSeconds: number;
-  /** WebP thumbnail path under /public — may 404 until asset ships */
-  thumbnailUrl: string;
+  /** WebP thumbnail path under /public. Omit when art hasn't shipped —
+   *  the UI's ActivityThumbnail gradient fallback covers it. Setting a
+   *  string that 404s is worse (browser stack-trace + console spam). */
+  thumbnailUrl?: string;
   /** Plain-English skill the activity rehearses (portal flavor copy) */
   openclawSkill: string;
   /** Other building ids whose focus category aligns — drives focus bonus */
@@ -150,7 +152,9 @@ export const ACTIVITY_REGISTRY: readonly ActivityDefinition[] = [
     maxPlayers: 8,
     queueMinPlayers: 4,
     roundSeconds: 90,
-    thumbnailUrl: '/images/activities/bumper-shells.webp',
+    // thumbnailUrl omitted until art ships — ActivityThumbnail's gradient
+    // fallback already reads as intentional, and a missing file 404s
+    // every lobby open + spams the console with the Image error stack.
     openclawSkill: 'Request handling under load',
     skillBuildingMatches: ['webhook-gateway'],
     status: 'live',
@@ -165,7 +169,7 @@ export const ACTIVITY_REGISTRY: readonly ActivityDefinition[] = [
     maxPlayers: 8,
     queueMinPlayers: 4,
     roundSeconds: 110,
-    thumbnailUrl: '/images/activities/reef-race.webp',
+    // thumbnailUrl omitted — see bumper-shells comment above.
     openclawSkill: 'Fast, low-latency research loops',
     skillBuildingMatches: ['voice-tower'],
     status: 'live',
