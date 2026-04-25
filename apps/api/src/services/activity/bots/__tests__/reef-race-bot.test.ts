@@ -12,6 +12,8 @@ import { createReefRaceBot } from '../reef-race-bot';
 import type { BotRoomView } from '../bot-controller';
 import {
   buildReefCheckpoints,
+  ACTION_BIT_DRIFT,
+  ACTION_BIT_LAUNCH,
   type ReefPowerUpKind,
 } from '../../sim/reef-race-config';
 
@@ -138,6 +140,169 @@ describe('ReefRaceBot.computeInput', () => {
     for (let i = 0; i < 200; i++) {
       const intent = bot.computeInput(view, 1 / 30);
       expect((intent.actionBits ?? 0) & 0b01).toBe(0);
+    }
+  });
+});
+
+// ─── Phase 1 — Bot drift + launch behaviour (T22–T25) ───────────────────────
+
+describe('ReefRaceBot — Phase 1 launch + drift (T22–T25)', () => {
+  it('T22 — launch attempt bypasses grace thrust cap (audit C5)', () => {
+    const bot = createReefRaceBot('bot-self');
+    // Run repeatedly across the launch jitter range to cover any random
+    // jitter draw; once `view.now >= matchStartedAt + 400` the launch
+    // window is unconditionally over and the bot will have fired.
+    let observedLaunch = false;
+    for (let trial = 0; trial < 50; trial++) {
+      const fresh = createReefRaceBot('bot-self');
+      const checkpoints = buildReefCheckpoints();
+      const view: BotRoomView & { nextCheckpoint?: number; checkpoints?: typeof checkpoints } = {
+        selfAvatarId: 'bot-self',
+        bodies: [
+          {
+            avatarId: 'bot-self',
+            x: 0, y: 0, vx: 0, vy: 0, rot: 0, alive: true,
+            inventory: [
+              { kind: null, charges: 0, cooldownUntil: 0 },
+              { kind: null, charges: 0, cooldownUntil: 0 },
+            ],
+          },
+        ],
+        arenaRadius: 2000,
+        // matchAge = 0 (well inside grace) — but launch fires within the
+        // ±400ms jitter window, so the early-return will trip on most
+        // trials. We only need ONE successful trial across the run to
+        // prove the path bypasses the grace cap.
+        now: 500,
+        matchStartedAt: 500,
+        nextCheckpoint: 1,
+        checkpoints,
+      };
+      // Force the launch to fire NOW by overriding the planned time.
+      // (private field — set via `(bot as any)`).
+      (fresh as any).launchFireMs = view.now - 1;
+      const intent = fresh.computeInput(view, 1 / 30);
+      if ((intent.actionBits ?? 0) & ACTION_BIT_LAUNCH) {
+        // CRITICAL: thrust must be 1.0 (the early-return bypasses
+        // `thrust: inGrace ? 0.4 : thrust`).
+        expect(intent.thrust).toBe(1.0);
+        observedLaunch = true;
+        break;
+      }
+      // Sanity for the trial loop — _bot_ may have suppressed launch this
+      // trial because `launchAttempted` flips after first call. Try again.
+      void bot;
+    }
+    expect(observedLaunch).toBe(true);
+  });
+
+  it('T23 — no drift bit during grace window', () => {
+    const checkpoints = buildReefCheckpoints();
+    const bot = createReefRaceBot('bot-self');
+    // matchStartedAt = 0, now = 500ms (well inside 2.5s grace).
+    const view: BotRoomView & { nextCheckpoint?: number; checkpoints?: typeof checkpoints } = {
+      selfAvatarId: 'bot-self',
+      bodies: [
+        {
+          avatarId: 'bot-self',
+          x: 0, y: 0, vx: 0, vy: 0, rot: 0, alive: true,
+          inventory: [
+            { kind: null, charges: 0, cooldownUntil: 0 },
+            { kind: null, charges: 0, cooldownUntil: 0 },
+          ],
+        },
+      ],
+      arenaRadius: 2000,
+      now: 500,
+      matchStartedAt: 0,
+      nextCheckpoint: 1,
+      checkpoints,
+    };
+    // Mark launch as already attempted so we exercise the post-launch path.
+    (bot as any).launchAttempted = true;
+    (bot as any).launchFireMs = -10;
+    for (let i = 0; i < 100; i++) {
+      const intent = bot.computeInput(view, 1 / 30);
+      expect((intent.actionBits ?? 0) & ACTION_BIT_DRIFT).toBe(0);
+    }
+  });
+
+  it('T24 — uses drift on hairpins (statistical, post-grace)', () => {
+    const checkpoints = buildReefCheckpoints();
+    const bot = createReefRaceBot('bot-self');
+    const target = checkpoints[1];
+    // Place body opposite the next checkpoint so dot < 0.5 + dist > 200.
+    const view: BotRoomView & { nextCheckpoint?: number; checkpoints?: typeof checkpoints } = {
+      selfAvatarId: 'bot-self',
+      bodies: [
+        {
+          avatarId: 'bot-self',
+          // Position behind & moving the wrong way so dot < 0.5.
+          x: -target.center.x,
+          y: -target.center.y,
+          vx: -target.center.x,
+          vy: -target.center.y,
+          rot: 0,
+          alive: true,
+          inventory: [
+            { kind: null, charges: 0, cooldownUntil: 0 },
+            { kind: null, charges: 0, cooldownUntil: 0 },
+          ],
+        },
+      ],
+      arenaRadius: 2000,
+      now: 5_000, // post-grace
+      matchStartedAt: 0,
+      nextCheckpoint: 1,
+      checkpoints,
+    };
+    (bot as any).launchAttempted = true;
+    let driftTicks = 0;
+    const TICKS = 600;
+    for (let i = 0; i < TICKS; i++) {
+      const intent = bot.computeInput(view, 1 / 30);
+      if ((intent.actionBits ?? 0) & ACTION_BIT_DRIFT) driftTicks++;
+    }
+    // Bot averages ~0.6/30 = 2% trigger rate, but once active it holds for
+    // 12-45 ticks. Expect non-trivial drift presence — the threshold is set
+    // low enough to weather the trigger jitter.
+    expect(driftTicks).toBeGreaterThan(TICKS * 0.05);
+  });
+
+  it('T25 — no drift on straights (dot ≥ 0.5)', () => {
+    const checkpoints = buildReefCheckpoints();
+    const bot = createReefRaceBot('bot-self');
+    const target = checkpoints[1];
+    // Place body slightly behind target, moving roughly toward it (dot ≈ 1).
+    const dx = target.center.x;
+    const dy = target.center.y;
+    const len = Math.hypot(dx, dy);
+    const view: BotRoomView & { nextCheckpoint?: number; checkpoints?: typeof checkpoints } = {
+      selfAvatarId: 'bot-self',
+      bodies: [
+        {
+          avatarId: 'bot-self',
+          x: 0, y: 0,
+          vx: (dx / len) * 200,
+          vy: (dy / len) * 200,
+          rot: 0,
+          alive: true,
+          inventory: [
+            { kind: null, charges: 0, cooldownUntil: 0 },
+            { kind: null, charges: 0, cooldownUntil: 0 },
+          ],
+        },
+      ],
+      arenaRadius: 2000,
+      now: 5_000,
+      matchStartedAt: 0,
+      nextCheckpoint: 1,
+      checkpoints,
+    };
+    (bot as any).launchAttempted = true;
+    for (let i = 0; i < 300; i++) {
+      const intent = bot.computeInput(view, 1 / 30);
+      expect((intent.actionBits ?? 0) & ACTION_BIT_DRIFT).toBe(0);
     }
   });
 });

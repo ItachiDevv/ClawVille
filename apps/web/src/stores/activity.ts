@@ -160,6 +160,13 @@ export interface ActivityState {
   matchPhase: BumperMatchPhase;
   countdownSecondsRemaining: number;
   roundEndsAt: number | null;
+  /**
+   * Reef Race Phase 1 — current drift charge tier of the SELF avatar (0..3).
+   * Subscribed by `<DriftSparksBar>` (see `reef-race-drift-sparks.tsx`).
+   * Written by the snapshot.delta caller (NOT inside `applyEntityDelta` —
+   * that helper has no access to selfAvatarId; audit S2 fix).
+   */
+  driftSparks: 0 | 1 | 2 | 3;
 
   // ── HUD-only mirror state ───────────────────────────────────────────────
   /** Active room id this store snapshot belongs to (used by `reset` guard). */
@@ -281,6 +288,12 @@ function applyEntityDelta(map: Map<string, BumperShellEntity>, delta: EntityDelt
       vx: typeof c.vx === 'number' ? c.vx : 0,
       vy: typeof c.vy === 'number' ? c.vy : 0,
       alive: c.state !== 'dead' && c.state !== 'eliminated',
+      // Reef Race Phase 1 (audit S11) — initialise so a first-sighting
+      // body that's already mid-drift doesn't drop the spark tier.
+      driftSparks:
+        typeof c.driftSparks === 'number'
+          ? ((c.driftSparks as 0 | 1 | 2 | 3) ?? 0)
+          : 0,
     });
     return;
   }
@@ -293,6 +306,9 @@ function applyEntityDelta(map: Map<string, BumperShellEntity>, delta: EntityDelt
     ...(typeof c.vy === 'number' ? { vy: c.vy } : {}),
     ...(typeof c.state === 'string'
       ? { alive: c.state !== 'dead' && c.state !== 'eliminated' }
+      : {}),
+    ...(typeof c.driftSparks === 'number'
+      ? { driftSparks: c.driftSparks as 0 | 1 | 2 | 3 }
       : {}),
   });
 }
@@ -350,6 +366,7 @@ function emptyState(): Pick<
   | 'matchPhase'
   | 'countdownSecondsRemaining'
   | 'roundEndsAt'
+  | 'driftSparks'
   | 'placement'
   | 'alive'
   | 'total'
@@ -371,6 +388,7 @@ function emptyState(): Pick<
     matchPhase: 'pregame-countdown',
     countdownSecondsRemaining: 0,
     roundEndsAt: null,
+    driftSparks: 0,
     placement: null,
     alive: 0,
     total: 0,
@@ -479,7 +497,20 @@ export const useActivityStore = create<ActivityState>()(
         // ── Snapshot delta (15 Hz hot path) ─────────────────────────────
         case 'snapshot.delta': {
           const entities = new Map(state.entities);
-          for (const d of frame.entities) applyEntityDelta(entities, d);
+          // Phase 1 (audit S2) — track drift sparks for the self avatar
+          // alongside the per-entity application loop. applyEntityDelta has
+          // no access to selfAvatarId, so the caller hoists the bookkeeping.
+          let nextDriftSparks: 0 | 1 | 2 | 3 = state.driftSparks;
+          for (const d of frame.entities) {
+            applyEntityDelta(entities, d);
+            if (
+              state.selfAvatarId &&
+              d.avatarId === state.selfAvatarId &&
+              typeof d.changed.driftSparks === 'number'
+            ) {
+              nextDriftSparks = d.changed.driftSparks as 0 | 1 | 2 | 3;
+            }
+          }
 
           const pickups = new Map(state.pickups);
           for (const p of frame.powerUps) {
@@ -532,7 +563,14 @@ export const useActivityStore = create<ActivityState>()(
             if (e.alive) alive++;
           });
 
-          set({ entities, pickups, scores, alive, placement });
+          set({
+            entities,
+            pickups,
+            scores,
+            alive,
+            placement,
+            driftSparks: nextDriftSparks,
+          });
           break;
         }
 
@@ -703,6 +741,18 @@ export const useActivityStore = create<ActivityState>()(
 
         case 'error':
           set({ errorBanner: { code: frame.code, message: frame.message } });
+          break;
+
+        // Reef Race Phase 1 — drift-boost release fanout. Phase 1 HUD reads
+        // `driftSparks` (already 0 by the time this event lands), so this
+        // is a no-op here today. Future scene VFX will hook in.
+        case 'event.drift_boost':
+          break;
+
+        // Reef Race Phase 1 — per-avatar launch verdict broadcast at LIVE.
+        // Phase 1 launch glow ring is countdown-driven (local computation
+        // from room.countdownStartedAt), so this is a no-op here today.
+        case 'event.launch':
           break;
 
         default: {

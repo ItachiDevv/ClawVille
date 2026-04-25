@@ -119,6 +119,16 @@ export interface Room {
     maxPlayers: number;
     preferredPlayers: number;
   };
+  /**
+   * Reef Race Phase 1 — pre-launch input buffer for launch detection.
+   * Maps avatarId → last thrust=1.0 input received during COUNTDOWN. Populated
+   * by `recordPreLaunchInput()`; consumed + cleared by `computeLaunchVerdicts()`
+   * at COUNTDOWN→LIVE. Reset to `null` on aborted/aborted_crash transitions.
+   *
+   * `null` = never allocated (no qualifying inputs received OR not a reef-race
+   * room). Stays `null` for non-race activities — no allocation cost.
+   */
+  preLaunchBuffer: Map<string, { timestamp: number; thrust: number }> | null;
 }
 
 // ─── Queue ──────────────────────────────────────────────────────────────────
