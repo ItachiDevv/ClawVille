@@ -206,6 +206,37 @@ export interface ActivityState {
    */
   reefRace: ReefRaceState;
 
+  // ── Reef Race Phase 2 — slipstream + apex + ribbon + hazard ────────────
+  /**
+   * Phase 2 — true while the self pet is actively in another's slipstream.
+   * Set on `event.slipstream`, cleared on `event.slipstream_end` (both
+   * server-driven — no client-side timer needed, audit S4 fix).
+   */
+  slipstreamActive: boolean;
+  /**
+   * Phase 2 — wall-clock millis of the last `event.slipstream` received.
+   * Advisory only — used for diagnostic / Phase 3 fallback timing.
+   * Audit C3 fix: field present so future code can fall back to timeout.
+   */
+  lastSlipstreamEventAt: number;
+  /**
+   * Phase 2 — last apex verdict for the self pet. Replaced (not appended)
+   * on each `event.apex_verdict` arrival; the toast subscribes to this
+   * primitive object reference (a new object fires re-renders).
+   * null until the first apex crossing.
+   */
+  lastApexVerdict: { kind: 'clean' | 'wide'; at: number } | null;
+  /**
+   * Phase 2 — wall-clock millis of the last `event.ribbon_collected`
+   * received for the self pet. 0 = never collected.
+   */
+  lastRibbonCollectedAt: number;
+  /**
+   * Phase 2 — wall-clock millis of the last `event.hazard_hit` received
+   * for the self pet. 0 = never hit.
+   */
+  lastHazardHitAt: number;
+
   // ── Writer API ──────────────────────────────────────────────────────────
 
   /** Single switchboard for `useActivityWs` to apply incoming server frames. */
@@ -380,6 +411,11 @@ function emptyState(): Pick<
   | 'ping'
   | 'chatLog'
   | 'reefRace'
+  | 'slipstreamActive'
+  | 'lastSlipstreamEventAt'
+  | 'lastApexVerdict'
+  | 'lastRibbonCollectedAt'
+  | 'lastHazardHitAt'
 > {
   return {
     entities: new Map(),
@@ -402,6 +438,12 @@ function emptyState(): Pick<
     ping: 0,
     chatLog: [],
     reefRace: { laps: new Map(), selfBestGhostPath: null },
+    // Phase 2 — Reef Race slipstream / apex / ribbon / hazard
+    slipstreamActive: false,
+    lastSlipstreamEventAt: 0,
+    lastApexVerdict: null,
+    lastRibbonCollectedAt: 0,
+    lastHazardHitAt: 0,
   };
 }
 
@@ -698,7 +740,66 @@ export const useActivityStore = create<ActivityState>()(
         case 'event.power_up_collected': {
           const pickups = new Map(state.pickups);
           pickups.delete(frame.spawnId);
-          set({ pickups });
+          // Phase 2 — write the placement-aware collected kind into self's
+          // inventory slot immediately (audit C2 fix). `frame.kind` is only
+          // present on Phase 2 servers; Phase 1 servers omit the field so
+          // we guard with `typeof` before writing.
+          if (
+            state.selfPetId &&
+            frame.collectorPetId === state.selfPetId &&
+            typeof frame.kind === 'string'
+          ) {
+            const next = [...state.powerUpInventory];
+            // Find first empty slot (kind === null) or last slot as fallback.
+            const slot = next.findIndex((s) => s.kind === null);
+            if (slot >= 0) {
+              next[slot] = { kind: frame.kind, charges: 1 };
+              set({ pickups, powerUpInventory: next });
+            } else {
+              set({ pickups });
+            }
+          } else {
+            set({ pickups });
+          }
+          break;
+        }
+
+        // ── Reef Race Phase 2 events ────────────────────────────────────
+
+        case 'event.slipstream': {
+          // Only update HUD state for the self pet.
+          if (state.selfPetId && frame.dstPetId === state.selfPetId) {
+            set({ slipstreamActive: true, lastSlipstreamEventAt: Date.now() });
+          }
+          break;
+        }
+
+        case 'event.slipstream_end': {
+          if (state.selfPetId && frame.dstPetId === state.selfPetId) {
+            set({ slipstreamActive: false });
+          }
+          break;
+        }
+
+        case 'event.apex_verdict': {
+          if (state.selfPetId && frame.petId === state.selfPetId) {
+            // New object reference on every event triggers React re-render in toast.
+            set({ lastApexVerdict: { kind: frame.kind, at: Date.now() } });
+          }
+          break;
+        }
+
+        case 'event.ribbon_collected': {
+          if (state.selfPetId && frame.petId === state.selfPetId) {
+            set({ lastRibbonCollectedAt: Date.now() });
+          }
+          break;
+        }
+
+        case 'event.hazard_hit': {
+          if (state.selfPetId && frame.petId === state.selfPetId) {
+            set({ lastHazardHitAt: Date.now() });
+          }
           break;
         }
 

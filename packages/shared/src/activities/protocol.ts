@@ -127,6 +127,21 @@ export interface RoomMeta {
    * Optional so older clients tolerating its absence aren't broken.
    */
   countdownStartedAt?: number;
+  /**
+   * Phase 2 — server-authoritative Reef Race static-zone positions. `null`
+   * for non-reef-race rooms. Sent once in `snapshot.init`; never updated.
+   * Client builds visual meshes from these so Phase-3 stat tweaks read
+   * from a single source of truth (audit N3).
+   */
+  reefStaticZones?: {
+    ribbons: Array<{ id: string; a: Vec2; b: Vec2 }>;
+    apexZones: Array<{
+      hairpinIndex: number;
+      innerCenter: Vec2;
+      outerCenter: Vec2;
+    }>;
+    hazards: Array<{ id: string; center: Vec2; radius: number }>;
+  };
 }
 
 /** Per-entity delta — only changed fields are transmitted */
@@ -244,6 +259,60 @@ export type ServerFrame =
       type: 'event.power_up_collected';
       spawnId: string;
       collectorPetId: string;
+      /**
+       * Phase 2 — kind of the item placed into inventory. May differ from the
+       * spawn-time kind when the placement-aware re-roll fires (audit C2 fix).
+       * Old clients silently drop this field. `undefined` on Phase 1 servers.
+       */
+      kind?: string;
+    }
+  | {
+      /**
+       * Phase 2 — slipstream verdict START. Fired once when `dstPetId` first
+       * enters `srcPetId`'s wake AND completes SLIPSTREAM_REQUIRED_TICKS hold.
+       * Edge-triggered. NOT broadcast on every tick of being in-wake.
+       */
+      type: 'event.slipstream';
+      srcPetId: string;
+      dstPetId: string;
+    }
+  | {
+      /**
+       * Phase 2 — slipstream verdict END. Fired once when the body's grace
+       * counter runs out and the activeBoosts entry is cleared. Edge-triggered.
+       * Eliminates client-side timer polling (audit S4 fix).
+       */
+      type: 'event.slipstream_end';
+      dstPetId: string;
+    }
+  | {
+      /**
+       * Phase 2 — apex verdict. `kind: 'clean'` = inside line +5%,
+       * `'wide'` = outside line -5%. Fired at most once per (petId, lap,
+       * hairpinIndex). Renamed from event.apex_bonus (audit S1 fix).
+       */
+      type: 'event.apex_verdict';
+      petId: string;
+      hairpinIndex: number;
+      kind: 'clean' | 'wide';
+    }
+  | {
+      /**
+       * Phase 2 — boost ribbon collection. `ribbonId` is 'rib-top' or
+       * 'rib-bot'. HUD may flash; scene fires a sparkle particle burst.
+       */
+      type: 'event.ribbon_collected';
+      petId: string;
+      ribbonId: string;
+    }
+  | {
+      /**
+       * Phase 2 — sea-urchin field clip. Fired once per (petId, lap,
+       * hazardId). activeBoosts handles per-tick speed penalty refresh.
+       */
+      type: 'event.hazard_hit';
+      petId: string;
+      hazardId: string;
     }
   | {
       /**

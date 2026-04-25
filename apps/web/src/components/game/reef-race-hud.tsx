@@ -22,7 +22,9 @@ import { TOTAL_LAPS } from '@/lib/three/activities/reef-race/reef-race-config';
 import ActivityResultsModal from './activity-results-modal';
 import ReefRaceInstructions from './reef-race-instructions';
 import { RoundCountdown } from './activity';
-import ReefRaceDriftSparks from './reef-race-drift-sparks';
+import ReefRaceDriftSparks   from './reef-race-drift-sparks';
+import ReefRaceDraftBadge    from './reef-race-draft-badge';
+import ReefRaceEventToasts   from './reef-race-event-toasts';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -269,6 +271,12 @@ export default function ReefRaceHud({
         <PlacementTile selfPetId={selfPetId} />
         <BestLapTile selfPetId={selfPetId} />
       </div>
+
+      {/* Top-center: Draft (slipstream) badge — Phase 2 */}
+      <ReefRaceDraftBadge />
+
+      {/* Center: Apex verdict + hazard hit + ribbon boost toasts — Phase 2 */}
+      <ReefRaceEventToasts />
 
       {/* Bottom-center: Drift charge sparks (above PowerUpBar) */}
       <ReefRaceDriftSparks />
