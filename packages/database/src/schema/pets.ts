@@ -100,6 +100,15 @@ export const pets = pgTable('pets', {
   gender: petGenderEnum('gender').notNull(),
   /** Selected archetype ID (e.g. 'brave-adventurer') */
   archetype: varchar('archetype', { length: 50 }).notNull(),
+  /**
+   * Phase 6.1 — free-text curriculum focus the human picked at
+   * magic-link time (e.g. "cron jobs", "solana signing", "discord bot").
+   * Appended to the pet's character system prompt so the agent biases
+   * toward the matching building's teacher. Nullable — agents connected
+   * before the column existed have no focus; `buildCharacterConfig`
+   * skips the injection when null.
+   */
+  learningFocus: varchar('learning_focus', { length: 120 }),
   personality: jsonb('personality').$type<PetPersonalityJson>().notNull(),
   stats: jsonb('stats').$type<PetStatsJson>().notNull(),
   /** ElizaOS character config - full archetype data for the pet's AI personality */
