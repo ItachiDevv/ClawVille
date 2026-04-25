@@ -52,7 +52,10 @@ function makeReefView(opts: {
     selfAvatarId: 'bot-self',
     bodies: [makeBody('bot-self', opts.selfPos.x, opts.selfPos.y, opts.selfPos.alive ?? true, opts.inventory)],
     arenaRadius: 2000,
-    now: 1000,
+    // matchAge = now - matchStartedAt = 5000ms, well past the 2.5s
+    // opening grace window, so existing assertions (chase checkpoint,
+    // off-track recovery, power-up fire) run in the post-grace branch.
+    now: 5_000,
     matchStartedAt: 0,
     nextCheckpoint: opts.nextCheckpoint ?? 1,
     checkpoints,
