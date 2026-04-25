@@ -125,6 +125,12 @@ import {
   type ReefApexZone,
   // Phase 2 — placement-weighted item table
   getPlacementItemTable,
+  // Phase 3 — stat-driven body multipliers
+  buildBodyMultipliers,
+  racingClassFromArchetype,
+  type BodyMultipliers,
+  type PetRacingProfile,
+  type RacingClass,
 } from './reef-race-config';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -254,6 +260,32 @@ interface ReefBody {
   // ─── Phase 2 — hazard patches ───────────────────────────────────────────
   /** Set of "${lap}:${hazardId}" entries already broadcast this lap. Cleared on lap-up. */
   hazardsHitThisLap: Set<string>;
+
+  // ─── Phase 3 — pet-stat-driven multipliers (computed once at startRoom) ─
+  /**
+   * Pet-stat-driven per-body multipliers. Read-only after init.
+   *
+   * Always a per-body CLONE (never the global NEUTRAL_BODY_MULTIPLIERS
+   * reference) so a debug helper / future refactor cannot poison the
+   * neutral baseline (audit N4). Builder always returns a fresh object.
+   */
+  mults: BodyMultipliers;
+
+  /**
+   * Pre-computed drift spark thresholds (in ticks), derived once at
+   * startRoom from `mults.driftChargeMult`. Stored as a readonly 3-tuple
+   * so the hot loop (`tickDriftState`) reads three integers instead of
+   * dividing.
+   *
+   *   strength (mult=1.4): [9, 19, 32]   (vs neutral [12, 27, 45])
+   *   neutral  (mult=1.0): [12, 27, 45]
+   *
+   * Math: Math.round(threshold / mult). JS Math.round uses round-half-up
+   * for positive numbers (per ECMA-262 §21.3.2.28), so 12/1.4 = 8.571 → 9,
+   * 27/1.4 = 19.286 → 19, 45/1.4 = 32.143 → 32. Capped via Math.max(1,...)
+   * so an extreme mult cannot collapse the threshold to 0.
+   */
+  driftSparkTicks: readonly [number, number, number];
 }
 
 interface ReefPickupBox {
@@ -305,6 +337,14 @@ interface ReefRoomState {
    * Audit S7 fix.
    */
   lastPlacementMap: Map<string, number>;
+
+  /**
+   * Phase 3 — per-pet (class, level) cache, populated once at startRoom.
+   * Read by `getRacingProfiles()` for the HUD via `RoomMeta.reefRacingProfiles`.
+   * Stamped here (not derived from `body.mults`) so we keep the original
+   * level integer (mults flatten 26-50 into a single accelMult value).
+   */
+  petClassCache: Map<string, { class: RacingClass; level: number }>;
 }
 
 interface ReefSnapshot {
@@ -390,6 +430,14 @@ class ReefRaceSim {
        * very first applyIntentForTick respects the boost/stall.
        */
       launchBoosts?: Map<string, 'boost' | 'stall'>;
+      /**
+       * Phase 3 — per-pet racing profile (level + archetype) for body
+       * multiplier construction. Missing petIds default to neutral (1.0).
+       * Bots default to neutral via `pet-profile-loader.ts`. When the opt
+       * is omitted entirely, every body gets neutral mults (bit-identical
+       * to pre-Phase-3 behavior).
+       */
+      petProfiles?: Map<string, PetRacingProfile>;
     },
   ): ReefRoomState {
     if (this.rooms.has(roomId)) {
@@ -445,6 +493,8 @@ class ReefRaceSim {
       apexZones,
       hazards,
       lastPlacementMap: new Map<string, number>(),
+      // Phase 3 — per-pet (class, level) cache for HUD profile broadcast.
+      petClassCache: new Map<string, { class: RacingClass; level: number }>(),
     };
 
     // Stagger spawn positions on the start straight (just before
@@ -482,6 +532,32 @@ class ReefRaceSim {
           expiresAt: startedAt + LAUNCH_STALL_DURATION_MS,
         });
       }
+
+      // Phase 3 — pet-stat-driven multipliers + pre-computed drift spark
+      // thresholds. Builder always returns a fresh object (audit N4 — never
+      // a shared NEUTRAL_BODY_MULTIPLIERS reference).
+      const profile = opts?.petProfiles?.get(petId) ?? null;
+      const mults = buildBodyMultipliers(profile);
+      const driftSparkTicks: readonly [number, number, number] = [
+        Math.max(1, Math.round(DRIFT_SPARK_TICK_1 / mults.driftChargeMult)),
+        Math.max(1, Math.round(DRIFT_SPARK_TICK_2 / mults.driftChargeMult)),
+        Math.max(1, Math.round(DRIFT_SPARK_TICK_3 / mults.driftChargeMult)),
+      ];
+      // Cache the resolved (class, level) for HUD broadcast — bots are
+      // forced to balanced/L1 (Phase 3 §6 — neutral by design).
+      const cachedClass: RacingClass = profile?.isBot
+        ? 'balanced'
+        : racingClassFromArchetype(profile?.archetype);
+      const cachedLevel =
+        profile?.isBot
+          ? 1
+          : Number.isFinite(profile?.level)
+            ? Math.max(1, Math.floor(profile?.level ?? 1))
+            : 1;
+      state.petClassCache.set(petId, {
+        class: cachedClass,
+        level: cachedLevel,
+      });
 
       state.bodies.set(petId, {
         petId,
@@ -523,6 +599,9 @@ class ReefRaceSim {
         ribbonLastCollectedAt: new Map<string, number>(),
         apexCheckedThisLap: new Set<string>(),
         hazardsHitThisLap: new Set<string>(),
+        // Phase 3 — stat-driven multipliers stamped once at room start.
+        mults,
+        driftSparkTicks,
       });
     });
 
@@ -999,11 +1078,34 @@ class ReefRaceSim {
       }
     }
 
-    // 9. Integrate acceleration toward target.
+    // 9. Integrate acceleration toward target. Phase 3 — agility tightens
+    //    the turn by GREATER acceleration during direction-change ticks
+    //    (cosTheta < 0.97 ≈ angle > 14°). Audit S1: the turn bonus REPLACES
+    //    accelMult via Math.max — does NOT compound — so the worst-case
+    //    per-tick gain is max(1.25, 1.176) = 1.25× (not 1.47×). That keeps
+    //    the worst-case position step under the 2.1 validator tolerance
+    //    (see §5 of `.claude/plans/reef-race-phase3-detailed.md` for math).
     const dvx = targetVx - body.vx;
     const dvy = targetVy - body.vy;
     const dv = Math.hypot(dvx, dvy);
-    const maxStep = REEF_MAX_ACCEL * dt;
+    let maxStep = REEF_MAX_ACCEL * dt * body.mults.accelMult;
+    if (intent.dir && body.mults.turnRadiusMult < 1.0) {
+      const speed = Math.hypot(body.vx, body.vy);
+      if (speed > REEF_MAX_SPEED * 0.10) {
+        // intent.dir is normalized at applyInput time (validateInputBounds);
+        // dirMag fallback guards against a future regression where it isn't.
+        const dirMag = Math.hypot(intent.dir.x, intent.dir.y) || 1;
+        const cosTheta =
+          (body.vx * intent.dir.x + body.vy * intent.dir.y) / (speed * dirMag);
+        if (cosTheta < 0.97) {
+          // S1 fix: REPLACE accelMult with the larger of (accelMult,
+          // 1/turnRadiusMult), don't compound.
+          const turnBonus = 1 / body.mults.turnRadiusMult;
+          maxStep =
+            REEF_MAX_ACCEL * dt * Math.max(body.mults.accelMult, turnBonus);
+        }
+      }
+    }
     const scale = dv === 0 ? 0 : Math.min(1, maxStep / dv);
     body.vx += dvx * scale;
     body.vy += dvy * scale;
@@ -1055,16 +1157,14 @@ class ReefRaceSim {
         body.drift.sparkLevel      = 0;
         body.drift.chargeStartTick = 0;
       } else {
-        // Still charging — advance the spark level.
+        // Still charging — advance the spark level. Phase 3: thresholds
+        // pre-divided by `mults.driftChargeMult` at startRoom and stamped on
+        // `body.driftSparkTicks`. Strength (1.4×) → [9, 19, 32]; neutral
+        // (1.0×) → [12, 27, 45] (bit-identical to pre-Phase-3).
         const elapsed = state.tick - body.drift.chargeStartTick;
+        const [t1, t2, t3] = body.driftSparkTicks;
         body.drift.sparkLevel =
-          elapsed >= DRIFT_SPARK_TICK_3
-            ? 3
-            : elapsed >= DRIFT_SPARK_TICK_2
-              ? 2
-              : elapsed >= DRIFT_SPARK_TICK_1
-                ? 1
-                : 0;
+          elapsed >= t3 ? 3 : elapsed >= t2 ? 2 : elapsed >= t1 ? 1 : 0;
       }
     } else if (justPressed && turning && fastEnough) {
       body.drift.charging        = true;
@@ -1210,7 +1310,23 @@ class ReefRaceSim {
     // a future refactor of integrateMotion can't silently revert to the
     // shared.ts DEFAULT_CLAMP_TOLERANCE (1.15) and start clipping legit
     // boosts.
-    const velCheck = validateReefVelocityDelta(prevV, prevV, dt, REEF_KINEMATIC_TOLERANCE);
+    //
+    // Phase 3 (audit N1) — fixed pre-existing no-op: the validator was
+    // called with `prevV, prevV` (zero delta, never flags). With the
+    // tolerance bumped to 2.1 the velocity validator is now the cheat-
+    // detection backstop for synthetic per-tick velocity jumps. We compare
+    // prevV (velocity AT START of this tick — applyIntentForTick already
+    // ran so the integration step happened, but the legitimate per-tick
+    // delta is bounded by REEF_MAX_ACCEL × dt × 1.25 ≈ 83 wu/s vs the
+    // validator's REEF_MAX_ACCEL × dt × 2.1 ≈ 140 wu/s allowance — leaves
+    // 56 wu/s of headroom to catch tampering).
+    const currV = { x: body.vx, y: body.vy };
+    const velCheck = validateReefVelocityDelta(
+      prevV,
+      currV,
+      dt,
+      REEF_KINEMATIC_TOLERANCE,
+    );
     if (!velCheck.ok) {
       body.vx = velCheck.value.x;
       body.vy = velCheck.value.y;
@@ -1472,7 +1588,13 @@ class ReefRaceSim {
       case 'rr-bubble-shield':
       case 'rr-ink-slick':
       case 'rr-whirlpool':
-        body.activeEffects.set(kind, now + def.effectMs);
+        // Phase 3 — intelligence pickups last 20% longer (effectMs scaled).
+        // Neutral mult=1.0 → identical to legacy. The REEF_BOOST_MULT speed
+        // multiplier on turbo-bubble is unchanged; only DURATION extends.
+        body.activeEffects.set(
+          kind,
+          now + def.effectMs * body.mults.powerUpDurationMult,
+        );
         break;
       case 'rr-tide-wave':
         this.applyTideWave(state, body);
@@ -1503,7 +1625,10 @@ class ReefRaceSim {
       if (dist > radius) continue;
       const speed = Math.hypot(target.vx, target.vy);
       if (speed > 0) {
-        const factor = 0.4 * (1 - dist / radius); // closer = bigger slow
+        // Phase 3 — strength takes 60% of normal knockback (40% reduction).
+        // Neutral mult=1.0 keeps the legacy 0.4 × distFalloff behavior.
+        const factor =
+          0.4 * (1 - dist / radius) * target.mults.knockbackResistMult;
         target.vx *= 1 - factor;
         target.vy *= 1 - factor;
       }
@@ -1545,7 +1670,9 @@ class ReefRaceSim {
     const mag = Math.max(Math.hypot(dx, dy), 1);
     const nx = dx / mag;
     const ny = dy / mag;
-    const impulse = REEF_MAX_SPEED * 0.6;
+    // Phase 3 — strength target takes 60% of the 300 wu/s impulse (180 wu/s).
+    // Neutral mult=1.0 → unchanged 300 wu/s. (audit S3 explicit patch)
+    const impulse = REEF_MAX_SPEED * 0.6 * best.mults.knockbackResistMult;
     best.vx += nx * impulse;
     best.vy += ny * impulse;
     this.broadcastFn(state.roomId, {
@@ -1931,7 +2058,11 @@ class ReefRaceSim {
           self.slipstreamSourcePetId = bestSrc.petId;
           self.slipstreamConsecutiveTicks = 1;
         }
-        self.slipstreamGraceTicksLeft = SLIPSTREAM_GRACE_TICKS;
+        // Phase 3 — agility extends post-leave grace from 6 ticks (200ms)
+        // to 24 ticks (800ms). Neutral classes use the legacy 6 via
+        // body.mults.slipstreamGraceTicks. SLIPSTREAM_REQUIRED_TICKS (the
+        // hold-to-arm time) is unchanged for everyone (audit C3).
+        self.slipstreamGraceTicksLeft = self.mults.slipstreamGraceTicks;
         // Threshold reached → set / refresh boost.
         if (self.slipstreamConsecutiveTicks >= SLIPSTREAM_REQUIRED_TICKS) {
           const wasActive = self.activeBoosts.has('slipstream-boost');
@@ -2001,7 +2132,17 @@ class ReefRaceSim {
         const lastCollect = body.ribbonLastCollectedAt.get(ribbon.id) ?? 0;
         if (now - lastCollect < RIBBON_COLLECTION_COOLDOWN_MS) continue;
         // Segment-distance test: project body onto ribbon.a→ribbon.b.
-        if (!isOnRibbon(body, ribbon)) continue;
+        // Phase 3 — intelligence widens the perpendicular detect band by
+        // 30% (RIBBON_HALF_WIDTH × 1.3 = 45.5 wu vs neutral 35 wu).
+        if (
+          !isOnRibbon(
+            body,
+            ribbon,
+            RIBBON_HALF_WIDTH * body.mults.ribbonDetectMult,
+          )
+        ) {
+          continue;
+        }
         // Collected.
         body.ribbonsCollectedThisLap.add(key);
         body.ribbonLastCollectedAt.set(ribbon.id, now);
@@ -2147,6 +2288,29 @@ class ReefRaceSim {
   }
 
   /**
+   * Phase 3 — accessor for `RoomMeta.reefRacingProfiles`. Emits per-pet
+   * racing class + level so the HUD's archetype tile can show the player
+   * WHY they have the multipliers they have (S5 fix: room-wide one-shot
+   * map, client filters by self petId; ~50 bytes × ≤8 pets = ≤400 bytes).
+   *
+   * Bots are included with `class: 'balanced', level: 1` (they're always
+   * neutral by design — Phase 3 §6).
+   */
+  getRacingProfiles(roomId: string): Record<
+    string,
+    { class: RacingClass; level: number }
+  > | null {
+    const state = this.rooms.get(roomId);
+    if (!state) return null;
+    const out: Record<string, { class: RacingClass; level: number }> = {};
+    for (const body of state.bodies.values()) {
+      const cached = state.petClassCache.get(body.petId);
+      out[body.petId] = cached ?? { class: 'balanced', level: 1 };
+    }
+    return out;
+  }
+
+  /**
    * Phase 2 — accessor for `RoomMeta.reefStaticZones`. Emits the server-
    * authoritative ribbon / apex / hazard positions so the client builds
    * visual meshes from the same source-of-truth (audit N3).
@@ -2223,6 +2387,7 @@ function emptyReefInventory(): PowerUpInventorySlot[] {
 function isOnRibbon(
   body: { x: number; y: number },
   ribbon: ReefBoostRibbon,
+  halfWidth: number = RIBBON_HALF_WIDTH,
 ): boolean {
   const ax = ribbon.a.x;
   const ay = ribbon.a.y;
@@ -2243,7 +2408,7 @@ function isOnRibbon(
   const ex = body.x - projX;
   const ey = body.y - projY;
   const perpSq = ex * ex + ey * ey;
-  return perpSq <= RIBBON_HALF_WIDTH * RIBBON_HALF_WIDTH;
+  return perpSq <= halfWidth * halfWidth;
 }
 
 export const reefRaceSim = new ReefRaceSim();

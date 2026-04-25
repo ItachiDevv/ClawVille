@@ -350,7 +350,83 @@ export async function issueRewardsForRoom(
     });
   }
 
+  // Phase 3 (§6, §10) — bot-winrate-by-level-bucket telemetry. Single
+  // event per finished reef-race room. Powers the Phase 3.5 graduation
+  // gate ("if bots lose 95%+ to level 26-49 / 50 humans, level-match
+  // bots"). Without this hook the Phase 3.5 deferral is open-loop —
+  // violates the no-scaffolding-theater rule.
+  if (room.activityId === 'reef-race' && issued.length > 0) {
+    void emitReefRaceBotWinrateEvent(room, issued);
+  }
+
   return issued;
+}
+
+/**
+ * Phase 3 — race-end telemetry. Bucket the highest-level human in the
+ * room and report whether a human took first vs how many bots finished
+ * ahead. Fire-and-forget — fetch failure is logged + swallowed.
+ *
+ * Event payload schema mirrors `.claude/plans/reef-race-phase3-detailed.md`
+ * §6: `{ roomId, humanLevelBucket, humanFinished, humanFinishedFirst,
+ * botCount, botFinishedAhead }`.
+ */
+async function emitReefRaceBotWinrateEvent(
+  room: Room,
+  issued: IssuedResult[],
+): Promise<void> {
+  try {
+    const humanResults = issued.filter((r) => r.subjectType !== 'bot');
+    const botResults = issued.filter((r) => r.subjectType === 'bot');
+    if (humanResults.length === 0) return; // bot-only room, no signal
+    // Pull levels for human petIds — bots are skipped (always L1).
+    const humanPetIds = humanResults.map((r) => r.petId);
+    const levelRows = await db
+      .select({ id: pets.id, level: pets.level })
+      .from(pets)
+      .where(inArrayWhitelist(pets.id, humanPetIds));
+    let highestLevel = 1;
+    for (const row of levelRows) {
+      const lvl = typeof row.level === 'number' ? row.level : 1;
+      if (lvl > highestLevel) highestLevel = lvl;
+    }
+    const bucket = bucketLevelForBotWinrate(highestLevel);
+    // Top placement (lowest placement number) among humans.
+    const humanTopPlacement = humanResults.reduce(
+      (lo, r) => (r.placement < lo ? r.placement : lo),
+      Number.POSITIVE_INFINITY,
+    );
+    const humanFinishedFirst = humanTopPlacement === 1;
+    const botFinishedAhead = botResults.filter(
+      (r) => r.placement < humanTopPlacement,
+    ).length;
+    void logEvent({
+      eventType: 'reef_race.bot_winrate.by_level_bucket',
+      payload: {
+        roomId: room.id,
+        humanLevelBucket: bucket,
+        humanFinished: humanResults.length,
+        humanFinishedFirst,
+        botCount: botResults.length,
+        botFinishedAhead,
+      },
+    });
+  } catch (err) {
+    console.error(
+      '[reward-pipeline] reef_race.bot_winrate emit failed:',
+      err,
+    );
+  }
+}
+
+function bucketLevelForBotWinrate(
+  level: number,
+): '1-10' | '11-25' | '26-49' | '50' {
+  const lvl = Number.isFinite(level) ? Math.max(1, Math.floor(level)) : 1;
+  if (lvl >= 50) return '50';
+  if (lvl >= 26) return '26-49';
+  if (lvl >= 11) return '11-25';
+  return '1-10';
 }
 
 /**

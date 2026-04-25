@@ -164,6 +164,23 @@ export interface RoomMeta {
     }>;
     hazards: Array<{ id: string; center: Vec2; radius: number }>;
   };
+  /**
+   * Phase 3 — Reef Race per-pet racing profile. Class is derived from
+   * `pets.archetype` (4-bucket mapping); level is from `pets.level` (1..50).
+   * Sent ONCE in `snapshot.init`; never updated. Bots are included with
+   * `class: 'balanced', level: 1` (always neutral, Phase 3 §6).
+   *
+   * S5 fix: room-wide one-shot map (~50 bytes × ≤8 pets = ≤400 bytes).
+   * Client filters by self petId for the HUD's archetype tile. Empty /
+   * missing on non-reef-race rooms.
+   */
+  reefRacingProfiles?: Record<
+    string,
+    {
+      class: 'agility' | 'strength' | 'intelligence' | 'balanced';
+      level: number;
+    }
+  >;
 }
 
 /** Per-entity delta — only changed fields are transmitted */
