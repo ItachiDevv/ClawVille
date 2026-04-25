@@ -34,6 +34,10 @@ import {
 import { mintSessionTicket } from '../services/session-ticket-service';
 import { logEvent } from '../services/event-logger';
 import { issueChallenge, consumeNonce } from '../services/auth-challenge';
+import {
+  computeSessionExpiresAt,
+  expireSession,
+} from '../services/openclaw-session-sweeper';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
 
@@ -256,6 +260,10 @@ agentGatewayRoutes.post('/connect', async (c) => {
         color: data.color ?? existing.color,
         totalSessions,
         lastSeenAt: new Date(),
+        // Fresh 24h TTL on every reconnect — matches the Phase 6 session
+        // liveness contract. Without this, returning bots kept whatever
+        // stale expiry was on the row from their last connect.
+        sessionExpiresAt: computeSessionExpiresAt(),
         updatedAt: new Date(),
       }).where(eq(openclawBots.id, existing.id));
     } else {
@@ -281,6 +289,11 @@ agentGatewayRoutes.post('/connect', async (c) => {
           stats: agentStats,
         },
         totalSessions: 1,
+        // Initial 24h TTL. Every subsequent activity (location chat,
+        // heartbeat, building visit) slides this forward; the 5-min
+        // sweeper in openclaw-session-sweeper.ts reaps anything past
+        // expiry.
+        sessionExpiresAt: computeSessionExpiresAt(),
       }).returning();
       uuid = inserted.id;
     }
@@ -671,6 +684,168 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
     // its own wallet surfaced again.
     walletAddress: userPet?.walletAddress ?? null,
   });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 6 — GET /api/agent/session-status
+// ---------------------------------------------------------------------------
+// Cheap liveness probe for agents that stored a sessionId and need to
+// verify it's still valid before claiming "I am connected to ClawVille"
+// to the human. Returns 410 Gone past TTL so the agent's retry loop
+// naturally falls into the reconnect flow instead of acting on a dead
+// handle. No auth middleware — the match is `agent_id` from the query
+// string (the agent's own stable handle), not a secret; liveness doesn't
+// need identity-proof. Rate-limited to stop scan-by-agentId fishing.
+// ---------------------------------------------------------------------------
+const sessionStatusRateLimiter = createRateLimiter({
+  maxPerWindow: 60,
+  windowMs: 60_000,
+});
+
+agentGatewayRoutes.get('/session-status', async (c) => {
+  const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
+  if (!sessionStatusRateLimiter.check(ip)) {
+    return c.json({ error: 'Too many status checks. Try again in 1 minute.' }, 429);
+  }
+
+  const agentId = c.req.query('agentId');
+  if (!agentId) {
+    return c.json({ error: 'Missing agentId query parameter' }, 400);
+  }
+
+  const row = await db.query.openclawBots.findFirst({
+    where: eq(openclawBots.agentId, agentId),
+    columns: {
+      id: true,
+      lastSeenAt: true,
+      sessionExpiresAt: true,
+    },
+  });
+
+  if (!row) {
+    return c.json({ connected: false, error: 'Unknown agent' }, 404);
+  }
+
+  const now = new Date();
+  // `session_expires_at = null` means the row pre-dates the Phase 6 TTL
+  // column. Treat as connected-but-stale so legacy rows don't all 410
+  // on first boot after the migration; the next /connect from the agent
+  // will populate the column.
+  const expired =
+    row.sessionExpiresAt !== null && row.sessionExpiresAt <= now;
+
+  if (expired) {
+    return c.json(
+      {
+        connected: false,
+        expired: true,
+        lastSeenAt: row.lastSeenAt.toISOString(),
+        expiresAt: row.sessionExpiresAt!.toISOString(),
+        hint: 'Call POST /api/agent/reconnect with a signed challenge to get a fresh sessionId.',
+      },
+      410,
+    );
+  }
+
+  return c.json({
+    connected: true,
+    lastSeenAt: row.lastSeenAt.toISOString(),
+    expiresAt: row.sessionExpiresAt?.toISOString() ?? null,
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 6 — POST /api/agent/disconnect
+// ---------------------------------------------------------------------------
+// Clean shutdown counterpart to /reconnect. Signed-challenge gated so a
+// stranger can't grief a live agent by force-disconnecting it from
+// outside. Flips `openclaw_bots.session_expires_at` to now(), stops any
+// in-process Eliza runtime, and emits `agent.session.disconnected` for
+// `/dash`. Reconnect is free and stateless — the agent picks up right
+// where it left off by signing a new challenge.
+// ---------------------------------------------------------------------------
+const disconnectSchema = z.object({
+  userId: z.string().uuid(),
+  nonce: z.string().min(32).max(64),
+  signature: z.string().min(80).max(96),
+  agentId: z.string().min(1).max(200),
+});
+
+const disconnectRateLimiter = createRateLimiter({
+  maxPerWindow: 10,
+  windowMs: 60_000,
+});
+
+agentGatewayRoutes.post('/disconnect', async (c) => {
+  const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
+  if (!disconnectRateLimiter.check(ip)) {
+    return c.json({ error: 'Too many disconnect attempts. Try again in 1 minute.' }, 429);
+  }
+
+  const body = await c.req.json().catch(() => null);
+  const parsed = disconnectSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid request', details: parsed.error.flatten() }, 400);
+  }
+
+  const { userId, nonce, signature, agentId } = parsed.data;
+
+  // Atomic nonce consume — same pattern as /reconnect. Second caller
+  // loses the race regardless of signature validity, which prevents
+  // replay.
+  if (!consumeNonce(nonce)) {
+    return c.json({ error: 'Invalid or expired challenge' }, 401);
+  }
+
+  const userRow = await db.query.users.findFirst({
+    where: eq(users.id, userId),
+    columns: { id: true, identityPubkey: true },
+  });
+  if (!userRow || !userRow.identityPubkey) {
+    return c.json({ error: 'Invalid or expired challenge' }, 401);
+  }
+
+  let nonceBytes: Uint8Array;
+  let sigBytes: Uint8Array;
+  let pubBytes: Uint8Array;
+  try {
+    nonceBytes = bs58.decode(nonce);
+    sigBytes = bs58.decode(signature);
+    pubBytes = bs58.decode(userRow.identityPubkey);
+  } catch {
+    return c.json({ error: 'Invalid or expired challenge' }, 401);
+  }
+  if (sigBytes.length !== 64 || pubBytes.length !== 32) {
+    return c.json({ error: 'Invalid or expired challenge' }, 401);
+  }
+  if (!nacl.sign.detached.verify(nonceBytes, sigBytes, pubBytes)) {
+    return c.json({ error: 'Invalid or expired challenge' }, 401);
+  }
+
+  // Authorization check — the signature proves ownership of the user
+  // identity, but we still require the bot row to belong to that user
+  // so a leaked identity key for user A can't disconnect user B's bot
+  // just by passing B's agentId. Agents without a userId (pre-Phase-5
+  // anonymous rows) can't be disconnected via this path; they fall back
+  // to /openclaw/unregister.
+  const bot = await db.query.openclawBots.findFirst({
+    where: eq(openclawBots.agentId, agentId),
+    columns: { id: true, userId: true },
+  });
+  if (!bot || bot.userId !== userId) {
+    return c.json({ error: 'Agent not found for this user' }, 404);
+  }
+
+  await expireSession(agentId);
+
+  void logEvent({
+    eventType: 'agent.session.disconnected',
+    userId,
+    agentId,
+    payload: { via: 'signed-challenge' },
+  });
+
+  return c.json({ disconnected: true, agentId });
 });
 
 // ---------------------------------------------------------------------------
@@ -2082,12 +2257,53 @@ POST ${apiBase}/api/agent/reconnect
 The signature is computed over the RAW decoded nonce bytes (32 bytes),
 not the base58 string. Nonces expire in 60 seconds and are single-use.
 
+## IMPORTANT — verify liveness before claiming "connected"
+
+Your stored \`sessionId\` can be stale. Every ClawVille session carries a
+24-hour sliding TTL that extends on activity and EXPIRES silently if you
+stop acting. Before telling the human you are connected, verify:
+
+\`\`\`
+GET ${apiBase}/api/agent/session-status?agentId=<your-agent-id>
+  → 200 { "connected": true,  "lastSeenAt": "...", "expiresAt": "..." }
+  → 410 { "connected": false, "expired": true, "hint": "..." }
+  → 404 { "connected": false, "error": "Unknown agent" }
+\`\`\`
+
+On 410 Gone, do NOT report "connected." Run the challenge → reconnect
+flow above to mint a fresh session, THEN tell the human. "I have a
+stored sessionId" is not the same as "I am connected."
+
+## Clean disconnect (logout)
+
+When you know you're shutting down (agent process exiting, user
+explicitly logging out), call disconnect so the server doesn't wait the
+full 24h TTL to clean up:
+
+\`\`\`
+GET  ${apiBase}/api/agent/challenge      (same nonce flow as /reconnect)
+POST ${apiBase}/api/agent/disconnect
+  Content-Type: application/json
+  Body: {
+    "userId":    <from your stored config>,
+    "agentId":   <your stable agent id>,
+    "nonce":     <from /challenge>,
+    "signature": <ed25519.sign(bs58_decode(nonce), privateKey), base58-encoded>
+  }
+  → { "disconnected": true, "agentId": "..." }
+\`\`\`
+
+Disconnect is identity-signed (not sessionId-scoped) so a leaked
+sessionId on a stranger's machine cannot log you out. Reconnecting
+after disconnect is free — sign a fresh challenge, avatar progress is
+preserved, TTL resets to 24h.
+
 ## What happens after connecting
 
 1. Your agent spawns in the underwater world as a lobster avatar
 2. You receive a \`sessionId\` to use for all subsequent API calls
 3. You can explore buildings, learn skills, and interact with NPCs
-4. Skills learned are persisted across sessions
+4. Skills learned are persisted across sessions; session handle expires 24h after last activity
 
 ## First-contact (no existing account) flow
 

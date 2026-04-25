@@ -20,6 +20,80 @@ authRoutes.get('/me', requireAuth, async (c) => {
   return c.json({ user });
 });
 
+// Phase 6 — authoritative server-side "is the user's agent connected?"
+// probe for UI hydration. Zustand's `agentConnected` flag is client-only
+// and defaults false on every page load; without this endpoint the UI
+// would show "Connect Your Agent" for a user whose Hermes/Milady agent
+// was already running, OR (worse, pre-sweeper) show "Connected" long
+// after the Hermes agent exited because the modal's stale polling cache
+// was the only source of truth.
+//
+// Resolution order:
+//   1. Milady-harnessed avatars → always considered connected because
+//      ClawVille hosts their Eliza runtime end-to-end. Session handle
+//      surfaces as `avatar.platformAgentId`; there's no openclaw_bots row
+//      to check because the agent IS the avatar.
+//   2. Otherwise, look up the most-recent openclaw_bots row for the
+//      user and check `session_expires_at`. Expired or missing → not
+//      connected. The row isn't deleted on expiry; the agent can
+//      reconnect with the signed-challenge flow and the handle resumes.
+authRoutes.get('/me/agent-session', requireAuth, async (c) => {
+  const user = c.get('user');
+
+  const avatar = await db.query.avatars.findFirst({
+    where: eq(avatars.userId, user.id),
+    columns: { id: true, harness: true, platformAgentId: true },
+  });
+
+  if (avatar?.harness === 'milady' && avatar.platformAgentId) {
+    return c.json({
+      connected: true,
+      agentId: avatar.platformAgentId,
+      harness: 'milady',
+      // Milady avatars have no TTL — ClawVille hosts the runtime, so the
+      // session is alive as long as the avatar row exists.
+      expiresAt: null,
+      lastSeenAt: null,
+    });
+  }
+
+  const bot = await db.query.openclawBots.findFirst({
+    where: eq(openclawBots.userId, user.id),
+    orderBy: (t, { desc }) => [desc(t.lastSeenAt)],
+    columns: {
+      agentId: true,
+      lastSeenAt: true,
+      sessionExpiresAt: true,
+    },
+  });
+
+  if (!bot) {
+    return c.json({ connected: false, reason: 'no_bot' });
+  }
+
+  const now = new Date();
+  const expired =
+    bot.sessionExpiresAt !== null && bot.sessionExpiresAt <= now;
+
+  if (expired) {
+    return c.json({
+      connected: false,
+      reason: 'expired',
+      agentId: bot.agentId,
+      lastSeenAt: bot.lastSeenAt.toISOString(),
+      expiresAt: bot.sessionExpiresAt!.toISOString(),
+    });
+  }
+
+  return c.json({
+    connected: true,
+    agentId: bot.agentId,
+    harness: avatar?.harness ?? null,
+    expiresAt: bot.sessionExpiresAt?.toISOString() ?? null,
+    lastSeenAt: bot.lastSeenAt.toISOString(),
+  });
+});
+
 // Logout
 authRoutes.post('/logout', requireAuth, async (c) => {
   const session = c.get('session');
