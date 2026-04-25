@@ -929,8 +929,27 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
       currentTerrainY.current += (terrainY - currentTerrainY.current) * 0.3;
     }
 
-    // VRM feet are at Y=0 per spec — no pivot offset needed.
-    group.position.y = currentTerrainY.current;
+    // Jump + bob support for the possessed player NPC (PLAYER_NPC_ID, controlMode='npc').
+    // Mirrors GLBNpcMesh lines 592-605 exactly, with two differences:
+    //   1. No `- pivotOffsetY` — VRM feet are at Y=0 per spec; no pivot correction needed.
+    //   2. No `+ 2` baseline — player-avatar.tsx VRM branch (line 402) confirms VRM feet
+    //      sit flush on currentTerrainY with no extra offset. GLB needs +2 because its
+    //      pivot may be above the feet, but VRM's Y=0 is already the floor contact point.
+    // Bob frequency (4.0) and amplitude (0.6) match GLBNpcMesh so jump feels identical
+    // whether the player NPC is rendered as GLB or VRM.
+    const isPossessedPlayerNpc =
+      d.id === PLAYER_NPC_ID &&
+      useGameStore.getState().controlMode === 'npc';
+    // 'charging' keeps the NPC on the ground (heightOffset=0), so it is not airborne.
+    // playerAltitude > 0 means swimming above the ocean floor — also airborne.
+    const airborne = isPossessedPlayerNpc &&
+                     (jumpState.phase !== 'grounded' && jumpState.phase !== 'charging'
+                   || jumpState.playerAltitude > 0);
+    const jumpY = isPossessedPlayerNpc
+      ? (jumpState.heightOffset + jumpState.playerAltitude)
+      : 0;
+    const bob = (isMoving && !airborne) ? Math.sin(clock.elapsedTime * 4.0 + seed) * 0.6 : 0;
+    group.position.y = currentTerrainY.current + bob + jumpY;
 
     // Facing: compute continuous rotation from actual per-frame velocity rather
     // than the server's discrete 'up'/'down'/'left'/'right' direction. The
