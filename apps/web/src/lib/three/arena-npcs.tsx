@@ -33,12 +33,12 @@ import { anchorInFrontOfCamera } from '@/lib/three/utils/camera-cull';
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 // LERP_SPEED controls how fast currentPos catches up to targetPos from server.
-// 5 = exponential 92% convergence per 500ms snapshot window → client BURSTS
-// forward then STOPS waiting for next snapshot. That accelerate-decelerate
-// pattern is what whipped hair spring bones (visible as "hair out of sync").
-// 2.5 = 71% convergence per 500ms — smoother continuous motion, ~22wu of lag
-// which is imperceptible against 110wu server step.
-const LERP_SPEED = 2.5;
+// 2026-04-25: server ticks at 5Hz (200ms) with baseStep=44 → 8.8wu per snapshot.
+// LERP_SPEED=1.5 means exp(-1.5·0.2) = 0.74 → 26% convergence per snapshot.
+// Steady-state lag = 8.8/0.26 ≈ 34wu (about 0.7 m at world scale), not visible.
+// What IS visible is the smoothness — small per-tick delta + slow lerp = no
+// burst-stop pattern, motion reads as continuous like Nori (who is static).
+const LERP_SPEED = 1.5;
 // TARGET_NPC_HEIGHT: desired world-unit height for wandering NPCs.
 // Previously NPC_SCALE=50 was a flat multiplier applied to all species; measured
 // heights were 30-36 wu because species GLBs have native heights of 0.6-0.7 units
