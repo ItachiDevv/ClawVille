@@ -9,6 +9,7 @@ import { consumeTicket } from '../services/session-ticket-service';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import type { AppContext } from '../types';
 import { z } from 'zod';
+import { DEFAULT_AGENT_MODEL_KEY } from '@clawville/shared';
 
 export const authRoutes = new Hono<AppContext>();
 
@@ -492,7 +493,7 @@ async function insertGuestPet(
           // by other checks in the chat surfaces, not enforced here).
           clawTokens: 100,
           isActive: true,
-          modelKey: 'lobster',
+          modelKey: DEFAULT_AGENT_MODEL_KEY,
           agentCategory: 'openclaw',
           harness: 'milady',
           isGuest: true,

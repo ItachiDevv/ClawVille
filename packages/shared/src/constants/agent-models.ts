@@ -117,7 +117,12 @@ export const AGENT_MODEL_KEYS: readonly AgentModelKey[] = AGENT_MODELS.map(
 // landmine if the registry were ever reordered. Now it's derived from
 // the keyed constant below and asserts at module-load that the key
 // exists.
-export const DEFAULT_AGENT_MODEL_KEY: AgentModelKey = 'lobster';
+// 2026-04-25: switched default from 'lobster' to 'milady_official_1' so newly
+// connected agents render as a Milady VRM (the world's signature avatar) rather
+// than a red lobster. Existing avatars keep whatever modelKey they were created
+// with — this only affects new agents whose payload omits modelKey, and the
+// guest avatar seed in auth.ts (which uses this constant via DEFAULT_AGENT_MODEL).
+export const DEFAULT_AGENT_MODEL_KEY: AgentModelKey = 'milady_official_1';
 export const DEFAULT_AGENT_CATEGORY: AgentCategory = 'openclaw';
 export const DEFAULT_AGENT_HARNESS: AgentHarness = 'milady';
 
