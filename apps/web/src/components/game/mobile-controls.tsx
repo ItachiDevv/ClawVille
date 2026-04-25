@@ -19,9 +19,10 @@ export default function MobileControls() {
   // Explore mode = pure spectator with no character — no movement joystick, no building entry
   const isExplore = controlMode === 'explore';
 
-  // Left joystick — movement (WASD equivalent). Hidden in explore mode (camera-only spectator).
+  // Left joystick — movement/pan. In explore mode it drives the free-roam spectator
+  // camera via WASDCameraController (World3DCanvas.tsx) reading joystickVelocity.
   useEffect(() => {
-    if (!isMobile || movementFrozen || isExplore || !leftContainerRef.current) {
+    if (!isMobile || movementFrozen || !leftContainerRef.current) {
       if (leftJoystickRef.current) {
         leftJoystickRef.current.destroy();
         leftJoystickRef.current = null;
@@ -69,7 +70,7 @@ export default function MobileControls() {
         useGameStore.getState().setJoystickVelocity(0, 0);
       }
     };
-  }, [isMobile, movementFrozen, isExplore]);
+  }, [isMobile, movementFrozen]);
 
   // Right joystick — camera orbit (arrow key equivalent)
   useEffect(() => {
@@ -137,8 +138,8 @@ export default function MobileControls() {
       className="fixed bottom-0 left-0 z-40 pointer-events-none"
       style={{ width: '100vw', height: '220px' }}
     >
-      {/* Left joystick zone — movement (hidden in explore mode: camera-only spectator) */}
-      {!movementFrozen && !isExplore && (
+      {/* Left joystick zone — movement / explore-mode camera pan */}
+      {!movementFrozen && (
         <div
           ref={leftContainerRef}
           className="absolute pointer-events-auto"

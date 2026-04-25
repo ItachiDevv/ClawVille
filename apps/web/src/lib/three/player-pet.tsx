@@ -352,13 +352,12 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
     let continuousRot: number | null = null;
     if (vx !== 0 || vy !== 0) {
       dir = Math.abs(vx) > Math.abs(vy) ? (vx > 0 ? 'right' : 'left') : (vy > 0 ? 'down' : 'up');
-      // VRM faces -Z. Math: R_y(θ) applied to (0,0,-1) = (-sinθ, 0, -cosθ).
-      // For that to point at (vx, 0, vy), need sinθ = -vx, cosθ = -vy, i.e.
-      // θ = atan2(-vx, -vy). Old formula atan2(vx, -vy) was 180° wrong on
-      // east/west/diagonals; invisible here only because the 3rd-person camera
-      // orbits with the player (back-of-pet view hides the error). Corrected
-      // to match arena-npcs.tsx 2026-04-24.
-      continuousRot = Math.atan2(-vx, -vy);
+      // VRM facing — Milady VRMs in this project are rigged with Mixamo bones
+      // facing -Z natively (opposite of VRM 0.x spec). rotateVRM0 over-rotates,
+      // so body world-forward at rotation θ = (sin θ, cos θ). For body forward
+      // to equal velocity (vx, vy=z): θ = atan2(vx, vy). Verified live via
+      // dot-product probe + arrow screenshot 2026-04-25. Match arena-npcs.tsx.
+      continuousRot = Math.atan2(vx, vy);
     }
     store.setMovementDirection(dir as any);
 

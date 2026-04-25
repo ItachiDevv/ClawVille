@@ -152,14 +152,16 @@ function loadVRM(path: string): Promise<VRM> {
       // no skeleton-graph mutation).
       VRMUtils.removeUnnecessaryVertices(vrm.scene);
 
-      // Prune finger / toe / face bones that the game never animates.
-      // VRoid VRMs ship with a full avatar skeleton; unused joints still pay
-      // skeleton.update() cost every frame even when no clips reference them.
-      // VRMUtils.removeUnnecessaryJoints drops these while preserving all
-      // mandatory humanoid bones — safe for Mixamo retarget which only drives
-      // the core 54-bone set. Reduces bone count 20-40% on typical VRoid exports.
-      // (B3 2026-04-24)
-      VRMUtils.removeUnnecessaryJoints(vrm.scene);
+      // Joint pruning intentionally DROPPED 2026-04-25.
+      // VRMUtils.removeUnnecessaryJoints is deprecated by pixiv. Their
+      // "use combineSkeletons instead" recommendation is misleading — those
+      // are different operations (combineSkeletons merges meshes and orphans
+      // raw humanoid bones, see comment above). The deprecated joint-prune
+      // function still works but emits a console.warn on every load.
+      // The perf benefit it provided (~20-40% bone reduction → ~0.1ms/frame
+      // across 5 VRMs) is small enough that a clean console is the better
+      // tradeoff. If joint pruning becomes a real perf problem later, port
+      // pixiv's pre-deprecation function locally instead of calling theirs.
 
       // Normalise facing: VRM 0.x faces +Z at rest; rotateVRM0 adds π on scene
       // so it faces -Z, matching VRM 1.0 convention.

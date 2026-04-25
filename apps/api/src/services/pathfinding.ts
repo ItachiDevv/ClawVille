@@ -21,13 +21,12 @@ export interface PathNode {
  *  pathfinding blocks the visual footprint AND keeps a buffer so NPCs don't
  *  walk right up to the wall and stop there.
  *
- *  2026-04-24: bumped 9 → 14. At pad=9, Miladys were clustering pressed
- *  against the Pineapple House and other buildings per user screenshot —
- *  A* routes them to the exclusion edge which happens to be 1-2 tiles
- *  from the visible wall. Bumping pad to 14 tiles (448 wu) means final
- *  waypoints land well clear of any building geometry. Effective
- *  half-extent = 7+14 = 21 tiles = 672 wu per building. */
-const BUILDING_EXCLUSION_PAD = 14;
+ *  History: 9 (default) → 14 (Apr 24, NPCs were pressing against walls)
+ *  → 11 (Apr 25, user wanted more breathing room without moving buildings).
+ *  Effective half-extent now = 7+11 = 18 tiles = 576 wu per building. The
+ *  hasClearance(margin=3) check in npc-simulation gives final waypoints
+ *  another 3-tile buffer, so visible NPC distance from walls stays safe. */
+const BUILDING_EXCLUSION_PAD = 11;
 
 function buildWalkabilityGrid(): boolean[][] {
   const grid: boolean[][] = [];
