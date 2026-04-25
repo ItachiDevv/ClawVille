@@ -895,7 +895,7 @@ class ReefRaceSim {
     //    ~1033ms, launch ~2033ms. Within the 33ms-tick tolerance and
     //    matches the pre-Phase-1 `activeEffects` sweep timing.
 
-    // 4. Compute speedMod from activeEffects + activeBoosts.
+    // 4. Compute speedMod from activeEffects + activeBoosts (audit C2/S4/S5).
     //    Pickup-only flags (existing):
     const slicked      = body.activeEffects.has('rr-ink-slick');
     const powerBoosted = body.activeEffects.has('rr-turbo-bubble');
