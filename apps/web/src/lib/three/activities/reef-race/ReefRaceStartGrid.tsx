@@ -4,24 +4,21 @@
  * ReefRaceStartGrid.tsx
  *
  * Start pads (InstancedMesh, 1 draw call) + countdown light gantry (4 draw calls)
- * + animated checkered finish flags (TSL MeshBasicNodeMaterial vertex wave).
+ * + static checkered finish flags (MeshBasicMaterial, plain three — TSL wave requires WebGPU).
  *
  * Iris Xe invariants:
- *   - InstancedMesh + MeshStandardMaterial (safe on WebGPU).
- *   - TSL positionNode wave on MeshBasicNodeMaterial (safe on WebGPU; no ShaderMaterial).
+ *   - InstancedMesh + MeshStandardMaterial (plain three, WebGLRenderer compatible).
+ *   - Finish flags: MeshBasicMaterial (plain three) — TSL vertex wave removed (WebGPU only).
  *   - No ShaderMaterial anywhere.
  *   - Static meshes: matrixAutoUpdate=false.
- *   - Finish flags: mast-anchored planes with TSL vertex wave only on top half.
  *   - No Billboard (forbidden on Iris Xe) — flags on fixed masts.
  *
- * Draw calls: 1 (pads InstancedMesh) + 2 (gantry: bar + bulbs) + 2 (flags) = 5.
+ * Draw calls: 1 (pads InstancedMesh) + 2 (gantry: bar + bulbs) + 4 (flags + masts) = 7.
  */
 
 import { useRef, useEffect, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
-import * as THREE from 'three/webgpu';
-import { MeshBasicNodeMaterial } from 'three/webgpu';
-import { sin, time, positionLocal, vec3, uniform } from 'three/tsl';
+import * as THREE from 'three';
 import {
   GRID_PAD_COUNT,
   GRID_PAD_WIDTH,
@@ -87,29 +84,17 @@ function makeCheckerTexture(): THREE.CanvasTexture {
   return new THREE.CanvasTexture(canvas);
 }
 
-// ─── TSL flag material factory ────────────────────────────────────────────────
-// Uses MeshBasicNodeMaterial + positionLocal vertex wave on top portion.
-// Safe on WebGPU (TSL, not ShaderMaterial).
-function makeFlagMaterial(checkerTex: THREE.Texture): MeshBasicNodeMaterial {
-  const mat = new MeshBasicNodeMaterial({ side: THREE.DoubleSide });
-  mat.map = checkerTex;
-  mat.transparent = true;
-  mat.opacity = 0.92;
-
-  // Wave only the top vertices: wave amplitude modulated by normalized Y.
-  // positionLocal.y ranges from 0 to FLAG_HEIGHT.
-  const heightFactor = positionLocal.y.div(FLAG_HEIGHT); // 0 at base, 1 at top
-  const waveX = sin(
-    positionLocal.y.div(FLAG_HEIGHT).mul(Math.PI).add(time.mul(FLAG_WAVE_FREQ))
-  ).mul(FLAG_WAVE_AMP).mul(heightFactor);
-
-  mat.positionNode = vec3(
-    positionLocal.x.add(waveX),
-    positionLocal.y,
-    positionLocal.z,
-  );
-
-  return mat;
+// ─── Flag material factory ────────────────────────────────────────────────────
+// Plain MeshBasicMaterial — WebGLRenderer compatible.
+// TSL positionNode vertex wave (FLAG_WAVE_AMP/FREQ) is not available without
+// WebGPURenderer. Flags render as static checkered planes.
+function makeFlagMaterial(checkerTex: THREE.Texture): THREE.MeshBasicMaterial {
+  return new THREE.MeshBasicMaterial({
+    map: checkerTex,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.92,
+  });
 }
 
 // ─── Gantry lights component ──────────────────────────────────────────────────
@@ -285,7 +270,7 @@ export default function ReefRaceStartGrid({ gantryPhase = 'off' }: ReefRaceStart
 
   const flagMat = useMemo(() => {
     if (typeof document === 'undefined') {
-      return new MeshBasicNodeMaterial({ side: THREE.DoubleSide });
+      return new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
     }
     const canvas = document.createElement('canvas');
     canvas.width = 64; canvas.height = 64;
