@@ -299,8 +299,10 @@ class ReefRaceSim {
       const sideY = startCp.normal.y * col * ROW_OFFSET;
       const x = startCp.center.x - startCp.tangent.x * back + sideX;
       const y = startCp.center.y - startCp.tangent.y * back + sideY;
-      // Face the direction of travel.
-      const rot = Math.atan2(startCp.tangent.y, startCp.tangent.x);
+      // Face the direction of travel — Three.js Y-rotation convention
+      // (atan2(x, y) so the kart's native +Z forward rotates to align
+      // with the (tangent.x, tangent.y) direction in scene-space).
+      const rot = Math.atan2(startCp.tangent.x, startCp.tangent.y);
       state.bodies.set(petId, {
         petId,
         x,
@@ -679,8 +681,12 @@ class ReefRaceSim {
     body.vx += dvx * scale;
     body.vy += dvy * scale;
 
+    // Three.js Y-rotation convention — atan2(x, y), NOT atan2(y, x).
+    // The client (`ReefRacePlayer`) reads `entity.rot` directly into
+    // `group.rotation.y` where the kart's native +Z forward maps to the
+    // screen-Z axis. Same fix bumper-shells got — see PR #56.
     if (intent.dir && (intent.dir.x !== 0 || intent.dir.y !== 0)) {
-      body.rot = Math.atan2(intent.dir.y, intent.dir.x);
+      body.rot = Math.atan2(intent.dir.x, intent.dir.y);
     }
   }
 
