@@ -398,6 +398,26 @@ class ActivityWsHub {
     // Dispatch to the sim. Chunk #3 = Bumper only. Chunk #5 adds Reef.
     const room = activityRoomManager.getRoom(ws.data.roomId);
     if (!room) return;
+
+    // Reef Race Phase 1 — capture pre-launch thrust during COUNTDOWN so the
+    // sim can credit a launch-boost / launch-stall verdict at the LIVE
+    // transition (audit C4 fix). Falls THROUGH to the existing applyInput
+    // dispatch — sim returns {ok:false} for unknown rooms during countdown,
+    // which is exactly the silent-no-op behaviour we want.
+    if (
+      room.activityId === 'reef-race' &&
+      room.state === 'countdown' &&
+      typeof frame.thrust === 'number' &&
+      frame.thrust >= 1.0
+    ) {
+      activityRoomManager.recordPreLaunchInput(
+        ws.data.roomId,
+        identity.petId,
+        Date.now(),
+        frame.thrust,
+      );
+    }
+
     if (room.activityId === 'bumper-shells') {
       const out = bumperShellsSim.applyInput(
         ws.data.roomId,
@@ -509,6 +529,10 @@ class ActivityWsHub {
         activityId: room.activityId,
         status: room.state === 'countdown' ? 'countdown' : room.state === 'live' ? 'live' : 'results',
         startedAt: room.startedAt ?? undefined,
+        // Reef Race Phase 1 — HUD launch-glow ring computes secondsRemaining
+        // locally from this so it doesn't depend on a per-second countdown
+        // event the room manager doesn't currently emit (audit S9 fix).
+        countdownStartedAt: room.countdownStartedAt ?? undefined,
       },
       world: {
         tick,

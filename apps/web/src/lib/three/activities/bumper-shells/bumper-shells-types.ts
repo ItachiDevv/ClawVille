@@ -66,6 +66,15 @@ export interface BumperShellEntity {
   color?: string;
   /** 'lobster' | 'crayfish' — determines which GLB clone is used. */
   species?: string;
+  /**
+   * Reef Race Phase 1 — current drift charge tier (0..3). Optional —
+   * Bumper Shells entities never set it. The store mirrors this from
+   * `EntityDelta.changed.driftSparks` for the SELF pet so the HUD can
+   * subscribe to a primitive number selector. Audit S11 — first-insert
+   * branch initialises this to 0 so a body that ships its first delta
+   * with a non-zero value still surfaces correctly to consumers.
+   */
+  driftSparks?: 0 | 1 | 2 | 3;
 }
 
 // ─── Pickup state ─────────────────────────────────────────────────────────────

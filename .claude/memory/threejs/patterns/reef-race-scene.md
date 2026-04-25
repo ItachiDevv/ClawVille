@@ -56,6 +56,27 @@ Full scene architecture for the Reef Race activity. Key decisions: per-client ch
 - `event.lap_completed` case was a no-op — update it to push into `reefRace.laps`.
 - `pushLap()` and `setGhostPath()` actions added.
 
+### Reef Glider player scene graph (Phase 1 §4, 2026-04-24)
+
+```
+groupRef  (world XZ pos + Y rotation; scale=[20,20,20])
+  └── gliderRef  (position.y = KART_Y_ABOVE_TRACK/KART_SCALE = 0.25 local; rotation.z = bank tilt)
+        ├── gliderMesh  (shared module-scope BoxGeometry 2.5×0.25×5 + MeshStandardMaterial '#1e293b')
+        └── riderMountRef  (position = RIDER_MOUNT_OFFSET_DEFAULT [0, 0.6, -0.5]; rotation.z = 0 always)
+              └── clonedScene  (avatar GLB, color-tinted via traverse)
+```
+
+Key invariants:
+- `gliderRef.rotation.z` = bank tilt; `riderMountRef.rotation.z = 0` always — rider stays level.
+- `group.position.y = 0`; Y elevation is `gliderRef.position.y = KART_Y_ABOVE_TRACK / KART_SCALE`.
+- Shared BoxGeometry + MeshStandardMaterial created ONCE at module scope — never disposed (page-lifetime).
+- Bob: `riderMount.position.y = RIDER_MOUNT_OFFSET_DEFAULT[1] + sin(t * 1.2 * 2π) * 2` local units.
+- Bob accumulator in `_bobTime: Record<string, number>` module-scope scratch. No per-frame alloc.
+- PR #62 interpolation (4-snap ring, lerpAngle, INTERP_DELAY_MS=100) unchanged.
+- Color tint on avatar MeshStandardMaterial children unchanged (traverse + clone pattern).
+- entity.species deferred to Phase 1.5 (C8 fix) — Phase 1 uses lobster.glb always.
+
 ## Context
 Shipped in chunk #6 of Q2 Activity Portals. Pairs with chunk #5 (sim, PR #23).
-Performance: ≤70 draw calls, ≤220k tris, 1×512² shadow, 0 post-processing.
+Phase 1 §4 Reef Glider added 2026-04-24 (SHA 73900ad).
+Performance: ≤70 draw calls, ≤220k tris (+1 draw call per player for board), 1×512² shadow, 0 post-processing.

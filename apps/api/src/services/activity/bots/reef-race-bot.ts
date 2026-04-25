@@ -18,7 +18,17 @@
  */
 
 import type { BotController, BotInput, BotRoomView } from './bot-controller';
-import { REEF_TRACK_HALF_WIDTH, type ReefCheckpointAabb } from '../sim/reef-race-config';
+import {
+  REEF_TRACK_HALF_WIDTH,
+  REEF_TICK_HZ,
+  REEF_TICK_MS,
+  DRIFT_SPARK_TICK_1,
+  DRIFT_SPARK_TICK_2,
+  DRIFT_SPARK_TICK_3,
+  ACTION_BIT_DRIFT,
+  ACTION_BIT_LAUNCH,
+  type ReefCheckpointAabb,
+} from '../sim/reef-race-config';
 
 const POWERUP_USE_CHANCE = 0.3;
 const JITTER_MAGNITUDE = 0.08;
@@ -29,6 +39,13 @@ const JITTER_MAGNITUDE = 0.08;
  * before the bots accelerate to cruise speed.
  */
 const BOT_OPENING_GRACE_MS = 2_500;
+
+/**
+ * Phase 1 — bot drift trigger probability per tick once a hairpin is
+ * detected (`dot < 0.5 && distToTarget > 200`). Tuned so the bot picks up
+ * a drift roughly twice per typical 36s lap.
+ */
+const BOT_DRIFT_TRIGGER_PER_SEC = 0.60;
 
 /**
  * Extension of the generic `BotRoomView` with Reef-specific fields the
@@ -43,6 +60,17 @@ interface ReefBotRoomView extends BotRoomView {
 
 class ReefRaceBot implements BotController {
   readonly activityId = 'reef-race';
+
+  // Phase 1 — drift state.
+  private driftActive = false;
+  private driftStartedMs = 0;
+  private driftTargetTicks: number = DRIFT_SPARK_TICK_1;
+
+  // Phase 1 — launch attempt state. `launchFireMs = -1` is the sentinel
+  // meaning "not yet planned"; on first computeInput we plan a one-shot
+  // fire time relative to matchStartedAt with ±400ms jitter.
+  private launchAttempted = false;
+  private launchFireMs = -1;
 
   constructor(public readonly petId: string) {}
 
@@ -62,6 +90,37 @@ class ReefRaceBot implements BotController {
 
     const targetIndex = (view.nextCheckpoint ?? 1) % view.checkpoints.length;
     const target = view.checkpoints[targetIndex];
+
+    // ── LAUNCH ATTEMPT — EARLY RETURN, before the grace branch (audit C5) ──
+    // Bypasses the `thrust: inGrace ? 0.4 : thrust` final return that would
+    // otherwise overwrite our thrust=1.0 launch press. The hub captures the
+    // thrust=1.0 frame in its COUNTDOWN preLaunchBuffer branch, and the room
+    // manager's computeLaunchVerdicts() resolves the verdict at LIVE.
+    if (this.launchFireMs < 0) {
+      // Jitter ±400ms relative to matchStartedAt:
+      //   [-150, +150]ms → boost window     (~37.5% of range)
+      //   [-350, -150]ms → stall zone       (~25%   of range)
+      //   remainder      → no verdict       (~37.5% of range)
+      const jitter = Math.random() * 800 - 400;
+      this.launchFireMs = view.matchStartedAt + jitter;
+    }
+    if (!this.launchAttempted && view.now >= this.launchFireMs) {
+      this.launchAttempted = true;
+      // Aim toward the next checkpoint; direction is irrelevant for the
+      // launch-detection itself (the room manager only inspects thrust+ts)
+      // but we keep it sane so the body doesn't lurch sideways on the
+      // first integration tick.
+      let lx = target.center.x - self.x;
+      let ly = target.center.y - self.y;
+      const llen = Math.hypot(lx, ly) || 1;
+      lx /= llen;
+      ly /= llen;
+      return {
+        dir: { x: lx, y: ly },
+        thrust: 1.0,
+        actionBits: ACTION_BIT_LAUNCH,
+      };
+    }
 
     let dx = target.center.x - self.x;
     let dy = target.center.y - self.y;
@@ -86,11 +145,12 @@ class ReefRaceBot implements BotController {
     // Thrust: lower if heading is far off velocity direction (let the
     // body swing).
     let thrust = 0.85;
+    let dot = 1;
     const speed = Math.hypot(self.vx, self.vy);
     if (speed > 1) {
       const headingX = self.vx / speed;
       const headingY = self.vy / speed;
-      const dot = dx * headingX + dy * headingY;
+      dot = dx * headingX + dy * headingY;
       if (dot < 0.3) thrust = 0.6;
     }
 
@@ -104,15 +164,45 @@ class ReefRaceBot implements BotController {
       thrust = 1.0;
     }
 
+    // Phase 1 — drift release check. If we held drift long enough to hit
+    // the target tier, drop the bit so the sim fires the boost on this tick.
+    if (this.driftActive) {
+      const chargedTicks = Math.round(
+        (view.now - this.driftStartedMs) / REEF_TICK_MS,
+      );
+      if (chargedTicks >= this.driftTargetTicks) {
+        this.driftActive = false;
+      }
+    }
+
     // Opening grace — coast toward the checkpoint at low thrust + no
     // power-ups so the human has 2.5s to orient. This branch overrides
     // the cruise/cornering thrust calculations above with a steady 0.4.
     const matchAge = view.now - view.matchStartedAt;
     const inGrace = matchAge < BOT_OPENING_GRACE_MS;
 
-    // Power-up usage — skipped during grace.
+    // Power-up usage + drift attempts — both skipped during grace.
     let actionBits = 0;
     if (!inGrace) {
+      // Phase 1 — drift decision. Only attempt to start a fresh drift on
+      // hairpin entries (heading misaligned + still far from the apex).
+      if (!this.driftActive && dot < 0.5 && distToTarget > 200) {
+        if (Math.random() < BOT_DRIFT_TRIGGER_PER_SEC / REEF_TICK_HZ) {
+          this.driftActive    = true;
+          this.driftStartedMs = view.now;
+          // Pick a target spark tier — heavier weight on tier 1 / 2 so
+          // the bot doesn't always commit to a full hairpin.
+          const r = Math.random();
+          this.driftTargetTicks =
+            r < 0.5
+              ? DRIFT_SPARK_TICK_1
+              : r < 0.85
+                ? DRIFT_SPARK_TICK_2
+                : DRIFT_SPARK_TICK_3;
+        }
+      }
+      if (this.driftActive) actionBits |= ACTION_BIT_DRIFT;
+
       const inv = self.inventory;
       for (let i = 0; i < inv.length; i++) {
         const slot = inv[i];
