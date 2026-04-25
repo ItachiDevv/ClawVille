@@ -32,14 +32,17 @@ import { Suspense, useEffect, useRef, useMemo } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 
-import ReefRaceTrack       from './ReefRaceTrack';
-import ReefRaceCheckpoints from './ReefRaceCheckpoints';
-import ReefRaceStartGrid   from './ReefRaceStartGrid';
-import ReefRacePlayer      from './ReefRacePlayer';
-import ReefRaceGhost       from './ReefRaceGhost';
-import ReefRacePickups     from './ReefRacePickups';
-import ReefRaceBoostFX     from './ReefRaceBoostFX';
-import { ActivityBursts }  from '@/lib/three/activities/shared/activity-particles';
+import ReefRaceTrack         from './ReefRaceTrack';
+import ReefRaceCheckpoints   from './ReefRaceCheckpoints';
+import ReefRaceStartGrid     from './ReefRaceStartGrid';
+import ReefRacePlayer        from './ReefRacePlayer';
+import ReefRaceGhost         from './ReefRaceGhost';
+import ReefRacePickups       from './ReefRacePickups';
+import ReefRaceBoostFX       from './ReefRaceBoostFX';
+import ReefRaceBoostRibbons  from './ReefRaceBoostRibbons';
+import ReefRaceHazards       from './ReefRaceHazards';
+import ReefRaceApexMarkers   from './ReefRaceApexMarkers';
+import { ActivityBursts }    from '@/lib/three/activities/shared/activity-particles';
 import { useActivityStore } from '@/stores/activity';
 import {
   FOG_COLOR,
@@ -250,6 +253,11 @@ function SceneContents({ entities, selfAvatarId, matchPhase, raceStartMs }: Scen
 
       {/* Checkpoints (merged static) */}
       <ReefRaceCheckpoints />
+
+      {/* Phase 2 — boost ribbons, hazard patches, apex markers (static) */}
+      <ReefRaceBoostRibbons />
+      <ReefRaceHazards />
+      <ReefRaceApexMarkers />
 
       {/* Start grid + gantry + flags */}
       <ReefRaceStartGrid gantryPhase={gantryPhase} />
