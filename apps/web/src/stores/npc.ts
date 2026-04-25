@@ -472,7 +472,11 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
       x: 2560, y: 2560, // World center (tile 80,80)
       prevX: 2560, prevY: 2560,
       direction: 'idle',
-      species: 'lobster',
+      // 2026-04-25: NPC-mode default flipped from 'lobster' to 'milady_official_1'
+      // so the player avatar matches the world's signature cast. ArenaNpcs routes
+      // VRM species through VRMNpcMesh, which now ports the jumpState/airborne/bob
+      // logic from GLBNpcMesh (see arena-npcs.tsx) so jump still works.
+      species: 'milady_official_1',
       color: 0x42a5f5, // blue tint
       hp: 100, maxHp: 100,
       isDead: false, hasSword: false,
