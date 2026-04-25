@@ -69,14 +69,19 @@ researchSseRoutes.get('/stream', (c) => {
       researchEventBus.removeListener(listener);
     });
 
-    // Match npc-sse pattern exactly — sleep loop, no heartbeat writes.
-    // The earlier heartbeat write triggered HTTP/2 protocol errors in
-    // Chrome (ERR_HTTP2_PROTOCOL_ERROR 200 OK) when proxied through
-    // Cloudflare, even though SSE bytes were technically valid. Initial
-    // 'connected' event above is sufficient to establish the stream;
-    // research events flowing through eventBus.emit() keep it alive.
+    // Match npc-sse keepalive pattern (407ec5c #57): Cloudflare resets
+    // idle HTTP/2 streams at ~100s — without periodic bytes the client
+    // surfaces ERR_HTTP2_PROTOCOL_ERROR (status 200, but frame layer
+    // died). 30s keepalive writes prevent the reset. Empty `data` +
+    // `event: 'keepalive'` so EventSource clients can ignore it cleanly.
     while (true) {
       await stream.sleep(30000);
+      try {
+        await stream.writeSSE({ data: '', event: 'keepalive' });
+      } catch {
+        researchEventBus.removeListener(listener);
+        return;
+      }
     }
   });
 });
