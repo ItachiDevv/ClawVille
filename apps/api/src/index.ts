@@ -292,6 +292,21 @@ startSimulation(arenaMode);
     console.error('[API] System NPC seeder failed:', err);
   }
 
+  // Phase 6 — start the openclaw_bots session TTL sweeper. Runs every 5
+  // min, reaps rows whose `session_expires_at` has passed and stops any
+  // still-mounted Eliza runtimes. Without this, a disconnected Hermes /
+  // OpenClaw agent row lives forever and `/api/agent/session-status`
+  // keeps answering `connected: true` until someone calls the explicit
+  // unregister. See `services/openclaw-session-sweeper.ts`.
+  try {
+    const { startSessionSweeper } = await import(
+      './services/openclaw-session-sweeper'
+    );
+    startSessionSweeper();
+  } catch (err) {
+    console.error('[API] Session sweeper failed to start:', err);
+  }
+
   // Q2 Activity Portals — recover orphaned LIVE/COUNTDOWN rooms (pod
   // crash recovery per backend §12.1), hydrate persisted queue entries,
   // then start the room sweeper + matchmaker intervals. Order matters:
@@ -467,6 +482,14 @@ async function gracefulShutdown(signal: string) {
     stopSimulation();
     activityRoomManager.stopSweeper();
     activityQueueService.stopMatchmaker();
+    try {
+      const { stopSessionSweeper } = await import(
+        './services/openclaw-session-sweeper'
+      );
+      stopSessionSweeper();
+    } catch {
+      // If the sweeper module failed to load earlier, there's nothing to stop.
+    }
     await Promise.allSettled([
       npcSimulation.petAutonomyManager.shutdown(),
       getCollaborationBroker().shutdown(),
