@@ -1,9 +1,30 @@
 # Reef Race — Phase 4 (FINAL) detailed implementation plan
 
-**Status:** Plan locked 2026-04-24. Awaiting audit.
+**Status:** Plan v2 locked 2026-04-24. Addresses audit findings (C1/C2/C3 + S1/S2/S4/S5/S7/S8).
 **Owners:** orchestrator (PB persistence + streak sim hooks + leaderboard route + match-end UI), 3da (PB ghost client wiring + fade), reef-race-bot (no scope — bots have no PB ghost / no streak rewards).
 **Previous phases:** 1 (drift + launch boost) merged; 2 (slipstream + apex + ribbons + hazards + placement-weighted items) merged; 3 (stat connection) merged. All on master via `worktree-fix-bumper-build`.
 **Plan reference:** `.claude/plans/reef-race-real-racing.md` §Phase 4.
+**Audit reference:** `.claude/plans/reef-race-phase4-audit.md` (audited SHA `c9fc37c`).
+
+---
+
+## Changelog
+
+### v2 — addresses audit findings (2026-04-24)
+
+| Audit ID | Severity | Fix location in v2 |
+|---|---|---|
+| C1 | Critical — sub-MIN_LAP lap contaminates ghost frame buffer | §1.4 — `currentLapFrames.length = 0` in BOTH discard AND success branches |
+| C2 | Critical — `dailyRank` race vs cache | §1.2 (await PB write), §1.6 (cache invalidation on write), §4.1 (separate cache from rank query), §5.4 + §6.5 (rank computed via indexed scan, not cache) |
+| C3 | Critical — perfect-lap bonus may never fire | §3.4 (snapshot streaks into `SimResultRow` at `computeResults()` time, BEFORE teardown), §3.5 + §9 (no late `getStreaksByPet` accessor) |
+| S1 | Streak-survives-lap-up implicit | §3.1 (`lastApexVerdictByHairpin` keyed by `${lap}-${cpIdx}` AND cleared at lap-up) |
+| S2 | `STREAK_MILESTONES` count vs tier-kind union mismatch | §3.3 (compressed milestones to `[5, 10, 20, 30, 36]` matching 5 tier kinds) |
+| S4 | PB ghost cache stale after write | §1.6 (`invalidate(petId)` from `maybeUpdatePersonalBest` on successful upsert) |
+| S5 | Shared rate limiter contention | §4.2 (NEW `dailyBestLapLimiter` — does not share bucket with `agentLeaderboardLimiter`) |
+| S7 | `event.match_ended.pbDelta.newGhostFrames` broadcast semantics undefined | §6.4 (per-recipient via `safeSend(ws)` — only the PB-setter receives their own frames; rivals get `pbDelta` minus `newGhostFrames`) |
+| S8 | Town-guide knowledge "+6 lines" too thin | §9 + new §11 (4 substantive entries: PB ghost, streak counter, lobster-of-the-day, match-end summary) |
+
+Every other section preserved from v1 with edits inlined where the fix lands. No scope downgrade. No kill switches.
 
 ---
 
@@ -27,7 +48,7 @@ Verified via Read on each cited file at the head of this plan session.
 - Per-lap splits exist transiently in `ReefBody.lapSplitsMs[]` (`apps/api/src/services/activity/sim/reef-race-sim.ts:204` declared; populated at `sim.ts:1559` `body.lapSplitsMs.push(lapMs)`). They are **NOT persisted** anywhere — they evaporate when the room is GC'd.
 - The `bestLapMs` field on the client `ReefRaceEntity` (`reef-race-types.ts:67`) is **defined but never written** — Grep on `bestLapMs` across the codebase returns only the type declaration.
 
-**Decision (locked, see §1.1):** create a NEW table `reef_race_personal_bests` for the per-lap-best + ghost replay payload. DO NOT extend `activity_results` — that table is per-match (one row per finish), Phase 4 needs per-pet (one row per lifetime PB lap) and a JSONB blob whose size (~13 KB) doesn't belong in a per-match row.
+**Decision (locked, see §1.1):** create a NEW table `reef_race_personal_bests` for the per-lap-best + ghost replay payload. DO NOT extend `activity_results` — that table is per-match (one row per finish), Phase 4 needs per-pet (one row per lifetime PB lap) and a JSONB blob whose size (~5 KB) doesn't belong in a per-match row.
 
 ### 0.3 `/leaderboard` page — current state
 
@@ -50,7 +71,7 @@ Verified via Read on each cited file at the head of this plan session.
 
 ### 1.1 New table `reef_race_personal_bests`
 
-Decision rationale: extending `activity_results` was rejected because (a) one row per match vs. one row per lifetime-best-lap is a different cardinality, (b) ghost replay JSONB (~13 KB compressed) bloats the per-match row that's hot for leaderboard scans, (c) per-match `score_ms` is a finish time (3-lap total) not a single lap; we'd be conflating two metrics. New table is additive, has a clean unique constraint, and indexes are tiny.
+Decision rationale: extending `activity_results` was rejected because (a) one row per match vs. one row per lifetime-best-lap is a different cardinality, (b) ghost replay JSONB (~5 KB compressed) bloats the per-match row that's hot for leaderboard scans, (c) per-match `score_ms` is a finish time (3-lap total) not a single lap; we'd be conflating two metrics. New table is additive, has a clean unique constraint, and indexes are tiny.
 
 ```ts
 // packages/database/src/schema/reef-race-personal-bests.ts (NEW)
@@ -77,7 +98,8 @@ export const reefRacePersonalBests = pgTable('reef_race_personal_bests', {
   petActivityUq: uniqueIndex('uq_reef_race_pb_pet_activity').on(t.petId, t.activityId),
   // Daily-fastest-lap query over `bestLapRecordedAt > NOW() - INTERVAL '24h'`,
   // ORDER BY bestLapMs ASC LIMIT 100. Composite index makes both predicate +
-  // ordering index-only.
+  // ordering index-only. Also covers the daily-rank scan in §1.6
+  // (count(*) WHERE bestLapMs < newMs AND best_lap_recorded_at > cutoff).
   recordedAtIdx: index('idx_reef_race_pb_recorded_lap')
     .on(t.bestLapRecordedAt.desc(), t.bestLapMs.asc())
     .where(sql`activity_id = 'reef-race'`),
@@ -107,39 +129,70 @@ export interface PbWriteResult {
   improved: boolean;
   /** Previous best in ms. null if no prior PB row. */
   previousMs: number | null;
+  /** Daily rank of the just-written PB if improved (1 = #1 fastest in last 24h),
+   *  else null. Computed via single indexed scan against the same connection,
+   *  avoiding the 60s cache used by the public leaderboard surface. */
+  dailyRank: number | null;
 }
 
-/** Atomic upsert: write only when newBestLapMs < existing.bestLapMs. */
+/** Atomic upsert: write only when newBestLapMs < existing.bestLapMs.
+ *  On success, INVALIDATES the in-memory PB ghost cache (S4) AND the
+ *  daily-best-lap snapshot cache (C2) so subsequent reads see the new entry.
+ */
 export async function maybeUpdatePersonalBest(input: PbWriteInput): Promise<PbWriteResult>;
 
 /** Read latest PB for pet (hot path: snapshot.init for self pet). */
 export async function loadPersonalBest(petId: string): Promise<ReefRacePersonalBest | null>;
+
+/** Read PB ghost frames only (snapshot.init payload). Cached 5 min;
+ *  invalidated by maybeUpdatePersonalBest on successful upsert. */
+export async function loadPersonalBestGhostFrames(petId: string): Promise<GhostFrame[] | undefined>;
+
+/** Internal — exported for tests + the daily-best-lap service to call after
+ *  any external mutation. */
+export function invalidatePbGhostCache(petId: string): void;
 ```
 
 Implementation notes:
 - `maybeUpdatePersonalBest` uses `INSERT ... ON CONFLICT (pet_id, activity_id) DO UPDATE SET ... WHERE EXCLUDED.best_lap_ms < reef_race_personal_bests.best_lap_ms RETURNING ...` — single round-trip atomic compare-and-set. The `RETURNING` lets us know whether the row actually got updated (improved=true) vs. predicate matched but kept (improved=false).
+- **C2 fix.** When `improved === true`, the same function executes a single follow-up indexed scan in the same async chain to compute `dailyRank`:
+  ```sql
+  SELECT count(*)::int + 1 AS rank
+  FROM reef_race_personal_bests
+  WHERE activity_id = 'reef-race'
+    AND best_lap_recorded_at > NOW() - INTERVAL '24 hours'
+    AND best_lap_ms < $1;  -- newBestLapMs
+  ```
+  Returns the new rank in <2 ms (covered by `idx_reef_race_pb_recorded_lap`). Returns `null` if `count >= 100` (off-board) so the modal doesn't display a misleading rank.
+- **C2 fix part 2.** Immediately AFTER a successful upsert, the function calls `invalidateDailyBestLapCache()` (from §4.1) AND `invalidatePbGhostCache(petId)`. This makes the next `/api/leaderboard/reef-race/daily-best-lap` read see the fresh row, and any reconnect within the 5-minute PB-ghost-cache TTL sees the freshly-set ghost (S4 fix).
 - Bots are skipped at the call site (`participant.subjectType === 'bot'`). Guests are NOT skipped — guests can have PBs (matches §0.4 reward logic; guests still earn tokens, but their daily-leaderboard surface fires the same anti-bot SQL filter as `activity-leaderboard-service.ts:117-120`).
 
 ### 1.3 When PB is UPDATED
 
 In `apps/api/src/services/activity/reward-pipeline.ts` `issueRewardsForRoom()`:
 
-- After the existing `db.transaction` block that writes `activity_results` rows (line 223-331), add a fire-and-forget pass that walks `simResults` and, for `room.activityId === 'reef-race'` only, calls `maybeUpdatePersonalBest()` for each non-bot participant with a complete lap.
-- The PB write is INTENTIONALLY OUTSIDE the rewards transaction. Rationale: PB write failure must not roll back the actual reward credit (token debit). PB is best-effort — re-deriveable from replay log + `activity_results` if needed.
-- Per the task constraint (`ALL new DB writes are async fire-and-forget`): the PB write is `void maybeUpdatePersonalBest(...)`. Errors get console.error + `alertError({severity: 'warning'})`. We do NOT await it.
+- After the existing `db.transaction` block that writes `activity_results` rows (line 223-331), the pipeline AWAITS `maybeUpdatePersonalBest()` for each non-bot Reef Race participant with a complete lap. **C2 fix — this is no longer fire-and-forget.** The pipeline `Promise.all`s the per-pet PB writes (parallel; bounded by 8 concurrent matches; total wall-clock <50 ms even with all 8 pets improving).
+- The PB write is INTENTIONALLY OUTSIDE the rewards transaction. Rationale: PB write failure must not roll back the actual reward credit (token debit). On error, the pipeline logs + `alertError({severity: 'warning'})` + sets the per-pet `pbDelta = null` so the modal doesn't show a half-truth.
+- **C2 fix.** The `event.match_ended` payload is built AFTER the awaited PB writes complete. The payload's `pbDelta` includes the freshly-computed `dailyRank` from the PB service's single indexed scan — no cache dependency, no second round-trip.
 
-**Where does the per-lap split + ghost replay data come from?** The sim resolver currently returns `SimResultRow[]` from `reefRaceSim.computeResults()` — a placement list with `score`, `scoreMs`, `placement` only. Phase 4 extends `SimResultRow` (or adds a parallel `getReefRacePerLapResults(roomId): ReefRacePerLapResult[]` accessor on `reefRaceSim`) to surface:
+**Where does the per-lap split + ghost replay data come from?** The sim resolver currently returns `SimResultRow[]` from `reefRaceSim.computeResults()` — a placement list with `score`, `scoreMs`, `placement` only. Phase 4 extends `SimResultRow` to surface the per-pet best-lap + streak data INLINE — no separate accessor that depends on `state.bodies` still being alive (C3 fix):
 
 ```ts
-interface ReefRacePerLapResult {
-  petId: string;
-  bestLapMs: number;            // min(body.lapSplitsMs[])
-  bestLapIndex: number;         // 0-indexed lap that produced the best split
-  ghostReplayFrames: GhostFrame[];  // captured from the sim — see §1.4
+// SimResultRow extension, populated in computeResults() BEFORE teardown.
+interface SimResultRow {
+  // ... existing fields
+  // Reef Race only — undefined for other activities:
+  reefRace?: {
+    bestLapMs: number;            // min(body.lapSplitsMs[])
+    bestLapIndex: number;         // 0-indexed lap that produced the best split
+    ghostReplayFrames: GhostFrame[];  // captured from the sim — see §1.4
+    bestStreakThisMatch: number;  // C3 — embedded here, NOT looked up later
+    currentStreakAtMatchEnd: number;  // for completeness; not surfaced
+  };
 }
 ```
 
-`reefRaceSim.getReefRacePerLapResults(roomId)` is implemented in §1.4. The reward pipeline calls it once per Reef Race room and joins to `simResults` by `petId` for the PB pass.
+This is the **C3 fix**: `computeResults()` is called BEFORE `endRound()` clears `state.bodies`, so it can safely read every body's streak + ghost frames + lap splits while the data is still alive. The reward pipeline then operates on `simResults[i].reefRace` — a plain JS object with no live-state dependency. There is NO `getStreaksByPet(roomId)` accessor; it was removed from the v1 plan because it created an ordering dependency between sim teardown and reward credit.
 
 ### 1.4 Ghost replay capture (server-side)
 
@@ -155,10 +208,14 @@ Capture mechanism — new module-level state on `ReefBody`:
 
 ```ts
 // In reef-race-sim.ts, ReefBody interface (line 180 area), ADD:
-/** Ring buffer of frames for the CURRENT lap. Cleared on lap-up. */
+/** Ring buffer of frames for the CURRENT lap. Cleared on lap-up AND on
+ *  sub-MIN_LAP discard (C1 fix). */
 currentLapFrames: GhostFrame[];
 /** Snapshot of currentLapFrames at the moment the BEST lap closed. null until first lap finished. */
 bestLapFrames: GhostFrame[] | null;
+/** Best lap ms seen so far (used to gate bestLapFrames replacement without
+ *  allocating). */
+bestLapMsSoFar: number | null;
 ```
 
 Frame sampling — added inside `tick()` between physics integration and snapshot broadcast, gated by tick-modulo:
@@ -174,31 +231,56 @@ if (state.tick % 6 === 0) {
       z: body.y,                    // sim-Y → Three.js-Z
       rot: body.rot,
     });
+    // S6 — guarantee the very first frame has t=0 by writing a synthetic
+    // frame at lapStartedAt the first time we sample after a lap-up. See §1.5.
   }
 }
 ```
 
-Frame capture cap: hard limit 250 frames per body (= 50 sec lap @ 5 Hz). At cap, oldest frame drops (FIFO `shift()`). 50 sec is safely above legitimate lap times; a 50+ sec "lap" is either a reset or anti-cheat triggered (`MIN_LAP_MS = 15s` is the floor; the implicit ceiling is the soft timeout at 90 sec for the whole 3-lap race).
+Frame capture cap: hard limit 250 frames per body (= 50 sec lap @ 5 Hz). At cap, oldest frame drops (FIFO `shift()`). 50 sec is safely above legitimate lap times; a 50+ sec "lap" is either a reset or a hazard-stuck body — the cap saves the LAST 50 sec which is what we'd want to surface anyway. **N5 acceptance:** PB lap by definition is the player's fastest; the worst-case frame budget is never the saved one. We're capping the WORK of capture, not the SIZE of the saved blob.
 
 Per-frame allocation guard: `currentLapFrames` is initialized as `[]` at body init, reused via `push` + `shift` only. The `GhostFrame` object literal in the push site IS one allocation per body per tick-modulo-6 — that's 8 bodies × 5 Hz = 40 allocations/sec. Acceptable; the alternative (a typed-array ring buffer) is over-engineered for 200 short-lived frames per match.
 
-On lap completion (`reef-race-sim.ts:1558` after `body.lap += 1`):
+#### 1.4a — C1 FIX: clear frames in BOTH lap-completion branches
+
+The existing `resolveCheckpoints` at `sim.ts:1543-1568` has TWO terminal branches when a lap completes:
 
 ```ts
-// If this lap is the best so far, snapshot the current-lap frames.
-const isBestLapSoFar =
-  body.bestLapFrames === null || lapMs < Math.min(...body.lapSplitsMs.slice(0, -1)) ;
-//                                                  ↑ everything except the just-pushed lap
+// EXISTING (sim.ts:1543-1556) — sub-MIN_LAP discard branch:
+if (lapMs < REEF_MIN_LAP_MS) {
+  // ... anti-cheat flag + log
+  body.lapStartedAt = now;        // reset for next attempt
+  body.nextCheckpoint = 1;        // roll back
+  // C1 FIX — MUST clear ghost frame buffer; otherwise stale frames
+  // from this discarded attempt mix with the next attempt's frames at
+  // t≈14000ms, breaking findGhostFrames' linear scan with non-monotonic t.
+  body.currentLapFrames.length = 0;
+  break;
+}
+
+// EXISTING success path (sim.ts:1558-1568) — PLUS Phase 4 additions:
+body.lap += 1;
+body.lapSplitsMs.push(lapMs);
+body.lapStartedAt = now;
+
+// Phase 4 — if this lap is the best so far, snapshot the frames.
+const isBestLapSoFar = body.bestLapMsSoFar === null || lapMs < body.bestLapMsSoFar;
 if (isBestLapSoFar) {
+  body.bestLapMsSoFar = lapMs;
   // CLONE the array — currentLapFrames clears next, the snapshot must persist.
   body.bestLapFrames = body.currentLapFrames.slice();
 }
-body.currentLapFrames.length = 0;  // truncate-in-place; keeps the array reference
+// C1 — same clear in the success branch.
+body.currentLapFrames.length = 0;
+
+// S1 FIX — clear apex verdicts at lap boundary so the next lap's
+// hairpin reads a fresh verdict, not the previous lap's stale entry.
+body.lastApexVerdictByHairpin.clear();
 ```
 
-(Refinement: avoid `Math.min(...body.lapSplitsMs.slice(0, -1))` allocating — track `body.bestLapMsSoFar: number | null` field updated inline.)
+Both branches MUST clear `currentLapFrames`. Test §7.2 adds an explicit case for the discard branch.
 
-`reefRaceSim.getReefRacePerLapResults(roomId)` walks `state.bodies`, picks the body with `bestLapFrames !== null`, returns the array of `{petId, bestLapMs, bestLapIndex, ghostReplayFrames}`.
+`SimResultRow.reefRace.ghostReplayFrames` is populated from `body.bestLapFrames` inside `computeResults()` (C3 fix — embedded into the result row, not looked up later).
 
 ### 1.5 Frame coordinate system — lap-relative `t`
 
@@ -206,6 +288,17 @@ body.currentLapFrames.length = 0;  // truncate-in-place; keeps the array referen
 - The client's existing `ReefRaceGhost.tsx:101-110` does `Date.now() - raceStartMs % pathDuration`. With lap-relative `t`, the ghost loops over a ~30 sec lap regardless of when the original PB was set (yesterday vs. now).
 - Without lap-relative `t`, the client would have to subtract `path[0].t` every frame — the existing code already does (`path[0].t + (elapsedMs % pathDuration)`), so lap-relative just keeps the math the same.
 - `findGhostFrames(path, ghostMs)` is unchanged.
+
+**S6 fix — synthetic t=0 frame.** The first sample after `lapStartedAt` is set lands at `now - lapStartedAt = (tickInterval × ticksUntilNextSample)` — typically ~200 ms. To make the ghost start at `t=0` in lockstep with the player's own kart, add a one-shot synthetic frame at lap-up:
+
+```ts
+// In the lap-up SUCCESS branch (and at race start in addBody),
+// AFTER clearing currentLapFrames, write a t=0 anchor frame so the
+// next captured frame is the SECOND in the array, not the first.
+body.currentLapFrames.push({ t: 0, x: body.x, z: body.y, rot: body.rot });
+```
+
+This is one extra allocation per lap (negligible) and removes the visible "ghost starts late" artifact called out in S6.
 
 ### 1.6 PB load path
 
@@ -217,7 +310,7 @@ In `apps/api/src/services/activity/activity-ws-hub.ts:539-557` (the snapshot.ini
 // spec §2). Skipped for guests + bots (no PB row).
 const selfBestLapGhost =
   room.activityId === 'reef-race' && ws.data.identity
-    ? await loadPersonalBestGhostFrames(ws.data.identity.petId)  // see below
+    ? await loadPersonalBestGhostFrames(ws.data.identity.petId)
     : undefined;
 ```
 
@@ -226,6 +319,7 @@ const selfBestLapGhost =
 - Returns `ghostReplayData.frames` (typed cast).
 - Returns `undefined` on any error (logged via `console.warn`, NOT alertError — missing PB is the common case for fresh pets).
 - Hot path: ~50 ms first call, cached for subsequent loads of the same room (cache key: petId). A small in-memory `Map<petId, {frames, expiresAt}>` with 5-min TTL is enough — no eviction loop needed (RAF natural gc when room ends + map size is bounded by concurrent players).
+- **S4 FIX.** `maybeUpdatePersonalBest` calls `invalidatePbGhostCache(petId)` on successful upsert (§1.2). Subsequent reconnects within the 5-min TTL will see the fresh ghost on snapshot.init.
 
 The frames are then propagated into `RoomMeta.selfBestLapGhost` (new optional field — see §6). The hub's `safeSend` block at line 540-565 gets `selfBestLapGhost` added to the inner `room` object.
 
@@ -310,13 +404,16 @@ Per the streak's intended UX of "perfect line", the test is:
 ```ts
 function isCheckpointCrossClean(body: ReefBody, cpIdx: number): boolean {
   if (!APEX_HAIRPIN_CP_INDICES.includes(cpIdx)) return true;  // non-hairpin: auto-clean
-  // Was apex resolved as 'clean' for this lap+hairpin?
+  // S1 FIX — key by (lap, cpIdx) to avoid stale verdicts from previous lap.
+  const key = `${body.lap}-${cpIdx}`;
   return body.apexCheckedThisLap.has(`${body.lap}:${cpIdx}`)
-      && body.lastApexVerdictByHairpin.get(cpIdx) === 'clean';
+      && body.lastApexVerdictByHairpin.get(key) === 'clean';
 }
 ```
 
-`body.lastApexVerdictByHairpin: Map<number, 'clean' | 'wide'>` is a NEW per-body field (initialized empty in `addBody()`, updated in `resolveApex` whenever a verdict fires). The `apexCheckedThisLap` set is already checked at `sim.ts:2205` — Phase 4 ADD a parallel verdict-kind cache because today only "was checked" is recorded, not "what was the verdict".
+`body.lastApexVerdictByHairpin: Map<string, 'clean' | 'wide'>` is a NEW per-body field (initialized empty in `addBody()`, updated in `resolveApex` whenever a verdict fires, **keyed by `${body.lap}-${cpIdx}` to avoid cross-lap collision** — S1 fix). The map is also cleared in the lap-up branch (§1.4a) for belt-and-suspenders safety.
+
+The `apexCheckedThisLap` set (existing) is already cleared at lap boundary in `resolveCheckpoints` (sim.ts:1567). Phase 4 adds the parallel `lastApexVerdictByHairpin` map clear in the SAME location (§1.4a code block).
 
 ### 3.2 Per-body sim state
 
@@ -326,8 +423,9 @@ function isCheckpointCrossClean(body: ReefBody, cpIdx: number): boolean {
 currentStreak: number;
 /** High-water mark of currentStreak across the entire match. */
 bestStreakThisMatch: number;
-/** Whether the last hairpin verdict per (lap, hairpin) was 'clean'. */
-lastApexVerdictByHairpin: Map<number, 'clean' | 'wide'>;
+/** Whether the last hairpin verdict per (lap, hairpin) was 'clean'.
+ *  S1 FIX — keyed by `${lap}-${cpIdx}` (was `cpIdx` only — collided across laps). */
+lastApexVerdictByHairpin: Map<string, 'clean' | 'wide'>;
 ```
 
 All cleared in `addBody()` next to the existing initializers.
@@ -345,15 +443,16 @@ if (clean) {
   if (body.currentStreak > body.bestStreakThisMatch) {
     body.bestStreakThisMatch = body.currentStreak;
   }
-  // Edge-trigger event broadcast on milestone hits (5/10/15/20). Avoid
+  // Edge-trigger event broadcast on milestone hits (5/10/20/30/36). Avoid
   // per-checkpoint broadcasts — too noisy. Total checkpoints in 3 laps =
-  // 12 × 3 = 36, so milestones at 5/10/15/20/25/30 + perfect at 36.
+  // 12 × 3 = 36, so milestones at 5/10/20/30 + perfect at 36.
+  // S2 FIX — milestone count compressed from 7 to 5 to match 5-tier union.
   if (STREAK_MILESTONES.includes(body.currentStreak)) {
     this.broadcastFn(state.roomId, {
       type: 'event.streak_milestone',
       petId: body.petId,
       streak: body.currentStreak,
-      kind: streakMilestoneKind(body.currentStreak),  // 'tier-1' | ...
+      kind: streakMilestoneKind(body.currentStreak),  // 'tier-1'|'tier-2'|'tier-3'|'tier-4'|'perfect'
     });
   }
 } else {
@@ -362,13 +461,28 @@ if (clean) {
 }
 ```
 
-`STREAK_MILESTONES = [5, 10, 15, 20, 25, 30, 36]` and `streakMilestoneKind()` map are constants in `reef-race-config.ts` (server) — clients need a parallel constant set ONLY for the HUD label (a one-line string-map, not full event semantics).
+**S2 FIX.** `STREAK_MILESTONES = [5, 10, 20, 30, 36]` and `streakMilestoneKind()` map (constants in `reef-race-config.ts` server-side):
+
+```ts
+export const STREAK_MILESTONES = [5, 10, 20, 30, 36] as const;
+export type StreakMilestoneKind = 'tier-1' | 'tier-2' | 'tier-3' | 'tier-4' | 'perfect';
+
+export function streakMilestoneKind(streak: number): StreakMilestoneKind {
+  if (streak >= 36) return 'perfect';
+  if (streak >= 30) return 'tier-4';
+  if (streak >= 20) return 'tier-3';
+  if (streak >= 10) return 'tier-2';
+  return 'tier-1';  // streak >= 5
+}
+```
+
+Clients import the same constants from `packages/shared/src/activities/reef-race-streak.ts` (NEW shared module) for HUD label + glow tier mapping (N4 fix). No client-side duplication; shared is the single source of truth.
 
 **Hairpin verdict timing:** apex resolution happens in step 5b BEFORE checkpoint resolution in step 5c (per the existing comment at `sim.ts:917-922` "Phase 2 audit G4 — apex-penalty ... Apex verdicts are evaluated BEFORE checkpoints"). So when `resolveCheckpoints` reads `lastApexVerdictByHairpin`, the value is current to THIS tick. ✓ ordering correct.
 
 **100% perfect:** total checkpoints in 3 laps = 36. Streak ≥ 36 at match-end = perfect race. Reward: see §3.4.
 
-### 3.4 Bonus tokens for 100% perfect streak
+### 3.4 Bonus tokens for 100% perfect streak — C3 FIX (no late accessor)
 
 Reward configuration in `packages/shared/src/activities/activities.ts` for `reef-race.rewardConfig`:
 
@@ -380,36 +494,43 @@ perfectStreakBonusTokens?: number;  // default 25
 In `reward-pipeline.ts` `computeBreakdown()`:
 
 ```ts
+// C3 FIX — read bestStreakThisMatch from the SimResultRow (embedded at
+// computeResults() time, BEFORE state.bodies teardown). NO live accessor.
+const bestStreak = simResult.reefRace?.bestStreakThisMatch ?? 0;
 const perfectStreakBonus =
-  input.bestStreakThisMatch >= TOTAL_CHECKPOINTS_PER_RACE  // 36
+  bestStreak >= TOTAL_CHECKPOINTS_PER_RACE  // 36
     ? rewardConfig?.perfectStreakBonusTokens ?? 0
     : 0;
 ```
 
-`computeBreakdown` input grows `bestStreakThisMatch?: number` (default 0 — non-Reef-Race activities omit it, no behaviour change). The `RewardBreakdown` adds `perfectStreakBonus: number` (sums into the same breakdown total). The room manager passes the per-pet streak from sim to the pipeline:
+The pipeline NEVER calls `getStreaksByPet(roomId)` or any other live-state accessor. The data flow is:
 
-```ts
-// In activity-room-manager.ts where computeResultsFn is called:
-const simResults = this.computeResultsFn(room);
-const perLap = reefRaceSim.getReefRacePerLapResults(room.id);  // §1.3
-const streaksByPet = reefRaceSim.getStreaksByPet(room.id);     // NEW accessor
-issued = await issueRewardsForRoom({
-  room,
-  simResults,
-  reefRacePerLap: perLap,
-  reefRaceStreaks: streaksByPet,  // Map<petId, {currentStreak, bestStreakThisMatch}>
-});
+```
+sim.computeResults(room)
+  └─ walks state.bodies WHILE ALIVE
+  └─ embeds bestLapMs, ghostFrames, bestStreakThisMatch into SimResultRow.reefRace
+  └─ returns SimResultRow[]
+                ↓
+sim.endRound()  ← may clear state.bodies; doesn't matter, data already extracted
+                ↓
+issueRewardsForRoom({ simResults })
+  └─ reads simResults[i].reefRace.* — plain JS, no live state lookup
+  └─ awaits maybeUpdatePersonalBest() per pet (parallel)
+  └─ builds event.match_ended.pbDelta with deterministic dailyRank
+  └─ broadcasts per-recipient match-end frames
 ```
 
-`reefRaceSim.getStreaksByPet(roomId)` is a new accessor (cheap — walks `state.bodies`).
+This makes the perfect-lap bonus + PB write + dailyRank computation **ordering-independent** with respect to sim teardown. C3 fix complete.
+
+`computeBreakdown` input grows `bestStreakThisMatch?: number` (default 0 — non-Reef-Race activities omit it, no behaviour change). The `RewardBreakdown` adds `perfectStreakBonus: number` (sums into the same breakdown total).
 
 ### 3.5 HUD streak indicator
 
 `apps/web/src/components/game/reef-race-hud.tsx`:
 
-- Read `useActivityStore((s) => s.reefRace?.selfStreak ?? 0)` (new field — see §3.6).
+- Read `useActivityStore((s) => s.reefRace?.selfStreak ?? 0)`.
 - Render a small chip near the placement tile (top-right of HUD): `🔥 STREAK: 7`.
-- Light up at milestones: glow color goes amber (5/10), red (15/20), gold (25/30), rainbow gradient (36+). Use a CSS class table indexed by tier — no per-frame work.
+- Light up at milestones using the SHARED tier kind from `streakMilestoneKind(streak)` (§3.3) — single source of truth, no client-side milestone re-derivation (N4 fix). Tier-1 amber, tier-2 orange, tier-3 red, tier-4 gold, perfect rainbow gradient. CSS class table indexed by tier — no per-frame work.
 - Resets to 0 visually with a brief flash (CSS keyframe `streak-reset 200ms`) when the value drops to 0 — gives the player feedback that they just lost the streak.
 
 ### 3.6 Store wiring for streak
@@ -429,13 +550,15 @@ Updated by:
 ### 3.7 Per-tick / per-checkpoint event cost
 
 - `event.checkpoint_clean` is **NOT broadcast** — too noisy (36 events per match × 8 players = 288 events/match). Streak state is in `EntityDelta.changed.streak` instead.
-- `event.streak_milestone` IS broadcast (≤7 milestones × 8 players = ≤56 events/match — bandwidth trivial).
+- `event.streak_milestone` IS broadcast (≤5 milestones × 8 players = ≤40 events/match — bandwidth trivial).
 - `body.currentStreak` ALWAYS goes into `EntityDelta` snapshot diff (added to the existing `buildSnapshot()` output at `sim.ts:1780-1807`) — same shape as `driftSparks`.
 - Cost analysis: 12 cps × 3 laps × 8 players = 288 streak field updates per match. Each is a 1-byte int change; well within the existing 5 Hz delta bandwidth.
 
 ### 3.8 Per-body teardown
 
 Per-body cleanup (the `addBody` path's mirror) lives in `removeBody` / room teardown. The streak state is in fields directly on the `ReefBody` object — when the body is removed from `state.bodies`, the `lastApexVerdictByHairpin` Map is GC'd along with the body. No explicit cleanup needed.
+
+**C3 corollary.** Even if `state.bodies` is cleared in `endRound`, the streak data lives ALSO in `SimResultRow.reefRace.bestStreakThisMatch` (extracted at `computeResults()` time). The reward pipeline operates on the extracted data, never on the live body.
 
 ---
 
@@ -464,10 +587,15 @@ export interface DailyBestLapSnapshot {
   entries: DailyBestLapEntry[];
 }
 
-/** 60s in-memory cache. Same TTL pattern as activity-leaderboard-service.ts:56. */
+/** 60s in-memory cache. Same TTL pattern as activity-leaderboard-service.ts:56.
+ *  C2/S4 FIX — invalidated by maybeUpdatePersonalBest on successful upsert. */
 export async function getDailyBestLapSnapshot(limit?: number): Promise<DailyBestLapSnapshot>;
 export function invalidateDailyBestLapCache(): void;
 ```
+
+**Important — separation of concerns (C2 fix):**
+- The 60s cache here serves the PUBLIC `/api/leaderboard/reef-race/daily-best-lap` endpoint (§4.2). It is invalidated on every successful PB upsert so users hitting the page see fresh data within one round-trip after their lap.
+- The per-pet `dailyRank` returned in `event.match_ended.pbDelta.dailyRank` is computed via a SEPARATE, non-cached indexed scan inside `maybeUpdatePersonalBest` (§1.2). This avoids any race between the PB write and the cache rebuild — the rank is computed in the SAME async chain as the write, against the freshly-written row.
 
 SQL (Drizzle equivalent):
 
@@ -492,10 +620,13 @@ Index from §1.1 (`idx_reef_race_pb_recorded_lap`) covers this exactly. Query pl
 `apps/api/src/routes/leaderboard.ts`:
 
 ```ts
-// New route at the public-leaderboard mount point.
+// S5 FIX — separate limiter, NOT shared with /agents. 60/min/IP each gives
+// power users on multi-tab leaderboard page the headroom they need.
+const dailyBestLapLimiter = createRateLimiter({ maxPerWindow: 60, windowMs: 60_000 });
+
 leaderboardRoutes.get('/reef-race/daily-best-lap', async (c) => {
   const ip = getClientIp(c.req.raw.headers);
-  if (!agentLeaderboardLimiter.check(ip)) {
+  if (!dailyBestLapLimiter.check(ip)) {
     return c.json({ error: 'rate_limited' }, 429);
   }
   const limit = clampInt(c.req.query('limit'), 100, 1, 100);
@@ -505,7 +636,7 @@ leaderboardRoutes.get('/reef-race/daily-best-lap', async (c) => {
 });
 ```
 
-Same rate limiter as `/agents` (60/min/IP per CLAUDE.md priority #3). Public — no auth — matching the brand stance "high-visibility public surface".
+Public — no auth — matching the brand stance "high-visibility public surface". Both endpoints (`/agents` and `/reef-race/daily-best-lap`) honor the brand priority #3 60-req/min budget independently, so a tab rendering both surfaces never blows a single bucket.
 
 ### 4.3 `/leaderboard` page UI
 
@@ -529,7 +660,7 @@ Risk: a player completes a single fast lap, drops out, locks in a top time, domi
 **Mitigations:**
 
 1. **Match-finish gate.** PB writes happen INSIDE `issueRewardsForRoom` which only runs after `endRound()` in the sim, which only fires when the match ENDED (all racers finished/DNF or hard timeout reached at `sim.ts:1719-1727`). A player who disconnects mid-race never reaches PB write.
-2. **MIN_LAP_MS already enforced.** `validateLapTime(lapMs)` at `sim.ts:1543` discards laps under 15 sec — flagged as `underminlap` anti-cheat. Fast-time exploits via teleport/clip already blocked at the source.
+2. **MIN_LAP_MS already enforced.** `validateLapTime(lapMs)` at `sim.ts:1543` discards laps under 15 sec — flagged as `underminlap` anti-cheat. Fast-time exploits via teleport/clip already blocked at the source. **C1 ensures discarded-lap frames don't contaminate the next attempt's PB.**
 3. **Anti-cheat flag check.** A pet with ≥1 anti-cheat flag this match has their PB write SKIPPED. New check in `reward-pipeline.ts` PB pass: `if (body.flagCount > 0) skip`. Trades small honest-mistake recall (a single false-positive flag denies a legit PB) for ironclad cheater exclusion. Acceptable trade — there's always tomorrow's PB.
 4. **Subject-type filter** mirrors the existing pattern (`subjectType !== 'bot'`, `is_guest = false` excluded — see §4.1 SQL).
 5. **No anonymous submission.** The route is read-only (`GET`); the only write path is the sim → reward pipeline → DB, which can't be triggered without a participant slot.
@@ -571,7 +702,7 @@ When streak hit max (36): "⚡ PERFECT LAP — 36/36 checkpoints clean (+25 🪙
 Beat the 24h best by 0.12s? Try again tomorrow.
 ```
 
-Daily rank is computed server-side at PB-write time and returned in `event.match_ended.pbDelta.dailyRank` (see §6).
+**C2 FIX.** Daily rank is computed server-side INSIDE `maybeUpdatePersonalBest` at PB-write time (single indexed scan, no cache dependency) and returned as part of the awaited result. The pipeline embeds it into `event.match_ended.pbDelta.dailyRank`. The modal reads it from the per-pet match-end frame. The rank is **deterministic on the very match that earned it** — no race window with the cache.
 
 ### 5.3 Data sources
 
@@ -589,7 +720,7 @@ selfBestStreakThisMatch: number;    // §3.6
 selfDailyBestLapRank: number | null;  // populated on event.match_ended
 ```
 
-Match-end handler in `applyServerFrame` switch updates these from `event.match_ended.pbDelta` / `streakBest` / `dailyRank`.
+Match-end handler in `applyServerFrame` switch updates these from `event.match_ended.pbDelta` / `streakBest` / `dailyRank` (the latter sourced from the awaited PB-write result, NOT the public cache — C2 fix).
 
 ### 5.5 "Reef Race" subtitle fix
 
@@ -605,6 +736,10 @@ const activityLabel = activityId === 'reef-race' ? 'REEF RACE' : 'BUMPER SHELLS'
 
 The new sections inherit the existing `phases.callout` / animation gating — `prefers-reduced-motion` collapses them to instant fade-in same as the existing PB callout.
 
+### 5.7 Visual density check
+
+With all three optional sections firing PLUS the existing modal content (placement banner, portrait, stats, podium, rewards, CTAs), the modal becomes scroll-heavy on small screens. Implementation MUST mockup the worst case (all three fire on a 720p mobile viewport) before writing modal CSS. If overflow risk, collapse PB delta + streak + daily rank into a single "Reef Race highlights" panel with three rows.
+
 ---
 
 ## 6. Snapshot/protocol additions
@@ -616,8 +751,9 @@ The new sections inherit the existing `phases.callout` / animation gating — `p
 ```ts
 | {
     /**
-     * Phase 4 — streak milestone (5/10/15/20/25/30/36 clean checkpoint
+     * Phase 4 — streak milestone (5/10/20/30/36 clean checkpoint
      * crosses in a row). Edge-triggered. HUD shows a glow + sound.
+     * S2 FIX — milestones compressed from 7 to 5 to match tier-kind union.
      */
     type: 'event.streak_milestone';
     petId: string;
@@ -654,7 +790,7 @@ selfBestLapGhost?: GhostFrame[];
 
 Where `GhostFrame` is moved from the client-only `reef-race-types.ts:73-80` to `packages/shared/src/activities/protocol.ts` so the server can import the same type. The client file re-exports for backward compat.
 
-### 6.4 Match-end extension
+### 6.4 Match-end extension — S7 FIX (per-recipient semantics)
 
 ```ts
 // In RewardPreview (protocol.ts:128-135), ADD optional fields:
@@ -669,16 +805,47 @@ export interface RewardPreview {
   pbDelta?: {
     newMs: number;       // the new best lap (or current if no improvement)
     oldMs: number | null;  // null = first PB ever
-    /** Replay frames for the freshly-set PB; null when no improvement. */
+    /**
+     * S7 FIX — Replay frames for the freshly-set PB. Included ONLY in the
+     * recipient's OWN match-end frame (i.e., the player who set the PB
+     * receives their frames; rivals receive pbDelta WITHOUT newGhostFrames).
+     * The server emits per-recipient match-end frames via safeSend(ws, …),
+     * gating this field on `ws.data.identity.petId === pbDelta.petId`. */
     newGhostFrames?: GhostFrame[];
+    /** C2 FIX — daily rank for the just-set PB (1-100), null if off-board.
+     *  Computed in maybeUpdatePersonalBest via single indexed scan against
+     *  the freshly-written row. NOT cached. */
+    dailyRank: number | null;
   };
   streakBest?: number;     // best streak this match
   perfectLapBonus?: number;  // +tokens credited for ≥36 streak (0 otherwise)
-  dailyRank?: number | null;  // 1-100 if PB lap landed in top 100, else null
 }
 ```
 
-`event.match_ended` already carries `rewardPreview: RewardPreview` — no envelope change.
+**S7 FIX — broadcast semantics, explicit.** `event.match_ended` is emitted via the existing per-recipient `safeSend(ws, frame)` pattern (NOT room-wide `broadcastFn`). For each WS connection in the room:
+
+```ts
+for (const ws of room.connections) {
+  const recipientPetId = ws.data.identity?.petId;
+  const ownResult = simResults.find(r => r.petId === recipientPetId);
+  const matchEndedFrame = {
+    type: 'event.match_ended',
+    rewardPreview: {
+      ...ownResult.rewardPreview,
+      pbDelta: ownResult.pbDelta && {
+        ...ownResult.pbDelta,
+        // ONLY include newGhostFrames for the pet that earned the PB.
+        newGhostFrames: ownResult.pbDelta.newGhostFrames,  // already gated upstream
+      },
+    },
+  };
+  safeSend(ws, matchEndedFrame);
+}
+```
+
+Total per-match WS payload: ~5 KB ghost frames × 1 recipient (the PB-setter) = ~5 KB peak. Other recipients get a pbDelta block of ~50 bytes. Bandwidth-bounded, no N² blowup.
+
+`event.match_ended` already has `rewardPreview: RewardPreview` — no envelope change.
 
 ### 6.5 Authoritative `GET /api/activities/:id/rooms/:roomId/results` extension
 
@@ -695,15 +862,25 @@ Add the same optional fields to the response per-row shape (`activities.ts:731-7
 }
 ```
 
-Sourced from `activity_results` row + a JOIN to `reef_race_personal_bests` keyed on `(pet_id, activity_id='reef-race')` (left join — null when no PB row). Daily rank is computed by ranking the row against `getDailyBestLapSnapshot()` — done in-memory, no SQL window function needed (snapshot is cached).
+**C2 fix.** `dailyRank` here is sourced from the same `maybeUpdatePersonalBest` result as the WS event — when the user re-fetches via this endpoint after match-end, the value matches what they saw in the WS frame. The endpoint does NOT call `getDailyBestLapSnapshot()` to compute rank (would re-introduce the cache race); it joins to a per-pet `match_pb_rank` column on `activity_results` written by the pipeline.
 
-Phase 4 stores the per-match streak best on a NEW column `activity_results.best_streak`:
+Phase 4 stores the per-match streak best AND the dailyRank-at-match-end on NEW columns:
 
 ```sql
-ALTER TABLE activity_results ADD COLUMN best_streak integer;  -- nullable; legacy rows = null
+-- match_best_streak — Reef Race only, null for other activities.
+ALTER TABLE activity_results ADD COLUMN match_best_streak integer;
+COMMENT ON COLUMN activity_results.match_best_streak IS
+  'Reef Race only — best consecutive clean checkpoint crosses this match. Null for other activities.';
+
+-- match_pb_daily_rank — Reef Race only, null when no PB improvement.
+ALTER TABLE activity_results ADD COLUMN match_pb_daily_rank integer;
+COMMENT ON COLUMN activity_results.match_pb_daily_rank IS
+  'Reef Race only — daily-best-lap rank (1-100) earned by this match if it set a new PB. Null otherwise.';
 ```
 
-Migration generated in same `0005` file as §1.1 (additive, no destructive change). Reward pipeline writes it in the same `INSERT ... VALUES` at `reward-pipeline.ts:274-289`.
+**S3 FIX.** Renamed `best_streak` → `match_best_streak` to disambiguate from "personal best streak" (which we don't track yet). Comment makes the Reef-Race-only nature explicit.
+
+Migration generated in same `0005` file as §1.1 (additive, no destructive change). Reward pipeline writes both columns in the same `INSERT ... VALUES` at `reward-pipeline.ts:274-289`.
 
 ---
 
@@ -713,11 +890,14 @@ Migration generated in same `0005` file as §1.1 (additive, no destructive chang
 
 `apps/api/src/services/activity/__tests__/reef-race-personal-best-service.test.ts` (NEW):
 
-- `maybeUpdatePersonalBest writes new row when no PB exists`
-- `maybeUpdatePersonalBest UPDATES row when newBestLapMs < existing`
-- `maybeUpdatePersonalBest NO-OP when newBestLapMs >= existing` (returns improved=false)
-- `maybeUpdatePersonalBest skipped for bots` — call site test in `reward-pipeline.test.ts`
+- `maybeUpdatePersonalBest writes new row when no PB exists` — assert `improved=true, dailyRank=1` (only entry).
+- `maybeUpdatePersonalBest UPDATES row when newBestLapMs < existing` — assert `improved=true, previousMs=<old>`.
+- `maybeUpdatePersonalBest NO-OP when newBestLapMs >= existing` — assert `improved=false, dailyRank=null`.
+- `maybeUpdatePersonalBest skipped for bots` — call site test in `reward-pipeline.test.ts`.
 - `maybeUpdatePersonalBest stores ghostReplayData verbatim` — round-trip a 200-frame array.
+- `maybeUpdatePersonalBest invalidates daily-best-lap cache on improvement` — write a PB, immediately re-query `getDailyBestLapSnapshot()`, assert new entry visible (C2 fix test).
+- `maybeUpdatePersonalBest invalidates pb-ghost cache on improvement` — write a PB, call `loadPersonalBestGhostFrames(petId)`, assert returns the freshly-set frames (S4 fix test).
+- `maybeUpdatePersonalBest computes correct dailyRank against existing rows` — seed 5 rows, write a PB that lands rank 3, assert `dailyRank=3`.
 - `loadPersonalBest returns the row for a pet` / `returns null when none`.
 - DB-mocked via the same `mock()` pattern as `reward-pipeline.test.ts:16` (Bun test `mock` helper).
 
@@ -726,10 +906,13 @@ Migration generated in same `0005` file as §1.1 (additive, no destructive chang
 `apps/api/src/services/activity/sim/__tests__/reef-race-sim.test.ts` ADD:
 
 - `captures ghost frames at 5 Hz for the active body` — drive 60 ticks (2 sec at 30 Hz), expect ~10 frames in `body.currentLapFrames`.
-- `clears currentLapFrames on lap-up` — drive a full lap, then assert length is 0 after the lap-up tick.
+- `clears currentLapFrames on lap-up` — drive a full lap, then assert length is 1 after the lap-up tick (the synthetic t=0 anchor — S6 fix).
+- **`clears currentLapFrames on under-MIN-LAP lap discard` (C1 FIX TEST)** — drive a fake start-line cross at lapMs=5000 (< MIN_LAP_MS=15000), assert `body.currentLapFrames.length === 0` after the discard, then drive a legit lap and assert `bestLapFrames` contains ONLY frames from the legit lap (no Frankenstein).
 - `bestLapFrames captures from FIRST lap if it's the only/best lap` — drive 1 lap, assert `body.bestLapFrames` has the captured array.
 - `bestLapFrames REPLACED when later lap is faster` — drive 2 laps with the second one shorter, assert bestLapFrames matches the second lap.
-- `getReefRacePerLapResults emits per-pet best with frames` — full integration through the public sim accessor.
+- `SimResultRow.reefRace.ghostReplayFrames is populated by computeResults` — full integration through the public sim accessor (C3 fix integration).
+- `SimResultRow.reefRace.bestStreakThisMatch is populated by computeResults` — drive a perfect run, assert `simResult.reefRace.bestStreakThisMatch === 36`.
+- `SimResultRow.reefRace data persists after endRound clears state.bodies` — call computeResults, then endRound, assert simResults still has the embedded data (C3 fix lifecycle test).
 
 ### 7.3 PB load (snapshot.init)
 
@@ -738,33 +921,36 @@ Migration generated in same `0005` file as §1.1 (additive, no destructive chang
 - `snapshot.init carries selfBestLapGhost when pet has a PB row` — fixture: insert row, connect WS, assert frame.
 - `snapshot.init omits selfBestLapGhost for non-Reef-Race rooms`.
 - `snapshot.init omits selfBestLapGhost for bots`.
+- `snapshot.init omits selfBestLapGhost for guest sockets without ws.data.identity` — no error, no frame field.
 
 ### 7.4 Streak counter
 
 `reef-race-sim.test.ts` ADD:
 
-- `currentStreak increments on consecutive clean checkpoint crosses`
-- `currentStreak resets to 0 on a wide hairpin verdict`
-- `bestStreakThisMatch is the high-water mark`
+- `currentStreak increments on consecutive clean checkpoint crosses`.
+- `currentStreak resets to 0 on a wide hairpin verdict`.
+- `bestStreakThisMatch is the high-water mark`.
 - `non-hairpin checkpoints count as clean automatically` — drive a pure-straight lap, expect streak to advance.
-- `event.streak_milestone fires at 5, 10, 15, 20, 25, 30, 36 only` — drive 36 clean crosses, assert exactly 7 events.
-- `streak survives lap boundary if the lap-up checkpoint is clean` — fixture: enter lap-N final hairpin clean, cross start/finish, assert streak += 1.
+- `event.streak_milestone fires at 5, 10, 20, 30, 36 only` — drive 36 clean crosses, assert exactly 5 events with kinds tier-1, tier-2, tier-3, tier-4, perfect (S2 fix test).
+- **`streak survives lap boundary if the lap-up checkpoint is clean` (S1 FIX TEST)** — fixture: enter lap-1 final hairpin clean, cross start/finish, enter lap-2 first hairpin → assert verdict map clear at lap-up AND streak += 1 only when the new-lap apex resolves clean.
+- `lastApexVerdictByHairpin keyed by (lap, cpIdx) prevents cross-lap stale read` — fixture: lap 1 hairpin 9 verdict 'clean', lap 2 enters cp 9 BEFORE resolveApex re-fires, assert isCheckpointCrossClean returns false (key `2-9` not present, NOT a stale `9` hit).
 
 ### 7.5 Lobster of the day
 
 `apps/api/src/services/activity/__tests__/reef-race-daily-best-service.test.ts` (NEW):
 
-- `getDailyBestLapSnapshot returns rows ordered by bestLapMs ASC`
-- `getDailyBestLapSnapshot excludes rows older than 24h`
-- `getDailyBestLapSnapshot excludes guest pets`
+- `getDailyBestLapSnapshot returns rows ordered by bestLapMs ASC`.
+- `getDailyBestLapSnapshot excludes rows older than 24h`.
+- `getDailyBestLapSnapshot excludes guest pets`.
 - `getDailyBestLapSnapshot caches for 60s` — assert second call within window doesn't re-query DB (mock SELECT counter).
 - `getDailyBestLapSnapshot honors limit param` — insert 150 rows, request limit=10, expect 10 entries.
+- `invalidateDailyBestLapCache forces fresh read` — populate cache, invalidate, assert next call re-queries DB.
 
 `apps/api/src/routes/__tests__/leaderboard.test.ts` (NEW or extended):
 
-- `GET /api/leaderboard/reef-race/daily-best-lap returns 200 + correct shape`
-- `GET /api/leaderboard/reef-race/daily-best-lap rate-limits at 60/min/IP`
-- `GET /api/leaderboard/reef-race/daily-best-lap public — no auth required`
+- `GET /api/leaderboard/reef-race/daily-best-lap returns 200 + correct shape`.
+- `GET /api/leaderboard/reef-race/daily-best-lap rate-limits at 60/min/IP via dailyBestLapLimiter (S5 fix)` — assert NOT shared with /agents bucket (drain 60 on /agents, then /reef-race/daily-best-lap still allowed).
+- `GET /api/leaderboard/reef-race/daily-best-lap public — no auth required`.
 
 ### 7.6 Match-end results
 
@@ -772,9 +958,11 @@ Migration generated in same `0005` file as §1.1 (additive, no destructive chang
 
 - `issueRewardsForRoom credits perfect-lap bonus when bestStreak >= 36` — assert tokens include +25.
 - `issueRewardsForRoom skips perfect-lap bonus when bestStreak < 36`.
-- `issueRewardsForRoom triggers PB write when newBestLapMs < priorBestMs` — assert mock called.
+- `issueRewardsForRoom triggers PB write when newBestLapMs < priorBestMs` — assert `maybeUpdatePersonalBest` mock awaited (C2 fix test).
 - `issueRewardsForRoom skips PB write for bots`.
-- `issueRewardsForRoom emits pbDelta.newGhostFrames when PB improved` — assert event payload.
+- `issueRewardsForRoom emits pbDelta.newGhostFrames in PB-setter's match-end frame ONLY` (S7 fix test) — assert recipient WS gets frames; rival WS does not.
+- `issueRewardsForRoom embeds dailyRank from awaited PB write into match-end frame` (C2 fix test) — assert `pbDelta.dailyRank` equals the rank returned by the (mocked) `maybeUpdatePersonalBest`.
+- `issueRewardsForRoom reads bestStreakThisMatch from SimResultRow.reefRace, not from a live accessor` (C3 fix test) — fixture mocks state.bodies as cleared post-computeResults; assert pipeline still credits the bonus.
 
 ### 7.7 Anti-cheat — PB skip on flagged match
 
@@ -786,9 +974,10 @@ Migration generated in same `0005` file as §1.1 (additive, no destructive chang
 
 `apps/web/src/stores/__tests__/activity.test.ts` (if exists, else add new):
 
-- `setGhostPath populates reefRace.selfBestGhostPath`
-- `event.streak_milestone updates selfStreak when self pet`
-- `EntityDelta.changed.streak updates entity.streak`
+- `setGhostPath populates reefRace.selfBestGhostPath`.
+- `event.streak_milestone updates selfStreak when self pet`.
+- `EntityDelta.changed.streak updates entity.streak`.
+- `event.match_ended.pbDelta.dailyRank updates selfDailyBestLapRank`.
 
 ---
 
@@ -796,20 +985,26 @@ Migration generated in same `0005` file as §1.1 (additive, no destructive chang
 
 | Risk | Mitigation |
 |---|---|
-| **DB write at match end** | 1 INSERT per pet per match (PB) + 1 UPDATE per `activity_results` (perfect bonus column). Bound: ~5 matches/min × 8 players = 40 writes/min. Trivial vs. Supabase paid-tier capacity. |
+| **DB write at match end** | 1 INSERT per pet per match (PB) + 1 UPDATE per `activity_results` (perfect bonus column) + 1 indexed scan for dailyRank. Bound: ~5 matches/min × 8 players = 40 writes/min + 40 scans/min. Trivial vs. Supabase paid-tier capacity. |
 | **`ghost_replay_data` JSONB size** | 5 Hz capture cap = 250 frames × ~24 B serialized = 6 KB worst case. Storage at 1000 active pets = 6 MB total — negligible on Supabase. JSONB compression makes it ~half that on disk. |
 | **Mid-match server crash kills replay capture** | The current frame ring buffer is in-process. A crash loses the in-progress lap's frames — same blast radius as the existing replay log buffer (already accepted risk per `activity-room-manager.ts:887` flush-on-end semantics). PB stays as the previous match's. |
-| **Anti-cheat for daily leaderboard** | (1) PB only writes after match ENDS (no premature disconnect), (2) `MIN_LAP_MS=15s` blocks teleport laps via existing `validateLapTime`, (3) any pet with anti-cheat flag in the match has PB write skipped, (4) bot + guest carve-outs in SQL. |
-| **Per-body streak state cleanup** | Streak fields live on the `ReefBody` object — automatic GC when `state.bodies` is cleared in `endRound`. No explicit teardown. Same pattern as `apexCheckedThisLap`. |
-| **PB ghost on LIVE rivals** | Spec: self only. Server NEVER sends `selfBestLapGhost` for any pet other than the connecting one's identity. WS hub gates on `ws.data.identity.petId`. |
+| **Anti-cheat for daily leaderboard** | (1) PB only writes after match ENDS (no premature disconnect), (2) `MIN_LAP_MS=15s` blocks teleport laps via existing `validateLapTime` AND C1 fix prevents discarded-lap frame contamination, (3) any pet with anti-cheat flag in the match has PB write skipped, (4) bot + guest carve-outs in SQL. |
+| **Per-body streak state cleanup** | Streak fields live on the `ReefBody` object — automatic GC when `state.bodies` is cleared in `endRound`. **C3** ensures the data is extracted into `SimResultRow.reefRace` BEFORE teardown so the reward pipeline never depends on live state. Same pattern as `apexCheckedThisLap`. |
+| **PB ghost on LIVE rivals** | Spec: self only. Server NEVER sends `selfBestLapGhost` for any pet other than the connecting one's identity. WS hub gates on `ws.data.identity.petId`. **S7** clarifies match-end ghost frames also gate on per-recipient identity. |
 | **Per-frame allocation regression** | Frame capture allocates ONE GhostFrame literal per body per (tick % 6) — 5 Hz × 8 bodies = 40 allocs/sec. Below the per-frame budget. Material list is memoized in `ReefRaceGhost.tsx:useMemo`. |
 | **Stat-driven body multipliers don't apply to streak** | Confirmed: streak is a pure mechanic over checkpoint-cross transitions; no body multipliers needed. Stat-tweaked body just makes hitting the apex easier (Phase 3 effect), which is fine. |
 | **Frame rate change (10 → 5 Hz) breaks existing client expectations** | Verified: `findGhostFrames` lerps for arbitrary rate. The `GHOST_SAMPLE_HZ` constant on the client is documentation only — no integer divisions hard-code 10. Updating the constant in same diff keeps docs honest. |
-| **`event.match_ended` payload bigger** | Reef-race only. New `pbDelta.newGhostFrames` is ~5 KB, fires at most ONCE per match (and only when PB improved). Per-match cost, not per-tick. |
+| **`event.match_ended` payload bigger** | Reef-race only. New `pbDelta.newGhostFrames` is ~5 KB, fires at most ONCE per match (and only when PB improved). **S7** confirms per-recipient delivery — only the PB-setter receives the frames. Per-match, per-recipient cost. |
 | **3da rule** | `ReefRaceGhost.tsx` + `ReefRaceScene.tsx` mount = 3D code. `3da` MUST be spawned to write/edit those changes. PB write, streak sim, leaderboard route, modal extensions are NOT 3D — orchestrator owns. |
 | **Daily-best-lap cold cache** | First request after server restart hits PG with the index-only scan. Worst case <50 ms at 1000 PB rows. 60s cache absorbs the rest. |
-| **Migration order** | `0005_reef_race_personal_bests.sql` is purely additive (new table + new column on activity_results). `bun run db:push` applies cleanly. Per CLAUDE.md, run before deploy. |
-| **Same-diff doc updates** | `GameFeatures.md` (PB ghost, streak, daily-fastest-lap), `ARCHITECTURE.md` (new table, new route, new event types), `3dStructure.md` (PB ghost mounted in scene), `town-guide.ts` knowledge[] (new "Lobster of the day" surface for orientation). All MUST land same diff per project rules. |
+| **Daily-best-lap cache stale post-write** | **C2 fix.** `invalidateDailyBestLapCache()` called from `maybeUpdatePersonalBest` on every successful upsert; next public read sees fresh data within one round-trip. |
+| **dailyRank race with public cache** | **C2 fix.** `dailyRank` in match-end payload is computed via single indexed scan inside `maybeUpdatePersonalBest`, NOT via the cached snapshot. Always reflects the just-written row. |
+| **PB ghost cache stale post-write** | **S4 fix.** `invalidatePbGhostCache(petId)` called from `maybeUpdatePersonalBest`; reconnect within 5-min TTL sees freshly-set ghost. |
+| **Sub-MIN_LAP frame contamination** | **C1 fix.** `body.currentLapFrames.length = 0` cleared in BOTH the discard branch (sim.ts:1554 area) AND the success branch — guaranteed monotonic `t` in saved replay. |
+| **Streak-cross-lap stale verdict** | **S1 fix.** `lastApexVerdictByHairpin` keyed by `${lap}-${cpIdx}` AND cleared at lap-up. No cross-lap collision possible. |
+| **Rate-limiter contention with /agents** | **S5 fix.** Separate `dailyBestLapLimiter` instance; multi-tab leaderboard browsing doesn't blow the agents budget. |
+| **Migration order** | `0005_reef_race_personal_bests.sql` is purely additive (new table + two new columns on activity_results). `bun run db:push` applies cleanly. Per CLAUDE.md, run before deploy. |
+| **Same-diff doc updates** | `GameFeatures.md` (PB ghost, streak, daily-fastest-lap, perfect-lap bonus), `ARCHITECTURE.md` (new table, new route, new event types, new columns), `3dStructure.md` (PB ghost mounted in scene), `town-guide.ts` knowledge[] (4 substantive entries — see §11). All MUST land same diff per project rules. |
 
 ---
 
@@ -819,41 +1014,42 @@ Migration generated in same `0005` file as §1.1 (additive, no destructive chang
 |---|---|---|---|---|
 | `packages/database/src/schema/reef-race-personal-bests.ts` | NEW | orchestrator | ~50 | New PG table + types |
 | `packages/database/src/schema/index.ts` | MOD | orchestrator | +1 | export new schema |
-| `packages/database/src/schema/activity-results.ts` | MOD | orchestrator | +3 | add `bestStreak: integer` column |
-| `packages/database/drizzle/0005_reef_race_personal_bests.sql` | NEW | orchestrator | ~30 | additive migration (table + column) |
+| `packages/database/src/schema/activity-results.ts` | MOD | orchestrator | +6 | add `match_best_streak` + `match_pb_daily_rank` columns (S3 fix) |
+| `packages/database/drizzle/0005_reef_race_personal_bests.sql` | NEW | orchestrator | ~35 | additive migration (table + 2 columns + comments) |
 | `packages/database/drizzle/meta/0005_snapshot.json` | NEW | orchestrator | ~120 | drizzle-kit auto-generated |
-| `packages/shared/src/activities/protocol.ts` | MOD | orchestrator | +50 | move `GhostFrame` here, add `selfBestLapGhost` to RoomMeta, extend RewardPreview, add `event.streak_milestone` |
+| `packages/shared/src/activities/protocol.ts` | MOD | orchestrator | +55 | move `GhostFrame` here, add `selfBestLapGhost` to RoomMeta, extend RewardPreview (incl. dailyRank, S7 per-recipient newGhostFrames), add `event.streak_milestone` |
+| `packages/shared/src/activities/reef-race-streak.ts` | NEW | orchestrator | ~30 | shared `STREAK_MILESTONES`, `streakMilestoneKind` (N4 single-source-of-truth) |
 | `packages/shared/src/activities/activities.ts` | MOD | orchestrator | +5 | `perfectStreakBonusTokens` in reef-race rewardConfig |
 | `apps/web/src/lib/three/activities/reef-race/reef-race-types.ts` | MOD | 3da | +5 | re-export GhostFrame from shared |
 | `apps/web/src/lib/three/activities/reef-race/reef-race-config.ts` | MOD | orchestrator | +3 | `GHOST_SAMPLE_HZ` 10 → 5 + comment update |
 | `apps/web/src/lib/three/activities/reef-race/ReefRaceGhost.tsx` | MOD | 3da | +40 | per-lap fade, material list memo, settings gate, mount-only-if-self |
 | `apps/web/src/lib/three/activities/reef-race/ReefRaceScene.tsx` | MOD | 3da | +5 | mount `<ReefRaceGhost />` |
-| `apps/api/src/services/activity/sim/reef-race-sim.ts` | MOD | orchestrator | +120 | frame capture, streak fields, accessors `getReefRacePerLapResults` + `getStreaksByPet`, `event.streak_milestone` broadcast, EntityDelta.streak field |
-| `apps/api/src/services/activity/sim/reef-race-config.ts` | MOD | orchestrator | +20 | `STREAK_MILESTONES`, `streakMilestoneKind`, `TOTAL_CHECKPOINTS_PER_RACE`, `GHOST_CAPTURE_HZ`, `MAX_GHOST_FRAMES_PER_LAP`, `PB_GHOST_PER_FRAME_BYTES_BUDGET` |
-| `apps/api/src/services/activity/reef-race-personal-best-service.ts` | NEW | orchestrator | ~120 | `maybeUpdatePersonalBest`, `loadPersonalBest`, `loadPersonalBestGhostFrames` + 5-min in-memory cache |
-| `apps/api/src/services/activity/reef-race-daily-best-service.ts` | NEW | orchestrator | ~110 | `getDailyBestLapSnapshot`, 60s cache, invalidate hook |
-| `apps/api/src/services/activity/reward-pipeline.ts` | MOD | orchestrator | +60 | thread per-lap + streaks into pipeline, perfect-lap bonus computation, fire-and-forget PB write, daily-rank computation, anti-cheat-flag PB skip |
-| `apps/api/src/services/activity/activity-room-manager.ts` | MOD | orchestrator | +15 | call `getReefRacePerLapResults` + `getStreaksByPet` and pass into `issueRewardsForRoom` |
+| `apps/api/src/services/activity/sim/reef-race-sim.ts` | MOD | orchestrator | +130 | frame capture (incl. C1 dual-branch clear + S6 synthetic t=0 anchor), streak fields (S1 keyed by lap+cp), `event.streak_milestone` broadcast (S2 5-tier), EntityDelta.streak field, `computeResults()` embeds reefRace block into SimResultRow (C3) |
+| `apps/api/src/services/activity/sim/reef-race-config.ts` | MOD | orchestrator | +20 | `STREAK_MILESTONES`, `streakMilestoneKind`, `TOTAL_CHECKPOINTS_PER_RACE`, `GHOST_CAPTURE_HZ`, `MAX_GHOST_FRAMES_PER_LAP` |
+| `apps/api/src/services/activity/reef-race-personal-best-service.ts` | NEW | orchestrator | ~140 | `maybeUpdatePersonalBest` (with awaited dailyRank scan + dual cache invalidation per C2/S4), `loadPersonalBest`, `loadPersonalBestGhostFrames` + 5-min in-memory cache + `invalidatePbGhostCache` |
+| `apps/api/src/services/activity/reef-race-daily-best-service.ts` | NEW | orchestrator | ~110 | `getDailyBestLapSnapshot`, 60s cache, `invalidateDailyBestLapCache` |
+| `apps/api/src/services/activity/reward-pipeline.ts` | MOD | orchestrator | +70 | thread `simResult.reefRace` into pipeline, perfect-lap bonus computation (C3 — read from SimResultRow not live accessor), AWAITED PB write per pet (C2), per-recipient match-end emit (S7 — `safeSend(ws, …)` gated on identity), anti-cheat-flag PB skip, write `match_best_streak` + `match_pb_daily_rank` columns |
+| `apps/api/src/services/activity/activity-room-manager.ts` | MOD | orchestrator | +5 | call `computeResultsFn(room)` BEFORE `endRound` (already the case — verify ordering); pass `simResults` directly to pipeline (no `getStreaksByPet` accessor — C3) |
 | `apps/api/src/services/activity/activity-ws-hub.ts` | MOD | orchestrator | +15 | load self-pet PB ghost, attach to RoomMeta in snapshot.init |
-| `apps/api/src/routes/leaderboard.ts` | MOD | orchestrator | +35 | new `GET /reef-race/daily-best-lap`, register limiter, response shape |
-| `apps/api/src/routes/activities.ts` | MOD | orchestrator | +30 | extend `GET /:id/rooms/:roomId/results` to join PB row + return Phase-4 fields |
+| `apps/api/src/routes/leaderboard.ts` | MOD | orchestrator | +40 | new `GET /reef-race/daily-best-lap`, NEW `dailyBestLapLimiter` (S5 — does not share with `agentLeaderboardLimiter`), response shape |
+| `apps/api/src/routes/activities.ts` | MOD | orchestrator | +30 | extend `GET /:id/rooms/:roomId/results` to read Phase-4 columns directly from activity_results (no JOIN to PB row needed for rank — C2: rank is already persisted on the per-match row) |
 | `apps/web/src/stores/activity.ts` | MOD | orchestrator | +60 | `selfStreak`, `selfBestStreakThisMatch`, `selfDailyBestLapRank` in ReefRaceState; handlers for `event.streak_milestone`, EntityDelta.streak, snapshot.init `selfBestLapGhost`, match-end `pbDelta.newGhostFrames` |
-| `apps/web/src/components/game/reef-race-hud.tsx` | MOD | orchestrator | +35 | streak indicator chip + tier-coded glow + reset flash |
+| `apps/web/src/components/game/reef-race-hud.tsx` | MOD | orchestrator | +35 | streak indicator chip + tier-coded glow (imports `streakMilestoneKind` from shared — N4) + reset flash |
 | `apps/web/src/components/game/activity-results-modal.tsx` | MOD | orchestrator | +90 | activity label fix, PB delta block, streak section, daily rank section, plumb authoritative response |
 | `apps/web/src/app/leaderboard/page.tsx` | MOD | orchestrator | +120 | tab group (Agents | Lobster of the day), daily-best-lap fetch hook, ranked table component |
-| `packages/agent-templates/src/locations/town-guide.ts` | MOD | orchestrator | +6 | knowledge[] entry: "Lobster of the day" surface + perfect-lap bonus |
-| `apps/api/src/services/activity/__tests__/reef-race-personal-best-service.test.ts` | NEW | orchestrator | ~120 | §7.1 |
-| `apps/api/src/services/activity/sim/__tests__/reef-race-sim.test.ts` | MOD | orchestrator | +130 | §7.2 + §7.4 cases |
-| `apps/api/src/services/activity/__tests__/activity-ws-hub.test.ts` | MOD | orchestrator | +50 | §7.3 cases |
-| `apps/api/src/services/activity/__tests__/reef-race-daily-best-service.test.ts` | NEW | orchestrator | ~100 | §7.5 |
-| `apps/api/src/routes/__tests__/leaderboard.test.ts` | NEW or MOD | orchestrator | +60 | §7.5 route tests |
-| `apps/api/src/services/activity/__tests__/reward-pipeline.test.ts` | MOD | orchestrator | +80 | §7.6 + §7.7 cases |
-| `apps/web/src/stores/__tests__/activity.test.ts` | NEW or MOD | orchestrator | +40 | §7.8 |
+| `packages/agent-templates/src/locations/town-guide.ts` | MOD | orchestrator | ~25 | knowledge[] — 4 substantive entries per §11 (S8 fix) |
+| `apps/api/src/services/activity/__tests__/reef-race-personal-best-service.test.ts` | NEW | orchestrator | ~160 | §7.1 (incl. C2/S4 cache-invalidation tests, dailyRank scan test) |
+| `apps/api/src/services/activity/sim/__tests__/reef-race-sim.test.ts` | MOD | orchestrator | +160 | §7.2 + §7.4 cases (incl. C1 discard test, S1 lap-keyed verdict test, C3 lifecycle test) |
+| `apps/api/src/services/activity/__tests__/activity-ws-hub.test.ts` | MOD | orchestrator | +60 | §7.3 cases (incl. guest socket no-error case) |
+| `apps/api/src/services/activity/__tests__/reef-race-daily-best-service.test.ts` | NEW | orchestrator | ~110 | §7.5 (incl. invalidate test) |
+| `apps/api/src/routes/__tests__/leaderboard.test.ts` | NEW or MOD | orchestrator | +70 | §7.5 route tests (incl. S5 separate-bucket test) |
+| `apps/api/src/services/activity/__tests__/reward-pipeline.test.ts` | MOD | orchestrator | +110 | §7.6 + §7.7 cases (incl. C2 awaited-PB test, C3 SimResultRow-not-live-accessor test, S7 per-recipient frame test) |
+| `apps/web/src/stores/__tests__/activity.test.ts` | NEW or MOD | orchestrator | +50 | §7.8 |
 | `GameFeatures.md` | MOD | orchestrator | +30 | Phase 4 mechanics: PB ghost, streak, lobster-of-the-day, perfect-lap bonus |
-| `ARCHITECTURE.md` | MOD | orchestrator | +20 | new table + route + event in tables of routes/DB |
+| `ARCHITECTURE.md` | MOD | orchestrator | +25 | new table + route + event in tables of routes/DB; new columns on activity_results |
 | `3dStructure.md` | MOD | 3da | +12 | PB ghost mount, fade timeline, opacity budget, settings gate |
 
-**TOTAL CODE EST:** ~1100 lines added/modified, ~600 lines test, 3 doc updates.
+**TOTAL CODE EST:** ~1200 lines added/modified, ~720 lines test, 3 doc updates.
 
 ---
 
@@ -893,8 +1089,18 @@ CREATE INDEX IF NOT EXISTS "idx_reef_race_pb_recorded_lap"
 
 -- Phase 4 — best-streak surfaced on per-match results so /results endpoint can
 -- return it without a JOIN. Nullable so legacy rows backfill as null.
+-- S3 FIX — renamed best_streak → match_best_streak for clarity.
 ALTER TABLE "activity_results"
-  ADD COLUMN IF NOT EXISTS "best_streak" integer;
+  ADD COLUMN IF NOT EXISTS "match_best_streak" integer;
+COMMENT ON COLUMN "activity_results"."match_best_streak" IS
+  'Reef Race only — best consecutive clean checkpoint crosses this match. Null for other activities.';
+
+-- C2 FIX — daily-best-lap rank for the just-set PB persisted on the per-match
+-- row so /results endpoint can return it without a cache round-trip.
+ALTER TABLE "activity_results"
+  ADD COLUMN IF NOT EXISTS "match_pb_daily_rank" integer;
+COMMENT ON COLUMN "activity_results"."match_pb_daily_rank" IS
+  'Reef Race only — daily-best-lap rank (1-100) earned by this match if it set a new PB. Null otherwise.';
 ```
 
 Migration is **purely additive** — no DROPs, no data rewrites, no destructive ALTER. Safe to run on prod via `bun run db:push` per CLAUDE.md "Database migrations".
@@ -905,6 +1111,50 @@ Migration is **purely additive** — no DROPs, no data rewrites, no destructive 
 - Server code that READS `reef_race_personal_bests` ships next (after migration confirmed live in prod via `psql \dt`).
 - Server code that WRITES `reef_race_personal_bests` ships in the same deploy as the read-side (writers don't fire until a Reef Race match ends, by which time the table exists).
 - Client code (modal, leaderboard tab, ghost mount) ships in the same deploy. Ghost component returns `null` cleanly when `selfBestLapGhost` is `undefined` → backwards-compatible with old servers.
+
+---
+
+## 11. Town Guide knowledge entries (S8 fix)
+
+`packages/agent-templates/src/locations/town-guide.ts` `knowledge[]` MUST add the following four substantive entries (per CLAUDE.md mandatory town-guide-knowledge-sync rule). These cover every player-facing surface introduced in Phase 4 — Nori can answer "what is the ghost?", "what's the streak about?", "where do I find lobster of the day?", and "what just happened in my match-end?".
+
+```ts
+// In packages/agent-templates/src/locations/town-guide.ts knowledge[]:
+
+`Reef Race PB ghost: when you've finished at least one Reef Race match
+and set a personal best lap, your fastest lap replays as a translucent
+sea-horse ghost on every subsequent run. Only YOU see your own ghost —
+not other racers'. The ghost fades in over the first 0.5 sec of each
+lap and out over the last 0.5 sec. Toggle it off in Reef Race settings
+if it distracts you (default ON). Beating your ghost = setting a new PB.`,
+
+`Reef Race streak counter: the HUD chip in the top-right shows your
+current run of consecutive clean checkpoint crosses. A cross is "clean"
+when you're inside the apex zone for hairpin checkpoints (cps 3 and 9
+on each lap), and automatically clean for the 10 non-hairpin checkpoints.
+Wide on a hairpin = streak resets to 0. Total checkpoints in a 3-lap race
+is 36; hitting 36 = perfect race = +25 ClawToken bonus. Milestone glows
+fire at 5, 10, 20, 30, and 36.`,
+
+`Lobster of the Day: the public /leaderboard page has two tabs —
+"Agents" (the existing free contribution-based ranking) and "Lobster
+of the Day" (Reef Race fastest single lap in the last 24 hours, top
+100). The #1 entry gets a gold "🦞 LOBSTER OF THE DAY" card. Updates
+every 60 seconds + within one round-trip of any new PB. Anti-cheat:
+sub-15-second laps are discarded, anti-cheat-flagged matches don't
+write a PB, bots and guests are excluded.`,
+
+`Reef Race match-end summary: after every Reef Race match the results
+modal can show up to three Reef-Race-specific sections in addition to
+the standard placement / podium / rewards. (1) PB delta — your new
+fastest lap and the previous best, with the time saved. (2) Perfect-line
+streak — your best run of clean checkpoint crosses this match, and the
++25 token bonus if you hit 36/36. (3) Daily rank — if your new PB lands
+in the top 100 fastest laps of the last 24 hours, the modal shows your
+"#N LOBSTER OF THE DAY" rank.`,
+```
+
+Test `system-npc-seeder` re-chunks these into RAG on next API boot — verify by chatting "tell me about the ghost" with Nori after deploy.
 
 ---
 
