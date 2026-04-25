@@ -956,6 +956,16 @@ class ReefRaceSim {
     dt: number,
     now: number,
   ): void {
+    // Phase 3 (audit C-IMPL-1) — capture velocity BEFORE any mutation so the
+    // velocity-delta validator at the end of this method sees a real
+    // before/after pair. The previous implementation captured both prev/curr
+    // inside `integrateMotion` AFTER applyIntentForTick had already mutated
+    // body.vx/body.vy in the prior tick-loop pass — making the comparison
+    // vacuous (dv = 0, validator always ok). Capturing here is the cleanest
+    // fix: single function ownership, no per-body cache, and the validator
+    // call sits adjacent to the only acceleration mutation site.
+    const prevVelocityBeforeIntent = { x: body.vx, y: body.vy };
+
     const intent = body.intent;
     // 1. Consume seq.
     if (intent.seq > intent.consumedSeq) {
@@ -1109,6 +1119,34 @@ class ReefRaceSim {
     const scale = dv === 0 ? 0 : Math.min(1, maxStep / dv);
     body.vx += dvx * scale;
     body.vy += dvy * scale;
+
+    // Phase 3 (audit C-IMPL-1) — REAL velocity-delta validator. Compares
+    // velocity captured BEFORE any mutation in this method against velocity
+    // AFTER the acceleration step. The legitimate per-tick delta is bounded
+    // by REEF_MAX_ACCEL × dt × max(accelMult, 1/turnRadiusMult) ≈ 83 wu/s
+    // (worst case at level-50 agility / strength); the validator allows
+    // REEF_MAX_ACCEL × dt × REEF_KINEMATIC_TOLERANCE ≈ 140 wu/s — leaving
+    // 56 wu/s of headroom to catch synthetic per-tick velocity tampering.
+    // Secondary speed cap (REEF_MAX_SPEED × tolerance = 1050 wu/s) catches
+    // sustained over-speed even if the per-tick delta stays under threshold.
+    const velCheck = validateReefVelocityDelta(
+      prevVelocityBeforeIntent,
+      { x: body.vx, y: body.vy },
+      dt,
+      REEF_KINEMATIC_TOLERANCE,
+    );
+    if (!velCheck.ok) {
+      body.vx = velCheck.value.x;
+      body.vy = velCheck.value.y;
+      // validateReefVelocityDelta returns flagKind ∈ {'overaccel','overspeed'}.
+      // Narrow to the ActivityAntiCheatFlagPayload['kind'] union (which excludes
+      // 'input_bounds'/'input_rate') so the route through this.flag() typechecks
+      // — defensive default to 'overaccel' if a future validator extension
+      // returns something unexpected.
+      const kind: 'overaccel' | 'overspeed' =
+        velCheck.flagKind === 'overspeed' ? 'overspeed' : 'overaccel';
+      this.flag(state, body.petId, kind, velCheck.detail);
+    }
   }
 
   /**
@@ -1304,34 +1342,20 @@ class ReefRaceSim {
     dt: number,
   ): void {
     const prev = { x: body.x, y: body.y };
-    const prevV = { x: body.vx, y: body.vy };
 
     // Audit C3 — both call-sites use the named REEF_KINEMATIC_TOLERANCE so
     // a future refactor of integrateMotion can't silently revert to the
     // shared.ts DEFAULT_CLAMP_TOLERANCE (1.15) and start clipping legit
     // boosts.
     //
-    // Phase 3 (audit N1) — fixed pre-existing no-op: the validator was
-    // called with `prevV, prevV` (zero delta, never flags). With the
-    // tolerance bumped to 2.1 the velocity validator is now the cheat-
-    // detection backstop for synthetic per-tick velocity jumps. We compare
-    // prevV (velocity AT START of this tick — applyIntentForTick already
-    // ran so the integration step happened, but the legitimate per-tick
-    // delta is bounded by REEF_MAX_ACCEL × dt × 1.25 ≈ 83 wu/s vs the
-    // validator's REEF_MAX_ACCEL × dt × 2.1 ≈ 140 wu/s allowance — leaves
-    // 56 wu/s of headroom to catch tampering).
-    const currV = { x: body.vx, y: body.vy };
-    const velCheck = validateReefVelocityDelta(
-      prevV,
-      currV,
-      dt,
-      REEF_KINEMATIC_TOLERANCE,
-    );
-    if (!velCheck.ok) {
-      body.vx = velCheck.value.x;
-      body.vy = velCheck.value.y;
-    }
-
+    // Phase 3 (audit C-IMPL-1) — the velocity-delta validator that USED to
+    // live here was a no-op: by the time integrateMotion ran,
+    // applyIntentForTick had already mutated body.vx/vy in the prior
+    // tick-loop pass, so prevV and currV were byte-equal and dv = 0. The
+    // validator now lives at the END of applyIntentForTick where it has a
+    // real before/after pair to compare. integrateMotion is left with the
+    // position-delta validator only — the secondary cheat-detection backstop
+    // for any post-integration drift.
     body.x += body.vx * dt;
     body.y += body.vy * dt;
 

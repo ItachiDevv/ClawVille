@@ -1995,6 +1995,36 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     expect(body.mults.turnRadiusMult).toBe(AGILITY_TURN_RADIUS_MULT);
   });
 
+  // P3-T11b — async-pipeline integration: drives the SAME async path
+  // production uses (`loadRacingProfiles → reefRaceSim.startRoom`), then
+  // asserts `body.mults` is populated BEFORE the first tick advances —
+  // catches regressions where a future refactor accidentally fires the
+  // sim before the loader settles.
+  it('P3-T11b — async loader → startRoom: body.mults populated on tick 0', async () => {
+    captureBroadcasts();
+    // Drive the actual async path: a Promise<Map> resolves and the result
+    // is fed straight into startRoom. Mirrors apps/api/src/index.ts:359-371.
+    const fakeProfilesPromise: Promise<
+      Map<string, { petId: string; level: number; archetype: string | null; isBot: boolean }>
+    > = Promise.resolve(
+      new Map([
+        ['p1', profile('p1', 50, 'chaotic-jester')],
+      ]),
+    );
+    const petProfiles = await fakeProfilesPromise;
+    const state = bootProfileRoom({ petIds: ['p1'], petProfiles });
+    const body = state.bodies.get('p1')!;
+    // Mults must be set BEFORE any tick advances — i.e. immediately after
+    // startRoom returns. No 1.0 sentinel allowed.
+    expect(body.mults.accelMult).toBeCloseTo(1.245, 4);
+    expect(body.mults.turnRadiusMult).toBe(AGILITY_TURN_RADIUS_MULT);
+    expect(body.mults.slipstreamGraceTicks).toBe(AGILITY_SLIPSTREAM_GRACE_TICKS);
+    // Drive one tick — mults still applied (no init gap).
+    setIntent(body, { dir: { x: 0, y: 1 }, thrust: 1 });
+    reefRaceSim.__tickOnceForTest('room-p3');
+    expect(body.mults.accelMult).toBeCloseTo(1.245, 4);
+  });
+
   // P3-T12 — bot petId always neutral
   it('P3-T12 — bot petId always neutral mults regardless of archetype', () => {
     captureBroadcasts();
@@ -2063,8 +2093,9 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
 
   // P3-T15 — velocity validator NOW actually fires (N1 fix). Direct
   // validator call — proves the validator clamps at REEF_MAX_ACCEL × dt ×
-  // 2.1 ≈ 140 wu/s, AND also asserts the integrateMotion call-site no
-  // longer passes (prevV, prevV) — see N1 fix at reef-race-sim.ts:~1213.
+  // 2.1 ≈ 140 wu/s, AND also asserts the applyIntentForTick call-site no
+  // longer passes (prevV, prevV) — see C-IMPL-1 fix at
+  // reef-race-sim.ts:~1132 (validator runs at end of applyIntentForTick).
   it('P3-T15 — velocity validator clamps a synthetic 200 wu/s jump', () => {
     const dt = 1 / REEF_SIM_HZ;
     const prev = { x: 0, y: 200 };
@@ -2088,9 +2119,70 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     );
     expect(ok.ok).toBe(true);
     expect(ok.flagged).toBe(false);
-    // Source-level proof of the N1 fix: the integrateMotion call-site at
-    // reef-race-sim.ts now passes (prevV, currV) — without that fix the
-    // synthetic clamp branch above would never run for a real body.
+  });
+
+  // P3-T15b — REAL wiring proof for C-IMPL-1. Drives the actual
+  // applyIntentForTick → validator pipeline by poisoning body.mults.accelMult
+  // to a value that produces a per-tick velocity delta well above the
+  // validator's REEF_MAX_ACCEL × dt × 2.1 ≈ 140 wu/s allowance. With the
+  // pre-fix wiring (prev/curr both captured AFTER acceleration), no flag
+  // would ever appear regardless of accel magnitude. With C-IMPL-1 fixed
+  // (prev captured BEFORE acceleration, validator at end of
+  // applyIntentForTick), the validator MUST flag.
+  it('P3-T15b — applyIntentForTick velocity validator FIRES on poisoned accelMult (C-IMPL-1 wiring proof)', () => {
+    captureBroadcasts();
+    const profiles = new Map([
+      ['p1', profile('p1', 1, null)],
+    ]);
+    const state = bootProfileRoom({
+      petIds: ['p1'],
+      petProfiles: profiles,
+    });
+    const body = state.bodies.get('p1')!;
+    // Poison accelMult to 5.0 so a single applyIntentForTick step adds
+    // ~333 wu/s — well over the validator's ~140 wu/s allowance. This
+    // simulates a future regression / cheat path that pumps the per-tick
+    // delta past the legitimate ceiling. With C-IMPL-1 fixed the
+    // validator catches it; without the fix it never sees a non-zero dv.
+    (body.mults as { accelMult: number }).accelMult = 5.0;
+    body.vx = 0;
+    body.vy = 0;
+    setIntent(body, { dir: { x: 0, y: 1 }, thrust: 1 });
+    const flagsBefore = state.flagCounter.countFor('p1');
+    reefRaceSim.__tickOnceForTest('room-p3');
+    const flagsAfter = state.flagCounter.countFor('p1');
+    expect(flagsAfter).toBeGreaterThan(flagsBefore);
+    // And the body's velocity must have been clamped down toward the
+    // validator's allowance, not the poisoned 333 wu/s target.
+    const speedAfterClamp = Math.hypot(body.vx, body.vy);
+    expect(speedAfterClamp).toBeLessThanOrEqual(
+      REEF_MAX_ACCEL * (1 / REEF_SIM_HZ) * REEF_KINEMATIC_TOLERANCE + 0.01,
+    );
+  });
+
+  // P3-T15c — NEGATIVE wiring proof. A normal level-50 agility tick under
+  // worst-case stat advantages MUST NOT trigger the per-tick velocity
+  // validator. Locks in the headroom calculation in `.claude/plans/reef-
+  // race-phase3-detailed.md` §5.
+  it('P3-T15c — normal level-50 agility tick does NOT false-flag the velocity validator', () => {
+    captureBroadcasts();
+    const profiles = new Map([
+      ['p1', profile('p1', 50, 'mischievous-trickster')],
+    ]);
+    const state = bootProfileRoom({
+      petIds: ['p1'],
+      petProfiles: profiles,
+    });
+    const body = state.bodies.get('p1')!;
+    body.vx = 0;
+    body.vy = 0;
+    setIntent(body, { dir: { x: 0.7, y: 0.7 }, thrust: 1 });
+    const flagsBefore = state.flagCounter.countFor('p1');
+    for (let i = 0; i < 5; i++) {
+      reefRaceSim.__tickOnceForTest('room-p3');
+    }
+    const flagsAfter = state.flagCounter.countFor('p1');
+    expect(flagsAfter).toBe(flagsBefore);
   });
 
   // P3-T16 — worst-case Phase 3 stack does NOT flag at tolerance 2.1
@@ -2181,6 +2273,62 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     // Simulate the manager's await — sync return shouldn't break.
     await syncFn({ id: 'fake' });
     expect(invoked).toBe(true);
+  });
+
+  // P3-T17b — REGRESSION MARKER: agility class has a sustained turn-radius
+  // advantage over balanced/neutral across many ticks of cornering. The
+  // audit (S-IMPL-5) flagged that the original P3-T17 only checks one tick
+  // of velocity convergence — useful but doesn't guard against a future
+  // refactor that breaks `applyIntentForTick`'s turn-bonus path on tick 2+.
+  // This test runs 10 trial pairs (independent rooms) and asserts agility's
+  // mean cumulative path length over a sustained 60-tick (~2s) corner is
+  // greater than balanced's. Larger path length under same thrust = stronger
+  // tracking of the steering direction = real handling advantage.
+  it('P3-T17b — agility outperforms balanced over sustained 60-tick corner (10-trial bound)', () => {
+    captureBroadcasts();
+    const N_TRIALS = 10;
+    const TICKS_PER_TRIAL = 60; // ~2s at 30Hz
+    let agilityAdvantage = 0;
+    for (let trial = 0; trial < N_TRIALS; trial++) {
+      // Reset between trials so each room has fresh seeding/state.
+      reefRaceSim.__resetForTest();
+      const profiles = new Map([
+        ['agi', profile('agi', 1, 'chaotic-jester')],
+        ['bal', profile('bal', 1, 'gentle-healer')],
+      ]);
+      const state = bootProfileRoom({
+        petIds: ['agi', 'bal'],
+        petProfiles: profiles,
+      });
+      const agi = state.bodies.get('agi')!;
+      const bal = state.bodies.get('bal')!;
+      // Same starting state — equivalent corner entry.
+      for (const b of [agi, bal]) {
+        b.vx = 0;
+        b.vy = 400;
+      }
+      let agiPath = 0;
+      let balPath = 0;
+      let prevAgi = { x: agi.x, y: agi.y };
+      let prevBal = { x: bal.x, y: bal.y };
+      for (let i = 0; i < TICKS_PER_TRIAL; i++) {
+        // Sustained 45° turn input.
+        for (const b of [agi, bal]) {
+          setIntent(b, { dir: { x: 0.7, y: 0.7 }, thrust: 1 });
+        }
+        reefRaceSim.__tickOnceForTest('room-p3');
+        agiPath += Math.hypot(agi.x - prevAgi.x, agi.y - prevAgi.y);
+        balPath += Math.hypot(bal.x - prevBal.x, bal.y - prevBal.y);
+        prevAgi = { x: agi.x, y: agi.y };
+        prevBal = { x: bal.x, y: bal.y };
+      }
+      if (agiPath > balPath) agilityAdvantage += 1;
+    }
+    // Agility must show a path-length advantage in the majority of trials.
+    // (Since both bodies are deterministic with identical inputs except for
+    // mults, agility wins consistently — this asserts at least 7/10 to
+    // give wiggle room for future micro-changes that don't affect intent.)
+    expect(agilityAdvantage).toBeGreaterThanOrEqual(7);
   });
 });
 

@@ -40,13 +40,46 @@ mock.module('@clawville/database', () => {
     db: {
       select: (_cols: unknown) => fromChain,
     },
-    pets: { id: {}, level: {}, archetype: {} },
+    pets: { id: {}, level: {}, archetype: {}, flags: {} },
+    // Defensive: include every other table reward-pipeline / activity-room-
+    // manager / activity-leaderboard-service might import. Bun's mock.module
+    // is process-scoped — these stubs prevent unrelated test files in the
+    // same process from failing with "Export named X not found".
+    activityResults: { id: {}, petId: {}, activityId: {}, createdAt: {}, scoreMs: {} },
+    activityRooms: { id: {}, status: {}, startedAt: {}, endedAt: {} },
+    activityRoomParticipants: { roomId: {}, petId: {} },
   };
 });
 
-mock.module('drizzle-orm', () => ({
-  inArray: (_col: unknown, _vals: unknown) => ({ kind: 'inArray' }),
-}));
+// NOTE: mock.module('drizzle-orm') is process-scoped in Bun, and downstream
+// imports (e.g. reward-pipeline running in another test file in the same
+// process) cache their `import { ... } from 'drizzle-orm'` bindings against
+// whichever mock was active at FIRST resolution. To avoid leaking a partial
+// mock that breaks unrelated test files, expose every drizzle-orm symbol
+// reward-pipeline / activity-leaderboard-service / activity-room-manager
+// imports — they're harmless no-ops here because pet-profile-loader only
+// chains `inArray`.
+mock.module('drizzle-orm', () => {
+  const noop = () => ({});
+  const sqlFn: unknown = (() => {
+    const tag = (..._args: unknown[]) => ({ kind: 'sql' });
+    (tag as unknown as { join: unknown }).join = noop;
+    (tag as unknown as { raw: unknown }).raw = noop;
+    return tag;
+  })();
+  return {
+    and: noop,
+    asc: noop,
+    desc: noop,
+    eq: noop,
+    gte: noop,
+    inArray: (_col: unknown, _vals: unknown) => ({ kind: 'inArray' }),
+    isNull: noop,
+    lt: noop,
+    ne: noop,
+    sql: sqlFn,
+  };
+});
 
 const { loadRacingProfiles } = await import('../pet-profile-loader');
 

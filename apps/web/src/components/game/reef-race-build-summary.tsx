@@ -1,5 +1,13 @@
 'use client';
 
+// FEATURE_GATE: reef_race_build_summary
+// Status: rendered during pregame + first 3s LIVE on every reef-race match
+// Metric to graduate: telemetry shows >50% of returning players retain ≥1 stat-driven build choice within 14d
+// Current reading: to fill (no telemetry hook exists yet — Phase 3.5 metric)
+// Review deadline: 2026-05-23
+// On deadline: if metric not met, replace badge with a hover-only tooltip on the placement tile
+// Reference: .claude/plans/reef-race-phase3-detailed.md §7d, brand-identity Priority #4
+
 /**
  * ReefRaceBuildSummary — Phase 3 HUD chip showing the SELF pet's racing
  * class + level + headline mults. Rendered as a small badge in the top-left
@@ -34,7 +42,7 @@ const CLASS_PRESENTATION: Record<RacingClass, ClassPresentation> = {
     label: 'AGI',
     glyph: '\u{1F300}',
     color: '#5cd2ff',
-    headline: 'Tighter turn, +60% slipstream grace',
+    headline: 'Tighter turn, 4× longer slipstream grace',
   },
   strength: {
     label: 'STR',
