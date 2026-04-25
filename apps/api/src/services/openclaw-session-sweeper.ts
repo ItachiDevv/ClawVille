@@ -19,7 +19,7 @@
  * nothing ever invalidated the stored handle.
  */
 
-import { and, eq, lt } from 'drizzle-orm';
+import { and, eq, lt, or, isNull } from 'drizzle-orm';
 import { db, openclawBots, agents, sql } from '@clawville/database';
 import { agentOrchestrator } from './agent-orchestrator';
 import { logEvent } from './event-logger';
@@ -59,7 +59,17 @@ export async function extendSessionTtl(agentId: string): Promise<void> {
   const next = computeSessionExpiresAt();
   await db
     .update(openclawBots)
-    .set({ sessionExpiresAt: next, lastSeenAt: new Date(), updatedAt: new Date() })
+    .set({
+      sessionExpiresAt: next,
+      // Clear sessionSweptAt so the next genuine expiration fires
+      // exactly once. Without this, an agent that connects, expires
+      // (sweepers logs the event), then reconnects, would never emit
+      // `agent.session.expired` again because sessionSweptAt would
+      // still be > old sessionExpiresAt for all subsequent cycles.
+      sessionSweptAt: null,
+      lastSeenAt: new Date(),
+      updatedAt: new Date(),
+    })
     .where(eq(openclawBots.agentId, agentId))
     .catch((err) => {
       // Non-fatal: TTL extension failure logs but never blocks the
@@ -76,9 +86,14 @@ export async function extendSessionTtl(agentId: string): Promise<void> {
  */
 export async function expireSession(agentId: string): Promise<void> {
   const now = new Date();
+  // Set BOTH `session_expires_at` and `session_swept_at` so the sweeper
+  // doesn't pick this row up again to re-emit `agent.session.expired` —
+  // the explicit /disconnect path emits its own
+  // `agent.session.disconnected` event in the route handler, and we
+  // don't want a duplicate "expired" event firing at the next sweep.
   const rows = await db
     .update(openclawBots)
-    .set({ sessionExpiresAt: now, updatedAt: now })
+    .set({ sessionExpiresAt: now, sessionSweptAt: now, updatedAt: now })
     .where(eq(openclawBots.agentId, agentId))
     .returning({ userId: openclawBots.userId });
 
@@ -108,20 +123,46 @@ export async function expireSession(agentId: string): Promise<void> {
  */
 export async function sweepExpiredSessions(): Promise<number> {
   const now = new Date();
+
+  // Pick up rows that:
+  //   1. Have a populated `session_expires_at` (legacy rows pre-dating
+  //      the column are NULL and skipped until /connect refreshes them).
+  //   2. Have an expiry strictly in the past.
+  //   3. Have NOT already been processed by a previous sweep — that's
+  //      the `session_swept_at IS NULL OR session_swept_at <
+  //      session_expires_at` check, which ensures the sweeper fires
+  //      `agent.session.expired` exactly once per expiration cycle.
+  //      A subsequent /connect resets `session_swept_at` to NULL via
+  //      the upsert path, so the next expiration after a reconnect
+  //      processes correctly.
   const expired = await db
     .select({ id: openclawBots.id, agentId: openclawBots.agentId, userId: openclawBots.userId })
     .from(openclawBots)
     .where(
       and(
-        // `session_expires_at IS NOT NULL` — legacy rows pre-dating the
-        // column have null and are skipped until they reconnect (which
-        // populates the column). The sweep is conservative by design.
         sql`${openclawBots.sessionExpiresAt} IS NOT NULL`,
         lt(openclawBots.sessionExpiresAt, now),
+        or(
+          isNull(openclawBots.sessionSweptAt),
+          lt(openclawBots.sessionSweptAt, openclawBots.sessionExpiresAt),
+        ),
       ),
     );
 
   if (expired.length === 0) return 0;
+
+  // Mark the picked-up rows as swept BEFORE we emit events / stop
+  // runtimes. If the boot crashes mid-sweep, the next tick won't
+  // double-emit because session_swept_at is already advanced.
+  await db
+    .update(openclawBots)
+    .set({ sessionSweptAt: now, updatedAt: now })
+    .where(
+      sql`${openclawBots.id} IN (${sql.join(expired.map((r) => sql`${r.id}`), sql`, `)})`,
+    )
+    .catch((err) => {
+      console.warn('[SessionSweeper] mark-swept update failed (non-fatal):', err);
+    });
 
   // Group runtime stops by user so we only look up `agents.id` once per
   // owner, not once per openclaw_bots row (a single user can have

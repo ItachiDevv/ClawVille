@@ -72,6 +72,15 @@ export const openclawBots = pgTable('openclaw_bots', {
    * back alive with a new sessionId and a fresh TTL.
    */
   sessionExpiresAt: timestamp('session_expires_at'),
+  /**
+   * Phase 6.1 — set by the sweeper the first time it picks up an
+   * expired row, so the same expiration doesn't fire `agent.session.
+   * expired` events on every 5-min tick forever. Reset to NULL on
+   * /connect / /reconnect so subsequent expirations get processed
+   * correctly. Sweep query: `session_expires_at < now AND
+   * (session_swept_at IS NULL OR session_swept_at < session_expires_at)`.
+   */
+  sessionSweptAt: timestamp('session_swept_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
