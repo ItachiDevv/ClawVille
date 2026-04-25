@@ -206,6 +206,31 @@ export interface ActivityState {
    */
   reefRace: ReefRaceState;
 
+  // ── Reef Race Phase 2 — slipstream + apex + ribbon + hazard ────────────
+  /**
+   * Phase 2 — true while the self avatar is actively in another's slipstream.
+   * Set on `event.slipstream`, cleared on `event.slipstream_end` (both
+   * server-driven — no client-side timer needed, audit S4 fix).
+   */
+  slipstreamActive: boolean;
+  /**
+   * Phase 2 — last apex verdict for the self avatar. Replaced (not appended)
+   * on each `event.apex_verdict` arrival; the toast subscribes to this
+   * primitive object reference (a new object fires re-renders).
+   * null until the first apex crossing.
+   */
+  lastApexVerdict: { kind: 'clean' | 'wide'; at: number } | null;
+  /**
+   * Phase 2 — wall-clock millis of the last `event.ribbon_collected`
+   * received for the self avatar. 0 = never collected.
+   */
+  lastRibbonCollectedAt: number;
+  /**
+   * Phase 2 — wall-clock millis of the last `event.hazard_hit` received
+   * for the self avatar. 0 = never hit.
+   */
+  lastHazardHitAt: number;
+
   // ── Writer API ──────────────────────────────────────────────────────────
 
   /** Single switchboard for `useActivityWs` to apply incoming server frames. */
@@ -380,6 +405,10 @@ function emptyState(): Pick<
   | 'ping'
   | 'chatLog'
   | 'reefRace'
+  | 'slipstreamActive'
+  | 'lastApexVerdict'
+  | 'lastRibbonCollectedAt'
+  | 'lastHazardHitAt'
 > {
   return {
     entities: new Map(),
@@ -402,6 +431,11 @@ function emptyState(): Pick<
     ping: 0,
     chatLog: [],
     reefRace: { laps: new Map(), selfBestGhostPath: null },
+    // Phase 2 — Reef Race slipstream / apex / ribbon / hazard
+    slipstreamActive: false,
+    lastApexVerdict: null,
+    lastRibbonCollectedAt: 0,
+    lastHazardHitAt: 0,
   };
 }
 
@@ -501,14 +535,21 @@ export const useActivityStore = create<ActivityState>()(
           // alongside the per-entity application loop. applyEntityDelta has
           // no access to selfAvatarId, so the caller hoists the bookkeeping.
           let nextDriftSparks: 0 | 1 | 2 | 3 = state.driftSparks;
+          // Phase 2 — same pattern for live placement on the SELF avatar. The
+          // server's per-tick `placement` field on EntityDelta is more
+          // reliable than the ScoreDelta-derived placement (which today uses
+          // `score: b.lap`, an undercount of progress). Score-derived
+          // placement stays as a fallback if a delta omits the field.
+          let nextPlacement: number | null = state.placement;
           for (const d of frame.entities) {
             applyEntityDelta(entities, d);
-            if (
-              state.selfAvatarId &&
-              d.avatarId === state.selfAvatarId &&
-              typeof d.changed.driftSparks === 'number'
-            ) {
-              nextDriftSparks = d.changed.driftSparks as 0 | 1 | 2 | 3;
+            if (state.selfAvatarId && d.avatarId === state.selfAvatarId) {
+              if (typeof d.changed.driftSparks === 'number') {
+                nextDriftSparks = d.changed.driftSparks as 0 | 1 | 2 | 3;
+              }
+              if (typeof d.changed.placement === 'number') {
+                nextPlacement = d.changed.placement;
+              }
             }
           }
 
@@ -540,7 +581,9 @@ export const useActivityStore = create<ActivityState>()(
 
           // Score deltas — recompute placements + self placement.
           let scores = state.scores;
-          let placement = state.placement;
+          // Start placement from the EntityDelta-hoisted value (Phase 2 — server
+          // authoritative). Score-derived placement is a fallback below.
+          let placement = nextPlacement;
           if (frame.scores && frame.scores.length > 0) {
             scores = new Map(state.scores);
             for (const s of frame.scores) {
@@ -554,7 +597,12 @@ export const useActivityStore = create<ActivityState>()(
             }
             if (state.selfAvatarId) {
               const self = scores.get(state.selfAvatarId);
-              placement = self?.placement ?? placement;
+              // Only fall back to score-derived placement if the entity-delta
+              // hoist didn't produce one (i.e. the server-authoritative
+              // placement is missing on this delta).
+              if (placement === state.placement) {
+                placement = self?.placement ?? placement;
+              }
             }
           }
 
@@ -698,7 +746,69 @@ export const useActivityStore = create<ActivityState>()(
         case 'event.power_up_collected': {
           const pickups = new Map(state.pickups);
           pickups.delete(frame.spawnId);
-          set({ pickups });
+          // Phase 2 — write the placement-aware collected kind into self's
+          // inventory slot immediately (audit C2 fix). `frame.kind` is only
+          // present on Phase 2 servers; Phase 1 servers omit the field so
+          // we guard with `typeof` before writing.
+          if (
+            state.selfAvatarId &&
+            frame.collectorAvatarId === state.selfAvatarId &&
+            typeof frame.kind === 'string'
+          ) {
+            const next = [...state.powerUpInventory];
+            // Find first empty slot (kind === null) or last slot as fallback.
+            const slot = next.findIndex((s) => s.kind === null);
+            if (slot >= 0) {
+              next[slot] = { kind: frame.kind, charges: 1 };
+              set({ pickups, powerUpInventory: next });
+            } else {
+              set({ pickups });
+            }
+          } else {
+            set({ pickups });
+          }
+          break;
+        }
+
+        // ── Reef Race Phase 2 events ────────────────────────────────────
+
+        case 'event.slipstream': {
+          // Only update HUD state for the self avatar.
+          if (state.selfAvatarId && frame.dstAvatarId === state.selfAvatarId) {
+            // impl-audit M2: dropped `lastSlipstreamEventAt` — was set but
+            // never read. Server-driven event.slipstream_end clears the badge
+            // (audit S4 flow) so a wall-clock fallback is unneeded.
+            set({ slipstreamActive: true });
+          }
+          break;
+        }
+
+        case 'event.slipstream_end': {
+          if (state.selfAvatarId && frame.dstAvatarId === state.selfAvatarId) {
+            set({ slipstreamActive: false });
+          }
+          break;
+        }
+
+        case 'event.apex_verdict': {
+          if (state.selfAvatarId && frame.avatarId === state.selfAvatarId) {
+            // New object reference on every event triggers React re-render in toast.
+            set({ lastApexVerdict: { kind: frame.kind, at: Date.now() } });
+          }
+          break;
+        }
+
+        case 'event.ribbon_collected': {
+          if (state.selfAvatarId && frame.avatarId === state.selfAvatarId) {
+            set({ lastRibbonCollectedAt: Date.now() });
+          }
+          break;
+        }
+
+        case 'event.hazard_hit': {
+          if (state.selfAvatarId && frame.avatarId === state.selfAvatarId) {
+            set({ lastHazardHitAt: Date.now() });
+          }
           break;
         }
 

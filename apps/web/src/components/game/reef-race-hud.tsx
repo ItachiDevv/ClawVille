@@ -22,7 +22,9 @@ import { TOTAL_LAPS } from '@/lib/three/activities/reef-race/reef-race-config';
 import ActivityResultsModal from './activity-results-modal';
 import ReefRaceInstructions from './reef-race-instructions';
 import { RoundCountdown } from './activity';
-import ReefRaceDriftSparks from './reef-race-drift-sparks';
+import ReefRaceDriftSparks   from './reef-race-drift-sparks';
+import ReefRaceDraftBadge    from './reef-race-draft-badge';
+import ReefRaceEventToasts   from './reef-race-event-toasts';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -70,11 +72,38 @@ function LapCounter({ selfAvatarId }: { selfAvatarId: string | null }) {
   );
 }
 
+/**
+ * Phase 2 — placement-weighted power-up rarity hint.
+ * Mirrors the server's `getPlacementItemTable` bias:
+ *   - 1st       → defensive-only roll (shield / turbo)
+ *   - 2nd–3rd   → neutral-leaning blend
+ *   - 4th–6th   → balanced
+ *   - 7th–8th+  → aggressive-only roll (whirlpool / ink-slick / seeker)
+ * Without this hint, the rubber-band feels like RNG noise to players.
+ */
+function rarityChipForPlacement(
+  placement: number,
+): { glyph: string; tone: string; color: string; label: string } {
+  if (placement <= 1) {
+    return { glyph: '\u{1F6E1} DEF', tone: 'def', color: '#5cd2ff', label: 'Defensive items only' };
+  }
+  if (placement <= 3) {
+    return { glyph: '\u{2696} BAL', tone: 'bal', color: '#cccccc', label: 'Balanced — slight defense bias' };
+  }
+  if (placement <= 6) {
+    return { glyph: '\u{2696} BAL', tone: 'bal', color: '#cccccc', label: 'Balanced item roll' };
+  }
+  return { glyph: '\u{2694} AGG', tone: 'agg', color: '#ff7a4a', label: 'Aggressive items only' };
+}
+
 function PlacementTile({ selfAvatarId }: { selfAvatarId: string | null }) {
   const placement = useActivityStore((s) => s.placement);
   const total     = useActivityStore((s) => s.total);
 
   if (!placement) return null;
+
+  const rarity = rarityChipForPlacement(placement);
+  void selfAvatarId;
 
   return (
     <div
@@ -95,6 +124,31 @@ function PlacementTile({ selfAvatarId }: { selfAvatarId: string | null }) {
       </div>
       <div style={{ fontSize: 10, color: '#ffffff66' }}>
         of {total}
+      </div>
+      {/* Phase 2 — rarity-tier hint chip. Surfaces placement-weighted item bias. */}
+      <div
+        title={rarity.label}
+        aria-label={rarity.label}
+        data-rarity-tone={rarity.tone}
+        style={{
+          marginTop: 4,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 4,
+          padding: '2px 6px',
+          borderRadius: 4,
+          background: 'rgba(0, 0, 0, 0.45)',
+          border: `1px solid ${rarity.color}66`,
+          color: rarity.color,
+          fontSize: 9,
+          fontWeight: 700,
+          letterSpacing: '0.12em',
+          textTransform: 'uppercase',
+          fontVariantNumeric: 'tabular-nums',
+        }}
+      >
+        {rarity.glyph}
       </div>
     </div>
   );
@@ -269,6 +323,12 @@ export default function ReefRaceHud({
         <PlacementTile selfAvatarId={selfAvatarId} />
         <BestLapTile selfAvatarId={selfAvatarId} />
       </div>
+
+      {/* Top-center: Draft (slipstream) badge — Phase 2 */}
+      <ReefRaceDraftBadge />
+
+      {/* Center: Apex verdict + hazard hit + ribbon boost toasts — Phase 2 */}
+      <ReefRaceEventToasts />
 
       {/* Bottom-center: Drift charge sparks (above PowerUpBar) */}
       <ReefRaceDriftSparks />
