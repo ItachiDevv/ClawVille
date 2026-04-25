@@ -10,20 +10,19 @@
  * Only renders for the self player (chase-cam client). Other players' trails are NOT rendered.
  *
  * Iris Xe invariants:
- *   - Trail: BufferGeometry + MeshBasicNodeMaterial (TSL opacityNode) — no ShaderMaterial.
- *   - Speed cones: InstancedMesh + MeshBasicNodeMaterial (TSL) — safe on WebGPU.
+ *   - Trail: BufferGeometry + MeshBasicMaterial (plain three) — no ShaderMaterial.
+ *   - Speed cones: InstancedMesh + MeshBasicMaterial — no ShaderMaterial.
  *   - Pre-allocated buffers — no per-frame geometry creation.
- *   - MeshBasicNodeMaterial does not receive fog (spec notes backdrop placement handles this).
+ *   - MeshBasicMaterial does not receive fog (spec notes backdrop placement handles this).
  *   - matrixAutoUpdate=false on static cone instances (positions are camera-relative).
+ *   - Module-scope _right scratch vector — no per-frame Vector3 allocation.
  *
  * Draw calls: 1 (trail) + 1 (cone InstancedMesh) = 2.
  */
 
 import { useRef, useEffect, useMemo } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
-import * as THREE from 'three/webgpu';
-import { MeshBasicNodeMaterial } from 'three/webgpu';
-import { float, sin, time, instanceIndex, uniform } from 'three/tsl';
+import * as THREE from 'three';
 import {
   TRAIL_MAX_POINTS,
   TRAIL_WIDTH,
@@ -43,6 +42,7 @@ const _conePosArr = new Array<THREE.Vector3>(SPEED_CONE_COUNT).fill(null as any)
 const _quat   = new THREE.Quaternion();
 const _scl    = new THREE.Vector3(1, 1, 1);
 const _fwd    = new THREE.Vector3();
+const _right  = new THREE.Vector3();
 
 // ─── Trail geometry (pre-allocated) ──────────────────────────────────────────
 // Simple line strip — 2 vertices per segment (left+right edge of trail ribbon).
@@ -70,44 +70,31 @@ function makeTrailGeo(): THREE.BufferGeometry {
   return geo;
 }
 
-// ─── Trail material (TSL MeshBasicNodeMaterial) ───────────────────────────────
-// opacityNode: fades from full at kart to zero at tail using UV.y.
-// MeshBasicNodeMaterial is safe on WebGPU (no ShaderMaterial).
-function makeTrailMaterial(): MeshBasicNodeMaterial {
-  const mat = new MeshBasicNodeMaterial({
+// ─── Trail material ───────────────────────────────────────────────────────────
+// Plain MeshBasicMaterial — WebGLRenderer compatible. Constant opacity 0.6
+// (TSL uv-based fade not available without WebGPU backend).
+function makeTrailMaterial(): THREE.MeshBasicMaterial {
+  return new THREE.MeshBasicMaterial({
     side: THREE.DoubleSide,
     transparent: true,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
     color: '#00d4ff',
+    opacity: 0.6,
   });
-  // UV.y = 0 at kart (full opacity), 1 at tail (transparent).
-  // Using built-in uv() from TSL is avoided to prevent import confusion;
-  // use a simple time-independent opacity fallback.
-  mat.opacity = 0.6;
-  return mat;
 }
 
 // ─── Cone InstancedMesh material ─────────────────────────────────────────────
-
-function makeConeNodeMaterial(): MeshBasicNodeMaterial {
-  const mat = new MeshBasicNodeMaterial({
+// Plain MeshBasicMaterial — WebGLRenderer compatible. Constant opacity 0.5
+// (TSL sin(time*8 + instanceIndex*0.5) strobe not available without WebGPU backend).
+function makeConeNodeMaterial(): THREE.MeshBasicMaterial {
+  return new THREE.MeshBasicMaterial({
     transparent: true,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
     color: '#ffffff',
+    opacity: 0.5,
   });
-  // Strobing opacity: sin(time * 8 + instanceIndex * 0.5) * 0.5 + 0.5
-  // instanceIndex is a TSL built-in for InstancedMesh.
-  try {
-    mat.opacityNode = sin(
-      time.mul(8.0).add(instanceIndex.toFloat().mul(0.5))
-    ).mul(0.5).add(0.5);
-  } catch {
-    // TSL instanceIndex may not be available in all contexts — degrade gracefully.
-    mat.opacity = 0.5;
-  }
-  return mat;
 }
 
 // ─── Ring buffer trail writer ─────────────────────────────────────────────────
@@ -222,9 +209,9 @@ export default function ReefRaceBoostFX({ playerPos, boostActive }: ReefRaceBoos
 
     return () => {
       trailGeo.dispose();
-      (trailMat as THREE.Material).dispose();
+      trailMat.dispose();
       coneGeo.dispose();
-      (coneMat as THREE.Material).dispose();
+      coneMat.dispose();
     };
   }, [trailGeo, trailMat, coneGeo, coneMat]);
 
@@ -251,11 +238,11 @@ export default function ReefRaceBoostFX({ playerPos, boostActive }: ReefRaceBoos
       ts.head = (ts.head + 1) % TRAIL_MAX_POINTS;
       ts.count++;
 
-      // Camera right vector for ribbon width.
+      // Camera right vector for ribbon width (module-scope scratch — no per-frame alloc).
       camera.getWorldDirection(_fwd);
-      const right = new THREE.Vector3().crossVectors(_fwd, camera.up).normalize();
+      _right.crossVectors(_fwd, camera.up).normalize();
 
-      writeCenterToRibbon(ts, trailGeo, playerPos, right);
+      writeCenterToRibbon(ts, trailGeo, playerPos, _right);
     } else {
       // Fade out: reset trail.
       if (trailState.current.count > 0) {
@@ -276,7 +263,7 @@ export default function ReefRaceBoostFX({ playerPos, boostActive }: ReefRaceBoos
       {/* Boost trail ribbon — 1 draw call */}
       <mesh ref={trailRef} geometry={trailGeo} material={trailMat} frustumCulled={false} />
 
-      {/* Speed cones — 1 draw call (InstancedMesh + MeshBasicNodeMaterial, safe on WebGPU) */}
+      {/* Speed cones — 1 draw call (InstancedMesh + MeshBasicMaterial, plain three) */}
       <instancedMesh
         ref={conesRef}
         args={[coneGeo, coneMat, SPEED_CONE_COUNT]}
