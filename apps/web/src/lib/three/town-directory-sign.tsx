@@ -8,15 +8,15 @@
 
 import * as THREE from 'three/webgpu';
 
-const POST_W = 20;
-const POST_H = 420;
-const POST_D = 20;
-const POST_SPACING = 420;
+const POST_W = 14;
+const POST_H = 280;
+const POST_D = 14;
+const POST_SPACING = 280;
 
-const PLANK_W = 560;
-const PLANK_H = 280;
+const PLANK_W = 380;
+const PLANK_H = 190;
 const PLANK_Y = POST_H - PLANK_H / 2;
-const BACKING_D = 10;
+const BACKING_D = 6;
 
 const SIGN_X = 0;
 const SIGN_Y = 0; // posts rest just above sand (sand at Y=-2); was 150 — too high
