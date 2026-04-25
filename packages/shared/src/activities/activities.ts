@@ -46,6 +46,15 @@ export interface ActivityRewardConfig {
   firstPlayOfDayBonusTokens?: number;
   /** Reef Race — bonus for setting a new personal best lap/finish */
   personalBestBonusTokens?: number;
+  /**
+   * Reef Race Phase 4 — bonus for completing a "perfect race" — i.e.
+   * `bestStreakThisMatch` reaches `TOTAL_CHECKPOINTS_PER_RACE` (= 36 =
+   * 12 cps × 3 laps with every hairpin clean). Defaults to 0 when not
+   * configured. C3-fix consumers read `bestStreakThisMatch` from the
+   * `SimResultRow.reefRace` block embedded at `computeResults()` time —
+   * never from a live state accessor that could race sim teardown.
+   */
+  perfectStreakBonusTokens?: number;
   /** Focus-aligned bonus pct applied to total tokens (e.g. 25 = +25%) */
   focusBonusPct?: number;
   /**
@@ -129,6 +138,10 @@ const REEF_RACE_REWARD_CONFIG: ActivityRewardConfig = {
   participationTokens: 10,
   firstPlayOfDayBonusTokens: 15,
   personalBestBonusTokens: 10,
+  // Phase 4 — perfect race (36/36 clean checkpoint crosses). Sits on top
+  // of placement + first-play + PB + focus bonuses; sums into the same
+  // `tokens_awarded` total surfaced on the match-end modal.
+  perfectStreakBonusTokens: 25,
   focusBonusPct: 25,
   leaderboardPoints: { '1': 30, '2': 15, '3': 8, default: 2 },
 };

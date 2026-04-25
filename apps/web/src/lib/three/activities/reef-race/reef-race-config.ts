@@ -215,10 +215,16 @@ export const RIDER_MOUNT_OFFSET_DEFAULT: [number, number, number] = [0, 0.6, -0.
 /** Ghost kart material opacity. */
 export const GHOST_OPACITY = 0.45;
 
-/** Ghost kart path sample rate in Hz (matches backend replay rate). */
-export const GHOST_SAMPLE_HZ = 10;
+/**
+ * Ghost kart path sample rate in Hz (matches backend replay rate).
+ * Phase 4 (S-IMPL-3 fix 2026-04-25) — server now samples at 5 Hz to halve
+ * ghost storage size. Client doesn't read this value at runtime — the
+ * `findGhostFrames` lerp in `ReefRaceGhost.tsx` works for arbitrary sample
+ * rates — but the constant is kept for documentation symmetry.
+ */
+export const GHOST_SAMPLE_HZ = 5;
 
-/** Maximum ghost path frames to buffer (~30s at 10Hz). */
+/** Maximum ghost path frames to buffer (~60s at 5Hz). */
 export const GHOST_MAX_FRAMES = 300;
 
 // ─── Power-up pickup boxes ────────────────────────────────────────────────────
