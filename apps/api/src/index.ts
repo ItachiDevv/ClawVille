@@ -47,7 +47,15 @@ const app = new Hono<AppContext>();
 
 // Global middleware
 app.use('*', logger());
-app.use('*', secureHeaders());
+// secureHeaders defaults Cross-Origin-Resource-Policy to "same-origin", which
+// blocks api.clawville.world responses from being read by clawville.world
+// (different origins). The web app's SSE/fetch calls fail with "blocked by
+// CORS policy" even though Access-Control-Allow-Origin is correct, because
+// browsers honor CORP independently of CORS. We override to "cross-origin"
+// since the entire purpose of this API is to be consumed by the web app on
+// a sibling origin. The actual access control still goes through the cors()
+// middleware below + per-route auth.
+app.use('*', secureHeaders({ crossOriginResourcePolicy: 'cross-origin' }));
 app.use(
   '*',
   cors({
