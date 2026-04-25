@@ -17,6 +17,7 @@ import { activityQueueService } from './services/activity/activity-queue';
 import { activityWsHub } from './services/activity/activity-ws-hub';
 import { bumperShellsSim } from './services/activity/sim/bumper-shells-sim';
 import { reefRaceSim } from './services/activity/sim/reef-race-sim';
+import { loadRacingProfiles } from './services/activity/pet-profile-loader';
 import { botPool } from './services/activity/bots/bot-pool';
 import { getBotControllerFactory } from './services/activity/bots/bot-controller';
 import { getBunWebSocketHelper } from './lib/bun-ws-adapter';
@@ -318,7 +319,7 @@ startSimulation(arenaMode);
     activityRoomManager.setBroadcastFn((roomId, frame) => {
       activityWsHub.broadcastEvent(roomId, frame);
     });
-    activityRoomManager.setLiveTransitionFn((room) => {
+    activityRoomManager.setLiveTransitionFn(async (room) => {
       // Chunk #10 — instantiate bot controllers for any bot participants.
       // The factory is per-activity so each sim (Bumper, Reef, future)
       // pulls its own controller class without touching this dispatcher.
@@ -345,6 +346,18 @@ startSimulation(arenaMode);
           // by persistLiveTransition just before liveTransitionFn fires.
           const launchBoosts =
             activityRoomManager.computeLaunchVerdicts(room);
+
+          // Phase 3 (audit C2) — split human/bot petIds, pre-load racing
+          // profiles SYNCHRONOUSLY (await) BEFORE startRoom so the sim's
+          // first tick has correct mults. ~1-2 ms blocking on the Drizzle
+          // pool query — well below the 33 ms tick budget.
+          const humanPetIds: string[] = [];
+          const botPetIds: string[] = [];
+          for (const p of room.participants.values()) {
+            (p.subjectType === 'bot' ? botPetIds : humanPetIds).push(p.petId);
+          }
+          const petProfiles = await loadRacingProfiles(humanPetIds, botPetIds);
+
           reefRaceSim.startRoom(
             room.id,
             room.activityId,
@@ -353,6 +366,7 @@ startSimulation(arenaMode);
               bots,
               startedAt: room.startedAt ?? Date.now(),
               launchBoosts,
+              petProfiles,
             },
           );
           break;

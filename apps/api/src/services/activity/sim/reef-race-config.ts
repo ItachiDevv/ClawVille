@@ -378,15 +378,28 @@ export const LAUNCH_STALL_THRUST_CAP  = 0.30;
  * Anti-cheat tolerance multiplier for reef-race kinematic validators.
  * Replaces the two hard-coded `1.5` values in reef-race-sim.ts (audit C3 fix).
  *
- * Raised from 1.5× to 2.0×:
- *   Max combined boost = drift-3 (0.38) + launch (0.30) = 0.68 additive
- *   Effective speed = 500 × 1.68 = 840 wu/s
- *   Under 2.0× tolerance = 500 × 2.0 = 1000 wu/s — 160 wu/s safe margin
+ * Phase 3 (audit C1) — bumped 2.0 → 2.1 to absorb the per-tick acceleration
+ * step boosted by max(accelMult=1.25, 1/turnRadiusMult=1.176) = 1.25× during
+ * corner entry. Math (§5 of `.claude/plans/reef-race-phase3-detailed.md`):
+ *   Worst-case body velocity at peak boost = 1.85× × 500 = 925 wu/s steady.
+ *   Single-tick acceleration kick = REEF_MAX_ACCEL × dt × 1.25
+ *                                = 2000 × 0.0333 × 1.25 = 83.3 wu/s
+ *   Peak velocity for that tick = 925 + 83.3 = 1008.3 wu/s
+ *   Position step = dt × peak velocity = 0.0333 × 1008.3 = 33.6 wu
+ *   Validator allowance = dt × REEF_MAX_SPEED × 2.1 = 35.0 wu
+ *   Headroom = 1.4 wu (~4%) — under by 1.4 wu, no flag.
  *
- *   Under OLD 1.5× tolerance, drift-3 + launch (840 wu/s > 750 wu/s) would be
- *   silently clamped, stripping ~11% of the combined boost. Player feels robbed.
+ * SAFETY (cheaters): velocity validator at the same 2.1 tolerance still
+ * catches sustained over-velocity at REEF_MAX_SPEED × 2.1 = 1050 wu/s. The
+ * extra 5% position headroom equates to ~10% extra speed (~51 wu/s) on a
+ * single-tick basis — well below the 1.85× legitimate boost stack ceiling.
+ *
+ * Phase 1 audit C3 raised this 1.5 → 2.0; Phase 3 raises 2.0 → 2.1. The
+ * velocity-validator no-op bug (validateReefVelocityDelta(prevV, prevV)) is
+ * fixed in tandem (see reef-race-sim.ts:1213) so the cheat-detection backstop
+ * actually fires on synthetic velocity jumps.
  */
-export const REEF_KINEMATIC_TOLERANCE = 2.0;
+export const REEF_KINEMATIC_TOLERANCE = 2.1;
 
 // actionBit assignments. Bits 0+1 are pre-existing power-up slot toggles.
 export const ACTION_BIT_POWERUP_0 = 0b0001;
@@ -729,4 +742,221 @@ export function getPlacementItemTable(
   placement: number,
 ): ReadonlyArray<{ kind: ReefPowerUpKind; weight: number }> | null {
   return PLACEMENT_ITEM_TABLE[placement] ?? null;
+}
+
+// ─── Phase 3 — stat-driven body multipliers ─────────────────────────────────
+//
+// Pet `level` (1-50) + `archetype` (14 IDs → 4 racing classes) become per-body
+// multipliers stamped on each ReefBody at startRoom. Top-speed cap unchanged
+// — these only affect handling (acceleration recovery, turning, slipstream
+// grace, drift charge rate, knockback resistance, powerup duration, ribbon
+// detect width). All multipliers default to 1.0 (or BASELINE_*) so a level-1
+// neutral pet behaves bit-identically to today.
+//
+// Spec: `.claude/plans/reef-race-phase3-detailed.md` §1, §4.
+
+/**
+ * Level → acceleration recovery multiplier.
+ *   per-level mult = 1 + LEVEL_ACCEL_MULT_PER_LEVEL × (level - 1), CLAMPED.
+ *   level=1   → 1.000 (today's behavior)
+ *   level=25  → 1.120 (bot default)
+ *   level=50  → 1.245
+ *   level=51+ → 1.250 (clamped at ceiling)
+ *
+ * N3 fix: name the ceiling for what it is (a clamp), not the value at any
+ * specific level — the formula reaches 1.245 at level 50, not 1.25.
+ */
+export const LEVEL_ACCEL_MULT_CEILING = 1.25;
+export const LEVEL_ACCEL_MULT_PER_LEVEL = 0.005;
+
+/** Agility — tighter turning (lower = tighter; 0.85 = 15% tighter). */
+export const AGILITY_TURN_RADIUS_MULT = 0.85;
+/**
+ * Agility — extended slipstream post-leave grace window. 24 ticks @ 30 Hz =
+ * 800 ms vs the 6-tick (200 ms) baseline. Audit C3 fix: agility extends
+ * GRACE (post-leave window, a buff), not REQUIRED (hold-to-arm time, would
+ * be a nerf). REQUIRED stays at 45 for everyone.
+ */
+export const AGILITY_SLIPSTREAM_GRACE_TICKS = 24;
+
+/** Strength — drift sparks charge 40% faster (thresholds divided). */
+export const STRENGTH_DRIFT_CHARGE_MULT = 1.4;
+/** Strength — receives 60% of normal knockback (40% reduction). */
+export const STRENGTH_KNOCKBACK_RESIST_MULT = 0.6;
+
+/** Intelligence — pickups last 20% longer (effectMs scaled). */
+export const INTELLIGENCE_POWERUP_DURATION_MULT = 1.2;
+/** Intelligence — ribbon detection band is 30% wider. */
+export const INTELLIGENCE_RIBBON_DETECT_MULT = 1.3;
+
+/**
+ * Baseline slipstream post-leave grace window (ticks). Aliased here for
+ * clarity in the multiplier builder; identical numeric value to
+ * `SLIPSTREAM_GRACE_TICKS = 6`. Used as the default for non-agility classes.
+ */
+export const BASELINE_SLIPSTREAM_GRACE_TICKS = SLIPSTREAM_GRACE_TICKS;
+
+/**
+ * Hard clamp ranges so a malformed pet (level 999, NaN mult) cannot break
+ * the sim. Applied at multiplier-construction time, NOT inside the hot loop.
+ */
+export const PHASE3_MULT_CLAMP_ACCEL                  = [1.0, 1.25] as const;
+export const PHASE3_MULT_CLAMP_TURN_RADIUS            = [0.70, 1.00] as const;
+export const PHASE3_MULT_CLAMP_SLIPSTREAM_GRACE_TICKS = [6, 30] as const;
+export const PHASE3_MULT_CLAMP_DRIFT_CHARGE           = [1.00, 1.50] as const;
+export const PHASE3_MULT_CLAMP_KNOCKBACK_RES          = [0.50, 1.00] as const;
+export const PHASE3_MULT_CLAMP_POWERUP_DUR            = [1.00, 1.50] as const;
+export const PHASE3_MULT_CLAMP_RIBBON_DETECT          = [1.00, 1.50] as const;
+
+/**
+ * 4-bucket racing class derived from the 14-archetype string column. Pure
+ * function — no DB schema change. Audit verdict (a) AGREE: bucketing is
+ * defensible (mobility/scout → agility; combative/protective → strength;
+ * cerebral/analytical → intelligence; social/companion → balanced).
+ */
+export type RacingClass = 'agility' | 'strength' | 'intelligence' | 'balanced';
+
+const ARCHETYPE_RACING_CLASS_MAP: Record<string, RacingClass> = {
+  // Agility — scouts, tricksters, explorers
+  'mischievous-trickster': 'agility',
+  'wild-explorer':         'agility',
+  'chaotic-jester':        'agility',
+  // Strength — battlers, guardians, adventurers
+  'brave-adventurer':      'strength',
+  'fierce-battler':        'strength',
+  'noble-guardian':        'strength',
+  // Intelligence — scholars, seers, traders, mystics, diplomats
+  'curious-scholar':       'intelligence',
+  'mystical-seer':         'intelligence',
+  'cunning-trader':        'intelligence',
+  'royal-diplomat':        'intelligence',
+  'quiet-mystic':          'intelligence',
+  // Balanced — social/companion archetypes
+  'gentle-healer':         'balanced',
+  'creative-dreamer':      'balanced',
+  'loyal-companion':       'balanced',
+};
+
+export function racingClassFromArchetype(
+  archetype: string | null | undefined,
+): RacingClass {
+  if (!archetype) return 'balanced';
+  return ARCHETYPE_RACING_CLASS_MAP[archetype] ?? 'balanced';
+}
+
+/**
+ * Per-pet racing profile. Constructed by `pet-profile-loader.ts` from
+ * `pets.level + pets.archetype` for human/agent participants; bots short-
+ * circuit to `isBot:true` and the builder returns a neutral clone.
+ */
+export interface PetRacingProfile {
+  petId: string;
+  level: number;
+  archetype: string | null;
+  isBot: boolean;
+}
+
+/**
+ * Per-body multiplier struct, stamped on each `ReefBody` at startRoom by
+ * `buildBodyMultipliers(profile)`. Read-only after init. Hot loop reads:
+ *   - applyIntentForTick (accel + turn radius)
+ *   - resolveSlipstream  (slipstreamGraceTicks)
+ *   - tickDriftState     (driftSparkTicks pre-computed from driftChargeMult)
+ *   - applyTideWave + applySeekerJelly (knockbackResistMult)
+ *   - tryUsePowerUp      (powerUpDurationMult)
+ *   - resolveBoostRibbons (ribbonDetectMult)
+ */
+export interface BodyMultipliers {
+  accelMult: number;
+  turnRadiusMult: number;
+  slipstreamGraceTicks: number;
+  driftChargeMult: number;
+  knockbackResistMult: number;
+  powerUpDurationMult: number;
+  ribbonDetectMult: number;
+}
+
+/**
+ * `as const` so the global is immutable. Callers MUST clone via
+ * `{ ...NEUTRAL_BODY_MULTIPLIERS }` before assigning to `body.mults` so a
+ * future debug helper / refactor cannot poison the neutral baseline (audit N4).
+ */
+export const NEUTRAL_BODY_MULTIPLIERS = {
+  accelMult: 1.0,
+  turnRadiusMult: 1.0,
+  slipstreamGraceTicks: BASELINE_SLIPSTREAM_GRACE_TICKS,
+  driftChargeMult: 1.0,
+  knockbackResistMult: 1.0,
+  powerUpDurationMult: 1.0,
+  ribbonDetectMult: 1.0,
+} as const satisfies BodyMultipliers;
+
+function clampPhase3(v: number, lo: number, hi: number): number {
+  if (!Number.isFinite(v)) return lo;
+  return v < lo ? lo : v > hi ? hi : v;
+}
+
+/**
+ * Build per-body multipliers from a `PetRacingProfile`. Bots, null profiles,
+ * and missing/unknown archetypes all fall back to a CLONE of
+ * `NEUTRAL_BODY_MULTIPLIERS` (audit N4 — never the global reference).
+ *
+ * Bots are ALWAYS neutral (Phase 3 §6) — even if their DB row has an
+ * archetype, the profile loader sets `isBot:true` and we short-circuit.
+ */
+export function buildBodyMultipliers(
+  profile: PetRacingProfile | null | undefined,
+): BodyMultipliers {
+  if (!profile)      return { ...NEUTRAL_BODY_MULTIPLIERS };
+  if (profile.isBot) return { ...NEUTRAL_BODY_MULTIPLIERS };
+
+  const safeLevel = Number.isFinite(profile.level) ? profile.level : 1;
+  const accelRaw  = 1 + LEVEL_ACCEL_MULT_PER_LEVEL * Math.max(0, safeLevel - 1);
+  const accelMult = clampPhase3(
+    accelRaw,
+    PHASE3_MULT_CLAMP_ACCEL[0],
+    PHASE3_MULT_CLAMP_ACCEL[1],
+  );
+
+  const cls = racingClassFromArchetype(profile.archetype);
+
+  // Agility extends GRACE (post-leave window, buff). REQUIRED stays at 45
+  // for everyone (audit C3).
+  const slipstreamGraceTicks = clampPhase3(
+    cls === 'agility'
+      ? AGILITY_SLIPSTREAM_GRACE_TICKS
+      : BASELINE_SLIPSTREAM_GRACE_TICKS,
+    PHASE3_MULT_CLAMP_SLIPSTREAM_GRACE_TICKS[0],
+    PHASE3_MULT_CLAMP_SLIPSTREAM_GRACE_TICKS[1],
+  );
+
+  return {
+    accelMult,
+    turnRadiusMult: clampPhase3(
+      cls === 'agility' ? AGILITY_TURN_RADIUS_MULT : 1.0,
+      PHASE3_MULT_CLAMP_TURN_RADIUS[0],
+      PHASE3_MULT_CLAMP_TURN_RADIUS[1],
+    ),
+    slipstreamGraceTicks,
+    driftChargeMult: clampPhase3(
+      cls === 'strength' ? STRENGTH_DRIFT_CHARGE_MULT : 1.0,
+      PHASE3_MULT_CLAMP_DRIFT_CHARGE[0],
+      PHASE3_MULT_CLAMP_DRIFT_CHARGE[1],
+    ),
+    knockbackResistMult: clampPhase3(
+      cls === 'strength' ? STRENGTH_KNOCKBACK_RESIST_MULT : 1.0,
+      PHASE3_MULT_CLAMP_KNOCKBACK_RES[0],
+      PHASE3_MULT_CLAMP_KNOCKBACK_RES[1],
+    ),
+    powerUpDurationMult: clampPhase3(
+      cls === 'intelligence' ? INTELLIGENCE_POWERUP_DURATION_MULT : 1.0,
+      PHASE3_MULT_CLAMP_POWERUP_DUR[0],
+      PHASE3_MULT_CLAMP_POWERUP_DUR[1],
+    ),
+    ribbonDetectMult: clampPhase3(
+      cls === 'intelligence' ? INTELLIGENCE_RIBBON_DETECT_MULT : 1.0,
+      PHASE3_MULT_CLAMP_RIBBON_DETECT[0],
+      PHASE3_MULT_CLAMP_RIBBON_DETECT[1],
+    ),
+  };
 }
