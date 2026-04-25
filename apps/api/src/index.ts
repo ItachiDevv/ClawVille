@@ -338,14 +338,25 @@ startSimulation(arenaMode);
             { bots },
           );
           break;
-        case 'reef-race':
+        case 'reef-race': {
+          // Phase 1 (audit C4 + S10) — pull pre-launch verdicts from the
+          // room manager BEFORE starting the sim so bodies init with the
+          // correct activeBoosts entry on tick 0. `room.startedAt` is set
+          // by persistLiveTransition just before liveTransitionFn fires.
+          const launchBoosts =
+            activityRoomManager.computeLaunchVerdicts(room);
           reefRaceSim.startRoom(
             room.id,
             room.activityId,
             participantIds,
-            { bots },
+            {
+              bots,
+              startedAt: room.startedAt ?? Date.now(),
+              launchBoosts,
+            },
           );
           break;
+        }
         default:
           console.warn(
             `[API] No sim registered for activityId='${room.activityId}' — room ${room.id} will sit LIVE without a sim`,

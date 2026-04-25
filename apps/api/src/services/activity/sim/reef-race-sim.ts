@@ -74,6 +74,22 @@ import {
   getReefPowerUpDef,
   type ReefCheckpointAabb,
   type ReefPowerUpKind,
+  // Phase 1 — drift state machine + launch boost
+  type ReefBoostKind,
+  DRIFT_SPARK_TICK_1,
+  DRIFT_SPARK_TICK_2,
+  DRIFT_SPARK_TICK_3,
+  DRIFT_BOOST_DURATION_MS,
+  DRIFT_BOOST_MULTS,
+  DRIFT_ANGULAR_BIAS_RAD,
+  DRIFT_MIN_SPEED_FOR_CHARGE,
+  DRIFT_MIN_STEER,
+  LAUNCH_BOOST_MULT,
+  LAUNCH_BOOST_DURATION_MS,
+  LAUNCH_STALL_DURATION_MS,
+  LAUNCH_STALL_THRUST_CAP,
+  ACTION_BIT_DRIFT,
+  REEF_KINEMATIC_TOLERANCE,
 } from './reef-race-config';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -94,6 +110,31 @@ const POS_QUANT = 100;
 const ROT_QUANT = 1000;
 
 // ─── Body / sim state ───────────────────────────────────────────────────────
+
+/**
+ * Phase 1 — entry in `ReefBody.activeBoosts`. SEPARATE from `activeEffects`
+ * (pickup-only) so the strict `Map<ReefPowerUpKind, number>` typing is
+ * inviolate (audit C2 fix).
+ */
+interface ReefBoostEntry {
+  expiresAt: number;
+  /** Additive speed multiplier (e.g. 0.38 for +38%). Absent for launch-stall. */
+  mult?: number;
+}
+
+/**
+ * Phase 1 — per-body drift state machine. Single field on `ReefBody`.
+ * Transitions described in `tickDriftState()` below; spec in
+ * `.claude/plans/reef-race-phase1-detailed.md` §2.
+ */
+interface ReefDriftState {
+  charging: boolean;
+  sparkLevel: 0 | 1 | 2 | 3;
+  /** Sim tick at which charging began — used for spark-tier elapsed math. */
+  chargeStartTick: number;
+  /** Drift-bit value last tick (for press / release edge detection). */
+  lastDriftBit: boolean;
+}
 
 interface ReefBody {
   petId: string;
@@ -128,8 +169,21 @@ interface ReefBody {
   insideCheckpoints: Set<number>;
   /** Per-pet inventory, slot-indexed (length = REEF_MAX_POWER_UP_SLOTS) */
   inventory: PowerUpInventorySlot[];
-  /** Active effects (kind → expires ms) */
+  /** Active effects (kind → expires ms) — POWER-UP PICKUPS ONLY (audit C2). */
   activeEffects: Map<ReefPowerUpKind, number>;
+  /**
+   * Phase 1 — drift + launch boost state (SEPARATE map; never aliased to
+   * activeEffects). Absent entries = no active boost. Sweep on tick preamble.
+   */
+  activeBoosts: Map<ReefBoostKind, ReefBoostEntry>;
+  /**
+   * Phase 1 — spark tier of the currently-active drift boost (1..3); 0 when
+   * no drift-boost is active. Mirrored into snapshot deltas so the HUD can
+   * render the spark dot bar without subscribing to per-tick boost events.
+   */
+  currentDriftBoostSparks: 0 | 1 | 2 | 3;
+  /** Phase 1 — drift state machine. */
+  drift: ReefDriftState;
   /** Pending intent applied next tick — set from `applyInput` */
   intent: {
     dir: Vec2 | null;
@@ -192,6 +246,8 @@ interface ReefSnapshot {
     nextCheckpoint: number;
     finishedAt: number | null;
     dnf: boolean;
+    /** Phase 1 — current drift charge tier (0..3). HUD-driven. */
+    driftSparks: 0 | 1 | 2 | 3;
   }>;
   pickups: Array<{
     spawnId: string;
@@ -240,6 +296,21 @@ class ReefRaceSim {
       seed?: number;
       isBot?: (petId: string) => boolean;
       bots?: BotController[];
+      /**
+       * Phase 1 (audit S10) — when set, the sim uses this wall-clock as
+       * `state.startedAt` instead of `Date.now()`. The room manager owns
+       * the COUNTDOWN→LIVE transition timestamp; the sim must match so
+       * launch verdicts (computed against `room.startedAt`) line up with
+       * the boost/stall expirations the sim itself enforces.
+       */
+      startedAt?: number;
+      /**
+       * Phase 1 (audit C4) — per-pet launch verdict computed by the room
+       * manager's `computeLaunchVerdicts(room)` BEFORE startRoom. The sim
+       * seeds the corresponding `activeBoosts` entry on each body so the
+       * very first applyIntentForTick respects the boost/stall.
+       */
+      launchBoosts?: Map<string, 'boost' | 'stall'>;
     },
   ): ReefRoomState {
     if (this.rooms.has(roomId)) {
@@ -247,7 +318,9 @@ class ReefRaceSim {
       return this.rooms.get(roomId)!;
     }
     const seed = opts?.seed ?? this.deriveSeedFromRoomId(roomId);
-    const startedAt = Date.now();
+    // Audit S10 — prefer the room manager's startedAt so launch-verdict
+    // expirations stay aligned with the sim's tick clock.
+    const startedAt = opts?.startedAt ?? Date.now();
     const checkpoints = buildReefCheckpoints();
 
     const botControllers = new Map<string, BotController>();
@@ -303,6 +376,23 @@ class ReefRaceSim {
       // (atan2(x, y) so the kart's native +Z forward rotates to align
       // with the (tangent.x, tangent.y) direction in scene-space).
       const rot = Math.atan2(startCp.tangent.x, startCp.tangent.y);
+      const activeBoosts = new Map<ReefBoostKind, ReefBoostEntry>();
+      // Phase 1 (audit C4) — seed launch verdict on first tick, BEFORE the
+      // sim starts ticking. expirations are anchored to `startedAt` so the
+      // boost duration is measured from the green light, not the call site.
+      const verdict = opts?.launchBoosts?.get(petId) ?? null;
+      if (verdict === 'boost') {
+        activeBoosts.set('launch-boost', {
+          expiresAt: startedAt + LAUNCH_BOOST_DURATION_MS,
+          mult: LAUNCH_BOOST_MULT,
+        });
+      } else if (verdict === 'stall') {
+        // No mult — stall caps THRUST (not speedMod) inside applyIntentForTick.
+        activeBoosts.set('launch-stall', {
+          expiresAt: startedAt + LAUNCH_STALL_DURATION_MS,
+        });
+      }
+
       state.bodies.set(petId, {
         petId,
         x,
@@ -322,6 +412,9 @@ class ReefRaceSim {
         insideCheckpoints: new Set<number>(),
         inventory: emptyReefInventory(),
         activeEffects: new Map(),
+        activeBoosts,
+        currentDriftBoostSparks: 0,
+        drift: { charging: false, sparkLevel: 0, chargeStartTick: 0, lastDriftBit: false },
         intent: {
           dir: null,
           thrust: 0,
@@ -373,6 +466,13 @@ class ReefRaceSim {
 
     // Emit match_started + initial pickup spawn events.
     this.broadcastFn(roomId, { type: 'event.match_started', startedAt });
+    // Phase 1 — broadcast per-pet launch verdict so future per-player VFX
+    // (boost flash, stall stutter) can hook in without re-deriving.
+    if (opts?.launchBoosts) {
+      for (const [petId, kind] of opts.launchBoosts) {
+        this.broadcastFn(roomId, { type: 'event.launch', petId, kind });
+      }
+    }
     for (const pk of state.pickups) {
       this.broadcastFn(roomId, {
         type: 'event.power_up_spawned',
@@ -603,6 +703,15 @@ class ReefRaceSim {
       for (const [kind, expires] of body.activeEffects) {
         if (expires <= now) body.activeEffects.delete(kind);
       }
+      // Phase 1 — sweep active boosts (drift / launch). When a drift-boost
+      // expires we must zero `currentDriftBoostSparks` so the snapshot diff
+      // stops broadcasting the spark tier.
+      for (const [kind, entry] of body.activeBoosts) {
+        if (entry.expiresAt <= now) {
+          body.activeBoosts.delete(kind);
+          if (kind === 'drift-boost') body.currentDriftBoostSparks = 0;
+        }
+      }
     }
 
     // 4. Body-body proximity (light push to prevent tunneling).
@@ -646,20 +755,78 @@ class ReefRaceSim {
     now: number,
   ): void {
     const intent = body.intent;
+    // 1. Consume seq.
     if (intent.seq > intent.consumedSeq) {
       intent.consumedSeq = intent.seq;
     }
-    // Decode actionBits: bit 0 = use slot 0, bit 1 = use slot 1.
+    // 2. Power-up actionBits 0b01 / 0b10 (existing).
     const actionBits = intent.actionBits;
     if (actionBits & 0b01) this.tryUsePowerUp(state, body, 0, now);
     if (actionBits & 0b10) this.tryUsePowerUp(state, body, 1, now);
 
-    // Slick effect from ink-slick caps thrust temporarily.
-    const slicked = body.activeEffects.has('rr-ink-slick');
-    const boosted = body.activeEffects.has('rr-turbo-bubble');
-    const speedMod = boosted ? REEF_BOOST_MULT : slicked ? 0.5 : 1.0;
+    // 3. activeEffects + activeBoosts expiry sweep happens in tickRoom step
+    //    3 BEFORE applyIntentForTick on the same tick. Reading them here is
+    //    safe — anything past `now` is already cleared.
+
+    // 4. Compute speedMod from activeEffects + activeBoosts (audit C2/S4/S5).
+    //    Pickup-only flags (existing):
+    const slicked      = body.activeEffects.has('rr-ink-slick');
+    const powerBoosted = body.activeEffects.has('rr-turbo-bubble');
+    //    Phase 1 kinematic flags (NEW):
+    const launchBoosted = body.activeBoosts.has('launch-boost');
+    const driftBoosted  = body.activeBoosts.has('drift-boost');
+    const stalled       = body.activeBoosts.has('launch-stall');
+
+    // 5. effectiveThrust — stall caps thrust at 30% (audit M2 — measured
+    //    from race start, not press time, so an early-press penalty cuts
+    //    into the FIRST second of racing.)
+    const rawThrust       = Math.max(0, Math.min(1, intent.thrust));
+    const effectiveThrust = stalled
+      ? Math.min(rawThrust, LAUNCH_STALL_THRUST_CAP)
+      : rawThrust;
+
+    let speedMod: number;
+    if (stalled) {
+      // Stall suppresses all speed mods AND caps thrust above. 0.5 mirrors
+      // the ink-slick visual feel — half-cap so the lag is unmistakable.
+      speedMod = 0.5;
+    } else {
+      // Additive kinematic contribution from launch + drift:
+      const driftMult =
+        driftBoosted && body.currentDriftBoostSparks >= 1
+          ? DRIFT_BOOST_MULTS[body.currentDriftBoostSparks - 1] ?? 0
+          : 0;
+      const kineticMult = (launchBoosted ? LAUNCH_BOOST_MULT : 0) + driftMult;
+      // Pickup contribution (rr-turbo-bubble expressed as additive delta):
+      const pickupMult = powerBoosted ? REEF_BOOST_MULT - 1.0 : 0; // = 0.4
+      // Take MAX so simultaneous turbo-bubble + drift-3 doesn't stack
+      // multiplicatively past the kinematic tolerance (audit C3 / S4).
+      const bestMult = Math.max(kineticMult, pickupMult);
+      speedMod = slicked ? 0.5 : 1.0 + bestMult;
+    }
+
     const baseTopSpeed = REEF_MAX_SPEED * speedMod;
 
+    // 6. Update body.rot. Drift bias is applied INSIDE the atan2 assignment,
+    //    not as a per-tick accumulator (audit C1 fix). turnSign mirrors the
+    //    intuition that turning right = body leans right (visual yaw < target),
+    //    so we SUBTRACT the bias from the target rot.
+    if (intent.dir && (intent.dir.x !== 0 || intent.dir.y !== 0)) {
+      const baseRot = Math.atan2(intent.dir.x, intent.dir.y);
+      if (body.drift.charging) {
+        const turnSign = intent.dir.x > 0 ? -1 : 1;
+        body.rot = baseRot + turnSign * DRIFT_ANGULAR_BIAS_RAD;
+      } else {
+        body.rot = baseRot;
+      }
+    }
+
+    // 7. Tick the drift state machine AFTER step 6 — see §2.3 commentary
+    //    in `.claude/plans/reef-race-phase1-detailed.md`. One tick of
+    //    "lingering lean" on release avoids an abrupt visual snap-back.
+    this.tickDriftState(state, body, now);
+
+    // 8. targetVx/Vy from intent.dir * effectiveThrust * speedMod.
     let targetVx = 0;
     let targetVy = 0;
     if (intent.dir) {
@@ -667,12 +834,12 @@ class ReefRaceSim {
       if (mag > 0) {
         const nx = intent.dir.x / mag;
         const ny = intent.dir.y / mag;
-        const t = Math.max(0, Math.min(1, intent.thrust));
-        targetVx = nx * t * baseTopSpeed;
-        targetVy = ny * t * baseTopSpeed;
+        targetVx = nx * effectiveThrust * baseTopSpeed;
+        targetVy = ny * effectiveThrust * baseTopSpeed;
       }
     }
 
+    // 9. Integrate acceleration toward target.
     const dvx = targetVx - body.vx;
     const dvy = targetVy - body.vy;
     const dv = Math.hypot(dvx, dvy);
@@ -680,14 +847,66 @@ class ReefRaceSim {
     const scale = dv === 0 ? 0 : Math.min(1, maxStep / dv);
     body.vx += dvx * scale;
     body.vy += dvy * scale;
+  }
 
-    // Three.js Y-rotation convention — atan2(x, y), NOT atan2(y, x).
-    // The client (`ReefRacePlayer`) reads `entity.rot` directly into
-    // `group.rotation.y` where the kart's native +Z forward maps to the
-    // screen-Z axis. Same fix bumper-shells got — see PR #56.
-    if (intent.dir && (intent.dir.x !== 0 || intent.dir.y !== 0)) {
-      body.rot = Math.atan2(intent.dir.x, intent.dir.y);
+  /**
+   * Phase 1 — drift state machine. Runs as step 7 of `applyIntentForTick`.
+   * Pure-state-mutation; never broadcasts more than one event.drift_boost
+   * per release (audit-proofed via `lastDriftBit` edge detection).
+   */
+  private tickDriftState(state: ReefRoomState, body: ReefBody, now: number): void {
+    const driftBit   = (body.intent.actionBits & ACTION_BIT_DRIFT) !== 0;
+    const speed      = Math.hypot(body.vx, body.vy);
+    const turning    = Math.abs(body.intent.dir?.x ?? 0) >= DRIFT_MIN_STEER;
+    const fastEnough = speed >= DRIFT_MIN_SPEED_FOR_CHARGE;
+
+    const justPressed  = driftBit && !body.drift.lastDriftBit;
+    const justReleased = !driftBit && body.drift.lastDriftBit;
+
+    if (body.drift.charging) {
+      // Cancel paths: drift-bit released OR speed dropped below threshold
+      // (only legitimate speed reducer in Phase 1 is rr-ink-slick — see
+      // audit C6, collisions don't modify velocity).
+      const shouldCancel = !driftBit || !fastEnough;
+
+      if (shouldCancel) {
+        if (justReleased && body.drift.sparkLevel >= 1) {
+          // Fire drift boost — speedMod-only (audit S4: NO velocity impulse).
+          const sparks = body.drift.sparkLevel;
+          const mult   = DRIFT_BOOST_MULTS[sparks - 1];
+          body.activeBoosts.set('drift-boost', {
+            expiresAt: now + DRIFT_BOOST_DURATION_MS,
+            mult,
+          });
+          body.currentDriftBoostSparks = sparks;
+          this.broadcastFn(state.roomId, {
+            type: 'event.drift_boost',
+            petId: body.petId,
+            sparks: sparks as 1 | 2 | 3,
+          });
+        }
+        body.drift.charging        = false;
+        body.drift.sparkLevel      = 0;
+        body.drift.chargeStartTick = 0;
+      } else {
+        // Still charging — advance the spark level.
+        const elapsed = state.tick - body.drift.chargeStartTick;
+        body.drift.sparkLevel =
+          elapsed >= DRIFT_SPARK_TICK_3
+            ? 3
+            : elapsed >= DRIFT_SPARK_TICK_2
+              ? 2
+              : elapsed >= DRIFT_SPARK_TICK_1
+                ? 1
+                : 0;
+      }
+    } else if (justPressed && turning && fastEnough) {
+      body.drift.charging        = true;
+      body.drift.sparkLevel      = 0;
+      body.drift.chargeStartTick = state.tick;
     }
+
+    body.drift.lastDriftBit = driftBit;
   }
 
   private runBotControllers(
@@ -793,7 +1012,11 @@ class ReefRaceSim {
     const prev = { x: body.x, y: body.y };
     const prevV = { x: body.vx, y: body.vy };
 
-    const velCheck = validateReefVelocityDelta(prevV, prevV, dt, 1.5);
+    // Audit C3 — both call-sites use the named REEF_KINEMATIC_TOLERANCE so
+    // a future refactor of integrateMotion can't silently revert to the
+    // shared.ts DEFAULT_CLAMP_TOLERANCE (1.15) and start clipping legit
+    // boosts.
+    const velCheck = validateReefVelocityDelta(prevV, prevV, dt, REEF_KINEMATIC_TOLERANCE);
     if (!velCheck.ok) {
       body.vx = velCheck.value.x;
       body.vy = velCheck.value.y;
@@ -802,7 +1025,12 @@ class ReefRaceSim {
     body.x += body.vx * dt;
     body.y += body.vy * dt;
 
-    const posCheck = validateReefPositionDelta(prev, { x: body.x, y: body.y }, dt, 1.5);
+    const posCheck = validateReefPositionDelta(
+      prev,
+      { x: body.x, y: body.y },
+      dt,
+      REEF_KINEMATIC_TOLERANCE,
+    );
     if (!posCheck.ok) {
       body.x = posCheck.value.x;
       body.y = posCheck.value.y;
@@ -811,6 +1039,22 @@ class ReefRaceSim {
 
     body.vx *= REEF_DRAG;
     body.vy *= REEF_DRAG;
+
+    // Phase 1 (audit S5) — boost-gated hard velocity cap. Backstop only;
+    // never clamps non-boosted bodies. Max legit speed at 1.68× = 840 wu/s;
+    // cap at 1.85× = 925 wu/s gives 85 wu/s safety margin against a future
+    // unforeseen stacking bug.
+    const isBoostActive =
+      body.activeBoosts.has('launch-boost') ||
+      body.activeBoosts.has('drift-boost');
+    if (isBoostActive) {
+      const speed = Math.hypot(body.vx, body.vy);
+      const hardCap = REEF_MAX_SPEED * 1.85;
+      if (speed > hardCap) {
+        body.vx = (body.vx / speed) * hardCap;
+        body.vy = (body.vy / speed) * hardCap;
+      }
+    }
   }
 
   private resolveProximity(state: ReefRoomState): void {
@@ -1172,6 +1416,7 @@ class ReefRaceSim {
         nextCheckpoint: b.nextCheckpoint,
         finishedAt: b.finishedAt,
         dnf: b.dnf,
+        driftSparks: b.drift.sparkLevel,
       })),
       pickups: state.pickups.map((pk) => ({
         spawnId: pk.spawnId,
@@ -1238,7 +1483,10 @@ class ReefRaceSim {
           p.lap !== b.lap ||
           p.nextCheckpoint !== b.nextCheckpoint ||
           p.finishedAt !== b.finishedAt ||
-          p.dnf !== b.dnf
+          p.dnf !== b.dnf ||
+          // Phase 1 (audit S1+S7) — spark-only changes MUST broadcast so the
+          // HUD can update its dot bar between positional ticks.
+          p.driftSparks !== b.driftSparks
         );
       })
       .map((b) => ({
@@ -1257,6 +1505,9 @@ class ReefRaceSim {
             : b.finishedAt !== null
               ? 'finished'
               : 'racing',
+          // Phase 1 — surface drift charge tier per body. Old clients hit
+          // EntityDelta.changed's `[k: string]: unknown` catch-all → no-op.
+          driftSparks: b.driftSparks,
         },
       }));
     const pickups = snap.pickups

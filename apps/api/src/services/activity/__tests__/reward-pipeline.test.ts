@@ -388,6 +388,7 @@ describe('issueRewardsForRoom', () => {
       hasBots: true,
       hasAgents: false,
       activityConfig: { minPlayers: 4, maxPlayers: 8, preferredPlayers: 6 },
+      preLaunchBuffer: null,
     };
   }
 

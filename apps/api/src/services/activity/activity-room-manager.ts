@@ -48,6 +48,10 @@ import {
   type SimResultRow,
   type IssuedResult,
 } from './reward-pipeline';
+import {
+  LAUNCH_WINDOW_MS,
+  LAUNCH_STALL_WINDOW_MS,
+} from './sim/reef-race-config';
 
 // ─── Constants (backend §1.5, §1.6) ────────────────────────────────────────
 
@@ -249,6 +253,10 @@ class ActivityRoomManager {
       hasBots,
       hasAgents,
       activityConfig,
+      // Reef Race Phase 1 — populated lazily by recordPreLaunchInput() when
+      // the first thrust=1.0 frame arrives during COUNTDOWN. Cleared by
+      // computeLaunchVerdicts() at the LIVE transition (or by abort cleanup).
+      preLaunchBuffer: null,
     };
 
     this.rooms.set(roomId, room);
@@ -537,6 +545,65 @@ class ActivityRoomManager {
         console.error('[activity-room-manager] sweeper GC failed:', err);
       }
     }
+  }
+
+  // ─── Reef Race Phase 1 — pre-launch capture + verdicts ──────────────────
+
+  /**
+   * Called by the WS hub when a Reef Race client sends `thrust >= 1.0`
+   * during COUNTDOWN. Stores only the LAST qualifying input per player —
+   * timing of the final full-throttle press is what determines the verdict.
+   *
+   * Idempotent and safe to call from non-reef-race rooms (no-op if state
+   * isn't 'countdown' or thrust < 1.0).
+   */
+  recordPreLaunchInput(
+    roomId: string,
+    petId: string,
+    timestamp: number,
+    thrust: number,
+  ): void {
+    const room = this.rooms.get(roomId);
+    if (!room || room.state !== 'countdown') return;
+    if (thrust < 1.0) return;
+    if (!room.preLaunchBuffer) room.preLaunchBuffer = new Map();
+    room.preLaunchBuffer.set(petId, { timestamp, thrust });
+  }
+
+  /**
+   * Called by the sim dispatcher in apps/api/src/index.ts AFTER
+   * `room.startedAt` is set by `persistLiveTransition` and BEFORE
+   * `reefRaceSim.startRoom` is invoked. Returns a per-pet verdict map.
+   * Clears `room.preLaunchBuffer` on completion.
+   *
+   * Verdict windows (audit C4 + S10 fix — uses room manager's startedAt):
+   *   |offset| ≤ LAUNCH_WINDOW_MS                           → 'boost'
+   *   offset ∈ [-(WINDOW + STALL_WINDOW), -WINDOW)          → 'stall'
+   *   offset > +LAUNCH_WINDOW_MS or further early           → no verdict
+   */
+  computeLaunchVerdicts(room: Room): Map<string, 'boost' | 'stall'> {
+    const verdicts = new Map<string, 'boost' | 'stall'>();
+    if (!room.preLaunchBuffer || !room.startedAt) {
+      // Always release the buffer — even when empty — so a stale Map
+      // doesn't survive into the LIVE phase if startedAt was never set.
+      room.preLaunchBuffer = null;
+      return verdicts;
+    }
+
+    for (const [petId, entry] of room.preLaunchBuffer) {
+      const offset = entry.timestamp - room.startedAt;
+      if (Math.abs(offset) <= LAUNCH_WINDOW_MS) {
+        verdicts.set(petId, 'boost');
+      } else if (
+        offset < -LAUNCH_WINDOW_MS &&
+        offset >= -(LAUNCH_WINDOW_MS + LAUNCH_STALL_WINDOW_MS)
+      ) {
+        verdicts.set(petId, 'stall');
+      }
+      // else: outside both windows → no verdict (normal start)
+    }
+    room.preLaunchBuffer = null;
+    return verdicts;
   }
 
   /**
@@ -836,6 +903,12 @@ class ActivityRoomManager {
     room: Room,
     status: 'aborted' | 'aborted_crash',
   ): Promise<void> {
+    // Reef Race Phase 1 (audit S6) — discard any collected pre-launch
+    // inputs so an abort path can never deliver stale launch verdicts to
+    // a future incarnation of the room. Covers BOTH 'aborted' (countdown
+    // → aborted) and 'aborted_crash' (live → aborted_crash) paths.
+    room.preLaunchBuffer = null;
+
     // Only update the DB row if it was previously persisted (PENDING never
     // hits the DB; rooms aborted before COUNTDOWN have nothing to update).
     if (!room.startedAt && room.state === 'aborted' && room.countdownStartedAt === null) {

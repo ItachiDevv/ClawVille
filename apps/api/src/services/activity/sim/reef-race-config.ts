@@ -285,3 +285,96 @@ export const REEF_POWERUP_RADIUS = 28;
 
 /** Sim tick rate (Hz). 30Hz per task spec (race kinematics tolerate lower rate). */
 export const REEF_TICK_HZ = 30;
+
+// ─── Phase 1 — Drift state machine + launch boost (Reef Race rebuild) ───────
+
+/**
+ * Sim tick period in milliseconds (33.33ms at 30Hz).
+ * Exported so the bot can convert ticks↔ms without re-deriving the constant.
+ */
+export const REEF_TICK_MS = 1000 / REEF_TICK_HZ;
+
+/**
+ * Boost-kind union for drift + launch effects. SEPARATE from `ReefPowerUpKind`
+ * (pickup-only) — these live in `body.activeBoosts: Map<ReefBoostKind, …>` to
+ * keep the strict pickup type inviolate (audit C2 fix).
+ */
+export type ReefBoostKind =
+  | 'launch-boost'
+  | 'launch-stall'
+  | 'drift-boost';
+
+// Drift spark tier thresholds (in sim ticks).
+//   Tier 0→1: 0.4s = 12 ticks   → achievable in any medium corner
+//   Tier 1→2: 0.9s = 27 ticks   → needs a sustained turn entry
+//   Tier 2→3: 1.5s = 45 ticks   → requires a full hairpin (~1/3 of B-arc)
+export const DRIFT_SPARK_TICK_1 = 12;
+export const DRIFT_SPARK_TICK_2 = 27;
+export const DRIFT_SPARK_TICK_3 = 45;
+export const DRIFT_SPARK_TIERS: readonly [number, number, number] = [
+  DRIFT_SPARK_TICK_1,
+  DRIFT_SPARK_TICK_2,
+  DRIFT_SPARK_TICK_3,
+];
+
+/**
+ * Drift boost duration after release. Time-extended speedMod, NOT a velocity
+ * impulse (audit S4 fix — eliminates double-counting against the speed cap).
+ */
+export const DRIFT_BOOST_DURATION_MS = 1_200;
+
+/**
+ * Additive speed multipliers per spark level (index 0 = spark 1).
+ * Applied as: speedMod = 1 + DRIFT_BOOST_MULTS[sparkLevel - 1].
+ * Stored on the ReefBoostEntry so no re-lookup is needed after drift state
+ * is cleared at release.
+ */
+export const DRIFT_BOOST_MULTS: readonly [number, number, number] = [0.12, 0.24, 0.38];
+
+/**
+ * Constant absolute angular bias added to body.rot WHILE drift.charging is
+ * true. Applied INSIDE step 6 of applyIntentForTick on the same line that
+ * computes Math.atan2(...) — not as a per-tick accumulator (audit C1 fix).
+ * Right turn (intent.dir.x > 0) subtracts, left turn adds.
+ *
+ * 15° = 0.2618 rad — visible kart-style lean into the corner.
+ */
+export const DRIFT_ANGULAR_BIAS_RAD = (15 * Math.PI) / 180;
+
+/** Minimum forward speed (wu/s) required to start OR maintain a drift charge. */
+export const DRIFT_MIN_SPEED_FOR_CHARGE = REEF_MAX_SPEED * 0.30; // 150 wu/s
+
+/**
+ * |dir.x| threshold — body must be cornering to initiate drift.
+ * 0.25 ≈ 14.5° off straight. Single canonical name (the v1-draft
+ * `DRIFT_MIN_ANGULAR_RATE` is intentionally NOT exported — one knob only).
+ */
+export const DRIFT_MIN_STEER = 0.25;
+
+// Launch boost window (sub-window timings, ms).
+export const LAUNCH_WINDOW_MS         = 150;   // half-window: ±150ms of green = boost
+export const LAUNCH_BOOST_MULT        = 0.30;  // +30% speed cap for 2s
+export const LAUNCH_BOOST_DURATION_MS = 2_000;
+export const LAUNCH_STALL_WINDOW_MS   = 200;   // press >150ms but ≤350ms early → stall zone
+export const LAUNCH_STALL_DURATION_MS = 1_000;
+export const LAUNCH_STALL_THRUST_CAP  = 0.30;
+
+/**
+ * Anti-cheat tolerance multiplier for reef-race kinematic validators.
+ * Replaces the two hard-coded `1.5` values in reef-race-sim.ts (audit C3 fix).
+ *
+ * Raised from 1.5× to 2.0×:
+ *   Max combined boost = drift-3 (0.38) + launch (0.30) = 0.68 additive
+ *   Effective speed = 500 × 1.68 = 840 wu/s
+ *   Under 2.0× tolerance = 500 × 2.0 = 1000 wu/s — 160 wu/s safe margin
+ *
+ *   Under OLD 1.5× tolerance, drift-3 + launch (840 wu/s > 750 wu/s) would be
+ *   silently clamped, stripping ~11% of the combined boost. Player feels robbed.
+ */
+export const REEF_KINEMATIC_TOLERANCE = 2.0;
+
+// actionBit assignments. Bits 0+1 are pre-existing power-up slot toggles.
+export const ACTION_BIT_POWERUP_0 = 0b0001;
+export const ACTION_BIT_POWERUP_1 = 0b0010;
+export const ACTION_BIT_DRIFT     = 0b0100;
+export const ACTION_BIT_LAUNCH    = 0b1000;
