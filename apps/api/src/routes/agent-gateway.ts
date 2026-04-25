@@ -384,6 +384,28 @@ agentGatewayRoutes.post('/connect', async (c) => {
       pending.connected = true;
       pending.sessionId = sessionId;
       pending.agentId = resolvedAgentId;
+
+      // Phase 6.1 — if the human gave the token a learning focus at
+      // issuance time, persist it on their avatar now that the agent has
+      // claimed the token. Non-fatal on failure — the connect succeeds
+      // either way, the avatar just won't have a focus-biased prompt
+      // until next /create-agent or next connect-token flow.
+      if (pending.learningFocus && pending.avatarId) {
+        try {
+          await db
+            .update(avatars)
+            .set({
+              learningFocus: pending.learningFocus,
+              updatedAt: new Date(),
+            })
+            .where(eq(avatars.id, pending.avatarId));
+        } catch (err) {
+          console.error(
+            '[AgentConnect] learningFocus persist failed (non-fatal):',
+            err,
+          );
+        }
+      }
     }
   }
 
@@ -472,26 +494,38 @@ agentGatewayRoutes.post('/connect', async (c) => {
     }
   }
 
-  // Phase 5.1 — first-time avatar wallet disclosure. Only fires when a avatar
-  // has been resolved for this connect AND the avatar has no wallet yet.
-  // On first-creation, the base58 secret is returned exactly once so
-  // the agent can relay it to the human for self-custody backup.
-  // Subsequent calls for the same avatar omit the `wallet` block.
+  // Phase 6.1 — avatar wallet disclosure, now returned EVERY session when
+  // a avatar is resolved. Only the `secretKey` field is first-time-only
+  // (server never re-exposes it); the public `address` flows every time
+  // so the agent can save it to config and call /api/agent/wallet for
+  // balance reads + earnings summaries. Before this change the agent
+  // had no way to learn its avatar's wallet address on returning sessions,
+  // which broke the "report what it earned this session" loop the
+  // human needs.
   //
   // Top-level `walletAddress` stays the AGENT wallet (per existing
-  // contract) — this new block is the AVATAR wallet, a separate economic
-  // identity. SKILL.md disambiguates the two for the agent.
-  let walletBlock: { address: string; secretKey: string; chain: 'solana' } | null = null;
+  // contract) — this `wallet` block is the AVATAR wallet, a separate
+  // economic identity. SKILL.md disambiguates the two for the agent.
+  let walletBlock: {
+    address: string;
+    chain: 'solana';
+    secretKey?: string;
+  } | null = null;
   if (resolved.avatarId) {
     try {
       const avatarWallet = await ensureWalletWithFirstTimeSecret('avatar', resolved.avatarId);
-      if (avatarWallet.firstTimeSecretKeyBase58) {
-        walletBlock = {
-          address: avatarWallet.publicKey,
-          secretKey: avatarWallet.firstTimeSecretKeyBase58,
-          chain: 'solana',
-        };
-      }
+      walletBlock = {
+        address: avatarWallet.publicKey,
+        chain: 'solana',
+        // `firstTimeSecretKeyBase58` is populated only on the mint that
+        // created the keypair. Subsequent calls for the same avatar
+        // leave it undefined, and we omit the field from the JSON
+        // below so a stale client can't misread a missing secret as a
+        // valid one.
+        ...(avatarWallet.firstTimeSecretKeyBase58
+          ? { secretKey: avatarWallet.firstTimeSecretKeyBase58 }
+          : {}),
+      };
     } catch (err) {
       console.error('[AgentConnect] avatar wallet provisioning failed (non-fatal):', err);
     }
@@ -683,6 +717,18 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
     // reconnect — the agent already has its config and doesn't need
     // its own wallet surfaced again.
     walletAddress: userPet?.walletAddress ?? null,
+    // Phase 6.1 — also return the avatar wallet in the same `wallet` block
+    // shape as /connect, so the agent has ONE place to read from
+    // regardless of which flow it took. `secretKey` is NEVER returned on
+    // reconnect — the first-time disclosure happens only on /connect.
+    ...(userPet?.walletAddress
+      ? {
+          wallet: {
+            address: userPet.walletAddress,
+            chain: 'solana' as const,
+          },
+        }
+      : {}),
   });
 });
 
@@ -751,6 +797,85 @@ agentGatewayRoutes.get('/session-status', async (c) => {
     connected: true,
     lastSeenAt: row.lastSeenAt.toISOString(),
     expiresAt: row.sessionExpiresAt?.toISOString() ?? null,
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 6.1 — GET /api/agent/wallet
+// ---------------------------------------------------------------------------
+// Balance + address report for the avatar wallet tied to a live session.
+// Agents use this to tell the human "your avatar earned +42 ClawTokens and
+// +0.0001 SOL this session" without needing to know the wallet private
+// key (they don't — only the server does). Unauthenticated beyond the
+// sessionId because the info surfaced (address + balances) is all
+// public on-chain anyway; the sessionId scoping prevents cross-user
+// leakage (a stranger can't read my balances without my sessionId).
+//
+// Session resolution: `sessionId → agentId` via npcSimulation's live
+// map; `agentId → openclaw_bots.user_id → avatars.walletAddress`. The
+// avatar's ClawToken balance is the authoritative server-side counter.
+// SOL balance is deferred (no on-chain RPC call in hot path) — we
+// surface `solLamports: null` with a comment so the agent can fetch
+// directly from an RPC if it really needs it.
+// ---------------------------------------------------------------------------
+const walletSummaryRateLimiter = createRateLimiter({
+  maxPerWindow: 60,
+  windowMs: 60_000,
+});
+
+agentGatewayRoutes.get('/wallet', async (c) => {
+  const ip = getClientIp({ get: (n) => c.req.header(n) ?? null });
+  if (!walletSummaryRateLimiter.check(ip)) {
+    return c.json({ error: 'Too many wallet reads. Try again in 1 minute.' }, 429);
+  }
+
+  const sessionId = c.req.query('sessionId');
+  if (!sessionId) {
+    return c.json({ error: 'Missing sessionId query parameter' }, 400);
+  }
+
+  const botCfg = npcSimulation.getOpenClawBotConfig(sessionId);
+  if (!botCfg) {
+    return c.json({ error: 'Unknown or expired session' }, 404);
+  }
+
+  const bot = await db.query.openclawBots.findFirst({
+    where: eq(openclawBots.agentId, botCfg.agentId),
+    columns: { id: true, userId: true, walletAddress: true },
+  });
+  if (!bot || !bot.userId) {
+    return c.json({ error: 'Session is not bound to a user account' }, 404);
+  }
+
+  const avatar = await db.query.avatars.findFirst({
+    where: eq(avatars.userId, bot.userId),
+    columns: {
+      id: true,
+      name: true,
+      walletAddress: true,
+      clawTokens: true,
+    },
+  });
+
+  if (!avatar) {
+    return c.json({ error: 'No avatar for this user' }, 404);
+  }
+
+  return c.json({
+    avatarId: avatar.id,
+    avatarName: avatar.name,
+    wallet: {
+      address: avatar.walletAddress ?? null,
+      chain: 'solana' as const,
+    },
+    balances: {
+      clawTokens: avatar.clawTokens ?? 0,
+      // Agents that need live SOL balance should call their Solana
+      // RPC directly with `wallet.address`. We don't fan out to
+      // mainnet-beta here — it'd add ~200ms to every wallet read and
+      // pin one of our Helius quota units per call.
+      solLamports: null as number | null,
+    },
   });
 });
 
@@ -1995,6 +2120,13 @@ interface PendingConnection {
   avatarName: string;
   userId: string;
   expiresAt: number;
+  /**
+   * Phase 6.1 — optional curriculum focus the human picked before
+   * issuing the token ("cron jobs", "solana signing", etc). Flows from
+   * `/connect-token` body through to `avatars.learning_focus` on /connect
+   * claim, and into the agent's system prompt via `buildCharacterConfig`.
+   */
+  learningFocus?: string;
   // Filled when agent claims the token
   sessionId?: string;
   agentId?: string;
@@ -2041,6 +2173,12 @@ agentGatewayRoutes.post('/connect-token', async (c) => {
   const avatarId = body.avatarId as string | undefined;
   const avatarName = body.avatarName as string | undefined;
   const userId = body.userId as string | undefined;
+  // Phase 6.1 — optional focus string from the modal's new prompt.
+  // Clamp length before persisting to match the schema's 120-char cap;
+  // trim so "   " doesn't become a truthy value.
+  const rawLearningFocus =
+    typeof body.learningFocus === 'string' ? body.learningFocus.trim() : '';
+  const learningFocus = rawLearningFocus ? rawLearningFocus.slice(0, 120) : undefined;
 
   if (!avatarId || !userId) {
     return c.json({ error: 'avatarId and userId required' }, 400);
@@ -2058,6 +2196,7 @@ agentGatewayRoutes.post('/connect-token', async (c) => {
     avatarId,
     avatarName: avatarName ?? 'MyBot',
     userId,
+    ...(learningFocus ? { learningFocus } : {}),
     expiresAt: Date.now() + TOKEN_TTL_MS,
     connected: false,
   });
@@ -2108,11 +2247,40 @@ agentGatewayRoutes.get('/connect-skill', (c) => {
 
   const markdown = `# Connect to ClawVille
 
-You have been invited to join ClawVille — an underwater world where AI agents learn skills from 10 buildings.
+You have been invited to join ClawVille — an underwater world where AI agents learn skills from 10 buildings. Before you call the connect endpoint, check the section below — the human may need to set up a local runtime first, and that instruction belongs in the human's chat BEFORE you relay the magic link.
 
-## Instructions
+## 0. First — does the human need to install a local runtime?
 
-Call this endpoint to connect:
+ClawVille's cloud hosts the Eliza runtime for **Milady** agents end-to-end, but **Hermes / OpenClaw / custom ElizaOS** agents run on the human's machine. If this connection is for a non-Milady framework and the human has never set one up, the link you're about to issue will land them in the world, but their agent will have nowhere to actually live after they click it. Paste the matching setup block in chat FIRST, then do the connect:
+
+### If the human is running Milady AI
+No local install needed — ClawVille's cloud hosts Milady-harnessed avatars. The \`@clawville/app-clawville\` npm plugin is already listed in the Milady app grid; from any Milady chat surface they can type "open clawville" and it launches. When they eventually want to "take the agent home" (export), ClawVille emits a one-line \`curl\` command that POSTs to their local \`/api/plugins/install\` — that step requires Milady running locally (port 2138), which is a separate install:
+- Windows / macOS / Linux: \`npm create milady@latest\` (bundles Eliza)
+- Start with \`milady dev\` — the plugin install endpoint is at \`http://localhost:2138/api/plugins/install\`
+
+### If the human is running Hermes
+- Install: \`npm i -g @hermes-ai/cli\` · then \`hermes init\` in a project directory
+- Local Eliza + Postgres: Hermes ships its own runtime, so only Postgres is an extra dep (Docker: \`docker run -p 5432:5432 -e POSTGRES_PASSWORD=hermes -d postgres:16\`)
+- Bind to ClawVille: \`hermes clawville login\` (uses the magic link we're about to issue)
+- Keep running: \`hermes run\` in a terminal, or \`pm2 start "hermes run" --name hermes\` for persistence
+
+### If the human is running OpenClaw
+- Install: \`npm i -g @openclaw/cli\` · then \`openclaw init\`
+- Local Eliza + Postgres: \`openclaw bootstrap\` seeds both
+- Bind to ClawVille: \`openclaw connect clawville\` and paste the magic link we'll generate below
+
+### If the human is running raw ElizaOS / a custom build
+- \`npm create elizaos@latest\` · point \`DATABASE_URL\` at a local Postgres
+- Install the \`@clawville/agent-runtime\` plugin in the ElizaOS project
+- Pull the character JSON from \`POST ${apiBase}/api/agent/export-character\` (after first connect) and drop it at \`characters/<name>.json\`
+- Start with \`npm run dev\` or \`pm2 start "npm run start" --name eliza\` for persistence
+
+### "Take my agent home" (all non-Milady)
+After the first session, the agent can ask ClawVille to bundle its learned skills into a portable character file. Endpoint: \`POST ${apiBase}/api/agent/export-character\`. Response includes a full ElizaOS-compatible character + a \`skillPack\` array that Milady's plugin (or any Eliza host) can RAG-embed on install. Teach the human this exists — it's why they're training the agent in the first place.
+
+## 1. Connect endpoint
+
+Once the human confirms their local runtime is ready (or they're on Milady), call:
 
 \`\`\`
 POST ${apiBase}/api/agent/connect
@@ -2199,23 +2367,50 @@ that means another agent for the same user claimed the identity first
 (a race). Do NOT overwrite your stored identity; instead, prompt the
 human to generate a fresh connect link from the ClawVille game UI.
 
-## IMPORTANT — relay the wallet backup to the human (first connect only)
+## IMPORTANT — save the avatar wallet address to your config (every session)
 
-The response ALSO includes a \`wallet\` block on first connect:
+The response ALWAYS includes a \`wallet\` block whenever a avatar has been
+resolved — not only on first connect. The public address is yours to
+keep; the private key is only returned on FIRST connect, never again.
 
 \`\`\`json
 {
   "wallet": {
-    "address":   "<base58>",
-    "secretKey": "<base58>",
-    "chain":     "solana"
+    "address":    "<base58>",
+    "chain":      "solana",
+    "secretKey":  "<base58, first-connect-only — omitted on subsequent connects>"
   }
 }
 \`\`\`
 
-Display BOTH the address and the secret to the human — this is the
-user's \$CLAWVILLE wallet, the one economic identity they will want to
-keep for self-custody backup:
+### Save the address in your config, every time
+
+Store the address under EXACTLY this path — other ClawVille tooling
+(balance reads, token reports, earnings summaries) expects to find it
+there:
+
+\`\`\`yaml
+clawville:
+  wallet:
+    address: <wallet.address>
+    chain:   solana
+\`\`\`
+
+It's public (anyone can read a Solana address), so it's safe to commit
+if your config is in version control. Use it to:
+
+- Report balance to the human after a session via
+  \`GET ${apiBase}/api/agent/wallet?sessionId=<your-session-id>\`.
+- Cite the address when someone wants to send \$CLAWVILLE or SOL to the
+  avatar for shop purchases or sponsorship.
+- Summarize earnings ("your avatar earned +42 ClawTokens and +0.01 SOL
+  this session") by diffing balance reads across the session.
+
+### On first connect ONLY, relay the secret to the human
+
+When \`wallet.secretKey\` IS present (i.e. first connect), display BOTH
+the address and the secret to the human one time — this is the user's
+self-custody backup of the \$CLAWVILLE avatar wallet:
 
 \`\`\`
 Your ClawVille wallet recovery key — SAVE THIS NOW.
@@ -2225,15 +2420,20 @@ Secret:  <wallet.secretKey>
 Click to enter ClawVille: <sessionTicket.url>
 \`\`\`
 
-Do NOT store \`wallet.secretKey\` in your config. That is the human's
-backup, not your working credential.
+Do NOT store \`wallet.secretKey\` in your config — only the address. The
+secret is the human's backup, not your working credential. Subsequent
+connects will omit the \`secretKey\` field; the server never re-issues
+it.
 
 ### Disambiguation: the response has TWO wallet fields
 
-- Top-level \`walletAddress\` = YOUR bot's internal wallet. Don't
-  display this; it is our internal bookkeeping.
-- \`wallet.address\` (in the new block) = the HUMAN's avatar wallet. This
-  is the one you copy to the human alongside \`wallet.secretKey\`.
+- Top-level \`walletAddress\` = YOUR bot's internal wallet (x402 / fees /
+  internal bookkeeping). Don't display this; save it under
+  \`clawville.bot.walletAddress\` if your framework needs it for
+  payment flows.
+- \`wallet.address\` (in the \`wallet\` block) = the HUMAN's avatar wallet.
+  Save it under \`clawville.wallet.address\` and use it for balance
+  reads and earnings reports.
 
 ## Reconnect without a new token (future sessions)
 
@@ -2273,6 +2473,28 @@ GET ${apiBase}/api/agent/session-status?agentId=<your-agent-id>
 On 410 Gone, do NOT report "connected." Run the challenge → reconnect
 flow above to mint a fresh session, THEN tell the human. "I have a
 stored sessionId" is not the same as "I am connected."
+
+## Reporting balance + earnings to the human
+
+Once \`clawville.wallet.address\` is in your config, you can call the
+wallet-summary endpoint any time to report balances or diff them
+across a session:
+
+\`\`\`
+GET ${apiBase}/api/agent/wallet?sessionId=<your-session-id>
+  → 200 {
+      "avatarId":   "<uuid>",
+      "avatarName": "<name>",
+      "wallet":  { "address": "<base58>", "chain": "solana" },
+      "balances": { "clawTokens": 142, "solLamports": null }
+    }
+\`\`\`
+
+ClawToken balance is the authoritative server-side counter (what the
+human actually has to spend in-game). SOL balance is intentionally
+\`null\` — if the human asks for live SOL, hit your own Solana RPC
+with \`wallet.address\`. Diff the ClawToken balance at start vs end of
+session to report "earned +N ClawTokens this session."
 
 ## Clean disconnect (logout)
 
