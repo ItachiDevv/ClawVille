@@ -39,6 +39,19 @@ export const researchSseRoutes = new Hono<AppContext>();
  */
 researchSseRoutes.get('/stream', (c) => {
   return streamSSE(c, async (stream) => {
+    // Send an immediate "connected" event so the HTTP/2 stream actually
+    // delivers initial bytes to the client. Without this, the connection
+    // hangs indefinitely waiting for the first eventBus emission, which
+    // some browsers (Chrome over HTTP/2) treat as a failed response —
+    // resulting in `TypeError: Failed to fetch` and a CORS-style error
+    // in the console even though headers are correct. (User report
+    // 2026-04-25: persistent /api/research/stream "blocked by CORS" /
+    // 500 error despite verified-correct CORS + CORP headers.)
+    await stream.writeSSE({
+      data: JSON.stringify({ type: 'connected', timestamp: Date.now() }),
+      event: 'connected',
+    });
+
     const listener: ResearchListener = async (event) => {
       try {
         await stream.writeSSE({
@@ -56,9 +69,16 @@ researchSseRoutes.get('/stream', (c) => {
       researchEventBus.removeListener(listener);
     });
 
-    // Keep stream alive until client disconnects
+    // Heartbeat every 15s to keep the connection healthy and detect
+    // disconnects faster than the 30s sleep would.
     while (true) {
-      await stream.sleep(30000);
+      await stream.sleep(15000);
+      try {
+        await stream.writeSSE({ data: 'ping', event: 'heartbeat' });
+      } catch {
+        researchEventBus.removeListener(listener);
+        return;
+      }
     }
   });
 });
