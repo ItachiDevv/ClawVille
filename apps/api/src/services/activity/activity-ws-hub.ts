@@ -528,6 +528,14 @@ class ActivityWsHub {
       room.activityId === 'reef-race'
         ? reefRaceSim.getStaticZones(room.id) ?? undefined
         : undefined;
+    // Phase 3 — pull per-avatar racing profile (class + level) for reef-race
+    // rooms so the HUD's archetype tile can show the player WHY they have
+    // the multipliers they have (audit S5 fix: room-wide one-shot map,
+    // ~50 bytes × ≤8 = ≤400 bytes total).
+    const reefRacingProfiles =
+      room.activityId === 'reef-race'
+        ? reefRaceSim.getRacingProfiles(room.id) ?? undefined
+        : undefined;
     this.safeSend(ws, {
       type: 'snapshot.init',
       room: {
@@ -543,6 +551,9 @@ class ActivityWsHub {
         // Reef Race Phase 2 — server-authoritative static-zone positions
         // for ribbons / apex markers / hazards. Sent ONCE per snapshot.init.
         reefStaticZones,
+        // Reef Race Phase 3 — per-avatar (class, level). Sent ONCE per
+        // snapshot.init. Client filters by self avatarId.
+        reefRacingProfiles,
       },
       world: {
         tick,

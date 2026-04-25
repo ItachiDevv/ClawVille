@@ -196,6 +196,7 @@ export interface ActivityMatchAbortedCrashPayload {
 export interface ActivityAntiCheatFlagPayload {
   kind:
     | 'overspeed'
+    | 'overaccel'
     | 'underminlap'
     | 'seq_gap'
     | 'ghost_input'
