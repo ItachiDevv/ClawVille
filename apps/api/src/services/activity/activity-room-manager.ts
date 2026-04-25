@@ -81,6 +81,19 @@ const SHORT_CODE_LENGTH = 6;
 /** How many times to retry short-code generation on collision */
 const SHORT_CODE_RETRY = 16;
 
+/**
+ * Room states that DON'T block a player from re-queueing. The match is
+ * either over (`results`), being torn down (`gc`), or never ran cleanly
+ * (`aborted`/`aborted_crash`). Anything outside this set means a live
+ * match is in flight for the player.
+ */
+const NON_BLOCKING_ROOM_STATES: ReadonlySet<RoomState> = new Set<RoomState>([
+  'results',
+  'gc',
+  'aborted',
+  'aborted_crash',
+]);
+
 /** Allowed FSM transitions — guard against typos in code paths */
 const VALID_TRANSITIONS: Record<RoomState, ReadonlySet<RoomState>> = {
   pending: new Set<RoomState>(['countdown', 'aborted']),
@@ -308,13 +321,7 @@ class ActivityRoomManager {
     // to re-queue immediately without waiting for the GC sweep. Without
     // this, a player who closes the tab right after the results screen
     // gets stuck in queue jail until the next sweeper run + GC tick.
-    if (
-      !room ||
-      room.state === 'results' ||
-      room.state === 'gc' ||
-      room.state === 'aborted' ||
-      room.state === 'aborted_crash'
-    ) {
+    if (!room || NON_BLOCKING_ROOM_STATES.has(room.state)) {
       this.playerToRoom.delete(avatarId);
       return undefined;
     }
