@@ -23,7 +23,8 @@
 
 import { useRef, useEffect } from 'react';
 import { useFrame } from '@react-three/fiber';
-import * as THREE from 'three/webgpu';
+// PERF FIX 2026-04-24: 'three' not 'three/webgpu' — two THREE instances = GPU context loss
+import * as THREE from 'three';
 import {
   BURST_POOL_SIZE,
   BURST_POINT_COUNT,

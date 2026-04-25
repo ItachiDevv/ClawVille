@@ -5,22 +5,31 @@
  * Centralised here so BumperShellsArena, BumperShellsHazard, BumperShellsPlayer,
  * BumperShellsPickups, and BumperShellsParticles all read from one source.
  *
- * REBUILD 2026-04-24: Perspective chase camera, real arena geometry, VFX pipeline.
+ * PERF FIX 2026-04-24: Killed PCF shadows, neon point lights, and three/webgpu import
+ * to cure GPU context loss on Iris Xe / mobile Safari. Rescaled shells + pulled
+ * camera back so the full arena reads at neutral pose.
  *
- * Performance budget: ≤60 draw calls / ≤180k tris / 1×1024² shadow map / 0 post-processing.
+ * Performance budget: ≤30 draw calls / 0 shadow maps / 0 post-processing.
  * Target GPU: Intel Iris Xe (integrated) @ 30fps mobile minimum, 60fps desktop target.
  */
 
 // ─── Arena geometry ──────────────────────────────────────────────────────────
 
-/** Flat disc radius in world-units (wu). Sim boundary unchanged. */
+/**
+ * Flat disc radius in world-units (wu).
+ * MUST match server BUMPER_ARENA_RADIUS (apps/api/.../sim/bumper-shells-sim.ts = 500).
+ * Do NOT change this value without changing the server constant.
+ */
 export const ARENA_RADIUS = 500;
 
 /** Platform cylinder height — thicker for visual depth from perspective cam. */
 export const ARENA_HEIGHT = 24;
 
-/** Radial segments for the platform disc — 64 for smooth silhouette. */
-export const ARENA_RADIAL_SEGMENTS = 64;
+/**
+ * Radial segments for the platform disc.
+ * 48 is smooth enough from chase cam distance; was 64 (saves ~25% cylinder verts).
+ */
+export const ARENA_RADIAL_SEGMENTS = 48;
 
 // ─── Boundary / rim ──────────────────────────────────────────────────────────
 
@@ -28,10 +37,10 @@ export const ARENA_RADIAL_SEGMENTS = 64;
 export const RIM_TUBE_RADIUS = 14;
 
 /** Rim glow torus radial segments. */
-export const RIM_RADIAL_SEGMENTS = 16;
+export const RIM_RADIAL_SEGMENTS = 8;
 
-/** Rim glow torus tubular segments. */
-export const RIM_TUBULAR_SEGMENTS = 80;
+/** Rim glow torus tubular segments — 64 was 80; lower saves verts at far dist. */
+export const RIM_TUBULAR_SEGMENTS = 64;
 
 /** Bumper wall height — knee-high guardrail at arena edge visible from chase cam. */
 export const BUMPER_WALL_HEIGHT = 44;
@@ -63,25 +72,25 @@ export const HAZARD_SPIN_SPEED = 0.5;
 
 /**
  * Perspective camera FOV in degrees.
- * 55° gives a natural-feeling game view for competitive bumper gameplay.
+ * 60° gives a wider view so the full arena fits at neutral cam pose.
  */
-export const CAMERA_FOV = 55;
+export const CAMERA_FOV = 60;
 
 /** Camera near clip plane. */
 export const CAMERA_NEAR = 1;
 
 /**
  * Camera far clip plane.
- * Chase cam sits ~300wu above player at ~420wu back. The void is at -2000wu.
- * 2500wu gives margin. Fog dissolves before the clip plane.
+ * Chase cam sits ~380wu above player at ~600wu back. Fog dissolves before clip.
+ * Kept at 2000wu (down from 2500) to reduce depth buffer precision waste.
  */
-export const CAMERA_FAR = 2500;
+export const CAMERA_FAR = 2000;
 
-/** Chase camera horizontal arm length in wu. */
-export const CHASE_CAM_DISTANCE = 420;
+/** Chase camera horizontal arm length in wu. Pulled back so 3 shells are visible. */
+export const CHASE_CAM_DISTANCE = 620;
 
-/** Chase camera height above arena floor in wu. */
-export const CHASE_CAM_HEIGHT = 280;
+/** Chase camera height above arena floor in wu. Higher = more of arena visible. */
+export const CHASE_CAM_HEIGHT = 400;
 
 /** Look-ahead distance: the camera aims ahead of the player in their velocity direction. */
 export const CHASE_CAM_LOOK_AHEAD = 60;
@@ -89,8 +98,8 @@ export const CHASE_CAM_LOOK_AHEAD = 60;
 /** Camera position lerp alpha per second (frame-rate independent exp decay). */
 export const CHASE_CAM_LERP_ALPHA = 5.0;
 
-/** Spectator camera FOV in degrees (same as player for consistency). */
-export const SPECTATOR_FOV = 55;
+/** Spectator camera FOV in degrees. */
+export const SPECTATOR_FOV = 60;
 
 // ─── Fog ─────────────────────────────────────────────────────────────────────
 
@@ -100,18 +109,30 @@ export const FOG_COLOR = '#020508';
 /**
  * Fog near/far for the perspective chase camera.
  *
- * Chase cam is ~300wu above the disc, at ~420wu behind the player.
- * The arena disc is 500wu radius — fully visible within ~600wu of the player.
- * Fog starts at 900wu (beyond arena edge) and completes at 1800wu.
- * This preserves full arena visibility while hiding the void seam.
+ * Chase cam is ~400wu above the disc, ~620wu behind the player.
+ * Fog starts at 1000wu (past arena edge at 500wu radius) and completes at 1600wu.
+ * This hides the void seam while keeping the full arena visible.
  *
- * Iris Xe perf: fog.far (1800) < camera.far (2500) — safe, no overdraw spike.
+ * Iris Xe perf: fog.far (1600) < camera.far (2000) — safe, no overdraw spike.
  * See performance/fog-density-iris-xe-regression.md.
  */
-export const FOG_NEAR = 900;
-export const FOG_FAR  = 1800;
+export const FOG_NEAR = 1000;
+export const FOG_FAR  = 1600;
 
 // ─── Lighting ────────────────────────────────────────────────────────────────
+//
+// PERF FIX 2026-04-24: Removed ALL point lights (rim accents × 4 in Arena +
+// neon accents × 3 in Scene = 7 total). Each point light doubles the
+// lighting shader pass per fragment — on Iris Xe at 1280×720 that is ~1.7M
+// extra ALU ops per light per frame. With 7 lights on top of a shadow-casting
+// directional light, the GPU saturates and loses context.
+//
+// Removed shadow map entirely (was 1024×1024 PCF). PCF shadow on a directional
+// light covers 560wu×560wu, requires a full depth-prepass at 1024² every frame.
+// On Iris Xe that is a ~4ms GPU cost per frame on top of the main pass.
+//
+// Current lighting: hemisphere (free, no pass) + 1 directional no-shadow (1 pass).
+// Total GPU lighting passes: 1. Was: 1 (PCF shadow) + 1 (main) = 2 + 7 light bins.
 
 /** Hemisphere sky color — deep ocean blue fill. */
 export const HEMI_SKY_COLOR    = '#1a3a6a';
@@ -119,43 +140,36 @@ export const HEMI_SKY_COLOR    = '#1a3a6a';
 /** Hemisphere ground color — dark abyss. */
 export const HEMI_GROUND_COLOR = '#050a14';
 
-/** Hemisphere intensity — fills the shadow side of shells so they read clearly. */
-export const HEMI_INTENSITY    = 1.2;
+/**
+ * Hemisphere intensity — raised slightly to compensate for removed fill lights.
+ * Fills shadow side of shells so they read clearly without point lights.
+ */
+export const HEMI_INTENSITY    = 1.8;
 
 /** Key directional light color — warm white for PBR shell sheen. */
 export const DIR_COLOR     = '#fff8f0';
 
-/** Key directional light intensity — strong for lobster PBR shells. */
-export const DIR_INTENSITY = 2.2;
+/** Key directional light intensity. */
+export const DIR_INTENSITY = 2.5;
 
-/** Key light position — above and to side for dramatic angle + good shadow direction. */
+/** Key light position — above and to side for dramatic angle. */
 export const DIR_POSITION  = [300, 500, 200] as const;
-
-/** Shadow map size — 1024 for soft PCF shadows visible from chase cam. */
-export const DIR_SHADOW_MAP_SIZE = 1024;
-
-export const DIR_SHADOW_NEAR = 1;
-export const DIR_SHADOW_FAR = 1200;
-
-/** Shadow frustum covers the full arena disc + some margin. */
-export const DIR_SHADOW_CAM_BOUNDS = 560;
-
-/** Rim accent point light color — cyan underwater glow. */
-export const RIM_LIGHT_COLOR = '#00ccff';
-
-/** Rim accent light intensity. */
-export const RIM_LIGHT_INTENSITY = 1.5;
-
-/** Rim accent light decay distance in wu. */
-export const RIM_LIGHT_DISTANCE = 800;
 
 // ─── Player shells ───────────────────────────────────────────────────────────
 
 /**
  * Scale applied to lobster.glb / crayfish.glb clones.
- * lobster.glb native height ≈ 1.12 → SHELL_SCALE=40 → 44.8wu.
+ *
+ * lobster.glb native height ≈ 1.12wu.
+ * SHELL_SCALE=22 → 22 × 1.12 = 24.6wu.
+ * Arena radius = 500wu, diameter = 1000wu.
+ * Shell diameter ≈ 25wu = 1/40 of diameter — correct ratio for bumper game.
+ * (Was 40 → 44.8wu = 1/22 of diameter — too large, arena felt crowded.)
+ *
+ * Camera arm = 620wu, height = 400wu → at neutral pose, arena reads 900wu across.
+ * Three shells at 25wu diameter each = 75wu total — about 8% of frame width: readable.
  */
-export const SHELL_SCALE = 40;
+export const SHELL_SCALE = 22;
 
 /** Maximum simultaneously-rendered player shells. */
 export const MAX_PLAYERS = 8;
@@ -163,7 +177,7 @@ export const MAX_PLAYERS = 8;
 // ─── Player name labels ───────────────────────────────────────────────────────
 
 /** Y offset of name label above player shell group origin (in wu). */
-export const LABEL_Y_OFFSET = 72;
+export const LABEL_Y_OFFSET = 45;
 
 // ─── Squash/stretch animation ────────────────────────────────────────────────
 
@@ -272,8 +286,12 @@ export const VOID_BACKDROP_Y = -2000;
 /** Void backdrop quad size in wu. */
 export const VOID_BACKDROP_SIZE = 10000;
 
-/** Number of stars in the void starfield (Points object, 1 draw call). */
-export const STAR_COUNT = 300;
+/**
+ * Number of stars in the void starfield (Points object, 1 draw call).
+ * Reduced from 300 to 60 — 300 was 900 point sprites at 8px each: overdraw hog.
+ * 60 is still visually "starfield" from chase cam distance.
+ */
+export const STAR_COUNT = 60;
 
 /** Starfield spawn radius in wu from arena center. */
 export const STAR_RADIUS = 1800;
