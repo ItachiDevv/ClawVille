@@ -69,16 +69,14 @@ researchSseRoutes.get('/stream', (c) => {
       researchEventBus.removeListener(listener);
     });
 
-    // Heartbeat every 15s to keep the connection healthy and detect
-    // disconnects faster than the 30s sleep would.
+    // Match npc-sse pattern exactly — sleep loop, no heartbeat writes.
+    // The earlier heartbeat write triggered HTTP/2 protocol errors in
+    // Chrome (ERR_HTTP2_PROTOCOL_ERROR 200 OK) when proxied through
+    // Cloudflare, even though SSE bytes were technically valid. Initial
+    // 'connected' event above is sufficient to establish the stream;
+    // research events flowing through eventBus.emit() keep it alive.
     while (true) {
-      await stream.sleep(15000);
-      try {
-        await stream.writeSSE({ data: 'ping', event: 'heartbeat' });
-      } catch {
-        researchEventBus.removeListener(listener);
-        return;
-      }
+      await stream.sleep(30000);
     }
   });
 });
