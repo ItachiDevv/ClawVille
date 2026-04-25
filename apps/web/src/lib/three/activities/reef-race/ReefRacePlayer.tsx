@@ -21,13 +21,30 @@
  *   the swimming motion degrades gracefully (fish-like) on lobsters. No species-
  *   specific animator branch needed.
  *
+ * Phase 1 §4 — Reef Glider scene node restructure (2026-04-24):
+ *
+ *   Scene graph restructured from:
+ *     groupRef → meshRootRef (bank tilt + avatar)
+ *
+ *   To:
+ *     groupRef → gliderRef (bank tilt) → [gliderMesh, riderMountRef → avatarMesh]
+ *
+ *   - gliderMesh: shared module-scope BoxGeometry(2.5, 0.25, 5) + MeshStandardMaterial.
+ *     ONE geometry and ONE material instance for ALL player instances (no per-mount alloc).
+ *   - gliderRef carries the bank tilt (rotation.z). riderMountRef.rotation.z = 0 always.
+ *   - riderMountRef positioned at RIDER_MOUNT_OFFSET_DEFAULT = [0, 0.6, -0.5] local.
+ *   - Gentle bob on riderMountRef.position.y (±2 local units at 1.2Hz).
+ *   - KART_Y_ABOVE_TRACK elevation moves from group.position.y (world) to
+ *     gliderRef.position.y (local = KART_Y_ABOVE_TRACK / KART_SCALE = 0.25).
+ *
  * Iris Xe invariants:
  *   - SkeletonUtils.clone() + frustumCulled=false traverse immediately after clone.
  *   - No per-frame allocations — module-scope scratch primitives only.
  *   - import from 'three' (plain), NOT 'three/webgpu'.
- *   - Color tint preserved unchanged (lines 87-106 in original — not touched).
+ *   - Color tint preserved unchanged (same traverse + clone pattern as before).
+ *   - Shared glider geometry/material never disposed (page-lifetime, multi-instance).
  *
- * Draw calls: 1 per player.
+ * Draw calls: 2 per player (glider board + avatar).
  */
 
 import { useRef, useEffect, useMemo } from 'react';
@@ -35,12 +52,29 @@ import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
-import { KART_SCALE, KART_Y_ABOVE_TRACK } from './reef-race-config';
+import {
+  KART_SCALE,
+  KART_Y_ABOVE_TRACK,
+  GLIDER_WIDTH,
+  GLIDER_HEIGHT,
+  GLIDER_LENGTH,
+  RIDER_MOUNT_OFFSET_DEFAULT,
+} from './reef-race-config';
 import type { ReefRaceEntity } from './reef-race-types';
 
 // ─── Preloads — fire at module scope ─────────────────────────────────────────
 useGLTF.preload('/models/sea_horse.glb');
 useGLTF.preload('/models/lobster.glb');
+
+// ─── Shared glider geometry + material (ONE instance for ALL players) ─────────
+// Never disposed — these are page-lifetime, shared across all ReefRacePlayer
+// instances. Disposing on any one instance would break all other live instances.
+const _gliderGeom = new THREE.BoxGeometry(GLIDER_WIDTH, GLIDER_HEIGHT, GLIDER_LENGTH);
+const _gliderMat  = new THREE.MeshStandardMaterial({
+  color:     '#1e293b',
+  roughness: 0.5,
+  metalness: 0.4,
+});
 
 // ─── Interpolation constants ──────────────────────────────────────────────────
 /**
@@ -57,6 +91,14 @@ const INTERP_HISTORY_SIZE = 4;
 
 // ─── Module-scope scratch — NO per-frame allocations ─────────────────────────
 const _swimTime: Record<string, number> = {};
+const _bobTime: Record<string, number>  = {};
+
+/** Bob amplitude in local units (× KART_SCALE = world units). */
+const BOB_AMP_LOCAL  = 2;
+/** Bob frequency in Hz. */
+const BOB_FREQ_HZ    = 1.2;
+/** gliderRef Y in local space = KART_Y_ABOVE_TRACK (world) / KART_SCALE. */
+const GLIDER_LOCAL_Y = KART_Y_ABOVE_TRACK / KART_SCALE; // = 0.25
 
 // ─── Shortest-angle lerp ──────────────────────────────────────────────────────
 /**
@@ -115,16 +157,15 @@ interface ReefRacePlayerProps {
 }
 
 function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
-  // BUG FIX (Bug 3): branch on entity.species instead of hardcoding sea_horse.glb.
-  // entity.species is populated from the pet's model_key via the server delta.
-  // Default 'lobster' matches pets.model_key default in DB schema.
-  const species = entity.species ?? 'lobster';
-  const glbPath = species === 'sea_horse' ? '/models/sea_horse.glb' : '/models/lobster.glb';
+  // entity.species deferred per C8 fix — Phase 1 uses lobster.glb as sole default.
+  // Phase 1.5 will restore species branching once the server populates the field.
+  const glbPath = '/models/lobster.glb';
 
   const { scene: srcScene } = useGLTF(glbPath);
 
-  const groupRef    = useRef<THREE.Group>(null);
-  const meshRootRef = useRef<THREE.Group>(null);
+  const groupRef      = useRef<THREE.Group>(null);
+  const gliderRef     = useRef<THREE.Group>(null);
+  const riderMountRef = useRef<THREE.Group>(null);
 
   // Fade state for finish (not elimination — racers don't vanish on finish).
   const finishedRef = useRef(false);
@@ -173,18 +214,19 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
   }, [srcScene, entity.color]);
 
   useEffect(() => {
-    const root = meshRootRef.current;
-    if (!root || !clonedScene) return;
-    root.add(clonedScene);
+    const mount = riderMountRef.current;
+    if (!mount || !clonedScene) return;
+    mount.add(clonedScene);
     return () => {
-      root.remove(clonedScene);
+      mount.remove(clonedScene);
     };
   }, [clonedScene]);
 
   useFrame((_, delta) => {
-    const group    = groupRef.current;
-    const meshRoot = meshRootRef.current;
-    if (!group || !meshRoot) return;
+    const group      = groupRef.current;
+    const glider     = gliderRef.current;
+    const riderMount = riderMountRef.current;
+    if (!group || !glider || !riderMount) return;
 
     // Cap delta to prevent spiral-of-death on stall frames.
     const dt = Math.min(delta, 0.1);
@@ -270,29 +312,46 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
     // Persist the interpolated rotation for the next zero-velocity spawn frame.
     lastRotRef.current = interpRot;
 
-    // ─── Apply interpolated transform ─────────────────────────────────────────
+    // ─── Apply interpolated XZ transform to groupRef ──────────────────────────
     // BUG FIX (Bug 1): position now comes from interpolated history, not raw entity.
     // BUG FIX (Bug 2): rotation now comes from entity.rot, not atan2(vx,vy).
+    // Y elevation is now carried by gliderRef in local space (KART_Y_ABOVE_TRACK /
+    // KART_SCALE = 0.25 local units). group.position.y stays 0.
     group.position.x = interpX;
-    group.position.y = KART_Y_ABOVE_TRACK;
+    group.position.y = 0;
     group.position.z = interpZ;
     group.rotation.y = interpRot;
 
-    // ─── Procedural swimming animation ────────────────────────────────────────
-    const speed = Math.sqrt(interpVx * interpVx + interpVz * interpVz);
-    applySwimmingAnim(clonedScene, entity.petId, dt, speed);
-
-    // ─── Slight bank on turning (velocity-derived — fine for visual lean) ─────
+    // ─── Bank tilt on gliderRef (Phase 1 §4) ─────────────────────────────────
     // Bank uses velocity direction relative to current facing. Because facing is
     // now server-authoritative (entity.rot), delta between velocity angle and
     // group.rotation.y gives the correct lean amount without spazzing.
+    // MOVES HERE from meshRootRef — now the BOARD tilts; the rider stays level.
     const velAngle = (interpVx !== 0 || interpVz !== 0)
       ? Math.atan2(interpVx, interpVz)
       : interpRot;
     // Wrap bank delta into (-π, π]
     let bankDelta = velAngle - group.rotation.y;
     bankDelta = ((bankDelta % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2) - Math.PI;
-    meshRoot.rotation.z = -bankDelta * 0.15;
+    glider.rotation.z = -bankDelta * 0.15;
+
+    // ─── Rider stays level (Phase 1 §4) ──────────────────────────────────────
+    // riderMountRef.rotation.z is explicitly kept at 0 — the rider does not lean
+    // even as the board banks. This is the key visual distinction of the glider prop.
+    riderMount.rotation.z = 0;
+
+    // ─── Gentle bob on riderMountRef.position.y (Phase 1 §4) ─────────────────
+    // ±BOB_AMP_LOCAL local units at BOB_FREQ_HZ — rider appears to float on board.
+    // Accumulate per-petId bob time in module-scope scratch (no per-frame alloc).
+    if (!_bobTime[entity.petId]) _bobTime[entity.petId] = 0;
+    _bobTime[entity.petId] += dt;
+    riderMount.position.y =
+      RIDER_MOUNT_OFFSET_DEFAULT[1] +
+      Math.sin(_bobTime[entity.petId] * BOB_FREQ_HZ * Math.PI * 2) * BOB_AMP_LOCAL;
+
+    // ─── Procedural swimming animation ────────────────────────────────────────
+    const speed = Math.sqrt(interpVx * interpVx + interpVz * interpVz);
+    applySwimmingAnim(clonedScene, entity.petId, dt, speed);
 
     // Mark finished if finishedAt is set.
     if (entity.finishedAt && !finishedRef.current) {
@@ -301,8 +360,24 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
   });
 
   return (
+    /*
+     * Scene graph (Phase 1 §4):
+     *   groupRef  — world XZ position + Y rotation (from server via interpolation)
+     *     └── gliderRef  — local Y elevation (GLIDER_LOCAL_Y) + bank tilt (rotation.z)
+     *           ├── gliderMesh  — shared BoxGeometry board (2.5×0.25×5 local)
+     *           └── riderMountRef  — offset [0, 0.6, -0.5] + bob on Y; rotation.z=0
+     *                 └── clonedScene  (avatar GLB, color-tinted)
+     */
     <group ref={groupRef} scale={[KART_SCALE, KART_SCALE, KART_SCALE]}>
-      <group ref={meshRootRef} />
+      <group ref={gliderRef} position={[0, GLIDER_LOCAL_Y, 0]}>
+        {/* Glider board — shared geometry + material, no per-instance alloc */}
+        <mesh geometry={_gliderGeom} material={_gliderMat} />
+        {/* Rider mount — offset so avatar sits on board; rotation.z pinned 0 */}
+        <group
+          ref={riderMountRef}
+          position={RIDER_MOUNT_OFFSET_DEFAULT}
+        />
+      </group>
     </group>
   );
 }

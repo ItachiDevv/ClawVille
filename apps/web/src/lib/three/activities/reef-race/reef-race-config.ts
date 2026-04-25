@@ -191,6 +191,25 @@ export const MAX_PLAYERS = 8;
 /** Height above track surface for kart spawn (so feet don't clip tube). */
 export const KART_Y_ABOVE_TRACK = 5;
 
+// ─── Reef Glider prop (Phase 1 §4) ───────────────────────────────────────────
+
+/**
+ * Glider board geometry in KART_SCALE-local space (before scale={[20,20,20]}).
+ * World dimensions = these × KART_SCALE:
+ *   2.5 × 0.25 × 5  →  50wu × 5wu × 100wu
+ * Two gliders have 125wu clearance each side of a 300wu-wide track.
+ */
+export const GLIDER_WIDTH  = 2.5;
+export const GLIDER_HEIGHT = 0.25;
+export const GLIDER_LENGTH = 5;
+
+/**
+ * Rider mount offset in KART_SCALE-local space.
+ * World position = this × KART_SCALE = [0, 12wu, -10wu].
+ * Single default for Phase 1 (species-specific offsets deferred to Phase 1.5).
+ */
+export const RIDER_MOUNT_OFFSET_DEFAULT: [number, number, number] = [0, 0.6, -0.5];
+
 // ─── Ghost kart ──────────────────────────────────────────────────────────────
 
 /** Ghost kart material opacity. */
