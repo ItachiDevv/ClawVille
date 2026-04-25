@@ -65,9 +65,9 @@ class BumperShellsBot implements BotController {
         // Already at center — coast in place.
         return { dir: { x: 0, y: 0 }, thrust: 0, actionBits: 0 };
       }
-      const mag = Math.max(distFromOrigin, 0.0001);
+      // distFromOrigin >= 1 (early return above), no clamp needed.
       return {
-        dir: { x: -self.x / mag, y: -self.y / mag },
+        dir: { x: -self.x / distFromOrigin, y: -self.y / distFromOrigin },
         thrust: 0.4,
         actionBits: 0,
       };
