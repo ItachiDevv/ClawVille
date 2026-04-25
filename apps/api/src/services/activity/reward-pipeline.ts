@@ -43,8 +43,39 @@ import type { ActivityMatchPlacedPayload } from '../event-logger';
 import {
   ACTIVITY_REGISTRY,
   getActivityDefinition,
+  TOTAL_CHECKPOINTS_PER_RACE,
+  type GhostFrame,
+  type ServerFrame,
 } from '@clawville/shared';
 import type { Room, RoomParticipant, SubjectType } from './types';
+import {
+  maybeUpdatePersonalBest,
+  type PbWriteResult,
+} from './reef-race-personal-best-service';
+import { reefRaceSim } from './sim/reef-race-sim';
+import { alertError } from '../alert-error';
+
+/**
+ * Phase 4 (S7 fix) — per-recipient match-end delivery callback registered
+ * by the WS hub at boot (`apps/api/src/index.ts` calls
+ * `setMatchEndDeliveryFn(activityWsHub.sendToPet)`). Avoids a hard
+ * import of `activity-ws-hub` from this module — that import would pull
+ * `activity-room-manager` and the `activityLog` schema chain into every
+ * reward-pipeline test that mocks `@clawville/database`. When unset
+ * (e.g. tests that don't register), per-recipient delivery is silently
+ * skipped — the base sim's broadcast generic match-end frame still fires.
+ */
+type MatchEndDeliveryFn = (
+  roomId: string,
+  petId: string,
+  frame: ServerFrame,
+) => void;
+let matchEndDeliveryFn: MatchEndDeliveryFn = () => {
+  /* no-op until WS hub registers in index.ts boot */
+};
+export function setMatchEndDeliveryFn(fn: MatchEndDeliveryFn): void {
+  matchEndDeliveryFn = fn;
+}
 
 /**
  * Per-participant placement returned by an activity sim.
@@ -58,6 +89,23 @@ export interface SimResultRow {
   placement: number;
   score: number;
   scoreMs?: number | null;
+  /**
+   * Reef Race Phase 4 (C3 fix) — per-pet best lap + ghost frames + best
+   * streak embedded by `reefRaceSim.computeResults()` BEFORE sim
+   * teardown. The reward pipeline reads from THIS object — never from a
+   * live `state.bodies` accessor that could race `endRound()`.
+   *
+   * `bestLapMs` is null when the pet never completed a clean lap (DNF
+   * before the first lap-up). `ghostReplayFrames` mirrors `bestLapMs`
+   * nullity. `bestStreakThisMatch` is the high-water mark across the
+   * entire match.
+   */
+  reefRace?: {
+    bestLapMs: number | null;
+    ghostReplayFrames: GhostFrame[] | null;
+    bestStreakThisMatch: number;
+    currentStreakAtMatchEnd: number;
+  };
 }
 
 /**
@@ -80,6 +128,26 @@ export interface IssuedResult {
   breakdown: RewardBreakdown;
   /** True when this participant is an un-authed guest (carve-out flag) */
   isGuest: boolean;
+  /**
+   * Reef Race Phase 4 — match-end PB delta data plumbed back into the
+   * per-recipient `event.match_ended` frame. Set when this pet's just-
+   * completed match LOWERED their PB lap (improved=true from the awaited
+   * `maybeUpdatePersonalBest`). `newGhostFrames` is included for the
+   * PB-setter — the WS hub gates further per-recipient (S7 fix).
+   */
+  pbDelta?: {
+    newMs: number;
+    oldMs: number | null;
+    dailyRank: number | null;
+    newGhostFrames?: GhostFrame[];
+  };
+  /**
+   * Reef Race Phase 4 — best consecutive clean checkpoint crosses this
+   * match. Always present for Reef Race; undefined for other activities.
+   */
+  streakBest?: number;
+  /** Reef Race Phase 4 — perfect-race tokens credited (0 when not earned). */
+  perfectLapBonus?: number;
 }
 
 export interface RewardBreakdown {
@@ -87,6 +155,12 @@ export interface RewardBreakdown {
   participationFloor: boolean;
   firstPlayOfDayBonus: number;
   personalBestBonus: number;
+  /**
+   * Reef Race Phase 4 — perfect-race bonus credited when bestStreakThisMatch
+   * reached TOTAL_CHECKPOINTS_PER_RACE (= 36). 0 otherwise. Sums into the
+   * same tokens_awarded total as the other lines.
+   */
+  perfectStreakBonus: number;
   focusBonus: number;
   /** Set true when the participant is a bot (no credit, no breakdown line) */
   bot: boolean;
@@ -219,6 +293,63 @@ export async function issueRewardsForRoom(
 
   const issued: IssuedResult[] = [];
 
+  // ── Phase 4 (C2 fix) — PB writes happen OUTSIDE the rewards transaction.
+  // Rationale: PB-write failure must NOT roll back the actual reward credit
+  // (token ledger). Awaiting per-pet (Promise.all bounded by ≤8) keeps
+  // total wall-clock <50 ms even when every pet improves.
+  //
+  // Anti-cheat skip (§4.4): pets with ≥1 anti-cheat flag this match have
+  // their PB write skipped — trades a small honest-mistake recall for
+  // ironclad cheater exclusion (there's always tomorrow's PB).
+  //
+  // Bot skip: `subjectType === 'bot'` short-circuits — bots never set PBs
+  // by design.
+  const pbWritesByPet = new Map<string, PbWriteResult>();
+  if (room.activityId === 'reef-race') {
+    const pbCandidates = simResults.filter((s) => {
+      const participant = participants.get(s.petId);
+      if (!participant || participant.subjectType === 'bot') return false;
+      const reef = s.reefRace;
+      if (!reef || reef.bestLapMs == null) return false;
+      // Anti-cheat skip — flagged matches don't set PBs.
+      const flags = reefRaceSim.getFlagCount(room.id, s.petId);
+      if (flags > 0) return false;
+      return true;
+    });
+    const pbResults = await Promise.allSettled(
+      pbCandidates.map(async (s) => {
+        const reef = s.reefRace!;
+        const result = await maybeUpdatePersonalBest({
+          petId: s.petId,
+          activityId: 'reef-race',
+          newBestLapMs: reef.bestLapMs!,
+          ghostReplayData: { frames: reef.ghostReplayFrames ?? [] },
+          sourceRoomId: room.id,
+        });
+        return { petId: s.petId, result };
+      }),
+    );
+    for (const settled of pbResults) {
+      if (settled.status === 'fulfilled') {
+        pbWritesByPet.set(settled.value.petId, settled.value.result);
+      } else {
+        // Per spec: PB write failure logs + alerts but doesn't block
+        // reward credit. The match-end frame omits pbDelta for the
+        // affected pet so the modal doesn't show a half-truth.
+        console.error(
+          '[reward-pipeline] PB write failed:',
+          settled.reason,
+        );
+        void alertError({
+          severity: 'warning',
+          source: 'reward-pipeline',
+          message: 'Reef Race PB write failed (non-blocking)',
+          context: { roomId: room.id, error: String(settled.reason) },
+        });
+      }
+    }
+  }
+
   // One transaction per match — all credit + result inserts atomic.
   await db.transaction(async (tx) => {
     for (const sim of simResults) {
@@ -239,6 +370,7 @@ export async function issueRewardsForRoom(
       };
 
       const isBot = participant.subjectType === 'bot';
+      const bestStreakThisMatch = sim.reefRace?.bestStreakThisMatch ?? 0;
       const breakdown = computeBreakdown({
         rewardConfig,
         placement: sim.placement,
@@ -248,6 +380,9 @@ export async function issueRewardsForRoom(
         flags: ctx.flags,
         activityId: room.activityId,
         isBot,
+        // C3 fix — read from the embedded SimResultRow.reefRace block,
+        // NEVER from a live sim accessor.
+        bestStreakThisMatch,
       });
 
       const isPersonalBest =
@@ -263,10 +398,13 @@ export async function issueRewardsForRoom(
         : breakdown.base +
           breakdown.firstPlayOfDayBonus +
           breakdown.personalBestBonus +
+          breakdown.perfectStreakBonus +
           breakdown.focusBonus;
       const leaderboardPoints = isBot || ctx.isGuest
         ? 0
         : computeLeaderboardPoints(rewardConfig, sim.placement);
+
+      const pbWrite = pbWritesByPet.get(sim.petId);
 
       // Insert the result row first so we have an id for the breakdown
       // return + the event payload. `returning()` in the same tx avoids
@@ -285,6 +423,12 @@ export async function issueRewardsForRoom(
           tokensAwarded,
           leaderboardPoints,
           isPersonalBest,
+          // Phase 4 — embed best-streak + PB-rank on the per-match row so
+          // the /results endpoint can return them without a JOIN. C2 fix:
+          // dailyRank sourced from the awaited PB-write result.
+          matchBestStreak:
+            room.activityId === 'reef-race' ? bestStreakThisMatch : null,
+          matchPbDailyRank: pbWrite?.dailyRank ?? null,
         })
         .returning({ id: activityResults.id });
 
@@ -305,6 +449,7 @@ export async function issueRewardsForRoom(
                 base: breakdown.base,
                 firstPlayOfDayBonus: breakdown.firstPlayOfDayBonus,
                 personalBestBonus: breakdown.personalBestBonus,
+                perfectStreakBonus: breakdown.perfectStreakBonus,
                 focusBonus: breakdown.focusBonus,
               },
             },
@@ -312,6 +457,20 @@ export async function issueRewardsForRoom(
           tx,
         );
       }
+
+      // Phase 4 — pbDelta block when the awaited PB write improved.
+      // newGhostFrames is included here for the PB-setter; the WS hub
+      // strips it for non-self recipients in the per-recipient match-end
+      // dispatch (S7 fix — see emitPerRecipientMatchEnd below).
+      const pbDelta =
+        pbWrite && pbWrite.improved && sim.reefRace?.bestLapMs != null
+          ? {
+              newMs: sim.reefRace.bestLapMs,
+              oldMs: pbWrite.previousMs,
+              dailyRank: pbWrite.dailyRank,
+              newGhostFrames: pbWrite.newGhostFrames,
+            }
+          : undefined;
 
       issued.push({
         resultId: resultRow.id,
@@ -326,9 +485,23 @@ export async function issueRewardsForRoom(
         isPersonalBest,
         breakdown,
         isGuest: ctx.isGuest,
+        pbDelta,
+        streakBest:
+          room.activityId === 'reef-race' ? bestStreakThisMatch : undefined,
+        perfectLapBonus:
+          room.activityId === 'reef-race'
+            ? breakdown.perfectStreakBonus
+            : undefined,
       });
     }
   });
+
+  // Phase 4 (S7 fix) — per-recipient `event.match_ended` dispatch. The
+  // PB-setter receives their own `newGhostFrames` (~5 KB); rivals receive
+  // pbDelta WITHOUT newGhostFrames (~50 bytes). Bandwidth-bounded.
+  if (room.activityId === 'reef-race') {
+    emitPerRecipientMatchEnd(room, issued);
+  }
 
   // Event emission AFTER the transaction commits so we never log credit
   // for rows that rolled back. logEvent is fire-and-forget.
@@ -446,6 +619,13 @@ export function computeBreakdown(input: {
   flags: Record<string, unknown> | null;
   activityId: string;
   isBot: boolean;
+  /**
+   * Phase 4 — best consecutive clean checkpoint crosses this match. Reef
+   * Race only; defaults to 0 for other activities (no behaviour change).
+   * C3 fix: read from `SimResultRow.reefRace.bestStreakThisMatch`, NOT
+   * from a live sim accessor.
+   */
+  bestStreakThisMatch?: number;
 }): RewardBreakdown {
   if (input.isBot) {
     return {
@@ -453,6 +633,7 @@ export function computeBreakdown(input: {
       participationFloor: false,
       firstPlayOfDayBonus: 0,
       personalBestBonus: 0,
+      perfectStreakBonus: 0,
       focusBonus: 0,
       bot: true,
     };
@@ -473,7 +654,16 @@ export function computeBreakdown(input: {
       ? rewardConfig?.personalBestBonusTokens ?? 0
       : 0;
 
-  const subtotal = base + firstPlayOfDayBonus + personalBestBonus;
+  // Phase 4 — perfect-race bonus. Reef Race only; non-Reef-Race callers
+  // pass `bestStreakThisMatch=undefined` and the predicate fails-closed.
+  const bestStreak = input.bestStreakThisMatch ?? 0;
+  const perfectStreakBonus =
+    bestStreak >= TOTAL_CHECKPOINTS_PER_RACE
+      ? rewardConfig?.perfectStreakBonusTokens ?? 0
+      : 0;
+
+  const subtotal =
+    base + firstPlayOfDayBonus + personalBestBonus + perfectStreakBonus;
   const focusBonus = computeFocusBonus(
     subtotal,
     rewardConfig?.focusBonusPct,
@@ -485,6 +675,7 @@ export function computeBreakdown(input: {
     participationFloor,
     firstPlayOfDayBonus,
     personalBestBonus,
+    perfectStreakBonus,
     focusBonus,
     bot: false,
   };
@@ -611,6 +802,63 @@ function inArrayWhitelist<T>(
     values.map((v) => sql`${v}`),
     sql.raw(', '),
   )})`;
+}
+
+// ─── Phase 4 — per-recipient match-end emit (S7 fix) ─────────────────────
+
+/**
+ * Emit `event.match_ended` per recipient WS so each pet's `pbDelta` can
+ * carry their OWN `newGhostFrames` (~5 KB) without broadcasting all
+ * recipients' frames to all subscribers (N²-style bandwidth blow-up).
+ *
+ * For each WS in the room: build a frame with rewardPreview that includes
+ * THIS pet's pbDelta + streakBest + perfectLapBonus, with newGhostFrames
+ * stripped for non-self pet rows. Frames go out via the WS hub's
+ * `sendToPet` per-recipient path, NOT `broadcastEvent`.
+ *
+ * The base sim already broadcasts a generic `event.match_ended` at
+ * `endRound()` with empty rewardPreview; this Phase-4 emission lands
+ * AFTER the reward pipeline writes finish, with authoritative numbers.
+ */
+function emitPerRecipientMatchEnd(room: Room, issued: IssuedResult[]): void {
+  // winners list is the same for every recipient — derived from issued
+  // ordered by placement asc.
+  const winners = issued
+    .slice()
+    .sort((a, b) => a.placement - b.placement)
+    .map((r) => ({ petId: r.petId, placement: r.placement }));
+
+  for (const r of issued) {
+    // Build the per-recipient pbDelta (strip newGhostFrames for the
+    // recipient view — this IS the recipient's own row, so they keep
+    // their own frames; rivals would receive nothing here because
+    // `r.pbDelta` is undefined for rivals not setting a PB).
+    const pbDelta = r.pbDelta
+      ? {
+          newMs: r.pbDelta.newMs,
+          oldMs: r.pbDelta.oldMs,
+          dailyRank: r.pbDelta.dailyRank,
+          newGhostFrames: r.pbDelta.newGhostFrames,
+        }
+      : undefined;
+
+    matchEndDeliveryFn(room.id, r.petId, {
+      type: 'event.match_ended',
+      reason: 'complete',
+      winners,
+      rewardPreview: {
+        placement: r.placement,
+        tokens: r.tokensAwarded,
+        leaderboardPoints: r.leaderboardPoints,
+        isPersonalBest: r.isPersonalBest,
+        firstPlayOfDayBonus: r.breakdown.firstPlayOfDayBonus > 0,
+        focusBonus: r.breakdown.focusBonus > 0,
+        pbDelta,
+        streakBest: r.streakBest,
+        perfectLapBonus: r.perfectLapBonus,
+      },
+    });
+  }
 }
 
 // ─── Re-exported registry helpers (for the routes that need them) ─────────

@@ -77,6 +77,15 @@ mock.module('@clawville/database', () => ({
   activityResults: { id: 'id', petId: 'pet_id', activityId: 'activity_id' },
   pets: { id: 'id', flags: 'flags' },
   clawTokenTransactions: { id: 'id' },
+  // Phase 4 — PB service (transitively imported by ws-hub for the
+  // snapshot.init ghost frames load path) references this table.
+  reefRacePersonalBests: {
+    id: 'id',
+    petId: 'pet_id',
+    activityId: 'activity_id',
+    bestLapMs: 'best_lap_ms',
+    ghostReplayData: 'ghost_replay_data',
+  },
 }));
 
 // Chunk #7 — claw-token-ledger import chain.

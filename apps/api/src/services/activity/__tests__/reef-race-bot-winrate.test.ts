@@ -118,6 +118,13 @@ mock.module('@clawville/database', () => ({
     scoreMs: 'score_ms',
   },
   pets: { id: 'id', level: 'level', flags: 'flags' },
+  // Phase 4 — PB service is transitively imported by reward-pipeline.
+  reefRacePersonalBests: {
+    id: 'id',
+    petId: 'pet_id',
+    activityId: 'activity_id',
+    bestLapMs: 'best_lap_ms',
+  },
 }));
 
 // Mock drizzle-orm — reward-pipeline imports `{and, eq, gte, lt, sql}` and

@@ -615,6 +615,17 @@ const agentLeaderboardLimiter = createRateLimiter({
   windowMs: 60_000,
 });
 
+/**
+ * Reef Race Phase 4 — separate rate limiter for the public daily-best-lap
+ * surface. S5 FIX: NOT shared with `/agents` so a multi-tab browser
+ * loading both leaderboards doesn't blow a single bucket. Same 60/min/IP
+ * budget — independent ceiling.
+ */
+const dailyBestLapLimiter = createRateLimiter({
+  maxPerWindow: 60,
+  windowMs: 60_000,
+});
+
 leaderboardRoutes.get('/agents', async (c) => {
   // Rate limit first — public endpoint, cheap to trigger.
   const ip = getClientIp(c.req.raw.headers);
@@ -671,6 +682,52 @@ leaderboardRoutes.get('/agents', async (c) => {
   // don't all hit the origin within the 60s server TTL.
   c.header('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
   return c.json(payload);
+});
+
+// ---- Reef Race "Lobster of the Day" (Phase 4, public) --------------------
+//
+// `GET /api/leaderboard/reef-race/daily-best-lap` — top-100 fastest single
+// laps in the last 24 hours. Public, no auth, mirrors the brand priority
+// #3 budget (60 req/min/IP) on a SEPARATE bucket from `/agents` (S5 fix).
+// Cache: 60s in-memory in `reef-race-daily-best-service.ts`, invalidated
+// on every successful PB upsert (C2 fix) so any new PB is visible in the
+// next round-trip after the writing match's reward pipeline finishes.
+
+leaderboardRoutes.get('/reef-race/daily-best-lap', async (c) => {
+  const ip = getClientIp(c.req.raw.headers);
+  if (!dailyBestLapLimiter.check(ip)) {
+    return c.json(
+      { error: 'rate_limited', message: 'Too many requests. Try again shortly.' },
+      429,
+    );
+  }
+
+  // Lazy import to keep the leaderboard route module tree small at boot.
+  const { getDailyBestLapSnapshot } = await import(
+    '../services/activity/reef-race-daily-best-service'
+  );
+
+  const rawLimit = parseInt(c.req.query('limit') || '100', 10);
+  const limit = Math.min(
+    100,
+    Math.max(1, Number.isFinite(rawLimit) ? rawLimit : 100),
+  );
+
+  let snapshot: Awaited<ReturnType<typeof getDailyBestLapSnapshot>>;
+  try {
+    snapshot = await getDailyBestLapSnapshot(limit);
+  } catch (err) {
+    console.error('[leaderboard/reef-race/daily-best-lap] failed:', err);
+    snapshot = {
+      generatedAt: new Date().toISOString(),
+      windowStart: new Date(Date.now() - 24 * 3600_000).toISOString(),
+      totalEntries: 0,
+      entries: [],
+    };
+  }
+
+  c.header('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
+  return c.json(snapshot);
 });
 
 // ---- Legacy economy board (auth-gated) ------------------------------------

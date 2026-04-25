@@ -33,6 +33,14 @@ export interface ActivityRewardConfig {
   participationTokens?: number;
   firstPlayOfDayBonusTokens?: number;
   personalBestBonusTokens?: number;
+  /**
+   * Reef Race Phase 4 — bonus credited when bestStreakThisMatch reaches
+   * `TOTAL_CHECKPOINTS_PER_RACE` (= 36). 0 / undefined when not set on
+   * the activity row. C3-fix consumers read `bestStreakThisMatch` from
+   * `SimResultRow.reefRace` (embedded at sim.computeResults() time —
+   * never from a live state accessor).
+   */
+  perfectStreakBonusTokens?: number;
   focusBonusPct?: number;
   leaderboardPoints?: Record<string, number>;
 }
