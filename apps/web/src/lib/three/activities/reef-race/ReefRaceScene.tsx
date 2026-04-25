@@ -30,15 +30,7 @@
 
 import { Suspense, useEffect, useRef, useMemo } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import * as THREE from 'three/webgpu';
-import { extend } from '@react-three/fiber';
-import type { ThreeToJSXElements } from '@react-three/fiber';
-
-// Register Three.js WebGPU elements with R3F.
-declare module '@react-three/fiber' {
-  interface ThreeElements extends ThreeToJSXElements<typeof THREE> {}
-}
-extend(THREE as any);
+import * as THREE from 'three';
 
 import ReefRaceTrack       from './ReefRaceTrack';
 import ReefRaceCheckpoints from './ReefRaceCheckpoints';
@@ -132,7 +124,7 @@ function ReefLight() {
 }
 
 // ─── Depth backdrop (below track plane) ──────────────────────────────────────
-// MeshBasicNodeMaterial ignores fog — placed far enough to be invisible.
+// MeshBasicMaterial ignores fog — placed far enough to be invisible.
 function DepthBackdrop() {
   const geo = useMemo(() => new THREE.PlaneGeometry(VOID_BACKDROP_SIZE, VOID_BACKDROP_SIZE), []);
   const mat = useMemo(
