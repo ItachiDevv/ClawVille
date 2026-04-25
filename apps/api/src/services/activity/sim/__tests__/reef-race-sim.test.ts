@@ -286,8 +286,16 @@ describe('ReefRaceSim — race-end on REEF_LAPS completion', () => {
     expect(state.bodies.get('p1')!.finishedAt).not.toBeNull();
     expect(state.bodies.get('p2')!.finishedAt).not.toBeNull();
     expect(state.bodies.get('p1')!.lap).toBe(REEF_LAPS);
+    // Phase 4 (S-IMPL-1 fix 2026-04-25) — reef-race rooms NO LONGER emit a
+    // preview `event.match_ended` from the sim. The reward pipeline owns the
+    // authoritative per-recipient broadcast (`emitPerRecipientMatchEnd`)
+    // with real tokens / pbDelta / streakBest. Suppression here removes the
+    // "tokens=0 flash" UX bug where the modal opened with zeroed numbers
+    // before being replaced ~50–500 ms later. The endedFn callback (which
+    // drives the room manager → reward pipeline chain) IS still fired, so
+    // the authoritative frame is still sent — just not via the sim.
     const matchEnded = broadcasts.find((f) => f.type === 'event.match_ended');
-    expect(matchEnded).toBeDefined();
+    expect(matchEnded).toBeUndefined();
   });
 });
 
@@ -2421,5 +2429,268 @@ describe('reef-race-config — Phase 3 helpers (P3-C1..P3-C6)', () => {
     r1.accelMult = 99;
     expect(r2.accelMult).toBe(1);
     expect(NEUTRAL_BODY_MULTIPLIERS.accelMult).toBe(1);
+  });
+});
+
+// ─── Phase 4 — ghost replay capture, streak, C1/S1/C3 fixes ────────────────
+
+describe('ReefRaceSim Phase 4 — ghost replay capture', () => {
+  // P4-T1
+  it('P4-T1 — captures ghost frames at 5 Hz for the active body', () => {
+    captureBroadcasts();
+    reefRaceSim.startRoom('room-a', 'reef-race', ['p1', 'p2', 'p3', 'p4'], { seed: 7 });
+    stopInterval('room-a');
+    const state = reefRaceSim.__getState('room-a')!;
+    const body = state.bodies.get('p1')!;
+    // After startRoom, the t=0 anchor is in place.
+    const initial = body.currentLapFrames.length;
+    expect(initial).toBe(1);
+    expect(body.currentLapFrames[0]?.t).toBe(0);
+    // Drive 60 ticks (2 sec at 30 Hz). Capture stride = 6 → ~10 new frames.
+    for (let i = 0; i < 60; i++) {
+      reefRaceSim.__tickOnceForTest('room-a');
+    }
+    expect(body.currentLapFrames.length).toBeGreaterThanOrEqual(10);
+    expect(body.currentLapFrames.length).toBeLessThanOrEqual(12);
+    // First frame is the synthetic anchor at t=0; subsequent frames are
+    // monotonic in lap-relative t.
+    let lastT = -1;
+    for (const f of body.currentLapFrames) {
+      expect(f.t).toBeGreaterThanOrEqual(lastT);
+      lastT = f.t;
+    }
+  });
+
+  // P4-T2 (C1 fix — discard branch)
+  it('P4-T2 (C1 fix) — clears currentLapFrames on sub-MIN_LAP discard AND re-anchors', () => {
+    captureBroadcasts();
+    reefRaceSim.startRoom('room-a', 'reef-race', ['p1', 'p2', 'p3', 'p4']);
+    stopInterval('room-a');
+    const state = reefRaceSim.__getState('room-a')!;
+    const body = state.bodies.get('p1')!;
+    const checkpoints = buildReefCheckpoints();
+    // Drive a few capture ticks so currentLapFrames has a few entries.
+    for (let i = 0; i < 30; i++) {
+      reefRaceSim.__tickOnceForTest('room-a');
+    }
+    const beforeDiscard = body.currentLapFrames.length;
+    expect(beforeDiscard).toBeGreaterThan(1);
+    // Now drive a sub-MIN_LAP lap completion: walk cps 1..11 + 0 with
+    // lapStartedAt = now (lapMs ~= 0 < MIN_LAP_MS).
+    body.lapStartedAt = Date.now();
+    for (let i = 1; i < REEF_CHECKPOINT_COUNT; i++) {
+      body.x = checkpoints[i].center.x;
+      body.y = checkpoints[i].center.y;
+      body.vx = 0;
+      body.vy = 0;
+      reefRaceSim.__tickOnceForTest('room-a');
+    }
+    body.x = checkpoints[0].center.x;
+    body.y = checkpoints[0].center.y;
+    reefRaceSim.__tickOnceForTest('room-a');
+    // Lap discarded, lap counter unchanged.
+    expect(body.lap).toBe(0);
+    // C1 FIX — currentLapFrames cleared in the discard branch, re-anchored
+    // with synthetic t=0. Should be exactly 1 frame (the anchor) immediately
+    // after discard. (Subsequent ticks may add to it.)
+    expect(body.currentLapFrames.length).toBeGreaterThanOrEqual(1);
+    expect(body.currentLapFrames[0]?.t).toBe(0);
+    // Subsequent t values must be monotonic with NO huge gap from a stale
+    // pre-discard frame.
+    let lastT = -1;
+    for (const f of body.currentLapFrames) {
+      expect(f.t).toBeGreaterThanOrEqual(lastT);
+      lastT = f.t;
+    }
+  });
+
+  // P4-T3
+  it('P4-T3 — bestLapFrames captures from the FIRST lap and persists', () => {
+    captureBroadcasts();
+    reefRaceSim.startRoom('room-a', 'reef-race', ['p1', 'p2', 'p3', 'p4'], { seed: 11 });
+    stopInterval('room-a');
+    const state = reefRaceSim.__getState('room-a')!;
+    const body = state.bodies.get('p1')!;
+    const checkpoints = buildReefCheckpoints();
+    // Drive a few ticks so currentLapFrames has multiple captures.
+    for (let i = 0; i < 30; i++) {
+      reefRaceSim.__tickOnceForTest('room-a');
+    }
+    // Now finish a clean lap (lapStartedAt set in the past so lapMs > MIN_LAP_MS).
+    body.lapStartedAt = Date.now() - (MIN_LAP_MS + 1_000);
+    for (let i = 1; i < REEF_CHECKPOINT_COUNT; i++) {
+      body.x = checkpoints[i].center.x;
+      body.y = checkpoints[i].center.y;
+      body.vx = 0;
+      body.vy = 0;
+      reefRaceSim.__tickOnceForTest('room-a');
+    }
+    body.x = checkpoints[0].center.x;
+    body.y = checkpoints[0].center.y;
+    reefRaceSim.__tickOnceForTest('room-a');
+    expect(body.lap).toBe(1);
+    expect(body.bestLapMsSoFar).not.toBeNull();
+    expect(body.bestLapFrames).not.toBeNull();
+    expect((body.bestLapFrames ?? []).length).toBeGreaterThan(0);
+    // After lap-up, currentLapFrames has been cleared + re-anchored. The
+    // exact length depends on whether the lap-up tick also happened to be a
+    // capture stride tick (every 6th); either 1 (anchor only) or 2 (anchor
+    // + same-tick capture) is correct. Critically the FIRST frame is the
+    // synthetic t=0 anchor — that's the C1+S6 fix invariant.
+    expect(body.currentLapFrames.length).toBeGreaterThanOrEqual(1);
+    expect(body.currentLapFrames.length).toBeLessThanOrEqual(2);
+    expect(body.currentLapFrames[0]?.t).toBe(0);
+  });
+
+  // P4-T4 (C3 fix — embedded into SimResultRow at computeResults time)
+  it('P4-T4 (C3 fix) — computeResults embeds reefRace block before teardown', () => {
+    captureBroadcasts();
+    reefRaceSim.startRoom('room-a', 'reef-race', ['p1', 'p2'], { seed: 21 });
+    stopInterval('room-a');
+    const state = reefRaceSim.__getState('room-a')!;
+    const checkpoints = buildReefCheckpoints();
+    function runLap(avatarId: string): void {
+      const body = state.bodies.get(avatarId)!;
+      body.lapStartedAt = Date.now() - (MIN_LAP_MS + 1_000);
+      for (let i = 1; i < REEF_CHECKPOINT_COUNT; i++) {
+        body.x = checkpoints[i].center.x;
+        body.y = checkpoints[i].center.y;
+        reefRaceSim.__tickOnceForTest('room-a');
+      }
+      body.x = checkpoints[0].center.x;
+      body.y = checkpoints[0].center.y;
+      reefRaceSim.__tickOnceForTest('room-a');
+    }
+    for (let lap = 0; lap < REEF_LAPS; lap++) {
+      runLap('p1');
+      runLap('p2');
+    }
+    const results = reefRaceSim.computeResults('room-a');
+    expect(results.length).toBe(2);
+    for (const r of results) {
+      expect(r.reefRace).toBeDefined();
+      expect(r.reefRace?.bestLapMs).not.toBeNull();
+      expect(Array.isArray(r.reefRace?.ghostReplayFrames)).toBe(true);
+      expect(typeof r.reefRace?.bestStreakThisMatch).toBe('number');
+    }
+  });
+});
+
+describe('ReefRaceSim Phase 4 — streak counter', () => {
+  // P4-T5
+  it('P4-T5 — non-hairpin checkpoints count as clean automatically', () => {
+    captureBroadcasts();
+    reefRaceSim.startRoom('room-a', 'reef-race', ['p1', 'p2', 'p3', 'p4'], { seed: 4 });
+    stopInterval('room-a');
+    const state = reefRaceSim.__getState('room-a')!;
+    const body = state.bodies.get('p1')!;
+    const checkpoints = buildReefCheckpoints();
+    // Cross checkpoint 1 (non-hairpin). Streak should advance to 1.
+    body.x = checkpoints[1].center.x;
+    body.y = checkpoints[1].center.y;
+    body.vx = 0;
+    body.vy = 0;
+    reefRaceSim.__tickOnceForTest('room-a');
+    expect(body.currentStreak).toBe(1);
+    expect(body.bestStreakThisMatch).toBe(1);
+    // Cross checkpoint 2 (non-hairpin). Streak += 1.
+    body.x = checkpoints[2].center.x;
+    body.y = checkpoints[2].center.y;
+    reefRaceSim.__tickOnceForTest('room-a');
+    expect(body.currentStreak).toBe(2);
+    expect(body.bestStreakThisMatch).toBe(2);
+  });
+
+  // P4-T6 (S1 fix — keyed by lap+cp)
+  it('P4-T6 (S1 fix) — hairpin without a clean apex verdict for THIS lap = streak resets', () => {
+    captureBroadcasts();
+    reefRaceSim.startRoom('room-a', 'reef-race', ['p1', 'p2', 'p3', 'p4'], { seed: 5 });
+    stopInterval('room-a');
+    const state = reefRaceSim.__getState('room-a')!;
+    const body = state.bodies.get('p1')!;
+    const checkpoints = buildReefCheckpoints();
+    // Build up streak via cps 1, 2.
+    body.x = checkpoints[1].center.x;
+    body.y = checkpoints[1].center.y;
+    reefRaceSim.__tickOnceForTest('room-a');
+    body.x = checkpoints[2].center.x;
+    body.y = checkpoints[2].center.y;
+    reefRaceSim.__tickOnceForTest('room-a');
+    expect(body.currentStreak).toBe(2);
+    // Cross hairpin cp 3 WITHOUT entering the apex zones — verdict map
+    // has no entry for `${lap}-3`. Streak resets.
+    body.x = checkpoints[3].center.x;
+    body.y = checkpoints[3].center.y;
+    reefRaceSim.__tickOnceForTest('room-a');
+    expect(body.currentStreak).toBe(0);
+    // bestStreakThisMatch retains the high-water mark.
+    expect(body.bestStreakThisMatch).toBe(2);
+  });
+
+  // P4-T7 (S2 fix — milestones at 5/10/20/30/36)
+  it('P4-T7 (S2 fix) — event.streak_milestone fires at 5, 10, 20', () => {
+    const { broadcasts } = captureBroadcasts();
+    reefRaceSim.startRoom('room-a', 'reef-race', ['p1', 'p2', 'p3', 'p4'], { seed: 6 });
+    stopInterval('room-a');
+    const state = reefRaceSim.__getState('room-a')!;
+    const body = state.bodies.get('p1')!;
+    // Force the streak by directly manipulating the body field then crossing
+    // a non-hairpin to trigger the broadcast.
+    const checkpoints = buildReefCheckpoints();
+    function crossNonHairpin(i: number): void {
+      // Make sure we expect the next-cp = i so the cross is legit.
+      body.nextCheckpoint = i;
+      body.x = checkpoints[i].center.x;
+      body.y = checkpoints[i].center.y;
+      body.vx = 0;
+      body.vy = 0;
+      // Reset insideCheckpoints so the cross counts as a transition.
+      body.insideCheckpoints = new Set();
+      reefRaceSim.__tickOnceForTest('room-a');
+    }
+    // Manually drive the streak high enough by crossing 1, 2, 4 (skip
+    // hairpin 3). We need enough crosses to hit 5.
+    body.currentStreak = 4;
+    crossNonHairpin(1);
+    expect(body.currentStreak).toBe(5);
+    type MilestoneFrame = Extract<
+      ServerFrame,
+      { type: 'event.streak_milestone' }
+    >;
+    const milestoneEvents = broadcasts.filter(
+      (f): f is MilestoneFrame =>
+        f.type === 'event.streak_milestone' && f.avatarId === 'p1',
+    );
+    expect(milestoneEvents.length).toBeGreaterThanOrEqual(1);
+    const tier1 = milestoneEvents.find((m) => m.streak === 5);
+    expect(tier1).toBeDefined();
+    expect(tier1?.kind).toBe('tier-1');
+    // Drive to 10
+    body.currentStreak = 9;
+    crossNonHairpin(2);
+    expect(body.currentStreak).toBe(10);
+    const tier2 = broadcasts.find(
+      (f): f is MilestoneFrame =>
+        f.type === 'event.streak_milestone' &&
+        f.avatarId === 'p1' &&
+        f.streak === 10,
+    );
+    expect(tier2).toBeDefined();
+    expect(tier2?.kind).toBe('tier-2');
+  });
+});
+
+describe('ReefRaceSim Phase 4 — getFlagCount accessor', () => {
+  it('returns 0 for unknown room/avatar', () => {
+    expect(reefRaceSim.getFlagCount('no-such-room', 'no-such-avatar')).toBe(0);
+  });
+  it('reflects the flag count for a body', () => {
+    captureBroadcasts();
+    reefRaceSim.startRoom('room-a', 'reef-race', ['p1', 'p2', 'p3', 'p4']);
+    stopInterval('room-a');
+    expect(reefRaceSim.getFlagCount('room-a', 'p1')).toBe(0);
+    const state = reefRaceSim.__getState('room-a')!;
+    state.flagCounter.bump('p1');
+    expect(reefRaceSim.getFlagCount('room-a', 'p1')).toBe(1);
   });
 });

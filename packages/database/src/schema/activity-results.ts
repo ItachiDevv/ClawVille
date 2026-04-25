@@ -68,6 +68,25 @@ export const activityResults = pgTable(
      * existing rows as "unseen".
      */
     acknowledgedAt: timestamp('acknowledged_at', { withTimezone: true }),
+    /**
+     * Phase 4 (Reef Race only) — best consecutive clean checkpoint
+     * crosses this match. Null for other activities. Embedded on the
+     * per-match row so `/results` can return it without a JOIN, and so
+     * the dashboard can aggregate without back-tracking through events.
+     *
+     * S3 fix: renamed from `best_streak` to `match_best_streak` to
+     * disambiguate from a hypothetical "personal best streak" (which
+     * isn't tracked yet).
+     */
+    matchBestStreak: integer('match_best_streak'),
+    /**
+     * Phase 4 (Reef Race only) — daily-best-lap rank (1..100) earned by
+     * this match if it set a new PB. Null when the match did NOT set a
+     * new PB OR rank was off-board (>100). Sourced from
+     * `maybeUpdatePersonalBest`'s indexed scan against the freshly-
+     * written PB row (C2 fix — never the cached daily snapshot).
+     */
+    matchPbDailyRank: integer('match_pb_daily_rank'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({

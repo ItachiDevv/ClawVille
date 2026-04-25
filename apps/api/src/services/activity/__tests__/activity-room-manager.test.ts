@@ -39,6 +39,15 @@ mock.module('@clawville/database', () => ({
   activityResults: { id: 'id', avatarId: 'avatar_id', activityId: 'activity_id' },
   avatars: { id: 'id', flags: 'flags' },
   clawTokenTransactions: { id: 'id' },
+  // Phase 4 — reward pipeline transitively imports the PB service which
+  // references this table. Mock with the column shape used in PB queries.
+  reefRacePersonalBests: {
+    id: 'id',
+    avatarId: 'avatar_id',
+    activityId: 'activity_id',
+    bestLapMs: 'best_lap_ms',
+    ghostReplayData: 'ghost_replay_data',
+  },
 }));
 
 mock.module('../../alert-error', () => ({

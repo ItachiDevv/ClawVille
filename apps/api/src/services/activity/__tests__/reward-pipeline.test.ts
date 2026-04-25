@@ -100,6 +100,45 @@ mock.module('@clawville/database', () => ({
     scoreMs: 'score_ms',
   },
   avatars: { id: 'id', flags: 'flags' },
+  // Phase 4 — reward-pipeline now indirectly imports
+  // `reef-race-personal-best-service` which references this table. Mock
+  // its column shape so the loader's column references stay typed.
+  reefRacePersonalBests: {
+    id: 'id',
+    avatarId: 'avatar_id',
+    activityId: 'activity_id',
+    bestLapMs: 'best_lap_ms',
+    bestLapRecordedAt: 'best_lap_recorded_at',
+    sourceRoomId: 'source_room_id',
+    ghostReplayData: 'ghost_replay_data',
+    createdAt: 'created_at',
+    updatedAt: 'updated_at',
+  },
+  // Phase 4 — reward-pipeline now imports activity-ws-hub which
+  // transitively imports activity-room-manager which references these
+  // schemas at module load time. Bun's mock.module is process-scoped
+  // and partial; provide stubs to satisfy the import chain.
+  activityRooms: { id: 'id', activityId: 'activity_id', shortCode: 'short_code', status: 'status' },
+  activityRoomParticipants: { roomId: 'room_id', avatarId: 'avatar_id' },
+  activityReplays: { id: 'id' },
+  clawTokenTransactions: { id: 'id' },
+}));
+
+// Phase 4 — these existing tests use `bumper-shells` activityId, so the
+// Reef-Race-only PB write + per-recipient match-end paths are NEVER
+// reached. We deliberately do NOT mock `../sim/reef-race-sim` /
+// `../activity-ws-hub` / `../reef-race-personal-best-service` here:
+// those mocks would shadow the real modules process-wide in Bun and
+// break sibling tests that import the real reef-race-sim (cross-file
+// mock pollution — see activity-queue.test.ts §"bleeds across test
+// files in bun's shared-process runner").
+//
+// alert-error is mocked because `issueRewardsForRoom` calls
+// alertError() in the Reef-Race PB-write failure branch — but stubbing
+// it is safe because the existing tests don't hit that branch on
+// bumper-shells activityId. Kept defensive.
+mock.module('../alert-error', () => ({
+  alertError: () => Promise.resolve(),
 }));
 
 mock.module('../../event-logger', () => ({

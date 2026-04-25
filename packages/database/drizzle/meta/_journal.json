@@ -22,6 +22,27 @@
       "when": 1776952883280,
       "tag": "0002_lively_thunderbolt_ross",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1777064003857,
+      "tag": "0003_activity_results_acknowledged_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1777064003858,
+      "tag": "0004_guest_pet_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1777136647260,
+      "tag": "0005_reef_race_personal_bests",
+      "breakpoints": true
     }
   ]
 }

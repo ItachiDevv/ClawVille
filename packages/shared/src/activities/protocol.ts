@@ -124,6 +124,55 @@ export type ClientFrame = z.infer<typeof clientFrameSchema>;
 
 // ─── Server → Client — metadata shapes ──────────────────────────────────────
 
+/**
+ * Reef Race Phase 4 — single ghost replay sample frame. Captured server-side
+ * at 5 Hz during the lap that produced the player's personal best, replayed
+ * client-side as a translucent sea-horse on every subsequent run.
+ *
+ * `t` is lap-relative milliseconds (0 = lap start) so the ghost loops
+ * cleanly regardless of when the original PB was set. `x`/`z` are sim-space
+ * coordinates (sim-Y → Three-Z); `rot` is the body's heading.
+ *
+ * Lives in shared so both server (capture) and client (playback +
+ * snapshot.init payload) reference the same shape — see
+ * `apps/web/src/lib/three/activities/reef-race/reef-race-types.ts` re-export
+ * for backward compat with the original client-only declaration.
+ */
+export interface GhostFrame {
+  t: number;
+  x: number;
+  z: number;
+  rot: number;
+}
+
+/**
+ * Reef Race Phase 4 — PB delta block embedded inside `event.match_ended`'s
+ * `RewardPreview` and the authoritative `/results` per-row response when a
+ * match set a new personal-best lap. Per-recipient: `newGhostFrames` is
+ * ONLY included for the WS recipient that earned the PB (S7 fix).
+ */
+export interface PbDelta {
+  /** The new best lap in ms (the lap just-set). */
+  newMs: number;
+  /** Previous best in ms; `null` when this is the avatar's first PB ever. */
+  oldMs: number | null;
+  /**
+   * S7 FIX — captured frames for the freshly-set PB. Sent ONLY in the
+   * recipient's OWN match-end frame (the player who set the PB receives
+   * their frames; rivals receive `pbDelta` WITHOUT `newGhostFrames`). The
+   * server emits per-recipient match-end frames via `safeSend(ws, …)`,
+   * gating this field on `ws.data.identity.avatarId === <pb-setter-avatarId>`.
+   */
+  newGhostFrames?: GhostFrame[];
+  /**
+   * C2 FIX — daily-best-lap rank for the just-set PB (1-100), `null` if
+   * off-board. Computed in `maybeUpdatePersonalBest` via single indexed
+   * scan against the freshly-written row. NOT sourced from the public
+   * 60s daily-leaderboard cache — always reflects the just-written PB.
+   */
+  dailyRank: number | null;
+}
+
 /** Reward preview returned on `event.match_ended` — authoritative from DB */
 export interface RewardPreview {
   placement: number;
@@ -132,6 +181,26 @@ export interface RewardPreview {
   isPersonalBest?: boolean;
   firstPlayOfDayBonus?: boolean;
   focusBonus?: boolean;
+  /**
+   * Reef Race Phase 4 — set when the participant's just-completed match
+   * lowered their PB lap (or set the first one). Includes PB delta + daily
+   * rank; `newGhostFrames` is per-recipient gated. Absent on Bumper Shells
+   * and on Reef Race matches that did NOT improve the PB.
+   */
+  pbDelta?: PbDelta;
+  /**
+   * Reef Race Phase 4 — best consecutive clean checkpoint crosses this
+   * match. Always present on Reef Race matches (>= 0); absent for other
+   * activities. Hitting `TOTAL_CHECKPOINTS_PER_RACE` (= 36) yields the
+   * perfect-lap bonus, surfaced via `perfectLapBonus`.
+   */
+  streakBest?: number;
+  /**
+   * Reef Race Phase 4 — additional ClawTokens credited for a perfect race
+   * (streakBest >= 36). 0 when not earned. Sums into `tokens` already; the
+   * field is included so the modal can render the bonus line.
+   */
+  perfectLapBonus?: number;
 }
 
 /** Room-level metadata attached to `snapshot.init` */
@@ -181,6 +250,17 @@ export interface RoomMeta {
       level: number;
     }
   >;
+  /**
+   * Reef Race Phase 4 — self avatar's PB ghost replay frames. Sent ONCE per
+   * snapshot.init for the SELF avatar only (not other racers — too crowded
+   * per spec §2). Skipped for non-Reef-Race rooms, guests, bots, and avatars
+   * without a PB row.
+   *
+   * ~3-5 KB at 5 Hz capture × ~30 sec lap. The server emits this via
+   * per-recipient `safeSend` (S7 fix) — broadcast machinery never serves
+   * one player's ghost to another.
+   */
+  selfBestLapGhost?: GhostFrame[];
 }
 
 /** Per-entity delta — only changed fields are transmitted */
@@ -381,6 +461,22 @@ export type ServerFrame =
       type: 'event.launch';
       avatarId: string;
       kind: 'boost' | 'stall';
+    }
+  | {
+      /**
+       * Reef Race Phase 4 — streak milestone (5/10/20/30/36 clean checkpoint
+       * crosses in a row). Edge-triggered, NOT broadcast per checkpoint — the
+       * per-tick streak count rides `EntityDelta.changed.streak` instead.
+       *
+       * `kind` maps to the HUD glow tier — single source of truth at
+       * `@clawville/shared/activities/reef-race-streak#streakMilestoneKind`.
+       *
+       * S2 FIX — milestones compressed from 7 to 5 to match the 5-tier union.
+       */
+      type: 'event.streak_milestone';
+      avatarId: string;
+      streak: number;
+      kind: 'tier-1' | 'tier-2' | 'tier-3' | 'tier-4' | 'perfect';
     }
   | {
       type: 'chat';

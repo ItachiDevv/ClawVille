@@ -131,7 +131,16 @@ import {
   type BodyMultipliers,
   type PetRacingProfile,
   type RacingClass,
+  // Phase 4 — ghost capture cadence + streak constants
+  GHOST_CAPTURE_HZ,
+  MAX_GHOST_FRAMES_PER_LAP,
+  APEX_HAIRPIN_CHECKPOINT_INDICES,
 } from './reef-race-config';
+import {
+  STREAK_MILESTONES,
+  streakMilestoneKind,
+  type GhostFrame,
+} from '@clawville/shared';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -286,6 +295,40 @@ interface ReefBody {
    * so an extreme mult cannot collapse the threshold to 0.
    */
   driftSparkTicks: readonly [number, number, number];
+
+  // ─── Phase 4 — ghost replay capture (per-body) ──────────────────────────
+  /**
+   * Captured frames for the CURRENT lap-in-progress. FIFO ring up to
+   * MAX_GHOST_FRAMES_PER_LAP. Cleared in BOTH lap-up branches (success
+   * AND sub-MIN_LAP discard) to guarantee monotonic `t` in saved replay
+   * (C1 fix). Re-anchored with a synthetic `t=0` frame on lap-up (S6 fix).
+   */
+  currentLapFrames: GhostFrame[];
+  /**
+   * Snapshot of `currentLapFrames` taken at the moment the BEST lap closed.
+   * null until the first finished lap. Embedded into `SimResultRow.reefRace
+   * .ghostReplayFrames` at `computeResults()` time (C3 fix — never read
+   * via a live accessor that could race sim teardown).
+   */
+  bestLapFrames: GhostFrame[] | null;
+  /** Best lap ms seen so far this match. null until the first finished lap. */
+  bestLapMsSoFar: number | null;
+
+  // ─── Phase 4 — streak counter (per-body) ────────────────────────────────
+  /**
+   * Current run of consecutive clean checkpoint crosses. Resets to 0 on
+   * any dirty cross (wide hairpin verdict). Mirrored into snapshot deltas
+   * so the HUD chip updates without a separate event subscription.
+   */
+  currentStreak: number;
+  /** High-water mark of `currentStreak` across the entire match. */
+  bestStreakThisMatch: number;
+  /**
+   * Last apex verdict per `(lap, hairpinIndex)`. Key = `${lap}-${cpIdx}`
+   * to avoid cross-lap collision (S1 fix). Cleared at lap-up boundary
+   * for belt-and-suspenders safety.
+   */
+  lastApexVerdictByHairpin: Map<string, 'clean' | 'wide'>;
 }
 
 interface ReefPickupBox {
@@ -367,6 +410,12 @@ interface ReefSnapshot {
      * cache hasn't been populated yet (very first tick of a fresh room).
      */
     placement: number | null;
+    /**
+     * Phase 4 — current run of consecutive clean checkpoint crosses.
+     * Mirrored into snapshot deltas so the HUD streak chip updates
+     * between checkpoint crossings without a separate event channel.
+     */
+    streak: number;
   }>;
   pickups: Array<{
     spawnId: string;
@@ -602,6 +651,15 @@ class ReefRaceSim {
         // Phase 3 — stat-driven multipliers stamped once at room start.
         mults,
         driftSparkTicks,
+        // Phase 4 — ghost capture + streak. Seed currentLapFrames with a
+        // synthetic t=0 anchor (S6 fix) so the very first sample after
+        // lapStartedAt isn't `t≈200ms` (one capture tick later).
+        currentLapFrames: [{ t: 0, x, z: y, rot }],
+        bestLapFrames: null,
+        bestLapMsSoFar: null,
+        currentStreak: 0,
+        bestStreakThisMatch: 0,
+        lastApexVerdictByHairpin: new Map<string, 'clean' | 'wide'>(),
       });
     });
 
@@ -787,10 +845,22 @@ class ReefRaceSim {
    *   1..n = finishers in finish order (lowest totalTimeMs first)
    *   n+1..end = DNFers, ordered by laps completed DESC then dnf
    *              wall-clock ascending (earlier-DNF places worse)
+   *
+   * Phase 4 (C3 fix) — for Reef Race rooms, embeds per-avatar best lap +
+   * captured ghost frames + best-streak directly into the result row.
+   * The reward pipeline reads from this embedded `reefRace` block, NEVER
+   * via a live-state accessor — so sim teardown ordering doesn't race
+   * the reward credit.
    */
   computeResults(
     roomId: string,
-  ): Array<{ avatarId: string; placement: number; score: number; scoreMs: number | null }> {
+  ): Array<{
+    avatarId: string;
+    placement: number;
+    score: number;
+    scoreMs: number | null;
+    reefRace?: ReefRaceSimResultRowExt;
+  }> {
     const state = this.rooms.get(roomId);
     if (!state) return [];
 
@@ -806,7 +876,15 @@ class ReefRaceSim {
         return a.avatarId.localeCompare(b.avatarId);
       });
 
-    const out: Array<{ avatarId: string; placement: number; score: number; scoreMs: number | null }> = [];
+    const isReefRace = state.activityId === 'reef-race';
+
+    const out: Array<{
+      avatarId: string;
+      placement: number;
+      score: number;
+      scoreMs: number | null;
+      reefRace?: ReefRaceSimResultRowExt;
+    }> = [];
     let placement = 1;
     for (const f of finishers) {
       out.push({
@@ -816,6 +894,7 @@ class ReefRaceSim {
         // generic placement-by-score logic in the reward pipeline.
         score: -f.totalTimeMs,
         scoreMs: f.totalTimeMs,
+        reefRace: isReefRace ? extractReefRaceBlock(f) : undefined,
       });
     }
     for (const d of dnfers) {
@@ -824,9 +903,24 @@ class ReefRaceSim {
         placement: placement++,
         score: -REEF_HARD_TIMEOUT_MS - 1, // worse than any finish
         scoreMs: null,
+        // DNFers may still have set a fast lap before forfeiting/timing
+        // out — surface it. The reward pipeline only writes a PB if the
+        // avatar has no anti-cheat flags AND bestLapMs is set.
+        reefRace: isReefRace ? extractReefRaceBlock(d) : undefined,
       });
     }
     return out;
+  }
+
+  /**
+   * Phase 4 — read-only flag-count accessor. Used by the reward pipeline
+   * (anti-cheat skip-PB-on-flagged-match check, §4.4). Returns 0 when
+   * the room or body is unknown.
+   */
+  getFlagCount(roomId: string, avatarId: string): number {
+    const state = this.rooms.get(roomId);
+    if (!state) return 0;
+    return state.flagCounter.countFor(avatarId);
   }
 
   /** Test hook — wipe all in-memory state. */
@@ -940,6 +1034,33 @@ class ReefRaceSim {
         finishedCount > 0 ? 'all_finished' : 'time_expired',
       );
       return;
+    }
+
+    // 8a. Phase 4 — capture per-body ghost frames at GHOST_CAPTURE_HZ.
+    //     5 Hz × 8 bodies = 40 alloc/sec — within per-frame budget. The
+    //     synthetic t=0 anchor frame is written at lap-up (see
+    //     resolveCheckpoints — both success AND discard branches), so the
+    //     very first sample on a fresh lap lands at the next capture tick
+    //     not at t=0 (the anchor already covers that).
+    const ghostStrideTicks = Math.max(
+      1,
+      Math.round(REEF_SIM_HZ / GHOST_CAPTURE_HZ),
+    );
+    if (state.tick % ghostStrideTicks === 0) {
+      for (const body of state.bodies.values()) {
+        if (!body.alive || body.dnf || body.finishedAt !== null) continue;
+        if (body.currentLapFrames.length >= MAX_GHOST_FRAMES_PER_LAP) {
+          // FIFO drop oldest — only happens on absurdly long laps (>50 sec).
+          // The legitimate fastest lap never approaches the cap.
+          body.currentLapFrames.shift();
+        }
+        body.currentLapFrames.push({
+          t: now - body.lapStartedAt, // lap-relative ms
+          x: body.x,
+          z: body.y, // sim-Y → Three.js-Z
+          rot: body.rot,
+        });
+      }
     }
 
     // 9. Snapshot broadcast cadence.
@@ -1534,6 +1655,11 @@ class ReefRaceSim {
         body.lastCheckpointAt = now;
         body.nextCheckpoint = (wasCheckpoint + 1) % REEF_CHECKPOINT_COUNT;
 
+        // Phase 4 — streak update. Runs BEFORE lap-up branching so a
+        // hairpin cleared on lap N still credits the streak before the
+        // verdict map gets cleared at lap-up boundary (S1 fix).
+        this.applyStreakUpdate(state, body, wasCheckpoint);
+
         if (justCompletedLap) {
           // Crossed the start/finish line as the expected next-checkpoint
           // → that means the previous checkpoint we crossed was 11 and we
@@ -1552,12 +1678,50 @@ class ReefRaceSim {
             // discarded the lap (we still consider checkpoint 0 a valid
             // start-line crossing for kinematic purposes).
             body.nextCheckpoint = 1;
+            // Phase 4 (C1 fix) — clear ghost frame buffer in the DISCARD
+            // branch too. Without this, stale frames from this aborted
+            // attempt mix with the next attempt's frames at t≈14000ms,
+            // breaking findGhostFrames' linear scan with non-monotonic t.
+            body.currentLapFrames.length = 0;
+            // Re-anchor with synthetic t=0 frame (S6 fix).
+            body.currentLapFrames.push({
+              t: 0,
+              x: body.x,
+              z: body.y,
+              rot: body.rot,
+            });
+            // Phase 4 (S1 fix) — clear apex verdict map at lap boundary
+            // even on discard so a stale `${lap}-${cp}` entry can never
+            // leak into the next attempt.
+            body.lastApexVerdictByHairpin.clear();
             break;
           }
 
           body.lap += 1;
           body.lapSplitsMs.push(lapMs);
           body.lapStartedAt = now;
+
+          // Phase 4 — if this lap is the best so far, snapshot the captured
+          // frames BEFORE clearing currentLapFrames. The snapshot is a
+          // shallow clone (slice()) — currentLapFrames mutates in place
+          // next, the snapshot must persist into bestLapFrames.
+          const isBestLapSoFar =
+            body.bestLapMsSoFar === null || lapMs < body.bestLapMsSoFar;
+          if (isBestLapSoFar) {
+            body.bestLapMsSoFar = lapMs;
+            body.bestLapFrames = body.currentLapFrames.slice();
+          }
+          // Phase 4 (C1 fix) — clear ghost frame buffer in the SUCCESS
+          // branch. Re-anchor with a synthetic t=0 frame (S6 fix) so the
+          // first captured frame on the new lap doesn't land at t≈200ms.
+          body.currentLapFrames.length = 0;
+          body.currentLapFrames.push({
+            t: 0,
+            x: body.x,
+            z: body.y,
+            rot: body.rot,
+          });
+
           // Phase 2 — clear per-lap dedupe sets after the lap counter
           // increments. The Phase 2 resolvers (ribbons / apex / hazards) ran
           // in step 5a-5c using the PRE-INCREMENT lap as the dedupe key, so
@@ -1566,6 +1730,11 @@ class ReefRaceSim {
           body.ribbonsCollectedThisLap.clear();
           body.apexCheckedThisLap.clear();
           body.hazardsHitThisLap.clear();
+          // Phase 4 (S1 fix) — clear apex verdict map at lap boundary so
+          // the next lap's hairpin reads a fresh verdict, not a stale
+          // entry keyed by the previous lap.
+          body.lastApexVerdictByHairpin.clear();
+
           this.broadcastFn(state.roomId, {
             type: 'event.lap_completed',
             avatarId: body.avatarId,
@@ -1753,18 +1922,33 @@ class ReefRaceSim {
       avatarId: r.avatarId,
       placement: r.placement,
     }));
-    const previewPlacement = winners[0]?.placement ?? 0;
-    this.broadcastFn(state.roomId, {
-      type: 'event.match_ended',
-      reason: 'complete',
-      winners,
-      rewardPreview: {
-        placement: previewPlacement,
-        // Authoritative crediting lives in chunk #7's reward pipeline.
-        tokens: 0,
-        leaderboardPoints: 0,
-      },
-    });
+
+    // Phase 4 (S-IMPL-1 fix 2026-04-25) — Reef Race rooms ALWAYS go through
+    // `reward-pipeline.ts → emitPerRecipientMatchEnd` which broadcasts the
+    // authoritative `event.match_ended` (with real tokens / pbDelta /
+    // streakBest / perfectLapBonus) per recipient. Emitting this preview
+    // frame first would fire the client modal with `tokens: 0` for ~50–
+    // 500ms before the authoritative numbers replace it (UX flash).
+    // Skip the preview here; the pipeline owns the broadcast.
+    //
+    // For activities WITHOUT a per-recipient pipeline emit (none today
+    // beside reef-race, but future activities could opt in similarly),
+    // the preview broadcast still runs so the client gets at least one
+    // match-end frame.
+    if (state.activityId !== 'reef-race') {
+      const previewPlacement = winners[0]?.placement ?? 0;
+      this.broadcastFn(state.roomId, {
+        type: 'event.match_ended',
+        reason: 'complete',
+        winners,
+        rewardPreview: {
+          placement: previewPlacement,
+          // Authoritative crediting lives in chunk #7's reward pipeline.
+          tokens: 0,
+          leaderboardPoints: 0,
+        },
+      });
+    }
 
     if (this.endedFn) {
       try {
@@ -1795,6 +1979,8 @@ class ReefRaceSim {
         // Phase 2 — live placement piped through the snapshot delta so the
         // HUD's placement tile updates between checkpoint crossings.
         placement: state.lastPlacementMap.get(b.avatarId) ?? null,
+        // Phase 4 — current streak count for the HUD chip.
+        streak: b.currentStreak,
       })),
       pickups: state.pickups.map((pk) => ({
         spawnId: pk.spawnId,
@@ -1868,7 +2054,11 @@ class ReefRaceSim {
           // Phase 2 — placement-only changes MUST broadcast so the HUD's
           // placement tile updates between checkpoint crossings (positional
           // fields may not change on the same tick the placement does).
-          p.placement !== b.placement
+          p.placement !== b.placement ||
+          // Phase 4 — streak-only changes MUST broadcast so the HUD chip
+          // resets visibly on a dirty cross even when position barely
+          // moved between ticks.
+          p.streak !== b.streak
         );
       })
       .map((b) => ({
@@ -1893,6 +2083,9 @@ class ReefRaceSim {
           // Phase 2 — surface live placement so the HUD's placement tile
           // updates between checkpoint crossings.
           placement: b.placement,
+          // Phase 4 — surface live streak so the HUD chip stays in sync
+          // between checkpoint crossings.
+          streak: b.streak,
         },
       }));
     const pickups = snap.pickups
@@ -1914,6 +2107,57 @@ class ReefRaceSim {
       entities,
       powerUps: pickups,
     });
+  }
+
+  // ─── Phase 4 — streak counter ──────────────────────────────────────────
+
+  /**
+   * Update `body.currentStreak` + `bestStreakThisMatch` on a legitimate
+   * checkpoint cross. Hairpin checkpoints (cps 3 + 9) require the most-
+   * recent apex verdict for THIS lap (S1 fix — keyed by `${lap}-${cpIdx}`)
+   * to be `'clean'`; non-hairpin crosses are auto-clean. Edge-broadcasts
+   * `event.streak_milestone` on milestone hits (5/10/20/30/36).
+   *
+   * Reset to 0 on dirty cross. The HUD chip subscribes to the per-tick
+   * `streak` field on EntityDelta — the milestone event is glow-only.
+   */
+  private applyStreakUpdate(
+    state: ReefRoomState,
+    body: ReefBody,
+    cpIdx: number,
+  ): void {
+    const isHairpin =
+      cpIdx === APEX_HAIRPIN_CHECKPOINT_INDICES[0] ||
+      cpIdx === APEX_HAIRPIN_CHECKPOINT_INDICES[1];
+    let clean: boolean;
+    if (!isHairpin) {
+      clean = true;
+    } else {
+      // S1 FIX — verdict map is keyed by (lap, cpIdx). A hairpin cross
+      // with no apex verdict for this lap counts as dirty (the body
+      // crossed the cp without ever entering the inner OR outer apex
+      // disc — likely cut a corner outside both rings).
+      const key = `${body.lap}-${cpIdx}`;
+      clean = body.lastApexVerdictByHairpin.get(key) === 'clean';
+    }
+    if (clean) {
+      body.currentStreak += 1;
+      if (body.currentStreak > body.bestStreakThisMatch) {
+        body.bestStreakThisMatch = body.currentStreak;
+      }
+      // Edge-trigger: only broadcast on milestone hits to avoid 36×8
+      // event spam per match. Per-tick streak count rides EntityDelta.
+      if ((STREAK_MILESTONES as readonly number[]).includes(body.currentStreak)) {
+        this.broadcastFn(state.roomId, {
+          type: 'event.streak_milestone',
+          avatarId: body.avatarId,
+          streak: body.currentStreak,
+          kind: streakMilestoneKind(body.currentStreak),
+        });
+      }
+    } else {
+      body.currentStreak = 0;
+    }
   }
 
   // ─── Anti-cheat hook ───────────────────────────────────────────────────
@@ -2207,8 +2451,14 @@ class ReefRaceSim {
         const dyIn = body.y - zone.innerCenter.y;
         const dxOut = body.x - zone.outerCenter.x;
         const dyOut = body.y - zone.outerCenter.y;
+        // Phase 4 (S1 fix) — verdicts also stamped onto the per-(lap, cp)
+        // map so the streak resolver in resolveCheckpoints can read the
+        // verdict for THIS lap's hairpin without colliding with stale
+        // entries from a previous lap.
+        const verdictKey = `${body.lap}-${zone.hairpinIndex}`;
         if (dxIn * dxIn + dyIn * dyIn <= APEX_INNER_RADIUS * APEX_INNER_RADIUS) {
           body.apexCheckedThisLap.add(key);
+          body.lastApexVerdictByHairpin.set(verdictKey, 'clean');
           body.activeBoosts.set('apex-bonus', {
             expiresAt: now + APEX_DURATION_MS,
             mult: APEX_BONUS_MULT,
@@ -2224,6 +2474,7 @@ class ReefRaceSim {
           APEX_OUTER_RADIUS * APEX_OUTER_RADIUS
         ) {
           body.apexCheckedThisLap.add(key);
+          body.lastApexVerdictByHairpin.set(verdictKey, 'wide');
           body.activeBoosts.set('apex-penalty', {
             expiresAt: now + APEX_DURATION_MS,
             mult: APEX_PENALTY_MULT, // negative
@@ -2433,6 +2684,40 @@ function isOnRibbon(
   const ey = body.y - projY;
   const perpSq = ex * ex + ey * ey;
   return perpSq <= halfWidth * halfWidth;
+}
+
+/**
+ * Phase 4 (C3 fix) — per-avatar Reef Race extension on `SimResultRow`.
+ * Embedded inline by `computeResults()` BEFORE `state.bodies` teardown so
+ * the reward pipeline's perfect-lap-bonus + PB-write logic operates on
+ * a plain JS object — no live-state accessor, no race window with
+ * `endRound()`.
+ */
+export interface ReefRaceSimResultRowExt {
+  /**
+   * Best single-lap time this match in ms. null when no clean lap was
+   * ever completed (immediate DNF / forfeit before any lap-up).
+   */
+  bestLapMs: number | null;
+  /**
+   * Captured ghost-replay frames for the best lap. null when no clean lap
+   * was ever completed. Lap-relative `t`. Empty array possible on a
+   * legitimate but extremely short capture window.
+   */
+  ghostReplayFrames: GhostFrame[] | null;
+  /** High-water `currentStreak` across the entire match. */
+  bestStreakThisMatch: number;
+  /** Final `currentStreak` value at match-end (informational). */
+  currentStreakAtMatchEnd: number;
+}
+
+function extractReefRaceBlock(body: ReefBody): ReefRaceSimResultRowExt {
+  return {
+    bestLapMs: body.bestLapMsSoFar,
+    ghostReplayFrames: body.bestLapFrames,
+    bestStreakThisMatch: body.bestStreakThisMatch,
+    currentStreakAtMatchEnd: body.currentStreak,
+  };
 }
 
 export const reefRaceSim = new ReefRaceSim();

@@ -43,6 +43,36 @@ export const REEF_LAPS = 3;
 export const REEF_CHECKPOINT_COUNT = 12;
 
 /**
+ * Reef Race Phase 4 — total clean checkpoint crosses required for a
+ * "perfect" race. Mirrors `REEF_CHECKPOINT_COUNT * REEF_LAPS` and the
+ * shared `TOTAL_CHECKPOINTS_PER_RACE` in
+ * `@clawville/shared/activities/reef-race-streak`. When a body's
+ * `bestStreakThisMatch` reaches this value, the perfect-lap bonus
+ * (`rewardConfig.perfectStreakBonusTokens`) is credited.
+ */
+export const TOTAL_CHECKPOINTS_PER_RACE =
+  REEF_CHECKPOINT_COUNT * REEF_LAPS;
+
+// ─── Phase 4 — ghost replay capture cadence ─────────────────────────────────
+
+/**
+ * Ghost replay sampling rate (Hz). 5 Hz × 30 sec lap × 4 fields × ~6 bytes
+ * = ~3.6 KB serialized. Doubling the bracket gap from 100 ms → 200 ms is
+ * invisible at the kart's 360 wu/s top speed (the body moves ~72 wu in
+ * 200 ms — well below the per-frame visual fidelity needed for a
+ * transparent ghost on a 300 wu wide track).
+ */
+export const GHOST_CAPTURE_HZ = 5;
+
+/**
+ * Hard cap on captured frames per body per lap. 250 frames @ 5 Hz =
+ * 50 sec — safely above a legitimate fastest lap. At cap the OLDEST
+ * frame drops (FIFO) so the saved replay always represents the
+ * trailing 50 sec of work.
+ */
+export const MAX_GHOST_FRAMES_PER_LAP = 250;
+
+/**
  * Minimum legal lap time. Faster than this = discarded + flag. Backend
  * §4.5: tuned for the 6000wu × 1 lap path at MAX_REEF_SPEED. A clean
  * fast lap is ~30–36s; 15s is well below the physically-reachable
