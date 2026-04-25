@@ -172,20 +172,15 @@ describe('BumperShellsBot.computeInput', () => {
     const view = makeView({ x: 150, y: 0, inventory: inv }, [{ petId: 'opp', x: 200, y: 0 }]);
     view.now = 1500;
     view.matchStartedAt = 0; // matchAge = 1500ms < 2500ms ⇒ grace active
-    let firedPowerUp = 0;
-    const xs: number[] = [];
-    const thrusts: number[] = [];
-    for (let i = 0; i < 200; i++) {
+    // Grace path is fully deterministic — no Math.random in scope, so
+    // a single computeInput call is sufficient. A handful of iterations
+    // gives defense in depth against future edits adding randomness here.
+    for (let i = 0; i < 5; i++) {
       const intent = bot.computeInput(view, 1 / 60);
-      if ((intent.actionBits ?? 0) !== 0) firedPowerUp++;
-      xs.push(intent.dir!.x);
-      thrusts.push(intent.thrust ?? 0);
+      expect(intent.actionBits ?? 0).toBe(0); // no power-up during grace
+      expect(intent.dir!.x).toBeLessThan(0);   // toward origin (negative x)
+      expect(intent.thrust).toBeCloseTo(0.4, 5);
     }
-    expect(firedPowerUp).toBe(0);
-    const avgX = xs.reduce((s, v) => s + v, 0) / xs.length;
-    expect(avgX).toBeLessThan(0); // toward origin (negative x), not the opponent
-    const avgThrust = thrusts.reduce((s, v) => s + v, 0) / thrusts.length;
-    expect(avgThrust).toBeCloseTo(0.4, 1);
   });
 
   it('skips eliminated opponents when picking the nearest', () => {
