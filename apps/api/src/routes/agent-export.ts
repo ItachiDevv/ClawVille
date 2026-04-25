@@ -30,6 +30,7 @@ import {
   KNOWLEDGE_BOOKS,
   DEFAULT_AGENT_MODEL,
   DEFAULT_AGENT_HARNESS,
+  CLAWVILLE_ORIENTATION_SKILL,
   getAgentModel,
   type AgentCategory,
   type AgentHarness,
@@ -175,6 +176,18 @@ function buildSkillPack(
   const knowledgeSet = new Set(petKnowledge);
 
   const entries: SkillPackEntry[] = [];
+
+  // Always ship the ClawVille orientation skill first. Gives the exported
+  // agent RAG access to modes, buildings, economy, connect/reconnect/
+  // disconnect flow, and session-liveness rules on its new host — so a
+  // Milady-installed agent never has to guess how to talk back to us.
+  // `exportedFrom` is filled here because the shared constant is pet-
+  // agnostic (one definition, many exports).
+  entries.push({
+    ...CLAWVILLE_ORIENTATION_SKILL,
+    exportedFrom: { petId: pet.id, petName: pet.name },
+  });
+
   for (const [buildingId, skill] of Object.entries(BUILDING_MILADY_SKILLS)) {
     const buildingBooks = BOOKS_BY_BUILDING[buildingId] ?? [];
     if (buildingBooks.length === 0) continue;

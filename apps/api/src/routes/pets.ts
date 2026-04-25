@@ -12,6 +12,7 @@ import {
   DEFAULT_AGENT_MODEL_KEY,
   DEFAULT_AGENT_HARNESS,
   getAgentModel,
+  CLAWVILLE_ORIENTATION_KNOWLEDGE,
 } from '@clawville/shared';
 import type {
   PetArchetypeId,
@@ -160,6 +161,15 @@ function buildCharacterConfig(archetypeId: PetArchetypeId, petName: string, mode
     `Tone: ${archetype.tone}. Speak consistently with your character's voice and personality.`,
   ].join('\n');
 
+  // ClawVille world-facts (modes, 10 buildings, economy, leaderboard, connect
+  // + reconnect + disconnect flow, session TTL, guest mode, tutorial) are
+  // baked in on creation so the pet is orientation-aware at t=0 regardless
+  // of harness. Source of truth lives in `@clawville/shared`; Nori spreads
+  // the same list into her own Eliza knowledge so the player agent and the
+  // in-world guide agree verbatim. Without this the pet knows nothing about
+  // the world it just spawned into and every "how do I X?" becomes a guess.
+  const knowledge = [...archetype.knowledge, ...CLAWVILLE_ORIENTATION_KNOWLEDGE];
+
   return {
     bio: archetype.bio,
     greeting: archetype.greeting,
@@ -170,7 +180,7 @@ function buildCharacterConfig(archetypeId: PetArchetypeId, petName: string, mode
     style: archetype.style,
     messageExamples: archetype.messageExamples,
     lore: archetype.lore,
-    knowledge: archetype.knowledge,
+    knowledge,
     system,
   };
 }
