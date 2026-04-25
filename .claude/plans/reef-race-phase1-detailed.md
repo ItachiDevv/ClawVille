@@ -1,15 +1,45 @@
 # Reef Race Phase 1 — Detailed Implementation Plan
 
-**Status:** Pre-implementation. Awaiting audit before code is written.
+**Status:** Revised — ready for implementation.
 **Branch:** `fix-bumper-build` (worktree at `.claude/worktrees/fix-bumper-build`)
 **Date authored:** 2026-04-24
 **Author:** 3da (implementation planning pass)
 
 ---
 
+## Changelog
+
+### v2 — addresses audit SHA 9f16646 (2026-04-24)
+
+| Issue | Resolution summary |
+|---|---|
+| C1 — drift bias no-op | Bias now written INSIDE `applyIntentForTick` step 6, as a constant absolute offset added to the `Math.atan2` result. No per-tick accumulation; no clobbering. |
+| C2 — `ReefPowerUpKind` type error | Separate `activeBoosts: Map<ReefBoostKind, ReefBoostEntry>` introduced. `activeEffects` (pickup-only) is never touched by drift/launch. |
+| C3 — validator/tolerance inconsistency | Named constant `REEF_KINEMATIC_TOLERANCE = 2.0` exported and used at both call-sites. Tolerance raised to 2.0× so combined drift+launch (1.68×) never hits the silent clamp. |
+| C4 — launch data path missing | Full 4-file data path specified: new `Room.preLaunchBuffer`, new `recordPreLaunchInput`, new `computeLaunchVerdicts`, updated `liveTransitionFn` in `index.ts` passing `startedAt + launchBoosts` to `startRoom`. |
+| C5 — bot launch unreachable during grace | Bot launch attempt is an early return BEFORE the grace branch — bypasses the `thrust: inGrace ? 0.4 : thrust` final return entirely. |
+| C6 — drift cancel on collision claim wrong | Cancel-on-collision removed from spec. Cancellation only fires when `speed < DRIFT_MIN_SPEED_FOR_CHARGE` (from ink-slick or held zero-thrust). `resolveProximity` never modifies velocity. |
+| C7 — glider geometry in wrong space | All geometry specified in **local pre-scale units** (divide by KART_SCALE=20). World sizes stated explicitly for every mesh. |
+| C8 — species never populated | Phase 1 ships ONE default rider attach for all species. Species-conditional branches removed entirely. Deferred to Phase 1.5. |
+| S1 — snapshot diff predicate | `\|\| prev.driftSparks !== b.drift.sparkLevel` added to diff predicate. Listed in §10 table. |
+| S2 — `applyEntityDelta` explanation | Corrected: no catch-all for logic. `driftSparks` written by caller (snapshot.delta handler), not inside `applyEntityDelta`. |
+| S3 — `activeDriftMult` tracking | `currentDriftBoostSparks: 0|1|2|3` field on `ReefBody`. Mult looked up at apply-time from `DRIFT_BOOST_MULTS`. |
+| S4 — double-counted boost | Impulse removed. Boost delivered ONLY via time-extended `activeBoosts` speedMod. No velocity spike at release. |
+| S5 — hard cap not boost-gated | Cap is inside `isBoostActive` branch only. Never clamps non-boosted bodies. |
+| S6 — abort cleanup | `room.preLaunchBuffer = null` added to `persistAbortedTransition` and `persistAbortedCrashTransition`. |
+| S7 — snapshot diff predicate in §10 | Now in file-by-file table under `reef-race-sim.ts`. |
+| S8 — bot non-determinism | Documented: bot heuristics intentionally use `Math.random()` (pre-existing). LCG governs sim physics only. |
+| S9 — HUD countdown glow | HUD computes `secondsRemaining` locally from `room.countdownStartedAt`. Not dependent on `event.countdown`. |
+| S10 — startedAt skew | `startRoom` accepts `startedAt` parameter. `liveTransitionFn` passes `room.startedAt!`. |
+| S11 — first-sighting driftSparks | First-insert branch in `applyEntityDelta` initialises `driftSparks: 0`. |
+| M1–M7 | Decimal style standardised; `DRIFT_MIN_ANGULAR_RATE` dropped (single `DRIFT_MIN_STEER`); milady branch deferred; stall start-time clarified. |
+| New tests T10–T25 | 16 additional test scenarios from audit gaps added to §8. |
+
+---
+
 ## 0. Baseline facts from source audit
 
-Before the plan numbers can be trusted, every value was verified against the live source:
+Every value verified against live source before writing this plan.
 
 | Fact | Source | Value |
 |---|---|---|
@@ -24,42 +54,76 @@ Before the plan numbers can be trusted, every value was verified against the liv
 | `REEF_MAX_ACCEL` | `reef-race-config.ts` line 95 | `REEF_MAX_SPEED * 4 = 2000 wu/s²` |
 | `REEF_DRAG` | `reef-race-config.ts` line 98 | 0.97 per tick |
 | `REEF_BODY_RADIUS` | `reef-race-config.ts` line 101 | 22 wu |
-| `ServerFrame` union | `packages/shared/src/activities/protocol.ts` | discriminated union, no `activity-frames.ts` — file does not exist |
-| `applyServerFrame` exhaustive | `activity.ts` line 711 | `const _exhaustive: never = frame;` — new events MUST be added to union |
-| `KART_SCALE` | `reef-race-config.ts` (client) | 20 |
-| Species in player | `ReefRacePlayer.tsx` line 43-43 | sea_horse + lobster only (milady/crayfish not yet in player) |
-| Bot `BOT_OPENING_GRACE_MS` | `reef-race-bot.ts` line 31 | 2500ms |
-| Test fixture NOW | `reef-race-bot.test.ts` lines 57-60 | `now: 5000, matchStartedAt: 0` — matchAge = 5000ms, well past grace |
+| `REEF_TRACK_HALF_WIDTH` | `reef-race-config.ts` line ~53 | 150 wu (total lane = 300 wu) |
+| `KART_SCALE` | `apps/web/.../reef-race-config.ts` line 186 | 20 |
+| `KART_Y_ABOVE_TRACK` | `apps/web/.../reef-race-config.ts` line 192 | 5 |
+| `ReefPowerUpKind` | `reef-race-config.ts` lines 234-241 | 6-member CLOSED union: `rr-turbo-bubble`, `rr-ink-slick`, `rr-bubble-shield`, `rr-seeker-jelly`, `rr-tide-wave`, `rr-whirlpool` |
+| `activeEffects` type | `reef-race-sim.ts` line 132 | `Map<ReefPowerUpKind, number>` — STRICTLY typed; cannot accept new keys |
+| `ServerFrame` union | `packages/shared/src/activities/protocol.ts` | discriminated union; new events MUST be added to union; `default: never` guard in `activity.ts` line 711 |
+| `applyEntityDelta` | `activity.ts` lines 271-298 | explicit field-by-field; unknown fields silently DROPPED |
+| `hydrateFromWorld` | `activity.ts` lines ~306-336 | `WorldState.entities` has NO `species` field; `species` NOT populated on any entity |
+| `BotController` class | `reef-race-bot.ts` | only instance field is `petId`; class is otherwise stateless |
+| Grace return location | `reef-race-bot.ts` line ~130 | final `return { thrust: inGrace ? 0.4 : thrust }` overrides ALL prior thrust |
+| `liveTransitionFn` call | `activity-room-manager.ts` line ~713 | called inside `persistLiveTransition` AFTER `room.startedAt = now` |
+| `room.startedAt` set | `activity-room-manager.ts` line ~398 | `room.startedAt = now` in `case 'live':` of `transitionRoom` |
+| `Room` interface | `types.ts` | no `preLaunchBuffer` field — must add |
+| `handleInput` | `activity-ws-hub.ts` lines 390-432 | routes only to `reefRaceSim.applyInput`; no countdown branch |
+| `startRoom` signature | `reef-race-sim.ts` line 235 | `opts?: {seed, isBot, bots}` — no `launchBoosts` or `startedAt` yet |
+| Bot grace window | `reef-race-bot.ts` line 31 | `BOT_OPENING_GRACE_MS = 2500ms` |
+| `DEFAULT_CLAMP_TOLERANCE` | `shared.ts` line 42 | 1.15 — used by bumper-shells; reef call-sites hard-code 1.5 |
+| Reef validator call-sites | `reef-race-sim.ts` lines 796+805 | hard-coded `1.5` — replace with named export |
 
-**Critical finding:** There is no `packages/shared/src/types/activity-frames.ts`. The protocol lives in `packages/shared/src/activities/protocol.ts` as a single `ServerFrame` TypeScript union (not Zod). New events extend that union. The plan spec says `activity-frames.ts` — this must be interpreted as `protocol.ts`.
+**Retained:** There is no `packages/shared/src/types/activity-frames.ts`. The protocol lives in `packages/shared/src/activities/protocol.ts`. All plan references to "activity-frames.ts" mean `protocol.ts`.
 
 ---
 
 ## 1. Constants
 
-All constants go in `apps/api/src/services/activity/sim/reef-race-config.ts`.
+All server constants go in `apps/api/src/services/activity/sim/reef-race-config.ts`.
+Client constants go in `apps/web/src/lib/three/activities/reef-race/reef-race-config.ts`.
 
-### 1.1 Drift spark tier thresholds
+### 1.1 New type: `ReefBoostKind` (C2 fix)
+
+Drift and launch boosts are NOT power-ups. They use a SEPARATE type and a SEPARATE Map on `ReefBody`. `activeEffects: Map<ReefPowerUpKind, number>` is never modified by drift or launch code.
+
+```typescript
+// In apps/api/src/services/activity/sim/reef-race-config.ts
+export type ReefBoostKind =
+  | 'launch-boost'
+  | 'launch-stall'
+  | 'drift-boost';
+
+// In reef-race-sim.ts (alongside ReefBody interface)
+interface ReefBoostEntry {
+  expiresAt: number;
+  /** Additive speed multiplier, e.g. 0.38 for +38%. Absent for launch-stall. */
+  mult?: number;
+}
+```
+
+`ReefBody` gains:
+```typescript
+activeBoosts: Map<ReefBoostKind, ReefBoostEntry>;
+currentDriftBoostSparks: 0 | 1 | 2 | 3;
+```
+
+Initialised to `new Map()` and `0` respectively. The `activeEffects: Map<ReefPowerUpKind, number>` field is UNTOUCHED by all drift/launch code.
+
+### 1.2 Drift spark tier thresholds
 
 ```
 REEF_SIM_HZ = 30 → 1 tick = 33.33ms
 
-Tier 0→1: 0.4s = 0.4 * 30 = 12 ticks
-Tier 1→2: 0.9s total = 0.9 * 30 = 27 ticks
-Tier 2→3: 1.5s total = 1.5 * 30 = 45 ticks
+Tier 0→1: 0.4s = 12 ticks   → achievable in any medium corner
+Tier 1→2: 0.9s = 27 ticks   → needs a sustained turn entry
+Tier 2→3: 1.5s = 45 ticks   → requires a full hairpin (~1/3 of the B-arc)
 ```
 
-**Justification:**
-- A 1-spark drift (~0.4s hold) is achievable in a medium corner. Short enough that casual players can land it.
-- A 3-spark drift (~1.5s hold) requires a sustained full hairpin entry — the entire REEF_TRACK_B arc at minimum. At 500 wu/s the wide hairpin subtends ~(π × 700wu) / (500wu/s) ≈ 4.4s of track time, so 1.5s of drift is ~one-third of the corner — achievable but demanding.
-- Advancing by same-tick thresholds (not incremental per tick) means we check `chargeStartTick` at the current tick: `spark = chargeStartTick + threshold <= currentTick`.
-
 ```typescript
-// Tick counts from DRIFT charge start at which spark level advances:
-export const DRIFT_SPARK_TICK_1 = 12;   // 0.4s
-export const DRIFT_SPARK_TICK_2 = 27;   // 0.9s
-export const DRIFT_SPARK_TICK_3 = 45;   // 1.5s
-
+export const REEF_TICK_MS = 1000 / REEF_SIM_HZ; // ≈ 33.33ms
+export const DRIFT_SPARK_TICK_1 = 12;
+export const DRIFT_SPARK_TICK_2 = 27;
+export const DRIFT_SPARK_TICK_3 = 45;
 export const DRIFT_SPARK_TIERS: readonly [number, number, number] = [
   DRIFT_SPARK_TICK_1,
   DRIFT_SPARK_TICK_2,
@@ -67,221 +131,222 @@ export const DRIFT_SPARK_TIERS: readonly [number, number, number] = [
 ];
 ```
 
-### 1.2 Drift boost multipliers
-
-**From plan §1B:** "1=+12%, 2=+24%, 3=+38%". Applied for 1.2s.
-
-```
-DRIFT_BOOST_DURATION_MS = 1200  (1.2s)
-1200ms / 33.33ms ≈ 36 ticks
-
-Boost velocity factor (additive on top of current velocity):
-spark=1: +12% → factor 0.12
-spark=2: +24% → factor 0.24
-spark=3: +38% → factor 0.38
-```
+### 1.3 Drift boost multipliers
 
 ```typescript
 export const DRIFT_BOOST_DURATION_MS = 1_200;
+/**
+ * Additive speed multipliers per spark level (index 0 = spark 1).
+ * Applied as: speedMod = 1 + DRIFT_BOOST_MULTS[sparkLevel - 1].
+ * The mult value is stored on the ReefBoostEntry so no re-lookup is
+ * needed after drift state is cleared.
+ */
 export const DRIFT_BOOST_MULTS: readonly [number, number, number] = [0.12, 0.24, 0.38];
 ```
 
-Implementation note: the boost is applied as a one-tick velocity impulse at release. The implementation stores an `activeEffect` `'rr-drift-boost'` with expiry and applies a `speedMod` inside `applyIntentForTick`, analogous to `rr-turbo-bubble`. This avoids repeated-fire and survives tick boundaries.
+**Boost delivery (S4 fix — impulse removed):** The drift boost does NOT apply a velocity impulse at release. Velocity magnitude at release is left unchanged. The boost raises the effective speed cap for `DRIFT_BOOST_DURATION_MS` via `speedMod` inside `applyIntentForTick`. The "surge of speed" comes from full thrust being more effective, not from an instantaneous spike. This eliminates the double-counting bug (audit S4).
 
-### 1.3 Drift angular bias
+### 1.4 Drift angular bias (C1 fix)
 
-**From plan §1B:** "+15° angular bias for the drift arc." This is a constant added to the body's rotation during drift charge to simulate the classic kart drift-slide.
+**The bias is applied as a constant absolute offset added to the `Math.atan2` result inside `applyIntentForTick` step 6, on the same line that computes `body.rot`.** It does NOT accumulate per-tick. It does NOT run after step 6 to be clobbered by it.
 
 ```typescript
-export const DRIFT_ANGULAR_BIAS_RAD = (15 * Math.PI) / 180; // ≈ 0.2618 rad
+export const DRIFT_ANGULAR_BIAS_RAD = (15 * Math.PI) / 180; // 0.2618 rad ≈ 15°
 ```
 
-Applied as: during drift charging, if turning right (`dir.x > 0`), subtract the bias from `body.rot`; if turning left, add it. Reset when drift ends.
+Applied in step 6 of `applyIntentForTick`:
+```typescript
+// Normal (not drifting):
+body.rot = Math.atan2(intent.dir.x, intent.dir.y);
 
-### 1.4 Minimum speed threshold for drift activation
+// While drift.charging is true (replaces the above):
+const turnSign = (intent.dir.x > 0) ? -1 : 1;
+body.rot = Math.atan2(intent.dir.x, intent.dir.y) + turnSign * DRIFT_ANGULAR_BIAS_RAD;
+```
 
-A body rolling at nearly zero speed should not be able to drift-charge. Threshold is 30% of `REEF_MAX_SPEED`.
+This produces a VISIBLE constant 15° body-angle lean into the corner while the drift is held. It disappears on the tick after release (next tick's step 6 uses the unbiased formula since `drift.charging` is now false). No unbounded accumulation. No clobbering from later steps (the bias IS step 6).
+
+### 1.5 Minimum thresholds
 
 ```typescript
 export const DRIFT_MIN_SPEED_FOR_CHARGE = REEF_MAX_SPEED * 0.30; // 150 wu/s
-```
-
-### 1.5 Minimum angular rate threshold for drift activation
-
-"Turning AND drift-bit AND moving above threshold." Angular rate threshold derived from the minimum turn that constitutes a "hairpin entry" — roughly the rate a body produces when pointing at a checkpoint that is 45° off its current heading.
-
-```typescript
-// Angular threshold (rad/s) below which we don't count as "turning"
-export const DRIFT_MIN_ANGULAR_RATE = 0.25; // rad/s
-```
-
-In the sim, angular rate is derived from `Math.abs(intent.dir.x)` normalized: if `|dir.x| >= DRIFT_MIN_STEER`, we consider the body turning. Since `dir` is already a unit vector, `|dir.x| >= 0.25` means ≥14.5° off straight — effectively any cornering input.
-
-```typescript
-export const DRIFT_MIN_STEER = 0.25; // |dir.x| threshold for "turning"
+/**
+ * |dir.x| threshold — body must be cornering to initiate drift.
+ * 0.25 ≈ 14.5° off straight. Single constant name (DRIFT_MIN_ANGULAR_RATE
+ * name from v1 draft dropped — only one name needed).
+ */
+export const DRIFT_MIN_STEER = 0.25;
 ```
 
 ### 1.6 Launch boost window
 
-**From plan §1B:** "±150ms of the green" = total window of 300ms.
-
-At 30Hz tick rate, 150ms = 4.5 ticks. To avoid floating-point precision issues, we store the window in milliseconds and compare wall-clock.
-
-```
-LAUNCH_WINDOW_MS = 150   (half-window, ±150ms total = 300ms window)
-LAUNCH_BOOST_MULT = 0.30  (+30% velocity for 2s)
-LAUNCH_BOOST_DURATION_MS = 2_000
-LAUNCH_STALL_WINDOW_MS = 200  (press >200ms early = stall)
-LAUNCH_STALL_DURATION_MS = 1_000
-LAUNCH_STALL_THRUST_CAP = 0.3
-```
-
 ```typescript
-export const LAUNCH_WINDOW_MS = 150;
-export const LAUNCH_BOOST_MULT = 0.30;
+export const LAUNCH_WINDOW_MS         = 150;   // half-window: ±150ms of green
+export const LAUNCH_BOOST_MULT        = 0.30;  // +30% speed cap for 2s
 export const LAUNCH_BOOST_DURATION_MS = 2_000;
-export const LAUNCH_STALL_WINDOW_MS = 200;
+export const LAUNCH_STALL_WINDOW_MS   = 200;   // press >200ms early = stall zone
 export const LAUNCH_STALL_DURATION_MS = 1_000;
-export const LAUNCH_STALL_THRUST_CAP = 0.30;
+export const LAUNCH_STALL_THRUST_CAP  = 0.30;
 ```
 
-### 1.7 actionBit assignments (new)
+**Stall semantics (M2 fix):** The stall begins at `room.startedAt`, NOT at the press moment. A player who pressed 300ms early races stalled through the first 1s of the race — net penalty is 1s of reduced thrust just as everyone else launches. Intentional and punishing without being game-ending.
+
+### 1.7 Anti-cheat tolerance (C3 fix)
 
 ```typescript
-// In reef-race-config.ts (or a shared actions module):
+/**
+ * Named constant replacing the two hard-coded 1.5 values in reef-race-sim.ts
+ * (lines 796 + 805). Both integrateMotion call-sites MUST use this constant
+ * so a future refactor cannot silently revert to 1.15× (the shared.ts default).
+ *
+ * Raised from 1.5× to 2.0×:
+ *   Max combined boost = drift-3 (0.38) + launch (0.30) = 0.68 additive
+ *   Effective speed = 500 × 1.68 = 840 wu/s
+ *   Under 2.0× tolerance = 500 × 2.0 = 1000 wu/s — 160 wu/s safe margin
+ *
+ *   Under OLD 1.5× = 750 wu/s — drift-3 + launch (840 wu/s) would be
+ *   silently clamped, stripping ~11% of the combined boost. Player feels robbed.
+ *
+ *   rr-turbo-bubble stacking: max(1.4, 1.68) = 1.68 — still under 2.0×.
+ */
+export const REEF_KINEMATIC_TOLERANCE = 2.0;
+```
+
+### 1.8 actionBit assignments
+
+```typescript
 export const ACTION_BIT_POWERUP_0 = 0b0001; // existing
 export const ACTION_BIT_POWERUP_1 = 0b0010; // existing
-export const ACTION_BIT_DRIFT     = 0b0100; // NEW — bit 2
-export const ACTION_BIT_LAUNCH    = 0b1000; // NEW — bit 3
+export const ACTION_BIT_DRIFT     = 0b0100; // NEW
+export const ACTION_BIT_LAUNCH    = 0b1000; // NEW
 ```
-
-The client sends `actionBits |= ACTION_BIT_DRIFT` while the drift key is held. This is already captured client-side (plan §"Existing `ACTION_BIT_DRIFT` is already captured client-side") — the client-side constant must match.
 
 ---
 
 ## 2. Drift state machine
 
-### 2.1 Per-body state shape (added to `ReefBody` interface in `reef-race-sim.ts`)
+### 2.1 Per-body state shape
 
+Add to `ReefBody`:
 ```typescript
 interface ReefDriftState {
-  /** True while the drift-bit is held AND conditions are met */
   charging: boolean;
-  /** Accumulated spark level 0..3 */
   sparkLevel: 0 | 1 | 2 | 3;
-  /** Sim tick number when charging began (0 if not charging) */
-  chargeStartTick: number;
-  /** Was the drift-bit held last tick? Used for transition detection */
-  lastDriftBit: boolean;
+  chargeStartTick: number;   // sim tick when charging began
+  lastDriftBit: boolean;     // drift-bit value last tick (for edge detection)
 }
+
+// Fields on ReefBody:
+drift: ReefDriftState;
+currentDriftBoostSparks: 0 | 1 | 2 | 3; // spark level of active drift boost, 0 = none
+activeBoosts: Map<ReefBoostKind, ReefBoostEntry>; // launch + drift kinematic effects
 ```
 
-Add `drift: ReefDriftState` to `ReefBody` with default:
+Default initialisation:
 ```typescript
-drift: { charging: false, sparkLevel: 0, chargeStartTick: 0, lastDriftBit: false }
+drift: { charging: false, sparkLevel: 0, chargeStartTick: 0, lastDriftBit: false },
+currentDriftBoostSparks: 0,
+activeBoosts: new Map(),
 ```
 
 ### 2.2 Transition table
 
 ```
-Event                            Old state              New state               Side effects
-─────────────────────────────────────────────────────────────────────────────────────────────
-driftBit=1 + turning + speed≥min  not charging          charging=true           chargeStartTick=now
-                                                          sparkLevel=0
-                                                          lastDriftBit=true
+Event                              Old state           New state            Side effects
+──────────────────────────────────────────────────────────────────────────────────────────
+driftBit=1 + turning + speed≥min   not charging        charging=true        chargeStartTick=now
+                                                         sparkLevel=0
 
-driftBit=1 + tick elapses         charging               sparkLevel advances     broadcast driftSparks in snapshot
-                                                          when tick-threshold met
+driftBit=1 + tick elapses          charging             sparkLevel advances  encoded in snapshot delta
+                                                          per threshold check
 
-driftBit=0 (released)             charging, sparks≥1    charging=false           FIRE BOOST
-  (from lastDriftBit=true)                                sparkLevel=0            broadcast event.drift_boost
-                                                          apply rr-drift-boost
+driftBit=0 released                charging, sparks≥1   charging=false       SET activeBoosts['drift-boost']
+  (justReleased=true)                                    sparkLevel=0         currentDriftBoostSparks=sparks
+                                                                              broadcast event.drift_boost
 
-driftBit=0 (released early)       charging, sparks=0    charging=false           no boost, silent
-  (from lastDriftBit=true)                                sparkLevel=0
+driftBit=0 released early          charging, sparks=0   charging=false       no boost, silent
+  (justReleased=true)                                    sparkLevel=0
 
-driftBit=1, speed<min             charging               CANCEL, charging=false   no boost
-  OR collision resolves body to                           sparkLevel=0
-  stop (speed drops below threshold)
+speed < DRIFT_MIN_SPEED            charging (any)        charging=false       no boost (cancelled)
+  (ink-slick or zero-thrust)                             sparkLevel=0
 
-body.finishedAt≠null OR dnf       any                   charging=false           no boost
-  (body stops being processed)                            sparkLevel=0
+body finished/forfeited            any                   (tick-loop guard skips body before drift code runs)
 ```
 
-### 2.3 Exact code location and call order
+**C6 fix:** The `resolveProximity` function only adjusts body POSITION, never velocity. Drift cancellation from collision is NOT in Phase 1. The only legitimate speed-reducer is `rr-ink-slick` (which halves effective thrust) — that CAN drop speed below the threshold and cancel drift. Collisions never can. The claim "collision cancels drift" from v1 is removed entirely.
 
-The drift state machine runs inside `applyIntentForTick` after velocity integration, before `integrateMotion`. This ordering ensures:
-1. The angular bias from drift is applied to `body.rot` before the snapshot encodes it.
-2. The boost effect is set on `body.activeEffects` before `speedMod` is computed next tick.
+### 2.3 Exact call order inside `applyIntentForTick` (C1 fix location)
 
 ```
 applyIntentForTick(state, body, dt, now):
-  1. consume seq (existing)
-  2. powerup bits 0b01 / 0b10 (existing)
-  3. compute speedMod from activeEffects (existing, now includes rr-drift-boost)
-  4. compute targetVx/Vy from intent (existing)
-  5. integrate acceleration toward target (existing)
-  6. update body.rot from intent.dir (existing)
-  7. [NEW] tickDriftState(state, body, now)   ← inserts here
-  integrateMotion(state, body, dt)
+  1. consume seq  (existing)
+  2. powerup actionBits 0b01 / 0b10  (existing)
+  3. expire activeEffects entries by now  (existing)
+     [NEW] expire activeBoosts entries by now (sweep and clear currentDriftBoostSparks)
+  4. compute speedMod from activeEffects + activeBoosts  (modified — see §3.4)
+  5. compute effectiveThrust  (new — handles launch-stall cap)
+  6. [MODIFIED] update body.rot:
+       if body.drift.charging:
+         turnSign = (intent.dir.x > 0) ? -1 : 1
+         body.rot = atan2(intent.dir.x, intent.dir.y) + turnSign * DRIFT_ANGULAR_BIAS_RAD
+       else:
+         body.rot = atan2(intent.dir.x, intent.dir.y)
+  7. [NEW] tickDriftState(state, body, now)  ← runs AFTER step 6
+  8. compute targetVx/Vy from intent.dir * effectiveThrust * speedMod  (existing, modified)
+  9. integrate acceleration toward target  (existing)
+  integrateMotion(state, body, dt, REEF_KINEMATIC_TOLERANCE)  ← named constant
+  [NEW] boost-gated hard cap (§3.4)
 ```
 
-### 2.4 `tickDriftState` function (pseudocode)
+**Why step 6 before step 7:** `tickDriftState` reads `body.drift.charging` and may transition it from `true → false` on the release tick. Step 6 uses `body.drift.charging` from the PREVIOUS tick state (before this tick's state-machine update). On the release tick, step 6 still applies the bias (one final tick of lean), then step 7 sets `charging = false`. Next tick, step 6 returns to unbiased `atan2`. This gives one tick of "lingering lean" that avoids an abrupt snap-back. Imperceptible in feel, avoids visual artifact.
+
+### 2.4 `tickDriftState` pseudocode
 
 ```typescript
 function tickDriftState(state: ReefRoomState, body: ReefBody, now: number): void {
-  const driftBit = !!(body.intent.actionBits & ACTION_BIT_DRIFT);
-  const speed = Math.hypot(body.vx, body.vy);
-  const turning = Math.abs(body.intent.dir?.x ?? 0) >= DRIFT_MIN_STEER;
+  const driftBit   = !!(body.intent.actionBits & ACTION_BIT_DRIFT);
+  const speed      = Math.hypot(body.vx, body.vy);
+  const turning    = Math.abs(body.intent.dir?.x ?? 0) >= DRIFT_MIN_STEER;
   const fastEnough = speed >= DRIFT_MIN_SPEED_FOR_CHARGE;
 
-  // Transition: started drift press this tick
-  const justPressed = driftBit && !body.drift.lastDriftBit;
-  // Transition: released drift this tick
+  const justPressed  = driftBit && !body.drift.lastDriftBit;
   const justReleased = !driftBit && body.drift.lastDriftBit;
 
   if (body.drift.charging) {
-    if (!driftBit || !fastEnough) {
-      // Cancelled (released or slowed below threshold)
-      const hadSparks = body.drift.sparkLevel >= 1;
-      if (hadSparks && justReleased) {
-        // Fire boost
-        const mult = DRIFT_BOOST_MULTS[body.drift.sparkLevel - 1];
-        const curSpeed = Math.hypot(body.vx, body.vy);
-        if (curSpeed > 0) {
-          const factor = 1 + mult;
-          body.vx *= factor;
-          body.vy *= factor;
-        }
-        body.activeEffects.set('rr-drift-boost', now + DRIFT_BOOST_DURATION_MS);
+    const shouldCancel = !driftBit || !fastEnough;
+
+    if (shouldCancel) {
+      if (justReleased && body.drift.sparkLevel >= 1) {
+        // Fire drift boost — NO velocity impulse (S4 fix)
+        const sparks = body.drift.sparkLevel;
+        const mult   = DRIFT_BOOST_MULTS[sparks - 1];
+        body.activeBoosts.set('drift-boost', {
+          expiresAt: now + DRIFT_BOOST_DURATION_MS,
+          mult,
+        });
+        body.currentDriftBoostSparks = sparks;
         state.broadcastFn(state.roomId, {
           type: 'event.drift_boost',
           petId: body.petId,
-          sparks: body.drift.sparkLevel,
+          sparks: sparks as 1 | 2 | 3,
         });
       }
-      body.drift.charging = false;
-      body.drift.sparkLevel = 0;
+      // Cancel drift state
+      body.drift.charging        = false;
+      body.drift.sparkLevel      = 0;
       body.drift.chargeStartTick = 0;
     } else {
       // Still charging — advance spark level
       const elapsed = state.tick - body.drift.chargeStartTick;
-      let newLevel: 0 | 1 | 2 | 3 = 0;
-      if (elapsed >= DRIFT_SPARK_TICK_3) newLevel = 3;
-      else if (elapsed >= DRIFT_SPARK_TICK_2) newLevel = 2;
-      else if (elapsed >= DRIFT_SPARK_TICK_1) newLevel = 1;
-      body.drift.sparkLevel = newLevel;
-      // Angular bias: lean body.rot toward the inside of the turn
-      if (body.intent.dir && turning) {
-        const sign = body.intent.dir.x > 0 ? -1 : 1;
-        body.rot += sign * DRIFT_ANGULAR_BIAS_RAD * (1 / REEF_SIM_HZ);
-      }
+      body.drift.sparkLevel =
+        elapsed >= DRIFT_SPARK_TICK_3 ? 3 :
+        elapsed >= DRIFT_SPARK_TICK_2 ? 2 :
+        elapsed >= DRIFT_SPARK_TICK_1 ? 1 : 0;
     }
   } else {
-    // Not charging — can we start?
     if (justPressed && turning && fastEnough) {
-      body.drift.charging = true;
-      body.drift.sparkLevel = 0;
+      body.drift.charging        = true;
+      body.drift.sparkLevel      = 0;
       body.drift.chargeStartTick = state.tick;
     }
   }
@@ -290,271 +355,371 @@ function tickDriftState(state: ReefRoomState, body: ReefBody, now: number): void
 }
 ```
 
-**Interaction with collision/pickup logic:**
-- `resolveProximity` happens AFTER `applyIntentForTick`. A collision that slows the body below `DRIFT_MIN_SPEED_FOR_CHARGE` will trigger cancellation on the NEXT tick (not the same tick as the collision). This is acceptable — one-tick lag is imperceptible and avoids the complexity of cancelling in the same tick as collision resolution.
-- The `rr-drift-boost` active effect stacks with `rr-turbo-bubble`: `speedMod = boosted ? REEF_BOOST_MULT : driftBoosted ? (1 + activeDriftMult) : slicked ? 0.5 : 1.0`. Implementation: check drift boost separately in `speedMod` calculation.
-- Body finishes (`finishedAt ≠ null`) or DNFs: the guard at the top of the per-body loop in `tickRoom` already skips finished/forfeited bodies, so no drift state cleanup is needed.
+**activeBoosts expiry sweep (step 3 in call order):**
+```typescript
+for (const [kind, entry] of body.activeBoosts) {
+  if (entry.expiresAt <= now) {
+    body.activeBoosts.delete(kind);
+    if (kind === 'drift-boost') body.currentDriftBoostSparks = 0;
+  }
+}
+```
 
 ### 2.5 No double-fire protection
 
-The state machine is single-fire by design: once `justReleased` fires the boost, `body.drift.charging` is set to `false` and `body.drift.lastDriftBit` is set to `false` in the same call. The next tick sees `lastDriftBit=false`, so `justReleased=false`. Double-fire is structurally impossible.
+`justReleased` is `true` for exactly one tick (the tick `lastDriftBit` transitions `true → false`). After that tick, `lastDriftBit = false` so `justReleased = false`. Structurally impossible to double-fire.
 
 ---
 
 ## 3. Launch boost window
 
-### 3.1 Problem statement
+### 3.1 Problem statement (C4 fix — complete 4-file path)
 
-The COUNTDOWN→LIVE transition happens at a server wall-clock instant (`state.startedAt`). Clients send `input` frames at ~30Hz with `thrust` values. The launch window detection must sample thrust in the ±150ms window around `startedAt`.
+The COUNTDOWN→LIVE transition is owned by `activity-room-manager.ts`. At the moment `room.startedAt = now` in `transitionRoom` `case 'live'`, the countdown has elapsed. Inputs sent during COUNTDOWN reach `handleInput` → `reefRaceSim.applyInput`, but the sim has no room yet — returns `{ok:false}`. The 4-file path below captures pre-launch thrust in the room manager, computes verdicts at the LIVE transition, and passes them to `startRoom`.
 
-### 3.2 Data collection
+### 3.2 File 1: `apps/api/src/services/activity/types.ts`
 
-In `ReefRoomState`, add a pre-launch input buffer:
+Add to `Room` interface:
+```typescript
+/**
+ * Pre-launch input buffer for Reef Race launch detection.
+ * Maps petId → last thrust=1.0 input received during COUNTDOWN.
+ * Populated by recordPreLaunchInput(); cleared by computeLaunchVerdicts().
+ * null = never allocated (no launch inputs received or not a reef-race room).
+ */
+preLaunchBuffer: Map<string, { timestamp: number; thrust: number }> | null;
+```
+
+Initialise to `null` in the `createRoom` / pending-state constructor.
+
+### 3.3 File 2: `apps/api/src/services/activity/activity-room-manager.ts`
+
+Add two methods to `ActivityRoomManager`:
 
 ```typescript
 /**
- * Collected during the countdown phase: per-body, the last N thrust values
- * with their wall-clock timestamps. Cleared on LIVE transition after evaluation.
+ * Called by the WS hub when a client sends thrust >= 1.0 during COUNTDOWN.
+ * Stores only the LAST qualifying input per player — timing of the final
+ * full-throttle press is what matters.
  */
-preLaunchInputs: Map<string, Array<{ timestamp: number; thrust: number }>>;
+recordPreLaunchInput(
+  roomId: string,
+  petId: string,
+  timestamp: number,
+  thrust: number,
+): void {
+  const room = this.rooms.get(roomId);
+  if (!room || room.state !== 'countdown') return;
+  if (thrust < 1.0) return;
+  if (!room.preLaunchBuffer) room.preLaunchBuffer = new Map();
+  room.preLaunchBuffer.set(petId, { timestamp, thrust });
+}
+
+/**
+ * Called inside persistLiveTransition() BEFORE invoking liveTransitionFn.
+ * room.startedAt is already set by the time this is called.
+ * Returns a verdict map. Clears preLaunchBuffer.
+ */
+computeLaunchVerdicts(room: Room): Map<string, 'boost' | 'stall'> {
+  const verdicts = new Map<string, 'boost' | 'stall'>();
+  if (!room.preLaunchBuffer || !room.startedAt) return verdicts;
+
+  for (const [petId, entry] of room.preLaunchBuffer) {
+    const offset = entry.timestamp - room.startedAt;
+    if (Math.abs(offset) <= LAUNCH_WINDOW_MS) {
+      verdicts.set(petId, 'boost');
+    } else if (
+      offset < -LAUNCH_WINDOW_MS &&
+      offset >= -(LAUNCH_WINDOW_MS + LAUNCH_STALL_WINDOW_MS)
+    ) {
+      verdicts.set(petId, 'stall');
+    }
+    // else: outside both windows → no verdict (normal start)
+  }
+  room.preLaunchBuffer = null;
+  return verdicts;
+}
 ```
 
-**When populated:** The sim is started via `startRoom` which is called at the LIVE transition. However, in the actual room manager flow, the sim starts after the countdown completes — so `startedAt` IS the green-light moment. The approach is:
+**Imports needed:** `LAUNCH_WINDOW_MS`, `LAUNCH_STALL_WINDOW_MS` from `reef-race-config.ts`.
 
-1. Store `raceStartedAt: number` on the state (same as `startedAt`).
-2. In `applyInput`, if the room is in a "pre-live" buffer mode (a flag: `awaitingLaunch: boolean = true`, cleared on first tick), append to `preLaunchInputs[petId]`.
-3. On the FIRST tick (`state.tick === 1`), evaluate all pre-launch inputs against `state.startedAt` and apply launch results to `body.activeEffects`.
+**S6 fix — abort cleanup:** Add `room.preLaunchBuffer = null;` to BOTH `persistAbortedTransition` and `persistAbortedCrashTransition`:
+```typescript
+room.preLaunchBuffer = null; // discard any collected pre-launch data
+```
 
-Wait — actually `startRoom` is called when the room goes LIVE (per the comment on line 236: "Caller (room manager) ensures the room is in LIVE state when calling"). There is no pre-live phase in the sim. The launch input must come from the TRANSITION moment itself.
+`computeLaunchVerdicts` must be called inside `persistLiveTransition` AFTER `room.startedAt = now` is set and BEFORE `liveTransitionFn(room)` is invoked — so that `liveTransitionFn` receives the verdicts via closure or parameter. The cleanest approach: call it inside `liveTransitionFn`'s dispatcher in `index.ts` immediately before `startRoom`.
 
-**Revised approach — input window around `startedAt`:**
+### 3.4 File 3: `apps/api/src/services/activity/activity-ws-hub.ts`
 
-The room manager calls `startRoom` at the LIVE transition. Before that, the WS hub was accepting `input` frames and calling `applyInput` — but `applyInput` returns `{ok: false}` for an unknown room (the sim doesn't have the room yet). So pre-launch thrust data never reaches the sim.
+In `handleInput`, add a COUNTDOWN-phase capture branch for reef-race **before** the existing `applyInput` dispatch:
 
-**Solution:** Add a `launchInputBuffer` to the room state that the room manager writes INTO via a separate `recordPreLaunchInput(roomId, petId, timestamp, thrust)` method on the sim — called by the WS hub BEFORE `startRoom`. Then `startRoom` reads the buffer.
+```typescript
+private handleInput(ws: HubWs, frame: Extract<ClientFrame, { type: 'input' }>): void {
+  // ... existing rate-limit check ...
+  const room = activityRoomManager.getRoom(ws.data.roomId);
+  if (!room) return;
 
-Alternatively (simpler, same fidelity): The room manager holds a pre-launch buffer in its own state (outside the sim), and passes the per-body launch verdict as part of the `startRoom` call:
+  // NEW: capture pre-launch thrust during COUNTDOWN for reef-race launch detection.
+  // Falls through to applyInput below (which returns {ok:false} for unknown rooms — safe).
+  if (
+    room.activityId === 'reef-race' &&
+    room.state === 'countdown' &&
+    frame.thrust >= 1.0
+  ) {
+    activityRoomManager.recordPreLaunchInput(
+      ws.data.roomId,
+      ws.data.identity!.petId,
+      Date.now(),
+      frame.thrust,
+    );
+  }
+
+  // ... existing bumper-shells / reef-race applyInput dispatch unchanged ...
+}
+```
+
+### 3.5 File 4: `apps/api/src/index.ts`
+
+Update `setLiveTransitionFn` reef-race case:
+
+```typescript
+case 'reef-race': {
+  // Compute verdicts BEFORE starting the sim so bodies can be initialized
+  // with the correct active boost. Uses room.startedAt (already set by
+  // persistLiveTransition before liveTransitionFn is called — S10 fix).
+  const launchBoosts = activityRoomManager.computeLaunchVerdicts(room);
+  reefRaceSim.startRoom(
+    room.id,
+    room.activityId,
+    participantIds,
+    {
+      bots,
+      startedAt: room.startedAt!,  // S10: sim uses room manager's timestamp
+      launchBoosts,
+    },
+  );
+  break;
+}
+```
+
+### 3.6 `startRoom` signature change (S10 fix)
 
 ```typescript
 startRoom(
-  roomId, activityId, participantPetIds,
+  roomId: string,
+  activityId: string,
+  participantPetIds: string[],
   opts?: {
     seed?: number;
     isBot?: (petId: string) => boolean;
     bots?: BotController[];
-    launchBoosts?: Map<string, 'boost' | 'stall' | null>; // NEW
+    startedAt?: number;                            // NEW: override Date.now()
+    launchBoosts?: Map<string, 'boost' | 'stall'>; // NEW: per-player launch verdict
+  },
+): ReefRoomState
+```
+
+Inside `startRoom`, replace `const startedAt = Date.now()` with:
+```typescript
+const startedAt = opts?.startedAt ?? Date.now();
+```
+
+In the body init loop, apply verdicts:
+```typescript
+for (const petId of participantPetIds) {
+  const body: ReefBody = {
+    // ... existing fields ...
+    drift: { charging: false, sparkLevel: 0, chargeStartTick: 0, lastDriftBit: false },
+    currentDriftBoostSparks: 0,
+    activeBoosts: new Map(),
+  };
+
+  const verdict = opts?.launchBoosts?.get(petId) ?? null;
+  if (verdict === 'boost') {
+    body.activeBoosts.set('launch-boost', {
+      expiresAt: startedAt + LAUNCH_BOOST_DURATION_MS,
+      mult: LAUNCH_BOOST_MULT,
+    });
+  } else if (verdict === 'stall') {
+    body.activeBoosts.set('launch-stall', {
+      expiresAt: startedAt + LAUNCH_STALL_DURATION_MS,
+      // no mult — stall uses thrust cap, not speedMod
+    });
   }
-)
+
+  state.bodies.set(petId, body);
+}
+
+// Broadcast launch events after all bodies are initialised:
+if (opts?.launchBoosts) {
+  for (const [petId, kind] of opts.launchBoosts) {
+    broadcastFn(roomId, { type: 'event.launch', petId, kind });
+  }
+}
 ```
 
-The room manager captures thrust in the ±150ms around the countdown-zero wall-clock, computes the verdict per player, and passes it in. On body initialization, apply the appropriate `activeEffect`:
+### 3.7 Speed modifier and hard cap (C2, S4, S5 fixes)
 
 ```typescript
-// In body initialization loop:
-const launchVerdict = opts?.launchBoosts?.get(petId) ?? null;
-if (launchVerdict === 'boost') {
-  body.activeEffects.set('rr-launch-boost', startedAt + LAUNCH_BOOST_DURATION_MS);
+// Step 4 of applyIntentForTick — speedMod and effectiveThrust
+
+// activeEffects flags (pickup-only, unchanged):
+const slicked      = body.activeEffects.has('rr-ink-slick');
+const powerBoosted = body.activeEffects.has('rr-turbo-bubble');
+
+// activeBoosts flags (kinematic, new):
+const launchBoosted = body.activeBoosts.has('launch-boost');
+const driftBoosted  = body.activeBoosts.has('drift-boost');
+const stalled       = body.activeBoosts.has('launch-stall');
+
+// effectiveThrust (step 5):
+const effectiveThrust = stalled
+  ? Math.min(intent.thrust, LAUNCH_STALL_THRUST_CAP)
+  : intent.thrust;
+
+// speedMod — stall suppresses all boost; otherwise additive kinematic mult
+// vs pickup mult, taking MAX to avoid double-counting (S4 fix):
+let speedMod: number;
+if (stalled) {
+  speedMod = 0.5;
+} else {
+  // Additive kinematic contribution from launch + drift:
+  const kineticMult =
+    (launchBoosted ? LAUNCH_BOOST_MULT : 0) +
+    (driftBoosted ? (DRIFT_BOOST_MULTS[body.currentDriftBoostSparks - 1] ?? 0) : 0);
+  // Pickup contribution (rr-turbo-bubble expressed as additive delta):
+  const pickupMult = powerBoosted ? (REEF_BOOST_MULT - 1.0) : 0; // = 0.4
+  // Take MAX so simultaneous turbo-bubble + drift-3 doesn't stack multiplicatively:
+  const bestMult = Math.max(kineticMult, pickupMult);
+  speedMod = slicked ? 0.5 : (1.0 + bestMult);
 }
-if (launchVerdict === 'stall') {
-  body.activeEffects.set('rr-launch-stall', startedAt + LAUNCH_STALL_DURATION_MS);
-}
-// Broadcast after bodies are initialized:
-broadcastFn(roomId, { type: 'event.launch', petId, kind: launchVerdict });
 ```
 
-This keeps the sim pure (no WS dependency) and moves the timing detection to the correct layer (room manager, which owns the countdown clock).
-
-### 3.3 Tick math for the launch window
-
-At 30Hz, 150ms = 4.5 ticks. The input capture window opens at `countdownEndsAt - LAUNCH_WINDOW_MS` ms wall-clock and closes at `countdownEndsAt + LAUNCH_WINDOW_MS`. The room manager samples the last-received `thrust` value per player at the moment it calls `startRoom`, then looks back at buffered inputs in the buffer period.
-
-```
-LAUNCH_WINDOW_MS = 150
-LAUNCH_STALL_WINDOW_MS = 200
-```
-
-**Detection rule (implemented in room manager, not sim):**
-```
-lastThrust = last thrust value received from client before startedAt
-lastThrustAt = timestamp of that input frame
-
-if (lastThrust >= 1.0 && abs(lastThrustAt - startedAt) <= LAUNCH_WINDOW_MS):
-  verdict = 'boost'
-elif (lastThrust >= 1.0 && lastThrustAt < startedAt - LAUNCH_WINDOW_MS
-      && lastThrustAt > startedAt - LAUNCH_STALL_WINDOW_MS - LAUNCH_WINDOW_MS):
-  verdict = 'stall'
-else:
-  verdict = null
-```
-
-The stall condition ("press too early >200ms before green"): the stall zone is `(startedAt - (LAUNCH_WINDOW_MS + LAUNCH_STALL_WINDOW_MS))` to `(startedAt - LAUNCH_WINDOW_MS)`.
-
-**ABORTED transition safety:** If the room is torn down (e.g., host leaves) during the countdown, the room manager never calls `startRoom` — the `launchBoosts` map is simply discarded. No sim state is left dangling.
-
-### 3.4 `rr-launch-stall` effect in `applyIntentForTick`
-
-Add a `speedMod` clause for stall. During stall, `thrust` is capped at `LAUNCH_STALL_THRUST_CAP`:
-
+**Hard velocity cap — boost-gated only (S5 fix):**
 ```typescript
-const stalled = body.activeEffects.has('rr-launch-stall');
-const launchBoosted = body.activeEffects.has('rr-launch-boost');
-const driftBoosted = body.activeEffects.has('rr-drift-boost');
-
-const effectiveThrust = stalled ? Math.min(intent.thrust, LAUNCH_STALL_THRUST_CAP) : intent.thrust;
-const speedMod = launchBoosted
-  ? (1 + LAUNCH_BOOST_MULT)
-  : boosted
-    ? REEF_BOOST_MULT
-    : driftBoosted
-      ? (1 + activeDriftMult)
-      : slicked
-        ? 0.5
-        : 1.0;
+// AFTER integrateMotion, inside tick loop:
+const isBoostActive =
+  body.activeBoosts.has('launch-boost') || body.activeBoosts.has('drift-boost');
+if (isBoostActive) {
+  const s = Math.hypot(body.vx, body.vy);
+  const hardCap = REEF_MAX_SPEED * 1.85; // 925 wu/s backstop; max legit = 840 wu/s
+  if (s > hardCap) {
+    body.vx = (body.vx / s) * hardCap;
+    body.vy = (body.vy / s) * hardCap;
+  }
+}
 ```
 
-where `activeDriftMult` is read from the stored `DRIFT_BOOST_MULTS` index (need to track which spark level triggered it — store the multiplier value, not the index, in a separate `Map<petId, number>` or embed it in the effect value).
-
-**Implementation note on stacking:** `rr-launch-boost` and `rr-turbo-bubble` both apply `speedMod`. If both are active simultaneously (a player collected a turbo bubble AND got launch boost), the implementation takes the MAX. This is safe — it's a design decision, not a spec constraint.
+The cap is `1.85×` — 85 wu/s above the maximum achievable combined boost. Its purpose is purely defensive against future stacking bugs. Normal gameplay never triggers it.
 
 ---
 
 ## 4. Reef Glider prop (3da owned)
 
-### 4.1 Placeholder GLB strategy
+### 4.1 Geometry in local pre-scale units (C7 fix)
 
-**Decision: procedural geometry in code, not a committed GLB file.**
+**All dimensions below are in KART_SCALE-LOCAL space (before the `scale={[20,20,20]}` is applied by the group). To convert to world units, multiply by KART_SCALE = 20.**
 
-Justification:
-- Iris Xe draw call budget: scene already uses chase cam with 1 dir shadow + hemi light. Adding a GLB with new materials risks adding 2-4 draw calls per player (8 players = 16-32 extra calls). A procedural `BoxGeometry` surfboard in the same `MeshStandardMaterial` as the kart color shares the material instance — zero extra draw calls if instanced.
-- A committed 1KB GLB would still require a new material (GLB brings its own). The procedural approach costs exactly 0 draw calls in the merged-geometry path.
-- Iris Xe gotcha: `InstancedMesh + ShaderMaterial` crashes WebGPU silently (MEMORY.md gotcha). Procedural with `MeshStandardMaterial` is safe.
-- Art placeholder quality is irrelevant — it ships Phase 1 before anyone sees it, then gets replaced in Phase 2.
+| Mesh | Local (W × H × L) | World (wu) | Clearance at 300wu track |
+|---|---|---|---|
+| Glider board | 2.5 × 0.25 × 5 | 50 × 5 × 100 wu | 125 wu each side — two gliders pass comfortably |
 
-**Glider geometry:**
+```typescript
+// In ReefRacePlayer.tsx:
+const gliderGeom = new THREE.BoxGeometry(2.5, 0.25, 5); // local units → 50wu×5wu×100wu world
 ```
-BoxGeometry(60, 6, 100)  — wu (width × height × length)
-```
-Positioned at `gliderRef.position.set(0, 0, 0)` relative to the kart group.
 
 ### 4.2 Scene node structure change
 
-Current (before Phase 1):
+Current:
 ```
-groupRef (position, rotation from server)
-  └── meshRoot (KART_Y_ABOVE_TRACK offset, bank tilt applied here)
-        └── avatarMesh (GLB clone)
+groupRef  (position+rotation, scale=[KART_SCALE,KART_SCALE,KART_SCALE])
+  └── meshRootRef  (y=KART_Y_ABOVE_TRACK, bank tilt applied here)
+        └── avatarMesh  (GLB clone)
 ```
 
 After Phase 1:
 ```
-groupRef (position from server via interpolation)
-  └── gliderRef (y=KART_Y_ABOVE_TRACK, rotation.y from server, bank tilt applied HERE)
-        ├── gliderMesh (procedural BoxGeometry surfboard)
-        └── riderMountRef (at SPECIES_RIDER_OFFSET[species])
-              └── avatarMesh (GLB clone, bank tilt NOT applied — rider stays upright)
+groupRef  (position from server, scale=[KART_SCALE,KART_SCALE,KART_SCALE])
+  └── gliderRef  (y=KART_Y_ABOVE_TRACK/KART_SCALE in local space, bank tilt here)
+        ├── gliderMesh  (BoxGeometry 2.5×0.25×5 local)
+        └── riderMountRef  (offset per RIDER_MOUNT_OFFSET_DEFAULT)
+              └── avatarMesh  (GLB clone, rotation.z = 0 always)
 ```
 
-**Key invariants:**
-- `groupRef` remains the interpolation target (x, z in Three.js space = sim x, y).
-- `gliderRef.rotation.y` = server `entity.rot` (already computed in the existing lerpAngle path — just move the target from `meshRoot` to `gliderRef`).
-- Bank tilt: moves from `meshRoot.rotation.z` to `gliderRef.rotation.z`. The velocity-derived bank formula is unchanged.
-- Avatar `riderMountRef.rotation.z = 0` always (rider stays level while board leans).
+Key invariants:
+- `groupRef` position and `rotation.y` are unchanged (existing lerpAngle path)
+- `gliderRef.rotation.z` carries the bank tilt (moves from `meshRootRef`)
+- `riderMountRef.rotation.z = 0` always — rider stays level as board leans
+- `KART_Y_ABOVE_TRACK = 5` (world) → in local space = `5 / KART_SCALE = 0.25`
 
-### 4.3 Species rider offset map
+### 4.3 Rider offset (C8 fix — single default, species deferred)
 
-The 4 known species from `ReefRacePlayer.tsx` are `sea_horse` and `lobster` (the only two currently branched in the file). The plan names milady and crayfish as future. The map must be keyed by `species` string from `entity.species`.
-
-**Proposed offsets (wu, in glider-local space, Y=up):**
-
-| Species | x (side) | y (vertical) | z (fore-aft) | Notes |
-|---|---|---|---|---|
-| `lobster` | 0 | 10 | -10 | Grips front rail; slightly forward, mid-height |
-| `sea_horse` | 0 | 15 | 0 | Coils vertically on center; higher because tail extends down |
-| `milady` | 0 | 18 | 5 | Stands upright, center-back (hoverboard stance) |
-| `crayfish` | 0 | 10 | -8 | Similar to lobster, slightly more centered |
+**Phase 1 uses ONE default offset for all species.** No species-conditional branches. The `entity.species` field is never populated from the server (C8: not in `WorldState.entities`, not written by `applyEntityDelta`, not by `hydrateFromWorld`). Species-specific offsets deferred to Phase 1.5.
 
 ```typescript
-// In reef-race-config.ts (client side)
-export const SPECIES_RIDER_OFFSET: Record<string, [x: number, y: number, z: number]> = {
-  lobster:   [0, 10, -10],
-  sea_horse: [0, 15,   0],
-  milady:    [0, 18,   5],
-  crayfish:  [0, 10,  -8],
-};
-export const SPECIES_RIDER_OFFSET_DEFAULT: [number, number, number] = [0, 12, 0];
+// In apps/web/.../reef-race-config.ts (client)
+/**
+ * Rider mount offset in KART_SCALE-local space.
+ * World position = this × KART_SCALE = [0, 12wu, -10wu].
+ * Single default for Phase 1 (species-specific offsets deferred to Phase 1.5).
+ */
+export const RIDER_MOUNT_OFFSET_DEFAULT: [number, number, number] = [0, 0.6, -0.5];
 ```
 
-### 4.4 Procedural animation gating
+### 4.4 Procedural animation
 
-The existing `applySwimmingAnim` in `ReefRacePlayer.tsx` applies spine/tail/fin bone animation on ALL species. After Phase 1:
-
-- `lobster`, `sea_horse`, `crayfish`: keep gentle bob (vertical `sin` oscillation on `riderMountRef.position.y`, ±2wu at 1.2Hz). Remove fin/tail bone animation that mimics swimming — the glider provides locomotion fiction.
-- `milady`: balance sway instead of swim. Apply `riderMountRef.rotation.z = sin(t * 0.8) * 0.04` (subtle side lean). No tail/fin bones (VRM rig — different bone hierarchy).
-
-**Guard for milady:** `if (entity.species === 'milady') { applyBalanceSway(riderRef, t); } else { applyBob(riderRef, t); }`
-
-**No per-frame allocations:** The existing `_swimTime` module-scope record is used. `riderMountRef` is stored in a module-scope Map keyed by `entity.petId`.
+Keep existing `applySwimmingAnim` on the avatar mesh. Add a gentle bob (±2 local units at 1.2Hz) on `riderMountRef.position.y`. No tail/fin bone removal — defer to Phase 2 art pass. No per-frame allocations. `riderMountRef` stored in a module-scope Map keyed by `entity.petId`.
 
 ---
 
 ## 5. HUD drift sparks
 
-### 5.1 Store field
+### 5.1 Store field and write path (S2 fix)
 
-**New field on `ActivityState`:** `driftSparks: number` (0..3, default 0). This is a HUD-only scalar — the scene does not use it. It represents the SELF player's current spark level.
+**New field on `ActivityState`:** `driftSparks: 0 | 1 | 2 | 3` (default 0). Added to `emptyState()`.
 
-Added to `emptyState()` return as `driftSparks: 0`.
-
-Written when `applyServerFrame` processes `snapshot.delta` or `snapshot.keyframe` — the entity delta for the self pet now includes `driftSparks?: number` in the `changed` map (see §6 below). The store reads it:
+`applyEntityDelta` is NOT modified to write `driftSparks` (it has no access to `selfPetId`). Instead, the caller (snapshot.delta handler) reads `driftSparks` from the delta for the self pet:
 
 ```typescript
-// in applyEntityDelta, after existing field spreads:
-if (typeof c.driftSparks === 'number' && delta.petId === get().selfPetId) {
-  set({ driftSparks: c.driftSparks as 0 | 1 | 2 | 3 });
+// In applyServerFrame → snapshot.delta branch:
+let newDriftSparks = state.driftSparks; // preserve across non-self entities
+for (const d of frame.entities) {
+  applyEntityDelta(entities, d);
+  if (d.petId === state.selfPetId && typeof d.changed.driftSparks === 'number') {
+    newDriftSparks = d.changed.driftSparks as 0 | 1 | 2 | 3;
+  }
 }
+set({ entities, driftSparks: newDriftSparks });
 ```
 
-**Re-render gate:** use `subscribeWithSelector` — the `DriftSparksBar` component subscribes with `useActivityStore(s => s.driftSparks)`. Since `driftSparks` is a primitive number, zustand's default `Object.is` equality check prevents re-renders when the value hasn't changed. No additional gate needed.
+**First-sighting initialisation (S11 fix):** In `applyEntityDelta`'s first-insert branch, add:
+```typescript
+driftSparks: typeof c.driftSparks === 'number' ? (c.driftSparks as 0|1|2|3) : 0,
+```
 
-**Per-frame ref update is NOT used.** `driftSparks` is only written on snapshot delta (5Hz), not in `useFrame`. This is correct — the store updates at 5Hz which is fast enough for visual feedback on a 1.2s arc.
+**`BumperShellEntity` interface:** Add `driftSparks?: 0 | 1 | 2 | 3` (optional — bumper entities don't set it).
+
+**Re-render gate:** `DriftSparksBar` subscribes to `useActivityStore(s => s.driftSparks)`. Primitive number → Object.is equality check prevents spurious re-renders.
 
 ### 5.2 DOM structure
 
-The sparks component is added to `reef-race-hud.tsx` as a new sub-component `DriftSparksBar`.
-
-**CSS/DOM structure:**
-
 ```tsx
-// Position: bottom-center, ABOVE the PowerUpBar
-// Layout: absolute div stack
-
-// Container — sits above PowerUpBar
+// Bottom-center, above PowerUpBar (bottom: 80px)
 <div style={{
-  position: 'absolute',
-  bottom: 80,  // above the 24px-bottom PowerUpBar (which is 36+6+6+6+24 = ~78px tall)
-  left: '50%',
+  position: 'absolute', bottom: 80, left: '50%',
   transform: 'translateX(-50%)',
-  display: 'flex',
-  gap: 8,
-  alignItems: 'center',
+  display: 'flex', gap: 8, alignItems: 'center',
 }}>
-  {/* Label */}
-  <div style={{
-    fontSize: 9,
-    letterSpacing: '0.15em',
-    color: '#ffffff66',
-    marginRight: 4,
-  }}>DRIFT</div>
-
-  {/* 3 spark dots */}
+  <div style={{ fontSize: 9, letterSpacing: '0.15em', color: '#ffffff66', marginRight: 4 }}>
+    DRIFT
+  </div>
   {[0, 1, 2].map(i => (
     <div key={i} style={{
-      width: 14,
-      height: 14,
-      borderRadius: '50%',
+      width: 14, height: 14, borderRadius: '50%',
       border: `2px solid ${i < sparks ? SPARK_BORDER[i] : '#ffffff33'}`,
       background: i < sparks ? SPARK_FILL[i] : 'transparent',
-      // Glow effect via boxShadow when filled
       boxShadow: i < sparks ? `0 0 6px ${SPARK_FILL[i]}` : 'none',
       transition: 'background 0.1s, box-shadow 0.1s',
     }} />
@@ -562,60 +727,55 @@ The sparks component is added to `reef-race-hud.tsx` as a new sub-component `Dri
 </div>
 ```
 
-**Color constants:**
 ```typescript
 const SPARK_FILL   = ['#ff9800', '#f44336', '#2979ff'] as const; // orange, red, blue
 const SPARK_BORDER = ['#ff9800', '#f44336', '#2979ff'] as const;
 ```
 
-Spark 1 (index 0) = orange, spark 2 = red, spark 3 = blue. Fills are additive: sparks=2 means dots 0 and 1 filled, dot 2 empty.
+Only renders when `matchPhase === 'live'`.
 
-**Only renders when `matchPhase === 'live'`** — no drift in countdown or results. The existing `matchPhase` subscription gates the component.
+### 5.3 Launch glow ring (S9 fix — local countdown computation)
 
-### 5.3 Launch glow ring on countdown
-
-The `RoundCountdown` component is in `apps/web/src/components/game/activity.tsx`. In the LAST countdown second (`secondsRemaining === 1`), add a pulsing animated ring via CSS `@keyframes pulse`:
+The HUD computes `secondsRemaining` locally from `room.countdownStartedAt` rather than relying on `event.countdown` (which is only sent once at countdown entry, not per-second — audit S9).
 
 ```tsx
-// In RoundCountdown, when secondsRemaining === 1:
-<div style={{
-  position: 'absolute',
-  inset: -12,
-  borderRadius: '50%',
-  border: '3px solid #00e676',
-  animation: 'reefLaunchPulse 0.4s ease-in-out infinite',
-  pointerEvents: 'none',
-}} />
+const { room } = useActivityStore(s => ({ room: s.room }));
+const [secondsRemaining, setSecondsRemaining] = useState(5);
+
+useEffect(() => {
+  if (!room?.countdownStartedAt) return;
+  const tick = () => {
+    const elapsed = (Date.now() - room.countdownStartedAt!) / 1000;
+    setSecondsRemaining(Math.max(0, Math.ceil(5 - elapsed)));
+  };
+  tick();
+  const id = setInterval(tick, 200); // 5Hz is plenty for a 1s countdown
+  return () => clearInterval(id);
+}, [room?.countdownStartedAt]);
+
+// Render glow ring at secondsRemaining === 1:
+{secondsRemaining === 1 && matchPhase === 'pregame-countdown' && (
+  <div style={{
+    position: 'absolute', inset: -12, borderRadius: '50%',
+    border: '3px solid #00e676',
+    animation: 'reefLaunchPulse 0.4s ease-in-out infinite',
+    pointerEvents: 'none',
+  }} />
+)}
 ```
 
-The keyframe is injected as a `<style>` element at module scope (not inline, to avoid per-render allocation):
-```css
-@keyframes reefLaunchPulse {
-  0%   { opacity: 1; transform: scale(1); }
-  50%  { opacity: 0.4; transform: scale(1.15); }
-  100% { opacity: 1; transform: scale(1); }
-}
-```
-
-This is purely visual — no logic change to `RoundCountdown` itself.
+`countdownStartedAt` must be in `RoomMeta` (included in `snapshot.init`). If not already in `RoomMeta`, add it to `protocol.ts` and `reef-race-sim.ts`'s `buildRoomMeta` call.
 
 ---
 
 ## 6. WS protocol additions
 
-### 6.1 File to modify
-
-`packages/shared/src/activities/protocol.ts` — the `ServerFrame` union. There is no `activity-frames.ts`.
-
-### 6.2 New event types
-
-Add two new members to the `ServerFrame` union:
+### 6.1 `ServerFrame` union (`packages/shared/src/activities/protocol.ts`)
 
 ```typescript
 | {
     type: 'event.drift_boost';
     petId: string;
-    /** Spark level that triggered the boost (1 | 2 | 3) */
     sparks: 1 | 2 | 3;
   }
 | {
@@ -625,392 +785,304 @@ Add two new members to the `ServerFrame` union:
   }
 ```
 
-**Backwards compat:** The exhaustive `default: never` sentinel in `activity.ts` `applyServerFrame` will catch these at compile time — the switch MUST add new cases or TypeScript will error. Old clients receiving these events from a new server will hit the `default` branch which does `void _exhaustive` — no crash, graceful ignore.
+**Backwards compat:** Old clients hit `default: never` branch → `void _exhaustive` at runtime → no crash. Old client receives `driftSparks` in `EntityDelta.changed` → hits `[k: string]: unknown` catch-all → silently ignored.
 
-### 6.3 `driftSparks` field on entity delta
+### 6.2 `driftSparks` in snapshot (`reef-race-sim.ts`)
 
-The `EntityDelta.changed` interface uses `[k: string]: unknown` catch-all:
+**In `buildSnapshot`:**
 ```typescript
-changed: {
-  x?: number;
-  y?: number;
-  ...
-  [k: string]: unknown;
-};
-```
-
-`driftSparks` flows through the existing catch-all without requiring a schema change to `EntityDelta`. However, for type-safety in the store's `applyEntityDelta`, document it explicitly:
-
-```typescript
-// Add to EntityDelta.changed type annotation comment block:
-// driftSparks?: 0 | 1 | 2 | 3  (Reef Race only — self body's current drift spark level)
-```
-
-### 6.4 Wiring through `activity.ts` store
-
-**Add to `ActivityState`:**
-```typescript
-driftSparks: 0 | 1 | 2 | 3;
-```
-
-**Add to `emptyState()`:**
-```typescript
-driftSparks: 0,
-```
-
-**In `applyEntityDelta`:** After processing the existing fields, if `delta.petId === get().selfPetId && typeof c.driftSparks === 'number'`:
-```typescript
-set({ driftSparks: (c.driftSparks as 0 | 1 | 2 | 3) });
-```
-
-**In `applyServerFrame` switch:**
-```typescript
-case 'event.drift_boost': {
-  // Visual flash: could push to events ring buffer for scene consumption.
-  // Phase 1: no 3D VFX. Store the event for the HUD flash only.
-  // The HUD subscribes to driftSparks (already zeroed by the delta following
-  // the boost) — no additional store field needed for Phase 1.
-  // Future: push to events.driftBoosts for the scene's VFX processor.
-  break;
-}
-case 'event.launch': {
-  // Phase 1: HUD shows the glow ring (driven by countdown state, not this event).
-  // Future: show per-player launch indicator in the 3D scene.
-  break;
-}
-```
-
-**Broadcast of `driftSparks` in snapshot delta (`reef-race-sim.ts`):**
-
-In `buildSnapshot`, include `driftSparks` in each body's snapshot data:
-```typescript
-bodies: Array.from(state.bodies.values()).map((b) => ({
-  ...existing fields...,
-  driftSparks: b.drift.sparkLevel,  // NEW
+bodies: Array.from(state.bodies.values()).map(b => ({
+  ...existingFields,
+  driftSparks: b.drift.sparkLevel,
 }))
 ```
 
-In `broadcastDelta`, include `driftSparks` in the entity delta `changed` object when it differs from the previous snapshot:
+**Snapshot diff predicate (S1+S7 fix):**
 ```typescript
-// In the delta filter:
-|| p.driftSparks !== b.driftSparks
+// In broadcastDelta's per-body changed-fields check:
+|| prev.driftSparks !== b.drift.sparkLevel
 
-// In the changed map:
-driftSparks: b.driftSparks,
+// In the changed object when the body IS included:
+driftSparks: b.drift.sparkLevel,
 ```
 
-**Default value for backwards compat:** Old clients not handling `driftSparks` will receive it in `changed` and silently ignore it (hits the `[k: string]: unknown` catch-all in `EntityDelta.changed` plus the `void _exhaustive` default in the store's switch on unknown keys — there is no switch on `changed` fields, it's a direct spread). No issue.
+### 6.3 `applyServerFrame` switch additions (`apps/web/src/stores/activity.ts`)
+
+```typescript
+case 'event.drift_boost': {
+  // Phase 1: HUD drives off driftSparks (already 0 post-release via delta).
+  // Future: events.driftBoosts ring buffer for scene VFX.
+  break;
+}
+case 'event.launch': {
+  // Phase 1: glow ring is countdown-driven (local computation, not event-driven).
+  // Future: per-player launch indicator in 3D scene.
+  break;
+}
+```
+
+Both cases MUST be added before the `default: never` sentinel. TypeScript build error is the guard — intentional.
 
 ---
 
 ## 7. Bot drift and launch behavior
 
-### 7.1 Drift decision tree
-
-The bot's `computeInput` in `reef-race-bot.ts` must decide when to set `ACTION_BIT_DRIFT` in `actionBits`.
-
-**Drift state needed:** The bot is stateless today (class has no instance fields beyond `petId`). Drift requires tracking `driftActive: boolean` and `driftStartedTick: number`. Since `BotController` is called with the room view (which includes `now`), the bot needs to maintain per-match state.
-
-**Add to `ReefRaceBot` class:**
-```typescript
-private driftActive = false;
-private driftStartedMs = 0;
-private driftTargetSparks: 1 | 2 | 3 = 1;
-```
-
-**Decision tree (per `computeInput` call):**
-
-```
-inGrace (matchAge < 2500ms)?
-  → no drift
-
-driftActive?
-  YES:
-    chargedEnough = (now - driftStartedMs) >= DRIFT_SPARK_TICK_1 * REEF_TICK_MS * driftTargetSparks_ticks
-    if chargedEnough:
-      release drift (driftActive = false, return actionBits WITHOUT drift bit)
-      // Releasing causes the sim to fire the boost
-    else:
-      continue holding drift (return actionBits WITH drift bit)
-  NO:
-    inHairpin? (|dir.x| >= 0.35 AND heading off-center)
-      probability check: Math.random() < 0.6 / REEF_SIM_HZ
-        → start drift (driftActive = true, driftStartedMs = now)
-        → driftTargetSparks = weightedRandom([1, 2, 3], [0.5, 0.35, 0.15])
-        → return actionBits WITH drift bit
-      else:
-        no drift
-```
-
-**"In hairpin" detection:** The bot already computes `dot` (dot product between current heading and target direction). A hairpin entry is when `dot < 0.5` (>60° off the target direction) AND `distToTarget > 200wu` (not at the checkpoint apex yet).
-
-**Probability:** `0.6 / REEF_SIM_HZ` per tick = 0.6 / 30 ≈ 0.02 per tick. At a 1s hairpin entry (30 ticks), expected drift attempts = 30 × 0.02 = 0.6 per hairpin. ~45% of hairpins trigger a drift charge. This is slightly below the plan's "probability 0.6" which likely means "60% of hairpins" — the per-tick math achieves this.
-
-**Target sparks distribution:** 50% spark-1, 35% spark-2, 15% spark-3. This gives bots a realistic but imperfect skill ceiling.
-
-### 7.2 Launch behavior
+### 7.1 Bot class state fields
 
 ```typescript
-private launchAttempted = false;
-```
+class ReefRaceBot implements BotController {
+  readonly activityId = 'reef-race';
+  // Drift state
+  private driftActive = false;
+  private driftStartedMs = 0;
+  private driftTargetTicks: number = DRIFT_SPARK_TICK_1;
+  // Launch state
+  private launchAttempted = false;
+  private launchFireMs = -1; // -1 = sentinel; set on first computeInput call
 
-The bot sets `ACTION_BIT_LAUNCH` for one tick at a random offset from `matchStartedAt`. The room manager must accept `ACTION_BIT_LAUNCH` in the pre-launch buffer.
-
-**Imperfection:** The bot's "press" is modeled as happening at `matchStartedAt + jitter` where `jitter ~ Uniform(-400ms, +400ms)`. In the bot's `computeInput`:
-
-```typescript
-// First call after grace ends:
-if (!this.launchAttempted && matchAge < 100) {
-  const jitter = (Math.random() * 800) - 400; // -400 to +400ms
-  if (matchAge >= jitter) {
-    this.launchAttempted = true;
-    // Return thrust=1.0 + ACTION_BIT_LAUNCH for one tick
-    return { dir, thrust: 1.0, actionBits: actionBits | ACTION_BIT_LAUNCH };
-  }
+  constructor(public readonly petId: string) {}
 }
 ```
 
-With `LAUNCH_WINDOW_MS = 150`: only launches with jitter in [-150, +150] (37.5% of the ±400 range) yield a boost. Launches with jitter in [-350, -150] (25%) yield a stall. Remaining 37.5% = no launch. This gives ~50% success rate as specified.
+### 7.2 `computeInput` — launch attempt (C5 fix)
+
+The C5 bug: the final `return { thrust: inGrace ? 0.4 : thrust }` overwrites any thrust set in earlier branches. The launch attempt MUST be an early return placed BEFORE the grace branch check.
+
+```typescript
+computeInput(roomState: BotRoomView, _dt: number): BotInput {
+  const view = roomState as ReefBotRoomView;
+  const self = view.bodies.find(b => b.petId === this.petId);
+  if (!self) return { dir: { x: 0, y: 1 }, thrust: 0, actionBits: 0 };
+
+  const matchAge = view.now - view.matchStartedAt;
+
+  // ── LAUNCH ATTEMPT — EARLY RETURN, before grace branch ───────────────────
+  // Initialise fire-time on first call (after matchStartedAt is known).
+  if (this.launchFireMs < 0) {
+    // Jitter ±400ms relative to matchStartedAt:
+    //   [-150, +150]ms → boost window (~37.5% of range)
+    //   [-350, -150]ms → stall zone (~25% of range)
+    //   remainder      → no verdict (~37.5%)
+    // Expected boost rate ≈ 37.5%, stall rate ≈ 25%
+    const jitter = (Math.random() * 800) - 400;
+    this.launchFireMs = view.matchStartedAt + jitter;
+  }
+  if (!this.launchAttempted && view.now >= this.launchFireMs) {
+    this.launchAttempted = true;
+    // Aim toward next checkpoint for direction (irrelevant for launch detection).
+    const target = view.checkpoints?.[self.nextCheckpoint ?? 0];
+    const dx = target ? (target.center.x - self.x) : 0;
+    const dy = target ? (target.center.y - self.y) : 1;
+    const len = Math.hypot(dx, dy) || 1;
+    // EARLY RETURN — bypasses ALL subsequent logic including grace thrust cap.
+    // room manager captures this in preLaunchBuffer via hub's COUNTDOWN branch.
+    return {
+      dir: { x: dx / len, y: dy / len },
+      thrust: 1.0,
+      actionBits: ACTION_BIT_LAUNCH,
+    };
+  }
+
+  // ── DRIFT STATE ───────────────────────────────────────────────────────────
+  if (this.driftActive) {
+    const chargedTicks = Math.round((view.now - this.driftStartedMs) / REEF_TICK_MS);
+    if (chargedTicks >= this.driftTargetTicks) {
+      this.driftActive = false; // release — sim fires drift boost on next tick
+    }
+  }
+
+  // ── NORMAL NAV (existing logic unchanged) ─────────────────────────────────
+  // ... existing checkpoint steering + thrust calculation ...
+  // (dot, distToTarget, thrust, dx, dy computed as before)
+
+  // ── GRACE ─────────────────────────────────────────────────────────────────
+  const inGrace = matchAge < BOT_OPENING_GRACE_MS;
+
+  let actionBits = 0;
+  if (!inGrace) {
+    // Drift decision
+    if (!this.driftActive && dot < 0.5 && distToTarget > 200) {
+      if (Math.random() < 0.60 / REEF_SIM_HZ) {
+        this.driftActive    = true;
+        this.driftStartedMs = view.now;
+        const r = Math.random();
+        this.driftTargetTicks =
+          r < 0.50 ? DRIFT_SPARK_TICK_1 :
+          r < 0.85 ? DRIFT_SPARK_TICK_2 :
+                     DRIFT_SPARK_TICK_3;
+      }
+    }
+    if (this.driftActive) actionBits |= ACTION_BIT_DRIFT;
+
+    // Power-up usage (existing)
+    const inv = self.inventory;
+    for (let i = 0; i < inv.length; i++) {
+      const slot = inv[i];
+      if (slot.kind === null || slot.cooldownUntil > view.now) continue;
+      if (Math.random() < POWERUP_USE_CHANCE) { actionBits |= 1 << i; break; }
+    }
+  }
+
+  return {
+    dir: { x: dx / len, y: dy / len },
+    thrust: inGrace ? 0.4 : thrust,
+    actionBits,
+  };
+}
+```
+
+**Bot non-determinism (S8 — documented explicitly):** Bot heuristics (`Math.random()` for jitter, drift timing, power-up firing) are intentionally non-deterministic. This is a pre-existing decision (`Math.random()` already used in the existing bot for jitter and power-up firing). The LCG seed governs sim physics (pickup spawns, pickup rolls) only. Replays reproduce physical body trajectories but not bot decisions. This is acceptable — bot behavior is a policy choice, not a physics simulation.
 
 ---
 
 ## 8. Test plan
 
-All new tests go in `apps/api/src/services/activity/sim/__tests__/reef-race-sim.test.ts` and `apps/api/src/services/activity/bots/__tests__/reef-race-bot.test.ts`.
+All new tests in `apps/api/src/services/activity/sim/__tests__/reef-race-sim.test.ts` and `apps/api/src/services/activity/bots/__tests__/reef-race-bot.test.ts`.
 
-**Preserve existing tests:** All existing fixtures use `now: 5000, matchStartedAt: 0` which puts `matchAge = 5000ms` — well past `BOT_OPENING_GRACE_MS = 2500ms`. No changes needed to existing test helpers.
+**Preserve existing tests:** Existing fixtures (`now: 5000, matchStartedAt: 0`) put `matchAge = 5000ms` — well past grace. No changes.
 
-### 8.1 Sim drift tests (`reef-race-sim.test.ts`)
+### 8.1 Sim tests
 
-#### Test 1: Drift starts when conditions are met
+**T1** — Starts charging when drift-bit + turning + speed threshold met.
+- `body.vx = 200` (above 150), `actionBits = ACTION_BIT_DRIFT`, `dir.x = 0.5`. Tick once.
+- Assert: `body.drift.charging === true`.
 
-```typescript
-describe('drift state machine', () => {
-  it('starts charging when drift-bit + turning + speed threshold met', () => {
-    // Setup: body at cruise speed, drift-bit set, steering input
-    // Assert: body.drift.charging === true after tick
-  });
-```
+**T2** — Does NOT start when going straight.
+- Same as T1 but `dir.x = 0`. Assert: `body.drift.charging === false`.
 
-Setup: `body.vx = 200` (above 150 threshold), `intent.actionBits = ACTION_BIT_DRIFT`, `intent.dir = {x: 0.5, y: 0.866}` (turning). Tick once. Assert `body.drift.charging === true`.
+**T3** — Advances spark levels at correct tick counts.
+- Charge for `DRIFT_SPARK_TICK_1 - 1` ticks → sparkLevel 0. One more tick → sparkLevel 1.
+- At tick `DRIFT_SPARK_TICK_2` → sparkLevel 2. At `DRIFT_SPARK_TICK_3` → sparkLevel 3.
 
-#### Test 2: Does NOT start without steering
+**T4** — Cancels silently on early release (spark 0).
+- Charge for `DRIFT_SPARK_TICK_1 - 2` ticks, release drift-bit. Tick once.
+- Assert: `drift.charging === false`, zero `event.drift_boost` broadcasts.
 
-```typescript
-  it('does not start drift-charge when moving straight', () => {
-    // Setup: body at cruise speed, drift-bit set, dir.x = 0 (straight)
-    // Assert: body.drift.charging === false after tick
-  });
-```
+**T5** — Fires boost on release at spark ≥ 1.
+- Charge to spark 1, release. Tick once.
+- Assert: `event.drift_boost` broadcast with `sparks: 1`, `body.activeBoosts.has('drift-boost') === true`.
 
-#### Test 3: Advances spark levels at correct tick counts
+**T6** — NO velocity impulse at release (S4 fix).
+- Body at 300 wu/s, charge to spark 3, release.
+- Assert: `Math.hypot(body.vx, body.vy) ≈ 300 wu/s` on the release tick (NOT 300 × 1.38).
+- Assert: `body.activeBoosts.get('drift-boost')?.mult === 0.38`.
 
-```typescript
-  it('advances from 0→1 at DRIFT_SPARK_TICK_1 ticks', () => {
-    // Start drift charging
-    // Tick DRIFT_SPARK_TICK_1 - 1 times → sparkLevel still 0
-    // Tick 1 more → sparkLevel === 1
-  });
-  it('advances to 2 at DRIFT_SPARK_TICK_2 ticks', ...);
-  it('advances to 3 at DRIFT_SPARK_TICK_3 ticks', ...);
-```
+**T7** — Boost raises speed via speedMod over subsequent ticks.
+- After T6, tick 10 more times with full thrust. Assert: speed after boost ticks > 300 wu/s (boost raised the cap; body naturally accelerated toward it under full thrust).
 
-Implementation: use `__tickOnceForTest` in a loop, set body velocity + intent before each tick (or once and verify the sim preserves them).
+**T8** — No double-fire.
+- Charge to spark 2, release. Boost fires, `charging = false`. Hold released for 5 ticks. Assert: only 1 `event.drift_boost` total.
 
-#### Test 4: Cancels without boost on early release (sparkLevel=0)
+**T9** — Cancels when speed drops below threshold.
+- Charge to spark 1. Set `body.vx = body.vy = 0`. Tick (drift-bit still held). Assert: `charging === false`, no boost.
 
-```typescript
-  it('cancels silently when drift-bit released before first spark', () => {
-    // Start drift charging
-    // Tick DRIFT_SPARK_TICK_1 - 2 times (not yet at spark 1)
-    // Release drift-bit (actionBits = 0)
-    // Tick once
-    // Assert: drift.charging === false, drift.sparkLevel === 0
-    // Assert: no 'event.drift_boost' in broadcasts
-  });
-```
+**T10** — Body.rot shows 15° bias while drifting, no unbounded accumulation (C1 verification).
+- Body heading +Y, `dir.x = 0.5` (turning right). Start charging. Tick once.
+- Assert: `body.rot ≈ Math.atan2(0.5, 0.866) - DRIFT_ANGULAR_BIAS_RAD` (right turn → subtract bias).
+- Tick again (same dir): Assert: same value (NOT accumulated further).
+- Release drift, tick: Assert: `body.rot ≈ Math.atan2(0.5, 0.866)` (bias gone).
 
-#### Test 5: Fires boost on release after at least 1 spark
+**T11** — Launch boost from `launchBoosts` map.
+- `startRoom('r1', 'reef-race', ['p1','p2'], { launchBoosts: new Map([['p1','boost']]) })`.
+- Assert: `p1.activeBoosts.has('launch-boost') === true`, `p2.activeBoosts.size === 0`.
 
-```typescript
-  it('fires boost event when drift released with sparkLevel >= 1', () => {
-    // Charge to spark 1 (DRIFT_SPARK_TICK_1 ticks)
-    // Release drift-bit
-    // Tick once
-    // Assert: 'event.drift_boost' in broadcasts with sparks: 1
-    // Assert: body.activeEffects.has('rr-drift-boost')
-  });
-```
+**T12** — Launch stall, thrust capped.
+- `launchBoosts: new Map([['p1','stall']])`. Set `intent.thrust = 1.0`, tick once.
+- Assert: `activeBoosts.has('launch-stall') === true`. Speed < `REEF_MAX_SPEED * LAUNCH_STALL_THRUST_CAP * 1.1`.
 
-#### Test 6: Drift does not double-fire
+**T13** — No effect when `launchBoosts` absent.
+- `startRoom` with no `launchBoosts`. Assert: neither boost nor stall in `activeBoosts`.
 
-```typescript
-  it('does not fire boost on consecutive release ticks', () => {
-    // Charge to spark 2, release
-    // Tick: captures boost event, clears drift state
-    // Hold drift-bit released for 3 more ticks
-    // Assert: only one 'event.drift_boost' in broadcasts total
-  });
-```
+**T14** — Named tolerance constant at both call-sites.
+- Static: grep `reef-race-sim.ts` source. Assert: string `1.5` does NOT appear in the `integrateMotion` call-sites (only `REEF_KINEMATIC_TOLERANCE`).
 
-#### Test 7: Drift cancels when speed drops below threshold
+**T15** — Drift-3 + launch combined stays under 2× REEF_MAX_SPEED.
+- Set both `launch-boost` (mult 0.30) and `drift-boost` (sparks=3, mult 0.38) in `activeBoosts`. Tick 30 times at full thrust.
+- Assert: `Math.hypot(body.vx, body.vy) <= REEF_MAX_SPEED * 2.0` every tick.
 
-```typescript
-  it('cancels drift when body slows below DRIFT_MIN_SPEED_FOR_CHARGE', () => {
-    // Start charging
-    // Advance tick count to spark 1
-    // Set body.vx = 0, body.vy = 0 (simulate full stop)
-    // Tick once (drift-bit still held)
-    // Assert: drift.charging === false, no boost event
-  });
-```
+**T16** — rr-turbo-bubble + drift boost takes MAX, not sum.
+- `activeEffects.set('rr-turbo-bubble', now + 9999)`, `activeBoosts.set('drift-boost', {expiresAt: now+9999, mult:0.24})`, `currentDriftBoostSparks = 2`.
+- Compute speedMod. Assert: `speedMod === 1.40` (turbo-bubble mult 0.40 > drift mult 0.24 → MAX; NOT 1.64).
 
-### 8.2 Launch boost tests (`reef-race-sim.test.ts`)
+**T17** — Snapshot diff includes spark-only change.
+- Body at stable position/velocity. Advance sparkLevel from 0 → 1 without moving.
+- Assert: body appears in `broadcastDelta` output with `driftSparks: 1`.
 
-#### Test 8: Launch boost success window
+**T18** — Snapshot diff omits spark-unchanged body.
+- Body never drifts (sparkLevel always 0), only positional change across two consecutive snapshots.
+- Assert: `driftSparks` field NOT included in delta's changed map (or if included, value is 0 and was already 0 in prev snapshot — verify it was included only because a positional field changed, not as a standalone unnecessary change).
+
+**T19** — `stopRoom` mid-drift is safe.
+- Body has `charging=true, sparkLevel=2`. Call `stopRoom`. Assert: zero `event.drift_boost` emitted after `stopRoom`. Room map deleted.
+
+**T20** — Forfeit mid-drift: no post-forfeit broadcast.
+- Trigger `integrityForfeitFn` on a drifting body. Assert: no boost broadcast after forfeit (body removed from loop).
+
+**T21** — `computeLaunchVerdicts` table-driven correctness.
 
 ```typescript
-describe('launch boost', () => {
-  it('applies rr-launch-boost when launchBoosts map contains boost verdict', () => {
-    const launchBoosts = new Map([['p1', 'boost' as const]]);
-    reefRaceSim.startRoom('room-a', 'reef-race', ['p1', 'p2'], { launchBoosts });
-    const body = state.bodies.get('p1')!;
-    expect(body.activeEffects.has('rr-launch-boost')).toBe(true);
-    expect(body.activeEffects.has('rr-launch-stall')).toBe(false);
-  });
+const startedAt = 10_000;
+const cases = [
+  { offset:    0, thrust: 1.0, expected: 'boost'  }, // exactly on green
+  { offset:  149, thrust: 1.0, expected: 'boost'  }, // inside window (late)
+  { offset: -149, thrust: 1.0, expected: 'boost'  }, // inside window (early)
+  { offset:  151, thrust: 1.0, expected: null      }, // outside window (too late)
+  { offset: -151, thrust: 1.0, expected: 'stall'  }, // just inside stall zone
+  { offset: -350, thrust: 1.0, expected: 'stall'  }, // at stall zone boundary
+  { offset: -351, thrust: 1.0, expected: null      }, // beyond stall zone
+  { offset:    0, thrust: 0.5, expected: null      }, // thrust < 1.0; not captured
+];
 ```
 
-#### Test 9: Launch stall on early press
+### 8.2 Bot tests
 
-```typescript
-  it('applies rr-launch-stall when verdict is stall', () => {
-    const launchBoosts = new Map([['p1', 'stall' as const]]);
-    reefRaceSim.startRoom('room-a', 'reef-race', ['p1', 'p2'], { launchBoosts });
-    const body = state.bodies.get('p1')!;
-    expect(body.activeEffects.has('rr-launch-stall')).toBe(true);
-    // Verify thrust is capped
-    body.intent.thrust = 1.0;
-    // tick once and check velocity did not reach full speed
-    reefRaceSim.__tickOnceForTest('room-a');
-    const speed = Math.hypot(body.vx, body.vy);
-    expect(speed).toBeLessThan(REEF_MAX_SPEED * LAUNCH_STALL_THRUST_CAP * 1.1);
-  });
-```
+**T22** — Launch bypasses grace thrust cap (C5 verification).
+- Set `bot.launchFireMs` to `view.now - 1` (just fired). `matchAge < BOT_OPENING_GRACE_MS`. Call `computeInput`.
+- Assert: returned `thrust === 1.0`, `actionBits & ACTION_BIT_LAUNCH !== 0`.
 
-#### Test 10: No-op when no launch input
+**T23** — No drift during grace.
+- 100 ticks at `matchAge < 2500ms`. Assert: `actionBits & ACTION_BIT_DRIFT === 0` always.
 
-```typescript
-  it('applies no launch effect when launchBoosts map is absent or null', () => {
-    reefRaceSim.startRoom('room-a', 'reef-race', ['p1', 'p2']);
-    const body = state.bodies.get('p1')!;
-    expect(body.activeEffects.has('rr-launch-boost')).toBe(false);
-    expect(body.activeEffects.has('rr-launch-stall')).toBe(false);
-  });
-```
+**T24** — Uses drift in hairpins (statistical).
+- 300 ticks at hairpin (`dot < 0.5`, `distToTarget > 200`) outside grace.
+- Assert: at least 10% of ticks have drift bit set.
 
-### 8.3 Bot drift behavior tests (`reef-race-bot.test.ts`)
-
-#### Test 11: Bot uses drift in hairpins (statistical)
-
-```typescript
-  it('uses drift bit in at least 30% of hairpin ticks over many samples', () => {
-    const bot = createReefRaceBot('bot-self');
-    const checkpoints = buildReefCheckpoints();
-    // Position at hairpin entry: 60° off next-checkpoint heading
-    // (dot product < 0.5 between current heading and checkpoint direction)
-    const target = checkpoints[3]; // some hairpin checkpoint
-    // Simulate body heading perpendicular to the direct path
-    const view = makeReefView({
-      selfPos: { x: target.center.x - 300, y: target.center.y + 200 },
-      nextCheckpoint: 3,
-    });
-    // Give the body some velocity perpendicular to target
-    view.bodies[0].vx = 150;
-    view.bodies[0].vy = 0;
-
-    let driftCount = 0;
-    const TICKS = 300; // 10 seconds at 30Hz
-    for (let i = 0; i < TICKS; i++) {
-      const intent = bot.computeInput(view, 1 / 30);
-      if ((intent.actionBits ?? 0) & ACTION_BIT_DRIFT) driftCount++;
-    }
-    // Should use drift in at least 10% of ticks
-    // (bot charges then releases, so it alternates on/off)
-    expect(driftCount / TICKS).toBeGreaterThan(0.10);
-  });
-```
-
-#### Test 12: Bot does not use drift during grace period
-
-```typescript
-  it('never sets drift bit during the opening grace window', () => {
-    const bot = createReefRaceBot('bot-self');
-    const view = makeReefView({ selfPos: { x: 0, y: 0 } });
-    view.now = 1_000; // matchAge = 1000ms, inside 2500ms grace
-    view.matchStartedAt = 0;
-    for (let i = 0; i < 100; i++) {
-      const intent = bot.computeInput(view, 1 / 30);
-      expect((intent.actionBits ?? 0) & ACTION_BIT_DRIFT).toBe(0);
-    }
-  });
-```
+**T25** — No drift on straights.
+- 300 ticks with `dot >= 0.5` outside grace. Assert: zero drift bits.
 
 ---
 
 ## 9. Risks and mitigations
 
-### 9.1 Backwards compat — clients without sparks UI
+### 9.1 Backwards compat — old clients
 
-**Risk:** A client on an older build receives `driftSparks` in entity deltas and `event.drift_boost` / `event.launch` in the frame stream. The old client's `applyServerFrame` switch has no cases for the new event types, hitting the `default: never` sentinel — which throws a TypeScript compile error at build time, NOT at runtime. At runtime, the default branch executes `void _exhaustive` (which is just the frame object) and continues — no crash. The `driftSparks` field in `changed` is silently ignored by the existing spread logic.
+Old clients receive `driftSparks` in `EntityDelta.changed` → `[k: string]: unknown` catch-all → silently dropped. `event.drift_boost` and `event.launch` in `ServerFrame` → `default: const _exhaustive: never = frame; void _exhaustive` → no throw (the void evaluates the frame but doesn't crash). Verified pattern in `activity.ts` line 711-712.
 
-**Mitigation:** The `default` branch's `const _exhaustive: never = frame; void _exhaustive` pattern is specifically designed for this forward-compat case. Verified in `activity.ts` line 711-712. Old clients degrade gracefully (no sparks UI, no launch indicator) without crashing.
+### 9.2 Room teardown mid-drift
 
-### 9.2 Drift state surviving room teardown
+`stopRoom` → `this.rooms.delete(roomId)` immediately. `tickRoom` guard `if (state.ended) return` prevents further drift processing. Interval cleared before deletion. No boost broadcast possible after `stopRoom`. Safe — identical to existing teardown for all sim state.
 
-**Risk:** If a room is `stopRoom`-ed while a body has `charging=true` and `sparkLevel=2`, the drift state exists in memory until the room map entry is deleted. The `broadcastFn` might fire the boost into a torn-down room.
+### 9.3 Launch boost abort safety
 
-**Mitigation:** `stopRoom` calls `this.rooms.delete(roomId)` which immediately removes the room. The `tickRoom` guard `if (state.ended) return;` at the top prevents any further drift processing. The `intervalHandle` is cleared before deletion. The broadcast callback is a closure over the room reference — after `rooms.delete`, the room object still exists in memory until the interval is cleared and all callbacks complete, but no further ticks fire. This is the existing pattern for all room teardown in the sim and is safe.
+`preLaunchBuffer` is on the `Room` object. Abort paths (`persistAbortedTransition`, `persistAbortedCrashTransition`) set `room.preLaunchBuffer = null`. `liveTransitionFn` is not called on abort — `computeLaunchVerdicts` is never called — `startRoom` is never called. No sim state affected.
 
-### 9.3 Launch boost firing during ABORTED transition
+### 9.4 Memory footprint
 
-**Risk:** If the countdown completes (triggering the room manager's `launchBoosts` computation) but the room is then immediately aborted before `startRoom` is called (e.g., host disconnects in the same event loop iteration), the `launchBoosts` map is computed but never applied.
+`ReefDriftState` (4 fields) + `activeBoosts: Map` (empty = ~96 bytes; max 2 entries = ~208 bytes) + `currentDriftBoostSparks` (8 bytes) = ~250 bytes per body. 8 bodies = 2 KB per room. Negligible.
 
-**Mitigation:** The `launchBoosts` map is a local variable in the room manager's countdown handler. If `startRoom` is never called, the map is simply GC'd. No sim state is affected. The abort path must NOT call `startRoom` — this is already the correct behavior since `startRoom` starts the `setInterval` and should only be called on confirmed LIVE transition.
+### 9.5 Anti-cheat tolerance
 
-### 9.4 Per-body drift state memory (bots × matches × time)
-
-**Risk:** In a room with 8 bodies (7 bots + 1 human) running a 90s race at 30Hz = 162,000 ticks, the drift state is 4 fields per body. Total additional memory: 8 bodies × 4 fields × ~8 bytes = 256 bytes per room. Negligible.
-
-**Risk (bot class):** The `ReefRaceBot` class instances carry `driftActive`, `driftStartedMs`, `launchAttempted`, `driftTargetSparks` — 4 fields × 8 bytes × 7 bots = 224 bytes per room. GC'd when `botControllers` map is cleared in `stopRoom`. Negligible.
-
-### 9.5 Anti-cheat interaction with drift boost speed
-
-**Risk:** After a 3-spark drift boost (+38%), the body's velocity spikes. The `validateReefVelocityDelta` and `validateReefPositionDelta` validators in `integrateMotion` check against `REEF_MAX_SPEED`. A drift-boosted body (max speed ≈ 690 wu/s) will trip the `overspeed` flag.
-
-**Mitigation:** The validators use a `tolerance` parameter (currently 1.5× in `integrateMotion`). Post-drift speed = `500 * 1.38 = 690 wu/s`. Tolerance check: `690 / 500 = 1.38 < 1.5` — JUST under the 1.5× tolerance. Safe for spark-3. For launch boost: `500 * 1.30 = 650 wu/s`. Combined (drift-3 + launch): `500 * 1.38 * 1.30 ≈ 897 wu/s > 1.5 × 500 = 750` — this WOULD flag.
-
-**Fix:** Drift boost and launch boost should not stack multiplicatively. Apply them additively: `speedMod = 1 + (driftMult + launchMult)`. Combined max: `1 + 0.38 + 0.30 = 1.68` → `840 wu/s`. Still > 750. 
-
-**Fix 2:** Raise the validator tolerance for the Reef sim to 2.0× (from 1.5×) specifically in the post-boost case, OR cap the combined boost at `REEF_MAX_SPEED * 1.5 - ε`. **Chosen approach:** cap the boost-applied velocity after application:
-
+`REEF_KINEMATIC_TOLERANCE = 2.0` allows any achievable boost (max 1.68× = 840 wu/s). Hard cap at 1.85× (925 wu/s) is a backstop. If a future power-up stacks past 1.85×, a console warning should be added to detect it:
 ```typescript
-// After applying drift/launch boost in applyIntentForTick:
-const postBoostSpeed = Math.hypot(body.vx, body.vy);
-const hardCap = REEF_MAX_SPEED * 1.45; // 725 wu/s, under the 1.5× validator
-if (postBoostSpeed > hardCap) {
-  const scale = hardCap / postBoostSpeed;
-  body.vx *= scale;
-  body.vy *= scale;
+if (s > hardCap) {
+  console.warn(`[reef-race] velocity hard-cap hit for ${body.petId}: ${s.toFixed(0)} wu/s`);
+  // ... clamp ...
 }
 ```
 
-This makes the combined drift+launch boost visually feel strong but never triggers the anti-cheat flag.
+### 9.6 Build guard
 
-### 9.6 `applyServerFrame` exhaustiveness — TypeScript build fail
-
-**Risk:** Adding `event.drift_boost` and `event.launch` to `ServerFrame` union will cause a TypeScript build error in `activity.ts` because the `default: never` case will produce a type error — the new union members are `never`-assignable but not handled.
-
-**Mitigation:** This is INTENTIONAL and DESIRED behavior. The plan explicitly adds `case 'event.drift_boost': break;` and `case 'event.launch': break;` to the switch. The build error is the guard that prevents shipping without the store wiring. Implementation must add both cases or the build fails.
+Adding `event.drift_boost` and `event.launch` to `ServerFrame` will cause TypeScript to error on the `default: never` branch in `activity.ts`. This is intentional. Implementation step 2 must add both `case` branches before the error is resolved.
 
 ---
 
@@ -1018,51 +1090,93 @@ This makes the combined drift+launch boost visually feel strong but never trigge
 
 | File | Owner | Changes |
 |---|---|---|
-| `packages/shared/src/activities/protocol.ts` | orchestrator | Add `event.drift_boost`, `event.launch` to `ServerFrame` union |
-| `apps/api/src/services/activity/sim/reef-race-config.ts` | orchestrator | Add `DRIFT_SPARK_TIERS`, `DRIFT_BOOST_MULTS`, `DRIFT_BOOST_DURATION_MS`, `DRIFT_MIN_SPEED_FOR_CHARGE`, `DRIFT_MIN_STEER`, `DRIFT_ANGULAR_BIAS_RAD`, `LAUNCH_WINDOW_MS`, `LAUNCH_BOOST_MULT`, `LAUNCH_BOOST_DURATION_MS`, `LAUNCH_STALL_WINDOW_MS`, `LAUNCH_STALL_DURATION_MS`, `LAUNCH_STALL_THRUST_CAP`, `ACTION_BIT_DRIFT`, `ACTION_BIT_LAUNCH` |
-| `apps/api/src/services/activity/sim/reef-race-sim.ts` | orchestrator | Add `ReefDriftState` to `ReefBody`; add `driftSparks` to snapshot encoding; add `tickDriftState()`; add `rr-drift-boost`/`rr-launch-boost`/`rr-launch-stall` to `speedMod`; add `launchBoosts` param to `startRoom`; add velocity hard cap post-boost; broadcast `event.drift_boost`, `event.launch` |
-| `apps/api/src/services/activity/bots/reef-race-bot.ts` | orchestrator | Add `driftActive`, `driftStartedMs`, `driftTargetSparks`, `launchAttempted` state fields; drift decision tree in `computeInput`; launch attempt logic |
-| `apps/web/src/stores/activity.ts` | orchestrator | Add `driftSparks: 0|1|2|3` to `ActivityState` + `emptyState`; handle `driftSparks` in `applyEntityDelta`; add `event.drift_boost` + `event.launch` cases to switch |
-| `apps/web/src/components/game/reef-race-hud.tsx` | orchestrator | Add `DriftSparksBar` component; add launch glow ring to `RoundCountdown` |
-| `apps/web/src/lib/three/activities/reef-race/reef-race-config.ts` | 3da | Add `SPECIES_RIDER_OFFSET` map, `SPECIES_RIDER_OFFSET_DEFAULT` |
-| `apps/web/src/lib/three/activities/reef-race/ReefRacePlayer.tsx` | 3da | Add `gliderRef` group, procedural surfboard geometry, `riderMountRef` at species offset; move bank tilt to `gliderRef`; gate swim/bob/sway by species |
-| `apps/api/src/services/activity/sim/__tests__/reef-race-sim.test.ts` | orchestrator | Add drift tests 1-7, launch tests 8-10 |
-| `apps/api/src/services/activity/bots/__tests__/reef-race-bot.test.ts` | orchestrator | Add bot drift tests 11-12 |
+| `packages/shared/src/activities/protocol.ts` | orchestrator | Add `event.drift_boost`, `event.launch` to `ServerFrame` union. Check `RoomMeta` for `countdownStartedAt` — add if absent. |
+| `apps/api/src/services/activity/types.ts` | orchestrator | Add `preLaunchBuffer: Map<string,{timestamp:number;thrust:number}>\|null` to `Room` interface. Initialise to `null`. |
+| `apps/api/src/services/activity/sim/reef-race-config.ts` | orchestrator | Add: `ReefBoostKind`, `REEF_TICK_MS`, `DRIFT_SPARK_TICK_1/2/3`, `DRIFT_SPARK_TIERS`, `DRIFT_BOOST_DURATION_MS`, `DRIFT_BOOST_MULTS`, `DRIFT_ANGULAR_BIAS_RAD`, `DRIFT_MIN_SPEED_FOR_CHARGE`, `DRIFT_MIN_STEER`, `LAUNCH_WINDOW_MS`, `LAUNCH_BOOST_MULT`, `LAUNCH_BOOST_DURATION_MS`, `LAUNCH_STALL_WINDOW_MS`, `LAUNCH_STALL_DURATION_MS`, `LAUNCH_STALL_THRUST_CAP`, `ACTION_BIT_DRIFT`, `ACTION_BIT_LAUNCH`, `REEF_KINEMATIC_TOLERANCE = 2.0`. |
+| `apps/api/src/services/activity/sim/reef-race-sim.ts` | orchestrator | Add `ReefBoostKind` import, `ReefBoostEntry` interface, `ReefDriftState` interface; add `drift`, `currentDriftBoostSparks`, `activeBoosts` to `ReefBody`; add `tickDriftState()`; modify step 6 in `applyIntentForTick` for drift bias; add `activeBoosts` sweep in tick preamble; add `activeBoosts`-based `speedMod`/`effectiveThrust`; add boost-gated hard cap after `integrateMotion`; replace hard-coded `1.5` with `REEF_KINEMATIC_TOLERANCE` at both call-sites; add `driftSparks` to `buildSnapshot`; add `\|\| prev.driftSparks !== b.drift.sparkLevel` to diff predicate in `broadcastDelta`; add `driftSparks` to changed-object; add `startedAt?` and `launchBoosts?` to `startRoom` opts; apply verdicts in body init loop; broadcast `event.launch` events after body init. |
+| `apps/api/src/services/activity/activity-room-manager.ts` | orchestrator | Add `recordPreLaunchInput(roomId, petId, ts, thrust)` method; add `computeLaunchVerdicts(room)` method; add `room.preLaunchBuffer = null` to BOTH `persistAbortedTransition` and `persistAbortedCrashTransition`; import `LAUNCH_WINDOW_MS`, `LAUNCH_STALL_WINDOW_MS` from `reef-race-config.ts`. |
+| `apps/api/src/services/activity/activity-ws-hub.ts` | orchestrator | In `handleInput`: add COUNTDOWN pre-launch capture branch for reef-race before the existing `applyInput` dispatch. |
+| `apps/api/src/index.ts` | orchestrator | In `setLiveTransitionFn` reef-race case: call `activityRoomManager.computeLaunchVerdicts(room)`, pass `{bots, startedAt: room.startedAt!, launchBoosts}` to `reefRaceSim.startRoom`. |
+| `apps/api/src/services/activity/bots/reef-race-bot.ts` | orchestrator | Add instance fields `driftActive`, `driftStartedMs`, `driftTargetTicks`, `launchAttempted`, `launchFireMs`; add launch early-return BEFORE grace branch; add drift decision tree in non-grace path; import `DRIFT_SPARK_TICK_1/2/3`, `REEF_TICK_MS`, `ACTION_BIT_DRIFT`, `ACTION_BIT_LAUNCH`, `REEF_SIM_HZ`. |
+| `apps/web/src/stores/activity.ts` | orchestrator | Add `driftSparks: 0\|1\|2\|3` to `ActivityState` interface + `emptyState()`; add `driftSparks?: 0\|1\|2\|3` to `BumperShellEntity`; add `driftSparks: 0` to first-insert branch of `applyEntityDelta` (S11); write `driftSparks` for self-pet in `snapshot.delta` handler (hoisted to caller — S2); add `case 'event.drift_boost': break;` and `case 'event.launch': break;` to `applyServerFrame` switch. |
+| `apps/web/src/components/game/reef-race-hud.tsx` | orchestrator | Add `DriftSparksBar` component; add launch glow ring with local countdown computation from `room.countdownStartedAt`. |
+| `apps/web/src/lib/three/activities/reef-race/reef-race-config.ts` | 3da | Add `RIDER_MOUNT_OFFSET_DEFAULT`, `ACTION_BIT_DRIFT`, `ACTION_BIT_LAUNCH`. |
+| `apps/web/src/lib/three/activities/reef-race/ReefRacePlayer.tsx` | 3da | Add `gliderRef` group; add `BoxGeometry(2.5, 0.25, 5)` glider mesh (local units → 50wu×5wu×100wu world); add `riderMountRef` at `RIDER_MOUNT_OFFSET_DEFAULT`; move bank tilt from `meshRootRef` to `gliderRef`; set avatar `rotation.z = 0` always; DO NOT add species-conditional branches. |
+| `apps/api/src/services/activity/sim/__tests__/reef-race-sim.test.ts` | orchestrator | Add Tests T1–T21. |
+| `apps/api/src/services/activity/bots/__tests__/reef-race-bot.test.ts` | orchestrator | Add Tests T22–T25. |
 
 ---
 
 ## 11. Implementation order (dependency graph)
 
 ```
-1. reef-race-config.ts (server)     — no deps
-   ↓
-2. protocol.ts (ServerFrame union)  — no deps
-   ↓
-3. reef-race-sim.ts                 — deps: (1), (2)
-   ↓
-4. activity.ts store                — deps: (2)
-   ↓
-5. reef-race-hud.tsx                — deps: (4)
+Step 1:  protocol.ts — ServerFrame union + RoomMeta.countdownStartedAt
+          (type-only; no runtime effect; safe alone)
+           ↓
+Step 2:  activity.ts — add empty case 'event.drift_boost'/'event.launch' breaks
+          + driftSparks to ActivityState/emptyState/BumperShellEntity/first-sighting
+          (restores TypeScript build after Step 1)
 
-Parallel to 1-5:
-6. reef-race-config.ts (client)     — no deps
-7. ReefRacePlayer.tsx               — deps: (6)
+Step 3:  types.ts — preLaunchBuffer on Room
 
-8. reef-race-bot.ts                 — deps: (1)
-9. Tests                            — deps: (3), (8)
+Step 4:  reef-race-config.ts (SERVER)
+          All new constants + ReefBoostKind. No runtime path change.
+
+Step 5:  reef-race-sim.ts
+          ReefBoostKind, ReefDriftState, ReefBoostEntry, activeBoosts,
+          currentDriftBoostSparks, drift on ReefBody. tickDriftState. step 6 bias.
+          activeBoosts sweep. speedMod overhaul. boost-gated hard cap.
+          buildSnapshot + broadcastDelta driftSparks. startRoom launchBoosts/startedAt.
+          REEF_KINEMATIC_TOLERANCE at both call-sites.
+          ← Keep broadcast emissions behind `if (false)` until Step 12.
+
+Step 6:  reef-race-sim.test.ts — Tests T1–T21.
+          All tests MUST pass before Step 12.
+
+Step 7:  activity-room-manager.ts
+          recordPreLaunchInput, computeLaunchVerdicts, abort cleanup.
+
+Step 8:  activity-ws-hub.ts
+          COUNTDOWN pre-launch capture branch.
+
+Step 9:  index.ts
+          computeLaunchVerdicts + startedAt in liveTransitionFn.
+
+Step 10: reef-race-bot.ts
+          Instance fields, launch early-return, drift decision tree.
+
+Step 11: reef-race-bot.test.ts — Tests T22–T25.
+
+Step 12: Flip broadcast emissions ON
+          (remove `if (false)` guard from Step 5)
+          All server tests green before this step.
+
+Step 13: reef-race-hud.tsx
+          DriftSparksBar + launch glow ring.
+
+Step 14: reef-race-config.ts (CLIENT)
+          RIDER_MOUNT_OFFSET_DEFAULT, ACTION_BIT_DRIFT, ACTION_BIT_LAUNCH.
+
+Step 15: ReefRacePlayer.tsx (3da owned)
+          gliderRef + BoxGeometry(2.5,0.25,5) + riderMountRef
+          bank tilt moved to gliderRef; no species branches.
 ```
 
-Steps 6-7 are 3da-owned and can proceed in parallel with steps 1-5 after constants are locked.
+Steps 1-12 are server-side (except Step 2 which is client store types). Steps 13-15 are client visual. Reverting Steps 13-15 never breaks the server contract. Reverting Steps 7-9 in reverse order safely removes the launch data path without touching drift.
 
 ---
 
-## 12. Out of scope (enforcement)
+## 12. Out of scope (Phase 1 enforcement)
 
-The following are explicitly NOT part of Phase 1 and must not be added during implementation:
-- Top-speed cap changes (plan §"Do NOT touch top-speed cap")
-- Per-frame `new Vector3()` or other allocations in `useFrame` (MEMORY.md zero-alloc rule)
-- `import 'three/webgpu'` in any file (existing PRs #59+#60 ban)
-- Slipstream, cornering apex bonus, boost ribbons, hazard patches (Phase 2)
-- Stat-driven physics multipliers (Phase 3)
-- Personal best ghost activation (Phase 4)
-- Final Reef Glider art asset (Phase 2 at earliest)
+- **Species-conditional rider animations** — deferred to Phase 1.5. Requires: `species` field in `WorldState.entities`, `EntityDelta.changed`, `hydrateFromWorld`, and `applyEntityDelta`. Non-trivial cross-package change.
+- **Milady balance-sway branch** — deferred to Phase 1.5 with species.
+- **`SPECIES_RIDER_OFFSET` map** — single `RIDER_MOUNT_OFFSET_DEFAULT` in Phase 1.
+- **Final Reef Glider art asset** — Phase 2.
+- Per-frame `new Vector3()` or other GC-producing allocations in `useFrame`.
+- `import 'three/webgpu'` in any file (PRs #59+#60 ban).
+- Slipstream, cornering apex bonus, boost ribbons, hazard patches (Phase 2).
+- Stat-driven physics multipliers (Phase 3).
+- Personal best ghost (Phase 4).
+- `rr-whirlpool` / `rr-tide-wave` drift-interaction edge cases (Phase 2 documentation).
+- Top-speed cap reduction (never — leave `REEF_MAX_SPEED = 500 wu/s`).
+- Feature flag / kill switch — too many indirections; not in Phase 1.
