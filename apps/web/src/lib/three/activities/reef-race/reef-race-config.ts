@@ -321,3 +321,158 @@ export const VOID_BACKDROP_SIZE = 12000;
 
 /** Total laps in a standard race. */
 export const TOTAL_LAPS = 3;
+
+// ─── Phase 2 — boost ribbons + hazard patches (client mirrors) ───────────────
+//
+// These builders MUST stay in sync with the server-side builders in
+//   apps/api/src/services/activity/sim/reef-race-config.ts
+// They are reproduced here (rather than imported from @clawville/shared) because
+// the server config pulls DB + event-logger transitive deps the client can't load.
+//
+// The client ALSO receives these positions via RoomMeta.reefStaticZones from the
+// server's snapshot.init. The local builders are used as a FALLBACK when the
+// room snapshot is not yet available (e.g. spectator join before init).
+
+/** Track half-axis values — must match server REEF_TRACK_A/B. */
+const REEF_TRACK_A_CLIENT = 1100;
+const REEF_TRACK_B_CLIENT = 700;
+
+/**
+ * Centerline point at parameter t in [0,1).
+ * t=0 → start/finish (+Y pole of the ellipse).
+ * Mirrors server `reefCenterlineAt` exactly.
+ */
+export function reefCenterlineAtClient(t: number): { x: number; y: number } {
+  const angle = Math.PI / 2 + 2 * Math.PI * t;
+  return {
+    x: REEF_TRACK_A_CLIENT * Math.cos(angle),
+    y: REEF_TRACK_B_CLIENT * Math.sin(angle),
+  };
+}
+
+/**
+ * Tangent unit vector at parameter t.
+ * Mirrors server `reefTangentAt` exactly.
+ */
+export function reefTangentAtClient(t: number): { x: number; y: number } {
+  const angle = Math.PI / 2 + 2 * Math.PI * t;
+  const tx = -REEF_TRACK_A_CLIENT * Math.sin(angle);
+  const ty = REEF_TRACK_B_CLIENT * Math.cos(angle);
+  const mag = Math.hypot(tx, ty) || 1;
+  return { x: tx / mag, y: ty / mag };
+}
+
+export interface ReefBoostRibbonClient {
+  id: string;
+  a: { x: number; y: number };
+  b: { x: number; y: number };
+}
+
+/**
+ * Build the two boost ribbons from the ellipse parameterisation.
+ *   - rib-top: t=0.92 → t=0.98  (top straight, before start/finish line)
+ *   - rib-bot: t=0.46 → t=0.54  (bottom straight)
+ * Matches server buildReefBoostRibbons() (audit S13 fix — rib-top stays
+ * fully BEFORE t=0 so it never straddles the start/finish line).
+ */
+export function buildReefBoostRibbonsClient(): ReefBoostRibbonClient[] {
+  return [
+    {
+      id: 'rib-top',
+      a: reefCenterlineAtClient(0.92),
+      b: reefCenterlineAtClient(0.98),
+    },
+    {
+      id: 'rib-bot',
+      a: reefCenterlineAtClient(0.46),
+      b: reefCenterlineAtClient(0.54),
+    },
+  ];
+}
+
+export interface ReefHazardPatchClient {
+  id: string;
+  center: { x: number; y: number };
+  radius: number;
+}
+
+/** Inward offset from centerline to hazard center (wu). Must match server HAZARD_INSIDE_OFFSET. */
+const HAZARD_INSIDE_OFFSET_CLIENT = 150 * 0.40; // REEF_TRACK_HALF_WIDTH * 0.40 = 60wu
+
+/** Hazard patch radius (wu). Must match server HAZARD_RADIUS. */
+const HAZARD_RADIUS_CLIENT = 22 * 2.5; // REEF_BODY_RADIUS * 2.5 = 55wu
+
+/** Hairpin checkpoint indices — must match server APEX_HAIRPIN_CHECKPOINT_INDICES. */
+const APEX_HAIRPIN_CP_INDICES_CLIENT = [3, 9] as const;
+
+/** Number of checkpoints — must match server REEF_CHECKPOINT_COUNT. */
+const REEF_CHECKPOINT_COUNT_CLIENT = 12;
+
+/**
+ * Build the two hazard patches at the hairpin apexes.
+ * Matches server buildReefHazardPatches() exactly.
+ */
+export function buildReefHazardPatchesClient(): ReefHazardPatchClient[] {
+  return APEX_HAIRPIN_CP_INDICES_CLIENT.map(idx => {
+    const t = idx / REEF_CHECKPOINT_COUNT_CLIENT;
+    const center = reefCenterlineAtClient(t);
+    const tangent = reefTangentAtClient(t);
+    // Inward normal: 90° left turn on tangent (CCW travel → inside is left).
+    let nx = -tangent.y;
+    let ny = tangent.x;
+    // Dot-check: ensure it points toward origin.
+    if (nx * -center.x + ny * -center.y < 0) {
+      nx = -nx;
+      ny = -ny;
+    }
+    return {
+      id: `hz-${idx}`,
+      center: {
+        x: center.x + nx * HAZARD_INSIDE_OFFSET_CLIENT,
+        y: center.y + ny * HAZARD_INSIDE_OFFSET_CLIENT,
+      },
+      radius: HAZARD_RADIUS_CLIENT,
+    };
+  });
+}
+
+/** Apex inside offset (wu). Must match server APEX_INSIDE_OFFSET. */
+const APEX_INSIDE_OFFSET_CLIENT = 150 * 0.55; // REEF_TRACK_HALF_WIDTH * 0.55 = 82.5wu
+
+/** Apex outside offset (wu). Must match server APEX_OUTSIDE_OFFSET. */
+const APEX_OUTSIDE_OFFSET_CLIENT = 150 * 0.55; // 82.5wu
+
+export interface ReefApexZoneClient {
+  hairpinIndex: number;
+  innerCenter: { x: number; y: number };
+  outerCenter: { x: number; y: number };
+}
+
+/**
+ * Build the two apex zones at the hairpin checkpoints.
+ * Matches server buildReefApexZones() exactly.
+ */
+export function buildReefApexZonesClient(): ReefApexZoneClient[] {
+  return APEX_HAIRPIN_CP_INDICES_CLIENT.map(idx => {
+    const t = idx / REEF_CHECKPOINT_COUNT_CLIENT;
+    const center = reefCenterlineAtClient(t);
+    const tangent = reefTangentAtClient(t);
+    let nx = -tangent.y;
+    let ny = tangent.x;
+    if (nx * -center.x + ny * -center.y < 0) {
+      nx = -nx;
+      ny = -ny;
+    }
+    return {
+      hairpinIndex: idx,
+      innerCenter: {
+        x: center.x + nx * APEX_INSIDE_OFFSET_CLIENT,
+        y: center.y + ny * APEX_INSIDE_OFFSET_CLIENT,
+      },
+      outerCenter: {
+        x: center.x - nx * APEX_OUTSIDE_OFFSET_CLIENT,
+        y: center.y - ny * APEX_OUTSIDE_OFFSET_CLIENT,
+      },
+    };
+  });
+}

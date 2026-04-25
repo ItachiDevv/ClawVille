@@ -90,6 +90,41 @@ import {
   LAUNCH_STALL_THRUST_CAP,
   ACTION_BIT_DRIFT,
   REEF_KINEMATIC_TOLERANCE,
+  // Phase 2 — kinematic effects
+  KINEMATIC_BOOST_CAP,
+  NEGATIVE_KINETIC_FLOOR,
+  // Phase 2 — slipstream
+  SLIPSTREAM_MIN_DISTANCE,
+  SLIPSTREAM_MAX_DISTANCE,
+  SLIPSTREAM_HALF_WIDTH,
+  SLIPSTREAM_MIN_VEL_ALIGNMENT,
+  SLIPSTREAM_REQUIRED_TICKS,
+  SLIPSTREAM_BOOST_MULT,
+  SLIPSTREAM_GRACE_TICKS,
+  SLIPSTREAM_REFRESH_TTL_MS,
+  // Phase 2 — apex
+  APEX_INNER_RADIUS,
+  APEX_OUTER_RADIUS,
+  APEX_BONUS_MULT,
+  APEX_PENALTY_MULT,
+  APEX_DURATION_MS,
+  // Phase 2 — ribbons
+  RIBBON_HALF_WIDTH,
+  RIBBON_BOOST_MULT,
+  RIBBON_BOOST_DURATION_MS,
+  RIBBON_COLLECTION_COOLDOWN_MS,
+  buildReefBoostRibbons,
+  type ReefBoostRibbon,
+  // Phase 2 — hazards
+  HAZARD_TICK_DURATION_MS,
+  HAZARD_SLOW_MULT,
+  buildReefHazardPatches,
+  type ReefHazardPatch,
+  // Phase 2 — apex zone builder
+  buildReefApexZones,
+  type ReefApexZone,
+  // Phase 2 — placement-weighted item table
+  getPlacementItemTable,
 } from './reef-race-config';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -197,6 +232,28 @@ interface ReefBody {
   isBot: boolean;
   /** Auto-forfeit (anti-cheat or DC timeout) */
   forfeited: boolean;
+
+  // ─── Phase 2 — slipstream ───────────────────────────────────────────────
+  /** petId of the body whose wake this body is currently sitting in (null = none). */
+  slipstreamSourcePetId: string | null;
+  /** Consecutive ticks the body has been in the SAME source's wake. Reset on switch. */
+  slipstreamConsecutiveTicks: number;
+  /** Grace ticks remaining after leaving the wake before clearing source. */
+  slipstreamGraceTicksLeft: number;
+
+  // ─── Phase 2 — boost ribbons ────────────────────────────────────────────
+  /** Set of "${lap}:${ribbonId}" entries already credited this lap. Cleared on lap-up. */
+  ribbonsCollectedThisLap: Set<string>;
+  /** Last collection time per ribbonId for cross-lap cooldown. */
+  ribbonLastCollectedAt: Map<string, number>;
+
+  // ─── Phase 2 — apex zones ───────────────────────────────────────────────
+  /** Set of "${lap}:${hairpinIndex}" entries already verdict'd this lap. Cleared on lap-up. */
+  apexCheckedThisLap: Set<string>;
+
+  // ─── Phase 2 — hazard patches ───────────────────────────────────────────
+  /** Set of "${lap}:${hazardId}" entries already broadcast this lap. Cleared on lap-up. */
+  hazardsHitThisLap: Set<string>;
 }
 
 interface ReefPickupBox {
@@ -231,6 +288,23 @@ interface ReefRoomState {
   /** Bot controllers (mirror Bumper's pattern). */
   botControllers: Map<string, BotController>;
   botSeqs: Map<string, number>;
+
+  // ─── Phase 2 — static zones (built once at startRoom) ──────────────────
+  /** Phase 2 — boost ribbons. */
+  ribbons: ReefBoostRibbon[];
+  /** Phase 2 — apex zones (inner clean disc + outer wide disc per hairpin). */
+  apexZones: ReefApexZone[];
+  /** Phase 2 — hazard patches. */
+  hazards: ReefHazardPatch[];
+  /**
+   * Phase 2 — placement cache. Refreshed at the TOP of every tickRoom (step
+   * 0a) by `computeLivePlacements`. Read by:
+   *   - resolvePickups (placement-aware item re-roll)
+   *   - buildBotRoomView (per-body placement projection)
+   *   - broadcastDelta (placement field on EntityDelta)
+   * Audit S7 fix.
+   */
+  lastPlacementMap: Map<string, number>;
 }
 
 interface ReefSnapshot {
@@ -248,6 +322,11 @@ interface ReefSnapshot {
     dnf: boolean;
     /** Phase 1 — current drift charge tier (0..3). HUD-driven. */
     driftSparks: 0 | 1 | 2 | 3;
+    /**
+     * Phase 2 — live race placement (1-indexed). null when the placement
+     * cache hasn't been populated yet (very first tick of a fresh room).
+     */
+    placement: number | null;
   }>;
   pickups: Array<{
     spawnId: string;
@@ -336,6 +415,12 @@ class ReefRaceSim {
       }
     }
 
+    // Phase 2 — static zone allocation. Built ONCE per room, immutable
+    // afterwards. Client receives via RoomMeta.reefStaticZones in snapshot.init.
+    const ribbons = buildReefBoostRibbons();
+    const apexZones = buildReefApexZones(checkpoints);
+    const hazards = buildReefHazardPatches();
+
     const state: ReefRoomState = {
       roomId,
       activityId,
@@ -355,6 +440,11 @@ class ReefRaceSim {
       finishOrder: [],
       botControllers,
       botSeqs: new Map(),
+      // Phase 2 — static zones + placement cache.
+      ribbons,
+      apexZones,
+      hazards,
+      lastPlacementMap: new Map<string, number>(),
     };
 
     // Stagger spawn positions on the start straight (just before
@@ -425,6 +515,14 @@ class ReefRaceSim {
         },
         isBot: opts?.isBot?.(petId) ?? botControllers.has(petId),
         forfeited: false,
+        // Phase 2 per-body initial state.
+        slipstreamSourcePetId: null,
+        slipstreamConsecutiveTicks: 0,
+        slipstreamGraceTicksLeft: 0,
+        ribbonsCollectedThisLap: new Set<string>(),
+        ribbonLastCollectedAt: new Map<string, number>(),
+        apexCheckedThisLap: new Set<string>(),
+        hazardsHitThisLap: new Set<string>(),
       });
     });
 
@@ -681,6 +779,13 @@ class ReefRaceSim {
     const now = Date.now();
     const dt = 1 / REEF_SIM_HZ;
 
+    // 0a. Phase 2 — refresh the placement cache once per tick. Read by:
+    //     - resolvePickups (placement-aware item re-roll)
+    //     - buildBotRoomView (per-body placement projection)
+    //     - broadcastDelta (placement field on EntityDelta)
+    //   Audit S7 fix.
+    state.lastPlacementMap = this.computeLivePlacements(state);
+
     // 0. Bot intent scheduling — runs BEFORE integration.
     if (state.botControllers.size > 0) {
       this.runBotControllers(state, dt, now);
@@ -703,9 +808,9 @@ class ReefRaceSim {
       for (const [kind, expires] of body.activeEffects) {
         if (expires <= now) body.activeEffects.delete(kind);
       }
-      // Phase 1 — sweep active boosts (drift / launch). When a drift-boost
-      // expires we must zero `currentDriftBoostSparks` so the snapshot diff
-      // stops broadcasting the spark tier.
+      // Phase 1+2 — sweep active boosts (drift / launch / Phase 2 effects).
+      // When a drift-boost expires we must zero `currentDriftBoostSparks` so
+      // the snapshot diff stops broadcasting the spark tier.
       for (const [kind, entry] of body.activeBoosts) {
         if (entry.expiresAt <= now) {
           body.activeBoosts.delete(kind);
@@ -714,11 +819,29 @@ class ReefRaceSim {
       }
     }
 
+    // 3a. Phase 2 — slipstream detection. Runs AFTER position integration so
+    //     wake distance uses true positions, AFTER the activeBoosts sweep so
+    //     the OWN boost doesn't get swept the same tick it's set.
+    this.resolveSlipstream(state, now);
+
     // 4. Body-body proximity (light push to prevent tunneling).
     this.resolveProximity(state);
 
     // 5. Power-up pickup collision.
     this.resolvePickups(state, now);
+
+    // 5a. Phase 2 — boost ribbons. AFTER pickups (those resolve at body radius
+    //     too), BEFORE checkpoints (so lap-up cleanup CAN'T retroactively wipe
+    //     an entry just collected on the same tick — see §2.11).
+    this.resolveBoostRibbons(state, now);
+
+    // 5b. Phase 2 — apex verdicts. Same window — between pickups and
+    //     checkpoints. Pure positional check.
+    this.resolveApex(state, now);
+
+    // 5c. Phase 2 — hazard patches. Edge-triggered event broadcast,
+    //     per-tick activeBoosts refresh.
+    this.resolveHazards(state, now);
 
     // 6. Pickup respawn cycle.
     this.tickPickups(state, now);
@@ -776,9 +899,7 @@ class ReefRaceSim {
     //    Pickup-only flags (existing):
     const slicked      = body.activeEffects.has('rr-ink-slick');
     const powerBoosted = body.activeEffects.has('rr-turbo-bubble');
-    //    Phase 1 kinematic flags (NEW):
-    const launchBoosted = body.activeBoosts.has('launch-boost');
-    const driftBoosted  = body.activeBoosts.has('drift-boost');
+    //    Phase 1 kinematic flags:
     const stalled       = body.activeBoosts.has('launch-stall');
 
     // 5. effectiveThrust — stall caps thrust at 30% (audit M2 — measured
@@ -793,20 +914,55 @@ class ReefRaceSim {
     if (stalled) {
       // Stall suppresses all speed mods AND caps thrust above. 0.5 mirrors
       // the ink-slick visual feel — half-cap so the lag is unmistakable.
+      // Phase 2 audit G4 — apex-penalty / hazard-slow are SKIPPED inside the
+      // stall short-circuit; stall is a single-source override, not a stack.
       speedMod = 0.5;
     } else {
-      // Additive kinematic contribution from launch + drift:
-      const driftMult =
-        driftBoosted && body.currentDriftBoostSparks >= 1
+      // ─── Phase 2 v2 — four-stage combination model ────────────────────
+      //
+      // 1. POSITIVE kinematic stack — ADDITIVE, capped at KINEMATIC_BOOST_CAP.
+      //    Sources: launch (+0.30), drift (+0.12/0.24/0.38), slipstream
+      //    (+0.20), ribbon (+0.30), apex-bonus (+0.05).
+      const launchAdd = body.activeBoosts.has('launch-boost')
+        ? LAUNCH_BOOST_MULT
+        : 0;
+      const driftAdd =
+        body.activeBoosts.has('drift-boost') && body.currentDriftBoostSparks >= 1
           ? DRIFT_BOOST_MULTS[body.currentDriftBoostSparks - 1] ?? 0
           : 0;
-      const kineticMult = (launchBoosted ? LAUNCH_BOOST_MULT : 0) + driftMult;
-      // Pickup contribution (rr-turbo-bubble expressed as additive delta):
-      const pickupMult = powerBoosted ? REEF_BOOST_MULT - 1.0 : 0; // = 0.4
-      // Take MAX so simultaneous turbo-bubble + drift-3 doesn't stack
-      // multiplicatively past the kinematic tolerance (audit C3 / S4).
-      const bestMult = Math.max(kineticMult, pickupMult);
-      speedMod = slicked ? 0.5 : 1.0 + bestMult;
+      const slipstreamAdd = body.activeBoosts.get('slipstream-boost')?.mult ?? 0;
+      const ribbonAdd     = body.activeBoosts.get('ribbon-boost')?.mult     ?? 0;
+      const apexBonusAdd  = body.activeBoosts.get('apex-bonus')?.mult       ?? 0;
+
+      const positiveStackRaw =
+        launchAdd + driftAdd + slipstreamAdd + ribbonAdd + apexBonusAdd;
+      const positiveStack = Math.min(positiveStackRaw, KINEMATIC_BOOST_CAP);
+
+      // 2. PICKUP turbo competes for the POSITIVE slot only. Phase 1 invariant:
+      //    turbo-bubble does NOT additively stack with drift; it replaces it
+      //    (taking the larger). v2 extends this to the FULL positive stack:
+      //    pickup vs (capped positive stack) is taken via MAX.
+      const pickupAdd = powerBoosted ? REEF_BOOST_MULT - 1.0 : 0; // 0.40
+      const effectivePositive = Math.max(positiveStack, pickupAdd);
+
+      // 3. NEGATIVE kinematic stack — ADDITIVE, floored, ALWAYS APPLIED.
+      //    Negatives DO NOT compete with positives via Math.max — they are
+      //    summed independently and ALWAYS subtract. Audit C4/C5 fix:
+      //    in v1 the Math.max(kineticMult, pickupMult) silently erased
+      //    hazard-slow whenever any positive boost was active.
+      const apexPenSub = body.activeBoosts.get('apex-penalty')?.mult ?? 0;
+      const hazardSub  = body.activeBoosts.get('hazard-slow')?.mult  ?? 0;
+      const negativeStackRaw = apexPenSub + hazardSub;
+      const negativeStack = Math.max(negativeStackRaw, NEGATIVE_KINETIC_FLOOR);
+
+      // 4. Combine + apply ink-slick override + absolute floor.
+      //    Three clamps in the chain (in order):
+      //      1. positiveStack ≤ KINEMATIC_BOOST_CAP    (cap on positives)
+      //      2. negativeStack ≥ NEGATIVE_KINETIC_FLOOR (floor on negatives)
+      //      3. speedMod      ≥ 0.5                    (absolute floor)
+      //    Plus: ink-slick continues to OVERRIDE everything to 0.5.
+      const kineticDelta = effectivePositive + negativeStack;
+      speedMod = slicked ? 0.5 : Math.max(0.5, 1.0 + kineticDelta);
     }
 
     const baseTopSpeed = REEF_MAX_SPEED * speedMod;
@@ -976,6 +1132,14 @@ class ReefRaceSim {
         charges: number;
         cooldownUntil: number;
       }>;
+      // Phase 2 (audit C1) — per-body race-progress projection so the bot
+      // can compute drafting / placement-fire heuristics without re-deriving
+      // the same data on every tick.
+      lap: number;
+      nextCheckpoint: number;
+      currentPlacement: number | null;
+      finishedAt: number | null;
+      dnf: boolean;
     }>;
     arenaRadius: number;
     now: number;
@@ -984,7 +1148,17 @@ class ReefRaceSim {
     nextCheckpoint?: number;
     /** Centerline points for the 12 checkpoints — bots use these for steering. */
     checkpoints?: ReefCheckpointAabb[];
+    /**
+     * Phase 2 (impl-audit S6, M4) — server-authoritative static zones so the
+     * bot can ribbon-steer and hazard-avoid against ACTUAL geometry, not the
+     * old `APEX_INSIDE_OFFSET * 0.73` approximation. Same shape as
+     * `getStaticZones` / `RoomMeta.reefStaticZones`. Read-only references —
+     * the bot must never mutate.
+     */
+    ribbons?: ReadonlyArray<{ id: string; a: Vec2; b: Vec2 }>;
+    hazards?: ReadonlyArray<{ id: string; center: Vec2; radius: number }>;
   } {
+    const placementMap = state.lastPlacementMap;
     const bodies = Array.from(state.bodies.values()).map((b) => ({
       petId: b.petId,
       x: b.x,
@@ -998,6 +1172,11 @@ class ReefRaceSim {
         charges: slot.charges,
         cooldownUntil: slot.cooldownUntil,
       })),
+      lap: b.lap,
+      nextCheckpoint: b.nextCheckpoint,
+      currentPlacement: placementMap.get(b.petId) ?? null,
+      finishedAt: b.finishedAt,
+      dnf: b.dnf,
     }));
     const self = state.bodies.get(selfPetId);
     return {
@@ -1011,6 +1190,11 @@ class ReefRaceSim {
       matchStartedAt: state.startedAt,
       nextCheckpoint: self?.nextCheckpoint ?? 1,
       checkpoints: state.checkpoints,
+      // Phase 2 (impl-audit S6, M4) — read-only references. Bot must NOT
+      // mutate. These let the bot opportunistically steer through ribbons
+      // and dodge actual hazards rather than approximating from APEX offsets.
+      ribbons: state.ribbons,
+      hazards: state.hazards,
     };
   }
 
@@ -1051,13 +1235,20 @@ class ReefRaceSim {
     body.vy *= REEF_DRAG;
 
     // Phase 1 (audit S5) — boost-gated hard velocity cap. Backstop only;
-    // never clamps non-boosted bodies. Max legit speed at 1.68× = 840 wu/s;
-    // cap at 1.85× = 925 wu/s gives 85 wu/s safety margin against a future
-    // unforeseen stacking bug.
-    const isBoostActive =
+    // never clamps non-boosted bodies. Max legit speed at 1.85× = 925 wu/s.
+    //
+    // Phase 2 — gate widens to include ALL positive kinematic effects so the
+    // cap covers the new combined-boost ceiling produced by the §2.3 cap math.
+    // The cap value stays at 1.85× because KINEMATIC_BOOST_CAP = 0.85 makes
+    // 1.85× the new theoretical ceiling — no headroom needed beyond the
+    // existing margin.
+    const isPositiveBoostActive =
       body.activeBoosts.has('launch-boost') ||
-      body.activeBoosts.has('drift-boost');
-    if (isBoostActive) {
+      body.activeBoosts.has('drift-boost') ||
+      body.activeBoosts.has('slipstream-boost') ||
+      body.activeBoosts.has('ribbon-boost') ||
+      body.activeBoosts.has('apex-bonus');
+    if (isPositiveBoostActive) {
       const speed = Math.hypot(body.vx, body.vy);
       const hardCap = REEF_MAX_SPEED * 1.85;
       if (speed > hardCap) {
@@ -1103,18 +1294,33 @@ class ReefRaceSim {
         if (dist <= REEF_BODY_RADIUS + REEF_POWERUP_RADIUS) {
           const slot = body.inventory.findIndex((s) => s.kind === null);
           if (slot >= 0) {
+            // Phase 2 — placement-aware re-roll at COLLECT time. The SPAWN
+            // roll (in tickPickups) keeps the world mesh stable; the COLLECT
+            // roll uses the collector's live placement to deliver Mario-Kart-
+            // style rubber-band items. Falls through to spawn-time kind if
+            // placement is unknown (very first tick of a fresh room).
+            const collectorPlacement =
+              state.lastPlacementMap.get(body.petId) ?? null;
+            const finalKind: ReefPowerUpKind =
+              collectorPlacement !== null
+                ? this.rollPowerUpKindForPlacement(state, collectorPlacement)
+                : pk.kind;
             body.inventory[slot] = {
-              kind: pk.kind,
+              kind: finalKind,
               charges: 1,
               cooldownUntil: 0,
             };
             pk.active = false;
             pk.collectedAt = now;
             pk.respawnAt = now + REEF_POWERUP_RESPAWN_MS;
+            // Phase 2 — broadcast the FINAL kind (the placement-rolled kind)
+            // so the HUD authoritatively swaps the inventory slot. Audit C2
+            // fix: makes the wire event the source of truth for inventory.
             this.broadcastFn(state.roomId, {
               type: 'event.power_up_collected',
               spawnId: pk.spawnId,
               collectorPetId: body.petId,
+              kind: finalKind,
             });
           }
           break;
@@ -1212,6 +1418,14 @@ class ReefRaceSim {
           body.lap += 1;
           body.lapSplitsMs.push(lapMs);
           body.lapStartedAt = now;
+          // Phase 2 — clear per-lap dedupe sets after the lap counter
+          // increments. The Phase 2 resolvers (ribbons / apex / hazards) ran
+          // in step 5a-5c using the PRE-INCREMENT lap as the dedupe key, so
+          // anything just collected on the lap-up tick is preserved in
+          // activeBoosts even though the dedupe entry is cleared here.
+          body.ribbonsCollectedThisLap.clear();
+          body.apexCheckedThisLap.clear();
+          body.hazardsHitThisLap.clear();
           this.broadcastFn(state.roomId, {
             type: 'event.lap_completed',
             petId: body.petId,
@@ -1427,6 +1641,9 @@ class ReefRaceSim {
         finishedAt: b.finishedAt,
         dnf: b.dnf,
         driftSparks: b.drift.sparkLevel,
+        // Phase 2 — live placement piped through the snapshot delta so the
+        // HUD's placement tile updates between checkpoint crossings.
+        placement: state.lastPlacementMap.get(b.petId) ?? null,
       })),
       pickups: state.pickups.map((pk) => ({
         spawnId: pk.spawnId,
@@ -1496,7 +1713,11 @@ class ReefRaceSim {
           p.dnf !== b.dnf ||
           // Phase 1 (audit S1+S7) — spark-only changes MUST broadcast so the
           // HUD can update its dot bar between positional ticks.
-          p.driftSparks !== b.driftSparks
+          p.driftSparks !== b.driftSparks ||
+          // Phase 2 — placement-only changes MUST broadcast so the HUD's
+          // placement tile updates between checkpoint crossings (positional
+          // fields may not change on the same tick the placement does).
+          p.placement !== b.placement
         );
       })
       .map((b) => ({
@@ -1518,6 +1739,9 @@ class ReefRaceSim {
           // Phase 1 — surface drift charge tier per body. Old clients hit
           // EntityDelta.changed's `[k: string]: unknown` catch-all → no-op.
           driftSparks: b.driftSparks,
+          // Phase 2 — surface live placement so the HUD's placement tile
+          // updates between checkpoint crossings.
+          placement: b.placement,
         },
       }));
     const pickups = snap.pickups
@@ -1583,6 +1807,376 @@ class ReefRaceSim {
     void FLAG_FORFEIT_THRESHOLD;
   }
 
+  // ─── Phase 2 — placement cache + per-mechanic resolvers ────────────────
+
+  /**
+   * Live placement computed from race progress = lap*REEF_CHECKPOINT_COUNT +
+   * (cpDone) for racing bodies. Higher progress = better placement (1 = leader).
+   * Finished bodies retain finish placement (sorted by finishedAt asc). DNFers
+   * appended last with deterministic petId tie-break.
+   *
+   * Returns a Map<petId, placement> with placements 1..N. Pure function of
+   * state — safe to call from any tick step. Cost: O(N log N) on N <= 8.
+   */
+  private computeLivePlacements(state: ReefRoomState): Map<string, number> {
+    const racing: Array<{
+      petId: string;
+      progress: number;
+      finishedAt: number | null;
+      dnf: boolean;
+    }> = [];
+    for (const b of state.bodies.values()) {
+      if (b.dnf || b.forfeited) {
+        racing.push({
+          petId: b.petId,
+          progress: -Infinity,
+          finishedAt: null,
+          dnf: true,
+        });
+        continue;
+      }
+      if (b.finishedAt !== null) {
+        racing.push({
+          petId: b.petId,
+          progress: Infinity,
+          finishedAt: b.finishedAt,
+          dnf: false,
+        });
+        continue;
+      }
+      // Race progress: full laps + completed checkpoints in the current lap.
+      // nextCheckpoint=1 means we just crossed 0 → 0 fully done; nextCheckpoint=11
+      // means we've crossed 1..10 = 10 done. Wrap: nextCheckpoint=0 means we've
+      // crossed 1..11 and are about to cross 0 → 11 done (+ lap-start).
+      const cpDone =
+        b.nextCheckpoint === 0 ? REEF_CHECKPOINT_COUNT - 1 : b.nextCheckpoint - 1;
+      racing.push({
+        petId: b.petId,
+        progress: b.lap * REEF_CHECKPOINT_COUNT + cpDone,
+        finishedAt: null,
+        dnf: false,
+      });
+    }
+    // Sort: finishers first by finishedAt asc, then racers by progress desc,
+    // then DNF. Tie-break by petId ASCENDING for determinism.
+    racing.sort((a, b) => {
+      if (a.finishedAt !== null && b.finishedAt !== null) {
+        return a.finishedAt - b.finishedAt;
+      }
+      if (a.finishedAt !== null) return -1;
+      if (b.finishedAt !== null) return 1;
+      if (a.dnf && !b.dnf) return 1;
+      if (!a.dnf && b.dnf) return -1;
+      if (a.progress !== b.progress) return b.progress - a.progress;
+      return a.petId < b.petId ? -1 : a.petId > b.petId ? 1 : 0;
+    });
+    const out = new Map<string, number>();
+    racing.forEach((r, i) => out.set(r.petId, i + 1));
+    return out;
+  }
+
+  /**
+   * Slipstream (drafting) detection. Pair-wise loop on alive racing bodies.
+   * Sets / refreshes `slipstream-boost` activeBoost entry once a body has
+   * stayed in the same source's wake for SLIPSTREAM_REQUIRED_TICKS. Edge-
+   * triggers `event.slipstream` on rising edge and `event.slipstream_end`
+   * when grace expires.
+   */
+  private resolveSlipstream(state: ReefRoomState, now: number): void {
+    const bodies: ReefBody[] = [];
+    for (const b of state.bodies.values()) {
+      if (b.alive && !b.dnf && b.finishedAt === null && !b.forfeited) {
+        bodies.push(b);
+      }
+    }
+    // Per-body inner loop — O(N²) on N≤8 = 64 checks/tick. Cheap.
+    for (const self of bodies) {
+      let bestSrc: ReefBody | null = null;
+      let bestDistSq = Infinity;
+      for (const target of bodies) {
+        if (target === self) continue;
+        const dx = target.x - self.x;
+        const dy = target.y - self.y;
+        const distSq = dx * dx + dy * dy;
+        const minSq = SLIPSTREAM_MIN_DISTANCE * SLIPSTREAM_MIN_DISTANCE;
+        const maxSq = SLIPSTREAM_MAX_DISTANCE * SLIPSTREAM_MAX_DISTANCE;
+        if (distSq < minSq || distSq > maxSq) continue;
+        // Target's velocity must be non-trivial (a parked / stalled car
+        // can't make wake).
+        const tSpeed = Math.hypot(target.vx, target.vy);
+        if (tSpeed < REEF_MAX_SPEED * 0.30) continue;
+        // Self must be BEHIND the target (dot(self→target, target.vel) > 0).
+        const dot = (dx * target.vx + dy * target.vy) / tSpeed;
+        if (dot <= 0) continue;
+        // Lateral offset must be within wake half-width (perp to target vel).
+        const perpMag = Math.abs(dx * target.vy - dy * target.vx) / tSpeed;
+        if (perpMag > SLIPSTREAM_HALF_WIDTH) continue;
+        // Self velocity must be non-trivial AND aligned with target's.
+        const sSpeed = Math.hypot(self.vx, self.vy);
+        if (sSpeed < REEF_MAX_SPEED * 0.30) continue;
+        const align =
+          (self.vx * target.vx + self.vy * target.vy) / (sSpeed * tSpeed);
+        if (align < SLIPSTREAM_MIN_VEL_ALIGNMENT) continue;
+        // Prefer the closest valid target (avoid bouncing between two leaders).
+        if (distSq < bestDistSq) {
+          bestDistSq = distSq;
+          bestSrc = target;
+        }
+      }
+      if (bestSrc) {
+        // Continue / start charging.
+        if (self.slipstreamSourcePetId === bestSrc.petId) {
+          self.slipstreamConsecutiveTicks++;
+        } else {
+          self.slipstreamSourcePetId = bestSrc.petId;
+          self.slipstreamConsecutiveTicks = 1;
+        }
+        self.slipstreamGraceTicksLeft = SLIPSTREAM_GRACE_TICKS;
+        // Threshold reached → set / refresh boost.
+        if (self.slipstreamConsecutiveTicks >= SLIPSTREAM_REQUIRED_TICKS) {
+          const wasActive = self.activeBoosts.has('slipstream-boost');
+          self.activeBoosts.set('slipstream-boost', {
+            expiresAt: now + SLIPSTREAM_REFRESH_TTL_MS,
+            mult: SLIPSTREAM_BOOST_MULT,
+          });
+          // Edge-trigger: only broadcast on RISING edge of `wasActive`.
+          // SLIPSTREAM_REFRESH_TTL_MS = 250ms is comfortably greater than
+          // one tick (33ms), so the boost won't expire-then-set mid-tick.
+          if (!wasActive) {
+            this.broadcastFn(state.roomId, {
+              type: 'event.slipstream',
+              srcPetId: bestSrc.petId,
+              dstPetId: self.petId,
+            });
+          }
+        }
+      } else {
+        // Out of wake — apply grace, then clear AND broadcast end event.
+        if (self.slipstreamGraceTicksLeft > 0) {
+          self.slipstreamGraceTicksLeft--;
+          if (
+            self.slipstreamGraceTicksLeft === 0 &&
+            self.activeBoosts.has('slipstream-boost')
+          ) {
+            // Edge-trigger: emit `event.slipstream_end` exactly when grace
+            // runs out and the boost is about to be allowed to expire.
+            self.activeBoosts.delete('slipstream-boost');
+            self.slipstreamSourcePetId = null;
+            self.slipstreamConsecutiveTicks = 0;
+            this.broadcastFn(state.roomId, {
+              type: 'event.slipstream_end',
+              dstPetId: self.petId,
+            });
+          }
+        } else {
+          // Already cleared in a prior tick; ensure source/counter reset.
+          self.slipstreamSourcePetId = null;
+          self.slipstreamConsecutiveTicks = 0;
+        }
+      }
+    }
+  }
+
+  /**
+   * Boost-ribbon detection. Crossing a ribbon segment with body radius
+   * overlap fires +30% / 2s. Per-lap dedupe keyed on (lap, ribbonId);
+   * cross-lap cooldown via `ribbonLastCollectedAt` map.
+   */
+  private resolveBoostRibbons(state: ReefRoomState, now: number): void {
+    if (state.ribbons.length === 0) return; // future-proof
+    for (const body of state.bodies.values()) {
+      if (
+        !body.alive ||
+        body.dnf ||
+        body.finishedAt !== null ||
+        body.forfeited
+      ) {
+        continue;
+      }
+      for (const ribbon of state.ribbons) {
+        // Skip if already collected this lap (key includes PRE-INCREMENT lap).
+        const key = `${body.lap}:${ribbon.id}`;
+        if (body.ribbonsCollectedThisLap.has(key)) continue;
+        // Per-ribbon cooldown — prevents oscillating across the line.
+        const lastCollect = body.ribbonLastCollectedAt.get(ribbon.id) ?? 0;
+        if (now - lastCollect < RIBBON_COLLECTION_COOLDOWN_MS) continue;
+        // Segment-distance test: project body onto ribbon.a→ribbon.b.
+        if (!isOnRibbon(body, ribbon)) continue;
+        // Collected.
+        body.ribbonsCollectedThisLap.add(key);
+        body.ribbonLastCollectedAt.set(ribbon.id, now);
+        body.activeBoosts.set('ribbon-boost', {
+          expiresAt: now + RIBBON_BOOST_DURATION_MS,
+          mult: RIBBON_BOOST_MULT,
+        });
+        this.broadcastFn(state.roomId, {
+          type: 'event.ribbon_collected',
+          petId: body.petId,
+          ribbonId: ribbon.id,
+        });
+        break; // one ribbon per body per tick
+      }
+    }
+  }
+
+  /**
+   * Apex verdict — inner zone = 'clean' (+5% / 1.5s), outer zone = 'wide'
+   * (-5% / 1.5s). Fired AT MOST ONCE per (petId, lap, hairpinIndex). Cleared
+   * on lap-up via `apexCheckedThisLap` clear in resolveCheckpoints.
+   */
+  private resolveApex(state: ReefRoomState, now: number): void {
+    if (state.apexZones.length === 0) return;
+    for (const body of state.bodies.values()) {
+      if (
+        !body.alive ||
+        body.dnf ||
+        body.finishedAt !== null ||
+        body.forfeited
+      ) {
+        continue;
+      }
+      for (const zone of state.apexZones) {
+        const key = `${body.lap}:${zone.hairpinIndex}`;
+        if (body.apexCheckedThisLap.has(key)) continue;
+        const dxIn = body.x - zone.innerCenter.x;
+        const dyIn = body.y - zone.innerCenter.y;
+        const dxOut = body.x - zone.outerCenter.x;
+        const dyOut = body.y - zone.outerCenter.y;
+        if (dxIn * dxIn + dyIn * dyIn <= APEX_INNER_RADIUS * APEX_INNER_RADIUS) {
+          body.apexCheckedThisLap.add(key);
+          body.activeBoosts.set('apex-bonus', {
+            expiresAt: now + APEX_DURATION_MS,
+            mult: APEX_BONUS_MULT,
+          });
+          this.broadcastFn(state.roomId, {
+            type: 'event.apex_verdict',
+            petId: body.petId,
+            hairpinIndex: zone.hairpinIndex,
+            kind: 'clean',
+          });
+        } else if (
+          dxOut * dxOut + dyOut * dyOut <=
+          APEX_OUTER_RADIUS * APEX_OUTER_RADIUS
+        ) {
+          body.apexCheckedThisLap.add(key);
+          body.activeBoosts.set('apex-penalty', {
+            expiresAt: now + APEX_DURATION_MS,
+            mult: APEX_PENALTY_MULT, // negative
+          });
+          this.broadcastFn(state.roomId, {
+            type: 'event.apex_verdict',
+            petId: body.petId,
+            hairpinIndex: zone.hairpinIndex,
+            kind: 'wide',
+          });
+        }
+      }
+    }
+  }
+
+  /**
+   * Hazard patches — sea-urchin field clipping the inside-line of each
+   * hairpin. Refreshes `hazard-slow` activeBoost every tick of overlap;
+   * edge-triggers `event.hazard_hit` AT MOST ONCE per (petId, lap, hazardId).
+   * Shields do NOT block hazards (terrain, not attacks).
+   */
+  private resolveHazards(state: ReefRoomState, now: number): void {
+    if (state.hazards.length === 0) return;
+    for (const body of state.bodies.values()) {
+      if (
+        !body.alive ||
+        body.dnf ||
+        body.finishedAt !== null ||
+        body.forfeited
+      ) {
+        continue;
+      }
+      let hit: ReefHazardPatch | null = null;
+      for (const hazard of state.hazards) {
+        const dx = body.x - hazard.center.x;
+        const dy = body.y - hazard.center.y;
+        if (dx * dx + dy * dy <= hazard.radius * hazard.radius) {
+          hit = hazard;
+          break;
+        }
+      }
+      if (hit) {
+        body.activeBoosts.set('hazard-slow', {
+          expiresAt: now + HAZARD_TICK_DURATION_MS,
+          mult: HAZARD_SLOW_MULT,
+        });
+        // Edge-trigger event broadcast — once per (petId, hazardId) per lap.
+        const key = `${body.lap}:${hit.id}`;
+        if (!body.hazardsHitThisLap.has(key)) {
+          body.hazardsHitThisLap.add(key);
+          this.broadcastFn(state.roomId, {
+            type: 'event.hazard_hit',
+            petId: body.petId,
+            hazardId: hit.id,
+          });
+        }
+      }
+      // No clear-on-leave — speedMod sweep in step 3 handles expiry naturally
+      // because `expiresAt` is now+200ms; if the body's still inside next tick
+      // the entry refreshes.
+    }
+  }
+
+  /**
+   * Phase 2 — placement-aware power-up roll. Walks the placement bucket from
+   * `getPlacementItemTable(placement)`; falls through to `rollPowerUpKind`
+   * (legacy global table) if the bucket is null/undefined.
+   */
+  private rollPowerUpKindForPlacement(
+    state: ReefRoomState,
+    placement: number,
+  ): ReefPowerUpKind {
+    const table = getPlacementItemTable(placement);
+    if (!table || table.length === 0) {
+      return this.rollPowerUpKind(state);
+    }
+    const total = table.reduce((s, e) => s + e.weight, 0);
+    if (total <= 0) return this.rollPowerUpKind(state);
+    const roll = this.lcgNext(state) % total;
+    let acc = 0;
+    for (const entry of table) {
+      acc += entry.weight;
+      if (roll < acc) return entry.kind;
+    }
+    return table[0].kind; // unreachable
+  }
+
+  /**
+   * Phase 2 — accessor for `RoomMeta.reefStaticZones`. Emits the server-
+   * authoritative ribbon / apex / hazard positions so the client builds
+   * visual meshes from the same source-of-truth (audit N3).
+   */
+  getStaticZones(roomId: string): {
+    ribbons: Array<{ id: string; a: Vec2; b: Vec2 }>;
+    apexZones: Array<{
+      hairpinIndex: number;
+      innerCenter: Vec2;
+      outerCenter: Vec2;
+    }>;
+    hazards: Array<{ id: string; center: Vec2; radius: number }>;
+  } | null {
+    const state = this.rooms.get(roomId);
+    if (!state) return null;
+    return {
+      ribbons: state.ribbons.map((r) => ({ id: r.id, a: r.a, b: r.b })),
+      apexZones: state.apexZones.map((z) => ({
+        hairpinIndex: z.hairpinIndex,
+        innerCenter: z.innerCenter,
+        outerCenter: z.outerCenter,
+      })),
+      hazards: state.hazards.map((h) => ({
+        id: h.id,
+        center: h.center,
+        radius: h.radius,
+      })),
+    };
+  }
+
   // ─── Spawn / RNG ───────────────────────────────────────────────────────
 
   private rollPowerUpKind(state: ReefRoomState): ReefPowerUpKind {
@@ -1616,6 +2210,40 @@ function emptyReefInventory(): PowerUpInventorySlot[] {
     out.push({ kind: null, charges: 0, cooldownUntil: 0 });
   }
   return out;
+}
+
+/**
+ * Phase 2 — segment-distance test: project the body onto the ribbon
+ * a→b segment. The body is "on" the ribbon when:
+ *   - parametric t lies in [0, 1] (body is between the segment endpoints)
+ *   - perpendicular distance ≤ RIBBON_HALF_WIDTH
+ *
+ * Pure number math, no allocations.
+ */
+function isOnRibbon(
+  body: { x: number; y: number },
+  ribbon: ReefBoostRibbon,
+): boolean {
+  const ax = ribbon.a.x;
+  const ay = ribbon.a.y;
+  const bx = ribbon.b.x;
+  const by = ribbon.b.y;
+  const sx = bx - ax;
+  const sy = by - ay;
+  const segLenSq = sx * sx + sy * sy;
+  if (segLenSq <= 0) return false;
+  const dx = body.x - ax;
+  const dy = body.y - ay;
+  // Parametric t along the segment.
+  const t = (dx * sx + dy * sy) / segLenSq;
+  if (t < 0 || t > 1) return false;
+  // Perpendicular distance to the segment.
+  const projX = ax + sx * t;
+  const projY = ay + sy * t;
+  const ex = body.x - projX;
+  const ey = body.y - projY;
+  const perpSq = ex * ex + ey * ey;
+  return perpSq <= RIBBON_HALF_WIDTH * RIBBON_HALF_WIDTH;
 }
 
 export const reefRaceSim = new ReefRaceSim();

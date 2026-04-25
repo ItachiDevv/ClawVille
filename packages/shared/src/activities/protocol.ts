@@ -28,6 +28,28 @@ export const vec2Schema = z.object({
 });
 export type Vec2 = z.infer<typeof vec2Schema>;
 
+/**
+ * Reef Race power-up kinds — string-literal union mirroring the server-side
+ * `ReefPowerUpKind` in `apps/api/src/services/activity/sim/reef-race-config.ts`.
+ * Lives in @clawville/shared so the protocol's `event.power_up_collected.kind`
+ * (impl-audit M1) can narrow it to the legitimate set rather than `string`,
+ * blocking any future server change from silently writing rogue kinds into
+ * the client-side inventory.
+ *
+ * Phase 2 (impl-audit M1): `event.power_up_collected.kind` is now typed
+ * `ReefPowerUpKind` (was `string`).
+ *
+ * If a new kind is added on the server, ADD IT HERE in the same diff or the
+ * type will fail to compile — that's the intended fence.
+ */
+export type ReefPowerUpKind =
+  | 'rr-turbo-bubble'
+  | 'rr-ink-slick'
+  | 'rr-bubble-shield'
+  | 'rr-seeker-jelly'
+  | 'rr-tide-wave'
+  | 'rr-whirlpool';
+
 // ─── Client → Server ────────────────────────────────────────────────────────
 
 export const clientAuthFrameSchema = z.object({
@@ -127,6 +149,21 @@ export interface RoomMeta {
    * Optional so older clients tolerating its absence aren't broken.
    */
   countdownStartedAt?: number;
+  /**
+   * Phase 2 — server-authoritative Reef Race static-zone positions. `null`
+   * for non-reef-race rooms. Sent once in `snapshot.init`; never updated.
+   * Client builds visual meshes from these so Phase-3 stat tweaks read
+   * from a single source of truth (audit N3).
+   */
+  reefStaticZones?: {
+    ribbons: Array<{ id: string; a: Vec2; b: Vec2 }>;
+    apexZones: Array<{
+      hairpinIndex: number;
+      innerCenter: Vec2;
+      outerCenter: Vec2;
+    }>;
+    hazards: Array<{ id: string; center: Vec2; radius: number }>;
+  };
 }
 
 /** Per-entity delta — only changed fields are transmitted */
@@ -244,6 +281,65 @@ export type ServerFrame =
       type: 'event.power_up_collected';
       spawnId: string;
       collectorPetId: string;
+      /**
+       * Phase 2 — kind of the item placed into inventory. May differ from the
+       * spawn-time kind when the placement-aware re-roll fires (audit C2 fix).
+       * Old clients silently drop this field. `undefined` on Phase 1 servers.
+       *
+       * impl-audit M1: narrowed from `string` to `ReefPowerUpKind` so a
+       * rogue server can't slip an unknown string into the client inventory
+       * slot. Old Phase 1 servers omit this field — `?` keeps backward
+       * compat with the Phase 1 broadcast shape.
+       */
+      kind?: ReefPowerUpKind;
+    }
+  | {
+      /**
+       * Phase 2 — slipstream verdict START. Fired once when `dstPetId` first
+       * enters `srcPetId`'s wake AND completes SLIPSTREAM_REQUIRED_TICKS hold.
+       * Edge-triggered. NOT broadcast on every tick of being in-wake.
+       */
+      type: 'event.slipstream';
+      srcPetId: string;
+      dstPetId: string;
+    }
+  | {
+      /**
+       * Phase 2 — slipstream verdict END. Fired once when the body's grace
+       * counter runs out and the activeBoosts entry is cleared. Edge-triggered.
+       * Eliminates client-side timer polling (audit S4 fix).
+       */
+      type: 'event.slipstream_end';
+      dstPetId: string;
+    }
+  | {
+      /**
+       * Phase 2 — apex verdict. `kind: 'clean'` = inside line +5%,
+       * `'wide'` = outside line -5%. Fired at most once per (petId, lap,
+       * hairpinIndex). Renamed from event.apex_bonus (audit S1 fix).
+       */
+      type: 'event.apex_verdict';
+      petId: string;
+      hairpinIndex: number;
+      kind: 'clean' | 'wide';
+    }
+  | {
+      /**
+       * Phase 2 — boost ribbon collection. `ribbonId` is 'rib-top' or
+       * 'rib-bot'. HUD may flash; scene fires a sparkle particle burst.
+       */
+      type: 'event.ribbon_collected';
+      petId: string;
+      ribbonId: string;
+    }
+  | {
+      /**
+       * Phase 2 — sea-urchin field clip. Fired once per (petId, lap,
+       * hazardId). activeBoosts handles per-tick speed penalty refresh.
+       */
+      type: 'event.hazard_hit';
+      petId: string;
+      hazardId: string;
     }
   | {
       /**

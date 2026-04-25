@@ -105,7 +105,7 @@ Touches `apps/api/src/services/activity/sim/reef-race-sim.ts` body integration. 
 | `apps/api/src/services/activity/sim/reef-race-config.ts` | orchestrator | DRIFT_SPARK_TIERS, LAUNCH_WINDOW_MS, LAUNCH_BOOST_MULT, etc. |
 | `apps/api/src/services/activity/bots/reef-race-bot.ts` | orchestrator | Drift on hairpin entry, launch attempt |
 | `apps/web/src/components/game/reef-race-hud.tsx` | orchestrator | Drift sparks UI, launch indicator |
-| `packages/shared/src/types/activity-frames.ts` | orchestrator | Add `event.drift_boost`, `event.launch`, `body.driftSparks` |
+| `packages/shared/src/activities/protocol.ts` | orchestrator | Add `event.drift_boost`, `event.launch`, `body.driftSparks` |
 | `apps/web/src/stores/activity.ts` | orchestrator | Thread driftSparks + new events through |
 | `apps/api/src/services/activity/bots/__tests__/reef-race-bot.test.ts` | orchestrator | Drift + launch test cases |
 
