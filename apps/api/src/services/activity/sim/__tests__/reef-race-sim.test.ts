@@ -286,8 +286,16 @@ describe('ReefRaceSim — race-end on REEF_LAPS completion', () => {
     expect(state.bodies.get('p1')!.finishedAt).not.toBeNull();
     expect(state.bodies.get('p2')!.finishedAt).not.toBeNull();
     expect(state.bodies.get('p1')!.lap).toBe(REEF_LAPS);
+    // Phase 4 (S-IMPL-1 fix 2026-04-25) — reef-race rooms NO LONGER emit a
+    // preview `event.match_ended` from the sim. The reward pipeline owns the
+    // authoritative per-recipient broadcast (`emitPerRecipientMatchEnd`)
+    // with real tokens / pbDelta / streakBest. Suppression here removes the
+    // "tokens=0 flash" UX bug where the modal opened with zeroed numbers
+    // before being replaced ~50–500 ms later. The endedFn callback (which
+    // drives the room manager → reward pipeline chain) IS still fired, so
+    // the authoritative frame is still sent — just not via the sim.
     const matchEnded = broadcasts.find((f) => f.type === 'event.match_ended');
-    expect(matchEnded).toBeDefined();
+    expect(matchEnded).toBeUndefined();
   });
 });
 

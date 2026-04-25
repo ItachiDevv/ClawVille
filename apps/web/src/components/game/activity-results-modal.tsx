@@ -34,6 +34,7 @@ import { usePet } from '@/hooks/use-pet';
 import { useActivityStore } from '@/stores/activity';
 import { useQuestStore, triggerQuestCheck } from '@/stores/quest';
 import { playActivitySound } from '@/lib/activity-audio';
+import { TOTAL_CHECKPOINTS_PER_RACE } from '@clawville/shared';
 
 // ─── API types (mirror of `GET /api/activities/:id/rooms/:roomId/results`) ──
 
@@ -239,6 +240,14 @@ export default function ActivityResultsModal({
   const eliminationsArr = useActivityStore((s) => s.events.eliminations);
   const hitsArr = useActivityStore((s) => s.events.hits);
   const scoresMap = useActivityStore((s) => s.scores);
+  // Phase 4 (C-IMPL-1 fix 2026-04-25) — Reef Race match-end summary fields.
+  // Each is a primitive store subscription; populated by event.match_ended
+  // handler in apps/web/src/stores/activity.ts (line 790-804). null when
+  // not present in this match's payload — sections render conditionally.
+  const lastMatchPbDelta      = useActivityStore((s) => s.lastMatchPbDelta);
+  const lastMatchStreakBest   = useActivityStore((s) => s.lastMatchStreakBest);
+  const lastMatchDailyRank    = useActivityStore((s) => s.lastMatchDailyRank);
+  const lastMatchPerfectBonus = useActivityStore((s) => s.lastMatchPerfectLapBonus);
 
   // Authoritative replace
   const [authResults, setAuthResults] = useState<AuthoritativeResultRow[] | null>(null);
@@ -491,6 +500,23 @@ export default function ActivityResultsModal({
   const petEmoji = '🦞';
   const petName = pet?.name ?? 'Agent';
 
+  // Phase 4 (C-IMPL-1 fix 2026-04-25) — activity-aware labels. The previous
+  // hard-coded "BUMPER SHELLS" subtitle + "LAST SHELL STANDING" tagline
+  // showed on the Reef Race match-end modal too — visible UX bug. Resolve
+  // from the `activityId` prop (passed through from the HUD parent).
+  const isReefRace = activityId === 'reef-race';
+  const isBumperShells = activityId === 'bumper-shells';
+  const activityLabel = isReefRace
+    ? 'REEF RACE'
+    : isBumperShells
+      ? 'BUMPER SHELLS'
+      : (activityId || 'ACTIVITY').toUpperCase();
+  const activityCompleteTag = isReefRace
+    ? 'CHECKERED FLAG'
+    : isBumperShells
+      ? 'LAST SHELL STANDING'
+      : 'MATCH COMPLETE';
+
   return (
     <div
       role="dialog"
@@ -594,7 +620,7 @@ export default function ActivityResultsModal({
               ? 'BY FORFEIT'
               : matchEndReason === 'aborted'
                 ? 'ROUND ABORTED'
-                : 'LAST SHELL STANDING'}
+                : activityCompleteTag}
           </div>
         </div>
 
@@ -646,7 +672,7 @@ export default function ActivityResultsModal({
               fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
             }}
           >
-            BUMPER SHELLS
+            {activityLabel}
           </div>
         </div>
 
@@ -776,6 +802,19 @@ export default function ActivityResultsModal({
               animate={phases.rewards && !reduced && !skipped}
             />
           )}
+          {/* Phase 4 (C-IMPL-1) — perfect-lap bonus row. Only renders for
+              Reef Race matches with a non-zero bonus credited (streak ≥ 36
+              cleared the entire race). The +25 is server-authoritative. */}
+          {isReefRace && lastMatchPerfectBonus !== null && lastMatchPerfectBonus > 0 && (
+            <RewardRow
+              icon="✨"
+              label="Perfect Race Bonus"
+              value={`+${lastMatchPerfectBonus}`}
+              tone="green"
+              delayIdx={4}
+              animate={phases.rewards && !reduced && !skipped}
+            />
+          )}
           {authError && !authResults && (
             <div
               style={{
@@ -790,26 +829,160 @@ export default function ActivityResultsModal({
           )}
         </div>
 
-        {/* PHASE 6 — NEW callout (personal best) */}
-        {isPersonalBest && (
-          <div
-            className={phases.callout ? 'arm-phase-on arm-callout' : 'arm-phase-off'}
-            style={{
-              textAlign: 'center',
-              marginBottom: 14,
-              padding: '8px 16px',
-              border: '1px solid rgba(250, 204, 21, 0.6)',
-              borderRadius: 6,
-              background: 'rgba(250, 204, 21, 0.1)',
-              fontSize: 12,
-              fontWeight: 800,
-              letterSpacing: '0.1em',
-              color: '#facc15',
-              textShadow: '0 0 12px rgba(250, 204, 21, 0.55)',
-            }}
-          >
-            ⭐ NEW PERSONAL BEST ⭐
-          </div>
+        {/* PHASE 6 — NEW callout sections.
+            Reef Race (C-IMPL-1 fix 2026-04-25): three independent
+            achievement blocks — PB delta, perfect-line streak, daily rank.
+            Each renders ONLY if its corresponding store field is populated
+            (server-driven — fields are written by the per-recipient
+            event.match_ended handler in stores/activity.ts).
+            Bumper Shells / other activities: the legacy
+            "⭐ NEW PERSONAL BEST ⭐" callout still fires from
+            `isPersonalBest` (server-flagged via the score path). */}
+        {isReefRace ? (
+          <>
+            {/* PB delta block — "🏆 NEW PERSONAL BEST: 12.34s (was 12.89s)" */}
+            {lastMatchPbDelta && (
+              <div
+                className={phases.callout ? 'arm-phase-on arm-callout' : 'arm-phase-off'}
+                style={{
+                  textAlign: 'center',
+                  marginBottom: 10,
+                  padding: '10px 16px',
+                  border: '1px solid rgba(250, 204, 21, 0.6)',
+                  borderRadius: 6,
+                  background: 'rgba(250, 204, 21, 0.1)',
+                  fontSize: 12,
+                  fontWeight: 800,
+                  letterSpacing: '0.06em',
+                  color: '#facc15',
+                  textShadow: '0 0 12px rgba(250, 204, 21, 0.55)',
+                }}
+              >
+                <span aria-hidden style={{ marginRight: 6 }}>🏆</span>
+                NEW PERSONAL BEST:{' '}
+                <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+                  {formatLapMs(lastMatchPbDelta.newMs)}
+                </span>
+                {lastMatchPbDelta.oldMs !== null && (
+                  <span
+                    style={{
+                      marginLeft: 8,
+                      fontSize: 10,
+                      fontWeight: 600,
+                      color: 'rgba(250, 204, 21, 0.7)',
+                      letterSpacing: '0.04em',
+                    }}
+                  >
+                    (was{' '}
+                    <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+                      {formatLapMs(lastMatchPbDelta.oldMs)}
+                    </span>
+                    , −
+                    <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+                      {formatLapDeltaMs(
+                        lastMatchPbDelta.oldMs - lastMatchPbDelta.newMs,
+                      )}
+                    </span>
+                    )
+                  </span>
+                )}
+              </div>
+            )}
+            {/* Streak best block — "🌟 PERFECT LAP × 36" or "⚡ PERFECT
+                LINE STREAK: N checkpoints" depending on whether the player
+                cleared every checkpoint in the match (streak ≥ 36). */}
+            {lastMatchStreakBest !== null && lastMatchStreakBest > 0 && (
+              <div
+                className={phases.callout ? 'arm-phase-on arm-callout' : 'arm-phase-off'}
+                style={{
+                  textAlign: 'center',
+                  marginBottom: 10,
+                  padding: '8px 14px',
+                  border: `1px solid ${
+                    lastMatchStreakBest >= TOTAL_CHECKPOINTS_PER_RACE
+                      ? 'rgba(103, 232, 249, 0.6)'
+                      : 'rgba(251, 146, 60, 0.55)'
+                  }`,
+                  borderRadius: 6,
+                  background:
+                    lastMatchStreakBest >= TOTAL_CHECKPOINTS_PER_RACE
+                      ? 'rgba(103, 232, 249, 0.08)'
+                      : 'rgba(251, 146, 60, 0.08)',
+                  fontSize: 12,
+                  fontWeight: 800,
+                  letterSpacing: '0.06em',
+                  color:
+                    lastMatchStreakBest >= TOTAL_CHECKPOINTS_PER_RACE
+                      ? '#67e8f9'
+                      : '#fb923c',
+                  textShadow:
+                    lastMatchStreakBest >= TOTAL_CHECKPOINTS_PER_RACE
+                      ? '0 0 12px rgba(103, 232, 249, 0.55)'
+                      : '0 0 12px rgba(251, 146, 60, 0.45)',
+                }}
+              >
+                {lastMatchStreakBest >= TOTAL_CHECKPOINTS_PER_RACE ? (
+                  <>
+                    <span aria-hidden style={{ marginRight: 6 }}>🌟</span>
+                    PERFECT LAP × {lastMatchStreakBest}
+                  </>
+                ) : (
+                  <>
+                    <span aria-hidden style={{ marginRight: 6 }}>⚡</span>
+                    PERFECT LINE STREAK: {lastMatchStreakBest} CHECKPOINTS
+                  </>
+                )}
+              </div>
+            )}
+            {/* Daily rank block — "🦞 #N LOBSTER OF THE DAY". Server returns
+                rank only when the just-set PB cracks the top 100 of the
+                last-24h leaderboard (C2 fix — direct indexed scan, NOT the
+                public 60s leaderboard cache). */}
+            {lastMatchDailyRank !== null && lastMatchDailyRank > 0 && (
+              <div
+                className={phases.callout ? 'arm-phase-on arm-callout' : 'arm-phase-off'}
+                style={{
+                  textAlign: 'center',
+                  marginBottom: 14,
+                  padding: '8px 14px',
+                  border: '1px solid rgba(56, 189, 248, 0.55)',
+                  borderRadius: 6,
+                  background: 'rgba(56, 189, 248, 0.08)',
+                  fontSize: 12,
+                  fontWeight: 800,
+                  letterSpacing: '0.06em',
+                  color: '#7dd3fc',
+                  textShadow: '0 0 12px rgba(56, 189, 248, 0.45)',
+                }}
+              >
+                <span aria-hidden style={{ marginRight: 6 }}>🦞</span>
+                {lastMatchDailyRank === 1
+                  ? '#1 LOBSTER OF THE DAY'
+                  : `#${lastMatchDailyRank} LOBSTER OF THE DAY`}
+              </div>
+            )}
+          </>
+        ) : (
+          isPersonalBest && (
+            <div
+              className={phases.callout ? 'arm-phase-on arm-callout' : 'arm-phase-off'}
+              style={{
+                textAlign: 'center',
+                marginBottom: 14,
+                padding: '8px 16px',
+                border: '1px solid rgba(250, 204, 21, 0.6)',
+                borderRadius: 6,
+                background: 'rgba(250, 204, 21, 0.1)',
+                fontSize: 12,
+                fontWeight: 800,
+                letterSpacing: '0.1em',
+                color: '#facc15',
+                textShadow: '0 0 12px rgba(250, 204, 21, 0.55)',
+              }}
+            >
+              ⭐ NEW PERSONAL BEST ⭐
+            </div>
+          )
         )}
 
         {/* PHASE 7 — CTAs */}
@@ -825,7 +998,7 @@ export default function ActivityResultsModal({
           <button
             type="button"
             onClick={onPlayAgain}
-            aria-label="Play another Bumper Shells match"
+            aria-label={`Play another ${isReefRace ? 'Reef Race' : isBumperShells ? 'Bumper Shells' : 'match'}`}
             style={{
               padding: '11px 22px',
               background: 'linear-gradient(180deg, #facc15 0%, #ca8a04 100%)',
@@ -1081,6 +1254,36 @@ function ordinalSuffix(n: number): string {
     default:
       return 'th';
   }
+}
+
+/**
+ * Format a lap time in milliseconds to "S.SS s" or "M:SS.SS" — Reef Race
+ * PB delta block (Phase 4 C-IMPL-1 fix). Sub-60s laps stay short
+ * ("12.34s") to keep the headline readable; >60s falls back to mm:ss.SS
+ * for the (admittedly unusual) case that a lap exceeded a minute.
+ */
+function formatLapMs(ms: number): string {
+  if (ms <= 0) return '0.00s';
+  if (ms < 60_000) {
+    return `${(ms / 1000).toFixed(2)}s`;
+  }
+  const totalSec = ms / 1000;
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec - min * 60;
+  return `${min}:${sec.toFixed(2).padStart(5, '0')}`;
+}
+
+/**
+ * Format a positive lap delta (oldMs - newMs) for the "(was X, −Y)"
+ * suffix on the PB delta block. Always positive — caller has already
+ * verified the new time is faster than the old.
+ */
+function formatLapDeltaMs(deltaMs: number): string {
+  if (deltaMs <= 0) return '0.00s';
+  if (deltaMs < 1000) {
+    return `${(deltaMs / 1000).toFixed(2)}s`;
+  }
+  return `${(deltaMs / 1000).toFixed(2)}s`;
 }
 
 // ─── Inline scoped CSS ──────────────────────────────────────────────────────

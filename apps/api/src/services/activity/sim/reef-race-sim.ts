@@ -1922,18 +1922,33 @@ class ReefRaceSim {
       petId: r.petId,
       placement: r.placement,
     }));
-    const previewPlacement = winners[0]?.placement ?? 0;
-    this.broadcastFn(state.roomId, {
-      type: 'event.match_ended',
-      reason: 'complete',
-      winners,
-      rewardPreview: {
-        placement: previewPlacement,
-        // Authoritative crediting lives in chunk #7's reward pipeline.
-        tokens: 0,
-        leaderboardPoints: 0,
-      },
-    });
+
+    // Phase 4 (S-IMPL-1 fix 2026-04-25) — Reef Race rooms ALWAYS go through
+    // `reward-pipeline.ts → emitPerRecipientMatchEnd` which broadcasts the
+    // authoritative `event.match_ended` (with real tokens / pbDelta /
+    // streakBest / perfectLapBonus) per recipient. Emitting this preview
+    // frame first would fire the client modal with `tokens: 0` for ~50–
+    // 500ms before the authoritative numbers replace it (UX flash).
+    // Skip the preview here; the pipeline owns the broadcast.
+    //
+    // For activities WITHOUT a per-recipient pipeline emit (none today
+    // beside reef-race, but future activities could opt in similarly),
+    // the preview broadcast still runs so the client gets at least one
+    // match-end frame.
+    if (state.activityId !== 'reef-race') {
+      const previewPlacement = winners[0]?.placement ?? 0;
+      this.broadcastFn(state.roomId, {
+        type: 'event.match_ended',
+        reason: 'complete',
+        winners,
+        rewardPreview: {
+          placement: previewPlacement,
+          // Authoritative crediting lives in chunk #7's reward pipeline.
+          tokens: 0,
+          leaderboardPoints: 0,
+        },
+      });
+    }
 
     if (this.endedFn) {
       try {
