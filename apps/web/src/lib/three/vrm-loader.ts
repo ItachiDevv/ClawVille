@@ -198,6 +198,50 @@ function loadVRM(path: string): Promise<VRM> {
         obj.frustumCulled = false;
       });
 
+      // ── Spring-bone stiffness scale fix (2026-04-25) ──────────────────────
+      //
+      // Root cause: three-vrm's verlet integrator runs in world-space (or
+      // center-space if the VRM defines a center node). The stiffness term is:
+      //
+      //   nextTail += boneAxisWorld * stiffness * delta
+      //
+      // This adds `stiffness * delta` world-units of restoring force per frame.
+      // At VRM_NPC_SCALE=112 (arena-npcs.tsx), all bone world-space lengths and
+      // tail displacements are 112× larger than at native scale (~1.6m), but
+      // stiffness stays at the VRM-authored value (typically 0.5–2.0). The body
+      // translates ~13–20wu/s during walk, while the stiffness correction per
+      // frame is only stiffness * 0.016 ≈ 0.016–0.032wu — completely overwhelmed
+      // by the scaled motion. Hair tails fall behind for several frames, exposing
+      // the skull cap ("bald spot" during walk). Standing NPCs are fine because
+      // there is no ongoing body translation to lag behind.
+      //
+      // Fix: multiply stiffness for all hair-chain joints by HAIR_STIFFNESS_SCALE.
+      // 80 = empirical target (112 * ~0.7 — slightly under full compensation to
+      // preserve a small, natural settling lag; full 112 makes hair overshoot).
+      // Non-hair joints (skirt, tail, etc.) are also scaled but more gently (20×)
+      // to avoid cloth/tail overshooting while still reducing visible lag.
+      //
+      // Applied once per VRM at load time — safe under the VRM_CACHE @invariant
+      // because load runs exactly once per path. All consumers of the same path
+      // (arena NPCs, player-pet) share the tuned spring settings. player-pet does
+      // not walk at VRM_NPC_SCALE=112, so the stiffer springs are a no-op for it
+      // (high stiffness on a stationary rig just means faster settle-to-rest,
+      // which is invisible at walking scale).
+      //
+      // dragForce is not touched: it controls oscillation damping, not restoring
+      // speed. Lowering it would make hair "springier" but also produce overshoot
+      // bouncing on turn changes. Stiffness is the correct lever.
+      if (vrm.springBoneManager) {
+        const HAIR_STIFFNESS_SCALE  = 80;  // For hair joints — compensates 112× scale
+        const OTHER_STIFFNESS_SCALE = 20;  // For other spring joints (skirt, tail, etc.)
+        for (const joint of vrm.springBoneManager.joints) {
+          const boneName = joint.bone?.name ?? '';
+          const isHair   = /hair/i.test(boneName);
+          joint.settings.stiffness *= isHair ? HAIR_STIFFNESS_SCALE : OTHER_STIFFNESS_SCALE;
+        }
+      }
+      // ── End spring-bone stiffness fix ──────────────────────────────────────
+
       VRM_CACHE.set(path, { status: 'resolved', vrm });
       return vrm;
     })
