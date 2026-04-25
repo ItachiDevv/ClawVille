@@ -69,15 +69,16 @@ export interface ReefRaceEntity {
 }
 
 // ─── Ghost replay frame ───────────────────────────────────────────────────────
-
-export interface GhostFrame {
-  /** Server time in ms at which this frame was recorded. */
-  t: number;
-  x: number;
-  /** Three.js Z (sim Y) */
-  z: number;
-  rot: number;
-}
+//
+// Phase 4 — moved canonical declaration into `@clawville/shared` so the
+// server (capture path in `reef-race-personal-best-service.ts` +
+// `reef-race-sim.ts`) and the client (playback in `ReefRaceGhost.tsx` +
+// store hydration) reference the SAME type. We re-export here to keep
+// existing imports (`./reef-race-types`) working unchanged.
+//
+// `t` is now lap-relative milliseconds (lap start = 0) so the ghost loops
+// cleanly regardless of when the original PB was set.
+export type { GhostFrame } from '@clawville/shared';
 
 // ─── Lap completion record (one per lap per player) ──────────────────────────
 

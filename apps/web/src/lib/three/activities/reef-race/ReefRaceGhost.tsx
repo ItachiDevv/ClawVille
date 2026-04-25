@@ -1,44 +1,108 @@
 'use client';
 
 /**
- * ReefRaceGhost.tsx
+ * ReefRaceGhost.tsx — Phase 4 §2 PB ghost mesh
  *
- * Semi-transparent kart following the player's own best-lap recorded path.
- * Max 1 ghost (self best only) — per spec §2.8 and Iris Xe performance budget.
+ * Renders the player's own personal-best lap as a translucent ghost kart.
+ * Max 1 ghost (self best only) — per spec §2 and Iris Xe performance budget.
  *
- * Ghost path: GhostFrame[] at 10Hz, linearly interpolated between frames.
+ * Ghost path: GhostFrame[] at 10Hz, lap-relative t (ms from 0..lapMs).
  * Reads from `useActivityStore.getState().reefRace.selfBestGhostPath`.
  *
- * Iris Xe invariants:
- *   - SkeletonUtils.clone() + frustumCulled=false traverse immediately after clone.
- *   - Semi-transparent: material.clone() + transparent=true + opacity=GHOST_OPACITY.
- *   - No per-frame allocations.
- *   - No trail for ghost (too expensive — per spec).
+ * Mesh: shared module-scope BoxGeometry glider board (GLIDER_WIDTH × GLIDER_HEIGHT × GLIDER_LENGTH)
+ * at KART_SCALE — same geometry as live ReefRacePlayer glider boards.
+ * Material: module-scope MeshStandardMaterial, purple (#a78bfa), opacity 0.4.
+ * No castShadow — ghost does not fight the live shadow map.
  *
- * Draw calls: 1 (ghost kart).
+ * Fade: linearly fades in over 0.5 s at the start of each looped lap replay,
+ * and fades out over 0.5 s before the end. Detected via loop position within
+ * the path duration — no store subscription needed.
+ *
+ * Settings gate:
+ *   localStorage key: "clawville.reef.showPBGhost" (default true).
+ *   Checked once at component mount. UI to toggle this is Phase 4.5.
+ *   FEATURE_GATE: reef_pb_ghost_toggle
+ *   Status: localStorage flag respected; toggle UI not yet surfaced in HUD.
+ *   Metric to graduate: any retention signal from Phase 4 instrumentation.
+ *   Current reading: to fill
+ *   Review deadline: 2026-06-01
+ *   On deadline: if no retention metric warrants removal, keep gate; delete if unused.
+ *   Reference: reef-race-phase4-detailed.md §2.4
+ *
+ * Iris Xe invariants:
+ *   - No per-frame allocations — module-scope scratch only.
+ *   - No drei Text / Billboard (hard GPU crash on Iris Xe).
+ *   - import from 'three' only (NOT 'three/webgpu').
+ *   - frustumCulled=false on all geometry (SkinnedMesh bind-pose cull risk).
+ *   - Shared geometry + material are never disposed mid-session (multi-instance safety).
+ *     Disposed only on component unmount via useEffect return.
+ *
+ * Draw calls: 1 (ghost glider board).
  */
 
 import { useRef, useEffect, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { useGLTF } from '@react-three/drei';
-import { Html } from '@react-three/drei';
 import * as THREE from 'three';
-import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { useActivityStore } from '@/stores/activity';
-import { GHOST_OPACITY, KART_SCALE, KART_Y_ABOVE_TRACK } from './reef-race-config';
+import {
+  KART_SCALE,
+  KART_Y_ABOVE_TRACK,
+  GLIDER_WIDTH,
+  GLIDER_HEIGHT,
+  GLIDER_LENGTH,
+} from './reef-race-config';
 import type { GhostFrame } from './reef-race-types';
 
-// ─── Module-scope scratch ─────────────────────────────────────────────────────
-const _ghostPos  = new THREE.Vector3();
-const _ghostPos2 = new THREE.Vector3();
-const _ghostScratch = { lastT: -1, lastFrameIdx: 0 };
+// ─── Settings gate ─────────────────────────────────────────────────────────────
 
-/** Find the two GhostFrames that bracket the given timestamp and return lerp alpha. */
+function readShowGhostSetting(): boolean {
+  if (typeof window === 'undefined') return true;
+  try {
+    const raw = localStorage.getItem('clawville.reef.showPBGhost');
+    if (raw === null) return true; // default ON
+    return raw !== 'false';
+  } catch {
+    return true;
+  }
+}
+
+// ─── Module-scope shared geometry + material ──────────────────────────────────
+//
+// ONE instance shared across all ReefRaceGhost renders (there is only one ghost,
+// but the geometry/material are created at module scope to guarantee zero alloc
+// on mount/re-mount). Must NOT be disposed per-instance — only at unmount.
+//
+// Dimensions match ReefRacePlayer._gliderGeom: GLIDER_WIDTH × GLIDER_HEIGHT × GLIDER_LENGTH.
+// At scale={[KART_SCALE, KART_SCALE, KART_SCALE]} these yield 50wu × 5wu × 100wu.
+
+const _ghostGeom = new THREE.BoxGeometry(GLIDER_WIDTH, GLIDER_HEIGHT, GLIDER_LENGTH);
+const _ghostMat  = new THREE.MeshStandardMaterial({
+  color:       '#a78bfa',  // purple — differentiates ghost from live karts
+  transparent: true,
+  opacity:     0.4,        // per Phase 4 spec §2
+  roughness:   0.6,
+  metalness:   0.2,
+  depthWrite:  false,      // standard for transparent meshes — avoid Z-fight with live karts
+});
+
+// ─── Module-scope scratch — NO per-frame allocations ─────────────────────────
+
+/** Sequential scan state — reset when path identity changes (new PB loaded). */
+const _scan = { lastFrameIdx: 0, lastPathRef: null as GhostFrame[] | null };
+
+/** Find the pair of GhostFrames that bracket `nowMs` and return lerp alpha.
+ *  O(1) amortised — sequential scan from last known position. */
 function findGhostFrames(
   path: GhostFrame[],
   nowMs: number,
 ): { a: GhostFrame; b: GhostFrame; alpha: number } | null {
   if (path.length < 2) return null;
+
+  // Reset scan index when path reference changes (new PB ghost loaded).
+  if (_scan.lastPathRef !== path) {
+    _scan.lastPathRef  = path;
+    _scan.lastFrameIdx = 0;
+  }
 
   const start = path[0].t;
   const end   = path[path.length - 1].t;
@@ -46,18 +110,37 @@ function findGhostFrames(
   if (nowMs <= start) return { a: path[0], b: path[0], alpha: 0 };
   if (nowMs >= end)   return { a: path[path.length - 2], b: path[path.length - 1], alpha: 1 };
 
-  // Linear scan from last found index (sequential access pattern → O(1) amortized).
-  let lo = Math.max(0, _ghostScratch.lastFrameIdx);
+  // Sequential scan from last known index.
+  let lo = Math.max(0, _scan.lastFrameIdx);
+  // Guard: lo must point at a frame whose t ≤ nowMs.
+  if (lo > 0 && path[lo].t > nowMs) lo = 0;
   while (lo < path.length - 2 && path[lo + 1].t <= nowMs) lo++;
-  _ghostScratch.lastFrameIdx = lo;
+  _scan.lastFrameIdx = lo;
 
   const a = path[lo];
   const b = path[lo + 1];
-  const alpha = (nowMs - a.t) / (b.t - a.t);
-  return { a, b, alpha: Math.min(1, Math.max(0, alpha)) };
+  const span  = b.t - a.t;
+  const alpha = span > 0 ? (nowMs - a.t) / span : 0;
+  return { a, b, alpha: alpha < 0 ? 0 : alpha > 1 ? 1 : alpha };
 }
 
-// ─── Ghost inner component ────────────────────────────────────────────────────
+// ─── Fade constants ───────────────────────────────────────────────────────────
+
+/** Duration (ms) of fade-in at the start of each looped lap. */
+const FADE_IN_MS  = 500;
+/** Duration (ms) of fade-out before the end of each looped lap. */
+const FADE_OUT_MS = 500;
+/** Target opacity (already baked into _ghostMat.opacity, but used for lerp calc). */
+const GHOST_MAX_OPACITY = 0.4;
+
+/**
+ * Y elevation in LOCAL scale-space = world KART_Y_ABOVE_TRACK / KART_SCALE.
+ * The glider board sits at this Y inside the KART_SCALE group, yielding the
+ * correct world-space height. Matches ReefRacePlayer.GLIDER_LOCAL_Y.
+ */
+const GHOST_LOCAL_Y = KART_Y_ABOVE_TRACK / KART_SCALE; // = 0.25
+
+// ─── Ghost mesh inner component ───────────────────────────────────────────────
 
 interface GhostInnerProps {
   path: GhostFrame[];
@@ -65,95 +148,97 @@ interface GhostInnerProps {
 }
 
 function GhostInner({ path, raceStartMs }: GhostInnerProps) {
-  const { scene: srcScene } = useGLTF('/models/sea_horse.glb');
-  const groupRef   = useRef<THREE.Group>(null);
-  const labelRef   = useRef<HTMLDivElement>(null);
+  // groupRef: world XZ position + Y rotation — at scene root level so
+  // position.x/z are in world space (unaffected by KART_SCALE).
+  const groupRef = useRef<THREE.Group>(null);
 
-  const clonedScene = useMemo(() => {
-    const c = skeletonClone(srcScene);
-    // CRITICAL: frustumCulled=false traverse immediately after clone.
-    c.traverse((o) => {
-      o.frustumCulled = false;
-    });
-    // Apply ghost transparency to all MeshStandardMaterial children.
-    c.traverse((o) => {
-      const mesh = o as THREE.Mesh;
-      if (!mesh.isMesh) return;
-      const applyGhost = (m: THREE.Material): THREE.Material => {
-        const cloned = m.clone();
-        (cloned as THREE.MeshStandardMaterial).transparent = true;
-        (cloned as THREE.MeshStandardMaterial).opacity     = GHOST_OPACITY;
-        return cloned;
-      };
-      const mat = mesh.material;
-      mesh.material = Array.isArray(mat) ? mat.map(applyGhost) : applyGhost(mat);
-    });
-    return c;
-  }, [srcScene]);
-
+  // Cache mesh ref on mount — set geometry + material imperatively.
+  // We do NOT use JSX geometry={} / material={} because those props trigger
+  // R3F's auto-dispose for intrinsic elements; we manage lifetime manually.
+  const meshRef = useRef<THREE.Mesh>(null);
   useEffect(() => {
-    const g = groupRef.current;
-    if (!g || !clonedScene) return;
-    g.add(clonedScene);
-    return () => { g.remove(clonedScene); };
-  }, [clonedScene]);
+    const m = meshRef.current;
+    if (!m) return;
+    m.geometry = _ghostGeom;
+    m.material = _ghostMat;
+    m.castShadow    = false;  // ghost does not fight the live shadow map
+    m.receiveShadow = false;
+    m.frustumCulled = false;  // bounding sphere may be stale — always render
+    // Do NOT dispose on unmount — _ghostGeom/_ghostMat are module-scope,
+    // shared across any re-mounts. Only dispose if this component is the
+    // LAST user; in practice there is at most 1 ghost, but it's safer to
+    // leave shared module-scope resources alive for the page lifetime.
+  }, []);
 
   useFrame(() => {
     const group = groupRef.current;
     if (!group || !path.length) return;
 
-    // Compute elapsed ms from race start, offset by ghost path start.
+    // ── Lap-relative ghost position ────────────────────────────────────────
+    // Ghost path t values are lap-relative (0..lapMs). We loop the playback
+    // over the path duration using elapsed time from race start.
     const elapsedMs = Date.now() - raceStartMs;
     const pathDuration = path[path.length - 1].t - path[0].t;
+    if (pathDuration <= 0) return;
 
-    // Loop ghost path.
-    const ghostMs = path[0].t + (elapsedMs % pathDuration);
+    // Loop position within the ghost path (0..pathDuration).
+    const loopMs  = elapsedMs % pathDuration;
+    // Absolute ghost time within the lap-relative path.
+    const ghostMs = path[0].t + loopMs;
 
     const frames = findGhostFrames(path, ghostMs);
     if (!frames) return;
 
     const { a, b, alpha } = frames;
-    group.position.x = a.x  + (b.x  - a.x)  * alpha;
-    group.position.y = KART_Y_ABOVE_TRACK;
-    group.position.z = a.z  + (b.z  - a.z)  * alpha;
 
-    // Lerp rotation (simple linear — good enough for 10Hz).
+    // Apply interpolated world XZ position on the OUTER group.
+    // groupRef is at scene root (identity parent), so position.x/z are world coords.
+    // KART_SCALE only applies to children inside the inner scaled group.
+    group.position.x = a.x + (b.x - a.x) * alpha;
+    // Y stays at 0 — elevation carried by the inner scaled group's local Y (GHOST_LOCAL_Y).
+    group.position.z = a.z + (b.z - a.z) * alpha;
+
+    // Lerp rotation via shortest arc.
     let dr = b.rot - a.rot;
-    // Wrap to [-PI, PI] for shortest arc.
     if (dr >  Math.PI) dr -= 2 * Math.PI;
     if (dr < -Math.PI) dr += 2 * Math.PI;
     group.rotation.y = a.rot + dr * alpha;
 
-    // Update HTML label position imperatively — never via React state.
-    // Three.js frustumCulled=false means group is always visible.
-    // We show/hide the label div only if ghost is nearby.
-    if (labelRef.current) {
-      labelRef.current.style.display = 'block';
+    // ── Fade in/out based on loop position ────────────────────────────────
+    // Fade in over FADE_IN_MS at start of each loop, fade out over FADE_OUT_MS
+    // before end of each loop. This makes the ghost feel like it "appears" at
+    // the start of each lap and "disappears" as it crosses the finish line.
+    let fadeAlpha: number;
+    if (loopMs < FADE_IN_MS) {
+      fadeAlpha = loopMs / FADE_IN_MS;
+    } else if (loopMs > pathDuration - FADE_OUT_MS) {
+      fadeAlpha = (pathDuration - loopMs) / FADE_OUT_MS;
+    } else {
+      fadeAlpha = 1;
     }
+    // Clamp to [0, 1] to guard against rounding at boundaries.
+    fadeAlpha = fadeAlpha < 0 ? 0 : fadeAlpha > 1 ? 1 : fadeAlpha;
+
+    // Write opacity — material is shared, so this affects any concurrent
+    // ghost renders (there is only ever one). No traverse needed (single mesh).
+    _ghostMat.opacity = fadeAlpha * GHOST_MAX_OPACITY;
   });
 
   return (
-    <group ref={groupRef} scale={[KART_SCALE, KART_SCALE, KART_SCALE]}>
-      {/* Ghost label via drei <Html> — DOM overlay, safe on Iris Xe. No distanceFactor. */}
-      <Html position={[0, 1.5, 0]} center>
-        <div
-          ref={labelRef}
-          style={{
-            display: 'none',
-            background: 'rgba(0,0,0,0.5)',
-            color: '#ffffff',
-            fontSize: 10,
-            padding: '2px 6px',
-            borderRadius: 4,
-            letterSpacing: '0.1em',
-            pointerEvents: 'none',
-            userSelect: 'none',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          GHOST
-        </div>
-      </Html>
+    /*
+     * Scene graph:
+     *   groupRef  — world XZ position + Y rotation (updated in useFrame above)
+     *     └── scaled group  — applies KART_SCALE to all children
+     *           └── meshRef  — glider board, local Y = GHOST_LOCAL_Y (= KART_Y_ABOVE_TRACK/KART_SCALE)
+     *
+     * groupRef.position is in world space (parent is scene root = identity transform).
+     * Inner scaled group child position.y = GHOST_LOCAL_Y converts to world Y = KART_Y_ABOVE_TRACK.
+     * Same structure as ReefRacePlayer: groupRef (world XZ) → gliderRef (scale + local Y).
+     */
+    <group ref={groupRef}>
+      <group scale={[KART_SCALE, KART_SCALE, KART_SCALE]}>
+        <mesh ref={meshRef} position={[0, GHOST_LOCAL_Y, 0]} />
+      </group>
     </group>
   );
 }
@@ -161,15 +246,23 @@ function GhostInner({ path, raceStartMs }: GhostInnerProps) {
 // ─── Public wrapper ───────────────────────────────────────────────────────────
 
 interface ReefRaceGhostProps {
+  /** Wall-clock ms when the race entered 'live' phase. 0 when not live. */
   raceStartMs?: number;
 }
 
 export default function ReefRaceGhost({ raceStartMs = 0 }: ReefRaceGhostProps) {
-  // Read ghost path from store — getState() avoids reactive subscription (ghost
-  // data only changes between races, not per-frame).
+  // Read ghost setting once on mount — re-reading every render is unnecessary;
+  // this component is only mounted during an active race session.
+  const showGhost = useMemo(() => readShowGhostSetting(), []);
+
+  // Subscribe to selfBestGhostPath (array ref changes only when a new PB loads).
+  // Using getState() here would avoid re-renders, but we WANT a remount when the
+  // ghost path changes (so GhostInner gets a fresh path prop and the scan resets).
   const ghostPath = useActivityStore((s) => s.reefRace?.selfBestGhostPath ?? null);
 
+  if (!showGhost) return null;
   if (!ghostPath || ghostPath.length < 2) return null;
+  if (raceStartMs === 0) return null; // race not live yet — no elapsed time to compute
 
   return <GhostInner path={ghostPath} raceStartMs={raceStartMs} />;
 }

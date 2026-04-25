@@ -703,6 +703,9 @@ activitiesV2Routes.get(
         leaderboardPoints: activityResults.leaderboardPoints,
         isPersonalBest: activityResults.isPersonalBest,
         createdAt: activityResults.createdAt,
+        // Phase 4 — Reef Race surfaces. Null on Bumper Shells rows.
+        matchBestStreak: activityResults.matchBestStreak,
+        matchPbDailyRank: activityResults.matchPbDailyRank,
       })
       .from(activityResults)
       .where(eq(activityResults.roomId, roomId))
@@ -741,6 +744,9 @@ activitiesV2Routes.get(
         leaderboardPoints: r.leaderboardPoints,
         isPersonalBest: r.isPersonalBest,
         createdAt: r.createdAt,
+        // Phase 4 — Reef Race per-row extensions. Null on Bumper Shells.
+        matchBestStreak: r.matchBestStreak,
+        matchPbDailyRank: r.matchPbDailyRank,
       })),
     });
   },

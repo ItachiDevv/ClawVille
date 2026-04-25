@@ -245,6 +245,42 @@ export interface ActivityState {
    */
   selfLevel: number;
 
+  // ── Reef Race Phase 4 — streak + match-end summary ─────────────────────
+  /**
+   * Phase 4 — current consecutive clean checkpoint crosses for the SELF
+   * avatar. Driven by `EntityDelta.changed.streak` (per-tick mirror).
+   * Subscribed by the HUD streak chip.
+   */
+  selfStreak: number;
+  /**
+   * Phase 4 — high-water mark of `selfStreak` across the current match.
+   * Updated locally as `selfStreak` increments; surfaced on the match-end
+   * modal even if the server's `streakBest` payload arrives slower.
+   */
+  selfBestStreakThisMatch: number;
+  /**
+   * Phase 4 — last `pbDelta` block from `event.match_ended`. Populated only
+   * on Reef Race matches that improved the PB. Drives the modal's "NEW
+   * PERSONAL BEST 12.34s (was 12.89s)" callout.
+   */
+  lastMatchPbDelta: { newMs: number; oldMs: number | null } | null;
+  /**
+   * Phase 4 — final `streakBest` from the match-end frame. May exceed
+   * `selfBestStreakThisMatch` when the local mirror dropped a delta.
+   */
+  lastMatchStreakBest: number | null;
+  /**
+   * Phase 4 — daily-best-lap rank (1..100) for the just-set PB, sourced
+   * from `event.match_ended.pbDelta.dailyRank`. C2 fix: this comes from
+   * the awaited PB-write result, NOT the public 60s leaderboard cache.
+   */
+  lastMatchDailyRank: number | null;
+  /**
+   * Phase 4 — perfect-lap bonus credited (0 when not earned). Mirrors
+   * `event.match_ended.rewardPreview.perfectLapBonus`.
+   */
+  lastMatchPerfectLapBonus: number | null;
+
   // ── Writer API ──────────────────────────────────────────────────────────
 
   /** Single switchboard for `useActivityWs` to apply incoming server frames. */
@@ -425,6 +461,12 @@ function emptyState(): Pick<
   | 'lastHazardHitAt'
   | 'selfRacingClass'
   | 'selfLevel'
+  | 'selfStreak'
+  | 'selfBestStreakThisMatch'
+  | 'lastMatchPbDelta'
+  | 'lastMatchStreakBest'
+  | 'lastMatchDailyRank'
+  | 'lastMatchPerfectLapBonus'
 > {
   return {
     entities: new Map(),
@@ -455,6 +497,13 @@ function emptyState(): Pick<
     // Phase 3 — Reef Race self-avatar build summary (populated on snapshot.init)
     selfRacingClass: null,
     selfLevel: 1,
+    // Phase 4 — streak counter + match-end summary
+    selfStreak: 0,
+    selfBestStreakThisMatch: 0,
+    lastMatchPbDelta: null,
+    lastMatchStreakBest: null,
+    lastMatchDailyRank: null,
+    lastMatchPerfectLapBonus: null,
   };
 }
 
@@ -534,6 +583,18 @@ export const useActivityStore = create<ActivityState>()(
           const profileMap = frame.room.reefRacingProfiles;
           const myProfile =
             selfAvatarId && profileMap ? profileMap[selfAvatarId] : undefined;
+          // Phase 4 — populate the self avatar's PB ghost path from the
+          // snapshot.init payload (per-recipient, server already gated
+          // on identity). Empty/null when the avatar has no PB row yet.
+          const selfGhost =
+            frame.room.selfBestLapGhost &&
+            Array.isArray(frame.room.selfBestLapGhost) &&
+            frame.room.selfBestLapGhost.length > 1
+              ? frame.room.selfBestLapGhost
+              : null;
+          const nextReef = selfGhost
+            ? { laps: state.reefRace.laps, selfBestGhostPath: selfGhost }
+            : state.reefRace;
           set({
             room: frame.room,
             entities: hydrated.entities,
@@ -552,6 +613,7 @@ export const useActivityStore = create<ActivityState>()(
             errorBanner: null,
             selfRacingClass: myProfile?.class ?? null,
             selfLevel: myProfile?.level ?? 1,
+            reefRace: nextReef,
           });
           break;
         }
@@ -569,6 +631,11 @@ export const useActivityStore = create<ActivityState>()(
           // `score: b.lap`, an undercount of progress). Score-derived
           // placement stays as a fallback if a delta omits the field.
           let nextPlacement: number | null = state.placement;
+          // Phase 4 — same pattern for the streak counter. Hoisted so the
+          // HUD streak chip ticks even on per-checkpoint updates with no
+          // positional change. `applyEntityDelta` has no selfAvatarId access.
+          let nextStreak: number = state.selfStreak;
+          let nextBestStreak: number = state.selfBestStreakThisMatch;
           for (const d of frame.entities) {
             applyEntityDelta(entities, d);
             if (state.selfAvatarId && d.avatarId === state.selfAvatarId) {
@@ -577,6 +644,10 @@ export const useActivityStore = create<ActivityState>()(
               }
               if (typeof d.changed.placement === 'number') {
                 nextPlacement = d.changed.placement;
+              }
+              if (typeof d.changed.streak === 'number') {
+                nextStreak = d.changed.streak;
+                if (nextStreak > nextBestStreak) nextBestStreak = nextStreak;
               }
             }
           }
@@ -646,6 +717,8 @@ export const useActivityStore = create<ActivityState>()(
             alive,
             placement,
             driftSparks: nextDriftSparks,
+            selfStreak: nextStreak,
+            selfBestStreakThisMatch: nextBestStreak,
           });
           break;
         }
@@ -691,14 +764,47 @@ export const useActivityStore = create<ActivityState>()(
           });
           break;
 
-        case 'event.match_ended':
+        case 'event.match_ended': {
+          // Phase 4 — pull PB delta + streak best + daily rank from the
+          // per-recipient match-end frame. The server's WS hub has
+          // already gated `pbDelta.newGhostFrames` to only the PB-setter,
+          // so we trust the payload as-is. When the PB-setter is the SELF
+          // avatar AND the match brought new ghost frames, swap in the new
+          // path so the next match (without WS reconnect) shows the
+          // freshly-set ghost.
+          const reward = frame.rewardPreview;
+          const reefRaceNext =
+            reward?.pbDelta?.newGhostFrames &&
+            reward.pbDelta.newGhostFrames.length > 1
+              ? {
+                  laps: state.reefRace.laps,
+                  selfBestGhostPath: reward.pbDelta.newGhostFrames,
+                }
+              : state.reefRace;
           set({
             matchPhase: 'ended',
             matchEndReason: frame.reason,
             winners: frame.winners,
-            rewardPreview: frame.rewardPreview,
+            rewardPreview: reward,
+            reefRace: reefRaceNext,
+            lastMatchPbDelta: reward?.pbDelta
+              ? { newMs: reward.pbDelta.newMs, oldMs: reward.pbDelta.oldMs }
+              : null,
+            lastMatchStreakBest:
+              typeof reward?.streakBest === 'number'
+                ? reward.streakBest
+                : null,
+            lastMatchDailyRank:
+              typeof reward?.pbDelta?.dailyRank === 'number'
+                ? reward.pbDelta.dailyRank
+                : null,
+            lastMatchPerfectLapBonus:
+              typeof reward?.perfectLapBonus === 'number'
+                ? reward.perfectLapBonus
+                : null,
           });
           break;
+        }
 
         case 'event.player_joined': {
           // Stamp the displayName into the score row so the mini-leaderboard
@@ -892,6 +998,24 @@ export const useActivityStore = create<ActivityState>()(
         // from room.countdownStartedAt), so this is a no-op here today.
         case 'event.launch':
           break;
+
+        // Reef Race Phase 4 — streak milestone glow trigger. The per-tick
+        // streak count rides EntityDelta.changed.streak (handled in
+        // snapshot.delta above); this event is the edge-trigger for a
+        // burst (HUD glow + future audio sting) at 5/10/20/30/36.
+        // Updates `selfStreak` defensively in case a delta was dropped.
+        case 'event.streak_milestone': {
+          if (state.selfAvatarId && frame.avatarId === state.selfAvatarId) {
+            const updates: Partial<ActivityState> = {
+              selfStreak: frame.streak,
+            };
+            if (frame.streak > state.selfBestStreakThisMatch) {
+              updates.selfBestStreakThisMatch = frame.streak;
+            }
+            set(updates);
+          }
+          break;
+        }
 
         default: {
           // Exhaustiveness sentinel — pull a `never` so a new ServerFrame

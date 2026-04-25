@@ -383,6 +383,20 @@ startSimulation(arenaMode);
     activityRoomManager.setEvictionFn((room) => {
       botPool.releaseRoom(room.id);
     });
+
+    // Phase 4 (S7 fix) — wire the reward-pipeline's per-recipient match-
+    // end delivery to the WS hub's `sendToAvatar`. Done via callback (not
+    // direct import) so the reward-pipeline module doesn't pull
+    // `activity-ws-hub → activity-room-manager → activityLog` schema
+    // chain into every reward-pipeline test that mocks `@clawville/database`.
+    {
+      const { setMatchEndDeliveryFn } = await import(
+        './services/activity/reward-pipeline'
+      );
+      setMatchEndDeliveryFn((roomId, avatarId, frame) => {
+        activityWsHub.sendToAvatar(roomId, avatarId, frame);
+      });
+    }
     // Chunk #7 — register the per-activity placement resolver so the
     // room manager's RESULTS transition can pull placements without
     // importing each sim directly. Future activities (Reef Race, …)

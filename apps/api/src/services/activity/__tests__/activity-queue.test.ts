@@ -50,6 +50,13 @@ mock.module('@clawville/database', () => ({
   // needs these schemas to resolve at import time.
   activityResults: { id: 'id', avatarId: 'avatar_id', activityId: 'activity_id' },
   clawTokenTransactions: { id: 'id' },
+  // Phase 4 — PB service is transitively imported by reward-pipeline.
+  reefRacePersonalBests: {
+    id: 'id',
+    avatarId: 'avatar_id',
+    activityId: 'activity_id',
+    bestLapMs: 'best_lap_ms',
+  },
 }));
 
 mock.module('../../alert-error', () => ({
