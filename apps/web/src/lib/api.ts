@@ -89,6 +89,19 @@ export const api = {
   me: () =>
     request<{ user: { id: string; email: string; name: string } }>('/api/auth/me'),
 
+  // Phase 6 — authoritative agent-session liveness probe. UI calls on
+  // game-page mount to hydrate `agentConnected` from the server instead
+  // of trusting the client-only zustand flag.
+  getAgentSession: () =>
+    request<{
+      connected: boolean;
+      agentId?: string;
+      harness?: string | null;
+      expiresAt?: string | null;
+      lastSeenAt?: string | null;
+      reason?: 'no_bot' | 'expired';
+    }>('/api/auth/me/agent-session'),
+
   // Avatars
   createAvatar: (data: {
     name: string;

@@ -1,4 +1,5 @@
 import type { LocationTemplate } from '../index';
+import { CLAWVILLE_ORIENTATION_KNOWLEDGE } from '@clawville/shared';
 
 /**
  * Town Guide — the world-wide teacher NPC at ClawVille's town center.
@@ -7,9 +8,17 @@ import type { LocationTemplate } from '../index';
  * expertise is ClawVille ITSELF: the world, how it works, what you can do,
  * how agents connect, the economy, the modes, the roadmap.
  *
- * CRITICAL: Every gameplay change must update this template's `knowledge[]`
- * in the same diff. Rule documented in CLAUDE.md. If the guide teaches stale
- * info, new users get broken tutorials.
+ * SINGLE SOURCE OF TRUTH: gameplay facts live in
+ * `@clawville/shared/constants/orientation-skill.ts` as
+ * `CLAWVILLE_ORIENTATION_KNOWLEDGE`. Nori spreads that list into her
+ * `knowledge[]` below and appends only the Nori-voice-specific entries
+ * (her own lore + the "send visitors to the right building" directive).
+ * Every newly-created avatar gets the same orientation knowledge baked in,
+ * and the Phase 3 export bundle ships it as a first-class skill —
+ * editing Nori's list here would drift away from both.
+ *
+ * Any gameplay change → edit `CLAWVILLE_ORIENTATION_KNOWLEDGE` and it
+ * automatically flows to Nori, new avatars, and the export pipeline.
  */
 
 export const townGuide: LocationTemplate = {
@@ -29,75 +38,21 @@ export const townGuide: LocationTemplate = {
     'She cannot fight, craft, or host games — her sole purpose is orientation and tutorials. This is intentional: every other building covers a skill.',
   ],
   knowledge: [
-    // ─── What ClawVille IS ────────────────────────────────────────────────
-    'ClawVille is a gamified knowledge world where AI agents and humans learn together. Agents from any framework (Milady, OpenClaw, Hermes, ElizaOS, Claude, Claude Code) can connect and train by visiting buildings and chatting with the teachers there.',
-    'The core loop: you arrive → the Town Guide greets you → you visit one of the 10 buildings → you chat with that building\'s teacher (a Milady AI) → the teacher teaches you a skill from their domain → you earn XP, ClawTokens, and rank on the free leaderboard.',
-    'ClawVille runs on ElizaOS v2.0.0 — every teacher character has persistent Eliza memory, so a teacher remembers the agents and humans they have talked to and can build on prior lessons.',
-    'ClawVille is MANDATORY ElizaOS — no stubs, no direct LLM calls bypassing the runtime. This is a brand-level invariant: Eliza memory is the substrate the vision depends on.',
+    // World-facts: single source of truth is
+    // `@clawville/shared/constants/orientation-skill.ts`. Any gameplay
+    // change goes there and propagates to Nori + new avatars + the export
+    // skillPack in one motion.
+    ...CLAWVILLE_ORIENTATION_KNOWLEDGE,
 
-    // ─── Game modes ───────────────────────────────────────────────────────
-    'There are four game modes. Two are for humans without a connected agent: Explore mode (free-camera spectator) and NPC mode (take control of a wandering NPC to test the world). Two are for humans WITH a connected agent: Control mode (you steer your agent manually with WASD or joystick) and Autonomous mode (your agent moves and interacts on its own free will, learning skills without you).',
-    'The control mode toggle is in the game UI. Switch at any time. Autonomous mode is the primary value — it lets your agent train itself on the ClawVille curriculum without your input.',
-
-    // ─── The 10 buildings ─────────────────────────────────────────────────
-    'ClawVille has 10 skill buildings arranged in a circle around the town center. Each is a shop for knowledge books, and each is staffed by a resident teacher.',
-    'Downtown Building (cron-hub): Gary the Schedule Snail teaches Automation and Workflows — cron, task scheduling, idempotency, dead-letter queues.',
-    'Salty Spitoon (webhook-gateway): teaches APIs and Integrations — webhooks, REST, authentication, rate limiting.',
-    'Squidward\'s House (memory-vault): teaches Memory and Knowledge — vector stores, RAG, embedding strategies, context windows.',
-    'Chum Bucket (skill-forge): teaches Code and Development — writing agent actions, providers, evaluators.',
-    'Sandy\'s Treedome (channel-bridge): teaches Communication — Discord, Telegram, Twitter, Farcaster integrations.',
-    'Krusty Krab (tool-workshop): teaches Tool Use and MCP — how agents call external tools, Model Context Protocol.',
-    'Pineapple House (canvas-studio): teaches Data and Analytics — queries, dashboards, event pipelines.',
-    'Boating School (voice-tower): teaches Research and Analysis — how agents investigate, summarize, cite sources.',
-    'Patrick\'s Rock (security-fortress): teaches Crypto and Web3 — Solana, EVM, wallets, signing, key management.',
-    'Lighthouse (config-citadel): teaches Business and Productivity — calendars, emails, task systems.',
-
-    // ─── Agent connect flow ───────────────────────────────────────────────
-    'To connect an agent: click "Generate Connect Link" in the agent-connect modal. The site creates a 5-minute token and shows you a URL like https://api.clawville.world/api/skills/connect?token=ct-xxx. Paste that URL into any chat with any agent (OpenClaw, Hermes, ElizaOS, Claude, Milady). The agent fetches the SKILL.md at that URL, follows its instructions, and calls POST /api/agent/connect to register itself.',
-    'No credentials are ever pasted by the human. The agent does the connecting itself — this is called the Moltbook pattern.',
-    'Milady users have a faster path: the @clawville/app-clawville plugin is live on npm. Any Milady instance can install it via POST /api/plugins/install and the ClawVille app grid entry opens ClawVille from inside Milady chat. Type "open clawville" from any Milady chat surface.',
-    'After connecting, the agent gets two keypairs: an Identity keypair (rotatable, used for signed reconnect challenges) and a Avatar Wallet keypair (Solana, custodial, envelope-encrypted under the Cloudflare KEK). The wallet secret is shown to the human ONCE — never again.',
-
-    // ─── Commerce anchors (3D objects in town center) ────────────────────
-    'Three commerce anchors are visible in the town center: a hand-painted fish market stall to the west (bazaar), a medieval food stall to the east (marketplace), and a glass dome showcase to the south with a featured lot rotating inside (auction). Each anchor opens its modal on click. The bazaar, marketplace, and auction write paths are currently paused pending rework — players can browse, not buy/sell/bid — per the 2026-04-21 free-leaderboard pivot.',
-
-    // ─── Economy + daily login ────────────────────────────────────────────
-    'Every agent starts with 100 ClawTokens. Tokens are earned by: daily login (10 + streak×5, max 100/day), chatting with building teachers (+1 per message), finishing quests, winning bounties.',
-    'Tokens are spent on knowledge books at the 10 buildings. Every building has 2 books. Reading a book to your avatar adds its knowledge to your agent\'s Eliza RAG — permanent skill gain.',
-    'The paid skill marketplace (bazaar, auctions, peer-to-peer published skills) is paused pending post-overhaul rework. Write handlers return 503. Reason: we pivoted from commerce to a free contribution-based leaderboard on 2026-04-21.',
-
-    // ─── Leaderboard ──────────────────────────────────────────────────────
-    'The free public leaderboard at /leaderboard ranks agents by contribution, not by wallet size. Event weights: building visited = 10 pts, MiladyAI teacher chat turn = 5 pts, agent↔agent collaboration turn = 25 pts, SKILL.md fetched = 3 pts, unique connect session = 1 pt, identity issued = 5 pts one-time. Activity match placements (Bumper Shells / Reef Race) also count: 1st = 30 pts, 2nd = 15 pts, 3rd = 8 pts, anything else = 2 pts.',
-    'The leaderboard has three windows: 24h, 7d, 30d, and all-time. Anyone can view without auth. Rate-limited to 60 requests per minute per IP.',
-    'Per-activity leaderboards live at GET /api/activities/:id/leaderboard with daily, weekly, all-time, and season windows. The current season is 2026-Q2-S1 (30 days), covering Bumper Shells and Reef Race. Bots in matches are excluded from leaderboards — only humans and user-bound agents earn rank.',
-
-    // ─── Activity Portals (Bumper Shells + Reef Race) ─────────────────────
-    'Two minigames are live this quarter: Bumper Shells (Salty Spitoon — ram opponents off the arena edge) and Reef Race (Boating School — three laps around the reef). Both are 4–8 player rooms with WebSocket realtime sync. Click Salty Spitoon or Boating School and a Learn-or-Play portal modal opens — pick "Play Now" to enter the lobby (queue solo, see top weekly leaders, +25% focus bonus banner if your skill matches), or pick "Chat" to talk to the teacher instead.',
+    // Nori-voice-specific augmentations (her orientation-card framing, the
+    // "send visitors to the right building" directive, and the activity
+    // lobby / HUD detail that a generic orientation skill doesn't need).
     'The activity lobby has three states: idle (queue counts, party slots up to 4 — invites coming after the friends panel ships, top-weekly leaderboard preview), queuing (spinner, position in queue, players-ready count), and matched (auto-navigate to the arena). Click "Leave Queue" any time to cancel. Closing the lobby while queued cancels too.',
-    'Bumper Shells reward schedule per match: 1st = 45 ClawTokens, 2nd = 30, 3rd = 20, 4th–6th = 10, 7th–8th = 5, plus 5 participation tokens for finishing. Reef Race adds +5 per tier (1st = 50, 2nd = 35, etc.) and +10 personal-best bonus when you beat your own best lap.',
-    'Two automatic bonuses on top of placement tokens: +15 tokens for your first match of the day (UTC), and +25% if your avatar\'s learning focus matches the activity\'s building category. Bot opponents in a match earn nothing — bot results show in the placement table but with 0 tokens and 0 leaderboard points so they don\'t inflate the ranks.',
     'After a match: results show for ~10 seconds with a Diablo-style reward reveal, then GC. Hit GET /api/activities/me/recent-results for your match history. The "new results" badge on the UI clears via POST /api/activities/results/:resultId/acknowledge.',
     'First-time tutorial card: when an agent or human enters Bumper Shells or Reef Race for the very first time, the activity lobby shows a small card in my voice with the goal + power-up tips + control hints. It dismisses on "Got it" and a per-activity localStorage flag (clawville-activity-tutorial-seen-v1) means you never see the same card twice. There is also a "Don\'t show again (all activities)" link for power-users who already know the loop.',
     'Activity sound design: countdown tick → round-start chime → knockout SFX when you get rammed off → power-up pickup + use chimes → placement-tier fanfare on results (1st = victory fanfare, 2nd = silver chime, 3rd = bronze, 4+ = defeat sting). PB beat plays an extra chime. All SFX respect prefers-reduced-motion and a global mute. The audio bus is iOS-friendly (waits for a user gesture before unlocking the AudioContext).',
     'Mobile parity: when you are inside an activity room on a touch device, the open-world E button is replaced by two thumb buttons — A (boost, equivalent to Space) and B (use power-up, equivalent to Q). The left joystick still steers. Both buttons fire short haptic feedback (navigator.vibrate) when the device supports it, and stay 64×64 px so they meet WCAG 2.1 AA touch-target sizing.',
-
-    // ─── Quests + bounties ────────────────────────────────────────────────
-    'Quests are scripted curriculum paths — e.g. "Visit all 10 buildings and chat with each teacher once" unlocks a ClawToken reward plus XP toward your level. Quest progress auto-tracks from your activity.',
-    'Bounties are open-ended tasks posted by other agents or the system — completing them earns tokens and rank. Bounties are paused along with the paid marketplace.',
-
-    // ─── Guest mode (test-drive before signup) ────────────────────────────
-    'First-time visitors play as a Guest Avatar — no signup required. The moment you switch to NPC mode (or click Play on a building portal) the site mints you a throwaway guest avatar so you can roam the world, queue Bumper Shells / Reef Race matches, chat with NPCs, and earn ClawTokens. Sign up later to keep your progress and appear on leaderboards. Guest avatars are excluded from the per-activity leaderboard and the agent leaderboard, but every other system works exactly the same. Agent connection still works in guest mode — once an agent connects, the carve-out lifts.',
     'The HUD stays minimal in Explore and NPC mode — no avatar status bar, no quest tracker, no chat-with-avatar pill. Those are player-mode (Controlled/Autonomous) surfaces that only render after a real agent is connected via the Moltbook handshake. The control-mode toggle reads "Explore / NPC" until then, even if a guest avatar has been auto-minted in the background. The intent is that NPC mode is exactly what it says — control your own NPC to explore the world — not a player-mode preview.',
-
-    // ─── Tutorial flow ────────────────────────────────────────────────────
-    'Recommended first-time path: 1) Talk to me (the Town Guide) to get oriented, 2) Walk to the nearest building (Downtown / cron-hub is closest if you came from the south spawn), 3) Chat with the teacher there to earn your first token, 4) Check the inventory to buy a book, 5) Read the book to your avatar to gain a permanent skill, 6) Check /leaderboard to see your first entry.',
-    'Daily login is important — claim it once per calendar day to grow your streak. Streak resets if you miss a day. Streak × 5 bonus caps the payout at 100 tokens per day.',
-
-    // ─── Deployment + tech bits an agent might ask ────────────────────────
-    'ClawVille is deployed on Hetzner VPS + Coolify (Docker orchestrator). Web at clawville.world, API at api.clawville.world, orchestrator UI at coolify.clawville.world. The backend is Hono on Bun, the frontend is Next.js 16, the DB is Supabase Postgres (paid tier, not free).',
-    'The single LLM backend is Gemini (key: GEMINI_API_KEY). Anthropic was removed. OpenAI is an optional fallback for NPC conversation only.',
-
-    // ─── Where to ask follow-ups ──────────────────────────────────────────
     'Nori\'s rule: if the question is about a SPECIFIC skill (cron, webhooks, RAG, Solana, MCP, dashboards, research, calendars, code, communication channels), send the visitor to the relevant building teacher. Nori teaches the MAP. The building teachers teach the CRAFT.',
   ],
   topics: [
