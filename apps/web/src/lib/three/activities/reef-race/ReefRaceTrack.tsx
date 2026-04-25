@@ -3,23 +3,31 @@
 /**
  * ReefRaceTrack.tsx
  *
- * Track surface (TubeGeometry on CatmullRomCurve3) + merged guardrails +
- * 3× InstancedMesh coral/jellyfish decorations.
+ * Track surface (flat ribbon BufferGeometry following ellipse curve) +
+ * merged guardrails + 3× InstancedMesh coral/jellyfish decorations.
+ *
+ * IMPORTANT: TubeGeometry was replaced with a flat ribbon because:
+ *   - TubeGeometry is a HOLLOW TUBE — the camera above the track sees
+ *     only the thin outer-top face edge, making the track nearly invisible.
+ *   - The ribbon geometry is a flat road surface at y=0 with normals
+ *     pointing +Y, visible from the chase camera above.
+ *   - DoubleSide ensures the track is visible from any camera angle.
+ *
+ * Track ellipse coordinates match the server sim exactly:
+ *   REEF_TRACK_A=1100, REEF_TRACK_B=700 → entity.x/y lands on the ribbon.
  *
  * Iris Xe invariants:
- *   - TubeGeometry: radialSegments=4 (quad strip, minimal triangles).
+ *   - Flat ribbon BufferGeometry: O(SEGMENTS × 2) vertices, 1 draw call.
  *   - Guardrails: mergeGeometries → 2 draw calls (left rail, right rail).
  *   - Coral props: 3 InstancedMesh (coral-reef1/2/3.glb) → 3 draw calls.
  *   - matrixAutoUpdate=false on ALL static meshes after mount.
  *   - No ShaderMaterial anywhere — MeshStandardMaterial only.
  *   - No per-frame allocations — all setup in useMemo/useEffect.
  *
- * Draw calls: 2 (track + guardrails merged) + 3 (coral InstancedMesh) = 5 max.
- * The track tube itself is 1 draw call; guardrails merged → 1 draw call = 2 total.
+ * Draw calls: 1 (track ribbon) + 2 (guardrails merged) + 3 (coral) = 6 max.
  */
 
 import { useRef, useEffect, useMemo } from 'react';
-import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
@@ -27,7 +35,6 @@ import {
   TRACK_CURVE_POINTS,
   TRACK_TUBE_SEGMENTS,
   TRACK_TUBE_RADIUS,
-  TRACK_RADIAL_SEGMENTS,
   TRACK_CLOSED,
   GUARDRAIL_HEIGHT,
   GUARDRAIL_THICKNESS,
@@ -49,37 +56,42 @@ const _pos  = new THREE.Vector3();
 const _quat = new THREE.Quaternion();
 const _scl  = new THREE.Vector3();
 const _tangent  = new THREE.Vector3();
-const _normal   = new THREE.Vector3();
 const _binormal = new THREE.Vector3();
 
 /** Build the closed CatmullRomCurve3 once at module scope — no per-render cost. */
 const TRACK_CURVE = new THREE.CatmullRomCurve3(TRACK_CURVE_POINTS, TRACK_CLOSED, 'catmullrom', 0.5);
 
+/** World up — used in cross-product for guardrail/coral placement. */
+const _worldUp = new THREE.Vector3(0, 1, 0);
+
 /**
- * Sample track frame (tangent, binormal, normal) at parameter t.
- * Returns a Matrix4 that orients a guardrail segment along the track.
+ * Sample track frame (tangent, binormal) at parameter t.
+ * binormal = tangent × worldUp, giving the XZ-plane sideways direction.
  */
 function sampleTrackFrame(t: number): { pos: THREE.Vector3; tangent: THREE.Vector3; binormal: THREE.Vector3 } {
   TRACK_CURVE.getPointAt(t, _pos);
   TRACK_CURVE.getTangentAt(t, _tangent);
   _tangent.normalize();
-  _normal.set(0, 1, 0);
-  _binormal.crossVectors(_tangent, _normal).normalize();
+  _binormal.crossVectors(_tangent, _worldUp).normalize();
   return { pos: _pos.clone(), tangent: _tangent.clone(), binormal: _binormal.clone() };
 }
 
 // ─── Track material (module scope) ───────────────────────────────────────────
+// DoubleSide: the flat ribbon is visible from both above AND below the XZ plane.
+// This ensures the track is always visible regardless of camera angle.
 
 const _trackMat = new THREE.MeshStandardMaterial({
   color: '#1a6b3c',
   roughness: 0.9,
   metalness: 0.0,
+  side: THREE.DoubleSide,
 });
 
 const _guardrailMat = new THREE.MeshStandardMaterial({
   color: '#e0e0e0',
   roughness: 0.7,
   metalness: 0.1,
+  side: THREE.DoubleSide,
 });
 
 // ─── Canvas texture for track surface ────────────────────────────────────────
@@ -105,6 +117,73 @@ function makeTrackTexture(): THREE.CanvasTexture {
   tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(1, 20);
   return tex;
+}
+
+// ─── Flat ribbon track geometry ───────────────────────────────────────────────
+// Replaces TubeGeometry. Generates a flat road surface at y=0 by sampling
+// the curve and extruding a strip perpendicular to the tangent in the XZ plane.
+// Normals point +Y (up) — unambiguously visible from the chase camera above.
+//
+// With DoubleSide material this is visible from any camera angle and avoids
+// the hollow-tube backface-culling problem that made TubeGeometry invisible.
+function buildFlatRibbonGeo(
+  curve: THREE.CatmullRomCurve3,
+  segments: number,
+  halfWidth: number,
+): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const normals:   number[] = [];
+  const uvs:       number[] = [];
+  const indices:   number[] = [];
+
+  const _pt  = new THREE.Vector3();
+  const _tan = new THREE.Vector3();
+  // Right direction = tangent × (0,1,0) in XZ plane
+  const _right = new THREE.Vector3();
+  const _up = new THREE.Vector3(0, 1, 0);
+
+  for (let i = 0; i <= segments; i++) {
+    const t = i / segments;
+    curve.getPointAt(t, _pt);
+    curve.getTangentAt(t, _tan).normalize();
+
+    // Right vector perpendicular to tangent in XZ plane
+    _right.crossVectors(_tan, _up).normalize();
+
+    const u = t;
+
+    // Left edge vertex
+    positions.push(
+      _pt.x - _right.x * halfWidth,
+      0,
+      _pt.z - _right.z * halfWidth,
+    );
+    normals.push(0, 1, 0);
+    uvs.push(0, u);
+
+    // Right edge vertex
+    positions.push(
+      _pt.x + _right.x * halfWidth,
+      0,
+      _pt.z + _right.z * halfWidth,
+    );
+    normals.push(0, 1, 0);
+    uvs.push(1, u);
+
+    if (i < segments) {
+      const base = i * 2;
+      // Two triangles per quad strip segment
+      indices.push(base, base + 1, base + 2);
+      indices.push(base + 1, base + 3, base + 2);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('normal',   new THREE.Float32BufferAttribute(normals, 3));
+  geo.setAttribute('uv',       new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  return geo;
 }
 
 // ─── Coral InstancedMesh component ───────────────────────────────────────────
@@ -262,14 +341,10 @@ function Guardrails() {
 export default function ReefRaceTrack() {
   const trackMeshRef = useRef<THREE.Mesh>(null);
 
-  const tubeGeo = useMemo(() => {
-    return new THREE.TubeGeometry(
-      TRACK_CURVE,
-      TRACK_TUBE_SEGMENTS,
-      TRACK_TUBE_RADIUS,
-      TRACK_RADIAL_SEGMENTS,
-      TRACK_CLOSED,
-    );
+  // Flat ribbon geometry: visible as a road surface from the chase camera above.
+  // Uses TRACK_TUBE_SEGMENTS samples and TRACK_TUBE_RADIUS as the half-width.
+  const ribbonGeo = useMemo(() => {
+    return buildFlatRibbonGeo(TRACK_CURVE, TRACK_TUBE_SEGMENTS, TRACK_TUBE_RADIUS);
   }, []);
 
   const trackTexture = useMemo(() => {
@@ -289,16 +364,16 @@ export default function ReefRaceTrack() {
     mesh.matrixAutoUpdate = false;
     mesh.updateMatrix();
     return () => {
-      tubeGeo.dispose();
+      ribbonGeo.dispose();
       trackMaterial.dispose();
       trackTexture?.dispose();
     };
-  }, [tubeGeo, trackMaterial, trackTexture]);
+  }, [ribbonGeo, trackMaterial, trackTexture]);
 
   return (
     <group>
-      {/* Track surface — 1 draw call */}
-      <mesh ref={trackMeshRef} geometry={tubeGeo} material={trackMaterial} receiveShadow castShadow />
+      {/* Track surface (flat ribbon) — 1 draw call, normals +Y, DoubleSide */}
+      <mesh ref={trackMeshRef} geometry={ribbonGeo} material={trackMaterial} receiveShadow />
 
       {/* Guardrails — 2 draw calls (merged left + right) */}
       <Guardrails />

@@ -15,45 +15,49 @@ import * as THREE from 'three';
 // ─── Track geometry ──────────────────────────────────────────────────────────
 
 /**
- * CatmullRomCurve3 control points for the closed oval + chicane track.
- * Scene-space units (wu). Track is on the XZ plane (y=0 surface).
- * 6000wu perimeter at ~500wu/s → ~12s/lap (tight loop + one chicane).
+ * CatmullRomCurve3 control points matching the SERVER-AUTHORITATIVE ellipse.
+ *
+ * Server sim (reef-race-config.ts in apps/api) defines the oval as:
+ *   REEF_TRACK_A = 1100  (X half-axis, sim-X → Three.js X)
+ *   REEF_TRACK_B = 700   (Y half-axis, sim-Y → Three.js Z)
+ *   reefCenterlineAt(t) = { x: 1100*cos(π/2 + 2πt), y: 700*sin(π/2 + 2πt) }
+ *   t=0 → (0, 700)  → Three.js (0, 0, 700)    ← start/finish
+ *
+ * CRITICAL: entity.x and entity.y from the server are in these sim coordinates.
+ * The scene maps entity.x → THREE.x and entity.y → THREE.z (flat XZ plane).
+ * If the visual track uses different coordinates the players float off-track.
+ *
+ * 16 points sampling the ellipse at equal t intervals, closed loop.
  */
-export const TRACK_CURVE_POINTS: THREE.Vector3[] = [
-  // Long straight (start/finish)
-  new THREE.Vector3(  0,   0, -2400),
-  new THREE.Vector3( 600,  0, -2200),
-  new THREE.Vector3(1400,  0, -1800),
-  // Right hairpin
-  new THREE.Vector3(1800,  0, -1000),
-  new THREE.Vector3(1800,  0,     0),
-  new THREE.Vector3(1800,  0,  1000),
-  // Chicane (S-bend) — right then left
-  new THREE.Vector3(1200,  0,  1600),
-  new THREE.Vector3( 400,  0,  1800),
-  new THREE.Vector3(-400,  0,  2000),
-  new THREE.Vector3(-1200, 0,  1800),
-  // Left hairpin
-  new THREE.Vector3(-1800, 0,  1000),
-  new THREE.Vector3(-1800, 0,     0),
-  new THREE.Vector3(-1800, 0, -1000),
-  // Back to start
-  new THREE.Vector3(-1200, 0, -2000),
-  new THREE.Vector3(-600,  0, -2200),
-  new THREE.Vector3(  0,   0, -2400),
-];
+function makeEllipseTrackPoints(): THREE.Vector3[] {
+  const A = 1100; // matches REEF_TRACK_A on server
+  const B = 700;  // matches REEF_TRACK_B on server
+  const N = 16;
+  const pts: THREE.Vector3[] = [];
+  for (let i = 0; i < N; i++) {
+    const t = i / N;
+    const angle = Math.PI / 2 + 2 * Math.PI * t;
+    pts.push(new THREE.Vector3(A * Math.cos(angle), 0, B * Math.sin(angle)));
+  }
+  return pts;
+}
+
+export const TRACK_CURVE_POINTS: THREE.Vector3[] = makeEllipseTrackPoints();
 
 /** Number of curve samples for TubeGeometry. Higher = smoother track. */
 export const TRACK_TUBE_SEGMENTS = 200;
 
 /**
- * Track half-width (tube radius) in wu.
- * Track surface is a TubeGeometry — radialSegments=4 (quad strip, very cheap).
- * Width = 150 → full track width = 300wu per spec.
+ * Track half-width in wu. Full track width = 300wu.
+ * Used as the ribbon half-width in the flat track geometry.
+ * Matches REEF_TRACK_HALF_WIDTH=150 on the server sim.
  */
 export const TRACK_TUBE_RADIUS = 150;
 
-/** TubeGeometry radial segments — 4 keeps tri count minimal. */
+/**
+ * @deprecated TubeGeometry removed — track is now a flat ribbon BufferGeometry.
+ * Retained for backwards compatibility in case anything still imports it.
+ */
 export const TRACK_RADIAL_SEGMENTS = 4;
 
 /** Track closed — true for a lap circuit. */
