@@ -3,22 +3,34 @@
 /**
  * BumperShellsArena.tsx
  *
- * REBUILT 2026-04-24 — Real 3D arena geometry for perspective chase camera.
+ * PERF FIX 2026-04-24: import from 'three' (not 'three/webgpu') — R3F Canvas
+ * uses WebGLRenderer. Two-THREE-instances crash = GPU context loss.
+ * See gotchas/two-three-instances-nodemat-webgl-crash.md
  *
- * Draw calls: 8
- *   platform (1) + tile overlay (1) + rim torus (1) + bumper wall torus (1) +
- *   danger ring (1) + void backdrop (1) + starfield (1) + [4 point lights = 0 dc]
+ * Also removed: 4 rim accent point lights (each was a full lighting pass per
+ * fragment), danger ring downgraded to MeshBasicMaterial (zero lighting cost),
+ * stars reduced 300→60.
+ *
+ * Draw calls: 7
+ *   platform (1) + tile overlay (1) + rim torus (1) + bumper wall (1) +
+ *   danger ring (1) + void backdrop (1) + starfield (1)
+ *   [4 rim point lights REMOVED — were causing GPU context loss on Iris Xe]
  *
  * Iris Xe invariants:
- *   - MeshStandardMaterial for lit surfaces; MeshBasicMaterial for unlit/emissive.
- *   - NO ShaderMaterial anywhere.
+ *   - import from 'three' (plain WebGLRenderer) — NOT 'three/webgpu'.
+ *   - MeshStandardMaterial for lit surfaces; MeshBasicMaterial for unlit.
+ *   - NO ShaderMaterial, NO castShadow (shadow pipeline disabled).
  *   - matrixAutoUpdate=false on every static mesh after mount.
  *   - No per-frame allocations — module-scope elapsed only.
  */
 
 import { useRef, useEffect } from 'react';
 import { useFrame } from '@react-three/fiber';
-import * as THREE from 'three/webgpu';
+// PERF FIX 2026-04-24: import from 'three' not 'three/webgpu'.
+// R3F Canvas uses WebGLRenderer (plain 'three'). Mixing two THREE instances
+// causes per-frame NodeMaterial.vertexShader crash → GPU context loss.
+// See gotchas/two-three-instances-nodemat-webgl-crash.md
+import * as THREE from 'three';
 import {
   ARENA_RADIUS,
   ARENA_HEIGHT,
@@ -34,9 +46,6 @@ import {
   STAR_RADIUS,
   STAR_Y_MIN,
   STAR_Y_MAX,
-  RIM_LIGHT_COLOR,
-  RIM_LIGHT_INTENSITY,
-  RIM_LIGHT_DISTANCE,
 } from './bumper-shells-config';
 
 // ─── Module-scope scratch ──────────────────────────────────────────────────
@@ -55,8 +64,8 @@ const platformGeo = new THREE.CylinderGeometry(
 const tileOverlayGeo = new THREE.PlaneGeometry(
   ARENA_RADIUS * 2,
   ARENA_RADIUS * 2,
-  20,
-  20,
+  12,  // was 20×20; 12×12 saves ~375 verts at no perceptible quality loss
+  12,
 );
 
 const rimGeo = new THREE.TorusGeometry(
@@ -69,7 +78,7 @@ const rimGeo = new THREE.TorusGeometry(
 const bumperWallGeo = new THREE.TorusGeometry(
   ARENA_RADIUS - BUMPER_WALL_TUBE_RADIUS * 0.5,
   BUMPER_WALL_TUBE_RADIUS,
-  12,
+  8,   // was 12; slight facet at chase cam distance is invisible
   RIM_TUBULAR_SEGMENTS,
 );
 
@@ -132,14 +141,15 @@ const bumperWallMat = new THREE.MeshStandardMaterial({
   emissiveIntensity: 0.3,
 });
 
-const dangerMat = new THREE.MeshStandardMaterial({
-  color: new THREE.Color('#880000'),
-  emissive: new THREE.Color('#cc0000'),
-  emissiveIntensity: 0.6,
-  roughness: 0.6,
-  metalness: 0.0,
+// PERF FIX: MeshBasicMaterial — zero lighting cost vs. MeshStandardMaterial
+// which requires a full PBR evaluation per fragment. Danger zone is additive
+// so it still reads as "glowing red" without needing emissiveIntensity.
+const dangerMat = new THREE.MeshBasicMaterial({
+  color: new THREE.Color('#cc0000'),
   transparent: true,
-  opacity: 0.7,
+  opacity: 0.55,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
 });
 
 const voidMat = new THREE.MeshBasicMaterial({
@@ -179,7 +189,7 @@ export default function BumperShellsArena() {
     }
   }, []);
 
-  // Rim pulse + danger throb — only material property mutations, no allocations
+  // Rim pulse + danger throb — only opacity mutations on BasicMaterial, no allocs
   useFrame((_, delta) => {
     _arenaElapsed += delta;
 
@@ -191,8 +201,9 @@ export default function BumperShellsArena() {
 
     const danger = dangerRef.current;
     if (danger) {
-      (danger.material as THREE.MeshStandardMaterial).emissiveIntensity =
-        Math.sin(_arenaElapsed * 3.5) * 0.3 + 0.7;
+      // MeshBasicMaterial: pulse opacity instead of emissiveIntensity
+      (danger.material as THREE.MeshBasicMaterial).opacity =
+        Math.sin(_arenaElapsed * 3.5) * 0.2 + 0.5;
     }
   });
 
@@ -200,25 +211,25 @@ export default function BumperShellsArena() {
 
   return (
     <group>
-      {/* Platform disc with beveled base */}
+      {/* Platform disc with beveled base — no shadows (shadow pipeline disabled) */}
       <mesh
         ref={platformRef}
         geometry={platformGeo}
         material={platformMat}
-        receiveShadow
         castShadow={false}
+        receiveShadow={false}
         frustumCulled={false}
       />
 
-      {/* Tile overlay on top of disc — receives key light for seam definition */}
+      {/* Tile overlay on top of disc */}
       <mesh
         ref={tileRef}
         geometry={tileOverlayGeo}
         material={tileOverlayMat}
         position={[0, discTopY + 0.5, 0]}
         rotation={[-Math.PI / 2, 0, 0]}
-        receiveShadow
         castShadow={false}
+        receiveShadow={false}
         frustumCulled={false}
       />
 
@@ -232,59 +243,25 @@ export default function BumperShellsArena() {
         frustumCulled={false}
       />
 
-      {/* Bumper wall — metallic guardrail, catches key light, visible from chase cam */}
+      {/* Bumper wall — metallic guardrail, no shadow */}
       <mesh
         ref={bumperRef}
         geometry={bumperWallGeo}
         material={bumperWallMat}
         position={[0, discTopY + BUMPER_WALL_HEIGHT * 0.5, 0]}
         rotation={[Math.PI / 2, 0, 0]}
-        castShadow
-        receiveShadow
+        castShadow={false}
+        receiveShadow={false}
         frustumCulled={false}
       />
 
-      {/* Danger zone ring — outer 15%, pulsing red emissive */}
+      {/* Danger zone ring — outer 15%, additive red pulse via MeshBasicMaterial */}
       <mesh
         ref={dangerRef}
         geometry={dangerGeo}
         material={dangerMat}
         position={[0, discTopY + 2, 0]}
         frustumCulled={false}
-      />
-
-      {/* 4 rim accent point lights at cardinal positions — no shadows */}
-      <pointLight
-        color={RIM_LIGHT_COLOR}
-        intensity={RIM_LIGHT_INTENSITY}
-        distance={RIM_LIGHT_DISTANCE}
-        decay={2}
-        position={[ARENA_RADIUS, discTopY + 20, 0]}
-        castShadow={false}
-      />
-      <pointLight
-        color={RIM_LIGHT_COLOR}
-        intensity={RIM_LIGHT_INTENSITY}
-        distance={RIM_LIGHT_DISTANCE}
-        decay={2}
-        position={[-ARENA_RADIUS, discTopY + 20, 0]}
-        castShadow={false}
-      />
-      <pointLight
-        color={RIM_LIGHT_COLOR}
-        intensity={RIM_LIGHT_INTENSITY * 0.7}
-        distance={RIM_LIGHT_DISTANCE}
-        decay={2}
-        position={[0, discTopY + 20, ARENA_RADIUS]}
-        castShadow={false}
-      />
-      <pointLight
-        color={RIM_LIGHT_COLOR}
-        intensity={RIM_LIGHT_INTENSITY * 0.7}
-        distance={RIM_LIGHT_DISTANCE}
-        decay={2}
-        position={[0, discTopY + 20, -ARENA_RADIUS]}
-        castShadow={false}
       />
 
       {/* Void backdrop far below */}
@@ -297,7 +274,7 @@ export default function BumperShellsArena() {
         frustumCulled={false}
       />
 
-      {/* Starfield — 300 scattered points below the disc, 1 draw call */}
+      {/* Starfield — 60 scattered points below the disc, 1 draw call (was 300) */}
       <points
         ref={starsRef}
         geometry={starGeo}

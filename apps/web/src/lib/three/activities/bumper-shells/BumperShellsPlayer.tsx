@@ -26,7 +26,8 @@
 import { useRef, useEffect, useMemo } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF, Html } from '@react-three/drei';
-import * as THREE from 'three/webgpu';
+// PERF FIX 2026-04-24: 'three' not 'three/webgpu' — two THREE instances = GPU context loss
+import * as THREE from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { LobsterAnimator } from '@/lib/three/lobster-animations';
 import { discoverLobsterParts } from '@/lib/three/lobster-parts';
@@ -422,6 +423,7 @@ function BumperShellsPlayerInner({
   const labelText = displayName ?? entity.avatarId.slice(0, 8);
 
   return (
+    // castShadow removed — shadow pipeline disabled in Canvas (no `shadows` prop)
     <group ref={groupRef} scale={[SHELL_SCALE, SHELL_SCALE, SHELL_SCALE]}>
       {/* meshRoot receives squash/stretch scale — separate from position group.
           bone mutations from animator + root scale compose cleanly. */}
