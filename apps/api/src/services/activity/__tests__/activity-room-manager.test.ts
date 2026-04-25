@@ -322,6 +322,22 @@ describe('Player active-room lookup', () => {
     await activityRoomManager.transitionRoom(room.id, 'aborted');
     expect(activityRoomManager.getPlayerActiveRoom(participants[0].petId)).toBeUndefined();
   });
+
+  it('treats a results-state room as not-blocking so the player can re-queue', async () => {
+    // Regression for "Pet is already in an active room" 400 the user hit
+    // when a match ended cleanly but GC hadn't run yet — the player closes
+    // the results modal and tries to queue again, and the queue refuses.
+    // results = match is over, just waiting for the GC sweep.
+    const participants = makeParticipants(4);
+    const room = await activityRoomManager.createRoom(
+      ACTIVITY_ID,
+      participants,
+      ACTIVITY_CONFIG,
+    );
+    await activityRoomManager.transitionRoom(room.id, 'live');
+    await activityRoomManager.transitionRoom(room.id, 'results');
+    expect(activityRoomManager.getPlayerActiveRoom(participants[0].petId)).toBeUndefined();
+  });
 });
 
 // ─── DB mock factory ──────────────────────────────────────────────────────
