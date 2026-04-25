@@ -744,6 +744,7 @@ class ReefRaceSim {
     }>;
     arenaRadius: number;
     now: number;
+    matchStartedAt: number;
     /** Next-checkpoint index for self — let bots steer toward it. */
     nextCheckpoint?: number;
     /** Centerline points for the 12 checkpoints — bots use these for steering. */
@@ -772,6 +773,7 @@ class ReefRaceSim {
       // primarily steers via centerline + checkpoints.
       arenaRadius: Math.max(REEF_TRACK_A, REEF_TRACK_B) + 200,
       now: Date.now(),
+      matchStartedAt: state.startedAt,
       nextCheckpoint: self?.nextCheckpoint ?? 1,
       checkpoints: state.checkpoints,
     };
