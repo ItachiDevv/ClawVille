@@ -87,6 +87,12 @@ export interface BotRoomView {
   arenaRadius: number;
   /** Wall-clock now (ms) so bots can compare against `cooldownUntil` */
   now: number;
+  /**
+   * Wall-clock match start (ms). Bots use this to gate aggressive behavior
+   * during the opening seconds — see Bumper Shells controller's grace
+   * period, which prevents instant elimination on spawn.
+   */
+  matchStartedAt: number;
 }
 
 export interface BotController {

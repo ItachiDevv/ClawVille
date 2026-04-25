@@ -9,9 +9,23 @@
  *   - Three.js GLB clone (lobster / crayfish) with LobsterAnimator locomotion
  *   - drei <Html> name label above shell (camera-cull gated; NO drei Text — Iris Xe crash)
  *   - Squash/stretch on hit (meshRootRef scale; orthogonal to bone rotations)
- *   - Elimination: gravity drop (DROP_GRAVITY wu/s²) + fade over DROP_FADE_DURATION
- *   - Self-hit flash: fires onSelfHit callback so BumperShellsScene flashes the DOM overlay
+ *   - Elimination: death anim fires immediately, gravity drop starts in parallel
+ *     (lobster tips over while falling — visually reads as "limp tumble off disc")
+ *   - Combat animations: triggerCombatAction('attack'|'hurt'|'death') called
+ *     imperatively by BumperShellsScene's HitEventProcessor via a module-scope Map.
+ *   - Self-hit flash: fires onSelfHit callback so BumperShellsScene flashes DOM overlay
  *   - PR #51 position interpolation fully preserved (15Hz → 60fps lerp)
+ *
+ * Bug fixes vs prior build (2026-04-24):
+ *   - Bug 1: Facing now comes from entity.rot (server-authoritative, only updates
+ *     on player input direction). Velocity-derived facing caused snap-spazzing on
+ *     every knockback impulse. Velocity is kept only for locomotion speed classification.
+ *   - Bug 2: Combat animations wired. triggerCombatAction() calls
+ *     animatorRef.current?.startAction(). LobsterAnimator.actionDone gates return
+ *     to idle/walk naturally after ACTION_DURATIONS[state] expires.
+ *   - Bug 3: Death anim starts at elimination alongside the gravity drop (parallel).
+ *     The lobster tips sideways (body.rotation.z → π/2) while falling off disc —
+ *     reads as a "limp tumble" which is visually better than instant drop.
  *
  * Iris Xe invariants:
  *   - SkeletonUtils.clone() + frustumCulled=false traverse immediately after clone.
@@ -19,8 +33,16 @@
  *   - NO drei Text/Billboard — Iris Xe hard GPU crash.
  *   - drei <Html> with anchorInFrontOfCamera dot-product cull.
  *   - No per-frame allocations — module-scope scratch primitives only.
+ *   - import from 'three' (plain), NOT 'three/webgpu'.
  *
  * Draw calls: 1 per player (lobster.glb = 1 SkinnedMesh draw call).
+ *
+ * External API (imperative handles attached to group):
+ *   group.triggerHit?.()               — squash/stretch VFX
+ *   group.triggerCombatAction?.(action) — 'attack' | 'hurt' | 'death' animator state
+ *
+ * Both are registered by BumperShellsScene's HitEventProcessor via the
+ * PLAYER_GROUP_MAP module-scope Map<avatarId, THREE.Group>.
  */
 
 import { useRef, useEffect, useMemo } from 'react';
@@ -30,6 +52,7 @@ import { useGLTF, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { LobsterAnimator } from '@/lib/three/lobster-animations';
+import type { AnimState } from '@/lib/three/lobster-animations';
 import { discoverLobsterParts } from '@/lib/three/lobster-parts';
 import { anchorInFrontOfCamera } from '@/lib/three/utils/camera-cull';
 import type { BumperShellEntity, ShellHitAnimState } from './bumper-shells-types';
@@ -44,6 +67,18 @@ import {
 // ─── Preloads — fire at module scope so GLBs are warm before a round starts ──
 useGLTF.preload('/models/lobster.glb');
 useGLTF.preload('/models/crayfish.glb');
+
+// ─── Module-scope player group registry ──────────────────────────────────────
+// BumperShellsScene's HitEventProcessor uses this to call triggerCombatAction
+// imperatively without React props or re-renders.
+// Map is intentionally at module scope so it lives for the lifetime of the
+// JS module — no per-render allocation.
+export const PLAYER_GROUP_MAP = new Map<
+  string,
+  THREE.Group & { triggerHit?: () => void; triggerCombatAction?: (action: CombatAction) => void }
+>();
+
+export type CombatAction = 'attack' | 'hurt' | 'death';
 
 // ─── Interpolation constants ──────────────────────────────────────────────────
 /**
@@ -67,13 +102,14 @@ const _speedScratch = { speed: 0 };
 // ─── Locomotion speed thresholds ─────────────────────────────────────────────
 /** Below this speed (wu/s) the animator uses 'idle'. */
 const WALK_SPEED_THRESHOLD = 20;
-/** Above this speed (wu/s) the animator blends toward 'walk' at full rate. */
-const RUN_SPEED_THRESHOLD = 80;
 
-// ─── Lobster facing constant ──────────────────────────────────────────────────
-// lobster.glb faces +Z at rotation.y=0. Facing formula: atan2(vx, vy) in sim-space,
-// which maps to atan2(vx, vz) in 3D (sim-y → Three.js Z).
-// idle default = 0 (faces +Z toward default camera).
+// ─── Lobster facing note ──────────────────────────────────────────────────────
+// lobster.glb faces +Z at rotation.y=0.
+// BUG FIX (Bug 1): facing now comes from entity.rot (server-authoritative).
+// entity.rot is set server-side as atan2(intent.dir.x, intent.dir.y) only when
+// the player provides input — it does NOT update on knockback impulses.
+// This eliminates the snap-spazzing caused by velocity-derived facing.
+// Velocity magnitude is still used for the idle/walk locomotion classifier.
 
 // ─── Per-snapshot record ─────────────────────────────────────────────────────
 
@@ -82,7 +118,11 @@ interface SnapRecord {
   t: number;
   x: number;
   z: number; // sim-space y → Three.js z
-  /** Facing angle in radians: atan2(vx, vy). NaN if velocity is zero (use prev). */
+  /**
+   * Facing angle in radians — directly from entity.rot (server-authoritative).
+   * NaN only when entity.rot is exactly 0 AND velocity is also zero (initial
+   * spawn frame before any input) — fall back to last rendered rotation.
+   */
   rot: number;
   vx: number;
   vz: number; // sim-space vy → Three.js vz
@@ -151,7 +191,7 @@ function BumperShellsPlayerInner({
   const historyRef = useRef<SnapRecord[]>([]);
   // Pointer to the last entity object we saw (identity compare to detect new snapshot).
   const lastEntityRef = useRef<BumperShellEntity | null>(null);
-  // Last interpolated rotation — used when velocity is zero (no new facing info).
+  // Last interpolated rotation — used when rot is zero + velocity is zero (initial spawn).
   const lastRotRef = useRef(0);
 
   // Clone the GLB once per entity/species change.
@@ -190,6 +230,36 @@ function BumperShellsPlayerInner({
   // Track previous alive state to trigger fade on elimination.
   const wasAlive = useRef(true);
 
+  // ─── Register in module-scope PLAYER_GROUP_MAP ───────────────────────────
+  // Must run after groupRef is populated (after first render).
+  // Uses useEffect (not useLayoutEffect) — Map registration is not frame-timing
+  // critical; BumperShellsScene reads the Map in useFrame at ≥1 frame latency.
+  useEffect(() => {
+    const group = groupRef.current;
+    if (!group) return;
+    const avatarId = entity.avatarId;
+
+    // Attach imperative handles to the group object (same pattern as triggerHit).
+    (group as THREE.Group & { triggerHit?: () => void; triggerCombatAction?: (action: CombatAction) => void }).triggerHit = () => {
+      hitAnim.current = { active: true, elapsed: 0 };
+    };
+
+    (group as THREE.Group & { triggerCombatAction?: (action: CombatAction) => void }).triggerCombatAction = (action: CombatAction) => {
+      // BUG FIX (Bug 2): wire combat states to animator.
+      // startAction() is a no-op if the same state is already playing + !actionDone.
+      // For 'death': also handled by the elimination path in useFrame; calling it
+      // here from the external event lets the anim fire even if entity.alive hasn't
+      // updated yet (event arrives on the same tick as the alive=false delta).
+      animatorRef.current?.startAction(action as AnimState, elapsedRef.current);
+    };
+
+    PLAYER_GROUP_MAP.set(avatarId, group as any);
+
+    return () => {
+      PLAYER_GROUP_MAP.delete(avatarId);
+    };
+  }, [entity.avatarId]); // re-run if avatarId ever changes (shouldn't, but safe)
+
   useFrame((_, delta) => {
     const group    = groupRef.current;
     const meshRoot = meshRootRef.current;
@@ -207,10 +277,14 @@ function BumperShellsPlayerInner({
     if (entity !== lastEntityRef.current) {
       lastEntityRef.current = entity;
 
-      // Compute facing from velocity. NaN when both are zero — we'll fall back
-      // to the last rendered rotation so the lobster doesn't snap to 0.
+      // BUG FIX (Bug 1): use entity.rot (server-authoritative, only changes on
+      // player input direction — NOT updated by knockback impulses).
+      // Fallback to last rendered rotation only when rot is 0 AND velocity is also
+      // zero (initial spawn frame; server initializes rot=0 at spawn so we can't
+      // distinguish "facing +Z" from "not yet moved"). Once the player provides
+      // any input direction, entity.rot is trusted unconditionally.
       const hasVelocity = entity.vx !== 0 || entity.vy !== 0;
-      const rot = hasVelocity ? Math.atan2(entity.vx, entity.vy) : NaN;
+      const rot = (entity.rot !== 0 || hasVelocity) ? entity.rot : NaN;
 
       const snap: SnapRecord = {
         t: performance.now(),
@@ -275,7 +349,7 @@ function BumperShellsPlayerInner({
       interpVx = a.vx + (b.vx - a.vx) * t;
       interpVz = a.vz + (b.vz - a.vz) * t;
 
-      // Rotation: prefer velocity-derived angle; skip NaN (zero-velocity) frames.
+      // BUG FIX (Bug 1): lerp entity.rot angles, skip NaN (zero-velocity spawn) frames.
       const rotA = isNaN(a.rot) ? lastRotRef.current : a.rot;
       const rotB = isNaN(b.rot) ? rotA               : b.rot;
       interpRot = lerpAngle(rotA, rotB, t);
@@ -292,7 +366,8 @@ function BumperShellsPlayerInner({
 
     // ─── LobsterAnimator: locomotion blend from interpolated velocity ──────
     // Speed is magnitude of (vx, vz) in sim-space (both map to XZ plane).
-    // Reuse module-scope scratch — no allocation.
+    // BUG FIX (Bug 1): velocity magnitude is still used for idle/walk classification —
+    // only facing (rotation) was moved to entity.rot. No change here.
     _speedScratch.speed = Math.sqrt(interpVx * interpVx + interpVz * interpVz);
 
     let suggestedState: 'idle' | 'walk' = 'idle';
@@ -339,9 +414,14 @@ function BumperShellsPlayerInner({
       }
     }
 
-    // ─── Elimination: gravity drop + fade ────────────────────────────────────
+    // ─── Elimination: death anim + gravity drop in parallel ──────────────────
+    // BUG FIX (Bug 3): death anim and gravity drop are parallel (Option B).
+    // The death anim tips body.rotation.z → π/2 (limp sideways) while the
+    // group falls via DROP_GRAVITY. Visually: "tips over while tumbling off the disc."
+    // This is orthogonal — body.rotation.z is in clonedScene's child space
+    // (animator's domain), group.position.y is in world space (our domain).
     if (wasAlive.current && !entity.alive) {
-      // Just eliminated — start physics drop.
+      // Just eliminated — start both death anim + physics drop simultaneously.
       wasAlive.current = false;
       dropRef.current.active = true;
       dropRef.current.elapsed = 0;
@@ -351,6 +431,9 @@ function BumperShellsPlayerInner({
       // Fire knockout sound + hide label immediately
       if (isSelf) onSelfHit?.();
       if (labelRef.current) labelRef.current.style.display = 'none';
+
+      // Trigger death anim (joins any in-progress anim via startAction guard).
+      animatorRef.current?.startAction('death', elapsed);
     }
 
     if (dropRef.current.active) {
@@ -404,20 +487,6 @@ function BumperShellsPlayerInner({
       fadeRef.current.opacity = 1;
       dropRef.current.active = false;
     }
-  });
-
-  /**
-   * Called externally (by BumperShellsScene) when a hit event matches this avatarId.
-   * Triggers the squash/stretch animation.
-   */
-  // We expose this via an imperative handle pattern using a ref on the outer group.
-  // BumperShellsScene calls: playerRefs[avatarId].current?.triggerHit?.()
-  useEffect(() => {
-    const group = groupRef.current;
-    if (!group) return;
-    (group as THREE.Group & { triggerHit?: () => void }).triggerHit = () => {
-      hitAnim.current = { active: true, elapsed: 0 };
-    };
   });
 
   const labelText = displayName ?? entity.avatarId.slice(0, 8);

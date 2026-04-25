@@ -638,6 +638,8 @@ export const useActivityStore = create<ActivityState>()(
             x: frame.position.x,
             y: frame.position.y,
             power: typeof frame.power === 'number' ? frame.power : 0.5,
+            srcAvatarId: frame.srcAvatarId,
+            dstAvatarId: frame.dstAvatarId,
           });
           set({ events: { ...state.events, hits } });
           break;
