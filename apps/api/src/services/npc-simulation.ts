@@ -39,11 +39,13 @@ const MAP_HEIGHT = 5120;
 const TOWN_CENTER_X = MAP_WIDTH / 2;       // 2560
 const TOWN_CENTER_Y = MAP_HEIGHT / 2;      // 2560
 // Ring of wander bounds centered ON the building ring (radius ~2176wu).
-// 2026-04-24: expanded from 500-1700 (NPCs clustered around town square, looked
-// empty) to 1400-2600 — inner edge just inside buildings, outer edge just behind
-// them. NPCs now wander between/behind the buildings, not in the empty town core.
-const FREE_ROAMER_MIN_RADIUS = 1400;
-const FREE_ROAMER_MAX_RADIUS = 2600;
+// 2026-04-25: 1400-2600 → 1200-2750. User asked for "more room" — widening
+// inward (NPCs can drift closer to town center) and outward (further behind
+// buildings, toward map edge). Combined with BUILDING_EXCLUSION_PAD reduction
+// 14 → 11 in pathfinding.ts, the effective walkable area between buildings
+// and inside the ring is now ~1.4× larger than before.
+const FREE_ROAMER_MIN_RADIUS = 1200;
+const FREE_ROAMER_MAX_RADIUS = 2750;
 
 // --- Types ---
 
