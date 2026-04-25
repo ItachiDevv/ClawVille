@@ -12,6 +12,7 @@ import {
   DEFAULT_AGENT_MODEL_KEY,
   DEFAULT_AGENT_HARNESS,
   getAgentModel,
+  CLAWVILLE_ORIENTATION_KNOWLEDGE,
 } from '@clawville/shared';
 import type {
   PetArchetypeId,
@@ -95,6 +96,12 @@ const createPetSchema = z.object({
    * (Phase 2 audit Fix A) — no `as unknown as [T, ...T[]]` cast needed.
    */
   agentCategory: z.enum(AGENT_CATEGORIES).optional(),
+  /**
+   * Phase 6.1 — free-text curriculum focus the human picked at /create-agent
+   * (optional). Clamped + persisted on `pets.learning_focus`; injected into
+   * the system prompt by `buildCharacterConfig`.
+   */
+  learningFocus: z.string().max(120).optional(),
   /** Phase 2 — preferred runtime harness. DB CHECK `pets_harness_valid`. */
   harness: z.enum(AGENT_HARNESSES).optional(),
 });
@@ -148,17 +155,43 @@ function calculateStats(personality: z.infer<typeof createPetSchema>['personalit
  * animal. Callers resolve the label from `getAgentModel(modelKey).label`
  * before calling this.
  */
-function buildCharacterConfig(archetypeId: PetArchetypeId, petName: string, modelLabel: string) {
+function buildCharacterConfig(
+  archetypeId: PetArchetypeId,
+  petName: string,
+  modelLabel: string,
+  learningFocus?: string | null,
+) {
   const archetype = PET_ARCHETYPES.find((a) => a.id === archetypeId);
   if (!archetype) throw new Error(`Unknown archetype: ${archetypeId}`);
 
-  const system = [
+  const systemLines = [
     `You are ${petName}, a ${modelLabel} in the sea-themed world of ClawVille — a virtual pet adventure where agents learn OpenClaw skills.`,
     `Your archetype is "${archetype.label}". Stay in character at all times.`,
     `You exist in Neopia Central and have deep knowledge of Neopets lore, culture, and locations.`,
     `You also have knowledge of Solana, cryptocurrency, and memecoin/degen culture — weave this naturally into conversation when relevant.`,
     `Tone: ${archetype.tone}. Speak consistently with your character's voice and personality.`,
-  ].join('\n');
+  ];
+
+  // Phase 6.1 — human-picked curriculum focus. Biases the agent toward
+  // the matching building's teacher without forcing it; the other nine
+  // remain reachable. Empty/null focus = general exploration, same as
+  // pre-Phase-6.1 behavior.
+  if (learningFocus && learningFocus.trim()) {
+    systemLines.push(
+      `Your human asked you to focus on learning: "${learningFocus.trim()}". Prioritize visits and conversations with the building teacher(s) whose domain best matches this focus, and surface relevant knowledge first when chatting. Other buildings remain available for exploration.`,
+    );
+  }
+
+  const system = systemLines.join('\n');
+
+  // ClawVille world-facts (modes, 10 buildings, economy, leaderboard, connect
+  // + reconnect + disconnect flow, session TTL, guest mode, tutorial) are
+  // baked in on creation so the pet is orientation-aware at t=0 regardless
+  // of harness. Source of truth lives in `@clawville/shared`; Nori spreads
+  // the same list into her own Eliza knowledge so the player agent and the
+  // in-world guide agree verbatim. Without this the pet knows nothing about
+  // the world it just spawned into and every "how do I X?" becomes a guess.
+  const knowledge = [...archetype.knowledge, ...CLAWVILLE_ORIENTATION_KNOWLEDGE];
 
   return {
     bio: archetype.bio,
@@ -170,7 +203,7 @@ function buildCharacterConfig(archetypeId: PetArchetypeId, petName: string, mode
     style: archetype.style,
     messageExamples: archetype.messageExamples,
     lore: archetype.lore,
-    knowledge: archetype.knowledge,
+    knowledge,
     system,
   };
 }
@@ -291,10 +324,13 @@ petRoutes.post('/', async (c) => {
   // to the character-config builder instead of the legacy `species`
   // enum value. The system prompt now describes the pet by what the 3D
   // renderer actually shows.
+  const learningFocus = result.data.learningFocus?.trim() || null;
+
   const characterConfig = buildCharacterConfig(
     result.data.archetypeId as PetArchetypeId,
     result.data.name,
     modelMeta.label,
+    learningFocus,
   );
 
   // Audit Fix C §6 — wrap the agent + pet inserts in a transaction so a
@@ -341,6 +377,7 @@ petRoutes.post('/', async (c) => {
           modelKey,
           agentCategory,
           harness,
+          learningFocus,
         })
         .returning();
 

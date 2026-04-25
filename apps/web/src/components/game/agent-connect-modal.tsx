@@ -24,6 +24,10 @@ export default function AgentConnectModal() {
   const [, setPolling] = useState(false);
   const [expiresIn, setExpiresIn] = useState(0);
   const [copied, setCopied] = useState(false);
+  // Phase 6.1 — learning focus the human picks before the magic link is
+  // issued. Flows through `/api/agent/connect-token` → pending connection
+  // → pet.learning_focus on /connect claim → system prompt injection.
+  const [learningFocus, setLearningFocus] = useState('');
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Cleanup polling on unmount or close
@@ -54,6 +58,7 @@ export default function AgentConnectModal() {
         petId: pet.id,
         petName: pet.name ?? 'MyBot',
         userId: authData.user.id,
+        ...(learningFocus.trim() ? { learningFocus: learningFocus.trim() } : {}),
       });
       setConnectToken(res.token);
       setConnectUrl(res.connectUrl);
@@ -89,7 +94,7 @@ export default function AgentConnectModal() {
     } finally {
       setLoading(false);
     }
-  }, [pet, authData, addToast, setAgentConnection]);
+  }, [pet, authData, addToast, setAgentConnection, learningFocus]);
 
   const handleCopyUrl = () => {
     if (!connectUrl) return;
@@ -226,13 +231,31 @@ export default function AgentConnectModal() {
                 </div>
 
                 {!connectToken ? (
-                  <button
-                    onClick={handleGenerateToken}
-                    disabled={loading}
-                    className="w-full px-4 py-3 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-400 hover:to-blue-400 text-white font-bold text-sm transition-all disabled:opacity-50"
-                  >
-                    {loading ? 'Generating...' : 'Generate Connect Link'}
-                  </button>
+                  <>
+                    <div className="space-y-1.5">
+                      <label className="block text-white/50 text-[11px] font-mono uppercase tracking-[0.2em]">
+                        ⟐ learning focus (optional)
+                      </label>
+                      <input
+                        type="text"
+                        value={learningFocus}
+                        onChange={(e) => setLearningFocus(e.target.value.slice(0, 120))}
+                        maxLength={120}
+                        placeholder="e.g. cron jobs, solana signing, discord bots"
+                        className="w-full px-3 py-2 rounded-lg bg-white/[0.04] border border-white/10 text-white placeholder:text-white/25 focus:outline-none focus:border-cyan-400/60 transition-all text-sm"
+                      />
+                      <p className="text-[10px] text-white/30 font-mono">
+                        Biases your agent toward the matching building teacher. Leave blank for free exploration.
+                      </p>
+                    </div>
+                    <button
+                      onClick={handleGenerateToken}
+                      disabled={loading}
+                      className="w-full px-4 py-3 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-400 hover:to-blue-400 text-white font-bold text-sm transition-all disabled:opacity-50"
+                    >
+                      {loading ? 'Generating...' : 'Generate Connect Link'}
+                    </button>
+                  </>
                 ) : (
                   <div className="space-y-3">
                     {/* Copyable URL */}

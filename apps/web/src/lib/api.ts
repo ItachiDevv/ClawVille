@@ -89,6 +89,19 @@ export const api = {
   me: () =>
     request<{ user: { id: string; email: string; name: string } }>('/api/auth/me'),
 
+  // Phase 6 — authoritative agent-session liveness probe. UI calls on
+  // game-page mount to hydrate `agentConnected` from the server instead
+  // of trusting the client-only zustand flag.
+  getAgentSession: () =>
+    request<{
+      connected: boolean;
+      agentId?: string;
+      harness?: string | null;
+      expiresAt?: string | null;
+      lastSeenAt?: string | null;
+      reason?: 'no_bot' | 'expired';
+    }>('/api/auth/me/agent-session'),
+
   // Pets
   createPet: (data: {
     name: string;
@@ -331,7 +344,13 @@ export const api = {
     }),
 
   // Agent-initiated connection (Moltbook pattern)
-  generateConnectToken: (data: { petId: string; petName: string; userId: string }) =>
+  generateConnectToken: (data: {
+    petId: string;
+    petName: string;
+    userId: string;
+    /** Phase 6.1 — optional free-text focus ("cron jobs", "solana signing"). Server clamps to 120 chars. */
+    learningFocus?: string;
+  }) =>
     honoRequest<{
       token: string;
       connectUrl: string;

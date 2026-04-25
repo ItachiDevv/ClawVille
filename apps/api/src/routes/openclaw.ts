@@ -12,6 +12,7 @@ import { setSessionAgent, getSessionAgent, deleteSessionAgent } from '../service
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import type { ClawvilleServices } from '@clawville/agent-runtime';
 import { generateSkillMd } from '../services/skill-generator';
+import { computeSessionExpiresAt } from '../services/openclaw-session-sweeper';
 
 /** Ensure a system user exists for OpenClaw bot agents (FK requirement) */
 let _systemUserId: string | null = null;
@@ -159,6 +160,11 @@ openclawRoutes.post('/register', async (c) => {
         color: data.mode === 'avatar' ? data.color : existing.color,
         totalSessions: (existing.totalSessions ?? 0) + 1,
         lastSeenAt: new Date(),
+        // Phase 6 — fresh 24h TTL on every legacy /openclaw/register too.
+        sessionExpiresAt: computeSessionExpiresAt(),
+        // Phase 6.1 — clear sweptAt so the next expiration emits exactly
+        // one event. Same rationale as the /api/agent/connect path.
+        sessionSweptAt: null,
         updatedAt: new Date(),
       }).where(eq(openclawBots.id, existing.id));
 
@@ -197,6 +203,8 @@ openclawRoutes.post('/register', async (c) => {
         color: data.mode === 'avatar' ? data.color : null,
         metadata: avatarMeta,
         totalSessions: 1,
+        // Phase 6 — initial 24h TTL so the sweeper reaps dormant rows.
+        sessionExpiresAt: computeSessionExpiresAt(),
       }).returning();
 
       identity = {
@@ -322,6 +330,15 @@ openclawRoutes.delete('/unregister/:sessionId', async (c) => {
           await db.update(openclawBots).set({
             metadata: meta,
             lastSeenAt: new Date(),
+            // Phase 6 — explicit unregister flips session to expired
+            // immediately so /session-status answers 410 on the next
+            // poll without waiting for the 24h TTL.
+            sessionExpiresAt: new Date(),
+            // Phase 6.1 — also stamp sweptAt so the sweeper doesn't
+            // re-emit `agent.session.expired` for a row that was
+            // explicitly disconnected (the unregister handler is the
+            // canonical "gone" signal here).
+            sessionSweptAt: new Date(),
             updatedAt: new Date(),
           }).where(eq(openclawBots.id, existing.id));
         }
@@ -477,6 +494,8 @@ openclawRoutes.post('/chat', async (c) => {
     db.update(openclawBots).set({
       totalMessages: sql`${openclawBots.totalMessages} + 1`,
       lastSeenAt: new Date(),
+      // Phase 6 — slide the 24h session TTL forward on every chat.
+      sessionExpiresAt: computeSessionExpiresAt(),
     }).where(eq(openclawBots.agentId, botCfg.agentId)).catch(() => {});
   }
 
@@ -649,6 +668,8 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
       db.update(openclawBots).set({
         totalMessages: sql`${openclawBots.totalMessages} + 1`,
         lastSeenAt: new Date(),
+        // Phase 6 — slide the 24h session TTL forward on every chat.
+        sessionExpiresAt: computeSessionExpiresAt(),
       }).where(eq(openclawBots.agentId, locBotCfg.agentId)).catch(() => {});
     }
 

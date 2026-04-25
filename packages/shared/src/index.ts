@@ -22,6 +22,7 @@ export * from './constants/quest-seeds';
 export * from './types/collaboration';
 export * from './types/skill-pack';
 export * from './constants/milady-skills';
+export * from './constants/orientation-skill';
 // `agent-models` uses type + value dual exports; explicit re-exports
 // guarantee every symbol is public (the earlier `export *` worked but
 // made the surface less obvious during Phase 2 audits).

@@ -173,6 +173,43 @@ export default function GamePage() {
 
   const isAuthenticated = !!authData?.user;
 
+  // Phase 6 — hydrate `agentConnected` from the server on mount.
+  //
+  // Before this, the flag was client-only and defaulted false on every
+  // page load; meanwhile the user's Hermes/OpenClaw agent could claim
+  // "still connected" for a week because nothing ever invalidated the
+  // stored sessionId. `/api/auth/me/agent-session` is the authoritative
+  // answer — it checks `openclaw_bots.session_expires_at` (plus a Milady
+  // carve-out where the Eliza runtime IS the pet).
+  //
+  // Refetch on window focus so a tab that's been idle past the 24h TTL
+  // picks up the expiry immediately when the user returns; `staleTime:
+  // 30s` caps the background fetch noise.
+  const { data: agentSession } = useQuery({
+    queryKey: ['agent-session'],
+    queryFn: api.getAgentSession,
+    enabled: isAuthenticated,
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+    retry: false,
+  });
+
+  useEffect(() => {
+    if (!agentSession) return;
+    const { agentConnected: clientSideConnected, setAgentConnection } =
+      useGameStore.getState();
+    if (agentSession.connected && agentSession.agentId) {
+      if (!clientSideConnected) {
+        setAgentConnection(agentSession.agentId);
+      }
+    } else if (clientSideConnected) {
+      // Server says no — clear the stale optimistic flag. Covers the
+      // "Hermes exited a week ago but UI still says Connected" case
+      // the user reported this session.
+      setAgentConnection(null);
+    }
+  }, [agentSession]);
+
   // NPC SSE stream — populates npc store for NPC mode possession + rendering
   useNpcStream();
 
@@ -285,6 +322,14 @@ export default function GamePage() {
           <TutorialOverlay />
           <ActivityFeed />
           <ChatPanel />
+          {/* Phase 6.1 — persistent chat-with-pet bar. Was previously
+              agent-connected-only (hidden in NPC/explore/guest modes),
+              but the itachi suggestion was right: a human giving
+              continuous feedback to their pet is the whole point of the
+              persistent interaction axis, and it's the only way to
+              steer an autonomous agent mid-session. Backend /api/pets/
+              me/chat already accepts guest pets + any mode. */}
+          <PetChatBar />
         </>
       )}
 
@@ -304,7 +349,9 @@ export default function GamePage() {
           <QuestTracker />
           <PetSettingsModal />
           <LocationConfigModal />
-          <PetChatBar />
+          {/* PetChatBar moved up into the hasPet block (Phase 6.1) — it
+              renders any time the user has a pet, not only when an
+              agent is connected. */}
           <ChargeBar />
           <ShopOverlay />
           <InventoryModal />

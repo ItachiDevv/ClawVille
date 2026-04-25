@@ -52,6 +52,35 @@ export const openclawBots = pgTable('openclaw_bots', {
   totalMessages: integer('total_messages').default(0).notNull(),
   userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
   lastSeenAt: timestamp('last_seen_at').defaultNow().notNull(),
+  /**
+   * Session liveness — sliding 24h TTL extended on every meaningful agent
+   * action (location chat, heartbeat, building visit, activity match).
+   * `null` means "never expires" and is only used for legacy rows that
+   * pre-date the Phase-6 liveness sweep; the sweeper treats null as
+   * "needs backfill, not expired".
+   *
+   * Enforcement:
+   *   - `openclaw-session-sweeper.ts` runs every 5 min, marks rows where
+   *     session_expires_at < now() and stops any running Eliza runtime.
+   *   - `GET /api/agent/session-status` returns 410 Gone past expiry.
+   *   - `POST /api/agent/disconnect` sets session_expires_at = now()
+   *     immediately (signed-challenge gated, same as /reconnect).
+   *
+   * Reconnect is cheap and stateless — an expired row does NOT require
+   * the user to re-do the magic-link flow. The agent just signs a fresh
+   * challenge with the stored identity private key; the session pops
+   * back alive with a new sessionId and a fresh TTL.
+   */
+  sessionExpiresAt: timestamp('session_expires_at'),
+  /**
+   * Phase 6.1 — set by the sweeper the first time it picks up an
+   * expired row, so the same expiration doesn't fire `agent.session.
+   * expired` events on every 5-min tick forever. Reset to NULL on
+   * /connect / /reconnect so subsequent expirations get processed
+   * correctly. Sweep query: `session_expires_at < now AND
+   * (session_swept_at IS NULL OR session_swept_at < session_expires_at)`.
+   */
+  sessionSweptAt: timestamp('session_swept_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

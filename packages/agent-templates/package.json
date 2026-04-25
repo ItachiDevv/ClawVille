@@ -15,6 +15,9 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "@clawville/shared": "workspace:*"
+  },
   "devDependencies": {
     "typescript": "^5.3.3"
   }
