@@ -302,17 +302,27 @@ class BumperShellsSim {
     };
 
     // Place bodies on a circle around origin so spawn isn't biased.
-    const radius = BUMPER_ARENA_RADIUS * 0.5;
+    // 30% of arena radius (was 50%) — gives ~350wu margin from the boundary
+    // so a single botram during the opening seconds can't ring you out.
+    // See bumper-shells-bot.ts BOT_OPENING_GRACE_MS for the matching client
+    // grace period (~2.5s during which bots cruise instead of ram).
+    const radius = BUMPER_ARENA_RADIUS * 0.3;
     const angleStep = (Math.PI * 2) / Math.max(participantPetIds.length, 1);
     participantPetIds.forEach((petId, i) => {
       const angle = i * angleStep;
+      // Three.js Y-rotation convention: rot = atan2(x, z) so the lobster's
+      // native +Z facing rotates to point at the world-space (x, z) target.
+      // For inward-facing spawn from a circle around origin, the inward
+      // vector is (-cos(angle), -sin(angle)) → rot = atan2(-cos, -sin).
+      const inwardX = -Math.cos(angle);
+      const inwardZ = -Math.sin(angle);
       state.bodies.set(petId, {
         petId,
         x: Math.cos(angle) * radius,
         y: Math.sin(angle) * radius,
         vx: 0,
         vy: 0,
-        rot: angle + Math.PI, // face inward
+        rot: Math.atan2(inwardX, inwardZ),
         hp: 1,
         alive: true,
         eliminatedAt: null,
@@ -646,9 +656,16 @@ class BumperShellsSim {
     body.vx += dvx * scale;
     body.vy += dvy * scale;
 
-    // Update facing if there's any direction input.
+    // Update facing if there's any direction input. We use atan2(x, y) —
+    // NOT the standard math atan2(y, x) — so the value is directly assignable
+    // to a Three.js Y-rotation when sim-y maps to scene-Z (which it does in
+    // BumperShellsPlayer). Lobster GLBs face their native +Z at rot=0; this
+    // formula rotates that forward vector to the input direction.
+    // The collision impulse code below intentionally does NOT touch body.rot —
+    // the lobster keeps facing its movement intent, so visually the player
+    // doesn't "spazz" toward the bump direction every time they get hit.
     if (intent.dir && (intent.dir.x !== 0 || intent.dir.y !== 0)) {
-      body.rot = Math.atan2(intent.dir.y, intent.dir.x);
+      body.rot = Math.atan2(intent.dir.x, intent.dir.y);
     }
   }
 
@@ -708,6 +725,7 @@ class BumperShellsSim {
     }>;
     arenaRadius: number;
     now: number;
+    matchStartedAt: number;
   } {
     const bodies = Array.from(state.bodies.values()).map((b) => ({
       petId: b.petId,
@@ -728,6 +746,7 @@ class BumperShellsSim {
       bodies,
       arenaRadius: BUMPER_ARENA_RADIUS,
       now: Date.now(),
+      matchStartedAt: state.startedAt,
     };
   }
 
@@ -794,9 +813,14 @@ class BumperShellsSim {
         }
         // Knockback impulse: scale closing speed by 1.0 baseline; +20%
         // if either body has speed-boost active (per power-up def).
+        // Cap the per-collision impulse to MAX_SPEED * 0.6 so a single
+        // ram from a fully-boosted body can't fling the receiver more
+        // than 60% of top speed in one tick — was causing instant
+        // ring-outs from the spawn ring under demo-mode bot pressure.
         const aBoost = a.activeEffects.has('bs-speed-boost') ? 1.2 : 1.0;
         const bBoost = b.activeEffects.has('bs-speed-boost') ? 1.2 : 1.0;
-        const impulseMag = Math.abs(closing) * 0.5; // half because mirrored
+        const rawImpulseMag = Math.abs(closing) * 0.5;
+        const impulseMag = Math.min(rawImpulseMag, MAX_SPEED * 0.6);
 
         // Shield absorbs first incoming hit then is consumed.
         const aHasShield = a.activeEffects.has('bs-shell-shield');
