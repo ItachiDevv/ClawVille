@@ -34,6 +34,14 @@ const EDGE_BUFFER = 100;
 const POWERUP_USE_CHANCE = 0.3;
 /** Magnitude of random direction jitter — small enough to look intentional. */
 const JITTER_MAGNITUDE = 0.15;
+/**
+ * Opening grace window in ms after match start during which bots cruise
+ * toward the arena center at low thrust instead of hunting opponents.
+ * Without this, a solo player surrounded by 3-7 backfill bots gets
+ * rammed off the spawn ring within ~1s. 2.5s gives the human time to
+ * read the arena, get oriented, and start moving deliberately.
+ */
+const BOT_OPENING_GRACE_MS = 2_500;
 
 class BumperShellsBot implements BotController {
   readonly activityId = 'bumper-shells';
@@ -44,6 +52,25 @@ class BumperShellsBot implements BotController {
     const self = roomState.bodies.find((b) => b.petId === this.petId);
     if (!self || !self.alive) {
       return { dir: { x: 0, y: 0 }, thrust: 0, actionBits: 0 };
+    }
+
+    // 0. Opening grace — for the first BOT_OPENING_GRACE_MS we don't hunt
+    //    opponents. Cruise toward arena center at moderate thrust so the
+    //    arena visually settles + the human has time to read the controls.
+    //    No power-up fire during grace either.
+    const matchAge = roomState.now - roomState.matchStartedAt;
+    if (matchAge < BOT_OPENING_GRACE_MS) {
+      const distFromOrigin = Math.hypot(self.x, self.y);
+      if (distFromOrigin < 1) {
+        // Already at center — coast in place.
+        return { dir: { x: 0, y: 0 }, thrust: 0, actionBits: 0 };
+      }
+      const mag = Math.max(distFromOrigin, 0.0001);
+      return {
+        dir: { x: -self.x / mag, y: -self.y / mag },
+        thrust: 0.4,
+        actionBits: 0,
+      };
     }
 
     // 1. Find nearest alive opponent.

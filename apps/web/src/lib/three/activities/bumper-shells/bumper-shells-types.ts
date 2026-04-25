@@ -98,6 +98,10 @@ export interface BumperHitEvent {
   y: number;
   /** Knockback power (0–1 normalised, used for burst radius scaling). */
   power: number;
+  /** petId of the shell that dealt the hit (higher-velocity body at impact). */
+  srcPetId?: string;
+  /** petId of the shell that received the hit (lower-velocity body at impact). */
+  dstPetId?: string;
 }
 
 // ─── Elimination event ────────────────────────────────────────────────────────

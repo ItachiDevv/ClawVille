@@ -35,6 +35,7 @@ import { playActivitySound } from '@/lib/activity-audio';
 import BumperShellsArena    from './BumperShellsArena';
 import BumperShellsHazard   from './BumperShellsHazard';
 import BumperShellsPlayer   from './BumperShellsPlayer';
+import { PLAYER_GROUP_MAP } from './BumperShellsPlayer';
 import BumperShellsPickups  from './BumperShellsPickups';
 import BumperShellsParticles, { triggerBurst } from './BumperShellsParticles';
 import {
@@ -430,7 +431,25 @@ function HitEventProcessor({ selfPetId, onSelfHit }: HitEventProcessorProps) {
       if (len > _hitCheckScratch.lastHitCount) {
         for (let i = _hitCheckScratch.lastHitCount; i < len; i++) {
           const h = hits[i];
+          // Particle burst at impact position
           triggerBurst(h.x, ARENA_HEIGHT / 2 + 4, h.y, '#ff8800');
+
+          // BUG FIX (Bug 2): trigger combat animations on involved players.
+          // srcPetId = higher-velocity body (dealt the hit) → 'attack'
+          // dstPetId = lower-velocity body (received the hit) → 'hurt'
+          // Both fire alongside the squash/stretch VFX (triggerHit stays on
+          // the player's own wasHit path; this is purely animator-side).
+          if (h.srcPetId) {
+            const srcGroup = PLAYER_GROUP_MAP.get(h.srcPetId);
+            srcGroup?.triggerCombatAction?.('attack');
+          }
+          if (h.dstPetId) {
+            const dstGroup = PLAYER_GROUP_MAP.get(h.dstPetId);
+            dstGroup?.triggerCombatAction?.('hurt');
+            // Also trigger the squash/stretch VFX on the destination player
+            // (previously only self-hit fired this; now all hits do).
+            dstGroup?.triggerHit?.();
+          }
         }
         _hitCheckScratch.lastHitCount = len;
       }
@@ -452,6 +471,14 @@ function HitEventProcessor({ selfPetId, onSelfHit }: HitEventProcessorProps) {
             '#ff3300',
           );
           if (e.petId === selfPetId) onSelfHit();
+
+          // BUG FIX (Bug 2+3): trigger death anim on eliminated player.
+          // BumperShellsPlayer's useFrame also triggers death anim when it
+          // sees entity.alive flip to false — this call handles the case where
+          // the elimination event arrives on the same tick as (or before) the
+          // entity delta, ensuring the anim fires ASAP.
+          const elimGroup = PLAYER_GROUP_MAP.get(e.petId);
+          elimGroup?.triggerCombatAction?.('death');
         }
         _elimCheckScratch.lastElimCount = len;
       }
