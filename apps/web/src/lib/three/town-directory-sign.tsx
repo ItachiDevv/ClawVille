@@ -55,7 +55,7 @@ export default function TownDirectorySign() {
     (window as any).__TOWN_SIGN_RENDERED = ((window as any).__TOWN_SIGN_RENDERED || 0) + 1;
   }
   return (
-    <group position={[SIGN_X, SIGN_Y, SIGN_Z]}>
+    <group position={[SIGN_X, SIGN_Y, SIGN_Z]} userData={{ isOccluder: true }}>
       <mesh
         geometry={postGeo}
         material={woodMat}
