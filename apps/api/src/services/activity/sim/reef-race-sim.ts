@@ -1249,13 +1249,66 @@ class ReefRaceSim {
     this.tickDriftState(state, body, now);
 
     // 8. targetVx/Vy from intent.dir * effectiveThrust * speedMod.
+    //
+    // Wall-slide fix: if the body is currently AT or NEAR the outer wall, the
+    // outward component of intent (the part pointing AWAY from track centerline)
+    // is zeroed before integration. Without this the player who steers into a
+    // curve gets pinned to the wall — server keeps adding outward thrust each
+    // tick, wall bumper deflects, but the kart can't slide along the wall.
+    //
+    // Threshold: 95% of HALF_WIDTH so a kart approaching the wall gets the
+    // lateral assist before slamming. Below this distance the player's intent
+    // is honored unchanged — they can still steer toward / away from the wall.
     let targetVx = 0;
     let targetVy = 0;
     if (intent.dir) {
       const mag = Math.hypot(intent.dir.x, intent.dir.y);
       if (mag > 0) {
-        const nx = intent.dir.x / mag;
-        const ny = intent.dir.y / mag;
+        let nx = intent.dir.x / mag;
+        let ny = intent.dir.y / mag;
+        // Wall-slide projection.
+        if (state.checkpoints.length > 0) {
+          let nearest = state.checkpoints[0];
+          let nearestSq = Infinity;
+          for (const cp of state.checkpoints) {
+            const dx = body.x - cp.center.x;
+            const dy = body.y - cp.center.y;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < nearestSq) {
+              nearestSq = d2;
+              nearest = cp;
+            }
+          }
+          const dx = body.x - nearest.center.x;
+          const dy = body.y - nearest.center.y;
+          const along = dx * nearest.tangent.x + dy * nearest.tangent.y;
+          const perpX = dx - along * nearest.tangent.x;
+          const perpY = dy - along * nearest.tangent.y;
+          const perp = Math.hypot(perpX, perpY);
+          const WALL_PROJECT_THRESHOLD = REEF_TRACK_HALF_WIDTH * 0.95;
+          if (perp > WALL_PROJECT_THRESHOLD && perp > 0) {
+            const wallNx = perpX / perp; // outward unit normal at body
+            const wallNy = perpY / perp;
+            // Outward component of intent direction.
+            const intentOut = nx * wallNx + ny * wallNy;
+            if (intentOut > 0) {
+              // Strip the outward component — keep only the tangent slide.
+              nx = nx - wallNx * intentOut;
+              ny = ny - wallNy * intentOut;
+              const slideMag = Math.hypot(nx, ny);
+              if (slideMag > 0) {
+                nx = nx / slideMag;
+                ny = ny / slideMag;
+              } else {
+                // Pure outward intent (e.g. player facing wall head-on with no
+                // forward thrust) — fall back to track tangent so kart still
+                // makes progress along the racing line instead of stopping.
+                nx = nearest.tangent.x;
+                ny = nearest.tangent.y;
+              }
+            }
+          }
+        }
         targetVx = nx * effectiveThrust * baseTopSpeed;
         targetVy = ny * effectiveThrust * baseTopSpeed;
       }
