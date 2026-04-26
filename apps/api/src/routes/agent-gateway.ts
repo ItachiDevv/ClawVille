@@ -344,10 +344,12 @@ agentGatewayRoutes.post('/connect', async (c) => {
       return c.json({ error: msg }, 409);
     }
   } else {
-    // Avatar mode — spawn a new bot. Default species to 'lobster' and name
-    // to agentId so agents ALWAYS spawn even if the caller omits optional fields.
+    // Avatar mode — spawn a new bot. Default species to the canonical Milady
+    // VRM default so connected agents render as Miladys (not lobsters) when
+    // the caller omits species. Renderer routes by species via MODEL_REGISTRY,
+    // so 'milady_official_1' takes the VRMNpcMesh path.
     const spawnName = data.name ?? data.miladyCharacterName ?? resolvedAgentId.slice(0, 24);
-    const spawnSpecies = data.species ?? 'lobster';
+    const spawnSpecies = data.species ?? DEFAULT_AGENT_MODEL_KEY;
     try {
       const config: OpenClawRegistration = {
         agentId: resolvedAgentId,

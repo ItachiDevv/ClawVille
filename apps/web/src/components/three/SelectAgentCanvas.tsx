@@ -29,6 +29,7 @@ import {
   type CharacterAnimator,
 } from '@/lib/three/character-animations';
 
+import { DEFAULT_AGENT_MODEL_KEY } from '@clawville/shared';
 import {
   MODEL_REGISTRY,
   type ModelKey,
@@ -259,7 +260,7 @@ const PlatformModelGLB = memo(function PlatformModelGLB({
   color: string;
 }) {
   // Cast to ModelKey for index safety; unknown keys fall back to lobster at runtime.
-  const reg: ModelRegistryEntry = MODEL_REGISTRY[modelKey as ModelKey] ?? MODEL_REGISTRY.lobster;
+  const reg: ModelRegistryEntry = MODEL_REGISTRY[modelKey as ModelKey] ?? MODEL_REGISTRY[DEFAULT_AGENT_MODEL_KEY];
 
   const { scene } = useGLTF(reg.path);
   const groupRef     = useRef<THREE.Group>(null!);
@@ -353,7 +354,7 @@ const PlatformModel = memo(function PlatformModel({
   modelKey: string;
   color: string;
 }) {
-  const reg: ModelRegistryEntry = MODEL_REGISTRY[modelKey as ModelKey] ?? MODEL_REGISTRY.lobster;
+  const reg: ModelRegistryEntry = MODEL_REGISTRY[modelKey as ModelKey] ?? MODEL_REGISTRY[DEFAULT_AGENT_MODEL_KEY];
 
   useEffect(() => {
     if (!MODEL_REGISTRY[modelKey as ModelKey]) {
@@ -383,7 +384,7 @@ const SceneContents = memo(function SceneContents({
   modelKey: string;
   color: string;
 }) {
-  const reg = MODEL_REGISTRY[modelKey as ModelKey] ?? MODEL_REGISTRY.lobster;
+  const reg = MODEL_REGISTRY[modelKey as ModelKey] ?? MODEL_REGISTRY[DEFAULT_AGENT_MODEL_KEY];
   const isVRM = reg.avatar_type === 'vrm';
 
   // Single unified atmosphere — underwater cyan, matching what the player
@@ -466,7 +467,7 @@ interface SelectAgentCanvasProps {
 }
 
 export default function SelectAgentCanvas({
-  modelKey = 'lobster',
+  modelKey = DEFAULT_AGENT_MODEL_KEY,
   color = 'green',  // matches PICKER_COLORS default
   onCanvasReady,
 }: SelectAgentCanvasProps) {
