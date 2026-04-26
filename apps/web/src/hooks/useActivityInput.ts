@@ -160,19 +160,27 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
         const h = headingRef.current;
         const fwdX = Math.sin(h);
         const fwdY = Math.cos(h);
-        const rightX = Math.cos(h);
-        const rightY = -Math.sin(h);
+        // "Right" in our atan2(x,y) sim convention rotates the forward
+        // vector by -90° (clockwise from above). For a chase camera that
+        // looks the same way the kart faces, player-perceived "left" of
+        // the screen corresponds to a CCW rotation of the kart, i.e.
+        // +turnBias along the LEFT-perpendicular vector.
+        // Earlier wiring used turn = D - A which produced a CW yaw on A —
+        // user-confirmed swapped (2026-04-26 playtest). Flipping the sign:
+        // A = +1 (left turn, CCW yaw), D = -1 (right turn, CW yaw).
+        const leftX = -Math.cos(h);
+        const leftY =  Math.sin(h);
         const thrust = (k.w ? 1 : 0) - (k.s ? 1 : 0);
-        const turn   = (k.d ? 1 : 0) - (k.a ? 1 : 0);
-        x = fwdX * thrust + rightX * turn * TURN_BIAS;
-        y = fwdY * thrust + rightY * turn * TURN_BIAS;
+        const turn   = (k.a ? 1 : 0) - (k.d ? 1 : 0); // A=+1, D=-1
+        x = fwdX * thrust + leftX * turn * TURN_BIAS;
+        y = fwdY * thrust + leftY * turn * TURN_BIAS;
         // Edge case — only A or D held with no W/S: synthesize a forward
         // thrust so the kart yaws (you can't steer in place — Mario Kart rule
         // — but we let the kart inch forward into the turn so the input feels
         // responsive instead of dead).
         if (thrust === 0 && turn !== 0) {
-          x = fwdX * 0.15 + rightX * turn * TURN_BIAS;
-          y = fwdY * 0.15 + rightY * turn * TURN_BIAS;
+          x = fwdX * 0.15 + leftX * turn * TURN_BIAS;
+          y = fwdY * 0.15 + leftY * turn * TURN_BIAS;
         }
       } else {
         // ─── Bumper Shells / legacy: world-axis WASD ────────────────────
