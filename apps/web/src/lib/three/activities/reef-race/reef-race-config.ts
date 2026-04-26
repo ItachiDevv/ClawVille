@@ -205,10 +205,30 @@ export const GLIDER_LENGTH = 5;
 
 /**
  * Rider mount offset in KART_SCALE-local space.
- * World position = this × KART_SCALE = [0, 12wu, -10wu].
+ *
+ * Math (local space → world space via KART_SCALE=20):
+ *   Glider board BoxGeometry height = GLIDER_HEIGHT = 0.25 local
+ *   Glider board top in local space = GLIDER_LOCAL_Y + GLIDER_HEIGHT/2
+ *                                   = 0.25 + 0.125 = 0.375 local
+ *   Board top in world space        = 0.375 × 20   = 7.5 wu
+ *
+ *   Rider Y offset (local) = 1.2
+ *   Rider Y in local space = GLIDER_LOCAL_Y + 1.2 = 0.25 + 1.2 = 1.45 local
+ *   Rider Y in world space = 1.45 × 20 = 29 wu    (21.5 wu above board top)
+ *
+ *   BOB_AMP_LOCAL = 0.04 local = 0.8 wu — gentle float, never sinks below board
+ *   Worst-case low  = (1.45 - 0.04) × 20 = 28.2 wu  (still 20.7 wu above board top)
+ *
+ * lobster.glb bbox: origin is not measured; assuming center-of-mass pivot.
+ * The 21.5 wu static clearance above board top is sufficient for any origin
+ * placement (feet, center, or head) at KART_SCALE=20.
+ *
+ * Previous values [0, 0.6, -0.5] placed the rider at 12 wu world — BELOW
+ * board top at 7.5 wu + bob amplitude 40 wu → rider sank 28 wu underground.
+ *
  * Single default for Phase 1 (species-specific offsets deferred to Phase 1.5).
  */
-export const RIDER_MOUNT_OFFSET_DEFAULT: [number, number, number] = [0, 0.6, -0.5];
+export const RIDER_MOUNT_OFFSET_DEFAULT: [number, number, number] = [0, 1.2, -0.3];
 
 // ─── Ghost kart ──────────────────────────────────────────────────────────────
 
