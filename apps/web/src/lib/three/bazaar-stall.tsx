@@ -91,6 +91,7 @@ const BazaarStallInner = memo(function BazaarStallInner() {
     <group
       position={[STALL_X, STALL_Y, STALL_Z]}
       scale={[scale, scale, scale]}
+      userData={{ isOccluder: true }}
       onClick={(e) => {
         e.stopPropagation();
         useGameStore.getState().openBazaar();

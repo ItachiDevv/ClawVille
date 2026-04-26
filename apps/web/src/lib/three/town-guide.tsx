@@ -286,6 +286,7 @@ const TownGuideInner = memo(function TownGuideInner() {
   return (
     <group
       position={[0, GROUND_Y, GUIDE_Z]}
+      userData={{ isOccluder: true }}
       onClick={handleClick}
       onPointerEnter={(e) => {
         e.stopPropagation();

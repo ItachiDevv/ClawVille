@@ -245,10 +245,18 @@ function loadVRM(path: string): Promise<VRM> {
       // Applied once per VRM at load — safe under VRM_CACHE @invariant.
       // player-avatar does not walk at NPC_SCALE=112; high stiffness/drag on a
       // stationary rig just means faster settle-to-rest, which is invisible.
+      // Iteration 3 (2026-04-26): user reported "more bald" with stiffness×120 +
+      // drag=0.9. Diagnosis: stiffness × 120 forces tails to lock onto the bind-
+      // pose boneAxisWorld direction, overriding the natural draped pose the
+      // VRM was authored with — hair points in the rigid skeleton direction
+      // instead of falling over the back of the head, exposing the scalp.
+      // Dialing back: keep moderate scale compensation that prevents lag during
+      // walk but lets gravity + chain-constraint physics produce the natural
+      // drape on the back of the head.
       if (vrm.springBoneManager) {
-        const HAIR_STIFFNESS_SCALE  = 120; // 112× world scale compensation (up from 80 — drag now kills momentum assist)
-        const OTHER_STIFFNESS_SCALE = 20;  // Skirt/tail: unchanged — feel correct already
-        const HAIR_DRAG_FORCE       = 0.9; // SET (not multiply) — kills 90% of inertia carryover; fixes translation lag
+        const HAIR_STIFFNESS_SCALE  = 30;  // moderate scale comp — was 120, too rigid
+        const OTHER_STIFFNESS_SCALE = 20;  // Skirt/tail: unchanged
+        const HAIR_DRAG_FORCE       = 0.7; // 30% inertia carryover — was 0.9, was too dead
         for (const joint of vrm.springBoneManager.joints) {
           const boneName = joint.bone?.name ?? '';
           const isHair   = /hair/i.test(boneName);
