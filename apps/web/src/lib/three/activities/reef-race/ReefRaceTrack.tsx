@@ -80,11 +80,17 @@ function sampleTrackFrame(t: number): { pos: THREE.Vector3; tangent: THREE.Vecto
 // DoubleSide: the flat ribbon is visible from both above AND below the XZ plane.
 // This ensures the track is always visible regardless of camera angle.
 
+// fog=false: track surface and guardrails are the racing reference — they MUST
+// be visible at all distances regardless of fog settings. When FOG_FAR is
+// calibrated for props/karts (depth cue), the track would otherwise fade into
+// the fog color on the far side of the ellipse, producing a "black portal"
+// effect as the player drives toward the previously-invisible portion.
 const _trackMat = new THREE.MeshStandardMaterial({
   color: '#1a6b3c',
   roughness: 0.9,
   metalness: 0.0,
   side: THREE.DoubleSide,
+  fog: false,
 });
 
 const _guardrailMat = new THREE.MeshStandardMaterial({
@@ -92,6 +98,7 @@ const _guardrailMat = new THREE.MeshStandardMaterial({
   roughness: 0.7,
   metalness: 0.1,
   side: THREE.DoubleSide,
+  fog: false,
 });
 
 // ─── Canvas texture for track surface ────────────────────────────────────────
