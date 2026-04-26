@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { ACTIVITY_REGISTRY } from '@clawville/shared';
+import { ACTIVITY_REGISTRY, DEFAULT_AGENT_MODEL_KEY } from '@clawville/shared';
 
 // ---------------------------------------------------------------------------
 // B6 — module-scope mutable position ref
@@ -399,12 +399,15 @@ export const useGameStore = create<GameState>((set, get) => ({
   avatarSpecies: 'cat',
   avatarColor: 'green',
   avatarName: '',
-  petModelKey: 'lobster',
+  // 2026-04-26: default flipped 'lobster' → DEFAULT_AGENT_MODEL_KEY so guests
+  // and never-customized avatars render as Miladys (matches the canonical default
+  // in packages/shared/src/constants/agent-models.ts).
+  petModelKey: DEFAULT_AGENT_MODEL_KEY,
   setPetAppearance: (species, color, name, modelKey) => set({
     avatarSpecies: species,
     avatarColor: color,
     ...(name ? { avatarName: name } : {}),
-    petModelKey: modelKey ?? 'lobster',
+    petModelKey: modelKey ?? DEFAULT_AGENT_MODEL_KEY,
   }),
 
   // Spawn 380 world units south of center (world Z+380 = store y=2940) so the
