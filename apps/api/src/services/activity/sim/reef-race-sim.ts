@@ -1052,6 +1052,19 @@ class ReefRaceSim {
     // 4. Body-body proximity (light push to prevent tunneling).
     this.resolveProximity(state);
 
+    // 4a. Wall clamp safety pass — proximity push can shove a parked body
+    //     past REEF_TRACK_HALF_WIDTH. Without this pass the position broadcast
+    //     in step 6 alternates between (wall + push) and (wall) every snapshot
+    //     interval, which the user sees as a kart "spamming back and forth in
+    //     the fence" with no input. reflectVelocity=false so the safety pass
+    //     does NOT bounce the kart back into the colliding bot — it just
+    //     parks it at the wall and zeros outward speed.
+    for (const body of state.bodies.values()) {
+      if (!body.alive || body.forfeited || body.finishedAt !== null) continue;
+      if (body.respawnAt !== null) continue;
+      this.enforceWallClamp(state, body, /*reflectVelocity*/ false);
+    }
+
     // 5. Power-up pickup collision.
     this.resolvePickups(state, now);
 
@@ -1623,63 +1636,74 @@ class ReefRaceSim {
       }
     }
 
-    // ─── Wall bumpers ────────────────────────────────────────────────────
-    // Soft-clamp to track corridor: if the body is past REEF_TRACK_HALF_WIDTH
-    // from the centerline (approximated by nearest checkpoint), push it back
-    // and cancel the outward velocity component (slide-along-wall, mild bounce).
-    //
-    // Why this lives in integrateMotion (not as a separate tick step):
-    //   - Body position has just been updated. Catching the overshoot here
-    //     keeps the kart visually-glued to the wall surface, not 1 tick past.
-    //   - Same nearest-checkpoint projection is reused by `checkOffTrackReset`
-    //     as a safety net for any ball-in-a-bowl edge case the wall misses.
-    //
-    // Tunables:
-    //   WALL_RESTITUTION = 0.25 → soft bounce, mostly absorb. Higher values
-    //     make corners feel "pingy". Lower (toward 0) feels like sliding along
-    //     a wall — more skill-rewarding for racing-line precision.
-    //   WALL_TANGENT_FRICTION = 0.92 → 8% tangent velocity loss per wall hit.
-    //     Stops a kart from accelerating-along-wall infinitely; slight penalty
-    //     for sloppy lines without making walls into stop-gates.
-    if (state.checkpoints.length > 0) {
-      let nearest = state.checkpoints[0];
-      let nearestSq = Infinity;
-      for (const cp of state.checkpoints) {
-        const dx = body.x - cp.center.x;
-        const dy = body.y - cp.center.y;
-        const d2 = dx * dx + dy * dy;
-        if (d2 < nearestSq) {
-          nearestSq = d2;
-          nearest = cp;
-        }
+    // ─── Wall bumpers (primary clamp post-velocity) ──────────────────────
+    // Catches outward overshoot from this tick's velocity step. A SECOND
+    // pass runs at end-of-tick after resolveProximity to catch any push that
+    // shoves a parked kart past the wall — without that pass the kart and
+    // the bot proximity push fight every tick (visible "spamming back and
+    // forth in the fence" with no input).
+    this.enforceWallClamp(state, body, /*reflectVelocity*/ true);
+  }
+
+  /**
+   * Soft-clamp `body` to the track corridor: if perpendicular distance from
+   * the nearest checkpoint centerline exceeds REEF_TRACK_HALF_WIDTH, push it
+   * back to the wall surface. When `reflectVelocity` is true, also decompose
+   * outward velocity and reflect with WALL_RESTITUTION / WALL_TANGENT_FRICTION.
+   * When false (post-proximity safety pass), only the position is corrected
+   * and the outward velocity component is zeroed — no reflection — so a parked
+   * kart pushed by a bot stops at the wall instead of bouncing back into bots.
+   */
+  private enforceWallClamp(
+    state: ReefRoomState,
+    body: ReefBody,
+    reflectVelocity: boolean,
+  ): void {
+    if (state.checkpoints.length === 0) return;
+    let nearest = state.checkpoints[0];
+    let nearestSq = Infinity;
+    for (const cp of state.checkpoints) {
+      const dx = body.x - cp.center.x;
+      const dy = body.y - cp.center.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < nearestSq) {
+        nearestSq = d2;
+        nearest = cp;
       }
-      const dx = body.x - nearest.center.x;
-      const dy = body.y - nearest.center.y;
-      const along = dx * nearest.tangent.x + dy * nearest.tangent.y;
-      const perpX = dx - along * nearest.tangent.x;
-      const perpY = dy - along * nearest.tangent.y;
-      const perp = Math.hypot(perpX, perpY);
-      if (perp > REEF_TRACK_HALF_WIDTH && perp > 0) {
+    }
+    const dx = body.x - nearest.center.x;
+    const dy = body.y - nearest.center.y;
+    const along = dx * nearest.tangent.x + dy * nearest.tangent.y;
+    const perpX = dx - along * nearest.tangent.x;
+    const perpY = dy - along * nearest.tangent.y;
+    const perp = Math.hypot(perpX, perpY);
+    if (perp <= REEF_TRACK_HALF_WIDTH || perp <= 0) return;
+
+    const overshoot = perp - REEF_TRACK_HALF_WIDTH;
+    const nX = perpX / perp;
+    const nY = perpY / perp;
+    // Snap body to wall surface.
+    body.x -= nX * overshoot;
+    body.y -= nY * overshoot;
+
+    const vN = body.vx * nX + body.vy * nY;
+    if (reflectVelocity) {
+      // Primary clamp: reflect outward velocity (full bumper physics).
+      if (vN > 0) {
         const WALL_RESTITUTION = 0.25;
         const WALL_TANGENT_FRICTION = 0.92;
-        const overshoot = perp - REEF_TRACK_HALF_WIDTH;
-        // Outward unit normal (centerline → body direction).
-        const nX = perpX / perp;
-        const nY = perpY / perp;
-        // Push body back to wall surface.
-        body.x -= nX * overshoot;
-        body.y -= nY * overshoot;
-        // Decompose velocity into outward + tangent components.
-        const vN = body.vx * nX + body.vy * nY; // outward speed
-        if (vN > 0) {
-          // Reflect outward component with restitution; preserve tangent
-          // component minus a small friction loss.
-          const vTx = body.vx - vN * nX;
-          const vTy = body.vy - vN * nY;
-          const reflectedN = -vN * WALL_RESTITUTION;
-          body.vx = vTx * WALL_TANGENT_FRICTION + reflectedN * nX;
-          body.vy = vTy * WALL_TANGENT_FRICTION + reflectedN * nY;
-        }
+        const vTx = body.vx - vN * nX;
+        const vTy = body.vy - vN * nY;
+        const reflectedN = -vN * WALL_RESTITUTION;
+        body.vx = vTx * WALL_TANGENT_FRICTION + reflectedN * nX;
+        body.vy = vTy * WALL_TANGENT_FRICTION + reflectedN * nY;
+      }
+    } else {
+      // Safety pass after proximity: just kill outward velocity. No bounce —
+      // a parked kart shoved by a bot must NOT recoil into the bot pile.
+      if (vN > 0) {
+        body.vx -= vN * nX;
+        body.vy -= vN * nY;
       }
     }
   }
@@ -2462,9 +2486,35 @@ class ReefRaceSim {
       // crossed 1..11 and are about to cross 0 → 11 done (+ lap-start).
       const cpDone =
         b.nextCheckpoint === 0 ? REEF_CHECKPOINT_COUNT - 1 : b.nextCheckpoint - 1;
+
+      // Fractional along-segment progress (0..1) from the previous crossed
+      // checkpoint to the next one. Without this, every kart with the same
+      // `cpDone` ties on integer progress and is broken by petId — meaning a
+      // kart STUCK at the start grid (cpDone=0) ranks 1st over moving karts
+      // simply because its petId sorts earliest. Adding the fractional term
+      // makes a stuck-at-start kart genuinely lose to one that's driven any
+      // distance toward CP1.
+      const N = state.checkpoints.length;
+      let frac = 0;
+      if (N > 0) {
+        const prevIdx = (b.nextCheckpoint - 1 + N) % N;
+        const nextIdx = b.nextCheckpoint % N;
+        const prevCp  = state.checkpoints[prevIdx];
+        const nextCp  = state.checkpoints[nextIdx];
+        const segDx = nextCp.center.x - prevCp.center.x;
+        const segDy = nextCp.center.y - prevCp.center.y;
+        const segLenSq = segDx * segDx + segDy * segDy;
+        if (segLenSq > 0) {
+          const bodyDx = b.x - prevCp.center.x;
+          const bodyDy = b.y - prevCp.center.y;
+          const t = (bodyDx * segDx + bodyDy * segDy) / segLenSq;
+          frac = Math.max(0, Math.min(0.999, t));
+        }
+      }
+
       racing.push({
         petId: b.petId,
-        progress: b.lap * REEF_CHECKPOINT_COUNT + cpDone,
+        progress: b.lap * REEF_CHECKPOINT_COUNT + cpDone + frac,
         finishedAt: null,
         dnf: false,
       });
