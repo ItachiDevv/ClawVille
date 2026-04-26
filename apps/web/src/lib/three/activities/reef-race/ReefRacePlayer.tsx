@@ -80,28 +80,28 @@ const _gliderMat  = new THREE.MeshStandardMaterial({
 /**
  * How far behind real-time we render (ms).
  *
- * Server sends snapshots at REEF_SNAPSHOT_HZ = 5 Hz → one snap every 200 ms.
- * BUT each snap is recorded by the CLIENT with `t = performance.now()` at
- * arrival, so the timestamps include network jitter. Worst-case time between
- * arrivals = snap_interval (200 ms) + jitter (50–100 ms).
+ * Server REEF_SNAPSHOT_HZ was bumped 5 → 10 (2026-04-26) so each snap is now
+ * 100 ms apart. Worst-case arrival gap = snap_interval (100 ms) + jitter
+ * (50–80 ms). INTERP_DELAY_MS must exceed that gap so renderTime always falls
+ * BEFORE the newest history entry's arrival timestamp — otherwise the bracket
+ * scan extrapolates past the newest snap and the body teleports forward when
+ * the next snap finally arrives.
  *
- * For zero freeze frames, INTERP_DELAY_MS must exceed `worst_case_arrival_gap`
- * so renderTime always falls BEFORE the newest history entry's timestamp.
- *   target = 200 ms snap_interval + 100 ms jitter buffer + 50 ms safety = 350 ms
+ *   target = 100 ms snap_interval + 50 ms jitter buffer + 50 ms safety = 200 ms
  *
- * Earlier values failed in the wild:
- *   - 100 ms (initial) — assumed 15 Hz snapshots; server is 5 Hz; freeze for ~100 ms
- *     then teleport to next snap.
- *   - 250 ms (first fix) — covered the average snap interval but not jitter; user
- *     reported "still jumpy" because each late snap caused a brief freeze + jump
- *     when render_time exceeded the newest snap's arrival time.
+ * Trade-off: 200 ms input lag from press to on-screen kart motion. Half the
+ * old 350 ms lag, with twice the snapshot resolution → much smoother motion
+ * and faster control feel. Bumping snapshot rate further (15 / 30 Hz) would
+ * trade more bandwidth for marginal smoothness gain — diminishing returns.
  *
- * Trade-off: 350 ms input lag from press to on-screen kart motion. Acceptable for
- * a kart racer at this snapshot rate. Going below the snap_interval risks the same
- * freeze pattern. The proper long-term fix is to bump REEF_SNAPSHOT_HZ to 10 Hz,
- * which would let INTERP_DELAY_MS drop to 150 ms (100 ms interval + 50 ms buffer).
+ * Earlier values that failed:
+ *   - 100 ms (initial) — assumed 15 Hz; server was 5 Hz; freeze for ~100 ms.
+ *   - 250 ms — covered avg interval not jitter; user reported jumps.
+ *   - 350 ms — covered jitter but each segment was 200 ms long, so a single
+ *     delayed snap looked like "feet in one jump" when the next snap arrived
+ *     and the bracket interp scrubbed 400 ms of motion in 1-2 render frames.
  */
-const INTERP_DELAY_MS = 350;
+const INTERP_DELAY_MS = 200;
 
 /**
  * Maximum snapshot history kept per entity.
