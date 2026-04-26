@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useMemo, useEffect, memo, Suspense } from 'react';
+import { useRef, useMemo, useEffect, useLayoutEffect, memo, Suspense } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF, Html } from '@react-three/drei';
 import * as THREE from 'three';
@@ -30,7 +30,15 @@ import { anchorInFrontOfCamera } from '@/lib/three/utils/camera-cull';
 
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
-const LERP_SPEED = 5;
+// LERP_SPEED controls how fast currentPos catches up to targetPos from server.
+// 2026-04-25 (re-locked 2026-04-26 after PR #65 reverted): server ticks at 5Hz
+// (200ms) with baseStep=44 → 8.8wu per snapshot. LERP_SPEED=1.5 means
+// exp(-1.5·0.2) = 0.74 → 26% convergence per snapshot.
+// Steady-state lag = 8.8/0.26 ≈ 34wu (about 0.7 m at world scale), not visible.
+// What IS visible is the smoothness — small per-tick delta + slow lerp = no
+// burst-stop pattern, motion reads as continuous like Nori (who is static).
+// DO NOT raise this back to 5 — that's the jittery value.
+const LERP_SPEED = 1.5;
 // TARGET_NPC_HEIGHT: desired world-unit height for wandering NPCs.
 // Previously NPC_SCALE=50 was a flat multiplier applied to all species; measured
 // heights were 30-36 wu because species GLBs have native heights of 0.6-0.7 units
@@ -373,6 +381,69 @@ preloadMixamoClips();
 const _npcAnchorWorldPos = new THREE.Vector3();
 
 // ---------------------------------------------------------------------------
+// Label occlusion infrastructure (re-locked 2026-04-26 after PR #65 stripped it).
+// Cached raycast against a small set of "occluder" meshes (buildings + NPC
+// groups) to hide labels when the anchor is blocked by closer geometry. Much
+// cheaper than drei occlude={true} (full-scene traversal).
+// ---------------------------------------------------------------------------
+const _occRaycaster = new THREE.Raycaster();
+const _occDir = new THREE.Vector3();
+let _occluderMeshes: THREE.Mesh[] | null = null;
+let _occluderScene: THREE.Scene | null = null;
+
+/** Collect every Mesh that is a descendant of an Object3D tagged
+ *  userData.isOccluder = true. Cache invalidates on scene change or when
+ *  setOccluderListDirty() is called from a useLayoutEffect at NPC mount. */
+function buildOccluderList(scene: THREE.Scene): THREE.Mesh[] {
+  const meshes: THREE.Mesh[] = [];
+  scene.traverse((obj) => {
+    if (!obj.userData.isOccluder) return;
+    obj.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) meshes.push(child as THREE.Mesh);
+    });
+  });
+  return meshes;
+}
+
+/** Returns true when the camera→anchor ray is blocked by an occluder mesh
+ *  closer than the anchor. selfNpcId skips meshes from the calling NPC's own
+ *  group so it never self-occludes its label. */
+function checkLabelOcclusion(
+  cameraPos: THREE.Vector3,
+  anchorWorldPos: THREE.Vector3,
+  selfNpcId: string,
+  scene: THREE.Scene,
+): boolean {
+  if (!_occluderMeshes || _occluderScene !== scene) {
+    _occluderMeshes = buildOccluderList(scene);
+    _occluderScene = scene;
+  }
+  const anchorDist = cameraPos.distanceTo(anchorWorldPos);
+  if (anchorDist < 1) return false;
+
+  _occDir.subVectors(anchorWorldPos, cameraPos).normalize();
+  _occRaycaster.set(cameraPos, _occDir);
+  _occRaycaster.far = anchorDist - 1;
+
+  const filtered = _occluderMeshes.filter((m) => {
+    let p: THREE.Object3D | null = m;
+    while (p) {
+      if (p.userData.isOccluder && p.userData.npcId === selfNpcId) return false;
+      p = p.parent;
+    }
+    return true;
+  });
+  const hits = _occRaycaster.intersectObjects(filtered, false);
+  return hits.length > 0;
+}
+
+/** Force the occluder cache to rebuild on next call. NPCs invoke this from a
+ *  useLayoutEffect after they tag their group with isOccluder/npcId. */
+function invalidateOccluderCache() {
+  _occluderMeshes = null;
+}
+
+// ---------------------------------------------------------------------------
 // Single NPC using GLB model with terrain following
 // ---------------------------------------------------------------------------
 const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
@@ -382,11 +453,26 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // Catches any NPC that slips through computeNpcScale with a wrong pivot offset.
   const rescaleAppliedRef = useRef(false);
   // drei <Html> uses a React DOM portal outside the Three.js scene graph — setting
-  // group.visible=false does NOT propagate to the DOM label. We imperatively sync
+  // group.visible=false does NOT propagate to the DOM div. We imperatively sync
   // label display in useFrame so the label disappears with the mesh.
   const labelRef = useRef<HTMLDivElement>(null);
+  // Occlusion latch — flipped at ~10Hz by checkLabelOcclusion, read every frame
+  // to decide label visibility without burning raycast budget.
+  const occludedRef = useRef(false);
   const npcRef = useRef(npc);
   npcRef.current = npc;
+
+  // Tag this group as a label-occluder + invalidate the module-scope cache so
+  // the next checkLabelOcclusion call picks this NPC up. Runs before paint
+  // (useLayoutEffect) so the first useFrame already sees the tagged group.
+  useLayoutEffect(() => {
+    const g = groupRef.current;
+    if (!g) return;
+    g.userData.isOccluder = true;
+    g.userData.npcId = npc.id;
+    invalidateOccluderCache();
+    return () => { invalidateOccluderCache(); };
+  }, [npc.id]);
   const { scene: threeScene } = useThree();
   // idToSeed returns a float (0..10). Convert to integer so (frame + seed) % N
   // uses integer arithmetic — float modulo with strict === 0 never fires.
@@ -542,15 +628,27 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
       return;
     }
     group.visible = true;
+    const frame = Math.floor(clock.elapsedTime * 60);
     {
-      // Behind-camera cull: drei <Html> does not hide when the 3D anchor is behind
-      // the near plane — it projects to a screen XY anyway, producing a ghost label.
-      // Dot-product test: if (anchor - cameraPos) · cameraForward ≤ 0, anchor is
-      // behind (or coplanar with) the camera — hide the label.
+      // Behind-camera cull + line-of-sight occlusion gate.
+      // Behind-camera: drei <Html> projects to screen XY even when the anchor
+      // is behind the camera, producing a ghost label.
+      // Occlusion: anchor in front but blocked by a building/closer NPC →
+      // label would draw over foreground geometry. Re-locked 2026-04-26 after
+      // PR #65 stripped this — that's the bug where Driftwood/Riptide labels
+      // float over Nori's chest.
       group.getWorldPosition(_npcAnchorWorldPos);
       const inFront = anchorInFrontOfCamera(_npcAnchorWorldPos, camera);
+      // 10Hz occlusion test, staggered per NPC. Only runs when the label is
+      // already in front (so behind-camera labels don't burn raycast budget).
+      if (inFront && (frame + seed) % 6 === 0) {
+        occludedRef.current = checkLabelOcclusion(
+          camera.position, _npcAnchorWorldPos, npc.id, threeScene,
+        );
+      }
       const label = labelRef.current;
-      if (!inFront) {
+      const shouldShow = inFront && !occludedRef.current;
+      if (!shouldShow) {
         if (label && label.style.display !== 'none') label.style.display = 'none';
       } else {
         if (label && label.style.display !== 'flex') label.style.display = 'flex';
@@ -562,7 +660,6 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // raycasting on the same frame tick (which would spike the CPU every 150ms).
     // Use clock.elapsedTime (already available) instead of Date.now() to avoid
     // a syscall allocation in the hot path.
-    const frame = Math.floor(clock.elapsedTime * 60);
     if ((frame + seed) % 3 === 0) {
       const terrainY = getTerrainY(group.position.x, group.position.z, threeScene);
       currentTerrainY.current += (terrainY - currentTerrainY.current) * 0.3;
@@ -770,9 +867,22 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // Same DOM-portal caveat as GLBNpcMesh — drei <Html> is outside the scene graph.
   // Imperatively sync label display with group.visible in the cull block.
   const labelRef = useRef<HTMLDivElement>(null);
+  // Occlusion latch — same pattern as GLBNpcMesh.
+  const occludedRef = useRef(false);
   const { scene: threeScene } = useThree();
   const npcRef = useRef(npc);
   npcRef.current = npc;
+
+  // Tag this group as a label-occluder so checkLabelOcclusion sees it AND so
+  // an NPC's own mesh doesn't self-occlude its own label.
+  useLayoutEffect(() => {
+    const g = groupRef.current;
+    if (!g) return;
+    g.userData.isOccluder = true;
+    g.userData.npcId = npc.id;
+    invalidateOccluderCache();
+    return () => { invalidateOccluderCache(); };
+  }, [npc.id]);
 
   // idToSeed returns float — round to int so (frame + seed) % 3 uses integer arithmetic.
   const seed = useMemo(() => Math.round(idToSeed(npc.id)), [npc.id]);
@@ -883,12 +993,17 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     }
     group.visible = true;
     {
-      // Behind-camera cull: drei <Html> does not hide when the 3D anchor is behind
-      // the near plane — it projects to a screen XY anyway, producing a ghost label.
+      // Behind-camera cull + line-of-sight occlusion gate (same pattern as GLBNpcMesh).
       group.getWorldPosition(_npcAnchorWorldPos);
       const inFront = anchorInFrontOfCamera(_npcAnchorWorldPos, camera);
+      if (inFront && (frame + seed) % 6 === 0) {
+        occludedRef.current = checkLabelOcclusion(
+          camera.position, _npcAnchorWorldPos, npc.id, threeScene,
+        );
+      }
       const label = labelRef.current;
-      if (!inFront) {
+      const shouldShow = inFront && !occludedRef.current;
+      if (!shouldShow) {
         if (label && label.style.display !== 'none') label.style.display = 'none';
       } else {
         if (label && label.style.display !== 'flex') label.style.display = 'flex';
@@ -901,70 +1016,73 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
       currentTerrainY.current += (terrainY - currentTerrainY.current) * 0.3;
     }
 
-    // VRM feet are at Y=0 per spec — no pivot offset needed.
-    group.position.y = currentTerrainY.current;
+    // Jump + bob support for the possessed player NPC (PLAYER_NPC_ID, controlMode='npc').
+    // Mirrors GLBNpcMesh exactly, with two differences:
+    //   1. No `- pivotOffsetY` — VRM feet are at Y=0 per spec; no pivot correction needed.
+    //   2. No `+ 2` baseline — player-avatar.tsx VRM branch confirms VRM feet sit flush on
+    //      currentTerrainY with no extra offset.
+    // Bob frequency (4.0) and amplitude (0.6) match GLBNpcMesh so jump feels identical.
+    const isPossessedPlayerNpc =
+      d.id === PLAYER_NPC_ID &&
+      useGameStore.getState().controlMode === 'npc';
+    const airborne = isPossessedPlayerNpc &&
+                     (jumpState.phase !== 'grounded' && jumpState.phase !== 'charging'
+                   || jumpState.playerAltitude > 0);
+    const jumpY = isPossessedPlayerNpc
+      ? (jumpState.heightOffset + jumpState.playerAltitude)
+      : 0;
+    const bob = (isMoving && !airborne) ? Math.sin(clock.elapsedTime * 4.0 + seed) * 0.6 : 0;
+    group.position.y = currentTerrainY.current + bob + jumpY;
 
-    // Facing: compute continuous rotation from actual per-frame velocity rather
-    // than the server's discrete 'up'/'down'/'left'/'right' direction. The
-    // discrete version snaps to 4 cardinals and lerps at 8*dt, so when a
-    // pathfinding waypoint flips the direction 180°, the NPC's position moves
-    // fast (LERP_SPEED=6 catch-up) while its body rotates slowly — producing a
-    // visible "walking backwards" window for ~0.5s. Using the velocity vector
-    // keeps body facing locked to movement direction at all times.
-    //
-    // VRM faces -Z at rotation.y = 0 (rotateVRM0 applied in vrm-loader).
-    // For world velocity (vx, vz), target rotation = atan2(vx, -vz) places
-    // the -Z forward along the velocity vector.
+    // VRM facing — LOCKED 2026-04-25 (re-locked 2026-04-26 after PR #65 regression).
+    // The Milady VRMs in this project are rigged with Mixamo bones facing -Z natively
+    // — opposite of the VRM 0.x spec (+Z forward). rotateVRM0() then over-rotates them,
+    // so body world-forward at outer.rotation.y=θ ends up at (sin θ, cos θ).
+    // Solving for body forward = (vx, vz): θ = atan2(vx, vz). NO NEGATIONS.
+    // User confirmed live 2026-04-25; PR #65 "resolve to master version" reverted to
+    // atan2(vx, -vz) which makes Miladys walk backwards. DO NOT change this without
+    // a screenshot proving otherwise — see .claude/memory/feedback_vrm_facing_formula.md.
     const vx = currentPos.current.x - prevX;
     const vz = currentPos.current.z - prevZ;
     const velMagSq = vx * vx + vz * vz;
-    // Movement threshold: need at least 0.5wu/frame of motion to trust velocity
-    // as a facing signal. Below that it's likely sub-pixel jitter during idle.
-    if (velMagSq > 0.25 && d.direction !== 'idle') {
-      const targetRot = Math.atan2(vx, -vz);
+    if (velMagSq > 0.1 && d.direction !== 'idle') {
+      const targetRot = Math.atan2(vx, vz);
       let diff = targetRot - currentRotY.current;
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
-      // Faster rotation lerp (12*dt vs previous 8*dt) so 180° flips complete
-      // in ~0.25s instead of ~0.4s — effectively eliminates the moonwalk window.
       currentRotY.current += diff * Math.min(1, 12 * dt);
     }
     group.rotation.y = currentRotY.current;
 
-    // Mid-distance: animator runs at 30Hz. Close: full 60Hz.
-    if (camDistSq > VRM_NPC_HALF_RATE_DIST_SQ && (frame + seed) % 2 !== 0) {
-      return;
-    }
-    // Debug: log when animator ref is null at update time (should never happen post-init)
+    // PERF: split mixer (60Hz unconditional) from spring-bone physics (tiered rate).
+    // Re-locked 2026-04-26 after PR #65 reverted to the early-return pattern that
+    // killed the entire useFrame on odd mid-distance frames — including the
+    // mixer.update() — causing keyframe animation to run at 30Hz with visible jank.
+    //
+    // The mixer MUST run every frame at 60Hz (Nori parity). Only spring-bone
+    // physics is tiered:
+    //   close (camDistSq ≤ VRM_NPC_HALF_RATE_DIST_SQ): every 2nd frame = 30Hz
+    //   mid-dist (camDistSq > VRM_NPC_HALF_RATE_DIST_SQ): every 4th frame = 15Hz
+    //
+    // Walking NPCs keep full vrm.update() — movement causes large spring
+    // displacements where sub-30Hz would produce visible lag on hair/tail physics.
     if (!vrmAnimatorRef.current && frame % 120 === seed % 120) {
       console.warn('[VRMNpcMesh] animator ref null at update time', npc.id, npc.species);
     }
 
-    // PERF: split mixer (60Hz) from spring-bone physics (30Hz for idle NPCs).
-    //
-    // Spring-bone update (vrm.update) is O(joints) with matrix ops, verlet
-    // integration, and quaternion arithmetic per joint. With 5 VRM NPCs × ~10-20
-    // spring joints each = 50-100 expensive physics ops/frame at 60Hz.
-    //
-    // Strategy: call updateMixerOnly() every frame (keeps keyframe animation
-    // smooth), accumulate delta, and call updateSpringOnly() every 2nd frame
-    // for idle NPCs (hair/cloth physics at 30Hz is imperceptible; Nyquist for
-    // visible spring frequencies <4 Hz needs only >8 Hz sampling rate).
-    //
-    // Walking NPCs keep full vrm.update() — movement causes large spring
-    // displacements where 30Hz would produce visible lag on hair/tail physics.
     const animator = vrmAnimatorRef.current;
     if (animator) {
       springDeltaAccRef.current += dt;
       if (isMoving) {
         // Walking: full update every frame — spring displacements are large.
-        // Reset accumulator so the first post-walk spring tick isn't over-stepped.
         animator.update(dt, isMoving);
         springDeltaAccRef.current = 0;
       } else {
-        // Idle: mixer at 60Hz, spring bones at 30Hz (every 2nd frame, staggered by seed).
+        // Idle: mixer ALWAYS at 60Hz (keyframe smoothness, Nori parity).
         animator.updateMixerOnly(dt, isMoving);
-        if ((frame + seed) % 2 === 0) {
+        // Tiered spring-bone rate: close = 30Hz (every 2nd frame), mid-dist = 15Hz (every 4th).
+        const springMod = camDistSq > VRM_NPC_HALF_RATE_DIST_SQ ? 4 : 2;
+        if ((frame + seed) % springMod === 0) {
           const acc = Math.min(springDeltaAccRef.current, 0.1);
           animator.updateSpringOnly(acc);
           springDeltaAccRef.current = 0;
