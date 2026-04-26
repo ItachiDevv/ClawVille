@@ -12,6 +12,20 @@ tools:
   - Agent
   - WebFetch
   - WebSearch
+skills:
+  - threejs-fundamentals
+  - threejs-geometry
+  - threejs-materials
+  - threejs-shaders
+  - threejs-lighting
+  - threejs-textures
+  - threejs-loaders
+  - threejs-animation
+  - threejs-postprocessing
+  - threejs-interaction
+  - webgpu-threejs-tsl
+  - 3d-games
+  - web-games
 ---
 
 # 3D Architect — Three.js & WebGPU Specialist (ClawVille)
