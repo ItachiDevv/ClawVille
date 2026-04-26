@@ -152,6 +152,7 @@ const AuctionPodiumInner = memo(function AuctionPodiumInner() {
   return (
     <group
       position={[DOME_X, DOME_Y, DOME_Z]}
+      userData={{ isOccluder: true }}
       onClick={(e) => {
         e.stopPropagation();
         useGameStore.getState().openAuction();

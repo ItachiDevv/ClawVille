@@ -4,6 +4,7 @@ import { useRef, useMemo, useEffect, useLayoutEffect, memo, Suspense } from 'rea
 import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF, Html } from '@react-three/drei';
 import * as THREE from 'three';
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { useNpcStore, type NpcSpriteState } from '@/stores/npc';
 import { applyWalkAnimation, applyIdleAnimation, idToSeed } from '@/lib/three/procedural-animation';
 import { LobsterAnimator, resolveAnimState } from '@/lib/three/lobster-animations';
@@ -491,7 +492,14 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
   const useNewSystem = speciesInfo.key !== 'lobster' && speciesInfo.key !== 'crayfish';
 
   const { cloned, npcScale, lobsterAnimator, charAnimator, pivotOffsetY } = useMemo(() => {
-    const c = scene.clone(true);
+    // SkeletonUtils.clone rebinds SkinnedMesh.skeleton correctly — plain
+    // scene.clone(true) shares bones across instances, which causes every
+    // instance after the first to render bound to another NPC's skeleton
+    // (observed 2026-04-24: Marlin/Riptide/Driftwood + the 10 building-canvas
+    // GLB NPCs silently invisible despite valid scene-graph state). Re-locked
+    // 2026-04-26 after PR #65 reverted the import + call.
+    // Safe for plain-Mesh models too — SkeletonUtils falls through to clone.
+    const c = SkeletonUtils.clone(scene);
     const tint = new THREE.Color(npc.color);
     applyColorTint(c, tint, 0.7, 0.25);
 
