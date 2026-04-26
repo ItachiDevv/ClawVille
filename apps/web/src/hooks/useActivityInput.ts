@@ -150,7 +150,13 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
         // is intentionally small so the server's atan2-snap yaws the kart by
         // only a few degrees per tick — i.e., it acts like a steering rate, not
         // a hard 90° pivot. Held A while moving = continuous gentle left turn.
-        const TURN_BIAS = 0.18; // ~10° steer angle per axis component
+        //
+        // TURN_BIAS = tan(per-tick yaw angle). Server snaps body.rot to
+        // atan2(dir.x, dir.y) every input frame (30 Hz on client, 30 Hz on
+        // server) so 0.05 ≈ 2.86° per tick ≈ 86°/sec — Mario Kart-comparable
+        // steering rate. Anything above ~0.10 makes the kart pivot too fast
+        // and over-steer into walls (player feedback session 2026-04-26).
+        const TURN_BIAS = 0.05;
         const h = headingRef.current;
         const fwdX = Math.sin(h);
         const fwdY = Math.cos(h);
