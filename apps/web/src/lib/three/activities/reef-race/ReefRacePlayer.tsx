@@ -6,8 +6,9 @@
  * REBUILT 2026-04-24 — Three bugs fixed (port from BumperShellsPlayer pattern):
  *
  *   Bug 1 — No interpolation: direct entity.x/y assignment on every frame
- *   produced 5Hz positional jumps at 60fps render rate. Fixed with the 4-snapshot
- *   history ring + 250ms render delay (1.25× the 200ms snapshot interval).
+ *   produced positional jumps at 60fps render rate. Fixed with the 4-snapshot
+ *   history ring + INTERP_DELAY_MS render delay (2× the snapshot interval).
+ *   Snapshot rate bumped 5→10Hz on 2026-04-26 alongside delay 350→200ms.
  *
  *   Bug 2 — Velocity-derived facing: atan2(vx,vy) snaps on every knockback
  *   impulse. Fixed: facing now comes from entity.rot (server-authoritative, only
@@ -298,7 +299,7 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
     }
 
     // ─── Interpolation (BUG FIX Bug 1) ───────────────────────────────────────
-    // Render at (now - INTERP_DELAY_MS=250ms) — smooth 60fps motion from 5Hz snapshots.
+    // Render at (now - INTERP_DELAY_MS=200ms) — smooth 60fps motion from 10Hz snapshots.
     const history = historyRef.current;
     let interpX   = entity.x;
     let interpZ   = entity.y;
