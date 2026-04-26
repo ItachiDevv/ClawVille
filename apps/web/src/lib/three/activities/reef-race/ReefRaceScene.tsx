@@ -22,7 +22,7 @@
  *   - No per-frame allocations (module-scope scratch vectors/matrices).
  *   - 1 shadow map at 512×512.
  *   - 0 post-processing passes.
- *   - Fog far (1800) < camera.far (2000). ✓
+ *   - Fog far (4500) < camera.far (5000). ✓
  *   - matrixAutoUpdate=false on all static meshes (handled per-component).
  *
  * Performance budget: ≤70 draw calls / ≤220k tris.
@@ -69,11 +69,15 @@ import {
 import type { ReefRaceEntity } from './reef-race-types';
 
 // ─── Module-scope scratch (no per-frame allocations) ─────────────────────────
-const _targetPos = new THREE.Vector3();
-const _lookAt    = new THREE.Vector3();
-const _camPos    = new THREE.Vector3();
-const _rotatedOffset = new THREE.Vector3();
+const _targetPos      = new THREE.Vector3();
+const _lookAt         = new THREE.Vector3();
+const _camPos         = new THREE.Vector3();
+const _rotatedOffset  = new THREE.Vector3();
 const _playerWorldDir = new THREE.Vector3(0, 0, 1);
+// Scratch for selfPos passed to <ReefRaceBoostFX> — avoids a `new Vector3()` per
+// React render. Safe: ReefRaceBoostFX reads playerPos.x/y/z only inside useFrame
+// (RAF), which fires AFTER the React render that writes this value.
+const _selfPosScratch = new THREE.Vector3();
 
 // ─── PreCompilePipelines ──────────────────────────────────────────────────────
 // Must be rendered INSIDE SceneContents, AFTER all other children.
@@ -230,8 +234,11 @@ interface SceneContentsProps {
 
 function SceneContents({ entities, selfPetId, matchPhase, raceStartMs }: SceneContentsProps) {
   const selfEntity = selfPetId ? (entities.get(selfPetId) ?? null) : null;
-  const selfPos    = selfEntity
-    ? new THREE.Vector3(selfEntity.x, 0, selfEntity.y)
+  // Use module-scope scratch to avoid a `new Vector3()` allocation every render.
+  // ReefRaceBoostFX only reads playerPos.x/y/z inside useFrame (RAF), which fires
+  // after this render — the scratch value is stable for the duration of the frame.
+  const selfPos = selfEntity
+    ? _selfPosScratch.set(selfEntity.x, 0, selfEntity.y)
     : null;
 
   const boostActive = useActivityStore(

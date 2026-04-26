@@ -106,7 +106,7 @@ const INTERP_DELAY_MS = 200;
 
 /**
  * Maximum snapshot history kept per entity.
- * 4 entries at 5 Hz covers 800 ms — well past the 250 ms INTERP_DELAY_MS.
+ * 4 entries at 10 Hz covers 400 ms — well past the 200 ms INTERP_DELAY_MS.
  * Trim logic in useFrame keeps only the latest INTERP_HISTORY_SIZE entries,
  * so the bracket scan always has ≥ 2 entries available after the 2nd snap.
  */

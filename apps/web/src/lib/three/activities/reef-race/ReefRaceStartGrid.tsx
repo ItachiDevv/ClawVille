@@ -104,11 +104,8 @@ export interface GantryState {
 }
 
 function GantryLights({ state, gantryPos }: { state: GantryState; gantryPos: THREE.Vector3 }) {
-  const bulbRefs = [
-    useRef<THREE.Mesh>(null),
-    useRef<THREE.Mesh>(null),
-    useRef<THREE.Mesh>(null),
-  ];
+  // bulbRefs removed — gantry color updates happen via bulbMats material mutation
+  // (emissive + color set in the useEffect below); the mesh refs were never read.
 
   const bulbMats = useMemo(
     () => [
@@ -176,7 +173,6 @@ function GantryLights({ state, gantryPos }: { state: GantryState; gantryPos: THR
       {bulbPositions.map((bp, i) => (
         <mesh
           key={i}
-          ref={bulbRefs[i]}
           geometry={bulbGeo}
           material={bulbMats[i]}
           position={bp}
