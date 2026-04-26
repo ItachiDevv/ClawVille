@@ -87,21 +87,30 @@ const _ghostMat  = new THREE.MeshStandardMaterial({
 
 // ─── Module-scope scratch — NO per-frame allocations ─────────────────────────
 
-/** Sequential scan state — reset when path identity changes (new PB loaded). */
-const _scan = { lastFrameIdx: 0, lastPathRef: null as GhostFrame[] | null };
+/** Shape of the sequential scan state kept per-instance in a useRef. */
+interface ScanState {
+  lastFrameIdx: number;
+  lastPathRef: GhostFrame[] | null;
+}
 
 /** Find the pair of GhostFrames that bracket `nowMs` and return lerp alpha.
- *  O(1) amortised — sequential scan from last known position. */
+ *  O(1) amortised — sequential scan from last known position.
+ *
+ *  `scan` is a per-instance ref (ScanState), NOT a module-scope singleton.
+ *  Passing it as a parameter means two simultaneous GhostInner mounts
+ *  (remount, Suspense re-render, fast navigation) each maintain their own
+ *  cursor and cannot corrupt each other's index. */
 function findGhostFrames(
+  scan: ScanState,
   path: GhostFrame[],
   nowMs: number,
 ): { a: GhostFrame; b: GhostFrame; alpha: number } | null {
   if (path.length < 2) return null;
 
   // Reset scan index when path reference changes (new PB ghost loaded).
-  if (_scan.lastPathRef !== path) {
-    _scan.lastPathRef  = path;
-    _scan.lastFrameIdx = 0;
+  if (scan.lastPathRef !== path) {
+    scan.lastPathRef  = path;
+    scan.lastFrameIdx = 0;
   }
 
   const start = path[0].t;
@@ -111,11 +120,11 @@ function findGhostFrames(
   if (nowMs >= end)   return { a: path[path.length - 2], b: path[path.length - 1], alpha: 1 };
 
   // Sequential scan from last known index.
-  let lo = Math.max(0, _scan.lastFrameIdx);
+  let lo = Math.max(0, scan.lastFrameIdx);
   // Guard: lo must point at a frame whose t ≤ nowMs.
   if (lo > 0 && path[lo].t > nowMs) lo = 0;
   while (lo < path.length - 2 && path[lo + 1].t <= nowMs) lo++;
-  _scan.lastFrameIdx = lo;
+  scan.lastFrameIdx = lo;
 
   const a = path[lo];
   const b = path[lo + 1];
@@ -152,6 +161,12 @@ function GhostInner({ path, raceStartMs }: GhostInnerProps) {
   // position.x/z are in world space (unaffected by KART_SCALE).
   const groupRef = useRef<THREE.Group>(null);
 
+  // Per-instance scan state — keeps the sequential cursor isolated so two
+  // simultaneous GhostInner mounts (remount, Suspense re-render, fast nav)
+  // cannot corrupt each other's lastFrameIdx.  Initial shape mirrors the old
+  // module-scope `_scan` initialiser.
+  const scanRef = useRef<ScanState>({ lastFrameIdx: 0, lastPathRef: null });
+
   // Cache mesh ref on mount — set geometry + material imperatively.
   // We do NOT use JSX geometry={} / material={} because those props trigger
   // R3F's auto-dispose for intrinsic elements; we manage lifetime manually.
@@ -186,7 +201,7 @@ function GhostInner({ path, raceStartMs }: GhostInnerProps) {
     // Absolute ghost time within the lap-relative path.
     const ghostMs = path[0].t + loopMs;
 
-    const frames = findGhostFrames(path, ghostMs);
+    const frames = findGhostFrames(scanRef.current, path, ghostMs);
     if (!frames) return;
 
     const { a, b, alpha } = frames;
