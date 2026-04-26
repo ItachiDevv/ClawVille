@@ -160,27 +160,40 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
         const h = headingRef.current;
         const fwdX = Math.sin(h);
         const fwdY = Math.cos(h);
-        // "Right" in our atan2(x,y) sim convention rotates the forward
-        // vector by -90° (clockwise from above). For a chase camera that
-        // looks the same way the kart faces, player-perceived "left" of
-        // the screen corresponds to a CCW rotation of the kart, i.e.
-        // +turnBias along the LEFT-perpendicular vector.
-        // Earlier wiring used turn = D - A which produced a CW yaw on A —
-        // user-confirmed swapped (2026-04-26 playtest). Flipping the sign:
-        // A = +1 (left turn, CCW yaw), D = -1 (right turn, CW yaw).
-        const leftX = -Math.cos(h);
-        const leftY =  Math.sin(h);
+        // Three.js camera convention surprise:
+        //
+        // Chase camera lookAt(playerCenter) sets `_x = up × back` for camera-
+        // local +x (screen-right). With our chase cam pose, this places camera-
+        // RIGHT on the OPPOSITE world-axis from the player's geometric right
+        // hand. Net effect: player presses A intending "turn left on screen,"
+        // and a bias toward player's geometric LEFT actually produces a yaw
+        // toward camera-RIGHT (= screen-RIGHT). Players feel A and D swapped.
+        //
+        // The two prior fixes (turn = D-A with `right` vec, and turn = A-D
+        // with `left` vec) were algebraically identical — both bias along
+        // (-cos(h), +sin(h)). Confirmed no-op via trace 2026-04-26.
+        //
+        // Real fix: bias along the GEOMETRIC RIGHT vector (cos(h), -sin(h))
+        // when player presses A. Counter-intuitive in code but correct on
+        // screen. D press uses the opposite sign — biases geometric LEFT,
+        // produces yaw toward camera-LEFT = screen-LEFT. Wait — we want
+        // D = right. So D bias must produce yaw toward CAMERA-RIGHT.
+        // A press → bias right vec → kart visually turns LEFT.
+        // D press → bias -right (= left) vec → kart visually turns RIGHT.
+        const rightX = Math.cos(h);
+        const rightY = -Math.sin(h);
         const thrust = (k.w ? 1 : 0) - (k.s ? 1 : 0);
-        const turn   = (k.a ? 1 : 0) - (k.d ? 1 : 0); // A=+1, D=-1
-        x = fwdX * thrust + leftX * turn * TURN_BIAS;
-        y = fwdY * thrust + leftY * turn * TURN_BIAS;
-        // Edge case — only A or D held with no W/S: synthesize a forward
-        // thrust so the kart yaws (you can't steer in place — Mario Kart rule
-        // — but we let the kart inch forward into the turn so the input feels
-        // responsive instead of dead).
+        // A = +1 (will bias along +right vec → screen-LEFT yaw)
+        // D = -1 (biases along -right vec → screen-RIGHT yaw)
+        const turn = (k.a ? 1 : 0) - (k.d ? 1 : 0);
+        x = fwdX * thrust + rightX * turn * TURN_BIAS;
+        y = fwdY * thrust + rightY * turn * TURN_BIAS;
+        // Edge case — only A or D held with no W/S: synthesize forward thrust
+        // so the kart yaws (Mario Kart rule: can't steer in place, but the
+        // input shouldn't feel dead).
         if (thrust === 0 && turn !== 0) {
-          x = fwdX * 0.15 + leftX * turn * TURN_BIAS;
-          y = fwdY * 0.15 + leftY * turn * TURN_BIAS;
+          x = fwdX * 0.15 + rightX * turn * TURN_BIAS;
+          y = fwdY * 0.15 + rightY * turn * TURN_BIAS;
         }
       } else {
         // ─── Bumper Shells / legacy: world-axis WASD ────────────────────
