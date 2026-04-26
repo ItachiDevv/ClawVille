@@ -183,11 +183,26 @@ function ChaseCamera({ selfEntity }: ChaseCamProps) {
     _playerWorldDir.set(Math.sin(heading), 0, Math.cos(heading));
 
     // Camera target position: behind + above player.
-    // CAMERA_OFFSET: (0, 200, -350) in player-local space.
+    // CAMERA_OFFSET: (0, 200, -350) in player-local space (kart-local).
+    //
+    // Convention:
+    //   server `body.rot = atan2(intent.dir.x, intent.dir.y)` and the kart's
+    //   group.rotation.y = body.rot, so the kart's local +Z (forward) maps to
+    //   world (sin(rot), 0, cos(rot)).
+    //
+    // Three.js Y-rotation matrix transforms a local point (X,Y,Z) to world:
+    //   world.x =  X*cos(rot) + Z*sin(rot)
+    //   world.z = -X*sin(rot) + Z*cos(rot)
+    //
+    // The previous formula had `-Z*sin` and `+X*sin` — that's a rotation by
+    // -rot, which puts the camera IN FRONT of the kart for any rot != 0 / π.
+    // At spawn (rot=-π/2 facing west along track tangent) the camera ended up
+    // WEST of player, so the player saw their kart from in-front and the
+    // controls felt fully reversed (W drove "toward" the camera, A/D mirrored).
     _rotatedOffset.set(
-      CAMERA_OFFSET.x * Math.cos(heading) - CAMERA_OFFSET.z * Math.sin(heading),
+      CAMERA_OFFSET.x * Math.cos(heading) + CAMERA_OFFSET.z * Math.sin(heading),
       CAMERA_OFFSET.y,
-      CAMERA_OFFSET.x * Math.sin(heading) + CAMERA_OFFSET.z * Math.cos(heading),
+      -CAMERA_OFFSET.x * Math.sin(heading) + CAMERA_OFFSET.z * Math.cos(heading),
     );
     _targetPos.set(selfEntity.x, 0, selfEntity.y).add(_rotatedOffset);
 
