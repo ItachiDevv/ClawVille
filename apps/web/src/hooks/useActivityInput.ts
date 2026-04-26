@@ -24,8 +24,10 @@
  */
 
 import { useEffect, useRef } from 'react';
+import { usePathname } from 'next/navigation';
 import type { ClientFrame } from '@clawville/shared';
 import { useGameStore } from '@/stores/game';
+import { useActivityStore } from '@/stores/activity';
 
 export const ACTION_BIT_BOOST = 1 << 0;
 export const ACTION_BIT_USE_POWERUP = 1 << 1;
@@ -58,6 +60,53 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
 
+  // ─── Reef Race detection (Mario Kart-style controls) ────────────────────
+  // Reef Race uses a chase camera that follows the kart's facing. World-axis
+  // WASD (W=north, A=west, etc.) feels "reversed" to a player whose camera is
+  // pointed along an arbitrary direction. The kart-relative scheme:
+  //   W/S = thrust forward / backward in the kart's CURRENT facing direction
+  //   A/D = steering bias (slight side push so the server's atan2 yaws the
+  //         kart left/right while still moving forward)
+  //
+  // Bumper Shells uses a top-down camera where world-axis = screen-axis, so
+  // there's no disconnect — keep its existing world-axis WASD (legacy path).
+  //
+  // We detect the active activity from the URL path because the input hook is
+  // mounted by the activity page wrapper which knows the activity id, but the
+  // hook itself doesn't currently take it as a prop. Adding the prop would
+  // ripple through every caller; the path check is one-line.
+  const pathname = usePathname() ?? '';
+  const isReefRace = pathname.includes('/activity/reef-race/');
+
+  // Kart-relative-controls state. Only read in Reef Race mode.
+  // headingRef mirrors the server-authoritative entity.rot of the self pet so
+  // the input loop computes "forward" against the latest rot the server saw.
+  const headingRef = useRef(0);
+  useEffect(() => {
+    if (!isReefRace) return;
+    // Prime headingRef immediately from the current store snapshot so the
+    // first keypress before any subscription event fires uses the actual
+    // spawn rotation, not the default 0 (which would face south at spawn
+    // and feel exactly as wrong as the bug we're fixing).
+    const prime = useActivityStore.getState();
+    const primeId = prime.selfPetId;
+    if (primeId) {
+      const e = prime.entities.get(primeId) as { rot?: number } | undefined;
+      if (e && typeof e.rot === 'number' && Number.isFinite(e.rot)) {
+        headingRef.current = e.rot;
+      }
+    }
+    const unsub = useActivityStore.subscribe((s) => {
+      const id = s.selfPetId;
+      if (!id) return;
+      const e = s.entities.get(id) as { rot?: number } | undefined;
+      if (e && typeof e.rot === 'number' && Number.isFinite(e.rot)) {
+        headingRef.current = e.rot;
+      }
+    });
+    return unsub;
+  }, [isReefRace]);
+
   // Subscribe to mobile joystick velocity from the game store. The mobile
   // controls layer (`mobile-controls.tsx`) writes nipplejs output to
   // `joystickVelocity` which we mirror into `dirRef` so a single send loop
@@ -84,11 +133,51 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       const k = keysRef.current;
       let x = 0;
       let y = 0;
-      if (k.a) x -= 1;
-      if (k.d) x += 1;
-      if (k.w) y -= 1; // server convention: -y = forward / north
-      if (k.s) y += 1;
-      // Normalize so diagonals aren't √2 faster.
+
+      if (isReefRace) {
+        // ─── Mario Kart-style kart-relative controls ───────────────────
+        // Compute "forward" (kart's current facing) and "right" (perpendicular)
+        // unit vectors in sim-space.
+        //
+        // Server convention: body.rot = atan2(intent.dir.x, intent.dir.y).
+        // So at rot=h, the unit forward vector in sim-space is
+        //   (sin(h), cos(h))     — same parameterization as server uses.
+        // Right (90° clockwise of forward) is
+        //   (cos(h), -sin(h))    — 2D rotation by -π/2 of the forward vector.
+        //
+        // W/S contribute thrust along ±forward.
+        // A/D contribute a SMALL side bias (TURN_BIAS) along ±right. The bias
+        // is intentionally small so the server's atan2-snap yaws the kart by
+        // only a few degrees per tick — i.e., it acts like a steering rate, not
+        // a hard 90° pivot. Held A while moving = continuous gentle left turn.
+        const TURN_BIAS = 0.18; // ~10° steer angle per axis component
+        const h = headingRef.current;
+        const fwdX = Math.sin(h);
+        const fwdY = Math.cos(h);
+        const rightX = Math.cos(h);
+        const rightY = -Math.sin(h);
+        const thrust = (k.w ? 1 : 0) - (k.s ? 1 : 0);
+        const turn   = (k.d ? 1 : 0) - (k.a ? 1 : 0);
+        x = fwdX * thrust + rightX * turn * TURN_BIAS;
+        y = fwdY * thrust + rightY * turn * TURN_BIAS;
+        // Edge case — only A or D held with no W/S: synthesize a forward
+        // thrust so the kart yaws (you can't steer in place — Mario Kart rule
+        // — but we let the kart inch forward into the turn so the input feels
+        // responsive instead of dead).
+        if (thrust === 0 && turn !== 0) {
+          x = fwdX * 0.15 + rightX * turn * TURN_BIAS;
+          y = fwdY * 0.15 + rightY * turn * TURN_BIAS;
+        }
+      } else {
+        // ─── Bumper Shells / legacy: world-axis WASD ────────────────────
+        if (k.a) x -= 1;
+        if (k.d) x += 1;
+        if (k.w) y -= 1; // server convention: -y = forward / north
+        if (k.s) y += 1;
+      }
+
+      // Normalize so diagonals aren't √2 faster (kart-relative path also
+      // benefits — combined thrust+turn vector can exceed unit length).
       const mag = Math.hypot(x, y);
       if (mag > 0) {
         x /= mag;
