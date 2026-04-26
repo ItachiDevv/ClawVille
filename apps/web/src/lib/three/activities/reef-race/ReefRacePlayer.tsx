@@ -6,8 +6,8 @@
  * REBUILT 2026-04-24 — Three bugs fixed (port from BumperShellsPlayer pattern):
  *
  *   Bug 1 — No interpolation: direct entity.x/y assignment on every frame
- *   produced 15Hz positional jumps at 60fps render rate. Fixed with the 4-snapshot
- *   history ring + 100ms render delay pattern from BumperShellsPlayer.
+ *   produced 5Hz positional jumps at 60fps render rate. Fixed with the 4-snapshot
+ *   history ring + 250ms render delay (1.25× the 200ms snapshot interval).
  *
  *   Bug 2 — Velocity-derived facing: atan2(vx,vy) snaps on every knockback
  *   impulse. Fixed: facing now comes from entity.rot (server-authoritative, only
@@ -79,13 +79,30 @@ const _gliderMat  = new THREE.MeshStandardMaterial({
 // ─── Interpolation constants ──────────────────────────────────────────────────
 /**
  * How far behind real-time we render (ms).
- * = 1.5× the 15Hz snapshot interval (66.67ms) → comfortable bracket window.
+ *
+ * Server sends snapshots at REEF_SNAPSHOT_HZ = 5 Hz → one snap every 200 ms.
+ * Snaps arrive at t=0, 200, 400, 600 …
+ *
+ * We need renderTime = (now - INTERP_DELAY_MS) to fall BETWEEN two consecutive
+ * snaps so we always have a valid [a, b] bracket. Target: 1.25× the interval.
+ *   1.25 × 200 ms = 250 ms
+ *
+ * With INTERP_DELAY_MS=250:
+ *   renderTime is always 250 ms behind real-time.
+ *   The most recent snap in the history was received ≤ 200 ms ago.
+ *   → renderTime sits 50–250 ms behind the newest snap → always bracketed.
+ *
+ * Old value was 100 ms (comment claimed "1.5× 15Hz" — server is NOT 15Hz).
+ * With 100 ms delay and 200 ms snaps: renderTime could land AT or PAST the
+ * latest snap → kart froze for ~100 ms then teleported to next snap.
  */
-const INTERP_DELAY_MS = 100;
+const INTERP_DELAY_MS = 250;
 
 /**
  * Maximum snapshot history kept per entity.
- * 4 entries covers 4 × 66ms ≈ 265ms — comfortably past INTERP_DELAY_MS.
+ * 4 entries at 5 Hz covers 800 ms — well past the 250 ms INTERP_DELAY_MS.
+ * Trim logic in useFrame keeps only the latest INTERP_HISTORY_SIZE entries,
+ * so the bracket scan always has ≥ 2 entries available after the 2nd snap.
  */
 const INTERP_HISTORY_SIZE = 4;
 
@@ -93,8 +110,19 @@ const INTERP_HISTORY_SIZE = 4;
 const _swimTime: Record<string, number> = {};
 const _bobTime: Record<string, number>  = {};
 
-/** Bob amplitude in local units (× KART_SCALE = world units). */
-const BOB_AMP_LOCAL  = 2;
+/**
+ * Bob amplitude in local units (× KART_SCALE = world units).
+ *
+ * Old value was 2 local = 40 world units — caused rider to oscillate between
+ * +52 wu and -28 wu, sinking FAR below the board (board top = 7.5 wu world).
+ *
+ * New value: 0.04 local = 0.8 wu world — gentle float effect.
+ * With RIDER_MOUNT_OFFSET_DEFAULT[1] = 1.2 local:
+ *   rider Y range in local = [1.16, 1.24] → world = [23.2, 24.8] wu
+ *   board top in world     = 7.5 wu
+ *   clearance above board  = 15.7 – 17.3 wu  ✓  never clips board
+ */
+const BOB_AMP_LOCAL  = 0.04;
 /** Bob frequency in Hz. */
 const BOB_FREQ_HZ    = 1.2;
 /** gliderRef Y in local space = KART_Y_ABOVE_TRACK (world) / KART_SCALE. */
@@ -265,7 +293,7 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
     }
 
     // ─── Interpolation (BUG FIX Bug 1) ───────────────────────────────────────
-    // Render at (now - INTERP_DELAY_MS) — smooth 60fps motion from 15Hz snapshots.
+    // Render at (now - INTERP_DELAY_MS=250ms) — smooth 60fps motion from 5Hz snapshots.
     const history = historyRef.current;
     let interpX   = entity.x;
     let interpZ   = entity.y;
