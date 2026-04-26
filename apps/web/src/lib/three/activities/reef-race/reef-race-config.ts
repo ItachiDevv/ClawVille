@@ -292,12 +292,12 @@ export const CAMERA_NEAR = 1;
 /**
  * Camera far clip plane.
  * Iris Xe rule: keep fog.far ≤ camera.far.
- * Bumped 2000 → 3000 on 2026-04-26 to stay ahead of the 1.5× scaled track
- * — outer track edge sits at 1650+300 = 1950 wu from origin; chase cam can
- * be 350 wu behind player on the far side, so worst-case object distance
- * from camera = 1950 + 350 + 350 = 2650 wu. 3000 keeps headroom.
+ * Bumped 2000 → 3000 → 5000 on 2026-04-26.
+ * Track surface uses fog=false so the racing line is always visible,
+ * but opposing-side karts and props still need camera.far ≥ fog.far.
+ * With FOG_FAR=4500, CAMERA_FAR must be ≥ 4500. 5000 gives headroom.
  */
-export const CAMERA_FAR = 3000;
+export const CAMERA_FAR = 5000;
 
 /** Chase-cam offset in player-local space (behind and above). */
 export const CAMERA_OFFSET = new THREE.Vector3(0, 200, -350);
@@ -313,15 +313,24 @@ export const CAMERA_LERP = 5.0;
 /** Fog color — bright tropical ocean blue. */
 export const FOG_COLOR = '#0d2b5e';
 
-/** Fog near distance. Pushed out 800 → 1200 to match the bigger track scale. */
-export const FOG_NEAR = 1200;
+/**
+ * Fog near distance.
+ * Pushed out 800 → 1200 → 2000 on 2026-04-26.
+ * Track surface uses fog=false so the racing line is always visible; fog is only
+ * used for atmospheric depth on props/karts. Pushing near to 2000 keeps karts
+ * crisp at normal racing distances (~350wu arm + 1000wu ahead).
+ */
+export const FOG_NEAR = 2000;
 
 /**
  * Fog far distance. MUST be ≤ CAMERA_FAR.
  * Iris Xe rule: fog.far > camera.far → FPS drop.
- * Bumped 1800 → 2700 so karts on the far side of the 1.5× track stay visible.
+ * Bumped 1800 → 2700 → 4500 on 2026-04-26.
+ * Ellipse perimeter ≈ 8500wu; far-side karts are up to ~2100wu from the
+ * player + 350wu camera arm = ~2450wu from camera. 4500 keeps them visible
+ * with gentle atmospheric haze (not instant pop-off).
  */
-export const FOG_FAR = 2700;
+export const FOG_FAR = 4500;
 
 // ─── Lighting ────────────────────────────────────────────────────────────────
 
@@ -334,8 +343,15 @@ export const DIR_INTENSITY         = 1.2;
 export const DIR_POSITION          = [300, 800, 200] as const;
 export const DIR_SHADOW_MAP_SIZE   = 512;
 export const DIR_SHADOW_NEAR       = 1;
-export const DIR_SHADOW_FAR        = 3000;
-export const DIR_SHADOW_CAM_BOUNDS = 3000;
+/**
+ * Shadow camera far and bounds bumped 3000 → 4000 on 2026-04-26.
+ * At 3000 the directional-light shadow frustum clips karts on the far side
+ * of the 1.5× track (outer edge at 1950wu + 350wu cam offset = 2300wu worst-case
+ * object; 3000 had headroom but the diagonal across the ellipse ~3000wu was
+ * already at the limit). 4000 covers the full track diagonal with margin.
+ */
+export const DIR_SHADOW_FAR        = 4000;
+export const DIR_SHADOW_CAM_BOUNDS = 4000;
 
 // ─── Atmosphere (light rays + depth backdrop) ─────────────────────────────────
 
