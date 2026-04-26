@@ -149,8 +149,15 @@ import {
 export const REEF_SIM_HZ = REEF_TICK_HZ;
 const REEF_TICK_MS = 1000 / REEF_SIM_HZ;
 
-/** Snapshot broadcast rate (Hz). 5Hz delta per task spec. */
-const REEF_SNAPSHOT_HZ = 5;
+/**
+ * Snapshot broadcast rate (Hz). Bumped 5 → 10 on 2026-04-26 to halve the
+ * client-side interp segment length. Task spec said 5Hz; user feedback in the
+ * wild was that 5Hz produced visibly staggered motion (200ms segments + the
+ * occasional jitter-delayed delta producing a 400ms catch-up jump = "feet in
+ * one jump"). Bandwidth cost is tiny — 8 racers × ~50 bytes × 10Hz ≈ 4 KB/s
+ * per client. Halve the client INTERP_DELAY_MS in lockstep (350 → 200).
+ */
+const REEF_SNAPSHOT_HZ = 10;
 const REEF_TICKS_PER_SNAPSHOT = Math.round(REEF_SIM_HZ / REEF_SNAPSHOT_HZ);
 
 /** Keyframe broadcast cadence (1Hz per task spec). */
