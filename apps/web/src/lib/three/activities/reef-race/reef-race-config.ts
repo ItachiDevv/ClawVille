@@ -30,8 +30,8 @@ import * as THREE from 'three';
  * 16 points sampling the ellipse at equal t intervals, closed loop.
  */
 function makeEllipseTrackPoints(): THREE.Vector3[] {
-  const A = 1100; // matches REEF_TRACK_A on server
-  const B = 700;  // matches REEF_TRACK_B on server
+  const A = 1650; // MUST match REEF_TRACK_A on server (1.5× scale-up 2026-04-26)
+  const B = 1050; // MUST match REEF_TRACK_B on server
   const N = 16;
   const pts: THREE.Vector3[] = [];
   for (let i = 0; i < N; i++) {
@@ -48,11 +48,11 @@ export const TRACK_CURVE_POINTS: THREE.Vector3[] = makeEllipseTrackPoints();
 export const TRACK_TUBE_SEGMENTS = 200;
 
 /**
- * Track half-width in wu. Full track width = 300wu.
+ * Track half-width in wu. Full track width = 600wu.
  * Used as the ribbon half-width in the flat track geometry.
- * Matches REEF_TRACK_HALF_WIDTH=150 on the server sim.
+ * Matches REEF_TRACK_HALF_WIDTH=300 on the server sim (doubled 2026-04-26).
  */
-export const TRACK_TUBE_RADIUS = 150;
+export const TRACK_TUBE_RADIUS = 300;
 
 /**
  * @deprecated TubeGeometry removed — track is now a flat ribbon BufferGeometry.
@@ -292,9 +292,12 @@ export const CAMERA_NEAR = 1;
 /**
  * Camera far clip plane.
  * Iris Xe rule: keep fog.far ≤ camera.far.
- * 1800 < 2000 ✓
+ * Bumped 2000 → 3000 on 2026-04-26 to stay ahead of the 1.5× scaled track
+ * — outer track edge sits at 1650+300 = 1950 wu from origin; chase cam can
+ * be 350 wu behind player on the far side, so worst-case object distance
+ * from camera = 1950 + 350 + 350 = 2650 wu. 3000 keeps headroom.
  */
-export const CAMERA_FAR = 2000;
+export const CAMERA_FAR = 3000;
 
 /** Chase-cam offset in player-local space (behind and above). */
 export const CAMERA_OFFSET = new THREE.Vector3(0, 200, -350);
@@ -310,15 +313,15 @@ export const CAMERA_LERP = 5.0;
 /** Fog color — bright tropical ocean blue. */
 export const FOG_COLOR = '#0d2b5e';
 
-/** Fog near distance. */
-export const FOG_NEAR = 800;
+/** Fog near distance. Pushed out 800 → 1200 to match the bigger track scale. */
+export const FOG_NEAR = 1200;
 
 /**
  * Fog far distance. MUST be ≤ CAMERA_FAR.
  * Iris Xe rule: fog.far > camera.far → FPS drop.
- * 1800 < 2000 ✓
+ * Bumped 1800 → 2700 so karts on the far side of the 1.5× track stay visible.
  */
-export const FOG_FAR = 1800;
+export const FOG_FAR = 2700;
 
 // ─── Lighting ────────────────────────────────────────────────────────────────
 
@@ -331,8 +334,8 @@ export const DIR_INTENSITY         = 1.2;
 export const DIR_POSITION          = [300, 800, 200] as const;
 export const DIR_SHADOW_MAP_SIZE   = 512;
 export const DIR_SHADOW_NEAR       = 1;
-export const DIR_SHADOW_FAR        = 2000;
-export const DIR_SHADOW_CAM_BOUNDS = 2000;
+export const DIR_SHADOW_FAR        = 3000;
+export const DIR_SHADOW_CAM_BOUNDS = 3000;
 
 // ─── Atmosphere (light rays + depth backdrop) ─────────────────────────────────
 
@@ -360,8 +363,8 @@ export const TOTAL_LAPS = 3;
 // room snapshot is not yet available (e.g. spectator join before init).
 
 /** Track half-axis values — must match server REEF_TRACK_A/B. */
-const REEF_TRACK_A_CLIENT = 1100;
-const REEF_TRACK_B_CLIENT = 700;
+const REEF_TRACK_A_CLIENT = 1650;
+const REEF_TRACK_B_CLIENT = 1050;
 
 /**
  * Centerline point at parameter t in [0,1).
@@ -423,7 +426,7 @@ export interface ReefHazardPatchClient {
 }
 
 /** Inward offset from centerline to hazard center (wu). Must match server HAZARD_INSIDE_OFFSET. */
-const HAZARD_INSIDE_OFFSET_CLIENT = 150 * 0.40; // REEF_TRACK_HALF_WIDTH * 0.40 = 60wu
+const HAZARD_INSIDE_OFFSET_CLIENT = 300 * 0.40; // REEF_TRACK_HALF_WIDTH * 0.40 = 120wu
 
 /** Hazard patch radius (wu). Must match server HAZARD_RADIUS. */
 const HAZARD_RADIUS_CLIENT = 22 * 2.5; // REEF_BODY_RADIUS * 2.5 = 55wu
@@ -463,10 +466,10 @@ export function buildReefHazardPatchesClient(): ReefHazardPatchClient[] {
 }
 
 /** Apex inside offset (wu). Must match server APEX_INSIDE_OFFSET. */
-const APEX_INSIDE_OFFSET_CLIENT = 150 * 0.55; // REEF_TRACK_HALF_WIDTH * 0.55 = 82.5wu
+const APEX_INSIDE_OFFSET_CLIENT = 300 * 0.55; // REEF_TRACK_HALF_WIDTH * 0.55 = 165wu
 
 /** Apex outside offset (wu). Must match server APEX_OUTSIDE_OFFSET. */
-const APEX_OUTSIDE_OFFSET_CLIENT = 150 * 0.55; // 82.5wu
+const APEX_OUTSIDE_OFFSET_CLIENT = 300 * 0.55; // 165wu
 
 export interface ReefApexZoneClient {
   hairpinIndex: number;
