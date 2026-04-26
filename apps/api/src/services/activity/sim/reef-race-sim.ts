@@ -59,6 +59,7 @@ import {
   REEF_BOOST_MULT,
   REEF_DRAG,
   REEF_BODY_RADIUS,
+  REEF_TRACK_HALF_WIDTH,
   REEF_SOFT_TIMEOUT_MS,
   REEF_HARD_TIMEOUT_MS,
   REEF_MAX_POWER_UP_SLOTS,
@@ -159,6 +160,28 @@ const REEF_TICKS_PER_KEYFRAME = REEF_SIM_HZ;
 const POS_QUANT = 100;
 const ROT_QUANT = 1000;
 
+// ─── Off-track reset (Mario Kart) ───────────────────────────────────────────
+//
+// When a body's perpendicular distance from the nearest centerline checkpoint
+// exceeds OFF_TRACK_PERP_DISTANCE, the body is teleported back to the LAST
+// SUCCESSFULLY-CROSSED checkpoint (or the start grid if no laps yet) and
+// frozen for OFF_TRACK_RESPAWN_MS. The freeze IS the Mario Kart penalty —
+// player lost time falling off + can't move during reset.
+//
+// Detection threshold = REEF_TRACK_HALF_WIDTH (150) * 2.5 = 375 wu. Allows the
+// outer guardrail (≈ HALF_WIDTH + GUARDRAIL margin) without false-firing on a
+// kart that's just hugging the wall. A kart in the deep void at ±1500 wu off
+// the centerline tangent is unambiguously off the map.
+//
+// Edge cases:
+//   - Body already finished: never reset (would un-finish the race).
+//   - Body forfeited / dnf: never reset (terminal states).
+//   - Body inside reset freeze: skip detection (would re-trigger every tick).
+// REEF_TRACK_HALF_WIDTH = 150 (imported from reef-race-config below).
+// Computed at first use in checkOffTrackReset to avoid a TDZ-style import order.
+const OFF_TRACK_PERP_DISTANCE_MULT = 2.5;
+const OFF_TRACK_RESPAWN_MS = 1500;
+
 // ─── Body / sim state ───────────────────────────────────────────────────────
 
 /**
@@ -198,6 +221,12 @@ interface ReefBody {
   finishedAt: number | null;
   /** Did Did Not Finish — set at hard timeout when laps < REEF_LAPS. */
   dnf: boolean;
+  /**
+   * Mario Kart-style off-track reset. Wall-clock when the body's freeze ends
+   * after being teleported to the last clean checkpoint. While `now < respawnAt`,
+   * intent is ignored (body sits still on the track). Null when not respawning.
+   */
+  respawnAt: number | null;
   /** Number of laps fully completed (0..REEF_LAPS). */
   lap: number;
   /** Index of the next checkpoint we expect this body to cross. */
@@ -618,6 +647,7 @@ class ReefRaceSim {
         alive: true,
         finishedAt: null,
         dnf: false,
+        respawnAt: null,
         lap: 0,
         nextCheckpoint: 1, // we want to cross 1, then 2, ..., then 0 to complete a lap
         lastCheckpointAt: startedAt,
@@ -965,15 +995,37 @@ class ReefRaceSim {
     }
 
     // 1. Apply intents → integrate velocity.
+    //    Bodies inside off-track respawn freeze: skip intent + integration so
+    //    they sit still on the centerline until respawnAt expires (Mario Kart
+    //    "you fell, wait" penalty).
     for (const body of state.bodies.values()) {
       if (!body.alive || body.forfeited || body.finishedAt !== null) continue;
+      if (body.respawnAt !== null) {
+        if (now < body.respawnAt) {
+          body.vx = 0;
+          body.vy = 0;
+          continue;
+        }
+        body.respawnAt = null;
+      }
       this.applyIntentForTick(state, body, dt, now);
     }
 
     // 2. Velocity → position.
     for (const body of state.bodies.values()) {
       if (!body.alive || body.forfeited || body.finishedAt !== null) continue;
+      if (body.respawnAt !== null) continue;
       this.integrateMotion(state, body, dt);
+    }
+
+    // 2a. Off-track detection. Runs AFTER integration so we catch the tick a
+    //     body crosses the threshold, not the tick after. Teleports to the
+    //     last cleanly-crossed checkpoint (or start grid for lap 0, cp 1)
+    //     and arms the respawn freeze.
+    for (const body of state.bodies.values()) {
+      if (!body.alive || body.forfeited || body.finishedAt !== null) continue;
+      if (body.respawnAt !== null) continue;
+      this.checkOffTrackReset(state, body, now);
     }
 
     // 3. Tick active effects → expire them.
@@ -1517,6 +1569,118 @@ class ReefRaceSim {
         body.vy = (body.vy / speed) * hardCap;
       }
     }
+
+    // ─── Wall bumpers ────────────────────────────────────────────────────
+    // Soft-clamp to track corridor: if the body is past REEF_TRACK_HALF_WIDTH
+    // from the centerline (approximated by nearest checkpoint), push it back
+    // and cancel the outward velocity component (slide-along-wall, mild bounce).
+    //
+    // Why this lives in integrateMotion (not as a separate tick step):
+    //   - Body position has just been updated. Catching the overshoot here
+    //     keeps the kart visually-glued to the wall surface, not 1 tick past.
+    //   - Same nearest-checkpoint projection is reused by `checkOffTrackReset`
+    //     as a safety net for any ball-in-a-bowl edge case the wall misses.
+    //
+    // Tunables:
+    //   WALL_RESTITUTION = 0.25 → soft bounce, mostly absorb. Higher values
+    //     make corners feel "pingy". Lower (toward 0) feels like sliding along
+    //     a wall — more skill-rewarding for racing-line precision.
+    //   WALL_TANGENT_FRICTION = 0.92 → 8% tangent velocity loss per wall hit.
+    //     Stops a kart from accelerating-along-wall infinitely; slight penalty
+    //     for sloppy lines without making walls into stop-gates.
+    if (state.checkpoints.length > 0) {
+      let nearest = state.checkpoints[0];
+      let nearestSq = Infinity;
+      for (const cp of state.checkpoints) {
+        const dx = body.x - cp.center.x;
+        const dy = body.y - cp.center.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < nearestSq) {
+          nearestSq = d2;
+          nearest = cp;
+        }
+      }
+      const dx = body.x - nearest.center.x;
+      const dy = body.y - nearest.center.y;
+      const along = dx * nearest.tangent.x + dy * nearest.tangent.y;
+      const perpX = dx - along * nearest.tangent.x;
+      const perpY = dy - along * nearest.tangent.y;
+      const perp = Math.hypot(perpX, perpY);
+      if (perp > REEF_TRACK_HALF_WIDTH && perp > 0) {
+        const WALL_RESTITUTION = 0.25;
+        const WALL_TANGENT_FRICTION = 0.92;
+        const overshoot = perp - REEF_TRACK_HALF_WIDTH;
+        // Outward unit normal (centerline → body direction).
+        const nX = perpX / perp;
+        const nY = perpY / perp;
+        // Push body back to wall surface.
+        body.x -= nX * overshoot;
+        body.y -= nY * overshoot;
+        // Decompose velocity into outward + tangent components.
+        const vN = body.vx * nX + body.vy * nY; // outward speed
+        if (vN > 0) {
+          // Reflect outward component with restitution; preserve tangent
+          // component minus a small friction loss.
+          const vTx = body.vx - vN * nX;
+          const vTy = body.vy - vN * nY;
+          const reflectedN = -vN * WALL_RESTITUTION;
+          body.vx = vTx * WALL_TANGENT_FRICTION + reflectedN * nX;
+          body.vy = vTy * WALL_TANGENT_FRICTION + reflectedN * nY;
+        }
+      }
+    }
+  }
+
+  /**
+   * Off-track reset (Mario Kart style). If a body's perpendicular distance
+   * from the nearest checkpoint centerline exceeds OFF_TRACK_PERP_DISTANCE,
+   * teleport it to the last successfully-crossed checkpoint and freeze for
+   * OFF_TRACK_RESPAWN_MS. The freeze ITSELF is the time penalty.
+   *
+   * "Last successful checkpoint" = `(body.nextCheckpoint - 1 + N) % N`.
+   * For the very first lap before crossing CP1, that's CP0 (start/finish line)
+   * which sits at the start grid — correct fallback.
+   *
+   * Velocity zero'd on teleport so the body doesn't carry over the off-track
+   * speed back into the racing line.
+   */
+  private checkOffTrackReset(
+    state: ReefRoomState,
+    body: ReefBody,
+    now: number,
+  ): void {
+    // Find nearest checkpoint center (squared distance, no sqrt).
+    let nearest = state.checkpoints[0];
+    let nearestSq = Infinity;
+    for (const cp of state.checkpoints) {
+      const dx = body.x - cp.center.x;
+      const dy = body.y - cp.center.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < nearestSq) {
+        nearestSq = d2;
+        nearest = cp;
+      }
+    }
+    // Perpendicular distance from body to centerline at nearest checkpoint
+    // (project onto tangent then subtract).
+    const dx = body.x - nearest.center.x;
+    const dy = body.y - nearest.center.y;
+    const along = dx * nearest.tangent.x + dy * nearest.tangent.y;
+    const perpX = dx - along * nearest.tangent.x;
+    const perpY = dy - along * nearest.tangent.y;
+    const perp = Math.hypot(perpX, perpY);
+    if (perp <= REEF_TRACK_HALF_WIDTH * OFF_TRACK_PERP_DISTANCE_MULT) return;
+
+    // Teleport to the last cleanly-crossed checkpoint center.
+    const N = state.checkpoints.length;
+    const lastCleanIdx = (body.nextCheckpoint - 1 + N) % N;
+    const target = state.checkpoints[lastCleanIdx];
+    body.x = target.center.x;
+    body.y = target.center.y;
+    body.vx = 0;
+    body.vy = 0;
+    body.rot = Math.atan2(target.tangent.x, target.tangent.y);
+    body.respawnAt = now + OFF_TRACK_RESPAWN_MS;
   }
 
   private resolveProximity(state: ReefRoomState): void {
