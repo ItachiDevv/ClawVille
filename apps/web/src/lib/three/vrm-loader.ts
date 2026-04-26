@@ -167,6 +167,58 @@ function loadVRM(path: string): Promise<VRM> {
       // so it faces -Z, matching VRM 1.0 convention.
       VRMUtils.rotateVRM0(vrm);
 
+      // Hair accessory backward-tilt fix (2026-04-25 CDP diagnosis).
+      //
+      // These Milady VRMs have static non-skinned Hairmodel meshes parented to
+      // mixamorigHead (raw Mixamo head bone). The Hairmodel geometry is symmetric
+      // in Z (vertexZRange ≈ [-0.76, +0.76]) and the scalp (Body SkinnedMesh)
+      // top vertices are 100% weighted to the same head bone — so there is no
+      // positional separation between scalp and hair.
+      //
+      // Root cause: The Mixamo walk animation forward-tilts the head bone up to
+      // ~0.10 rad (5.8°) via the hip/spine chain. When the head tilts forward,
+      // the crown-back of the scalp tilts toward the camera. The Hairmodel tilts
+      // with it, but its coverage at the crown-back is geometrically thin (222
+      // verts at Z<-0.2 AND Y>0.5 vs 989 back verts total). The thin crown
+      // becomes visible to a rear-above camera during the forward tilt phase.
+      //
+      // Fix: apply a static backward counter-rotation (rotation.x += +0.15 rad)
+      // to the Hairmodel. This tilts the hair toward the back of the head by
+      // 8.6°. At idle (no head tilt), the hair leans slightly backward, which
+      // improves back-crown coverage aesthetically. At the max forward walk tilt
+      // (0.10 rad), the net effective tilt is only 0.10 - 0.15 = -0.05 rad —
+      // hair still drapes backward, no front gap created. The 0.15 rad value
+      // is 1.5× the measured max head tilt, giving margin against variation.
+      //
+      // Rotation is around the mesh's own X axis (in head-bone local space):
+      // positive X = tip forward, negative X = tip backward.
+      // We add +0.15 to rotation.x which, in head-bone local space with Y-up
+      // Z-forward convention, tilts the hair BACKWARD (toward -Z = body back).
+      vrm.scene.traverse((obj) => {
+        if (!(obj as THREE.Mesh).isMesh) return;
+        if ((obj as any).isSkinnedMesh) return;
+        const parent = obj.parent;
+        if (!parent) return;
+        const name = obj.name ?? '';
+        if (name === 'Hairmodel') {
+          // Tilt hair crown upward/backward to increase coverage of the crown-back
+          // area exposed during walk animation.
+          //
+          // Measurement (2026-04-25 CDP live test): rotation.x += 0.15 on the
+          // Hairmodel moves the crown vertex +1.94wu (UP) and -2.02wu in world Z
+          // (toward the rear-camera direction). This increases crown-back visibility
+          // and compensates for the Mixamo walk animation's max forward head tilt
+          // of -0.10 rad (measured headBone.rotation.x range).
+          //
+          // The head bone tilts forward up to 0.10 rad during walk. With hair
+          // pre-tilted +0.15 in the opposite direction, the effective crown
+          // exposure at peak walk tilt is 0.15 - 0.10 = 0.05 rad (still rear-
+          // tilted, no front gap). At idle (no head tilt), hair leans 0.15 rad
+          // backward — visually consistent with long hair draping behind.
+          obj.rotation.x += 0.15;
+        }
+      });
+
       // MToon outline pass — disable to halve VRM draw calls (B1 2026-04-24).
       // MToon renders each mesh twice: once for the fill, once for an outset
       // silhouette (the "outline pass"). For ClawVille's wandering Milady VRMs
@@ -198,75 +250,30 @@ function loadVRM(path: string): Promise<VRM> {
         obj.frustumCulled = false;
       });
 
-      // ── Spring-bone physics fix (updated 2026-04-25) ─────────────────────
+      // ── Spring-bone physics scale compensation ───────────────────────────
+      // NOTE (2026-04-25 CDP probe): these Milady VRMs have springBoneManager.
+      // joints.size === 0 — no spring-bone joints are registered. The for-of
+      // loop is a no-op. Retained for safety in case a future VRM loads WITH
+      // spring bones (e.g. a VRM 1.0 with proper secondary animation).
       //
-      // three-vrm VRMSpringBoneJoint.update() Verlet integration:
-      //
-      //   nextTail = currentTail
-      //     + (currentTail - prevTail) * (1 - dragForce)   // inertia term
-      //     + boneAxisWorld * stiffness * delta             // restoring force
-      //     + gravityDir * gravityPower * delta
-      //
-      // TWO independent problems at VRM_NPC_SCALE=112:
-      //
-      // Problem 1 — RESTORING FORCE OVERWHELMED (fixed by stiffness scale):
-      //   All world-space bone displacements are 112× larger than native (~1.6m
-      //   avatar). VRM-authored stiffness ≈ 0.5–2.0, so restoring force per
-      //   frame is only stiffness * delta ≈ 0.016–0.032wu, overwhelmed by
-      //   13–20wu/s body translation. Hair lags and "bald spot" appears.
-      //   Fix: multiply stiffness × HAIR_STIFFNESS_SCALE at load time.
-      //
-      // Problem 2 — TRANSLATION LAG FROM INERTIA TERM (fixed by dragForce):
-      //   The inertia term `(currentTail - prevTail) * (1 - dragForce)` carries
-      //   forward a fraction of the previous frame's tail displacement in WORLD
-      //   SPACE. When the whole avatar body translates by δ world-units per
-      //   frame, prevTail is at the OLD world position, so the inertia term
-      //   propagates `(1 - dragForce) * δ` of OLD-frame offset on the next tick.
-      //   With default dragForce ≈ 0.4, that is 60% old-position carryover —
-      //   hair tails sit 1–2 frames behind the head even with infinite stiffness,
-      //   because stiffness only pulls toward boneAxisWorld (natural rest
-      //   direction), NOT toward the per-frame translation delta.
-      //
-      //   Fix: SET dragForce HIGH (0.9) for hair joints — `(1 - 0.9) = 0.1` means
-      //   only 10% old-position carryover, so hair converges within 1–2 frames.
-      //   Trade-off: less free-swish, but at stiffness×120 the hair already reads
-      //   "rigid", so the aesthetic cost is nil.
-      //
-      // STIFFNESS at 120 (up from 80):
-      //   dragForce=0.9 kills the momentum-assist that was keeping hair close to
-      //   the head during stationary oscillation. Adding 40 more stiffness units
-      //   compensates — gives the restoring force enough punch to snap back
-      //   within the same frame the momentum assist disappears.
-      //
-      // HAIR REGEX — Milady VRM joint names include:
-      //   J_Sec_Hair01, J_Sec_R_HairBack01_C, J_Sec_FrontHair_C, etc.
-      //   /hair/i matches all of them. Verified against three-vrm 3.5.2 source.
-      //
-      // Applied once per VRM at load — safe under VRM_CACHE @invariant.
-      // player-pet does not walk at NPC_SCALE=112; high stiffness/drag on a
-      // stationary rig just means faster settle-to-rest, which is invisible.
-      // Iteration 3 (2026-04-26): user reported "more bald" with stiffness×120 +
-      // drag=0.9. Diagnosis: stiffness × 120 forces tails to lock onto the bind-
-      // pose boneAxisWorld direction, overriding the natural draped pose the
-      // VRM was authored with — hair points in the rigid skeleton direction
-      // instead of falling over the back of the head, exposing the scalp.
-      // Dialing back: keep moderate scale compensation that prevents lag during
-      // walk but lets gravity + chain-constraint physics produce the natural
-      // drape on the back of the head.
+      // If spring bones are ever present at VRM_NPC_SCALE=112, the two
+      // scaling problems below apply:
+      //   1. Stiffness overwhelmed → multiply HAIR_STIFFNESS_SCALE
+      //   2. Translation lag from inertia term → SET dragForce high for hair
       if (vrm.springBoneManager) {
-        const HAIR_STIFFNESS_SCALE  = 30;  // moderate scale comp — was 120, too rigid
-        const OTHER_STIFFNESS_SCALE = 20;  // Skirt/tail: unchanged
-        const HAIR_DRAG_FORCE       = 0.7; // 30% inertia carryover — was 0.9, was too dead
+        const HAIR_STIFFNESS_SCALE  = 30;
+        const OTHER_STIFFNESS_SCALE = 20;
+        const HAIR_DRAG_FORCE       = 0.7;
         for (const joint of vrm.springBoneManager.joints) {
           const boneName = joint.bone?.name ?? '';
           const isHair   = /hair/i.test(boneName);
           joint.settings.stiffness *= isHair ? HAIR_STIFFNESS_SCALE : OTHER_STIFFNESS_SCALE;
           if (isHair) {
-            joint.settings.dragForce = HAIR_DRAG_FORCE; // override, not multiply
+            joint.settings.dragForce = HAIR_DRAG_FORCE;
           }
         }
       }
-      // ── End spring-bone physics fix ────────────────────────────────────────
+      // ── End spring-bone scale compensation ────────────────────────────────
 
       VRM_CACHE.set(path, { status: 'resolved', vrm });
       return vrm;
