@@ -267,20 +267,20 @@ function resolveSpecies(raw: string): string {
 Object.values(SPECIES_MODEL).forEach(({ path }) => useGLTF.preload(path));
 
 // Per-species npcScale override. computeNpcScale measures the bind-pose
-// bounding box via Box3.setFromObject which, for rigged GLBs with
-// pre-skin parent transforms (transform1 scale ≈ 0.042, nurbsCircleMover
-// scale ≈ 24.053 cancelling to ~1) reads the SKELETON extent rather than
-// the actual rendered mesh extent. On hermitcrab that produced
-// npcScale = 2.14 → rendered mesh only ~6 wu tall (invisible from the
-// spectate camera). These overrides are measured from the rendered
-// mesh centers + bboxes after the full rig pipeline is applied:
-//   - hermitcrab: rendered cluster ~6 wu → 16× = 45 wu (TARGET_NPC_HEIGHT)
-//   - sweet_crab: native Y 5.90 → computeNpcScale lands at 13.19 (rendered
-//     78 wu, too tall); 7.6 keeps it at 45 wu matching lobsters
-// 2026-04-24 — added alongside the server-side approach stand-off fix
-// that unstuck the 3 crustacean wanderers from a single world coordinate.
+// Per-species scale overrides — calibrated AFTER the SkeletonUtils.clone fix.
+// Pre-clone-fix the SkinnedMesh was effectively bind-pose-only (bones bound to
+// another instance's skeleton), so old overrides like hermitcrab=16 were
+// measured against a frozen pose. With bones now properly rebound the animated
+// extent is much larger, and those values render the crustaceans massively
+// oversized. Re-locked 2026-04-26 after PR #65 reverted hermitcrab to the
+// pre-fix value of 16 and produced "fucking huge" wanderers in production:
+//   - hermitcrab: 4   → ~54 wu Y-extent with the live animated skeleton
+//   - sweet_crab: 7.6 → bbox 56×53×67 reads acceptable in-game
+//   - lobster:    no override — computeNpcScale returns ~40 (matches
+//                 player-pet PET_SCALE=40); only re-add an override if the
+//                 lobster.glb is re-compressed and the bind-pose bbox shifts.
 const SPECIES_WANDER_SCALE_OVERRIDE: Partial<Record<string, number>> = {
-  hermitcrab: 16,
+  hermitcrab: 4,
   sweet_crab: 7.6,
 };
 
