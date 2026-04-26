@@ -210,12 +210,15 @@ function loadVRM(path: string): Promise<VRM> {
           // and compensates for the Mixamo walk animation's max forward head tilt
           // of -0.10 rad (measured headBone.rotation.x range).
           //
-          // The head bone tilts forward up to 0.10 rad during walk. With hair
-          // pre-tilted +0.15 in the opposite direction, the effective crown
-          // exposure at peak walk tilt is 0.15 - 0.10 = 0.05 rad (still rear-
-          // tilted, no front gap). At idle (no head tilt), hair leans 0.15 rad
-          // backward — visually consistent with long hair draping behind.
-          obj.rotation.x += 0.15;
+          // The head bone tilts forward up to 0.10 rad during walk. Iteration
+          // 2026-04-26: 0.15 rad gave only +0.05 net at walk peak — not enough
+          // back-crown coverage. Bumping to 0.22 leaves +0.12 net at walk peak,
+          // which is past the goldilocks band's upper edge (0.18) but the user
+          // said 0.15 was "still sub par"; the cost at idle is hair leaning a
+          // touch further back, which reads as a natural windswept pose at
+          // VRM_NPC_SCALE=112. If front-fringe gaps appear at idle, dial back
+          // to 0.20 first.
+          obj.rotation.x += 0.22;
         }
       });
 
