@@ -13,6 +13,7 @@
  */
 
 import { useMemo, useState, useCallback, useEffect } from 'react';
+import { DEFAULT_AGENT_MODEL_KEY } from '@clawville/shared';
 import {
   MODEL_REGISTRY,
   PICKER_COLORS,
@@ -36,7 +37,7 @@ export function EditAppearanceSection({ pet }: EditAppearanceSectionProps) {
   const editMutation = useEditPetAppearance();
   const addToast = useGameStore((s) => s.addToast);
 
-  const currentModelKey = (pet.modelKey ?? 'lobster') as ModelKey;
+  const currentModelKey = (pet.modelKey ?? DEFAULT_AGENT_MODEL_KEY) as ModelKey;
   const currentColor = (pet.color ?? 'green') as PickerColorId;
   const currentGender = (pet.gender ?? 'male') as 'male' | 'female';
 
