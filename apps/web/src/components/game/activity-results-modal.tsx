@@ -86,16 +86,22 @@ interface SoundLoader {
   play: (key: 'victory' | 'tick') => void;
 }
 
+// Flip to `true` once /public/sounds/quest-complete.wav and quest-tick.wav
+// ship. Until then, leaving this `false` skips the preload entirely so the
+// browser doesn't log 404s on every match-end reveal.
+const QUEST_SOUNDS_AVAILABLE = false;
+
 function useRevealSounds(reduced: boolean): SoundLoader {
-  // Audio assets are optional — when /sounds/quest-*.wav 404 we silently
-  // no-op rather than crash the modal. This keeps reveal robust in dev
-  // before sounds are added to /public/sounds/.
+  // Audio assets are optional — the modal degrades to silent reveal when the
+  // .wav files aren't shipped. The Audio() error handler swallows failures at
+  // runtime but the browser still surfaces a 404 to devtools, so we gate the
+  // whole preload behind QUEST_SOUNDS_AVAILABLE to keep the console clean.
   const ctxRef = useRef<{ victory: HTMLAudioElement | null; tick: HTMLAudioElement | null }>({
     victory: null,
     tick: null,
   });
   useEffect(() => {
-    if (reduced || typeof window === 'undefined') return;
+    if (reduced || typeof window === 'undefined' || !QUEST_SOUNDS_AVAILABLE) return;
     try {
       const v = new Audio('/sounds/quest-complete.wav');
       v.preload = 'auto';
