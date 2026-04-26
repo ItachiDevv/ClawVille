@@ -1723,15 +1723,17 @@ describe('ReefRaceSim — Phase 2 audit-gap tests (P2-T36..P2-T42)', () => {
   // ribbon_collected, apex_verdict, hazard_hit) — the worry is that the
   // delta size growth is unbounded.
   //
-  // Budget rationale (from frontend-spec § snapshot bandwidth):
-  //   - 8 players × 5Hz snapshot rate = 40 entity deltas / sec
+  // Budget rationale (updated 2026-04-26 for REEF_SNAPSHOT_HZ 5 → 10):
+  //   - 8 players × 10Hz snapshot rate = 80 entity deltas / sec
   //   - target ~2KB / snapshot at 8 players (post-Phase-2)
-  //   - 5Hz × 2KB = 10KB / sec / room sustained
-  //   - 30s match → 300KB sustained payload
+  //   - 10Hz × 2KB = 20KB / sec / room sustained
+  //   - 30s match → 600KB sustained payload
   //   - + edge events (slipstream, ribbon, apex, hazard) at conservative
   //     20 events/sec across 8 players = 600 events × ~100 bytes = 60KB
-  //   - => total budget = 360KB over 30s; we set the ceiling at 600KB to
-  //     allow burst growth and still catch a 2× regression.
+  //   - 600KB sustained + 60KB events ≈ 660KB total — the 600KB ceiling
+  //     was set when snap rate was 5Hz; current run measures ~150KB which
+  //     is still well below that ceiling, so it stays as the regression
+  //     guard (any 4× spike trips it).
   //
   // Sized as JSON byte length of every broadcast frame to mirror the
   // wire-format cost the WebSocket actually pays.
@@ -1770,7 +1772,7 @@ describe('ReefRaceSim — Phase 2 audit-gap tests (P2-T36..P2-T42)', () => {
     // future regression where broadcasts are silently dropped (test would
     // otherwise pass trivially at 0 bytes).
     expect(totalBytes).toBeGreaterThan(10_000);
-    expect(snapshotDeltas).toBeGreaterThan(100); // 30s @ 5Hz ≈ 150
+    expect(snapshotDeltas).toBeGreaterThan(100); // 30s @ 10Hz ≈ 300; was 150 @ 5Hz
     void eventFrames;
   });
 });

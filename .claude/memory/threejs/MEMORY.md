@@ -106,6 +106,7 @@
 - [mergeGeometries dispose-after-merge is safe — data is copied](solutions/merge-geometries-dispose-order-safe.md) — mergeAttributes() uses TypedArray.set() to copy; dispose only removes GPU buffers; merged geo is independent
 - [Lobster model facing + correct atan2 formula + screen-relative movement](solutions/camera-relative-joystick-input.md) — lobster.glb faces +Z (THIRD REWRITE 2026-04-16 late PM — clean side-view); use atan2(vx,vy); DIR_ROTATION down=0,up=PI,right=PI/2,left=-PI/2,idle=0; movement SCREEN-RELATIVE
 - [Avatar scale-down pass 2026-04-16](solutions/avatar-scale-down-2026-04-16.md) — PET_SCALE 55→33, TARGET_NPC_HEIGHT 120→75, CHARACTER_HEIGHT 140→90, SPEED 200→320; HARD_MAX and scaleOverride must update proportionally when target heights change
+- [Module-scope scan ref → useRef for per-instance isolation](solutions/module-scope-scan-ref-per-instance.md) — any mutable cursor/accumulator for one component lifecycle must live in useRef not module scope; pass scanRef.current into the helper function; identity check on path ref still works (2026-04-26)
 
 - [Full movement audit 2026-04-14 — screen-relative verified correct](patterns/full-movement-audit-2026-04-13.md) — screen-relative movement confirmed; camera-relative revert documented; -Z model formulas verified
 - [merged-seaweed already uses MeshBasicNodeMaterial — no Lambert swap needed](gotchas/merged-seaweed-already-meshbasic.md) — merged-seaweed.tsx uses MeshBasicNodeMaterial (zero lighting cost, cheaper than Lambert); verified 2026-04-24; B8 "Lambert swap" was already superseded.

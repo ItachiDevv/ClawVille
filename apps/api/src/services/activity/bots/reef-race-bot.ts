@@ -223,6 +223,15 @@ class ReefRaceBot implements BotController {
 
     // Off-track recovery — perpendicular distance from centerline of
     // the next checkpoint. If far, boost back toward target.
+    //
+    // NOTE (2026-04-26): the wall-clamp safety pass added to the sim
+    // (enforceWallClamp post-resolveProximity, reflectVelocity=false) pins
+    // bodies at perp = REEF_TRACK_HALF_WIDTH, so this 1.5× recovery branch
+    // is now reachable only in the very narrow window between the position
+    // mutation in resolveProximity and the next tick's clamp. In practice
+    // the branch will rarely fire — bots get clamped before they can reach
+    // 1.5×. Leaving it as a defensive fallback in case a future sim change
+    // bypasses the safety pass.
     const along = (self.x - target.center.x) * target.tangent.x + (self.y - target.center.y) * target.tangent.y;
     const perpX = self.x - target.center.x - along * target.tangent.x;
     const perpY = self.y - target.center.y - along * target.tangent.y;
