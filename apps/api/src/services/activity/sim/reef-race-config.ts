@@ -133,15 +133,22 @@ export const REEF_BODY_RADIUS = 22;
 // ─── Track geometry — centerline ────────────────────────────────────────────
 
 /**
- * Half-axes of the oval centerline (wu). Perimeter for an ellipse is
- * approximately π × (3(a+b) − √((3a+b)(a+3b))) ≈ 6024 wu at these
- * values — within the 6000 wu spec target.
+ * Half-axes of the oval centerline (wu). Bumped 1.5× from (1100, 700) on
+ * 2026-04-26 because the original sizing made the kart (40 wu glider × 50 wu
+ * rider) feel cramped — only ~7.5 kart-widths across at 300 wu HALF_WIDTH * 2.
+ * New perimeter ≈ 9036 wu. At REEF_MAX_SPEED 500 wu/s a clean lap is ~18s
+ * (was ~12s), still under MIN_LAP_MS=15s teleport-cheat detector.
  */
-export const REEF_TRACK_A = 1100;
-export const REEF_TRACK_B = 700;
+export const REEF_TRACK_A = 1650;
+export const REEF_TRACK_B = 1050;
 
-/** Track lane half-width (wu). Total lane = 300 wu. */
-export const REEF_TRACK_HALF_WIDTH = 150;
+/**
+ * Track lane half-width (wu). Total lane = 600 wu = 15 kart-widths.
+ * Doubled from 150 so two karts can pass without scraping AND so the
+ * inside/outside racing line choice is geometrically meaningful for the
+ * Phase 2 apex-bonus / hazard-patch system.
+ */
+export const REEF_TRACK_HALF_WIDTH = 300;
 
 /**
  * Bounding-box half-extent applied to each checkpoint AABB on top of
