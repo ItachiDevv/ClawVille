@@ -81,22 +81,27 @@ const _gliderMat  = new THREE.MeshStandardMaterial({
  * How far behind real-time we render (ms).
  *
  * Server sends snapshots at REEF_SNAPSHOT_HZ = 5 Hz → one snap every 200 ms.
- * Snaps arrive at t=0, 200, 400, 600 …
+ * BUT each snap is recorded by the CLIENT with `t = performance.now()` at
+ * arrival, so the timestamps include network jitter. Worst-case time between
+ * arrivals = snap_interval (200 ms) + jitter (50–100 ms).
  *
- * We need renderTime = (now - INTERP_DELAY_MS) to fall BETWEEN two consecutive
- * snaps so we always have a valid [a, b] bracket. Target: 1.25× the interval.
- *   1.25 × 200 ms = 250 ms
+ * For zero freeze frames, INTERP_DELAY_MS must exceed `worst_case_arrival_gap`
+ * so renderTime always falls BEFORE the newest history entry's timestamp.
+ *   target = 200 ms snap_interval + 100 ms jitter buffer + 50 ms safety = 350 ms
  *
- * With INTERP_DELAY_MS=250:
- *   renderTime is always 250 ms behind real-time.
- *   The most recent snap in the history was received ≤ 200 ms ago.
- *   → renderTime sits 50–250 ms behind the newest snap → always bracketed.
+ * Earlier values failed in the wild:
+ *   - 100 ms (initial) — assumed 15 Hz snapshots; server is 5 Hz; freeze for ~100 ms
+ *     then teleport to next snap.
+ *   - 250 ms (first fix) — covered the average snap interval but not jitter; user
+ *     reported "still jumpy" because each late snap caused a brief freeze + jump
+ *     when render_time exceeded the newest snap's arrival time.
  *
- * Old value was 100 ms (comment claimed "1.5× 15Hz" — server is NOT 15Hz).
- * With 100 ms delay and 200 ms snaps: renderTime could land AT or PAST the
- * latest snap → kart froze for ~100 ms then teleported to next snap.
+ * Trade-off: 350 ms input lag from press to on-screen kart motion. Acceptable for
+ * a kart racer at this snapshot rate. Going below the snap_interval risks the same
+ * freeze pattern. The proper long-term fix is to bump REEF_SNAPSHOT_HZ to 10 Hz,
+ * which would let INTERP_DELAY_MS drop to 150 ms (100 ms interval + 50 ms buffer).
  */
-const INTERP_DELAY_MS = 250;
+const INTERP_DELAY_MS = 350;
 
 /**
  * Maximum snapshot history kept per entity.
