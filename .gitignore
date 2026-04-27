@@ -33,6 +33,12 @@ coverage
 # Turbo
 .turbo
 
+# Claude Code worktrees + scratch (never commit these)
+.claude/worktrees/
+.claude/scheduled_tasks.lock
+.claude/projects/
+.claude/worktree-archive-*/
+
 # Misc
 .DS_Store
 *.pem
