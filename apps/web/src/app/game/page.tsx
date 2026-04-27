@@ -18,6 +18,7 @@ import ToastNotifications from '@/components/game/toast-notifications';
 import { GuestPetBootstrap } from '@/components/game/guest-pet-bootstrap';
 import Minimap from '@/components/game/minimap';
 import PetChatBar from '@/components/game/pet-chat-bar';
+import TalkToCharacterBar from '@/components/game/talk-to-character-bar';
 import ChargeBar from '@/components/game/charge-bar';
 import ShopOverlay from '@/components/game/shop-overlay';
 import InventoryModal from '@/components/game/inventory-modal';
@@ -323,19 +324,17 @@ export default function GamePage() {
           <ActivityFeed />
           <ChatPanel />
           {/* Phase 6.2 (2026-04-27) — PetChatBar moved BACK out of the
-              hasPet block. The Phase 6.1 placement leaked the bar into
-              Explore mode any time a guest pet was auto-created (which
-              fires on NPC-mode entry, then sticks around when the user
-              flips back to Explore). It also created Eliza state for
-              the user's stored pet during NPC mode, which is wrong:
-              the player NPC in mode 2 is a transient possession, not
-              a persistent agent. Strict gate: only render when the
-              agent IS connected and in player/autonomous mode (3/4).
-              NPC-mode chat with the nearest wandering character will
-              be wired as a separate non-Eliza endpoint + its own
-              TalkToCharacterBar component (Phase B). */}
+              hasPet block; lives only under the agent-connected branch
+              below. NPC-mode chat is now handled by TalkToCharacterBar
+              against /api/chat/transient (no Eliza, no DB, no rooms).
+              See talk-to-character-bar.tsx + chat-transient.ts. */}
         </>
       )}
+
+      {/* NPC-mode chat: talk to nearest wandering world character.
+          Stateless one-shot Gemini — no Eliza store. Component
+          self-gates on `controlMode === 'npc'`. */}
+      <TalkToCharacterBar />
 
       {/* Player-mode (agent-connected) UI — hidden in NPC/Explore mode.
           Per the brand structure: the toggle reads Explore/NPC for guests,

@@ -161,6 +161,21 @@ export const api = {
       }
     ),
 
+  // Transient world-NPC chat — used by TalkToCharacterBar in NPC mode.
+  // Stateless one-shot Gemini; no Eliza, no DB writes. Client owns history.
+  sendTransientChat: (
+    characterName: string,
+    message: string,
+    history?: Array<{ role: 'user' | 'assistant'; content: string }>,
+  ) =>
+    request<{ message: { role: string; content: string; timestamp: string } }>(
+      '/api/chat/transient',
+      {
+        method: 'POST',
+        body: JSON.stringify({ characterName, message, history }),
+      }
+    ),
+
   updatePetPosition: (positionX: number, positionY: number) =>
     request<{ pet: any }>('/api/pets/me', {
       method: 'PATCH',
