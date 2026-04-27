@@ -73,6 +73,7 @@ import type {
   SeaCreatureSpecies,
   SeaCreatureAnimState,
 } from '@/lib/three/sea-creature-types';
+import { applyTransformSwim, resetTransformSwimState } from '@/lib/three/sea-creature-swim';
 
 // ─── Preloads — fire at module scope ─────────────────────────────────────────
 useGLTF.preload('/models/sea_horse.glb');
@@ -171,8 +172,32 @@ interface SnapRecord {
   vz: number; // sim-space vy → Three.js vz
 }
 
-/** Apply procedural swimming undulation to seahorse / lobster bones. */
+/**
+ * Apply swimming animation to the avatar scene.
+ *
+ * For RIGGED meshes (sea_horse.glb — 93 bone nodes): delegates to the bone-based
+ * undulation path via applyTransformSwim's internal `hasBones` branch, which
+ * returns early and lets the original bone traversal run via the scene.traverse below.
+ *
+ * For STATIC meshes (lobster.glb — 0 bones): applyTransformSwim does pure
+ * rotation.x / rotation.z / position.y oscillation on the whole scene group —
+ * producing visible swimming motion that was a complete no-op before this change.
+ *
+ * `baseY = 0` because clonedScene is parented to riderMountRef whose position.y
+ * is already driven by the bob loop above; position.y on clonedScene itself
+ * starts at 0 and we oscillate around that.
+ *
+ * The bone-path below (traverse + isBone) still handles rigged species correctly
+ * because applyTransformSwim returns early when hasBones=true, leaving the
+ * scene's rotation/position untouched for the traverse to work on.
+ */
 function applySwimmingAnim(scene: THREE.Object3D, petId: string, delta: number, speed: number): void {
+  // Transform-only path for static meshes (lobster.glb, crayfish.glb, etc.).
+  // Returns early internally when bones are present, so rigged meshes pass through.
+  applyTransformSwim(scene, petId, delta, speed, 0);
+
+  // Bone-based undulation for rigged species (sea_horse.glb, future rigged GLBs).
+  // applyTransformSwim's hasBones=true guard ensures transform is NOT also applied.
   if (!_swimTime[petId]) _swimTime[petId] = 0;
   _swimTime[petId] += delta;
   const t = _swimTime[petId];
@@ -268,8 +293,11 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
     mount.add(clonedScene);
     return () => {
       mount.remove(clonedScene);
+      // Clear per-petId procedural state so a remounted clone starts at t=0
+      // and re-probes for bones (important if species changes across mounts).
+      resetTransformSwimState(entity.petId);
     };
-  }, [clonedScene]);
+  }, [clonedScene, entity.petId]);
 
   // ─── Sea-creature animator (hot-swap when manifest enables this species) ───
   // Manifest defaults to all-empty so this hook is a no-op until rigged GLBs

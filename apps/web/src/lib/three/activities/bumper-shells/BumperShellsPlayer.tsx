@@ -72,6 +72,7 @@ import type {
   SeaCreatureSpecies,
   SeaCreatureAnimState,
 } from '@/lib/three/sea-creature-types';
+import { applyTransformSwim, resetTransformSwimState } from '@/lib/three/sea-creature-swim';
 
 // ─── Preloads — fire at module scope so GLBs are warm before a round starts ──
 useGLTF.preload('/models/lobster.glb');
@@ -233,8 +234,10 @@ function BumperShellsPlayerInner({
     root.add(clonedScene);
     return () => {
       root.remove(clonedScene);
+      // Reset procedural swim state so a remounted clone re-probes bones at t=0.
+      resetTransformSwimState(entity.petId);
     };
-  }, [clonedScene]);
+  }, [clonedScene, entity.petId]);
 
   // ─── Sea-creature animator (hot-swap when manifest enables this species) ───
   // Same pattern as ReefRacePlayer. While manifest hasRig=false (default), the
@@ -476,6 +479,13 @@ function BumperShellsPlayerInner({
       if (animator) {
         animator.update(dt, elapsed, suggestedState, direction);
       }
+      // Transform-only swim for static meshes (lobster.glb / crayfish.glb — 0 bones).
+      // applyTransformSwim internally probes for bones on first call (cached) and
+      // skips itself when hasBones=true, so rigged species (if added later) are safe.
+      // baseY=0: clonedScene's position.y is 0 relative to meshRoot; bob oscillates around 0.
+      // LobsterAnimator modifies bone rotations on child meshes — orthogonal to
+      // clonedScene.rotation.x/z and clonedScene.position.y (the transform targets).
+      applyTransformSwim(clonedScene, entity.petId, dt, _speedScratch.speed, 0);
     }
 
     // ─── Squash/stretch animation (applied to meshRoot group) ─────────────
