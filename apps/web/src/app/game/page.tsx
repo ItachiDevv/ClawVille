@@ -322,14 +322,18 @@ export default function GamePage() {
           <TutorialOverlay />
           <ActivityFeed />
           <ChatPanel />
-          {/* Phase 6.1 — persistent chat-with-avatar bar. Was previously
-              agent-connected-only (hidden in NPC/explore/guest modes),
-              but the itachi suggestion was right: a human giving
-              continuous feedback to their avatar is the whole point of the
-              persistent interaction axis, and it's the only way to
-              steer an autonomous agent mid-session. Backend /api/avatars/
-              me/chat already accepts guest avatars + any mode. */}
-          <AvatarChatBar />
+          {/* Phase 6.2 (2026-04-27) — AvatarChatBar moved BACK out of the
+              hasAvatar block. The Phase 6.1 placement leaked the bar into
+              Explore mode any time a guest avatar was auto-created (which
+              fires on NPC-mode entry, then sticks around when the user
+              flips back to Explore). It also created Eliza state for
+              the user's stored avatar during NPC mode, which is wrong:
+              the player NPC in mode 2 is a transient possession, not
+              a persistent agent. Strict gate: only render when the
+              agent IS connected and in player/autonomous mode (3/4).
+              NPC-mode chat with the nearest wandering character will
+              be wired as a separate non-Eliza endpoint + its own
+              TalkToCharacterBar component (Phase B). */}
         </>
       )}
 
@@ -349,9 +353,12 @@ export default function GamePage() {
           <QuestTracker />
           <AvatarSettingsModal />
           <LocationConfigModal />
-          {/* AvatarChatBar moved up into the hasAvatar block (Phase 6.1) — it
-              renders any time the user has a avatar, not only when an
-              agent is connected. */}
+          {/* AvatarChatBar — restored to agent-connected-only gate (Phase 6.2).
+              The Phase 6.1 move into hasAvatar leaked it into Explore mode
+              and created Eliza state for the user's avatar during NPC mode,
+              both wrong. Mode 2 (NPC) chat lives in a separate
+              TalkToCharacterBar component (non-Eliza, transient). */}
+          <AvatarChatBar />
           <ChargeBar />
           <ShopOverlay />
           <InventoryModal />
