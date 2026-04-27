@@ -51,6 +51,13 @@ const _camForward = new THREE.Vector3();
 const _camRight = new THREE.Vector3();
 const _worldUp = new THREE.Vector3(0, 1, 0);
 
+function resetNpcKeys() {
+  // Clear all key state — called on window blur/visibility-hide so a key held
+  // while the tab loses focus doesn't stay "true" forever (browser skips keyup
+  // when focus leaves the window, leaving _keys stranded in the pressed state).
+  (Object.keys(_keys) as Array<keyof NpcKeyState>).forEach((k) => { _keys[k] = false; });
+}
+
 function attachNpcKeyListeners() {
   if (_listenersAttached) return;
   _listenersAttached = true;
@@ -67,8 +74,15 @@ function attachNpcKeyListeners() {
     const k = e.key.toLowerCase() as keyof NpcKeyState;
     if (k in _keys) _keys[k] = false;
   };
+  // When the window loses focus the browser stops firing keyup for held keys.
+  // Resetting all key state on blur/visibilitychange prevents phantom movement
+  // after the user alt-tabs or the OS steals focus mid-hold.
+  const onBlur = () => resetNpcKeys();
+  const onVisibility = () => { if (document.hidden) resetNpcKeys(); };
   window.addEventListener('keydown', onDown);
   window.addEventListener('keyup', onUp);
+  window.addEventListener('blur', onBlur);
+  document.addEventListener('visibilitychange', onVisibility);
 }
 
 function directionFromVelocity(vx: number, vy: number): NpcSpriteState['direction'] {
