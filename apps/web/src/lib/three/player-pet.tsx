@@ -106,6 +106,10 @@ let keyListenersAttached = false;
 let lastEState = false;
 let lastEscState = false;
 
+function resetPlayerKeys() {
+  (Object.keys(keyState) as Array<keyof KeyState>).forEach((k) => { keyState[k] = false; });
+}
+
 function attachKeyListeners() {
   if (keyListenersAttached) return;
   keyListenersAttached = true;
@@ -122,8 +126,13 @@ function attachKeyListeners() {
     const key = e.key.toLowerCase() as keyof KeyState;
     if (key in keyState) keyState[key] = false;
   };
+  // Prevent phantom movement when the window loses focus mid-hold (browser skips keyup).
+  const onBlur = () => resetPlayerKeys();
+  const onVisibility = () => { if (document.hidden) resetPlayerKeys(); };
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
+  window.addEventListener('blur', onBlur);
+  document.addEventListener('visibilitychange', onVisibility);
 }
 
 function mapToWorld(px: number, py: number): [number, number, number] {

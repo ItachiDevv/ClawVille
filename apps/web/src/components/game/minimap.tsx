@@ -35,6 +35,7 @@ export default function Minimap() {
   const nearLocation = useGameStore((s) => s.nearLocation);
   const visitedBuildings = useGameStore((s) => s.visitedBuildings);
   const setClickPath = useGameStore((s) => s.setClickPath);
+  const controlMode = useGameStore((s) => s.controlMode);
   const movementFrozen = useGameStore((s) => s.movementFrozen);
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -43,6 +44,9 @@ export default function Minimap() {
 
   /** Convert a minimap click to map pixel coords, path-find from pet, and dispatch. */
   const handleClick = (e: React.MouseEvent<SVGSVGElement>) => {
+    // Only player/autonomous modes have a ClickToMove consumer — NPC mode drives
+    // the possessed NPC via NpcController (WASD/joystick), not clickPath.
+    if (controlMode === 'npc' || controlMode === 'explore') return;
     if (movementFrozen) return;
     if (!svgRef.current) return;
 
