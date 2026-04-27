@@ -7,6 +7,7 @@ import { authRoutes } from './routes/auth';
 import { avatarRoutes } from './routes/avatars';
 import { locationRoutes } from './routes/locations';
 import { chatRoutes } from './routes/chat';
+import { transientChatRoutes } from './routes/chat-transient';
 import { itemRoutes } from './routes/items';
 import { npcRoutes } from './routes/npc-sse';
 import { openclawRoutes } from './routes/openclaw';
@@ -122,6 +123,10 @@ app.route('/api/locations', chatRoutes);
 // legacy `POST /api/locations/:id/chat` path continues to work under the
 // first mount above; nothing moves. Both mounts share the same handler map.
 app.route('/api/chat', chatRoutes);
+// Transient world-NPC chat — POST /api/chat/transient. Stateless one-shot
+// Gemini for NPC mode (controlMode === 'npc') talking to nearby wanderers.
+// No Eliza, no rooms, no DB writes. See routes/chat-transient.ts for why.
+app.route('/api/chat/transient', transientChatRoutes);
 app.route('/api/items', itemRoutes);
 app.route('/api/npc', npcRoutes);
 app.route('/api/openclaw', openclawRoutes);
