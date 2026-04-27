@@ -731,6 +731,35 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
 // ---------------------------------------------------------------------------
 
 async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
+  // -------------------------------------------------------------------------
+  // Fix: depth-stencil attachment size mismatch (300×150 vs actual CSS size)
+  //
+  // Problem: when the async gl factory runs, the canvas element is in the DOM
+  // but the browser may not have flushed the CSS layout pass yet. The canvas
+  // still has its default HTML attribute dimensions (300×150). WebGPURenderer
+  // creates its depth buffer at those dimensions inside init(). R3F then calls
+  // renderer.setSize() from its ResizeObserver, which resizes color attachments
+  // but does NOT recreate the depth/stencil texture in Three.js r182. Every
+  // subsequent BeginRenderPass fails WebGPU validation: depth (300×150) ≠
+  // color (actual size).
+  //
+  // Fix: force a synchronous layout reflow via getBoundingClientRect() to get
+  // the true CSS-resolved dimensions, then stamp those onto the canvas's width/
+  // height attributes before constructing the renderer. WebGPURenderer reads
+  // canvas.width/height for the initial depth buffer allocation, so this
+  // ensures the depth buffer is created at the correct size from the start.
+  // -------------------------------------------------------------------------
+  const rect = canvas.getBoundingClientRect();
+  const cssW = Math.round(rect.width);
+  const cssH = Math.round(rect.height);
+  if (cssW > 0 && cssH > 0) {
+    // Stamp the true pixel dimensions so WebGPURenderer.init() allocates the
+    // depth buffer at the correct size. R3F's ResizeObserver will call
+    // setSize() again after mount (which is fine — it's idempotent when the
+    // size is already correct).
+    canvas.width  = cssW;
+    canvas.height = cssH;
+  }
   // Dynamic import — tree-shakes out when WebGPU path isn't taken
   const { WebGPURenderer } = await import('three/webgpu');
   const renderer = new WebGPURenderer({
