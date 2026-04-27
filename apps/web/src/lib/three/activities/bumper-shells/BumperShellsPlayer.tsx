@@ -63,6 +63,15 @@ import {
   DROP_GRAVITY,
   DROP_FADE_DURATION,
 } from './bumper-shells-config';
+import {
+  createSeaCreatureAnimator,
+  type SeaCreatureAnimatorHandle,
+} from '@/lib/three/sea-creature-animator';
+import { SEA_CREATURE_MANIFEST } from '@/lib/three/sea-creature-manifest';
+import type {
+  SeaCreatureSpecies,
+  SeaCreatureAnimState,
+} from '@/lib/three/sea-creature-types';
 
 // ─── Preloads — fire at module scope so GLBs are warm before a round starts ──
 useGLTF.preload('/models/lobster.glb');
@@ -227,6 +236,62 @@ function BumperShellsPlayerInner({
     };
   }, [clonedScene]);
 
+  // ─── Sea-creature animator (hot-swap when manifest enables this species) ───
+  // Same pattern as ReefRacePlayer. While manifest hasRig=false (default), the
+  // existing LobsterAnimator + procedural bone discovery path runs unchanged.
+  // When manifest is enabled, the animator's scene REPLACES clonedScene and
+  // LobsterAnimator's per-frame call is skipped.
+  //
+  // Caveat: Bumper Shells has combat states (attack / hurt / death) that the
+  // sea-creature pipeline doesn't surface yet. Once manifest is enabled they
+  // map onto 'hit' (attack/hurt) and 'wipeout' (death) — but only if the
+  // corresponding clip GLBs are shipped. Combat states with no clip silently
+  // fall through swim → idle per the animator's fallback chain.
+  //
+  // FEATURE_GATE: sea_creature_animator (bumper-shells)
+  // Status: scaffolded; dormant until manifest hasRig=true.
+  // Metric to graduate: rigged base.glb + ≥1 animation clip exists for any
+  //   species AND visual review confirms motion matches arena combat feel.
+  // Current reading: 0 species enabled (all hasRig=false in manifest).
+  // Review deadline: 2026-05-26
+  // On deadline: if no GLBs shipped, DELETE this block + the import.
+  // Reference: tweet copyrebeldia 2026-04-26 — Meshy/Tripo auto-rig pipeline.
+  const seaCreatureAnimRef = useRef<SeaCreatureAnimatorHandle | null>(null);
+  const speciesKey: SeaCreatureSpecies =
+    ((entity as BumperShellEntity & { species?: string }).species as SeaCreatureSpecies | undefined) ?? 'lobster';
+  const wantsSeaCreatureAnim = SEA_CREATURE_MANIFEST[speciesKey]?.hasRig ?? false;
+
+  useEffect(() => {
+    if (!wantsSeaCreatureAnim) return;
+    let cancelled = false;
+    let handle: SeaCreatureAnimatorHandle | null = null;
+
+    createSeaCreatureAnimator(speciesKey, 'idle').then((h) => {
+      if (cancelled || !h) {
+        h?.dispose();
+        return;
+      }
+      handle = h;
+      seaCreatureAnimRef.current = h;
+      const root = meshRootRef.current;
+      if (root) {
+        root.remove(clonedScene);
+        root.add(h.scene);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      const root = meshRootRef.current;
+      if (handle && root) {
+        root.remove(handle.scene);
+        root.add(clonedScene);
+      }
+      handle?.dispose();
+      seaCreatureAnimRef.current = null;
+    };
+  }, [wantsSeaCreatureAnim, speciesKey, clonedScene]);
+
   // Track previous alive state to trigger fade on elimination.
   const wasAlive = useRef(true);
 
@@ -245,6 +310,15 @@ function BumperShellsPlayerInner({
     };
 
     (group as THREE.Group & { triggerCombatAction?: (action: CombatAction) => void }).triggerCombatAction = (action: CombatAction) => {
+      // Sea-creature animator path (manifest-enabled): map combat → state and
+      // setState() — the LoopOnce + 'finished' handler in sea-creature-animator
+      // auto-reverts to the prior locomotion state when the clip ends.
+      const seaAnim = seaCreatureAnimRef.current;
+      if (seaAnim) {
+        const mapped: SeaCreatureAnimState = action === 'death' ? 'wipeout' : 'hit';
+        seaAnim.setState(mapped);
+        return;
+      }
       // BUG FIX (Bug 2): wire combat states to animator.
       // startAction() is a no-op if the same state is already playing + !actionDone.
       // For 'death': also handled by the elimination path in useFrame; calling it
@@ -380,9 +454,28 @@ function BumperShellsPlayerInner({
       direction = 'down';
     }
 
-    const animator = animatorRef.current;
-    if (animator) {
-      animator.update(dt, elapsed, suggestedState, direction);
+    const seaCreatureAnim = seaCreatureAnimRef.current;
+    if (seaCreatureAnim) {
+      // Manifest-enabled path: AnimationMixer drives the rigged GLB.
+      // Locomotion-only here — combat actions (attack/hurt/death) come
+      // through the imperative `triggerCombatAction` group handle below
+      // and call setState('hit'|'wipeout') directly. Don't override an
+      // active one-shot (hit / wipeout / victory) — let it finish before
+      // the locomotion derivation reasserts.
+      seaCreatureAnim.tick(dt);
+      const cur = seaCreatureAnim.getState();
+      if (cur === 'idle' || cur === 'swim') {
+        const desiredLocomotion: SeaCreatureAnimState =
+          suggestedState === 'walk' ? 'swim' : 'idle';
+        if (cur !== desiredLocomotion) {
+          seaCreatureAnim.setState(desiredLocomotion);
+        }
+      }
+    } else {
+      const animator = animatorRef.current;
+      if (animator) {
+        animator.update(dt, elapsed, suggestedState, direction);
+      }
     }
 
     // ─── Squash/stretch animation (applied to meshRoot group) ─────────────
