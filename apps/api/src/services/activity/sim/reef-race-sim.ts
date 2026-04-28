@@ -1307,12 +1307,20 @@ class ReefRaceSim {
       const baseRot = Math.atan2(intent.dir.x, intent.dir.y);
       let desiredRot = baseRot;
       if (body.drift.charging) {
-        // Clamp the outward lean to |baseRot| so a gentle steering input
-        // (|dir.x| in [DRIFT_MIN_STEER..tan(DRIFT_ANGULAR_BIAS_RAD)] —
-        // i.e. ~0.12..0.27 normalized) cannot flip the heading sign and
-        // make the kart visibly turn OPPOSITE the player's input.
+        // Outward drift lean — always preserves at least 50% of the input
+        // turn, so the kart still visibly heads the way the player steers.
+        // Two prior bugs avoided here:
+        //   (a) Constant 15° subtraction flipped the sign on gentle input
+        //       (|dir.x| in [DRIFT_MIN_STEER..tan(15°)] ≈ [0.12..0.27]).
+        //   (b) Hard clamp at |baseRot| made gentle inputs read as
+        //       "kart freezes pointing straight ahead" — no visible lean,
+        //       no apparent turn — so users reported "drift doesn't work".
+        // Bias is at most 15°, AND at most half of |baseRot|. Result:
+        // desiredRot keeps the same sign as baseRot and at least 50% of
+        // its magnitude. Loosens the turn (sliding feel) without ever
+        // freezing or reversing the heading.
         const turnSign = intent.dir.x > 0 ? -1 : 1;
-        const biasMag = Math.min(DRIFT_ANGULAR_BIAS_RAD, Math.abs(baseRot));
+        const biasMag = Math.min(DRIFT_ANGULAR_BIAS_RAD, Math.abs(baseRot) * 0.5);
         desiredRot = baseRot + turnSign * biasMag;
       }
       const turnRate = body.drift.charging
