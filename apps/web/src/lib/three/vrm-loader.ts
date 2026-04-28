@@ -52,27 +52,6 @@ import type { VRM } from '@pixiv/three-vrm';
 //   registered.
 
 // ---------------------------------------------------------------------------
-// Scalp cap geometry + material — module-scope singletons.
-//
-// Shared across all Milady VRM loads (5 NPCs + player-pet). Never disposed
-// because they live for the entire browser session and are purely read-only
-// after construction. Each VRM gets a distinct Mesh instance (via new THREE.Mesh)
-// but all share these same geo+mat objects — zero extra GPU allocations per
-// additional NPC.
-//
-// SphereGeometry(0.18, 10, 8):
-//   radius = 0.18 VRM-local units → ~20wu world at VRM_NPC_SCALE=112
-//   widthSegments=10, heightSegments=8 → 80 triangles; enough curvature to
-//   avoid faceting, low cost on Iris Xe
-//
-// MeshBasicMaterial: no lighting cost (important for Iris Xe GPU budget);
-//   color #111111 reads as dark hair for all Milady variants; side=FrontSide
-//   (back faces invisible, safe since cap is always behind hair geometry)
-// ---------------------------------------------------------------------------
-const SCALP_CAP_GEO = new THREE.SphereGeometry(0.18, 10, 8);
-const SCALP_CAP_MAT = new THREE.MeshBasicMaterial({ color: 0x111111 });
-
-// ---------------------------------------------------------------------------
 // Module-level VRM cache
 // Holds either the resolved VRM or the in-flight Promise so the hook can
 // implement the Suspense throw-the-promise protocol without re-entrancy bugs.
@@ -188,52 +167,12 @@ function loadVRM(path: string): Promise<VRM> {
       // so it faces -Z, matching VRM 1.0 convention.
       VRMUtils.rotateVRM0(vrm);
 
-      // Scalp cap fix for Milady VRM crown-back bald spot (2026-04-25 → revised 2026-04-25).
-      //
-      // Root cause (CDP-verified): The Mixamo walk animation forward-tilts the head
-      // bone up to -0.11 rad. The Hairmodel has sparse crown-back geometry (469 verts
-      // at Y>0.3 AND Z<-0.1 in Hairmodel local space). When the head tilts forward,
-      // the sparse crown-back is presented to a rear-above camera.
-      //
-      // Pre-tilt approach (rotation.x += 0.15 / 0.22 / 0.18) was proven ineffective:
-      // CDP measurement showed the crown vertex world Y changes only ~1.4wu across
-      // the full 0 → 0.22 rad range, because tilting rotates the crown vertex AWAY
-      // from the scalp underneath it (lifts it, creating MORE gap in the underlying
-      // skin region). Three iterations confirmed no improvement.
-      //
-      // Fix: inject a dark "scalp cap" sphere parented to mixamorigHead, covering
-      // the crown-back. At any head tilt the cap follows the head bone exactly
-      // (rigid parent), filling the gap with a dark mesh that reads as "more hair"
-      // regardless of camera angle or walk phase.
-      //
-      // Cap parameters (head-bone local space, scale 1.0 before VRM_NPC_SCALE):
-      //   position: {x:0, y:0.52, z:-0.10}  — crown-back, matches Hairmodel crown
-      //   radius: 0.18  — ~20wu world at scale 112; covers sparse zone without
-      //                    clipping through forehead at any yaw
-      //   color: #111111 (near-black) — reads as dark hair for all Milady variants
-      //                    (blonde, brunette, dark) without needing texture sampling
-      //   geometry/material: module-scope singletons, never disposed (reused across
-      //                    all 5 VRM loads; safe because geometry/material are
-      //                    read-only after construction)
-      //   renderOrder: -1 — render before hair to avoid z-fighting with Hairmodel
-      //   depthWrite: true — participates in depth buffer normally (not transparent)
-      {
-        let headBone: THREE.Object3D | null = null;
-        vrm.scene.traverse((obj) => {
-          if (obj.name === 'mixamorigHead') headBone = obj;
-        });
-        if (headBone) {
-          const cap = new THREE.Mesh(
-            SCALP_CAP_GEO,
-            SCALP_CAP_MAT,
-          );
-          cap.name = '__scalp_cap__';
-          cap.position.set(0, 0.52, -0.10);
-          cap.renderOrder = -1;
-          cap.frustumCulled = false;
-          (headBone as THREE.Object3D).add(cap);
-        }
-      }
+      // Scalp cap REMOVED 2026-04-27: cap rendered as a visible black ball on top
+      // of the head (clipped through hair) instead of hiding behind it. The
+      // SCALP_CAP_GEO/MAT module singletons are kept dead-code-eliminated by the
+      // bundler since they're no longer referenced. Real hair-binding fix is
+      // pending CDP probe of why Hairmodel SkinnedMesh doesn't follow the head
+      // bone tilt during walk animation (likely separate root or wrong bone weights).
 
       // MToon outline pass — disable to halve VRM draw calls (B1 2026-04-24).
       // MToon renders each mesh twice: once for the fill, once for an outset
