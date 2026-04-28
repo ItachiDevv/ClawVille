@@ -31,6 +31,7 @@ import { useRef, useEffect, useMemo } from 'react';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { makeGeometryWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import {
   TRACK_TUBE_SEGMENTS,
   TRACK_TUBE_RADIUS,
@@ -209,7 +210,7 @@ function CoralInstances({ glbPath, seed, side }: CoralInstProps) {
     let g: THREE.BufferGeometry | null = null;
     srcScene.traverse((o) => {
       if (!g && (o as THREE.Mesh).isMesh) {
-        g = (o as THREE.Mesh).geometry.clone();
+        g = makeGeometryWebGPUSafe((o as THREE.Mesh).geometry.clone());
       }
     });
     return g ?? new THREE.BoxGeometry(20, 40, 20);

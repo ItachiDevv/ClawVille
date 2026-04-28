@@ -73,6 +73,7 @@ import type {
   SeaCreatureAnimState,
 } from '@/lib/three/sea-creature-types';
 import { applyTransformSwim, resetTransformSwimState } from '@/lib/three/sea-creature-swim';
+import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 
 // ─── Preloads — fire at module scope so GLBs are warm before a round starts ──
 useGLTF.preload('/models/lobster.glb');
@@ -207,6 +208,7 @@ function BumperShellsPlayerInner({
   // Clone the GLB once per entity/species change.
   const clonedScene = useMemo(() => {
     const c = skeletonClone(srcScene);
+    makeObject3DWebGPUSafe(c);
     // CRITICAL: frustumCulled=false traverse immediately after SkeletonUtils.clone.
     // SkinnedMesh bind-pose bounding spheres don't encompass animated poses.
     c.traverse((o) => {

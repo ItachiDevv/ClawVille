@@ -7,7 +7,9 @@
  *   - Green material: checkpoints 1–11
  *   - Gold material: finish line (checkpoint 0)
  *
- * Each gate = 2 CylinderGeometry pillars + 1 BoxGeometry bar.
+ * Finish gate = 2 CylinderGeometry pillars + 1 BoxGeometry bar.
+ * Checkpoint gates = 2 CylinderGeometry pillars only; repeated crossbars read
+ * as collision blockers in chase-cam and can occlude the player at low angles.
  * All geometry merged via mergeGeometries → 2 static draw calls.
  * matrixAutoUpdate=false after mount.
  *
@@ -50,8 +52,8 @@ const _up      = new THREE.Vector3(0, 1, 0);
 
 const TRACK_CURVE = new THREE.CatmullRomCurve3(TRACK_CURVE_POINTS, TRACK_CLOSED, 'catmullrom', 0.5);
 
-/** Build pillar + bar geometries for one gate at track t-value. */
-function buildGateGeos(t: number): THREE.BufferGeometry[] {
+/** Build pillar + optional bar geometries for one gate at track t-value. */
+function buildGateGeos(t: number, includeBar: boolean): THREE.BufferGeometry[] {
   TRACK_CURVE.getPointAt(t, _pos);
   TRACK_CURVE.getTangentAt(t, _tangent).normalize();
   _binorm.crossVectors(_tangent, _up).normalize();
@@ -67,7 +69,7 @@ function buildGateGeos(t: number): THREE.BufferGeometry[] {
     PILLAR_RADIUS_TOP, PILLAR_RADIUS_BOTTOM,
     PILLAR_HEIGHT, PILLAR_RADIAL_SEGS, 1,
   );
-  const barGeo = new THREE.BoxGeometry(GATE_BAR_WIDTH, GATE_BAR_HEIGHT, GATE_BAR_DEPTH);
+  const geos: THREE.BufferGeometry[] = [pillarGeoL, pillarGeoR];
 
   // Left pillar
   const leftPos = _pos.clone().addScaledVector(_binorm, -TRACK_TUBE_RADIUS);
@@ -81,18 +83,21 @@ function buildGateGeos(t: number): THREE.BufferGeometry[] {
   _m4.compose(rightPos, q, _scl);
   pillarGeoR.applyMatrix4(_m4);
 
-  // Bar at top
-  const barPos = _pos.clone();
-  barPos.y = PILLAR_HEIGHT;
-  // Rotate bar to align with gate width (along binormal)
-  const barQ = new THREE.Quaternion().setFromUnitVectors(
-    new THREE.Vector3(1, 0, 0),
-    _binorm.clone(),
-  );
-  _m4.compose(barPos, barQ, _scl);
-  barGeo.applyMatrix4(_m4);
+  if (includeBar) {
+    const barGeo = new THREE.BoxGeometry(GATE_BAR_WIDTH, GATE_BAR_HEIGHT, GATE_BAR_DEPTH);
+    const barPos = _pos.clone();
+    barPos.y = PILLAR_HEIGHT;
+    // Rotate bar to align with gate width (along binormal)
+    const barQ = new THREE.Quaternion().setFromUnitVectors(
+      new THREE.Vector3(1, 0, 0),
+      _binorm.clone(),
+    );
+    _m4.compose(barPos, barQ, _scl);
+    barGeo.applyMatrix4(_m4);
+    geos.push(barGeo);
+  }
 
-  return [pillarGeoL, pillarGeoR, barGeo];
+  return geos;
 }
 
 // ─── Module-scope materials ───────────────────────────────────────────────────
@@ -125,10 +130,11 @@ export default function ReefRaceCheckpoints() {
 
     for (let i = 0; i < CHECKPOINT_T_VALUES.length; i++) {
       const t = CHECKPOINT_T_VALUES[i];
-      const geos = buildGateGeos(t);
       if (i === FINISH_LINE_INDEX) {
+        const geos = buildGateGeos(t, true);
         goldGeos.push(...geos);
       } else {
+        const geos = buildGateGeos(t, false);
         greenGeos.push(...geos);
       }
     }

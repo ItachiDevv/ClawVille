@@ -1698,7 +1698,7 @@ class ReefRaceSim {
     // Nudge slightly inside the rail after correction. Sitting exactly on the
     // mathematical boundary makes the next tick re-hit the clamp immediately,
     // which reads as "stuck on the fence" when the player is trying to recover.
-    const WALL_RECOVERY_INSET_SCALE = 0.004;
+    const WALL_RECOVERY_INSET_SCALE = 0.012;
     const clampScale =
       Math.max(0, REEF_OUTER_WALL_SCALE - WALL_RECOVERY_INSET_SCALE) / scale;
     body.x *= clampScale;
@@ -1716,6 +1716,24 @@ class ReefRaceSim {
         const vTy = body.vy - vN * normal.y;
         body.vx = vTx * WALL_TANGENT_FRICTION;
         body.vy = vTy * WALL_TANGENT_FRICTION;
+
+        const intent = body.intent.dir;
+        if (intent && body.intent.thrust > 0.15) {
+          const tangent = ellipseTangentAtPoint(body.x, body.y);
+          const intentAlongTangent = intent.x * tangent.x + intent.y * tangent.y;
+          if (Math.abs(intentAlongTangent) > 0.2) {
+            const sign = intentAlongTangent < 0 ? -1 : 1;
+            const slideX = tangent.x * sign;
+            const slideY = tangent.y * sign;
+            const currentSlide = body.vx * slideX + body.vy * slideY;
+            const minSlideSpeed = REEF_MAX_SPEED * 0.25;
+            if (currentSlide < minSlideSpeed) {
+              const add = minSlideSpeed - Math.max(0, currentSlide);
+              body.vx += slideX * add;
+              body.vy += slideY * add;
+            }
+          }
+        }
       }
     } else {
       // Safety pass after proximity: just kill outward velocity. No bounce —
