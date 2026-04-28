@@ -275,6 +275,19 @@ class ActivityQueueService {
   }
 
   /**
+   * Idempotency helper for REST queue joins. A retry/double-click should not
+   * strand the lobby with "Avatar is already in a queue" when the existing entry
+   * is exactly the same activity bucket.
+   */
+  getQueuedEntry(avatarId: string): QueueEntry | null {
+    for (const queue of this.queues.values()) {
+      const entry = queue.find((e) => e.avatarId === avatarId);
+      if (entry) return entry;
+    }
+    return null;
+  }
+
+  /**
    * Look up the room a freshly-matched avatar was routed into — used by
    * the queue-status polling path so a client can pick up `matchedRoomId`
    * without a separate WS control channel. (Chunk #3 match.found

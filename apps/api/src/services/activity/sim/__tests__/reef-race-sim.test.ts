@@ -91,6 +91,7 @@ const {
   NEUTRAL_BODY_MULTIPLIERS,
   RIBBON_HALF_WIDTH,
   REEF_MAX_ACCEL,
+  REEF_TRACK_B,
   buildBodyMultipliers,
   racingClassFromArchetype,
 } = await import('../reef-race-config');
@@ -398,6 +399,14 @@ function bootDriftRoom(opts?: {
   stopInterval('room-drift');
   const state = reefRaceSim.__getState('room-drift')!;
   const body = state.bodies.get(avatarId)!;
+  // Mechanics-only helper: keep drift/boost speed tests away from the oval
+  // guardrail and static track zones so they validate kinematic stacking, not
+  // wall/ribbon/hazard/apex behavior.
+  state.ribbons = [];
+  state.hazards = [];
+  state.apexZones = [];
+  body.x = 0;
+  body.y = -REEF_TRACK_B * 1.2;
   if (typeof opts?.vx === 'number') body.vx = opts.vx;
   if (typeof opts?.vy === 'number') body.vy = opts.vy;
   return { state, body, avatarId };

@@ -318,6 +318,41 @@ activitiesV2Routes.post('/:id/queue', requireAuthOrAgentSession, async (c) => {
   }
 
   // Solo enqueue.
+  const existingEntry = activityQueueService.getQueuedEntry(identity.avatarId);
+  if (existingEntry) {
+    if (
+      existingEntry.activityId === id &&
+      existingEntry.agentOnly === agentOnly
+    ) {
+      return c.json({
+        ok: true,
+        queued: 1,
+        activityId: id,
+        entryId: existingEntry.id,
+        alreadyQueued: true,
+      });
+    }
+    throw new HTTPException(409, {
+      message: `Avatar is already queued for ${existingEntry.activityId}`,
+    });
+  }
+
+  const activeRoom = activityRoomManager.getPlayerActiveRoom(identity.avatarId);
+  if (activeRoom) {
+    if (activeRoom.activityId === id) {
+      return c.json({
+        ok: true,
+        queued: 0,
+        activityId: id,
+        matchedRoomId: activeRoom.id,
+        alreadyInRoom: true,
+      });
+    }
+    throw new HTTPException(409, {
+      message: `Avatar is already in an active ${activeRoom.activityId} room`,
+    });
+  }
+
   try {
     const entry = await activityQueueService.enqueue({
       activityId: id,

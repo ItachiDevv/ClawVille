@@ -40,8 +40,7 @@ export const transientChatRoutes = new Hono<AppContext>();
 // per response × 60 ≈ 24k tokens/min/user worst case.
 const transientRateLimit = createRateLimiter({
   windowMs: 60_000,
-  max: 60,
-  keyGen: (c) => `chat-transient:${getClientIp(c)}`,
+  maxPerWindow: 60,
 });
 
 const bodySchema = z.object({
@@ -62,7 +61,12 @@ const GEMINI_MODEL = 'gemini-2.5-flash';
 const TEMPERATURE = 0.85;
 const MAX_OUTPUT_TOKENS = 220;
 
-transientChatRoutes.post('/', transientRateLimit, async (c) => {
+transientChatRoutes.post('/', async (c) => {
+  const ip = getClientIp(c.req.raw.headers);
+  if (!transientRateLimit.check(`chat-transient:${ip}`)) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+
   let parsed;
   try {
     parsed = bodySchema.parse(await c.req.json());

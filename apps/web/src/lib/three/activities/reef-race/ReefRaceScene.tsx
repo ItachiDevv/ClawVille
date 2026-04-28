@@ -79,6 +79,21 @@ const _playerWorldDir = new THREE.Vector3(0, 0, 1);
 // (RAF), which fires AFTER the React render that writes this value.
 const _selfPosScratch = new THREE.Vector3();
 
+const CAMERA_INTERP_DELAY_MS = 200;
+const CAMERA_INTERP_HISTORY_SIZE = 4;
+
+interface CameraSnapRecord {
+  t: number;
+  x: number;
+  z: number;
+  rot: number;
+}
+
+function lerpAngle(a: number, b: number, t: number): number {
+  const diff = ((b - a) % (Math.PI * 2) + Math.PI * 3) % (Math.PI * 2) - Math.PI;
+  return a + diff * t;
+}
+
 // ─── PreCompilePipelines ──────────────────────────────────────────────────────
 // Must be rendered INSIDE SceneContents, AFTER all other children.
 function PreCompilePipelines() {
@@ -167,6 +182,9 @@ interface ChaseCamProps {
 
 function ChaseCamera({ selfEntity }: ChaseCamProps) {
   const { camera } = useThree();
+  const historyRef = useRef<CameraSnapRecord[]>([]);
+  const lastEntityRef = useRef<ReefRaceEntity | null>(null);
+  const lastRotRef = useRef(0);
 
   useEffect(() => {
     // PerspectiveCamera setup.
@@ -178,12 +196,59 @@ function ChaseCamera({ selfEntity }: ChaseCamProps) {
   }, [camera]);
 
   useFrame((_, delta) => {
-    if (!selfEntity) return;
+    if (!selfEntity) {
+      historyRef.current.length = 0;
+      lastEntityRef.current = null;
+      return;
+    }
 
     const cam = camera as THREE.PerspectiveCamera;
 
+    if (selfEntity !== lastEntityRef.current) {
+      lastEntityRef.current = selfEntity;
+      const hasVelocity = selfEntity.vx !== 0 || selfEntity.vy !== 0;
+      const rot = (selfEntity.rot !== 0 || hasVelocity) ? selfEntity.rot : lastRotRef.current;
+      const history = historyRef.current;
+      history.push({
+        t: performance.now(),
+        x: selfEntity.x,
+        z: selfEntity.y,
+        rot,
+      });
+      if (history.length > CAMERA_INTERP_HISTORY_SIZE) {
+        history.splice(0, history.length - CAMERA_INTERP_HISTORY_SIZE);
+      }
+    }
+
+    let renderX = selfEntity.x;
+    let renderZ = selfEntity.y;
+    let heading = selfEntity.rot ?? lastRotRef.current;
+    const history = historyRef.current;
+    if (history.length === 1) {
+      renderX = history[0].x;
+      renderZ = history[0].z;
+      heading = history[0].rot;
+    } else if (history.length >= 2) {
+      const renderTime = performance.now() - CAMERA_INTERP_DELAY_MS;
+      let a = history[history.length - 2];
+      let b = history[history.length - 1];
+      for (let i = 1; i < history.length; i++) {
+        if (history[i].t >= renderTime) {
+          a = history[i - 1];
+          b = history[i];
+          break;
+        }
+      }
+      const span = b.t - a.t;
+      const rawT = span > 0 ? (renderTime - a.t) / span : 1;
+      const t = rawT < 0 ? 0 : rawT > 1 ? 1 : rawT;
+      renderX = a.x + (b.x - a.x) * t;
+      renderZ = a.z + (b.z - a.z) * t;
+      heading = lerpAngle(a.rot, b.rot, t);
+    }
+    lastRotRef.current = heading;
+
     // Direction player is heading (facing).
-    const heading = selfEntity.rot ?? 0;
     _playerWorldDir.set(Math.sin(heading), 0, Math.cos(heading));
 
     // Camera target position: behind + above player.
@@ -208,7 +273,7 @@ function ChaseCamera({ selfEntity }: ChaseCamProps) {
       CAMERA_OFFSET.y,
       -CAMERA_OFFSET.x * Math.sin(heading) + CAMERA_OFFSET.z * Math.cos(heading),
     );
-    _targetPos.set(selfEntity.x, 0, selfEntity.y).add(_rotatedOffset);
+    _targetPos.set(renderX, 0, renderZ).add(_rotatedOffset);
 
     // Lerp camera position.
     const lerpFactor = Math.min(1, CAMERA_LERP * delta);
@@ -216,7 +281,7 @@ function ChaseCamera({ selfEntity }: ChaseCamProps) {
     cam.position.copy(_camPos);
 
     // Look at kart + upward offset.
-    _lookAt.set(selfEntity.x, 0, selfEntity.y).add(CAMERA_LOOK_OFFSET);
+    _lookAt.set(renderX, 0, renderZ).add(CAMERA_LOOK_OFFSET);
     cam.lookAt(_lookAt);
   });
 
