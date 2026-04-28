@@ -424,7 +424,9 @@ function PowerUpBar({ selfPetId: _selfPetId }: { selfPetId: string | null }) {
       <div
         style={{
           display: 'flex',
-          gap: 14,
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 6,
           background: 'rgba(0, 0, 0, 0.55)',
           border: '1px solid #00e5ff33',
           borderRadius: 12,
@@ -432,9 +434,27 @@ function PowerUpBar({ selfPetId: _selfPetId }: { selfPetId: string | null }) {
           backdropFilter: 'blur(6px)',
         }}
       >
-        {slots.map((slot, i) => (
-          <PowerUpSlotCard key={i} slot={slot} useKey={useKeys[i]} slotIndex={i} />
-        ))}
+        <div style={{ display: 'flex', gap: 14 }}>
+          {slots.map((slot, i) => (
+            <PowerUpSlotCard key={i} slot={slot} useKey={useKeys[i]} slotIndex={i} />
+          ))}
+        </div>
+        {/* Controls hint strip — Mario-Kart-feel parity. Shift = drift, not Space. */}
+        <div
+          style={{
+            display: 'flex',
+            gap: 14,
+            fontSize: 9,
+            color: '#ffffff66',
+            letterSpacing: '0.14em',
+            fontWeight: 700,
+            paddingTop: 2,
+          }}
+        >
+          <span><b style={{ color: '#ffd24a' }}>SHIFT</b> · DRIFT</span>
+          <span style={{ color: '#ffffff22' }}>·</span>
+          <span><b style={{ color: '#ffffff99' }}>SPACE/Q</b> · USE ITEM</span>
+        </div>
       </div>
     </>
   );

@@ -644,12 +644,14 @@ describe('ReefRaceSim — drift state machine (Phase 1 T1–T10)', () => {
     expect(body.rot).toBeCloseTo(baseRot, 4);
   });
 
-  it('T10b — gentle right turn under drift never flips to a left heading', () => {
+  it('T10b — gentle right turn under drift never flips, never freezes straight', () => {
     captureBroadcasts();
     const { body } = bootDriftRoom({ vx: 200, vy: 0 });
     // dir.x = 0.18 → atan2(0.18, ~0.984) ≈ 10.4° (below 15° drift bias).
-    // Pre-fix: desiredRot = 10.4° - 15° = -4.6° (player would visibly turn LEFT).
-    // Post-fix: bias clamped to |baseRot| = 10.4°, desiredRot = 0° (straight ahead).
+    // Bug history at this gentle-input regime:
+    //   v1 (constant 15° subtract):  desiredRot = 10.4° - 15° = -4.6° → visible LEFT turn
+    //   v2 (clamp |baseRot|):        desiredRot = 0°               → kart freezes straight
+    //   v3 (clamp |baseRot| * 0.5):  desiredRot ≈ 5.2°             → still right, half turn
     const dir = { x: 0.18, y: 0.984 };
     const baseRot = Math.atan2(dir.x, dir.y);
     for (let i = 0; i < 12; i++) {
@@ -658,9 +660,11 @@ describe('ReefRaceSim — drift state machine (Phase 1 T1–T10)', () => {
       reefRaceSim.__tickOnceForTest('room-drift');
     }
     expect(body.drift.charging).toBe(true);
-    // Heading must NOT cross 0 into negative territory — the regression.
-    expect(body.rot).toBeGreaterThanOrEqual(0);
-    // And it must remain within the input direction (clamp at baseRot).
+    // Strictly positive — not flipped (regression v1) AND not frozen (regression v2).
+    expect(body.rot).toBeGreaterThan(0);
+    // At least 50% of input magnitude — preserves visible turn feedback.
+    expect(body.rot).toBeGreaterThanOrEqual(baseRot * 0.5 - 1e-4);
+    // And no more than the input — bias is outward, never tightens past input.
     expect(body.rot).toBeLessThanOrEqual(baseRot + 1e-4);
   });
 });
