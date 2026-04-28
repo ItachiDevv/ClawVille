@@ -46,11 +46,24 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
   // Per-input mutable state. Stored in refs to avoid React re-renders
   // and keep the keyboard handlers stable across the session.
   const dirRef = useRef({ x: 0, y: 0 });
-  const keysRef = useRef<{ w: boolean; a: boolean; s: boolean; d: boolean }>({
+  const keysRef = useRef<{
+    w: boolean;
+    a: boolean;
+    s: boolean;
+    d: boolean;
+    arrowUp: boolean;
+    arrowLeft: boolean;
+    arrowDown: boolean;
+    arrowRight: boolean;
+  }>({
     w: false,
     a: false,
     s: false,
     d: false,
+    arrowUp: false,
+    arrowLeft: false,
+    arrowDown: false,
+    arrowRight: false,
   });
   const actionBitsRef = useRef(0);
   /** Latched bits — fired ONCE on next send tick then cleared. */
@@ -151,12 +164,11 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
         // only a few degrees per tick — i.e., it acts like a steering rate, not
         // a hard 90° pivot. Held A while moving = continuous gentle left turn.
         //
-        // TURN_BIAS = tan(per-tick yaw angle). Server snaps body.rot to
-        // atan2(dir.x, dir.y) every input frame (30 Hz on client, 30 Hz on
-        // server) so 0.05 ≈ 2.86° per tick ≈ 86°/sec — Mario Kart-comparable
-        // steering rate. Anything above ~0.10 makes the kart pivot too fast
-        // and over-steer into walls (player feedback session 2026-04-26).
+        // TURN_BIAS = tan(per-tick yaw angle). Arrow steering is tracked
+        // separately so A+Left / D+Right can turn harder without making
+        // default WASD steering twitchy.
         const TURN_BIAS = 0.05;
+        const ARROW_TURN_BIAS = 0.07;
         const h = headingRef.current;
         const fwdX = Math.sin(h);
         const fwdY = Math.cos(h);
@@ -182,25 +194,29 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
         // D press → bias -right (= left) vec → kart visually turns RIGHT.
         const rightX = Math.cos(h);
         const rightY = -Math.sin(h);
-        const thrust = (k.w ? 1 : 0) - (k.s ? 1 : 0);
+        const thrust =
+          (k.w || k.arrowUp ? 1 : 0) - (k.s || k.arrowDown ? 1 : 0);
         // A = +1 (will bias along +right vec → screen-LEFT yaw)
         // D = -1 (biases along -right vec → screen-RIGHT yaw)
-        const turn = (k.a ? 1 : 0) - (k.d ? 1 : 0);
-        x = fwdX * thrust + rightX * turn * TURN_BIAS;
-        y = fwdY * thrust + rightY * turn * TURN_BIAS;
+        const keyTurn = (k.a ? 1 : 0) - (k.d ? 1 : 0);
+        const arrowTurn = (k.arrowLeft ? 1 : 0) - (k.arrowRight ? 1 : 0);
+        const turnBias =
+          keyTurn * TURN_BIAS + arrowTurn * ARROW_TURN_BIAS;
+        x = fwdX * thrust + rightX * turnBias;
+        y = fwdY * thrust + rightY * turnBias;
         // Edge case — only A or D held with no W/S: synthesize forward thrust
         // so the kart yaws (Mario Kart rule: can't steer in place, but the
         // input shouldn't feel dead).
-        if (thrust === 0 && turn !== 0) {
-          x = fwdX * 0.15 + rightX * turn * TURN_BIAS;
-          y = fwdY * 0.15 + rightY * turn * TURN_BIAS;
+        if (thrust === 0 && turnBias !== 0) {
+          x = fwdX * 0.15 + rightX * turnBias;
+          y = fwdY * 0.15 + rightY * turnBias;
         }
       } else {
         // ─── Bumper Shells / legacy: world-axis WASD ────────────────────
-        if (k.a) x -= 1;
-        if (k.d) x += 1;
-        if (k.w) y -= 1; // server convention: -y = forward / north
-        if (k.s) y += 1;
+        if (k.a || k.arrowLeft) x -= 1;
+        if (k.d || k.arrowRight) x += 1;
+        if (k.w || k.arrowUp) y -= 1; // server convention: -y = forward / north
+        if (k.s || k.arrowDown) y += 1;
       }
 
       // Normalize so diagonals aren't √2 faster (kart-relative path also
@@ -212,7 +228,16 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       }
       // Only OVERRIDE the joystick when keyboard is actively pressed —
       // a mobile user using both shouldn't have keys clobber thumb input.
-      if (k.w || k.a || k.s || k.d) {
+      if (
+        k.w ||
+        k.a ||
+        k.s ||
+        k.d ||
+        k.arrowUp ||
+        k.arrowLeft ||
+        k.arrowDown ||
+        k.arrowRight
+      ) {
         dirRef.current = { x, y };
       } else if (
         useGameStore.getState().joystickVelocity.x === 0 &&
@@ -238,26 +263,42 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       const code = e.code;
       switch (code) {
         case 'KeyW':
-        case 'ArrowUp':
           keysRef.current.w = true;
           recomputeDirFromKeys();
           e.preventDefault();
           break;
+        case 'ArrowUp':
+          keysRef.current.arrowUp = true;
+          recomputeDirFromKeys();
+          e.preventDefault();
+          break;
         case 'KeyA':
-        case 'ArrowLeft':
           keysRef.current.a = true;
           recomputeDirFromKeys();
           e.preventDefault();
           break;
+        case 'ArrowLeft':
+          keysRef.current.arrowLeft = true;
+          recomputeDirFromKeys();
+          e.preventDefault();
+          break;
         case 'KeyS':
-        case 'ArrowDown':
           keysRef.current.s = true;
           recomputeDirFromKeys();
           e.preventDefault();
           break;
+        case 'ArrowDown':
+          keysRef.current.arrowDown = true;
+          recomputeDirFromKeys();
+          e.preventDefault();
+          break;
         case 'KeyD':
-        case 'ArrowRight':
           keysRef.current.d = true;
+          recomputeDirFromKeys();
+          e.preventDefault();
+          break;
+        case 'ArrowRight':
+          keysRef.current.arrowRight = true;
           recomputeDirFromKeys();
           e.preventDefault();
           break;
@@ -285,23 +326,35 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       // gate mid-keypress can leave a phantom direction.
       switch (e.code) {
         case 'KeyW':
-        case 'ArrowUp':
           keysRef.current.w = false;
           recomputeDirFromKeys();
           break;
+        case 'ArrowUp':
+          keysRef.current.arrowUp = false;
+          recomputeDirFromKeys();
+          break;
         case 'KeyA':
-        case 'ArrowLeft':
           keysRef.current.a = false;
           recomputeDirFromKeys();
           break;
+        case 'ArrowLeft':
+          keysRef.current.arrowLeft = false;
+          recomputeDirFromKeys();
+          break;
         case 'KeyS':
-        case 'ArrowDown':
           keysRef.current.s = false;
           recomputeDirFromKeys();
           break;
+        case 'ArrowDown':
+          keysRef.current.arrowDown = false;
+          recomputeDirFromKeys();
+          break;
         case 'KeyD':
-        case 'ArrowRight':
           keysRef.current.d = false;
+          recomputeDirFromKeys();
+          break;
+        case 'ArrowRight':
+          keysRef.current.arrowRight = false;
           recomputeDirFromKeys();
           break;
         case 'Space':
@@ -355,7 +408,16 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
         onCustomAction as EventListener,
       );
       // Reset key state on teardown to prevent leak across remounts.
-      keysRef.current = { w: false, a: false, s: false, d: false };
+      keysRef.current = {
+        w: false,
+        a: false,
+        s: false,
+        d: false,
+        arrowUp: false,
+        arrowLeft: false,
+        arrowDown: false,
+        arrowRight: false,
+      };
       actionBitsRef.current = 0;
       oneShotBitsRef.current = 0;
       dirRef.current = { x: 0, y: 0 };
