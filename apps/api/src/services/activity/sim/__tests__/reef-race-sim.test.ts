@@ -2192,16 +2192,20 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     body.vx = 0;
     body.vy = 0;
     setIntent(body, { dir: { x: 0, y: 1 }, thrust: 1 });
-    const flagsBefore = state.flagCounter.countFor('p1');
     reefRaceSim.__tickOnceForTest('room-p3');
-    const flagsAfter = state.flagCounter.countFor('p1');
-    expect(flagsAfter).toBeGreaterThan(flagsBefore);
-    // And the body's velocity must have been clamped down toward the
-    // validator's allowance, not the poisoned 333 wu/s target.
+    // The body's velocity must have been clamped down toward the validator's
+    // allowance, not the poisoned 333 wu/s target. This is the load-bearing
+    // assertion — clamp is what actually protects the sim from a cheat path.
     const speedAfterClamp = Math.hypot(body.vx, body.vy);
     expect(speedAfterClamp).toBeLessThanOrEqual(
       REEF_MAX_ACCEL * (1 / REEF_SIM_HZ) * REEF_KINEMATIC_TOLERANCE + 0.01,
     );
+    // NOTE: pre-2026-04-28 this test also asserted that flagCounter bumped
+    // by 1. After the bumper-bug fallout — honest players got DQ'd by
+    // checkpoint_skip cascades when the bumper flung them off-track — physics
+    // flags (overaccel/overspeed/checkpoint_skip/underminlap) no longer
+    // increment the 5-flag forfeit counter. The clamp above is the entire
+    // anti-cheat for these kinds; the flag is logged for observability only.
   });
 
   // P3-T15c — NEGATIVE wiring proof. A normal level-50 agility tick under
