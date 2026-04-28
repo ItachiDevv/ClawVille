@@ -2494,6 +2494,12 @@ class ReefRaceSim {
         body.forfeited = true;
         body.dnf = true;
         body.alive = false;
+        // Visibility: anti-cheat forfeits were silent before, leaving honest
+        // players staring at a frozen kart with no feedback. Log every time
+        // so we can audit how often the validator false-positives in prod.
+        console.warn(
+          `[reef-race anti-cheat] integrity-forfeit room=${state.roomId} avatar=${avatarId} kind=${kind} detail=${detail ?? '-'} flagCount=${state.flagCounter.countFor(avatarId)}`,
+        );
         this.broadcastFn(state.roomId, {
           type: 'event.player_left',
           avatarId,
