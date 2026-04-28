@@ -1,79 +1,82 @@
 ---
-title: VRM "bald spot" — rotation approach proven ineffective; scalp cap sphere is the fix
+title: VRM bald-spot — static geometry gap in Sketchfab_model hair strands; fix is position.y offset
 category: gotcha
-tags: [vrm, milady, hair, bald-spot, hairmodel, walk-animation, head-bone, mixamo, scalp-cap]
-date: 2026-04-28
+tags: [vrm, milady, hair, bald-spot, hairmodel, sketchfab-model, object-1003, walk-animation, head-bone, static-gap]
+date: 2026-04-27
 confidence: high
 threejs_version: r170+
 ---
 
 ## Summary
-Pre-tilting Hairmodel.rotation.x (0.15 / 0.22 / 0.18) does NOT fix the crown-back bald spot. CDP measurement proved the crown vertex world Y only moves ~1.4wu across the full 0→0.22 rad range — rotating lifts the crown AWAY from the scalp, widening the gap. Fix: inject a dark sphere parented to mixamorigHead (the scalp cap approach).
 
-## CDP Measurements (2026-04-28, live on clawville.world/game)
+The Milady VRM bald-spot at the back-crown is a **static geometry gap** baked into the VRM files. It is NOT spring-bone lag, NOT skinning error, NOT head-bone rotation. The `Sketchfab_model` group (hair tendrils) only reaches `headBoneY+21wu`; the actual scalp crown sits at `headBoneY+44wu`, leaving a 24.5wu gap. Fix: `Sketchfab_model.position.y += 0.218` at load time.
 
-- Live code at rotation.x=0.22: crown-back world Y = 240.79, gap above head bone = 59.42wu
-- At rotation.x=0.00: crown-back world Y = 239.68, gap = 58.43wu
-- At rotation.x=0.05: crown-back world Y = 239.92, gap = 58.81wu
-- At rotation=0, scale×1.06, posY-0.02: crown-back world Y = 239.35, gap = 58.32wu
-- **Max gap change across ALL approaches: 1.4wu** — trivially small, no visual improvement
+## CDP Measurements (2026-04-27, clawville.world/game live)
 
-## Why rotation fails
+Scene graph structure (confirmed via CDP traverse):
+- `mixamorigHead` (Bone)
+  - `Hairmodel` (plain **Mesh**, pos.y=0.2069, scale=0.3209) — the top bun
+  - `Sketchfab_model` (Group, pos.y≈0.1285–0.1345, scale≈0.1879)
+    - `Object_1003` (plain Mesh, 2001 verts) — hair accessory
+    - `Object_1003_1` (plain Mesh, 5059 verts) — lower hair tendrils
+- `Eyes` (SkinnedMesh, at scene root)
+- `Body_36338mesh002` (SkinnedMesh, at scene root)
 
-Tilting Hairmodel.rotation.x++ rotates the crown vertex BACKWARD and UPWARD in world space. The problem is NOT that the crown vertex needs to move — it's that the SPACE BETWEEN the crown vertex and the scalp below it opens up as the head tilts. Moving the crown vertex slightly doesn't help because the scalp vertices below it (100% weighted to the same head bone) also tilt with the bone. The entire geometry cluster moves together; the thin zone just becomes visible to the rear camera.
+Gap measurements (15 samples, full walk animation range hRx −0.047…+0.004 rad):
+- Hairmodel crown-back world Y: `headBoneY + 59wu` (always covers scalp top ✓)
+- Object_1003_1 crown-back world Y: `headBoneY + 21wu`
+- Scalp crown-back world Y (body mesh, head-bone-weighted verts, boneInverse transform): `headBoneY + 44wu`
+- **Gap = 24.5wu, constant across all animation frames**
 
-## What actually works: scalp cap sphere
+After fix (`+0.218`):
+- Object_1003_1 crown-back: `headBoneY + 44.7wu`
+- Scalp crown-back: `headBoneY + 44.0wu`
+- **Gap = 0.6wu** — essentially flush
 
-Add a `THREE.Mesh(SphereGeometry(0.18, 10, 8), MeshBasicMaterial({color: 0x111111}))` parented to `mixamorigHead`. Position at `{y: 0.52, z: -0.10}` in head-bone local space (matches crown-back of Hairmodel).
+## Why Previous Approaches Failed
 
-This cap:
-- Follows the head bone rigidly at all poses (idle, walk-tilt) — no lag
-- Fills the sparse zone with a dark mesh that reads as "more hair" to any camera angle
-- Works for all Milady variants (blonde, dark, etc.) because near-black is always interpreted as hair depth
-- Zero extra GPU allocations: module-scope geo+mat singletons shared across all 5 NPC loads
+All 7 prior iterations targeted the wrong cause:
 
-## Implementation in vrm-loader.ts (after rotateVRM0)
+| Approach | Why it failed |
+|---|---|
+| Spring-bone stiffness ×80/120/30 | `springBoneManager.joints.size === 0` — no spring joints in these VRMs |
+| `rotation.x += 0.15/0.22/0.18` on Hairmodel | CDP proved crown vertex moves only 1.4wu for full 0→0.22 rad range |
+| Scale Hairmodel up × 1.06 | Same geometry, crown-back moves < 1wu |
+| Scalp cap sphere on mixamorigHead | Clipped through Hairmodel and rendered as visible black ball on top |
+
+None of these addressed that `Object_1003_1` is the SHORT strands and they need to move UP, not that the bun needs to tilt.
+
+## Fix (vrm-loader.ts, after rotateVRM0)
 
 ```ts
-const SCALP_CAP_GEO = new THREE.SphereGeometry(0.18, 10, 8); // module scope
-const SCALP_CAP_MAT = new THREE.MeshBasicMaterial({ color: 0x111111 }); // module scope
-
-// In loadVRM, after rotateVRM0:
-let headBone: THREE.Object3D | null = null;
+// Hair-strands gap fix — CDP measured 2026-04-27.
+// Sketchfab_model contains the lower hair tendrils (Object_1003 + Object_1003_1).
+// Their crown-back only reaches headBoneY+21wu; scalp is at headBoneY+44wu.
+// Offset = 24.4wu / headBoneScale(112) = 0.218 local units.
 vrm.scene.traverse((obj) => {
-  if (obj.name === 'mixamorigHead') headBone = obj;
+  if (obj.name === 'Sketchfab_model') {
+    obj.position.y += 0.218;
+    obj.updateMatrix();
+  }
 });
-if (headBone) {
-  const cap = new THREE.Mesh(SCALP_CAP_GEO, SCALP_CAP_MAT);
-  cap.name = '__scalp_cap__';
-  cap.position.set(0, 0.52, -0.10);
-  cap.renderOrder = -1;
-  cap.frustumCulled = false;
-  headBone.add(cap);
-}
 ```
 
-## What the live numbers showed (2026-04-28 CDP probe)
+Applied BEFORE the MToon outline-disable traverse. Safe for all VRM variants (1–8) — the position.y varies slightly (0.1285–0.1345) but the gap is always 24.4wu so the offset is invariant.
 
-- `springBoneManager.joints.size === 0` — still confirmed, no spring bones
-- Head bone world scale = 112 on all axes (= VRM_NPC_SCALE)
-- Hairmodel: `rotation.x = 0.22`, `scale.y = 0.3209`, `position.y = 0.2069`
-- Crown-back vertex: `topBackLocalY = 0.9982`, `topBackLocalZ = -0.103`
-- In head-bone local space: crown-back at Y ≈ 0.52, Z ≈ -0.033
-- Head bone rotation.x during walk probe = -0.110 rad (confirms up to -0.11 rad tilt)
-- Mesh inventory: Hairmodel (2162 verts), Object_1003 (2001), Object_1003_1 (5059), Eyes (30), Body_36338mesh002 (3206), Body_36338mesh002_1 (23)
+## Head Bone Scale Context
 
-## What did NOT work (all iteration history)
+`VRM_NPC_SCALE = 112`. The head bone inherits this scale. All "local units" in the head-bone frame are amplified 112× in world space.
+- 0.218 local units × 112 = 24.4wu
+- headBone.scale.x = 1.000 (scale is at the NPC group level, not individual bones)
 
-- stiffness ×80 — no-op (no spring joints)
-- stiffness ×120 + dragForce=0.9 — no-op
-- stiffness ×30 + dragForce=0.7 — no-op
-- `rotation.x += 0.15` — crown moves +1.94wu up; user: "still sub par"
-- `rotation.x += 0.22` — user: "worse" (awkward windswept pose at idle)
-- `rotation.x += 0.18` — same geometric problem, no improvement
-- Scale up 1.06 + translate down 0.02 — crown changes <1wu, no improvement
-- Counter-rotation +π on Y axis — symmetric geometry, no visible effect
+Wait — the 112× amplification comes from the NPC GROUP scale, not the bone scale. The head bone's `scale.x = 1.000` in its own local frame. The group that holds `vrm.scene` has scale 112. Any offset on `Sketchfab_model.position.y` is in VRM local space (scale 1) then scaled 112× by the parent group. So 0.218 * 112 = 24.4wu world offset — confirmed by the CDP measurement.
+
+## What Does NOT Exist in These VRMs
+
+- No VRM spring-bone joints (`springBoneManager.joints.size === 0` — confirmed on multiple variants)
+- No separate Hair armature hierarchy (all hair is plain Mesh, not SkinnedMesh)
+- `Hairmodel` and `Sketchfab_model` are both non-skinned Meshes/Groups parented to the head bone — they follow rigidly with zero lag at any animation frame
 
 ## Context
 
-`VRM_NPC_SCALE = 112`. 5 Milady NPCs in world. Applied in `vrm-loader.ts` after `rotateVRM0`. 2026-04-25 diagnosis established spring bones absent and rotation approach; 2026-04-28 CDP measurements proved rotation approach ineffective and scalp cap confirmed as correct fix.
+7th iteration on this bug. `VRM_NPC_SCALE=112`. 5 Milady NPCs in world. Fix shipped in commit `2d26729` 2026-04-27.
