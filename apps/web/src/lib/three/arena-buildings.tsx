@@ -33,6 +33,7 @@ function zoneCenter(zone: BuildingZone): [number, number, number] {
 
 import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
 import { anchorInFrontOfCamera } from '@/lib/three/utils/camera-cull';
+import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 
 // Shared raycaster -- only hits layer 1 (terrain)
 const _buildRaycaster = new THREE.Raycaster();
@@ -304,6 +305,7 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
 
   const { cloned, buildingScale, pivotOffsetX, pivotOffsetY, pivotOffsetZ } = useMemo(() => {
     const c = scene.clone(true);
+    makeObject3DWebGPUSafe(c);
     // Strip named decorative meshes (Flowers, Path, etc.) before measuring so
     // flat non-structural planes don't inflate the XZ bbox and trigger the
     // MAX_FOOTPRINT cap (pineapple-house.glb: removes Flowers+Path → height 800).
@@ -422,6 +424,7 @@ function EditableBuilding({
 
   const { cloned, buildingScale, pivotOffsetX, pivotOffsetY, pivotOffsetZ } = useMemo(() => {
     const c = scene.clone(true);
+    makeObject3DWebGPUSafe(c);
     stripDecorativeMeshes(c);
     stripGroundPlanes(c);
     const { scale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz } = computeBuildingScale(c);

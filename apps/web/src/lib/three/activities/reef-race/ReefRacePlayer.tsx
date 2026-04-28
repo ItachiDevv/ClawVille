@@ -74,6 +74,7 @@ import type {
   SeaCreatureAnimState,
 } from '@/lib/three/sea-creature-types';
 import { applyTransformSwim, resetTransformSwimState } from '@/lib/three/sea-creature-swim';
+import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 
 // ─── Preloads — fire at module scope ─────────────────────────────────────────
 useGLTF.preload('/models/sea_horse.glb');
@@ -254,6 +255,7 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
 
   const clonedScene = useMemo(() => {
     const c = skeletonClone(srcScene);
+    makeObject3DWebGPUSafe(c);
     // CRITICAL: frustumCulled=false traverse immediately after SkeletonUtils.clone.
     // SkinnedMesh bind-pose bounding spheres don't encompass animated poses.
     c.traverse((o) => {

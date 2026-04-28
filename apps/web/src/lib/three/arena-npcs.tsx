@@ -18,6 +18,7 @@ import {
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 import { useGameStore } from '@/stores/game';
 import { PLAYER_NPC_ID } from '@/stores/npc';
+import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { jumpState } from '@/lib/three/jump-state';
 import { useVRMInstance, disposeVRMInstance, preloadVRMBytes } from '@/lib/three/vrm-loader';
 import { VRMCharacterAnimator, preloadMixamoClips } from '@/lib/three/vrm-character-animator';
@@ -500,6 +501,7 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // 2026-04-26 after PR #65 reverted the import + call.
     // Safe for plain-Mesh models too — SkeletonUtils falls through to clone.
     const c = SkeletonUtils.clone(scene);
+    makeObject3DWebGPUSafe(c);
     const tint = new THREE.Color(npc.color);
     applyColorTint(c, tint, 0.7, 0.25);
 
