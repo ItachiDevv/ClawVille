@@ -372,6 +372,36 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       }
     }
 
+    /**
+     * Clear all key + held-action state. Called on window blur and
+     * `visibilitychange→hidden` because browsers stop firing `keyup` once
+     * focus leaves the window — a key held when the user alt-tabs / clicks
+     * DevTools / Cmd+Tab to another app stays `true` forever, then later
+     * releases produce a stranded "no input" → server zeroes thrust →
+     * kart freezes mid-track. Same pattern as `npc-controller.tsx` and
+     * `player-avatar.tsx`. One-shot bits intentionally untouched.
+     */
+    function resetHeldInput() {
+      keysRef.current.w = false;
+      keysRef.current.a = false;
+      keysRef.current.s = false;
+      keysRef.current.d = false;
+      keysRef.current.arrowUp = false;
+      keysRef.current.arrowLeft = false;
+      keysRef.current.arrowDown = false;
+      keysRef.current.arrowRight = false;
+      // Held bits only — boost / drift. One-shot use-powerup is consumed on
+      // send and harmless to leave alone here.
+      actionBitsRef.current &= ~(ACTION_BIT_BOOST | ACTION_BIT_DRIFT);
+      targetDirRef.current = { x: 0, y: 0 };
+    }
+    function onBlur() {
+      resetHeldInput();
+    }
+    function onVisibility() {
+      if (document.hidden) resetHeldInput();
+    }
+
     /** Power-up alt: left-click anywhere on the viewport → use. */
     function onPointerDown(e: MouseEvent) {
       if (!enabledRef.current) return;
@@ -401,6 +431,8 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('pointerdown', onPointerDown);
     window.addEventListener('clawville:activity-action', onCustomAction as EventListener);
+    window.addEventListener('blur', onBlur);
+    document.addEventListener('visibilitychange', onVisibility);
 
     return () => {
       window.removeEventListener('keydown', onKeyDown);
@@ -410,6 +442,8 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
         'clawville:activity-action',
         onCustomAction as EventListener,
       );
+      window.removeEventListener('blur', onBlur);
+      document.removeEventListener('visibilitychange', onVisibility);
       // Reset key state on teardown to prevent leak across remounts.
       keysRef.current = {
         w: false,
