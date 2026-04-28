@@ -10,6 +10,7 @@ import {
   mix, smoothstep,
 } from 'three/tsl';
 import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tilemap-data';
+import { makeGeometryWebGPUSafe, makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 
 // ---------------------------------------------------------------------------
 // Terrain: Bikini Bottom GLB + sand floor + coral/kelp decorations
@@ -539,7 +540,7 @@ function MergedDecorationsInner() {
         // Compose with the mesh's GLB-internal world matrix
         const combinedMatrix = _decoMatrix.clone().multiply(mesh.matrixWorld);
 
-        const geo = mesh.geometry.clone();
+        const geo = makeGeometryWebGPUSafe(mesh.geometry.clone());
         geo.applyMatrix4(combinedMatrix);
         tempGeos.push(geo);
 
@@ -619,7 +620,11 @@ function UnderwaterDecorations() {
 function UnderwaterDecorationsGlb() {
   const { scene } = useGLTF('/models/underwater-decorations.glb');
   // Clone once so we own the scene (avoid mutating the cached original)
-  const cloned = useMemo(() => scene.clone(true), [scene]);
+  const cloned = useMemo(() => {
+    const c = scene.clone(true);
+    makeObject3DWebGPUSafe(c);
+    return c;
+  }, [scene]);
 
   useEffect(() => () => disposeClone(cloned), [cloned]);
 
@@ -642,8 +647,16 @@ function UnderwaterDecorationsGlb() {
 function FixedLandmarks() {
   const { scene: shipwreckScene } = useGLTF('/models/building-shipwreck.glb');
   const { scene: submarineScene } = useGLTF('/models/building-submarine.glb');
-  const shipwreckClone = useMemo(() => shipwreckScene.clone(true), [shipwreckScene]);
-  const submarineClone = useMemo(() => submarineScene.clone(true), [submarineScene]);
+  const shipwreckClone = useMemo(() => {
+    const c = shipwreckScene.clone(true);
+    makeObject3DWebGPUSafe(c);
+    return c;
+  }, [shipwreckScene]);
+  const submarineClone = useMemo(() => {
+    const c = submarineScene.clone(true);
+    makeObject3DWebGPUSafe(c);
+    return c;
+  }, [submarineScene]);
 
   useEffect(() => {
     return () => {

@@ -18,6 +18,7 @@ import {
 } from '@/lib/three/character-positions';
 import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
 import { applyStationaryIdleAnimation, idToSeed } from '@/lib/three/procedural-animation';
+import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { applyColorTint } from '@/lib/three/character-animations';
 
 // ---------------------------------------------------------------------------
@@ -411,6 +412,7 @@ const NpcMesh = memo(function NpcMesh({
     // Pearl Krabs invisible in the Downtown building was the symptom that
     // surfaced this. Safe for non-skinned scenes (falls back to standard clone).
     const c = SkeletonUtils.clone(scene);
+    makeObject3DWebGPUSafe(c);
     // SkinnedMesh bounding spheres come from bind pose (T-pose); animated geometry
     // extends past them, causing the character to disappear when camera is close/angled.
     // Must be applied at every clone site — not just arena-npcs.tsx.

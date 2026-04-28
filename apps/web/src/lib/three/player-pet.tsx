@@ -25,6 +25,7 @@ import {
 import { jumpState, isEditable } from '@/lib/three/jump-state';
 import { useVRMInstance, disposeVRMInstance, preloadVRMBytes } from '@/lib/three/vrm-loader';
 import { VRMCharacterAnimator, preloadMixamoClips } from '@/lib/three/vrm-character-animator';
+import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 
 // ---------------------------------------------------------------------------
 // GLB-based player pet — lobster.glb model = 1-2 draw calls
@@ -459,6 +460,7 @@ function PlayerPetGLBInner() {
 
   const { cloned, lobsterAnimator, charAnimator, pivotOffsetY } = useMemo(() => {
     const c = scene.clone(true);
+    makeObject3DWebGPUSafe(c);
     // SkinnedMesh bounding spheres come from bind pose (T-pose); animated geometry
     // extends past them, causing the player pet to disappear when camera is close/angled.
     // Must be applied at every clone site — not just arena-npcs.tsx.

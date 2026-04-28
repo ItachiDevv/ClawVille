@@ -46,6 +46,7 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
   // Per-input mutable state. Stored in refs to avoid React re-renders
   // and keep the keyboard handlers stable across the session.
   const dirRef = useRef({ x: 0, y: 0 });
+  const targetDirRef = useRef({ x: 0, y: 0 });
   const keysRef = useRef<{
     w: boolean;
     a: boolean;
@@ -90,6 +91,8 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
   // ripple through every caller; the path check is one-line.
   const pathname = usePathname() ?? '';
   const isReefRace = pathname.includes('/activity/reef-race/');
+  const isReefRaceRef = useRef(isReefRace);
+  isReefRaceRef.current = isReefRace;
 
   // Kart-relative-controls state. Only read in Reef Race mode.
   // headingRef mirrors the server-authoritative entity.rot of the self pet so
@@ -134,7 +137,7 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       ) {
         // joystickVelocity uses world-down as +y. We feed the input frame
         // an unaltered vector — server-side sim normalizes its own axes.
-        dirRef.current = { x: s.joystickVelocity.x, y: s.joystickVelocity.y };
+        targetDirRef.current = { x: s.joystickVelocity.x, y: s.joystickVelocity.y };
       }
     });
     return unsub;
@@ -238,12 +241,12 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
         k.arrowDown ||
         k.arrowRight
       ) {
-        dirRef.current = { x, y };
+        targetDirRef.current = { x, y };
       } else if (
         useGameStore.getState().joystickVelocity.x === 0 &&
         useGameStore.getState().joystickVelocity.y === 0
       ) {
-        dirRef.current = { x: 0, y: 0 };
+        targetDirRef.current = { x: 0, y: 0 };
       }
     }
 
@@ -421,6 +424,7 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       actionBitsRef.current = 0;
       oneShotBitsRef.current = 0;
       dirRef.current = { x: 0, y: 0 };
+      targetDirRef.current = { x: 0, y: 0 };
     };
   }, []);
 
@@ -432,14 +436,32 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       const now = Date.now();
       const dt = lastSendAtRef.current ? (now - lastSendAtRef.current) / 1000 : 0;
       lastSendAtRef.current = now;
+      const frameDt = dt > 0 && dt < 0.2 ? dt : SEND_INTERVAL_MS / 1000;
 
       // Combine sticky bits (boost held) with one-shot bits (Q/click).
       const bits = actionBitsRef.current | oneShotBitsRef.current;
       oneShotBitsRef.current = 0;
 
+      const targetDir = targetDirRef.current;
+      const targetMag = Math.hypot(targetDir.x, targetDir.y);
+      if (isReefRaceRef.current) {
+        const current = dirRef.current;
+        const responsePerSec = targetMag > 0.001 ? 11 : 18;
+        const alpha = 1 - Math.exp(-responsePerSec * frameDt);
+        const nextX = current.x + (targetDir.x - current.x) * alpha;
+        const nextY = current.y + (targetDir.y - current.y) * alpha;
+        const nextMag = Math.hypot(nextX, nextY);
+        dirRef.current =
+          targetMag <= 0.001 && nextMag < 0.015
+            ? { x: 0, y: 0 }
+            : { x: nextX, y: nextY };
+      } else {
+        dirRef.current = targetDir;
+      }
+
       const dir = dirRef.current;
       const dirMag = Math.hypot(dir.x, dir.y);
-      const moving = dirMag > 0;
+      const moving = dirMag > 0.015;
 
       seqRef.current = (seqRef.current + 1) >>> 0;
 
