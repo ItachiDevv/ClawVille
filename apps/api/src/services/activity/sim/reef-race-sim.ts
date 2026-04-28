@@ -2477,7 +2477,22 @@ class ReefRaceSim {
     kind: ActivityAntiCheatFlagPayload['kind'],
     detail?: string,
   ): void {
-    const reachedThreshold = state.flagCounter.bump(avatarId);
+    // Physics-displacement kinds are server-clamped already (validator clamps
+    // velocity to safe values before tagging). Auto-forfeit on these is
+    // redundant AND harmful — honest players who get flung off-track by a
+    // bumper bug start crossing checkpoints out of order, accumulate skips,
+    // and silently DQ. We still LOG these so prod stays auditable, but they
+    // don't count toward the 5-flag forfeit ceiling. Reserve forfeit for
+    // genuinely-malicious kinds (powerup_unowned = client claimed an item
+    // they don't have, input_bounds/input_rate = malformed payload).
+    const PHYSICS_KINDS = new Set<typeof kind>([
+      'overaccel',
+      'overspeed',
+      'checkpoint_skip',
+      'underminlap',
+    ]);
+    const isPhysics = PHYSICS_KINDS.has(kind);
+    const reachedThreshold = isPhysics ? false : state.flagCounter.bump(avatarId);
     void logEvent({
       eventType: ACTIVITY_EVENT_TYPES.ANTI_CHEAT_FLAG,
       avatarId,
@@ -2488,6 +2503,12 @@ class ReefRaceSim {
         detail: detail ? { detail } : undefined,
       } satisfies ActivityAntiCheatFlagPayload,
     });
+    if (isPhysics) {
+      // Lightweight visibility — quietly note the false-positive trigger.
+      console.warn(
+        `[reef-race anti-cheat] physics-flag (NOT counted toward forfeit) room=${state.roomId} avatar=${avatarId} kind=${kind} detail=${detail ?? '-'}`,
+      );
+    }
     if (reachedThreshold) {
       const body = state.bodies.get(avatarId);
       if (body) {
