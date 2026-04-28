@@ -231,13 +231,10 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
   // Load VRM (suspends until resolved)
   const vrm = useVRM(reg.path);
 
-  // VRM scene is a single live scene — we apply scale via the group, not the scene directly
-  // Note: We do NOT deep-clone VRMs the same way we clone GLBs.
-  // VRMUtils does not provide a deepCloneVRM in v3.5.2; instead each useVRM
-  // call returns the same cached VRM instance. For player-pet this is fine
-  // since only one player pet renders at a time. If multiple VRM instances of
-  // the same model were needed, a full re-load with a unique path suffix would
-  // be required. For now: one cached VRM per path, one player.
+  // VRM scene is applied via group scale, not scene scale directly.
+  // useVRM returns a per-consumer VRM (path + useId cache key, 2026-04-27),
+  // so player-pet and any wandering NPC sharing the same path each have
+  // their own scene/skeleton — no <primitive> reparenting wars.
 
   // VRM animator — created once per VRM instance
   const vrmAnimatorRef = useRef<VRMCharacterAnimator | null>(null);
