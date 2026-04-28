@@ -208,6 +208,8 @@ const REEF_OFF_TRACK_RESET_SCALE =
   1 +
   (REEF_TRACK_HALF_WIDTH * OFF_TRACK_PERP_DISTANCE_MULT) /
     Math.min(REEF_TRACK_A, REEF_TRACK_B);
+const REEF_TURN_RATE_RAD_PER_SEC = 5.8;
+const REEF_DRIFT_TURN_RATE_RAD_PER_SEC = 7.2;
 
 function ellipseScaleAt(x: number, y: number): number {
   return Math.hypot(x / REEF_TRACK_A, y / REEF_TRACK_B);
@@ -224,6 +226,17 @@ function outerEllipseNormalAt(x: number, y: number): Vec2 {
 function ellipseTangentAtPoint(x: number, y: number): Vec2 {
   const n = outerEllipseNormalAt(x, y);
   return { x: -n.y, y: n.x };
+}
+
+function normalizeAngle(rad: number): number {
+  let out = rad;
+  while (out <= -Math.PI) out += Math.PI * 2;
+  while (out > Math.PI) out -= Math.PI * 2;
+  return out;
+}
+
+function shortestAngleDelta(from: number, to: number): number {
+  return normalizeAngle(to - from);
 }
 
 // ─── Body / sim state ───────────────────────────────────────────────────────
@@ -1286,18 +1299,24 @@ class ReefRaceSim {
 
     const baseTopSpeed = REEF_MAX_SPEED * speedMod;
 
-    // 6. Update body.rot. Drift bias is applied INSIDE the atan2 assignment,
-    //    not as a per-tick accumulator (audit C1 fix). turnSign mirrors the
-    //    intuition that turning right = body leans right (visual yaw < target),
-    //    so we SUBTRACT the bias from the target rot.
+    // 6. Update body.rot. Drift bias is applied to the desired heading, then
+    //    the body rotates toward it at a bounded yaw rate. Snapping directly
+    //    to atan2(intent) made network snapshots look like step-by-step turns.
     if (intent.dir && (intent.dir.x !== 0 || intent.dir.y !== 0)) {
       const baseRot = Math.atan2(intent.dir.x, intent.dir.y);
+      let desiredRot = baseRot;
       if (body.drift.charging) {
         const turnSign = intent.dir.x > 0 ? -1 : 1;
-        body.rot = baseRot + turnSign * DRIFT_ANGULAR_BIAS_RAD;
-      } else {
-        body.rot = baseRot;
+        desiredRot = baseRot + turnSign * DRIFT_ANGULAR_BIAS_RAD;
       }
+      const turnRate = body.drift.charging
+        ? REEF_DRIFT_TURN_RATE_RAD_PER_SEC
+        : REEF_TURN_RATE_RAD_PER_SEC;
+      const maxTurn = turnRate * dt;
+      const delta = shortestAngleDelta(body.rot, desiredRot);
+      body.rot = normalizeAngle(
+        body.rot + Math.max(-maxTurn, Math.min(maxTurn, delta)),
+      );
     }
 
     // 7. Tick the drift state machine AFTER step 6 — see §2.3 commentary
@@ -1434,7 +1453,6 @@ class ReefRaceSim {
     const turning    = Math.abs(body.intent.dir?.x ?? 0) >= DRIFT_MIN_STEER;
     const fastEnough = speed >= DRIFT_MIN_SPEED_FOR_CHARGE;
 
-    const justPressed  = driftBit && !body.drift.lastDriftBit;
     const justReleased = !driftBit && body.drift.lastDriftBit;
 
     if (body.drift.charging) {
@@ -1472,7 +1490,9 @@ class ReefRaceSim {
         body.drift.sparkLevel =
           elapsed >= t3 ? 3 : elapsed >= t2 ? 2 : elapsed >= t1 ? 1 : 0;
       }
-    } else if (justPressed && turning && fastEnough) {
+    } else if (driftBit && turning && fastEnough) {
+      // Start when all conditions become true, not only on the exact Shift
+      // edge. Real players often hold Shift just before turning into a bend.
       body.drift.charging        = true;
       body.drift.sparkLevel      = 0;
       body.drift.chargeStartTick = state.tick;
@@ -1788,16 +1808,33 @@ class ReefRaceSim {
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const dist = Math.hypot(dx, dy);
-        const minDist = REEF_BODY_RADIUS * 2;
+        // Softer than the visual radius: hard 2x-radius separation made bots
+        // and players shove each other into rails, then the wall clamp fought
+        // that push every tick. This keeps contact readable without pinning.
+        const minDist = REEF_BODY_RADIUS * 1.6;
         if (dist === 0 || dist >= minDist) continue;
         // Light separation push only — no knockback in a race.
         const overlap = minDist - dist;
         const nx = dx / dist;
         const ny = dy / dist;
-        a.x -= nx * overlap * 0.5;
-        a.y -= ny * overlap * 0.5;
-        b.x += nx * overlap * 0.5;
-        b.y += ny * overlap * 0.5;
+        const push = overlap * 0.42;
+        a.x -= nx * push;
+        a.y -= ny * push;
+        b.x += nx * push;
+        b.y += ny * push;
+
+        // Remove only closing velocity along the contact normal. Without this
+        // the next tick immediately recreates the overlap and racers look stuck.
+        const relVx = b.vx - a.vx;
+        const relVy = b.vy - a.vy;
+        const closing = relVx * nx + relVy * ny;
+        if (closing < 0) {
+          const remove = closing * 0.35;
+          a.vx += nx * remove;
+          a.vy += ny * remove;
+          b.vx -= nx * remove;
+          b.vy -= ny * remove;
+        }
       }
     }
   }

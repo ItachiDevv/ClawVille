@@ -357,12 +357,12 @@ export type ReefBoostKind =
   | 'hazard-slow';      // Phase 2 — negative (-0.40)
 
 // Drift spark tier thresholds (in sim ticks).
-//   Tier 0→1: 0.4s = 12 ticks   → achievable in any medium corner
-//   Tier 1→2: 0.9s = 27 ticks   → needs a sustained turn entry
-//   Tier 2→3: 1.5s = 45 ticks   → requires a full hairpin (~1/3 of B-arc)
-export const DRIFT_SPARK_TICK_1 = 12;
-export const DRIFT_SPARK_TICK_2 = 27;
-export const DRIFT_SPARK_TICK_3 = 45;
+//   Tier 0->1: ~0.27s = 8 ticks   -> readable in ordinary corner entries
+//   Tier 1->2: ~0.67s = 20 ticks  -> sustained turn
+//   Tier 2->3: ~1.13s = 34 ticks  -> committed hairpin
+export const DRIFT_SPARK_TICK_1 = 8;
+export const DRIFT_SPARK_TICK_2 = 20;
+export const DRIFT_SPARK_TICK_3 = 34;
 export const DRIFT_SPARK_TIERS: readonly [number, number, number] = [
   DRIFT_SPARK_TICK_1,
   DRIFT_SPARK_TICK_2,
@@ -373,7 +373,7 @@ export const DRIFT_SPARK_TIERS: readonly [number, number, number] = [
  * Drift boost duration after release. Time-extended speedMod, NOT a velocity
  * impulse (audit S4 fix — eliminates double-counting against the speed cap).
  */
-export const DRIFT_BOOST_DURATION_MS = 1_200;
+export const DRIFT_BOOST_DURATION_MS = 1_600;
 
 /**
  * Additive speed multipliers per spark level (index 0 = spark 1).
@@ -394,14 +394,14 @@ export const DRIFT_BOOST_MULTS: readonly [number, number, number] = [0.12, 0.24,
 export const DRIFT_ANGULAR_BIAS_RAD = (15 * Math.PI) / 180;
 
 /** Minimum forward speed (wu/s) required to start OR maintain a drift charge. */
-export const DRIFT_MIN_SPEED_FOR_CHARGE = REEF_MAX_SPEED * 0.30; // 150 wu/s
+export const DRIFT_MIN_SPEED_FOR_CHARGE = REEF_MAX_SPEED * 0.20; // 100 wu/s
 
 /**
  * |dir.x| threshold — body must be cornering to initiate drift.
- * 0.25 ≈ 14.5° off straight. Single canonical name (the v1-draft
+ * 0.12 ≈ 6.8° off straight. Single canonical name (the v1-draft
  * `DRIFT_MIN_ANGULAR_RATE` is intentionally NOT exported — one knob only).
  */
-export const DRIFT_MIN_STEER = 0.25;
+export const DRIFT_MIN_STEER = 0.12;
 
 // Launch boost window (sub-window timings, ms).
 export const LAUNCH_WINDOW_MS         = 150;   // half-window: ±150ms of green = boost
