@@ -1,19 +1,28 @@
 /**
  * vrm-loader.ts
  *
- * Suspense-compatible VRM loader that wraps GLTFLoader + VRMLoaderPlugin.
+ * Suspense-compatible per-instance VRM loader.
+ *
+ * Architecture (Codex Critical #1, redesigned 2026-04-28):
+ *   - VRM_BYTES — one ArrayBuffer fetch per path, shared across all instances.
+ *     Network round-trip happens once per VRM file per session.
+ *   - VRM_INSTANCES — one fully-disjoint VRM per (path, instanceId). Each
+ *     mounted avatar gets its own scene, skeleton, humanoid, expressionManager,
+ *     and springBoneManager. NO sharing of mutable state across consumers.
+ *
+ * Per-consumer cost: one parse (~30-80ms on Iris Xe). Per-path cost: one fetch.
+ *
+ * Why fully disjoint per instance:
+ *   - vrm.scene is the live Object3D tree mounted under <primitive>. Sharing it
+ *     causes R3F to reparent the same object between groups every frame.
+ *   - vrm.humanoid/lookAt/expressionManager/springBoneManager hold direct refs
+ *     to bones in vrm.scene. Cloning only the scene leaves these managers
+ *     pointing at the wrong bones (the template's, not the consumer's clone).
+ *   - The only correct fix is per-instance parse.
  *
  * Usage:
- *   const vrm = useVRM('/avatars/milady-official-1.vrm');
- *
- * Features:
- *   - Module-level Promise cache — each path loads exactly once per session
- *   - Registers VRMLoaderPlugin exactly once per GLTFLoader instance
- *   - Calls VRMUtils.removeUnnecessaryVertices + combineSkeletons after load
- *   - Calls VRMUtils.rotateVRM0 to normalise VRM 0.x facing to -Z (matches VRM 1.0)
- *   - Throws the Promise while loading (Suspense protocol)
- *   - Does NOT call useGLTF — VRM requires the plugin registration step that
- *     useGLTF's internal loader doesn't know about
+ *   const vrm = useVRMInstance('/avatars/milady-official-1.vrm', npc.id);
+ *   useEffect(() => () => disposeVRMInstance(path, npc.id), [path, npc.id]);
  *
  * GPU constraints: no InstancedMesh, no ShaderMaterial, no drei Text/Billboard.
  */
@@ -28,71 +37,43 @@ import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 import { MToonMaterialLoaderPlugin } from '@pixiv/three-vrm-materials-mtoon';
 import type { VRM } from '@pixiv/three-vrm';
 
-// MToon plugin registration (2026-04-23):
+// MToon plugin registration:
 //   Explicitly register MToonMaterialLoaderPlugin so VRMLoaderPlugin produces
 //   MToonMaterial instances (the WebGL ShaderMaterial variant) for all VRM
-//   meshes. Without this line, CDP-probe confirmed that Milady VRMs were
-//   loading with default MeshStandardMaterial + no diffuse maps, rendering
-//   as black silhouettes (see
-//   .claude/memory/threejs/gotchas/mixamo-retarget-rest-pose-transform.md
-//   for the T-pose investigation that surfaced this).
-//
-//   We intentionally import from '@pixiv/three-vrm-materials-mtoon' (main
-//   package) rather than '@pixiv/three-vrm/nodes'. The /nodes subpath re-
-//   exports MToonNodeMaterial which references THREE_WEBGPU.tslFn — a symbol
-//   removed from three in r168+ (renamed to Fn). At runtime MToon's FnCompat
-//   shim picks the Fn branch, but Turbopack's strict static-export analysis
-//   rejects the reference to tslFn and fails the build. The non-nodes path
-//   has no such reference.
-//
-//   The MToon WebGL ShaderMaterial path runs under both WebGLRenderer and
-//   WebGPURenderer's WebGL2 backend (via TSL transpilation in three/webgpu).
-//   World3DCanvas attempts WebGPURenderer first and falls back to WebGL if
-//   init fails — either path renders MToon correctly with this plugin
-//   registered.
+//   meshes. Without this line, Milady VRMs render with default
+//   MeshStandardMaterial + no diffuse maps — black silhouettes. We import from
+//   '@pixiv/three-vrm-materials-mtoon' (NOT '@pixiv/three-vrm/nodes') because
+//   the /nodes path references THREE_WEBGPU.tslFn which Turbopack rejects.
 
 // ---------------------------------------------------------------------------
-// Module-level VRM cache
-// Holds either the resolved VRM or the in-flight Promise so the hook can
-// implement the Suspense throw-the-promise protocol without re-entrancy bugs.
+// Caches
 // ---------------------------------------------------------------------------
 
-type CacheEntry =
+type InstanceEntry =
   | { status: 'pending';  promise: Promise<VRM> }
   | { status: 'resolved'; vrm:     VRM }
   | { status: 'rejected'; error:   unknown };
 
 /**
- * @invariant VRM_CACHE — one VRM instance per path, shared across all consumers.
- *
- * VRM_CACHE stores exactly ONE `VRM` object per path string. Every call to
- * `useVRM(path)` or `preloadVRM(path)` returns — or eventually resolves to —
- * that same object. This means `vrm.scene` is a **shared Object3D**; any
- * mutation made by one consumer (e.g. nulling `vrm.lookAt`) is immediately
- * visible to all others.
- *
- * Enforced constraints for all consumers:
- *   1. Never render two R3F components with the same VRM path — they would
- *      share `vrm.scene` and R3F's `<primitive>` would reparent it between
- *      groups each frame, clobbering both components' transforms.
- *   2. Mutations on the shared VRM instance (e.g. setting `vrm.lookAt = null`
- *      in VRMNpcMesh) affect every consumer using that path. Today player-avatar.tsx
- *      (PlayerPetVRMInner) does NOT use `lookAt` or `expressionManager`, so the
- *      wanderer null-assignments in arena-npcs.tsx are safe for current paths
- *      (official_2/3/4/7/8). If `lookAt` is ever added to player-avatar, those paths
- *      must be kept disjoint from any VRMNpcMesh path — or the null-assignment must
- *      be guarded by a per-consumer clone.
- *   3. Dispose of the VRM scene via VRMUtils.deepDispose at the correct lifetime
- *      boundary (the outermost component that owns the VRM). Do NOT dispose from
- *      an inner per-instance animator — the cache still holds a reference.
- *
- * Player-selectable paths:  official_1 … official_8 (agent-model-registry.ts)
- * Wandering NPC paths:       official_2, official_3, official_4, official_7, official_8
- * Overlap (constraint #2):   official_2/3/4/7/8 — player-avatar and wanderers share these.
+ * Bytes cache, keyed by path. One fetch per file per session.
+ * Stores the in-flight Promise so concurrent first-mount calls dedup the
+ * fetch instead of launching N parallel HTTP requests for the same VRM.
  */
-const VRM_CACHE = new Map<string, CacheEntry>();
+const VRM_BYTES = new Map<string, Promise<ArrayBuffer>>();
+
+/**
+ * Instance cache, keyed by `${path}#${instanceId}`. One unique VRM per
+ * (path, instanceId) pair. Each entry holds either an in-flight parse Promise
+ * (for Suspense), a resolved VRM, or a parse error.
+ *
+ * Disposal is the consumer's responsibility: call `disposeVRMInstance(path, id)`
+ * in useEffect cleanup. Dropped instances leak both GPU memory (geometry,
+ * textures) and CPU memory (skeleton/scene graph) until disposed.
+ */
+const VRM_INSTANCES = new Map<string, InstanceEntry>();
 
 // Single shared GLTFLoader instance — VRMLoaderPlugin registered once.
+// Reused across all parses; the parser hooks into per-parse state internally.
 let _loader: GLTFLoader | null = null;
 
 function getLoader(): GLTFLoader {
@@ -101,14 +82,7 @@ function getLoader(): GLTFLoader {
   // VRM files may ship with EXT_meshopt_compression buffers (the asset
   // pipeline runs gltfpack -cc for skinned meshes). Without this line
   // GLTFLoader throws "setMeshoptDecoder must be called before loading
-  // compressed files" at loadBufferView, which blocks the whole /game
-  // route and shows Next's "This page couldn't load" error page.
-  // three-stdlib's MeshoptDecoder is a callable that returns the decoder
-  // object; GLTFLoader accepts either, but three-stdlib's signature is
-  // `() => API` so we invoke it.
-  // meshoptimizer's MeshoptDecoder is the decoder object itself (NOT a
-  // callable — three-stdlib's is `() => API`, which is what caused the
-  // PR #47 tsc break). Pass the object directly.
+  // compressed files" at loadBufferView, blocking the whole /game route.
   _loader.setMeshoptDecoder(MeshoptDecoder);
   _loader.register((parser) => new VRMLoaderPlugin(parser, {
     mtoonMaterialPlugin: new MToonMaterialLoaderPlugin(parser),
@@ -116,179 +90,209 @@ function getLoader(): GLTFLoader {
   return _loader;
 }
 
-/**
- * Initiate (or return) a VRM load for the given path.
- * Always returns immediately — the returned Promise resolves to the VRM.
- */
-function loadVRM(path: string): Promise<VRM> {
-  const existing = VRM_CACHE.get(path);
-  if (existing) {
-    if (existing.status === 'resolved') return Promise.resolve(existing.vrm);
-    if (existing.status === 'rejected') return Promise.reject(existing.error);
-    return existing.promise;
-  }
+// ---------------------------------------------------------------------------
+// Bytes fetch — one HTTP fetch per path
+// ---------------------------------------------------------------------------
 
-  const loader = getLoader();
-
-  const promise = loader
-    .loadAsync(path)
-    .then((gltf) => {
-      const vrm: VRM | undefined = gltf.userData.vrm;
-      if (!vrm) throw new Error(`[vrm-loader] No VRM data in ${path}`);
-
-      // Do NOT call VRMUtils.combineSkeletons here — it merges SkinnedMesh
-      // skeletons into a single consolidated skeleton but leaves the original
-      // raw humanoid bones orphaned (parent === null). The Mixamo retargeter
-      // animates `humanoid.getNormalizedBoneNode(...)` which `vrm.update()`
-      // then copies to the raw humanoid bones — but those raw bones are no
-      // longer in the SkinnedMesh's active skeleton, so the character renders
-      // in T-pose even though the bones behind the scenes ARE moving.
-      //
-      // Confirmed via live CDP probe 2026-04-23: Normalized_mixamorigHips AND
-      // mixamorigHips quaternions changed over 500ms, but mixamorigHips.parent
-      // was null — orphaned by combineSkeletons. Removing this call restores
-      // the animation-skeleton binding so Mixamo idle/walk drives the visible
-      // mesh. We keep removeUnnecessaryVertices (it only culls unused verts,
-      // no skeleton-graph mutation).
-      VRMUtils.removeUnnecessaryVertices(vrm.scene);
-
-      // Joint pruning intentionally DROPPED 2026-04-25.
-      // VRMUtils.removeUnnecessaryJoints is deprecated by pixiv. Their
-      // "use combineSkeletons instead" recommendation is misleading — those
-      // are different operations (combineSkeletons merges meshes and orphans
-      // raw humanoid bones, see comment above). The deprecated joint-prune
-      // function still works but emits a console.warn on every load.
-      // The perf benefit it provided (~20-40% bone reduction → ~0.1ms/frame
-      // across 5 VRMs) is small enough that a clean console is the better
-      // tradeoff. If joint pruning becomes a real perf problem later, port
-      // pixiv's pre-deprecation function locally instead of calling theirs.
-
-      // Normalise facing: VRM 0.x faces +Z at rest; rotateVRM0 adds π on scene
-      // so it faces -Z, matching VRM 1.0 convention.
-      VRMUtils.rotateVRM0(vrm);
-
-      // Do not runtime re-parent Milady hair nodes here.
-      //
-      // A 2026-04-28 attempt moved Hairmodel / Sketchfab_model / Hatmodel
-      // under a discovered head bone with Object3D.attach(). In live testing
-      // that made every Milady's hair follow the walk motion with a large
-      // offset from the skull. The original bald-spot bug is less severe than
-      // that regression, so runtime bone attachment must stay out of the shared
-      // loader unless it is first verified against all 8 VRMs in a browser
-      // scene. The durable fix is to author/export those hair meshes with
-      // proper head-bone skin weights in the VRM assets.
-
-      // MToon outline pass — disable to halve VRM draw calls (B1 2026-04-24).
-      // MToon renders each mesh twice: once for the fill, once for an outset
-      // silhouette (the "outline pass"). For ClawVille's wandering Milady VRMs
-      // the ink-line aesthetic is not a core requirement; cel-shading look is
-      // preserved by the fill pass alone. outlineWidthMode='none' per MToon
-      // spec — no outline geometry is emitted. Reversible: set to
-      // 'worldCoordinates' or 'screenCoordinates' to restore outlines.
-      // Applied once per VRM at load time; safe for both renderers.
-      //
-      // NOTE: three-vrm 3.5.x uses STRING literals, not numeric enums.
-      // Earlier `= 0` assignment silently did nothing at runtime.
-      vrm.scene.traverse((obj) => {
-        const mat = (obj as THREE.Mesh).material as any;
-        if (!mat) return;
-        const mats: any[] = Array.isArray(mat) ? mat : [mat];
-        for (const m of mats) {
-          if (m?.isMToonMaterial) m.outlineWidthMode = 'none';
-        }
-      });
-
-      // Disable frustum culling on every node in the VRM scene.
-      // VRM models use SkinnedMesh nodes whose bounding spheres are computed
-      // from the bind pose (T-pose). When the avatar is animated the posed geometry
-      // extends outside the bind-pose bounding sphere, causing Three.js frustum
-      // culling to incorrectly hide the mesh when the camera is close or looking
-      // down from above. Setting frustumCulled=false on every node prevents this
-      // "disappears at close range" regression for all VRM NPCs and the player avatar.
-      vrm.scene.traverse((obj) => {
-        obj.frustumCulled = false;
-      });
-
-      // ── Spring-bone physics scale compensation ───────────────────────────
-      // NOTE (2026-04-25 CDP probe): these Milady VRMs have springBoneManager.
-      // joints.size === 0 — no spring-bone joints are registered. The for-of
-      // loop is a no-op. Retained for safety in case a future VRM loads WITH
-      // spring bones (e.g. a VRM 1.0 with proper secondary animation).
-      //
-      // If spring bones are ever present at VRM_NPC_SCALE=112, the two
-      // scaling problems below apply:
-      //   1. Stiffness overwhelmed → multiply HAIR_STIFFNESS_SCALE
-      //   2. Translation lag from inertia term → SET dragForce high for hair
-      if (vrm.springBoneManager) {
-        const HAIR_STIFFNESS_SCALE  = 30;
-        const OTHER_STIFFNESS_SCALE = 20;
-        const HAIR_DRAG_FORCE       = 0.7;
-        for (const joint of vrm.springBoneManager.joints) {
-          const boneName = joint.bone?.name ?? '';
-          const isHair   = /hair/i.test(boneName);
-          joint.settings.stiffness *= isHair ? HAIR_STIFFNESS_SCALE : OTHER_STIFFNESS_SCALE;
-          if (isHair) {
-            joint.settings.dragForce = HAIR_DRAG_FORCE;
-          }
-        }
-      }
-      // ── End spring-bone scale compensation ────────────────────────────────
-
-      VRM_CACHE.set(path, { status: 'resolved', vrm });
-      return vrm;
-    })
-    .catch((err) => {
-      VRM_CACHE.set(path, { status: 'rejected', error: err });
+function fetchBytes(path: string): Promise<ArrayBuffer> {
+  let p = VRM_BYTES.get(path);
+  if (!p) {
+    p = fetch(path).then((r) => {
+      if (!r.ok) throw new Error(`[vrm-loader] fetch ${path} failed: ${r.status}`);
+      return r.arrayBuffer();
+    }).catch((err) => {
+      // On error, evict so a future call can retry instead of replaying the rejection.
+      VRM_BYTES.delete(path);
       throw err;
     });
-
-  VRM_CACHE.set(path, { status: 'pending', promise });
-  return promise;
+    VRM_BYTES.set(path, p);
+  }
+  return p;
 }
 
+// ---------------------------------------------------------------------------
+// Per-instance VRM normalisation
+// ---------------------------------------------------------------------------
+
+function normaliseVRM(vrm: VRM): void {
+  // Do NOT call VRMUtils.combineSkeletons — it merges SkinnedMesh skeletons
+  // and leaves the raw humanoid bones orphaned (parent === null). The Mixamo
+  // retargeter animates `humanoid.getNormalizedBoneNode(...)` whose updates
+  // are then copied to the raw humanoid bones — but those raw bones would no
+  // longer be in the SkinnedMesh's active skeleton, producing a frozen T-pose.
+  // removeUnnecessaryVertices is safe (only culls unused verts).
+  VRMUtils.removeUnnecessaryVertices(vrm.scene);
+
+  // VRM 0.x faces +Z at rest; rotateVRM0 adds π on the scene root so it
+  // matches VRM 1.0's -Z convention.
+  VRMUtils.rotateVRM0(vrm);
+
+  // MToon outline pass — disable to halve VRM draw calls (each MToon mesh
+  // would otherwise render twice: fill + offset silhouette). For ClawVille's
+  // wandering Milady VRMs the ink-line aesthetic isn't a core requirement;
+  // the cel-shaded look is preserved by the fill pass alone. three-vrm 3.5.x
+  // uses STRING literals for outlineWidthMode, not numeric enums.
+  vrm.scene.traverse((obj) => {
+    const mat = (obj as THREE.Mesh).material as unknown;
+    if (!mat) return;
+    const mats = (Array.isArray(mat) ? mat : [mat]) as Array<{ isMToonMaterial?: boolean; outlineWidthMode?: string }>;
+    for (const m of mats) {
+      if (m?.isMToonMaterial) m.outlineWidthMode = 'none';
+    }
+  });
+
+  // Disable frustum culling on every node. VRM SkinnedMesh nodes have
+  // bounding spheres computed from the bind pose (T-pose); animated geometry
+  // extends outside that sphere, causing Three.js to incorrectly cull the
+  // mesh at close range or steep camera angles.
+  vrm.scene.traverse((obj) => {
+    obj.frustumCulled = false;
+  });
+
+  // Spring-bone scale compensation. NOTE (CDP probe 2026-04-25): Milady VRMs
+  // have springBoneManager.joints.size === 0 — the loop below is a no-op.
+  // Retained for safety in case a future VRM ships with proper VRM 1.0
+  // secondary animation (hair / cloth physics). If spring bones ARE present
+  // at VRM_NPC_SCALE=112, they need stiffness multipliers + drag force on
+  // hair joints to compensate for the scaling factor.
+  if (vrm.springBoneManager) {
+    const HAIR_STIFFNESS_SCALE  = 30;
+    const OTHER_STIFFNESS_SCALE = 20;
+    const HAIR_DRAG_FORCE       = 0.7;
+    for (const joint of vrm.springBoneManager.joints) {
+      const boneName = joint.bone?.name ?? '';
+      const isHair   = /hair/i.test(boneName);
+      joint.settings.stiffness *= isHair ? HAIR_STIFFNESS_SCALE : OTHER_STIFFNESS_SCALE;
+      if (isHair) joint.settings.dragForce = HAIR_DRAG_FORCE;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Per-instance parse
+// ---------------------------------------------------------------------------
+
+async function loadInstance(cacheKey: string, path: string): Promise<VRM> {
+  const buffer = await fetchBytes(path);
+  // .slice(0) gives the parser its own copy of the bytes. GLTFLoader doesn't
+  // mutate the input, but the defensive copy guards against any future change
+  // in three's parser semantics that could corrupt subsequent parses.
+  const ownBuffer = buffer.slice(0);
+  const gltf = await getLoader().parseAsync(ownBuffer, '');
+  const vrm: VRM | undefined = (gltf as unknown as { userData: { vrm?: VRM } }).userData.vrm;
+  if (!vrm) throw new Error(`[vrm-loader] No VRM data in ${path}`);
+  normaliseVRM(vrm);
+  VRM_INSTANCES.set(cacheKey, { status: 'resolved', vrm });
+  return vrm;
+}
+
+// ---------------------------------------------------------------------------
+// Public API — Suspense-compatible per-instance hook
+// ---------------------------------------------------------------------------
+
 /**
- * Suspense-compatible hook.
- * Must be called inside a React component (or hook) wrapped in <Suspense>.
- * Throws the Promise while loading, returns the VRM when resolved,
- * re-throws errors when rejected.
+ * Fetch + parse a fresh VRM instance for (path, instanceId).
+ * Throws a Promise while loading (Suspense protocol). Returns the resolved
+ * VRM on success. Re-throws errors on parse failure.
+ *
+ * Two calls with the same instanceId return the same cached VRM. Two calls
+ * with different instanceIds return DIFFERENT VRMs even for the same path —
+ * that's the whole point.
+ *
+ * Consumer responsibility: pass a stable instanceId per component instance
+ * (e.g. `npc.id`, `'player-avatar'`, `'picker'`), and dispose on unmount via
+ * `disposeVRMInstance(path, instanceId)`.
  */
-export function useVRM(path: string): VRM {
-  // Kick off the load if not already started
-  const entry = VRM_CACHE.get(path);
+export function useVRMInstance(path: string, instanceId: string): VRM {
+  const cacheKey = `${path}#${instanceId}`;
+  const entry = VRM_INSTANCES.get(cacheKey);
 
   if (!entry) {
-    // First call — initiate load and throw the Promise
-    const p = loadVRM(path);
-    throw p;
+    const promise = loadInstance(cacheKey, path).catch((err) => {
+      VRM_INSTANCES.set(cacheKey, { status: 'rejected', error: err });
+      throw err;
+    });
+    VRM_INSTANCES.set(cacheKey, { status: 'pending', promise });
+    throw promise;
   }
 
-  if (entry.status === 'pending') {
-    throw entry.promise;
-  }
-
-  if (entry.status === 'rejected') {
-    throw entry.error;
-  }
-
+  if (entry.status === 'pending')  throw entry.promise;
+  if (entry.status === 'rejected') throw entry.error;
   return entry.vrm;
 }
 
 /**
- * Preload a VRM without triggering Suspense.
- * Call from useEffect or module scope to warm the cache ahead of rendering.
+ * Imperative loader for non-React contexts (tests, scripts).
+ * Same per-instance semantics as useVRMInstance — the React hook is a thin
+ * Suspense wrapper around this.
  */
-export function preloadVRM(path: string): void {
-  if (!VRM_CACHE.has(path)) {
-    loadVRM(path).catch(() => {
-      // Errors will be surfaced when useVRM is actually called; swallow here.
-    });
+export function loadVRMInstance(instanceId: string, path: string): Promise<VRM> {
+  const cacheKey = `${path}#${instanceId}`;
+  const entry = VRM_INSTANCES.get(cacheKey);
+  if (entry) {
+    if (entry.status === 'resolved') return Promise.resolve(entry.vrm);
+    if (entry.status === 'rejected') return Promise.reject(entry.error);
+    return entry.promise;
   }
+  const promise = loadInstance(cacheKey, path).catch((err) => {
+    VRM_INSTANCES.set(cacheKey, { status: 'rejected', error: err });
+    throw err;
+  });
+  VRM_INSTANCES.set(cacheKey, { status: 'pending', promise });
+  return promise;
 }
 
 /**
- * Expose cache for testing/debug.
- * Do not use in production rendering paths.
+ * Dispose a specific VRM instance. Call from useEffect cleanup on unmount.
+ *
+ * Disposes the VRM's scene meshes/materials/geometries via VRMUtils.deepDispose,
+ * then evicts the cache entry. Cached BYTES are kept — the next instance for
+ * the same path can parse without re-fetching.
+ *
+ * Safe to call with an unknown (path, instanceId) — silently no-ops if the
+ * instance was never created or already disposed.
  */
-export function getVRMCacheEntry(path: string): CacheEntry | undefined {
-  return VRM_CACHE.get(path);
+export function disposeVRMInstance(path: string, instanceId: string): void {
+  const cacheKey = `${path}#${instanceId}`;
+  const entry = VRM_INSTANCES.get(cacheKey);
+  if (!entry) return;
+  if (entry.status === 'resolved') {
+    try {
+      VRMUtils.deepDispose(entry.vrm.scene);
+    } catch {
+      // deepDispose can throw on partially-loaded scenes; swallow so the
+      // cache entry is always evicted (preventing leaks even on dispose error).
+    }
+  }
+  VRM_INSTANCES.delete(cacheKey);
+}
+
+/**
+ * Warm the byte cache for a path so the first useVRMInstance call doesn't
+ * pay the network round-trip. No parse — just fetch into VRM_BYTES.
+ */
+export function preloadVRMBytes(path: string): void {
+  fetchBytes(path).catch(() => {
+    // Errors will surface when useVRMInstance actually tries to parse.
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Test/debug introspection
+// ---------------------------------------------------------------------------
+
+/** Test helper: count active instances. Internal, not for production code. */
+export function _vrmInstanceCount(): number {
+  return VRM_INSTANCES.size;
+}
+
+/** Test helper: clear all caches. Internal, not for production code. */
+export function _vrmClearAllCaches(): void {
+  for (const [, entry] of VRM_INSTANCES) {
+    if (entry.status === 'resolved') {
+      try { VRMUtils.deepDispose(entry.vrm.scene); } catch { /* ignore */ }
+    }
+  }
+  VRM_INSTANCES.clear();
+  VRM_BYTES.clear();
 }

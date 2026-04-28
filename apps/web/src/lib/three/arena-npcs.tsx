@@ -19,7 +19,7 @@ import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 import { useGameStore } from '@/stores/game';
 import { PLAYER_NPC_ID } from '@/stores/npc';
 import { jumpState } from '@/lib/three/jump-state';
-import { useVRM, preloadVRM } from '@/lib/three/vrm-loader';
+import { useVRMInstance, disposeVRMInstance, preloadVRMBytes } from '@/lib/three/vrm-loader';
 import { VRMCharacterAnimator, preloadMixamoClips } from '@/lib/three/vrm-character-animator';
 import { MODEL_REGISTRY } from '@/lib/three/agent-model-registry';
 import { anchorInFrontOfCamera } from '@/lib/three/utils/camera-cull';
@@ -370,11 +370,11 @@ const VRM_NPC_CULL_DIST_SQ      = NPC_CULL_DIST_SQ;
 // animator.init() by a full network round-trip and leaving Vivi/Maple/Ash in T-pose
 // until after their Suspense resolved AND the clip loads completed. Now all 5 are
 // preloaded at module scope so they are hot when the Suspense boundaries resolve.
-preloadVRM('/avatars/milady-official-2.vrm');
-preloadVRM('/avatars/milady-official-3.vrm');
-preloadVRM('/avatars/milady-official-4.vrm');
-preloadVRM('/avatars/milady-official-7.vrm');
-preloadVRM('/avatars/milady-official-8.vrm');
+preloadVRMBytes('/avatars/milady-official-2.vrm');
+preloadVRMBytes('/avatars/milady-official-3.vrm');
+preloadVRMBytes('/avatars/milady-official-4.vrm');
+preloadVRMBytes('/avatars/milady-official-7.vrm');
+preloadVRMBytes('/avatars/milady-official-8.vrm');
 preloadMixamoClips();
 
 // Module-scope scratch for getWorldPosition in behind-camera cull checks.
@@ -908,8 +908,14 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
   const regEntry = MODEL_REGISTRY[npc.species as keyof typeof MODEL_REGISTRY];
   const vrmPath = regEntry?.path ?? `/avatars/${npc.species.replace('milady_official_', 'milady-official-')}.vrm`;
 
-  // Load VRM — suspends until resolved (parent Suspense absorbs the throw)
-  const vrm = useVRM(vrmPath);
+  // Load a fresh VRM instance for this NPC — each NPC gets its own scene,
+  // skeleton, humanoid, no sharing with player-avatar or other NPCs (Codex Critical #1).
+  const vrm = useVRMInstance(vrmPath, npc.id);
+
+  // Dispose this instance when the NPC unmounts or path/id changes.
+  useEffect(() => {
+    return () => disposeVRMInstance(vrmPath, npc.id);
+  }, [vrmPath, npc.id]);
 
   // Per-instance VRM animator — each NPC gets its own AnimationMixer
   const vrmAnimatorRef = useRef<VRMCharacterAnimator | null>(null);
