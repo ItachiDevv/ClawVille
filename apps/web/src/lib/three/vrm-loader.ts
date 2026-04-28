@@ -52,6 +52,27 @@ import type { VRM } from '@pixiv/three-vrm';
 //   registered.
 
 // ---------------------------------------------------------------------------
+// Scalp cap geometry + material — module-scope singletons.
+//
+// Shared across all Milady VRM loads (5 NPCs + player-pet). Never disposed
+// because they live for the entire browser session and are purely read-only
+// after construction. Each VRM gets a distinct Mesh instance (via new THREE.Mesh)
+// but all share these same geo+mat objects — zero extra GPU allocations per
+// additional NPC.
+//
+// SphereGeometry(0.18, 10, 8):
+//   radius = 0.18 VRM-local units → ~20wu world at VRM_NPC_SCALE=112
+//   widthSegments=10, heightSegments=8 → 80 triangles; enough curvature to
+//   avoid faceting, low cost on Iris Xe
+//
+// MeshBasicMaterial: no lighting cost (important for Iris Xe GPU budget);
+//   color #111111 reads as dark hair for all Milady variants; side=FrontSide
+//   (back faces invisible, safe since cap is always behind hair geometry)
+// ---------------------------------------------------------------------------
+const SCALP_CAP_GEO = new THREE.SphereGeometry(0.18, 10, 8);
+const SCALP_CAP_MAT = new THREE.MeshBasicMaterial({ color: 0x111111 });
+
+// ---------------------------------------------------------------------------
 // Module-level VRM cache
 // Holds either the resolved VRM or the in-flight Promise so the hook can
 // implement the Suspense throw-the-promise protocol without re-entrancy bugs.
@@ -167,60 +188,52 @@ function loadVRM(path: string): Promise<VRM> {
       // so it faces -Z, matching VRM 1.0 convention.
       VRMUtils.rotateVRM0(vrm);
 
-      // Hair accessory backward-tilt fix (2026-04-25 CDP diagnosis).
+      // Scalp cap fix for Milady VRM crown-back bald spot (2026-04-25 → revised 2026-04-25).
       //
-      // These Milady VRMs have static non-skinned Hairmodel meshes parented to
-      // mixamorigHead (raw Mixamo head bone). The Hairmodel geometry is symmetric
-      // in Z (vertexZRange ≈ [-0.76, +0.76]) and the scalp (Body SkinnedMesh)
-      // top vertices are 100% weighted to the same head bone — so there is no
-      // positional separation between scalp and hair.
+      // Root cause (CDP-verified): The Mixamo walk animation forward-tilts the head
+      // bone up to -0.11 rad. The Hairmodel has sparse crown-back geometry (469 verts
+      // at Y>0.3 AND Z<-0.1 in Hairmodel local space). When the head tilts forward,
+      // the sparse crown-back is presented to a rear-above camera.
       //
-      // Root cause: The Mixamo walk animation forward-tilts the head bone up to
-      // ~0.10 rad (5.8°) via the hip/spine chain. When the head tilts forward,
-      // the crown-back of the scalp tilts toward the camera. The Hairmodel tilts
-      // with it, but its coverage at the crown-back is geometrically thin (222
-      // verts at Z<-0.2 AND Y>0.5 vs 989 back verts total). The thin crown
-      // becomes visible to a rear-above camera during the forward tilt phase.
+      // Pre-tilt approach (rotation.x += 0.15 / 0.22 / 0.18) was proven ineffective:
+      // CDP measurement showed the crown vertex world Y changes only ~1.4wu across
+      // the full 0 → 0.22 rad range, because tilting rotates the crown vertex AWAY
+      // from the scalp underneath it (lifts it, creating MORE gap in the underlying
+      // skin region). Three iterations confirmed no improvement.
       //
-      // Fix: apply a static backward counter-rotation (rotation.x += +0.15 rad)
-      // to the Hairmodel. This tilts the hair toward the back of the head by
-      // 8.6°. At idle (no head tilt), the hair leans slightly backward, which
-      // improves back-crown coverage aesthetically. At the max forward walk tilt
-      // (0.10 rad), the net effective tilt is only 0.10 - 0.15 = -0.05 rad —
-      // hair still drapes backward, no front gap created. The 0.15 rad value
-      // is 1.5× the measured max head tilt, giving margin against variation.
+      // Fix: inject a dark "scalp cap" sphere parented to mixamorigHead, covering
+      // the crown-back. At any head tilt the cap follows the head bone exactly
+      // (rigid parent), filling the gap with a dark mesh that reads as "more hair"
+      // regardless of camera angle or walk phase.
       //
-      // Rotation is around the mesh's own X axis (in head-bone local space):
-      // positive X = tip forward, negative X = tip backward.
-      // We add +0.15 to rotation.x which, in head-bone local space with Y-up
-      // Z-forward convention, tilts the hair BACKWARD (toward -Z = body back).
-      vrm.scene.traverse((obj) => {
-        if (!(obj as THREE.Mesh).isMesh) return;
-        if ((obj as any).isSkinnedMesh) return;
-        const parent = obj.parent;
-        if (!parent) return;
-        const name = obj.name ?? '';
-        if (name === 'Hairmodel') {
-          // Tilt hair crown upward/backward to increase coverage of the crown-back
-          // area exposed during walk animation.
-          //
-          // Measurement (2026-04-25 CDP live test): rotation.x += 0.15 on the
-          // Hairmodel moves the crown vertex +1.94wu (UP) and -2.02wu in world Z
-          // (toward the rear-camera direction). This increases crown-back visibility
-          // and compensates for the Mixamo walk animation's max forward head tilt
-          // of -0.10 rad (measured headBone.rotation.x range).
-          //
-          // The head bone tilts forward up to 0.10 rad during walk.
-          // Iteration log:
-          //   0.15 → user: "still sub par"  (+0.05 net at walk peak — too little)
-          //   0.22 → user: "worse"           (overshoot, awkward windswept pose)
-          //   0.18 → current — upper edge of 3da's measured 0.10-0.18 goldilocks
-          //          band. Leaves +0.08 net at walk peak (3.5× the 0.15 attempt's
-          //          coverage delta) without crossing into "leaning back too far"
-          //          territory at idle.
-          obj.rotation.x += 0.18;
+      // Cap parameters (head-bone local space, scale 1.0 before VRM_NPC_SCALE):
+      //   position: {x:0, y:0.52, z:-0.10}  — crown-back, matches Hairmodel crown
+      //   radius: 0.18  — ~20wu world at scale 112; covers sparse zone without
+      //                    clipping through forehead at any yaw
+      //   color: #111111 (near-black) — reads as dark hair for all Milady variants
+      //                    (blonde, brunette, dark) without needing texture sampling
+      //   geometry/material: module-scope singletons, never disposed (reused across
+      //                    all 5 VRM loads; safe because geometry/material are
+      //                    read-only after construction)
+      //   renderOrder: -1 — render before hair to avoid z-fighting with Hairmodel
+      //   depthWrite: true — participates in depth buffer normally (not transparent)
+      {
+        let headBone: THREE.Object3D | null = null;
+        vrm.scene.traverse((obj) => {
+          if (obj.name === 'mixamorigHead') headBone = obj;
+        });
+        if (headBone) {
+          const cap = new THREE.Mesh(
+            SCALP_CAP_GEO,
+            SCALP_CAP_MAT,
+          );
+          cap.name = '__scalp_cap__';
+          cap.position.set(0, 0.52, -0.10);
+          cap.renderOrder = -1;
+          cap.frustumCulled = false;
+          (headBone as THREE.Object3D).add(cap);
         }
-      });
+      }
 
       // MToon outline pass — disable to halve VRM draw calls (B1 2026-04-24).
       // MToon renders each mesh twice: once for the fill, once for an outset
