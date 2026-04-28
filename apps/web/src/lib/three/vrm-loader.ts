@@ -167,12 +167,39 @@ function loadVRM(path: string): Promise<VRM> {
       // so it faces -Z, matching VRM 1.0 convention.
       VRMUtils.rotateVRM0(vrm);
 
-      // Scalp cap REMOVED 2026-04-27: cap rendered as a visible black ball on top
-      // of the head (clipped through hair) instead of hiding behind it. The
-      // SCALP_CAP_GEO/MAT module singletons are kept dead-code-eliminated by the
-      // bundler since they're no longer referenced. Real hair-binding fix is
-      // pending CDP probe of why Hairmodel SkinnedMesh doesn't follow the head
-      // bone tilt during walk animation (likely separate root or wrong bone weights).
+      // ── Hair-strands gap fix ─────────────────────────────────────────────────
+      // CDP probe 2026-04-27 root-cause finding (clawville.world/game, live):
+      //
+      // The "bald spot" at the back-crown is a STATIC GEOMETRY GAP, not a
+      // spring-bone lag or skinning issue. Every Milady VRM contains two hair
+      // sub-hierarchies both parented to mixamorigHead:
+      //
+      //   1. Hairmodel  (plain Mesh, pos.y=0.2069, scale=0.3209) — the top bun.
+      //      Crown-back in head-bone local space: localY=1.0, reaches headBoneY+59wu.
+      //
+      //   2. Sketchfab_model (Group, pos.y≈0.1285-0.1345, scale≈0.1879) wrapping
+      //      Object_1003 + Object_1003_1 — the lower hair tendrils/strands.
+      //      Max local Y of strands = 0.322, so they reach headBoneY+21wu.
+      //
+      // The scalp crown-back (head-weighted body vertices transformed through the
+      // head bone matrix) measures at headBoneY+44wu.
+      //
+      // Gap before fix (confirmed stable across full walk animation range hRx -0.047…+0.004):
+      //   scalp crown-back − strands crown-back = 24.5wu
+      //
+      // Fix: move Sketchfab_model up by 24.4wu / headBoneScale(112) = 0.218 local units.
+      // This makes strands crown-back reach 221.6wu vs scalp crown 222.2wu → gap 0.6wu.
+      //
+      // Applied to EVERY VRM at load time (not just NPC variants). Safe for player VRMs:
+      // Hairmodel + Sketchfab_model structure is present in all milady-official-*.vrm.
+      // The 0.218 offset is independent of the original position.y (which varies
+      // slightly across variants, 0.1285–0.1345) because the gap is always 24.4wu.
+      vrm.scene.traverse((obj) => {
+        if (obj.name === 'Sketchfab_model') {
+          obj.position.y += 0.218;
+          obj.updateMatrix();
+        }
+      });
 
       // MToon outline pass — disable to halve VRM draw calls (B1 2026-04-24).
       // MToon renders each mesh twice: once for the fill, once for an outset
