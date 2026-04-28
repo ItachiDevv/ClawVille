@@ -189,6 +189,43 @@ const ROT_QUANT = 1000;
 const OFF_TRACK_PERP_DISTANCE_MULT = 2.5;
 const OFF_TRACK_RESPAWN_MS = 1500;
 
+/**
+ * Runtime outer-wall approximation for the oval track.
+ *
+ * The previous guardrail used the nearest checkpoint's tangent as a local
+ * centerline approximation. That is unstable between checkpoints and is very
+ * wrong near the oval interior: bodies at the center of the map looked
+ * hundreds of units "past the wall", so the sim kept snapping/reflecting them
+ * every tick. In production that shows up as pinned racers and bot spin-outs
+ * after contact. Use an outer ellipse instead; checkpoint sequencing still
+ * enforces actual race progress.
+ */
+const REEF_OUTER_WALL_SCALE =
+  1 + REEF_TRACK_HALF_WIDTH / Math.min(REEF_TRACK_A, REEF_TRACK_B);
+const REEF_OUTER_WALL_PROJECT_SCALE =
+  1 + (REEF_TRACK_HALF_WIDTH * 0.95) / Math.min(REEF_TRACK_A, REEF_TRACK_B);
+const REEF_OFF_TRACK_RESET_SCALE =
+  1 +
+  (REEF_TRACK_HALF_WIDTH * OFF_TRACK_PERP_DISTANCE_MULT) /
+    Math.min(REEF_TRACK_A, REEF_TRACK_B);
+
+function ellipseScaleAt(x: number, y: number): number {
+  return Math.hypot(x / REEF_TRACK_A, y / REEF_TRACK_B);
+}
+
+function outerEllipseNormalAt(x: number, y: number): Vec2 {
+  const nx = x / (REEF_TRACK_A * REEF_TRACK_A);
+  const ny = y / (REEF_TRACK_B * REEF_TRACK_B);
+  const mag = Math.hypot(nx, ny);
+  if (mag <= 1e-6) return { x: 0, y: 1 };
+  return { x: nx / mag, y: ny / mag };
+}
+
+function ellipseTangentAtPoint(x: number, y: number): Vec2 {
+  const n = outerEllipseNormalAt(x, y);
+  return { x: -n.y, y: n.x };
+}
+
 // ─── Body / sim state ───────────────────────────────────────────────────────
 
 /**
@@ -1286,35 +1323,19 @@ class ReefRaceSim {
       if (mag > 0) {
         let nx = intent.dir.x / mag;
         let ny = intent.dir.y / mag;
-        // Wall-slide projection.
-        if (state.checkpoints.length > 0) {
-          let nearest = state.checkpoints[0];
-          let nearestSq = Infinity;
-          for (const cp of state.checkpoints) {
-            const dx = body.x - cp.center.x;
-            const dy = body.y - cp.center.y;
-            const d2 = dx * dx + dy * dy;
-            if (d2 < nearestSq) {
-              nearestSq = d2;
-              nearest = cp;
-            }
-          }
-          const dx = body.x - nearest.center.x;
-          const dy = body.y - nearest.center.y;
-          const along = dx * nearest.tangent.x + dy * nearest.tangent.y;
-          const perpX = dx - along * nearest.tangent.x;
-          const perpY = dy - along * nearest.tangent.y;
-          const perp = Math.hypot(perpX, perpY);
-          const WALL_PROJECT_THRESHOLD = REEF_TRACK_HALF_WIDTH * 0.95;
-          if (perp > WALL_PROJECT_THRESHOLD && perp > 0) {
-            const wallNx = perpX / perp; // outward unit normal at body
-            const wallNy = perpY / perp;
+        // Wall-slide projection: only strip the component pushing past the
+        // OUTER guardrail. Do not project infield/center positions; mechanics
+        // tests and close-contact recovery rely on ordinary acceleration there.
+        const wallScale = ellipseScaleAt(body.x, body.y);
+        if (wallScale > REEF_OUTER_WALL_PROJECT_SCALE) {
+          const normal = outerEllipseNormalAt(body.x, body.y);
+          if (normal.x !== 0 || normal.y !== 0) {
             // Outward component of intent direction.
-            const intentOut = nx * wallNx + ny * wallNy;
+            const intentOut = nx * normal.x + ny * normal.y;
             if (intentOut > 0) {
               // Strip the outward component — keep only the tangent slide.
-              nx = nx - wallNx * intentOut;
-              ny = ny - wallNy * intentOut;
+              nx = nx - normal.x * intentOut;
+              ny = ny - normal.y * intentOut;
               const slideMag = Math.hypot(nx, ny);
               if (slideMag > 0) {
                 nx = nx / slideMag;
@@ -1323,8 +1344,9 @@ class ReefRaceSim {
                 // Pure outward intent (e.g. player facing wall head-on with no
                 // forward thrust) — fall back to track tangent so kart still
                 // makes progress along the racing line instead of stopping.
-                nx = nearest.tangent.x;
-                ny = nearest.tangent.y;
+                const tangent = ellipseTangentAtPoint(body.x, body.y);
+                nx = tangent.x;
+                ny = tangent.y;
               }
             }
           }
@@ -1478,6 +1500,11 @@ class ReefRaceSim {
       }
       sharedView.selfPetId = petId;
       sharedView.now = now;
+      // `buildBotRoomView(state, '')` is shared for allocation reasons, but
+      // nextCheckpoint is self-specific. Without stamping it here every bot
+      // kept targeting checkpoint 1 forever, then circled/spun after contact
+      // once its real checkpoint had advanced.
+      sharedView.nextCheckpoint = body.nextCheckpoint;
       let intent;
       try {
         intent = ctrl.computeInput(sharedView, dt);
@@ -1653,13 +1680,11 @@ class ReefRaceSim {
   }
 
   /**
-   * Soft-clamp `body` to the track corridor: if perpendicular distance from
-   * the nearest checkpoint centerline exceeds REEF_TRACK_HALF_WIDTH, push it
-   * back to the wall surface. When `reflectVelocity` is true, also decompose
-   * outward velocity and reflect with WALL_RESTITUTION / WALL_TANGENT_FRICTION.
-   * When false (post-proximity safety pass), only the position is corrected
-   * and the outward velocity component is zeroed — no reflection — so a parked
-   * kart pushed by a bot stops at the wall instead of bouncing back into bots.
+   * Soft-clamp `body` to the OUTER oval guardrail. The prior implementation
+   * used nearest-checkpoint tangent distance, which over-corrected interior
+   * positions and caused racers/bots to pinball or spin after contact.
+   * Checkpoint order still prevents finish-line exploits; this clamp is only
+   * the physical outer fence.
    */
   private enforceWallClamp(
     state: ReefRoomState,
@@ -1667,57 +1692,39 @@ class ReefRaceSim {
     reflectVelocity: boolean,
   ): void {
     if (state.checkpoints.length === 0) return;
-    let nearest = state.checkpoints[0];
-    let nearestSq = Infinity;
-    for (const cp of state.checkpoints) {
-      const dx = body.x - cp.center.x;
-      const dy = body.y - cp.center.y;
-      const d2 = dx * dx + dy * dy;
-      if (d2 < nearestSq) {
-        nearestSq = d2;
-        nearest = cp;
-      }
-    }
-    const dx = body.x - nearest.center.x;
-    const dy = body.y - nearest.center.y;
-    const along = dx * nearest.tangent.x + dy * nearest.tangent.y;
-    const perpX = dx - along * nearest.tangent.x;
-    const perpY = dy - along * nearest.tangent.y;
-    const perp = Math.hypot(perpX, perpY);
-    if (perp <= REEF_TRACK_HALF_WIDTH || perp <= 0) return;
+    const scale = ellipseScaleAt(body.x, body.y);
+    if (scale <= REEF_OUTER_WALL_SCALE || scale <= 0) return;
 
-    const overshoot = perp - REEF_TRACK_HALF_WIDTH;
-    const nX = perpX / perp;
-    const nY = perpY / perp;
-    // Snap body to wall surface.
-    body.x -= nX * overshoot;
-    body.y -= nY * overshoot;
+    const clampScale = REEF_OUTER_WALL_SCALE / scale;
+    body.x *= clampScale;
+    body.y *= clampScale;
 
-    const vN = body.vx * nX + body.vy * nY;
+    const normal = outerEllipseNormalAt(body.x, body.y);
+    const vN = body.vx * normal.x + body.vy * normal.y;
     if (reflectVelocity) {
       // Primary clamp: reflect outward velocity (full bumper physics).
       if (vN > 0) {
         const WALL_RESTITUTION = 0.25;
         const WALL_TANGENT_FRICTION = 0.92;
-        const vTx = body.vx - vN * nX;
-        const vTy = body.vy - vN * nY;
+        const vTx = body.vx - vN * normal.x;
+        const vTy = body.vy - vN * normal.y;
         const reflectedN = -vN * WALL_RESTITUTION;
-        body.vx = vTx * WALL_TANGENT_FRICTION + reflectedN * nX;
-        body.vy = vTy * WALL_TANGENT_FRICTION + reflectedN * nY;
+        body.vx = vTx * WALL_TANGENT_FRICTION + reflectedN * normal.x;
+        body.vy = vTy * WALL_TANGENT_FRICTION + reflectedN * normal.y;
       }
     } else {
       // Safety pass after proximity: just kill outward velocity. No bounce —
       // a parked kart shoved by a bot must NOT recoil into the bot pile.
       if (vN > 0) {
-        body.vx -= vN * nX;
-        body.vy -= vN * nY;
+        body.vx -= vN * normal.x;
+        body.vy -= vN * normal.y;
       }
     }
   }
 
   /**
-   * Off-track reset (Mario Kart style). If a body's perpendicular distance
-   * from the nearest checkpoint centerline exceeds OFF_TRACK_PERP_DISTANCE,
+   * Off-track reset (Mario Kart style). If a body leaves the outer oval by
+   * more than OFF_TRACK_PERP_DISTANCE,
    * teleport it to the last successfully-crossed checkpoint and freeze for
    * OFF_TRACK_RESPAWN_MS. The freeze ITSELF is the time penalty.
    *
@@ -1733,27 +1740,7 @@ class ReefRaceSim {
     body: ReefBody,
     now: number,
   ): void {
-    // Find nearest checkpoint center (squared distance, no sqrt).
-    let nearest = state.checkpoints[0];
-    let nearestSq = Infinity;
-    for (const cp of state.checkpoints) {
-      const dx = body.x - cp.center.x;
-      const dy = body.y - cp.center.y;
-      const d2 = dx * dx + dy * dy;
-      if (d2 < nearestSq) {
-        nearestSq = d2;
-        nearest = cp;
-      }
-    }
-    // Perpendicular distance from body to centerline at nearest checkpoint
-    // (project onto tangent then subtract).
-    const dx = body.x - nearest.center.x;
-    const dy = body.y - nearest.center.y;
-    const along = dx * nearest.tangent.x + dy * nearest.tangent.y;
-    const perpX = dx - along * nearest.tangent.x;
-    const perpY = dy - along * nearest.tangent.y;
-    const perp = Math.hypot(perpX, perpY);
-    if (perp <= REEF_TRACK_HALF_WIDTH * OFF_TRACK_PERP_DISTANCE_MULT) return;
+    if (ellipseScaleAt(body.x, body.y) <= REEF_OFF_TRACK_RESET_SCALE) return;
 
     // Teleport to the last cleanly-crossed checkpoint center.
     const N = state.checkpoints.length;

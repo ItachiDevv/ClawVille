@@ -730,6 +730,40 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
 // We dynamically import the WebGPU build to avoid bundling it when unsupported.
 // ---------------------------------------------------------------------------
 
+function getCanvasCssSize(canvas: HTMLCanvasElement): { width: number; height: number } | null {
+  const rect = canvas.getBoundingClientRect();
+  let width = Math.round(rect.width);
+  let height = Math.round(rect.height);
+
+  if ((width <= 0 || height <= 0) && canvas.parentElement) {
+    const parentRect = canvas.parentElement.getBoundingClientRect();
+    width = Math.round(parentRect.width);
+    height = Math.round(parentRect.height);
+  }
+
+  if ((width <= 0 || height <= 0) && typeof window !== 'undefined') {
+    width = window.innerWidth;
+    height = window.innerHeight;
+  }
+
+  if (width <= 0 || height <= 0) return null;
+  return { width, height };
+}
+
+async function waitForCanvasCssSize(canvas: HTMLCanvasElement): Promise<{ width: number; height: number }> {
+  // WebGPU allocates depth/stencil textures during init(). If init sees the
+  // default HTML canvas size (300x150), later R3F color-attachment resize causes
+  // WebGPU validation failures. Wait briefly for layout to settle before init.
+  for (let i = 0; i < 10; i++) {
+    const size = getCanvasCssSize(canvas);
+    if (size && size.width !== 300 && size.height !== 150) return size;
+    if (size && (size.width > 300 || size.height > 150)) return size;
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  }
+
+  return getCanvasCssSize(canvas) ?? { width: 1, height: 1 };
+}
+
 async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
   // -------------------------------------------------------------------------
   // Fix: depth-stencil attachment size mismatch (300×150 vs actual CSS size)
@@ -749,17 +783,13 @@ async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
   // canvas.width/height for the initial depth buffer allocation, so this
   // ensures the depth buffer is created at the correct size from the start.
   // -------------------------------------------------------------------------
-  const rect = canvas.getBoundingClientRect();
-  const cssW = Math.round(rect.width);
-  const cssH = Math.round(rect.height);
-  if (cssW > 0 && cssH > 0) {
-    // Stamp the true pixel dimensions so WebGPURenderer.init() allocates the
-    // depth buffer at the correct size. R3F's ResizeObserver will call
-    // setSize() again after mount (which is fine — it's idempotent when the
-    // size is already correct).
-    canvas.width  = cssW;
-    canvas.height = cssH;
-  }
+  const { width: cssW, height: cssH } = await waitForCanvasCssSize(canvas);
+  // Stamp the true pixel dimensions so WebGPURenderer.init() allocates the
+  // depth buffer at the correct size. R3F's ResizeObserver will call setSize()
+  // again after mount; with matching dimensions that resize is idempotent.
+  canvas.width = cssW;
+  canvas.height = cssH;
+
   // Dynamic import — tree-shakes out when WebGPU path isn't taken
   const { WebGPURenderer } = await import('three/webgpu');
   const renderer = new WebGPURenderer({
@@ -771,6 +801,7 @@ async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
   // WebGPURenderer.render() throws if not initialized — must await init()
   // init() internally: tries WebGPU backend → falls back to WebGL2 if unavailable
   await renderer.init();
+  renderer.setSize(cssW, cssH, false);
 
   // Device-loss handler — log and attempt page reload on unexpected loss
   try {

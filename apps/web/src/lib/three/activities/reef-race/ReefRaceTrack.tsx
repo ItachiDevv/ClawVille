@@ -32,16 +32,16 @@ import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
-  TRACK_CURVE_POINTS,
   TRACK_TUBE_SEGMENTS,
   TRACK_TUBE_RADIUS,
-  TRACK_CLOSED,
   GUARDRAIL_HEIGHT,
   GUARDRAIL_THICKNESS,
   CORAL_COUNT_PER_TYPE,
   CORAL_SCALE_MIN,
   CORAL_SCALE_MAX,
   CORAL_OFFSET_FROM_TRACK,
+  reefCenterlineAtClient,
+  reefTangentAtClient,
 } from './reef-race-config';
 
 // ─── Preloads ────────────────────────────────────────────────────────────────
@@ -58,9 +58,6 @@ const _scl  = new THREE.Vector3();
 const _tangent  = new THREE.Vector3();
 const _binormal = new THREE.Vector3();
 
-/** Build the closed CatmullRomCurve3 once at module scope — no per-render cost. */
-const TRACK_CURVE = new THREE.CatmullRomCurve3(TRACK_CURVE_POINTS, TRACK_CLOSED, 'catmullrom', 0.5);
-
 /** World up — used in cross-product for guardrail/coral placement. */
 const _worldUp = new THREE.Vector3(0, 1, 0);
 
@@ -69,9 +66,10 @@ const _worldUp = new THREE.Vector3(0, 1, 0);
  * binormal = tangent × worldUp, giving the XZ-plane sideways direction.
  */
 function sampleTrackFrame(t: number): { pos: THREE.Vector3; tangent: THREE.Vector3; binormal: THREE.Vector3 } {
-  TRACK_CURVE.getPointAt(t, _pos);
-  TRACK_CURVE.getTangentAt(t, _tangent);
-  _tangent.normalize();
+  const p = reefCenterlineAtClient(t % 1);
+  const tangent = reefTangentAtClient(t % 1);
+  _pos.set(p.x, 0, p.y);
+  _tangent.set(tangent.x, 0, tangent.y).normalize();
   _binormal.crossVectors(_tangent, _worldUp).normalize();
   return { pos: _pos.clone(), tangent: _tangent.clone(), binormal: _binormal.clone() };
 }
@@ -134,7 +132,6 @@ function makeTrackTexture(): THREE.CanvasTexture {
 // With DoubleSide material this is visible from any camera angle and avoids
 // the hollow-tube backface-culling problem that made TubeGeometry invisible.
 function buildFlatRibbonGeo(
-  curve: THREE.CatmullRomCurve3,
   segments: number,
   halfWidth: number,
 ): THREE.BufferGeometry {
@@ -151,8 +148,10 @@ function buildFlatRibbonGeo(
 
   for (let i = 0; i <= segments; i++) {
     const t = i / segments;
-    curve.getPointAt(t, _pt);
-    curve.getTangentAt(t, _tan).normalize();
+    const p = reefCenterlineAtClient(t % 1);
+    const tangent = reefTangentAtClient(t % 1);
+    _pt.set(p.x, 0, p.y);
+    _tan.set(tangent.x, 0, tangent.y).normalize();
 
     // Right vector perpendicular to tangent in XZ plane
     _right.crossVectors(_tan, _up).normalize();
@@ -351,7 +350,7 @@ export default function ReefRaceTrack() {
   // Flat ribbon geometry: visible as a road surface from the chase camera above.
   // Uses TRACK_TUBE_SEGMENTS samples and TRACK_TUBE_RADIUS as the half-width.
   const ribbonGeo = useMemo(() => {
-    return buildFlatRibbonGeo(TRACK_CURVE, TRACK_TUBE_SEGMENTS, TRACK_TUBE_RADIUS);
+    return buildFlatRibbonGeo(TRACK_TUBE_SEGMENTS, TRACK_TUBE_RADIUS);
   }, []);
 
   const trackTexture = useMemo(() => {
