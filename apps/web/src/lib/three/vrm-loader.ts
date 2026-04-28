@@ -167,50 +167,16 @@ function loadVRM(path: string): Promise<VRM> {
       // so it faces -Z, matching VRM 1.0 convention.
       VRMUtils.rotateVRM0(vrm);
 
-      // ── Hair re-parent to head BONE (2026-04-28) ─────────────────────────
+      // Do not runtime re-parent Milady hair nodes here.
       //
-      // Root cause of the "bald spot during walk" bug, finally tested:
-      //
-      // Hairmodel / Sketchfab_model / Hatmodel are plain (non-skinned) Meshes
-      // parented to the mixamorigHead **scene node** in the GLTF tree. At
-      // runtime three-vrm drives the rig via skinning matrices on SkinnedMeshes
-      // — those matrices DO NOT update the scene-graph node positions. So the
-      // hair stays at its bind-pose offset while the head bone tilts forward
-      // during walk, producing a gap at the crown-back.
-      //
-      // Fix: walk the scene, find the head BONE (Object3D.isBone), then
-      // headBone.attach(hairMesh) for each hair piece. attach() preserves the
-      // world transform during re-parent, so the hair starts at the same
-      // position as before but now follows the bone every frame.
-      //
-      // Prior attempts (all failed) tried to compensate the static gap:
-      //   • spring-bone tuning (no springs in these VRMs)
-      //   • Hairmodel pre-tilt rotation (CDP-disproved)
-      //   • dark scalp-cap sphere (visibly clipped through hair)
-      //   • Sketchfab_model.position.y += 0.218 (closed gap statically but
-      //     hair still didn't follow head tilt)
-      //   • blender07 hair-into-head SkinnedMesh bake (corrupted GLB)
-      //
-      // None of those tested the actual hypothesis. This does.
-      {
-        let headBone: THREE.Object3D | null = null;
-        vrm.scene.traverse((o) => {
-          if (o.name === 'mixamorigHead' && (o as THREE.Bone).isBone) {
-            headBone = o;
-          }
-        });
-        if (headBone) {
-          const hairPieces: THREE.Object3D[] = [];
-          vrm.scene.traverse((o) => {
-            if (o.name === 'Hairmodel' || o.name === 'Sketchfab_model' || o.name === 'Hatmodel') {
-              hairPieces.push(o);
-            }
-          });
-          for (const piece of hairPieces) {
-            (headBone as THREE.Object3D).attach(piece);
-          }
-        }
-      }
+      // A 2026-04-28 attempt moved Hairmodel / Sketchfab_model / Hatmodel
+      // under a discovered head bone with Object3D.attach(). In live testing
+      // that made every Milady's hair follow the walk motion with a large
+      // offset from the skull. The original bald-spot bug is less severe than
+      // that regression, so runtime bone attachment must stay out of the shared
+      // loader unless it is first verified against all 8 VRMs in a browser
+      // scene. The durable fix is to author/export those hair meshes with
+      // proper head-bone skin weights in the VRM assets.
 
       // MToon outline pass — disable to halve VRM draw calls (B1 2026-04-24).
       // MToon renders each mesh twice: once for the fill, once for an outset
