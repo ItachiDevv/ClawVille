@@ -307,7 +307,20 @@ function SketchfabMissingBanner() {
 // Root page
 // ---------------------------------------------------------------------------
 
+// Next.js 16 enforces wrapping useSearchParams in <Suspense> at page level
+// even when the page is `'use client'` and `dynamic = 'force-dynamic'` is
+// set. Without the wrap the build fails with:
+//   useSearchParams() should be wrapped in a suspense boundary at page
+// The outer component is the suspense boundary; the inner reads the params.
 export default function AvatarPreviewPage() {
+  return (
+    <Suspense fallback={null}>
+      <AvatarPreviewInner />
+    </Suspense>
+  );
+}
+
+function AvatarPreviewInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
 
