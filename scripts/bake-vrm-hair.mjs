@@ -28,27 +28,37 @@
  *           After transform, hair vert[0] lands at Y≈1.02 (above head). ✓
  *
  * Usage:
- *   node scripts/bake-vrm-hair.mjs 1      → milady-official-1.vrm only (pilot)
- *   node scripts/bake-vrm-hair.mjs        → all 1-8
+ *   bun scripts/bake-vrm-hair.mjs 1
+ *     → writes .tmp/milady-vrm-bake/milady-official-1.vrm
+ *   bun scripts/bake-vrm-hair.mjs
+ *     → writes fixed copies for all 1-8 under .tmp/milady-vrm-bake/
+ *   bun scripts/bake-vrm-hair.mjs --apply
+ *     → overwrites apps/web/public/avatars/milady-official-{1..8}.vrm
  */
 
 import { NodeIO } from '@gltf-transform/core';
 import { EXTMeshoptCompression, EXTTextureWebP, KHRMeshQuantization } from '@gltf-transform/extensions';
+import { dedup, weld, meshopt } from '@gltf-transform/functions';
 import { MeshoptDecoder, MeshoptEncoder } from 'meshoptimizer';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { renameSync, existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AVATARS_DIR = path.join(__dirname, '..', 'apps', 'web', 'public', 'avatars');
 
-const HAIR_NODE_NAMES = ['Hairmodel', 'Hatmodel'];
+const HAIR_NODE_NAMES = ['Hairmodel', 'Hatmodel', 'Sketchfab_model', 'Object_1003', 'Object_1003_1'];
 const HEAD_JOINT_INDEX = 29; // mixamorig:Head in both skins (verified)
 const BODY_NODE_NAME = 'Body';
 
-async function bakeVRMHair(vrmNumber) {
+async function bakeVRMHair(vrmNumber, options) {
     const filePath = path.join(AVATARS_DIR, `milady-official-${vrmNumber}.vrm`);
+    const outPath = options.apply
+        ? filePath
+        : path.join(options.outDir, `milady-official-${vrmNumber}.vrm`);
     console.log(`\n=== milady-official-${vrmNumber}.vrm ===`);
+    console.log(`  Input:  ${filePath}`);
+    console.log(`  Output: ${outPath}`);
 
     await MeshoptDecoder.ready;
     await MeshoptEncoder.ready;
@@ -211,13 +221,20 @@ async function bakeVRMHair(vrmNumber) {
     // gltf-transform drops the VRM extension (it's unregistered/unknown).
     // Strategy: write GLB to temp, extract JSON from both original and temp,
     // splice original's extensions block back into the output JSON, rewrite GLB.
-    const tmpPath = filePath.replace(/\.vrm$/, '.tmp.glb');
+    mkdirSync(path.dirname(outPath), { recursive: true });
+    await document.transform(
+        dedup(),
+        weld({ tolerance: 0.0001 }),
+        meshopt({ encoder: MeshoptEncoder, level: 'medium' }),
+    );
+
+    const tmpPath = outPath.replace(/\.vrm$/, '.tmp.glb');
     await io.write(tmpPath, document);
 
-    // Read original VRM extension JSON from the BACKUP
-    const bakPath = filePath + '.bak';
-    if (!existsSync(bakPath)) throw new Error(`Backup not found at ${bakPath} — cannot preserve VRM extension`);
-    const origJson = readGlbJsonChunk(bakPath);
+    // Read original VRM extension JSON from the source file. Using source instead
+    // of `.bak` keeps this usable for all 8 avatars; only official-1 currently
+    // has a checked-in .bak.
+    const origJson = readGlbJsonChunk(filePath);
     const vrmExt = origJson.extensions?.VRM;
     if (!vrmExt) {
         console.log('  WARNING: original had no VRM extension — skipping extension merge');
@@ -236,10 +253,10 @@ async function bakeVRMHair(vrmNumber) {
     }
 
     // Write merged GLB back
-    rewriteGlbJsonChunk(tmpPath, filePath, outJson);
+    rewriteGlbJsonChunk(tmpPath, outPath, outJson);
     // Clean up temp file
     try { unlinkSync(tmpPath); } catch {}
-    console.log(`  Saved → ${filePath} (binary GLB with VRM extension)`);
+    console.log(`  Saved → ${outPath} (binary GLB with VRM extension)`);
 }
 
 // --- Matrix helpers ---
@@ -334,9 +351,20 @@ function rewriteGlbJsonChunk(inPath, outPath, newJson) {
 
     // Parse original header
     const chunk0Len = inBuf.readUInt32LE(12);
-    // Binary chunk starts at: 12 (header) + 8 (chunk0 header) + chunk0Len
-    const binaryOffset = 12 + 8 + chunk0Len;
-    const binaryData = binaryOffset < inBuf.length ? inBuf.slice(binaryOffset) : Buffer.alloc(0);
+    // Binary chunk starts after JSON chunk header+data. Copy ONLY the BIN
+    // payload, not the old BIN chunk header. The previous script copied from
+    // `binaryOffset`, which nested the old BIN header inside the new BIN data
+    // and produced malformed buffer data in GLTFLoader/three-vrm.
+    const binaryChunkOffset = 12 + 8 + chunk0Len;
+    let binaryData = Buffer.alloc(0);
+    if (binaryChunkOffset + 8 <= inBuf.length) {
+        const binLen = inBuf.readUInt32LE(binaryChunkOffset);
+        const binType = inBuf.slice(binaryChunkOffset + 4, binaryChunkOffset + 8).toString('ascii');
+        if (binType !== 'BIN\0') {
+            throw new Error(`Unexpected GLB chunk type "${binType}" in ${inPath}`);
+        }
+        binaryData = inBuf.slice(binaryChunkOffset + 8, binaryChunkOffset + 8 + binLen);
+    }
 
     // Serialize new JSON, padded to 4-byte alignment with spaces
     let jsonStr = JSON.stringify(newJson);
@@ -377,9 +405,15 @@ function rewriteGlbJsonChunk(inPath, outPath, newJson) {
 
 // --- Entry point ---
 const args = process.argv.slice(2);
-const indices = args.length > 0 ? [parseInt(args[0], 10)] : [1,2,3,4,5,6,7,8];
+const apply = args.includes('--apply');
+const outDirIndex = args.indexOf('--out-dir');
+const outDir = outDirIndex >= 0 && args[outDirIndex + 1]
+    ? path.resolve(args[outDirIndex + 1])
+    : path.join(__dirname, '..', '.tmp', 'milady-vrm-bake');
+const numericArgs = args.filter((a) => /^\d+$/.test(a));
+const indices = numericArgs.length > 0 ? numericArgs.map((n) => parseInt(n, 10)) : [1,2,3,4,5,6,7,8];
 
 (async () => {
-    for (const i of indices) await bakeVRMHair(i);
-    console.log('\nAll done.');
+    for (const i of indices) await bakeVRMHair(i, { apply, outDir });
+    console.log(`\nAll done. ${apply ? 'Applied in-place.' : `Wrote outputs to ${outDir}`}`);
 })().catch(err => { console.error('FATAL:', err); process.exit(1); });
