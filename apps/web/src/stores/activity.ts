@@ -825,6 +825,17 @@ export const useActivityStore = create<ActivityState>()(
           // Don't drop from `entities` — the body may still be on the field
           // as a static/idle target per backend §3.6. The server's next delta
           // will mark `state: 'dead'` if appropriate.
+          //
+          // Surface integrity-forfeits to the local player. Without this, an
+          // anti-cheat false-positive used to look like "kart randomly froze"
+          // with zero feedback. A console.warn is the lightest visible signal
+          // that doesn't add new HUD machinery; future work can add a toast.
+          if (frame.reason === 'integrity' && state.selfAvatarId === frame.avatarId) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              '[reef-race] You were disqualified by anti-cheat (integrity-forfeit). The server stopped accepting your inputs. Please refresh + report if you were playing normally.',
+            );
+          }
           break;
         }
 
