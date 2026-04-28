@@ -150,14 +150,15 @@ export const REEF_SIM_HZ = REEF_TICK_HZ;
 const REEF_TICK_MS = 1000 / REEF_SIM_HZ;
 
 /**
- * Snapshot broadcast rate (Hz). Bumped 5 → 10 on 2026-04-26 to halve the
- * client-side interp segment length. Task spec said 5Hz; user feedback in the
- * wild was that 5Hz produced visibly staggered motion (200ms segments + the
- * occasional jitter-delayed delta producing a 400ms catch-up jump = "feet in
- * one jump"). Bandwidth cost is tiny — 8 racers × ~50 bytes × 10Hz ≈ 4 KB/s
- * per client. Halve the client INTERP_DELAY_MS in lockstep (350 → 200).
+ * Snapshot broadcast rate (Hz). Bumped 5 → 10 (2026-04-26) → 20 (2026-04-28)
+ * to halve the client-side interp segment length each time. At 30Hz sim
+ * + 5.8 rad/s yaw, a 100ms (10Hz) bracket can cover ~33° of rotation that
+ * the client linear-lerps over 100ms — a visible piecewise seam. 20Hz halves
+ * the seam to ~16° / 50ms which is well below the perceptual jerk threshold
+ * for kart-style steering. Bandwidth: 8 racers × ~50 bytes × 20Hz ≈ 8 KB/s
+ * per client (comfortable). Halve client INTERP_DELAY_MS in lockstep (200 → 100).
  */
-const REEF_SNAPSHOT_HZ = 10;
+const REEF_SNAPSHOT_HZ = 20;
 const REEF_TICKS_PER_SNAPSHOT = Math.round(REEF_SIM_HZ / REEF_SNAPSHOT_HZ);
 
 /** Keyframe broadcast cadence (1Hz per task spec). */
@@ -1306,8 +1307,13 @@ class ReefRaceSim {
       const baseRot = Math.atan2(intent.dir.x, intent.dir.y);
       let desiredRot = baseRot;
       if (body.drift.charging) {
+        // Clamp the outward lean to |baseRot| so a gentle steering input
+        // (|dir.x| in [DRIFT_MIN_STEER..tan(DRIFT_ANGULAR_BIAS_RAD)] —
+        // i.e. ~0.12..0.27 normalized) cannot flip the heading sign and
+        // make the kart visibly turn OPPOSITE the player's input.
         const turnSign = intent.dir.x > 0 ? -1 : 1;
-        desiredRot = baseRot + turnSign * DRIFT_ANGULAR_BIAS_RAD;
+        const biasMag = Math.min(DRIFT_ANGULAR_BIAS_RAD, Math.abs(baseRot));
+        desiredRot = baseRot + turnSign * biasMag;
       }
       const turnRate = body.drift.charging
         ? REEF_DRIFT_TURN_RATE_RAD_PER_SEC

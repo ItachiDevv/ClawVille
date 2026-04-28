@@ -94,19 +94,17 @@ const _gliderMat  = new THREE.MeshStandardMaterial({
 /**
  * How far behind real-time we render (ms).
  *
- * Server REEF_SNAPSHOT_HZ was bumped 5 → 10 (2026-04-26) so each snap is now
- * 100 ms apart. Worst-case arrival gap = snap_interval (100 ms) + jitter
- * (50–80 ms). INTERP_DELAY_MS must exceed that gap so renderTime always falls
- * BEFORE the newest history entry's arrival timestamp — otherwise the bracket
- * scan extrapolates past the newest snap and the body teleports forward when
- * the next snap finally arrives.
+ * Server REEF_SNAPSHOT_HZ progression: 5 → 10 (2026-04-26) → 20 (2026-04-28).
+ * At 20 Hz each snap is 50 ms apart. Worst-case arrival gap = snap_interval
+ * (50 ms) + jitter (~30-50 ms). INTERP_DELAY_MS must exceed that gap so
+ * renderTime always falls BEFORE the newest history entry — otherwise the
+ * bracket scan extrapolates and the body teleports when the next snap arrives.
  *
- *   target = 100 ms snap_interval + 50 ms jitter buffer + 50 ms safety = 200 ms
+ *   target = 50 ms snap_interval + 30 ms jitter buffer + 20 ms safety = 100 ms
  *
- * Trade-off: 200 ms input lag from press to on-screen kart motion. Half the
- * old 350 ms lag, with twice the snapshot resolution → much smoother motion
- * and faster control feel. Bumping snapshot rate further (15 / 30 Hz) would
- * trade more bandwidth for marginal smoothness gain — diminishing returns.
+ * Trade-off: 100 ms input lag (down from 200 ms). Halving the snapshot
+ * interval again trims the linear-lerp piecewise seam from ~33° / bracket
+ * to ~16° / bracket — well below kart-steering perceptual jerk threshold.
  *
  * Earlier values that failed:
  *   - 100 ms (initial) — assumed 15 Hz; server was 5 Hz; freeze for ~100 ms.
@@ -114,12 +112,15 @@ const _gliderMat  = new THREE.MeshStandardMaterial({
  *   - 350 ms — covered jitter but each segment was 200 ms long, so a single
  *     delayed snap looked like "feet in one jump" when the next snap arrived
  *     and the bracket interp scrubbed 400 ms of motion in 1-2 render frames.
+ *   - 200 ms (with 10 Hz snaps) — perceptually smoother than 350, but rotation
+ *     seam at the 100ms bracket boundary still picked up by users on tight
+ *     curves ("left-right movement still choppy"). Halved alongside snap rate.
  */
-const INTERP_DELAY_MS = 200;
+const INTERP_DELAY_MS = 100;
 
 /**
  * Maximum snapshot history kept per entity.
- * 4 entries at 10 Hz covers 400 ms — well past the 200 ms INTERP_DELAY_MS.
+ * 4 entries at 20 Hz covers 200 ms — well past the 100 ms INTERP_DELAY_MS.
  * Trim logic in useFrame keeps only the latest INTERP_HISTORY_SIZE entries,
  * so the bracket scan always has ≥ 2 entries available after the 2nd snap.
  */
