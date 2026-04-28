@@ -167,8 +167,8 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
         // TURN_BIAS = tan(per-tick yaw angle). Arrow steering is tracked
         // separately so A+Left / D+Right can turn harder without making
         // default WASD steering twitchy.
-        const TURN_BIAS = 0.05;
-        const ARROW_TURN_BIAS = 0.07;
+        const TURN_BIAS = 0.12;
+        const ARROW_TURN_BIAS = 0.18;
         const h = headingRef.current;
         const fwdX = Math.sin(h);
         const fwdY = Math.cos(h);
