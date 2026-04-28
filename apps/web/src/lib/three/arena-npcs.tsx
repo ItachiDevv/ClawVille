@@ -353,11 +353,23 @@ const VRM_NPC_HALF_RATE_DIST_SQ = 1000 * 1000;
 // GLB cull constants now match — neither far-culls in normal camera ranges.
 const VRM_NPC_CULL_DIST_SQ      = NPC_CULL_DIST_SQ;
 
-// Preload Milady VRM paths used by wandering NPCs + Mixamo animation clips.
-// These calls warm the browser HTTP cache so the first useVRM(path) Suspense
-// resolves without a network round-trip. Per-consumer caching (Codex Critical
-// #1 fix, 2026-04-27) means two consumers sharing a path is safe — each gets
-// its own scene/skeleton/humanoid, no `<primitive>` reparenting wars.
+// Preload ALL Milady VRM paths used by wandering NPCs + Mixamo animation clips.
+// These calls are module-scope so the caches are warm before any VRMNpcMesh mounts.
+// IMPORTANT: each concurrent VRM NPC MUST use a distinct VRM path — vrm-loader caches
+// exactly one VRM instance (vrm.scene Object3D) per path. Two components sharing a path
+// would share vrm.scene; R3F's `<primitive>` would reparent the same Object3D between
+// groups each frame, and both AnimationMixers would fight over the same scene root —
+// causing T-pose / frozen animation on one of them.
+// Demo NPC → VRM path mapping (all distinct, no collision):
+//   Miu   → milady_official_7
+//   Kyoko → milady_official_8
+//   Vivi  → milady_official_2
+//   Maple → milady_official_3
+//   Ash   → milady_official_4
+// Only official_7/8 were preloaded before — official_2/3/4 cold-started, delaying
+// animator.init() by a full network round-trip and leaving Vivi/Maple/Ash in T-pose
+// until after their Suspense resolved AND the clip loads completed. Now all 5 are
+// preloaded at module scope so they are hot when the Suspense boundaries resolve.
 preloadVRM('/avatars/milady-official-2.vrm');
 preloadVRM('/avatars/milady-official-3.vrm');
 preloadVRM('/avatars/milady-official-4.vrm');
@@ -854,9 +866,10 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
 // ---------------------------------------------------------------------------
 // VRM NPC renderer — parallel to GLBNpcMesh, for Milady wandering NPCs
 // ---------------------------------------------------------------------------
-// vrm-loader caches per (path, useId) since 2026-04-27, so two VRMNpcMesh
-// components with the same path now each get their own scene/skeleton.
-// No path-disjointness constraint anymore.
+// CRITICAL CONSTRAINT: vrm-loader caches exactly one VRM instance per path.
+// Do NOT render two VRMNpcMesh components with the same VRM path — they would
+// share vrm.scene and clobber each other's position/animation state every frame.
+// The 2 demo Milady NPCs intentionally use different paths (official_7 / official_8).
 const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
   const groupRef = useRef<THREE.Group>(null!);
   // Same DOM-portal caveat as GLBNpcMesh — drei <Html> is outside the scene graph.
