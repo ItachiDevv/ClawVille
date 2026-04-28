@@ -36,7 +36,7 @@ import {
   type ModelRegistryEntry,
   type PickerColorId,
 } from '@/lib/three/agent-model-registry';
-import { useVRM, preloadVRM } from '@/lib/three/vrm-loader';
+import { useVRMInstance, disposeVRMInstance, preloadVRMBytes } from '@/lib/three/vrm-loader';
 import { VRMCharacterAnimator, preloadMixamoClips } from '@/lib/three/vrm-character-animator';
 
 // Module-scope scene background color — avoids a new THREE.Color allocation on
@@ -208,7 +208,15 @@ const PlatformModelVRM = memo(function PlatformModelVRM({
   modelKey: string;
 }) {
   const reg: ModelRegistryEntry = MODEL_REGISTRY[modelKey as ModelKey] ?? MODEL_REGISTRY.milady_official_1;
-  const vrm = useVRM(reg.path);
+  // Picker shows one VRM at a time — instanceId 'picker' is stable for the
+  // single picker preview. Switching modelKey unmounts the previous instance
+  // (different reg.path → different cacheKey → previous useEffect cleanup
+  // runs disposeVRMInstance for the old path).
+  const vrm = useVRMInstance(reg.path, 'picker');
+
+  React.useEffect(() => {
+    return () => disposeVRMInstance(reg.path, 'picker');
+  }, [reg.path]);
 
   const vrmAnimatorRef = React.useRef<VRMCharacterAnimator | null>(null);
 
@@ -472,13 +480,14 @@ export default function SelectAgentCanvas({
   onCanvasReady,
 }: SelectAgentCanvasProps) {
   // Preload all models in the background after first commit.
-  // GLB models use useGLTF.preload; VRM models use preloadVRM (different loader).
+  // GLB models use useGLTF.preload; VRM models warm the byte cache via
+  // preloadVRMBytes (per-instance parse happens at mount time).
   // Also preload Mixamo animation clips for VRM animators.
   useEffect(() => {
     preloadMixamoClips();
     Object.values(MODEL_REGISTRY).forEach((m: ModelRegistryEntry) => {
       if (m.avatar_type === 'vrm') {
-        preloadVRM(m.path);
+        preloadVRMBytes(m.path);
       } else {
         useGLTF.preload(m.path);
       }

@@ -23,7 +23,7 @@ import {
   type CharacterAnimator,
 } from '@/lib/three/character-animations';
 import { jumpState, isEditable } from '@/lib/three/jump-state';
-import { useVRM, preloadVRM } from '@/lib/three/vrm-loader';
+import { useVRMInstance, disposeVRMInstance, preloadVRMBytes } from '@/lib/three/vrm-loader';
 import { VRMCharacterAnimator, preloadMixamoClips } from '@/lib/three/vrm-character-animator';
 
 // ---------------------------------------------------------------------------
@@ -228,16 +228,16 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
   const terrainYRef = useRef(-2);
   const { scene: threeScene, camera } = useThree();
 
-  // Load VRM (suspends until resolved)
-  const vrm = useVRM(reg.path);
+  // Load a fresh VRM instance for the player. Stable instanceId 'player-avatar'
+  // since only one player avatar ever exists at a time. Per-instance loading
+  // means the player's VRM is fully disjoint from any wandering NPC sharing
+  // the same path — no scene reparenting wars (Codex Critical #1).
+  const vrm = useVRMInstance(reg.path, 'player-avatar');
 
-  // VRM scene is a single live scene — we apply scale via the group, not the scene directly
-  // Note: We do NOT deep-clone VRMs the same way we clone GLBs.
-  // VRMUtils does not provide a deepCloneVRM in v3.5.2; instead each useVRM
-  // call returns the same cached VRM instance. For player-avatar this is fine
-  // since only one player avatar renders at a time. If multiple VRM instances of
-  // the same model were needed, a full re-load with a unique path suffix would
-  // be required. For now: one cached VRM per path, one player.
+  // Dispose this player-avatar's instance when the avatar path changes or unmounts.
+  useEffect(() => {
+    return () => disposeVRMInstance(reg.path, 'player-avatar');
+  }, [reg.path]);
 
   // VRM animator — created once per VRM instance
   const vrmAnimatorRef = useRef<VRMCharacterAnimator | null>(null);
@@ -781,9 +781,11 @@ export default function PlayerAvatar() {
   // Preload VRM assets and Mixamo anim clips for fast switch if user picks a Milady avatar
   useEffect(() => {
     preloadMixamoClips();
-    // Preload all 8 VRM paths (non-blocking — errors swallowed in preloadVRM)
+    // Preload all 8 VRM byte caches so first useVRMInstance call hits the
+    // browser HTTP cache instead of round-tripping. Per-instance parse still
+    // happens at mount time.
     for (let i = 1; i <= 8; i++) {
-      preloadVRM(`/avatars/milady-official-${i}.vrm`);
+      preloadVRMBytes(`/avatars/milady-official-${i}.vrm`);
     }
   }, []);
 
