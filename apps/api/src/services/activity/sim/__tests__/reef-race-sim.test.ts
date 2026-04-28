@@ -643,6 +643,26 @@ describe('ReefRaceSim — drift state machine (Phase 1 T1–T10)', () => {
     }
     expect(body.rot).toBeCloseTo(baseRot, 4);
   });
+
+  it('T10b — gentle right turn under drift never flips to a left heading', () => {
+    captureBroadcasts();
+    const { body } = bootDriftRoom({ vx: 200, vy: 0 });
+    // dir.x = 0.18 → atan2(0.18, ~0.984) ≈ 10.4° (below 15° drift bias).
+    // Pre-fix: desiredRot = 10.4° - 15° = -4.6° (player would visibly turn LEFT).
+    // Post-fix: bias clamped to |baseRot| = 10.4°, desiredRot = 0° (straight ahead).
+    const dir = { x: 0.18, y: 0.984 };
+    const baseRot = Math.atan2(dir.x, dir.y);
+    for (let i = 0; i < 12; i++) {
+      body.vx = 200; body.vy = 0;
+      setIntent(body, { dir, thrust: 0, actionBits: ACTION_BIT_DRIFT });
+      reefRaceSim.__tickOnceForTest('room-drift');
+    }
+    expect(body.drift.charging).toBe(true);
+    // Heading must NOT cross 0 into negative territory — the regression.
+    expect(body.rot).toBeGreaterThanOrEqual(0);
+    // And it must remain within the input direction (clamp at baseRot).
+    expect(body.rot).toBeLessThanOrEqual(baseRot + 1e-4);
+  });
 });
 
 describe('ReefRaceSim — launch boost (Phase 1 T11–T15)', () => {
@@ -1736,17 +1756,14 @@ describe('ReefRaceSim — Phase 2 audit-gap tests (P2-T36..P2-T42)', () => {
   // ribbon_collected, apex_verdict, hazard_hit) — the worry is that the
   // delta size growth is unbounded.
   //
-  // Budget rationale (updated 2026-04-26 for REEF_SNAPSHOT_HZ 5 → 10):
-  //   - 8 players × 10Hz snapshot rate = 80 entity deltas / sec
+  // Budget rationale (updated 2026-04-28 for REEF_SNAPSHOT_HZ 10 → 20):
+  //   - 8 players × 20Hz snapshot rate = 160 entity deltas / sec
   //   - target ~2KB / snapshot at 8 players (post-Phase-2)
-  //   - 10Hz × 2KB = 20KB / sec / room sustained
-  //   - 30s match → 600KB sustained payload
-  //   - + edge events (slipstream, ribbon, apex, hazard) at conservative
-  //     20 events/sec across 8 players = 600 events × ~100 bytes = 60KB
-  //   - 600KB sustained + 60KB events ≈ 660KB total — the 600KB ceiling
-  //     was set when snap rate was 5Hz; current run measures ~150KB which
-  //     is still well below that ceiling, so it stays as the regression
-  //     guard (any 4× spike trips it).
+  //   - 20Hz × 2KB = 40KB / sec / room sustained
+  //   - 30s match → 1.2MB sustained payload upper bound (worst case)
+  //   - measured run at 20Hz lands ~300KB — still under the historical
+  //     600KB ceiling, but doubling the snap rate doubles the run too,
+  //     so the ceiling is bumped to 1.2MB to keep the 4× spike guard.
   //
   // Sized as JSON byte length of every broadcast frame to mirror the
   // wire-format cost the WebSocket actually pays.
@@ -1778,14 +1795,14 @@ describe('ReefRaceSim — Phase 2 audit-gap tests (P2-T36..P2-T42)', () => {
       if (frame.type === 'snapshot.delta') snapshotDeltas++;
       else if (frame.type.startsWith('event.')) eventFrames++;
     }
-    // Ceiling: 600KB / 30s / 8 players.
-    const CEILING_BYTES = 600 * 1024;
+    // Ceiling: 1.2MB / 30s / 8 players (post-20Hz, see budget rationale above).
+    const CEILING_BYTES = 1_200 * 1024;
     expect(totalBytes).toBeLessThan(CEILING_BYTES);
     // Lower bound — sanity: must have actually broadcast something. Prevents a
     // future regression where broadcasts are silently dropped (test would
     // otherwise pass trivially at 0 bytes).
     expect(totalBytes).toBeGreaterThan(10_000);
-    expect(snapshotDeltas).toBeGreaterThan(100); // 30s @ 10Hz ≈ 300; was 150 @ 5Hz
+    expect(snapshotDeltas).toBeGreaterThan(200); // 30s @ 20Hz ≈ 600
     void eventFrames;
   });
 });

@@ -11,13 +11,14 @@
  * Interactive elements (leave button) use pointer-events:auto.
  */
 
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useRef, useState, useMemo } from 'react';
 import {
   useActivityStore,
   selectLeaderboard,
   selectSelfAlive,
   type ActivityState,
 } from '@/stores/activity';
+import type { ReefPowerUpKind } from '@clawville/shared';
 import { TOTAL_LAPS } from '@/lib/three/activities/reef-race/reef-race-config';
 import ActivityResultsModal from './activity-results-modal';
 import ReefRaceInstructions from './reef-race-instructions';
@@ -186,63 +187,256 @@ function BestLapTile({ selfPetId }: { selfPetId: string | null }) {
   );
 }
 
-function PowerUpBar({ selfPetId }: { selfPetId: string | null }) {
-  const inventory = useActivityStore((s) => s.powerUpInventory);
+// Display metadata for each Reef Race power-up kind. Mirrors REEF_POWERUP_DEFS
+// (apps/api/src/services/activity/sim/reef-race-config.ts) — must be kept in
+// sync if a new kind is added on the server (the protocol type fence will
+// prevent silent drift but the player would see "?" until this map updates).
+const POWER_UP_META: Record<
+  ReefPowerUpKind,
+  {
+    icon: string;
+    name: string;
+    desc: string;
+    color: string;
+    /** Active effect duration ms — 0 means instant-cast (no on-screen timer). */
+    effectMs: number;
+  }
+> = {
+  'rr-turbo-bubble':  { icon: '⚡', name: 'Turbo Bubble', desc: '+40% speed for 2.5s', color: '#ffd24a', effectMs: 2_500 },
+  'rr-bubble-shield': { icon: '🛡',  name: 'Bubble Shield', desc: 'Block 1 hit · 4s', color: '#5cd2ff', effectMs: 4_000 },
+  'rr-ink-slick':     { icon: '🟣', name: 'Ink Slick',  desc: 'Drop slick · 6s slow', color: '#a26bff', effectMs: 6_000 },
+  'rr-seeker-jelly':  { icon: '🪼', name: 'Seeker Jelly', desc: 'Homing hit on rival', color: '#ff7aa8', effectMs: 0 },
+  'rr-tide-wave':     { icon: '🌊', name: 'Tide Wave', desc: 'Push back nearby pets', color: '#4dffea', effectMs: 0 },
+  'rr-whirlpool':     { icon: '🌀', name: 'Whirlpool', desc: 'Spin nearby rivals · 3s', color: '#ff5e8a', effectMs: 3_000 },
+};
 
-  if (!inventory.length) return null;
+function getPowerUpMeta(kind: string) {
+  return (POWER_UP_META as Record<string, typeof POWER_UP_META[ReefPowerUpKind]>)[kind] ?? {
+    icon: '?', name: kind, desc: '', color: '#888', effectMs: 0,
+  };
+}
+
+/**
+ * Single power-up slot — icon + name + USE-key prompt + charge count, with a
+ * pickup-pulse on transitions empty→filled and an active-effect bar after use.
+ */
+function PowerUpSlotCard({
+  slot,
+  useKey,
+  slotIndex,
+}: {
+  slot: { kind: string; charges: number; cooldownUntil?: number } | null;
+  useKey: string;
+  slotIndex: number;
+}) {
+  // Track previous slot state so we can detect pickup vs use transitions and
+  // run a local-only effect timer (server doesn't broadcast active duration).
+  const prevKindRef = useRef<string | null>(null);
+  const [pickupFlash, setPickupFlash] = useState(false);
+  const [activeEffect, setActiveEffect] = useState<{
+    kind: string;
+    until: number;
+  } | null>(null);
+
+  useEffect(() => {
+    const cur = slot?.kind ?? null;
+    const prev = prevKindRef.current;
+
+    // empty → filled = pickup
+    if (!prev && cur) {
+      setPickupFlash(true);
+      const t = window.setTimeout(() => setPickupFlash(false), 600);
+      // also clear any lingering "active" pip from prior round
+      setActiveEffect(null);
+      prevKindRef.current = cur;
+      return () => window.clearTimeout(t);
+    }
+    // filled → empty = use (or wipeout consume — close enough for HUD)
+    if (prev && !cur) {
+      const meta = getPowerUpMeta(prev);
+      if (meta.effectMs > 0) {
+        setActiveEffect({ kind: prev, until: performance.now() + meta.effectMs });
+      }
+      prevKindRef.current = null;
+      return;
+    }
+    prevKindRef.current = cur;
+  }, [slot?.kind]);
+
+  // Tick the active-effect timer at 30 Hz so the countdown bar animates.
+  const [, force] = useState(0);
+  useEffect(() => {
+    if (!activeEffect) return;
+    const tick = () => {
+      if (performance.now() >= activeEffect.until) {
+        setActiveEffect(null);
+      } else {
+        force((n) => (n + 1) & 0xff);
+      }
+    };
+    const id = window.setInterval(tick, 33);
+    return () => window.clearInterval(id);
+  }, [activeEffect]);
+
+  const meta = slot ? getPowerUpMeta(slot.kind) : null;
+  const filled = !!slot;
+
+  // Active-effect overlay
+  let activePct = 0;
+  let activeMeta = null;
+  if (activeEffect) {
+    activeMeta = getPowerUpMeta(activeEffect.kind);
+    const remaining = Math.max(0, activeEffect.until - performance.now());
+    activePct = Math.min(1, remaining / activeMeta.effectMs);
+  }
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        gap: 8,
-        background: 'rgba(0, 0, 0, 0.6)',
-        border: '1px solid #00e5ff33',
-        borderRadius: 8,
-        padding: '6px 12px',
-      }}
-    >
-      {inventory.map((slot, i) => (
-        <div
-          key={i}
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            gap: 2,
-          }}
-        >
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, minWidth: 110 }}>
+      {/* USE-KEY chip — always visible so players learn the binding */}
+      <div
+        style={{
+          fontSize: 9,
+          letterSpacing: '0.18em',
+          fontWeight: 900,
+          padding: '2px 8px',
+          borderRadius: 4,
+          background: filled ? `${meta!.color}33` : 'rgba(255,255,255,0.08)',
+          border: `1px solid ${filled ? meta!.color : '#ffffff22'}`,
+          color: filled ? meta!.color : '#ffffff66',
+          transition: 'all 200ms ease',
+        }}
+      >
+        {useKey}
+      </div>
+
+      {/* Slot card */}
+      <div
+        style={{
+          width: 80,
+          height: 80,
+          borderRadius: 12,
+          border: `2px solid ${filled ? meta!.color : '#ffffff15'}`,
+          background: filled
+            ? `radial-gradient(circle at 50% 30%, ${meta!.color}55 0%, ${meta!.color}11 60%, rgba(0,0,0,0.7) 100%)`
+            : 'rgba(0,0,0,0.55)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: 36,
+          position: 'relative',
+          transition: 'all 250ms ease',
+          boxShadow: pickupFlash
+            ? `0 0 24px 4px ${meta?.color ?? '#fff'}, 0 0 8px 2px #fff inset`
+            : filled
+            ? `0 0 12px ${meta!.color}55`
+            : 'none',
+          animation: pickupFlash ? 'reef-power-pulse 600ms ease-out' : undefined,
+        }}
+      >
+        {filled ? meta!.icon : <span style={{ color: '#ffffff22', fontSize: 24 }}>—</span>}
+
+        {/* Charge pip (only when > 1) */}
+        {filled && slot!.charges > 1 && (
           <div
             style={{
-              fontSize: 8,
-              color: '#00e5ffcc',
-              letterSpacing: '0.12em',
+              position: 'absolute',
+              top: -6,
+              right: -6,
+              fontSize: 10,
               fontWeight: 800,
+              padding: '2px 6px',
+              borderRadius: 999,
+              background: meta!.color,
+              color: '#000',
             }}
           >
-            {i === 0 ? 'SPACE' : 'Q'}
+            ×{slot!.charges}
           </div>
+        )}
+
+        {/* Active-effect countdown ring */}
+        {activeMeta && (
           <div
             style={{
-              width: 36,
-              height: 36,
-              background: '#00e5ff22',
-              border: '1px solid #00e5ff55',
-              borderRadius: 6,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: 18,
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              bottom: -3,
+              height: 4,
+              background: 'rgba(255,255,255,0.1)',
+              borderRadius: 2,
+              overflow: 'hidden',
             }}
           >
-            {slot.kind === 'boost' ? '⚡' : slot.kind === 'shield' ? '🛡' : '?'}
+            <div
+              style={{
+                width: `${activePct * 100}%`,
+                height: '100%',
+                background: activeMeta.color,
+                transition: 'width 33ms linear',
+              }}
+            />
           </div>
-          <div style={{ fontSize: 9, color: '#ffffff99' }}>
-            ×{slot.charges}
+        )}
+      </div>
+
+      {/* Name + description */}
+      <div style={{ height: 26, textAlign: 'center' }}>
+        {filled ? (
+          <>
+            <div style={{ fontSize: 10, fontWeight: 800, color: meta!.color, letterSpacing: '0.04em' }}>
+              {meta!.name}
+            </div>
+            <div style={{ fontSize: 8, color: '#ffffff88', marginTop: 1 }}>
+              {meta!.desc}
+            </div>
+          </>
+        ) : activeMeta ? (
+          <div style={{ fontSize: 9, color: activeMeta.color, fontWeight: 800, letterSpacing: '0.05em' }}>
+            ACTIVE · {activeMeta.name}
           </div>
-        </div>
-      ))}
+        ) : (
+          <div style={{ fontSize: 9, color: '#ffffff44', letterSpacing: '0.08em' }}>
+            EMPTY · DRIVE THROUGH PICKUP
+          </div>
+        )}
+      </div>
+      {/* Slot index dev hint suppressed in prod; readable here for debug */}
+      <span style={{ display: 'none' }}>{slotIndex}</span>
     </div>
+  );
+}
+
+function PowerUpBar({ selfPetId: _selfPetId }: { selfPetId: string | null }) {
+  const inventory = useActivityStore((s) => s.powerUpInventory);
+  // Pad to REEF_MAX_POWER_UP_SLOTS (= 2) so empty slots stay visible — the
+  // whole point of this HUD is "you can SEE you have nothing yet" instead of
+  // wondering whether your pickup landed.
+  const slots: Array<{ kind: string; charges: number; cooldownUntil?: number } | null> = [
+    inventory[0] ?? null,
+    inventory[1] ?? null,
+  ];
+  const useKeys = ['SPACE', 'Q'];
+
+  return (
+    <>
+      <style>{`@keyframes reef-power-pulse { 0% { transform: scale(1); } 35% { transform: scale(1.18); } 100% { transform: scale(1); } }`}</style>
+      <div
+        style={{
+          display: 'flex',
+          gap: 14,
+          background: 'rgba(0, 0, 0, 0.55)',
+          border: '1px solid #00e5ff33',
+          borderRadius: 12,
+          padding: '10px 16px 12px',
+          backdropFilter: 'blur(6px)',
+        }}
+      >
+        {slots.map((slot, i) => (
+          <PowerUpSlotCard key={i} slot={slot} useKey={useKeys[i]} slotIndex={i} />
+        ))}
+      </div>
+    </>
   );
 }
 
