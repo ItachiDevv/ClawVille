@@ -1695,22 +1695,27 @@ class ReefRaceSim {
     const scale = ellipseScaleAt(body.x, body.y);
     if (scale <= REEF_OUTER_WALL_SCALE || scale <= 0) return;
 
-    const clampScale = REEF_OUTER_WALL_SCALE / scale;
+    // Nudge slightly inside the rail after correction. Sitting exactly on the
+    // mathematical boundary makes the next tick re-hit the clamp immediately,
+    // which reads as "stuck on the fence" when the player is trying to recover.
+    const WALL_RECOVERY_INSET_SCALE = 0.004;
+    const clampScale =
+      Math.max(0, REEF_OUTER_WALL_SCALE - WALL_RECOVERY_INSET_SCALE) / scale;
     body.x *= clampScale;
     body.y *= clampScale;
 
     const normal = outerEllipseNormalAt(body.x, body.y);
     const vN = body.vx * normal.x + body.vy * normal.y;
     if (reflectVelocity) {
-      // Primary clamp: reflect outward velocity (full bumper physics).
+      // Primary clamp: kill outward velocity but keep tangential speed. A
+      // bounce felt bad in Reef Race because racers pinballed into the rail
+      // and lost the ability to steer out; sliding preserves recovery control.
       if (vN > 0) {
-        const WALL_RESTITUTION = 0.25;
-        const WALL_TANGENT_FRICTION = 0.92;
+        const WALL_TANGENT_FRICTION = 0.98;
         const vTx = body.vx - vN * normal.x;
         const vTy = body.vy - vN * normal.y;
-        const reflectedN = -vN * WALL_RESTITUTION;
-        body.vx = vTx * WALL_TANGENT_FRICTION + reflectedN * normal.x;
-        body.vy = vTy * WALL_TANGENT_FRICTION + reflectedN * normal.y;
+        body.vx = vTx * WALL_TANGENT_FRICTION;
+        body.vy = vTy * WALL_TANGENT_FRICTION;
       }
     } else {
       // Safety pass after proximity: just kill outward velocity. No bounce —
