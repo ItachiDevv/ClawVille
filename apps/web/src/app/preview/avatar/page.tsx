@@ -1,5 +1,10 @@
 'use client';
 
+// useSearchParams + Three.js (browser-only WebGL canvas) require dynamic
+// rendering at request time. Without this the build fails during static
+// prerender of /preview/avatar with "Error occurred prerendering page".
+export const dynamic = 'force-dynamic';
+
 /**
  * /preview/avatar — standalone animation comparison page (dev-only, unadvertised).
  *
