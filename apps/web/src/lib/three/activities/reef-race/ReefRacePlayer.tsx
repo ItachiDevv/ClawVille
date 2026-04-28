@@ -62,6 +62,18 @@ import {
   RIDER_MOUNT_OFFSET_DEFAULT,
 } from './reef-race-config';
 import type { ReefRaceEntity } from './reef-race-types';
+import {
+  createSeaCreatureAnimator,
+  type SeaCreatureAnimatorHandle,
+} from '@/lib/three/sea-creature-animator';
+import {
+  SEA_CREATURE_MANIFEST,
+} from '@/lib/three/sea-creature-manifest';
+import type {
+  SeaCreatureSpecies,
+  SeaCreatureAnimState,
+} from '@/lib/three/sea-creature-types';
+import { applyTransformSwim, resetTransformSwimState } from '@/lib/three/sea-creature-swim';
 
 // ─── Preloads — fire at module scope ─────────────────────────────────────────
 useGLTF.preload('/models/sea_horse.glb');
@@ -160,8 +172,32 @@ interface SnapRecord {
   vz: number; // sim-space vy → Three.js vz
 }
 
-/** Apply procedural swimming undulation to seahorse / lobster bones. */
+/**
+ * Apply swimming animation to the avatar scene.
+ *
+ * For RIGGED meshes (sea_horse.glb — 93 bone nodes): delegates to the bone-based
+ * undulation path via applyTransformSwim's internal `hasBones` branch, which
+ * returns early and lets the original bone traversal run via the scene.traverse below.
+ *
+ * For STATIC meshes (lobster.glb — 0 bones): applyTransformSwim does pure
+ * rotation.x / rotation.z / position.y oscillation on the whole scene group —
+ * producing visible swimming motion that was a complete no-op before this change.
+ *
+ * `baseY = 0` because clonedScene is parented to riderMountRef whose position.y
+ * is already driven by the bob loop above; position.y on clonedScene itself
+ * starts at 0 and we oscillate around that.
+ *
+ * The bone-path below (traverse + isBone) still handles rigged species correctly
+ * because applyTransformSwim returns early when hasBones=true, leaving the
+ * scene's rotation/position untouched for the traverse to work on.
+ */
 function applySwimmingAnim(scene: THREE.Object3D, petId: string, delta: number, speed: number): void {
+  // Transform-only path for static meshes (lobster.glb, crayfish.glb, etc.).
+  // Returns early internally when bones are present, so rigged meshes pass through.
+  applyTransformSwim(scene, petId, delta, speed, 0);
+
+  // Bone-based undulation for rigged species (sea_horse.glb, future rigged GLBs).
+  // applyTransformSwim's hasBones=true guard ensures transform is NOT also applied.
   if (!_swimTime[petId]) _swimTime[petId] = 0;
   _swimTime[petId] += delta;
   const t = _swimTime[petId];
@@ -257,8 +293,91 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
     mount.add(clonedScene);
     return () => {
       mount.remove(clonedScene);
+      // Clear per-petId procedural state so a remounted clone starts at t=0
+      // and re-probes for bones (important if species changes across mounts).
+      resetTransformSwimState(entity.petId);
     };
-  }, [clonedScene]);
+  }, [clonedScene, entity.petId]);
+
+  // ─── Sea-creature animator (hot-swap when manifest enables this species) ───
+  // Manifest defaults to all-empty so this hook is a no-op until rigged GLBs
+  // ship at /models/sea-creatures/<species>/{base.glb, animations/<state>.glb}
+  // and the manifest is flipped to hasRig=true. While that's the case the
+  // existing static `clonedScene` + procedural `applySwimmingAnim` keep running
+  // unchanged. When manifest is enabled, the animator's scene REPLACES
+  // clonedScene at the rider mount and the per-state animation plays.
+  //
+  // FEATURE_GATE: sea_creature_animator
+  // Status: scaffolded import path; dormant until manifest hasRig=true.
+  // Metric to graduate: rigged base.glb + ≥1 animation clip exists for any
+  //   species AND visual review confirms motion matches the racing context.
+  // Current reading: 0 species enabled (all hasRig=false in manifest).
+  // Review deadline: 2026-05-26
+  // On deadline: if no GLBs shipped, DELETE the animator import path and
+  //   keep procedural-only. Don't extend without a Meshy export to point at.
+  // Reference: tweet copyrebeldia 2026-04-26 — Meshy/Tripo auto-rig pipeline.
+  const animatorRef = useRef<SeaCreatureAnimatorHandle | null>(null);
+  const speciesKey: SeaCreatureSpecies =
+    ((entity as ReefRaceEntity & { species?: string }).species as SeaCreatureSpecies | undefined) ?? 'lobster';
+  const wantsAnimator = SEA_CREATURE_MANIFEST[speciesKey]?.hasRig ?? false;
+
+  useEffect(() => {
+    if (!wantsAnimator) return;
+    let cancelled = false;
+    let handle: SeaCreatureAnimatorHandle | null = null;
+
+    createSeaCreatureAnimator(speciesKey, 'idle').then((h) => {
+      if (cancelled || !h) {
+        h?.dispose();
+        return;
+      }
+      handle = h;
+      animatorRef.current = h;
+
+      // Hot-swap: detach static fallback scene, attach animator scene.
+      const mount = riderMountRef.current;
+      if (mount) {
+        mount.remove(clonedScene);
+        // Re-apply the per-player color tint to the animator's freshly-cloned
+        // scene (animator clones from its own cache and doesn't know about
+        // entity.color).
+        if (entity.color) {
+          h.scene.traverse((o: THREE.Object3D) => {
+            const mesh = o as THREE.Mesh;
+            if (!mesh.isMesh) return;
+            const mat = mesh.material;
+            const applyTint = (m: THREE.Material) => {
+              if ((m as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
+                const cloned = (m as THREE.MeshStandardMaterial).clone();
+                cloned.color.setStyle(entity.color!);
+                return cloned;
+              }
+              return m;
+            };
+            if (Array.isArray(mat)) {
+              mesh.material = mat.map(applyTint);
+            } else {
+              mesh.material = applyTint(mat);
+            }
+          });
+        }
+        mount.add(h.scene);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      const mount = riderMountRef.current;
+      if (handle && mount) {
+        mount.remove(handle.scene);
+        // Restore static fallback in case the component re-mounts before
+        // a fresh animator load completes (rare — race restart, navigation).
+        mount.add(clonedScene);
+      }
+      handle?.dispose();
+      animatorRef.current = null;
+    };
+  }, [wantsAnimator, speciesKey, entity.color, clonedScene]);
 
   useFrame((_, delta) => {
     const group      = groupRef.current;
@@ -387,9 +506,32 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
       RIDER_MOUNT_OFFSET_DEFAULT[1] +
       Math.sin(_bobTime[entity.petId] * BOB_FREQ_HZ * Math.PI * 2) * BOB_AMP_LOCAL;
 
-    // ─── Procedural swimming animation ────────────────────────────────────────
+    // ─── Animation: animator (when manifest enabled) OR procedural fallback ──
     const speed = Math.sqrt(interpVx * interpVx + interpVz * interpVz);
-    applySwimmingAnim(clonedScene, entity.petId, dt, speed);
+    const animator = animatorRef.current;
+    if (animator) {
+      // Drive the AnimationMixer + state machine. State derivation:
+      //   finishedAt → victory   (one-shot, holds last frame)
+      //   speed > 50 → swim      (loop)
+      //   else        → idle     (loop)
+      // Note: 'wipeout' (respawnAt) and 'hit' (knockback) are not derivable from
+      // ReefRaceEntity yet — server doesn't surface respawnAt to the client.
+      // Ship them in a follow-up after the wire-format adds the fields.
+      animator.tick(dt);
+      const desiredState: SeaCreatureAnimState = entity.finishedAt
+        ? 'victory'
+        : speed > 50
+          ? 'swim'
+          : 'idle';
+      if (animator.getState() !== desiredState) {
+        animator.setState(desiredState);
+      }
+    } else {
+      // Fallback path — procedural per-bone undulation on the static GLB.
+      // Currently a no-op for lobster.glb / crayfish.glb (0 bones) and a faint
+      // wiggle on sea_horse.glb (93-node rig with bone names that match).
+      applySwimmingAnim(clonedScene, entity.petId, dt, speed);
+    }
 
     // Mark finished if finishedAt is set.
     if (entity.finishedAt && !finishedRef.current) {
