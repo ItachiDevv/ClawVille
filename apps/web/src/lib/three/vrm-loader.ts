@@ -167,39 +167,50 @@ function loadVRM(path: string): Promise<VRM> {
       // so it faces -Z, matching VRM 1.0 convention.
       VRMUtils.rotateVRM0(vrm);
 
-      // ── Hair-strands gap fix ─────────────────────────────────────────────────
-      // CDP probe 2026-04-27 root-cause finding (clawville.world/game, live):
+      // ── Hair re-parent to head BONE (2026-04-28) ─────────────────────────
       //
-      // The "bald spot" at the back-crown is a STATIC GEOMETRY GAP, not a
-      // spring-bone lag or skinning issue. Every Milady VRM contains two hair
-      // sub-hierarchies both parented to mixamorigHead:
+      // Root cause of the "bald spot during walk" bug, finally tested:
       //
-      //   1. Hairmodel  (plain Mesh, pos.y=0.2069, scale=0.3209) — the top bun.
-      //      Crown-back in head-bone local space: localY=1.0, reaches headBoneY+59wu.
+      // Hairmodel / Sketchfab_model / Hatmodel are plain (non-skinned) Meshes
+      // parented to the mixamorigHead **scene node** in the GLTF tree. At
+      // runtime three-vrm drives the rig via skinning matrices on SkinnedMeshes
+      // — those matrices DO NOT update the scene-graph node positions. So the
+      // hair stays at its bind-pose offset while the head bone tilts forward
+      // during walk, producing a gap at the crown-back.
       //
-      //   2. Sketchfab_model (Group, pos.y≈0.1285-0.1345, scale≈0.1879) wrapping
-      //      Object_1003 + Object_1003_1 — the lower hair tendrils/strands.
-      //      Max local Y of strands = 0.322, so they reach headBoneY+21wu.
+      // Fix: walk the scene, find the head BONE (Object3D.isBone), then
+      // headBone.attach(hairMesh) for each hair piece. attach() preserves the
+      // world transform during re-parent, so the hair starts at the same
+      // position as before but now follows the bone every frame.
       //
-      // The scalp crown-back (head-weighted body vertices transformed through the
-      // head bone matrix) measures at headBoneY+44wu.
+      // Prior attempts (all failed) tried to compensate the static gap:
+      //   • spring-bone tuning (no springs in these VRMs)
+      //   • Hairmodel pre-tilt rotation (CDP-disproved)
+      //   • dark scalp-cap sphere (visibly clipped through hair)
+      //   • Sketchfab_model.position.y += 0.218 (closed gap statically but
+      //     hair still didn't follow head tilt)
+      //   • blender07 hair-into-head SkinnedMesh bake (corrupted GLB)
       //
-      // Gap before fix (confirmed stable across full walk animation range hRx -0.047…+0.004):
-      //   scalp crown-back − strands crown-back = 24.5wu
-      //
-      // Fix: move Sketchfab_model up by 24.4wu / headBoneScale(112) = 0.218 local units.
-      // This makes strands crown-back reach 221.6wu vs scalp crown 222.2wu → gap 0.6wu.
-      //
-      // Applied to EVERY VRM at load time (not just NPC variants). Safe for player VRMs:
-      // Hairmodel + Sketchfab_model structure is present in all milady-official-*.vrm.
-      // The 0.218 offset is independent of the original position.y (which varies
-      // slightly across variants, 0.1285–0.1345) because the gap is always 24.4wu.
-      vrm.scene.traverse((obj) => {
-        if (obj.name === 'Sketchfab_model') {
-          obj.position.y += 0.218;
-          obj.updateMatrix();
+      // None of those tested the actual hypothesis. This does.
+      {
+        let headBone: THREE.Object3D | null = null;
+        vrm.scene.traverse((o) => {
+          if (o.name === 'mixamorigHead' && (o as THREE.Bone).isBone) {
+            headBone = o;
+          }
+        });
+        if (headBone) {
+          const hairPieces: THREE.Object3D[] = [];
+          vrm.scene.traverse((o) => {
+            if (o.name === 'Hairmodel' || o.name === 'Sketchfab_model' || o.name === 'Hatmodel') {
+              hairPieces.push(o);
+            }
+          });
+          for (const piece of hairPieces) {
+            (headBone as THREE.Object3D).attach(piece);
+          }
         }
-      });
+      }
 
       // MToon outline pass — disable to halve VRM draw calls (B1 2026-04-24).
       // MToon renders each mesh twice: once for the fill, once for an outset
