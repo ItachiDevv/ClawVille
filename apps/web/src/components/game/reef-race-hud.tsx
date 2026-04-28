@@ -214,6 +214,16 @@ function PowerUpBar({ selfPetId }: { selfPetId: string | null }) {
         >
           <div
             style={{
+              fontSize: 8,
+              color: '#00e5ffcc',
+              letterSpacing: '0.12em',
+              fontWeight: 800,
+            }}
+          >
+            {i === 0 ? 'SPACE' : 'Q'}
+          </div>
+          <div
+            style={{
               width: 36,
               height: 36,
               background: '#00e5ff22',

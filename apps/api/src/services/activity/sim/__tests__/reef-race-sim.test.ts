@@ -601,7 +601,7 @@ describe('ReefRaceSim — drift state machine (Phase 1 T1–T10)', () => {
     expect(broadcasts.some((f) => f.type === 'event.drift_boost')).toBe(false);
   });
 
-  it('T10 — body.rot shows constant 15° bias while drifting (no accumulation)', () => {
+  it('T10 — body.rot eases toward constant 15° drift bias (no accumulation)', () => {
     captureBroadcasts();
     const { body } = bootDriftRoom({ vx: 200, vy: 0 });
     // First tick = "press" tick. drift.charging starts FALSE on entry to
@@ -612,15 +612,17 @@ describe('ReefRaceSim — drift state machine (Phase 1 T1–T10)', () => {
     reefRaceSim.__tickOnceForTest('room-drift');
     expect(body.drift.charging).toBe(true);
 
-    // Tick 2 — bias applies. Right turn (dir.x > 0) → bias is SUBTRACTED.
-    body.vx = 200; body.vy = 0;
-    setIntent(body, { dir: { x: 0.5, y: 0.866 }, thrust: 0, actionBits: ACTION_BIT_DRIFT });
-    reefRaceSim.__tickOnceForTest('room-drift');
     const baseRot = Math.atan2(0.5, 0.866);
     const expected = baseRot - DRIFT_ANGULAR_BIAS_RAD;
+    // Subsequent ticks ease toward the biased heading instead of snapping.
+    for (let i = 0; i < 8; i++) {
+      body.vx = 200; body.vy = 0;
+      setIntent(body, { dir: { x: 0.5, y: 0.866 }, thrust: 0, actionBits: ACTION_BIT_DRIFT });
+      reefRaceSim.__tickOnceForTest('room-drift');
+    }
     expect(body.rot).toBeCloseTo(expected, 4);
 
-    // Tick 3 — same dir → SAME rot (bias is absolute, not accumulating).
+    // Same dir remains anchored to the same biased target (not accumulating).
     body.vx = 200; body.vy = 0;
     setIntent(body, { dir: { x: 0.5, y: 0.866 }, thrust: 0, actionBits: ACTION_BIT_DRIFT });
     reefRaceSim.__tickOnceForTest('room-drift');
@@ -634,9 +636,11 @@ describe('ReefRaceSim — drift state machine (Phase 1 T1–T10)', () => {
     reefRaceSim.__tickOnceForTest('room-drift');
     expect(body.drift.charging).toBe(false);
 
-    body.vx = 200; body.vy = 0;
-    setIntent(body, { dir: { x: 0.5, y: 0.866 }, thrust: 0, actionBits: 0 });
-    reefRaceSim.__tickOnceForTest('room-drift');
+    for (let i = 0; i < 3; i++) {
+      body.vx = 200; body.vy = 0;
+      setIntent(body, { dir: { x: 0.5, y: 0.866 }, thrust: 0, actionBits: 0 });
+      reefRaceSim.__tickOnceForTest('room-drift');
+    }
     expect(body.rot).toBeCloseTo(baseRot, 4);
   });
 });
@@ -1938,8 +1942,8 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     });
     const str = state.bodies.get('str')!;
     const bal = state.bodies.get('bal')!;
-    // strength mult = 1.4 → [round(12/1.4), round(27/1.4), round(45/1.4)] = [9, 19, 32]
-    expect(str.driftSparkTicks).toEqual([9, 19, 32]);
+    // strength mult = 1.4 -> [round(8/1.4), round(20/1.4), round(34/1.4)] = [6, 14, 24]
+    expect(str.driftSparkTicks).toEqual([6, 14, 24]);
     expect(bal.driftSparkTicks).toEqual([
       DRIFT_SPARK_TICK_1,
       DRIFT_SPARK_TICK_2,
@@ -2079,7 +2083,7 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
   });
 
   // P3-T14 — strength drift charges fire spark1 sooner
-  it('P3-T14 — strength drift charges spark1 at tick 9 vs 12 baseline', () => {
+  it('P3-T14 — strength drift charges spark1 at tick 6 vs 8 baseline', () => {
     captureBroadcasts();
     const profiles = new Map([
       ['str', profile('str', 1, 'brave-adventurer')],
@@ -2098,8 +2102,8 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     });
     reefRaceSim.__tickOnceForTest('room-p3');
     expect(body.drift.charging).toBe(true);
-    // Hold drift through 9 more ticks (elapsed = 9 = strength threshold T1).
-    for (let i = 0; i < 9; i++) {
+    // Hold drift through 6 more ticks (elapsed = 6 = strength threshold T1).
+    for (let i = 0; i < 6; i++) {
       setIntent(body, {
         dir: { x: 0.5, y: 1 },
         thrust: 0.85,
