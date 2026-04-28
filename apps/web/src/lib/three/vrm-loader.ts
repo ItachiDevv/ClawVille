@@ -18,6 +18,7 @@
  * GPU constraints: no InstancedMesh, no ShaderMaterial, no drei Text/Billboard.
  */
 
+import { useId } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 // meshoptimizer's decoder object satisfies three's strict `setMeshoptDecoder`
@@ -63,32 +64,25 @@ type CacheEntry =
   | { status: 'rejected'; error:   unknown };
 
 /**
- * @invariant VRM_CACHE — one VRM instance per path, shared across all consumers.
+ * @invariant VRM_CACHE — one VRM instance per (path, consumer) pair.
  *
- * VRM_CACHE stores exactly ONE `VRM` object per path string. Every call to
- * `useVRM(path)` or `preloadVRM(path)` returns — or eventually resolves to —
- * that same object. This means `vrm.scene` is a **shared Object3D**; any
- * mutation made by one consumer (e.g. nulling `vrm.lookAt`) is immediately
- * visible to all others.
+ * Cache key is `${path}#${useId()}`. Each React component instance that calls
+ * `useVRM(path)` gets its OWN cached VRM with its OWN scene + skeleton +
+ * humanoid. Two components rendering the same path no longer share `vrm.scene` —
+ * R3F's `<primitive>` can safely mount each one to its own group, and per-VRM
+ * runtime mutations (e.g. nulling `vrm.lookAt`) no longer leak across consumers.
  *
- * Enforced constraints for all consumers:
- *   1. Never render two R3F components with the same VRM path — they would
- *      share `vrm.scene` and R3F's `<primitive>` would reparent it between
- *      groups each frame, clobbering both components' transforms.
- *   2. Mutations on the shared VRM instance (e.g. setting `vrm.lookAt = null`
- *      in VRMNpcMesh) affect every consumer using that path. Today player-avatar.tsx
- *      (PlayerPetVRMInner) does NOT use `lookAt` or `expressionManager`, so the
- *      wanderer null-assignments in arena-npcs.tsx are safe for current paths
- *      (official_2/3/4/7/8). If `lookAt` is ever added to player-avatar, those paths
- *      must be kept disjoint from any VRMNpcMesh path — or the null-assignment must
- *      be guarded by a per-consumer clone.
- *   3. Dispose of the VRM scene via VRMUtils.deepDispose at the correct lifetime
- *      boundary (the outermost component that owns the VRM). Do NOT dispose from
- *      an inner per-instance animator — the cache still holds a reference.
+ * Cost model: parsing a VRM is ~30-80ms on Iris Xe. The underlying file fetch
+ * is served from the browser HTTP cache after the first network request, so
+ * the only per-consumer cost is the parse itself. For ClawVille (5 NPCs +
+ * player-avatar, ~6 concurrent VRMs) this is acceptable — measured at scene mount,
+ * not in the steady-state render loop.
  *
- * Player-selectable paths:  official_1 … official_8 (agent-model-registry.ts)
- * Wandering NPC paths:       official_2, official_3, official_4, official_7, official_8
- * Overlap (constraint #2):   official_2/3/4/7/8 — player-avatar and wanderers share these.
+ * Codex Critical #1 (2026-04-27): The previous one-VRM-per-path design caused
+ * silent corruption when player-avatar selected a Milady model (official_2/3/4/7/8)
+ * that wandering NPCs were already rendering. R3F would reparent the same
+ * Object3D between groups each frame, randomly freezing one's animation and
+ * teleporting the other's transform. Per-consumer caching kills that bug class.
  */
 const VRM_CACHE = new Map<string, CacheEntry>();
 
@@ -117,11 +111,14 @@ function getLoader(): GLTFLoader {
 }
 
 /**
- * Initiate (or return) a VRM load for the given path.
+ * Initiate (or return) a VRM load for the given (cacheKey, path) pair.
+ * cacheKey is typically `${path}#${useId()}` to give each consumer its own
+ * VRM instance — see VRM_CACHE invariant block above.
+ *
  * Always returns immediately — the returned Promise resolves to the VRM.
  */
-function loadVRM(path: string): Promise<VRM> {
-  const existing = VRM_CACHE.get(path);
+function loadVRM(cacheKey: string, path: string): Promise<VRM> {
+  const existing = VRM_CACHE.get(cacheKey);
   if (existing) {
     if (existing.status === 'resolved') return Promise.resolve(existing.vrm);
     if (existing.status === 'rejected') return Promise.reject(existing.error);
@@ -257,15 +254,15 @@ function loadVRM(path: string): Promise<VRM> {
       }
       // ── End spring-bone scale compensation ────────────────────────────────
 
-      VRM_CACHE.set(path, { status: 'resolved', vrm });
+      VRM_CACHE.set(cacheKey, { status: 'resolved', vrm });
       return vrm;
     })
     .catch((err) => {
-      VRM_CACHE.set(path, { status: 'rejected', error: err });
+      VRM_CACHE.set(cacheKey, { status: 'rejected', error: err });
       throw err;
     });
 
-  VRM_CACHE.set(path, { status: 'pending', promise });
+  VRM_CACHE.set(cacheKey, { status: 'pending', promise });
   return promise;
 }
 
@@ -274,14 +271,19 @@ function loadVRM(path: string): Promise<VRM> {
  * Must be called inside a React component (or hook) wrapped in <Suspense>.
  * Throws the Promise while loading, returns the VRM when resolved,
  * re-throws errors when rejected.
+ *
+ * Returns a UNIQUE VRM instance per call site (Codex Critical #1 fix).
+ * The cache key combines `path` with React's `useId()` so two components
+ * rendering the same path each get their own scene/skeleton/humanoid.
  */
 export function useVRM(path: string): VRM {
-  // Kick off the load if not already started
-  const entry = VRM_CACHE.get(path);
+  const id = useId();
+  const cacheKey = `${path}#${id}`;
+  const entry = VRM_CACHE.get(cacheKey);
 
   if (!entry) {
     // First call — initiate load and throw the Promise
-    const p = loadVRM(path);
+    const p = loadVRM(cacheKey, path);
     throw p;
   }
 
@@ -297,21 +299,30 @@ export function useVRM(path: string): VRM {
 }
 
 /**
- * Preload a VRM without triggering Suspense.
- * Call from useEffect or module scope to warm the cache ahead of rendering.
+ * Preload a VRM by warming the browser HTTP cache for `path`.
+ *
+ * Per-consumer parse means there's no shared parsed VRM to pre-populate;
+ * the win from preloading is eliminating the network round-trip when the
+ * first consumer mounts. Subsequent loadAsync(path) calls hit the browser
+ * cache and parse from memory.
+ *
+ * Pre-2026-04-27 behaviour (full load + parse + cache by path) is no longer
+ * meaningful under per-consumer caching — kept as a fetch() to preserve
+ * the ergonomic call pattern in arena-npcs.tsx module-scope preloads.
  */
 export function preloadVRM(path: string): void {
-  if (!VRM_CACHE.has(path)) {
-    loadVRM(path).catch(() => {
-      // Errors will be surfaced when useVRM is actually called; swallow here.
-    });
-  }
+  fetch(path).catch(() => {
+    // Errors will surface when useVRM actually parses.
+  });
 }
 
 /**
  * Expose cache for testing/debug.
  * Do not use in production rendering paths.
+ *
+ * Cache is keyed by `${path}#${useId}` — debugging callers should iterate
+ * all entries rather than expecting a single entry per path.
  */
-export function getVRMCacheEntry(path: string): CacheEntry | undefined {
-  return VRM_CACHE.get(path);
+export function getVRMCacheEntry(cacheKey: string): CacheEntry | undefined {
+  return VRM_CACHE.get(cacheKey);
 }
