@@ -65,7 +65,15 @@ const N_SECTIONS = 80;
  *   lateralOffset = hw * factor + addend (see PROFILE_OFFSETS_ABS)
  * Using absolute wu offsets added to hw makes the profile independent of hw.
  */
-const PROFILE_Y: readonly number[] = [+30, 0, -180, -220, -250];
+// 2026-04-29 iter-7d: pulled v0 outer-top from +30 to 0. The +30 protrusion
+// dominated the top-down view at narrow chokepoint sections (kelp/shipwreck/
+// coral halfWidth 420-525), covering the cyan water with brown cliff stripe.
+// At y=0 it's flush with ground — the cliff's lateral protrusion still
+// blocks the water at 1050 corridor, but from top-down the cliff "rim" is
+// invisible and water dominates the visible canyon channel. Cliff face
+// drops from y=0 → y=-180 (water-line) inside the corridor, so cinematic
+// player POV still sees cliff walls on each side.
+const PROFILE_Y: readonly number[] = [0, 0, -180, -220, -250];
 
 /**
  * Absolute wu added to halfWidth for each profile vertex.
