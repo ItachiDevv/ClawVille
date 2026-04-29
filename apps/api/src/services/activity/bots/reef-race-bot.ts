@@ -31,10 +31,14 @@ import {
   APEX_HAIRPIN_CHECKPOINT_INDICES,
   APEX_INSIDE_OFFSET,
   SLIPSTREAM_MAX_DISTANCE,
+  REEF_POWERUP_RADIUS,
+  REEF_RACE_USE_SPLINE,
   type ReefCheckpointAabb,
   type ReefBoostRibbon,
   type ReefHazardPatch,
 } from '../sim/reef-race-config';
+import { ReefSpline } from '../sim/reef-race-spline';
+import { REEF_RACE_DEFAULT_TRACK } from '../sim/reef-race-track-layout';
 
 const POWERUP_USE_CHANCE = 0.3;
 const JITTER_MAGNITUDE = 0.08;
@@ -100,6 +104,99 @@ interface ReefBotRoomView extends Omit<BotRoomView, 'bodies'> {
   hazards?: ReadonlyArray<Pick<ReefHazardPatch, 'id' | 'center' | 'radius'>>;
 }
 
+// ─── v2 spline-bot constants ────────────────────────────────────────────────
+// Reef Race v2 — bot AI for the spline track. Active only when
+// REEF_RACE_USE_SPLINE is true. Spec: `.claude/plans/reef-race-v2.md` and
+// architecture §5 of `.claude/plans/reef-race-v2-spline-architecture.md`.
+//
+// The v2 path is fully separate from the legacy ellipse heuristics above —
+// flag-gated inside computeInput so production stays bit-identical until the
+// flag flips. Drift logic is DROPPED on the v2 path (ACTION_BIT_DRIFT bit is
+// reused as ACTION_BIT_JUMP in v2; the sim handles the bit).
+
+/** Lookahead for race-line target in spline t-space (NOT arclength). */
+const V2_LOOKAHEAD_T = 0.03;
+
+/**
+ * Curvature delta sample distance (t-space). The bot samples the tangent at
+ * `t` and at `t + V2_CURVATURE_SAMPLE_DT`, then computes the angular delta to
+ * estimate curvature. Spec: §5.
+ */
+const V2_CURVATURE_SAMPLE_DT = 0.02;
+
+/** Threshold (radians) for "the curve is sharp enough to bias toward inside". */
+const V2_CURVATURE_THRESHOLD_RAD = 0.05;
+
+/**
+ * Lateral offset magnitude per radian of curvature. Capped against a fraction
+ * of widthAt(t) so the bot stays inside the corridor on extreme curvatures.
+ */
+const V2_OFFSET_PER_RAD = 200;
+
+/** Inside-offset fraction of the corridor halfWidth. */
+const V2_OFFSET_FRACTION_OF_HALF_WIDTH = 0.3;
+
+/** Pickup detection radius multiplier. Spec: 3 * REEF_POWERUP_PICKUP_RADIUS. */
+const V2_PICKUP_LOOKAHEAD_MULT = 3;
+
+/**
+ * Pickup deviation budget. Spec: bot only redirects if pickup is within
+ * 40% of widthAt(t) lateral deviation from the racing line.
+ */
+const V2_PICKUP_DEVIATION_FRACTION = 0.4;
+
+/**
+ * Lazy-built spline singleton — same control points as the sim's spline so
+ * the math is identical. Built once on first bot tick (boot-time
+ * construction would inflate cold-start cost on the API; first-tick lazy
+ * mirrors how the sim itself constructs per-room).
+ */
+let _splineSingleton: ReefSpline | null = null;
+function getSpline(): ReefSpline {
+  if (!_splineSingleton) {
+    _splineSingleton = new ReefSpline(REEF_RACE_DEFAULT_TRACK);
+  }
+  return _splineSingleton;
+}
+
+/**
+ * v2 — ramp AABB definitions (XZ corridor zones where the server injects
+ * REEF_JUMP_IMPULSE_RAMP). Phase 1 layout has ZERO ramps — Phase 2 places
+ * them along the spline. The bot still emits ACTION_BIT_JUMP when its
+ * forward-projected position enters a ramp AABB so when ramps land in
+ * Phase 2, this path lights up immediately.
+ *
+ * TODO(reef-race-v2 Phase 2): populate this from the track-layout module
+ * once ramp positions are locked. Until then the array stays empty and
+ * the bot's ramp-jump code is dead but cheap.
+ */
+const REEF_RACE_RAMP_ZONES: ReadonlyArray<{
+  centerX: number;
+  centerZ: number;
+  halfX: number;
+  halfZ: number;
+}> = [];
+
+// TODO(reef-race-v2 Phase 2): manual obstacle-jump detection. When v2
+// adds static obstacle AABBs to the track, scan the lookahead window for
+// any obstacle whose top is below REEF_JUMP_IMPULSE_MANUAL apex height
+// and emit ACTION_BIT_JUMP one tick before entry. Hooks would land here.
+
+/**
+ * Optional v2 fields tacked onto the bot's room view by the spline sim's
+ * buildBotRoomView. Phase 1 spline-sim does NOT populate `pickups` (Wave 2
+ * follow-up) — the v2 bot's pickup-deviation branch no-ops gracefully when
+ * the field is absent. Tests inject `pickups` directly to exercise the
+ * branch.
+ */
+interface ReefV2BotRoomView {
+  pickups?: ReadonlyArray<{
+    x: number; // protocol X (sim X)
+    y: number; // protocol Y (sim Z)
+    active: boolean;
+  }>;
+}
+
 /**
  * Phase 2 (impl-audit S6) — ribbon-aware steering tuning.
  *
@@ -141,11 +238,21 @@ class ReefRaceBot implements BotController {
 
   constructor(public readonly avatarId: string) {}
 
-  computeInput(roomState: BotRoomView, _dt: number): BotInput {
+  computeInput(roomState: BotRoomView, dt: number): BotInput {
     const view = roomState as ReefBotRoomView;
     const self = view.bodies.find((b) => b.avatarId === this.avatarId);
     if (!self || !self.alive) {
       return { dir: { x: 0, y: 0 }, thrust: 0, actionBits: 0 };
+    }
+
+    // ─── v2 spline path — fully separate from ellipse heuristics ─────────
+    // Active when REEF_RACE_USE_SPLINE is true. Drift logic is dropped on
+    // this path; ACTION_BIT_DRIFT bit is reused as ACTION_BIT_JUMP server-
+    // side. Bot only emits jump when entering a ramp AABB (v2 layout has
+    // zero ramps in Phase 1 so this is dead code by design — Phase 2
+    // populates REEF_RACE_RAMP_ZONES).
+    if (REEF_RACE_USE_SPLINE) {
+      return this.computeInputSpline(view, self, dt);
     }
 
     // Without the Reef-specific fields the bot can't navigate. Return a
@@ -546,6 +653,181 @@ class ReefRaceBot implements BotController {
       }
     }
     return best ? { x: best.x, y: best.y } : null;
+  }
+
+  // ─── v2 spline-bot path ──────────────────────────────────────────────────
+  // Activated when REEF_RACE_USE_SPLINE is true. Architecture §5:
+  //   - Race-line: lookahead at t+0.03 with curvature-based inside offset
+  //   - Pickup deviation: only if pickup within budget
+  //   - Always emit ACTION_BIT_JUMP on ramp AABB entry (Phase 2 placeholder)
+  //   - DROP all drift logic; bit 2 is now ACTION_BIT_JUMP server-side
+  //
+  // The bot reads `self.x` (sim X) + `self.y` (sim Z, mapped from body.z by
+  // the sim's buildBotRoomView). It builds a Vec2 {x, z} for the spline math.
+
+  private computeInputSpline(
+    view: ReefBotRoomView & ReefV2BotRoomView,
+    self: ReefBotBody,
+    _dt: number,
+  ): BotInput {
+    const spline = getSpline();
+
+    // ── Find current t on the spline ──────────────────────────────────────
+    // self.x is sim X; self.y is sim Z (per buildBotRoomView's protocol map).
+    const closest = spline.closestPointOnSpline({ x: self.x, z: self.y });
+    const tSelf = closest.t;
+
+    // ── Lookahead target on centerline + curvature-based inside offset ────
+    const tLook = Math.min(1, tSelf + V2_LOOKAHEAD_T);
+    const lookCenter = spline.centerlineAt(tLook);
+    const tg0 = spline.tangentAt(tSelf);
+    const tg1 = spline.tangentAt(
+      Math.min(1, tSelf + V2_CURVATURE_SAMPLE_DT),
+    );
+    // Signed angular delta in XZ: positive = curve LEFT (CCW), negative = curve RIGHT.
+    // dot = tg0·tg1, cross = tg0.x*tg1.z - tg0.z*tg1.x (2D cross product in XZ).
+    const dotT = tg0.x * tg1.x + tg0.z * tg1.z;
+    const crossT = tg0.x * tg1.z - tg0.z * tg1.x;
+    const delta = Math.atan2(crossT, dotT);
+
+    const halfW = spline.widthAt(tLook);
+    let lateralOffset = 0;
+    if (Math.abs(delta) > V2_CURVATURE_THRESHOLD_RAD) {
+      // Magnitude bound: min(0.3 * halfW, |delta| * 200 wu)
+      const mag = Math.min(
+        halfW * V2_OFFSET_FRACTION_OF_HALF_WIDTH,
+        Math.abs(delta) * V2_OFFSET_PER_RAD,
+      );
+      // Sign: positive delta = curve LEFT → offset toward LEFT (+normal),
+      // negative = curve RIGHT → offset toward RIGHT (-normal). normalAt is
+      // 90° CCW of tangent (= LEFT of travel).
+      lateralOffset = delta > 0 ? mag : -mag;
+    }
+
+    const normalLook = spline.normalAt(tLook);
+    let targetX = lookCenter.x + normalLook.x * lateralOffset;
+    let targetZ = lookCenter.z + normalLook.z * lateralOffset;
+
+    // ── Pickup deviation: scan within 3 * REEF_POWERUP_RADIUS of lookahead ─
+    // Only redirect if pickup's lateral deviation from the racing line is
+    // within 40% of widthAt(t). When `view.pickups` is absent (Wave 2 sim
+    // hasn't populated it yet), this branch no-ops gracefully.
+    const pickups = view.pickups;
+    if (pickups && pickups.length > 0) {
+      const lookRadius = REEF_POWERUP_RADIUS * V2_PICKUP_LOOKAHEAD_MULT;
+      const lookRadiusSq = lookRadius * lookRadius;
+      const deviationBudget = halfW * V2_PICKUP_DEVIATION_FRACTION;
+      let bestPickup: { x: number; z: number; distSq: number } | null = null;
+      for (const pk of pickups) {
+        if (!pk.active) continue;
+        // pk.x = sim X; pk.y = sim Z (protocol convention from sim view).
+        const dx = pk.x - lookCenter.x;
+        const dz = pk.y - lookCenter.z;
+        const distSq = dx * dx + dz * dz;
+        if (distSq > lookRadiusSq) continue;
+        // Lateral deviation from racing line = |dot(offsetVec, normal)|.
+        const lateral = Math.abs(dx * normalLook.x + dz * normalLook.z);
+        if (lateral > deviationBudget) continue;
+        if (!bestPickup || distSq < bestPickup.distSq) {
+          bestPickup = { x: pk.x, z: pk.y, distSq };
+        }
+      }
+      if (bestPickup) {
+        targetX = bestPickup.x;
+        targetZ = bestPickup.z;
+      }
+    }
+
+    // ── Steering: dir vector from self → target ──────────────────────────
+    let dx = targetX - self.x;
+    let dz = targetZ - self.y; // self.y is sim Z
+    const distToTarget = Math.hypot(dx, dz);
+    if (distToTarget > 0) {
+      dx /= distToTarget;
+      dz /= distToTarget;
+    } else {
+      // Degenerate — face down-track tangent.
+      dx = tg0.x;
+      dz = tg0.z;
+    }
+
+    // Per-tick jitter for human-feeling tracking error.
+    dx += (Math.random() - 0.5) * 2 * JITTER_MAGNITUDE;
+    dz += (Math.random() - 0.5) * 2 * JITTER_MAGNITUDE;
+    const dmag = Math.hypot(dx, dz);
+    if (dmag > 0) {
+      dx /= dmag;
+      dz /= dmag;
+    }
+
+    // Thrust — drop on big heading mismatch (let the body swing).
+    let thrust = 0.85;
+    let dot = 1;
+    const speed = Math.hypot(self.vx, self.vy);
+    if (speed > 1) {
+      const headingX = self.vx / speed;
+      const headingZ = self.vy / speed;
+      dot = dx * headingX + dz * headingZ;
+      if (dot < 0.3) thrust = 0.6;
+    }
+    void dot; // currently informational; reserved for tighter cornering tuning
+
+    // Off-track recovery — perpendicular distance from spline centerline.
+    if (closest.distance > halfW * 1.5) {
+      thrust = 1.0;
+    }
+
+    // Opening-grace gate (mirrors v1 behavior).
+    const matchAge = view.now - view.matchStartedAt;
+    const inGrace = matchAge < BOT_OPENING_GRACE_MS;
+
+    // ── Action bits: jump + powerups (no drift) ──────────────────────────
+    let actionBits = 0;
+
+    // Ramp jump — emit ACTION_BIT_JUMP (= ACTION_BIT_DRIFT bit, semantically
+    // re-purposed in v2) when forward-projected lookahead position is
+    // inside any ramp AABB. Phase 1: REEF_RACE_RAMP_ZONES is empty, so this
+    // branch is a no-op until Phase 2 lands ramp definitions.
+    if (REEF_RACE_RAMP_ZONES.length > 0) {
+      // Use the lookahead point so the bot triggers a tick before entry.
+      for (const zone of REEF_RACE_RAMP_ZONES) {
+        const adx = lookCenter.x - zone.centerX;
+        const adz = lookCenter.z - zone.centerZ;
+        if (Math.abs(adx) <= zone.halfX && Math.abs(adz) <= zone.halfZ) {
+          actionBits |= ACTION_BIT_DRIFT; // = ACTION_BIT_JUMP in v2 sim
+          break;
+        }
+      }
+    }
+
+    // Power-up usage — same probabilistic policy as v1, gated past grace.
+    if (!inGrace) {
+      const ownPlacement = this.getOwnPlacement(view);
+      const useChance =
+        ownPlacement === null
+          ? POWERUP_USE_CHANCE
+          : ownPlacement <= 1
+            ? 0.30
+            : ownPlacement >= 8
+              ? 0.45
+              : 0.30 + (ownPlacement - 1) * (0.15 / 7);
+      const inv = self.inventory;
+      for (let i = 0; i < inv.length; i++) {
+        const slot = inv[i];
+        if (slot.kind === null) continue;
+        if (slot.cooldownUntil > view.now) continue;
+        if (Math.random() < useChance) {
+          actionBits |= 1 << i;
+          break;
+        }
+      }
+    }
+
+    return {
+      dir: { x: dx, y: dz }, // protocol y = sim z
+      thrust: inGrace ? 0.4 : thrust,
+      actionBits,
+    };
   }
 }
 
