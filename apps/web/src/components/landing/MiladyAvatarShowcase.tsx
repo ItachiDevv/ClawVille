@@ -149,7 +149,7 @@ export default function MiladyAvatarShowcase() {
     >
       <Canvas
         style={{ width: '100%', height: '100%' }}
-        camera={{ position: [0, 0.75, 2.8], fov: 38, near: 0.1, far: 40 }}
+        camera={{ position: [0, 0, 3.0], fov: 38, near: 0.1, far: 40 }}
         gl={{ antialias: true, alpha: true }}
         scene={{ background: SCENE_BG }}
         dpr={[1, 1.5]}
