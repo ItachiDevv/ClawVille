@@ -82,7 +82,12 @@ export interface ValidationVerdict<T = unknown> {
     | 'underminlap'
     | 'checkpoint_skip'
     | 'seq_gap'
-    | 'ghost_input';
+    | 'ghost_input'
+    // Reef Race v2 (spline sim) — replace lap-time + checkpoint-sequence
+    // with progress-monotonic + per-segment time. See
+    // `.claude/plans/reef-race-v2-spline-architecture.md` §6.
+    | 'progress_regression'
+    | 'segment_too_fast';
   /** Human-readable diagnostic for logs/admin UI */
   detail?: string;
 }
