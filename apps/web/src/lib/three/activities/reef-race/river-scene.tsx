@@ -10,9 +10,10 @@
  * Contains:
  *   A. GroundShader (REPLACED flat GroundPlane) — subdivided terrain with
  *      per-vertex noise displacement + multi-color fragment shader.
- *   B. Rocky canyon cliff banks (<RockyBanks />) — stepped cliff cross-section
- *      swept along the spline; replaces sand ribbon (1264 tris, 1 draw call).
- *   C. Water ribbon — animated cartoon shader (simplex noise + bank-edge foam)
+ *   B. Rocky canyon cliff banks (<RockyCliffs />) — real CC0 boulder GLBs tiled
+ *      along the spline, merged into 2 draw calls (~58K tris, 3 vertical rows).
+ *   C. Water ribbon (<WaterSurf />) — Wave Race 64-style depth gradient + Phong
+ *      sun glint, soft white-cap foam, pulsing edge foam (water-surf.tsx).
  *   D. Sky dome (SphereGeometry + MeshBasicMaterial vertexColors)
  *   E. ScenerySpawner (low-poly prop GLBs ON THE GRASS, not in water)
  *   F. Finish-line gate (wooden arch at z~18000, Part 2A)
@@ -61,7 +62,8 @@ import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { clientSpline } from './reef-race-spline-instance';
-import { RockyBanks } from './rocky-banks';
+import { RockyCliffs } from './rocky-cliffs';
+import { WaterSurf } from './water-surf';
 import { RacingKarts } from './racing-karts';
 
 // ─── Track layout constants ───────────────────────────────────────────────────
@@ -94,13 +96,12 @@ const DOME_H_SEGS  = 16;
 const DOME_HORIZON = new THREE.Color('#cfe9ff');
 const DOME_ZENITH  = new THREE.Color('#5ab8e8');
 
-// ─── Water / sand ribbon sampling ────────────────────────────────────────────
-const RIBBON_SAMPLES = 64;   // number of cross-sections along the spline
+// ─── Water Y (must match water-surf.tsx + racing-karts.tsx + rocky-cliffs.tsx) ─
 const WATER_Y        = -200; // option-C: deep canyon (200wu)
 
-// DEV-mode assertion: rocky-banks.tsx expects WATER_Y < 0; cliffs will render inverted otherwise.
+// DEV-mode assertion: rocky-cliffs.tsx + water-surf.tsx expect WATER_Y < 0; cliffs will render inverted otherwise.
 if (process.env.NODE_ENV === 'development' && WATER_Y >= 0) {
-  console.warn('[river-scene] RockyBanks expects WATER_Y < 0; cliffs may render inverted. Current WATER_Y:', WATER_Y);
+  console.warn('[river-scene] RockyCliffs/WaterSurf expect WATER_Y < 0; cliffs may render inverted. Current WATER_Y:', WATER_Y);
 }
 
 // ─── Gameplay prop constants ──────────────────────────────────────────────────
@@ -242,48 +243,7 @@ const SPAWNER_DEFS: SpawnerDef[] = [
   },
 ];
 
-// ─── Water ribbon geometry (module-scope, baked once) ────────────────────────
-// Triangle strip swept along clientSpline centerline.
-// Each cross-section: 2 verts at center ± normal*halfWidth.
-// N=64 cross-sections → 63 quads × 2 tris = 126 tris total.
-// UVs: x=0(left)/1(right), y=t(arclength fraction along spline).
-// The vertex shader animates Y in GPU — buffer stays static.
-function buildWaterRibbonGeo(): THREE.BufferGeometry {
-  const positions: number[] = [];
-  const normals:   number[] = [];
-  const uvs:       number[] = [];
-  const indices:   number[] = [];
-
-  for (let i = 0; i <= RIBBON_SAMPLES; i++) {
-    const t  = i / RIBBON_SAMPLES;
-    const c  = clientSpline.centerlineAt(t);
-    const n  = clientSpline.normalAt(t);
-    const hw = clientSpline.widthAt(t);
-
-    // Left edge
-    positions.push(c.x + n.x * hw, WATER_Y, c.z + n.z * hw);
-    normals.push(0, 1, 0);
-    uvs.push(0, t);
-
-    // Right edge
-    positions.push(c.x - n.x * hw, WATER_Y, c.z - n.z * hw);
-    normals.push(0, 1, 0);
-    uvs.push(1, t);
-
-    if (i < RIBBON_SAMPLES) {
-      const base = i * 2;
-      indices.push(base, base + 1, base + 2);
-      indices.push(base + 1, base + 3, base + 2);
-    }
-  }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geo.setAttribute('normal',   new THREE.Float32BufferAttribute(normals,   3));
-  geo.setAttribute('uv',       new THREE.Float32BufferAttribute(uvs,       2));
-  geo.setIndex(indices);
-  return geo;
-}
+// (Water ribbon geometry now lives in water-surf.tsx — module-scope, single source of truth)
 
 // ─── Sky dome geometry ────────────────────────────────────────────────────────
 function makeDomeGeo(): THREE.BufferGeometry {
@@ -428,152 +388,9 @@ const _groundShaderMat = new THREE.ShaderMaterial({
   fog:    true,
 });
 
-// ─── Animated water ShaderMaterial ──────────────────────────────────────────
-//
-// Vertex shader: multi-octave sin waves displace Y (world up).
-// Fragment shader: simplex noise foam stripes + UV-scrolled flow + bank-edge foam.
-//
-// Key changes vs iter-3:
-//   - bankFoam is now a WIDE creamy-white band (edgeDist < 0.12 instead of 0.04)
-//     with animated turbulence so foam churns at the waterline.
-//   - uColorNear bumped to #5fdcff (brighter cyan), uColorFar to #3aaedf
-//     (lighter mid-blue so low-angle views don't go navy).
-//   - Edge-zone has a separate foam layer that reads stronger than the ambient stripes.
-//
-// IRIS XE SAFE: plain ShaderMaterial on a plain Mesh.
-//
-const _waterVertexShader = /* glsl */ `
-  uniform float uTime;
-  varying vec2 vUv;
-  varying vec3 vWorldPos;
-
-  void main() {
-    vUv = uv;
-
-    // Multi-octave sin wave displacement in Y (world up for this geometry)
-    float x = position.x;
-    float z = position.z;
-    float wave = sin(x * 0.005 + uTime * 0.8) * 4.0
-               + sin(z * 0.003 + uTime * 1.2) * 3.0
-               + sin((x + z) * 0.002 - uTime * 0.6) * 2.0;
-
-    vec3 displaced = position;
-    displaced.y += wave;
-
-    vWorldPos = (modelMatrix * vec4(displaced, 1.0)).xyz;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(displaced, 1.0);
-  }
-`;
-
-const _waterFragmentShader = /* glsl */ `
-  uniform float uTime;
-  uniform vec3  uColorNear;
-  uniform vec3  uColorFar;
-
-  varying vec2 vUv;
-  varying vec3 vWorldPos;
-
-  // 2D simplex noise — self-contained, no texture lookup
-  vec3 mod289_3(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
-  vec2 mod289_2(vec2 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
-  vec3 permute3(vec3 x) { return mod289_3(((x * 34.0) + 1.0) * x); }
-
-  float snoise(vec2 v) {
-    const vec4 C = vec4(0.211324865405187, 0.366025403784439,
-                       -0.577350269189626, 0.024390243902439);
-    vec2 i  = floor(v + dot(v, C.yy));
-    vec2 x0 = v - i + dot(i, C.xx);
-    vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
-    vec4 x12 = x0.xyxy + C.xxzz;
-    x12.xy -= i1;
-    i = mod289_2(i);
-    vec3 p = permute3(permute3(i.y + vec3(0.0, i1.y, 1.0))
-                    + i.x + vec3(0.0, i1.x, 1.0));
-    vec3 m = max(0.5 - vec3(dot(x0, x0), dot(x12.xy, x12.xy), dot(x12.zw, x12.zw)), 0.0);
-    m = m * m;
-    m = m * m;
-    vec3 x = 2.0 * fract(p * C.www) - 1.0;
-    vec3 h = abs(x) - 0.5;
-    vec3 ox = floor(x + 0.5);
-    vec3 a0 = x - ox;
-    m *= 1.79284291400159 - 0.85373472095314 * (a0 * a0 + h * h);
-    vec3 g;
-    g.x  = a0.x  * x0.x  + h.x  * x0.y;
-    g.yz = a0.yz * x12.xz + h.yz * x12.yw;
-    return 130.0 * dot(m, g);
-  }
-
-  void main() {
-    // UV scrolled downstream (+UV.y = downstream direction)
-    vec2 flowUv = vUv + vec2(0.0, -uTime * 0.05);
-
-    // 2026-04-29 iter-7f: cut noise scales 5×. Old 280/100 produced foam stripes
-    // ~125 cycles across corridor width — at top-down altitude 22000 that aliased
-    // to grey/tan, making the water look brown instead of cyan. New scales
-    // 56/20 give stripes ~25 cycles across — still detailed up close but the
-    // cyan base dominates from far altitude.
-    float noiseBase = snoise(flowUv * 56.0 + sin(uTime * 0.3));
-    noiseBase = noiseBase * 0.5 + 0.5;
-    vec3 colorBase = vec3(noiseBase);
-
-    // Foam stripes — softer (no binary step) so they blend with cyan base
-    vec3 foam = smoothstep(0.08, 0.001, colorBase) * 0.5;
-
-    float noiseWaves = snoise(flowUv * 20.0 + sin(uTime * -0.1));
-    noiseWaves = noiseWaves * 0.5 + 0.5;
-
-    float threshold = 0.6 + 0.01 * sin(uTime * 2.0);
-    vec3 waveEffect = 1.0 - (smoothstep(threshold + 0.03, threshold + 0.032, vec3(noiseWaves))
-                           + smoothstep(threshold, threshold - 0.01, vec3(noiseWaves)));
-    waveEffect *= 0.4;
-
-    // ── Bank-edge foam (ITER-4 UPGRADE) ──────────────────────────────────────
-    // edgeFactor = 1.0 at UV.x=0 or 1.0, smoothly falls to 0 at 0.12 from edge.
-    // This is strongest AT the waterline, fading toward the river centre.
-    float edgeDist  = min(vUv.x, 1.0 - vUv.x);
-    float edgeFactor = 1.0 - smoothstep(0.0, 0.12, edgeDist);
-
-    // Animated foam turbulence along bank — two noise layers at different scales
-    float foamTurb1 = snoise(flowUv * 60.0 + vec2(uTime * 1.2, 0.0)) * 0.5 + 0.5;
-    float foamTurb2 = snoise(flowUv * 150.0 + vec2(0.0, uTime * 2.0)) * 0.5 + 0.5;
-    float foamTurbCombined = foamTurb1 * 0.6 + foamTurb2 * 0.4;
-
-    // Bright bank foam: flicker between 0.6 and 1.0 with time + noise
-    float bankFoamIntensity = edgeFactor * (0.6 + 0.4 * foamTurbCombined);
-    // Creamy white foam color (slightly warm)
-    vec3 bankFoamColor = vec3(1.0, 0.97, 0.92) * bankFoamIntensity;
-
-    // ── Combine all effects ───────────────────────────────────────────────────
-    vec3 combinedEffect = min(waveEffect + foam, 1.0);
-
-    // Depth gradient: deeper = uses uColorFar
-    float vignette = length(vUv - 0.5) * 1.5;
-    vec3 baseEffect = smoothstep(0.1, 0.3, vec3(vignette));
-    vec3 baseColor = mix(uColorNear, uColorFar, baseEffect);
-    combinedEffect = mix(combinedEffect, vec3(0.0), baseEffect);
-
-    // Final color: base + white foam overlaid + bank foam on top
-    vec3 finalColor = (1.0 - combinedEffect) * baseColor + combinedEffect;
-    // Bank foam always layers ON TOP, blending to white at the edge
-    finalColor = mix(finalColor, bankFoamColor, edgeFactor * bankFoamIntensity * 0.8);
-
-    gl_FragColor = vec4(finalColor, 1.0);
-  }
-`;
-
-// Shared water shader material — module scope, uTime updated each frame
-const _waterShaderMat = new THREE.ShaderMaterial({
-  uniforms: {
-    uTime:      { value: 0 },
-    uColorNear: { value: new THREE.Color('#5fdcff') },   // bright cartoon cyan
-    uColorFar:  { value: new THREE.Color('#3aaedf') },   // lighter mid-blue (not navy)
-  },
-  vertexShader:   _waterVertexShader,
-  fragmentShader: _waterFragmentShader,
-  side:       THREE.DoubleSide,
-  fog:        true,
-  transparent: false,
-});
+// (Animated water ShaderMaterial moved to water-surf.tsx — see <WaterSurf /> below.
+//  The new shader uses depth-gradient + Phong sun glint inspired by Wave Race 64,
+//  identified as a significant upgrade vs the inline vignette+stripes approach.)
 
 // ─── Power-up box material (module scope) ────────────────────────────────────
 // Emissive gold — no point lights (Iris Xe budget constraint)
@@ -633,7 +450,7 @@ const _bridgeMat = new THREE.MeshStandardMaterial({
 // (Kart BoxGeometry + MeshStandardMaterial removed — see racing-karts.tsx)
 
 // ─── Module-scope geometries (baked at module load, shared forever) ───────────
-const _waterGeo     = buildWaterRibbonGeo();
+// (water ribbon geo lives in water-surf.tsx)
 const _domeGeo      = makeDomeGeo();
 // Ground terrain geo (subdivided — 96×192×2 = 36 864 tris)
 const _groundGeo    = (() => {
@@ -746,27 +563,7 @@ function GroundShader() {
   );
 }
 
-// ─── Animated water ribbon component ─────────────────────────────────────────
-//
-// The water uses a plain THREE.ShaderMaterial on a plain Mesh — safe on Iris Xe.
-// The ONLY per-frame operation is updating the uTime uniform.
-// No buffer mutations, no normals recomputation.
-
-function WaterRibbon() {
-  useFrame(({ clock }) => {
-    _waterShaderMat.uniforms.uTime.value = clock.getElapsedTime();
-  });
-
-  return (
-    <mesh
-      geometry={_waterGeo}
-      material={_waterShaderMat}
-      frustumCulled={false}
-      matrixAutoUpdate={false}
-      renderOrder={2}
-    />
-  );
-}
+// (WaterRibbon component moved to water-surf.tsx as <WaterSurf />.)
 
 // ─── Sky dome component ───────────────────────────────────────────────────────
 
@@ -1098,11 +895,11 @@ export function RiverScene() {
       {/* 0: Terrain shader ground — subdivided rolling hills */}
       <GroundShader />
 
-      {/* 1: Rocky canyon cliff banks — stepped cliffs (1264 tris, 1 draw call) */}
-      <RockyBanks />
+      {/* 1: Rocky canyon cliff banks — real CC0 boulder GLBs tiled along spline (~58K tris, 2 draw calls) */}
+      <RockyCliffs />
 
-      {/* 2: Animated cartoon water ribbon — simplex noise + bank-edge foam */}
-      <WaterRibbon />
+      {/* 2: Animated water — Wave Race 64-style depth gradient + Phong sun glint (water-surf.tsx) */}
+      <WaterSurf />
 
       {/* Scenery props on the grass */}
       <ScenerySpawner />
