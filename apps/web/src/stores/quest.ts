@@ -2,10 +2,12 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { useGameStore } from '@/stores/game';
 import { useNpcStore } from '@/stores/npc';
+import { api } from '@/lib/api';
 import {
   type QuestId,
   type QuestStatus,
   type CounterKey,
+  type QuestDefinition,
   QUEST_DEFINITIONS,
 } from '@/lib/quests';
 
@@ -29,9 +31,20 @@ interface QuestCounters {
 interface QuestStoreState {
   progress: Record<QuestId, QuestProgress>;
   counters: QuestCounters;
+  /**
+   * Q3 plan §2.6 + audit-fix 2026-04-29 — set of quest ids whose
+   * server-side reward credit has been confirmed (200 or 409 from the
+   * /tutorial/:id/claim endpoint). Locally-completed quests not in this
+   * set are retried on subsequent loads via `retryUnclaimedRewards()`,
+   * so a one-time network failure during completion doesn't permanently
+   * lose the player's tokens. Stored as object-of-bools (not Set) so it
+   * survives zustand persist's JSON serialization.
+   */
+  serverClaimed: Partial<Record<QuestId, boolean>>;
 
   incrementCounter: (key: CounterKey, amount?: number) => void;
   checkAndCompleteQuests: () => QuestId[];
+  markServerClaimed: (id: QuestId) => void;
   getActiveQuests: () => QuestId[];
   isCompleted: (id: QuestId) => boolean;
   getStatus: (id: QuestId) => QuestStatus;
@@ -61,6 +74,10 @@ export const useQuestStore = create<QuestStoreState>()(
         activityMatchesPlayed: 0,
         activityMatchesWon: 0,
       },
+      serverClaimed: {},
+
+      markServerClaimed: (id) =>
+        set((s) => ({ serverClaimed: { ...s.serverClaimed, [id]: true } })),
 
       incrementCounter: (key, amount = 1) => {
         set((s) => ({
@@ -179,21 +196,24 @@ export const useQuestStore = create<QuestStoreState>()(
       partialize: (state) => ({
         progress: state.progress,
         counters: state.counters,
+        serverClaimed: state.serverClaimed,
       }),
-      // Forward-compatible merge: backfill any new counter keys that older
-      // persisted state is missing (added in Q2 chunk #9 — `activityMatchesPlayed`
-      // / `activityMatchesWon`). Without this, returning users would crash on
-      // `state.counters[condition.counterKey]` returning undefined ⇒ NaN >= 1
-      // is `false`, which is harmless, but the typesystem would still flag it.
+      // Forward-compatible merge: backfill any new counter keys + the
+      // serverClaimed map that older persisted state is missing. Returning
+      // users with Phase 1 quests already marked complete will have an empty
+      // serverClaimed{} after this load and retryUnclaimedRewards() will
+      // settle the credits server-side on next page mount.
       merge: (persisted, current) => {
         const safe = persisted as Partial<{
           progress: Record<QuestId, QuestProgress>;
           counters: Partial<QuestCounters>;
+          serverClaimed: Partial<Record<QuestId, boolean>>;
         }> | undefined;
         return {
           ...current,
           progress: { ...current.progress, ...(safe?.progress ?? {}) },
           counters: { ...current.counters, ...(safe?.counters ?? {}) },
+          serverClaimed: { ...current.serverClaimed, ...(safe?.serverClaimed ?? {}) },
         };
       },
     }
@@ -201,8 +221,84 @@ export const useQuestStore = create<QuestStoreState>()(
 );
 
 /**
- * Check all quests and fire toasts for any newly completed ones.
- * Call after incrementing a counter or changing game state.
+ * Q3 plan §2.6 — fire the server-side reward claim for a completed
+ * tutorial quest. Fire-and-forget: completion toast lands immediately
+ * (synchronous), token-credit toast lands when the server responds.
+ *
+ * Idempotency: server returns 409 `already_claimed` for repeat calls;
+ * we silence those because the store's local "completed" status means
+ * the user was already credited on first completion.
+ */
+async function claimTutorialQuestReward(def: QuestDefinition, opts?: { silent?: boolean }) {
+  try {
+    const res = await api.claimTutorialQuest(def.id);
+    if (res.ok) {
+      // Server credited the reward. Mark locally so we don't retry, and
+      // toast unless this is a silent retry replay.
+      useQuestStore.getState().markServerClaimed(def.id);
+      if (!opts?.silent) {
+        useGameStore
+          .getState()
+          .addToast('💰', `+${res.credited} ClawTokens (balance: ${res.balance})`, 3500);
+      }
+    } else if (res.error === 'already_claimed') {
+      // Server has the reward, we just didn't know — sync local state.
+      useQuestStore.getState().markServerClaimed(def.id);
+    } else if (res.error === 'guest_not_eligible') {
+      // Guest accounts can't claim tutorial rewards. Mark as "claimed" so
+      // we stop retrying; if the user signs up later the server will allow
+      // the claim on the new account (which has its own fresh state).
+      useQuestStore.getState().markServerClaimed(def.id);
+      if (!opts?.silent) {
+        useGameStore
+          .getState()
+          .addToast('🔒', 'Sign up to claim tutorial rewards', 4000);
+      }
+    } else if (res.error === 'engagement_required') {
+      // Server doesn't see the engagement events yet (eventual consistency
+      // window or events.ts emitter gap). Leave serverClaimed[] unset so a
+      // later mount retries.
+      console.warn('[quest] server engagement gate failed for', def.id, res.reason);
+    }
+  } catch (err) {
+    // honoRequest throws on !res.ok. Detect known-409 ('already_claimed')
+    // path from the message and silently mark claimed; everything else is
+    // genuine network failure that retryUnclaimedRewards() will pick up.
+    const msg = String((err as Error)?.message ?? '');
+    if (msg.includes('already_claimed')) {
+      useQuestStore.getState().markServerClaimed(def.id);
+    } else if (msg.includes('guest_not_eligible')) {
+      useQuestStore.getState().markServerClaimed(def.id);
+    } else {
+      console.warn('[quest] claim network failure for', def.id, err);
+    }
+  }
+}
+
+/**
+ * Retry server-side claims for any tutorial quests that the local store
+ * marks completed but `serverClaimed` doesn't acknowledge. Call once on
+ * app mount. Network failures during the original completion no longer
+ * lose the user's reward forever.
+ */
+export async function retryUnclaimedRewards() {
+  const state = useQuestStore.getState();
+  const claimed = state.serverClaimed;
+  for (const def of QUEST_DEFINITIONS) {
+    if (state.progress[def.id]?.status === 'completed' && !claimed[def.id]) {
+      // Run silently — no completion toast, just settle the credit.
+      // claimTutorialQuestReward will toast for newly-credited rewards
+      // even with silent:true is false; the silent flag here suppresses
+      // the +CT toast since the user already saw the original completion
+      // toast on first attempt.
+      await claimTutorialQuestReward(def, { silent: true });
+    }
+  }
+}
+
+/**
+ * Check all quests and fire toasts + server reward claims for any newly
+ * completed ones. Call after incrementing a counter or changing game state.
  */
 export function triggerQuestCheck() {
   const completed = useQuestStore.getState().checkAndCompleteQuests();
@@ -210,6 +306,8 @@ export function triggerQuestCheck() {
     const def = QUEST_DEFINITIONS.find((q) => q.id === questId);
     if (def) {
       useGameStore.getState().addToast(def.icon, `Quest complete: ${def.title}!`, 4000);
+      // Fire-and-forget server-side ClawToken credit.
+      void claimTutorialQuestReward(def);
     }
   }
 }

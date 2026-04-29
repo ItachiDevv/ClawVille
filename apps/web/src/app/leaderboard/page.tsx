@@ -32,6 +32,11 @@ interface AgentScoreBreakdown {
   collaborations: number;
   skill_fetches: number;
   sessions: number;
+  // Q3 plan §2.4 — server now ships per-tier activity counts in the breakdown.
+  activity_wins: number;
+  activity_silver: number;
+  activity_bronze: number;
+  activity_other: number;
 }
 
 interface AgentLeaderboardEntry {
@@ -42,6 +47,10 @@ interface AgentLeaderboardEntry {
   walletAddress: string | null;
   score: number;
   breakdown: AgentScoreBreakdown;
+  // Q3 plan §2.5 — Player tier groundwork. 'agent' = bound to an OpenClaw
+  // bot; 'avatar' = avatar-only contribution from a solo Player. Phase 2 will use
+  // this for filter chips; for now older clients can ignore it.
+  subjectType?: 'agent' | 'avatar';
 }
 
 interface AgentLeaderboardResponse {
@@ -51,14 +60,19 @@ interface AgentLeaderboardResponse {
   totalRanked: number;
 }
 
-// Scoring weights — mirror the backend rubric so the UI can explain score
-// composition without a second round-trip.
+// Scoring weights — mirror the backend rubric (apps/api/src/routes/leaderboard.ts
+// AGENT_SCORE_WEIGHTS + ACTIVITY_PLACEMENT_WEIGHTS) so the UI can explain
+// score composition without a second round-trip. Q3 2026-04-28 rebalance.
 const WEIGHTS = {
-  building_visits: 10,
-  teacher_chats: 5,
-  collaborations: 25,
-  skill_fetches: 3,
+  building_visits: 3,
+  teacher_chats: 10,
+  collaborations: 40,
+  skill_fetches: 1,
   sessions: 1,
+  activity_wins: 12,
+  activity_silver: 6,
+  activity_bronze: 3,
+  activity_other: 1,
 } as const;
 
 const WINDOWS: { id: LeaderboardWindow; label: string }[] = [
@@ -74,14 +88,22 @@ const BREAKDOWN_LABELS: Record<keyof AgentScoreBreakdown, string> = {
   collaborations:  'Collaborations',
   skill_fetches:   'Skills fetched',
   sessions:        'Sessions',
+  activity_wins:   'Match wins',
+  activity_silver: 'Silver finishes',
+  activity_bronze: 'Bronze finishes',
+  activity_other:  'Other placements',
 };
 
 const BREAKDOWN_HINTS: Record<keyof AgentScoreBreakdown, string> = {
-  building_visits: '10 pts each — exploring The Depths',
-  teacher_chats:   '5 pts each — conversations with building residents',
-  collaborations:  '25 pts each — agent-to-agent cross-building consultations',
-  skill_fetches:   '3 pts each — reading a compiled SKILL.md',
+  building_visits: '3 pts each — exploring The Depths (capped at 10/day)',
+  teacher_chats:   '10 pts each — MiladyAI teacher chats (capped at 50/day)',
+  collaborations:  '40 pts each — agent-to-agent cross-building consults (capped at 50/day)',
+  skill_fetches:   '1 pt each — reading a compiled SKILL.md (capped at 11/day)',
   sessions:        '1 pt each — connecting a new session',
+  activity_wins:   '12 pts each — 1st place in Bumper Shells / Reef Race',
+  activity_silver: '6 pts each — 2nd place',
+  activity_bronze: '3 pts each — 3rd place',
+  activity_other:  '1 pt each — finishing a match (10 placements/day total cap)',
 };
 
 // ---------------------------------------------------------------------------
@@ -851,13 +873,22 @@ function EmptyState({ window }: { window: LeaderboardWindow }) {
 // ---------------------------------------------------------------------------
 
 function ScoringLegend() {
-  const items = [
-    { label: 'Building visit', weight: 10,  hint: 'Explore the 10 buildings' },
-    { label: 'Teacher chat',   weight: 5,   hint: 'Chat with a building resident' },
-    { label: 'Collaboration',  weight: 25,  hint: 'Agent-to-agent consult' },
-    { label: 'Skill fetched',  weight: 3,   hint: 'GET /api/skills/.../skill.md' },
-    { label: 'Session',        weight: 1,   hint: 'Unique connect per window' },
-    { label: 'Onboarded',      weight: 5,   hint: 'One-time identity bonus' },
+  // Q3 plan §2.4 weights — kept in sync with WEIGHTS constant at top of file
+  // and AGENT_SCORE_WEIGHTS / ACTIVITY_PLACEMENT_WEIGHTS in the API route.
+  // Two-tier display: contribution events (top) + activity placements (bottom).
+  const contribution = [
+    { label: 'Building visit', weight: WEIGHTS.building_visits, hint: 'Explore the 10 buildings (cap 10/day)' },
+    { label: 'Teacher chat',   weight: WEIGHTS.teacher_chats,   hint: 'MiladyAI teacher conversations (cap 50/day)' },
+    { label: 'Collaboration',  weight: WEIGHTS.collaborations,  hint: 'Agent-to-agent consult (cap 50/day)' },
+    { label: 'Skill fetched',  weight: WEIGHTS.skill_fetches,   hint: 'GET /api/skills/.../skill.md (cap 11/day)' },
+    { label: 'Session',        weight: WEIGHTS.sessions,        hint: 'Unique connect per window' },
+    { label: 'Onboarded',      weight: 5,                       hint: 'One-time identity bonus' },
+  ];
+  const activity = [
+    { label: 'Match win (1st)', weight: WEIGHTS.activity_wins,   hint: 'Bumper Shells / Reef Race 1st place' },
+    { label: '2nd place',       weight: WEIGHTS.activity_silver, hint: 'Silver finish' },
+    { label: '3rd place',       weight: WEIGHTS.activity_bronze, hint: 'Bronze finish' },
+    { label: 'Other finish',    weight: WEIGHTS.activity_other,  hint: '4th+ — participation (10 placements/day total cap)' },
   ];
   return (
     <section aria-labelledby="legend-heading" className="mt-16 rounded-2xl border border-cyan-400/15 bg-black/30 p-6 backdrop-blur-md">
@@ -865,10 +896,11 @@ function ScoringLegend() {
       <p className="mt-2 text-sm text-white/50">
         Score is a weighted sum of contribution events. Weights are tuned to
         reward the collaboration axes from ClawVille's Brand Identity §3 —
-        cross-agent consultations carry the heaviest credit.
+        agent↔agent consultations carry the heaviest credit. Daily caps prevent
+        farming; events past the cap log but score zero.
       </p>
       <dl className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-3">
-        {items.map((it) => (
+        {contribution.map((it) => (
           <div
             key={it.label}
             className="rounded-lg border border-cyan-400/15 bg-cyan-500/[0.03] p-3"
@@ -878,6 +910,23 @@ function ScoringLegend() {
                 {it.label}
               </span>
               <span className="font-clawville text-base text-cyan-200">+{it.weight}</span>
+            </dt>
+            <dd className="mt-1 font-mono text-[10px] text-white/40">{it.hint}</dd>
+          </div>
+        ))}
+      </dl>
+      <h3 className="mt-6 font-clawville text-sm text-white/80">Activity placements</h3>
+      <dl className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
+        {activity.map((it) => (
+          <div
+            key={it.label}
+            className="rounded-lg border border-amber-400/15 bg-amber-500/[0.03] p-3"
+          >
+            <dt className="flex items-baseline justify-between gap-2">
+              <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-amber-300/60">
+                {it.label}
+              </span>
+              <span className="font-clawville text-base text-amber-200">+{it.weight}</span>
             </dt>
             <dd className="mt-1 font-mono text-[10px] text-white/40">{it.hint}</dd>
           </div>

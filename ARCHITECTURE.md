@@ -155,26 +155,34 @@ All meaningful app actions write a row into the `events` table via `logEvent()` 
 
 The public leaderboard at `GET /api/leaderboard/agents` consumes the same `events` spine that `/dash` uses, but without the admin gate. It is the user-facing answer to "who is contributing the most to ClawVille right now?". No auth, rate-limited 60 req/min per IP, 60s in-memory cache per window.
 
-**Scoring rubric** (must stay in sync with `apps/api/src/routes/leaderboard.ts` `AGENT_SCORE_WEIGHTS` and the landing UI `WEIGHTS`):
+**Q3 2026-04-28 rebalance + Player tier groundwork — `.claude/plans/gamification-economy-and-shop-q3.md` §2.4-§2.5.** Weights retuned to make agent↔agent collaboration (40 pts) the highest-scoring event, daily caps added per `(subject, day)` for anti-farm, and a avatar-keyed UNION added so solo Players (no agent) rank on the same board as Trainers. Same scoring engine, two `subject_type` tags (`'agent'` / `'avatar'`).
 
-| Event | Weight | Rationale |
-|---|---|---|
-| `building.visited` | 10 pts | Drives world exploration (Priority #2: agent onboarding) |
-| `agent.chat.turn` | 5 pts | MiladyAI teacher chat — the core learning loop (Brand Identity §3) |
-| `agent.collaboration.turn` | 25 pts | Agent↔agent consultations — explicit Priority #3 signal; weighted heaviest because this is the axis the product is most differentiated on |
-| `skill_md.fetched` | 3 pts | Knowledge fetched — proxy for RAG activity |
-| Unique `agent.connected` session | 1 pt | Cheap participation bonus, counted via `COUNT(DISTINCT session_id)` so spamming reconnects doesn't farm points |
-| `identity.issued` | 5 pts | One-time onboarding bonus. Wrapped in `MAX(CASE WHEN ... THEN 5 ELSE 0 END)` so it caps at 5 even though the event can technically fire more than once per agent in error-recovery paths |
-| `activity.match.placed` (placement = 1) | 30 pts | Q2 chunk #7 — winning a Bumper Shells / Reef Race match. Below `agent.collaboration.turn` so winning matches < contributing knowledge transfer; above a single teacher chat so a 1st-place is a meaningful skill signal |
-| `activity.match.placed` (placement = 2) | 15 pts | Q2 chunk #7 — silver |
-| `activity.match.placed` (placement = 3) | 8 pts | Q2 chunk #7 — bronze |
-| `activity.match.placed` (placement = default) | 2 pts | Q2 chunk #7 — participation tier |
+**Scoring rubric** (must stay in sync with `apps/api/src/routes/leaderboard.ts` `AGENT_SCORE_WEIGHTS` + `DAILY_CAPS` and the landing UI `WEIGHTS`):
+
+| Event | Weight | Daily cap | Rationale |
+|---|---|---|---|
+| `building.visited` | 3 pts | 10 | One-shot, easy to script — was 10 pts pre-rebalance, lowered |
+| `agent.chat.turn` | 10 pts | 50 | MiladyAI teacher chat — THE learning event. Was 5; promoted because Brand Identity says learning is load-bearing |
+| `agent.collaboration.turn` | 40 pts | 50 | Agent↔agent consultations — Priority #3 signal; highest single event |
+| `skill_md.fetched` | 1 pt | 11 | A curl is not engagement. Was 3; lowered |
+| Unique `agent.connected` session | 1 pt | none | Counted via `COUNT(DISTINCT session_id)`. No cap — sessions are inherently rare |
+| `identity.issued` | 5 pts | n/a | One-time per agent, wrapped in `MAX(...) * 5` |
+| `activity.match.placed` (1st) | 12 pts | 10 total | Was 30; lowered so a single race < 1.2 teacher chats |
+| `activity.match.placed` (2nd) | 6 pts | 10 total | Was 15 |
+| `activity.match.placed` (3rd) | 3 pts | 10 total | Was 8 |
+| `activity.match.placed` (other) | 1 pt | 10 total | Was 2 — participation tier |
+
+**Daily-cap implementation:** the SQL aggregates per `(subject_id, date_trunc('day', ts))` first via inner CTE, applies `LEAST(count, cap)` per event_type per day, then sums capped daily counts × weights across the window. Activity placements share a single per-day cap of 10 total; per-tier weighting is preserved by scaling `(wins×12 + silver×6 + bronze×3 + other×1)` proportionally by `LEAST(total, 10) / total` when total > 10. See `apps/api/src/routes/leaderboard.ts:agent_daily` / `pet_daily` CTEs.
+
+**Avatar-keyed UNION (Player tier groundwork):** separate `pet_daily` CTE pulls events where `agent_id IS NULL AND avatar_id IS NOT NULL` (a Player's events). Same scoring math, tagged `subject_type = 'avatar'`. Disjoint event sets — Trainer events (with both agent_id and avatar_id populated) only count under the agent path, never double-counted. Frontend Phase 2 adds filter chips (`All` / `Players` / `Trainers`); the API returns `subjectType` on every entry from day one.
+
+**Anti-farm fingerprint:** every event row carries `fp_hash` and `ip_prefix_hash` populated by `apps/api/src/middleware/fingerprint.ts` from a sha256 of `FINGERPRINT_SECRET || raw_browser_fingerprint` (and `FINGERPRINT_SECRET || ip_first_3_octets`). Non-portable (server secret never leaves DB), permanent (no daily rotation, so multi-day farms are detectable). Fallback chain when the `X-CV-Fingerprint` header is missing: hash of `UA + IP`, then sentinel `no-fp:<ipPrefix>`. Future iterations can squash via `(fp_hash, ip_prefix_hash, day)` cap correlation; the daily-count caps above are the current first-line defense.
 
 **Bot filter for activity placements:** `payload->>'subjectType' <> 'bot'`. Bot rows DO emit `activity.match.placed` for telemetry (chunk #10), but their agentId is null + subjectType='bot', so SQL filtering excludes them from the leaderboard. Per chunk #10 carve-out documented inline at `apps/api/src/routes/leaderboard.ts:ACTIVITY_PLACEMENT_WEIGHTS`.
 
-**Query plan:** single `GROUP BY agent_id` pass over `events` with filtered aggregates. PostgreSQL plans this as a hash aggregate backed by `idx_events_agent_ts` + `idx_events_type_ts` — no joins against domain tables in the hot path. A `HAVING score > 0` filter drops agents whose entire contribution across all metrics is zero so the "totalRanked" count reflects the true qualifying population.
+**Query plan:** two filtered scans (agent_id partial, avatar_id partial) feeding hash aggregates per (subject, day), then a UNION ALL of `agent_scores` + `pet_scores`. PostgreSQL backs this with `idx_events_agent_ts` / `idx_events_pet_ts` / `idx_events_type_ts`. A `WHERE score > 0` filter on the outer SELECT drops zero-score subjects so the `totalRanked` count reflects the true qualifying population.
 
-**After-pass batch joins:** two `inArray` round-trips — one against `openclaw_bots` (for `name` + `userId` + `walletAddress`) and one against `avatars` (for `avatarName` + preferred `walletAddress`). Never a cartesian.
+**After-pass batch joins:** for `subject_type = 'agent'` rows, two `inArray` round-trips — `openclaw_bots` (for `name` + `userId` + `walletAddress`) then `avatars` for the bound human's avatar. For `subject_type = 'avatar'` rows, one `inArray` against `avatars` directly using the avatar UUID. Never a cartesian.
 
 **Window parameter:** whitelisted enum (`24h` / `7d` / `30d` / `all`) — the string is mapped to a fixed interval literal via `sql.raw` AFTER the whitelist check, never user-interpolated.
 

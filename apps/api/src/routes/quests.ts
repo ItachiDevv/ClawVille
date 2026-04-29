@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { AppContext } from '../types';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import { creditClawTokens } from '../services/claw-token-ledger';
+import { logEventFromContext } from '../services/event-logger';
 import {
   db,
   users,
@@ -13,9 +14,15 @@ import {
   questSubmissions,
   questRewards,
   avatarInventory,
+  tutorialQuestClaims,
 } from '@clawville/database';
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { count } from 'drizzle-orm';
+import {
+  TUTORIAL_QUEST_REWARDS,
+  getTutorialQuestReward,
+  type TutorialQuestId,
+} from '@clawville/shared';
 
 export const questRoutes = new Hono<AppContext>();
 questRoutes.use('*', sessionMiddleware);
@@ -897,4 +904,290 @@ questRoutes.get('/', async (c) => {
   }));
 
   return c.json({ quests: questList, total: totalCount, page, pageSize });
+});
+
+// ---------------------------------------------------------------------------
+// Q3 plan §2.6 — Tutorial quest claim (CLIENT-tracked, SERVER-credited)
+// ---------------------------------------------------------------------------
+//
+// The 8+ tutorial quests defined in apps/web/src/lib/quests.ts are tracked
+// in zustand persist on the client (counters, threshold checks). When the
+// client detects completion, it calls this endpoint to settle the token
+// reward on the authoritative ledger.
+//
+// **Trust model (v1):** the SERVER is the source of truth for amounts
+// (TUTORIAL_QUEST_REWARDS in @clawville/shared) and idempotency
+// (tutorial_quest_claims unique on userId+questId). The CLIENT is trusted
+// for the granular threshold check (e.g. "did you walk 200u?"), but the
+// SERVER applies a per-quest proof-of-engagement event-log gate so a fresh
+// account can't claim all 175 CT instantly. Edge cases of farming are
+// bounded by the small per-quest amounts (5–50 CT) and the once-ever cap.
+//
+// Future tightening: add server-side counters per quest for stricter
+// validation. v1 ships the framework; values can be tuned.
+
+const claimTutorialQuestParamSchema = z.object({
+  id: z.string().min(1).max(50),
+});
+
+/**
+ * Per-quest server-side proof-of-engagement check. Returns null if the
+ * user has met the bar, or a reason string otherwise. Uses the events
+ * table because every gameplay action emits at least one event.
+ */
+async function validateTutorialQuestEngagement(
+  userId: string,
+  avatarId: string,
+  questId: TutorialQuestId,
+): Promise<string | null> {
+  // Helper: count events for this user (or avatar) matching predicates.
+  async function countEvents(predicate: ReturnType<typeof sql>): Promise<number> {
+    const rows = await db.execute<{ c: number }>(sql`
+      SELECT COUNT(*)::int AS c FROM events
+      WHERE (user_id = ${userId} OR avatar_id = ${avatarId})
+        AND ${predicate}
+    `);
+    return Number(rows[0]?.c ?? 0);
+  }
+
+  switch (questId) {
+    case 'first-steps':
+      // Lowest bar — any event proves the account is real, not a brand-new
+      // signup blasting /claim. Movement isn't an event today, so any
+      // heartbeat / chat / visit suffices.
+      return (await countEvents(sql`1=1`)) >= 1 ? null : 'no_activity';
+
+    case 'building-explorer':
+      return (await countEvents(sql`event_type = 'building.visited'`)) >= 1
+        ? null
+        : 'no_building_visits';
+
+    case 'npc-chatter':
+      // NPC chats fire `agent.chat.turn` with payload.chatType being one of
+      // 'character' (agent-gateway), 'building' (agent-gateway), 'location'
+      // (chat.ts), or 'system-agent' (chat.ts). The "small talk with a
+      // building character" intent maps to character / building / location.
+      // Excludes 'avatar' (that's avatar-whisperer) and 'system-agent' (Nori).
+      return (await countEvents(
+        sql`event_type = 'agent.chat.turn'
+            AND payload->>'chatType' IN ('character','building','location')`,
+      )) >= 2
+        ? null
+        : 'insufficient_npc_chats';
+
+    case 'book-worm':
+      // Emitted by apps/api/src/routes/items.ts /buy after successful debit.
+      return (await countEvents(
+        sql`event_type = 'item.purchased' AND coalesce(payload->>'isBook','') = 'true'`,
+      )) >= 1
+        ? null
+        : 'no_purchases';
+
+    case 'avatar-whisperer':
+      // Avatar chat fires `agent.chat.turn` with chatType='avatar' — see
+      // apps/api/src/routes/avatars.ts chat handler.
+      return (await countEvents(
+        sql`event_type = 'agent.chat.turn' AND payload->>'chatType' = 'avatar'`,
+      )) >= 3
+        ? null
+        : 'insufficient_pet_chats';
+
+    case 'agent-scholar':
+      // Emitted by apps/api/src/routes/items.ts /learn ONLY when
+      // newKnowledge.length > 0 — re-reading a book that contributed
+      // nothing new doesn't count. Threshold of 3 = three books with new
+      // knowledge merged into the agent.
+      return (await countEvents(
+        sql`event_type = 'book.read'`,
+      )) >= 3
+        ? null
+        : 'insufficient_knowledge';
+
+    case 'deep-explorer': {
+      // Distinct buildings visited
+      const rows = await db.execute<{ c: number }>(sql`
+        SELECT COUNT(DISTINCT building_id)::int AS c FROM events
+        WHERE event_type = 'building.visited'
+          AND (user_id = ${userId} OR avatar_id = ${avatarId})
+          AND building_id IS NOT NULL
+      `);
+      return Number(rows[0]?.c ?? 0) >= 5 ? null : 'insufficient_distinct_buildings';
+    }
+
+    case 'bot-master':
+      // Any agent.connected for this user — proves an OpenClaw bot has
+      // attached to the account.
+      return (await countEvents(sql`event_type = 'agent.connected'`)) >= 1
+        ? null
+        : 'no_bot_connection';
+
+    case 'first-match':
+      return (await countEvents(
+        sql`event_type = 'activity.match.placed'
+            AND coalesce(payload->>'subjectType','') <> 'bot'`,
+      )) >= 1
+        ? null
+        : 'no_matches';
+
+    case 'first-win':
+      return (await countEvents(
+        sql`event_type = 'activity.match.placed'
+            AND payload->>'placement' = '1'
+            AND coalesce(payload->>'subjectType','') <> 'bot'`,
+      )) >= 1
+        ? null
+        : 'no_wins';
+
+    default:
+      return 'unknown_quest';
+  }
+}
+
+questRoutes.post('/tutorial/:id/claim', requireAuth, async (c) => {
+  const user = c.get('user') as { id: string };
+
+  const parsed = claimTutorialQuestParamSchema.safeParse({ id: c.req.param('id') });
+  if (!parsed.success) {
+    throw new HTTPException(400, { message: 'Invalid quest id' });
+  }
+  const questId = parsed.data.id;
+
+  const reward = getTutorialQuestReward(questId);
+  if (reward === null) {
+    throw new HTTPException(404, { message: 'Unknown tutorial quest' });
+  }
+
+  // Audit-fix 2026-04-29 — block guest accounts. Each guest signup creates
+  // a fresh `userId`, and the idempotency key is `(userId, questId)`. Without
+  // this guard a guest could mint the full ~175 CT tutorial reward, then
+  // re-signup and farm again. Brand carve-out (Brand Identity §"guest mode"):
+  // guests can play, queue activities, and chat with NPCs — but tutorial
+  // rewards require a real account so progress is tied to a stable identity.
+  const userRow = await db.query.users.findFirst({
+    where: eq(users.id, user.id),
+    columns: { isGuest: true },
+  });
+  if (userRow?.isGuest) {
+    return c.json(
+      {
+        ok: false,
+        error: 'guest_not_eligible',
+        message:
+          'Sign up to claim tutorial rewards. Guest play earns ClawTokens through activity matches; tutorial-quest rewards are reserved for real accounts.',
+        credited: 0,
+        balance: 0,
+      },
+      403,
+    );
+  }
+
+  const avatar = await getUserPet(user.id);
+
+  // Idempotency: pre-check (cheap path) — unique index is the source of
+  // truth, this just avoids running the full validator + transaction when
+  // we know it'll fail.
+  const existingClaim = await db.query.tutorialQuestClaims.findFirst({
+    where: and(
+      eq(tutorialQuestClaims.userId, user.id),
+      eq(tutorialQuestClaims.questId, questId),
+    ),
+  });
+  if (existingClaim) {
+    return c.json(
+      {
+        ok: false,
+        error: 'already_claimed',
+        message: 'This tutorial quest has already been claimed.',
+        credited: 0,
+        balance: avatar.clawTokens,
+      },
+      409,
+    );
+  }
+
+  // Engagement gate — server-side proof that the user actually played.
+  const validationFailure = await validateTutorialQuestEngagement(
+    user.id,
+    avatar.id,
+    questId as TutorialQuestId,
+  );
+  if (validationFailure) {
+    return c.json(
+      {
+        ok: false,
+        error: 'engagement_required',
+        reason: validationFailure,
+        message:
+          'Server cannot verify completion yet — keep playing and try again.',
+        credited: 0,
+        balance: avatar.clawTokens,
+      },
+      400,
+    );
+  }
+
+  // Atomic credit + claim insert. Unique index on (user_id, quest_id)
+  // serves as the authoritative idempotency barrier — a concurrent
+  // double-claim still rolls back at INSERT time.
+  try {
+    const result = await db.transaction(async (tx) => {
+      const ledger = await creditClawTokens(
+        {
+          avatarId: avatar.id,
+          amount: reward,
+          reason: 'tutorial_quest', // Q3 plan §0 L6 locked decision
+          source: 'quest',
+          metadata: { questId, tutorial: true },
+        },
+        tx,
+      );
+
+      await tx.insert(tutorialQuestClaims).values({
+        userId: user.id,
+        avatarId: avatar.id,
+        questId,
+        tokensCredited: reward,
+        ledgerId: ledger.ledgerId,
+      });
+
+      return ledger;
+    });
+
+    // Fire-and-forget event for analytics. Uses logEventFromContext so the
+    // anti-farm fp_hash + ip_prefix_hash get persisted.
+    void logEventFromContext(c, {
+      eventType: 'tutorial_quest.claimed',
+      userId: user.id,
+      avatarId: avatar.id,
+      payload: { questId, tokensCredited: reward, ledgerId: result.ledgerId },
+    });
+
+    return c.json({
+      ok: true,
+      questId,
+      credited: reward,
+      balance: result.balanceAfter,
+    });
+  } catch (err) {
+    // Unique-violation race — another concurrent request beat us to the
+    // insert. Same shape as the pre-check 409 so the client can treat
+    // both branches identically.
+    const code = (err as { code?: string }).code;
+    if (code === '23505') {
+      const refreshed = await db.query.avatars.findFirst({
+        where: eq(avatars.id, avatar.id),
+      });
+      return c.json(
+        {
+          ok: false,
+          error: 'already_claimed',
+          message: 'This tutorial quest has already been claimed (race).',
+          credited: 0,
+          balance: refreshed?.clawTokens ?? avatar.clawTokens,
+        },
+        409,
+      );
+    }
+    throw err;
+  }
 });

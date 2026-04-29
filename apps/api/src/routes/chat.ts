@@ -8,7 +8,7 @@ import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { awardXp } from '../services/xp-service';
 import { shouldCollaborate, collaborateOnQuery } from '../services/agent-collaboration';
-import { logEvent } from '../services/event-logger';
+import { logEvent, logEventFromContext } from '../services/event-logger';
 import { miladyGateway } from '../services/milady-gateway';
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import { getSystemNpcAgent, getSystemAgent } from '../services/system-npc-seeder';
@@ -125,7 +125,7 @@ chatRoutes.post('/system/:slug', requireAuth, async (c) => {
     awardXp(avatar.id, 5, 'npc-chat').catch(console.error);
   }
 
-  void logEvent({
+  void logEventFromContext(c, {
     eventType: 'agent.chat.turn',
     userId: user.id,
     avatarId: avatar?.id ?? null,
@@ -313,7 +313,7 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
     awardXp(avatar.id, 5, 'npc-chat').catch(console.error);
   }
 
-  void logEvent({
+  void logEventFromContext(c, {
     eventType: 'agent.chat.turn',
     userId: user.id,
     avatarId: avatar?.id ?? null,

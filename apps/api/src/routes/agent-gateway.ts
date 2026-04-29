@@ -32,7 +32,7 @@ import {
   generateIdentityKeypairForUser,
 } from '../services/identity-service';
 import { mintSessionTicket } from '../services/session-ticket-service';
-import { logEvent } from '../services/event-logger';
+import { logEvent, logEventFromContext } from '../services/event-logger';
 import { issueChallenge, consumeNonce } from '../services/auth-challenge';
 import {
   computeSessionExpiresAt,
@@ -545,7 +545,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
   const pendingForEvent = data.connectionToken
     ? pendingConnections.get(data.connectionToken)
     : null;
-  void logEvent({
+  void logEventFromContext(c, {
     eventType: 'agent.connected',
     userId: pendingForEvent?.userId ?? resolved.userId ?? null,
     avatarId: pendingForEvent?.avatarId ?? resolved.avatarId ?? null,
@@ -1663,7 +1663,7 @@ agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
     }
   }
 
-  void logEvent({
+  void logEventFromContext(c, {
     eventType: 'agent.chat.turn',
     agentId: npcSimulation.getOpenClawBotConfig(sessionId)?.agentId ?? sessionId,
     sessionId,
@@ -1722,6 +1722,11 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
   // Award 1 ClawToken for visiting a building (best-effort — openclaw bots
   // without a matching avatars row will silently skip the credit)
   let tokenAwarded = 0;
+  // Capture bot's userId so the event row can be attributed to the human
+  // account behind the agent — required for the deep-explorer tutorial
+  // quest validator's `(user_id = X OR avatar_id = Y)` check (audit-fix
+  // 2026-04-29).
+  let visitUserId: string | null = null;
   const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
   if (botConfig) {
     try {
@@ -1729,6 +1734,7 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
         where: eq(openclawBots.agentId, botConfig.agentId),
       });
       if (bot) {
+        visitUserId = bot.userId ?? null;
         await creditClawTokens({
           avatarId: bot.id,
           amount: 1,
@@ -1776,8 +1782,13 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
     })();
   }
 
-  void logEvent({
+  void logEventFromContext(c, {
     eventType: 'building.visited',
+    // Audit-fix 2026-04-29 — userId attribution lets the deep-explorer
+    // tutorial quest validator credit the human account for autonomous
+    // agent visits. Was missing pre-fix; quest was effectively unclaimable
+    // for users whose agents did all the visiting.
+    userId: visitUserId,
     agentId: botConfig?.agentId ?? sessionId,
     sessionId,
     buildingId,
@@ -1932,7 +1943,7 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
     }
   }
 
-  void logEvent({
+  void logEventFromContext(c, {
     eventType: 'agent.chat.turn',
     agentId: botConfig?.agentId ?? sessionId,
     sessionId,

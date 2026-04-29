@@ -95,6 +95,7 @@
         "@clawville/agent-runtime": "workspace:*",
         "@clawville/database": "workspace:*",
         "@clawville/shared": "workspace:*",
+        "@fingerprintjs/fingerprintjs": "^4.6.2",
         "@lucia-auth/adapter-drizzle": "^1.1.0",
         "@pixi/react": "^8.0.5",
         "@pixi/tilemap": "^5.0.2",
@@ -294,6 +295,8 @@
     "@esbuild/win32-ia32": ["@esbuild/win32-ia32@0.19.12", "", { "os": "win32", "cpu": "ia32" }, "sha512-+ZOE6pUkMOJfmxmBZElNOx72NKpIa/HFOMGzu8fqzQJ5kgf6aTGrcJaFsNiVMH4JKpMipyK+7k0n2UXN7a8YKQ=="],
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.19.12", "", { "os": "win32", "cpu": "x64" }, "sha512-T1QyPSDCyMXaO3pzBkF96E8xMkiRYbUEZADd29SyPGabqxMViNoii+NcK7eWJAEoU6RZyEm5lVSIjTmcdoB9HA=="],
+
+    "@fingerprintjs/fingerprintjs": ["@fingerprintjs/fingerprintjs@4.6.2", "", { "dependencies": { "tslib": "^2.4.1" } }, "sha512-g8mXuqcFKbgH2CZKwPfVtsUJDHyvcgIABQI7Y0tzWEFXpGxJaXuAuzlifT2oTakjDBLTK4Gaa9/5PERDhqUjtw=="],
 
     "@floating-ui/core": ["@floating-ui/core@1.7.5", "", { "dependencies": { "@floating-ui/utils": "^0.2.11" } }, "sha512-1Ih4WTWyw0+lKyFMcBHGbb5U5FtuHJuujoyyr5zTaWS5EYMeT6Jb2AuDeftsCsEuchO+mM2ij5+q9crhydzLhQ=="],
 

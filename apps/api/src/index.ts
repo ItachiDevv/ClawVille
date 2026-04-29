@@ -56,6 +56,7 @@ import { adminIdentityRoutes } from './routes/admin-identity';
 import { startSimulation } from './services/npc-simulation';
 import { alertError } from './services/alert-error';
 import { getPublishedIssuerInfo } from './services/service-issuer';
+import { fingerprintMiddleware } from './middleware/fingerprint';
 import type { AppContext } from './types';
 
 const app = new Hono<AppContext>();
@@ -100,6 +101,14 @@ app.use(
     credentials: true,
   })
 );
+
+// Phase 1 anti-farm — compute fpHash + ipPrefixHash once per request and
+// stash on context so event-logger and rate-limit consumers can read them
+// without re-hashing. Must run AFTER cors (preflights skip it cleanly via
+// `OPTIONS` returning early in the cors handler) but BEFORE any route so
+// every emitted event carries the hash. Throws at module load if
+// FINGERPRINT_SECRET is missing — fail-fast is intentional.
+app.use('*', fingerprintMiddleware);
 
 // Health check
 app.get('/health', (c) => {

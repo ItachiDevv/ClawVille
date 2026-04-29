@@ -25,7 +25,7 @@ import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { npcSimulation } from '../services/npc-simulation';
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
-import { logEvent } from '../services/event-logger';
+import { logEvent, logEventFromContext } from '../services/event-logger';
 import type { ClawvilleServices } from '@clawville/agent-runtime';
 import { ensureWallet, ensureWalletWithFirstTimeSecret } from '../services/wallet-service';
 import { resolveOrCreateUserByIdentity, generateIdentityKeypairForUser } from '../services/identity-service';
@@ -885,7 +885,7 @@ avatarRoutes.post('/me/chat', requireAuth, async (c) => {
     state,
   });
 
-  void logEvent({
+  void logEventFromContext(c, {
     eventType: 'agent.chat.turn',
     userId: user.id,
     avatarId: avatar.id,

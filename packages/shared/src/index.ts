@@ -37,6 +37,8 @@ export { ReefSpline } from './reef-race/spline';
 export * from './reef-race/track-layout';
 export * from './constants/milady-skills';
 export * from './constants/orientation-skill';
+// Q3 plan §2.6 — server-credited token rewards for tutorial quests.
+export * from './constants/tutorial-quest-rewards';
 // `agent-models` uses type + value dual exports; explicit re-exports
 // guarantee every symbol is public (the earlier `export *` worked but
 // made the surface less obvious during Phase 2 audits).

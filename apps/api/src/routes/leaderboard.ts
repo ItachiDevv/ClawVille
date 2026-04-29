@@ -335,6 +335,13 @@ interface AgentLeaderboardEntry {
   walletAddress: string | null;
   score: number;
   breakdown: AgentScoreBreakdown;
+  /**
+   * Phase 1 (Q3 plan §2.5) — subject classification for the Phase-2
+   * filter chips. `agent` = bound to an OpenClaw bot via openclaw_bots;
+   * `avatar` = avatar-only contribution (Player tier). Frontend filter on this
+   * field; backward-compatible because old clients can ignore it.
+   */
+  subjectType: 'agent' | 'avatar';
 }
 
 interface AgentLeaderboardSnapshot {
@@ -344,33 +351,55 @@ interface AgentLeaderboardSnapshot {
   totalRanked: number;
 }
 
-// Scoring rubric — keep in sync with the ARCHITECTURE.md §Observability
-// "Free Agent Leaderboard" table.
+// Scoring rubric — keep in sync with the CLAUDE.md Brand Identity weights
+// line + ARCHITECTURE.md §Observability "Free Agent Leaderboard" table.
+//
+// Q3 plan §2.4 rebalance (2026-04-28):
+//   - Teacher chat moved 5 → 10 (load-bearing learning event).
+//   - Collaboration moved 25 → 40 (load-bearing brand axis).
+//   - Building visit dropped 10 → 3 (one-shot, easy to script).
+//   - Skill fetch dropped 3 → 1 (a curl is not engagement).
 const AGENT_SCORE_WEIGHTS = {
-  buildingVisit: 10,    // drives world exploration
-  teacherChat: 5,       // MiladyAI teacher-chat — the core learning loop
-  collaboration: 25,    // agent↔agent — explicit Priority #3 signal
-  skillFetch: 3,        // knowledge fetched
-  session: 1,           // cheap participation bonus
-  identityIssued: 5,    // Phase 5.1 onboarding bonus, capped via MAX below
+  buildingVisit: 3,     // Q3 plan §2.4 — was 10
+  teacherChat: 10,      // Q3 plan §2.4 — was 5; THE learning event
+  collaboration: 40,    // Q3 plan §2.4 — was 25; load-bearing brand axis
+  skillFetch: 1,        // Q3 plan §2.4 — was 3
+  session: 1,
+  identityIssued: 5,    // Phase 5.1 onboarding, one-time per agent
 } as const;
 
 /**
- * Q2 Activity Portals — placement-tier weights for `activity.match.placed`
- * events (chunk #7). Below collab (25) intentionally — winning matches
- * < contributing knowledge transfer; a 1st-place match (30) > a single
- * teacher chat (5). See backend §6.3 + Brand Identity §1.
+ * Q3 plan §2.4 — placement-tier weights for `activity.match.placed`.
+ * Lowered so a single match win (12) ≈ 1.2 teacher chats (10), not 6×.
+ * Brand Identity says learning > arcade; weights enforce it.
  *
- * Bots are filtered at SQL level via `payload->>'subjectType' != 'bot'`
- * — bot rows DO emit `activity.match.placed` for telemetry, but their
- * agentId is null + subjectType='bot' so a non-bot filter excludes them
- * from leaderboard credit. Per chunk #10 carve-out.
+ * Bots filtered at SQL level via `payload->>'subjectType' != 'bot'`
+ * (chunk #10 carve-out). Bot rows DO emit telemetry but get zero credit.
  */
 const ACTIVITY_PLACEMENT_WEIGHTS = {
-  1: 30,
-  2: 15,
-  3: 8,
-  default: 2,
+  1: 12,    // Q3 plan §2.4 — was 30
+  2: 6,     // Q3 plan §2.4 — was 15
+  3: 3,     // Q3 plan §2.4 — was 8
+  default: 1, // Q3 plan §2.4 — was 2
+} as const;
+
+/**
+ * Q3 plan §2.4 — per-(subject, day) caps to prevent farming. Applied as
+ * `LEAST(daily_count, cap)` per event_type inside the daily aggregation
+ * CTE. Capped counts then sum across days and multiply by weights.
+ *
+ * `activity` cap is on the TOTAL placements per day (sum of all tiers);
+ * the per-tier weighting is preserved by scaling `(wins*12 + silver*6 +
+ * bronze*3 + other*1)` by `LEAST(total, 10) / total`.
+ *
+ * Sessions and identity.issued are inherently rare — no cap.
+ */
+const DAILY_CAPS = {
+  buildingVisit: 10,    // 10 buildings exist; visiting each once is the natural max
+  teacherChat: 50,      // ~1/min sustained; well above real engagement
+  collaboration: 50,    // mirrors chat
+  skillFetch: 11,       // 11 SKILL.md files exist; one fetch each
+  activity: 10,         // ~3-min races × 10 = 30min, reasonable ceiling
 } as const;
 
 const AGENT_CACHE_TTL_MS = 60_000;
@@ -407,12 +436,31 @@ function windowToInterval(window: AgentLeaderboardWindow): string {
 }
 
 /**
- * Aggregate events into a ranked agent snapshot.
+ * Aggregate events into a ranked subject snapshot.
  *
- * Single `GROUP BY agent_id` pass with filtered aggregates — each metric
- * reuses the one table scan. PostgreSQL plans this as a hash aggregate over
- * the already-covering `idx_events_type_ts` + `idx_events_agent_ts` indexes.
- * Joining avatar / openclaw_bots / wallets happens in memory via two batched
+ * Q3 plan §2.4 + §2.5 rewrite (2026-04-28):
+ *
+ *   1. Per-(subject, day) capping via inner CTE — `LEAST(daily_count, cap)`
+ *      so multi-day farming doesn't break the leaderboard. Capped counts
+ *      sum across days, then multiply by weights.
+ *
+ *   2. Avatar-keyed UNION — Players (avatar + no agent) rank alongside Trainers
+ *      (avatar + agent). Same scoring rubric, separate `subjectType` tag for
+ *      the Phase 2 filter chips. Disjoint event sets so no double-counting:
+ *      agent path takes events with agent_id IS NOT NULL; avatar path takes
+ *      events with agent_id IS NULL AND avatar_id IS NOT NULL.
+ *
+ *   3. Activity per-tier scoring with daily total cap — preserves the
+ *      "1st > 2nd > 3rd > other" weighting while honoring the 10/day total
+ *      cap by scaling all tiers proportionally:
+ *        scaled_score = (wins*12 + silver*6 + bronze*3 + other*1)
+ *                     × LEAST(daily_total, 10) / daily_total
+ *
+ * Postgres plans this as two index-supported scans (agent_id partial,
+ * avatar_id partial) feeding hash aggregates, then a UNION. Index coverage:
+ * `idx_events_type_ts`, `idx_events_agent_ts`, `idx_events_pet_ts`.
+ *
+ * Joining avatar / openclaw_bots / wallets happens in memory via batched
  * `inArray` round trips, never a cartesian.
  */
 async function buildAgentSnapshot(
@@ -422,13 +470,15 @@ async function buildAgentSnapshot(
   const interval = windowToInterval(window);
 
   const W = AGENT_SCORE_WEIGHTS;
+  const A = ACTIVITY_PLACEMENT_WEIGHTS;
+  const C = DAILY_CAPS;
 
   // Use `sql.raw` for the interval because drizzle's bound-parameter path
   // doesn't support interval literals directly, and we've whitelisted the
-  // `interval` string above.
-  const A = ACTIVITY_PLACEMENT_WEIGHTS;
+  // `interval` string in `windowToInterval` above.
   const aggRows = await db.execute<{
-    agent_id: string;
+    subject_id: string;
+    subject_type: 'agent' | 'avatar';
     building_visits: number;
     teacher_chats: number;
     collaborations: number;
@@ -441,81 +491,195 @@ async function buildAgentSnapshot(
     activity_other: number;
     score: number;
   }>(sql`
-    SELECT
-      agent_id,
-      COUNT(*) FILTER (WHERE event_type = 'building.visited')::int          AS building_visits,
-      COUNT(*) FILTER (WHERE event_type = 'agent.chat.turn')::int           AS teacher_chats,
-      COUNT(*) FILTER (WHERE event_type = 'agent.collaboration.turn')::int  AS collaborations,
-      COUNT(*) FILTER (WHERE event_type = 'skill_md.fetched')::int          AS skill_fetches,
-      COUNT(DISTINCT session_id) FILTER (WHERE event_type = 'agent.connected')::int AS sessions,
-      MAX(CASE WHEN event_type = 'identity.issued' THEN 1 ELSE 0 END)::int  AS onboarded,
-      -- Q2 chunk #7 — per-placement counts for activity.match.placed.
-      -- Bots are excluded via the subjectType filter so the agent
-      -- leaderboard only credits human-bound or user-agent participants.
-      COUNT(*) FILTER (
-        WHERE event_type = 'activity.match.placed'
-          AND payload->>'placement' = '1'
-          AND coalesce(payload->>'subjectType','') <> 'bot'
-      )::int AS activity_wins,
-      COUNT(*) FILTER (
-        WHERE event_type = 'activity.match.placed'
-          AND payload->>'placement' = '2'
-          AND coalesce(payload->>'subjectType','') <> 'bot'
-      )::int AS activity_silver,
-      COUNT(*) FILTER (
-        WHERE event_type = 'activity.match.placed'
-          AND payload->>'placement' = '3'
-          AND coalesce(payload->>'subjectType','') <> 'bot'
-      )::int AS activity_bronze,
-      COUNT(*) FILTER (
-        WHERE event_type = 'activity.match.placed'
-          AND payload->>'placement' NOT IN ('1','2','3')
-          AND coalesce(payload->>'subjectType','') <> 'bot'
-      )::int AS activity_other,
-      (
-        COUNT(*) FILTER (WHERE event_type = 'building.visited')          * ${W.buildingVisit}
-        + COUNT(*) FILTER (WHERE event_type = 'agent.chat.turn')         * ${W.teacherChat}
-        + COUNT(*) FILTER (WHERE event_type = 'agent.collaboration.turn')* ${W.collaboration}
-        + COUNT(*) FILTER (WHERE event_type = 'skill_md.fetched')        * ${W.skillFetch}
-        + COUNT(DISTINCT session_id) FILTER (WHERE event_type = 'agent.connected') * ${W.session}
-        + MAX(CASE WHEN event_type = 'identity.issued' THEN ${W.identityIssued} ELSE 0 END)
-        + COUNT(*) FILTER (
-            WHERE event_type = 'activity.match.placed'
-              AND payload->>'placement' = '1'
-              AND coalesce(payload->>'subjectType','') <> 'bot'
-          ) * ${A[1]}
-        + COUNT(*) FILTER (
-            WHERE event_type = 'activity.match.placed'
-              AND payload->>'placement' = '2'
-              AND coalesce(payload->>'subjectType','') <> 'bot'
-          ) * ${A[2]}
-        + COUNT(*) FILTER (
-            WHERE event_type = 'activity.match.placed'
-              AND payload->>'placement' = '3'
-              AND coalesce(payload->>'subjectType','') <> 'bot'
-          ) * ${A[3]}
-        + COUNT(*) FILTER (
-            WHERE event_type = 'activity.match.placed'
-              AND payload->>'placement' NOT IN ('1','2','3')
-              AND coalesce(payload->>'subjectType','') <> 'bot'
-          ) * ${A.default}
-      )::int AS score
-    FROM events
-    WHERE agent_id IS NOT NULL
-      AND ts > now() - ${sql.raw(`interval '${interval}'`)}
-    GROUP BY agent_id
-    HAVING (
-      COUNT(*) FILTER (WHERE event_type = 'building.visited')          * ${W.buildingVisit}
-      + COUNT(*) FILTER (WHERE event_type = 'agent.chat.turn')         * ${W.teacherChat}
-      + COUNT(*) FILTER (WHERE event_type = 'agent.collaboration.turn')* ${W.collaboration}
-      + COUNT(*) FILTER (WHERE event_type = 'skill_md.fetched')        * ${W.skillFetch}
-      + COUNT(DISTINCT session_id) FILTER (WHERE event_type = 'agent.connected') * ${W.session}
-      + MAX(CASE WHEN event_type = 'identity.issued' THEN ${W.identityIssued} ELSE 0 END)
-      + COUNT(*) FILTER (
+    WITH
+    -- Distinct session counts (kept outside the daily CTE so cross-day
+    -- session distinctness is preserved — losing it inside daily aggregation
+    -- would over-count agents that span midnight on the same connect).
+    agent_sessions AS (
+      SELECT
+        agent_id,
+        COUNT(DISTINCT session_id)::int AS sessions
+      FROM events
+      WHERE event_type = 'agent.connected'
+        AND agent_id IS NOT NULL
+        AND ts > now() - ${sql.raw(`interval '${interval}'`)}
+      GROUP BY agent_id
+    ),
+    pet_sessions AS (
+      SELECT
+        avatar_id,
+        COUNT(DISTINCT session_id)::int AS sessions
+      FROM events
+      WHERE event_type = 'agent.connected'
+        AND agent_id IS NULL
+        AND avatar_id IS NOT NULL
+        AND ts > now() - ${sql.raw(`interval '${interval}'`)}
+      GROUP BY avatar_id
+    ),
+    -- Per-(agent, day) capped counts. LEAST applies the cap inside one row
+    -- per (agent, day); SUM in the next CTE adds capped values across days.
+    agent_daily AS (
+      SELECT
+        agent_id,
+        date_trunc('day', ts) AS day,
+        LEAST(COUNT(*) FILTER (WHERE event_type = 'building.visited'), ${C.buildingVisit})::int AS visits_c,
+        LEAST(COUNT(*) FILTER (WHERE event_type = 'agent.chat.turn'), ${C.teacherChat})::int AS chats_c,
+        LEAST(COUNT(*) FILTER (WHERE event_type = 'agent.collaboration.turn'), ${C.collaboration})::int AS collabs_c,
+        LEAST(COUNT(*) FILTER (WHERE event_type = 'skill_md.fetched'), ${C.skillFetch})::int AS skills_c,
+        MAX(CASE WHEN event_type = 'identity.issued' THEN 1 ELSE 0 END)::int AS onboarded,
+        COUNT(*) FILTER (
           WHERE event_type = 'activity.match.placed'
+            AND payload->>'placement' = '1'
             AND coalesce(payload->>'subjectType','') <> 'bot'
-        ) * ${A.default}
-    ) > 0
+        )::int AS act_wins,
+        COUNT(*) FILTER (
+          WHERE event_type = 'activity.match.placed'
+            AND payload->>'placement' = '2'
+            AND coalesce(payload->>'subjectType','') <> 'bot'
+        )::int AS act_silver,
+        COUNT(*) FILTER (
+          WHERE event_type = 'activity.match.placed'
+            AND payload->>'placement' = '3'
+            AND coalesce(payload->>'subjectType','') <> 'bot'
+        )::int AS act_bronze,
+        COUNT(*) FILTER (
+          WHERE event_type = 'activity.match.placed'
+            AND payload->>'placement' IS NOT NULL
+            AND payload->>'placement' NOT IN ('1','2','3')
+            AND coalesce(payload->>'subjectType','') <> 'bot'
+        )::int AS act_other,
+        -- act_total MUST equal the sum of the four numerator buckets so the
+        -- proportional cap factor (LEAST(act_total, cap) / act_total) doesn't
+        -- deflate honest scoring. The IS NOT NULL clause excludes malformed
+        -- rows that would otherwise inflate the denominator without
+        -- contributing to any numerator. Audit finding 2026-04-28.
+        COUNT(*) FILTER (
+          WHERE event_type = 'activity.match.placed'
+            AND payload->>'placement' IS NOT NULL
+            AND coalesce(payload->>'subjectType','') <> 'bot'
+        )::int AS act_total
+      FROM events
+      WHERE agent_id IS NOT NULL
+        AND ts > now() - ${sql.raw(`interval '${interval}'`)}
+      GROUP BY agent_id, date_trunc('day', ts)
+    ),
+    pet_daily AS (
+      SELECT
+        avatar_id,
+        date_trunc('day', ts) AS day,
+        LEAST(COUNT(*) FILTER (WHERE event_type = 'building.visited'), ${C.buildingVisit})::int AS visits_c,
+        LEAST(COUNT(*) FILTER (WHERE event_type = 'agent.chat.turn'), ${C.teacherChat})::int AS chats_c,
+        LEAST(COUNT(*) FILTER (WHERE event_type = 'agent.collaboration.turn'), ${C.collaboration})::int AS collabs_c,
+        LEAST(COUNT(*) FILTER (WHERE event_type = 'skill_md.fetched'), ${C.skillFetch})::int AS skills_c,
+        MAX(CASE WHEN event_type = 'identity.issued' THEN 1 ELSE 0 END)::int AS onboarded,
+        COUNT(*) FILTER (
+          WHERE event_type = 'activity.match.placed'
+            AND payload->>'placement' = '1'
+            AND coalesce(payload->>'subjectType','') <> 'bot'
+        )::int AS act_wins,
+        COUNT(*) FILTER (
+          WHERE event_type = 'activity.match.placed'
+            AND payload->>'placement' = '2'
+            AND coalesce(payload->>'subjectType','') <> 'bot'
+        )::int AS act_silver,
+        COUNT(*) FILTER (
+          WHERE event_type = 'activity.match.placed'
+            AND payload->>'placement' = '3'
+            AND coalesce(payload->>'subjectType','') <> 'bot'
+        )::int AS act_bronze,
+        COUNT(*) FILTER (
+          WHERE event_type = 'activity.match.placed'
+            AND payload->>'placement' IS NOT NULL
+            AND payload->>'placement' NOT IN ('1','2','3')
+            AND coalesce(payload->>'subjectType','') <> 'bot'
+        )::int AS act_other,
+        -- See agent_daily comment — NULL-placement rows excluded from both
+        -- numerator and denominator so the proportional cap stays honest.
+        COUNT(*) FILTER (
+          WHERE event_type = 'activity.match.placed'
+            AND payload->>'placement' IS NOT NULL
+            AND coalesce(payload->>'subjectType','') <> 'bot'
+        )::int AS act_total
+      FROM events
+      WHERE agent_id IS NULL
+        AND avatar_id IS NOT NULL
+        AND ts > now() - ${sql.raw(`interval '${interval}'`)}
+      GROUP BY avatar_id, date_trunc('day', ts)
+    ),
+    -- Subject-level aggregation: sum capped daily counts, compute score.
+    -- The activity sub-expression scales tier weights by the daily-cap
+    -- factor so total credited matches never exceed C.activity per day
+    -- while preserving the 1st > 2nd > 3rd > other gradient.
+    agent_scores AS (
+      SELECT
+        ad.agent_id::text AS subject_id,
+        'agent'::text AS subject_type,
+        SUM(ad.visits_c)::int AS building_visits,
+        SUM(ad.chats_c)::int AS teacher_chats,
+        SUM(ad.collabs_c)::int AS collaborations,
+        SUM(ad.skills_c)::int AS skill_fetches,
+        COALESCE(MAX(s.sessions), 0)::int AS sessions,
+        MAX(ad.onboarded)::int AS onboarded,
+        SUM(ad.act_wins)::int AS activity_wins,
+        SUM(ad.act_silver)::int AS activity_silver,
+        SUM(ad.act_bronze)::int AS activity_bronze,
+        SUM(ad.act_other)::int AS activity_other,
+        (
+          SUM(ad.visits_c) * ${W.buildingVisit}
+          + SUM(ad.chats_c) * ${W.teacherChat}
+          + SUM(ad.collabs_c) * ${W.collaboration}
+          + SUM(ad.skills_c) * ${W.skillFetch}
+          + COALESCE(MAX(s.sessions), 0) * ${W.session}
+          + MAX(ad.onboarded) * ${W.identityIssued}
+          + ROUND(SUM(
+              CASE WHEN ad.act_total = 0 THEN 0
+                   ELSE (ad.act_wins * ${A[1]} + ad.act_silver * ${A[2]} + ad.act_bronze * ${A[3]} + ad.act_other * ${A.default})
+                        * LEAST(ad.act_total, ${C.activity})::float / ad.act_total
+              END
+            ))::int
+        )::int AS score
+      FROM agent_daily ad
+      LEFT JOIN agent_sessions s ON s.agent_id = ad.agent_id
+      GROUP BY ad.agent_id
+    ),
+    pet_scores AS (
+      SELECT
+        pd.avatar_id::text AS subject_id,
+        'avatar'::text AS subject_type,
+        SUM(pd.visits_c)::int AS building_visits,
+        SUM(pd.chats_c)::int AS teacher_chats,
+        SUM(pd.collabs_c)::int AS collaborations,
+        SUM(pd.skills_c)::int AS skill_fetches,
+        COALESCE(MAX(s.sessions), 0)::int AS sessions,
+        MAX(pd.onboarded)::int AS onboarded,
+        SUM(pd.act_wins)::int AS activity_wins,
+        SUM(pd.act_silver)::int AS activity_silver,
+        SUM(pd.act_bronze)::int AS activity_bronze,
+        SUM(pd.act_other)::int AS activity_other,
+        (
+          SUM(pd.visits_c) * ${W.buildingVisit}
+          + SUM(pd.chats_c) * ${W.teacherChat}
+          + SUM(pd.collabs_c) * ${W.collaboration}
+          + SUM(pd.skills_c) * ${W.skillFetch}
+          + COALESCE(MAX(s.sessions), 0) * ${W.session}
+          + MAX(pd.onboarded) * ${W.identityIssued}
+          + ROUND(SUM(
+              CASE WHEN pd.act_total = 0 THEN 0
+                   ELSE (pd.act_wins * ${A[1]} + pd.act_silver * ${A[2]} + pd.act_bronze * ${A[3]} + pd.act_other * ${A.default})
+                        * LEAST(pd.act_total, ${C.activity})::float / pd.act_total
+              END
+            ))::int
+        )::int AS score
+      FROM pet_daily pd
+      LEFT JOIN pet_sessions s ON s.avatar_id = pd.avatar_id
+      GROUP BY pd.avatar_id
+    )
+    SELECT * FROM (
+      SELECT * FROM agent_scores
+      UNION ALL
+      SELECT * FROM pet_scores
+    ) combined
+    WHERE score > 0
     ORDER BY score DESC
   `);
 
@@ -528,24 +692,27 @@ async function buildAgentSnapshot(
     };
   }
 
-  // Batch-fetch openclaw_bots metadata (agentId is the text identifier used
-  // throughout events; ties to openclaw_bots.agent_id — not .id).
-  const agentIds = aggRows.map((r) => r.agent_id);
-  const botRows = await db
-    .select({
-      agentId: openclawBots.agentId,
-      name: openclawBots.name,
-      userId: openclawBots.userId,
-      walletAddress: openclawBots.walletAddress,
-    })
-    .from(openclawBots)
-    .where(inArray(openclawBots.agentId, agentIds));
+  // Split rows by subject_type so we hit the right metadata table for each.
+  // Agent rows → openclaw_bots → avatars-for-user. Avatar rows → avatars directly.
+  const agentRows = aggRows.filter((r) => r.subject_type === 'agent');
+  const petRows = aggRows.filter((r) => r.subject_type === 'avatar');
+
+  // Agent path: openclaw_bots → optional bound avatar via userId.
+  const agentSubjectIds = agentRows.map((r) => r.subject_id);
+  const botRows = agentSubjectIds.length > 0
+    ? await db
+        .select({
+          agentId: openclawBots.agentId,
+          name: openclawBots.name,
+          userId: openclawBots.userId,
+          walletAddress: openclawBots.walletAddress,
+        })
+        .from(openclawBots)
+        .where(inArray(openclawBots.agentId, agentSubjectIds))
+    : [];
 
   const botByAgentId = new Map(botRows.map((b) => [b.agentId, b]));
 
-  // Secondary join: avatars for this user — we want the avatar name + id when the
-  // agent is bound to a human account, otherwise we fall back to the openclaw
-  // bot's own `name` field.
   const userIds = botRows
     .map((b) => b.userId)
     .filter((u): u is string => typeof u === 'string' && u.length > 0);
@@ -554,7 +721,7 @@ async function buildAgentSnapshot(
     { id: string; name: string; walletAddress: string | null }
   >();
   if (userIds.length > 0) {
-    const petRows = await db
+    const petsForBots = await db
       .select({
         id: avatars.id,
         name: avatars.name,
@@ -564,8 +731,34 @@ async function buildAgentSnapshot(
       .from(avatars)
       .where(and(inArray(avatars.userId, userIds), eq(avatars.isActive, true)));
 
-    for (const p of petRows) {
+    for (const p of petsForBots) {
       petByUserId.set(p.userId, {
+        id: p.id,
+        name: p.name,
+        walletAddress: p.walletAddress ?? null,
+      });
+    }
+  }
+
+  // Avatar path (Q3 plan §2.5 — Player tier groundwork): subject_id IS the avatar.id
+  // since avatar rows come from events with no agent_id. One direct avatars lookup.
+  const petSubjectIds = petRows.map((r) => r.subject_id);
+  const petById = new Map<
+    string,
+    { id: string; name: string; walletAddress: string | null }
+  >();
+  if (petSubjectIds.length > 0) {
+    const directPets = await db
+      .select({
+        id: avatars.id,
+        name: avatars.name,
+        walletAddress: avatars.walletAddress,
+      })
+      .from(avatars)
+      .where(and(inArray(avatars.id, petSubjectIds), eq(avatars.isActive, true)));
+
+    for (const p of directPets) {
+      petById.set(p.id, {
         id: p.id,
         name: p.name,
         walletAddress: p.walletAddress ?? null,
@@ -577,15 +770,20 @@ async function buildAgentSnapshot(
   // qualifying set, not just the paginated slice).
   const totalRanked = aggRows.length;
   const entries: AgentLeaderboardEntry[] = aggRows.slice(0, limit).map((r, idx) => {
-    const bot = botByAgentId.get(r.agent_id);
-    const avatar = bot?.userId ? petByUserId.get(bot.userId) : undefined;
+    const isAgent = r.subject_type === 'agent';
+    const bot = isAgent ? botByAgentId.get(r.subject_id) : undefined;
+    const boundPet = bot?.userId ? petByUserId.get(bot.userId) : undefined;
+    const directPet = isAgent ? undefined : petById.get(r.subject_id);
+    const avatar = boundPet ?? directPet;
+
     return {
       rank: idx + 1,
-      agentId: r.agent_id,
-      avatarId: avatar?.id ?? null,
-      // Prefer the avatar name (human-facing) over the raw openclaw bot name.
+      // For agent rows: the openclaw bot's text agent_id. For avatar rows: a
+      // synthetic `avatar:<uuid>` so client-side keys stay unique across the
+      // unified board without colliding with real bot agent_ids.
+      agentId: isAgent ? r.subject_id : `avatar:${r.subject_id}`,
+      avatarId: avatar?.id ?? (isAgent ? null : r.subject_id),
       avatarName: avatar?.name ?? bot?.name ?? null,
-      // Wallet — avatar wallet for bound agents, bot wallet otherwise.
       walletAddress: avatar?.walletAddress ?? bot?.walletAddress ?? null,
       score: Number(r.score) || 0,
       breakdown: {
@@ -599,6 +797,7 @@ async function buildAgentSnapshot(
         activity_bronze: Number(r.activity_bronze) || 0,
         activity_other: Number(r.activity_other) || 0,
       },
+      subjectType: r.subject_type,
     };
   });
 
