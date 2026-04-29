@@ -1,131 +1,95 @@
 /**
  * Internal admin dashboard — /dash
  *
- * Server-rendered, no client state, 10-minute meta-refresh. Reads from
- * GET /api/dashboard/overview (admin-gated via ADMIN_USER_IDS env var).
+ * Server-rendered, no client state, 10-minute meta-refresh. Admin-gated via
+ * the upstream /api/dashboard/* routes (ADMIN_USER_IDS env allowlist).
  *
- * Not user-facing. A future-session session reading this file should treat
- * /dash as a tool for measuring whether the free agent leaderboard thesis
- * is working — not as a surface to add features to.
+ * Five tabs (Q3 plan §gamification dashboard):
+ *
+ *   ?tab=overview        — DAU + funnel + retention + collab metrics (the
+ *                          original "is the leaderboard thesis working" view)
+ *   ?tab=tokens          — score weights + daily caps + bundle tiers + CLV
+ *                          mint info + treasury balances
+ *   ?tab=quests          — 10 tutorial quests with claim counts + backend
+ *                          admin-curated quests
+ *   ?tab=cosmetics       — catalog grid w/ thumbnails (or category icon
+ *                          fallback), variant counts, license attribution
+ *   ?tab=phases          — Q3 plan phase status, mutable via the dashboard
+ *                          MCP server (tools/dashboard-mcp/)
+ *
+ * Tab state via search param so links are shareable. Each tab is its own
+ * server component file under ./tabs/*.tsx; the shell here just dispatches.
  */
 
-import { cookies } from 'next/headers';
-import { Card } from './Card';
-import { BuildingBarChart } from './BuildingBarChart';
+import OverviewTab from './tabs/overview';
+import TokenEconomyTab from './tabs/token-economy';
+import QuestsTab from './tabs/quests';
+import CosmeticsTab from './tabs/cosmetics';
+import PhasesTab from './tabs/phases';
 
 export const dynamic = 'force-dynamic';
 
-interface DashboardOverview {
-  measurementStartDate: string;
-  dau: {
-    connectedAgents: number;
-    delta7d: number;
-    miladyOriginPct: number;
-  };
-  funnel: {
-    uniqueConnectsLast7d: number;
-    firstEngagedLast7d: number;
-    conversionPct: number;
-  };
-  retention: {
-    totalAgentsLast7d: number;
-    returningAgentsLast7d: number;
-    returningDayRatePct: number;
-  };
-  collaboration: {
-    agentToAgentTurns7d: number;
-    teacherChats7d: number;
-  };
-  buildings: { id: string; visits7d: number; rank: number }[];
+const TABS = [
+  { id: 'overview',  label: 'Overview',       hint: 'DAU · funnel · collab' },
+  { id: 'tokens',    label: 'Token Economy',  hint: 'weights · caps · bundles' },
+  { id: 'quests',    label: 'Quests',         hint: 'tutorial + admin' },
+  { id: 'cosmetics', label: 'Cosmetics',      hint: 'catalog · thumbnails' },
+  { id: 'phases',    label: 'Phases',         hint: 'Q3 roadmap status' },
+] as const;
+
+type TabId = (typeof TABS)[number]['id'];
+
+function isValidTab(t: string | undefined): t is TabId {
+  return TABS.some((x) => x.id === t);
 }
 
-type FetchResult = DashboardOverview | { error: string };
-
-async function fetchOverview(): Promise<FetchResult> {
-  const apiBase = process.env.NEXT_PUBLIC_API_URL ?? '';
-  if (!apiBase) return { error: 'NEXT_PUBLIC_API_URL is not configured.' };
-
-  // Next.js 15+: cookies() is async. Await before .toString() or the cookie
-  // header is literally "[object Promise]" and the API returns 401.
-  const cookieStore = await cookies();
-  const cookieHeader = cookieStore.toString();
-  try {
-    const res = await fetch(`${apiBase}/api/dashboard/overview`, {
-      headers: { cookie: cookieHeader },
-      cache: 'no-store',
-    });
-    if (res.status === 401) return { error: 'Not authenticated. Sign in as an admin first.' };
-    if (res.status === 403) return { error: 'Your account is not in ADMIN_USER_IDS.' };
-    if (!res.ok) return { error: `API returned ${res.status}.` };
-    return (await res.json()) as DashboardOverview;
-  } catch (err) {
-    return { error: `Fetch failed: ${String(err)}` };
-  }
-}
-
-export default async function DashPage() {
-  const data = await fetchOverview();
-
-  if ('error' in data) {
-    return (
-      <main className="max-w-2xl mx-auto p-8">
-        <h1 className="text-2xl font-bold mb-4">Dashboard unavailable</h1>
-        <p className="text-red-400">{data.error}</p>
-      </main>
-    );
-  }
-
-  const funnelSublabel = `${data.funnel.firstEngagedLast7d} of ${data.funnel.uniqueConnectsLast7d} connects`;
-  const retentionSublabel = `${data.retention.returningAgentsLast7d} of ${data.retention.totalAgentsLast7d} agents`;
-  const collabSublabel = `MiladyAI teacher chats: ${data.collaboration.teacherChats7d}`;
-  const miladySublabel =
-    data.dau.miladyOriginPct > 0
-      ? `Milady-origin: ${data.dau.miladyOriginPct}%`
-      : 'Milady-origin: 0%';
+export default async function DashPage({
+  searchParams,
+}: {
+  // Next.js 15+ — searchParams is async.
+  searchParams: Promise<{ tab?: string }>;
+}) {
+  const { tab: rawTab } = await searchParams;
+  const tab: TabId = isValidTab(rawTab) ? rawTab : 'overview';
 
   return (
     <>
-      {/* 10-minute auto refresh per Decision #8 (revised). Matches the
-          cadence of numbers that move over days, not seconds. */}
       <meta httpEquiv="refresh" content="600" />
-      <main className="max-w-5xl mx-auto p-8 space-y-8">
-        <header className="flex justify-between items-baseline">
+      <main className="max-w-6xl mx-auto p-6 sm:p-8">
+        <header className="mb-6 flex flex-wrap items-baseline justify-between gap-2">
           <h1 className="text-2xl font-bold">ClawVille Dashboard</h1>
-          <span className="text-sm text-slate-500">
-            Measuring since {data.measurementStartDate}
+          <span className="text-xs font-mono text-slate-500">
+            Q3 plan: <code>.claude/plans/gamification-economy-and-shop-q3.md</code>
           </span>
         </header>
 
-        <section className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card
-            label="DAU connected agents"
-            value={data.dau.connectedAgents}
-            delta={data.dau.delta7d}
-            sublabel={miladySublabel}
-          />
-          <Card
-            label="Connect → first engagement (7d)"
-            value={`${data.funnel.conversionPct}%`}
-            sublabel={funnelSublabel}
-          />
-          <Card
-            label="Returning-day rate (7d)"
-            value={`${data.retention.returningDayRatePct}%`}
-            sublabel={retentionSublabel}
-          />
-          <Card
-            label="Agent↔agent collab (7d)"
-            value={data.collaboration.agentToAgentTurns7d}
-            sublabel={collabSublabel}
-          />
-        </section>
+        <nav role="tablist" className="mb-6 flex flex-wrap gap-1 border-b border-slate-700/50">
+          {TABS.map((t) => {
+            const active = t.id === tab;
+            return (
+              <a
+                key={t.id}
+                role="tab"
+                aria-selected={active}
+                href={`/dash?tab=${t.id}`}
+                title={t.hint}
+                className={`-mb-px border-b-2 px-4 py-2 text-sm transition-colors ${
+                  active
+                    ? 'border-cyan-400 text-cyan-100'
+                    : 'border-transparent text-slate-400 hover:text-slate-100'
+                }`}
+              >
+                {t.label}
+              </a>
+            );
+          })}
+        </nav>
 
-        <section>
-          <h2 className="text-lg font-semibold mb-3">
-            Buildings by visits (7d)
-          </h2>
-          <BuildingBarChart buildings={data.buildings} />
-        </section>
+        {tab === 'overview'  ? <OverviewTab />     : null}
+        {tab === 'tokens'    ? <TokenEconomyTab /> : null}
+        {tab === 'quests'    ? <QuestsTab />       : null}
+        {tab === 'cosmetics' ? <CosmeticsTab />    : null}
+        {tab === 'phases'    ? <PhasesTab />       : null}
       </main>
     </>
   );

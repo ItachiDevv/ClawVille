@@ -1,0 +1,20 @@
+{
+  "name": "@clawville/dashboard-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local MCP server for mutating ClawVille dashboard_phases via DATABASE_URL. Add to Claude Desktop / Claude Code mcp config to use.",
+  "scripts": {
+    "start": "bun server.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "postgres": "^3.4.4",
+    "dotenv": "^16.4.5",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.3",
+    "@types/node": "^20.14.10"
+  }
+}
