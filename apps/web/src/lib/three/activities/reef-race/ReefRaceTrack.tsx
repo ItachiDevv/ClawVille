@@ -26,7 +26,7 @@
  * River bed + bank walls built from clientSpline singleton.
  * Samples centerlineAt/normalAt/widthAt at 64 uniform-t points.
  * Sandy color 0xc8a572, roughness 0.85, fog=false.
- * Bank walls: vertical quads at river edges, rock color 0x6b5544.
+ * Bank walls: vertical quads at river edges, grass green 0x7cb342 (blends with ground plane).
  * Finish-line gate at t=1.0 (gold pillar pair + crossbar).
  *
  * Iris Xe invariants (both paths):
@@ -374,9 +374,13 @@ const _v2RiverMat = new THREE.MeshStandardMaterial({
   fog: false,
 });
 
-/** Rocky bank walls (slightly darker than river-bed). */
+/**
+ * Bank walls — recolored to grass green so they blend with the new GroundPlane
+ * and SandRibbon in river-scene.tsx. The old dark-brown 0x6b5544 rendered as
+ * an ugly dark stripe visible from the cinematic camera view.
+ */
 const _v2BankMat = new THREE.MeshStandardMaterial({
-  color: 0x6b5544,
+  color: 0x7cb342,  // grass green — matches GroundPlane in river-scene.tsx
   roughness: 0.9,
   metalness: 0.0,
   side: THREE.DoubleSide,
