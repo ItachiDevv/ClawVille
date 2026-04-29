@@ -398,13 +398,16 @@ function SplineTrack({ onTriUpdate }: { onTriUpdate: (n: number) => void }) {
 
   return (
     <group>
-      {/* River bed */}
-      <mesh ref={riverRef} geometry={riverGeo} material={_riverMat} receiveShadow matrixAutoUpdate={false} />
+      {/* River bed — position.y -50 cascades from iter-5 WATER_Y=-40 (bed below water) */}
+      <mesh ref={riverRef} geometry={riverGeo} material={_riverMat} position-y={-50} receiveShadow matrixAutoUpdate={false} />
 
-      {/* Bank walls */}
-      <group ref={bankGroup}>
-        <mesh geometry={bankGeos.left}  material={_bankMat} castShadow receiveShadow matrixAutoUpdate={false} />
-        <mesh geometry={bankGeos.right} material={_bankMat} castShadow receiveShadow matrixAutoUpdate={false} />
+      {/* Bank walls — HIDDEN: replaced by <RockyBanks /> from rocky-banks.tsx
+          which provides the canyon cliff geometry. The old grass-green bank
+          walls overlapped the new cliffs and cast shadows producing dark
+          rectangles inside the river area (iter-5b regression). */}
+      <group ref={bankGroup} visible={false}>
+        <mesh geometry={bankGeos.left}  material={_bankMat} matrixAutoUpdate={false} />
+        <mesh geometry={bankGeos.right} material={_bankMat} matrixAutoUpdate={false} />
       </group>
 
       {/* Finish gate */}
