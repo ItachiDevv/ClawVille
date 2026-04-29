@@ -38,6 +38,7 @@ import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { makeGeometryWebGPUSafe } from '@/lib/three/webgpu-geometry';
+import { RiverScene } from '@/lib/three/activities/reef-race/river-scene';
 
 // ─── Spline instance (always v2, bypasses env flag) ──────────────────────────
 // Import the same singleton used by ReefRaceTrack so we share the pre-built
@@ -56,19 +57,16 @@ import {
 
 // ─── Production lighting / fog constants (inlined from ReefRaceScene values) ──
 // Inlined rather than imported to avoid cross-module 'use client' import issues.
-const FOG_COLOR            = '#0d2b5e';
-// Track is 18 000 wu long × ±500 wu wide. Old ellipse-track values
-// (FOG_FAR=4500, CAMERA_FAR=5000) clipped the river before it reached the
-// camera — first preview render came back with a totally blank canvas
-// despite 460 tris being uploaded. Scaled all view-volume constants 6× so
-// the whole spline + start/finish + four sample karts fit. Confirmed
-// 2026-04-29 from the broken first preview render.
+const FOG_COLOR            = '#a8d8ff'; // sky-blue atmospheric haze, matches SkyDome horizon
+// Track is 18 000 wu long × ±500 wu wide. FOG tuned for open-vista feel:
+// near=8000 keeps foreground crisp, far=30000 gives soft haze on distant banks.
+// CAMERA_FAR stays at 35000 so the dome (radius=28000) renders correctly.
 const FOG_NEAR             = 8000;
 const FOG_FAR              = 30000;
 const CAMERA_NEAR          = 1;
 const CAMERA_FAR           = 35000;
-const HEMI_SKY_COLOR       = '#87ceeb';
-const HEMI_GROUND_COLOR    = '#0d2b5e';
+const HEMI_SKY_COLOR       = '#a8d8ff'; // matches SkyDome horizon
+const HEMI_GROUND_COLOR    = '#4a7c3f'; // earthy green riverbank
 const HEMI_INTENSITY       = 0.5;
 const DIR_COLOR            = '#fffbe6';
 const DIR_INTENSITY        = 1.2;
@@ -737,7 +735,11 @@ function SceneContents({
 
       {/* Production fog */}
       <fog args={[FOG_COLOR, FOG_NEAR, FOG_FAR]} />
-      <color attach="background" args={[FOG_COLOR]} />
+      {/* Sky-blue clear color matches SkyDome horizon — prevents flash before dome renders */}
+      <color attach="background" args={['#a8d8ff']} />
+
+      {/* Low-poly stylized river atmosphere — dome, water surface, scenery */}
+      <RiverScene />
 
       {/* Production lighting */}
       <PreviewLighting />
