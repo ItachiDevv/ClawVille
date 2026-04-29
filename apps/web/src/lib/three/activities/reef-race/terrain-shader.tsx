@@ -134,6 +134,16 @@ const _fragmentShader = /* glsl */ `
   varying float vYDisplacement;
 
   void main() {
+    // ── Cut a HOLE for the river canyon ──────────────────────────────────────
+    // 2026-04-29 iter-7: discard ground fragments inside the corridor band so
+    // (a) top-down sees water, not grass covering the canyon, and (b) cinematic
+    // POV inside the canyon doesn't have a dark "ground from below" band cutting
+    // across the screen. The corridor halfWidth maxes at 1050wu; spline meanders
+    // ±200wu in X. Cut at abs(x) < 1300wu = corridor center + max meander +
+    // small cliff-rim-overlap. Trees/rocks at xJitter 350-450 sit beyond the
+    // cliff (>= 1400wu) so they're untouched.
+    if (abs(vWorldPos.x) < 1300.0) discard;
+
     // ── Grass color palette ──────────────────────────────────────────────────
     vec3 grassLight = vec3(0.545, 0.784, 0.282); // #8bc848 bright cartoon green
     vec3 grassDark  = vec3(0.369, 0.620, 0.180); // #5e9e2e deeper grass
