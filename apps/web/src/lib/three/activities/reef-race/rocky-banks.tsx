@@ -8,26 +8,25 @@
  * enclosed by stepped rocky cliffs on both sides.  A player inside the
  * canyon sees rock walls rising above the water line on left and right.
  *
- * Y-coordinate contract (future state — matches the orchestrator's planned
- * WATER_Y=-40 update):
+ * Y-coordinate contract (iter-6 — WATER_Y=-200 deep ravine):
  *
- *   y = +10   outer rock outcrop (slightly above ground)
- *   y =   0   ground / grass level
- *   y = -15   water-line (rock meets the future WATER_Y=-40 surface visually)
- *   y = -35   mid cliff face (underwater)
- *   y = -50   channel floor / river bed
+ *   y =  +30   outer rock outcrop (taller rim above ground for dramatic silhouette)
+ *   y =    0   ground / grass level (unchanged anchor)
+ *   y = -180   water-line cliff top (most of the 180wu drop from ground happens here)
+ *   y = -220   mid cliff face (underwater rock)
+ *   y = -250   channel floor / river bed (matches river bed mesh position-y)
  *
- * This means after the orchestrator lowers WATER_Y from +40 → -40 and
- * river-bed to y=-50, the cliffs will properly bracket the water.
+ * The 180wu vertical drop from v1→v2 is the cliff face visible from above.
+ * Significant visual mass — player looks DOWN into the ravine.
  *
  * Geometry details:
  *   • N=80 cross-sections along clientSpline (t=0…1, inclusive)
  *   • 5-vertex profile per side per cross-section:
- *       v0 outer-top (hw+250, y=+10) — rock outcrop above ground
- *       v1 outer-mid (hw+100, y=  0) — at ground level
- *       v2 inner-top (hw,     y=-15) — water-line, top of cliff face
- *       v3 inner-mid (hw- 60, y=-35) — mid cliff face, underwater
- *       v4 inner-bot (hw- 30, y=-50) — channel floor (slight toe-in)
+ *       v0 outer-top (hw+250, y=  +30) — rock outcrop, tall rim above ground
+ *       v1 outer-mid (hw+100, y=    0) — at ground level (anchor)
+ *       v2 inner-top (hw,     y= -180) — water-line cliff top (180wu drop from v1)
+ *       v3 inner-mid (hw-100, y= -220) — mid cliff face, underwater
+ *       v4 inner-bot (hw- 50, y= -250) — channel floor (matches river bed)
  *   • Left bank: normal direction +1 (normalAt result is LEFT of travel)
  *   • Right bank: normal direction -1
  *   • Both sides merged into ONE BufferGeometry — single draw call
@@ -66,14 +65,15 @@ const N_SECTIONS = 80;
  *   lateralOffset = hw * factor + addend (see PROFILE_OFFSETS_ABS)
  * Using absolute wu offsets added to hw makes the profile independent of hw.
  */
-const PROFILE_Y: readonly number[] = [+10, 0, -15, -35, -50];
+const PROFILE_Y: readonly number[] = [+30, 0, -180, -220, -250];
 
 /**
  * Absolute wu added to halfWidth for each profile vertex.
- * v0: hw+250  v1: hw+100  v2: hw+0  v3: hw-60  v4: hw-30
+ * v0: hw+250  v1: hw+100  v2: hw+0  v3: hw-100  v4: hw-50
+ * Wider inset at v3/v4 for cliff thickness proportional to the deeper canyon.
  * Note v4 < v3 in lateral offset — toe-in at channel floor (natural rock undercut).
  */
-const PROFILE_D_OFFSET: readonly number[] = [+250, +100, 0, -60, -30];
+const PROFILE_D_OFFSET: readonly number[] = [+250, +100, 0, -100, -50];
 
 const PROFILE_VERTS = PROFILE_Y.length; // 5
 

@@ -338,22 +338,20 @@ const SIDEON_CAM    = new THREE.Vector3(
   2400,
   _startCenter.z + _startNormal.z * 6000,
 );
-const SIDEON_TARGET = new THREE.Vector3(_startCenter.x, 0, _startCenter.z + 4000);
+const SIDEON_TARGET = new THREE.Vector3(_startCenter.x, -50, _startCenter.z + 4000);
 
-/** Cinematic: behind and just above the kart, riding the canyon. */
+/** Cinematic: behind and above the kart, looking DOWN into the 200wu ravine. */
 const _startTangent = clientSpline.tangentAt(0);
-// 2026-04-29 iter-5d: dropped cam altitude 300 → 60 (just above the cliff top
-// at y=+10) so the camera is INSIDE the canyon looking down its length.
-// At y=300 the cam was above the green hills surrounding the canyon and
-// the river was completely obscured from this POV.
+// 2026-04-29 iter-6: raised cam altitude to 150 (above cliff outer-top at y=+30)
+// and pushed lateral offset to 1200 to frame canyon walls from above.
+// Camera looks down to target at y=-100 (mid-canyon between cliff top y=0 and water y=-200).
 const CINEMATIC_CAM = new THREE.Vector3(
-  _startCenter.x - _startTangent.x * 800,
-  60,
-  _startCenter.z - _startTangent.z * 800,
+  _startCenter.x - _startTangent.x * 1200,
+  150,
+  _startCenter.z - _startTangent.z * 1200,
 );
-// Target inside the canyon at water level so cam looks along the river
-// surface — canyon walls visible flanking, water dominating the foreground.
-const CINEMATIC_TARGET = new THREE.Vector3(_startCenter.x, -35, _startCenter.z + 1500);
+// Target at mid-canyon depth — canyon walls visible on both sides, ravine apparent.
+const CINEMATIC_TARGET = new THREE.Vector3(_startCenter.x, -100, _startCenter.z + 1500);
 
 /** Default free-orbit position: 3/4 perspective showing whole track length. */
 const FREE_CAM    = new THREE.Vector3(_startCenter.x + 8000, 8000, _startCenter.z + 18000);
@@ -401,8 +399,8 @@ function SplineTrack({ onTriUpdate }: { onTriUpdate: (n: number) => void }) {
 
   return (
     <group>
-      {/* River bed — position.y -50 cascades from iter-5 WATER_Y=-40 (bed below water) */}
-      <mesh ref={riverRef} geometry={riverGeo} material={_riverMat} position-y={-50} receiveShadow matrixAutoUpdate={false} />
+      {/* River bed — position.y -250 cascades from iter-6 WATER_Y=-200 (bed 50wu below water) */}
+      <mesh ref={riverRef} geometry={riverGeo} material={_riverMat} position-y={-250} receiveShadow matrixAutoUpdate={false} />
 
       {/* Bank walls — HIDDEN: replaced by <RockyBanks /> from rocky-banks.tsx
           which provides the canyon cliff geometry. The old grass-green bank
@@ -619,10 +617,10 @@ function CamController({ mode, autoRotate, controlsRef, onCamDist }: CamControll
       if (!ctrl) return;
       // Slowly orbit around the start kart
       const angle = Date.now() * 0.0001;
-      const r     = 700;
+      const r     = 1200;
       camera.position.set(
         CINEMATIC_TARGET.x + Math.sin(angle) * r,
-        400,
+        150,
         CINEMATIC_TARGET.z + Math.cos(angle) * r,
       );
       ctrl.target.copy(CINEMATIC_TARGET);
