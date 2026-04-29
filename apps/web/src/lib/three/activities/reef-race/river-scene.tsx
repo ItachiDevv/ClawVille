@@ -491,7 +491,27 @@ const _bridgeMat = new THREE.MeshStandardMaterial({
  * where hw = clientSpline.widthAt(t) varies per sample.
  *
  * Triangle strip winds pairs of adjacent rows into quads, each split into 2 tris.
- * Winding order is consistent for +Y normals regardless of side sign.
+ *
+ * Winding order differs by side — cross-product analysis determines the correct order:
+ *
+ * Left ribbon (side=+1): spline normal n.x < 0 (points west), so vertex b is WEST of a.
+ *   v1 = b - a = (-widthStep, 0, 0)
+ *   v2 = c - a = (0, 0, +Δz)
+ *   v1 × v2 = (0·Δz - 0·0, 0·0 - (-widthStep)·Δz, (-widthStep)·0 - 0·0)
+ *           = (0, +widthStep·Δz, 0)  → +Y normal ✓
+ *   So tri1 = (a, b, c), tri2 = (b, d, c).
+ *
+ * Right ribbon (side=−1): spline normal n.x > 0 (points east), so vertex b is EAST of a.
+ *   v1 = c - a = (0, 0, +Δz)
+ *   v2 = b - a = (+widthStep, 0, 0)
+ *   v1 × v2 = (0·0 - Δz·0, Δz·widthStep - 0·0, 0·0 - 0·widthStep)
+ *   Wait — use opposite order for the fix: tri = (a, c, b):
+ *   v1 = c - a = (0, 0, +Δz), v2 = b - a = (+widthStep, 0, 0)
+ *   v1 × v2 y = Δz·widthStep > 0 → +Y ✓   (a, c, b) correct for right ribbon.
+ *   So tri1 = (a, c, b), tri2 = (b, c, d).
+ *
+ * NOTE: the two branches are SWAPPED relative to what naive "mirror winding" logic suggests.
+ * The previous code had them backwards, causing backface culling to hide both ribbons.
  */
 function buildGroundRibbonGeo(
   side: 1 | -1,
@@ -537,9 +557,11 @@ function buildGroundRibbonGeo(
     }
   }
 
-  // Build index buffer — two triangles per quad between adjacent rows
-  // For side=+1 (left):  winding a→b→c, a→c→d (CCW viewed from +Y)
-  // For side=-1 (right): winding a→c→b, a→d→c (mirror winding for +Y normal)
+  // Build index buffer — two triangles per quad between adjacent rows.
+  // Cross-product analysis (see JSDoc above) shows:
+  //   side=+1 (left):  vertices extend in -X → tri1=(a,b,c), tri2=(b,d,c) for +Y normal
+  //   side=-1 (right): vertices extend in +X → tri1=(a,c,b), tri2=(b,c,d) for +Y normal
+  // These look like a swap vs. naive mirroring — that's intentional and mathematically correct.
   const quadCount = (rows - 1) * widthSegs;
   const indices   = new Uint32Array(quadCount * 6);
   let   idxPtr    = 0;
@@ -552,21 +574,23 @@ function buildGroundRibbonGeo(
       const d = (r + 1) * cols + col + 1;
 
       if (side === 1) {
-        // Left ribbon — CCW for +Y normal
+        // Left ribbon — vertices extend in -X direction (n.x < 0 for straight spline)
+        // (a,b,c): v1=b-a=(-Δx,0,0), v2=c-a=(0,0,+Δz) → cross.y = +Δx·Δz > 0 → +Y ✓
         indices[idxPtr++] = a;
-        indices[idxPtr++] = c;
-        indices[idxPtr++] = b;
         indices[idxPtr++] = b;
         indices[idxPtr++] = c;
+        indices[idxPtr++] = b;
         indices[idxPtr++] = d;
+        indices[idxPtr++] = c;
       } else {
-        // Right ribbon — mirror winding to keep +Y normal on right side
+        // Right ribbon — vertices extend in +X direction (n.x > 0 for straight spline)
+        // (a,c,b): v1=c-a=(0,0,+Δz), v2=b-a=(+Δx,0,0) → cross.y = +Δz·Δx > 0 → +Y ✓
         indices[idxPtr++] = a;
-        indices[idxPtr++] = b;
         indices[idxPtr++] = c;
         indices[idxPtr++] = b;
+        indices[idxPtr++] = b;
+        indices[idxPtr++] = c;
         indices[idxPtr++] = d;
-        indices[idxPtr++] = c;
       }
     }
   }
