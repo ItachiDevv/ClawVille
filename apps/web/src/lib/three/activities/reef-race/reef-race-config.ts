@@ -521,3 +521,42 @@ export function buildReefApexZonesClient(): ReefApexZoneClient[] {
     };
   });
 }
+
+// ─── SPEC 3 — Spline ramp positions (client mirrors) ─────────────────────────
+//
+// Must stay in sync with buildSplineRamps() in
+//   apps/api/src/services/activity/sim/reef-race-config.ts
+// These are used by ramps.tsx to place visual wedge meshes at the correct
+// spline positions. They're reproduced here (not shared) to avoid pulling
+// API-side transitive deps into the client bundle.
+
+export interface SplineRampClient {
+  id: string;
+  /** Arclength fraction along the client spline (0..1). */
+  t: number;
+  /** Lateral offset from centerline in wu (0 = centerline). */
+  lateralOffset: number;
+  /** Half-length of the visual wedge along the tangent (wu). */
+  halfLength: number;
+  /** Half-width of the visual wedge perpendicular to the tangent (wu). */
+  halfWidth: number;
+}
+
+// MUST match RAMP_HALF_LENGTH / RAMP_HALF_WIDTH in API reef-race-config.ts.
+const RAMP_HALF_LENGTH_CLIENT = 150;
+const RAMP_HALF_WIDTH_CLIENT  = 200;
+
+/**
+ * Build the 6 ramp definitions mirroring the server-side SPEC 3 ramp volumes.
+ * Used by ramps.tsx to place wedge meshes at the correct spline positions.
+ */
+export function buildSplineRampsClient(): SplineRampClient[] {
+  return [
+    { id: 'ramp-lagoon',     t: 0.09, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH_CLIENT, halfWidth: RAMP_HALF_WIDTH_CLIENT },
+    { id: 'ramp-kelp-1',    t: 0.22, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH_CLIENT, halfWidth: RAMP_HALF_WIDTH_CLIENT },
+    { id: 'ramp-kelp-2',    t: 0.35, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH_CLIENT, halfWidth: RAMP_HALF_WIDTH_CLIENT },
+    { id: 'ramp-shipwreck', t: 0.50, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH_CLIENT, halfWidth: RAMP_HALF_WIDTH_CLIENT },
+    { id: 'ramp-canyon-1',  t: 0.65, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH_CLIENT, halfWidth: RAMP_HALF_WIDTH_CLIENT },
+    { id: 'ramp-canyon-2',  t: 0.78, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH_CLIENT, halfWidth: RAMP_HALF_WIDTH_CLIENT },
+  ];
+}
