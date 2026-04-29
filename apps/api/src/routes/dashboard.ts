@@ -265,6 +265,85 @@ dashboardRoutes.get('/phases', adminOnly, async (c) => {
   return c.json({ phases: rows, generatedAt: new Date().toISOString() });
 });
 
+dashboardRoutes.get('/economy', adminOnly, async (c) => {
+  // Live operational metrics that complement the static config in the
+  // Token Economy tab. Three queries, all aggregations over recent windows.
+
+  // 1. Anti-farm fingerprint coverage — what fraction of events in the
+  //    last 24h have fp_hash populated? Should be ≥99% post-Phase-1
+  //    middleware deploy; gaps indicate emitter sites still using the
+  //    plain logEvent path (e.g., reward-pipeline / agent-collaboration
+  //    services that haven't been migrated yet).
+  const fpCoverage = await db.execute<{
+    total: number;
+    with_fp: number;
+  }>(drizzleSql`
+    SELECT
+      COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE fp_hash IS NOT NULL)::int AS with_fp
+    FROM events
+    WHERE ts > now() - interval '24 hours'
+  `);
+
+  // 2. ClawToken sources/sinks — sum of credits + debits by reason in
+  //    the last 30d. Gives an at-a-glance picture of where tokens enter
+  //    + leave the economy.
+  const tokenFlow = await db.execute<{
+    reason: string;
+    credits: number;
+    debits: number;
+    total_tx: number;
+  }>(drizzleSql`
+    SELECT
+      reason,
+      COALESCE(SUM(amount) FILTER (WHERE amount > 0), 0)::int AS credits,
+      ABS(COALESCE(SUM(amount) FILTER (WHERE amount < 0), 0))::int AS debits,
+      COUNT(*)::int AS total_tx
+    FROM claw_token_transactions
+    WHERE created_at > now() - interval '30 days'
+    GROUP BY reason
+    ORDER BY (COALESCE(SUM(amount) FILTER (WHERE amount > 0), 0) +
+             ABS(COALESCE(SUM(amount) FILTER (WHERE amount < 0), 0))) DESC
+  `);
+
+  // 3. Daily-login summary — lifetime stats so the team can see total
+  //    distribution + recent activity.
+  const dailyLogin = await db.execute<{
+    lifetime_ct: number;
+    lifetime_claims: number;
+    last_24h_claims: number;
+  }>(drizzleSql`
+    SELECT
+      COALESCE(SUM(amount), 0)::int AS lifetime_ct,
+      COUNT(*)::int AS lifetime_claims,
+      COUNT(*) FILTER (WHERE created_at > now() - interval '24 hours')::int AS last_24h_claims
+    FROM claw_token_transactions
+    WHERE reason = 'daily_login' AND amount > 0
+  `);
+
+  return c.json({
+    fingerprintCoverage24h: {
+      total: Number(fpCoverage[0]?.total ?? 0),
+      withFp: Number(fpCoverage[0]?.with_fp ?? 0),
+      pct: Number(fpCoverage[0]?.total ?? 0) > 0
+        ? Math.round((Number(fpCoverage[0].with_fp) / Number(fpCoverage[0].total)) * 1000) / 10
+        : 0,
+    },
+    tokenFlow30d: tokenFlow.map((r) => ({
+      reason: r.reason,
+      credits: Number(r.credits) || 0,
+      debits: Number(r.debits) || 0,
+      totalTx: Number(r.total_tx) || 0,
+    })),
+    dailyLogin: {
+      lifetimeCt: Number(dailyLogin[0]?.lifetime_ct ?? 0),
+      lifetimeClaims: Number(dailyLogin[0]?.lifetime_claims ?? 0),
+      last24hClaims: Number(dailyLogin[0]?.last_24h_claims ?? 0),
+    },
+    generatedAt: new Date().toISOString(),
+  });
+});
+
 dashboardRoutes.get('/cosmetics', adminOnly, async (c) => {
   // SKUs + variant counts + ownership counts. Three queries, one merge.
   const skus = await db.select().from(cosmeticSkus).orderBy(cosmeticSkus.createdAt);

@@ -63,6 +63,33 @@ export default async function DashPage({
           </span>
         </header>
 
+        {/* Brand Identity priorities — equal-weight, co-load-bearing.
+            Source: CLAUDE.md §"TOP PROJECT PRIORITIES". Every design
+            decision is measured against all four. */}
+        <section className="mb-6 rounded border border-cyan-400/15 bg-cyan-500/[0.03] p-4">
+          <h2 className="mb-2 font-mono text-[10px] uppercase tracking-[0.2em] text-cyan-300/70">
+            Brand Identity · 4 priorities (equal weight)
+          </h2>
+          <ol className="grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-4">
+            <li className="rounded bg-black/20 p-2">
+              <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-cyan-300">1 · Milady AI app store</div>
+              <div className="mt-1 text-[11px] text-slate-300">npm sideload (live) + curated app grid (PR #1839 merged)</div>
+            </li>
+            <li className="rounded bg-black/20 p-2">
+              <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-cyan-300">2 · Open agent onboarding</div>
+              <div className="mt-1 text-[11px] text-slate-300">Any agent enters via /api/agent/connect + 11 SKILL.md. Player tier (no agent) added Q3.</div>
+            </li>
+            <li className="rounded bg-black/20 p-2">
+              <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-cyan-300">3 · Free agent leaderboard</div>
+              <div className="mt-1 text-[11px] text-slate-300">Contribution-based (no peer skill commerce). Phase-1 rebalanced weights + daily caps + fp_hash.</div>
+            </li>
+            <li className="rounded bg-black/20 p-2">
+              <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-cyan-300">4 · Gamified UI + unified leaderboard</div>
+              <div className="mt-1 text-[11px] text-slate-300">3D world + ClawTokens + cosmetic engine. Players + Trainers on one board.</div>
+            </li>
+          </ol>
+        </section>
+
         <nav role="tablist" className="mb-6 flex flex-wrap gap-1 border-b border-slate-700/50">
           {TABS.map((t) => {
             const active = t.id === tab;
