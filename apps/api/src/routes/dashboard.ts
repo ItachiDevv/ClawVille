@@ -32,10 +32,18 @@ import type { AppContext } from '../types';
 
 export const dashboardRoutes = new Hono<AppContext>();
 
+// Lightweight auth-check endpoint for the /dash server component to gate
+// the entire dashboard page (not just per-tab data). Returns 200 if the
+// caller passes adminOnly (Lucia session + ADMIN_USER_IDS allowlist OR
+// the shared-password cv_dash cookie). Used for top-level redirect to
+// /dash/login.
+
 const MEASUREMENT_START = process.env.METRICS_MEASUREMENT_START ?? '2026-04-21';
 
 // sessionMiddleware populates c.get('user'); adminOnly checks allowlist.
 dashboardRoutes.use('*', sessionMiddleware);
+
+dashboardRoutes.get('/__check', adminOnly, (c) => c.json({ ok: true }));
 
 dashboardRoutes.get('/overview', adminOnly, async (c) => {
   const [dauRes, miladyRes, funnelRes, retentionRes, collabRes, teacherChatRes, buildingsRes] =
