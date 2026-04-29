@@ -7,6 +7,8 @@ import {
   type QuestId,
   type QuestStatus,
   type CounterKey,
+  type DistinctSetKey,
+  type QuestCondition,
   type QuestDefinition,
   QUEST_DEFINITIONS,
 } from '@/lib/quests';
@@ -17,38 +19,33 @@ export interface QuestProgress {
 }
 
 interface QuestCounters {
-  totalDistanceMoved: number;
-  npcMessagesSent: number;
+  systemAgentMessagesSent: number;
   petMessagesSent: number;
+  characterMessagesSent: number;
   booksBought: number;
+  itemsBought: number;
   knowledgeLearned: number;
-  /** Q2 chunk #9 — incremented in ActivityResultsModal for the first-match quest */
+  cosmeticsEquipped: number;
   activityMatchesPlayed: number;
-  /** Q2 chunk #9 — incremented when player placement === 1 */
   activityMatchesWon: number;
 }
+
+type DistinctSets = Record<DistinctSetKey, Record<string, true>>;
 
 interface QuestStoreState {
   progress: Record<QuestId, QuestProgress>;
   counters: QuestCounters;
-  /**
-   * Q3 plan §2.6 + audit-fix 2026-04-29 — set of quest ids whose
-   * server-side reward credit has been confirmed (200 or 409 from the
-   * /tutorial/:id/claim endpoint). Locally-completed quests not in this
-   * set are retried on subsequent loads via `retryUnclaimedRewards()`,
-   * so a one-time network failure during completion doesn't permanently
-   * lose the player's tokens. Stored as object-of-bools (not Set) so it
-   * survives zustand persist's JSON serialization.
-   */
+  distinct: DistinctSets;
   serverClaimed: Partial<Record<QuestId, boolean>>;
 
   incrementCounter: (key: CounterKey, amount?: number) => void;
+  recordDistinct: (setKey: DistinctSetKey, value: string) => void;
   checkAndCompleteQuests: () => QuestId[];
   markServerClaimed: (id: QuestId) => void;
   getActiveQuests: () => QuestId[];
   isCompleted: (id: QuestId) => boolean;
   getStatus: (id: QuestId) => QuestStatus;
-  getProgress: (id: QuestId) => number; // 0-1
+  getProgress: (id: QuestId) => number;
 }
 
 function getDefaultProgress(): Record<QuestId, QuestProgress> {
@@ -61,19 +58,77 @@ function getDefaultProgress(): Record<QuestId, QuestProgress> {
   return progress as Record<QuestId, QuestProgress>;
 }
 
+const DEFAULT_COUNTERS: QuestCounters = {
+  systemAgentMessagesSent: 0,
+  petMessagesSent: 0,
+  characterMessagesSent: 0,
+  booksBought: 0,
+  itemsBought: 0,
+  knowledgeLearned: 0,
+  cosmeticsEquipped: 0,
+  activityMatchesPlayed: 0,
+  activityMatchesWon: 0,
+};
+
+const DEFAULT_DISTINCT: DistinctSets = {
+  distinctTeachersChatted: {},
+  distinctActivityTypes: {},
+  distinctBookBuildings: {},
+};
+
+interface CondEvalContext {
+  counters: QuestCounters;
+  distinct: DistinctSets;
+  visitedBuildingsSize: number;
+  hasOpenClawBot: boolean;
+}
+
+function evalCondition(
+  cond: QuestCondition,
+  ctx: CondEvalContext,
+): { met: boolean; ratio: number } {
+  switch (cond.type) {
+    case 'counter': {
+      const v = ctx.counters[cond.counterKey] ?? 0;
+      return { met: v >= cond.threshold, ratio: Math.min(1, v / cond.threshold) };
+    }
+    case 'visitedBuildings': {
+      const v = ctx.visitedBuildingsSize;
+      return { met: v >= cond.threshold, ratio: Math.min(1, v / cond.threshold) };
+    }
+    case 'distinctSet': {
+      const v = Object.keys(ctx.distinct[cond.setKey] ?? {}).length;
+      return { met: v >= cond.threshold, ratio: Math.min(1, v / cond.threshold) };
+    }
+    case 'openClaw':
+      return { met: ctx.hasOpenClawBot, ratio: ctx.hasOpenClawBot ? 1 : 0 };
+    case 'compound': {
+      const sub = cond.predicates.map((p) => evalCondition(p, ctx));
+      const met = sub.every((s) => s.met);
+      const ratio = sub.reduce((s, r) => s + r.ratio, 0) / Math.max(1, sub.length);
+      return { met, ratio };
+    }
+    case 'pending':
+    case 'serverOnly':
+      return { met: false, ratio: 0 };
+  }
+}
+
+function buildEvalContext(state: QuestStoreState): CondEvalContext {
+  return {
+    counters: state.counters,
+    distinct: state.distinct,
+    visitedBuildingsSize: useGameStore.getState().visitedBuildings.size,
+    hasOpenClawBot: useNpcStore.getState().npcs.some((npc) => npc.isOpenClaw),
+  };
+}
+
 export const useQuestStore = create<QuestStoreState>()(
   persist(
     (set, get) => ({
       progress: getDefaultProgress(),
-      counters: {
-        totalDistanceMoved: 0,
-        npcMessagesSent: 0,
-        petMessagesSent: 0,
-        booksBought: 0,
-        knowledgeLearned: 0,
-        activityMatchesPlayed: 0,
-        activityMatchesWon: 0,
-      },
+      counters: { ...DEFAULT_COUNTERS },
+      distinct: { ...DEFAULT_DISTINCT },
       serverClaimed: {},
 
       markServerClaimed: (id) =>
@@ -81,21 +136,34 @@ export const useQuestStore = create<QuestStoreState>()(
 
       incrementCounter: (key, amount = 1) => {
         set((s) => ({
-          counters: { ...s.counters, [key]: s.counters[key] + amount },
+          counters: { ...s.counters, [key]: (s.counters[key] ?? 0) + amount },
         }));
+      },
+
+      recordDistinct: (setKey, value) => {
+        set((s) => {
+          const existing = s.distinct[setKey] ?? {};
+          if (existing[value]) return s;
+          return {
+            distinct: {
+              ...s.distinct,
+              [setKey]: { ...existing, [value]: true as const },
+            },
+          };
+        });
       },
 
       checkAndCompleteQuests: () => {
         const state = get();
+        const ctx = buildEvalContext(state);
         const completed: QuestId[] = [];
         const updatedProgress = { ...state.progress };
         let changed = false;
 
         for (const quest of QUEST_DEFINITIONS) {
           const current = updatedProgress[quest.id];
-          if (current.status === 'completed') continue;
+          if (!current || current.status === 'completed') continue;
 
-          // Check prerequisites — unlock if all prereqs completed
           if (current.status === 'locked') {
             const allPrereqsMet = quest.prerequisites.every(
               (pid) => updatedProgress[pid]?.status === 'completed'
@@ -108,20 +176,7 @@ export const useQuestStore = create<QuestStoreState>()(
             }
           }
 
-          // Check condition
-          let met = false;
-          const { condition } = quest;
-
-          if (condition.type === 'counter' && condition.counterKey && condition.threshold) {
-            met = state.counters[condition.counterKey] >= condition.threshold;
-          } else if (condition.type === 'visitedBuildings' && condition.threshold) {
-            const visited = useGameStore.getState().visitedBuildings;
-            met = visited.size >= condition.threshold;
-          } else if (condition.type === 'openClaw') {
-            const npcs = useNpcStore.getState().npcs;
-            met = npcs.some((npc) => npc.isOpenClaw);
-          }
-
+          const { met } = evalCondition(quest.condition, ctx);
           if (met) {
             updatedProgress[quest.id] = {
               status: 'completed',
@@ -132,10 +187,9 @@ export const useQuestStore = create<QuestStoreState>()(
           }
         }
 
-        // Unlock newly available quests after completions
         if (completed.length > 0) {
           for (const quest of QUEST_DEFINITIONS) {
-            if (updatedProgress[quest.id].status !== 'locked') continue;
+            if (updatedProgress[quest.id]?.status !== 'locked') continue;
             const allPrereqsMet = quest.prerequisites.every(
               (pid) => updatedProgress[pid]?.status === 'completed'
             );
@@ -146,10 +200,7 @@ export const useQuestStore = create<QuestStoreState>()(
           }
         }
 
-        if (changed) {
-          set({ progress: updatedProgress });
-        }
-
+        if (changed) set({ progress: updatedProgress });
         return completed;
       },
 
@@ -162,9 +213,7 @@ export const useQuestStore = create<QuestStoreState>()(
 
       isCompleted: (id) => get().progress[id]?.status === 'completed',
 
-      getStatus: (id) => {
-        return get().progress[id]?.status ?? 'locked';
-      },
+      getStatus: (id) => get().progress[id]?.status ?? 'locked',
 
       getProgress: (id) => {
         const state = get();
@@ -172,47 +221,37 @@ export const useQuestStore = create<QuestStoreState>()(
         if (!quest) return 0;
         if (state.progress[id]?.status === 'completed') return 1;
         if (state.progress[id]?.status === 'locked') return 0;
-
-        const { condition } = quest;
-        if (condition.type === 'counter' && condition.counterKey && condition.threshold) {
-          return Math.min(1, state.counters[condition.counterKey] / condition.threshold);
-        }
-        if (condition.type === 'visitedBuildings' && condition.threshold) {
-          const visited = useGameStore.getState().visitedBuildings;
-          return Math.min(1, visited.size / condition.threshold);
-        }
-        if (condition.type === 'openClaw') {
-          const npcs = useNpcStore.getState().npcs;
-          return npcs.some((npc) => npc.isOpenClaw) ? 1 : 0;
-        }
-        return 0;
+        const ctx = buildEvalContext(state);
+        return evalCondition(quest.condition, ctx).ratio;
       },
     }),
     {
       name: 'clawville-quest-progress',
-      // Bump version when adding counters/quests so the merge fn below can
-      // backfill missing fields without nuking returning users' progress.
-      version: 2,
+      // Bumped to v3 for the 30-quest redesign (new counter keys, new
+      // distinct sets, new quest IDs).
+      version: 3,
       partialize: (state) => ({
         progress: state.progress,
         counters: state.counters,
+        distinct: state.distinct,
         serverClaimed: state.serverClaimed,
       }),
-      // Forward-compatible merge: backfill any new counter keys + the
-      // serverClaimed map that older persisted state is missing. Returning
-      // users with Phase 1 quests already marked complete will have an empty
-      // serverClaimed{} after this load and retryUnclaimedRewards() will
-      // settle the credits server-side on next page mount.
       merge: (persisted, current) => {
         const safe = persisted as Partial<{
           progress: Record<QuestId, QuestProgress>;
           counters: Partial<QuestCounters>;
+          distinct: Partial<DistinctSets>;
           serverClaimed: Partial<Record<QuestId, boolean>>;
         }> | undefined;
         return {
           ...current,
           progress: { ...current.progress, ...(safe?.progress ?? {}) },
           counters: { ...current.counters, ...(safe?.counters ?? {}) },
+          distinct: {
+            distinctTeachersChatted: { ...current.distinct.distinctTeachersChatted, ...(safe?.distinct?.distinctTeachersChatted ?? {}) },
+            distinctActivityTypes: { ...current.distinct.distinctActivityTypes, ...(safe?.distinct?.distinctActivityTypes ?? {}) },
+            distinctBookBuildings: { ...current.distinct.distinctBookBuildings, ...(safe?.distinct?.distinctBookBuildings ?? {}) },
+          },
           serverClaimed: { ...current.serverClaimed, ...(safe?.serverClaimed ?? {}) },
         };
       },
@@ -220,21 +259,10 @@ export const useQuestStore = create<QuestStoreState>()(
   )
 );
 
-/**
- * Q3 plan §2.6 — fire the server-side reward claim for a completed
- * tutorial quest. Fire-and-forget: completion toast lands immediately
- * (synchronous), token-credit toast lands when the server responds.
- *
- * Idempotency: server returns 409 `already_claimed` for repeat calls;
- * we silence those because the store's local "completed" status means
- * the user was already credited on first completion.
- */
 async function claimTutorialQuestReward(def: QuestDefinition, opts?: { silent?: boolean }) {
   try {
     const res = await api.claimTutorialQuest(def.id);
     if (res.ok) {
-      // Server credited the reward. Mark locally so we don't retry, and
-      // toast unless this is a silent retry replay.
       useQuestStore.getState().markServerClaimed(def.id);
       if (!opts?.silent) {
         useGameStore
@@ -242,33 +270,25 @@ async function claimTutorialQuestReward(def: QuestDefinition, opts?: { silent?: 
           .addToast('💰', `+${res.credited} ClawTokens (balance: ${res.balance})`, 3500);
       }
     } else if (res.error === 'already_claimed') {
-      // Server has the reward, we just didn't know — sync local state.
       useQuestStore.getState().markServerClaimed(def.id);
     } else if (res.error === 'guest_not_eligible') {
-      // Guest accounts can't claim tutorial rewards. Mark as "claimed" so
-      // we stop retrying; if the user signs up later the server will allow
-      // the claim on the new account (which has its own fresh state).
       useQuestStore.getState().markServerClaimed(def.id);
       if (!opts?.silent) {
         useGameStore
           .getState()
           .addToast('🔒', 'Sign up to claim tutorial rewards', 4000);
       }
-    } else if (res.error === 'engagement_required') {
-      // Server doesn't see the engagement events yet (eventual consistency
-      // window or events.ts emitter gap). Leave serverClaimed[] unset so a
-      // later mount retries.
-      console.warn('[quest] server engagement gate failed for', def.id, res.reason);
+    } else if (res.error === 'engagement_required' || res.error === 'pending_feature') {
+      console.warn('[quest] server engagement gate failed for', def.id, res.reason ?? res.error);
     }
   } catch (err) {
-    // honoRequest throws on !res.ok. Detect known-409 ('already_claimed')
-    // path from the message and silently mark claimed; everything else is
-    // genuine network failure that retryUnclaimedRewards() will pick up.
     const msg = String((err as Error)?.message ?? '');
     if (msg.includes('already_claimed')) {
       useQuestStore.getState().markServerClaimed(def.id);
     } else if (msg.includes('guest_not_eligible')) {
       useQuestStore.getState().markServerClaimed(def.id);
+    } else if (msg.includes('pending_feature') || msg.includes('engagement_required')) {
+      // Quiet — feature not shipped or events haven't landed yet.
     } else {
       console.warn('[quest] claim network failure for', def.id, err);
     }
@@ -277,36 +297,36 @@ async function claimTutorialQuestReward(def: QuestDefinition, opts?: { silent?: 
 
 /**
  * Retry server-side claims for any tutorial quests that the local store
- * marks completed but `serverClaimed` doesn't acknowledge. Call once on
- * app mount. Network failures during the original completion no longer
- * lose the user's reward forever.
+ * marks completed but `serverClaimed` doesn't acknowledge. Also probes
+ * `serverOnly` quests whose prerequisites are met — the server validator
+ * is the only authority for those, so we ask periodically.
  */
 export async function retryUnclaimedRewards() {
   const state = useQuestStore.getState();
   const claimed = state.serverClaimed;
   for (const def of QUEST_DEFINITIONS) {
-    if (state.progress[def.id]?.status === 'completed' && !claimed[def.id]) {
-      // Run silently — no completion toast, just settle the credit.
-      // claimTutorialQuestReward will toast for newly-credited rewards
-      // even with silent:true is false; the silent flag here suppresses
-      // the +CT toast since the user already saw the original completion
-      // toast on first attempt.
+    if (claimed[def.id]) continue;
+    if (state.progress[def.id]?.status === 'completed') {
       await claimTutorialQuestReward(def, { silent: true });
+      continue;
+    }
+    if (def.condition.type === 'serverOnly') {
+      const allPrereqsMet = def.prerequisites.every(
+        (pid) => state.progress[pid]?.status === 'completed'
+      );
+      if (allPrereqsMet) {
+        await claimTutorialQuestReward(def, { silent: true });
+      }
     }
   }
 }
 
-/**
- * Check all quests and fire toasts + server reward claims for any newly
- * completed ones. Call after incrementing a counter or changing game state.
- */
 export function triggerQuestCheck() {
   const completed = useQuestStore.getState().checkAndCompleteQuests();
   for (const questId of completed) {
     const def = QUEST_DEFINITIONS.find((q) => q.id === questId);
     if (def) {
       useGameStore.getState().addToast(def.icon, `Quest complete: ${def.title}!`, 4000);
-      // Fire-and-forget server-side ClawToken credit.
       void claimTutorialQuestReward(def);
     }
   }

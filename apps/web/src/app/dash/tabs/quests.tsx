@@ -1,12 +1,19 @@
 /**
- * Quests tab — 10 tutorial quests as cards with claim counts + total CT
- * issued + completion %, plus the backend admin-curated quests table.
+ * Quests tab — dashboard-side surface for the 30 tutorial quests.
+ *
+ * Renders each tier as its own grouped section with a "live" / "pending"
+ * badge so reviewers can see at a glance which quests have a working
+ * backend validator and which are still stubs.
+ *
+ * Source of truth: `TUTORIAL_QUESTS` in @clawville/shared. The dashboard
+ * pulls claim counts from the API and zips them onto each card.
  */
 
 import { cookies } from 'next/headers';
 import {
-  TUTORIAL_QUEST_REWARDS,
+  TUTORIAL_QUESTS,
   TUTORIAL_QUEST_TOTAL_REWARD,
+  TUTORIAL_QUEST_LIVE_REWARD,
   type TutorialQuestId,
 } from '@clawville/shared';
 
@@ -23,21 +30,16 @@ interface AdminQuest {
 interface QuestsResponse { tutorial: TutorialClaim[]; admin: AdminQuest[]; generatedAt: string }
 type FetchResult = QuestsResponse | { error: string };
 
-// Same metadata schema as apps/web/src/lib/quests.ts QUEST_DEFINITIONS — duplicated
-// here so the dashboard renders without importing from a client lib (server-side
-// only, no zustand). One source for icons + titles is acceptable drift; the IDs +
-// rewards remain authoritative via TUTORIAL_QUEST_REWARDS in @clawville/shared.
-const TUTORIAL_META: Record<TutorialQuestId, { icon: string; title: string; threshold: string }> = {
-  'first-steps':       { icon: '👣', title: 'First Steps',       threshold: 'Walk 200 units' },
-  'building-explorer': { icon: '🧭', title: 'Explorer',          threshold: 'Visit 1 building' },
-  'npc-chatter':       { icon: '💬', title: 'Small Talk',        threshold: '2 character chats' },
-  'book-worm':         { icon: '📖', title: 'Book Worm',         threshold: 'Buy 1 book' },
-  'pet-whisperer':     { icon: '💜', title: 'Agent Whisperer',   threshold: '3 pet chats' },
-  'agent-scholar':     { icon: '🎓', title: 'AI Agent Scholar',  threshold: 'Learn 3 books' },
-  'deep-explorer':     { icon: '🗺️', title: 'Cartographer',      threshold: '5 distinct buildings' },
-  'bot-master':        { icon: '🤖', title: 'Bot Master',        threshold: 'Connect an OpenClaw bot' },
-  'first-match':       { icon: '⚔️', title: 'First Match',       threshold: '1 activity match' },
-  'first-win':         { icon: '🏆', title: 'First Victory',     threshold: '1 first-place finish' },
+const TIER_LABELS: Record<number, string> = {
+  1: 'Tier 1 · Hello',
+  2: 'Tier 2 · Conversation',
+  3: 'Tier 3 · The Town',
+  4: 'Tier 4 · Economy & Learning',
+  5: 'Tier 5 · Activities',
+  6: 'Tier 6 · Connect',
+  7: 'Tier 7 · Climb',
+  8: 'Tier 8 · Cross-World',
+  9: 'Tier 9 · Capstones',
 };
 
 async function fetchQuests(): Promise<FetchResult> {
@@ -67,46 +69,87 @@ export default async function QuestsTab() {
   const claimsByQuest = new Map(data.tutorial.map((t) => [t.questId, t]));
   const totalClaimed = data.tutorial.reduce((sum, t) => sum + t.totalCt, 0);
 
+  const byTier = new Map<number, typeof TUTORIAL_QUESTS[number][]>();
+  for (const q of TUTORIAL_QUESTS) {
+    const arr = byTier.get(q.tier) ?? [];
+    arr.push(q);
+    byTier.set(q.tier, arr);
+  }
+  const tiers = Array.from(byTier.keys()).sort((a, b) => a - b);
+
+  const liveCount = TUTORIAL_QUESTS.filter((q) => q.status === 'live').length;
+  const pendingCount = TUTORIAL_QUESTS.length - liveCount;
+
   return (
     <div className="space-y-10">
-      {/* TUTORIAL */}
       <section>
         <h2 className="mb-1 text-lg font-semibold">Tutorial quests (client-tracked, server-credited)</h2>
         <p className="mb-3 text-xs font-mono text-slate-500">
-          10 quests · max {TUTORIAL_QUEST_TOTAL_REWARD} CT total per user · settled via{' '}
-          <code>POST /api/quests/tutorial/:id/claim</code>{' '}
-          (idempotency table <code>tutorial_quest_claims</code>)
+          {TUTORIAL_QUESTS.length} quests · {liveCount} live · {pendingCount} pending ·
+          max <span className="text-amber-300">{TUTORIAL_QUEST_TOTAL_REWARD.toLocaleString()} CT</span> all-tier ·
+          <span className="text-emerald-300"> {TUTORIAL_QUEST_LIVE_REWARD.toLocaleString()} CT</span> earnable today.
+          Settled via <code>POST /api/quests/tutorial/:id/claim</code>{' '}
+          (idempotency table <code>tutorial_quest_claims</code>).
         </p>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {(Object.entries(TUTORIAL_QUEST_REWARDS) as [TutorialQuestId, number][]).map(([id, reward]) => {
-            const meta = TUTORIAL_META[id];
-            const claim = claimsByQuest.get(id);
-            const claimCount = claim?.claimCount ?? 0;
-            const totalCt = claim?.totalCt ?? 0;
-            return (
-              <div key={id} className="rounded border border-slate-700/50 bg-slate-900/30 p-3">
-                <div className="flex items-baseline justify-between gap-2">
-                  <h3 className="font-mono text-xs uppercase tracking-[0.16em] text-slate-200">
-                    {meta.icon} {meta.title}
-                  </h3>
-                  <span className="font-mono text-[10px] text-slate-500">{id}</span>
-                </div>
-                <p className="mt-1 text-xs text-slate-400">{meta.threshold}</p>
-                <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px]">
-                  <span className="text-amber-300">+{reward} CT</span>
-                  <span className="text-slate-400">·</span>
-                  <span className="text-cyan-300">{claimCount} claimed</span>
-                  <span className="text-slate-400">·</span>
-                  <span className="text-slate-300">{totalCt} CT issued</span>
-                </div>
+
+        {tiers.map((tier) => {
+          const list = byTier.get(tier) ?? [];
+          return (
+            <div key={tier} className="mb-6">
+              <h3 className="mb-2 font-mono text-[11px] uppercase tracking-[0.2em] text-cyan-300/80">
+                {TIER_LABELS[tier] ?? `Tier ${tier}`}
+              </h3>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {list.map((q) => {
+                  const claim = claimsByQuest.get(q.id as TutorialQuestId);
+                  const claimCount = claim?.claimCount ?? 0;
+                  const totalCt = claim?.totalCt ?? 0;
+                  const isPending = q.status === 'pending';
+                  return (
+                    <div
+                      key={q.id}
+                      className={`rounded border p-3 ${
+                        isPending
+                          ? 'border-slate-700/40 bg-slate-900/20 opacity-70'
+                          : 'border-slate-700/50 bg-slate-900/30'
+                      }`}
+                    >
+                      <div className="flex items-baseline justify-between gap-2">
+                        <h4 className="font-mono text-xs uppercase tracking-[0.16em] text-slate-200">
+                          {q.icon} {q.title}
+                        </h4>
+                        <span
+                          className={`rounded px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.18em] ${
+                            isPending
+                              ? 'border border-slate-600/40 text-slate-400'
+                              : 'border border-emerald-400/30 text-emerald-300'
+                          }`}
+                        >
+                          {q.status}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-slate-400">{q.description}</p>
+                      <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px]">
+                        <span className="text-amber-300">+{q.reward} CT</span>
+                        <span className="text-slate-500">·</span>
+                        <span className="text-cyan-300">{claimCount} claimed</span>
+                        <span className="text-slate-500">·</span>
+                        <span className="text-slate-300">{totalCt} CT issued</span>
+                        <span className="text-slate-500">·</span>
+                        <span className="font-mono text-[10px] text-slate-500">{q.id}</span>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            );
-          })}
-        </div>
-        <p className="mt-3 text-xs font-mono text-slate-500">Tutorial CT issued (lifetime): <span className="text-amber-300">{totalClaimed.toLocaleString()} CT</span></p>
+            </div>
+          );
+        })}
+        <p className="mt-3 text-xs font-mono text-slate-500">
+          Tutorial CT issued (lifetime): <span className="text-amber-300">{totalClaimed.toLocaleString()} CT</span>
+        </p>
       </section>
 
-      {/* ADMIN-CURATED */}
       <section>
         <h2 className="mb-1 text-lg font-semibold">Admin-curated quests (PR submission flow)</h2>
         <p className="mb-3 text-xs font-mono text-slate-500">

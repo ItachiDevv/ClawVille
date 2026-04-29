@@ -3,6 +3,7 @@
 import { useState, useRef, useMemo } from 'react';
 import { usePet } from '@/hooks/use-pet';
 import { useGameStore } from '@/stores/game';
+import { useQuestStore, triggerQuestCheck } from '@/stores/quest';
 import { api } from '@/lib/api';
 import { KNOWLEDGE_BOOKS } from '@clawville/shared';
 
@@ -57,6 +58,12 @@ export default function PetChatBar() {
     const userMsg: PetMessage = { id: crypto.randomUUID(), role: 'user', content };
     setMessages((prev) => [...prev, userMsg]);
     scrollToBottom();
+
+    // Quest counter — Tier 1 "Meet Your Agent" + Tier 2 "Bonded" both
+    // gate on petMessagesSent. Server validates against agent.chat.turn
+    // (chatType=pet) before crediting tokens.
+    useQuestStore.getState().incrementCounter('petMessagesSent', 1);
+    triggerQuestCheck();
 
     setLoading(true);
     try {

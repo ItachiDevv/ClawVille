@@ -3,6 +3,7 @@
 import { useState, useCallback } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import { useQuestStore, triggerQuestCheck } from '@/stores/quest';
 import type { ChatMessage } from '@/types/chat';
 
 const GUIDE_SLUG = 'town-guide';
@@ -45,6 +46,11 @@ export function useGuideChat() {
           timestamp: new Date().toISOString(),
         },
       ]);
+      // Quest counter — Tier 1 "Say Hi to Nori" + Tier 2 "Town Briefing"
+      // both gate on systemAgentMessagesSent. Server validator on
+      // agent.chat.turn (chatType=system-agent) is the authority.
+      useQuestStore.getState().incrementCounter('systemAgentMessagesSent', 1);
+      triggerQuestCheck();
       sendMutation.mutate(content);
     },
     [sendMutation]
