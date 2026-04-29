@@ -100,8 +100,12 @@ function VRMAvatarInner({ path }: { path: string }) {
     groupRef.current.position.y  = BOB_AMP * Math.sin(clock.getElapsedTime() * BOB_FREQ);
   });
 
+  // Mount avatar offset DOWN by ~0.95 so the body center lands near
+  // origin — VRMs export with feet at Y=0 and head at Y~1.7, but the
+  // canvas camera looks at origin, so without this offset only the
+  // legs/shoes render. Verified visually 2026-04-29.
   return (
-    <group ref={groupRef}>
+    <group ref={groupRef} position={[0, -0.95, 0]}>
       <primitive object={vrm.scene} />
     </group>
   );
@@ -152,12 +156,13 @@ export default function MiladyAvatarShowcase() {
       >
         <ShowcaseLighting />
 
-        {/* Soft shadow disc under avatar — grounding cue, zero draw call cost */}
+        {/* Soft shadow disc under avatar — grounding cue, zero draw call cost.
+            Y matches the avatar foot level (avatar is offset down by 0.95). */}
         <mesh
           geometry={_shadowGeo}
           material={_shadowMat}
           rotation={[-Math.PI / 2, 0, 0]}
-          position={[0, 0.01, 0]}
+          position={[0, -0.94, 0]}
         />
 
         {/* Suspense boundary: only the avatar remounts on swap, not the whole Canvas */}
