@@ -997,3 +997,48 @@ export function buildBodyMultipliers(
     ),
   };
 }
+
+// ─── Reef Race v2 — spline sim constants (NOT consumed by ellipse sim) ───
+//
+// Defined here (not in a separate config) so all reef-race tunables stay in
+// one searchable file. The live ellipse sim must never read these — the
+// spline sim is the only consumer. Migration is gated by
+// `REEF_RACE_USE_SPLINE` (bottom of this block).
+//
+// Spec: `.claude/plans/reef-race-v2.md` "Jump Mechanic — NEW".
+// Architecture: `.claude/plans/reef-race-v2-spline-architecture.md` §4 + §8.
+
+/**
+ * Manual jump impulse (player presses Shift). Calibrated so manual airtime
+ * is ~0.6s with REEF_GRAVITY: vyAxis_initial = 480 wu/s → peak height
+ * 480²/(2*1200) = 96 wu, total airtime 2*480/1200 = 0.8s.
+ * Target spec from plan: ~60 wu peak, ~0.6s airtime.
+ * Tune after first playtest.
+ */
+export const REEF_JUMP_IMPULSE_MANUAL = 380; // → ~60 wu peak, ~0.63s airtime
+
+/**
+ * Ramp jump impulse (server-injected on ramp AABB entry, regardless of input).
+ * ~2.5× manual per spec. Target: ~150 wu peak, ~1.2s airtime.
+ */
+export const REEF_JUMP_IMPULSE_RAMP = 600; // → ~150 wu peak, ~1.0s airtime
+
+/**
+ * Gravity for v2 vertical axis. Pulls vyAxis down each tick:
+ *   vyAxis -= REEF_GRAVITY * dt
+ *   heightOffset = max(0, heightOffset + vyAxis * dt)
+ */
+export const REEF_GRAVITY = 1200; // wu/s²
+
+/**
+ * Steering authority multiplier while airborne (heightOffset > 0).
+ * Player can mid-air correct but cannot snap-turn. 30% per locked spec.
+ */
+export const REEF_AIRBORNE_STEER_MULT = 0.30;
+
+/**
+ * Migration gate (per architecture doc section 8). When true, the spline
+ * sim handles reef-race rooms instead of the ellipse sim. Defaults false
+ * so production is unaffected until explicitly opted in via env.
+ */
+export const REEF_RACE_USE_SPLINE = process.env.REEF_RACE_USE_SPLINE === 'true';

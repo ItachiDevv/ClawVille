@@ -20,7 +20,16 @@
  * Action bits (16-bit packed):
  *   bit 0 — boost (Space)
  *   bit 1 — power-up use (Q OR click-on-viewport)
- *   bit 2 — drift (Shift)  // captured for forward-compat; sim chunk #5 may ignore
+ *   bit 2 — jump (Shift)
+ *
+ * Note on bit 2: the live ellipse Reef Race sim still consumes this bit as
+ * DRIFT (semantic owned server-side). The Reef Race v2 spline sim — gated by
+ * `REEF_RACE_USE_SPLINE=true` — consumes the same bit as JUMP. Same Shift
+ * binding, same wire format; only the server-side semantic differs. This
+ * rename reflects the v2 spec ("Jump Mechanic — NEW") while keeping the
+ * client wire-compatible with the live ellipse sim. See
+ * `.claude/plans/reef-race-v2.md` "Drift Mechanic — RETIRED" + "Jump
+ * Mechanic — NEW" sections.
  */
 
 import { useEffect, useRef } from 'react';
@@ -31,7 +40,13 @@ import { useActivityStore } from '@/stores/activity';
 
 export const ACTION_BIT_BOOST = 1 << 0;
 export const ACTION_BIT_USE_POWERUP = 1 << 1;
-export const ACTION_BIT_DRIFT = 1 << 2;
+/**
+ * Bit 2 — Shift key. Live ellipse Reef Race sim consumes as DRIFT; v2 spline
+ * sim consumes as JUMP. Same wire bit, server picks the semantic from the
+ * `REEF_RACE_USE_SPLINE` env flag. Renamed from `ACTION_BIT_DRIFT` for the
+ * v2 rebuild — see `.claude/plans/reef-race-v2.md`.
+ */
+export const ACTION_BIT_JUMP = 1 << 2;
 
 const SEND_INTERVAL_MS = 1000 / 30;
 
@@ -317,7 +332,7 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
           break;
         case 'ShiftLeft':
         case 'ShiftRight':
-          actionBitsRef.current |= ACTION_BIT_DRIFT;
+          actionBitsRef.current |= ACTION_BIT_JUMP;
           break;
         default:
           break;
@@ -365,7 +380,7 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
           break;
         case 'ShiftLeft':
         case 'ShiftRight':
-          actionBitsRef.current &= ~ACTION_BIT_DRIFT;
+          actionBitsRef.current &= ~ACTION_BIT_JUMP;
           break;
         default:
           break;
@@ -390,9 +405,9 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       keysRef.current.arrowLeft = false;
       keysRef.current.arrowDown = false;
       keysRef.current.arrowRight = false;
-      // Held bits only — boost / drift. One-shot use-powerup is consumed on
-      // send and harmless to leave alone here.
-      actionBitsRef.current &= ~(ACTION_BIT_BOOST | ACTION_BIT_DRIFT);
+      // Held bits only — boost / jump (Shift). One-shot use-powerup is consumed
+      // on send and harmless to leave alone here.
+      actionBitsRef.current &= ~(ACTION_BIT_BOOST | ACTION_BIT_JUMP);
       targetDirRef.current = { x: 0, y: 0 };
     }
     function onBlur() {

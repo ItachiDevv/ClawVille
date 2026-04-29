@@ -1028,6 +1028,17 @@ export const useActivityStore = create<ActivityState>()(
           break;
         }
 
+        // Reef Race v2 (spline sim) — wire-stub. The spline sim is
+        // skeleton-only as of Wave 1.b; these events never fire on the
+        // live ellipse sim. Branches exist solely so the exhaustiveness
+        // sentinel below stays compile-clean while protocol additions
+        // ride alongside the ellipse sim during migration. Real handlers
+        // (wait-at-finish overlay, finishline VFX) land with the spline
+        // sim port. See `.claude/plans/reef-race-v2.md`.
+        case 'event.crossed_finish':
+        case 'event.finish_wait_started':
+          break;
+
         default: {
           // Exhaustiveness sentinel — pull a `never` so a new ServerFrame
           // type without a branch fails typecheck.
