@@ -548,7 +548,21 @@ export type ServerFrame =
       emote?: { emoteId: string };
     }
   | { type: 'pong'; sentAt: number; serverTime: number }
-  | { type: 'error'; code: string; message: string };
+  | { type: 'error'; code: string; message: string }
+  | {
+      /**
+       * Reef Race SPEC 3 — ramp launch event. Fired by the server when a body
+       * enters a ramp AABB on the spline track. Client uses this to:
+       *   - Extend nose-up tilt to 16° for RAMP_TILT_HOLD_S (0.35s)
+       *   - Trigger screen shake for self-player only
+       *   - Trigger particle burst for self-player only
+       * Old clients silently ignore this event (switch/case default → no-op).
+       */
+      type: 'event.ramp_launch';
+      avatarId: string;
+      rampId: string;
+      launchVel: number;
+    };
 
 // ─── Close codes ────────────────────────────────────────────────────────────
 

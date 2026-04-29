@@ -65,6 +65,7 @@ import { clientSpline } from './reef-race-spline-instance';
 import { RockyCliffs } from './rocky-cliffs';
 import { WaterSurf } from './water-surf';
 import { RacingKarts } from './racing-karts';
+import { Ramps } from './ramps';
 
 // ─── Track layout constants ───────────────────────────────────────────────────
 // Track runs z=[0,18000]; slight overrun on each end for ground coverage.
@@ -1076,6 +1077,9 @@ export function RiverScene() {
 
       {/* Gameplay juice — Part 2F: Bridge at z=8500 */}
       <Bridge />
+
+      {/* SPEC 3: Ramp wedge meshes at 6 trigger volume positions */}
+      <Ramps />
     </>
   );
 }
