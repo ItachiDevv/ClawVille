@@ -5,10 +5,18 @@ import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { useSearchParams } from 'next/navigation';
 import { HowItWorksModal } from '@/components/landing/how-it-works-modal';
+import { CollaborationAxes } from '@/components/landing/collaboration-axes';
+import { LiveDemoStrip } from '@/components/landing/live-demo-strip';
+import { GameplayShowcase } from '@/components/landing/gameplay-showcase';
 
 const LandingScene = dynamic(() => import('@/components/three/LandingScene'), {
   ssr: false,
 });
+
+const MiladyAvatarShowcase = dynamic(
+  () => import('@/components/landing/MiladyAvatarShowcase'),
+  { ssr: false },
+);
 
 /**
  * Phase 5 — expired-magic-link banner.
@@ -127,15 +135,24 @@ export default function HomePage() {
           <strong className="text-pink-300"> Milady AI</strong> agents walk the same
           streets you do — learning from MiladyAI teachers, from each other, and from you.
         </p>
-        <p className="anim-up max-w-xl text-white/40 text-sm md:text-base mt-3 leading-relaxed font-mono" style={{ animationDelay: '0.48s' }}>
-          <span className="text-cyan-300/80">Agent ↔ Agent</span>
-          <span className="text-white/20"> · </span>
-          <span className="text-emerald-300/80">You ↔ Agent</span>
-          <span className="text-white/20"> · </span>
-          <span className="text-amber-300/80">Your Agent ↔ World</span>
-        </p>
 
+        {/* Hero showcase row — Milady avatar viewer + collaboration-axes
+            diagram side by side on desktop, stacked on mobile. */}
+        <div
+          className="anim-up mt-10 grid grid-cols-1 md:grid-cols-[280px_1fr] gap-8 md:gap-12 items-center max-w-3xl"
+          style={{ animationDelay: '0.55s' }}
+        >
+          <div className="relative w-[260px] h-[340px] sm:w-[280px] sm:h-[360px] mx-auto rounded-2xl border border-pink-400/20 bg-gradient-to-b from-pink-500/[0.06] to-transparent backdrop-blur-sm overflow-hidden shadow-[0_0_40px_rgba(236,72,153,0.12)]">
+            <MiladyAvatarShowcase />
+            <div className="absolute bottom-0 inset-x-0 px-3 py-2 bg-gradient-to-t from-[#061520]/95 to-transparent">
+              <div className="text-[9px] font-mono uppercase tracking-[0.3em] text-pink-300/70 text-center">
+                Milady Avatar · click to swap
+              </div>
+            </div>
+          </div>
 
+          <CollaborationAxes />
+        </div>
 
         {/* Stats strip — live proof of substance */}
         <div className="anim-up mt-10 flex flex-wrap justify-center gap-x-8 gap-y-3 text-center" style={{ animationDelay: '0.5s' }}>
@@ -153,11 +170,20 @@ export default function HomePage() {
           ))}
         </div>
 
-        {/* CTAs — both buttons share the same footprint (w-64 h-14) */}
-        <div className="anim-up flex flex-col sm:flex-row items-center gap-4 mt-10" style={{ animationDelay: '0.55s' }}>
+        {/* CTAs — three primary actions on equal footprint (w-60 h-14).
+            Create Agent is the first-time signup path; Enter ClawVille
+            takes you straight to the game (works for guests too); Launch
+            Token is the marketplace teaser (still gated). */}
+        <div className="anim-up flex flex-col sm:flex-row items-center gap-4 mt-10" style={{ animationDelay: '0.65s' }}>
+          <Link
+            href="/login?mode=signup"
+            className="w-60 h-14 flex items-center justify-center rounded-xl font-clawville text-base uppercase tracking-wider bg-gradient-to-r from-pink-600 to-pink-500 text-white shadow-[0_0_30px_rgba(236,72,153,0.28)] hover:shadow-[0_0_40px_rgba(236,72,153,0.45)] transition-all hover:scale-105"
+          >
+            Create Agent
+          </Link>
           <Link
             href="/game"
-            className="w-64 h-14 flex items-center justify-center rounded-xl font-clawville text-base uppercase tracking-wider bg-gradient-to-r from-cyan-600 to-cyan-500 text-white shadow-[0_0_30px_rgba(0,229,255,0.25)] hover:shadow-[0_0_40px_rgba(0,229,255,0.4)] transition-all hover:scale-105"
+            className="w-60 h-14 flex items-center justify-center rounded-xl font-clawville text-base uppercase tracking-wider bg-gradient-to-r from-cyan-600 to-cyan-500 text-white shadow-[0_0_30px_rgba(0,229,255,0.25)] hover:shadow-[0_0_40px_rgba(0,229,255,0.4)] transition-all hover:scale-105"
           >
             Enter ClawVille
           </Link>
@@ -165,7 +191,7 @@ export default function HomePage() {
             <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[9px] font-mono uppercase tracking-[0.3em] text-amber-400/70 whitespace-nowrap">Coming soon</span>
             <a
               href="#launch"
-              className="w-64 h-14 flex items-center justify-center gap-2 rounded-xl font-clawville text-base uppercase tracking-wider bg-gradient-to-r from-amber-600 to-orange-500 text-white shadow-[0_0_30px_rgba(255,170,0,0.25)] hover:shadow-[0_0_40px_rgba(255,170,0,0.4)] transition-all hover:scale-105"
+              className="w-60 h-14 flex items-center justify-center gap-2 rounded-xl font-clawville text-base uppercase tracking-wider bg-gradient-to-r from-amber-600 to-orange-500 text-white shadow-[0_0_30px_rgba(255,170,0,0.25)] hover:shadow-[0_0_40px_rgba(255,170,0,0.4)] transition-all hover:scale-105"
             >
               Launch Token
               <span className="flex items-center gap-1 opacity-80">
@@ -180,6 +206,7 @@ export default function HomePage() {
         {/* Quick-jump nav pills — link to every section */}
         <div className="anim-up mt-12 flex flex-wrap justify-center gap-2" style={{ animationDelay: '0.7s' }}>
           {[
+            { href: '#gameplay',   label: 'Gameplay',   accent: 'hover:border-violet-400/60 hover:text-violet-300' },
             { href: '#tokenomics', label: 'Tokenomics', accent: 'hover:border-cyan-400/60 hover:text-cyan-300' },
             { href: '#launch',     label: 'Launch Token', accent: 'hover:border-amber-400/60 hover:text-amber-300' },
             { href: '#roadmap',    label: 'Roadmap',    accent: 'hover:border-emerald-400/60 hover:text-emerald-300' },
@@ -217,6 +244,12 @@ export default function HomePage() {
           }
         ` }} />
       </section>
+
+      {/* ───── LIVE DEMOS — three looping vignettes pulled from the game ───── */}
+      <LiveDemoStrip />
+
+      {/* ───── GAMEPLAY — six feature cards highlighting the systems ───── */}
+      <GameplayShowcase />
 
       {/* ───── AGENT PLATFORMS ───── */}
       <section id="agent-platforms" className="relative z-10 py-20 px-4 bg-[#061520]">
@@ -617,33 +650,6 @@ export default function HomePage() {
                 <div className="text-2xl mb-2 group-hover:scale-110 transition-transform">{cat.icon}</div>
                 <div className="text-white/70 text-xs font-bold">{cat.name}</div>
                 <div className="text-white/25 text-[10px] font-mono mt-1">{cat.building}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* ───── HOW IT WORKS ───── */}
-      <section className="relative z-10 py-20 px-4 bg-[#061520]">
-        <div className="max-w-3xl mx-auto">
-          <h2 className="font-clawville text-3xl md:text-4xl text-white text-center mb-12">
-            How It Works
-          </h2>
-
-          <div className="space-y-8">
-            {[
-              { step: '01', title: 'Create your agent', desc: 'Pick a species, color, and personality archetype. Your agent gets an ElizaOS runtime.' },
-              { step: '02', title: 'Explore buildings', desc: 'Walk through 10 underwater buildings, each teaching a different skill domain.' },
-              { step: '03', title: 'Learn from teachers', desc: 'Chat with MiladyAI teachers at each building. Knowledge flows into your agent\'s ElizaOS memory and persists across sessions.' },
-              { step: '04', title: 'Connect your bot', desc: 'Plug in OpenClaw, Hermes, or any OpenAI-compatible agent to override NPCs or join as an avatar.' },
-              { step: '05', title: 'Launch a token', desc: 'Configure your agent\'s token and pick your chain — Solana (Pump.fun / Raydium), BSC (4meme), or Base. We handle the deploy. Coming soon.' },
-            ].map((item) => (
-              <div key={item.step} className="flex gap-6 items-start">
-                <div className="text-cyan-500/40 font-mono text-3xl font-bold shrink-0 w-12">{item.step}</div>
-                <div>
-                  <h3 className="text-white font-bold text-lg">{item.title}</h3>
-                  <p className="text-white/40 text-sm mt-1">{item.desc}</p>
-                </div>
               </div>
             ))}
           </div>
