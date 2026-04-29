@@ -275,6 +275,18 @@ export interface EntityDelta {
     rot?: number;
     hp?: number;
     state?: string;
+    /**
+     * Reef Race v2 (spline sim) — body's height above the river bed in wu.
+     * Optional, omitted (= ground level 0) for the common case to save bandwidth.
+     * Only sent when body.heightOffset !== 0 (jumping or in dive zone).
+     */
+    height?: number;
+    /**
+     * Reef Race v2 (spline sim) — body's race progress as 0..1 fraction of
+     * spline arclength. Replaces lap-counter for the linear river layout.
+     * Optional; ellipse sim does not emit this field.
+     */
+    progress?: number;
     [k: string]: unknown;
   };
 }
@@ -362,11 +374,37 @@ export type ServerFrame =
       power: number;
     }
   | {
+      /**
+       * Live ellipse Reef Race sim only. Retires when the v2 spline sim ships
+       * (`REEF_RACE_USE_SPLINE=true`) — the linear river layout has no laps,
+       * uses `event.crossed_finish` + per-tick `EntityDelta.changed.progress`
+       * instead. Kept here for backward compat with the live sim.
+       */
       type: 'event.lap_completed';
       avatarId: string;
       lap: number;
       splitMs: number;
       totalMs: number;
+    }
+  | {
+      /**
+       * Reef Race v2 — first racer to cross the finish line. Server-stamped
+       * totalMs + placement. Triggers the wait-at-finish countdown for the
+       * remaining racers (see event.finish_wait_started).
+       */
+      type: 'event.crossed_finish';
+      avatarId: string;
+      totalMs: number;
+      placement: number;
+    }
+  | {
+      /**
+       * Reef Race v2 — first finisher just crossed; remaining racers have
+       * msRemaining to also finish before the match force-ends.
+       * Per .claude/plans/reef-race-v2.md "End condition" decision.
+       */
+      type: 'event.finish_wait_started';
+      msRemaining: number;
     }
   | {
       type: 'event.power_up_spawned';
