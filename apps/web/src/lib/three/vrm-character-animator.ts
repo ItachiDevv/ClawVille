@@ -55,6 +55,16 @@ const ANIM_PATHS = {
   talk:            '/avatars/animations/emotes/talk.glb',
   dance_happy:     '/avatars/animations/emotes/dance-happy.glb',
   float:           '/avatars/animations/emotes/float.glb',
+  // Reef Race v2 surf clips (Mixamo CC0; downloaded 2026-04-29).
+  // - surf_idle:  Mixamo "Skateboarding" (knees bent, arms balanced) — used as
+  //               the surf-stand idle. No "Surfing" exists in Mixamo's library;
+  //               Skateboarding gives the cleanest riding stance for a surfboard.
+  // - wipeout:    Mixamo "Stumble Backwards" — backward flailing fall when the
+  //               player crashes off the board.
+  // - victory:    Mixamo "Cheering" — finish-line/podium pose.
+  surf_idle:       '/avatars/animations/skateboarding.glb',
+  wipeout:         '/avatars/animations/wipeout.glb',
+  victory:         '/avatars/animations/cheering.glb',
   // Emotes — 13 new peaceful clips (imported from Milady fork)
   crawling:        '/avatars/animations/emotes/crawling.glb',
   crying:          '/avatars/animations/emotes/crying.glb',
