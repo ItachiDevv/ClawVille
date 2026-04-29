@@ -27,16 +27,16 @@
  *   <terrainMaterial ref={matRef} uTime={t} />   — zero-allocation uniform update
  *
  * Geometry budget:
- *   PlaneGeometry(12000, 24000, 96, 192) = 96×192 quads × 2 tris = 36,864 tris, 1 draw call.
+ *   PlaneGeometry(4000, 24000, 32, 192) = 32×192 quads × 2 tris = 12,288 tris, 1 draw call.
  *   Old GroundPlane was 2 tris, 1 draw call.
- *   Delta: +36,862 tris, 0 extra draw calls.
+ *   Delta: +12,286 tris, 0 extra draw calls.
  *   Still within the ≤220k tris scene budget (well under).
  *
  * Placement:
  *   The Reef Race ellipse track is centered at (0,0) in XZ.
  *   This plane is placed at (0, -1, 0) to sit just below the track surface (y=0).
- *   12000×24000 wu covers the full ellipse footprint (A=1650, B=1050) with
- *   substantial visible hillside on all sides.
+ *   4000×24000 wu matches the narrow corridor (half-width 1050 wu) with
+ *   sufficient visible hillside on both banks.
  */
 
 import { useRef, useEffect } from 'react';
@@ -94,11 +94,11 @@ const _vertexShader = /* glsl */ `
     vec3 pos = position;
 
     // Distance from river center line (X=0 is the center of the ellipse track).
-    // The river corridor spans roughly ±700 wu in X.
+    // The river corridor spans roughly ±1050 wu in X.
     float distFromRiverCenter = abs(pos.x);
 
-    // Mask: 0 near the river, 1 well outside. Ramps from 700 to 1500 wu.
-    float displacementMask = smoothstep(700.0, 1500.0, distFromRiverCenter);
+    // Mask: 0 near the river, 1 well outside. Ramps from 1100 to 1900 wu.
+    float displacementMask = smoothstep(1100.0, 1900.0, distFromRiverCenter);
 
     // Large-scale rolling hills — very low frequency
     float largeNoise = snoise(pos.xz * 0.0008);  // range [-1, 1]
@@ -152,8 +152,8 @@ const _fragmentShader = /* glsl */ `
     vec3 finalColor = mix(grassMix, dirtSandy, smoothstep(0.65, 0.75, nB) * 0.6);
 
     // ── Bank shadow — slightly darker near the river edge ────────────────────
-    // abs(vWorldPos.x): bankShadow=1 at river center, 0 at 1300+ wu
-    float bankShadow = 1.0 - smoothstep(700.0, 1300.0, abs(vWorldPos.x));
+    // abs(vWorldPos.x): bankShadow=1 at river center, 0 at 1800+ wu
+    float bankShadow = 1.0 - smoothstep(1050.0, 1800.0, abs(vWorldPos.x));
     finalColor *= mix(1.0, 0.78, bankShadow);
 
     // ── Height tint — hilltops get a subtle brightness boost ─────────────────
@@ -199,10 +199,10 @@ declare module '@react-three/fiber' {
 }
 
 // ─── Module-scope geometry ────────────────────────────────────────────────────
-// 96×192 segments gives enough vertex density for visible rolling hills.
+// 32×192 segments gives enough vertex density for visible rolling hills.
 // PlaneGeometry is XY; we rotate -π/2 around X in JSX to lie flat on XZ.
 // Module scope = built once, never re-allocated.
-const _terrainGeo = new THREE.PlaneGeometry(12000, 24000, 96, 192);
+const _terrainGeo = new THREE.PlaneGeometry(4000, 24000, 32, 192);
 
 // ─── TerrainShader component ──────────────────────────────────────────────────
 
@@ -212,7 +212,7 @@ const _terrainGeo = new THREE.PlaneGeometry(12000, 24000, 96, 192);
  * Place inside any R3F Canvas that has the Reef Race ellipse scene.
  * The parent scene owns lighting, fog, and the track mesh.
  *
- * Tris: 36,864 (vs 2 for old GroundPlane). Draw calls: 1 (unchanged).
+ * Tris: 12,288 (vs 2 for old GroundPlane). Draw calls: 1 (unchanged).
  */
 export function TerrainShader() {
   // Ref typed as THREE.ShaderMaterial & { uTime: number } so the property
