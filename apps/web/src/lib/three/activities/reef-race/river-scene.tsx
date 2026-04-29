@@ -124,41 +124,51 @@ function spawnPos(t: number, side: number, xJitter: number): THREE.Vector3 {
   return new THREE.Vector3(ex, 0, ez);
 }
 
+// Scale values — 2026-04-29 fix: blender07 authored each prop in WORLD UNITS
+// already (e.g. pine bbox = ±68 wu, ±35 wu, [-233, -22] wu — i.e. ~140×70×211
+// wu authored). Original spawner multiplied by 60–120 → trees rendered as
+// ~14 000-wu green mountains filling the entire viewport. Targets:
+//   Tree:  ~200 wu visible height → scale ≈ 3 (authored 70 wu tall)
+//   Rock:  ~50  wu visible across → scale ≈ 1
+//   Fence: ~150 wu visible wide   → scale ≈ 1
+//   Grass: ~30  wu visible across → scale ≈ 1
+// xJitter values are ALREADY in world units (added directly to spline-edge
+// position — see spawnPos), so they didn't need rescaling. Same for tValues.
 const SPAWNER_DEFS: SpawnerDef[] = [
   // Pine trees left side — 16 along track
   {
     path: '/models/reef-race/scenery/prop-tree-pine.glb',
     tValues: Array.from({ length: 16 }, (_, i) => (i + 0.3) / 16),
-    side: 1, xJitter: 80, scaleMin: 60, scaleMax: 120, seed: 1,
+    side: 1, xJitter: 80, scaleMin: 2.5, scaleMax: 3.5, seed: 1,
   },
   // Leafy trees right side — 14 along track
   {
     path: '/models/reef-race/scenery/prop-tree-leafy.glb',
     tValues: Array.from({ length: 14 }, (_, i) => (i + 0.1) / 14),
-    side: -1, xJitter: 100, scaleMin: 50, scaleMax: 110, seed: 2,
+    side: -1, xJitter: 100, scaleMin: 2.2, scaleMax: 3.2, seed: 2,
   },
   // Rocks scattered both sides — 20 total (10 each)
   {
     path: '/models/reef-race/scenery/prop-rock-1.glb',
     tValues: Array.from({ length: 10 }, (_, i) => (i + 0.05) / 10),
-    side: 1, xJitter: 30, scaleMin: 15, scaleMax: 45, seed: 3,
+    side: 1, xJitter: 30, scaleMin: 0.7, scaleMax: 1.3, seed: 3,
   },
   {
     path: '/models/reef-race/scenery/prop-rock-2.glb',
     tValues: Array.from({ length: 10 }, (_, i) => (i + 0.55) / 10),
-    side: -1, xJitter: 40, scaleMin: 20, scaleMax: 50, seed: 4,
+    side: -1, xJitter: 40, scaleMin: 0.8, scaleMax: 1.4, seed: 4,
   },
   // Fences along left bank edge — 24 segments
   {
     path: '/models/reef-race/scenery/prop-fence.glb',
     tValues: Array.from({ length: 24 }, (_, i) => i / 24),
-    side: 1, xJitter: 10, scaleMin: 30, scaleMax: 30, seed: 5,
+    side: 1, xJitter: 10, scaleMin: 1.0, scaleMax: 1.0, seed: 5,
   },
   // Grass tufts — many, both sides
   {
     path: '/models/reef-race/scenery/prop-grass-tuft.glb',
     tValues: Array.from({ length: 30 }, (_, i) => (i + 0.15) / 30),
-    side: -1, xJitter: 20, scaleMin: 10, scaleMax: 25, seed: 6,
+    side: -1, xJitter: 20, scaleMin: 0.8, scaleMax: 1.5, seed: 6,
   },
 ];
 
