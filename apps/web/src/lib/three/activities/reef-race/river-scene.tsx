@@ -507,23 +507,25 @@ const _waterFragmentShader = /* glsl */ `
     // UV scrolled downstream (+UV.y = downstream direction)
     vec2 flowUv = vUv + vec2(0.0, -uTime * 0.05);
 
-    // Base foam noise (scrolled)
-    float noiseBase = snoise(flowUv * 280.0 + sin(uTime * 0.3));
+    // 2026-04-29 iter-7f: cut noise scales 5×. Old 280/100 produced foam stripes
+    // ~125 cycles across corridor width — at top-down altitude 22000 that aliased
+    // to grey/tan, making the water look brown instead of cyan. New scales
+    // 56/20 give stripes ~25 cycles across — still detailed up close but the
+    // cyan base dominates from far altitude.
+    float noiseBase = snoise(flowUv * 56.0 + sin(uTime * 0.3));
     noiseBase = noiseBase * 0.5 + 0.5;
     vec3 colorBase = vec3(noiseBase);
 
-    // Binary foam stripes from noise
-    vec3 foam = smoothstep(0.08, 0.001, colorBase);
-    foam = step(0.5, foam);
+    // Foam stripes — softer (no binary step) so they blend with cyan base
+    vec3 foam = smoothstep(0.08, 0.001, colorBase) * 0.5;
 
-    // Wave-stripe noise (scrolled at different scale/rate)
-    float noiseWaves = snoise(flowUv * 100.0 + sin(uTime * -0.1));
+    float noiseWaves = snoise(flowUv * 20.0 + sin(uTime * -0.1));
     noiseWaves = noiseWaves * 0.5 + 0.5;
 
     float threshold = 0.6 + 0.01 * sin(uTime * 2.0);
     vec3 waveEffect = 1.0 - (smoothstep(threshold + 0.03, threshold + 0.032, vec3(noiseWaves))
                            + smoothstep(threshold, threshold - 0.01, vec3(noiseWaves)));
-    waveEffect = step(0.5, waveEffect);
+    waveEffect *= 0.4;
 
     // ── Bank-edge foam (ITER-4 UPGRADE) ──────────────────────────────────────
     // edgeFactor = 1.0 at UV.x=0 or 1.0, smoothly falls to 0 at 0.12 from edge.
