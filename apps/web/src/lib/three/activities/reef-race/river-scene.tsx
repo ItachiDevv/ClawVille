@@ -72,10 +72,17 @@ const TRACK_CENTER_Z = TRACK_START_Z + TRACK_LEN_Z / 2; // 9500
 
 // ─── Ground shader terrain ────────────────────────────────────────────────────
 // Much wider than river, subdivided for per-vertex displacement
-const GROUND_W         = 12000;
+// 2026-04-29 iter-7b: ground is now TWO strips bracketing the canyon, NOT
+// one wide plane. Each strip is 2200wu wide, positioned at x=±2000 so the
+// inner edge sits at x=±900. Cliff outer-top at hw+250=1300; corridor max
+// halfwidth=1050. Gap from -900 to +900 leaves the river area clear so
+// water is visible from above and the cinematic POV doesn't have a ground
+// plane horizontal cutting through the view.
+const GROUND_W         = 2200;
 const GROUND_L         = 24000;
-const GROUND_W_SEGS    = 96;
+const GROUND_W_SEGS    = 24;
 const GROUND_L_SEGS    = 192;
+const GROUND_X_OFFSET  = 2000;  // strip center distance from spline X=0
 const GROUND_Y         = -1;  // just below river bed at y=0
 
 // ─── Sky dome ────────────────────────────────────────────────────────────────
@@ -706,26 +713,28 @@ const _domeMat = new THREE.MeshBasicMaterial({
 // ─── Ground terrain shader component ─────────────────────────────────────────
 
 function GroundShader() {
-  const meshRef = useRef<THREE.Mesh>(null);
-
-  useEffect(() => {
-    const m = meshRef.current;
-    if (!m) return;
-    m.matrixAutoUpdate = false;
-    m.updateMatrix();
-  }, []);
-
+  // Two strips bracketing the canyon (one on each side of the spline).
   return (
-    <mesh
-      ref={meshRef}
-      geometry={_groundGeo}
-      material={_groundShaderMat}
-      position={[0, GROUND_Y, TRACK_CENTER_Z]}
-      frustumCulled={false}
-      matrixAutoUpdate={false}
-      receiveShadow
-      renderOrder={0}
-    />
+    <>
+      <mesh
+        geometry={_groundGeo}
+        material={_groundShaderMat}
+        position={[-GROUND_X_OFFSET, GROUND_Y, TRACK_CENTER_Z]}
+        frustumCulled={false}
+        matrixAutoUpdate={false}
+        receiveShadow
+        renderOrder={0}
+      />
+      <mesh
+        geometry={_groundGeo}
+        material={_groundShaderMat}
+        position={[+GROUND_X_OFFSET, GROUND_Y, TRACK_CENTER_Z]}
+        frustumCulled={false}
+        matrixAutoUpdate={false}
+        receiveShadow
+        renderOrder={0}
+      />
+    </>
   );
 }
 
