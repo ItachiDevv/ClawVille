@@ -261,6 +261,19 @@ export interface RoomMeta {
    * one player's ghost to another.
    */
   selfBestLapGhost?: GhostFrame[];
+  /**
+   * Reef Race SPEC 1 — per-avatar display metadata sent ONCE in `snapshot.init`
+   * so the client can render the correct GLB without re-querying the avatars table.
+   * Keys are avatarId strings. Bots get `modelKey: 'lobster'` (their DB row
+   * `openclaw_bots` uses a fixed species).
+   *
+   * Only populated for `activityId === 'reef-race'` rooms. Absent on all other
+   * activity types so existing clients are unaffected.
+   */
+  reefParticipantMeta?: Record<string, {
+    /** Matches `avatars.model_key` — determines which GLB to render. */
+    modelKey: string;
+  }>;
 }
 
 /** Per-entity delta — only changed fields are transmitted */

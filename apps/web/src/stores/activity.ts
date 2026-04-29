@@ -205,6 +205,12 @@ export interface ActivityState {
    * Undefined on Bumper Shells sessions — always access via `?.reefRace`.
    */
   reefRace: ReefRaceState;
+  /**
+   * SPEC 1 — per-avatar modelKey map for Reef Race GLB dispatch.
+   * Populated once on `snapshot.init`, never updated per-tick.
+   * Empty map on non-reef-race rooms.
+   */
+  reefParticipantMeta: Record<string, { modelKey: string }>;
 
   // ── Reef Race Phase 2 — slipstream + apex + ribbon + hazard ────────────
   /**
@@ -506,6 +512,7 @@ function emptyState(): Pick<
   | 'selfTotalMs'
   | 'finishWaitDeadlineAt'
   | 'finishedRacers'
+  | 'reefParticipantMeta'
 > {
   return {
     entities: new Map(),
@@ -549,6 +556,8 @@ function emptyState(): Pick<
     selfTotalMs: null,
     finishWaitDeadlineAt: null,
     finishedRacers: [],
+    // SPEC 1 — per-avatar GLB species metadata
+    reefParticipantMeta: {},
   };
 }
 
@@ -640,9 +649,23 @@ export const useActivityStore = create<ActivityState>()(
           const nextReef = selfGhost
             ? { laps: state.reefRace.laps, selfBestGhostPath: selfGhost }
             : state.reefRace;
+          // SPEC 1 — inject species from reefParticipantMeta into entity objects.
+          // Runs once per snapshot.init, not per-tick. Cost: 1 Map clone + ≤8 iters.
+          const participantMeta = frame.room.reefParticipantMeta ?? {};
+          let finalEntities = hydrated.entities;
+          if (Object.keys(participantMeta).length > 0) {
+            const injected = new Map(hydrated.entities);
+            injected.forEach((e, avatarId) => {
+              const meta = participantMeta[avatarId];
+              if (meta) {
+                injected.set(avatarId, { ...e, species: meta.modelKey });
+              }
+            });
+            finalEntities = injected;
+          }
           set({
             room: frame.room,
-            entities: hydrated.entities,
+            entities: finalEntities,
             pickups: hydrated.pickups,
             scores: hydrated.scores,
             alive: hydrated.alive,
@@ -659,6 +682,7 @@ export const useActivityStore = create<ActivityState>()(
             selfRacingClass: myProfile?.class ?? null,
             selfLevel: myProfile?.level ?? 1,
             reefRace: nextReef,
+            reefParticipantMeta: participantMeta,
             // v2 — clear finish-line state on a fresh room hydration so a
             // mid-match reconnect or a snapshot.keyframe-style re-init doesn't
             // resurrect last match's "FINISHED — 1st!" overlay.
@@ -791,8 +815,23 @@ export const useActivityStore = create<ActivityState>()(
               placement: existing?.placement,
             });
           });
+          // SPEC 1 — re-inject species from reefParticipantMeta on reconnect.
+          // keyframe doesn't resend reefParticipantMeta (it's init-only); use
+          // stored state.reefParticipantMeta as the fallback source.
+          const keyframeMeta = state.reefParticipantMeta;
+          let keyframeEntities = hydrated.entities;
+          if (Object.keys(keyframeMeta).length > 0) {
+            const injected = new Map(hydrated.entities);
+            injected.forEach((e, avatarId) => {
+              const meta = keyframeMeta[avatarId];
+              if (meta) {
+                injected.set(avatarId, { ...e, species: meta.modelKey });
+              }
+            });
+            keyframeEntities = injected;
+          }
           set({
-            entities: hydrated.entities,
+            entities: keyframeEntities,
             pickups: hydrated.pickups,
             scores: merged,
             alive: hydrated.alive,
