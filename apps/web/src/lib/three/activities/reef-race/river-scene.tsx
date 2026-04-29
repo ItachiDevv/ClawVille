@@ -10,15 +10,23 @@
  * Contains:
  *   A. GroundShader (REPLACED flat GroundPlane) — subdivided terrain with
  *      per-vertex noise displacement + multi-color fragment shader.
- *   B. Sandy bank ribbons (cream trianglestrip at water edge)
+ *   B. Rocky canyon cliff banks (<RockyBanks />) — stepped cliff cross-section
+ *      swept along the spline; replaces sand ribbon (1264 tris, 1 draw call).
  *   C. Water ribbon — animated cartoon shader (simplex noise + bank-edge foam)
  *   D. Sky dome (SphereGeometry + MeshBasicMaterial vertexColors)
  *   E. ScenerySpawner (low-poly prop GLBs ON THE GRASS, not in water)
  *   F. Finish-line gate (wooden arch at z~18000, Part 2A)
  *   G. Distance markers every 2000wu (Part 2B)
  *   H. Power-up boxes mid-river (Part 2C)
- *   I. Animated sample karts riding the spline (REPLACES static wake ribbons)
+ *   I. <RacingKarts /> — 5 surfboard karts riding the spline (imported from racing-karts.tsx)
  *   J. Bridge prop (Part 2F)
+ *
+ * Iter-5 cascade (WATER_Y +40 → -40):
+ *   WATER_Y = -40  (water surface, sunken canyon)
+ *   SAND_Y  = -49  (just above river bed at -50)
+ *   GROUND_Y = -1  (grass / terrain surface ≈ y=0)
+ *   BRIDGE_H =  10 (bridge floor y=+10; clearance above water = 50wu)
+ *   Rocky cliff banks authored to match: ground=0, water=-40, riverbed=-50.
  *
  * Iris Xe invariants:
  *   - ShaderMaterial ONLY on plain Mesh — NO InstancedMesh + ShaderMaterial
@@ -28,24 +36,24 @@
  *   - frustumCulled=false on all atmosphere meshes
  *   - matrixAutoUpdate=false on all static meshes
  *   - NO point lights — emissive only for power-up glow (budget: 1 hemi + 1 dir)
- *   - Module-scope scratch Vec3s for all kart math — zero per-frame allocations
  *
- * Draw call budget:
- *   1 ground + 1 sand ribbon + 1 water ribbon + 1 dome + ≤6 scenery GLB types
+ * Draw call budget (iter-5):
+ *   1 ground + 1 rocky banks + 1 water ribbon + 1 dome + ≤6 scenery GLB types
  *   + 1 finish gate + 1 distance markers (instanced) + 6 power-up boxes
- *   + 5 kart meshes + 1 bridge = ≤24 draw calls (within 30-call budget)
+ *   + 5 kart meshes (<RacingKarts />) + 1 bridge = ≤24 draw calls (within 30-call budget)
  *
- * Tri count (iter-4):
+ * Tri count (iter-5):
  *   Ground terrain: 96×192×2 = 36 864 tris
- *   Water ribbon: 126 tris | Sand ribbon: 126 tris
- *   Sky dome: ~512 tris | Scenery GLBs: ~12 000 tris
- *   Gate+markers+karts+bridge+powerups: ~800 tris
- *   Total: ~50 428 tris — comfortably within ≤80k budget.
+ *   Water ribbon: 126 tris | Rocky banks: 1 264 tris (replaces 126-tri sand ribbon)
+ *   Sky dome: ~512 tris | Scenery GLBs: ~12 000 tris (Pine 765 tris / Leafy 724 tris)
+ *   Gate+markers+bridge+powerups: ~800 tris | Karts: ~300 tris (5 × surfboard_1.glb)
+ *   Total: ~51 866 tris — comfortably within ≤80k budget.
  *
- * Water Y placement:
- *   River bed at y=0. Water ribbon at y=40 (halfway up V2_BANK_HEIGHT=80).
- *   Sand ribbon at y=0.5 (just above river bed, below water surface).
- *   Ground plane at y=-1 (just below river bed — no z-fight with sandy river floor).
+ * Water Y placement (iter-5 — CANYON DEPTH):
+ *   Ground / grass at y=0. River bed at y=-50.
+ *   Water ribbon at y=-40 (WATER_Y, sunken canyon).
+ *   Rocky banks bracket the canyon: ground→water→river-bed (cliffs authored to match).
+ *   Ground plane at y=-1 (just below grass — no z-fight with terrain).
  */
 
 import { Suspense, useRef, useEffect, useMemo } from 'react';
@@ -54,6 +62,8 @@ import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { clientSpline } from './reef-race-spline-instance';
+import { RockyBanks } from './rocky-banks';
+import { RacingKarts } from './racing-karts';
 
 // ─── Track layout constants ───────────────────────────────────────────────────
 // Track runs z=[0,18000]; slight overrun on each end for ground coverage.
@@ -77,10 +87,13 @@ const DOME_HORIZON = new THREE.Color('#cfe9ff');
 const DOME_ZENITH  = new THREE.Color('#5ab8e8');
 
 // ─── Water / sand ribbon sampling ────────────────────────────────────────────
-const RIBBON_SAMPLES = 64;  // number of cross-sections along the spline
-const WATER_Y        = 40;  // halfway up V2_BANK_HEIGHT=80
-const SAND_Y         = 0.5; // just above river bed, below water
-const SAND_EXTRA_HW  = 120; // sand ribbon extends this many wu beyond water edge
+const RIBBON_SAMPLES = 64;   // number of cross-sections along the spline
+const WATER_Y        = -40;  // iter-5 cascade: canyon depth (-40 = 40wu below ground)
+
+// DEV-mode assertion: rocky-banks.tsx expects WATER_Y < 0; cliffs will render inverted otherwise.
+if (process.env.NODE_ENV === 'development' && WATER_Y >= 0) {
+  console.warn('[river-scene] RockyBanks expects WATER_Y < 0; cliffs may render inverted. Current WATER_Y:', WATER_Y);
+}
 
 // ─── Gameplay prop constants ──────────────────────────────────────────────────
 // Part 2A: Finish-line gate
@@ -121,31 +134,11 @@ const POWERUP_BOB_FREQ = 2;
 // Part 2F: Bridge
 const BRIDGE_Z         = 8500; // mid-track z position
 const BRIDGE_W         = 1100; // wu span (covers full river + banks)
-const BRIDGE_H         = 100;  // y position (rides over bank walls at y=80)
+const BRIDGE_H         = 10;   // bridge floor y=+10; clearance above WATER_Y=-40 is 50wu
 const BRIDGE_PLANK_H   = 30;   // plank thickness
 const BRIDGE_SUPPORT_W = 30;
 
-// ─── Animated kart constants ──────────────────────────────────────────────────
-// 5 surfboard karts ride the spline surface.
-// Module-scope scratch vectors — zero per-frame allocations.
-const _kartScratchC  = new THREE.Vector3();
-const _kartScratchN  = new THREE.Vector3();
-const _kartScratchT  = new THREE.Vector3();
-
-// Lateral offsets in wu from centerline (spread karts across lane)
-const KART_LATERAL_OFFSETS = [-120, -40, 0, 40, 120] as const;
-// Lap speeds as arc-fraction per second (kart[2]=1.0 is baseline ~19s lap)
-const KART_SPEEDS          = [0.047, 0.050, 0.053, 0.048, 0.051] as const;
-// Initial t positions spread around track
-const KART_T_START         = [0.0, 0.2, 0.4, 0.6, 0.8] as const;
-const KART_Y_ABOVE_WATER   = WATER_Y + 12; // kart rides slightly above water surface
-const KART_COLORS          = [
-  new THREE.Color('#ff6633'), // orange-red
-  new THREE.Color('#4499ff'), // blue
-  new THREE.Color('#ffdd00'), // yellow
-  new THREE.Color('#55dd44'), // green
-  new THREE.Color('#ee44ee'), // pink
-] as const;
+// (AnimatedKarts inline kart constants removed — see racing-karts.tsx)
 
 // ─── Scenery spawning ────────────────────────────────────────────────────────
 const SCENERY_PROP_PATHS = [
@@ -200,17 +193,19 @@ function spawnPos(t: number, side: number, xJitter: number): THREE.Vector3 {
 // Water extends to halfWidth (280-700 wu). Sand extends halfWidth+120 wu.
 // Props MUST have xJitter > 120 wu to clear the sand and land on grass.
 const SPAWNER_DEFS: SpawnerDef[] = [
-  // Pine trees — left side, well onto grass
+  // Pine trees — left side, well onto grass.
+  // Quaternius prop-tree-pine.glb is 10.236 wu tall; scale 17-22 → 174-225 wu visible height.
   {
     path: '/models/reef-race/scenery/prop-tree-pine.glb',
     tValues: Array.from({ length: 16 }, (_, i) => (i + 0.3) / 16),
-    side: 1, xJitter: 350, scaleMin: 2.5, scaleMax: 3.5, seed: 1,
+    side: 1, xJitter: 350, scaleMin: 17, scaleMax: 22, seed: 1,
   },
-  // Leafy trees — right side, well onto grass
+  // Leafy trees — right side, well onto grass.
+  // Quaternius prop-tree-leafy.glb is 5.544 wu tall; scale 25-32 → 139-177 wu visible height.
   {
     path: '/models/reef-race/scenery/prop-tree-leafy.glb',
     tValues: Array.from({ length: 14 }, (_, i) => (i + 0.1) / 14),
-    side: -1, xJitter: 450, scaleMin: 2.2, scaleMax: 3.2, seed: 2,
+    side: -1, xJitter: 450, scaleMin: 25, scaleMax: 32, seed: 2,
   },
   // Rocks — closer to bank edge, both sides
   {
@@ -262,46 +257,6 @@ function buildWaterRibbonGeo(): THREE.BufferGeometry {
 
     // Right edge
     positions.push(c.x - n.x * hw, WATER_Y, c.z - n.z * hw);
-    normals.push(0, 1, 0);
-    uvs.push(1, t);
-
-    if (i < RIBBON_SAMPLES) {
-      const base = i * 2;
-      indices.push(base, base + 1, base + 2);
-      indices.push(base + 1, base + 3, base + 2);
-    }
-  }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geo.setAttribute('normal',   new THREE.Float32BufferAttribute(normals,   3));
-  geo.setAttribute('uv',       new THREE.Float32BufferAttribute(uvs,       2));
-  geo.setIndex(indices);
-  return geo;
-}
-
-// ─── Sand ribbon geometry (module-scope, baked once) ─────────────────────────
-// Same approach as water but wider by SAND_EXTRA_HW and at y=SAND_Y.
-// Sits ON the ground plane, BELOW the water surface — acts as beach strip.
-function buildSandRibbonGeo(): THREE.BufferGeometry {
-  const positions: number[] = [];
-  const normals:   number[] = [];
-  const uvs:       number[] = [];
-  const indices:   number[] = [];
-
-  for (let i = 0; i <= RIBBON_SAMPLES; i++) {
-    const t  = i / RIBBON_SAMPLES;
-    const c  = clientSpline.centerlineAt(t);
-    const n  = clientSpline.normalAt(t);
-    const hw = clientSpline.widthAt(t) + SAND_EXTRA_HW;
-
-    // Left edge
-    positions.push(c.x + n.x * hw, SAND_Y, c.z + n.z * hw);
-    normals.push(0, 1, 0);
-    uvs.push(0, t);
-
-    // Right edge
-    positions.push(c.x - n.x * hw, SAND_Y, c.z - n.z * hw);
     normals.push(0, 1, 0);
     uvs.push(1, t);
 
@@ -659,23 +614,10 @@ const _bridgeMat = new THREE.MeshStandardMaterial({
   fog: false,
 });
 
-// ─── Kart material (one per kart colour, module scope) ────────────────────────
-const _kartMats = KART_COLORS.map((col) => new THREE.MeshStandardMaterial({
-  color: col.clone(),
-  roughness: 0.35,
-  metalness: 0.6,
-  emissive: col.clone().multiplyScalar(0.25),
-  emissiveIntensity: 0.5,
-  fog: true,
-}));
-
-// ─── Kart geometry (surfboard — elongated tapered box, module scope) ──────────
-// A surfboard silhouette: 60wu wide, 150wu long, 12wu tall
-const _kartGeo = new THREE.BoxGeometry(60, 12, 150);
+// (Kart BoxGeometry + MeshStandardMaterial removed — see racing-karts.tsx)
 
 // ─── Module-scope geometries (baked at module load, shared forever) ───────────
 const _waterGeo     = buildWaterRibbonGeo();
-const _sandGeo      = buildSandRibbonGeo();
 const _domeGeo      = makeDomeGeo();
 // Ground terrain geo (subdivided — 96×192×2 = 36 864 tris)
 const _groundGeo    = (() => {
@@ -750,14 +692,6 @@ function buildBridgeGeo(): THREE.BufferGeometry {
 
 // ─── Module-scope materials (page-lifetime, never disposed) ──────────────────
 
-/** Sandy bank ribbon — cream/peach color at water's edge. */
-const _sandMat = new THREE.MeshLambertMaterial({
-  color: new THREE.Color('#e8d5a8'),
-  flatShading: true,
-  fog: true,
-  side: THREE.DoubleSide,
-});
-
 /** Sky dome material — vertex colors, BackSide, no fog. */
 const _domeMat = new THREE.MeshBasicMaterial({
   vertexColors: true,
@@ -766,11 +700,7 @@ const _domeMat = new THREE.MeshBasicMaterial({
   depthWrite: false,
 });
 
-// ─── Kart t-state (module scope) — one entry per kart ─────────────────────────
-// These persist across React re-renders/unmounts inside the route since
-// the preview page keeps the Canvas mounted. If the component remounts,
-// values just reset naturally from KART_T_START.
-const _kartT = [...KART_T_START] as number[];
+// (Kart t-state removed — racing-karts.tsx owns its own _kartT)
 
 // ─── Ground terrain shader component ─────────────────────────────────────────
 
@@ -794,31 +724,6 @@ function GroundShader() {
       matrixAutoUpdate={false}
       receiveShadow
       renderOrder={0}
-    />
-  );
-}
-
-// ─── Sand ribbon component ────────────────────────────────────────────────────
-
-function SandRibbon() {
-  const meshRef = useRef<THREE.Mesh>(null);
-
-  useEffect(() => {
-    const m = meshRef.current;
-    if (!m) return;
-    m.matrixAutoUpdate = false;
-    m.updateMatrix();
-  }, []);
-
-  return (
-    <mesh
-      ref={meshRef}
-      geometry={_sandGeo}
-      material={_sandMat}
-      frustumCulled={false}
-      matrixAutoUpdate={false}
-      receiveShadow
-      renderOrder={1}
     />
   );
 }
@@ -1099,85 +1004,7 @@ function PowerUpBoxes() {
   );
 }
 
-// ─── Animated karts — ride the water surface ─────────────────────────────────
-//
-// 5 surfboard karts lap the spline independently. Per-frame math:
-//   1. Advance tCurrent by speed*dt; wrap at 1.
-//   2. Sample centerline + normal for lateral offset.
-//   3. Set Y = KART_Y_ABOVE_WATER + wave bob (same waveform as water vertex shader).
-//   4. Face tangent direction via atan2(tx, tz).
-//   5. Bank: tilt around forward axis proportional to curvature (second-derivative hack
-//      via two closely-sampled tangents). Clamp to ±0.35 rad.
-//
-// All scratch vectors are module-scope; zero per-frame allocations.
-// useMemo return is stable (same refs each render) so meshRefs array stays intact.
-
-function AnimatedKarts() {
-  const kartRefs = useRef<(THREE.Mesh | null)[]>([]);
-
-  useFrame((_state, dt) => {
-    const clampedDt = Math.min(dt, 0.05); // cap at 50ms to survive tab wakes
-
-    kartRefs.current.forEach((mesh, i) => {
-      if (!mesh) return;
-
-      // Advance t — wrap around
-      _kartT[i] = (_kartT[i]! + KART_SPEEDS[i]! * clampedDt) % 1.0;
-      const t = _kartT[i]!;
-
-      // Centerline + normal for lateral lane offset
-      // Vec2 {x,z} — set scratch XZ (Y=0 placeholder, overridden below)
-      const _c = clientSpline.centerlineAt(t);
-      const _n = clientSpline.normalAt(t);
-      _kartScratchC.set(_c.x, 0, _c.z);
-      _kartScratchN.set(_n.x, 0, _n.z);
-      const lat = KART_LATERAL_OFFSETS[i]!;
-
-      // Water wave Y — mirrors vertex shader wave (simplified, single octave)
-      // Using centerline x/z for the sample position
-      const elapsed = _state.clock.getElapsedTime();
-      const waveY = Math.sin(_c.x * 0.005 + elapsed * 0.8) * 4.0
-                  + Math.sin(_c.z * 0.003 + elapsed * 1.2) * 3.0;
-
-      mesh.position.set(
-        _c.x + _n.x * lat,
-        KART_Y_ABOVE_WATER + waveY,
-        _c.z + _n.z * lat,
-      );
-
-      // Tangent for yaw
-      const _tg = clientSpline.tangentAt(t);
-      _kartScratchT.set(_tg.x, 0, _tg.z);
-      mesh.rotation.y = Math.atan2(_tg.x, _tg.z);
-
-      // Banking lean from curvature — sample two tangents straddling t
-      const dt2 = 0.005;
-      const tA = Math.max(0, t - dt2);
-      const tB = Math.min(1, t + dt2);
-      const tgA = clientSpline.tangentAt(tA);
-      const tgB = clientSpline.tangentAt(tB);
-      // Cross-track curvature: (tgB.x - tgA.x) / (2*dt2) projected onto normal
-      const curvX = (tgB.x - tgA.x) / (2 * dt2);
-      const bankAngle = THREE.MathUtils.clamp(curvX * -6.0, -0.35, 0.35);
-      mesh.rotation.z = bankAngle;
-    });
-  });
-
-  return (
-    <>
-      {KART_LATERAL_OFFSETS.map((_, i) => (
-        <mesh
-          key={i}
-          ref={(el) => { kartRefs.current[i] = el; }}
-          geometry={_kartGeo}
-          material={_kartMats[i]!}
-          frustumCulled={false}
-          castShadow
-        />
-      ))}
-    </>
-  );
-}
+// (AnimatedKarts function removed — replaced by <RacingKarts /> from racing-karts.tsx)
 
 // ─── Part 2F: Bridge prop ─────────────────────────────────────────────────────
 // Wooden plank bridge over the river at z=BRIDGE_Z.
@@ -1222,32 +1049,27 @@ function Bridge() {
  * Renders (render order):
  *   -1: Sky dome (sunny blue gradient, BackSide sphere)
  *    0: Terrain shader ground (subdivided, rolling hills outside river corridor)
- *    1: Sandy bank ribbons (cream, spline-following, at water edge)
- *    2: Animated water ribbon (simplex noise + foam stripes + bank-edge foam)
- *    ?: Scenery props along banks (on the grass, not in the water)
- *    ?: Gameplay juice: finish gate, distance markers, power-ups, animated karts, bridge
+ *    1: Rocky cliff banks (canyon walls, 1264 tris, 1 draw call)
+ *    2: Animated water ribbon (simplex noise + bank-edge foam, WATER_Y=-40)
+ *    ?: Scenery props along banks (Quaternius CC0 trees at visible scale)
+ *    ?: Gameplay juice: finish gate, distance markers, power-ups, <RacingKarts />, bridge
  *
  * Bank wall geometry from SplineTrack (buildSplineBankGeos) is intentionally
  * hidden by the parent page — set visible=false or recolor to grass green.
  * See page.tsx: _bankMat color is '#7cb342' grass green to blend with ground.
  *
- * WATER SHADER (iter-4):
+ * WATER SHADER (iter-5):
  *   Plain THREE.ShaderMaterial on a plain Mesh — verified Iris Xe safe.
- *   uColorNear '#5fdcff', uColorFar '#3aaedf' (lighter than iter-3 to avoid
- *   "solid dark navy" at glancing angles). Bank-edge foam uses 0-0.12 UV width
- *   with animated simplex noise turbulence — bright creamy-white at waterline.
+ *   uColorNear '#5fdcff', uColorFar '#3aaedf'. Bank-edge foam uses 0-0.12 UV width.
+ *   Water surface now at WATER_Y=-40 (sunken canyon depth vs iter-4's +40).
  *
- * GROUND SHADER (iter-4, NEW):
+ * GROUND SHADER (iter-4, unchanged):
  *   ShaderMaterial on a 96×192-segment PlaneGeometry (36 864 tris).
- *   Vertex: value-noise Y displacement masked to zero within 700wu of x=0
- *   (river corridor stays flat). Fragment: 3-tone grass+dirt blending with
- *   berm highlight at the slope transition edge.
+ *   Vertex: value-noise Y displacement masked to zero within 700wu of x=0.
+ *   Fragment: 3-tone grass+dirt blending with berm highlight.
  *
- * KARTS (iter-4, NEW):
- *   5 surfboard karts ride the spline. Module-scope t-state advances each
- *   frame (wrap at 1). Position = centerline + normal×lateralOffset,
- *   Y = KART_Y_ABOVE_WATER + wave-sync bob. Yaw from tangent, bank from
- *   curvature. Zero per-frame allocations (module-scope scratch Vec3s).
+ * KARTS (iter-5): <RacingKarts /> imported from racing-karts.tsx and wired here.
+ *   racing-karts.tsx WATER_Y cascade is complete — value is -40 (confirmed iter-5).
  */
 export function RiverScene() {
   return (
@@ -1258,8 +1080,8 @@ export function RiverScene() {
       {/* 0: Terrain shader ground — subdivided rolling hills */}
       <GroundShader />
 
-      {/* 1: Sandy bank ribbons at water's edge */}
-      <SandRibbon />
+      {/* 1: Rocky canyon cliff banks — stepped cliffs (1264 tris, 1 draw call) */}
+      <RockyBanks />
 
       {/* 2: Animated cartoon water ribbon — simplex noise + bank-edge foam */}
       <WaterRibbon />
@@ -1276,8 +1098,8 @@ export function RiverScene() {
       {/* Gameplay juice — Part 2C: Power-up boxes mid-river */}
       <PowerUpBoxes />
 
-      {/* Gameplay juice — Animated surfboard karts riding the water */}
-      <AnimatedKarts />
+      {/* 5 surfboard karts animated along the spline */}
+      <RacingKarts />
 
       {/* Gameplay juice — Part 2F: Bridge at z=8500 */}
       <Bridge />

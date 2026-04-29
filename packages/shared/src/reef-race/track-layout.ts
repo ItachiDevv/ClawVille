@@ -15,11 +15,11 @@
  *
  *   Segment            z-range (wu)        CPs          halfWidth   Slalom
  *   ----------------   -----------------   ----------   ---------   --------
- *   0  Open lagoon       0 →  3 000        CP 0,1,2     50 wu       none
- *   1  Kelp forest     3 000 →  7 500      CP 3-6       30 wu       ±170 wu
- *   2  Shipwreck       7 500 → 12 000      CP 7,8,9     25 wu       ±200 wu
- *   3  Coral canyon   12 000 → 16 500      CP 10-13     20 wu       ±180 wu
- *   4  Finish straight 16500 → 18 000      CP 14,15     50 wu       none
+ *   0  Open lagoon       0 →  3 000        CP 0,1,2     1050 wu     none
+ *   1  Kelp forest     3 000 →  7 500      CP 3-6        630 wu     ±170 wu
+ *   2  Shipwreck       7 500 → 12 000      CP 7,8,9      525 wu     ±200 wu
+ *   3  Coral canyon   12 000 → 16 500      CP 10-13      420 wu     ±180 wu
+ *   4  Finish straight 16500 → 18 000      CP 14,15     1050 wu     none
  *
  * ─── Hand-math sanity (Risks doc §1: no two CPs within 88 wu in XZ) ─────────
  *
@@ -138,16 +138,16 @@ export interface ReefRaceSegmentRange {
 }
 
 export const REEF_RACE_SEGMENTS: ReadonlyArray<ReefRaceSegmentRange> = [
-  // halfWidth values multiplied ×1.4 on 2026-04-29 (iter-4 visual pass).
-  // User feedback: river still too narrow relative to the green plane. 1.4×
-  // keeps the chokepoint progression intact while giving karts meaningfully
-  // more room to slalom and making the water ribbon visually dominant.
-  // Lagoon/finish 500→700, kelp 300→420, shipwreck 250→350, coral 200→280.
-  { id: 'lagoon',    zStart:     0, zEnd:  3000, halfWidth: 700 },
-  { id: 'kelp',      zStart:  3000, zEnd:  7500, halfWidth: 420 },
-  { id: 'shipwreck', zStart:  7500, zEnd: 12000, halfWidth: 350 },
-  { id: 'coral',     zStart: 12000, zEnd: 16500, halfWidth: 280 },
-  { id: 'finish',    zStart: 16500, zEnd: 18000, halfWidth: 700 },
+  // halfWidth values multiplied ×1.5 on 2026-04-29 (iter-5 visual pass).
+  // User feedback: river still too narrow at iter-4 widths. 1.5× from iter-4
+  // keeps the chokepoint progression intact while making the water ribbon
+  // visually dominant at all segments.
+  // Lagoon/finish 700→1050, kelp 420→630, shipwreck 350→525, coral 280→420.
+  { id: 'lagoon',    zStart:     0, zEnd:  3000, halfWidth: 1050 },
+  { id: 'kelp',      zStart:  3000, zEnd:  7500, halfWidth:  630 },
+  { id: 'shipwreck', zStart:  7500, zEnd: 12000, halfWidth:  525 },
+  { id: 'coral',     zStart: 12000, zEnd: 16500, halfWidth:  420 },
+  { id: 'finish',    zStart: 16500, zEnd: 18000, halfWidth: 1050 },
 ];
 
 // ─── Track layout ───────────────────────────────────────────────────────────
@@ -166,30 +166,30 @@ export const REEF_RACE_SEGMENTS: ReadonlyArray<ReefRaceSegmentRange> = [
  */
 export const REEF_RACE_DEFAULT_TRACK: ReadonlyArray<SplineControlPoint> = [
   // ── Segment 0: Open lagoon (wide, no slalom) ──────────────────────────────
-  { x:    0, z:     0, halfWidth: 700 }, // CP 0  start line, lagoon mouth
-  { x:    0, z:  1500, halfWidth: 700 }, // CP 1  lagoon middle
-  { x:    0, z:  3000, halfWidth: 700 }, // CP 2  lagoon → kelp gate
+  { x:    0, z:     0, halfWidth: 1050 }, // CP 0  start line, lagoon mouth
+  { x:    0, z:  1500, halfWidth: 1050 }, // CP 1  lagoon middle
+  { x:    0, z:  3000, halfWidth: 1050 }, // CP 2  lagoon → kelp gate
 
   // ── Segment 1: Kelp forest (first slalom, ±170 wu) ────────────────────────
-  { x:  170, z:  4125, halfWidth: 420 }, // CP 3  kelp curve +
-  { x: -170, z:  5250, halfWidth: 420 }, // CP 4  kelp curve -
-  { x:  170, z:  6375, halfWidth: 420 }, // CP 5  kelp curve +
-  { x: -170, z:  7500, halfWidth: 420 }, // CP 6  kelp → shipwreck gate
+  { x:  170, z:  4125, halfWidth: 630 }, // CP 3  kelp curve +
+  { x: -170, z:  5250, halfWidth: 630 }, // CP 4  kelp curve -
+  { x:  170, z:  6375, halfWidth: 630 }, // CP 5  kelp curve +
+  { x: -170, z:  7500, halfWidth: 630 }, // CP 6  kelp → shipwreck gate
 
   // ── Segment 2: Shipwreck graveyard (denser turns + chokepoints, ±200 wu) ──
-  { x:  200, z:  9000, halfWidth: 350 }, // CP 7  hull-fragment chicane +
-  { x: -200, z: 10500, halfWidth: 350 }, // CP 8  hull-fragment chicane -
-  { x:  200, z: 12000, halfWidth: 350 }, // CP 9  shipwreck → coral gate
+  { x:  200, z:  9000, halfWidth: 525 }, // CP 7  hull-fragment chicane +
+  { x: -200, z: 10500, halfWidth: 525 }, // CP 8  hull-fragment chicane -
+  { x:  200, z: 12000, halfWidth: 525 }, // CP 9  shipwreck → coral gate
 
   // ── Segment 3: Coral canyon (tightest, ±180 wu) ───────────────────────────
-  { x: -180, z: 13125, halfWidth: 280 }, // CP 10 coral chicane -
-  { x:  180, z: 14250, halfWidth: 280 }, // CP 11 coral chicane +
-  { x: -180, z: 15375, halfWidth: 280 }, // CP 12 coral chicane -
-  { x:  180, z: 16500, halfWidth: 280 }, // CP 13 coral → finish gate
+  { x: -180, z: 13125, halfWidth: 420 }, // CP 10 coral chicane -
+  { x:  180, z: 14250, halfWidth: 420 }, // CP 11 coral chicane +
+  { x: -180, z: 15375, halfWidth: 420 }, // CP 12 coral chicane -
+  { x:  180, z: 16500, halfWidth: 420 }, // CP 13 coral → finish gate
 
   // ── Segment 4: Finish straight (wide, no slalom) ──────────────────────────
-  { x:    0, z: 17250, halfWidth: 700 }, // CP 14 finish-straight entry
-  { x:    0, z: 18000, halfWidth: 700 }, // CP 15 FINISH LINE
+  { x:    0, z: 17250, halfWidth: 1050 }, // CP 14 finish-straight entry
+  { x:    0, z: 18000, halfWidth: 1050 }, // CP 15 FINISH LINE
 ];
 
 /**
