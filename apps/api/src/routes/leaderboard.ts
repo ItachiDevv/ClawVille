@@ -825,6 +825,12 @@ const dailyBestLapLimiter = createRateLimiter({
   windowMs: 60_000,
 });
 
+// Phase 2 plan §3.3 — subject filter chips. The cached snapshot is built
+// once per window with both 'agent' + 'pet' rows; this whitelist gates the
+// per-request filter so we don't have to re-query the DB per chip click.
+type SubjectFilter = 'all' | 'players' | 'trainers';
+const VALID_SUBJECTS: SubjectFilter[] = ['all', 'players', 'trainers'];
+
 leaderboardRoutes.get('/agents', async (c) => {
   // Rate limit first — public endpoint, cheap to trigger.
   const ip = getClientIp(c.req.raw.headers);
@@ -848,13 +854,29 @@ leaderboardRoutes.get('/agents', async (c) => {
     ? (rawWindow as AgentLeaderboardWindow)
     : '7d';
 
+  const rawSubject = (c.req.query('subject') || 'all').toLowerCase();
+  const subject: SubjectFilter = VALID_SUBJECTS.includes(
+    rawSubject as SubjectFilter,
+  )
+    ? (rawSubject as SubjectFilter)
+    : 'all';
+
   // Cache is keyed on `window` only — we always build the full ranked set and
   // slice `limit` from it, so a second caller asking for a smaller page gets
   // a cache hit. This is safe because the top-N set is a strict prefix.
+  // Subject filter applies AFTER the cache lookup so chip clicks don't blow
+  // the cache; we just re-rank the filtered subset on each request.
+  //
+  // Snapshot cap bumped 100 → 500 (audit-fix 2026-04-29 W1) so the Players /
+  // Trainers filter chips show a meaningful subset even when one cohort
+  // dominates the global top-100. Memory cost: ~500 × 1KB = 500KB per
+  // window × 4 windows = 2MB total — negligible. Trade-off documented:
+  // entries beyond rank 500 in the unified board still don't appear under
+  // any filter; if/when active subjects exceed 500 in any window, bump again.
   let snapshot = getAgentCache(window);
   if (!snapshot) {
     try {
-      snapshot = await buildAgentSnapshot(window, 100);
+      snapshot = await buildAgentSnapshot(window, 500);
       setAgentCache(window, snapshot);
     } catch (err) {
       // Empty-DB deployment or transient DB error — return an empty board
@@ -870,11 +892,23 @@ leaderboardRoutes.get('/agents', async (c) => {
     }
   }
 
+  // Subject filter — Phase 2 plan §3.3. Re-rank the filtered subset so the
+  // top entry always shows rank=1 within the active filter. totalRanked is
+  // updated to reflect the filtered count so the UI's "n agents ranked"
+  // label stays accurate.
+  let filteredAgents = snapshot.agents;
+  if (subject !== 'all') {
+    const targetType: 'agent' | 'pet' = subject === 'trainers' ? 'agent' : 'pet';
+    filteredAgents = snapshot.agents
+      .filter((entry) => entry.subjectType === targetType)
+      .map((entry, idx) => ({ ...entry, rank: idx + 1 }));
+  }
+
   const payload: AgentLeaderboardSnapshot = {
     window: snapshot.window,
     generatedAt: snapshot.generatedAt,
-    agents: snapshot.agents.slice(0, limit),
-    totalRanked: snapshot.totalRanked,
+    agents: filteredAgents.slice(0, limit),
+    totalRanked: subject === 'all' ? snapshot.totalRanked : filteredAgents.length,
   };
 
   // Short client-side cache so React-Query polling + multiple tab instances

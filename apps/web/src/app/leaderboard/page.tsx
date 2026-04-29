@@ -110,12 +110,29 @@ const BREAKDOWN_HINTS: Record<keyof AgentScoreBreakdown, string> = {
 // Fetch helper
 // ---------------------------------------------------------------------------
 
-async function fetchLeaderboard(window: LeaderboardWindow): Promise<AgentLeaderboardResponse> {
+// Phase 2 plan §3.3 — subject filter chips. `'all'` is the existing default;
+// `'players'` and `'trainers'` map to subjectType='pet' and 'agent' respectively
+// at the API layer.
+type SubjectFilter = 'all' | 'players' | 'trainers';
+
+const SUBJECTS: { id: SubjectFilter; label: string; hint: string }[] = [
+  { id: 'all',      label: 'All',      hint: 'Players + Trainers — unified ranking' },
+  { id: 'players',  label: 'Players',  hint: 'Humans playing without an agent connected' },
+  { id: 'trainers', label: 'Trainers', hint: 'Humans with an agent + autonomous agents' },
+];
+
+async function fetchLeaderboard(
+  window: LeaderboardWindow,
+  subject: SubjectFilter,
+): Promise<AgentLeaderboardResponse> {
   const base = process.env.NEXT_PUBLIC_API_URL || '';
-  const res = await fetch(`${base}/api/leaderboard/agents?limit=100&window=${window}`, {
-    credentials: 'omit',
-    cache: 'no-store',
-  });
+  const res = await fetch(
+    `${base}/api/leaderboard/agents?limit=100&window=${window}&subject=${subject}`,
+    {
+      credentials: 'omit',
+      cache: 'no-store',
+    },
+  );
   if (!res.ok) throw new Error(`Leaderboard request failed: ${res.status}`);
   return (await res.json()) as AgentLeaderboardResponse;
 }
@@ -175,11 +192,12 @@ const BOARD_MODES: { id: BoardMode; label: string; emoji: string }[] = [
 export default function LeaderboardPage() {
   const [board, setBoard] = useState<BoardMode>('agents');
   const [window, setWindow] = useState<LeaderboardWindow>('7d');
+  const [subject, setSubject] = useState<SubjectFilter>('all');
 
   // Agents board (existing).
   const agentsQ = useQuery({
-    queryKey: ['leaderboard', 'agents', window],
-    queryFn: () => fetchLeaderboard(window),
+    queryKey: ['leaderboard', 'agents', window, subject],
+    queryFn: () => fetchLeaderboard(window, subject),
     staleTime: 60_000,
     retry: 1,
     enabled: board === 'agents',
@@ -224,6 +242,8 @@ export default function LeaderboardPage() {
               refreshing={agentsQ.isFetching}
               onRefresh={() => agentsQ.refetch()}
             />
+
+            <SubjectTabs current={subject} onChange={setSubject} />
 
             <div className="mt-8">
               {agentsQ.isLoading ? (
@@ -577,6 +597,50 @@ function WindowTabs({
         <span aria-hidden className={refreshing ? 'animate-spin' : undefined}>↻</span>
         {refreshing ? 'Refreshing' : 'Refresh'}
       </button>
+    </div>
+  );
+}
+
+// Phase 2 plan §3.3 — subject filter chips. Sits below WindowTabs so the
+// time-window choice and the subject-type choice compose orthogonally.
+// Default 'All' shows the unified board; 'Players' / 'Trainers' filter to
+// the corresponding subjectType. Server re-ranks the filtered subset, so
+// the displayed rank=1 entry is always #1 within the active filter.
+function SubjectTabs({
+  current,
+  onChange,
+}: {
+  current: SubjectFilter;
+  onChange: (s: SubjectFilter) => void;
+}) {
+  return (
+    <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+      <div
+        role="tablist"
+        aria-label="Subject filter"
+        className="inline-flex rounded-full border border-cyan-400/15 bg-black/40 p-1 backdrop-blur-md"
+      >
+        {SUBJECTS.map((s) => {
+          const active = s.id === current;
+          return (
+            <button
+              key={s.id}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              title={s.hint}
+              onClick={() => onChange(s.id)}
+              className={`h-7 rounded-full px-3.5 text-[10px] font-mono uppercase tracking-[0.18em] transition-all ${
+                active
+                  ? 'bg-gradient-to-r from-cyan-400/60 to-sky-400/60 text-white shadow-[0_0_12px_rgba(0,229,255,0.18)]'
+                  : 'text-cyan-200/50 hover:text-cyan-100'
+              }`}
+            >
+              {s.label}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

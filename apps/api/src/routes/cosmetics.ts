@@ -1,0 +1,236 @@
+/**
+ * Q3 plan §4.2 — Cosmetic engine API.
+ *
+ * Three surfaces:
+ *
+ *   GET  /api/cosmetics/catalog?scope=...
+ *        Public. Returns currently-purchasable SKUs filtered by availability
+ *        window + supply cap + optional scope. Drives the (future) shop UI.
+ *
+ *   GET  /api/cosmetics/owned
+ *        Auth'd. Returns the caller pet's owned SKUs joined with equipped
+ *        state + variants. Drives the in-game drawer (Phase 3.4).
+ *
+ *   POST /api/cosmetics/:skuId/equip      — toggle equipped=true (idempotent)
+ *   POST /api/cosmetics/:skuId/unequip    — toggle equipped=false (idempotent)
+ *        Auth'd. The cosmetic-loader (Phase 3.3) reads /owned with
+ *        equipped=true on each render pass; no separate "render" event.
+ *
+ * Phase 4 (storefront) will add:
+ *   POST /api/cosmetics/:skuId/buy        — debit CT + insert pet_skins row
+ *
+ * Out of scope here. The schema is buy-ready (acquired_via, ledger_id) so
+ * Phase 4 just adds the route.
+ */
+
+import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
+import { eq, and, or, isNull, gt, lte, sql } from 'drizzle-orm';
+import {
+  db,
+  cosmeticSkus,
+  cosmeticVariants,
+  petSkins,
+  pets,
+} from '@clawville/database';
+import { requireAuth, sessionMiddleware } from '../middleware/auth';
+import { logEventFromContext } from '../services/event-logger';
+import type { AppContext } from '../types';
+
+export const cosmeticsRoutes = new Hono<AppContext>();
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const VALID_SCOPES = new Set([
+  'world',
+  'avatar',
+  'activity:reef-race',
+  'activity:bumper-shells',
+  'all',
+]);
+
+const uuidRegex =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+async function getCallerPet(userId: string) {
+  const pet = await db.query.pets.findFirst({
+    where: and(eq(pets.userId, userId), eq(pets.isActive, true)),
+  });
+  if (!pet) throw new HTTPException(404, { message: 'No active pet found' });
+  return pet;
+}
+
+// ---------------------------------------------------------------------------
+// GET /catalog — public
+// ---------------------------------------------------------------------------
+//
+// Returns SKUs that are currently purchasable: availableFrom is null or in the
+// past, AND availableUntil is null or in the future. Scope filter (?scope=)
+// lets the shop UI show only world cosmetics, only reef-race cosmetics, etc.
+// Drops `attribution` + `attribution_url` + `license_spdx` into the response
+// so the shop card can render the "by [creator] on Sketchfab" credit.
+
+cosmeticsRoutes.get('/catalog', async (c) => {
+  const scopeQ = c.req.query('scope');
+  const scope = scopeQ && VALID_SCOPES.has(scopeQ) ? scopeQ : null;
+
+  const now = new Date();
+  const conditions = [
+    or(isNull(cosmeticSkus.availableFrom), lte(cosmeticSkus.availableFrom, now)),
+    or(isNull(cosmeticSkus.availableUntil), gt(cosmeticSkus.availableUntil, now)),
+  ];
+  if (scope) conditions.push(eq(cosmeticSkus.scope, scope));
+
+  const rows = await db
+    .select()
+    .from(cosmeticSkus)
+    .where(and(...conditions))
+    .orderBy(cosmeticSkus.createdAt);
+
+  // Empty supply_cap and full supply_cap — for full check we'd join pet_skins
+  // with COUNT; defer until Phase 4 (storefront) since the empty-catalog Phase 3
+  // launch doesn't have items hitting their caps. Plain SKUs only for now.
+  return c.json({
+    catalog: rows.map((r) => ({
+      id: r.id,
+      slug: r.slug,
+      category: r.category,
+      scope: r.scope,
+      displayName: r.displayName,
+      description: r.description,
+      rarity: r.rarity,
+      priceCt: r.priceCt,
+      exclusiveCurrency: r.exclusiveCurrency,
+      attribution: r.attribution,
+      attributionUrl: r.attributionUrl,
+      licenseSpdx: r.licenseSpdx,
+      availableUntil: r.availableUntil?.toISOString() ?? null,
+      supplyCap: r.supplyCap,
+    })),
+    generatedAt: new Date().toISOString(),
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /owned — auth'd
+// ---------------------------------------------------------------------------
+
+cosmeticsRoutes.get('/owned', sessionMiddleware, requireAuth, async (c) => {
+  const user = c.get('user') as { id: string };
+  const pet = await getCallerPet(user.id);
+
+  // Two-step: pet_skins → cosmetic_skus → cosmetic_variants. Could be one
+  // join, but the variants are an array per SKU — easier to assemble in JS
+  // after two flat queries than to duplicate-row + group-by in SQL.
+  const owned = await db
+    .select({
+      petSkin: petSkins,
+      sku: cosmeticSkus,
+    })
+    .from(petSkins)
+    .innerJoin(cosmeticSkus, eq(cosmeticSkus.id, petSkins.skuId))
+    .where(eq(petSkins.petId, pet.id))
+    .orderBy(petSkins.acquiredAt);
+
+  if (owned.length === 0) {
+    return c.json({ owned: [], generatedAt: new Date().toISOString() });
+  }
+
+  const skuIds = owned.map((o) => o.sku.id);
+  const variants = await db
+    .select()
+    .from(cosmeticVariants)
+    .where(sql`${cosmeticVariants.skuId} = ANY(${skuIds})`);
+
+  const variantsBySku = new Map<string, typeof variants>();
+  for (const v of variants) {
+    const arr = variantsBySku.get(v.skuId) ?? [];
+    arr.push(v);
+    variantsBySku.set(v.skuId, arr);
+  }
+
+  return c.json({
+    owned: owned.map(({ petSkin, sku }) => ({
+      id: petSkin.id,
+      acquiredAt: petSkin.acquiredAt.toISOString(),
+      acquiredVia: petSkin.acquiredVia,
+      equipped: petSkin.equipped,
+      equippedAt: petSkin.equippedAt?.toISOString() ?? null,
+      sku: {
+        id: sku.id,
+        slug: sku.slug,
+        category: sku.category,
+        scope: sku.scope,
+        displayName: sku.displayName,
+        description: sku.description,
+        rarity: sku.rarity,
+        attribution: sku.attribution,
+        attributionUrl: sku.attributionUrl,
+        licenseSpdx: sku.licenseSpdx,
+      },
+      variants: (variantsBySku.get(sku.id) ?? []).map((v) => ({
+        id: v.id,
+        rigType: v.rigType,
+        assetUrl: v.assetUrl,
+        assetMeta: v.assetMeta,
+      })),
+    })),
+    generatedAt: new Date().toISOString(),
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /:skuId/equip + /:skuId/unequip — auth'd
+// ---------------------------------------------------------------------------
+
+async function setEquipped(
+  c: any,
+  skuId: string,
+  userId: string,
+  equipped: boolean,
+) {
+  if (!uuidRegex.test(skuId)) {
+    throw new HTTPException(400, { message: 'Invalid skuId' });
+  }
+  const pet = await getCallerPet(userId);
+
+  // Update only if the row exists (idempotent — equipping an already-
+  // equipped SKU returns the same row, no toggle).
+  const result = await db
+    .update(petSkins)
+    .set({
+      equipped,
+      equippedAt: equipped ? new Date() : null,
+    })
+    .where(and(eq(petSkins.petId, pet.id), eq(petSkins.skuId, skuId)))
+    .returning();
+
+  if (result.length === 0) {
+    return c.json(
+      { ok: false, error: 'not_owned', message: 'You do not own this cosmetic.' },
+      404,
+    );
+  }
+
+  // Telemetry — equipping is a meaningful engagement signal. Fire-and-forget.
+  void logEventFromContext(c, {
+    eventType: equipped ? 'cosmetic.equipped' : 'cosmetic.unequipped',
+    userId,
+    petId: pet.id,
+    payload: { skuId, equippedAt: equipped ? new Date().toISOString() : null },
+  });
+
+  return c.json({ ok: true, equipped: result[0].equipped });
+}
+
+cosmeticsRoutes.post('/:skuId/equip', sessionMiddleware, requireAuth, async (c) => {
+  const user = c.get('user') as { id: string };
+  return setEquipped(c, c.req.param('skuId'), user.id, true);
+});
+
+cosmeticsRoutes.post('/:skuId/unequip', sessionMiddleware, requireAuth, async (c) => {
+  const user = c.get('user') as { id: string };
+  return setEquipped(c, c.req.param('skuId'), user.id, false);
+});

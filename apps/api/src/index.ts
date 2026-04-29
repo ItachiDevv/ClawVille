@@ -57,6 +57,7 @@ import { startSimulation } from './services/npc-simulation';
 import { alertError } from './services/alert-error';
 import { getPublishedIssuerInfo } from './services/service-issuer';
 import { fingerprintMiddleware } from './middleware/fingerprint';
+import { cosmeticsRoutes } from './routes/cosmetics';
 import type { AppContext } from './types';
 
 const app = new Hono<AppContext>();
@@ -150,6 +151,7 @@ app.route('/api/chat', chatRoutes);
 // No Eliza, no rooms, no DB writes. See routes/chat-transient.ts for why.
 app.route('/api/chat/transient', transientChatRoutes);
 app.route('/api/items', itemRoutes);
+app.route('/api/cosmetics', cosmeticsRoutes);
 app.route('/api/npc', npcRoutes);
 app.route('/api/openclaw', openclawRoutes);
 app.route('/api/pets', activityRoutes);

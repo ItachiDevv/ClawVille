@@ -22,6 +22,7 @@ import TalkToCharacterBar from '@/components/game/talk-to-character-bar';
 import ChargeBar from '@/components/game/charge-bar';
 import ShopOverlay from '@/components/game/shop-overlay';
 import InventoryModal from '@/components/game/inventory-modal';
+import CosmeticDrawer from '@/components/game/cosmetic-drawer';
 import ActivityFeed from '@/components/game/activity-feed';
 import AgentConnectModal from '@/components/game/agent-connect-modal';
 
@@ -362,6 +363,7 @@ export default function GamePage() {
           <ShopOverlay />
           <InventoryModal />
           <DailyLoginModal />
+          <CosmeticDrawerMount />
         </>
       )}
 
@@ -379,4 +381,15 @@ export default function GamePage() {
       <DeferredNpcPreloads />
     </div>
   );
+}
+
+/**
+ * Q3 plan §4.4 — cosmetic drawer mount. Reads `cosmeticDrawerOpen` from the
+ * zustand store and forwards close action. Lives inside the player-mode
+ * tree because the drawer is irrelevant to guests/spectators.
+ */
+function CosmeticDrawerMount() {
+  const open = useGameStore((s: GameState) => s.cosmeticDrawerOpen);
+  const setOpen = useGameStore((s: GameState) => s.setCosmeticDrawerOpen);
+  return <CosmeticDrawer open={open} onClose={() => setOpen(false)} />;
 }

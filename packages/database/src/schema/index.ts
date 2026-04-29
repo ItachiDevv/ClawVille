@@ -38,6 +38,8 @@ export * from './activity-seasons';
 export * from './reef-race-personal-bests';
 // Q3 plan §2.6 — idempotency for client-side tutorial quest token credits.
 export * from './tutorial-quest-claims';
+// Q3 plan §4 — cosmetic engine (cosmetic_skus + cosmetic_variants + pet_skins).
+export * from './cosmetics';
 
 import { users, sessions } from './users';
 import { npcMemories, activityLog } from './memories';
