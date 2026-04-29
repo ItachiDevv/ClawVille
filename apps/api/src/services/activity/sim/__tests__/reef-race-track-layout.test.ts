@@ -149,19 +149,18 @@ describe('REEF_RACE_DEFAULT_TRACK — spline integration', () => {
   });
 
   it('halfWidth interpolation respects per-segment design intent', () => {
-    // Spot-check: t=0 sits in the lagoon (halfWidth ~500), t≈0.45 sits in the
-    // shipwreck segment (halfWidth ~250), t=1 sits in the finish (halfWidth ~500).
+    // Spot-check: t=0 sits in the lagoon (halfWidth ~700), t≈0.45 sits in the
+    // shipwreck segment (halfWidth ~350), t=1 sits in the finish (halfWidth ~700).
     // We don't pin to exact numbers since centripetal interpolation smooths
-    // across the boundary; we check ranges. Updated 2026-04-29 from the
-    // original 30-50 wu values after preview confirmed the surfboard kart
-    // measures ~115 wu wide and would not fit. New baseline matches the
-    // OLD ellipse track's REEF_TRACK_HALF_WIDTH = 300.
+    // across the boundary; we check ranges. Updated 2026-04-29 (iter-4) after
+    // 1.4× width increase: lagoon/finish 500→700, kelp 300→420, ship 250→350,
+    // coral 200→280. Ranges adjusted proportionally.
     const wStart = spline.widthAt(0);
     const wFinish = spline.widthAt(1);
-    expect(wStart).toBeGreaterThanOrEqual(450);
-    expect(wStart).toBeLessThanOrEqual(550);
-    expect(wFinish).toBeGreaterThanOrEqual(450);
-    expect(wFinish).toBeLessThanOrEqual(550);
+    expect(wStart).toBeGreaterThanOrEqual(630);
+    expect(wStart).toBeLessThanOrEqual(770);
+    expect(wFinish).toBeGreaterThanOrEqual(630);
+    expect(wFinish).toBeLessThanOrEqual(770);
 
     // Mid-track must be tighter than start/finish (we have chokepoints there).
     const wMid = spline.widthAt(0.5);

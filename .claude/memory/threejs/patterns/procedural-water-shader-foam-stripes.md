@@ -38,8 +38,8 @@ const _waterVertexShader = `
 Full 2D simplex noise is inlined (mod289, permute helpers). Key patterns:
 - `scrolledUv = vUv + vec2(0.0, -uTime * 0.05)` — UV-scrolled flow (downstream direction)
 - Foam stripes: two `snoise()` passes at different frequencies + `smoothstep + step(0.5, foam)` for binary threshold
-- Bank-edge foam: `smoothstep(0.0, 0.08, vUv.x) * smoothstep(1.0, 0.92, vUv.x)` (pulse near UV.x=0/1)
-- `mix(uColorNear, uColorFar, depth)` for gradient depth cueing
+- Bank-edge foam (iter-4 upgrade): `edgeFactor = 1.0 - smoothstep(0.0, 0.12, min(vUv.x, 1.0 - vUv.x))` — wide 12% UV band (not 4%), soft falloff. Layer TWO animated simplex noise turbulence layers (`foamTurb1` at 60× 1.2×speed, `foamTurb2` at 150× 2.0×speed) combined `0.6 + 0.4 * combined`. Creamy white `vec3(1.0, 0.97, 0.92)` color. Final blend: `mix(finalColor, bankFoamColor, edgeFactor * bankFoamIntensity * 0.8)` — bank foam layers on top of everything.
+- `mix(uColorNear, uColorFar, depth)` for gradient depth cueing. iter-4 colors: `uColorNear: #5fdcff` (bright cartoon cyan), `uColorFar: #3aaedf` (lighter mid-blue — avoids dark navy at glancing angles that made the cinematic view read as solid navy).
 
 ### Module-scope material + single useFrame
 ```typescript
