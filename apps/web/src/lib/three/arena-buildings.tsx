@@ -60,12 +60,14 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // i=0  center=(80,24)    dx=0,   dz=56   → atan2(0,56)=0
   'canvas-studio':     { model: '/models/pineapple-house.glb',     yOffset: 0, rotY:  0.000 },
   // i=1  center=(113,35)   dx=-33, dz=45   → atan2(-33,45)≈-0.632
-  'memory-vault':      { model: '/models/bb-building.glb',         yOffset: 0, rotY: -0.632 },
+  // squidward-house.glb = Squidward's Easter Island moai head house (CC-BY, Yanez Designs, Sketchfab)
+  'memory-vault':      { model: '/models/squidward-house.glb',     yOffset: 0, rotY: -0.632 },
   // i=2  center=(133,63)   dx=-53, dz=17   → atan2(-53,17)≈-1.259
   // rotYOffset: salty-spitoon.glb is authored facing +X; -π/2 aligns it toward village center.
   'webhook-gateway':   { model: '/models/salty-spitoon.glb',       yOffset: 0, rotY: -1.259, rotYOffset: -Math.PI / 2 },
   // i=3  center=(133,97)   dx=-53, dz=-17  → atan2(-53,-17)≈-1.882
-  'cron-hub':          { model: '/models/downtown-building.glb',   yOffset: 0, rotY: -1.882 },
+  // patty-building.glb moved here from tool-workshop (2026-04-29: Pearl's downtown teen aesthetic)
+  'cron-hub':          { model: '/models/patty-building.glb',      yOffset: 0, rotY: -1.882 },
   // i=4  center=(113,125)  dx=-33, dz=-45  → atan2(-33,-45)≈-2.510
   // rotYOffset: boating-school.glb classroom (open side with desks + door) must face center.
   // Changed -π/2 → +π/2 (2026-04-16): flips 180° so classroom faces inward.
@@ -73,16 +75,19 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // i=5  center=(80,136)   dx=0,   dz=-56  → atan2(0,-56)=π≈3.142
   'config-citadel':    { model: '/models/building-lighthouse.glb', yOffset: 0, rotY:  3.142 },
   // i=6  center=(47,125)   dx=33,  dz=-45  → atan2(33,-45)≈2.510
-  'tool-workshop':     { model: '/models/patty-building.glb',      yOffset: 0, rotY:  2.510 },
+  // krusty-krab.glb = the iconic ship-shaped restaurant (CC-BY, Yanez Designs, Sketchfab, 7.6k tris)
+  'tool-workshop':     { model: '/models/krusty-krab.glb',         yOffset: 0, rotY:  2.510 },
   // i=7  center=(27,97)    dx=53,  dz=-17  → atan2(53,-17)≈1.882
   'skill-forge':       { model: '/models/chum-bucket.glb',         yOffset: 0, rotY:  1.882 },
   // i=8  center=(27,63)    dx=53,  dz=17   → atan2(53,17)≈1.259
-  // building-shell.glb = dome shape (interim for sandy-treedome — see 3dStructure.md §2)
+  // building-shell.glb = interim dome (2026-04-29: sandy-treedome.glb pending manual download from
+  //   https://sketchfab.com/3d-models/sandy-treedome-bf5893398ff3444ea4157682146ec5b7 CC-BY landon141)
+  //   When downloaded: rename to sandy-treedome.glb, drop in public/models/, change model below.
   'channel-bridge':    { model: '/models/building-shell.glb',      yOffset: 0, rotY:  1.259 },
   // i=9  center=(47,35)    dx=33,  dz=45   → atan2(33,45)≈0.632
-  // building-cave.glb = rocky cave (interim for patrick-rock — see 3dStructure.md §2)
+  // patricks-rock.glb = Patrick's Rock (CC-BY, Yanez Designs, Sketchfab, 3.5k tris)
   // building-submarine.glb is now a fixed-landmark decoration only (arena-terrain.tsx FixedLandmarks)
-  'security-fortress': { model: '/models/building-cave.glb',       yOffset: 0, rotY:  0.632 },
+  'security-fortress': { model: '/models/patricks-rock.glb',       yOffset: 0, rotY:  0.632 },
 };
 
 // Scratch objects for stripGroundPlanes — reused across calls to avoid GC.
