@@ -67,9 +67,8 @@ import {
 import { clientSpline } from './reef-race-spline-instance';
 
 // ─── Water surface Y — MUST match WATER_Y in river-scene.tsx ────────────────
-// 2026-04-29 iter-6 cascade: 200wu deep ravine. Old -40 placed karts
-// 160wu above the actual water surface after river-scene cascaded to -200.
-const WATER_Y = -200;
+// option-A shallow canyon variant: 60wu deep.
+const WATER_Y = -60;
 
 // ─── Race parameters ─────────────────────────────────────────────────────────
 
