@@ -340,17 +340,20 @@ const SIDEON_CAM    = new THREE.Vector3(
 );
 const SIDEON_TARGET = new THREE.Vector3(_startCenter.x, 0, _startCenter.z + 4000);
 
-/** Cinematic: behind and above the start surfboard. */
+/** Cinematic: behind and just above the kart, riding the canyon. */
 const _startTangent = clientSpline.tangentAt(0);
+// 2026-04-29 iter-5d: dropped cam altitude 300 → 60 (just above the cliff top
+// at y=+10) so the camera is INSIDE the canyon looking down its length.
+// At y=300 the cam was above the green hills surrounding the canyon and
+// the river was completely obscured from this POV.
 const CINEMATIC_CAM = new THREE.Vector3(
-  _startCenter.x - _startTangent.x * 1500,
-  300,                                          // 2026-04-29 iter-5b: lowered
-  _startCenter.z - _startTangent.z * 1500,      // 900→300 because water sunk
-);                                              // canyon now reads at lower altitude
-// 2026-04-29 iter-5b: target.y 80 → -30 — was pointing at empty air above
-// the now-sunken water surface (y=-40), making the cinematic view stare at
-// nothing.
-const CINEMATIC_TARGET = new THREE.Vector3(_startCenter.x, -30, _startCenter.z + 1200);
+  _startCenter.x - _startTangent.x * 800,
+  60,
+  _startCenter.z - _startTangent.z * 800,
+);
+// Target inside the canyon at water level so cam looks along the river
+// surface — canyon walls visible flanking, water dominating the foreground.
+const CINEMATIC_TARGET = new THREE.Vector3(_startCenter.x, -35, _startCenter.z + 1500);
 
 /** Default free-orbit position: 3/4 perspective showing whole track length. */
 const FREE_CAM    = new THREE.Vector3(_startCenter.x + 8000, 8000, _startCenter.z + 18000);
