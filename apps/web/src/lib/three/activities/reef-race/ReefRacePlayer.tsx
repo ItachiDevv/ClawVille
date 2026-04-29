@@ -539,10 +539,19 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
       // Clear per-petId procedural state so a remounted clone starts at t=0
       // and re-probes for bones (important if species changes across mounts).
       resetTransformSwimState(entity.petId);
-      // Clean up wipeout XZ tracker to prevent stale teleport detection on remount.
-      delete _lastXZ[entity.petId];
+      // _lastXZ cleanup is handled by the dedicated useEffect below (covers VRM path too).
     };
   }, [clonedScene, entity.petId]);
+
+  // Dedicated cleanup for _lastXZ: runs for BOTH GLB and VRM paths.
+  // The clonedScene effect above has an early-return guard (`if (!mount || !clonedScene)`)
+  // so VRM riders (clonedScene=null) never reach the delete there, leaking a stale
+  // XZ entry across unmount/remount and triggering a spurious wipeout on rejoin.
+  useEffect(() => {
+    return () => {
+      delete _lastXZ[entity.petId];
+    };
+  }, [entity.petId]);
 
   // ─── Sea-creature animator (hot-swap when manifest enables this species) ───
   // Manifest defaults to all-empty so this hook is a no-op until rigged GLBs
