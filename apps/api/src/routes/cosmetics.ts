@@ -26,7 +26,7 @@
 
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { eq, and, or, isNull, gt, lte, sql } from 'drizzle-orm';
+import { eq, and, or, isNull, gt, lte, inArray } from 'drizzle-orm';
 import {
   db,
   cosmeticSkus,
@@ -141,10 +141,14 @@ cosmeticsRoutes.get('/owned', sessionMiddleware, requireAuth, async (c) => {
   }
 
   const skuIds = owned.map((o) => o.sku.id);
+  // Use drizzle's inArray helper — the previous `sql\`${col} = ANY(${arr})\``
+  // form fed a raw JS array into postgres without proper array typing,
+  // which crashes at runtime once skuIds is non-empty (latent bug from
+  // Phase 3 launch when nobody had bought a cosmetic yet).
   const variants = await db
     .select()
     .from(cosmeticVariants)
-    .where(sql`${cosmeticVariants.skuId} = ANY(${skuIds})`);
+    .where(inArray(cosmeticVariants.skuId, skuIds));
 
   const variantsBySku = new Map<string, typeof variants>();
   for (const v of variants) {
