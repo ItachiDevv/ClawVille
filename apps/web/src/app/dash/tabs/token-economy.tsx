@@ -6,7 +6,31 @@
  * on render (5-min cache via Next fetch revalidate).
  */
 
+import { cookies } from 'next/headers';
 import { TUTORIAL_QUEST_REWARDS, TUTORIAL_QUEST_TOTAL_REWARD } from '@clawville/shared';
+
+interface EconomyData {
+  fingerprintCoverage24h: { total: number; withFp: number; pct: number };
+  tokenFlow30d: { reason: string; credits: number; debits: number; totalTx: number }[];
+  dailyLogin: { lifetimeCt: number; lifetimeClaims: number; last24hClaims: number };
+  generatedAt: string;
+}
+
+async function fetchEconomy(): Promise<EconomyData | null> {
+  const apiBase = process.env.NEXT_PUBLIC_API_URL ?? '';
+  if (!apiBase) return null;
+  const cookieStore = await cookies();
+  try {
+    const res = await fetch(`${apiBase}/api/dashboard/economy`, {
+      headers: { cookie: cookieStore.toString() },
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as EconomyData;
+  } catch {
+    return null;
+  }
+}
 
 const CLV_MINT = 'Epht7Fw4Sgh6fdcJj6afWXuNcAUmLLMc3MSthUqELiZA';
 
@@ -69,10 +93,86 @@ async function fetchClvPrice(): Promise<DexScreenerPair | null> {
 }
 
 export default async function TokenEconomyTab() {
-  const clv = await fetchClvPrice();
+  const [clv, econ] = await Promise.all([fetchClvPrice(), fetchEconomy()]);
 
   return (
     <div className="space-y-10">
+      {/* ANTI-FARM FINGERPRINT COVERAGE */}
+      <section>
+        <h2 className="mb-1 text-lg font-semibold">Anti-farm coverage (last 24h)</h2>
+        <p className="mb-3 text-xs font-mono text-slate-500">
+          Phase 1 §2.1-2.4 · every event row should carry sha256-salted{' '}
+          <code>fp_hash</code> + <code>ip_prefix_hash</code>. Coverage gaps =
+          emitter sites still using plain <code>logEvent()</code> instead of{' '}
+          <code>logEventFromContext(c, ...)</code>.
+        </p>
+        {econ ? (
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+            <MiniStat
+              label="fp_hash coverage"
+              value={`${econ.fingerprintCoverage24h.pct}%`}
+              delta={econ.fingerprintCoverage24h.pct >= 95 ? 0.01 : -0.01}
+            />
+            <MiniStat
+              label="Events 24h"
+              value={econ.fingerprintCoverage24h.total.toLocaleString()}
+            />
+            <MiniStat
+              label="With fp_hash"
+              value={econ.fingerprintCoverage24h.withFp.toLocaleString()}
+            />
+          </div>
+        ) : (
+          <div className="rounded border border-slate-700/50 bg-slate-900/30 p-3 text-xs text-slate-400">
+            Live coverage unavailable.
+          </div>
+        )}
+      </section>
+
+      {/* CT FLOW (sources + sinks) */}
+      <section>
+        <h2 className="mb-1 text-lg font-semibold">ClawToken flow (last 30d)</h2>
+        <p className="mb-3 text-xs font-mono text-slate-500">
+          From <code>claw_token_transactions</code> grouped by{' '}
+          <code>reason</code>. Credits = tokens entering the economy
+          (daily-login, chat rewards, quest completions, tutorial claims,
+          activity matches). Debits = tokens leaving (book purchases,
+          paused-marketplace ledger entries).
+        </p>
+        {econ && econ.tokenFlow30d.length > 0 ? (
+          <Table
+            head={['Reason', 'Credits (CT in)', 'Debits (CT out)', 'Tx count']}
+            rows={econ.tokenFlow30d.map((r) => [
+              r.reason,
+              r.credits > 0 ? `+${r.credits.toLocaleString()}` : '—',
+              r.debits > 0 ? `-${r.debits.toLocaleString()}` : '—',
+              r.totalTx.toLocaleString(),
+            ])}
+          />
+        ) : (
+          <div className="rounded border border-slate-700/50 bg-slate-900/30 p-3 text-xs text-slate-400">
+            No CT transactions in the last 30 days.
+          </div>
+        )}
+      </section>
+
+      {/* DAILY LOGIN */}
+      <section>
+        <h2 className="mb-1 text-lg font-semibold">Daily login</h2>
+        <p className="mb-3 text-xs font-mono text-slate-500">
+          Streak formula: <code>10 + streak × 5</code>, capped at{' '}
+          <code>100 CT/day</code>. Resets on missed day.
+          POST <code>/api/pets/me/daily-login</code>.
+        </p>
+        {econ ? (
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+            <MiniStat label="Lifetime CT issued" value={econ.dailyLogin.lifetimeCt.toLocaleString()} />
+            <MiniStat label="Lifetime claims" value={econ.dailyLogin.lifetimeClaims.toLocaleString()} />
+            <MiniStat label="Last 24h claims" value={econ.dailyLogin.last24hClaims.toLocaleString()} />
+          </div>
+        ) : null}
+      </section>
+
       {/* SCORE WEIGHTS */}
       <section>
         <h2 className="mb-1 text-lg font-semibold">Leaderboard score weights</h2>
