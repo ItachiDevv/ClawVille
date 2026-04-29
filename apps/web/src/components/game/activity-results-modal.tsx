@@ -371,19 +371,14 @@ export default function ActivityResultsModal({
 
   // ── Quest counter increments (fire ONCE per modal open) ──────────────
   const incrementCounter = useQuestStore((s) => s.incrementCounter);
-  const recordDistinct = useQuestStore((s) => s.recordDistinct);
   const firedOnceRef = useRef(false);
   useEffect(() => {
     if (firedOnceRef.current) return;
     firedOnceRef.current = true;
     incrementCounter('activityMatchesPlayed', 1);
     if (placement === 1) incrementCounter('activityMatchesWon', 1);
-    // Tier 5 "Reef Veteran" requires distinct activityIds — track which
-    // activity types the player has finished. Server validator on
-    // activity.match.placed.payload.activityType is authority.
-    if (activityId) recordDistinct('distinctActivityTypes', activityId);
     triggerQuestCheck();
-  }, [incrementCounter, recordDistinct, placement, activityId]);
+  }, [incrementCounter, placement]);
 
   // ── Sound triggers wired to phase activation ─────────────────────────
   const playedVictoryRef = useRef(false);
