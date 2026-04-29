@@ -72,17 +72,19 @@ const TRACK_CENTER_Z = TRACK_START_Z + TRACK_LEN_Z / 2; // 9500
 
 // ─── Ground shader terrain ────────────────────────────────────────────────────
 // Much wider than river, subdivided for per-vertex displacement
-// 2026-04-29 iter-7b: ground is now TWO strips bracketing the canyon, NOT
-// one wide plane. Each strip is 2200wu wide, positioned at x=±2000 so the
-// inner edge sits at x=±900. Cliff outer-top at hw+250=1300; corridor max
-// halfwidth=1050. Gap from -900 to +900 leaves the river area clear so
-// water is visible from above and the cinematic POV doesn't have a ground
-// plane horizontal cutting through the view.
-const GROUND_W         = 2200;
-const GROUND_L         = 24000;
-const GROUND_W_SEGS    = 24;
-const GROUND_L_SEGS    = 192;
-const GROUND_X_OFFSET  = 2000;  // strip center distance from spline X=0
+// 2026-04-29 iter-7c: bigger strips. User screenshot showed the world ending
+// abruptly — only ~6000wu of canyon visible against an empty sky-blue void.
+// Each strip widened 2200→6000 (covers more lateral land before fog), AND
+// extended Z 24000→32000 (extends 7000wu past the 18000 track to hide the
+// "world ends here" silhouette behind the finish gate).
+// Strip inner edge stays at x=±1300 (corridor + cliff), outer edge now at
+// x=±4300 (was ±3100). Trees at xJitter 350-450 (world x=±1400-1500) sit
+// well inside the strip — no longer near its edge.
+const GROUND_W         = 6000;
+const GROUND_L         = 32000;
+const GROUND_W_SEGS    = 64;   // 6000/64 ≈ 94wu per quad — fine displacement
+const GROUND_L_SEGS    = 256;  // 32000/256 = 125wu per quad
+const GROUND_X_OFFSET  = 4300; // strip center distance from spline (W/2 + 1300 inner gap = 3000+1300)
 const GROUND_Y         = -1;  // just below river bed at y=0
 
 // ─── Sky dome ────────────────────────────────────────────────────────────────
@@ -339,9 +341,13 @@ const _groundVertexShader = /* glsl */ `
   void main() {
     vUv = uv;
 
-    // River corridor falloff — flatten within 700wu of river centreline (x=0)
-    float riverDist = abs(position.x);
-    float riverMask = smoothstep(700.0, 1500.0, riverDist);
+    // 2026-04-29 iter-7c: with two strips bracketing the canyon (no terrain
+    // INSIDE the corridor), there's no need for the riverMask falloff anymore.
+    // Hills happen across the entire strip — no risk of them poking through
+    // the river bed since the river area is a literal gap. Set mask to 1.0
+    // everywhere. Old logic used local position.x which was wrong post-split
+    // (strip center is FAR from river, not at it).
+    float riverMask = 1.0;
     vRiverMask = riverMask;
 
     // Multi-octave value noise displacement (Y world up)
