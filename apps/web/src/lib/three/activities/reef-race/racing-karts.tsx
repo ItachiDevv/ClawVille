@@ -67,8 +67,8 @@ import {
 import { clientSpline } from './reef-race-spline-instance';
 
 // ─── Water surface Y — MUST match WATER_Y in river-scene.tsx ────────────────
-// option-A shallow canyon variant: 60wu deep.
-const WATER_Y = -60;
+// option-C: deep canyon 200wu.
+const WATER_Y = -200;
 
 // ─── Race parameters ─────────────────────────────────────────────────────────
 

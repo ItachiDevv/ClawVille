@@ -96,7 +96,7 @@ const DOME_ZENITH  = new THREE.Color('#5ab8e8');
 
 // ─── Water / sand ribbon sampling ────────────────────────────────────────────
 const RIBBON_SAMPLES = 64;   // number of cross-sections along the spline
-const WATER_Y        = -60;  // iter-7-A: shallow canyon variant (40wu deep — water visible from above)
+const WATER_Y        = -200; // option-C: deep canyon (200wu)
 
 // DEV-mode assertion: rocky-banks.tsx expects WATER_Y < 0; cliffs will render inverted otherwise.
 if (process.env.NODE_ENV === 'development' && WATER_Y >= 0) {
@@ -142,7 +142,7 @@ const POWERUP_BOB_FREQ = 2;
 // Part 2F: Bridge
 const BRIDGE_Z         = 8500; // mid-track z position
 const BRIDGE_W         = 1100; // wu span (covers full river + banks)
-const BRIDGE_H         = 30;   // option-A shallow: bridge floor y=+30, clearance over water (-60) = 90wu
+const BRIDGE_H         = 80;   // option-C: deep canyon, bridge floor y=+80, clearance over water (-200) = 280wu
 const BRIDGE_PLANK_H   = 30;   // plank thickness
 const BRIDGE_SUPPORT_W = 30;
 

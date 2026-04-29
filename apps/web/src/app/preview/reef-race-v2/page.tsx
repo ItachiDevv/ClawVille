@@ -349,10 +349,10 @@ const _startTangent = clientSpline.tangentAt(0);
 // fills the foreground, sky-blue dome above the canyon rim.
 const CINEMATIC_CAM = new THREE.Vector3(
   _startCenter.x - _startTangent.x * 700,
-  -30,                                          // option-A: cam at y=-30 (30wu above water -60)
+  -150,                                         // option-C: deep canyon, cam y=-150 (50wu above water)
   _startCenter.z - _startTangent.z * 700,
 );
-const CINEMATIC_TARGET = new THREE.Vector3(_startCenter.x, -50, _startCenter.z + 2000);
+const CINEMATIC_TARGET = new THREE.Vector3(_startCenter.x, -180, _startCenter.z + 2000);
 
 /** Default free-orbit position: 3/4 perspective showing whole track length. */
 const FREE_CAM    = new THREE.Vector3(_startCenter.x + 8000, 8000, _startCenter.z + 18000);
@@ -401,7 +401,7 @@ function SplineTrack({ onTriUpdate }: { onTriUpdate: (n: number) => void }) {
   return (
     <group>
       {/* River bed — position.y -250 cascades from iter-6 WATER_Y=-200 (bed 50wu below water) */}
-      <mesh ref={riverRef} geometry={riverGeo} material={_riverMat} position-y={-100} receiveShadow matrixAutoUpdate={false} />
+      <mesh ref={riverRef} geometry={riverGeo} material={_riverMat} position-y={-250} receiveShadow matrixAutoUpdate={false} />
 
       {/* Bank walls — HIDDEN: replaced by <RockyBanks /> from rocky-banks.tsx
           which provides the canyon cliff geometry. The old grass-green bank
