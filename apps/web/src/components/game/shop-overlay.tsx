@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useGameStore } from '@/stores/game';
+import { useQuestStore, triggerQuestCheck } from '@/stores/quest';
 import { useAvatar } from '@/hooks/use-avatar';
 
 export default function ShopOverlay() {
@@ -24,6 +25,17 @@ export default function ShopOverlay() {
       addToast('🛒', `Bought ${res.item.name}!`);
       queryClient.invalidateQueries({ queryKey: ['avatar'] });
       queryClient.invalidateQueries({ queryKey: ['inventory'] });
+      // Quest counters — Tier 4 Shop & Study, Inventory in Action,
+      // Library Card all gate on bookBought / itemsBought. The
+      // distinct-set tracker captures which buildings a player has
+      // bought books from for Library Card.
+      const qs = useQuestStore.getState();
+      qs.incrementCounter('itemsBought', 1);
+      if (res.item.isBook) {
+        qs.incrementCounter('booksBought', 1);
+        if (currentLocation) qs.recordDistinct('distinctBookBuildings', currentLocation);
+      }
+      triggerQuestCheck();
       setBuyingId(null);
     },
     onError: (err: Error) => {
