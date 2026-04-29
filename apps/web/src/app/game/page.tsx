@@ -23,6 +23,7 @@ import ChargeBar from '@/components/game/charge-bar';
 import ShopOverlay from '@/components/game/shop-overlay';
 import InventoryModal from '@/components/game/inventory-modal';
 import CosmeticDrawer from '@/components/game/cosmetic-drawer';
+import EmoteHotbar from '@/components/game/emote-hotbar';
 import ActivityFeed from '@/components/game/activity-feed';
 import AgentConnectModal from '@/components/game/agent-connect-modal';
 
@@ -364,6 +365,10 @@ export default function GamePage() {
           <InventoryModal />
           <DailyLoginModal />
           <CosmeticDrawerMount />
+          {/* Emote hotbar — only renders when the player has equipped at
+              least one emote cosmetic. Hotkeys 1-4 fire the slots; the
+              bus-driven trigger plays one-shot animations on the player VRM. */}
+          <EmoteHotbar />
         </>
       )}
 

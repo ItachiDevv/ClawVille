@@ -356,11 +356,20 @@ export function useEquippedCosmetics(
   context: CosmeticContext,
   rigType: string,
 ): OwnedCosmetic[] {
+  // IMPORTANT: query key must match `useOwnedCosmetics()` in
+  // use-cosmetics.ts so that the drawer's optimistic equip/unequip
+  // mutations propagate to the live render instantly. avatarId is kept on the
+  // signature for forward-compat with multi-avatar rendering (NPC cosmetics)
+  // but is intentionally NOT in the cache key today — the API resolves
+  // ownership from the session cookie, so all callers share a single
+  // 'caller-avatar' cache slot.
+  void avatarId;
   const { data } = useQuery<OwnedCosmeticsResponse>({
-    queryKey:   ['cosmetics-owned', avatarId],
+    queryKey:   ['cosmetics', 'owned'],
     queryFn:    fetchOwnedCosmetics,
     staleTime:  30_000, // 30s
     refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
     // Don't throw on auth failure — the hook returns empty
     retry:      false,
   });
@@ -894,6 +903,15 @@ export function CosmeticLoader({
 
         if (cat === 'outfit') {
           return <OutfitRenderer key={item.id} variant={variant} />;
+        }
+
+        if (cat === 'emote') {
+          // Emotes are not rendered as 3D geometry. Equipping an emote
+          // just adds it to the player's emote hotbar; the trigger flows
+          // through the emote-bus and VRMCharacterAnimator.playOneShot.
+          // Returning null here keeps the loader from logging an unknown
+          // category every render.
+          return null;
         }
 
         return null;

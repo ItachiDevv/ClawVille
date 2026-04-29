@@ -1,15 +1,16 @@
 /**
  * Q3 plan §4 — React Query hook for cosmetic SKU + ownership state.
  *
- * Two queries:
+ * Queries:
  *   - `useOwnedCosmetics()`  — auth'd, returns the caller avatar's owned skins
  *     with equipped state. Polled every 60s + on window focus.
  *   - `useCosmeticCatalog(scope?)` — public, returns purchasable SKUs.
- *     For Phase 4 storefront; Phase 3 drawer doesn't need it.
+ *     Drives the Shop tab inside CosmeticDrawer.
  *
  * Mutations:
  *   - `useEquipCosmetic()`   — POST /equip; optimistic toggle then refetch.
- *   - `useUnequipCosmetic()` — POST /unequip; same pattern.
+ *   - `useBuyCosmetic()`     — POST /buy; debits CT, inserts avatar_skins,
+ *     invalidates owned + avatar caches.
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -77,6 +78,85 @@ export function useOwnedCosmetics() {
     queryFn: fetchOwned,
     staleTime: 60_000,
     refetchOnWindowFocus: true,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Shop catalog
+// ---------------------------------------------------------------------------
+
+export interface CosmeticCatalogItem {
+  id: string;
+  slug: string;
+  category: string;
+  scope: string;
+  displayName: string;
+  description: string | null;
+  rarity: string;
+  priceCt: number;
+  exclusiveCurrency: string | null;
+  attribution: string | null;
+  attributionUrl: string | null;
+  licenseSpdx: string | null;
+  availableUntil: string | null;
+  supplyCap: number | null;
+}
+
+export interface CosmeticCatalogResponse {
+  catalog: CosmeticCatalogItem[];
+  generatedAt: string;
+}
+
+async function fetchCatalog(scope?: string): Promise<CosmeticCatalogResponse> {
+  const qs = scope ? `?scope=${encodeURIComponent(scope)}` : '';
+  const res = await fetch(`${API_URL}/api/cosmetics/catalog${qs}`, {
+    credentials: 'include',
+  });
+  if (!res.ok) throw new Error(`Catalog request failed: ${res.status}`);
+  return (await res.json()) as CosmeticCatalogResponse;
+}
+
+export function useCosmeticCatalog(scope?: string) {
+  return useQuery({
+    queryKey: ['cosmetics', 'catalog', scope ?? 'all'],
+    queryFn: () => fetchCatalog(scope),
+    staleTime: 60_000,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Buy mutation
+// ---------------------------------------------------------------------------
+
+export interface BuyResponse {
+  ok: true;
+  alreadyOwned: boolean;
+  avatarSkinId: string;
+  clawTokens: number;
+  equipped?: boolean;
+}
+
+async function postBuy(skuId: string): Promise<BuyResponse> {
+  const res = await fetch(`${API_URL}/api/cosmetics/${skuId}/buy`, {
+    method: 'POST',
+    credentials: 'include',
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error((body as { message?: string })?.message ?? `Buy failed: ${res.status}`);
+  }
+  return body as BuyResponse;
+}
+
+export function useBuyCosmetic() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (skuId: string) => postBuy(skuId),
+    onSuccess: () => {
+      // Refetch owned (new row) and avatar (CT balance changed).
+      qc.invalidateQueries({ queryKey: ['cosmetics', 'owned'] });
+      qc.invalidateQueries({ queryKey: ['avatar'] });
+    },
   });
 }
 

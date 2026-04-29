@@ -16,11 +16,12 @@
  *        Auth'd. The cosmetic-loader (Phase 3.3) reads /owned with
  *        equipped=true on each render pass; no separate "render" event.
  *
- * Phase 4 (storefront) will add:
- *   POST /api/cosmetics/:skuId/buy        — debit CT + insert avatar_skins row
- *
- * Out of scope here. The schema is buy-ready (acquired_via, ledger_id) so
- * Phase 4 just adds the route.
+ *   POST /api/cosmetics/:skuId/buy         — debit ClawTokens, insert avatar_skins.
+ *        Auth'd. Idempotent: re-buying an owned SKU returns 200 with
+ *        `{ alreadyOwned: true }` and does NOT debit again. Audited via
+ *        claw_token_transactions (acquired_via='shop_ct', source='api').
+ *        Added 2026-04-29 — pulled forward from Phase 4 to make the shop
+ *        ship alongside the first non-surfboard cosmetic drop.
  */
 
 import { Hono } from 'hono';
@@ -35,6 +36,7 @@ import {
 } from '@clawville/database';
 import { requireAuth, sessionMiddleware } from '../middleware/auth';
 import { logEventFromContext } from '../services/event-logger';
+import { debitClawTokens, InsufficientTokensError } from '../services/claw-token-ledger';
 import type { AppContext } from '../types';
 
 export const cosmeticsRoutes = new Hono<AppContext>();
@@ -233,4 +235,119 @@ cosmeticsRoutes.post('/:skuId/equip', sessionMiddleware, requireAuth, async (c) 
 cosmeticsRoutes.post('/:skuId/unequip', sessionMiddleware, requireAuth, async (c) => {
   const user = c.get('user') as { id: string };
   return setEquipped(c, c.req.param('skuId'), user.id, false);
+});
+
+// ---------------------------------------------------------------------------
+// POST /:skuId/buy — auth'd
+// ---------------------------------------------------------------------------
+//
+// Spends ClawTokens to acquire the SKU and inserts a avatar_skins row.
+// Idempotent: re-buying an already-owned SKU returns 200 with
+// `{ alreadyOwned: true }` and does NOT debit again.
+//
+// Atomicity: token debit + avatar_skins insert run inside a single
+// db.transaction(). debitClawTokens accepts a tx parameter to compose into
+// the same lock-scope so a failed insert rolls the debit back.
+
+cosmeticsRoutes.post('/:skuId/buy', sessionMiddleware, requireAuth, async (c) => {
+  const user = c.get('user') as { id: string };
+  const skuId = c.req.param('skuId');
+
+  if (!uuidRegex.test(skuId)) {
+    throw new HTTPException(400, { message: 'Invalid skuId' });
+  }
+
+  // SKU must exist and be currently available (window check).
+  const sku = await db.query.cosmeticSkus.findFirst({
+    where: eq(cosmeticSkus.id, skuId),
+  });
+  if (!sku) throw new HTTPException(404, { message: 'Cosmetic not found' });
+
+  const now = new Date();
+  if (sku.availableFrom && sku.availableFrom > now) {
+    throw new HTTPException(400, { message: 'Not yet available' });
+  }
+  if (sku.availableUntil && sku.availableUntil <= now) {
+    throw new HTTPException(400, { message: 'No longer available' });
+  }
+  if (sku.exclusiveCurrency && sku.exclusiveCurrency !== 'CT') {
+    // CLV / SOL / fiat exclusives are not buyable via this endpoint —
+    // they go through a separate currency-specific path (Phase 4 follow-up).
+    throw new HTTPException(400, {
+      message: `This item must be purchased with ${sku.exclusiveCurrency}.`,
+    });
+  }
+
+  const avatar = await getCallerPet(user.id);
+
+  // Idempotent: already owned ⇒ 200 with `{ alreadyOwned: true }`.
+  const existing = await db
+    .select({ id: petSkins.id, equipped: petSkins.equipped })
+    .from(petSkins)
+    .where(and(eq(petSkins.avatarId, avatar.id), eq(petSkins.skuId, skuId)))
+    .limit(1);
+  if (existing.length > 0) {
+    return c.json({
+      ok: true,
+      alreadyOwned: true,
+      avatarSkinId: existing[0].id,
+      equipped: existing[0].equipped,
+      clawTokens: avatar.clawTokens,
+    });
+  }
+
+  // Atomic debit + insert.
+  let result: { balanceAfter: number; avatarSkinId: string };
+  try {
+    result = await db.transaction(async (tx) => {
+      const debit = await debitClawTokens(
+        {
+          avatarId: avatar.id,
+          amount: sku.priceCt,
+          reason: 'buy_cosmetic',
+          source: 'api',
+          metadata: { skuId, slug: sku.slug, category: sku.category },
+        },
+        tx,
+      );
+      const [row] = await tx
+        .insert(petSkins)
+        .values({
+          avatarId: avatar.id,
+          skuId: sku.id,
+          acquiredVia: 'shop_ct',
+          ledgerId: debit.ledgerId,
+          equipped: false,
+        })
+        .returning({ id: petSkins.id });
+      return { balanceAfter: debit.balanceAfter, avatarSkinId: row.id };
+    });
+  } catch (err) {
+    if (err instanceof InsufficientTokensError) {
+      throw new HTTPException(400, {
+        message: `Not enough ClawTokens. Need ${sku.priceCt}, have ${avatar.clawTokens}.`,
+      });
+    }
+    throw err;
+  }
+
+  void logEventFromContext(c, {
+    eventType: 'cosmetic.purchased',
+    userId: user.id,
+    avatarId: avatar.id,
+    payload: {
+      skuId: sku.id,
+      slug: sku.slug,
+      category: sku.category,
+      pricePaid: sku.priceCt,
+      balanceAfter: result.balanceAfter,
+    },
+  });
+
+  return c.json({
+    ok: true,
+    alreadyOwned: false,
+    avatarSkinId: result.avatarSkinId,
+    clawTokens: result.balanceAfter,
+  });
 });

@@ -81,7 +81,41 @@ const ANIM_PATHS = {
   spell_cast:      '/avatars/animations/emotes/spell-cast.glb',
 } as const;
 
-type AnimName = keyof typeof ANIM_PATHS;
+export type AnimName = keyof typeof ANIM_PATHS;
+/**
+ * Subset of AnimName intended for one-shot emote triggering. Excludes
+ * locomotion clips (idle/walk/run) — those are managed by the locomotion
+ * crossfade. Intentionally listed by hand so seeding scripts and the
+ * emote hotbar share an authoritative whitelist.
+ */
+export const EMOTE_ANIM_NAMES = [
+  'flip',
+  'dance_happy',
+  'dance_breaking',
+  'dance_hiphop',
+  'dance_popping',
+  'kiss',
+  'fishing',
+  'jump',
+  'spell_cast',
+  'waving',
+  'looking_around',
+  'squat',
+  'talk',
+  'crawling',
+  'crying',
+  'fall',
+  'rude_gesture',
+  'sorrow',
+  'victory',
+  'wipeout',
+  'float',
+] as const satisfies readonly AnimName[];
+export type EmoteAnimName = (typeof EMOTE_ANIM_NAMES)[number];
+
+export function isEmoteAnimName(name: string): name is EmoteAnimName {
+  return (EMOTE_ANIM_NAMES as readonly string[]).includes(name);
+}
 
 // ---------------------------------------------------------------------------
 // Module-level raw GLTF cache
@@ -173,6 +207,17 @@ export class VRMCharacterAnimator {
   private currentAction: THREE.AnimationAction | null = null;
   private ready = false;
   private wasMoving = false;
+  /**
+   * True while a `playOneShot` emote is in-flight. While true, the
+   * isMoving → idle/walk crossfade in update() / updateMixerOnly() is
+   * suppressed so the emote can play to completion without being yanked
+   * back to locomotion mid-animation. The 'finished' listener clears it
+   * and crossfades to the correct locomotion target.
+   */
+  private oneShotActive = false;
+  /** The handler attached for the active one-shot — referenced so we can
+   * remove it if a second one-shot fires before the first finishes. */
+  private oneShotFinishedHandler: ((e: { action: THREE.AnimationAction }) => void) | null = null;
 
   // Verse Engine skeleton.update batching (B2 2026-04-24).
   // Three.js WebGLRenderer calls skeleton.update() once per SkinnedMesh before
@@ -341,7 +386,12 @@ export class VRMCharacterAnimator {
   update(delta: number, isMoving: boolean): void {
     if (!this.ready) return;
 
-    if (isMoving !== this.wasMoving) {
+    // While a one-shot emote is playing, suppress the locomotion crossfade
+    // but keep `wasMoving` updated so we crossfade to the correct target
+    // when the emote finishes. Otherwise: apply locomotion crossfade as normal.
+    if (this.oneShotActive) {
+      this.wasMoving = isMoving;
+    } else if (isMoving !== this.wasMoving) {
       this.applyCrossfade(isMoving);
       this.wasMoving = isMoving;
     }
@@ -399,7 +449,10 @@ export class VRMCharacterAnimator {
   updateMixerOnly(delta: number, isMoving: boolean): void {
     if (!this.ready) return;
 
-    if (isMoving !== this.wasMoving) {
+    // Same one-shot guard as update() — see that method for rationale.
+    if (this.oneShotActive) {
+      this.wasMoving = isMoving;
+    } else if (isMoving !== this.wasMoving) {
       this.applyCrossfade(isMoving);
       this.wasMoving = isMoving;
     }
@@ -430,10 +483,92 @@ export class VRMCharacterAnimator {
   }
 
   /**
+   * Play a one-shot emote (LoopOnce). Lazy-loads + retargets the clip on
+   * first request so the player only pays for emotes they trigger.
+   *
+   * Behavior:
+   *   1. If clip not loaded yet → fetch + retarget (one-time per emote per
+   *      VRM instance). Subsequent calls reuse the cached action.
+   *   2. Crossfade from the current action into the emote (CROSSFADE_DURATION).
+   *   3. Suppress locomotion crossfade for the duration of the emote.
+   *   4. On 'finished' (Mixer event) crossfade back to idle/walk based on
+   *      the latest `isMoving` state we observed.
+   *
+   * Calling playOneShot while another one-shot is already running cancels
+   * the previous one's finished handler and starts the new emote — a
+   * "stomp" pattern that matches Fortnite-style emote spam.
+   *
+   * @param name  Animation registry key (e.g. 'flip', 'dance_breaking').
+   */
+  async playOneShot(name: AnimName): Promise<void> {
+    if (!this.ready) return;
+    if (!this.mixer) return; // disposed
+
+    // Lazy-load + retarget if first time.
+    if (!this.actions[name]) {
+      try {
+        const gltf = await loadRawGltf(name);
+        const retargeted = retargetMixamoClip(gltf, this.vrm, name);
+        const action = this.mixer.clipAction(retargeted);
+        this.actions[name] = action;
+      } catch (err) {
+        console.warn(`[VRMCharacterAnimator] one-shot retarget failed for "${name}":`, err);
+        return;
+      }
+    }
+    // Re-check post-await — we may have been disposed mid-load.
+    if (!this.mixer) return;
+
+    const oneShot = this.actions[name];
+    if (!oneShot) return;
+
+    oneShot.setLoop(THREE.LoopOnce, 1);
+    oneShot.clampWhenFinished = true;
+
+    // If a previous one-shot is mid-flight, drop its handler so it doesn't
+    // fire after we've already moved on.
+    if (this.oneShotFinishedHandler) {
+      this.mixer.removeEventListener('finished', this.oneShotFinishedHandler as any);
+      this.oneShotFinishedHandler = null;
+    }
+
+    const previous = this.currentAction;
+
+    const onFinished = (e: { action: THREE.AnimationAction }) => {
+      if (e.action !== oneShot) return;
+      if (!this.mixer) return; // disposed mid-emote
+      this.mixer.removeEventListener('finished', onFinished as any);
+      this.oneShotFinishedHandler = null;
+      this.oneShotActive = false;
+      // Crossfade back to whatever locomotion state we are in NOW.
+      const back = this.actions[this.wasMoving ? 'walk' : 'idle'];
+      if (back) {
+        back.reset().fadeIn(CROSSFADE_DURATION).play();
+        oneShot.fadeOut(CROSSFADE_DURATION);
+        this.currentAction = back;
+      }
+    };
+    this.oneShotFinishedHandler = onFinished;
+    this.mixer.addEventListener('finished', onFinished as any);
+
+    this.oneShotActive = true;
+    oneShot.reset().fadeIn(CROSSFADE_DURATION).play();
+    if (previous && previous !== oneShot) {
+      previous.fadeOut(CROSSFADE_DURATION);
+    }
+    this.currentAction = oneShot;
+  }
+
+  /**
    * Clean up — call on component unmount to release GPU resources.
    * The VRM scene itself is not disposed here — caller manages scene lifetime.
    */
   dispose(): void {
+    if (this.oneShotFinishedHandler) {
+      this.mixer.removeEventListener('finished', this.oneShotFinishedHandler as any);
+      this.oneShotFinishedHandler = null;
+    }
+    this.oneShotActive = false;
     this.mixer.stopAllAction();
     this.mixer.uncacheRoot(this.vrm.scene);
 
