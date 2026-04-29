@@ -398,18 +398,20 @@ export function useEquippedCosmetics(
 function HatOrGlassesRenderer({
   parentObject,
   variant,
-  onDispose,
 }: {
   parentObject: THREE.Object3D;
   variant: OwnedCosmetic['variants'][0];
-  onDispose: (fn: () => void) => void;
+  // onDispose accepted for backwards compat but no longer used — React's
+  // own useEffect cleanup handles disposal correctly across variant changes.
+  onDispose?: (fn: () => void) => void;
 }) {
-  const mountedRef = useRef(false);
+  // Re-run effect whenever asset content changes (URL or meta). Including
+  // assetMeta as a JSON-stringified dep means changing offsetXYZ/scale/etc
+  // via re-seed automatically re-attaches with the new values without a
+  // page reload.
+  const metaKey = JSON.stringify(variant.assetMeta ?? {});
 
   useEffect(() => {
-    if (mountedRef.current) return;
-    mountedRef.current = true;
-
     const meta = variant.assetMeta ?? {};
     const boneAnchorName = (meta.boneAnchor as string | undefined) ?? null;
     const offsetXYZ = (meta.offsetXYZ as [number, number, number] | undefined) ?? [0, 0, 0];
@@ -422,7 +424,8 @@ function HatOrGlassesRenderer({
 
     loadGlbAsset(variant.assetUrl).then((glbGroup) => {
       if (!mounted) {
-        // Component unmounted while loading — dispose immediately
+        // Component unmounted (or effect re-ran) while loading — dispose
+        // the loaded GLB so it doesn't leak.
         glbGroup.traverse((c) => {
           if ((c as THREE.Mesh).isMesh) {
             (c as THREE.Mesh).geometry?.dispose();
@@ -461,7 +464,7 @@ function HatOrGlassesRenderer({
       console.error('[CosmeticLoader] Failed to load hat/glasses GLB', variant.assetUrl, err);
     });
 
-    onDispose(() => {
+    return () => {
       mounted = false;
       if (attachedGroup && anchor) {
         anchor.remove(attachedGroup);
@@ -475,8 +478,9 @@ function HatOrGlassesRenderer({
         });
         attachedGroup = null;
       }
-    });
-  }, [variant, parentObject, onDispose]);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [variant.assetUrl, variant.id, metaKey, parentObject]);
 
   return null;
 }
@@ -588,19 +592,19 @@ function ParticleRenderer({
 function BoardRenderer({
   parentObject,
   variant,
-  onDispose,
 }: {
   parentObject: THREE.Object3D;
   variant: OwnedCosmetic['variants'][0];
-  onDispose: (fn: () => void) => void;
+  onDispose?: (fn: () => void) => void;
 }) {
-  const sceneRef = useRef<THREE.Group | null>(null);
+  const metaKey = JSON.stringify(variant.assetMeta ?? {});
 
   useEffect(() => {
     const meta = variant.assetMeta ?? {};
     const yOffset = (meta.yOffset as number | undefined) ?? -8;
 
     let mounted = true;
+    let wrapper: THREE.Group | null = null;
 
     loadGlbAsset(variant.assetUrl).then((glbGroup) => {
       if (!mounted) {
@@ -615,20 +619,18 @@ function BoardRenderer({
         return;
       }
 
-      const wrapper = new THREE.Group();
+      wrapper = new THREE.Group();
       wrapper.name = `cosmetic-board-${variant.id}`;
       wrapper.position.set(0, yOffset, 0);
       wrapper.frustumCulled = false;
       wrapper.add(glbGroup);
       parentObject.add(wrapper);
-      sceneRef.current = wrapper;
     }).catch((err) => {
       console.error('[CosmeticLoader] Failed to load board GLB', variant.assetUrl, err);
     });
 
-    onDispose(() => {
+    return () => {
       mounted = false;
-      const wrapper = sceneRef.current;
       if (wrapper) {
         parentObject.remove(wrapper);
         wrapper.traverse((c) => {
@@ -639,10 +641,11 @@ function BoardRenderer({
             else mat?.dispose();
           }
         });
-        sceneRef.current = null;
+        wrapper = null;
       }
-    });
-  }, [variant, parentObject, onDispose]);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [variant.assetUrl, variant.id, metaKey, parentObject]);
 
   return null;
 }
