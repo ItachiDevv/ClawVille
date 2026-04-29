@@ -143,7 +143,7 @@ itemRoutes.post('/buy', requireAuth, async (c) => {
   return c.json({
     success: true,
     clawTokens: balanceAfter,
-    item: { id: book.id, name: book.name },
+    item: { id: book.id, name: book.name, isBook: true },
   });
 });
 
