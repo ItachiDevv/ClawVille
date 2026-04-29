@@ -80,10 +80,9 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // i=7  center=(27,97)    dx=53,  dz=-17  → atan2(53,-17)≈1.882
   'skill-forge':       { model: '/models/chum-bucket.glb',         yOffset: 0, rotY:  1.882 },
   // i=8  center=(27,63)    dx=53,  dz=17   → atan2(53,17)≈1.259
-  // building-shell.glb = interim dome (2026-04-29: sandy-treedome.glb pending manual download from
-  //   https://sketchfab.com/3d-models/sandy-treedome-bf5893398ff3444ea4157682146ec5b7 CC-BY landon141)
-  //   When downloaded: rename to sandy-treedome.glb, drop in public/models/, change model below.
-  'channel-bridge':    { model: '/models/building-shell.glb',      yOffset: 0, rotY:  1.259 },
+  // sandy-treedome.glb = Sandy's Treedome (CC-BY, landon141, Sketchfab; user-supplied, decimated
+  //   86MB→3.56MB via @gltf-transform/cli optimize+simplify+draco on 2026-04-29).
+  'channel-bridge':    { model: '/models/sandy-treedome.glb',      yOffset: 0, rotY:  1.259 },
   // i=9  center=(47,35)    dx=33,  dz=45   → atan2(33,45)≈0.632
   // patricks-rock.glb = Patrick's Rock (CC-BY, Yanez Designs, Sketchfab, 3.5k tris)
   // building-submarine.glb is now a fixed-landmark decoration only (arena-terrain.tsx FixedLandmarks)

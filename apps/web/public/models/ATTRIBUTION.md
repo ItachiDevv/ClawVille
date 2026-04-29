@@ -19,3 +19,7 @@ The following 3D models are used under CC-BY license. Full credit to their creat
 
 - **Patrick's House (SpongeBob)** by Yanez Designs (CC-BY) — `patricks-rock.glb`
   https://sketchfab.com/3d-models/patricks-house-spongebob-e903770349644943b400f8b72d2d3958
+
+- **Sandy's Treedome (SpongeBob)** by landon141 (CC-BY) — `sandy-treedome.glb`
+  https://sketchfab.com/3d-models/sandy-treedome-bf5893398ff3444ea4157682146ec5b7
+  Decimated from 86 MB → 3.56 MB via gltf-transform optimize+simplify(0.4)+draco on 2026-04-29.
