@@ -1,0 +1,255 @@
+'use client';
+
+/**
+ * terrain-shader.tsx — Stylized cartoon terrain for Reef Race v2.
+ *
+ * Replaces the stale flat green ground plane with a subdivided, procedurally
+ * displaced mesh driven by a custom ShaderMaterial.
+ *
+ * Design goals (matching the quality of the animated water shader):
+ *   - Rolling hills via vertex-displaced simplex noise, masked near the river
+ *     so the hillsides don't poke through the riverbed corridor.
+ *   - Two-frequency grass blend (light/dark patches), slow-drifting dirt spots.
+ *   - Bank shadowing (slightly darker ground near the water edge).
+ *   - Hilltop brightening so elevation reads clearly.
+ *
+ * Iris Xe invariants:
+ *   - Plain ShaderMaterial on plain Mesh — NOT InstancedMesh (that combo crashes).
+ *   - import from 'three' only (not 'three/webgpu').
+ *   - All geometry at module scope — zero per-frame GC.
+ *   - frustumCulled=false + matrixAutoUpdate=false on the static mesh.
+ *   - No drei Text / Billboard anywhere.
+ *   - No external textures — fully procedural.
+ *
+ * Pattern: drei shaderMaterial() factory (modern R3F idiom).
+ *   TerrainMaterial = shaderMaterial({ uTime: 0 }, vert, frag)
+ *   extend({ TerrainMaterial })                  — registers JSX element
+ *   <terrainMaterial ref={matRef} uTime={t} />   — zero-allocation uniform update
+ *
+ * Geometry budget:
+ *   PlaneGeometry(12000, 24000, 96, 192) = 96×192 quads × 2 tris = 36,864 tris, 1 draw call.
+ *   Old GroundPlane was 2 tris, 1 draw call.
+ *   Delta: +36,862 tris, 0 extra draw calls.
+ *   Still within the ≤220k tris scene budget (well under).
+ *
+ * Placement:
+ *   The Reef Race ellipse track is centered at (0,0) in XZ.
+ *   This plane is placed at (0, -1, 0) to sit just below the track surface (y=0).
+ *   12000×24000 wu covers the full ellipse footprint (A=1650, B=1050) with
+ *   substantial visible hillside on all sides.
+ */
+
+import { useRef, useEffect } from 'react';
+import { useFrame } from '@react-three/fiber';
+import { shaderMaterial } from '@react-three/drei';
+import { extend } from '@react-three/fiber';
+import * as THREE from 'three';
+
+// ─── Simplex noise GLSL (2D) ─────────────────────────────────────────────────
+// Standard 2D simplex noise by Ian McEwan / Ashima Arts.
+// Inlined to avoid any external texture dependency.
+const _snoiseFunctions = /* glsl */ `
+  vec3 mod289v3(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+  vec2 mod289v2(vec2 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+  vec3 permute(vec3 x) { return mod289v3(((x * 34.0) + 1.0) * x); }
+
+  float snoise(vec2 v) {
+    const vec4 C = vec4(0.211324865405187,
+                        0.366025403784439,
+                       -0.577350269189626,
+                        0.024390243902439);
+    vec2 i  = floor(v + dot(v, C.yy));
+    vec2 x0 = v - i + dot(i, C.xx);
+    vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+    vec4 x12 = x0.xyxy + C.xxzz;
+    x12.xy -= i1;
+    i = mod289v2(i);
+    vec3 p = permute(permute(i.y + vec3(0.0, i1.y, 1.0)) + i.x + vec3(0.0, i1.x, 1.0));
+    vec3 m = max(0.5 - vec3(dot(x0, x0), dot(x12.xy, x12.xy), dot(x12.zw, x12.zw)), 0.0);
+    m = m * m;
+    m = m * m;
+    vec3 x = 2.0 * fract(p * C.www) - 1.0;
+    vec3 h = abs(x) - 0.5;
+    vec3 ox = floor(x + 0.5);
+    vec3 a0 = x - ox;
+    m *= 1.79284291400159 - 0.85373472095314 * (a0 * a0 + h * h);
+    vec3 g;
+    g.x  = a0.x  * x0.x  + h.x  * x0.y;
+    g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+    return 130.0 * dot(m, g);
+  }
+`;
+
+// ─── Vertex shader ────────────────────────────────────────────────────────────
+// Computes rolling hill displacement with a smooth mask that fades hills out
+// near the river corridor (|x| < 700 wu) so terrain doesn't poke through.
+const _vertexShader = /* glsl */ `
+  ${_snoiseFunctions}
+
+  uniform float uTime;
+  varying vec3 vWorldPos;
+  varying float vYDisplacement;
+
+  void main() {
+    vec3 pos = position;
+
+    // Distance from river center line (X=0 is the center of the ellipse track).
+    // The river corridor spans roughly ±700 wu in X.
+    float distFromRiverCenter = abs(pos.x);
+
+    // Mask: 0 near the river, 1 well outside. Ramps from 700 to 1500 wu.
+    float displacementMask = smoothstep(700.0, 1500.0, distFromRiverCenter);
+
+    // Large-scale rolling hills — very low frequency
+    float largeNoise = snoise(pos.xz * 0.0008);  // range [-1, 1]
+
+    // Smaller octave for surface variation
+    float smallNoise = snoise(pos.xz * 0.003);   // range [-1, 1]
+
+    // Convert from [-1,1] to [0,1] for cleaner amplitude
+    largeNoise = largeNoise * 0.5 + 0.5;
+    smallNoise = smallNoise * 0.5 + 0.5;
+
+    // Final displacement: max ~100 wu at outer edges, 0 near river
+    float disp = (largeNoise * 80.0 + smallNoise * 20.0) * displacementMask;
+
+    pos.y += disp;
+
+    // Pass world-space XZ and displacement amount to fragment
+    vWorldPos = pos;
+    vYDisplacement = disp;
+
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+  }
+`;
+
+// ─── Fragment shader ──────────────────────────────────────────────────────────
+// Multi-frequency noise blend: patchy grass + slow-drifting dirt patches.
+// Additional depth cues: bank shadow (near water), hilltop brightening.
+const _fragmentShader = /* glsl */ `
+  ${_snoiseFunctions}
+
+  uniform float uTime;
+  varying vec3 vWorldPos;
+  varying float vYDisplacement;
+
+  void main() {
+    // ── Grass color palette ──────────────────────────────────────────────────
+    vec3 grassLight = vec3(0.545, 0.784, 0.282); // #8bc848 bright cartoon green
+    vec3 grassDark  = vec3(0.369, 0.620, 0.180); // #5e9e2e deeper grass
+    vec3 dirtSandy  = vec3(0.773, 0.647, 0.447); // #c5a572 sandy dirt patches
+
+    // ── Medium-frequency noise for grass patch variation ─────────────────────
+    float nA = snoise(vWorldPos.xz * 0.002) * 0.5 + 0.5;  // [0,1]
+
+    // ── High-frequency slowly-drifting noise for dirt patches ────────────────
+    float nB = snoise(vWorldPos.xz * 0.012 + uTime * 0.01) * 0.5 + 0.5; // [0,1]
+
+    // ── Grass color variation ─────────────────────────────────────────────────
+    vec3 grassMix = mix(grassLight, grassDark, smoothstep(0.3, 0.7, nA));
+
+    // ── Dirt patch overlay (where nB > 0.65) ─────────────────────────────────
+    vec3 finalColor = mix(grassMix, dirtSandy, smoothstep(0.65, 0.75, nB) * 0.6);
+
+    // ── Bank shadow — slightly darker near the river edge ────────────────────
+    // abs(vWorldPos.x): bankShadow=1 at river center, 0 at 1300+ wu
+    float bankShadow = 1.0 - smoothstep(700.0, 1300.0, abs(vWorldPos.x));
+    finalColor *= mix(1.0, 0.78, bankShadow);
+
+    // ── Height tint — hilltops get a subtle brightness boost ─────────────────
+    float heightT = smoothstep(0.0, 80.0, vYDisplacement);
+    finalColor = mix(finalColor, finalColor * 1.15, heightT);
+
+    gl_FragColor = vec4(finalColor, 1.0);
+  }
+`;
+
+// ─── TerrainMaterial — drei shaderMaterial() factory ─────────────────────────
+// Creates a ShaderMaterial subclass. uTime is auto-proxied so that
+// `matRef.current.uTime = value` writes to `uniforms.uTime.value` without
+// any per-frame object allocation.
+//
+// onInit (4th arg): sets non-default material flags on the instance.
+// FrontSide — terrain is only viewed from above; DoubleSide wastes fill.
+// fog=true — distant hills blend into the '#a8d8ff' sky-blue fog.
+export const TerrainMaterial = shaderMaterial(
+  { uTime: 0 },
+  _vertexShader,
+  _fragmentShader,
+  (mat) => {
+    if (!mat) return;
+    mat.side = THREE.FrontSide;
+    mat.transparent = false;
+    mat.fog = true;
+  },
+);
+
+// ─── Register with R3F so <terrainMaterial /> is a valid JSX element ─────────
+extend({ TerrainMaterial });
+
+// ─── TypeScript JSX augmentation ─────────────────────────────────────────────
+// Tells tsc that <terrainMaterial> accepts uTime and inherits shaderMaterial props.
+// ThreeElements['shaderMaterial'] is the canonical base type in @react-three/fiber.
+declare module '@react-three/fiber' {
+  interface ThreeElements {
+    terrainMaterial: ThreeElements['shaderMaterial'] & {
+      uTime?: number;
+    };
+  }
+}
+
+// ─── Module-scope geometry ────────────────────────────────────────────────────
+// 96×192 segments gives enough vertex density for visible rolling hills.
+// PlaneGeometry is XY; we rotate -π/2 around X in JSX to lie flat on XZ.
+// Module scope = built once, never re-allocated.
+const _terrainGeo = new THREE.PlaneGeometry(12000, 24000, 96, 192);
+
+// ─── TerrainShader component ──────────────────────────────────────────────────
+
+/**
+ * TerrainShader — drop-in replacement for the old flat green GroundPlane.
+ *
+ * Place inside any R3F Canvas that has the Reef Race ellipse scene.
+ * The parent scene owns lighting, fog, and the track mesh.
+ *
+ * Tris: 36,864 (vs 2 for old GroundPlane). Draw calls: 1 (unchanged).
+ */
+export function TerrainShader() {
+  // Ref typed as THREE.ShaderMaterial & { uTime: number } so the property
+  // assignment in useFrame is type-safe without casting.
+  const matRef = useRef<InstanceType<typeof TerrainMaterial>>(null);
+  const meshRef = useRef<THREE.Mesh>(null);
+
+  useEffect(() => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+    mesh.matrixAutoUpdate = false;
+    mesh.updateMatrix();
+  }, []);
+
+  // Update only the time uniform — zero per-frame allocations.
+  // Direct property assignment is safe: drei shaderMaterial proxies
+  // mat.uTime → mat.uniforms.uTime.value under the hood.
+  useFrame(({ clock }) => {
+    if (matRef.current) {
+      matRef.current.uTime = clock.elapsedTime;
+    }
+  });
+
+  return (
+    <mesh
+      ref={meshRef}
+      geometry={_terrainGeo}
+      // Ellipse track centered at (0,0) in XZ.
+      // y=-1 sits just below the track surface (y=0) so there's no z-fighting.
+      position={[0, -1, 0]}
+      // PlaneGeometry is XY; rotate to lie flat on XZ.
+      rotation={[-Math.PI / 2, 0, 0]}
+      frustumCulled={false}
+      matrixAutoUpdate={false}
+      receiveShadow
+    >
+      <terrainMaterial ref={matRef} />
+    </mesh>
+  );
+}
