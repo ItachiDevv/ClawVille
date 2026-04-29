@@ -232,6 +232,17 @@ agentGatewayRoutes.post('/connect', async (c) => {
   let lastY: number | undefined;
   const agentStats = data.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 };
 
+  // The connection-token flow knows which user issued the token (the
+  // human pasted the URL into their authed agent's chat, the modal
+  // captured `petId` + `userId` at issue time). Wire that userId onto
+  // openclaw_bots so `/api/auth/me/agent-session` (which filters by
+  // userId) can find this bot on every subsequent page load. Without it,
+  // the connect succeeds server-side but agentConnected reverts to false
+  // on the next reload — agent state evaporates between sessions.
+  const tokenUserId = data.connectionToken
+    ? pendingConnections.get(data.connectionToken)?.userId ?? null
+    : null;
+
   try {
     const existing = await db.query.openclawBots.findFirst({
       where: eq(openclawBots.agentId, resolvedAgentId),
@@ -260,6 +271,12 @@ agentGatewayRoutes.post('/connect', async (c) => {
         color: data.color ?? existing.color,
         totalSessions,
         lastSeenAt: new Date(),
+        // If a fresh connect-token claim brings a userId, prefer it over
+        // any prior value (handles the case where the bot was first
+        // created anonymously, then later claimed by a logged-in user).
+        // Falls back to existing.userId so we never NULL-out a
+        // previously-bound row.
+        userId: tokenUserId ?? existing.userId,
         // Fresh 24h TTL on every reconnect — matches the Phase 6 session
         // liveness contract. Without this, returning bots kept whatever
         // stale expiry was on the row from their last connect.
@@ -287,6 +304,11 @@ agentGatewayRoutes.post('/connect', async (c) => {
         name: insertName,
         species: data.species ?? null,
         color: data.color ?? null,
+        // Bind to the human who issued the connection token so the bot
+        // is recognized on later page loads + cross-session reconnect
+        // flows. Anonymous one-shot connects (no token) leave userId
+        // null — they're not expected to persist across reloads.
+        userId: tokenUserId,
         metadata: {
           personality: data.personality,
           homeX: data.homeX ?? 2560,
