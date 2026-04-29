@@ -157,10 +157,10 @@ describe('REEF_RACE_DEFAULT_TRACK — spline integration', () => {
     // 700→1050, kelp 420→630, ship 350→525, coral 280→420.
     const wStart = spline.widthAt(0);
     const wFinish = spline.widthAt(1);
-    expect(wStart).toBeGreaterThanOrEqual(1000);
-    expect(wStart).toBeLessThanOrEqual(1100);
-    expect(wFinish).toBeGreaterThanOrEqual(1000);
-    expect(wFinish).toBeLessThanOrEqual(1100);
+    expect(wStart).toBeGreaterThanOrEqual(1500);
+    expect(wStart).toBeLessThanOrEqual(1650);
+    expect(wFinish).toBeGreaterThanOrEqual(1500);
+    expect(wFinish).toBeLessThanOrEqual(1650);
 
     // Mid-track must be tighter than start/finish (we have chokepoints there).
     const wMid = spline.widthAt(0.5);
