@@ -240,7 +240,12 @@ const _cliffMat = new THREE.MeshStandardMaterial({
   flatShading:  true,
   roughness:    0.9,
   metalness:    0.05,
-  side:         THREE.FrontSide,
+  // 2026-04-29: switched from FrontSide → DoubleSide. Iter-5 deploy showed the
+  // canyon as solid BLACK from cinematic ground POV — back-face culling was
+  // hiding the cliff inner faces from the player perspective. DoubleSide costs
+  // ~2× fragment shading on the cliff but the geo is small (1264 tris) so the
+  // perf impact is negligible.
+  side:         THREE.DoubleSide,
 });
 
 // ─── React component ──────────────────────────────────────────────────────────

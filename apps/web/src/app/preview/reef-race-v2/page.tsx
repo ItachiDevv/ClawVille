@@ -344,10 +344,13 @@ const SIDEON_TARGET = new THREE.Vector3(_startCenter.x, 0, _startCenter.z + 4000
 const _startTangent = clientSpline.tangentAt(0);
 const CINEMATIC_CAM = new THREE.Vector3(
   _startCenter.x - _startTangent.x * 1500,
-  900,
-  _startCenter.z - _startTangent.z * 1500,
-);
-const CINEMATIC_TARGET = new THREE.Vector3(_startCenter.x, 80, _startCenter.z + 1200);
+  300,                                          // 2026-04-29 iter-5b: lowered
+  _startCenter.z - _startTangent.z * 1500,      // 900→300 because water sunk
+);                                              // canyon now reads at lower altitude
+// 2026-04-29 iter-5b: target.y 80 → -30 — was pointing at empty air above
+// the now-sunken water surface (y=-40), making the cinematic view stare at
+// nothing.
+const CINEMATIC_TARGET = new THREE.Vector3(_startCenter.x, -30, _startCenter.z + 1200);
 
 /** Default free-orbit position: 3/4 perspective showing whole track length. */
 const FREE_CAM    = new THREE.Vector3(_startCenter.x + 8000, 8000, _startCenter.z + 18000);
