@@ -4,6 +4,14 @@
 - [Three-Doc Standing Rule](standing-rules/three-doc-standing-rule.md) — Abide by `3dStructure.md` for all visual/3D decisions; `GameFeatures.md` for gameplay; `ARCHITECTURE.md` for tech stack. Unless the main session tells you to change behavior, do NOT deviate from what these docs specify. Every 3D code change requires a same-diff update to `3dStructure.md` (and a "Last Audited" bump). Live code > doc > CLAUDE.md > memory; memory is advisory only. Set 2026-04-17.
 - [Collaborative ultrathink team mandatory for 3D / Blender / long tasks](standing-rules/parallel-ultrathink-team-mandatory.md) — A "team" is multiple agents working SEQUENTIALLY on the SAME concern (Implementer → Auditor → Fix loop), NOT N agents working on N different concerns in parallel. The audit step is the point. Every agent prompt must include "use ultrathink reasoning before writing code". Set + corrected 2026-04-29.
 
+## Reef Race v2 Performance
+- [Scenery InstancedMesh per prop type — ScenerySpawner draw-call collapse](patterns/reef-race-scene.md) — Replace per-instance scene.clone(true) with InstancedMesh per SpawnerDef; extract first Mesh geo+mat from GLB; guard: replace ShaderMaterial with MeshStandardMaterial to avoid Iris Xe silent crash. 104→6 draw calls. (2026-04-29)
+- [Ramp wedges merged into single BufferGeometry — 6→1 draw call](patterns/reef-race-scene.md) — buildAllRampsGeo() applies per-ramp transform matrix to wedge template, mergeGeometries all 6 at module scope. 6→1 draw call. (2026-04-29)
+
+## Reef Race v2 Chase Camera
+- [VRM chase-cam framing formula — camera must see full-height rider](patterns/reef-race-scene.md) — With Milady VRM at world Y≈219 (KART_SCALE×VRM_RIDER_LOCAL_SCALE+offset), CAMERA_OFFSET.y=280 and CAMERA_LOOK_OFFSET.y=130 keeps head 89wu above lookAt; atan2(89,350)=14° within ±30° FOV. Previously 200/80 cut the head. (2026-04-29 QA S1 fix)
+- [REST reconnect route must use same sim dispatcher as WS hub](solutions/reef-race-rest-sim-dispatch.md) — activities.ts GET rooms/:id was hardcoded to reefRaceSim, causing reconnect to use v1 ellipse sim even when REEF_RACE_USE_SPLINE=true. Fix: add same reefRaceImpl dispatcher inline. (2026-04-29 QA S2 fix)
+
 ## VRM (load-bearing — read first when touching avatars)
 - [useVRMInstance(path, instanceId) — canonical VRM loading hook](patterns/vrm-per-instance-cache.md) — Two-tier cache: shared `VRM_BYTES` + per-instance `VRM_INSTANCES`. Replaces scene.clone() of shared vrm. Consumers must call `disposeVRMInstance` on unmount. (2026-04-28)
 - [Two visible VRMs sharing one parsed instance corrupts animation — Codex Critical #1](gotchas/vrm-shared-instance-corruption.md) — Cloning `vrm.scene` is wrong; humanoid/springBoneManager/lookAt point at original bones. Fix: per-instance VRM via useVRMInstance. NEVER use React's `useId()` as the key (causes Suspense loops). (2026-04-28)

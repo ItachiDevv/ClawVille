@@ -13,24 +13,26 @@
  *   - Warm coral/wood colour (#c9884a) — pops against the blue river water
  *   - MeshStandardMaterial (NOT ShaderMaterial — Iris Xe safe)
  *   - DoubleSide so the underside renders if the camera dips below the ramp
- *   - Module-scope shared geometry + material — 0 extra allocations per mount
- *   - 6 draw calls total (one plain Mesh per ramp)
+ *   - Module-scope merged geometry — ALL 6 ramps in 1 draw call
+ *   - matrixAutoUpdate=false (static geometry)
  *
- * Placement:
- *   Each ramp sits at clientSpline.centerlineAt(t) + lateral offset.
- *   rotationY aligns the wedge's high-end (+Z of local geometry) to the
- *   spline tangent direction so players hit the slope face-on.
+ * PERF FIX (2026-04-29):
+ *   Previously: 6 separate Mesh instances = 6 draw calls.
+ *   Now: all 6 wedge geometries transformed and merged at module scope
+ *        → 1 merged BufferGeometry, 1 draw call.
+ *   Reduction: 6 → 1 draw call.
  *
  * Iris Xe invariants:
  *   - Plain Mesh + plain MeshStandardMaterial — safe.
  *   - No InstancedMesh + ShaderMaterial (crash gotcha).
  *   - No drei Text/Billboard (crash gotcha).
- *   - matrixAutoUpdate=false on all 6 meshes (static after mount).
+ *   - matrixAutoUpdate=false (static after mount).
  *   - Module-scope geo/mat never disposed (page-lifetime, shared).
  */
 
-import { useMemo, useRef, useEffect } from 'react';
+import { useRef, useEffect } from 'react';
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { buildSplineRampsClient } from './reef-race-config';
 import { clientSpline } from './reef-race-spline-instance';
 
@@ -41,7 +43,7 @@ const RAMP_VIS_WIDTH  = 400;  // wu perpendicular (halfWidth × 2)
 const RAMP_VIS_HEIGHT = 60;   // wu vertical rise at high end
 
 /**
- * Build a triangle-prism (wedge) BufferGeometry.
+ * Build a single triangle-prism (wedge) BufferGeometry in local space.
  *
  * Local coordinate orientation:
  *   - Low end at -Z (front of ramp, where players enter)
@@ -63,9 +65,6 @@ const RAMP_VIS_HEIGHT = 60;   // wu vertical rise at high end
  *   left wall:  0,4,2
  *   right wall: 1,3,5
  *   back wall:  4,0,5  / 0,1,5   (triangulated quad — closes the prism)
- *
- * DoubleSide material handles any winding issues on interior faces.
- * computeVertexNormals() produces shading-correct normals for each face.
  */
 function buildWedgeGeometry(): THREE.BufferGeometry {
   const hw = RAMP_VIS_WIDTH  / 2;
@@ -106,11 +105,57 @@ function buildWedgeGeometry(): THREE.BufferGeometry {
   return geo;
 }
 
-// ─── Module-scope shared geometry + material ──────────────────────────────────
-// Created once at module load — never disposed (page-lifetime).
-// Shared across all 6 ramp meshes (zero extra allocations per mount).
+// ─── Module-scope merged geometry ────────────────────────────────────────────
+// All 6 ramps baked into one BufferGeometry at module load time.
+// clientSpline is available synchronously at module scope (same as rocky-cliffs wall geo).
+// Result: 1 draw call instead of 6.
 
-const _wedgeGeo = buildWedgeGeometry();
+function buildAllRampsGeo(): THREE.BufferGeometry {
+  const rampDefs = buildSplineRampsClient();
+  const templateGeo = buildWedgeGeometry();
+  const parts: THREE.BufferGeometry[] = [];
+
+  for (const ramp of rampDefs) {
+    const pt   = clientSpline.centerlineAt(ramp.t);
+    const tang = clientSpline.tangentAt(ramp.t);
+
+    // Lateral normal: 90° CCW of tangent
+    const nx = -tang.z;
+    const nz =  tang.x;
+    const wx = pt.x + nx * ramp.lateralOffset;
+    const wz = pt.z + nz * ramp.lateralOffset;
+
+    // rotY aligns the wedge's local +Z axis with the tangent direction
+    const rotY = Math.atan2(tang.x, tang.z);
+
+    // Build transform matrix for this ramp instance
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, rotY, 0));
+    const mat = new THREE.Matrix4();
+    mat.compose(
+      new THREE.Vector3(wx, 0, wz),
+      q,
+      new THREE.Vector3(1, 1, 1),
+    );
+
+    // Clone template, apply transform, add to parts list
+    const instanceGeo = templateGeo.clone();
+    instanceGeo.applyMatrix4(mat);
+    instanceGeo.computeVertexNormals();
+    parts.push(instanceGeo);
+  }
+
+  // Merge all 6 into one geometry
+  const merged = mergeGeometries(parts, false)!;
+
+  // Dispose the individual part geometries (data was copied into merged)
+  templateGeo.dispose();
+  parts.forEach(g => g.dispose());
+
+  return merged;
+}
+
+// Built once at module load — never disposed (page-lifetime, 1 draw call)
+const _allRampsGeo = buildAllRampsGeo();
 
 const _rampMat = new THREE.MeshStandardMaterial({
   color:     new THREE.Color('#c9884a'), // warm coral/wood — pops against blue river
@@ -119,41 +164,18 @@ const _rampMat = new THREE.MeshStandardMaterial({
   side:      THREE.DoubleSide,
 });
 
-// ─── Ramp mesh component ─────────────────────────────────────────────────────
-
-interface RampMeshProps {
-  id: string;
-  t: number;
-  lateralOffset: number;
-}
+// ─── Public component ─────────────────────────────────────────────────────────
 
 /**
- * Single static ramp wedge placed at a specific spline t-value.
- * matrixAutoUpdate=false because ramps never move after mount.
+ * Renders all 6 ramp wedge meshes as a SINGLE merged draw call.
+ *
+ * Draw calls: 1 (was 6 — merged at module load via mergeGeometries).
+ * Triangles: 6 × 8 = 48 tris (negligible).
+ * Iris Xe: safe — plain Mesh + MeshStandardMaterial, no instancing with shaders.
  */
-function RampMesh({ id, t, lateralOffset }: RampMeshProps) {
+export function Ramps() {
   const meshRef = useRef<THREE.Mesh>(null);
 
-  // Compute world position + rotation from spline at module level (pure math,
-  // no allocations — called exactly once per mount inside useMemo).
-  const transform = useMemo(() => {
-    const pt   = clientSpline.centerlineAt(t);  // {x, z}
-    const tang = clientSpline.tangentAt(t);      // {x, z} unit
-
-    // Lateral offset: normal = 90° CCW of tangent.
-    const nx = -tang.z;
-    const nz =  tang.x;
-    const wx = pt.x + nx * lateralOffset;
-    const wz = pt.z + nz * lateralOffset;
-
-    // rotY aligns the wedge's local +Z axis with the tangent direction.
-    // atan2(tang.x, tang.z) gives the Three.js Y-rotation for a +Z-forward model.
-    const rotY = Math.atan2(tang.x, tang.z);
-
-    return { wx, wz, rotY };
-  }, [t, lateralOffset]);
-
-  // Disable matrix auto-update — static mesh, matrix set once.
   useEffect(() => {
     const mesh = meshRef.current;
     if (!mesh) return;
@@ -164,40 +186,12 @@ function RampMesh({ id, t, lateralOffset }: RampMeshProps) {
   return (
     <mesh
       ref={meshRef}
-      key={id}
-      geometry={_wedgeGeo}
+      geometry={_allRampsGeo}
       material={_rampMat}
-      position={[transform.wx, 0, transform.wz]}
-      rotation={[0, transform.rotY, 0]}
       castShadow
       receiveShadow
+      frustumCulled={false}
+      matrixAutoUpdate={false}
     />
-  );
-}
-
-// ─── Public component ─────────────────────────────────────────────────────────
-
-/**
- * Renders all 6 ramp wedge meshes along the spline track.
- * Import and render once inside <RiverScene />.
- *
- * Draw calls: 6 (one plain Mesh per ramp).
- * Triangles: 6 × 8 = 48 tris (negligible).
- * Iris Xe: safe — plain Mesh + MeshStandardMaterial, no instancing with shaders.
- */
-export function Ramps() {
-  const rampDefs = useMemo(() => buildSplineRampsClient(), []);
-
-  return (
-    <>
-      {rampDefs.map((ramp) => (
-        <RampMesh
-          key={ramp.id}
-          id={ramp.id}
-          t={ramp.t}
-          lateralOffset={ramp.lateralOffset}
-        />
-      ))}
-    </>
   );
 }

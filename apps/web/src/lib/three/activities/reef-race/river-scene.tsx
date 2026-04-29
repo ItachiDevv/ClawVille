@@ -744,43 +744,99 @@ function SkyDome() {
   );
 }
 
-// ─── Individual scenery prop component ───────────────────────────────────────
+// ─── Individual scenery prop component — InstancedMesh per prop type ─────────
+//
+// PERF FIX (2026-04-29): Previously each instance was a full scene.clone(true) added
+// to a Group — one draw call per instance (16+14+10+10+24+30 = 104 draw calls total).
+// Now: one InstancedMesh per SpawnerDef = 1 draw call per prop type.
+// 6 prop types × 1 draw call = 6 draw calls (was 104).
+//
+// Iris Xe gotcha: InstancedMesh + ShaderMaterial = silent WebGPU crash (no console output).
+// Guard: extract material from GLB, replace any ShaderMaterial with MeshStandardMaterial.
+// Quaternius CC0 assets use MeshStandardMaterial so this is a safety net only.
 
 interface PropInstancesProps {
   def: SpawnerDef;
 }
 
+// Scratch objects reused across instances to avoid per-frame allocation
+const _dummy   = new THREE.Object3D();
+
 function PropInstances({ def }: PropInstancesProps) {
   const { scene: srcScene } = useGLTF(def.path);
+  // groupRef declared FIRST — useEffect closes over it
   const groupRef = useRef<THREE.Group>(null);
 
   useEffect(() => {
+    if (!srcScene) return;
     const gr = groupRef.current;
-    if (!gr || !srcScene) return;
+    if (!gr) return;
+
+    // ── 1. Extract first Mesh from the GLB scene ────────────────────────────
+    //    Quaternius props are single-mesh GLBs. We take the first Mesh child.
+    let srcMesh: THREE.Mesh | null = null;
+    srcScene.traverse((child) => {
+      if (!srcMesh && child instanceof THREE.Mesh && child.geometry) {
+        srcMesh = child as THREE.Mesh;
+      }
+    });
+    if (!srcMesh) return;
+
+    const geo = (srcMesh as THREE.Mesh).geometry;
+
+    // ── 2. Safe material — replace ShaderMaterial to avoid Iris Xe crash ───
+    //    InstancedMesh + ShaderMaterial = silent WebGPU crash (gotcha documented).
+    //    Quaternius assets use MeshStandardMaterial, so this path is a safety net.
+    const srcMat = Array.isArray((srcMesh as THREE.Mesh).material)
+      ? ((srcMesh as THREE.Mesh).material as THREE.Material[])[0]!
+      : ((srcMesh as THREE.Mesh).material as THREE.Material);
+
+    const needsFallbackMat =
+      srcMat instanceof THREE.ShaderMaterial ||
+      srcMat instanceof THREE.RawShaderMaterial;
+
+    const safeMat: THREE.Material = needsFallbackMat
+      ? new THREE.MeshStandardMaterial({
+          color: new THREE.Color('#7a9c55'), // neutral green — acceptable fallback
+          roughness: 0.8,
+          metalness: 0.0,
+        })
+      : srcMat;
+
+    // ── 3. Build InstancedMesh with N = tValues.length instances ───────────
+    const count = def.tValues.length;
+    const im = new THREE.InstancedMesh(geo, safeMat, count);
+    // frustumCulled=true (default): Three.js computes per-IM bounding-box cull.
+    // Chase cam is always near the track so most props will be in frustum anyway.
+    im.castShadow    = false; // Props are small — skip shadow cost on Iris Xe
+    im.receiveShadow = false;
 
     const rng = seededRand(def.seed);
-    def.tValues.forEach((t) => {
-      // Add random lateral jitter of ±30wu on top of the base xJitter
+    def.tValues.forEach((t, i) => {
       const jitter = def.xJitter + rng.next() * 60 - 30;
       const pos    = spawnPos(t, def.side, jitter);
       const yRot   = rng.next() * Math.PI * 2;
       const scale  = def.scaleMin + rng.next() * (def.scaleMax - def.scaleMin);
 
-      const clone = srcScene.clone(true);
-      clone.traverse(o => { o.frustumCulled = false; });
-      clone.position.copy(pos);
-      clone.rotation.y = yRot;
-      clone.scale.setScalar(scale);
-      clone.matrixAutoUpdate = false;
-      clone.updateMatrix();
-      gr.add(clone);
+      _dummy.position.copy(pos);
+      _dummy.rotation.set(0, yRot, 0);
+      _dummy.scale.setScalar(scale);
+      _dummy.updateMatrix();
+      im.setMatrixAt(i, _dummy.matrix);
     });
 
-    gr.matrixAutoUpdate = false;
-    gr.updateMatrix();
+    im.instanceMatrix.needsUpdate = true;
+    im.matrixAutoUpdate = false;
+    im.updateMatrix();
+
+    gr.add(im);
 
     return () => {
-      while (gr.children.length > 0) gr.remove(gr.children[0]);
+      gr.remove(im);
+      // Only dispose the fallback material — GLB's own material belongs to the cache
+      if (needsFallbackMat) {
+        safeMat.dispose();
+      }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [srcScene]);
