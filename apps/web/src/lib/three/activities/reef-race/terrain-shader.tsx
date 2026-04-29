@@ -209,10 +209,18 @@ declare module '@react-three/fiber' {
 }
 
 // ─── Module-scope geometry ────────────────────────────────────────────────────
-// 32×192 segments gives enough vertex density for visible rolling hills.
-// PlaneGeometry is XY; we rotate -π/2 around X in JSX to lie flat on XZ.
-// Module scope = built once, never re-allocated.
-const _terrainGeo = new THREE.PlaneGeometry(4000, 24000, 32, 192);
+// 2026-04-29 iter-7: terrain split into TWO strips bracketing the canyon
+// corridor (corridor max halfWidth=1050, cliff outer-top=1300; strips start at
+// x=±1300 outward). Discard-in-shader approach failed because dual chunks were
+// loaded by Next.js bundle splitting — the OLD shader's extend() call
+// frequently won the race, so the discard never fired. Two-strip-geometry
+// is unambiguous: there's literally no terrain mesh inside the corridor.
+//
+// Each strip: 1200wu × 24000wu (was one 4000×24000 plane).
+// Tris per strip: 16×192×2 = 6144. Total: 12 288 (same as before).
+const _terrainStripGeo = new THREE.PlaneGeometry(1200, 24000, 16, 192);
+// Kept for backwards-compat reference; unused.
+const _terrainGeo = _terrainStripGeo;
 
 // ─── TerrainShader component ──────────────────────────────────────────────────
 
@@ -246,20 +254,31 @@ export function TerrainShader() {
     }
   });
 
+  // Two strips bracketing the canyon — corridor at x∈[-1300, +1300] is bare
+  // sky/water/cliff (no terrain ground). Strip centers at x=±1900 (1300 + 1200/2).
   return (
-    <mesh
-      ref={meshRef}
-      geometry={_terrainGeo}
-      // Ellipse track centered at (0,0) in XZ.
-      // y=-1 sits just below the track surface (y=0) so there's no z-fighting.
-      position={[0, -1, 0]}
-      // PlaneGeometry is XY; rotate to lie flat on XZ.
-      rotation={[-Math.PI / 2, 0, 0]}
-      frustumCulled={false}
-      matrixAutoUpdate={false}
-      receiveShadow
-    >
-      <terrainMaterial ref={matRef} />
-    </mesh>
+    <>
+      <mesh
+        ref={meshRef}
+        geometry={_terrainStripGeo}
+        position={[-1900, -1, 0]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        frustumCulled={false}
+        matrixAutoUpdate={false}
+        receiveShadow
+      >
+        <terrainMaterial ref={matRef} />
+      </mesh>
+      <mesh
+        geometry={_terrainStripGeo}
+        position={[+1900, -1, 0]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        frustumCulled={false}
+        matrixAutoUpdate={false}
+        receiveShadow
+      >
+        <terrainMaterial />
+      </mesh>
+    </>
   );
 }
