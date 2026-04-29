@@ -21,6 +21,8 @@
  * server component file under ./tabs/*.tsx; the shell here just dispatches.
  */
 
+import { cookies } from 'next/headers';
+import { redirect } from 'next/navigation';
 import OverviewTab from './tabs/overview';
 import TokenEconomyTab from './tabs/token-economy';
 import QuestsTab from './tabs/quests';
@@ -28,6 +30,40 @@ import CosmeticsTab from './tabs/cosmetics';
 import PhasesTab from './tabs/phases';
 
 export const dynamic = 'force-dynamic';
+
+/**
+ * Top-level auth gate. Server-side checks /api/dashboard/__check before
+ * rendering ANY dashboard chrome (tab nav, Brand Identity banner, tab
+ * content). On 401/403, redirect to /dash/login so reviewers without a
+ * Lucia admin session can authenticate via the shared password.
+ *
+ * Per-tab data fetches inside each tab component still handle 401/403
+ * gracefully as a defensive fallback (e.g. cookie expired mid-session),
+ * but the primary auth surface is here.
+ */
+async function ensureDashAuthOrRedirect(): Promise<void> {
+  const apiBase = process.env.NEXT_PUBLIC_API_URL ?? '';
+  if (!apiBase) {
+    // Dev / mis-configured env — let the page render so the operator can
+    // see the original "NEXT_PUBLIC_API_URL is not configured" message
+    // from the tabs.
+    return;
+  }
+  const cookieStore = await cookies();
+  const cookieHeader = cookieStore.toString();
+  try {
+    const res = await fetch(`${apiBase}/api/dashboard/__check`, {
+      headers: { cookie: cookieHeader },
+      cache: 'no-store',
+    });
+    if (res.status === 401 || res.status === 403) {
+      redirect('/dash/login');
+    }
+  } catch {
+    // Network error to API — render the page; tabs will show their own
+    // "Fetch failed" cards.
+  }
+}
 
 const TABS = [
   { id: 'overview',  label: 'Overview',       hint: 'DAU · funnel · collab' },
@@ -49,6 +85,11 @@ export default async function DashPage({
   // Next.js 15+ — searchParams is async.
   searchParams: Promise<{ tab?: string }>;
 }) {
+  // Top-level gate — redirects to /dash/login on 401/403. The redirect
+  // throws inside `redirect()` so anything below this line only runs for
+  // authenticated callers.
+  await ensureDashAuthOrRedirect();
+
   const { tab: rawTab } = await searchParams;
   const tab: TabId = isValidTab(rawTab) ? rawTab : 'overview';
 
