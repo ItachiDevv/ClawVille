@@ -21,6 +21,20 @@ export * from './constants/article-seeds';
 export * from './constants/quest-seeds';
 export * from './types/collaboration';
 export * from './types/skill-pack';
+// Reef Race v2 spline math + track layout (canonical home).
+// `Vec2` is intentionally NOT re-exported from spline.ts because
+// `activities/protocol.ts` already exports a different (zod-derived) `Vec2`
+// — they describe the same shape but are separate type identities.
+// Server consumers that need the spline-flavour Vec2 import directly from
+// `apps/api/src/services/activity/sim/reef-race-spline.ts` (the shim
+// re-exports it explicitly).
+export type {
+  Vec3 as ReefSplineVec3,
+  SplineControlPoint,
+  ClosestPointResult,
+} from './reef-race/spline';
+export { ReefSpline } from './reef-race/spline';
+export * from './reef-race/track-layout';
 export * from './constants/milady-skills';
 export * from './constants/orientation-skill';
 // `agent-models` uses type + value dual exports; explicit re-exports
