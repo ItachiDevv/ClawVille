@@ -989,14 +989,19 @@ function Bridge() {
  * hidden by the parent page — set visible=false or recolor to grass green.
  * See page.tsx: _bankMat color is '#7cb342' grass green to blend with ground.
  *
- * WATER SHADER (iter-6):
- *   Plain THREE.ShaderMaterial on a plain Mesh — verified Iris Xe safe.
- *   uColorNear '#5fdcff', uColorFar '#3aaedf'. Bank-edge foam uses 0-0.12 UV width.
- *   Water surface at WATER_Y=-200 (200wu deep dramatic ravine vs iter-5's -40).
+ * WATER SHADER (iter-7+, see water-surf.tsx):
+ *   Wave Race 64 depth gradient + Phong sun glint + iter-9 vertex Y heave (±8wu)
+ *   + iter-9 organic-cluster soft white-caps + iter-4 dual-layer bank turbulence.
+ *   Drei `shaderMaterial()` factory + `extend()`. Iris Xe safe (plain Mesh).
+ *   Water surface at WATER_Y=-200 (200wu deep ravine).
  *
- * GROUND SHADER (iter-4, unchanged):
- *   ShaderMaterial on a 96×192-segment PlaneGeometry (36 864 tris).
- *   Vertex: value-noise Y displacement masked to zero within 700wu of x=0.
+ * GROUND SHADER (iter-9, spline-following ribbon — German River reference):
+ *   THREE.ShaderMaterial on TWO plain Meshes (one per side, sign ±1).
+ *   Geometry = `buildGroundRibbonGeo` — 128 spline samples × 64 width-segments
+ *   per side, ~32k tris total. Each ribbon cross-section sweeps along the spline
+ *   at lateral `hw + 873wu` (max cliff outer envelope + 100wu safety buffer)
+ *   outward to `+ GROUND_W (6000wu)` so the ground ENDS AT THE CLIFF BORDER.
+ *   Vertex: value-noise Y displacement (mask removed; geometry is always outside corridor).
  *   Fragment: 3-tone grass+dirt blending with berm highlight.
  *
  * KARTS (iter-6): <RacingKarts /> imported from racing-karts.tsx and wired here.

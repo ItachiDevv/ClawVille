@@ -149,9 +149,9 @@ describe('REEF_RACE_DEFAULT_TRACK — spline integration', () => {
   });
 
   it('halfWidth interpolation respects per-segment design intent', () => {
-    // Spot-check: t=0 sits in the lagoon (halfWidth ~2200), t≈0.45 sits in
-    // the shipwreck segment (halfWidth ~1100), t=1 sits in the finish
-    // (halfWidth ~2200). We don't pin to exact numbers since centripetal
+    // Spot-check: t=0 sits in the lagoon (halfWidth ~3300), t≈0.45 sits in
+    // the shipwreck segment (halfWidth ~1650), t=1 sits in the finish
+    // (halfWidth ~3300). We don't pin to exact numbers since centripetal
     // interpolation smooths across the boundary; we check ranges.
     // Updated 2026-04-29 (iter-9) after ×1.5 widening from iter-8:
     // lagoon/finish 2200→3300, kelp 1325→1990, shipwreck 1100→1650, coral 880→1320.
