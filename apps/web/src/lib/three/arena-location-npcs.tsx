@@ -120,10 +120,17 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   // Slot 3 — cron-hub — Downtown Building (Pearl Krabs's downtown teen vibe)
   // Pearl Krabs GLB sourced from Sketchfab (CC-BY 4.0) 2026-04-23 — official-look
   // low-poly Pearl, rigged with 5 idle/talk animations. ~4k tris, 2.1MB.
-  'cron-hub': { name: 'Pearl', model: '/models/characters/pearl.glb' },
+  // scaleOverride=80 (2026-04-29): Pearl is all-SkinnedMesh; non-skinned path finds nothing →
+  // bind-pose fallback. Bind-pose bbox for Pearl (root effective scale=1.7438, body local ~0.67wu)
+  // gives unreliable normalization. At 80: visual height ≈ 80 × 1.2wu ≈ 96wu.
+  'cron-hub': { name: 'Pearl', model: '/models/characters/pearl.glb', scaleOverride: 80 },
 
   // Slot 4 — voice-tower — Boating School (Mrs. Puff's workplace)
-  'voice-tower': { name: 'Mrs. Puff', model: '/models/characters/mrs-puff.glb' },
+  // scaleOverride=1.45 (2026-04-29): mrs-puff.glb uses INT16-quantized positions (normalized=true).
+  // Geometry is symmetric around pivot (min=-33.40, max=33.18 at native node scale).
+  // computeNormalizedScale uses maxY=33.18 as normalizing dim → computed=2.89 → visual=66.5×2.89=192wu.
+  // Override to 96/66.5=1.44 ensures visual height=96wu with correct pivot grounding.
+  'voice-tower': { name: 'Mrs. Puff', model: '/models/characters/mrs-puff.glb', scaleOverride: 1.45 },
 
   // Slot 5 — config-citadel — Lighthouse (Larry the Lobster as lighthouse keeper)
   // TODO: source proper larry.glb asset — currently using lobster_plush as a distinct stand-in.
