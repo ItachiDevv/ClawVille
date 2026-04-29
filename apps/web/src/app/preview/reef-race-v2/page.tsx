@@ -340,18 +340,19 @@ const SIDEON_CAM    = new THREE.Vector3(
 );
 const SIDEON_TARGET = new THREE.Vector3(_startCenter.x, -50, _startCenter.z + 4000);
 
-/** Cinematic: behind and above the kart, looking DOWN into the 200wu ravine. */
+/** Cinematic: INSIDE the canyon at water level — racer's POV. */
 const _startTangent = clientSpline.tangentAt(0);
-// 2026-04-29 iter-6: raised cam altitude to 150 (above cliff outer-top at y=+30)
-// and pushed lateral offset to 1200 to frame canyon walls from above.
-// Camera looks down to target at y=-100 (mid-canyon between cliff top y=0 and water y=-200).
+// 2026-04-29 iter-6b: cam relocated INSIDE the canyon. Altitude 150 above
+// ground stared at green grass — cliff face was foreshortened to nothing.
+// Now cam sits at y=-150 (50wu above water surface y=-200), behind the start
+// kart, looking forward down the channel — cliff walls flank the view, water
+// fills the foreground, sky-blue dome above the canyon rim.
 const CINEMATIC_CAM = new THREE.Vector3(
-  _startCenter.x - _startTangent.x * 1200,
-  150,
-  _startCenter.z - _startTangent.z * 1200,
+  _startCenter.x - _startTangent.x * 700,
+  -150,
+  _startCenter.z - _startTangent.z * 700,
 );
-// Target at mid-canyon depth — canyon walls visible on both sides, ravine apparent.
-const CINEMATIC_TARGET = new THREE.Vector3(_startCenter.x, -100, _startCenter.z + 1500);
+const CINEMATIC_TARGET = new THREE.Vector3(_startCenter.x, -180, _startCenter.z + 2000);
 
 /** Default free-orbit position: 3/4 perspective showing whole track length. */
 const FREE_CAM    = new THREE.Vector3(_startCenter.x + 8000, 8000, _startCenter.z + 18000);
@@ -610,19 +611,14 @@ function CamController({ mode, autoRotate, controlsRef, onCamDist }: CamControll
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
 
-  // Cinematic slow orbit
-  useFrame((_, delta) => {
+  // Cinematic — STATIC inside canyon (no orbit). Removed orbit because it
+  // pushed the cam OUT of the canyon during sweep, breaking the "inside the
+  // ravine" framing. Static keeps the player POV consistent.
+  useFrame(() => {
     if (mode === 'cinematic') {
       const ctrl = controlsRef.current;
       if (!ctrl) return;
-      // Slowly orbit around the start kart
-      const angle = Date.now() * 0.0001;
-      const r     = 1200;
-      camera.position.set(
-        CINEMATIC_TARGET.x + Math.sin(angle) * r,
-        150,
-        CINEMATIC_TARGET.z + Math.cos(angle) * r,
-      );
+      camera.position.copy(CINEMATIC_CAM);
       ctrl.target.copy(CINEMATIC_TARGET);
       ctrl.update();
     }
