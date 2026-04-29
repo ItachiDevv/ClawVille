@@ -57,20 +57,27 @@ import {
 // ─── Production lighting / fog constants (inlined from ReefRaceScene values) ──
 // Inlined rather than imported to avoid cross-module 'use client' import issues.
 const FOG_COLOR            = '#0d2b5e';
-const FOG_NEAR             = 2000;
-const FOG_FAR              = 4500;
+// Track is 18 000 wu long × ±500 wu wide. Old ellipse-track values
+// (FOG_FAR=4500, CAMERA_FAR=5000) clipped the river before it reached the
+// camera — first preview render came back with a totally blank canvas
+// despite 460 tris being uploaded. Scaled all view-volume constants 6× so
+// the whole spline + start/finish + four sample karts fit. Confirmed
+// 2026-04-29 from the broken first preview render.
+const FOG_NEAR             = 8000;
+const FOG_FAR              = 30000;
 const CAMERA_NEAR          = 1;
-const CAMERA_FAR           = 5000;
+const CAMERA_FAR           = 35000;
 const HEMI_SKY_COLOR       = '#87ceeb';
 const HEMI_GROUND_COLOR    = '#0d2b5e';
 const HEMI_INTENSITY       = 0.5;
 const DIR_COLOR            = '#fffbe6';
 const DIR_INTENSITY        = 1.2;
-const DIR_POSITION         = [300, 800, 200] as const;
-const DIR_SHADOW_MAP_SIZE  = 512;
+// Sun position scaled 10× so the shadow frustum encloses the whole 18 000-wu track.
+const DIR_POSITION         = [3000, 8000, 2000] as const;
+const DIR_SHADOW_MAP_SIZE  = 1024;
 const DIR_SHADOW_NEAR      = 1;
-const DIR_SHADOW_FAR       = 4000;
-const DIR_SHADOW_CAM_BOUNDS = 4000;
+const DIR_SHADOW_FAR       = 25000;
+const DIR_SHADOW_CAM_BOUNDS = 12000;
 
 // ─── Preload assets ───────────────────────────────────────────────────────────
 useGLTF.preload('/models/reef-race/surfboards/surfboard_1.glb');
@@ -314,30 +321,34 @@ const KART_T_VALUES = [0, 0.25, 0.5, 0.75] as const;
 // All computed at module scope from spline to avoid repeated calls.
 const _startCenter = clientSpline.centerlineAt(0);
 
-/** Top-down: high Y, looking straight down at spline midpoint. */
-const TOPDOWN_CAM    = new THREE.Vector3(_startCenter.x, 8000, _startCenter.z + 9000);
-const TOPDOWN_TARGET = new THREE.Vector3(_startCenter.x, 0,    _startCenter.z + 9000);
+// All preset distances sized for an 18 000-wu-long, ±500-wu-wide spline.
+// FOV is 50° → half-angle 25° → tan ≈ 0.466. To frame the whole track
+// from above (~20 000 wu visible Z) we need altitude ≈ 21 500 wu.
+
+/** Top-down: directly above track midpoint, frames the whole spline. */
+const TOPDOWN_CAM    = new THREE.Vector3(_startCenter.x, 22000, _startCenter.z + 9000);
+const TOPDOWN_TARGET = new THREE.Vector3(_startCenter.x, 0,     _startCenter.z + 9000);
 
 /** Side-on: perpendicular to start tangent, elevated. */
 const _startNormal = clientSpline.normalAt(0);
 const SIDEON_CAM    = new THREE.Vector3(
-  _startCenter.x + _startNormal.x * 1200,
-  300,
-  _startCenter.z + _startNormal.z * 1200,
+  _startCenter.x + _startNormal.x * 6000,
+  2400,
+  _startCenter.z + _startNormal.z * 6000,
 );
-const SIDEON_TARGET = new THREE.Vector3(_startCenter.x, 0, _startCenter.z);
+const SIDEON_TARGET = new THREE.Vector3(_startCenter.x, 0, _startCenter.z + 4000);
 
 /** Cinematic: behind and above the start surfboard. */
 const _startTangent = clientSpline.tangentAt(0);
 const CINEMATIC_CAM = new THREE.Vector3(
-  _startCenter.x - _startTangent.x * 600,
-  400,
-  _startCenter.z - _startTangent.z * 600,
+  _startCenter.x - _startTangent.x * 1500,
+  900,
+  _startCenter.z - _startTangent.z * 1500,
 );
-const CINEMATIC_TARGET = new THREE.Vector3(_startCenter.x, 80, _startCenter.z + 400);
+const CINEMATIC_TARGET = new THREE.Vector3(_startCenter.x, 80, _startCenter.z + 1200);
 
-/** Default free-orbit position: wide view from the side. */
-const FREE_CAM    = new THREE.Vector3(_startCenter.x + 2000, 1500, _startCenter.z + 4000);
+/** Default free-orbit position: 3/4 perspective showing whole track length. */
+const FREE_CAM    = new THREE.Vector3(_startCenter.x + 8000, 8000, _startCenter.z + 18000);
 const FREE_TARGET = new THREE.Vector3(_startCenter.x, 0, _startCenter.z + 9000);
 
 // ─── Spline Track component ───────────────────────────────────────────────────
