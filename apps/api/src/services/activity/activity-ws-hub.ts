@@ -59,6 +59,8 @@ import type { Room, RoomParticipant } from './types';
 // per-recipient — the WS hub is the only server-side surface that
 // resolves the connecting identity, so the gating lives here).
 import { loadPersonalBestGhostFrames } from './reef-race-personal-best-service';
+// SPEC 1 — per-pet modelKey metadata for GLB dispatch on the client.
+import { loadParticipantMeta } from './pet-profile-loader';
 
 // ─── Constants — backend §3.6 ──────────────────────────────────────────────
 
@@ -608,6 +610,28 @@ class ActivityWsHub {
       }
     }
 
+    // SPEC 1 — per-pet modelKey metadata for GLB dispatch on the client.
+    // Pattern mirrors reefRacingProfiles (Phase 3). DB query is ≤8 rows,
+    // ~1ms. Falls back to all-lobster on error.
+    // No !REEF_RACE_USE_SPLINE guard: this is display-only (not sim-coupled)
+    // and equally needed in both spline-sim and non-spline-sim modes.
+    let reefParticipantMeta: Record<string, { modelKey: string }> | undefined;
+    if (room.activityId === 'reef-race') {
+      const allPetIds = Array.from(room.participants.keys());
+      const humanPetIds = allPetIds.filter(
+        (id) => room.participants.get(id)!.subjectType !== 'bot',
+      );
+      const botPetIds = allPetIds.filter(
+        (id) => room.participants.get(id)!.subjectType === 'bot',
+      );
+      try {
+        reefParticipantMeta = await loadParticipantMeta(humanPetIds, botPetIds);
+      } catch (err) {
+        console.error('[activity-ws-hub] loadParticipantMeta failed:', err);
+        reefParticipantMeta = undefined; // client falls back to lobster
+      }
+    }
+
     this.safeSend(ws, {
       type: 'snapshot.init',
       room: {
@@ -628,6 +652,8 @@ class ActivityWsHub {
         reefRacingProfiles,
         // Reef Race Phase 4 — self pet's PB ghost replay frames.
         selfBestLapGhost,
+        // Reef Race SPEC 1 — per-pet modelKey for GLB dispatch (lobster/crayfish/seahorse).
+        reefParticipantMeta,
       },
       world: {
         tick,

@@ -82,6 +82,7 @@ import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 // ─── Preloads — fire at module scope ─────────────────────────────────────────
 useGLTF.preload('/models/sea_horse.glb');
 useGLTF.preload('/models/lobster.glb');
+useGLTF.preload('/models/crayfish.glb');  // SPEC 1 — 3rd species, static mesh
 // v2 spline path surfboard — plain .clone() (no skeleton, static mesh).
 // Asset: surfboard_1.glb, 3 220 tris, 660 KB, CC-BY 4.0 (see ATTRIBUTIONS.md).
 useGLTF.preload('/models/reef-race/surfboards/surfboard_1.glb');
@@ -250,13 +251,31 @@ interface ReefRacePlayerProps {
 }
 
 function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
-  // entity.species deferred per C8 fix — Phase 1 uses lobster.glb as sole default.
-  // Phase 1.5 will restore species branching once the server populates the field.
-  // (Note: master's PR #62 reintroduced the `species ?? 'lobster'` branch, but
-  // `species` is NOT in `EntityDelta` or `WorldState.entities` per the audit, so
-  // the branch always falls through to lobster.glb anyway — and the Milady-default
-  // flip in `a50bb28` only affects `model_key` / VRM avatars, not Reef Race GLBs.)
-  const glbPath = '/models/lobster.glb';
+  // SPEC 1 — derive GLB path from entity.species (modelKey from pets.model_key,
+  // injected by activity store on snapshot.init via reefParticipantMeta).
+  // Falls back to 'lobster' if species is absent or unrecognised (safe default).
+  // VRM species (milady_official_*) are SPEC 2 — fall back to lobster with a warn.
+  //
+  // NOTE: pre-existing spelling gap — AGENT_MODELS registry uses key 'seahorse'
+  // (no underscore); SeaCreatureSpecies type uses 'sea_horse' (underscore); DB
+  // model_key column may store either. Both spellings are handled in the switch
+  // below. Reconcile when seahorse gets a full animator rig (SPEC 2+).
+  const speciesKey = (entity as ReefRaceEntity & { species?: string }).species ?? 'lobster';
+  const glbPath = (() => {
+    switch (speciesKey) {
+      case 'crayfish':  return '/models/crayfish.glb';
+      case 'seahorse':
+      case 'sea_horse': return '/models/sea_horse.glb';
+      default:
+        // Milady VRM keys (milady_official_*) are SPEC 2. Log once, render lobster.
+        if (speciesKey.startsWith('milady_official_')) {
+          console.warn(
+            `[ReefRacePlayer] species="${speciesKey}" is a VRM (SPEC 2) — rendering lobster.glb as fallback`,
+          );
+        }
+        return '/models/lobster.glb';
+    }
+  })();
 
   const { scene: srcScene } = useGLTF(glbPath);
 
@@ -394,16 +413,17 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
   //   keep procedural-only. Don't extend without a Meshy export to point at.
   // Reference: tweet copyrebeldia 2026-04-26 — Meshy/Tripo auto-rig pipeline.
   const animatorRef = useRef<SeaCreatureAnimatorHandle | null>(null);
-  const speciesKey: SeaCreatureSpecies =
-    ((entity as ReefRaceEntity & { species?: string }).species as SeaCreatureSpecies | undefined) ?? 'lobster';
-  const wantsAnimator = SEA_CREATURE_MANIFEST[speciesKey]?.hasRig ?? false;
+  // speciesKey is derived earlier (above useGLTF calls) for the glbPath dispatch.
+  // Cast to SeaCreatureSpecies for the manifest lookup (unknown values produce
+  // undefined from the manifest, which the hasRig ?? false guard handles safely).
+  const wantsAnimator = SEA_CREATURE_MANIFEST[speciesKey as SeaCreatureSpecies]?.hasRig ?? false;
 
   useEffect(() => {
     if (!wantsAnimator) return;
     let cancelled = false;
     let handle: SeaCreatureAnimatorHandle | null = null;
 
-    createSeaCreatureAnimator(speciesKey, 'idle').then((h) => {
+    createSeaCreatureAnimator(speciesKey as SeaCreatureSpecies, 'idle').then((h) => {
       if (cancelled || !h) {
         h?.dispose();
         return;

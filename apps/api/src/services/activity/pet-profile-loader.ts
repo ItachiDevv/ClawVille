@@ -84,3 +84,50 @@ export async function loadRacingProfiles(
 
   return out;
 }
+
+/**
+ * SPEC 1 — Fetch per-pet display metadata (modelKey) for Reef Race rooms.
+ *
+ * - humanPetIds: real pets; read from DB.
+ * - botPetIds: synthetic bots; always get { modelKey: 'lobster' }.
+ *
+ * Any petId not returned by the SELECT gets { modelKey: 'lobster' } as a
+ * safe fallback. DB failure falls back all petIds to 'lobster' so the race
+ * still renders (wrong model is better than a broken page).
+ */
+export async function loadParticipantMeta(
+  humanPetIds: string[],
+  botPetIds: string[],
+): Promise<Record<string, { modelKey: string }>> {
+  const out: Record<string, { modelKey: string }> = {};
+
+  // Bots always render as lobster.
+  for (const petId of botPetIds) {
+    out[petId] = { modelKey: 'lobster' };
+  }
+
+  if (humanPetIds.length === 0) return out;
+
+  try {
+    const rows = await db
+      .select({ id: pets.id, modelKey: pets.modelKey })
+      .from(pets)
+      .where(inArray(pets.id, humanPetIds));
+
+    for (const row of rows) {
+      out[row.id] = { modelKey: row.modelKey ?? 'lobster' };
+    }
+
+    // Fill any petId the DB didn't return (deleted pet, edge case).
+    for (const petId of humanPetIds) {
+      if (!out[petId]) out[petId] = { modelKey: 'lobster' };
+    }
+  } catch (err) {
+    console.error('[loadParticipantMeta] DB error, falling back to lobster:', err);
+    for (const petId of humanPetIds) {
+      out[petId] = { modelKey: 'lobster' };
+    }
+  }
+
+  return out;
+}
