@@ -87,6 +87,8 @@ import {
   VRMCharacterAnimator,
   preloadMixamoClips,
 } from '@/lib/three/vrm-character-animator';
+import { useActivityStore } from '@/stores/activity';
+import { triggerBurst } from '@/lib/three/activities/shared/activity-particles';
 
 // ─── Preloads — fire at module scope ─────────────────────────────────────────
 useGLTF.preload('/models/sea_horse.glb');
@@ -155,6 +157,12 @@ const _squashTime: Record<string, number> = {};
 
 /** Nose-up pitch when airborne (radians). ~8°. */
 const JUMP_NOSE_UP_RAD = 0.14;
+/** Extended nose-up pitch after a ramp launch (radians). ~16°. 2× JUMP_NOSE_UP_RAD. */
+const RAMP_NOSE_UP_RAD = 0.28;
+/** How long the extended ramp tilt holds (seconds). */
+const RAMP_TILT_HOLD_S = 0.35;
+/** Per-petId ramp-launch hold timer (seconds remaining). Module scope, no per-frame alloc. */
+const _rampLaunchHold: Record<string, number> = {};
 /** Duration of landing squash effect (seconds). */
 const SQUASH_DURATION  = 0.18;
 /** Squash factor at peak (scale Y multiplier — slightly compressed). */
@@ -367,9 +375,11 @@ function ReefRaceVRMRiderInner({
 interface ReefRacePlayerProps {
   entity: ReefRaceEntity;
   isSelf?: boolean;
+  /** Called on ramp launch for the self player — triggers camera screen shake. */
+  triggerScreenShake?: (intensity: number) => void;
 }
 
-function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
+function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: ReefRacePlayerProps) {
   // SPEC 1 — derive GLB path from entity.species (modelKey from pets.model_key,
   // injected by activity store on snapshot.init via reefParticipantMeta).
   // Falls back to 'lobster' if species is absent or unrecognised (safe default).
@@ -634,6 +644,50 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
     };
   }, [wantsAnimator, speciesKey, entity.color, clonedScene]);
 
+  // ─── SPEC 3: ramp-launch event subscription ──────────────────────────────────
+  // Subscribe to the lastRampLaunchEvent slice. For ALL players: set _rampLaunchHold
+  // so the extended 16° nose-up tilt applies in useFrame. For self player only:
+  // trigger screen shake + particle burst.
+  //
+  // useActivityStore(selector) re-runs on every store change and is React-hook safe.
+  // Using a ref-based event is intentional — the burst/shake are imperative calls
+  // that produce NO React state updates (zero re-renders).
+  const lastRampLaunchEvent = useActivityStore((s) => s.lastRampLaunchEvent);
+  const lastSeenRampRef = useRef<{ petId: string; at: number } | null>(null);
+
+  useEffect(() => {
+    if (!lastRampLaunchEvent) return;
+    // Deduplicate: skip if we already processed this same event (same at + petId).
+    const prev = lastSeenRampRef.current;
+    if (prev && prev.petId === lastRampLaunchEvent.petId && prev.at === lastRampLaunchEvent.at) return;
+    // Only react when this event is for our petId.
+    if (lastRampLaunchEvent.petId !== entity.petId) return;
+
+    lastSeenRampRef.current = { petId: lastRampLaunchEvent.petId, at: lastRampLaunchEvent.at };
+
+    // Extended nose-up tilt for ALL instances of this petId.
+    _rampLaunchHold[entity.petId] = RAMP_TILT_HOLD_S;
+
+    // Self-player-only: screen shake + burst.
+    if (isSelf) {
+      triggerScreenShake?.(0.12);
+      // Compute world position from current entity snapshot.
+      // entity.x / entity.y are the latest received sim-space coords (not interpolated),
+      // which is close enough for burst placement (visual only, < 1 frame stale).
+      // entity.height is the heightOffset broadcast in SplineBodySnap — may be
+      // undefined on older snapshots; default to 0 (water surface).
+      const height = (entity as ReefRaceEntity & { height?: number }).height ?? 0;
+      triggerBurst(
+        new THREE.Vector3(entity.x, height, entity.y),
+        '#ff9944', // warm orange burst — matches ramp color (#c9884a)
+        100,
+      );
+    }
+  }, [lastRampLaunchEvent, entity.petId, isSelf, triggerScreenShake]);
+  // NOTE: entity.x / entity.y / entity.height are intentionally NOT deps —
+  // they change every snapshot and we only want to fire once per ramp event.
+  // The burst position is "good enough" at the moment the event lands.
+
   useFrame((_, delta) => {
     const group      = groupRef.current;
     const glider     = gliderRef.current;
@@ -769,7 +823,16 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
       _prevHeight[entity.petId] = entityHeight;
 
       // Apply nose-up pitch on glider when airborne.
-      glider.rotation.x = isAirborne ? -JUMP_NOSE_UP_RAD : 0;
+      // Ramp launches hold extended 16° tilt for RAMP_TILT_HOLD_S seconds.
+      const rampHold = _rampLaunchHold[entity.petId] ?? 0;
+      let noseAngle: number;
+      if (rampHold > 0) {
+        noseAngle = RAMP_NOSE_UP_RAD;
+        _rampLaunchHold[entity.petId] = Math.max(0, rampHold - dt);
+      } else {
+        noseAngle = isAirborne ? JUMP_NOSE_UP_RAD : 0;
+      }
+      glider.rotation.x = -noseAngle;
 
       // Squash animation on landing (xz expand, y compress) decays over time.
       const sq = _squashTime[entity.petId] ?? 0;
@@ -900,3 +963,4 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
 export default function ReefRacePlayer(props: ReefRacePlayerProps) {
   return <ReefRacePlayerInner {...props} />;
 }
+

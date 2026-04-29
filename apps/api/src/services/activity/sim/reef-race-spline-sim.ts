@@ -98,6 +98,9 @@ import {
   REEF_JUMP_IMPULSE_MANUAL,
   REEF_JUMP_IMPULSE_RAMP,
   REEF_GRAVITY,
+  // SPEC 3 — ramps
+  buildSplineRamps,
+  type SplineRampPatch,
   REEF_AIRBORNE_STEER_MULT,
   ACTION_BIT_POWERUP_0,
   ACTION_BIT_POWERUP_1,
@@ -288,6 +291,11 @@ interface SplineRoomState {
 
   botControllers: Map<string, BotController>;
   botSeqs: Map<string, number>;
+
+  /** SPEC 3 — ramp trigger volumes (built once per room). */
+  ramps: SplineRampPatch[];
+  /** SPEC 3 — per-body ramp cooldown map: petId → (rampId → expiresAt ms). */
+  rampCooldowns: Map<string, Map<string, number>>;
 }
 
 type SimBroadcastFn = (roomId: string, frame: ServerFrame) => void;
@@ -403,6 +411,9 @@ export class ReefRaceSplineSim {
       lastPlacementMap: new Map(),
       botControllers,
       botSeqs: new Map(),
+      // SPEC 3 — ramp trigger volumes, built once per room.
+      ramps: buildSplineRamps(),
+      rampCooldowns: new Map(),
     };
 
     // ── Spawn bodies at the start line (t=0, z=0) ─────────────────────────
@@ -767,6 +778,9 @@ export class ReefRaceSplineSim {
 
     // 5. Power-up pickup collision.
     this.resolvePickups(state, now);
+
+    // 5d. Ramp launch triggers (SPEC 3).
+    this.resolveRamps(state, now);
 
     // 6. Pickup respawn cycle.
     this.tickPickups(state, now);
@@ -1235,6 +1249,70 @@ export class ReefRaceSplineSim {
           b.vx -= nx * remove;
           b.vz -= nz * remove;
         }
+      }
+    }
+  }
+
+  // ─── Ramp launch triggers (SPEC 3) ────────────────────────────────────────
+
+  /**
+   * Check each grounded body against all ramp AABB volumes.
+   * If a body is inside a ramp it hasn't cooled down on, inject
+   * REEF_JUMP_IMPULSE_RAMP into vyAxis and broadcast event.ramp_launch.
+   * Only one ramp can fire per body per tick (inner break).
+   */
+  private resolveRamps(state: SplineRoomState, now: number): void {
+    for (const body of state.bodies.values()) {
+      // Skip non-participants and already-airborne bodies.
+      if (!body.alive || body.forfeited || body.finishedAt !== null) continue;
+      if (body.airborneTicks !== 0 || body.heightOffset > 0) continue;
+
+      // Lazy-init per-body cooldown map.
+      let bodyRampCooldowns = state.rampCooldowns.get(body.petId);
+      if (!bodyRampCooldowns) {
+        bodyRampCooldowns = new Map<string, number>();
+        state.rampCooldowns.set(body.petId, bodyRampCooldowns);
+      }
+
+      for (const ramp of state.ramps) {
+        // Cooldown guard.
+        const cooldownExpiry = bodyRampCooldowns.get(ramp.id) ?? 0;
+        if (now < cooldownExpiry) continue;
+
+        // Compute ramp centerline world position via spline.
+        const pt   = state.spline.centerlineAt(ramp.t);   // {x, z}
+        const tang = state.spline.tangentAt(ramp.t);       // {x, z} unit
+
+        // Lateral offset: normal = 90° CCW of tangent.
+        const nx = -tang.z;
+        const nz =  tang.x;
+        const cx = pt.x + nx * ramp.lateralOffset;
+        const cz = pt.z + nz * ramp.lateralOffset;
+
+        // Project body delta onto tangent/normal basis.
+        const dx    = body.x - cx;
+        const dz    = body.z - cz;
+        const along = dx * tang.x + dz * tang.z;
+        const perp  = dx * nx     + dz * nz;
+
+        if (Math.abs(along) > ramp.halfLength) continue;
+        if (Math.abs(perp)  > ramp.halfWidth)  continue;
+
+        // Trigger ramp launch.
+        body.vyAxis += ramp.launchImpulse;
+        body.airborneTicks = 1;
+        bodyRampCooldowns.set(ramp.id, now + ramp.cooldownMs);
+
+        // Broadcast VFX event to client.
+        this.broadcastFn(state.roomId, {
+          type: 'event.ramp_launch',
+          petId: body.petId,
+          rampId: ramp.id,
+          launchVel: ramp.launchImpulse,
+        });
+
+        // One ramp per body per tick — stop checking ramps for this body.
+        break;
       }
     }
   }
@@ -1835,7 +1913,6 @@ export class ReefRaceSplineSim {
 // ─── Silence unused imports (used via body.mults or reserved for later phases) ─
 
 void NEUTRAL_BODY_MULTIPLIERS;
-void REEF_JUMP_IMPULSE_RAMP; // TODO: used by ramp platforms (Phase 2 TODO)
 void SLIPSTREAM_GRACE_TICKS; // used via body.mults.slipstreamGraceTicks
 
 /**

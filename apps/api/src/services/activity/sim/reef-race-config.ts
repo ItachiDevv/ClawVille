@@ -1042,3 +1042,54 @@ export const REEF_AIRBORNE_STEER_MULT = 0.30;
  * so production is unaffected until explicitly opted in via env.
  */
 export const REEF_RACE_USE_SPLINE = process.env.REEF_RACE_USE_SPLINE === 'true';
+
+// ─── Ramp trigger volumes (SPEC 3) ───────────────────────────────────────────
+
+export interface SplineRampPatch {
+  id: string;
+  /** Progress fraction along spline (0..1). */
+  t: number;
+  /** Lateral offset from centerline (wu, positive = river-right). */
+  lateralOffset: number;
+  /** Half-length along spline tangent (wu). */
+  halfLength: number;
+  /** Half-width perpendicular to tangent (wu). */
+  halfWidth: number;
+  /** Launch impulse (wu/s). Always REEF_JUMP_IMPULSE_RAMP for this spec. */
+  launchImpulse: number;
+  /** Cooldown after trigger before same body can re-trigger (ms). */
+  cooldownMs: number;
+}
+
+/** Trigger cooldown between ramp re-fires for the same body (ms). */
+export const RAMP_COOLDOWN_MS = 500;
+
+/** AABB half-length of ramp trigger volume along tangent (wu). */
+export const RAMP_HALF_LENGTH = 150;
+
+/** AABB half-width of ramp trigger volume perpendicular to tangent (wu). */
+export const RAMP_HALF_WIDTH = 200;
+
+/**
+ * Ramp placements — 6 ramps, one per themed segment transition or midpoint.
+ * t-values chosen so ramps land on visible straightish sections, never on
+ * tight slalom S-bends. All centered on centerline (lateralOffset = 0)
+ * for maximum chance of natural contact during any racing line.
+ *
+ * Segment reference (from track-layout.ts):
+ *   Lagoon:    t ~ 0.00 – 0.16
+ *   Kelp:      t ~ 0.16 – 0.40
+ *   Shipwreck: t ~ 0.40 – 0.65
+ *   Canyon:    t ~ 0.65 – 0.89
+ *   Finish:    t ~ 0.89 – 1.00
+ */
+export function buildSplineRamps(): SplineRampPatch[] {
+  return [
+    { id: 'ramp-lagoon',     t: 0.09, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
+    { id: 'ramp-kelp-1',    t: 0.22, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
+    { id: 'ramp-kelp-2',    t: 0.35, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
+    { id: 'ramp-shipwreck', t: 0.50, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
+    { id: 'ramp-canyon-1',  t: 0.65, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
+    { id: 'ramp-canyon-2',  t: 0.78, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
+  ];
+}

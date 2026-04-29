@@ -237,6 +237,13 @@ export interface ActivityState {
    */
   lastHazardHitAt: number;
 
+  /**
+   * SPEC 3 — last `event.ramp_launch` received (any pet, not just self).
+   * `ReefRacePlayer` subscribes to drive extended nose-up tilt, particle
+   * burst, and screen shake for the self pet. null until first ramp launch.
+   */
+  lastRampLaunchEvent: { petId: string; rampId: string; at: number } | null;
+
   // ── Reef Race Phase 3 — self pet's racing class + level (HUD chip) ─────
   /**
    * Phase 3 — racing class derived from `pets.archetype` for the SELF pet,
@@ -499,6 +506,7 @@ function emptyState(): Pick<
   | 'lastApexVerdict'
   | 'lastRibbonCollectedAt'
   | 'lastHazardHitAt'
+  | 'lastRampLaunchEvent'
   | 'selfRacingClass'
   | 'selfLevel'
   | 'selfStreak'
@@ -540,6 +548,7 @@ function emptyState(): Pick<
     lastApexVerdict: null,
     lastRibbonCollectedAt: 0,
     lastHazardHitAt: 0,
+    lastRampLaunchEvent: null,
     // Phase 3 — Reef Race self-pet build summary (populated on snapshot.init)
     selfRacingClass: null,
     selfLevel: 1,
@@ -1055,6 +1064,14 @@ export const useActivityStore = create<ActivityState>()(
           if (state.selfPetId && frame.petId === state.selfPetId) {
             set({ lastHazardHitAt: Date.now() });
           }
+          break;
+        }
+
+        // SPEC 3 — ramp launch. Stored for ALL pets so ReefRacePlayer can
+        // apply extended tilt to other visible riders, and so the self-pet
+        // handler can fire particles + screen shake.
+        case 'event.ramp_launch': {
+          set({ lastRampLaunchEvent: { petId: frame.petId, rampId: frame.rampId, at: Date.now() } });
           break;
         }
 

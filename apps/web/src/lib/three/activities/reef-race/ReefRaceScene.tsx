@@ -28,7 +28,7 @@
  * Performance budget: ≤70 draw calls / ≤220k tris.
  */
 
-import { Suspense, useEffect, useRef, useMemo } from 'react';
+import { Suspense, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 
@@ -177,11 +177,16 @@ function DepthBackdrop() {
 // Procedural lerp-follow in useFrame — no OrbitControls.
 // Module-scope scratch vectors prevent GC pressure.
 
+// Module-scope scratch for screen shake (no per-frame allocation).
+const _shakeOffset = new THREE.Vector3();
+
 interface ChaseCamProps {
   selfEntity: ReefRaceEntity | null;
+  /** Mutable ref holding current shake magnitude (wu). Decays in useFrame. */
+  shakeRef: React.MutableRefObject<number>;
 }
 
-function ChaseCamera({ selfEntity }: ChaseCamProps) {
+function ChaseCamera({ selfEntity, shakeRef }: ChaseCamProps) {
   const { camera } = useThree();
   const historyRef = useRef<CameraSnapRecord[]>([]);
   const lastEntityRef = useRef<ReefRaceEntity | null>(null);
@@ -284,6 +289,21 @@ function ChaseCamera({ selfEntity }: ChaseCamProps) {
     // Look at kart + upward offset.
     _lookAt.set(renderX, 0, renderZ).add(CAMERA_LOOK_OFFSET);
     cam.lookAt(_lookAt);
+
+    // Screen shake — decay and apply camera position offset.
+    // shakeRef.current holds magnitude in wu. Decays at 2.5×/second.
+    if (shakeRef.current > 0.01) {
+      shakeRef.current = Math.max(0, shakeRef.current - delta * 2.5 * shakeRef.current);
+      const mag = shakeRef.current;
+      _shakeOffset.set(
+        (Math.random() * 2 - 1) * mag,
+        (Math.random() * 2 - 1) * mag * 0.5,
+        (Math.random() * 2 - 1) * mag * 0.5,
+      );
+      cam.position.add(_shakeOffset);
+    } else {
+      shakeRef.current = 0;
+    }
   });
 
   return null;
@@ -307,6 +327,16 @@ function SceneContents({ entities, selfPetId, matchPhase, raceStartMs }: SceneCo
     ? _selfPosScratch.set(selfEntity.x, 0, selfEntity.y)
     : null;
 
+  // Screen shake — mutable ref, zero re-renders.
+  // ChaseCamera decays this in useFrame at 2.5×/second (exponential falloff).
+  const shakeRef = useRef<number>(0);
+
+  // Stable callback: writing to a ref never changes the callback identity.
+  const triggerScreenShake = useCallback((intensity: number) => {
+    // Add, don't set — stacking ramp hits accumulates correctly.
+    shakeRef.current = Math.min(shakeRef.current + intensity, 120);
+  }, []);
+
   const boostActive = useActivityStore(
     (s) => selfPetId
       ? (s.powerUpInventory.some((p) => p.kind === 'boost' && p.charges > 0))
@@ -322,7 +352,7 @@ function SceneContents({ entities, selfPetId, matchPhase, raceStartMs }: SceneCo
   return (
     <>
       {/* Chase camera (follows selfEntity) */}
-      <ChaseCamera selfEntity={selfEntity} />
+      <ChaseCamera selfEntity={selfEntity} shakeRef={shakeRef} />
 
       {/* Atmosphere */}
       <fog args={[FOG_COLOR, FOG_NEAR, FOG_FAR]} />
@@ -361,6 +391,7 @@ function SceneContents({ entities, selfPetId, matchPhase, raceStartMs }: SceneCo
             key={entity.petId}
             entity={entity}
             isSelf={entity.petId === selfPetId}
+            triggerScreenShake={entity.petId === selfPetId ? triggerScreenShake : undefined}
           />
         ))}
       </Suspense>
