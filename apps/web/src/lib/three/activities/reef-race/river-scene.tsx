@@ -4,33 +4,40 @@
  * river-scene.tsx — Low-poly stylized river atmosphere for Reef Race v2.
  *
  * Visual target: Kagelok "The River" Sketchfab aesthetic.
- *   Bright sunny sky, flat-shaded OPAQUE cyan water ribbon,
- *   sandy cream bank ribbons on green grass hills.
- *   Low-poly trees / rocks / fences on the GREEN GRASS — not in the water.
+ *   Bright sunny sky, animated stylized cartoon water, sandy cream bank ribbons,
+ *   green grass hills, low-poly trees / rocks / fences on the grass.
  *
  * Contains:
  *   A. Green ground plane (large flat XZ plane under everything)
  *   B. Sandy bank ribbons (cream trianglestrip at water edge)
- *   C. Water ribbon swept along spline centerline (replaces rectangle "pool")
+ *   C. Water ribbon — animated cartoon shader (simplex noise + foam stripes)
  *   D. Sky dome (SphereGeometry + MeshBasicMaterial vertexColors)
  *   E. ScenerySpawner (low-poly prop GLBs ON THE GRASS, not in water)
+ *   F. Finish-line gate (wooden arch at z~18000, Part 2A)
+ *   G. Distance markers every 2000wu (Part 2B)
+ *   H. Power-up boxes mid-river (Part 2C)
+ *   I. Kart wake ribbons behind each sample kart (Part 2D)
+ *   J. Bridge prop (Part 2F)
  *
  * Iris Xe invariants:
- *   - NO ShaderMaterial anywhere
- *   - NO InstancedMesh + ShaderMaterial combo
+ *   - ShaderMaterial ONLY on plain Mesh — NO InstancedMesh + ShaderMaterial
  *   - NO drei <Text> or <Billboard>
  *   - import from 'three' only (not 'three/webgpu')
  *   - All static geo/mat at module scope — zero per-frame GC
  *   - frustumCulled=false on all atmosphere meshes
  *   - matrixAutoUpdate=false on all static meshes
+ *   - NO point lights — emissive only for power-up glow (budget: 1 hemi + 1 dir)
  *
  * Draw call budget:
- *   1 ground + 1 sand ribbon + 1 water ribbon + 1 dome + ≤6 scenery GLB types = ≤10 draw calls
+ *   1 ground + 1 sand ribbon + 1 water ribbon + 1 dome + ≤6 scenery GLB types
+ *   + 1 finish gate + 1 distance markers (instanced) + 6 power-up boxes
+ *   + 4 wake ribbons + 1 bridge = ≤23 draw calls (within 30-call budget)
  *
- * Tri count:
- *   Ground: 2 tris | Sand ribbon: 64×2=128 tris | Water ribbon: 64×2=128 tris
- *   Dome: ~1024 tris | Scenery: ~1000 tris est.
- *   Total new: ≈2300 tris — well within the ≤80k scene budget.
+ * Tri count additions (Part 2):
+ *   Finish gate: ~200 tris | Distance markers: ~18×9=162 tris
+ *   Power-up boxes: 6×12=72 tris | Wake ribbons: 4×4=16 tris
+ *   Bridge: ~24 tris | Total addition: ~474 tris
+ *   Combined scene total: ~2800 tris — well within the ≤80k budget.
  *
  * Water Y placement:
  *   River bed at y=0. Water ribbon at y=40 (halfway up V2_BANK_HEIGHT=80).
@@ -40,7 +47,9 @@
 
 import { Suspense, useRef, useEffect, useMemo } from 'react';
 import { useGLTF } from '@react-three/drei';
+import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { clientSpline } from './reef-race-spline-instance';
 
 // ─── Track layout constants ───────────────────────────────────────────────────
@@ -66,6 +75,49 @@ const RIBBON_SAMPLES = 64;  // number of cross-sections along the spline
 const WATER_Y        = 40;  // halfway up V2_BANK_HEIGHT=80
 const SAND_Y         = 0.5; // just above river bed, below water
 const SAND_EXTRA_HW  = 120; // sand ribbon extends this many wu beyond water edge
+
+// ─── Gameplay prop constants ──────────────────────────────────────────────────
+// Part 2A: Finish-line gate
+const GATE_POST_HALF_W = 520;  // half-width: gates span full river + margin
+const GATE_POST_W      = 40;
+const GATE_POST_H      = 250;
+const GATE_POST_D      = 60;
+const GATE_BAR_H       = 30;
+const GATE_BAR_D       = 40;
+const GATE_Z           = 18200; // just past finish line CP15 z≈18000
+
+// Part 2B: Distance markers
+const MARKER_SPACING   = 2000;  // wu between markers
+const MARKER_X_OFFSET  = 650;   // outside grass, +X side
+const MARKER_POLE_W    = 4;
+const MARKER_POLE_H    = 200;
+const MARKER_FLAG_W    = 80;
+const MARKER_FLAG_H    = 40;
+const MARKER_COLORS    = [
+  new THREE.Color('#ff4400'),  // red
+  new THREE.Color('#44cc22'),  // green
+  new THREE.Color('#2266ff'),  // blue
+  new THREE.Color('#ffcc00'),  // yellow
+  new THREE.Color('#ff22aa'),  // pink
+  new THREE.Color('#22cccc'),  // teal
+  new THREE.Color('#ff8800'),  // orange
+  new THREE.Color('#aa44ff'),  // purple
+  new THREE.Color('#ff4400'),  // red again
+];
+
+// Part 2C: Power-up boxes
+const POWERUP_T_VALUES = [0.15, 0.3, 0.45, 0.6, 0.75, 0.9];
+const POWERUP_X_ALTS   = [150, -150, 150, -150, 150, -150]; // lateral offset alternating
+const POWERUP_SIZE     = 30;
+const POWERUP_BOB_AMP  = 5;
+const POWERUP_BOB_FREQ = 2;
+
+// Part 2F: Bridge
+const BRIDGE_Z         = 8500; // mid-track z position
+const BRIDGE_W         = 1100; // wu span (covers full river + banks)
+const BRIDGE_H         = 100;  // y position (rides over bank walls at y=80)
+const BRIDGE_PLANK_H   = 30;   // plank thickness
+const BRIDGE_SUPPORT_W = 30;
 
 // ─── Scenery spawning ────────────────────────────────────────────────────────
 const SCENERY_PROP_PATHS = [
@@ -166,6 +218,8 @@ const SPAWNER_DEFS: SpawnerDef[] = [
 // Triangle strip swept along clientSpline centerline.
 // Each cross-section: 2 verts at center ± normal*halfWidth.
 // N=64 cross-sections → 63 quads × 2 tris = 126 tris total.
+// UVs: x=0(left)/1(right), y=t(arclength fraction along spline).
+// The vertex shader animates Y in GPU — buffer stays static.
 function buildWaterRibbonGeo(): THREE.BufferGeometry {
   const positions: number[] = [];
   const normals:   number[] = [];
@@ -265,11 +319,272 @@ function makeDomeGeo(): THREE.BufferGeometry {
   return geo;
 }
 
+// ─── Animated water ShaderMaterial ──────────────────────────────────────────
+//
+// Vertex shader: multi-octave sin waves displace Y (world up).
+// Fragment shader: simplex noise foam stripes + UV-scrolled flow + bank-edge foam.
+//
+// IRIS XE SAFE: plain ShaderMaterial on a plain Mesh — NOT inside InstancedMesh.
+// The crash gotcha is InstancedMesh + ShaderMaterial, not plain ShaderMaterial.
+//
+// The shader inlines a 2D simplex noise implementation (no texture download needed).
+//
+const _waterVertexShader = /* glsl */ `
+  uniform float uTime;
+  varying vec2 vUv;
+  varying vec3 vWorldPos;
+
+  void main() {
+    vUv = uv;
+
+    // Multi-octave sin wave displacement in Y (world up for this geometry)
+    float x = position.x;
+    float z = position.z;
+    float wave = sin(x * 0.005 + uTime * 0.8) * 4.0
+               + sin(z * 0.003 + uTime * 1.2) * 3.0
+               + sin((x + z) * 0.002 - uTime * 0.6) * 2.0;
+
+    vec3 displaced = position;
+    displaced.y += wave;
+
+    vWorldPos = (modelMatrix * vec4(displaced, 1.0)).xyz;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(displaced, 1.0);
+  }
+`;
+
+const _waterFragmentShader = /* glsl */ `
+  uniform float uTime;
+  uniform vec3  uColorNear;
+  uniform vec3  uColorFar;
+
+  varying vec2 vUv;
+  varying vec3 vWorldPos;
+
+  // 2D simplex noise — self-contained, no texture lookup
+  vec3 mod289_3(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+  vec2 mod289_2(vec2 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+  vec3 permute3(vec3 x) { return mod289_3(((x * 34.0) + 1.0) * x); }
+
+  float snoise(vec2 v) {
+    const vec4 C = vec4(0.211324865405187, 0.366025403784439,
+                       -0.577350269189626, 0.024390243902439);
+    vec2 i  = floor(v + dot(v, C.yy));
+    vec2 x0 = v - i + dot(i, C.xx);
+    vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+    vec4 x12 = x0.xyxy + C.xxzz;
+    x12.xy -= i1;
+    i = mod289_2(i);
+    vec3 p = permute3(permute3(i.y + vec3(0.0, i1.y, 1.0))
+                    + i.x + vec3(0.0, i1.x, 1.0));
+    vec3 m = max(0.5 - vec3(dot(x0, x0), dot(x12.xy, x12.xy), dot(x12.zw, x12.zw)), 0.0);
+    m = m * m;
+    m = m * m;
+    vec3 x = 2.0 * fract(p * C.www) - 1.0;
+    vec3 h = abs(x) - 0.5;
+    vec3 ox = floor(x + 0.5);
+    vec3 a0 = x - ox;
+    m *= 1.79284291400159 - 0.85373472095314 * (a0 * a0 + h * h);
+    vec3 g;
+    g.x  = a0.x  * x0.x  + h.x  * x0.y;
+    g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+    return 130.0 * dot(m, g);
+  }
+
+  void main() {
+    // UV scrolled downstream (+UV.y = downstream direction)
+    vec2 flowUv = vUv + vec2(0.0, -uTime * 0.05);
+
+    // Base foam noise (scrolled)
+    float noiseBase = snoise(flowUv * 280.0 + sin(uTime * 0.3));
+    noiseBase = noiseBase * 0.5 + 0.5;
+    vec3 colorBase = vec3(noiseBase);
+
+    // Binary foam stripes from noise
+    vec3 foam = smoothstep(0.08, 0.001, colorBase);
+    foam = step(0.5, foam);
+
+    // Wave-stripe noise (scrolled at different scale/rate)
+    float noiseWaves = snoise(flowUv * 100.0 + sin(uTime * -0.1));
+    noiseWaves = noiseWaves * 0.5 + 0.5;
+
+    float threshold = 0.6 + 0.01 * sin(uTime * 2.0);
+    vec3 waveEffect = 1.0 - (smoothstep(threshold + 0.03, threshold + 0.032, vec3(noiseWaves))
+                           + smoothstep(threshold, threshold - 0.01, vec3(noiseWaves)));
+    waveEffect = step(0.5, waveEffect);
+
+    // Bank-edge foam: bright white where UV.x approaches 0 or 1
+    float edgeDist = min(vUv.x, 1.0 - vUv.x);
+    float bankFoam = step(edgeDist, 0.04) * (0.7 + 0.3 * sin(uTime * 3.0 + vUv.y * 20.0));
+
+    // Combine all effects
+    vec3 combinedEffect = min(waveEffect + foam + vec3(bankFoam), 1.0);
+
+    // Depth gradient: deeper = darker blue
+    float vignette = length(vUv - 0.5) * 1.5;
+    vec3 baseEffect = smoothstep(0.1, 0.3, vec3(vignette));
+    vec3 baseColor = mix(uColorNear, uColorFar, baseEffect);
+    combinedEffect = mix(combinedEffect, vec3(0.0), baseEffect);
+
+    // Final color: base + white foam overlaid
+    vec3 finalColor = (1.0 - combinedEffect) * baseColor + combinedEffect;
+
+    gl_FragColor = vec4(finalColor, 1.0);
+  }
+`;
+
+// Shared water shader material — module scope, uTime updated each frame
+const _waterShaderMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime:      { value: 0 },
+    uColorNear: { value: new THREE.Color('#4ec5e8') },   // bright cyan
+    uColorFar:  { value: new THREE.Color('#2a8aaa') },   // deeper blue
+  },
+  vertexShader:   _waterVertexShader,
+  fragmentShader: _waterFragmentShader,
+  side:       THREE.DoubleSide,
+  fog:        true,
+  transparent: false,
+});
+
+// ─── Kart wake ribbon material ─────────────────────────────────────────────
+// Simple white foam ribbon behind each kart — additive blend, low alpha
+const _wakeMat = new THREE.MeshBasicMaterial({
+  color: new THREE.Color('#ffffff'),
+  transparent: true,
+  opacity: 0.45,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+  side: THREE.DoubleSide,
+  fog: false,
+});
+
+// ─── Power-up box material (module scope) ────────────────────────────────────
+// Emissive gold — no point lights (Iris Xe budget constraint)
+const _powerupMat = new THREE.MeshStandardMaterial({
+  color: new THREE.Color('#ffd700'),
+  emissive: new THREE.Color('#ffaa00'),
+  emissiveIntensity: 0.6,
+  metalness: 0.3,
+  roughness: 0.4,
+  fog: false,
+});
+
+// ─── Finish gate material ─────────────────────────────────────────────────────
+const _gateMat = new THREE.MeshStandardMaterial({
+  color: new THREE.Color('#8B4513'),   // wooden brown
+  roughness: 0.9,
+  metalness: 0.0,
+  fog: false,
+});
+
+// ─── Checker flag canvas texture (for finish gate) ───────────────────────────
+function makeCheckerTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width  = 128;
+  canvas.height = 64;
+  const ctx = canvas.getContext('2d')!;
+  const cols = 8;
+  const rows = 4;
+  const cellW = canvas.width  / cols;
+  const cellH = canvas.height / rows;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      ctx.fillStyle = (r + c) % 2 === 0 ? '#ffffff' : '#000000';
+      ctx.fillRect(c * cellW, r * cellH, cellW, cellH);
+    }
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  return tex;
+}
+
+// ─── Distance marker material (instanced flag colors set per mesh) ────────────
+const _poleMat = new THREE.MeshStandardMaterial({
+  color: new THREE.Color('#c8a050'),
+  roughness: 0.8,
+  metalness: 0.1,
+  fog: true,
+});
+
+// ─── Bridge material ───────────────────────────────────────────────────────────
+const _bridgeMat = new THREE.MeshStandardMaterial({
+  color: new THREE.Color('#9b7040'),   // weathered wood
+  roughness: 0.9,
+  metalness: 0.0,
+  fog: false,
+});
+
 // ─── Module-scope geometries (baked at module load, shared forever) ───────────
-const _groundGeo  = new THREE.PlaneGeometry(GROUND_W, GROUND_L, 1, 1);
-const _waterGeo   = buildWaterRibbonGeo();
-const _sandGeo    = buildSandRibbonGeo();
-const _domeGeo    = makeDomeGeo();
+const _groundGeo    = new THREE.PlaneGeometry(GROUND_W, GROUND_L, 1, 1);
+const _waterGeo     = buildWaterRibbonGeo();
+const _sandGeo      = buildSandRibbonGeo();
+const _domeGeo      = makeDomeGeo();
+
+// Part 2A: finish gate geometry
+function buildFinishGateGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+
+  // Left post
+  const leftPost = new THREE.BoxGeometry(GATE_POST_W, GATE_POST_H, GATE_POST_D);
+  leftPost.translate(-GATE_POST_HALF_W, GATE_POST_H / 2, GATE_Z);
+  parts.push(leftPost);
+
+  // Right post
+  const rightPost = new THREE.BoxGeometry(GATE_POST_W, GATE_POST_H, GATE_POST_D);
+  rightPost.translate(GATE_POST_HALF_W, GATE_POST_H / 2, GATE_Z);
+  parts.push(rightPost);
+
+  // Top bar spanning posts
+  const barW = GATE_POST_HALF_W * 2 + GATE_POST_W;
+  const topBar = new THREE.BoxGeometry(barW, GATE_BAR_H, GATE_BAR_D);
+  topBar.translate(0, GATE_POST_H + GATE_BAR_H / 2, GATE_Z);
+  parts.push(topBar);
+
+  // Merge
+  const merged = mergeGeometries(parts, false)!;
+  parts.forEach(g => g.dispose());
+  return merged;
+}
+
+// Part 2C: power-up box geometry (single 30wu cube — shared)
+const _powerupBoxGeo = new THREE.BoxGeometry(POWERUP_SIZE, POWERUP_SIZE, POWERUP_SIZE);
+
+// Part 2D: wake ribbon geometry behind kart (60wu wide × 200wu long)
+const _wakeGeo = new THREE.PlaneGeometry(60, 200);
+_wakeGeo.rotateX(-Math.PI / 2); // lie flat on water surface
+
+// Part 2B: distance marker pole + flag (single shared geo, cloned per marker)
+const _markerPoleGeo  = new THREE.BoxGeometry(MARKER_POLE_W, MARKER_POLE_H, MARKER_POLE_W);
+const _markerFlagGeo  = new THREE.BufferGeometry().setFromPoints([
+  new THREE.Vector3(0, 0, 0),
+  new THREE.Vector3(MARKER_FLAG_W, 0, 0),
+  new THREE.Vector3(0, -MARKER_FLAG_H, 0),
+]);
+_markerFlagGeo.setIndex([0, 1, 2]);
+_markerFlagGeo.computeVertexNormals();
+
+// Part 2F: bridge geometry
+function buildBridgeGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+
+  // Main plank
+  const plank = new THREE.BoxGeometry(BRIDGE_W, BRIDGE_PLANK_H, 120);
+  plank.translate(0, BRIDGE_H + BRIDGE_PLANK_H / 2, BRIDGE_Z);
+  parts.push(plank);
+
+  // Left support
+  const ls = new THREE.BoxGeometry(BRIDGE_SUPPORT_W, BRIDGE_H, BRIDGE_SUPPORT_W);
+  ls.translate(-BRIDGE_W / 2 + BRIDGE_SUPPORT_W, BRIDGE_H / 2, BRIDGE_Z);
+  parts.push(ls);
+
+  // Right support
+  const rs = new THREE.BoxGeometry(BRIDGE_SUPPORT_W, BRIDGE_H, BRIDGE_SUPPORT_W);
+  rs.translate(BRIDGE_W / 2 - BRIDGE_SUPPORT_W, BRIDGE_H / 2, BRIDGE_Z);
+  parts.push(rs);
+
+  const merged = mergeGeometries(parts, false)!;
+  parts.forEach(g => g.dispose());
+  return merged;
+}
 
 // ─── Module-scope materials (page-lifetime, never disposed) ──────────────────
 
@@ -283,18 +598,6 @@ const _groundMat = new THREE.MeshLambertMaterial({
 /** Sandy bank ribbon — cream/peach color at water's edge. */
 const _sandMat = new THREE.MeshLambertMaterial({
   color: new THREE.Color('#e8d5a8'),
-  flatShading: true,
-  fog: true,
-  side: THREE.DoubleSide,
-});
-
-/**
- * Water ribbon — OPAQUE bright cyan, flatShading for low-poly look.
- * No transparency: we want solid cyan, not a pool you can see through.
- * DoubleSide so both the top surface and underside render during orbit.
- */
-const _waterMat = new THREE.MeshLambertMaterial({
-  color: new THREE.Color('#4ec5e8'),
   flatShading: true,
   fog: true,
   side: THREE.DoubleSide,
@@ -361,23 +664,21 @@ function SandRibbon() {
   );
 }
 
-// ─── Water ribbon component ───────────────────────────────────────────────────
+// ─── Animated water ribbon component ─────────────────────────────────────────
+//
+// The water uses a plain THREE.ShaderMaterial on a plain Mesh — safe on Iris Xe.
+// The ONLY per-frame operation is updating the uTime uniform.
+// No buffer mutations, no normals recomputation.
 
 function WaterRibbon() {
-  const meshRef = useRef<THREE.Mesh>(null);
-
-  useEffect(() => {
-    const m = meshRef.current;
-    if (!m) return;
-    m.matrixAutoUpdate = false;
-    m.updateMatrix();
-  }, []);
+  useFrame(({ clock }) => {
+    _waterShaderMat.uniforms.uTime.value = clock.getElapsedTime();
+  });
 
   return (
     <mesh
-      ref={meshRef}
       geometry={_waterGeo}
-      material={_waterMat}
+      material={_waterShaderMat}
       frustumCulled={false}
       matrixAutoUpdate={false}
       renderOrder={2}
@@ -468,6 +769,246 @@ function ScenerySpawner() {
   );
 }
 
+// ─── Part 2A: Finish-line gate ────────────────────────────────────────────────
+// Wooden arch over the river at GATE_Z with procedural checkered flag.
+
+function FinishGate() {
+  const gateGeo = useMemo(() => buildFinishGateGeo(), []);
+  const checkerTex = useMemo(() => {
+    if (typeof document === 'undefined') return null;
+    return makeCheckerTexture();
+  }, []);
+
+  // Checker flag plane between the posts
+  const flagMat = useMemo(() => new THREE.MeshBasicMaterial({
+    map: checkerTex,
+    side: THREE.DoubleSide,
+    fog: false,
+    transparent: false,
+  }), [checkerTex]);
+
+  const flagGeo = useMemo(() => {
+    const geo = new THREE.PlaneGeometry(GATE_POST_HALF_W * 2, GATE_POST_H * 0.6);
+    // Stand the flag plane vertically (PlaneGeometry is XY by default)
+    geo.translate(0, GATE_POST_H * 0.7, GATE_Z);
+    return geo;
+  }, []);
+
+  const meshRef = useRef<THREE.Mesh>(null);
+  const flagRef = useRef<THREE.Mesh>(null);
+
+  useEffect(() => {
+    [meshRef.current, flagRef.current].forEach(m => {
+      if (m) { m.matrixAutoUpdate = false; m.updateMatrix(); }
+    });
+    return () => {
+      gateGeo.dispose();
+      flagGeo.dispose();
+      checkerTex?.dispose();
+      flagMat.dispose();
+    };
+  }, [gateGeo, flagGeo, checkerTex, flagMat]);
+
+  return (
+    <group>
+      <mesh ref={meshRef} geometry={gateGeo} material={_gateMat} castShadow matrixAutoUpdate={false} />
+      {checkerTex && (
+        <mesh ref={flagRef} geometry={flagGeo} material={flagMat} matrixAutoUpdate={false} />
+      )}
+    </group>
+  );
+}
+
+// ─── Part 2B: Distance markers ────────────────────────────────────────────────
+// Small flag-on-pole at z = 2000, 4000, ..., 18000, placed at x=+MARKER_X_OFFSET.
+// Gentle flag sway animation.
+
+const _markerCount = Math.floor(18000 / MARKER_SPACING); // 9 markers
+
+function DistanceMarkers() {
+  // Each marker: pole + flag — all placed via useEffect for perf
+  const groupRef = useRef<THREE.Group>(null);
+
+  // Store flag meshes for animation
+  const flagRefs = useRef<THREE.Mesh[]>([]);
+
+  useEffect(() => {
+    const gr = groupRef.current;
+    if (!gr) return;
+    flagRefs.current = [];
+
+    for (let i = 0; i < _markerCount; i++) {
+      const z = (i + 1) * MARKER_SPACING;
+      const x = MARKER_X_OFFSET;
+      const color = MARKER_COLORS[i % MARKER_COLORS.length]!;
+
+      // Pole
+      const poleMesh = new THREE.Mesh(_markerPoleGeo, _poleMat);
+      poleMesh.position.set(x, MARKER_POLE_H / 2, z);
+      poleMesh.matrixAutoUpdate = false;
+      poleMesh.updateMatrix();
+      gr.add(poleMesh);
+
+      // Flag — individual material per flag for color variety
+      const flagMat = new THREE.MeshStandardMaterial({
+        color,
+        side: THREE.DoubleSide,
+        fog: true,
+        roughness: 0.8,
+        metalness: 0.0,
+      });
+      const flagMesh = new THREE.Mesh(_markerFlagGeo, flagMat);
+      // Position: top of pole, +X direction (flag hangs to the right of pole)
+      flagMesh.position.set(x + MARKER_POLE_W / 2, MARKER_POLE_H, z);
+      gr.add(flagMesh);
+      flagRefs.current.push(flagMesh);
+    }
+
+    return () => {
+      // Clean up individual flag materials
+      flagRefs.current.forEach(m => {
+        if ((m.material as THREE.Material).dispose) {
+          (m.material as THREE.Material).dispose();
+        }
+      });
+      while (gr.children.length > 0) gr.remove(gr.children[0]);
+    };
+  }, []);
+
+  // Gentle flag sway
+  useFrame(({ clock }) => {
+    const t = clock.getElapsedTime();
+    flagRefs.current.forEach((flag, i) => {
+      flag.rotation.y = Math.sin(t * 1.5 + i * 0.7) * 0.15;
+    });
+  });
+
+  return <group ref={groupRef} />;
+}
+
+// ─── Part 2C: Power-up boxes ──────────────────────────────────────────────────
+// Glowing rotating golden cubes hovering above water mid-river.
+// NO point lights — emissive material only (Iris Xe budget).
+//
+// Positions are computed once at module scope (spline is available at load time).
+const _powerupBasePositions = POWERUP_T_VALUES.map((t, i) => {
+  const c  = clientSpline.centerlineAt(t);
+  const n  = clientSpline.normalAt(t);
+  const lat = POWERUP_X_ALTS[i] ?? 150;
+  return new THREE.Vector3(
+    c.x + n.x * lat,
+    WATER_Y + POWERUP_SIZE / 2 + 30,
+    c.z + n.z * lat,
+  );
+});
+
+function PowerUpBoxes() {
+  const meshRefs = useRef<(THREE.Mesh | null)[]>([]);
+
+  // Rotation + bobbing
+  useFrame(({ clock }) => {
+    const t = clock.getElapsedTime();
+    meshRefs.current.forEach((mesh, i) => {
+      if (!mesh) return;
+      const base = _powerupBasePositions[i]!;
+      mesh.position.set(
+        base.x,
+        base.y + Math.sin(t * POWERUP_BOB_FREQ + i) * POWERUP_BOB_AMP,
+        base.z,
+      );
+      mesh.rotation.y += 0.02;
+    });
+  });
+
+  return (
+    <>
+      {POWERUP_T_VALUES.map((_, i) => (
+        <mesh
+          key={i}
+          ref={(el) => { meshRefs.current[i] = el; }}
+          geometry={_powerupBoxGeo}
+          material={_powerupMat}
+          castShadow
+          position={[
+            _powerupBasePositions[i]!.x,
+            _powerupBasePositions[i]!.y,
+            _powerupBasePositions[i]!.z,
+          ]}
+        />
+      ))}
+    </>
+  );
+}
+
+// ─── Part 2D: Kart wake ribbons ───────────────────────────────────────────────
+// White foam plane behind each sample kart (4 at t=0, 0.25, 0.5, 0.75).
+// Uses MeshBasicMaterial additive blend — no ShaderMaterial needed.
+
+const KART_T_VALUES = [0, 0.25, 0.5, 0.75] as const;
+
+function KartWakes() {
+  const wakeRefs = useRef<THREE.Mesh[]>([]);
+
+  useEffect(() => {
+    KART_T_VALUES.forEach((t, i) => {
+      const m = wakeRefs.current[i];
+      if (!m) return;
+      const c       = clientSpline.centerlineAt(t);
+      const tangent = clientSpline.tangentAt(t);
+      // Place wake 100wu behind kart along -tangent direction
+      m.position.set(
+        c.x - tangent.x * 100,
+        WATER_Y + 2,  // just above water surface
+        c.z - tangent.z * 100,
+      );
+      // Rotate wake to align with river direction
+      m.rotation.y = Math.atan2(tangent.x, tangent.z);
+      m.matrixAutoUpdate = false;
+      m.updateMatrix();
+    });
+  }, []);
+
+  return (
+    <>
+      {KART_T_VALUES.map((_, i) => (
+        <mesh
+          key={i}
+          ref={(el) => { if (el) wakeRefs.current[i] = el; }}
+          geometry={_wakeGeo}
+          material={_wakeMat}
+          frustumCulled={false}
+          matrixAutoUpdate={false}
+        />
+      ))}
+    </>
+  );
+}
+
+// ─── Part 2F: Bridge prop ─────────────────────────────────────────────────────
+// Wooden plank bridge over the river at z=BRIDGE_Z.
+
+function Bridge() {
+  const bridgeGeo = useMemo(() => buildBridgeGeo(), []);
+  const meshRef   = useRef<THREE.Mesh>(null);
+
+  useEffect(() => {
+    const m = meshRef.current;
+    if (m) { m.matrixAutoUpdate = false; m.updateMatrix(); }
+    return () => { bridgeGeo.dispose(); };
+  }, [bridgeGeo]);
+
+  return (
+    <mesh
+      ref={meshRef}
+      geometry={bridgeGeo}
+      material={_bridgeMat}
+      castShadow
+      receiveShadow
+      matrixAutoUpdate={false}
+    />
+  );
+}
+
 // ─── Public composite component ───────────────────────────────────────────────
 
 /**
@@ -487,12 +1028,19 @@ function ScenerySpawner() {
  *   -1: Sky dome (sunny blue gradient, BackSide sphere)
  *    0: Green ground plane (large flat XZ grass plane)
  *    1: Sandy bank ribbons (cream, spline-following, at water edge)
- *    2: Cyan water ribbon (opaque, spline-following, above sand)
+ *    2: Animated water ribbon (simplex noise + foam stripes + UV scroll)
  *    ?: Scenery props along banks (on the grass, not in the water)
+ *    ?: Gameplay juice: finish gate, distance markers, power-ups, wakes, bridge
  *
  * Bank wall geometry from SplineTrack (buildSplineBankGeos) is intentionally
  * hidden by the parent page — set visible=false or recolor to grass green.
  * See page.tsx: _bankMat color is '#7cb342' grass green to blend with ground.
+ *
+ * WATER SHADER:
+ *   Plain THREE.ShaderMaterial on a plain Mesh — verified Iris Xe safe.
+ *   (The crash gotcha is InstancedMesh + ShaderMaterial, not plain ShaderMaterial.)
+ *   Vertex: multi-octave sin wave GPU displacement.
+ *   Fragment: 2D simplex noise + smoothstep foam stripes + UV scroll.
  */
 export function RiverScene() {
   return (
@@ -506,11 +1054,26 @@ export function RiverScene() {
       {/* 1: Sandy bank ribbons at water's edge */}
       <SandRibbon />
 
-      {/* 2: Opaque cyan water ribbon following spline */}
+      {/* 2: Animated cartoon water ribbon — simplex noise + foam */}
       <WaterRibbon />
 
       {/* Scenery props on the grass */}
       <ScenerySpawner />
+
+      {/* Gameplay juice — Part 2A: Finish-line gate */}
+      <FinishGate />
+
+      {/* Gameplay juice — Part 2B: Distance markers every 2000wu */}
+      <DistanceMarkers />
+
+      {/* Gameplay juice — Part 2C: Power-up boxes mid-river */}
+      <PowerUpBoxes />
+
+      {/* Gameplay juice — Part 2D: Kart wake ribbons */}
+      <KartWakes />
+
+      {/* Gameplay juice — Part 2F: Bridge at z=8500 */}
+      <Bridge />
     </>
   );
 }
