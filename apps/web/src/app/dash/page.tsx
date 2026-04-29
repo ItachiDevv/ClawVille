@@ -51,17 +51,27 @@ async function ensureDashAuthOrRedirect(): Promise<void> {
   }
   const cookieStore = await cookies();
   const cookieHeader = cookieStore.toString();
+
+  // CRITICAL: `redirect()` from next/navigation throws an internal
+  // NEXT_REDIRECT error that the framework catches at the route boundary.
+  // It MUST NOT be inside a try/catch that swallows generic errors —
+  // otherwise the redirect silently fails. We isolate the fetch in its
+  // own try/catch (network errors only) and call redirect AFTER, so the
+  // NEXT_REDIRECT error propagates cleanly.
+  let status = 0;
   try {
     const res = await fetch(`${apiBase}/api/dashboard/__check`, {
       headers: { cookie: cookieHeader },
       cache: 'no-store',
     });
-    if (res.status === 401 || res.status === 403) {
-      redirect('/dash/login');
-    }
+    status = res.status;
   } catch {
     // Network error to API — render the page; tabs will show their own
     // "Fetch failed" cards.
+    return;
+  }
+  if (status === 401 || status === 403) {
+    redirect('/dash/login');
   }
 }
 
