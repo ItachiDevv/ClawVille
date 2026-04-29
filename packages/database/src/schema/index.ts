@@ -36,6 +36,8 @@ export * from './activity-replays';
 export * from './activity-seasons';
 // Reef Race Phase 4 — per-pet personal-best lap + ghost replay.
 export * from './reef-race-personal-bests';
+// Q3 plan §2.6 — idempotency for client-side tutorial quest token credits.
+export * from './tutorial-quest-claims';
 
 import { users, sessions } from './users';
 import { npcMemories, activityLog } from './memories';

@@ -1,16 +1,33 @@
 import type { AgentCategory, AgentHarness } from '@clawville/shared';
+import { getFingerprint } from './fingerprint';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
 const HONO_API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
 
+/**
+ * Phase 1 anti-farm — inject the browser fingerprint header on every API
+ * call. Server middleware (apps/api/src/middleware/fingerprint.ts) hashes
+ * it with FINGERPRINT_SECRET before persisting. Empty fingerprint (SSR or
+ * load error) is omitted so the server's UA+IP fallback fires.
+ */
+async function withFingerprint(
+  base: HeadersInit | undefined,
+): Promise<HeadersInit> {
+  const fp = await getFingerprint();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(base as Record<string, string> | undefined),
+  };
+  if (fp) headers['X-CV-Fingerprint'] = fp;
+  return headers;
+}
+
 async function honoRequest<T>(path: string, options?: RequestInit): Promise<T> {
+  const headers = await withFingerprint(options?.headers);
   const res = await fetch(`${HONO_API_URL}${path}`, {
     ...options,
     credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...options?.headers,
-    },
+    headers,
   });
 
   if (!res.ok) {
@@ -22,13 +39,11 @@ async function honoRequest<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const headers = await withFingerprint(options?.headers);
   const res = await fetch(`${API_URL}${path}`, {
     ...options,
     credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...options?.headers,
-    },
+    headers,
   });
 
   if (!res.ok) {
@@ -513,8 +528,10 @@ export const api = {
     }>(`/api/openclaw/knowledge-export/${petId}`),
 
   exportKnowledgeMarkdown: async (petId: string): Promise<string> => {
+    const headers = await withFingerprint(undefined);
     const res = await fetch(`${HONO_API_URL}/api/openclaw/knowledge-export/${petId}?format=markdown`, {
       credentials: 'include',
+      headers,
     });
     if (!res.ok) throw new Error('Export failed');
     return res.text();
@@ -693,6 +710,20 @@ export const api = {
     honoRequest<{ quests: any[]; total: number; page: number; pageSize: number }>(
       `/api/quests?${new URLSearchParams(Object.entries(params || {}).filter(([,v]) => v != null).map(([k,v]) => [k, String(v)])).toString()}`
     ),
+
+  // Q3 plan §2.6 — Server-credited tutorial quest reward. Called from the
+  // zustand quest store on each newly-completed tutorial quest. Idempotent
+  // server-side — repeat calls return 409 with the existing balance.
+  claimTutorialQuest: (questId: string) =>
+    honoRequest<{
+      ok: boolean;
+      questId?: string;
+      credited: number;
+      balance: number;
+      error?: string;
+      reason?: string;
+      message?: string;
+    }>(`/api/quests/tutorial/${questId}/claim`, { method: 'POST' }),
   getQuest: (id: string) =>
     honoRequest<{ quest: any }>(`/api/quests/${id}`),
   acceptQuest: (id: string) =>

@@ -35,6 +35,20 @@ export const events = pgTable(
     buildingId: text('building_id'),
     sessionId: text('session_id'),
     payload: jsonb('payload').$type<Record<string, unknown>>(),
+    /**
+     * Phase 1 anti-farm — sha256(FINGERPRINT_SECRET || browser_fp).
+     * Permanent, ClawVille-scoped (server secret never leaves DB), never
+     * rotated, so a farm running multi-day is detectable. Pre-Phase-1
+     * rows are NULL; daily-cap squashing applies forward only.
+     */
+    fpHash: text('fp_hash'),
+    /**
+     * Phase 1 anti-farm — sha256(FINGERPRINT_SECRET || ip_first_3_octets).
+     * Coarse /24 range so a single user behind dynamic IPs (mobile) keeps a
+     * stable bucket while a single VPS hosting multiple agents collides into
+     * one prefix and gets squashed by the daily cap.
+     */
+    ipPrefixHash: text('ip_prefix_hash'),
   },
   (t) => ({
     idxTypeTs: index('idx_events_type_ts').on(t.eventType, t.ts.desc()),

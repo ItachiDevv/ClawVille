@@ -1,4 +1,11 @@
 // Quest/Objective system — types, definitions, and helpers
+//
+// Q3 plan §2.6 — token rewards now credit server-side via the
+// /api/quests/tutorial/:id/claim endpoint. Reward amounts are sourced from
+// `TUTORIAL_QUEST_REWARDS` in @clawville/shared so client toast and server
+// ledger agree.
+
+import { TUTORIAL_QUEST_REWARDS } from '@clawville/shared';
 
 export type QuestId =
   | 'first-steps'
@@ -38,6 +45,13 @@ export interface QuestDefinition {
   hint: string;
   condition: QuestCondition;
   prerequisites: QuestId[];
+  /**
+   * Q3 plan §2.6 — reward in ClawTokens. Settled server-side on completion
+   * via POST /api/quests/tutorial/:id/claim. Source of truth is
+   * TUTORIAL_QUEST_REWARDS in @clawville/shared; the lookup happens at
+   * QUEST_DEFINITIONS construction time below.
+   */
+  rewardTokens: number;
 }
 
 export const QUEST_DEFINITIONS: QuestDefinition[] = [
@@ -49,6 +63,7 @@ export const QUEST_DEFINITIONS: QuestDefinition[] = [
     hint: 'Use WASD or arrow keys to move your agent around the map',
     condition: { type: 'counter', counterKey: 'totalDistanceMoved', threshold: 200 },
     prerequisites: [],
+    rewardTokens: TUTORIAL_QUEST_REWARDS['first-steps'],
   },
   {
     id: 'building-explorer',
@@ -58,6 +73,7 @@ export const QUEST_DEFINITIONS: QuestDefinition[] = [
     hint: 'Walk near a building and press E to enter',
     condition: { type: 'visitedBuildings', threshold: 1 },
     prerequisites: ['first-steps'],
+    rewardTokens: TUTORIAL_QUEST_REWARDS['building-explorer'],
   },
   {
     id: 'npc-chatter',
@@ -67,6 +83,7 @@ export const QUEST_DEFINITIONS: QuestDefinition[] = [
     hint: 'Enter a building and type a message to chat with the character inside',
     condition: { type: 'counter', counterKey: 'npcMessagesSent', threshold: 2 },
     prerequisites: ['building-explorer'],
+    rewardTokens: TUTORIAL_QUEST_REWARDS['npc-chatter'],
   },
   {
     id: 'book-worm',
@@ -76,6 +93,7 @@ export const QUEST_DEFINITIONS: QuestDefinition[] = [
     hint: 'Enter a shop and click Buy on a book',
     condition: { type: 'counter', counterKey: 'booksBought', threshold: 1 },
     prerequisites: ['building-explorer'],
+    rewardTokens: TUTORIAL_QUEST_REWARDS['book-worm'],
   },
   {
     id: 'pet-whisperer',
@@ -85,6 +103,7 @@ export const QUEST_DEFINITIONS: QuestDefinition[] = [
     hint: 'Click the chat pill at the bottom to talk to your agent',
     condition: { type: 'counter', counterKey: 'petMessagesSent', threshold: 3 },
     prerequisites: ['npc-chatter'],
+    rewardTokens: TUTORIAL_QUEST_REWARDS['pet-whisperer'],
   },
   {
     id: 'agent-scholar',
@@ -94,6 +113,7 @@ export const QUEST_DEFINITIONS: QuestDefinition[] = [
     hint: 'Open Inventory (gear menu) and click Read to Agent on a book',
     condition: { type: 'counter', counterKey: 'knowledgeLearned', threshold: 3 },
     prerequisites: ['book-worm'],
+    rewardTokens: TUTORIAL_QUEST_REWARDS['agent-scholar'],
   },
   {
     id: 'deep-explorer',
@@ -103,6 +123,7 @@ export const QUEST_DEFINITIONS: QuestDefinition[] = [
     hint: 'Explore the reef — walk near buildings and press E to enter each one',
     condition: { type: 'visitedBuildings', threshold: 5 },
     prerequisites: ['building-explorer'],
+    rewardTokens: TUTORIAL_QUEST_REWARDS['deep-explorer'],
   },
   {
     id: 'bot-master',
@@ -112,6 +133,7 @@ export const QUEST_DEFINITIONS: QuestDefinition[] = [
     hint: 'Set up an OpenClaw bot to join the reef',
     condition: { type: 'openClaw' },
     prerequisites: ['deep-explorer'],
+    rewardTokens: TUTORIAL_QUEST_REWARDS['bot-master'],
   },
   // ── Q2 Activity Portals tutorial quests (chunk #9) ────────────────────
   // Per `.claude/plans/q2-research/frontend-spec.md` §9.1 — drive players
@@ -124,6 +146,7 @@ export const QUEST_DEFINITIONS: QuestDefinition[] = [
     hint: 'Use the sidebar Quick Queue → Bumper Shells to find a match',
     condition: { type: 'counter', counterKey: 'activityMatchesPlayed', threshold: 1 },
     prerequisites: ['building-explorer'],
+    rewardTokens: TUTORIAL_QUEST_REWARDS['first-match'],
   },
   {
     id: 'first-win',
@@ -133,5 +156,6 @@ export const QUEST_DEFINITIONS: QuestDefinition[] = [
     hint: 'Ram opponents off the edge in Bumper Shells — last shell standing wins.',
     condition: { type: 'counter', counterKey: 'activityMatchesWon', threshold: 1 },
     prerequisites: ['first-match'],
+    rewardTokens: TUTORIAL_QUEST_REWARDS['first-win'],
   },
 ];

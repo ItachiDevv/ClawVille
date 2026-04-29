@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { useQuestStore } from '@/stores/quest';
+import { useQuestStore, retryUnclaimedRewards } from '@/stores/quest';
 import { QUEST_DEFINITIONS, type QuestId } from '@/lib/quests';
 import { useGameStore } from '@/stores/game';
 
@@ -15,6 +15,15 @@ export default function QuestTracker() {
   const progress = useQuestStore((s) => s.progress);
   const getProgress = useQuestStore((s) => s.getProgress);
   const shownIntro = useRef(false);
+
+  // Q3 plan §2.6 + audit-fix 2026-04-29 — settle any locally-completed
+  // tutorial quests whose server-side credit didn't land due to a one-time
+  // network failure. Server is idempotent (409 = already_claimed = no-op);
+  // worst case is one silent round-trip per locally-completed quest on first
+  // mount per session.
+  useEffect(() => {
+    void retryUnclaimedRewards();
+  }, []);
 
   // Only show after tutorial dismissed
   useEffect(() => {
