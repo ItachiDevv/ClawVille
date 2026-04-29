@@ -73,8 +73,8 @@ const N_SECTIONS = 80;
 // invisible and water dominates the visible canyon channel. Cliff face
 // drops from y=0 → y=-180 (water-line) inside the corridor, so cinematic
 // player POV still sees cliff walls on each side.
-// option-A shallow canyon: cliff face only 50wu tall (was 180), water at y=-60.
-const PROFILE_Y: readonly number[] = [0, 0, -50, -80, -100];
+// option-C deep canyon (200wu) — same Y profile as iter-6.
+const PROFILE_Y: readonly number[] = [0, 0, -180, -220, -250];
 
 /**
  * Absolute wu added to halfWidth for each profile vertex.
