@@ -244,6 +244,158 @@ const _cliffMat = new THREE.MeshStandardMaterial({
   fog:         true,
 });
 
+/**
+ * Canyon wall backfill material — identical color/roughness to cliff boulders.
+ * DoubleSide so the ribbon is visible from the interior of the canyon regardless
+ * of winding order. This is the continuous solid wall behind the boulders.
+ */
+const _wallMat = new THREE.MeshStandardMaterial({
+  color:       new THREE.Color('#8a6e5c'),   // same warm stone
+  roughness:   0.9,
+  metalness:   0.0,
+  flatShading: true,
+  side:        THREE.DoubleSide,
+  fog:         true,
+});
+
+// ─── Canyon wall geometry builder ─────────────────────────────────────────────
+
+/**
+ * Lateral position of the wall surface relative to the corridor half-width.
+ * WALL_INSET=0: wall inner edge is flush with the corridor boundary.
+ * Small inset keeps the wall just outside the visible racing corridor.
+ */
+const WALL_SAMPLES   = 128;  // cross-section count — matches ground ribbon density
+const WALL_Y_BOTTOM  = -200; // waterline (world y)
+const WALL_Y_TOP     =    0; // ground level (world y)
+const WALL_THICKNESS =  150; // radial depth of wall (wu) — wide enough to hide gaps
+
+/**
+ * Builds a vertical wall ribbon swept along the spline for one bank.
+ *
+ * Cross-section per sample:
+ *   v0 = (lateralInner, WALL_Y_BOTTOM, z)   — inner bottom
+ *   v1 = (lateralInner, WALL_Y_TOP,    z)   — inner top
+ *   v2 = (lateralOuter, WALL_Y_BOTTOM, z)   — outer bottom
+ *   v3 = (lateralOuter, WALL_Y_TOP,    z)   — outer top
+ *
+ * Between adjacent samples i and i+1, two quads are built:
+ *   inner face: (v0i, v1i, v0i+1) + (v1i, v1i+1, v0i+1)   — faces inward
+ *   top cap:    (v1i, v3i, v1i+1) + (v3i, v3i+1, v1i+1)   — faces upward
+ *
+ * Since we use DoubleSide material, winding order only affects flat-shading
+ * normal direction — computeVertexNormals() corrects the shading after.
+ *
+ * @param side  +1 = left bank (+n direction), -1 = right bank (-n direction)
+ */
+function buildCanyonWallGeo(side: 1 | -1): THREE.BufferGeometry {
+  const SAMPLES = WALL_SAMPLES;
+  const vertsPerSection = 4;
+  const totalVerts = (SAMPLES + 1) * vertsPerSection;
+
+  const positions = new Float32Array(totalVerts * 3);
+  const normals   = new Float32Array(totalVerts * 3);
+  const uvs       = new Float32Array(totalVerts * 2);
+
+  // Build vertex positions
+  for (let i = 0; i <= SAMPLES; i++) {
+    const t   = i / SAMPLES;
+    const c   = clientSpline.centerlineAt(t);
+    const n   = clientSpline.normalAt(t);
+    const hw  = clientSpline.widthAt(t);
+
+    // Wall lateral positions: inner edge = corridor boundary, outer = inner + thickness
+    const innerDist = hw;
+    const outerDist = hw + WALL_THICKNESS;
+
+    // Normal direction: +side pushes outward from centerline
+    const nx = n.x * side;
+    const nz = n.z * side;
+
+    const baseV = i * vertsPerSection;
+
+    // v0 — inner bottom
+    positions[(baseV + 0) * 3 + 0] = c.x + nx * innerDist;
+    positions[(baseV + 0) * 3 + 1] = WALL_Y_BOTTOM;
+    positions[(baseV + 0) * 3 + 2] = c.z + nz * innerDist;
+
+    // v1 — inner top
+    positions[(baseV + 1) * 3 + 0] = c.x + nx * innerDist;
+    positions[(baseV + 1) * 3 + 1] = WALL_Y_TOP;
+    positions[(baseV + 1) * 3 + 2] = c.z + nz * innerDist;
+
+    // v2 — outer bottom
+    positions[(baseV + 2) * 3 + 0] = c.x + nx * outerDist;
+    positions[(baseV + 2) * 3 + 1] = WALL_Y_BOTTOM;
+    positions[(baseV + 2) * 3 + 2] = c.z + nz * outerDist;
+
+    // v3 — outer top
+    positions[(baseV + 3) * 3 + 0] = c.x + nx * outerDist;
+    positions[(baseV + 3) * 3 + 1] = WALL_Y_TOP;
+    positions[(baseV + 3) * 3 + 2] = c.z + nz * outerDist;
+
+    // Placeholder normals (will be recomputed below)
+    const inwardNx = -nx;
+    const inwardNz = -nz;
+    for (let vi = 0; vi < vertsPerSection; vi++) {
+      normals[(baseV + vi) * 3 + 0] = inwardNx;
+      normals[(baseV + vi) * 3 + 1] = 0;
+      normals[(baseV + vi) * 3 + 2] = inwardNz;
+    }
+
+    // UVs: u = t (spline progress), v = 0/1 for bottom/top
+    const u = t;
+    uvs[(baseV + 0) * 2 + 0] = u; uvs[(baseV + 0) * 2 + 1] = 0; // inner bottom
+    uvs[(baseV + 1) * 2 + 0] = u; uvs[(baseV + 1) * 2 + 1] = 1; // inner top
+    uvs[(baseV + 2) * 2 + 0] = u; uvs[(baseV + 2) * 2 + 1] = 0; // outer bottom
+    uvs[(baseV + 3) * 2 + 0] = u; uvs[(baseV + 3) * 2 + 1] = 1; // outer top
+  }
+
+  // Build index buffer — 2 quads per segment (inner face + top cap)
+  // Each quad = 2 triangles = 6 indices.
+  // Segments: SAMPLES. Quads per segment: 2. Total indices: SAMPLES * 2 * 6 = SAMPLES * 12.
+  const indices = new Uint32Array(SAMPLES * 12);
+  let idx = 0;
+
+  for (let i = 0; i < SAMPLES; i++) {
+    const base  = i * vertsPerSection;
+    const baseN = (i + 1) * vertsPerSection;
+
+    // v0i, v1i, v2i, v3i = inner-bottom, inner-top, outer-bottom, outer-top (this section)
+    // v0n, v1n, v2n, v3n = same verts for next section
+    const v0i = base + 0; const v1i = base + 1;
+    const v2i = base + 2; const v3i = base + 3;
+    const v0n = baseN + 0; const v1n = baseN + 1;
+    const v2n = baseN + 2; const v3n = baseN + 3;
+
+    // Inner face (the wall face visible from inside the canyon):
+    // Quad: (v0i, v1i, v0n, v1n) — two tris
+    // Winding: DoubleSide + computeVertexNormals handles direction.
+    indices[idx++] = v0i; indices[idx++] = v1i; indices[idx++] = v0n;
+    indices[idx++] = v1i; indices[idx++] = v1n; indices[idx++] = v0n;
+
+    // Top cap face (horizontal ledge at ground level, y=WALL_Y_TOP):
+    // Quad: (v1i, v3i, v1n, v3n) — two tris
+    indices[idx++] = v1i; indices[idx++] = v3i; indices[idx++] = v1n;
+    indices[idx++] = v3i; indices[idx++] = v3n; indices[idx++] = v1n;
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('normal',   new THREE.BufferAttribute(normals,   3));
+  geo.setAttribute('uv',       new THREE.BufferAttribute(uvs,       2));
+  geo.setIndex(new THREE.BufferAttribute(indices, 1));
+  geo.computeVertexNormals(); // override placeholder normals with correct face normals
+  geo.computeBoundingSphere();
+
+  return geo;
+}
+
+// Pre-built module-scope wall geometries — built once at module load.
+// These are static (spline is static) so no useEffect needed.
+const _wallGeoLeft  = buildCanyonWallGeo(+1);
+const _wallGeoRight = buildCanyonWallGeo(-1);
+
 // ─── Inner component (renders once GLBs are loaded) ──────────────────────────
 
 interface CliffMeshBuilderProps {
@@ -364,6 +516,27 @@ function CliffMeshBuilder({ scenes }: CliffMeshBuilderProps) {
 
   return (
     <>
+      {/* Continuous wall backfill — renders BEHIND boulders via depth test.
+          Module-scope geometries built at load time (static spline). */}
+      <mesh
+        geometry={_wallGeoLeft}
+        material={_wallMat}
+        frustumCulled={false}
+        matrixAutoUpdate={false}
+        receiveShadow
+        castShadow={false}
+        renderOrder={0}
+      />
+      <mesh
+        geometry={_wallGeoRight}
+        material={_wallMat}
+        frustumCulled={false}
+        matrixAutoUpdate={false}
+        receiveShadow
+        castShadow={false}
+        renderOrder={0}
+      />
+      {/* Boulder clusters — sit on top of the backfill wall, add silhouette variation */}
       <mesh
         ref={leftRef}
         material={_cliffMat}
