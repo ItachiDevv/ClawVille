@@ -56,7 +56,16 @@ const _buildAnchorWorldPos = new THREE.Vector3();
 //          rotY = Math.atan2(dx, dz)  (model faces +Z at rotY=0)
 // Ring layout (radius 56, 36° spacing): all angles are exactly atan2(−sin_i, −cos_i)
 // where θ_i = −π/2 + i*(π/5). Values recomputed for 2026-04-16 ring layout.
-const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number; rotYOffset?: number }> = {
+/**
+ * scaleOverride: bypasses computeBuildingScale entirely. Use for GLBs that
+ * confuse the bbox-based auto-scale — typically GLBs that use
+ * `EXT_mesh_gpu_instancing` where the source mesh bbox doesn't reflect
+ * the instanced-rendered extent.
+ *
+ * yOffset: world-unit shift applied AFTER scaling. Negative values lower the
+ * building (use to ground a floating model whose pivot isn't at its base).
+ */
+const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number; rotYOffset?: number; scaleOverride?: number }> = {
   // i=0  center=(80,24)    dx=0,   dz=56   → atan2(0,56)=0
   'canvas-studio':     { model: '/models/pineapple-house.glb',     yOffset: 0, rotY:  0.000 },
   // i=1  center=(113,35)   dx=-33, dz=45   → atan2(-33,45)≈-0.632
@@ -82,7 +91,9 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // i=8  center=(27,63)    dx=53,  dz=17   → atan2(53,17)≈1.259
   // sandy-treedome.glb = Sandy's Treedome (CC-BY, landon141, Sketchfab; user-supplied, decimated
   //   86MB→3.56MB via @gltf-transform/cli optimize+simplify+draco on 2026-04-29).
-  'channel-bridge':    { model: '/models/sandy-treedome.glb',      yOffset: 0, rotY:  1.259 },
+  // Uses EXT_mesh_gpu_instancing — auto-scaler reads source-geo bbox (small) and
+  //   misses the instanced grass/leaf extent. scaleOverride + yOffset hand-tuned.
+  'channel-bridge':    { model: '/models/sandy-treedome.glb',      yOffset: -50, rotY:  1.259, scaleOverride: 60 },
   // i=9  center=(47,35)    dx=33,  dz=45   → atan2(33,45)≈0.632
   // patricks-rock.glb = Patrick's Rock (CC-BY, Yanez Designs, Sketchfab, 3.5k tris)
   // building-submarine.glb is now a fixed-landmark decoration only (arena-terrain.tsx FixedLandmarks)
@@ -310,6 +321,13 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
   const { cloned, buildingScale, pivotOffsetX, pivotOffsetY, pivotOffsetZ } = useMemo(() => {
     const c = scene.clone(true);
     makeObject3DWebGPUSafe(c);
+    // scaleOverride bypasses bbox-based auto-scaling for GLBs that confuse the
+    // measurement (e.g. EXT_mesh_gpu_instancing — source-mesh bbox doesn't
+    // reflect the instanced render extent). Pivot offsets are zero; yOffset
+    // is applied by the caller to ground the model.
+    if (config.scaleOverride != null) {
+      return { cloned: c, buildingScale: config.scaleOverride, pivotOffsetX: 0, pivotOffsetY: 0, pivotOffsetZ: 0 };
+    }
     // Strip named decorative meshes (Flowers, Path, etc.) before measuring so
     // flat non-structural planes don't inflate the XZ bbox and trigger the
     // MAX_FOOTPRINT cap (pineapple-house.glb: removes Flowers+Path → height 800).
@@ -320,7 +338,7 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
     stripGroundPlanes(c);
     const { scale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz } = computeBuildingScale(c);
     return { cloned: c, buildingScale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz };
-  }, [scene, config.model]);
+  }, [scene, config.model, config.scaleOverride]);
 
   // Dispose cloned geometry + materials on unmount (navigation away / hot-reload)
   useEffect(() => {
