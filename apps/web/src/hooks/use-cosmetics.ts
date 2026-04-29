@@ -14,6 +14,7 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useGameStore } from '@/stores/game';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
 
@@ -170,6 +171,19 @@ export function useEquipCosmetic() {
     onMutate: async ({ skuId, equipped }) => {
       await qc.cancelQueries({ queryKey: ['cosmetics', 'owned'] });
       const prev = qc.getQueryData<OwnedCosmeticsResponse>(['cosmetics', 'owned']);
+
+      // Toast feedback — fire on mutation start so the user sees something
+      // happens before the GLB attach completes (~100-300ms first time,
+      // instant after cache warm). Read the SKU display name from the
+      // cached `owned` snapshot, which the drawer already populated. If
+      // the sku isn't found there we fall back to a generic message.
+      const item = prev?.owned.find((o) => o.sku.id === skuId);
+      const name = item?.sku.displayName ?? 'cosmetic';
+      const verb = equipped ? 'Equipping' : 'Unequipping';
+      // addToast is called eagerly (not via React) so it works inside
+      // useMutation callbacks without rules-of-hooks violations.
+      useGameStore.getState().addToast('✨', `${verb} ${name}…`, 1800);
+
       if (prev) {
         qc.setQueryData<OwnedCosmeticsResponse>(['cosmetics', 'owned'], {
           ...prev,
@@ -180,12 +194,28 @@ export function useEquipCosmetic() {
           ),
         });
       }
-      return { prev };
+      return { prev, name };
     },
     onError: (_err, _vars, context) => {
       if (context?.prev) {
         qc.setQueryData(['cosmetics', 'owned'], context.prev);
       }
+      useGameStore.getState().addToast(
+        '⚠️',
+        `Couldn't equip ${context?.name ?? 'cosmetic'} — try again`,
+        2400,
+      );
+    },
+    onSuccess: (_data, vars, context) => {
+      // Server confirmed the toggle. Confirmation toast lands ~ when the
+      // cosmetic-loader's GLB attach is about to render.
+      useGameStore.getState().addToast(
+        vars.equipped ? '✅' : '👋',
+        vars.equipped
+          ? `${context?.name ?? 'Cosmetic'} equipped`
+          : `${context?.name ?? 'Cosmetic'} unequipped`,
+        1600,
+      );
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: ['cosmetics', 'owned'] });
