@@ -134,6 +134,8 @@
 
 - [Phong glint reflects away from +Z chase cam when sun has +Z component](gotchas/phong-glint-reflects-away-from-chase-cam.md) — dot(reflect(-sunDir,(0,1,0)), viewDir) is negative when sun.z>0 and cam faces +Z → zero glint; scalar bump only helps on curve segments; real fix is sun.z<0 (2026-04-29)
 
+- [Spline-ribbon world-XZ noise + large amplitude = sawtooth from altitude](gotchas/ground-ribbon-world-xz-noise-sawtooth.md) — outer ribbon edge covers 2.4× more world-XZ per t-step than inner on curves → non-uniform noise + ±50wu amplitude → zigzag shark teeth from 23770wu altitude; fix: UV-space noise + ±12wu cap
+
 ## Gotchas (more)
 - [VRM half-rate early-return gate kills mixer at mid-distance](gotchas/vrm-half-rate-gate-kills-mixer.md) — early-return above animator calls throttles the mixer too, not just spring bones; always gate spring-bone only, keep mixer call unconditional at 60Hz.
 - [skeleton.update restore must use Map, not index-aligned Array](gotchas/skeleton-update-array-traversal-order.md) — index-aligned Array misaligns if scene graph mutates between construction and disposal; use Map<THREE.Skeleton, fn> + Map.forEach in dispose; also `for...of map` iterates [k,v] pairs — use `.values()` to iterate functions.

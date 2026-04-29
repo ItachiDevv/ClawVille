@@ -316,21 +316,33 @@ const _groundVertexShader = /* glsl */ `
   void main() {
     vUv = uv;
 
-    // 2026-04-29 iter-7c: with two strips bracketing the canyon (no terrain
-    // INSIDE the corridor), there's no need for the riverMask falloff anymore.
-    // Hills happen across the entire strip — no risk of them poking through
-    // the river bed since the river area is a literal gap. Set mask to 1.0
-    // everywhere. Old logic used local position.x which was wrong post-split
-    // (strip center is FAR from river, not at it).
+    // 2026-04-29 iter-7c: no riverMask needed — strips are fully outside corridor.
     float riverMask = 1.0;
     vRiverMask = riverMask;
 
-    // Multi-octave value noise displacement (Y world up)
-    float scale1 = 0.0006;
-    float scale2 = 0.0015;
-    float n1 = valueNoise(position.xz * scale1) * 2.0 - 1.0;
-    float n2 = valueNoise(position.xz * scale2) * 0.5 - 0.25;
-    float noiseVal = (n1 + n2) * 50.0 * riverMask; // max ±50wu, zero at river
+    // 2026-04-29 iter-9 FIX: sample noise in UV space (u=lateral [0,1], v=spline-t [0,1])
+    // NOT in world-space position.xz.
+    //
+    // WHY: The ribbon vertices live at 4000-10000wu from the spline centerline in
+    // world XZ. Sampling position.xz directly caused two problems:
+    //   1. Non-uniform noise density — the outer edge of the ribbon covers 2.4× more
+    //      world-XZ per t-step than the inner edge on curved sections, stretching noise
+    //      features unevenly and creating sharp transitions that look like zigzag/sawtooth
+    //      from the top-down camera at altitude 23770wu.
+    //   2. The old ±50wu amplitude equals 54% of the lateral vertex step (93wu), making
+    //      adjacent displaced vertices form near-90° angles — which renders as shark-teeth
+    //      rather than smooth rolling hills when viewed from high altitude.
+    //
+    // UV sampling gives uniform parameterisation regardless of spline curvature.
+    // uv.x = lateral frac [0,1] (inner→outer), uv.y = spline t [0,1] (start→finish).
+    // Scaled to produce ~6 noise hills laterally and ~14 along the track.
+    vec2 uvScale1 = vec2(6.0, 14.0);
+    vec2 uvScale2 = vec2(14.0, 30.0);
+    float n1 = valueNoise(uv * uvScale1) * 2.0 - 1.0;
+    float n2 = valueNoise(uv * uvScale2) * 0.5 - 0.25;
+    // Amplitude capped to ±12wu — safe for 93wu lateral step from altitude 23770wu.
+    // Old ±50wu was the root cause of the sawtooth appearance.
+    float noiseVal = (n1 + n2) * 12.0 * riverMask;
 
     vDisp = noiseVal;
 
@@ -388,7 +400,8 @@ const _groundFragmentShader = /* glsl */ `
     groundColor = mix(groundColor, grassLight * 1.2, bermHighlight * 0.4);
 
     // Displacement-based darkening: lower spots (shadow pools)
-    float dispNorm = clamp(vDisp / 50.0, -1.0, 1.0);
+    // Normalizer matches vertex shader amplitude cap (±12wu, was ±50wu).
+    float dispNorm = clamp(vDisp / 12.0, -1.0, 1.0);
     groundColor *= 1.0 + dispNorm * 0.08;
 
     gl_FragColor = vec4(groundColor, 1.0);
