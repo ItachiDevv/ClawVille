@@ -168,11 +168,13 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
     },
   },
 
-  // Slot 8 — channel-bridge — building-shell (interim Sandy's Treedome)
-  // sandy.glb: non-skinned accessories have bbox h≈0.29 → computed > CLAMP_MAX → bind-pose
-  // fallback gives correct body height. scaleOverride removed (was 140, rendered at ~11487 wu
-  // because native body h ≈ 77–82 units × 140 = 10780+).
-  'channel-bridge': { name: 'Sandy', model: '/models/characters/sandy.glb' },
+  // Slot 8 — channel-bridge — sandy-treedome (real Sandy's Treedome)
+  // sandy.glb (2026-04-29): replaced 43KB static GLB with Mixamo-rigged Sandy from
+  // mustafatylan68 (CC-BY 4.0, Sketchfab uid 9fda6cf3...). 1 skin, 2 skinned meshes,
+  // 1 animation clip 'mixamo.com' — runtime AnimationMixer auto-plays it (idle).
+  // Native bind-pose ~1.7m; computeNormalizedScale produces scale ≈ 56 → ~96wu render.
+  // scaleOverride=106 (1.8x) matches the Pearl/Mrs.Puff visual ratio with player VRM.
+  'channel-bridge': { name: 'Sandy', model: '/models/characters/sandy.glb', scaleOverride: 106 },
 
   // Slot 9 — security-fortress — building-cave (interim Patrick's Rock)
   'security-fortress': { name: 'Patrick', model: '/models/characters/patrick.glb' },
