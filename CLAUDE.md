@@ -69,32 +69,69 @@ Complex AI integrations: create a multi-phase plan in `.claude/plans/` + researc
 
 ---
 
-## MANDATORY: 3D / Blender / long tasks run as PARALLEL ULTRATHINK TEAMS
+## MANDATORY: 3D / Blender / long tasks run as COLLABORATIVE ULTRATHINK TEAMS
 
-**Solo agents are forbidden for any of:**
+**A "team" is multiple agents working SEQUENTIALLY on the SAME concern, stacking perspectives.** It is NOT N agents working on N different concerns in parallel — that's parallelization, not collaboration. The point of a team is the audit step, not the throughput.
 
-- **3D work** — Three.js / R3F / shaders / GLB-GLTF / post-proc / materials / lights / cameras / TSL / WGSL / WebGPU under `apps/web/src/lib/three/**`, `apps/web/src/components/three/**`, `apps/web/public/models/**`, render-loop concerns, animations, rigs, bone discovery, atmosphere/particles/volumetrics/overdraw, new world-surface 3D objects. (Spawn `3da`.)
-- **Blender pipelines** — multi-asset exports, mesh edits, rigging, MMD/glTF/FBX imports, Mixamo or Marvelous Designer flows. (Spawn `blender07`.)
+This rule corrects an earlier (2026-04-29 morning) version that mis-defined "team" as parallel-split. User clarified the intent same day.
+
+### When teams are mandatory
+
+- **3D work** — Three.js / R3F / shaders / GLB-GLTF / post-proc / materials / lights / cameras / TSL / WGSL / WebGPU under `apps/web/src/lib/three/**`, `apps/web/src/components/three/**`, `apps/web/public/models/**`, render-loop concerns, animations, rigs, bone discovery, atmosphere/particles/volumetrics/overdraw, new world-surface 3D objects. (Use `3da` agents.)
+- **Blender pipelines** — multi-asset exports, mesh edits, rigging, MMD/glTF/FBX imports, Mixamo or Marvelous Designer flows. (Use `blender07` agents.)
 - **Any task** estimated > 5 min agent runtime, > 300 LOC across files, or touching ≥ 3 files in different subsystems.
-- Anything the user described as "polish", "iterate", "rework", or "make it feel like X".
+- Anything the user described as "polish", "iterate", "rework", "make it feel like X", or with quality verbs ("elite", "high standards", "professional").
 
-**Spawn pattern (orchestrator's job — never delegated):**
+### Per-concern collaboration sequence
 
-1. **Decompose first.** Break the task into N independent file-scoped or concern-scoped slices BEFORE spawning anything.
-2. **One file per agent.** NO two agents may edit the same file. Use NEW files (`terrain-shader.tsx`, `racing-karts.tsx`, `water-material.tsx`, …) and let the orchestrator do final wire-up of imports + JSX in the parent.
-3. **Spawn all N in parallel** in a single message with multiple `Agent` tool uses (run_in_background where possible).
-4. **Every agent prompt** must contain the literal phrase **"use ultrathink reasoning before writing code"** in its first paragraph. The Agent tool has no thinking-mode flag — the prompt text is the only channel.
-5. **Orchestrator handles:** planning, decomposition, cross-file wiring, `bun run build`, push, manual Coolify deploy, browser verification (Playwright `mcp__playwright__*` or firecrawl hosted screenshot when the local Iris Xe can't render). Do NOT delegate any step of the ship loop.
+For EACH concern (a coherent file or scoped change):
 
-**Failure mode this prevents:** solo agent on a 4-task brief takes 12+ min sequentially, can fail mid-way, blocks progress on every other slice. Four parallel file-scoped agents finish in ~max(individual runtime); one agent's failure doesn't block the others. Documented 2026-04-29 after a session running solo 3da on bank-foam + terrain + corridor-widen + animated-karts ate 30+ min and forced a kill-and-respawn.
+1. **Implementer agent** — receives the brief, uses ultrathink, drafts the code. Reports what they wrote + key decisions.
+2. **Auditor agent** — receives the brief AND the implementer's diff/file. Uses ultrathink. Reviews against:
+   - Stated requirements
+   - Iris Xe gotchas (`InstancedMesh + ShaderMaterial`, drei `<Text>`/`<Billboard>`, etc.)
+   - Standing patterns in `.claude/memory/threejs/`
+   - The user's stated quality bar
+   - Returns either **APPROVED** or **BLOCKING ISSUES** with specific actionable items.
+3. If BLOCKING ISSUES: spawn a Fixer agent (or send the implementer back via SendMessage) with the audit feedback. Re-audit. Loop until APPROVED.
+4. Orchestrator commits the approved concern.
 
-**3da context:** agent def at `.claude/agents/3da.md`; memory at `.claude/memory/threejs/` (`gotchas/`, `patterns/`, `solutions/`, `performance/`, `webgpu/`, `MEMORY.md`). Both committed. Do NOT use user-level paths — migrated into project 2026-04-16.
+Optional third role for high-stakes work: **Reconciler / Critic** — a separate agent who re-implements the same concern from scratch given the brief, then compares both implementations and recommends one. Use this when the cost of getting it wrong dwarfs the cost of an extra agent run.
+
+### Concerns: sequential or parallel?
+
+- If concerns are TRULY INDEPENDENT (different files, no shared state): each concern's team can run in parallel with other concern-teams.
+- If concerns share state or build on each other: sequence them.
+- Default to sequential when in doubt — sequential never deadlocks on cross-file conflicts and the audit step is what we're paying for, not throughput.
+
+### Every agent prompt MUST include
+
+The literal phrase **"use ultrathink reasoning before writing code"** (or "before reviewing code" for auditors) in its first paragraph. The Agent tool has no thinking-mode flag — the prompt text is the only channel.
+
+### Orchestrator responsibilities (never delegated)
+
+- Decompose task into concerns
+- Run the per-concern Implementer → Auditor → Fix → Re-audit loop
+- Wire across concerns after each concern is approved
+- Build / push / manual Coolify deploy / browser verification (Playwright `mcp__playwright__*` or firecrawl hosted screenshot when the local Iris Xe can't render)
+
+### What this rule was correcting
+
+Earlier this same day I (orchestrator) misread "team" as "parallel split". I spawned 4 agents in parallel where each agent did a different file's work alone — water-material, terrain-shader, racing-karts, track-widen. Each agent worked in isolation; no audit; no second perspective. User clarified: that's parallelization, not collaboration. The Implementer-then-Auditor sequence is the actual point.
+
+### 3da context
+
+Agent def at `.claude/agents/3da.md`; memory at `.claude/memory/threejs/` (`gotchas/`, `patterns/`, `solutions/`, `performance/`, `webgpu/`, `MEMORY.md`). Both committed. Do NOT use user-level paths — migrated into project 2026-04-16.
 
 **3da burns prevented:** `InstancedMesh + ShaderMaterial` silent WebGPU crash, drei `<Text>`/`<Billboard>` killing Iris Xe, per-frame `new Vector3()` GC thrash, pipeline compile spikes, rotation sign errors.
 
-**Blender notes:** user's local Blender is exclusive. Tell blender07 to launch a NEW Blender instance or fall back to direct GLB downloads via curl from CC0/CC-BY sources (Polyhaven, Sketchfab, Kenney). Don't loop on Blender exclusivity.
+### Blender notes
 
-**Non-3D, ≤300 LOC, single-file tasks** (small API route, single DB column add, one React modal tweak, env var add) do NOT require teams — solo Agent or inline edit is fine. The bar is "would this realistically take a single agent >5 min or fan out across files?"
+User's local Blender is exclusive. Tell blender07 to launch a NEW Blender instance or fall back to direct GLB downloads via curl from CC0/CC-BY sources (Polyhaven, Sketchfab, Kenney, Quaternius). Don't loop on Blender exclusivity.
+
+### Single-file ≤ 300 LOC tasks
+
+Trivial work (small API route, single DB column add, one React modal tweak, env var add) may still skip teams. Bar: "would the cost of getting this wrong justify a second agent's review?" If yes → team. If no → solo or inline.
 
 Sea-themed OpenClaw game on ElizaOS. Users create a avatar, explore a 3D/2D sea-floor world with 10 buildings, chat with AI agents teaching OpenClaw development.
 

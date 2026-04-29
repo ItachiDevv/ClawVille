@@ -66,8 +66,10 @@ import {
 } from './reef-race-config';
 import { clientSpline } from './reef-race-spline-instance';
 
-// ─── Water surface Y — must match WATER_Y in river-scene.tsx ────────────────
-const WATER_Y = 40;
+// ─── Water surface Y — MUST match WATER_Y in river-scene.tsx ────────────────
+// 2026-04-29 iter-5 cascade: water sunk into the canyon. Old +40 made karts
+// ride 80 wu above the actual water surface after river-scene cascaded to -40.
+const WATER_Y = -40;
 
 // ─── Race parameters ─────────────────────────────────────────────────────────
 
