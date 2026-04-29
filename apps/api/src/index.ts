@@ -18,6 +18,19 @@ import { activityQueueService } from './services/activity/activity-queue';
 import { activityWsHub } from './services/activity/activity-ws-hub';
 import { bumperShellsSim } from './services/activity/sim/bumper-shells-sim';
 import { reefRaceSim } from './services/activity/sim/reef-race-sim';
+import { reefRaceSplineSim } from './services/activity/sim/reef-race-spline-sim';
+import { REEF_RACE_USE_SPLINE } from './services/activity/sim/reef-race-config';
+
+/**
+ * Reef Race v2 sim selector. Mirrors the activity-ws-hub one — the env flag
+ * routes every reef-race lifecycle entry point (startRoom, broadcastFn,
+ * endedFn, integrityForfeitFn, computeResults) to the spline sim when true,
+ * the ellipse sim when false. Both sims expose identical public method
+ * shapes for the methods this dispatcher calls.
+ */
+const reefRaceImpl = REEF_RACE_USE_SPLINE
+  ? (reefRaceSplineSim as unknown as typeof reefRaceSim)
+  : reefRaceSim;
 import { loadRacingProfiles } from './services/activity/pet-profile-loader';
 import { botPool } from './services/activity/bots/bot-pool';
 import { getBotControllerFactory } from './services/activity/bots/bot-controller';
@@ -363,7 +376,7 @@ startSimulation(arenaMode);
           }
           const petProfiles = await loadRacingProfiles(humanPetIds, botPetIds);
 
-          reefRaceSim.startRoom(
+          reefRaceImpl.startRoom(
             room.id,
             room.activityId,
             participantIds,
@@ -418,7 +431,7 @@ startSimulation(arenaMode);
               scoreMs: null,
             }));
         case 'reef-race':
-          return reefRaceSim
+          return reefRaceImpl
             .computeResults(room.id)
             .map((r) => ({
               petId: r.petId,
@@ -463,24 +476,27 @@ startSimulation(arenaMode);
     });
 
     // ─── Chunk #5 — Reef Race sim wiring (mirrors Bumper above) ─────────
-    reefRaceSim.setBroadcastFn((roomId, frame) => {
+    // v2: routed through `reefRaceImpl` so REEF_RACE_USE_SPLINE flips both
+    // the lifecycle wires AND the lookup paths in lockstep. The OTHER sim
+    // is left silent (no broadcast/end wiring) so a misrouted call is loud.
+    reefRaceImpl.setBroadcastFn((roomId, frame) => {
       if (frame.type === 'snapshot.delta' || frame.type === 'snapshot.keyframe') {
         activityWsHub.broadcastSnapshot(roomId, frame);
       } else {
         activityWsHub.broadcastEvent(roomId, frame);
       }
     });
-    reefRaceSim.setEndedFn((roomId) => {
+    reefRaceImpl.setEndedFn((roomId) => {
       void activityRoomManager
         .transitionRoom(roomId, 'results')
         .then(() => {
-          reefRaceSim.stopRoom(roomId);
+          reefRaceImpl.stopRoom(roomId);
         })
         .catch((err) => {
           console.error('[API] Reef sim end → RESULTS transition failed:', err);
         });
     });
-    reefRaceSim.setIntegrityForfeitFn((roomId, petId) => {
+    reefRaceImpl.setIntegrityForfeitFn((roomId, petId) => {
       activityWsHub.sendToPet(roomId, petId, {
         type: 'error',
         code: 'integrity',

@@ -787,3 +787,227 @@ describe('ReefRaceBot — Phase 2 heuristics (P2-T30..P2-T34)', () => {
     expect(awareAvgMin).toBeLessThan(blindAvgMin - 5);
   });
 });
+
+// ─── v2 spline-bot path (REEF_RACE_USE_SPLINE = true) ──────────────────────
+//
+// These exercise `computeInputSpline` directly via `(bot as any).computeInputSpline`
+// so they run regardless of the REEF_RACE_USE_SPLINE env flag (env is read at
+// module load by the bot's `computeInput` dispatcher; tests bypass that gate to
+// keep the test suite portable). Spec: `.claude/plans/reef-race-v2.md` and
+// architecture §5 of `.claude/plans/reef-race-v2-spline-architecture.md`.
+
+describe('ReefRaceBot — v2 spline path (V2-T1..V2-T4)', () => {
+  // Helper: build a spline view shaped like the spline sim's buildBotRoomView.
+  // self.x = sim X, self.y = sim Z (protocol convention).
+  function makeSplineView(opts: {
+    selfX: number;
+    selfZ: number;
+    selfVx?: number;
+    selfVz?: number;
+    pickups?: ReadonlyArray<{ x: number; y: number; active: boolean }>;
+    nowMs?: number;
+  }): BotRoomView & {
+    pickups?: ReadonlyArray<{ x: number; y: number; active: boolean }>;
+  } {
+    return {
+      selfPetId: 'bot-self',
+      bodies: [
+        {
+          petId: 'bot-self',
+          x: opts.selfX,
+          y: opts.selfZ, // sim Z mapped to view y per spline-sim's protocol map
+          vx: opts.selfVx ?? 0,
+          vy: opts.selfVz ?? 0,
+          rot: 0,
+          alive: true,
+          inventory: [
+            { kind: null, charges: 0, cooldownUntil: 0 },
+            { kind: null, charges: 0, cooldownUntil: 0 },
+          ],
+        },
+      ],
+      arenaRadius: 18000,
+      now: opts.nowMs ?? 5_000,
+      matchStartedAt: 0,
+      pickups: opts.pickups,
+    };
+  }
+
+  it('V2-T1 — follows spline centerline on a straight section (lagoon)', () => {
+    // Lagoon spans z=0..3000 with halfWidth=50 and centerline at x=0. Bot
+    // placed at x=0, z=500 should steer toward +Z (down-track).
+    const bot = createReefRaceBot('bot-self');
+    const view = makeSplineView({ selfX: 0, selfZ: 500 });
+    // Average direction over many trials to wash out jitter.
+    const TRIALS = 60;
+    let sumX = 0;
+    let sumZ = 0;
+    for (let i = 0; i < TRIALS; i++) {
+      const intent = (bot as any).computeInputSpline(
+        view,
+        view.bodies[0],
+        1 / 30,
+      );
+      sumX += intent.dir!.x;
+      sumZ += intent.dir!.y; // protocol y = sim z
+    }
+    const avgX = sumX / TRIALS;
+    const avgZ = sumZ / TRIALS;
+    // Should be predominantly +Z, near-zero X (jitter only).
+    expect(avgZ).toBeGreaterThan(0.9);
+    expect(Math.abs(avgX)).toBeLessThan(0.2);
+  });
+
+  it('V2-T2 — biases inside on a curve (kelp slalom)', () => {
+    // CP3 at z=4125 has slalom +170 X. CP4 at z=5250 swings to -170. Place
+    // the bot at the centerline between them — the curve from CP3 → CP5
+    // bends LEFT (since centerline x is heading from +170 → -170 → +170).
+    // We just want to verify the bot's lateral target is shifted away from
+    // exact centerline. The architecture-doc test is "average lateral
+    // offset is non-zero on a curved segment vs zero on a straight."
+    const bot = createReefRaceBot('bot-self');
+    const view = makeSplineView({ selfX: 0, selfZ: 4500 });
+    // Sample many trials to dampen jitter, project onto the spline normal
+    // at the bot's current t to detect lateral pull.
+    const { ReefSpline } = require('../../sim/reef-race-spline');
+    const { REEF_RACE_DEFAULT_TRACK } = require('../../sim/reef-race-track-layout');
+    const spline = new ReefSpline(REEF_RACE_DEFAULT_TRACK);
+    const TRIALS = 60;
+    const closest = spline.closestPointOnSpline({ x: 0, z: 4500 });
+    const tg = spline.tangentAt(closest.t);
+    // 90° CCW normal of tangent in XZ.
+    const nx = -tg.z;
+    const nz = tg.x;
+    let sumLateralBias = 0;
+    for (let i = 0; i < TRIALS; i++) {
+      const intent = (bot as any).computeInputSpline(
+        view,
+        view.bodies[0],
+        1 / 30,
+      );
+      // Project dir onto the spline normal to measure lateral component.
+      sumLateralBias += intent.dir!.x * nx + intent.dir!.y * nz;
+    }
+    const avgLateral = sumLateralBias / TRIALS;
+    // The slalom is curving → curvature delta crosses the threshold →
+    // lateralOffset is non-zero → dir has lateral component. Magnitude is
+    // dominated by direction toward the offset target, so we just assert
+    // non-zero with a generous bound (jitter would average near zero).
+    expect(Math.abs(avgLateral)).toBeGreaterThan(0.05);
+  });
+
+  it('V2-T3 — deviates toward a pickup within deviation budget', () => {
+    // Place pickup AT the bot's actual lookahead point (computed from spline
+    // math), with a small lateral offset within the deviation budget.
+    // Architecture §5: pickup must be within 3 * REEF_POWERUP_RADIUS (84 wu)
+    // of lookahead AND lateral deviation < 0.4 * halfWidth.
+    const { ReefSpline } = require('../../sim/reef-race-spline');
+    const { REEF_RACE_DEFAULT_TRACK } = require('../../sim/reef-race-track-layout');
+    const spline = new ReefSpline(REEF_RACE_DEFAULT_TRACK);
+    const selfPos = { x: 0, z: 500 };
+    const c = spline.closestPointOnSpline(selfPos);
+    const tLook = Math.min(1, c.t + 0.03);
+    const lookCenter = spline.centerlineAt(tLook);
+    const halfW = spline.widthAt(tLook);
+    const normal = spline.normalAt(tLook);
+    // Pickup 19 wu off the racing line in +normal direction. Budget at
+    // lagoon halfWidth=50 is 20 wu — 19 is just under the cap.
+    const lateralOffset = 19;
+    const pickupX = lookCenter.x + normal.x * lateralOffset;
+    const pickupZ = lookCenter.z + normal.z * lateralOffset;
+    void halfW;
+
+    const TRIALS = 80;
+    let sumLatWith = 0;
+    let sumLatWithout = 0;
+    for (let i = 0; i < TRIALS; i++) {
+      const bot = createReefRaceBot('bot-self');
+      const viewWith = makeSplineView({
+        selfX: selfPos.x,
+        selfZ: selfPos.z,
+        pickups: [{ x: pickupX, y: pickupZ, active: true }],
+      });
+      const intent = (bot as any).computeInputSpline(viewWith, viewWith.bodies[0], 1 / 30);
+      // Project dir onto normal to measure lateral component.
+      sumLatWith += intent.dir!.x * normal.x + intent.dir!.y * normal.z;
+    }
+    for (let i = 0; i < TRIALS; i++) {
+      const bot = createReefRaceBot('bot-self');
+      const viewWithout = makeSplineView({ selfX: selfPos.x, selfZ: selfPos.z });
+      const intent = (bot as any).computeInputSpline(viewWithout, viewWithout.bodies[0], 1 / 30);
+      sumLatWithout += intent.dir!.x * normal.x + intent.dir!.y * normal.z;
+    }
+    const avgWith = sumLatWith / TRIALS;
+    const avgWithout = sumLatWithout / TRIALS;
+    // With pickup pulling toward +normal, avgWith should exceed avgWithout
+    // by a measurable amount. Lift bound 0.015: pickup 19wu off, ~610wu
+    // ahead → angle ~1.8°. Bot's dir is the unit vector toward the pickup
+    // (not blended with race-line — the race-line lateral is the racing
+    // bias, redirected to pickup wholesale). Lateral-projection lift over
+    // 80 trials should comfortably exceed 0.015.
+    expect(avgWith).toBeGreaterThan(avgWithout + 0.015);
+  });
+
+  it('V2-T4 — ignores a pickup outside deviation budget', () => {
+    // Same lookahead point, but pickup lateral = 30 wu (1.5x budget for
+    // lagoon halfWidth=50, budget = 0.4 * 50 = 20 wu). Bot should NOT
+    // redirect — its lateral bias should match the no-pickup baseline.
+    const { ReefSpline } = require('../../sim/reef-race-spline');
+    const { REEF_RACE_DEFAULT_TRACK } = require('../../sim/reef-race-track-layout');
+    const spline = new ReefSpline(REEF_RACE_DEFAULT_TRACK);
+    const selfPos = { x: 0, z: 500 };
+    const c = spline.closestPointOnSpline(selfPos);
+    const tLook = Math.min(1, c.t + 0.03);
+    const lookCenter = spline.centerlineAt(tLook);
+    const normal = spline.normalAt(tLook);
+    // 35 wu lateral — out of budget (budget = 20).
+    const lateralOffset = 35;
+    const pickupX = lookCenter.x + normal.x * lateralOffset;
+    const pickupZ = lookCenter.z + normal.z * lateralOffset;
+
+    const TRIALS = 80;
+    let sumLatWith = 0;
+    let sumLatWithout = 0;
+    for (let i = 0; i < TRIALS; i++) {
+      const bot = createReefRaceBot('bot-self');
+      const viewWith = makeSplineView({
+        selfX: selfPos.x,
+        selfZ: selfPos.z,
+        pickups: [{ x: pickupX, y: pickupZ, active: true }],
+      });
+      const intent = (bot as any).computeInputSpline(viewWith, viewWith.bodies[0], 1 / 30);
+      sumLatWith += intent.dir!.x * normal.x + intent.dir!.y * normal.z;
+    }
+    for (let i = 0; i < TRIALS; i++) {
+      const bot = createReefRaceBot('bot-self');
+      const viewWithout = makeSplineView({ selfX: selfPos.x, selfZ: selfPos.z });
+      const intent = (bot as any).computeInputSpline(viewWithout, viewWithout.bodies[0], 1 / 30);
+      sumLatWithout += intent.dir!.x * normal.x + intent.dir!.y * normal.z;
+    }
+    const avgWith = sumLatWith / TRIALS;
+    const avgWithout = sumLatWithout / TRIALS;
+    // Out-of-budget pickup must NOT pull. Tolerance 0.02 — well below the
+    // T3 lift of ~0.025 to prove the gate fires (no bias = jitter only).
+    expect(Math.abs(avgWith - avgWithout)).toBeLessThan(0.02);
+  });
+
+  it('V2-T5 — drift bit is NEVER emitted on the v2 spline path', () => {
+    // Spec: drift logic is dropped on v2; ACTION_BIT_DRIFT (= ACTION_BIT_JUMP
+    // in v2) is only emitted on ramp AABB entry. Phase 1 has zero ramps, so
+    // the bot must NEVER set bit 2.
+    const bot = createReefRaceBot('bot-self');
+    // Place the bot mid-curve so v1 hairpin-drift would have triggered.
+    // Tick repeatedly — ACTION_BIT_DRIFT must stay 0.
+    for (let i = 0; i < 500; i++) {
+      const view = makeSplineView({ selfX: 0, selfZ: 5250 });
+      const intent = (bot as any).computeInputSpline(
+        view,
+        view.bodies[0],
+        1 / 30,
+      );
+      // Bit 2 = 0b0100 = ACTION_BIT_DRIFT (= ACTION_BIT_JUMP in v2). The bot
+      // should NOT emit it because REEF_RACE_RAMP_ZONES is empty in Phase 1.
+      expect((intent.actionBits ?? 0) & 0b0100).toBe(0);
+    }
+  });
+});

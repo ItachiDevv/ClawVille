@@ -32,6 +32,26 @@ import {
   BUMPER_TICK_HZ,
 } from './sim/bumper-shells-sim';
 import { reefRaceSim } from './sim/reef-race-sim';
+import { reefRaceSplineSim } from './sim/reef-race-spline-sim';
+import { REEF_RACE_USE_SPLINE } from './sim/reef-race-config';
+
+/**
+ * Reef Race v2 sim selector. Single source of truth — every reef-race
+ * dispatch site reads through this to keep the env-flag check from
+ * drifting. The spline sim's public method shape mirrors `reefRaceSim` so
+ * the call sites need no further branching beyond `getReefSim()`.
+ *
+ * Wave 2 follow-ups (spline sim is missing these methods):
+ *   - getStaticZones — ellipse-only ribbons/apex/hazards; v2 has none today
+ *   - getRacingProfiles — pet-stat HUD broadcast not yet ported
+ * Both calls below guard with `'method' in sim` so the dispatcher degrades
+ * gracefully when the spline path is active.
+ */
+function getReefSim(): typeof reefRaceSim | typeof reefRaceSplineSim {
+  return REEF_RACE_USE_SPLINE
+    ? (reefRaceSplineSim as unknown as typeof reefRaceSim)
+    : reefRaceSim;
+}
 import { InputRateTracker, validateChatBounds } from './anti-cheat/shared';
 import { logEvent } from '../event-logger';
 import type { Room, RoomParticipant } from './types';
@@ -439,9 +459,10 @@ class ActivityWsHub {
       );
       void out; // flag handling routed via the sim's integrityForfeitFn
     } else if (room.activityId === 'reef-race') {
-      // TODO(reef-race-v2): when REEF_RACE_USE_SPLINE is true, dispatch to
-      // ReefRaceSplineSim instead. See .claude/plans/reef-race-v2.md.
-      const out = reefRaceSim.applyInput(
+      // Reef Race v2 — dispatch to spline sim when REEF_RACE_USE_SPLINE is
+      // true. Both sims expose an identical applyInput surface so the call
+      // site is unchanged beyond the `getReefSim()` selector.
+      const out = getReefSim().applyInput(
         ws.data.roomId,
         identity.petId,
         frame.seq,
@@ -504,15 +525,22 @@ class ActivityWsHub {
           }));
       }
     } else if (room.activityId === 'reef-race') {
-      const reefState = reefRaceSim.getStateSnapshot(room.id);
+      const reefState = getReefSim().getStateSnapshot(room.id);
       if (reefState) {
         tick = reefState.tick;
         entities.length = 0;
         for (const b of reefState.bodies) {
+          // v1 snapshot bodies expose .y/.vy (XY plane). v2 spline-sim
+          // snapshot bodies expose .z/.vz (XZ plane) — but the wire
+          // protocol always uses {x, y} = (sceneX, sceneZ). Normalize at
+          // the boundary so the client side is sim-agnostic.
+          const bb = b as { y?: number; z?: number; vy?: number; vz?: number };
+          const yScene = bb.y ?? bb.z ?? 0;
+          const vyScene = bb.vy ?? bb.vz ?? 0;
           entities.push({
             petId: b.petId,
-            position: { x: b.x, y: b.y },
-            velocity: { x: b.vx, y: b.vy },
+            position: { x: b.x, y: yScene },
+            velocity: { x: b.vx, y: vyScene },
             rotation: b.rot,
             state: b.dnf
               ? 'dnf'
@@ -523,26 +551,37 @@ class ActivityWsHub {
         }
         powerUps = reefState.pickups
           .filter((p) => p.active)
-          .map((p) => ({
-            spawnId: p.spawnId,
-            kind: p.kind,
-            position: { x: p.x, y: p.y },
-          }));
+          .map((p) => {
+            const pp = p as { y?: number; z?: number };
+            return {
+              spawnId: p.spawnId,
+              kind: p.kind,
+              position: { x: p.x, y: pp.y ?? pp.z ?? 0 },
+            };
+          });
       }
     }
     // Phase 2 — pull static-zone positions for reef-race rooms so the client
     // can build visual meshes (ribbons, apex markers, hazards) from a single
     // server-authoritative source. `null` for non-reef-race rooms.
+    //
+    // Spline-sim (v2) has NO ribbons/apex/hazards (oval-only mechanics) — the
+    // method itself doesn't exist on the v2 sim. Wave 2 follow-up: spline
+    // sim should expose its own static zones (jump ramps, dive arches) on
+    // a parallel surface; until then, omit and the client renders no zones.
     const reefStaticZones =
-      room.activityId === 'reef-race'
+      room.activityId === 'reef-race' && !REEF_RACE_USE_SPLINE
         ? reefRaceSim.getStaticZones(room.id) ?? undefined
         : undefined;
     // Phase 3 — pull per-pet racing profile (class + level) for reef-race
     // rooms so the HUD's archetype tile can show the player WHY they have
     // the multipliers they have (audit S5 fix: room-wide one-shot map,
     // ~50 bytes × ≤8 = ≤400 bytes total).
+    //
+    // Spline-sim (v2) doesn't expose this method either — the same Wave 2
+    // gap. Skipping is safe (HUD falls back to no-class-tile state).
     const reefRacingProfiles =
-      room.activityId === 'reef-race'
+      room.activityId === 'reef-race' && !REEF_RACE_USE_SPLINE
         ? reefRaceSim.getRacingProfiles(room.id) ?? undefined
         : undefined;
 
@@ -632,7 +671,7 @@ class ActivityWsHub {
     if (room.activityId === 'bumper-shells' && room.state === 'live') {
       bumperShellsSim.forfeit(room.id, petId, reason);
     } else if (room.activityId === 'reef-race' && room.state === 'live') {
-      reefRaceSim.forfeit(room.id, petId, reason);
+      getReefSim().forfeit(room.id, petId, reason);
     }
     this.broadcastEvent(room.id, {
       type: 'event.player_left',
