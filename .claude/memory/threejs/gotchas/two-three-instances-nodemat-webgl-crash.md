@@ -37,7 +37,14 @@ Failing this rule produces a silent but continuous per-frame console flood + bla
 - `three-stdlib-ktx2loader-webgpu-broken.md` — pattern of three-addons classes failing under the three/webgpu namespace.
 - `webgpu-instancedmesh-shadermaterial.md` — Iris Xe WebGPU instability that may matter for Phase 3b (VRM on WebGPURenderer via MToonNodeMaterial).
 
+## Second occurrence — bumper-shells (2026-04-24)
+
+All 6 bumper-shells files (`BumperShellsScene`, `BumperShellsArena`, `BumperShellsPlayer`, `BumperShellsHazard`, `BumperShellsParticles`, `BumperShellsPickups`) were shipping with `import * as THREE from 'three/webgpu'` even though none of them used any TSL NodeMaterial — they only used standard `MeshStandardMaterial`, `MeshBasicMaterial`, `PointsMaterial`. The import alone (via `extend(THREE as any)` in Scene) was enough to register NodeMaterials into R3F's catalogue, causing the same `.replace()` crash every frame. User report: "WebGL context lost". Fix: switch all 6 to `import * as THREE from 'three'`, remove `extend(THREE as any)`.
+
+**Signal to check:** if a scene's R3F Canvas renders black AND the devtools console shows `TypeError: Cannot read ... 'replace'` (even with no explicit NodeMaterial usage) — look for a `three/webgpu` import anywhere in the file tree that module touches, or an `extend(THREE as any)` in the scene root.
+
 ## References
 
 - 3da audit report 2026-04-23 session (root-cause breakdown of WebGLPrograms.acquireProgram reading `vertexShader = parameters.vertexShader`, then WebGLProgram calling `.replace()` on it).
 - Library compat research 2026-04-23: three@0.182.0 also removed `unpackRGBAToDepth()` from ShaderChunk, which separately breaks MToon's WebGL path. That's a **second, independent** root cause affecting /game VRMs under WebGLRenderer.
+- PR #55 (2026-04-24) — bumper-shells perf fix that killed the context loss.

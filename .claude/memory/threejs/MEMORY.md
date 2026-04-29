@@ -83,6 +83,7 @@
 - [Arrow key orbital camera rotation](patterns/orbit-controls-arrow-key-rotation.md) — spherical coords to rotate OrbitControls view; separate WASD pan from arrow key orbit
 - [FPS-style follow camera with OrbitControls](patterns/fps-follow-camera-orbit-controls.md) — lerp target + enforce radial distance; controlMode routing; scratch vectors to avoid GC
 - [TSL MeshStandardNodeMaterial sand terrain](patterns/tsl-node-material-sand.md) — colorNode/roughnessNode/normalNode + vertexColor() + positionLocal height-tint pattern
+- [Low-poly stylized river atmosphere for R3F (Iris Xe safe)](patterns/reef-race-river-atmosphere.md) — SkyDome vertexColors BackSide sphere, MeshLambertMaterial flatShading water with vertex wave, ScenerySpawner per-GLB Suspense(fallback=null). FOG_COLOR '#a8d8ff'. Hard pivot from Three.js Water shader (ShaderMaterial, unsafe on Iris Xe) to this pattern. (2026-04-29)
 - [TSL underwater atmosphere](patterns/tsl-underwater-atmosphere.md) — caustic plane (MeshBasicNodeMaterial + AdditiveBlending + uv()), depth backdrop (gradient via uv().y mix), dust particles (PointsNodeMaterial + positionNode fract drift)
 - [TSL volumetric light rays](patterns/tsl-volumetric-light-rays.md) — open-ended CylinderGeometry cones + AdditiveBlending + sin(time) pulsing opacityNode, 7 draw calls, zero CPU
 - [Multi-variant merged seaweed with per-blade TSL amplitude](patterns/merged-seaweed-multivariant.md) — 3 blade shapes, cluster distribution, aAmplitude attribute drives per-variant sway in TSL, two-wave oceanic motion
