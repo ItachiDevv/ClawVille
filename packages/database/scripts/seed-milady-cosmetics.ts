@@ -39,8 +39,11 @@ interface CosmeticSeed {
 }
 
 // HATS
-// Offsets are starter values for Milady VRM head bone (J_Bip_C_Head).
-// Hats sit on top of head: y = +0.10..+0.14 m. Empirical tuning encouraged.
+// Offsets are tuned for Milady VRM mixamorigHead bone. The bone origin sits
+// at the BASE of the skull (where neck meets head), and Milady hair geometry
+// extends 12-16cm above it. Hats need to clear the hair, so Y offsets sit
+// at +0.16..+0.22m depending on hat brim depth. Re-tune visually if the
+// hat clips through hair on a particular Milady variant.
 const HATS: CosmeticSeed[] = [
   {
     slug: 'top-hat',
@@ -50,7 +53,7 @@ const HATS: CosmeticSeed[] = [
     rarity: 'rare',
     priceCt: 350,
     glbPath: '/cosmetics/hats/top-hat.glb',
-    offsetXYZ: [0, 0.11, 0],
+    offsetXYZ: [0, 0.18, 0],
     scale: 1.0,
   },
   {
@@ -61,7 +64,7 @@ const HATS: CosmeticSeed[] = [
     rarity: 'common',
     priceCt: 200,
     glbPath: '/cosmetics/hats/cowboy.glb',
-    offsetXYZ: [0, 0.10, 0],
+    offsetXYZ: [0, 0.18, 0],
     scale: 1.0,
   },
   {
@@ -72,7 +75,9 @@ const HATS: CosmeticSeed[] = [
     rarity: 'common',
     priceCt: 200,
     glbPath: '/cosmetics/hats/beanie.glb',
-    offsetXYZ: [0, 0.06, 0],
+    // Beanie wraps the head — sits LOWER than other hats so it hugs the
+    // skull. +0.13 puts the brim at hair-line, dome at crown level.
+    offsetXYZ: [0, 0.13, 0],
     scale: 1.0,
   },
   {
@@ -83,7 +88,7 @@ const HATS: CosmeticSeed[] = [
     rarity: 'epic',
     priceCt: 600,
     glbPath: '/cosmetics/hats/wizard.glb',
-    offsetXYZ: [0, 0.10, 0],
+    offsetXYZ: [0, 0.18, 0],
     scale: 1.0,
   },
   {
@@ -94,7 +99,8 @@ const HATS: CosmeticSeed[] = [
     rarity: 'epic',
     priceCt: 800,
     glbPath: '/cosmetics/hats/crown.glb',
-    offsetXYZ: [0, 0.07, 0],
+    // Crown rests directly on hair — slightly lower than full-brim hats.
+    offsetXYZ: [0, 0.15, 0],
     scale: 1.0,
   },
   {
@@ -105,7 +111,7 @@ const HATS: CosmeticSeed[] = [
     rarity: 'common',
     priceCt: 200,
     glbPath: '/cosmetics/hats/bucket.glb',
-    offsetXYZ: [0, 0.08, 0],
+    offsetXYZ: [0, 0.16, 0],
     scale: 1.0,
   },
 ];
