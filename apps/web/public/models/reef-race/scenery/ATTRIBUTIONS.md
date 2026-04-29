@@ -1,6 +1,6 @@
 # Reef Race Scenery Props — Attributions
 
-Mixed asset directory: trees are CC0 third-party from Quaternius (downloaded via poly.pizza). All other props (rocks, fence, grass) are procedurally generated original geometry.
+Mixed asset directory: trees + cliff rocks are CC0 third-party from Quaternius (downloaded via poly.pizza). Small props (prop-rock-{1,2,3}, fence, grass) are procedurally generated original geometry.
 
 ## License
 
@@ -17,6 +17,9 @@ All files in this directory are usable under **CC0 1.0 Universal (Public Domain 
 | `prop-rock-3.glb` | Procedural (blender07) | CC0 | 80 | 9.1 KB | y_min=0 |
 | `prop-fence.glb` | Procedural (blender07) | CC0 | 72 | 8.6 KB | y_min=0 |
 | `prop-grass-tuft.glb` | Procedural (blender07) | CC0 | 7 | 4.6 KB | y_min=0 |
+| `cliff-rock-1.glb` | **Quaternius — "Rock Large"** via [poly.pizza/m/54jZKTAt5p](https://poly.pizza/m/54jZKTAt5p) | CC0 | 222 | 12.5 KB | y_min=0, XZ centered, transforms baked |
+| `cliff-rock-2.glb` | **Quaternius — "Rock Medium"** via [poly.pizza/m/s1OJ3bBzqc](https://poly.pizza/m/s1OJ3bBzqc) | CC0 | 342 | 14.5 KB | y_min=0, XZ centered, transforms baked |
+| `cliff-rock-3.glb` | **Quaternius — "Rock Medium"** via [poly.pizza/m/KZdEP3uUpa](https://poly.pizza/m/KZdEP3uUpa) | CC0 | 244 | 10.6 KB | y_min=0, XZ centered, transforms baked |
 
 ## Tree dimensions (authored size, scale=1.0)
 
@@ -47,12 +50,57 @@ Source FBX2glTF outputs were processed via `gltf-transform` to:
 
 Pine uses `EXT_texture_webp` extension (supported by three.js GLTFLoader r158+).
 
+### Cliff rock optimization pipeline (cliff-rock-{1,2,3}.glb)
+
+Source FBX2glTF GLBs from Quaternius (poly.pizza CDN) processed via `@gltf-transform/core` + custom Node.js script:
+
+1. **Bake node transforms** — Rock Large had `scale=[100,100,100]` on its mesh node; baked into vertex positions (same TRS→mat4 approach as trees)
+2. **Strip all textures** — Atlas PNG textures (512×512 and 1024×1024) removed; replaced with flat color `baseColorFactor=[0.54, 0.48, 0.40, 1]` (sandy gray-brown)
+3. **Weld** at 0.001 tolerance + dedup
+4. **Center XZ** + **shift y_min=0** so rock base sits at ground level
+
+CDN source URLs (for re-derivation):
+```bash
+curl --ssl-no-revoke https://static.poly.pizza/c14651f6-9ef8-41e8-8aca-cafed61d9ca2.glb -o rock-large.glb
+curl --ssl-no-revoke https://static.poly.pizza/be5fef3a-4fa1-4d08-b2d4-82e02284588d.glb -o rock-medium-A.glb
+curl --ssl-no-revoke https://static.poly.pizza/aaf0aaa7-c244-430a-908b-2ac57567d81c.glb -o rock-medium-B.glb
+```
+
+### Cliff rock dimensions (at scale=1.0, post-bake)
+
+| File | Height | XZ extent | Notes |
+|---|---|---|---|
+| `cliff-rock-1.glb` | 3.29 wu | ±3.85 wu X / ±3.72 wu Z | Large boulder, dramatic silhouette |
+| `cliff-rock-2.glb` | 2.26 wu | ±1.73 wu | Medium, angular |
+| `cliff-rock-3.glb` | 1.90 wu | ±1.71 wu | Medium, rounder |
+
+At `SCALE_MIN=50 / SCALE_MAX=70`:
+- Rock-1 height: 165–230 wu (spans 200wu canyon with one boulder)
+- Used in `<RockyCliffs />` (`rocky-cliffs.tsx`) — 3 rows per cross-section, merged to 2 draw calls
+
 ## Procedural prop art direction
 
 Styled after the Kagelok "The River" low-poly aesthetic:
 - Flat-shaded / faceted geometry (no smooth shading)
 - Above-ground river bank environment
 - Colors: rock grey (#8c857a), wood pinkish-brown (#a6673a)
+
+## RockyCluster usage (rocky-cluster.tsx)
+
+`rocky-cluster.tsx` (Implementer 2 — scattered boulder approach) reuses the existing
+`prop-rock-{1,2,3}.glb` from this directory. No new GLB assets are needed.
+
+| GLB | Role in cluster | Scale range | Approx world height |
+|---|---|---|---|
+| `prop-rock-1.glb` | Structural base boulders (medium-large) | 1.8–4.0 | 90–200 wu |
+| `prop-rock-2.glb` | Gap-fill rocks (small-medium) | 1.0–2.2 | 50–110 wu |
+| `prop-rock-3.glb` | Foreground scatter (tiny-small) | 0.5–1.2 | 25–60 wu |
+
+Scale estimation based on native rock prism native-height ~50wu at scale=1.0. Actual
+heights depend on GLB bbox — verify with `@gltf-transform/cli inspect` if needed.
+
+Instance count: ~408 total across 3 InstancedMesh draw calls (136 per variant).
+Tris: ~32 640 (within Iris Xe 80k visible budget).
 
 ## Usage in Three.js
 
