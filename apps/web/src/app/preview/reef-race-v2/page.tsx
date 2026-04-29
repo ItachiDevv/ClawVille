@@ -912,7 +912,11 @@ function ReefRacePreviewInner() {
   const router       = useRouter();
 
   const rawMode = searchParams.get('mode');
-  const mode: CameraMode = isCameraMode(rawMode) ? rawMode : 'free-orbit';
+  // Default to top-down so first paint shows the slalom layout. free-orbit
+  // landed at an unhelpful angle that made the river render as a vertical
+  // sliver (camera was almost parallel to bed plane). Confirmed visually
+  // 2026-04-29 from the broken first preview render.
+  const mode: CameraMode = isCameraMode(rawMode) ? rawMode : 'top-down';
 
   const [triCount,     setTriCount]     = useState<number | null>(null);
   const [camDist,      setCamDist]      = useState(0);

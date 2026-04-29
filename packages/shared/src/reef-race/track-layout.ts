@@ -138,11 +138,20 @@ export interface ReefRaceSegmentRange {
 }
 
 export const REEF_RACE_SEGMENTS: ReadonlyArray<ReefRaceSegmentRange> = [
-  { id: 'lagoon',    zStart:     0, zEnd:  3000, halfWidth: 50 },
-  { id: 'kelp',      zStart:  3000, zEnd:  7500, halfWidth: 30 },
-  { id: 'shipwreck', zStart:  7500, zEnd: 12000, halfWidth: 25 },
-  { id: 'coral',     zStart: 12000, zEnd: 16500, halfWidth: 20 },
-  { id: 'finish',    zStart: 16500, zEnd: 18000, halfWidth: 50 },
+  // halfWidth values multiplied by 10 from the original spec on 2026-04-29
+  // because the surfboard kart loaded from surfboard_1.glb measures ~115 wu
+  // wide × 130 wu long at the world scale ReefRacePlayer applies (KART_SCALE
+  // = 20 × inner glider scale). The original 30-50 wu half-widths fit the
+  // OLD ellipse track conceptually but rendered as a sliver narrower than the
+  // kart itself — confirmed visually 2026-04-29 from the preview route.
+  // Scaled-up widths (300/500 default, 200 chokepoint) match the OLD
+  // REEF_TRACK_HALF_WIDTH = 300 baseline, so existing camera, fog, and
+  // lighting tuned for the ellipse just work.
+  { id: 'lagoon',    zStart:     0, zEnd:  3000, halfWidth: 500 },
+  { id: 'kelp',      zStart:  3000, zEnd:  7500, halfWidth: 300 },
+  { id: 'shipwreck', zStart:  7500, zEnd: 12000, halfWidth: 250 },
+  { id: 'coral',     zStart: 12000, zEnd: 16500, halfWidth: 200 },
+  { id: 'finish',    zStart: 16500, zEnd: 18000, halfWidth: 500 },
 ];
 
 // ─── Track layout ───────────────────────────────────────────────────────────
@@ -161,30 +170,30 @@ export const REEF_RACE_SEGMENTS: ReadonlyArray<ReefRaceSegmentRange> = [
  */
 export const REEF_RACE_DEFAULT_TRACK: ReadonlyArray<SplineControlPoint> = [
   // ── Segment 0: Open lagoon (wide, no slalom) ──────────────────────────────
-  { x:    0, z:     0, halfWidth: 50 }, // CP 0  start line, lagoon mouth
-  { x:    0, z:  1500, halfWidth: 50 }, // CP 1  lagoon middle
-  { x:    0, z:  3000, halfWidth: 50 }, // CP 2  lagoon → kelp gate
+  { x:    0, z:     0, halfWidth: 500 }, // CP 0  start line, lagoon mouth
+  { x:    0, z:  1500, halfWidth: 500 }, // CP 1  lagoon middle
+  { x:    0, z:  3000, halfWidth: 500 }, // CP 2  lagoon → kelp gate
 
   // ── Segment 1: Kelp forest (first slalom, ±170 wu) ────────────────────────
-  { x:  170, z:  4125, halfWidth: 30 }, // CP 3  kelp curve +
-  { x: -170, z:  5250, halfWidth: 30 }, // CP 4  kelp curve -
-  { x:  170, z:  6375, halfWidth: 30 }, // CP 5  kelp curve +
-  { x: -170, z:  7500, halfWidth: 30 }, // CP 6  kelp → shipwreck gate
+  { x:  170, z:  4125, halfWidth: 300 }, // CP 3  kelp curve +
+  { x: -170, z:  5250, halfWidth: 300 }, // CP 4  kelp curve -
+  { x:  170, z:  6375, halfWidth: 300 }, // CP 5  kelp curve +
+  { x: -170, z:  7500, halfWidth: 300 }, // CP 6  kelp → shipwreck gate
 
   // ── Segment 2: Shipwreck graveyard (denser turns + chokepoints, ±200 wu) ──
-  { x:  200, z:  9000, halfWidth: 25 }, // CP 7  hull-fragment chicane +
-  { x: -200, z: 10500, halfWidth: 25 }, // CP 8  hull-fragment chicane -
-  { x:  200, z: 12000, halfWidth: 25 }, // CP 9  shipwreck → coral gate
+  { x:  200, z:  9000, halfWidth: 250 }, // CP 7  hull-fragment chicane +
+  { x: -200, z: 10500, halfWidth: 250 }, // CP 8  hull-fragment chicane -
+  { x:  200, z: 12000, halfWidth: 250 }, // CP 9  shipwreck → coral gate
 
   // ── Segment 3: Coral canyon (tightest, ±180 wu) ───────────────────────────
-  { x: -180, z: 13125, halfWidth: 20 }, // CP 10 coral chicane -
-  { x:  180, z: 14250, halfWidth: 20 }, // CP 11 coral chicane +
-  { x: -180, z: 15375, halfWidth: 20 }, // CP 12 coral chicane -
-  { x:  180, z: 16500, halfWidth: 20 }, // CP 13 coral → finish gate
+  { x: -180, z: 13125, halfWidth: 200 }, // CP 10 coral chicane -
+  { x:  180, z: 14250, halfWidth: 200 }, // CP 11 coral chicane +
+  { x: -180, z: 15375, halfWidth: 200 }, // CP 12 coral chicane -
+  { x:  180, z: 16500, halfWidth: 200 }, // CP 13 coral → finish gate
 
   // ── Segment 4: Finish straight (wide, no slalom) ──────────────────────────
-  { x:    0, z: 17250, halfWidth: 50 }, // CP 14 finish-straight entry
-  { x:    0, z: 18000, halfWidth: 50 }, // CP 15 FINISH LINE
+  { x:    0, z: 17250, halfWidth: 500 }, // CP 14 finish-straight entry
+  { x:    0, z: 18000, halfWidth: 500 }, // CP 15 FINISH LINE
 ];
 
 /**
