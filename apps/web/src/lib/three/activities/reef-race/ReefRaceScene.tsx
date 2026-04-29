@@ -43,6 +43,7 @@ import ReefRaceBoostRibbons  from './ReefRaceBoostRibbons';
 import ReefRaceHazards       from './ReefRaceHazards';
 import ReefRaceApexMarkers   from './ReefRaceApexMarkers';
 import { ActivityBursts }    from '@/lib/three/activities/shared/activity-particles';
+import { RiverScene }       from './river-scene';
 import { useActivityStore } from '@/stores/activity';
 import {
   FOG_COLOR,
@@ -325,12 +326,16 @@ function SceneContents({ entities, selfAvatarId, matchPhase, raceStartMs }: Scen
 
       {/* Atmosphere */}
       <fog args={[FOG_COLOR, FOG_NEAR, FOG_FAR]} />
-      <color attach="background" args={[FOG_COLOR]} />
+      {/* Sky-blue clear color matches SkyDome horizon — prevents flash before dome renders */}
+      <color attach="background" args={['#a8d8ff']} />
+
+      {/* Low-poly stylized river atmosphere — dome, water surface, scenery */}
+      <RiverScene />
 
       {/* Lighting */}
       <ReefLight />
 
-      {/* Depth backdrop */}
+      {/* Depth backdrop (below track plane) */}
       <DepthBackdrop />
 
       {/* Static track geometry */}

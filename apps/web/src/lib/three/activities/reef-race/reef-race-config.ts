@@ -310,8 +310,8 @@ export const CAMERA_LERP = 5.0;
 
 // ─── Fog ─────────────────────────────────────────────────────────────────────
 
-/** Fog color — bright tropical ocean blue. */
-export const FOG_COLOR = '#0d2b5e';
+/** Fog color — sky-blue atmospheric haze matching SkyDome horizon. */
+export const FOG_COLOR = '#a8d8ff';
 
 /**
  * Fog near distance.
@@ -334,8 +334,8 @@ export const FOG_FAR = 4500;
 
 // ─── Lighting ────────────────────────────────────────────────────────────────
 
-export const HEMI_SKY_COLOR    = '#87ceeb';
-export const HEMI_GROUND_COLOR = '#0d2b5e';
+export const HEMI_SKY_COLOR    = '#a8d8ff'; // matches SkyDome horizon
+export const HEMI_GROUND_COLOR = '#4a7c3f'; // earthy green riverbank
 export const HEMI_INTENSITY    = 0.5;
 
 export const DIR_COLOR             = '#fffbe6';
