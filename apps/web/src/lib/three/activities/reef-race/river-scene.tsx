@@ -8,15 +8,16 @@
  *   green grass hills, low-poly trees / rocks / fences on the grass.
  *
  * Contains:
- *   A. Green ground plane (large flat XZ plane under everything)
+ *   A. GroundShader (REPLACED flat GroundPlane) — subdivided terrain with
+ *      per-vertex noise displacement + multi-color fragment shader.
  *   B. Sandy bank ribbons (cream trianglestrip at water edge)
- *   C. Water ribbon — animated cartoon shader (simplex noise + foam stripes)
+ *   C. Water ribbon — animated cartoon shader (simplex noise + bank-edge foam)
  *   D. Sky dome (SphereGeometry + MeshBasicMaterial vertexColors)
  *   E. ScenerySpawner (low-poly prop GLBs ON THE GRASS, not in water)
  *   F. Finish-line gate (wooden arch at z~18000, Part 2A)
  *   G. Distance markers every 2000wu (Part 2B)
  *   H. Power-up boxes mid-river (Part 2C)
- *   I. Kart wake ribbons behind each sample kart (Part 2D)
+ *   I. Animated sample karts riding the spline (REPLACES static wake ribbons)
  *   J. Bridge prop (Part 2F)
  *
  * Iris Xe invariants:
@@ -27,17 +28,19 @@
  *   - frustumCulled=false on all atmosphere meshes
  *   - matrixAutoUpdate=false on all static meshes
  *   - NO point lights — emissive only for power-up glow (budget: 1 hemi + 1 dir)
+ *   - Module-scope scratch Vec3s for all kart math — zero per-frame allocations
  *
  * Draw call budget:
  *   1 ground + 1 sand ribbon + 1 water ribbon + 1 dome + ≤6 scenery GLB types
  *   + 1 finish gate + 1 distance markers (instanced) + 6 power-up boxes
- *   + 4 wake ribbons + 1 bridge = ≤23 draw calls (within 30-call budget)
+ *   + 5 kart meshes + 1 bridge = ≤24 draw calls (within 30-call budget)
  *
- * Tri count additions (Part 2):
- *   Finish gate: ~200 tris | Distance markers: ~18×9=162 tris
- *   Power-up boxes: 6×12=72 tris | Wake ribbons: 4×4=16 tris
- *   Bridge: ~24 tris | Total addition: ~474 tris
- *   Combined scene total: ~2800 tris — well within the ≤80k budget.
+ * Tri count (iter-4):
+ *   Ground terrain: 96×192×2 = 36 864 tris
+ *   Water ribbon: 126 tris | Sand ribbon: 126 tris
+ *   Sky dome: ~512 tris | Scenery GLBs: ~12 000 tris
+ *   Gate+markers+karts+bridge+powerups: ~800 tris
+ *   Total: ~50 428 tris — comfortably within ≤80k budget.
  *
  * Water Y placement:
  *   River bed at y=0. Water ribbon at y=40 (halfway up V2_BANK_HEIGHT=80).
@@ -58,10 +61,13 @@ const TRACK_LEN_Z    = 20000;
 const TRACK_START_Z  = -500;
 const TRACK_CENTER_Z = TRACK_START_Z + TRACK_LEN_Z / 2; // 9500
 
-// ─── Ground plane ─────────────────────────────────────────────────────────────
-const GROUND_W  = 8000;
-const GROUND_L  = 22000;
-const GROUND_Y  = -1;  // just below river bed at y=0
+// ─── Ground shader terrain ────────────────────────────────────────────────────
+// Much wider than river, subdivided for per-vertex displacement
+const GROUND_W         = 12000;
+const GROUND_L         = 24000;
+const GROUND_W_SEGS    = 96;
+const GROUND_L_SEGS    = 192;
+const GROUND_Y         = -1;  // just below river bed at y=0
 
 // ─── Sky dome ────────────────────────────────────────────────────────────────
 const DOME_RADIUS  = 28000;
@@ -119,6 +125,28 @@ const BRIDGE_H         = 100;  // y position (rides over bank walls at y=80)
 const BRIDGE_PLANK_H   = 30;   // plank thickness
 const BRIDGE_SUPPORT_W = 30;
 
+// ─── Animated kart constants ──────────────────────────────────────────────────
+// 5 surfboard karts ride the spline surface.
+// Module-scope scratch vectors — zero per-frame allocations.
+const _kartScratchC  = new THREE.Vector3();
+const _kartScratchN  = new THREE.Vector3();
+const _kartScratchT  = new THREE.Vector3();
+
+// Lateral offsets in wu from centerline (spread karts across lane)
+const KART_LATERAL_OFFSETS = [-120, -40, 0, 40, 120] as const;
+// Lap speeds as arc-fraction per second (kart[2]=1.0 is baseline ~19s lap)
+const KART_SPEEDS          = [0.047, 0.050, 0.053, 0.048, 0.051] as const;
+// Initial t positions spread around track
+const KART_T_START         = [0.0, 0.2, 0.4, 0.6, 0.8] as const;
+const KART_Y_ABOVE_WATER   = WATER_Y + 12; // kart rides slightly above water surface
+const KART_COLORS          = [
+  new THREE.Color('#ff6633'), // orange-red
+  new THREE.Color('#4499ff'), // blue
+  new THREE.Color('#ffdd00'), // yellow
+  new THREE.Color('#55dd44'), // green
+  new THREE.Color('#ee44ee'), // pink
+] as const;
+
 // ─── Scenery spawning ────────────────────────────────────────────────────────
 const SCENERY_PROP_PATHS = [
   '/models/reef-race/scenery/prop-tree-pine.glb',
@@ -169,13 +197,8 @@ function spawnPos(t: number, side: number, xJitter: number): THREE.Vector3 {
 }
 
 // Spawner defs with xJitter large enough to clear the water + sand ribbon.
-// Water extends to halfWidth (200-500 wu). Sand extends halfWidth+120 wu.
-// So props MUST have xJitter > 120 wu to clear the sand and land on grass.
-//
-// xJitter values below are BEYOND the water bank edge (not from centerline).
-// At halfWidth=500 (widest), fence at xJitter=80 → 580 wu from center: still
-// at the sand edge. At narrowest (halfWidth=200), fence is at 280 wu — inside
-// the sand. That's acceptable for fences; they're meant to sit at the bank edge.
+// Water extends to halfWidth (280-700 wu). Sand extends halfWidth+120 wu.
+// Props MUST have xJitter > 120 wu to clear the sand and land on grass.
 const SPAWNER_DEFS: SpawnerDef[] = [
   // Pine trees — left side, well onto grass
   {
@@ -319,15 +342,136 @@ function makeDomeGeo(): THREE.BufferGeometry {
   return geo;
 }
 
+// ─── Ground terrain ShaderMaterial ───────────────────────────────────────────
+//
+// Vertex: inline value-noise for Y displacement. River corridor guard:
+//   distFromRiverCenter = |position.x| (acceptable approximation for spline
+//   that stays within ±200wu of x=0). displacementMask attenuates hills to
+//   zero within 700wu of x=0 so they never poke through the water ribbon.
+//
+// Fragment: two grass tones + dirt patches via multi-octave noise, with a
+//   slight lighter highlight at the very edge of the displacement falloff
+//   to suggest a grassy berm.
+//
+const _groundVertexShader = /* glsl */ `
+  varying vec2 vUv;
+  varying float vDisp;
+  varying float vRiverMask;
+
+  // Simple value noise for Y displacement
+  float hashF(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+  }
+  float valueNoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f); // smoothstep
+    float a = hashF(i);
+    float b = hashF(i + vec2(1.0, 0.0));
+    float c = hashF(i + vec2(0.0, 1.0));
+    float d = hashF(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+  }
+
+  void main() {
+    vUv = uv;
+
+    // River corridor falloff — flatten within 700wu of river centreline (x=0)
+    float riverDist = abs(position.x);
+    float riverMask = smoothstep(700.0, 1500.0, riverDist);
+    vRiverMask = riverMask;
+
+    // Multi-octave value noise displacement (Y world up)
+    float scale1 = 0.0006;
+    float scale2 = 0.0015;
+    float n1 = valueNoise(position.xz * scale1) * 2.0 - 1.0;
+    float n2 = valueNoise(position.xz * scale2) * 0.5 - 0.25;
+    float noiseVal = (n1 + n2) * 50.0 * riverMask; // max ±50wu, zero at river
+
+    vDisp = noiseVal;
+
+    vec3 displaced = position;
+    displaced.y += noiseVal;
+
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(displaced, 1.0);
+  }
+`;
+
+const _groundFragmentShader = /* glsl */ `
+  varying vec2 vUv;
+  varying float vDisp;
+  varying float vRiverMask;
+
+  float hashF(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+  }
+  float valueNoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    float a = hashF(i);
+    float b = hashF(i + vec2(1.0, 0.0));
+    float c = hashF(i + vec2(0.0, 1.0));
+    float d = hashF(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+  }
+
+  void main() {
+    // Grass colours
+    vec3 grassLight = vec3(0.545, 0.784, 0.282); // #8bc848
+    vec3 grassDark  = vec3(0.369, 0.620, 0.180); // #5e9e2e
+    vec3 dirtSandy  = vec3(0.773, 0.647, 0.447); // #c5a572
+
+    // UV in world-like scale for noise sampling (vUv is 0→1 on the 12000×24000 plane)
+    vec2 wUv = vUv * vec2(12.0, 24.0); // roughly 1 unit = 1000wu
+
+    float nPatch  = valueNoise(wUv * 1.2);          // large colour patches
+    float nDetail = valueNoise(wUv * 4.0) * 0.5;    // fine grass variation
+    float nDirt   = valueNoise(wUv * 0.6 + 7.3);    // low-freq dirt patches
+
+    // Blend grass light ↔ dark via noise
+    float grassBlend = clamp(nPatch + nDetail, 0.0, 1.0);
+    vec3 baseGrass = mix(grassDark, grassLight, grassBlend);
+
+    // Add dirt patches where nDirt > 0.65
+    float dirtMix = smoothstep(0.65, 0.75, nDirt);
+    vec3 groundColor = mix(baseGrass, dirtSandy, dirtMix * 0.6);
+
+    // Slight berm highlight: near the river mask transition, brighten grass
+    // to give a raised-levee feel at the bank edge.
+    float bermHighlight = smoothstep(0.0, 0.2, vRiverMask) *
+                          (1.0 - smoothstep(0.2, 0.5, vRiverMask));
+    groundColor = mix(groundColor, grassLight * 1.2, bermHighlight * 0.4);
+
+    // Displacement-based darkening: lower spots (shadow pools)
+    float dispNorm = clamp(vDisp / 50.0, -1.0, 1.0);
+    groundColor *= 1.0 + dispNorm * 0.08;
+
+    gl_FragColor = vec4(groundColor, 1.0);
+  }
+`;
+
+// Shared ground terrain material — module scope, no uniforms to update per-frame
+const _groundShaderMat = new THREE.ShaderMaterial({
+  vertexShader:   _groundVertexShader,
+  fragmentShader: _groundFragmentShader,
+  side:   THREE.FrontSide,
+  fog:    true,
+});
+
 // ─── Animated water ShaderMaterial ──────────────────────────────────────────
 //
 // Vertex shader: multi-octave sin waves displace Y (world up).
 // Fragment shader: simplex noise foam stripes + UV-scrolled flow + bank-edge foam.
 //
-// IRIS XE SAFE: plain ShaderMaterial on a plain Mesh — NOT inside InstancedMesh.
-// The crash gotcha is InstancedMesh + ShaderMaterial, not plain ShaderMaterial.
+// Key changes vs iter-3:
+//   - bankFoam is now a WIDE creamy-white band (edgeDist < 0.12 instead of 0.04)
+//     with animated turbulence so foam churns at the waterline.
+//   - uColorNear bumped to #5fdcff (brighter cyan), uColorFar to #3aaedf
+//     (lighter mid-blue so low-angle views don't go navy).
+//   - Edge-zone has a separate foam layer that reads stronger than the ambient stripes.
 //
-// The shader inlines a 2D simplex noise implementation (no texture download needed).
+// IRIS XE SAFE: plain ShaderMaterial on a plain Mesh.
 //
 const _waterVertexShader = /* glsl */ `
   uniform float uTime;
@@ -412,21 +556,35 @@ const _waterFragmentShader = /* glsl */ `
                            + smoothstep(threshold, threshold - 0.01, vec3(noiseWaves)));
     waveEffect = step(0.5, waveEffect);
 
-    // Bank-edge foam: bright white where UV.x approaches 0 or 1
-    float edgeDist = min(vUv.x, 1.0 - vUv.x);
-    float bankFoam = step(edgeDist, 0.04) * (0.7 + 0.3 * sin(uTime * 3.0 + vUv.y * 20.0));
+    // ── Bank-edge foam (ITER-4 UPGRADE) ──────────────────────────────────────
+    // edgeFactor = 1.0 at UV.x=0 or 1.0, smoothly falls to 0 at 0.12 from edge.
+    // This is strongest AT the waterline, fading toward the river centre.
+    float edgeDist  = min(vUv.x, 1.0 - vUv.x);
+    float edgeFactor = 1.0 - smoothstep(0.0, 0.12, edgeDist);
 
-    // Combine all effects
-    vec3 combinedEffect = min(waveEffect + foam + vec3(bankFoam), 1.0);
+    // Animated foam turbulence along bank — two noise layers at different scales
+    float foamTurb1 = snoise(flowUv * 60.0 + vec2(uTime * 1.2, 0.0)) * 0.5 + 0.5;
+    float foamTurb2 = snoise(flowUv * 150.0 + vec2(0.0, uTime * 2.0)) * 0.5 + 0.5;
+    float foamTurbCombined = foamTurb1 * 0.6 + foamTurb2 * 0.4;
 
-    // Depth gradient: deeper = darker blue
+    // Bright bank foam: flicker between 0.6 and 1.0 with time + noise
+    float bankFoamIntensity = edgeFactor * (0.6 + 0.4 * foamTurbCombined);
+    // Creamy white foam color (slightly warm)
+    vec3 bankFoamColor = vec3(1.0, 0.97, 0.92) * bankFoamIntensity;
+
+    // ── Combine all effects ───────────────────────────────────────────────────
+    vec3 combinedEffect = min(waveEffect + foam, 1.0);
+
+    // Depth gradient: deeper = uses uColorFar
     float vignette = length(vUv - 0.5) * 1.5;
     vec3 baseEffect = smoothstep(0.1, 0.3, vec3(vignette));
     vec3 baseColor = mix(uColorNear, uColorFar, baseEffect);
     combinedEffect = mix(combinedEffect, vec3(0.0), baseEffect);
 
-    // Final color: base + white foam overlaid
+    // Final color: base + white foam overlaid + bank foam on top
     vec3 finalColor = (1.0 - combinedEffect) * baseColor + combinedEffect;
+    // Bank foam always layers ON TOP, blending to white at the edge
+    finalColor = mix(finalColor, bankFoamColor, edgeFactor * bankFoamIntensity * 0.8);
 
     gl_FragColor = vec4(finalColor, 1.0);
   }
@@ -436,26 +594,14 @@ const _waterFragmentShader = /* glsl */ `
 const _waterShaderMat = new THREE.ShaderMaterial({
   uniforms: {
     uTime:      { value: 0 },
-    uColorNear: { value: new THREE.Color('#4ec5e8') },   // bright cyan
-    uColorFar:  { value: new THREE.Color('#2a8aaa') },   // deeper blue
+    uColorNear: { value: new THREE.Color('#5fdcff') },   // bright cartoon cyan
+    uColorFar:  { value: new THREE.Color('#3aaedf') },   // lighter mid-blue (not navy)
   },
   vertexShader:   _waterVertexShader,
   fragmentShader: _waterFragmentShader,
   side:       THREE.DoubleSide,
   fog:        true,
   transparent: false,
-});
-
-// ─── Kart wake ribbon material ─────────────────────────────────────────────
-// Simple white foam ribbon behind each kart — additive blend, low alpha
-const _wakeMat = new THREE.MeshBasicMaterial({
-  color: new THREE.Color('#ffffff'),
-  transparent: true,
-  opacity: 0.45,
-  blending: THREE.AdditiveBlending,
-  depthWrite: false,
-  side: THREE.DoubleSide,
-  fog: false,
 });
 
 // ─── Power-up box material (module scope) ────────────────────────────────────
@@ -513,11 +659,31 @@ const _bridgeMat = new THREE.MeshStandardMaterial({
   fog: false,
 });
 
+// ─── Kart material (one per kart colour, module scope) ────────────────────────
+const _kartMats = KART_COLORS.map((col) => new THREE.MeshStandardMaterial({
+  color: col.clone(),
+  roughness: 0.35,
+  metalness: 0.6,
+  emissive: col.clone().multiplyScalar(0.25),
+  emissiveIntensity: 0.5,
+  fog: true,
+}));
+
+// ─── Kart geometry (surfboard — elongated tapered box, module scope) ──────────
+// A surfboard silhouette: 60wu wide, 150wu long, 12wu tall
+const _kartGeo = new THREE.BoxGeometry(60, 12, 150);
+
 // ─── Module-scope geometries (baked at module load, shared forever) ───────────
-const _groundGeo    = new THREE.PlaneGeometry(GROUND_W, GROUND_L, 1, 1);
 const _waterGeo     = buildWaterRibbonGeo();
 const _sandGeo      = buildSandRibbonGeo();
 const _domeGeo      = makeDomeGeo();
+// Ground terrain geo (subdivided — 96×192×2 = 36 864 tris)
+const _groundGeo    = (() => {
+  const geo = new THREE.PlaneGeometry(GROUND_W, GROUND_L, GROUND_W_SEGS, GROUND_L_SEGS);
+  // PlaneGeometry is XY; rotate to XZ
+  geo.rotateX(-Math.PI / 2);
+  return geo;
+})();
 
 // Part 2A: finish gate geometry
 function buildFinishGateGeo(): THREE.BufferGeometry {
@@ -547,10 +713,6 @@ function buildFinishGateGeo(): THREE.BufferGeometry {
 
 // Part 2C: power-up box geometry (single 30wu cube — shared)
 const _powerupBoxGeo = new THREE.BoxGeometry(POWERUP_SIZE, POWERUP_SIZE, POWERUP_SIZE);
-
-// Part 2D: wake ribbon geometry behind kart (60wu wide × 200wu long)
-const _wakeGeo = new THREE.PlaneGeometry(60, 200);
-_wakeGeo.rotateX(-Math.PI / 2); // lie flat on water surface
 
 // Part 2B: distance marker pole + flag (single shared geo, cloned per marker)
 const _markerPoleGeo  = new THREE.BoxGeometry(MARKER_POLE_W, MARKER_POLE_H, MARKER_POLE_W);
@@ -588,13 +750,6 @@ function buildBridgeGeo(): THREE.BufferGeometry {
 
 // ─── Module-scope materials (page-lifetime, never disposed) ──────────────────
 
-/** Large green grass plane — MeshLambertMaterial, flat shading. */
-const _groundMat = new THREE.MeshLambertMaterial({
-  color: new THREE.Color('#7cb342'),
-  flatShading: true,
-  fog: true,
-});
-
 /** Sandy bank ribbon — cream/peach color at water's edge. */
 const _sandMat = new THREE.MeshLambertMaterial({
   color: new THREE.Color('#e8d5a8'),
@@ -611,9 +766,15 @@ const _domeMat = new THREE.MeshBasicMaterial({
   depthWrite: false,
 });
 
-// ─── Ground plane component ───────────────────────────────────────────────────
+// ─── Kart t-state (module scope) — one entry per kart ─────────────────────────
+// These persist across React re-renders/unmounts inside the route since
+// the preview page keeps the Canvas mounted. If the component remounts,
+// values just reset naturally from KART_T_START.
+const _kartT = [...KART_T_START] as number[];
 
-function GroundPlane() {
+// ─── Ground terrain shader component ─────────────────────────────────────────
+
+function GroundShader() {
   const meshRef = useRef<THREE.Mesh>(null);
 
   useEffect(() => {
@@ -627,9 +788,7 @@ function GroundPlane() {
     <mesh
       ref={meshRef}
       geometry={_groundGeo}
-      material={_groundMat}
-      // PlaneGeometry is XY; rotate to XZ and position centered on track
-      rotation={[-Math.PI / 2, 0, 0]}
+      material={_groundShaderMat}
       position={[0, GROUND_Y, TRACK_CENTER_Z]}
       frustumCulled={false}
       matrixAutoUpdate={false}
@@ -940,44 +1099,80 @@ function PowerUpBoxes() {
   );
 }
 
-// ─── Part 2D: Kart wake ribbons ───────────────────────────────────────────────
-// White foam plane behind each sample kart (4 at t=0, 0.25, 0.5, 0.75).
-// Uses MeshBasicMaterial additive blend — no ShaderMaterial needed.
+// ─── Animated karts — ride the water surface ─────────────────────────────────
+//
+// 5 surfboard karts lap the spline independently. Per-frame math:
+//   1. Advance tCurrent by speed*dt; wrap at 1.
+//   2. Sample centerline + normal for lateral offset.
+//   3. Set Y = KART_Y_ABOVE_WATER + wave bob (same waveform as water vertex shader).
+//   4. Face tangent direction via atan2(tx, tz).
+//   5. Bank: tilt around forward axis proportional to curvature (second-derivative hack
+//      via two closely-sampled tangents). Clamp to ±0.35 rad.
+//
+// All scratch vectors are module-scope; zero per-frame allocations.
+// useMemo return is stable (same refs each render) so meshRefs array stays intact.
 
-const KART_T_VALUES = [0, 0.25, 0.5, 0.75] as const;
+function AnimatedKarts() {
+  const kartRefs = useRef<(THREE.Mesh | null)[]>([]);
 
-function KartWakes() {
-  const wakeRefs = useRef<THREE.Mesh[]>([]);
+  useFrame((_state, dt) => {
+    const clampedDt = Math.min(dt, 0.05); // cap at 50ms to survive tab wakes
 
-  useEffect(() => {
-    KART_T_VALUES.forEach((t, i) => {
-      const m = wakeRefs.current[i];
-      if (!m) return;
-      const c       = clientSpline.centerlineAt(t);
-      const tangent = clientSpline.tangentAt(t);
-      // Place wake 100wu behind kart along -tangent direction
-      m.position.set(
-        c.x - tangent.x * 100,
-        WATER_Y + 2,  // just above water surface
-        c.z - tangent.z * 100,
+    kartRefs.current.forEach((mesh, i) => {
+      if (!mesh) return;
+
+      // Advance t — wrap around
+      _kartT[i] = (_kartT[i]! + KART_SPEEDS[i]! * clampedDt) % 1.0;
+      const t = _kartT[i]!;
+
+      // Centerline + normal for lateral lane offset
+      // Vec2 {x,z} — set scratch XZ (Y=0 placeholder, overridden below)
+      const _c = clientSpline.centerlineAt(t);
+      const _n = clientSpline.normalAt(t);
+      _kartScratchC.set(_c.x, 0, _c.z);
+      _kartScratchN.set(_n.x, 0, _n.z);
+      const lat = KART_LATERAL_OFFSETS[i]!;
+
+      // Water wave Y — mirrors vertex shader wave (simplified, single octave)
+      // Using centerline x/z for the sample position
+      const elapsed = _state.clock.getElapsedTime();
+      const waveY = Math.sin(_c.x * 0.005 + elapsed * 0.8) * 4.0
+                  + Math.sin(_c.z * 0.003 + elapsed * 1.2) * 3.0;
+
+      mesh.position.set(
+        _c.x + _n.x * lat,
+        KART_Y_ABOVE_WATER + waveY,
+        _c.z + _n.z * lat,
       );
-      // Rotate wake to align with river direction
-      m.rotation.y = Math.atan2(tangent.x, tangent.z);
-      m.matrixAutoUpdate = false;
-      m.updateMatrix();
+
+      // Tangent for yaw
+      const _tg = clientSpline.tangentAt(t);
+      _kartScratchT.set(_tg.x, 0, _tg.z);
+      mesh.rotation.y = Math.atan2(_tg.x, _tg.z);
+
+      // Banking lean from curvature — sample two tangents straddling t
+      const dt2 = 0.005;
+      const tA = Math.max(0, t - dt2);
+      const tB = Math.min(1, t + dt2);
+      const tgA = clientSpline.tangentAt(tA);
+      const tgB = clientSpline.tangentAt(tB);
+      // Cross-track curvature: (tgB.x - tgA.x) / (2*dt2) projected onto normal
+      const curvX = (tgB.x - tgA.x) / (2 * dt2);
+      const bankAngle = THREE.MathUtils.clamp(curvX * -6.0, -0.35, 0.35);
+      mesh.rotation.z = bankAngle;
     });
-  }, []);
+  });
 
   return (
     <>
-      {KART_T_VALUES.map((_, i) => (
+      {KART_LATERAL_OFFSETS.map((_, i) => (
         <mesh
           key={i}
-          ref={(el) => { if (el) wakeRefs.current[i] = el; }}
-          geometry={_wakeGeo}
-          material={_wakeMat}
+          ref={(el) => { kartRefs.current[i] = el; }}
+          geometry={_kartGeo}
+          material={_kartMats[i]!}
           frustumCulled={false}
-          matrixAutoUpdate={false}
+          castShadow
         />
       ))}
     </>
@@ -1026,21 +1221,33 @@ function Bridge() {
  *
  * Renders (render order):
  *   -1: Sky dome (sunny blue gradient, BackSide sphere)
- *    0: Green ground plane (large flat XZ grass plane)
+ *    0: Terrain shader ground (subdivided, rolling hills outside river corridor)
  *    1: Sandy bank ribbons (cream, spline-following, at water edge)
- *    2: Animated water ribbon (simplex noise + foam stripes + UV scroll)
+ *    2: Animated water ribbon (simplex noise + foam stripes + bank-edge foam)
  *    ?: Scenery props along banks (on the grass, not in the water)
- *    ?: Gameplay juice: finish gate, distance markers, power-ups, wakes, bridge
+ *    ?: Gameplay juice: finish gate, distance markers, power-ups, animated karts, bridge
  *
  * Bank wall geometry from SplineTrack (buildSplineBankGeos) is intentionally
  * hidden by the parent page — set visible=false or recolor to grass green.
  * See page.tsx: _bankMat color is '#7cb342' grass green to blend with ground.
  *
- * WATER SHADER:
+ * WATER SHADER (iter-4):
  *   Plain THREE.ShaderMaterial on a plain Mesh — verified Iris Xe safe.
- *   (The crash gotcha is InstancedMesh + ShaderMaterial, not plain ShaderMaterial.)
- *   Vertex: multi-octave sin wave GPU displacement.
- *   Fragment: 2D simplex noise + smoothstep foam stripes + UV scroll.
+ *   uColorNear '#5fdcff', uColorFar '#3aaedf' (lighter than iter-3 to avoid
+ *   "solid dark navy" at glancing angles). Bank-edge foam uses 0-0.12 UV width
+ *   with animated simplex noise turbulence — bright creamy-white at waterline.
+ *
+ * GROUND SHADER (iter-4, NEW):
+ *   ShaderMaterial on a 96×192-segment PlaneGeometry (36 864 tris).
+ *   Vertex: value-noise Y displacement masked to zero within 700wu of x=0
+ *   (river corridor stays flat). Fragment: 3-tone grass+dirt blending with
+ *   berm highlight at the slope transition edge.
+ *
+ * KARTS (iter-4, NEW):
+ *   5 surfboard karts ride the spline. Module-scope t-state advances each
+ *   frame (wrap at 1). Position = centerline + normal×lateralOffset,
+ *   Y = KART_Y_ABOVE_WATER + wave-sync bob. Yaw from tangent, bank from
+ *   curvature. Zero per-frame allocations (module-scope scratch Vec3s).
  */
 export function RiverScene() {
   return (
@@ -1048,13 +1255,13 @@ export function RiverScene() {
       {/* -1: Sky dome — renders behind everything */}
       <SkyDome />
 
-      {/* 0: Green grass ground plane — large flat base */}
-      <GroundPlane />
+      {/* 0: Terrain shader ground — subdivided rolling hills */}
+      <GroundShader />
 
       {/* 1: Sandy bank ribbons at water's edge */}
       <SandRibbon />
 
-      {/* 2: Animated cartoon water ribbon — simplex noise + foam */}
+      {/* 2: Animated cartoon water ribbon — simplex noise + bank-edge foam */}
       <WaterRibbon />
 
       {/* Scenery props on the grass */}
@@ -1069,8 +1276,8 @@ export function RiverScene() {
       {/* Gameplay juice — Part 2C: Power-up boxes mid-river */}
       <PowerUpBoxes />
 
-      {/* Gameplay juice — Part 2D: Kart wake ribbons */}
-      <KartWakes />
+      {/* Gameplay juice — Animated surfboard karts riding the water */}
+      <AnimatedKarts />
 
       {/* Gameplay juice — Part 2F: Bridge at z=8500 */}
       <Bridge />

@@ -434,9 +434,10 @@ interface KartProps {
   t: number;
   color: string;
   onMounted?: (obj: THREE.Group) => void;
+  visible?: boolean;
 }
 
-function SplineSurfboardKart({ t, color, onMounted }: KartProps) {
+function SplineSurfboardKart({ t, color, onMounted, visible = true }: KartProps) {
   const { scene: sbSrc }   = useGLTF('/models/reef-race/surfboards/surfboard_1.glb');
   const { scene: lobSrc }  = useGLTF('/models/lobster.glb');
 
@@ -507,7 +508,7 @@ function SplineSurfboardKart({ t, color, onMounted }: KartProps) {
   const gliderLocalY = KART_Y_ABOVE_TRACK / KART_SCALE;
 
   return (
-    <group ref={groupRef} scale={[KART_SCALE, KART_SCALE, KART_SCALE]}>
+    <group ref={groupRef} scale={[KART_SCALE, KART_SCALE, KART_SCALE]} visible={visible}>
       <group ref={gliderRef} position={[0, gliderLocalY, 0]}>
         {/* clonedSurf attached via useEffect */}
         <group ref={riderRef} position={RIDER_MOUNT_OFFSET_DEFAULT}>
@@ -759,16 +760,16 @@ function SceneContents({
         <SplineTrack onTriUpdate={reportTrackTris} />
       </Suspense>
 
-      {/* 4 surfboard karts at t=0, 0.25, 0.5, 0.75 */}
+      {/* Demo karts now ride via <AnimatedKarts /> inside <RiverScene> — see
+          river-scene.tsx. The static t=0 SplineSurfboardKart is still mounted
+          (invisible) to keep the bbox-measurement HUD readout populated. */}
       <Suspense fallback={null}>
-        {KART_T_VALUES.map((t, i) => (
-          <SplineSurfboardKart
-            key={t}
-            t={t}
-            color={KART_COLORS[i]!}
-            onMounted={t === 0 ? handleKartMounted : undefined}
-          />
-        ))}
+        <SplineSurfboardKart
+          t={0}
+          color={KART_COLORS[0]!}
+          onMounted={handleKartMounted}
+          visible={false}
+        />
       </Suspense>
 
       {/* Measurement collector — reads start kart bbox */}
