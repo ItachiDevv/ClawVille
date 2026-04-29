@@ -9,6 +9,31 @@
  *
  * Layout: pointer-events:none outer container (click-through to 3D canvas).
  * Interactive elements (leave button) use pointer-events:auto.
+ *
+ * ─── v2 (spline sim) HUD swap, gated by `NEXT_PUBLIC_REEF_RACE_USE_SPLINE` ──
+ *
+ * When `process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true'` the HUD
+ * renders the spline-sim variants:
+ *
+ *   - <ProgressBar> replaces <LapCounter> (top-left). Linear river layout
+ *     has no laps; we show the local avatar's `entity.progress` (0..1 fraction
+ *     of spline arclength) as "RACE 47%".
+ *   - <ReefRaceDriftSparks /> is HIDDEN — drift mechanic retired in v2 (see
+ *     `.claude/plans/reef-race-v2.md` "Drift Mechanic — RETIRED"). The
+ *     sparks component remains in the tree under the OLD path so the live
+ *     ellipse sim keeps its UX while the spline sim rolls out behind a flag.
+ *     DELETE the sparks import + component entirely once the flag is removed
+ *     post-Phase 1 graduation.
+ *   - <WaitAtFinishOverlay> is rendered once the local avatar crosses the
+ *     finish line. Server emits `event.crossed_finish` (single racer) and
+ *     `event.finish_wait_started` (per-match countdown). Both are wired in
+ *     `apps/web/src/stores/activity.ts` to populate
+ *     `selfFinished`, `selfPlacement`, `selfTotalMs`, `finishWaitDeadlineAt`,
+ *     and `finishedRacers`. The overlay only renders during `matchPhase==='live'`
+ *     so it disappears the moment the results modal arrives.
+ *   - <PowerUpBar> is unchanged — power-ups are Phase 1 carry-over.
+ *
+ * The chip strip in <PowerUpBar> already says "SHIFT · JUMP" — no change here.
  */
 
 import { useEffect, useRef, useState, useMemo } from 'react';
@@ -28,6 +53,23 @@ import ReefRaceDraftBadge    from './reef-race-draft-badge';
 import ReefRaceEventToasts   from './reef-race-event-toasts';
 import ReefRaceBuildSummary  from './reef-race-build-summary';
 import ReefRaceStreakCounter from './reef-race-streak-counter';
+
+// ─── v2 spline-sim feature flag ──────────────────────────────────────────────
+//
+// Module-scope read so Next.js's build-time env replacement statically inlines
+// `'true'` / `'false'` into the bundle. Live ellipse sim ships unchanged when
+// this is unset; spline sim turns on once Wave 2 server work merges.
+//
+// FEATURE_GATE: reef_race_v2_spline_hud
+// Status: HUD wiring landed Wave 2; sim + bots + WS-hub follow in Wave 3.
+// Metric to graduate: spline sim runs full match end-to-end without WS errors
+// and lap counter/drift sparks confirmed dead (no remaining call sites).
+// Current reading: to fill (env flag never enabled in prod yet)
+// Review deadline: 2026-05-15
+// On deadline: if spline sim hasn't replaced ellipse, delete the v2 branches
+// and revert to lap-counter-only HUD.
+// Reference: .claude/plans/reef-race-v2.md
+const USE_SPLINE = process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -70,6 +112,82 @@ function LapCounter({ selfAvatarId }: { selfAvatarId: string | null }) {
       </div>
       <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '0.05em', color: '#ffffff' }}>
         {Math.min(lap, TOTAL_LAPS)}/{TOTAL_LAPS}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * v2 — horizontal arclength progress bar. Replaces <LapCounter> when the
+ * spline sim is enabled. Reads `entity.progress` (0..1 fraction of the
+ * river spline arclength) emitted on every snapshot.delta tick.
+ *
+ * Sits in the same top-left slot the lap counter used (200×14 wu wide /
+ * tall) so the surrounding HUD column doesn't reflow when the flag flips.
+ */
+function ProgressBar({ selfAvatarId }: { selfAvatarId: string | null }) {
+  const progress = useActivityStore((s) => {
+    if (!selfAvatarId) return 0;
+    const e = s.entities.get(selfAvatarId) as any;
+    const p = typeof e?.progress === 'number' ? e.progress : 0;
+    // Clamp defensively — server may briefly tick 1.001 between
+    // crossed_finish and the next delta. Avoids "RACE 100%" → "RACE 100%"
+    // with a fill-bar overrun visual.
+    return Math.max(0, Math.min(1, p));
+  });
+
+  const pct = Math.round(progress * 100);
+  // Inline-bar layout: dark backdrop, cyan fill, percentage label centered
+  // on top of the fill so it stays readable at 0% (label sits on bg) and
+  // 100% (label sits on fill). pointer-events handled by the outer HUD.
+  return (
+    <div
+      style={{
+        position: 'relative',
+        width: 200,
+        height: 14,
+        background: 'rgba(0, 0, 0, 0.65)',
+        border: '1px solid #00e5ff44',
+        borderRadius: 8,
+        overflow: 'hidden',
+      }}
+      role="progressbar"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={pct}
+      aria-label={`Race progress ${pct}%`}
+    >
+      <div
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          bottom: 0,
+          width: `${pct}%`,
+          background:
+            'linear-gradient(90deg, #00e5ff 0%, #00b8d4 60%, #00838f 100%)',
+          // Cheap easing on the fill so jitter from 15Hz snapshot interp
+          // doesn't strobe the bar; cap short so we don't "lag" the racer.
+          transition: 'width 120ms linear',
+          boxShadow: 'inset 0 0 6px rgba(0, 229, 255, 0.5)',
+        }}
+      />
+      <div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: 10,
+          fontWeight: 800,
+          letterSpacing: '0.18em',
+          color: '#ffffff',
+          textShadow: '0 1px 2px rgba(0, 0, 0, 0.85)',
+          fontVariantNumeric: 'tabular-nums',
+        }}
+      >
+        RACE {pct}%
       </div>
     </div>
   );
@@ -464,6 +582,243 @@ function PowerUpBar({ selfAvatarId: _selfPetId }: { selfAvatarId: string | null 
   );
 }
 
+/**
+ * v2 — wait-at-finish centered overlay shown when the local avatar has crossed
+ * the finish line but the match is still LIVE (other racers haven't all
+ * finished yet, and the per-match timeout hasn't fired). Cosmetic only —
+ * pointer-events disabled. Reads:
+ *
+ *   - `selfPlacement` / `selfTotalMs` (set on `event.crossed_finish` for self)
+ *   - `finishWaitDeadlineAt` wall-clock ms (set on `event.finish_wait_started`)
+ *   - `finishedRacers[]` (running list — appended on each crossing)
+ *
+ * Countdown ticks via a 5Hz local interval that just bumps a render counter;
+ * the deadline math runs at render time so we never drift from server truth.
+ */
+function WaitAtFinishOverlay() {
+  const matchPhase = useActivityStore((s) => s.matchPhase);
+  const selfFinished = useActivityStore((s) => s.selfFinished);
+  const selfPlacement = useActivityStore((s) => s.selfPlacement);
+  const selfTotalMs = useActivityStore((s) => s.selfTotalMs);
+  const finishWaitDeadlineAt = useActivityStore(
+    (s) => s.finishWaitDeadlineAt,
+  );
+  const finishedRacers = useActivityStore((s) => s.finishedRacers);
+  const scores = useActivityStore((s) => s.scores);
+  const selfAvatarId = useActivityStore((s) => s.selfAvatarId);
+
+  // Render-time deadline recompute — cheap, drift-proof, no interval cleanup.
+  // Bump a tick counter at 5Hz so the displayed countdown updates.
+  const [, force] = useState(0);
+  useEffect(() => {
+    if (!selfFinished || matchPhase !== 'live') return;
+    const id = window.setInterval(() => force((n) => (n + 1) & 0xff), 200);
+    return () => window.clearInterval(id);
+  }, [selfFinished, matchPhase]);
+
+  if (!selfFinished || matchPhase !== 'live' || selfPlacement == null) {
+    return null;
+  }
+
+  const remainingMs =
+    finishWaitDeadlineAt != null
+      ? Math.max(0, finishWaitDeadlineAt - Date.now())
+      : null;
+  // Mario-Kart-style mm:ss for the wait countdown — short string fits the
+  // overlay footprint and matches the rest of the HUD's typography.
+  const countdownLabel =
+    remainingMs != null
+      ? (() => {
+          const totalSec = Math.ceil(remainingMs / 1000);
+          const min = Math.floor(totalSec / 60);
+          const sec = totalSec % 60;
+          return `${min}:${sec.toString().padStart(2, '0')}`;
+        })()
+      : null;
+
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        inset: 0,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        pointerEvents: 'none',
+      }}
+      aria-live="polite"
+    >
+      <div
+        style={{
+          minWidth: 360,
+          maxWidth: 480,
+          background: 'rgba(0, 0, 0, 0.78)',
+          border: '2px solid #ffd60088',
+          borderRadius: 16,
+          padding: '24px 32px',
+          textAlign: 'center',
+          boxShadow:
+            '0 0 32px rgba(255, 214, 0, 0.35), inset 0 0 16px rgba(255, 214, 0, 0.15)',
+          backdropFilter: 'blur(8px)',
+        }}
+      >
+        <div
+          style={{
+            fontSize: 12,
+            letterSpacing: '0.3em',
+            color: '#ffd60099',
+            fontWeight: 700,
+          }}
+        >
+          FINISHED
+        </div>
+        <div
+          style={{
+            fontSize: 44,
+            fontWeight: 900,
+            color: '#ffd600',
+            letterSpacing: '0.05em',
+            marginTop: 4,
+            lineHeight: 1.05,
+          }}
+        >
+          {ordinal(selfPlacement)}!
+        </div>
+        {selfTotalMs != null && (
+          <div
+            style={{
+              fontSize: 14,
+              color: '#ffffffcc',
+              marginTop: 6,
+              fontVariantNumeric: 'tabular-nums',
+              letterSpacing: '0.05em',
+            }}
+          >
+            {formatMs(selfTotalMs)}
+          </div>
+        )}
+
+        <div
+          style={{
+            marginTop: 18,
+            paddingTop: 14,
+            borderTop: '1px solid #ffffff22',
+          }}
+        >
+          <div
+            style={{
+              fontSize: 11,
+              letterSpacing: '0.18em',
+              color: '#ffffff88',
+              fontWeight: 600,
+            }}
+          >
+            WAITING FOR OTHER RACERS
+          </div>
+          {countdownLabel && (
+            <div
+              style={{
+                fontSize: 28,
+                fontWeight: 800,
+                color: '#00e5ff',
+                marginTop: 4,
+                fontVariantNumeric: 'tabular-nums',
+                letterSpacing: '0.08em',
+              }}
+            >
+              {countdownLabel}
+            </div>
+          )}
+        </div>
+
+        {finishedRacers.length > 0 && (
+          <div style={{ marginTop: 16 }}>
+            <div
+              style={{
+                fontSize: 9,
+                letterSpacing: '0.2em',
+                color: '#ffffff66',
+                fontWeight: 700,
+                marginBottom: 6,
+              }}
+            >
+              FINISHERS ({finishedRacers.length})
+            </div>
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 4,
+                maxHeight: 140,
+                overflow: 'hidden',
+              }}
+            >
+              {finishedRacers
+                .slice()
+                .sort((a, b) => a.placement - b.placement)
+                .map((r) => {
+                  const isSelf = selfAvatarId && r.avatarId === selfAvatarId;
+                  const name =
+                    scores.get(r.avatarId)?.displayName ??
+                    (r.avatarId.length > 8 ? `…${r.avatarId.slice(-6)}` : r.avatarId);
+                  return (
+                    <div
+                      key={r.avatarId}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'baseline',
+                        gap: 12,
+                        padding: '4px 10px',
+                        borderRadius: 6,
+                        background: isSelf
+                          ? 'rgba(255, 214, 0, 0.15)'
+                          : 'rgba(255, 255, 255, 0.04)',
+                        fontSize: 12,
+                        color: isSelf ? '#ffd600' : '#ffffffcc',
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontWeight: isSelf ? 800 : 600,
+                          letterSpacing: '0.04em',
+                        }}
+                      >
+                        {ordinal(r.placement)}{' '}
+                        <span style={{ opacity: 0.85 }}>{name}</span>
+                        {isSelf && (
+                          <span
+                            style={{
+                              marginLeft: 6,
+                              fontSize: 9,
+                              letterSpacing: '0.16em',
+                              opacity: 0.85,
+                            }}
+                          >
+                            YOU
+                          </span>
+                        )}
+                      </span>
+                      <span
+                        style={{
+                          fontVariantNumeric: 'tabular-nums',
+                          fontWeight: 600,
+                          color: isSelf ? '#ffd600' : '#ffffff99',
+                        }}
+                      >
+                        {formatMs(r.totalMs)}
+                      </span>
+                    </div>
+                  );
+                })}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function LeaveButton({ onLeave }: { onLeave?: () => void }) {
   if (!onLeave) return null;
   return (
@@ -549,7 +904,11 @@ export default function ReefRaceHud({
           gap: 8,
         }}
       >
-        <LapCounter selfAvatarId={selfAvatarId} />
+        {USE_SPLINE ? (
+          <ProgressBar selfAvatarId={selfAvatarId} />
+        ) : (
+          <LapCounter selfAvatarId={selfAvatarId} />
+        )}
         <PlacementTile selfAvatarId={selfAvatarId} />
         {/* Phase 4 — clean-checkpoint streak chip (C-IMPL-3 fix). Only
             renders mid-match; auto-dismisses on streak=0. Tier glow tracks
@@ -568,11 +927,14 @@ export default function ReefRaceHud({
       <ReefRaceEventToasts />
 
       {/* Bottom-center: Drift charge sparks (above PowerUpBar).
-          TODO(reef-race-v2): retire <ReefRaceDriftSparks /> when the spline
-          sim ships — drift mechanic is replaced by JUMP and the sparks bar
-          becomes dead UI. Tracked in `.claude/plans/reef-race-v2.md`
-          "Drift Mechanic — RETIRED". Live ellipse sim still drives sparks. */}
-      <ReefRaceDriftSparks />
+          TODO(reef-race-v2): DELETE <ReefRaceDriftSparks /> + its import +
+          the entire `apps/web/src/components/game/reef-race-drift-sparks.tsx`
+          file once `NEXT_PUBLIC_REEF_RACE_USE_SPLINE` graduates from gated
+          to default-on — drift mechanic is replaced by JUMP in v2 and the
+          sparks bar becomes dead UI. Tracked in `.claude/plans/reef-race-v2.md`
+          "Drift Mechanic — RETIRED". Live ellipse sim still drives sparks
+          while the flag is off. */}
+      {!USE_SPLINE && <ReefRaceDriftSparks />}
 
       {/* Bottom-center: Power-up bar */}
       <div
@@ -636,6 +998,13 @@ export default function ReefRaceHud({
           50%      { transform: scale(1.08); opacity: 1; }
         }
       `}</style>
+
+      {/* v2 — wait-at-finish overlay. Internal gates ensure it only renders
+          when the local avatar has crossed the finish line AND the match is
+          still LIVE. Safe to mount on the ellipse sim too — the gates fail
+          closed when `selfFinished` never flips (event.crossed_finish never
+          fires on ellipse sim). */}
+      {USE_SPLINE && <WaitAtFinishOverlay />}
 
       {/* Results modal — same as BumperShells, reused */}
       {matchPhase === 'ended' && activityId && roomId && onLeave && onPlayAgain && (
