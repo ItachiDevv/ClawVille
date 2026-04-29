@@ -1,0 +1,192 @@
+/**
+ * Q3 plan §4 — Cosmetic engine schema.
+ *
+ * Three tables:
+ *   1. cosmetic_skus        — the catalog. One row per purchasable item.
+ *   2. cosmetic_variants    — per-rig assets. Sunglasses-on-Milady ≠
+ *                             sunglasses-on-lobster, so each SKU has N
+ *                             variants keyed by `rigType`.
+ *   3. avatar_skins            — ownership ledger. Records which avatar owns
+ *                             which SKU + whether it's currently equipped.
+ *
+ * Scope-aware design (per founder convo 2026-04-28):
+ *   - Surfboards are `scope='activity:reef-race'` — render only inside the
+ *     Reef Race scene, not in the open world.
+ *   - Sunglasses are `scope='avatar'` — render on the avatar (head bone)
+ *     anywhere the avatar appears.
+ *   - Auras / particles are `scope='all'` — render anywhere.
+ *
+ * License tracking (per founder convo 2026-04-28):
+ *   - Many cosmetics will come from Sketchfab CC-BY downloads — the
+ *     attribution + attribution_url + license_spdx columns exist so the
+ *     in-game inspect modal can render the credit, satisfying the legal
+ *     requirement to display creator attribution.
+ *
+ * Engine vs storefront vs content separation:
+ *   - This schema is the ENGINE (one-shot infra).
+ *   - The cosmetics SHOP UI (Phase 4) is the storefront (one-shot infra).
+ *   - The actual SKU catalog (rows in cosmetic_skus) is the CONTENT track —
+ *     adds over time, starting with the 4 surfboards from the Reef Race v2
+ *     session. Engine ships with the catalog empty; first content drop is
+ *     the seeding script for those 4 surfboards.
+ */
+
+import {
+  pgTable,
+  uuid,
+  text,
+  integer,
+  jsonb,
+  boolean,
+  timestamp,
+  uniqueIndex,
+  index,
+} from 'drizzle-orm/pg-core';
+import { avatars } from './avatars';
+
+export const cosmeticSkus = pgTable(
+  'cosmetic_skus',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** url-safe, human-readable, unique. e.g. 'pirate-surfboard', 'pixel-shades'. */
+    slug: text('slug').notNull().unique(),
+    /** display category — 'hat' | 'glasses' | 'aura' | 'board' | 'particle' | 'outfit' | 'palette' */
+    category: text('category').notNull(),
+    /**
+     * Where the cosmetic renders. Drives equip-time validation + which 3D
+     * subsystem loads it. See cosmetic-loader.tsx.
+     */
+    scope: text('scope').notNull(), // 'world' | 'avatar' | 'activity:reef-race' | 'activity:bumper-shells' | 'all'
+    displayName: text('display_name').notNull(),
+    description: text('description'),
+    /** 'common' | 'rare' | 'epic' | 'limited' — drives shop card styling */
+    rarity: text('rarity').notNull(),
+    /** Price in ClawTokens. Catalog listing price; server enforces on purchase. */
+    priceCt: integer('price_ct').notNull(),
+    /**
+     * If non-null, only purchasable in that currency (e.g. 'CLV' = $CLAWVILLE
+     * exclusive limited drops). Phase 4 storefront enforces.
+     */
+    exclusiveCurrency: text('exclusive_currency'),
+
+    // ─── Asset license metadata ──────────────────────────────────────────
+    // Required for any Sketchfab-sourced asset (CC-BY etc); null for
+    // first-party assets we made ourselves.
+    /** "CC-BY 3.0 by [creator] on Sketchfab" */
+    attribution: text('attribution'),
+    /** Direct link to the source (Sketchfab URL etc.) for the inspect modal. */
+    attributionUrl: text('attribution_url'),
+    /** SPDX identifier — 'CC-BY-3.0' | 'CC-BY-SA-4.0' | 'CC0-1.0' | 'OWN' | etc. */
+    licenseSpdx: text('license_spdx'),
+
+    // ─── Availability windows (limited drops) ────────────────────────────
+    availableFrom: timestamp('available_from', { withTimezone: true }),
+    availableUntil: timestamp('available_until', { withTimezone: true }),
+    /**
+     * Hard supply cap — null = unlimited. When set + reached, shop hides
+     * the SKU from new buyers. Existing owners keep theirs.
+     */
+    supplyCap: integer('supply_cap'),
+
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => ({
+    // For the storefront catalog query — what's available right now,
+    // optionally filtered by scope.
+    idxScope: index('idx_cosmetic_skus_scope').on(t.scope),
+    idxAvailUntil: index('idx_cosmetic_skus_avail_until').on(t.availableUntil),
+  }),
+);
+
+export const cosmeticVariants = pgTable(
+  'cosmetic_variants',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    skuId: uuid('sku_id')
+      .notNull()
+      // RESTRICT (not cascade) — a SKU should NEVER be hard-deleted while
+      // any variant references it. Retire SKUs via `availableUntil` instead;
+      // RESTRICT enforces this at the DB layer (audit-fix 2026-04-29). Same
+      // rule on avatar_skins below.
+      .references(() => cosmeticSkus.id, { onDelete: 'restrict' }),
+    /**
+     * Which rig this variant fits. Universal items (auras, particles,
+     * surfboards-as-props) use 'universal'. Avatar-anchored items have
+     * one variant per supported rig.
+     *
+     * Examples:
+     *   - 'milady-vrm'         — Milady VRM avatar
+     *   - 'lobster'            — lobster GLB
+     *   - 'crab'               — crab GLB
+     *   - 'reef-race-board'    — surfboard prop in Reef Race scene
+     *   - 'universal'          — render-anywhere (auras, particles)
+     */
+    rigType: text('rig_type').notNull(),
+    /**
+     * Path to the asset under apps/web/public/cosmetics/, OR for shaders/
+     * textures, the registry key the cosmetic-loader maps to a runtime
+     * resource. e.g. 'cosmetics/hats/pirate/lobster.glb' or 'shader:aura-rainbow'.
+     */
+    assetUrl: text('asset_url').notNull(),
+    /**
+     * Render-time hints. Per-category shape:
+     *   - hat / glasses: { boneAnchor: 'head', offsetXYZ: [x,y,z], scale, rotationXYZ }
+     *   - palette:       { uvMap, paletteIndex }
+     *   - aura:          { shaderUniforms: { color, speed } }
+     *   - particle:      { spriteUrl, emitRate, lifetime }
+     *   - board:         { attachToPlayerPosition: true, yOffset }
+     */
+    assetMeta: jsonb('asset_meta').$type<Record<string, unknown>>(),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => ({
+    // Look up all variants of a SKU; one variant per (sku, rig) combo.
+    uniqSkuRig: uniqueIndex('uniq_cosmetic_variant_sku_rig').on(
+      t.skuId,
+      t.rigType,
+    ),
+  }),
+);
+
+export const petSkins = pgTable(
+  'avatar_skins',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    avatarId: uuid('avatar_id')
+      .notNull()
+      .references(() => avatars.id, { onDelete: 'cascade' }),
+    skuId: uuid('sku_id')
+      .notNull()
+      // RESTRICT — never silently delete ownership when a SKU is removed.
+      // Retire SKUs via `availableUntil`; avatar_skins rows survive even if
+      // the catalog hides the SKU from new buyers (audit-fix 2026-04-29).
+      .references(() => cosmeticSkus.id, { onDelete: 'restrict' }),
+    /** Provenance for revenue audits + refund rules */
+    acquiredVia: text('acquired_via').notNull(), // 'shop_ct' | 'shop_clv' | 'shop_sol' | 'shop_usdc' | 'shop_fiat' | 'gift' | 'reward'
+    /**
+     * Optional ledger pointer for shop_ct purchases — joins back to
+     * claw_token_transactions.id for full audit trail.
+     */
+    ledgerId: uuid('ledger_id'),
+    /** Equipped state. Multiple SKUs in the same scope+slot equipped at once
+     *  is allowed; the cosmetic-loader picks the most recently equipped one
+     *  per (scope, slot) at render time. */
+    equipped: boolean('equipped').notNull().default(false),
+    acquiredAt: timestamp('acquired_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    /** Last toggle of `equipped` — useful for analytics on which items get
+     *  worn vs collected. */
+    equippedAt: timestamp('equipped_at', { withTimezone: true }),
+  },
+  (t) => ({
+    // Each avatar owns each SKU exactly once. Re-purchases are a no-op (idempotent).
+    uniqPetSku: uniqueIndex('uniq_pet_skin_pet_sku').on(t.avatarId, t.skuId),
+    // Hot path: load all equipped skins for a avatar.
+    idxPetEquipped: index('idx_pet_skin_pet_equipped').on(t.avatarId, t.equipped),
+  }),
+);

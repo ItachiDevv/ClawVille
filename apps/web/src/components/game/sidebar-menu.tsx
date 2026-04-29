@@ -511,6 +511,7 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
   const openMarketplace = useGameStore((s: GameState) => s.openMarketplace);
   const openBazaar = useGameStore((s: GameState) => s.openBazaar);
   const openAuction = useGameStore((s: GameState) => s.openAuction);
+  const setCosmeticDrawerOpen = useGameStore((s: GameState) => s.setCosmeticDrawerOpen);
   const openQuestBoard = useGameStore((s: GameState) => s.openQuestBoard);
   const openBountyBoard = useGameStore((s: GameState) => s.openBountyBoard);
   const openLeaderboard = useGameStore((s: GameState) => s.openLeaderboard);
@@ -691,9 +692,24 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
         {/* WORLD — Priority 2: open agent onboarding surface */}
         <CategoryHeader label="World" subtitle="Enter · Connect" />
         <div className="rpg-sidebar-group">
+          {/*
+            Phase 2 plan §3.4 — tier-aware label. Same row, two intents:
+              - Player tier (hasAvatar && !agentConnected): primary "Upgrade
+                to Trainer" CTA. Click → existing agent-connect modal.
+                Avatar/CT/rank carry forward (server-side, non-destructive).
+              - Trainer tier (agentConnected): manage the bound bot.
+                Green dot indicates active session.
+            Identical onClick handler — only the framing changes.
+          */}
+          {/*
+            Icon + label stay aligned across all three states (audit-fix
+            2026-04-29 — preventing the ⬆️/'OpenClaw' mismatch when a
+            logged-in user has no avatar yet). Both flip together based on
+            the same tier predicate.
+          */}
           <SidebarRow
-            icon="🔌"
-            label="OpenClaw"
+            icon={agentConnected ? '🔌' : (hasAvatar ? '⬆️' : '🔌')}
+            label={agentConnected ? 'OpenClaw' : (hasAvatar ? 'Upgrade to Trainer' : 'OpenClaw')}
             onClick={runAction(() => setAgentConnectModalOpen(true))}
             active={agentConnected}
             badge={
@@ -768,6 +784,13 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
             label="Auction House"
             onClick={runAction(openAuction)}
             rarity="epic"
+          />
+          {/* Q3 plan §4.4 — cosmetic drawer entry. Opens the owned-skins
+              wardrobe (drawer modal). Empty until first content drop. */}
+          <SidebarRow
+            icon="✨"
+            label="Cosmetics"
+            onClick={runAction(() => setCosmeticDrawerOpen(true))}
           />
         </div>
 

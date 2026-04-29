@@ -146,6 +146,12 @@ export interface GameState {
   settingsModalOpen: boolean;
   setSettingsModalOpen: (open: boolean) => void;
 
+  // Q3 plan §4.4 — cosmetic drawer (Phase 3 surface). Drawer lists owned
+  // cosmetics with equip/unequip toggles. Catalog is empty at Phase 3 launch;
+  // first content drop ships the 4 surfboards from the Reef Race v2 session.
+  cosmeticDrawerOpen: boolean;
+  setCosmeticDrawerOpen: (open: boolean) => void;
+
   // Location config modal
   locationConfigModalOpen: boolean;
   locationConfigTarget: string | null;
@@ -562,6 +568,9 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   settingsModalOpen: false,
   setSettingsModalOpen: (open) => set({ settingsModalOpen: open }),
+
+  cosmeticDrawerOpen: false,
+  setCosmeticDrawerOpen: (open) => set({ cosmeticDrawerOpen: open }),
 
   locationConfigModalOpen: false,
   locationConfigTarget: null,

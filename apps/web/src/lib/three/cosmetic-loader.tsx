@@ -1,0 +1,905 @@
+'use client';
+
+/**
+ * cosmetic-loader.tsx — Phase 3.3 cosmetic render pipeline
+ *
+ * Subscribes to the user's equipped cosmetics and renders them on top of the
+ * existing avatar/avatar mesh. Categories handled:
+ *
+ *   hat / glasses — GLB attached to a bone anchor (Head / J_Bip_C_Head)
+ *   palette       — texture albedo swap on the avatar body material
+ *   aura          — GLSL sphere shader around the avatar root
+ *   particle      — emitParticles() calls into the existing particle pool
+ *   board         — GLB prop displayed only in reef-race context, at player pos
+ *   outfit        — stub (complex; deferred to follow-up per plan)
+ *
+ * Safety invariants (from memory):
+ *   - NEVER use drei <Text> or <Billboard> — hard crash on Iris Xe
+ *   - NEVER InstancedMesh + ShaderMaterial — silent WebGPU crash
+ *   - NEVER import 'three/webgpu' here — this component lives inside the
+ *     main world R3F canvas which uses WebGLRenderer. NodeMaterial in a
+ *     WebGLRenderer causes a per-frame .replace() crash on undefined.
+ *   - compileAsync is called once after the aura material mounts
+ *   - All geometry / material refs are module-scope or useRef — zero per-frame
+ *     new THREE.Vector3() allocations
+ *   - Dispose everything on unmount (Iris Xe leaks fast)
+ */
+
+import {
+  useRef,
+  useEffect,
+  useMemo,
+  useCallback,
+  useState,
+} from 'react';
+import { useFrame, useThree } from '@react-three/fiber';
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'meshoptimizer';
+import { useQuery } from '@tanstack/react-query';
+import { emitParticles } from '@/lib/three/particle-system';
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+/** One row from GET /api/cosmetics/owned */
+export interface OwnedCosmetic {
+  id: string;
+  equipped: boolean;
+  sku: {
+    id: string;
+    slug: string;
+    category: string; // 'hat' | 'glasses' | 'aura' | 'board' | 'particle' | 'outfit' | 'palette'
+    scope: string;    // 'world' | 'avatar' | 'activity:reef-race' | 'all' | ...
+    displayName: string;
+  };
+  variants: Array<{
+    id: string;
+    rigType: string; // 'milady-vrm' | 'lobster' | 'crab' | 'reef-race-board' | 'universal' | ...
+    assetUrl: string;
+    assetMeta: Record<string, unknown> | null;
+  }>;
+}
+
+export interface OwnedCosmeticsResponse {
+  owned: OwnedCosmetic[];
+  generatedAt: string;
+}
+
+/** Which scene context the loader is rendering into */
+export type CosmeticContext =
+  | 'world'
+  | 'activity:reef-race'
+  | 'activity:bumper-shells';
+
+/** Props for <CosmeticLoader /> */
+export interface CosmeticLoaderProps {
+  /** The avatar's ID — used as the React Query cache key */
+  avatarId: string;
+  /**
+   * The avatar's rig type. Determines which variant is selected.
+   * Must match a `rigType` value in cosmetic_variants.
+   */
+  rigType: 'milady-vrm' | 'lobster' | 'crab' | string;
+  /**
+   * Current scene context. Board cosmetics only render when
+   * context === 'activity:reef-race'. World cosmetics render everywhere except
+   * activity-specific scenes, unless their scope is 'all'.
+   */
+  context: CosmeticContext;
+  /**
+   * The Three.js Object3D that is the avatar root (or scene root for boards).
+   * All bone lookups and children are attached to / relative to this object.
+   */
+  parentObject: THREE.Object3D;
+}
+
+// ---------------------------------------------------------------------------
+// Module-scope GLTFLoader with MeshoptDecoder (shared, lazy-init)
+// ---------------------------------------------------------------------------
+
+let _loader: GLTFLoader | null = null;
+function getLoader(): GLTFLoader {
+  if (!_loader) {
+    _loader = new GLTFLoader();
+    (_loader as any).setMeshoptDecoder(MeshoptDecoder);
+  }
+  return _loader;
+}
+
+// ---------------------------------------------------------------------------
+// Module-scope geometry / material for the aura sphere (shared, never disposed)
+// Created once on first aura mount, reused across all instances.
+// ---------------------------------------------------------------------------
+
+let _auraGeo: THREE.SphereGeometry | null = null;
+function getAuraGeometry(): THREE.SphereGeometry {
+  if (!_auraGeo) {
+    // 32-segment sphere, slightly larger than avatar bounding sphere.
+    // Segments high enough to look smooth at typical zoom, low enough for Iris Xe.
+    _auraGeo = new THREE.SphereGeometry(1, 20, 14);
+  }
+  return _auraGeo;
+}
+
+// ---------------------------------------------------------------------------
+// Scope / context compatibility
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true if a SKU with the given scope is renderable in the current context.
+ */
+function scopeCompatible(skuScope: string, context: CosmeticContext): boolean {
+  if (skuScope === 'all') return true;
+  if (skuScope === 'world') return context === 'world';
+  if (skuScope === context) return true; // e.g. 'activity:reef-race' === 'activity:reef-race'
+  if (skuScope === 'avatar') return context === 'world'; // avatar cosmetics are world-only
+  return false;
+}
+
+/**
+ * Pick the best variant for the current rig.
+ * Priority: exact rig match > 'universal'
+ */
+function pickVariant(
+  variants: OwnedCosmetic['variants'],
+  rigType: string,
+): OwnedCosmetic['variants'][0] | null {
+  const exact = variants.find((v) => v.rigType === rigType);
+  if (exact) return exact;
+  const universal = variants.find((v) => v.rigType === 'universal');
+  return universal ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Bone anchor helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Find a bone by name inside an Object3D hierarchy.
+ *
+ * Checks common naming conventions used across VRM and standard glTF rigs:
+ *   - VRM 0.x / Mixamo: 'J_Bip_C_Head' or 'mixamorig:Head' / 'mixamorigHead'
+ *   - Standard glTF: 'Head' or 'head'
+ *   - Custom: whatever boneAnchor is set to in assetMeta
+ *
+ * Returns the first matching Object3D or null.
+ */
+export function findBone(
+  root: THREE.Object3D,
+  boneName: string,
+): THREE.Object3D | null {
+  let found: THREE.Object3D | null = null;
+  root.traverse((child) => {
+    if (found) return;
+    // Exact match first (fastest path)
+    if (child.name === boneName) {
+      found = child;
+      return;
+    }
+    // Case-insensitive match for 'head' variants
+    const nameLower = child.name.toLowerCase();
+    const targetLower = boneName.toLowerCase();
+    if (nameLower === targetLower) {
+      found = child;
+    }
+  });
+  return found;
+}
+
+/**
+ * Find the head bone using a prioritised list of known names.
+ * Returns the first match or null.
+ */
+function findHeadBone(root: THREE.Object3D): THREE.Object3D | null {
+  // VRM 0.x canonical / Mixamo sanitised / plain glTF / fallback
+  const candidates = [
+    'J_Bip_C_Head',
+    'mixamorigHead',
+    'mixamorig:Head',
+    'Head',
+    'head',
+    'Bip001_Head',
+  ];
+  for (const name of candidates) {
+    const bone = findBone(root, name);
+    if (bone) return bone;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Aura GLSL shader (WebGL-safe, no TSL)
+//
+// Reason for GLSL instead of TSL:
+//   The main world scene uses R3F's default Canvas → WebGLRenderer (plain
+//   'three' import). NodeMaterial / MeshBasicNodeMaterial in that context
+//   causes per-frame ".replace() on undefined" crashes (gotcha documented in
+//   memory: two-three-instances-nodemat-webgl-crash.md). The aura must use
+//   ShaderMaterial with raw GLSL.
+//
+//   For WebGPU activity scenes (reef-race / bumper-shells), the board cosmetic
+//   also uses MeshStandardMaterial (no shader) so there's no TSL needed there
+//   either.
+// ---------------------------------------------------------------------------
+
+const AURA_VERT = /* glsl */ `
+varying vec3 vNormal;
+varying vec3 vViewDir;
+
+void main() {
+  vec4 worldPos = modelMatrix * vec4(position, 1.0);
+  vNormal = normalize(normalMatrix * normal);
+  vViewDir = normalize(cameraPosition - worldPos.xyz);
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+`;
+
+const AURA_FRAG = /* glsl */ `
+uniform vec3  uColor;
+uniform float uTime;
+uniform float uSpeed;
+uniform float uOpacity;
+
+varying vec3 vNormal;
+varying vec3 vViewDir;
+
+void main() {
+  // Fresnel: brighter at glancing angles
+  float fresnel = 1.0 - abs(dot(normalize(vNormal), normalize(vViewDir)));
+  fresnel = pow(fresnel, 2.0);
+
+  // Pulsing glow via sine wave on uTime
+  float pulse = 0.7 + 0.3 * sin(uTime * uSpeed);
+
+  float alpha = fresnel * pulse * uOpacity;
+  gl_FragColor = vec4(uColor, alpha);
+}
+`;
+
+/**
+ * Create a ShaderMaterial for the aura effect.
+ * Returns [material, uniformsRef] so the caller can update uTime each frame.
+ */
+function createAuraMaterial(
+  color: THREE.Color,
+  speed: number,
+): { mat: THREE.ShaderMaterial; uniforms: Record<string, THREE.IUniform> } {
+  const uniforms = {
+    uColor:   { value: color.clone() },
+    uTime:    { value: 0 },
+    uSpeed:   { value: speed },
+    uOpacity: { value: 0.7 },
+  };
+  const mat = new THREE.ShaderMaterial({
+    uniforms,
+    vertexShader:   AURA_VERT,
+    fragmentShader: AURA_FRAG,
+    transparent:    true,
+    depthWrite:     false,
+    side:           THREE.FrontSide,
+    blending:       THREE.AdditiveBlending,
+  });
+  return { mat, uniforms };
+}
+
+// ---------------------------------------------------------------------------
+// GLB asset cache — avoid re-loading the same asset URL multiple times
+// per session. Maps assetUrl → loaded THREE.Group (cloned per use).
+// ---------------------------------------------------------------------------
+
+const GLB_CACHE = new Map<string, THREE.Group>();
+const GLB_LOADING = new Map<string, Promise<THREE.Group>>();
+
+async function loadGlbAsset(assetUrl: string): Promise<THREE.Group> {
+  if (GLB_CACHE.has(assetUrl)) {
+    return GLB_CACHE.get(assetUrl)!.clone(true);
+  }
+  if (GLB_LOADING.has(assetUrl)) {
+    const base = await GLB_LOADING.get(assetUrl)!;
+    return base.clone(true);
+  }
+
+  const promise = new Promise<THREE.Group>((resolve, reject) => {
+    getLoader().load(
+      assetUrl,
+      (gltf) => {
+        const group = gltf.scene;
+        // Frustum culling off — anchored accessory bounding boxes may not cover
+        // the actual render area (SkinnedMesh T-pose bbox issue)
+        group.traverse((c) => { c.frustumCulled = false; });
+        GLB_CACHE.set(assetUrl, group);
+        resolve(group.clone(true));
+      },
+      undefined,
+      reject,
+    );
+  });
+
+  GLB_LOADING.set(assetUrl, promise.then((g) => {
+    GLB_LOADING.delete(assetUrl);
+    return g;
+  }));
+
+  return promise;
+}
+
+// ---------------------------------------------------------------------------
+// useEquippedCosmetics hook
+// ---------------------------------------------------------------------------
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '';
+
+async function fetchOwnedCosmetics(): Promise<OwnedCosmeticsResponse> {
+  const res = await fetch(`${API_BASE}/api/cosmetics/owned`, {
+    credentials: 'include',
+  });
+  if (!res.ok) {
+    if (res.status === 401) {
+      // Unauthenticated — empty inventory, no error
+      return { owned: [], generatedAt: new Date().toISOString() };
+    }
+    throw new Error(`cosmetics/owned ${res.status}`);
+  }
+  return res.json();
+}
+
+/**
+ * Subscribes to the avatar's equipped cosmetics via React Query.
+ * Re-fetches every 30s so equip/unequip from the drawer propagates quickly.
+ *
+ * Returns only SKUs that are equipped=true and have at least one variant.
+ */
+export function useEquippedCosmetics(
+  avatarId: string,
+  context: CosmeticContext,
+  rigType: string,
+): OwnedCosmetic[] {
+  const { data } = useQuery<OwnedCosmeticsResponse>({
+    queryKey:   ['cosmetics-owned', avatarId],
+    queryFn:    fetchOwnedCosmetics,
+    staleTime:  30_000, // 30s
+    refetchInterval: 30_000,
+    // Don't throw on auth failure — the hook returns empty
+    retry:      false,
+  });
+
+  return useMemo(() => {
+    if (!data?.owned) return [];
+    return data.owned.filter((item) => {
+      if (!item.equipped) return false;
+      if (!scopeCompatible(item.sku.scope, context)) return false;
+      const variant = pickVariant(item.variants, rigType);
+      return variant !== null;
+    });
+  }, [data, context, rigType]);
+}
+
+// ---------------------------------------------------------------------------
+// Per-cosmetic renderers
+// ---------------------------------------------------------------------------
+
+/**
+ * HatOrGlassesRenderer — attaches a GLB to a head bone.
+ *
+ * Reads boneAnchor, offsetXYZ, scale, rotationXYZ from assetMeta.
+ * Falls back to findHeadBone() if boneAnchor is not specified.
+ */
+function HatOrGlassesRenderer({
+  parentObject,
+  variant,
+  onDispose,
+}: {
+  parentObject: THREE.Object3D;
+  variant: OwnedCosmetic['variants'][0];
+  onDispose: (fn: () => void) => void;
+}) {
+  const mountedRef = useRef(false);
+
+  useEffect(() => {
+    if (mountedRef.current) return;
+    mountedRef.current = true;
+
+    const meta = variant.assetMeta ?? {};
+    const boneAnchorName = (meta.boneAnchor as string | undefined) ?? null;
+    const offsetXYZ = (meta.offsetXYZ as [number, number, number] | undefined) ?? [0, 0, 0];
+    const scaleFactor = (meta.scale as number | undefined) ?? 1;
+    const rotationXYZ = (meta.rotationXYZ as [number, number, number] | undefined) ?? [0, 0, 0];
+
+    let mounted = true;
+    let attachedGroup: THREE.Group | null = null;
+    let anchor: THREE.Object3D | null = null;
+
+    loadGlbAsset(variant.assetUrl).then((glbGroup) => {
+      if (!mounted) {
+        // Component unmounted while loading — dispose immediately
+        glbGroup.traverse((c) => {
+          if ((c as THREE.Mesh).isMesh) {
+            (c as THREE.Mesh).geometry?.dispose();
+            const mat = (c as THREE.Mesh).material;
+            if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+            else mat?.dispose();
+          }
+        });
+        return;
+      }
+
+      // Find the bone to attach to
+      anchor = boneAnchorName
+        ? (findBone(parentObject, boneAnchorName) ?? findHeadBone(parentObject))
+        : findHeadBone(parentObject);
+
+      if (!anchor) {
+        // No head bone found — this can happen for rig types that don't have one.
+        // Attach at parent root as fallback so at least something renders.
+        console.warn('[CosmeticLoader] No head bone found, attaching at root', variant.assetUrl);
+        anchor = parentObject;
+      }
+
+      // Wrap in a container group so we can apply the offset without
+      // modifying the loaded GLB's transform (which may be needed for other
+      // clones later)
+      attachedGroup = new THREE.Group();
+      attachedGroup.name = `cosmetic-hat-${variant.id}`;
+      attachedGroup.position.set(offsetXYZ[0], offsetXYZ[1], offsetXYZ[2]);
+      attachedGroup.scale.setScalar(scaleFactor);
+      attachedGroup.rotation.set(rotationXYZ[0], rotationXYZ[1], rotationXYZ[2]);
+      attachedGroup.frustumCulled = false;
+      attachedGroup.add(glbGroup);
+      anchor.add(attachedGroup);
+    }).catch((err) => {
+      console.error('[CosmeticLoader] Failed to load hat/glasses GLB', variant.assetUrl, err);
+    });
+
+    onDispose(() => {
+      mounted = false;
+      if (attachedGroup && anchor) {
+        anchor.remove(attachedGroup);
+        attachedGroup.traverse((c) => {
+          if ((c as THREE.Mesh).isMesh) {
+            (c as THREE.Mesh).geometry?.dispose();
+            const mat = (c as THREE.Mesh).material;
+            if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+            else mat?.dispose();
+          }
+        });
+        attachedGroup = null;
+      }
+    });
+  }, [variant, parentObject, onDispose]);
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// AuraRenderer — GLSL shader sphere around avatar root
+// ---------------------------------------------------------------------------
+
+function AuraRenderer({
+  parentObject,
+  variant,
+  onDispose,
+}: {
+  parentObject: THREE.Object3D;
+  variant: OwnedCosmetic['variants'][0];
+  onDispose: (fn: () => void) => void;
+}) {
+  const { gl, scene, camera } = useThree();
+
+  useEffect(() => {
+    const meta = variant.assetMeta ?? {};
+    const rawColor = (meta.color as string | number | undefined) ?? 0x44aaff;
+    const speed = (meta.speed as number | undefined) ?? 1.5;
+    // Scale the sphere to be ~1.5× the avatar's approximate world radius.
+    // Default avatar radius ~22 wu (half of 45wu height). Can be overridden in meta.
+    const radius = (meta.radius as number | undefined) ?? 35;
+
+    const color = new THREE.Color(rawColor);
+    const { mat, uniforms } = createAuraMaterial(color, speed);
+
+    const geo = getAuraGeometry();
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = `cosmetic-aura-${variant.id}`;
+    mesh.scale.setScalar(radius);
+    mesh.frustumCulled = false;
+
+    parentObject.add(mesh);
+
+    // compileAsync after attach — eliminates the first-frame pipeline hitch.
+    // Guard: WebGPU renderer may not have compileAsync (it has compile instead);
+    // WebGLRenderer r170+ has it. Use feature-detect.
+    if (typeof (gl as any).compileAsync === 'function') {
+      ;(gl as any).compileAsync(mesh, camera, scene).catch((err: unknown) => {
+        console.warn('[CosmeticLoader] compileAsync failed for aura', err);
+      });
+    }
+
+    // Store uniforms ref so the frame loop can update uTime
+    // We communicate via the mesh's userData
+    mesh.userData.cosmeticUniforms = uniforms;
+
+    onDispose(() => {
+      parentObject.remove(mesh);
+      mat.dispose();
+      // Do NOT dispose geo — it's module-scope shared
+    });
+  }, [variant, parentObject, gl, scene, camera, onDispose]);
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// ParticleRenderer — wraps emitParticles() at a throttled rate
+// ---------------------------------------------------------------------------
+
+function ParticleRenderer({
+  parentObject,
+  variant,
+}: {
+  parentObject: THREE.Object3D;
+  variant: OwnedCosmetic['variants'][0];
+}) {
+  const accRef = useRef(0);
+  const meta = variant.assetMeta ?? {};
+  // emitRate: particles per second. Default 2/s (light ambient effect).
+  const emitRate = (meta.emitRate as number | undefined) ?? 2;
+  // lifetime not directly controllable via emitParticles() API — handled by pool
+  const particleType = (meta.particleType as string | undefined) ?? 'sparkle';
+
+  // Scratch vector — reused every frame, zero alloc
+  const scratchPos = useMemo(() => new THREE.Vector3(), []);
+
+  useFrame((_, delta) => {
+    accRef.current += delta;
+    const interval = 1 / emitRate;
+    if (accRef.current < interval) return;
+    accRef.current -= interval;
+
+    // Get world position of the avatar root for the particle spawn point
+    parentObject.getWorldPosition(scratchPos);
+    emitParticles({
+      type: particleType as any,
+      x: scratchPos.x,
+      y: scratchPos.y + 20, // spawn slightly above avatar feet
+      z: scratchPos.z,
+      count: 1,
+    });
+  });
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// BoardRenderer — surf board prop (reef-race context only)
+// Attaches the GLB at the player's world-space position offset by yOffset.
+// The board floats just below the avatar.
+// ---------------------------------------------------------------------------
+
+function BoardRenderer({
+  parentObject,
+  variant,
+  onDispose,
+}: {
+  parentObject: THREE.Object3D;
+  variant: OwnedCosmetic['variants'][0];
+  onDispose: (fn: () => void) => void;
+}) {
+  const sceneRef = useRef<THREE.Group | null>(null);
+
+  useEffect(() => {
+    const meta = variant.assetMeta ?? {};
+    const yOffset = (meta.yOffset as number | undefined) ?? -8;
+
+    let mounted = true;
+
+    loadGlbAsset(variant.assetUrl).then((glbGroup) => {
+      if (!mounted) {
+        glbGroup.traverse((c) => {
+          if ((c as THREE.Mesh).isMesh) {
+            (c as THREE.Mesh).geometry?.dispose();
+            const mat = (c as THREE.Mesh).material;
+            if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+            else mat?.dispose();
+          }
+        });
+        return;
+      }
+
+      const wrapper = new THREE.Group();
+      wrapper.name = `cosmetic-board-${variant.id}`;
+      wrapper.position.set(0, yOffset, 0);
+      wrapper.frustumCulled = false;
+      wrapper.add(glbGroup);
+      parentObject.add(wrapper);
+      sceneRef.current = wrapper;
+    }).catch((err) => {
+      console.error('[CosmeticLoader] Failed to load board GLB', variant.assetUrl, err);
+    });
+
+    onDispose(() => {
+      mounted = false;
+      const wrapper = sceneRef.current;
+      if (wrapper) {
+        parentObject.remove(wrapper);
+        wrapper.traverse((c) => {
+          if ((c as THREE.Mesh).isMesh) {
+            (c as THREE.Mesh).geometry?.dispose();
+            const mat = (c as THREE.Mesh).material;
+            if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+            else mat?.dispose();
+          }
+        });
+        sceneRef.current = null;
+      }
+    });
+  }, [variant, parentObject, onDispose]);
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// PaletteRenderer — texture albedo swap on avatar materials
+//
+// Finds all MeshStandardMaterial / MeshBasicMaterial instances on the
+// parentObject that match the uvMap region specified in assetMeta. Swaps
+// their map property to the palette texture loaded from assetUrl.
+//
+// Limitation: this is a whole-material swap. Full UV-region-specific palette
+// painting (only the region described by assetMeta.uvMap) requires a canvas
+// composite blit — deferred to a follow-up once we have actual palette assets.
+// For Phase 3 launch with the surfboard test bed this path is not exercised.
+// ---------------------------------------------------------------------------
+
+function PaletteRenderer({
+  parentObject,
+  variant,
+  onDispose,
+}: {
+  parentObject: THREE.Object3D;
+  variant: OwnedCosmetic['variants'][0];
+  onDispose: (fn: () => void) => void;
+}) {
+  useEffect(() => {
+    const loader = new THREE.TextureLoader();
+    let mounted = true;
+    const originalMaps = new Map<THREE.MeshStandardMaterial | THREE.MeshBasicMaterial, THREE.Texture | null>();
+
+    loader.load(
+      variant.assetUrl,
+      (texture) => {
+        if (!mounted) {
+          texture.dispose();
+          return;
+        }
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.needsUpdate = true;
+
+        // Collect and patch all body materials on the avatar
+        parentObject.traverse((child) => {
+          if (!(child as THREE.Mesh).isMesh) return;
+          const mesh = child as THREE.Mesh;
+          const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+          for (const mat of mats) {
+            if (
+              mat instanceof THREE.MeshStandardMaterial ||
+              mat instanceof THREE.MeshBasicMaterial
+            ) {
+              // Skip MToon materials (VRM) — they have their own map structure
+              if ((mat as any).isMToonMaterial) continue;
+              originalMaps.set(mat, mat.map);
+              mat.map = texture;
+              mat.needsUpdate = true;
+            }
+          }
+        });
+      },
+      undefined,
+      (err) => {
+        console.error('[CosmeticLoader] Failed to load palette texture', variant.assetUrl, err);
+      },
+    );
+
+    onDispose(() => {
+      mounted = false;
+      // Restore original maps
+      for (const [mat, originalMap] of originalMaps) {
+        mat.map = originalMap;
+        mat.needsUpdate = true;
+      }
+      originalMaps.clear();
+    });
+  }, [variant, parentObject, onDispose]);
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// OutfitRenderer — stub for Phase 3 launch
+//
+// Full Marvelous Designer GLB skin binding is complex (skinned mesh attachment,
+// morph matching, secondary bone registration). This stub logs a warning and
+// does nothing. The slot is wired so outfit variants in the DB don't cause
+// errors — they just silently skip rendering until the follow-up implements it.
+// ---------------------------------------------------------------------------
+
+function OutfitRenderer({ variant }: { variant: OwnedCosmetic['variants'][0] }) {
+  useEffect(() => {
+    console.info(
+      '[CosmeticLoader] Outfit rendering deferred to Phase 3 follow-up.',
+      variant.assetUrl,
+    );
+  }, [variant]);
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Aura frame-loop updater
+// Must live inside the R3F tree (uses useFrame). Finds all aura meshes by
+// userData tag and updates their uTime uniform.
+// ---------------------------------------------------------------------------
+
+function AuraFrameUpdater({ parentObject }: { parentObject: THREE.Object3D }) {
+  useFrame((_, delta) => {
+    parentObject.traverse((child) => {
+      const uniforms = child.userData?.cosmeticUniforms as
+        | Record<string, THREE.IUniform>
+        | undefined;
+      if (!uniforms?.uTime) return;
+      uniforms.uTime.value += delta;
+    });
+  });
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// CosmeticLoader — main component
+// ---------------------------------------------------------------------------
+
+/**
+ * Renders all equipped cosmetics for a avatar onto its avatar.
+ *
+ * Mount inside the R3F Canvas, as a sibling or child of the avatar component.
+ * parentObject must be the live Three.js Object3D of the avatar root.
+ *
+ * Example:
+ *   <CosmeticLoader
+ *     avatarId={avatar.id}
+ *     rigType="milady-vrm"
+ *     context="world"
+ *     parentObject={avatarRef.current}
+ *   />
+ */
+export function CosmeticLoader({
+  avatarId,
+  rigType,
+  context,
+  parentObject,
+}: CosmeticLoaderProps) {
+  const equipped = useEquippedCosmetics(avatarId, context, rigType);
+
+  // Dispose registry: maps cosmetic skin id → cleanup fn
+  // Populated by each per-category renderer via the onDispose callback.
+  const disposeRegistry = useRef<Map<string, () => void>>(new Map());
+
+  // When the equipped list changes, clean up any renderers that are no longer
+  // in the list, then let React render the new ones.
+  const prevEquippedIds = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const currentIds = new Set(equipped.map((e) => e.id));
+
+    // Dispose cosmetics that were removed
+    for (const [id, disposeFn] of disposeRegistry.current) {
+      if (!currentIds.has(id)) {
+        disposeFn();
+        disposeRegistry.current.delete(id);
+      }
+    }
+
+    prevEquippedIds.current = currentIds;
+  }, [equipped]);
+
+  // Cleanup everything on unmount
+  useEffect(() => {
+    return () => {
+      for (const disposeFn of disposeRegistry.current.values()) {
+        disposeFn();
+      }
+      disposeRegistry.current.clear();
+    };
+  }, []);
+
+  /**
+   * onDispose callback factory — called by per-category renderers to
+   * register their cleanup function. The id is the avatar_skins.id (unique per
+   * owned cosmetic), so each renderer slot has exactly one cleanup entry.
+   */
+  const makeOnDispose = useCallback(
+    (id: string) => (fn: () => void) => {
+      // If this slot already has a disposer (e.g. variant changed), run old one first
+      const existing = disposeRegistry.current.get(id);
+      if (existing) existing();
+      disposeRegistry.current.set(id, fn);
+    },
+    [],
+  );
+
+  const hasAura = equipped.some((e) => e.sku.category === 'aura');
+
+  return (
+    <>
+      {hasAura && <AuraFrameUpdater parentObject={parentObject} />}
+
+      {equipped.map((item) => {
+        const variant = pickVariant(item.variants, rigType);
+        if (!variant) return null;
+
+        const cat = item.sku.category;
+        const onDispose = makeOnDispose(item.id);
+
+        if (cat === 'hat' || cat === 'glasses') {
+          return (
+            <HatOrGlassesRenderer
+              key={item.id}
+              parentObject={parentObject}
+              variant={variant}
+              onDispose={onDispose}
+            />
+          );
+        }
+
+        if (cat === 'aura') {
+          return (
+            <AuraRenderer
+              key={item.id}
+              parentObject={parentObject}
+              variant={variant}
+              onDispose={onDispose}
+            />
+          );
+        }
+
+        if (cat === 'particle') {
+          return (
+            <ParticleRenderer
+              key={item.id}
+              parentObject={parentObject}
+              variant={variant}
+            />
+          );
+        }
+
+        if (cat === 'board' && context === 'activity:reef-race') {
+          return (
+            <BoardRenderer
+              key={item.id}
+              parentObject={parentObject}
+              variant={variant}
+              onDispose={onDispose}
+            />
+          );
+        }
+
+        if (cat === 'palette') {
+          return (
+            <PaletteRenderer
+              key={item.id}
+              parentObject={parentObject}
+              variant={variant}
+              onDispose={onDispose}
+            />
+          );
+        }
+
+        if (cat === 'outfit') {
+          return <OutfitRenderer key={item.id} variant={variant} />;
+        }
+
+        return null;
+      })}
+    </>
+  );
+}
+
+export default CosmeticLoader;
