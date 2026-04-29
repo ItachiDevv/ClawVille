@@ -84,18 +84,34 @@ dashAuthRoutes.post('/login', async (c) => {
     );
   }
 
+  // Cross-subdomain cookie scope — the dashboard server component runs on
+  // clawville.world and fetches api.clawville.world/__check; without an
+  // explicit Domain, the cookie is bound to api.clawville.world only and
+  // the frontend can't see it. Setting `Domain=.clawville.world` makes
+  // browsers store + send the cookie for both subdomains.
+  //
+  // Dev (NODE_ENV !== 'production') uses no Domain attribute — defaults to
+  // the response host (typically localhost), which is what local dev
+  // expects. Avoids "domain mismatch" cookie rejection on localhost.
+  const isProd = process.env.NODE_ENV === 'production';
   setCookie(c, DASH_COOKIE_NAME, cookieValue, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: isProd,
     sameSite: 'Lax',
     path: '/',
     maxAge: 30 * 24 * 60 * 60, // 30 days
+    ...(isProd ? { domain: '.clawville.world' } : {}),
   });
 
   return c.json({ ok: true });
 });
 
 dashAuthRoutes.post('/logout', async (c) => {
-  deleteCookie(c, DASH_COOKIE_NAME, { path: '/' });
+  // Delete must match the original Domain to actually clear the cookie.
+  const isProd = process.env.NODE_ENV === 'production';
+  deleteCookie(c, DASH_COOKIE_NAME, {
+    path: '/',
+    ...(isProd ? { domain: '.clawville.world' } : {}),
+  });
   return c.json({ ok: true });
 });
