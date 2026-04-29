@@ -244,7 +244,7 @@ export class ElizaRuntime {
     );
 
     // v2: plugin-bootstrap is built into core. plugin-openai is replaced by
-    // the Gemini embedding provider. plugin-solana is a legacy LegacyApp dep
+    // the Gemini embedding provider. plugin-solana is a legacy dep
     // that was never installed — omit to stop the silent import-error spam.
     // plugin-anthropic has been removed; Gemini text provider (priority 95)
     // is now the default text-generation backend.

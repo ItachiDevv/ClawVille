@@ -33,11 +33,13 @@ coverage
 # Turbo
 .turbo
 
-# Claude Code worktrees + scratch (never commit these)
+# Claude Code — per-user / runtime state (never commit these)
 .claude/worktrees/
 .claude/scheduled_tasks.lock
 .claude/projects/
 .claude/worktree-archive-*/
+.claude/settings.local.json
+.claude/reports/
 
 # Misc
 .DS_Store

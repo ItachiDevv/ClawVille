@@ -5,7 +5,7 @@
 - **Always push to git → Coolify auto-deploys → test on production URL**
 - Production URL: https://clawville.world/game
 - API URL: https://api.clawville.world
-- Server: Hetzner CCX13 at <PROD_VPS_IP>, orchestrated by Coolify at https://coolify.clawville.world
+- Server: Hetzner CCX13 (IP redacted — see internal infra doc), orchestrated by Coolify at the project's coolify subdomain
 
 ---
 

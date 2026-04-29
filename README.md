@@ -67,13 +67,13 @@ Required environment variables in `.env.local`:
 DATABASE_URL=postgresql://user:password@host:5432/clawville
 GEMINI_API_KEY=...
 CORS_ORIGIN=http://localhost:3000
-NEXT_PUBLIC_API_URL=http://localhost:4001
+NEXT_PUBLIC_API_URL=http://localhost:4000
 ```
 
 ```bash
 bun run db:push          # Push schema to database
 bun run db:seed          # Seed 10 map locations
-bun run dev              # Start all services (web :3000, api :4001)
+bun run dev              # Start all services (web :3000, api :4000)
 ```
 
 ### Commands
@@ -99,9 +99,24 @@ ClawVille/
     database/           # Drizzle ORM schema + migrations
     agent-runtime/      # ElizaOS wrapper
     agent-templates/    # 10 location character templates
-  scripts/
+  scripts/              # Operational + asset-pipeline scripts
     seed-locations.ts   # Seed map_locations table
+    bake-vrm-hair.mjs   # Re-rig Milady VRM hair as SkinnedMesh
+  docs/                 # Long-form playbooks (deploy, asset pipeline, etc.)
+  .claude/              # AI-collaboration assets (see "Working with this repo" below)
 ```
+
+### Working with this repo (humans + AI agents)
+
+- **`CLAUDE.md`** — canonical project spec, read first when contributing.
+- **`3dStructure.md`** — 3D world layout (building positions, NPC scales, camera, lighting).
+- **`GameFeatures.md`** — gameplay surface (modes, economy, quests, agent connect).
+- **`ARCHITECTURE.md`** — tech stack, routes, DB tables, deployment.
+- **`.claude/agents/3da.md`** — Three.js / WebGPU subagent definition with project-specific rules.
+- **`.claude/memory/threejs/`** — accumulated Three.js gotchas, patterns, performance findings. Useful as a developer FAQ even if you don't use AI tooling.
+- **`.claude/plans/`** — implementation history for major features. Treat as ADR-style historical context, not current spec.
+
+If you use Claude Code, the `.claude/` assets activate automatically. If you don't, they double as developer documentation.
 
 ## Controls
 
@@ -119,27 +134,30 @@ ClawVille/
 - **NPC** -- Possess nearest NPC, WASD overrides its movement
 - **Autonomous** -- Agent moves on its own, camera follows
 
-## 10 Sea-Themed Buildings
+## 10 SpongeBob-Landmark Buildings
 
-Each building has a dedicated AI agent NPC and sells 2 knowledge books focused on OpenClaw topics:
+Each building is a SpongeBob-themed landmark with a dedicated MiladyAI teacher NPC and sells 2 knowledge books focused on a specific OpenClaw / agent-development domain. Visit the building, chat with the teacher, and buy books to expand your pet's skill set.
 
-| Building | Theme |
-|----------|-------|
-| Tide Clock Grotto | Cron jobs, task scheduling |
-| Current Gateway | Webhooks, HTTP endpoints |
-| Abyssal Vault | Vector memory, LanceDB |
-| Hydrothermal Forge | ClawHub marketplace skills |
-| Coral Bridge | Multi-channel messaging |
-| Salvage Workshop | Tool/plugin development |
-| Biolume Studio | Live canvas visualization |
-| Echo Spire | Voice/speech integration |
-| Shell Fortress | Security, permissions |
-| Nautilus Citadel | Configuration, deployment |
+| Building | OpenClaw Focus |
+|----------|----------------|
+| Downtown Building | Automation & Workflows (cron, queues, CI/CD) |
+| Salty Spitoon | APIs & Integrations (REST, GraphQL, webhooks, OAuth) |
+| Squidward's House | Memory & Knowledge (RAG, vector DBs, embeddings) |
+| Chum Bucket | Code & Development (codegen, debugging, git, Docker) |
+| Sandy's Treedome | Communication (email, Slack, Discord, Telegram) |
+| Krusty Krab | Tool Use & MCP (function calling, MCP servers, agent loops) |
+| Pineapple House | Data & Analytics (SQL, pipelines, scraping) |
+| Boating School | Research & Analysis (search, fact-check, summarization) |
+| Patrick's Rock | Crypto & Web3 (Solana, wallets, DeFi, smart contracts) |
+| Lighthouse | Business & Productivity (PM APIs, invoicing, scheduling) |
 
 ## Documentation
 
 - [CLAUDE.md](CLAUDE.md) -- Full project specification and developer reference
 - [ARCHITECTURE.md](ARCHITECTURE.md) -- System architecture and design decisions
+- [GameFeatures.md](GameFeatures.md) -- Gameplay surface (modes, economy, agent connect, quests)
+- [3dStructure.md](3dStructure.md) -- 3D world layout (buildings, NPCs, camera, lighting)
+- [CONTRIBUTING.md](CONTRIBUTING.md) -- How to contribute
 - [TODO.md](TODO.md) -- Roadmap, current tasks, and completed work
 
 ## Deployment

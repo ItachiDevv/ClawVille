@@ -52,9 +52,8 @@ export const checkBalanceAction: Action = {
       'wallet',
       'inventory',
       'how many',
-      'my nt',
       'clawtoken',
-      'neo token',
+      'claw token',
     ];
     return triggers.some((t) => text.includes(t));
   },

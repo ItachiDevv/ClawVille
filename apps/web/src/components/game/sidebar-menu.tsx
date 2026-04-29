@@ -2,7 +2,7 @@
 
 /**
  * SidebarMenu — the right-edge RPG sidebar that replaces the legacy
- * legacyapp-ported yellow-gold gear dropdown (`game-menu.tsx`).
+ * yellow-gold gear dropdown (`game-menu.tsx`).
  *
  * Visual language: ClawVille dark-navy + cyan HUD, composed entirely from
  * Team 1's RPG primitives (`RuneFrame`, `RpgButton`, `RpgModal`, `RarityBadge`,
