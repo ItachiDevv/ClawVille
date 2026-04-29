@@ -23,3 +23,8 @@ The following 3D models are used under CC-BY license. Full credit to their creat
 - **Sandy's Treedome (SpongeBob)** by landon141 (CC-BY) — `sandy-treedome.glb`
   https://sketchfab.com/3d-models/sandy-treedome-bf5893398ff3444ea4157682146ec5b7
   Decimated from 86 MB → 3.56 MB via gltf-transform optimize+simplify(0.4)+draco on 2026-04-29.
+
+- **Sandy Cheeks (Mixamo rig)** by mustafatylan68 (CC-BY) — `characters/sandy.glb`
+  https://sketchfab.com/3d-models/sandy-cheeks-mixamo-rig-9fda6cf3ae534385885ac27bb84e0bb8
+  Mixamo-rigged with 1 idle clip (named `mixamo.com`); replaces the prior static
+  Gusifer719 export which was authored lying-down (no T-pose). 1.2 MB.
