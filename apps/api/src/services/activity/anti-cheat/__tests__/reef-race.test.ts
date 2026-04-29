@@ -19,6 +19,12 @@ import {
   ReefCheckpointSkipTracker,
   ReefFlagCounter,
   FLAG_FORFEIT_THRESHOLD,
+  validateProgressMonotonic,
+  validateSegmentTime,
+  ReefProgressTracker,
+  REEF_PROGRESS_REGRESSION_TOLERANCE,
+  REEF_SEGMENT_MIN_TIME_FRACTION,
+  __getSegmentTRangesForTest,
 } from '../reef-race';
 import {
   REEF_MAX_SPEED,
@@ -27,6 +33,7 @@ import {
   REEF_SKIP_PATTERN_THRESHOLD,
   REEF_CHECKPOINT_COUNT,
 } from '../../sim/reef-race-config';
+import { REEF_RACE_SEGMENTS } from '../../sim/reef-race-track-layout';
 
 const DT_30HZ = 1 / 30;
 
@@ -169,5 +176,177 @@ describe('ReefFlagCounter (inherits BumperFlagCounter)', () => {
     counter.bump('pet-b');
     expect(counter.countFor('pet-a')).toBe(2);
     expect(counter.countFor('pet-b')).toBe(1);
+  });
+});
+
+// ─── Reef Race v2 (spline) anti-cheat ───────────────────────────────────────
+//
+// Spec: `.claude/plans/reef-race-v2-spline-architecture.md` §6.
+// Replaces validateLapTime + validateCheckpointSequence (kept for live
+// ellipse sim) with validateProgressMonotonic + validateSegmentTime.
+
+describe('validateProgressMonotonic', () => {
+  it('T1: ok when current === previous (no change)', () => {
+    const v = validateProgressMonotonic(0.5, 0.5);
+    expect(v.ok).toBe(true);
+    expect(v.flagged).toBe(false);
+    expect(v.value).toBe(0.5);
+  });
+
+  it('T2: ok when forward (current > previous)', () => {
+    const v = validateProgressMonotonic(0.6, 0.5);
+    expect(v.ok).toBe(true);
+    expect(v.flagged).toBe(false);
+    expect(v.value).toBe(0.6);
+  });
+
+  it('T3: ok when small regression within tolerance (≤ 0.02)', () => {
+    const v = validateProgressMonotonic(0.49, 0.5);
+    expect(v.ok).toBe(true);
+    expect(v.flagged).toBe(false);
+  });
+
+  it('T3b: exactly at the tolerance edge is still ok', () => {
+    // Construct prev/current so currentT - prevT === -tolerance EXACTLY
+    // (avoid float drift by anchoring on the tolerance value).
+    const prevT = REEF_PROGRESS_REGRESSION_TOLERANCE; // = 0.02
+    const currentT = 0;                                // delta = -0.02 exactly
+    const v = validateProgressMonotonic(currentT, prevT);
+    expect(v.ok).toBe(true);
+    expect(v.flagged).toBe(false);
+  });
+
+  it('T4: flags large backward regression (delta = 0.10 > tol = 0.02)', () => {
+    const v = validateProgressMonotonic(0.4, 0.5);
+    expect(v.ok).toBe(false);
+    expect(v.flagged).toBe(true);
+    expect(v.flagKind).toBe('progress_regression');
+    expect(v.detail).toContain('progress_regressed_');
+  });
+
+  it('flags non-finite inputs', () => {
+    const v = validateProgressMonotonic(NaN, 0.5);
+    expect(v.ok).toBe(false);
+    expect(v.flagged).toBe(true);
+    expect(v.flagKind).toBe('progress_regression');
+  });
+});
+
+describe('validateSegmentTime', () => {
+  // The kelp segment (index 1) is the easiest to construct a deterministic
+  // test from: REEF_RACE_SEGMENTS[1] z-range = [3000, 7500] = 4500 wu.
+  // minSegmentMs = 4500 / REEF_MAX_SPEED * 0.7 * 1000 = 4500 / 500 * 700 = 6300 ms.
+  // The cached t-range table maps that z-range onto the spline.
+  const ranges = __getSegmentTRangesForTest(REEF_RACE_SEGMENTS);
+
+  it('T5: flags too-fast traversal (segment crossed under min time)', () => {
+    // Pick the kelp segment (index 1) and a t inside its range.
+    const kelp = ranges[1];
+    expect(kelp.id).toBe('kelp');
+    const tMid = (kelp.tStart + kelp.tEnd) * 0.5;
+    // Body entered the segment 1000ms ago — way under the ~6300ms floor.
+    const v = validateSegmentTime(tMid, 1_000_000, 999_000, REEF_RACE_SEGMENTS);
+    expect(v.ok).toBe(false);
+    expect(v.flagged).toBe(true);
+    expect(v.flagKind).toBe('segment_too_fast');
+    expect(v.detail).toContain('kelp');
+  });
+
+  it('T6: ok when traversal exceeds min time (12s in a 6.3s-floor segment)', () => {
+    const kelp = ranges[1];
+    const tMid = (kelp.tStart + kelp.tEnd) * 0.5;
+    // 12s elapsed > 6.3s floor → ok.
+    const v = validateSegmentTime(tMid, 1_000_000, 988_000, REEF_RACE_SEGMENTS);
+    expect(v.ok).toBe(true);
+    expect(v.flagged).toBe(false);
+  });
+
+  it('flags non-finite timestamps', () => {
+    const kelp = ranges[1];
+    const tMid = (kelp.tStart + kelp.tEnd) * 0.5;
+    const v = validateSegmentTime(tMid, NaN, 0, REEF_RACE_SEGMENTS);
+    expect(v.ok).toBe(false);
+    expect(v.flagged).toBe(true);
+    expect(v.flagKind).toBe('segment_too_fast');
+  });
+
+  it('flags negative elapsed time (clock skew / bad input)', () => {
+    const kelp = ranges[1];
+    const tMid = (kelp.tStart + kelp.tEnd) * 0.5;
+    const v = validateSegmentTime(tMid, 1000, 2000, REEF_RACE_SEGMENTS);
+    expect(v.ok).toBe(false);
+    expect(v.flagged).toBe(true);
+    expect(v.flagKind).toBe('segment_too_fast');
+    expect(v.detail).toContain('negative_elapsed');
+  });
+
+  it('verifies the min-time formula matches the spec (z-length / speed * 0.7)', () => {
+    // kelp z-length = 7500 - 3000 = 4500 wu
+    const kelp = ranges[1];
+    const expectedMs =
+      (4500 / REEF_MAX_SPEED) * REEF_SEGMENT_MIN_TIME_FRACTION * 1000;
+    expect(kelp.minSegmentMs).toBeCloseTo(expectedMs, 5);
+  });
+});
+
+describe('ReefProgressTracker', () => {
+  it('T7: recordEntry then getEntryMs round-trip', () => {
+    const t = new ReefProgressTracker();
+    t.recordEntry('pet-a', 2, 12345);
+    expect(t.getEntryMs('pet-a', 2)).toBe(12345);
+  });
+
+  it('returns null for a never-recorded (pet, segment) pair', () => {
+    const t = new ReefProgressTracker();
+    expect(t.getEntryMs('pet-a', 0)).toBeNull();
+    t.recordEntry('pet-a', 0, 100);
+    expect(t.getEntryMs('pet-a', 1)).toBeNull(); // segment 1 untouched
+    expect(t.getEntryMs('pet-b', 0)).toBeNull(); // different pet
+  });
+
+  it('is idempotent — first timestamp wins on repeat calls', () => {
+    const t = new ReefProgressTracker();
+    t.recordEntry('pet-a', 0, 1000);
+    t.recordEntry('pet-a', 0, 9999);
+    expect(t.getEntryMs('pet-a', 0)).toBe(1000);
+  });
+
+  it('forget(petId) clears every segment for that pet only', () => {
+    const t = new ReefProgressTracker();
+    t.recordEntry('pet-a', 0, 100);
+    t.recordEntry('pet-a', 1, 200);
+    t.recordEntry('pet-b', 0, 300);
+    t.forget('pet-a');
+    expect(t.getEntryMs('pet-a', 0)).toBeNull();
+    expect(t.getEntryMs('pet-a', 1)).toBeNull();
+    expect(t.getEntryMs('pet-b', 0)).toBe(300);
+  });
+});
+
+describe('Spline t-to-segment-index mapping', () => {
+  const ranges = __getSegmentTRangesForTest(REEF_RACE_SEGMENTS);
+
+  it('T8: mapping is monotonic (tStart strictly increases segment-by-segment)', () => {
+    expect(ranges).toHaveLength(REEF_RACE_SEGMENTS.length);
+    for (let i = 1; i < ranges.length; i++) {
+      expect(ranges[i].tStart).toBeGreaterThan(ranges[i - 1].tStart);
+      // tEnd of one segment === tStart of the next (contiguous coverage)
+      expect(ranges[i].tStart).toBeCloseTo(ranges[i - 1].tEnd, 5);
+    }
+  });
+
+  it('first segment starts at t=0 and last ends at t=1', () => {
+    expect(ranges[0].tStart).toBeCloseTo(0, 4);
+    expect(ranges[ranges.length - 1].tEnd).toBeCloseTo(1, 4);
+  });
+
+  it('preserves segment ids in order: lagoon → kelp → shipwreck → coral → finish', () => {
+    expect(ranges.map((r) => r.id)).toEqual([
+      'lagoon',
+      'kelp',
+      'shipwreck',
+      'coral',
+      'finish',
+    ]);
   });
 });

@@ -201,7 +201,12 @@ export interface ActivityAntiCheatFlagPayload {
     | 'seq_gap'
     | 'ghost_input'
     | 'checkpoint_skip'
-    | 'powerup_unowned';
+    | 'powerup_unowned'
+    // Reef Race v2 (spline sim) anti-cheat — replaces lap-time +
+    // checkpoint-sequence with progress-monotonic + per-segment time
+    // check. See `.claude/plans/reef-race-v2-spline-architecture.md` §6.
+    | 'progress_regression'
+    | 'segment_too_fast';
   activityId: string;
   roomId: string;
   detail?: Record<string, unknown>;
