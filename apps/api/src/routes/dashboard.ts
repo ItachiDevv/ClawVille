@@ -15,8 +15,16 @@
  */
 
 import { Hono } from 'hono';
-import { sql } from 'drizzle-orm';
-import { db } from '@clawville/database';
+import { sql, sql as drizzleSql } from 'drizzle-orm';
+import {
+  db,
+  tutorialQuestClaims,
+  quests as questsTable,
+  cosmeticSkus,
+  cosmeticVariants,
+  petSkins,
+  dashboardPhases,
+} from '@clawville/database';
 import { sessionMiddleware } from '../middleware/auth';
 import { adminOnly } from '../middleware/admin-only';
 import { alertError } from '../services/alert-error';
@@ -207,4 +215,87 @@ dashboardRoutes.post('/__test-alert', adminOnly, async (c) => {
     context: { triggeredByUserId: user?.id },
   });
   return c.json({ ok: true, message: 'alert dispatched — check Telegram' });
+});
+
+// ─── Q3 plan §gamification dashboard — read endpoints for the new tabs ────
+
+dashboardRoutes.get('/quests', adminOnly, async (c) => {
+  // Tutorial quest claim counts — one row per quest_id present in the
+  // tutorial_quest_claims table. Quests with zero claims are omitted from
+  // the SQL but the tab fills them in client-side.
+  const tutorial = await db
+    .select({
+      questId: tutorialQuestClaims.questId,
+      claimCount: drizzleSql<number>`count(*)::int`.as('count'),
+      totalCt: drizzleSql<number>`sum(${tutorialQuestClaims.tokensCredited})::int`.as('total_ct'),
+    })
+    .from(tutorialQuestClaims)
+    .groupBy(tutorialQuestClaims.questId);
+
+  // Backend admin-curated quests + counts.
+  const admin = await db
+    .select({
+      id: questsTable.id,
+      title: questsTable.title,
+      tier: questsTable.tier,
+      status: questsTable.status,
+      tokenReward: questsTable.tokenReward,
+      currentCompletions: questsTable.currentCompletions,
+      maxCompletions: questsTable.maxCompletions,
+    })
+    .from(questsTable)
+    .orderBy(questsTable.createdAt);
+
+  return c.json({
+    tutorial: tutorial.map((r) => ({
+      questId: r.questId,
+      claimCount: Number(r.claimCount) || 0,
+      totalCt: Number(r.totalCt) || 0,
+    })),
+    admin,
+    generatedAt: new Date().toISOString(),
+  });
+});
+
+dashboardRoutes.get('/phases', adminOnly, async (c) => {
+  const rows = await db
+    .select()
+    .from(dashboardPhases)
+    .orderBy(dashboardPhases.sortOrder);
+  return c.json({ phases: rows, generatedAt: new Date().toISOString() });
+});
+
+dashboardRoutes.get('/cosmetics', adminOnly, async (c) => {
+  // SKUs + variant counts + ownership counts. Three queries, one merge.
+  const skus = await db.select().from(cosmeticSkus).orderBy(cosmeticSkus.createdAt);
+  const variantCounts = await db
+    .select({
+      skuId: cosmeticVariants.skuId,
+      n: drizzleSql<number>`count(*)::int`.as('n'),
+    })
+    .from(cosmeticVariants)
+    .groupBy(cosmeticVariants.skuId);
+  const ownerCounts = await db
+    .select({
+      skuId: petSkins.skuId,
+      owners: drizzleSql<number>`count(*)::int`.as('owners'),
+      equippedNow: drizzleSql<number>`count(*) FILTER (WHERE ${petSkins.equipped})::int`.as('equipped_now'),
+    })
+    .from(petSkins)
+    .groupBy(petSkins.skuId);
+
+  const variantBySku = new Map(variantCounts.map((v) => [v.skuId, Number(v.n) || 0]));
+  const ownerBySku = new Map(
+    ownerCounts.map((o) => [o.skuId, { owners: Number(o.owners) || 0, equippedNow: Number(o.equippedNow) || 0 }]),
+  );
+
+  return c.json({
+    cosmetics: skus.map((s) => ({
+      ...s,
+      variantCount: variantBySku.get(s.id) ?? 0,
+      ownerCount: ownerBySku.get(s.id)?.owners ?? 0,
+      equippedNow: ownerBySku.get(s.id)?.equippedNow ?? 0,
+    })),
+    generatedAt: new Date().toISOString(),
+  });
 });

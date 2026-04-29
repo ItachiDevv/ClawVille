@@ -40,6 +40,8 @@ export * from './reef-race-personal-bests';
 export * from './tutorial-quest-claims';
 // Q3 plan §4 — cosmetic engine (cosmetic_skus + cosmetic_variants + avatar_skins).
 export * from './cosmetics';
+// Q3 plan §gamification dashboard — phase status (mutable via dashboard MCP).
+export * from './dashboard-phases';
 
 import { users, sessions } from './users';
 import { npcMemories, activityLog } from './memories';

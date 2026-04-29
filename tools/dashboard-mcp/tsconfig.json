@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "lib": ["ES2022"],
+    // Don't auto-include neighbor monorepo @types/* (which include things
+    // we don't depend on like 'tedious', 'serve-static', 'ws'). Explicit
+    // type imports below.
+    "types": ["node"]
+  },
+  "include": ["server.ts"]
+}
