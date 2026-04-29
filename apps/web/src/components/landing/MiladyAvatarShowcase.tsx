@@ -54,6 +54,9 @@ const INSTANCE_ID = 'showcase';              // stable string — never React.us
 const SPIN_SPEED  = 0.08;                    // rad/s Y-axis auto-rotate
 const BOB_AMP     = 0.04;                   // ±0.04 units vertical bob
 const BOB_FREQ    = (2 * Math.PI) / 3;      // one full cycle every 3 s
+// Framing offset — keep the bob centered on this Y instead of Y=0 so
+// the avatar (1.7u tall × 0.65 scale ≈ 1.1u) sits centered on origin.
+const AVATAR_BASE_Y = -0.55;
 
 // Module-scope scene background — one allocation, no per-render new Color()
 const SCENE_BG = new THREE.Color(0x061520);
@@ -92,12 +95,15 @@ function VRMAvatarInner({ path }: { path: string }) {
     return () => { disposeVRMInstance(path, INSTANCE_ID); };
   }, [path]);
 
-  // useFrame: frame-rate-invariant spin + sine bob.
-  // Zero per-frame allocations — all values are primitives.
+  // useFrame: frame-rate-invariant spin + sine bob AROUND the framing
+  // offset. Critical: the previous version set `position.y = bob` which
+  // overwrote the JSX `position={[0, -0.55, 0]}` framing offset every
+  // frame, so the avatar bobbed around world Y=0 (head clipping the top
+  // of the canvas) instead of Y=-0.55 (centered).
   useFrame(({ clock }, delta) => {
     if (!groupRef.current) return;
     groupRef.current.rotation.y += SPIN_SPEED * delta;
-    groupRef.current.position.y  = BOB_AMP * Math.sin(clock.getElapsedTime() * BOB_FREQ);
+    groupRef.current.position.y  = AVATAR_BASE_Y + BOB_AMP * Math.sin(clock.getElapsedTime() * BOB_FREQ);
   });
 
   // Avatar framing: VRMs export ~1.7u tall with feet at Y=0. Scale to
