@@ -9,6 +9,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./reef-race/spline": {
+      "types": "./dist/reef-race/spline.d.ts",
+      "import": "./dist/reef-race/spline.js"
+    },
+    "./reef-race/track-layout": {
+      "types": "./dist/reef-race/track-layout.d.ts",
+      "import": "./dist/reef-race/track-layout.js"
     }
   },
   "scripts": {

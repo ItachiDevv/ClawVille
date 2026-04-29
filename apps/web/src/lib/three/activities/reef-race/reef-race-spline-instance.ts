@@ -19,8 +19,7 @@
  * on the pre-built LUT.
  */
 
-import { ReefSpline } from '../../../../../../api/src/services/activity/sim/reef-race-spline';
-import { REEF_RACE_DEFAULT_TRACK } from '../../../../../../api/src/services/activity/sim/reef-race-track-layout';
+import { ReefSpline, REEF_RACE_DEFAULT_TRACK } from '@clawville/shared';
 
 /**
  * Shared client-side spline instance.
