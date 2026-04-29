@@ -72,29 +72,37 @@ const TRACK_LEN_Z    = 20000;
 const TRACK_START_Z  = -500;
 const TRACK_CENTER_Z = TRACK_START_Z + TRACK_LEN_Z / 2; // 9500
 
-// ─── Ground shader terrain ────────────────────────────────────────────────────
-// Much wider than river, subdivided for per-vertex displacement.
-// Iter-8 (2026-04-29) canyon rework: corridor halfWidths widened ×1.4, max cliff
-// band extended to 600wu. Ground must sit ALONGSIDE the canyon, never overlapping
-// water at any corridor width.
+// ─── Ground shader terrain — spline-following ribbon (iter-9) ────────────────
+// Two ribbons (left + right) swept along clientSpline following the river path.
+// Each ribbon's inner edge sits at (halfWidth + GROUND_INNER_OFFSET) from the
+// spline centerline, so it is always OUTSIDE the max cliff outer envelope.
 //
-// Non-overlap proof:
-//   max corridor halfWidth = 2200wu (lagoon/finish)
+// Non-overlap proof (iter-9, halfWidths ×1.5 from iter-8):
+//   max corridor halfWidth = 3300wu (lagoon/finish)
 //   max cliff lateralMax   =  600wu (German River variable-width bands)
 //   rock body half-width   ≈  173wu (3.85wu × SCALE_MAX=90 / 2)
-//   → max rock outer edge  = 2200 + 600 + 173 = 2973wu from centerline
+//   → max rock outer edge  = 3300 + 600 + 173 = 4073wu from centerline
 //
-//   GROUND_W = 6000wu. GROUND_X_OFFSET = center of ground strip from spline.
-//   inner edge of strip = GROUND_X_OFFSET − GROUND_W/2 = 6050 − 3000 = 3050wu.
-//   3050wu ≥ 2973wu → 77wu safety buffer between max rock outer edge and ground inner edge.
-//   outer edge of strip = GROUND_X_OFFSET + GROUND_W/2 = 6050 + 3000 = 9050wu.
-//   Ground sits alongside the canyon, never overlaps water at any halfwidth variant.
-const GROUND_W         = 6000;
-const GROUND_L         = 32000;
-const GROUND_W_SEGS    = 64;   // 6000/64 ≈ 94wu per quad — fine displacement
-const GROUND_L_SEGS    = 256;  // 32000/256 = 125wu per quad
-const GROUND_X_OFFSET  = 6050; // strip center from spline; inner edge=3050wu, outer=9050wu
-const GROUND_Y         = -1;  // just below river bed at y=0
+//   GROUND_INNER_OFFSET = max cliff lateralMax (600) + rock half (173) + buffer (100) = 873wu
+//   ground inner edge at lagoon = 3300 + 873 = 4173wu ≥ 4073wu (100wu safety buffer)
+//
+//   Per-section check:
+//     Lagoon  hw=3300: rock outer 4073, ground inner 4173 — 100wu gap ✓
+//     Kelp    hw=1990: rock outer 2763, ground inner 2863 — 100wu gap ✓
+//     Shipwreck hw=1650: rock outer 2423, ground inner 2523 — 100wu gap ✓
+//     Coral   hw=1320: rock outer 2093, ground inner 2193 — 100wu gap ✓
+//
+// Tri budget:
+//   RIBBON_SAMPLES=128, RIBBON_W_SEGS=64.
+//   tris per side = 128 × 64 × 2 = 16 384. Both sides = 32 768 tris.
+//
+// Iris Xe safety: plain Mesh + existing _groundShaderMat (THREE.ShaderMaterial).
+// NO InstancedMesh. matrixAutoUpdate=false. frustumCulled=false.
+const GROUND_INNER_OFFSET = 873;  // wu from cliff-max outer edge to ribbon inner edge
+const GROUND_W            = 6000; // ribbon width per side (wu)
+const GROUND_RIBBON_SAMPLES = 128; // longitudinal samples along spline (t-axis)
+const GROUND_RIBBON_W_SEGS  = 64;  // lateral segments per ribbon
+const GROUND_Y            = -1;   // slight Y below grass to avoid z-fight
 
 // ─── Sky dome ────────────────────────────────────────────────────────────────
 const DOME_RADIUS  = 28000;
@@ -456,16 +464,117 @@ const _bridgeMat = new THREE.MeshStandardMaterial({
 
 // (Kart BoxGeometry + MeshStandardMaterial removed — see racing-karts.tsx)
 
+// ─── Ground ribbon geometry builder ──────────────────────────────────────────
+/**
+ * buildGroundRibbonGeo — sweeps a ground strip along clientSpline.
+ *
+ * @param side       +1 = left of travel (CCW normal direction), -1 = right
+ * @param samples    number of cross-section planes along the spline [0,1]
+ * @param widthSegs  lateral subdivisions within each cross-section pair
+ *
+ * For each t-sample the cross-section row has (widthSegs+1) vertices:
+ *   lateral t_i = (i / widthSegs)
+ *   lateral distance from centerline = hw + GROUND_INNER_OFFSET + t_i * GROUND_W
+ * where hw = clientSpline.widthAt(t) varies per sample.
+ *
+ * Triangle strip winds pairs of adjacent rows into quads, each split into 2 tris.
+ * Winding order is consistent for +Y normals regardless of side sign.
+ */
+function buildGroundRibbonGeo(
+  side: 1 | -1,
+  samples: number,
+  widthSegs: number,
+): THREE.BufferGeometry {
+  const rows     = samples + 1; // t-axis sample count (including t=1)
+  const cols     = widthSegs + 1; // lateral vertex count per row
+  const vtxCount = rows * cols;
+
+  const positions = new Float32Array(vtxCount * 3);
+  const normals   = new Float32Array(vtxCount * 3);
+  const uvs       = new Float32Array(vtxCount * 2);
+
+  // Build vertex grid
+  for (let r = 0; r < rows; r++) {
+    const t  = r / (rows - 1); // [0, 1]
+    const c  = clientSpline.centerlineAt(t);
+    const n  = clientSpline.normalAt(t);
+    const hw = clientSpline.widthAt(t);
+    const innerLateral = hw + GROUND_INNER_OFFSET;
+
+    for (let col = 0; col < cols; col++) {
+      const lateralFrac = col / widthSegs; // [0, 1] across ribbon width
+      const totalLateral = innerLateral + lateralFrac * GROUND_W;
+
+      const wx = c.x + n.x * totalLateral * side;
+      const wz = c.z + n.z * totalLateral * side;
+
+      const idx = r * cols + col;
+      positions[idx * 3 + 0] = wx;
+      positions[idx * 3 + 1] = GROUND_Y;
+      positions[idx * 3 + 2] = wz;
+
+      // Normal always +Y for horizontal ground
+      normals[idx * 3 + 0] = 0;
+      normals[idx * 3 + 1] = 1;
+      normals[idx * 3 + 2] = 0;
+
+      // UV: u across lateral width [0,1], v along spline [0,1]
+      uvs[idx * 2 + 0] = lateralFrac;
+      uvs[idx * 2 + 1] = t;
+    }
+  }
+
+  // Build index buffer — two triangles per quad between adjacent rows
+  // For side=+1 (left):  winding a→b→c, a→c→d (CCW viewed from +Y)
+  // For side=-1 (right): winding a→c→b, a→d→c (mirror winding for +Y normal)
+  const quadCount = (rows - 1) * widthSegs;
+  const indices   = new Uint32Array(quadCount * 6);
+  let   idxPtr    = 0;
+
+  for (let r = 0; r < rows - 1; r++) {
+    for (let col = 0; col < widthSegs; col++) {
+      const a = r       * cols + col;
+      const b = r       * cols + col + 1;
+      const c = (r + 1) * cols + col;
+      const d = (r + 1) * cols + col + 1;
+
+      if (side === 1) {
+        // Left ribbon — CCW for +Y normal
+        indices[idxPtr++] = a;
+        indices[idxPtr++] = c;
+        indices[idxPtr++] = b;
+        indices[idxPtr++] = b;
+        indices[idxPtr++] = c;
+        indices[idxPtr++] = d;
+      } else {
+        // Right ribbon — mirror winding to keep +Y normal on right side
+        indices[idxPtr++] = a;
+        indices[idxPtr++] = b;
+        indices[idxPtr++] = c;
+        indices[idxPtr++] = b;
+        indices[idxPtr++] = d;
+        indices[idxPtr++] = c;
+      }
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('normal',   new THREE.BufferAttribute(normals,   3));
+  geo.setAttribute('uv',       new THREE.BufferAttribute(uvs,       2));
+  geo.setIndex(new THREE.BufferAttribute(indices, 1));
+  return geo;
+}
+
 // ─── Module-scope geometries (baked at module load, shared forever) ───────────
 // (water ribbon geo lives in water-surf.tsx)
-const _domeGeo      = makeDomeGeo();
-// Ground terrain geo (subdivided — 96×192×2 = 36 864 tris)
-const _groundGeo    = (() => {
-  const geo = new THREE.PlaneGeometry(GROUND_W, GROUND_L, GROUND_W_SEGS, GROUND_L_SEGS);
-  // PlaneGeometry is XY; rotate to XZ
-  geo.rotateX(-Math.PI / 2);
-  return geo;
-})();
+const _domeGeo = makeDomeGeo();
+
+// Spline-following ground ribbons — built once at module load.
+// Left (+1) and right (-1) sides. Each = 128 × 64 × 2 = 16 384 tris.
+// Combined = 32 768 tris (target: ~32k, within ≤80k budget).
+const _groundGeoLeft  = buildGroundRibbonGeo( 1, GROUND_RIBBON_SAMPLES, GROUND_RIBBON_W_SEGS);
+const _groundGeoRight = buildGroundRibbonGeo(-1, GROUND_RIBBON_SAMPLES, GROUND_RIBBON_W_SEGS);
 
 // Part 2A: finish gate geometry
 function buildFinishGateGeo(): THREE.BufferGeometry {
@@ -545,22 +654,22 @@ const _domeMat = new THREE.MeshBasicMaterial({
 // ─── Ground terrain shader component ─────────────────────────────────────────
 
 function GroundShader() {
-  // Two strips bracketing the canyon (one on each side of the spline).
+  // Two spline-following ribbon strips bracketing the canyon (left + right of spline).
+  // Geometry is baked at module scope — no props, no position offset needed
+  // (vertices are in world XZ, built directly from clientSpline samples).
   return (
     <>
       <mesh
-        geometry={_groundGeo}
+        geometry={_groundGeoLeft}
         material={_groundShaderMat}
-        position={[-GROUND_X_OFFSET, GROUND_Y, TRACK_CENTER_Z]}
         frustumCulled={false}
         matrixAutoUpdate={false}
         receiveShadow
         renderOrder={0}
       />
       <mesh
-        geometry={_groundGeo}
+        geometry={_groundGeoRight}
         material={_groundShaderMat}
-        position={[+GROUND_X_OFFSET, GROUND_Y, TRACK_CENTER_Z]}
         frustumCulled={false}
         matrixAutoUpdate={false}
         receiveShadow

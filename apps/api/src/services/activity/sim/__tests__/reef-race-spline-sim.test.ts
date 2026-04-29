@@ -277,19 +277,19 @@ describe('ReefRaceSplineSim', () => {
       const state = reefRaceSplineSim.__getState(ROOM_ID)!;
       const body = state.bodies.get(PET_A)!;
 
-      // Place body far outside corridor at lagoon (halfWidth=2200 post-2026-04-29 iter-8 ×1.4 pass).
-      // At z=1500 (CP1), centerline x=0. Put body well past the wall at x=2700.
-      body.x = 2700;
+      // Place body far outside corridor at lagoon (halfWidth=3300 post-2026-04-29 iter-9 ×1.5 pass).
+      // At z=1500 (CP1), centerline x=0. Put body well past the wall at x=4000.
+      body.x = 4000;
       body.z = 1500;
       body.vx = 200; // moving outward
       body.vz = 0;
 
       reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
 
-      // After clamp, body should be within the corridor (halfWidth=2200 at lagoon)
+      // After clamp, body should be within the corridor (halfWidth=3300 at lagoon)
       // with some tolerance for wall-inset and body radius (22wu).
       const closestDist = Math.abs(body.x); // centerline is x=0 here
-      expect(closestDist).toBeLessThan(2400);
+      expect(closestDist).toBeLessThan(3500);
     });
   });
 

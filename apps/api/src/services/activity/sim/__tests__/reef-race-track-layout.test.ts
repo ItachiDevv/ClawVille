@@ -153,14 +153,14 @@ describe('REEF_RACE_DEFAULT_TRACK — spline integration', () => {
     // the shipwreck segment (halfWidth ~1100), t=1 sits in the finish
     // (halfWidth ~2200). We don't pin to exact numbers since centripetal
     // interpolation smooths across the boundary; we check ranges.
-    // Updated 2026-04-29 (iter-8) after ×1.4 widening: lagoon/finish
-    // 1575→2200, kelp 945→1325, shipwreck 787→1100, coral 630→880.
+    // Updated 2026-04-29 (iter-9) after ×1.5 widening from iter-8:
+    // lagoon/finish 2200→3300, kelp 1325→1990, shipwreck 1100→1650, coral 880→1320.
     const wStart = spline.widthAt(0);
     const wFinish = spline.widthAt(1);
-    expect(wStart).toBeGreaterThanOrEqual(2100);
-    expect(wStart).toBeLessThanOrEqual(2300);
-    expect(wFinish).toBeGreaterThanOrEqual(2100);
-    expect(wFinish).toBeLessThanOrEqual(2300);
+    expect(wStart).toBeGreaterThanOrEqual(3200);
+    expect(wStart).toBeLessThanOrEqual(3400);
+    expect(wFinish).toBeGreaterThanOrEqual(3200);
+    expect(wFinish).toBeLessThanOrEqual(3400);
 
     // Mid-track must be tighter than start/finish (we have chokepoints there).
     const wMid = spline.widthAt(0.5);
