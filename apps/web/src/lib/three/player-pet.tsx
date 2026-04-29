@@ -24,8 +24,15 @@ import {
 } from '@/lib/three/character-animations';
 import { jumpState, isEditable } from '@/lib/three/jump-state';
 import { useVRMInstance, disposeVRMInstance, preloadVRMBytes } from '@/lib/three/vrm-loader';
-import { VRMCharacterAnimator, preloadMixamoClips } from '@/lib/three/vrm-character-animator';
+import {
+  VRMCharacterAnimator,
+  preloadMixamoClips,
+  isEmoteAnimName,
+  type AnimName,
+} from '@/lib/three/vrm-character-animator';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
+import { CosmeticLoader } from '@/lib/three/cosmetic-loader';
+import { subscribeEmote } from '@/lib/three/emote-bus';
 
 // ---------------------------------------------------------------------------
 // GLB-based player pet — lobster.glb model = 1-2 draw calls
@@ -250,7 +257,19 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
     animator.init().catch((err) => {
       console.warn('[PlayerPet VRM] animator init failed:', err);
     });
+
+    // Subscribe to the emote bus so the cosmetic-drawer / hotbar's
+    // `fireEmote('flip')` calls drive the player's avatar.
+    const unsub = subscribeEmote((animationKey) => {
+      if (!isEmoteAnimName(animationKey)) {
+        console.warn(`[PlayerPet VRM] unknown emote animation key: ${animationKey}`);
+        return;
+      }
+      void animator.playOneShot(animationKey as AnimName);
+    });
+
     return () => {
+      unsub();
       vrmAnimatorRef.current = null;
       animator.dispose();
     };
@@ -430,6 +449,19 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
       <primitive
         object={vrm.scene}
         scale={[PET_VRM_SCALE, PET_VRM_SCALE, PET_VRM_SCALE]}
+      />
+      {/*
+        Equipped cosmetics (hats / glasses / aura / particles) for the
+        player's Milady VRM. The loader subscribes to /api/cosmetics/owned
+        and attaches GLBs to the head bone or other anchors. petId='self'
+        because the API resolves the caller pet from the session cookie —
+        the prop is forward-compat for future per-NPC cosmetic rendering.
+      */}
+      <CosmeticLoader
+        petId="self"
+        rigType="milady-vrm"
+        context="world"
+        parentObject={vrm.scene}
       />
     </group>
   );
