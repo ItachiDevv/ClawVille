@@ -21,12 +21,11 @@
  *   I. <RacingKarts /> — 5 surfboard karts riding the spline (imported from racing-karts.tsx)
  *   J. Bridge prop (Part 2F)
  *
- * Iter-5 cascade (WATER_Y +40 → -40):
- *   WATER_Y = -40  (water surface, sunken canyon)
- *   SAND_Y  = -49  (just above river bed at -50)
- *   GROUND_Y = -1  (grass / terrain surface ≈ y=0)
- *   BRIDGE_H =  10 (bridge floor y=+10; clearance above water = 50wu)
- *   Rocky cliff banks authored to match: ground=0, water=-40, riverbed=-50.
+ * Iter-6 cascade (WATER_Y -40 → -200 — 200wu dramatic ravine):
+ *   WATER_Y  = -200 (water surface, deep sunken canyon)
+ *   GROUND_Y =   -1 (grass / terrain surface ≈ y=0)
+ *   BRIDGE_H =   80 (bridge floor y=+80; clearance above water = 280wu — dramatic over-canyon)
+ *   Rocky cliff banks authored to match: ground=0, water=-200, riverbed=-250.
  *
  * Iris Xe invariants:
  *   - ShaderMaterial ONLY on plain Mesh — NO InstancedMesh + ShaderMaterial
@@ -50,8 +49,8 @@
  *   Total: ~51 866 tris — comfortably within ≤80k budget.
  *
  * Water Y placement (iter-5 — CANYON DEPTH):
- *   Ground / grass at y=0. River bed at y=-50.
- *   Water ribbon at y=-40 (WATER_Y, sunken canyon).
+ *   Ground / grass at y=0. River bed at y=-250.
+ *   Water ribbon at y=-200 (WATER_Y, deep sunken canyon).
  *   Rocky banks bracket the canyon: ground→water→river-bed (cliffs authored to match).
  *   Ground plane at y=-1 (just below grass — no z-fight with terrain).
  */
@@ -88,7 +87,7 @@ const DOME_ZENITH  = new THREE.Color('#5ab8e8');
 
 // ─── Water / sand ribbon sampling ────────────────────────────────────────────
 const RIBBON_SAMPLES = 64;   // number of cross-sections along the spline
-const WATER_Y        = -40;  // iter-5 cascade: canyon depth (-40 = 40wu below ground)
+const WATER_Y        = -200; // iter-6 cascade: 200wu deep ravine (dramatic canyon)
 
 // DEV-mode assertion: rocky-banks.tsx expects WATER_Y < 0; cliffs will render inverted otherwise.
 if (process.env.NODE_ENV === 'development' && WATER_Y >= 0) {
@@ -134,7 +133,7 @@ const POWERUP_BOB_FREQ = 2;
 // Part 2F: Bridge
 const BRIDGE_Z         = 8500; // mid-track z position
 const BRIDGE_W         = 1100; // wu span (covers full river + banks)
-const BRIDGE_H         = 10;   // bridge floor y=+10; clearance above WATER_Y=-40 is 50wu
+const BRIDGE_H         = 80;   // bridge floor y=+80; clearance above WATER_Y=-200 is 280wu (dramatic over-canyon)
 const BRIDGE_PLANK_H   = 30;   // plank thickness
 const BRIDGE_SUPPORT_W = 30;
 
@@ -1052,7 +1051,7 @@ function Bridge() {
  *   -1: Sky dome (sunny blue gradient, BackSide sphere)
  *    0: Terrain shader ground (subdivided, rolling hills outside river corridor)
  *    1: Rocky cliff banks (canyon walls, 1264 tris, 1 draw call)
- *    2: Animated water ribbon (simplex noise + bank-edge foam, WATER_Y=-40)
+ *    2: Animated water ribbon (simplex noise + bank-edge foam, WATER_Y=-200)
  *    ?: Scenery props along banks (Quaternius CC0 trees at visible scale)
  *    ?: Gameplay juice: finish gate, distance markers, power-ups, <RacingKarts />, bridge
  *
@@ -1060,18 +1059,18 @@ function Bridge() {
  * hidden by the parent page — set visible=false or recolor to grass green.
  * See page.tsx: _bankMat color is '#7cb342' grass green to blend with ground.
  *
- * WATER SHADER (iter-5):
+ * WATER SHADER (iter-6):
  *   Plain THREE.ShaderMaterial on a plain Mesh — verified Iris Xe safe.
  *   uColorNear '#5fdcff', uColorFar '#3aaedf'. Bank-edge foam uses 0-0.12 UV width.
- *   Water surface now at WATER_Y=-40 (sunken canyon depth vs iter-4's +40).
+ *   Water surface at WATER_Y=-200 (200wu deep dramatic ravine vs iter-5's -40).
  *
  * GROUND SHADER (iter-4, unchanged):
  *   ShaderMaterial on a 96×192-segment PlaneGeometry (36 864 tris).
  *   Vertex: value-noise Y displacement masked to zero within 700wu of x=0.
  *   Fragment: 3-tone grass+dirt blending with berm highlight.
  *
- * KARTS (iter-5): <RacingKarts /> imported from racing-karts.tsx and wired here.
- *   racing-karts.tsx WATER_Y cascade is complete — value is -40 (confirmed iter-5).
+ * KARTS (iter-6): <RacingKarts /> imported from racing-karts.tsx and wired here.
+ *   racing-karts.tsx WATER_Y cascade is complete — value is -200 (confirmed iter-6).
  */
 export function RiverScene() {
   return (
