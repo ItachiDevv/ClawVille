@@ -56,9 +56,11 @@ const TRACK_CURVE = new THREE.CatmullRomCurve3(
 
 const LOOP_DURATION   = 6;    // seconds for one full lap
 const TRACK_HW        = 1.2;  // track half-width in wu
-const CAM_BACK        = 6;    // wu behind the racer
-const CAM_UP          = 2.5;  // wu above the racer
-const CAM_LOOK_AHEAD  = 3;    // wu ahead of the racer for look-at point
+const CAM_BACK        = 3.5;  // wu behind the racer (tightened from 6 so
+                              // the lobster reads at small landing-tile
+                              // viewport — verified visually 2026-04-29)
+const CAM_UP          = 1.5;  // wu above the racer (lowered with cam back)
+const CAM_LOOK_AHEAD  = 2;    // wu ahead of the racer for look-at point
 const CAM_POS_LERP    = 0.08;
 const CAM_LOOK_LERP   = 0.12;
 const BOB_AMP         = 0.12;
@@ -231,7 +233,7 @@ function Racer({ tRef }: { tRef: MutableRefObject<number> }) {
   });
 
   return (
-    <group ref={groupRef} scale={0.9}>
+    <group ref={groupRef} scale={1.6}>
       <primitive object={cloned} />
     </group>
   );
