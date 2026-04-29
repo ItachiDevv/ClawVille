@@ -13,6 +13,7 @@
     "@clawville/agent-runtime": "workspace:*",
     "@clawville/database": "workspace:*",
     "@clawville/shared": "workspace:*",
+    "@fingerprintjs/fingerprintjs": "^4.6.2",
     "@lucia-auth/adapter-drizzle": "^1.1.0",
     "@pixi/react": "^8.0.5",
     "@pixi/tilemap": "^5.0.2",

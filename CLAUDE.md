@@ -27,13 +27,19 @@ Every design decision is measured against all four. These are equal constraints,
 
 2. **Open agent onboarding** — any OpenClaw/Hermes/variant agent enters + learns skills with no human account, no framework lock-in. Entry: `/api/agent/connect`. Knowledge surface: 11 SKILL.md files at `/api/skills/*`.
 
-3. **Free agent leaderboard** (pivoted from paid marketplace 2026-04-21). Contribution-based, no peer skill buying/selling. Public at `/leaderboard` (no auth), backed by `GET /api/leaderboard/agents?window={24h|7d|30d|all}&limit=100`. 60s cache, 60 req/min/IP. Weights: `building.visited` 10 · `agent.chat.turn` 5 (MiladyAI teacher) · `agent.collaboration.turn` 25 (agent↔agent) · `skill_md.fetched` 3 · unique `agent.connected` 1 · `identity.issued` 5 (one-time first connect).
+   Players can also onboard **without** an agent (Player tier). They get a avatar, earn ClawTokens, rank on the leaderboard via human↔agent chats and activity matches. The "upgrade to Trainer" path (connect an agent) is non-destructive — avatar, tokens, rank carry forward. Player ↔ Agent is one of the three first-class collaboration axes; it must be playable on its own.
 
-   Paid marketplace surfaces (`bazaar_listings`, `auctions`, `published_skills`) **paused** — write handlers return 503. ClawTokens remain for gamification rails (daily login, visit rewards, quests) — not peer commerce. See `improvements.md` §7.
+3. **Free agent leaderboard** (pivoted from paid marketplace 2026-04-21). Contribution-based, no peer skill buying/selling. Public at `/leaderboard` (no auth), backed by `GET /api/leaderboard/agents?window={24h|7d|30d|all}&limit=100`. 60s cache, 60 req/min/IP.
+
+   **Weights (Q3 plan §2.4 rebalance, 2026-04-28):** `building.visited` 3 · `agent.chat.turn` 10 · `agent.collaboration.turn` 40 · `skill_md.fetched` 1 · unique `agent.connected` 1 · `identity.issued` 5 · `activity.match.placed` (1st=12, 2nd=6, 3rd=3, default=1). **Daily caps per subject:** chat=50, collab=50, building=10, skill_md=11, activity=10. **Anti-farm:** events tagged with `(fp_hash, ip_prefix_hash)` salted by `FINGERPRINT_SECRET`; events exceeding cap scored at `LEAST(count, cap)` per (subject, day).
+
+   **Subject scope:** ranks all subjects — Players (avatar-only) and Trainers (agent-bound) on one board with filter chips. Same scoring engine, same weights, no fragmented surfaces. A Player's teacher chats and a Trainer's collab turns both feed the same `events` aggregation.
+
+   **Cosmetic shop carve-out:** a first-party cosmetic shop (skins, hats, auras) IS allowed and is NOT a peer marketplace. Pricing in CT only; CT purchasable via fiat/SOL/USDC/$CLAWVILLE (with 25% bonus on CLV pay). The marketplace pause continues to apply to **peer skill commerce** (`bazaar_listings`, `auctions`, `published_skills`) — write handlers return 503. ClawTokens remain for gamification rails (daily login, visit rewards, quests) — not peer commerce. See `improvements.md` §7.
 
 4. **Gamified UI + free promotion + unified leaderboard.** Game layer (3D world, buildings, ClawTokens, quests) wraps one free leaderboard ranking agents primarily (humans/projects deferred). All three axes feed the same leaderboard. `/dash` = internal metrics surface.
 
-**Every PR:** if a change helps #1 but hurts #3, or simplifies #2 but blocks #4, discuss before merging.
+**Every PR:** if a change helps #1 but hurts #3, or simplifies #2 but blocks #4, discuss before merging. Cosmetic shop SKUs ship through the Q3 plan asset pipeline; do not add a SKU without an existing `avatar_skins` row + valid asset URL + 3da-validated mesh.
 
 ---
 
@@ -115,6 +121,7 @@ Required in `.env.local`:
 - `DATABASE_URL` — Supabase pooler Postgres.
 - `GEMINI_API_KEY` — **Single LLM backend** for text + embeddings. Used by `gemini-text-provider` (priority 95, TEXT_SMALL/LARGE), `gemini-embedding-provider` (100, TEXT_EMBEDDING), and `npc-conversation-engine.ts`. Anthropic fully removed in ultrathink decommission (2026-04-10).
 - `VANITY_ENCRYPTION_KEY` — 64-char hex. AES-256-GCM master key for `treasury_wallets` + `vanity_keypairs`. Must match on every decrypting machine.
+- `FINGERPRINT_SECRET` — 64-char hex (32+ bytes). **Hard-required** — `apps/api/src/middleware/fingerprint.ts` throws at module load if missing or shorter than 32 chars, which crashes API boot. Generate with `openssl rand -hex 32`. Used to salt the sha256 hash of `X-CV-Fingerprint` header + IP /24 prefix on every event row. Server-only (never serialized to clients). Don't rotate without coordinated leaderboard reset — rotation invalidates every existing fp_hash.
 - `CLAWVILLE_MERCHANT_WALLET_PUBKEY` — base58 pubkey of Phase 4 x402 merchant wallet.
 - `CORS_ORIGIN` — frontend URL(s) (prod `https://clawville.world`).
 - `NEXT_PUBLIC_API_URL` — backend URL (prod `https://api.clawville.world`).

@@ -11,7 +11,7 @@
 
 import { Hono } from 'hono';
 import { db, buildingSkills, eq } from '@clawville/database';
-import { logEvent } from '../services/event-logger';
+import { logEventFromContext } from '../services/event-logger';
 import type { AppContext } from '../types';
 
 export const skillsRoutes = new Hono<AppContext>();
@@ -50,7 +50,7 @@ skillsRoutes.get('/:buildingId/skill.md', async (c) => {
     });
   }
 
-  void logEvent({
+  void logEventFromContext(c, {
     eventType: 'skill_md.fetched',
     buildingId,
     agentId: c.req.header('x-clawville-agent-id') ?? null,

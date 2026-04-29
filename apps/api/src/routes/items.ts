@@ -9,6 +9,7 @@ import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { embedText } from '@clawville/agent-runtime';
+import { logEventFromContext } from '../services/event-logger';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 
@@ -119,6 +120,24 @@ itemRoutes.post('/buy', requireAuth, async (c) => {
     }
 
     return { balanceAfter: bal };
+  });
+
+  // Q3 plan §2.6 — emit event so the tutorial-quest `book-worm` engagement
+  // validator can verify the purchase actually happened. Was a missing
+  // emitter before; without it, the claim endpoint silently rejected
+  // legitimate completions ("scaffolding theater" failure mode).
+  void logEventFromContext(c, {
+    eventType: 'item.purchased',
+    userId: user.id,
+    avatarId: avatar.id,
+    payload: {
+      itemId: book.id,
+      itemName: book.name,
+      isBook: true,
+      buildingId: book.building,
+      pricePaid: book.price,
+      balanceAfter,
+    },
   });
 
   return c.json({
@@ -263,6 +282,25 @@ itemRoutes.post('/learn', requireAuth, async (c) => {
       .where(eq(avatarInventory.id, inventoryItem.id));
   } else {
     await db.delete(avatarInventory).where(eq(avatarInventory.id, inventoryItem.id));
+  }
+
+  // Q3 plan §2.6 — emit event so the tutorial-quest `agent-scholar`
+  // engagement validator can verify knowledge was actually merged. Counts
+  // only when newKnowledge.length > 0 (re-reading a book that contributed
+  // nothing new doesn't credit the quest).
+  if (newKnowledge.length > 0) {
+    void logEventFromContext(c, {
+      eventType: 'book.read',
+      userId: user.id,
+      avatarId: avatar.id,
+      payload: {
+        bookId: book.id,
+        bookName: book.name,
+        buildingId: book.building,
+        newKnowledgeCount: newKnowledge.length,
+        totalKnowledge: mergedKnowledge.length,
+      },
+    });
   }
 
   return c.json({

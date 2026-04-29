@@ -23,6 +23,26 @@
 import { db, events, eventWriteFailures } from '@clawville/database';
 import { alertError } from './alert-error';
 
+/**
+ * Duck-typed Hono context — any object with a string-keyed `.get()` method
+ * satisfies us. We only need `fpHash` and `ipPrefixHash` (set by the global
+ * fingerprintMiddleware). Avoiding `Context<AppContext>` here is deliberate:
+ *
+ *   - Hono's Context generic is invariant in `Variables`, so a strict shape
+ *     like `Context<{ Variables: { fpHash: string; ipPrefixHash: string } }>`
+ *     rejects every real call site (AppContext, AppContext & AuthenticatedContext,
+ *     BlankEnv from routes that did `new Hono()` without a generic).
+ *   - The runtime contract is: middleware always sets these two strings, so
+ *     `c.get('fpHash')` returns `string`. We narrow with `typeof === 'string'`
+ *     to be safe at the boundary.
+ *
+ * Audit fix 2026-04-29 (round 2) — first attempt used Context<{...}> which
+ * caused 12 TS errors across the migrated emitter sites.
+ */
+type FingerprintedContext = {
+  get(key: string): unknown;
+};
+
 // Sensitive-key detection. Two passes:
 //
 //   1. Split the key into words (camelCase → snake_case, then split on _/-).
@@ -90,6 +110,17 @@ export interface EventInput {
   buildingId?: string | null;
   sessionId?: string | null;
   payload?: Record<string, unknown>;
+  /**
+   * Phase 1 anti-farm — sha256-salted browser fingerprint. Routes should
+   * use logEventFromContext() which pulls this from middleware context;
+   * system/cron writes that have no request can leave it null.
+   */
+  fpHash?: string | null;
+  /**
+   * Phase 1 anti-farm — sha256-salted IP /24 prefix. Same lifecycle as
+   * fpHash.
+   */
+  ipPrefixHash?: string | null;
 }
 
 // ─── Q2 Activity Portals — event taxonomy ──────────────────────────────────
@@ -227,6 +258,8 @@ export async function logEvent(input: EventInput): Promise<void> {
     buildingId: input.buildingId ?? null,
     sessionId: input.sessionId ?? null,
     payload: sanitize(input.payload),
+    fpHash: input.fpHash ?? null,
+    ipPrefixHash: input.ipPrefixHash ?? null,
   };
 
   try {
@@ -261,4 +294,30 @@ export async function logEvent(input: EventInput): Promise<void> {
       });
     }
   }
+}
+
+/**
+ * Phase 1 anti-farm helper — pulls fpHash + ipPrefixHash from request
+ * context (set by global fingerprintMiddleware) and forwards to logEvent.
+ *
+ * Use this from any Hono route handler. System / cron writes that have no
+ * Hono context call logEvent directly with fp/ip null — those rows are
+ * inherently exempt from anti-farm caps because they aren't attributable
+ * to a single browser session.
+ *
+ * Returns Promise<void> with the same never-throws contract as logEvent.
+ */
+export async function logEventFromContext(
+  c: FingerprintedContext,
+  input: EventInput,
+): Promise<void> {
+  const fpHash = c.get('fpHash');
+  const ipPrefixHash = c.get('ipPrefixHash');
+  return logEvent({
+    ...input,
+    fpHash:
+      input.fpHash ?? (typeof fpHash === 'string' ? fpHash : null),
+    ipPrefixHash:
+      input.ipPrefixHash ?? (typeof ipPrefixHash === 'string' ? ipPrefixHash : null),
+  });
 }
