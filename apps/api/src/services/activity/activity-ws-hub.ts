@@ -439,6 +439,8 @@ class ActivityWsHub {
       );
       void out; // flag handling routed via the sim's integrityForfeitFn
     } else if (room.activityId === 'reef-race') {
+      // TODO(reef-race-v2): when REEF_RACE_USE_SPLINE is true, dispatch to
+      // ReefRaceSplineSim instead. See .claude/plans/reef-race-v2.md.
       const out = reefRaceSim.applyInput(
         ws.data.roomId,
         identity.avatarId,

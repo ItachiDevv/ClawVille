@@ -439,7 +439,11 @@ function PowerUpBar({ selfAvatarId: _selfPetId }: { selfAvatarId: string | null 
             <PowerUpSlotCard key={i} slot={slot} useKey={useKeys[i]} slotIndex={i} />
           ))}
         </div>
-        {/* Controls hint strip — Mario-Kart-feel parity. Shift = drift, not Space. */}
+        {/* Controls hint strip — Mario-Kart-feel parity. Shift = JUMP in v2.
+            Live ellipse sim still consumes the same bit as DRIFT, but the
+            Shift binding doesn't change between sims — only the chip label
+            and the server-side semantic do. See
+            `.claude/plans/reef-race-v2.md` "Jump Mechanic — NEW". */}
         <div
           style={{
             display: 'flex',
@@ -451,7 +455,7 @@ function PowerUpBar({ selfAvatarId: _selfPetId }: { selfAvatarId: string | null 
             paddingTop: 2,
           }}
         >
-          <span><b style={{ color: '#ffd24a' }}>SHIFT</b> · DRIFT</span>
+          <span><b style={{ color: '#ffd24a' }}>SHIFT</b> · JUMP</span>
           <span style={{ color: '#ffffff22' }}>·</span>
           <span><b style={{ color: '#ffffff99' }}>SPACE/Q</b> · USE ITEM</span>
         </div>
@@ -563,7 +567,11 @@ export default function ReefRaceHud({
       {/* Center: Apex verdict + hazard hit + ribbon boost toasts — Phase 2 */}
       <ReefRaceEventToasts />
 
-      {/* Bottom-center: Drift charge sparks (above PowerUpBar) */}
+      {/* Bottom-center: Drift charge sparks (above PowerUpBar).
+          TODO(reef-race-v2): retire <ReefRaceDriftSparks /> when the spline
+          sim ships — drift mechanic is replaced by JUMP and the sparks bar
+          becomes dead UI. Tracked in `.claude/plans/reef-race-v2.md`
+          "Drift Mechanic — RETIRED". Live ellipse sim still drives sparks. */}
       <ReefRaceDriftSparks />
 
       {/* Bottom-center: Power-up bar */}
