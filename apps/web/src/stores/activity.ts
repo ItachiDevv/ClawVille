@@ -281,6 +281,40 @@ export interface ActivityState {
    */
   lastMatchPerfectLapBonus: number | null;
 
+  // ── Reef Race v2 (spline sim) — finish-line + wait overlay ─────────────
+  /**
+   * v2 — true once the LOCAL avatar has crossed the finish line for this match.
+   * Set by `event.crossed_finish` when `avatarId === selfAvatarId`. Cleared on
+   * `event.match_ended` and `snapshot.init`. Drives the wait-at-finish
+   * overlay (`<WaitAtFinishOverlay>`), which only renders while the match
+   * is still `live` AND the local avatar has finished.
+   */
+  selfFinished: boolean;
+  /**
+   * v2 — local avatar's final placement (1 = first), set by `event.crossed_finish`
+   * when the avatarId matches self. null until self finishes.
+   */
+  selfPlacement: number | null;
+  /**
+   * v2 — local avatar's authoritative total race time in ms, set by
+   * `event.crossed_finish` (server-stamped). null until self finishes.
+   */
+  selfTotalMs: number | null;
+  /**
+   * v2 — wait-at-finish countdown deadline (wall-clock ms timestamp). Computed
+   * at receipt of `event.finish_wait_started` as `Date.now() + msRemaining`.
+   * The overlay reads this and recomputes remaining-ms each render — no
+   * setInterval, no cleanup bugs. null until first finisher triggers the
+   * countdown.
+   */
+  finishWaitDeadlineAt: number | null;
+  /**
+   * v2 — running list of all racers who have crossed the finish line, in
+   * placement order. Each `crossed_finish` event appends one row. Used by
+   * the wait-at-finish overlay's "Finishers" list.
+   */
+  finishedRacers: Array<{ avatarId: string; placement: number; totalMs: number }>;
+
   // ── Writer API ──────────────────────────────────────────────────────────
 
   /** Single switchboard for `useActivityWs` to apply incoming server frames. */
@@ -467,6 +501,11 @@ function emptyState(): Pick<
   | 'lastMatchStreakBest'
   | 'lastMatchDailyRank'
   | 'lastMatchPerfectLapBonus'
+  | 'selfFinished'
+  | 'selfPlacement'
+  | 'selfTotalMs'
+  | 'finishWaitDeadlineAt'
+  | 'finishedRacers'
 > {
   return {
     entities: new Map(),
@@ -504,6 +543,12 @@ function emptyState(): Pick<
     lastMatchStreakBest: null,
     lastMatchDailyRank: null,
     lastMatchPerfectLapBonus: null,
+    // Reef Race v2 — finish-line + wait-at-finish overlay state
+    selfFinished: false,
+    selfPlacement: null,
+    selfTotalMs: null,
+    finishWaitDeadlineAt: null,
+    finishedRacers: [],
   };
 }
 
@@ -614,6 +659,14 @@ export const useActivityStore = create<ActivityState>()(
             selfRacingClass: myProfile?.class ?? null,
             selfLevel: myProfile?.level ?? 1,
             reefRace: nextReef,
+            // v2 — clear finish-line state on a fresh room hydration so a
+            // mid-match reconnect or a snapshot.keyframe-style re-init doesn't
+            // resurrect last match's "FINISHED — 1st!" overlay.
+            selfFinished: false,
+            selfPlacement: null,
+            selfTotalMs: null,
+            finishWaitDeadlineAt: null,
+            finishedRacers: [],
           });
           break;
         }
@@ -802,6 +855,15 @@ export const useActivityStore = create<ActivityState>()(
               typeof reward?.perfectLapBonus === 'number'
                 ? reward.perfectLapBonus
                 : null,
+            // v2 — clear the wait-at-finish overlay state. The overlay's
+            // render gate (matchPhase === 'live') already hides it, but
+            // wiping these so the next match starts with a clean slate
+            // even if `reset(roomId)` isn't called between matches.
+            selfFinished: false,
+            selfPlacement: null,
+            selfTotalMs: null,
+            finishWaitDeadlineAt: null,
+            finishedRacers: [],
           });
           break;
         }
@@ -1028,16 +1090,59 @@ export const useActivityStore = create<ActivityState>()(
           break;
         }
 
-        // Reef Race v2 (spline sim) — wire-stub. The spline sim is
-        // skeleton-only as of Wave 1.b; these events never fire on the
-        // live ellipse sim. Branches exist solely so the exhaustiveness
-        // sentinel below stays compile-clean while protocol additions
-        // ride alongside the ellipse sim during migration. Real handlers
-        // (wait-at-finish overlay, finishline VFX) land with the spline
-        // sim port. See `.claude/plans/reef-race-v2.md`.
-        case 'event.crossed_finish':
-        case 'event.finish_wait_started':
+        // ── Reef Race v2 (spline sim) — finish-line events ───────────────
+        //
+        // Wave 2 HUD: thickens the Wave 1.b stub branches into real handlers
+        // for the wait-at-finish overlay. These events never fire on the
+        // live ellipse sim — the spline sim emits them when a body crosses
+        // the finish gate (`event.crossed_finish`) and when the per-match
+        // wait timer starts (`event.finish_wait_started`). Drives:
+        //   - <ProgressBar> stops growing once self has finished (entity.progress
+        //     no longer ticks server-side after crossing)
+        //   - <WaitAtFinishOverlay> renders FINISHED — Nth + countdown + finishers
+        //   - finishedRacers list grows on each crossing across all racers
+        //
+        // See `.claude/plans/reef-race-v2.md` "End condition" + protocol notes.
+
+        case 'event.crossed_finish': {
+          // Append to the running finishers list, dedup by avatarId so a
+          // duplicate broadcast (e.g. WS reconnect echo) doesn't double-count.
+          const finishedRacers = state.finishedRacers.some(
+            (r) => r.avatarId === frame.avatarId,
+          )
+            ? state.finishedRacers
+            : [
+                ...state.finishedRacers,
+                {
+                  avatarId: frame.avatarId,
+                  placement: frame.placement,
+                  totalMs: frame.totalMs,
+                },
+              ];
+
+          // SELF crossed — flip the local-finished flag + stamp final time.
+          if (state.selfAvatarId && frame.avatarId === state.selfAvatarId) {
+            set({
+              finishedRacers,
+              selfFinished: true,
+              selfPlacement: frame.placement,
+              selfTotalMs: frame.totalMs,
+            });
+          } else {
+            set({ finishedRacers });
+          }
           break;
+        }
+
+        case 'event.finish_wait_started': {
+          // Convert msRemaining → wall-clock deadline so render-time recompute
+          // doesn't need a setInterval (avoids React effect cleanup bugs and
+          // a tab-throttled timer drifting away from server truth).
+          set({
+            finishWaitDeadlineAt: Date.now() + Math.max(0, frame.msRemaining),
+          });
+          break;
+        }
 
         default: {
           // Exhaustiveness sentinel — pull a `never` so a new ServerFrame
