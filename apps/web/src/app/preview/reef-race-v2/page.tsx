@@ -731,6 +731,12 @@ function SceneContents({
         autoRotateSpeed={1.0}
         // Prevent going under the river bed
         maxPolarAngle={Math.PI * 0.85}
+        // Clamp zoom so the user can't drift past CAMERA_FAR (35 000 wu) and
+        // see an empty sky-blue void. Confirmed 2026-04-29 from the user
+        // reporting "as you zoom out, everything disappears" — orbit had
+        // reached 1 033 782 wu, well past the far plane.
+        minDistance={500}
+        maxDistance={28000}
       />
 
       {/* Production fog */}
