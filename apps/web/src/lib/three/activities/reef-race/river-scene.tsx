@@ -73,20 +73,27 @@ const TRACK_START_Z  = -500;
 const TRACK_CENTER_Z = TRACK_START_Z + TRACK_LEN_Z / 2; // 9500
 
 // ─── Ground shader terrain ────────────────────────────────────────────────────
-// Much wider than river, subdivided for per-vertex displacement
-// 2026-04-29 iter-7c: bigger strips. User screenshot showed the world ending
-// abruptly — only ~6000wu of canyon visible against an empty sky-blue void.
-// Each strip widened 2200→6000 (covers more lateral land before fog), AND
-// extended Z 24000→32000 (extends 7000wu past the 18000 track to hide the
-// "world ends here" silhouette behind the finish gate).
-// Strip inner edge stays at x=±1300 (corridor + cliff), outer edge now at
-// x=±4300 (was ±3100). Trees at xJitter 350-450 (world x=±1400-1500) sit
-// well inside the strip — no longer near its edge.
+// Much wider than river, subdivided for per-vertex displacement.
+// Iter-8 (2026-04-29) canyon rework: corridor halfWidths widened ×1.4, max cliff
+// band extended to 600wu. Ground must sit ALONGSIDE the canyon, never overlapping
+// water at any corridor width.
+//
+// Non-overlap proof:
+//   max corridor halfWidth = 2200wu (lagoon/finish)
+//   max cliff lateralMax   =  600wu (German River variable-width bands)
+//   rock body half-width   ≈  173wu (3.85wu × SCALE_MAX=90 / 2)
+//   → max rock outer edge  = 2200 + 600 + 173 = 2973wu from centerline
+//
+//   GROUND_W = 6000wu. GROUND_X_OFFSET = center of ground strip from spline.
+//   inner edge of strip = GROUND_X_OFFSET − GROUND_W/2 = 6050 − 3000 = 3050wu.
+//   3050wu ≥ 2973wu → 77wu safety buffer between max rock outer edge and ground inner edge.
+//   outer edge of strip = GROUND_X_OFFSET + GROUND_W/2 = 6050 + 3000 = 9050wu.
+//   Ground sits alongside the canyon, never overlaps water at any halfwidth variant.
 const GROUND_W         = 6000;
 const GROUND_L         = 32000;
 const GROUND_W_SEGS    = 64;   // 6000/64 ≈ 94wu per quad — fine displacement
 const GROUND_L_SEGS    = 256;  // 32000/256 = 125wu per quad
-const GROUND_X_OFFSET  = 4300; // strip center distance from spline (W/2 + 1300 inner gap = 3000+1300)
+const GROUND_X_OFFSET  = 6050; // strip center from spline; inner edge=3050wu, outer=9050wu
 const GROUND_Y         = -1;  // just below river bed at y=0
 
 // ─── Sky dome ────────────────────────────────────────────────────────────────

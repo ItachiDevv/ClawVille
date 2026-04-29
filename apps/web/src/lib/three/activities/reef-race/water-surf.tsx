@@ -8,12 +8,13 @@
  * chase-cam perspective used in Reef Race.
  *
  * Visual layers (bottom → top):
+ *   0. Vertex heaving: 3-octave sin wave Y displacement ±8wu (peaks at y=-192, safe in canyon)
  *   1. Shallow-to-deep color shift: UV.x edge→center drives mix(shallowColor, deepColor)
  *   2. Refraction-feel shimmer: UV perturbation of deep-color sample via sin(time+worldZ)
  *   3. Multi-layer surface motion: two scrolling noise layers (scale 12/8, rate slow/fast)
- *   4. White-cap foam stripes: softstep(0.60..0.65) at noise crests only
- *   5. Edge foam: pulsing animated band at bank-water boundary
- *   6. Specular sun glint: fake Phong highlight — pow(dot(R,V), 32) * 0.25
+ *   4. White-cap foam: soft organic clusters (smoothstep 0.40..0.78 × scale-24 cluster noise)
+ *   5. Specular sun glint: fake Phong highlight — pow(dot(R,V), 32) * 0.50 (applied before foam)
+ *   6. Bank-edge foam turbulence (iter-4 winner): dual-snoise (scale 60+150), 12% UV band, creamy-warm
  *
  * Iris Xe constraints:
  *   - Plain ShaderMaterial on plain Mesh — NOT InstancedMesh+ShaderMaterial (crash)
@@ -53,24 +54,40 @@ const RIBBON_SAMPLES        = 64;  // cross-section count (63 quads × 2 tris = 
 /**
  * Vertex shader.
  *
- * NO vertex Y displacement — the ribbon geometry is already at WATER_Y=-200.
- * Adding displacement here would clip through the canyon riverbed (-250) and
- * cause z-fighting with the rocky-banks geometry.
+ * 3-octave heaving water displacement applied in Y.
+ *   wave = sin(x*0.005 + t*0.8)*4.0
+ *         + sin(z*0.003 + t*1.2)*2.5
+ *         + sin((x+z)*0.002 - t*0.6)*1.5
+ * Max amplitude = ±8wu.
+ *   WATER_Y = -200; cliff face baseline = -200 (extends upward).
+ *   Peak y = -192 stays inside the canyon trough — no clip into ground-level terrain.
+ *   Trough y = -208 stays well above riverbed floor at -250.
  *
  * Passes:
  *   vUv      — UV.x=0(left bank) .. 1(right bank); UV.y=0..1 arclength fraction
- *   vWorldPos — world-space position used for:
+ *   vWorldPos — world-space position of DISPLACED vertex, used for:
  *               (a) Z-based edge-foam phase offset
  *               (b) sun glint (dot product with cameraPosition - vWorldPos)
  */
 const _vertexShader = /* glsl */`
+  uniform float uTime;
+
   varying vec2 vUv;
   varying vec3 vWorldPos;
 
   void main() {
     vUv = uv;
-    vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+
+    // 3-octave heaving displacement — max amplitude ±8wu
+    float wave = sin(position.x * 0.005 + uTime * 0.8) * 4.0
+               + sin(position.z * 0.003 + uTime * 1.2) * 2.5
+               + sin((position.x + position.z) * 0.002 - uTime * 0.6) * 1.5;
+    vec3 displaced = position;
+    displaced.y += wave;
+
+    // vWorldPos tracks the displaced surface for fragment-stage world-space ops
+    vWorldPos = (modelMatrix * vec4(displaced, 1.0)).xyz;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(displaced, 1.0);
   }
 `;
 
@@ -100,22 +117,28 @@ const _vertexShader = /* glsl */`
  *     At chase-cam distance this is perfectly visible; from far above it softens
  *     to a textured haze rather than aliasing to grey.
  *
- *   WHITE-CAP FOAM (soft, crest-only):
- *     foamMask = smoothstep(0.60, 0.65, flowFoam)
- *     — Only the top 5% of the noise value triggers foam; the transition is
- *     smooth so it never looks like a harsh binary stripe.
+ *   WHITE-CAP FOAM (soft, organic clusters):
+ *     softField  = smoothstep(0.40, 0.78, flowFoam)   [range 0.38, 5.4× softer]
+ *     clusterMod = mix(0.5, 1.0, snoise(vUv*24 + vec2(0,t*0.015))*0.5+0.5)
+ *     whiteCap   = softField * clusterMod * 0.7
+ *     — Wide smoothstep prevents harsh PS2-era linear stripes; scale-24 cluster
+ *     noise breaks the remaining pattern into irregular organic foam patches.
+ *     3rd snoise call per fragment — within Iris Xe budget.
  *
- *   EDGE FOAM (bank waterline pulse):
- *     edgeFactor = 1.0 - smoothstep(0.0, 0.06, min(uv.x, 1-uv.x))
- *     edgeFoam = edgeFactor * (0.7 + 0.3 * sin(uTime*1.5 + vWorldPos.z*0.01))
- *     — The sin period is 2π/0.01 ≈ 628wu, so you see animated foam pulses
- *     traveling along the canyon wall every ~628 world units.
+ *   BANK-EDGE FOAM (iter-4 winner, dual-turbulence):
+ *     edgeFactor = 1.0 - smoothstep(0.0, 0.12, edgeDist)  [12% UV band]
+ *     foamTurb1 = snoise(vUv*60  + vec2(uTime*1.2, 0.0))*0.5+0.5
+ *     foamTurb2 = snoise(vUv*150 + vec2(0.0, uTime*2.0))*0.5+0.5
+ *     bankFoamIntensity = edgeFactor * (0.6 + 0.4 * (turb1*0.6+turb2*0.4))
+ *     — Applied AFTER Phong glint as the topmost final layer.
+ *     Creamy-warm white (1.0, 0.97, 0.92). Fine fizzing + micro-bubble detail.
+ *     Total snoise calls: 5 per fragment (safe on Iris Xe Gen 12).
  *
  *   SUN GLINT (fake Phong):
  *     normal = vec3(0,1,0)  (flat ribbon)
  *     R = reflect(-uSunDir, normal)
  *     V = normalize(cameraPosition - vWorldPos)
- *     glint = pow(max(dot(R, V), 0.0), 32.0) * 0.25
+ *     glint = pow(max(dot(R, V), 0.0), 32.0) * 0.50
  *     — cameraPosition is a built-in uniform provided by THREE.ShaderMaterial.
  */
 const _fragmentShader = /* glsl */`
@@ -196,26 +219,28 @@ const _fragmentShader = /* glsl */`
     // Combined flow noise (normalized 0..1)
     float flowFoam = n1 * 0.6 + n2 * 0.4;
 
-    // ── 3. White-cap foam — soft, crest-only ───────────────────────────────────
-    // smoothstep(0.60, 0.65) = only the top 5% of noise triggers foam.
-    // Soft transition prevents harsh binary stripe look.
-    float foamMask   = smoothstep(0.55, 0.62, flowFoam);
+    // ── 3. White-cap foam — soft, organic clusters (replaces PS2-stripe version) ──
+    //
+    // Two-term blend:
+    //   (a) softField  — wide smoothstep(0.40..0.78) range; 5.4× softer than old
+    //                    0.07-range version. Foam gradually emerges rather than
+    //                    snapping on in a hard stripe.
+    //   (b) clusterMod — fine-scale simplex at UV*24 breaks the linear isolation of
+    //                    the flowFoam stripes into irregular organic patches. Maps
+    //                    snoise [-1,1] → [0.5,1.0] so it only dims, never zeros, foam.
+    //
+    // Result: whiteCap = softField * clusterMod * 0.7
+    // Iris Xe budget: this is the 3rd snoise call per fragment (existing 2 + this 1).
+    float softField  = smoothstep(0.40, 0.78, flowFoam);
+    float clusterMod = mix(0.5, 1.0, snoise(vUv * 24.0 + vec2(0.0, uTime * 0.015)) * 0.5 + 0.5);
+    float whiteCap   = softField * clusterMod * 0.7;
+
     vec3  foamColor  = uColorFoam;  // vec3(0.95, 0.97, 1.0) = slightly blue-white
 
-    baseColor = mix(baseColor, foamColor, foamMask);
+    baseColor = mix(baseColor, foamColor, whiteCap);
 
-    // ── 4. Edge foam (bank-waterline pulse) ────────────────────────────────────
-    // edgeFactor: 1.0 at uv.x=0 or 1, falls to 0 at 0.06 from edge.
-    float edgeFactor = 1.0 - smoothstep(0.0, 0.06, edgeDist);
-
-    // Animated foam pulse traveling along canyon (period ≈ 628wu in worldZ)
-    float edgeFoam   = edgeFactor * (0.7 + 0.3 * sin(uTime * 1.5 + vWorldPos.z * 0.01));
-
-    // Edge foam color: bright nearly-white
-    vec3 edgeFoamColor = vec3(0.96, 0.98, 1.0);
-    baseColor = mix(baseColor, edgeFoamColor, edgeFoam * 0.65);
-
-    // ── 5. Sun glint (fake Phong specular) ─────────────────────────────────────
+    // ── 4. Sun glint (fake Phong specular) ─────────────────────────────────────
+    // Applied before bank-edge foam so the foam paints on top as the final layer.
     // Water surface normal is (0,1,0) (flat ribbon with +Y normals).
     // cameraPosition is a built-in uniform in THREE.ShaderMaterial.
     vec3 normal  = vec3(0.0, 1.0, 0.0);
@@ -227,6 +252,34 @@ const _fragmentShader = /* glsl */`
     float glint = spec * 0.50 * depthFactor;
 
     baseColor += vec3(glint);
+
+    // ── 5. Bank-edge foam turbulence (iter-4 winner — final layer) ─────────────
+    // Replaces the previous simple sin() pulse with two-layer simplex turbulence.
+    //
+    // edgeFactor: 12% UV band (was 6%) — wider waterline foam zone.
+    // Two animated simplex layers at different scales + scroll speeds:
+    //   foamTurb1: scale 60, fast X-scroll  (fine fizzing)
+    //   foamTurb2: scale 150, fast Y-scroll (even finer micro-bubbles)
+    // Combined → bankFoamIntensity flickers between 0.6 and 1.0.
+    // Painted AFTER glint so bank foam is always the topmost visual layer.
+    //
+    // snoise call count after this block:
+    //   n1 (scale 12) + n2 (scale 8) + clusterMod (scale 24)
+    //   + foamTurb1 (scale 60) + foamTurb2 (scale 150) = 5 total.
+    //   5 × ~25 ops ≈ 125 ops/fragment; Iris Xe Gen12 ~1.18 TFLOPS FP32 handles
+    //   this comfortably for the water-ribbon footprint (~700K active fragments).
+    float edgeFactor = 1.0 - smoothstep(0.0, 0.12, edgeDist);  // 12% UV band
+
+    float foamTurb1 = snoise(vUv * 60.0  + vec2(uTime * 1.2, 0.0)) * 0.5 + 0.5;
+    float foamTurb2 = snoise(vUv * 150.0 + vec2(0.0, uTime * 2.0)) * 0.5 + 0.5;
+    float foamTurbCombined = foamTurb1 * 0.6 + foamTurb2 * 0.4;
+
+    // Bright, slightly warm creamy white — flickers between 0.6 and 1.0 intensity
+    float bankFoamIntensity = edgeFactor * (0.6 + 0.4 * foamTurbCombined);
+    vec3  bankFoamColor = vec3(1.0, 0.97, 0.92) * bankFoamIntensity;
+
+    // Final blend: bank foam is the topmost layer
+    baseColor = mix(baseColor, bankFoamColor, edgeFactor * bankFoamIntensity * 0.8);
 
     gl_FragColor = vec4(baseColor, 1.0);
   }
