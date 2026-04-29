@@ -10,3 +10,12 @@ The following 3D models are used under CC-BY license. Full credit to their creat
 
 - **Space Dome Showcase** by dylanheyes (CC-BY)
   https://sketchfab.com/3d-models/space-dome-showcase-5fda4e11a13e4b72bfe230edbd5bdbf9
+
+- **The Krusty Krab (SpongeBob)** by Yanez Designs (CC-BY) — `krusty-krab.glb`
+  https://sketchfab.com/3d-models/the-krusty-krab-spongebob-77eb7ac71cf34487a68394e826fb24d7
+
+- **Squidward's House (SpongeBob)** by Yanez Designs (CC-BY) — `squidward-house.glb`
+  https://sketchfab.com/3d-models/squidwards-house-spongebob-cf183eb8ce0a4ba59c5de662580bb1de
+
+- **Patrick's House (SpongeBob)** by Yanez Designs (CC-BY) — `patricks-rock.glb`
+  https://sketchfab.com/3d-models/patricks-house-spongebob-e903770349644943b400f8b72d2d3958
