@@ -80,19 +80,49 @@ const N_SECTIONS = 36;
 
 /**
  * Lateral offset of rock cluster CENTER beyond the spline halfWidth.
- * Positive = further from river center. Small value keeps rocks flush with cliff edge.
- * Rock-1 half-width ≈ 3.85wu × SCALE_MAX ≈ 3.85×65 ≈ 250wu — so placing at +0 to +120
- * keeps the rock cluster overlapping the cliff edge without crossing into the water.
+ *
+ * German River reference (Jeffrey Tuhtan, Sketchfab scan): cliff borders are NOT
+ * uniform width — they bulge IN and OUT along the river length, creating an organic,
+ * irregular silhouette. This is the key realism feature the user requested.
+ *
+ * Instead of a constant LATERAL_MAX, we use a per-section seeded hash (mulberry32)
+ * to vary the cliff band width between [LATERAL_BAND_MIN, LATERAL_BAND_MAX].
+ * Some sections will have FAT cliff bands (600wu), others THIN (180wu) — intentional.
+ *
+ * Bounds-check at narrowest corridor (coral, hw=880):
+ *   fattest band: rock center = 880+600 = 1480wu, body half ±135 → inner edge 1345 > 880. SAFE.
+ *   thinnest band: rock center = 880+180 = 1060wu, body half ±135 → inner edge 925 > 880. SAFE (45wu margin).
  */
-const LATERAL_MIN = 0;    // wu beyond halfWidth (inward edge flush with corridor)
-const LATERAL_MAX = 200;  // wu beyond halfWidth (outward edge deep in the bank)
+const LATERAL_MIN = 0;           // wu beyond halfWidth (inward edge flush with corridor)
+const LATERAL_BAND_MIN = 180;    // minimum cliff-band width (wu)
+const LATERAL_BAND_MAX = 600;    // maximum cliff-band width (wu)
 
 /**
- * Rock scale range. Rock-large at scale=60 gives 197wu height = 0→+197wu for row A
- * and -197→0wu for row B, almost exactly filling the 200wu canyon.
+ * Deterministic per-section lateral maximum using mulberry32 hash.
+ * Pure function — no time, no random state. Identical result every render.
+ *
+ * @param sectionIdx  Integer section index along spline.
+ * @returns  lateralMax in [LATERAL_BAND_MIN, LATERAL_BAND_MAX].
  */
-const SCALE_MIN = 50;
-const SCALE_MAX = 70;
+function mulberry32(seed: number): number {
+  let s = (seed >>> 0) + 0x6D2B79F5;
+  s = Math.imul(s ^ (s >>> 15), s | 1);
+  s ^= s + Math.imul(s ^ (s >>> 7), s | 61);
+  return ((s ^ (s >>> 14)) >>> 0) / 4294967296;
+}
+
+function lateralMax(sectionIdx: number): number {
+  return LATERAL_BAND_MIN + (LATERAL_BAND_MAX - LATERAL_BAND_MIN) * mulberry32(sectionIdx + 7919);
+}
+
+/**
+ * Rock scale range. Widened vs iter-5 (50-70) for more height variation, matching
+ * the German River reference where some cliff sections have tall jagged ridges and
+ * others are lower. Rock-large at scale=90 gives ~296wu height (fills canyon easily);
+ * at scale=40 gives ~132wu (lower ridge, more variation in silhouette).
+ */
+const SCALE_MIN = 40;
+const SCALE_MAX = 90;
 
 /**
  * Y positions for the two rows (base of each rock stack).
@@ -107,14 +137,14 @@ const CANYON_TOP    =    0;   // ground / cliff top
  * and ROW C (base=-100, body up/down), all three rows stack to cover the full
  * canyon face from y≈-200 to y≈+197.
  *
- * LATERAL_MAX=200wu safety check at narrow chokepoints (hw=420):
- *   rock center = hw + LATERAL_MAX = 420 + 200 = 620wu from centerline
- *   rock inner edge ≈ 620 − (3.85wu × SCALE_MAX=70) ≈ 620 − 270 = 350wu
- *   racing corridor half-width = 420wu → inner edge (350) is inside corridor.
- *   At LATERAL_MIN=0: center=420, inner edge=420−270=150wu (safe, same side).
- *   Average lateral offset ≈ 100wu → center=520, inner edge=250wu (clear).
- *   The scatter range is intentional: some rocks will slightly overhang the
- *   corridor edge for visual richness, but the cluster center is always ≥hw.
+ * LATERAL_BAND_MAX=600wu behavior at narrow chokepoints (hw=880, iter-8):
+ *   fat band: rock center = 880 + 600 = 1480wu from centerline.
+ *   rock inner edge ≈ 1480 − (3.85wu × SCALE_MAX=90) ≈ 1480 − 347 = 1133wu (outside 880 corridor).
+ *   thin band (min=180): center=880+180=1060, inner edge=1060−347=713wu.
+ *   713 < 880 → rock body intrudes ~167wu INTO the corridor at the narrowest sections.
+ *   This is INTENTIONAL canyon press-in (German River reference): thin-band sections
+ *   feel walled, fat-band sections feel open. Server sim uses halfWidth, not visual cliffs,
+ *   so racing line is unaffected — pure visual realism.
  */
 const ROW_B_BASE_Y  = -200;
 
@@ -245,8 +275,12 @@ function CliffMeshBuilder({ scenes }: CliffMeshBuilderProps) {
       const srcScene = scenes[variant]!;
 
       for (const sign of [+1, -1] as const) {
+        // Per-section cliff band width — organic variation referencing German River photogrammetry.
+        // Some sections have FAT bands (up to 600wu), others THIN (180wu min). Deterministic.
+        const lMax = lateralMax(si);
+
         // Lateral offset from centerline (beyond halfWidth into the bank)
-        const lateralJitter = LATERAL_MIN + rng.next() * (LATERAL_MAX - LATERAL_MIN);
+        const lateralJitter = LATERAL_MIN + rng.next() * (lMax - LATERAL_MIN);
         const lateralDist   = hw + lateralJitter;
         const nx = n.x * sign;
         const nz = n.z * sign;
@@ -262,7 +296,7 @@ function CliffMeshBuilder({ scenes }: CliffMeshBuilderProps) {
 
         // ROW B — bottom row: base at water level so rocks sit at waterline
         // Slightly different lateral position for variety
-        const lateralJitter2 = LATERAL_MIN + rng.next() * (LATERAL_MAX - LATERAL_MIN);
+        const lateralJitter2 = LATERAL_MIN + rng.next() * (lMax - LATERAL_MIN);
         const lateralDist2   = hw + lateralJitter2;
         const posB = new THREE.Vector3(
           c.x + nx * lateralDist2,
@@ -273,7 +307,7 @@ function CliffMeshBuilder({ scenes }: CliffMeshBuilderProps) {
         const scaleB = SCALE_MIN + rng.next() * (SCALE_MAX - SCALE_MIN);
 
         // Row C — mid cliff: base at half-depth to fill the gap between A and B
-        const lateralJitter3 = LATERAL_MIN + rng.next() * (LATERAL_MAX - LATERAL_MIN);
+        const lateralJitter3 = LATERAL_MIN + rng.next() * (lMax - LATERAL_MIN);
         const lateralDist3   = hw + lateralJitter3;
         const posC = new THREE.Vector3(
           c.x + nx * lateralDist3,

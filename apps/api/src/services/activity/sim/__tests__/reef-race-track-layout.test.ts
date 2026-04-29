@@ -149,18 +149,18 @@ describe('REEF_RACE_DEFAULT_TRACK — spline integration', () => {
   });
 
   it('halfWidth interpolation respects per-segment design intent', () => {
-    // Spot-check: t=0 sits in the lagoon (halfWidth ~1050), t≈0.45 sits in
-    // the shipwreck segment (halfWidth ~525), t=1 sits in the finish
-    // (halfWidth ~1050). We don't pin to exact numbers since centripetal
+    // Spot-check: t=0 sits in the lagoon (halfWidth ~2200), t≈0.45 sits in
+    // the shipwreck segment (halfWidth ~1100), t=1 sits in the finish
+    // (halfWidth ~2200). We don't pin to exact numbers since centripetal
     // interpolation smooths across the boundary; we check ranges.
-    // Updated 2026-04-29 (iter-5) after ×1.5 compound pass: lagoon/finish
-    // 700→1050, kelp 420→630, ship 350→525, coral 280→420.
+    // Updated 2026-04-29 (iter-8) after ×1.4 widening: lagoon/finish
+    // 1575→2200, kelp 945→1325, shipwreck 787→1100, coral 630→880.
     const wStart = spline.widthAt(0);
     const wFinish = spline.widthAt(1);
-    expect(wStart).toBeGreaterThanOrEqual(1500);
-    expect(wStart).toBeLessThanOrEqual(1650);
-    expect(wFinish).toBeGreaterThanOrEqual(1500);
-    expect(wFinish).toBeLessThanOrEqual(1650);
+    expect(wStart).toBeGreaterThanOrEqual(2100);
+    expect(wStart).toBeLessThanOrEqual(2300);
+    expect(wFinish).toBeGreaterThanOrEqual(2100);
+    expect(wFinish).toBeLessThanOrEqual(2300);
 
     // Mid-track must be tighter than start/finish (we have chokepoints there).
     const wMid = spline.widthAt(0.5);
