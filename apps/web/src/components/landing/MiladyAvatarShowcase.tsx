@@ -100,12 +100,12 @@ function VRMAvatarInner({ path }: { path: string }) {
     groupRef.current.position.y  = BOB_AMP * Math.sin(clock.getElapsedTime() * BOB_FREQ);
   });
 
-  // Mount avatar offset DOWN by ~0.95 so the body center lands near
-  // origin — VRMs export with feet at Y=0 and head at Y~1.7, but the
-  // canvas camera looks at origin, so without this offset only the
-  // legs/shoes render. Verified visually 2026-04-29.
+  // Avatar framing: VRMs export ~1.7u tall with feet at Y=0. Scale to
+  // 0.65 (≈1.1u tall) and offset down so center lands at origin —
+  // robust headroom on every VRM regardless of pose / clothing height.
+  // Verified visually 2026-04-29 after two earlier framings cropped.
   return (
-    <group ref={groupRef} position={[0, -0.95, 0]}>
+    <group ref={groupRef} position={[0, -0.55, 0]} scale={0.65}>
       <primitive object={vrm.scene} />
     </group>
   );
@@ -149,20 +149,21 @@ export default function MiladyAvatarShowcase() {
     >
       <Canvas
         style={{ width: '100%', height: '100%' }}
-        camera={{ position: [0, 0, 3.0], fov: 38, near: 0.1, far: 40 }}
+        camera={{ position: [0, 0, 2.4], fov: 38, near: 0.1, far: 40 }}
         gl={{ antialias: true, alpha: true }}
         scene={{ background: SCENE_BG }}
         dpr={[1, 1.5]}
       >
         <ShowcaseLighting />
 
-        {/* Soft shadow disc under avatar — grounding cue, zero draw call cost.
-            Y matches the avatar foot level (avatar is offset down by 0.95). */}
+        {/* Soft shadow disc under avatar at the new foot level
+            (offset -0.55, scaled 0.65 → feet at Y ≈ -0.55). */}
         <mesh
           geometry={_shadowGeo}
           material={_shadowMat}
           rotation={[-Math.PI / 2, 0, 0]}
-          position={[0, -0.94, 0]}
+          position={[0, -0.55, 0]}
+          scale={0.7}
         />
 
         {/* Suspense boundary: only the avatar remounts on swap, not the whole Canvas */}
