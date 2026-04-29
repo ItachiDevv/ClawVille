@@ -52,6 +52,17 @@ import {
 } from '../services/activity/activity-ws-hub';
 import { bumperShellsSim } from '../services/activity/sim/bumper-shells-sim';
 import { reefRaceSim } from '../services/activity/sim/reef-race-sim';
+import { reefRaceSplineSim } from '../services/activity/sim/reef-race-spline-sim';
+import { REEF_RACE_USE_SPLINE } from '../services/activity/sim/reef-race-config';
+
+/**
+ * REST-route sim dispatcher — mirrors the one in index.ts so the
+ * GET /rooms/:roomId state-snapshot endpoint uses the correct sim
+ * when REEF_RACE_USE_SPLINE=true (v2 spline build). Fix: 2026-04-29 QA S2.
+ */
+const reefRaceImpl = REEF_RACE_USE_SPLINE
+  ? (reefRaceSplineSim as unknown as typeof reefRaceSim)
+  : reefRaceSim;
 import {
   getLeaderboardSnapshot,
   getLeaderboardForAvatar,
@@ -522,7 +533,7 @@ activitiesV2Routes.get(
       if (room.activityId === 'bumper-shells') {
         simSnapshot = bumperShellsSim.getStateSnapshot(room.id);
       } else if (room.activityId === 'reef-race') {
-        simSnapshot = reefRaceSim.getStateSnapshot(room.id);
+        simSnapshot = reefRaceImpl.getStateSnapshot(room.id);
       }
     }
 
