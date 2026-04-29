@@ -3,6 +3,12 @@
 /**
  * ReefRaceTrack.tsx
  *
+ * Feature-flag dispatch:
+ *   NEXT_PUBLIC_REEF_RACE_USE_SPLINE=true  → v2 spline river-bed (centripetal
+ *     Catmull-Rom, variable width per CP, sandy riverbed color, bank walls).
+ *   unset / false                          → v1 ellipse track (original code).
+ *
+ * ─── v1 (ellipse, preserved) ────────────────────────────────────────────────
  * Track surface (flat ribbon BufferGeometry following ellipse curve) +
  * merged guardrails + 3× InstancedMesh coral/jellyfish decorations.
  *
@@ -16,15 +22,23 @@
  * Track ellipse coordinates match the server sim exactly:
  *   REEF_TRACK_A=1100, REEF_TRACK_B=700 → entity.x/y lands on the ribbon.
  *
- * Iris Xe invariants:
+ * ─── v2 (spline river-bed) ──────────────────────────────────────────────────
+ * River bed + bank walls built from clientSpline singleton.
+ * Samples centerlineAt/normalAt/widthAt at 64 uniform-t points.
+ * Sandy color 0xc8a572, roughness 0.85, fog=false.
+ * Bank walls: vertical quads at river edges, rock color 0x6b5544.
+ * Finish-line gate at t=1.0 (gold pillar pair + crossbar).
+ *
+ * Iris Xe invariants (both paths):
  *   - Flat ribbon BufferGeometry: O(SEGMENTS × 2) vertices, 1 draw call.
  *   - Guardrails: mergeGeometries → 2 draw calls (left rail, right rail).
- *   - Coral props: 3 InstancedMesh (coral-reef1/2/3.glb) → 3 draw calls.
- *   - matrixAutoUpdate=false on ALL static meshes after mount.
  *   - No ShaderMaterial anywhere — MeshStandardMaterial only.
  *   - No per-frame allocations — all setup in useMemo/useEffect.
+ *   - fog=false on ALL track/wall materials (racing line always visible).
+ *   - makeGeometryWebGPUSafe on all custom BufferGeometry instances.
  *
- * Draw calls: 1 (track ribbon) + 2 (guardrails merged) + 3 (coral) = 6 max.
+ * Draw calls v2: 1 (riverbed) + 2 (bank walls merged) + 2 (finish gate) = 5.
+ * Draw calls v1: 1 (track ribbon) + 2 (guardrails merged) + 3 (coral) = 6.
  */
 
 import { useRef, useEffect, useMemo } from 'react';
@@ -44,6 +58,10 @@ import {
   reefCenterlineAtClient,
   reefTangentAtClient,
 } from './reef-race-config';
+import { clientSpline } from './reef-race-spline-instance';
+
+// ─── v2 feature flag ──────────────────────────────────────────────────────────
+const USE_SPLINE_TRACK = process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
 
 // ─── Preloads ────────────────────────────────────────────────────────────────
 useGLTF.preload('/models/coral-reef1.glb');
@@ -343,9 +361,268 @@ function Guardrails() {
   );
 }
 
+// ─── v2 materials (module scope) ─────────────────────────────────────────────
+// All fog=false — track surface is the navigation reference, must never fade.
+// MeshStandardMaterial only — no ShaderMaterial (silent WebGPU crash on Iris Xe).
+
+/** Sandy river-bed surface. */
+const _v2RiverMat = new THREE.MeshStandardMaterial({
+  color: 0xc8a572,
+  roughness: 0.85,
+  metalness: 0.0,
+  side: THREE.DoubleSide,
+  fog: false,
+});
+
+/** Rocky bank walls (slightly darker than river-bed). */
+const _v2BankMat = new THREE.MeshStandardMaterial({
+  color: 0x6b5544,
+  roughness: 0.9,
+  metalness: 0.0,
+  side: THREE.DoubleSide,
+  fog: false,
+});
+
+/** Finish-line gate pillars (gold). */
+const _v2FinishMat = new THREE.MeshStandardMaterial({
+  color: 0xffd600,
+  roughness: 0.3,
+  metalness: 0.6,
+  fog: false,
+  emissive: new THREE.Color(0xffd600),
+  emissiveIntensity: 0.3,
+});
+
+// ─── v2 geometry builders ─────────────────────────────────────────────────────
+
+const V2_RIBBON_SAMPLES = 64;
+const V2_BANK_HEIGHT = 80; // wu — river wall height
+const V2_BANK_THICKNESS = 10; // wu
+
+/**
+ * Build the v2 river-bed ribbon from the centripetal Catmull-Rom spline.
+ *
+ * The spline's normalAt(t) returns 90° CCW of the tangent (= LEFT of travel).
+ *   Left edge  = center + normal * halfWidth
+ *   Right edge = center - normal * halfWidth
+ * Width varies per-sample via clientSpline.widthAt(t) — the river naturally
+ * narrows through chicanes (kelp/shipwreck/coral) and widens at lagoon/finish.
+ */
+function buildSplineRibbonGeo(samples: number): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const normals: number[]   = [];
+  const uvs: number[]       = [];
+  const indices: number[]   = [];
+
+  for (let i = 0; i <= samples; i++) {
+    const t = i / samples;
+    const c = clientSpline.centerlineAt(t);
+    const n = clientSpline.normalAt(t); // 90° CCW = left of travel
+    const hw = clientSpline.widthAt(t);
+
+    // Left edge (normal points left)
+    positions.push(c.x + n.x * hw, 0, c.z + n.z * hw);
+    normals.push(0, 1, 0);
+    uvs.push(0, t);
+
+    // Right edge
+    positions.push(c.x - n.x * hw, 0, c.z - n.z * hw);
+    normals.push(0, 1, 0);
+    uvs.push(1, t);
+
+    if (i < samples) {
+      const base = i * 2;
+      indices.push(base, base + 1, base + 2);
+      indices.push(base + 1, base + 3, base + 2);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('normal',   new THREE.Float32BufferAttribute(normals, 3));
+  geo.setAttribute('uv',       new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  return makeGeometryWebGPUSafe(geo);
+}
+
+/**
+ * Build merged bank-wall geometry for left and right edges.
+ * Each segment is a vertical quad (two triangles) connecting adjacent samples.
+ */
+function buildSplineBankGeos(samples: number): { left: THREE.BufferGeometry; right: THREE.BufferGeometry } {
+  const leftGeos: THREE.BufferGeometry[]  = [];
+  const rightGeos: THREE.BufferGeometry[] = [];
+
+  for (let i = 0; i < samples; i++) {
+    const t0 = i / samples;
+    const t1 = (i + 1) / samples;
+
+    const c0 = clientSpline.centerlineAt(t0);
+    const n0 = clientSpline.normalAt(t0);
+    const hw0 = clientSpline.widthAt(t0);
+
+    const c1 = clientSpline.centerlineAt(t1);
+    const n1 = clientSpline.normalAt(t1);
+    const hw1 = clientSpline.widthAt(t1);
+
+    // Left bank segment
+    {
+      const lx0 = c0.x + n0.x * hw0;
+      const lz0 = c0.z + n0.z * hw0;
+      const lx1 = c1.x + n1.x * hw1;
+      const lz1 = c1.z + n1.z * hw1;
+
+      const geo = new THREE.BufferGeometry();
+      const pos = new Float32Array([
+        // bottom-left, top-left, bottom-right, top-right
+        lx0, 0,              lz0,
+        lx0, V2_BANK_HEIGHT, lz0,
+        lx1, 0,              lz1,
+        lx1, V2_BANK_HEIGHT, lz1,
+      ]);
+      const nrm = new Float32Array([
+        // outward normals (left side, pointing left = +normal direction)
+        n0.x, 0, n0.z,
+        n0.x, 0, n0.z,
+        n1.x, 0, n1.z,
+        n1.x, 0, n1.z,
+      ]);
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      geo.setAttribute('normal',   new THREE.BufferAttribute(nrm, 3));
+      geo.setIndex([0, 1, 2, 1, 3, 2]);
+      leftGeos.push(geo);
+    }
+
+    // Right bank segment
+    {
+      const rx0 = c0.x - n0.x * hw0;
+      const rz0 = c0.z - n0.z * hw0;
+      const rx1 = c1.x - n1.x * hw1;
+      const rz1 = c1.z - n1.z * hw1;
+
+      const geo = new THREE.BufferGeometry();
+      const pos = new Float32Array([
+        rx0, 0,              rz0,
+        rx0, V2_BANK_HEIGHT, rz0,
+        rx1, 0,              rz1,
+        rx1, V2_BANK_HEIGHT, rz1,
+      ]);
+      const nrm = new Float32Array([
+        // inward normals (right side, pointing right = -normal direction)
+        -n0.x, 0, -n0.z,
+        -n0.x, 0, -n0.z,
+        -n1.x, 0, -n1.z,
+        -n1.x, 0, -n1.z,
+      ]);
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      geo.setAttribute('normal',   new THREE.BufferAttribute(nrm, 3));
+      geo.setIndex([0, 2, 1, 1, 2, 3]);
+      rightGeos.push(geo);
+    }
+  }
+
+  const left  = makeGeometryWebGPUSafe(mergeGeometries(leftGeos)!);
+  const right = makeGeometryWebGPUSafe(mergeGeometries(rightGeos)!);
+  leftGeos.forEach(g => g.dispose());
+  rightGeos.forEach(g => g.dispose());
+  return { left, right };
+}
+
+/**
+ * Build finish-line gate geometry at t=1.0 (which equals t=0 on the spline —
+ * the start/finish line at z=18 000 wu).
+ *
+ * Two pillars (CylinderGeometry) + one crossbar (BoxGeometry).
+ */
+function buildFinishGateGeo(): THREE.BufferGeometry {
+  const c = clientSpline.centerlineAt(1.0);
+  const n = clientSpline.normalAt(1.0);
+  const hw = clientSpline.widthAt(1.0);
+  const pillarR = 15;
+  const pillarH = 200;
+  const barH = 15;
+
+  const lx = c.x + n.x * hw;
+  const lz = c.z + n.z * hw;
+  const rx = c.x - n.x * hw;
+  const rz = c.z - n.z * hw;
+
+  const leftPillar  = new THREE.CylinderGeometry(pillarR, pillarR, pillarH, 8);
+  const rightPillar = new THREE.CylinderGeometry(pillarR, pillarR, pillarH, 8);
+  const bar         = new THREE.BoxGeometry(hw * 2 + pillarR * 2, barH, pillarR);
+
+  // Translate each sub-geometry into world position before merging
+  const lMat = new THREE.Matrix4().makeTranslation(lx, pillarH / 2, lz);
+  const rMat = new THREE.Matrix4().makeTranslation(rx, pillarH / 2, rz);
+  const bMat = new THREE.Matrix4().makeTranslation(c.x, pillarH + barH / 2, c.z);
+
+  leftPillar.applyMatrix4(lMat);
+  rightPillar.applyMatrix4(rMat);
+  bar.applyMatrix4(bMat);
+
+  const merged = makeGeometryWebGPUSafe(mergeGeometries([leftPillar, rightPillar, bar])!);
+  leftPillar.dispose();
+  rightPillar.dispose();
+  bar.dispose();
+  return merged;
+}
+
+// ─── v2 River-bed component ───────────────────────────────────────────────────
+
+function SplineTrack() {
+  const riverMeshRef  = useRef<THREE.Mesh>(null);
+  const bankGroupRef  = useRef<THREE.Group>(null);
+  const finishMeshRef = useRef<THREE.Mesh>(null);
+
+  const riverGeo  = useMemo(() => buildSplineRibbonGeo(V2_RIBBON_SAMPLES), []);
+  const bankGeos  = useMemo(() => buildSplineBankGeos(V2_RIBBON_SAMPLES), []);
+  const finishGeo = useMemo(() => buildFinishGateGeo(), []);
+
+  useEffect(() => {
+    const meshes = [riverMeshRef.current, finishMeshRef.current];
+    meshes.forEach(m => {
+      if (m) {
+        m.matrixAutoUpdate = false;
+        m.updateMatrix();
+      }
+    });
+    const g = bankGroupRef.current;
+    if (g) {
+      g.traverse(o => {
+        if ((o as THREE.Mesh).isMesh) {
+          o.matrixAutoUpdate = false;
+          (o as THREE.Mesh).updateMatrix();
+        }
+      });
+    }
+    return () => {
+      riverGeo.dispose();
+      bankGeos.left.dispose();
+      bankGeos.right.dispose();
+      finishGeo.dispose();
+    };
+  }, [riverGeo, bankGeos, finishGeo]);
+
+  return (
+    <group>
+      {/* River bed — sandy flat ribbon, normals +Y, DoubleSide */}
+      <mesh ref={riverMeshRef} geometry={riverGeo} material={_v2RiverMat} receiveShadow matrixAutoUpdate={false} />
+
+      {/* Bank walls — vertical quads merged left + right */}
+      <group ref={bankGroupRef}>
+        <mesh geometry={bankGeos.left}  material={_v2BankMat} castShadow receiveShadow matrixAutoUpdate={false} />
+        <mesh geometry={bankGeos.right} material={_v2BankMat} castShadow receiveShadow matrixAutoUpdate={false} />
+      </group>
+
+      {/* Finish-line gate — gold pillars + crossbar */}
+      <mesh ref={finishMeshRef} geometry={finishGeo} material={_v2FinishMat} castShadow matrixAutoUpdate={false} />
+    </group>
+  );
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function ReefRaceTrack() {
+function EllipseTrack() {
   const trackMeshRef = useRef<THREE.Mesh>(null);
 
   // Flat ribbon geometry: visible as a road surface from the chase camera above.
@@ -391,4 +668,14 @@ export default function ReefRaceTrack() {
       <CoralInstances glbPath="/models/coral-reef3.glb" seed={3} side={1}  />
     </group>
   );
+}
+
+/**
+ * ReefRaceTrack — env-flag dispatcher.
+ *
+ * NEXT_PUBLIC_REEF_RACE_USE_SPLINE=true  → SplineTrack (v2 spline river-bed)
+ * unset / false                          → EllipseTrack (v1, preserved)
+ */
+export default function ReefRaceTrack() {
+  return USE_SPLINE_TRACK ? <SplineTrack /> : <EllipseTrack />;
 }
