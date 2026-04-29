@@ -208,6 +208,15 @@ export class VRMCharacterAnimator {
   private ready = false;
   private wasMoving = false;
   /**
+   * The resting locomotion target when isMoving=false.
+   * Defaults to 'idle' — existing callers (player-avatar.tsx, arena-npcs.tsx)
+   * never call setSurfaceClip() so they remain on 'idle'.
+   * Reef Race overrides this to 'surf_idle' after init() resolves so that
+   * wipeout/victory one-shots return to surf_idle instead of idle.
+   */
+  private surfaceClip: AnimName = 'idle';
+
+  /**
    * True while a `playOneShot` emote is in-flight. While true, the
    * isMoving → idle/walk crossfade in update() / updateMixerOnly() is
    * suppressed so the emote can play to completion without being yanked
@@ -404,6 +413,18 @@ export class VRMCharacterAnimator {
   }
 
   /**
+   * Override the resting locomotion target when isMoving=false.
+   * Call after init() resolves with the desired persistent clip.
+   * In Reef Race: call with 'surf_idle' so post-one-shot crossfades return
+   * to the surfboard stance instead of the world-walk idle pose.
+   * Defaults to 'idle' — existing callers (player-avatar.tsx, arena-npcs.tsx)
+   * never call this so their behaviour is unchanged.
+   */
+  setSurfaceClip(name: AnimName): void {
+    this.surfaceClip = name;
+  }
+
+  /**
    * Transition to the action matching `isMoving`.
    *
    * three.js's `crossFadeTo` schedules weight changes but does NOT call `.play()`
@@ -426,7 +447,7 @@ export class VRMCharacterAnimator {
    * every transition, accumulating drift across repeated idle↔walk toggles.
    */
   private applyCrossfade(isMoving: boolean): void {
-    const next = this.actions[isMoving ? 'walk' : 'idle'];
+    const next = this.actions[isMoving ? 'walk' : this.surfaceClip];
     if (!next || next === this.currentAction) return;
     next.reset().fadeIn(CROSSFADE_DURATION).play();
     if (this.currentAction) {
@@ -541,7 +562,9 @@ export class VRMCharacterAnimator {
       this.oneShotFinishedHandler = null;
       this.oneShotActive = false;
       // Crossfade back to whatever locomotion state we are in NOW.
-      const back = this.actions[this.wasMoving ? 'walk' : 'idle'];
+      // In surf context (surfaceClip='surf_idle') this returns to surf_idle;
+      // in world context (default surfaceClip='idle') returns to idle as before.
+      const back = this.actions[this.wasMoving ? 'walk' : this.surfaceClip];
       if (back) {
         back.reset().fadeIn(CROSSFADE_DURATION).play();
         oneShot.fadeOut(CROSSFADE_DURATION);
@@ -580,6 +603,12 @@ export class VRMCharacterAnimator {
       skel.update = fn;
     });
     this._skeletonUpdateFns.clear();
+
+    // Reset surfaceClip before null-casting refs so a dangling closure
+    // referencing the animator post-dispose gets 'idle' (the safe no-op
+    // locomotion target) rather than a stale AnimName that no longer has
+    // an action in this.actions. Must precede the actions={} wipe.
+    this.surfaceClip = 'idle';
 
     // Drop strong refs so a long-lived closure or ref holding the animator
     // doesn't keep the VRM scene, mixer, clips, or actions alive after disposal.
