@@ -61,6 +61,9 @@ import {
   GLIDER_LENGTH,
   RIDER_MOUNT_OFFSET_DEFAULT,
 } from './reef-race-config';
+
+// ─── v2 feature flag ──────────────────────────────────────────────────────────
+const USE_SPLINE_PLAYER = process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
 import type { ReefRaceEntity } from './reef-race-types';
 import {
   createSeaCreatureAnimator,
@@ -79,16 +82,34 @@ import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 // ─── Preloads — fire at module scope ─────────────────────────────────────────
 useGLTF.preload('/models/sea_horse.glb');
 useGLTF.preload('/models/lobster.glb');
+// v2 spline path surfboard — plain .clone() (no skeleton, static mesh).
+// Asset: surfboard_1.glb, 3 220 tris, 660 KB, CC-BY 4.0 (see ATTRIBUTIONS.md).
+useGLTF.preload('/models/reef-race/surfboards/surfboard_1.glb');
 
-// ─── Shared glider geometry + material (ONE instance for ALL players) ─────────
-// Never disposed — these are page-lifetime, shared across all ReefRacePlayer
-// instances. Disposing on any one instance would break all other live instances.
+// ─── Shared glider geometry + material (v1, ONE instance for ALL players) ─────
+// Never disposed — page-lifetime, shared across all ReefRacePlayer instances.
+// v2 replaces this with surfboard_1.glb per-instance via plain .clone().
 const _gliderGeom = new THREE.BoxGeometry(GLIDER_WIDTH, GLIDER_HEIGHT, GLIDER_LENGTH);
 const _gliderMat  = new THREE.MeshStandardMaterial({
   color:     '#1e293b',
   roughness: 0.5,
   metalness: 0.4,
 });
+
+// ─── Jump / squash tracking (module scope, no per-frame alloc) ────────────────
+/** Per-petId previous height (for landing squash detection). */
+const _prevHeight: Record<string, number> = {};
+/** Per-petId squash progress (0 = at rest, >0 = squashing, decrements each frame). */
+const _squashTime: Record<string, number> = {};
+
+/** Nose-up pitch when airborne (radians). ~8°. */
+const JUMP_NOSE_UP_RAD = 0.14;
+/** Duration of landing squash effect (seconds). */
+const SQUASH_DURATION  = 0.18;
+/** Squash factor at peak (scale Y multiplier — slightly compressed). */
+const SQUASH_Y_MIN     = 0.7;
+/** Squash factor at peak (scale XZ multiplier — slightly wider). */
+const SQUASH_XZ_MAX    = 1.2;
 
 // ─── Interpolation constants ──────────────────────────────────────────────────
 /**
@@ -239,6 +260,10 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
 
   const { scene: srcScene } = useGLTF(glbPath);
 
+  // v2: surfboard GLB — always call the hook (rules of hooks); use result only
+  // when USE_SPLINE_PLAYER. Plain .clone() — no skeleton, static mesh.
+  const { scene: surfboardSrc } = useGLTF('/models/reef-race/surfboards/surfboard_1.glb');
+
   const groupRef      = useRef<THREE.Group>(null);
   const gliderRef     = useRef<THREE.Group>(null);
   const riderMountRef = useRef<THREE.Group>(null);
@@ -289,6 +314,55 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
 
     return c;
   }, [srcScene, entity.color]);
+
+  // v2: clone surfboard scene per-instance. Plain .clone() because surfboard_1.glb
+  // has no skeleton. Apply per-player color tint to the surfboard material so
+  // each player's board matches their kart color.
+  const clonedSurfboard = useMemo(() => {
+    if (!USE_SPLINE_PLAYER) return null;
+    const sb = surfboardSrc.clone();
+    sb.traverse(o => { o.frustumCulled = false; });
+    if (entity.color) {
+      sb.traverse(o => {
+        const mesh = o as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        const mat = mesh.material;
+        const applyTint = (m: THREE.Material) => {
+          if ((m as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
+            const cloned = (m as THREE.MeshStandardMaterial).clone();
+            // Blend the player color at 50% intensity over the original material.
+            // Full override would erase surfboard texture detail; 50% tints while
+            // preserving shape. Done by lerping color toward player color.
+            cloned.color.lerp(new THREE.Color(entity.color!), 0.5);
+            return cloned;
+          }
+          return m;
+        };
+        if (Array.isArray(mat)) {
+          mesh.material = mat.map(applyTint);
+        } else {
+          mesh.material = applyTint(mat);
+        }
+      });
+    }
+    // Scale: surfboard_1.glb is nominally 1m. In KART_SCALE local space, we
+    // target roughly GLIDER_LENGTH (5) in Z and GLIDER_WIDTH (2.5) in X.
+    // A scale of GLIDER_LENGTH fits the board footprint to the old BoxGeometry.
+    sb.scale.set(GLIDER_WIDTH, GLIDER_HEIGHT * 4, GLIDER_LENGTH);
+    return sb;
+  }, [surfboardSrc, entity.color]);
+
+  // v2: attach / detach surfboard clone to gliderRef.
+  const gliderSceneRef = useRef<THREE.Object3D | null>(null);
+  useEffect(() => {
+    if (!USE_SPLINE_PLAYER || !clonedSurfboard || !gliderRef.current) return;
+    gliderRef.current.add(clonedSurfboard);
+    gliderSceneRef.current = clonedSurfboard;
+    return () => {
+      if (gliderRef.current) gliderRef.current.remove(clonedSurfboard);
+      gliderSceneRef.current = null;
+    };
+  }, [clonedSurfboard]);
 
   useEffect(() => {
     const mount = riderMountRef.current;
@@ -475,12 +549,45 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
     // ─── Apply interpolated XZ transform to groupRef ──────────────────────────
     // BUG FIX (Bug 1): position now comes from interpolated history, not raw entity.
     // BUG FIX (Bug 2): rotation now comes from entity.rot, not atan2(vx,vy).
-    // Y elevation is now carried by gliderRef in local space (KART_Y_ABOVE_TRACK /
-    // KART_SCALE = 0.25 local units). group.position.y stays 0.
+    // Y elevation: v2 spline path reads entity.height (world-space jump height,
+    // default 0 = ground level). v1 ellipse path stays at y=0.
+    // Glider local-Y elevation (KART_Y_ABOVE_TRACK / KART_SCALE) is additive on
+    // top of group.position.y via gliderRef.position.y.
+    const entityHeight = (entity as ReefRaceEntity & { height?: number }).height ?? 0;
     group.position.x = interpX;
-    group.position.y = 0;
+    group.position.y = USE_SPLINE_PLAYER ? entityHeight : 0;
     group.position.z = interpZ;
     group.rotation.y = interpRot;
+
+    // ─── Jump nose-up tilt (v2 only) ─────────────────────────────────────────
+    // When airborne (height > 0): pitch glider nose up by ~8°.
+    // On landing (height was > 0, now 0): trigger squash animation.
+    if (USE_SPLINE_PLAYER) {
+      const prevH = _prevHeight[entity.petId] ?? 0;
+      const isAirborne = entityHeight > 0;
+
+      if (!isAirborne && prevH > 0) {
+        // Just landed — start squash.
+        _squashTime[entity.petId] = SQUASH_DURATION;
+      }
+      _prevHeight[entity.petId] = entityHeight;
+
+      // Apply nose-up pitch on glider when airborne.
+      glider.rotation.x = isAirborne ? -JUMP_NOSE_UP_RAD : 0;
+
+      // Squash animation on landing (xz expand, y compress) decays over time.
+      const sq = _squashTime[entity.petId] ?? 0;
+      if (sq > 0) {
+        _squashTime[entity.petId] = Math.max(0, sq - dt);
+        const progress = sq / SQUASH_DURATION; // 1→0
+        // Peak squash at progress=1, return to normal at progress=0.
+        const squashY  = 1 - (1 - SQUASH_Y_MIN)  * progress;
+        const squashXZ = 1 + (SQUASH_XZ_MAX - 1) * progress;
+        glider.scale.set(squashXZ, squashY, squashXZ);
+      } else {
+        glider.scale.set(1, 1, 1);
+      }
+    }
 
     // ─── Bank tilt on gliderRef (Phase 1 §4) ─────────────────────────────────
     // Bank uses velocity direction relative to current facing. Because facing is
@@ -553,8 +660,15 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
      */
     <group ref={groupRef} scale={[KART_SCALE, KART_SCALE, KART_SCALE]}>
       <group ref={gliderRef} position={[0, GLIDER_LOCAL_Y, 0]}>
-        {/* Glider board — shared geometry + material, no per-instance alloc */}
-        <mesh geometry={_gliderGeom} material={_gliderMat} />
+        {/*
+         * Glider board:
+         *   v2 (USE_SPLINE_PLAYER=true): surfboard_1.glb clone, attached via
+         *     useEffect into gliderRef (no JSX mesh needed — scene added imperatively).
+         *   v1 (default): shared BoxGeometry + MeshStandardMaterial, 0 allocs.
+         */}
+        {!USE_SPLINE_PLAYER && (
+          <mesh geometry={_gliderGeom} material={_gliderMat} />
+        )}
         {/* Rider mount — offset so avatar sits on board; rotation.z pinned 0 */}
         <group
           ref={riderMountRef}
