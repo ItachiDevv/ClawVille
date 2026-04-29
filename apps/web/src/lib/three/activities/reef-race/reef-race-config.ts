@@ -301,11 +301,12 @@ export const CAMERA_FAR = 5000;
 
 /**
  * Chase-cam offset in player-local space (behind and above).
- * Y raised from 200→280 (2026-04-29 QA fix S1): Milady VRM sits at world Y≈219
- * (KART_SCALE 20 × VRM_RIDER_LOCAL_SCALE 5.6 + mount offset); camera at Y=280
- * keeps the full figure in the upper third of the 60° FOV frame.
+ * Y raised 200→280→320 (2026-04-29 QA: 280 still clipped Milady's hair tip ~5-10px;
+ * 320 gives ~12° headroom above lookAt, well clear of 30° FOV half-angle top edge).
+ * Math: lookAt at Y=130 from camera Y=320 at chase 350wu = 32° down pitch;
+ * head_top at world Y≈175 → relative pitch atan2(45,350)=7.3° above lookAt = -25° from top edge.
  */
-export const CAMERA_OFFSET = new THREE.Vector3(0, 280, -350);
+export const CAMERA_OFFSET = new THREE.Vector3(0, 320, -350);
 
 /**
  * Chase-cam look-at offset from player position (slightly above kart).
