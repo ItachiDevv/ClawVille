@@ -44,7 +44,11 @@ export default async function OverviewTab() {
   if ('error' in data) {
     return (
       <div className="rounded border border-red-500/30 bg-red-500/5 p-4 text-sm text-red-300">
-        {data.error}
+        <p>{data.error}</p>
+        <p className="mt-2 text-xs text-red-200/70">
+          Have a shared password instead? Sign in at{' '}
+          <a href="/dash/login" className="underline">/dash/login</a>.
+        </p>
       </div>
     );
   }

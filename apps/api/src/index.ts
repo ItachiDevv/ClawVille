@@ -58,6 +58,7 @@ import { alertError } from './services/alert-error';
 import { getPublishedIssuerInfo } from './services/service-issuer';
 import { fingerprintMiddleware } from './middleware/fingerprint';
 import { cosmeticsRoutes } from './routes/cosmetics';
+import { dashAuthRoutes } from './routes/dash-auth';
 import type { AppContext } from './types';
 
 const app = new Hono<AppContext>();
@@ -152,6 +153,7 @@ app.route('/api/chat', chatRoutes);
 app.route('/api/chat/transient', transientChatRoutes);
 app.route('/api/items', itemRoutes);
 app.route('/api/cosmetics', cosmeticsRoutes);
+app.route('/api/dash-auth', dashAuthRoutes);
 app.route('/api/npc', npcRoutes);
 app.route('/api/openclaw', openclawRoutes);
 app.route('/api/pets', activityRoutes);
