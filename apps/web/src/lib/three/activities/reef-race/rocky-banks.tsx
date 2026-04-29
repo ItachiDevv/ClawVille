@@ -77,11 +77,15 @@ const PROFILE_Y: readonly number[] = [0, 0, -180, -220, -250];
 
 /**
  * Absolute wu added to halfWidth for each profile vertex.
- * v0: hw+250  v1: hw+100  v2: hw+0  v3: hw-100  v4: hw-50
- * Wider inset at v3/v4 for cliff thickness proportional to the deeper canyon.
- * Note v4 < v3 in lateral offset — toe-in at channel floor (natural rock undercut).
+ * 2026-04-29 iter-7e: cliff face is now VERTICAL (no inward intrusion).
+ * Old [+250, +100, 0, -100, -50] had v3/v4 reaching INWARD into the channel
+ * which covered the water from top-down at chokepoint sections. Pulling
+ * v3/v4 back to 0 (corridor edge) makes the cliff a vertical drop:
+ *   v0/v1: outer rock at +250/+100 (visible above ground from outside the canyon)
+ *   v2/v3/v4: cliff face at corridor edge (hw + 0) descending y=-180 → -250
+ * Channel is now fully open from above; water dominates the visible canyon.
  */
-const PROFILE_D_OFFSET: readonly number[] = [+250, +100, 0, -100, -50];
+const PROFILE_D_OFFSET: readonly number[] = [+250, +100, 0, 0, 0];
 
 const PROFILE_VERTS = PROFILE_Y.length; // 5
 
