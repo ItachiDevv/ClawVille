@@ -66,7 +66,7 @@ const FOG_FAR              = 30000;
 const CAMERA_NEAR          = 1;
 const CAMERA_FAR           = 35000;
 const HEMI_SKY_COLOR       = '#a8d8ff'; // matches SkyDome horizon
-const HEMI_GROUND_COLOR    = '#4a7c3f'; // earthy green riverbank
+const HEMI_GROUND_COLOR    = '#7cb342'; // grass green — matches GroundPlane + bank walls
 const HEMI_INTENSITY       = 0.5;
 const DIR_COLOR            = '#fffbe6';
 const DIR_INTENSITY        = 1.2;
@@ -109,9 +109,13 @@ const _riverMat = new THREE.MeshStandardMaterial({
   fog: false,
 });
 
-/** Rocky bank walls. */
+/**
+ * Bank walls — recolored to grass green so they blend with the new ground plane
+ * and sandy ribbon from RiverScene. The old dark-brown 0x6b5544 showed as an
+ * ugly black stripe in the cinematic view (v1 leftover).
+ */
 const _bankMat = new THREE.MeshStandardMaterial({
-  color: 0x6b5544,
+  color: 0x7cb342,  // grass green — matches GroundPlane in river-scene.tsx
   roughness: 0.9,
   metalness: 0.0,
   side: THREE.DoubleSide,
