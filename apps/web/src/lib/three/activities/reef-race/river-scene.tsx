@@ -194,18 +194,20 @@ function spawnPos(t: number, side: number, xJitter: number): THREE.Vector3 {
 // Props MUST have xJitter > 120 wu to clear the sand and land on grass.
 const SPAWNER_DEFS: SpawnerDef[] = [
   // Pine trees — left side, well onto grass.
-  // Quaternius prop-tree-pine.glb is 10.236 wu tall; scale 17-22 → 174-225 wu visible height.
+  // Quaternius prop-tree-pine.glb has hidden compounding-scale node transforms
+  // not captured by gltf-transform inspect bbox math. Empirically scale 17 produced
+  // 3000-wu mountain trees blocking the entire river top-down view. Tuned to 1-1.5.
   {
     path: '/models/reef-race/scenery/prop-tree-pine.glb',
     tValues: Array.from({ length: 16 }, (_, i) => (i + 0.3) / 16),
-    side: 1, xJitter: 350, scaleMin: 17, scaleMax: 22, seed: 1,
+    side: 1, xJitter: 350, scaleMin: 1.0, scaleMax: 1.5, seed: 1,
   },
   // Leafy trees — right side, well onto grass.
-  // Quaternius prop-tree-leafy.glb is 5.544 wu tall; scale 25-32 → 139-177 wu visible height.
+  // Same compounding-scale issue. Tuned 25 → 1.6, 32 → 2.1.
   {
     path: '/models/reef-race/scenery/prop-tree-leafy.glb',
     tValues: Array.from({ length: 14 }, (_, i) => (i + 0.1) / 14),
-    side: -1, xJitter: 450, scaleMin: 25, scaleMax: 32, seed: 2,
+    side: -1, xJitter: 450, scaleMin: 1.6, scaleMax: 2.1, seed: 2,
   },
   // Rocks — closer to bank edge, both sides
   {
