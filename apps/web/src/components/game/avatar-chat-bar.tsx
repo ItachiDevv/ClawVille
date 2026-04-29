@@ -40,7 +40,7 @@ export default function AvatarChatBar() {
   // Don't render when location chat is open or no avatar
   if (chatOpen || !avatar) return null;
 
-  // Use lobster emoji as the agent icon — replaces LegacyApp cat sprite that
+  // Use lobster emoji as the agent icon — replaces the legacy cat sprite that
   // used to render here via SPECIES_SPRITE_MAP (every agent backfills to 'cat'
   // legacy species, producing the wrong visual). Lobster matches the 3D avatar.
   const agentGlyph = '🦞';

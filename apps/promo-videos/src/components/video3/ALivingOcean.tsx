@@ -64,7 +64,7 @@ const MapOverview: React.FC = () => {
         }}
       >
         <Img
-          src={staticFile("map/clawville-map-real-full.png")}
+          src={staticFile("map/clawville-map.png")}
           style={{
             width: mapW,
             height: mapH,
