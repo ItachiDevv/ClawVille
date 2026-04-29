@@ -48,7 +48,7 @@
  * Draw calls: 2 per player (glider board + avatar).
  */
 
-import { useRef, useEffect, useMemo } from 'react';
+import { useRef, useEffect, useMemo, useCallback, Suspense } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
@@ -78,6 +78,15 @@ import type {
 } from '@/lib/three/sea-creature-types';
 import { applyTransformSwim, resetTransformSwimState } from '@/lib/three/sea-creature-swim';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
+import {
+  useVRMInstance,
+  disposeVRMInstance,
+  preloadVRMBytes,
+} from '@/lib/three/vrm-loader';
+import {
+  VRMCharacterAnimator,
+  preloadMixamoClips,
+} from '@/lib/three/vrm-character-animator';
 
 // ─── Preloads — fire at module scope ─────────────────────────────────────────
 useGLTF.preload('/models/sea_horse.glb');
@@ -86,6 +95,47 @@ useGLTF.preload('/models/crayfish.glb');  // SPEC 1 — 3rd species, static mesh
 // v2 spline path surfboard — plain .clone() (no skeleton, static mesh).
 // Asset: surfboard_1.glb, 3 220 tris, 660 KB, CC-BY 4.0 (see ATTRIBUTIONS.md).
 useGLTF.preload('/models/reef-race/surfboards/surfboard_1.glb');
+
+// SPEC 2 — Milady VRM preloads.
+// preloadMixamoClips() warms the raw Mixamo GLB cache (idle/walk/run + surf clips).
+// preloadVRMBytes() warms the ArrayBuffer fetch cache for all 8 official VRMs.
+// Both are fire-and-forget — errors surface later when useVRMInstance() resolves.
+preloadMixamoClips();
+for (let _n = 1; _n <= 8; _n++) {
+  preloadVRMBytes(`/avatars/milady-official-${_n}.vrm`);
+}
+
+// ─── SPEC 2: Milady VRM helpers ───────────────────────────────────────────────
+
+/** True when the species string identifies a Milady VRM avatar. */
+function isMiladySpecies(species: string | undefined): species is string {
+  return typeof species === 'string' && species.startsWith('milady_official_');
+}
+
+/** Map 'milady_official_N' → '/avatars/milady-official-N.vrm'. */
+function miladyVrmPath(species: string): string {
+  const n = species.replace('milady_official_', '');
+  return `/avatars/milady-official-${n}.vrm`;
+}
+
+/**
+ * Maximum squared position delta (world units²) achievable in one 20Hz
+ * snapshot interval via normal physics. REEF_MAX_SPEED ≈ 1650wu/s × 0.05s
+ * = 82.5wu/tick max. 500wu is 6× above that — uniquely identifies a respawn
+ * teleport without false positives from normal high-speed straight-line movement.
+ */
+const WIPEOUT_TELEPORT_THRESHOLD_SQ = 500 * 500;
+
+/** Per-petId last known XZ (for wipeout teleport detection). Module scope,
+ * no per-frame allocations. Cleaned up on component unmount. */
+const _lastXZ: Record<string, { x: number; z: number }> = {};
+
+/** Deduplicated warn set — log each unique VRM species key only once. */
+const _warnedVrmKeys = new Set<string>();
+
+/** VRM scale in riderMountRef LOCAL space (parent carries KART_SCALE=20).
+ * PET_VRM_SCALE(112) / KART_SCALE(20) = 5.6 — matches Milady world-player height. */
+const VRM_RIDER_LOCAL_SCALE = 5.6;
 
 // ─── Shared glider geometry + material (v1, ONE instance for ALL players) ─────
 // Never disposed — page-lifetime, shared across all ReefRacePlayer instances.
@@ -243,6 +293,75 @@ function applySwimmingAnim(scene: THREE.Object3D, petId: string, delta: number, 
   });
 }
 
+// ─── SPEC 2: VRM rider inner component ────────────────────────────────────────
+// Separate from ReefRacePlayerInner so a Suspense boundary can wrap it;
+// useVRMInstance() throws a Promise on first load (Suspense protocol).
+
+interface ReefRaceVRMRiderProps {
+  vrmPath: string;
+  petId: string;
+  riderMountRef: React.RefObject<THREE.Group>;
+  onAnimatorReady: (animator: VRMCharacterAnimator) => void;
+}
+
+function ReefRaceVRMRiderInner({
+  vrmPath,
+  petId,
+  riderMountRef,
+  onAnimatorReady,
+}: ReefRaceVRMRiderProps) {
+  const vrm = useVRMInstance(vrmPath, `reef-race-${petId}`);
+
+  // Dispose on unmount — must match the instanceId used above.
+  useEffect(() => {
+    return () => { disposeVRMInstance(vrmPath, `reef-race-${petId}`); };
+  }, [vrmPath, petId]);
+
+  const vrmAnimatorRef = useRef<VRMCharacterAnimator | null>(null);
+
+  // Initialise animator once we have the VRM.
+  useEffect(() => {
+    if (!vrm) return;
+    const animator = new VRMCharacterAnimator(vrm);
+    vrmAnimatorRef.current = animator;
+    animator.init('surf_idle').then(() => {
+      // setSurfaceClip AFTER init so surf_idle retarget is cached in this.actions;
+      // post-one-shot crossfades will correctly return to surf_idle (not idle).
+      animator.setSurfaceClip('surf_idle');
+      onAnimatorReady(animator);
+    }).catch((err: unknown) => {
+      console.warn('[ReefRaceVRMRider] animator.init failed:', err);
+    });
+    return () => {
+      vrmAnimatorRef.current = null;
+      animator.dispose();
+    };
+  }, [vrm, onAnimatorReady]);
+
+  // Attach VRM scene to riderMountRef imperatively.
+  useEffect(() => {
+    const mount = riderMountRef.current;
+    const vrmScene = vrm?.scene;
+    if (!mount || !vrmScene) return;
+    // frustumCulled=false — skinned mesh bind-pose bbox culls animated poses.
+    // Consistent with pattern in vrm-loader.ts normaliseVRM() + gotcha memo.
+    vrmScene.traverse((o) => { o.frustumCulled = false; });
+    vrmScene.scale.setScalar(VRM_RIDER_LOCAL_SCALE);
+    mount.add(vrmScene);
+    return () => { mount.remove(vrmScene); };
+  }, [vrm, riderMountRef]);
+
+  // Tick the mixer + spring bones every frame.
+  // surf context: isMoving=false always (rider stays in surf_idle base).
+  useFrame((_, delta) => {
+    const animator = vrmAnimatorRef.current;
+    if (!animator) return;
+    animator.update(Math.min(delta, 0.1), false);
+  });
+
+  return null; // imperative scene graph — no JSX output
+}
+
 // ─── Player inner component ───────────────────────────────────────────────────
 
 interface ReefRacePlayerProps {
@@ -254,30 +373,46 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
   // SPEC 1 — derive GLB path from entity.species (modelKey from pets.model_key,
   // injected by activity store on snapshot.init via reefParticipantMeta).
   // Falls back to 'lobster' if species is absent or unrecognised (safe default).
-  // VRM species (milady_official_*) are SPEC 2 — fall back to lobster with a warn.
+  //
+  // SPEC 2 — Milady VRM branch: when species starts with 'milady_official_',
+  // we render via useVRMInstance in ReefRaceVRMRiderInner (Suspense boundary).
+  // The GLB path falls back to lobster.glb in that case, but effectiveSrcScene
+  // is set to null so GLB rendering is suppressed while VRM renders.
   //
   // NOTE: pre-existing spelling gap — AGENT_MODELS registry uses key 'seahorse'
   // (no underscore); SeaCreatureSpecies type uses 'sea_horse' (underscore); DB
   // model_key column may store either. Both spellings are handled in the switch
   // below. Reconcile when seahorse gets a full animator rig (SPEC 2+).
-  const speciesKey = (entity as ReefRaceEntity & { species?: string }).species ?? 'lobster';
+  const speciesStr = (entity as ReefRaceEntity & { species?: string }).species;
+  const isVRM = isMiladySpecies(speciesStr);
+  const vrmPath = isVRM ? miladyVrmPath(speciesStr!) : null;
+
+  const speciesKey = speciesStr ?? 'lobster';
+  // Determine GLB path. For VRM species use lobster as the sentinel so the
+  // useGLTF hook is always called (Rules of Hooks).
   const glbPath = (() => {
+    if (isVRM) return '/models/lobster.glb'; // sentinel — not rendered when isVRM
     switch (speciesKey) {
       case 'crayfish':  return '/models/crayfish.glb';
       case 'seahorse':
       case 'sea_horse': return '/models/sea_horse.glb';
       default:
-        // Milady VRM keys (milady_official_*) are SPEC 2. Log once, render lobster.
-        if (speciesKey.startsWith('milady_official_')) {
+        // Unknown non-VRM species — log once, render lobster.
+        if (!_warnedVrmKeys.has(speciesKey)) {
+          _warnedVrmKeys.add(speciesKey);
           console.warn(
-            `[ReefRacePlayer] species="${speciesKey}" is a VRM (SPEC 2) — rendering lobster.glb as fallback`,
+            `[ReefRacePlayer] unknown species="${speciesKey}" — rendering lobster.glb as fallback`,
           );
         }
         return '/models/lobster.glb';
     }
   })();
 
+  // Always call useGLTF (Rules of Hooks). When isVRM=true, srcScene is a
+  // lobster sentinel that is never mounted (effectiveSrcScene = null).
   const { scene: srcScene } = useGLTF(glbPath);
+  // Gate all GLB clone/mount logic on this. Null when VRM branch is active.
+  const effectiveSrcScene = isVRM ? null : srcScene;
 
   // v2: surfboard GLB — always call the hook (rules of hooks); use result only
   // when USE_SPLINE_PLAYER. Plain .clone() — no skeleton, static mesh.
@@ -286,6 +421,13 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
   const groupRef      = useRef<THREE.Group>(null);
   const gliderRef     = useRef<THREE.Group>(null);
   const riderMountRef = useRef<THREE.Group>(null);
+
+  // SPEC 2 — VRM animator ref. Set by onVrmAnimatorReady callback once
+  // ReefRaceVRMRiderInner's init() resolves. Used for wipeout/victory one-shots.
+  const vrmAnimatorRef = useRef<VRMCharacterAnimator | null>(null);
+  const onVrmAnimatorReady = useCallback((animator: VRMCharacterAnimator) => {
+    vrmAnimatorRef.current = animator;
+  }, []);
 
   // Fade state for finish (not elimination — racers don't vanish on finish).
   const finishedRef = useRef(false);
@@ -299,7 +441,10 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
   const lastRotRef = useRef(0);
 
   const clonedScene = useMemo(() => {
-    const c = skeletonClone(srcScene);
+    // When isVRM=true, effectiveSrcScene=null — return null so the GLB mount
+    // useEffect no-ops and the VRM rider branch handles the scene graph instead.
+    if (!effectiveSrcScene) return null;
+    const c = skeletonClone(effectiveSrcScene);
     makeObject3DWebGPUSafe(c);
     // CRITICAL: frustumCulled=false traverse immediately after SkeletonUtils.clone.
     // SkinnedMesh bind-pose bounding spheres don't encompass animated poses.
@@ -332,7 +477,7 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
     }
 
     return c;
-  }, [srcScene, entity.color]);
+  }, [effectiveSrcScene, entity.color]);
 
   // v2: clone surfboard scene per-instance. Plain .clone() because surfboard_1.glb
   // has no skeleton. Apply per-player color tint to the surfboard material so
@@ -385,6 +530,8 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
 
   useEffect(() => {
     const mount = riderMountRef.current;
+    // clonedScene is null when isVRM=true (effectiveSrcScene=null guard in useMemo).
+    // In that case the VRM rider manages its own scene graph; this effect is a no-op.
     if (!mount || !clonedScene) return;
     mount.add(clonedScene);
     return () => {
@@ -392,6 +539,8 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
       // Clear per-petId procedural state so a remounted clone starts at t=0
       // and re-probes for bones (important if species changes across mounts).
       resetTransformSwimState(entity.petId);
+      // Clean up wipeout XZ tracker to prevent stale teleport detection on remount.
+      delete _lastXZ[entity.petId];
     };
   }, [clonedScene, entity.petId]);
 
@@ -434,7 +583,7 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
       // Hot-swap: detach static fallback scene, attach animator scene.
       const mount = riderMountRef.current;
       if (mount) {
-        mount.remove(clonedScene);
+        if (clonedScene) mount.remove(clonedScene);
         // Re-apply the per-player color tint to the animator's freshly-cloned
         // scene (animator clones from its own cache and doesn't know about
         // entity.color).
@@ -469,7 +618,7 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
         mount.remove(handle.scene);
         // Restore static fallback in case the component re-mounts before
         // a fresh animator load completes (rare — race restart, navigation).
-        mount.add(clonedScene);
+        if (clonedScene) mount.add(clonedScene);
       }
       handle?.dispose();
       animatorRef.current = null;
@@ -511,6 +660,24 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
       // Trim to keep only the latest INTERP_HISTORY_SIZE entries.
       if (h.length > INTERP_HISTORY_SIZE) {
         h.splice(0, h.length - INTERP_HISTORY_SIZE);
+      }
+
+      // SPEC 2 — Wipeout detection (VRM only).
+      // Server doesn't surface respawnAt to the client yet (see §C.2 in the plan).
+      // Heuristic: detect XZ teleport > 500wu in one snapshot interval — this is
+      // only achievable by a respawn teleport, not normal physics.
+      // Fires once per new snapshot, inside this guard, not per frame.
+      if (isVRM && vrmAnimatorRef.current) {
+        const prev = _lastXZ[entity.petId];
+        if (prev) {
+          const dx = entity.x - prev.x;
+          const dz = entity.y - prev.z; // entity.y = sim-Y = Three.js Z
+          const distSq = dx * dx + dz * dz;
+          if (distSq > WIPEOUT_TELEPORT_THRESHOLD_SQ) {
+            void vrmAnimatorRef.current.playOneShot('wipeout');
+          }
+        }
+        _lastXZ[entity.petId] = { x: entity.x, z: entity.y };
       }
     }
 
@@ -658,14 +825,19 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
       }
     } else {
       // Fallback path — procedural per-bone undulation on the static GLB.
-      // Currently a no-op for lobster.glb / crayfish.glb (0 bones) and a faint
-      // wiggle on sea_horse.glb (93-node rig with bone names that match).
-      applySwimmingAnim(clonedScene, entity.petId, dt, speed);
+      // Guard: clonedScene is null when isVRM=true (effectiveSrcScene=null).
+      if (clonedScene) {
+        applySwimmingAnim(clonedScene, entity.petId, dt, speed);
+      }
     }
 
     // Mark finished if finishedAt is set.
     if (entity.finishedAt && !finishedRef.current) {
       finishedRef.current = true;
+      // SPEC 2 — VRM victory one-shot on finish line crossing.
+      if (isVRM && vrmAnimatorRef.current) {
+        void vrmAnimatorRef.current.playOneShot('victory');
+      }
     }
   });
 
@@ -695,6 +867,23 @@ function ReefRacePlayerInner({ entity, isSelf = false }: ReefRacePlayerProps) {
           position={RIDER_MOUNT_OFFSET_DEFAULT}
         />
       </group>
+      {/*
+       * SPEC 2 — Milady VRM rider (Suspense boundary).
+       * ReefRaceVRMRiderInner throws a Promise on first load (Suspense protocol).
+       * fallback={null} means no placeholder is rendered while loading —
+       * the board still shows, the rider appears once the VRM parses (~30-80ms).
+       * Only mounted when isVRM=true so GLB species see zero overhead from this.
+       */}
+      {isVRM && vrmPath && (
+        <Suspense fallback={null}>
+          <ReefRaceVRMRiderInner
+            vrmPath={vrmPath}
+            petId={entity.petId}
+            riderMountRef={riderMountRef as React.RefObject<THREE.Group>}
+            onAnimatorReady={onVrmAnimatorReady}
+          />
+        </Suspense>
+      )}
     </group>
   );
 }
