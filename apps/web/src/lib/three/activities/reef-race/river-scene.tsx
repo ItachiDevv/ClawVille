@@ -4,14 +4,16 @@
  * river-scene.tsx — Low-poly stylized river atmosphere for Reef Race v2.
  *
  * Visual target: Kagelok "The River" Sketchfab aesthetic.
- *   Bright sunny sky, flat-shaded cyan water, sandy banks, green hillsides.
- *   Low-poly trees / rocks / fences scattered along the banks.
+ *   Bright sunny sky, flat-shaded OPAQUE cyan water ribbon,
+ *   sandy cream bank ribbons on green grass hills.
+ *   Low-poly trees / rocks / fences on the GREEN GRASS — not in the water.
  *
  * Contains:
- *   A. Animated water surface  (MeshLambertMaterial flatShading, vertex Y wave)
- *   B. Sky dome                (SphereGeometry + MeshBasicMaterial vertexColors)
- *   C. ScenerySpawner          (low-poly prop GLBs along spline — tries to load,
- *                                renders nothing if GLBs are missing during dev)
+ *   A. Green ground plane (large flat XZ plane under everything)
+ *   B. Sandy bank ribbons (cream trianglestrip at water edge)
+ *   C. Water ribbon swept along spline centerline (replaces rectangle "pool")
+ *   D. Sky dome (SphereGeometry + MeshBasicMaterial vertexColors)
+ *   E. ScenerySpawner (low-poly prop GLBs ON THE GRASS, not in water)
  *
  * Iris Xe invariants:
  *   - NO ShaderMaterial anywhere
@@ -20,63 +22,52 @@
  *   - import from 'three' only (not 'three/webgpu')
  *   - All static geo/mat at module scope — zero per-frame GC
  *   - frustumCulled=false on all atmosphere meshes
- *   - matrixAutoUpdate=false on static meshes; water vertex animation mutates
- *     BufferAttribute directly (needsUpdate=true only on position attr)
+ *   - matrixAutoUpdate=false on all static meshes
  *
- * Draw call budget added by this file:
- *   1 water plane + 1 dome + up to ~6 scenery GLB types (deduplicated) = ≤8 draw calls
- *   Scenery GLBs share one material each via InstancedMesh (NOT ShaderMaterial) → safe.
- *   CORRECTION: scenery uses plain Mesh clones (not InstancedMesh + ShaderMaterial) to
- *   stay within Iris Xe constraints.  Estimated: ≤12 new draw calls total.
+ * Draw call budget:
+ *   1 ground + 1 sand ribbon + 1 water ribbon + 1 dome + ≤6 scenery GLB types = ≤10 draw calls
  *
- * Tri count added:
- *   Water: 64×32×2 ≈ 4096 tris | Dome: ~1024 tris | Scenery: ~1000 tris est.
- *   Total new: ≈6100 tris — well within the ≤80k scene budget.
+ * Tri count:
+ *   Ground: 2 tris | Sand ribbon: 64×2=128 tris | Water ribbon: 64×2=128 tris
+ *   Dome: ~1024 tris | Scenery: ~1000 tris est.
+ *   Total new: ≈2300 tris — well within the ≤80k scene budget.
  *
  * Water Y placement:
- *   V2_BANK_HEIGHT = 80 wu. River bed at y=0. Water at y=40 (halfway up bank walls)
- *   so surfboards at y≈0 appear to ride just below/at the surface.
- *
- * Fog tuning:
- *   FOG_COLOR changed to sky-blue '#a8d8ff' (update in preview page + ReefRaceScene).
+ *   River bed at y=0. Water ribbon at y=40 (halfway up V2_BANK_HEIGHT=80).
+ *   Sand ribbon at y=0.5 (just above river bed, below water surface).
+ *   Ground plane at y=-1 (just below river bed — no z-fight with sandy river floor).
  */
 
 import { Suspense, useRef, useEffect, useMemo } from 'react';
-import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { clientSpline } from './reef-race-spline-instance';
 
 // ─── Track layout constants ───────────────────────────────────────────────────
-// Track runs z=[0,18000], x≈[-700,+700], river bed at y=0, bank walls to y=80.
-const TRACK_HALF_X   = 1200;  // extra margin beyond actual ±700 bank edge
-const TRACK_LEN_Z    = 20000; // track center z=[0,18000], slight overrun
-const TRACK_START_Z  = -500;  // water starts 500wu before z=0
-const TRACK_CENTER_Z = TRACK_START_Z + TRACK_LEN_Z / 2; // center for dome
+// Track runs z=[0,18000]; slight overrun on each end for ground coverage.
+const TRACK_LEN_Z    = 20000;
+const TRACK_START_Z  = -500;
+const TRACK_CENTER_Z = TRACK_START_Z + TRACK_LEN_Z / 2; // 9500
 
-// ─── Water surface ────────────────────────────────────────────────────────────
-const WATER_Y      = 40;           // halfway up V2_BANK_HEIGHT=80
-const WATER_W      = TRACK_HALF_X * 2;  // 2400 wu
-const WATER_L      = TRACK_LEN_Z;       // 20000 wu
-const WATER_SEG_X  = 64;          // enough for visible wave detail
-const WATER_SEG_Z  = 128;         // longer axis gets more segments
-const WAVE_AMP     = 4;           // ±4 wu max displacement
-const WAVE_FREQ_X  = 0.0045;      // spatial frequency across width
-const WAVE_FREQ_Z  = 0.0025;      // spatial frequency along length
-const WAVE_SPEED   = 0.8;         // time multiplier
+// ─── Ground plane ─────────────────────────────────────────────────────────────
+const GROUND_W  = 8000;
+const GROUND_L  = 22000;
+const GROUND_Y  = -1;  // just below river bed at y=0
 
 // ─── Sky dome ────────────────────────────────────────────────────────────────
-const DOME_RADIUS  = 28000;       // safely covers camera.far=35000 frustum
+const DOME_RADIUS  = 28000;
 const DOME_W_SEGS  = 32;
 const DOME_H_SEGS  = 16;
-// Bright sunny sky: lighter at horizon, deeper blue at zenith
-const DOME_HORIZON = new THREE.Color('#cfe9ff'); // horizon haze
-const DOME_ZENITH  = new THREE.Color('#5ab8e8'); // deep sky blue
+const DOME_HORIZON = new THREE.Color('#cfe9ff');
+const DOME_ZENITH  = new THREE.Color('#5ab8e8');
+
+// ─── Water / sand ribbon sampling ────────────────────────────────────────────
+const RIBBON_SAMPLES = 64;  // number of cross-sections along the spline
+const WATER_Y        = 40;  // halfway up V2_BANK_HEIGHT=80
+const SAND_Y         = 0.5; // just above river bed, below water
+const SAND_EXTRA_HW  = 120; // sand ribbon extends this many wu beyond water edge
 
 // ─── Scenery spawning ────────────────────────────────────────────────────────
-// Props are scattered along the spline at regular t-intervals, alternating sides.
-// If a GLB is missing during dev transition, the spawner renders nothing for it
-// (useGLTF will throw, Suspense will catch via fallback={null}).
 const SCENERY_PROP_PATHS = [
   '/models/reef-race/scenery/prop-tree-pine.glb',
   '/models/reef-race/scenery/prop-tree-leafy.glb',
@@ -86,23 +77,20 @@ const SCENERY_PROP_PATHS = [
   '/models/reef-race/scenery/prop-grass-tuft.glb',
 ] as const;
 
-/** Preload — wrapped in try/catch so missing files don't break build. */
 for (const path of SCENERY_PROP_PATHS) {
   try { useGLTF.preload(path); } catch { /* not yet available */ }
 }
 
-// Each "spawner" definition: which GLB, how many, which t-values, side, scale range
 interface SpawnerDef {
   path: string;
-  tValues: number[];  // t in [0,1] along spline
-  side: number;       // +1 = left of direction, -1 = right
-  xJitter: number;    // ±wu offset beyond bank edge
+  tValues: number[];
+  side: number;   // +1 = left, -1 = right
+  xJitter: number; // wu BEYOND bank edge (positive = further out onto grass)
   scaleMin: number;
   scaleMax: number;
   seed: number;
 }
 
-// Deterministic seeded rand
 function seededRand(seed: number) {
   let s = (seed * 1664525 + 1013904223) | 0;
   return {
@@ -113,77 +101,155 @@ function seededRand(seed: number) {
   };
 }
 
-/** Sample spline bank edge + offset for a prop spawn position. */
+/** Sample spline bank edge + xJitter for a prop spawn position.
+ *  Props are placed at: centerline ± normal*(halfWidth + xJitter)
+ *  so they are guaranteed to be BEYOND the water edge and onto the grass. */
 function spawnPos(t: number, side: number, xJitter: number): THREE.Vector3 {
-  const c   = clientSpline.centerlineAt(t);
-  const n   = clientSpline.normalAt(t);
-  const hw  = clientSpline.widthAt(t);
-  // Bank edge = center ± normal * halfWidth; further out by side * xJitter
-  const ex  = c.x + n.x * hw * side + n.x * xJitter * side;
-  const ez  = c.z + n.z * hw * side + n.z * xJitter * side;
-  return new THREE.Vector3(ex, 0, ez);
+  const c  = clientSpline.centerlineAt(t);
+  const n  = clientSpline.normalAt(t);
+  const hw = clientSpline.widthAt(t);
+  const dist = hw + xJitter;  // total lateral offset from centerline
+  return new THREE.Vector3(
+    c.x + n.x * dist * side,
+    0,
+    c.z + n.z * dist * side,
+  );
 }
 
-// Scale values — 2026-04-29 fix: blender07 authored each prop in WORLD UNITS
-// already (e.g. pine bbox = ±68 wu, ±35 wu, [-233, -22] wu — i.e. ~140×70×211
-// wu authored). Original spawner multiplied by 60–120 → trees rendered as
-// ~14 000-wu green mountains filling the entire viewport. Targets:
-//   Tree:  ~200 wu visible height → scale ≈ 3 (authored 70 wu tall)
-//   Rock:  ~50  wu visible across → scale ≈ 1
-//   Fence: ~150 wu visible wide   → scale ≈ 1
-//   Grass: ~30  wu visible across → scale ≈ 1
-// xJitter values are ALREADY in world units (added directly to spline-edge
-// position — see spawnPos), so they didn't need rescaling. Same for tValues.
+// Spawner defs with xJitter large enough to clear the water + sand ribbon.
+// Water extends to halfWidth (200-500 wu). Sand extends halfWidth+120 wu.
+// So props MUST have xJitter > 120 wu to clear the sand and land on grass.
+//
+// xJitter values below are BEYOND the water bank edge (not from centerline).
+// At halfWidth=500 (widest), fence at xJitter=80 → 580 wu from center: still
+// at the sand edge. At narrowest (halfWidth=200), fence is at 280 wu — inside
+// the sand. That's acceptable for fences; they're meant to sit at the bank edge.
 const SPAWNER_DEFS: SpawnerDef[] = [
-  // Pine trees left side — 16 along track
+  // Pine trees — left side, well onto grass
   {
     path: '/models/reef-race/scenery/prop-tree-pine.glb',
     tValues: Array.from({ length: 16 }, (_, i) => (i + 0.3) / 16),
-    side: 1, xJitter: 80, scaleMin: 2.5, scaleMax: 3.5, seed: 1,
+    side: 1, xJitter: 350, scaleMin: 2.5, scaleMax: 3.5, seed: 1,
   },
-  // Leafy trees right side — 14 along track
+  // Leafy trees — right side, well onto grass
   {
     path: '/models/reef-race/scenery/prop-tree-leafy.glb',
     tValues: Array.from({ length: 14 }, (_, i) => (i + 0.1) / 14),
-    side: -1, xJitter: 100, scaleMin: 2.2, scaleMax: 3.2, seed: 2,
+    side: -1, xJitter: 450, scaleMin: 2.2, scaleMax: 3.2, seed: 2,
   },
-  // Rocks scattered both sides — 20 total (10 each)
+  // Rocks — closer to bank edge, both sides
   {
     path: '/models/reef-race/scenery/prop-rock-1.glb',
     tValues: Array.from({ length: 10 }, (_, i) => (i + 0.05) / 10),
-    side: 1, xJitter: 30, scaleMin: 0.7, scaleMax: 1.3, seed: 3,
+    side: 1, xJitter: 200, scaleMin: 0.7, scaleMax: 1.3, seed: 3,
   },
   {
     path: '/models/reef-race/scenery/prop-rock-2.glb',
     tValues: Array.from({ length: 10 }, (_, i) => (i + 0.55) / 10),
-    side: -1, xJitter: 40, scaleMin: 0.8, scaleMax: 1.4, seed: 4,
+    side: -1, xJitter: 250, scaleMin: 0.8, scaleMax: 1.4, seed: 4,
   },
-  // Fences along left bank edge — 24 segments
+  // Fences — right at the sand/grass boundary
   {
     path: '/models/reef-race/scenery/prop-fence.glb',
     tValues: Array.from({ length: 24 }, (_, i) => i / 24),
-    side: 1, xJitter: 10, scaleMin: 1.0, scaleMax: 1.0, seed: 5,
+    side: 1, xJitter: 80, scaleMin: 1.0, scaleMax: 1.0, seed: 5,
   },
-  // Grass tufts — many, both sides
+  // Grass tufts — clustered near bank, on grass
   {
     path: '/models/reef-race/scenery/prop-grass-tuft.glb',
     tValues: Array.from({ length: 30 }, (_, i) => (i + 0.15) / 30),
-    side: -1, xJitter: 20, scaleMin: 0.8, scaleMax: 1.5, seed: 6,
+    side: -1, xJitter: 150, scaleMin: 0.8, scaleMax: 1.5, seed: 6,
   },
 ];
 
-// ─── Module-scope water geometry (cloned per-mount so vertex mutation is safe) ──
-// We generate a base grid once and clone it inside WaterSurface.
-const _waterGeoTemplate = new THREE.PlaneGeometry(WATER_W, WATER_L, WATER_SEG_X, WATER_SEG_Z);
+// ─── Water ribbon geometry (module-scope, baked once) ────────────────────────
+// Triangle strip swept along clientSpline centerline.
+// Each cross-section: 2 verts at center ± normal*halfWidth.
+// N=64 cross-sections → 63 quads × 2 tris = 126 tris total.
+function buildWaterRibbonGeo(): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const normals:   number[] = [];
+  const uvs:       number[] = [];
+  const indices:   number[] = [];
 
-// ─── Dome geometry with vertex colors ────────────────────────────────────────
+  for (let i = 0; i <= RIBBON_SAMPLES; i++) {
+    const t  = i / RIBBON_SAMPLES;
+    const c  = clientSpline.centerlineAt(t);
+    const n  = clientSpline.normalAt(t);
+    const hw = clientSpline.widthAt(t);
+
+    // Left edge
+    positions.push(c.x + n.x * hw, WATER_Y, c.z + n.z * hw);
+    normals.push(0, 1, 0);
+    uvs.push(0, t);
+
+    // Right edge
+    positions.push(c.x - n.x * hw, WATER_Y, c.z - n.z * hw);
+    normals.push(0, 1, 0);
+    uvs.push(1, t);
+
+    if (i < RIBBON_SAMPLES) {
+      const base = i * 2;
+      indices.push(base, base + 1, base + 2);
+      indices.push(base + 1, base + 3, base + 2);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('normal',   new THREE.Float32BufferAttribute(normals,   3));
+  geo.setAttribute('uv',       new THREE.Float32BufferAttribute(uvs,       2));
+  geo.setIndex(indices);
+  return geo;
+}
+
+// ─── Sand ribbon geometry (module-scope, baked once) ─────────────────────────
+// Same approach as water but wider by SAND_EXTRA_HW and at y=SAND_Y.
+// Sits ON the ground plane, BELOW the water surface — acts as beach strip.
+function buildSandRibbonGeo(): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const normals:   number[] = [];
+  const uvs:       number[] = [];
+  const indices:   number[] = [];
+
+  for (let i = 0; i <= RIBBON_SAMPLES; i++) {
+    const t  = i / RIBBON_SAMPLES;
+    const c  = clientSpline.centerlineAt(t);
+    const n  = clientSpline.normalAt(t);
+    const hw = clientSpline.widthAt(t) + SAND_EXTRA_HW;
+
+    // Left edge
+    positions.push(c.x + n.x * hw, SAND_Y, c.z + n.z * hw);
+    normals.push(0, 1, 0);
+    uvs.push(0, t);
+
+    // Right edge
+    positions.push(c.x - n.x * hw, SAND_Y, c.z - n.z * hw);
+    normals.push(0, 1, 0);
+    uvs.push(1, t);
+
+    if (i < RIBBON_SAMPLES) {
+      const base = i * 2;
+      indices.push(base, base + 1, base + 2);
+      indices.push(base + 1, base + 3, base + 2);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('normal',   new THREE.Float32BufferAttribute(normals,   3));
+  geo.setAttribute('uv',       new THREE.Float32BufferAttribute(uvs,       2));
+  geo.setIndex(indices);
+  return geo;
+}
+
+// ─── Sky dome geometry ────────────────────────────────────────────────────────
 function makeDomeGeo(): THREE.BufferGeometry {
   const geo = new THREE.SphereGeometry(DOME_RADIUS, DOME_W_SEGS, DOME_H_SEGS);
   const positions = geo.attributes.position!;
   const count = positions.count;
   const colorsArr = new Float32Array(count * 3);
 
-  // Map Y position → gradient t in [0,1]: bottom=0, top=1
   for (let i = 0; i < count; i++) {
     const y = positions.getY(i);
     const tc = Math.max(0, Math.min(1, y / DOME_RADIUS * 0.5 + 0.5));
@@ -199,11 +265,42 @@ function makeDomeGeo(): THREE.BufferGeometry {
   return geo;
 }
 
-const _domeGeo = makeDomeGeo();
+// ─── Module-scope geometries (baked at module load, shared forever) ───────────
+const _groundGeo  = new THREE.PlaneGeometry(GROUND_W, GROUND_L, 1, 1);
+const _waterGeo   = buildWaterRibbonGeo();
+const _sandGeo    = buildSandRibbonGeo();
+const _domeGeo    = makeDomeGeo();
 
-// ─── Module-scope materials ───────────────────────────────────────────────────
+// ─── Module-scope materials (page-lifetime, never disposed) ──────────────────
 
-/** Sky dome material — vertex colors, BackSide, no fog (it IS the sky). */
+/** Large green grass plane — MeshLambertMaterial, flat shading. */
+const _groundMat = new THREE.MeshLambertMaterial({
+  color: new THREE.Color('#7cb342'),
+  flatShading: true,
+  fog: true,
+});
+
+/** Sandy bank ribbon — cream/peach color at water's edge. */
+const _sandMat = new THREE.MeshLambertMaterial({
+  color: new THREE.Color('#e8d5a8'),
+  flatShading: true,
+  fog: true,
+  side: THREE.DoubleSide,
+});
+
+/**
+ * Water ribbon — OPAQUE bright cyan, flatShading for low-poly look.
+ * No transparency: we want solid cyan, not a pool you can see through.
+ * DoubleSide so both the top surface and underside render during orbit.
+ */
+const _waterMat = new THREE.MeshLambertMaterial({
+  color: new THREE.Color('#4ec5e8'),
+  flatShading: true,
+  fog: true,
+  side: THREE.DoubleSide,
+});
+
+/** Sky dome material — vertex colors, BackSide, no fog. */
 const _domeMat = new THREE.MeshBasicMaterial({
   vertexColors: true,
   side: THREE.BackSide,
@@ -211,96 +308,76 @@ const _domeMat = new THREE.MeshBasicMaterial({
   depthWrite: false,
 });
 
-/**
- * Water surface — flat-shaded MeshLambertMaterial, cyan, semi-transparent.
- * flatShading=true gives the low-poly faceted look matching the reference.
- * fog=true so distant water blends into the horizon haze.
- */
-const _waterMat = new THREE.MeshLambertMaterial({
-  color: new THREE.Color('#4ec5e8'),
-  transparent: true,
-  opacity: 0.88,
-  side: THREE.DoubleSide,
-  depthWrite: false,
-  fog: true,
-  flatShading: true,
-});
+// ─── Ground plane component ───────────────────────────────────────────────────
 
-// ─── Water surface component ──────────────────────────────────────────────────
-// Clones the template geometry so vertex mutation doesn't corrupt the template.
-
-function WaterSurface() {
+function GroundPlane() {
   const meshRef = useRef<THREE.Mesh>(null);
 
-  // Clone template geometry once per mount so vertex mutation is per-instance
-  const waterGeo = useMemo(() => {
-    const geo = _waterGeoTemplate.clone();
-    // PlaneGeometry is XY; we need XZ. rotateX is a geometry-level transform
-    // applied to positions. We rotate in JSX, so leave geometry as XY and
-    // let the mesh rotation=[-PI/2,0,0] handle it — same pattern as caustic.
-    return geo;
-  }, []);
-
-  // Cache original Y positions for wave animation
-  const origY = useMemo(() => {
-    const pos = waterGeo.attributes.position!;
-    // PlaneGeometry XY: store original Z values (which become Y after rotation)
-    // Actually PlaneGeometry stores verts as (x, y, z=0); after rotation.x=-PI/2
-    // the mesh Y is geometry Z. We animate geometry's Z attribute.
-    const arr = new Float32Array(pos.count);
-    for (let i = 0; i < pos.count; i++) {
-      arr[i] = 0; // base is flat
-    }
-    return arr;
-  }, [waterGeo]);
-
   useEffect(() => {
-    const mesh = meshRef.current;
-    if (!mesh) return;
-    // No matrixAutoUpdate freeze here — mesh position set via JSX props
-    // R3F applies them on initial commit before this useEffect runs, so
-    // position is already in the matrix. We call updateMatrix to freeze it.
-    mesh.matrixAutoUpdate = false;
-    mesh.updateMatrix();
-    return () => {
-      waterGeo.dispose();
-    };
-  }, [waterGeo]);
-
-  useFrame((_, delta) => {
-    const mesh = meshRef.current;
-    if (!mesh) return;
-
-    // Accumulate time from delta (avoids Date.now() stale pattern)
-    const elapsed = (mesh.userData.elapsed ?? 0) + delta;
-    mesh.userData.elapsed = elapsed;
-    const t = elapsed * WAVE_SPEED;
-
-    const pos = waterGeo.attributes.position as THREE.BufferAttribute;
-    const arr = pos.array as Float32Array;
-
-    // PlaneGeometry vertices layout: (x, y, 0) in local space
-    // After mesh rotation=[-PI/2,0,0], local Y→world Z, local Z→world Y
-    // So we animate local Z to get world Y displacement.
-    for (let i = 0; i < pos.count; i++) {
-      const x = arr[i * 3 + 0];  // local X (→ world X)
-      const y = arr[i * 3 + 1];  // local Y (→ world Z)
-      // Two interfering sine waves for organic-looking surface
-      const w = Math.sin(x * WAVE_FREQ_X + t) * Math.sin(y * WAVE_FREQ_Z + t * 1.3);
-      arr[i * 3 + 2] = w * WAVE_AMP;
-    }
-    pos.needsUpdate = true;
-    // Recompute vertex normals so flat shading re-calculates face normals
-    waterGeo.computeVertexNormals();
-  });
+    const m = meshRef.current;
+    if (!m) return;
+    m.matrixAutoUpdate = false;
+    m.updateMatrix();
+  }, []);
 
   return (
     <mesh
       ref={meshRef}
-      geometry={waterGeo}
-      material={_waterMat}
-      position={[0, WATER_Y, TRACK_CENTER_Z]}
+      geometry={_groundGeo}
+      material={_groundMat}
+      // PlaneGeometry is XY; rotate to XZ and position centered on track
       rotation={[-Math.PI / 2, 0, 0]}
+      position={[0, GROUND_Y, TRACK_CENTER_Z]}
+      frustumCulled={false}
+      matrixAutoUpdate={false}
+      receiveShadow
+      renderOrder={0}
+    />
+  );
+}
+
+// ─── Sand ribbon component ────────────────────────────────────────────────────
+
+function SandRibbon() {
+  const meshRef = useRef<THREE.Mesh>(null);
+
+  useEffect(() => {
+    const m = meshRef.current;
+    if (!m) return;
+    m.matrixAutoUpdate = false;
+    m.updateMatrix();
+  }, []);
+
+  return (
+    <mesh
+      ref={meshRef}
+      geometry={_sandGeo}
+      material={_sandMat}
+      frustumCulled={false}
+      matrixAutoUpdate={false}
+      receiveShadow
+      renderOrder={1}
+    />
+  );
+}
+
+// ─── Water ribbon component ───────────────────────────────────────────────────
+
+function WaterRibbon() {
+  const meshRef = useRef<THREE.Mesh>(null);
+
+  useEffect(() => {
+    const m = meshRef.current;
+    if (!m) return;
+    m.matrixAutoUpdate = false;
+    m.updateMatrix();
+  }, []);
+
+  return (
+    <mesh
+      ref={meshRef}
+      geometry={_waterGeo}
+      material={_waterMat}
       frustumCulled={false}
       matrixAutoUpdate={false}
       renderOrder={2}
@@ -316,7 +393,6 @@ function SkyDome() {
   useEffect(() => {
     const m = meshRef.current;
     if (!m) return;
-    // Center dome over track midpoint
     m.position.set(0, 0, TRACK_CENTER_Z);
     m.matrixAutoUpdate = false;
     m.updateMatrix();
@@ -335,8 +411,6 @@ function SkyDome() {
 }
 
 // ─── Individual scenery prop component ───────────────────────────────────────
-// Renders one prop GLB at each spawn point from a SpawnerDef.
-// Wrapped in Suspense so missing GLBs render null without crashing the scene.
 
 interface PropInstancesProps {
   def: SpawnerDef;
@@ -352,9 +426,11 @@ function PropInstances({ def }: PropInstancesProps) {
 
     const rng = seededRand(def.seed);
     def.tValues.forEach((t) => {
-      const pos = spawnPos(t, def.side, def.xJitter + rng.next() * 40 - 20);
-      const yRot = rng.next() * Math.PI * 2;
-      const scale = def.scaleMin + rng.next() * (def.scaleMax - def.scaleMin);
+      // Add random lateral jitter of ±30wu on top of the base xJitter
+      const jitter = def.xJitter + rng.next() * 60 - 30;
+      const pos    = spawnPos(t, def.side, jitter);
+      const yRot   = rng.next() * Math.PI * 2;
+      const scale  = def.scaleMin + rng.next() * (def.scaleMax - def.scaleMin);
 
       const clone = srcScene.clone(true);
       clone.traverse(o => { o.frustumCulled = false; });
@@ -366,15 +442,11 @@ function PropInstances({ def }: PropInstancesProps) {
       gr.add(clone);
     });
 
-    // Freeze group matrix too
     gr.matrixAutoUpdate = false;
     gr.updateMatrix();
 
     return () => {
-      // Clean up clones on unmount
-      while (gr.children.length > 0) {
-        gr.remove(gr.children[0]);
-      }
+      while (gr.children.length > 0) gr.remove(gr.children[0]);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [srcScene]);
@@ -383,8 +455,6 @@ function PropInstances({ def }: PropInstancesProps) {
 }
 
 // ─── Scenery spawner ──────────────────────────────────────────────────────────
-// Each def is wrapped in its own Suspense(fallback=null) so a missing GLB
-// file just renders nothing for that prop type without breaking the scene.
 
 function ScenerySpawner() {
   return (
@@ -411,22 +481,35 @@ function ScenerySpawner() {
  * the parent scene. The parent SHOULD:
  *   - Use fog color '#a8d8ff' (sky-blue) not the old deep-navy '#061525'
  *   - Use <color attach="background" args={['#a8d8ff']} /> to match horizon
+ *   - HEMI_GROUND_COLOR: '#7cb342' grass green (matches ground plane)
  *
- * Renders:
- *   A. Animated flat-shaded water surface at y=40
- *   B. Sky dome (bright sunny blue gradient, BackSide sphere)
- *   C. Scenery props along banks (low-poly trees, rocks, fences, grass)
+ * Renders (render order):
+ *   -1: Sky dome (sunny blue gradient, BackSide sphere)
+ *    0: Green ground plane (large flat XZ grass plane)
+ *    1: Sandy bank ribbons (cream, spline-following, at water edge)
+ *    2: Cyan water ribbon (opaque, spline-following, above sand)
+ *    ?: Scenery props along banks (on the grass, not in the water)
+ *
+ * Bank wall geometry from SplineTrack (buildSplineBankGeos) is intentionally
+ * hidden by the parent page — set visible=false or recolor to grass green.
+ * See page.tsx: _bankMat color is '#7cb342' grass green to blend with ground.
  */
 export function RiverScene() {
   return (
     <>
-      {/* B. Sky dome — sunny blue gradient, renders first */}
+      {/* -1: Sky dome — renders behind everything */}
       <SkyDome />
 
-      {/* A. Water surface — flat-shaded cyan, animated vertex wave */}
-      <WaterSurface />
+      {/* 0: Green grass ground plane — large flat base */}
+      <GroundPlane />
 
-      {/* C. Low-poly scenery along banks */}
+      {/* 1: Sandy bank ribbons at water's edge */}
+      <SandRibbon />
+
+      {/* 2: Opaque cyan water ribbon following spline */}
+      <WaterRibbon />
+
+      {/* Scenery props on the grass */}
       <ScenerySpawner />
     </>
   );

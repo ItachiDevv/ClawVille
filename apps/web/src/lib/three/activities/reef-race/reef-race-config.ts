@@ -335,7 +335,7 @@ export const FOG_FAR = 4500;
 // ─── Lighting ────────────────────────────────────────────────────────────────
 
 export const HEMI_SKY_COLOR    = '#a8d8ff'; // matches SkyDome horizon
-export const HEMI_GROUND_COLOR = '#4a7c3f'; // earthy green riverbank
+export const HEMI_GROUND_COLOR = '#7cb342'; // grass green — matches GroundPlane in river-scene
 export const HEMI_INTENSITY    = 0.5;
 
 export const DIR_COLOR             = '#fffbe6';
