@@ -371,14 +371,19 @@ export default function ActivityResultsModal({
 
   // ── Quest counter increments (fire ONCE per modal open) ──────────────
   const incrementCounter = useQuestStore((s) => s.incrementCounter);
+  const recordDistinct = useQuestStore((s) => s.recordDistinct);
   const firedOnceRef = useRef(false);
   useEffect(() => {
     if (firedOnceRef.current) return;
     firedOnceRef.current = true;
     incrementCounter('activityMatchesPlayed', 1);
     if (placement === 1) incrementCounter('activityMatchesWon', 1);
+    // Tier 5 "Reef Veteran" requires distinct activityIds — track which
+    // activity types the player has finished. Server validator on
+    // activity.match.placed.payload.activityType is authority.
+    if (activityId) recordDistinct('distinctActivityTypes', activityId);
     triggerQuestCheck();
-  }, [incrementCounter, placement]);
+  }, [incrementCounter, recordDistinct, placement, activityId]);
 
   // ── Sound triggers wired to phase activation ─────────────────────────
   const playedVictoryRef = useRef(false);
@@ -503,7 +508,16 @@ export default function ActivityResultsModal({
     };
   })();
 
-  const petEmoji = '🦞';
+  // Map modelKey → species emoji so VRM players (Milady) get the correct icon
+  // instead of falling back to the lobster. GLB models keep their original emoji.
+  const petEmoji = (() => {
+    const mk = (pet as { modelKey?: string } | null | undefined)?.modelKey ?? '';
+    if (mk.startsWith('milady') || mk.startsWith('vrm')) return '🪷';
+    if (mk === 'crayfish') return '🦐';
+    if (mk === 'sea_horse' || mk === 'seahorse') return '🐴';
+    // Default lobster / unknown GLB keys
+    return '🦞';
+  })();
   const petName = pet?.name ?? 'Agent';
 
   // Phase 4 (C-IMPL-1 fix 2026-04-25) — activity-aware labels. The previous

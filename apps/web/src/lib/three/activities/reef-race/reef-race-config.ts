@@ -299,11 +299,21 @@ export const CAMERA_NEAR = 1;
  */
 export const CAMERA_FAR = 5000;
 
-/** Chase-cam offset in player-local space (behind and above). */
-export const CAMERA_OFFSET = new THREE.Vector3(0, 200, -350);
+/**
+ * Chase-cam offset in player-local space (behind and above).
+ * Y raised from 200→280 (2026-04-29 QA fix S1): Milady VRM sits at world Y≈219
+ * (KART_SCALE 20 × VRM_RIDER_LOCAL_SCALE 5.6 + mount offset); camera at Y=280
+ * keeps the full figure in the upper third of the 60° FOV frame.
+ */
+export const CAMERA_OFFSET = new THREE.Vector3(0, 280, -350);
 
-/** Chase-cam look-at offset from player position (slightly above kart). */
-export const CAMERA_LOOK_OFFSET = new THREE.Vector3(0, 80, 0);
+/**
+ * Chase-cam look-at offset from player position (slightly above kart).
+ * Y raised from 80→130 (2026-04-29 QA fix S1): lookAt at Y=130 targets chest
+ * height; head sits ~89wu above that point; at 350wu chase distance the
+ * vertical angle is atan2(89,350)≈14°, well within the ±30° FOV half-angle.
+ */
+export const CAMERA_LOOK_OFFSET = new THREE.Vector3(0, 130, 0);
 
 /** Chase-cam lerp factor per second (0→1: instant, 1: no follow). */
 export const CAMERA_LERP = 5.0;

@@ -69,6 +69,20 @@ import {
 } from './reef-race-config';
 import type { ReefRaceEntity } from './reef-race-types';
 
+// ─── Dev debug surface ────────────────────────────────────────────────────────
+// Exposed when NODE_ENV=development OR ?debug=1 in URL.
+// QA uses `window.__reefDebug.gl.info`, `.scene`, `.entities` for snapshot
+// assertions. Safe to ship — the guard keeps it out of production bundles.
+declare global {
+  interface Window {
+    __reefDebug?: {
+      gl: THREE.WebGLRenderer;
+      scene: THREE.Scene;
+      entities: Map<string, ReefRaceEntity>;
+    };
+  }
+}
+
 // ─── Module-scope scratch (no per-frame allocations) ─────────────────────────
 const _targetPos      = new THREE.Vector3();
 const _lookAt         = new THREE.Vector3();
@@ -309,6 +323,28 @@ function ChaseCamera({ selfEntity, shakeRef }: ChaseCamProps) {
   return null;
 }
 
+// ─── Debug surface ────────────────────────────────────────────────────────────
+// Exposes `window.__reefDebug` when NODE_ENV=development OR ?debug=1.
+// Must live inside Canvas (uses useThree). Zero-cost in prod bundles because
+// the condition is evaluated once on mount and the effect does nothing.
+function DebugExpose({ entities }: { entities: Map<string, ReefRaceEntity> }) {
+  const { gl, scene } = useThree();
+  const isDebug =
+    process.env.NODE_ENV === 'development' ||
+    (typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('debug'));
+
+  useEffect(() => {
+    if (!isDebug) return;
+    window.__reefDebug = { gl: gl as THREE.WebGLRenderer, scene, entities };
+    return () => {
+      window.__reefDebug = undefined;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDebug, gl, scene, entities]);
+
+  return null;
+}
+
 // ─── Scene contents ───────────────────────────────────────────────────────────
 
 interface SceneContentsProps {
@@ -409,6 +445,9 @@ function SceneContents({ entities, selfPetId, matchPhase, raceStartMs }: SceneCo
 
       {/* Shared burst particle pool — up to 8 Points objects */}
       <ActivityBursts />
+
+      {/* Dev debug surface — exposes window.__reefDebug in dev / ?debug=1 */}
+      <DebugExpose entities={entities} />
 
       {/* Pipeline pre-compilation — must be LAST */}
       <PreCompilePipelines />
