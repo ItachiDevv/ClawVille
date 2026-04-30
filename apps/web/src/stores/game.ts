@@ -438,16 +438,35 @@ export const useGameStore = create<GameState>((set, get) => ({
   },
 
   movementDirection: 'idle',
-  setMovementDirection: (dir) => set({ movementDirection: dir }),
+  // Guard against the 60Hz no-op set() — player-pet's useFrame called this
+  // every tick regardless of whether direction changed, fanning out
+  // Zustand subscriber notifications + React reconciliation passes that
+  // cost ~3-5ms/frame CPU when stationary. Audit: 3da emergency hot-loop
+  // pass 2026-04-30. The guard fires inside set() so all callers benefit
+  // without needing per-call-site memoization.
+  setMovementDirection: (dir) => {
+    if (dir === get().movementDirection) return;
+    set({ movementDirection: dir });
+  },
 
   petSpeed: 0,
-  setPetSpeed: (speed) => set({ petSpeed: speed }),
+  // Same per-frame guard rationale — player-pet writes speed every tick.
+  setPetSpeed: (speed) => {
+    if (speed === get().petSpeed) return;
+    set({ petSpeed: speed });
+  },
 
   nearLocation: null,
-  setNearLocation: (id) => set({ nearLocation: id }),
+  setNearLocation: (id) => {
+    if (id === get().nearLocation) return;
+    set({ nearLocation: id });
+  },
 
   nearCharacter: null,
-  setNearCharacter: (name) => set({ nearCharacter: name }),
+  setNearCharacter: (name) => {
+    if (name === get().nearCharacter) return;
+    set({ nearCharacter: name });
+  },
 
   currentLocation: null,
   currentCharacter: null,

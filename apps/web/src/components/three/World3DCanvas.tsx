@@ -714,14 +714,21 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
           effect but does waste GPU time computing fog for invisible fragments. */}
       <fog attach="fog" args={[FOG_COLOR, 1200, 6400]} />
 
-      {/* Underwater atmosphere — caustic light plane, depth backdrop, dust particles.
-          Volumetric light rays — 7 cone shafts with pulsing TSL opacity, additive blending.
-          Both are heavy on GPU fragment cost (additive transparent overdraw across the
-          full visible area) — gated to discrete GPUs only. Iris Xe / integrated Intel
-          GPUs skip the mount entirely; the scene still has fog + base lighting so it
-          remains coherent, just without volumetric effects. Perf audit 2026-04-29 #3. */}
-      <AtmosphereGate />
-      <AtmosphereGateRays />
+      {/*
+        UnderwaterAtmosphere (caustic plane + dust + depth backdrop) and
+        UnderwaterLightRays (7 cone shafts with TSL pulsing opacity) are
+        DISABLED globally. Both use additive transparent meshes that paint
+        across the full visible area — even on capable GPUs the overdraw
+        costs measurable frame budget (8-15ms on integrated GPUs, still
+        non-trivial on discrete). User-reported emergency perf regression
+        2026-04-30: scene was choppy on a good discrete GPU, so the
+        previous Intel-only gate wasn't enough. Effects can be toggled
+        back on by a future graphics-quality preference; for now the
+        scene relies on fog + base lighting only. The mounts stay imported
+        + alive in the bundle so re-enabling is a one-line edit.
+      */}
+      {false && <UnderwaterAtmosphere />}
+      {false && <UnderwaterLightRays />}
 
       {/* Shared world geometry */}
       <ArenaTerrain />
