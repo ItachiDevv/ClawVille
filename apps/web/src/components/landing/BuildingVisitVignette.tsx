@@ -28,6 +28,7 @@ import { Suspense, useRef, useMemo, useEffect, memo } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { useGLTF, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
+import { useVisibleFrameloop } from '@/lib/use-visible-frameloop';
 import {
   useVRMInstance,
   disposeVRMInstance,
@@ -226,19 +227,24 @@ function VignetteScene() {
 // Root export — thin Canvas wrapper
 // ---------------------------------------------------------------------------
 export default function BuildingVisitVignette() {
+  // Pause the canvas frameloop when offscreen — significant perf win.
+  const { ref, frameloop } = useVisibleFrameloop();
   return (
-    <Canvas
-      style={{ width: '100%', height: '100%' }}
-      dpr={[1, 1.5]}
-      camera={{
-        position: [ORBIT_R, ORBIT_CAM_Y, 0],
-        fov: 45,
-        near: 0.1,
-        far: 60,
-      }}
-      gl={{ antialias: false }}
-    >
-      <VignetteScene />
-    </Canvas>
+    <div ref={ref} style={{ width: '100%', height: '100%' }}>
+      <Canvas
+        style={{ width: '100%', height: '100%' }}
+        dpr={[1, 1.25]}
+        camera={{
+          position: [ORBIT_R, ORBIT_CAM_Y, 0],
+          fov: 45,
+          near: 0.1,
+          far: 60,
+        }}
+        gl={{ antialias: false, powerPreference: 'high-performance' }}
+        frameloop={frameloop}
+      >
+        <VignetteScene />
+      </Canvas>
+    </div>
   );
 }

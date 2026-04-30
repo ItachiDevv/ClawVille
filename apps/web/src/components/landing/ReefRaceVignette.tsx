@@ -21,6 +21,7 @@ import { useRef, useMemo, useEffect, type MutableRefObject } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
+import { useVisibleFrameloop } from '@/lib/use-visible-frameloop';
 
 // ---------------------------------------------------------------------------
 // Module-scope scratch vectors — allocated once, reused every frame
@@ -330,14 +331,19 @@ function VignetteScene() {
 // Public export — consumed via dynamic() with ssr:false
 // ---------------------------------------------------------------------------
 export default function ReefRaceVignette() {
+  // Pause the canvas frameloop when the tile scrolls offscreen.
+  const { ref, frameloop } = useVisibleFrameloop();
   return (
-    <Canvas
-      style={{ width: '100%', height: '100%' }}
-      dpr={[1, 1.5]}
-      camera={{ fov: 52, near: 0.5, far: 120, position: [0, 4, -8] }}
-      gl={{ antialias: true }}
-    >
-      <VignetteScene />
-    </Canvas>
+    <div ref={ref} style={{ width: '100%', height: '100%' }}>
+      <Canvas
+        style={{ width: '100%', height: '100%' }}
+        dpr={[1, 1.25]}
+        camera={{ fov: 52, near: 0.5, far: 120, position: [0, 4, -8] }}
+        gl={{ antialias: true, powerPreference: 'high-performance' }}
+        frameloop={frameloop}
+      >
+        <VignetteScene />
+      </Canvas>
+    </div>
   );
 }
