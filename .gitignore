@@ -86,3 +86,4 @@ apps/web/public/models/.ktx2-backup/
 # C6 meshopt+WebP pipeline originals — pre-C6 GLB/VRM backups (regeneratable).
 # Revert a single file: git checkout 13480db -- apps/web/public/models/guide.glb
 apps/web/public/.assets-backup/
+.worktrees/
