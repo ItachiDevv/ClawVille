@@ -295,10 +295,20 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
 
     if (store.controlMode !== 'autonomous') {
       const eNow = keyState.e;
-      if (eNow && !lastEState && store.nearLocation) {
-        store.enterBuilding(store.nearLocation);
-        lastEState = eNow;
-        return;
+      if (eNow && !lastEState) {
+        // Nori wins if both proximities are true — she stands at the
+        // open town center and is the discoverable greeter, so the E
+        // press should bias toward her over a flanking building.
+        if (store.nearGuide && !store.guideChatOpen && !store.chatOpen) {
+          store.openGuideChat();
+          lastEState = eNow;
+          return;
+        }
+        if (store.nearLocation) {
+          store.enterBuilding(store.nearLocation);
+          lastEState = eNow;
+          return;
+        }
       }
       lastEState = eNow;
     }
@@ -583,10 +593,20 @@ function PlayerPetGLBInner() {
     // In autonomous mode, don't let E key enter buildings — the autonomy tick handles navigation
     if (store.controlMode !== 'autonomous') {
       const eNow = keyState.e;
-      if (eNow && !lastEState && store.nearLocation) {
-        store.enterBuilding(store.nearLocation);
-        lastEState = eNow;
-        return;
+      if (eNow && !lastEState) {
+        // Nori wins if both proximities are true — she stands at the
+        // open town center and is the discoverable greeter, so the E
+        // press should bias toward her over a flanking building.
+        if (store.nearGuide && !store.guideChatOpen && !store.chatOpen) {
+          store.openGuideChat();
+          lastEState = eNow;
+          return;
+        }
+        if (store.nearLocation) {
+          store.enterBuilding(store.nearLocation);
+          lastEState = eNow;
+          return;
+        }
       }
       lastEState = eNow;
     }
