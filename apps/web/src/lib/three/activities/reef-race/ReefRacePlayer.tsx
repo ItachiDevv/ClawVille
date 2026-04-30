@@ -64,6 +64,15 @@ import {
 
 // ─── v2 feature flag ──────────────────────────────────────────────────────────
 const USE_SPLINE_PLAYER = process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
+
+// ─── Water surface Y — MUST match WATER_Y in river-scene.tsx + racing-karts.tsx ─
+// Player karts ride ON TOP of the water surface, not on grass. The decorative
+// karts in racing-karts.tsx already use WATER_Y + KART_Y_ABOVE_TRACK so that the
+// boards visually float on the water. The player must use the same baseline so
+// they are not rendered standing on grass (the visual bug observed 2026-04-29).
+// v1 (ellipse) path stays at y=0 — the v1 track ribbon is on grass.
+const WATER_Y = -200;
+
 import type { ReefRaceEntity } from './reef-race-types';
 import {
   createSeaCreatureAnimator,
@@ -805,7 +814,10 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
     // top of group.position.y via gliderRef.position.y.
     const entityHeight = (entity as ReefRaceEntity & { height?: number }).height ?? 0;
     group.position.x = interpX;
-    group.position.y = USE_SPLINE_PLAYER ? entityHeight : 0;
+    // v2 (spline): anchor at water surface so the surfboard floats on water.
+    //   base = WATER_Y; entityHeight is server-broadcast jump altitude (0 = grounded).
+    // v1 (ellipse): legacy track ribbon is on grass — keep at y=0.
+    group.position.y = USE_SPLINE_PLAYER ? WATER_Y + entityHeight : 0;
     group.position.z = interpZ;
     group.rotation.y = interpRot;
 
