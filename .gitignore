@@ -87,3 +87,6 @@ apps/web/public/models/.ktx2-backup/
 # Revert a single file: git checkout 13480db -- apps/web/public/models/guide.glb
 apps/web/public/.assets-backup/
 .worktrees/
+
+# Playwright MCP session artifacts
+.playwright-mcp/
