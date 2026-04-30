@@ -183,14 +183,62 @@ function loadRawGltf(name: AnimName): Promise<MixamoGltf> {
 }
 
 /**
- * Preload all Mixamo animation GLBs (locomotion + emotes).
- * Call once from the component that renders VRM avatars.
- * Errors are swallowed — they will surface when VRMCharacterAnimator.init() is called.
+ * Locomotion clips that EVERY VRM needs immediately so NPCs/player don't sit
+ * in T-pose while emote GLBs are still streaming in.
  */
-export function preloadMixamoClips(): void {
-  for (const name of Object.keys(ANIM_PATHS) as AnimName[]) {
+const LOCOMOTION_CLIPS: AnimName[] = ['idle', 'walk', 'run'];
+
+/**
+ * Preload only the 3 locomotion clips (idle/walk/run). Use this for the
+ * main /game canvas mount — every VRM in the scene plays one of these
+ * within a frame of construction. The 19 emote/surf clips are deferred to
+ * `preloadEmoteClips()` so we don't open 22 parallel HTTP fetches at page
+ * load and saturate the connection pool (which on Iris Xe pushes the
+ * first-animated-NPC delay from ~300ms to ~3s).
+ *
+ * Errors are swallowed — they will surface when
+ * `VRMCharacterAnimator.init()` is called.
+ */
+export function preloadLocomotionClips(): void {
+  for (const name of LOCOMOTION_CLIPS) {
     loadRawGltf(name).catch(() => undefined);
   }
+}
+
+/**
+ * Deferred preload of all emote / surf clips. Call this on idle (after
+ * first paint) or just-in-time when the player opens the emote hotbar.
+ * Uses `requestIdleCallback` when available so it doesn't compete with
+ * the first-frame render budget; falls back to a 1.5s timeout otherwise
+ * (Safari + older browsers).
+ */
+export function preloadEmoteClips(): void {
+  const allNames = Object.keys(ANIM_PATHS) as AnimName[];
+  const emoteNames = allNames.filter((n) => !LOCOMOTION_CLIPS.includes(n));
+
+  const fire = () => {
+    for (const name of emoteNames) {
+      loadRawGltf(name).catch(() => undefined);
+    }
+  };
+
+  if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+    (window as any).requestIdleCallback(fire, { timeout: 5000 });
+  } else if (typeof setTimeout !== 'undefined') {
+    setTimeout(fire, 1500);
+  } else {
+    fire();
+  }
+}
+
+/**
+ * Backwards-compat alias. Preloads locomotion (eager) + schedules the
+ * emote tier to load on idle. Existing call sites keep working but now
+ * the 19 emote fetches don't block first paint.
+ */
+export function preloadMixamoClips(): void {
+  preloadLocomotionClips();
+  preloadEmoteClips();
 }
 
 // ---------------------------------------------------------------------------
