@@ -406,8 +406,11 @@ function SceneContents({ entities, selfPetId, matchPhase, raceStartMs }: SceneCo
       {/* Sky-blue clear color matches SkyDome horizon — prevents flash before dome renders */}
       <color attach="background" args={['#a8d8ff']} />
 
-      {/* Low-poly stylized river atmosphere — dome, water surface, scenery */}
-      <RiverScene />
+      {/* Low-poly stylized river atmosphere — dome, water surface, scenery.
+          showDemoKarts/Pickups disabled in real gameplay so the 5 cosmetic
+          spline karts and decorative power-up boxes don't visually compete
+          with the server-driven <ReefRacePlayer /> + <ReefRacePickups />. */}
+      <RiverScene showDemoKarts={false} showDemoPickups={false} />
 
       {/* Lighting */}
       <ReefLight />

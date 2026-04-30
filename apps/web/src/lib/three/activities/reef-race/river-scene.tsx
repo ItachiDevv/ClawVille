@@ -1101,7 +1101,17 @@ function Bridge() {
  * KARTS (iter-6): <RacingKarts /> imported from racing-karts.tsx and wired here.
  *   racing-karts.tsx WATER_Y cascade is complete — value is -200 (confirmed iter-6).
  */
-export function RiverScene() {
+/**
+ * @param showDemoKarts - Defaults to true (preview route). Real gameplay should
+ *   pass `false` so the 5 decorative spline karts don't compete visually with
+ *   the player + bot karts driven by the server sim. PowerUpBoxes are also
+ *   hidden in gameplay because <ReefRacePickups /> renders the server-spawned
+ *   power-up state — the static decorative boxes would double-render alongside.
+ */
+export function RiverScene({
+  showDemoKarts = true,
+  showDemoPickups = true,
+}: { showDemoKarts?: boolean; showDemoPickups?: boolean } = {}) {
   return (
     <>
       {/* -1: Sky dome — renders behind everything */}
@@ -1125,11 +1135,13 @@ export function RiverScene() {
       {/* Gameplay juice — Part 2B: Distance markers every 2000wu */}
       <DistanceMarkers />
 
-      {/* Gameplay juice — Part 2C: Power-up boxes mid-river */}
-      <PowerUpBoxes />
+      {/* Gameplay juice — Part 2C: Power-up boxes mid-river. Hidden in gameplay
+          because <ReefRacePickups /> renders server-authoritative power-up state. */}
+      {showDemoPickups && <PowerUpBoxes />}
 
-      {/* 5 surfboard karts animated along the spline */}
-      <RacingKarts />
+      {/* 5 surfboard karts animated along the spline. Hidden in gameplay because
+          the player + 3 bots are rendered separately by <ReefRacePlayer />. */}
+      {showDemoKarts && <RacingKarts />}
 
       {/* Gameplay juice — Part 2F: Bridge at z=8500 */}
       <Bridge />
