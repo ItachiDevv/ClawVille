@@ -58,7 +58,10 @@ export function CollaborationAxes() {
 
   return (
     <div className="anim-up flex flex-col items-center gap-4 mt-6" style={{ animationDelay: '0.62s' }}>
-      <svg viewBox="0 0 240 220" className="w-[260px] sm:w-[300px] h-auto">
+      {/* viewBox extended -50→290 in X to give the bottom-corner labels
+          ("YOU ↔ AGENT" / "AGENT ↔ WORLD") room to render past the
+          vertex coordinates without clipping at the SVG edge. */}
+      <svg viewBox="-50 0 340 220" className="w-[280px] sm:w-[320px] h-auto">
         <defs>
           {AXES.map((a) => (
             <radialGradient key={a.id} id={`glow-${a.id}`} cx="50%" cy="50%" r="50%">
