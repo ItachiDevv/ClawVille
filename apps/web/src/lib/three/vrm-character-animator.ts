@@ -433,9 +433,29 @@ export class VRMCharacterAnimator {
   /**
    * Main update — call every frame inside useFrame.
    *
-   * Order: mixer.update() → vrm.update() (matches Milady's VrmEngine.ts).
-   * mixer.update advances keyframe actions; vrm.update propagates normalized
-   * bone poses to raw bones + runs spring-bone physics.
+   * Order MATTERS:
+   *   1. mixer.update()        — advances Normalized_* keyframe actions
+   *   2. vrm.update()          — copies Normalized → raw bones, runs spring
+   *                              physics. THIS is what gives raw bones (the
+   *                              ones SkinnedMesh skeletons reference, AND
+   *                              the ones cosmetic-loader parents children
+   *                              to) their current-frame local poses.
+   *   3. vrm.scene.updateMatrixWorld(true)
+   *                            — recompute every bone's matrixWorld from
+   *                              the new local transforms. Without this the
+   *                              flush below reads STALE last-frame matrices.
+   *   4. Flush batched skeleton.update() once per unique skeleton (Verse
+   *      Engine pattern). With current matrixWorld, boneMatrices buffer is
+   *      consistent with bone children rendered later in the frame.
+   *
+   * Bug history (2026-04-30): the order was previously
+   *   mixer.update → flush → vrm.update
+   * which left raw bones one frame behind on every walking step. Body
+   * SkinnedMeshes drew with last-frame pose, but cosmetic hats / glasses
+   * (children of `mixamorigHead`) followed the renderer's automatic
+   * matrixWorld update so they sat at the new pose. Net effect: hat
+   * appeared to "jump around" the head every step. Reordering aligns
+   * body and accessories on the same frame.
    *
    * @param delta    Clamped frame delta (Math.min(rawDelta, 0.1))
    * @param isMoving true when the avatar is walking/running
@@ -454,10 +474,9 @@ export class VRMCharacterAnimator {
     }
 
     this.mixer.update(delta);
-    // Flush batched skeleton.update() once per unique skeleton (Verse Engine pattern).
-    // The renderer's per-mesh calls are no-ops; we run each unique skeleton exactly once.
-    for (const fn of this._skeletonUpdateFns.values()) fn();
     this.vrm.update(delta);
+    this.vrm.scene.updateMatrixWorld(true);
+    for (const fn of this._skeletonUpdateFns.values()) fn();
   }
 
   /**
@@ -527,11 +546,12 @@ export class VRMCharacterAnimator {
     }
 
     this.mixer.update(delta);
-    // Flush batched skeleton.update() once per unique skeleton (Verse Engine pattern).
-    // Must run after mixer.update() so bone world matrices are current before draw.
-    for (const fn of this._skeletonUpdateFns.values()) fn();
     // Note: vrm.update() intentionally skipped — caller must call updateSpringOnly()
     // at the desired spring-bone rate (e.g. every 2nd frame for idle NPCs).
+    // Skeleton flush is also deferred to updateSpringOnly because the bone
+    // matrices won't have changed until vrm.update() copies the normalized
+    // bones across to the raw rig. Flushing here would write stale boneMatrices
+    // and the body would draw one tick behind any bone-anchored cosmetic.
   }
 
   /**
@@ -549,6 +569,11 @@ export class VRMCharacterAnimator {
   updateSpringOnly(accumulatedDelta: number): void {
     if (!this.ready) return;
     this.vrm.update(accumulatedDelta);
+    // Same ordering invariant as `update()` — refresh bone matrixWorld
+    // before flushing the skeleton boneMatrices buffer, otherwise the
+    // SkinnedMesh body draws one tick behind any bone-anchored cosmetic.
+    this.vrm.scene.updateMatrixWorld(true);
+    for (const fn of this._skeletonUpdateFns.values()) fn();
   }
 
   /**
