@@ -45,9 +45,9 @@
  * Tri count (iter-5):
  *   Ground terrain: 96×192×2 = 36 864 tris
  *   Water ribbon: 126 tris | Rocky banks: 1 264 tris (replaces 126-tri sand ribbon)
- *   Sky dome: ~512 tris | Scenery GLBs: ~12 000 tris (Pine 765 tris / Leafy 724 tris)
+ *   Sky dome: ~512 tris | Scenery GLBs: ~37 030 tris (iter-10: 162 instances both sides)
  *   Gate+markers+bridge+powerups: ~800 tris | Karts: ~300 tris (5 × surfboard_1.glb)
- *   Total: ~51 866 tris — comfortably within ≤80k budget.
+ *   Total: ~76 896 tris — within ≤80k Iris Xe budget.
  *
  * Water Y placement (iter-5 — CANYON DEPTH):
  *   Ground / grass at y=0. River bed at y=-250.
@@ -180,10 +180,11 @@ for (const path of SCENERY_PROP_PATHS) {
 }
 
 interface SpawnerDef {
+  key: string;     // unique key for React (path+seed combo)
   path: string;
   tValues: number[];
   side: number;   // +1 = left, -1 = right
-  xJitter: number; // wu BEYOND bank edge (positive = further out onto grass)
+  xJitter: number; // wu from centerline (must be >= GROUND_INNER_OFFSET=873 to land on grass)
   scaleMin: number;
   scaleMax: number;
   seed: number;
@@ -214,48 +215,93 @@ function spawnPos(t: number, side: number, xJitter: number): THREE.Vector3 {
   );
 }
 
-// Spawner defs with xJitter large enough to clear the water + sand ribbon.
-// Water extends to halfWidth (280-700 wu). Sand extends halfWidth+120 wu.
-// Props MUST have xJitter > 120 wu to clear the sand and land on grass.
+// Spawner defs: xJitter is the TOTAL lateral offset from the spline centerline.
+// Ground inner edge = halfWidth + GROUND_INNER_OFFSET (873wu).
+// Props MUST have xJitter >= 873 to land on grass, not inside the cliff zone.
+// Grass extends from halfWidth+873 to halfWidth+873+6000wu — target [1000, 6500].
+//
+// Per-type notes:
+//   Pine ~765 tris, Leafy ~724 tris, Rock-1/2 ~80 tris, Fence ~50 tris, Grass ~30 tris.
+//   Both sides populated for visual balance (split tValues across two entries per type).
+//
+// Tri budget (scenery only): 22×765 + 20×724 + 28×80 + 36×50 + 56×30 ≈ 37,030 tris.
+// Non-scenery geometry ≈ 39,866 tris (ground+water+sky+gate+markers+bridge+karts).
+// Grand total ≈ 76,896 tris — within ≤80K Iris Xe budget.
+//
+// Instance count: 162 instances — within ≤250 budget.
 const SPAWNER_DEFS: SpawnerDef[] = [
-  // Pine trees — left side, well onto grass.
-  // Quaternius prop-tree-pine.glb has hidden compounding-scale node transforms
-  // not captured by gltf-transform inspect bbox math. Empirically scale 17 produced
-  // 3000-wu mountain trees blocking the entire river top-down view. Tuned to 1-1.5.
+  // ── Pine trees — left side (near cliff edge, into grass)
+  // Quaternius prop-tree-pine.glb has hidden compounding-scale node transforms.
+  // Empirically scale 17 gave 3000-wu mountain trees. Tuned to 1.0-1.5 range.
   {
+    key: 'pine-L',
     path: '/models/reef-race/scenery/prop-tree-pine.glb',
-    tValues: Array.from({ length: 16 }, (_, i) => (i + 0.3) / 16),
-    side: 1, xJitter: 350, scaleMin: 1.0, scaleMax: 1.5, seed: 1,
+    tValues: Array.from({ length: 11 }, (_, i) => (i + 0.3) / 11),
+    side: 1, xJitter: 1500, scaleMin: 1.0, scaleMax: 1.5, seed: 1,
   },
-  // Leafy trees — right side, well onto grass.
-  // Same compounding-scale issue. Tuned 25 → 1.6, 32 → 2.1.
+  // ── Pine trees — right side (deeper into grass, cross-side visual layering)
   {
+    key: 'pine-R',
+    path: '/models/reef-race/scenery/prop-tree-pine.glb',
+    tValues: Array.from({ length: 11 }, (_, i) => (i + 0.65) / 11),
+    side: -1, xJitter: 1800, scaleMin: 0.9, scaleMax: 1.4, seed: 11,
+  },
+  // ── Leafy trees — right side
+  // Same compounding-scale issue. Scale range 1.6-2.1 empirically safe.
+  {
+    key: 'leafy-R',
     path: '/models/reef-race/scenery/prop-tree-leafy.glb',
-    tValues: Array.from({ length: 14 }, (_, i) => (i + 0.1) / 14),
-    side: -1, xJitter: 450, scaleMin: 1.6, scaleMax: 2.1, seed: 2,
+    tValues: Array.from({ length: 10 }, (_, i) => (i + 0.1) / 10),
+    side: -1, xJitter: 2200, scaleMin: 1.6, scaleMax: 2.1, seed: 2,
   },
-  // Rocks — closer to bank edge, both sides
+  // ── Leafy trees — left side (creates depth-of-field of trees from both banks)
   {
-    path: '/models/reef-race/scenery/prop-rock-1.glb',
-    tValues: Array.from({ length: 10 }, (_, i) => (i + 0.05) / 10),
-    side: 1, xJitter: 200, scaleMin: 0.7, scaleMax: 1.3, seed: 3,
-  },
-  {
-    path: '/models/reef-race/scenery/prop-rock-2.glb',
+    key: 'leafy-L',
+    path: '/models/reef-race/scenery/prop-tree-leafy.glb',
     tValues: Array.from({ length: 10 }, (_, i) => (i + 0.55) / 10),
-    side: -1, xJitter: 250, scaleMin: 0.8, scaleMax: 1.4, seed: 4,
+    side: 1, xJitter: 2500, scaleMin: 1.4, scaleMax: 1.9, seed: 22,
   },
-  // Fences — right at the sand/grass boundary
+  // ── Rocks — left bank (at the cliff/grass boundary)
   {
+    key: 'rock1-L',
+    path: '/models/reef-race/scenery/prop-rock-1.glb',
+    tValues: Array.from({ length: 14 }, (_, i) => (i + 0.05) / 14),
+    side: 1, xJitter: 1100, scaleMin: 0.7, scaleMax: 1.3, seed: 3,
+  },
+  // ── Rocks — right bank (slightly further out)
+  {
+    key: 'rock2-R',
+    path: '/models/reef-race/scenery/prop-rock-2.glb',
+    tValues: Array.from({ length: 14 }, (_, i) => (i + 0.55) / 14),
+    side: -1, xJitter: 1500, scaleMin: 0.8, scaleMax: 1.4, seed: 4,
+  },
+  // ── Fences — left bank (right at the cliff/grass border — decorative line)
+  {
+    key: 'fence-L',
     path: '/models/reef-race/scenery/prop-fence.glb',
-    tValues: Array.from({ length: 24 }, (_, i) => i / 24),
-    side: 1, xJitter: 80, scaleMin: 1.0, scaleMax: 1.0, seed: 5,
+    tValues: Array.from({ length: 18 }, (_, i) => i / 18),
+    side: 1, xJitter: 950, scaleMin: 1.0, scaleMax: 1.0, seed: 5,
   },
-  // Grass tufts — clustered near bank, on grass
+  // ── Fences — right bank
   {
+    key: 'fence-R',
+    path: '/models/reef-race/scenery/prop-fence.glb',
+    tValues: Array.from({ length: 18 }, (_, i) => (i + 0.5) / 18),
+    side: -1, xJitter: 1000, scaleMin: 1.0, scaleMax: 1.0, seed: 55,
+  },
+  // ── Grass tufts — right bank (clustered near cliff edge, on grass)
+  {
+    key: 'grass-R',
     path: '/models/reef-race/scenery/prop-grass-tuft.glb',
-    tValues: Array.from({ length: 30 }, (_, i) => (i + 0.15) / 30),
-    side: -1, xJitter: 150, scaleMin: 0.8, scaleMax: 1.5, seed: 6,
+    tValues: Array.from({ length: 28 }, (_, i) => (i + 0.15) / 28),
+    side: -1, xJitter: 1100, scaleMin: 0.8, scaleMax: 1.5, seed: 6,
+  },
+  // ── Grass tufts — left bank (denser second pass)
+  {
+    key: 'grass-L',
+    path: '/models/reef-race/scenery/prop-grass-tuft.glb',
+    tValues: Array.from({ length: 28 }, (_, i) => (i + 0.65) / 28),
+    side: 1, xJitter: 1200, scaleMin: 0.9, scaleMax: 1.6, seed: 66,
   },
 ];
 
@@ -850,7 +896,7 @@ function ScenerySpawner() {
   return (
     <>
       {SPAWNER_DEFS.map((def) => (
-        <Suspense key={def.path} fallback={null}>
+        <Suspense key={def.key} fallback={null}>
           <PropInstances def={def} />
         </Suspense>
       ))}
