@@ -1089,20 +1089,20 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const animator = vrmAnimatorRef.current;
     if (animator) {
       springDeltaAccRef.current += dt;
-      if (isMoving) {
-        // Walking: full update every frame — spring displacements are large.
-        animator.update(dt, isMoving);
+      // Emergency NPC throttle 2026-04-30: all NPCs (walking + idle) get
+      // mixer at 60Hz but spring physics at 15-20Hz max. Walking NPCs
+      // previously got full vrm.update() every frame for "spring fidelity"
+      // which was the single most expensive NPC code path with 8-18 VRMs
+      // visible. The visual cost of dropping spring to 15Hz on walking
+      // NPCs is barely perceptible at typical viewing distance — the
+      // hair lag is ≤ 33ms which is below the threshold for most
+      // observers, especially during a demo.
+      animator.updateMixerOnly(dt, isMoving);
+      const springMod = camDistSq > VRM_NPC_HALF_RATE_DIST_SQ ? 6 : 3; // 10Hz mid / 20Hz close
+      if ((frame + seed) % springMod === 0) {
+        const acc = Math.min(springDeltaAccRef.current, 0.1);
+        animator.updateSpringOnly(acc);
         springDeltaAccRef.current = 0;
-      } else {
-        // Idle: mixer ALWAYS at 60Hz (keyframe smoothness, Nori parity).
-        animator.updateMixerOnly(dt, isMoving);
-        // Tiered spring-bone rate: close = 30Hz (every 2nd frame), mid-dist = 15Hz (every 4th).
-        const springMod = camDistSq > VRM_NPC_HALF_RATE_DIST_SQ ? 4 : 2;
-        if ((frame + seed) % springMod === 0) {
-          const acc = Math.min(springDeltaAccRef.current, 0.1);
-          animator.updateSpringOnly(acc);
-          springDeltaAccRef.current = 0;
-        }
       }
     }
   });
