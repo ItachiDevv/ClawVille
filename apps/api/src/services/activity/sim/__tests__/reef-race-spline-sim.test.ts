@@ -174,7 +174,7 @@ describe('ReefRaceSplineSim', () => {
       body.prevProgress = 0.96;
       body.progress = 0.96;
       body.x = 0;
-      body.z = 17900; // near CP15 at z=18000
+      body.z = 27900; // near CP21 at z=28000
 
       // Apply forward thrust so body gets close to finish.
       reefRaceSplineSim.applyInput(

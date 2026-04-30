@@ -1873,7 +1873,7 @@ export class ReefRaceSplineSim {
     return {
       selfAvatarId,
       bodies,
-      arenaRadius: 18000,  // approximate track length as "radius" for boundary heuristics
+      arenaRadius: 28000,  // approximate track length as "radius" for boundary heuristics (90s rebuild)
       now: Date.now(),
       matchStartedAt: state.startedAt,
     };

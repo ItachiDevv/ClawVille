@@ -355,8 +355,8 @@ const CINEMATIC_CAM = new THREE.Vector3(
 const CINEMATIC_TARGET = new THREE.Vector3(_startCenter.x, -180, _startCenter.z + 2000);
 
 /** Default free-orbit position: 3/4 perspective showing whole track length. */
-const FREE_CAM    = new THREE.Vector3(_startCenter.x + 8000, 8000, _startCenter.z + 18000);
-const FREE_TARGET = new THREE.Vector3(_startCenter.x, 0, _startCenter.z + 9000);
+const FREE_CAM    = new THREE.Vector3(_startCenter.x + 8000, 8000, _startCenter.z + 28000);
+const FREE_TARGET = new THREE.Vector3(_startCenter.x, 0, _startCenter.z + 14000);
 
 // ─── Spline Track component ───────────────────────────────────────────────────
 

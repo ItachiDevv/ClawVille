@@ -3,21 +3,19 @@
  *
  * Sanity tests for the locked v2 default track. Catches geometric regressions
  * before they reach the sim:
- *   - Exactly 16 control points (any add/remove must be intentional)
+ *   - Exactly 22 control points (any add/remove must be intentional)
  *   - All adjacent CP-pair distances > 88 wu (Newton mis-segmenting guard)
- *   - Total spline arclength in [17 000, 21 000] wu (~60s race window)
+ *   - Total spline arclength in [28 000, 31 500] wu (~90s race window)
  *   - First CP at origin (z = 0, x = 0) — start-line invariant
- *   - Last CP near (x ≈ 0, z ≈ 18 000) — finish-line invariant
+ *   - Last CP near (x ≈ 0, z ≈ 28 000) — finish-line invariant
  *
  * The 88 wu threshold comes from `.claude/plans/reef-race-v2-spline-architecture.md`
  * Risk #1: "no folds within 88 wu of itself in XZ".
  *
- * The 17k-21k arclength window:
- *   - Lower bound 17 000: even with zero curvature added by the slalom we expect
- *     at least the straight-line z-span (~18 000); 17k catches a layout that
- *     accidentally truncates the finish straight.
- *   - Upper bound 21 000: a layout with excessive S-bend amplitude would inflate
- *     arc by >15%, breaking the 60s race-time target.
+ * The 28k-31.5k arclength window (2026-04-30 90s rebuild):
+ *   - Lower bound 28 000: catches a layout that truncates the finish straight.
+ *   - Upper bound 31 500: an excessive-S layout would inflate arc by >12%,
+ *     breaking the 90s race-time target.
  */
 
 import { describe, it, expect } from 'bun:test';
@@ -33,14 +31,14 @@ import {
 /** Architecture doc Risk #1: 4 × REEF_BODY_RADIUS (22 wu) = 88 wu safe margin. */
 const MIN_SAFE_CP_SPACING_WU = 88;
 
-/** Lower bound on totalArcLength — straight line minus a small slack. */
-const ARC_LENGTH_LOWER_WU = 17_000;
+/** Lower bound on totalArcLength — z-span minus a small slack. */
+const ARC_LENGTH_LOWER_WU = 28_000;
 
-/** Upper bound on totalArcLength — slalom adds ~5-15%, anything more breaks 60s. */
-const ARC_LENGTH_UPPER_WU = 21_000;
+/** Upper bound on totalArcLength — slalom adds ~3-5%, anything more breaks 90s. */
+const ARC_LENGTH_UPPER_WU = 31_500;
 
 /** Final-CP target z-coordinate (per layout doc). */
-const FINISH_Z_TARGET_WU = 18_000;
+const FINISH_Z_TARGET_WU = 28_000;
 
 /** Tolerance for "near origin" / "near finish" assertions on x/z. */
 const POSITION_TOLERANCE_WU = 50;
@@ -48,9 +46,9 @@ const POSITION_TOLERANCE_WU = 50;
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe('REEF_RACE_DEFAULT_TRACK — locked v2 layout', () => {
-  it('contains exactly 16 control points', () => {
-    expect(REEF_RACE_DEFAULT_TRACK.length).toBe(16);
-    expect(REEF_RACE_DEFAULT_TRACK_LENGTH).toBe(16);
+  it('contains exactly 22 control points', () => {
+    expect(REEF_RACE_DEFAULT_TRACK.length).toBe(22);
+    expect(REEF_RACE_DEFAULT_TRACK_LENGTH).toBe(22);
   });
 
   it('first CP sits exactly at the origin (start line)', () => {
@@ -60,7 +58,7 @@ describe('REEF_RACE_DEFAULT_TRACK — locked v2 layout', () => {
     expect(start.halfWidth).toBeGreaterThan(0);
   });
 
-  it('last CP sits on the finish line (x≈0, z≈18000)', () => {
+  it('last CP sits on the finish line (x≈0, z≈28000)', () => {
     const finish = REEF_RACE_DEFAULT_TRACK[REEF_RACE_DEFAULT_TRACK.length - 1];
     expect(Math.abs(finish.x)).toBeLessThan(POSITION_TOLERANCE_WU);
     expect(Math.abs(finish.z - FINISH_Z_TARGET_WU)).toBeLessThan(POSITION_TOLERANCE_WU);
@@ -118,7 +116,7 @@ describe('REEF_RACE_DEFAULT_TRACK — locked v2 layout', () => {
 describe('REEF_RACE_DEFAULT_TRACK — spline integration', () => {
   const spline = new ReefSpline(REEF_RACE_DEFAULT_TRACK);
 
-  it('total arclength falls in the 60s race-time window [17 000, 21 000] wu', () => {
+  it('total arclength falls in the 90s race-time window [28 000, 31 500] wu', () => {
     const arc = spline.totalArcLength;
     // eslint-disable-next-line no-console
     console.log(`  totalArcLength = ${arc.toFixed(1)} wu`);
@@ -170,7 +168,7 @@ describe('REEF_RACE_DEFAULT_TRACK — spline integration', () => {
 });
 
 describe('REEF_RACE_SEGMENTS — themed segment table', () => {
-  it('covers z=[0, 18000] contiguously with no gaps or overlaps', () => {
+  it('covers z=[0, 28000] contiguously with no gaps or overlaps', () => {
     expect(REEF_RACE_SEGMENTS[0].zStart).toBe(0);
     expect(REEF_RACE_SEGMENTS[REEF_RACE_SEGMENTS.length - 1].zEnd)
       .toBe(FINISH_Z_TARGET_WU);
