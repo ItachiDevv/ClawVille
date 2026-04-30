@@ -8,7 +8,7 @@ import { useQuestStore, triggerQuestCheck } from '@/stores/quest';
 import { usePet } from '@/hooks/use-pet';
 
 export default function ShopOverlay() {
-  const { shopOpen, closeShop, currentLocation, addToast } = useGameStore();
+  const { shopOpen, closeShop, currentLocation, addToast, setCosmeticDrawerOpen } = useGameStore();
   const { data: pet } = usePet();
   const queryClient = useQueryClient();
   const [buyingId, setBuyingId] = useState<string | null>(null);
@@ -109,6 +109,31 @@ export default function ShopOverlay() {
             })
           )}
         </div>
+
+        {/* Cosmetics entry — building shop sells knowledge books only.
+            Cosmetics (skins, hats, surfboards, etc.) are global and live in
+            their own drawer. Surface a clear entry point here so players
+            don't have to find the sidebar menu to spend tokens on a board. */}
+        <button
+          type="button"
+          onClick={() => {
+            closeShop();
+            setCosmeticDrawerOpen(true);
+          }}
+          className="mt-3 w-full flex items-center justify-between px-4 py-3 rounded-lg
+                     bg-gradient-to-r from-pink-500/15 to-fuchsia-500/15
+                     border border-pink-400/30 hover:border-pink-300/60
+                     hover:from-pink-500/25 hover:to-fuchsia-500/25 transition-all
+                     shadow-[0_0_20px_rgba(236,72,153,0.15)]"
+        >
+          <span className="flex items-center gap-2">
+            <span className="text-lg">✨</span>
+            <span className="font-bold text-sm text-pink-100">Browse Cosmetics</span>
+          </span>
+          <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-pink-300/80">
+            skins · hats · boards →
+          </span>
+        </button>
       </div>
     </div>
   );
