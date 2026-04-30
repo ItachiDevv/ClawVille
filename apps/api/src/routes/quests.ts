@@ -20,6 +20,7 @@ import { eq, and, desc, sql } from 'drizzle-orm';
 import { count } from 'drizzle-orm';
 import {
   TUTORIAL_QUEST_REWARDS,
+  TUTORIAL_QUEST_STATUS,
   getTutorialQuestReward,
   type TutorialQuestId,
 } from '@clawville/shared';
@@ -931,16 +932,31 @@ const claimTutorialQuestParamSchema = z.object({
 });
 
 /**
- * Per-quest server-side proof-of-engagement check. Returns null if the
- * user has met the bar, or a reason string otherwise. Uses the events
- * table because every gameplay action emits at least one event.
+ * Per-quest server-side proof-of-engagement check.
+ *
+ * Returns:
+ *   - { ok: true }                                  → user has met the bar
+ *   - { ok: false, pending: true,  reason: '...' }  → feature isn't shipped
+ *   - { ok: false, pending: false, reason: '...' }  → user hasn't done it yet
+ *
+ * The route maps `pending` to error code `pending_feature` (so the client
+ * knows to render "coming soon" rather than retry forever) vs the standard
+ * `engagement_required` for not-yet-completed live quests.
+ *
+ * Q3 plan §2.6 + 2026-04-29 redesign — extended for the 30-quest ladder.
  */
+type EngagementResult = { ok: true } | { ok: false; pending: boolean; reason: string };
+
 async function validateTutorialQuestEngagement(
   userId: string,
   avatarId: string,
   questId: TutorialQuestId,
-): Promise<string | null> {
-  // Helper: count events for this user (or avatar) matching predicates.
+): Promise<EngagementResult> {
+  // Hard-block pending quests — their server emitter doesn't exist yet.
+  if (TUTORIAL_QUEST_STATUS[questId] === 'pending') {
+    return { ok: false, pending: true, reason: 'feature_not_shipped' };
+  }
+
   async function countEvents(predicate: ReturnType<typeof sql>): Promise<number> {
     const rows = await db.execute<{ c: number }>(sql`
       SELECT COUNT(*)::int AS c FROM events
@@ -950,96 +966,315 @@ async function validateTutorialQuestEngagement(
     return Number(rows[0]?.c ?? 0);
   }
 
+  async function distinctTeacherChats(): Promise<number> {
+    const rows = await db.execute<{ c: number }>(sql`
+      SELECT COUNT(DISTINCT building_id)::int AS c FROM events
+      WHERE event_type = 'agent.chat.turn'
+        AND payload->>'chatType' IN ('character','building','location')
+        AND (user_id = ${userId} OR avatar_id = ${avatarId})
+        AND building_id IS NOT NULL
+    `);
+    return Number(rows[0]?.c ?? 0);
+  }
+
+  async function distinctBuildingsVisited(): Promise<number> {
+    const rows = await db.execute<{ c: number }>(sql`
+      SELECT COUNT(DISTINCT building_id)::int AS c FROM events
+      WHERE event_type = 'building.visited'
+        AND (user_id = ${userId} OR avatar_id = ${avatarId})
+        AND building_id IS NOT NULL
+    `);
+    return Number(rows[0]?.c ?? 0);
+  }
+
+  async function distinctBookBuildings(): Promise<number> {
+    const rows = await db.execute<{ c: number }>(sql`
+      SELECT COUNT(DISTINCT payload->>'buildingId')::int AS c FROM events
+      WHERE event_type = 'item.purchased'
+        AND coalesce(payload->>'isBook','') = 'true'
+        AND (user_id = ${userId} OR avatar_id = ${avatarId})
+        AND payload->>'buildingId' IS NOT NULL
+    `);
+    return Number(rows[0]?.c ?? 0);
+  }
+
+  async function distinctActivityTypes(): Promise<number> {
+    const rows = await db.execute<{ c: number }>(sql`
+      SELECT COUNT(DISTINCT payload->>'activityType')::int AS c FROM events
+      WHERE event_type = 'activity.match.placed'
+        AND (user_id = ${userId} OR avatar_id = ${avatarId})
+        AND coalesce(payload->>'subjectType','') <> 'bot'
+        AND payload->>'activityType' IS NOT NULL
+    `);
+    return Number(rows[0]?.c ?? 0);
+  }
+
+  const ok = (): EngagementResult => ({ ok: true });
+  const fail = (reason: string): EngagementResult => ({ ok: false, pending: false, reason });
+
   switch (questId) {
-    case 'first-steps':
-      // Lowest bar — any event proves the account is real, not a brand-new
-      // signup blasting /claim. Movement isn't an event today, so any
-      // heartbeat / chat / visit suffices.
-      return (await countEvents(sql`1=1`)) >= 1 ? null : 'no_activity';
-
-    case 'building-explorer':
-      return (await countEvents(sql`event_type = 'building.visited'`)) >= 1
-        ? null
-        : 'no_building_visits';
-
-    case 'npc-chatter':
-      // NPC chats fire `agent.chat.turn` with payload.chatType being one of
-      // 'character' (agent-gateway), 'building' (agent-gateway), 'location'
-      // (chat.ts), or 'system-agent' (chat.ts). The "small talk with a
-      // building character" intent maps to character / building / location.
-      // Excludes 'avatar' (that's avatar-whisperer) and 'system-agent' (Nori).
+    // ── TIER 1 ────────────────────────────────────────────────────────
+    case 'say-hi-nori':
       return (await countEvents(
-        sql`event_type = 'agent.chat.turn'
-            AND payload->>'chatType' IN ('character','building','location')`,
-      )) >= 2
-        ? null
-        : 'insufficient_npc_chats';
+        sql`event_type = 'agent.chat.turn' AND payload->>'chatType' = 'system-agent'`,
+      )) >= 1 ? ok() : fail('no_system_chats');
 
-    case 'book-worm':
-      // Emitted by apps/api/src/routes/items.ts /buy after successful debit.
-      return (await countEvents(
-        sql`event_type = 'item.purchased' AND coalesce(payload->>'isBook','') = 'true'`,
-      )) >= 1
-        ? null
-        : 'no_purchases';
-
-    case 'avatar-whisperer':
-      // Avatar chat fires `agent.chat.turn` with chatType='avatar' — see
-      // apps/api/src/routes/avatars.ts chat handler.
+    case 'meet-your-agent':
       return (await countEvents(
         sql`event_type = 'agent.chat.turn' AND payload->>'chatType' = 'avatar'`,
-      )) >= 3
-        ? null
-        : 'insufficient_pet_chats';
+      )) >= 1 ? ok() : fail('no_pet_chats');
 
-    case 'agent-scholar':
-      // Emitted by apps/api/src/routes/items.ts /learn ONLY when
-      // newKnowledge.length > 0 — re-reading a book that contributed
-      // nothing new doesn't count. Threshold of 3 = three books with new
-      // knowledge merged into the agent.
+    case 'first-steps':
+      return (await countEvents(sql`event_type = 'building.visited'`)) >= 1
+        ? ok()
+        : fail('no_building_visits');
+
+    // ── TIER 2 ────────────────────────────────────────────────────────
+    case 'town-briefing':
       return (await countEvents(
-        sql`event_type = 'book.read'`,
-      )) >= 3
-        ? null
-        : 'insufficient_knowledge';
+        sql`event_type = 'agent.chat.turn' AND payload->>'chatType' = 'system-agent'`,
+      )) >= 3 ? ok() : fail('insufficient_system_chats');
 
-    case 'deep-explorer': {
-      // Distinct buildings visited
-      const rows = await db.execute<{ c: number }>(sql`
-        SELECT COUNT(DISTINCT building_id)::int AS c FROM events
-        WHERE event_type = 'building.visited'
-          AND (user_id = ${userId} OR avatar_id = ${avatarId})
-          AND building_id IS NOT NULL
-      `);
-      return Number(rows[0]?.c ?? 0) >= 5 ? null : 'insufficient_distinct_buildings';
+    case 'bonded':
+      return (await countEvents(
+        sql`event_type = 'agent.chat.turn' AND payload->>'chatType' = 'avatar'`,
+      )) >= 5 ? ok() : fail('insufficient_pet_chats');
+
+    case 'door-knocker': {
+      const visits = await countEvents(sql`event_type = 'building.visited'`);
+      const teacherChats = await countEvents(
+        sql`event_type = 'agent.chat.turn'
+            AND payload->>'chatType' IN ('character','building','location')`,
+      );
+      return visits >= 1 && teacherChats >= 1 ? ok() : fail('compound_unmet');
     }
 
-    case 'bot-master':
-      // Any agent.connected for this user — proves an OpenClaw bot has
-      // attached to the account.
-      return (await countEvents(sql`event_type = 'agent.connected'`)) >= 1
-        ? null
-        : 'no_bot_connection';
+    // ── TIER 3 ────────────────────────────────────────────────────────
+    case 'town-tour': {
+      const distinctVisits = await distinctBuildingsVisited();
+      const distinctTeachers = await distinctTeacherChats();
+      return distinctVisits >= 3 && distinctTeachers >= 2 ? ok() : fail('compound_unmet');
+    }
 
+    case 'star-pupil':
+      return (await distinctTeacherChats()) >= 5 ? ok() : fail('insufficient_distinct_teachers');
+
+    case 'cartographer':
+      return (await distinctBuildingsVisited()) >= 10
+        ? ok()
+        : fail('insufficient_distinct_buildings');
+
+    // ── TIER 4 ────────────────────────────────────────────────────────
+    case 'shop-and-study': {
+      const bought = await countEvents(
+        sql`event_type = 'item.purchased' AND coalesce(payload->>'isBook','') = 'true'`,
+      );
+      const learned = await countEvents(sql`event_type = 'book.read'`);
+      return bought >= 1 && learned >= 1 ? ok() : fail('compound_unmet');
+    }
+
+    case 'inventory-in-action': {
+      const bought = await countEvents(sql`event_type = 'item.purchased'`);
+      const used = await countEvents(
+        sql`event_type IN ('book.read','cosmetic.equipped')`,
+      );
+      return bought >= 1 && used >= 1 ? ok() : fail('compound_unmet');
+    }
+
+    case 'library-card': {
+      const buildings = await distinctBookBuildings();
+      const learned = await countEvents(sql`event_type = 'book.read'`);
+      return buildings >= 3 && learned >= 3 ? ok() : fail('compound_unmet');
+    }
+
+    case 'polymath':
+      return (await countEvents(sql`event_type = 'book.read'`)) >= 10
+        ? ok()
+        : fail('insufficient_knowledge');
+
+    // ── TIER 5 ────────────────────────────────────────────────────────
     case 'first-match':
       return (await countEvents(
         sql`event_type = 'activity.match.placed'
             AND coalesce(payload->>'subjectType','') <> 'bot'`,
-      )) >= 1
-        ? null
-        : 'no_matches';
+      )) >= 1 ? ok() : fail('no_matches');
 
-    case 'first-win':
+    case 'game-day': {
+      const distinctTeachers = await distinctTeacherChats();
+      const matches = await countEvents(
+        sql`event_type = 'activity.match.placed'
+            AND coalesce(payload->>'subjectType','') <> 'bot'`,
+      );
+      return distinctTeachers >= 2 && matches >= 1 ? ok() : fail('compound_unmet');
+    }
+
+    case 'reef-veteran':
+      return (await distinctActivityTypes()) >= 2 ? ok() : fail('insufficient_activity_types');
+
+    case 'first-victory':
       return (await countEvents(
         sql`event_type = 'activity.match.placed'
             AND payload->>'placement' = '1'
             AND coalesce(payload->>'subjectType','') <> 'bot'`,
-      )) >= 1
-        ? null
-        : 'no_wins';
+      )) >= 1 ? ok() : fail('no_wins');
 
-    default:
-      return 'unknown_quest';
+    case 'match-maker': {
+      const matches = await countEvents(
+        sql`event_type = 'activity.match.placed'
+            AND coalesce(payload->>'subjectType','') <> 'bot'`,
+      );
+      const wins = await countEvents(
+        sql`event_type = 'activity.match.placed'
+            AND payload->>'placement' = '1'
+            AND coalesce(payload->>'subjectType','') <> 'bot'`,
+      );
+      return matches >= 5 && wins >= 1 ? ok() : fail('compound_unmet');
+    }
+
+    // ── TIER 6 ────────────────────────────────────────────────────────
+    case 'bot-master':
+      return (await countEvents(sql`event_type = 'agent.connected'`)) >= 1
+        ? ok()
+        : fail('no_bot_connection');
+
+    case 'open-house': {
+      const connected = await countEvents(sql`event_type = 'agent.connected'`);
+      // Bot teacher chats: chatType in (character/building/location)
+      // emitted by the agent gateway when an OpenClaw bot speaks. We
+      // count distinct buildings here.
+      const botChatRows = await db.execute<{ c: number }>(sql`
+        SELECT COUNT(DISTINCT building_id)::int AS c FROM events
+        WHERE event_type IN ('agent.chat.turn','agent.collaboration.turn')
+          AND payload->>'chatType' IN ('character','building','location')
+          AND (user_id = ${userId} OR avatar_id = ${avatarId})
+          AND building_id IS NOT NULL
+      `);
+      const distinctBotTeachers = Number(botChatRows[0]?.c ?? 0);
+      const matches = await countEvents(
+        sql`event_type = 'activity.match.placed'`,
+      );
+      return connected >= 1 && distinctBotTeachers >= 2 && matches >= 1
+        ? ok()
+        : fail('compound_unmet');
+    }
+
+    // ── TIER 7 ────────────────────────────────────────────────────────
+    case 'on-the-board':
+      // "Has any leaderboard-scoring event" — any chat / match / building
+      // visit / skill_md fetch counts.
+      return (await countEvents(
+        sql`event_type IN ('agent.chat.turn','agent.collaboration.turn',
+                           'building.visited','skill_md.fetched',
+                           'activity.match.placed')`,
+      )) >= 1 ? ok() : fail('no_scoring_events');
+
+    case 'top-100': {
+      // Compute the avatar's current rank in the agents leaderboard (24h
+      // window) and check against threshold 100. This is a heavy SQL
+      // path — leaderboard.ts already snapshot-caches similar; for
+      // tutorial gating we recompute on-demand (per claim, infrequent).
+      const rankRows = await db.execute<{ rank: number }>(sql`
+        WITH events_window AS (
+          SELECT subject_type, subject_id FROM events
+          WHERE created_at > NOW() - INTERVAL '24 hours'
+            AND subject_id IS NOT NULL
+        ),
+        ranked AS (
+          SELECT subject_id,
+                 ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC) AS rank
+          FROM events_window
+          GROUP BY subject_id
+        )
+        SELECT rank::int FROM ranked WHERE subject_id = ${avatarId}
+      `);
+      const rank = Number(rankRows[0]?.rank ?? 9999);
+      return rank > 0 && rank <= 100 ? ok() : fail('rank_too_low');
+    }
+
+    case 'building-champion': {
+      // Avatar is the top-visited subject for any single building (24h).
+      const rows = await db.execute<{ matched: number }>(sql`
+        WITH per_building AS (
+          SELECT building_id, subject_id, COUNT(*) AS visits
+          FROM events
+          WHERE event_type = 'building.visited'
+            AND created_at > NOW() - INTERVAL '24 hours'
+            AND building_id IS NOT NULL
+            AND subject_id IS NOT NULL
+          GROUP BY building_id, subject_id
+        ),
+        winners AS (
+          SELECT building_id, subject_id,
+                 ROW_NUMBER() OVER (PARTITION BY building_id ORDER BY visits DESC) AS rk
+          FROM per_building
+        )
+        SELECT COUNT(*)::int AS matched FROM winners
+        WHERE rk = 1 AND subject_id = ${avatarId}
+      `);
+      return Number(rows[0]?.matched ?? 0) >= 1 ? ok() : fail('not_top_visitor');
+    }
+
+    // ── TIER 8 ────────────────────────────────────────────────────────
+    case 'crossover':
+      return (await countEvents(
+        sql`event_type IN ('portal.scape.crossed','portal.scape.linked')`,
+      )) >= 1 ? ok() : fail('no_portal_cross');
+
+    // ── TIER 9 ────────────────────────────────────────────────────────
+    case 'full-house': {
+      const distinctVisits = await distinctBuildingsVisited();
+      const distinctTeachers = await distinctTeacherChats();
+      const booksBought = await countEvents(
+        sql`event_type = 'item.purchased' AND coalesce(payload->>'isBook','') = 'true'`,
+      );
+      const learned = await countEvents(sql`event_type = 'book.read'`);
+      return distinctVisits >= 10 &&
+        distinctTeachers >= 10 &&
+        booksBought >= 5 &&
+        learned >= 5
+        ? ok()
+        : fail('compound_unmet');
+    }
+
+    case 'elite-trainer': {
+      const connected = await countEvents(sql`event_type = 'agent.connected'`);
+      const wins = await countEvents(
+        sql`event_type = 'activity.match.placed'
+            AND payload->>'placement' = '1'
+            AND coalesce(payload->>'subjectType','') <> 'bot'`,
+      );
+      const learned = await countEvents(sql`event_type = 'book.read'`);
+      // Reuse top-100 rank check.
+      const rankRows = await db.execute<{ rank: number }>(sql`
+        WITH events_window AS (
+          SELECT subject_id FROM events
+          WHERE created_at > NOW() - INTERVAL '24 hours'
+            AND subject_id IS NOT NULL
+        ),
+        ranked AS (
+          SELECT subject_id,
+                 ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC) AS rank
+          FROM events_window
+          GROUP BY subject_id
+        )
+        SELECT rank::int FROM ranked WHERE subject_id = ${avatarId}
+      `);
+      const rank = Number(rankRows[0]?.rank ?? 9999);
+      return connected >= 1 && wins >= 3 && learned >= 10 && rank > 0 && rank <= 100
+        ? ok()
+        : fail('compound_unmet');
+    }
+
+    // Pending quests (style-statement, big-spender, wallet-aware,
+    // brand-ambassador) get short-circuited at the top of the function
+    // to `pending_feature`. They land here only via the type union; we
+    // double-gate as pending so a future un-pending without a case
+    // doesn't accidentally credit.
+    case 'style-statement':
+    case 'big-spender':
+    case 'wallet-aware':
+    case 'brand-ambassador':
+      return { ok: false, pending: true, reason: 'feature_not_shipped' };
   }
 }
 
@@ -1106,19 +1341,20 @@ questRoutes.post('/tutorial/:id/claim', requireAuth, async (c) => {
   }
 
   // Engagement gate — server-side proof that the user actually played.
-  const validationFailure = await validateTutorialQuestEngagement(
+  const validation = await validateTutorialQuestEngagement(
     user.id,
     avatar.id,
     questId as TutorialQuestId,
   );
-  if (validationFailure) {
+  if (!validation.ok) {
     return c.json(
       {
         ok: false,
-        error: 'engagement_required',
-        reason: validationFailure,
-        message:
-          'Server cannot verify completion yet — keep playing and try again.',
+        error: validation.pending ? 'pending_feature' : 'engagement_required',
+        reason: validation.reason,
+        message: validation.pending
+          ? 'This quest is for an upcoming feature — claim opens once the backend ships.'
+          : 'Server cannot verify completion yet — keep playing and try again.',
         credited: 0,
         balance: avatar.clawTokens,
       },

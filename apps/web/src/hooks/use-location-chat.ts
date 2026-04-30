@@ -4,6 +4,7 @@ import { useState, useCallback, useEffect } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useGameStore } from '@/stores/game';
+import { useQuestStore, triggerQuestCheck } from '@/stores/quest';
 import type { ChatMessage } from '@/types/chat';
 
 export function useLocationChat(locationId: string | null) {
@@ -67,6 +68,15 @@ export function useLocationChat(locationId: string | null) {
         timestamp: new Date().toISOString(),
       };
       setMessages((prev) => [...prev, userMsg]);
+
+      // Quest counters — chatting with a building teacher feeds Tier 2
+      // Door Knocker, Tier 3 Town Tour / Star Pupil, Tier 5 Game Day, and
+      // the Tier 9 Full House capstone. The locationId doubles as the
+      // teacher discriminator for the distinct-set tracker.
+      const qs = useQuestStore.getState();
+      qs.incrementCounter('characterMessagesSent', 1);
+      qs.recordDistinct('distinctTeachersChatted', locationId);
+      triggerQuestCheck();
 
       sendMutation.mutate(content);
     },

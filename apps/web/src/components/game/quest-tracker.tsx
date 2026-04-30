@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useQuestStore, retryUnclaimedRewards } from '@/stores/quest';
-import { QUEST_DEFINITIONS, type QuestId } from '@/lib/quests';
+import { QUEST_DEFINITIONS, type QuestId, type QuestDefinition } from '@/lib/quests';
 import { useGameStore } from '@/stores/game';
 
 const TUTORIAL_KEY = 'clawville-tutorial-seen';
@@ -18,9 +18,8 @@ export default function QuestTracker() {
 
   // Q3 plan §2.6 + audit-fix 2026-04-29 — settle any locally-completed
   // tutorial quests whose server-side credit didn't land due to a one-time
-  // network failure. Server is idempotent (409 = already_claimed = no-op);
-  // worst case is one silent round-trip per locally-completed quest on first
-  // mount per session.
+  // network failure. Server is idempotent (409 = already_claimed = no-op).
+  // Also probes serverOnly quests once their prereqs land.
   useEffect(() => {
     void retryUnclaimedRewards();
   }, []);
@@ -31,11 +30,6 @@ export default function QuestTracker() {
       const tutorialSeen = localStorage.getItem(TUTORIAL_KEY) === 'true';
       if (tutorialSeen && !visible) {
         setVisible(true);
-        // Auto-expand and pulse on first ever appearance — but NOT on
-        // mobile. On mobile the expanded card eats ~30% of the viewport
-        // and blocks the game world (user report 2026-04-24). Mobile
-        // users still get the pulse + toast so they know the tracker is
-        // there; they can tap to expand on demand.
         const introSeen = localStorage.getItem(QUEST_INTRO_KEY);
         if (!introSeen && !shownIntro.current) {
           shownIntro.current = true;
@@ -44,9 +38,7 @@ export default function QuestTracker() {
           if (!isMobile) setExpanded(true);
           setIsNew(true);
           localStorage.setItem(QUEST_INTRO_KEY, 'true');
-          // Show welcome toast
           useGameStore.getState().addToast('📋', 'Complete quests to learn the ropes!', 5000);
-          // Stop pulsing after 8s
           setTimeout(() => setIsNew(false), 8000);
         }
       }
@@ -64,9 +56,10 @@ export default function QuestTracker() {
   const totalCount = QUEST_DEFINITIONS.length;
   const allDone = completedCount === totalCount;
 
-  // Find current active quest (first active one)
+  // Headline quest = first non-pending active quest. Pending quests show
+  // in the list as "soon" but never headline since you can't progress them.
   const activeQuest = QUEST_DEFINITIONS.find(
-    (q) => progress[q.id]?.status === 'active'
+    (q) => progress[q.id]?.status === 'active' && !q.isPending
   );
 
   return (
@@ -108,7 +101,7 @@ export default function QuestTracker() {
 interface QuestPanelProps {
   expanded: boolean;
   onToggle: () => void;
-  activeQuest: (typeof QUEST_DEFINITIONS)[number] | undefined;
+  activeQuest: QuestDefinition | undefined;
   completedCount: number;
   totalCount: number;
   allDone: boolean;
@@ -130,11 +123,21 @@ function QuestPanel({
   isNew,
   mobile,
 }: QuestPanelProps) {
-  // Mobile collapsed is a compact one-line pill (icon + title + count + chevron).
-  // Desktop / expanded keep the chunky card with hint + progress bar.
-  // User report 2026-04-24: the fat mobile card took ~30% of viewport; pared
-  // back to a tap target only while collapsed.
   const isCompactMobile = mobile && !expanded;
+
+  // Tier-group the quests (excluding the headline active quest).
+  const tieredList = (() => {
+    const visible = QUEST_DEFINITIONS.filter((q) => q.id !== activeQuest?.id);
+    const byTier = new Map<number, QuestDefinition[]>();
+    for (const q of visible) {
+      const arr = byTier.get(q.tier) ?? [];
+      arr.push(q);
+      byTier.set(q.tier, arr);
+    }
+    return Array.from(byTier.keys())
+      .sort((a, b) => a - b)
+      .map((tier) => ({ tier, list: byTier.get(tier) ?? [] }));
+  })();
 
   return (
     <div className={mobile ? 'w-[220px] max-w-[75vw]' : 'w-80'}>
@@ -161,14 +164,11 @@ function QuestPanel({
               ? activeQuest.title
               : 'Quests'}
           </div>
-          {/* Active hint — desktop collapsed only. Mobile collapsed hides it
-              to keep the pill small; user taps to expand for details. */}
           {!isCompactMobile && !allDone && activeQuest && !expanded && (
             <div className="text-sm text-white/75 truncate mt-1 font-medium">
               {activeQuest.hint}
             </div>
           )}
-          {/* Mini progress bar — desktop-only in collapsed view. */}
           {!isCompactMobile && !allDone && activeQuest && (
             <div className="h-2.5 w-full bg-black/15 rounded-full mt-2 overflow-hidden border border-black/5">
               <div
@@ -221,65 +221,85 @@ function QuestPanel({
                     />
                   </div>
                 </div>
+                <span className="font-mono text-[10px] text-amber-300/80">
+                  +{activeQuest.rewardTokens}
+                </span>
               </div>
             </div>
           )}
 
-          {/* All quests */}
-          {QUEST_DEFINITIONS.map((quest) => {
-            const status = progress[quest.id]?.status ?? 'locked';
-            const prog = getProgress(quest.id);
-            const isCompleted = status === 'completed';
-            const isLocked = status === 'locked';
-            const isActive = status === 'active' && quest.id !== activeQuest?.id;
-
-            // Skip the active quest since it's shown above
-            if (quest.id === activeQuest?.id) return null;
-
-            return (
-              <div
-                key={quest.id}
-                className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${
-                  isCompleted
-                    ? 'bg-claw-green/20'
-                    : isLocked
-                    ? 'bg-white/[0.03]'
-                    : 'bg-white/[0.06]'
-                }`}
-              >
-                <span className="text-xl flex-shrink-0">
-                  {isCompleted ? '✅' : isLocked ? '🔒' : quest.icon}
-                </span>
-
-                <div className="flex-1 min-w-0">
+          {/* Tier-grouped quests */}
+          {tieredList.map(({ tier, list }) => (
+            <div key={`tier-${tier}`} className="space-y-1">
+              <div className="px-2 pt-2 pb-1 font-mono text-[9px] uppercase tracking-[0.2em] text-white/40">
+                Tier {tier}
+              </div>
+              {list.map((quest) => {
+                const status = progress[quest.id]?.status ?? 'locked';
+                const prog = getProgress(quest.id);
+                const isCompleted = status === 'completed';
+                const isLocked = status === 'locked';
+                const isActive = status === 'active';
+                const isPending = quest.isPending;
+                return (
                   <div
-                    className={`text-sm font-bold truncate ${
+                    key={quest.id}
+                    className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-all ${
                       isCompleted
-                        ? 'text-white/50 line-through'
+                        ? 'bg-claw-green/20'
+                        : isPending
+                        ? 'bg-amber-500/[0.05] border border-amber-500/15'
                         : isLocked
-                        ? 'text-white/40'
-                        : 'text-white'
+                        ? 'bg-white/[0.03]'
+                        : 'bg-white/[0.06]'
                     }`}
                   >
-                    {quest.title}
-                  </div>
-                  {isActive && (
-                    <div className="text-xs text-white/70 truncate font-medium">
-                      {quest.description}
-                    </div>
-                  )}
-                  {isActive && (
-                    <div className="h-2 w-full bg-black/30 rounded-full mt-1 overflow-hidden">
+                    <span className="text-xl flex-shrink-0">
+                      {isCompleted ? '✅' : isPending ? '🚧' : isLocked ? '🔒' : quest.icon}
+                    </span>
+
+                    <div className="flex-1 min-w-0">
                       <div
-                        className="h-full bg-claw-green rounded-full transition-all duration-500"
-                        style={{ width: `${prog * 100}%` }}
-                      />
+                        className={`text-sm font-bold truncate flex items-center gap-2 ${
+                          isCompleted
+                            ? 'text-white/50 line-through'
+                            : isPending
+                            ? 'text-amber-200/80'
+                            : isLocked
+                            ? 'text-white/40'
+                            : 'text-white'
+                        }`}
+                      >
+                        <span className="truncate">{quest.title}</span>
+                        {isPending && (
+                          <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-amber-300/80 flex-shrink-0">
+                            soon
+                          </span>
+                        )}
+                      </div>
+                      {isActive && !isPending && (
+                        <div className="text-xs text-white/70 truncate font-medium">
+                          {quest.description}
+                        </div>
+                      )}
+                      {isActive && !isPending && (
+                        <div className="h-2 w-full bg-black/30 rounded-full mt-1 overflow-hidden">
+                          <div
+                            className="h-full bg-claw-green rounded-full transition-all duration-500"
+                            style={{ width: `${prog * 100}%` }}
+                          />
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+
+                    <span className="ml-1 font-mono text-[10px] text-amber-300/80 whitespace-nowrap">
+                      +{quest.rewardTokens}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
         </div>
       )}
     </div>

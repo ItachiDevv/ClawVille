@@ -54,6 +54,16 @@ const GROUND_Y    = -2;
 const GUIDE_Z     = 240;
 const GUIDE_SCALE = 200;
 
+// Exported so player-avatar / npc-controller can run the same proximity
+// check building characters get against the CHARACTER_POSITIONS map.
+// X is 0 (town center on X-axis); Z matches the placement above.
+export const NORI_WORLD_X = 0;
+export const NORI_WORLD_Z = GUIDE_Z;
+// Squared talk-radius — 320 wu gives Nori a slightly larger pull-in
+// circle than the 260 wu building characters use, since she stands in
+// the open town center where proximity is the only chat affordance.
+export const NORI_TALK_RADIUS_SQ = 320 * 320;
+
 const CLIP_WAVE = 'wave';
 
 // Ordered playlist. pose-laying excluded (looks broken at standing height —
