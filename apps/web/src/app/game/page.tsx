@@ -45,6 +45,7 @@ const LeaderboardModal = dynamic(() => import('@/components/game/leaderboard-mod
 import BuildingTooltip from '@/components/game/building-tooltip';
 import DailyLoginModal from '@/components/game/daily-login-modal';
 import QuestTracker from '@/components/game/quest-tracker';
+import NoriButton from '@/components/game/nori-button';
 import ThoughtLog from '@/components/game/thought-log';
 import ControlModeToggle from '@/components/game/control-mode-toggle';
 import AutonomyHUD from '@/components/game/autonomy-hud';
@@ -306,6 +307,11 @@ export default function GamePage() {
       <MobileControls />
       <PerfHud />
       <ToastNotifications />
+      {/* Ask Nori HUD shortcut — opens the Town Guide chat from anywhere
+          on the world surface so new players don't have to find her 3D
+          model first. Hides itself when a chat is already open or
+          inside an activity room. */}
+      <NoriButton />
       {/* Listens for `clawville:ensure-guest-pet` window events from the
           game store and bootstraps a guest pet for un-authenticated
           visitors. No UI of its own. */}
