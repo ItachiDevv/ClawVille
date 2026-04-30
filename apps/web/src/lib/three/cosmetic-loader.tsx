@@ -363,13 +363,23 @@ export function useEquippedCosmetics(
   // but is intentionally NOT in the cache key today — the API resolves
   // ownership from the session cookie, so all callers share a single
   // 'caller-pet' cache slot.
+  //
+  // Polling tuning (perf audit 2026-04-29 #2): cosmetics only change when
+  // the user equips something via the drawer, which goes through
+  // `useEquipCosmetic()` and explicitly invalidates this query key. The
+  // previous 30s+refetchOnWindowFocus combo fired a fresh /owned fetch
+  // every alt-tab return AND every 30s of play, each one cascading through
+  // a useMemo + reconciler pass inside an active R3F useFrame loop on Iris
+  // Xe (causing visible jitter spikes). Dropped to 120s polling and
+  // disabled focus refetch — equip mutations remain instant via the
+  // explicit invalidate path.
   void petId;
   const { data } = useQuery<OwnedCosmeticsResponse>({
     queryKey:   ['cosmetics', 'owned'],
     queryFn:    fetchOwnedCosmetics,
-    staleTime:  30_000, // 30s
-    refetchInterval: 30_000,
-    refetchOnWindowFocus: true,
+    staleTime:  120_000,
+    refetchInterval: 120_000,
+    refetchOnWindowFocus: false,
     // Don't throw on auth failure — the hook returns empty
     retry:      false,
   });
