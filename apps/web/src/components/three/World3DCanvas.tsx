@@ -933,14 +933,12 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
     >
       <Canvas
         gl={glFactory as any}
-        // DPR drop 2026-04-30 emergency: was [0.75, 1.0], now [0.5, 0.5].
-        // Canvas renders at half native resolution and is upscaled by the
-        // browser to fit the CSS box — 4× fewer fragments per frame on
-        // every machine. Edges look slightly softer; HUD/UI text is
-        // unaffected (CSS layer is independent of the WebGL canvas DPR).
-        // Single biggest no-feature-loss GPU win available short of
-        // disabling shaders or geometry.
-        dpr={[0.5, 0.5]}
+        // Restored 2026-04-30 — the [0.5, 0.5] emergency drop was too
+        // visibly blurry. Reverting to the original cap. Other perf
+        // wins (atmosphere off, NPC spring throttle, 60Hz Zustand
+        // debounce, animator order fix) remain in place because none of
+        // them cost visual quality.
+        dpr={[0.75, 1]}
         // MUST be "always" — R3F v9 with an async gl factory appears to skip
         // calling the factory entirely when frameloop="never" is set, so the
         // Canvas never initializes. "always" drives the normal RAF loop.
