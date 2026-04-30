@@ -89,14 +89,6 @@ const _lookAt         = new THREE.Vector3();
 const _camPos         = new THREE.Vector3();
 const _rotatedOffset  = new THREE.Vector3();
 const _playerWorldDir = new THREE.Vector3(0, 0, 1);
-
-// ─── Player baseline Y (must match WATER_Y in river-scene.tsx + ReefRacePlayer.tsx) ─
-// v2 spline path: player surfboards float ON the water surface (WATER_Y=-200).
-// Chase camera target/lookAt MUST anchor at the same Y or the player drops
-// off the bottom of the frame. v1 ellipse path stays at y=0 (grass track).
-const USE_SPLINE_PLAYER_FOR_CAM =
-  process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
-const PLAYER_BASE_Y = USE_SPLINE_PLAYER_FOR_CAM ? -200 : 0;
 // Scratch for selfPos passed to <ReefRaceBoostFX> — avoids a `new Vector3()` per
 // React render. Safe: ReefRaceBoostFX reads playerPos.x/y/z only inside useFrame
 // (RAF), which fires AFTER the React render that writes this value.
@@ -301,10 +293,7 @@ function ChaseCamera({ selfEntity, shakeRef }: ChaseCamProps) {
       CAMERA_OFFSET.y,
       -CAMERA_OFFSET.x * Math.sin(heading) + CAMERA_OFFSET.z * Math.cos(heading),
     );
-    // Anchor camera + lookAt at PLAYER_BASE_Y (water surface for v2 spline path,
-    // grass for v1 ellipse). Without this the camera floats 200wu above the
-    // surfboard and frames empty grass instead of the player.
-    _targetPos.set(renderX, PLAYER_BASE_Y, renderZ).add(_rotatedOffset);
+    _targetPos.set(renderX, 0, renderZ).add(_rotatedOffset);
 
     // Lerp camera position.
     const lerpFactor = Math.min(1, CAMERA_LERP * delta);
@@ -312,7 +301,7 @@ function ChaseCamera({ selfEntity, shakeRef }: ChaseCamProps) {
     cam.position.copy(_camPos);
 
     // Look at kart + upward offset.
-    _lookAt.set(renderX, PLAYER_BASE_Y, renderZ).add(CAMERA_LOOK_OFFSET);
+    _lookAt.set(renderX, 0, renderZ).add(CAMERA_LOOK_OFFSET);
     cam.lookAt(_lookAt);
 
     // Screen shake — decay and apply camera position offset.

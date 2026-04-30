@@ -38,13 +38,6 @@ const _quat     = new THREE.Quaternion();
 const _scl      = new THREE.Vector3(1, 1, 1);
 let _spinAngle  = 0;
 
-// ─── Player baseline Y (must match WATER_Y in river-scene.tsx + ReefRacePlayer.tsx) ─
-// v2 spline path: pickups float above water (WATER_Y=-200 + PICKUP_Y_ABOVE_TRACK).
-// v1 ellipse path stays at PICKUP_Y_ABOVE_TRACK above grass (y=0).
-const USE_SPLINE_PICKUPS =
-  process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
-const PICKUP_BASE_Y = USE_SPLINE_PICKUPS ? -200 : 0;
-
 // ─── Canvas texture (module scope) ───────────────────────────────────────────
 // Created once for the lifetime of the module (not per-mount).
 let _pickupTexture: THREE.CanvasTexture | null = null;
@@ -143,7 +136,7 @@ export default function ReefRacePickups() {
         nextSlot.current++;
         slotMap.current.set(spawnId, slot);
 
-        _pos.set(pickup.x, PICKUP_BASE_Y + PICKUP_Y_ABOVE_TRACK, pickup.y);
+        _pos.set(pickup.x, PICKUP_Y_ABOVE_TRACK, pickup.y);
         _quat.identity();
         _scl.set(1, 1, 1);
         _m4.compose(_pos, _quat, _scl);
