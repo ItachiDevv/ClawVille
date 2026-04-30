@@ -4,6 +4,7 @@ import { useRef, useMemo, useState, useEffect } from 'react';
 import { Canvas, useFrame, extend } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
+import { useVisibleFrameloop } from '@/lib/use-visible-frameloop';
 
 extend(THREE as any);
 
@@ -287,6 +288,7 @@ function SceneContents() {
 // ---------------------------------------------------------------------------
 export default function LandingScene() {
   const [ready, setReady] = useState(false);
+  const { ref, frameloop } = useVisibleFrameloop();
 
   useEffect(() => {
     setReady(true);
@@ -295,10 +297,12 @@ export default function LandingScene() {
   if (!ready) return null;
 
   return (
-    <div className="absolute inset-0 z-0">
+    <div ref={ref} className="absolute inset-0 z-0">
       <Canvas
         shadows
-        gl={{ antialias: true }}
+        gl={{ antialias: true, powerPreference: 'high-performance' }}
+        dpr={[1, 1.5]}
+        frameloop={frameloop}
         camera={{
           fov: 50,
           near: 1,
