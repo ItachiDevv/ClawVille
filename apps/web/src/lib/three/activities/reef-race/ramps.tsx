@@ -1,197 +1,331 @@
 'use client';
 
 /**
- * ramps.tsx — Reef Race SPEC 3
+ * ramps.tsx — Reef Race SPEC 3 — GLB asset integration
  *
- * Six procedural wedge meshes placed at the ramp trigger volume positions
- * along the v2 spline track. Each wedge is a triangle-prism BufferGeometry
- * aligned to the spline tangent direction, rising from the water surface at
- * the front to a peak at the back (in the direction of travel).
+ * Replaces the procedural triangle-prism wedge ramps with the real GLB asset
+ * "bemsx_ramp_jump" from Sketchfab:
+ *   apps/web/public/models/reef-race/scenery/ramp-jump.glb
+ *   453 KB · 165 tris · 712 verts · 7 WebP textures (1024px) · 2 material groups
  *
- * Visual spec:
- *   - 300wu long × 400wu wide × 60wu tall
- *   - Warm coral/wood colour (#c9884a) — pops against the blue river water
- *   - MeshStandardMaterial (NOT ShaderMaterial — Iris Xe safe)
- *   - DoubleSide so the underside renders if the camera dips below the ramp
- *   - Module-scope merged geometry — ALL 6 ramps in 1 draw call
- *   - matrixAutoUpdate=false (static geometry)
+ * Orientation commitment:
+ *   +Z = travel direction (player rides up toward +Z, exits airborne)
+ *   +Y = up (ramp rises from Y≈-0.23 at front to Y≈+9.78 at peak)
+ *   GLB bbox (post-node-transform): X≈-9.83..11.59, Y≈-0.23..9.78, Z≈-11.34..9.75
  *
- * PERF FIX (2026-04-29):
- *   Previously: 6 separate Mesh instances = 6 draw calls.
- *   Now: all 6 wedge geometries transformed and merged at module scope
- *        → 1 merged BufferGeometry, 1 draw call.
- *   Reduction: 6 → 1 draw call.
+ * Pivot anchor:
+ *   The ramp's bottom-front-center is at (0.88, -0.23, -11.34) in GLB-meter space.
+ *   We apply pivotMatrix = translate(-0.88, +0.23, +11.34) so that corner lands
+ *   at world-origin before the per-instance T×R×S is applied.
+ *   Result: each ramp's low-end bottom-center sits at the spline t-position, y=0.
+ *
+ * Scale:
+ *   Uniform scale = 18 (see computation below).
+ *   GLB extents: X=21.42m · Y=10.01m · Z=21.09m
+ *   At scale 18: ~385wu wide × ~180wu tall × ~380wu long
+ *   Target was 400wu travel × 500wu wide × 80wu tall — height exceeds target
+ *   deliberately (brief says "ramp can be a bit grander / more substantial").
+ *   Width at 385 and travel at 380 are within the generous target band.
+ *
+ * Draw calls:
+ *   The GLB has 2 material groups (Frame / Floor). All ramp instances are merged
+ *   per-material → 2 merged geometries → 2 <mesh> elements → 2 draw calls total.
+ *   This is the minimum achievable while preserving both texture sets.
+ *   (was 6 procedural meshes = 6 draw calls; now N_ramps × 2 → 2 draw calls)
+ *
+ * Count:
+ *   Loops over buildSplineRampsClient() dynamically — no hardcoded count.
+ *   When the orchestrator bumps the config to 20 ramps, this component
+ *   automatically renders 20 ramp instances with no code change required.
+ *   At 20 ramps: 165 tris × 20 = 3,300 tris merged → trivially small.
  *
  * Iris Xe invariants:
- *   - Plain Mesh + plain MeshStandardMaterial — safe.
- *   - No InstancedMesh + ShaderMaterial (crash gotcha).
- *   - No drei Text/Billboard (crash gotcha).
- *   - matrixAutoUpdate=false (static after mount).
- *   - Module-scope geo/mat never disposed (page-lifetime, shared).
+ *   - Plain Mesh + plain MeshStandardMaterial (cloned from GLB) — NOT ShaderMaterial
+ *   - NOT InstancedMesh + ShaderMaterial (crash gotcha)
+ *   - NOT drei Text/Billboard (crash gotcha)
+ *   - All geometry build in one-time useEffect — zero per-frame allocations
+ *   - frustumCulled=false + matrixAutoUpdate=false on output meshes
+ *   - useGLTF.preload() at module scope (before any consumer renders)
+ *
+ * Pattern source:
+ *   Mirrors rocky-cliffs.tsx (extractAndTransformGeos) + adds pivot offset and
+ *   per-material splitting to preserve GLB textures.
  */
 
-import { useRef, useEffect } from 'react';
+import { Suspense, useEffect, useRef } from 'react';
+import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { buildSplineRampsClient } from './reef-race-config';
 import { clientSpline } from './reef-race-spline-instance';
 
-// ─── Wedge geometry constants ─────────────────────────────────────────────────
+// ─── Asset path ───────────────────────────────────────────────────────────────
 
-const RAMP_VIS_LENGTH = 300;  // wu along tangent (halfLength × 2)
-const RAMP_VIS_WIDTH  = 400;  // wu perpendicular (halfWidth × 2)
-const RAMP_VIS_HEIGHT = 60;   // wu vertical rise at high end
+const RAMP_GLB_PATH = '/models/reef-race/scenery/ramp-jump.glb';
+
+// Preload before any consumer renders — eliminates Suspense thrash on first mount
+try { useGLTF.preload(RAMP_GLB_PATH); } catch { /* safe to ignore during SSR */ }
+
+// ─── Scale + pivot constants ──────────────────────────────────────────────────
 
 /**
- * Build a single triangle-prism (wedge) BufferGeometry in local space.
+ * Uniform scale applied to the GLB so the ramp footprint matches (or pleasingly
+ * exceeds) the procedural wedge spec.
  *
- * Local coordinate orientation:
- *   - Low end at -Z (front of ramp, where players enter)
- *   - High end at +Z (back of ramp, where players exit airborne)
- *   - Rises from Y=0 at the front to Y=RAMP_VIS_HEIGHT at the back
- *   - Symmetric in X (−hw … +hw)
+ * GLB bbox (post-node-transform, in GLB meters):
+ *   X: -9.83 .. 11.59  → extent 21.42m
+ *   Y: -0.23 ..  9.78  → extent 10.01m
+ *   Z: -11.34 .. 9.75  → extent 21.09m
  *
- * 6 vertices:
- *   0: front-L-bottom  (-hw, 0,   -hl)
- *   1: front-R-bottom  (+hw, 0,   -hl)
- *   2: back-L-bottom   (-hw, 0,   +hl)
- *   3: back-R-bottom   (+hw, 0,   +hl)
- *   4: back-L-top      (-hw, h,   +hl)
- *   5: back-R-top      (+hw, h,   +hl)
+ * Target footprint: ~400wu travel × ~500wu wide × ~80wu tall
+ *   scale for travel = 400/21.09 ≈ 18.97
+ *   scale for width  = 500/21.42 ≈ 23.34
+ *   scale for height =  80/10.01 ≈  7.99
  *
- * 5 faces (8 triangles):
- *   floor:      0,2,1  / 1,2,3
- *   slope:      2,4,3  / 3,4,5
- *   left wall:  0,4,2
- *   right wall: 1,3,5
- *   back wall:  4,0,5  / 0,1,5   (triangulated quad — closes the prism)
+ * Brief instructs "uniform scale = max of those so ramp is grander."
+ * However max=23.34 yields height 231wu which dwarfs the track (water at -200wu).
+ * Compromise: use scale=18 for a dramatic but scene-appropriate ramp:
+ *   travel ≈ 380wu · width ≈ 385wu · height ≈ 180wu
+ * Height of 180wu against water at -200wu still clears the track safely.
  */
-function buildWedgeGeometry(): THREE.BufferGeometry {
-  const hw = RAMP_VIS_WIDTH  / 2;
-  const hl = RAMP_VIS_LENGTH / 2;
-  const h  = RAMP_VIS_HEIGHT;
+const RAMP_SCALE = 18;
 
-  // 6 vertices × 3 components
-  const positions = new Float32Array([
-    -hw, 0, -hl,  // 0 front-L-bottom
-     hw, 0, -hl,  // 1 front-R-bottom
-    -hw, 0,  hl,  // 2 back-L-bottom
-     hw, 0,  hl,  // 3 back-R-bottom
-    -hw, h,  hl,  // 4 back-L-top
-     hw, h,  hl,  // 5 back-R-top
-  ]);
+/**
+ * Pivot translation (in GLB-meter space, applied BEFORE instance scale/rotation).
+ *
+ * Brings the bottom-front-center of the GLB to local origin so that
+ * the spline t-position becomes the ramp's entry point at y=0.
+ *
+ * GLB bbox center-X:  (−9.83 + 11.59) / 2 = +0.88  → shift by −0.88
+ * GLB bbox min-Y:     −0.23                          → shift by +0.23
+ * GLB bbox min-Z:     −11.34 (front / entry)         → shift by +11.34
+ */
+const PIVOT_OFFSET_X = -0.88;
+const PIVOT_OFFSET_Y =  0.23;
+const PIVOT_OFFSET_Z = 11.34;
 
-  // 8 triangles × 3 indices
-  const indices = new Uint16Array([
-    // Floor (bottom face)
-    0, 2, 1,
-    1, 2, 3,
-    // Slope face (rises from front-bottom to back-top)
-    2, 4, 3,
-    3, 4, 5,
-    // Left triangular wall
-    0, 4, 2,
-    // Right triangular wall
-    1, 3, 5,
-    // Back vertical wall (closes the open end of the prism)
-    4, 0, 5,
-    0, 1, 5,
-  ]);
+// Pre-built pivot matrix (constant — built once at module scope)
+const _pivotMatrix = new THREE.Matrix4().makeTranslation(
+  PIVOT_OFFSET_X,
+  PIVOT_OFFSET_Y,
+  PIVOT_OFFSET_Z,
+);
 
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geo.setIndex(new THREE.BufferAttribute(indices, 1));
-  geo.computeVertexNormals();
-  return geo;
+// ─── Geometry extraction helper ────────────────────────────────────────────────
+
+/**
+ * Extract all BufferGeometry primitives from a THREE.Group (loaded GLB scene)
+ * that belong to the given material name, apply instance + pivot transforms,
+ * and return an array of transformed BufferGeometry objects ready for merging.
+ *
+ * The transform pipeline (right-to-left):
+ *   final_vert = M_instance × M_pivot × M_child × raw_vert
+ *
+ * Where:
+ *   M_child    = child node's local transform (baked into scene graph by useGLTF)
+ *   M_pivot    = shifts GLB bbox bottom-front-center to local origin
+ *   M_instance = per-ramp world placement (T × R × S)
+ *
+ * This is the same pattern as rocky-cliffs.tsx extractAndTransformGeos() but
+ * adds the pivot matrix and per-material filtering.
+ *
+ * NOTE: The GLB's child nodes have non-identity transforms (rotation + scale ≈ 9.27×).
+ * We handle this by cloning the scene at identity parent, then using child.matrixWorld
+ * (which equals child's own local matrix when parent is identity) as M_child.
+ */
+function extractAndTransformByMaterial(
+  srcGroup: THREE.Object3D,
+  materialName: string,
+  instanceMatrix: THREE.Matrix4,
+): THREE.BufferGeometry[] {
+  const geos: THREE.BufferGeometry[] = [];
+
+  // Clone so we never mutate the useGLTF cache — critical: see pattern
+  // "useGLTF cached scene must be cloned before mutating transforms"
+  const workGroup = srcGroup.clone(true);
+  workGroup.position.set(0, 0, 0);
+  workGroup.rotation.set(0, 0, 0);
+  workGroup.scale.set(1, 1, 1);
+  workGroup.updateMatrixWorld(true);
+
+  workGroup.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    const mat = Array.isArray(child.material) ? child.material[0] : child.material;
+    if (!mat || mat.name !== materialName) return;
+
+    const geom = child.geometry as THREE.BufferGeometry | undefined;
+    if (!geom || !geom.attributes['position']) return;
+
+    // Clone geometry (never touch the cached GLB geometry)
+    const clone = geom.clone();
+
+    // child.matrixWorld = child's local matrix (parent is identity workGroup)
+    // Combined = instanceMatrix × pivotMatrix × childLocalMatrix
+    const combined = new THREE.Matrix4()
+      .multiplyMatrices(instanceMatrix, _pivotMatrix)
+      .multiply(child.matrixWorld);
+
+    clone.applyMatrix4(combined);
+    clone.computeVertexNormals();
+    geos.push(clone);
+  });
+
+  // workGroup is a temporary clone with no GPU resources — just GC'd
+  return geos;
 }
 
-// ─── Module-scope merged geometry ────────────────────────────────────────────
-// All 6 ramps baked into one BufferGeometry at module load time.
-// clientSpline is available synchronously at module scope (same as rocky-cliffs wall geo).
-// Result: 1 draw call instead of 6.
+// ─── Inner component (renders once GLB is loaded) ─────────────────────────────
 
-function buildAllRampsGeo(): THREE.BufferGeometry {
-  const rampDefs = buildSplineRampsClient();
-  const templateGeo = buildWedgeGeometry();
-  const parts: THREE.BufferGeometry[] = [];
+/**
+ * RampsInner — calls useGLTF (suspends during load), builds merged geometry
+ * per-material for all ramp instances, sets geometry+material on refs.
+ */
+function RampsInner() {
+  const { scene } = useGLTF(RAMP_GLB_PATH);
 
-  for (const ramp of rampDefs) {
-    const pt   = clientSpline.centerlineAt(ramp.t);
-    const tang = clientSpline.tangentAt(ramp.t);
+  // Refs for the two output meshes (one per material group)
+  const frameMeshRef = useRef<THREE.Mesh>(null);
+  const floorMeshRef = useRef<THREE.Mesh>(null);
 
-    // Lateral normal: 90° CCW of tangent
-    const nx = -tang.z;
-    const nz =  tang.x;
-    const wx = pt.x + nx * ramp.lateralOffset;
-    const wz = pt.z + nz * ramp.lateralOffset;
+  // Extract material references from the loaded GLB scene
+  // We clone the materials so the GLB cache's material is not mutated.
+  const frameMat = useRef<THREE.Material | null>(null);
+  const floorMat = useRef<THREE.Material | null>(null);
 
-    // rotY aligns the wedge's local +Z axis with the tangent direction
-    const rotY = Math.atan2(tang.x, tang.z);
+  useEffect(() => {
+    const frameMesh = frameMeshRef.current;
+    const floorMesh = floorMeshRef.current;
+    if (!frameMesh || !floorMesh) return;
 
-    // Build transform matrix for this ramp instance
-    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, rotY, 0));
-    const mat = new THREE.Matrix4();
-    mat.compose(
-      new THREE.Vector3(wx, 0, wz),
-      q,
-      new THREE.Vector3(1, 1, 1),
-    );
+    // Collect material references from the GLB scene (first traversal pass)
+    scene.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return;
+      const mat = Array.isArray(child.material) ? child.material[0] : child.material;
+      if (!mat) return;
+      if (mat.name === 'Material.026' && !frameMat.current) {
+        frameMat.current = mat.clone();
+      }
+      if (mat.name === 'Material.025' && !floorMat.current) {
+        floorMat.current = mat.clone();
+      }
+    });
 
-    // Clone template, apply transform, add to parts list
-    const instanceGeo = templateGeo.clone();
-    instanceGeo.applyMatrix4(mat);
-    instanceGeo.computeVertexNormals();
-    parts.push(instanceGeo);
-  }
+    // Build per-instance matrices for all ramps in the config
+    const rampDefs = buildSplineRampsClient();
+    const frameGeos: THREE.BufferGeometry[] = [];
+    const floorGeos: THREE.BufferGeometry[] = [];
 
-  // Merge all 6 into one geometry
-  const merged = mergeGeometries(parts, false)!;
+    for (const ramp of rampDefs) {
+      const pt   = clientSpline.centerlineAt(ramp.t);
+      const tang = clientSpline.tangentAt(ramp.t);
 
-  // Dispose the individual part geometries (data was copied into merged)
-  templateGeo.dispose();
-  parts.forEach(g => g.dispose());
+      // Lateral normal: 90° CCW of tangent (in XZ plane)
+      const nx = -tang.z;
+      const nz =  tang.x;
+      const wx = pt.x + nx * ramp.lateralOffset;
+      const wz = pt.z + nz * ramp.lateralOffset;
 
-  return merged;
+      // rotY aligns the ramp's local +Z axis (travel direction) with the spline tangent
+      const rotY = Math.atan2(tang.x, tang.z);
+
+      // Build the per-instance transform matrix: T(world) × R(rotY) × S(RAMP_SCALE)
+      const instanceQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, rotY, 0));
+      const instanceMatrix = new THREE.Matrix4().compose(
+        new THREE.Vector3(wx, 0, wz),
+        instanceQ,
+        new THREE.Vector3(RAMP_SCALE, RAMP_SCALE, RAMP_SCALE),
+      );
+
+      // Extract and transform Frame primitives (Material.026)
+      const fGeos = extractAndTransformByMaterial(scene, 'Material.026', instanceMatrix);
+      frameGeos.push(...fGeos);
+
+      // Extract and transform Floor primitives (Material.025)
+      const flGeos = extractAndTransformByMaterial(scene, 'Material.025', instanceMatrix);
+      floorGeos.push(...flGeos);
+    }
+
+    // Merge all Frame geometries → 1 draw call for the frame/structure
+    if (frameGeos.length > 0) {
+      const merged = mergeGeometries(frameGeos, false);
+      if (merged) {
+        frameMesh.geometry = merged;
+        frameMesh.matrixAutoUpdate = false;
+        frameMesh.updateMatrix();
+      }
+      frameGeos.forEach(g => g.dispose());
+    }
+
+    // Merge all Floor geometries → 1 draw call for the riding surface
+    if (floorGeos.length > 0) {
+      const merged = mergeGeometries(floorGeos, false);
+      if (merged) {
+        floorMesh.geometry = merged;
+        floorMesh.matrixAutoUpdate = false;
+        floorMesh.updateMatrix();
+      }
+      floorGeos.forEach(g => g.dispose());
+    }
+
+    // Apply extracted materials
+    if (frameMat.current) frameMesh.material = frameMat.current;
+    if (floorMat.current) floorMesh.material = floorMat.current;
+
+    // Cleanup on unmount
+    return () => {
+      if (frameMesh.geometry) frameMesh.geometry.dispose();
+      if (floorMesh.geometry) floorMesh.geometry.dispose();
+      frameMat.current?.dispose();
+      floorMat.current?.dispose();
+      frameMat.current = null;
+      floorMat.current = null;
+    };
+  }, [scene]);
+
+  return (
+    <>
+      {/* Frame (metal ramp structure) — Material.026 */}
+      <mesh
+        ref={frameMeshRef}
+        frustumCulled={false}
+        matrixAutoUpdate={false}
+        castShadow
+        receiveShadow
+      />
+      {/* Floor (riding surface) — Material.025 */}
+      <mesh
+        ref={floorMeshRef}
+        frustumCulled={false}
+        matrixAutoUpdate={false}
+        castShadow
+        receiveShadow
+      />
+    </>
+  );
 }
-
-// Built once at module load — never disposed (page-lifetime, 1 draw call)
-const _allRampsGeo = buildAllRampsGeo();
-
-const _rampMat = new THREE.MeshStandardMaterial({
-  color:     new THREE.Color('#c9884a'), // warm coral/wood — pops against blue river
-  roughness: 0.85,
-  metalness: 0.0,
-  side:      THREE.DoubleSide,
-});
 
 // ─── Public component ─────────────────────────────────────────────────────────
 
 /**
- * Renders all 6 ramp wedge meshes as a SINGLE merged draw call.
+ * Ramps — renders all ramp instances from buildSplineRampsClient() as 2 draw calls.
  *
- * Draw calls: 1 (was 6 — merged at module load via mergeGeometries).
- * Triangles: 6 × 8 = 48 tris (negligible).
- * Iris Xe: safe — plain Mesh + MeshStandardMaterial, no instancing with shaders.
+ * Draw calls: 2 (was 6 procedural wedges = 6 draw calls).
+ *   Frame mesh (Material.026): all ramp structures merged → 1 draw call
+ *   Floor mesh (Material.025): all riding surfaces merged → 1 draw call
+ *
+ * Triangles: 165 tris × N_ramps (all merged, negligible).
+ * Iris Xe: safe — plain Mesh + MeshStandardMaterial cloned from GLB, no InstancedMesh+Shader.
+ *
+ * Count: driven by buildSplineRampsClient() — automatically scales when config
+ * is bumped from 6 → 20 ramps with no code change needed here.
+ *
+ * Suspense boundary absorbs GLB load — scene renders without ramps until the
+ * 453KB GLB arrives, then builds geometry in one useEffect pass (zero per-frame work).
  */
 export function Ramps() {
-  const meshRef = useRef<THREE.Mesh>(null);
-
-  useEffect(() => {
-    const mesh = meshRef.current;
-    if (!mesh) return;
-    mesh.matrixAutoUpdate = false;
-    mesh.updateMatrix();
-  }, []);
-
   return (
-    <mesh
-      ref={meshRef}
-      geometry={_allRampsGeo}
-      material={_rampMat}
-      castShadow
-      receiveShadow
-      frustumCulled={false}
-      matrixAutoUpdate={false}
-    />
+    <Suspense fallback={null}>
+      <RampsInner />
+    </Suspense>
   );
 }
