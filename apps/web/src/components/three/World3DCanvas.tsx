@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useEffect, useCallback, memo, Suspense } from 'react';
+import { useRef, useState, useEffect, useCallback, memo, Suspense } from 'react';
 import { Canvas, useFrame, extend, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
@@ -21,6 +21,7 @@ import NpcController from '@/lib/three/npc-controller';
 import MergedSeaweed from '@/lib/three/merged-seaweed';
 import UnderwaterAtmosphere from '@/lib/three/underwater-atmosphere';
 import UnderwaterLightRays from '@/lib/three/underwater-light-rays';
+import { detectGpuTier } from '@/lib/three/gpu-tier';
 import QuestNpc from '@/lib/three/quest-npc';
 import TownGuide from '@/lib/three/town-guide';
 import BazaarStall from '@/lib/three/bazaar-stall';
@@ -393,6 +394,49 @@ function kickRenderLoop(state: any): void {
 // the focus point — that's what the user is actually looking at. Also handles
 // NPC-mode by copying the possessed NPC's map coordinates on each tick.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// AtmosphereGate / AtmosphereGateRays — render UnderwaterAtmosphere /
+// UnderwaterLightRays only on capable GPUs.
+//
+// Detection runs once on mount. Intel-integrated GPUs (Iris Xe etc.)
+// skip the mount; the render-cost win is documented in the perf audit
+// (~8-15ms/frame freed on Iris Xe due to caustic + ray overdraw).
+//
+// We default to OFF until detection completes so the user sees one
+// consistent visual rather than a flicker of caustics that disappear a
+// frame later. Detection is synchronous on WebGL fallback; on WebGPU
+// the adapter info may not be populated until after the renderer's
+// init() resolves but `useThree().gl` is already that initialized
+// renderer — so reading `gl.backend.adapter.info` works at first
+// render. If detection fails we leave atmosphere OFF for the user that
+// asked for perf wins, rather than risk re-enabling overdraw on the
+// hardware we can't classify.
+// ---------------------------------------------------------------------------
+function useAtmosphereEnabled(): boolean {
+  const { gl } = useThree();
+  const [enabled, setEnabled] = useState(false);
+  useEffect(() => {
+    const tier = detectGpuTier(gl);
+    if (typeof window !== 'undefined') {
+      // Surface the detection result for /browser-live perf inspection.
+      (window as any).__GPU_TIER = tier;
+    }
+    setEnabled(!tier.isIntel && tier.renderer !== null);
+  }, [gl]);
+  return enabled;
+}
+
+function AtmosphereGate() {
+  const enabled = useAtmosphereEnabled();
+  return enabled ? <UnderwaterAtmosphere /> : null;
+}
+
+function AtmosphereGateRays() {
+  const enabled = useAtmosphereEnabled();
+  return enabled ? <UnderwaterLightRays /> : null;
+}
+
 function MinimapPositionTracker() {
   const { camera } = useThree();
   const lastWriteRef = useRef(0);
@@ -670,11 +714,14 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
           effect but does waste GPU time computing fog for invisible fragments. */}
       <fog attach="fog" args={[FOG_COLOR, 1200, 6400]} />
 
-      {/* Underwater atmosphere — caustic light plane, depth backdrop, dust particles */}
-      <UnderwaterAtmosphere />
-
-      {/* Volumetric light rays — 7 cone shafts with pulsing TSL opacity, additive blending */}
-      <UnderwaterLightRays />
+      {/* Underwater atmosphere — caustic light plane, depth backdrop, dust particles.
+          Volumetric light rays — 7 cone shafts with pulsing TSL opacity, additive blending.
+          Both are heavy on GPU fragment cost (additive transparent overdraw across the
+          full visible area) — gated to discrete GPUs only. Iris Xe / integrated Intel
+          GPUs skip the mount entirely; the scene still has fog + base lighting so it
+          remains coherent, just without volumetric effects. Perf audit 2026-04-29 #3. */}
+      <AtmosphereGate />
+      <AtmosphereGateRays />
 
       {/* Shared world geometry */}
       <ArenaTerrain />
