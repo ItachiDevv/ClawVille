@@ -220,12 +220,17 @@ export default function GamePage() {
   useResearchStream();
 
   // Redirect authenticated users with no active agent to /create-agent
-  // EXCEPT: embed mode, spectate mode (user explicitly chose to explore)
+  // EXCEPT: embed mode, spectate mode, OR quickQueue (demo flow — guest
+  // hits a quickQueue link and should drop straight into the activity
+  // queue with a default lobster avatar auto-provisioned by the queue route,
+  // not get bounced to /create-agent and lose the deep-link intent).
   useEffect(() => {
     if (miladyEmbed.isEmbed) return;
-    // Allow spectating via ?spectate=1 query param or localStorage flag
     const params = new URLSearchParams(window.location.search);
     if (params.get('spectate') === '1' || localStorage.getItem('clawville-spectate-mode') === '1') {
+      return;
+    }
+    if (params.get('quickQueue')) {
       return;
     }
     if (!isLoading && !authLoading && isAuthenticated && !avatar) {
