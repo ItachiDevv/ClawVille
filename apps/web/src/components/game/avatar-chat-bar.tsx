@@ -3,6 +3,7 @@
 import { useState, useRef, useMemo } from 'react';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useGameStore } from '@/stores/game';
+import { useQuestStore, triggerQuestCheck } from '@/stores/quest';
 import { api } from '@/lib/api';
 import { KNOWLEDGE_BOOKS } from '@clawville/shared';
 
@@ -57,6 +58,12 @@ export default function AvatarChatBar() {
     const userMsg: AvatarMessage = { id: crypto.randomUUID(), role: 'user', content };
     setMessages((prev) => [...prev, userMsg]);
     scrollToBottom();
+
+    // Quest counter — Tier 1 "Meet Your Agent" + Tier 2 "Bonded" both
+    // gate on avatarMessagesSent. Server validates against agent.chat.turn
+    // (chatType=avatar) before crediting tokens.
+    useQuestStore.getState().incrementCounter('avatarMessagesSent', 1);
+    triggerQuestCheck();
 
     setLoading(true);
     try {

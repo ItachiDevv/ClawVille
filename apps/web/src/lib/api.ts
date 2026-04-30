@@ -299,7 +299,7 @@ export const api = {
     }>('/api/items/inventory'),
 
   buyItem: (itemId: string) =>
-    request<{ success: boolean; clawTokens: number; item: { id: string; name: string } }>(
+    request<{ success: boolean; clawTokens: number; item: { id: string; name: string; isBook?: boolean } }>(
       '/api/items/buy',
       {
         method: 'POST',

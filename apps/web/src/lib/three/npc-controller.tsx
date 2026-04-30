@@ -19,6 +19,7 @@ import { useNpcStore } from '@/stores/npc';
 import type { NpcSpriteState } from '@/stores/npc';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 import { findNearestCharacter } from '@/lib/three/character-positions';
+import { NORI_WORLD_X, NORI_WORLD_Z, NORI_TALK_RADIUS_SQ } from '@/lib/three/town-guide';
 import { isEditable, jumpState } from '@/lib/three/jump-state';
 
 const SPEED = 550; // pixels/sec — pass 2 2026-04-16: bumped 320→550 (user tested pass 1 at 320,
@@ -111,22 +112,31 @@ export default function NpcController() {
     // Only active in npc mode with a possessed target
     if (controlMode !== 'npc' || !possessedNpcId) return;
 
-    // Handle Escape to exit building
+    // Handle Escape to exit building OR close guide chat
     const escNow = _keys.escape;
-    if (escNow && !_lastEscState && store.chatOpen) {
-      store.exitBuilding();
+    if (escNow && !_lastEscState) {
+      if (store.chatOpen) store.exitBuilding();
+      else if (store.guideChatOpen) store.closeGuideChat();
     }
     _lastEscState = escNow;
 
-    // If movement is frozen (inside a building), skip movement
+    // If movement is frozen (inside a building or guide chat), skip movement
     if (store.movementFrozen) return;
 
-    // Handle E to enter building
+    // Handle E to talk — Nori takes priority over a building character
+    // when both proximities are true (she's the discoverable greeter).
     const eNow = _keys.e;
-    if (eNow && !_lastEState && store.nearLocation) {
-      store.enterBuilding(store.nearLocation);
-      _lastEState = eNow;
-      return;
+    if (eNow && !_lastEState) {
+      if (store.nearGuide && !store.guideChatOpen && !store.chatOpen) {
+        store.openGuideChat();
+        _lastEState = eNow;
+        return;
+      }
+      if (store.nearLocation) {
+        store.enterBuilding(store.nearLocation);
+        _lastEState = eNow;
+        return;
+      }
     }
     _lastEState = eNow;
 
@@ -147,6 +157,12 @@ export default function NpcController() {
       const nearName = nearest ? nearest.characterName : null;
       if (nearId !== store.nearLocation) store.setNearLocation(nearId);
       if (nearName !== store.nearCharacter) store.setNearCharacter(nearName);
+
+      // Town Guide proximity (singleton — Nori isn't in CHARACTER_POSITIONS).
+      const ndx = wx - NORI_WORLD_X;
+      const ndz = wz - NORI_WORLD_Z;
+      const noriNear = (ndx * ndx + ndz * ndz) < NORI_TALK_RADIUS_SQ;
+      if (noriNear !== store.nearGuide) store.setNearGuide(noriNear);
     }
 
     // ---- Unified input: joystick + WASD → camera-relative ----

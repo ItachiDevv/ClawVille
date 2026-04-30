@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useGameStore } from '@/stores/game';
+import { useQuestStore, triggerQuestCheck } from '@/stores/quest';
 
 export default function InventoryModal() {
   const { inventoryOpen, closeInventory, addToast } = useGameStore();
@@ -22,6 +23,13 @@ export default function InventoryModal() {
       addToast('📖', `${res.learnedBook} — learned ${res.newKnowledgeCount} new topics!`);
       queryClient.invalidateQueries({ queryKey: ['inventory'] });
       queryClient.invalidateQueries({ queryKey: ['avatar'] });
+      // Quest counter — Tier 4 Shop & Study, Library Card, Polymath all
+      // gate on knowledgeLearned. Server validates against book.read
+      // events (only fired when newKnowledge.length > 0).
+      if (res.newKnowledgeCount > 0) {
+        useQuestStore.getState().incrementCounter('knowledgeLearned', res.newKnowledgeCount);
+        triggerQuestCheck();
+      }
       setLearningId(null);
     },
     onError: (err: Error) => {

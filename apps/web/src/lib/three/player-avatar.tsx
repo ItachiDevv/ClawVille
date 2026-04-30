@@ -10,6 +10,7 @@ import {
   MAP_HEIGHT,
 } from '@/lib/pixi/tilemap-data';
 import { findNearestCharacter } from '@/lib/three/character-positions';
+import { NORI_WORLD_X, NORI_WORLD_Z, NORI_TALK_RADIUS_SQ } from '@/lib/three/town-guide';
 import { applyWalkAnimation, applyIdleAnimation } from '@/lib/three/procedural-animation';
 import { LobsterAnimator } from '@/lib/three/lobster-animations';
 import { discoverLobsterParts } from '@/lib/three/lobster-parts';
@@ -294,10 +295,20 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
 
     if (store.controlMode !== 'autonomous') {
       const eNow = keyState.e;
-      if (eNow && !lastEState && store.nearLocation) {
-        store.enterBuilding(store.nearLocation);
-        lastEState = eNow;
-        return;
+      if (eNow && !lastEState) {
+        // Nori wins if both proximities are true — she stands at the
+        // open town center and is the discoverable greeter, so the E
+        // press should bias toward her over a flanking building.
+        if (store.nearGuide && !store.guideChatOpen && !store.chatOpen) {
+          store.openGuideChat();
+          lastEState = eNow;
+          return;
+        }
+        if (store.nearLocation) {
+          store.enterBuilding(store.nearLocation);
+          lastEState = eNow;
+          return;
+        }
       }
       lastEState = eNow;
     }
@@ -408,6 +419,14 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
       const nearName = nearest ? nearest.characterName : null;
       if (nearId !== store.nearLocation) store.setNearLocation(nearId);
       if (nearName !== store.nearCharacter) store.setNearCharacter(nearName);
+
+      // Town Guide proximity — same shape as findNearestCharacter, but
+      // Nori isn't in the building map so we test her singleton position
+      // inline. Squared distance avoids sqrt in the hot path.
+      const ndx = wx - NORI_WORLD_X;
+      const ndz = wz - NORI_WORLD_Z;
+      const noriNear = (ndx * ndx + ndz * ndz) < NORI_TALK_RADIUS_SQ;
+      if (noriNear !== store.nearGuide) store.setNearGuide(noriNear);
     }
 
     const group = groupRef.current;
@@ -574,10 +593,20 @@ function PlayerPetGLBInner() {
     // In autonomous mode, don't let E key enter buildings — the autonomy tick handles navigation
     if (store.controlMode !== 'autonomous') {
       const eNow = keyState.e;
-      if (eNow && !lastEState && store.nearLocation) {
-        store.enterBuilding(store.nearLocation);
-        lastEState = eNow;
-        return;
+      if (eNow && !lastEState) {
+        // Nori wins if both proximities are true — she stands at the
+        // open town center and is the discoverable greeter, so the E
+        // press should bias toward her over a flanking building.
+        if (store.nearGuide && !store.guideChatOpen && !store.chatOpen) {
+          store.openGuideChat();
+          lastEState = eNow;
+          return;
+        }
+        if (store.nearLocation) {
+          store.enterBuilding(store.nearLocation);
+          lastEState = eNow;
+          return;
+        }
       }
       lastEState = eNow;
     }
@@ -700,6 +729,14 @@ function PlayerPetGLBInner() {
       const nearName = nearest ? nearest.characterName : null;
       if (nearId !== store.nearLocation) store.setNearLocation(nearId);
       if (nearName !== store.nearCharacter) store.setNearCharacter(nearName);
+
+      // Town Guide proximity — same shape as findNearestCharacter, but
+      // Nori isn't in the building map so we test her singleton position
+      // inline. Squared distance avoids sqrt in the hot path.
+      const ndx = wx - NORI_WORLD_X;
+      const ndz = wz - NORI_WORLD_Z;
+      const noriNear = (ndx * ndx + ndz * ndz) < NORI_TALK_RADIUS_SQ;
+      if (noriNear !== store.nearGuide) store.setNearGuide(noriNear);
     }
 
     const group = groupRef.current;
