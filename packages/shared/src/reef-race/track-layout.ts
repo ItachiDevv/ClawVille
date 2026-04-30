@@ -1,54 +1,56 @@
 /**
  * reef-race-track-layout.ts
  *
- * LOCKED v2 default track for Reef Race — 16 control-point centripetal
+ * LOCKED v2 default track for Reef Race — 22 control-point centripetal
  * Catmull-Rom slalom river. Consumed by `ReefSpline` (see
  * `./reef-race-spline.ts`) for both the server sim corridor math AND
  * the client-side 3D river-bed builder. Single source of truth.
  *
- * Spec sources:
- *   - `.claude/plans/reef-race-v2.md` ("Track layout — my proposed default"
- *     + "5 themed segments")
- *   - `.claude/plans/reef-race-v2-spline-architecture.md` §1, §4, "Risks" #1
+ * 2026-04-30 90s rebuild (CP-INSERTION approach, see
+ * `.claude/plans/track-90s-RECONCILED.md`): track lengthened from 18 000 →
+ * 28 000 wu z-span by inserting +3 kelp / +2 shipwreck / +1 coral CPs while
+ * preserving slalom amplitudes (±170 / ±200 / ±180) and per-segment halfWidth.
  *
  * ─── 5 themed segments ──────────────────────────────────────────────────────
  *
  *   Segment            z-range (wu)        CPs          halfWidth   Slalom
  *   ----------------   -----------------   ----------   ---------   --------
  *   0  Open lagoon       0 →  3 000        CP 0,1,2     3300 wu     none
- *   1  Kelp forest     3 000 →  7 500      CP 3-6       1990 wu     ±170 wu
- *   2  Shipwreck       7 500 → 12 000      CP 7,8,9     1650 wu     ±200 wu
- *   3  Coral canyon   12 000 → 16 500      CP 10-13     1320 wu     ±180 wu
- *   4  Finish straight 16500 → 18 000      CP 14,15     3300 wu     none
+ *   1  Kelp forest     3 000 → 12 100      CP 3-9       1990 wu     ±170 wu
+ *   2  Shipwreck      12 100 → 19 600      CP 10-14     1650 wu     ±200 wu
+ *   3  Coral canyon   19 600 → 26 100      CP 15-19     1320 wu     ±180 wu
+ *   4  Finish straight 26 100 → 28 000      CP 20,21    3300 wu     none
  *
  * ─── Hand-math sanity (Risks doc §1: no two CPs within 88 wu in XZ) ─────────
  *
  *   Adjacent CP distances (Euclidean XZ, wu):
- *     0→1   1500    4→5   1175    8→9   1500    12→13  1125
- *     1→2   1500    5→6   1125    9→10  1187    13→14   771
- *     2→3   1138    6→7   1545   10→11  1181    14→15   750
- *     3→4   1175    7→8   1553   11→12  1125
+ *     0→1   1500    7→8   1344   14→15  1354
+ *     1→2   1500    8→9   1344   15→16  1349
+ *     2→3   1311    9→10  1545   16→17  1349
+ *     3→4   1344   10→11  1552   17→18  1349
+ *     4→5   1344   11→12  1552   18→19  1349
+ *     5→6   1344   12→13  1552   19→20  1164
+ *     6→7   1344   13→14  1552   20→21   750
  *
- *   min = 750 wu (CP14→CP15)   max = 1553 wu (CP7→CP8)   avg ≈ 1227 wu
+ *   min = 750 wu (CP20→CP21)   max = 1552 wu (CP10–CP14)   avg ≈ 1334 wu
  *
  *   Min/88 ≈ 8.5×  → comfortable margin against Newton mis-segmenting in
  *   `closestPointOnSpline`. The architecture-doc constraint is satisfied
  *   by ~10× headroom on EVERY adjacent pair.
  *
- *   Slalom waveform: triangle-style sign-flip at each CP (±170, ±200, ±180
- *   alternating). At amplitude A=200 wu and CP spacing ~1500 wu,
- *   centripetal Catmull-Rom yields a peak curvature radius of
- *   R ≈ (1500²)/(8·200) = 1406 wu — ~16× REEF_BODY_RADIUS (22 wu),
- *   well clear of self-intersection.
+ *   Slalom waveform: alternating sign-flip per CP within each segment.
+ *   Δz widened to ~1300 wu in kelp/coral (was 1125) for the 90s extension.
+ *   Curvature radius math: R ≈ Δz²/(8·A) = 1300²/(8·170) ≈ 1242 wu in kelp,
+ *   ~56× REEF_BODY_RADIUS (22 wu) — comfortable margin.
  *
  * ─── Total arc length target ────────────────────────────────────────────────
  *
- *   Straight-line z span: 18 000 wu. Catmull-Rom adds ~5-8% arc due to the
- *   slalom S-curves. Expected totalArcLength ≈ 18 500 → 19 500 wu.
+ *   Straight-line z span: 28 000 wu. Catmull-Rom adds ~3-5% arc.
+ *   Expected totalArcLength ≈ 29 500 → 30 200 wu.
  *
  *   At REEF_MAX_SPEED = 500 wu/s and effective cruising speed
  *   ~330 wu/s (turbo/slipstream-free), one-shot race time
- *   ≈ 19 000 / 330 ≈ 58 s — matches the locked 60s target from the spec.
+ *   ≈ 30 000 / 330 ≈ 91 s — matches the 90s soft-timeout target.
  *
  * ─── Top-down ASCII visualisation (X horizontal, Z vertical down) ───────────
  *
@@ -112,7 +114,7 @@
  *   To verify the start-line tangent points "down-track" (+Z), we keep
  *   CP[0]=(0,0) and CP[1]=(0,1500): the reflection produces phantom_start
  *   at (0,-1500), so the t=0 tangent is exactly +Z. Same logic at the
- *   finish (CP14=(0,17250), CP15=(0,18000) → phantom_end at (0,18750)).
+ *   finish (CP20=(0,27250), CP21=(0,28000) → phantom_end at (0,28750)).
  *
  * @module reef-race-track-layout
  */
@@ -138,26 +140,26 @@ export interface ReefRaceSegmentRange {
 }
 
 export const REEF_RACE_SEGMENTS: ReadonlyArray<ReefRaceSegmentRange> = [
-  // iter-9 (2026-04-29): ×1.5 from iter-8. User: "river still needs to be wider."
-  // iter-8 values: lagoon/finish 2200, kelp 1325, shipwreck 1100, coral 880.
-  // iter-9 values: lagoon/finish 3300, kelp 1990, shipwreck 1650, coral 1320.
-  // Cumulative from iter-5 baseline: ×1.4 (iter-5→8) × ×1.5 (iter-8→9) = ×2.1.
+  // 2026-04-30: 90s rebuild via CP-INSERTION (was 18000 wu z-span / ~58s race).
+  // Slalom segments lengthened proportionally: kelp 4500→9100, shipwreck 4500→7500,
+  // coral 4500→6500. Lagoon + finish straights unchanged.
+  // Half-widths preserved from iter-9 (×1.5 widening kept).
   { id: 'lagoon',    zStart:     0, zEnd:  3000, halfWidth: 3300 },
-  { id: 'kelp',      zStart:  3000, zEnd:  7500, halfWidth: 1990 },
-  { id: 'shipwreck', zStart:  7500, zEnd: 12000, halfWidth: 1650 },
-  { id: 'coral',     zStart: 12000, zEnd: 16500, halfWidth: 1320 },
-  { id: 'finish',    zStart: 16500, zEnd: 18000, halfWidth: 3300 },
+  { id: 'kelp',      zStart:  3000, zEnd: 12100, halfWidth: 1990 },
+  { id: 'shipwreck', zStart: 12100, zEnd: 19600, halfWidth: 1650 },
+  { id: 'coral',     zStart: 19600, zEnd: 26100, halfWidth: 1320 },
+  { id: 'finish',    zStart: 26100, zEnd: 28000, halfWidth: 3300 },
 ];
 
 // ─── Track layout ───────────────────────────────────────────────────────────
 
 /**
- * REEF_RACE_DEFAULT_TRACK — locked v2 layout, 16 interior control points.
+ * REEF_RACE_DEFAULT_TRACK — locked v2 layout, 22 interior control points.
  *
  * Coordinate frame: XZ plane (Y is altitude, owned by `body.heightOffset`
  * per spline-architecture §4). CP[0] at origin (z=0). Track extends in
- * +Z direction. X meanders within ±200 wu for the slalom segments and
- * snaps to 0 on the lagoon/finish straights.
+ * +Z direction to z=28 000. X meanders within ±200 wu for the slalom segments
+ * and snaps to 0 on the lagoon/finish straights.
  *
  * Indices map 1:1 to the themed segments documented above. Field shape
  * matches `SplineControlPoint` exactly — passed straight to
@@ -165,38 +167,39 @@ export const REEF_RACE_SEGMENTS: ReadonlyArray<ReefRaceSegmentRange> = [
  */
 export const REEF_RACE_DEFAULT_TRACK: ReadonlyArray<SplineControlPoint> = [
   // ── Segment 0: Open lagoon (wide, no slalom) ──────────────────────────────
-  { x:    0, z:     0, halfWidth: 3300 }, // CP 0  start line, lagoon mouth
-  { x:    0, z:  1500, halfWidth: 3300 }, // CP 1  lagoon middle
-  { x:    0, z:  3000, halfWidth: 3300 }, // CP 2  lagoon → kelp gate
+  { x:    0, z:     0, halfWidth: 3300 }, // CP  0  start line, lagoon mouth
+  { x:    0, z:  1500, halfWidth: 3300 }, // CP  1  lagoon middle
+  { x:    0, z:  3000, halfWidth: 3300 }, // CP  2  lagoon → kelp gate
 
-  // ── Segment 1: Kelp forest (first slalom, ±170 wu) ────────────────────────
-  { x:  170, z:  4125, halfWidth: 1990 }, // CP 3  kelp curve +
-  { x: -170, z:  5250, halfWidth: 1990 }, // CP 4  kelp curve -
-  { x:  170, z:  6375, halfWidth: 1990 }, // CP 5  kelp curve +
-  { x: -170, z:  7500, halfWidth: 1990 }, // CP 6  kelp → shipwreck gate
+  // ── Segment 1: Kelp forest (first slalom, ±170 wu, 7 CPs) ─────────────────
+  { x:  170, z:  4300, halfWidth: 1990 }, // CP  3  kelp curve +
+  { x: -170, z:  5600, halfWidth: 1990 }, // CP  4  kelp curve -
+  { x:  170, z:  6900, halfWidth: 1990 }, // CP  5  kelp curve +
+  { x: -170, z:  8200, halfWidth: 1990 }, // CP  6  kelp curve -        (NEW)
+  { x:  170, z:  9500, halfWidth: 1990 }, // CP  7  kelp curve +        (NEW)
+  { x: -170, z: 10800, halfWidth: 1990 }, // CP  8  kelp curve -        (NEW)
+  { x:  170, z: 12100, halfWidth: 1990 }, // CP  9  kelp → shipwreck gate
 
-  // ── Segment 2: Shipwreck graveyard (denser turns + chokepoints, ±200 wu) ──
-  { x:  200, z:  9000, halfWidth: 1650 }, // CP 7  hull-fragment chicane +
-  { x: -200, z: 10500, halfWidth: 1650 }, // CP 8  hull-fragment chicane -
-  { x:  200, z: 12000, halfWidth: 1650 }, // CP 9  shipwreck → coral gate
+  // ── Segment 2: Shipwreck graveyard (denser turns, ±200 wu, 5 CPs) ─────────
+  { x: -200, z: 13600, halfWidth: 1650 }, // CP 10  hull-fragment chicane -
+  { x:  200, z: 15100, halfWidth: 1650 }, // CP 11  hull-fragment chicane +
+  { x: -200, z: 16600, halfWidth: 1650 }, // CP 12  hull-fragment chicane - (NEW)
+  { x:  200, z: 18100, halfWidth: 1650 }, // CP 13  hull-fragment chicane + (NEW)
+  { x: -200, z: 19600, halfWidth: 1650 }, // CP 14  shipwreck → coral gate
 
-  // ── Segment 3: Coral canyon (tightest, ±180 wu) ───────────────────────────
-  { x: -180, z: 13125, halfWidth: 1320 }, // CP 10 coral chicane -
-  { x:  180, z: 14250, halfWidth: 1320 }, // CP 11 coral chicane +
-  { x: -180, z: 15375, halfWidth: 1320 }, // CP 12 coral chicane -
-  { x:  180, z: 16500, halfWidth: 1320 }, // CP 13 coral → finish gate
+  // ── Segment 3: Coral canyon (tightest, ±180 wu, 5 CPs) ────────────────────
+  { x:  180, z: 20900, halfWidth: 1320 }, // CP 15  coral chicane +
+  { x: -180, z: 22200, halfWidth: 1320 }, // CP 16  coral chicane -
+  { x:  180, z: 23500, halfWidth: 1320 }, // CP 17  coral chicane +
+  { x: -180, z: 24800, halfWidth: 1320 }, // CP 18  coral chicane -      (NEW)
+  { x:  180, z: 26100, halfWidth: 1320 }, // CP 19  coral → finish gate
 
   // ── Segment 4: Finish straight (wide, no slalom) ──────────────────────────
-  { x:    0, z: 17250, halfWidth: 3300 }, // CP 14 finish-straight entry
-  { x:    0, z: 18000, halfWidth: 3300 }, // CP 15 FINISH LINE
+  { x:    0, z: 27250, halfWidth: 3300 }, // CP 20  finish-straight entry
+  { x:    0, z: 28000, halfWidth: 3300 }, // CP 21  FINISH LINE
 ];
 
 /**
- * Compile-time sanity: 16 control points exactly. If anyone adds/removes a CP
- * without thinking through the segment table + curvature math, this assertion
- * line will become a TypeScript width-mismatch and they will see the comment.
- *
- * (Bun's `as const` would freeze the inner objects too aggressively — we keep
- * the readonly array but allow numeric arithmetic on field reads at runtime.)
+ * Compile-time sanity: 22 control points exactly.
  */
-export const REEF_RACE_DEFAULT_TRACK_LENGTH = 16 as const;
+export const REEF_RACE_DEFAULT_TRACK_LENGTH = 22 as const;
