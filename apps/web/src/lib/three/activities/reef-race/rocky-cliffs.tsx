@@ -73,10 +73,12 @@ for (const path of CLIFF_ROCK_PATHS) {
 
 /**
  * Number of evenly-spaced cross-sections along the spline.
- * Lower than the ribbon's 64 since each section now places 4 rocks (2 rows × 2 sides).
- * 36 sections × 4 = 144 rock instances before merging.
+ * 2026-04-30 density bump: 36 → 60 sections + 2 rocks per (section, side, row).
+ * 60 × 2 sides × 3 rows × 2 copies = 720 rock instances before merging.
+ * Estimated tris: 720 × ~269 = ~194k (under 220k scene budget).
  */
-const N_SECTIONS = 36;
+const N_SECTIONS = 60;
+const ROCKS_PER_CELL = 2;
 
 /**
  * Lateral offset of rock cluster CENTER beyond the spline halfWidth.
@@ -428,52 +430,55 @@ function CliffMeshBuilder({ scenes }: CliffMeshBuilderProps) {
 
       for (const sign of [+1, -1] as const) {
         // Per-section cliff band width — organic variation referencing German River photogrammetry.
-        // Some sections have FAT bands (up to 600wu), others THIN (180wu min). Deterministic.
         const lMax = lateralMax(si);
-
-        // Lateral offset from centerline (beyond halfWidth into the bank)
-        const lateralJitter = LATERAL_MIN + rng.next() * (lMax - LATERAL_MIN);
-        const lateralDist   = hw + lateralJitter;
         const nx = n.x * sign;
         const nz = n.z * sign;
 
-        // ROW A — top row: base at y=CANYON_TOP (rock extends upward, forms cliff rim)
-        const posA = new THREE.Vector3(
-          c.x + nx * lateralDist,
-          CANYON_TOP,
-          c.z + nz * lateralDist,
-        );
-        const rotA  = rng.next() * Math.PI * 2;
-        const scaleA = SCALE_MIN + rng.next() * (SCALE_MAX - SCALE_MIN);
+        const allGeos: THREE.BufferGeometry[] = [];
 
-        // ROW B — bottom row: base at water level so rocks sit at waterline
-        // Slightly different lateral position for variety
-        const lateralJitter2 = LATERAL_MIN + rng.next() * (lMax - LATERAL_MIN);
-        const lateralDist2   = hw + lateralJitter2;
-        const posB = new THREE.Vector3(
-          c.x + nx * lateralDist2,
-          ROW_B_BASE_Y,
-          c.z + nz * lateralDist2,
-        );
-        const rotB   = rng.next() * Math.PI * 2;
-        const scaleB = SCALE_MIN + rng.next() * (SCALE_MAX - SCALE_MIN);
+        // 2026-04-30: place ROCKS_PER_CELL copies per (section, side, row).
+        // Each copy gets independent lateral jitter, rotation, and scale, so the
+        // same row produces a clustered band instead of a single rock per slot.
+        for (let copy = 0; copy < ROCKS_PER_CELL; copy++) {
+          // ROW A — top row: base at y=CANYON_TOP (cliff rim)
+          const lateralJitterA = LATERAL_MIN + rng.next() * (lMax - LATERAL_MIN);
+          const lateralDistA   = hw + lateralJitterA;
+          const posA = new THREE.Vector3(
+            c.x + nx * lateralDistA,
+            CANYON_TOP,
+            c.z + nz * lateralDistA,
+          );
+          const rotA   = rng.next() * Math.PI * 2;
+          const scaleA = SCALE_MIN + rng.next() * (SCALE_MAX - SCALE_MIN);
 
-        // Row C — mid cliff: base at half-depth to fill the gap between A and B
-        const lateralJitter3 = LATERAL_MIN + rng.next() * (lMax - LATERAL_MIN);
-        const lateralDist3   = hw + lateralJitter3;
-        const posC = new THREE.Vector3(
-          c.x + nx * lateralDist3,
-          -100,   // mid-cliff
-          c.z + nz * lateralDist3,
-        );
-        const rotC   = rng.next() * Math.PI * 2;
-        const scaleC = SCALE_MIN + rng.next() * (SCALE_MAX - SCALE_MIN);
+          // ROW B — bottom row: base at water level
+          const lateralJitterB = LATERAL_MIN + rng.next() * (lMax - LATERAL_MIN);
+          const lateralDistB   = hw + lateralJitterB;
+          const posB = new THREE.Vector3(
+            c.x + nx * lateralDistB,
+            ROW_B_BASE_Y,
+            c.z + nz * lateralDistB,
+          );
+          const rotB   = rng.next() * Math.PI * 2;
+          const scaleB = SCALE_MIN + rng.next() * (SCALE_MAX - SCALE_MIN);
 
-        const geoA = extractAndTransformGeos(srcScene, posA, rotA, scaleA);
-        const geoB = extractAndTransformGeos(srcScene, posB, rotB, scaleB);
-        const geoC = extractAndTransformGeos(srcScene, posC, rotC, scaleC);
+          // ROW C — mid cliff
+          const lateralJitterC = LATERAL_MIN + rng.next() * (lMax - LATERAL_MIN);
+          const lateralDistC   = hw + lateralJitterC;
+          const posC = new THREE.Vector3(
+            c.x + nx * lateralDistC,
+            -100,
+            c.z + nz * lateralDistC,
+          );
+          const rotC   = rng.next() * Math.PI * 2;
+          const scaleC = SCALE_MIN + rng.next() * (SCALE_MAX - SCALE_MIN);
 
-        const allGeos = [...geoA, ...geoB, ...geoC];
+          allGeos.push(
+            ...extractAndTransformGeos(srcScene, posA, rotA, scaleA),
+            ...extractAndTransformGeos(srcScene, posB, rotB, scaleB),
+            ...extractAndTransformGeos(srcScene, posC, rotC, scaleC),
+          );
+        }
 
         if (sign > 0) {
           leftGeos.push(...allGeos);

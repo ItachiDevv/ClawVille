@@ -125,44 +125,44 @@ const _vertexShader = /* glsl */ `
 
 // ─── Fragment shader ──────────────────────────────────────────────────────────
 // Multi-frequency noise blend: patchy grass + slow-drifting dirt patches.
-// Additional depth cues: bank shadow (near water), hilltop brightening.
+// 2026-04-30: tiled CC0 grass diffuse (Polyhaven aerial_grass_rock) sampled in
+// world space and multiplied with the procedural color tint for "texture paint"
+// detail. Texture binding is uGrassMap; sampling cost is one texture2D() per
+// fragment — Iris Xe safe (still plain Mesh + ShaderMaterial).
 const _fragmentShader = /* glsl */ `
   ${_snoiseFunctions}
 
-  uniform float uTime;
-  varying vec3 vWorldPos;
-  varying float vYDisplacement;
+  uniform float     uTime;
+  uniform sampler2D uGrassMap;
+  varying vec3      vWorldPos;
+  varying float     vYDisplacement;
 
   void main() {
     // ── Cut a HOLE for the river canyon ──────────────────────────────────────
-    // 2026-04-29 iter-7: discard ground fragments inside the corridor band so
-    // (a) top-down sees water, not grass covering the canyon, and (b) cinematic
-    // POV inside the canyon doesn't have a dark "ground from below" band cutting
-    // across the screen. The corridor halfWidth maxes at 1050wu; spline meanders
-    // ±200wu in X. Cut at abs(x) < 1300wu = corridor center + max meander +
-    // small cliff-rim-overlap. Trees/rocks at xJitter 350-450 sit beyond the
-    // cliff (>= 1400wu) so they're untouched.
     if (abs(vWorldPos.x) < 1300.0) discard;
 
-    // ── Grass color palette ──────────────────────────────────────────────────
-    vec3 grassLight = vec3(0.545, 0.784, 0.282); // #8bc848 bright cartoon green
-    vec3 grassDark  = vec3(0.369, 0.620, 0.180); // #5e9e2e deeper grass
-    vec3 dirtSandy  = vec3(0.773, 0.647, 0.447); // #c5a572 sandy dirt patches
+    // ── Tiled grass texture sample (world-space UV, ~1 tile per 240wu) ───────
+    vec2 grassUV = vWorldPos.xz * (1.0 / 240.0);
+    vec3 grassTex = texture2D(uGrassMap, grassUV).rgb;
+
+    // ── Grass color palette (procedural tint) ────────────────────────────────
+    vec3 grassLight = vec3(0.545, 0.784, 0.282);
+    vec3 grassDark  = vec3(0.369, 0.620, 0.180);
+    vec3 dirtSandy  = vec3(0.773, 0.647, 0.447);
 
     // ── Medium-frequency noise for grass patch variation ─────────────────────
-    float nA = snoise(vWorldPos.xz * 0.002) * 0.5 + 0.5;  // [0,1]
+    float nA = snoise(vWorldPos.xz * 0.002) * 0.5 + 0.5;
+    float nB = snoise(vWorldPos.xz * 0.012 + uTime * 0.01) * 0.5 + 0.5;
 
-    // ── High-frequency slowly-drifting noise for dirt patches ────────────────
-    float nB = snoise(vWorldPos.xz * 0.012 + uTime * 0.01) * 0.5 + 0.5; // [0,1]
+    vec3 grassMix   = mix(grassLight, grassDark, smoothstep(0.3, 0.7, nA));
+    vec3 procColor  = mix(grassMix, dirtSandy, smoothstep(0.65, 0.75, nB) * 0.6);
 
-    // ── Grass color variation ─────────────────────────────────────────────────
-    vec3 grassMix = mix(grassLight, grassDark, smoothstep(0.3, 0.7, nA));
-
-    // ── Dirt patch overlay (where nB > 0.65) ─────────────────────────────────
-    vec3 finalColor = mix(grassMix, dirtSandy, smoothstep(0.65, 0.75, nB) * 0.6);
+    // ── Combine: texture detail × procedural tint, with 0.6 strength on the tex ──
+    // Pre-multiply texture toward neutral grey so tint stays dominant while detail comes through.
+    vec3 grassDetail = mix(vec3(0.5), grassTex, 0.85);
+    vec3 finalColor  = procColor * (grassDetail * 1.6); // ×1.6 compensates for 0.5 grey baseline
 
     // ── Bank shadow — slightly darker near the river edge ────────────────────
-    // abs(vWorldPos.x): bankShadow=1 at river center, 0 at 1800+ wu
     float bankShadow = 1.0 - smoothstep(1050.0, 1800.0, abs(vWorldPos.x));
     finalColor *= mix(1.0, 0.78, bankShadow);
 
@@ -174,16 +174,17 @@ const _fragmentShader = /* glsl */ `
   }
 `;
 
+// ─── Grass texture loader (module scope, reused across both strips) ──────────
+const _grassTexLoader = new THREE.TextureLoader();
+const _grassTex = _grassTexLoader.load('/textures/reef-race/grass-diff-1k.jpg');
+_grassTex.wrapS = THREE.RepeatWrapping;
+_grassTex.wrapT = THREE.RepeatWrapping;
+_grassTex.colorSpace = THREE.SRGBColorSpace;
+_grassTex.anisotropy = 4;
+
 // ─── TerrainMaterial — drei shaderMaterial() factory ─────────────────────────
-// Creates a ShaderMaterial subclass. uTime is auto-proxied so that
-// `matRef.current.uTime = value` writes to `uniforms.uTime.value` without
-// any per-frame object allocation.
-//
-// onInit (4th arg): sets non-default material flags on the instance.
-// FrontSide — terrain is only viewed from above; DoubleSide wastes fill.
-// fog=true — distant hills blend into the '#a8d8ff' sky-blue fog.
 export const TerrainMaterial = shaderMaterial(
-  { uTime: 0 },
+  { uTime: 0, uGrassMap: _grassTex },
   _vertexShader,
   _fragmentShader,
   (mat) => {
