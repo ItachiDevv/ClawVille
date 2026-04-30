@@ -112,22 +112,31 @@ export default function NpcController() {
     // Only active in npc mode with a possessed target
     if (controlMode !== 'npc' || !possessedNpcId) return;
 
-    // Handle Escape to exit building
+    // Handle Escape to exit building OR close guide chat
     const escNow = _keys.escape;
-    if (escNow && !_lastEscState && store.chatOpen) {
-      store.exitBuilding();
+    if (escNow && !_lastEscState) {
+      if (store.chatOpen) store.exitBuilding();
+      else if (store.guideChatOpen) store.closeGuideChat();
     }
     _lastEscState = escNow;
 
-    // If movement is frozen (inside a building), skip movement
+    // If movement is frozen (inside a building or guide chat), skip movement
     if (store.movementFrozen) return;
 
-    // Handle E to enter building
+    // Handle E to talk — Nori takes priority over a building character
+    // when both proximities are true (she's the discoverable greeter).
     const eNow = _keys.e;
-    if (eNow && !_lastEState && store.nearLocation) {
-      store.enterBuilding(store.nearLocation);
-      _lastEState = eNow;
-      return;
+    if (eNow && !_lastEState) {
+      if (store.nearGuide && !store.guideChatOpen && !store.chatOpen) {
+        store.openGuideChat();
+        _lastEState = eNow;
+        return;
+      }
+      if (store.nearLocation) {
+        store.enterBuilding(store.nearLocation);
+        _lastEState = eNow;
+        return;
+      }
     }
     _lastEState = eNow;
 
