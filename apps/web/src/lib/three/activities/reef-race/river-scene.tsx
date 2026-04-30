@@ -16,7 +16,7 @@
  *      sun glint, soft white-cap foam, pulsing edge foam (water-surf.tsx).
  *   D. Sky dome (SphereGeometry + MeshBasicMaterial vertexColors)
  *   E. ScenerySpawner (low-poly prop GLBs ON THE GRASS, not in water)
- *   F. Finish-line gate (wooden arch at z~18000, Part 2A)
+ *   F. Finish-line gate (wooden arch at z~28000, Part 2A)
  *   G. Distance markers every 2000wu (Part 2B)
  *   H. Power-up boxes mid-river (Part 2C)
  *   I. <RacingKarts /> — 5 surfboard karts riding the spline (imported from racing-karts.tsx)
@@ -68,10 +68,10 @@ import { RacingKarts } from './racing-karts';
 import { Ramps } from './ramps';
 
 // ─── Track layout constants ───────────────────────────────────────────────────
-// Track runs z=[0,18000]; slight overrun on each end for ground coverage.
-const TRACK_LEN_Z    = 20000;
+// Track runs z=[0,28000] (90s rebuild); slight overrun on each end for ground coverage.
+const TRACK_LEN_Z    = 30000;
 const TRACK_START_Z  = -500;
-const TRACK_CENTER_Z = TRACK_START_Z + TRACK_LEN_Z / 2; // 9500
+const TRACK_CENTER_Z = TRACK_START_Z + TRACK_LEN_Z / 2; // 14500
 
 // ─── Ground shader terrain — spline-following ribbon (iter-9) ────────────────
 // Two ribbons (left + right) swept along clientSpline following the river path.
@@ -128,7 +128,7 @@ const GATE_POST_H      = 250;
 const GATE_POST_D      = 60;
 const GATE_BAR_H       = 30;
 const GATE_BAR_D       = 40;
-const GATE_Z           = 18200; // just past finish line CP15 z≈18000
+const GATE_Z           = 28200; // just past finish line CP21 z≈28000 (90s rebuild)
 
 // Part 2B: Distance markers
 const MARKER_SPACING   = 2000;  // wu between markers
@@ -955,10 +955,10 @@ function FinishGate() {
 }
 
 // ─── Part 2B: Distance markers ────────────────────────────────────────────────
-// Small flag-on-pole at z = 2000, 4000, ..., 18000, placed at x=+MARKER_X_OFFSET.
+// Small flag-on-pole at z = 2000, 4000, ..., 28000, placed at x=+MARKER_X_OFFSET.
 // Gentle flag sway animation.
 
-const _markerCount = Math.floor(18000 / MARKER_SPACING); // 9 markers
+const _markerCount = Math.floor(28000 / MARKER_SPACING); // 14 markers (90s rebuild)
 
 function DistanceMarkers() {
   // Each marker: pole + flag — all placed via useEffect for perf

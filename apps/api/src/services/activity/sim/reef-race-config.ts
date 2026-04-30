@@ -13,10 +13,11 @@
  * units; the 3D layer multiplies by `AVATAR_SCALE` (40) when laying out
  * meshes.
  *
- * Track shape (3d-spec §2.1):
- *   - Closed oval, ~6000 wu perimeter, 3 laps default = ~18000 wu race
- *   - 300 wu wide track, ~36s/lap at MAX_REEF_SPEED ≈ 500 wu/s
- *   - 1 chicane (S-bend, near checkpoint 6) + 1 long straight (start/finish)
+ * Track shape (v2 spline, 2026-04-30 90s rebuild):
+ *   - Open spline track, 22 control points, z-span 0→28000 wu
+ *   - ~30 000 wu arc length, single lap = ~90s at ~330 wu/s cruise
+ *   - 5 themed segments (lagoon → kelp → shipwreck → coral → finish)
+ *   - Slalom amplitudes ±170/±200/±180 wu in kelp/shipwreck/coral
  *
  * Checkpoint sequence: 12 AABB volumes evenly spaced around the
  * centerline. `0` is the start/finish line; `1..11` advance counter-
