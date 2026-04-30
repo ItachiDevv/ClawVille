@@ -528,21 +528,32 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
         }
       });
     }
-    // CENTER FIX (2026-04-29): The surfboard GLB has a baked-in offset
-    // on the inner Surfboard_01 child (localX=120.63, localY=87.65). Without
-    // this fix the visible mesh ends up ~33wu RIGHT and ~51wu BEHIND the
-    // rider. Zero out that inner offset BEFORE applying the outer scale so
-    // the centring lives in the GLB's pre-scale local space (cleaner than
-    // computing a bbox after scale, which mixes world + local units).
-    sb.traverse(o => {
-      if (o.name === 'Surfboard_01') {
-        o.position.set(0, 0, 0);
-      }
-    });
     // Scale: surfboard_1.glb is nominally 1m. In KART_SCALE local space, we
     // target roughly GLIDER_LENGTH (5) in Z and GLIDER_WIDTH (2.5) in X.
     // A scale of GLIDER_LENGTH fits the board footprint to the old BoxGeometry.
     sb.scale.set(GLIDER_WIDTH, GLIDER_HEIGHT * 4, GLIDER_LENGTH);
+
+    // CENTER FIX (2026-04-29): The surfboard GLB has a baked-in offset
+    // (Surfboard_01 child has localX=120.63, localY=87.65), so the visible
+    // mesh appears ~33wu RIGHT and ~51wu BEHIND the rider VRM. Compute the
+    // post-scale bounding-box center and translate the wrapper group to put
+    // the BOARD CENTER at local (0, 0, 0) — i.e., directly under the rider.
+    // Update world matrices first so the bbox reflects the hierarchy + scale.
+    sb.updateWorldMatrix(true, true);
+    const bbox = new THREE.Box3().setFromObject(sb);
+    if (!bbox.isEmpty()) {
+      const center = bbox.getCenter(new THREE.Vector3());
+      // Subtract from sb.position so the BOARD center lands at (0, 0, 0)
+      // in gliderRef-local space. Y is preserved (we want the BOARD TOP at
+      // the rider's feet — handled by RIDER_MOUNT_OFFSET above the glider).
+      sb.position.x -= center.x;
+      sb.position.z -= center.z;
+      // Y: align board TOP to local y=0. bbox.max.y is the board's highest
+      // point in world coords; we want that point at the SAME world Y as
+      // the gliderRef origin. Subtract bbox.max.y - sb.position.y to slide.
+      // Equivalent: sb.position.y -= bbox.max.y (since sb starts at y=0).
+      sb.position.y -= bbox.max.y;
+    }
     return sb;
   }, [surfboardSrc, entity.color]);
 
