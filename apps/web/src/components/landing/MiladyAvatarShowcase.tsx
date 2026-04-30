@@ -33,6 +33,7 @@ import React, { useRef, useState, useEffect, Suspense, useCallback } from 'react
 import { Canvas, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useVRMInstance, disposeVRMInstance } from '@/lib/three/vrm-loader';
+import { useVisibleFrameloop } from '@/lib/use-visible-frameloop';
 import type { VRM } from '@pixiv/three-vrm';
 
 // ---------------------------------------------------------------------------
@@ -55,8 +56,8 @@ const SPIN_SPEED  = 0.08;                    // rad/s Y-axis auto-rotate
 const BOB_AMP     = 0.04;                   // ±0.04 units vertical bob
 const BOB_FREQ    = (2 * Math.PI) / 3;      // one full cycle every 3 s
 // Framing offset — keep the bob centered on this Y instead of Y=0 so
-// the avatar (1.7u tall × 0.65 scale ≈ 1.1u) sits centered on origin.
-const AVATAR_BASE_Y = -0.55;
+// the avatar (1.7u tall × 0.5 scale ≈ 0.85u) sits centered on origin.
+const AVATAR_BASE_Y = -0.42;
 
 // Module-scope scene background — one allocation, no per-render new Color()
 const SCENE_BG = new THREE.Color(0x061520);
@@ -107,11 +108,10 @@ function VRMAvatarInner({ path }: { path: string }) {
   });
 
   // Avatar framing: VRMs export ~1.7u tall with feet at Y=0. Scale to
-  // 0.65 (≈1.1u tall) and offset down so center lands at origin —
-  // robust headroom on every VRM regardless of pose / clothing height.
-  // Verified visually 2026-04-29 after two earlier framings cropped.
+  // 0.5 (≈0.85u tall — slightly more breathing room than 0.65) and
+  // offset down so center lands at origin. Robust on every VRM.
   return (
-    <group ref={groupRef} position={[0, -0.55, 0]} scale={0.65}>
+    <group ref={groupRef} position={[0, AVATAR_BASE_Y, 0]} scale={0.5}>
       <primitive object={vrm.scene} />
     </group>
   );
@@ -142,13 +142,17 @@ export default function MiladyAvatarShowcase() {
   const [index, setIndex] = useState(_startIndex);
   const path = VRM_PATHS[index % VRM_PATHS.length];
 
-  // Click anywhere on the canvas → cycle to next avatar (wrap-around)
+  // Pause the canvas frameloop when the showcase scrolls offscreen —
+  // big perf win, the GPU goes idle when you're past the hero.
+  const { ref, frameloop } = useVisibleFrameloop();
+
   const handleClick = useCallback(() => {
     setIndex((i) => (i + 1) % VRM_PATHS.length);
   }, []);
 
   return (
     <div
+      ref={ref}
       style={{ width: '100%', height: '100%', cursor: 'pointer' }}
       onClick={handleClick}
       title="Click to see next avatar"
@@ -156,20 +160,20 @@ export default function MiladyAvatarShowcase() {
       <Canvas
         style={{ width: '100%', height: '100%' }}
         camera={{ position: [0, 0, 2.4], fov: 38, near: 0.1, far: 40 }}
-        gl={{ antialias: true, alpha: true }}
+        gl={{ antialias: true, alpha: true, powerPreference: 'high-performance' }}
         scene={{ background: SCENE_BG }}
-        dpr={[1, 1.5]}
+        dpr={[1, 1.25]}
+        frameloop={frameloop}
       >
         <ShowcaseLighting />
 
-        {/* Soft shadow disc under avatar at the new foot level
-            (offset -0.55, scaled 0.65 → feet at Y ≈ -0.55). */}
+        {/* Soft shadow disc at avatar foot level (matches AVATAR_BASE_Y). */}
         <mesh
           geometry={_shadowGeo}
           material={_shadowMat}
           rotation={[-Math.PI / 2, 0, 0]}
-          position={[0, -0.55, 0]}
-          scale={0.7}
+          position={[0, AVATAR_BASE_Y, 0]}
+          scale={0.55}
         />
 
         {/* Suspense boundary: only the avatar remounts on swap, not the whole Canvas */}
