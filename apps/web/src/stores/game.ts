@@ -84,6 +84,13 @@ export interface GameState {
   nearCharacter: string | null;
   setNearCharacter: (name: string | null) => void;
 
+  // Near Town Guide (Nori) — true when player is within TALK_RADIUS_WORLD of
+  // the town-guide anchor (0, _, 240). Drives the in-HUD "Talk to Nori" pill
+  // glow + label swap so Nori gets the same proximity affordance the 10
+  // building characters do. Written by the same 3D proximity pass.
+  nearGuide: boolean;
+  setNearGuide: (near: boolean) => void;
+
   // Current location the player is chatting at (still keyed by buildingId for
   // downstream routing — API chat endpoint, shop, knowledge context — but the
   // UX is framed as "talking to the character in front of this building",
@@ -448,6 +455,9 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   nearCharacter: null,
   setNearCharacter: (name) => set({ nearCharacter: name }),
+
+  nearGuide: false,
+  setNearGuide: (near) => set({ nearGuide: near }),
 
   currentLocation: null,
   currentCharacter: null,

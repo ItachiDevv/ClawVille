@@ -19,6 +19,7 @@ import { useNpcStore } from '@/stores/npc';
 import type { NpcSpriteState } from '@/stores/npc';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 import { findNearestCharacter } from '@/lib/three/character-positions';
+import { NORI_WORLD_X, NORI_WORLD_Z, NORI_TALK_RADIUS_SQ } from '@/lib/three/town-guide';
 import { isEditable, jumpState } from '@/lib/three/jump-state';
 
 const SPEED = 550; // pixels/sec — pass 2 2026-04-16: bumped 320→550 (user tested pass 1 at 320,
@@ -147,6 +148,12 @@ export default function NpcController() {
       const nearName = nearest ? nearest.characterName : null;
       if (nearId !== store.nearLocation) store.setNearLocation(nearId);
       if (nearName !== store.nearCharacter) store.setNearCharacter(nearName);
+
+      // Town Guide proximity (singleton — Nori isn't in CHARACTER_POSITIONS).
+      const ndx = wx - NORI_WORLD_X;
+      const ndz = wz - NORI_WORLD_Z;
+      const noriNear = (ndx * ndx + ndz * ndz) < NORI_TALK_RADIUS_SQ;
+      if (noriNear !== store.nearGuide) store.setNearGuide(noriNear);
     }
 
     // ---- Unified input: joystick + WASD → camera-relative ----
