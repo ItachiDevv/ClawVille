@@ -294,7 +294,7 @@ Source: `packages/shared/src/constants/map-locations.ts` (names) + `building-typ
 | skill-forge | Chum Bucket | Code & Development |
 | channel-bridge | Sandy's Treedome | Communication |
 | tool-workshop | Krusty Krab | Tool Use & MCP |
-| canvas-studio | Pineapple House | Data & Analytics |
+| canvas-studio | Pineapple House | Visual Creation |
 | voice-tower | Boating School | Research & Analysis |
 | security-fortress | Patrick's Rock | Crypto & Web3 |
 | config-citadel | Lighthouse | Business & Productivity |
