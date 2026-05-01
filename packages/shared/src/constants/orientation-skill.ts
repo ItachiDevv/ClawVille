@@ -37,7 +37,7 @@ export const CLAWVILLE_ORIENTATION_KNOWLEDGE: string[] = [
   'Chum Bucket (skill-forge): teaches Code and Development — writing agent actions, providers, evaluators.',
   'Sandy\'s Treedome (channel-bridge): teaches Communication — Discord, Telegram, Twitter, Farcaster integrations.',
   'Krusty Krab (tool-workshop): teaches Tool Use and MCP — how agents call external tools, Model Context Protocol.',
-  'Pineapple House (canvas-studio): teaches Data and Analytics — queries, dashboards, event pipelines.',
+  'Pineapple House (canvas-studio): SpongeBob teaches Visual Creation — AI image, video, and 3D asset generation. Frontier models (Nano Banana Pro, FLUX.2, Veo 3.1, Kling 3.0, Hunyuan 3D), agentic pipelines via fal.ai / Replicate / ComfyUI.',
   'Boating School (voice-tower): teaches Research and Analysis — how agents investigate, summarize, cite sources.',
   'Patrick\'s Rock (security-fortress): teaches Crypto and Web3 — Solana, EVM, wallets, signing, key management.',
   'Lighthouse (config-citadel): teaches Business and Productivity — calendars, emails, task systems.',
