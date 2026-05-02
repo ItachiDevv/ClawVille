@@ -192,30 +192,44 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
 
   // === Canvas Studio (Pineapple House) ===
   {
+    // ID retained as 'live-canvas-rendering' for backwards compatibility with
+    // existing avatar_inventory rows. User-visible name/description/contents
+    // rebranded for the Visual Creation curriculum.
     id: 'live-canvas-rendering',
-    name: 'Live Canvas Rendering',
-    description: 'Create real-time visualizations and interactive canvases.',
+    name: 'AI Visual Pipelines',
+    description: 'Frontier AI models for image, video, and 3D generation — Nano Banana Pro, FLUX.2, Veo 3.1, Kling 3.0, Hunyuan 3D — and the fal.ai / Replicate / ComfyUI pipelines that orchestrate them.',
     icon: '🎨',
-    price: 10,
+    price: 15,
     building: 'canvas-studio',
     knowledgeEntries: [
-      'Live Canvas lets agents render real-time charts, diagrams, and interactive UIs directly in chat.',
-      'Canvas uses a declarative component model — agents describe what to render, and the framework handles layout and updates.',
-      'Data-driven visualizations update automatically as underlying data changes — perfect for dashboards and monitoring.',
+      'For frontier image generation in 2026, the top three are Nano Banana Pro (gemini-3-pro-image-preview), GPT Image 2, and FLUX.2 Pro — all callable via OpenAI-compatible REST or the fal.ai aggregator.',
+      'FLUX.2 Pro accepts up to 10 reference images in one call at $0.03/image — the default for multi-reference brand and character work; got a 2× speed upgrade in April 2026 at the same price.',
+      'For frontier video, default to Veo 3.1 (native synced audio, $0.10–0.40/s), Kling 3.0 Pro (native 4K, multi-shot), or Seedance 2.0 (multimodal text+image+audio+video input, up to 20s) — Sora 2 API ends 2026-09-24.',
+      'For game-ready rigged 3D characters, Tripo 3.0 Ultra is the fastest pipeline; for stylised quad-mesh characters use Hunyuan 3D + PolyGen; for hard-surface props with clean part separation use Rodin Gen-2 with tier=Gen-2 and tapose=true.',
+      'For character consistency across shots, escalate cheapest-first: multi-reference prompts → Higgsfield Soul ID ($3 train + $0.15/gen) → custom LoRA training on fal.ai (~$2.40 floor, 1000 steps).',
+      'fal.ai (`@fal-ai/client`) is the default aggregator for agent code — 600+ models behind one API, queue-with-webhooks via fal.queue.submit, ~30–50% cheaper than Replicate; tier model by intent (flux/schnell at $0.003 for icons, FLUX.2 Pro at $0.03 for hero, Veo 3.1 Lite at $0.05/s for cinematics).',
+      'Always set an Idempotency-Key on POST /create or you get billed twice on retry; long video jobs return {id, status} immediately — poll with exponential 2s→30s backoff capped at 10 min, or set a webhook and verify the HMAC signature.',
     ],
   },
   {
+    // ID retained as 'generative-art-agents' for backwards compatibility with
+    // existing avatar_inventory rows. User-visible name/description/contents
+    // rebranded for the Visual Creation curriculum.
     id: 'generative-art-agents',
-    name: 'Generative Art with Agents',
-    description: 'Use AI agents to create and iterate on generative art and visuals.',
-    icon: '🖼️',
-    price: 14,
+    name: 'Production Toolkit',
+    description: 'Working artist depth in Photoshop, After Effects, Premiere Pro, DaVinci Resolve, CapCut, Blender, and TouchDesigner — the keyboard maps, scripting surfaces, and pipelines pros use daily.',
+    icon: '🛠️',
+    price: 20,
     building: 'canvas-studio',
     knowledgeEntries: [
-      'Generative art agents combine rule-based systems with AI creativity to produce unique visual outputs.',
-      'SVG generation lets agents create scalable vector art programmatically — perfect for logos, icons, and diagrams.',
-      'Image generation APIs like DALL-E and Stable Diffusion can be wrapped as agent tools for on-demand visual creation.',
-      'Iterative refinement loops let agents generate, critique, and improve their own visual outputs.',
+      'Photoshop 27.6 (April 2026) runs Generative Fill on Firefly Image 5 at 2K with a model picker exposing Firefly + Gemini 3 Pro (Nano Banana) + FLUX.2 + GPT-Image side-by-side; UXP scripts in .psjs are the modern automation path (BatchPlay descriptors inside core.executeAsModal).',
+      'After Effects layer property reveal letters are P (Position), S (Scale), R (Rotation), T (Opacity), A (Anchor Point), M (Mask Path), with U/UU revealing all keyframed/modified properties — the fastest way to reverse-engineer any project.',
+      'AE Object Matte (26.2, April 2026) single-clicks AI subject isolation; wiggle(freq, amp) is the most-used expression; loopOut("cycle"/"pingpong"/"continue"/"offset") extends keyframes forever; aerender CLI with -mp -mfr ON 90 enables Multi-Frame Rendering.',
+      'Premiere JKL is the universal shuttle (J reverse, K stop, L forward); Cmd+K cuts targeted tracks at playhead; Lumetri Color sections stack in order Basic Correction → Creative → Curves → Color Wheels & Match → HSL Secondary → Vignette; ExtendScript sunsets September 2026 for UXP migration.',
+      'DaVinci Resolve has seven pages (Media/Cut/Edit/Fusion/Color/Fairlight/Deliver) switched with Shift+2..8; Color uses node trees (Serial/Parallel/Layer/Outside) with HSL Qualifier + Power Window + Tracker for face grades; Studio is $295 perpetual one-time, no subscription.',
+      'CapCut is ByteDance\'s short-form NLE (mobile/desktop/web/Pippit) with Pro at $7.99/mo via web vs $19.99/mo on iOS; AI features (OmniHuman 1.5 talking-head, Voice Clone, Auto Captions, Background Removal, AI Inpaint) are integrated; "Use for commercial" tag is TikTok-only — license real music elsewhere.',
+      'Blender modifier stack evaluates top-to-bottom (Mirror BEFORE Subdivision Surface or the seam doesn\'t merge); always Ctrl+A → Apply All Transforms before exporting glTF/FBX or sibling tools (Unity, Unreal, Three.js) import at 100× scale; bpy.data is reliable from any context, bpy.ops can fail silently in headless scripts.',
+      'TouchDesigner is node-based real-time visuals — six OP families (TOPs/CHOPs/SOPs/POPs/MATs/DATs/COMPs); Non-Commercial is free with a 1280×1280 cap, Commercial is $600 node-locked; StreamDiffusionTD + TDComfyUI bridge AI generation into the live signal flow.',
     ],
   },
 
