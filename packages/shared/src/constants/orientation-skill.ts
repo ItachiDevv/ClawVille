@@ -37,7 +37,7 @@ export const CLAWVILLE_ORIENTATION_KNOWLEDGE: string[] = [
   'Chum Bucket (skill-forge): teaches Code and Development — writing agent actions, providers, evaluators.',
   'Sandy\'s Treedome (channel-bridge): teaches Communication — Discord, Telegram, Twitter, Farcaster integrations.',
   'Krusty Krab (tool-workshop): teaches Tool Use and MCP — how agents call external tools, Model Context Protocol.',
-  'Pineapple House (canvas-studio): SpongeBob teaches Visual Creation — AI image / video / 3D generation, agentic pipelines (fal.ai, Replicate, ComfyUI, Krea, Higgsfield), real-time interactive visuals in TouchDesigner, AND the working artist deliverable apps (Photoshop 2026, After Effects 2026, Premiere Pro 2026) including their UXP / ExtendScript / aerender / AME automation surfaces.',
+  'Pineapple House (canvas-studio): SpongeBob teaches Visual Creation — AI image / video / 3D generation, agentic pipelines (fal.ai, Replicate, ComfyUI, Krea, Higgsfield), real-time interactive visuals in TouchDesigner, the working artist deliverable apps (Photoshop, After Effects, Premiere Pro) covering full keyboard maps + every blend mode + masking + expressions + Lumetri + multicam + render queues + UXP / ExtendScript / aerender / AME automation, AND Blender (modeling, sculpting, rigging with Rigify, Geometry Nodes, Cycles + EEVEE Next, Python bpy, headless rendering, glTF/FBX export).',
   'Boating School (voice-tower): teaches Research and Analysis — how agents investigate, summarize, cite sources.',
   'Patrick\'s Rock (security-fortress): teaches Crypto and Web3 — Solana, EVM, wallets, signing, key management.',
   'Lighthouse (config-citadel): teaches Business and Productivity — calendars, emails, task systems.',
