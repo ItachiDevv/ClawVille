@@ -233,33 +233,44 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
 
-  // === Voice Tower (Boating School) ===
+  // === Voice Tower (Boating School — repurposed to App Publishing 2026-05) ===
   {
+    // ID retained as 'voice-speech-integration' for backwards compatibility with
+    // existing avatar_inventory rows. Rebranded to App Store Survival Guide.
     id: 'voice-speech-integration',
-    name: 'Voice & Speech Integration',
-    description: 'Add speech-to-text and text-to-speech to your agents.',
-    icon: '🗼',
-    price: 12,
+    name: 'App Store Survival Guide',
+    description: 'Pass App Store Review on the first try. Apple guidelines, Google Play Closed Testing rule, Microsoft Store fees, Steam Direct, IARC age ratings — Mrs. Puff\'s playbook.',
+    icon: '📋',
+    price: 18,
     building: 'voice-tower',
     knowledgeEntries: [
-      'Speech-to-text (STT) converts audio input into text that agents can process — popular APIs include Whisper and Deepgram.',
-      'Text-to-speech (TTS) gives agents a voice — ElevenLabs and OpenAI TTS produce natural-sounding speech from text.',
-      'Voice agents need low latency pipelines: STT → LLM → TTS should complete in under 2 seconds for natural conversation.',
-      'Voice activity detection (VAD) determines when the user has finished speaking, enabling turn-based voice conversations.',
+      'Apple Developer Program is $99/year (mandatory Mac + Xcode + Apple ID with 2FA); the most-cited App Store rejection reasons are 5.1.1 (privacy policy URL), 2.1 (completeness/crashes), 4.3 (design spam), and 5.1.2 (data use mismatch).',
+      'Google Play registration is $25 ONE-TIME, but personal accounts created after Nov 2023 must run Closed Testing with 12 opted-in testers for 14 continuous days — verified Organization accounts with a DUNS number are exempt.',
+      'Microsoft Store individual developer accounts have been free since September 2025; revenue split is 85/15 for non-gaming apps using Microsoft commerce, 100/0 if you use your own commerce engine (Stripe/Paddle), and 88/12 for games.',
+      'Steam Direct is $100 one-time per app (recoupable at $1,000 revenue); first product faces a mandatory 30-day waiting period; Coming Soon page must be live for 14+ days; revenue split tiers 70/30 → 75/25 above $10M → 80/20 above $50M per title lifetime.',
+      'The IARC questionnaire produces ESRB, PEGI, USK, ClassInd, GRAC, ACB, IGRS, GAMR ratings from one submission — used by Google Play and Microsoft Store at once, saves hours per region.',
+      'Apple Privacy Manifests (PrivacyInfo.xcprivacy) have been mandatory since May 2024; 86 listed third-party SDKs (Firebase, Sentry, Stripe etc.) MUST ship with their own privacy manifest + valid code signature, or your app gets rejected at upload.',
+      'Subscription pricing favors Google: Play takes 15% from day one on subscriptions and 15% on the first $1M/yr revenue automatically; Apple is 30% Year 1 / 15% Year 2 / 15% under the Small Business Program for sub-$1M devs.',
     ],
   },
   {
+    // ID retained as 'conversational-voice-ai' for backwards compatibility with
+    // existing avatar_inventory rows. Rebranded to Cross-Platform Publisher.
     id: 'conversational-voice-ai',
-    name: 'Conversational Voice AI',
-    description: 'Build natural voice agents with interruption handling and emotion detection.',
-    icon: '🎙️',
-    price: 16,
+    name: 'Cross-Platform Publisher',
+    description: 'One codebase, many stores. React Native + Expo, Flutter, Tauri 2, MAUI, Unity for games. Plus alt stores (Itch, Epic, AltStore PAL, Flathub, Huawei) and code-signing across platforms.',
+    icon: '🚀',
+    price: 22,
     building: 'voice-tower',
     knowledgeEntries: [
-      'Barge-in handling lets users interrupt the agent mid-speech — the agent stops talking and processes the new input.',
-      'Emotion detection from voice prosody (pitch, speed, volume) helps agents adapt their tone to the user emotional state.',
-      'Streaming TTS reduces perceived latency — start speaking the first sentence while generating the rest.',
-      'Multi-language voice agents use language detection on the first utterance to switch STT and TTS models automatically.',
+      'Framework decision tree: Tauri 2 (Rust + native webview, 2-10MB bundles vs Electron 100MB+) for desktop, Flutter (Impeller, pixel-identical UI) for branded mobile, React Native + Expo for web-team mobile, Unity/Unreal/Godot for games, .NET MAUI for .NET shops, Kotlin Multiplatform + Compose for Kotlin teams.',
+      'Expo SDK 55 (2026) dropped Legacy Architecture entirely — New Architecture is mandatory; EAS Build runs iOS in Expo\'s macOS cloud and Android on GCP Linux runners, so no local Xcode required for CI.',
+      'Microsoft Store re-signs MSIX packages for free at certification time — Store-only apps don\'t need to buy a code-signing cert; Azure Trusted Signing ($9.99/mo) is the recommended hosted alternative for non-Store distribution; EV certs ($300-900/yr from DigiCert/Sectigo/SSL.com) are the only path to instant Windows SmartScreen bypass and require hardware key storage since June 2023.',
+      'EU iOS alternative app marketplaces in 2026 are AltStore PAL, Epic Games Store, and Aptoide; Apple\'s Web Distribution requires 1M+ EU installs in the prior year (excludes ~90% of devs).',
+      'Itch.io has a 0-100% revenue-share slider (10% default), 900,000+ projects, and is the de-facto indie game launchpad; Epic Games Store now lets developers keep 100% of the first $1M per product per year before reverting to 88/12.',
+      'IAP commission map across stores: Apple 30/15, Google Play 30/15 (15% on first $1M/yr automatic), Microsoft Store 0% with own commerce or 15/12 with theirs, Steam 70/25/20 tiered, Epic 88/12 with $1M free, Itch 0-100% slider — the math drives platform strategy.',
+      'Cross-platform notification systems require unified abstraction across APNs (Apple) + FCM (Google) + WNS (Windows) + WebPush (browsers) — Firebase Cloud Messaging or OneSignal usually wrap them all.',
+      'Microsoft App Center sunsets June 30, 2026; Microsoft itself recommends migrating to Sentry, Crashlytics, BugSnag, or Datadog for cross-platform crash and analytics.',
     ],
   },
 
