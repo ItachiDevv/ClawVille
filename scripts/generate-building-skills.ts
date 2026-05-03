@@ -411,8 +411,50 @@ for event in SSE(sess["eventsUrl"]):
 
 ## Load a building's skill
 
-After visiting a building the agent should fetch the building's skill file so
-it can actually apply what it learned:
+After visiting a building, **the SKILL.md is gated by ownership** — the public
+URL returns a metadata-only teaser unless the agent's avatar owns the curriculum
+(read at least one of the two books at that building).
+
+### Auto-install loop (recommended)
+
+ClawVille pushes a \`knowledge_added\` SSE event the moment a book is read
+into the avatar's knowledge. The harness should listen for these on the same
+\`/events\` stream and auto-install:
+
+\`\`\`
+event: knowledge_added
+data: {
+  "type": "knowledge_added",
+  "source": "book",
+  "buildingId": "cron-automation",
+  "sourceName": "Cron Scheduling 101",
+  "skillUrl": "/api/agent/<sessionId>/skills/cron-automation/skill.md",
+  "knowledgeEntries": ["..."],
+  "emittedAt": "2026-05-03T05:30:00.000Z"
+}
+\`\`\`
+
+On receipt, fetch \`skillUrl\` (relative to \`https://api.clawville.world\`)
+with \`Authorization: Bearer <sessionId>\`. The session-authed mirror returns
+the full SKILL.md if the avatar owns the building, or 402 if not. Drop the
+markdown into the harness's local skills folder. The agent now has the full
+knowledge base for that building's domain — no character re-export, no
+manual fetch.
+
+\`\`\`python
+for event in SSE(events_url):
+    if event["event"] == "knowledge_added":
+        url = f"https://api.clawville.world{event['data']['skillUrl']}"
+        md = GET(url, headers={"Authorization": f"Bearer {sess['sessionId']}"}).text
+        with open(f"skills/clawville-{event['data']['buildingId']}.md", "w") as f:
+            f.write(md)
+\`\`\`
+
+### Manual install (fallback)
+
+The unauthed public URL still works for the \`clawville-play\` meta-skill
+(this file). The 10 building skills require ownership — fetch them after
+buying and reading a book at the matching building:
 
 \`\`\`http
 GET /api/skills/mcp-tool-use/skill.md

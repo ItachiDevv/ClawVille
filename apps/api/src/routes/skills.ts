@@ -5,12 +5,31 @@
  *
  * Routes:
  *   GET /api/skills                        — JSON index of all skills
- *   GET /api/skills/:buildingId/skill.md   — raw SKILL.md (text/markdown)
+ *   GET /api/skills/:buildingId/skill.md   — raw SKILL.md (gated, see below)
  *   GET /api/skills/:buildingId            — JSON metadata for a single skill
+ *
+ * Inventory gating (added 2026-05-03)
+ *   --------------------------------
+ *   Per-building SKILL.md content is the *paid* curriculum — it lives behind
+ *   ownership so agents can't reverse-engineer the URL pattern and fetch
+ *   skills they never bought. Two ways to satisfy ownership:
+ *
+ *   1. Authenticated browser session (Lucia cookie) — the user's avatar must
+ *      have at least one knowledge entry from this building's books.
+ *   2. Authenticated agent session (Bearer sessionId) — the agent's linked
+ *      avatar must have at least one knowledge entry from this building's
+ *      books. (Same check, different auth path.)
+ *
+ *   Unauthenticated callers and authed callers without ownership get 402
+ *   Payment Required + a metadata-only teaser body. The `clawville-play`
+ *   meta skill is the one exception — it's the entry-point skill any
+ *   agent needs before they can play, so it stays public.
  */
 
 import { Hono } from 'hono';
-import { db, buildingSkills, eq } from '@clawville/database';
+import { db, buildingSkills, openclawBots, avatars, eq, and } from '@clawville/database';
+import { getBooksForBuilding, BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
+import { lucia } from '../lib/auth';
 import { logEventFromContext } from '../services/event-logger';
 import type { AppContext } from '../types';
 
@@ -36,6 +55,123 @@ skillsRoutes.get('/', async (c) => {
   });
 });
 
+/**
+ * Resolve the caller's avatar ID via either Lucia session cookie or
+ * Authorization: Bearer <agent-sessionId>. Returns null if both fail.
+ */
+async function resolvePetId(c: any): Promise<string | null> {
+  // Try Lucia session cookie first
+  const cookieHeader = c.req.header('Cookie');
+  if (cookieHeader) {
+    const cookieName = lucia.sessionCookieName;
+    const sessionMatch = cookieHeader.match(new RegExp(`${cookieName}=([^;]+)`));
+    if (sessionMatch) {
+      try {
+        const { user } = await lucia.validateSession(sessionMatch[1]);
+        if (user) {
+          const row = await db.query.avatars.findFirst({
+            where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
+            columns: { id: true },
+          });
+          if (row) return row.id;
+        }
+      } catch {
+        /* fall through to bearer */
+      }
+    }
+  }
+
+  // Try agent Bearer sessionId — sessionId itself is opaque, so we look up
+  // the openclaw_bots row by agent_id matching the in-memory map. Cheap
+  // alternative: skip sessionId resolution entirely and take agent_id from
+  // the X-Clawville-Agent-Id header that nanoclaw clients already send for
+  // event logging.
+  const auth = c.req.header('Authorization');
+  const agentIdHeader = c.req.header('X-Clawville-Agent-Id');
+  if (auth?.startsWith('Bearer ') || agentIdHeader) {
+    // Prefer agent-id header (set by nanoclaw harnesses); fall back to the
+    // session-resolution map for sessionId-only callers.
+    const { npcSimulation } = await import('../services/npc-simulation');
+    let agentId: string | null = agentIdHeader ?? null;
+    if (!agentId && auth) {
+      const sid = auth.slice(7);
+      const cfg = npcSimulation.getOpenClawBotConfig(sid);
+      agentId = cfg?.agentId ?? null;
+    }
+    if (agentId) {
+      const bot = await db.query.openclawBots.findFirst({
+        where: eq(openclawBots.agentId, agentId),
+        columns: { userId: true },
+      });
+      if (bot?.userId) {
+        const avatar = await db.query.avatars.findFirst({
+          where: and(eq(avatars.userId, bot.userId), eq(avatars.isActive, true)),
+          columns: { id: true },
+        });
+        if (avatar) return avatar.id;
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Returns true if the avatar's characterConfig.knowledge contains at least
+ * one entry from any of the building's books' knowledgeEntries arrays.
+ * This matches the in-game definition of "you've read at least one book
+ * here" — the install moment, not just visiting.
+ */
+async function petOwnsBuilding(avatarId: string, buildingId: string): Promise<boolean> {
+  const row = await db.query.avatars.findFirst({
+    where: eq(avatars.id, avatarId),
+    columns: { characterConfig: true },
+  });
+  const known: string[] =
+    (row?.characterConfig as { knowledge?: string[] } | null)?.knowledge ?? [];
+  if (known.length === 0) return false;
+  const knownSet = new Set(known);
+  for (const book of getBooksForBuilding(buildingId)) {
+    for (const entry of book.knowledgeEntries) {
+      if (knownSet.has(entry)) return true;
+    }
+  }
+  return false;
+}
+
+function teaserBody(buildingId: string, skillName: string, description: string): string {
+  const theme = BUILDING_OPENCLAW_THEMES[buildingId];
+  const label = theme?.label ?? buildingId;
+  return [
+    '---',
+    `name: ${skillName}`,
+    `description: ${description}`,
+    `version: 0.0.0`,
+    'license: gated',
+    `metadata:`,
+    `  building_id: ${buildingId}`,
+    `  building_label: ${JSON.stringify(label)}`,
+    `  ownership: locked`,
+    '---',
+    '',
+    `# ${label} — locked`,
+    '',
+    `This skill is gated. To unlock, your avatar must read at least one knowledge`,
+    `book from the ${label} in ClawVille. Path:`,
+    '',
+    `1. Connect (or sign in) at https://clawville.world.`,
+    `2. Visit ${label} (\`buildingId: ${buildingId}\`).`,
+    `3. Buy and read a knowledge book at the shop.`,
+    `4. Refetch this URL via your authed agent session — the SKILL.md`,
+    `   contents will appear in full and your harness will receive a`,
+    `   \`knowledge_added\` SSE event with the install URL.`,
+    '',
+    `(This is a metadata-only teaser. The full ${skillName} content is`,
+    `available once you own it.)`,
+    '',
+  ].join('\n');
+}
+
 skillsRoutes.get('/:buildingId/skill.md', async (c) => {
   const buildingId = c.req.param('buildingId');
   const [row] = await db
@@ -50,6 +186,26 @@ skillsRoutes.get('/:buildingId/skill.md', async (c) => {
     });
   }
 
+  // Entry-point skill: always public so agents can install the play loop
+  // before they own anything.
+  const isEntrySkill = buildingId === 'clawville-play';
+
+  let unlocked = isEntrySkill;
+  if (!unlocked) {
+    const avatarId = await resolvePetId(c);
+    if (avatarId) {
+      unlocked = await petOwnsBuilding(avatarId, buildingId);
+    }
+  }
+
+  if (!unlocked) {
+    return c.text(teaserBody(buildingId, row.name, row.description), 402, {
+      'Content-Type': 'text/markdown; charset=utf-8',
+      'X-Skill-Locked': 'true',
+      'X-Skill-Building': buildingId,
+    });
+  }
+
   void logEventFromContext(c, {
     eventType: 'skill_md.fetched',
     buildingId,
@@ -60,6 +216,7 @@ skillsRoutes.get('/:buildingId/skill.md', async (c) => {
       referer: c.req.header('referer') ?? null,
       skillName: row.name,
       generatorVersion: row.generatorVersion,
+      gated: !isEntrySkill,
     },
   });
 
@@ -67,7 +224,7 @@ skillsRoutes.get('/:buildingId/skill.md', async (c) => {
     status: 200,
     headers: {
       'Content-Type': 'text/markdown; charset=utf-8',
-      'Cache-Control': 'public, max-age=300',
+      'Cache-Control': 'private, max-age=60',
       'X-Skill-Name': row.name,
       'X-Skill-Version': String(row.generatorVersion),
     },

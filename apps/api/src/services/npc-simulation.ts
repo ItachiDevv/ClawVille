@@ -407,6 +407,22 @@ class NpcSimulation {
     return this.openClawBots.get(sessionId)?.config ?? null;
   }
 
+  /**
+   * Find all currently-connected agent session IDs whose agent IDs are in
+   * the given set. Used by the skill-event-bus auto-install push so a
+   * book read by a human triggers a `knowledge_added` SSE event on every
+   * one of the user's active agent sessions.
+   */
+  findActiveSessionsByAgentIds(agentIds: Iterable<string>): string[] {
+    const ids = new Set(agentIds);
+    if (ids.size === 0) return [];
+    const found: string[] = [];
+    for (const [sid, { config }] of this.openClawBots) {
+      if (ids.has(config.agentId)) found.push(sid);
+    }
+    return found;
+  }
+
   /** Get avatar's current position for persistence on disconnect */
   getOpenClawAvatarPosition(sessionId: string): { x: number; y: number } | null {
     const npcId = `oc-${sessionId}`;
