@@ -1,12 +1,13 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and, sql, isNull, or, gt } from 'drizzle-orm';
-import { db, avatars, avatarInventory, agents, openclawBots } from '@clawville/database';
+import { db, avatars, avatarInventory, agents, openclawBots, users } from '@clawville/database';
 import { getBookById, getBooksForBuilding, KNOWLEDGE_BOOKS, BUILDING_MILADY_SKILLS } from '@clawville/shared';
 import { miladyGateway } from '../services/milady-gateway';
 import { debitClawTokens } from '../services/claw-token-ledger';
 import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
+import { requireAuthOrAgentSession } from '../middleware/require-auth-or-agent';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { embedText } from '@clawville/agent-runtime';
 import { logEventFromContext } from '../services/event-logger';
@@ -20,18 +21,19 @@ export const itemRoutes = new Hono<AppContext>();
 itemRoutes.use('*', sessionMiddleware);
 
 // Get items available at a building
-itemRoutes.get('/shop/:buildingId', requireAuth, async (c) => {
+itemRoutes.get('/shop/:buildingId', requireAuthOrAgentSession, async (c) => {
   const buildingId = c.req.param('buildingId');
   const books = getBooksForBuilding(buildingId);
   return c.json({ items: books });
 });
 
 // Get player's inventory
-itemRoutes.get('/inventory', requireAuth, async (c) => {
-  const user = c.get('user');
+itemRoutes.get('/inventory', requireAuthOrAgentSession, async (c) => {
+  const identity = c.get('identity');
+  const userId = identity.userId;
 
   const avatar = await db.query.avatars.findFirst({
-    where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
+    where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
   });
 
   if (!avatar) {
@@ -62,8 +64,9 @@ const buySchema = z.object({
   itemId: z.string().min(1).max(50),
 });
 
-itemRoutes.post('/buy', requireAuth, async (c) => {
-  const user = c.get('user');
+itemRoutes.post('/buy', requireAuthOrAgentSession, async (c) => {
+  const identity = c.get('identity');
+  const userId = identity.userId;
   const body = await c.req.json();
   const result = buySchema.safeParse(body);
 
@@ -77,7 +80,7 @@ itemRoutes.post('/buy', requireAuth, async (c) => {
   }
 
   const avatar = await db.query.avatars.findFirst({
-    where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
+    where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
   });
 
   if (!avatar) {
@@ -130,7 +133,7 @@ itemRoutes.post('/buy', requireAuth, async (c) => {
   // legitimate completions ("scaffolding theater" failure mode).
   void logEventFromContext(c, {
     eventType: 'item.purchased',
-    userId: user.id,
+    userId: userId,
     avatarId: avatar.id,
     payload: {
       itemId: book.id,
@@ -154,8 +157,9 @@ const learnSchema = z.object({
   bookId: z.string().min(1).max(50),
 });
 
-itemRoutes.post('/learn', requireAuth, async (c) => {
-  const user = c.get('user');
+itemRoutes.post('/learn', requireAuthOrAgentSession, async (c) => {
+  const identity = c.get('identity');
+  const userId = identity.userId;
   const body = await c.req.json();
   const result = learnSchema.safeParse(body);
 
@@ -169,7 +173,7 @@ itemRoutes.post('/learn', requireAuth, async (c) => {
   }
 
   const avatar = await db.query.avatars.findFirst({
-    where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
+    where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
   });
 
   if (!avatar) {
@@ -231,7 +235,7 @@ itemRoutes.post('/learn', requireAuth, async (c) => {
       try {
         const runtime = await agentOrchestrator.ensureAgentRuntime(
           avatar.platformAgentId,
-          user.id,
+          userId,
         );
         if (runtime) {
           const { v5: uuidv5 } = await import('uuid');
@@ -293,7 +297,7 @@ itemRoutes.post('/learn', requireAuth, async (c) => {
   if (newKnowledge.length > 0) {
     void logEventFromContext(c, {
       eventType: 'book.read',
-      userId: user.id,
+      userId: userId,
       avatarId: avatar.id,
       payload: {
         bookId: book.id,
@@ -317,7 +321,7 @@ itemRoutes.post('/learn', requireAuth, async (c) => {
           .from(openclawBots)
           .where(
             and(
-              eq(openclawBots.userId, user.id),
+              eq(openclawBots.userId, userId),
               or(
                 isNull(openclawBots.sessionExpiresAt),
                 gt(openclawBots.sessionExpiresAt, sql`now()`),
