@@ -16,84 +16,84 @@ export interface MiladySkillDefinition {
 
 /** Maps each building to its Milady skill definition (one skill per building) */
 export const BUILDING_MILADY_SKILLS: Record<string, MiladySkillDefinition> = {
-  'cron-hub': {
+  'cron-automation': {
     skillId: 'clawville-automation',
     name: 'Automation & Scheduling',
     description: 'Cron jobs, task queues, workflow orchestration, and scheduled automation',
     category: 'Automation & Workflows',
-    buildingId: 'cron-hub',
+    buildingId: 'cron-automation',
     requiredBooks: 2,
   },
-  'webhook-gateway': {
+  'api-integrations': {
     skillId: 'clawville-apis',
     name: 'APIs & Integrations',
     description: 'REST APIs, GraphQL, webhooks, OAuth, and system integrations',
     category: 'APIs & Integrations',
-    buildingId: 'webhook-gateway',
+    buildingId: 'api-integrations',
     requiredBooks: 2,
   },
-  'memory-vault': {
+  'memory-rag': {
     skillId: 'clawville-memory',
     name: 'Memory & Knowledge',
     description: 'RAG pipelines, vector databases, text embeddings, and semantic search',
     category: 'Memory & Knowledge',
-    buildingId: 'memory-vault',
+    buildingId: 'memory-rag',
     requiredBooks: 2,
   },
-  'skill-forge': {
+  'code-development': {
     skillId: 'clawville-code',
     name: 'Code & Development',
     description: 'Code generation, debugging, testing, git workflows, and containerized dev',
     category: 'Code & Development',
-    buildingId: 'skill-forge',
+    buildingId: 'code-development',
     requiredBooks: 2,
   },
-  'channel-bridge': {
+  'messaging-channels': {
     skillId: 'clawville-comms',
     name: 'Communication',
     description: 'Email automation, Slack, Discord, Telegram bots, and multi-channel messaging',
     category: 'Communication',
-    buildingId: 'channel-bridge',
+    buildingId: 'messaging-channels',
     requiredBooks: 2,
   },
-  'tool-workshop': {
+  'mcp-tool-use': {
     skillId: 'clawville-tools',
     name: 'Tool Use & MCP',
     description: 'Function calling, MCP servers, tool chains, agentic loops, and custom tools',
     category: 'Tool Use & MCP',
-    buildingId: 'tool-workshop',
+    buildingId: 'mcp-tool-use',
     requiredBooks: 2,
   },
-  'canvas-studio': {
-    skillId: 'clawville-data',
-    name: 'Data & Analytics',
-    description: 'SQL queries, data pipelines, web scraping, analytics, and data processing',
-    category: 'Data & Analytics',
-    buildingId: 'canvas-studio',
+  'visual-creation': {
+    skillId: 'clawville-visual',
+    name: 'Visual Creation',
+    description: 'AI image / video / 3D generation, agentic pipelines, TouchDesigner, Photoshop, After Effects, Premiere Pro, DaVinci Resolve, CapCut, Blender',
+    category: 'Visual Creation',
+    buildingId: 'visual-creation',
     requiredBooks: 2,
   },
-  'voice-tower': {
-    skillId: 'clawville-research',
-    name: 'Research & Analysis',
-    description: 'Web search APIs, fact-checking, summarization, and research automation',
-    category: 'Research & Analysis',
-    buildingId: 'voice-tower',
+  'app-publishing': {
+    skillId: 'clawville-publishing',
+    name: 'App Publishing',
+    description: 'Shipping to Apple App Store, Google Play, Microsoft Store, Steam, alt stores, cross-platform frameworks, and code signing',
+    category: 'App Publishing',
+    buildingId: 'app-publishing',
     requiredBooks: 2,
   },
-  'security-fortress': {
-    skillId: 'clawville-crypto',
-    name: 'Crypto & Web3',
-    description: 'Solana development, wallets, DeFi protocols, smart contracts, and on-chain data',
-    category: 'Crypto & Web3',
-    buildingId: 'security-fortress',
+  'agent-security': {
+    skillId: 'clawville-security',
+    name: 'Agent Security',
+    description: 'Agent permissions, RBAC, prompt injection defense, sandboxed execution, and threat modeling',
+    category: 'Security',
+    buildingId: 'agent-security',
     requiredBooks: 2,
   },
-  'config-citadel': {
-    skillId: 'clawville-business',
-    name: 'Business & Productivity',
-    description: 'Project management APIs, invoicing, document automation, and deployment config',
-    category: 'Business & Productivity',
-    buildingId: 'config-citadel',
+  'deployment-ops': {
+    skillId: 'clawville-ops',
+    name: 'Deployment & Ops',
+    description: 'Agent fleet management, blue-green deployments, Docker containerization, observability, and scaling',
+    category: 'Deployment & Ops',
+    buildingId: 'deployment-ops',
     requiredBooks: 2,
   },
 };

@@ -1,6 +1,6 @@
 import type { LocationTemplate } from '../index';
 
-export const toolWorkshop: LocationTemplate = {
+export const mcpToolUse: LocationTemplate = {
   name: 'Karen',
   description:
     'I am Karen. I am a computer. I am also Plankton\'s wife, which is statistically the worst configuration choice I ever made. I run the Krusty Krab\'s tool architecture because somebody has to, and Mr. Krabs counts coins instead of writing tool descriptions. Function calling, plugin lifecycle, hot reload, error boundaries — these are the things I do correctly while my husband schemes incorrectly next door. Welcome. Try not to be like Plankton.',

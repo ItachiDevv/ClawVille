@@ -89,9 +89,9 @@ type LocationNpcConfig = NpcModelConfig & {
 };
 
 const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
-  // Slot 0 — canvas-studio — Pineapple House (SpongeBob's home)
+  // Slot 0 — visual-creation — Pineapple House (SpongeBob's home)
   // Gary lives here too: he's a passive companion (no chat target)
-  'canvas-studio': {
+  'visual-creation': {
     name: 'SpongeBob',
     model: '/models/characters/spongebob.glb',
     companion: {
@@ -104,54 +104,54 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
     },
   },
 
-  // Slot 1 — memory-vault — bb-building (interim Squidward's house)
-  'memory-vault': { name: 'Squidward', model: '/models/characters/squidward.glb' },
+  // Slot 1 — memory-rag — bb-building (interim Squidward's house)
+  'memory-rag': { name: 'Squidward', model: '/models/characters/squidward.glb' },
 
-  // Slot 2 — webhook-gateway — Salty Spitoon (the tough fish bar)
+  // Slot 2 — api-integrations — Salty Spitoon (the tough fish bar)
   // Flying Dutchman GLB sourced from Sketchfab (CC-BY 4.0) 2026-04-23 — the
   // canonical "intimidating spectral pirate" who fits the Salty Spitoon vibe
   // better than any tough-fish patron we could find. Iconic green ghost,
   // pirate hat, beard, hook hands. ~17.9k tris, 2.2MB.
   // ghostFloat: static mesh with no skeleton — uses procedural ghost-float
   // (large Y bob + Z sway) which is more thematic for a ghost than walk anims
-  // anyway. Compare to Pearl in cron-hub which ships with 5 built-in animations.
-  'webhook-gateway': { name: 'Flying Dutchman', model: '/models/characters/flying-dutchman.glb', ghostFloat: true },
+  // anyway. Compare to Pearl in cron-automation which ships with 5 built-in animations.
+  'api-integrations': { name: 'Flying Dutchman', model: '/models/characters/flying-dutchman.glb', ghostFloat: true },
 
-  // Slot 3 — cron-hub — Downtown Building (Pearl Krabs's downtown teen vibe)
+  // Slot 3 — cron-automation — Downtown Building (Pearl Krabs's downtown teen vibe)
   // Pearl Krabs GLB sourced from Sketchfab (CC-BY 4.0) 2026-04-23 — official-look
   // low-poly Pearl, rigged with 5 idle/talk animations. ~4k tris, 2.1MB.
   // scaleOverride=150 (2026-04-29 pass 2): prior 80 rendered ~96wu which read tiny next to
   // the player VRM (AVATAR_VRM_SCALE=112 → ~180wu). Bumped 1.8× to match Kyoko's visual height.
-  'cron-hub': { name: 'Pearl', model: '/models/characters/pearl.glb', scaleOverride: 150 },
+  'cron-automation': { name: 'Pearl', model: '/models/characters/pearl.glb', scaleOverride: 150 },
 
-  // Slot 4 — voice-tower — Boating School (Mrs. Puff's workplace)
+  // Slot 4 — app-publishing — Boating School (Mrs. Puff's workplace)
   // scaleOverride=2.7 (2026-04-29 pass 2): prior 1.45 rendered ~96wu — half the player VRM's
   // ~180wu, so she read tiny next to Kyoko. Bumped 1.86× to match Kyoko's visual height.
   // mrs-puff.glb uses INT16-quantized positions; native visual height ≈ 66.5wu post-node-scale.
-  'voice-tower': { name: 'Mrs. Puff', model: '/models/characters/mrs-puff.glb', scaleOverride: 2.7 },
+  'app-publishing': { name: 'Mrs. Puff', model: '/models/characters/mrs-puff.glb', scaleOverride: 2.7 },
 
-  // Slot 5 — config-citadel — Lighthouse (Larry the Lobster as lighthouse keeper)
+  // Slot 5 — deployment-ops — Lighthouse (Larry the Lobster as lighthouse keeper)
   // TODO: source proper larry.glb asset — currently using lobster_plush as a distinct stand-in.
   // lobster_plush had a broken bbox (world height 331 at CH=32). SkinnedMesh exclusion
   // should fix normalization; scaleOverride=55 is fallback assuming visual_native_H≈1.0 (= CHARACTER_HEIGHT/1.0).
   // Pass 2 (2026-04-16): reduced 90→55 to match CHARACTER_HEIGHT scale-down.
-  'config-citadel': { name: 'Larry', model: '/models/lobster_plush.glb', color: 0xff2020, scaleOverride: 96 },
+  'deployment-ops': { name: 'Larry', model: '/models/lobster_plush.glb', color: 0xff2020, scaleOverride: 96 },
 
-  // Slot 6 — tool-workshop — patty-building (Krusty Krab — Mr. Krabs's restaurant)
+  // Slot 6 — mcp-tool-use — patty-building (Krusty Krab — Mr. Krabs's restaurant)
   // mr-krabs.glb: non-skinned geometry is only tiny accessories → computed scale > CLAMP_MAX.
   // The non-skinned path now falls back to bind-pose bbox when computed > CLAMP_MAX, which
   // gives a reliable body height. scaleOverride removed (was 148, rendered at ~11487 wu
   // because native body h ≈ 77–82 units × 148 = 11000+).
-  'tool-workshop': { name: 'Mr. Krabs', model: '/models/characters/mr-krabs.glb' },
+  'mcp-tool-use': { name: 'Mr. Krabs', model: '/models/characters/mr-krabs.glb' },
 
-  // Slot 7 — skill-forge — Chum Bucket (Plankton + Karen both live here)
+  // Slot 7 — code-development — Chum Bucket (Plankton + Karen both live here)
   // Karen: karen.glb had a broken bbox (world height 1940 at CH=32) caused by
   // SkinnedMesh bind-pose inflation. The improved computeNormalizedScale() excludes
   // SkinnedMesh, which should fix the normalization automatically. scaleOverride=37
   // is a fallback activated ONLY if the non-skinned geometry also gives a bad bbox
   // (outside NPC_SCALE_CLAMP bounds). Assumes karen_visual_native_H ≈ 1.5 native units
   // (= CHARACTER_HEIGHT/1.5 = 55/1.5 ≈ 37). Pass 2 (2026-04-16): reduced 60→37.
-  'skill-forge': {
+  'code-development': {
     name: 'Plankton',
     model: '/models/characters/plankton.glb',
     // plankton.glb native body ~2.14 units tall. Target render 55 wu → scale 55/2.14 ≈ 26.
@@ -168,16 +168,16 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
     },
   },
 
-  // Slot 8 — channel-bridge — sandy-treedome (real Sandy's Treedome)
+  // Slot 8 — messaging-channels — sandy-treedome (real Sandy's Treedome)
   // sandy.glb (2026-04-29): replaced 43KB static GLB with Mixamo-rigged Sandy from
   // mustafatylan68 (CC-BY 4.0, Sketchfab uid 9fda6cf3...). 1 skin, 2 skinned meshes,
   // 1 animation clip 'mixamo.com' — runtime AnimationMixer auto-plays it (idle).
   // Native bind-pose ~1.7m; computeNormalizedScale produces scale ≈ 56 → ~96wu render.
   // scaleOverride=106 (1.8x) matches the Pearl/Mrs.Puff visual ratio with player VRM.
-  'channel-bridge': { name: 'Sandy', model: '/models/characters/sandy.glb', scaleOverride: 106 },
+  'messaging-channels': { name: 'Sandy', model: '/models/characters/sandy.glb', scaleOverride: 106 },
 
-  // Slot 9 — security-fortress — building-cave (interim Patrick's Rock)
-  'security-fortress': { name: 'Patrick', model: '/models/characters/patrick.glb' },
+  // Slot 9 — agent-security — building-cave (interim Patrick's Rock)
+  'agent-security': { name: 'Patrick', model: '/models/characters/patrick.glb' },
 };
 
 /** Compute NPC world position and facing angle for a given building zone.

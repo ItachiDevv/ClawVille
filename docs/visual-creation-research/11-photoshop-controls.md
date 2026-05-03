@@ -2,7 +2,7 @@
 
 > Anchor knowledge complement to `07-photoshop-2026.md`. Recency-agnostic. The parts of Photoshop that have been true for 5+ years.
 
-This doc holds the 50 knowledge[]-ready facts from round 2 of the deep-controls research — written for direct paste into `packages/agent-templates/src/locations/canvas-studio.ts`. The full reference body (keyboard maps, every tool group, every blend mode, every adjustment, every filter category, layer styles, masking, text, color management, 30 task recipes, Pen tool, Smart Objects, Camera Raw, web/UI, history, workspace) is documented in the agent task transcript at the corresponding research run.
+This doc holds the 50 knowledge[]-ready facts from round 2 of the deep-controls research — written for direct paste into `packages/agent-templates/src/locations/visual-creation.ts`. The full reference body (keyboard maps, every tool group, every blend mode, every adjustment, every filter category, layer styles, masking, text, color management, 30 task recipes, Pen tool, Smart Objects, Camera Raw, web/UI, history, workspace) is documented in the agent task transcript at the corresponding research run.
 
 ## knowledge[]-ready facts (50)
 

@@ -273,11 +273,11 @@ describe('computeLeaderboardPoints', () => {
 
 describe('isFocusAligned', () => {
   it('returns true when avatar flags carry matching learningFocus', () => {
-    expect(isFocusAligned({ learningFocus: 'webhook-gateway' }, 'bumper-shells')).toBe(true);
+    expect(isFocusAligned({ learningFocus: 'api-integrations' }, 'bumper-shells')).toBe(true);
   });
 
   it('returns false when learningFocus mismatches', () => {
-    expect(isFocusAligned({ learningFocus: 'cron-hub' }, 'bumper-shells')).toBe(false);
+    expect(isFocusAligned({ learningFocus: 'cron-automation' }, 'bumper-shells')).toBe(false);
   });
 
   it('returns false when no flags', () => {
@@ -321,7 +321,7 @@ describe('computeBreakdown — non-bot Bumper Shells', () => {
       ...baseInput,
       placement: 4,
       todayCount: 0,
-      flags: { learningFocus: 'webhook-gateway' },
+      flags: { learningFocus: 'api-integrations' },
     });
     expect(b.base).toBe(10);
     expect(b.firstPlayOfDayBonus).toBe(15);
@@ -339,7 +339,7 @@ describe('computeBreakdown — bots get zero everything', () => {
       scoreMs: null,
       priorBestMs: null,
       todayCount: 0,
-      flags: { learningFocus: 'webhook-gateway' }, // would normally bonus
+      flags: { learningFocus: 'api-integrations' }, // would normally bonus
       activityId: 'bumper-shells',
       isBot: true,
     });

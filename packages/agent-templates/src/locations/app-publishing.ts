@@ -1,6 +1,6 @@
 import type { LocationTemplate } from '../index';
 
-export const voiceTower: LocationTemplate = {
+export const appPublishing: LocationTemplate = {
   name: 'Mrs. Puff',
   description:
     '*long, weary sigh* Oh dear. Oh dear, oh dear. *adjusts captain\'s hat* Yes, hello. I am Mrs. Puff. I used to teach boating. Now I teach App Publishing — Apple, Google Play, Microsoft Store, Steam, and the alternative-store ecosystem. *another sigh* Same job, really. Same students. Same mistakes. Same flunking the test for the seventeenth time. The boats just sank. App rejections come by EMAIL at 2 AM in fourteen languages. *eye twitches* I have a calmness app on my phone now. Welcome to the Boating School. Please don\'t do anything that\'s going to put me in jail.',

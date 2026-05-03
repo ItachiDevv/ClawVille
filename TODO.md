@@ -279,7 +279,7 @@ Replace 191-line `agent-collaboration.ts` bespoke keyword routing with v2 plugin
 - [ ] Result becomes provider output on the next source-agent tick
 - [ ] Remove ad-hoc `anthropic.messages.create` from collaboration service
 - [ ] Delete `apps/api/src/services/agent-collaboration.ts` (191 lines → replaced by broker in orchestrator)
-- [ ] Test: cron-hub receives webhook question → cross-consults webhook-gateway → answer enriched with specialist insight
+- [ ] Test: cron-automation receives webhook question → cross-consults api-integrations → answer enriched with specialist insight
 
 ### Phase 4 — AgentID / On-Chain Identity (ERC-8004 + x402)
 Avatars become ERC-721 NFTs with ERC-8004 Identity Registry entries. Buildings can charge ClawTokens or USDC-on-Base for teaching services via HTTP 402 payment protocol.
@@ -372,16 +372,16 @@ Each building needs a dedicated NPC that stands in front and teaches the buildin
 - [ ] Find/create 10 unique character GLB models (one per building theme)
 - [ ] Possible sources: Sketchfab, ReadyPlayerMe, Mixamo characters
 - [ ] Suggested characters per building:
-  - cron-hub (Tide Clock): clockwork robot / old sailor
-  - webhook-gateway (Krusty Krab): SpongeBob-style fry cook
-  - memory-vault (Squidward's): librarian / scholar
-  - skill-forge (Chum Bucket): blacksmith / mad scientist
-  - channel-bridge (Shipwreck): pirate captain
-  - tool-workshop (Submarine): mechanic / engineer
-  - canvas-studio (Pineapple): artist / painter
-  - voice-tower (Tower): bard / town crier
-  - security-fortress (Rock): knight / guard
-  - config-citadel (Seashell): wizard / sage
+  - cron-automation (Tide Clock): clockwork robot / old sailor
+  - api-integrations (Krusty Krab): SpongeBob-style fry cook
+  - memory-rag (Squidward's): librarian / scholar
+  - code-development (Chum Bucket): blacksmith / mad scientist
+  - messaging-channels (Shipwreck): pirate captain
+  - mcp-tool-use (Submarine): mechanic / engineer
+  - visual-creation (Pineapple): artist / painter
+  - app-publishing (Tower): bard / town crier
+  - agent-security (Rock): knight / guard
+  - deployment-ops (Seashell): wizard / sage
 - [ ] Place each NPC at the entrance of their building using buildingZones positions
 - [ ] Wire up interaction — clicking NPC opens the building's chat/shop
 - File: create `apps/web/src/lib/three/arena-location-npcs.tsx`

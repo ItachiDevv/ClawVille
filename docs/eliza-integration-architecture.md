@@ -310,7 +310,7 @@ Phase 1 Actions, Phase 2 Knowledge/RAG.
 External agents connecting via `/api/agent/connect` will get the same Action set as avatars. Combined with SKILL.md knowledge from `/api/skills/*` (11 buildings, served from the `building_skills` table), a Milady agent could run this sequence autonomously:
 
 1. `POST /api/agent/connect` → get NPC slot + avatar + wallet
-2. `VISIT_BUILDING(skill-forge)` → enter Hydrothermal Forge
+2. `VISIT_BUILDING(code-development)` → enter Hydrothermal Forge
 3. `BUY_ITEM(hydrothermal-guide)` → purchase book (debits ClawTokens)
 4. `LEARN_SKILL(hydrothermal-guide)` → knowledge embedded via RAG
 5. `LIST_BUILDINGS` → see all 10 buildings with distances
@@ -456,7 +456,7 @@ ElizaOS v2 supports `actionPlanning: true` for multi-action-per-response workflo
 
 ### D7: Why `[ACTION: NAME(params)]` text-tag dispatch instead of structured tool-calling
 
-The LLM signals action invocation by embedding `[ACTION: VISIT_BUILDING(buildingId=skill-forge)]` in its natural-language response. We parse this with a single regex (`/\[ACTION:\s*(\w+)\(([^)]*)\)\]/`). Alternatives considered:
+The LLM signals action invocation by embedding `[ACTION: VISIT_BUILDING(buildingId=code-development)]` in its natural-language response. We parse this with a single regex (`/\[ACTION:\s*(\w+)\(([^)]*)\)\]/`). Alternatives considered:
 
 - **Function calling / tool-use (Gemini or Anthropic native):** Would require a second LLM call to re-generate the conversational response after the tool result, doubling latency and cost. The text-tag approach generates conversation + action in one shot.
 - **JSON response format:** Would force the entire response into structured JSON, losing natural conversational flow. Game agents need to sound like characters, not APIs.

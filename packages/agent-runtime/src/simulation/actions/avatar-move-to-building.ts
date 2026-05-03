@@ -34,7 +34,7 @@ export function createPetMoveToBuildingAction(deps: PetMoveToBuildingDeps): Acti
       },
       {
         name: 'buildingId',
-        description: 'The building ID to walk toward (e.g. "cron-hub", "webhook-gateway")',
+        description: 'The building ID to walk toward (e.g. "cron-automation", "api-integrations")',
         required: true,
         schema: { type: 'string' },
       },

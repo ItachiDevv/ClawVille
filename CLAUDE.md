@@ -288,16 +288,16 @@ Source: `packages/shared/src/constants/map-locations.ts` (names) + `building-typ
 
 | ID | Display | OpenClaw Focus |
 |---|---|---|
-| cron-hub | Downtown Building | Automation & Workflows |
-| webhook-gateway | Salty Spitoon | APIs & Integrations |
-| memory-vault | Squidward's House | Memory & Knowledge |
-| skill-forge | Chum Bucket | Code & Development |
-| channel-bridge | Sandy's Treedome | Communication |
-| tool-workshop | Krusty Krab | Tool Use & MCP |
-| canvas-studio | Pineapple House | Visual Creation |
-| voice-tower | Boating School | App Publishing |
-| security-fortress | Patrick's Rock | Crypto & Web3 |
-| config-citadel | Lighthouse | Business & Productivity |
+| cron-automation | Downtown Building | Automation & Workflows |
+| api-integrations | Salty Spitoon | APIs & Integrations |
+| memory-rag | Squidward's House | Memory & Knowledge |
+| code-development | Chum Bucket | Code & Development |
+| messaging-channels | Sandy's Treedome | Communication |
+| mcp-tool-use | Krusty Krab | Tool Use & MCP |
+| visual-creation | Pineapple House | Visual Creation |
+| app-publishing | Boating School | App Publishing |
+| agent-security | Patrick's Rock | Crypto & Web3 |
+| deployment-ops | Lighthouse | Business & Productivity |
 
 All 10 are shop buildings for knowledge books (visit + chat MiladyAI teacher to learn). Paid marketplace write paths (publish/buy/bid/list) return 503 — see Priority #3.
 

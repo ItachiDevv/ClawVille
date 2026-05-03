@@ -16,29 +16,29 @@ export interface LocationTemplate {
 }
 
 // Import all location templates
-import { cronHub } from './locations/cron-hub';
-import { webhookGateway } from './locations/webhook-gateway';
-import { memoryVault } from './locations/memory-vault';
-import { skillForge } from './locations/skill-forge';
-import { channelBridge } from './locations/channel-bridge';
-import { toolWorkshop } from './locations/tool-workshop';
-import { canvasStudio } from './locations/canvas-studio';
-import { voiceTower } from './locations/voice-tower';
-import { securityFortress } from './locations/security-fortress';
-import { configCitadel } from './locations/config-citadel';
+import { cronAutomation } from './locations/cron-automation';
+import { apiIntegrations } from './locations/api-integrations';
+import { memoryRag } from './locations/memory-rag';
+import { codeDevelopment } from './locations/code-development';
+import { messagingChannels } from './locations/messaging-channels';
+import { mcpToolUse } from './locations/mcp-tool-use';
+import { visualCreation } from './locations/visual-creation';
+import { appPublishing } from './locations/app-publishing';
+import { agentSecurity } from './locations/agent-security';
+import { deploymentOps } from './locations/deployment-ops';
 import { townGuide } from './locations/town-guide';
 
 // Re-export all location templates
-export { cronHub } from './locations/cron-hub';
-export { webhookGateway } from './locations/webhook-gateway';
-export { memoryVault } from './locations/memory-vault';
-export { skillForge } from './locations/skill-forge';
-export { channelBridge } from './locations/channel-bridge';
-export { toolWorkshop } from './locations/tool-workshop';
-export { canvasStudio } from './locations/canvas-studio';
-export { voiceTower } from './locations/voice-tower';
-export { securityFortress } from './locations/security-fortress';
-export { configCitadel } from './locations/config-citadel';
+export { cronAutomation } from './locations/cron-automation';
+export { apiIntegrations } from './locations/api-integrations';
+export { memoryRag } from './locations/memory-rag';
+export { codeDevelopment } from './locations/code-development';
+export { messagingChannels } from './locations/messaging-channels';
+export { mcpToolUse } from './locations/mcp-tool-use';
+export { visualCreation } from './locations/visual-creation';
+export { appPublishing } from './locations/app-publishing';
+export { agentSecurity } from './locations/agent-security';
+export { deploymentOps } from './locations/deployment-ops';
 export { townGuide } from './locations/town-guide';
 
 // System agents are world-scoped NPCs that aren't tied to a building (unlike
@@ -54,28 +54,28 @@ export const SYSTEM_AGENT_TEMPLATES: Record<string, LocationTemplate> = {
 
 // Legacy export name (kept for backwards compatibility)
 export const templates: Record<string, LocationTemplate> = {
-  'cron-hub': cronHub,
-  'webhook-gateway': webhookGateway,
-  'memory-vault': memoryVault,
-  'skill-forge': skillForge,
-  'channel-bridge': channelBridge,
-  'tool-workshop': toolWorkshop,
-  'canvas-studio': canvasStudio,
-  'voice-tower': voiceTower,
-  'security-fortress': securityFortress,
-  'config-citadel': configCitadel,
+  'cron-automation': cronAutomation,
+  'api-integrations': apiIntegrations,
+  'memory-rag': memoryRag,
+  'code-development': codeDevelopment,
+  'messaging-channels': messagingChannels,
+  'mcp-tool-use': mcpToolUse,
+  'visual-creation': visualCreation,
+  'app-publishing': appPublishing,
+  'agent-security': agentSecurity,
+  'deployment-ops': deploymentOps,
 };
 
 // Map building IDs to templates
 export const LOCATION_TEMPLATES: Record<string, LocationTemplate> = {
-  'cron-hub': cronHub,
-  'webhook-gateway': webhookGateway,
-  'memory-vault': memoryVault,
-  'skill-forge': skillForge,
-  'channel-bridge': channelBridge,
-  'tool-workshop': toolWorkshop,
-  'canvas-studio': canvasStudio,
-  'voice-tower': voiceTower,
-  'security-fortress': securityFortress,
-  'config-citadel': configCitadel,
+  'cron-automation': cronAutomation,
+  'api-integrations': apiIntegrations,
+  'memory-rag': memoryRag,
+  'code-development': codeDevelopment,
+  'messaging-channels': messagingChannels,
+  'mcp-tool-use': mcpToolUse,
+  'visual-creation': visualCreation,
+  'app-publishing': appPublishing,
+  'agent-security': agentSecurity,
+  'deployment-ops': deploymentOps,
 };

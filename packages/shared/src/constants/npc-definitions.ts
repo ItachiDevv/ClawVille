@@ -41,25 +41,25 @@ function center(tileX: number, tileY: number, tileW: number, tileH: number) {
 // center_x = round(80 + 68*cos(θ)), zone x = center_x - 7  (14-tile width)
 export const BUILDING_TILE_ZONES: Record<string, { x: number; y: number; w: number; h: number }> = {
   // Ring i=0  θ=-π/2        center=(80, 12)
-  'canvas-studio':     { x:  73, y:   5, w: 14, h: 14 },
+  'visual-creation':     { x:  73, y:   5, w: 14, h: 14 },
   // Ring i=1  θ=-3π/10      center=(120, 25)
-  'memory-vault':      { x: 113, y:  18, w: 14, h: 14 },
+  'memory-rag':          { x: 113, y:  18, w: 14, h: 14 },
   // Ring i=2  θ=-π/10       center=(145, 59)
-  'webhook-gateway':   { x: 138, y:  52, w: 14, h: 14 },
+  'api-integrations':    { x: 138, y:  52, w: 14, h: 14 },
   // Ring i=3  θ=+π/10       center=(145,101)
-  'cron-hub':          { x: 138, y:  94, w: 14, h: 14 },
+  'cron-automation':     { x: 138, y:  94, w: 14, h: 14 },
   // Ring i=4  θ=+3π/10      center=(120,135)
-  'voice-tower':       { x: 113, y: 128, w: 14, h: 14 },
+  'app-publishing':      { x: 113, y: 128, w: 14, h: 14 },
   // Ring i=5  θ=+π/2        center=(80, 148)
-  'config-citadel':    { x:  73, y: 141, w: 14, h: 14 },
+  'deployment-ops':      { x:  73, y: 141, w: 14, h: 14 },
   // Ring i=6  θ=+7π/10      center=(40, 135)
-  'tool-workshop':     { x:  33, y: 128, w: 14, h: 14 },
+  'mcp-tool-use':        { x:  33, y: 128, w: 14, h: 14 },
   // Ring i=7  θ=+9π/10      center=(15,  101)
-  'skill-forge':       { x:   8, y:  94, w: 14, h: 14 },
+  'code-development':    { x:   8, y:  94, w: 14, h: 14 },
   // Ring i=8  θ=+11π/10     center=(15,  59)
-  'channel-bridge':    { x:   8, y:  52, w: 14, h: 14 },
+  'messaging-channels':  { x:   8, y:  52, w: 14, h: 14 },
   // Ring i=9  θ=+13π/10     center=(40,  25)
-  'security-fortress': { x:  33, y:  18, w: 14, h: 14 },
+  'agent-security':      { x:  33, y:  18, w: 14, h: 14 },
 };
 
 /** Map of building ID to {homeX, homeY} for NPC definitions */
@@ -103,10 +103,10 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   //   Map: 5120×5120 px / 160×160 tiles, town center (2560, 2560).
   //   Building ring radius ≈ 68 tiles from center. Open gaps lie roughly
   //   between the 10 ring positions and well inside (closer to center).
-  //   - Miu  at (1400, 3000) ≈ tile (43, 93) — between skill-forge(15,101) and
-  //     tool-workshop(40,135) on the SW arc, inside the ring radius. Walkable.
-  //   - Kyoko at (3700, 2000) ≈ tile (115, 62) — between memory-vault(120,25)
-  //     and webhook-gateway(145,59) on the NE arc, inside the ring. Walkable.
+  //   - Miu  at (1400, 3000) ≈ tile (43, 93) — between code-development(15,101) and
+  //     mcp-tool-use(40,135) on the SW arc, inside the ring radius. Walkable.
+  //   - Kyoko at (3700, 2000) ≈ tile (115, 62) — between memory-rag(120,25)
+  //     and api-integrations(145,59) on the NE arc, inside the ring. Walkable.
   {
     id: 'milady-miu',
     name: 'Miu',
@@ -182,7 +182,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     buildingId: '',
     patrolRadius: 700,
     homeX: 1500,
-    homeY: 2400,                 // W inner — between channel-bridge + skill-forge
+    homeY: 2400,                 // W inner — between messaging-channels + code-development
     stats: { hp: 100, attack: 14, defense: 14, speed: 12 },
     personality: 'A weather-worn vagabond lobster who treats the whole reef as his personal backyard.',
   },
@@ -194,7 +194,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     buildingId: '',
     patrolRadius: 700,
     homeX: 3700,
-    homeY: 2700,                 // E inner — between webhook-gateway + cron-hub
+    homeY: 2700,                 // E inner — between api-integrations + cron-automation
     stats: { hp: 85, attack: 17, defense: 11, speed: 19 },
     personality: 'A speedy crab courier who claims to know every tide pool shortcut on the map.',
   },
@@ -206,7 +206,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     buildingId: '',
     patrolRadius: 700,
     homeX: 2600,
-    homeY: 3500,                 // S inner — between voice-tower + config-citadel
+    homeY: 3500,                 // S inner — between app-publishing + deployment-ops
     stats: { hp: 110, attack: 13, defense: 17, speed: 11 },
     personality: 'A philosophical hermit crab who borrows shells from every building he visits and returns each one.',
   },

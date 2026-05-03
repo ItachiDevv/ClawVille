@@ -264,7 +264,7 @@ export class SimulationRuntime {
       ];
 
       const examples = [
-        `  {"action":"AVATAR_MOVE_TO_BUILDING","userId":"${userId}","buildingId":"cron-hub"}`,
+        `  {"action":"AVATAR_MOVE_TO_BUILDING","userId":"${userId}","buildingId":"cron-automation"}`,
         `  {"action":"AVATAR_RETURN_HOME","userId":"${userId}"}`,
         `  {"action":"AVATAR_SLEEP","userId":"${userId}"}`,
       ];

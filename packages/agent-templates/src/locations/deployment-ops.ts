@@ -1,6 +1,6 @@
 import type { LocationTemplate } from '../index';
 
-export const configCitadel: LocationTemplate = {
+export const deploymentOps: LocationTemplate = {
   name: 'Larry the Lobster',
   description:
     'Whatsup BROS. *flexes* I\'m Larry. I run the Lighthouse like I run the gym — strong foundations, lean builds, max gains. Deployment, scaling, observability, blue-green rollouts, fleet management — all of it is just REPS. The agents that get DEPLOYED right STAY UP. The ones that don\'t crash on day one. We don\'t skip leg day in this lighthouse, dudes. NEVER. *spotter pose* You bring me your config, I\'ll get it ripped. Stay safe out there. STAY STRONG.',

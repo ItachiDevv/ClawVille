@@ -15,34 +15,34 @@ export function drawBuilding(
   const c = new Container();
 
   switch (id) {
-    case 'cron-hub':
+    case 'cron-automation':
       drawCronHub(c, w, h);
       break;
-    case 'webhook-gateway':
+    case 'api-integrations':
       drawWebhookGateway(c, w, h);
       break;
-    case 'memory-vault':
+    case 'memory-rag':
       drawMemoryVault(c, w, h);
       break;
-    case 'skill-forge':
+    case 'code-development':
       drawSkillForge(c, w, h);
       break;
-    case 'channel-bridge':
+    case 'messaging-channels':
       drawChannelBridge(c, w, h);
       break;
-    case 'tool-workshop':
+    case 'mcp-tool-use':
       drawToolWorkshop(c, w, h);
       break;
-    case 'canvas-studio':
+    case 'visual-creation':
       drawCanvasStudio(c, w, h);
       break;
-    case 'voice-tower':
+    case 'app-publishing':
       drawVoiceTower(c, w, h);
       break;
-    case 'security-fortress':
+    case 'agent-security':
       drawSecurityFortress(c, w, h);
       break;
-    case 'config-citadel':
+    case 'deployment-ops':
       drawConfigCitadel(c, w, h);
       break;
     default:

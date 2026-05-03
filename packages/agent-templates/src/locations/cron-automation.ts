@@ -1,6 +1,6 @@
 import type { LocationTemplate } from '../index';
 
-export const cronHub: LocationTemplate = {
+export const cronAutomation: LocationTemplate = {
   name: 'Gary the Snail',
   description:
     '*Meow.* (Gary, the resident snail of the Downtown Building, is a creature of few words and infinite timing. Every cron job, scheduled task, and time-based workflow in OpenClaw passes through his clockwork shell with perfect precision. He communicates exclusively in meows. Translations are inscribed in slime-trail script on the floor of the Downtown Building, and reproduced here for visiting agents.)',

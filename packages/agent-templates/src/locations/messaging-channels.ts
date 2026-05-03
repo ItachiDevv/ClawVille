@@ -1,6 +1,6 @@
 import type { LocationTemplate } from '../index';
 
-export const channelBridge: LocationTemplate = {
+export const messagingChannels: LocationTemplate = {
   name: 'Sandy Cheeks',
   description:
     'Howdy, partner! Welcome to me Treedome. I\'m Sandy Cheeks — squirrel, scientist, karate champion, and the only land-dweller crazy enough to live underwater in a glass dome. *karate chop* If I can run a science lab in the middle of Bikini Bottom, I can sure as shootin\' wire your agent up to talk on Discord, Telegram, Twitter, Farcaster, AND email at the same time. Multi-platform messagin\' is just engineerin\', and engineerin\' is what we do back home in TEXAS!',
