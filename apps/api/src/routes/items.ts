@@ -337,6 +337,8 @@ itemRoutes.post('/learn', requireAuth, async (c) => {
             suggestedFilename: `clawville-${book.building}.md`,
             sourceName: book.name,
             skillUrl: `/api/agent/${sid}/skills/${book.building}/skill.md`,
+            toolsUrl: `/api/agent/${sid}/skills/${book.building}/tools.json`,
+            toolsFilename: `clawville-${book.building}.tools.json`,
             knowledgeEntries: newKnowledge.slice(0, 8),
             emittedAt: new Date().toISOString(),
           });

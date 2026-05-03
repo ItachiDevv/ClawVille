@@ -258,3 +258,57 @@ skillsRoutes.get('/:buildingId', async (c) => {
     skillUrl: `/api/skills/${row.buildingId}/skill.md`,
   });
 });
+
+// ---------------------------------------------------------------------------
+// POST /api/skills/forge  — chat conversation → custom installable skill
+// ---------------------------------------------------------------------------
+// Take a transcript of an agent's conversation with a building teacher
+// and distill it into a custom SKILL.md + tools.json the agent can
+// install via the same pipeline as the canonical building skills. Lets
+// users capture "I learned how to do X with Gary" as a permanent,
+// portable skill artifact.
+//
+// STUB SHAPE — wired but does NOT yet run a Gemini distill pass. The
+// route returns 501 with a structured payload describing the eventual
+// response so the install pipeline at the harness side can be coded
+// against the contract today. Implementation lands when the
+// custom_skills table + Gemini distill prompt ship.
+// ---------------------------------------------------------------------------
+skillsRoutes.post('/forge', async (c) => {
+  let body: any = {};
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+
+  const buildingId = typeof body?.buildingId === 'string' ? body.buildingId : null;
+  const conversationId = typeof body?.conversationId === 'string' ? body.conversationId : null;
+  const turns = Array.isArray(body?.turns) ? body.turns : null;
+
+  if (!buildingId) return c.json({ error: 'buildingId_required' }, 400);
+  if (!conversationId && !turns) {
+    return c.json({ error: 'conversationId_or_turns_required' }, 400);
+  }
+
+  return c.json(
+    {
+      status: 'implementation_pending',
+      message:
+        'Conversation→skill distillation is not yet wired. Endpoint shape is stable so harnesses can code against the contract.',
+      expectedResponseShape: {
+        ok: true,
+        skillId: '<uuid>',
+        skillName: '<derived-from-conversation>',
+        suggestedFilename: 'clawville-custom-<slug>.md',
+        skillUrl: '/api/skills/forge/<skillId>/skill.md',
+        toolsUrl: '/api/skills/forge/<skillId>/tools.json',
+        toolsFilename: 'clawville-custom-<slug>.tools.json',
+        sourceConversationId: '<conversationId>',
+        sourceBuildingId: '<buildingId>',
+      },
+      receivedRequest: { buildingId, conversationId, turnCount: turns?.length ?? null },
+    },
+    501,
+  );
+});
