@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { eq, and } from 'drizzle-orm';
-import { db, avatars, avatarInventory, agents } from '@clawville/database';
+import { eq, and, sql, isNull, or, gt } from 'drizzle-orm';
+import { db, avatars, avatarInventory, agents, openclawBots } from '@clawville/database';
 import { getBookById, getBooksForBuilding, KNOWLEDGE_BOOKS, BUILDING_MILADY_SKILLS } from '@clawville/shared';
 import { miladyGateway } from '../services/milady-gateway';
 import { debitClawTokens } from '../services/claw-token-ledger';
@@ -10,6 +10,8 @@ import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { embedText } from '@clawville/agent-runtime';
 import { logEventFromContext } from '../services/event-logger';
+import { publishKnowledgeAdded } from '../services/skill-event-bus';
+import { npcSimulation } from '../services/npc-simulation';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 
@@ -301,6 +303,46 @@ itemRoutes.post('/learn', requireAuth, async (c) => {
         totalKnowledge: mergedKnowledge.length,
       },
     });
+
+    // Auto-install push (2026-05-03): notify any active agent sessions
+    // belonging to this user that new knowledge has been added. The
+    // agent's harness should listen for `event: knowledge_added` on its
+    // SSE stream and pull the matching SKILL.md to its local skills
+    // folder. The skillUrl is the session-authed mirror — fetching it
+    // with the bot's Bearer sessionId proves ownership server-side.
+    void (async () => {
+      try {
+        const activeBots = await db
+          .select({ agentId: openclawBots.agentId })
+          .from(openclawBots)
+          .where(
+            and(
+              eq(openclawBots.userId, user.id),
+              or(
+                isNull(openclawBots.sessionExpiresAt),
+                gt(openclawBots.sessionExpiresAt, sql`now()`),
+              ),
+              isNull(openclawBots.sessionSweptAt),
+            ),
+          );
+        const activeSessionIds = npcSimulation.findActiveSessionsByAgentIds(
+          activeBots.map((b) => b.agentId),
+        );
+        for (const sid of activeSessionIds) {
+          publishKnowledgeAdded(sid, {
+            type: 'knowledge_added',
+            source: 'book',
+            buildingId: book.building,
+            sourceName: book.name,
+            skillUrl: `/api/agent/${sid}/skills/${book.building}/skill.md`,
+            knowledgeEntries: newKnowledge.slice(0, 8),
+            emittedAt: new Date().toISOString(),
+          });
+        }
+      } catch (err) {
+        console.warn(`[items/learn] Failed to publish knowledge_added: ${(err as Error).message}`);
+      }
+    })();
   }
 
   return c.json({

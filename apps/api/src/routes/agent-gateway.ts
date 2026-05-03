@@ -19,7 +19,7 @@ import {
 import { npcSimulation } from '../services/npc-simulation';
 import { findPath } from '../services/pathfinding';
 import { memoryService } from '../services/memory-service';
-import { db, openclawBots, avatars, users, eq, and, sql } from '@clawville/database';
+import { db, openclawBots, avatars, users, buildingSkills, eq, and, sql } from '@clawville/database';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { getSessionAgent } from '../services/session-agent-map';
 import { OpenClawClient } from '../services/openclaw-client';
@@ -38,6 +38,8 @@ import {
   computeSessionExpiresAt,
   expireSession,
 } from '../services/openclaw-session-sweeper';
+import { drainKnowledgeEvents, clearSessionQueue } from '../services/skill-event-bus';
+import { getBooksForBuilding, BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
 
@@ -2100,6 +2102,101 @@ agentGatewayRoutes.get('/:sessionId/stats', async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/agent/:sessionId/skills/:buildingId/skill.md
+// ---------------------------------------------------------------------------
+// Session-authed mirror of the public /api/skills/:buildingId/skill.md.
+// Same content, but ownership is checked against the session's linked avatar
+// instead of the public unauth path. Issued in `knowledge_added` SSE
+// events emitted by /api/items/learn — the harness fetches this URL with
+// the Bearer sessionId it already holds and saves the markdown into its
+// local skills folder. No new auth token system; the sessionId IS the
+// fetch token.
+// ---------------------------------------------------------------------------
+agentGatewayRoutes.get('/:sessionId/skills/:buildingId/skill.md', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const buildingId = c.req.param('buildingId');
+
+  const resolved = resolveSession(sessionId);
+  if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+
+  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  if (!botConfig) return c.json({ error: 'No agent config for session' }, 404);
+
+  // Resolve the avatar linked to this agent (via openclaw_bots.userId → avatars.userId)
+  const bot = await db.query.openclawBots.findFirst({
+    where: eq(openclawBots.agentId, botConfig.agentId),
+    columns: { userId: true },
+  });
+  if (!bot?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
+
+  const avatar = await db.query.avatars.findFirst({
+    where: and(eq(avatars.userId, bot.userId), eq(avatars.isActive, true)),
+    columns: { id: true, characterConfig: true },
+  });
+  if (!avatar) return c.json({ error: 'No active avatar for user' }, 404);
+
+  // Ownership check — at least one knowledge entry from the building's books
+  // must already be merged into the avatar's characterConfig.
+  const known: string[] =
+    (avatar.characterConfig as { knowledge?: string[] } | null)?.knowledge ?? [];
+  const knownSet = new Set(known);
+  let owned = false;
+  for (const book of getBooksForBuilding(buildingId)) {
+    for (const entry of book.knowledgeEntries) {
+      if (knownSet.has(entry)) {
+        owned = true;
+        break;
+      }
+    }
+    if (owned) break;
+  }
+
+  if (!owned) {
+    const theme = BUILDING_OPENCLAW_THEMES[buildingId];
+    return c.json(
+      {
+        error: 'skill_locked',
+        buildingId,
+        buildingLabel: theme?.label ?? buildingId,
+        hint: `Buy and read a knowledge book at the ${theme?.label ?? buildingId} shop to unlock this skill.`,
+      },
+      402,
+    );
+  }
+
+  const [row] = await db
+    .select()
+    .from(buildingSkills)
+    .where(eq(buildingSkills.buildingId, buildingId))
+    .limit(1);
+
+  if (!row) return c.json({ error: 'skill_not_found', buildingId }, 404);
+
+  void logEventFromContext(c, {
+    eventType: 'skill_md.fetched',
+    agentId: botConfig.agentId,
+    sessionId,
+    buildingId,
+    payload: {
+      skillName: row.name,
+      generatorVersion: row.generatorVersion,
+      gated: true,
+      via: 'agent-session-mirror',
+    },
+  });
+
+  return new Response(row.content, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/markdown; charset=utf-8',
+      'Cache-Control': 'private, max-age=60',
+      'X-Skill-Name': row.name,
+      'X-Skill-Version': String(row.generatorVersion),
+    },
+  });
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/agent/:sessionId/events  — SSE world-state push stream
 // ---------------------------------------------------------------------------
 // Primary subscription primitive for self-managed (nanoclaw) agents.
@@ -2164,12 +2261,23 @@ agentGatewayRoutes.get('/:sessionId/events', (c) => {
 
       wasInCombat = npc.inCombat;
 
+      // --- knowledge_added drained from skill-event-bus (book read by human or
+      // teach-turn earned by agent) — agent harness should react by fetching
+      // skillUrl with its Bearer sessionId and dropping into local skills folder.
+      const skillEvents = drainKnowledgeEvents(sessionId);
+      for (const ev of skillEvents) {
+        await stream.write(`event: knowledge_added\ndata: ${JSON.stringify(ev)}\n\n`);
+      }
+
       // --- ping every 10s (every 5 ticks at 2s cadence) ---
       tickCount++;
       if (tickCount % 5 === 0) {
         await stream.write(`event: ping\ndata: {}\n\n`);
       }
     }
+    // Stream loop exited (session expired / disconnected) — drop any pending
+    // events so we don't leak memory.
+    clearSessionQueue(sessionId);
   });
 });
 
