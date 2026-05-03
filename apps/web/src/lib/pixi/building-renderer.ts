@@ -185,7 +185,7 @@ function drawCronHub(c: Container, w: number, h: number) {
   windowRect(g, w - 22, h * 0.68, 12, 10);
   door(g, w / 2, h, 14, 22, 0x4e342e);
   c.addChild(g);
-  sign(c, 'Cron Hub', w / 2, h + 14, 0x795548);
+  sign(c, 'Downtown Building', w / 2, h + 14, 0x795548);
 }
 
 function drawWebhookGateway(c: Container, w: number, h: number) {
@@ -222,7 +222,7 @@ function drawWebhookGateway(c: Container, w: number, h: number) {
   windowRect(g, w - 22, h * 0.35, 12, 10);
   door(g, w / 2, h, 16, 24, 0xbf360c);
   c.addChild(g);
-  sign(c, 'Webhook Gateway', w / 2, h + 14, 0xe65100);
+  sign(c, 'Salty Spitoon', w / 2, h + 14, 0xe65100);
 }
 
 function drawMemoryVault(c: Container, w: number, h: number) {
@@ -270,7 +270,7 @@ function drawMemoryVault(c: Container, w: number, h: number) {
   windowRect(g, 10, h * 0.38, 10, 10);
   windowRect(g, w - 20, h * 0.38, 10, 10);
   c.addChild(g);
-  sign(c, 'Memory Vault', w / 2, h + 14, 0x1b5e20);
+  sign(c, "Squidward's House", w / 2, h + 14, 0x1b5e20);
 }
 
 function drawSkillForge(c: Container, w: number, h: number) {
@@ -319,7 +319,7 @@ function drawSkillForge(c: Container, w: number, h: number) {
   g.rect(w / 2 - 5, h - 22, 6, 4);
   g.fill(0x757575);
   c.addChild(g);
-  sign(c, 'Skill Forge', w / 2, h + 14, 0x4e342e);
+  sign(c, 'Chum Bucket', w / 2, h + 14, 0x4e342e);
 }
 
 function drawChannelBridge(c: Container, w: number, h: number) {
@@ -359,7 +359,7 @@ function drawChannelBridge(c: Container, w: number, h: number) {
   windowRect(g, w - 22, h * 0.38, 12, 10);
   door(g, w / 2, h, 14, 22, 0x0d47a1);
   c.addChild(g);
-  sign(c, 'Channel Bridge', w / 2, h + 14, 0x0d47a1);
+  sign(c, "Sandy's Treedome", w / 2, h + 14, 0x0d47a1);
 }
 
 function drawToolWorkshop(c: Container, w: number, h: number) {
@@ -406,7 +406,7 @@ function drawToolWorkshop(c: Container, w: number, h: number) {
   windowRect(g, w / 2 + 6, h * 0.38, 12, 12);
   door(g, w / 2, h, 14, 22, 0x4a148c);
   c.addChild(g);
-  sign(c, 'Tool Workshop', w / 2, h + 14, 0x4a148c);
+  sign(c, 'Krusty Krab', w / 2, h + 14, 0x4a148c);
 }
 
 function drawCanvasStudio(c: Container, w: number, h: number) {
@@ -455,7 +455,7 @@ function drawCanvasStudio(c: Container, w: number, h: number) {
   windowRect(g, w - 24, h * 0.4, 14, 14);
   door(g, w / 2, h, 14, 22, 0x1565c0);
   c.addChild(g);
-  sign(c, 'Canvas Studio', w / 2, h + 14, 0x1565c0);
+  sign(c, 'Pineapple House', w / 2, h + 14, 0x1565c0);
 }
 
 function drawVoiceTower(c: Container, w: number, h: number) {
@@ -496,7 +496,7 @@ function drawVoiceTower(c: Container, w: number, h: number) {
   windowRect(g, w - 22, h * 0.58, 12, 10);
   door(g, w / 2, h, 14, 22, 0x263238);
   c.addChild(g);
-  sign(c, 'Voice Tower', w / 2, h + 14, 0x37474f);
+  sign(c, 'Boating School', w / 2, h + 14, 0x37474f);
 }
 
 function drawSecurityFortress(c: Container, w: number, h: number) {
@@ -556,7 +556,7 @@ function drawSecurityFortress(c: Container, w: number, h: number) {
   windowRect(g, 16, h * 0.45, 10, 10);
   windowRect(g, w - 26, h * 0.45, 10, 10);
   c.addChild(g);
-  sign(c, 'Security Fortress', w / 2, h + 14, 0x455a64);
+  sign(c, "Patrick's Rock", w / 2, h + 14, 0x455a64);
 }
 
 function drawConfigCitadel(c: Container, w: number, h: number) {
@@ -613,7 +613,7 @@ function drawConfigCitadel(c: Container, w: number, h: number) {
   windowRect(g, w - 28, h * 0.42, 10, 10);
   door(g, w / 2, h, 14, 22, 0x455a64);
   c.addChild(g);
-  sign(c, 'Config Citadel', w / 2, h + 14, 0x455a64);
+  sign(c, 'Lighthouse', w / 2, h + 14, 0x455a64);
 }
 
 function drawGenericBuilding(c: Container, w: number, h: number) {
