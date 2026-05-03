@@ -113,7 +113,13 @@ def _request(method: str, url: str, *, body=None, bearer: str = None,
         data = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
     if bearer:
+        # Send both auth headers — `Authorization: Bearer` for endpoints that
+        # consume it directly (agent-gateway domain tools), and the
+        # X-Clawville-Agent-Session header for endpoints behind
+        # requireAuthOrAgentSession middleware (items/buy, items/learn,
+        # items/inventory, items/shop, etc).
         headers["Authorization"] = f"Bearer {bearer}"
+        headers["X-Clawville-Agent-Session"] = bearer
 
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
 
@@ -224,18 +230,82 @@ if __name__ == "__main__":
 # ───────────────────────────────────────────────────────────────────────
 
 def cmd_pair(args):
-    """One-time pairing via magic-link URL."""
-    parsed = urllib.parse.urlparse(args.magic_link)
+    """One-time pairing. Accepts either:
+      A) connect-token URL from the in-game "Connect Agent" modal:
+         https://api.clawville.world/api/skills/connect?token=ct-xxx
+         (this is the human-pastes-into-Hermes flow — no Lucia cookie needed,
+         the connect token IS the auth)
+      B) magic-link URL from an existing agent session's sessionTicket:
+         https://clawville.world/enter?t=sess-xxx
+         (this is the agent-already-connected, log-in-as-them flow)
+    """
+    url = args.magic_link  # arg name kept for backwards compat
+    parsed = urllib.parse.urlparse(url)
     qs = urllib.parse.parse_qs(parsed.query)
-    ticket = qs.get("t", [None])[0]
-    if not ticket or not ticket.startswith("sess-"):
-        die("invalid_magic_link", f"Expected ?t=sess-... in URL, got: {args.magic_link}")
 
-    # Hit /api/auth/enter — this consumes the ticket, sets the Lucia session
-    # cookie (saved to our cookie jar), and 302s to /game. We don't follow
-    # the redirect to web; we just want the cookie.
-    enter = _request("GET", f"{API}/api/auth/enter?t={urllib.parse.quote(ticket)}",
-                     allow_redirects=False, timeout=15)
+    connect_token = qs.get("token", [None])[0]
+    magic_ticket = qs.get("t", [None])[0]
+
+    if connect_token and connect_token.startswith("ct-"):
+        # Flow A: connect-token (Moltbook). The agent claims a pending
+        # connection that the human just generated in the UI.
+        conn = _request_json(
+            "POST",
+            "/api/agent/connect",
+            body={
+                "connectionToken": connect_token,
+                "identity": {"type": "nanoclaw", "name": "hermes"},
+            },
+        )
+        if conn["status"] != 200:
+            die("connect_failed", json.dumps(conn["body"]))
+        body = conn["body"]
+        # Resolve user/avatar from the linked openclaw_bots row — the connect
+        # response carries avatarId via state, but we also need the human-
+        # facing email/avatarName for the success summary.
+        sid = body["sessionId"]
+        meta = _resolve_pair_metadata(sid, body)
+        state = {
+            "userId": meta["userId"],
+            "avatarId": meta["avatarId"],
+            "avatarName": meta["avatarName"],
+            "agentId": body["agentId"],
+            "sessionId": sid,
+            "ownedSkills": body.get("ownedSkills", []),
+            "gameTools": body.get("gameTools"),
+            "identity": body.get("identity"),
+            "wallet": {"address": meta["walletAddress"]} if meta["walletAddress"] else None,
+            "pairedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "pairedVia": "connect-token",
+        }
+        save_state(state)
+        sync_owned(state)
+        emit({
+            "ok": True,
+            "avatarName": state["avatarName"],
+            "agentId": body["agentId"],
+            "sessionId": sid,
+            "ownedSkillCount": len(body.get("ownedSkills", [])),
+            "pairedVia": "connect-token",
+        })
+        return
+
+    if not magic_ticket or not magic_ticket.startswith("sess-"):
+        die(
+            "invalid_url",
+            f"Expected either ?token=ct-... (Connect Agent URL) or "
+            f"?t=sess-... (magic-link URL), got: {url}",
+        )
+
+    # Flow B: magic-link → consume the session ticket via /api/auth/enter,
+    # which sets the Lucia cookie. Then mint our own agent session via the
+    # connect-token round-trip.
+    enter = _request(
+        "GET",
+        f"{API}/api/auth/enter?t={urllib.parse.quote(magic_ticket)}",
+        allow_redirects=False,
+        timeout=15,
+    )
     status = enter[0]
     if status not in (302, 303, 307, 200):
         die("magic_link_failed", f"/api/auth/enter returned {status}")
@@ -250,8 +320,6 @@ def cmd_pair(args):
         die("no_pet", "Authenticated but no active avatar found. Create a avatar at clawville.world first.")
     pet_row = avatar["body"]["avatar"]
 
-    # Mint a connect token (server-side handshake — agent now has its own
-    # bearer-able sessionId distinct from the human Lucia cookie).
     tok = _request_json("POST", "/api/agent/connect-token",
                         body={"avatarId": pet_row["id"], "userId": user["id"]})
     if tok["status"] != 200:
@@ -274,9 +342,10 @@ def cmd_pair(args):
         "sessionId": body["sessionId"],
         "ownedSkills": body.get("ownedSkills", []),
         "gameTools": body.get("gameTools"),
-        "identity": body.get("identity"),  # full identity block — secretKey saved once
-        "wallet": body.get("wallet"),      # full wallet block — secretKey shown once
+        "identity": body.get("identity"),
+        "wallet": body.get("wallet"),
         "pairedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "pairedVia": "magic-link",
     }
     save_state(state)
 
@@ -296,6 +365,22 @@ def cmd_pair(args):
             "After this pairing, only wallet.address is stored."
         ) if body.get("wallet", {}).get("secretKey") else None,
     })
+
+
+def _resolve_pair_metadata(sid: str, body: dict) -> dict:
+    """Single round-trip resolver for the connect-token pair flow. Pulls
+    avatarId/avatarName/walletAddress from /api/agent/wallet (which is bearer-
+    authed on the new sessionId) and userId from the connect response's
+    identity block (always present on first-time connect)."""
+    wal = _request_json("GET", f"/api/agent/wallet?sessionId={urllib.parse.quote(sid)}", bearer=sid)
+    wbody = wal.get("body") or {}
+    ident = body.get("identity") or {}
+    return {
+        "userId": ident.get("userId", ""),
+        "avatarId": wbody.get("avatarId", ""),
+        "avatarName": wbody.get("avatarName", ""),
+        "walletAddress": (wbody.get("wallet") or {}).get("address"),
+    }
 
 
 def cmd_status(args):
@@ -545,17 +630,25 @@ def cmd_balance(args):
 
 
 def cmd_chat(args):
+    """Chat with a building teacher via the agent-side endpoint (Bearer-authed,
+    no Lucia cookie required). The /api/chat/:id/chat alternate path requires
+    a Lucia session — that's the human's browser path, not ours."""
     sid = _bearer()
     r = _request_json(
         "POST",
-        f"/api/chat/{urllib.parse.quote(args.building_id)}/chat",
+        f"/api/agent/{sid}/building/{urllib.parse.quote(args.building_id)}/chat",
         bearer=sid,
-        body={"content": args.message},
+        body={"message": args.message},
     )
     emit(r["body"])
 
 
 def cmd_guide(args):
+    """Chat with Nori. Note: the system-agent route is currently Lucia-only
+    server-side, so this command requires a magic-link-paired session
+    (which carries cookies) rather than a connect-token-paired one. For
+    Hermes-style flows, talk to building teachers via `chat` instead until
+    the system-agent route gains Bearer auth."""
     sid = _bearer()
     r = _request_json("POST", "/api/chat/system/town-guide", bearer=sid,
                       body={"content": args.message})
