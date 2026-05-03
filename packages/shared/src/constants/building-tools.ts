@@ -212,7 +212,7 @@ export const BUILDING_TOOLS: Record<string, ToolDefinition[]> = {
     {
       name: 'api_describe_webhook',
       description:
-        '[stub — implementation pending] Returns guidance for designing a webhook endpoint for the given event type, including HMAC verification, retry, and idempotency advice.',
+        'Returns guidance for designing a webhook endpoint for the given event type, including HMAC verification, retry, and idempotency advice.',
       input_schema: {
         type: 'object',
         properties: { eventType: { type: 'string' } },
@@ -224,7 +224,7 @@ export const BUILDING_TOOLS: Record<string, ToolDefinition[]> = {
     {
       name: 'memory_chunk_text',
       description:
-        '[stub — implementation pending] Splits text into overlapping ~512-token chunks suitable for RAG embedding.',
+        'Splits text into overlapping ~512-token chunks suitable for RAG embedding.',
       input_schema: {
         type: 'object',
         properties: {
@@ -240,7 +240,7 @@ export const BUILDING_TOOLS: Record<string, ToolDefinition[]> = {
     {
       name: 'code_review_snippet',
       description:
-        '[stub — implementation pending] Returns a code review for a given snippet, focused on the building\'s curriculum (test coverage, idiomatic style, common bugs).',
+        'Returns a code review for a given snippet, focused on the building\'s curriculum (test coverage, idiomatic style, common bugs).',
       input_schema: {
         type: 'object',
         properties: { language: { type: 'string' }, code: { type: 'string' } },
@@ -252,7 +252,7 @@ export const BUILDING_TOOLS: Record<string, ToolDefinition[]> = {
     {
       name: 'channels_normalize_message',
       description:
-        '[stub — implementation pending] Converts a platform-specific message (Discord/Telegram/Slack) into the agent-internal common message format.',
+        'Converts a platform-specific message (Discord/Telegram/Slack) into the agent-internal common message format.',
       input_schema: {
         type: 'object',
         properties: {
@@ -267,7 +267,7 @@ export const BUILDING_TOOLS: Record<string, ToolDefinition[]> = {
     {
       name: 'mcp_validate_tool_schema',
       description:
-        '[stub — implementation pending] Validates an OpenAI/Anthropic tool definition for completeness and clarity.',
+        'Validates an OpenAI/Anthropic tool definition for completeness and clarity.',
       input_schema: {
         type: 'object',
         properties: { tool: { type: 'object', properties: {} } },
@@ -279,7 +279,7 @@ export const BUILDING_TOOLS: Record<string, ToolDefinition[]> = {
     {
       name: 'visual_pick_model',
       description:
-        '[stub — implementation pending] Recommends a frontier image/video/3D model for the given task and budget.',
+        'Recommends a frontier image/video/3D model for the given task and budget.',
       input_schema: {
         type: 'object',
         properties: {
@@ -294,7 +294,7 @@ export const BUILDING_TOOLS: Record<string, ToolDefinition[]> = {
     {
       name: 'publishing_review_checklist',
       description:
-        '[stub — implementation pending] Returns a pre-submission checklist for the given target store (Apple, Google Play, Microsoft Store, Steam, etc.).',
+        'Returns a pre-submission checklist for the given target store (Apple, Google Play, Microsoft Store, Steam, etc.).',
       input_schema: {
         type: 'object',
         properties: {
@@ -311,7 +311,7 @@ export const BUILDING_TOOLS: Record<string, ToolDefinition[]> = {
     {
       name: 'security_check_prompt',
       description:
-        '[stub — implementation pending] Scans a user prompt for prompt-injection patterns. Returns flags + suggested mitigations.',
+        'Scans a user prompt for prompt-injection patterns. Returns flags + suggested mitigations.',
       input_schema: {
         type: 'object',
         properties: { prompt: { type: 'string' } },
@@ -323,7 +323,7 @@ export const BUILDING_TOOLS: Record<string, ToolDefinition[]> = {
     {
       name: 'ops_size_resources',
       description:
-        '[stub — implementation pending] Suggests CPU/memory/replica counts for an agent fleet given expected QPS and per-request latency.',
+        'Suggests CPU/memory/replica counts for an agent fleet given expected QPS and per-request latency.',
       input_schema: {
         type: 'object',
         properties: {
