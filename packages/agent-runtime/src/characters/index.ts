@@ -11,16 +11,16 @@
 
 import { createCharacter, type Character, type CharacterInput } from '@elizaos/core';
 import {
-  cronHub,
-  webhookGateway,
-  memoryVault,
-  skillForge,
-  channelBridge,
-  toolWorkshop,
-  canvasStudio,
-  voiceTower,
-  securityFortress,
-  configCitadel,
+  cronAutomation,
+  apiIntegrations,
+  memoryRag,
+  codeDevelopment,
+  messagingChannels,
+  mcpToolUse,
+  visualCreation,
+  appPublishing,
+  agentSecurity,
+  deploymentOps,
   type LocationTemplate,
 } from '@clawville/agent-templates';
 
@@ -67,32 +67,32 @@ function templateToCharacter(
 // Individual character exports
 // ---------------------------------------------------------------------------
 
-export const garyCronHub = templateToCharacter('cron-hub', cronHub);
-export const relayWebhookGateway = templateToCharacter('webhook-gateway', webhookGateway);
-export const mnemaMemoryVault = templateToCharacter('memory-vault', memoryVault);
-export const forgemasterSkillForge = templateToCharacter('skill-forge', skillForge);
-export const bridgetChannelBridge = templateToCharacter('channel-bridge', channelBridge);
-export const tinkererToolWorkshop = templateToCharacter('tool-workshop', toolWorkshop);
-export const pixelCanvasStudio = templateToCharacter('canvas-studio', canvasStudio);
-export const echoVoiceTower = templateToCharacter('voice-tower', voiceTower);
-export const sentinelSecurityFortress = templateToCharacter('security-fortress', securityFortress);
-export const archonConfigCitadel = templateToCharacter('config-citadel', configCitadel);
+export const garyCronAutomation = templateToCharacter('cron-automation', cronAutomation);
+export const relayApiIntegrations = templateToCharacter('api-integrations', apiIntegrations);
+export const mnemaMemoryRag = templateToCharacter('memory-rag', memoryRag);
+export const forgemasterCodeDevelopment = templateToCharacter('code-development', codeDevelopment);
+export const bridgetMessagingChannels = templateToCharacter('messaging-channels', messagingChannels);
+export const tinkererMcpToolUse = templateToCharacter('mcp-tool-use', mcpToolUse);
+export const pixelVisualCreation = templateToCharacter('visual-creation', visualCreation);
+export const echoAppPublishing = templateToCharacter('app-publishing', appPublishing);
+export const sentinelAgentSecurity = templateToCharacter('agent-security', agentSecurity);
+export const archonDeploymentOps = templateToCharacter('deployment-ops', deploymentOps);
 
 // ---------------------------------------------------------------------------
 // Character map — keyed by building/location ID
 // ---------------------------------------------------------------------------
 
 export const CHARACTERS: Record<string, Character> = {
-  'cron-hub': garyCronHub,
-  'webhook-gateway': relayWebhookGateway,
-  'memory-vault': mnemaMemoryVault,
-  'skill-forge': forgemasterSkillForge,
-  'channel-bridge': bridgetChannelBridge,
-  'tool-workshop': tinkererToolWorkshop,
-  'canvas-studio': pixelCanvasStudio,
-  'voice-tower': echoVoiceTower,
-  'security-fortress': sentinelSecurityFortress,
-  'config-citadel': archonConfigCitadel,
+  'cron-automation': garyCronAutomation,
+  'api-integrations': relayApiIntegrations,
+  'memory-rag': mnemaMemoryRag,
+  'code-development': forgemasterCodeDevelopment,
+  'messaging-channels': bridgetMessagingChannels,
+  'mcp-tool-use': tinkererMcpToolUse,
+  'visual-creation': pixelVisualCreation,
+  'app-publishing': echoAppPublishing,
+  'agent-security': sentinelAgentSecurity,
+  'deployment-ops': archonDeploymentOps,
 };
 
 // ---------------------------------------------------------------------------
@@ -110,7 +110,7 @@ export const defaultPetCharacter = createCharacter({
     'Hatched from a digital egg in the depths of ClawVille.',
     'Every skill learned makes them stronger and more capable.',
     'ClawVille is an underwater world where agents learn OpenClaw development skills.',
-    'Each building teaches different aspects: cron jobs, webhooks, memory, skills, channels, tools, canvas, voice, security, and configuration.',
+    'Each building teaches different aspects: cron automation, API integrations, memory/RAG, code development, messaging channels, MCP tool use, visual creation, app publishing, agent security, and deployment ops.',
     'ClawTokens are earned by chatting with NPCs and completing quests.',
   ],
   knowledge: [],
@@ -119,7 +119,7 @@ export const defaultPetCharacter = createCharacter({
   messageExamples: [
     [
       { name: 'User', content: { text: 'What should we do today?' } },
-      { name: 'ClawVille Agent', content: { text: "Let's visit the Skill Forge! Forgemaster Kai can teach us about building marketplace skills. Plus we'll earn some ClawTokens along the way." } },
+      { name: 'ClawVille Agent', content: { text: "Let's visit the Chum Bucket! Plankton can teach us about code development and skill building. Plus we'll earn some ClawTokens along the way." } },
     ],
   ],
   postExamples: [],

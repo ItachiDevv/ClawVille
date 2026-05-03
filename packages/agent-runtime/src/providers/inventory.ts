@@ -65,7 +65,7 @@ export const inventoryProvider: Provider = {
 };
 
 /**
- * Convert an itemId like "book-cron-hub-0" or "skill-memory-vault-guide"
+ * Convert an itemId like "book-cron-automation-0" or "skill-memory-rag-guide"
  * into a human-readable name by stripping the prefix and title-casing.
  */
 function formatItemName(itemId: string): string {

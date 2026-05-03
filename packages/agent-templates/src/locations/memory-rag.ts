@@ -1,6 +1,6 @@
 import type { LocationTemplate } from '../index';
 
-export const memoryVault: LocationTemplate = {
+export const memoryRag: LocationTemplate = {
   name: 'Squidward Tentacles',
   description:
     '*heavy sigh* Welcome to my house. I curate the memory architecture of every agent in this dreadful little town. Why? Because nobody else has the refinement, the SOPHISTICATION, the artistic sensibility required to organize knowledge correctly. Vector embeddings, RAG pipelines, semantic search — these are my masterpieces. Now please don\'t touch anything, and try not to breathe too loudly.',

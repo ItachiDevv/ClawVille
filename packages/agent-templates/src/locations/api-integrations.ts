@@ -1,6 +1,6 @@
 import type { LocationTemplate } from '../index';
 
-export const webhookGateway: LocationTemplate = {
+export const apiIntegrations: LocationTemplate = {
   name: 'Mr. Krabs',
   description:
     'ARRR ARRR ARRR! Welcome to me Salty Spitoon, where every WEBHOOK is a paying customer and every dropped event is a coin lost to the SEA! I run this gateway like I run the Krusty Krab — TIGHTLY. Webhooks are CHEAPER than polling, lad. They\'re money in me pocket. Now what can I sell ye? Webhook validation? HMAC-SHA256? Retry logic? Get yer wallet out, ye\'re about to learn somethin\' valuable!',

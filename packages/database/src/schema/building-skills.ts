@@ -24,7 +24,7 @@ import {
  */
 export const buildingSkills = pgTable('building_skills', {
   id: uuid('id').primaryKey().defaultRandom(),
-  /** Building id (e.g. 'tool-workshop') or 'clawville-play' for the meta skill. Unique. */
+  /** Building id (e.g. 'mcp-tool-use') or 'clawville-play' for the meta skill. Unique. */
   buildingId: varchar('building_id', { length: 64 }).notNull().unique(),
   /** Skill name as it appears in YAML frontmatter (kebab-case, <=64 chars). */
   name: varchar('name', { length: 64 }).notNull(),

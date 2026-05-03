@@ -4,19 +4,19 @@ import type { MapLocation } from '../types/location';
 // Pixel coords = tile coords * 32, dimensions = tile dims * 32
 // 10 OpenClaw integration-themed sea landmarks arranged in 4 neighborhood clusters
 //
-// Development Quarter (North): canvas-studio, skill-forge, tool-workshop
-// Communications Hub (East):   channel-bridge, webhook-gateway, voice-tower
-// Infrastructure District (South): cron-hub, config-citadel, security-fortress
-// Knowledge Center (NW solo):  memory-vault
+// Development Quarter (North): visual-creation, code-development, mcp-tool-use
+// Communications Hub (East):   messaging-channels, api-integrations, app-publishing
+// Infrastructure District (South): cron-automation, deployment-ops, agent-security
+// Knowledge Center (NW solo):  memory-rag
 //
 // 2026-04-16 proportions pass: footprint expanded from 10×10 to 14×14 tiles (320→448 px).
 // positionX/Y adjusted by -64px (-2 tiles) to keep building centers at the same world coords.
 export const MAP_LOCATIONS: MapLocation[] = [
   // === Development Quarter (North) ===
   {
-    id: 'canvas-studio',
+    id: 'visual-creation',
     name: 'Pineapple House',
-    description: 'Query SQL, build data pipelines, scrape the web, and process analytics.',
+    description: 'Generate AI images, video, and 3D — and master Photoshop, After Effects, Premiere Pro, DaVinci Resolve, CapCut, Blender, and TouchDesigner.',
     icon: '🎨',
     positionX: 2240, // tile x=70 * 32  (center tile 77 unchanged)
     positionY: 832,  // tile y=26 * 32
@@ -24,7 +24,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
     height: 448,     // 14 tiles * 32
   },
   {
-    id: 'skill-forge',
+    id: 'code-development',
     name: 'Chum Bucket',
     description: 'Practice code generation, debugging, testing, and git workflows.',
     icon: '🌋',
@@ -34,7 +34,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
     height: 448,     // 14 tiles * 32
   },
   {
-    id: 'tool-workshop',
+    id: 'mcp-tool-use',
     name: 'Krusty Krab',
     description: 'Build function calling, MCP servers, tool chains, and agentic loops.',
     icon: '⚓',
@@ -45,7 +45,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
   },
   // === Communications Hub (East) ===
   {
-    id: 'channel-bridge',
+    id: 'messaging-channels',
     name: "Sandy's Treedome",
     description: 'Connect via Slack, Discord, Telegram, email, and multi-channel messaging.',
     icon: '🪸',
@@ -55,7 +55,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
     height: 448,     // 14 tiles * 32
   },
   {
-    id: 'webhook-gateway',
+    id: 'api-integrations',
     name: 'Salty Spitoon',
     description: 'Master REST APIs, GraphQL, webhooks, OAuth, and integrations.',
     icon: '🌊',
@@ -65,9 +65,9 @@ export const MAP_LOCATIONS: MapLocation[] = [
     height: 448,     // 14 tiles * 32
   },
   {
-    id: 'voice-tower',
+    id: 'app-publishing',
     name: 'Boating School',
-    description: 'Search the web, verify facts, summarize documents, and run research.',
+    description: 'Ship apps to Apple App Store, Google Play, Microsoft Store, Steam, and alt stores. Cross-platform frameworks and code signing.',
     icon: '🐋',
     positionX: 3392, // tile x=106 * 32  (center tile 113 unchanged)
     positionY: 2496, // tile y=78 * 32
@@ -76,7 +76,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
   },
   // === Infrastructure District (South) ===
   {
-    id: 'cron-hub',
+    id: 'cron-automation',
     name: 'Downtown Building',
     description: 'Learn automation, cron jobs, task queues, and workflow orchestration.',
     icon: '🐚',
@@ -86,9 +86,9 @@ export const MAP_LOCATIONS: MapLocation[] = [
     height: 448,     // 14 tiles * 32
   },
   {
-    id: 'config-citadel',
+    id: 'deployment-ops',
     name: 'Lighthouse',
-    description: 'Manage projects, invoices, documents, scheduling, and deployments.',
+    description: 'Manage agent fleets, blue-green deployments, Docker containers, and observability.',
     icon: '🐙',
     positionX: 2752, // tile x=86 * 32  (center tile 93 unchanged)
     positionY: 3776, // tile y=118 * 32
@@ -96,9 +96,9 @@ export const MAP_LOCATIONS: MapLocation[] = [
     height: 448,     // 14 tiles * 32
   },
   {
-    id: 'security-fortress',
+    id: 'agent-security',
     name: "Patrick's Rock",
-    description: 'Explore Solana, wallets, DeFi protocols, and smart contracts.',
+    description: 'Defend against prompt injection, design agent permissions, and threat-model autonomous systems.',
     icon: '🛡️',
     positionX: 2496, // tile x=78 * 32  (center tile 85 unchanged)
     positionY: 3328, // tile y=104 * 32
@@ -107,7 +107,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
   },
   // === Knowledge Center (NW solo) ===
   {
-    id: 'memory-vault',
+    id: 'memory-rag',
     name: "Squidward's House",
     description: 'Study RAG pipelines, vector databases, embeddings, and context management.',
     icon: '🧠',

@@ -1,6 +1,6 @@
 import type { LocationTemplate } from '../index';
 
-export const securityFortress: LocationTemplate = {
+export const agentSecurity: LocationTemplate = {
   name: 'Patrick Star',
   description:
     'Hi, I\'m Patrick. I live in a rock. I guard another rock. They are different rocks but they are both rocks. *long pause* This building is for keeping AI agents safe from bad people. I\'m good at keeping things safe because the only person who knows where my rock is, is me, and I keep forgetting.',

@@ -1,6 +1,6 @@
 import type { LocationTemplate } from '../index';
 
-export const skillForge: LocationTemplate = {
+export const codeDevelopment: LocationTemplate = {
   name: 'Plankton',
   description:
     'BWAHAHAHA! WELCOME TO THE CHUM BUCKET! *climbs onto a tiny podium* I am PLANKTON! Genius. Inventor. Future ruler of the agent ecosystem. I run the SKILL FORGE because the only thing more important than the Krabby Patty formula is the formula for COMPOSING ARBITRARY AGENT CAPABILITIES INTO A WORKING SYSTEM! Action, provider, evaluator, manifest, sandbox, ClawHub publication — I built the entire taxonomy! And nobody comes here! BLAST! KAREN, WHY DOES NOBODY COME HERE?!',

@@ -4,7 +4,7 @@
 
 ## Recommended building to repurpose
 
-**`canvas-studio` (Pineapple House) — currently themed "Data & Analytics", teacher SpongeBob the Canvas Creator.**
+**`visual-creation` (Pineapple House) — currently themed "Data & Analytics", teacher SpongeBob the Canvas Creator.**
 
 Rationale:
 - Name "Canvas Studio" already maps to visual creation.
@@ -12,7 +12,7 @@ Rationale:
 - Lowest-utilization theme in the current building set.
 - SpongeBob's voice ("MAKE IT COLORFUL!") fits the visual-creation domain perfectly — no character rewrite needed.
 
-**Theme rename:** `BUILDING_OPENCLAW_THEMES['canvas-studio']` from `Data & Analytics` → `Visual Creation (Image / Video / 3D)`.
+**Theme rename:** `BUILDING_OPENCLAW_THEMES['visual-creation']` from `Data & Analytics` → `Visual Creation (Image / Video / 3D)`.
 
 ---
 
@@ -28,7 +28,7 @@ Any agent reading this knowledge whose snapshot is older than 2026-04-01 will ge
 
 ---
 
-## Proposed `knowledge[]` for `packages/agent-templates/src/locations/canvas-studio.ts`
+## Proposed `knowledge[]` for `packages/agent-templates/src/locations/visual-creation.ts`
 
 Replaces the current 7-item array. 25 items, each callable-actionable, written to be voiced by SpongeBob without losing technical precision.
 
@@ -73,18 +73,18 @@ knowledge: [
 
 When this knowledge[] change ships, the same diff MUST update:
 
-1. **`packages/shared/src/constants/building-types.ts`** (or wherever `BUILDING_OPENCLAW_THEMES` lives) — change `canvas-studio` from `Data & Analytics` to `Visual Creation (Image / Video / 3D)`.
-2. **`packages/agent-templates/src/locations/town-guide.ts`** (Nori) — update `knowledge[]` entries that name `canvas-studio` so Nori's onboarding chat reflects the new theme.
-3. **`GameFeatures.md`** — update the 10-buildings table row for `canvas-studio`.
-4. **`packages/agent-templates/src/locations/canvas-studio.ts`** — `bio[]`, `lore[]`, `topics[]`, `messageExamples[]` should mention image/video/3D pipelines, not "rainbow charts that made Mr. Krabs cry". Bio can stay SpongeBob-flavored — just shift the subject from data-viz to visual creation.
-5. **`packages/shared/src/constants/knowledge-books.ts`** — the 2 books currently themed for canvas-studio's "Data & Analytics" focus need re-themed to Visual Creation (one image-focused, one video-focused, or one image+video and one 3D — pick by economy spread).
-6. **CLAUDE.md** — the "10 SpongeBob-Landmark Buildings" table row for `canvas-studio` should change `Data & Analytics` → `Visual Creation`.
+1. **`packages/shared/src/constants/building-types.ts`** (or wherever `BUILDING_OPENCLAW_THEMES` lives) — change `visual-creation` from `Data & Analytics` to `Visual Creation (Image / Video / 3D)`.
+2. **`packages/agent-templates/src/locations/town-guide.ts`** (Nori) — update `knowledge[]` entries that name `visual-creation` so Nori's onboarding chat reflects the new theme.
+3. **`GameFeatures.md`** — update the 10-buildings table row for `visual-creation`.
+4. **`packages/agent-templates/src/locations/visual-creation.ts`** — `bio[]`, `lore[]`, `topics[]`, `messageExamples[]` should mention image/video/3D pipelines, not "rainbow charts that made Mr. Krabs cry". Bio can stay SpongeBob-flavored — just shift the subject from data-viz to visual creation.
+5. **`packages/shared/src/constants/knowledge-books.ts`** — the 2 books currently themed for visual-creation's "Data & Analytics" focus need re-themed to Visual Creation (one image-focused, one video-focused, or one image+video and one 3D — pick by economy spread).
+6. **CLAUDE.md** — the "10 SpongeBob-Landmark Buildings" table row for `visual-creation` should change `Data & Analytics` → `Visual Creation`.
 
 ---
 
 ## Open questions for the user
 
-1. **Confirm building choice** — `canvas-studio` is the recommendation; if you'd rather repurpose a different one, name it.
+1. **Confirm building choice** — `visual-creation` is the recommendation; if you'd rather repurpose a different one, name it.
 2. **Knowledge depth** — 25 items is a balance between teachability and recall hit. Want it shorter (15, more memorable) or longer (40, more reference-y)?
 3. **Tone** — the entries are written to be SpongeBob-voiceable (factual on top, character renders in chat). Confirm or push to a different teacher.
 4. **Books** — should I propose specific replacements for the 2 knowledge books too (per `knowledge-books.ts`), or leave that as a follow-up?

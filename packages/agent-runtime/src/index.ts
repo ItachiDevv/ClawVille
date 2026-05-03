@@ -26,16 +26,16 @@ export { default as project, project as clawvilleProject } from './project';
 export {
   CHARACTERS,
   defaultPetCharacter,
-  garyCronHub,
-  relayWebhookGateway,
-  mnemaMemoryVault,
-  forgemasterSkillForge,
-  bridgetChannelBridge,
-  tinkererToolWorkshop,
-  pixelCanvasStudio,
-  echoVoiceTower,
-  sentinelSecurityFortress,
-  archonConfigCitadel,
+  garyCronAutomation,
+  relayApiIntegrations,
+  mnemaMemoryRag,
+  forgemasterCodeDevelopment,
+  bridgetMessagingChannels,
+  tinkererMcpToolUse,
+  pixelVisualCreation,
+  echoAppPublishing,
+  sentinelAgentSecurity,
+  archonDeploymentOps,
 } from './characters';
 
 // ClawVille game plugin (Actions + Providers — Phase 1 deeper ElizaOS integration)

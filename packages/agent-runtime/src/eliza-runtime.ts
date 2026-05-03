@@ -200,7 +200,7 @@ export class ElizaRuntime {
       this.character = config.character;
     } else {
       // Location agents load from templates
-      const locationId = (config.agentConfig?.locationId as string) || 'cron-hub';
+      const locationId = (config.agentConfig?.locationId as string) || 'cron-automation';
       const template = loadLocationTemplate(locationId);
       this.character = convertToElizaCharacter(template, config);
     }

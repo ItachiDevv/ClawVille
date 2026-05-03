@@ -28,14 +28,14 @@ export const ACTIVITY_EMOJIS: Record<NpcActivity, string> = {
 
 /** Activities available per building */
 export const BUILDING_ACTIVITIES: Record<string, NpcActivity[]> = {
-  'cron-hub': ['reading', 'thinking', 'researching'],
-  'webhook-gateway': ['trading', 'socializing', 'thinking'],
-  'memory-vault': ['reading', 'researching', 'thinking'],
-  'skill-forge': ['crafting', 'training', 'thinking'],
-  'channel-bridge': ['socializing', 'trading', 'exploring'],
-  'tool-workshop': ['crafting', 'researching', 'thinking'],
-  'canvas-studio': ['crafting', 'thinking', 'exploring'],
-  'voice-tower': ['socializing', 'training', 'thinking'],
-  'security-fortress': ['training', 'thinking', 'researching'],
-  'config-citadel': ['reading', 'researching', 'crafting'],
+  'cron-automation': ['reading', 'thinking', 'researching'],
+  'api-integrations': ['trading', 'socializing', 'thinking'],
+  'memory-rag': ['reading', 'researching', 'thinking'],
+  'code-development': ['crafting', 'training', 'thinking'],
+  'messaging-channels': ['socializing', 'trading', 'exploring'],
+  'mcp-tool-use': ['crafting', 'researching', 'thinking'],
+  'visual-creation': ['crafting', 'thinking', 'exploring'],
+  'app-publishing': ['socializing', 'training', 'thinking'],
+  'agent-security': ['training', 'thinking', 'researching'],
+  'deployment-ops': ['reading', 'researching', 'crafting'],
 };

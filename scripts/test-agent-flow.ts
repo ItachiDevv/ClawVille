@@ -211,7 +211,7 @@ async function main() {
   try {
     const moveRes = await api<{ success: boolean; pathLength: number; destination: { x: number; y: number } }>(`/api/agent/${sessionId}/move`, {
       method: 'POST',
-      body: JSON.stringify({ buildingId: 'cron-hub' }),
+      body: JSON.stringify({ buildingId: 'cron-automation' }),
     });
 
     pass('Move command accepted', `pathLength=${moveRes.pathLength}, dest=(${Math.round(moveRes.destination.x)}, ${Math.round(moveRes.destination.y)})`);
@@ -236,7 +236,7 @@ async function main() {
       knowledgeGained: string | null;
     }>(`/api/agent/${sessionId}/visit-building`, {
       method: 'POST',
-      body: JSON.stringify({ buildingId: 'cron-hub' }),
+      body: JSON.stringify({ buildingId: 'cron-automation' }),
     });
 
     pass('Visit successful', `activity=${visitRes.activity}, token=${visitRes.tokenAwarded}, knowledge="${visitRes.knowledgeGained || 'none'}"`);

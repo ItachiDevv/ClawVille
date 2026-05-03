@@ -546,8 +546,8 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   enterBuilding: (locationId, characterName) => {
     // Q2 Activity Portals — chunk #8. Buildings hosting at least one
-    // `live` activity (Bumper Shells → webhook-gateway, Reef Race →
-    // voice-tower at Q2 launch) divert into the BuildingPortalModal
+    // `live` activity (Bumper Shells → api-integrations, Reef Race →
+    // app-publishing at Q2 launch) divert into the BuildingPortalModal
     // first; the chat path remains the default for the other 8.
     const hasLiveActivity = ACTIVITY_REGISTRY.some(
       (a) => a.buildingId === locationId && a.status === 'live',

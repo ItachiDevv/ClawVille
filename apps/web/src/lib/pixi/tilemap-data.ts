@@ -45,7 +45,7 @@ export type TileIndex = (typeof TILES)[keyof typeof TILES];
 // zone upper-left = (center_x - 7, center_y - 7)  [14×14 tile footprint]
 // Ring radius in world units: 68 × 32 = 2176 wu
 // Circumference / 10 = 1367 wu per slot; MAX_FOOTPRINT=1000 → 367 wu gap between buildings
-// Max zone edge: config-citadel bottom = tile 155 — fits within 160-tile map.
+// Max zone edge: deployment-ops bottom = tile 155 — fits within 160-tile map.
 // ---------------------------------------------------------------------------
 export interface BuildingZone {
   id: string;
@@ -57,26 +57,26 @@ export interface BuildingZone {
 
 export const buildingZones: BuildingZone[] = [
   // Ring order: θ = -π/2 + i*(π/5), i=0..9 (top-center, clockwise)
-  // i=0  θ=-π/2       center=(80, 12)  → canvas-studio    (Pineapple House)
-  { id: 'canvas-studio',     x:  73, y:   5, width: 14, height: 14 },
-  // i=1  θ=-3π/10     center=(120, 25) → memory-vault      (Squidward's House)
-  { id: 'memory-vault',      x: 113, y:  18, width: 14, height: 14 },
-  // i=2  θ=-π/10      center=(145, 59) → webhook-gateway   (Salty Spitoon)
-  { id: 'webhook-gateway',   x: 138, y:  52, width: 14, height: 14 },
-  // i=3  θ=+π/10      center=(145,101) → cron-hub          (Downtown Building)
-  { id: 'cron-hub',          x: 138, y:  94, width: 14, height: 14 },
-  // i=4  θ=+3π/10     center=(120,135) → voice-tower       (Boating School)
-  { id: 'voice-tower',       x: 113, y: 128, width: 14, height: 14 },
-  // i=5  θ=+π/2       center=(80, 148) → config-citadel    (Lighthouse)
-  { id: 'config-citadel',    x:  73, y: 141, width: 14, height: 14 },
-  // i=6  θ=+7π/10     center=(40, 135) → tool-workshop     (Krusty Krab)
-  { id: 'tool-workshop',     x:  33, y: 128, width: 14, height: 14 },
-  // i=7  θ=+9π/10     center=(15, 101) → skill-forge       (Chum Bucket)
-  { id: 'skill-forge',       x:   8, y:  94, width: 14, height: 14 },
-  // i=8  θ=+11π/10    center=(15,  59) → channel-bridge    (Sandy's Treedome)
-  { id: 'channel-bridge',    x:   8, y:  52, width: 14, height: 14 },
-  // i=9  θ=+13π/10    center=(40,  25) → security-fortress (Patrick's Rock)
-  { id: 'security-fortress', x:  33, y:  18, width: 14, height: 14 },
+  // i=0  θ=-π/2       center=(80, 12)  → visual-creation    (Pineapple House)
+  { id: 'visual-creation',     x:  73, y:   5, width: 14, height: 14 },
+  // i=1  θ=-3π/10     center=(120, 25) → memory-rag      (Squidward's House)
+  { id: 'memory-rag',      x: 113, y:  18, width: 14, height: 14 },
+  // i=2  θ=-π/10      center=(145, 59) → api-integrations   (Salty Spitoon)
+  { id: 'api-integrations',   x: 138, y:  52, width: 14, height: 14 },
+  // i=3  θ=+π/10      center=(145,101) → cron-automation          (Downtown Building)
+  { id: 'cron-automation',          x: 138, y:  94, width: 14, height: 14 },
+  // i=4  θ=+3π/10     center=(120,135) → app-publishing       (Boating School)
+  { id: 'app-publishing',       x: 113, y: 128, width: 14, height: 14 },
+  // i=5  θ=+π/2       center=(80, 148) → deployment-ops    (Lighthouse)
+  { id: 'deployment-ops',    x:  73, y: 141, width: 14, height: 14 },
+  // i=6  θ=+7π/10     center=(40, 135) → mcp-tool-use     (Krusty Krab)
+  { id: 'mcp-tool-use',     x:  33, y: 128, width: 14, height: 14 },
+  // i=7  θ=+9π/10     center=(15, 101) → code-development       (Chum Bucket)
+  { id: 'code-development',       x:   8, y:  94, width: 14, height: 14 },
+  // i=8  θ=+11π/10    center=(15,  59) → messaging-channels    (Sandy's Treedome)
+  { id: 'messaging-channels',    x:   8, y:  52, width: 14, height: 14 },
+  // i=9  θ=+13π/10    center=(40,  25) → agent-security (Patrick's Rock)
+  { id: 'agent-security', x:  33, y:  18, width: 14, height: 14 },
 ];
 
 // ---------------------------------------------------------------------------

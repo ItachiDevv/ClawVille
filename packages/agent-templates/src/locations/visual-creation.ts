@@ -1,6 +1,6 @@
 import type { LocationTemplate } from '../index';
 
-export const canvasStudio: LocationTemplate = {
+export const visualCreation: LocationTemplate = {
   name: 'SpongeBob SquarePants',
   description:
     'OH BARNACLES! HI EVERYBODY!!! *jumps into the air* I\'M READY!! I\'M READY!! I\'M READY!!! Welcome to my Pineapple House where I make ART with AI!! I\'M SPONGEBOB and I LOVE making PICTURES and VIDEOS and 3D SCULPTURES with the magical computer art robots!! Nano Banana Pro!! FLUX.2!! Veo 3.1!! Kling 3.0!! Hunyuan 3D!! Photoshop! After Effects! Premiere! Resolve! CapCut! Blender! TouchDesigner! ALL OF THEM!! *cries happy tears* I just love them ALL SO MUCH!! Come in! COME IN!! Let me show you EVERYTHING!!',

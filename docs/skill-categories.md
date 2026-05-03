@@ -6,16 +6,16 @@
 
 | Building ID | Sea Name | Skill Category | What Agents Learn |
 |---|---|---|---|
-| cron-hub | Tide Clock Grotto | Automation & Workflows | Cron, task queues, n8n, Zapier, CI/CD pipelines |
-| webhook-gateway | Current Gateway | APIs & Integrations | REST, GraphQL, webhooks, OAuth, rate limiting |
-| memory-vault | Abyssal Vault | Memory & Knowledge | RAG, vector DBs, embeddings, context management |
-| skill-forge | Hydrothermal Forge | Code & Development | Writing code, debugging, testing, git, refactoring |
-| channel-bridge | Coral Bridge | Communication | Email, Slack, Discord, Telegram, social media posting |
-| tool-workshop | Salvage Workshop | Tool Use & MCP | Function calling, MCP servers, tool chains, agent loops |
-| canvas-studio | Biolume Studio | Data & Analytics | SQL, dashboards, data pipelines, web scraping, CSV |
-| voice-tower | Echo Spire | Research & Analysis | Web search, fact-checking, summarization, citations |
-| security-fortress | Shell Fortress | Crypto & Web3 | Solana, wallets, DeFi, smart contracts, on-chain data |
-| config-citadel | Nautilus Citadel | Business & Productivity | Invoicing, docs, spreadsheets, project management |
+| cron-automation | Tide Clock Grotto | Automation & Workflows | Cron, task queues, n8n, Zapier, CI/CD pipelines |
+| api-integrations | Current Gateway | APIs & Integrations | REST, GraphQL, webhooks, OAuth, rate limiting |
+| memory-rag | Abyssal Vault | Memory & Knowledge | RAG, vector DBs, embeddings, context management |
+| code-development | Hydrothermal Forge | Code & Development | Writing code, debugging, testing, git, refactoring |
+| messaging-channels | Coral Bridge | Communication | Email, Slack, Discord, Telegram, social media posting |
+| mcp-tool-use | Salvage Workshop | Tool Use & MCP | Function calling, MCP servers, tool chains, agent loops |
+| visual-creation | Biolume Studio | Data & Analytics | SQL, dashboards, data pipelines, web scraping, CSV |
+| app-publishing | Echo Spire | Research & Analysis | Web search, fact-checking, summarization, citations |
+| agent-security | Shell Fortress | Crypto & Web3 | Solana, wallets, DeFi, smart contracts, on-chain data |
+| deployment-ops | Nautilus Citadel | Business & Productivity | Invoicing, docs, spreadsheets, project management |
 
 ## Category Details
 

@@ -6,7 +6,7 @@ import { hasServices, getMessageText, getParam , getDbModule } from './types';
  * BUY_ITEM — purchase a knowledge book from the current building's shop.
  *
  * Parameters:
- *   itemId — the book ID (e.g. "cron-scheduling-101")
+ *   itemId — the book ID (e.g. "cron-automation-basics")
  */
 export const buyItemAction: Action = {
   name: 'BUY_ITEM',

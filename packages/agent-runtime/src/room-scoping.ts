@@ -27,7 +27,7 @@ export const CHARACTER_ROOM_NAMESPACE = '8f3b1b27-5f2a-4a8d-9c1d-2e7b4d1f6a9c';
 /**
  * Deterministic per-user room ID for a building character.
  *
- * @param locationId building / location ID (e.g. `cron-hub`)
+ * @param locationId building / location ID (e.g. `cron-automation`)
  * @param userId     viewer user ID (Lucia user.id)
  * @returns          UUID v5 that both identifies the shared character AND
  *                   isolates that user's chat memory from other users'

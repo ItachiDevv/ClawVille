@@ -81,16 +81,16 @@ function computeNpcPlacement(zone: { x: number; y: number; width: number; height
 // registered here; companions are not talk targets.
 // ---------------------------------------------------------------------------
 const CHARACTER_NAMES: Record<string, string> = {
-  'canvas-studio':     'SpongeBob',
-  'memory-vault':      'Squidward',
-  'voice-tower':       'Mrs. Puff',
-  'config-citadel':    'Larry',
-  'tool-workshop':     'Mr. Krabs',
-  'skill-forge':       'Plankton',
-  'channel-bridge':    'Sandy',
-  'security-fortress': 'Patrick',
-  'webhook-gateway':   'Flying Dutchman',
-  'cron-hub':          'Pearl',
+  'visual-creation':     'SpongeBob',
+  'memory-rag':      'Squidward',
+  'app-publishing':       'Mrs. Puff',
+  'deployment-ops':    'Larry',
+  'mcp-tool-use':     'Mr. Krabs',
+  'code-development':       'Plankton',
+  'messaging-channels':    'Sandy',
+  'agent-security': 'Patrick',
+  'api-integrations':   'Flying Dutchman',
+  'cron-automation':          'Pearl',
 };
 
 // ---------------------------------------------------------------------------

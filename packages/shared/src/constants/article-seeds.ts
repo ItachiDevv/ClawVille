@@ -9,10 +9,16 @@ import type { ResearchArticleSeed } from '../types/research';
  * This prevents prompt injection via scraped content.
  *
  * ClawVille buildings teach general-purpose agent skills across 10 categories.
+ *
+ * NOTE 2026-05-03: visual-creation and app-publishing URLs below are legacy
+ * stubs from when these buildings taught Data & Analytics and Research &
+ * Analysis respectively. New URLs aligned with the rebrand will be staged in
+ * a follow-up scrape pass; the BUILDING_OPENCLAW_THEMES focus strings drive
+ * NPC behavior in the meantime.
  */
 export const LOCATION_ARTICLE_SEEDS: Record<string, ResearchArticleSeed[]> = {
   // ─── Automation & Workflows ───────────────────────────────────────────
-  'cron-hub': [
+  'cron-automation': [
     { url: 'https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#schedule', title: 'GitHub Actions: Scheduled Workflows with Cron', source: 'GitHub Docs' },
     { url: 'https://docs.temporal.io/workflows', title: 'Temporal: Durable Workflow Execution', source: 'Temporal Docs' },
     { url: 'https://docs.n8n.io/workflows/', title: 'n8n: Workflow Automation Concepts', source: 'n8n Docs' },
@@ -21,7 +27,7 @@ export const LOCATION_ARTICLE_SEEDS: Record<string, ResearchArticleSeed[]> = {
   ],
 
   // ─── APIs & Integrations ──────────────────────────────────────────────
-  'webhook-gateway': [
+  'api-integrations': [
     { url: 'https://docs.github.com/en/webhooks/about-webhooks', title: 'GitHub Webhooks: Event-Driven Architecture', source: 'GitHub Docs' },
     { url: 'https://docs.stripe.com/webhooks', title: 'Stripe Webhooks: Event Handling Best Practices', source: 'Stripe Docs' },
     { url: 'https://graphql.org/learn/', title: 'GraphQL: Query Language for APIs', source: 'GraphQL Foundation' },
@@ -30,7 +36,7 @@ export const LOCATION_ARTICLE_SEEDS: Record<string, ResearchArticleSeed[]> = {
   ],
 
   // ─── Memory & Knowledge ───────────────────────────────────────────────
-  'memory-vault': [
+  'memory-rag': [
     { url: 'https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching', title: 'Anthropic: Prompt Caching for Persistent Context', source: 'Anthropic Docs' },
     { url: 'https://docs.pinecone.io/guides/get-started/overview', title: 'Pinecone: Vector Database for AI Memory', source: 'Pinecone Docs' },
     { url: 'https://docs.aws.amazon.com/bedrock/latest/userguide/embeddings.html', title: 'AWS Bedrock: Text Embeddings for Semantic Search', source: 'AWS Docs' },
@@ -39,7 +45,7 @@ export const LOCATION_ARTICLE_SEEDS: Record<string, ResearchArticleSeed[]> = {
   ],
 
   // ─── Code & Development ───────────────────────────────────────────────
-  'skill-forge': [
+  'code-development': [
     { url: 'https://www.typescriptlang.org/docs/handbook/2/basic-types.html', title: 'TypeScript: Type System Fundamentals', source: 'TypeScript Docs' },
     { url: 'https://docs.github.com/en/pull-requests/collaborating-with-pull-requests', title: 'GitHub: Pull Request Collaboration Workflow', source: 'GitHub Docs' },
     { url: 'https://vitest.dev/guide/', title: 'Vitest: Fast Unit Testing for Modern Projects', source: 'Vitest Docs' },
@@ -48,7 +54,7 @@ export const LOCATION_ARTICLE_SEEDS: Record<string, ResearchArticleSeed[]> = {
   ],
 
   // ─── Communication ────────────────────────────────────────────────────
-  'channel-bridge': [
+  'messaging-channels': [
     { url: 'https://api.slack.com/apis/events-api', title: 'Slack: Events API for Real-Time Messaging', source: 'Slack Docs' },
     { url: 'https://discord.com/developers/docs/resources/webhook', title: 'Discord: Webhook Integration for Bots', source: 'Discord Docs' },
     { url: 'https://core.telegram.org/bots/api', title: 'Telegram: Bot API for Agent Messaging', source: 'Telegram Docs' },
@@ -57,7 +63,7 @@ export const LOCATION_ARTICLE_SEEDS: Record<string, ResearchArticleSeed[]> = {
   ],
 
   // ─── Tool Use & MCP ───────────────────────────────────────────────────
-  'tool-workshop': [
+  'mcp-tool-use': [
     { url: 'https://docs.anthropic.com/en/docs/build-with-claude/tool-use/overview', title: 'Anthropic: Function Calling Overview', source: 'Anthropic Docs' },
     { url: 'https://docs.anthropic.com/en/docs/build-with-claude/tool-use', title: 'Anthropic: Claude Tool Use', source: 'Anthropic Docs' },
     { url: 'https://modelcontextprotocol.io/introduction', title: 'MCP: Model Context Protocol Standard', source: 'MCP Docs' },
@@ -65,8 +71,8 @@ export const LOCATION_ARTICLE_SEEDS: Record<string, ResearchArticleSeed[]> = {
     { url: 'https://python.langchain.com/docs/how_to/custom_tools/', title: 'LangChain: Building Custom Agent Tools', source: 'LangChain Docs' },
   ],
 
-  // ─── Data & Analytics ─────────────────────────────────────────────────
-  'canvas-studio': [
+  // ─── Visual Creation (legacy URLs — see top-of-file note) ─────────────
+  'visual-creation': [
     { url: 'https://docs.github.com/en/rest', title: 'GitHub REST API: Structured Data Access', source: 'GitHub Docs' },
     { url: 'https://docs.aws.amazon.com/AmazonS3/latest/userguide/Welcome.html', title: 'AWS S3: Object Storage for Data Pipelines', source: 'AWS Docs' },
     { url: 'https://docs.snowflake.com/en/user-guide-getting-started', title: 'Snowflake: Cloud Data Warehouse Getting Started', source: 'Snowflake Docs' },
@@ -74,8 +80,8 @@ export const LOCATION_ARTICLE_SEEDS: Record<string, ResearchArticleSeed[]> = {
     { url: 'https://supabase.com/docs/guides/database/overview', title: 'Supabase: PostgreSQL Database Platform', source: 'Supabase Docs' },
   ],
 
-  // ─── Research & Analysis ──────────────────────────────────────────────
-  'voice-tower': [
+  // ─── App Publishing (legacy URLs — see top-of-file note) ──────────────
+  'app-publishing': [
     { url: 'https://docs.perplexity.ai/guides/search-quickstart', title: 'Perplexity: Search API for AI Research', source: 'Perplexity Docs' },
     { url: 'https://docs.tavily.com/documentation/api-reference/endpoint/search', title: 'Tavily: AI-Optimized Search API', source: 'Tavily Docs' },
     { url: 'https://docs.exa.ai/reference/search', title: 'Exa: Semantic Search API for Agents', source: 'Exa Docs' },
@@ -83,21 +89,21 @@ export const LOCATION_ARTICLE_SEEDS: Record<string, ResearchArticleSeed[]> = {
     { url: 'https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering', title: 'Anthropic: Prompt Engineering for Structured Analysis', source: 'Anthropic Docs' },
   ],
 
-  // ─── Crypto & Web3 ────────────────────────────────────────────────────
-  'security-fortress': [
-    { url: 'https://solana.com/docs/intro/dev', title: 'Solana: Developer Getting Started Guide', source: 'Solana Docs' },
-    { url: 'https://solana.com/developers/cookbook', title: 'Solana: Developer Cookbook and Code Examples', source: 'Solana Docs' },
-    { url: 'https://www.helius.dev/docs', title: 'Helius: Solana RPC and API Platform', source: 'Helius Docs' },
-    { url: 'https://dev.jup.ag/', title: 'Jupiter: Solana DEX Aggregator API', source: 'Jupiter Docs' },
-    { url: 'https://www.anchor-lang.com/docs/installation', title: 'Anchor: Solana Smart Contract Framework', source: 'Anchor Docs' },
+  // ─── Agent Security ───────────────────────────────────────────────────
+  'agent-security': [
+    { url: 'https://owasp.org/www-project-top-10-for-large-language-model-applications/', title: 'OWASP: Top 10 for LLM Applications', source: 'OWASP' },
+    { url: 'https://learn.microsoft.com/en-us/security/zero-trust/', title: 'Microsoft: Zero Trust Security Model', source: 'Microsoft Docs' },
+    { url: 'https://docs.anthropic.com/en/docs/test-and-evaluate/strengthen-guardrails/mitigate-jailbreaks', title: 'Anthropic: Mitigating Jailbreaks and Prompt Injections', source: 'Anthropic Docs' },
+    { url: 'https://platform.openai.com/docs/guides/prompt-engineering', title: 'OpenAI: Prompt Engineering and Safety', source: 'OpenAI Docs' },
+    { url: 'https://nvlpubs.nist.gov/nistpubs/ai/NIST.AI.100-1.pdf', title: 'NIST: AI Risk Management Framework', source: 'NIST' },
   ],
 
-  // ─── Business & Productivity ──────────────────────────────────────────
-  'config-citadel': [
-    { url: 'https://linear.app/developers/graphql', title: 'Linear: GraphQL API for Project Management', source: 'Linear Docs' },
-    { url: 'https://developers.notion.com/docs/getting-started', title: 'Notion: API for Workspace Automation', source: 'Notion Docs' },
-    { url: 'https://docs.stripe.com/invoicing', title: 'Stripe: Invoice and Payment Automation', source: 'Stripe Docs' },
-    { url: 'https://developers.google.com/calendar/api/guides/overview', title: 'Google Calendar: Scheduling API', source: 'Google Docs' },
-    { url: 'https://docs.railway.com/guides/variables', title: 'Railway: Environment and Deployment Config', source: 'Railway Docs' },
+  // ─── Deployment & Ops ─────────────────────────────────────────────────
+  'deployment-ops': [
+    { url: 'https://kubernetes.io/docs/concepts/overview/', title: 'Kubernetes: Container Orchestration Concepts', source: 'Kubernetes Docs' },
+    { url: 'https://docs.docker.com/build/building/multi-stage/', title: 'Docker: Multi-Stage Builds for Lean Images', source: 'Docker Docs' },
+    { url: 'https://prometheus.io/docs/introduction/overview/', title: 'Prometheus: Metrics and Observability', source: 'Prometheus Docs' },
+    { url: 'https://docs.coolify.io/get-started/introduction', title: 'Coolify: Self-Hosted Deployment Platform', source: 'Coolify Docs' },
+    { url: 'https://railway.com/docs', title: 'Railway: Application Deployment Guides', source: 'Railway Docs' },
   ],
 };

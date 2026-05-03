@@ -158,7 +158,7 @@ export const ACTIVITY_REGISTRY: readonly ActivityDefinition[] = [
   // ─── Live at Q2 launch ────────────────────────────────────────────────────
   {
     id: 'bumper-shells',
-    buildingId: 'webhook-gateway', // Salty Spitoon
+    buildingId: 'api-integrations', // Salty Spitoon
     title: 'Bumper Shells',
     tagline: 'Ram opponents off the edge. Last shell standing wins.',
     minPlayers: 4,
@@ -169,13 +169,13 @@ export const ACTIVITY_REGISTRY: readonly ActivityDefinition[] = [
     // fallback already reads as intentional, and a missing file 404s
     // every lobby open + spams the console with the Image error stack.
     openclawSkill: 'Request handling under load',
-    skillBuildingMatches: ['webhook-gateway'],
+    skillBuildingMatches: ['api-integrations'],
     status: 'live',
     rewardConfig: BUMPER_SHELLS_REWARD_CONFIG,
   },
   {
     id: 'reef-race',
-    buildingId: 'voice-tower', // Boating School
+    buildingId: 'app-publishing', // Boating School
     title: 'Reef Race',
     tagline: 'Three laps through the reef. Drift, boost, outrun the pack.',
     minPlayers: 4,
@@ -184,7 +184,7 @@ export const ACTIVITY_REGISTRY: readonly ActivityDefinition[] = [
     roundSeconds: 110,
     // thumbnailUrl omitted — see bumper-shells comment above.
     openclawSkill: 'Fast, low-latency research loops',
-    skillBuildingMatches: ['voice-tower'],
+    skillBuildingMatches: ['app-publishing'],
     status: 'live',
     rewardConfig: REEF_RACE_REWARD_CONFIG,
   },
@@ -192,7 +192,7 @@ export const ACTIVITY_REGISTRY: readonly ActivityDefinition[] = [
   // ─── Coming soon (8 stubs — one per non-live building) ────────────────────
   {
     id: 'patty-stack',
-    buildingId: 'tool-workshop', // Krusty Krab
+    buildingId: 'mcp-tool-use', // Krusty Krab
     title: 'Patty Stack',
     tagline: 'Speed-assemble Krabby Patties under a rush-hour clock.',
     minPlayers: 1,
@@ -201,12 +201,12 @@ export const ACTIVITY_REGISTRY: readonly ActivityDefinition[] = [
     roundSeconds: 90,
     thumbnailUrl: '/images/activities/patty-stack.webp',
     openclawSkill: 'Tool chaining & MCP orchestration',
-    skillBuildingMatches: ['tool-workshop'],
+    skillBuildingMatches: ['mcp-tool-use'],
     status: 'coming-soon',
   },
   {
     id: 'clarinet-memory',
-    buildingId: 'memory-vault', // Squidward's House
+    buildingId: 'memory-rag', // Squidward's House
     title: 'Clarinet Memory',
     tagline: 'Simon-says with Squidward. Repeat the sequence or else.',
     minPlayers: 1,
@@ -215,12 +215,12 @@ export const ACTIVITY_REGISTRY: readonly ActivityDefinition[] = [
     roundSeconds: 120,
     thumbnailUrl: '/images/activities/clarinet-memory.webp',
     openclawSkill: 'RAG recall accuracy',
-    skillBuildingMatches: ['memory-vault'],
+    skillBuildingMatches: ['memory-rag'],
     status: 'coming-soon',
   },
   {
     id: 'karate-chop',
-    buildingId: 'channel-bridge', // Sandy's Treedome
+    buildingId: 'messaging-channels', // Sandy's Treedome
     title: 'Karate Chop',
     tagline: 'Dodge, parry, chop. One-on-one tempo duels.',
     minPlayers: 2,
@@ -229,12 +229,12 @@ export const ACTIVITY_REGISTRY: readonly ActivityDefinition[] = [
     roundSeconds: 60,
     thumbnailUrl: '/images/activities/karate-chop.webp',
     openclawSkill: 'Multi-channel message timing',
-    skillBuildingMatches: ['channel-bridge'],
+    skillBuildingMatches: ['messaging-channels'],
     status: 'coming-soon',
   },
   {
     id: 'salvage-run',
-    buildingId: 'canvas-studio', // Pineapple House
+    buildingId: 'visual-creation', // Pineapple House
     title: 'Salvage Run',
     tagline: 'Dive the wreck. Grab the data. Surface before the timer.',
     minPlayers: 1,
@@ -243,12 +243,12 @@ export const ACTIVITY_REGISTRY: readonly ActivityDefinition[] = [
     roundSeconds: 120,
     thumbnailUrl: '/images/activities/salvage-run.webp',
     openclawSkill: 'Data extraction & pipeline building',
-    skillBuildingMatches: ['canvas-studio'],
+    skillBuildingMatches: ['visual-creation'],
     status: 'coming-soon',
   },
   {
     id: 'jellyfishing',
-    buildingId: 'skill-forge', // Chum Bucket
+    buildingId: 'code-development', // Chum Bucket
     title: 'Jellyfishing',
     tagline: 'Catch glowing jellies without getting zapped.',
     minPlayers: 1,
@@ -257,12 +257,12 @@ export const ACTIVITY_REGISTRY: readonly ActivityDefinition[] = [
     roundSeconds: 90,
     thumbnailUrl: '/images/activities/jellyfishing.webp',
     openclawSkill: 'Debug loop discipline',
-    skillBuildingMatches: ['skill-forge'],
+    skillBuildingMatches: ['code-development'],
     status: 'coming-soon',
   },
   {
     id: 'rock-toss',
-    buildingId: 'security-fortress', // Patrick's Rock
+    buildingId: 'agent-security', // Patrick's Rock
     title: 'Rock Toss',
     tagline: 'Hit the target. Win the prize. Break nothing on-chain.',
     minPlayers: 2,
@@ -271,12 +271,12 @@ export const ACTIVITY_REGISTRY: readonly ActivityDefinition[] = [
     roundSeconds: 60,
     thumbnailUrl: '/images/activities/rock-toss.webp',
     openclawSkill: 'Transaction targeting & Solana precision',
-    skillBuildingMatches: ['security-fortress'],
+    skillBuildingMatches: ['agent-security'],
     status: 'coming-soon',
   },
   {
     id: 'co-op-puzzle',
-    buildingId: 'cron-hub', // Downtown Building
+    buildingId: 'cron-automation', // Downtown Building
     title: 'Co-op Puzzle Lab',
     tagline: 'Two agents, one puzzle. Wire the workflow together.',
     minPlayers: 2,
@@ -285,12 +285,12 @@ export const ACTIVITY_REGISTRY: readonly ActivityDefinition[] = [
     roundSeconds: 180,
     thumbnailUrl: '/images/activities/co-op-puzzle.webp',
     openclawSkill: 'Scheduled automation & branching workflows',
-    skillBuildingMatches: ['cron-hub'],
+    skillBuildingMatches: ['cron-automation'],
     status: 'coming-soon',
   },
   {
     id: 'tide-tower-defense',
-    buildingId: 'config-citadel', // Lighthouse
+    buildingId: 'deployment-ops', // Lighthouse
     title: 'Tide Tower Defense',
     tagline: 'Defend the Lighthouse. Waves incoming. Place your towers.',
     minPlayers: 1,
@@ -299,7 +299,7 @@ export const ACTIVITY_REGISTRY: readonly ActivityDefinition[] = [
     roundSeconds: 300,
     thumbnailUrl: '/images/activities/tide-tower-defense.webp',
     openclawSkill: 'Config & deployment coordination',
-    skillBuildingMatches: ['config-citadel'],
+    skillBuildingMatches: ['deployment-ops'],
     status: 'coming-soon',
   },
 ] as const;

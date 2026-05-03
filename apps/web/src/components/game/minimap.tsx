@@ -18,16 +18,16 @@ const CENTER_TILE_PX_Y = (MAP_HEIGHT / 2);
 // Per-building accent colors tied to the skill category (so each building
 // has a distinct minimap silhouette even before hover).
 const BUILDING_ACCENT: Record<string, string> = {
-  'canvas-studio': '#fde68a',      // pineapple yellow
-  'memory-vault': '#a5b4fc',       // squidward indigo
-  'webhook-gateway': '#fca5a5',    // salty spitoon red
-  'cron-hub': '#93c5fd',           // downtown blue
-  'voice-tower': '#d9f99d',        // boating school green
-  'config-citadel': '#fed7aa',     // lighthouse orange
-  'tool-workshop': '#f9a8d4',      // krusty krab pink
-  'skill-forge': '#c4b5fd',        // chum bucket violet
-  'channel-bridge': '#67e8f9',     // sandy treedome cyan
-  'security-fortress': '#fbbf24',  // patrick rock yellow
+  'visual-creation': '#fde68a',      // pineapple yellow
+  'memory-rag': '#a5b4fc',       // squidward indigo
+  'api-integrations': '#fca5a5',    // salty spitoon red
+  'cron-automation': '#93c5fd',           // downtown blue
+  'app-publishing': '#d9f99d',        // boating school green
+  'deployment-ops': '#fed7aa',     // lighthouse orange
+  'mcp-tool-use': '#f9a8d4',      // krusty krab pink
+  'code-development': '#c4b5fd',        // chum bucket violet
+  'messaging-channels': '#67e8f9',     // sandy treedome cyan
+  'agent-security': '#fbbf24',  // patrick rock yellow
 };
 
 export default function Minimap() {

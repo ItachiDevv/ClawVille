@@ -9,14 +9,14 @@ export interface KnowledgeBook {
 }
 
 export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
-  // === Cron Hub (Downtown Building) ===
+  // === Cron Automation (Downtown Building) ===
   {
-    id: 'cron-scheduling-101',
+    id: 'cron-automation-basics',
     name: 'Cron Scheduling 101',
     description: 'Master cron expressions and task automation for AI agents.',
     icon: '⏰',
     price: 8,
-    building: 'cron-hub',
+    building: 'cron-automation',
     knowledgeEntries: [
       'Cron expressions use five fields: minute, hour, day-of-month, month, day-of-week to define recurring schedules.',
       'OpenClaw agents can register cron handlers that fire autonomously — perfect for social posting, data scraping, and heartbeat checks.',
@@ -25,12 +25,12 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
   {
-    id: 'advanced-scheduling',
+    id: 'cron-automation-advanced',
     name: 'Advanced Scheduling Patterns',
     description: 'Complex scheduling: chaining, retries, dead-letter queues, and distributed cron.',
     icon: '🕰️',
     price: 12,
-    building: 'cron-hub',
+    building: 'cron-automation',
     knowledgeEntries: [
       'Distributed cron uses leader election to ensure only one node runs a scheduled task across a cluster.',
       'Dead-letter queues capture failed cron jobs for later inspection and retry without blocking the schedule.',
@@ -39,14 +39,14 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
 
-  // === Webhook Gateway (Salty Spitoon) ===
+  // === API Integrations (Salty Spitoon) ===
   {
-    id: 'webhook-patterns',
+    id: 'api-integrations-webhooks',
     name: 'Webhook Patterns',
     description: 'Design reliable webhook endpoints and event-driven agent architectures.',
     icon: '🔗',
     price: 10,
-    building: 'webhook-gateway',
+    building: 'api-integrations',
     knowledgeEntries: [
       'Webhooks deliver real-time event notifications via HTTP POST — faster and more efficient than polling APIs.',
       'Always verify webhook signatures using HMAC-SHA256 to ensure payloads come from trusted sources.',
@@ -55,12 +55,12 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
   {
-    id: 'event-driven-agents',
+    id: 'api-integrations-event-driven',
     name: 'Event-Driven Agent Design',
     description: 'Build reactive agents that respond to real-world events in real time.',
     icon: '⚡',
     price: 14,
-    building: 'webhook-gateway',
+    building: 'api-integrations',
     knowledgeEntries: [
       'Event-driven architecture decouples producers from consumers — agents react to events without tight coupling to sources.',
       'Event sourcing stores all state changes as an immutable log — replay events to reconstruct any past state.',
@@ -69,14 +69,14 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
 
-  // === Memory Vault (Squidward's House) ===
+  // === Memory RAG (Squidward's House) ===
   {
-    id: 'vector-memory-guide',
+    id: 'memory-rag-vectors',
     name: 'Vector Memory Guide',
     description: 'Understanding embeddings, LanceDB, and semantic search for agent memory.',
     icon: '🧠',
     price: 12,
-    building: 'memory-vault',
+    building: 'memory-rag',
     knowledgeEntries: [
       'Vector embeddings convert text into high-dimensional number arrays that capture semantic meaning — similar concepts cluster nearby.',
       'LanceDB is a serverless vector database that stores embeddings on disk with fast approximate nearest-neighbor search.',
@@ -86,12 +86,12 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
   {
-    id: 'memory-architecture',
+    id: 'memory-rag-architecture',
     name: 'Memory Architecture Deep Dive',
     description: 'Advanced memory patterns: episodic recall, memory consolidation, and forgetting curves.',
     icon: '🗃️',
     price: 16,
-    building: 'memory-vault',
+    building: 'memory-rag',
     knowledgeEntries: [
       'Episodic memory stores specific interaction sequences — agents recall past conversations with temporal context.',
       'Memory consolidation periodically summarizes and compresses old memories to save storage while preserving key insights.',
@@ -100,14 +100,14 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
 
-  // === Skill Forge (Chum Bucket) ===
+  // === Code Development (Chum Bucket) ===
   {
-    id: 'skill-development-manual',
+    id: 'code-development-skills',
     name: 'Skill Development Manual',
     description: 'Build, test, and publish skills to the ClawHub marketplace.',
     icon: '🔨',
     price: 15,
-    building: 'skill-forge',
+    building: 'code-development',
     knowledgeEntries: [
       'An OpenClaw skill is a self-contained module with actions, providers, and evaluators that extends agent behavior.',
       'Skills are published to ClawHub — a marketplace where developers share reusable agent capabilities.',
@@ -116,12 +116,12 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
   {
-    id: 'skill-composition',
+    id: 'code-development-composition',
     name: 'Skill Composition Patterns',
     description: 'Combine multiple skills into powerful agent workflows.',
     icon: '🧩',
     price: 18,
-    building: 'skill-forge',
+    building: 'code-development',
     knowledgeEntries: [
       'Skill composition chains multiple capabilities — a research skill feeds into a summarization skill then a publishing skill.',
       'Dependency injection lets skills share services like databases, API clients, and caches without tight coupling.',
@@ -130,14 +130,14 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
 
-  // === Channel Bridge (Sandy's Treedome) ===
+  // === Messaging Channels (Sandy's Treedome) ===
   {
-    id: 'multi-platform-messaging',
+    id: 'messaging-channels-multiplatform',
     name: 'Multi-Platform Messaging',
     description: 'Connect agents to Discord, Telegram, Twitter, Farcaster and more.',
     icon: '🌉',
     price: 10,
-    building: 'channel-bridge',
+    building: 'messaging-channels',
     knowledgeEntries: [
       'OpenClaw agents can simultaneously operate on Discord, Telegram, Twitter, Farcaster, and custom API channels.',
       'Each platform adapter normalizes messages into a common format: sender, content, channel, and metadata.',
@@ -146,12 +146,12 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
   {
-    id: 'channel-orchestration',
+    id: 'messaging-channels-orchestration',
     name: 'Channel Orchestration',
     description: 'Coordinate agent behavior across multiple channels simultaneously.',
     icon: '📡',
     price: 13,
-    building: 'channel-bridge',
+    building: 'messaging-channels',
     knowledgeEntries: [
       'Channel-aware context lets agents tailor responses to the platform — formal on email, casual on Discord.',
       'Cross-channel message routing forwards relevant information between platforms (e.g., Discord alert triggers Telegram notification).',
@@ -160,14 +160,14 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
 
-  // === Tool Workshop (Krusty Krab) ===
+  // === MCP Tool Use (Krusty Krab) ===
   {
-    id: 'plugin-architecture',
+    id: 'mcp-tool-use-plugins',
     name: 'Plugin Architecture',
     description: 'Design and build tools and plugins that extend agent capabilities.',
     icon: '🛠️',
     price: 12,
-    building: 'tool-workshop',
+    building: 'mcp-tool-use',
     knowledgeEntries: [
       'OpenClaw plugins follow a standard interface: actions (what the agent can do), providers (data the agent can access), and evaluators (how the agent reflects).',
       'Tools are invoked through function-calling — the LLM decides when to use a tool based on the user request and tool descriptions.',
@@ -176,12 +176,12 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
   {
-    id: 'custom-tool-building',
+    id: 'mcp-tool-use-custom',
     name: 'Custom Tool Building',
     description: 'Create your own tools from APIs, databases, and external services.',
     icon: '⚒️',
     price: 15,
-    building: 'tool-workshop',
+    building: 'mcp-tool-use',
     knowledgeEntries: [
       'API wrapper tools expose external services to agents — define input schemas, handle auth, and format responses.',
       'Database tools let agents query and update structured data — always use parameterized queries to prevent injection.',
@@ -190,17 +190,14 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
 
-  // === Canvas Studio (Pineapple House) ===
+  // === Visual Creation (Pineapple House) ===
   {
-    // ID retained as 'live-canvas-rendering' for backwards compatibility with
-    // existing avatar_inventory rows. User-visible name/description/contents
-    // rebranded for the Visual Creation curriculum.
-    id: 'live-canvas-rendering',
+    id: 'visual-creation-ai-pipelines',
     name: 'AI Visual Pipelines',
     description: 'Frontier AI models for image, video, and 3D generation — Nano Banana Pro, FLUX.2, Veo 3.1, Kling 3.0, Hunyuan 3D — and the fal.ai / Replicate / ComfyUI pipelines that orchestrate them.',
     icon: '🎨',
     price: 15,
-    building: 'canvas-studio',
+    building: 'visual-creation',
     knowledgeEntries: [
       'For frontier image generation in 2026, the top three are Nano Banana Pro (gemini-3-pro-image-preview), GPT Image 2, and FLUX.2 Pro — all callable via OpenAI-compatible REST or the fal.ai aggregator.',
       'FLUX.2 Pro accepts up to 10 reference images in one call at $0.03/image — the default for multi-reference brand and character work; got a 2× speed upgrade in April 2026 at the same price.',
@@ -212,15 +209,12 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
   {
-    // ID retained as 'generative-art-agents' for backwards compatibility with
-    // existing avatar_inventory rows. User-visible name/description/contents
-    // rebranded for the Visual Creation curriculum.
-    id: 'generative-art-agents',
+    id: 'visual-creation-production-toolkit',
     name: 'Production Toolkit',
     description: 'Working artist depth in Photoshop, After Effects, Premiere Pro, DaVinci Resolve, CapCut, Blender, and TouchDesigner — the keyboard maps, scripting surfaces, and pipelines pros use daily.',
     icon: '🛠️',
     price: 20,
-    building: 'canvas-studio',
+    building: 'visual-creation',
     knowledgeEntries: [
       'Photoshop 27.6 (April 2026) runs Generative Fill on Firefly Image 5 at 2K with a model picker exposing Firefly + Gemini 3 Pro (Nano Banana) + FLUX.2 + GPT-Image side-by-side; UXP scripts in .psjs are the modern automation path (BatchPlay descriptors inside core.executeAsModal).',
       'After Effects layer property reveal letters are P (Position), S (Scale), R (Rotation), T (Opacity), A (Anchor Point), M (Mask Path), with U/UU revealing all keyframed/modified properties — the fastest way to reverse-engineer any project.',
@@ -233,16 +227,14 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
 
-  // === Voice Tower (Boating School — repurposed to App Publishing 2026-05) ===
+  // === App Publishing (Boating School) ===
   {
-    // ID retained as 'voice-speech-integration' for backwards compatibility with
-    // existing avatar_inventory rows. Rebranded to App Store Survival Guide.
-    id: 'voice-speech-integration',
+    id: 'app-publishing-store-survival',
     name: 'App Store Survival Guide',
     description: 'Pass App Store Review on the first try. Apple guidelines, Google Play Closed Testing rule, Microsoft Store fees, Steam Direct, IARC age ratings — Mrs. Puff\'s playbook.',
     icon: '📋',
     price: 18,
-    building: 'voice-tower',
+    building: 'app-publishing',
     knowledgeEntries: [
       'Apple Developer Program is $99/year (mandatory Mac + Xcode + Apple ID with 2FA); the most-cited App Store rejection reasons are 5.1.1 (privacy policy URL), 2.1 (completeness/crashes), 4.3 (design spam), and 5.1.2 (data use mismatch).',
       'Google Play registration is $25 ONE-TIME, but personal accounts created after Nov 2023 must run Closed Testing with 12 opted-in testers for 14 continuous days — verified Organization accounts with a DUNS number are exempt.',
@@ -254,14 +246,12 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
   {
-    // ID retained as 'conversational-voice-ai' for backwards compatibility with
-    // existing avatar_inventory rows. Rebranded to Cross-Platform Publisher.
-    id: 'conversational-voice-ai',
+    id: 'app-publishing-cross-platform',
     name: 'Cross-Platform Publisher',
     description: 'One codebase, many stores. React Native + Expo, Flutter, Tauri 2, MAUI, Unity for games. Plus alt stores (Itch, Epic, AltStore PAL, Flathub, Huawei) and code-signing across platforms.',
     icon: '🚀',
     price: 22,
-    building: 'voice-tower',
+    building: 'app-publishing',
     knowledgeEntries: [
       'Framework decision tree: Tauri 2 (Rust + native webview, 2-10MB bundles vs Electron 100MB+) for desktop, Flutter (Impeller, pixel-identical UI) for branded mobile, React Native + Expo for web-team mobile, Unity/Unreal/Godot for games, .NET MAUI for .NET shops, Kotlin Multiplatform + Compose for Kotlin teams.',
       'Expo SDK 55 (2026) dropped Legacy Architecture entirely — New Architecture is mandatory; EAS Build runs iOS in Expo\'s macOS cloud and Android on GCP Linux runners, so no local Xcode required for CI.',
@@ -274,14 +264,14 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
 
-  // === Security Fortress (Patrick's Rock) ===
+  // === Agent Security (Patrick's Rock) ===
   {
     id: 'agent-security-handbook',
     name: 'Agent Security Handbook',
     description: 'Permissions, access control, and security best practices for AI agents.',
     icon: '🏰',
     price: 15,
-    building: 'security-fortress',
+    building: 'agent-security',
     knowledgeEntries: [
       'OpenClaw uses role-based access control (RBAC) — agents, users, and tools each have defined permission scopes.',
       'Prompt injection attacks attempt to override agent instructions through user input — validate and sanitize all external text.',
@@ -290,12 +280,12 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
   {
-    id: 'threat-modeling-agents',
+    id: 'agent-security-threat-modeling',
     name: 'Threat Modeling for AI Agents',
     description: 'Identify and mitigate security risks in autonomous agent systems.',
     icon: '🛡️',
     price: 18,
-    building: 'security-fortress',
+    building: 'agent-security',
     knowledgeEntries: [
       'Agent threat modeling maps attack surfaces: user inputs, tool invocations, memory access, and external API calls.',
       'Sandboxed execution limits agent capabilities — restrict file system access, network calls, and resource consumption.',
@@ -304,14 +294,14 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
 
-  // === Config Citadel (Lighthouse) ===
+  // === Deployment Ops (Lighthouse) ===
   {
-    id: 'deployment-config-guide',
+    id: 'deployment-ops-config',
     name: 'Deployment & Config Guide',
     description: 'Configure, deploy, and manage agent environments at scale.',
     icon: '⚙️',
     price: 10,
-    building: 'config-citadel',
+    building: 'deployment-ops',
     knowledgeEntries: [
       'OpenClaw agents are configured via character JSON files that define personality, skills, model providers, and behavior rules.',
       'Environment-specific configs allow the same agent to behave differently in development, staging, and production.',
@@ -320,12 +310,12 @@ export const KNOWLEDGE_BOOKS: KnowledgeBook[] = [
     ],
   },
   {
-    id: 'scaling-agent-fleets',
+    id: 'deployment-ops-scaling',
     name: 'Scaling Agent Fleets',
     description: 'Run hundreds of agents efficiently with resource management and orchestration.',
     icon: '🚀',
     price: 15,
-    building: 'config-citadel',
+    building: 'deployment-ops',
     knowledgeEntries: [
       'Agent fleet management orchestrates many agents from a single control plane — start, stop, update, and monitor at scale.',
       'Resource pooling shares LLM API quotas across agents — a token budget manager prevents any single agent from exhausting limits.',

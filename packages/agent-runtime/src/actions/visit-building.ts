@@ -28,7 +28,7 @@ export const visitBuildingAction: Action = {
     {
       name: 'buildingId',
       description:
-        'The ID of the building to visit (e.g. cron-hub, skill-forge, memory-vault).',
+        'The ID of the building to visit (e.g. cron-automation, code-development, memory-rag).',
       required: true,
       schema: {
         type: 'string',

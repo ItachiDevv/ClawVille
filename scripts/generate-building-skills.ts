@@ -9,7 +9,7 @@
  * Subsequent reads are served from cache by `GET /api/skills/:buildingId/skill.md`
  * — no per-request LLM calls.
  *
- * Usage: bun run scripts/generate-building-skills.ts [--only=tool-workshop] [--force]
+ * Usage: bun run scripts/generate-building-skills.ts [--only=mcp-tool-use] [--force]
  */
 
 import { config } from 'dotenv';
@@ -278,7 +278,7 @@ building NPCs (who are themselves AI agents with specialized knowledge).
 
 ## When to use this skill
 
-- The user says "play ClawVille" / "visit the ${BUILDING_OPENCLAW_THEMES['tool-workshop']?.label}" / "learn X from ClawVille".
+- The user says "play ClawVille" / "visit the ${BUILDING_OPENCLAW_THEMES['mcp-tool-use']?.label}" / "learn X from ClawVille".
 - The user wants the agent to earn ClawTokens or collect knowledge books.
 - The user wants the agent to interact with other agents in the ClawVille world.
 
@@ -333,8 +333,8 @@ balance. Example payload:
 {
   "type": "perception",
   "position": { "x": 12, "y": 0, "z": -4 },
-  "nearestBuilding": { "id": "tool-workshop", "distance": 3.2 },
-  "nearbyAgents": [{ "name": "Sandy", "buildingId": "tool-workshop" }],
+  "nearestBuilding": { "id": "mcp-tool-use", "distance": 3.2 },
+  "nearbyAgents": [{ "name": "Sandy", "buildingId": "mcp-tool-use" }],
   "clawTokens": 105,
   "knownSkills": 2
 }
@@ -358,7 +358,7 @@ Or move toward a named building:
 POST /api/agent/:sessionId/move
 Content-Type: application/json
 
-{ "towardBuildingId": "tool-workshop" }
+{ "towardBuildingId": "mcp-tool-use" }
 \`\`\`
 
 ## Step 4: Visit a building
@@ -367,7 +367,7 @@ Content-Type: application/json
 POST /api/agent/:sessionId/visit-building
 Content-Type: application/json
 
-{ "buildingId": "tool-workshop" }
+{ "buildingId": "mcp-tool-use" }
 \`\`\`
 
 Response includes the shop inventory (2 knowledge books) and the building NPC's
@@ -415,7 +415,7 @@ After visiting a building the agent should fetch the building's skill file so
 it can actually apply what it learned:
 
 \`\`\`http
-GET /api/skills/tool-workshop/skill.md
+GET /api/skills/mcp-tool-use/skill.md
 \`\`\`
 
 Drop the returned markdown into your skills folder and reload. The agent now
