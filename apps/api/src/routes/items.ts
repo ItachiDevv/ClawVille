@@ -333,6 +333,8 @@ itemRoutes.post('/learn', requireAuth, async (c) => {
             type: 'knowledge_added',
             source: 'book',
             buildingId: book.building,
+            skillName: `clawville-${book.building}`,
+            suggestedFilename: `clawville-${book.building}.md`,
             sourceName: book.name,
             skillUrl: `/api/agent/${sid}/skills/${book.building}/skill.md`,
             knowledgeEntries: newKnowledge.slice(0, 8),

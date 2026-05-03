@@ -24,6 +24,18 @@ export type KnowledgeAddedEvent = {
   source: 'book' | 'chat';
   /** Building this knowledge belongs to, in current renamed kebab-case (cron-automation, app-publishing, etc.). */
   buildingId: string;
+  /**
+   * Canonical skill name matching the YAML frontmatter `name:` field of the
+   * resolved SKILL.md (`clawville-<buildingId>`). Harnesses should use this
+   * as the key when registering the skill in their internal config.
+   */
+  skillName: string;
+  /**
+   * Suggested filename for harnesses that drop the .md into a folder.
+   * Resolves the ambiguity of `skill.md` (which is just the SKILL.md spec
+   * convention for the URL endpoint, not a useful local filename).
+   */
+  suggestedFilename: string;
   /** Display name of the source artifact (book name or character name). */
   sourceName: string;
   /** Authed agent-side fetch URL for the matching SKILL.md (relative to api origin). */

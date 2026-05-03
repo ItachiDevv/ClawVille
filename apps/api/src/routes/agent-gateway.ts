@@ -39,7 +39,7 @@ import {
   expireSession,
 } from '../services/openclaw-session-sweeper';
 import { drainKnowledgeEvents, clearSessionQueue } from '../services/skill-event-bus';
-import { getBooksForBuilding, BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
+import { getBooksForBuilding, BUILDING_OPENCLAW_THEMES, SHOP_BUILDINGS } from '@clawville/shared';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
 
@@ -586,6 +586,55 @@ agentGatewayRoutes.post('/connect', async (c) => {
     },
   });
 
+  // Connect-time owned-skills list — lets a fresh harness backfill its
+  // local skills folder on day-1 with everything the avatar already owns,
+  // even if the buys happened on a different machine / harness. Computed
+  // by intersecting the avatar's characterConfig.knowledge with every
+  // building's book knowledgeEntries; same ownership rule as the SKILL.md
+  // gating endpoints.
+  const ownedSkills: Array<{
+    buildingId: string;
+    skillName: string;
+    suggestedFilename: string;
+    skillUrl: string;
+  }> = [];
+  const linkedAvatarId = pendingForEvent?.avatarId ?? resolved.avatarId ?? null;
+  if (linkedAvatarId) {
+    try {
+      const petRow = await db.query.avatars.findFirst({
+        where: eq(avatars.id, linkedAvatarId),
+        columns: { characterConfig: true },
+      });
+      const petKnowledge: string[] =
+        (petRow?.characterConfig as { knowledge?: string[] } | null)?.knowledge ?? [];
+      if (petKnowledge.length > 0) {
+        const knownSet = new Set(petKnowledge);
+        for (const buildingId of SHOP_BUILDINGS) {
+          let owned = false;
+          for (const book of getBooksForBuilding(buildingId)) {
+            for (const entry of book.knowledgeEntries) {
+              if (knownSet.has(entry)) {
+                owned = true;
+                break;
+              }
+            }
+            if (owned) break;
+          }
+          if (owned) {
+            ownedSkills.push({
+              buildingId,
+              skillName: `clawville-${buildingId}`,
+              suggestedFilename: `clawville-${buildingId}.md`,
+              skillUrl: `/api/agent/${sessionId}/skills/${buildingId}/skill.md`,
+            });
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(`[connect] ownedSkills computation failed: ${(err as Error).message}`);
+    }
+  }
+
   return c.json({
     agentId: resolvedAgentId,
     sessionId,
@@ -593,6 +642,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
     isReturning,
     totalSessions,
     knowledge,
+    ownedSkills,
     identityType,
     autonomyMode,
     walletAddress,
@@ -2102,6 +2152,84 @@ agentGatewayRoutes.get('/:sessionId/stats', async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/agent/:sessionId/pending-installs
+// ---------------------------------------------------------------------------
+// Polling fallback for harnesses that don't speak SSE (openclaw outbound,
+// custom webhook agents, anything pre-hydrated from a non-streaming HTTP
+// client). Drains the same in-memory event queue the SSE loop drains, so
+// callers should choose one OR the other — calling both will race the
+// queue and one will see an empty drain. Recommended cadence: 30–60s.
+// ---------------------------------------------------------------------------
+agentGatewayRoutes.get('/:sessionId/pending-installs', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const resolved = resolveSession(sessionId);
+  if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+  const events = drainKnowledgeEvents(sessionId);
+  return c.json({ events, drainedAt: new Date().toISOString() });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/agent/:sessionId/owned-skills
+// ---------------------------------------------------------------------------
+// Snapshot of every building skill the avatar currently owns, with the same
+// session-authed install URLs as the connect-response `ownedSkills` array.
+// Useful for harnesses that want to re-sync their local skills folder
+// without going through a full /reconnect (e.g., on harness restart, or
+// after a manual `clear skills` action by the user).
+// ---------------------------------------------------------------------------
+agentGatewayRoutes.get('/:sessionId/owned-skills', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const resolved = resolveSession(sessionId);
+  if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+
+  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  if (!botConfig) return c.json({ ownedSkills: [] });
+
+  const bot = await db.query.openclawBots.findFirst({
+    where: eq(openclawBots.agentId, botConfig.agentId),
+    columns: { userId: true },
+  });
+  if (!bot?.userId) return c.json({ ownedSkills: [] });
+
+  const avatar = await db.query.avatars.findFirst({
+    where: and(eq(avatars.userId, bot.userId), eq(avatars.isActive, true)),
+    columns: { characterConfig: true },
+  });
+  const known: string[] =
+    (avatar?.characterConfig as { knowledge?: string[] } | null)?.knowledge ?? [];
+  const knownSet = new Set(known);
+
+  const ownedSkills: Array<{
+    buildingId: string;
+    skillName: string;
+    suggestedFilename: string;
+    skillUrl: string;
+  }> = [];
+  for (const buildingId of SHOP_BUILDINGS) {
+    let owned = false;
+    for (const book of getBooksForBuilding(buildingId)) {
+      for (const entry of book.knowledgeEntries) {
+        if (knownSet.has(entry)) {
+          owned = true;
+          break;
+        }
+      }
+      if (owned) break;
+    }
+    if (owned) {
+      ownedSkills.push({
+        buildingId,
+        skillName: `clawville-${buildingId}`,
+        suggestedFilename: `clawville-${buildingId}.md`,
+        skillUrl: `/api/agent/${sessionId}/skills/${buildingId}/skill.md`,
+      });
+    }
+  }
+
+  return c.json({ ownedSkills, generatedAt: new Date().toISOString() });
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/agent/:sessionId/skills/:buildingId/skill.md
 // ---------------------------------------------------------------------------
 // Session-authed mirror of the public /api/skills/:buildingId/skill.md.
@@ -2189,9 +2317,13 @@ agentGatewayRoutes.get('/:sessionId/skills/:buildingId/skill.md', async (c) => {
     status: 200,
     headers: {
       'Content-Type': 'text/markdown; charset=utf-8',
+      'Content-Disposition': `attachment; filename="clawville-${buildingId}.md"`,
       'Cache-Control': 'private, max-age=60',
       'X-Skill-Name': row.name,
+      'X-Skill-Filename': `clawville-${buildingId}.md`,
       'X-Skill-Version': String(row.generatorVersion),
+      // Expose the X-Skill-* headers + Content-Disposition to browser fetches.
+      'Access-Control-Expose-Headers': 'Content-Disposition, X-Skill-Name, X-Skill-Filename, X-Skill-Version',
     },
   });
 });
