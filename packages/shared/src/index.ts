@@ -7,6 +7,7 @@ export * from './constants/avatar-archetypes';
 export * from './constants/map-locations';
 export * from './constants/knowledge-books';
 export * from './constants/building-types';
+export * from './constants/building-tools';
 export * from './constants/npc-definitions';
 export * from './constants/npc-activities';
 export * from './types/openclaw';

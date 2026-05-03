@@ -40,6 +40,14 @@ export type KnowledgeAddedEvent = {
   sourceName: string;
   /** Authed agent-side fetch URL for the matching SKILL.md (relative to api origin). */
   skillUrl: string;
+  /**
+   * Authed agent-side fetch URL for the matching tools.json — declares the
+   * callable function schemas the harness should register with its LLM
+   * tool dispatcher. Same auth + gating as skillUrl.
+   */
+  toolsUrl: string;
+  /** Suggested filename for the tools.json drop. */
+  toolsFilename: string;
   /** New knowledge entries the agent just received. Capped at 8 — pull SKILL.md for the full body. */
   knowledgeEntries: string[];
   /** Server clock, ISO-8601. Lets the harness dedupe on retry. */

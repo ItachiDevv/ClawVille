@@ -39,7 +39,14 @@ import {
   expireSession,
 } from '../services/openclaw-session-sweeper';
 import { drainKnowledgeEvents, clearSessionQueue } from '../services/skill-event-bus';
-import { getBooksForBuilding, BUILDING_OPENCLAW_THEMES, SHOP_BUILDINGS } from '@clawville/shared';
+import { runTool } from '../services/skill-tools-dispatcher';
+import {
+  getBooksForBuilding,
+  BUILDING_OPENCLAW_THEMES,
+  SHOP_BUILDINGS,
+  BUILDING_TOOLS,
+  CLAWVILLE_GAME_TOOLS,
+} from '@clawville/shared';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
 
@@ -626,6 +633,8 @@ agentGatewayRoutes.post('/connect', async (c) => {
               skillName: `clawville-${buildingId}`,
               suggestedFilename: `clawville-${buildingId}.md`,
               skillUrl: `/api/agent/${sessionId}/skills/${buildingId}/skill.md`,
+              toolsUrl: `/api/agent/${sessionId}/skills/${buildingId}/tools.json`,
+              toolsFilename: `clawville-${buildingId}.tools.json`,
             });
           }
         }
@@ -635,6 +644,15 @@ agentGatewayRoutes.post('/connect', async (c) => {
     }
   }
 
+  // Universal game tools — every connected agent gets these regardless of
+  // ownership. Single-file install, no per-building gating.
+  const gameToolsBundle = {
+    name: 'clawville-play',
+    suggestedFilename: 'clawville-play.tools.json',
+    toolsUrl: `/api/agent/${sessionId}/tools.json`,
+    toolCount: CLAWVILLE_GAME_TOOLS.length,
+  };
+
   return c.json({
     agentId: resolvedAgentId,
     sessionId,
@@ -643,6 +661,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
     totalSessions,
     knowledge,
     ownedSkills,
+    gameTools: gameToolsBundle,
     identityType,
     autonomyMode,
     walletAddress,
@@ -2169,6 +2188,31 @@ agentGatewayRoutes.get('/:sessionId/pending-installs', async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/agent/:sessionId/tools.json
+// ---------------------------------------------------------------------------
+// Universal ClawVille game tools — connect/visit/buy/read/chat/move. NOT
+// gated; every connected agent gets these because they're the "how to
+// play the game" capability set, not the gated curriculum. Building-
+// specific tools live at /api/agent/:sid/skills/:bid/tools.json.
+// ---------------------------------------------------------------------------
+agentGatewayRoutes.get('/:sessionId/tools.json', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const resolved = resolveSession(sessionId);
+  if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+
+  return new Response(JSON.stringify(CLAWVILLE_GAME_TOOLS, null, 2), {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Disposition': `attachment; filename="clawville-play.tools.json"`,
+      'Cache-Control': 'private, max-age=300',
+      'X-Skill-Filename': 'clawville-play.tools.json',
+      'Access-Control-Expose-Headers': 'Content-Disposition, X-Skill-Filename',
+    },
+  });
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/agent/:sessionId/owned-skills
 // ---------------------------------------------------------------------------
 // Snapshot of every building skill the avatar currently owns, with the same
@@ -2222,11 +2266,164 @@ agentGatewayRoutes.get('/:sessionId/owned-skills', async (c) => {
         skillName: `clawville-${buildingId}`,
         suggestedFilename: `clawville-${buildingId}.md`,
         skillUrl: `/api/agent/${sessionId}/skills/${buildingId}/skill.md`,
+        toolsUrl: `/api/agent/${sessionId}/skills/${buildingId}/tools.json`,
+        toolsFilename: `clawville-${buildingId}.tools.json`,
       });
     }
   }
 
   return c.json({ ownedSkills, generatedAt: new Date().toISOString() });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/agent/:sessionId/skills/:buildingId/tools.json
+// ---------------------------------------------------------------------------
+// Per-building callable tool definitions, gated identically to skill.md.
+// The harness's dispatcher loads this on install and registers each tool
+// with its LLM tool registry. Tool execution flows through
+// POST /api/agent/:sessionId/skills/:buildingId/tools/:toolName.
+// ---------------------------------------------------------------------------
+agentGatewayRoutes.get('/:sessionId/skills/:buildingId/tools.json', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const buildingId = c.req.param('buildingId');
+
+  const resolved = resolveSession(sessionId);
+  if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+
+  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  if (!botConfig) return c.json({ error: 'No agent config for session' }, 404);
+
+  const bot = await db.query.openclawBots.findFirst({
+    where: eq(openclawBots.agentId, botConfig.agentId),
+    columns: { userId: true },
+  });
+  if (!bot?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
+
+  const avatar = await db.query.avatars.findFirst({
+    where: and(eq(avatars.userId, bot.userId), eq(avatars.isActive, true)),
+    columns: { characterConfig: true },
+  });
+  if (!avatar) return c.json({ error: 'No active avatar for user' }, 404);
+
+  const known: string[] =
+    (avatar.characterConfig as { knowledge?: string[] } | null)?.knowledge ?? [];
+  const knownSet = new Set(known);
+  let owned = false;
+  for (const book of getBooksForBuilding(buildingId)) {
+    for (const entry of book.knowledgeEntries) {
+      if (knownSet.has(entry)) {
+        owned = true;
+        break;
+      }
+    }
+    if (owned) break;
+  }
+
+  if (!owned) {
+    const theme = BUILDING_OPENCLAW_THEMES[buildingId];
+    return c.json(
+      {
+        error: 'tools_locked',
+        buildingId,
+        buildingLabel: theme?.label ?? buildingId,
+        hint: `Buy and read a knowledge book at the ${theme?.label ?? buildingId} shop to unlock these tools.`,
+      },
+      402,
+    );
+  }
+
+  const tools = BUILDING_TOOLS[buildingId] ?? [];
+  return new Response(JSON.stringify(tools, null, 2), {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Disposition': `attachment; filename="clawville-${buildingId}.tools.json"`,
+      'Cache-Control': 'private, max-age=60',
+      'X-Skill-Filename': `clawville-${buildingId}.tools.json`,
+      'Access-Control-Expose-Headers': 'Content-Disposition, X-Skill-Filename',
+    },
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/agent/:sessionId/skills/:buildingId/tools/:toolName
+// ---------------------------------------------------------------------------
+// Server-side execution endpoint for the building's domain tools. The
+// harness's tool dispatcher routes a tool_use call here; the response
+// goes back to the LLM as a tool_result. Inventory-gated identically
+// to tools.json — an agent cannot invoke a tool from a building it
+// hasn't paid the curriculum for.
+// ---------------------------------------------------------------------------
+agentGatewayRoutes.post('/:sessionId/skills/:buildingId/tools/:toolName', async (c) => {
+  const sessionId = c.req.param('sessionId');
+  const buildingId = c.req.param('buildingId');
+  const toolName = c.req.param('toolName');
+
+  const resolved = resolveSession(sessionId);
+  if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+
+  const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
+  if (!botConfig) return c.json({ error: 'No agent config for session' }, 404);
+
+  // Ownership check (same as tools.json + skill.md)
+  const bot = await db.query.openclawBots.findFirst({
+    where: eq(openclawBots.agentId, botConfig.agentId),
+    columns: { userId: true },
+  });
+  if (!bot?.userId) return c.json({ error: 'Agent not linked to a user' }, 404);
+
+  const avatar = await db.query.avatars.findFirst({
+    where: and(eq(avatars.userId, bot.userId), eq(avatars.isActive, true)),
+    columns: { characterConfig: true },
+  });
+  if (!avatar) return c.json({ error: 'No active avatar for user' }, 404);
+
+  const known: string[] =
+    (avatar.characterConfig as { knowledge?: string[] } | null)?.knowledge ?? [];
+  const knownSet = new Set(known);
+  let owned = false;
+  for (const book of getBooksForBuilding(buildingId)) {
+    for (const entry of book.knowledgeEntries) {
+      if (knownSet.has(entry)) {
+        owned = true;
+        break;
+      }
+    }
+    if (owned) break;
+  }
+  if (!owned) {
+    return c.json({ error: 'tool_locked', buildingId, toolName, hint: 'Read a book at this building first.' }, 402);
+  }
+
+  // Validate the tool exists in the building's declared set
+  const tools = BUILDING_TOOLS[buildingId] ?? [];
+  const decl = tools.find((t) => t.name === toolName);
+  if (!decl) {
+    return c.json({ error: 'unknown_tool', buildingId, toolName, knownTools: tools.map((t) => t.name) }, 404);
+  }
+
+  let input: unknown = {};
+  try {
+    input = await c.req.json();
+  } catch {
+    // empty body is fine
+  }
+
+  const result = await runTool(buildingId, toolName, input);
+
+  void logEventFromContext(c, {
+    eventType: 'agent.tool.invoked',
+    agentId: botConfig.agentId,
+    sessionId,
+    buildingId,
+    payload: {
+      toolName,
+      ok: result.ok,
+      via: 'session-mirror',
+    },
+  });
+
+  return c.json(result, result.ok ? 200 : 400);
 });
 
 // ---------------------------------------------------------------------------
