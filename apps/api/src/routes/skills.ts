@@ -224,9 +224,12 @@ skillsRoutes.get('/:buildingId/skill.md', async (c) => {
     status: 200,
     headers: {
       'Content-Type': 'text/markdown; charset=utf-8',
+      'Content-Disposition': `attachment; filename="clawville-${buildingId}.md"`,
       'Cache-Control': 'private, max-age=60',
       'X-Skill-Name': row.name,
+      'X-Skill-Filename': `clawville-${buildingId}.md`,
       'X-Skill-Version': String(row.generatorVersion),
+      'Access-Control-Expose-Headers': 'Content-Disposition, X-Skill-Name, X-Skill-Filename, X-Skill-Version',
     },
   });
 });
