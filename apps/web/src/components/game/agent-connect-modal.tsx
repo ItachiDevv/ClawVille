@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import { useGameStore } from '@/stores/game';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useQuery } from '@tanstack/react-query';
@@ -8,6 +9,7 @@ import { api } from '@/lib/api';
 import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 
 export default function AgentConnectModal() {
+  const router = useRouter();
   const { agentConnectModalOpen, setAgentConnectModalOpen, agentConnected, agentSessionId, setAgentConnection, addToast, setSkillBuilderOpen } = useGameStore();
   const { data: avatar } = useAvatar();
   const { data: authData } = useQuery({ queryKey: ['auth-me'], queryFn: () => api.me(), retry: false });
@@ -47,8 +49,12 @@ export default function AgentConnectModal() {
   }, [agentConnectModalOpen]);
 
   const handleGenerateToken = useCallback(async () => {
+    // Avatar-gate is enforced upstream by the render branch (the "create your
+    // agent" block replaces this button when no avatar exists), so this path
+    // shouldn't be reachable without a avatar. Guard remains as a defense-in-
+    // depth check — but the message is short because the user never sees it.
     if (!avatar?.id || !authData?.user?.id) {
-      setError('You need a avatar to connect an agent. Create one first.');
+      setError('Avatar required — close this modal and click Create Your Agent.');
       return;
     }
     setError('');
@@ -212,8 +218,43 @@ export default function AgentConnectModal() {
                 Build Skill
               </button>
             </div>
+          ) : !avatar?.id ? (
+            /* ─── No avatar yet — explain + route to /create-agent ─── */
+            <div className="space-y-3">
+              <p className="text-white/70 text-sm leading-relaxed">
+                Before you can connect an external AI agent, you need an{' '}
+                <span className="text-cyan-300 font-bold">in-game agent character</span>{' '}
+                for it to control. Your external bot (Hermes, OpenClaw, ElizaOS, custom)
+                will pilot this character — moving around the world, visiting buildings,
+                buying skills, and talking to teachers.
+              </p>
+
+              <div className="bg-cyan-500/5 border border-cyan-500/15 rounded-lg px-3 py-2.5 space-y-2">
+                <p className="text-cyan-300/80 font-bold text-xs">What this gives you:</p>
+                <ul className="text-[11px] text-white/50 space-y-1 list-disc list-inside">
+                  <li>A persistent character your bot owns — its on-chain avatar wallet, its accumulated knowledge, its leaderboard rank</li>
+                  <li>An identity the server attaches every connect URL, magic link, and skill purchase to</li>
+                  <li>An avatar — pick a species, color, archetype, and personality once</li>
+                </ul>
+              </div>
+
+              <button
+                onClick={() => {
+                  setAgentConnectModalOpen(false);
+                  router.push('/create-agent');
+                }}
+                className="w-full px-4 py-3 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-400 hover:to-blue-400 text-white font-bold text-sm transition-all"
+              >
+                Create Your Agent →
+              </button>
+
+              <p className="text-[11px] text-white/30 text-center">
+                Takes about 30 seconds. After that, come back here to generate
+                a connect link for your external bot.
+              </p>
+            </div>
           ) : (
-            /* ─── Not connected ─── */
+            /* ─── Not connected (has avatar) ─── */
             <div className="space-y-3">
               <p className="text-white/50 text-sm">
                 Connect your AI agent to explore ClawVille and learn skills from 10 buildings.
