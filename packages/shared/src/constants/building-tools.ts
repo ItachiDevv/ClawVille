@@ -124,7 +124,7 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
     },
   },
   {
-    name: 'clawville_chat_pet',
+    name: 'clawville_chat_avatar',
     description:
       'Chat with your own avatar (the in-game character your agent controls). Useful for self-reflection on accumulated knowledge.',
     input_schema: {

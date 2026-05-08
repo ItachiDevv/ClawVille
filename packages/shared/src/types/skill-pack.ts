@@ -2,7 +2,7 @@
  * Phase 3 — SkillPackEntry is one element of the "take my agent home"
  * bundle emitted by `POST /api/agent/export-character`.
  *
- * A SkillPack is the list of Milady-compatible skills a avatar has fully
+ * A SkillPack is the list of Milady-compatible skills an avatar has fully
  * learned (i.e. it owns BOTH knowledge books at a given building and
  * therefore merits the corresponding skill from `BUILDING_MILADY_SKILLS`).
  *
