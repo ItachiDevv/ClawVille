@@ -106,7 +106,7 @@ export const clawTokenTransactions = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
-    petIdx: index('claw_token_tx_pet_idx').on(t.avatarId, t.createdAt),
+    avatarIdx: index('claw_token_tx_avatar_idx').on(t.avatarId, t.createdAt),
     userIdx: index('claw_token_tx_user_idx').on(t.userId, t.createdAt),
     sourceIdx: index('claw_token_tx_source_idx').on(t.source, t.createdAt),
   }),

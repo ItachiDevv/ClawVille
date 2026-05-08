@@ -53,7 +53,7 @@ export const events = pgTable(
   (t) => ({
     idxTypeTs: index('idx_events_type_ts').on(t.eventType, t.ts.desc()),
     idxAgentTs: index('idx_events_agent_ts').on(t.agentId, t.ts.desc()),
-    idxPetTs: index('idx_events_pet_ts').on(t.avatarId, t.ts.desc()),
+    idxAvatarTs: index('idx_events_avatar_ts').on(t.avatarId, t.ts.desc()),
     idxBuildingTs: index('idx_events_building_ts').on(t.buildingId, t.ts.desc()),
   }),
 );

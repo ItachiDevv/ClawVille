@@ -74,7 +74,7 @@ export const sessionsRelations = relations(sessions, ({ one }) => ({
   }),
 }));
 
-export const petsRelations = relations(avatars, ({ one, many }) => ({
+export const avatarsRelations = relations(avatars, ({ one, many }) => ({
   user: one(users, {
     fields: [avatars.userId],
     references: [users.id],
@@ -88,7 +88,7 @@ export const petsRelations = relations(avatars, ({ one, many }) => ({
   agentConfigs: many(agentConfigs),
 }));
 
-export const petInventoryRelations = relations(avatarInventory, ({ one }) => ({
+export const avatarInventoryRelations = relations(avatarInventory, ({ one }) => ({
   avatar: one(avatars, {
     fields: [avatarInventory.avatarId],
     references: [avatars.id],
@@ -129,7 +129,7 @@ export const locationAgentsRelations = relations(locationAgents, ({ one }) => ({
 }));
 
 export const publishedSkillsRelations = relations(publishedSkills, ({ one, many }) => ({
-  authorPet: one(avatars, {
+  authorAvatar: one(avatars, {
     fields: [publishedSkills.authorAvatarId],
     references: [avatars.id],
   }),

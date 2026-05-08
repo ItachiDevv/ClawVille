@@ -24,7 +24,7 @@ import { avatars } from './avatars';
  *
  * Indexes (per backend §7.3):
  *   (activity_id, queued_at) WHERE left_at IS NULL — matcher sweep
- *   (avatar_id, queued_at DESC)                        — "my queue history"
+ *   (avatar_id, queued_at DESC)                     — "my queue history"
  */
 export const activityQueueEntries = pgTable(
   'activity_queue_entries',
@@ -51,7 +51,7 @@ export const activityQueueEntries = pgTable(
     activeQueueIdx: index('idx_activity_queue_active')
       .on(t.activityId, t.queuedAt)
       .where(sql`left_at IS NULL`),
-    petQueueIdx: index('idx_activity_queue_pet').on(
+    avatarQueueIdx: index('idx_activity_queue_avatar').on(
       t.avatarId,
       t.queuedAt.desc(),
     ),

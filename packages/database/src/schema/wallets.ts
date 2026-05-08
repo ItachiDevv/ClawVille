@@ -16,7 +16,7 @@ import {
  * Every wallet in ClawVille belongs to exactly one "subject" — a thing that
  * owns a keypair and can participate in the economy. Subjects today:
  *
- *   'avatar'     — a human-owned avatar from the avatars table
+ *   'avatar'  — a human-owned avatar from the avatars table
  *   'agent'   — an external agent from the openclaw_bots table
  *               (Milady, OpenClaw, Hermes, nanoclaw, etc.)
  *   'treasury'— a process-owned wallet (merchant, fee collector, escrow)
@@ -35,8 +35,8 @@ export const walletSubjectTypeEnum = pgEnum('wallet_subject_type', [
 
 /**
  * Unified custodial wallet table — one row per (subject_type, subject_id)
- * pair. Replaces the previous split between `avatar_wallet` and a would-be
- * `agent_wallets` table. Single source of truth for "who owns this
+ * pair. Replaces the previous split between `avatar_wallet` (legacy) and a
+ * would-be `agent_wallets` table. Single source of truth for "who owns this
  * keypair" across the whole ClawVille economy.
  *
  * Encryption (Phase 5.1): two versions coexist in-column.
@@ -80,7 +80,7 @@ export const walletSubjectTypeEnum = pgEnum('wallet_subject_type', [
  *
  * Ownership model:
  *   Marketplace listings reference wallets via `subject_type` + `subject_id`
- *   (or a `wallet_id` join), so a avatar selling a skill to an agent is just
+ *   (or a `wallet_id` join), so an avatar selling a skill to an agent is just
  *   two rows in the same table. Leaderboard queries become `GROUP BY
  *   subject_type, subject_id` — no UNIONs across parallel tables.
  */

@@ -20,7 +20,7 @@ export const bazaarRarityEnum = pgEnum('bazaar_rarity', [
 
 export const publishedSkills = pgTable('published_skills', {
   id: uuid('id').primaryKey().defaultRandom(),
-  authorAvatarId: uuid('author_pet_id')
+  authorAvatarId: uuid('author_avatar_id')
     .references(() => avatars.id, { onDelete: 'cascade' }),
   authorClawName: varchar('author_claw_name', { length: 100 }),
   authorClawSpecies: varchar('author_claw_species', { length: 20 }),
@@ -50,6 +50,6 @@ export const skillUpvotes = pgTable(
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
   (t) => ({
-    skillPetUnique: uniqueIndex('skill_upvotes_skill_pet_unique').on(t.skillId, t.avatarId),
+    skillAvatarUnique: uniqueIndex('skill_upvotes_skill_avatar_unique').on(t.skillId, t.avatarId),
   })
 );

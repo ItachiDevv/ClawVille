@@ -6,7 +6,7 @@
  *   2. cosmetic_variants    — per-rig assets. Sunglasses-on-Milady ≠
  *                             sunglasses-on-lobster, so each SKU has N
  *                             variants keyed by `rigType`.
- *   3. avatar_skins            — ownership ledger. Records which avatar owns
+ *   3. avatar_skins         — ownership ledger. Records which avatar owns
  *                             which SKU + whether it's currently equipped.
  *
  * Scope-aware design (per founder convo 2026-04-28):
@@ -160,7 +160,7 @@ export const cosmeticVariants = pgTable(
   }),
 );
 
-export const petSkins = pgTable(
+export const avatarSkins = pgTable(
   'avatar_skins',
   {
     id: uuid('id').primaryKey().defaultRandom(),
@@ -193,8 +193,8 @@ export const petSkins = pgTable(
   },
   (t) => ({
     // Each avatar owns each SKU exactly once. Re-purchases are a no-op (idempotent).
-    uniqPetSku: uniqueIndex('uniq_pet_skin_pet_sku').on(t.avatarId, t.skuId),
-    // Hot path: load all equipped skins for a avatar.
-    idxPetEquipped: index('idx_pet_skin_pet_equipped').on(t.avatarId, t.equipped),
+    uniqAvatarSku: uniqueIndex('uniq_avatar_skin_avatar_sku').on(t.avatarId, t.skuId),
+    // Hot path: load all equipped skins for an avatar.
+    idxAvatarEquipped: index('idx_avatar_skin_avatar_equipped').on(t.avatarId, t.equipped),
   }),
 );

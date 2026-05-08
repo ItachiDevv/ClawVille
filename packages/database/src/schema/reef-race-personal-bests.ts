@@ -88,7 +88,7 @@ export const reefRacePersonalBests = pgTable(
   },
   (t) => ({
     /** One PB per (avatar, activity). Replaced (not appended) on improvement. */
-    petActivityUq: uniqueIndex('uq_reef_race_pb_pet_activity').on(
+    avatarActivityUq: uniqueIndex('uq_reef_race_pb_avatar_activity').on(
       t.avatarId,
       t.activityId,
     ),
