@@ -98,6 +98,51 @@ For EACH concern (a coherent file or scoped change):
 
 Optional third role for high-stakes work: **Reconciler / Critic** — a separate agent who re-implements the same concern from scratch given the brief, then compares both implementations and recommends one. Use this when the cost of getting it wrong dwarfs the cost of an extra agent run.
 
+### Recursive teams: every role is a manager (added 2026-05-08)
+
+The roles above (Implementer, Auditor, Fixer, Reconciler) are **not solo agents** — each is a **Manager** that leads its own ultrathink sub-team for the duration of its responsibility. The orchestrator does NOT spawn a single Implementer; it spawns an Implementer-Manager who in turn spawns 2–3 sub-agents and reconciles their work.
+
+#### Implementer-Manager team
+- Runs ≥ 2 ultrathink implementation passes in sequence (the second pass needs to see the first):
+  - **Drafter pass** — receives the brief, ultrathink, writes the implementation. Reports diff + decisions.
+  - **Reconciler-Drafter pass** — receives the brief AND the Drafter's diff, ultrathink, re-implements from scratch *or* refines the Drafter's work, justifying every divergence. Reports diff + verdict on Drafter's choices.
+- **Execution model — flexible based on tool availability:**
+  - **Preferred:** spawn 2 sub-agents in sequence via the Agent tool (Drafter first, then Reconciler-Drafter with the Drafter's diff in context).
+  - **Fallback (when Agent tool isn't exposed at sub-agent level):** the manager itself executes both passes sequentially in its own session — first does the Drafter pass with ultrathink, then re-evaluates with explicit ultrathink reasoning to refine or re-implement. Transparent flag in report.
+- Manager compares the two diffs, picks the cleaner approach (or merges the better parts), runs build/typecheck, returns the consolidated diff + decision rationale to the orchestrator.
+
+#### Auditor-Manager team
+- Runs ≥ 3 independent ultrathink audit lenses (no cross-talk between lenses):
+  - **Spec-Auditor lens** — does the diff match the brief's literal requirements? Cite line-by-line.
+  - **Regression-Auditor lens** — does the diff break consumers, standing patterns, project memory entries, or known gotchas (Iris Xe traps, ElizaOS roomId rules, etc.)? Read `.claude/memory/**/MEMORY.md` and the canonical docs first.
+  - **Adversarial-Auditor lens** — what subtle thing slipped through? Word-boundary collision, missed string-literal, broken JSON schema, stale comment that misleads, edge case in tests. Try to break it.
+- **Execution model — flexible based on tool availability:**
+  - **Preferred:** spawn 3 sub-agents in parallel (one per lens) via the Agent tool, then reconcile their reports.
+  - **Fallback (when Agent tool isn't exposed at sub-agent level):** the manager itself executes all 3 lenses sequentially in its own session, with explicit ultrathink reasoning between each lens, treating each as a fresh evidence-collection pass. Must transparently flag the deviation in its report.
+- Manager reconciles three findings into a single verdict: **APPROVED** or **BLOCKING ISSUES**. Disagreement between lenses must be resolved in the manager's report, not silently dropped.
+
+#### Fixer-Manager team
+- Same shape as Implementer-Manager: Drafter applies the audit-reported fixes, Reconciler-Drafter re-implements or critiques.
+
+#### Reconciler-Manager (high-stakes only)
+- The optional Reconciler/Critic role itself becomes a manager for cross-cutting high-stakes work (e.g., DB migrations, auth flows, custodial wallet code). Spawns its own re-implementation team + a comparison auditor.
+
+#### Orchestrator (still single-agent)
+- Decomposes concerns
+- Spawns the per-concern Manager (Implementer-Manager → Auditor-Manager → Fixer-Manager loop)
+- Commits after APPROVED
+- Builds, deploys, verifies
+- Never delegates orchestration itself
+
+#### Required prompt elements for every level
+- Manager prompts must include: "you are a manager — spawn N sub-agents, give each ultrathink, reconcile their output before returning"
+- Sub-agent prompts must include: "use ultrathink reasoning before writing code" (or "before reviewing code" for auditors)
+- Without the literal "ultrathink" string, the Agent tool has no thinking-mode flag — the prompt text is the only channel.
+
+#### When to skip recursive teams
+- For trivial work (single-file ≤ 100 LOC, doc edit, env var add), the orchestrator may run a single ultrathink Implementer + single ultrathink Auditor, no sub-teams. Bar: "would the cost of getting this wrong justify the extra ~3× agent invocations?" If no → flat 2-agent team. If yes → recursive.
+- High-stakes work (DB migrations, custodial keys, auth, billing) — always recursive teams, no exceptions.
+
 ### Concerns: sequential or parallel?
 
 - If concerns are TRULY INDEPENDENT (different files, no shared state): each concern's team can run in parallel with other concern-teams.

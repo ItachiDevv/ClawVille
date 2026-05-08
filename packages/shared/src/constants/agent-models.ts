@@ -18,7 +18,7 @@
  */
 
 // ── Categories ──────────────────────────────────────────────────────────────
-// DB CHECK constraint `pets_agent_category_valid` mirrors this list. If
+// DB CHECK constraint `avatars_agent_category_valid` mirrors this list. If
 // you add a value here, update the check() call in packages/database/src/
 // schema/avatars.ts in the same diff and run `bun run db:push`.
 export const AGENT_CATEGORIES = [
@@ -30,7 +30,7 @@ export const AGENT_CATEGORIES = [
 export type AgentCategory = typeof AGENT_CATEGORIES[number];
 
 // ── Harnesses ───────────────────────────────────────────────────────────────
-// DB CHECK constraint `pets_harness_valid` mirrors this list. Same rule
+// DB CHECK constraint `avatars_harness_valid` mirrors this list. Same rule
 // as AGENT_CATEGORIES — keep the DB and this list in sync.
 export const AGENT_HARNESSES = [
   'openclaw',

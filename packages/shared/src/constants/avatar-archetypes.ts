@@ -1,4 +1,4 @@
-export type PetArchetypeId =
+export type AvatarArchetypeId =
   | 'brave-adventurer'
   | 'curious-scholar'
   | 'mischievous-trickster'
@@ -14,7 +14,7 @@ export type PetArchetypeId =
   | 'chaotic-jester'
   | 'quiet-mystic';
 
-export type PetTone =
+export type AvatarTone =
   | 'enthusiastic'
   | 'intellectual'
   | 'playful'
@@ -30,16 +30,16 @@ export type PetTone =
   | 'zany'
   | 'contemplative';
 
-export interface PetArchetypeMessageExample {
+export interface AvatarArchetypeMessageExample {
   user: string;
   content: string;
 }
 
 export interface AvatarArchetype {
-  id: PetArchetypeId;
+  id: AvatarArchetypeId;
   label: string;
   description: string;
-  tone: PetTone;
+  tone: AvatarTone;
   bio: string[];
   lore: string[];
   knowledge: string[];
@@ -50,7 +50,7 @@ export interface AvatarArchetype {
     chat: string[];
     post: string[];
   };
-  messageExamples: PetArchetypeMessageExample[][];
+  messageExamples: AvatarArchetypeMessageExample[][];
   greeting: string;
   rules: string[];
 }

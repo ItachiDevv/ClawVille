@@ -1,21 +1,21 @@
-export type { PetArchetypeId, PetTone } from '../constants/avatar-archetypes';
+export type { AvatarArchetypeId, AvatarTone } from '../constants/avatar-archetypes';
 import type { AgentCategory, AgentHarness } from '../constants/agent-models';
 
 export type AvatarSpecies = 'cat' | 'dragon' | 'fox' | 'owl' | 'wolf' | 'bunny' | 'phoenix' | 'turtle';
 export type AvatarColor = 'green' | 'red' | 'blue' | 'yellow';
 export type AvatarGender = 'male' | 'female';
 
-export type PetHabitat = 'forest' | 'sea' | 'mountain' | 'sky' | 'desert' | 'cave';
-export type PetHobby = 'reading-and-learning' | 'exploring' | 'battling' | 'collecting' | 'cooking' | 'art';
-export type PetGreeting = 'run-away' | 'wave-hello' | 'tackle-hug' | 'shy-peek' | 'bow-politely' | 'roar';
+export type AvatarHabitat = 'forest' | 'sea' | 'mountain' | 'sky' | 'desert' | 'cave';
+export type AvatarHobby = 'reading-and-learning' | 'exploring' | 'battling' | 'collecting' | 'cooking' | 'art';
+export type AvatarGreeting = 'run-away' | 'wave-hello' | 'tackle-hug' | 'shy-peek' | 'bow-politely' | 'roar';
 
-export interface PetPersonality {
-  habitat: PetHabitat;
-  hobby: PetHobby;
-  greeting: PetGreeting;
+export interface AvatarPersonality {
+  habitat: AvatarHabitat;
+  hobby: AvatarHobby;
+  greeting: AvatarGreeting;
 }
 
-export interface PetStats {
+export interface AvatarStats {
   strength: number;
   defence: number;
   movement: number;
@@ -29,8 +29,8 @@ export interface Avatar {
   color: AvatarColor;
   gender: AvatarGender;
   archetype: string;
-  personality: PetPersonality;
-  stats: PetStats;
+  personality: AvatarPersonality;
+  stats: AvatarStats;
   positionX: number;
   positionY: number;
   /**
