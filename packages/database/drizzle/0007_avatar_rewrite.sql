@@ -25,6 +25,12 @@ UPDATE events
   SET payload = jsonb_set(payload, '{chatType}', '"avatar"')
   WHERE payload->>'chatType' = 'avatar';
 
+-- platform_agents.type: 'avatar-agent' → 'avatar-agent' (text column, no enum).
+-- Old code wrote 'avatar-agent'; current orchestrator branches on 'avatar-agent'
+-- and falls through to 'location-agent' for the legacy value, which routes
+-- the agent to the wrong runtime path. Caught by break-it adversarial probe (T53).
+UPDATE platform_agents SET type = 'avatar-agent' WHERE type = 'avatar-agent';
+
 -- ─── (2) Rename main tables ─────────────────────────────────────────────
 -- Each ALTER TABLE ... RENAME preserves all rows + FK constraints + indexes.
 
@@ -97,6 +103,24 @@ EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 -- 0004 added `idx_pets_is_guest` directly via SQL (no TS schema declaration).
 -- Some environments may not have applied 0004 — guard accordingly.
 DO $$ BEGIN ALTER INDEX idx_pets_is_guest RENAME TO idx_avatars_is_guest;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
+
+-- ─── (4.5) Rename auto-generated PRIMARY KEY indexes ────────────────────
+-- PG does NOT auto-rename the `<table>_pkey` index when the table is
+-- renamed (ALTER TABLE … RENAME only renames the table OID, not the
+-- _pkey index name). Without these, prod ends up with `avatars_pkey` /
+-- `avatar_inventory_pkey` / `avatar_skins_pkey` indexes pointing at the
+-- renamed tables — visible to anyone running `\d avatars` or querying
+-- `pg_indexes`. Functional behavior is unaffected, but it leaks the
+-- old name. Caught by the break-it adversarial probe (T50/T51).
+
+DO $$ BEGIN ALTER INDEX avatars_pkey RENAME TO avatars_pkey;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
+
+DO $$ BEGIN ALTER INDEX avatar_inventory_pkey RENAME TO avatar_inventory_pkey;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
+
+DO $$ BEGIN ALTER INDEX avatar_skins_pkey RENAME TO avatar_skins_pkey;
 EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- ─── (5) Rename CHECK constraints on the avatars table ──────────────────
