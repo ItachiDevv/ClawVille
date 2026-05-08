@@ -37,14 +37,14 @@ import type {
   BuildingActivities,
   BuildingCenters,
   PathfindFn,
-  PetDbHooks,
+  AvatarDbHooks,
 } from './types';
 
-import { createPetMoveToBuildingAction } from './actions/avatar-move-to-building';
-import { createPetVisitBuildingAction } from './actions/avatar-visit-building';
-import { createPetReturnHomeAction } from './actions/avatar-return-home';
-import { createPetSleepAction } from './actions/avatar-sleep';
-import { createPetWorldStateProvider } from './providers/avatar-world-state';
+import { createAvatarMoveToBuildingAction } from './actions/avatar-move-to-building';
+import { createAvatarVisitBuildingAction } from './actions/avatar-visit-building';
+import { createAvatarReturnHomeAction } from './actions/avatar-return-home';
+import { createAvatarSleepAction } from './actions/avatar-sleep';
+import { createAvatarWorldStateProvider } from './providers/avatar-world-state';
 
 const SIM_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
 const SIM_AGENT_ID = uuidv5('clawville-simulation-agent', SIM_NAMESPACE) as UUID;
@@ -57,7 +57,7 @@ export interface SimulationRuntimeDeps {
   buildingActivities: BuildingActivities;
   activityEmojis: ActivityEmojis;
   pathfind: PathfindFn;
-  dbHooks: PetDbHooks;
+  dbHooks: AvatarDbHooks;
   databaseUrl?: string;
   apiKeys?: { gemini?: string };
   /** Optional home spawn coordinates (defaults to center of 5120x5120) */
@@ -134,30 +134,30 @@ export class SimulationRuntime {
 
     // Build the 4 actions + provider with deps closed over
     this.actions = [
-      createPetMoveToBuildingAction({
+      createAvatarMoveToBuildingAction({
         stateStore: deps.stateStore,
         buildingCenters: deps.buildingCenters,
         pathfind: deps.pathfind,
       }),
-      createPetVisitBuildingAction({
+      createAvatarVisitBuildingAction({
         stateStore: deps.stateStore,
         buildingActivities: deps.buildingActivities,
         activityEmojis: deps.activityEmojis,
         dbHooks: deps.dbHooks,
       }),
-      createPetReturnHomeAction({
+      createAvatarReturnHomeAction({
         stateStore: deps.stateStore,
         pathfind: deps.pathfind,
         homeX: deps.homeX,
         homeY: deps.homeY,
       }),
-      createPetSleepAction({
+      createAvatarSleepAction({
         stateStore: deps.stateStore,
         activityEmojis: deps.activityEmojis,
       }),
     ];
 
-    this.provider = createPetWorldStateProvider({
+    this.provider = createAvatarWorldStateProvider({
       stateStore: deps.stateStore,
       buildingCenters: deps.buildingCenters,
     });
@@ -207,7 +207,7 @@ export class SimulationRuntime {
 
   /**
    * Plan the next action for a single avatar using the LLM.
-   * Called by the bridge when a avatar is idle and cooldown has elapsed.
+   * Called by the bridge when an avatar is idle and cooldown has elapsed.
    */
   async planAvatarNextAction(userId: string): Promise<ActionResult | null> {
     if (!this.initialized) return null;
@@ -330,7 +330,7 @@ export class SimulationRuntime {
 
   /**
    * Direct action dispatch — used by the bridge to fire AVATAR_VISIT_BUILDING
-   * when a avatar arrives at its destination (no LLM involvement).
+   * when an avatar arrives at its destination (no LLM involvement).
    */
   async dispatchAction(
     choice: { action: string; userId: string; buildingId?: string; itemId?: string },

@@ -190,10 +190,10 @@ export class ElizaRuntime {
 
     if (config.agentType === 'openclaw-bot') {
       // OpenClaw bots reuse avatar character builder with gateway-specific defaults
-      this.character = this.buildPetCharacter(config);
+      this.character = this.buildAvatarCharacter(config);
     } else if (config.agentType === 'avatar-agent') {
       // Avatar agents use customization directly, no template
-      this.character = this.buildPetCharacter(config);
+      this.character = this.buildAvatarCharacter(config);
     } else if (config.character) {
       // Caller provided a pre-built character (escape hatch for simulation
       // runtime, collaboration broker, etc.) — skip template loading entirely
@@ -206,7 +206,7 @@ export class ElizaRuntime {
     }
   }
 
-  private buildPetCharacter(config: ElizaRuntimeConfig): Character {
+  private buildAvatarCharacter(config: ElizaRuntimeConfig): Character {
     const { customization } = config;
     const name = customization?.name || 'Avatar';
     const species = (config.agentConfig?.species as string) || 'creature';
@@ -656,7 +656,7 @@ export class ElizaRuntime {
       platform?: string;
       /** @deprecated Use `state` + Providers instead. Still supported for backward compat. */
       dynamicContext?: string;
-      /** State object for Providers and Actions (petData, worldSnapshot, services, etc.) */
+      /** State object for Providers and Actions (avatarData, worldSnapshot, services, etc.) */
       state?: Record<string, any>;
     } = {}
   ): Promise<ElizaMessage> {

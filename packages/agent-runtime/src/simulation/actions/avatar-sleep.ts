@@ -13,12 +13,12 @@ import type { Action, ActionResult } from '@elizaos/core';
 import type { AvatarStateStore } from '../avatar-state-store';
 import type { ActivityEmojis } from '../types';
 
-export interface PetSleepDeps {
+export interface AvatarSleepDeps {
   stateStore: AvatarStateStore;
   activityEmojis: ActivityEmojis;
 }
 
-export function createPetSleepAction(deps: PetSleepDeps): Action {
+export function createAvatarSleepAction(deps: AvatarSleepDeps): Action {
   const { stateStore, activityEmojis } = deps;
 
   return {

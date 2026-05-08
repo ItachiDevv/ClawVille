@@ -1,4 +1,4 @@
-import { CHARACTERS, defaultPetCharacter } from './characters';
+import { CHARACTERS, defaultAvatarCharacter } from './characters';
 import type { LocationTemplate } from './characters';
 import { templates } from '@clawville/agent-templates';
 import type { Character } from '@elizaos/core';
@@ -31,7 +31,7 @@ export function loadLocationTemplate(locationId: string): LocationTemplate {
  * Returns a full Character object ready for AgentRuntime.
  */
 export function loadCharacter(locationId: string): Character {
-  return CHARACTERS[locationId] ?? defaultPetCharacter;
+  return CHARACTERS[locationId] ?? defaultAvatarCharacter;
 }
 
 export function mergeCustomizations(

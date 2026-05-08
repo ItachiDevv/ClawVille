@@ -99,7 +99,7 @@ export const CHARACTERS: Record<string, Character> = {
 // Default avatar/player agent character
 // ---------------------------------------------------------------------------
 
-export const defaultPetCharacter = createCharacter({
+export const defaultAvatarCharacter = createCharacter({
   name: 'ClawVille Agent',
   username: 'clawville-agent',
   system: 'You are a friendly agent companion in the world of ClawVille. You chat with your owner, explore buildings, learn skills from NPCs, and help your owner navigate the OpenClaw ecosystem.',

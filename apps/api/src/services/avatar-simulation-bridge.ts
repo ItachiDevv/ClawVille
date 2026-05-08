@@ -20,57 +20,18 @@
  */
 
 import {
-  // NOTE: agent-runtime still exports Avatar* names (renamed in concern 1h).
-  // We alias to Avatar* at the import boundary so this app uses the new
-  // vocabulary internally without breaking the package contract.
-  AvatarStateStore as AvatarStateStore,
+  AvatarStateStore,
   SimulationRuntime,
-  activateIdlePets,
+  activateIdleAvatars,
   stepMovement,
   handleActivityTransition,
   type AvatarRegistrationInput,
   type AvatarSimBroadcast,
-  type PetDirection,
-  type NpcActivity,
 } from '@clawville/agent-runtime';
 
-// Public type used by API callers. The on-the-wire field is `avatarId`; we
-// translate to the runtime's legacy `avatarId` field at the bridge boundary.
-export interface AvatarRegistrationInput {
-  avatarId: string;
-  userId: string;
-  name: string;
-  species: string;
-  color: string;
-  archetype: string;
-  positionX: number;
-  positionY: number;
-}
-
-// Public broadcast shape used by API consumers. The runtime returns objects
-// keyed by `avatarId` — we translate to `avatarId` at the bridge boundary.
-// Mirrors `AvatarSimBroadcast` exactly except for the renamed id field. Once
-// concern 1h flips the runtime to `avatarId`, this becomes
-//   `export type AvatarSimBroadcast = AvatarSimBroadcast`.
-export interface AvatarSimBroadcast {
-  avatarId: string;
-  userId: string;
-  name: string;
-  species: string;
-  color: string;
-  x: number;
-  y: number;
-  direction: PetDirection;
-  activity: NpcActivity;
-  activityEmoji: string;
-  isAutonomous: boolean;
-  chatMessage: string | null;
-  // Phase 3 enrichment — must match AvatarSimBroadcast 1:1
-  lastActionName: string | null;
-  lastActionResult: string | null;
-  budgetSpent: number;
-  budgetPurchaseCount: number;
-}
+// Re-export so route + service consumers can import these from the bridge
+// rather than reaching into the runtime package directly.
+export type { AvatarRegistrationInput, AvatarSimBroadcast };
 
 import {
   NPC_BUILDING_CENTERS,
@@ -83,8 +44,6 @@ import { findPath } from './pathfinding';
 import { creditClawTokens } from './claw-token-ledger';
 import { buildRuntimeServices } from './runtime-services-adapter';
 
-// Single source of truth — agent-runtime re-exports NpcActivity from shared,
-// so these constants type-check without casting.
 const VISIT_CHAT_COOLDOWN_MS = 30_000;
 const IDLE_UNREGISTER_MS = 30 * 60 * 1000; // 30 min — auto-cleanup abandoned avatars
 
@@ -138,9 +97,9 @@ export class AvatarSimulationBridge {
         gemini: process.env.GEMINI_API_KEY,
       },
       // Phase 3: inject services so economic actions (BUY_ITEM, LEARN_SKILL) can execute.
-      // buildRuntimeServices translates the runtime's `{ avatarId }` calls to the
-      // ledger's `{ avatarId }` shape — see runtime-services-adapter.ts.
-      // (Until concern 1h flips agent-runtime, this translation is required.)
+      // buildRuntimeServices passes the avatar-keyed params straight through to
+      // the ledger; the only translation it does now is mapping runtime-emitted
+      // source labels (e.g. 'shop', 'bazaar') to the ledger's enum values.
       services: buildRuntimeServices(db),
     });
 
@@ -169,11 +128,7 @@ export class AvatarSimulationBridge {
 
   register(input: AvatarRegistrationInput): void {
     this.ensureRuntime();
-    // Translate the API-layer `avatarId` field to the runtime's legacy
-    // `avatarId` field. Drop concern 1h flips agent-runtime fully.
-    const { avatarId, ...rest } = input;
-    const runtimeInput: AvatarRegistrationInput = { avatarId: avatarId, ...rest };
-    this.stateStore.register(runtimeInput);
+    this.stateStore.register(input);
   }
 
   unregister(userId: string): void {
@@ -185,12 +140,7 @@ export class AvatarSimulationBridge {
   }
 
   getAutonomousAvatars(): AvatarSimBroadcast[] {
-    // Runtime broadcast still keys entities by `avatarId`; translate to
-    // `avatarId` for API consumers. Concern 1h flips the source of truth.
-    return this.stateStore.getBroadcast().map((b: AvatarSimBroadcast): AvatarSimBroadcast => {
-      const { avatarId, ...rest } = b;
-      return { avatarId: avatarId, ...rest };
-    });
+    return this.stateStore.getBroadcast();
   }
 
   /**
@@ -217,7 +167,7 @@ export class AvatarSimulationBridge {
     }
 
     // 1. Activate any avatars that just crossed the idle threshold
-    activateIdlePets(this.stateStore, now);
+    activateIdleAvatars(this.stateStore, now);
 
     for (const avatar of this.stateStore.all()) {
       if (!avatar.isAutonomous) continue;
@@ -238,10 +188,6 @@ export class AvatarSimulationBridge {
 
         // Dispatch AVATAR_VISIT_BUILDING (the action will set activity to a
         // building-themed one and pick an activityEndsAt timer).
-        // NOTE: action names are part of the runtime contract — concern 1h
-        // will rename PET_* → AVATAR_* on both sides simultaneously. Until
-        // then, the bridge dispatches the runtime's registered name so the
-        // string-based action lookup in simulation-runtime resolves.
         this.runtime
           .dispatchAction({ action: 'AVATAR_VISIT_BUILDING', userId: avatar.userId })
           .catch((err) => console.error('[AvatarSimBridge] AVATAR_VISIT_BUILDING dispatch failed:', err));
@@ -267,8 +213,6 @@ export class AvatarSimulationBridge {
         avatar.path = [];
         avatar.pathIndex = 0;
         // Arrived home — go to sleep.
-        // NOTE: see AVATAR_VISIT_BUILDING comment above — concern 1h flips the
-        // action registry; until then, dispatch the runtime's registered name.
         this.runtime
           .dispatchAction({ action: 'AVATAR_SLEEP', userId: avatar.userId })
           .catch((err) => console.error('[AvatarSimBridge] AVATAR_SLEEP dispatch failed:', err));

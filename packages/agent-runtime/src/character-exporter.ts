@@ -1,6 +1,6 @@
 /**
  * Phase 3 — pure Character bundle builder for the "take my agent home"
- * export. Given a avatar row + resolved `AgentModelMeta` + target
+ * export. Given an avatar row + resolved `AgentModelMeta` + target
  * `AgentHarness`, assemble a ready-to-import ElizaOS `Character` object.
  *
  * This module MUST stay side-effect-free:
@@ -11,7 +11,7 @@
  *     caller will hand off to a different runtime (the user's local
  *     Milady, typically).
  *
- * The skill pack derivation is NOT here because it requires a
+ * The skill pack derivation is NOT here because it requires an
  * `avatar_inventory` query. It lives inside the API route that owns the
  * DB connection (see `apps/api/src/routes/agent-export.ts`). Keeping
  * the character builder pure makes it trivially unit-testable and
@@ -33,11 +33,11 @@ export { type SkillPackEntry } from '@clawville/shared';
  * the database package (avoids a new package-graph edge). If the DB
  * schema ever adds a required field the exporter needs, mirror it
  * here; if it drops one, delete it here. The field names and types
- * intentionally match `PetCharacterConfigJson` in
+ * intentionally match `AvatarCharacterConfigJson` in
  * `packages/database/src/schema/avatars.ts` so assignment from a raw
  * Drizzle row is a no-op.
  */
-export interface PetCharacterConfigLike {
+export interface AvatarCharacterConfigLike {
   bio?: string[];
   greeting?: string;
   tone?: string;
@@ -53,21 +53,21 @@ export interface PetCharacterConfigLike {
 
 /**
  * Minimal avatar shape required by `buildCharacterExport`. We key off
- * `PetCharacterConfigJson` (from `@clawville/database`) so the type
+ * `AvatarCharacterConfigJson` (from `@clawville/database`) so the type
  * matches exactly what `db.query.avatars.findFirst()` returns. Using a
  * structural subset keeps this function callable with a raw Drizzle
  * row, a fixture, or a plain object — no casts needed.
  *
  * `characterConfig` is nullable in the DB because older rows predate
  * the Phase 1 migration that populated it. The builder handles nullish
- * values by falling back to empty arrays, but a real export against a
+ * values by falling back to empty arrays, but a real export against an
  * avatar missing `characterConfig` will look sparse — callers should
  * surface a warning in that case.
  */
-export interface PetExportInput {
+export interface AvatarExportInput {
   id: string;
   name: string;
-  characterConfig: PetCharacterConfigLike | null;
+  characterConfig: AvatarCharacterConfigLike | null;
 }
 
 export interface CharacterExportOptions {
@@ -123,7 +123,7 @@ function buildSystemPrompt(avatarName: string, modelLabel: string): string {
 }
 
 /**
- * Pure builder — construct a full ElizaOS `Character` from a avatar row,
+ * Pure builder — construct a full ElizaOS `Character` from an avatar row,
  * resolved model metadata, and target harness. No DB, no async, no
  * runtime. Caller is responsible for resolving `modelMeta` via
  * `getAgentModel(avatar.modelKey)` (or `DEFAULT_AGENT_MODEL` for
@@ -143,7 +143,7 @@ function buildSystemPrompt(avatarName: string, modelLabel: string): string {
  * clawville` reads it on install.
  */
 export function buildCharacterExport(
-  avatar: PetExportInput,
+  avatar: AvatarExportInput,
   modelMeta: AgentModelMeta,
   options: CharacterExportOptions,
 ): Character {
@@ -171,7 +171,7 @@ export function buildCharacterExport(
   // pattern used in `characters/index.ts` so the exported character
   // loads cleanly into Milady's runtime without a reshape step.
   //
-  // Phase 3 audit C7 — `PetCharacterConfigLike.messageExamples[].user`
+  // Phase 3 audit C7 — `AvatarCharacterConfigLike.messageExamples[].user`
   // is typed as `string`, so the legacy `typeof msg.user === 'string'`
   // guard is structurally redundant. We keep only the `startsWith('{{')`
   // check that actually does work (rewrites `{{user1}}` → `User`).

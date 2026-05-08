@@ -8,24 +8,24 @@ export type { OpenClawGatewayConfig } from './plugins/openclaw-provider';
 export { loadLocationTemplate, loadCharacter, mergeCustomizations } from './character-loader';
 
 // Character exporter (Phase 3 — "take my agent home" bundle builder)
-// The function is pure: given a Avatar row + resolved model metadata +
+// The function is pure: given an Avatar row + resolved model metadata +
 // target harness, it returns the ElizaOS Character JSON. No DB reads,
 // no async, no runtime start. The skill-pack builder that
 // accompanies it lives in the API route (needs DB access).
 export { buildCharacterExport } from './character-exporter';
 export type {
   CharacterExportOptions,
-  PetExportInput,
+  AvatarExportInput,
   SkillPackEntry,
 } from './character-exporter';
 
 // ElizaOS Project export — standard entry point for `elizaos start`
 export { default as project, project as clawvilleProject } from './project';
 
-// ElizaOS Characters — proper Character objects for all 10 locations + avatar
+// ElizaOS Characters — proper Character objects for all 10 locations + default avatar
 export {
   CHARACTERS,
-  defaultPetCharacter,
+  defaultAvatarCharacter,
   garyCronAutomation,
   relayApiIntegrations,
   mnemaMemoryRag,
@@ -90,18 +90,18 @@ export { SimulationRuntime, createSimulationRuntime } from './simulation/simulat
 export type { SimulationRuntimeDeps } from './simulation/simulation-runtime';
 export { AvatarStateStore } from './simulation/avatar-state-store';
 export type {
-  PetSimState,
+  AvatarSimState,
   AvatarSimBroadcast,
   AvatarRegistrationInput,
 } from './simulation/avatar-state-store';
 export {
-  activateIdlePets,
+  activateIdleAvatars,
   stepMovement,
   handleActivityTransition,
 } from './simulation/movement';
 export type { ActivityTransition } from './simulation/movement';
 export type {
-  PetDirection,
+  AvatarDirection,
   NpcActivity,
   PathNode,
   PathfindFn,
@@ -109,5 +109,5 @@ export type {
   BuildingCenters,
   BuildingActivities,
   ActivityEmojis,
-  PetDbHooks,
+  AvatarDbHooks,
 } from './simulation/types';

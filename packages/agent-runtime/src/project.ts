@@ -12,7 +12,7 @@
 import type { Project, ProjectAgent, Plugin } from '@elizaos/core';
 import {
   CHARACTERS,
-  defaultPetCharacter,
+  defaultAvatarCharacter,
 } from './characters';
 import { clawvillePlugin } from './plugins/clawville-plugin';
 
@@ -38,8 +38,8 @@ const locationAgents: ProjectAgent[] = Object.entries(CHARACTERS).map(
 // Default avatar agent — used when a user creates a new agent without customization
 // ---------------------------------------------------------------------------
 
-const petAgent: ProjectAgent = {
-  character: defaultPetCharacter,
+const avatarAgent: ProjectAgent = {
+  character: defaultAvatarCharacter,
   init: async (runtime) => {
     console.log(`[ClawVille] Default avatar agent initialized`);
   },
@@ -51,7 +51,7 @@ const petAgent: ProjectAgent = {
 // ---------------------------------------------------------------------------
 
 const project: Project = {
-  agents: [...locationAgents, petAgent],
+  agents: [...locationAgents, avatarAgent],
 };
 
 export default project;

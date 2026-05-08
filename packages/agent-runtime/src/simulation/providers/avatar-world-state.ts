@@ -16,12 +16,12 @@ import type { Provider, ProviderResult } from '@elizaos/core';
 import type { AvatarStateStore } from '../avatar-state-store';
 import type { BuildingCenters } from '../types';
 
-export interface PetWorldStateDeps {
+export interface AvatarWorldStateDeps {
   stateStore: AvatarStateStore;
   buildingCenters: BuildingCenters;
 }
 
-export function createPetWorldStateProvider(deps: PetWorldStateDeps): Provider {
+export function createAvatarWorldStateProvider(deps: AvatarWorldStateDeps): Provider {
   const { stateStore, buildingCenters } = deps;
 
   return {

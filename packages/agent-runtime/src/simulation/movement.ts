@@ -1,15 +1,15 @@
 /**
  * Pure movement + activity transition helpers.
  *
- * These are extracted from the original PetAutonomyManager and remain
+ * These are extracted from the original AvatarAutonomyManager and remain
  * pure functions (no LLM, no DB, no async). Called from the bridge
  * tick every 500ms for all autonomous avatars.
  *
  * Decision-making (what building to walk to next) is the only piece
- * that goes through the LLM — see simulation-runtime.planPetAction().
+ * that goes through the LLM — see simulation-runtime.planAvatarAction().
  */
 
-import type { AvatarStateStore, PetSimState } from './avatar-state-store';
+import type { AvatarStateStore, AvatarSimState } from './avatar-state-store';
 import type { ActivityEmojis } from './types';
 
 const MAP_WIDTH = 5120;
@@ -22,8 +22,8 @@ const IDLE_THRESHOLD_MS = 60_000; // 60s of no user input
  * threshold. Returns the list of avatars that just became autonomous
  * (useful for triggering an initial plan).
  */
-export function activateIdlePets(stateStore: AvatarStateStore, now: number): PetSimState[] {
-  const newlyActive: PetSimState[] = [];
+export function activateIdleAvatars(stateStore: AvatarStateStore, now: number): AvatarSimState[] {
+  const newlyActive: AvatarSimState[] = [];
   for (const avatar of stateStore.all()) {
     if (avatar.isAutonomous) continue;
     if (now - avatar.lastUserInputAt >= IDLE_THRESHOLD_MS) {
@@ -39,9 +39,9 @@ export function activateIdlePets(stateStore: AvatarStateStore, now: number): Pet
 }
 
 /**
- * Advance a avatar one step along its path. Pure — no external state.
+ * Advance an avatar one step along its path. Pure — no external state.
  */
-export function stepMovement(avatar: PetSimState): void {
+export function stepMovement(avatar: AvatarSimState): void {
   if (avatar.activity !== 'walking') return;
   if (avatar.path.length === 0 || avatar.pathIndex >= avatar.path.length) return;
 
@@ -75,7 +75,7 @@ export function stepMovement(avatar: PetSimState): void {
 export type ActivityTransition = 'arrived' | 'expired' | 'home' | null;
 
 export function handleActivityTransition(
-  avatar: PetSimState,
+  avatar: AvatarSimState,
   now: number,
   activityEmojis: ActivityEmojis,
 ): ActivityTransition {
