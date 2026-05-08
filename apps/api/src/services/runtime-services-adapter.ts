@@ -1,23 +1,14 @@
 /**
- * Runtime Services Adapter (concern 1c, audit fix #4)
+ * Runtime Services Adapter
  *
- * The agent-runtime package's action handlers call ledger services with the
- * legacy `{ avatarId, ... }` shape — the runtime types still use `avatarId` because
- * concern 1h hasn't flipped agent-runtime yet. apps/api's `creditClawTokens`
- * / `debitClawTokens` impls expect `{ avatarId, ... }` (post-1b schema).
- *
- * Pre-fix, every call site cast its services bag with
- * `as unknown as ClawvilleServices`, which silenced the type mismatch but
- * caused a real runtime failure: every economic action threw
- * `avatar undefined not found` because `params.avatarId` was undefined.
- *
- * This adapter does the literal field translation at the boundary so the
- * action handlers see their expected shape and the ledger sees its expected
- * shape, with full type safety on both ends.
- *
- * Once concern 1h renames AvatarStateStore→AvatarStateStore + the action types
- * avatarId→avatarId, this adapter becomes a no-op pass-through and can be
- * inlined back to a plain object literal.
+ * Wraps the apps/api ledger functions so they can be injected into
+ * agent-runtime's `ClawvilleServices` slot. After concern 1h, the
+ * runtime now uses `avatarId` natively, so the only translation
+ * remaining at this boundary is mapping runtime-emitted source labels
+ * (e.g. `'shop'` from BUY_ITEM, `'bazaar'` from BUY_BAZAAR_LISTING) to
+ * the ledger's enforced `ClawTokenSource` enum — those values are NOT
+ * in the Postgres `claw_token_source` enum and would throw
+ * `invalid input value for enum` if passed through unchanged.
  */
 
 import type { ClawvilleServices } from '@clawville/agent-runtime';
@@ -32,8 +23,8 @@ import {
 // We keep the type at the call boundary as `any` to avoid forcing every
 // caller through a specific Drizzle generic.
 //
-// The adapter only translates the function parameters — `db` passes through
-// unchanged.
+// The adapter only translates the function `source` field — `db` passes
+// through unchanged.
 export function buildRuntimeServices(db: any): ClawvilleServices {
   return {
     db,
@@ -45,13 +36,6 @@ export function buildRuntimeServices(db: any): ClawvilleServices {
         avatarId: params.avatarId,
         amount: params.amount,
         reason: params.reason,
-          // Runtime emits source values that aren't in the ledger's enum
-        // (e.g. 'shop' from BUY_ITEM action, 'bazaar' from BUY_BAZAAR_LISTING).
-        // Map runtime-only values to 'simulation' since these are all driven
-        // by the autonomous-avatar simulator. ClawTokenSource enum is enforced
-        // at the Postgres level (claw_token_source pgEnum) — passing 'shop'
-        // would throw `invalid input value for enum`. The semantic is correct:
-        // from the ledger's perspective these are simulation-originated tx.
         source: mapRuntimeSourceToLedger(params.source),
         metadata: params.metadata,
       });

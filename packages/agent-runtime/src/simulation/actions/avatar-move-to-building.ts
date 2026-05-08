@@ -4,20 +4,20 @@
  * Computes a path from the avatar's current position to the target
  * building center and sets the avatar's activity to 'walking'. The
  * actual per-tick movement along the path is handled by
- * movePet() in movement.ts (pure, no LLM).
+ * stepMovement() in movement.ts (pure, no LLM).
  */
 
 import type { Action, ActionResult } from '@elizaos/core';
 import type { AvatarStateStore } from '../avatar-state-store';
 import type { BuildingCenters, PathfindFn } from '../types';
 
-export interface PetMoveToBuildingDeps {
+export interface AvatarMoveToBuildingDeps {
   stateStore: AvatarStateStore;
   buildingCenters: BuildingCenters;
   pathfind: PathfindFn;
 }
 
-export function createPetMoveToBuildingAction(deps: PetMoveToBuildingDeps): Action {
+export function createAvatarMoveToBuildingAction(deps: AvatarMoveToBuildingDeps): Action {
   const { stateStore, buildingCenters, pathfind } = deps;
 
   return {

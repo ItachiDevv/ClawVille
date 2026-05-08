@@ -11,9 +11,9 @@
  * - The bridge needs a hot read path for every SSE broadcast
  */
 
-import type { PathNode, NpcActivity, PetDirection } from './types';
+import type { PathNode, NpcActivity, AvatarDirection } from './types';
 
-export interface PetSimState {
+export interface AvatarSimState {
   avatarId: string;
   userId: string;
   name: string;
@@ -22,7 +22,7 @@ export interface PetSimState {
   archetype: string;
   x: number;
   y: number;
-  direction: PetDirection;
+  direction: AvatarDirection;
   activity: NpcActivity;
   activityEmoji: string;
   destinationBuildingId: string | null;
@@ -61,7 +61,7 @@ export interface AvatarSimBroadcast {
   color: string;
   x: number;
   y: number;
-  direction: PetDirection;
+  direction: AvatarDirection;
   activity: NpcActivity;
   activityEmoji: string;
   isAutonomous: boolean;
@@ -85,7 +85,7 @@ export interface AvatarRegistrationInput {
 }
 
 export class AvatarStateStore {
-  private avatars: Map<string, PetSimState> = new Map(); // userId -> state
+  private avatars: Map<string, AvatarSimState> = new Map(); // userId -> state
 
   has(userId: string): boolean {
     return this.avatars.has(userId);
@@ -130,18 +130,18 @@ export class AvatarStateStore {
     this.avatars.delete(userId);
   }
 
-  get(userId: string): PetSimState | undefined {
+  get(userId: string): AvatarSimState | undefined {
     return this.avatars.get(userId);
   }
 
-  getByAvatarId(avatarId: string): PetSimState | undefined {
+  getByAvatarId(avatarId: string): AvatarSimState | undefined {
     for (const avatar of this.avatars.values()) {
       if (avatar.avatarId === avatarId) return avatar;
     }
     return undefined;
   }
 
-  all(): PetSimState[] {
+  all(): AvatarSimState[] {
     return Array.from(this.avatars.values());
   }
 
@@ -177,24 +177,24 @@ export class AvatarStateStore {
   /** Returns the SSE payload shape — only the fields the client needs */
   getBroadcast(): AvatarSimBroadcast[] {
     return Array.from(this.avatars.values())
-      .filter((p) => p.isAutonomous)
-      .map((p) => ({
-        avatarId: p.avatarId,
-        userId: p.userId,
-        name: p.name,
-        species: p.species,
-        color: p.color,
-        x: p.x,
-        y: p.y,
-        direction: p.direction,
-        activity: p.activity,
-        activityEmoji: p.activityEmoji,
-        isAutonomous: p.isAutonomous,
-        chatMessage: p.chatMessage,
-        lastActionName: p.lastActionName,
-        lastActionResult: p.lastActionResult,
-        budgetSpent: p.budgetSpent,
-        budgetPurchaseCount: p.budgetPurchaseCount,
+      .filter((a) => a.isAutonomous)
+      .map((a) => ({
+        avatarId: a.avatarId,
+        userId: a.userId,
+        name: a.name,
+        species: a.species,
+        color: a.color,
+        x: a.x,
+        y: a.y,
+        direction: a.direction,
+        activity: a.activity,
+        activityEmoji: a.activityEmoji,
+        isAutonomous: a.isAutonomous,
+        chatMessage: a.chatMessage,
+        lastActionName: a.lastActionName,
+        lastActionResult: a.lastActionResult,
+        budgetSpent: a.budgetSpent,
+        budgetPurchaseCount: a.budgetPurchaseCount,
       }));
   }
 }

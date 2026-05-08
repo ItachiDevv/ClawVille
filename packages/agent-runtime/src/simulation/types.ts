@@ -8,7 +8,7 @@
 
 import type { NpcActivity as SharedNpcActivity } from '@clawville/shared';
 
-export type PetDirection = 'idle' | 'left' | 'right' | 'up' | 'down';
+export type AvatarDirection = 'idle' | 'left' | 'right' | 'up' | 'down';
 
 // Re-export the shared NpcActivity type so consumers within agent-runtime
 // have a stable local import without reaching into @clawville/shared
@@ -47,7 +47,7 @@ export type ActivityEmojis = Record<NpcActivity, string>;
  * DB write hooks — the bridge injects real DB functions so that
  * agent-runtime doesn't depend on @clawville/database directly.
  */
-export interface PetDbHooks {
+export interface AvatarDbHooks {
   awardToken: (avatarId: string) => Promise<void>;
   logActivity: (
     avatarId: string,

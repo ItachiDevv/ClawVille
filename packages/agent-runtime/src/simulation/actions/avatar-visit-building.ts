@@ -1,7 +1,7 @@
 /**
  * AVATAR_VISIT_BUILDING action
  *
- * Called when a avatar arrives at its destination building. Picks a
+ * Called when an avatar arrives at its destination building. Picks a
  * themed activity from BUILDING_ACTIVITIES, sets the activity timer,
  * awards a ClawToken, and inserts an activity log row.
  *
@@ -12,16 +12,16 @@
 
 import type { Action, ActionResult } from '@elizaos/core';
 import type { AvatarStateStore } from '../avatar-state-store';
-import type { ActivityEmojis, BuildingActivities, PetDbHooks } from '../types';
+import type { ActivityEmojis, BuildingActivities, AvatarDbHooks } from '../types';
 
-export interface PetVisitBuildingDeps {
+export interface AvatarVisitBuildingDeps {
   stateStore: AvatarStateStore;
   buildingActivities: BuildingActivities;
   activityEmojis: ActivityEmojis;
-  dbHooks: PetDbHooks;
+  dbHooks: AvatarDbHooks;
 }
 
-export function createPetVisitBuildingAction(deps: PetVisitBuildingDeps): Action {
+export function createAvatarVisitBuildingAction(deps: AvatarVisitBuildingDeps): Action {
   const { stateStore, buildingActivities, activityEmojis, dbHooks } = deps;
 
   return {

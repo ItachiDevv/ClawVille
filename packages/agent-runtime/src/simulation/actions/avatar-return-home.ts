@@ -11,14 +11,14 @@ import type { Action, ActionResult } from '@elizaos/core';
 import type { AvatarStateStore } from '../avatar-state-store';
 import type { PathfindFn } from '../types';
 
-export interface PetReturnHomeDeps {
+export interface AvatarReturnHomeDeps {
   stateStore: AvatarStateStore;
   pathfind: PathfindFn;
   homeX?: number;
   homeY?: number;
 }
 
-export function createPetReturnHomeAction(deps: PetReturnHomeDeps): Action {
+export function createAvatarReturnHomeAction(deps: AvatarReturnHomeDeps): Action {
   const { stateStore, pathfind } = deps;
   const homeX = deps.homeX ?? 2560; // default: center of 5120x5120 map
   const homeY = deps.homeY ?? 2560;

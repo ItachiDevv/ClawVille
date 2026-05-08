@@ -16,9 +16,9 @@ export interface ClawTokenServiceParams {
 }
 
 export interface ClawvilleServices {
-  /** Credit ClawTokens to a avatar (returns new balance) */
+  /** Credit ClawTokens to an avatar (returns new balance) */
   creditClawTokens: (params: ClawTokenServiceParams) => Promise<{ balanceAfter: number }>;
-  /** Debit ClawTokens from a avatar (returns new balance) */
+  /** Debit ClawTokens from an avatar (returns new balance) */
   debitClawTokens: (params: ClawTokenServiceParams) => Promise<{ balanceAfter: number }>;
   /** Drizzle query builder instance (injected from the API layer) */
   db: any;
