@@ -34,13 +34,9 @@ coverage
 .turbo
 
 # Claude Code — per-user / runtime state (never commit these)
-.claude/worktrees/
-.claude/scheduled_tasks.lock
-.claude/projects/
-.claude/worktree-archive-*/
-.claude/settings.local.json
-.claude/reports/
-.claude/plans/github-support-ticket.md
+# Entire .claude/ directory is local-only — agent definitions, plans,
+# memory, skill metadata, session reports. Never publish.
+.claude/
 
 # Misc
 .DS_Store
