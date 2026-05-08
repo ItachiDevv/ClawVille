@@ -61,18 +61,43 @@ ALTER TABLE tutorial_quest_claims RENAME COLUMN avatar_id TO avatar_id;
 -- (Auto-named btree indexes for renamed FK columns are PG-internal and
 --  follow the new column name automatically; we only rename indexes
 --  explicitly created via `index('name')` in the Drizzle schema files.)
+--
+-- Idempotent: each rename is wrapped in DO $$ ... EXCEPTION to no-op if
+-- the index doesn't exist (some migrations like 0004 may not have been
+-- applied to all environments). Without the guard, a missing index would
+-- abort the whole BEGIN/COMMIT block and roll back the rename.
 
-ALTER INDEX idx_arp_pet_joined RENAME TO idx_arp_avatar_joined;
-ALTER INDEX uniq_pet_skin_pet_sku RENAME TO uniq_avatar_skin_avatar_sku;
-ALTER INDEX idx_pet_skin_pet_equipped RENAME TO idx_avatar_skin_avatar_equipped;
-ALTER INDEX idx_events_pet_ts RENAME TO idx_events_avatar_ts;
-ALTER INDEX idx_activity_results_pet_created RENAME TO idx_activity_results_avatar_created;
-ALTER INDEX idx_activity_queue_pet RENAME TO idx_activity_queue_avatar;
-ALTER INDEX uq_reef_race_pb_pet_activity RENAME TO uq_reef_race_pb_avatar_activity;
-ALTER INDEX claw_token_tx_pet_idx RENAME TO claw_token_tx_avatar_idx;
-ALTER INDEX skill_upvotes_skill_pet_unique RENAME TO skill_upvotes_skill_avatar_unique;
+DO $$ BEGIN ALTER INDEX idx_arp_pet_joined RENAME TO idx_arp_avatar_joined;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
+
+DO $$ BEGIN ALTER INDEX uniq_pet_skin_pet_sku RENAME TO uniq_avatar_skin_avatar_sku;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
+
+DO $$ BEGIN ALTER INDEX idx_pet_skin_pet_equipped RENAME TO idx_avatar_skin_avatar_equipped;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
+
+DO $$ BEGIN ALTER INDEX idx_events_pet_ts RENAME TO idx_events_avatar_ts;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
+
+DO $$ BEGIN ALTER INDEX idx_activity_results_pet_created RENAME TO idx_activity_results_avatar_created;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
+
+DO $$ BEGIN ALTER INDEX idx_activity_queue_pet RENAME TO idx_activity_queue_avatar;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
+
+DO $$ BEGIN ALTER INDEX uq_reef_race_pb_pet_activity RENAME TO uq_reef_race_pb_avatar_activity;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
+
+DO $$ BEGIN ALTER INDEX claw_token_tx_pet_idx RENAME TO claw_token_tx_avatar_idx;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
+
+DO $$ BEGIN ALTER INDEX skill_upvotes_skill_pet_unique RENAME TO skill_upvotes_skill_avatar_unique;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
+
 -- 0004 added `idx_pets_is_guest` directly via SQL (no TS schema declaration).
-ALTER INDEX idx_pets_is_guest RENAME TO idx_avatars_is_guest;
+-- Some environments may not have applied 0004 — guard accordingly.
+DO $$ BEGIN ALTER INDEX idx_pets_is_guest RENAME TO idx_avatars_is_guest;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- ─── (5) Rename CHECK constraints on the avatars table ──────────────────
 -- (Postgres does NOT auto-rename CHECK constraints when the table is
@@ -128,257 +153,257 @@ DO $$ BEGIN
   ALTER TABLE avatars
     RENAME CONSTRAINT pets_user_id_users_id_fk
     TO avatars_user_id_users_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 DO $$ BEGIN
   ALTER TABLE avatars
     RENAME CONSTRAINT pets_platform_agent_id_platform_agents_id_fk
     TO avatars_platform_agent_id_platform_agents_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 DO $$ BEGIN
   ALTER TABLE avatars
     RENAME CONSTRAINT pets_user_id_unique
     TO avatars_user_id_unique;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 DO $$ BEGIN
   ALTER TABLE avatars
     RENAME CONSTRAINT pets_name_unique
     TO avatars_name_unique;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- avatar_inventory
 DO $$ BEGIN
   ALTER TABLE avatar_inventory
     RENAME CONSTRAINT avatar_inventory_avatar_id_avatars_id_fk
     TO avatar_inventory_avatar_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- avatar_skins (was avatar_skins)
 DO $$ BEGIN
   ALTER TABLE avatar_skins
     RENAME CONSTRAINT pet_skins_pet_id_pets_id_fk
     TO avatar_skins_avatar_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 DO $$ BEGIN
   ALTER TABLE avatar_skins
     RENAME CONSTRAINT pet_skins_sku_id_cosmetic_skus_id_fk
     TO avatar_skins_sku_id_cosmetic_skus_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- activity_log
 DO $$ BEGIN
   ALTER TABLE activity_log
     RENAME CONSTRAINT activity_log_pet_id_pets_id_fk
     TO activity_log_avatar_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- published_skills
 DO $$ BEGIN
   ALTER TABLE published_skills
     RENAME CONSTRAINT published_skills_author_pet_id_pets_id_fk
     TO published_skills_author_avatar_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- skill_upvotes
 DO $$ BEGIN
   ALTER TABLE skill_upvotes
     RENAME CONSTRAINT skill_upvotes_pet_id_pets_id_fk
     TO skill_upvotes_avatar_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- bazaar_listings
 DO $$ BEGIN
   ALTER TABLE bazaar_listings
     RENAME CONSTRAINT bazaar_listings_seller_id_pets_id_fk
     TO bazaar_listings_seller_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- bazaar_reviews
 DO $$ BEGIN
   ALTER TABLE bazaar_reviews
     RENAME CONSTRAINT bazaar_reviews_reviewer_id_pets_id_fk
     TO bazaar_reviews_reviewer_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- bazaar_transactions
 DO $$ BEGIN
   ALTER TABLE bazaar_transactions
     RENAME CONSTRAINT bazaar_transactions_buyer_id_pets_id_fk
     TO bazaar_transactions_buyer_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 DO $$ BEGIN
   ALTER TABLE bazaar_transactions
     RENAME CONSTRAINT bazaar_transactions_seller_id_pets_id_fk
     TO bazaar_transactions_seller_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- token_launches
 DO $$ BEGIN
   ALTER TABLE token_launches
     RENAME CONSTRAINT token_launches_pet_id_pets_id_fk
     TO token_launches_avatar_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- claw_token_transactions
 DO $$ BEGIN
   ALTER TABLE claw_token_transactions
     RENAME CONSTRAINT claw_token_transactions_pet_id_pets_id_fk
     TO claw_token_transactions_avatar_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- auction_agent_configs
 DO $$ BEGIN
   ALTER TABLE auction_agent_configs
     RENAME CONSTRAINT auction_agent_configs_pet_id_pets_id_fk
     TO auction_agent_configs_avatar_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- auction_bids
 DO $$ BEGIN
   ALTER TABLE auction_bids
     RENAME CONSTRAINT auction_bids_bidder_id_pets_id_fk
     TO auction_bids_bidder_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- auctions
 DO $$ BEGIN
   ALTER TABLE auctions
     RENAME CONSTRAINT auctions_seller_id_pets_id_fk
     TO auctions_seller_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 DO $$ BEGIN
   ALTER TABLE auctions
     RENAME CONSTRAINT auctions_current_bidder_id_pets_id_fk
     TO auctions_current_bidder_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- quest_rewards
 DO $$ BEGIN
   ALTER TABLE quest_rewards
     RENAME CONSTRAINT quest_rewards_pet_id_pets_id_fk
     TO quest_rewards_avatar_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- quest_submissions
 DO $$ BEGIN
   ALTER TABLE quest_submissions
     RENAME CONSTRAINT quest_submissions_pet_id_pets_id_fk
     TO quest_submissions_avatar_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- agent_configs
 DO $$ BEGIN
   ALTER TABLE agent_configs
     RENAME CONSTRAINT agent_configs_pet_id_pets_id_fk
     TO agent_configs_avatar_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- bounties
 DO $$ BEGIN
   ALTER TABLE bounties
     RENAME CONSTRAINT bounties_creator_id_pets_id_fk
     TO bounties_creator_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- bounty_attempts
 DO $$ BEGIN
   ALTER TABLE bounty_attempts
     RENAME CONSTRAINT bounty_attempts_hunter_id_pets_id_fk
     TO bounty_attempts_hunter_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- bounty_reputation
 DO $$ BEGIN
   ALTER TABLE bounty_reputation
     RENAME CONSTRAINT bounty_reputation_pet_id_pets_id_fk
     TO bounty_reputation_avatar_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 DO $$ BEGIN
   ALTER TABLE bounty_reputation
     RENAME CONSTRAINT bounty_reputation_pet_id_unique
     TO bounty_reputation_avatar_id_unique;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- agent_session_tickets
 DO $$ BEGIN
   ALTER TABLE agent_session_tickets
     RENAME CONSTRAINT agent_session_tickets_pet_id_pets_id_fk
     TO agent_session_tickets_avatar_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- events
 DO $$ BEGIN
   ALTER TABLE events
     RENAME CONSTRAINT events_pet_id_pets_id_fk
     TO events_avatar_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- activity_room_participants — has both PK and FK
 DO $$ BEGIN
   ALTER TABLE activity_room_participants
     RENAME CONSTRAINT activity_room_participants_room_id_pet_id_pk
     TO activity_room_participants_room_id_avatar_id_pk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 DO $$ BEGIN
   ALTER TABLE activity_room_participants
     RENAME CONSTRAINT activity_room_participants_pet_id_pets_id_fk
     TO activity_room_participants_avatar_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- activity_results
 DO $$ BEGIN
   ALTER TABLE activity_results
     RENAME CONSTRAINT activity_results_pet_id_pets_id_fk
     TO activity_results_avatar_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- activity_queue_entries
 DO $$ BEGIN
   ALTER TABLE activity_queue_entries
     RENAME CONSTRAINT activity_queue_entries_pet_id_pets_id_fk
     TO activity_queue_entries_avatar_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- activity_parties
 DO $$ BEGIN
   ALTER TABLE activity_parties
     RENAME CONSTRAINT activity_parties_leader_pet_id_pets_id_fk
     TO activity_parties_leader_avatar_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- activity_party_members — has both PK and FK
 DO $$ BEGIN
   ALTER TABLE activity_party_members
     RENAME CONSTRAINT activity_party_members_party_id_pet_id_pk
     TO activity_party_members_party_id_avatar_id_pk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 DO $$ BEGIN
   ALTER TABLE activity_party_members
     RENAME CONSTRAINT activity_party_members_pet_id_pets_id_fk
     TO activity_party_members_avatar_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- reef_race_personal_bests
 DO $$ BEGIN
   ALTER TABLE reef_race_personal_bests
     RENAME CONSTRAINT reef_race_personal_bests_pet_id_pets_id_fk
     TO reef_race_personal_bests_avatar_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- tutorial_quest_claims
 DO $$ BEGIN
   ALTER TABLE tutorial_quest_claims
     RENAME CONSTRAINT tutorial_quest_claims_pet_id_pets_id_fk
     TO tutorial_quest_claims_avatar_id_avatars_id_fk;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
+EXCEPTION WHEN undefined_table OR undefined_object THEN NULL; END $$;
 
 -- ─── (6) Rename pgEnum types (values stay) ──────────────────────────────
 
