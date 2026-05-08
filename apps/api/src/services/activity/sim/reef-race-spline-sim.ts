@@ -93,7 +93,7 @@ import {
   buildBodyMultipliers,
   NEUTRAL_BODY_MULTIPLIERS,
   type BodyMultipliers,
-  type PetRacingProfile,
+  type AvatarRacingProfile,
   // v2 specific
   REEF_JUMP_IMPULSE_MANUAL,
   REEF_JUMP_IMPULSE_RAMP,
@@ -210,7 +210,7 @@ interface SplineBody {
   activeBoosts: Map<ReefBoostKind, ReefBoostEntry>;
 
   // ── Slipstream ───────────────────────────────────────────────────────────
-  slipstreamSourcePetId: string | null;
+  slipstreamSourceAvatarId: string | null;
   slipstreamConsecutiveTicks: number;
   slipstreamGraceTicksLeft: number;
 
@@ -358,14 +358,14 @@ export class ReefRaceSplineSim {
   startRoom(
     roomId: string,
     activityId: string,
-    participantPetIds: string[],
+    participantAvatarIds: string[],
     opts?: {
       seed?: number;
       isBot?: (avatarId: string) => boolean;
       bots?: BotController[];
       startedAt?: number;
       launchBoosts?: Map<string, 'boost' | 'stall'>;
-      petProfiles?: Map<string, PetRacingProfile>;
+      avatarProfiles?: Map<string, AvatarRacingProfile>;
     },
   ): SplineRoomState {
     if (this.rooms.has(roomId)) {
@@ -381,7 +381,7 @@ export class ReefRaceSplineSim {
     const botControllers = new Map<string, BotController>();
     if (opts?.bots) {
       for (const ctrl of opts.bots) {
-        if (!participantPetIds.includes(ctrl.avatarId)) {
+        if (!participantAvatarIds.includes(ctrl.avatarId)) {
           console.warn(
             `[spline-sim] bot controller for ${ctrl.avatarId} not a participant — skipping`,
           );
@@ -426,7 +426,7 @@ export class ReefRaceSplineSim {
     const SPAWN_SPACING_Z = 70;
     const SPAWN_OFFSET_X  = 90;
 
-    participantPetIds.forEach((avatarId, i) => {
+    participantAvatarIds.forEach((avatarId, i) => {
       const row = Math.floor(i / 2);
       const col = i % 2 === 0 ? -1 : 1;   // left / right column
 
@@ -451,7 +451,7 @@ export class ReefRaceSplineSim {
         });
       }
 
-      const profile = opts?.petProfiles?.get(avatarId) ?? null;
+      const profile = opts?.avatarProfiles?.get(avatarId) ?? null;
       const mults = buildBodyMultipliers(profile);
 
       state.bodies.set(avatarId, {
@@ -483,7 +483,7 @@ export class ReefRaceSplineSim {
         inventory: emptyInventory(),
         activeEffects: new Map(),
         activeBoosts,
-        slipstreamSourcePetId: null,
+        slipstreamSourceAvatarId: null,
         slipstreamConsecutiveTicks: 0,
         slipstreamGraceTicksLeft: 0,
         mults,
@@ -1172,10 +1172,10 @@ export class ReefRaceSplineSim {
       }
 
       if (bestSrc) {
-        if (self.slipstreamSourcePetId === bestSrc.avatarId) {
+        if (self.slipstreamSourceAvatarId === bestSrc.avatarId) {
           self.slipstreamConsecutiveTicks++;
         } else {
-          self.slipstreamSourcePetId = bestSrc.avatarId;
+          self.slipstreamSourceAvatarId = bestSrc.avatarId;
           self.slipstreamConsecutiveTicks = 1;
         }
         self.slipstreamGraceTicksLeft = self.mults.slipstreamGraceTicks;
@@ -1201,7 +1201,7 @@ export class ReefRaceSplineSim {
             self.activeBoosts.has('slipstream-boost')
           ) {
             self.activeBoosts.delete('slipstream-boost');
-            self.slipstreamSourcePetId = null;
+            self.slipstreamSourceAvatarId = null;
             self.slipstreamConsecutiveTicks = 0;
             this.broadcastFn(state.roomId, {
               type: 'event.slipstream_end',
@@ -1209,7 +1209,7 @@ export class ReefRaceSplineSim {
             });
           }
         } else {
-          self.slipstreamSourcePetId = null;
+          self.slipstreamSourceAvatarId = null;
           self.slipstreamConsecutiveTicks = 0;
         }
       }

@@ -33,7 +33,7 @@ marketplaceRoutes.use('*', async (c, next) => {
 });
 
 // Helper: get current user's avatar (throws if not found)
-async function getUserPet(userId: string) {
+async function getUserAvatar(userId: string) {
   const avatar = await db.query.avatars.findFirst({
     where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
   });
@@ -107,7 +107,7 @@ marketplaceRoutes.post('/publish', sessionMiddleware, async (c) => {
     throw new HTTPException(401, { message: 'Authentication or claw session required' });
   }
 
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   const [skill] = await db
     .insert(publishedSkills)
@@ -387,7 +387,7 @@ marketplaceRoutes.post('/skills/:id/upvote', sessionMiddleware, async (c) => {
 // POST /skills/:id/buy — purchase a skill (auth required)
 marketplaceRoutes.post('/skills/:id/buy', requireAuth, async (c) => {
   const user = c.get('user') as { id: string };
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
   const skillId = c.req.param('id');
 
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -443,7 +443,7 @@ marketplaceRoutes.post('/skills/:id/buy', requireAuth, async (c) => {
 // POST /skills/:id/install — install a purchased skill (auth required)
 marketplaceRoutes.post('/skills/:id/install', requireAuth, async (c) => {
   const user = c.get('user') as { id: string };
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
   const skillId = c.req.param('id');
 
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -597,7 +597,7 @@ marketplaceRoutes.post('/skills/:id/install', requireAuth, async (c) => {
 // GET /my-skills — skills published by current user's avatar (auth required)
 marketplaceRoutes.get('/my-skills', requireAuth, async (c) => {
   const user = c.get('user') as { id: string };
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   const skills = await db
     .select()

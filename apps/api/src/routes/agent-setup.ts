@@ -18,7 +18,7 @@ import {
   getBooksForBuilding,
   BUILDING_OPENCLAW_THEMES,
 } from '@clawville/shared';
-import type { PetArchetypeId } from '@clawville/shared';
+import type { AvatarArchetypeId } from '@clawville/shared';
 import type { AgentConfigExport } from '@clawville/database';
 
 export const agentSetupRoutes = new Hono<AppContext>();
@@ -103,7 +103,7 @@ function calculateStats(personality: {
   };
 }
 
-function buildCharacterConfig(archetypeId: PetArchetypeId, avatarName: string, species: string) {
+function buildCharacterConfig(archetypeId: AvatarArchetypeId, avatarName: string, species: string) {
   const archetype = AVATAR_ARCHETYPES.find((a) => a.id === archetypeId);
   if (!archetype) throw new Error(`Unknown archetype: ${archetypeId}`);
 
@@ -341,7 +341,7 @@ agentSetupRoutes.post('/create', requireAuth, async (c) => {
   const isFirstAgent = userAgents.length === 0;
   const stats = calculateStats(result.data.personality);
   const characterConfig = buildCharacterConfig(
-    result.data.archetypeId as PetArchetypeId,
+    result.data.archetypeId as AvatarArchetypeId,
     result.data.name,
     result.data.species,
   );

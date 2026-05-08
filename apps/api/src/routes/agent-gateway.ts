@@ -24,9 +24,9 @@ import { agentOrchestrator } from '../services/agent-orchestrator';
 import { getSessionAgent } from '../services/session-agent-map';
 import { OpenClawClient } from '../services/openclaw-client';
 import { ensureWallet, ensureWalletWithFirstTimeSecret } from '../services/wallet-service';
-import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
+import { creditClawTokens } from '../services/claw-token-ledger';
+import { buildRuntimeServices } from '../services/runtime-services-adapter';
 import { getSystemNpcAgent } from '../services/system-npc-seeder';
-import type { ClawvilleServices } from '@clawville/agent-runtime';
 import {
   resolveOrCreateUserByIdentity,
   generateIdentityKeypairForUser,
@@ -42,7 +42,6 @@ import { drainKnowledgeEvents, clearSessionQueue } from '../services/skill-event
 import { runTool } from '../services/skill-tools-dispatcher';
 import {
   getBooksForBuilding,
-  BUILDING_OPENCLAW_THEMES,
   SHOP_BUILDINGS,
   BUILDING_TOOLS,
   CLAWVILLE_GAME_TOOLS,
@@ -469,7 +468,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
       data.connectionToken
         ? pendingConnections.get(data.connectionToken)?.avatarId ?? null
         : null,
-    existingPetName:
+    existingAvatarName:
       data.connectionToken
         ? pendingConnections.get(data.connectionToken)?.avatarName ?? null
         : null,
@@ -534,7 +533,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
   }
 
   // Phase 6.1 — avatar wallet disclosure, now returned EVERY session when
-  // a avatar is resolved. Only the `secretKey` field is first-time-only
+  // an avatar is resolved. Only the `secretKey` field is first-time-only
   // (server never re-exposes it); the public `address` flows every time
   // so the agent can save it to config and call /api/agent/wallet for
   // balance reads + earnings summaries. Before this change the agent
@@ -604,18 +603,20 @@ agentGatewayRoutes.post('/connect', async (c) => {
     skillName: string;
     suggestedFilename: string;
     skillUrl: string;
+    toolsUrl?: string;
+    toolsFilename?: string;
   }> = [];
   const linkedAvatarId = pendingForEvent?.avatarId ?? resolved.avatarId ?? null;
   if (linkedAvatarId) {
     try {
-      const petRow = await db.query.avatars.findFirst({
+      const avatarRow = await db.query.avatars.findFirst({
         where: eq(avatars.id, linkedAvatarId),
         columns: { characterConfig: true },
       });
-      const petKnowledge: string[] =
-        (petRow?.characterConfig as { knowledge?: string[] } | null)?.knowledge ?? [];
-      if (petKnowledge.length > 0) {
-        const knownSet = new Set(petKnowledge);
+      const avatarKnowledge: string[] =
+        (avatarRow?.characterConfig as { knowledge?: string[] } | null)?.knowledge ?? [];
+      if (avatarKnowledge.length > 0) {
+        const knownSet = new Set(avatarKnowledge);
         for (const buildingId of SHOP_BUILDINGS) {
           let owned = false;
           for (const book of getBooksForBuilding(buildingId)) {
@@ -767,7 +768,7 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
   //    Avatar lookup is best-effort: if the user never created one,
   //    ticket still mints (they'll be bounced to /create-agent on
   //    click).
-  const userPet = await db.query.avatars.findFirst({
+  const userAvatar = await db.query.avatars.findFirst({
     where: eq(avatars.userId, userId),
     columns: { id: true, name: true, walletAddress: true },
   });
@@ -813,10 +814,10 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
   try {
     sessionTicket = await mintSessionTicket({
       userId,
-      avatarId: userPet?.id ?? null,
+      avatarId: userAvatar?.id ?? null,
       identityType: 'reconnect',
       identityKey: userId,
-      avatarName: userPet?.name ?? null,
+      avatarName: userAvatar?.name ?? null,
     });
   } catch (err) {
     console.error('[AgentReconnect] ticket mint failed:', err);
@@ -826,7 +827,7 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
   await logEvent({
     eventType: 'identity.reconnected',
     userId,
-    avatarId: userPet?.id ?? null,
+    avatarId: userAvatar?.id ?? null,
     agentId: existingBot?.id ?? null,
     payload: {
       via: 'signed-challenge',
@@ -835,21 +836,21 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
 
   return c.json({
     sessionTicket,
-    avatarId: userPet?.id ?? null,
+    avatarId: userAvatar?.id ?? null,
     uuid: existingBot?.id ?? null,
     // `walletAddress` here is the AVATAR wallet (the human-facing economic
     // identity). The agent's internal bot wallet isn't relevant on
     // reconnect — the agent already has its config and doesn't need
     // its own wallet surfaced again.
-    walletAddress: userPet?.walletAddress ?? null,
+    walletAddress: userAvatar?.walletAddress ?? null,
     // Phase 6.1 — also return the avatar wallet in the same `wallet` block
     // shape as /connect, so the agent has ONE place to read from
     // regardless of which flow it took. `secretKey` is NEVER returned on
     // reconnect — the first-time disclosure happens only on /connect.
-    ...(userPet?.walletAddress
+    ...(userAvatar?.walletAddress
       ? {
           wallet: {
-            address: userPet.walletAddress,
+            address: userAvatar.walletAddress,
             chain: 'solana' as const,
           },
         }
@@ -1179,14 +1180,14 @@ async function mintSessionTicketFromConnect(args: {
   sessionId: string;
   existingUserId: string | null;
   existingAvatarId: string | null;
-  existingPetName: string | null;
+  existingAvatarName: string | null;
 }): Promise<ResolvedConnectTicket> {
   try {
     // If the caller already resolved a user via the connection-token
     // flow, use that directly — no identity bootstrap needed.
     let userId = args.existingUserId;
     let avatarId = args.existingAvatarId;
-    let avatarName = args.existingPetName;
+    let avatarName = args.existingAvatarName;
     let ticketIdentityType = args.identityType;
     let ticketIdentityKey: string | null = null;
 
@@ -1202,12 +1203,12 @@ async function mintSessionTicketFromConnect(args: {
       // binds to it. Enter-page redirects to /game which will load
       // whatever avatar belongs to the session — avatarId binding is
       // informational only.
-      const existingPet = await db.query.avatars.findFirst({
+      const existingAvatar = await db.query.avatars.findFirst({
         where: eq(avatars.userId, userId),
       });
-      if (existingPet) {
-        avatarId = existingPet.id;
-        avatarName = existingPet.name;
+      if (existingAvatar) {
+        avatarId = existingAvatar.id;
+        avatarName = existingAvatar.name;
       }
     } else {
       // Connection-token path — we don't have a key, only a type hint.
@@ -1295,7 +1296,7 @@ agentGatewayRoutes.post('/join', async (c) => {
 
   // 2. Look up existing avatar OR auto-provision a placeholder.
   let avatar = await db.query.avatars.findFirst({ where: eq(avatars.userId, userId) });
-  let petCreated = false;
+  let avatarCreated = false;
 
   if (!avatar) {
     // Auto-provision a default avatar so the user can click through and
@@ -1353,7 +1354,7 @@ agentGatewayRoutes.post('/join', async (c) => {
         })
         .returning();
       avatar = inserted;
-      petCreated = true;
+      avatarCreated = true;
     } catch (err: unknown) {
       // Race-safe recovery: two concurrent /join calls with the same
       // identity both resolve to the same user, both observe "no avatar",
@@ -1472,7 +1473,7 @@ agentGatewayRoutes.post('/join', async (c) => {
     userId,
     avatarId: avatar.id,
     avatarName: avatar.name,
-    petCreated,
+    avatarCreated,
     sessionTicket,
     // Phase 5.1 — first-time wallet disclosure. Only present when the
     // avatar wallet was just created; subsequent /join calls omit this.
@@ -1698,7 +1699,9 @@ agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
       const runtime = await agentOrchestrator.ensureAgentRuntime(elizaAgentId);
       if (runtime) {
         // Phase 4: inject services + bot data so Actions + Providers work
-        const services = { db, creditClawTokens, debitClawTokens } as ClawvilleServices;
+        // Adapter translates runtime's `avatarId` → ledger's `avatarId`.
+        // See `services/runtime-services-adapter.ts`.
+        const services = buildRuntimeServices(db);
 
         // Look up the bot via its resolved agentId (e.g. milady:xxx), NOT npcId
         const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
@@ -1729,7 +1732,7 @@ agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
           avatarId: bot?.id ?? npcId,
           userId: sessionId,
           services,
-          petData: bot ? {
+          avatarData: bot ? {
             id: bot.id,
             name: bot.name,
             species: bot.species ?? 'cat',
@@ -2248,6 +2251,8 @@ agentGatewayRoutes.get('/:sessionId/owned-skills', async (c) => {
     skillName: string;
     suggestedFilename: string;
     skillUrl: string;
+    toolsUrl?: string;
+    toolsFilename?: string;
   }> = [];
   for (const buildingId of SHOP_BUILDINGS) {
     let owned = false;
@@ -2699,11 +2704,11 @@ agentGatewayRoutes.post('/connect-token', async (c) => {
   if (userId !== user.id) {
     return c.json({ error: 'userId mismatch' }, 403);
   }
-  const ownedPet = await db.query.avatars.findFirst({
+  const ownedAvatar = await db.query.avatars.findFirst({
     where: and(eq(avatars.id, avatarId), eq(avatars.userId, user.id)),
     columns: { id: true },
   });
-  if (!ownedPet) {
+  if (!ownedAvatar) {
     return c.json({ error: 'Avatar not owned by authenticated user' }, 403);
   }
 
@@ -2892,7 +2897,7 @@ human to generate a fresh connect link from the ClawVille game UI.
 
 ## IMPORTANT — save the avatar wallet address to your config (every session)
 
-The response ALWAYS includes a \`wallet\` block whenever a avatar has been
+The response ALWAYS includes a \`wallet\` block whenever an avatar has been
 resolved — not only on first connect. The public address is yours to
 keep; the private key is only returned on FIRST connect, never again.
 

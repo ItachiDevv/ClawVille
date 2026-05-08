@@ -20,7 +20,7 @@ import { eq, and, desc, asc, lt, sql } from 'drizzle-orm';
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function getUserPet(userId: string) {
+async function getUserAvatar(userId: string) {
   const avatar = await db.query.avatars.findFirst({
     where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
   });
@@ -127,27 +127,27 @@ class AuctionResolver {
 
             if (auction.currentBidderId && auction.currentBid) {
               // Has a winner — resolve with payout
-              const winnerPet = await tx.query.avatars.findFirst({
+              const winnerAvatar = await tx.query.avatars.findFirst({
                 where: eq(avatars.id, auction.currentBidderId),
               });
-              const sellerPet = await tx.query.avatars.findFirst({
+              const sellerAvatar = await tx.query.avatars.findFirst({
                 where: eq(avatars.id, auction.sellerId),
               });
 
-              if (winnerPet && sellerPet) {
+              if (winnerAvatar && sellerAvatar) {
                 const price = auction.currentBid;
                 const platformFee = Math.floor(price * 0.15);
                 const sellerPayout = price - platformFee;
 
                 // Pay seller (bid was already escrowed from winner on place-bid)
                 await creditClawTokens({
-                  avatarId: sellerPet.id,
+                  avatarId: sellerAvatar.id,
                   amount: sellerPayout,
                   reason: 'auction_settled',
                   source: 'api',
                   metadata: {
                     auctionId: auction.id,
-                    winnerId: winnerPet.id,
+                    winnerId: winnerAvatar.id,
                     price,
                     platformFee,
                   },
@@ -158,7 +158,7 @@ class AuctionResolver {
                   const itemId = `skill-${auction.skillId}`;
                   const existingItem = await tx.query.avatarInventory.findFirst({
                     where: and(
-                      eq(avatarInventory.avatarId, winnerPet.id),
+                      eq(avatarInventory.avatarId, winnerAvatar.id),
                       eq(avatarInventory.itemId, itemId)
                     ),
                   });
@@ -170,7 +170,7 @@ class AuctionResolver {
                       .where(eq(avatarInventory.id, existingItem.id));
                   } else {
                     await tx.insert(avatarInventory).values({
-                      avatarId: winnerPet.id,
+                      avatarId: winnerAvatar.id,
                       itemId,
                       quantity: 1,
                     });
@@ -184,13 +184,13 @@ class AuctionResolver {
                 ) {
                   await tx.insert(auctionAgentConfigs).values({
                     auctionId: auction.id,
-                    avatarId: winnerPet.id,
+                    avatarId: winnerAvatar.id,
                     configSnapshot: auction.agentConfigSnapshot,
                   });
                 }
 
                 console.log(
-                  `[AuctionResolver] Resolved auction ${auction.id} — winner: ${winnerPet.id}, payout: ${sellerPayout}`
+                  `[AuctionResolver] Resolved auction ${auction.id} — winner: ${winnerAvatar.id}, payout: ${sellerPayout}`
                 );
               }
             } else {
@@ -289,7 +289,7 @@ auctionRoutes.get('/stream', (c) => {
 // ---------------------------------------------------------------------------
 auctionRoutes.get('/my-auctions', requireAuth, async (c) => {
   const user = c.get('user') as { id: string };
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   const rows = await db
     .select({
@@ -332,7 +332,7 @@ auctionRoutes.get('/my-auctions', requireAuth, async (c) => {
 // ---------------------------------------------------------------------------
 auctionRoutes.get('/my-bids', requireAuth, async (c) => {
   const user = c.get('user') as { id: string };
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   // Find distinct auctions this avatar has bid on
   const bidRows = await db
@@ -458,7 +458,7 @@ auctionRoutes.post('/create', requireAuth, async (c) => {
     });
   }
 
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   let resolvedSkillId: string | null = null;
   let agentConfigSnapshot: unknown = null;
@@ -658,7 +658,7 @@ auctionRoutes.delete('/:id', requireAuth, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Auction');
 
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   const [auction] = await db
     .select()
@@ -719,7 +719,7 @@ auctionRoutes.post('/:id/bid', requireAuth, async (c) => {
   }
 
   const { amount } = parsed.data;
-  const bidderPet = await getUserPet(user.id);
+  const bidderAvatar = await getUserAvatar(user.id);
 
   // Entire bid flow in a single transaction with row-level locking to
   // prevent two concurrent bids from racing on the same auction row.
@@ -754,7 +754,7 @@ auctionRoutes.post('/:id/bid', requireAuth, async (c) => {
     }
 
     // 2. Prevent self-bidding
-    if (auction.seller_id === bidderPet.id) {
+    if (auction.seller_id === bidderAvatar.id) {
       throw new HTTPException(400, {
         message: 'Seller cannot bid on their own auction',
       });
@@ -773,7 +773,7 @@ auctionRoutes.post('/:id/bid', requireAuth, async (c) => {
 
     // 4. Deduct bid amount from bidder (escrow) — within transaction
     await debitClawTokens({
-      avatarId: bidderPet.id,
+      avatarId: bidderAvatar.id,
       amount,
       reason: 'auction_bid_escrow',
       source: 'api',
@@ -787,7 +787,7 @@ auctionRoutes.post('/:id/bid', requireAuth, async (c) => {
         amount: auction.current_bid,
         reason: 'auction_bid_refund',
         source: 'api',
-        metadata: { auctionId: id, outbidBy: bidderPet.id },
+        metadata: { auctionId: id, outbidBy: bidderAvatar.id },
       }, tx);
     }
 
@@ -814,7 +814,7 @@ auctionRoutes.post('/:id/bid', requireAuth, async (c) => {
       .update(auctions)
       .set({
         currentBid: amount,
-        currentBidderId: bidderPet.id,
+        currentBidderId: bidderAvatar.id,
         bidCount: newBidCount,
         endsAt: newEndsAt,
         updatedAt: new Date(),
@@ -826,7 +826,7 @@ auctionRoutes.post('/:id/bid', requireAuth, async (c) => {
       .insert(auctionBids)
       .values({
         auctionId: id,
-        bidderId: bidderPet.id,
+        bidderId: bidderAvatar.id,
         amount,
       })
       .returning();
@@ -839,14 +839,14 @@ auctionRoutes.post('/:id/bid', requireAuth, async (c) => {
     type: 'bid_placed',
     auctionId: id,
     currentBid: amount,
-    currentBidderId: bidderPet.id,
+    currentBidderId: bidderAvatar.id,
     endsAt: result.newEndsAt.toISOString(),
     bidCount: result.newBidCount,
   });
 
   // Re-fetch bidder's updated balance
   const updatedBidder = await db.query.avatars.findFirst({
-    where: eq(avatars.id, bidderPet.id),
+    where: eq(avatars.id, bidderAvatar.id),
   });
 
   return c.json({
@@ -871,7 +871,7 @@ auctionRoutes.post('/:id/buy-now', requireAuth, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Auction');
 
-  const buyerPet = await getUserPet(user.id);
+  const buyerAvatar = await getUserAvatar(user.id);
 
   // Entire buy-now flow in a single transaction with row-level locking to
   // prevent two concurrent buy-now requests from racing on the same auction.
@@ -922,7 +922,7 @@ auctionRoutes.post('/:id/buy-now', requireAuth, async (c) => {
     }
 
     // 4. Prevent self-purchase
-    if (auction.seller_id === buyerPet.id) {
+    if (auction.seller_id === buyerAvatar.id) {
       throw new HTTPException(400, {
         message: 'Cannot buy your own auction',
       });
@@ -930,15 +930,15 @@ auctionRoutes.post('/:id/buy-now', requireAuth, async (c) => {
 
     // 5. Verify buyer has enough tokens
     const price = auction.buy_now_price;
-    if (buyerPet.clawTokens < price) {
+    if (buyerAvatar.clawTokens < price) {
       throw new HTTPException(400, {
-        message: `Not enough ClawTokens. Need ${price}, have ${buyerPet.clawTokens}.`,
+        message: `Not enough ClawTokens. Need ${price}, have ${buyerAvatar.clawTokens}.`,
       });
     }
 
     // 6. Deduct buy-now price from buyer — within transaction
     const { balanceAfter: buyerBalance } = await debitClawTokens({
-      avatarId: buyerPet.id,
+      avatarId: buyerAvatar.id,
       amount: price,
       reason: 'auction_buy_now',
       source: 'api',
@@ -952,7 +952,7 @@ auctionRoutes.post('/:id/buy-now', requireAuth, async (c) => {
         amount: auction.current_bid,
         reason: 'auction_bid_refund',
         source: 'api',
-        metadata: { auctionId: id, outbidBy: buyerPet.id, reason: 'buy_now' },
+        metadata: { auctionId: id, outbidBy: buyerAvatar.id, reason: 'buy_now' },
       }, tx);
     }
 
@@ -965,7 +965,7 @@ auctionRoutes.post('/:id/buy-now', requireAuth, async (c) => {
       amount: sellerPayout,
       reason: 'auction_buy_now_settled',
       source: 'api',
-      metadata: { auctionId: id, buyerId: buyerPet.id, price, platformFee },
+      metadata: { auctionId: id, buyerId: buyerAvatar.id, price, platformFee },
     }, tx);
 
     // 9. Mark auction as resolved — within transaction
@@ -973,7 +973,7 @@ auctionRoutes.post('/:id/buy-now', requireAuth, async (c) => {
       .update(auctions)
       .set({
         currentBid: price,
-        currentBidderId: buyerPet.id,
+        currentBidderId: buyerAvatar.id,
         status: 'resolved',
         resolvedAt: new Date(),
         updatedAt: new Date(),
@@ -985,7 +985,7 @@ auctionRoutes.post('/:id/buy-now', requireAuth, async (c) => {
       const itemId = `skill-${auction.skill_id}`;
       const existingItem = await tx.query.avatarInventory.findFirst({
         where: and(
-          eq(avatarInventory.avatarId, buyerPet.id),
+          eq(avatarInventory.avatarId, buyerAvatar.id),
           eq(avatarInventory.itemId, itemId)
         ),
       });
@@ -997,7 +997,7 @@ auctionRoutes.post('/:id/buy-now', requireAuth, async (c) => {
           .where(eq(avatarInventory.id, existingItem.id));
       } else {
         await tx.insert(avatarInventory).values({
-          avatarId: buyerPet.id,
+          avatarId: buyerAvatar.id,
           itemId,
           quantity: 1,
         });
@@ -1008,7 +1008,7 @@ auctionRoutes.post('/:id/buy-now', requireAuth, async (c) => {
     if (auction.item_type === 'agent_config' && auction.agent_config_snapshot) {
       await tx.insert(auctionAgentConfigs).values({
         auctionId: auction.id,
-        avatarId: buyerPet.id,
+        avatarId: buyerAvatar.id,
         configSnapshot: auction.agent_config_snapshot,
       });
     }
@@ -1021,7 +1021,7 @@ auctionRoutes.post('/:id/buy-now', requireAuth, async (c) => {
     type: 'buy_now',
     auctionId: id,
     currentBid: result.price,
-    currentBidderId: buyerPet.id,
+    currentBidderId: buyerAvatar.id,
     endsAt: result.endsAt.toISOString(),
     bidCount: result.bidCount,
   });

@@ -1,7 +1,7 @@
 /**
  * Avatar Simulation Bridge (Phase 2)
  *
- * Replaces the old hand-rolled PetAutonomyManager with a thin adapter
+ * Replaces the old hand-rolled AvatarAutonomyManager with a thin adapter
  * over the v2 SimulationRuntime + AvatarStateStore in @clawville/agent-runtime.
  *
  * Responsibilities:
@@ -20,14 +20,57 @@
  */
 
 import {
-  AvatarStateStore,
+  // NOTE: agent-runtime still exports Avatar* names (renamed in concern 1h).
+  // We alias to Avatar* at the import boundary so this app uses the new
+  // vocabulary internally without breaking the package contract.
+  AvatarStateStore as AvatarStateStore,
   SimulationRuntime,
   activateIdlePets,
   stepMovement,
   handleActivityTransition,
   type AvatarRegistrationInput,
   type AvatarSimBroadcast,
+  type PetDirection,
+  type NpcActivity,
 } from '@clawville/agent-runtime';
+
+// Public type used by API callers. The on-the-wire field is `avatarId`; we
+// translate to the runtime's legacy `avatarId` field at the bridge boundary.
+export interface AvatarRegistrationInput {
+  avatarId: string;
+  userId: string;
+  name: string;
+  species: string;
+  color: string;
+  archetype: string;
+  positionX: number;
+  positionY: number;
+}
+
+// Public broadcast shape used by API consumers. The runtime returns objects
+// keyed by `avatarId` — we translate to `avatarId` at the bridge boundary.
+// Mirrors `AvatarSimBroadcast` exactly except for the renamed id field. Once
+// concern 1h flips the runtime to `avatarId`, this becomes
+//   `export type AvatarSimBroadcast = AvatarSimBroadcast`.
+export interface AvatarSimBroadcast {
+  avatarId: string;
+  userId: string;
+  name: string;
+  species: string;
+  color: string;
+  x: number;
+  y: number;
+  direction: PetDirection;
+  activity: NpcActivity;
+  activityEmoji: string;
+  isAutonomous: boolean;
+  chatMessage: string | null;
+  // Phase 3 enrichment — must match AvatarSimBroadcast 1:1
+  lastActionName: string | null;
+  lastActionResult: string | null;
+  budgetSpent: number;
+  budgetPurchaseCount: number;
+}
 
 import {
   NPC_BUILDING_CENTERS,
@@ -37,14 +80,15 @@ import {
 import { db, activityLog } from '@clawville/database';
 
 import { findPath } from './pathfinding';
-import { creditClawTokens, debitClawTokens } from './claw-token-ledger';
+import { creditClawTokens } from './claw-token-ledger';
+import { buildRuntimeServices } from './runtime-services-adapter';
 
 // Single source of truth — agent-runtime re-exports NpcActivity from shared,
 // so these constants type-check without casting.
 const VISIT_CHAT_COOLDOWN_MS = 30_000;
 const IDLE_UNREGISTER_MS = 30 * 60 * 1000; // 30 min — auto-cleanup abandoned avatars
 
-export class PetSimulationBridge {
+export class AvatarSimulationBridge {
   private stateStore: AvatarStateStore;
   private runtime: SimulationRuntime | null = null;
   private runtimeReady = false;
@@ -93,8 +137,11 @@ export class PetSimulationBridge {
       apiKeys: {
         gemini: process.env.GEMINI_API_KEY,
       },
-      // Phase 3: inject services so economic actions (BUY_ITEM, LEARN_SKILL) can execute
-      services: { db, creditClawTokens, debitClawTokens },
+      // Phase 3: inject services so economic actions (BUY_ITEM, LEARN_SKILL) can execute.
+      // buildRuntimeServices translates the runtime's `{ avatarId }` calls to the
+      // ledger's `{ avatarId }` shape — see runtime-services-adapter.ts.
+      // (Until concern 1h flips agent-runtime, this translation is required.)
+      services: buildRuntimeServices(db),
     });
 
     // Fire-and-forget startup; tick() guards on runtimeReady before touching
@@ -106,7 +153,7 @@ export class PetSimulationBridge {
         this.runtimeReady = true;
       })
       .catch((err) => {
-        console.error('[PetSimBridge] SimulationRuntime start failed:', err);
+        console.error('[AvatarSimBridge] SimulationRuntime start failed:', err);
         this.runtime = null;
         this.runtimeReady = false;
         // Clear state store so SSE doesn't show stale avatars during a degraded state
@@ -122,7 +169,11 @@ export class PetSimulationBridge {
 
   register(input: AvatarRegistrationInput): void {
     this.ensureRuntime();
-    this.stateStore.register(input);
+    // Translate the API-layer `avatarId` field to the runtime's legacy
+    // `avatarId` field. Drop concern 1h flips agent-runtime fully.
+    const { avatarId, ...rest } = input;
+    const runtimeInput: AvatarRegistrationInput = { avatarId: avatarId, ...rest };
+    this.stateStore.register(runtimeInput);
   }
 
   unregister(userId: string): void {
@@ -134,7 +185,12 @@ export class PetSimulationBridge {
   }
 
   getAutonomousAvatars(): AvatarSimBroadcast[] {
-    return this.stateStore.getBroadcast();
+    // Runtime broadcast still keys entities by `avatarId`; translate to
+    // `avatarId` for API consumers. Concern 1h flips the source of truth.
+    return this.stateStore.getBroadcast().map((b: AvatarSimBroadcast): AvatarSimBroadcast => {
+      const { avatarId, ...rest } = b;
+      return { avatarId: avatarId, ...rest };
+    });
   }
 
   /**
@@ -155,7 +211,7 @@ export class PetSimulationBridge {
     // 0. Sweep abandoned avatars — prevents unbounded growth of the state store
     for (const avatar of this.stateStore.all()) {
       if (now - avatar.lastUserInputAt > IDLE_UNREGISTER_MS) {
-        console.log(`[PetSimBridge] Unregistering abandoned avatar ${avatar.name} (${avatar.userId})`);
+        console.log(`[AvatarSimBridge] Unregistering abandoned avatar ${avatar.name} (${avatar.userId})`);
         this.stateStore.unregister(avatar.userId);
       }
     }
@@ -181,10 +237,14 @@ export class PetSimulationBridge {
         avatar.pathIndex = 0;
 
         // Dispatch AVATAR_VISIT_BUILDING (the action will set activity to a
-        // building-themed one and pick an activityEndsAt timer)
+        // building-themed one and pick an activityEndsAt timer).
+        // NOTE: action names are part of the runtime contract — concern 1h
+        // will rename PET_* → AVATAR_* on both sides simultaneously. Until
+        // then, the bridge dispatches the runtime's registered name so the
+        // string-based action lookup in simulation-runtime resolves.
         this.runtime
           .dispatchAction({ action: 'AVATAR_VISIT_BUILDING', userId: avatar.userId })
-          .catch((err) => console.error('[PetSimBridge] AVATAR_VISIT_BUILDING dispatch failed:', err));
+          .catch((err) => console.error('[AvatarSimBridge] AVATAR_VISIT_BUILDING dispatch failed:', err));
 
         // Generate a visit chat line (throttled) via runtime
         if (destinationId && now - avatar.lastChatAt > VISIT_CHAT_COOLDOWN_MS) {
@@ -197,7 +257,7 @@ export class PetSimulationBridge {
                 if (current) current.chatMessage = text;
               }
             })
-            .catch((err) => console.error('[PetSimBridge] generateAvatarChat failed:', err));
+            .catch((err) => console.error('[AvatarSimBridge] generateAvatarChat failed:', err));
         }
         continue;
       }
@@ -206,10 +266,12 @@ export class PetSimulationBridge {
         // Clear arrival state before dispatch (same reason as above)
         avatar.path = [];
         avatar.pathIndex = 0;
-        // Arrived home — go to sleep
+        // Arrived home — go to sleep.
+        // NOTE: see AVATAR_VISIT_BUILDING comment above — concern 1h flips the
+        // action registry; until then, dispatch the runtime's registered name.
         this.runtime
           .dispatchAction({ action: 'AVATAR_SLEEP', userId: avatar.userId })
-          .catch((err) => console.error('[PetSimBridge] AVATAR_SLEEP dispatch failed:', err));
+          .catch((err) => console.error('[AvatarSimBridge] AVATAR_SLEEP dispatch failed:', err));
         continue;
       }
 
@@ -221,7 +283,7 @@ export class PetSimulationBridge {
           this.inFlightPlanners.add(avatar.userId);
           this.runtime
             .planAvatarNextAction(avatar.userId)
-            .catch((err) => console.error('[PetSimBridge] planAvatarNextAction failed:', err))
+            .catch((err) => console.error('[AvatarSimBridge] planAvatarNextAction failed:', err))
             .finally(() => this.inFlightPlanners.delete(avatar.userId));
         }
       }

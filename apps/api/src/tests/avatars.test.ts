@@ -216,7 +216,7 @@ describe('Avatar API Tests', () => {
       expect(data.avatar.stats.movement).toBe(8);
     });
 
-    it('should fail when user already has a avatar', async () => {
+    it('should fail when user already has an avatar', async () => {
       const res = await app.request('/api/avatars', {
         method: 'POST',
         headers: {

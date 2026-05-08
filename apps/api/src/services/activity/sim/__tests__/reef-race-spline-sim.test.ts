@@ -38,8 +38,8 @@ const { REEF_TICK_HZ, ACTION_BIT_DRIFT, REEF_GRAVITY, REEF_JUMP_IMPULSE_MANUAL }
 
 const ROOM_ID   = 'test-spline-room';
 const ROOM_ID_2 = 'test-spline-room-2';
-const PET_A     = 'avatar-A';
-const PET_B     = 'avatar-B';
+const AVATAR_A     = 'avatar-A';
+const AVATAR_B     = 'avatar-B';
 const DT        = 1 / REEF_TICK_HZ;
 
 // ── Helper ────────────────────────────────────────────────────────────────────
@@ -62,13 +62,13 @@ describe('ReefRaceSplineSim', () => {
       const events: unknown[] = [];
       reefRaceSplineSim.setBroadcastFn((_id, frame) => events.push(frame));
 
-      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [PET_A, PET_B]);
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A, AVATAR_B]);
       const state = reefRaceSplineSim.__getState(ROOM_ID);
 
       expect(state).toBeTruthy();
       expect(state!.bodies.size).toBe(2);
 
-      const bodyA = state!.bodies.get(PET_A)!;
+      const bodyA = state!.bodies.get(AVATAR_A)!;
       expect(bodyA).toBeTruthy();
       // Should be near start line (z ≈ 0 ± spawn offset)
       expect(Math.abs(bodyA.z)).toBeLessThan(200);
@@ -84,7 +84,7 @@ describe('ReefRaceSplineSim', () => {
         events.push(frame as { type: string }),
       );
 
-      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [PET_A]);
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
       expect(events.some((e) => e.type === 'event.match_started')).toBe(true);
     });
 
@@ -92,9 +92,9 @@ describe('ReefRaceSplineSim', () => {
       const events: unknown[] = [];
       reefRaceSplineSim.setBroadcastFn((_id, frame) => events.push(frame));
 
-      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [PET_A]);
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
       const s1 = reefRaceSplineSim.__getState(ROOM_ID);
-      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [PET_A, PET_B]);
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A, AVATAR_B]);
       const s2 = reefRaceSplineSim.__getState(ROOM_ID);
       expect(s1).toBe(s2); // same reference
     });
@@ -104,32 +104,32 @@ describe('ReefRaceSplineSim', () => {
 
   describe('applyInput', () => {
     it('stores intent on valid input', () => {
-      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [PET_A]);
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
       const result = reefRaceSplineSim.applyInput(
-        ROOM_ID, PET_A, 1, DT, makeInput(),
+        ROOM_ID, AVATAR_A, 1, DT, makeInput(),
       );
       expect(result.ok).toBe(true);
 
-      const body = reefRaceSplineSim.__getState(ROOM_ID)!.bodies.get(PET_A)!;
+      const body = reefRaceSplineSim.__getState(ROOM_ID)!.bodies.get(AVATAR_A)!;
       expect(body.intent.seq).toBe(1);
       expect(body.intent.thrust).toBeCloseTo(1, 5);
     });
 
     it('rejects seq that was already consumed by a tick', () => {
-      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [PET_A]);
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
       // Apply seq=5, then tick so the sim consumes it (consumedSeq → 5).
-      reefRaceSplineSim.applyInput(ROOM_ID, PET_A, 5, DT, makeInput());
+      reefRaceSplineSim.applyInput(ROOM_ID, AVATAR_A, 5, DT, makeInput());
       reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
       // Now re-submitting seq=5 should be rejected (5 <= consumedSeq=5).
       const result = reefRaceSplineSim.applyInput(
-        ROOM_ID, PET_A, 5, DT, makeInput(),
+        ROOM_ID, AVATAR_A, 5, DT, makeInput(),
       );
       expect(result.ok).toBe(false);
     });
 
     it('returns ok=false for unknown room', () => {
       const result = reefRaceSplineSim.applyInput(
-        'no-such-room', PET_A, 1, DT, makeInput(),
+        'no-such-room', AVATAR_A, 1, DT, makeInput(),
       );
       expect(result.ok).toBe(false);
     });
@@ -139,12 +139,12 @@ describe('ReefRaceSplineSim', () => {
 
   describe('progress', () => {
     it('advances when body moves with full thrust', () => {
-      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [PET_A]);
-      const body = reefRaceSplineSim.__getState(ROOM_ID)!.bodies.get(PET_A)!;
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
+      const body = reefRaceSplineSim.__getState(ROOM_ID)!.bodies.get(AVATAR_A)!;
 
       // Apply full-thrust input pointing straight down-track (+Z direction).
       reefRaceSplineSim.applyInput(
-        ROOM_ID, PET_A, 1, DT, makeInput(1, 0, 1),
+        ROOM_ID, AVATAR_A, 1, DT, makeInput(1, 0, 1),
       );
       // Tick 100 frames (~3.3 seconds).
       for (let i = 0; i < 100; i++) {
@@ -165,10 +165,10 @@ describe('ReefRaceSplineSim', () => {
       reefRaceSplineSim.setBroadcastFn((_id, f) =>
         events.push(f as { type: string; avatarId?: string }),
       );
-      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [PET_A]);
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
 
       const state = reefRaceSplineSim.__getState(ROOM_ID)!;
-      const body = state.bodies.get(PET_A)!;
+      const body = state.bodies.get(AVATAR_A)!;
 
       // Force the body to just before the finish line.
       body.prevProgress = 0.96;
@@ -178,7 +178,7 @@ describe('ReefRaceSplineSim', () => {
 
       // Apply forward thrust so body gets close to finish.
       reefRaceSplineSim.applyInput(
-        ROOM_ID, PET_A, 1, DT, makeInput(1, 0, 1),
+        ROOM_ID, AVATAR_A, 1, DT, makeInput(1, 0, 1),
       );
 
       // Tick until finish crossed (max 60 extra ticks ≈ 2 seconds).
@@ -210,12 +210,12 @@ describe('ReefRaceSplineSim', () => {
 
   describe('jump and gravity', () => {
     it('jump impulse makes body airborne', () => {
-      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [PET_A]);
-      const body = reefRaceSplineSim.__getState(ROOM_ID)!.bodies.get(PET_A)!;
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
+      const body = reefRaceSplineSim.__getState(ROOM_ID)!.bodies.get(AVATAR_A)!;
 
       // Trigger jump via ACTION_BIT_DRIFT (= ACTION_BIT_JUMP in v2).
       reefRaceSplineSim.applyInput(
-        ROOM_ID, PET_A, 1, DT, makeInput(0, 0, 1, ACTION_BIT_DRIFT),
+        ROOM_ID, AVATAR_A, 1, DT, makeInput(0, 0, 1, ACTION_BIT_DRIFT),
       );
       reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
 
@@ -225,12 +225,12 @@ describe('ReefRaceSplineSim', () => {
     });
 
     it('gravity eventually lands the kart', () => {
-      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [PET_A]);
-      const body = reefRaceSplineSim.__getState(ROOM_ID)!.bodies.get(PET_A)!;
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
+      const body = reefRaceSplineSim.__getState(ROOM_ID)!.bodies.get(AVATAR_A)!;
 
       // Trigger jump.
       reefRaceSplineSim.applyInput(
-        ROOM_ID, PET_A, 1, DT, makeInput(0, 0, 1, ACTION_BIT_DRIFT),
+        ROOM_ID, AVATAR_A, 1, DT, makeInput(0, 0, 1, ACTION_BIT_DRIFT),
       );
 
       // Tick until the body lands.
@@ -247,11 +247,11 @@ describe('ReefRaceSplineSim', () => {
     });
 
     it('peak height is within expected range for REEF_JUMP_IMPULSE_MANUAL', () => {
-      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [PET_A]);
-      const body = reefRaceSplineSim.__getState(ROOM_ID)!.bodies.get(PET_A)!;
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
+      const body = reefRaceSplineSim.__getState(ROOM_ID)!.bodies.get(AVATAR_A)!;
 
       reefRaceSplineSim.applyInput(
-        ROOM_ID, PET_A, 1, DT, makeInput(0, 0, 1, ACTION_BIT_DRIFT),
+        ROOM_ID, AVATAR_A, 1, DT, makeInput(0, 0, 1, ACTION_BIT_DRIFT),
       );
 
       let peakHeight = 0;
@@ -273,9 +273,9 @@ describe('ReefRaceSplineSim', () => {
 
   describe('wall clamp', () => {
     it('pushes body outside corridor back inside', () => {
-      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [PET_A]);
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
       const state = reefRaceSplineSim.__getState(ROOM_ID)!;
-      const body = state.bodies.get(PET_A)!;
+      const body = state.bodies.get(AVATAR_A)!;
 
       // Place body far outside corridor at lagoon (halfWidth=3300 post-2026-04-29 iter-9 ×1.5 pass).
       // At z=1500 (CP1), centerline x=0. Put body well past the wall at x=4000.
@@ -302,24 +302,24 @@ describe('ReefRaceSplineSim', () => {
     });
 
     it('places finishers before DNFers', () => {
-      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [PET_A, PET_B]);
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A, AVATAR_B]);
       const state = reefRaceSplineSim.__getState(ROOM_ID)!;
 
-      // Manually finish PET_A, DNF PET_B.
-      const bodyA = state.bodies.get(PET_A)!;
-      const bodyB = state.bodies.get(PET_B)!;
+      // Manually finish AVATAR_A, DNF AVATAR_B.
+      const bodyA = state.bodies.get(AVATAR_A)!;
+      const bodyB = state.bodies.get(AVATAR_B)!;
       bodyA.finishedAt = Date.now();
       bodyA.totalTimeMs = 50000;
-      state.finishOrder.push(PET_A);
+      state.finishOrder.push(AVATAR_A);
       bodyB.dnf = true;
       bodyB.alive = false;
 
       const results = reefRaceSplineSim.computeResults(ROOM_ID);
       expect(results).toHaveLength(2);
-      expect(results[0].avatarId).toBe(PET_A);
+      expect(results[0].avatarId).toBe(AVATAR_A);
       expect(results[0].placement).toBe(1);
       expect(results[0].scoreMs).toBe(50000);
-      expect(results[1].avatarId).toBe(PET_B);
+      expect(results[1].avatarId).toBe(AVATAR_B);
       expect(results[1].placement).toBe(2);
       expect(results[1].scoreMs).toBeNull();
     });
@@ -333,16 +333,16 @@ describe('ReefRaceSplineSim', () => {
       reefRaceSplineSim.setBroadcastFn((_id, f) =>
         events.push(f as { type: string; avatarId?: string }),
       );
-      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [PET_A, PET_B]);
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A, AVATAR_B]);
 
-      reefRaceSplineSim.forfeit(ROOM_ID, PET_A, 'voluntary');
+      reefRaceSplineSim.forfeit(ROOM_ID, AVATAR_A, 'voluntary');
 
-      const body = reefRaceSplineSim.__getState(ROOM_ID)!.bodies.get(PET_A)!;
+      const body = reefRaceSplineSim.__getState(ROOM_ID)!.bodies.get(AVATAR_A)!;
       expect(body.dnf).toBe(true);
       expect(body.alive).toBe(false);
       expect(
         events.some(
-          (e) => e.type === 'event.player_left' && e.avatarId === PET_A,
+          (e) => e.type === 'event.player_left' && e.avatarId === AVATAR_A,
         ),
       ).toBe(true);
     });
@@ -352,7 +352,7 @@ describe('ReefRaceSplineSim', () => {
 
   describe('stopRoom', () => {
     it('removes the room from state', () => {
-      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [PET_A]);
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
       expect(reefRaceSplineSim.__getState(ROOM_ID)).toBeTruthy();
 
       reefRaceSplineSim.stopRoom(ROOM_ID);
@@ -364,12 +364,12 @@ describe('ReefRaceSplineSim', () => {
 
   describe('getFlagCount', () => {
     it('returns 0 for unknown room', () => {
-      expect(reefRaceSplineSim.getFlagCount('no-room', PET_A)).toBe(0);
+      expect(reefRaceSplineSim.getFlagCount('no-room', AVATAR_A)).toBe(0);
     });
 
     it('returns 0 initially', () => {
-      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [PET_A]);
-      expect(reefRaceSplineSim.getFlagCount(ROOM_ID, PET_A)).toBe(0);
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
+      expect(reefRaceSplineSim.getFlagCount(ROOM_ID, AVATAR_A)).toBe(0);
     });
   });
 
@@ -381,11 +381,11 @@ describe('ReefRaceSplineSim', () => {
     });
 
     it('returns snapshot with bodies', () => {
-      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [PET_A]);
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
       const snap = reefRaceSplineSim.getStateSnapshot(ROOM_ID);
       expect(snap).toBeTruthy();
       expect(snap!.bodies).toHaveLength(1);
-      expect(snap!.bodies[0].avatarId).toBe(PET_A);
+      expect(snap!.bodies[0].avatarId).toBe(AVATAR_A);
     });
   });
 });

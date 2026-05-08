@@ -96,7 +96,7 @@ class ActivityQueueService {
   private queues = new Map<string, QueueEntry[]>();
 
   /** SINGLE-POD: avatarId → entryId for O(1) leave-queue lookups. */
-  private petToEntry = new Map<string, string>();
+  private avatarToEntry = new Map<string, string>();
 
   /** SINGLE-POD: parties keyed by id. Mirror table is the source of truth. */
   private parties = new Map<string, Party>();
@@ -113,7 +113,7 @@ class ActivityQueueService {
   // ─── Public API ────────────────────────────────────────────────────────
 
   /**
-   * Enqueue a avatar for an activity. Atomic — caller verifies caps + auth
+   * Enqueue an avatar for an activity. Atomic — caller verifies caps + auth
    * before reaching here. Throws on cap-hit or duplicate-queue.
    */
   async enqueue(input: {
@@ -127,7 +127,7 @@ class ActivityQueueService {
     allowBotBackfill?: boolean;
     agentOnly?: boolean;
   }): Promise<QueueEntry> {
-    if (this.petToEntry.has(input.avatarId)) {
+    if (this.avatarToEntry.has(input.avatarId)) {
       throw new Error('Avatar is already in a queue');
     }
 
@@ -216,7 +216,7 @@ class ActivityQueueService {
     avatarId: string,
     reason: 'voluntary' | 'matched' | 'timeout' | 'pod_restart' = 'voluntary',
   ): Promise<boolean> {
-    const entryId = this.petToEntry.get(avatarId);
+    const entryId = this.avatarToEntry.get(avatarId);
     if (!entryId) return false;
 
     const entry = this.findEntryInMemory(entryId);
@@ -296,7 +296,7 @@ class ActivityQueueService {
   getMatchedRoomId(avatarId: string): string | null {
     const roomId = this.matchedRooms.get(avatarId);
     if (!roomId) return null;
-    // Auto-expire entries so a avatar can re-queue later without carrying
+    // Auto-expire entries so an avatar can re-queue later without carrying
     // a stale matchedRoomId forward. Manager knows if the room is still
     // active.
     const room = activityRoomManager.getRoom(roomId);
@@ -396,27 +396,27 @@ class ActivityQueueService {
     return party;
   }
 
-  async kickMember(partyId: string, requesterAvatarId: string, targetPetId: string): Promise<Party> {
+  async kickMember(partyId: string, requesterAvatarId: string, targetAvatarId: string): Promise<Party> {
     const party = this.parties.get(partyId);
     if (!party) throw new Error('Party not found');
     if (party.leaderAvatarId !== requesterAvatarId) {
       throw new Error('Only the party leader can kick members');
     }
-    if (targetPetId === party.leaderAvatarId) {
+    if (targetAvatarId === party.leaderAvatarId) {
       throw new Error('Leader cannot be kicked — leave instead');
     }
-    if (!party.members.has(targetPetId)) {
+    if (!party.members.has(targetAvatarId)) {
       throw new Error('Member is not in this party');
     }
 
-    party.members.delete(targetPetId);
+    party.members.delete(targetAvatarId);
     await db
       .update(activityPartyMembers)
       .set({ leftAt: new Date() })
       .where(
         and(
           eq(activityPartyMembers.partyId, partyId),
-          eq(activityPartyMembers.avatarId, targetPetId),
+          eq(activityPartyMembers.avatarId, targetAvatarId),
           isNull(activityPartyMembers.leftAt),
         ),
       );
@@ -554,7 +554,7 @@ class ActivityQueueService {
   /** Test hook — wipe all in-memory state. */
   __resetForTest(): void {
     this.queues.clear();
-    this.petToEntry.clear();
+    this.avatarToEntry.clear();
     this.parties.clear();
     this.partyShortCodeIndex.clear();
     this.matchedRooms.clear();
@@ -785,12 +785,12 @@ class ActivityQueueService {
       this.queues.set(key, queue);
     }
     queue.push(entry);
-    this.petToEntry.set(entry.avatarId, entry.id);
+    this.avatarToEntry.set(entry.avatarId, entry.id);
   }
 
   private removeFromMemory(avatarId: string, entryId: string): void {
-    const knownEntryId = this.petToEntry.get(avatarId);
-    if (knownEntryId === entryId) this.petToEntry.delete(avatarId);
+    const knownEntryId = this.avatarToEntry.get(avatarId);
+    if (knownEntryId === entryId) this.avatarToEntry.delete(avatarId);
     for (const [key, queue] of this.queues.entries()) {
       const idx = queue.findIndex((e) => e.id === entryId);
       if (idx >= 0) {

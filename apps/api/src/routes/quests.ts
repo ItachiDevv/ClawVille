@@ -38,7 +38,7 @@ function isAdmin(userEmail: string | null): boolean {
   return !!userEmail && ADMIN_EMAILS.includes(userEmail);
 }
 
-async function getUserPet(userId: string) {
+async function getUserAvatar(userId: string) {
   const avatar = await db.query.avatars.findFirst({
     where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
   });
@@ -119,7 +119,7 @@ const reviewSchema = z.object({
 // ---------------------------------------------------------------------------
 questRoutes.get('/my-quests', requireAuth, async (c) => {
   const user = c.get('user') as { id: string };
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   const rows = await db
     .select({
@@ -167,7 +167,7 @@ questRoutes.get('/my-quests', requireAuth, async (c) => {
 // ---------------------------------------------------------------------------
 questRoutes.get('/quest-log', requireAuth, async (c) => {
   const user = c.get('user') as { id: string };
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   const rows = await db
     .select({
@@ -655,7 +655,7 @@ questRoutes.post('/:id/accept', requireAuth, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Quest');
 
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   // Verify quest exists and is active
   const [quest] = await db
@@ -725,7 +725,7 @@ questRoutes.post('/:id/start', requireAuth, async (c) => {
   const id = c.req.param('id'); // quest ID
   validateUuid(id, 'Quest');
 
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   // Find the avatar's accepted submission for this quest
   const submission = await db.query.questSubmissions.findFirst({
@@ -778,7 +778,7 @@ questRoutes.post('/:id/submit', requireAuth, async (c) => {
     });
   }
 
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   // Find the avatar's in_progress (or accepted) submission for this quest
   const submission = await db.query.questSubmissions.findFirst({
@@ -1316,7 +1316,7 @@ questRoutes.post('/tutorial/:id/claim', requireAuth, async (c) => {
     );
   }
 
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   // Idempotency: pre-check (cheap path) — unique index is the source of
   // truth, this just avoids running the full validator + transaction when

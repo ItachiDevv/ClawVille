@@ -137,13 +137,13 @@ export async function buildLeaderboardSnapshot(
 
   // Join avatar names — single batch lookup.
   const avatarIds = rows.map((r) => r.avatarId);
-  const petNamesById = new Map<string, string>();
+  const avatarNamesById = new Map<string, string>();
   if (avatarIds.length > 0) {
-    const petRows = await db
+    const avatarRows = await db
       .select({ id: avatars.id, name: avatars.name })
       .from(avatars)
-      .where(petInListWhere(avatarIds));
-    for (const p of petRows) petNamesById.set(p.id, p.name);
+      .where(avatarInListWhere(avatarIds));
+    for (const p of avatarRows) avatarNamesById.set(p.id, p.name);
   }
 
   // Sort: total points DESC, ties broken by wins DESC, then matches DESC.
@@ -159,7 +159,7 @@ export async function buildLeaderboardSnapshot(
     rank: offset + i + 1,
     avatarId: r.avatarId,
     agentId: r.agentId,
-    displayName: petNamesById.get(r.avatarId) ?? r.avatarId.slice(0, 8),
+    displayName: avatarNamesById.get(r.avatarId) ?? r.avatarId.slice(0, 8),
     totalPoints: Number(r.totalPoints) || 0,
     wins: Number(r.wins) || 0,
     matches: Number(r.matches) || 0,
@@ -263,7 +263,7 @@ export function invalidateLeaderboardCache(activityId?: string): void {
  * cleanly + we can unit-test without a real `avatars` table when the test
  * doesn't care about names.
  */
-function petInListWhere(avatarIds: string[]): ReturnType<typeof sql> {
+function avatarInListWhere(avatarIds: string[]): ReturnType<typeof sql> {
   if (avatarIds.length === 0) return sql`false`;
   return sql`${avatars.id} in (${sql.join(
     avatarIds.map((id) => sql`${id}`),

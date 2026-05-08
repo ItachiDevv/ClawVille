@@ -144,7 +144,7 @@ const BOOKS_BY_BUILDING: Readonly<Record<string, readonly KnowledgeBook[]>> = ((
 })();
 
 /**
- * Compose the SkillPack for a avatar.
+ * Compose the SkillPack for an avatar.
  *
  * "Fully learned" check — a building is learned when the avatar's
  * `characterConfig.knowledge` contains at least one entry from EACH
@@ -171,9 +171,9 @@ const BOOKS_BY_BUILDING: Readonly<Record<string, readonly KnowledgeBook[]>> = ((
  */
 function buildSkillPack(
   avatar: { id: string; name: string },
-  petKnowledge: string[],
+  avatarKnowledge: string[],
 ): SkillPackEntry[] {
-  const knowledgeSet = new Set(petKnowledge);
+  const knowledgeSet = new Set(avatarKnowledge);
 
   const entries: SkillPackEntry[] = [];
 
@@ -283,7 +283,7 @@ agentExportRoutes.post(
 
   // --- Resolve model metadata + target harness ---
   // `avatar.modelKey` should always be populated post-Phase-2 thanks to the
-  // NOT NULL DEFAULT + CHECK constraint, but a avatar row that pre-dates the
+  // NOT NULL DEFAULT + CHECK constraint, but an avatar row that pre-dates the
   // migration could theoretically arrive here with a stale value. Fall
   // back to `DEFAULT_AGENT_MODEL` in that case rather than 500-ing —
   // this keeps the export useful even on edge rows.
@@ -296,12 +296,12 @@ agentExportRoutes.post(
   // --- Build skill pack from the avatar's learned knowledge ---
   // Books are consumed on `/api/items/learn`, so the only durable signal
   // of "learned" is the avatar's `characterConfig.knowledge[]` array.
-  const petKnowledge: string[] =
+  const avatarKnowledge: string[] =
     (avatar.characterConfig as { knowledge?: string[] } | null)?.knowledge ?? [];
 
   const skillPack = buildSkillPack(
     { id: avatar.id, name: avatar.name },
-    petKnowledge,
+    avatarKnowledge,
   );
 
   // --- Build the character (pure, synchronous) ---

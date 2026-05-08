@@ -19,7 +19,7 @@
 
 import { db, avatars } from '@clawville/database';
 import { inArray } from 'drizzle-orm';
-import type { PetRacingProfile } from './sim/reef-race-config';
+import type { AvatarRacingProfile } from './sim/reef-race-config';
 
 /**
  * Fetch racing profiles for the human/agent participants of a room.
@@ -27,7 +27,7 @@ import type { PetRacingProfile } from './sim/reef-race-config';
  * - `humanAvatarIds` — avatar ids whose `avatars.level + avatars.archetype` we read.
  * - `botAvatarIds`   — avatar ids that ALWAYS get a neutral profile (no DB read).
  *
- * Returns a Map keyed by avatarId. Any humanPetId not returned by the SELECT
+ * Returns a Map keyed by avatarId. Any humanAvatarId not returned by the SELECT
  * gets a neutral fallback (a missing row at LIVE-time is a bug elsewhere
  * but the sim must not fail because of it).
  *
@@ -37,8 +37,8 @@ import type { PetRacingProfile } from './sim/reef-race-config';
 export async function loadRacingProfiles(
   humanAvatarIds: string[],
   botAvatarIds: string[],
-): Promise<Map<string, PetRacingProfile>> {
-  const out = new Map<string, PetRacingProfile>();
+): Promise<Map<string, AvatarRacingProfile>> {
+  const out = new Map<string, AvatarRacingProfile>();
 
   // Bots — always neutral.
   for (const avatarId of botAvatarIds) {
@@ -66,7 +66,7 @@ export async function loadRacingProfiles(
       });
     }
 
-    // Any humanPetId NOT returned → neutral fallback.
+    // Any humanAvatarId NOT returned → neutral fallback.
     for (const avatarId of humanAvatarIds) {
       if (!out.has(avatarId)) {
         out.set(avatarId, { avatarId, level: 1, archetype: null, isBot: false });

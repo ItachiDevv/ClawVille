@@ -42,7 +42,7 @@ const { ReefSpline } = await import('../reef-race-spline');
 const { REEF_RACE_DEFAULT_TRACK } = await import('../reef-race-track-layout');
 
 const ROOM_ID = 'ramp-test-room';
-const PET_A   = 'ramp-avatar-A';
+const AVATAR_A   = 'ramp-avatar-A';
 
 // Build a shared spline instance for test position computation.
 const _testSpline = new ReefSpline(REEF_RACE_DEFAULT_TRACK);
@@ -78,10 +78,10 @@ describe('resolveRamps (SPEC 3)', () => {
     reefRaceSplineSim.setBroadcastFn((_id, frame) =>
       events.push(frame as typeof events[0]),
     );
-    reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [PET_A]);
+    reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
 
     const state = reefRaceSplineSim.__getState(ROOM_ID)!;
-    const body  = state.bodies.get(PET_A)!;
+    const body  = state.bodies.get(AVATAR_A)!;
 
     // Place body exactly at ramp-canyon-2 center.
     const { cx, cz } = getRampCenter('ramp-canyon-2');
@@ -101,7 +101,7 @@ describe('resolveRamps (SPEC 3)', () => {
 
     // event.ramp_launch must have been broadcast.
     const launchEvent = events.find(
-      (e) => e.type === 'event.ramp_launch' && e.avatarId === PET_A,
+      (e) => e.type === 'event.ramp_launch' && e.avatarId === AVATAR_A,
     );
     expect(launchEvent).toBeTruthy();
     expect(launchEvent!.rampId).toBe('ramp-canyon-2');
@@ -115,10 +115,10 @@ describe('resolveRamps (SPEC 3)', () => {
     reefRaceSplineSim.setBroadcastFn((_id, frame) =>
       events.push(frame as { type: string }),
     );
-    reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [PET_A]);
+    reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
 
     const state = reefRaceSplineSim.__getState(ROOM_ID)!;
-    const body  = state.bodies.get(PET_A)!;
+    const body  = state.bodies.get(AVATAR_A)!;
     const { cx, cz } = getRampCenter('ramp-canyon-2');
 
     // First tick — launch.
@@ -150,10 +150,10 @@ describe('resolveRamps (SPEC 3)', () => {
     reefRaceSplineSim.setBroadcastFn((_id, frame) =>
       events.push(frame as { type: string }),
     );
-    reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [PET_A]);
+    reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
 
     const state = reefRaceSplineSim.__getState(ROOM_ID)!;
-    const body  = state.bodies.get(PET_A)!;
+    const body  = state.bodies.get(AVATAR_A)!;
     const { cx, cz } = getRampCenter('ramp-canyon-2');
 
     // Airborne: airborneTicks=1, heightOffset=50
@@ -174,10 +174,10 @@ describe('resolveRamps (SPEC 3)', () => {
     reefRaceSplineSim.setBroadcastFn((_id, frame) =>
       events.push(frame as { type: string }),
     );
-    reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [PET_A]);
+    reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
 
     const state = reefRaceSplineSim.__getState(ROOM_ID)!;
-    const body  = state.bodies.get(PET_A)!;
+    const body  = state.bodies.get(AVATAR_A)!;
 
     // Get ramp-canyon-2 center and tangent direction.
     const ramp = buildSplineRamps().find((r) => r.id === 'ramp-canyon-2')!;
@@ -205,10 +205,10 @@ describe('resolveRamps (SPEC 3)', () => {
     reefRaceSplineSim.setBroadcastFn((_id, frame) =>
       events.push(frame as { type: string }),
     );
-    reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [PET_A]);
+    reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
 
     const state = reefRaceSplineSim.__getState(ROOM_ID)!;
-    const body  = state.bodies.get(PET_A)!;
+    const body  = state.bodies.get(AVATAR_A)!;
     const { cx, cz } = getRampCenter('ramp-canyon-2');
 
     // First launch.
@@ -217,7 +217,7 @@ describe('resolveRamps (SPEC 3)', () => {
     expect(events.filter((e) => e.type === 'event.ramp_launch').length).toBe(1);
 
     // Manually expire the cooldown by back-dating it to 0 (past expiry).
-    const bodyRampCooldowns = state.rampCooldowns.get(PET_A)!;
+    const bodyRampCooldowns = state.rampCooldowns.get(AVATAR_A)!;
     bodyRampCooldowns.set('ramp-canyon-2', 0);
 
     // Force grounded again.

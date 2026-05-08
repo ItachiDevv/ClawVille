@@ -227,12 +227,12 @@ export function computeLeaderboardPoints(
  * bonus simply doesn't fire and tokens stay at the base.
  */
 export function isFocusAligned(
-  petFlags: Record<string, unknown> | null | undefined,
+  avatarFlags: Record<string, unknown> | null | undefined,
   activityId: string,
 ): boolean {
   const def = getActivityDefinition(activityId);
   if (!def?.skillBuildingMatches?.length) return false;
-  const focus = petFlags?.learningFocus;
+  const focus = avatarFlags?.learningFocus;
   if (typeof focus !== 'string' || focus.length === 0) return false;
   return def.skillBuildingMatches.includes(focus);
 }
@@ -247,7 +247,7 @@ interface IssueRewardsInput {
   simResults: SimResultRow[];
 }
 
-interface PetContext {
+interface AvatarContext {
   flags: Record<string, unknown> | null;
   /** Earliest `created_at` for this avatar+activity scoped to today (UTC) */
   todayCount: number;
@@ -289,7 +289,7 @@ export async function issueRewardsForRoom(
   // needed — their avatar rows belong to the system user).
   const avatarIds = simResults.map((r) => r.avatarId);
   const participants = room.participants;
-  const petContexts = await loadAvatarContexts(avatarIds, room.activityId, participants);
+  const avatarContexts = await loadAvatarContexts(avatarIds, room.activityId, participants);
 
   const issued: IssuedResult[] = [];
 
@@ -304,7 +304,7 @@ export async function issueRewardsForRoom(
   //
   // Bot skip: `subjectType === 'bot'` short-circuits — bots never set PBs
   // by design.
-  const pbWritesByPet = new Map<string, PbWriteResult>();
+  const pbWritesByAvatar = new Map<string, PbWriteResult>();
   if (room.activityId === 'reef-race') {
     const pbCandidates = simResults.filter((s) => {
       const participant = participants.get(s.avatarId);
@@ -331,7 +331,7 @@ export async function issueRewardsForRoom(
     );
     for (const settled of pbResults) {
       if (settled.status === 'fulfilled') {
-        pbWritesByPet.set(settled.value.avatarId, settled.value.result);
+        pbWritesByAvatar.set(settled.value.avatarId, settled.value.result);
       } else {
         // Per spec: PB write failure logs + alerts but doesn't block
         // reward credit. The match-end frame omits pbDelta for the
@@ -362,7 +362,7 @@ export async function issueRewardsForRoom(
         continue;
       }
 
-      const ctx = petContexts.get(sim.avatarId) ?? {
+      const ctx = avatarContexts.get(sim.avatarId) ?? {
         flags: null,
         todayCount: 0,
         priorBestMs: null,
@@ -404,7 +404,7 @@ export async function issueRewardsForRoom(
         ? 0
         : computeLeaderboardPoints(rewardConfig, sim.placement);
 
-      const pbWrite = pbWritesByPet.get(sim.avatarId);
+      const pbWrite = pbWritesByAvatar.get(sim.avatarId);
 
       // Insert the result row first so we have an id for the breakdown
       // return + the event payload. `returning()` in the same tx avoids
@@ -697,7 +697,7 @@ async function loadAvatarContexts(
   avatarIds: string[],
   activityId: string,
   participants: Map<string, RoomParticipant>,
-): Promise<Map<string, PetContext>> {
+): Promise<Map<string, AvatarContext>> {
   if (avatarIds.length === 0) return new Map();
 
   // Filter out bots — their flags don't drive any reward branching.
@@ -706,19 +706,19 @@ async function loadAvatarContexts(
     return p?.subjectType !== 'bot';
   });
 
-  const flagsByPet = new Map<string, Record<string, unknown> | null>();
-  const guestByPet = new Map<string, boolean>();
+  const flagsByAvatar = new Map<string, Record<string, unknown> | null>();
+  const guestByAvatar = new Map<string, boolean>();
   if (nonBotAvatarIds.length > 0) {
     const flagRows = await db
       .select({ id: avatars.id, flags: avatars.flags, isGuest: avatars.isGuest })
       .from(avatars)
       .where(inArrayWhitelist(avatars.id, nonBotAvatarIds));
     for (const row of flagRows) {
-      flagsByPet.set(
+      flagsByAvatar.set(
         row.id,
         (row.flags as Record<string, unknown> | null) ?? null,
       );
-      guestByPet.set(row.id, !!row.isGuest);
+      guestByAvatar.set(row.id, !!row.isGuest);
     }
   }
 
@@ -745,9 +745,9 @@ async function loadAvatarContexts(
     )
     .groupBy(activityResults.avatarId);
 
-  const todayByPet = new Map<string, number>();
+  const todayByAvatar = new Map<string, number>();
   for (const row of todayRows) {
-    todayByPet.set(row.avatarId, Number(row.cnt) || 0);
+    todayByAvatar.set(row.avatarId, Number(row.cnt) || 0);
   }
 
   // Best (lowest non-null) score_ms for personal-best detection. Reef
@@ -767,18 +767,18 @@ async function loadAvatarContexts(
     )
     .groupBy(activityResults.avatarId);
 
-  const bestByPet = new Map<string, number | null>();
+  const bestByAvatar = new Map<string, number | null>();
   for (const row of bestRows) {
-    bestByPet.set(row.avatarId, row.best ?? null);
+    bestByAvatar.set(row.avatarId, row.best ?? null);
   }
 
-  const out = new Map<string, PetContext>();
+  const out = new Map<string, AvatarContext>();
   for (const id of avatarIds) {
     out.set(id, {
-      flags: flagsByPet.get(id) ?? null,
-      todayCount: todayByPet.get(id) ?? 0,
-      priorBestMs: bestByPet.get(id) ?? null,
-      isGuest: guestByPet.get(id) ?? false,
+      flags: flagsByAvatar.get(id) ?? null,
+      todayCount: todayByAvatar.get(id) ?? 0,
+      priorBestMs: bestByAvatar.get(id) ?? null,
+      isGuest: guestByAvatar.get(id) ?? false,
     });
   }
   return out;

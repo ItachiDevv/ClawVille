@@ -354,7 +354,7 @@ class ActivityRoomManager {
   }
 
   /**
-   * Look up the room a avatar is currently in (across all activities).
+   * Look up the room an avatar is currently in (across all activities).
    * Used by /me endpoints + the queue Sybil checks.
    */
   getPlayerActiveRoom(avatarId: string): Room | undefined {

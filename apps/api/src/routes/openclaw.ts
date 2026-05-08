@@ -9,8 +9,7 @@ import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import type { AppContext } from '../types';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { setSessionAgent, getSessionAgent, deleteSessionAgent } from '../services/session-agent-map';
-import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
-import type { ClawvilleServices } from '@clawville/agent-runtime';
+import { buildRuntimeServices } from '../services/runtime-services-adapter';
 import { generateSkillMd } from '../services/skill-generator';
 import { computeSessionExpiresAt } from '../services/openclaw-session-sweeper';
 
@@ -397,7 +396,7 @@ openclawRoutes.get('/bot/:agentId', async (c) => {
 const chatSchema = z.object({
   sessionId: z.string().min(1),
   content: z.string().min(1).max(4000),
-  petContext: z.object({
+  avatarContext: z.object({
     name: z.string(),
     species: z.string(),
     archetype: z.string().optional(),
@@ -413,13 +412,13 @@ openclawRoutes.post('/chat', async (c) => {
     return c.json({ error: 'Invalid request', details: parsed.error.flatten() }, 400);
   }
 
-  const { sessionId, content, petContext } = parsed.data;
+  const { sessionId, content, avatarContext } = parsed.data;
   const client = npcSimulation.getOpenClawClientBySession(sessionId);
   if (!client) {
     return c.json({ error: 'OpenClaw session not found. Bot may have disconnected.' }, 404);
   }
 
-  // Look up actual bot data from DB instead of trusting client petContext
+  // Look up actual bot data from DB instead of trusting client avatarContext
   const botConfig = npcSimulation.getOpenClawBotConfig(sessionId);
   const bot = botConfig
     ? await db.query.openclawBots.findFirst({
@@ -427,14 +426,14 @@ openclawRoutes.post('/chat', async (c) => {
       })
     : null;
 
-  // Use DB data, fall back to client petContext only for display name/species
-  const botName = bot?.name ?? petContext?.name ?? 'agent';
-  const botKnowledge: string[] = bot?.knowledge ?? petContext?.knowledge ?? [];
+  // Use DB data, fall back to client avatarContext only for display name/species
+  const botName = bot?.name ?? avatarContext?.name ?? 'agent';
+  const botKnowledge: string[] = bot?.knowledge ?? avatarContext?.knowledge ?? [];
 
   // Dynamic context — only non-Provider extras (archetype hint, no token/knowledge duplication)
   const contextParts: string[] = [];
-  if (petContext?.archetype) {
-    contextParts.push(`Personality archetype: "${petContext.archetype}".`);
+  if (avatarContext?.archetype) {
+    contextParts.push(`Personality archetype: "${avatarContext.archetype}".`);
   }
 
   // Try ElizaOS runtime first
@@ -444,15 +443,15 @@ openclawRoutes.post('/chat', async (c) => {
     try {
       const runtime = await agentOrchestrator.ensureAgentRuntime(elizaAgentId);
       if (runtime) {
-        const services = { db, creditClawTokens, debitClawTokens } as ClawvilleServices;
+        const services = buildRuntimeServices(db);
         const state: Record<string, any> = {
           avatarId: bot?.id ?? sessionId,
           userId: botName,
           services,
-          petData: bot ? {
+          avatarData: bot ? {
             id: bot.id,
             name: bot.name,
-            species: bot.species ?? petContext?.species ?? 'cat',
+            species: bot.species ?? avatarContext?.species ?? 'cat',
             clawTokens: (bot as any).clawTokens ?? 0,
           } : null,
           characterConfig: { knowledge: botKnowledge },
@@ -474,7 +473,7 @@ openclawRoutes.post('/chat', async (c) => {
   // Fallback to direct client
   if (!reply) {
     const systemParts: string[] = [
-      `You are ${petContext?.name ?? 'a ClawVille avatar'}, a ${petContext?.species ?? 'avatar'} exploring ClawVille World — a sea-themed 3D game for training AI agents with OpenClaw knowledge.`,
+      `You are ${avatarContext?.name ?? 'a ClawVille avatar'}, a ${avatarContext?.species ?? 'avatar'} exploring ClawVille World — a sea-themed 3D game for training AI agents with OpenClaw knowledge.`,
       ...contextParts,
     ];
     try {
@@ -513,7 +512,7 @@ const locationChatSchema = z.object({
   sessionId: z.string().min(1),
   locationId: z.string().min(1),
   content: z.string().min(1).max(4000),
-  petContext: z.object({
+  avatarContext: z.object({
     name: z.string(),
     species: z.string(),
     archetype: z.string().optional(),
@@ -529,7 +528,7 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
     return c.json({ error: 'Invalid request', details: parsed.error.flatten() }, 400);
   }
 
-  const { sessionId, locationId, content, petContext } = parsed.data;
+  const { sessionId, locationId, content, avatarContext } = parsed.data;
   const client = npcSimulation.getOpenClawClientBySession(sessionId);
   if (!client) {
     return c.json({ error: 'OpenClaw session not found. Bot may have disconnected.' }, 404);
@@ -556,10 +555,10 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
       })
     : null;
 
-  const locBotName = locBot?.name ?? petContext?.name ?? 'visitor';
+  const locBotName = locBot?.name ?? avatarContext?.name ?? 'visitor';
 
   if (locBotName) {
-    systemParts.push(`The visitor is ${locBotName}, a ${locBot?.species ?? petContext?.species ?? 'avatar'}.`);
+    systemParts.push(`The visitor is ${locBotName}, a ${locBot?.species ?? avatarContext?.species ?? 'avatar'}.`);
   }
   // ClawTokens and knowledge are handled by Providers — no manual duplication
 
@@ -571,19 +570,19 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
     try {
       const runtime = await agentOrchestrator.ensureAgentRuntime(elizaAgentId);
       if (runtime) {
-        const locServices = { db, creditClawTokens, debitClawTokens } as ClawvilleServices;
+        const locServices = buildRuntimeServices(db);
         const locState: Record<string, any> = {
           avatarId: locBot?.id ?? sessionId,
           userId: locBotName,
           services: locServices,
-          petData: locBot ? {
+          avatarData: locBot ? {
             id: locBot.id,
             name: locBot.name,
             species: locBot.species ?? 'cat',
             clawTokens: (locBot as any).clawTokens ?? 0,
           } : null,
           nearLocation: locationId,
-          characterConfig: { knowledge: locBot?.knowledge ?? petContext?.knowledge ?? [] },
+          characterConfig: { knowledge: locBot?.knowledge ?? avatarContext?.knowledge ?? [] },
           userMessage: content,
         };
         const result = await runtime.processMessage(content, {

@@ -887,7 +887,7 @@ export function racingClassFromArchetype(
  * `avatars.level + avatars.archetype` for human/agent participants; bots short-
  * circuit to `isBot:true` and the builder returns a neutral clone.
  */
-export interface PetRacingProfile {
+export interface AvatarRacingProfile {
   avatarId: string;
   level: number;
   archetype: string | null;
@@ -935,7 +935,7 @@ function clampPhase3(v: number, lo: number, hi: number): number {
 }
 
 /**
- * Build per-body multipliers from a `PetRacingProfile`. Bots, null profiles,
+ * Build per-body multipliers from a `AvatarRacingProfile`. Bots, null profiles,
  * and missing/unknown archetypes all fall back to a CLONE of
  * `NEUTRAL_BODY_MULTIPLIERS` (audit N4 — never the global reference).
  *
@@ -943,7 +943,7 @@ function clampPhase3(v: number, lo: number, hi: number): number {
  * archetype, the profile loader sets `isBot:true` and we short-circuit.
  */
 export function buildBodyMultipliers(
-  profile: PetRacingProfile | null | undefined,
+  profile: AvatarRacingProfile | null | undefined,
 ): BodyMultipliers {
   if (!profile)      return { ...NEUTRAL_BODY_MULTIPLIERS };
   if (profile.isBot) return { ...NEUTRAL_BODY_MULTIPLIERS };

@@ -454,7 +454,7 @@ function pickRandom<T>(arr: readonly T[]): T {
  * suffix space is 100k entries; a collision needs >316 concurrent guests
  * with the same first roll, so a small retry budget is sufficient.
  */
-async function insertGuestPet(
+async function insertGuestAvatar(
   ownerId: string,
   requestedName: string | undefined,
 ): Promise<{ id: string; name: string }> {
@@ -526,7 +526,7 @@ authRoutes.post('/guest', async (c) => {
   // current user + avatar rather than minting a second guest.
   const existingUser = c.get('user');
   if (existingUser) {
-    const existingPet = await db.query.avatars.findFirst({
+    const existingAvatar = await db.query.avatars.findFirst({
       where: and(eq(avatars.userId, existingUser.id), eq(avatars.isActive, true)),
     });
     return c.json({
@@ -540,7 +540,7 @@ authRoutes.post('/guest', async (c) => {
           columns: { isGuest: true },
         }))?.isGuest,
       },
-      avatar: existingPet ?? null,
+      avatar: existingAvatar ?? null,
       reused: true,
     });
   }
@@ -570,7 +570,7 @@ authRoutes.post('/guest', async (c) => {
     guestExpiresAt: expiresAt,
   });
 
-  const avatar = await insertGuestPet(userId, parsed.data.requestedName);
+  const avatar = await insertGuestAvatar(userId, parsed.data.requestedName);
 
   // Lucia session cookie — same attributes as signup/login (sameSite +
   // secure flags driven by NODE_ENV via lib/auth.ts).

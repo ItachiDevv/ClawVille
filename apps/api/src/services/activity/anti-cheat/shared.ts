@@ -214,7 +214,7 @@ export class InputRateTracker {
     return { ok: true, value: undefined, clamped: false, flagged: false };
   }
 
-  /** Drop tracking for a avatar on disconnect / match end. */
+  /** Drop tracking for an avatar on disconnect / match end. */
   forget(avatarId: string): void {
     this.timestamps.delete(avatarId);
   }

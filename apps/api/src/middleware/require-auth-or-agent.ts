@@ -168,7 +168,7 @@ export const requireAuthOrAgentSession = createMiddleware<ActivityAuthContext>(
       if (!avatar) {
         throw new HTTPException(403, {
           message:
-            'Active avatar required — create a avatar before queuing for an activity',
+            'Active avatar required — create an avatar before queuing for an activity',
         });
       }
       c.set('identity', {

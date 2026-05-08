@@ -323,13 +323,13 @@ describe('ReefRaceSim.computeResults', () => {
     p3.lap = 1;
 
     const results = reefRaceSim.computeResults('room-a');
-    const byPet = Object.fromEntries(results.map((r) => [r.avatarId, r]));
-    expect(byPet['p2'].placement).toBe(1);
-    expect(byPet['p2'].scoreMs).toBe(30_000);
-    expect(byPet['p1'].placement).toBe(2);
-    expect(byPet['p1'].scoreMs).toBe(35_000);
-    expect(byPet['p3'].placement).toBe(3);
-    expect(byPet['p3'].scoreMs).toBeNull();
+    const byAvatar = Object.fromEntries(results.map((r) => [r.avatarId, r]));
+    expect(byAvatar['p2'].placement).toBe(1);
+    expect(byAvatar['p2'].scoreMs).toBe(30_000);
+    expect(byAvatar['p1'].placement).toBe(2);
+    expect(byAvatar['p1'].scoreMs).toBe(35_000);
+    expect(byAvatar['p3'].placement).toBe(3);
+    expect(byAvatar['p3'].scoreMs).toBeNull();
   });
 });
 
@@ -954,7 +954,7 @@ describe('ReefRaceSim — Phase 2 slipstream (P2-T1..P2-T5)', () => {
       reefRaceSim.__tickOnceForTest('room-p2');
     }
     expect(p2.activeBoosts.has('slipstream-boost')).toBe(true);
-    expect(p2.slipstreamSourcePetId).toBe('p1');
+    expect(p2.slipstreamSourceAvatarId).toBe('p1');
     const slipEvents = broadcasts.filter((f) => f.type === 'event.slipstream');
     expect(slipEvents.length).toBe(1);
     if (slipEvents[0].type === 'event.slipstream') {
@@ -1548,8 +1548,8 @@ describe('ReefRaceSim — Phase 2 audit-gap tests (P2-T36..P2-T42)', () => {
       C.x = 0; C.y = -80;   C.vx = 0; C.vy = 300;
       reefRaceSim.__tickOnceForTest('room-p2');
     }
-    expect(B.slipstreamSourcePetId).toBe('A');
-    expect(C.slipstreamSourcePetId).toBe('B');
+    expect(B.slipstreamSourceAvatarId).toBe('A');
+    expect(C.slipstreamSourceAvatarId).toBe('B');
     expect(B.activeBoosts.has('slipstream-boost')).toBe(true);
     expect(C.activeBoosts.has('slipstream-boost')).toBe(true);
     const slipEvts = broadcasts.filter((f) => f.type === 'event.slipstream');
@@ -1820,7 +1820,7 @@ describe('ReefRaceSim — Phase 2 audit-gap tests (P2-T36..P2-T42)', () => {
 
 function bootProfileRoom(opts: {
   avatarIds: string[];
-  petProfiles?: Map<
+  avatarProfiles?: Map<
     string,
     {
       avatarId: string;
@@ -1832,10 +1832,10 @@ function bootProfileRoom(opts: {
   startedAt?: number;
   launchBoosts?: Map<string, 'boost' | 'stall'>;
 }) {
-  const { avatarIds, petProfiles, startedAt, launchBoosts } = opts;
+  const { avatarIds, avatarProfiles, startedAt, launchBoosts } = opts;
   reefRaceSim.startRoom('room-p3', 'reef-race', avatarIds, {
     seed: 1,
-    petProfiles,
+    avatarProfiles,
     startedAt,
     launchBoosts,
   });
@@ -1854,7 +1854,7 @@ function profile(
 
 describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () => {
   // P3-T1
-  it('P3-T1 — applies neutral mults when petProfiles is empty', () => {
+  it('P3-T1 — applies neutral mults when avatarProfiles is empty', () => {
     captureBroadcasts();
     const state = bootProfileRoom({ avatarIds: ['p1', 'p2'] });
     for (const body of state.bodies.values()) {
@@ -1873,7 +1873,7 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     const profiles = new Map([
       ['p1', profile('p1', 50, null)],
     ]);
-    const state = bootProfileRoom({ avatarIds: ['p1'], petProfiles: profiles });
+    const state = bootProfileRoom({ avatarIds: ['p1'], avatarProfiles: profiles });
     const body = state.bodies.get('p1')!;
     // Formula: 1 + 0.005 × 49 = 1.245 → unclamped (ceiling = 1.25).
     expect(body.mults.accelMult).toBeCloseTo(
@@ -1886,7 +1886,7 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
   it('P3-T3 — level 25 grants accelMult ≈ 1.12', () => {
     captureBroadcasts();
     const profiles = new Map([['p1', profile('p1', 25, null)]]);
-    const state = bootProfileRoom({ avatarIds: ['p1'], petProfiles: profiles });
+    const state = bootProfileRoom({ avatarIds: ['p1'], avatarProfiles: profiles });
     const body = state.bodies.get('p1')!;
     expect(body.mults.accelMult).toBeCloseTo(1.12, 6);
   });
@@ -1895,7 +1895,7 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
   it('P3-T4 — level 999 clamps accelMult to ceiling', () => {
     captureBroadcasts();
     const profiles = new Map([['p1', profile('p1', 999, null)]]);
-    const state = bootProfileRoom({ avatarIds: ['p1'], petProfiles: profiles });
+    const state = bootProfileRoom({ avatarIds: ['p1'], avatarProfiles: profiles });
     const body = state.bodies.get('p1')!;
     expect(body.mults.accelMult).toBe(LEVEL_ACCEL_MULT_CEILING);
   });
@@ -1909,7 +1909,7 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     ]);
     const state = bootProfileRoom({
       avatarIds: ['agi', 'bal'],
-      petProfiles: profiles,
+      avatarProfiles: profiles,
     });
     const agi = state.bodies.get('agi')!;
     const bal = state.bodies.get('bal')!;
@@ -1942,7 +1942,7 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     ]);
     const state = bootProfileRoom({
       avatarIds: ['agi', 'bal'],
-      petProfiles: profiles,
+      avatarProfiles: profiles,
     });
     const agi = state.bodies.get('agi')!;
     const bal = state.bodies.get('bal')!;
@@ -1959,7 +1959,7 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     ]);
     const state = bootProfileRoom({
       avatarIds: ['str', 'bal'],
-      petProfiles: profiles,
+      avatarProfiles: profiles,
     });
     const str = state.bodies.get('str')!;
     const bal = state.bodies.get('bal')!;
@@ -1982,7 +1982,7 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     ]);
     const state = bootProfileRoom({
       avatarIds: ['src', 'str', 'bal'],
-      petProfiles: profiles,
+      avatarProfiles: profiles,
     });
     const str = state.bodies.get('str')!;
     const bal = state.bodies.get('bal')!;
@@ -1999,7 +1999,7 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     ]);
     const state = bootProfileRoom({
       avatarIds: ['int', 'bal'],
-      petProfiles: profiles,
+      avatarProfiles: profiles,
     });
     const intl = state.bodies.get('int')!;
     const bal = state.bodies.get('bal')!;
@@ -2018,7 +2018,7 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     ]);
     const state = bootProfileRoom({
       avatarIds: ['int', 'bal'],
-      petProfiles: profiles,
+      avatarProfiles: profiles,
     });
     const intl = state.bodies.get('int')!;
     const bal = state.bodies.get('bal')!;
@@ -2032,7 +2032,7 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     const profiles = new Map([
       ['p1', profile('p1', 50, 'mischievous-trickster')],
     ]);
-    const state = bootProfileRoom({ avatarIds: ['p1'], petProfiles: profiles });
+    const state = bootProfileRoom({ avatarIds: ['p1'], avatarProfiles: profiles });
     // Read mults immediately — no async gap.
     const body = state.bodies.get('p1')!;
     expect(body.mults.accelMult).toBeCloseTo(1.245, 4);
@@ -2055,8 +2055,8 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
         ['p1', profile('p1', 50, 'chaotic-jester')],
       ]),
     );
-    const petProfiles = await fakeProfilesPromise;
-    const state = bootProfileRoom({ avatarIds: ['p1'], petProfiles });
+    const avatarProfiles = await fakeProfilesPromise;
+    const state = bootProfileRoom({ avatarIds: ['p1'], avatarProfiles });
     const body = state.bodies.get('p1')!;
     // Mults must be set BEFORE any tick advances — i.e. immediately after
     // startRoom returns. No 1.0 sentinel allowed.
@@ -2076,7 +2076,7 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     const profiles = new Map([
       ['bot', profile('bot', 50, 'fierce-battler', true)],
     ]);
-    const state = bootProfileRoom({ avatarIds: ['bot'], petProfiles: profiles });
+    const state = bootProfileRoom({ avatarIds: ['bot'], avatarProfiles: profiles });
     const body = state.bodies.get('bot')!;
     expect(body.mults).toEqual(NEUTRAL_BODY_MULTIPLIERS);
   });
@@ -2111,7 +2111,7 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     ]);
     const state = bootProfileRoom({
       avatarIds: ['str'],
-      petProfiles: profiles,
+      avatarProfiles: profiles,
     });
     const body = state.bodies.get('str')!;
     body.vx = 200;
@@ -2180,7 +2180,7 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     ]);
     const state = bootProfileRoom({
       avatarIds: ['p1'],
-      petProfiles: profiles,
+      avatarProfiles: profiles,
     });
     const body = state.bodies.get('p1')!;
     // Poison accelMult to 5.0 so a single applyIntentForTick step adds
@@ -2219,7 +2219,7 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     ]);
     const state = bootProfileRoom({
       avatarIds: ['p1'],
-      petProfiles: profiles,
+      avatarProfiles: profiles,
     });
     const body = state.bodies.get('p1')!;
     body.vx = 0;
@@ -2241,7 +2241,7 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     ]);
     const state = bootProfileRoom({
       avatarIds: ['p1'],
-      petProfiles: profiles,
+      avatarProfiles: profiles,
     });
     const body = state.bodies.get('p1')!;
     // Stack: launch boost + drift-3 + slipstream + ribbon + apex bonus.
@@ -2290,7 +2290,7 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     ]);
     const state = bootProfileRoom({
       avatarIds: ['agi', 'bot'],
-      petProfiles: profiles,
+      avatarProfiles: profiles,
     });
     const agi = state.bodies.get('agi')!;
     const bot = state.bodies.get('bot')!;
@@ -2346,7 +2346,7 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
       ]);
       const state = bootProfileRoom({
         avatarIds: ['agi', 'bal'],
-        petProfiles: profiles,
+        avatarProfiles: profiles,
       });
       const agi = state.bodies.get('agi')!;
       const bal = state.bodies.get('bal')!;

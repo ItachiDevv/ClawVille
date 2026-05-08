@@ -15,7 +15,7 @@ import {
   CLAWVILLE_ORIENTATION_KNOWLEDGE,
 } from '@clawville/shared';
 import type {
-  PetArchetypeId,
+  AvatarArchetypeId,
   AgentCategory,
   AgentHarness,
   AgentModelKey,
@@ -24,9 +24,9 @@ import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { npcSimulation } from '../services/npc-simulation';
-import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
+import { creditClawTokens } from '../services/claw-token-ledger';
 import { logEvent, logEventFromContext } from '../services/event-logger';
-import type { ClawvilleServices } from '@clawville/agent-runtime';
+import { buildRuntimeServices } from '../services/runtime-services-adapter';
 import { ensureWallet, ensureWalletWithFirstTimeSecret } from '../services/wallet-service';
 import { resolveOrCreateUserByIdentity, generateIdentityKeypairForUser } from '../services/identity-service';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
@@ -156,7 +156,7 @@ function calculateStats(personality: z.infer<typeof createAvatarSchema>['persona
  * before calling this.
  */
 function buildCharacterConfig(
-  archetypeId: PetArchetypeId,
+  archetypeId: AvatarArchetypeId,
   avatarName: string,
   modelLabel: string,
   learningFocus?: string | null,
@@ -229,7 +229,7 @@ avatarRoutes.post('/', async (c) => {
 
   // Audit CRITICAL #1 — rate limit the auto-provision branch. Each mint
   // creates a user row, an ed25519 keypair (2 CF Worker wraps), a Solana
-  // wallet row, an agent row, a avatar row, and a Lucia session. Unbounded
+  // wallet row, an agent row, an avatar row, and a Lucia session. Unbounded
   // callers could DoS the Worker + fill the `users`/`wallets` tables +
   // grief the project by squatting desirable avatar names. 5/min/IP matches
   // `connectRateLimiter` in agent-gateway.ts.
@@ -269,12 +269,12 @@ avatarRoutes.post('/', async (c) => {
     ownerId = resolved.id;
   } else {
     // Existing-session path — guard against creating a second avatar.
-    const existingPet = await db.query.avatars.findFirst({
+    const existingAvatar = await db.query.avatars.findFirst({
       where: eq(avatars.userId, sessionUser.id),
     });
 
-    if (existingPet) {
-      throw new HTTPException(400, { message: 'You already have a avatar' });
+    if (existingAvatar) {
+      throw new HTTPException(400, { message: 'You already have an avatar' });
     }
 
     ownerId = sessionUser.id;
@@ -327,7 +327,7 @@ avatarRoutes.post('/', async (c) => {
   const learningFocus = result.data.learningFocus?.trim() || null;
 
   const characterConfig = buildCharacterConfig(
-    result.data.archetypeId as PetArchetypeId,
+    result.data.archetypeId as AvatarArchetypeId,
     result.data.name,
     modelMeta.label,
     learningFocus,
@@ -361,7 +361,7 @@ avatarRoutes.post('/', async (c) => {
         })
         .returning();
 
-      const [insertedPet] = await tx
+      const [insertedAvatar] = await tx
         .insert(avatars)
         .values({
           userId: ownerId,
@@ -381,7 +381,7 @@ avatarRoutes.post('/', async (c) => {
         })
         .returning();
 
-      return { avatar: insertedPet, agent: insertedAgent };
+      return { avatar: insertedAvatar, agent: insertedAgent };
     });
     avatar = txResult.avatar;
     agent = txResult.agent;
@@ -436,7 +436,7 @@ avatarRoutes.post('/', async (c) => {
 
     // 2. Provision the Solana avatar wallet — FATAL on auto-provision path
     //    (audit CRITICAL #3). If Cloudflare Worker is down we'd rather
-    //    500 than leave the user with a avatar that has no wallet + no
+    //    500 than leave the user with an avatar that has no wallet + no
     //    way to recover the plaintext secret later.
     const w = await ensureWalletWithFirstTimeSecret('avatar', avatar.id);
     avatar.walletAddress = w.publicKey;
@@ -500,7 +500,7 @@ avatarRoutes.post('/', async (c) => {
     // Phase 4d — first-time identity + wallet disclosure. Present only
     // when the avatar was created by an auto-provisioned (unauth) call.
     // Subsequent /api/avatars POSTs by the same user would 400 ("already
-    // have a avatar"), so these are truly one-time.
+    // have an avatar"), so these are truly one-time.
     ...(firstTimeIdentity ? { identity: firstTimeIdentity } : {}),
     ...(firstTimeWallet ? { wallet: firstTimeWallet } : {}),
   });
@@ -698,7 +698,7 @@ avatarRoutes.patch('/me/appearance', requireAuth, async (c) => {
   // for Phase 4e exports + any future orchestrator path that reads
   // the agents table as a source of truth.
   const updated = await db.transaction(async (tx) => {
-    const [updatedPet] = await tx
+    const [updatedAvatar] = await tx
       .update(avatars)
       .set(patch)
       .where(and(eq(avatars.userId, user.id), eq(avatars.isActive, true)))
@@ -707,7 +707,7 @@ avatarRoutes.patch('/me/appearance', requireAuth, async (c) => {
     // Audit fix — a concurrent deactivation between the SELECT above
     // and this UPDATE would produce zero returned rows. Without this
     // guard the handler returned { avatar: undefined }.
-    if (!updatedPet) {
+    if (!updatedAvatar) {
       throw new HTTPException(404, { message: 'Avatar not found or inactive' });
     }
 
@@ -742,7 +742,7 @@ avatarRoutes.patch('/me/appearance', requireAuth, async (c) => {
       }
     }
 
-    return updatedPet;
+    return updatedAvatar;
   });
 
   // Audit fix — emit `avatar.appearance.changed` so /dash can aggregate
@@ -812,7 +812,7 @@ avatarRoutes.post('/me/chat', requireAuth, async (c) => {
   });
 
   if (!avatar) {
-    throw new HTTPException(404, { message: 'You do not have a avatar yet' });
+    throw new HTTPException(404, { message: 'You do not have an avatar yet' });
   }
 
   if (!avatar.platformAgentId) {
@@ -829,8 +829,10 @@ avatarRoutes.post('/me/chat', requireAuth, async (c) => {
     throw new HTTPException(500, { message: 'Failed to start avatar agent runtime' });
   }
 
-  // Build state for Providers + Actions
-  const services = { db, creditClawTokens, debitClawTokens } as ClawvilleServices;
+  // Build state for Providers + Actions.
+  // Adapter translates runtime's `avatarId` field → ledger's `avatarId` field.
+  // See `services/runtime-services-adapter.ts` for rationale.
+  const services = buildRuntimeServices(db);
 
   let worldSnapshot: any = null;
   try {
@@ -868,7 +870,7 @@ avatarRoutes.post('/me/chat', requireAuth, async (c) => {
     avatarId: avatar.id,
     userId: user.id,
     services,
-    petData: avatar,
+    avatarData: avatar,
     worldSnapshot,
     inventory,
     activeQuests,
@@ -936,7 +938,7 @@ avatarRoutes.post('/me/heartbeat', requireAuth, async (c) => {
 
   // Phase 2: Ensure avatar is registered in the simulation bridge and
   // report user activity so the avatar snaps back to user control.
-  const bridge = npcSimulation.petAutonomyManager;
+  const bridge = npcSimulation.avatarAutonomyManager;
   if (!bridge.isRegistered(user.id)) {
     // Lazy-load avatar data on first heartbeat (fire-and-forget)
     db.query.avatars

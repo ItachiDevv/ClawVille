@@ -206,7 +206,7 @@ itemRoutes.post('/learn', requireAuthOrAgentSession, async (c) => {
   };
 
   // Update avatar's characterConfig in DB
-  const [updatedPet] = await db
+  const [updatedAvatar] = await db
     .update(avatars)
     .set({
       characterConfig: updatedConfig,
@@ -358,7 +358,7 @@ itemRoutes.post('/learn', requireAuthOrAgentSession, async (c) => {
     learnedBook: book.name,
     newKnowledgeCount: newKnowledge.length,
     totalKnowledge: mergedKnowledge.length,
-    avatar: updatedPet,
+    avatar: updatedAvatar,
   });
 });
 
@@ -385,16 +385,16 @@ itemRoutes.post('/export-skill/:buildingId', requireAuth, async (c) => {
   // from each book. (Books are consumed from inventory when learned, so
   // checking inventory would fail for avatars that already read the books.)
   const buildingBooks = getBooksForBuilding(buildingId);
-  const petKnowledge = new Set<string>(
+  const avatarKnowledge = new Set<string>(
     (avatar.characterConfig as { knowledge?: string[] } | null)?.knowledge ?? []
   );
   const allLearned = buildingBooks.every((book) =>
-    book.knowledgeEntries.some((entry) => petKnowledge.has(entry))
+    book.knowledgeEntries.some((entry) => avatarKnowledge.has(entry))
   );
 
   if (!allLearned) {
     const learnedCount = buildingBooks.filter((book) =>
-      book.knowledgeEntries.some((entry) => petKnowledge.has(entry))
+      book.knowledgeEntries.some((entry) => avatarKnowledge.has(entry))
     ).length;
     return c.json({
       success: false,

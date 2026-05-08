@@ -110,11 +110,11 @@ describe('ReefRaceSplineSim — full-room integration smoke test', () => {
     // already flags >0.02 backward, but we double-check here so a
     // regression that's silently absorbed by floating-point noise can't
     // hide. We sample EVERY tick, not just snapshot ticks.
-    const maxRegressionByPet = new Map<string, number>();
-    const lastProgressByPet = new Map<string, number>();
+    const maxRegressionByAvatar = new Map<string, number>();
+    const lastProgressByAvatar = new Map<string, number>();
     for (const avatar of ALL_PETS) {
-      maxRegressionByPet.set(avatar, 0);
-      lastProgressByPet.set(avatar, 0);
+      maxRegressionByAvatar.set(avatar, 0);
+      lastProgressByAvatar.set(avatar, 0);
     }
 
     // Apply a steady forward thrust for the human so they actually drive
@@ -148,13 +148,13 @@ describe('ReefRaceSplineSim — full-room integration smoke test', () => {
       for (const avatar of ALL_PETS) {
         const body = state.bodies.get(avatar);
         if (!body) continue;
-        const prev = lastProgressByPet.get(avatar)!;
+        const prev = lastProgressByAvatar.get(avatar)!;
         const curr = body.progress;
         const drop = prev - curr;
-        if (drop > maxRegressionByPet.get(avatar)!) {
-          maxRegressionByPet.set(avatar, drop);
+        if (drop > maxRegressionByAvatar.get(avatar)!) {
+          maxRegressionByAvatar.set(avatar, drop);
         }
-        lastProgressByPet.set(avatar, curr);
+        lastProgressByAvatar.set(avatar, curr);
       }
 
       if (state.ended) break;
@@ -212,7 +212,7 @@ describe('ReefRaceSplineSim — full-room integration smoke test', () => {
 
     // 4. No progress regressed beyond 0.02 anti-cheat tolerance.
     for (const avatar of ALL_PETS) {
-      const maxDrop = maxRegressionByPet.get(avatar)!;
+      const maxDrop = maxRegressionByAvatar.get(avatar)!;
       expect(maxDrop).toBeLessThanOrEqual(0.02);
     }
 
