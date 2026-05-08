@@ -14,18 +14,18 @@ import type { AgentCategory, AgentHarness } from '@clawville/shared';
 import { users } from './users';
 import { platformAgents } from './agents';
 
-export const petSpeciesEnum = pgEnum('avatar_species', [
+export const avatarSpeciesEnum = pgEnum('avatar_species', [
   'cat', 'dragon', 'fox', 'owl', 'wolf', 'bunny', 'phoenix', 'turtle',
 ]);
 
-export const petColorEnum = pgEnum('avatar_color', [
+export const avatarColorEnum = pgEnum('avatar_color', [
   'green', 'red', 'blue', 'yellow',
 ]);
 
-export const petGenderEnum = pgEnum('avatar_gender', ['male', 'female']);
+export const avatarGenderEnum = pgEnum('avatar_gender', ['male', 'female']);
 
 /**
- * Avatar model format for 3D rendering.
+ * Avatar render-format for 3D rendering.
  *
  * - 'glb'  — default, loads /models/{species}.glb via existing species-keyed path
  * - 'vrm'  — custom VRM model URL in avatars.avatarUrl; used by Milady agents that
@@ -34,7 +34,7 @@ export const petGenderEnum = pgEnum('avatar_gender', ['male', 'female']);
  *
  * Renderer falls back to 'glb' if avatarUrl is null or the VRM fails to load.
  */
-export const petAvatarTypeEnum = pgEnum('pet_avatar_type', ['glb', 'vrm']);
+export const avatarRenderTypeEnum = pgEnum('avatar_render_type', ['glb', 'vrm']);
 
 /**
  * VRM-specific metadata — expression map, bone overrides, loading hints.
@@ -42,7 +42,7 @@ export const petAvatarTypeEnum = pgEnum('pet_avatar_type', ['glb', 'vrm']);
  * the runtime character config) or by a future ClawVille avatar upload flow.
  * Optional — the renderer uses sensible defaults if absent.
  */
-export interface PetVrmMetadataJson {
+export interface AvatarVrmMetadataJson {
   /** Semantic version of the schema so we can migrate later */
   version?: number;
   /** Expression names available on the VRM (e.g. 'happy', 'sad', 'angry') */
@@ -57,20 +57,20 @@ export interface PetVrmMetadataJson {
   contentHash?: string;
 }
 
-export interface PetPersonalityJson {
+export interface AvatarPersonalityJson {
   habitat: string;
   hobby: string;
   greeting: string;
 }
 
-export interface PetStatsJson {
+export interface AvatarStatsJson {
   strength: number;
   defence: number;
   movement: number;
 }
 
 /** ElizaOS-compatible character config for avatar agents */
-export interface PetCharacterConfigJson {
+export interface AvatarCharacterConfigJson {
   bio: string[];
   greeting: string;
   tone: string;
@@ -95,9 +95,9 @@ export const avatars = pgTable('avatars', {
     .unique()
     .references(() => users.id, { onDelete: 'cascade' }),
   name: varchar('name', { length: 100 }).notNull().unique(),
-  species: petSpeciesEnum('species').notNull(),
-  color: petColorEnum('color').notNull(),
-  gender: petGenderEnum('gender').notNull(),
+  species: avatarSpeciesEnum('species').notNull(),
+  color: avatarColorEnum('color').notNull(),
+  gender: avatarGenderEnum('gender').notNull(),
   /** Selected archetype ID (e.g. 'brave-adventurer') */
   archetype: varchar('archetype', { length: 50 }).notNull(),
   /**
@@ -109,10 +109,10 @@ export const avatars = pgTable('avatars', {
    * skips the injection when null.
    */
   learningFocus: varchar('learning_focus', { length: 120 }),
-  personality: jsonb('personality').$type<PetPersonalityJson>().notNull(),
-  stats: jsonb('stats').$type<PetStatsJson>().notNull(),
+  personality: jsonb('personality').$type<AvatarPersonalityJson>().notNull(),
+  stats: jsonb('stats').$type<AvatarStatsJson>().notNull(),
   /** ElizaOS character config - full archetype data for the avatar's AI personality */
-  characterConfig: jsonb('character_config').$type<PetCharacterConfigJson>(),
+  characterConfig: jsonb('character_config').$type<AvatarCharacterConfigJson>(),
   /** Link to platform_agents table for ElizaOS runtime */
   platformAgentId: uuid('platform_agent_id')
     .references(() => platformAgents.id, { onDelete: 'set null' }),
@@ -134,9 +134,9 @@ export const avatars = pgTable('avatars', {
    * renderer (Phase 5, not yet wired on the frontend) with avatarUrl as
    * the source. Schema is ready today; renderer comes later.
    */
-  avatarType: petAvatarTypeEnum('avatar_type').default('glb').notNull(),
+  avatarType: avatarRenderTypeEnum('avatar_type').default('glb').notNull(),
   avatarUrl: varchar('avatar_url', { length: 1024 }),
-  vrmMetadata: jsonb('vrm_metadata').$type<PetVrmMetadataJson>(),
+  vrmMetadata: jsonb('vrm_metadata').$type<AvatarVrmMetadataJson>(),
   /**
    * Phase 2 fields — first-class agent-framework identity on the avatar.
    *
@@ -161,8 +161,8 @@ export const avatars = pgTable('avatars', {
    *   2. TypeScript — `$type<AgentCategory>()` / `$type<AgentHarness>()`
    *      below pull the union directly from @clawville/shared so any
    *      registry change in the shared package cascades here at build.
-   *   3. Postgres — CHECK constraints `pets_agent_category_valid` and
-   *      `pets_harness_valid` (see constraint block at the end of the
+   *   3. Postgres — CHECK constraints `avatars_agent_category_valid` and
+   *      `avatars_harness_valid` (see constraint block at the end of the
    *      table definition). This is defense-in-depth against direct-SQL
    *      writers (admin tools, cron, backfill scripts) that bypass the
    *      API. See Phase 2 plan §3.1.
@@ -182,7 +182,7 @@ export const avatars = pgTable('avatars', {
    * Auto-generated custodial Solana wallet address (base58). NULL for avatars
    * that existed before the C2 backfill; populated for new avatars (human or
    * agent-created) via apps/api/src/services/avatar-wallet-service.ts.
-   * Secret key lives encrypted in the avatar_wallet table.
+   * Secret key lives encrypted in the wallets table.
    */
   walletAddress: varchar('wallet_address', { length: 64 }),
   /**
@@ -220,11 +220,11 @@ export const avatars = pgTable('avatars', {
   // already exists", drop the existing one manually (the name matches
   // the first argument to check()).
   agentCategoryCheck: check(
-    'pets_agent_category_valid',
+    'avatars_agent_category_valid',
     sql`${t.agentCategory} IN ('openclaw','hermes','milady','other')`,
   ),
   harnessCheck: check(
-    'pets_harness_valid',
+    'avatars_harness_valid',
     sql`${t.harness} IN ('openclaw','hermes','milady','custom')`,
   ),
 }));

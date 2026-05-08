@@ -28,7 +28,7 @@ export const activityParties = pgTable('activity_parties', {
   id: uuid('id').primaryKey().defaultRandom(),
   /** 6-char base32-crockford share code, unique across active parties */
   shortCode: varchar('short_code', { length: 10 }).notNull().unique(),
-  leaderAvatarId: uuid('leader_pet_id')
+  leaderAvatarId: uuid('leader_avatar_id')
     .notNull()
     .references(() => avatars.id),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),

@@ -46,7 +46,7 @@ export const activityRoomParticipants = pgTable(
   },
   (t) => ({
     pk: primaryKey({ columns: [t.roomId, t.avatarId] }),
-    petJoinedIdx: index('idx_arp_pet_joined').on(t.avatarId, t.joinedAt.desc()),
+    avatarJoinedIdx: index('idx_arp_avatar_joined').on(t.avatarId, t.joinedAt.desc()),
   }),
 );
 

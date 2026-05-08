@@ -30,7 +30,7 @@ import { avatars } from './avatars';
  *
  * Indexes (per backend §7.3):
  *   (activity_id, placement, created_at DESC) — leaderboard window scans
- *   (avatar_id, created_at DESC)                 — "my recent results"
+ *   (avatar_id, created_at DESC)              — "my recent results"
  *   (activity_id, score_ms ASC) WHERE score_ms IS NOT NULL — Reef fast-time
  */
 export const activityResults = pgTable(
@@ -95,7 +95,7 @@ export const activityResults = pgTable(
       t.placement,
       t.createdAt.desc(),
     ),
-    petCreatedIdx: index('idx_activity_results_pet_created').on(
+    avatarCreatedIdx: index('idx_activity_results_avatar_created').on(
       t.avatarId,
       t.createdAt.desc(),
     ),
