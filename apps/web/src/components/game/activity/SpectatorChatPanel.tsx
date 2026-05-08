@@ -21,7 +21,7 @@ import type { ActivityChatMessage } from '@/stores/activity';
 
 export interface SpectatorChatPanelProps {
   messages: ActivityChatMessage[];
-  /** Resolves a avatarId to a friendly display name when available. */
+  /** Resolves an avatarId to a friendly display name when available. */
   resolveName: (avatarId: string) => string;
   /** Self avatar id — own messages render with a distinct tint. */
   selfAvatarId: string | null;

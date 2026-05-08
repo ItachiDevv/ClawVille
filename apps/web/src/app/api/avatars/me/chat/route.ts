@@ -27,7 +27,7 @@ export async function POST(request: NextRequest) {
     });
 
     if (!avatar) {
-      return error('You do not have a avatar yet', 404);
+      return error('You do not have an avatar yet', 404);
     }
 
     if (!avatar.platformAgentId) {

@@ -51,7 +51,7 @@ export default function AgentConnectModal() {
   const handleGenerateToken = useCallback(async () => {
     // Avatar-gate is enforced upstream by the render branch (the "create your
     // agent" block replaces this button when no avatar exists), so this path
-    // shouldn't be reachable without a avatar. Guard remains as a defense-in-
+    // shouldn't be reachable without an avatar. Guard remains as a defense-in-
     // depth check — but the message is short because the user never sees it.
     if (!avatar?.id || !authData?.user?.id) {
       setError('Avatar required — close this modal and click Create Your Agent.');

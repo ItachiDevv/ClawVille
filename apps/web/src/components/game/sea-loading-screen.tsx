@@ -68,7 +68,7 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
   const rafRef     = useRef<number | null>(null);
   const mountedRef = useRef(true);
 
-  // Read avatar color from game store (set by game/page.tsx via setPetAppearance)
+  // Read avatar color from game store (set by game/page.tsx via setAvatarAppearance)
   const avatarColorId = useGameStore((s) => s.avatarColor);
   const lobsterColor = COLOR_MAP[avatarColorId] ?? DEFAULT_COLOR;
   // Derive a slightly darker shade for shading strokes

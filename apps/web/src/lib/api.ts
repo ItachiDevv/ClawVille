@@ -167,7 +167,7 @@ export const api = {
   getMyAvatar: () => request<{ avatar: any }>('/api/avatars/me'),
 
   // Avatar chat (chat with your own avatar)
-  sendPetChat: (content: string) =>
+  sendAvatarChat: (content: string) =>
     request<{ message: { role: string; content: string; timestamp: string } }>(
       '/api/avatars/me/chat',
       {
@@ -191,7 +191,7 @@ export const api = {
       }
     ),
 
-  updatePetPosition: (positionX: number, positionY: number) =>
+  updateAvatarPosition: (positionX: number, positionY: number) =>
     request<{ avatar: any }>('/api/avatars/me', {
       method: 'PATCH',
       body: JSON.stringify({ positionX, positionY }),
@@ -200,7 +200,7 @@ export const api = {
   // Phase 4c Layer 1 — in-game appearance edit. Backend validates modelKey
   // stays within the current harness pool (Milady ↔ Milady, non-Milady ↔
   // non-Milady) so appearance swaps can't bypass the hosting contract.
-  editPetAppearance: (data: {
+  editAvatarAppearance: (data: {
     modelKey?: string;
     color?: 'green' | 'red' | 'blue' | 'yellow';
     gender?: 'male' | 'female';
@@ -210,7 +210,7 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  checkPetName: (name: string) =>
+  checkAvatarName: (name: string) =>
     request<{ available: boolean; reason?: string }>(`/api/avatars/check-name/${name}`),
 
   // Locations
@@ -421,7 +421,7 @@ export const api = {
   openclawChat: (data: {
     sessionId: string;
     content: string;
-    petContext?: {
+    avatarContext?: {
       name: string;
       species: string;
       archetype?: string;
@@ -441,7 +441,7 @@ export const api = {
     sessionId: string;
     locationId: string;
     content: string;
-    petContext?: {
+    avatarContext?: {
       name: string;
       species: string;
       archetype?: string;
@@ -492,7 +492,7 @@ export const api = {
     }),
 
   // Heartbeat (alias matching ClawVille convention)
-  sendPetHeartbeat: (positionX: number, positionY: number) =>
+  sendAvatarHeartbeat: (positionX: number, positionY: number) =>
     honoRequest<{ ok: boolean }>('/api/avatars/me/heartbeat', {
       method: 'POST',
       body: JSON.stringify({ positionX, positionY }),

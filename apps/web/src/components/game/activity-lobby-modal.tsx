@@ -386,7 +386,7 @@ function IdleBody({
           member={selfMember ?? undefined}
           ctaLabel="Sign in to join a party"
           ctaDisabled
-          ctaDisabledReason="Connect a avatar first"
+          ctaDisabledReason="Connect an avatar first"
         />
 
         {/* Slots 2..PARTY_CAP — Friend + Agent invite stubs.

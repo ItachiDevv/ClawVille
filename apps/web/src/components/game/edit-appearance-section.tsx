@@ -5,7 +5,7 @@
  *
  * Lets the user swap avatar (modelKey), re-tint color (GLB only — VRM
  * MToon materials preserve their native colorway), and switch gender.
- * Calls `PATCH /api/avatars/me/appearance` via `useEditPetAppearance`.
+ * Calls `PATCH /api/avatars/me/appearance` via `useEditAvatarAppearance`.
  *
  * Harness is NOT editable here — swapping Milady↔non-Milady would cross
  * the hosting contract. The avatar grid is pre-filtered to the current
@@ -20,7 +20,7 @@ import {
   type ModelKey,
   type PickerColorId,
 } from '@/lib/three/agent-model-registry';
-import { useEditPetAppearance } from '@/hooks/use-avatar';
+import { useEditAvatarAppearance } from '@/hooks/use-avatar';
 import { useGameStore } from '@/stores/game';
 
 interface EditAppearanceSectionProps {
@@ -34,7 +34,7 @@ interface EditAppearanceSectionProps {
 }
 
 export function EditAppearanceSection({ avatar }: EditAppearanceSectionProps) {
-  const editMutation = useEditPetAppearance();
+  const editMutation = useEditAvatarAppearance();
   const addToast = useGameStore((s) => s.addToast);
 
   const currentModelKey = (avatar.modelKey ?? DEFAULT_AGENT_MODEL_KEY) as ModelKey;

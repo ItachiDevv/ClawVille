@@ -17,7 +17,7 @@
  * Why a window event vs. calling api directly from the store?
  *   - The Zustand store has no QueryClient access — react-query is a
  *     React-tree concern, not a global one.
- *   - The window event keeps the store free of "do I have a avatar
+ *   - The window event keeps the store free of "do I have an avatar
  *     already?" branches; this component checks the cache itself.
  *   - It's also useful as a debug hook (`window.dispatchEvent(new
  *     CustomEvent('clawville:ensure-guest-avatar'))` from devtools).
@@ -36,7 +36,7 @@ export function GuestAvatarBootstrap() {
     if (typeof window === 'undefined') return;
 
     async function handle(): Promise<void> {
-      // Skip if we already have a avatar in the cache — no need to bootstrap.
+      // Skip if we already have an avatar in the cache — no need to bootstrap.
       const cached = queryClient.getQueryData<{ avatar: unknown } | undefined>(['avatar']);
       if (cached?.avatar) return;
 

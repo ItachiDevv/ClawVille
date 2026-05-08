@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { useCreatePet } from '@/hooks/use-avatar';
+import { useCreateAvatar } from '@/hooks/use-avatar';
 import { useGameStore } from '@/stores/game';
 import {
   AVATAR_ARCHETYPES,
@@ -11,7 +11,7 @@ import {
   AGENT_MODEL_KEYS,
 } from '@clawville/shared';
 import type {
-  PetArchetypeId,
+  AvatarArchetypeId,
   AgentCategory,
   AgentHarness,
 } from '@clawville/shared';
@@ -109,13 +109,13 @@ const ARCHETYPE_COLORS: Record<string, string> = {
 
 export default function PersonalityPage() {
   const router = useRouter();
-  const createPetMutation = useCreatePet();
+  const createPetMutation = useCreateAvatar();
 
   const [step1, setStep1] = useState<Step1Data | null>(null);
   const [habitat, setHabitat] = useState('forest');
   const [hobby, setHobby] = useState('reading-and-learning');
   const [greetingStyle, setGreetingStyle] = useState('run-away');
-  const [selectedArchetype, setSelectedArchetype] = useState<PetArchetypeId | null>(null);
+  const [selectedArchetype, setSelectedArchetype] = useState<AvatarArchetypeId | null>(null);
   const [error, setError] = useState('');
 
   // Load step 1 data from sessionStorage

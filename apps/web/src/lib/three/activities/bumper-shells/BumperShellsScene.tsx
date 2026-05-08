@@ -216,12 +216,12 @@ function ChaseCameraController({ selfAvatarId, entities, shakeRef }: ChaseCamera
 interface SpectatorCameraProps {
   mode: SpectatorCamMode;
   /** avatarId of the entity to follow in 'follow' mode. null = auto-pick closest alive. */
-  targetPetId: string | null;
+  targetAvatarId: string | null;
   /** Live entity map from activity store — read in useFrame (no re-render trigger). */
   entities: Map<string, BumperShellEntity>;
 }
 
-function SpectatorCamera({ mode, targetPetId, entities }: SpectatorCameraProps) {
+function SpectatorCamera({ mode, targetAvatarId, entities }: SpectatorCameraProps) {
   const { camera, gl } = useThree();
 
   // 'free' mode OrbitControls — created/destroyed on mode enter/exit.
@@ -293,8 +293,8 @@ function SpectatorCamera({ mode, targetPetId, entities }: SpectatorCameraProps) 
 
     if (mode === 'follow') {
       // 'follow': explicit target avatarId, or first alive entity as fallback.
-      if (targetPetId) {
-        targetEntity = entities.get(targetPetId) ?? null;
+      if (targetAvatarId) {
+        targetEntity = entities.get(targetAvatarId) ?? null;
         // If target is eliminated, fall back to any alive entity.
         if (targetEntity && !targetEntity.alive) targetEntity = null;
       }
@@ -495,7 +495,7 @@ interface SceneContentsProps {
   pickups: Map<string, BumperPickup>;
   selfAvatarId: string | null;
   spectatorCamMode?: SpectatorCamMode;
-  spectatorTargetPetId?: string | null;
+  spectatorTargetAvatarId?: string | null;
   shakeRef: React.MutableRefObject<number>;
   onSelfHit: () => void;
 }
@@ -505,7 +505,7 @@ function SceneContents({
   pickups,
   selfAvatarId,
   spectatorCamMode,
-  spectatorTargetPetId,
+  spectatorTargetAvatarId,
   shakeRef,
   onSelfHit,
 }: SceneContentsProps) {
@@ -515,7 +515,7 @@ function SceneContents({
       {spectatorCamMode ? (
         <SpectatorCamera
           mode={spectatorCamMode}
-          targetPetId={spectatorTargetPetId ?? null}
+          targetAvatarId={spectatorTargetAvatarId ?? null}
           entities={entities}
         />
       ) : (
@@ -578,7 +578,7 @@ export interface BumperShellsSceneProps {
    * Spectator camera mode. When undefined, the perspective chase camera follows selfAvatarId.
    *
    * When set, spectator camera is used:
-   *   'follow' — lerps toward spectatorTargetPetId (or first alive entity).
+   *   'follow' — lerps toward spectatorTargetAvatarId (or first alive entity).
    *   'free'   — OrbitControls, distance bounded 600–1500wu.
    *   'action' — auto-follows arena center entity, retargets every 3s.
    *
@@ -589,14 +589,14 @@ export interface BumperShellsSceneProps {
    * AvatarId to follow in 'follow' mode. Ignored for 'free' and 'action'.
    * Falls back to first alive entity if null or the entity is eliminated.
    */
-  spectatorTargetPetId?: string | null;
+  spectatorTargetAvatarId?: string | null;
 }
 
 export default function BumperShellsScene({
   roomId,
   selfAvatarId = null,
   spectatorCamMode,
-  spectatorTargetPetId,
+  spectatorTargetAvatarId,
 }: BumperShellsSceneProps) {
   const entities = useActivityStore((s) => s.entities as Map<string, BumperShellEntity>);
   const pickups  = useActivityStore((s) => s.pickups  as Map<string, BumperPickup>);
@@ -650,7 +650,7 @@ export default function BumperShellsScene({
           pickups={pickups ?? new Map()}
           selfAvatarId={selfAvatarId}
           spectatorCamMode={spectatorCamMode}
-          spectatorTargetPetId={spectatorTargetPetId}
+          spectatorTargetAvatarId={spectatorTargetAvatarId}
           shakeRef={shakeRef}
           onSelfHit={handleSelfHit}
         />

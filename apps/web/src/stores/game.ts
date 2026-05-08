@@ -6,10 +6,10 @@ import { ACTIVITY_REGISTRY, DEFAULT_AGENT_MODEL_KEY } from '@clawville/shared';
 // Callers that need per-frame position accuracy (movement physics, click-path
 // following, proximity checks) read from this ref without triggering React
 // re-renders. The reactive zustand field (avatarPosition) is throttled to 10 Hz
-// via setPetPosition so that subscribers like Minimap rebuild at most 10×/sec
+// via setAvatarPosition so that subscribers like Minimap rebuild at most 10×/sec
 // instead of 60×/sec during movement.
 // ---------------------------------------------------------------------------
-export const petPositionRef: { x: number; y: number } = { x: 2560, y: 2940 };
+export const avatarPositionRef: { x: number; y: number } = { x: 2560, y: 2940 };
 // Module-scope timestamp of the last reactive (zustand set) write.
 let lastReactiveWriteAt = 0;
 
@@ -58,20 +58,20 @@ export interface GameState {
   avatarColor: string;
   avatarName: string;
   /** Phase 2: stable model key from AGENT_MODELS registry — drives GLB in player-avatar.tsx */
-  petModelKey: string;
-  setPetAppearance: (species: string, color: string, name?: string, modelKey?: string) => void;
+  avatarModelKey: string;
+  setAvatarAppearance: (species: string, color: string, name?: string, modelKey?: string) => void;
 
   // Avatar position (written by game loop)
   avatarPosition: { x: number; y: number };
-  setPetPosition: (x: number, y: number) => void;
+  setAvatarPosition: (x: number, y: number) => void;
 
   // Movement direction for sprite animation
   movementDirection: MovementDirection;
   setMovementDirection: (dir: MovementDirection) => void;
 
   // Avatar speed (0-1 normalized, written by game loop)
-  petSpeed: number;
-  setPetSpeed: (speed: number) => void;
+  avatarSpeed: number;
+  setAvatarSpeed: (speed: number) => void;
 
   // Near location (written by game loop when player is within TALK_RADIUS of a
   // building's resident character — no more "inside the zone" model).
@@ -188,8 +188,8 @@ export interface GameState {
   markBuildingVisited: (id: string) => boolean; // returns true if newly discovered
 
   // Avatar autonomy
-  petIsAutonomous: boolean;
-  setPetIsAutonomous: (v: boolean) => void;
+  avatarIsAutonomous: boolean;
+  setAvatarIsAutonomous: (v: boolean) => void;
 
   // Activity feed
   activityFeedOpen: boolean;
@@ -291,9 +291,9 @@ export interface GameState {
   consumeFloatingTexts: () => Array<{ text: string; color: number }>;
 
   // Avatar level & XP
-  petLevel: number;
-  petXp: number;
-  setPetLevel: (level: number, xp: number) => void;
+  avatarLevel: number;
+  avatarXp: number;
+  setAvatarLevel: (level: number, xp: number) => void;
 
   // Daily login streak
   dailyLoginClaimed: boolean;
@@ -415,12 +415,12 @@ export const useGameStore = create<GameState>((set, get) => ({
   // 2026-04-26: default flipped 'lobster' → DEFAULT_AGENT_MODEL_KEY so guests
   // and never-customized avatars render as Miladys (matches the canonical default
   // in packages/shared/src/constants/agent-models.ts).
-  petModelKey: DEFAULT_AGENT_MODEL_KEY,
-  setPetAppearance: (species, color, name, modelKey) => set({
+  avatarModelKey: DEFAULT_AGENT_MODEL_KEY,
+  setAvatarAppearance: (species, color, name, modelKey) => set({
     avatarSpecies: species,
     avatarColor: color,
     ...(name ? { avatarName: name } : {}),
-    petModelKey: modelKey ?? DEFAULT_AGENT_MODEL_KEY,
+    avatarModelKey: modelKey ?? DEFAULT_AGENT_MODEL_KEY,
   }),
 
   // Spawn 380 world units south of center (world Z+380 = store y=2940) so the
@@ -429,12 +429,12 @@ export const useGameStore = create<GameState>((set, get) => ({
   // z=+200 (guide z=+100) rendered the podium wrapping the guide; z=+240 places
   // the guide fully south of the podium's 144u bottom radius at ground level.
   avatarPosition: { x: 2560, y: 2940 },
-  setPetPosition: (x, y) => {
+  setAvatarPosition: (x, y) => {
     // Always update the module-scope ref — zero React overhead, safe to call
     // at 60 Hz from useFrame / rAF loops. Per-frame readers (player-avatar.tsx,
-    // use-game-loop.ts) switch to petPositionRef so they never touch React.
-    petPositionRef.x = x;
-    petPositionRef.y = y;
+    // use-game-loop.ts) switch to avatarPositionRef so they never touch React.
+    avatarPositionRef.x = x;
+    avatarPositionRef.y = y;
     // Throttle the reactive zustand write to 10 Hz (100 ms) to prevent the
     // Minimap SVG (and any other subscriber) from rebuilding on every frame.
     const now = performance.now();
@@ -456,11 +456,11 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({ movementDirection: dir });
   },
 
-  petSpeed: 0,
+  avatarSpeed: 0,
   // Same per-frame guard rationale — player-avatar writes speed every tick.
-  setPetSpeed: (speed) => {
-    if (speed === get().petSpeed) return;
-    set({ petSpeed: speed });
+  setAvatarSpeed: (speed) => {
+    if (speed === get().avatarSpeed) return;
+    set({ avatarSpeed: speed });
   },
 
   nearLocation: null,
@@ -639,8 +639,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     return true;
   },
 
-  petIsAutonomous: false,
-  setPetIsAutonomous: (v) => set({ petIsAutonomous: v }),
+  avatarIsAutonomous: false,
+  setAvatarIsAutonomous: (v) => set({ avatarIsAutonomous: v }),
 
   activityFeedOpen: false,
   toggleActivityFeed: () => set((s) => ({ activityFeedOpen: !s.activityFeedOpen })),
@@ -775,9 +775,9 @@ export const useGameStore = create<GameState>((set, get) => ({
     return texts;
   },
 
-  petLevel: 1,
-  petXp: 0,
-  setPetLevel: (level, xp) => set({ petLevel: level, petXp: xp }),
+  avatarLevel: 1,
+  avatarXp: 0,
+  setAvatarLevel: (level, xp) => set({ avatarLevel: level, avatarXp: xp }),
 
   dailyLoginClaimed: false,
   loginStreak: 0,
@@ -832,12 +832,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     // Reset to the same default used in the initial store declaration
     // (line 319). Omitting this was a cross-session leak — after logout,
     // the next user's player-avatar would render with the previous user's
-    // GLB until setPetAppearance fired, which for an unauthenticated
+    // GLB until setAvatarAppearance fired, which for an unauthenticated
     // session may never happen.
-    petModelKey: 'lobster',
+    avatarModelKey: 'lobster',
     avatarPosition: { x: 2560, y: 2940 }, // 380wu south of center; matches initial spawn (guide at z=+240)
     movementDirection: 'idle',
-    petSpeed: 0,
+    avatarSpeed: 0,
     nearLocation: null,
     nearCharacter: null,
     currentLocation: null,
@@ -855,7 +855,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     shopOpen: false,
     joystickVelocity: { x: 0, y: 0 },
     cameraJoystickVelocity: { x: 0, y: 0 },
-    petIsAutonomous: false,
+    avatarIsAutonomous: false,
     activityFeedOpen: false,
     agentConnected: false,
     agentSessionId: null,
@@ -868,8 +868,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     questBoardOpen: false,
     bountyBoardOpen: false,
     leaderboardOpen: false,
-    petLevel: 1,
-    petXp: 0,
+    avatarLevel: 1,
+    avatarXp: 0,
     dailyLoginClaimed: false,
     loginStreak: 0,
     clickPath: null,
