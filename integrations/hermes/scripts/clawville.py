@@ -230,16 +230,27 @@ if __name__ == "__main__":
 # ───────────────────────────────────────────────────────────────────────
 
 def cmd_pair(args):
-    """One-time pairing. Accepts either:
+    """One-time pairing. Three modes:
       A) connect-token URL from the in-game "Connect Agent" modal:
          https://api.clawville.world/api/skills/connect?token=ct-xxx
-         (this is the human-pastes-into-Hermes flow — no Lucia cookie needed,
-         the connect token IS the auth)
+         (the human-pastes-into-Hermes flow — attaches the agent to the
+         human's existing avatar)
       B) magic-link URL from an existing agent session's sessionTicket:
          https://clawville.world/enter?t=sess-xxx
-         (this is the agent-already-connected, log-in-as-them flow)
+         (agent-already-connected, log-in-as-them flow — needs Lucia cookie)
+      C) `--self` flag — direct agent self-registration with no URL, no
+         human account, no avatar to create first. Server auto-mints a user
+         + avatar for the agent based on its identity. This is the "open
+         agent onboarding" path called out in the brand spec.
     """
+    if args.self:
+        return _pair_self(args)
     url = args.magic_link  # arg name kept for backwards compat
+    if not url:
+        die(
+            "url_or_self_required",
+            "Provide either --magic-link <URL> (from Connect Agent modal) or --self for direct agent registration with no human account.",
+        )
     parsed = urllib.parse.urlparse(url)
     qs = urllib.parse.parse_qs(parsed.query)
 
@@ -317,11 +328,15 @@ def cmd_pair(args):
 
     avatar = _request_json("GET", "/api/avatars/me")
     if avatar["status"] != 200:
-        die("no_pet", "Authenticated but no active avatar found. Create a avatar at clawville.world first.")
-    pet_row = avatar["body"]["avatar"]
+        die("no_avatar", "Authenticated but no active avatar found. Create an avatar at clawville.world first.")
+    avatar_row = avatar["body"]["avatar"]
 
     tok = _request_json("POST", "/api/agent/connect-token",
-                        body={"avatarId": pet_row["id"], "userId": user["id"]})
+                        body={
+                            "avatarId": avatar_row["id"],
+                            "avatarName": avatar_row["name"],
+                            "userId": user["id"],
+                        })
     if tok["status"] != 200:
         die("connect_token_failed", json.dumps(tok["body"]))
 
@@ -336,8 +351,8 @@ def cmd_pair(args):
     body = conn["body"]
     state = {
         "userId": user["id"],
-        "avatarId": pet_row["id"],
-        "avatarName": pet_row["name"],
+        "avatarId": avatar_row["id"],
+        "avatarName": avatar_row["name"],
         "agentId": body["agentId"],
         "sessionId": body["sessionId"],
         "ownedSkills": body.get("ownedSkills", []),
@@ -355,7 +370,7 @@ def cmd_pair(args):
 
     emit({
         "ok": True,
-        "avatarName": pet_row["name"],
+        "avatarName": avatar_row["name"],
         "userEmail": user.get("email"),
         "agentId": body["agentId"],
         "sessionId": body["sessionId"],
