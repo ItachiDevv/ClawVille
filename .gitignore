@@ -40,6 +40,7 @@ coverage
 .claude/worktree-archive-*/
 .claude/settings.local.json
 .claude/reports/
+.claude/plans/github-support-ticket.md
 
 # Misc
 .DS_Store
