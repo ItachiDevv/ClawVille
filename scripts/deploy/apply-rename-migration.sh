@@ -2,14 +2,19 @@
 # apply-rename-migration.sh
 #
 # Applies a hand-authored Drizzle SQL migration (e.g. 0007_pets_to_avatars.sql)
-# to the production Postgres instance running inside the `coolify-db`
-# container on the Hetzner VPS. This script EXISTS because
-# `packages/database/package.json` wires both `migrate` and `push` to
-# `drizzle-kit push --force`, which DIFFs the TS schema against the live DB
-# and synthesizes its own ALTERs — it does NOT execute hand-authored SQL
-# files in `packages/database/drizzle/*.sql`. Running `db:push` for a rename
-# would emit `DROP TABLE avatars` + `CREATE TABLE avatars` and wipe production
-# rows. This script is the manual escape hatch.
+# to the production Postgres instance. ClawVille's prod DB is Supabase
+# (aws-1-us-east-1.pooler.supabase.com:6543) — NOT the coolify-db Postgres
+# stack. The DATABASE_URL is set as an env var inside the api container
+# on the Hetzner VPS. We exec into the api container, install psql if
+# absent, and apply the migration via psql against $DATABASE_URL.
+#
+# This script EXISTS because `packages/database/package.json` wires both
+# `migrate` and `push` to `drizzle-kit push --force`, which DIFFs the TS
+# schema against the live DB and synthesizes its own ALTERs — it does NOT
+# execute hand-authored SQL files in `packages/database/drizzle/*.sql`.
+# Running `db:push` for a rename would emit `DROP TABLE avatars` + `CREATE
+# TABLE avatars` and wipe production rows. This script is the manual
+# escape hatch.
 #
 # Usage:
 #   bash scripts/deploy/apply-rename-migration.sh \
@@ -106,11 +111,31 @@ run_remote() {
   ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new "root@${VPS_IP}" "$cmd"
 }
 
+find_api_container() {
+  run_remote "docker ps --format '{{.Names}}' | grep -E 'yvtwz7snaghxifkjhyxknffu' | head -1"
+}
+
+ensure_psql_in_container() {
+  local container="$1"
+  if ! run_remote "docker exec ${container} which psql >/dev/null 2>&1"; then
+    echo "[apply-rename-migration] Installing postgresql-client in api container..."
+    run_remote "docker exec ${container} bash -c 'apt-get update -qq && apt-get install -y -qq postgresql-client' >/dev/null 2>&1"
+  fi
+}
+
 run_psql() {
-  # Run a single SQL statement inside coolify-db, return only the value
-  # (psql -At = unaligned, tuples-only).
+  # Run a single SQL statement against the live Supabase DB via the api
+  # container's $DATABASE_URL. Returns only the value (psql -At = unaligned,
+  # tuples-only).
   local sql="$1"
-  run_remote "docker exec coolify-db psql -U coolify -d coolify -At -c \"${sql}\""
+  local container="${API_CONTAINER:-$(find_api_container)}"
+  if [[ -z "$container" ]]; then
+    echo "[apply-rename-migration] Could not find api container on ${VPS_IP}" >&2
+    return 1
+  fi
+  API_CONTAINER="$container"
+  ensure_psql_in_container "$container"
+  run_remote "docker exec ${container} bash -c 'psql \"\$DATABASE_URL\" -At -c \"${sql//\"/\\\"}\"'"
 }
 
 # ─── Pre-flight: is the migration already applied? ──────────────────────
@@ -143,16 +168,22 @@ else
     "$LOCAL_SQL" "root@${VPS_IP}:${REMOTE_TMP}"
 fi
 
-echo "[apply-rename-migration] Copying SQL into coolify-db container..."
-run_remote "docker cp ${REMOTE_TMP} coolify-db:${CONTAINER_TMP}"
+CONTAINER="${API_CONTAINER:-$(find_api_container)}"
+if [[ -z "$CONTAINER" ]]; then
+  echo "[apply-rename-migration] Could not find api container on ${VPS_IP}" >&2
+  exit 1
+fi
+echo "[apply-rename-migration] Copying SQL into api container ${CONTAINER}..."
+run_remote "docker cp ${REMOTE_TMP} ${CONTAINER}:${CONTAINER_TMP}"
 
 # ─── Apply migration ────────────────────────────────────────────────────
 echo
-echo "[apply-rename-migration] Applying migration via psql..."
+echo "[apply-rename-migration] Applying migration via psql against \$DATABASE_URL (Supabase)..."
 if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "[dry-run] docker exec coolify-db psql -U coolify -d coolify -v ON_ERROR_STOP=1 -f ${CONTAINER_TMP}"
+  echo "[dry-run] docker exec ${CONTAINER} bash -c 'psql \"\$DATABASE_URL\" -v ON_ERROR_STOP=1 -f ${CONTAINER_TMP}'"
 else
-  if ! run_remote "docker exec coolify-db psql -U coolify -d coolify -v ON_ERROR_STOP=1 -f ${CONTAINER_TMP}"; then
+  ensure_psql_in_container "$CONTAINER"
+  if ! run_remote "docker exec ${CONTAINER} bash -c 'psql \"\$DATABASE_URL\" -v ON_ERROR_STOP=1 -f ${CONTAINER_TMP}'"; then
     echo "[apply-rename-migration] Migration FAILED. The hand-authored SQL is wrapped in BEGIN/COMMIT," >&2
     echo "  so on error PG will have rolled back. Investigate the error output above and retry." >&2
     exit 2
