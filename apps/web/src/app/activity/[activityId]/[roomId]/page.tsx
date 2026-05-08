@@ -113,7 +113,7 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
   // Reset store on mount and whenever roomId changes (room teardown safety).
   useEffect(() => {
     useActivityStore.getState().reset(roomId);
-    if (avatarId) useActivityStore.getState().setSelfPetId(avatarId);
+    if (avatarId) useActivityStore.getState().setSelfAvatarId(avatarId);
     return () => {
       useActivityStore.getState().reset(null);
     };
@@ -122,7 +122,7 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
   // Push selfAvatarId into the store the moment we know it (might land after
   // the WS opens; the store re-renders the scene then for self-highlight).
   useEffect(() => {
-    if (avatarId) useActivityStore.getState().setSelfPetId(avatarId);
+    if (avatarId) useActivityStore.getState().setSelfAvatarId(avatarId);
   }, [avatarId]);
 
   // If the lobby didn't pass shortCode, fetch room state to recover it.
@@ -185,19 +185,19 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
   // invariant — see BumperShellsScene.tsx §31).
   const [spectatorCamMode, setSpectatorCamMode] =
     useState<SpectatorCamMode>('action');
-  const [spectatorTargetPetId, setSpectatorTargetPetId] = useState<string | null>(
+  const [spectatorTargetAvatarId, setSpectatorTargetAvatarId] = useState<string | null>(
     null,
   );
   const handleSpectatorStateChange = useCallback(
-    (next: { camMode: SpectatorCamMode; targetPetId: string | null }) => {
+    (next: { camMode: SpectatorCamMode; targetAvatarId: string | null }) => {
       setSpectatorCamMode(next.camMode);
-      setSpectatorTargetPetId(next.targetPetId);
+      setSpectatorTargetAvatarId(next.targetAvatarId);
     },
     [],
   );
   const isSpectating = matchPhase === 'live' && !selfAlive;
   const sceneSpectatorCamMode = isSpectating ? spectatorCamMode : undefined;
-  const sceneSpectatorTargetPetId = isSpectating ? spectatorTargetPetId : null;
+  const sceneSpectatorTargetAvatarId = isSpectating ? spectatorTargetAvatarId : null;
 
   // ── Chunk #12 — prime SFX bus on first user interaction ────────────────
   // The route mount itself isn't a user gesture, so AudioContext.resume()
@@ -347,7 +347,7 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
           roomId={roomId}
           selfAvatarId={avatarId}
           spectatorCamMode={sceneSpectatorCamMode}
-          spectatorTargetPetId={sceneSpectatorTargetPetId}
+          spectatorTargetAvatarId={sceneSpectatorTargetAvatarId}
         />
       </div>
       <BumperShellsHud

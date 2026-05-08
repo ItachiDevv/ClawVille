@@ -112,7 +112,7 @@ export interface BumperShellsHudProps {
    */
   onSpectatorStateChange?: (state: {
     camMode: SpectatorCamMode;
-    targetPetId: string | null;
+    targetAvatarId: string | null;
   }) => void;
 }
 
@@ -163,7 +163,7 @@ export default function BumperShellsHud({
 
   // ── Spectator local state (chunk #11) ──────────────────────────────────
   const [spectatorCamMode, setSpectatorCamMode] = useState<SpectatorCamMode>('action');
-  const [spectatorTargetPetId, setSpectatorTargetPetId] = useState<string | null>(null);
+  const [spectatorTargetAvatarId, setSpectatorTargetAvatarId] = useState<string | null>(null);
   const [cheerCooldownUntil, setCheerCooldownUntil] = useState<number | null>(null);
   const [tauntCooldownUntil, setTauntCooldownUntil] = useState<number | null>(null);
 
@@ -174,9 +174,9 @@ export default function BumperShellsHud({
     if (!onSpectatorStateChange) return;
     onSpectatorStateChange({
       camMode: spectatorCamMode,
-      targetPetId: spectatorTargetPetId,
+      targetAvatarId: spectatorTargetAvatarId,
     });
-  }, [spectatorCamMode, spectatorTargetPetId, onSpectatorStateChange]);
+  }, [spectatorCamMode, spectatorTargetAvatarId, onSpectatorStateChange]);
 
   // ── SFX: knockout sound when self is eliminated (chunk #12) ────────────
   const lastElimAtRef = useRef<number | null>(null);
@@ -211,11 +211,11 @@ export default function BumperShellsHud({
   useEffect(() => {
     if (selfAlive) {
       // Reset spectator state when the user is alive again (e.g. next match).
-      if (spectatorTargetPetId !== null) setSpectatorTargetPetId(null);
+      if (spectatorTargetAvatarId !== null) setSpectatorTargetAvatarId(null);
       return;
     }
     if (aliveEntities.length === 0) return;
-    if (spectatorTargetPetId && aliveEntities.some((e) => e.avatarId === spectatorTargetPetId)) {
+    if (spectatorTargetAvatarId && aliveEntities.some((e) => e.avatarId === spectatorTargetAvatarId)) {
       return;
     }
     // Action-cam heuristic — pick the most recently-credited eliminator,
@@ -224,7 +224,7 @@ export default function BumperShellsHud({
       (e) => e.avatarId !== selfAvatarId && aliveEntities.some((a) => a.avatarId === e.avatarId),
     );
     if (recentElim) {
-      setSpectatorTargetPetId(recentElim.avatarId);
+      setSpectatorTargetAvatarId(recentElim.avatarId);
       return;
     }
     type BestRef = { avatarId: string; score: number } | null;
@@ -236,22 +236,22 @@ export default function BumperShellsHud({
         best = { avatarId: e.avatarId, score };
       }
     }
-    setSpectatorTargetPetId((best as BestRef)?.avatarId ?? aliveEntities[0].avatarId);
-  }, [selfAlive, aliveEntities, eliminations, scores, selfAvatarId, spectatorTargetPetId]);
+    setSpectatorTargetAvatarId((best as BestRef)?.avatarId ?? aliveEntities[0].avatarId);
+  }, [selfAlive, aliveEntities, eliminations, scores, selfAvatarId, spectatorTargetAvatarId]);
 
   // ── Spectator action callbacks ─────────────────────────────────────────
   const cycleTarget = useCallback(
     (direction: 1 | -1) => {
       if (aliveEntities.length === 0) return;
-      const currentIdx = spectatorTargetPetId
-        ? aliveEntities.findIndex((e) => e.avatarId === spectatorTargetPetId)
+      const currentIdx = spectatorTargetAvatarId
+        ? aliveEntities.findIndex((e) => e.avatarId === spectatorTargetAvatarId)
         : -1;
       const baseIdx = currentIdx >= 0 ? currentIdx : 0;
       const nextIdx = (baseIdx + direction + aliveEntities.length) % aliveEntities.length;
-      setSpectatorTargetPetId(aliveEntities[nextIdx].avatarId);
+      setSpectatorTargetAvatarId(aliveEntities[nextIdx].avatarId);
       setSpectatorCamMode('follow');
     },
-    [aliveEntities, spectatorTargetPetId],
+    [aliveEntities, spectatorTargetAvatarId],
   );
 
   const handleSelectPrev = useCallback(() => cycleTarget(-1), [cycleTarget]);
@@ -475,7 +475,7 @@ export default function BumperShellsHud({
           aliveEntities={aliveEntities}
           spectatorChat={spectatorChat}
           roundEndsAt={roundEndsAt}
-          spectatorTargetPetId={spectatorTargetPetId}
+          spectatorTargetAvatarId={spectatorTargetAvatarId}
           spectatorCamMode={spectatorCamMode}
           cheerCooldownUntil={cheerCooldownUntil}
           tauntCooldownUntil={tauntCooldownUntil}

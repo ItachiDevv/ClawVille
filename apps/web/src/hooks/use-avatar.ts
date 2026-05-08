@@ -19,7 +19,7 @@ export function useAvatar() {
   });
 }
 
-export function useCreatePet() {
+export function useCreateAvatar() {
   const queryClient = useQueryClient();
 
   return useMutation({
@@ -30,9 +30,9 @@ export function useCreatePet() {
   });
 }
 
-export function useCheckPetName() {
+export function useCheckAvatarName() {
   return useMutation({
-    mutationFn: (name: string) => api.checkPetName(name),
+    mutationFn: (name: string) => api.checkAvatarName(name),
   });
 }
 
@@ -46,11 +46,11 @@ export function useCheckPetName() {
  * authoritative avatar (with regenerated characterConfig.system + the
  * agents.config mirror) replaces our local guess.
  */
-export function useEditPetAppearance() {
+export function useEditAvatarAppearance() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: api.editPetAppearance,
+    mutationFn: api.editAvatarAppearance,
     onMutate: async (patch) => {
       // Cancel in-flight refetches so they don't race our optimistic write.
       await queryClient.cancelQueries({ queryKey: ['avatar'] });

@@ -334,7 +334,7 @@ export default function ActivityResultsModal({
       rows.push({
         avatarId: w.avatarId,
         placement: w.placement,
-        displayName: s?.displayName ?? shortPetId(w.avatarId),
+        displayName: s?.displayName ?? shortAvatarId(w.avatarId),
         score: s?.score ?? null,
         isSelf: w.avatarId === selfAvatarId,
       });
@@ -1257,7 +1257,7 @@ function RewardRow({
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-function shortPetId(avatarId: string): string {
+function shortAvatarId(avatarId: string): string {
   return avatarId.length > 8 ? `…${avatarId.slice(-6)}` : avatarId;
 }
 

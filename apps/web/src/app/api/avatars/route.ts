@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { db, avatars, agents, eq } from '@clawville/database';
 import { AVATAR_ARCHETYPES, ARCHETYPE_IDS } from '@clawville/shared';
-import type { PetArchetypeId } from '@clawville/shared';
+import type { AvatarArchetypeId } from '@clawville/shared';
 import { json, error, requireAuth } from '@/lib/api-utils';
 
 const createAvatarSchema = z.object({
@@ -57,7 +57,7 @@ function calculateStats(personality: z.infer<typeof createAvatarSchema>['persona
   };
 }
 
-function buildCharacterConfig(archetypeId: PetArchetypeId, avatarName: string, species: string) {
+function buildCharacterConfig(archetypeId: AvatarArchetypeId, avatarName: string, species: string) {
   const archetype = AVATAR_ARCHETYPES.find((a) => a.id === archetypeId);
   if (!archetype) throw new Error(`Unknown archetype: ${archetypeId}`);
 
@@ -117,7 +117,7 @@ export async function POST(request: NextRequest) {
 
     const stats = calculateStats(result.data.personality);
     const characterConfig = buildCharacterConfig(
-      result.data.archetypeId as PetArchetypeId,
+      result.data.archetypeId as AvatarArchetypeId,
       result.data.name,
       result.data.species,
     );

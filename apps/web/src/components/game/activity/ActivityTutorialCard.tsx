@@ -6,7 +6,7 @@
  * Spec: `.claude/plans/q2-research/frontend-spec.md` §10.1.
  *
  * UX:
- *  - Renders inline inside `<ActivityLobbyModal>` only on a avatar's first
+ *  - Renders inline inside `<ActivityLobbyModal>` only on an avatar's first
  *    ever entry to that activity.
  *  - Layout: small RuneFrame card with Nori avatar + 1-2 sentences in her
  *    voice + "Got it" button.

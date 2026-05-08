@@ -4,7 +4,7 @@
  * cosmetic-loader.tsx — Phase 3.3 cosmetic render pipeline
  *
  * Subscribes to the user's equipped cosmetics and renders them on top of the
- * existing avatar/avatar mesh. Categories handled:
+ * existing avatar mesh. Categories handled:
  *
  *   hat / glasses — GLB attached to a bone anchor (Head / J_Bip_C_Head)
  *   palette       — texture albedo swap on the avatar body material
@@ -779,7 +779,7 @@ function AuraFrameUpdater({ parentObject }: { parentObject: THREE.Object3D }) {
 // ---------------------------------------------------------------------------
 
 /**
- * Renders all equipped cosmetics for a avatar onto its avatar.
+ * Renders all equipped cosmetics for an avatar onto its avatar.
  *
  * Mount inside the R3F Canvas, as a sibling or child of the avatar component.
  * parentObject must be the live Three.js Object3D of the avatar root.

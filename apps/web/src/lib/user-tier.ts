@@ -23,7 +23,7 @@
 export type UserTier =
   /** Anonymous — never signed up. Public visitors, before /api/auth/guest fires. */
   | 'guest'
-  /** Signed in + has a avatar, but no agent connected. The Q3 brand-identity addition. */
+  /** Signed in + has an avatar, but no agent connected. The Q3 brand-identity addition. */
   | 'player'
   /** Signed in + agent connected. The original "controlled gameplay" tier. */
   | 'trainer';

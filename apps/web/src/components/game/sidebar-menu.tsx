@@ -837,7 +837,7 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
           />
         </div>
 
-        {/* WORLDS — Phase 5.1 cross-world portal surface (hidden until a avatar exists) */}
+        {/* WORLDS — Phase 5.1 cross-world portal surface (hidden until an avatar exists) */}
         {hasAvatar && (
           <>
             <CategoryHeader label="Worlds" subtitle="Cross · Explore" />

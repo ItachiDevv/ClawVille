@@ -262,9 +262,9 @@ export default function GamePage() {
   useEffect(() => {
     if (avatar) {
       // Phase 2: pass modelKey so player-avatar.tsx renders the correct GLB.
-      // Falls back to 'lobster' inside setPetAppearance if modelKey is absent
+      // Falls back to 'lobster' inside setAvatarAppearance if modelKey is absent
       // (pre-Phase-2 rows and any row where the column is null).
-      useGameStore.getState().setPetAppearance(avatar.species, avatar.color, undefined, avatar.modelKey);
+      useGameStore.getState().setAvatarAppearance(avatar.species, avatar.color, undefined, avatar.modelKey);
     }
   }, [avatar]);
 

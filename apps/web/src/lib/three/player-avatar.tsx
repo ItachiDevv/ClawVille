@@ -4,7 +4,7 @@ import { useRef, useMemo, useEffect, Suspense } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
-import { useGameStore, petPositionRef } from '@/stores/game';
+import { useGameStore, avatarPositionRef } from '@/stores/game';
 import {
   MAP_WIDTH,
   MAP_HEIGHT,
@@ -370,8 +370,8 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
     if (!hasInput && store.clickPath && store.clickPath.length > 0) {
       const waypoint = store.clickPath[store.clickPathIndex];
       if (waypoint) {
-        const dx = waypoint.x - petPositionRef.x;
-        const dy = waypoint.y - petPositionRef.y;
+        const dx = waypoint.x - avatarPositionRef.x;
+        const dy = waypoint.y - avatarPositionRef.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
         if (dist < 6) {
           if (store.clickPathIndex >= store.clickPath.length - 1) {
@@ -403,17 +403,17 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
 
     if (vx !== 0 || vy !== 0) {
       // Read from ref (zero React overhead) for current position, write via
-      // setPetPosition which updates both ref + throttled reactive store.
-      let newX = petPositionRef.x + vx * SPEED * delta;
-      let newY = petPositionRef.y + vy * SPEED * delta;
+      // setAvatarPosition which updates both ref + throttled reactive store.
+      let newX = avatarPositionRef.x + vx * SPEED * delta;
+      let newY = avatarPositionRef.y + vy * SPEED * delta;
       newX = Math.max(16, Math.min(MAP_WIDTH - 16, newX));
       newY = Math.max(16, Math.min(MAP_HEIGHT - 16, newY));
-      store.setPetPosition(newX, newY);
+      store.setAvatarPosition(newX, newY);
     }
 
     {
-      const wx = petPositionRef.x - HALF_W;
-      const wz = petPositionRef.y - HALF_H;
+      const wx = avatarPositionRef.x - HALF_W;
+      const wz = avatarPositionRef.y - HALF_H;
       const nearest = findNearestCharacter(wx, wz);
       const nearId = nearest ? nearest.buildingId : null;
       const nearName = nearest ? nearest.characterName : null;
@@ -431,7 +431,7 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
 
     const group = groupRef.current;
     if (!group) return;
-    const [wx, , wz] = mapToWorld(petPositionRef.x, petPositionRef.y);
+    const [wx, , wz] = mapToWorld(avatarPositionRef.x, avatarPositionRef.y);
     group.position.x = wx;
     group.position.z = wz;
 
@@ -496,18 +496,18 @@ function PlayerPetGLBInner() {
   attachKeyListeners();
 
   // Phase 2: resolve which GLB to load from the model registry.
-  // petModelKey is set by game/page.tsx via setPetAppearance when the avatar
+  // avatarModelKey is set by game/page.tsx via setAvatarAppearance when the avatar
   // loads from the API. Falls back to 'lobster' if null / unknown key.
-  const petModelKey = useGameStore((s) => s.petModelKey);
+  const avatarModelKey = useGameStore((s) => s.avatarModelKey);
   const reg: ModelRegistryEntry =
-    MODEL_REGISTRY[petModelKey as keyof typeof MODEL_REGISTRY] ?? MODEL_REGISTRY.lobster;
+    MODEL_REGISTRY[avatarModelKey as keyof typeof MODEL_REGISTRY] ?? MODEL_REGISTRY.lobster;
 
   const { scene } = useGLTF(reg.path);
 
   // Whether to use the legacy LobsterAnimator (skeletal bone discovery) or
   // the universal CharacterAnimator. Mirrors the same routing in arena-npcs.tsx
   // and SelectAgentCanvas.tsx.
-  const useNewAnimSystem = petModelKey !== 'lobster' && petModelKey !== 'crayfish';
+  const useNewAnimSystem = avatarModelKey !== 'lobster' && avatarModelKey !== 'crayfish';
 
   const { cloned, lobsterAnimator, charAnimator, pivotOffsetY } = useMemo(() => {
     const c = scene.clone(true);
@@ -531,7 +531,7 @@ function PlayerPetGLBInner() {
     if (useNewAnimSystem) {
       // Universal path: shared applyColorTint (stronger tint, matches NPC behaviour)
       applyColorTint(c, tint, 0.6, 0.2);
-      const anim = createCharacterAnimator(petModelKey, c);
+      const anim = createCharacterAnimator(avatarModelKey, c);
       return { cloned: c, lobsterAnimator: null as LobsterAnimator | null, charAnimator: anim, pivotOffsetY: pivotOffset };
     } else {
       // Legacy lobster/crayfish path: shallow lerp + emissive
@@ -551,7 +551,7 @@ function PlayerPetGLBInner() {
       const anim = new LobsterAnimator(parts);
       return { cloned: c, lobsterAnimator: anim, charAnimator: null as CharacterAnimator | null, pivotOffsetY: pivotOffset };
     }
-  }, [scene, petModelKey, useNewAnimSystem, reg.scale]);
+  }, [scene, avatarModelKey, useNewAnimSystem, reg.scale]);
 
   // Dispose cloned materials on unmount (navigation away / hot-reload)
   useEffect(() => {
@@ -680,8 +680,8 @@ function PlayerPetGLBInner() {
     if (!hasInput && store.clickPath && store.clickPath.length > 0) {
       const waypoint = store.clickPath[store.clickPathIndex];
       if (waypoint) {
-        const dx = waypoint.x - petPositionRef.x;
-        const dy = waypoint.y - petPositionRef.y;
+        const dx = waypoint.x - avatarPositionRef.x;
+        const dy = waypoint.y - avatarPositionRef.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
         if (dist < 6) {
           if (store.clickPathIndex >= store.clickPath.length - 1) {
@@ -709,21 +709,21 @@ function PlayerPetGLBInner() {
 
     if (vx !== 0 || vy !== 0) {
       // Read from ref (zero React overhead) for current position, write via
-      // setPetPosition which updates both ref + throttled reactive store.
-      let newX = petPositionRef.x + vx * SPEED * delta;
-      let newY = petPositionRef.y + vy * SPEED * delta;
+      // setAvatarPosition which updates both ref + throttled reactive store.
+      let newX = avatarPositionRef.x + vx * SPEED * delta;
+      let newY = avatarPositionRef.y + vy * SPEED * delta;
       newX = Math.max(16, Math.min(MAP_WIDTH - 16, newX));
       newY = Math.max(16, Math.min(MAP_HEIGHT - 16, newY));
-      store.setPetPosition(newX, newY);
+      store.setAvatarPosition(newX, newY);
     }
 
     // Character proximity check — replaces building-zone area check.
     // Runs every frame so nearLocation / nearCharacter stay accurate even when
-    // the avatar stops or is repositioned externally (clickPath, setPetPosition).
+    // the avatar stops or is repositioned externally (clickPath, setAvatarPosition).
     // findNearestCharacter takes world-space primitives — zero allocation.
     {
-      const wx = petPositionRef.x - HALF_W;
-      const wz = petPositionRef.y - HALF_H;
+      const wx = avatarPositionRef.x - HALF_W;
+      const wz = avatarPositionRef.y - HALF_H;
       const nearest = findNearestCharacter(wx, wz);
       const nearId = nearest ? nearest.buildingId : null;
       const nearName = nearest ? nearest.characterName : null;
@@ -741,7 +741,7 @@ function PlayerPetGLBInner() {
 
     const group = groupRef.current;
     if (!group) return;
-    const [wx, , wz] = mapToWorld(petPositionRef.x, petPositionRef.y);
+    const [wx, , wz] = mapToWorld(avatarPositionRef.x, avatarPositionRef.y);
     group.position.x = wx;
     group.position.z = wz;
 
@@ -833,9 +833,9 @@ function PlayerPetGLBInner() {
 function PlayerPetRouter() {
   attachKeyListeners();
 
-  const petModelKey = useGameStore((s) => s.petModelKey);
+  const avatarModelKey = useGameStore((s) => s.avatarModelKey);
   const reg: ModelRegistryEntry =
-    MODEL_REGISTRY[petModelKey as keyof typeof MODEL_REGISTRY] ?? MODEL_REGISTRY.lobster;
+    MODEL_REGISTRY[avatarModelKey as keyof typeof MODEL_REGISTRY] ?? MODEL_REGISTRY.lobster;
 
   if (reg.avatar_type === 'vrm') {
     return (

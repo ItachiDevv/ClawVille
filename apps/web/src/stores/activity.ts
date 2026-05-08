@@ -335,7 +335,7 @@ export interface ActivityState {
 
   /** Imperative actions (used by hooks + page lifecycle). */
   reset: (roomId: string | null) => void;
-  setSelfPetId: (avatarId: string | null) => void;
+  setSelfAvatarId: (avatarId: string | null) => void;
   setConnectionStatus: (status: ConnectionStatus) => void;
   setPing: (ms: number) => void;
   pushHit: (hit: BumperHitEvent) => void;
@@ -392,7 +392,7 @@ function normalizePickupKind(raw: string): BumperPickupKind {
 }
 
 /** Display name fallback when we don't have a `player_joined` event yet. */
-function shortPetId(avatarId: string): string {
+function shortAvatarId(avatarId: string): string {
   return avatarId.length > 8 ? `…${avatarId.slice(-6)}` : avatarId;
 }
 
@@ -467,7 +467,7 @@ function hydrateFromWorld(world: WorldState): {
   for (const s of world.scores) {
     scores.set(s.avatarId, {
       avatarId: s.avatarId,
-      displayName: shortPetId(s.avatarId),
+      displayName: shortAvatarId(s.avatarId),
       score: s.score,
     });
   }
@@ -579,7 +579,7 @@ export const useActivityStore = create<ActivityState>()(
     connectionStatus: 'idle',
     ...emptyState(),
 
-    setSelfPetId: (avatarId) => set({ selfAvatarId: avatarId }),
+    setSelfAvatarId: (avatarId) => set({ selfAvatarId: avatarId }),
     setConnectionStatus: (status) => set({ connectionStatus: status }),
     setPing: (ms) => set({ ping: ms }),
     clearError: () => set({ errorBanner: null }),
@@ -775,7 +775,7 @@ export const useActivityStore = create<ActivityState>()(
               const existing = scores.get(s.avatarId);
               scores.set(s.avatarId, {
                 avatarId: s.avatarId,
-                displayName: existing?.displayName ?? shortPetId(s.avatarId),
+                displayName: existing?.displayName ?? shortAvatarId(s.avatarId),
                 score: s.score,
                 placement: s.placement ?? existing?.placement,
               });
@@ -923,7 +923,7 @@ export const useActivityStore = create<ActivityState>()(
           const existing = scores.get(frame.avatarId);
           scores.set(frame.avatarId, {
             avatarId: frame.avatarId,
-            displayName: frame.displayName || shortPetId(frame.avatarId),
+            displayName: frame.displayName || shortAvatarId(frame.avatarId),
             score: existing?.score ?? 0,
             placement: existing?.placement,
           });

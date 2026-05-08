@@ -288,8 +288,8 @@ export default function PixiCanvas({ isSpectator = false }: PixiCanvasProps) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<Application | null>(null);
   const worldRef = useRef<Container | null>(null);
-  const petSpriteRef = useRef<Sprite | null>(null);
-  const petContainerRef = useRef<Container | null>(null);
+  const avatarSpriteRef = useRef<Sprite | null>(null);
+  const avatarContainerRef = useRef<Container | null>(null);
   const scaleRef = useRef<number>(1);
   const npcSpritesRef = useRef<Map<string, NpcSpriteInfo>>(new Map());
   const npcContainerRef = useRef<Container | null>(null);
@@ -434,13 +434,13 @@ export default function PixiCanvas({ isSpectator = false }: PixiCanvasProps) {
       if (!isSpectator) {
         avatarContainer = new Container();
         world.addChild(avatarContainer);
-        petContainerRef.current = avatarContainer;
+        avatarContainerRef.current = avatarContainer;
 
         // Shadow + bubble + footsteps are created immediately (no texture needed)
-        const petShadow = new Graphics();
-        petShadow.ellipse(0, 6, 16, 5);
-        petShadow.fill({ color: 0x000000, alpha: 0.2 });
-        avatarContainer.addChild(petShadow);
+        const avatarShadow = new Graphics();
+        avatarShadow.ellipse(0, 6, 16, 5);
+        avatarShadow.fill({ color: 0x000000, alpha: 0.2 });
+        avatarContainer.addChild(avatarShadow);
 
         bubbleContainer = new Container();
         bubbleContainer.visible = false;
@@ -475,7 +475,7 @@ export default function PixiCanvas({ isSpectator = false }: PixiCanvasProps) {
       texturesReady.then(() => {
         spritesLoaded = true;
         // Create avatar sprite once textures are available
-        if (!isSpectator && avatarContainer && !petSpriteRef.current) {
+        if (!isSpectator && avatarContainer && !avatarSpriteRef.current) {
           const state = useGameStore.getState();
           const species = (state.avatarSpecies || 'cat') as AvatarSpecies;
           const texturePath = SPECIES_SPRITE_MAP[species] ?? SPECIES_SPRITE_MAP.cat;
@@ -491,7 +491,7 @@ export default function PixiCanvas({ isSpectator = false }: PixiCanvasProps) {
               avatarSprite.tint = blendColors(0xffffff, tint, 0.3);
             }
             avatarContainer.addChild(avatarSprite);
-            petSpriteRef.current = avatarSprite;
+            avatarSpriteRef.current = avatarSprite;
           }
         }
       });
@@ -515,22 +515,22 @@ export default function PixiCanvas({ isSpectator = false }: PixiCanvasProps) {
         const currentScale = scaleRef.current;
 
         // ---- Avatar rendering (non-spectator only) ----
-        if (!isSpectator && avatarContainer && petSpriteRef.current) {
+        if (!isSpectator && avatarContainer && avatarSpriteRef.current) {
           // Update avatar sprite if species changed
           if (st.avatarSpecies !== lastSpecies) {
             const newSpecies = (st.avatarSpecies || 'cat') as AvatarSpecies;
             const newPath = SPECIES_SPRITE_MAP[newSpecies] ?? SPECIES_SPRITE_MAP.cat;
             const newTex = Assets.get(newPath);
             if (newTex) {
-              petSpriteRef.current.texture = newTex;
+              avatarSpriteRef.current.texture = newTex;
               const ns = targetHeight / newTex.height;
-              petSpriteRef.current.scale.set(ns);
+              avatarSpriteRef.current.scale.set(ns);
             }
             lastSpecies = st.avatarSpecies;
           }
 
           // Avatar animation
-          const sprite = petSpriteRef.current;
+          const sprite = avatarSpriteRef.current;
           const dir = st.movementDirection;
           const isMoving = dir !== 'idle';
 

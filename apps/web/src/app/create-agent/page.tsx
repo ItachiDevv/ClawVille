@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
-import { useCheckPetName } from '@/hooks/use-avatar';
+import { useCheckAvatarName } from '@/hooks/use-avatar';
 import {
   MODEL_REGISTRY,
   PICKER_COLORS,
@@ -120,7 +120,7 @@ const MODEL_TAG: Record<string, string> = {
 
 export default function CreateAgentPage() {
   const router = useRouter();
-  const checkNameMutation = useCheckPetName();
+  const checkNameMutation = useCheckAvatarName();
 
   // --- Tab + gate state ---------------------------------------------------
   const [selectedTab, setSelectedTab] = useState<TabId>(() => {

@@ -53,7 +53,7 @@ export interface EliminatedOverlayProps {
   /** Server-driven round end time; null/undef → header omits the timer. */
   roundEndsAt?: number | null;
   /** Currently focused avatar id (controlled by parent). */
-  spectatorTargetPetId: string | null;
+  spectatorTargetAvatarId: string | null;
   /** Local cam-mode pick. */
   spectatorCamMode: SpectatorCamMode;
   /** Cooldown sentinel for cheer button (wall-clock millis or null). */
@@ -93,7 +93,7 @@ export default function EliminatedOverlay(props: EliminatedOverlayProps) {
     aliveEntities,
     spectatorChat,
     roundEndsAt,
-    spectatorTargetPetId,
+    spectatorTargetAvatarId,
     spectatorCamMode,
     cheerCooldownUntil,
     tauntCooldownUntil,
@@ -111,9 +111,9 @@ export default function EliminatedOverlay(props: EliminatedOverlayProps) {
   const spectatedName = useMemo(() => {
     if (spectatorCamMode === 'free') return 'Free Camera';
     if (spectatorCamMode === 'action') return 'Action Cam';
-    if (!spectatorTargetPetId) return 'Pick a target';
-    return resolveDisplayName(spectatorTargetPetId, scoreLookup, aliveEntities);
-  }, [spectatorCamMode, spectatorTargetPetId, scoreLookup, aliveEntities]);
+    if (!spectatorTargetAvatarId) return 'Pick a target';
+    return resolveDisplayName(spectatorTargetAvatarId, scoreLookup, aliveEntities);
+  }, [spectatorCamMode, spectatorTargetAvatarId, scoreLookup, aliveEntities]);
 
   const remainingSec = roundEndsAt
     ? Math.max(0, Math.round((roundEndsAt - Date.now()) / 1000))
@@ -432,10 +432,10 @@ function resolveDisplayName(
   const score = scoreLookup.get(avatarId);
   if (score?.displayName) return score.displayName;
   const ent = aliveEntities.find((e) => e.avatarId === avatarId);
-  if (ent) return shortPetId(avatarId);
-  return shortPetId(avatarId);
+  if (ent) return shortAvatarId(avatarId);
+  return shortAvatarId(avatarId);
 }
 
-function shortPetId(avatarId: string): string {
+function shortAvatarId(avatarId: string): string {
   return avatarId.length > 8 ? `…${avatarId.slice(-6)}` : avatarId;
 }

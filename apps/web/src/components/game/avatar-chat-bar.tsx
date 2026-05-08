@@ -74,7 +74,7 @@ export default function AvatarChatBar() {
         res = await api.openclawChat({
           sessionId: agentSessionId,
           content,
-          petContext: {
+          avatarContext: {
             name: avatar.name,
             species: avatar.species,
             archetype: (avatar as any).archetype,
@@ -83,7 +83,7 @@ export default function AvatarChatBar() {
           },
         });
       } else {
-        res = await api.sendPetChat(content);
+        res = await api.sendAvatarChat(content);
       }
 
       const assistantMsg: AvatarMessage = {
