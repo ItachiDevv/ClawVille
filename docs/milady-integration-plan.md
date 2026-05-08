@@ -204,7 +204,7 @@ Following Milady's pattern (`generateWalletKeys()` in `packages/agent/src/api/wa
 
 **Schema changes:**
 - `avatars.walletAddress varchar(64) UNIQUE` — base58 public key
-- `avatar_wallet` table (new, parallel to `treasury_wallets`):
+- `avatar_wallets` table (new, parallel to `treasury_wallets`):
   ```ts
   id uuid PK
   avatar_id uuid FK -> avatars.id (unique)
@@ -214,7 +214,7 @@ Following Milady's pattern (`generateWalletKeys()` in `packages/agent/src/api/wa
   encryption_tag varchar(32)
   created_at timestamp
   ```
-- OR alternately, reuse `treasury_wallets` with a new `purpose: 'avatar-custody'` enum value and a nullable `avatar_id` column. **I lean toward a separate `avatar_wallet` table** because the access patterns are different (avatars query by their own id, treasury queries by purpose) and it keeps the treasury table focused on merchant/fee-collector/escrow purposes.
+- OR alternately, reuse `treasury_wallets` with a new `purpose: 'avatar-custody'` enum value and a nullable `avatar_id` column. **I lean toward a separate `avatar_wallets` table** because the access patterns are different (avatars query by their own id, treasury queries by purpose) and it keeps the treasury table focused on merchant/fee-collector/escrow purposes.
 
 **Encryption:**
 - Reuse the existing `VANITY_ENCRYPTION_KEY` AES-256-GCM master key
@@ -375,10 +375,10 @@ Defense of the Agents registers elizaOS **Actions** that let the agent issue in-
 
 | File | Change | ~Lines |
 |---|---|---:|
-| `packages/database/src/schema/avatar-wallets.ts` | NEW — `avatar_wallet` table (mirrors `treasury_wallets` shape, keyed on avatar_id) | 40 |
+| `packages/database/src/schema/avatar-wallets.ts` | NEW — `avatar_wallets` table (mirrors `treasury_wallets` shape, keyed on avatar_id) | 40 |
 | `packages/database/src/schema/avatars.ts` | Add `walletAddress varchar(64) UNIQUE` column to `avatars` table | +2 |
-| `packages/database/src/schema/index.ts` | Register new `petWallets` export + relation | +3 |
-| `apps/api/src/services/avatar-wallet-service.ts` | NEW — `generatePetWallet(avatarId)`: calls `Keypair.generate()`, encrypts secret via `keypair-vault`, inserts into `avatar_wallet`, updates `avatars.walletAddress` | 80 |
+| `packages/database/src/schema/index.ts` | Register new `avatarWallets` export + relation | +3 |
+| `apps/api/src/services/avatar-wallet-service.ts` | NEW — `generatePetWallet(avatarId)`: calls `Keypair.generate()`, encrypts secret via `keypair-vault`, inserts into `avatar_wallets`, updates `avatars.walletAddress` | 80 |
 | `apps/api/src/routes/avatars.ts` | Call `generatePetWallet()` on avatar creation if the avatar has no wallet | +20 |
 | `apps/api/src/routes/agent-gateway.ts` | In the Milady branch, call `generatePetWallet()` when creating a new `openclaw_bots` row for a first-time Milady agent | +15 |
 | `scripts/backfill-avatar-wallets.ts` | NEW — one-time script that finds all avatars without a wallet and generates one for each | 60 |
@@ -390,7 +390,7 @@ Defense of the Agents registers elizaOS **Actions** that let the agent issue in-
 | File | Change | ~Lines |
 |---|---|---:|
 | `packages/database/src/schema/avatars.ts` | Add `avatarType varchar enum('glb','vrm')`, `avatarUrl text`, `vrmMetadata jsonb` columns | +5 |
-| `packages/shared/src/types/avatar.ts` | Add fields to the `Avatar` type + a `PetAvatarConfig` helper type | +20 |
+| `packages/shared/src/types/avatar.ts` | Add fields to the `Avatar` type + a `AvatarAvatarConfig` helper type | +20 |
 | `apps/api/src/routes/avatars.ts` | Accept `avatarUrl` in the create/update endpoints | +10 |
 | Frontend: NO changes yet — `World3DCanvas.tsx` stays on the lobster GLB path. The VRM branch comes later, probably with the `3da` subagent driving the rendering work | — |
 | `docs/vrm-avatar-roadmap.md` | NEW short doc explaining that the data model is ready but the renderer isn't | 30 |
@@ -408,7 +408,7 @@ Defense of the Agents registers elizaOS **Actions** that let the agent issue in-
 
 | File | Change | ~Lines |
 |---|---|---:|
-| `scripts/test-milady-plugin-flow.ts` | NEW — mimics what the Milady plugin's `resolveLaunchSession` will do. POSTs to `/api/agent/connect` with `identityType: 'milady'`, asserts a avatar wallet was generated, calls `/move` and `/visit-building`, disconnects. | 80 |
+| `scripts/test-milady-plugin-flow.ts` | NEW — mimics what the Milady plugin's `resolveLaunchSession` will do. POSTs to `/api/agent/connect` with `identityType: 'milady'`, asserts an avatar wallet was generated, calls `/move` and `/visit-building`, disconnects. | 80 |
 
 **Phase C totals: ~870 lines across ~14 files, 2 schema migrations.**
 

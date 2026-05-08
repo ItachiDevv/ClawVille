@@ -64,7 +64,7 @@ ClawVille has 4 game modes controlled by `controlMode` in the Zustand `game.ts` 
 | E key near building | Enters building (opens chat panel) | |
 | Escape inside building | Exits building | |
 | Location HUD | Shows when NPC is inside building zone | |
-| Avatar status bar | Visible (user has a avatar) | |
+| Avatar status bar | Visible (user has an avatar) | |
 | Avatar chat bar | Visible | |
 | NPC label | Shows "You" above the player NPC | |
 | Proximity detection | Works every frame (even when idle) | |

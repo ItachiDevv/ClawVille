@@ -193,7 +193,7 @@ Coolify will pull from your GitHub repo and build each service from its existing
 ### 6e. Smoke test
 - Open https://new.clawville.world — you should see the game
 - Open the browser devtools → Network tab, confirm requests go to `https://api-new.clawville.world`
-- Chat with a avatar → confirm Eliza responses come back
+- Chat with an avatar → confirm Eliza responses come back
 - Walk into a building → confirm NPCs appear and chat works
 - Check Coolify → Logs for either service if anything errors
 

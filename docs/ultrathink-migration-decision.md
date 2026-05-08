@@ -63,7 +63,7 @@ Source: `packages/agent-runtime/src/plugins/ultrathink-provider.ts`
 
 ### Presets (from `ULTRATHINK_PRESETS`)
 - `buildingAgent` — high effort (10k thinking tokens) + think tool enabled
-- `petAgent` — medium effort (5k) + no think tool
+- `avatarAgent` — medium effort (5k) + no think tool
 - `npcAmbient` — low effort (2k) + no think tool
 - `deepReasoning` — max effort (20k) + think tool enabled
 
