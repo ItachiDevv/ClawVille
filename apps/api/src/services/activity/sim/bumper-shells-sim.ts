@@ -177,7 +177,7 @@ interface BumperSpawn {
 
 interface BumperStickyBomb {
   bombId: string;
-  ownerPetId: string;
+  ownerAvatarId: string;
   position: Vec2;
   expiresAt: number;
 }
@@ -250,13 +250,13 @@ class BumperShellsSim {
   startRoom(
     roomId: string,
     activityId: string,
-    participantPetIds: string[],
+    participantAvatarIds: string[],
     opts?: {
       seed?: number;
       isBot?: (avatarId: string) => boolean;
       /**
        * Bot controllers to install for this room. Their avatarIds MUST be
-       * a subset of `participantPetIds`. The sim ticks each one before
+       * a subset of `participantAvatarIds`. The sim ticks each one before
        * applying intents so bots feed the same `applyInput()` validators
        * as humans. Chunk #10.
        */
@@ -273,7 +273,7 @@ class BumperShellsSim {
     const botControllers = new Map<string, BotController>();
     if (opts?.bots) {
       for (const ctrl of opts.bots) {
-        if (!participantPetIds.includes(ctrl.avatarId)) {
+        if (!participantAvatarIds.includes(ctrl.avatarId)) {
           console.warn(
             `[bumper-shells-sim] bot controller for ${ctrl.avatarId} is not a participant — skipping`,
           );
@@ -307,8 +307,8 @@ class BumperShellsSim {
     // See bumper-shells-bot.ts BOT_OPENING_GRACE_MS for the matching client
     // grace period (~2.5s during which bots cruise instead of ram).
     const radius = BUMPER_ARENA_RADIUS * 0.3;
-    const angleStep = (Math.PI * 2) / Math.max(participantPetIds.length, 1);
-    participantPetIds.forEach((avatarId, i) => {
+    const angleStep = (Math.PI * 2) / Math.max(participantAvatarIds.length, 1);
+    participantAvatarIds.forEach((avatarId, i) => {
       const angle = i * angleStep;
       // Three.js Y-rotation convention: rot = atan2(x, z) so the lobster's
       // native +Z facing rotates to point at the world-space (x, z) target.
@@ -376,7 +376,7 @@ class BumperShellsSim {
     }
 
     console.log(
-      `[bumper-shells-sim] startRoom ${roomId} — ${participantPetIds.length} participants (${botControllers.size} bots) — tick=${BUMPER_TICK_MS.toFixed(2)}ms`,
+      `[bumper-shells-sim] startRoom ${roomId} — ${participantAvatarIds.length} participants (${botControllers.size} bots) — tick=${BUMPER_TICK_MS.toFixed(2)}ms`,
     );
 
     // Boot the tick loop. Drift-correcting via Date.now() inside the
@@ -895,7 +895,7 @@ class BumperShellsSim {
       if (bomb.expiresAt <= now) return false;
       // Check collision with any non-owner body.
       for (const body of state.bodies.values()) {
-        if (!body.alive || body.avatarId === bomb.ownerPetId) continue;
+        if (!body.alive || body.avatarId === bomb.ownerAvatarId) continue;
         if (body.activeEffects.has('bs-ghost')) continue;
         const dx = body.x - bomb.position.x;
         const dy = body.y - bomb.position.y;
@@ -911,7 +911,7 @@ class BumperShellsSim {
           }
           this.broadcastFn(state.roomId, {
             type: 'event.hit',
-            srcAvatarId: bomb.ownerPetId,
+            srcAvatarId: bomb.ownerAvatarId,
             dstAvatarId: body.avatarId,
             position: bomb.position,
             power: 1,
@@ -964,7 +964,7 @@ class BumperShellsSim {
       case 'bs-sticky-bomb':
         state.bombs.push({
           bombId: this.uniqueId(state),
-          ownerPetId: body.avatarId,
+          ownerAvatarId: body.avatarId,
           position: { x: body.x, y: body.y },
           expiresAt: now + def.effectMs,
         });

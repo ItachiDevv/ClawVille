@@ -22,7 +22,7 @@ import {
   quests as questsTable,
   cosmeticSkus,
   cosmeticVariants,
-  petSkins,
+  avatarSkins,
   dashboardPhases,
 } from '@clawville/database';
 import { sessionMiddleware } from '../middleware/auth';
@@ -364,12 +364,12 @@ dashboardRoutes.get('/cosmetics', adminOnly, async (c) => {
     .groupBy(cosmeticVariants.skuId);
   const ownerCounts = await db
     .select({
-      skuId: petSkins.skuId,
+      skuId: avatarSkins.skuId,
       owners: drizzleSql<number>`count(*)::int`.as('owners'),
-      equippedNow: drizzleSql<number>`count(*) FILTER (WHERE ${petSkins.equipped})::int`.as('equipped_now'),
+      equippedNow: drizzleSql<number>`count(*) FILTER (WHERE ${avatarSkins.equipped})::int`.as('equipped_now'),
     })
-    .from(petSkins)
-    .groupBy(petSkins.skuId);
+    .from(avatarSkins)
+    .groupBy(avatarSkins.skuId);
 
   const variantBySku = new Map(variantCounts.map((v) => [v.skuId, Number(v.n) || 0]));
   const ownerBySku = new Map(

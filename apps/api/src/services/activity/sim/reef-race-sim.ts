@@ -130,7 +130,7 @@ import {
   buildBodyMultipliers,
   racingClassFromArchetype,
   type BodyMultipliers,
-  type PetRacingProfile,
+  type AvatarRacingProfile,
   type RacingClass,
   // Phase 4 — ghost capture cadence + streak constants
   GHOST_CAPTURE_HZ,
@@ -337,7 +337,7 @@ interface ReefBody {
 
   // ─── Phase 2 — slipstream ───────────────────────────────────────────────
   /** avatarId of the body whose wake this body is currently sitting in (null = none). */
-  slipstreamSourcePetId: string | null;
+  slipstreamSourceAvatarId: string | null;
   /** Consecutive ticks the body has been in the SAME source's wake. Reset on switch. */
   slipstreamConsecutiveTicks: number;
   /** Grace ticks remaining after leaving the wake before clearing source. */
@@ -474,7 +474,7 @@ interface ReefRoomState {
    * Stamped here (not derived from `body.mults`) so we keep the original
    * level integer (mults flatten 26-50 into a single accelMult value).
    */
-  petClassCache: Map<string, { class: RacingClass; level: number }>;
+  avatarClassCache: Map<string, { class: RacingClass; level: number }>;
 }
 
 interface ReefSnapshot {
@@ -546,7 +546,7 @@ class ReefRaceSim {
   startRoom(
     roomId: string,
     activityId: string,
-    participantPetIds: string[],
+    participantAvatarIds: string[],
     opts?: {
       seed?: number;
       isBot?: (avatarId: string) => boolean;
@@ -573,7 +573,7 @@ class ReefRaceSim {
        * is omitted entirely, every body gets neutral mults (bit-identical
        * to pre-Phase-3 behavior).
        */
-      petProfiles?: Map<string, PetRacingProfile>;
+      avatarProfiles?: Map<string, AvatarRacingProfile>;
     },
   ): ReefRoomState {
     if (this.rooms.has(roomId)) {
@@ -589,7 +589,7 @@ class ReefRaceSim {
     const botControllers = new Map<string, BotController>();
     if (opts?.bots) {
       for (const ctrl of opts.bots) {
-        if (!participantPetIds.includes(ctrl.avatarId)) {
+        if (!participantAvatarIds.includes(ctrl.avatarId)) {
           console.warn(
             `[reef-race-sim] bot controller for ${ctrl.avatarId} is not a participant — skipping`,
           );
@@ -630,7 +630,7 @@ class ReefRaceSim {
       hazards,
       lastPlacementMap: new Map<string, number>(),
       // Phase 3 — per-avatar (class, level) cache for HUD profile broadcast.
-      petClassCache: new Map<string, { class: RacingClass; level: number }>(),
+      avatarClassCache: new Map<string, { class: RacingClass; level: number }>(),
     };
 
     // Stagger spawn positions on the start straight (just before
@@ -640,7 +640,7 @@ class ReefRaceSim {
     // Place bodies behind the start line by `i * spacing` along -tangent.
     const SPACING = 70;
     const ROW_OFFSET = 90;
-    participantPetIds.forEach((avatarId, i) => {
+    participantAvatarIds.forEach((avatarId, i) => {
       const row = Math.floor(i / 2);
       const col = i % 2 === 0 ? -1 : 1;
       const back = row * SPACING + 30;
@@ -672,7 +672,7 @@ class ReefRaceSim {
       // Phase 3 — avatar-stat-driven multipliers + pre-computed drift spark
       // thresholds. Builder always returns a fresh object (audit N4 — never
       // a shared NEUTRAL_BODY_MULTIPLIERS reference).
-      const profile = opts?.petProfiles?.get(avatarId) ?? null;
+      const profile = opts?.avatarProfiles?.get(avatarId) ?? null;
       const mults = buildBodyMultipliers(profile);
       const driftSparkTicks: readonly [number, number, number] = [
         Math.max(1, Math.round(DRIFT_SPARK_TICK_1 / mults.driftChargeMult)),
@@ -690,7 +690,7 @@ class ReefRaceSim {
           : Number.isFinite(profile?.level)
             ? Math.max(1, Math.floor(profile?.level ?? 1))
             : 1;
-      state.petClassCache.set(avatarId, {
+      state.avatarClassCache.set(avatarId, {
         class: cachedClass,
         level: cachedLevel,
       });
@@ -729,7 +729,7 @@ class ReefRaceSim {
         isBot: opts?.isBot?.(avatarId) ?? botControllers.has(avatarId),
         forfeited: false,
         // Phase 2 per-body initial state.
-        slipstreamSourcePetId: null,
+        slipstreamSourceAvatarId: null,
         slipstreamConsecutiveTicks: 0,
         slipstreamGraceTicksLeft: 0,
         ribbonsCollectedThisLap: new Set<string>(),
@@ -2682,10 +2682,10 @@ class ReefRaceSim {
       }
       if (bestSrc) {
         // Continue / start charging.
-        if (self.slipstreamSourcePetId === bestSrc.avatarId) {
+        if (self.slipstreamSourceAvatarId === bestSrc.avatarId) {
           self.slipstreamConsecutiveTicks++;
         } else {
-          self.slipstreamSourcePetId = bestSrc.avatarId;
+          self.slipstreamSourceAvatarId = bestSrc.avatarId;
           self.slipstreamConsecutiveTicks = 1;
         }
         // Phase 3 — agility extends post-leave grace from 6 ticks (200ms)
@@ -2722,7 +2722,7 @@ class ReefRaceSim {
             // Edge-trigger: emit `event.slipstream_end` exactly when grace
             // runs out and the boost is about to be allowed to expire.
             self.activeBoosts.delete('slipstream-boost');
-            self.slipstreamSourcePetId = null;
+            self.slipstreamSourceAvatarId = null;
             self.slipstreamConsecutiveTicks = 0;
             this.broadcastFn(state.roomId, {
               type: 'event.slipstream_end',
@@ -2731,7 +2731,7 @@ class ReefRaceSim {
           }
         } else {
           // Already cleared in a prior tick; ensure source/counter reset.
-          self.slipstreamSourcePetId = null;
+          self.slipstreamSourceAvatarId = null;
           self.slipstreamConsecutiveTicks = 0;
         }
       }
@@ -2941,7 +2941,7 @@ class ReefRaceSim {
     if (!state) return null;
     const out: Record<string, { class: RacingClass; level: number }> = {};
     for (const body of state.bodies.values()) {
-      const cached = state.petClassCache.get(body.avatarId);
+      const cached = state.avatarClassCache.get(body.avatarId);
       out[body.avatarId] = cached ?? { class: 'balanced', level: 1 };
     }
     return out;

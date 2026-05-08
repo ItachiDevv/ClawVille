@@ -56,7 +56,7 @@ function calculateRarity(
   return 'common';
 }
 
-async function getUserPet(userId: string) {
+async function getUserAvatar(userId: string) {
   const avatar = await db.query.avatars.findFirst({
     where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
   });
@@ -248,7 +248,7 @@ bazaarRoutes.get('/featured', async (c) => {
 // ---------------------------------------------------------------------------
 bazaarRoutes.get('/my-listings', requireAuth, async (c) => {
   const user = c.get('user') as { id: string };
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   const rows = await db
     .select({
@@ -293,7 +293,7 @@ bazaarRoutes.get('/my-listings', requireAuth, async (c) => {
 // ---------------------------------------------------------------------------
 bazaarRoutes.get('/my-purchases', requireAuth, async (c) => {
   const user = c.get('user') as { id: string };
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   const rows = await db
     .select({
@@ -390,7 +390,7 @@ bazaarRoutes.get('/skills/:skillId/reviews', async (c) => {
       rating: bazaarReviews.rating,
       comment: bazaarReviews.comment,
       createdAt: bazaarReviews.createdAt,
-      reviewerPetName: avatars.name,
+      reviewerAvatarName: avatars.name,
       reviewerSpecies: avatars.species,
     })
     .from(bazaarReviews)
@@ -403,7 +403,7 @@ bazaarRoutes.get('/skills/:skillId/reviews', async (c) => {
     rating: r.rating,
     comment: r.comment,
     createdAt: r.createdAt.toISOString(),
-    reviewerPetName: r.reviewerPetName,
+    reviewerAvatarName: r.reviewerAvatarName,
     reviewerSpecies: r.reviewerSpecies,
   }));
 
@@ -457,7 +457,7 @@ bazaarRoutes.get('/:id', async (c) => {
       rating: bazaarReviews.rating,
       comment: bazaarReviews.comment,
       createdAt: bazaarReviews.createdAt,
-      reviewerPetName: avatars.name,
+      reviewerAvatarName: avatars.name,
       reviewerSpecies: avatars.species,
     })
     .from(bazaarReviews)
@@ -490,7 +490,7 @@ bazaarRoutes.get('/:id', async (c) => {
       rating: rv.rating,
       comment: rv.comment,
       createdAt: rv.createdAt.toISOString(),
-      reviewerPetName: rv.reviewerPetName,
+      reviewerAvatarName: rv.reviewerAvatarName,
       reviewerSpecies: rv.reviewerSpecies,
     })),
   };
@@ -519,7 +519,7 @@ bazaarRoutes.post('/list', requireAuth, async (c) => {
   }
 
   const { skillId, price } = parsed.data;
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   // Verify the seller owns this skill
   const [skill] = await db
@@ -620,7 +620,7 @@ bazaarRoutes.patch('/:id', requireAuth, async (c) => {
     });
   }
 
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   const [listing] = await db
     .select()
@@ -668,7 +668,7 @@ bazaarRoutes.delete('/:id', requireAuth, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Listing');
 
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   const [listing] = await db
     .select()
@@ -708,7 +708,7 @@ bazaarRoutes.post('/:id/buy', requireAuth, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Listing');
 
-  const buyerPet = await getUserPet(user.id);
+  const buyerAvatar = await getUserAvatar(user.id);
 
   // Entire buy flow runs in a single DB transaction to prevent double-buy
   // races and ensure debit/credit atomicity.
@@ -728,7 +728,7 @@ bazaarRoutes.post('/:id/buy', requireAuth, async (c) => {
     }
 
     // 2. Prevent self-purchase
-    if (buyerPet.id === claimed.sellerId) {
+    if (buyerAvatar.id === claimed.sellerId) {
       throw new HTTPException(400, {
         message: 'Cannot buy your own listing',
       });
@@ -741,7 +741,7 @@ bazaarRoutes.post('/:id/buy', requireAuth, async (c) => {
 
     // 4. Atomic debit buyer + credit seller within the same transaction
     const { balanceAfter: buyerBalance } = await debitClawTokens({
-      avatarId: buyerPet.id,
+      avatarId: buyerAvatar.id,
       amount: price,
       reason: 'bazaar_purchase',
       source: 'api',
@@ -753,7 +753,7 @@ bazaarRoutes.post('/:id/buy', requireAuth, async (c) => {
       amount: sellerPayout,
       reason: 'bazaar_sale',
       source: 'api',
-      metadata: { listingId: id, skillId: claimed.skillId, buyerId: buyerPet.id, platformFee },
+      metadata: { listingId: id, skillId: claimed.skillId, buyerId: buyerAvatar.id, platformFee },
     }, tx);
 
     // 5. Insert bazaar_transaction
@@ -761,7 +761,7 @@ bazaarRoutes.post('/:id/buy', requireAuth, async (c) => {
       .insert(bazaarTransactions)
       .values({
         listingId: id,
-        buyerId: buyerPet.id,
+        buyerId: buyerAvatar.id,
         sellerId: claimed.sellerId,
         skillId: claimed.skillId,
         price,
@@ -774,7 +774,7 @@ bazaarRoutes.post('/:id/buy', requireAuth, async (c) => {
     const itemId = `skill-${claimed.skillId}`;
     const existingItem = await tx.query.avatarInventory.findFirst({
       where: and(
-        eq(avatarInventory.avatarId, buyerPet.id),
+        eq(avatarInventory.avatarId, buyerAvatar.id),
         eq(avatarInventory.itemId, itemId)
       ),
     });
@@ -786,7 +786,7 @@ bazaarRoutes.post('/:id/buy', requireAuth, async (c) => {
         .where(eq(avatarInventory.id, existingItem.id));
     } else {
       await tx.insert(avatarInventory).values({
-        avatarId: buyerPet.id,
+        avatarId: buyerAvatar.id,
         itemId,
         quantity: 1,
       });
@@ -833,7 +833,7 @@ bazaarRoutes.post('/:id/review', requireAuth, async (c) => {
     });
   }
 
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   // Verify the user actually purchased via this listing
   const [transaction] = await db

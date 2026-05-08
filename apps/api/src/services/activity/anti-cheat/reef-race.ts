@@ -609,13 +609,13 @@ export class ReefProgressTracker {
    * Idempotent: silently keeps the first recorded timestamp on repeat calls.
    */
   recordEntry(avatarId: string, segmentIndex: number, ms: number): void {
-    let perPet = this.entries.get(avatarId);
-    if (!perPet) {
-      perPet = new Map();
-      this.entries.set(avatarId, perPet);
+    let perAvatar = this.entries.get(avatarId);
+    if (!perAvatar) {
+      perAvatar = new Map();
+      this.entries.set(avatarId, perAvatar);
     }
-    if (!perPet.has(segmentIndex)) {
-      perPet.set(segmentIndex, ms);
+    if (!perAvatar.has(segmentIndex)) {
+      perAvatar.set(segmentIndex, ms);
     }
   }
 
@@ -624,13 +624,13 @@ export class ReefProgressTracker {
    * been recorded entering this segment.
    */
   getEntryMs(avatarId: string, segmentIndex: number): number | null {
-    const perPet = this.entries.get(avatarId);
-    if (!perPet) return null;
-    const ms = perPet.get(segmentIndex);
+    const perAvatar = this.entries.get(avatarId);
+    if (!perAvatar) return null;
+    const ms = perAvatar.get(segmentIndex);
     return ms === undefined ? null : ms;
   }
 
-  /** Drop tracking for a avatar on disconnect / match end. */
+  /** Drop tracking for an avatar on disconnect / match end. */
   forget(avatarId: string): void {
     this.entries.delete(avatarId);
   }

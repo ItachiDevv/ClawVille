@@ -59,7 +59,7 @@ skillsRoutes.get('/', async (c) => {
  * Resolve the caller's avatar ID via either Lucia session cookie or
  * Authorization: Bearer <agent-sessionId>. Returns null if both fail.
  */
-async function resolvePetId(c: any): Promise<string | null> {
+async function resolveAvatarId(c: any): Promise<string | null> {
   // Try Lucia session cookie first
   const cookieHeader = c.req.header('Cookie');
   if (cookieHeader) {
@@ -122,7 +122,7 @@ async function resolvePetId(c: any): Promise<string | null> {
  * This matches the in-game definition of "you've read at least one book
  * here" — the install moment, not just visiting.
  */
-async function petOwnsBuilding(avatarId: string, buildingId: string): Promise<boolean> {
+async function avatarOwnsBuilding(avatarId: string, buildingId: string): Promise<boolean> {
   const row = await db.query.avatars.findFirst({
     where: eq(avatars.id, avatarId),
     columns: { characterConfig: true },
@@ -192,9 +192,9 @@ skillsRoutes.get('/:buildingId/skill.md', async (c) => {
 
   let unlocked = isEntrySkill;
   if (!unlocked) {
-    const avatarId = await resolvePetId(c);
+    const avatarId = await resolveAvatarId(c);
     if (avatarId) {
-      unlocked = await petOwnsBuilding(avatarId, buildingId);
+      unlocked = await avatarOwnsBuilding(avatarId, buildingId);
     }
   }
 

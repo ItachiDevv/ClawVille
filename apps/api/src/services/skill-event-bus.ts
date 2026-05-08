@@ -8,7 +8,7 @@
  *
  * Architecture:
  *   - Publishers: `apps/api/src/routes/items.ts` (book read), and any
- *     other code path that grants new knowledge to a avatar whose user has
+ *     other code path that grants new knowledge to an avatar whose user has
  *     an active agent session.
  *   - Subscriber: the SSE loop at `agent-gateway.ts:/:sessionId/events`
  *     calls `drain(sessionId)` once per 2s tick and writes any pending

@@ -31,7 +31,7 @@ import {
   db,
   cosmeticSkus,
   cosmeticVariants,
-  petSkins,
+  avatarSkins,
   avatars,
 } from '@clawville/database';
 import { requireAuth, sessionMiddleware } from '../middleware/auth';
@@ -56,7 +56,7 @@ const VALID_SCOPES = new Set([
 const uuidRegex =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-async function getCallerPet(userId: string) {
+async function getCallerAvatar(userId: string) {
   const avatar = await db.query.avatars.findFirst({
     where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
   });
@@ -121,20 +121,20 @@ cosmeticsRoutes.get('/catalog', async (c) => {
 
 cosmeticsRoutes.get('/owned', sessionMiddleware, requireAuth, async (c) => {
   const user = c.get('user') as { id: string };
-  const avatar = await getCallerPet(user.id);
+  const avatar = await getCallerAvatar(user.id);
 
   // Two-step: avatar_skins → cosmetic_skus → cosmetic_variants. Could be one
   // join, but the variants are an array per SKU — easier to assemble in JS
   // after two flat queries than to duplicate-row + group-by in SQL.
   const owned = await db
     .select({
-      avatarSkin: petSkins,
+      avatarSkin: avatarSkins,
       sku: cosmeticSkus,
     })
-    .from(petSkins)
-    .innerJoin(cosmeticSkus, eq(cosmeticSkus.id, petSkins.skuId))
-    .where(eq(petSkins.avatarId, avatar.id))
-    .orderBy(petSkins.acquiredAt);
+    .from(avatarSkins)
+    .innerJoin(cosmeticSkus, eq(cosmeticSkus.id, avatarSkins.skuId))
+    .where(eq(avatarSkins.avatarId, avatar.id))
+    .orderBy(avatarSkins.acquiredAt);
 
   if (owned.length === 0) {
     return c.json({ owned: [], generatedAt: new Date().toISOString() });
@@ -200,17 +200,17 @@ async function setEquipped(
   if (!uuidRegex.test(skuId)) {
     throw new HTTPException(400, { message: 'Invalid skuId' });
   }
-  const avatar = await getCallerPet(userId);
+  const avatar = await getCallerAvatar(userId);
 
   // Update only if the row exists (idempotent — equipping an already-
   // equipped SKU returns the same row, no toggle).
   const result = await db
-    .update(petSkins)
+    .update(avatarSkins)
     .set({
       equipped,
       equippedAt: equipped ? new Date() : null,
     })
-    .where(and(eq(petSkins.avatarId, avatar.id), eq(petSkins.skuId, skuId)))
+    .where(and(eq(avatarSkins.avatarId, avatar.id), eq(avatarSkins.skuId, skuId)))
     .returning();
 
   if (result.length === 0) {
@@ -282,13 +282,13 @@ cosmeticsRoutes.post('/:skuId/buy', sessionMiddleware, requireAuth, async (c) =>
     });
   }
 
-  const avatar = await getCallerPet(user.id);
+  const avatar = await getCallerAvatar(user.id);
 
   // Idempotent: already owned ⇒ 200 with `{ alreadyOwned: true }`.
   const existing = await db
-    .select({ id: petSkins.id, equipped: petSkins.equipped })
-    .from(petSkins)
-    .where(and(eq(petSkins.avatarId, avatar.id), eq(petSkins.skuId, skuId)))
+    .select({ id: avatarSkins.id, equipped: avatarSkins.equipped })
+    .from(avatarSkins)
+    .where(and(eq(avatarSkins.avatarId, avatar.id), eq(avatarSkins.skuId, skuId)))
     .limit(1);
   if (existing.length > 0) {
     return c.json({
@@ -315,7 +315,7 @@ cosmeticsRoutes.post('/:skuId/buy', sessionMiddleware, requireAuth, async (c) =>
         tx,
       );
       const [row] = await tx
-        .insert(petSkins)
+        .insert(avatarSkins)
         .values({
           avatarId: avatar.id,
           skuId: sku.id,
@@ -323,7 +323,7 @@ cosmeticsRoutes.post('/:skuId/buy', sessionMiddleware, requireAuth, async (c) =>
           ledgerId: debit.ledgerId,
           equipped: false,
         })
-        .returning({ id: petSkins.id });
+        .returning({ id: avatarSkins.id });
       return { balanceAfter: debit.balanceAfter, avatarSkinId: row.id };
     });
   } catch (err) {

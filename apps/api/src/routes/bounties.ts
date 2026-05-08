@@ -25,7 +25,7 @@ bountyRoutes.use('*', sessionMiddleware);
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function getUserPet(userId: string) {
+async function getUserAvatar(userId: string) {
   const avatar = await db.query.avatars.findFirst({
     where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
   });
@@ -184,7 +184,7 @@ bountyRoutes.get('/featured', async (c) => {
 // ---------------------------------------------------------------------------
 bountyRoutes.get('/my-bounties', requireAuth, async (c) => {
   const user = c.get('user') as { id: string };
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   const rows = await db
     .select()
@@ -251,7 +251,7 @@ bountyRoutes.get('/my-bounties', requireAuth, async (c) => {
 // ---------------------------------------------------------------------------
 bountyRoutes.get('/my-attempts', requireAuth, async (c) => {
   const user = c.get('user') as { id: string };
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   const rows = await db
     .select({
@@ -307,7 +307,7 @@ bountyRoutes.post('/create', requireAuth, async (c) => {
   }
 
   const data = parsed.data;
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   // ESCROW: Verify creator has enough tokens
   if (avatar.clawTokens < data.tokenReward) {
@@ -433,7 +433,7 @@ bountyRoutes.post('/create', requireAuth, async (c) => {
 });
 
 // ---------------------------------------------------------------------------
-// 13. GET /reputation/:avatarId — Get bounty reputation for a avatar
+// 13. GET /reputation/:avatarId — Get bounty reputation for an avatar
 // ---------------------------------------------------------------------------
 bountyRoutes.get('/reputation/:avatarId', async (c) => {
   const avatarId = c.req.param('avatarId');
@@ -490,7 +490,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuth, async (c) => {
   }
 
   const { decision, reviewNote } = parsed.data;
-  const reviewerPet = await getUserPet(user.id);
+  const reviewerAvatar = await getUserAvatar(user.id);
 
   // Fetch attempt with bounty details
   const [attemptRow] = await db
@@ -511,7 +511,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuth, async (c) => {
   const bounty = attemptRow.bounty;
 
   // Only bounty creator can review
-  if (bounty.creatorId !== reviewerPet.id) {
+  if (bounty.creatorId !== reviewerAvatar.id) {
     throw new HTTPException(403, {
       message: 'Only the bounty creator can review submissions',
     });
@@ -542,17 +542,17 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuth, async (c) => {
         .where(eq(bountyAttempts.id, attemptId));
 
       // 2. Transfer escrowed tokenReward to hunter's clawTokens
-      const hunterPet = await tx.query.avatars.findFirst({
+      const hunterAvatar = await tx.query.avatars.findFirst({
         where: eq(avatars.id, attempt.hunterId),
       });
 
-      if (!hunterPet) {
+      if (!hunterAvatar) {
         throw new HTTPException(500, { message: 'Hunter avatar not found' });
       }
 
       // Release escrowed tokenReward to hunter (atomic + audited)
       await creditClawTokens({
-        avatarId: hunterPet.id,
+        avatarId: hunterAvatar.id,
         amount: bounty.tokenReward,
         reason: 'bounty_reward',
         source: 'bounty',
@@ -570,7 +570,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuth, async (c) => {
           const itemId = `skill-${reward.skillId}`;
           const existingItem = await tx.query.avatarInventory.findFirst({
             where: and(
-              eq(avatarInventory.avatarId, hunterPet.id),
+              eq(avatarInventory.avatarId, hunterAvatar.id),
               eq(avatarInventory.itemId, itemId)
             ),
           });
@@ -582,7 +582,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuth, async (c) => {
               .where(eq(avatarInventory.id, existingItem.id));
           } else {
             await tx.insert(avatarInventory).values({
-              avatarId: hunterPet.id,
+              avatarId: hunterAvatar.id,
               itemId,
               quantity: 1,
             });
@@ -593,7 +593,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuth, async (c) => {
           const itemId = `book-${reward.bookId}`;
           const existingItem = await tx.query.avatarInventory.findFirst({
             where: and(
-              eq(avatarInventory.avatarId, hunterPet.id),
+              eq(avatarInventory.avatarId, hunterAvatar.id),
               eq(avatarInventory.itemId, itemId)
             ),
           });
@@ -605,7 +605,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuth, async (c) => {
               .where(eq(avatarInventory.id, existingItem.id));
           } else {
             await tx.insert(avatarInventory).values({
-              avatarId: hunterPet.id,
+              avatarId: hunterAvatar.id,
               itemId,
               quantity: 1,
             });
@@ -644,10 +644,10 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuth, async (c) => {
 
       // 5. Update bounty reputation for hunter
       const hunterRep = await tx.query.bountyReputation.findFirst({
-        where: eq(bountyReputation.avatarId, hunterPet.id),
+        where: eq(bountyReputation.avatarId, hunterAvatar.id),
       });
 
-      const newSuccessRate = await recalculateSuccessRate(hunterPet.id, tx);
+      const newSuccessRate = await recalculateSuccessRate(hunterAvatar.id, tx);
 
       if (hunterRep) {
         const newCompleted = hunterRep.totalCompleted + 1;
@@ -666,7 +666,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuth, async (c) => {
       } else {
         const newTier = calculateReputationTier(1);
         await tx.insert(bountyReputation).values({
-          avatarId: hunterPet.id,
+          avatarId: hunterAvatar.id,
           totalCompleted: 1,
           totalEarned: bounty.tokenReward,
           tier: newTier as any,
@@ -677,7 +677,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuth, async (c) => {
 
       // 6. Update reputation for creator (track activity)
       const creatorRep = await tx.query.bountyReputation.findFirst({
-        where: eq(bountyReputation.avatarId, reviewerPet.id),
+        where: eq(bountyReputation.avatarId, reviewerAvatar.id),
       });
 
       if (creatorRep) {
@@ -858,7 +858,7 @@ bountyRoutes.post('/:id/claim', requireAuth, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Bounty');
 
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   // Verify bounty exists and is open
   const [bounty] = await db
@@ -964,7 +964,7 @@ bountyRoutes.post('/:id/submit', requireAuth, async (c) => {
     });
   }
 
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   // Find the hunter's active attempt (claimed or in_progress) for this bounty
   const attempt = await db.query.bountyAttempts.findFirst({
@@ -1018,7 +1018,7 @@ bountyRoutes.post('/:id/abandon', requireAuth, async (c) => {
   const id = c.req.param('id'); // bounty ID
   validateUuid(id, 'Bounty');
 
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   // Find the hunter's active attempt for this bounty
   const attempt = await db.query.bountyAttempts.findFirst({
@@ -1083,7 +1083,7 @@ bountyRoutes.patch('/:id', requireAuth, async (c) => {
     });
   }
 
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   const [bounty] = await db
     .select()
@@ -1161,7 +1161,7 @@ bountyRoutes.delete('/:id', requireAuth, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Bounty');
 
-  const avatar = await getUserPet(user.id);
+  const avatar = await getUserAvatar(user.id);
 
   const [bounty] = await db
     .select()

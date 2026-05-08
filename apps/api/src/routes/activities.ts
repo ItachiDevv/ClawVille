@@ -761,11 +761,11 @@ activitiesV2Routes.get(
     const avatarIds = resultRows.map((r) => r.avatarId);
     const namesById = new Map<string, string>();
     if (avatarIds.length > 0) {
-      const petRows = await db
+      const avatarRows = await db
         .select({ id: avatars.id, name: avatars.name })
         .from(avatars)
-        .where(petInList(avatarIds));
-      for (const p of petRows) namesById.set(p.id, p.name);
+        .where(avatarInList(avatarIds));
+      for (const p of avatarRows) namesById.set(p.id, p.name);
     }
 
     return c.json({
@@ -957,7 +957,7 @@ function clampInt(
   return Math.max(min, Math.min(max, n));
 }
 
-function petInList(avatarIds: string[]): ReturnType<typeof sql> {
+function avatarInList(avatarIds: string[]): ReturnType<typeof sql> {
   if (avatarIds.length === 0) return sql`false`;
   return sql`${avatars.id} in (${sql.join(
     avatarIds.map((id) => sql`${id}`),

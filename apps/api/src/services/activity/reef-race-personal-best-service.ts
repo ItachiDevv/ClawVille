@@ -217,7 +217,7 @@ export async function maybeUpdatePersonalBest(
 }
 
 /**
- * Read the latest PB row for a avatar. Hot path on snapshot.init for self avatar.
+ * Read the latest PB row for an avatar. Hot path on snapshot.init for self avatar.
  * Returns null when the avatar has no PB yet (the common case for fresh avatars).
  */
 export async function loadPersonalBest(
@@ -234,7 +234,7 @@ export async function loadPersonalBest(
 }
 
 /**
- * Read just the captured ghost frames for a avatar. 5-min TTL in-memory cache
+ * Read just the captured ghost frames for an avatar. 5-min TTL in-memory cache
  * keyed by avatarId; invalidated by `maybeUpdatePersonalBest` on successful
  * upsert (S4 fix).
  *

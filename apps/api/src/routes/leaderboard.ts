@@ -157,7 +157,7 @@ function setCache(cap: number, snapshot: LeaderboardSnapshot) {
 // ---------------------------------------------------------------------------
 
 async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
-  const petRows = await db
+  const avatarRows = await db
     .select({
       id: avatars.id,
       name: avatars.name,
@@ -169,7 +169,7 @@ async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
     .from(avatars)
     .where(eq(avatars.isActive, true));
 
-  if (petRows.length === 0) {
+  if (avatarRows.length === 0) {
     return { entries: [], totalPets: 0, generatedAt: new Date().toISOString() };
   }
 
@@ -182,7 +182,7 @@ async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
     .where(gt(clawTokenTransactions.amount, 0))
     .groupBy(clawTokenTransactions.avatarId);
 
-  const earnedByPet = new Map<string, number>(
+  const earnedByAvatar = new Map<string, number>(
     earnedRows.map((r) => [r.avatarId, Number(r.total) || 0])
   );
 
@@ -194,7 +194,7 @@ async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
     .from(bazaarTransactions)
     .groupBy(bazaarTransactions.sellerId);
 
-  const soldByPet = new Map<string, number>(
+  const soldByAvatar = new Map<string, number>(
     soldRows.map((r) => [r.avatarId, Number(r.total) || 0])
   );
 
@@ -207,7 +207,7 @@ async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
     .where(sql`${publishedSkills.authorAvatarId} is not null`)
     .groupBy(publishedSkills.authorAvatarId);
 
-  const authoredByPet = new Map<string, number>(
+  const authoredByAvatar = new Map<string, number>(
     authoredRows
       .filter((r): r is { avatarId: string; total: number } => r.avatarId !== null)
       .map((r) => [r.avatarId, Number(r.total) || 0])
@@ -221,7 +221,7 @@ async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
     .from(questRewards)
     .groupBy(questRewards.avatarId);
 
-  const questByPet = new Map<string, number>(
+  const questByAvatar = new Map<string, number>(
     questRows.map((r) => [r.avatarId, Number(r.total) || 0])
   );
 
@@ -232,11 +232,11 @@ async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
     })
     .from(bountyReputation);
 
-  const bountyByPet = new Map<string, number>(
+  const bountyByAvatar = new Map<string, number>(
     bountyRows.map((r) => [r.avatarId, r.totalCompleted || 0])
   );
 
-  const partialEntries = petRows.map((avatar) => {
+  const partialEntries = avatarRows.map((avatar) => {
     const body = {
       avatarId: avatar.id,
       avatarName: avatar.name,
@@ -244,11 +244,11 @@ async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
       color: avatar.color ?? null,
       archetype: avatar.archetype ?? null,
       gold: avatar.clawTokens || 0,
-      earned: earnedByPet.get(avatar.id) || 0,
-      skillsSold: soldByPet.get(avatar.id) || 0,
-      skillsAuthored: authoredByPet.get(avatar.id) || 0,
-      questsCompleted: questByPet.get(avatar.id) || 0,
-      bountiesCompleted: bountyByPet.get(avatar.id) || 0,
+      earned: earnedByAvatar.get(avatar.id) || 0,
+      skillsSold: soldByAvatar.get(avatar.id) || 0,
+      skillsAuthored: authoredByAvatar.get(avatar.id) || 0,
+      questsCompleted: questByAvatar.get(avatar.id) || 0,
+      bountiesCompleted: bountyByAvatar.get(avatar.id) || 0,
     };
     return { ...body, compositeScore: computeComposite(body) };
   });
@@ -263,7 +263,7 @@ async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
 
   return {
     entries: ranked,
-    totalPets: petRows.length,
+    totalPets: avatarRows.length,
     generatedAt: new Date().toISOString(),
   };
 }
@@ -458,7 +458,7 @@ function windowToInterval(window: AgentLeaderboardWindow): string {
  *
  * Postgres plans this as two index-supported scans (agent_id partial,
  * avatar_id partial) feeding hash aggregates, then a UNION. Index coverage:
- * `idx_events_type_ts`, `idx_events_agent_ts`, `idx_events_pet_ts`.
+ * `idx_events_type_ts`, `idx_events_agent_ts`, `idx_events_avatar_ts`.
  *
  * Joining avatar / openclaw_bots / wallets happens in memory via batched
  * `inArray` round trips, never a cartesian.
@@ -505,7 +505,7 @@ async function buildAgentSnapshot(
         AND ts > now() - ${sql.raw(`interval '${interval}'`)}
       GROUP BY agent_id
     ),
-    pet_sessions AS (
+    avatar_sessions AS (
       SELECT
         avatar_id,
         COUNT(DISTINCT session_id)::int AS sessions
@@ -563,7 +563,7 @@ async function buildAgentSnapshot(
         AND ts > now() - ${sql.raw(`interval '${interval}'`)}
       GROUP BY agent_id, date_trunc('day', ts)
     ),
-    pet_daily AS (
+    avatar_daily AS (
       SELECT
         avatar_id,
         date_trunc('day', ts) AS day,
@@ -642,7 +642,7 @@ async function buildAgentSnapshot(
       LEFT JOIN agent_sessions s ON s.agent_id = ad.agent_id
       GROUP BY ad.agent_id
     ),
-    pet_scores AS (
+    avatar_scores AS (
       SELECT
         pd.avatar_id::text AS subject_id,
         'avatar'::text AS subject_type,
@@ -670,14 +670,14 @@ async function buildAgentSnapshot(
               END
             ))::int
         )::int AS score
-      FROM pet_daily pd
-      LEFT JOIN pet_sessions s ON s.avatar_id = pd.avatar_id
+      FROM avatar_daily pd
+      LEFT JOIN avatar_sessions s ON s.avatar_id = pd.avatar_id
       GROUP BY pd.avatar_id
     )
     SELECT * FROM (
       SELECT * FROM agent_scores
       UNION ALL
-      SELECT * FROM pet_scores
+      SELECT * FROM avatar_scores
     ) combined
     WHERE score > 0
     ORDER BY score DESC
@@ -695,7 +695,7 @@ async function buildAgentSnapshot(
   // Split rows by subject_type so we hit the right metadata table for each.
   // Agent rows → openclaw_bots → avatars-for-user. Avatar rows → avatars directly.
   const agentRows = aggRows.filter((r) => r.subject_type === 'agent');
-  const petRows = aggRows.filter((r) => r.subject_type === 'avatar');
+  const avatarRows = aggRows.filter((r) => r.subject_type === 'avatar');
 
   // Agent path: openclaw_bots → optional bound avatar via userId.
   const agentSubjectIds = agentRows.map((r) => r.subject_id);
@@ -716,7 +716,7 @@ async function buildAgentSnapshot(
   const userIds = botRows
     .map((b) => b.userId)
     .filter((u): u is string => typeof u === 'string' && u.length > 0);
-  const petByUserId = new Map<
+  const avatarByUserId = new Map<
     string,
     { id: string; name: string; walletAddress: string | null }
   >();
@@ -732,7 +732,7 @@ async function buildAgentSnapshot(
       .where(and(inArray(avatars.userId, userIds), eq(avatars.isActive, true)));
 
     for (const p of petsForBots) {
-      petByUserId.set(p.userId, {
+      avatarByUserId.set(p.userId, {
         id: p.id,
         name: p.name,
         walletAddress: p.walletAddress ?? null,
@@ -742,12 +742,12 @@ async function buildAgentSnapshot(
 
   // Avatar path (Q3 plan §2.5 — Player tier groundwork): subject_id IS the avatar.id
   // since avatar rows come from events with no agent_id. One direct avatars lookup.
-  const petSubjectIds = petRows.map((r) => r.subject_id);
-  const petById = new Map<
+  const avatarSubjectIds = avatarRows.map((r) => r.subject_id);
+  const avatarById = new Map<
     string,
     { id: string; name: string; walletAddress: string | null }
   >();
-  if (petSubjectIds.length > 0) {
+  if (avatarSubjectIds.length > 0) {
     const directPets = await db
       .select({
         id: avatars.id,
@@ -755,10 +755,10 @@ async function buildAgentSnapshot(
         walletAddress: avatars.walletAddress,
       })
       .from(avatars)
-      .where(and(inArray(avatars.id, petSubjectIds), eq(avatars.isActive, true)));
+      .where(and(inArray(avatars.id, avatarSubjectIds), eq(avatars.isActive, true)));
 
     for (const p of directPets) {
-      petById.set(p.id, {
+      avatarById.set(p.id, {
         id: p.id,
         name: p.name,
         walletAddress: p.walletAddress ?? null,
@@ -772,9 +772,9 @@ async function buildAgentSnapshot(
   const entries: AgentLeaderboardEntry[] = aggRows.slice(0, limit).map((r, idx) => {
     const isAgent = r.subject_type === 'agent';
     const bot = isAgent ? botByAgentId.get(r.subject_id) : undefined;
-    const boundPet = bot?.userId ? petByUserId.get(bot.userId) : undefined;
-    const directPet = isAgent ? undefined : petById.get(r.subject_id);
-    const avatar = boundPet ?? directPet;
+    const boundAvatar = bot?.userId ? avatarByUserId.get(bot.userId) : undefined;
+    const directAvatar = isAgent ? undefined : avatarById.get(r.subject_id);
+    const avatar = boundAvatar ?? directAvatar;
 
     return {
       rank: idx + 1,
@@ -1003,7 +1003,7 @@ leaderboardRoutes.get('/', sessionMiddleware, async (c) => {
   const sorted = sortBy(snapshot.entries, sort);
   const page = sorted.slice(offset, offset + limit);
 
-  let mePet: LeaderboardEntry | null = null;
+  let meAvatar: LeaderboardEntry | null = null;
   if (wantMe) {
     const user = c.get('user');
     if (user) {
@@ -1014,7 +1014,7 @@ leaderboardRoutes.get('/', sessionMiddleware, async (c) => {
         .limit(1);
 
       if (myAvatar) {
-        mePet = sorted.find((e) => e.avatarId === myAvatar.id) ?? null;
+        meAvatar = sorted.find((e) => e.avatarId === myAvatar.id) ?? null;
       }
     }
   }
@@ -1027,7 +1027,7 @@ leaderboardRoutes.get('/', sessionMiddleware, async (c) => {
     totalPets: snapshot.totalPets,
     rankedCount: sorted.length,
     generatedAt: snapshot.generatedAt,
-    me: mePet,
+    me: meAvatar,
   });
 });
 

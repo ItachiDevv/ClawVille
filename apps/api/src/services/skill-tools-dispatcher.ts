@@ -32,7 +32,10 @@ const HANDLERS: Record<string, ToolHandler> = {
       return { ok: false, error: 'invalid_cron_expression', message: (err as Error).message };
     }
     const samples: string[] = [];
-    for (let i = 0; i < 3; i++) samples.push(it.next().toISOString());
+    for (let i = 0; i < 3; i++) {
+      const iso = it.next().toISOString();
+      if (iso) samples.push(iso);
+    }
     return {
       ok: true,
       expression,
@@ -55,7 +58,10 @@ const HANDLERS: Record<string, ToolHandler> = {
       return { ok: false, error: 'invalid_cron_expression', message: (err as Error).message };
     }
     const fires: string[] = [];
-    for (let i = 0; i < n; i++) fires.push(it.next().toISOString());
+    for (let i = 0; i < n; i++) {
+      const iso = it.next().toISOString();
+      if (iso) fires.push(iso);
+    }
     return { ok: true, expression, count: n, fires };
   },
 
@@ -712,7 +718,7 @@ function memoryChunkText(input: { text?: unknown; chunkSize?: number; overlap?: 
   const text = String(input.text ?? '');
   if (text.length === 0) return { ok: false, error: 'text_required' };
 
-  const chunkSize = Number.isFinite(input.chunkSize) && input.chunkSize > 0 ? Math.floor(input.chunkSize as number) : 512;
+  const chunkSize = Number.isFinite(input.chunkSize) && (input.chunkSize ?? 0) > 0 ? Math.floor(input.chunkSize as number) : 512;
   const overlap = Number.isFinite(input.overlap) && (input.overlap as number) >= 0 ? Math.floor(input.overlap as number) : Math.floor(chunkSize / 8);
 
   // Approx-token chunker — splits on sentence boundaries first, then word

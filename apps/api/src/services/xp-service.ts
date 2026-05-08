@@ -19,7 +19,7 @@ export interface XpAwardResult {
 }
 
 /**
- * Award XP to a avatar. Handles level-ups and token rewards automatically.
+ * Award XP to an avatar. Handles level-ups and token rewards automatically.
  * This is safe to call fire-and-forget (non-blocking).
  */
 export async function awardXp(

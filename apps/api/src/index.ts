@@ -387,7 +387,7 @@ startSimulation(arenaMode);
           for (const p of room.participants.values()) {
             (p.subjectType === 'bot' ? botAvatarIds : humanAvatarIds).push(p.avatarId);
           }
-          const petProfiles = await loadRacingProfiles(humanAvatarIds, botAvatarIds);
+          const avatarProfiles = await loadRacingProfiles(humanAvatarIds, botAvatarIds);
 
           reefRaceImpl.startRoom(
             room.id,
@@ -397,7 +397,7 @@ startSimulation(arenaMode);
               bots,
               startedAt: room.startedAt ?? Date.now(),
               launchBoosts,
-              petProfiles,
+              avatarProfiles,
             },
           );
           break;
@@ -564,7 +564,7 @@ async function gracefulShutdown(signal: string) {
       // If the sweeper module failed to load earlier, there's nothing to stop.
     }
     await Promise.allSettled([
-      npcSimulation.petAutonomyManager.shutdown(),
+      npcSimulation.avatarAutonomyManager.shutdown(),
       getCollaborationBroker().shutdown(),
       agentOrchestrator.shutdown(),
     ]);

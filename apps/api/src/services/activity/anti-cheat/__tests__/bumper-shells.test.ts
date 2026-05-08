@@ -158,7 +158,7 @@ describe('BumperFlagCounter', () => {
     expect(counter.countFor('avatar-b')).toBe(1);
   });
 
-  it('reset wipes a avatar', () => {
+  it('reset wipes an avatar', () => {
     const counter = new BumperFlagCounter();
     counter.bump('avatar-a');
     counter.reset('avatar-a');

@@ -148,7 +148,7 @@ async function debitInTx(tx: LedgerTx, input: LedgerDebitInput): Promise<LedgerR
 }
 
 /**
- * Credit ClawTokens to a avatar. Row-locked, atomic with ledger insert.
+ * Credit ClawTokens to an avatar. Row-locked, atomic with ledger insert.
  *
  * Pass `tx` to compose into a larger transaction (e.g. bazaar/auction
  * transfers where both buyer debit and seller credit must succeed
@@ -163,7 +163,7 @@ export async function creditClawTokens(
 }
 
 /**
- * Debit ClawTokens from a avatar. Throws InsufficientTokensError if balance
+ * Debit ClawTokens from an avatar. Throws InsufficientTokensError if balance
  * too low. Pass `tx` to compose into a larger transaction.
  */
 export async function debitClawTokens(

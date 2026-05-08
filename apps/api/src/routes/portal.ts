@@ -216,11 +216,11 @@ portalRoutes.post('/scape', sessionMiddleware, requireAuth, async (c) => {
     return c.json({ error: 'User not found' }, 404);
   }
 
-  const userPet = await db.query.avatars.findFirst({
+  const userAvatar = await db.query.avatars.findFirst({
     where: eq(avatars.userId, user.id),
     columns: { id: true, name: true },
   });
-  if (!userPet) {
+  if (!userAvatar) {
     return c.json({ error: 'No avatar — create your agent first' }, 400);
   }
 
@@ -236,9 +236,9 @@ portalRoutes.post('/scape', sessionMiddleware, requireAuth, async (c) => {
   const principalId =
     userRow.linkedScapePrincipalId ?? `principal:clawville:${user.id}`;
   const worldCharacterId =
-    userRow.linkedScapeWorldCharacterId ?? `cv-${userPet.id}`;
+    userRow.linkedScapeWorldCharacterId ?? `cv-${userAvatar.id}`;
   const displayName =
-    userRow.linkedScapeDisplayName ?? `${userPet.name}-cv`;
+    userRow.linkedScapeDisplayName ?? `${userAvatar.name}-cv`;
   const agentId = latestBot?.id ?? null;
 
   const payload = {
@@ -278,7 +278,7 @@ portalRoutes.post('/scape', sessionMiddleware, requireAuth, async (c) => {
     await logEvent({
       eventType: 'portal.scape.cross_failed',
       userId: user.id,
-      avatarId: userPet.id,
+      avatarId: userAvatar.id,
       agentId,
       payload: { reason: 'fetch_error', message: String(err) },
     });
@@ -290,7 +290,7 @@ portalRoutes.post('/scape', sessionMiddleware, requireAuth, async (c) => {
     await logEvent({
       eventType: 'portal.scape.cross_failed',
       userId: user.id,
-      avatarId: userPet.id,
+      avatarId: userAvatar.id,
       agentId,
       payload: {
         reason: 'partner_rejected',
@@ -308,7 +308,7 @@ portalRoutes.post('/scape', sessionMiddleware, requireAuth, async (c) => {
     await logEvent({
       eventType: 'portal.scape.cross_failed',
       userId: user.id,
-      avatarId: userPet.id,
+      avatarId: userAvatar.id,
       agentId,
       payload: { reason: 'partner_bad_json', message: String(err) },
     });
@@ -320,7 +320,7 @@ portalRoutes.post('/scape', sessionMiddleware, requireAuth, async (c) => {
     await logEvent({
       eventType: 'portal.scape.cross_failed',
       userId: user.id,
-      avatarId: userPet.id,
+      avatarId: userAvatar.id,
       agentId,
       payload: { reason: 'partner_missing_session_token' },
     });
@@ -351,7 +351,7 @@ portalRoutes.post('/scape', sessionMiddleware, requireAuth, async (c) => {
   await logEvent({
     eventType: 'portal.scape.crossed',
     userId: user.id,
-    avatarId: userPet.id,
+    avatarId: userAvatar.id,
     agentId,
     payload: {
       direction: 'clawville_to_scape',
@@ -426,7 +426,7 @@ portalRoutes.post('/mint-for-scape', async (c) => {
     return c.json({ error: 'not_found' }, 404);
   }
 
-  const userPet = await db.query.avatars.findFirst({
+  const userAvatar = await db.query.avatars.findFirst({
     where: eq(avatars.userId, userId),
     columns: { id: true, name: true },
   });
@@ -441,10 +441,10 @@ portalRoutes.post('/mint-for-scape', async (c) => {
   try {
     sessionTicket = await mintSessionTicket({
       userId,
-      avatarId: userPet?.id ?? null,
+      avatarId: userAvatar?.id ?? null,
       identityType: 'portal-scape',
       identityKey: `scape:${parsed.data.requestingScapeUserId}`,
-      avatarName: userPet?.name ?? null,
+      avatarName: userAvatar?.name ?? null,
     });
   } catch (err) {
     console.error('[Portal/MintForScape] ticket mint failed:', err);
@@ -454,7 +454,7 @@ portalRoutes.post('/mint-for-scape', async (c) => {
   await logEvent({
     eventType: 'portal.scape.crossed',
     userId,
-    avatarId: userPet?.id ?? null,
+    avatarId: userAvatar?.id ?? null,
     agentId: latestBot?.id ?? null,
     payload: {
       direction: 'scape_to_clawville',
@@ -566,7 +566,7 @@ portalRoutes.post('/accept-scape-link', async (c) => {
   }
 
   // Avatar lookup for the caller-facing response (confirmation copy).
-  const userPet = await db.query.avatars.findFirst({
+  const userAvatar = await db.query.avatars.findFirst({
     where: eq(avatars.userId, pending.clawvilleUserId),
     columns: { name: true },
   });
@@ -588,7 +588,7 @@ portalRoutes.post('/accept-scape-link', async (c) => {
   return c.json({
     linked: true,
     clawvilleDisplayName: targetUser.name ?? null,
-    avatarName: userPet?.name ?? null,
+    avatarName: userAvatar?.name ?? null,
   });
 });
 

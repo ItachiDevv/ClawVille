@@ -10,12 +10,12 @@ import { awardXp } from '../services/xp-service';
 import { shouldCollaborate, collaborateOnQuery } from '../services/agent-collaboration';
 import { logEvent, logEventFromContext } from '../services/event-logger';
 import { miladyGateway } from '../services/milady-gateway';
-import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
+import { creditClawTokens } from '../services/claw-token-ledger';
+import { buildRuntimeServices } from '../services/runtime-services-adapter';
 import { getSystemNpcAgent, getSystemAgent } from '../services/system-npc-seeder';
 import { systemAgentRewardLimiter } from '../services/system-agent-reward-limiter';
 import type { AppContext } from '../types';
 import { z } from 'zod';
-import type { ClawvilleServices } from '@clawville/agent-runtime';
 import { characterRoomId } from '@clawville/agent-runtime';
 
 export const chatRoutes = new Hono<AppContext>();
@@ -77,13 +77,13 @@ chatRoutes.post('/system/:slug', requireAuth, async (c) => {
   });
 
   const services = avatar
-    ? ({ db, creditClawTokens, debitClawTokens } as ClawvilleServices)
+    ? buildRuntimeServices(db)
     : undefined;
   const state: Record<string, any> = {
     avatarId: avatar?.id,
     userId: user.id,
     services,
-    petData: avatar ?? null,
+    avatarData: avatar ?? null,
     // NOTE: keep the bare slug here (no 'system:' prefix). Audit H3 — memory
     // continuity for existing Nori chats requires preserving the existing
     // room derivation: `characterRoomId('town-guide', userId)`.
@@ -203,14 +203,14 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
   // Build state object for Providers + Actions
   // Only inject services if avatar exists — actions require a avatarId to transact
   const services = avatar
-    ? ({ db, creditClawTokens, debitClawTokens } as ClawvilleServices)
+    ? buildRuntimeServices(db)
     : undefined;
   const state: Record<string, any> = {
     avatarId: avatar?.id,
     userId: user.id,
     services,
     // Provider data
-    petData: avatar ?? null,
+    avatarData: avatar ?? null,
     nearLocation: locationId,
     characterConfig: (avatar?.characterConfig as any) ?? {},
   };
