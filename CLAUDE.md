@@ -27,7 +27,7 @@ Every design decision is measured against all four. These are equal constraints,
 
 2. **Open agent onboarding** — any OpenClaw/Hermes/variant agent enters + learns skills with no human account, no framework lock-in. Entry: `/api/agent/connect`. Knowledge surface: 11 SKILL.md files at `/api/skills/*`.
 
-   Players can also onboard **without** an agent (Player tier). They get a avatar, earn ClawTokens, rank on the leaderboard via human↔agent chats and activity matches. The "upgrade to Trainer" path (connect an agent) is non-destructive — avatar, tokens, rank carry forward. Player ↔ Agent is one of the three first-class collaboration axes; it must be playable on its own.
+   Players can also onboard **without** an agent (Player tier). They get an avatar, earn ClawTokens, rank on the leaderboard via human↔agent chats and activity matches. The "upgrade to Trainer" path (connect an agent) is non-destructive — avatar, tokens, rank carry forward. Player ↔ Agent is one of the three first-class collaboration axes; it must be playable on its own.
 
 3. **Free agent leaderboard** (pivoted from paid marketplace 2026-04-21). Contribution-based, no peer skill buying/selling. Public at `/leaderboard` (no auth), backed by `GET /api/leaderboard/agents?window={24h|7d|30d|all}&limit=100`. 60s cache, 60 req/min/IP.
 
@@ -178,7 +178,7 @@ User's local Blender is exclusive. Tell blender07 to launch a NEW Blender instan
 
 Trivial work (small API route, single DB column add, one React modal tweak, env var add) may still skip teams. Bar: "would the cost of getting this wrong justify a second agent's review?" If yes → team. If no → solo or inline.
 
-Sea-themed OpenClaw game on ElizaOS. Users create a avatar, explore a 3D/2D sea-floor world with 10 buildings, chat with AI agents teaching OpenClaw development.
+Sea-themed OpenClaw game on ElizaOS. Users create an avatar, explore a 3D/2D sea-floor world with 10 buildings, chat with AI agents teaching OpenClaw development.
 
 ## IMPORTANT: ElizaOS is MANDATORY
 
@@ -349,7 +349,7 @@ All 10 are shop buildings for knowledge books (visit + chat MiladyAI teacher to 
 ## Database Schema
 
 - `users` + `sessions` — Lucia auth.
-- `avatars` (one per user) — identity (`name`, `species`, `color`, `gender`, `archetype`, `personality`, `stats`); **Phase 2 agent framework** `model_key` (default `lobster`), `agent_category` (`openclaw`/`hermes`/`milady`/`other`, default `openclaw`), `harness` (`openclaw`/`hermes`/`milady`/`custom`, default `milady`) — all NOT NULL w/ DEFAULTs + CHECK; VRM-ready avatar (`avatar_type` `glb`/`vrm`, `avatar_url`, `vrm_metadata` JSONB); position + activity + economy + progression + `wallet_address` (base58 custodial Solana) + `platform_agent_id` → `platform_agents`.
+- `avatars` (one per user) — identity (`name`, `species`, `color`, `gender`, `archetype`, `personality`, `stats`); **Phase 2 agent framework** `model_key` (default `lobster`), `agent_category` (`openclaw`/`hermes`/`milady`/`other`, default `openclaw`), `harness` (`openclaw`/`hermes`/`milady`/`custom`, default `milady`) — all NOT NULL w/ DEFAULTs + CHECK constraint `avatars_agent_category_valid`; VRM-ready render (`avatar_type` `glb`/`vrm`, `avatar_url`, `vrm_metadata` JSONB); position + activity + economy + progression + `wallet_address` (base58 custodial Solana) + `platform_agent_id` → `platform_agents`.
 - `avatar_inventory` — books + quantity.
 - `map_locations` — static, seeded, 10 buildings.
 - `location_agents` — user's agent config per location.

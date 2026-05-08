@@ -15,11 +15,11 @@
 Landing page now has "Enter ClawVille" + "Explore World" buttons.
 
 ### ~~BUG 1: Agent creation fails with 4xx error on /select-agent~~ FIXED
-The onboarding flow now uses `/create-avatar` (species/color/name) → `/create-avatar/personality` (archetype/traits) → `/game`. Tested 2026-04-12: sign up → create avatar → enter game works end-to-end. The old `/select-agent` 6-slot page still exists but is no longer the primary onboarding path.
+The onboarding flow now uses `/create-agent` (species/color/name) → `/create-agent/personality` (archetype/traits) → `/game`. Tested 2026-04-12: sign up → create avatar → enter game works end-to-end. The old `/select-agent` 6-slot page still exists but is no longer the primary onboarding path. (Route renamed from `/create-avatar` in the 2026-05-08 avatars→avatar rename.)
 **Note:** The personality page has a layout bug — huge empty space between archetype cards and the CREATE button (habitat/hobby/greeting selectors not visible). UX issue, not a blocker.
 
 ### ~~BUG 3: /select-agent allows 6-agent roster (should be 1 per user)~~ FIXED
-`/select-agent` now redirects to `/create-avatar` (single-agent flow). All references in `game/page.tsx` and `sidebar-menu.tsx` updated to point to `/create-avatar`. The old 6-slot roster code replaced with a redirect stub.
+`/select-agent` now redirects to `/create-agent` (single-agent flow). All references in `game/page.tsx` and `sidebar-menu.tsx` updated to point to `/create-agent`. The old 6-slot roster code replaced with a redirect stub.
 
 ---
 
@@ -249,7 +249,7 @@ Bump versions, rewrite `eliza-runtime.ts` to match v2 APIs, verify custom plugin
 - [ ] Rollback path: revert package.json + eliza-runtime.ts if anything breaks
 
 ### Phase 2 — Autonomy System (HTN-driven avatar behavior)
-Replace 336-line hand-rolled `avatar-autonomy.ts` state machine with v2's ActionPlan + autonomy primitives. Avatars pursue declarative goals like "visit 3 buildings, earn tokens, learn about cron jobs" via runtime-driven planning.
+Replace 336-line hand-rolled `avatar-autonomy.ts` state machine with v2's ActionPlan + autonomy primitives. Avatars pursue declarative goals like "visit 3 buildings, earn tokens, learn about cron jobs" via runtime-driven planning. (`avatar-autonomy.ts` was deleted before the rename — left here as historical context for the migration plan.)
 
 **v2 primitives used:** `ActionPlan`, `ActionResult` (with `values` + `data` for chaining), `Action` interface, task-mode autonomy (if `ENABLE_AUTONOMY` ships in our build — otherwise wrap `agentloop` manually).
 
@@ -493,7 +493,7 @@ An open board where anyone (AI agents or humans) can post coding bounties for ot
 - [ ] **Tag a GitHub release `v0.1.0`** on `ItachiDevv/clawville-milady-plugin` so users have a stable download pointer separate from the npm tarball.
 - [ ] **Wire `/api/auth/milady-session-exchange`** on the ClawVille backend so the plugin's `postMessage` bootstrap can hook into a guest-cookie auth flow for the embedded viewer. Currently the viewer loads `clawville.world/game` and falls through to the landing page auth prompt — adding a session-exchange endpoint would let the embed skip the login overlay entirely.
 - [ ] **Add `clawville-embed-mode` check** to `apps/web/src/app/page.tsx` so the landing/auth overlays are auto-hidden when ClawVille detects it's loaded inside a Milady viewer. Detection via `window.parent !== window` + `document.referrer` check, or via a query param the plugin appends.
-- [ ] **Verify DOM element IDs** used by the plugin's viewer bootstrap script (`#landing-overlay`, `#auth-modal`, `#login-overlay`, `#create-avatar-overlay`) match what ClawVille's frontend actually renders — the bootstrap was written defensively without verifying.
+- [ ] **Verify DOM element IDs** used by the plugin's viewer bootstrap script (`#landing-overlay`, `#auth-modal`, `#login-overlay`, `#create-avatar-overlay`) match what ClawVille's frontend actually renders — the bootstrap was written defensively without verifying. (Overlay id renamed from `create-avatar-overlay` in the 2026-05-08 avatars→avatar rename — verify the plugin bootstrap's selector targets follow.)
 
 ## Later
 - [ ] Remove ground plane squares from building GLB models (the pineapple has a visible sand square)

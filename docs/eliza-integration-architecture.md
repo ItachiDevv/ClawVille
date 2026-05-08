@@ -53,7 +53,7 @@ Every chat interaction in ClawVille goes through `ElizaRuntime.processMessage()`
 | Feature | How We Use It |
 |---|---|
 | Postgres-backed conversation memory | Room/entity model via plugin-sql; messages stored per `roomId` with deterministic UUID v5 IDs |
-| Character/personality type system | `bios`, `lore`, `topics`, `rules`, `adjectives`, `style`, `messageExamples` — converted from our templates + archetypes via `convertToElizaCharacter()` / `buildPetCharacter()` |
+| Character/personality type system | `bios`, `lore`, `topics`, `rules`, `adjectives`, `style`, `messageExamples` — converted from our templates + archetypes via `convertToElizaCharacter()` / `buildAvatarCharacter()` |
 | Plugin priority routing | OpenClaw(100) > Gemini(95) — external agents override the default LLM transparently |
 | Deterministic UUID v5 room IDs | One room per agent-user pair, stable across sessions: `uuidv5(agentId-userId, ROOM_NAMESPACE)` |
 | Runtime lifecycle | `start()` / `stop()` / `generateText()` — lazy-start on first chat, auto-stop after 30min inactivity |
@@ -131,7 +131,7 @@ Providers read from `state.*` properties passed by the API route handler — the
 
 | Provider | Position | State Input | Context Injected |
 |---|---|---|---|
-| `petStateProvider` | 10 | `state.petData` | `[Avatar Status]` — name, species, archetype, level, ClawTokens, STR/DEF/MOV stats, login streak |
+| `avatarStateProvider` | 10 | `state.avatarData` | `[Avatar Status]` — name, species, archetype, level, ClawTokens, STR/DEF/MOV stats, login streak |
 | `worldStateProvider` | 20 | `state.worldSnapshot`, `state.nearLocation` | `[World State]` — current location, up to 8 alive NPCs with activity + destination |
 | `inventoryProvider` | 30 | `state.inventory` | `[Inventory]` — items grouped by type (books, skills, other), quantities, total count |
 | `questProvider` | 40 | `state.activeQuests`, `state.availableQuests` | `[Quests]` — active quests with status + reward, available quests |
@@ -216,10 +216,10 @@ The following manual `dynamicContext` building blocks can be removed once call s
 
 | File | Lines to Remove | Replaced By |
 |---|---|---|
-| `apps/api/src/routes/chat.ts` | ~30 lines (visitor avatar, shop items, theme, collab) | `PetStateProvider`, `WorldStateProvider`, `InventoryProvider` |
-| `apps/api/src/routes/avatars.ts` | ~25 lines (token balance, knowledge count, NPC state) | `PetStateProvider`, `KnowledgeProvider`, `WorldStateProvider` |
-| `apps/api/src/routes/agent-gateway.ts` | ~5 lines (identity context) | `PetStateProvider` |
-| `apps/api/src/routes/openclaw.ts` | ~15 lines (archetype, tokens, knowledge) | `PetStateProvider`, `KnowledgeProvider` |
+| `apps/api/src/routes/chat.ts` | ~30 lines (visitor avatar, shop items, theme, collab) | `AvatarStateProvider`, `WorldStateProvider`, `InventoryProvider` |
+| `apps/api/src/routes/avatars.ts` | ~25 lines (token balance, knowledge count, NPC state) | `AvatarStateProvider`, `KnowledgeProvider`, `WorldStateProvider` |
+| `apps/api/src/routes/agent-gateway.ts` | ~5 lines (identity context) | `AvatarStateProvider` |
+| `apps/api/src/routes/openclaw.ts` | ~15 lines (archetype, tokens, knowledge) | `AvatarStateProvider`, `KnowledgeProvider` |
 
 ### What Phase 1 Unlocks
 
@@ -276,7 +276,7 @@ Enable ElizaOS's built-in autonomy self-loop on the avatar runtime. The loop wak
 
 ```
 Wake (every 60s, configurable per avatar)
-  → Providers inject context (PetState, WorldState, Inventory, Quest, Knowledge)
+  → Providers inject context (AvatarState, WorldState, Inventory, Quest, Knowledge)
   → LLM evaluates available Actions
   → Picks one: VISIT_BUILDING(salvage-workshop)
   → Handler executes: avatar moves to building, enters
@@ -466,4 +466,4 @@ The text-tag format is stripped from the final user-visible response and the act
 
 ### D8: Why providers are state-readers, not DB-queriers
 
-All 5 providers read from pre-populated `state.*` properties (e.g., `state.petData`, `state.worldSnapshot`, `state.inventory`) rather than querying the database directly. The API route handler fetches this data before calling `processMessage()`. This keeps providers pure data formatters with no side effects, makes them trivially testable, avoids N+1 query problems (one DB round-trip in the route vs. 5 separate queries in providers), and prevents providers from needing the Drizzle `db` instance.
+All 5 providers read from pre-populated `state.*` properties (e.g., `state.avatarData`, `state.worldSnapshot`, `state.inventory`) rather than querying the database directly. The API route handler fetches this data before calling `processMessage()`. This keeps providers pure data formatters with no side effects, makes them trivially testable, avoids N+1 query problems (one DB round-trip in the route vs. 5 separate queries in providers), and prevents providers from needing the Drizzle `db` instance.
