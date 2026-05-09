@@ -2,8 +2,9 @@
 
 import { useRef, useMemo, useEffect, useLayoutEffect, memo, Suspense } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
-import { useGLTF, Html } from '@react-three/drei';
+import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
+import { useWorldLabel, WorldLabel } from '@/lib/three/world-labels-overlay';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { useNpcStore, type NpcSpriteState } from '@/stores/npc';
 import { applyWalkAnimation, applyIdleAnimation, idToSeed } from '@/lib/three/procedural-animation';
@@ -454,10 +455,6 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // Layer 2 safety net: one-shot rendered-height hard cap applied after first render.
   // Catches any NPC that slips through computeNpcScale with a wrong pivot offset.
   const rescaleAppliedRef = useRef(false);
-  // drei <Html> uses a React DOM portal outside the Three.js scene graph — setting
-  // group.visible=false does NOT propagate to the DOM div. We imperatively sync
-  // label display in useFrame so the label disappears with the mesh.
-  const labelRef = useRef<HTMLDivElement>(null);
   // Occlusion latch — flipped at ~10Hz by checkLabelOcclusion, read every frame
   // to decide label visibility without burning raycast budget.
   const occludedRef = useRef(false);
@@ -479,6 +476,15 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // idToSeed returns a float (0..10). Convert to integer so (frame + seed) % N
   // uses integer arithmetic — float modulo with strict === 0 never fires.
   const seed = useMemo(() => Math.round(idToSeed(npc.id)), [npc.id]);
+
+  // WorldLabelsOverlay label — replaces drei <Html> for this NPC's name tag.
+  // starts hidden (initialVisible:false); useFrame calls setVisible when NPC enters range.
+  const { divRef: labelRef, setVisible: setLabelVisible } = useWorldLabel({
+    id: `glb-npc-label-${npc.id}`,
+    anchorRef: groupRef,
+    offset: [0, 100, 0],
+    initialVisible: false,
+  });
 
   const targetPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
   const currentPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
@@ -630,39 +636,28 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
       // already false, so the label stayed visible at distance indefinitely.
       // Always writing the style (cheap when value doesn't change) prevents the leak.
       group.visible = false;
-      // drei <Html> DOM portal is outside the scene graph — visibility flag does NOT
-      // propagate to the DOM div. Imperatively hide the label so it doesn't float
-      // over empty world space while the 3D mesh is culled.
-      const label = labelRef.current;
-      if (label && label.style.display !== 'none') label.style.display = 'none';
+      // WorldLabelsOverlay manages the DOM label — hide it imperatively so it
+      // doesn't float over empty world space while the 3D mesh is culled.
+      setLabelVisible(false);
       return;
     }
     group.visible = true;
     const frame = Math.floor(clock.elapsedTime * 60);
     {
       // Behind-camera cull + line-of-sight occlusion gate.
-      // Behind-camera: drei <Html> projects to screen XY even when the anchor
-      // is behind the camera, producing a ghost label.
-      // Occlusion: anchor in front but blocked by a building/closer NPC →
-      // label would draw over foreground geometry. Re-locked 2026-04-26 after
-      // PR #65 stripped this — that's the bug where Driftwood/Riptide labels
-      // float over Nori's chest.
+      // Behind-camera: overlay projects even when anchor is behind camera → hide.
+      // Occlusion: anchor in front but blocked by building/closer NPC → hide.
+      // Re-locked 2026-04-26 after PR #65 stripped this.
       group.getWorldPosition(_npcAnchorWorldPos);
       const inFront = anchorInFrontOfCamera(_npcAnchorWorldPos, camera);
-      // 10Hz occlusion test, staggered per NPC. Only runs when the label is
+      // 10Hz occlusion test, staggered per NPC. Only runs when label is
       // already in front (so behind-camera labels don't burn raycast budget).
       if (inFront && (frame + seed) % 6 === 0) {
         occludedRef.current = checkLabelOcclusion(
           camera.position, _npcAnchorWorldPos, npc.id, threeScene,
         );
       }
-      const label = labelRef.current;
-      const shouldShow = inFront && !occludedRef.current;
-      if (!shouldShow) {
-        if (label && label.style.display !== 'none') label.style.display = 'none';
-      } else {
-        if (label && label.style.display !== 'flex') label.style.display = 'flex';
-      }
+      setLabelVisible(inFront && !occludedRef.current);
     }
 
     // Raycast to find terrain surface Y (every 3rd frame to save perf).
@@ -800,30 +795,12 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
           <primitive object={cloned} />
         </group>
       </group>
-      {/* Name label — OUTSIDE scaled group so position is in world units.
-          100 = clearance above TARGET_NPC_HEIGHT=45 for the tallest species. */}
-      {/* PERF: removed `distanceFactor={300}` — drei recomputes camera-distance
-          scale + writes a new CSS transform every frame for each Html, which
-          forces a full Layout pass per label per frame (~14% of frame budget
-          across 18 NPC labels per the DevTools profile). Labels now display
-          at constant CSS size; positioning still tracks the 3D point. */}
-      <Html
-        position={[0, 100, 0]}
-        center
-        style={{ pointerEvents: 'none' }}
-        zIndexRange={[10, 100]}
-      >
-        {/* ref attached so useFrame can imperatively sync display with group.visible.
-            drei <Html> is a DOM portal — Three.js visibility flag does NOT propagate.
-            Default display:'none' so labels start hidden; useFrame opens them when
-            the NPC enters range. This prevents ghost labels on the very first frames
-            before useFrame has had a chance to evaluate distance — and also ensures
-            that memo re-renders (which re-apply the JSX inline style) default to
-            hidden rather than overwriting a cull-frame 'none' with 'flex'. */}
+      {/* Name label — WorldLabelsOverlay manages projection + DOM writes.
+          offset [0,100,0]: 100wu clearance above TARGET_NPC_HEIGHT=45. */}
+      <WorldLabel divRef={labelRef}>
         <div
-          ref={labelRef}
           style={{
-            display: 'none',
+            display: 'flex',
             alignItems: 'center',
             gap: 4,
             background: 'rgba(8, 20, 38, 0.78)',
@@ -860,7 +837,7 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
             </span>
           )}
         </div>
-      </Html>
+      </WorldLabel>
     </group>
   );
 });
@@ -874,9 +851,6 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
 // The 2 demo Milady NPCs intentionally use different paths (official_7 / official_8).
 const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
   const groupRef = useRef<THREE.Group>(null!);
-  // Same DOM-portal caveat as GLBNpcMesh — drei <Html> is outside the scene graph.
-  // Imperatively sync label display with group.visible in the cull block.
-  const labelRef = useRef<HTMLDivElement>(null);
   // Occlusion latch — same pattern as GLBNpcMesh.
   const occludedRef = useRef(false);
   const { scene: threeScene } = useThree();
@@ -896,6 +870,15 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
 
   // idToSeed returns float — round to int so (frame + seed) % 3 uses integer arithmetic.
   const seed = useMemo(() => Math.round(idToSeed(npc.id)), [npc.id]);
+
+  // WorldLabelsOverlay label — replaces drei <Html> for this NPC's name tag.
+  // Starts hidden; useFrame calls setVisible when NPC enters cull radius.
+  const { divRef: labelRef, setVisible: setLabelVisible } = useWorldLabel({
+    id: `vrm-npc-label-${npc.id}`,
+    anchorRef: groupRef,
+    offset: [0, 100, 0],
+    initialVisible: false,
+  });
 
   const targetPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
   const currentPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
@@ -1002,9 +985,8 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
       // Always write — not transition-only. See GLBNpcMesh cull block for full rationale:
       // memo re-renders restore JSX inline style; always-write prevents the leak.
       group.visible = false;
-      // drei <Html> DOM portal — Three.js visibility flag does NOT propagate.
-      const label = labelRef.current;
-      if (label && label.style.display !== 'none') label.style.display = 'none';
+      // WorldLabelsOverlay manages the DOM label — hide imperatively.
+      setLabelVisible(false);
       return;
     }
     group.visible = true;
@@ -1017,13 +999,7 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
           camera.position, _npcAnchorWorldPos, npc.id, threeScene,
         );
       }
-      const label = labelRef.current;
-      const shouldShow = inFront && !occludedRef.current;
-      if (!shouldShow) {
-        if (label && label.style.display !== 'none') label.style.display = 'none';
-      } else {
-        if (label && label.style.display !== 'flex') label.style.display = 'flex';
-      }
+      setLabelVisible(inFront && !occludedRef.current);
     }
 
     // Raycast terrain every 3rd frame (staggered by seed to avoid per-frame spikes)
@@ -1115,27 +1091,12 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
         object={vrm.scene}
         scale={[VRM_NPC_SCALE, VRM_NPC_SCALE, VRM_NPC_SCALE]}
       />
-      {/* Name label — OUTSIDE scale so it's in world units. y=100 matches GLBNpcMesh. */}
-      {/* PERF: removed `distanceFactor={300}` — drei recomputes camera-distance
-          scale + writes a new CSS transform every frame for each Html, which
-          forces a full Layout pass per label per frame (~14% of frame budget
-          across 18 NPC labels per the DevTools profile). Labels now display
-          at constant CSS size; positioning still tracks the 3D point. */}
-      <Html
-        position={[0, 100, 0]}
-        center
-        style={{ pointerEvents: 'none' }}
-        zIndexRange={[10, 100]}
-      >
-        {/* ref attached so useFrame can imperatively sync display with group.visible.
-            drei <Html> is a DOM portal — Three.js visibility flag does NOT propagate.
-            Default display:'none' — same rationale as GLBNpcMesh: prevents ghost labels
-            on first frames and prevents memo re-renders from restoring 'flex' on culled
-            NPCs. useFrame opens the label when the NPC enters the cull radius. */}
+      {/* Name label — WorldLabelsOverlay manages projection + DOM writes.
+          offset [0,100,0]: 100wu clearance, matches GLBNpcMesh. */}
+      <WorldLabel divRef={labelRef}>
         <div
-          ref={labelRef}
           style={{
-            display: 'none',
+            display: 'flex',
             alignItems: 'center',
             gap: 4,
             background: 'rgba(8, 20, 38, 0.78)',
@@ -1172,7 +1133,7 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
             </span>
           )}
         </div>
-      </Html>
+      </WorldLabel>
     </group>
   );
 });

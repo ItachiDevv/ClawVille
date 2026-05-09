@@ -3,6 +3,7 @@
 import { useMemo, useRef, useState, useEffect, useCallback, Suspense } from 'react';
 import * as THREE from 'three';
 import { useGLTF, Html } from '@react-three/drei';
+import { useWorldLabel, WorldLabel } from '@/lib/three/world-labels-overlay';
 import { useFrame, useThree } from '@react-three/fiber';
 import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 import {
@@ -32,7 +33,6 @@ function zoneCenter(zone: BuildingZone): [number, number, number] {
 }
 
 import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
-import { anchorInFrontOfCamera } from '@/lib/three/utils/camera-cull';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 
 // Shared raycaster -- only hits layer 1 (terrain)
@@ -45,9 +45,6 @@ const _buildRayDir = new THREE.Vector3(0, -1, 0);
 // 800 gives buildings proper visual weight on the 160x160 (5120 world-unit) map —
 // previously 480 made buildings feel like tiny props relative to the vast sand floor.
 const BUILDING_TARGET_HEIGHT = 800;
-
-// Module-scope scratch for getWorldPosition in the building label behind-camera cull.
-const _buildAnchorWorldPos = new THREE.Vector3();
 
 // Map each building ID to a GLB model + display config.
 // rotY: each building faces the village center at tile (80, 80) = world (0, 0).
@@ -313,10 +310,15 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
   const [cx, , cz] = zoneCenter(zone);
   const { scene } = useGLTF(config.model);
   const groupRef = useRef<THREE.Group>(null);
-  // Ref for the label div — needed for behind-camera imperative cull (see useFrame below).
-  // drei <Html> is a DOM portal; Three.js visibility flags do NOT propagate to DOM.
-  const labelDivRef = useRef<HTMLDivElement>(null);
-  const { camera } = useThree();
+
+  // WorldLabelsOverlay label — always visible (buildings are never distance-culled).
+  // pointerEvents='auto' preserves click-target behavior from the original <Html>.
+  const { divRef: labelDivRef } = useWorldLabel({
+    id: `building-label-${zone.id}`,
+    anchorRef: groupRef,
+    offset: [0, BUILDING_TARGET_HEIGHT + 20, 0],
+    initialVisible: true,
+  });
 
   const { cloned, buildingScale, pivotOffsetX, pivotOffsetY, pivotOffsetZ } = useMemo(() => {
     const c = scene.clone(true);
@@ -386,10 +388,10 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
       <group position={[-pivotOffsetX, -pivotOffsetY, -pivotOffsetZ]}>
         <primitive object={cloned} scale={buildingScale} />
       </group>
-      {/* Floating building label.
-          PERF: removed distanceFactor (was 1500) — see arena-npcs.tsx PERF note */}
+      {/* Floating building label — WorldLabelsOverlay projects offset [0, BUILDING_TARGET_HEIGHT+20, 0].
+          pointerEvents='auto' preserves click-target behavior. */}
       {theme && (
-        <Html position={[0, BUILDING_TARGET_HEIGHT + 20, 0]} center style={{ pointerEvents: 'auto' }}>
+        <WorldLabel divRef={labelDivRef} pointerEvents="auto">
           <div
             style={{
               background: 'rgba(10, 22, 40, 0.85)',
@@ -406,7 +408,7 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
             <div style={{ color: '#7dd3fc', fontWeight: 'bold', fontSize: 13 }}>{theme.label}</div>
             <div style={{ color: 'rgba(148,163,184,0.7)', fontSize: 10, marginTop: 2 }}>{theme.category}</div>
           </div>
-        </Html>
+        </WorldLabel>
       )}
     </group>
   );
