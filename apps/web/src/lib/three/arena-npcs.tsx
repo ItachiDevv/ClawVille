@@ -559,8 +559,9 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
         const mesh = obj as THREE.Mesh;
         if (mesh.isMesh) {
           mesh.geometry?.dispose();
-          if (Array.isArray(mesh.material)) mesh.material.forEach((m) => m.dispose());
-          else mesh.material?.dispose();
+          // Do NOT dispose tinted materials — applyColorTint() uses a module-scope
+          // shared cache; disposing here would corrupt the cache for other NPCs
+          // sharing the same (baseMat.uuid|tintHex|lerpFactor|emissiveIntensity) key.
         }
       });
     };
