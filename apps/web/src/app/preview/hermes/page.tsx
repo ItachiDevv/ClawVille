@@ -88,6 +88,17 @@ function HermesScene({ character, idle }: { character: Character; idle: boolean 
 }
 
 export default function PreviewHermesPage() {
+  // Next.js 16 requires useSearchParams() to be inside a Suspense boundary.
+  // Wrap the inner component (which calls the hook) so the build's prerender
+  // check passes; force-dynamic alone is not enough.
+  return (
+    <Suspense fallback={null}>
+      <PreviewHermesInner />
+    </Suspense>
+  );
+}
+
+function PreviewHermesInner() {
   const searchParams = useSearchParams();
   const initial = (searchParams.get('c') === 'male' ? 'male' : 'female') as Character;
   const [character, setCharacter] = useState<Character>(initial);
