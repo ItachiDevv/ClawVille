@@ -34,6 +34,7 @@ function zoneCenter(zone: BuildingZone): [number, number, number] {
 
 import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
+import BatchedBuildings from '@/lib/three/batched-buildings';
 
 // Shared raycaster -- only hits layer 1 (terrain)
 const _buildRaycaster = new THREE.Raycaster();
@@ -666,13 +667,8 @@ export default function ArenaBuildings() {
 
   if (editMode) return <EditMode />;
 
-  return (
-    <Suspense fallback={null}>
-      <group>
-        {buildingZones.map((zone) => (
-          <GLBBuilding key={zone.id} zone={zone} />
-        ))}
-      </group>
-    </Suspense>
-  );
+  // Production path: draw-call–optimised BatchedMesh renderer.
+  // EditMode (?edit=1) is handled above and remains unchanged — GLBBuilding + EditableBuilding
+  // are still used there. BatchedBuildings replaces ONLY this production path.
+  return <BatchedBuildings />;
 }
