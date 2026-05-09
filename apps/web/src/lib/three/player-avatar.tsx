@@ -559,15 +559,18 @@ function PlayerPetGLBInner() {
       cloned.traverse((obj: THREE.Object3D) => {
         const mesh = obj as THREE.Mesh;
         if ((mesh as any).isMesh) {
-          // Dispose materials only — applyColorTint() in character-animations.ts
-          // clones the material per instance, so this clone owns its materials.
+          // Do NOT dispose tinted materials — applyColorTint() now uses a
+          // module-scope shared cache keyed on (baseMat.uuid|tintHex|lerpFactor|
+          // emissiveIntensity). The cached instances are intentionally long-lived
+          // so subsequent NPCs with the same (species, tint) combo can reuse
+          // the same GPU pipeline without re-upload. Disposing here would corrupt
+          // the cache and break every other NPC that shares the material.
+          //
           // NEVER dispose geometry: scene.clone(true) shares BufferGeometry with
           // the useGLTF cache (Mesh.copy: this.geometry = source.geometry). If
           // we disposed it, the cache would hand out a disposed buffer to any
           // other consumer of this GLB (e.g. arena-npcs wandering NPCs that
           // load the same path).
-          if (Array.isArray(mesh.material)) mesh.material.forEach((m) => m.dispose());
-          else mesh.material?.dispose();
         }
       });
     };
