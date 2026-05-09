@@ -31,7 +31,11 @@ import { useVRMInstance, disposeVRMInstance } from '@/lib/three/vrm-loader';
 import { VRMCharacterAnimator } from '@/lib/three/vrm-character-animator';
 
 const SCENE_BG = new THREE.Color(0x0d2b5e); // matches game fog
-const AVATAR_SCALE = 13;                    // matches Milady scale per project memory
+// Hermes-Female export has its mesh CENTERED at origin (Blender export
+// didn't translate feet-to-z=0). After scale=13 the avatar spans y=-6.5..+6.5.
+// Until we fix the export, offset the scene up so feet land at y=0.
+const AVATAR_SCALE = 13;
+const FEET_OFFSET_Y = 6.5; // half avatar height after scale=13
 
 type Character = 'female' | 'male';
 
@@ -105,7 +109,13 @@ function HermesAvatar({ character, idle }: { character: Character; idle: boolean
   });
 
   if (!vrm) return null;
-  return <primitive object={vrm.scene} scale={AVATAR_SCALE} />;
+  return (
+    <primitive
+      object={vrm.scene}
+      scale={AVATAR_SCALE}
+      position={[0, FEET_OFFSET_Y, 0]}
+    />
+  );
 }
 
 function HermesScene({ character, idle }: { character: Character; idle: boolean }) {
@@ -142,12 +152,12 @@ function PreviewHermesInner() {
   return (
     <div style={{ position: 'fixed', inset: 0, background: '#0d2b5e' }}>
       <Canvas
-        camera={{ position: [0, 18, 30], fov: 35 }}
+        camera={{ position: [0, 8, 25], fov: 35 }}
         gl={{ antialias: true, powerPreference: 'high-performance' }}
         scene={{ background: SCENE_BG }}
       >
         <HermesScene character={character} idle={idle} />
-        <OrbitControls target={[0, 13, 0]} enablePan={true} maxDistance={80} minDistance={5} />
+        <OrbitControls target={[0, 7, 0]} enablePan={true} maxDistance={80} minDistance={5} />
       </Canvas>
 
       <div style={{
