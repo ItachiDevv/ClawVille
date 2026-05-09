@@ -2,7 +2,8 @@
 
 import { useRef, useMemo, memo, Suspense, useEffect, type ReactElement } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
-import { useGLTF, Html } from '@react-three/drei';
+import { useGLTF } from '@react-three/drei';
+import { useWorldLabel, WorldLabel } from '@/lib/three/world-labels-overlay';
 import * as THREE from 'three';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import {
@@ -393,6 +394,17 @@ const NpcMesh = memo(function NpcMesh({
   // Null for un-rigged GLBs (most of the canonical SpongeBob cast + Flying Dutchman).
   const mixerRef = useRef<THREE.AnimationMixer | null>(null);
   const { scene: threeScene } = useThree();
+
+  // WorldLabelsOverlay label — always visible for primary NPCs (showLabel=true),
+  // invisible/skipped for companions (showLabel=false). No distance cull needed —
+  // location NPCs are stationary and the user must approach them to interact.
+  // id encodes model path + position so companion instances don't collide with primary.
+  const { divRef: locationLabelRef } = useWorldLabel({
+    id: `location-npc-label-${modelCfg.model}-${worldX}-${worldZ}`,
+    anchorRef: groupRef,
+    offset: [0, 150, 0],
+    initialVisible: showLabel,
+  });
   const { scene, animations } = useGLTF(modelCfg.model);
   const terrainY = useRef(-2);
   const placed = useRef(false);
@@ -589,18 +601,13 @@ const NpcMesh = memo(function NpcMesh({
           <primitive object={cloned} />
         </group>
       </group>
-      {/* Name label — OUTSIDE scaled group so position is in world units.
-          Only shown for primary NPCs; companions are passive (no label). */}
+      {/* Name label — WorldLabelsOverlay projects offset [0,150,0].
+          Only primary NPCs get a label (showLabel=true via initialVisible). */}
       {showLabel && (
-        // PERF: removed distanceFactor — see arena-npcs.tsx PERF note
-        <Html
-          position={[0, 150, 0]}
-          center
-          style={{ pointerEvents: 'none' }}
-          zIndexRange={[10, 100]}
-        >
+        <WorldLabel divRef={locationLabelRef}>
           <div
             style={{
+              display: 'flex',
               background: 'rgba(8, 20, 38, 0.78)',
               border: '1px solid rgba(100, 200, 255, 0.25)',
               borderRadius: 6,
@@ -615,7 +622,7 @@ const NpcMesh = memo(function NpcMesh({
           >
             {modelCfg.name}
           </div>
-        </Html>
+        </WorldLabel>
       )}
     </group>
   );
