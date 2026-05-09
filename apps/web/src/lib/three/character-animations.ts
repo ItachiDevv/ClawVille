@@ -852,6 +852,48 @@ export function createCharacterAnimator(
 // character-animations.ts is the single import for setup.
 // ---------------------------------------------------------------------------
 
+/**
+ * Module-scope tinted-material cache.
+ *
+ * Key: `${baseMaterial.uuid}|${tintHex}|${lerpFactor}|${emissiveIntensity}`
+ *
+ * Why this key is correct:
+ *   - `baseMaterial.uuid` is stable and unique per source material instance.
+ *     It ties the cached clone to the exact original color/roughness/etc.
+ *   - `tintHex` captures the full 24-bit tint color.
+ *   - `lerpFactor` and `emissiveIntensity` are call-time parameters that
+ *     affect the output material; two calls with different values must
+ *     produce different cached instances.
+ *
+ * Result: pipeline count drops from ~(numNPCs × numSubmeshes) ≈ 100 unique
+ * materials to ~(numSpecies × numTintColors) ≈ 10-20.
+ */
+const _tintCache = new Map<string, THREE.Material>();
+
+function _getTintedMaterial(
+  baseMat: THREE.Material,
+  tint: THREE.Color,
+  lerpFactor: number,
+  emissiveIntensity: number,
+): THREE.Material {
+  const tintHex = tint.getHex();
+  const key = `${baseMat.uuid}|${tintHex}|${lerpFactor}|${emissiveIntensity}`;
+
+  const cached = _tintCache.get(key);
+  if (cached) return cached;
+
+  // First time we've seen this (base, tint, params) combo — clone once, apply
+  // tint, cache forever. The result is byte-identical to what the old per-call
+  // clone() produced, just shared across all NPCs with the same combo.
+  const tinted = (baseMat as THREE.MeshStandardMaterial).clone();
+  (tinted as THREE.MeshStandardMaterial).color.lerp(tint, lerpFactor);
+  (tinted as THREE.MeshStandardMaterial).emissive = tint.clone();
+  (tinted as THREE.MeshStandardMaterial).emissiveIntensity = emissiveIntensity;
+
+  _tintCache.set(key, tinted);
+  return tinted;
+}
+
 export function applyColorTint(
   root: THREE.Object3D,
   tint: THREE.Color,
@@ -862,10 +904,19 @@ export function applyColorTint(
     if (!(child as THREE.Mesh).isMesh) return;
     const mesh = child as THREE.Mesh;
     if (!mesh.material) return;
-    const mat = (mesh.material as THREE.MeshStandardMaterial).clone();
-    mat.color.lerp(tint, lerpFactor);
-    mat.emissive = tint.clone();
-    mat.emissiveIntensity = emissiveIntensity;
-    mesh.material = mat;
+
+    // Handle multi-material meshes: apply tint to each slot independently.
+    if (Array.isArray(mesh.material)) {
+      mesh.material = mesh.material.map((m) =>
+        _getTintedMaterial(m, tint, lerpFactor, emissiveIntensity)
+      );
+    } else {
+      mesh.material = _getTintedMaterial(
+        mesh.material,
+        tint,
+        lerpFactor,
+        emissiveIntensity,
+      );
+    }
   });
 }

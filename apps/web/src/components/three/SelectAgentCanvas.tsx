@@ -300,16 +300,19 @@ const PlatformModelGLB = memo(function PlatformModelGLB({
       cloned.traverse((obj) => {
         const mesh = obj as THREE.Mesh;
         if ((mesh as any).isMesh) {
-          // Dispose materials only — applyColorTint() in character-animations.ts
-          // clones the material per instance, so this clone owns its materials.
+          // Do NOT dispose tinted materials — applyColorTint() now uses a
+          // module-scope shared cache keyed on (baseMat.uuid|tintHex|lerpFactor|
+          // emissiveIntensity). The cached instances are intentionally long-lived
+          // so subsequent components with the same (species, tint) combo can reuse
+          // the same GPU pipeline without re-upload. Disposing here would corrupt
+          // the cache and break all other users of the shared material.
+          //
           // NEVER dispose geometry: scene.clone(true) shares BufferGeometry with
           // the useGLTF cache (Mesh.copy: this.geometry = source.geometry). If
           // we disposed it, the cache would hand out a disposed buffer on the
           // next load of this modelKey. Leave geometry cleanup to useGLTF's
           // internal lifecycle or an explicit page-level useEffect(clear, [])
           // if full cleanup is ever needed.
-          if (Array.isArray(mesh.material)) mesh.material.forEach((m) => m.dispose());
-          else mesh.material?.dispose();
         }
       });
     };
