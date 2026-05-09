@@ -478,10 +478,15 @@ export default function ReefRaceScene({ roomId, selfAvatarId = null }: ReefRaceS
     <Canvas
       key={roomId}
       camera={{ near: CAMERA_NEAR, far: CAMERA_FAR, fov: 60 }}
-      shadows
-      gl={{ antialias: false }} // Disable MSAA for Iris Xe perf budget
+      // shadows REMOVED 2026-05-09 — full shadow-map pipeline was running per
+      // frame for the track + guardrails + ramps + checkpoints + pickups +
+      // hazards. Mirrors Bumper Shells which dropped shadows for the same
+      // perf budget. Lighting is still directional via the scene's
+      // directional+ambient lights; the cost was the second render pass for
+      // shadow map generation, not the lights themselves.
+      gl={{ antialias: false }}
       style={{ width: '100%', height: '100%' }}
-      dpr={[1, 1.5]} // Clamp pixel ratio for Iris Xe
+      dpr={[1, 1.5]}
     >
       <SceneContents
         entities={entities ?? new Map()}
