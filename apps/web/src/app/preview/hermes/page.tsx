@@ -109,11 +109,15 @@ function HermesAvatar({ character, idle }: { character: Character; idle: boolean
   });
 
   if (!vrm) return null;
+  // Avatar exported facing +X. Rotate -90° around Y so it faces +Z (toward
+  // a camera positioned at +Z). Permanent fix should bake this into the
+  // Blender export (apply armature rotation before VRM export).
   return (
     <primitive
       object={vrm.scene}
       scale={AVATAR_SCALE}
       position={[0, FEET_OFFSET_Y, 0]}
+      rotation={[0, -Math.PI / 2, 0]}
     />
   );
 }
