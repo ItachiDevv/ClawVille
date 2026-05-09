@@ -52,6 +52,41 @@ function HermesAvatar({ character, idle }: { character: Character; idle: boolean
       }
     });
 
+    // ---- DEBUG: expose VRM + scene measurements so we can probe via DevTools.
+    // Compute the world bbox of vrm.scene at this moment so we know if it's
+    // visible from the camera or wildly off-position / wrong scale.
+    const box = new THREE.Box3().setFromObject(vrm.scene);
+    const size = new THREE.Vector3();
+    const center = new THREE.Vector3();
+    box.getSize(size);
+    box.getCenter(center);
+    const meshSummary: Array<{ name: string; verts: number; mat: string; visible: boolean; opacity: number }> = [];
+    vrm.scene.traverse((o) => {
+      if ((o as THREE.SkinnedMesh).isSkinnedMesh || (o as THREE.Mesh).isMesh) {
+        const m = o as THREE.Mesh;
+        const mat = (Array.isArray(m.material) ? m.material[0] : m.material) as THREE.Material & { opacity?: number };
+        meshSummary.push({
+          name: m.name || m.type,
+          verts: m.geometry.attributes.position?.count ?? 0,
+          mat: mat?.type ?? 'none',
+          visible: m.visible,
+          opacity: (mat as { opacity?: number })?.opacity ?? 1,
+        });
+      }
+    });
+    (window as unknown as { __hermes: unknown }).__hermes = {
+      vrm,
+      scene: vrm.scene,
+      bboxMin: box.min.toArray(),
+      bboxMax: box.max.toArray(),
+      bboxSize: size.toArray(),
+      bboxCenter: center.toArray(),
+      sceneScale: vrm.scene.scale.toArray(),
+      scenePos: vrm.scene.position.toArray(),
+      meshes: meshSummary,
+    };
+    console.log('[hermes preview] VRM mounted', (window as unknown as { __hermes: { bboxSize: number[]; bboxCenter: number[]; meshes: unknown[] } }).__hermes);
+
     const animator = new VRMCharacterAnimator(vrm);
     animatorRef.current = animator;
     animator.init().catch((err) => {
