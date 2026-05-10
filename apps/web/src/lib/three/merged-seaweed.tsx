@@ -379,12 +379,21 @@ function createMergedSeaweedGeometry(): THREE.BufferGeometry {
 // ---------------------------------------------------------------------------
 
 function createSeaweedMaterial(): THREE.MeshBasicNodeMaterial {
+  // Mobile FPS fix (audit 2026-05-10):
+  //   Was: transparent:true + DoubleSide + depthWrite:false. With 4500 blades
+  //   that defeats early-Z on tile-based mobile GPUs (every blade fragment
+  //   pays full TSL wave shader cost regardless of occlusion). Audit estimate
+  //   was -15 to -25 FPS on mobile vs the alphaTest variant.
+  //
+  //   Now: opaque + alphaTest:0.5 + FrontSide. Fragments pass early-Z and
+  //   blades behind blades are skipped at the rasterizer level. Visual diff
+  //   on the procedural-color seaweed is minimal (the blades have no fine
+  //   silhouette detail that needed soft alpha).
   const mat = new THREE.MeshBasicNodeMaterial({
     vertexColors: true,
-    side: THREE.DoubleSide,
-    transparent: true,
-    opacity: 0.88,
-    depthWrite: false,
+    side: THREE.FrontSide,
+    transparent: false,
+    alphaTest: 0.5,
   });
 
   const phase     = attribute('aPhase',     'float');
