@@ -34,6 +34,7 @@ function zoneCenter(zone: BuildingZone): [number, number, number] {
 import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
 import { anchorInFrontOfCamera } from '@/lib/three/utils/camera-cull';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
+import { extendLoaderWithMeshopt } from '@/lib/three/meshopt-loader-setup';
 
 // Shared raycaster -- only hits layer 1 (terrain)
 const _buildRaycaster = new THREE.Raycaster();
@@ -297,9 +298,13 @@ function computeBuildingScale(scene: THREE.Object3D): BuildingScaleResult {
   return { scale, pivotOffsetX, pivotOffsetY, pivotOffsetZ };
 }
 
-// Preload all models
+// Preload all models. extendLoaderWithMeshopt registers MeshoptDecoder on the
+// per-call loader so GLBs with EXT_meshopt_compression (patricks-rock,
+// krusty-krab, chum-bucket) decode at preload time. Without this, the
+// module-scope preload fires before drei's shared loader has the decoder
+// registered → those 3 buildings load as empty scenes and don't render.
 Object.values(BUILDING_MODELS).forEach(({ model }) => {
-  useGLTF.preload(model);
+  useGLTF.preload(model, undefined, undefined, extendLoaderWithMeshopt);
 });
 
 // ---------------------------------------------------------------------------
@@ -311,7 +316,9 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
   if (!config) return null;
 
   const [cx, , cz] = zoneCenter(zone);
-  const { scene } = useGLTF(config.model);
+  // Pass extendLoaderWithMeshopt for buildings with EXT_meshopt_compression.
+  // Same rationale as the module-scope preload above.
+  const { scene } = useGLTF(config.model, undefined, undefined, extendLoaderWithMeshopt);
   const groupRef = useRef<THREE.Group>(null);
   // Ref for the label div — needed for behind-camera imperative cull (see useFrame below).
   // drei <Html> is a DOM portal; Three.js visibility flags do NOT propagate to DOM.
@@ -439,7 +446,7 @@ function EditableBuilding({
   const config = BUILDING_MODELS[zone.id];
   if (!config) return null;
 
-  const { scene } = useGLTF(config.model);
+  const { scene } = useGLTF(config.model, undefined, undefined, extendLoaderWithMeshopt);
   const { scene: threeScene } = useThree();
   const groupRef = useRef<THREE.Group>(null);
   const terrainY = useRef(-15);
