@@ -35,7 +35,6 @@ import NpcSpeechBubbles from '@/lib/three/npc-speech-bubbles';
 import ClickToMove from '@/lib/three/click-to-move';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 import { MeshoptLoaderSetup } from '@/lib/three/meshopt-loader-setup';
-import { WorldLabelsOverlayMount } from '@/lib/three/world-labels-overlay';
 import JumpTicker from '@/lib/three/jump-ticker';
 import { jumpState } from '@/lib/three/jump-state';
 import { useGameStore, avatarPositionRef } from '@/stores/game';
@@ -665,12 +664,6 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
           R3F runs useFrame hooks in mount order; hoisting here ensures every
           consumer reads current-frame heightOffset, not the prior frame's stale value. */}
       <JumpTicker />
-
-      {/* Single DOM overlay for all world-space labels (NPC names, building labels,
-          speech bubbles). Replaces 30+ per-instance drei <Html> portals.
-          Mount early so consumers (ArenaNpcs, ArenaBuildings, etc.) see the overlay
-          node ready on their first render. */}
-      <WorldLabelsOverlayMount />
 
       {/* Camera controls.
           Target at z=-50 centres on the middle building row (z ≈ -64) so the

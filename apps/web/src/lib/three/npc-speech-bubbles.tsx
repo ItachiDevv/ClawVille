@@ -1,9 +1,8 @@
 'use client';
 
 import { memo, useMemo, useState, useEffect, useRef } from 'react';
-import { useFrame } from '@react-three/fiber';
-import * as THREE from 'three';
-import { useWorldLabel, WorldLabel } from '@/lib/three/world-labels-overlay';
+import { Html } from '@react-three/drei';
+import { useFrame, useThree } from '@react-three/fiber';
 import { useNpcStore, type NpcChatBubble, type NpcSpriteState } from '@/stores/npc';
 import { useShallow } from 'zustand/react/shallow';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
@@ -42,50 +41,68 @@ const SpeechBubble = memo(function SpeechBubble({ npc, bubble }: SpeechBubblePro
     ? bubble.text.slice(0, MAX_CHARS) + '…'
     : bubble.text;
 
-  // groupRef serves as the 3D anchor for WorldLabelsOverlay.
-  // The overlay handles behind-camera detection via NDC z > 1 — no manual
-  // camera.matrixWorldInverse viewZ calculation needed.
-  const groupRef = useRef<THREE.Group>(null);
+  // bubbleDivRef: imperative behind-camera cull — drei <Html> does not hide its
+  // DOM portal when the 3D anchor is behind the camera (NDC z > 1 still produces
+  // a screen XY), so ghost bubbles float over empty world space. Starts hidden
+  // (display:'none'); useFrame below opens it only when the NPC is in front.
+  // Zero-allocation: camera.matrixWorldInverse viewZ test (no Vector3 alloc).
+  const bubbleDivRef = useRef<HTMLDivElement>(null);
+  const { camera } = useThree();
 
   // Keep world coords in refs so useFrame reads fresh values without closure capture.
-  // Still needed to update the group position each frame (NPC moves with server ticks).
   const worldXRef = useRef(worldX);
   const worldZRef = useRef(worldZ);
   worldXRef.current = worldX;
   worldZRef.current = worldZ;
 
-  const { divRef: bubbleDivRef } = useWorldLabel({
-    id: `speech-bubble-${npc.id}-${bubble.expiresAt}`,
-    anchorRef: groupRef,
-    // offset [0,0,0]: group is already positioned at [worldX, BUBBLE_Y, worldZ].
-    offset: [0, 0, 0],
-    initialVisible: true,
-  });
-
-  // Update group world position each frame to track NPC movement.
-  // Also keeps visibility in sync — the overlay's NDC z > 1 check replaces the
-  // manual viewZ calculation from the previous drei <Html> implementation.
   useFrame(() => {
-    const g = groupRef.current;
-    if (!g) return;
-    g.position.x = worldXRef.current;
-    g.position.z = worldZRef.current;
+    const div = bubbleDivRef.current;
+    if (!div) return;
+    // camera.matrixWorldInverse transforms world→view; viewZ < 0 = in front of camera.
+    // Anchor world position: (worldX, BUBBLE_Y, worldZ) — no group.matrixWorld needed.
+    const m = camera.matrixWorldInverse.elements;
+    const wx = worldXRef.current;
+    const wy = BUBBLE_Y;
+    const wz = worldZRef.current;
+    const viewZ = m[2] * wx + m[6] * wy + m[10] * wz + m[14];
+    const inFront = viewZ < 0;
+    if (!inFront) {
+      if (div.style.display !== 'none') div.style.display = 'none';
+    } else {
+      if (div.style.display !== 'block') div.style.display = 'block';
+    }
   });
 
   return (
-    <group ref={groupRef} position={[worldX, BUBBLE_Y, worldZ]}>
-      {/* WorldLabelsOverlay projects this bubble to screen space.
-          width:180 preserves the original layout — see prior comment about
-          drei <Html center> collapsing to min-content width. */}
-      <WorldLabel divRef={bubbleDivRef}>
+    <group position={[worldX, BUBBLE_Y, worldZ]}>
+      {/* NO distanceFactor. Earlier version set distanceFactor={300} claiming
+          it was required to preserve maxWidth — in practice the opposite was
+          true. drei computes `scale = distanceFactor / cameraDistance`. At
+          the default spectate camera ~1217wu from town center, scale ≈ 0.25,
+          which shrunk the inner `maxWidth: 180` to ~45px visual — narrow
+          enough to force 1-char-per-line wrapping (the tall skinny column
+          the user reported 2026-04-24). Constant CSS size (no
+          distanceFactor) matches the NPC name-label pattern and keeps the
+          bubble readable at all camera distances. */}
+      <Html
+        center
+        style={{ pointerEvents: 'none' }}
+        zIndexRange={[10, 100]}
+      >
         <div
+          ref={bubbleDivRef}
           style={{
-            display: 'flex',
-            flexDirection: 'column',
+            display: 'none',
             background: 'rgba(8, 20, 38, 0.88)',
             border: '1px solid rgba(100, 200, 255, 0.3)',
             borderRadius: 8,
             padding: '5px 9px',
+            // width (not maxWidth!): drei's <Html center> wrapper collapses
+            // to min-content around this div. With only `maxWidth: 180`,
+            // the actual computed width becomes 1 character (min-content of
+            // `word-break: break-word` broken text) and text renders as a
+            // vertical column of letters. Setting `width: 180` forces the
+            // div to be exactly that wide, and text wraps normally inside.
             width: 180,
             boxSizing: 'border-box',
             backdropFilter: 'blur(4px)',
@@ -134,7 +151,7 @@ const SpeechBubble = memo(function SpeechBubble({ npc, bubble }: SpeechBubblePro
             }}
           />
         </div>
-      </WorldLabel>
+      </Html>
     </group>
   );
 });
