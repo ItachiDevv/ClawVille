@@ -30,7 +30,7 @@ import {
   type RefObject,
   type ReactNode,
 } from 'react';
-import { createPortal } from 'react-dom';
+import { createRoot, type Root } from 'react-dom/client';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 
@@ -288,11 +288,16 @@ export interface WorldLabelProps {
 }
 
 /**
- * Portals label content into the overlay DOM container.
+ * Renders label content into the overlay DOM container via a separate
+ * react-dom root.
  *
- * If the overlay isn't mounted yet, renders nothing — safe on first frame.
- * The parent component will re-render once the overlay is ready (via the
- * overlay-ready listener pattern in useOverlayReady).
+ * IMPORTANT: this component is invoked from inside the R3F-reconciled
+ * Canvas subtree. We CANNOT return `<div>` JSX (or `createPortal(<div/>)`
+ * from `react-dom`) — R3F's reconciler walks portal children too and will
+ * throw "Div is not part of the THREE namespace". Instead we mount our own
+ * `react-dom/client` root inside the overlay div and render the label
+ * children there, the same trick drei's `<Html>` uses. The component
+ * itself returns null, so R3F has nothing to reconcile.
  */
 export function WorldLabel({
   divRef,
@@ -300,27 +305,65 @@ export function WorldLabel({
   children,
   pointerEvents = 'none',
 }: WorldLabelProps) {
-  // Subscribe to overlay-ready so this component re-renders when the overlay mounts.
+  // Subscribe to overlay-ready so this component re-runs the mount effect
+  // once the overlay node is created.
   const overlayReady = useOverlayReady();
+  const rootRef = useRef<Root | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
 
-  if (!overlayReady || !_overlayNode) return null;
+  // Mount: create the per-label container div, attach to the overlay,
+  // wire divRef so the projection useFrame can write transform/display,
+  // then spin up a fresh react-dom root and render the children there.
+  useEffect(() => {
+    if (!overlayReady || !_overlayNode) return;
 
-  return createPortal(
-    <div
-      ref={divRef}
-      className={className}
-      style={{
-        position: 'absolute',
-        top: 0,
-        left: 0,
-        display: 'none',
-        pointerEvents,
-      }}
-    >
-      {children}
-    </div>,
-    _overlayNode,
-  );
+    const div = document.createElement('div');
+    div.style.position = 'absolute';
+    div.style.top = '0';
+    div.style.left = '0';
+    div.style.display = 'none';
+    div.style.pointerEvents = pointerEvents;
+    if (className) div.className = className;
+    _overlayNode.appendChild(div);
+    containerRef.current = div;
+
+    // Expose the real DOM node to the projection registry. divRef is the
+    // ref returned from useWorldLabel(); the projection useFrame in
+    // WorldLabelsOverlayMount writes div.style.{display,transform} on it.
+    (divRef as { current: HTMLDivElement | null }).current = div;
+
+    const root = createRoot(div);
+    rootRef.current = root;
+    root.render(<>{children}</>);
+
+    return () => {
+      const r = rootRef.current;
+      const c = containerRef.current;
+      rootRef.current = null;
+      containerRef.current = null;
+      (divRef as { current: HTMLDivElement | null }).current = null;
+      // Defer unmount — calling Root.unmount() during the parent's commit
+      // phase logs a React warning. queueMicrotask runs after commit.
+      queueMicrotask(() => {
+        r?.unmount();
+        c?.remove();
+      });
+    };
+    // children/className/pointerEvents are handled by the second effect below
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overlayReady]);
+
+  // Re-render content + sync className/pointerEvents when they change.
+  useEffect(() => {
+    const div = containerRef.current;
+    if (div) {
+      div.style.pointerEvents = pointerEvents;
+      div.className = className ?? '';
+    }
+    rootRef.current?.render(<>{children}</>);
+  }, [children, className, pointerEvents]);
+
+  return null;
 }
 
 // ---------------------------------------------------------------------------
