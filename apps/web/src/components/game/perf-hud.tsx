@@ -119,20 +119,24 @@ export default function PerfHud() {
 
   return (
     <div
-      className="fixed top-4 right-20 z-50 pointer-events-none select-none"
+      // Anchor top-left + allow wrap so FPS is always visible on mobile
+      // (was top-4 right-20 + nowrap → bar overflowed left off-screen on
+      // narrow viewports, hiding the FPS readout).
+      className="fixed top-1 left-1 z-50 pointer-events-none select-none"
       style={{
         background: 'rgba(10, 22, 40, 0.85)',
         backdropFilter: 'blur(4px)',
         border: '1px solid rgba(56, 189, 248, 0.3)',
         borderRadius: 10,
-        padding: '6px 14px',
+        padding: '4px 10px',
         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-        fontSize: 12,
+        fontSize: 11,
         color: '#94a3b8',
         display: 'flex',
+        flexWrap: 'wrap',
         alignItems: 'center',
-        gap: 10,
-        whiteSpace: 'nowrap',
+        gap: '4px 8px',
+        maxWidth: 'calc(100vw - 8px)',
       }}
     >
       <span>
