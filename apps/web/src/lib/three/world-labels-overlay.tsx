@@ -1,41 +1,55 @@
 'use client';
 
 /**
- * WorldLabelsOverlay
+ * WorldLabelsOverlay — single-root architecture
  *
- * Single DOM overlay component mounted once at the Canvas root.
- * Replaces 30+ per-NPC/per-building drei <Html> portals with one rAF
- * projection pass and one batched DOM write per label per frame.
+ * Replaces 30+ per-label `createRoot()` instances with ONE React root for the
+ * entire overlay. All labels render as children of one tree, so React's
+ * reconciler diffs them efficiently in a single pass.
  *
- * Architecture:
- *   - One <div> overlay (absolute, pointer-events: none, inset: 0, overflow: hidden).
- *   - Module-scope registry: Map<string, LabelEntry> tracks every registered label.
- *   - Single useFrame: projects each anchor's world position to screen, updates
- *     each label's transform in one pass with zero per-frame allocations.
- *   - Consumers call useWorldLabel() hook to register an entry, render content
- *     via <WorldLabel>, and get back a divRef + setVisible.
+ * Why this matters
+ *   The previous version (commits f54331d + 88f8a75) created one createRoot()
+ *   per <WorldLabel>, then re-ran root.render() on every children-prop change.
+ *   With ~30 labels × 10Hz SSE-driven parent re-renders, that produced ~300
+ *   independent React reconciliations per second. Memory pressure compounded
+ *   over ~20s of gameplay until the tab crashed.
  *
- * Perf rules (non-negotiable):
- *   - ZERO per-frame allocations: all scratch Vector3 at module scope.
- *   - Canvas DOMRect read once per frame (not per label).
- *   - transform only written when NDC moved ≥ 0.5 px.
- *   - display only written when it changes.
+ * Now
+ *   - WorldLabelsOverlayMount creates ONE overlay <div> and ONE createRoot.
+ *   - That root renders <LabelsHost />, a single component that maps the
+ *     module-scope registry into a flat list of <LabelView> children.
+ *   - <WorldLabel> consumers update their entry's `content` field. When
+ *     anything changes, _scheduleNotify() coalesces in a microtask and
+ *     LabelsHost re-renders ONCE — React diffs N labels in one tree.
+ *   - The projection useFrame stays the same: zero per-frame allocations,
+ *     DOMRect read once per frame, transform writes skipped if NDC moved
+ *     <0.5 px, display writes skipped on no-change.
+ *
+ * Consumer API is unchanged
+ *   const { divRef, setVisible } = useWorldLabel({ id, anchorRef, offset });
+ *   ...
+ *   <WorldLabel divRef={divRef} pointerEvents="auto">
+ *     <span>{npc.name}</span>
+ *   </WorldLabel>
+ *
+ *   `divRef.current` is set by LabelView once it mounts in the overlay tree.
+ *   The projection useFrame reads `divRef.current` to write transform/display.
  */
 
 import {
-  useRef,
   useEffect,
-  useState,
   useMemo,
-  type RefObject,
+  useRef,
+  useSyncExternalStore,
   type ReactNode,
+  type RefObject,
 } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 
 // ---------------------------------------------------------------------------
-// Types
+// Registry — single source of truth for all labels
 // ---------------------------------------------------------------------------
 
 interface LabelEntry {
@@ -43,58 +57,130 @@ interface LabelEntry {
   anchorRef: RefObject<THREE.Object3D | null>;
   offset: [number, number, number];
   visible: boolean;
+  content: ReactNode;
+  className: string | undefined;
+  pointerEvents: 'none' | 'auto';
+  /** Public ref the consumer holds; LabelView writes its real DOM node here. */
   divRef: RefObject<HTMLDivElement | null>;
-  /** Previous state — avoid redundant DOM writes. */
+  /** Track previous DOM state to skip redundant writes from the projection useFrame. */
   _prevDisplay: string;
   _prevX: number;
   _prevY: number;
 }
 
-// ---------------------------------------------------------------------------
-// Module-scope registry — mutated in place, never replaced
-// ---------------------------------------------------------------------------
 const _registry = new Map<string, LabelEntry>();
 
-// Module-scope scratch — ZERO allocations per frame.
+/** Reverse lookup so <WorldLabel divRef={...}> can find its entry in O(1). */
+const _refToId = new WeakMap<RefObject<HTMLDivElement | null>, string>();
+
+// ---------------------------------------------------------------------------
+// Subscribers + microtask-coalesced notify
+// ---------------------------------------------------------------------------
+
+const _subscribers = new Set<() => void>();
+let _scheduledNotify = false;
+/**
+ * The snapshot is the array of entries in registry order. We re-build it on
+ * every notify so React's `useSyncExternalStore` sees a new reference and
+ * re-renders. Since LabelsHost iterates the array via .map() with stable
+ * `key={entry.id}`, React's diff per child is cheap when individual entries
+ * don't actually change.
+ */
+let _snapshot: ReadonlyArray<LabelEntry> = [];
+
+function _rebuildSnapshot() {
+  _snapshot = Array.from(_registry.values());
+}
+
+function _scheduleNotify() {
+  if (_scheduledNotify) return;
+  _scheduledNotify = true;
+  queueMicrotask(() => {
+    _scheduledNotify = false;
+    _rebuildSnapshot();
+    _subscribers.forEach((fn) => fn());
+  });
+}
+
+function _subscribe(cb: () => void) {
+  _subscribers.add(cb);
+  return () => {
+    _subscribers.delete(cb);
+  };
+}
+
+function _getSnapshot(): ReadonlyArray<LabelEntry> {
+  return _snapshot;
+}
+
+// ---------------------------------------------------------------------------
+// Module-scope scratch (zero per-frame allocations)
+// ---------------------------------------------------------------------------
+
 const _scratchPos = new THREE.Vector3();
 const _scratchOffset = new THREE.Vector3();
 
 // ---------------------------------------------------------------------------
-// Module-scope overlay node reference.
-// Set by WorldLabelsOverlayMount on mount, cleared on unmount.
-// WorldLabel reads this synchronously — safe because:
-//   1. WorldLabelsOverlayMount mounts early in SceneContents (before consumers).
-//   2. Consumer components mount in the same commit cycle or later.
-//   3. React commit order is parent → child, SceneContents renders children after itself.
-// On the first frame consumers may see null and render nothing; the next render
-// (triggered by the overlay-ready state below) shows labels.
+// Module-scope overlay node (set by WorldLabelsOverlayMount)
 // ---------------------------------------------------------------------------
-let _overlayNode: HTMLDivElement | null = null;
-const _overlayReadyListeners = new Set<() => void>();
 
-function setOverlayNode(node: HTMLDivElement | null) {
-  _overlayNode = node;
-  if (node) {
-    _overlayReadyListeners.forEach((fn) => fn());
-    _overlayReadyListeners.clear();
-  }
+let _overlayNode: HTMLDivElement | null = null;
+let _overlayRoot: Root | null = null;
+
+// ---------------------------------------------------------------------------
+// LabelsHost — single React tree that renders every label
+// ---------------------------------------------------------------------------
+
+function LabelsHost() {
+  const entries = useSyncExternalStore(_subscribe, _getSnapshot, _getSnapshot);
+
+  return (
+    <>
+      {entries.map((entry) => (
+        <LabelView key={entry.id} entry={entry} />
+      ))}
+    </>
+  );
+}
+
+function LabelView({ entry }: { entry: LabelEntry }) {
+  const localRef = useRef<HTMLDivElement | null>(null);
+
+  // Wire entry.divRef to this DOM node so the projection useFrame can write
+  // transform/display imperatively.
+  useEffect(() => {
+    (entry.divRef as { current: HTMLDivElement | null }).current = localRef.current;
+    return () => {
+      (entry.divRef as { current: HTMLDivElement | null }).current = null;
+    };
+  }, [entry]);
+
+  return (
+    <div
+      ref={localRef}
+      className={entry.className}
+      style={{
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        display: 'none',
+        pointerEvents: entry.pointerEvents,
+      }}
+    >
+      {entry.content}
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
-// WorldLabelsOverlayMount — mount once inside Canvas (SceneContents)
+// WorldLabelsOverlayMount — mount once inside <Canvas>
 // ---------------------------------------------------------------------------
 
-/**
- * Mount exactly once inside `<Canvas>`.
- * Creates the DOM overlay container and runs the single projection pass each frame.
- * Add `<WorldLabelsOverlayMount />` to SceneContents in World3DCanvas.tsx.
- */
 export function WorldLabelsOverlayMount() {
   const { gl, camera } = useThree();
 
   useEffect(() => {
     const canvas = gl.domElement;
-    // Append to canvas parent so it sits in the same stacking context as the canvas.
     const container = canvas.parentElement ?? document.body;
 
     const overlay = document.createElement('div');
@@ -102,17 +188,30 @@ export function WorldLabelsOverlayMount() {
     overlay.style.cssText =
       'position:absolute;inset:0;overflow:hidden;pointer-events:none;z-index:10';
     container.appendChild(overlay);
-    setOverlayNode(overlay);
+
+    _overlayNode = overlay;
+
+    const root = createRoot(overlay);
+    _overlayRoot = root;
+    _rebuildSnapshot();
+    root.render(<LabelsHost />);
 
     return () => {
-      overlay.remove();
-      setOverlayNode(null);
+      const r = _overlayRoot;
+      _overlayRoot = null;
+      _overlayNode = null;
+      // Defer unmount past the parent's commit phase to avoid React's "race
+      // calling root.unmount() while reconciling" warning.
+      queueMicrotask(() => {
+        r?.unmount();
+        overlay.remove();
+      });
     };
-  // gl is stable after init — intentional omission
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // gl is stable post-init.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Single projection pass — one read of canvas rect, one write per label.
+  // Single projection pass — one read of canvas rect, one write per visible label.
   useFrame(() => {
     if (!_overlayNode) return;
 
@@ -142,15 +241,12 @@ export function WorldLabelsOverlayMount() {
         return;
       }
 
-      // World position = anchor.worldPos + offset
       anchor.getWorldPosition(_scratchPos);
       _scratchOffset.set(entry.offset[0], entry.offset[1], entry.offset[2]);
       _scratchPos.add(_scratchOffset);
-
-      // Project to NDC [-1, 1]
       _scratchPos.project(camera);
 
-      // NDC z > 1 = behind camera clipping plane → hide
+      // NDC z > 1 → behind near plane → hide.
       if (_scratchPos.z > 1) {
         if (entry._prevDisplay !== 'none') {
           div.style.display = 'none';
@@ -159,17 +255,14 @@ export function WorldLabelsOverlayMount() {
         return;
       }
 
-      // NDC → CSS pixel (center-anchored; WorldLabel applies translate(-50%,-50%))
       const cssX = (_scratchPos.x * 0.5 + 0.5) * W;
       const cssY = (1 - (_scratchPos.y * 0.5 + 0.5)) * H;
 
-      // Only write display when it changes
       if (entry._prevDisplay !== 'block') {
         div.style.display = 'block';
         entry._prevDisplay = 'block';
       }
 
-      // Only write transform when moved ≥ 0.5 px (avoids constant layout invalidation)
       if (
         Math.abs(cssX - entry._prevX) >= 0.5 ||
         Math.abs(cssY - entry._prevY) >= 0.5
@@ -186,78 +279,77 @@ export function WorldLabelsOverlayMount() {
 
 // ---------------------------------------------------------------------------
 // useWorldLabel — consumer hook
+//
+// Registration happens via the lazy useRef pattern. The entry is created on
+// the first render of the consumer, BEFORE any child component (including
+// <WorldLabel>) renders. That solves the children-effects-run-first ordering
+// problem: by the time WorldLabel.useEffect tries to look up the entry by
+// divRef, the entry is already in the registry.
 // ---------------------------------------------------------------------------
 
 export interface UseWorldLabelOpts {
   id: string;
   anchorRef: RefObject<THREE.Object3D | null>;
   offset?: [number, number, number];
-  zIndex?: number;
-  /**
-   * Initial visibility state. Defaults to true.
-   * Set false for labels that use imperative setVisible() to control display
-   * (wandering NPC labels, speech bubbles). Set true for labels that are always
-   * visible (location NPC names, building labels).
-   */
+  /** Initial visibility. Default true. */
   initialVisible?: boolean;
 }
 
 export interface UseWorldLabelReturn {
+  /** The DOM node ref the projection useFrame writes to. Wired by LabelView. */
   divRef: RefObject<HTMLDivElement | null>;
   setVisible: (visible: boolean) => void;
 }
 
-/**
- * Register a label in the overlay registry.
- * Returns a stable divRef (attach to the label root div) and setVisible.
- *
- * Mount: registers entry. Unmount: deregisters and removes DOM node.
- */
 export function useWorldLabel({
   id,
   anchorRef,
   offset = [0, 0, 0],
   initialVisible = true,
 }: UseWorldLabelOpts): UseWorldLabelReturn {
+  // Stable ref the consumer + LabelView share.
   const divRef = useRef<HTMLDivElement | null>(null);
+  // Tracks whether we've registered our entry. Used to handle React 18 strict
+  // mode (mount → unmount → mount) and re-register after cleanup.
+  const registeredRef = useRef(false);
 
-  // Stable setVisible — reads/writes registry entry directly.
-  const setVisible = useMemo(
-    () => (visible: boolean) => {
-      const entry = _registry.get(id);
-      if (entry) entry.visible = visible;
-    },
-    [id],
-  );
-
-  // Register on mount, deregister on unmount.
-  useEffect(() => {
+  // SYNCHRONOUS REGISTRATION DURING RENDER.
+  // Idempotent: only fires when registeredRef is false (first render OR after
+  // a strict-mode unmount cleared it). Mutating the registry here is a
+  // controlled module-state side-effect, not a render anti-pattern — it's
+  // equivalent to React's lazy-ref initialization idiom.
+  if (!registeredRef.current) {
+    registeredRef.current = true;
     const entry: LabelEntry = {
       id,
       anchorRef,
       offset: [offset[0], offset[1], offset[2]],
       visible: initialVisible,
+      content: null,
+      className: undefined,
+      pointerEvents: 'none',
       divRef,
       _prevDisplay: '',
       _prevX: -9999,
       _prevY: -9999,
     };
     _registry.set(id, entry);
+    _refToId.set(divRef, id);
+    _scheduleNotify();
+  }
 
+  // Cleanup on unmount; reset registeredRef so a strict-mode remount re-registers.
+  useEffect(() => {
     return () => {
       _registry.delete(id);
-      // Detach DOM node from overlay if it was portaled there.
-      const div = divRef.current;
-      if (div && div.parentElement) {
-        div.parentElement.removeChild(div);
-      }
+      _refToId.delete(divRef);
+      registeredRef.current = false;
+      _scheduleNotify();
     };
-  // id is the stable key; anchorRef and initialVisible intentionally not in deps
-  // (they don't change after mount and including them causes spurious re-registers).
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  // Sync offset when it changes (rare — only if parent component changes offset prop)
+  // Sync offset if it changes (rare).
   useEffect(() => {
     const entry = _registry.get(id);
     if (entry) {
@@ -265,127 +357,67 @@ export function useWorldLabel({
       entry.offset[1] = offset[1];
       entry.offset[2] = offset[2];
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, offset[0], offset[1], offset[2]]);
+
+  // Stable setVisible — closes over `id`, mutates the entry directly. No
+  // re-render needed; the projection useFrame reads entry.visible each frame.
+  const setVisible = useMemo(
+    () =>
+      (visible: boolean) => {
+        const e = _registry.get(id);
+        if (e) e.visible = visible;
+      },
+    [id],
+  );
 
   return { divRef, setVisible };
 }
 
 // ---------------------------------------------------------------------------
-// WorldLabel — portals label content into the overlay container
+// WorldLabel — declarative content updater
+//
+// Reports children/className/pointerEvents to the registry entry. Does NOT
+// render any DOM itself — the host root renders all labels in a single tree.
 // ---------------------------------------------------------------------------
 
 export interface WorldLabelProps {
   divRef: RefObject<HTMLDivElement | null>;
   className?: string;
   children: ReactNode;
-  /**
-   * Pointer events on the label container div.
-   * Default 'none' — overlay is transparent to mouse events.
-   * Set 'auto' for interactive labels (building click targets).
-   */
   pointerEvents?: 'none' | 'auto';
 }
 
-/**
- * Renders label content into the overlay DOM container via a separate
- * react-dom root.
- *
- * IMPORTANT: this component is invoked from inside the R3F-reconciled
- * Canvas subtree. We CANNOT return `<div>` JSX (or `createPortal(<div/>)`
- * from `react-dom`) — R3F's reconciler walks portal children too and will
- * throw "Div is not part of the THREE namespace". Instead we mount our own
- * `react-dom/client` root inside the overlay div and render the label
- * children there, the same trick drei's `<Html>` uses. The component
- * itself returns null, so R3F has nothing to reconcile.
- */
 export function WorldLabel({
   divRef,
   className,
   children,
   pointerEvents = 'none',
 }: WorldLabelProps) {
-  // Subscribe to overlay-ready so this component re-runs the mount effect
-  // once the overlay node is created.
-  const overlayReady = useOverlayReady();
-  const rootRef = useRef<Root | null>(null);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-
-  // Mount: create the per-label container div, attach to the overlay,
-  // wire divRef so the projection useFrame can write transform/display,
-  // then spin up a fresh react-dom root and render the children there.
+  // No deps array — runs after every render. Cheap: a WeakMap lookup, three
+  // identity checks, and (only if anything changed) a microtask schedule.
+  // The actual reconciliation is batched into a single LabelsHost re-render.
   useEffect(() => {
-    if (!overlayReady || !_overlayNode) return;
+    const id = _refToId.get(divRef);
+    if (!id) return;
+    const entry = _registry.get(id);
+    if (!entry) return;
 
-    const div = document.createElement('div');
-    div.style.position = 'absolute';
-    div.style.top = '0';
-    div.style.left = '0';
-    div.style.display = 'none';
-    div.style.pointerEvents = pointerEvents;
-    if (className) div.className = className;
-    _overlayNode.appendChild(div);
-    containerRef.current = div;
-
-    // Expose the real DOM node to the projection registry. divRef is the
-    // ref returned from useWorldLabel(); the projection useFrame in
-    // WorldLabelsOverlayMount writes div.style.{display,transform} on it.
-    (divRef as { current: HTMLDivElement | null }).current = div;
-
-    const root = createRoot(div);
-    rootRef.current = root;
-    root.render(<>{children}</>);
-
-    return () => {
-      const r = rootRef.current;
-      const c = containerRef.current;
-      rootRef.current = null;
-      containerRef.current = null;
-      (divRef as { current: HTMLDivElement | null }).current = null;
-      // Defer unmount — calling Root.unmount() during the parent's commit
-      // phase logs a React warning. queueMicrotask runs after commit.
-      queueMicrotask(() => {
-        r?.unmount();
-        c?.remove();
-      });
-    };
-    // children/className/pointerEvents are handled by the second effect below
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overlayReady]);
-
-  // Re-render content + sync className/pointerEvents when they change.
-  useEffect(() => {
-    const div = containerRef.current;
-    if (div) {
-      div.style.pointerEvents = pointerEvents;
-      div.className = className ?? '';
+    let dirty = false;
+    if (entry.content !== children) {
+      entry.content = children;
+      dirty = true;
     }
-    rootRef.current?.render(<>{children}</>);
-  }, [children, className, pointerEvents]);
+    if (entry.className !== className) {
+      entry.className = className;
+      dirty = true;
+    }
+    if (entry.pointerEvents !== pointerEvents) {
+      entry.pointerEvents = pointerEvents;
+      dirty = true;
+    }
+    if (dirty) _scheduleNotify();
+  });
 
   return null;
-}
-
-// ---------------------------------------------------------------------------
-// useOverlayReady — triggers a re-render when the overlay DOM node is ready.
-// ---------------------------------------------------------------------------
-
-/** Returns true once the overlay DOM node has been created. */
-function useOverlayReady(): boolean {
-  const [ready, setReady] = useState(() => _overlayNode !== null);
-
-  useEffect(() => {
-    if (_overlayNode !== null) {
-      setReady(true);
-      return;
-    }
-    // Not ready yet — subscribe to the ready event.
-    const handler = () => setReady(true);
-    _overlayReadyListeners.add(handler);
-    return () => {
-      _overlayReadyListeners.delete(handler);
-    };
-  }, []);
-
-  return ready;
 }
