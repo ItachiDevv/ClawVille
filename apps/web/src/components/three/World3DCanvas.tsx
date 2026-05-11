@@ -48,6 +48,40 @@ import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 const CAM_PAN_SPEED = 500;
+
+// Synchronous one-shot probe of the unmasked WebGL renderer string. Runs at
+// module load before the Canvas mounts, so we can pick a DPR cap appropriate
+// to the GPU class. False positives (lower DPR on a capable GPU) are mostly
+// harmless — slightly softer rendering; false negatives (full DPR on Iris Xe)
+// are the laggy baseline we want to avoid.
+const LOW_END_GPU_DETECTED: boolean = (() => {
+  if (typeof window === 'undefined') return false;
+  try {
+    const canvas = document.createElement('canvas');
+    const gl = (canvas.getContext('webgl2') ||
+      canvas.getContext('webgl') ||
+      canvas.getContext('experimental-webgl')) as WebGLRenderingContext | null;
+    if (!gl) return true; // no webgl at all → almost certainly low-end
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    const renderer = ext
+      ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) ?? '')
+      : '';
+    const lowEnd =
+      /\bintel\b|\biris\b|\buhd graphics\b|\bhd graphics\b|\bgma\b|adreno|mali|powervr|apple gpu/i.test(
+        renderer,
+      );
+    // Touch / coarse-pointer devices are almost universally low-end mobile.
+    const isTouch =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(pointer: coarse)').matches;
+    return lowEnd || isTouch;
+  } catch {
+    return false;
+  }
+})();
+if (typeof window !== 'undefined') {
+  console.log('[World3D] Low-end GPU detected:', LOW_END_GPU_DETECTED);
+}
 const SKY_COLOR = new THREE.Color(0x0a2a4a); // Deeper ocean blue
 const FOG_COLOR = new THREE.Color(0x0e3458); // Underwater haze — matches sky
 
@@ -973,12 +1007,15 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
     >
       <Canvas
         gl={glFactory as any}
-        // Restored 2026-04-30 — the [0.5, 0.5] emergency drop was too
-        // visibly blurry. Reverting to the original cap. Other perf
-        // wins (atmosphere off, NPC spring throttle, 60Hz Zustand
-        // debounce, animator order fix) remain in place because none of
-        // them cost visual quality.
-        dpr={[0.75, 1]}
+        // 2026-05-11 — DPR is detected per-device.
+        //   Integrated/mobile GPU (Iris Xe, Adreno, Mali, Apple integrated):
+        //     [0.55, 0.7]  → 56% fewer fragments than [0.75, 1].
+        //   Discrete desktop GPU: [0.75, 1] (unchanged from prior).
+        // Fragment shading at full resolution on Iris Xe was a major chunk of
+        // frame time given 1.58M visible triangles through fog. 0.5 was tried
+        // earlier and judged too blurry; 0.7 keeps the scene crisp while
+        // halving the pixel count vs 1.0.
+        dpr={LOW_END_GPU_DETECTED ? [0.55, 0.7] : [0.75, 1]}
         // MUST be "always" — R3F v9 with an async gl factory appears to skip
         // calling the factory entirely when frameloop="never" is set, so the
         // Canvas never initializes. "always" drives the normal RAF loop.
