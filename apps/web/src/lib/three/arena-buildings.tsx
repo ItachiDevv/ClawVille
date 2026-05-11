@@ -87,11 +87,14 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // i=7  center=(27,97)    dx=53,  dz=-17  → atan2(53,-17)≈1.882
   'code-development':       { model: '/models/chum-bucket.glb',         yOffset: 0, rotY:  1.882 },
   // i=8  center=(27,63)    dx=53,  dz=17   → atan2(53,17)≈1.259
-  // sandy-treedome.glb = Sandy's Treedome (CC-BY, landon141, Sketchfab; user-supplied, decimated
-  //   86MB→3.56MB via @gltf-transform/cli optimize+simplify+draco on 2026-04-29).
-  // Uses EXT_mesh_gpu_instancing — auto-scaler reads source-geo bbox (small) and
-  //   misses the instanced grass/leaf extent. scaleOverride + yOffset hand-tuned.
-  'messaging-channels':    { model: '/models/sandy-treedome.glb',      yOffset: -50, rotY:  1.259, scaleOverride: 60 },
+  // sandy-treedome.glb — REPLACED 2026-05-11 with a new low-poly version
+  // (4,011 tris vs the prior 1,115,968 — 99.6% reduction). The old GLB used
+  // EXT_mesh_gpu_instancing for the grass clumps, which required a manual
+  // scaleOverride: 60 because the source-mesh bbox didn't reflect the
+  // instanced extent. The new GLB has standard geometry → bbox is honest →
+  // computeBuildingScale handles it normally. scaleOverride removed; yOffset
+  // kept (likely still needs to lower the model to ground).
+  'messaging-channels':    { model: '/models/sandy-treedome.glb',      yOffset: -50, rotY:  1.259 },
   // i=9  center=(47,35)    dx=33,  dz=45   → atan2(33,45)≈0.632
   // patricks-rock.glb = Patrick's Rock (CC-BY, Yanez Designs, Sketchfab, 3.5k tris)
   // building-submarine.glb is now a fixed-landmark decoration only (arena-terrain.tsx FixedLandmarks)
