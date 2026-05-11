@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
+import { getTopSpikes } from '@/lib/perf-tracker';
 
 interface PerfStats {
   fps: number;
@@ -17,6 +18,8 @@ interface PerfStats {
   meshes: number;
   pipes: number;
   backend: string;
+  /** Top named spike from perf-tracker (name + max ms in last second). */
+  topSpike: { name: string; ms: number } | null;
 }
 
 const INITIAL_STATS: PerfStats = {
@@ -30,6 +33,7 @@ const INITIAL_STATS: PerfStats = {
   meshes: 0,
   pipes: 0,
   backend: '—',
+  topSpike: null,
 };
 
 function fpsColor(fps: number): string {
@@ -188,6 +192,12 @@ export default function PerfHud() {
           backend = gl.isWebGPURenderer ? 'WebGPU' : 'WebGL';
         }
 
+        // Pull the worst named spike from the rolling-window tracker.
+        const spikes = getTopSpikes(1);
+        const topSpike = spikes.length > 0
+          ? { name: spikes[0].name, ms: Math.round(spikes[0].maxMs * 10) / 10 }
+          : null;
+
         setStats({
           fps,
           frameAvg: Math.round(frameAvg * 10) / 10,
@@ -199,6 +209,7 @@ export default function PerfHud() {
           meshes,
           pipes,
           backend,
+          topSpike,
         });
 
         lastSampleTime = now;
@@ -285,6 +296,19 @@ export default function PerfHud() {
       </span>
       <span style={{ color: '#334155' }}>·</span>
       <span style={{ color: '#64748b' }}>{stats.backend}</span>
+      {stats.topSpike && (
+        <>
+          <span style={{ color: '#334155' }}>·</span>
+          <span
+            title="Top named spike captured by perf-tracker (measureSpike wraps in code)"
+            style={{ color: frameMaxColor(stats.topSpike.ms) }}
+          >
+            <span style={{ fontWeight: 'bold' }}>{stats.topSpike.ms}</span>
+            <span style={{ color: '#64748b' }}> ms</span>{' '}
+            <span style={{ color: '#94a3b8' }}>{stats.topSpike.name}</span>
+          </span>
+        </>
+      )}
     </div>
   );
 }

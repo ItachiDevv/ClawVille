@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { useNpcStore } from '@/stores/npc';
 import { useResearchStore } from '@/stores/research';
+import { measureSpike } from '@/lib/perf-tracker';
 
 const NPC_API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
 const MAX_RETRIES = 20;
@@ -36,17 +37,17 @@ export function useNpcStream() {
 
       es.addEventListener('snapshot', (event) => {
         try {
-          const snapshot = JSON.parse(event.data);
+          const snapshot = measureSpike('sse:parse', () => JSON.parse(event.data));
           // Mark connected whenever any valid snapshot arrives — not gated
           // on npcs.length. A collab-only snapshot still means the stream
           // is alive.
           setConnected(true);
           if (snapshot.npcs?.length > 0) {
-            updateFromSnapshot(snapshot);
+            measureSpike('sse:npcUpdate', () => updateFromSnapshot(snapshot));
           }
           // Phase 3: drain collaboration events into the research store
           if (Array.isArray(snapshot.collaborationEvents) && snapshot.collaborationEvents.length > 0) {
-            addCollaborationEntries(snapshot.collaborationEvents);
+            measureSpike('sse:collabUpdate', () => addCollaborationEntries(snapshot.collaborationEvents));
           }
         } catch (err) {
           if (process.env.NODE_ENV !== 'production') {
