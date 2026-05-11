@@ -987,10 +987,11 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
       // hair lag is ≤ 33ms which is below the threshold for most
       // observers, especially during a demo.
       animator.updateMixerOnly(dt, isMoving);
-      // 2026-05-11 — uniform 20Hz spring physics (was tiered 10/20 Hz by distance).
-      // Distance gate removed with the rest of culling. 20Hz is below the
-      // perceptual lag threshold for hair/tail springs at typical viewing distance.
-      const springMod = 3; // 20Hz
+      // 2026-05-11 — uniform 15Hz spring physics (was 20Hz, then tiered 10/20).
+      // Spring-bone verlet integration is the single most expensive VRM cost on
+      // CPU; 60fps / 4 = 15Hz keeps hair motion smooth at typical viewing
+      // distance while saving 25% of spring CPU vs 20Hz.
+      const springMod = 4; // 15Hz
       if ((frame + seed) % springMod === 0) {
         const acc = Math.min(springDeltaAccRef.current, 0.1);
         animator.updateSpringOnly(acc);

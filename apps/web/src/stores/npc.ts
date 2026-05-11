@@ -187,48 +187,49 @@ function tickDemoNpcs(npcs: NpcSpriteState[]): NpcSpriteState[] {
   const { useGameStore } = require('@/stores/game') as typeof import('@/stores/game');
   const possessedNpcId = useGameStore.getState().possessedNpcId;
 
-  return npcs.map((npc) => {
-    // Skip wander for possessed NPC — player WASD drives it via moveNpc()
-    if (possessedNpcId && npc.id === possessedNpcId) return npc;
+  // 2026-05-11 — Mutate npc objects in place (same pattern as updateFromSnapshot).
+  // Previously this returned `{ ...npc, ... }` every 100ms which broke useShallow
+  // and re-rendered the ArenaNpcs subtree 10×/sec in disconnected mode.
+  for (let i = 0; i < npcs.length; i++) {
+    const npc = npcs[i];
+    if (possessedNpcId && npc.id === possessedNpcId) continue;
     let ws = wanderStates.get(npc.id);
     if (!ws) {
       ws = pickNewTarget(npc);
-      ws.waitUntil = now + Math.random() * 3000; // stagger initial movement
+      ws.waitUntil = now + Math.random() * 3000;
       wanderStates.set(npc.id, ws);
     }
 
-    // Waiting (idle pause between walks)
     if (now < ws.waitUntil) {
-      return { ...npc, direction: 'idle' as const };
+      npc.direction = 'idle';
+      continue;
     }
 
     const dx = ws.targetX - npc.x;
     const dy = ws.targetY - npc.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
 
-    // Reached target — pause then pick new one
     if (dist < 10) {
       const newWs = pickNewTarget(npc);
       newWs.waitUntil = now + 2000 + Math.random() * 4000;
       wanderStates.set(npc.id, newWs);
-      return { ...npc, direction: 'idle' as const };
+      npc.direction = 'idle';
+      continue;
     }
 
-    // Move toward target
     const mx = (dx / dist) * speed;
     const my = (dy / dist) * speed;
-    const newX = npc.x + mx;
-    const newY = npc.y + my;
-
-    let dir: NpcSpriteState['direction'] = 'idle';
+    npc.prevX = npc.x;
+    npc.prevY = npc.y;
+    npc.x = npc.x + mx;
+    npc.y = npc.y + my;
     if (Math.abs(dx) > Math.abs(dy)) {
-      dir = dx > 0 ? 'right' : 'left';
+      npc.direction = dx > 0 ? 'right' : 'left';
     } else {
-      dir = dy > 0 ? 'down' : 'up';
+      npc.direction = dy > 0 ? 'down' : 'up';
     }
-
-    return { ...npc, prevX: npc.x, prevY: npc.y, x: newX, y: newY, direction: dir };
-  });
+  }
+  return npcs;
 }
 
 let demoIntervalId: ReturnType<typeof setInterval> | null = null;
@@ -491,13 +492,21 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
   },
 
   moveNpc: (id, x, y, direction, facingAngle = null) => {
-    set((s) => ({
-      npcs: s.npcs.map((npc) =>
-        npc.id === id
-          ? { ...npc, prevX: npc.x, prevY: npc.y, x, y, direction, facingAngle }
-          : npc
-      ),
-    }));
+    // 2026-05-11 — Mutate in place + skip setState entirely if no identity-check
+    // field changed. moveNpc fires at 60Hz during NPC-mode play; the old
+    // `s.npcs.map(...)` returned a new array + new element every call, kicking
+    // off a React reconciliation pass even though only position changed.
+    const s = get();
+    const npc = s.npcs.find((n) => n.id === id);
+    if (!npc) return;
+    npc.prevX = npc.x;
+    npc.prevY = npc.y;
+    npc.x = x;
+    npc.y = y;
+    npc.direction = direction;
+    npc.facingAngle = facingAngle;
+    // No setState call — the mutated object is the same reference subscribers
+    // already hold, and useFrame reads via npcRef.current.
   },
 
   spawnPlayerNpc: () => {
