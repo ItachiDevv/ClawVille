@@ -23,6 +23,12 @@ interface SpikeEntry {
   lastMs: number;
   count: number;
   windowResetAt: number;
+  /** Sum of ms accumulated since last cumulative flush. */
+  sumMs: number;
+  /** Highest sum-per-frame seen in the rolling window. */
+  maxSumMs: number;
+  /** Marker for whether this entry is sum-accumulating (vs single-event). */
+  isCumulative: boolean;
 }
 
 const WINDOW_MS = 1000;
@@ -34,12 +40,22 @@ function recordEntry(name: string, ms: number) {
   const now = performance.now();
   let e = _spikes.get(name);
   if (!e) {
-    e = { name, maxMs: 0, lastMs: 0, count: 0, windowResetAt: now };
+    e = {
+      name,
+      maxMs: 0,
+      lastMs: 0,
+      count: 0,
+      windowResetAt: now,
+      sumMs: 0,
+      maxSumMs: 0,
+      isCumulative: false,
+    };
     _spikes.set(name, e);
   }
   // Reset the rolling window every WINDOW_MS so stale spikes don't dominate.
   if (now - e.windowResetAt > WINDOW_MS) {
     e.maxMs = 0;
+    e.maxSumMs = 0;
     e.count = 0;
     e.windowResetAt = now;
   }
@@ -107,9 +123,70 @@ export function getTopSpikes(n = 3): readonly SpikeEntry[] {
   const live: SpikeEntry[] = [];
   for (const e of _spikes.values()) {
     if (now - e.windowResetAt > WINDOW_MS * 2) continue;
-    if (e.maxMs <= 0) continue;
+    const m = e.isCumulative ? e.maxSumMs : e.maxMs;
+    if (m <= 0) continue;
     live.push(e);
   }
-  live.sort((a, b) => b.maxMs - a.maxMs);
+  live.sort((a, b) => {
+    const am = a.isCumulative ? a.maxSumMs : a.maxMs;
+    const bm = b.isCumulative ? b.maxSumMs : b.maxMs;
+    return bm - am;
+  });
   return live.slice(0, n);
+}
+
+/**
+ * Accumulating variant. Each call adds to a running sum for the current frame.
+ * Call `flushCumulative(name)` once per frame (e.g. at end of useFrame chain)
+ * to record the frame's total and reset the accumulator.
+ *
+ * Example — wrap each NPC's per-frame work in `accumulate('npcs', dur)`, then
+ * call `flushCumulative('npcs')` after rendering the last NPC. The PerfHud
+ * will show "<total-ms> npcs" capturing the SUM across all NPCs that frame,
+ * not the max of one.
+ */
+export function measureCumulative<T>(name: string, fn: () => T): T {
+  if (typeof performance === 'undefined') return fn();
+  start();
+  const t0 = performance.now();
+  const result = fn();
+  const t1 = performance.now();
+  // Mutate or create the entry. Cumulative entries don't use mark/measure
+  // (no need to send to PerformanceObserver — sum is internal).
+  const now = performance.now();
+  let e = _spikes.get(name);
+  if (!e) {
+    e = {
+      name,
+      maxMs: 0,
+      lastMs: 0,
+      count: 0,
+      windowResetAt: now,
+      sumMs: 0,
+      maxSumMs: 0,
+      isCumulative: true,
+    };
+    _spikes.set(name, e);
+  }
+  if (now - e.windowResetAt > WINDOW_MS) {
+    e.maxMs = 0;
+    e.maxSumMs = 0;
+    e.count = 0;
+    e.windowResetAt = now;
+  }
+  e.sumMs += t1 - t0;
+  return result;
+}
+
+/**
+ * Flush the accumulated sum for `name` as one frame's worth, then reset the
+ * accumulator. Call at end of frame (e.g. via a one-line useFrame at low
+ * priority, or after the last NPC's useFrame runs).
+ */
+export function flushCumulative(name: string): void {
+  const e = _spikes.get(name);
+  if (!e) return;
+  if (e.sumMs > e.maxSumMs) e.maxSumMs = e.sumMs;
+  e.lastMs = e.sumMs;
+  e.sumMs = 0;
 }
