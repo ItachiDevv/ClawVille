@@ -47,6 +47,7 @@ import {
 import { createRoot, type Root } from 'react-dom/client';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
+import { measureSpike } from '@/lib/perf-tracker';
 
 // ---------------------------------------------------------------------------
 // Registry — single source of truth for all labels
@@ -213,6 +214,7 @@ export function WorldLabelsOverlayMount() {
 
   // Single projection pass — one read of canvas rect, one write per visible label.
   useFrame(() => {
+    measureSpike('uF:labels', () => {
     if (!_overlayNode) return;
 
     const rect = gl.domElement.getBoundingClientRect();
@@ -271,6 +273,7 @@ export function WorldLabelsOverlayMount() {
         entry._prevX = cssX;
         entry._prevY = cssY;
       }
+    });
     });
   });
 
