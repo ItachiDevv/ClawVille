@@ -347,11 +347,24 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
       // visual lag is negligible (200-500 ms before the indicator updates
       // when a fight finally ends and the NPC moves).
       if (prev && npcFieldsEqual(prev, candidate)) {
+        // Mutate every non-identity field on prev. Only conversation flip,
+        // rename, species swap, or color change ever invalidate identity in
+        // this game (no combat / no hp / no death systems exist yet, but
+        // their fields ride along via mutation so they stay correct if
+        // they're ever brought back).
         prev.x = candidate.x;
         prev.y = candidate.y;
         prev.prevX = candidate.prevX;
         prev.prevY = candidate.prevY;
         prev.direction = candidate.direction;
+        prev.hp = candidate.hp;
+        prev.maxHp = candidate.maxHp;
+        prev.isDead = candidate.isDead;
+        prev.hasSword = candidate.hasSword;
+        prev.inCombat = candidate.inCombat;
+        prev.combatAction = candidate.combatAction;
+        prev.combatActionAt = candidate.combatActionAt;
+        prev.inventory = candidate.inventory;
         // facingAngle stays on prev — never overwritten by SSE.
         return prev;
       }
@@ -519,14 +532,15 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
 }));
 
 // ---------------------------------------------------------------------------
-// NPC identity helper — drives the in-place position mutation in
-// updateFromSnapshot (see comment there).
+// NPC identity helper — drives the in-place mutation pattern in
+// updateFromSnapshot. Only fields that are READ from React state (rather
+// than via npcRef.current inside useFrame) belong here.
 //
-// Position fields (x, y, prevX, prevY, direction, facingAngle) are deliberately
-// EXCLUDED: when every render-driving field is equal we mutate the position
-// fields on the previous object and return its reference, so React never sees
-// the change. NPCs only re-render on combat / conversation / health / death /
-// inventory / species / color / name changes.
+// ClawVille has no combat, no hp, no death systems yet — those fields ride
+// along via mutation but never invalidate identity. The only React-visible
+// state change is `inConversation` (drives speech bubbles + activity
+// indicators), plus the static label fields (name / species / color /
+// isOpenClaw which never change in practice but are cheap to check).
 // ---------------------------------------------------------------------------
 function npcFieldsEqual(a: NpcSpriteState, b: NpcSpriteState): boolean {
   return (
@@ -534,17 +548,8 @@ function npcFieldsEqual(a: NpcSpriteState, b: NpcSpriteState): boolean {
     Object.is(a.name, b.name) &&
     Object.is(a.species, b.species) &&
     Object.is(a.color, b.color) &&
-    Object.is(a.hp, b.hp) &&
-    Object.is(a.maxHp, b.maxHp) &&
-    Object.is(a.isDead, b.isDead) &&
-    Object.is(a.hasSword, b.hasSword) &&
-    Object.is(a.inCombat, b.inCombat) &&
     Object.is(a.inConversation, b.inConversation) &&
-    Object.is(a.isOpenClaw, b.isOpenClaw) &&
-    Object.is(a.combatAction, b.combatAction) &&
-    Object.is(a.combatActionAt, b.combatActionAt) &&
-    a.inventory.length === b.inventory.length &&
-    a.inventory.every((item, i) => item === b.inventory[i])
+    Object.is(a.isOpenClaw, b.isOpenClaw)
   );
 }
 
