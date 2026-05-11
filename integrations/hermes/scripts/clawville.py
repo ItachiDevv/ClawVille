@@ -243,9 +243,10 @@ def cmd_pair(args):
          + avatar for the agent based on its identity. This is the "open
          agent onboarding" path called out in the brand spec.
     """
-    if args.self:
+    # `--self` is declared optional on the parser; treat missing attr as False.
+    if getattr(args, "self", False):
         return _pair_self(args)
-    url = args.magic_link  # arg name kept for backwards compat
+    url = getattr(args, "magic_link", None)
     if not url:
         die(
             "url_or_self_required",
@@ -630,17 +631,24 @@ def cmd_inventory(args):
 
 
 def cmd_balance(args):
+    """Balance + XP + level. /api/avatars/me is Lucia-only (browser path),
+    so we compose from two bearer-authed agent endpoints instead:
+      - /api/agent/wallet?sessionId=X  → balances.clawTokens + walletAddress
+      - /api/agent/:sid/stats          → xp, level, kills, knowledgeLearned[]"""
     sid = _bearer()
-    r = _request_json("GET", "/api/avatars/me", bearer=sid)
-    avatar = (r["body"] or {}).get("avatar", {})
+    wallet = _request_json("GET", f"/api/agent/wallet?sessionId={urllib.parse.quote(sid)}", bearer=sid)
+    stats = _request_json("GET", f"/api/agent/{sid}/stats", bearer=sid)
+    wb = wallet.get("body") or {}
+    sb = stats.get("body") or {}
     emit({
-        "clawTokens": avatar.get("clawTokens"),
-        "level": avatar.get("level"),
-        "xp": avatar.get("xp"),
-        "totalXp": avatar.get("totalXp"),
-        "loginStreak": avatar.get("loginStreak"),
-        "knowledgeCount": (avatar.get("characterConfig") or {}).get("knowledge", []).__len__()
-                          if isinstance(avatar.get("characterConfig"), dict) else None,
+        "avatarName": wb.get("avatarName") or wb.get("petName"),
+        "avatarId": wb.get("avatarId") or wb.get("petId"),
+        "walletAddress": (wb.get("wallet") or {}).get("address"),
+        "clawTokens": (wb.get("balances") or {}).get("clawTokens"),
+        "level": sb.get("level"),
+        "xp": sb.get("xp"),
+        "knowledgeLearnedCount": len(sb.get("knowledgeLearned") or []) if isinstance(sb.get("knowledgeLearned"), list) else None,
+        "totalMessages": sb.get("totalMessages"),
     })
 
 
@@ -707,8 +715,9 @@ def main():
     ap = argparse.ArgumentParser(prog="clawville", description="ClawVille → Hermes integration")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("pair", help="One-time pairing via magic-link URL.")
-    p.add_argument("--magic-link", required=True, help="https://clawville.world/enter?t=sess-...")
+    p = sub.add_parser("pair", help="One-time pairing via Connect Agent URL.")
+    p.add_argument("--magic-link", required=False, help="Connect URL from the in-game modal (Moltbook flow) — https://api.clawville.world/api/skills/connect?token=ct-... OR magic-link https://clawville.world/enter?t=sess-...")
+    p.add_argument("--self", action="store_true", help="Direct agent self-registration — no URL, no human account, server auto-mints user+avatar.")
     p.set_defaults(func=cmd_pair)
 
     p = sub.add_parser("status", help="Show current session + ownership.")
