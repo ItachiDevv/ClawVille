@@ -184,10 +184,19 @@ export default function PerfHud() {
           } catch {
             // ignore — scene might be mid-mutation
           }
-          draws = info?.calls ?? 0;
+          // 2026-05-11 — HUD was reading the wrong paths.
+          // Three.js WebGPU exposes per-frame draws at `info.render.drawCalls`,
+          // NOT `info.render.calls` (which is the cumulative renderer.render()
+          // invocation count and grows forever). Fall back to `calls` only for
+          // the legacy WebGL renderer where that's actually the right field.
+          draws = (info as any)?.drawCalls ?? info?.calls ?? 0;
           triangles = info?.triangles ?? 0;
+          // Pipeline cache for WebGPU lives at renderer._pipelines.caches (Map).
+          // WebGL renderer uses gl.info.programs (array). Neither used to be
+          // exposed via gl.info.render.pipelines — that path is always
+          // undefined so the HUD has been showing 0 since launch.
           pipes =
-            (gl.info?.render as any)?.pipelines ??
+            (gl as any)?._pipelines?.caches?.size ??
             (gl.info?.programs?.length ?? 0);
           backend = gl.isWebGPURenderer ? 'WebGPU' : 'WebGL';
         }
