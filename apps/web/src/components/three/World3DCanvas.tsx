@@ -504,25 +504,28 @@ function PreCompilePipelines() {
 }
 
 // ---------------------------------------------------------------------------
-// StaggeredTextureUpload — spread GPU texture uploads across multiple frames
+// StaggeredTextureUpload — spread GPU texture uploads across idle time
 // ---------------------------------------------------------------------------
 // Problem: after WebP decode, uploading all RGBA8 textures to the GPU in one
 // frame causes a 400ms+ long task on Iris Xe (the WebP decode → GPU upload
 // pipeline is CPU-bound and unthreaded).
 //
-// Fix: after compileAsync completes (pipelines ready), collect every unique
-// texture in the scene and call renderer.initTexture(tex) for BATCH_SIZE
-// textures per rAF tick. initTexture() is synchronous and exists on both
-// WebGLRenderer (r170+) and WebGPURenderer (r182+) — it calls
-// _textures.updateTexture() which does the GPU upload immediately.
+// Old fix (BATCH=2 per rAF tick): 200 textures × 1 frame each = 200 frames to
+// upload everything. At 12fps that's ~17s of "avatar not visible". The fixed
+// per-frame count wastes the frame budget on fast machines and bottlenecks
+// slow ones.
 //
-// BATCH_SIZE = 2 keeps each rAF tick under ~16ms on Iris Xe (each WebP
-// texture costs ~4-8ms to upload). Adjust up if profiling shows headroom.
+// New fix: use requestIdleCallback with a 6ms budget per slice. The browser
+// schedules the slice during idle time after a frame paints, so we never
+// steal the frame budget — but on fast hardware we burn through ~6ms of
+// texture uploads per idle slice (~1-2 textures per slice on Iris Xe, more
+// on a desktop GPU). On a fast machine the whole 200-texture pool finishes
+// in a handful of slices (< 200ms total). On slow hardware it self-paces.
 //
-// We fire one frame after PreCompilePipelines' rAF (using a nested rAF) so
-// the uploads begin after pipeline compilation finishes, not racing it.
+// Fallback for Safari (no rIC): rAF with BATCH=4 (still 2× the old rate).
 // ---------------------------------------------------------------------------
-const TEXTURE_UPLOAD_BATCH = 2;
+const IDLE_SLICE_BUDGET_MS = 6;
+const RAF_FALLBACK_BATCH = 4;
 
 // All standard texture slot names on MeshStandardMaterial and related.
 const TEXTURE_SLOTS = [
@@ -547,8 +550,10 @@ function StaggeredTextureUpload() {
     // second tick is after at least one compile cycle has started.
     let outerRaf: number;
     let innerRaf: number;
-    // Hoisted so the useEffect cleanup can cancel in-progress upload batches
+    // Hoisted so the useEffect cleanup can cancel in-progress upload batches.
+    // Need both rIC and rAF refs because we pick one per browser capability.
     let uploadRaf: number | undefined;
+    let idleHandle: number | undefined;
 
     outerRaf = requestAnimationFrame(() => {
       innerRaf = requestAnimationFrame(() => {
@@ -572,34 +577,59 @@ function StaggeredTextureUpload() {
         const unique = Array.from(seen);
         if (unique.length === 0) return;
 
-        console.log(`[World3D] StaggeredTextureUpload: uploading ${unique.length} textures (${TEXTURE_UPLOAD_BATCH}/frame)`);
+        const hasIdle = typeof (window as any).requestIdleCallback === 'function';
+        console.log(`[World3D] StaggeredTextureUpload: uploading ${unique.length} textures via ${hasIdle ? 'rIC' : 'rAF'} budget`);
 
         let i = 0;
 
-        function uploadBatch() {
+        function uploadIdle(deadline: IdleDeadline) {
           const t0 = performance.now();
-          const end = Math.min(i + TEXTURE_UPLOAD_BATCH, unique.length);
+          while (
+            i < unique.length &&
+            (deadline.timeRemaining() > 1 || performance.now() - t0 < IDLE_SLICE_BUDGET_MS)
+          ) {
+            try {
+              (gl as any).initTexture(unique[i]);
+            } catch (err) {
+              console.warn('[World3D] initTexture error (non-fatal):', err);
+            }
+            i++;
+          }
+          if (i < unique.length) {
+            idleHandle = (window as any).requestIdleCallback(uploadIdle, { timeout: 200 });
+          } else {
+            idleHandle = undefined;
+            console.log('[World3D] StaggeredTextureUpload: all textures uploaded');
+          }
+        }
+
+        function uploadRafFallback() {
+          const t0 = performance.now();
+          const end = Math.min(i + RAF_FALLBACK_BATCH, unique.length);
           for (; i < end; i++) {
             try {
               (gl as any).initTexture(unique[i]);
             } catch (err) {
-              // Non-fatal — renderer may skip textures that haven't decoded yet
               console.warn('[World3D] initTexture error (non-fatal):', err);
             }
           }
           const elapsed = performance.now() - t0;
           if (elapsed > 20) {
-            console.warn(`[World3D] StaggeredTextureUpload: batch took ${elapsed.toFixed(1)}ms — reduce TEXTURE_UPLOAD_BATCH`);
+            console.warn(`[World3D] StaggeredTextureUpload: batch took ${elapsed.toFixed(1)}ms`);
           }
           if (i < unique.length) {
-            uploadRaf = requestAnimationFrame(uploadBatch);
+            uploadRaf = requestAnimationFrame(uploadRafFallback);
           } else {
             uploadRaf = undefined;
             console.log('[World3D] StaggeredTextureUpload: all textures uploaded');
           }
         }
 
-        uploadRaf = requestAnimationFrame(uploadBatch);
+        if (hasIdle) {
+          idleHandle = (window as any).requestIdleCallback(uploadIdle, { timeout: 200 });
+        } else {
+          uploadRaf = requestAnimationFrame(uploadRafFallback);
+        }
       });
     });
 
@@ -607,6 +637,9 @@ function StaggeredTextureUpload() {
       cancelAnimationFrame(outerRaf);
       cancelAnimationFrame(innerRaf);
       if (uploadRaf !== undefined) cancelAnimationFrame(uploadRaf);
+      if (idleHandle !== undefined && typeof (window as any).cancelIdleCallback === 'function') {
+        (window as any).cancelIdleCallback(idleHandle);
+      }
     };
     // gl/scene are stable R3F refs — intentionally omitted from deps
     // eslint-disable-next-line react-hooks/exhaustive-deps
