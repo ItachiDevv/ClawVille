@@ -1,12 +1,13 @@
 'use client';
 
-import { useRef, useMemo, useEffect, useLayoutEffect, memo, Suspense } from 'react';
+import { useRef, useMemo, useEffect, memo, Suspense } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { useWorldLabel, WorldLabel } from '@/lib/three/world-labels-overlay';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { useNpcStore, type NpcSpriteState } from '@/stores/npc';
+import { useShallow } from 'zustand/react/shallow';
 import { applyWalkAnimation, applyIdleAnimation, idToSeed } from '@/lib/three/procedural-animation';
 import { LobsterAnimator, resolveAnimState } from '@/lib/three/lobster-animations';
 import { discoverLobsterParts } from '@/lib/three/lobster-parts';
@@ -24,7 +25,9 @@ import { jumpState } from '@/lib/three/jump-state';
 import { useVRMInstance, disposeVRMInstance, preloadVRMBytes } from '@/lib/three/vrm-loader';
 import { VRMCharacterAnimator, preloadMixamoClips } from '@/lib/three/vrm-character-animator';
 import { MODEL_REGISTRY } from '@/lib/three/agent-model-registry';
-import { anchorInFrontOfCamera } from '@/lib/three/utils/camera-cull';
+// Camera-cull import REMOVED 2026-05-11 — all NPC/label culling deleted per user
+// directive ("remove all the culling completely it ruins the game"). The helper
+// still ships for BumperShellsPlayer but is not used in the open world scene.
 
 // ---------------------------------------------------------------------------
 // GLB-based NPC renderer with terrain raycasting
@@ -455,35 +458,26 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // Layer 2 safety net: one-shot rendered-height hard cap applied after first render.
   // Catches any NPC that slips through computeNpcScale with a wrong pivot offset.
   const rescaleAppliedRef = useRef(false);
-  // Occlusion latch — flipped at ~10Hz by checkLabelOcclusion, read every frame
-  // to decide label visibility without burning raycast budget.
-  const occludedRef = useRef(false);
   const npcRef = useRef(npc);
   npcRef.current = npc;
 
-  // Tag this group as a label-occluder + invalidate the module-scope cache so
-  // the next checkLabelOcclusion call picks this NPC up. Runs before paint
-  // (useLayoutEffect) so the first useFrame already sees the tagged group.
-  useLayoutEffect(() => {
-    const g = groupRef.current;
-    if (!g) return;
-    g.userData.isOccluder = true;
-    g.userData.npcId = npc.id;
-    invalidateOccluderCache();
-    return () => { invalidateOccluderCache(); };
-  }, [npc.id]);
+  // Occluder-tag useLayoutEffect removed 2026-05-11 — label-occlusion raycast is
+  // gone with the rest of culling, so the userData.isOccluder/npcId tag has no
+  // consumer. The whole anti-self-occlusion machinery was a workaround for a
+  // feature the user explicitly told us to delete.
   const { scene: threeScene } = useThree();
   // idToSeed returns a float (0..10). Convert to integer so (frame + seed) % N
   // uses integer arithmetic — float modulo with strict === 0 never fires.
   const seed = useMemo(() => Math.round(idToSeed(npc.id)), [npc.id]);
 
-  // WorldLabelsOverlay label — replaces drei <Html> for this NPC's name tag.
-  // starts hidden (initialVisible:false); useFrame calls setVisible when NPC enters range.
-  const { divRef: labelRef, setVisible: setLabelVisible } = useWorldLabel({
+  // WorldLabelsOverlay label — name tag, always visible (no cull, 2026-05-11).
+  // The projection useFrame still hides via NDC z>1 when the anchor is behind
+  // the near plane, which is correct projection math — not "culling".
+  const { divRef: labelRef } = useWorldLabel({
     id: `glb-npc-label-${npc.id}`,
     anchorRef: groupRef,
     offset: [0, 100, 0],
-    initialVisible: false,
+    initialVisible: true,
   });
 
   const targetPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
@@ -617,49 +611,16 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     group.position.x = currentPos.current.x;
     group.position.z = currentPos.current.z;
 
-    // ── Distance-LOD cull ────────────────────────────────────────────────
-    // Perf: every NPC's useFrame ran terrain raycasts (scene-traverse), matrix
-    // updates, animator ticks, + a drei <Html> label that recomputes CSS per
-    // frame — all paid regardless of whether the NPC was visible. With 18 NPCs
-    // that dominated frametime even when most were off-camera. Now when an NPC
-    // is past the far-cull threshold, we hide the group (Three.js skips its
-    // entire render subtree, including the Html portal) and early-return —
-    // zero per-frame work until the NPC re-enters the view bubble.
-    const camDx = targetPos.current.x - camera.position.x;
-    const camDz = targetPos.current.z - camera.position.z;
-    const camDistSq = camDx * camDx + camDz * camDz;
-    if (camDistSq > NPC_CULL_DIST_SQ) {
-      // Always write — not transition-only. React memo shallow-compares the npc prop
-      // object reference; every SSE snapshot rebuilds the array so memo re-renders on
-      // every snapshot, re-applying the JSX inline `display: 'flex'` and clobbering
-      // any `display: 'none'` that a previous cull frame wrote. The transition-only
-      // guard (`if (group.visible)`) then skipped re-writing because group.visible was
-      // already false, so the label stayed visible at distance indefinitely.
-      // Always writing the style (cheap when value doesn't change) prevents the leak.
-      group.visible = false;
-      // WorldLabelsOverlay manages the DOM label — hide it imperatively so it
-      // doesn't float over empty world space while the 3D mesh is culled.
-      setLabelVisible(false);
-      return;
-    }
+    // 2026-05-11 — All NPC culling removed per user directive.
+    // Previously: distance-cull (hide group past 10000² wu), behind-camera cull
+    // (hide label when anchor outside frustum), occlusion raycast (hide label
+    // when blocked by building). Every layer caused visible bugs (NPCs popping
+    // in/out, labels flashing, race conditions with React.memo). The user
+    // explicitly said "let's remove all the culling completely it ruins the
+    // game" 2026-05-11. NDC z>1 hide in WorldLabelsOverlay still applies
+    // (correct projection math, not culling).
     group.visible = true;
     const frame = Math.floor(clock.elapsedTime * 60);
-    {
-      // Behind-camera cull + line-of-sight occlusion gate.
-      // Behind-camera: overlay projects even when anchor is behind camera → hide.
-      // Occlusion: anchor in front but blocked by building/closer NPC → hide.
-      // Re-locked 2026-04-26 after PR #65 stripped this.
-      group.getWorldPosition(_npcAnchorWorldPos);
-      const inFront = anchorInFrontOfCamera(_npcAnchorWorldPos, camera);
-      // 10Hz occlusion test, staggered per NPC. Only runs when label is
-      // already in front (so behind-camera labels don't burn raycast budget).
-      if (inFront && (frame + seed) % 6 === 0) {
-        occludedRef.current = checkLabelOcclusion(
-          camera.position, _npcAnchorWorldPos, npc.id, threeScene,
-        );
-      }
-      setLabelVisible(inFront && !occludedRef.current);
-    }
 
     // Raycast to find terrain surface Y (every 3rd frame to save perf).
     // Use (frame + seed) % 3 to stagger across NPCs — prevents all NPCs from
@@ -852,33 +813,22 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
 // The 2 demo Milady NPCs intentionally use different paths (official_7 / official_8).
 const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
   const groupRef = useRef<THREE.Group>(null!);
-  // Occlusion latch — same pattern as GLBNpcMesh.
-  const occludedRef = useRef(false);
   const { scene: threeScene } = useThree();
   const npcRef = useRef(npc);
   npcRef.current = npc;
 
-  // Tag this group as a label-occluder so checkLabelOcclusion sees it AND so
-  // an NPC's own mesh doesn't self-occlude its own label.
-  useLayoutEffect(() => {
-    const g = groupRef.current;
-    if (!g) return;
-    g.userData.isOccluder = true;
-    g.userData.npcId = npc.id;
-    invalidateOccluderCache();
-    return () => { invalidateOccluderCache(); };
-  }, [npc.id]);
+  // Occluder-tag useLayoutEffect removed 2026-05-11 — see GLBNpcMesh.
 
   // idToSeed returns float — round to int so (frame + seed) % 3 uses integer arithmetic.
   const seed = useMemo(() => Math.round(idToSeed(npc.id)), [npc.id]);
 
-  // WorldLabelsOverlay label — replaces drei <Html> for this NPC's name tag.
-  // Starts hidden; useFrame calls setVisible when NPC enters cull radius.
-  const { divRef: labelRef, setVisible: setLabelVisible } = useWorldLabel({
+  // WorldLabelsOverlay label — always visible (no cull, 2026-05-11).
+  // NDC z>1 hide in WorldLabelsOverlay handles behind-near-plane projection.
+  const { divRef: labelRef } = useWorldLabel({
     id: `vrm-npc-label-${npc.id}`,
     anchorRef: groupRef,
     offset: [0, 100, 0],
-    initialVisible: false,
+    initialVisible: true,
   });
 
   const targetPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
@@ -959,49 +909,11 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     group.position.x = currentPos.current.x;
     group.position.z = currentPos.current.z;
 
-    // ── Distance-LOD cull (same policy as GLBNpcMesh) ────────────────────
-    // Far: hide group (Three.js skips render subtree + Html portal); return.
-    // Mid: animator throttles to 30Hz. Close: full 60Hz animator + spring.
-    const camDx = targetPos.current.x - camera.position.x;
-    const camDz = targetPos.current.z - camera.position.z;
-    const camDistSq = camDx * camDx + camDz * camDz;
-
-    // VRM animator must tick even when the NPC is culled (invisible).
-    // Bug: NPCs that spawn beyond NPC_CULL_DIST start with their mixer never ticked —
-    // the idle AnimationAction was play()'d in init() but mixer.update() was skipped
-    // by the early-return, leaving all normalized bone quaternions at identity = T-pose.
-    // When the NPC eventually walks into range, the mixer cold-starts but the visual
-    // delay is a jarring T-pose snap. Ticking every frame keeps animation warm.
-    // Cost: ~0.3ms × 5 VRM NPCs when culled (spring bone math, no GPU work since
-    // Three.js skips vertex skinning on invisible SkinnedMesh nodes).
+    // 2026-05-11 — All VRM NPC culling removed per user directive
+    // ("remove all the culling completely it ruins the game"). Mirrors GLBNpcMesh.
     const isMoving = d.direction !== 'idle' && !d.isDead;
     const frame = Math.floor(clock.elapsedTime * 60);
-
-    if (camDistSq > VRM_NPC_CULL_DIST_SQ) {
-      // Tick mixer at reduced rate (every 4th frame) while culled — keeps anim warm
-      // without burning full frame budget on off-screen NPCs.
-      if ((frame + seed) % 4 === 0) {
-        vrmAnimatorRef.current?.update(dt * 4, isMoving);
-      }
-      // Always write — not transition-only. See GLBNpcMesh cull block for full rationale:
-      // memo re-renders restore JSX inline style; always-write prevents the leak.
-      group.visible = false;
-      // WorldLabelsOverlay manages the DOM label — hide imperatively.
-      setLabelVisible(false);
-      return;
-    }
     group.visible = true;
-    {
-      // Behind-camera cull + line-of-sight occlusion gate (same pattern as GLBNpcMesh).
-      group.getWorldPosition(_npcAnchorWorldPos);
-      const inFront = anchorInFrontOfCamera(_npcAnchorWorldPos, camera);
-      if (inFront && (frame + seed) % 6 === 0) {
-        occludedRef.current = checkLabelOcclusion(
-          camera.position, _npcAnchorWorldPos, npc.id, threeScene,
-        );
-      }
-      setLabelVisible(inFront && !occludedRef.current);
-    }
 
     // Raycast terrain every 3rd frame (staggered by seed to avoid per-frame spikes)
     if ((frame + seed) % 3 === 0) {
@@ -1075,7 +987,10 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
       // hair lag is ≤ 33ms which is below the threshold for most
       // observers, especially during a demo.
       animator.updateMixerOnly(dt, isMoving);
-      const springMod = camDistSq > VRM_NPC_HALF_RATE_DIST_SQ ? 6 : 3; // 10Hz mid / 20Hz close
+      // 2026-05-11 — uniform 20Hz spring physics (was tiered 10/20 Hz by distance).
+      // Distance gate removed with the rest of culling. 20Hz is below the
+      // perceptual lag threshold for hair/tail springs at typical viewing distance.
+      const springMod = 3; // 20Hz
       if ((frame + seed) % springMod === 0) {
         const acc = Math.min(springDeltaAccRef.current, 0.1);
         animator.updateSpringOnly(acc);
@@ -1143,7 +1058,13 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
 // Main export
 // ---------------------------------------------------------------------------
 export default function ArenaNpcs() {
-  const allNpcs = useNpcStore((s) => s.npcs);
+  // useShallow on the npcs array — combined with NPC-identity preservation in
+  // updateFromSnapshot (see stores/npc.ts npcFieldsEqual), this skips re-renders
+  // entirely when no NPC actually changed between SSE snapshots. Previously,
+  // every snapshot rebuilt the array and forced ArenaNpcs to re-render +
+  // re-evaluate npcs.filter(); useShallow checks element-by-element so an
+  // unchanged 18-NPC array stays referentially equal for React.
+  const allNpcs = useNpcStore(useShallow((s) => s.npcs));
   const controlMode = useGameStore((s) => s.controlMode);
 
   // Filter out the dedicated player NPC when not in NPC mode.
