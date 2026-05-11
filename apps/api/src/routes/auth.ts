@@ -46,18 +46,12 @@ authRoutes.get('/me/agent-session', requireAuth, async (c) => {
     columns: { id: true, harness: true, platformAgentId: true },
   });
 
-  if (avatar?.harness === 'milady' && avatar.platformAgentId) {
-    return c.json({
-      connected: true,
-      agentId: avatar.platformAgentId,
-      harness: 'milady',
-      // Milady avatars have no TTL — ClawVille hosts the runtime, so the
-      // session is alive as long as the avatar row exists.
-      expiresAt: null,
-      lastSeenAt: null,
-    });
-  }
-
+  // External agent path takes precedence — if an openclaw_bots row exists,
+  // its sliding 24h TTL is the authoritative liveness signal regardless of
+  // the avatar's harness label. Previously a Milady-harness carve-out
+  // short-circuited to `connected: true` without ever consulting the bot
+  // row, so a Hermes/OpenClaw session paired weeks ago kept showing as
+  // active in the UI long after its actual session_expires_at had lapsed.
   const bot = await db.query.openclawBots.findFirst({
     where: eq(openclawBots.userId, user.id),
     orderBy: (t, { desc }) => [desc(t.lastSeenAt)],
@@ -65,34 +59,51 @@ authRoutes.get('/me/agent-session', requireAuth, async (c) => {
       agentId: true,
       lastSeenAt: true,
       sessionExpiresAt: true,
+      identityType: true,
     },
   });
 
-  if (!bot) {
-    return c.json({ connected: false, reason: 'no_bot' });
-  }
+  if (bot) {
+    const now = new Date();
+    const expired =
+      bot.sessionExpiresAt !== null && bot.sessionExpiresAt <= now;
 
-  const now = new Date();
-  const expired =
-    bot.sessionExpiresAt !== null && bot.sessionExpiresAt <= now;
+    if (expired) {
+      return c.json({
+        connected: false,
+        reason: 'expired',
+        agentId: bot.agentId,
+        lastSeenAt: bot.lastSeenAt.toISOString(),
+        expiresAt: bot.sessionExpiresAt!.toISOString(),
+      });
+    }
 
-  if (expired) {
     return c.json({
-      connected: false,
-      reason: 'expired',
+      connected: true,
       agentId: bot.agentId,
+      harness: avatar?.harness ?? bot.identityType ?? null,
+      expiresAt: bot.sessionExpiresAt?.toISOString() ?? null,
       lastSeenAt: bot.lastSeenAt.toISOString(),
-      expiresAt: bot.sessionExpiresAt!.toISOString(),
     });
   }
 
-  return c.json({
-    connected: true,
-    agentId: bot.agentId,
-    harness: avatar?.harness ?? null,
-    expiresAt: bot.sessionExpiresAt?.toISOString() ?? null,
-    lastSeenAt: bot.lastSeenAt.toISOString(),
-  });
+  // No external bot — fall through to the Milady carve-out only when the
+  // user truly has no external agent attached. ClawVille hosts the Milady
+  // Eliza runtime server-side, so an avatar with harness='milady' and a
+  // platform_agents row IS always alive in the sense that you can chat
+  // with it; that's a different liveness shape than an external agent's
+  // sliding TTL and we don't want to falsely mark it dead.
+  if (avatar?.harness === 'milady' && avatar.platformAgentId) {
+    return c.json({
+      connected: true,
+      agentId: avatar.platformAgentId,
+      harness: 'milady',
+      expiresAt: null,
+      lastSeenAt: null,
+    });
+  }
+
+  return c.json({ connected: false, reason: 'no_bot' });
 });
 
 // Logout
