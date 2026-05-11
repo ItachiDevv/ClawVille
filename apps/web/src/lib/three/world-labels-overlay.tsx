@@ -177,6 +177,14 @@ function LabelView({ entry }: { entry: LabelEntry }) {
 // WorldLabelsOverlayMount — mount once inside <Canvas>
 // ---------------------------------------------------------------------------
 
+// Canvas size cache — updated via ResizeObserver instead of polled via
+// getBoundingClientRect every frame. The per-frame read was triggering a
+// forced reflow (~211ms/s confirmed via Chrome trace) because label divs'
+// display:none/block writes invalidate layout, and the read after them
+// forces a synchronous recompute.
+let _canvasW = 0;
+let _canvasH = 0;
+
 export function WorldLabelsOverlayMount() {
   const { gl, camera } = useThree();
 
@@ -197,7 +205,22 @@ export function WorldLabelsOverlayMount() {
     _rebuildSnapshot();
     root.render(<LabelsHost />);
 
+    // Initialise + track canvas size without per-frame getBoundingClientRect.
+    const rect = canvas.getBoundingClientRect();
+    _canvasW = rect.width;
+    _canvasH = rect.height;
+
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const cr = entry.contentRect;
+        _canvasW = cr.width;
+        _canvasH = cr.height;
+      }
+    });
+    ro.observe(canvas);
+
     return () => {
+      ro.disconnect();
       const r = _overlayRoot;
       _overlayRoot = null;
       _overlayNode = null;
@@ -212,14 +235,15 @@ export function WorldLabelsOverlayMount() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Single projection pass — one read of canvas rect, one write per visible label.
+  // Single projection pass — uses ResizeObserver-cached canvas size to avoid
+  // the forced reflow from getBoundingClientRect after the previous frame's
+  // display:none/block writes invalidated layout.
   useFrame(() => {
     measureSpike('uF:labels', () => {
     if (!_overlayNode) return;
 
-    const rect = gl.domElement.getBoundingClientRect();
-    const W = rect.width;
-    const H = rect.height;
+    const W = _canvasW;
+    const H = _canvasH;
     if (W <= 0 || H <= 0) return;
 
     _registry.forEach((entry) => {
