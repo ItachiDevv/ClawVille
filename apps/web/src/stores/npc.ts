@@ -327,8 +327,32 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
         // Preserve client-side seed value — server snapshots never carry defaultIdleClip.
         defaultIdleClip: prev?.defaultIdleClip,
       };
-      // Return the previous reference if nothing changed (identity preservation).
+      // 2026-05-11 — Position mutation pattern.
+      // React-rendered NPC components subscribe via useShallow(s => s.npcs),
+      // so when EVERY element preserves its reference between snapshots the
+      // top-level subscriber doesn't re-render at all. Previously, the SSE
+      // tick rebuilt every walking NPC's object (new x/y → new ref) which
+      // forced ArenaNpcs to re-render 5×/s and re-evaluate the full 18-NPC
+      // subtree. Chrome trace showed function T (React scheduler flushWork)
+      // at 530 ms/call as a result.
+      //
+      // Fix: if every NON-position field is equal, mutate position on the
+      // PREVIOUS object and return its reference. React never sees the
+      // change. The NPC's useFrame still reads fresh x/y because npcRef.current
+      // points at the same (now-mutated) object.
+      //
+      // Cost: speech bubbles + activity indicators read npc.x/y from React
+      // state, so they lag by however long the npc identity stays stable.
+      // These appear on stationary NPCs (in combat / in conversation) so the
+      // visual lag is negligible (200-500 ms before the indicator updates
+      // when a fight finally ends and the NPC moves).
       if (prev && npcFieldsEqual(prev, candidate)) {
+        prev.x = candidate.x;
+        prev.y = candidate.y;
+        prev.prevX = candidate.prevX;
+        prev.prevY = candidate.prevY;
+        prev.direction = candidate.direction;
+        // facingAngle stays on prev — never overwritten by SSE.
         return prev;
       }
       return candidate;
@@ -495,23 +519,19 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
 }));
 
 // ---------------------------------------------------------------------------
-// B7 — NPC object identity helper
-// Compare every field that drives rendering in GLBNpcMesh / VRMNpcMesh.
-// Used by updateFromSnapshot to preserve object references when nothing changed,
-// restoring React.memo's shallow-prop bailout on unchanged NPCs.
-// facingAngle is intentionally excluded — it is set by NpcController
-// (client-side) and is NOT in the server snapshot; server path always keeps
-// the prev value so it never changes from snapshot processing.
+// NPC identity helper — drives the in-place position mutation in
+// updateFromSnapshot (see comment there).
+//
+// Position fields (x, y, prevX, prevY, direction, facingAngle) are deliberately
+// EXCLUDED: when every render-driving field is equal we mutate the position
+// fields on the previous object and return its reference, so React never sees
+// the change. NPCs only re-render on combat / conversation / health / death /
+// inventory / species / color / name changes.
 // ---------------------------------------------------------------------------
 function npcFieldsEqual(a: NpcSpriteState, b: NpcSpriteState): boolean {
   return (
     Object.is(a.id, b.id) &&
     Object.is(a.name, b.name) &&
-    Object.is(a.x, b.x) &&
-    Object.is(a.y, b.y) &&
-    Object.is(a.prevX, b.prevX) &&
-    Object.is(a.prevY, b.prevY) &&
-    Object.is(a.direction, b.direction) &&
     Object.is(a.species, b.species) &&
     Object.is(a.color, b.color) &&
     Object.is(a.hp, b.hp) &&
@@ -523,7 +543,6 @@ function npcFieldsEqual(a: NpcSpriteState, b: NpcSpriteState): boolean {
     Object.is(a.isOpenClaw, b.isOpenClaw) &&
     Object.is(a.combatAction, b.combatAction) &&
     Object.is(a.combatActionAt, b.combatActionAt) &&
-    // inventory: compare length then each item (string[])
     a.inventory.length === b.inventory.length &&
     a.inventory.every((item, i) => item === b.inventory[i])
   );
