@@ -46,12 +46,18 @@ const _scratchLocal = new THREE.Matrix4();
 const ALLOWED_ATTRS = ['position', 'normal', 'uv'] as const;
 
 function normalizeAttributes(g: THREE.BufferGeometry): THREE.BufferGeometry {
+  // CRITICAL: every attribute must be CLONED. The caller does
+  // applyMatrix4(localToRoot) on the returned geometry, which mutates the
+  // position attribute IN PLACE. Sharing the original attribute reference
+  // would write the local-to-root transform directly onto the source
+  // geometry — every original mesh's positions would be silently shifted
+  // even when no merge happened, breaking the scene visually.
   const out = new THREE.BufferGeometry();
   for (const name of ALLOWED_ATTRS) {
     const a = g.attributes[name];
-    if (a) out.setAttribute(name, a);
+    if (a) out.setAttribute(name, a.clone());
   }
-  if (g.index) out.setIndex(g.index);
+  if (g.index) out.setIndex(g.index.clone());
   return out;
 }
 
