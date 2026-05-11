@@ -6,6 +6,7 @@ import { useGLTF, Html } from '@react-three/drei';
 import { useWorldLabel, WorldLabel } from '@/lib/three/world-labels-overlay';
 import { useFrame, useThree } from '@react-three/fiber';
 import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
+import { mergeStaticMeshesByMaterial } from '@/lib/three/utils/merge-static-meshes';
 import {
   MAP_WIDTH,
   MAP_HEIGHT,
@@ -335,20 +336,31 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
     // measurement (e.g. EXT_mesh_gpu_instancing — source-mesh bbox doesn't
     // reflect the instanced render extent). Pivot offsets are zero; yOffset
     // is applied by the caller to ground the model.
+    let result;
     if (config.scaleOverride != null) {
-      return { cloned: c, buildingScale: config.scaleOverride, pivotOffsetX: 0, pivotOffsetY: 0, pivotOffsetZ: 0 };
+      result = { cloned: c, buildingScale: config.scaleOverride, pivotOffsetX: 0, pivotOffsetY: 0, pivotOffsetZ: 0 };
+    } else {
+      // Strip named decorative meshes (Flowers, Path, etc.) before measuring so
+      // flat non-structural planes don't inflate the XZ bbox and trigger the
+      // MAX_FOOTPRINT cap (pineapple-house.glb: removes Flowers+Path → height 800).
+      stripDecorativeMeshes(c);
+      // Strip flat ground planes before measuring height so BUILDING_TARGET_HEIGHT
+      // is accurate — ground planes inflate the bounding box and make buildings
+      // appear shorter than 100 world units after scaling.
+      stripGroundPlanes(c);
+      const { scale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz } = computeBuildingScale(c);
+      result = { cloned: c, buildingScale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz };
     }
-    // Strip named decorative meshes (Flowers, Path, etc.) before measuring so
-    // flat non-structural planes don't inflate the XZ bbox and trigger the
-    // MAX_FOOTPRINT cap (pineapple-house.glb: removes Flowers+Path → height 800).
-    stripDecorativeMeshes(c);
-    // Strip flat ground planes before measuring height so BUILDING_TARGET_HEIGHT
-    // is accurate — ground planes inflate the bounding box and make buildings
-    // appear shorter than 100 world units after scaling.
-    stripGroundPlanes(c);
-    const { scale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz } = computeBuildingScale(c);
-    return { cloned: c, buildingScale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz };
-  }, [scene, config.model, config.scaleOverride]);
+    // 2026-05-11 — collapse same-material draw calls into one mesh each.
+    // Buildings have ~5-15 submeshes from the source GLB but many share a
+    // material (wood/metal/sand) — merging by material reference cuts draws
+    // proportional to the duplication ratio.
+    const merge = mergeStaticMeshesByMaterial(c);
+    if (typeof window !== 'undefined') {
+      console.log(`[building-merge] ${zone.id}: ${merge.meshesBefore} → ${merge.meshesAfter} meshes (${merge.buckets} buckets merged, ${merge.skipped} skipped)`);
+    }
+    return result;
+  }, [scene, config.model, config.scaleOverride, zone.id]);
 
   // Dispose cloned geometry + materials on unmount (navigation away / hot-reload)
   useEffect(() => {
