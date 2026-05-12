@@ -83,14 +83,18 @@ export const MODEL_REGISTRY = {
   milady_official_7: { path: '/avatars/milady-official-7.vrm', scale: 13, label: 'Milady Official 7', category: 'milady', avatar_type: 'vrm', preview: '/avatars/previews/milady-official-7.png' },
   milady_official_8: { path: '/avatars/milady-official-8.vrm', scale: 13, label: 'Milady Official 8', category: 'milady', avatar_type: 'vrm', preview: '/avatars/previews/milady-official-8.png' },
 
-  // Hermes-hosted VRM avatars (added 2026-05-12). Same scale as the Milady
-  // pool — they share the create-agent camera framing. Previews reuse the
-  // turnaround front views; we can swap to dedicated card art later. Animation
-  // clips live under /avatars/animations/{hermes-female,tekk-male}/*.glb but
-  // the picker only needs idle which the VRMCharacterAnimator routes
-  // transparently.
-  hermes_female: { path: '/avatars/hermes-female.vrm', scale: 13, label: 'Hermes',  category: 'hermes', avatar_type: 'vrm', preview: '/models/hermes-turnaround/female-front.png' },
-  hermes_male:   { path: '/avatars/hermes-male.vrm',   scale: 13, label: 'Tekk',    category: 'hermes', avatar_type: 'vrm', preview: '/models/tekk-turnaround/with-wings-front.png' },
+  // Hermes-hosted VRM avatars (added 2026-05-12, third entry added the same
+  // day after the user pointed out the male/Tekk mix-up). Three distinct
+  // characters — the file at /avatars/hermes-male.vrm is the "MaleHermes"
+  // (Paul-style) export, NOT Tekk; Tekk has its own VRM at /avatars/tekk.vrm
+  // and a separate turnaround folder /models/tekk-turnaround/*. Same scale
+  // value as the Milady pool — the picker's bounding-box auto-fit
+  // normalizes screen-space height regardless of native VRM units.
+  // Animation clips: hermes-female/ → female rig, hermes-male/ → male rig,
+  // tekk-male/ → Tekk rig.
+  hermes_female: { path: '/avatars/hermes-female.vrm', scale: 13, label: 'Hermes',      category: 'hermes', avatar_type: 'vrm', preview: '/models/hermes-turnaround/female-front.png' },
+  hermes_male:   { path: '/avatars/hermes-male.vrm',   scale: 13, label: 'Hermes Male', category: 'hermes', avatar_type: 'vrm', preview: '/models/hermes-turnaround/male-front.png' },
+  tekk:          { path: '/avatars/tekk.vrm',          scale: 13, label: 'Tekk',        category: 'hermes', avatar_type: 'vrm', preview: '/models/tekk-turnaround/with-wings-front.png' },
 
   // NOTE: `crayfish` removed from the picker 2026-04-16 — the mesh renders
   // noticeably larger than lobster at the same scale (different pivot) and
@@ -194,4 +198,5 @@ export const MODEL_KEY_TO_LEGACY_SPECIES: Record<ModelKey, LegacySpecies> = {
   // 3D path uses the actual VRM; this is purely the PixiJS 2D fallback sprite.
   hermes_female:      'fox',
   hermes_male:        'fox',
+  tekk:               'fox',
 };

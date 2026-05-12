@@ -101,9 +101,14 @@ function SpotlightConeSelect() {
   useEffect(() => () => mat.dispose(), [mat]);
 
   return (
-    // Inverted cone: radiusTop = wide (at water-surface level), radiusBottom = 0 (tip points down at model)
-    // Position so the tip is near y=15 (above the model), open end at y=80
-    <mesh position={[0, 55, 0]} material={mat}>
+    // Inverted cone: radiusTop = wide (water-surface), radiusBottom = 0 (tip
+    // points down). With cylinder height=70 and position y=65, the tip sits
+    // at y=30 — comfortably above the auto-fit avatar's head (top reaches
+    // ~y=23.5 = 1.5 feet offset + TARGET_HEIGHT_WU 22). Bumped 2026-05-12
+    // from the original y=55 because the bbox auto-fit shortened the
+    // avatars enough that the previous tip at y=20 cut THROUGH the avatar's
+    // torso, producing a blue beam piercing the character's chest.
+    <mesh position={[0, 65, 0]} material={mat}>
       <cylinderGeometry args={[20, 0, 70, 24, 1, true]} />
     </mesh>
   );
