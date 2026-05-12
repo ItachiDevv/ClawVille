@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useMiladyEmbed } from '@/hooks/use-milady-embed';
@@ -84,7 +83,6 @@ const SidebarMenu = dynamic(() => import('@/components/game/sidebar-menu'), {
 });
 
 function NanoClawBanner({ hasAvatar }: { hasAvatar: boolean }) {
-  const router = useRouter();
   const agentConnected = useGameStore((s: GameState) => s.agentConnected);
   const agentSessionId = useGameStore((s: GameState) => s.agentSessionId);
   const setAgentConnectModalOpen = useGameStore((s: GameState) => s.setAgentConnectModalOpen);
@@ -117,7 +115,7 @@ function NanoClawBanner({ hasAvatar }: { hasAvatar: boolean }) {
     <div className="fixed left-1/2 -translate-x-1/2 z-50 top-3 flex items-center gap-2">
       {!hasAvatar && (
         <button
-          onClick={() => router.push('/create-agent')}
+          onClick={() => setAgentConnectModalOpen(true, 'create')}
           className="flex items-center gap-2 px-4 py-2 rounded-full bg-black/60 backdrop-blur-sm border border-cyan-400/40 shadow-lg hover:bg-black/80 hover:border-cyan-300/60 transition-all"
         >
           <span className="text-lg">✨</span>
@@ -125,7 +123,7 @@ function NanoClawBanner({ hasAvatar }: { hasAvatar: boolean }) {
         </button>
       )}
       <button
-        onClick={() => setAgentConnectModalOpen(true)}
+        onClick={() => setAgentConnectModalOpen(true, 'connect')}
         className="flex items-center gap-2 px-4 py-2 rounded-full bg-black/60 backdrop-blur-sm border border-yellow-500/40 shadow-lg hover:bg-black/80 hover:border-yellow-400/60 transition-all animate-pulse-subtle"
       >
         <span className="text-lg">🔌</span>
