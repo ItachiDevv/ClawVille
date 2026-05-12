@@ -35,7 +35,7 @@ const SCENE_BG = new THREE.Color(0xffffff); // white backdrop for video capture
 const TARGET_HEIGHT = 6.5;
 
 type Character = 'female' | 'male';
-type Mode = 'idle' | 'walk' | 'run' | 'swim' | 'fly';
+type Mode = 'idle' | 'walk' | 'run' | 'swim' | 'fly' | 'pray';
 
 function HermesAvatar({ character, mode }: { character: Character; mode: Mode }) {
   const path = `/avatars/hermes-${character}.vrm`;
@@ -93,6 +93,7 @@ function HermesAvatar({ character, mode }: { character: Character; mode: Mode })
       mode === 'run'  ? 'run' :
       mode === 'swim' ? 'swimming' :
       mode === 'fly'  ? 'flying' :
+      mode === 'pray' ? 'praying' :
       'idle';
     a.setSurfaceClip(surface);
   }, [mode]);
@@ -173,6 +174,9 @@ function PreviewHermesInner() {
           <button onClick={() => setMode('swim')} style={btn(mode === 'swim')}>Swim</button>
           {character === 'male' && (
             <button onClick={() => setMode('fly')} style={btn(mode === 'fly')}>Fly</button>
+          )}
+          {character === 'female' && (
+            <button onClick={() => setMode('pray')} style={btn(mode === 'pray')}>Pray</button>
           )}
         </div>
         <div style={{ marginTop: 10, opacity: 0.7, fontSize: 12 }}>
