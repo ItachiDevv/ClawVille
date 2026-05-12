@@ -19,11 +19,26 @@ import { avatars } from './avatars';
  *   (Phase 4 prep; activation deferred)
  * - `fee-collector`: generic fee sink if we add on-chain fees later
  * - `escrow`: holds funds between two parties during a transaction
+ * - `wager-settlement-authority`: settlement-authority signing key for the
+ *   `clawville_wager` Anchor program (devnet program id
+ *   `HgQhHVYV2C5Mw8K81kEnADkqsuS5YQRmGJDUR5wnZVuG`). Singleton across the
+ *   whole API host — the API loads it on cold boot via
+ *   `wager-program-client.ts` and uses it to call `lock_lobby` /
+ *   `settle_lobby_*` / authority-cancel. The private key never leaves the
+ *   API process. Devnet uses the deployer pubkey
+ *   `G5WgvGYK5mLxQbVUmNhFKeWwEhT235p2HjKmkbpMbMWy`; production must rotate
+ *   via the program's `update_config` instruction and re-seed this row
+ *   with the new keypair before pointing prod traffic at it.
+ *
+ * Postgres enum add: extending this list requires
+ * `ALTER TYPE treasury_purpose ADD VALUE 'wager-settlement-authority'`
+ * which drizzle-kit handles in `db:push` (Drizzle 0.33+ emits the ALTER).
  */
 export const treasuryPurposeEnum = pgEnum('treasury_purpose', [
   'x402-merchant',
   'fee-collector',
   'escrow',
+  'wager-settlement-authority',
 ]);
 
 /**
