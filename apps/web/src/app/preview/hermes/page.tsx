@@ -97,7 +97,7 @@ function HermesAvatar({ character, idle }: { character: Character; idle: boolean
     };
     console.log('[hermes preview] VRM mounted', (window as unknown as { __hermes: { bboxSize: number[]; bboxCenter: number[]; meshes: unknown[] } }).__hermes);
 
-    const animator = new VRMCharacterAnimator(vrm);
+    const animator = new VRMCharacterAnimator(vrm, `hermes-${character}`);
     animatorRef.current = animator;
     animator.init().catch((err) => {
       console.warn('[hermes preview] animator init failed:', err);
