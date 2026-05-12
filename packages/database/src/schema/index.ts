@@ -42,6 +42,10 @@ export * from './tutorial-quest-claims';
 export * from './cosmetics';
 // Q3 plan §gamification dashboard — phase status (mutable via dashboard MCP).
 export * from './dashboard-phases';
+// Wager lobbies + escrow — mirrors deployed `clawville_wager` Anchor program.
+// On-chain is authoritative for money; these tables back FE discovery / FE
+// polling / event timelines / leaderboard hooks. See `wager.ts` header.
+export * from './wager';
 
 import { users, sessions } from './users';
 import { npcMemories, activityLog } from './memories';
