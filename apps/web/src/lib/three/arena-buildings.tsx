@@ -99,13 +99,13 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // hack was inherited from the OLD GLB which had EXT_mesh_gpu_instancing
   // and a tiny source bbox — that's not the case anymore, so yOffset reset
   // to 0 to keep it on the ground like the other buildings.
-  // 2026-05-12: With Object_1 (the 2.2M-vert outlier dome) now stripped by
-  // BACKDROP_KILL_NAMES above, the bbox is driven by the small visible
-  // meshes (platform + tree). yOffset back to 0 — guessing offsets was
-  // pointless while the dominant mesh was 26 units tall and the visible
-  // ones are 3 units. rotYOffset flips it 180° so the tree faces the
-  // village center.
-  'messaging-channels':    { model: '/models/sandy-treedome-v2.glb',   yOffset: 0, rotY:  1.259, rotYOffset: Math.PI },
+  // 2026-05-12: swapped to sandy-treedome-v3.glb (sandy_tree_final.glb,
+  // 4.4 MB). Confirmed correct origin via scripts/read-glb-bbox.mjs:
+  // Object_31 (26×2×26 platform base) has minY=-1.34 → grounds at y=-2
+  // naturally with yOffset=0. v2 had a 2.2M-vert Object that dominated
+  // the bbox and forced the tree to float; v3 has 123 properly-laid-out
+  // meshes with a sensible bbox.
+  'messaging-channels':    { model: '/models/sandy-treedome-v3.glb',   yOffset: 0, rotY:  1.259, rotYOffset: Math.PI },
   // i=9  center=(47,35)    dx=33,  dz=45   → atan2(33,45)≈0.632
   // patricks-rock.glb = Patrick's Rock (CC-BY, Yanez Designs, Sketchfab, 3.5k tris)
   // building-submarine.glb is now a fixed-landmark decoration only (arena-terrain.tsx FixedLandmarks)
@@ -204,27 +204,16 @@ const BACKDROP_KILL_NAMES = new Set<string>(['Object_1']);
  *  buildings the user actually complained about. */
 const BACKDROP_KILL_MATERIALS = new Set<string>([]);
 
-/** Any single building sub-mesh above this vertex count is treated as an
- *  asset-author outlier (display-stand dome, dense decoration, etc.) and
- *  stripped. Confirmed safe — every legitimate Sketchfab building mesh
- *  in this scene is well under 50k verts. The sandy-treedome-v2 has an
- *  Object_N with 2.2 MILLION verts that's clearly a portfolio backdrop
- *  dome the artist baked in. */
-const OUTLIER_VERT_THRESHOLD = 500_000;
-
 function stripDecorativeMeshes(scene: THREE.Object3D): void {
   const toRemove: THREE.Object3D[] = [];
   scene.traverse((child) => {
     const mesh = child as THREE.Mesh;
     if (!mesh.isMesh) return;
-    // Vert-count outlier kill — any building sub-mesh > 500k verts is an
-    // authoring artifact (e.g. sandy-treedome-v2's 2.2M-vert glass dome
-    // that dominates the bbox and forces the visible tree to float).
-    const verts = mesh.geometry?.attributes?.position?.count ?? 0;
-    if (verts > OUTLIER_VERT_THRESHOLD) {
-      toRemove.push(mesh);
-      return;
-    }
+    // 2026-05-12: the vertex-count outlier rule was wrong — Object_5
+    // (2.2M verts) in sandy-treedome-v2 was the TREE+PLATFORM, not the
+    // dome. Stripping it left only the faint dome shell + scattered
+    // pebbles visible. Reverted to name/material-based strips only.
+
     // Prefix match on mesh name — catches "Skybox_10_-_Default_0",
     // "Sand_04_-_Default_0", "Road_19_-_Default_0" et al.
     if (child.name) {
