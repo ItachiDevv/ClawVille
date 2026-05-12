@@ -30,7 +30,7 @@ function seededRandom(x: number, y: number, seed: number = 42): number {
 }
 
 // Preload all avatar sprites
-async function preloadPetTextures() {
+async function preloadAvatarTextures() {
   const entries = Object.entries(SPECIES_SPRITE_MAP) as [AvatarSpecies, string][];
   await Promise.all(entries.map(([, path]) => Assets.load(path)));
 }
@@ -164,7 +164,7 @@ export default function ArenaCanvas() {
 
     (async () => {
       // Start preloading avatar textures in parallel (don't block canvas init)
-      const texturesReady = preloadPetTextures();
+      const texturesReady = preloadAvatarTextures();
 
       const viewW = window.innerWidth;
       const viewH = window.innerHeight;
