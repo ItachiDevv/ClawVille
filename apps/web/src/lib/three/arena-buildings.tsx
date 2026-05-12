@@ -129,50 +129,10 @@ const _stripMeshBox = new THREE.Box3();
  *      shrank to ~60wu tall) */
 const DECORATIVE_PARENT_NAMES = new Set(['Flowers', 'Path', 'Skybox', 'Road', 'Sand']);
 
-/** 2026-05-11 — Explicit kill list for backdrop / display-stand domes baked
- *  into individual Sketchfab building GLBs. These meshes have huge square
- *  XZ footprints and low vert counts (UV-sphere hemispheres) — they look
- *  like skybox/diorama backings the original artist used for portfolio
- *  shots. They never have a sensible parent name (sit directly under
- *  "Sketchfab_Scene") so the name-prefix DECORATIVE_PARENT_NAMES rule
- *  can't catch them. Match by exact mesh name OR by material name.
- *
- *  Identified live via Chrome DevTools MCP scene inspection:
- *    - Patrick's_House_02_-_Default_0  → purple/blue starfish dome around
- *      Patrick's Rock (561 × 561 × 280 wu, 360 verts)
- *    - Patrick's_House_03_-_Default_0  → flat sand patch under Patrick
- *      (587 × 564 × 16 wu, 303 verts)
- *    - Material "Mesh_0030.rip" / "Mesh_0022.rip" → 1000 × 400 × 1000 wu
- *      dome backdrops at world (1280, -2, 1760) — Krusty Krab area
- *    - Background_Material004_0 → 380³ background sphere at (0, 200, -500)
- *      → "old Sandy treedome floating in the air" reported by user
- */
-const BACKDROP_KILL_NAMES = new Set([
-  "Patrick's_House_02_-_Default_0",
-  "Patrick's_House_03_-_Default_0",
-  'Background_Material004_0',
-]);
-const BACKDROP_KILL_MATERIALS = new Set([
-  'Mesh_0030.rip',
-  'Mesh_0022.rip',
-]);
-
 function stripDecorativeMeshes(scene: THREE.Object3D): void {
   const toRemove: THREE.Object3D[] = [];
   scene.traverse((child) => {
     if (!(child as THREE.Mesh).isMesh) return;
-    // Direct kill by mesh name (backdrop domes).
-    if (child.name && BACKDROP_KILL_NAMES.has(child.name)) {
-      toRemove.push(child);
-      return;
-    }
-    // Direct kill by material name (orphan domes lacking a useful mesh name).
-    const mesh = child as THREE.Mesh;
-    const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
-    if (mat?.name && BACKDROP_KILL_MATERIALS.has(mat.name)) {
-      toRemove.push(child);
-      return;
-    }
     // Walk the parent chain looking for a named decorator group
     let p: THREE.Object3D | null = child.parent;
     while (p) {
@@ -372,12 +332,6 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
   const { cloned, buildingScale, pivotOffsetX, pivotOffsetY, pivotOffsetZ } = useMemo(() => {
     const c = scene.clone(true);
     makeObject3DWebGPUSafe(c);
-    // 2026-05-11 — Strip backdrop / display-stand domes baked into source GLBs
-    // (Patrick's hemisphere, Krusty Krab "Mesh_0030.rip" / "Mesh_0022.rip"
-    // domes, Sandy's floating "Background_Material004_0"). This runs
-    // UNCONDITIONALLY — even buildings with scaleOverride should not render
-    // a 1000-wu skybox dome.
-    stripDecorativeMeshes(c);
     // scaleOverride bypasses bbox-based auto-scaling for GLBs that confuse the
     // measurement (e.g. EXT_mesh_gpu_instancing — source-mesh bbox doesn't
     // reflect the instanced render extent). Pivot offsets are zero; yOffset
@@ -386,6 +340,10 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
     if (config.scaleOverride != null) {
       result = { cloned: c, buildingScale: config.scaleOverride, pivotOffsetX: 0, pivotOffsetY: 0, pivotOffsetZ: 0 };
     } else {
+      // Strip named decorative meshes (Flowers, Path, etc.) before measuring so
+      // flat non-structural planes don't inflate the XZ bbox and trigger the
+      // MAX_FOOTPRINT cap (pineapple-house.glb: removes Flowers+Path → height 800).
+      stripDecorativeMeshes(c);
       // Strip flat ground planes before measuring height so BUILDING_TARGET_HEIGHT
       // is accurate — ground planes inflate the bounding box and make buildings
       // appear shorter than 100 world units after scaling.
