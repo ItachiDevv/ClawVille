@@ -10,7 +10,7 @@ import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 
 export default function AgentConnectModal() {
   const router = useRouter();
-  const { agentConnectModalOpen, setAgentConnectModalOpen, agentConnected, agentSessionId, setAgentConnection, addToast, setSkillBuilderOpen } = useGameStore();
+  const { agentConnectModalOpen, agentConnectModalIntent, setAgentConnectModalOpen, agentConnected, agentSessionId, setAgentConnection, addToast, setSkillBuilderOpen } = useGameStore();
   const { data: avatar } = useAvatar();
   const { data: authData } = useQuery({ queryKey: ['auth-me'], queryFn: () => api.me(), retry: false });
   // Same query the game page uses to hydrate the banner — TanStack dedupes
@@ -268,8 +268,16 @@ export default function AgentConnectModal() {
                 Build Skill
               </button>
             </div>
-          ) : !avatar?.id ? (
-            /* ─── No avatar yet — explain + route to /create-agent ─── */
+          ) : (agentConnectModalIntent === 'create' || !avatar?.id) ? (
+            /* ─── Create-Agent explainer ────────────────────────────────
+                Shown when:
+                  - user clicked "Create Agent" in the banner (intent='create')
+                  - OR they clicked "Connect Your Agent" but have no avatar yet,
+                    in which case connect can't proceed and we route them
+                    through avatar creation first.
+                User flow split intentionally so the two banner CTAs feel
+                distinct: Create Agent always lands here; Connect Your Agent
+                only lands here as a fallback. */
             <div className="space-y-3">
               <p className="text-white/70 text-sm leading-relaxed">
                 Before you can connect an external AI agent, you need an{' '}

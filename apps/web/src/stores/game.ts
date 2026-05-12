@@ -199,7 +199,15 @@ export interface GameState {
   agentConnected: boolean;
   agentSessionId: string | null;
   agentConnectModalOpen: boolean;
-  setAgentConnectModalOpen: (open: boolean) => void;
+  /**
+   * Which CTA opened the modal. `'create'` forces the "what's an agent?"
+   * explainer regardless of avatar state (the user clicked Create Agent and
+   * wants the orientation copy); `'connect'` follows the avatar gate (has
+   * avatar → connect-link flow, no avatar → fall back to explainer with
+   * the bot-onboarding framing).
+   */
+  agentConnectModalIntent: 'create' | 'connect';
+  setAgentConnectModalOpen: (open: boolean, intent?: 'create' | 'connect') => void;
   setAgentConnection: (sessionId: string | null) => void;
 
   // Toast notifications
@@ -648,7 +656,16 @@ export const useGameStore = create<GameState>((set, get) => ({
   agentConnected: false,
   agentSessionId: null,
   agentConnectModalOpen: false,
-  setAgentConnectModalOpen: (open) => set({ agentConnectModalOpen: open }),
+  agentConnectModalIntent: 'connect',
+  setAgentConnectModalOpen: (open, intent) =>
+    set((s) => ({
+      agentConnectModalOpen: open,
+      // Default to the connect intent if no override; preserve last intent
+      // when closing so a follow-up reopen doesn't visually flip.
+      agentConnectModalIntent: open
+        ? (intent ?? 'connect')
+        : s.agentConnectModalIntent,
+    })),
   setAgentConnection: (sessionId) => {
     // A connected claw IS an agent driving the user's own avatar (Option A
     // architecture — the external claw takes over the user's avatar rather
