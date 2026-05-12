@@ -344,9 +344,9 @@ Gated on `agentConnected` after the **2026-04-24 fix** that re-gated from `hasAv
 | `<InventoryModal>` | View / learn books |
 | `<DailyLoginModal>` | Streak reward popup (§8) |
 
-### 11d. Dead code in repo
+### 11d. Removed legacy
 
-- `<SpectatorBanner>` exists at `apps/web/src/components/game/spectator-banner.tsx` but is **not imported** in `game/page.tsx` (line 21: `// SpectatorBanner removed — /game is always game mode`).
+- `<SpectatorBanner>` and the original `<OpenClawConnectModal>` component files were deleted (orphaned post-`<AgentConnectModal>` rename). The `// SpectatorBanner removed — /game is always game mode` sentinel comment lives in `game/page.tsx` so a future reader doesn't try to re-add it on the assumption that spectator state needs a separate banner — it doesn't, the toggle and `<NanoClawBanner>` already cover those states.
 
 ---
 
