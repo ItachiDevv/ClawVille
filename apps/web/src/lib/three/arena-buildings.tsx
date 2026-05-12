@@ -93,14 +93,18 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // hack was inherited from the OLD GLB which had EXT_mesh_gpu_instancing
   // and a tiny source bbox — that's not the case anymore, so yOffset reset
   // to 0 to keep it on the ground like the other buildings.
-  // 2026-05-12: yOffset -80 grounds the platform (was floating); rotYOffset
-  // flips it 180° so the tree faces the village center like every other
-  // building. Adjust yOffset further if it clips into the terrain.
-  'messaging-channels':    { model: '/models/sandy-treedome-v2.glb',   yOffset: -80, rotY:  1.259, rotYOffset: Math.PI },
+  // 2026-05-12: yOffset -300 (was -80, still floating well above the head
+  // of the Sandy NPC); rotYOffset flips it 180° so the tree faces the
+  // village center like every other building.
+  'messaging-channels':    { model: '/models/sandy-treedome-v2.glb',   yOffset: -300, rotY:  1.259, rotYOffset: Math.PI },
   // i=9  center=(47,35)    dx=33,  dz=45   → atan2(33,45)≈0.632
   // patricks-rock.glb = Patrick's Rock (CC-BY, Yanez Designs, Sketchfab, 3.5k tris)
   // building-submarine.glb is now a fixed-landmark decoration only (arena-terrain.tsx FixedLandmarks)
-  'agent-security': { model: '/models/patricks-rock.glb',       yOffset: 0, rotY:  0.632 },
+  // 2026-05-12: swapped to patricks-rock-v2.glb (the user's original
+  // patricks_house_spongebob.glb, 3.88MB uncompressed). The previous
+  // 663 KB meshopt-recompressed version had degraded geometry; user
+  // confirmed "this is not the Patrick's Rock we were using".
+  'agent-security': { model: '/models/patricks-rock-v2.glb',    yOffset: 0, rotY:  0.632 },
 };
 
 // Scratch objects for stripGroundPlanes — reused across calls to avoid GC.
