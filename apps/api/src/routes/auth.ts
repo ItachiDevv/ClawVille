@@ -43,7 +43,7 @@ authRoutes.get('/me/agent-session', requireAuth, async (c) => {
 
   const avatar = await db.query.avatars.findFirst({
     where: eq(avatars.userId, user.id),
-    columns: { id: true, harness: true, platformAgentId: true },
+    columns: { id: true, harness: true, platformAgentId: true, flags: true },
   });
 
   // External agent path takes precedence — if an openclaw_bots row exists,
@@ -93,6 +93,25 @@ authRoutes.get('/me/agent-session', requireAuth, async (c) => {
   // platform_agents row IS always alive in the sense that you can chat
   // with it; that's a different liveness shape than an external agent's
   // sliding TTL and we don't want to falsely mark it dead.
+  //
+  // EXCEPT: respect a user-set "banner dismissed" flag on the avatar. When
+  // a Milady-only user clicks Disconnect, the unregister handler has no
+  // bot row to expire (there isn't one); without a persisted dismissal
+  // signal, the carve-out below would re-assert connected:true on every
+  // page reload — exactly the "I clicked Disconnect, reloaded, banner came
+  // back" bug. The flag lives in avatars.flags.agentBannerDismissed and
+  // is cleared automatically by /api/agent/connect-token when the user
+  // generates a fresh pair link (any future pair is treated as an
+  // intentional re-show).
+  const flags = (avatar?.flags as { agentBannerDismissed?: boolean } | null) ?? {};
+  if (flags.agentBannerDismissed === true) {
+    return c.json({
+      connected: false,
+      reason: 'dismissed',
+      harness: avatar?.harness ?? null,
+    });
+  }
+
   if (avatar?.harness === 'milady' && avatar.platformAgentId) {
     return c.json({
       connected: true,

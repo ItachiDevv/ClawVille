@@ -373,6 +373,15 @@ export const api = {
       method: 'DELETE',
     }),
 
+  // Persists `avatars.flags.agentBannerDismissed = true` server-side so the
+  // green "Bot Training Active" pill stops re-asserting on every page reload
+  // for Milady-only accounts (no external bot to expire). Cleared again
+  // automatically the next time the user mints a Connect URL.
+  dismissAgentBanner: () =>
+    honoRequest<{ ok: true; dismissed: true }>('/api/avatars/me/dismiss-agent-banner', {
+      method: 'POST',
+    }),
+
   // Agent-initiated connection (Moltbook pattern)
   generateConnectToken: (data: {
     avatarId: string;
