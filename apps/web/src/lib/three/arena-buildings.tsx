@@ -150,7 +150,10 @@ const DECORATIVE_PARENT_NAMES = new Set(['Flowers', 'Path', 'Skybox', 'Road', 'S
 const BACKDROP_KILL_NAMES = new Set([
   "Patrick's_House_02_-_Default_0",
   "Patrick's_House_03_-_Default_0",
-  'Background_Material004_0',
+  // NOTE: Background_Material004_0 was initially in this list but it's
+  // actually the Auction Podium's glass dome (auction-dome.glb), an
+  // intentional game feature — NOT Sandy's treedome. The 380³ dome at
+  // world (0, 200, -500) is the auction house showcase. Do not strip.
 ]);
 const BACKDROP_KILL_MATERIALS = new Set([
   'Mesh_0030.rip',
