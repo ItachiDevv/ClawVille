@@ -172,12 +172,12 @@ function PreviewHermesInner() {
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button onClick={() => setMode('swim')} style={btn(mode === 'swim')}>Swim</button>
-          {character === 'male' && (
-            <button onClick={() => setMode('fly')} style={btn(mode === 'fly')}>Fly</button>
-          )}
           {character === 'female' && (
             <button onClick={() => setMode('pray')} style={btn(mode === 'pray')}>Pray</button>
           )}
+          {/* Fly button removed — was Tekk-only. The "male" slot is now
+              MaleHermes (Paul), no wings. Re-add when Tekk gets his own
+              selectable slot in the preview. */}
         </div>
         <div style={{ marginTop: 10, opacity: 0.7, fontSize: 12 }}>
           drag to rotate · scroll to zoom · /avatars/hermes-{character}.vrm
