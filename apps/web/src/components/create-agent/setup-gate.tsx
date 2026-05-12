@@ -103,6 +103,14 @@ export function SetupGate({
   }
 
   // hasAgent === null — initial choice screen
+  //
+  // Hermes is special: we host it for you OR you can run it locally, and
+  // either path ends at the same picker (the avatar row carries
+  // harness='hermes' and the runtime layer lazy-spins the appropriate
+  // adapter on first chat). So the Hermes gate is a 3-way choice while
+  // OpenClaw / Custom stay 2-way (no first-party hosting offer for those).
+  const isHermes = framework === 'hermes';
+
   return (
     <div className="rounded-xl border border-cyan-400/25 bg-cyan-500/5 p-6 space-y-5">
       <div className="space-y-1.5 text-center">
@@ -110,24 +118,44 @@ export function SetupGate({
           § {copy.label} agent
         </div>
         <h3 className="font-clawville text-xl text-cyan-100 uppercase tracking-[0.2em]">
-          Do you have a {copy.label} agent yet?
+          {isHermes ? 'How do you want to run Hermes?' : `Do you have a ${copy.label} agent yet?`}
         </h3>
         <p className="text-xs text-white/60 leading-relaxed max-w-lg mx-auto pt-1">
           {copy.description}
         </p>
       </div>
 
-      <div className="grid sm:grid-cols-2 gap-3">
+      <div className={`grid gap-3 ${isHermes ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>
+        {isHermes && (
+          <button
+            type="button"
+            onClick={handleYes}
+            className="group relative px-4 py-6 rounded-xl border border-pink-400/50 bg-pink-500/10 hover:border-pink-300/80 hover:bg-pink-500/20 transition-all text-left shadow-[0_0_14px_rgba(255,120,200,0.2)]"
+          >
+            <div className="font-clawville text-sm text-pink-100 uppercase tracking-widest mb-1 group-hover:text-pink-50">
+              Host it for me
+            </div>
+            <p className="text-[11px] text-pink-100/60 font-mono leading-relaxed">
+              We run the Hermes runtime — zero setup
+            </p>
+            <div className="absolute -top-2 right-2 px-1.5 py-0.5 rounded bg-pink-500/30 border border-pink-300/40 font-mono text-[8px] uppercase tracking-wider text-pink-100">
+              recommended
+            </div>
+          </button>
+        )}
+
         <button
           type="button"
           onClick={handleNo}
           className="group relative px-4 py-6 rounded-xl border border-white/10 bg-black/20 hover:border-cyan-400/40 hover:bg-cyan-500/10 transition-all text-left"
         >
           <div className="font-clawville text-sm text-white/80 uppercase tracking-widest mb-1 group-hover:text-cyan-100">
-            Not yet
+            {isHermes ? "I'll run it locally" : 'Not yet'}
           </div>
           <p className="text-[11px] text-white/50 font-mono leading-relaxed">
-            Show me how to set up {copy.label} + local Eliza
+            {isHermes
+              ? `Show me the ${copy.label} self-host setup`
+              : `Show me how to set up ${copy.label} + local Eliza`}
           </p>
         </button>
 
@@ -137,7 +165,7 @@ export function SetupGate({
           className="group relative px-4 py-6 rounded-xl border border-cyan-400/40 bg-cyan-500/10 hover:border-cyan-300/80 hover:bg-cyan-500/20 transition-all text-left shadow-[0_0_14px_rgba(0,229,255,0.15)]"
         >
           <div className="font-clawville text-sm text-cyan-200 uppercase tracking-widest mb-1 group-hover:text-cyan-100">
-            I have one
+            {isHermes ? 'Already running' : 'I have one'}
           </div>
           <p className="text-[11px] text-cyan-200/60 font-mono leading-relaxed">
             Skip the setup — pick avatar + personality
