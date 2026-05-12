@@ -108,8 +108,18 @@ const CHARACTER_ANIM_OVERRIDES: Record<string, Partial<Record<AnimName, string>>
     surf_idle:     '/avatars/animations/tekk-male/skateboarding.glb',
     wipeout:       '/avatars/animations/tekk-male/wipeout.glb',
   },
-  // 'hermes-female' overrides will be added once user re-uploads her to
-  // Mixamo and we get her character-specific animation FBXs.
+  'hermes-female': {
+    idle:          '/avatars/animations/hermes-female/idle.glb',
+    walk:          '/avatars/animations/hermes-female/walk.glb',
+    run:           '/avatars/animations/hermes-female/run.glb',
+    victory:       '/avatars/animations/hermes-female/cheering.glb',
+    surf_idle:     '/avatars/animations/hermes-female/skateboarding.glb',
+    wipeout:       '/avatars/animations/hermes-female/wipeout.glb',
+    // Note: she also downloaded a `praying.glb` bonus emote at
+    // /avatars/animations/hermes-female/praying.glb — not yet bound
+    // to an AnimName slot. Add a 'praying' clip to ANIM_PATHS if we
+    // want it as an emote.
+  },
 };
 
 function resolveAnimPath(name: AnimName, characterId?: string): string {
