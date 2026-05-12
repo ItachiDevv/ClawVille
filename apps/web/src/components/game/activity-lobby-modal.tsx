@@ -30,7 +30,7 @@ import {
   ACTIVITY_REGISTRY,
   type ActivityDefinition,
 } from '@clawville/shared';
-import { ensureGuestPet } from '@/lib/guest-bootstrap';
+import { ensureGuestAvatar } from '@/lib/guest-bootstrap';
 import {
   RpgModal,
   RpgButton,
@@ -692,7 +692,7 @@ export default function ActivityLobbyModal({
       // guest avatar here. This mirrors the NPC-mode bootstrap so the
       // visitor never sees the raw 401.
       if (res.status === 401) {
-        const guest = await ensureGuestPet();
+        const guest = await ensureGuestAvatar();
         if (guest) {
           await queryClient.invalidateQueries({ queryKey: ['avatar'] });
           if (!guest.reused && guest.user.isGuest) {

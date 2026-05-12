@@ -65,7 +65,7 @@ describe('Avatar API Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: 'TestPet',
+          name: 'TestAvatar',
           species: 'cat',
           color: 'green',
           gender: 'male',
@@ -123,7 +123,7 @@ describe('Avatar API Tests', () => {
           Cookie: testSessionCookie,
         },
         body: JSON.stringify({
-          name: 'TestPet123',
+          name: 'TestAvatar123',
           species: 'unicorn', // invalid
           color: 'green',
           gender: 'male',
@@ -152,7 +152,7 @@ describe('Avatar API Tests', () => {
           Cookie: testSessionCookie,
         },
         body: JSON.stringify({
-          name: 'TestPet456',
+          name: 'TestAvatar456',
           species: 'cat',
           color: 'purple', // invalid
           gender: 'male',
@@ -174,7 +174,7 @@ describe('Avatar API Tests', () => {
     });
 
     it('should create avatar successfully with valid data', async () => {
-      const avatarName = `TestPet${Date.now()}`;
+      const avatarName = `TestAvatar${Date.now()}`;
       const res = await app.request('/api/avatars', {
         method: 'POST',
         headers: {
@@ -224,7 +224,7 @@ describe('Avatar API Tests', () => {
           Cookie: testSessionCookie,
         },
         body: JSON.stringify({
-          name: `AnotherPet${Date.now()}`,
+          name: `AnotherAvatar${Date.now()}`,
           species: 'dragon',
           color: 'red',
           gender: 'female',

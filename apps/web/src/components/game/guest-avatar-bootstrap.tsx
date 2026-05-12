@@ -25,7 +25,7 @@
 
 import { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { ensureGuestPet } from '@/lib/guest-bootstrap';
+import { ensureGuestAvatar } from '@/lib/guest-bootstrap';
 import { useGameStore } from '@/stores/game';
 
 export function GuestAvatarBootstrap() {
@@ -40,7 +40,7 @@ export function GuestAvatarBootstrap() {
       const cached = queryClient.getQueryData<{ avatar: unknown } | undefined>(['avatar']);
       if (cached?.avatar) return;
 
-      const result = await ensureGuestPet();
+      const result = await ensureGuestAvatar();
       if (!result) return; // 429 or network error — silent
       // Force a refetch so the player-avatar 3D component picks up the new avatar.
       await queryClient.invalidateQueries({ queryKey: ['avatar'] });
