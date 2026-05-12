@@ -247,23 +247,27 @@ const PlatformModelVRM = memo(function PlatformModelVRM({
     vrmAnimatorRef.current?.update(dt, false);
   });
 
+  // Auto-fit scale by bounding box — replaces the hard-coded `reg.scale ×
+  // multiplier` 2026-05-12 because Hermes VRMs are exported at a wildly
+  // different unit scale than Milady (the same `reg.scale=13` value made
+  // Milady head-clip and made Hermes fill the entire frame as a single
+  // skin patch). Bounding box is taken at T-pose, before the animator
+  // displaces any bones, so the height is the rig's natural rest height.
+  //
+  // TARGET_HEIGHT_WU = 22 → at camera distance 45 + FOV 45° the vertical
+  // frustum at the avatar plane is ~37wu; 22wu + 1.5wu feet offset leaves
+  // ~6-7wu of headroom AND footroom even on the tallest portrait viewport.
+  const TARGET_HEIGHT_WU = 22;
+  const computedScale = React.useMemo(() => {
+    if (!vrm) return reg.scale;
+    const box = new THREE.Box3().setFromObject(vrm.scene);
+    const h = box.max.y - box.min.y;
+    if (!isFinite(h) || h < 0.001) return reg.scale;
+    return TARGET_HEIGHT_WU / h;
+  }, [vrm, reg.scale]);
+
   return (
-    // reg.scale * 1.2 (≈ 15.6wu at the standard scale=13) — tuned 2026-05-12
-    // after the 1.6× variant overflowed the picker frame (avatar's head was
-    // cut off; only torso + legs visible). At distance 45 + FOV 45° the
-    // vertical frustum at the avatar plane is ~37wu, so 15.6wu tall + the
-    // 1.5wu feet offset reads with comfortable margin top and bottom even
-    // on narrow portrait viewports.
-    // the shrine on mobile-portrait viewports while still reading large on
-    // desktop. History:
-    //   1.35× — too small ("half as small as OpenClaw" — 2026-04-23)
-    //   2.1×  — too big on mobile (camera zoom-in cropped the head — 2026-04-24)
-    //   1.6×  — current; head + feet both in frame at minDistance=40, fills
-    //           ~75% of the shrine on desktop. Combined with the higher
-    //           minDistance, orbit zoom can't crop the head regardless of
-    //           aspect ratio.
-    // Registry scale=13 is the picker authoring unit; this multiplier is picker-only.
-    <group position={[0, 1.5, 0]} scale={[reg.scale * 1.2, reg.scale * 1.2, reg.scale * 1.2]}>
+    <group position={[0, 1.5, 0]} scale={[computedScale, computedScale, computedScale]}>
       <primitive object={vrm.scene} />
     </group>
   );
@@ -463,8 +467,11 @@ const SceneContents = memo(function SceneContents({
       {/* Atmosphere effects — UnderwaterAtmosphere and UnderwaterLightRays
           are TSL/three-webgpu components and cannot run in a plain WebGLRenderer
           Canvas. They are intentionally excluded here to avoid the dual-THREE-
-          instance NodeMaterial.vertexShader crash. Static ember particles remain. */}
-      <EmberParticles />
+          instance NodeMaterial.vertexShader crash.
+          EmberParticles removed 2026-05-12 — PointsMaterial without a sprite
+          texture renders as opaque orange squares ("orange cubes") that
+          dominate the frame and obscure the avatar. Will re-add as soft
+          textured sprites in a follow-up if needed. */}
       <SpotlightConeSelect />
 
       {/* Rotating platform with model */}
