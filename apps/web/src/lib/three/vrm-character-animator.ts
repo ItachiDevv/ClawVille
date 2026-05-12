@@ -65,6 +65,13 @@ const ANIM_PATHS = {
   surf_idle:       '/avatars/animations/skateboarding.glb',
   wipeout:         '/avatars/animations/wipeout.glb',
   victory:         '/avatars/animations/cheering.glb',
+  // Cross-character locomotion clips. Generic fallback uses Hermes-female's
+  // bake so Milady/legacy VRMs still get a usable swim loop via the retargeter;
+  // hermes-male overrides swimming with its own bake. Flying has no generic
+  // fallback (only Tekk has wings) — Milady gets the path-not-found that the
+  // animator silently handles as a no-op.
+  swimming:        '/avatars/animations/hermes-female/swimming.glb',
+  flying:          '/avatars/animations/tekk-male/flying.glb',
   // Emotes — 13 new peaceful clips (imported from Milady fork)
   crawling:        '/avatars/animations/emotes/crawling.glb',
   crying:          '/avatars/animations/emotes/crying.glb',
@@ -107,6 +114,8 @@ const CHARACTER_ANIM_OVERRIDES: Record<string, Partial<Record<AnimName, string>>
     victory:       '/avatars/animations/tekk-male/cheering.glb',
     surf_idle:     '/avatars/animations/tekk-male/skateboarding.glb',
     wipeout:       '/avatars/animations/tekk-male/wipeout.glb',
+    swimming:      '/avatars/animations/tekk-male/swimming.glb',
+    flying:        '/avatars/animations/tekk-male/flying.glb',
   },
   'hermes-female': {
     idle:          '/avatars/animations/hermes-female/idle.glb',
@@ -115,6 +124,7 @@ const CHARACTER_ANIM_OVERRIDES: Record<string, Partial<Record<AnimName, string>>
     victory:       '/avatars/animations/hermes-female/cheering.glb',
     surf_idle:     '/avatars/animations/hermes-female/skateboarding.glb',
     wipeout:       '/avatars/animations/hermes-female/wipeout.glb',
+    swimming:      '/avatars/animations/hermes-female/swimming.glb',
     // Note: she also downloaded a `praying.glb` bonus emote at
     // /avatars/animations/hermes-female/praying.glb — not yet bound
     // to an AnimName slot. Add a 'praying' clip to ANIM_PATHS if we
