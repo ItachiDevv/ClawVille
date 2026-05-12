@@ -46,10 +46,14 @@ interface TabMeta {
 }
 
 const TABS: TabMeta[] = [
-  { id: 'milady',   label: 'Milady AI',  tagline: 'Hosted by ClawVille',    hosted: true  },
-  { id: 'hermes',   label: 'Hermes',     tagline: 'Hosted by ClawVille',    hosted: true  },
-  { id: 'openclaw', label: 'OpenClaw',   tagline: 'You run OpenClaw',       hosted: false },
-  { id: 'custom',   label: 'Custom',     tagline: 'Bring your own',         hosted: false },
+  { id: 'milady',   label: 'Milady AI',  tagline: 'Hosted by ClawVille',     hosted: true  },
+  // Hermes: 2026-05-12 — taken off the auto-hosted track so its SetupGate
+  // surfaces both options ("Host it for me" + self-host instructions). The
+  // runtime layer still treats harness='hermes' the same whichever path
+  // the user picks; the gate is purely about exposing the choice up front.
+  { id: 'hermes',   label: 'Hermes',     tagline: 'Host or self-host',       hosted: false },
+  { id: 'openclaw', label: 'OpenClaw',   tagline: 'You run OpenClaw',        hosted: false },
+  { id: 'custom',   label: 'Custom',     tagline: 'Bring your own',          hosted: false },
 ];
 
 // Avatar pool per tab. Hosted tabs (Milady, Hermes) each show their own VRM
