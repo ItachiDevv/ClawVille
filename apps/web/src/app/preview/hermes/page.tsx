@@ -24,7 +24,7 @@ export const dynamic = 'force-dynamic';
 
 import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { Canvas, useFrame } from '@react-three/fiber';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import type { VRM } from '@pixiv/three-vrm';
@@ -44,12 +44,23 @@ const SPEEDLINE_COLORS = [
 
 type Character = 'female' | 'male';
 type Mode = 'idle' | 'walk' | 'run' | 'swim' | 'fly';
+type PreviewFit = { scale: number; offsetY: number };
 
-function HermesAvatar({ character, mode, vrmRef }: { character: Character; mode: Mode; vrmRef: React.MutableRefObject<VRM | null> }) {
+function HermesAvatar({
+  character,
+  mode,
+  vrmRef,
+  fitRef,
+}: {
+  character: Character;
+  mode: Mode;
+  vrmRef: React.MutableRefObject<VRM | null>;
+  fitRef: React.MutableRefObject<PreviewFit | null>;
+}) {
   const path = `/avatars/hermes-${character}.vrm`;
   const vrm = useVRMInstance(path, `preview-${character}`);
   const animatorRef = useRef<VRMCharacterAnimator | null>(null);
-  const [fit, setFit] = useState<{ scale: number; offsetY: number } | null>(null);
+  const [fit, setFit] = useState<PreviewFit | null>(null);
 
   // Share VRM upward so sibling components (SpeedLines) can read bone world
   // positions in their useFrame without re-running the loader hook.
@@ -83,7 +94,9 @@ function HermesAvatar({ character, mode, vrmRef }: { character: Character; mode:
     box.getCenter(center);
     const autoScale = size.y > 0 ? TARGET_HEIGHT / size.y : 1;
     const autoOffsetY = -box.min.y * autoScale;
-    setFit({ scale: autoScale, offsetY: autoOffsetY });
+    const nextFit = { scale: autoScale, offsetY: autoOffsetY };
+    fitRef.current = nextFit;
+    setFit(nextFit);
     const meshSummary: Array<{ name: string; verts: number; mat: string; visible: boolean; opacity: number }> = [];
     vrm.scene.traverse((o) => {
       if ((o as THREE.SkinnedMesh).isSkinnedMesh || (o as THREE.Mesh).isMesh) {
@@ -119,11 +132,12 @@ function HermesAvatar({ character, mode, vrmRef }: { character: Character; mode:
       console.warn('[hermes preview] animator init failed:', err);
     });
     return () => {
+      fitRef.current = null;
       animatorRef.current = null;
       animator.dispose();
       disposeVRMInstance(path, `preview-${character}`);
     };
-  }, [vrm, character, path]);
+  }, [vrm, character, path, fitRef]);
 
   // Reflect mode changes onto the animator each frame:
   //   - 'idle' → surfaceClip='idle', isMoving=false → plays idle
@@ -146,62 +160,172 @@ function HermesAvatar({ character, mode, vrmRef }: { character: Character; mode:
   useFrame((_, delta) => {
     const dt = Math.min(delta, 0.1);
     animatorRef.current?.update(dt, mode === 'walk');
+    if (vrm && fit) {
+      vrm.scene.scale.setScalar(fit.scale);
+      vrm.scene.position.set(0, fit.offsetY, 0);
+      vrm.scene.rotation.set(0, -Math.PI / 2, 0);
+      vrm.scene.updateMatrixWorld(true);
+    }
   });
 
   if (!vrm || !fit) return null;
   // Avatar exported facing +X. Rotate -90° around Y so it faces +Z (toward
   // a camera positioned at +Z). Permanent fix should bake this into the
   // Blender export (apply armature rotation before VRM export).
-  return (
-    <primitive
-      object={vrm.scene}
-      scale={fit.scale}
-      position={[0, fit.offsetY, 0]}
-      rotation={[0, -Math.PI / 2, 0]}
-    />
-  );
+  return <primitive object={vrm.scene} />;
 }
 
-// Ribbon trails per emitter bone — fighter-game sword-trail style. Each
-// emitter maintains a ring buffer of the last TRAIL_HISTORY_LEN positions
-// of its anchor bone (in world space). Each frame we shift the buffer,
-// push the bone's new world position to slot 0, then rebuild a smooth
-// TubeGeometry along a Catmull-Rom curve through those points. The trail
-// is physically attached to the bone — wherever Tekk's hand swings or his
-// wing tip arcs, the ribbon follows.
-const EMITTERS: Array<{ bone: string; offset: THREE.Vector3; color: string; radius: number }> = [
-  { bone: 'leftHand',      offset: new THREE.Vector3( 0,    0,    0), color: '#ff2040', radius: 0.07 },
-  { bone: 'rightHand',     offset: new THREE.Vector3( 0,    0,    0), color: '#00d0ff', radius: 0.07 },
-  { bone: 'leftFoot',      offset: new THREE.Vector3( 0,   -0.04, 0), color: '#ffd000', radius: 0.07 },
-  { bone: 'rightFoot',     offset: new THREE.Vector3( 0,   -0.04, 0), color: '#a040ff', radius: 0.07 },
-  { bone: 'leftShoulder',  offset: new THREE.Vector3( 0.4,  0.2, -0.3), color: '#40e040', radius: 0.09 },
-  { bone: 'rightShoulder', offset: new THREE.Vector3(-0.4,  0.2, -0.3), color: '#ff8000', radius: 0.09 },
-];
-const TRAIL_HISTORY_LEN = 18;     // recent positions tracked per bone
-const TRAIL_TUBE_SEGMENTS = 32;   // smoothness along the trail
-const TRAIL_RADIAL = 5;           // tube cross-section faces
+// Tapered speed ribbons. They are camera-facing strips rebuilt from recent
+// emitter positions, which gives the 2D speed-line silhouette without looking
+// like physical cables attached to the model.
+const TRAIL_HISTORY_LEN = 14;
+const TRAIL_MIN_STEP = 0.025;
+const TRAIL_RESET_DISTANCE = 1.4;
 
-interface Trail {
+const TRAIL_VERTEX_SHADER = `
+  varying vec2 vUv;
+
+  void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+const TRAIL_FRAGMENT_SHADER = `
+  uniform float time;
+  uniform float hueOffset;
+  uniform float alpha;
+  varying vec2 vUv;
+
+  vec3 hsb2rgb(vec3 c) {
+    vec3 rgb = clamp(abs(mod(c.x * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
+    rgb = rgb * rgb * (3.0 - 2.0 * rgb);
+    return c.z * mix(vec3(1.0), rgb, c.y);
+  }
+
+  void main() {
+    float headFade = smoothstep(0.0, 0.16, vUv.x);
+    float tailFade = 1.0 - smoothstep(0.72, 1.0, vUv.x);
+    float edgeFade = 1.0 - smoothstep(0.36, 0.5, abs(vUv.y - 0.5));
+    float dash = smoothstep(0.18, 0.72, fract((vUv.x * 3.2) - (time * 1.9) + hueOffset));
+    float glow = mix(0.55, 1.0, dash);
+    vec3 rgb = hsb2rgb(vec3(fract(hueOffset + vUv.x * 0.36 + time * 0.16), 0.95, 1.0));
+
+    gl_FragColor = vec4(rgb * glow, alpha * headFade * tailFade * edgeFade);
+  }
+`;
+
+const EMITTERS: Array<{
   bone: string;
   offset: THREE.Vector3;
-  color: THREE.Color;
-  radius: number;
+  width: number;
+  hue: number;
+  alpha: number;
+}> = [
+  { bone: 'leftHand',      offset: new THREE.Vector3( 0.02, -0.03, -0.04), width: 0.16, hue: 0.96, alpha: 0.9 },
+  { bone: 'leftHand',      offset: new THREE.Vector3(-0.04, -0.02,  0.05), width: 0.10, hue: 0.58, alpha: 0.8 },
+  { bone: 'rightHand',     offset: new THREE.Vector3(-0.02, -0.03, -0.04), width: 0.16, hue: 0.50, alpha: 0.9 },
+  { bone: 'rightHand',     offset: new THREE.Vector3( 0.04, -0.02,  0.05), width: 0.10, hue: 0.80, alpha: 0.8 },
+  { bone: 'leftFoot',      offset: new THREE.Vector3( 0.02, -0.08,  0.04), width: 0.13, hue: 0.14, alpha: 0.82 },
+  { bone: 'rightFoot',     offset: new THREE.Vector3(-0.02, -0.08,  0.04), width: 0.13, hue: 0.74, alpha: 0.82 },
+  { bone: 'leftShoulder',  offset: new THREE.Vector3( 0.58,  0.18, -0.28), width: 0.22, hue: 0.34, alpha: 0.72 },
+  { bone: 'leftShoulder',  offset: new THREE.Vector3( 0.86,  0.04, -0.44), width: 0.14, hue: 0.52, alpha: 0.66 },
+  { bone: 'rightShoulder', offset: new THREE.Vector3(-0.58,  0.18, -0.28), width: 0.22, hue: 0.06, alpha: 0.72 },
+  { bone: 'rightShoulder', offset: new THREE.Vector3(-0.86,  0.04, -0.44), width: 0.14, hue: 0.84, alpha: 0.66 },
+];
+
+interface SpeedTrail {
+  bone: string;
+  offset: THREE.Vector3;
+  width: number;
+  geometry: THREE.BufferGeometry;
+  positions: Float32Array;
+  material: THREE.ShaderMaterial;
   history: THREE.Vector3[];
   seeded: boolean;                // false until the first frame seeds the buffer
 }
 
-function SpeedLines({ active, vrmRef }: { active: boolean; vrmRef: React.MutableRefObject<VRM | null> }) {
+function SpeedLines({
+  active,
+  vrmRef,
+  fitRef,
+}: {
+  active: boolean;
+  vrmRef: React.MutableRefObject<VRM | null>;
+  fitRef: React.MutableRefObject<PreviewFit | null>;
+}) {
   const meshRefs = useRef<(THREE.Mesh | null)[]>([]);
+  const { camera } = useThree();
 
-  const trails = useMemo<Trail[]>(() =>
+  const trails = useMemo<SpeedTrail[]>(() =>
     EMITTERS.map((e) => ({
       bone: e.bone,
-      offset: e.offset,
-      color: new THREE.Color(e.color),
-      radius: e.radius,
+      offset: e.offset.clone(),
+      width: e.width,
+      geometry: (() => {
+        const geometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(TRAIL_HISTORY_LEN * 2 * 3);
+        const uvs = new Float32Array(TRAIL_HISTORY_LEN * 2 * 2);
+        const indices = new Uint16Array((TRAIL_HISTORY_LEN - 1) * 6);
+
+        for (let j = 0; j < TRAIL_HISTORY_LEN; j++) {
+          const t = j / (TRAIL_HISTORY_LEN - 1);
+          const uv = j * 4;
+          uvs[uv] = t;
+          uvs[uv + 1] = 1;
+          uvs[uv + 2] = t;
+          uvs[uv + 3] = 0;
+
+          if (j < TRAIL_HISTORY_LEN - 1) {
+            const a = j * 2;
+            const ii = j * 6;
+            indices[ii] = a;
+            indices[ii + 1] = a + 1;
+            indices[ii + 2] = a + 2;
+            indices[ii + 3] = a + 1;
+            indices[ii + 4] = a + 3;
+            indices[ii + 5] = a + 2;
+          }
+        }
+
+        const positionAttr = new THREE.BufferAttribute(positions, 3);
+        positionAttr.setUsage(THREE.DynamicDrawUsage);
+        geometry.setAttribute('position', positionAttr);
+        geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+        geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+        return geometry;
+      })(),
+      positions: new Float32Array(0),
+      material: new THREE.ShaderMaterial({
+        uniforms: {
+          time: { value: 0 },
+          hueOffset: { value: e.hue },
+          alpha: { value: e.alpha },
+        },
+        vertexShader: TRAIL_VERTEX_SHADER,
+        fragmentShader: TRAIL_FRAGMENT_SHADER,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.NormalBlending,
+        side: THREE.DoubleSide,
+        toneMapped: false,
+      }),
       history: Array.from({ length: TRAIL_HISTORY_LEN }, () => new THREE.Vector3()),
       seeded: false,
     })), []);
+
+  useEffect(() => {
+    for (const t of trails) {
+      t.positions = (t.geometry.getAttribute('position') as THREE.BufferAttribute).array as Float32Array;
+    }
+
+    return () => {
+      for (const t of trails) {
+        t.geometry.dispose();
+        t.material.dispose();
+      }
+    };
+  }, [trails]);
 
   // When toggling active off → on we want to reset the trail seed so
   // the ribbons start from the bone's current location instead of
@@ -213,11 +337,21 @@ function SpeedLines({ active, vrmRef }: { active: boolean; vrmRef: React.Mutable
   }, [active, trails]);
 
   const scratch = useMemo(() => new THREE.Vector3(), []);
+  const cameraDir = useMemo(() => new THREE.Vector3(), []);
+  const tangent = useMemo(() => new THREE.Vector3(), []);
+  const side = useMemo(() => new THREE.Vector3(), []);
 
-  useFrame(() => {
-    if (!active) return;
+  useFrame((state) => {
+    for (const trail of trails) {
+      trail.material.uniforms.time.value = state.clock.elapsedTime;
+    }
+
     const vrm = vrmRef.current;
-    if (!vrm || !vrm.humanoid) return;
+    const fit = fitRef.current;
+    if (!active || !vrm || !vrm.humanoid || !fit) return;
+
+    vrm.scene.updateMatrixWorld(true);
+    camera.getWorldDirection(cameraDir);
 
     for (let i = 0; i < trails.length; i++) {
       const trail = trails[i]!;
@@ -229,44 +363,50 @@ function SpeedLines({ active, vrmRef }: { active: boolean; vrmRef: React.Mutable
       if (!boneNode) continue;
       scratch.copy(trail.offset).applyMatrix4(boneNode.matrixWorld);
 
-      if (!trail.seeded) {
-        // Seed every slot with the current position so the first frame's
-        // curve is degenerate (zero-length tube) instead of a wild arc.
+      if (!trail.seeded || scratch.distanceToSquared(trail.history[0]!) > TRAIL_RESET_DISTANCE * TRAIL_RESET_DISTANCE) {
         for (let j = 0; j < trail.history.length; j++) trail.history[j].copy(scratch);
         trail.seeded = true;
-      } else {
-        // Shift back: history[N-1] takes history[N-2], etc., then write
-        // current position into slot 0. The Vector3 instances are reused
-        // (no allocation) so we copy values rather than reassigning refs.
+      } else if (scratch.distanceToSquared(trail.history[0]!) > TRAIL_MIN_STEP * TRAIL_MIN_STEP) {
         for (let j = trail.history.length - 1; j > 0; j--) {
           trail.history[j].copy(trail.history[j - 1]!);
         }
         trail.history[0]!.copy(scratch);
       }
 
-      // Rebuild tube along a smooth curve through the history. Catmull-Rom
-      // tension 0.5 keeps the curve from overshooting on sharp arcs (like
-      // a wing flap reversing direction).
-      const curve = new THREE.CatmullRomCurve3(trail.history, false, 'catmullrom', 0.5);
-      const newGeom = new THREE.TubeGeometry(curve, TRAIL_TUBE_SEGMENTS, trail.radius, TRAIL_RADIAL, false);
-      mesh.geometry.dispose();
-      mesh.geometry = newGeom;
+      for (let j = 0; j < trail.history.length; j++) {
+        const p = trail.history[j]!;
+        const prev = trail.history[Math.max(0, j - 1)]!;
+        const next = trail.history[Math.min(trail.history.length - 1, j + 1)]!;
+        tangent.subVectors(prev, next);
+        if (tangent.lengthSq() < 0.0001) tangent.set(1, 0, 0);
+        tangent.normalize();
+
+        side.crossVectors(tangent, cameraDir);
+        if (side.lengthSq() < 0.0001) side.set(0, 1, 0);
+        side.normalize();
+
+        const t = j / (trail.history.length - 1);
+        const taper = Math.sin((1 - t) * Math.PI * 0.85);
+        const width = trail.width * Math.max(0.08, taper);
+        const pIndex = j * 6;
+        trail.positions[pIndex] = p.x + side.x * width;
+        trail.positions[pIndex + 1] = p.y + side.y * width;
+        trail.positions[pIndex + 2] = p.z + side.z * width;
+        trail.positions[pIndex + 3] = p.x - side.x * width;
+        trail.positions[pIndex + 4] = p.y - side.y * width;
+        trail.positions[pIndex + 5] = p.z - side.z * width;
+      }
+
+      const positionAttr = trail.geometry.getAttribute('position') as THREE.BufferAttribute;
+      positionAttr.needsUpdate = true;
+      trail.geometry.computeBoundingSphere();
     }
   });
 
   return (
     <group visible={active}>
       {trails.map((t, i) => (
-        <mesh key={i} ref={(m) => { meshRefs.current[i] = m; }}>
-          {/* Geometry replaced every frame in useFrame */}
-          <bufferGeometry />
-          <meshBasicMaterial
-            color={t.color}
-            toneMapped={false}
-            transparent
-            opacity={0.92}
-          />
-        </mesh>
+        <mesh key={i} ref={(m) => { meshRefs.current[i] = m; }} geometry={t.geometry} material={t.material} renderOrder={20} />
       ))}
     </group>
   );
@@ -278,14 +418,15 @@ function HermesScene({ character, mode }: { character: Character; mode: Mode }) 
   // Shared VRM ref so SpeedLines can read bone world positions each frame
   // without redoing the loader hook (cheap pointer share).
   const vrmRef = useRef<VRM | null>(null);
+  const fitRef = useRef<PreviewFit | null>(null);
   return (
     <>
       <hemisphereLight args={[0xffffff, 0xccccff, ambient]} />
       <directionalLight position={[10, 30, 10]} intensity={1.0} castShadow={false} />
-      <SpeedLines active={speedlinesActive} vrmRef={vrmRef} />
       <Suspense fallback={null}>
-        <HermesAvatar character={character} mode={mode} vrmRef={vrmRef} />
+        <HermesAvatar character={character} mode={mode} vrmRef={vrmRef} fitRef={fitRef} />
       </Suspense>
+      <SpeedLines active={speedlinesActive} vrmRef={vrmRef} fitRef={fitRef} />
     </>
   );
 }
