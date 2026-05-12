@@ -99,11 +99,13 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // hack was inherited from the OLD GLB which had EXT_mesh_gpu_instancing
   // and a tiny source bbox — that's not the case anymore, so yOffset reset
   // to 0 to keep it on the ground like the other buildings.
-  // 2026-05-12: yOffset -150 — midpoint between earlier guesses (-80 left
-  // the platform floating well above Sandy's head; -300 partially buried
-  // the tree). rotYOffset flips it 180° so the tree faces the village
-  // center like every other building.
-  'messaging-channels':    { model: '/models/sandy-treedome-v2.glb',   yOffset: -150, rotY:  1.259, rotYOffset: Math.PI },
+  // 2026-05-12: With Object_1 (the 2.2M-vert outlier dome) now stripped by
+  // BACKDROP_KILL_NAMES above, the bbox is driven by the small visible
+  // meshes (platform + tree). yOffset back to 0 — guessing offsets was
+  // pointless while the dominant mesh was 26 units tall and the visible
+  // ones are 3 units. rotYOffset flips it 180° so the tree faces the
+  // village center.
+  'messaging-channels':    { model: '/models/sandy-treedome-v2.glb',   yOffset: 0, rotY:  1.259, rotYOffset: Math.PI },
   // i=9  center=(47,35)    dx=33,  dz=45   → atan2(33,45)≈0.632
   // patricks-rock.glb = Patrick's Rock (CC-BY, Yanez Designs, Sketchfab, 3.5k tris)
   // building-submarine.glb is now a fixed-landmark decoration only (arena-terrain.tsx FixedLandmarks)
@@ -181,17 +183,20 @@ const DECORATIVE_NAME_PREFIXES = ['Skybox_'] as const;
  *    - Background_Material004_0 → 380³ background sphere at (0, 200, -500)
  *      → "old Sandy treedome floating in the air" reported by user
  */
-/** 2026-05-12 — exact-mesh-name kill list emptied.
+/** 2026-05-12 — exact-mesh-name kill list.
  *
- *  Previously held "Patrick's_House_02_-_Default_0" and "_03" thinking
- *  they were backdrop. They're NOT — Patrick's_House_02 (360 verts) is
- *  the actual ROCK that Patrick lives under; _03 is its base plate. The
- *  blue dome around Patrick was always "Skybox_07_-_Default_0", which
- *  the DECORATIVE_NAME_PREFIXES rule now catches.
+ *  Object_1 — the giant 2.2M-vert glass dome inside sandy-treedome-v2.glb
+ *  (the sandy_tree_opt.glb the user uploaded). Measured locally with
+ *  scripts/read-glb-bbox.mjs: this single mesh is 50×26×49 GLB units
+ *  while the actual visible tree+platform are six tiny meshes (Object_0/
+ *  52/53/54/112/46) at 3-17 units each. The dome dominates bbox.min.y
+ *  so computeBuildingScale calculates a pivot that grounds the dome and
+ *  leaves the tree floating ~245 wu above the terrain. Stripping it
+ *  lets the small meshes drive the pivot.
  *
  *  Background_Material004_0 is the Auction Podium's intentional glass
- *  dome (auction-dome.glb) — also not for the kill list. */
-const BACKDROP_KILL_NAMES = new Set<string>([]);
+ *  dome (auction-dome.glb) — NOT in the kill list. */
+const BACKDROP_KILL_NAMES = new Set<string>(['Object_1']);
 
 /** Material kill list also empty for now — "Mesh_0030.rip" / "Mesh_0022.rip"
  *  weren't actually the blue domes at Krusty/Chum/Patrick; they were at
