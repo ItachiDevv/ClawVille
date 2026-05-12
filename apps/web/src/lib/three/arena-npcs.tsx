@@ -342,15 +342,14 @@ const VRM_NPC_SCALE = 112;
 // retired Milady paths still selectable in the player-avatar picker (preloading
 // _3/_4 is cheap and avoids T-pose hitches when a guest picks them).
 preloadVRMBytes('/avatars/milady-official-2.vrm');
-preloadVRMBytes('/avatars/milady-official-3.vrm');
-preloadVRMBytes('/avatars/milady-official-4.vrm');
 preloadVRMBytes('/avatars/milady-official-7.vrm');
 preloadVRMBytes('/avatars/milady-official-8.vrm');
-// hermes-female / hermes-male preloads removed 2026-05-12 — the
-// Mira/Tekk roster swap was reverted (commit 4b53b13) because the
-// Hermes VRMs render oversized at the shared VRM_NPC_SCALE. Until a
-// per-species scale lands, no NPC uses these so eager-fetching 3 MB
-// on every /game load is pure waste.
+// Hermes wanderers (Mira / Cyrus / Tekk) — re-added 2026-05-12 PM after the
+// per-VRM auto-fit in VRMNpcMesh let cm-authored VRMs render at the same
+// world height as Milady (computeVRMNpcScale below).
+preloadVRMBytes('/avatars/hermes-female.vrm');
+preloadVRMBytes('/avatars/hermes-male.vrm');
+preloadVRMBytes('/avatars/tekk.vrm');
 preloadMixamoClips();
 
 // ---------------------------------------------------------------------------
@@ -775,6 +774,7 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const characterId =
       npc.species === 'hermes_female' ? 'hermes-female' :
       npc.species === 'hermes_male'   ? 'hermes-male'   :
+      npc.species === 'tekk'          ? 'tekk'          :
       undefined;
     const animator = new VRMCharacterAnimator(vrm, characterId);
     vrmAnimatorRef.current = animator;

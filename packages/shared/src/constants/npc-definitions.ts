@@ -157,39 +157,49 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     stats: { hp: 90, attack: 13, defense: 13, speed: 16 },
     personality: 'A bookish Milady sketcher who maps every reef formation she encounters into her field journal.',
   },
-  // ─── Restored Milady wanderers (2026-05-12 PM hotfix) ─────────────────────
-  // Mira (hermes_female) + Tekk (hermes_male) were swapped in earlier today,
-  // then reverted same day because the Hermes VRMs render massively oversized
-  // under VRM_NPC_SCALE=112 (they're authored at a different native height
-  // than the Milady VRMs, so the shared world scale blows them up to giant
-  // size and overshadows the rest of the cast). Scaffold for the hermes
-  // wanderers remains intact (MODEL_REGISTRY entries, preloads, the
-  // characterId switch in VRMNpcMesh) — just don't put them in the roster
-  // until a per-species VRM scale override lands. See arena-npcs.tsx
-  // VRM_NPC_SCALE comment.
+  // ─── Hermes wanderers (re-restored 2026-05-12 after per-VRM auto-fit) ────
+  // 3 of the 5 Milady wanderer slots replaced with Mira (hermes_female),
+  // Cyrus (hermes_male — the Paul-Atreides-style cape MaleHermes), and Tekk
+  // (the winged operator at /avatars/tekk.vrm). Previous swap failed because
+  // VRM_NPC_SCALE=112 sized cm-authored Hermes VRMs as ~21,000wu giants. Now
+  // arena-npcs.tsx VRMNpcMesh computes a per-VRM render scale from the bbox
+  // at scale=1, so all VRM families land at VRM_NPC_TARGET_HEIGHT_WU regardless
+  // of source unit system.
   {
-    id: 'milady-maple',
-    name: 'Maple',
-    species: 'milady_official_3',
-    color: 0xffb0d0,             // pink (ignored — MToon)
+    id: 'hermes-mira',
+    name: 'Mira',
+    species: 'hermes_female',
+    color: 0xb088ff,             // ignored — MToon
     buildingId: '',
     patrolRadius: 500,
     homeX: 3400,
     homeY: 3200,                 // SE of town, inside the ring
     stats: { hp: 95, attack: 12, defense: 14, speed: 15 },
-    personality: 'A laid-back Milady cafe-hopper who treats every building like a new coffee bar to review.',
+    personality: 'A wide-eyed Hermes scholar mapping every glyph on every building she passes.',
   },
   {
-    id: 'milady-ash',
-    name: 'Ash',
-    species: 'milady_official_4',
-    color: 0xd0c0ff,             // pale violet (ignored — MToon)
+    id: 'hermes-cyrus',
+    name: 'Cyrus',
+    species: 'hermes_male',
+    color: 0x4b6cb7,             // ignored — MToon
     buildingId: '',
     patrolRadius: 500,
     homeX: 2560,
     homeY: 1700,                 // N of town, inside the ring
     stats: { hp: 92, attack: 14, defense: 12, speed: 17 },
-    personality: 'A restless Milady debugger who insists every glitch in the world has a poetic explanation.',
+    personality: 'A composed Hermes operator who treats every door in town like a problem worth solving.',
+  },
+  {
+    id: 'hermes-tekk',
+    name: 'Tekk',
+    species: 'tekk',
+    color: 0x30c060,             // ignored — MToon
+    buildingId: '',
+    patrolRadius: 500,
+    homeX: 1900,
+    homeY: 3800,                 // SW of town, inside the ring
+    stats: { hp: 88, attack: 16, defense: 10, speed: 19 },
+    personality: 'A winged scout who landed three buildings ago and has not stopped narrating since.',
   },
   // ─── Additional free-roaming crustaceans (added 2026-04-22) ──────────────
   // Sea-creature GLBs scale + clone per-instance, so multiple NPCs can share
