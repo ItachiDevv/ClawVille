@@ -110,15 +110,19 @@ export type AnimName = keyof typeof ANIM_PATHS;
 // ---------------------------------------------------------------------------
 
 const CHARACTER_ANIM_OVERRIDES: Record<string, Partial<Record<AnimName, string>>> = {
+  // hermes-male is now the Paul-Atreides-style MaleHermes (cape behind body,
+  // tunic + utility belt + leather pants + boots). Tekk's animations are
+  // archived at /avatars/animations/tekk-male/ for future use as a separate
+  // selectable character — they're NOT wired to hermes-male anymore.
   'hermes-male': {
-    idle:          '/avatars/animations/tekk-male/idle.glb',
-    walk:          '/avatars/animations/tekk-male/walk.glb',
-    run:           '/avatars/animations/tekk-male/run.glb',
-    victory:       '/avatars/animations/tekk-male/cheering.glb',
-    surf_idle:     '/avatars/animations/tekk-male/skateboarding.glb',
-    wipeout:       '/avatars/animations/tekk-male/wipeout.glb',
-    swimming:      '/avatars/animations/tekk-male/swimming.glb',
-    flying:        '/avatars/animations/tekk-male/flying.glb',
+    idle:          '/avatars/animations/hermes-male/idle.glb',
+    walk:          '/avatars/animations/hermes-male/walk.glb',
+    run:           '/avatars/animations/hermes-male/run.glb',
+    victory:       '/avatars/animations/hermes-male/cheering.glb',
+    surf_idle:     '/avatars/animations/hermes-male/skateboarding.glb',
+    wipeout:       '/avatars/animations/hermes-male/wipeout.glb',
+    swimming:      '/avatars/animations/hermes-male/swimming.glb',
+    // No flying override — flying stays Tekk-exclusive via ANIM_PATHS.flying.
   },
   'hermes-female': {
     idle:          '/avatars/animations/hermes-female/idle.glb',
