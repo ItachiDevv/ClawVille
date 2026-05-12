@@ -546,7 +546,16 @@ export class VRMCharacterAnimator {
    * never call this so their behaviour is unchanged.
    */
   setSurfaceClip(name: AnimName): void {
+    const prev = this.surfaceClip;
     this.surfaceClip = name;
+    // If we're not actively moving and not mid-emote, the avatar is currently
+    // playing the PREVIOUS surfaceClip. Without triggering a crossfade here,
+    // changing surfaceClip is a no-op until isMoving toggles. Force the
+    // crossfade so consumers (e.g. /preview/hermes Run toggle, Reef Race
+    // mode switch) actually see the new resting animation play.
+    if (prev !== name && this.ready && !this.oneShotActive && !this.wasMoving) {
+      this.applyCrossfade(false);
+    }
   }
 
   /**
