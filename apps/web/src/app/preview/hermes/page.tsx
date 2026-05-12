@@ -35,7 +35,7 @@ const SCENE_BG = new THREE.Color(0x0d2b5e); // matches game fog
 const TARGET_HEIGHT = 6.5;
 
 type Character = 'female' | 'male';
-type Mode = 'idle' | 'walk' | 'run';
+type Mode = 'idle' | 'walk' | 'run' | 'swim' | 'fly';
 
 function HermesAvatar({ character, mode }: { character: Character; mode: Mode }) {
   const path = `/avatars/hermes-${character}.vrm`;
@@ -114,10 +114,18 @@ function HermesAvatar({ character, mode }: { character: Character; mode: Mode })
   //   - 'idle' → surfaceClip='idle', isMoving=false → plays idle
   //   - 'walk' → surfaceClip='idle', isMoving=true  → plays walk
   //   - 'run'  → surfaceClip='run',  isMoving=false → plays run on loop
+  //   - 'swim' → surfaceClip='swimming', isMoving=false → plays swim on loop
+  //   - 'fly'  → surfaceClip='flying',   isMoving=false → plays fly on loop
+  //              (only meaningful for Tekk — Hermes-female has no flying clip)
   useEffect(() => {
     const a = animatorRef.current;
     if (!a) return;
-    a.setSurfaceClip(mode === 'run' ? 'run' : 'idle');
+    const surface =
+      mode === 'run' ? 'run' :
+      mode === 'swim' ? 'swimming' :
+      mode === 'fly' ? 'flying' :
+      'idle';
+    a.setSurfaceClip(surface);
   }, [mode]);
 
   useFrame((_, delta) => {
@@ -193,10 +201,16 @@ function PreviewHermesInner() {
           <button onClick={() => setCharacter('male')}
             style={btn(character === 'male')}>Male</button>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
           <button onClick={() => setMode('idle')} style={btn(mode === 'idle')}>Idle</button>
           <button onClick={() => setMode('walk')} style={btn(mode === 'walk')}>Walk</button>
           <button onClick={() => setMode('run')}  style={btn(mode === 'run')}>Run</button>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={() => setMode('swim')} style={btn(mode === 'swim')}>Swim</button>
+          {character === 'male' && (
+            <button onClick={() => setMode('fly')} style={btn(mode === 'fly')}>Fly</button>
+          )}
         </div>
         <div style={{ marginTop: 10, opacity: 0.7, fontSize: 12 }}>
           drag to rotate · scroll to zoom · /avatars/hermes-{character}.vrm
