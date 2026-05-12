@@ -27,6 +27,7 @@ import { useSearchParams } from 'next/navigation';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
+import type { VRM } from '@pixiv/three-vrm';
 import { useVRMInstance, disposeVRMInstance } from '@/lib/three/vrm-loader';
 import { VRMCharacterAnimator } from '@/lib/three/vrm-character-animator';
 
@@ -44,11 +45,18 @@ const SPEEDLINE_COLORS = [
 type Character = 'female' | 'male';
 type Mode = 'idle' | 'walk' | 'run' | 'swim' | 'fly';
 
-function HermesAvatar({ character, mode }: { character: Character; mode: Mode }) {
+function HermesAvatar({ character, mode, vrmRef }: { character: Character; mode: Mode; vrmRef: React.MutableRefObject<VRM | null> }) {
   const path = `/avatars/hermes-${character}.vrm`;
   const vrm = useVRMInstance(path, `preview-${character}`);
   const animatorRef = useRef<VRMCharacterAnimator | null>(null);
   const [fit, setFit] = useState<{ scale: number; offsetY: number } | null>(null);
+
+  // Share VRM upward so sibling components (SpeedLines) can read bone world
+  // positions in their useFrame without re-running the loader hook.
+  useEffect(() => {
+    vrmRef.current = vrm ?? null;
+    return () => { vrmRef.current = null; };
+  }, [vrm, vrmRef]);
 
   // Set up animator + cleanup on character switch / unmount
   useEffect(() => {
@@ -154,79 +162,127 @@ function HermesAvatar({ character, mode }: { character: Character; mode: Mode })
   );
 }
 
-// 3D hyperspace-style speed streaks. Each streak is a thin box elongated
-// along Z that flies from far behind the character toward the camera, giving
-// proper perspective + depth instead of flat 2D bars.
-const STREAK_COUNT = 60;
-const STREAK_Z_FAR = -60;     // spawn depth
-const STREAK_Z_RESET = 22;    // when past this, wrap back to FAR
-const STREAK_LENGTH = 3.5;    // along local Z
+// Particle-emitter speed streaks. Each emitter is anchored to a VRM bone
+// (hands, feet, plus offset positions near the shoulders to approximate wing
+// tips). Particles spawn AT the emitter, then drift outward with their own
+// velocity for `PARTICLE_LIFETIME` seconds, then respawn at the bone again.
+const EMITTERS: Array<{ bone: string; offset: THREE.Vector3 }> = [
+  { bone: 'leftHand',     offset: new THREE.Vector3( 0,    0, 0) },
+  { bone: 'rightHand',    offset: new THREE.Vector3( 0,    0, 0) },
+  { bone: 'leftFoot',     offset: new THREE.Vector3( 0, -0.05, 0) },
+  { bone: 'rightFoot',    offset: new THREE.Vector3( 0, -0.05, 0) },
+  // Wing-tip approximations: shoulder bone + lateral/back offset so the
+  // emitter sits roughly where Tekk's mech wings extend. Mixamo's auto-rig
+  // doesn't give us wing bones, so we ride the shoulder transform and let
+  // the lateral offset trace the wing fan.
+  { bone: 'leftShoulder',  offset: new THREE.Vector3( 0.4, 0.2, -0.3) },
+  { bone: 'rightShoulder', offset: new THREE.Vector3(-0.4, 0.2, -0.3) },
+];
+const PARTICLES_PER_EMITTER = 10;
+const TOTAL_PARTICLES = EMITTERS.length * PARTICLES_PER_EMITTER;
+const PARTICLE_LIFETIME = 0.9;     // seconds before respawn
+const STREAK_LENGTH = 0.9;         // long axis of each tube
 
-interface Streak {
-  x: number;
-  y: number;
-  z: number;       // current depth, updated per frame
-  speed: number;   // u/sec toward +Z (toward camera)
-  color: string;
-  scaleZ: number;  // some streaks are longer for variety
+interface Particle {
+  emitterIdx: number;
+  age: number;
+  pos: THREE.Vector3;
+  vel: THREE.Vector3;
+  color: THREE.Color;
 }
 
-function SpeedLines({ active }: { active: boolean }) {
-  // Generate one stable streak field for the lifetime of the component.
-  // Position/speed/color all randomized once so each line has its own
-  // parallax depth and won't snap on toggle.
-  const streaks = useMemo<Streak[]>(() => {
-    const rng = (seed: number) => {
-      // Tiny deterministic PRNG so HMR keeps the same field across reloads
-      let s = seed;
-      return () => {
-        s = (s * 9301 + 49297) % 233280;
-        return s / 233280;
-      };
-    };
-    const r = rng(1337);
-    return Array.from({ length: STREAK_COUNT }, (_, i) => ({
-      x: (r() - 0.5) * 26,                    // -13 .. +13
-      y: r() * 13 + 0.5,                      // 0.5 .. 13.5
-      z: STREAK_Z_FAR + r() * (STREAK_Z_RESET - STREAK_Z_FAR),
-      speed: 26 + r() * 28,                   // 26 .. 54 u/s
-      color: SPEEDLINE_COLORS[i % SPEEDLINE_COLORS.length]!,
-      scaleZ: 0.7 + r() * 1.8,                // 0.7 .. 2.5x length
-    }));
+function SpeedLines({ active, vrmRef }: { active: boolean; vrmRef: React.MutableRefObject<VRM | null> }) {
+  const refs = useRef<(THREE.Mesh | null)[]>([]);
+
+  // Build particle pool once (positions filled in per-frame). Each emitter
+  // gets PARTICLES_PER_EMITTER particles, staggered in age so the stream is
+  // continuous instead of pulse-spawning every LIFETIME seconds.
+  const particles = useMemo<Particle[]>(() => {
+    const arr: Particle[] = [];
+    for (let e = 0; e < EMITTERS.length; e++) {
+      for (let i = 0; i < PARTICLES_PER_EMITTER; i++) {
+        arr.push({
+          emitterIdx: e,
+          age: (i / PARTICLES_PER_EMITTER) * PARTICLE_LIFETIME,
+          pos: new THREE.Vector3(),
+          vel: new THREE.Vector3(),
+          color: new THREE.Color(SPEEDLINE_COLORS[(e * PARTICLES_PER_EMITTER + i) % SPEEDLINE_COLORS.length]!),
+        });
+      }
+    }
+    return arr;
   }, []);
 
-  const refs = useRef<(THREE.Mesh | null)[]>([]);
+  // Reusable scratch — never allocated in the hot loop
+  const scratchEmitter = useMemo(() => new THREE.Vector3(), []);
+  const scratchDir = useMemo(() => new THREE.Vector3(), []);
+
+  const respawnParticle = (p: Particle, emitterWorldPos: THREE.Vector3) => {
+    p.age = 0;
+    p.pos.copy(emitterWorldPos);
+    // Random direction with a backward (-Z, away from camera) bias so streaks
+    // trail behind him rather than into the lens.
+    const ax = (Math.random() - 0.5) * 4;        // lateral spread
+    const ay = (Math.random() - 0.5) * 2;        // mild vertical fan
+    const az = -2 - Math.random() * 3;           // always backward, varying magnitude
+    p.vel.set(ax, ay, az);
+    // New rainbow colour each respawn for chromatic chaos
+    p.color.setHex(parseInt(SPEEDLINE_COLORS[Math.floor(Math.random() * SPEEDLINE_COLORS.length)]!.slice(1), 16));
+    // Apply colour to mesh material — material is unique per mesh below.
+  };
 
   useFrame((_, delta) => {
     const dt = Math.min(delta, 0.05);
-    for (let i = 0; i < streaks.length; i++) {
+    const vrm = vrmRef.current;
+    if (!vrm || !vrm.humanoid) return;
+
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i]!;
       const m = refs.current[i];
-      const s = streaks[i]!;
       if (!m) continue;
-      s.z += s.speed * dt;
-      if (s.z > STREAK_Z_RESET) {
-        // Wrap: respawn far behind with a NEW lateral position so the field
-        // doesn't show a repeating pattern.
-        s.z = STREAK_Z_FAR;
-        s.x = (Math.random() - 0.5) * 26;
-        s.y = Math.random() * 13 + 0.5;
+      p.age += dt;
+      if (p.age >= PARTICLE_LIFETIME) {
+        // Look up emitter bone world position
+        const e = EMITTERS[p.emitterIdx]!;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const boneNode = (vrm.humanoid as any).getNormalizedBoneNode?.(e.bone) as THREE.Object3D | null;
+        if (boneNode) {
+          boneNode.getWorldPosition(scratchEmitter);
+          // Apply local-space offset transformed by the bone's world matrix so
+          // wing-offsets stay attached to the shoulder orientation.
+          scratchDir.copy(e.offset).applyMatrix4(boneNode.matrixWorld).sub(boneNode.getWorldPosition(scratchEmitter));
+          boneNode.getWorldPosition(scratchEmitter).add(scratchDir);
+          respawnParticle(p, scratchEmitter);
+          (m.material as THREE.MeshBasicMaterial).color.copy(p.color);
+        }
+      } else {
+        // Drift outward
+        p.pos.x += p.vel.x * dt;
+        p.pos.y += p.vel.y * dt;
+        p.pos.z += p.vel.z * dt;
       }
-      m.position.set(s.x, s.y, s.z);
+      m.position.copy(p.pos);
+      // Orient streak along its velocity so it visually trails
+      m.lookAt(p.pos.x + p.vel.x, p.pos.y + p.vel.y, p.pos.z + p.vel.z);
+      // Fade scale at end of life so streaks don't snap-cut on respawn
+      const t = p.age / PARTICLE_LIFETIME;
+      const opacityScale = Math.min(1, (1 - t) * 2);  // hold then fade in last half
+      (m.material as THREE.MeshBasicMaterial).opacity = 0.9 * opacityScale;
     }
   });
 
   return (
     <group visible={active}>
-      {streaks.map((s, i) => (
-        <mesh
-          key={i}
-          ref={(m) => { refs.current[i] = m; }}
-          position={[s.x, s.y, s.z]}
-          scale={[1, 1, s.scaleZ]}
-        >
-          {/* Thin elongated box: width 0.08, height 0.08, length STREAK_LENGTH along Z */}
-          <boxGeometry args={[0.09, 0.09, STREAK_LENGTH]} />
-          <meshBasicMaterial color={s.color} toneMapped={false} />
+      {particles.map((p, i) => (
+        <mesh key={i} ref={(m) => { refs.current[i] = m; }}>
+          {/* Thin elongated tube: 0.08 wide, 0.08 tall, STREAK_LENGTH long along Z */}
+          <boxGeometry args={[0.08, 0.08, STREAK_LENGTH]} />
+          <meshBasicMaterial
+            color={p.color}
+            transparent
+            opacity={0.9}
+            toneMapped={false}
+          />
         </mesh>
       ))}
     </group>
@@ -236,13 +292,16 @@ function SpeedLines({ active }: { active: boolean }) {
 function HermesScene({ character, mode }: { character: Character; mode: Mode }) {
   const ambient = useMemo(() => 0.7, []);
   const speedlinesActive = mode === 'run' || mode === 'fly';
+  // Shared VRM ref so SpeedLines can read bone world positions each frame
+  // without redoing the loader hook (cheap pointer share).
+  const vrmRef = useRef<VRM | null>(null);
   return (
     <>
       <hemisphereLight args={[0xffffff, 0xccccff, ambient]} />
       <directionalLight position={[10, 30, 10]} intensity={1.0} castShadow={false} />
-      <SpeedLines active={speedlinesActive} />
+      <SpeedLines active={speedlinesActive} vrmRef={vrmRef} />
       <Suspense fallback={null}>
-        <HermesAvatar character={character} mode={mode} />
+        <HermesAvatar character={character} mode={mode} vrmRef={vrmRef} />
       </Suspense>
     </>
   );
