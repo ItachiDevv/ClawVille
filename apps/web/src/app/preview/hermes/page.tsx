@@ -35,8 +35,9 @@ const SCENE_BG = new THREE.Color(0x0d2b5e); // matches game fog
 const TARGET_HEIGHT = 6.5;
 
 type Character = 'female' | 'male';
+type Mode = 'idle' | 'walk' | 'run';
 
-function HermesAvatar({ character, idle }: { character: Character; idle: boolean }) {
+function HermesAvatar({ character, mode }: { character: Character; mode: Mode }) {
   const path = `/avatars/hermes-${character}.vrm`;
   const vrm = useVRMInstance(path, `preview-${character}`);
   const animatorRef = useRef<VRMCharacterAnimator | null>(null);
@@ -109,9 +110,19 @@ function HermesAvatar({ character, idle }: { character: Character; idle: boolean
     };
   }, [vrm, character, path]);
 
+  // Reflect mode changes onto the animator each frame:
+  //   - 'idle' → surfaceClip='idle', isMoving=false → plays idle
+  //   - 'walk' → surfaceClip='idle', isMoving=true  → plays walk
+  //   - 'run'  → surfaceClip='run',  isMoving=false → plays run on loop
+  useEffect(() => {
+    const a = animatorRef.current;
+    if (!a) return;
+    a.setSurfaceClip(mode === 'run' ? 'run' : 'idle');
+  }, [mode]);
+
   useFrame((_, delta) => {
     const dt = Math.min(delta, 0.1);
-    animatorRef.current?.update(dt, idle);
+    animatorRef.current?.update(dt, mode === 'walk');
   });
 
   if (!vrm || !fit) return null;
@@ -128,7 +139,7 @@ function HermesAvatar({ character, idle }: { character: Character; idle: boolean
   );
 }
 
-function HermesScene({ character, idle }: { character: Character; idle: boolean }) {
+function HermesScene({ character, mode }: { character: Character; mode: Mode }) {
   const ambient = useMemo(() => 0.5, []);
   return (
     <>
@@ -136,7 +147,7 @@ function HermesScene({ character, idle }: { character: Character; idle: boolean 
       <directionalLight position={[10, 30, 10]} intensity={1.2} castShadow={false} />
       <gridHelper args={[40, 20, 0x224466, 0x163355]} position={[0, 0, 0]} />
       <Suspense fallback={null}>
-        <HermesAvatar character={character} idle={idle} />
+        <HermesAvatar character={character} mode={mode} />
       </Suspense>
     </>
   );
@@ -157,7 +168,7 @@ function PreviewHermesInner() {
   const searchParams = useSearchParams();
   const initial = (searchParams.get('c') === 'male' ? 'male' : 'female') as Character;
   const [character, setCharacter] = useState<Character>(initial);
-  const [idle, setIdle] = useState(true);
+  const [mode, setMode] = useState<Mode>('idle');
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: '#0d2b5e' }}>
@@ -166,7 +177,7 @@ function PreviewHermesInner() {
         gl={{ antialias: true, powerPreference: 'high-performance' }}
         scene={{ background: SCENE_BG }}
       >
-        <HermesScene character={character} idle={idle} />
+        <HermesScene character={character} mode={mode} />
         <OrbitControls target={[0, 7, 0]} enablePan={true} maxDistance={80} minDistance={5} />
       </Canvas>
 
@@ -183,8 +194,9 @@ function PreviewHermesInner() {
             style={btn(character === 'male')}>Male</button>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={() => setIdle(true)}  style={btn(idle)}>Idle</button>
-          <button onClick={() => setIdle(false)} style={btn(!idle)}>Walk</button>
+          <button onClick={() => setMode('idle')} style={btn(mode === 'idle')}>Idle</button>
+          <button onClick={() => setMode('walk')} style={btn(mode === 'walk')}>Walk</button>
+          <button onClick={() => setMode('run')}  style={btn(mode === 'run')}>Run</button>
         </div>
         <div style={{ marginTop: 10, opacity: 0.7, fontSize: 12 }}>
           drag to rotate · scroll to zoom · /avatars/hermes-{character}.vrm
