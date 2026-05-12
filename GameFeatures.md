@@ -238,16 +238,19 @@ Tested end-to-end 2026-04-12 — sign-up → create avatar → enter game works.
 
 ### 9c. Species + color
 
-7 sea-creature GLBs + 8 Milady Official VRMs = 15 picker entries (`SelectAgentCanvas.tsx`). See `3dStructure.md §11` for the picker scene constraints.
+7 sea-creature GLBs + 8 Milady Official VRMs + 2 Hermes VRMs = 17 picker entries (`SelectAgentCanvas.tsx`). See `3dStructure.md §11` for the picker scene constraints. The picker's tabs are **Milady AI · Hermes · OpenClaw · Custom**, both Milady and Hermes flagged `hosted: true` ("Hosted by ClawVille") and starting unlocked for any visitor (no agent gate). Hermes is the second hosted runtime peer to Milady (added 2026-05-12); a third Hermes avatar slot is reserved.
 
 | Type | Models | Color tinting |
 |---|---|---|
 | Sea creature GLB | lobster, sweet_crab, hermitcrab, jellyfish, octopus_toy, lobster_plush, sea_horse | Per-instance via `applyColorTint` — clones `MeshStandardMaterial`, sets `color` + `emissive` |
 | Milady VRM | `milady-official-1..8.vrm` | **No color tint** — MToon's toon-uniform system breaks under `.clone()`. Color customization disabled for VRM avatars. |
+| Hermes VRM | `hermes-female.vrm` ("Hermes"), `hermes-male.vrm` ("Tekk") | **No color tint** (same MToon constraint). Mixamo-style humanoid normalization; uses dedicated animation folders at `/avatars/animations/{hermes-female,tekk-male}/*.glb` rather than the generic Milady Mixamo set. |
 
 ### 9d. Agent avatar picker (`/create-agent`)
 
-Rotating pedestal in front of the player; click an avatar → confirm. Warm-preloads all 15 avatars at mount via `useGLTF.preload` (GLBs) + `preloadVRM` (VRMs). Never run simultaneously with the open-world Canvas on Iris Xe.
+Rotating pedestal in front of the player; click an avatar → confirm. Warm-preloads all 17 avatars at mount via `useGLTF.preload` (GLBs) + `preloadVRM` (VRMs). Never run simultaneously with the open-world Canvas on Iris Xe.
+
+**Render-frame tuning (2026-05-12):** picker VRM scale is `reg.scale * 1.2` (≈15.6wu) — the previous 1.6× variant overflowed the camera frame, clipping the head. Ember particles spawn in an annulus `9 ≤ r ≤ 18` around the pedestal instead of `0 ≤ r ≤ 8`; the old inner-radius range sprayed orange points through the avatar's silhouette where they rendered as opaque squares (the "orange cubes" bug).
 
 ### 9e. One avatar per user
 
@@ -300,7 +303,7 @@ All composed in `apps/web/src/app/game/page.tsx`. The component matrix is gated 
 | `<World3DCanvas>` | Three.js 3D world. See `3dStructure.md` + `WorldContent.md`. |
 | `<SeaLoadingScreen>` | Fade-out overlay until `window.__W3D` is set |
 | `<BuildingTooltip>` | Hover tooltip for buildings |
-| `<NanoClawBanner>` (inline component, `page.tsx:72-99`) | "Connect Your Agent" pill (disconnected) / "Bot Training Active" pill (connected) |
+| `<NanoClawBanner>` (inline component, `page.tsx:86-138`) | Three states: (a) green "Bot Training Active" pill when `agentConnected`. (b) **"Create Agent" + "Connect Your Agent" pair** when no avatar AND no agent — covers NPC-mode visitors so both onramps are in view (matches landing-page CTAs; added 2026-05-12). (c) "Connect Your Agent" alone when avatar exists but agent not connected. The Create Agent button routes to `/create-agent`; the Connect button opens `<AgentConnectModal>`. |
 | `<AgentConnectModal>` | Quick-Connect modal — Manual tab removed in `984627d` |
 | `<SidebarMenu>` | Right-edge RPG sidebar (WORLD / AGENT / ECONOMY / QUESTS / SYSTEM). Gear FAB on mobile. |
 | `<Minimap>` | Top-left underwater sonar (radial cyan gradient + per-building accent dots). Click-to-path dispatches `setClickPath(path, hitZone?.id)`. Blip fed by `MinimapPositionTracker` at ~5 Hz. |
@@ -582,6 +585,42 @@ Tracked in `ARCHITECTURE.md §4` as service `activity/reward-pipeline`. Placemen
 
 ---
 
+## 18z. Wager lobbies (Bumper Shells + Reef Race, 2026-05-12)
+
+Every activity that runs a winner-take-most match is now wrapped by a wager lobby. The same UI component (`apps/web/src/components/game/lobby-landing.tsx`) is rendered as a gate by `apps/web/src/app/activity/[activityId]/[roomId]/page.tsx` — the 3D scene only mounts after the lobby transitions to `locked`.
+
+### 18z.a. Flow
+
+1. **Mount** — page renders `<LobbyLanding>` (3D scene unmounted). Component fetches `GET /api/wager/lobbies?activityId=X&roomId=Y&state=open`. If a lobby exists, jumps to "waiting"; else "create".
+2. **Create** — user picks: `Mode = Multiplayer | Solo vs Bots`; if multiplayer: wager (Free / 0.01 / 0.05 / 0.1 / 0.5 / 1 SOL), visibility (Public / Private invite-link / Friends-only), max players (2-16, default 4). Submit → `POST /api/wager/lobbies` → server inserts off-chain row + signs on-chain `create_lobby_sol` (creator deposits + becomes Player PDA).
+3. **Waiting** — component polls `GET /api/wager/lobbies/:id` every 3 s. Renders the depositor list, share-invite link (if creator + private/friends), `LEAVE LOBBY` button (cancels for creator, refund-request for non-creator).
+4. **Locking** — when the match-server transitions `room → LIVE`, the wager-lobby bridge calls `lock_lobby` on chain in lockstep. Component sees `state='locked'` on the next poll, calls `onLobbyLocked` → parent unmounts `<LobbyLanding>` + mounts `<BumperShellsScene>` or `<ReefRaceScene>`.
+5. **Settle** — when the match-server transitions `room → RESULTS`, the bridge calls `settle_lobby_sol` with the first-placed avatar from the sim's `computeResults()`. If the placement-1 entry is a bot or no-show, the bridge logs a failed-settle event; an operator must then call `POST /api/wager/lobbies/:id/cancel` to unlock per-player refunds via `POST /api/wager/lobbies/:id/refund`.
+
+### 18z.b. Modes
+
+- **Multiplayer** — real on-chain escrow via the deployed `clawville_wager` Anchor program (`HgQhHVYV2C5Mw8K81kEnADkqsuS5YQRmGJDUR5wnZVuG` on devnet). 5 % rake snapshot at create-time goes to the treasury (currently the deployer pubkey). Free-play (`wager=0`) is supported and routes through the same SOL instructions; rake on zero pot is zero.
+- **Solo vs Bots** — no escrow, no on-chain footprint. The lobby row exists purely for FE state continuity + leaderboard credit. The lobby is auto-locked on FE submit so the 3D scene mounts immediately.
+
+Visibility:
+- `public` — shows up in `GET /api/wager/lobbies`, anyone can join.
+- `private` — generates a ~12-char URL-safe `invite_code`. Only visible to creator in the list response. Shared via the in-component "Invite link" button.
+- `friends` — same shape as private; future work adds a friend-list whitelist check.
+
+### 18z.c. Cancel / Refund
+
+- Creator can cancel while `state='open'`. Authority (admin) can cancel while `state in ('open','locked')` — emergency drain path.
+- After cancel, every depositor can call `POST /api/wager/lobbies/:id/refund` (single tx per player; idempotent — second call returns 200 with `idempotent: true`). The on-chain instruction `claim_refund_sol` closes the player's PDA + returns their deposit + rent residual.
+- Solo-bots cancels are a no-op on chain — the off-chain row flips to `cancelled` and the FE bails.
+
+### 18z.d. Feature gates
+
+- `wager-spl-lobbies` — the `wager_mint` column + `create_lobby_spl` instruction exist; routes refuse `wagerMint != null` with 503 until a merchant requests it. Review deadline 2026-07-01.
+- `wager-mainnet-paid` — the API hard-codes devnet RPC; mainnet wiring requires a code change, not just an env flip. Review deadline 2026-09-01.
+- `treasury-envelope-encryption` — settlement-authority key is encrypted with the legacy `VANITY_ENCRYPTION_KEY` (matches the other treasury keys), not envelope-encrypted via CF KEK. Review deadline 2026-07-01.
+
+---
+
 ## 19. Map layout
 
 Source: `packages/shared/src/constants/map-locations.ts`. 160×160 tile grid, 32 px/tile = 5120×5120 world units. Village center tile `(80, 80)` → world `(0, 0)`. Building ring at radius 68 tiles = 2176 wu, 10 slots at 36° spacing.
@@ -594,6 +633,7 @@ See **`3dStructure.md §1`** for the full coordinate system + axis conventions, 
 
 Compact log. The audit-history wall at the top of the prior version of this doc has been replaced with this. Entries are gameplay-facing — backend/service changes belong in `ARCHITECTURE.md §13`, 3D-render changes in `3dStructure.md §13`.
 
+- 2026-05-12 — Wager lobbies vertical slice. New §18z covers the reusable `<LobbyLanding>` gate on every activity match page, the 4 lobby flows (create / wait / lock / cancel-refund), the 3 modes (multiplayer / solo-bots / free-play), and the 3 visibility levels (public / private / friends). On-chain settlement via the deployed `clawville_wager` Anchor program on devnet. Match-server auto-locks on `room → LIVE` and auto-settles to placement-1 avatar on `room → RESULTS`.
 - 2026-05-12 — `40e7ed4` — new canonical `WorldContent.md` + bidirectional sync rule across all four docs. This doc's tight-manifest rewrite landed under `c2be3e0`-equivalent same series.
 - 2026-05-08 — Pets → Avatars rename pass. UI components `PetStatusBar` → `AvatarStatusBar`, `PetChatBar` → `AvatarChatBar`; routes `/api/pets/*` → `/api/avatars/*`; game-store fields `petPosition`/`petSpeed` → `avatarPosition`/`avatarSpeed`. `avatar_type` / `avatar_url` columns kept (those describe the render asset format, not the table name).
 - 2026-04-29 — Reef Race SPEC 3 ramps + SPEC 2 Milady VRM riders shipped.

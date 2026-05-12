@@ -83,20 +83,24 @@ const SidebarMenu = dynamic(() => import('@/components/game/sidebar-menu'), {
   ssr: false,
 });
 
-function NanoClawBanner() {
+function NanoClawBanner({ hasAvatar }: { hasAvatar: boolean }) {
+  const router = useRouter();
   const agentConnected = useGameStore((s: GameState) => s.agentConnected);
   const agentSessionId = useGameStore((s: GameState) => s.agentSessionId);
   const setAgentConnectModalOpen = useGameStore((s: GameState) => s.setAgentConnectModalOpen);
 
-  // Banner gates strictly on `agentConnected`:
-  //   true  → green "Bot Training Active" pill (with session id)
-  //   false → "Connect Your Agent" CTA (visible to guests + logged-in users
-  //           who haven't connected yet — guest-avatar auto-create no longer
-  //           hides this; the guest needs the upgrade path)
+  // Banner has three states keyed on (agentConnected, hasAvatar):
+  //   agentConnected=true                 → green "Bot Training Active" pill
+  //   !agentConnected && !hasAvatar       → "Create Agent" + "Connect Your Agent"
+  //                                          side-by-side (matches landing-page
+  //                                          CTAs so NPC-mode visitors have
+  //                                          both onramps in view — user
+  //                                          request 2026-05-12)
+  //   !agentConnected &&  hasAvatar       → "Connect Your Agent" alone
 
-  return (
-    <div className="fixed left-1/2 -translate-x-1/2 z-50 top-3">
-      {agentConnected ? (
+  if (agentConnected) {
+    return (
+      <div className="fixed left-1/2 -translate-x-1/2 z-50 top-3">
         <button
           onClick={() => setAgentConnectModalOpen(true)}
           className="flex items-center gap-2 px-4 py-2 rounded-full bg-green-600/90 backdrop-blur-sm border border-green-400/40 shadow-lg hover:bg-green-600 transition-colors"
@@ -105,15 +109,28 @@ function NanoClawBanner() {
           <span className="text-white font-bold text-sm">Bot Training Active</span>
           <span className="text-green-200/70 text-xs font-mono hidden md:inline">{agentSessionId?.slice(0, 12)}</span>
         </button>
-      ) : (
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed left-1/2 -translate-x-1/2 z-50 top-3 flex items-center gap-2">
+      {!hasAvatar && (
         <button
-          onClick={() => setAgentConnectModalOpen(true)}
-          className="flex items-center gap-2 px-4 py-2 rounded-full bg-black/60 backdrop-blur-sm border border-yellow-500/40 shadow-lg hover:bg-black/80 hover:border-yellow-400/60 transition-all animate-pulse-subtle"
+          onClick={() => router.push('/create-agent')}
+          className="flex items-center gap-2 px-4 py-2 rounded-full bg-black/60 backdrop-blur-sm border border-cyan-400/40 shadow-lg hover:bg-black/80 hover:border-cyan-300/60 transition-all"
         >
-          <span className="text-lg">🔌</span>
-          <span className="text-yellow-300 font-bold text-sm">Connect Your Agent</span>
+          <span className="text-lg">✨</span>
+          <span className="text-cyan-200 font-bold text-sm">Create Agent</span>
         </button>
       )}
+      <button
+        onClick={() => setAgentConnectModalOpen(true)}
+        className="flex items-center gap-2 px-4 py-2 rounded-full bg-black/60 backdrop-blur-sm border border-yellow-500/40 shadow-lg hover:bg-black/80 hover:border-yellow-400/60 transition-all animate-pulse-subtle"
+      >
+        <span className="text-lg">🔌</span>
+        <span className="text-yellow-300 font-bold text-sm">Connect Your Agent</span>
+      </button>
     </div>
   );
 }
@@ -285,7 +302,7 @@ export default function GamePage() {
       <SeaLoadingScreen />
       <World3DCanvas mode="game" />
       <BuildingTooltip />
-      <NanoClawBanner />
+      <NanoClawBanner hasAvatar={hasAvatar} />
       <AgentConnectModal />
       <BuildingPortalModal />
       {/* Lobby modal mounts whenever activityLobbyId is set; reads

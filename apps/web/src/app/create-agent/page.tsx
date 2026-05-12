@@ -47,28 +47,33 @@ interface TabMeta {
 
 const TABS: TabMeta[] = [
   { id: 'milady',   label: 'Milady AI',  tagline: 'Hosted by ClawVille',    hosted: true  },
+  { id: 'hermes',   label: 'Hermes',     tagline: 'Hosted by ClawVille',    hosted: true  },
   { id: 'openclaw', label: 'OpenClaw',   tagline: 'You run OpenClaw',       hosted: false },
-  { id: 'hermes',   label: 'Hermes',     tagline: 'You run Hermes',         hosted: false },
   { id: 'custom',   label: 'Custom',     tagline: 'Bring your own',         hosted: false },
 ];
 
-// Avatar pool per tab. Milady tab = the 8 VRMs. Every other tab shares the
-// same non-VRM pool (4 crustaceans + 3 sea-creatures) — the user's harness
-// is what differs, not which sea-creature they like.
+// Avatar pool per tab. Hosted tabs (Milady, Hermes) each show their own VRM
+// roster — the cast-your-agent experience is character-driven for those.
+// External-runtime tabs (OpenClaw, Custom) share the sea-creature pool since
+// they pick a harness, not a character.
 const MODELS_BY_TAB: Record<TabId, ModelKey[]> = (() => {
   const allKeys = Object.keys(MODEL_REGISTRY) as ModelKey[];
   const miladyKeys = allKeys.filter((k) => MODEL_REGISTRY[k].category === 'milady');
-  const nonMilady = allKeys.filter((k) => MODEL_REGISTRY[k].category !== 'milady');
+  const hermesKeys = allKeys.filter((k) => MODEL_REGISTRY[k].category === 'hermes');
+  const seaCreatureKeys = allKeys.filter(
+    (k) => MODEL_REGISTRY[k].category !== 'milady' && MODEL_REGISTRY[k].category !== 'hermes',
+  );
   return {
     milady:   miladyKeys,
-    openclaw: nonMilady,
-    hermes:   nonMilady,
-    custom:   nonMilady,
+    hermes:   hermesKeys,
+    openclaw: seaCreatureKeys,
+    custom:   seaCreatureKeys,
   };
 })();
 
 function mapCategoryToTab(category: AgentCategory | undefined): TabId | null {
   if (category === 'milady') return 'milady';
+  if (category === 'hermes') return 'hermes';
   return null;
 }
 
@@ -135,10 +140,10 @@ export default function CreateAgentPage() {
   });
 
   const [hasAgentByTab, setHasAgentByTab] = useState<Record<TabId, boolean | null>>(() => ({
-    milady:   true,   // Milady always renders the picker — no gate needed
-    openclaw: null,
-    hermes:   null,
-    custom:   null,
+    milady:   true,   // Hosted — picker renders unconditionally
+    hermes:   true,   // Hosted — picker renders unconditionally
+    openclaw: null,   // External — picker gated until user confirms they run one
+    custom:   null,   // External — picker gated until user confirms they run one
   }));
 
   // --- Avatar / color / identity state -----------------------------------

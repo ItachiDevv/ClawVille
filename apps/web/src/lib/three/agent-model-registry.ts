@@ -83,6 +83,15 @@ export const MODEL_REGISTRY = {
   milady_official_7: { path: '/avatars/milady-official-7.vrm', scale: 13, label: 'Milady Official 7', category: 'milady', avatar_type: 'vrm', preview: '/avatars/previews/milady-official-7.png' },
   milady_official_8: { path: '/avatars/milady-official-8.vrm', scale: 13, label: 'Milady Official 8', category: 'milady', avatar_type: 'vrm', preview: '/avatars/previews/milady-official-8.png' },
 
+  // Hermes-hosted VRM avatars (added 2026-05-12). Same scale as the Milady
+  // pool — they share the create-agent camera framing. Previews reuse the
+  // turnaround front views; we can swap to dedicated card art later. Animation
+  // clips live under /avatars/animations/{hermes-female,tekk-male}/*.glb but
+  // the picker only needs idle which the VRMCharacterAnimator routes
+  // transparently.
+  hermes_female: { path: '/avatars/hermes-female.vrm', scale: 13, label: 'Hermes',  category: 'hermes', avatar_type: 'vrm', preview: '/models/hermes-turnaround/female-front.png' },
+  hermes_male:   { path: '/avatars/hermes-male.vrm',   scale: 13, label: 'Tekk',    category: 'hermes', avatar_type: 'vrm', preview: '/models/tekk-turnaround/with-wings-front.png' },
+
   // NOTE: `crayfish` removed from the picker 2026-04-16 — the mesh renders
   // noticeably larger than lobster at the same scale (different pivot) and
   // consistently clipped the modal card. The GLB still ships under
@@ -102,11 +111,12 @@ export const CATEGORY_META: Partial<Record<AgentCategory, { label: string; descr
   openclaw: { label: 'OpenClaw', description: 'Crustacean agents — external gateway or OpenClaw framework' },
   other:    { label: 'Other',    description: 'Sea-creature agents — any framework' },
   milady:   { label: 'Milady',   description: 'Milady VRM avatars — humanoid Milady AI characters' },
+  hermes:   { label: 'Hermes',   description: 'Hermes VRM avatars — ClawVille-hosted Hermes runtimes' },
 };
 
 // Ordered list of categories for tab rendering.
-// milady restored 2026-04-21 with 8 VRM avatars.
-export const CATEGORY_ORDER: AgentCategory[] = ['openclaw', 'other', 'milady'];
+// milady restored 2026-04-21 with 8 VRM avatars; hermes added 2026-05-12.
+export const CATEGORY_ORDER: AgentCategory[] = ['openclaw', 'other', 'milady', 'hermes'];
 
 // Color presets — aligned with COLOR_TINTS hex values in SelectAgentCanvas so
 // the button background matches the actual GLB tint applied.
@@ -125,6 +135,7 @@ export const CATEGORY_DEFAULT_MODEL: Partial<Record<AgentCategory, ModelKey>> = 
   openclaw: 'lobster',
   other:    'jellyfish',
   milady:   'milady_official_1',
+  hermes:   'hermes_female',
 };
 
 // Agent harness options — controls which export format Phase 3 uses.
@@ -179,4 +190,8 @@ export const MODEL_KEY_TO_LEGACY_SPECIES: Record<ModelKey, LegacySpecies> = {
   milady_official_6:  'fox',
   milady_official_7:  'fox',
   milady_official_8:  'fox',
+  // Hermes VRMs map to 'fox' (humanoid → closest legacy fantasy fallback). The
+  // 3D path uses the actual VRM; this is purely the PixiJS 2D fallback sprite.
+  hermes_female:      'fox',
+  hermes_male:        'fox',
 };
