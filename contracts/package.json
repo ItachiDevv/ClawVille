@@ -1,0 +1,30 @@
+{
+  "name": "@clawville/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "lint": "prettier --check 'tests/**/*.ts'",
+    "lint:fix": "prettier --write 'tests/**/*.ts'",
+    "test": "anchor test",
+    "test:litesvm": "ts-mocha -p ./tsconfig.json -t 60000 tests/wager-litesvm.ts",
+    "build": "anchor build",
+    "deploy:devnet": "anchor deploy --provider.cluster devnet"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.31.1",
+    "@solana/spl-token": "^0.4.9",
+    "@solana/web3.js": "^1.95.4"
+  },
+  "devDependencies": {
+    "@types/bn.js": "^5.1.6",
+    "@types/chai": "^5.0.1",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.10.0",
+    "chai": "^5.1.2",
+    "litesvm": "^0.5.0",
+    "mocha": "^11.1.0",
+    "prettier": "^3.4.2",
+    "ts-mocha": "^11.1.0",
+    "typescript": "^5.7.3"
+  }
+}

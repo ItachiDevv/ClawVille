@@ -29,6 +29,9 @@ import { useActivityInput } from '@/hooks/useActivityInput';
 import BumperShellsHud from '@/components/game/bumper-shells-hud';
 import ReefRaceHud from '@/components/game/reef-race-hud';
 import ActivityMobileControls from '@/components/game/activity-mobile-controls';
+import LobbyLanding, {
+  type LobbySnapshot,
+} from '@/components/game/lobby-landing';
 import { primeActivitySounds, preloadActivitySounds } from '@/lib/activity-audio';
 import type { SpectatorCamMode } from '@/components/game/activity';
 
@@ -106,6 +109,28 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
     searchParams?.get('shortCode') ?? null,
   );
   const [shortCodeError, setShortCodeError] = useState<string | null>(null);
+
+  // Wager-lobby gate. The 3D scene only mounts once `lobbyState === 'in-game'`.
+  // Default is `in-lobby` so <LobbyLanding> renders first and the user must
+  // either create / join / pay before the scene boots. The `?invite=...`
+  // URL param feeds the lobby's invite_code so a friend link skips the form.
+  // See apps/web/src/components/game/lobby-landing.tsx for full state graph.
+  type LobbyGate = 'in-lobby' | 'in-game' | 'cancelled';
+  const [lobbyGate, setLobbyGate] = useState<LobbyGate>('in-lobby');
+  const inviteCodeFromUrl = searchParams?.get('invite') ?? null;
+
+  const handleLobbyLocked = useCallback((lobby: LobbySnapshot) => {
+    void lobby;
+    setLobbyGate('in-game');
+  }, []);
+  const handleLobbyCancelled = useCallback(
+    (lobby: LobbySnapshot) => {
+      void lobby;
+      setLobbyGate('cancelled');
+      router.push('/game');
+    },
+    [router],
+  );
 
   const { data: avatar, isLoading: avatarLoading } = useAvatar();
   const avatarId = avatar?.id ?? null;
@@ -303,6 +328,24 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
 
   if (!shortCode) {
     return <FullScreenStatus message="RESOLVING ROOM…" tone="neutral" />;
+  }
+
+  // Wager-lobby gate — render <LobbyLanding> first. Until the user creates
+  // / joins / locks a lobby, the 3D scene stays unmounted to keep the WebGPU
+  // context off and the pipeline-compile cost deferred.
+  if (lobbyGate !== 'in-game') {
+    const accent = activityId === 'reef-race' ? '#7CFFCB' : '#00E5FF';
+    return (
+      <LobbyLanding
+        activityId={activityId}
+        roomId={roomId}
+        inviteCode={inviteCodeFromUrl}
+        onLobbyLocked={handleLobbyLocked}
+        onLobbyCancelled={handleLobbyCancelled}
+        activityTitle={activityDef.title}
+        activityAccentColor={accent}
+      />
+    );
   }
 
   // Reef Race

@@ -157,10 +157,12 @@ const DEMO_NPCS: NpcSpriteState[] = [
   makeDemoNpc('milady-miu',     'Miu',       1400, 3000, 'milady_official_7', 0xffc0ff, false, 'looking_around'),
   makeDemoNpc('milady-kyoko',   'Kyoko',     3700, 2000, 'milady_official_8', 0xc0e8ff, false, 'squat'),
   makeDemoNpc('milady-vivi',    'Vivi',      1600, 1500, 'milady_official_2', 0xffd0a0),
-  // 2026-05-12: temporarily swapped to Mira/Tekk (hermes VRMs); reverted same
-  // day because shared VRM_NPC_SCALE=112 oversizes them. Restoring originals.
-  makeDemoNpc('milady-maple',   'Maple',     3500, 3500, 'milady_official_3', 0xffb0d0),
-  makeDemoNpc('milady-ash',     'Ash',       2700, 1500, 'milady_official_4', 0xd0c0ff),
+  // 2026-05-12 PM: Hermes wanderers restored with per-VRM auto-fit (Mira,
+  // Cyrus, Tekk) — see npc-definitions.ts. Each species lands at
+  // VRM_NPC_TARGET_HEIGHT_WU regardless of cm-vs-m authoring units.
+  makeDemoNpc('hermes-mira',  'Mira',  3500, 3500, 'hermes_female', 0xb088ff),
+  makeDemoNpc('hermes-cyrus', 'Cyrus', 2700, 1500, 'hermes_male',   0x4b6cb7),
+  makeDemoNpc('hermes-tekk',  'Tekk',  1900, 3800, 'tekk',          0x30c060),
   makeDemoNpc('wanderer-driftwood', 'Driftwood', 1500, 2400, 'lobster',     0x8d6e63),
   makeDemoNpc('wanderer-marlin',    'Marlin',    3700, 2700, 'sweet_crab',  0x00acc1),
   makeDemoNpc('wanderer-riptide',   'Riptide',   2600, 3500, 'hermitcrab',  0xa1887f),

@@ -59,6 +59,7 @@ import { getPublishedIssuerInfo } from './services/service-issuer';
 import { fingerprintMiddleware } from './middleware/fingerprint';
 import { cosmeticsRoutes } from './routes/cosmetics';
 import { dashAuthRoutes } from './routes/dash-auth';
+import { wagerRoutes } from './routes/wager';
 import type { AppContext } from './types';
 
 const app = new Hono<AppContext>();
@@ -187,6 +188,9 @@ app.route('/api/v2/agent', agentV2Routes);
 app.route('/api/dashboard', dashboardRoutes);
 // Phase 5.1 — cross-world portal + account linking (see plan §6.2 + §15).
 app.route('/api/portal', portalRoutes);
+// Wager lobbies + escrow (gambling-contracts vertical slice).
+// See routes/wager.ts header for the full surface + feature gates.
+app.route('/api/wager', wagerRoutes);
 // Phase 5.1 — admin identity recovery stub. Returns 501 behind a
 // FEATURE_GATE until the support-chat verification workflow lights up.
 app.route('/api/admin', adminIdentityRoutes);
@@ -351,6 +355,19 @@ startSimulation(arenaMode);
       activityWsHub.broadcastEvent(roomId, frame);
     });
     activityRoomManager.setLiveTransitionFn(async (room) => {
+      // Wager bridge — if this room has a wager lobby attached, flip it
+      // from `open` → `locked` on chain in lockstep with the FSM
+      // transition. Best-effort (errors logged) so a lock failure doesn't
+      // crash the match start; the lobby just stays open and we can
+      // refund via cancel later. See services/activity/wager-lobby-bridge.ts.
+      try {
+        const { lockLobbyForRoom } = await import(
+          './services/activity/wager-lobby-bridge'
+        );
+        await lockLobbyForRoom(room.id);
+      } catch (err) {
+        console.error('[API] wager-lobby-bridge lock failed:', err);
+      }
       // Chunk #10 — instantiate bot controllers for any bot participants.
       // The factory is per-activity so each sim (Bumper, Reef, future)
       // pulls its own controller class without touching this dispatcher.
@@ -465,12 +482,24 @@ startSimulation(arenaMode);
         activityWsHub.broadcastEvent(roomId, frame);
       }
     });
-    // Sim end → room manager LIVE→RESULTS transition.
+    // Sim end → room manager LIVE→RESULTS transition + wager settle bridge.
     bumperShellsSim.setEndedFn((roomId) => {
       void activityRoomManager
         .transitionRoom(roomId, 'results')
-        .then(() => {
+        .then(async () => {
           bumperShellsSim.stopRoom(roomId);
+          // Wager bridge — settle the wager lobby (if attached) to the
+          // first-placed avatar from the sim's computeResults.
+          try {
+            const results = bumperShellsSim.computeResults(roomId);
+            const winner = results.find((r) => r.placement === 1) ?? null;
+            const { settleLobbyForRoom } = await import(
+              './services/activity/wager-lobby-bridge'
+            );
+            await settleLobbyForRoom(roomId, winner?.avatarId ?? null);
+          } catch (err) {
+            console.error('[API] wager-lobby-bridge settle failed (bumper):', err);
+          }
         })
         .catch((err) => {
           console.error('[API] Sim end → RESULTS transition failed:', err);
@@ -502,8 +531,20 @@ startSimulation(arenaMode);
     reefRaceImpl.setEndedFn((roomId) => {
       void activityRoomManager
         .transitionRoom(roomId, 'results')
-        .then(() => {
+        .then(async () => {
           reefRaceImpl.stopRoom(roomId);
+          // Wager bridge — settle the wager lobby (if attached) for the
+          // first-placed avatar (placement 1 = race winner).
+          try {
+            const results = reefRaceImpl.computeResults(roomId);
+            const winner = results.find((r) => r.placement === 1) ?? null;
+            const { settleLobbyForRoom } = await import(
+              './services/activity/wager-lobby-bridge'
+            );
+            await settleLobbyForRoom(roomId, winner?.avatarId ?? null);
+          } catch (err) {
+            console.error('[API] wager-lobby-bridge settle failed (reef):', err);
+          }
         })
         .catch((err) => {
           console.error('[API] Reef sim end → RESULTS transition failed:', err);
