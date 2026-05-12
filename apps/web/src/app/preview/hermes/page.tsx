@@ -180,7 +180,7 @@ function HermesAvatar({
 // like physical cables attached to the model.
 const TRAIL_HISTORY_LEN = 14;
 const TRAIL_MIN_STEP = 0.025;
-const TRAIL_RESET_DISTANCE = 1.4;
+const TRAIL_RESET_DISTANCE = 12;
 
 const TRAIL_VERTEX_SHADER = `
   varying vec2 vUv;
@@ -222,16 +222,16 @@ const EMITTERS: Array<{
   hue: number;
   alpha: number;
 }> = [
-  { bone: 'leftHand',      offset: new THREE.Vector3( 0.02, -0.03, -0.04), width: 0.16, hue: 0.96, alpha: 0.9 },
-  { bone: 'leftHand',      offset: new THREE.Vector3(-0.04, -0.02,  0.05), width: 0.10, hue: 0.58, alpha: 0.8 },
-  { bone: 'rightHand',     offset: new THREE.Vector3(-0.02, -0.03, -0.04), width: 0.16, hue: 0.50, alpha: 0.9 },
-  { bone: 'rightHand',     offset: new THREE.Vector3( 0.04, -0.02,  0.05), width: 0.10, hue: 0.80, alpha: 0.8 },
-  { bone: 'leftFoot',      offset: new THREE.Vector3( 0.02, -0.08,  0.04), width: 0.13, hue: 0.14, alpha: 0.82 },
-  { bone: 'rightFoot',     offset: new THREE.Vector3(-0.02, -0.08,  0.04), width: 0.13, hue: 0.74, alpha: 0.82 },
-  { bone: 'leftShoulder',  offset: new THREE.Vector3( 0.58,  0.18, -0.28), width: 0.22, hue: 0.34, alpha: 0.72 },
-  { bone: 'leftShoulder',  offset: new THREE.Vector3( 0.86,  0.04, -0.44), width: 0.14, hue: 0.52, alpha: 0.66 },
-  { bone: 'rightShoulder', offset: new THREE.Vector3(-0.58,  0.18, -0.28), width: 0.22, hue: 0.06, alpha: 0.72 },
-  { bone: 'rightShoulder', offset: new THREE.Vector3(-0.86,  0.04, -0.44), width: 0.14, hue: 0.84, alpha: 0.66 },
+  { bone: 'leftHand',      offset: new THREE.Vector3( 0.02, -0.03, -0.04), width: 0.26, hue: 0.96, alpha: 0.95 },
+  { bone: 'leftHand',      offset: new THREE.Vector3(-0.04, -0.02,  0.05), width: 0.18, hue: 0.58, alpha: 0.88 },
+  { bone: 'rightHand',     offset: new THREE.Vector3(-0.02, -0.03, -0.04), width: 0.26, hue: 0.50, alpha: 0.95 },
+  { bone: 'rightHand',     offset: new THREE.Vector3( 0.04, -0.02,  0.05), width: 0.18, hue: 0.80, alpha: 0.88 },
+  { bone: 'leftFoot',      offset: new THREE.Vector3( 0.02, -0.08,  0.04), width: 0.22, hue: 0.14, alpha: 0.9 },
+  { bone: 'rightFoot',     offset: new THREE.Vector3(-0.02, -0.08,  0.04), width: 0.22, hue: 0.74, alpha: 0.9 },
+  { bone: 'leftShoulder',  offset: new THREE.Vector3( 0.58,  0.18, -0.28), width: 0.36, hue: 0.34, alpha: 0.86 },
+  { bone: 'leftShoulder',  offset: new THREE.Vector3( 0.86,  0.04, -0.44), width: 0.24, hue: 0.52, alpha: 0.78 },
+  { bone: 'rightShoulder', offset: new THREE.Vector3(-0.58,  0.18, -0.28), width: 0.36, hue: 0.06, alpha: 0.86 },
+  { bone: 'rightShoulder', offset: new THREE.Vector3(-0.86,  0.04, -0.44), width: 0.24, hue: 0.84, alpha: 0.78 },
 ];
 
 interface SpeedTrail {
