@@ -558,12 +558,33 @@ export class VRMCharacterAnimator {
   setSurfaceClip(name: AnimName): void {
     const prev = this.surfaceClip;
     this.surfaceClip = name;
-    // If we're not actively moving and not mid-emote, the avatar is currently
-    // playing the PREVIOUS surfaceClip. Without triggering a crossfade here,
-    // changing surfaceClip is a no-op until isMoving toggles. Force the
-    // crossfade so consumers (e.g. /preview/hermes Run toggle, Reef Race
-    // mode switch) actually see the new resting animation play.
-    if (prev !== name && this.ready && !this.oneShotActive && !this.wasMoving) {
+    if (prev === name || !this.ready) return;
+
+    // Lazy-load + retarget non-locomotion surface clips (swimming, flying,
+    // etc.) the first time they're requested. init() only preloads
+    // idle/walk/run, so without this branch the crossfade silently no-ops.
+    if (!this.actions[name]) {
+      void loadRawGltf(name, this.characterId)
+        .then((gltf) => {
+          if (!this.mixer) return; // disposed mid-load
+          const retargeted = retargetMixamoClip(gltf, this.vrm, name);
+          const action = this.mixer.clipAction(retargeted);
+          action.setLoop(THREE.LoopRepeat, Infinity);
+          action.clampWhenFinished = false;
+          this.actions[name] = action;
+          // Only crossfade if user is still asking for this surface clip
+          // and not actively moving / mid-emote.
+          if (this.surfaceClip === name && !this.oneShotActive && !this.wasMoving) {
+            this.applyCrossfade(false);
+          }
+        })
+        .catch((err) => {
+          console.warn(`[VRMCharacterAnimator] setSurfaceClip lazy-load failed for "${name}":`, err);
+        });
+      return;
+    }
+
+    if (!this.oneShotActive && !this.wasMoving) {
       this.applyCrossfade(false);
     }
   }
