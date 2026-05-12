@@ -836,7 +836,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     // thumbnail JPEG, model choice). sessionStorage is per-tab so this is
     // defensive — covers the case where the same tab persists across login.
     if (typeof window !== 'undefined') {
-      try { sessionStorage.removeItem('createPetStep1'); } catch { /* ignore storage errors */ }
+      try { sessionStorage.removeItem('createAvatarStep1'); } catch { /* ignore storage errors */ }
     }
     set({
     controlMode: 'explore',

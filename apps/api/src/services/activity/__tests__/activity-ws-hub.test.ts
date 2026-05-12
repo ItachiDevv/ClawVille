@@ -145,7 +145,7 @@ beforeEach(() => {
   activityRoomManager.__resetForTest();
 });
 
-async function roomWithPets(avatarIds: string[]) {
+async function roomWithAvatars(avatarIds: string[]) {
   return activityRoomManager.createRoom(
     'bumper-shells',
     avatarIds.map((p) => ({
@@ -163,7 +163,7 @@ async function roomWithPets(avatarIds: string[]) {
 
 describe('WS auth handshake', () => {
   it('accepts a valid auth frame and sends snapshot.init', async () => {
-    const room = await roomWithPets(['avatar-1', 'avatar-2', 'avatar-3', 'avatar-4']);
+    const room = await roomWithAvatars(['avatar-1', 'avatar-2', 'avatar-3', 'avatar-4']);
     const fake = makeFakeWs(room.id);
     await activityWsHub.handleMessage(
       fake.ws,
@@ -179,7 +179,7 @@ describe('WS auth handshake', () => {
   });
 
   it('closes 4001 on unknown sessionToken', async () => {
-    const room = await roomWithPets(['avatar-1', 'avatar-2', 'avatar-3', 'avatar-4']);
+    const room = await roomWithAvatars(['avatar-1', 'avatar-2', 'avatar-3', 'avatar-4']);
     const fake = makeFakeWs(room.id);
     await activityWsHub.handleMessage(
       fake.ws,
@@ -193,7 +193,7 @@ describe('WS auth handshake', () => {
   });
 
   it('closes 4001 on shortCode mismatch', async () => {
-    const room = await roomWithPets(['avatar-1', 'avatar-2', 'avatar-3', 'avatar-4']);
+    const room = await roomWithAvatars(['avatar-1', 'avatar-2', 'avatar-3', 'avatar-4']);
     const fake = makeFakeWs(room.id);
     await activityWsHub.handleMessage(
       fake.ws,
@@ -207,7 +207,7 @@ describe('WS auth handshake', () => {
   });
 
   it('closes 4001 when avatar not in room', async () => {
-    const room = await roomWithPets(['avatar-1', 'avatar-3', 'avatar-4', 'avatar-5']); // avatar-2 absent
+    const room = await roomWithAvatars(['avatar-1', 'avatar-3', 'avatar-4', 'avatar-5']); // avatar-2 absent
     const fake = makeFakeWs(room.id);
     await activityWsHub.handleMessage(
       fake.ws,
@@ -221,7 +221,7 @@ describe('WS auth handshake', () => {
   });
 
   it('closes 4001 when first frame is not auth', async () => {
-    const room = await roomWithPets(['avatar-1', 'avatar-2', 'avatar-3', 'avatar-4']);
+    const room = await roomWithAvatars(['avatar-1', 'avatar-2', 'avatar-3', 'avatar-4']);
     const fake = makeFakeWs(room.id);
     await activityWsHub.handleMessage(
       fake.ws,
@@ -231,7 +231,7 @@ describe('WS auth handshake', () => {
   });
 
   it('rejects unknown frame types without closing the socket', async () => {
-    const room = await roomWithPets(['avatar-1', 'avatar-2', 'avatar-3', 'avatar-4']);
+    const room = await roomWithAvatars(['avatar-1', 'avatar-2', 'avatar-3', 'avatar-4']);
     const fake = makeFakeWs(room.id);
     await activityWsHub.handleMessage(
       fake.ws,
@@ -247,7 +247,7 @@ describe('WS auth handshake', () => {
 
 describe('broadcastEvent fan-out', () => {
   it('delivers to every authed participant', async () => {
-    const room = await roomWithPets(['avatar-1', 'avatar-2', 'avatar-3', 'avatar-4']);
+    const room = await roomWithAvatars(['avatar-1', 'avatar-2', 'avatar-3', 'avatar-4']);
     const a = makeFakeWs(room.id);
     const b = makeFakeWs(room.id);
     await activityWsHub.handleMessage(
@@ -271,7 +271,7 @@ describe('broadcastEvent fan-out', () => {
   });
 
   it('reports active connections count', async () => {
-    const room = await roomWithPets(['avatar-1', 'avatar-2', 'avatar-3', 'avatar-4']);
+    const room = await roomWithAvatars(['avatar-1', 'avatar-2', 'avatar-3', 'avatar-4']);
     expect(activityWsHub.getActiveConnections(room.id)).toBe(0);
     const fake = makeFakeWs(room.id);
     await activityWsHub.handleMessage(
@@ -286,7 +286,7 @@ describe('broadcastEvent fan-out', () => {
 
 describe('broadcastSnapshot backpressure', () => {
   it('skips snapshot delta when getBufferedAmount > threshold', async () => {
-    const room = await roomWithPets(['avatar-1', 'avatar-2', 'avatar-3', 'avatar-4']);
+    const room = await roomWithAvatars(['avatar-1', 'avatar-2', 'avatar-3', 'avatar-4']);
     const fake = makeFakeWs(room.id);
     await activityWsHub.handleMessage(
       fake.ws,
@@ -313,7 +313,7 @@ describe('broadcastSnapshot backpressure', () => {
 
 describe('unregisterConnection cleanup', () => {
   it('removes the WS from the room map', async () => {
-    const room = await roomWithPets(['avatar-1', 'avatar-2', 'avatar-3', 'avatar-4']);
+    const room = await roomWithAvatars(['avatar-1', 'avatar-2', 'avatar-3', 'avatar-4']);
     const fake = makeFakeWs(room.id);
     await activityWsHub.handleMessage(
       fake.ws,
@@ -325,7 +325,7 @@ describe('unregisterConnection cleanup', () => {
   });
 
   it('marks the participant as disconnected', async () => {
-    const room = await roomWithPets(['avatar-1', 'avatar-2', 'avatar-3', 'avatar-4']);
+    const room = await roomWithAvatars(['avatar-1', 'avatar-2', 'avatar-3', 'avatar-4']);
     const fake = makeFakeWs(room.id);
     await activityWsHub.handleMessage(
       fake.ws,

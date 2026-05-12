@@ -218,7 +218,7 @@ function drawFenceDecoration(g: Graphics, col: number, row: number) {
 }
 
 // ---- Preload all avatar sprites ----
-async function preloadPetTextures() {
+async function preloadAvatarTextures() {
   const entries = Object.entries(SPECIES_SPRITE_MAP) as [AvatarSpecies, string][];
   const promises = entries.map(([, path]) => Assets.load(path));
   await Promise.all(promises);
@@ -304,7 +304,7 @@ export default function PixiCanvas({ isSpectator = false }: PixiCanvasProps) {
 
     (async () => {
       // Start preloading avatar textures in parallel (don't block canvas init)
-      const texturesReady = preloadPetTextures();
+      const texturesReady = preloadAvatarTextures();
 
       const viewW = window.innerWidth;
       const viewH = window.innerHeight;

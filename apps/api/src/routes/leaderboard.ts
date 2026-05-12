@@ -85,7 +85,7 @@ interface LeaderboardEntry {
 
 interface LeaderboardSnapshot {
   entries: LeaderboardEntry[];
-  totalPets: number;
+  totalAvatars: number;
   generatedAt: string;
 }
 
@@ -170,7 +170,7 @@ async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
     .where(eq(avatars.isActive, true));
 
   if (avatarRows.length === 0) {
-    return { entries: [], totalPets: 0, generatedAt: new Date().toISOString() };
+    return { entries: [], totalAvatars: 0, generatedAt: new Date().toISOString() };
   }
 
   const earnedRows = await db
@@ -263,7 +263,7 @@ async function buildSnapshot(cap: number): Promise<LeaderboardSnapshot> {
 
   return {
     entries: ranked,
-    totalPets: avatarRows.length,
+    totalAvatars: avatarRows.length,
     generatedAt: new Date().toISOString(),
   };
 }
@@ -721,7 +721,7 @@ async function buildAgentSnapshot(
     { id: string; name: string; walletAddress: string | null }
   >();
   if (userIds.length > 0) {
-    const petsForBots = await db
+    const avatarsForBots = await db
       .select({
         id: avatars.id,
         name: avatars.name,
@@ -731,7 +731,7 @@ async function buildAgentSnapshot(
       .from(avatars)
       .where(and(inArray(avatars.userId, userIds), eq(avatars.isActive, true)));
 
-    for (const p of petsForBots) {
+    for (const p of avatarsForBots) {
       avatarByUserId.set(p.userId, {
         id: p.id,
         name: p.name,
@@ -748,7 +748,7 @@ async function buildAgentSnapshot(
     { id: string; name: string; walletAddress: string | null }
   >();
   if (avatarSubjectIds.length > 0) {
-    const directPets = await db
+    const directAvatars = await db
       .select({
         id: avatars.id,
         name: avatars.name,
@@ -757,7 +757,7 @@ async function buildAgentSnapshot(
       .from(avatars)
       .where(and(inArray(avatars.id, avatarSubjectIds), eq(avatars.isActive, true)));
 
-    for (const p of directPets) {
+    for (const p of directAvatars) {
       avatarById.set(p.id, {
         id: p.id,
         name: p.name,
@@ -1024,7 +1024,7 @@ leaderboardRoutes.get('/', sessionMiddleware, async (c) => {
     sort,
     limit,
     offset,
-    totalPets: snapshot.totalPets,
+    totalAvatars: snapshot.totalAvatars,
     rankedCount: sorted.length,
     generatedAt: snapshot.generatedAt,
     me: meAvatar,
@@ -1061,8 +1061,8 @@ leaderboardRoutes.get('/stats', sessionMiddleware, async (c) => {
   );
 
   return c.json({
-    totalPets: snapshot.totalPets,
-    rankedPets: snapshot.entries.length,
+    totalAvatars: snapshot.totalAvatars,
+    rankedAvatars: snapshot.entries.length,
     totalGold,
     totalEarned,
     totalSkillsSold,

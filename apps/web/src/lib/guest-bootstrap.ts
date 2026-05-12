@@ -19,7 +19,7 @@
  *
  * The avatar provider invalidation is the caller's responsibility (because
  * the helper has no access to the QueryClient outside React) — but a
- * convenience hook `useEnsureGuestPet` does that automatically.
+ * convenience hook `useEnsureGuestAvatar` does that automatically.
  */
 
 import { api, type GuestSignupResponse } from './api';
@@ -38,7 +38,7 @@ let inflight: Promise<GuestSignupResponse | null> | null = null;
  *
  * Single-flight: concurrent calls share one network request.
  */
-export function ensureGuestPet(
+export function ensureGuestAvatar(
   options?: { requestedName?: string },
 ): Promise<GuestSignupResponse | null> {
   if (inflight) return inflight;
