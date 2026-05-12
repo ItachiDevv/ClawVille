@@ -308,6 +308,34 @@ export function preloadMixamoClips(): void {
 
 const CROSSFADE_DURATION = 0.3; // seconds
 
+/**
+ * Clips whose root motion should be FULLY stripped so the character plays
+ * the animation in place. Mixamo bakes:
+ *   - walk / idle: ~5cm vertical hip bob (good — drives spring bones)
+ *   - run: ~30cm vertical AND forward drift (bad — character "resets in place")
+ *   - swim / fly: large upward/forward drift (very bad — character flies off
+ *     screen then snaps back every loop)
+ *
+ * The retargeter already zeros X and Z (so walk doesn't moonwalk backwards),
+ * but it keeps the Y track for the hip bob. For the clips below we drop the
+ * Y track too so the character stays planted at the same height.
+ */
+const IN_PLACE_CLIPS: ReadonlySet<AnimName> = new Set([
+  'run',
+  'swimming',
+  'flying',
+]);
+
+/**
+ * Strip ALL position tracks from a retargeted clip so the character plays in
+ * place. Walk/idle keep their hip-bob; everything in IN_PLACE_CLIPS gets a
+ * pure rotation-only clip.
+ */
+function stripPositionTracks(clip: THREE.AnimationClip): THREE.AnimationClip {
+  clip.tracks = clip.tracks.filter((t) => !t.name.endsWith('.position'));
+  return clip;
+}
+
 export class VRMCharacterAnimator {
   private vrm: VRM;
   private mixer: THREE.AnimationMixer;
@@ -436,6 +464,7 @@ export class VRMCharacterAnimator {
         let retargeted: THREE.AnimationClip;
         try {
           retargeted = retargetMixamoClip(gltf, this.vrm, name);
+          if (IN_PLACE_CLIPS.has(name)) stripPositionTracks(retargeted);
         } catch (err) {
           console.warn(`[VRMCharacterAnimator] retarget failed for clip "${name}":`, err);
           continue;
@@ -568,6 +597,7 @@ export class VRMCharacterAnimator {
         .then((gltf) => {
           if (!this.mixer) return; // disposed mid-load
           const retargeted = retargetMixamoClip(gltf, this.vrm, name);
+          if (IN_PLACE_CLIPS.has(name)) stripPositionTracks(retargeted);
           const action = this.mixer.clipAction(retargeted);
           action.setLoop(THREE.LoopRepeat, Infinity);
           action.clampWhenFinished = false;
@@ -701,6 +731,7 @@ export class VRMCharacterAnimator {
       try {
         const gltf = await loadRawGltf(name, this.characterId);
         const retargeted = retargetMixamoClip(gltf, this.vrm, name);
+        if (IN_PLACE_CLIPS.has(name)) stripPositionTracks(retargeted);
         const action = this.mixer.clipAction(retargeted);
         this.actions[name] = action;
       } catch (err) {
