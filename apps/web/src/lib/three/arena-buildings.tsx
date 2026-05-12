@@ -93,7 +93,7 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // hack was inherited from the OLD GLB which had EXT_mesh_gpu_instancing
   // and a tiny source bbox — that's not the case anymore, so yOffset reset
   // to 0 to keep it on the ground like the other buildings.
-  'messaging-channels':    { model: '/models/sandy-treedome.glb',      yOffset: 0, rotY:  1.259 },
+  'messaging-channels':    { model: '/models/sandy-treedome-v2.glb',   yOffset: 0, rotY:  1.259 },
   // i=9  center=(47,35)    dx=33,  dz=45   → atan2(33,45)≈0.632
   // patricks-rock.glb = Patrick's Rock (CC-BY, Yanez Designs, Sketchfab, 3.5k tris)
   // building-submarine.glb is now a fixed-landmark decoration only (arena-terrain.tsx FixedLandmarks)
