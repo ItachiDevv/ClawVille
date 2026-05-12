@@ -154,45 +154,81 @@ function HermesAvatar({ character, mode }: { character: Character; mode: Mode })
   );
 }
 
-function SpeedLines({ active }: { active: boolean }) {
-  // 8 rainbow lines spread vertically across the character's silhouette,
-  // each at varying length/speed for parallax. Lines live in scene space at
-  // z=-6 (behind the avatar at z=0) so they sit between the white backdrop
-  // and the character. Plain Mesh + MeshBasicMaterial — no shaders, safe on
-  // Iris Xe.
-  const refs = useRef<(THREE.Mesh | null)[]>([]);
-  const speeds = useMemo(() => SPEEDLINE_COLORS.map((_, i) => 14 + i * 1.7), []);
-  const widths = useMemo(() => SPEEDLINE_COLORS.map((_, i) => 3.2 + (i % 4) * 1.4), []);
+// 3D hyperspace-style speed streaks. Each streak is a thin box elongated
+// along Z that flies from far behind the character toward the camera, giving
+// proper perspective + depth instead of flat 2D bars.
+const STREAK_COUNT = 60;
+const STREAK_Z_FAR = -60;     // spawn depth
+const STREAK_Z_RESET = 22;    // when past this, wrap back to FAR
+const STREAK_LENGTH = 3.5;    // along local Z
 
-  // Continuously animate even when inactive — `<group visible>` toggles
-  // display, not the mesh.position updates. This way toggling Run/Fly shows
-  // lines mid-stream rather than snapped at x=-12.
+interface Streak {
+  x: number;
+  y: number;
+  z: number;       // current depth, updated per frame
+  speed: number;   // u/sec toward +Z (toward camera)
+  color: string;
+  scaleZ: number;  // some streaks are longer for variety
+}
+
+function SpeedLines({ active }: { active: boolean }) {
+  // Generate one stable streak field for the lifetime of the component.
+  // Position/speed/color all randomized once so each line has its own
+  // parallax depth and won't snap on toggle.
+  const streaks = useMemo<Streak[]>(() => {
+    const rng = (seed: number) => {
+      // Tiny deterministic PRNG so HMR keeps the same field across reloads
+      let s = seed;
+      return () => {
+        s = (s * 9301 + 49297) % 233280;
+        return s / 233280;
+      };
+    };
+    const r = rng(1337);
+    return Array.from({ length: STREAK_COUNT }, (_, i) => ({
+      x: (r() - 0.5) * 26,                    // -13 .. +13
+      y: r() * 13 + 0.5,                      // 0.5 .. 13.5
+      z: STREAK_Z_FAR + r() * (STREAK_Z_RESET - STREAK_Z_FAR),
+      speed: 26 + r() * 28,                   // 26 .. 54 u/s
+      color: SPEEDLINE_COLORS[i % SPEEDLINE_COLORS.length]!,
+      scaleZ: 0.7 + r() * 1.8,                // 0.7 .. 2.5x length
+    }));
+  }, []);
+
+  const refs = useRef<(THREE.Mesh | null)[]>([]);
+
   useFrame((_, delta) => {
     const dt = Math.min(delta, 0.05);
-    for (let i = 0; i < refs.current.length; i++) {
+    for (let i = 0; i < streaks.length; i++) {
       const m = refs.current[i];
+      const s = streaks[i]!;
       if (!m) continue;
-      m.position.x += speeds[i]! * dt;
-      if (m.position.x > 14) m.position.x = -14;
+      s.z += s.speed * dt;
+      if (s.z > STREAK_Z_RESET) {
+        // Wrap: respawn far behind with a NEW lateral position so the field
+        // doesn't show a repeating pattern.
+        s.z = STREAK_Z_FAR;
+        s.x = (Math.random() - 0.5) * 26;
+        s.y = Math.random() * 13 + 0.5;
+      }
+      m.position.set(s.x, s.y, s.z);
     }
   });
 
   return (
     <group visible={active}>
-      {SPEEDLINE_COLORS.map((color, i) => {
-        const y = 1.5 + (i / SPEEDLINE_COLORS.length) * 9.5; // y=1.5 .. y=11
-        const startX = -14 + (i * 28) / SPEEDLINE_COLORS.length;
-        return (
-          <mesh
-            key={i}
-            ref={(m) => { refs.current[i] = m; }}
-            position={[startX, y, -6]}
-          >
-            <planeGeometry args={[widths[i]!, 0.18]} />
-            <meshBasicMaterial color={color} transparent opacity={0.85} toneMapped={false} />
-          </mesh>
-        );
-      })}
+      {streaks.map((s, i) => (
+        <mesh
+          key={i}
+          ref={(m) => { refs.current[i] = m; }}
+          position={[s.x, s.y, s.z]}
+          scale={[1, 1, s.scaleZ]}
+        >
+          {/* Thin elongated box: width 0.08, height 0.08, length STREAK_LENGTH along Z */}
+          <boxGeometry args={[0.09, 0.09, STREAK_LENGTH]} />
+          <meshBasicMaterial color={s.color} toneMapped={false} />
+        </mesh>
+      ))}
     </group>
   );
 }
