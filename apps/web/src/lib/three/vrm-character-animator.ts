@@ -82,6 +82,43 @@ const ANIM_PATHS = {
 } as const;
 
 export type AnimName = keyof typeof ANIM_PATHS;
+
+// ---------------------------------------------------------------------------
+// Per-character animation overrides
+//
+// Mixamo's stock animations (ANIM_PATHS above) are baked on a default Mixamo
+// skeleton — bone lengths differ from any specific character. The retargeter
+// compensates with a rest-pose-differential rotation, but when bone proportions
+// diverge enough (Hermes-female, Hermes-male/Tekk), the resulting deformations
+// look wrong (feet meshing together mid-stride, hands clipping through hips).
+//
+// Fix: re-download each animation from Mixamo with the character loaded
+// (Skin: With Skin → keyframes baked to THAT character's bone lengths) and
+// register the per-character GLB path here. When VRMCharacterAnimator is
+// constructed with a matching characterId, it loads the override; otherwise
+// it falls back to the generic ANIM_PATHS entry.
+// ---------------------------------------------------------------------------
+
+const CHARACTER_ANIM_OVERRIDES: Record<string, Partial<Record<AnimName, string>>> = {
+  'hermes-male': {
+    idle:          '/avatars/animations/tekk-male/idle.glb',
+    walk:          '/avatars/animations/tekk-male/walk.glb',
+    run:           '/avatars/animations/tekk-male/run.glb',
+    victory:       '/avatars/animations/tekk-male/cheering.glb',
+    surf_idle:     '/avatars/animations/tekk-male/skateboarding.glb',
+    wipeout:       '/avatars/animations/tekk-male/wipeout.glb',
+  },
+  // 'hermes-female' overrides will be added once user re-uploads her to
+  // Mixamo and we get her character-specific animation FBXs.
+};
+
+function resolveAnimPath(name: AnimName, characterId?: string): string {
+  if (characterId && CHARACTER_ANIM_OVERRIDES[characterId]?.[name]) {
+    return CHARACTER_ANIM_OVERRIDES[characterId][name]!;
+  }
+  return ANIM_PATHS[name];
+}
+
 /**
  * Subset of AnimName intended for one-shot emote triggering. Excludes
  * locomotion clips (idle/walk/run) — those are managed by the locomotion
@@ -130,7 +167,10 @@ type RawGltfEntry =
   | { status: 'resolved'; gltf:    MixamoGltf }
   | { status: 'rejected'; error:   unknown };
 
-const RAW_CLIP_CACHE = new Map<AnimName, RawGltfEntry>();
+// Cache keyed by the FULL resolved path, so per-character overrides don't
+// collide with the generic clip of the same AnimName, and so two characters
+// sharing the same override path still hit the same cached GLTF.
+const RAW_CLIP_CACHE = new Map<string, RawGltfEntry>();
 
 // Separate loader for anim GLBs — no VRMLoaderPlugin needed
 let _animLoader: GLTFLoader | null = null;
@@ -148,15 +188,15 @@ function getAnimLoader(): GLTFLoader {
  * Load a Mixamo animation GLB and return the full GLTF bundle ({ scene, animations }).
  * Promise is cached at module level — each path loads only once.
  */
-function loadRawGltf(name: AnimName): Promise<MixamoGltf> {
-  const cached = RAW_CLIP_CACHE.get(name);
+function loadRawGltf(name: AnimName, characterId?: string): Promise<MixamoGltf> {
+  const path = resolveAnimPath(name, characterId);
+  const cached = RAW_CLIP_CACHE.get(path);
   if (cached) {
     if (cached.status === 'resolved') return Promise.resolve(cached.gltf);
     if (cached.status === 'rejected') return Promise.reject(cached.error);
     return cached.promise;
   }
 
-  const path = ANIM_PATHS[name];
   const promise = getAnimLoader()
     .loadAsync(path)
     .then((gltf) => {
@@ -170,15 +210,15 @@ function loadRawGltf(name: AnimName): Promise<MixamoGltf> {
       // Force matrix world computation once at load time so the retargeter
       // gets accurate rest-pose world quaternions from the source rig nodes.
       entry.scene.updateMatrixWorld(true);
-      RAW_CLIP_CACHE.set(name, { status: 'resolved', gltf: entry });
+      RAW_CLIP_CACHE.set(path, { status: 'resolved', gltf: entry });
       return entry;
     })
     .catch((err) => {
-      RAW_CLIP_CACHE.set(name, { status: 'rejected', error: err });
+      RAW_CLIP_CACHE.set(path, { status: 'rejected', error: err });
       throw err;
     });
 
-  RAW_CLIP_CACHE.set(name, { status: 'pending', promise });
+  RAW_CLIP_CACHE.set(path, { status: 'pending', promise });
   return promise;
 }
 
@@ -292,8 +332,16 @@ export class VRMCharacterAnimator {
   // Reference: https://github.com/VerseEngine/three-avatar/blob/main/src/avatar.ts#L614
   private _skeletonUpdateFns: Map<THREE.Skeleton, () => void> = new Map();
 
-  constructor(vrm: VRM) {
+  /**
+   * Optional character ID used to look up per-character animation overrides
+   * in CHARACTER_ANIM_OVERRIDES. When unset, the generic ANIM_PATHS are used
+   * for every clip — current behavior for Milady/legacy avatars.
+   */
+  private characterId: string | undefined;
+
+  constructor(vrm: VRM, characterId?: string) {
     this.vrm = vrm;
+    this.characterId = characterId;
     // Mixer is rooted at vrm.scene so PropertyBinding can resolve
     // Normalized_* node names. VRMHumanoidRig (containing those nodes)
     // is a child of vrm.scene — scene.getObjectByName() finds them from here.
@@ -359,7 +407,7 @@ export class VRMCharacterAnimator {
       : [...locomotion, startClip];
 
     try {
-      const rawGltfs = await Promise.all(toLoad.map((n) => loadRawGltf(n)));
+      const rawGltfs = await Promise.all(toLoad.map((n) => loadRawGltf(n, this.characterId)));
 
       for (let i = 0; i < toLoad.length; i++) {
         const name = toLoad[i]!;
@@ -601,7 +649,7 @@ export class VRMCharacterAnimator {
     // Lazy-load + retarget if first time.
     if (!this.actions[name]) {
       try {
-        const gltf = await loadRawGltf(name);
+        const gltf = await loadRawGltf(name, this.characterId);
         const retargeted = retargetMixamoClip(gltf, this.vrm, name);
         const action = this.mixer.clipAction(retargeted);
         this.actions[name] = action;
