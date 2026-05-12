@@ -85,7 +85,7 @@ function useIsMobile(): boolean {
 // Character frame — top-of-sidebar "unit frame" showing the avatar identity.
 // ---------------------------------------------------------------------------
 
-function CharacterFrame({ onCreatePet }: { onCreatePet: () => void }) {
+function CharacterFrame({ onCreateAvatar }: { onCreateAvatar: () => void }) {
   const { data: avatar, isLoading } = useAvatar();
 
   if (isLoading) {
@@ -134,7 +134,7 @@ function CharacterFrame({ onCreatePet }: { onCreatePet: () => void }) {
         <p style={{ fontSize: 11, color: '#94a3b8', lineHeight: 1.4, margin: 0 }}>
           Enter the world by selecting or creating an agent.
         </p>
-        <RpgButton size="sm" variant="primary" onClick={onCreatePet}>
+        <RpgButton size="sm" variant="primary" onClick={onCreateAvatar}>
           Create Agent
         </RpgButton>
       </div>
@@ -679,7 +679,7 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
         minHeight: 0,
       }}
     >
-      <CharacterFrame onCreatePet={handleCreateAgent} />
+      <CharacterFrame onCreateAvatar={handleCreateAgent} />
 
       <div
         className="rpg-sidebar-scroll"

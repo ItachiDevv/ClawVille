@@ -227,7 +227,7 @@ function StatsBar() {
         marginBottom: 14,
       }}
     >
-      <StatPill icon="🐾" label="Avatars" value={data.totalPets.toLocaleString()} />
+      <StatPill icon="🐾" label="Avatars" value={data.totalAvatars.toLocaleString()} />
       <StatPill
         icon="💰"
         label="Gold in circ"
@@ -577,7 +577,7 @@ export default function LeaderboardModal() {
             textTransform: 'uppercase',
           }}
         >
-          {data.rankedCount} of {data.totalPets} avatars · refreshed every 30s
+          {data.rankedCount} of {data.totalAvatars} avatars · refreshed every 30s
         </div>
       )}
     </RpgModal>

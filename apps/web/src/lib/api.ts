@@ -815,7 +815,7 @@ export const api = {
       sort: string;
       limit: number;
       offset: number;
-      totalPets: number;
+      totalAvatars: number;
       rankedCount: number;
       generatedAt: string;
       me: {
@@ -836,8 +836,8 @@ export const api = {
 
   getLeaderboardStats: () =>
     honoRequest<{
-      totalPets: number;
-      rankedPets: number;
+      totalAvatars: number;
+      rankedAvatars: number;
       totalGold: number;
       totalEarned: number;
       totalSkillsSold: number;

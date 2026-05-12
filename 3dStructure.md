@@ -149,7 +149,7 @@ Every hot path uses module-scope `THREE.Vector3 / Matrix4 / Raycaster` scratch o
 - `arena-npcs.tsx:44-47` — `_raycaster, _rayOrigin, _rayDir`
 - `arena-buildings.tsx:37-40` — `_buildRaycaster, _buildRayOrigin, _buildRayDir`
 - `arena-location-npcs.tsx:27-30` — `_locRaycaster, _locRayOrigin, _locRayDir`
-- `player-avatar.tsx:94-97` — `_petRaycaster, _petRayOrigin, _petRayDir`
+- `player-avatar.tsx:94-97` — `_avatarRaycaster, _avatarRayOrigin, _avatarRayDir`
 - `click-to-move.tsx:31-33` — `_dotWorldPos, _dotMatrix, _rotMatrix`
 - `npc-controller.tsx:45-47` — `_camForward, _camRight, _worldUp`
 - `particle-system.tsx:161-164` — `_particleMatrix, _particleScale, _particlePos, _particleQuat`

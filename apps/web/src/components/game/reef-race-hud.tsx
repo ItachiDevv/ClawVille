@@ -525,7 +525,7 @@ function PowerUpSlotCard({
   );
 }
 
-function PowerUpBar({ selfAvatarId: _selfPetId }: { selfAvatarId: string | null }) {
+function PowerUpBar({ selfAvatarId: _selfAvatarId }: { selfAvatarId: string | null }) {
   const inventory = useActivityStore((s) => s.powerUpInventory);
   // Pad to REEF_MAX_POWER_UP_SLOTS (= 2) so empty slots stay visible — the
   // whole point of this HUD is "you can SEE you have nothing yet" instead of

@@ -74,11 +74,11 @@ export interface EliminatedOverlayProps {
   onTaunt: () => void;
   /**
    * Backwards-compat (chunk #4 callers): the chunk #4 stub accepted only
-   * `eliminatedAt`, `placement`, `spectatingPet`. Tests + legacy callers
+   * `eliminatedAt`, `placement`, `spectatingAvatar`. Tests + legacy callers
    * passing the old shape still compile but get the upgraded UI when the
    * new props are also supplied. The field is read-only in §7's wireframe.
    */
-  spectatingPet?: string;
+  spectatingAvatar?: string;
 }
 
 // ─── Component ───────────────────────────────────────────────────────────────
