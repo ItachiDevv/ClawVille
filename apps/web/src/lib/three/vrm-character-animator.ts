@@ -72,6 +72,9 @@ const ANIM_PATHS = {
   // animator silently handles as a no-op.
   swimming:        '/avatars/animations/hermes-female/swimming.glb',
   flying:          '/avatars/animations/tekk-male/flying.glb',
+  // praying is intended as a female-only emote; generic fallback uses
+  // Hermes-female's bake so retargeting works for any humanoid VRM.
+  praying:         '/avatars/animations/hermes-female/praying.glb',
   // Emotes — 13 new peaceful clips (imported from Milady fork)
   crawling:        '/avatars/animations/emotes/crawling.glb',
   crying:          '/avatars/animations/emotes/crying.glb',
@@ -125,6 +128,7 @@ const CHARACTER_ANIM_OVERRIDES: Record<string, Partial<Record<AnimName, string>>
     surf_idle:     '/avatars/animations/hermes-female/skateboarding.glb',
     wipeout:       '/avatars/animations/hermes-female/wipeout.glb',
     swimming:      '/avatars/animations/hermes-female/swimming.glb',
+    praying:       '/avatars/animations/hermes-female/praying.glb',
     // Note: she also downloaded a `praying.glb` bonus emote at
     // /avatars/animations/hermes-female/praying.glb — not yet bound
     // to an AnimName slot. Add a 'praying' clip to ANIM_PATHS if we
@@ -167,6 +171,7 @@ export const EMOTE_ANIM_NAMES = [
   'victory',
   'wipeout',
   'float',
+  'praying',   // female-only emote: serenity/devotion (kneels, hands together)
 ] as const satisfies readonly AnimName[];
 export type EmoteAnimName = (typeof EMOTE_ANIM_NAMES)[number];
 
@@ -324,6 +329,7 @@ const IN_PLACE_CLIPS: ReadonlySet<AnimName> = new Set([
   'run',
   'swimming',
   'flying',
+  'praying',  // kneeling/standing prayer pose — strictly stationary
 ]);
 
 /**
