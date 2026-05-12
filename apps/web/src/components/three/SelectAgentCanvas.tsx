@@ -121,8 +121,16 @@ const EMBER_COUNT = 80;
 function EmberParticles() {
   const geo = React.useMemo(() => {
     const pos = new Float32Array(EMBER_COUNT * 3);
+    // Spawn embers in an ANNULUS around the avatar, not a disc through it.
+    // Inner radius 9 keeps every particle clear of the VRM silhouette (which
+    // at scale ~15 + a generous girdle margin sits inside r≈6). Outer 18
+    // gives the embers room to drift visually without crowding the rune
+    // circle (r=10) or escaping the spotlight cone. Previously r=0..8
+    // sprayed directly through the avatar's torso/legs and on WebGPU the
+    // untextured PointsMaterial renders as opaque orange squares — they
+    // looked like floating cubes glued to the character.
     for (let i = 0; i < EMBER_COUNT; i++) {
-      const r   = Math.random() * 8;
+      const r   = 9 + Math.random() * 9;
       const ang = Math.random() * Math.PI * 2;
       pos[i * 3 + 0] = Math.cos(ang) * r;
       pos[i * 3 + 1] = Math.random() * 30;
@@ -240,7 +248,12 @@ const PlatformModelVRM = memo(function PlatformModelVRM({
   });
 
   return (
-    // reg.scale * 1.6 (≈ 20.8wu) — chosen so the ENTIRE character fits inside
+    // reg.scale * 1.2 (≈ 15.6wu at the standard scale=13) — tuned 2026-05-12
+    // after the 1.6× variant overflowed the picker frame (avatar's head was
+    // cut off; only torso + legs visible). At distance 45 + FOV 45° the
+    // vertical frustum at the avatar plane is ~37wu, so 15.6wu tall + the
+    // 1.5wu feet offset reads with comfortable margin top and bottom even
+    // on narrow portrait viewports.
     // the shrine on mobile-portrait viewports while still reading large on
     // desktop. History:
     //   1.35× — too small ("half as small as OpenClaw" — 2026-04-23)
@@ -250,7 +263,7 @@ const PlatformModelVRM = memo(function PlatformModelVRM({
     //           minDistance, orbit zoom can't crop the head regardless of
     //           aspect ratio.
     // Registry scale=13 is the picker authoring unit; this multiplier is picker-only.
-    <group position={[0, 1.5, 0]} scale={[reg.scale * 1.6, reg.scale * 1.6, reg.scale * 1.6]}>
+    <group position={[0, 1.5, 0]} scale={[reg.scale * 1.2, reg.scale * 1.2, reg.scale * 1.2]}>
       <primitive object={vrm.scene} />
     </group>
   );
