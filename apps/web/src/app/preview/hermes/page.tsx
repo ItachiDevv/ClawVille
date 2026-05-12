@@ -194,9 +194,6 @@ interface Particle {
 function SpeedLines({ active, vrmRef }: { active: boolean; vrmRef: React.MutableRefObject<VRM | null> }) {
   const refs = useRef<(THREE.Mesh | null)[]>([]);
 
-  // Build particle pool once (positions filled in per-frame). Each emitter
-  // gets PARTICLES_PER_EMITTER particles, staggered in age so the stream is
-  // continuous instead of pulse-spawning every LIFETIME seconds.
   const particles = useMemo<Particle[]>(() => {
     const arr: Particle[] = [];
     for (let e = 0; e < EMITTERS.length; e++) {
@@ -213,31 +210,45 @@ function SpeedLines({ active, vrmRef }: { active: boolean; vrmRef: React.Mutable
     return arr;
   }, []);
 
-  // Reusable scratch — never allocated in the hot loop
   const scratchEmitter = useMemo(() => new THREE.Vector3(), []);
-  const scratchDir = useMemo(() => new THREE.Vector3(), []);
+  // Camera-relative wind axes — recomputed each frame so trails always flow
+  // away from the viewer regardless of how the orbit camera is rotated.
+  const windBack = useMemo(() => new THREE.Vector3(), []);
+  const windRight = useMemo(() => new THREE.Vector3(), []);
+  const windUp = useMemo(() => new THREE.Vector3(), []);
 
   const respawnParticle = (p: Particle, emitterWorldPos: THREE.Vector3) => {
     p.age = 0;
     p.pos.copy(emitterWorldPos);
-    // Coherent wind direction: all particles flow STRAIGHT BACK (-Z away
-    // from camera) with only tiny angular spread so the stream reads as a
-    // single trail, not a starburst. Vertical drift slightly downward to
-    // mimic gravity / drag on the trail.
-    const SPREAD = 0.6;                          // small cone half-angle
-    const BACKWARD = 7 + Math.random() * 2;      // 7-9 u/s downstream
-    p.vel.set(
-      (Math.random() - 0.5) * SPREAD,           // tiny lateral
-      (Math.random() - 0.3) * SPREAD,           // slight downward bias
-      -BACKWARD,                                 // dominant backward flow
-    );
+    // Velocity in CAMERA-RELATIVE basis: dominant flow along windBack
+    // (away from viewer into the scene), with a wide fan in windRight and
+    // a smaller fan in windUp so the trails look like a soft wake rather
+    // than a tight clump.
+    const SPREAD_LAT = 3.2;                        // wide horizontal fan
+    const SPREAD_VRT = 1.6;                        // narrower vertical fan
+    const BACK = 6 + Math.random() * 3;            // 6-9 u/s downstream
+    const lat = (Math.random() - 0.5) * SPREAD_LAT;
+    const vrt = (Math.random() - 0.5) * SPREAD_VRT;
+    p.vel.set(0, 0, 0)
+      .addScaledVector(windBack,  BACK)
+      .addScaledVector(windRight, lat)
+      .addScaledVector(windUp,    vrt);
     p.color.setHex(parseInt(SPEEDLINE_COLORS[Math.floor(Math.random() * SPEEDLINE_COLORS.length)]!.slice(1), 16));
   };
 
-  useFrame((_, delta) => {
+  useFrame((state, delta) => {
     const dt = Math.min(delta, 0.05);
     const vrm = vrmRef.current;
     if (!vrm || !vrm.humanoid) return;
+
+    // Build camera-relative wind basis. "Back" = into the screen from the
+    // camera's POV; "Right" / "Up" track the viewport so streaks fan in
+    // screen space.
+    state.camera.getWorldDirection(windBack);        // camera forward (into scene)
+    windUp.copy(state.camera.up).normalize();
+    windRight.crossVectors(windBack, windUp).normalize();
+    // Recompute Up from Right×Back so the basis is strictly orthonormal
+    windUp.crossVectors(windRight, windBack).normalize();
 
     for (let i = 0; i < particles.length; i++) {
       const p = particles[i]!;
@@ -245,31 +256,26 @@ function SpeedLines({ active, vrmRef }: { active: boolean; vrmRef: React.Mutable
       if (!m) continue;
       p.age += dt;
       if (p.age >= PARTICLE_LIFETIME) {
-        // Look up emitter bone world position
         const e = EMITTERS[p.emitterIdx]!;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const boneNode = (vrm.humanoid as any).getNormalizedBoneNode?.(e.bone) as THREE.Object3D | null;
         if (boneNode) {
-          boneNode.getWorldPosition(scratchEmitter);
-          // Apply local-space offset transformed by the bone's world matrix so
-          // wing-offsets stay attached to the shoulder orientation.
-          scratchDir.copy(e.offset).applyMatrix4(boneNode.matrixWorld).sub(boneNode.getWorldPosition(scratchEmitter));
-          boneNode.getWorldPosition(scratchEmitter).add(scratchDir);
+          // Offset is expressed in bone-local space — applyMatrix4 treats
+          // it as a position (homogeneous w=1) and gives us the offset
+          // point's WORLD coordinate directly.
+          scratchEmitter.copy(e.offset).applyMatrix4(boneNode.matrixWorld);
           respawnParticle(p, scratchEmitter);
           (m.material as THREE.MeshBasicMaterial).color.copy(p.color);
         }
       } else {
-        // Drift outward
         p.pos.x += p.vel.x * dt;
         p.pos.y += p.vel.y * dt;
         p.pos.z += p.vel.z * dt;
       }
       m.position.copy(p.pos);
-      // Orient streak along its velocity so it visually trails
       m.lookAt(p.pos.x + p.vel.x, p.pos.y + p.vel.y, p.pos.z + p.vel.z);
-      // Fade scale at end of life so streaks don't snap-cut on respawn
       const t = p.age / PARTICLE_LIFETIME;
-      const opacityScale = Math.min(1, (1 - t) * 2);  // hold then fade in last half
+      const opacityScale = Math.min(1, (1 - t) * 2);
       (m.material as THREE.MeshBasicMaterial).opacity = 0.9 * opacityScale;
     }
   });
@@ -278,7 +284,6 @@ function SpeedLines({ active, vrmRef }: { active: boolean; vrmRef: React.Mutable
     <group visible={active}>
       {particles.map((p, i) => (
         <mesh key={i} ref={(m) => { refs.current[i] = m; }}>
-          {/* Long thin wisp: 0.05 wide, 0.05 tall, STREAK_LENGTH long along Z */}
           <boxGeometry args={[0.05, 0.05, STREAK_LENGTH]} />
           <meshBasicMaterial
             color={p.color}
