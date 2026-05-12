@@ -306,17 +306,29 @@ function generateDecorations(): DecoEntry[] {
   const rng = seededRandom(12345);
   const totalWeight = DECO_TYPES.reduce((s, d) => s + d.weight, 0);
   const entries: DecoEntry[] = [];
-  // Keep at 80 to maintain FPS on Intel Iris Xe — the larger map doesn't need
-  // more decorations because the camera view frustum is the same size.
-  const TARGET_COUNT = 80;
+  // 2026-05-12: cut from 80 → 30. Audit (scripts/audit-decorations.mjs) showed
+  // that with the old extent (MAP_WIDTH × 2.4) and fog (1200→6400wu), only ~10
+  // of the 80 props were in the close-visible band, ~20 deep-fogged, ~30 lost
+  // beyond fog cutoff, ~19 off-map. The remaining 30 are concentrated in the
+  // 2700–4500wu visible annulus. Update WorldContent.md §5 when you change.
+  const TARGET_COUNT = 30;
 
-  // Map extents — auto-scales with MAP_WIDTH/MAP_HEIGHT imports
-  const EXTENT_X = MAP_WIDTH  * 2.4;
-  const EXTENT_Z = MAP_HEIGHT * 2.4;
+  // Hard distance cap — any prop placed beyond this radius from world origin
+  // is rejected. 4500wu sits inside the fog's perceptual cutoff, so every
+  // surviving prop reads clearly.
+  const MAX_VISIBLE_DIST = 4500;
+  const MAX_VISIBLE_DIST_SQ = MAX_VISIBLE_DIST * MAX_VISIBLE_DIST;
+
+  // Map extents — narrowed from MAP_WIDTH × 2.4 to × 1.76 so the cluster
+  // centres themselves land inside (or near) the visible band, not way out
+  // past the fog where they used to waste placement attempts.
+  const EXTENT_X = MAP_WIDTH  * 1.76;
+  const EXTENT_Z = MAP_HEIGHT * 1.76;
 
   // ---- Cluster centres ----
-  // Keep at 24 clusters — same density, just spread across larger area
-  const N_CLUSTERS    = 24;
+  // 12 clusters (down from 24) — fewer entries to spread across, so fewer
+  // cluster centres keeps each cluster meaningfully dense.
+  const N_CLUSTERS    = 12;
   const CLUSTER_RADIUS = 280; // world-space units; controls patch spread
   const clusters: Array<{ x: number; z: number }> = [];
   for (let i = 0; i < N_CLUSTERS; i++) {
@@ -358,7 +370,13 @@ function generateDecorations(): DecoEntry[] {
     // Skip if inside the inner village plaza — keep the town center clear
     const dcx = x - VILLAGE_CX;
     const dcz = z - VILLAGE_CZ;
-    if (dcx * dcx + dcz * dcz < DECO_INNER_EXCLUSION_R * DECO_INNER_EXCLUSION_R) continue;
+    const radiusSq = dcx * dcx + dcz * dcz;
+    if (radiusSq < DECO_INNER_EXCLUSION_R * DECO_INNER_EXCLUSION_R) continue;
+
+    // 2026-05-12: hard cap on outer distance. Anything past 4500wu is lost in
+    // fog (fog far=6400 with significant haze starting ~4000). Audited via
+    // scripts/audit-decorations.mjs.
+    if (radiusSq > MAX_VISIBLE_DIST_SQ) continue;
 
     // Skip if inside a building exclusion zone
     if (isNearBuilding(x, z)) continue;
