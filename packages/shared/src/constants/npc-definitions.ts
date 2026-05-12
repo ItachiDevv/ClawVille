@@ -72,10 +72,16 @@ export const NPC_BUILDING_CENTERS: Record<string, { x: number; y: number }> = Ob
   Object.entries(NPC_HOME_POSITIONS).map(([id, p]) => [id, { x: p.homeX, y: p.homeY }])
 );
 
-// Wandering NPC species distribution — 2 model categories:
-//   milady   (neo-chibi VRMs): milady_official_2/3/4/7/8                (5 of 8) — free wanderers
+// Wandering NPC species distribution — 3 model categories:
+//   milady   (neo-chibi VRMs): milady_official_2/7/8                    (3 of 8) — free wanderers
+//   hermes   (humanoid VRMs):  hermes_female (Mira), hermes_male (Tekk) (2 of 8) — free wanderers
 //   openclaw (crustaceans):    lobster, sweet_crab, hermitcrab          (3 of 8) — free wanderers
 //   Total: 8 NPCs — all free wanderers (buildingId='').
+//   2026-05-12: replaced Ash (milady_official_4) with Mira (hermes_female)
+//   and Maple (milady_official_3) with Tekk (hermes_male) so the new
+//   Hermes-female / Tekk rigs ship as wandering brand ambassadors alongside
+//   the Milady wanderers. The retired Milady VRM paths (official_3, _4) stay
+//   in MODEL_REGISTRY for player-avatar picker use.
 //   The 10 SpongeBob building residents (SpongeBob, Patrick, Squidward, etc.)
 //   at each building entrance are rendered by arena-location-npcs.tsx and are
 //   the canonical per-building characters. Previously there was ALSO one
@@ -131,8 +137,8 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     stats: { hp: 90, attack: 13, defense: 14, speed: 16 },
     personality: 'A curious Milady explorer cataloguing every agent signal she overhears across ClawVille.',
   },
-  // ─── Additional Milady wanderers (added 2026-04-22) ──────────────────────
-  // Use VRM paths official_2/3/4 — official_1 is the picker default and
+  // ─── Additional Milady wanderer (added 2026-04-22) ───────────────────────
+  // Uses VRM path official_2 — official_1 is the picker default and
   // official_5/6 are most-frequently-picked, keeping NPC paths off the
   // common player-avatar picks to avoid VRM module-cache scene-sharing.
   {
@@ -147,29 +153,38 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     stats: { hp: 90, attack: 13, defense: 13, speed: 16 },
     personality: 'A bookish Milady sketcher who maps every reef formation she encounters into her field journal.',
   },
+  // ─── Hermes wanderers (added 2026-05-12) ─────────────────────────────────
+  // Replaces former Maple (milady_official_3) and Ash (milady_official_4)
+  // slots. Both VRMs are Mixamo-rigged at human scale (~1.6m) with their own
+  // per-character animation bakes under /avatars/animations/{hermes-female,
+  // tekk-male}/*.glb. arena-npcs.tsx passes characterId='hermes-female' /
+  // 'hermes-male' to VRMCharacterAnimator so those overrides apply — without
+  // it the generic Mixamo clips deform their bones (feet meshing, hands
+  // clipping hips). Spawn coords kept identical to the Maple/Ash slots so
+  // the world layout is unchanged.
   {
-    id: 'milady-maple',
-    name: 'Maple',
-    species: 'milady_official_3',
+    id: 'hermes-mira',
+    name: 'Mira',
+    species: 'hermes_female',
     color: 0xffb0d0,             // pink (ignored — MToon)
     buildingId: '',
     patrolRadius: 500,
     homeX: 3400,
-    homeY: 3200,                 // SE of town, inside the ring
+    homeY: 3200,                 // SE of town, inside the ring (former Maple slot)
     stats: { hp: 95, attack: 12, defense: 14, speed: 15 },
-    personality: 'A laid-back Milady cafe-hopper who treats every building like a new coffee bar to review.',
+    personality: 'A poised Hermes wanderer who reads the reef like a manuscript and offers gentle notes on every story she overhears.',
   },
   {
-    id: 'milady-ash',
-    name: 'Ash',
-    species: 'milady_official_4',
+    id: 'hermes-tekk',
+    name: 'Tekk',
+    species: 'hermes_male',
     color: 0xd0c0ff,             // pale violet (ignored — MToon)
     buildingId: '',
     patrolRadius: 500,
     homeX: 2560,
-    homeY: 1700,                 // N of town, inside the ring
+    homeY: 1700,                 // N of town, inside the ring (former Ash slot)
     stats: { hp: 92, attack: 14, defense: 12, speed: 17 },
-    personality: 'A restless Milady debugger who insists every glitch in the world has a poetic explanation.',
+    personality: 'A winged Hermes scout who insists every passing current carries a message someone forgot to deliver.',
   },
   // ─── Additional free-roaming crustaceans (added 2026-04-22) ──────────────
   // Sea-creature GLBs scale + clone per-instance, so multiple NPCs can share

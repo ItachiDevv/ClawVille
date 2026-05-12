@@ -335,17 +335,19 @@ const VRM_NPC_SCALE = 112;
 //   Miu   → milady_official_7
 //   Kyoko → milady_official_8
 //   Vivi  → milady_official_2
-//   Maple → milady_official_3
-//   Ash   → milady_official_4
-// Only official_7/8 were preloaded before — official_2/3/4 cold-started, delaying
-// animator.init() by a full network round-trip and leaving Vivi/Maple/Ash in T-pose
-// until after their Suspense resolved AND the clip loads completed. Now all 5 are
-// preloaded at module scope so they are hot when the Suspense boundaries resolve.
+//   Mira  → hermes-female  (replaced Maple/milady_official_3 — 2026-05-12)
+//   Tekk  → hermes-male    (replaced Ash/milady_official_4    — 2026-05-12)
+// Every concurrent wandering VRM MUST be a distinct path — vrm-loader caches one
+// instance per path. The 5 paths below cover both the live NPC roster AND the
+// retired Milady paths still selectable in the player-avatar picker (preloading
+// _3/_4 is cheap and avoids T-pose hitches when a guest picks them).
 preloadVRMBytes('/avatars/milady-official-2.vrm');
 preloadVRMBytes('/avatars/milady-official-3.vrm');
 preloadVRMBytes('/avatars/milady-official-4.vrm');
 preloadVRMBytes('/avatars/milady-official-7.vrm');
 preloadVRMBytes('/avatars/milady-official-8.vrm');
+preloadVRMBytes('/avatars/hermes-female.vrm');
+preloadVRMBytes('/avatars/hermes-male.vrm');
 preloadMixamoClips();
 
 // ---------------------------------------------------------------------------
@@ -762,7 +764,16 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // against any three-vrm / three-stdlib / post-processing pass that
     // toggles frustumCulled back on. Cheap (no-op if already false).
     vrm.scene.traverse((o) => { o.frustumCulled = false; });
-    const animator = new VRMCharacterAnimator(vrm);
+    // characterId routes per-character Mixamo overrides in VRMCharacterAnimator.
+    // Hermes-female / hermes-male have rig proportions that diverge enough from
+    // the generic Mixamo skeleton that without their own baked clips, locomotion
+    // deforms (feet meshing together, hands clipping the hips). Milady VRMs use
+    // the generic Mixamo set and pass characterId=undefined.
+    const characterId =
+      npc.species === 'hermes_female' ? 'hermes-female' :
+      npc.species === 'hermes_male'   ? 'hermes-male'   :
+      undefined;
+    const animator = new VRMCharacterAnimator(vrm, characterId);
     vrmAnimatorRef.current = animator;
     // Debug: track useEffect mount/cleanup on window for CDP diagnostics
     if (typeof window !== 'undefined') {

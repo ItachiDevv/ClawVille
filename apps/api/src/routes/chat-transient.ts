@@ -4,7 +4,7 @@
  * Stateless one-shot Gemini chat with a wandering world NPC. Used by
  * the TalkToCharacterBar in NPC mode (controlMode === 'npc'). The user
  * is possessing a transient PLAYER_NPC, talking to a nearby wanderer
- * (Maple, Vivi, Driftwood, Marlin, etc.). Per the architecture rule
+ * (Mira, Vivi, Driftwood, Marlin, etc.). Per the architecture rule
  * stated 2026-04-27: "we are not making persistent eliza stores for
  * NPCs" — wandering characters do NOT get Eliza runtimes, rooms, or
  * memories. Each request is independent.
@@ -15,7 +15,7 @@
  * are the primary product loop).
  *
  * Request body: { characterName, message, history? }
- *   - characterName: matches NpcDefinition.name (e.g. "Maple", "Vivi")
+ *   - characterName: matches NpcDefinition.name (e.g. "Mira", "Vivi")
  *   - message: user's input
  *   - history: optional in-memory transcript provided by the client
  *     so the conversation has short-term context. Server does NOT
