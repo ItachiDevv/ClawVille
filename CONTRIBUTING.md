@@ -4,13 +4,29 @@ Thanks for your interest. ClawVille is a 3D agent-development sandbox built on E
 
 ## Before you start
 
-Read `CLAUDE.md` first. It documents the load-bearing project invariants and conventions. The sister docs are:
+Read `CLAUDE.md` first. It documents the load-bearing project invariants and conventions. The four canonical docs:
 
-- `3dStructure.md` — 3D world layout (canonical for visuals).
-- `GameFeatures.md` — gameplay surface (canonical for features).
-- `ARCHITECTURE.md` — tech stack, routes, DB tables, deployment.
+- **`WorldContent.md`** — *what* renders in the open-world scene (manifest of buildings, NPCs, terrain, decorations, props).
+- **`3dStructure.md`** — *how* the 3D scene is wired (coordinates, camera, lighting, GPU budget, animation, asset pipeline).
+- **`GameFeatures.md`** — gameplay surfaces (modes, agent connect, economy, quests, UI, portals, activities).
+- **`ARCHITECTURE.md`** — backend tech (routes, middleware, services, schema, events, deploy).
 
-If your change touches any of these surfaces, you must update the matching doc in the same PR.
+### The bidirectional sync rule
+
+**If your change touches any code path tabulated in `CLAUDE.md` "Path → doc decision matrix", you must stage the matching doc update in the same commit.** Reverse holds: changing a manifest doc requires the corresponding code change. Mismatch is a bug.
+
+This is enforced at the contributor/review level — there's no pre-commit hook or CI gate by design. Every contributor and reviewer is responsible.
+
+### Workflow runbooks
+
+For common operations, follow the runbook in `.claude/workflows/` — each one lists every doc update required:
+
+- `.claude/workflows/add-a-building.md`
+- `.claude/workflows/add-an-npc.md`
+- `.claude/workflows/add-a-route.md`
+- `.claude/workflows/add-a-service.md`
+- `.claude/workflows/add-a-gameplay-feature.md`
+- `.claude/workflows/ship-a-feature.md` (end-to-end: code → docs → typecheck → commit → push → Coolify → browser verify)
 
 ## Setup
 
@@ -30,7 +46,7 @@ Web at `http://localhost:3000`, API at `http://localhost:4000`.
 
 - Fork the repo, create a feature branch off `master`.
 - One logical change per PR. Smaller diffs land faster.
-- The PR description should reference any updated docs (CLAUDE.md, 3dStructure.md, GameFeatures.md, ARCHITECTURE.md).
+- The PR description should reference any updated docs (`WorldContent.md`, `3dStructure.md`, `GameFeatures.md`, `ARCHITECTURE.md`, `CLAUDE.md`).
 - CI runs build + type checks. Make sure `bun run build` is green locally before opening the PR.
 - Coolify auto-deploys on merge to `master`. Until then, your branch only deploys if you manually trigger it.
 

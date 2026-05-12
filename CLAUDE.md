@@ -54,20 +54,70 @@ Every design decision is measured against all four. These are equal constraints,
 
 **Standing rule:** unless user says otherwise, abide by what these docs specify. Code vs doc disagreement → **live code wins** AND you update the doc same turn.
 
-**Same-diff doc updates (NO EXCEPTIONS):**
-- 3D code (`apps/web/src/lib/three/*`, `components/three/*`, models, shaders, materials, cameras, lighting, post-proc) → `3dStructure.md`. Also spawn `3da`. If the change adds/removes/repositions/rescales a rendered thing or flips a count/exclusion knob, **also update `WorldContent.md` same diff**.
-- Gameplay/feature code (stores, gameplay routes, game UI, modes, economy, auth, landing) → `GameFeatures.md`.
-- Tech-stack code (new Hono routes, DB tables, services, deploy/env) → `ARCHITECTURE.md`.
-- Single change can touch multiple docs. Bump "Last Audited" / "Last edit" + one-line drift note each time.
+**Same-diff doc updates (NO EXCEPTIONS).** The load-bearing rule of the entire doc system. Enforced at the prompt/contributor level — no pre-commit hook, no CI gate by design (revisit only if drift becomes a measurable problem on the `/dash` events table). Every contributor, agent, and audit run is responsible for keeping the contract.
 
-**`WorldContent.md` ↔ scene code — strict bidirectional contract:**
+### Path → doc decision matrix
+
+Use this as a grep target before staging a commit. Touching any path on the left means staging a doc update on the right in the same diff.
+
+| Code path | Doc(s) to update | Section |
+|---|---|---|
+| `apps/web/src/lib/three/arena-buildings.tsx` | `WorldContent.md` §2 + `3dStructure.md` §2 | Building roster / scale + pivot system |
+| `apps/web/src/lib/three/arena-npcs.tsx` · `arena-location-npcs.tsx` | `WorldContent.md` §3 + `3dStructure.md` §6a/§6b | NPC roster + animation system |
+| `apps/web/src/lib/three/arena-terrain.tsx` | `WorldContent.md` §5 + `3dStructure.md` §7 | Decorations + terrain shader |
+| `apps/web/src/components/three/World3DCanvas.tsx` | `WorldContent.md` §1 + `3dStructure.md` §3/§4/§9 | Top-level mounts + camera + lights + asset pipeline |
+| `apps/web/src/lib/three/world-labels-overlay.tsx` | `3dStructure.md` §5d | Throttles + label projection |
+| `apps/web/src/lib/three/jump-state.ts` · `jump-ticker.tsx` | `3dStructure.md` §6e + `GameFeatures.md` §16 | Jump physics machine |
+| `apps/web/src/lib/three/{quest-npc,town-guide,bazaar-stall,marketplace-stall,auction-podium,town-directory-sign}.tsx` | `WorldContent.md` §6 | Town center props |
+| `apps/web/src/lib/three/activities/**` | `3dStructure.md` §10 + `GameFeatures.md` §18 | Activity rendering + game design |
+| `apps/web/public/models/**` (GLB add/swap/rename) | `WorldContent.md` §2/§5/§6 | Model paths table |
+| `apps/api/src/routes/**` | `ARCHITECTURE.md` §2 | Hono route table |
+| `apps/api/src/middleware/**` | `ARCHITECTURE.md` §3 | Middleware table |
+| `apps/api/src/services/**` | `ARCHITECTURE.md` §4 | Service catalog |
+| `apps/api/src/services/event-logger.ts` + new `logEvent({...})` site | `ARCHITECTURE.md` §5a + (if rubric-relevant) §5b | Event types + leaderboard weights |
+| `packages/database/src/schema/**` | `ARCHITECTURE.md` §8 | DB schema table |
+| `apps/web/src/stores/{game,npc,activity,quest}.ts` | `GameFeatures.md` §2a/§9/§12/§18 + `ARCHITECTURE.md` §9 | Game state + store fields |
+| `apps/web/src/components/game/**` (new component or major change) | `GameFeatures.md` §11 | UI components matrix |
+| `apps/web/src/components/game/control-mode-toggle.tsx` | `GameFeatures.md` §1a | Toggle labels |
+| `apps/web/src/components/game/avatar-settings-modal.tsx` | `GameFeatures.md` §11c | Avatar Settings sections |
+| `packages/shared/src/constants/knowledge-books.ts` | `GameFeatures.md` §4 | Book catalogue (1 row per building) |
+| `packages/shared/src/constants/tutorial-quest-rewards.ts` | `GameFeatures.md` §13b | Tutorial quest tier table |
+| `packages/shared/src/constants/avatar-archetypes.ts` | `GameFeatures.md` §9a | Archetype list |
+| `packages/agent-templates/src/locations/town-guide.ts` (the `knowledge[]` array) | n/a — this is itself the canonical knowledge source; every gameplay/world change MUST update this file in the same diff (see CLAUDE.md §"system agents") | — |
+| `apps/web/src/app/page.tsx` (landing) | `GameFeatures.md` §15 | Landing page sections |
+| `apps/web/src/app/leaderboard/page.tsx` · `apps/api/src/routes/leaderboard.ts` | `ARCHITECTURE.md` §5b + `GameFeatures.md` §7 | Free agent leaderboard |
+| `apps/web/src/app/activity/**` · activity sim services | `ARCHITECTURE.md` §4 + `GameFeatures.md` §18 + `3dStructure.md` §10 | Activity-room rendering, server sim, gameplay |
+| `docs/DEPLOY-HETZNER.md` · Coolify infra | `ARCHITECTURE.md` §12 | Deployment table |
+
+### Single-change-multiple-docs
+
+A single code change often touches multiple docs. E.g. adding a new agent-connect endpoint:
+- `ARCHITECTURE.md` §2 (routes), §6 (endpoint table)
+- `GameFeatures.md` §2 (Moltbook flow if user-visible)
+- `WorldContent.md` only if it adds something to render
+
+Every touched doc bumps its "Last edit" / drift line at the top in the same diff.
+
+### Workflow runbooks
+
+For common operations, walk the runbook in `.claude/workflows/` — they list every doc update required:
+
+- `.claude/workflows/add-a-building.md`
+- `.claude/workflows/add-an-npc.md`
+- `.claude/workflows/add-a-route.md`
+- `.claude/workflows/add-a-service.md`
+- `.claude/workflows/add-a-gameplay-feature.md`
+- `.claude/workflows/ship-a-feature.md` (the end-to-end loop: code → docs → typecheck → commit → push → coolify → verify in browser)
+
+### `WorldContent.md` ↔ scene code — strict bidirectional contract
+
 - Adding, removing, repositioning, rescaling, or recoloring any rendered object/group → update both files in one diff.
 - Changing any knob the doc tabulates (`TARGET_COUNT`, `EXTENT_X`, `DECO_INNER_EXCLUSION_R`, `MAX_VISIBLE_DIST`, building list, NPC roster, disabled-feature reason) → update both.
 - Renaming/swapping a GLB → update the model-paths table in §2 / §5 / §6.
 - Adding a new top-level component to `World3DCanvas.tsx` → add a row in §1.
 - Mismatch is a bug; whichever is wrong (code or doc) gets fixed.
 
-**Precedence (high→low):** (1) source code, (2) three canonical docs, (3) `CLAUDE.md`/`README.md`, (4) memory files (advisory only). Memory contradicting canonical doc → doc wins, update/delete memory same turn. Doc contradicting code → code wins, update doc same turn.
+**Precedence (high→low):** (1) source code, (2) four canonical docs, (3) `CLAUDE.md` / `README.md` / `CONTRIBUTING.md`, (4) memory files (advisory only). Memory contradicting canonical doc → doc wins, update/delete memory same turn. Doc contradicting code → code wins, update doc same turn.
 
 ---
 
