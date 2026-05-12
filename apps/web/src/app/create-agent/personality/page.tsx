@@ -257,7 +257,20 @@ export default function PersonalityPage() {
 
       router.push('/game');
     } catch (err: any) {
-      setError(err.message || 'Failed to create agent');
+      const message = String(err?.message ?? '');
+      // The API enforces one avatar per user — when the user already has
+      // one, POST /api/avatars 400s with "You already have an avatar".
+      // The user reached this page in good faith (the /game banner's
+      // Create Agent button never shows when an avatar exists, so the
+      // most likely cause is a stale guest avatar auto-provisioned on a
+      // prior visit). Bounce them to /game instead of leaving them
+      // stuck on the personality form with a dead Create button.
+      if (/already have an avatar/i.test(message)) {
+        sessionStorage.removeItem('createPetStep1');
+        router.push('/game');
+        return;
+      }
+      setError(message || 'Failed to create agent');
     }
   }
 

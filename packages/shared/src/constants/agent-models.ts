@@ -86,14 +86,14 @@ export const AGENT_MODELS = [
   { key: 'milady_official_8', label: 'Milady Official 8', category: 'milady' },
 
   // ── Hermes (VRM humanoid avatars) — added 2026-05-12 ──
-  // ClawVille-hosted Hermes runtimes. Path/scale/preview metadata is in
-  // agent-model-registry.ts on the web side. Animations live in their own
-  // folders at /avatars/animations/{hermes-female,tekk-male}/*.glb (vs the
-  // generic Mixamo set Milady uses).
-  // Third hermes avatar incoming — drop a new entry alongside these when the
-  // asset ships.
-  { key: 'hermes_female', label: 'Hermes',  category: 'hermes' },
-  { key: 'hermes_male',   label: 'Tekk',    category: 'hermes' },
+  // ClawVille-hosted Hermes runtimes — three distinct characters. The file
+  // at /avatars/hermes-male.vrm is "Hermes Male" (the Paul-style export),
+  // NOT Tekk; Tekk has its own VRM (/avatars/tekk.vrm) and animation folder
+  // (/avatars/animations/tekk-male/*.glb). Path/scale/preview metadata is
+  // in agent-model-registry.ts on the web side.
+  { key: 'hermes_female', label: 'Hermes',      category: 'hermes' },
+  { key: 'hermes_male',   label: 'Hermes Male', category: 'hermes' },
+  { key: 'tekk',          label: 'Tekk',        category: 'hermes' },
 
   // NOTE: `crayfish` entry removed 2026-04-16 — the GLB renders visually
   // close to `lobster` but with a larger silhouette that clipped the
