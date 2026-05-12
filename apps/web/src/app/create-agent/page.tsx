@@ -145,7 +145,11 @@ export default function CreateAgentPage() {
 
   const [hasAgentByTab, setHasAgentByTab] = useState<Record<TabId, boolean | null>>(() => ({
     milady:   true,   // Hosted — picker renders unconditionally
-    hermes:   true,   // Hosted — picker renders unconditionally
+    // Hermes flipped off the auto-hosted track 2026-05-12 (commit 5636bdb).
+    // Gate now fires on tab entry so the user picks: Host for me / Run locally /
+    // Already running. Hardcoding this to `true` previously skipped the gate
+    // entirely.
+    hermes:   null,
     openclaw: null,   // External — picker gated until user confirms they run one
     custom:   null,   // External — picker gated until user confirms they run one
   }));
