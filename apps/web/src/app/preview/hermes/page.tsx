@@ -178,10 +178,10 @@ const EMITTERS: Array<{ bone: string; offset: THREE.Vector3 }> = [
   { bone: 'leftShoulder',  offset: new THREE.Vector3( 0.4, 0.2, -0.3) },
   { bone: 'rightShoulder', offset: new THREE.Vector3(-0.4, 0.2, -0.3) },
 ];
-const PARTICLES_PER_EMITTER = 10;
+const PARTICLES_PER_EMITTER = 12;
 const TOTAL_PARTICLES = EMITTERS.length * PARTICLES_PER_EMITTER;
-const PARTICLE_LIFETIME = 0.9;     // seconds before respawn
-const STREAK_LENGTH = 0.9;         // long axis of each tube
+const PARTICLE_LIFETIME = 0.7;     // seconds before respawn
+const STREAK_LENGTH = 2.4;         // long axis of each tube — long & wispy
 
 interface Particle {
   emitterIdx: number;
@@ -220,15 +220,18 @@ function SpeedLines({ active, vrmRef }: { active: boolean; vrmRef: React.Mutable
   const respawnParticle = (p: Particle, emitterWorldPos: THREE.Vector3) => {
     p.age = 0;
     p.pos.copy(emitterWorldPos);
-    // Random direction with a backward (-Z, away from camera) bias so streaks
-    // trail behind him rather than into the lens.
-    const ax = (Math.random() - 0.5) * 4;        // lateral spread
-    const ay = (Math.random() - 0.5) * 2;        // mild vertical fan
-    const az = -2 - Math.random() * 3;           // always backward, varying magnitude
-    p.vel.set(ax, ay, az);
-    // New rainbow colour each respawn for chromatic chaos
+    // Coherent wind direction: all particles flow STRAIGHT BACK (-Z away
+    // from camera) with only tiny angular spread so the stream reads as a
+    // single trail, not a starburst. Vertical drift slightly downward to
+    // mimic gravity / drag on the trail.
+    const SPREAD = 0.6;                          // small cone half-angle
+    const BACKWARD = 7 + Math.random() * 2;      // 7-9 u/s downstream
+    p.vel.set(
+      (Math.random() - 0.5) * SPREAD,           // tiny lateral
+      (Math.random() - 0.3) * SPREAD,           // slight downward bias
+      -BACKWARD,                                 // dominant backward flow
+    );
     p.color.setHex(parseInt(SPEEDLINE_COLORS[Math.floor(Math.random() * SPEEDLINE_COLORS.length)]!.slice(1), 16));
-    // Apply colour to mesh material — material is unique per mesh below.
   };
 
   useFrame((_, delta) => {
@@ -275,12 +278,12 @@ function SpeedLines({ active, vrmRef }: { active: boolean; vrmRef: React.Mutable
     <group visible={active}>
       {particles.map((p, i) => (
         <mesh key={i} ref={(m) => { refs.current[i] = m; }}>
-          {/* Thin elongated tube: 0.08 wide, 0.08 tall, STREAK_LENGTH long along Z */}
-          <boxGeometry args={[0.08, 0.08, STREAK_LENGTH]} />
+          {/* Long thin wisp: 0.05 wide, 0.05 tall, STREAK_LENGTH long along Z */}
+          <boxGeometry args={[0.05, 0.05, STREAK_LENGTH]} />
           <meshBasicMaterial
             color={p.color}
             transparent
-            opacity={0.9}
+            opacity={0.85}
             toneMapped={false}
           />
         </mesh>
