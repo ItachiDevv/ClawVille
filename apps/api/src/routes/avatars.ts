@@ -913,6 +913,35 @@ const heartbeatSchema = z.object({
   positionY: z.number().min(0).max(5120),
 });
 
+// POST /api/avatars/me/dismiss-agent-banner
+// ---------------------------------------------------------------------------
+// User-facing "log out the agent" action for Milady-only accounts. Persists
+// `avatars.flags.agentBannerDismissed = true`. The auth-session endpoint
+// reads this flag and returns `connected: false, reason: 'dismissed'` so
+// the green "Bot Training Active" banner stays gone across reloads. The
+// flag is cleared automatically by /api/agent/connect-token when the user
+// generates a fresh pair link — any subsequent pairing is treated as an
+// intentional re-show. For external-bot users this is a no-op (the
+// existing unregister handler is the canonical disconnect for them) but
+// safe to call.
+avatarRoutes.post('/me/dismiss-agent-banner', requireAuth, async (c) => {
+  const user = c.get('user');
+  const av = await db.query.avatars.findFirst({
+    where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
+    columns: { id: true, flags: true },
+  });
+  if (!av) throw new HTTPException(404, { message: 'No avatar found' });
+  const prev = (av.flags as Record<string, unknown> | null) ?? {};
+  await db
+    .update(avatars)
+    .set({
+      flags: { ...prev, agentBannerDismissed: true },
+      updatedAt: new Date(),
+    })
+    .where(eq(avatars.id, av.id));
+  return c.json({ ok: true, dismissed: true });
+});
+
 avatarRoutes.post('/me/heartbeat', requireAuth, async (c) => {
   const user = c.get('user');
   const body = await c.req.json();

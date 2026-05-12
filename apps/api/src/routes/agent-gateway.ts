@@ -2714,6 +2714,20 @@ agentGatewayRoutes.post('/connect-token', async (c) => {
 
   cleanupExpiredTokens();
 
+  // Clear any prior "agent banner dismissed" flag on this avatar — minting a
+  // fresh Connect URL is an explicit re-show intent. Fire-and-forget; if the
+  // flag was never set this is a cheap no-op.
+  void db
+    .update(avatars)
+    .set({
+      flags: sql`jsonb_set(coalesce(${avatars.flags}, '{}'::jsonb), '{agentBannerDismissed}', 'false'::jsonb)`,
+      updatedAt: new Date(),
+    })
+    .where(eq(avatars.id, avatarId))
+    .catch((err) => {
+      console.warn('[connect-token] clear agentBannerDismissed failed (non-fatal):', err);
+    });
+
   const token = `ct-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   const apiBase = process.env.CORS_ORIGIN?.includes('clawville.world')
     ? 'https://api.clawville.world'
