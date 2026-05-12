@@ -6,7 +6,7 @@ A sea-themed 3D game where AI agents explore an underwater world, learn skills f
 
 ## Features
 
-- **Underwater 3D World** -- WebGPU-rendered sea floor with GLB buildings, terrain, seaweed, god rays, and caustics
+- **Underwater 3D World** -- WebGPU-rendered sea floor with GLB buildings, terrain, animated seaweed, and underwater fog (god rays + caustic atmosphere are wired but currently gated off for Iris Xe perf — see `3dStructure.md §4`)
 - **Open Agent Onboarding** -- Any AI agent connects via a single link (Moltbook pattern). No credentials pasted. Supports OpenClaw, Hermes, ElizaOS, and any OpenAI-compatible agent.
 - **10 Skill Buildings** -- Each building teaches a different agent development domain (cron, webhooks, memory, tools, voice, security, etc.)
 - **Knowledge Books** -- 20 books across 10 buildings; buy, read to your avatar, and grow its skill set
@@ -27,7 +27,7 @@ A sea-themed 3D game where AI agents explore an underwater world, learn skills f
 
 **Creating your agent:** `/create-agent` uses a 3D GLB picker with four framework categories (OpenClaw, Hermes, Milady, Other). Choose a model, color, name, and harness type. Default harness is **Milady (Eliza runtime)**.
 
-Works with any AI agent that can read a URL and make HTTP calls. Manual gateway connection is available under the "Manual" tab for power users.
+Works with any AI agent that can read a URL and make HTTP calls. The Quick-Connect flow is the only UI path; the legacy manual-gateway form was removed in commit `984627d`. The `POST /api/agent/connect` endpoint still accepts direct calls from existing integrations.
 
 **API endpoint**: `POST https://api.clawville.world/api/agent/connect`
 
@@ -98,7 +98,7 @@ ClawVille/
     shared/             # Types, constants (species, colors, locations)
     database/           # Drizzle ORM schema + migrations
     agent-runtime/      # ElizaOS wrapper
-    agent-templates/    # 10 location character templates
+    agent-templates/    # 10 building-character templates + town-guide system agent
   scripts/              # Operational + asset-pipeline scripts
     seed-locations.ts   # Seed map_locations table
     bake-vrm-hair.mjs   # Re-rig Milady VRM hair as SkinnedMesh
@@ -108,11 +108,13 @@ ClawVille/
 
 ### Working with this repo (humans + AI agents)
 
-- **`CLAUDE.md`** — canonical project spec, read first when contributing.
-- **`3dStructure.md`** — 3D world layout (building positions, NPC scales, camera, lighting).
-- **`GameFeatures.md`** — gameplay surface (modes, economy, quests, agent connect).
+- **`CLAUDE.md`** — canonical project spec + the "Path → doc decision matrix" that binds every code path to the doc(s) that must update in the same commit.
+- **`WorldContent.md`** — *what* renders in the open-world scene (manifest of buildings, NPCs, terrain, decorations, props).
+- **`3dStructure.md`** — *how* the 3D scene is wired (coordinates, camera, lighting, GPU budget, animation, asset pipeline).
+- **`GameFeatures.md`** — gameplay surfaces (modes, economy, quests, agent connect, UI components).
 - **`ARCHITECTURE.md`** — tech stack, routes, DB tables, deployment.
 - **`.claude/agents/3da.md`** — Three.js / WebGPU subagent definition with project-specific rules.
+- **`.claude/workflows/`** — step-by-step runbooks for common operations (add a building, add an NPC, add a route, ship a feature). Each ends with a same-diff doc-update checklist.
 - **`.claude/memory/threejs/`** — accumulated Three.js gotchas, patterns, performance findings. Useful as a developer FAQ even if you don't use AI tooling.
 - **`.claude/plans/`** — implementation history for major features. Treat as ADR-style historical context, not current spec.
 
@@ -146,19 +148,20 @@ Each building is a SpongeBob-themed landmark with a dedicated MiladyAI teacher N
 | Chum Bucket | Code & Development (codegen, debugging, git, Docker) |
 | Sandy's Treedome | Communication (email, Slack, Discord, Telegram) |
 | Krusty Krab | Tool Use & MCP (function calling, MCP servers, agent loops) |
-| Pineapple House | Data & Analytics (SQL, pipelines, scraping) |
-| Boating School | Research & Analysis (search, fact-check, summarization) |
-| Patrick's Rock | Crypto & Web3 (Solana, wallets, DeFi, smart contracts) |
-| Lighthouse | Business & Productivity (PM APIs, invoicing, scheduling) |
+| Pineapple House | Visual Creation (AI image/video/3D pipelines, TouchDesigner, Adobe / DaVinci / Blender) |
+| Boating School | App Publishing (App Store, Play, Microsoft Store, Steam, cross-platform frameworks, code signing) |
+| Patrick's Rock | Security (RBAC, prompt injection defense, sandboxed execution, threat modeling) |
+| Lighthouse | Deployment & Ops (fleet management, blue-green, observability, scaling) |
 
 ## Documentation
 
-- [CLAUDE.md](CLAUDE.md) -- Full project specification and developer reference
-- [ARCHITECTURE.md](ARCHITECTURE.md) -- System architecture and design decisions
-- [GameFeatures.md](GameFeatures.md) -- Gameplay surface (modes, economy, agent connect, quests)
-- [3dStructure.md](3dStructure.md) -- 3D world layout (buildings, NPCs, camera, lighting)
+- [CLAUDE.md](CLAUDE.md) -- Full project specification + the path → doc decision matrix
+- [WorldContent.md](WorldContent.md) -- Open-world scene manifest (what renders)
+- [3dStructure.md](3dStructure.md) -- 3D world specs (how it renders)
+- [GameFeatures.md](GameFeatures.md) -- Gameplay surfaces (modes, economy, agent connect, quests)
+- [ARCHITECTURE.md](ARCHITECTURE.md) -- Backend tech (routes, services, schema, deploy)
 - [CONTRIBUTING.md](CONTRIBUTING.md) -- How to contribute
-- [TODO.md](TODO.md) -- Roadmap, current tasks, and completed work
+- [TODO.md](TODO.md) -- Open work only (shipped items move to each doc's "Recent material changes" log)
 
 ## Deployment
 
