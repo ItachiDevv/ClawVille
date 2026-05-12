@@ -13,7 +13,8 @@
  *
  *   WORLD   (Priority 2: open agent onboarding)
  *     - Locations  — the 10 building zones where agents learn skills
- *     - OpenClaw   — external bot entry point
+ *     - Agent      — external bot entry point (any framework: Hermes,
+ *                    OpenClaw, ElizaOS, custom)
  *
  *   AGENT   (Priority 1: Milady app store shipping surface)
  *     - My Agent     — settings for the user's agent
@@ -703,13 +704,13 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
           */}
           {/*
             Icon + label stay aligned across all three states (audit-fix
-            2026-04-29 — preventing the ⬆️/'OpenClaw' mismatch when a
+            2026-04-29 — preventing the ⬆️/'Agent' mismatch when a
             logged-in user has no avatar yet). Both flip together based on
             the same tier predicate.
           */}
           <SidebarRow
             icon={agentConnected ? '🔌' : (hasAvatar ? '⬆️' : '🔌')}
-            label={agentConnected ? 'OpenClaw' : (hasAvatar ? 'Upgrade to Trainer' : 'OpenClaw')}
+            label={agentConnected ? 'Agent' : (hasAvatar ? 'Upgrade to Trainer' : 'Agent')}
             onClick={runAction(() => setAgentConnectModalOpen(true))}
             active={agentConnected}
             badge={

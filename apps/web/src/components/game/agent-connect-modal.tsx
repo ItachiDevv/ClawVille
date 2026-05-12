@@ -13,6 +13,22 @@ export default function AgentConnectModal() {
   const { agentConnectModalOpen, setAgentConnectModalOpen, agentConnected, agentSessionId, setAgentConnection, addToast, setSkillBuilderOpen } = useGameStore();
   const { data: avatar } = useAvatar();
   const { data: authData } = useQuery({ queryKey: ['auth-me'], queryFn: () => api.me(), retry: false });
+  // Same query the game page uses to hydrate the banner — TanStack dedupes
+  // so this is essentially free. `mode` tells us whether the "connected"
+  // state comes from a server-hosted avatar (no real disconnect possible,
+  // just dismissal) or a live external bot (auto-derived from recent
+  // activity; no button needed — bot liveness is the source of truth).
+  const { data: agentSession } = useQuery({
+    queryKey: ['agent-session'],
+    queryFn: api.getAgentSession,
+    enabled: !!authData?.user?.id,
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+    retry: false,
+  });
+  const sessionMode = (agentSession as { mode?: string } | undefined)?.mode;
+  const isHosted = sessionMode === 'hosted';
+  const isExternalActive = sessionMode === 'external-active';
 
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -208,13 +224,42 @@ export default function AgentConnectModal() {
                 </div>
               )}
 
+              {/* Status detail — paired-active gets a status line + last-seen
+                  timestamp; hosted avatars get a "this lives on our servers"
+                  hint. */}
+              {isExternalActive && (agentSession as any)?.lastSeenAt && (
+                <p className="text-cyan-300/60 text-[11px] font-mono">
+                  Last action: {new Date((agentSession as any).lastSeenAt).toLocaleTimeString()} · auto-grays after 5 min idle
+                </p>
+              )}
+              {isHosted && (
+                <p className="text-cyan-300/60 text-[11px]">
+                  Server-hosted runtime ({(agentSession as any)?.harness}) — always reachable. Nothing to disconnect; hide the banner instead.
+                </p>
+              )}
+
               <div className="flex gap-2">
                 <button onClick={handleExport} disabled={exporting || !avatar?.id} className="flex-1 px-3 py-2 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 text-xs font-bold disabled:opacity-50">
                   {exporting ? 'Exporting...' : 'Export SKILL.md'}
                 </button>
-                <button onClick={handleDisconnect} className="flex-1 px-3 py-2 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-300 text-xs font-bold">
-                  Disconnect
-                </button>
+                {/* Disconnect makes sense only for hosted avatars (UI-only
+                    dismissal flag) and legacy external-active sessions where
+                    the user explicitly wants to invalidate the sessionId.
+                    For pure hosted avatars rename to "Hide banner" so the
+                    label matches what the action does. For external bots
+                    that are actively training, killing their sessionId
+                    server-side while they're alive locally is the "lying
+                    to the local bot" problem — so we hide the button and
+                    let liveness auto-derive instead. */}
+                {isHosted ? (
+                  <button onClick={handleDisconnect} className="flex-1 px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-white/70 text-xs font-bold">
+                    Hide banner
+                  </button>
+                ) : isExternalActive ? null : (
+                  <button onClick={handleDisconnect} className="flex-1 px-3 py-2 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-300 text-xs font-bold">
+                    Disconnect
+                  </button>
+                )}
               </div>
               <button
                 onClick={() => { setAgentConnectModalOpen(false); setSkillBuilderOpen(true); }}

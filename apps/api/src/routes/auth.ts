@@ -38,6 +38,17 @@ authRoutes.get('/me', requireAuth, async (c) => {
 //      user and check `session_expires_at`. Expired or missing → not
 //      connected. The row isn't deleted on expiry; the agent can
 //      reconnect with the signed-challenge flow and the handle resumes.
+// Hosted harnesses are runtimes ClawVille runs server-side. Their avatars
+// are always reachable (no external process to time out). External harnesses
+// (openclaw / custom) point at a process the user runs locally — their
+// liveness is derived from how recently the bot acted.
+const HOSTED_HARNESSES = new Set(['milady', 'hermes']);
+const EXTERNAL_ACTIVE_WINDOW_MS = (() => {
+  const raw = process.env.EXTERNAL_BOT_ACTIVE_WINDOW_SECONDS;
+  const n = raw ? Number.parseInt(raw, 10) : 300;
+  return Number.isFinite(n) && n > 0 ? n * 1000 : 300_000; // default 5 min
+})();
+
 authRoutes.get('/me/agent-session', requireAuth, async (c) => {
   const user = c.get('user');
 
@@ -47,11 +58,11 @@ authRoutes.get('/me/agent-session', requireAuth, async (c) => {
   });
 
   // External agent path takes precedence — if an openclaw_bots row exists,
-  // its sliding 24h TTL is the authoritative liveness signal regardless of
-  // the avatar's harness label. Previously a Milady-harness carve-out
-  // short-circuited to `connected: true` without ever consulting the bot
-  // row, so a Hermes/OpenClaw session paired weeks ago kept showing as
-  // active in the UI long after its actual session_expires_at had lapsed.
+  // its actual recent activity (NOT the 24h TTL) is the authoritative
+  // liveness signal. A user who paired Hermes locally and then killed the
+  // process should see the banner go gray within EXTERNAL_ACTIVE_WINDOW_MS
+  // of the last action, not wait for a 24h sweep. The 24h TTL still gates
+  // reconnect/replay; that's a separate concern.
   const bot = await db.query.openclawBots.findFirst({
     where: eq(openclawBots.userId, user.id),
     orderBy: (t, { desc }) => [desc(t.lastSeenAt)],
@@ -64,22 +75,41 @@ authRoutes.get('/me/agent-session', requireAuth, async (c) => {
   });
 
   if (bot) {
-    const now = new Date();
+    const now = Date.now();
+    const lastSeenMs = bot.lastSeenAt.getTime();
     const expired =
-      bot.sessionExpiresAt !== null && bot.sessionExpiresAt <= now;
+      bot.sessionExpiresAt !== null && bot.sessionExpiresAt.getTime() <= now;
+    const idle = now - lastSeenMs > EXTERNAL_ACTIVE_WINDOW_MS;
 
     if (expired) {
       return c.json({
         connected: false,
         reason: 'expired',
+        mode: 'external-expired',
         agentId: bot.agentId,
         lastSeenAt: bot.lastSeenAt.toISOString(),
         expiresAt: bot.sessionExpiresAt!.toISOString(),
       });
     }
 
+    if (idle) {
+      // Bot still has a valid sessionId (within 24h TTL) but hasn't acted
+      // recently — local process likely killed, laptop slept, etc. UI
+      // should show "paired, idle" rather than green.
+      return c.json({
+        connected: false,
+        reason: 'idle',
+        mode: 'external-idle',
+        agentId: bot.agentId,
+        lastSeenAt: bot.lastSeenAt.toISOString(),
+        idleSinceMs: now - lastSeenMs,
+        canReconnect: true,
+      });
+    }
+
     return c.json({
       connected: true,
+      mode: 'external-active',
       agentId: bot.agentId,
       harness: avatar?.harness ?? bot.identityType ?? null,
       expiresAt: bot.sessionExpiresAt?.toISOString() ?? null,
@@ -87,42 +117,35 @@ authRoutes.get('/me/agent-session', requireAuth, async (c) => {
     });
   }
 
-  // No external bot — fall through to the Milady carve-out only when the
-  // user truly has no external agent attached. ClawVille hosts the Milady
-  // Eliza runtime server-side, so an avatar with harness='milady' and a
-  // platform_agents row IS always alive in the sense that you can chat
-  // with it; that's a different liveness shape than an external agent's
-  // sliding TTL and we don't want to falsely mark it dead.
-  //
-  // EXCEPT: respect a user-set "banner dismissed" flag on the avatar. When
-  // a Milady-only user clicks Disconnect, the unregister handler has no
-  // bot row to expire (there isn't one); without a persisted dismissal
-  // signal, the carve-out below would re-assert connected:true on every
-  // page reload — exactly the "I clicked Disconnect, reloaded, banner came
-  // back" bug. The flag lives in avatars.flags.agentBannerDismissed and
-  // is cleared automatically by /api/agent/connect-token when the user
-  // generates a fresh pair link (any future pair is treated as an
-  // intentional re-show).
+  // No external bot — fall through to the hosted-harness carve-out for
+  // avatars whose runtime ClawVille runs server-side (milady, hermes).
+  // The dismissal flag (avatars.flags.agentBannerDismissed) lets the user
+  // suppress the banner without anything to actually "disconnect" — the
+  // server runtime is always alive in those cases; this is purely a UI
+  // preference. Cleared automatically by /api/agent/connect-token when
+  // the user generates a fresh pair link.
   const flags = (avatar?.flags as { agentBannerDismissed?: boolean } | null) ?? {};
   if (flags.agentBannerDismissed === true) {
     return c.json({
       connected: false,
       reason: 'dismissed',
+      mode: 'dismissed',
       harness: avatar?.harness ?? null,
     });
   }
 
-  if (avatar?.harness === 'milady' && avatar.platformAgentId) {
+  if (avatar && HOSTED_HARNESSES.has(avatar.harness ?? '') && avatar.platformAgentId) {
     return c.json({
       connected: true,
+      mode: 'hosted',
       agentId: avatar.platformAgentId,
-      harness: 'milady',
+      harness: avatar.harness,
       expiresAt: null,
       lastSeenAt: null,
     });
   }
 
-  return c.json({ connected: false, reason: 'no_bot' });
+  return c.json({ connected: false, reason: 'no_bot', mode: 'none' });
 });
 
 // Logout
