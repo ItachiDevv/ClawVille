@@ -314,49 +314,15 @@ const VRM_DIR_ROTATION: Record<string, number> = {
 // are at Y=0 per spec — no pivot offset calculation needed (unlike GLBs).
 const VRM_NPC_SCALE = 112;
 
-// NPC distance LOD thresholds (squared world-unit distances from camera).
-//
-// Applied uniformly to ALL wandering NPCs (GLB + VRM). Past NPC_CULL_DIST, we
-// flip the group's `visible = false` and early-return from useFrame — Three.js
-// then skips the entire render subtree (including the drei <Html> label
-// portal, which is the most expensive per-NPC DOM cost).
-//
-//   Close (< 800 wu):  full 60Hz — animator + raycast + label
-//   Mid   (< 2500 wu): VRM animator drops to 30Hz (GLB animators stay 60Hz
-//                      since they're much cheaper than VRM spring-bone physics)
-//   Far   (≥ 2500 wu): group.visible = false → no render, no label, no
-//                      matrix/animator/raycast/lerp work. Zero cost per frame.
-//
-// NPC_CULL_DIST raised 1200→2000 (2026-04-21 bug fix): Maple/Miu spawned
-//   beyond the old 1200wu threshold and were T-posed permanently.
-// NPC_CULL_DIST raised 2000→2500 (2026-04-23 bug fix):
-//   The 5120×5120 world (−2560..+2560 in world space) places many wandering
-//   NPCs 1300–2500wu from any reasonable camera position (camera is at y≈600,
-//   not y=0, so even NPCs on adjacent quadrants are 1300–1600wu XZ-distance
-//   from the player). With the old 2000wu threshold, NPCs in the outer half of
-//   the world were culled whenever the player was anywhere near center — they
-//   would appear briefly as the camera approached and disappear again as it
-//   receded past the 2000wu sphere. 2500wu covers ~half the map radius
-//   (diagonal half = 3620wu) and matches the fog's effective visibility cutoff,
-//   keeping all nearby-quadrant NPCs live while the distant corners remain culled.
-//   VRM half-rate band raised 800→1000 proportionally.
-const NPC_CULL_DIST_SQ          = 10000 * 10000;  // see rationale below
-const VRM_NPC_HALF_RATE_DIST_SQ = 1000 * 1000;
-
-// 2026-04-24: NPC_CULL_DIST_SQ widened 2500²→10000² (effectively disabled).
-// The old 2500wu sphere caused two visible bugs on a 5120wu map:
-//   1. Building residents on the far side of the ring (~2100wu from center)
-//      would be culled whenever the camera was on the opposite side — their
-//      group.position never got set, and they stayed invisible at (0,0,0)
-//      even after they should have reappeared.
-//   2. Crustacean wanderers (Driftwood/Marlin/Riptide) wander through the
-//      whole town ring and crossed the 2500wu threshold routinely as the
-//      user rotated the camera — their avatars flickered in and out despite
-//      their labels being shown.
-// 13 GLB NPCs (10 building residents + 3 wanderers) is a bounded set that
-// can all render all the time without visible perf degradation. The VRM and
-// GLB cull constants now match — neither far-culls in normal camera ranges.
-const VRM_NPC_CULL_DIST_SQ      = NPC_CULL_DIST_SQ;
+// 2026-05-11: all NPC distance/behind-camera/occlusion culling REMOVED per user
+// directive ("let's remove all the culling completely it ruins the game"). No
+// LOD thresholds, no group.visible flips, no per-frame raycast occlusion test
+// on labels. Mid-distance spring-bone throttling also flattened — all VRM NPCs
+// now run uniform 15Hz spring physics. The world's 18 wandering NPCs are a
+// bounded set that renders correctly at all camera positions; perf gains we
+// chased through culling caused more visual bugs (pop-in, label flicker, scale
+// regressions) than they recovered. See 3dStructure.md §5d for the throttle
+// policy and the "Recent material changes" log for the rollout.
 
 // Preload ALL Milady VRM paths used by wandering NPCs + Mixamo animation clips.
 // These calls are module-scope so the caches are warm before any VRMNpcMesh mounts.
@@ -381,73 +347,6 @@ preloadVRMBytes('/avatars/milady-official-4.vrm');
 preloadVRMBytes('/avatars/milady-official-7.vrm');
 preloadVRMBytes('/avatars/milady-official-8.vrm');
 preloadMixamoClips();
-
-// Module-scope scratch for getWorldPosition in behind-camera cull checks.
-// Shared by GLBNpcMesh + VRMNpcMesh — each call overwrites before reading.
-const _npcAnchorWorldPos = new THREE.Vector3();
-
-// ---------------------------------------------------------------------------
-// Label occlusion infrastructure (re-locked 2026-04-26 after PR #65 stripped it).
-// Cached raycast against a small set of "occluder" meshes (buildings + NPC
-// groups) to hide labels when the anchor is blocked by closer geometry. Much
-// cheaper than drei occlude={true} (full-scene traversal).
-// ---------------------------------------------------------------------------
-const _occRaycaster = new THREE.Raycaster();
-const _occDir = new THREE.Vector3();
-let _occluderMeshes: THREE.Mesh[] | null = null;
-let _occluderScene: THREE.Scene | null = null;
-
-/** Collect every Mesh that is a descendant of an Object3D tagged
- *  userData.isOccluder = true. Cache invalidates on scene change or when
- *  setOccluderListDirty() is called from a useLayoutEffect at NPC mount. */
-function buildOccluderList(scene: THREE.Scene): THREE.Mesh[] {
-  const meshes: THREE.Mesh[] = [];
-  scene.traverse((obj) => {
-    if (!obj.userData.isOccluder) return;
-    obj.traverse((child) => {
-      if ((child as THREE.Mesh).isMesh) meshes.push(child as THREE.Mesh);
-    });
-  });
-  return meshes;
-}
-
-/** Returns true when the camera→anchor ray is blocked by an occluder mesh
- *  closer than the anchor. selfNpcId skips meshes from the calling NPC's own
- *  group so it never self-occludes its label. */
-function checkLabelOcclusion(
-  cameraPos: THREE.Vector3,
-  anchorWorldPos: THREE.Vector3,
-  selfNpcId: string,
-  scene: THREE.Scene,
-): boolean {
-  if (!_occluderMeshes || _occluderScene !== scene) {
-    _occluderMeshes = buildOccluderList(scene);
-    _occluderScene = scene;
-  }
-  const anchorDist = cameraPos.distanceTo(anchorWorldPos);
-  if (anchorDist < 1) return false;
-
-  _occDir.subVectors(anchorWorldPos, cameraPos).normalize();
-  _occRaycaster.set(cameraPos, _occDir);
-  _occRaycaster.far = anchorDist - 1;
-
-  const filtered = _occluderMeshes.filter((m) => {
-    let p: THREE.Object3D | null = m;
-    while (p) {
-      if (p.userData.isOccluder && p.userData.npcId === selfNpcId) return false;
-      p = p.parent;
-    }
-    return true;
-  });
-  const hits = _occRaycaster.intersectObjects(filtered, false);
-  return hits.length > 0;
-}
-
-/** Force the occluder cache to rebuild on next call. NPCs invoke this from a
- *  useLayoutEffect after they tag their group with isOccluder/npcId. */
-function invalidateOccluderCache() {
-  _occluderMeshes = null;
-}
 
 // ---------------------------------------------------------------------------
 // Single NPC using GLB model with terrain following
@@ -959,18 +858,16 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     }
     group.rotation.y = currentRotY.current;
 
-    // PERF: split mixer (60Hz unconditional) from spring-bone physics (tiered rate).
+    // PERF: split mixer (60Hz unconditional) from spring-bone physics (15Hz).
     // Re-locked 2026-04-26 after PR #65 reverted to the early-return pattern that
     // killed the entire useFrame on odd mid-distance frames — including the
     // mixer.update() — causing keyframe animation to run at 30Hz with visible jank.
     //
-    // The mixer MUST run every frame at 60Hz (Nori parity). Only spring-bone
-    // physics is tiered:
-    //   close (camDistSq ≤ VRM_NPC_HALF_RATE_DIST_SQ): every 2nd frame = 30Hz
-    //   mid-dist (camDistSq > VRM_NPC_HALF_RATE_DIST_SQ): every 4th frame = 15Hz
-    //
-    // Walking NPCs keep full vrm.update() — movement causes large spring
-    // displacements where sub-30Hz would produce visible lag on hair/tail physics.
+    // The mixer MUST run every frame at 60Hz (Nori parity). Spring-bone physics
+    // is uniform 15Hz for all VRM NPCs as of 2026-05-11 (was tiered 10/20Hz by
+    // camera distance; flattened with the culling removal — see 3dStructure.md
+    // §5d). Walking NPCs and idle NPCs use the same rate now; 15Hz is below the
+    // perceptual hair/tail-lag threshold at typical viewing distance.
     if (!vrmAnimatorRef.current && frame % 120 === seed % 120) {
       console.warn('[VRMNpcMesh] animator ref null at update time', npc.id, npc.species);
     }
@@ -978,20 +875,8 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const animator = vrmAnimatorRef.current;
     if (animator) {
       springDeltaAccRef.current += dt;
-      // Emergency NPC throttle 2026-04-30: all NPCs (walking + idle) get
-      // mixer at 60Hz but spring physics at 15-20Hz max. Walking NPCs
-      // previously got full vrm.update() every frame for "spring fidelity"
-      // which was the single most expensive NPC code path with 8-18 VRMs
-      // visible. The visual cost of dropping spring to 15Hz on walking
-      // NPCs is barely perceptible at typical viewing distance — the
-      // hair lag is ≤ 33ms which is below the threshold for most
-      // observers, especially during a demo.
       animator.updateMixerOnly(dt, isMoving);
-      // 2026-05-11 — uniform 15Hz spring physics (was 20Hz, then tiered 10/20).
-      // Spring-bone verlet integration is the single most expensive VRM cost on
-      // CPU; 60fps / 4 = 15Hz keeps hair motion smooth at typical viewing
-      // distance while saving 25% of spring CPU vs 20Hz.
-      const springMod = 4; // 15Hz
+      const springMod = 4; // 15Hz — see comment block above
       if ((frame + seed) % springMod === 0) {
         const acc = Math.min(springDeltaAccRef.current, 0.1);
         animator.updateSpringOnly(acc);
