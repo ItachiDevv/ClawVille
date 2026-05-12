@@ -83,20 +83,27 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // i=5  center=(80,136)   dx=0,   dz=-56  → atan2(0,-56)=π≈3.142
   'deployment-ops':    { model: '/models/building-lighthouse.glb', yOffset: 0, rotY:  3.142 },
   // i=6  center=(47,125)   dx=33,  dz=-45  → atan2(33,-45)≈2.510
-  // krusty-krab.glb = the iconic ship-shaped restaurant (CC-BY, Yanez Designs, Sketchfab, 7.6k tris)
-  'mcp-tool-use':     { model: '/models/krusty-krab.glb',         yOffset: 0, rotY:  2.510 },
+  // krusty-krab-v2.glb = the iconic ship-shaped restaurant (CC-BY, Yanez Designs).
+  // 2026-05-12: restored from the_krusty_krab_spongebob.glb (1.59 MB original).
+  // The previous krusty-krab.glb (0.30 MB Apr-30 recompression) had degraded
+  // geometry — user reported "doesn't even look like our old GLB, has floor
+  // aspects we didn't have before".
+  'mcp-tool-use':     { model: '/models/krusty-krab-v2.glb',      yOffset: 0, rotY:  2.510 },
   // i=7  center=(27,97)    dx=53,  dz=-17  → atan2(53,-17)≈1.882
-  'code-development':       { model: '/models/chum-bucket.glb',         yOffset: 0, rotY:  1.882 },
+  // 2026-05-12: chum-bucket-v2.glb restored from spongebob_chum_bucket.glb
+  // (1.85 MB original) for the same reason as Krusty Krab.
+  'code-development':       { model: '/models/chum-bucket-v2.glb',      yOffset: 0, rotY:  1.882 },
   // i=8  center=(27,63)    dx=53,  dz=17   → atan2(53,17)≈1.259
   // sandy-treedome.glb — low-poly version (4,011 tris). Auto-scaled via
   // computeBuildingScale (the new model has an honest bbox). The yOffset:-50
   // hack was inherited from the OLD GLB which had EXT_mesh_gpu_instancing
   // and a tiny source bbox — that's not the case anymore, so yOffset reset
   // to 0 to keep it on the ground like the other buildings.
-  // 2026-05-12: yOffset -300 (was -80, still floating well above the head
-  // of the Sandy NPC); rotYOffset flips it 180° so the tree faces the
-  // village center like every other building.
-  'messaging-channels':    { model: '/models/sandy-treedome-v2.glb',   yOffset: -300, rotY:  1.259, rotYOffset: Math.PI },
+  // 2026-05-12: yOffset -150 — midpoint between earlier guesses (-80 left
+  // the platform floating well above Sandy's head; -300 partially buried
+  // the tree). rotYOffset flips it 180° so the tree faces the village
+  // center like every other building.
+  'messaging-channels':    { model: '/models/sandy-treedome-v2.glb',   yOffset: -150, rotY:  1.259, rotYOffset: Math.PI },
   // i=9  center=(47,35)    dx=33,  dz=45   → atan2(33,45)≈0.632
   // patricks-rock.glb = Patrick's Rock (CC-BY, Yanez Designs, Sketchfab, 3.5k tris)
   // building-submarine.glb is now a fixed-landmark decoration only (arena-terrain.tsx FixedLandmarks)
