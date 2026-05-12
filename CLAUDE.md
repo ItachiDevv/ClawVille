@@ -236,6 +236,11 @@ Required in `.env.local`:
   - `SCAPE_HOSTED_SESSION_URL` — 'scape `/hosted-session/issue` endpoint.
   - `SCAPE_WEB_ORIGIN` — 'scape web origin for `?sessionToken=…` redirect.
   - `PARTNER_PUBKEYS` — JSON allowlist by partner id: `{"scape":"<base58>"}`. Empty ⇒ inbound portal routes return 401.
+- **Wager program** keys (added 2026-05-12 for the `clawville_wager` Anchor program — `HgQhHVYV2C5Mw8K81kEnADkqsuS5YQRmGJDUR5wnZVuG` on devnet):
+  - `SOLANA_RPC_URL` — RPC endpoint used by `wager-program-client.ts`. Default `https://api.devnet.solana.com`. Production MUST keep this on devnet until the `wager-mainnet-paid` feature gate graduates.
+  - `WAGER_SETTLEMENT_AUTHORITY_PUBKEY` — Base58 pubkey the API expects after decrypting the `treasury_wallets` row with `purpose='wager-settlement-authority'`. Mismatch ⇒ API refuses to sign any lock/settle/authority-cancel. Default (env unset) is the devnet deployer `G5WgvGYK5mLxQbVUmNhFKeWwEhT235p2HjKmkbpMbMWy`.
+  - `WAGER_SETTLEMENT_AUTHORITY_KEYPAIR_PATH` — Path to the 64-element JSON keypair file used by `scripts/seed-wager-settlement-authority.ts`. Defaults to `$HOME/.config/solana/id.json`. Never set in prod env — the seed script reads it locally, encrypts immediately, and persists only the ciphertext.
+  - `WAGER_PROGRAM_CLUSTER` — `'devnet'` (default) or `'localnet'`. Mainnet wiring intentionally requires a code change, not just an env flip.
 
 **Optional:** `OPENAI_API_KEY` — fallback ONLY for `npc-conversation-engine.ts` on Gemini `GEMINI_MAX_FAILURES` backoff. Not a general replacement.
 
