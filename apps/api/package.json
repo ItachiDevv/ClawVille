@@ -16,6 +16,8 @@
     "@clawville/agent-templates": "workspace:*",
     "@clawville/database": "workspace:*",
     "@clawville/shared": "workspace:*",
+    "@clawville/wager-program": "workspace:*",
+    "@coral-xyz/anchor": "^0.31.1",
     "@elizaos/plugin-sql": "2.0.0-alpha.7",
     "@lucia-auth/adapter-drizzle": "^1.1.0",
     "@solana/web3.js": "^1.95.0",
