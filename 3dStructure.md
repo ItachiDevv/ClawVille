@@ -396,6 +396,7 @@ Draw-call budget (full equipped set): hat ≤ 1, aura ≤ 4 (instanced particles
 
 Compact log. Single line per change with commit reference where applicable.
 
+- 2026-05-12 — dead-code cleanup in `arena-npcs.tsx` — removed unused `NPC_CULL_DIST_SQ` / `VRM_NPC_HALF_RATE_DIST_SQ` / `VRM_NPC_CULL_DIST_SQ` constants and the entire `checkLabelOcclusion` / `buildOccluderList` / `invalidateOccluderCache` infra block (5 module-scope variables + 3 functions, all orphaned by the 2026-05-11 culling removal). Also flattened a duplicated spring-throttle comment block. No behavior change.
 - 2026-05-12 — `ed1f4a0` / `2728ac6` — Sandy's Treedome swap to `sandy_tree_final.glb` after measuring every candidate via `scripts/read-glb-bbox.mjs`. Vertex-count strip rule attempted then reverted (Object_5 was the building, not a backdrop).
 - 2026-05-12 — `3b9d64b` / `c3934a1` — `Skybox_`-prefix mesh-name strip added to `stripDecorativeMeshes` (the actual blue-dome backdrop in Yanez Designs Sketchfab GLBs).
 - 2026-05-12 — `9cdaeee` — Krusty Krab + Chum Bucket restored from original Sketchfab GLBs (the Apr-30 meshopt re-compression had degraded geometry). Renamed `-v2.glb` to bust the 1-year browser cache.
