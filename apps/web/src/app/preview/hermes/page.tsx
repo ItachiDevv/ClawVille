@@ -30,9 +30,16 @@ import * as THREE from 'three';
 import { useVRMInstance, disposeVRMInstance } from '@/lib/three/vrm-loader';
 import { VRMCharacterAnimator } from '@/lib/three/vrm-character-animator';
 
-const SCENE_BG = new THREE.Color(0x0d2b5e); // matches game fog
+const SCENE_BG = new THREE.Color(0xffffff); // white backdrop for video capture
 // Target visual height — camera at y=8 looking at y=7 frames a 6.5u-tall avatar.
 const TARGET_HEIGHT = 6.5;
+
+// RGB speed-line rainbow used during Run / Fly modes.
+const SPEEDLINE_COLORS = [
+  '#ff2040', '#ff8000', '#ffd000', '#40e040',
+  '#00d0ff', '#3060ff', '#a040ff', '#ff20c0',
+];
+
 
 type Character = 'female' | 'male';
 type Mode = 'idle' | 'walk' | 'run' | 'swim' | 'fly';
@@ -147,13 +154,57 @@ function HermesAvatar({ character, mode }: { character: Character; mode: Mode })
   );
 }
 
+function SpeedLines({ active }: { active: boolean }) {
+  // 8 rainbow lines spread vertically across the character's silhouette,
+  // each at varying length/speed for parallax. Lines live in scene space at
+  // z=-6 (behind the avatar at z=0) so they sit between the white backdrop
+  // and the character. Plain Mesh + MeshBasicMaterial — no shaders, safe on
+  // Iris Xe.
+  const refs = useRef<(THREE.Mesh | null)[]>([]);
+  const speeds = useMemo(() => SPEEDLINE_COLORS.map((_, i) => 14 + i * 1.7), []);
+  const widths = useMemo(() => SPEEDLINE_COLORS.map((_, i) => 3.2 + (i % 4) * 1.4), []);
+
+  // Continuously animate even when inactive — `<group visible>` toggles
+  // display, not the mesh.position updates. This way toggling Run/Fly shows
+  // lines mid-stream rather than snapped at x=-12.
+  useFrame((_, delta) => {
+    const dt = Math.min(delta, 0.05);
+    for (let i = 0; i < refs.current.length; i++) {
+      const m = refs.current[i];
+      if (!m) continue;
+      m.position.x += speeds[i]! * dt;
+      if (m.position.x > 14) m.position.x = -14;
+    }
+  });
+
+  return (
+    <group visible={active}>
+      {SPEEDLINE_COLORS.map((color, i) => {
+        const y = 1.5 + (i / SPEEDLINE_COLORS.length) * 9.5; // y=1.5 .. y=11
+        const startX = -14 + (i * 28) / SPEEDLINE_COLORS.length;
+        return (
+          <mesh
+            key={i}
+            ref={(m) => { refs.current[i] = m; }}
+            position={[startX, y, -6]}
+          >
+            <planeGeometry args={[widths[i]!, 0.18]} />
+            <meshBasicMaterial color={color} transparent opacity={0.85} toneMapped={false} />
+          </mesh>
+        );
+      })}
+    </group>
+  );
+}
+
 function HermesScene({ character, mode }: { character: Character; mode: Mode }) {
-  const ambient = useMemo(() => 0.5, []);
+  const ambient = useMemo(() => 0.7, []);
+  const speedlinesActive = mode === 'run' || mode === 'fly';
   return (
     <>
-      <hemisphereLight args={[0xffffff, 0x223355, ambient]} />
-      <directionalLight position={[10, 30, 10]} intensity={1.2} castShadow={false} />
-      <gridHelper args={[40, 20, 0x224466, 0x163355]} position={[0, 0, 0]} />
+      <hemisphereLight args={[0xffffff, 0xccccff, ambient]} />
+      <directionalLight position={[10, 30, 10]} intensity={1.0} castShadow={false} />
+      <SpeedLines active={speedlinesActive} />
       <Suspense fallback={null}>
         <HermesAvatar character={character} mode={mode} />
       </Suspense>
@@ -179,7 +230,7 @@ function PreviewHermesInner() {
   const [mode, setMode] = useState<Mode>('idle');
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: '#0d2b5e' }}>
+    <div style={{ position: 'fixed', inset: 0, background: '#ffffff' }}>
       <Canvas
         camera={{ position: [0, 8, 25], fov: 35 }}
         gl={{ antialias: true, powerPreference: 'high-performance' }}
