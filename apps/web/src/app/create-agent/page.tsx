@@ -82,7 +82,7 @@ function mapCategoryToTab(category: AgentCategory | undefined): TabId | null {
 }
 
 // Shape of the sessionStorage payload that bridges step 1 → step 2 → POST /api/avatars.
-interface CreatePetStep1 {
+interface CreateAvatarStep1 {
   species: LegacySpecies;
   modelKey: ModelKey;
   category: AgentCategory;
@@ -93,12 +93,12 @@ interface CreatePetStep1 {
   thumb: string;
 }
 
-function readSessionStep1(): Partial<CreatePetStep1> | null {
+function readSessionStep1(): Partial<CreateAvatarStep1> | null {
   if (typeof window === 'undefined') return null;
   try {
-    const raw = sessionStorage.getItem('createPetStep1');
+    const raw = sessionStorage.getItem('createAvatarStep1');
     if (!raw) return null;
-    return JSON.parse(raw) as Partial<CreatePetStep1>;
+    return JSON.parse(raw) as Partial<CreateAvatarStep1>;
   } catch {
     return null;
   }
@@ -260,7 +260,7 @@ export default function CreateAgentPage() {
       const thumb = await captureThumbnail();
       const legacySpecies = MODEL_KEY_TO_LEGACY_SPECIES[selectedModelInPool];
 
-      const payload: CreatePetStep1 = {
+      const payload: CreateAvatarStep1 = {
         species: legacySpecies,
         modelKey: selectedModelInPool,
         category: selectedCategory,
@@ -271,7 +271,7 @@ export default function CreateAgentPage() {
         thumb,
       };
 
-      sessionStorage.setItem('createPetStep1', JSON.stringify(payload));
+      sessionStorage.setItem('createAvatarStep1', JSON.stringify(payload));
       router.push('/create-agent/personality');
     } finally {
       // Reset BOTH the ref AND the state. The ref was previously only

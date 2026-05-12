@@ -154,15 +154,15 @@ useGLTF.preload('/models/lobster.glb');
 import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
 
 // Scratch objects for computeLocalMinY — module-scope to avoid GC in useMemo.
-const _petBbox = new THREE.Box3();
-const _petMeshBbox = new THREE.Box3();
+const _avatarBbox = new THREE.Box3();
+const _avatarMeshBbox = new THREE.Box3();
 
 /** Measure local-space bbox min.y for non-SkinnedMesh geometry in a cloned GLB scene.
  *  Returns 0 if no geometry found.
  *  See arena-npcs.tsx computeLocalMinY for full rationale. */
 function computeLocalMinY(scene: THREE.Object3D): number {
   scene.updateMatrixWorld(true);
-  _petBbox.makeEmpty();
+  _avatarBbox.makeEmpty();
 
   scene.traverse((child) => {
     if ((child as THREE.Mesh).isMesh && !(child as THREE.SkinnedMesh).isSkinnedMesh) {
@@ -171,16 +171,16 @@ function computeLocalMinY(scene: THREE.Object3D): number {
       mesh.geometry.computeBoundingBox();
       const geoBB = mesh.geometry.boundingBox;
       if (!geoBB) return;
-      _petMeshBbox.copy(geoBB).applyMatrix4(mesh.matrixWorld);
-      _petBbox.union(_petMeshBbox);
+      _avatarMeshBbox.copy(geoBB).applyMatrix4(mesh.matrixWorld);
+      _avatarBbox.union(_avatarMeshBbox);
     }
   });
 
-  if (_petBbox.isEmpty()) {
-    _petBbox.setFromObject(scene);
+  if (_avatarBbox.isEmpty()) {
+    _avatarBbox.setFromObject(scene);
   }
 
-  return _petBbox.isEmpty() ? 0 : _petBbox.min.y;
+  return _avatarBbox.isEmpty() ? 0 : _avatarBbox.min.y;
 }
 
 // Scratch vectors for camera-relative player movement — module-scope, zero GC.
@@ -190,36 +190,36 @@ const _playerCamRight = new THREE.Vector3();
 const _playerWorldUp = new THREE.Vector3(0, 1, 0);
 
 // Shared raycaster — only hits layer 1 (terrain)
-const _petRaycaster = new THREE.Raycaster();
-_petRaycaster.layers.set(TERRAIN_LAYER);
-const _petRayOrigin = new THREE.Vector3();
-const _petRayDir = new THREE.Vector3(0, -1, 0);
+const _avatarRaycaster = new THREE.Raycaster();
+_avatarRaycaster.layers.set(TERRAIN_LAYER);
+const _avatarRayOrigin = new THREE.Vector3();
+const _avatarRayDir = new THREE.Vector3(0, -1, 0);
 
 // PERF: cache the terrain mesh — see arena-npcs.tsx for the full rationale.
 // intersectObjects(scene.children, true) recurses through 4549 objects per call
 // when only one mesh has TERRAIN_LAYER. Cache + intersectObject(mesh, false) is
 // O(1 mesh) instead of O(scene-graph).
-let _cachedPetTerrainMesh: THREE.Object3D | null = null;
-function findPetTerrainMesh(scene: THREE.Scene): THREE.Object3D | null {
-  if (_cachedPetTerrainMesh && _cachedPetTerrainMesh.parent) return _cachedPetTerrainMesh;
-  _cachedPetTerrainMesh = null;
+let _cachedAvatarTerrainMesh: THREE.Object3D | null = null;
+function findAvatarTerrainMesh(scene: THREE.Scene): THREE.Object3D | null {
+  if (_cachedAvatarTerrainMesh && _cachedAvatarTerrainMesh.parent) return _cachedAvatarTerrainMesh;
+  _cachedAvatarTerrainMesh = null;
   scene.traverse((obj) => {
-    if (_cachedPetTerrainMesh) return;
-    if ((obj as THREE.Mesh).isMesh && obj.layers.test(_petRaycaster.layers)) {
-      _cachedPetTerrainMesh = obj;
+    if (_cachedAvatarTerrainMesh) return;
+    if ((obj as THREE.Mesh).isMesh && obj.layers.test(_avatarRaycaster.layers)) {
+      _cachedAvatarTerrainMesh = obj;
     }
   });
-  return _cachedPetTerrainMesh;
+  return _cachedAvatarTerrainMesh;
 }
 
 function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
-  const terrain = findPetTerrainMesh(scene);
+  const terrain = findAvatarTerrainMesh(scene);
   if (!terrain) return -2;
-  _petRayOrigin.set(x, 200, z);
-  _petRaycaster.set(_petRayOrigin, _petRayDir);
-  _petRaycaster.layers.set(TERRAIN_LAYER);
-  _petRaycaster.far = 400;
-  const intersects = _petRaycaster.intersectObject(terrain, false);
+  _avatarRayOrigin.set(x, 200, z);
+  _avatarRaycaster.set(_avatarRayOrigin, _avatarRayDir);
+  _avatarRaycaster.layers.set(TERRAIN_LAYER);
+  _avatarRaycaster.far = 400;
+  const intersects = _avatarRaycaster.intersectObject(terrain, false);
   if (intersects.length > 0) return intersects[0].point.y;
   return -2; // fallback — matches sand floor Y position
 }
@@ -231,7 +231,7 @@ function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
 // VRM feet are at Y=0 per spec — no pivot offset needed.
 // ---------------------------------------------------------------------------
 
-function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
+function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
   const groupRef = useRef<THREE.Group>(null);
   const rotRef = useRef(VRM_DIR_ROTATION.idle);
   const terrainYRef = useRef(-2);
@@ -486,7 +486,7 @@ function PlayerPetVRMInner({ reg }: { reg: ModelRegistryEntry }) {
   );
 }
 
-function PlayerPetGLBInner() {
+function PlayerAvatarGLBInner() {
   const groupRef = useRef<THREE.Group>(null);
   const animGroupRef = useRef<THREE.Group>(null);
   const rotRef = useRef(0);
@@ -833,7 +833,7 @@ function PlayerPetGLBInner() {
 // Route to the correct inner component based on avatar_type
 // ---------------------------------------------------------------------------
 
-function PlayerPetRouter() {
+function PlayerAvatarRouter() {
   attachKeyListeners();
 
   const avatarModelKey = useGameStore((s) => s.avatarModelKey);
@@ -843,12 +843,12 @@ function PlayerPetRouter() {
   if (reg.avatar_type === 'vrm') {
     return (
       <Suspense fallback={null}>
-        <PlayerPetVRMInner reg={reg} />
+        <PlayerAvatarVRMInner reg={reg} />
       </Suspense>
     );
   }
 
-  return <PlayerPetGLBInner />;
+  return <PlayerAvatarGLBInner />;
 }
 
 export default function PlayerAvatar() {
@@ -865,7 +865,7 @@ export default function PlayerAvatar() {
 
   return (
     <Suspense fallback={null}>
-      <PlayerPetRouter />
+      <PlayerAvatarRouter />
     </Suspense>
   );
 }

@@ -109,7 +109,7 @@ const ARCHETYPE_COLORS: Record<string, string> = {
 
 export default function PersonalityPage() {
   const router = useRouter();
-  const createPetMutation = useCreateAvatar();
+  const createAvatarMutation = useCreateAvatar();
 
   const [step1, setStep1] = useState<Step1Data | null>(null);
   const [habitat, setHabitat] = useState('forest');
@@ -120,7 +120,7 @@ export default function PersonalityPage() {
 
   // Load step 1 data from sessionStorage
   useEffect(() => {
-    const raw = sessionStorage.getItem('createPetStep1');
+    const raw = sessionStorage.getItem('createAvatarStep1');
     if (!raw) {
       router.push('/create-agent');
       return;
@@ -185,7 +185,7 @@ export default function PersonalityPage() {
           ? (step1.harness as AgentHarness)
           : undefined;
 
-      const createRes = await createPetMutation.mutateAsync({
+      const createRes = await createAvatarMutation.mutateAsync({
         name: step1.name,
         species: step1.species,
         color: step1.color,
@@ -223,7 +223,7 @@ export default function PersonalityPage() {
         }
       }
 
-      sessionStorage.removeItem('createPetStep1');
+      sessionStorage.removeItem('createAvatarStep1');
 
       // Mark the agent as connected before the redirect. User feedback
       // 2026-04-24: "drops agent into the world in explore/npc mode when
@@ -266,7 +266,7 @@ export default function PersonalityPage() {
       // prior visit). Bounce them to /game instead of leaving them
       // stuck on the personality form with a dead Create button.
       if (/already have an avatar/i.test(message)) {
-        sessionStorage.removeItem('createPetStep1');
+        sessionStorage.removeItem('createAvatarStep1');
         router.push('/game');
         return;
       }
@@ -516,10 +516,10 @@ export default function PersonalityPage() {
       {/* Create button */}
       <button
         onClick={handleCreate}
-        disabled={createPetMutation.isPending}
+        disabled={createAvatarMutation.isPending}
         className="w-full max-w-xl py-3 rounded-lg font-clawville text-sm uppercase tracking-wider bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-white shadow-[0_0_20px_rgba(0,229,255,0.2)] text-xl disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        {createPetMutation.isPending ? 'Creating...' : 'CREATE'}
+        {createAvatarMutation.isPending ? 'Creating...' : 'CREATE'}
       </button>
     </div>
   );

@@ -35,7 +35,7 @@ function toSlug(name: string) {
 
 export default function MarketplaceModal() {
   const { marketplaceOpen, closeMarketplace, addToast } = useGameStore();
-  const { data: avatar, refetch: refetchPet } = useAvatar();
+  const { data: avatar, refetch: refetchAvatar } = useAvatar();
 
   const [tab, setTab] = useState<Tab>('browse');
   const [sort, setSort] = useState<SortMode>('newest');
@@ -126,7 +126,7 @@ export default function MarketplaceModal() {
     try {
       const res = await api.buySkill(skill.id);
       addToast('🛒', `Added "${res.skill.name}" to your collection`);
-      refetchPet();
+      refetchAvatar();
       loadBrowse();
     } catch (err: any) {
       addToast('!', err.message || 'Purchase failed');
@@ -139,7 +139,7 @@ export default function MarketplaceModal() {
     try {
       const res = await api.installSkill(skillId);
       addToast('📚', `Installed "${res.skillName}" — ${res.newKnowledgeCount} new knowledge entries`);
-      refetchPet();
+      refetchAvatar();
       loadPurchases();
     } catch (err: any) {
       addToast('!', err.message || 'Install failed');

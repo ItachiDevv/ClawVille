@@ -1022,7 +1022,7 @@ async function validateTutorialQuestEngagement(
     case 'meet-your-agent':
       return (await countEvents(
         sql`event_type = 'agent.chat.turn' AND payload->>'chatType' = 'avatar'`,
-      )) >= 1 ? ok() : fail('no_pet_chats');
+      )) >= 1 ? ok() : fail('no_avatar_chats');
 
     case 'first-steps':
       return (await countEvents(sql`event_type = 'building.visited'`)) >= 1
@@ -1038,7 +1038,7 @@ async function validateTutorialQuestEngagement(
     case 'bonded':
       return (await countEvents(
         sql`event_type = 'agent.chat.turn' AND payload->>'chatType' = 'avatar'`,
-      )) >= 5 ? ok() : fail('insufficient_pet_chats');
+      )) >= 5 ? ok() : fail('insufficient_avatar_chats');
 
     case 'door-knocker': {
       const visits = await countEvents(sql`event_type = 'building.visited'`);
