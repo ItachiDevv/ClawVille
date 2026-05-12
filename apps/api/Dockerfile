@@ -20,6 +20,10 @@ RUN cd packages/shared && bunx tsc
 RUN cd packages/database && bunx tsc
 RUN cd packages/agent-templates && bunx tsc
 RUN cd packages/agent-runtime && bunx tsc
+# wager-program — added 2026-05-12 alongside the clawville_wager Anchor program.
+# Consumed by apps/api/src/services/wager-program-client.ts via `main: ./dist/index.js`;
+# missing this step crash-loops the api with "Cannot find module @clawville/wager-program".
+RUN cd packages/wager-program && bunx tsc
 
 EXPOSE 4000
 
