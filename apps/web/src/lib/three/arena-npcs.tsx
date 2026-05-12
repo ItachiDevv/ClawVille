@@ -346,8 +346,11 @@ preloadVRMBytes('/avatars/milady-official-3.vrm');
 preloadVRMBytes('/avatars/milady-official-4.vrm');
 preloadVRMBytes('/avatars/milady-official-7.vrm');
 preloadVRMBytes('/avatars/milady-official-8.vrm');
-preloadVRMBytes('/avatars/hermes-female.vrm');
-preloadVRMBytes('/avatars/hermes-male.vrm');
+// hermes-female / hermes-male preloads removed 2026-05-12 — the
+// Mira/Tekk roster swap was reverted (commit 4b53b13) because the
+// Hermes VRMs render oversized at the shared VRM_NPC_SCALE. Until a
+// per-species scale lands, no NPC uses these so eager-fetching 3 MB
+// on every /game load is pure waste.
 preloadMixamoClips();
 
 // ---------------------------------------------------------------------------
