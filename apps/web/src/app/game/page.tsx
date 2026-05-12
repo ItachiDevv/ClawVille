@@ -136,7 +136,6 @@ function NanoClawBanner({ hasAvatar }: { hasAvatar: boolean }) {
 }
 
 export default function GamePage() {
-  const router = useRouter();
   const { data: avatar, isLoading } = useAvatar();
   const controlMode = useGameStore((s: GameState) => s.controlMode);
   const agentConnected = useGameStore((s: GameState) => s.agentConnected);
@@ -237,24 +236,17 @@ export default function GamePage() {
   // Connect to research thought stream
   useResearchStream();
 
-  // Redirect authenticated users with no active agent to /create-agent
-  // EXCEPT: embed mode, spectate mode, OR quickQueue (demo flow — guest
-  // hits a quickQueue link and should drop straight into the activity
-  // queue with a default lobster avatar auto-provisioned by the queue route,
-  // not get bounced to /create-agent and lose the deep-link intent).
-  useEffect(() => {
-    if (miladyEmbed.isEmbed) return;
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('spectate') === '1' || localStorage.getItem('clawville-spectate-mode') === '1') {
-      return;
-    }
-    if (params.get('quickQueue')) {
-      return;
-    }
-    if (!isLoading && !authLoading && isAuthenticated && !avatar) {
-      router.push('/create-agent');
-    }
-  }, [avatar, isLoading, authLoading, isAuthenticated, miladyEmbed.isEmbed, router]);
+  // 2026-05-12: removed the auto-redirect to /create-agent for authenticated
+  // users without an avatar. NPC mode is now a first-class landing surface —
+  // the NanoClawBanner exposes a "Create Agent" CTA alongside "Connect Your
+  // Agent" so the visitor can choose. The previous force-redirect made it
+  // impossible to reach NPC mode while logged-in and short-circuited the
+  // banner the same commit added.
+  //
+  // miladyEmbed, spectate, quickQueue gates were the only escape hatches
+  // before — now everyone falls through to NPC mode by default. Anyone who
+  // wants /create-agent reaches it via the banner button or the landing
+  // page.
 
   // Sync store state to match auth/avatar reality:
   //   - No avatar  → spectator (isSpectator=true), controlMode stays 'explore'
