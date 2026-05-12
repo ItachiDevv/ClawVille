@@ -93,7 +93,10 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // hack was inherited from the OLD GLB which had EXT_mesh_gpu_instancing
   // and a tiny source bbox — that's not the case anymore, so yOffset reset
   // to 0 to keep it on the ground like the other buildings.
-  'messaging-channels':    { model: '/models/sandy-treedome-v2.glb',   yOffset: 0, rotY:  1.259 },
+  // 2026-05-12: yOffset -80 grounds the platform (was floating); rotYOffset
+  // flips it 180° so the tree faces the village center like every other
+  // building. Adjust yOffset further if it clips into the terrain.
+  'messaging-channels':    { model: '/models/sandy-treedome-v2.glb',   yOffset: -80, rotY:  1.259, rotYOffset: Math.PI },
   // i=9  center=(47,35)    dx=33,  dz=45   → atan2(33,45)≈0.632
   // patricks-rock.glb = Patrick's Rock (CC-BY, Yanez Designs, Sketchfab, 3.5k tris)
   // building-submarine.glb is now a fixed-landmark decoration only (arena-terrain.tsx FixedLandmarks)
@@ -129,22 +132,25 @@ const _stripMeshBox = new THREE.Box3();
  *      shrank to ~60wu tall) */
 const DECORATIVE_PARENT_NAMES = new Set(['Flowers', 'Path', 'Skybox', 'Road', 'Sand']);
 
-/** 2026-05-12 — Mesh NAME prefixes for Sketchfab portfolio backdrop /
- *  ground meshes. The Yanez Designs SpongeBob asset pack ships every
- *  building (Krusty Krab, Chum Bucket, Patrick's Rock, Squidward, etc.)
- *  with a hemisphere "Skybox_NN" + flat "Sand_NN" / "Road_NN" patch
- *  baked in. These render as a giant blue dome around each building.
+/** 2026-05-12 — Mesh NAME prefix match for the SOLE problem mesh:
+ *  the "Skybox_NN" hemisphere backdrop baked into every Yanez Designs
+ *  Sketchfab building. 94-vert UV sphere, identical texture across the
+ *  whole asset pack, renders as a giant blue dome around each building.
  *
- *  The mesh sits directly under Sketchfab_Scene with no parent group,
- *  so DECORATIVE_PARENT_NAMES doesn't catch it (that rule checks parent
- *  name, the mesh IS the named thing here). Match by prefix on the
- *  mesh's own name. Three.js spaces→underscores when loading GLBs, so
- *  "Skybox_10 - Default_0" arrives as "Skybox_10_-_Default_0".
+ *  Sits directly under Sketchfab_Scene with no parent group, so the
+ *  DECORATIVE_PARENT_NAMES rule (parent-name match) never catches it —
+ *  the MESH itself is the named thing. Match by prefix on the mesh's
+ *  own name. Three.js converts spaces to underscores when loading GLBs
+ *  so "Skybox_10 - Default_0" arrives as "Skybox_10_-_Default_0".
+ *
+ *  IMPORTANT: do NOT add "Sand_" / "Road_" here — those are caught by
+ *  stripGroundPlanes which uses a flat-and-at-bottom geometric test
+ *  rather than a name match. Doubling up the kills was breaking the
+ *  bbox calc in computeBuildingScale and miss-scaling Krusty Krab tiny.
  *
  *  Confirmed via gltf-transform inspection (scripts/inspect-broken-
- *  buildings.mjs) — every problem GLB has exactly one Skybox_NN mesh
- *  with 94 verts (low-poly UV-sphere hemisphere). */
-const DECORATIVE_NAME_PREFIXES = ['Skybox_', 'Sand_', 'Road_'] as const;
+ *  buildings.mjs). */
+const DECORATIVE_NAME_PREFIXES = ['Skybox_'] as const;
 
 /** 2026-05-11 — Explicit kill list for backdrop / display-stand domes baked
  *  into individual Sketchfab building GLBs. These meshes have huge square
@@ -164,18 +170,23 @@ const DECORATIVE_NAME_PREFIXES = ['Skybox_', 'Sand_', 'Road_'] as const;
  *    - Background_Material004_0 → 380³ background sphere at (0, 200, -500)
  *      → "old Sandy treedome floating in the air" reported by user
  */
-const BACKDROP_KILL_NAMES = new Set([
-  "Patrick's_House_02_-_Default_0",
-  "Patrick's_House_03_-_Default_0",
-  // NOTE: Background_Material004_0 was initially in this list but it's
-  // actually the Auction Podium's glass dome (auction-dome.glb), an
-  // intentional game feature — NOT Sandy's treedome. The 380³ dome at
-  // world (0, 200, -500) is the auction house showcase. Do not strip.
-]);
-const BACKDROP_KILL_MATERIALS = new Set([
-  'Mesh_0030.rip',
-  'Mesh_0022.rip',
-]);
+/** 2026-05-12 — exact-mesh-name kill list emptied.
+ *
+ *  Previously held "Patrick's_House_02_-_Default_0" and "_03" thinking
+ *  they were backdrop. They're NOT — Patrick's_House_02 (360 verts) is
+ *  the actual ROCK that Patrick lives under; _03 is its base plate. The
+ *  blue dome around Patrick was always "Skybox_07_-_Default_0", which
+ *  the DECORATIVE_NAME_PREFIXES rule now catches.
+ *
+ *  Background_Material004_0 is the Auction Podium's intentional glass
+ *  dome (auction-dome.glb) — also not for the kill list. */
+const BACKDROP_KILL_NAMES = new Set<string>([]);
+
+/** Material kill list also empty for now — "Mesh_0030.rip" / "Mesh_0022.rip"
+ *  weren't actually the blue domes at Krusty/Chum/Patrick; they were at
+ *  a different building's position and removing them did nothing for the
+ *  buildings the user actually complained about. */
+const BACKDROP_KILL_MATERIALS = new Set<string>([]);
 
 function stripDecorativeMeshes(scene: THREE.Object3D): void {
   const toRemove: THREE.Object3D[] = [];
