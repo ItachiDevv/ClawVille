@@ -162,134 +162,109 @@ function HermesAvatar({ character, mode, vrmRef }: { character: Character; mode:
   );
 }
 
-// Particle-emitter speed streaks. Each emitter is anchored to a VRM bone
-// (hands, feet, plus offset positions near the shoulders to approximate wing
-// tips). Particles spawn AT the emitter, then drift outward with their own
-// velocity for `PARTICLE_LIFETIME` seconds, then respawn at the bone again.
-const EMITTERS: Array<{ bone: string; offset: THREE.Vector3 }> = [
-  { bone: 'leftHand',     offset: new THREE.Vector3( 0,    0, 0) },
-  { bone: 'rightHand',    offset: new THREE.Vector3( 0,    0, 0) },
-  { bone: 'leftFoot',     offset: new THREE.Vector3( 0, -0.05, 0) },
-  { bone: 'rightFoot',    offset: new THREE.Vector3( 0, -0.05, 0) },
-  // Wing-tip approximations: shoulder bone + lateral/back offset so the
-  // emitter sits roughly where Tekk's mech wings extend. Mixamo's auto-rig
-  // doesn't give us wing bones, so we ride the shoulder transform and let
-  // the lateral offset trace the wing fan.
-  { bone: 'leftShoulder',  offset: new THREE.Vector3( 0.4, 0.2, -0.3) },
-  { bone: 'rightShoulder', offset: new THREE.Vector3(-0.4, 0.2, -0.3) },
+// Ribbon trails per emitter bone — fighter-game sword-trail style. Each
+// emitter maintains a ring buffer of the last TRAIL_HISTORY_LEN positions
+// of its anchor bone (in world space). Each frame we shift the buffer,
+// push the bone's new world position to slot 0, then rebuild a smooth
+// TubeGeometry along a Catmull-Rom curve through those points. The trail
+// is physically attached to the bone — wherever Tekk's hand swings or his
+// wing tip arcs, the ribbon follows.
+const EMITTERS: Array<{ bone: string; offset: THREE.Vector3; color: string; radius: number }> = [
+  { bone: 'leftHand',      offset: new THREE.Vector3( 0,    0,    0), color: '#ff2040', radius: 0.07 },
+  { bone: 'rightHand',     offset: new THREE.Vector3( 0,    0,    0), color: '#00d0ff', radius: 0.07 },
+  { bone: 'leftFoot',      offset: new THREE.Vector3( 0,   -0.04, 0), color: '#ffd000', radius: 0.07 },
+  { bone: 'rightFoot',     offset: new THREE.Vector3( 0,   -0.04, 0), color: '#a040ff', radius: 0.07 },
+  { bone: 'leftShoulder',  offset: new THREE.Vector3( 0.4,  0.2, -0.3), color: '#40e040', radius: 0.09 },
+  { bone: 'rightShoulder', offset: new THREE.Vector3(-0.4,  0.2, -0.3), color: '#ff8000', radius: 0.09 },
 ];
-const PARTICLES_PER_EMITTER = 12;
-const TOTAL_PARTICLES = EMITTERS.length * PARTICLES_PER_EMITTER;
-const PARTICLE_LIFETIME = 0.7;     // seconds before respawn
-const STREAK_LENGTH = 2.4;         // long axis of each tube — long & wispy
+const TRAIL_HISTORY_LEN = 18;     // recent positions tracked per bone
+const TRAIL_TUBE_SEGMENTS = 32;   // smoothness along the trail
+const TRAIL_RADIAL = 5;           // tube cross-section faces
 
-interface Particle {
-  emitterIdx: number;
-  age: number;
-  pos: THREE.Vector3;
-  vel: THREE.Vector3;
+interface Trail {
+  bone: string;
+  offset: THREE.Vector3;
   color: THREE.Color;
+  radius: number;
+  history: THREE.Vector3[];
+  seeded: boolean;                // false until the first frame seeds the buffer
 }
 
 function SpeedLines({ active, vrmRef }: { active: boolean; vrmRef: React.MutableRefObject<VRM | null> }) {
-  const refs = useRef<(THREE.Mesh | null)[]>([]);
+  const meshRefs = useRef<(THREE.Mesh | null)[]>([]);
 
-  const particles = useMemo<Particle[]>(() => {
-    const arr: Particle[] = [];
-    for (let e = 0; e < EMITTERS.length; e++) {
-      for (let i = 0; i < PARTICLES_PER_EMITTER; i++) {
-        arr.push({
-          emitterIdx: e,
-          age: (i / PARTICLES_PER_EMITTER) * PARTICLE_LIFETIME,
-          pos: new THREE.Vector3(),
-          vel: new THREE.Vector3(),
-          color: new THREE.Color(SPEEDLINE_COLORS[(e * PARTICLES_PER_EMITTER + i) % SPEEDLINE_COLORS.length]!),
-        });
-      }
+  const trails = useMemo<Trail[]>(() =>
+    EMITTERS.map((e) => ({
+      bone: e.bone,
+      offset: e.offset,
+      color: new THREE.Color(e.color),
+      radius: e.radius,
+      history: Array.from({ length: TRAIL_HISTORY_LEN }, () => new THREE.Vector3()),
+      seeded: false,
+    })), []);
+
+  // When toggling active off → on we want to reset the trail seed so
+  // the ribbons start from the bone's current location instead of
+  // snapping along a stale buffer.
+  useEffect(() => {
+    if (!active) {
+      for (const t of trails) t.seeded = false;
     }
-    return arr;
-  }, []);
+  }, [active, trails]);
 
-  const scratchEmitter = useMemo(() => new THREE.Vector3(), []);
-  // Camera-relative wind axes — recomputed each frame so trails always flow
-  // away from the viewer regardless of how the orbit camera is rotated.
-  const windBack = useMemo(() => new THREE.Vector3(), []);
-  const windRight = useMemo(() => new THREE.Vector3(), []);
-  const windUp = useMemo(() => new THREE.Vector3(), []);
+  const scratch = useMemo(() => new THREE.Vector3(), []);
 
-  const respawnParticle = (p: Particle, emitterWorldPos: THREE.Vector3) => {
-    p.age = 0;
-    p.pos.copy(emitterWorldPos);
-    // Velocity in CAMERA-RELATIVE basis: dominant flow along windBack
-    // (away from viewer into the scene), with a wide fan in windRight and
-    // a smaller fan in windUp so the trails look like a soft wake rather
-    // than a tight clump.
-    const SPREAD_LAT = 3.2;                        // wide horizontal fan
-    const SPREAD_VRT = 1.6;                        // narrower vertical fan
-    const BACK = 6 + Math.random() * 3;            // 6-9 u/s downstream
-    const lat = (Math.random() - 0.5) * SPREAD_LAT;
-    const vrt = (Math.random() - 0.5) * SPREAD_VRT;
-    p.vel.set(0, 0, 0)
-      .addScaledVector(windBack,  BACK)
-      .addScaledVector(windRight, lat)
-      .addScaledVector(windUp,    vrt);
-    p.color.setHex(parseInt(SPEEDLINE_COLORS[Math.floor(Math.random() * SPEEDLINE_COLORS.length)]!.slice(1), 16));
-  };
-
-  useFrame((state, delta) => {
-    const dt = Math.min(delta, 0.05);
+  useFrame(() => {
+    if (!active) return;
     const vrm = vrmRef.current;
     if (!vrm || !vrm.humanoid) return;
 
-    // Build camera-relative wind basis. "Back" = into the screen from the
-    // camera's POV; "Right" / "Up" track the viewport so streaks fan in
-    // screen space.
-    state.camera.getWorldDirection(windBack);        // camera forward (into scene)
-    windUp.copy(state.camera.up).normalize();
-    windRight.crossVectors(windBack, windUp).normalize();
-    // Recompute Up from Right×Back so the basis is strictly orthonormal
-    windUp.crossVectors(windRight, windBack).normalize();
+    for (let i = 0; i < trails.length; i++) {
+      const trail = trails[i]!;
+      const mesh = meshRefs.current[i];
+      if (!mesh) continue;
 
-    for (let i = 0; i < particles.length; i++) {
-      const p = particles[i]!;
-      const m = refs.current[i];
-      if (!m) continue;
-      p.age += dt;
-      if (p.age >= PARTICLE_LIFETIME) {
-        const e = EMITTERS[p.emitterIdx]!;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const boneNode = (vrm.humanoid as any).getNormalizedBoneNode?.(e.bone) as THREE.Object3D | null;
-        if (boneNode) {
-          // Offset is expressed in bone-local space — applyMatrix4 treats
-          // it as a position (homogeneous w=1) and gives us the offset
-          // point's WORLD coordinate directly.
-          scratchEmitter.copy(e.offset).applyMatrix4(boneNode.matrixWorld);
-          respawnParticle(p, scratchEmitter);
-          (m.material as THREE.MeshBasicMaterial).color.copy(p.color);
-        }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const boneNode = (vrm.humanoid as any).getNormalizedBoneNode?.(trail.bone) as THREE.Object3D | null;
+      if (!boneNode) continue;
+      scratch.copy(trail.offset).applyMatrix4(boneNode.matrixWorld);
+
+      if (!trail.seeded) {
+        // Seed every slot with the current position so the first frame's
+        // curve is degenerate (zero-length tube) instead of a wild arc.
+        for (let j = 0; j < trail.history.length; j++) trail.history[j].copy(scratch);
+        trail.seeded = true;
       } else {
-        p.pos.x += p.vel.x * dt;
-        p.pos.y += p.vel.y * dt;
-        p.pos.z += p.vel.z * dt;
+        // Shift back: history[N-1] takes history[N-2], etc., then write
+        // current position into slot 0. The Vector3 instances are reused
+        // (no allocation) so we copy values rather than reassigning refs.
+        for (let j = trail.history.length - 1; j > 0; j--) {
+          trail.history[j].copy(trail.history[j - 1]!);
+        }
+        trail.history[0]!.copy(scratch);
       }
-      m.position.copy(p.pos);
-      m.lookAt(p.pos.x + p.vel.x, p.pos.y + p.vel.y, p.pos.z + p.vel.z);
-      const t = p.age / PARTICLE_LIFETIME;
-      const opacityScale = Math.min(1, (1 - t) * 2);
-      (m.material as THREE.MeshBasicMaterial).opacity = 0.9 * opacityScale;
+
+      // Rebuild tube along a smooth curve through the history. Catmull-Rom
+      // tension 0.5 keeps the curve from overshooting on sharp arcs (like
+      // a wing flap reversing direction).
+      const curve = new THREE.CatmullRomCurve3(trail.history, false, 'catmullrom', 0.5);
+      const newGeom = new THREE.TubeGeometry(curve, TRAIL_TUBE_SEGMENTS, trail.radius, TRAIL_RADIAL, false);
+      mesh.geometry.dispose();
+      mesh.geometry = newGeom;
     }
   });
 
   return (
     <group visible={active}>
-      {particles.map((p, i) => (
-        <mesh key={i} ref={(m) => { refs.current[i] = m; }}>
-          <boxGeometry args={[0.05, 0.05, STREAK_LENGTH]} />
+      {trails.map((t, i) => (
+        <mesh key={i} ref={(m) => { meshRefs.current[i] = m; }}>
+          {/* Geometry replaced every frame in useFrame */}
+          <bufferGeometry />
           <meshBasicMaterial
-            color={p.color}
-            transparent
-            opacity={0.85}
+            color={t.color}
             toneMapped={false}
+            transparent
+            opacity={0.92}
           />
         </mesh>
       ))}
