@@ -31,11 +31,8 @@ import { useVRMInstance, disposeVRMInstance } from '@/lib/three/vrm-loader';
 import { VRMCharacterAnimator } from '@/lib/three/vrm-character-animator';
 
 const SCENE_BG = new THREE.Color(0x0d2b5e); // matches game fog
-// Hermes-Female export has its mesh CENTERED at origin (Blender export
-// didn't translate feet-to-z=0). After scale=13 the avatar spans y=-6.5..+6.5.
-// Until we fix the export, offset the scene up so feet land at y=0.
-const AVATAR_SCALE = 13;
-const FEET_OFFSET_Y = 6.5; // half avatar height after scale=13
+// Target visual height — camera at y=8 looking at y=7 frames a 6.5u-tall avatar.
+const TARGET_HEIGHT = 6.5;
 
 type Character = 'female' | 'male';
 
@@ -43,6 +40,7 @@ function HermesAvatar({ character, idle }: { character: Character; idle: boolean
   const path = `/avatars/hermes-${character}.vrm`;
   const vrm = useVRMInstance(path, `preview-${character}`);
   const animatorRef = useRef<VRMCharacterAnimator | null>(null);
+  const [fit, setFit] = useState<{ scale: number; offsetY: number } | null>(null);
 
   // Set up animator + cleanup on character switch / unmount
   useEffect(() => {
@@ -56,14 +54,20 @@ function HermesAvatar({ character, idle }: { character: Character; idle: boolean
       }
     });
 
-    // ---- DEBUG: expose VRM + scene measurements so we can probe via DevTools.
-    // Compute the world bbox of vrm.scene at this moment so we know if it's
-    // visible from the camera or wildly off-position / wrong scale.
+    // Auto-fit: measure natural bbox (scale=1) and compute the scale that
+    // makes the avatar TARGET_HEIGHT tall with feet on y=0. Works for any
+    // exporter (Mixamo cm, Tripo m, etc.) so the preview survives re-rigs.
+    vrm.scene.scale.setScalar(1);
+    vrm.scene.position.set(0, 0, 0);
+    vrm.scene.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(vrm.scene);
     const size = new THREE.Vector3();
     const center = new THREE.Vector3();
     box.getSize(size);
     box.getCenter(center);
+    const autoScale = size.y > 0 ? TARGET_HEIGHT / size.y : 1;
+    const autoOffsetY = -box.min.y * autoScale;
+    setFit({ scale: autoScale, offsetY: autoOffsetY });
     const meshSummary: Array<{ name: string; verts: number; mat: string; visible: boolean; opacity: number }> = [];
     vrm.scene.traverse((o) => {
       if ((o as THREE.SkinnedMesh).isSkinnedMesh || (o as THREE.Mesh).isMesh) {
@@ -85,6 +89,8 @@ function HermesAvatar({ character, idle }: { character: Character; idle: boolean
       bboxMax: box.max.toArray(),
       bboxSize: size.toArray(),
       bboxCenter: center.toArray(),
+      autoScale,
+      autoOffsetY,
       sceneScale: vrm.scene.scale.toArray(),
       scenePos: vrm.scene.position.toArray(),
       meshes: meshSummary,
@@ -108,15 +114,15 @@ function HermesAvatar({ character, idle }: { character: Character; idle: boolean
     animatorRef.current?.update(dt, idle);
   });
 
-  if (!vrm) return null;
+  if (!vrm || !fit) return null;
   // Avatar exported facing +X. Rotate -90° around Y so it faces +Z (toward
   // a camera positioned at +Z). Permanent fix should bake this into the
   // Blender export (apply armature rotation before VRM export).
   return (
     <primitive
       object={vrm.scene}
-      scale={AVATAR_SCALE}
-      position={[0, FEET_OFFSET_Y, 0]}
+      scale={fit.scale}
+      position={[0, fit.offsetY, 0]}
       rotation={[0, -Math.PI / 2, 0]}
     />
   );
