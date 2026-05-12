@@ -63,16 +63,17 @@ Loaded by `<ArenaBuildings>`. Each is a single GLB clone placed on a ring at rad
 
 ### 3a. Wandering NPCs — 18 total
 
-3 Milady VRMs + 2 Hermes VRMs + 13 GLB sea creatures. Server-driven positions via SSE; client smooths them. Code: `lib/three/arena-npcs.tsx`. Definitions: `packages/shared/src/constants/npc-definitions.ts` (or the demo NPCs in `stores/npc.ts` when SSE is disconnected).
+5 Milady VRMs + 13 GLB sea creatures. Server-driven positions via SSE; client smooths them. Code: `lib/three/arena-npcs.tsx`. Definitions: `packages/shared/src/constants/npc-definitions.ts` (or the demo NPCs in `stores/npc.ts` when SSE is disconnected).
 
 | Species | Count | Asset |
 |---|---|---|
-| Milady VRM | 3 | `milady-official-{2,7,8}.vrm` — Vivi / Miu / Kyoko (one per NPC, must be distinct paths — shared paths cause T-pose collisions) |
-| Hermes VRM | 2 | `hermes-female.vrm` (Mira), `hermes-male.vrm` (Tekk) — added 2026-05-12. Use `VRMCharacterAnimator(vrm, 'hermes-female'\|'hermes-male')` so per-character Mixamo overrides apply; bone proportions diverge from the generic Mixamo skeleton enough that the stock clips deform the rig. |
+| Milady VRM | 5 | `milady-official-{2,3,4,7,8}.vrm` (one per NPC, must be distinct paths — shared paths cause T-pose collisions) |
 | Lobster GLB | 8 | `models/lobster.glb` |
 | Sweet crab | 1 | `models/sweet_crab.glb` |
 | Hermit crab | 1 | `models/hermitcrab.glb` |
 | Crayfish | 3 | scattered (Marlin/Driftwood/Riptide use `lobster` species, not crayfish prop) |
+
+> **Hermes VRM scaffold (Mira/Tekk) is wired but unused.** `MODEL_REGISTRY` carries `hermes_female` + `hermes_male`, `arena-npcs.tsx` preloads both VRMs and routes `characterId` through `VRMCharacterAnimator`, but the wanderer roster reverted from Mira/Tekk to Maple/Ash on 2026-05-12 because shared `VRM_NPC_SCALE=112` blows the Hermes meshes up massively. Add a per-species scale override in `arena-npcs.tsx` before reinstating them.
 
 ### 3b. Building residents — 10 total
 

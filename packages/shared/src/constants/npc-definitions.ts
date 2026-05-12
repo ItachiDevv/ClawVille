@@ -72,16 +72,20 @@ export const NPC_BUILDING_CENTERS: Record<string, { x: number; y: number }> = Ob
   Object.entries(NPC_HOME_POSITIONS).map(([id, p]) => [id, { x: p.homeX, y: p.homeY }])
 );
 
-// Wandering NPC species distribution — 3 model categories:
-//   milady   (neo-chibi VRMs): milady_official_2/7/8                    (3 of 8) — free wanderers
-//   hermes   (humanoid VRMs):  hermes_female (Mira), hermes_male (Tekk) (2 of 8) — free wanderers
+// Wandering NPC species distribution — 2 model categories:
+//   milady   (neo-chibi VRMs): milady_official_2/3/4/7/8                (5 of 8) — free wanderers
 //   openclaw (crustaceans):    lobster, sweet_crab, hermitcrab          (3 of 8) — free wanderers
 //   Total: 8 NPCs — all free wanderers (buildingId='').
-//   2026-05-12: replaced Ash (milady_official_4) with Mira (hermes_female)
-//   and Maple (milady_official_3) with Tekk (hermes_male) so the new
-//   Hermes-female / Tekk rigs ship as wandering brand ambassadors alongside
-//   the Milady wanderers. The retired Milady VRM paths (official_3, _4) stay
-//   in MODEL_REGISTRY for player-avatar picker use.
+//   The 10 SpongeBob building residents at each building entrance are
+//   rendered by arena-location-npcs.tsx and are the canonical per-building
+//   characters.
+//   2026-05-12 (PM): Hermes-female (Mira) and Hermes-male (Tekk) were swapped
+//   in earlier today, then reverted same day — the Hermes VRMs render
+//   massively oversized at the shared VRM_NPC_SCALE=112 and overshadow the
+//   rest of the cast. Scaffold for Hermes wanderers (MODEL_REGISTRY entries,
+//   preloads, characterId switch in VRMNpcMesh) stays in place; the roster
+//   reverts to the original 5 Milady picks until a per-species VRM scale
+//   override lands in arena-npcs.tsx.
 //   The 10 SpongeBob building residents (SpongeBob, Patrick, Squidward, etc.)
 //   at each building entrance are rendered by arena-location-npcs.tsx and are
 //   the canonical per-building characters. Previously there was ALSO one
@@ -153,38 +157,39 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     stats: { hp: 90, attack: 13, defense: 13, speed: 16 },
     personality: 'A bookish Milady sketcher who maps every reef formation she encounters into her field journal.',
   },
-  // ─── Hermes wanderers (added 2026-05-12) ─────────────────────────────────
-  // Replaces former Maple (milady_official_3) and Ash (milady_official_4)
-  // slots. Both VRMs are Mixamo-rigged at human scale (~1.6m) with their own
-  // per-character animation bakes under /avatars/animations/{hermes-female,
-  // tekk-male}/*.glb. arena-npcs.tsx passes characterId='hermes-female' /
-  // 'hermes-male' to VRMCharacterAnimator so those overrides apply — without
-  // it the generic Mixamo clips deform their bones (feet meshing, hands
-  // clipping hips). Spawn coords kept identical to the Maple/Ash slots so
-  // the world layout is unchanged.
+  // ─── Restored Milady wanderers (2026-05-12 PM hotfix) ─────────────────────
+  // Mira (hermes_female) + Tekk (hermes_male) were swapped in earlier today,
+  // then reverted same day because the Hermes VRMs render massively oversized
+  // under VRM_NPC_SCALE=112 (they're authored at a different native height
+  // than the Milady VRMs, so the shared world scale blows them up to giant
+  // size and overshadows the rest of the cast). Scaffold for the hermes
+  // wanderers remains intact (MODEL_REGISTRY entries, preloads, the
+  // characterId switch in VRMNpcMesh) — just don't put them in the roster
+  // until a per-species VRM scale override lands. See arena-npcs.tsx
+  // VRM_NPC_SCALE comment.
   {
-    id: 'hermes-mira',
-    name: 'Mira',
-    species: 'hermes_female',
+    id: 'milady-maple',
+    name: 'Maple',
+    species: 'milady_official_3',
     color: 0xffb0d0,             // pink (ignored — MToon)
     buildingId: '',
     patrolRadius: 500,
     homeX: 3400,
-    homeY: 3200,                 // SE of town, inside the ring (former Maple slot)
+    homeY: 3200,                 // SE of town, inside the ring
     stats: { hp: 95, attack: 12, defense: 14, speed: 15 },
-    personality: 'A poised Hermes wanderer who reads the reef like a manuscript and offers gentle notes on every story she overhears.',
+    personality: 'A laid-back Milady cafe-hopper who treats every building like a new coffee bar to review.',
   },
   {
-    id: 'hermes-tekk',
-    name: 'Tekk',
-    species: 'hermes_male',
+    id: 'milady-ash',
+    name: 'Ash',
+    species: 'milady_official_4',
     color: 0xd0c0ff,             // pale violet (ignored — MToon)
     buildingId: '',
     patrolRadius: 500,
     homeX: 2560,
-    homeY: 1700,                 // N of town, inside the ring (former Ash slot)
+    homeY: 1700,                 // N of town, inside the ring
     stats: { hp: 92, attack: 14, defense: 12, speed: 17 },
-    personality: 'A winged Hermes scout who insists every passing current carries a message someone forgot to deliver.',
+    personality: 'A restless Milady debugger who insists every glitch in the world has a poetic explanation.',
   },
   // ─── Additional free-roaming crustaceans (added 2026-04-22) ──────────────
   // Sea-creature GLBs scale + clone per-instance, so multiple NPCs can share
