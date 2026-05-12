@@ -129,6 +129,23 @@ const _stripMeshBox = new THREE.Box3();
  *      shrank to ~60wu tall) */
 const DECORATIVE_PARENT_NAMES = new Set(['Flowers', 'Path', 'Skybox', 'Road', 'Sand']);
 
+/** 2026-05-12 — Mesh NAME prefixes for Sketchfab portfolio backdrop /
+ *  ground meshes. The Yanez Designs SpongeBob asset pack ships every
+ *  building (Krusty Krab, Chum Bucket, Patrick's Rock, Squidward, etc.)
+ *  with a hemisphere "Skybox_NN" + flat "Sand_NN" / "Road_NN" patch
+ *  baked in. These render as a giant blue dome around each building.
+ *
+ *  The mesh sits directly under Sketchfab_Scene with no parent group,
+ *  so DECORATIVE_PARENT_NAMES doesn't catch it (that rule checks parent
+ *  name, the mesh IS the named thing here). Match by prefix on the
+ *  mesh's own name. Three.js spaces→underscores when loading GLBs, so
+ *  "Skybox_10 - Default_0" arrives as "Skybox_10_-_Default_0".
+ *
+ *  Confirmed via gltf-transform inspection (scripts/inspect-broken-
+ *  buildings.mjs) — every problem GLB has exactly one Skybox_NN mesh
+ *  with 94 verts (low-poly UV-sphere hemisphere). */
+const DECORATIVE_NAME_PREFIXES = ['Skybox_', 'Sand_', 'Road_'] as const;
+
 /** 2026-05-11 — Explicit kill list for backdrop / display-stand domes baked
  *  into individual Sketchfab building GLBs. These meshes have huge square
  *  XZ footprints and low vert counts (UV-sphere hemispheres) — they look
@@ -164,7 +181,17 @@ function stripDecorativeMeshes(scene: THREE.Object3D): void {
   const toRemove: THREE.Object3D[] = [];
   scene.traverse((child) => {
     if (!(child as THREE.Mesh).isMesh) return;
-    // Direct kill by mesh name (backdrop domes).
+    // Prefix match on mesh name — catches "Skybox_10_-_Default_0",
+    // "Sand_04_-_Default_0", "Road_19_-_Default_0" et al.
+    if (child.name) {
+      for (const prefix of DECORATIVE_NAME_PREFIXES) {
+        if (child.name.startsWith(prefix)) {
+          toRemove.push(child);
+          return;
+        }
+      }
+    }
+    // Direct kill by exact mesh name (one-off backdrop domes).
     if (child.name && BACKDROP_KILL_NAMES.has(child.name)) {
       toRemove.push(child);
       return;
