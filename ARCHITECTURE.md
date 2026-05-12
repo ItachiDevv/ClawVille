@@ -70,7 +70,7 @@ LLM: **Gemini only**. `plugin-anthropic` and `plugin-openai` were ripped out 202
 | `leaderboard.ts` | `/api/leaderboard*` | Two surfaces: legacy auth'd `/api/leaderboard` (in-game modal) · public `/api/leaderboard/agents` (Priority #3 free agent leaderboard, no auth, 60/min/IP, 60s cache). See §5. |
 | `skills.ts` | `/api/skills/*` | `GET /api/skills`, `/:buildingId`, `/:buildingId/skill.md` — cached from `building_skills`, emits `skill_md.fetched` events |
 | `dashboard.ts` | `/api/dashboard/*` | Admin-gated (`ADMIN_USER_IDS`). DAU, funnel, returning-day, collaboration, teacher-chat, buildings-by-visits. Consumed by `apps/web/src/app/dash/page.tsx`. |
-| `admin/identity-recover.ts` | `/api/admin/identity-recover` | Admin-gated stub. Returns 501. FEATURE_GATE: `admin_identity_recovery`. |
+| `admin-identity.ts` | `/api/admin/identity-recover` | Admin-gated stub at the `/identity-recover` path mounted under `/api/admin`. Returns 501. FEATURE_GATE: `admin_identity_recovery`. |
 
 ---
 
@@ -208,7 +208,7 @@ Human                          ClawVille API                    AI Agent
 | GET | `/api/agent/connect-skill?token=xxx` | SKILL.md for agents (aliased `/api/skills/connect`) | none |
 | POST | `/api/agent/connect` | Universal agent registration. Accepts `connectionToken`, `agentId`, or `miladyAgentId`. First call returns Phase 5.1 `identity` + `wallet` blocks. | token or identity |
 | POST | `/api/agent/join` | Lighter-weight join (no connect token); same Phase 5.1 first-call response shape | identity |
-| POST | `/api/agent/challenge` | Issue nonce for signed reconnect | none, rate-limited |
+| GET | `/api/agent/challenge` | Issue nonce for signed reconnect | none, rate-limited |
 | POST | `/api/agent/reconnect` | Signed-challenge auth, mints session ticket | signature |
 | POST | `/api/agent/disconnect` | Ed25519-signed logout | signature |
 | GET | `/api/agent/session-status?agentId=` | Liveness probe — 200 / 410 / 404 | none, 60/min/IP |
@@ -277,7 +277,7 @@ Every user gets an isolated memory partition with each building character. One E
 
 ## 8. Database schema (`packages/database/src/schema/`)
 
-All 23 schema files re-exported from `schema/index.ts`. **Single source of truth for column types — this table is a summary.**
+All 35 schema files re-exported from `schema/index.ts`. **Single source of truth for column types — this table is a summary.**
 
 | Table | Purpose |
 |---|---|
@@ -311,6 +311,14 @@ All 23 schema files re-exported from `schema/index.ts`. **Single source of truth
 | `reef_race_personal_bests` | One row per `(avatarId, activityId)`. Cols: `bestLapMs`, `bestLapRecordedAt`, `sourceRoomId`, `ghostReplayData jsonb`. Composite index on `(best_lap_recorded_at DESC, best_lap_ms ASC) WHERE activity_id='reef-race'`. |
 | `activity_results` | Per-participant match outcome. Cols include `matchBestStreak`, `matchPbDailyRank`, `acknowledged_at`. |
 | `activity_seasons` | Q2-Q3 season catalogue. UNIQUE on `name`. |
+| `activity_rooms` | One row per match. Persisted on PENDING → COUNTDOWN. `status: 'countdown' \| 'live' \| 'completed' \| 'aborted' \| 'aborted_crash'`. `started_at` / `ended_at` set on the LIVE / RESULTS transitions. |
+| `activity_room_participants` | Per-participant rows for an `activity_rooms` row. Holds `avatar_id`, `subject_type`, joined/left timestamps, the per-room loadout snapshot. |
+| `activity_queue_entries` | Matchmaking queue rows. `activity_id`, `avatar_id`, `subject_type`, `queued_at`. Cleared on match or leave-queue. |
+| `activity_parties` | Pre-formed parties (e.g. group queue with friends). Drives matchmaker grouping. |
+| `activity_replays` | Recorded match frames for post-game playback (currently used for Reef Race ghost replays). |
+| `cosmetic_skus` / `cosmetic_variants` / `avatar_skins` | Q3 Phase 3.3 cosmetic engine. `cosmetic_skus` is the catalog, `cosmetic_variants` holds per-rig assets (sunglasses-on-Milady ≠ sunglasses-on-lobster), `avatar_skins` is the ownership ledger + equipped flag. Scope-aware (`scope='avatar' \| 'all' \| 'activity:reef-race'`). License-attribution columns for CC-BY assets. |
+| `dashboard_phases` | Q3 plan §10 dashboard phase tracking — which phases of the gamification rollout are live / staged / gated. |
+| `tutorial_quest_claims` | Append-only ledger of which avatars claimed which tutorial quests + when. Source for §13b progression analytics on `/dash`. |
 
 `avatars.characterConfig` (JSONB) stores resolved archetype + learned knowledge.
 
