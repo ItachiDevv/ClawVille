@@ -204,10 +204,27 @@ const BACKDROP_KILL_NAMES = new Set<string>(['Object_1']);
  *  buildings the user actually complained about. */
 const BACKDROP_KILL_MATERIALS = new Set<string>([]);
 
+/** Any single building sub-mesh above this vertex count is treated as an
+ *  asset-author outlier (display-stand dome, dense decoration, etc.) and
+ *  stripped. Confirmed safe — every legitimate Sketchfab building mesh
+ *  in this scene is well under 50k verts. The sandy-treedome-v2 has an
+ *  Object_N with 2.2 MILLION verts that's clearly a portfolio backdrop
+ *  dome the artist baked in. */
+const OUTLIER_VERT_THRESHOLD = 500_000;
+
 function stripDecorativeMeshes(scene: THREE.Object3D): void {
   const toRemove: THREE.Object3D[] = [];
   scene.traverse((child) => {
-    if (!(child as THREE.Mesh).isMesh) return;
+    const mesh = child as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    // Vert-count outlier kill — any building sub-mesh > 500k verts is an
+    // authoring artifact (e.g. sandy-treedome-v2's 2.2M-vert glass dome
+    // that dominates the bbox and forces the visible tree to float).
+    const verts = mesh.geometry?.attributes?.position?.count ?? 0;
+    if (verts > OUTLIER_VERT_THRESHOLD) {
+      toRemove.push(mesh);
+      return;
+    }
     // Prefix match on mesh name — catches "Skybox_10_-_Default_0",
     // "Sand_04_-_Default_0", "Road_19_-_Default_0" et al.
     if (child.name) {
@@ -224,7 +241,6 @@ function stripDecorativeMeshes(scene: THREE.Object3D): void {
       return;
     }
     // Direct kill by material name (orphan domes lacking a useful mesh name).
-    const mesh = child as THREE.Mesh;
     const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
     if (mat?.name && BACKDROP_KILL_MATERIALS.has(mat.name)) {
       toRemove.push(child);
