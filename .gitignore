@@ -65,11 +65,20 @@ scripts/deploy/treasury-*.json
 miladyApp.txt
 *.scratch.md
 
-# Working drafts — local planning docs for the active rebuild
-3dStructure.md
-GameFeatures.md
+# 2026-05-12: 3dStructure.md and GameFeatures.md were marked as "Working
+# drafts" here but they're treated as canonical by CLAUDE.md and
+# WorldContent.md. They're now tracked. Re-adding them here will silently
+# break the doc system — see CLAUDE.md "CANONICAL DOCS" section.
+#
+# AgentHosting.md never materialised; improvements.md was archived to
+# docs/archive/design-notes/improvements.md. Both stay ignored.
 AgentHosting.md
 improvements.md
+
+# Sub-agent memory index files accidentally written to repo root.
+# These belong under .claude/memory/<agent>/ — pinning here so they stop
+# polluting git status when an agent writes one to the wrong path.
+/MEMORY.md
 
 # Draco compression originals — pre-compression GLB backups. Git history
 # already holds the original uncompressed versions, so revert is a
