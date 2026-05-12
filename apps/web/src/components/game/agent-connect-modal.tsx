@@ -139,6 +139,11 @@ export default function AgentConnectModal() {
     if (agentSessionId) {
       try { await api.unregisterOpenClaw(agentSessionId); } catch { /* ignore */ }
     }
+    // Persist the dismissal — without this, the Milady server-hosted carve-out
+    // in /api/auth/me/agent-session re-asserts connected:true on every reload
+    // for users who don't have an external bot row to expire. Flag is cleared
+    // again the next time they mint a Connect URL.
+    try { await api.dismissAgentBanner(); } catch { /* ignore — local state already cleared */ }
     setAgentConnection(null);
     addToast('🔌', 'Agent disconnected');
   };
