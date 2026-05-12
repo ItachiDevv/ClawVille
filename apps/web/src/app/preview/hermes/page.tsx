@@ -34,11 +34,20 @@ const SCENE_BG = new THREE.Color(0xffffff); // white backdrop for video capture
 // Target visual height — camera at y=8 looking at y=7 frames a 6.5u-tall avatar.
 const TARGET_HEIGHT = 6.5;
 
-type Character = 'female' | 'male';
+type Character = 'female' | 'male' | 'tekk';
 type Mode = 'idle' | 'walk' | 'run' | 'swim' | 'fly' | 'pray';
 
+// VRM URL + animator characterId per selectable character. Tekk is a
+// stand-alone character (not hermes-*) so his override map key + file path
+// differ from the hermes-female / hermes-male pattern.
+const CHARACTER_META: Record<Character, { path: string; animatorId: string }> = {
+  female: { path: '/avatars/hermes-female.vrm', animatorId: 'hermes-female' },
+  male:   { path: '/avatars/hermes-male.vrm',   animatorId: 'hermes-male' },
+  tekk:   { path: '/avatars/tekk.vrm',          animatorId: 'tekk' },
+};
+
 function HermesAvatar({ character, mode }: { character: Character; mode: Mode }) {
-  const path = `/avatars/hermes-${character}.vrm`;
+  const { path, animatorId } = CHARACTER_META[character];
   const vrm = useVRMInstance(path, `preview-${character}`);
   const animatorRef = useRef<VRMCharacterAnimator | null>(null);
   const [fit, setFit] = useState<{ scale: number; offsetY: number } | null>(null);
@@ -67,7 +76,7 @@ function HermesAvatar({ character, mode }: { character: Character; mode: Mode })
     const autoOffsetY = -box.min.y * autoScale;
     setFit({ scale: autoScale, offsetY: autoOffsetY });
 
-    const animator = new VRMCharacterAnimator(vrm, `hermes-${character}`);
+    const animator = new VRMCharacterAnimator(vrm, animatorId);
     animatorRef.current = animator;
     animator.init().catch((err) => {
       console.warn('[hermes preview] animator init failed:', err);
@@ -138,7 +147,11 @@ export default function PreviewHermesPage() {
 
 function PreviewHermesInner() {
   const searchParams = useSearchParams();
-  const initial = (searchParams.get('c') === 'male' ? 'male' : 'female') as Character;
+  const c = searchParams.get('c');
+  const initial: Character =
+    c === 'male' ? 'male' :
+    c === 'tekk' ? 'tekk' :
+    'female';
   const [character, setCharacter] = useState<Character>(initial);
   const [mode, setMode] = useState<Mode>('idle');
 
@@ -164,6 +177,8 @@ function PreviewHermesInner() {
             style={btn(character === 'female')}>Female</button>
           <button onClick={() => setCharacter('male')}
             style={btn(character === 'male')}>Male</button>
+          <button onClick={() => setCharacter('tekk')}
+            style={btn(character === 'tekk')}>Tekk</button>
         </div>
         <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
           <button onClick={() => setMode('idle')} style={btn(mode === 'idle')}>Idle</button>
@@ -172,15 +187,15 @@ function PreviewHermesInner() {
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button onClick={() => setMode('swim')} style={btn(mode === 'swim')}>Swim</button>
+          {character === 'tekk' && (
+            <button onClick={() => setMode('fly')} style={btn(mode === 'fly')}>Fly</button>
+          )}
           {character === 'female' && (
             <button onClick={() => setMode('pray')} style={btn(mode === 'pray')}>Pray</button>
           )}
-          {/* Fly button removed — was Tekk-only. The "male" slot is now
-              MaleHermes (Paul), no wings. Re-add when Tekk gets his own
-              selectable slot in the preview. */}
         </div>
         <div style={{ marginTop: 10, opacity: 0.7, fontSize: 12 }}>
-          drag to rotate · scroll to zoom · /avatars/hermes-{character}.vrm
+          drag to rotate · scroll to zoom · {CHARACTER_META[character].path}
         </div>
       </div>
     </div>
