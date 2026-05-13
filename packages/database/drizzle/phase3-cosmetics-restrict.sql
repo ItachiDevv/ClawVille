@@ -13,9 +13,9 @@ ALTER TABLE "cosmetic_variants"
 
 -- 2. avatar_skins.sku_id
 ALTER TABLE "avatar_skins"
-  DROP CONSTRAINT IF EXISTS "pet_skins_sku_id_cosmetic_skus_id_fk";
+  DROP CONSTRAINT IF EXISTS "avatar_skins_sku_id_cosmetic_skus_id_fk";
 
 ALTER TABLE "avatar_skins"
-  ADD CONSTRAINT "pet_skins_sku_id_cosmetic_skus_id_fk"
+  ADD CONSTRAINT "avatar_skins_sku_id_cosmetic_skus_id_fk"
   FOREIGN KEY ("sku_id") REFERENCES "public"."cosmetic_skus"("id")
   ON DELETE RESTRICT ON UPDATE NO ACTION;

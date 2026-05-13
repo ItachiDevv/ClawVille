@@ -11,7 +11,7 @@ import { loadFont as loadLobster } from "@remotion/google-fonts/Lobster";
 import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { RecordingBackground, LiveBadge } from "../../../shared/RecordingBackground";
 import { ParticleField } from "../../../shared/ParticleField";
-import { PetSprite } from "../../../shared/PetSprite";
+import { AvatarSprite } from "../../../shared/AvatarSprite";
 import { ClawPanel } from "../../../shared/ClawPanel";
 import { SpeechBubble } from "../../../shared/SpeechBubble";
 import { StatBar } from "../../../shared/StatBar";
@@ -110,7 +110,7 @@ const SpeciesChoice: React.FC = () => {
                 transform: `scale(${scale}) translateY(${slideY}px)`,
               }}
             >
-              <PetSprite species={s.species} size={spriteSize} enterDelay={delay} bob />
+              <AvatarSprite species={s.species} size={spriteSize} enterDelay={delay} bob />
               <span
                 style={{
                   fontFamily: roboto,
@@ -294,7 +294,7 @@ const Customization: React.FC = () => {
           gap: 8,
         }}
       >
-        <PetSprite species="fox" size={isVertical ? 140 : 130} enterDelay={0} bob />
+        <AvatarSprite species="fox" size={isVertical ? 140 : 130} enterDelay={0} bob />
         <ClawPanel width={isVertical ? 240 : 260}>
           <div style={{ textAlign: "center" }}>
             <span
@@ -356,10 +356,10 @@ const UniqueDialogue: React.FC = () => {
   const questionDelay = 8;
 
   // Two avatars respond differently
-  const pet1Delay = fps * 1.5;
-  const pet2Delay = fps * 3;
+  const avatar1Delay = fps * 1.5;
+  const avatar2Delay = fps * 3;
 
-  const petSize = isVertical ? 100 : 90;
+  const avatarSize = isVertical ? 100 : 90;
   const bubbleWidth = isVertical ? width - 120 : 320;
 
   return (
@@ -406,7 +406,7 @@ const UniqueDialogue: React.FC = () => {
           marginBottom: 16,
         }}
       >
-        <PetSprite species="dragon" size={petSize} enterDelay={pet1Delay} bob />
+        <AvatarSprite species="dragon" size={avatarSize} enterDelay={avatar1Delay} bob />
         <div style={{ flex: 1 }}>
           <span
             style={{
@@ -421,7 +421,7 @@ const UniqueDialogue: React.FC = () => {
           </span>
           <SpeechBubble
             text="DeFi is the ultimate battleground! I crush yield farms!"
-            delay={pet1Delay + 5}
+            delay={avatar1Delay + 5}
             maxWidth={bubbleWidth}
           />
         </div>
@@ -436,7 +436,7 @@ const UniqueDialogue: React.FC = () => {
           flexDirection: "row-reverse",
         }}
       >
-        <PetSprite species="owl" size={petSize} enterDelay={pet2Delay} bob />
+        <AvatarSprite species="owl" size={avatarSize} enterDelay={avatar2Delay} bob />
         <div style={{ flex: 1 }}>
           <span
             style={{
@@ -453,7 +453,7 @@ const UniqueDialogue: React.FC = () => {
           </span>
           <SpeechBubble
             text="DeFi protocols reveal fascinating mechanism design. Let me explain the math..."
-            delay={pet2Delay + 5}
+            delay={avatar2Delay + 5}
             direction="right"
             maxWidth={bubbleWidth}
           />

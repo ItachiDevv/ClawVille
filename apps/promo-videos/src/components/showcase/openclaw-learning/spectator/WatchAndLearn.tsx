@@ -12,7 +12,7 @@ import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { TitleScreen } from "../../shared/TitleScreen";
 import { RecordingBackground, LiveBadge } from "../../../shared/RecordingBackground";
 import { ParticleField } from "../../../shared/ParticleField";
-import { PetSprite } from "../../../shared/PetSprite";
+import { AvatarSprite } from "../../../shared/AvatarSprite";
 import { ClawPanel } from "../../../shared/ClawPanel";
 import { HPBar } from "../../../shared/HPBar";
 import { DamageNumber } from "../../../shared/DamageNumber";
@@ -75,8 +75,8 @@ const BattleViewScene: React.FC = () => {
 
   // Avatar attack animation
   const attackPhase = Math.floor((frame / fps) * 2) % 2;
-  const leftPetX = attackPhase === 0 ? 15 : 0;
-  const rightPetX = attackPhase === 1 ? -15 : 0;
+  const leftAvatarX = attackPhase === 0 ? 15 : 0;
+  const rightAvatarX = attackPhase === 1 ? -15 : 0;
 
   // Damage numbers appear on alternating beats
   const showDmg1 = frame > 20 && attackPhase === 0;
@@ -113,11 +113,11 @@ const BattleViewScene: React.FC = () => {
             flexDirection: "column",
             alignItems: "center",
             gap: 8,
-            transform: `translateX(${leftPetX}px)`,
+            transform: `translateX(${leftAvatarX}px)`,
           }}
         >
           <HPBar hp={75} maxHp={100} width={isVertical ? 100 : 140} label="DragonX" />
-          <PetSprite species="dragon" size={isVertical ? 80 : 100} bob />
+          <AvatarSprite species="dragon" size={isVertical ? 80 : 100} bob />
         </div>
 
         {/* VS badge */}
@@ -139,11 +139,11 @@ const BattleViewScene: React.FC = () => {
             flexDirection: "column",
             alignItems: "center",
             gap: 8,
-            transform: `translateX(${rightPetX}px)`,
+            transform: `translateX(${rightAvatarX}px)`,
           }}
         >
           <HPBar hp={60} maxHp={100} width={isVertical ? 100 : 140} label="PhoenixZ" />
-          <PetSprite species="phoenix" size={isVertical ? 80 : 100} flipX bob />
+          <AvatarSprite species="phoenix" size={isVertical ? 80 : 100} flipX bob />
         </div>
 
         {/* Damage numbers */}

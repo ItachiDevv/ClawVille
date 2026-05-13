@@ -12,7 +12,7 @@ import { loadFont as loadLobster } from "@remotion/google-fonts/Lobster";
 import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { RecordingBackground, LiveBadge } from "../../../shared/RecordingBackground";
 import { ParticleField } from "../../../shared/ParticleField";
-import { PetSprite } from "../../../shared/PetSprite";
+import { AvatarSprite } from "../../../shared/AvatarSprite";
 import { HPBar } from "../../../shared/HPBar";
 import { DamageNumber } from "../../../shared/DamageNumber";
 import { ClawPanel } from "../../../shared/ClawPanel";
@@ -40,8 +40,8 @@ const PreBattle: React.FC = () => {
   const { fps, width, height } = useVideoConfig();
   const isVertical = height > width;
 
-  const petSize = isVertical ? 140 : 130;
-  const petSpacing = isVertical ? 100 : 180;
+  const avatarSize = isVertical ? 140 : 130;
+  const avatarSpacing = isVertical ? 100 : 180;
 
   // Wolf slides in from left
   const wolfSlide = spring({
@@ -107,8 +107,8 @@ const PreBattle: React.FC = () => {
       <div
         style={{
           position: "absolute",
-          left: width / 2 - petSpacing - petSize / 2 + wolfX,
-          top: height / 2 - petSize / 2 - (isVertical ? 60 : 40),
+          left: width / 2 - avatarSpacing - avatarSize / 2 + wolfX,
+          top: height / 2 - avatarSize / 2 - (isVertical ? 60 : 40),
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
@@ -126,16 +126,16 @@ const PreBattle: React.FC = () => {
         >
           Fang Lv14
         </span>
-        <HPBar hp={88} maxHp={88} width={petSize} />
-        <PetSprite species="wolf" size={petSize} enterDelay={0} bob />
+        <HPBar hp={88} maxHp={88} width={avatarSize} />
+        <AvatarSprite species="wolf" size={avatarSize} enterDelay={0} bob />
       </div>
 
       {/* Bunny (right) */}
       <div
         style={{
           position: "absolute",
-          left: width / 2 + petSpacing - petSize / 2 + bunnyX,
-          top: height / 2 - petSize / 2 - (isVertical ? 60 : 40),
+          left: width / 2 + avatarSpacing - avatarSize / 2 + bunnyX,
+          top: height / 2 - avatarSize / 2 - (isVertical ? 60 : 40),
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
@@ -153,8 +153,8 @@ const PreBattle: React.FC = () => {
         >
           Hoppy Lv12
         </span>
-        <HPBar hp={75} maxHp={75} width={petSize} />
-        <PetSprite species="bunny" size={petSize} enterDelay={8} flipX bob />
+        <HPBar hp={75} maxHp={75} width={avatarSize} />
+        <AvatarSprite species="bunny" size={avatarSize} enterDelay={8} flipX bob />
       </div>
 
       {/* VS Text */}
@@ -250,8 +250,8 @@ const Battle: React.FC = () => {
   const { fps, width, height } = useVideoConfig();
   const isVertical = height > width;
 
-  const petSize = isVertical ? 130 : 120;
-  const petSpacing = isVertical ? 90 : 170;
+  const avatarSize = isVertical ? 130 : 120;
+  const avatarSpacing = isVertical ? 90 : 170;
 
   // 4 attack exchanges
   const attacks = [
@@ -325,26 +325,26 @@ const Battle: React.FC = () => {
       <div
         style={{
           position: "absolute",
-          left: width / 2 - petSpacing - petSize / 2 + wolfOffsetX,
-          top: height / 2 - petSize / 2,
+          left: width / 2 - avatarSpacing - avatarSize / 2 + wolfOffsetX,
+          top: height / 2 - avatarSize / 2,
           transform: `rotate(${wolfTilt}deg)`,
         }}
       >
-        <HPBar hp={wolfHp} maxHp={88} width={petSize} label="Fang Lv14" />
-        <PetSprite species="wolf" size={petSize} enterDelay={0} bob />
+        <HPBar hp={wolfHp} maxHp={88} width={avatarSize} label="Fang Lv14" />
+        <AvatarSprite species="wolf" size={avatarSize} enterDelay={0} bob />
       </div>
 
       {/* Bunny (right) */}
       <div
         style={{
           position: "absolute",
-          left: width / 2 + petSpacing - petSize / 2 + bunnyOffsetX,
-          top: height / 2 - petSize / 2,
+          left: width / 2 + avatarSpacing - avatarSize / 2 + bunnyOffsetX,
+          top: height / 2 - avatarSize / 2,
           transform: `rotate(${bunnyTilt}deg)`,
         }}
       >
-        <HPBar hp={bunnyHp} maxHp={75} width={petSize} label="Hoppy Lv12" />
-        <PetSprite species="bunny" size={petSize} enterDelay={0} flipX bob />
+        <HPBar hp={bunnyHp} maxHp={75} width={avatarSize} label="Hoppy Lv12" />
+        <AvatarSprite species="bunny" size={avatarSize} enterDelay={0} flipX bob />
       </div>
 
       {/* Damage numbers */}
@@ -353,15 +353,15 @@ const Battle: React.FC = () => {
         if (af < 12 || af > 48) return null;
         const tx =
           atk.attacker === "wolf"
-            ? width / 2 + petSpacing
-            : width / 2 - petSpacing;
+            ? width / 2 + avatarSpacing
+            : width / 2 - avatarSpacing;
         return (
           <DamageNumber
             key={i}
             damage={atk.damage}
             delay={atk.frame + 12}
             x={tx - 20}
-            y={height / 2 - petSize / 2 - 20}
+            y={height / 2 - avatarSize / 2 - 20}
             isCritical={atk.damage >= 15}
           />
         );
@@ -375,8 +375,8 @@ const Battle: React.FC = () => {
         const arcOpacity = 1 - arcProgress;
         const arcX =
           atk.attacker === "wolf"
-            ? width / 2 + petSpacing - 40
-            : width / 2 - petSpacing + 40;
+            ? width / 2 + avatarSpacing - 40
+            : width / 2 - avatarSpacing + 40;
 
         return (
           <div
@@ -462,7 +462,7 @@ const KnowledgeReward: React.FC = () => {
             transform: `scale(${winnerScale})`,
           }}
         >
-          <PetSprite species="wolf" size={isVertical ? 120 : 100} enterDelay={0} bob />
+          <AvatarSprite species="wolf" size={isVertical ? 120 : 100} enterDelay={0} bob />
           <div
             style={{
               filter: `drop-shadow(0 0 ${glowIntensity}px rgba(33,150,243,0.5))`,

@@ -74,7 +74,7 @@ const exportSchema = z.object({
    * Optional harness override — defaults to the avatar's stored `harness` when
    * omitted. Validated against the shared `AGENT_HARNESSES` tuple so the
    * server stays in lockstep with the DB CHECK constraint
-   * `pets_harness_valid` (Phase 2).
+   * `avatars_harness_valid` (Phase 2).
    */
   targetHarness: z.enum(AGENT_HARNESSES).optional(),
   /**

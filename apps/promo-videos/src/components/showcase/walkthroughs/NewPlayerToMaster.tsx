@@ -12,7 +12,7 @@ import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { RecordingBackground, LiveBadge } from "../../shared/RecordingBackground";
 import { ParticleField } from "../../shared/ParticleField";
 import { ClawPanel } from "../../shared/ClawPanel";
-import { PetSprite } from "../../shared/PetSprite";
+import { AvatarSprite } from "../../shared/AvatarSprite";
 import { AnimatedCounter } from "../../shared/AnimatedCounter";
 import { StatBar } from "../../shared/StatBar";
 import { CTAButton } from "../../shared/CTAButton";
@@ -84,7 +84,7 @@ const NewPlayer: React.FC = () => {
               alignItems: "center",
             }}
           >
-            <PetSprite species="bunny" size={80} enterDelay={10} bob />
+            <AvatarSprite species="bunny" size={80} enterDelay={10} bob />
             <span
               style={{
                 fontFamily: roboto,
@@ -160,7 +160,7 @@ const FirstSteps: React.FC = () => {
 
   // Avatar walks into world
   const avatarX = interpolate(worldEntrance, [0, 1], [-200, 0]);
-  const petOpacity = interpolate(worldEntrance, [0, 0.3], [0, 1], {
+  const avatarOpacity = interpolate(worldEntrance, [0, 0.3], [0, 1], {
     extrapolateRight: "clamp",
   });
 
@@ -200,13 +200,13 @@ const FirstSteps: React.FC = () => {
       <div
         style={{
           transform: `translateX(${avatarX}px)`,
-          opacity: petOpacity,
+          opacity: avatarOpacity,
           display: "flex",
           alignItems: "center",
           gap: 16,
         }}
       >
-        <PetSprite species="bunny" size={isVertical ? 90 : 80} enterDelay={0} bob />
+        <AvatarSprite species="bunny" size={isVertical ? 90 : 80} enterDelay={0} bob />
 
         <div
           style={{

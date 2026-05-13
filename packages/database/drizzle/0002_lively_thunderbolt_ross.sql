@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS "activity_room_participants" (
 	"subject_type" text NOT NULL,
 	"joined_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"left_at" timestamp with time zone,
-	CONSTRAINT "activity_room_participants_room_id_pet_id_pk" PRIMARY KEY("room_id","avatar_id")
+	CONSTRAINT "activity_room_participants_room_id_avatar_id_pk" PRIMARY KEY("room_id","avatar_id")
 );
 --> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "activity_results" (
@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS "activity_queue_entries" (
 CREATE TABLE IF NOT EXISTS "activity_parties" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"short_code" varchar(10) NOT NULL,
-	"leader_pet_id" uuid NOT NULL,
+	"leader_avatar_id" uuid NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"disbanded_at" timestamp with time zone,
 	CONSTRAINT "activity_parties_short_code_unique" UNIQUE("short_code")
@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS "activity_party_members" (
 	"avatar_id" uuid NOT NULL,
 	"joined_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"left_at" timestamp with time zone,
-	CONSTRAINT "activity_party_members_party_id_pet_id_pk" PRIMARY KEY("party_id","avatar_id")
+	CONSTRAINT "activity_party_members_party_id_avatar_id_pk" PRIMARY KEY("party_id","avatar_id")
 );
 --> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "activity_replays" (
@@ -118,7 +118,7 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "activity_room_participants" ADD CONSTRAINT "activity_room_participants_pet_id_pets_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE no action ON UPDATE no action;
+ ALTER TABLE "activity_room_participants" ADD CONSTRAINT "activity_room_participants_avatar_id_avatars_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE no action ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
@@ -136,7 +136,7 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "activity_results" ADD CONSTRAINT "activity_results_pet_id_pets_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE no action ON UPDATE no action;
+ ALTER TABLE "activity_results" ADD CONSTRAINT "activity_results_avatar_id_avatars_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE no action ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
@@ -148,7 +148,7 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "activity_queue_entries" ADD CONSTRAINT "activity_queue_entries_pet_id_pets_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE no action ON UPDATE no action;
+ ALTER TABLE "activity_queue_entries" ADD CONSTRAINT "activity_queue_entries_avatar_id_avatars_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE no action ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
@@ -160,7 +160,7 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "activity_parties" ADD CONSTRAINT "activity_parties_leader_pet_id_pets_id_fk" FOREIGN KEY ("leader_pet_id") REFERENCES "public"."avatars"("id") ON DELETE no action ON UPDATE no action;
+ ALTER TABLE "activity_parties" ADD CONSTRAINT "activity_parties_leader_avatar_id_avatars_id_fk" FOREIGN KEY ("leader_avatar_id") REFERENCES "public"."avatars"("id") ON DELETE no action ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
@@ -172,7 +172,7 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "activity_party_members" ADD CONSTRAINT "activity_party_members_pet_id_pets_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE no action ON UPDATE no action;
+ ALTER TABLE "activity_party_members" ADD CONSTRAINT "activity_party_members_avatar_id_avatars_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE no action ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
@@ -191,10 +191,10 @@ END $$;
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_activity_rooms_activity_created" ON "activity_rooms" USING btree ("activity_id","created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_activity_rooms_active_status" ON "activity_rooms" USING btree ("status") WHERE status IN ('countdown','live');--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "idx_arp_pet_joined" ON "activity_room_participants" USING btree ("avatar_id","joined_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "idx_arp_avatar_joined" ON "activity_room_participants" USING btree ("avatar_id","joined_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_activity_results_activity_placement" ON "activity_results" USING btree ("activity_id","placement","created_at" DESC NULLS LAST);--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "idx_activity_results_pet_created" ON "activity_results" USING btree ("avatar_id","created_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "idx_activity_results_avatar_created" ON "activity_results" USING btree ("avatar_id","created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_activity_results_fast_time" ON "activity_results" USING btree ("activity_id","score_ms") WHERE score_ms IS NOT NULL;--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_activity_queue_active" ON "activity_queue_entries" USING btree ("activity_id","queued_at") WHERE left_at IS NULL;--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "idx_activity_queue_pet" ON "activity_queue_entries" USING btree ("avatar_id","queued_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "idx_activity_queue_avatar" ON "activity_queue_entries" USING btree ("avatar_id","queued_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_activity_replays_activity_created" ON "activity_replays" USING btree ("activity_id","created_at" DESC NULLS LAST);

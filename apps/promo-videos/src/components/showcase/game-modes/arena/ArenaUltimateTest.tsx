@@ -12,7 +12,7 @@ import { loadFont as loadLobster } from "@remotion/google-fonts/Lobster";
 import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { RecordingBackground, LiveBadge } from "../../../shared/RecordingBackground";
 import { ParticleField } from "../../../shared/ParticleField";
-import { PetSprite } from "../../../shared/PetSprite";
+import { AvatarSprite } from "../../../shared/AvatarSprite";
 import { HPBar } from "../../../shared/HPBar";
 import { DamageNumber } from "../../../shared/DamageNumber";
 import { ClawPanel } from "../../../shared/ClawPanel";
@@ -138,8 +138,8 @@ const Matchup: React.FC = () => {
   const { fps, width, height } = useVideoConfig();
   const isVertical = height > width;
 
-  const petSize = isVertical ? 140 : 130;
-  const petSpacing = isVertical ? 90 : 160;
+  const avatarSize = isVertical ? 140 : 130;
+  const avatarSpacing = isVertical ? 90 : 160;
 
   // Dragon slides in from left
   const dragonSlide = spring({
@@ -185,8 +185,8 @@ const Matchup: React.FC = () => {
       <div
         style={{
           position: "absolute",
-          left: width / 2 - petSpacing - petSize / 2 + dragonX,
-          top: height / 2 - petSize / 2 - 20,
+          left: width / 2 - avatarSpacing - avatarSize / 2 + dragonX,
+          top: height / 2 - avatarSize / 2 - 20,
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
@@ -225,16 +225,16 @@ const Matchup: React.FC = () => {
             Lv14
           </span>
         </div>
-        <HPBar hp={92} maxHp={92} width={petSize} />
-        <PetSprite species="dragon" size={petSize} enterDelay={0} bob />
+        <HPBar hp={92} maxHp={92} width={avatarSize} />
+        <AvatarSprite species="dragon" size={avatarSize} enterDelay={0} bob />
       </div>
 
       {/* Phoenix (right) */}
       <div
         style={{
           position: "absolute",
-          left: width / 2 + petSpacing - petSize / 2 + phoenixX,
-          top: height / 2 - petSize / 2 - 20,
+          left: width / 2 + avatarSpacing - avatarSize / 2 + phoenixX,
+          top: height / 2 - avatarSize / 2 - 20,
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
@@ -273,8 +273,8 @@ const Matchup: React.FC = () => {
             Lv12
           </span>
         </div>
-        <HPBar hp={78} maxHp={78} width={petSize} />
-        <PetSprite species="phoenix" size={petSize} enterDelay={6} flipX bob />
+        <HPBar hp={78} maxHp={78} width={avatarSize} />
+        <AvatarSprite species="phoenix" size={avatarSize} enterDelay={6} flipX bob />
       </div>
 
       {/* VS */}
@@ -313,8 +313,8 @@ const Battle: React.FC = () => {
   const { fps, width, height } = useVideoConfig();
   const isVertical = height > width;
 
-  const petSize = isVertical ? 130 : 120;
-  const petSpacing = isVertical ? 90 : 160;
+  const avatarSize = isVertical ? 130 : 120;
+  const avatarSpacing = isVertical ? 90 : 160;
 
   // 4 attack exchanges
   const attacks = [
@@ -382,24 +382,24 @@ const Battle: React.FC = () => {
       <div
         style={{
           position: "absolute",
-          left: width / 2 - petSpacing - petSize / 2 + dragonOffsetX,
-          top: height / 2 - petSize / 2,
+          left: width / 2 - avatarSpacing - avatarSize / 2 + dragonOffsetX,
+          top: height / 2 - avatarSize / 2,
         }}
       >
-        <HPBar hp={dragonHp} maxHp={92} width={petSize} label="Drake Lv14" />
-        <PetSprite species="dragon" size={petSize} enterDelay={0} bob />
+        <HPBar hp={dragonHp} maxHp={92} width={avatarSize} label="Drake Lv14" />
+        <AvatarSprite species="dragon" size={avatarSize} enterDelay={0} bob />
       </div>
 
       {/* Phoenix */}
       <div
         style={{
           position: "absolute",
-          left: width / 2 + petSpacing - petSize / 2 + phoenixOffsetX,
-          top: height / 2 - petSize / 2,
+          left: width / 2 + avatarSpacing - avatarSize / 2 + phoenixOffsetX,
+          top: height / 2 - avatarSize / 2,
         }}
       >
-        <HPBar hp={phoenixHp} maxHp={78} width={petSize} label="Blaze Lv12" />
-        <PetSprite species="phoenix" size={petSize} enterDelay={0} flipX bob />
+        <HPBar hp={phoenixHp} maxHp={78} width={avatarSize} label="Blaze Lv12" />
+        <AvatarSprite species="phoenix" size={avatarSize} enterDelay={0} flipX bob />
       </div>
 
       {/* Damage numbers */}
@@ -408,15 +408,15 @@ const Battle: React.FC = () => {
         if (af < 10 || af > 40) return null;
         const targetX =
           atk.attacker === "dragon"
-            ? width / 2 + petSpacing
-            : width / 2 - petSpacing;
+            ? width / 2 + avatarSpacing
+            : width / 2 - avatarSpacing;
         return (
           <DamageNumber
             key={i}
             damage={atk.damage}
             delay={atk.frame + 10}
             x={targetX - 20}
-            y={height / 2 - petSize / 2 - 20}
+            y={height / 2 - avatarSize / 2 - 20}
             isCritical={atk.damage >= 18}
           />
         );
@@ -430,8 +430,8 @@ const Battle: React.FC = () => {
         const arcOpacity = 1 - progress;
         const arcX =
           atk.attacker === "dragon"
-            ? width / 2 + petSpacing - 35
-            : width / 2 - petSpacing + 35;
+            ? width / 2 + avatarSpacing - 35
+            : width / 2 - avatarSpacing + 35;
 
         return (
           <div
@@ -461,7 +461,7 @@ const Victory: React.FC = () => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   const isVertical = height > width;
-  const petSize = isVertical ? 150 : 140;
+  const avatarSize = isVertical ? 150 : 140;
 
   // Phoenix defeat
   const deathProgress = interpolate(frame, [0, fps * 1.2], [0, 1], {
@@ -524,25 +524,25 @@ const Victory: React.FC = () => {
       <div
         style={{
           position: "absolute",
-          left: width / 2 + 100 - petSize / 2,
-          top: height / 2 - petSize / 2 + deathProgress * 25,
+          left: width / 2 + 100 - avatarSize / 2,
+          top: height / 2 - avatarSize / 2 + deathProgress * 25,
           opacity: phoenixOpacity,
           transform: `rotate(${phoenixRot}deg) scale(${phoenixScale})`,
         }}
       >
-        <PetSprite species="phoenix" size={petSize} enterDelay={0} bob={false} flipX />
+        <AvatarSprite species="phoenix" size={avatarSize} enterDelay={0} bob={false} flipX />
       </div>
 
       {/* Dragon winner */}
       <div
         style={{
           position: "absolute",
-          left: width / 2 - 100 - petSize / 2,
-          top: height / 2 - petSize / 2 - dragonBounceY,
+          left: width / 2 - 100 - avatarSize / 2,
+          top: height / 2 - avatarSize / 2 - dragonBounceY,
           transform: `scale(${dragonScale})`,
         }}
       >
-        <PetSprite species="dragon" size={petSize} enterDelay={0} bob />
+        <AvatarSprite species="dragon" size={avatarSize} enterDelay={0} bob />
       </div>
 
       {/* VICTORY text */}

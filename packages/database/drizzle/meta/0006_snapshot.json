@@ -414,7 +414,7 @@
         },
         "avatar_type": {
           "name": "avatar_type",
-          "type": "pet_avatar_type",
+          "type": "avatar_render_type",
           "typeSchema": "public",
           "primaryKey": false,
           "notNull": true,
@@ -490,8 +490,8 @@
       },
       "indexes": {},
       "foreignKeys": {
-        "pets_user_id_users_id_fk": {
-          "name": "pets_user_id_users_id_fk",
+        "avatars_user_id_users_id_fk": {
+          "name": "avatars_user_id_users_id_fk",
           "tableFrom": "avatar",
           "tableTo": "users",
           "columnsFrom": [
@@ -503,8 +503,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "pets_platform_agent_id_platform_agents_id_fk": {
-          "name": "pets_platform_agent_id_platform_agents_id_fk",
+        "avatars_platform_agent_id_platform_agents_id_fk": {
+          "name": "avatars_platform_agent_id_platform_agents_id_fk",
           "tableFrom": "avatar",
           "tableTo": "platform_agents",
           "columnsFrom": [
@@ -519,15 +519,15 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "pets_user_id_unique": {
-          "name": "pets_user_id_unique",
+        "avatars_user_id_unique": {
+          "name": "avatars_user_id_unique",
           "nullsNotDistinct": false,
           "columns": [
             "user_id"
           ]
         },
-        "pets_name_unique": {
-          "name": "pets_name_unique",
+        "avatars_name_unique": {
+          "name": "avatars_name_unique",
           "nullsNotDistinct": false,
           "columns": [
             "name"
@@ -1158,8 +1158,8 @@
       },
       "indexes": {},
       "foreignKeys": {
-        "activity_log_pet_id_pets_id_fk": {
-          "name": "activity_log_pet_id_pets_id_fk",
+        "activity_log_avatar_id_avatars_id_fk": {
+          "name": "activity_log_avatar_id_avatars_id_fk",
           "tableFrom": "activity_log",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -1341,8 +1341,8 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
-        "author_pet_id": {
-          "name": "author_pet_id",
+        "author_avatar_id": {
+          "name": "author_avatar_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
@@ -1435,12 +1435,12 @@
       },
       "indexes": {},
       "foreignKeys": {
-        "published_skills_author_pet_id_pets_id_fk": {
-          "name": "published_skills_author_pet_id_pets_id_fk",
+        "published_skills_author_avatar_id_avatars_id_fk": {
+          "name": "published_skills_author_avatar_id_avatars_id_fk",
           "tableFrom": "published_skills",
           "tableTo": "avatar",
           "columnsFrom": [
-            "author_pet_id"
+            "author_avatar_id"
           ],
           "columnsTo": [
             "id"
@@ -1490,8 +1490,8 @@
         }
       },
       "indexes": {
-        "skill_upvotes_skill_pet_unique": {
-          "name": "skill_upvotes_skill_pet_unique",
+        "skill_upvotes_skill_avatar_unique": {
+          "name": "skill_upvotes_skill_avatar_unique",
           "columns": [
             {
               "expression": "skill_id",
@@ -1526,8 +1526,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "skill_upvotes_pet_id_pets_id_fk": {
-          "name": "skill_upvotes_pet_id_pets_id_fk",
+        "skill_upvotes_avatar_id_avatars_id_fk": {
+          "name": "skill_upvotes_avatar_id_avatars_id_fk",
           "tableFrom": "skill_upvotes",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -1622,8 +1622,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "bazaar_listings_seller_id_pets_id_fk": {
-          "name": "bazaar_listings_seller_id_pets_id_fk",
+        "bazaar_listings_seller_id_avatars_id_fk": {
+          "name": "bazaar_listings_seller_id_avatars_id_fk",
           "tableFrom": "bazaar_listings",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -1703,8 +1703,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "bazaar_reviews_reviewer_id_pets_id_fk": {
-          "name": "bazaar_reviews_reviewer_id_pets_id_fk",
+        "bazaar_reviews_reviewer_id_avatars_id_fk": {
+          "name": "bazaar_reviews_reviewer_id_avatars_id_fk",
           "tableFrom": "bazaar_reviews",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -1809,8 +1809,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "bazaar_transactions_buyer_id_pets_id_fk": {
-          "name": "bazaar_transactions_buyer_id_pets_id_fk",
+        "bazaar_transactions_buyer_id_avatars_id_fk": {
+          "name": "bazaar_transactions_buyer_id_avatars_id_fk",
           "tableFrom": "bazaar_transactions",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -1822,8 +1822,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "bazaar_transactions_seller_id_pets_id_fk": {
-          "name": "bazaar_transactions_seller_id_pets_id_fk",
+        "bazaar_transactions_seller_id_avatars_id_fk": {
+          "name": "bazaar_transactions_seller_id_avatars_id_fk",
           "tableFrom": "bazaar_transactions",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -1999,8 +1999,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "token_launches_pet_id_pets_id_fk": {
-          "name": "token_launches_pet_id_pets_id_fk",
+        "token_launches_avatar_id_avatars_id_fk": {
+          "name": "token_launches_avatar_id_avatars_id_fk",
           "tableFrom": "token_launches",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -2210,8 +2210,8 @@
         }
       },
       "indexes": {
-        "claw_token_tx_pet_idx": {
-          "name": "claw_token_tx_pet_idx",
+        "claw_token_tx_avatar_idx": {
+          "name": "claw_token_tx_avatar_idx",
           "columns": [
             {
               "expression": "avatar_id",
@@ -2275,8 +2275,8 @@
         }
       },
       "foreignKeys": {
-        "claw_token_transactions_pet_id_pets_id_fk": {
-          "name": "claw_token_transactions_pet_id_pets_id_fk",
+        "claw_token_transactions_avatar_id_avatars_id_fk": {
+          "name": "claw_token_transactions_avatar_id_avatars_id_fk",
           "tableFrom": "claw_token_transactions",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -2429,8 +2429,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "auction_agent_configs_pet_id_pets_id_fk": {
-          "name": "auction_agent_configs_pet_id_pets_id_fk",
+        "auction_agent_configs_avatar_id_avatars_id_fk": {
+          "name": "auction_agent_configs_avatar_id_avatars_id_fk",
           "tableFrom": "auction_agent_configs",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -2505,8 +2505,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "auction_bids_bidder_id_pets_id_fk": {
-          "name": "auction_bids_bidder_id_pets_id_fk",
+        "auction_bids_bidder_id_avatars_id_fk": {
+          "name": "auction_bids_bidder_id_avatars_id_fk",
           "tableFrom": "auction_bids",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -2644,8 +2644,8 @@
       },
       "indexes": {},
       "foreignKeys": {
-        "auctions_seller_id_pets_id_fk": {
-          "name": "auctions_seller_id_pets_id_fk",
+        "auctions_seller_id_avatars_id_fk": {
+          "name": "auctions_seller_id_avatars_id_fk",
           "tableFrom": "auctions",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -2670,8 +2670,8 @@
           "onDelete": "set null",
           "onUpdate": "no action"
         },
-        "auctions_current_bidder_id_pets_id_fk": {
-          "name": "auctions_current_bidder_id_pets_id_fk",
+        "auctions_current_bidder_id_avatars_id_fk": {
+          "name": "auctions_current_bidder_id_avatars_id_fk",
           "tableFrom": "auctions",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -2757,8 +2757,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "quest_rewards_pet_id_pets_id_fk": {
-          "name": "quest_rewards_pet_id_pets_id_fk",
+        "quest_rewards_avatar_id_avatars_id_fk": {
+          "name": "quest_rewards_avatar_id_avatars_id_fk",
           "tableFrom": "quest_rewards",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -2904,8 +2904,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "quest_submissions_pet_id_pets_id_fk": {
-          "name": "quest_submissions_pet_id_pets_id_fk",
+        "quest_submissions_avatar_id_avatars_id_fk": {
+          "name": "quest_submissions_avatar_id_avatars_id_fk",
           "tableFrom": "quest_submissions",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -3161,8 +3161,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "agent_configs_pet_id_pets_id_fk": {
-          "name": "agent_configs_pet_id_pets_id_fk",
+        "agent_configs_avatar_id_avatars_id_fk": {
+          "name": "agent_configs_avatar_id_avatars_id_fk",
           "tableFrom": "agent_configs",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -3292,8 +3292,8 @@
       },
       "indexes": {},
       "foreignKeys": {
-        "bounties_creator_id_pets_id_fk": {
-          "name": "bounties_creator_id_pets_id_fk",
+        "bounties_creator_id_avatars_id_fk": {
+          "name": "bounties_creator_id_avatars_id_fk",
           "tableFrom": "bounties",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -3407,8 +3407,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "bounty_attempts_hunter_id_pets_id_fk": {
-          "name": "bounty_attempts_hunter_id_pets_id_fk",
+        "bounty_attempts_hunter_id_avatars_id_fk": {
+          "name": "bounty_attempts_hunter_id_avatars_id_fk",
           "tableFrom": "bounty_attempts",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -3500,8 +3500,8 @@
       },
       "indexes": {},
       "foreignKeys": {
-        "bounty_reputation_pet_id_pets_id_fk": {
-          "name": "bounty_reputation_pet_id_pets_id_fk",
+        "bounty_reputation_avatar_id_avatars_id_fk": {
+          "name": "bounty_reputation_avatar_id_avatars_id_fk",
           "tableFrom": "bounty_reputation",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -3516,8 +3516,8 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "bounty_reputation_pet_id_unique": {
-          "name": "bounty_reputation_pet_id_unique",
+        "bounty_reputation_avatar_id_unique": {
+          "name": "bounty_reputation_avatar_id_unique",
           "nullsNotDistinct": false,
           "columns": [
             "avatar_id"
@@ -3921,8 +3921,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "agent_session_tickets_pet_id_pets_id_fk": {
-          "name": "agent_session_tickets_pet_id_pets_id_fk",
+        "agent_session_tickets_avatar_id_avatars_id_fk": {
+          "name": "agent_session_tickets_avatar_id_avatars_id_fk",
           "tableFrom": "agent_session_tickets",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -4053,8 +4053,8 @@
           "method": "btree",
           "with": {}
         },
-        "idx_events_pet_ts": {
-          "name": "idx_events_pet_ts",
+        "idx_events_avatar_ts": {
+          "name": "idx_events_avatar_ts",
           "columns": [
             {
               "expression": "avatar_id",
@@ -4110,8 +4110,8 @@
           "onDelete": "set null",
           "onUpdate": "no action"
         },
-        "events_pet_id_pets_id_fk": {
-          "name": "events_pet_id_pets_id_fk",
+        "events_avatar_id_avatars_id_fk": {
+          "name": "events_avatar_id_avatars_id_fk",
           "tableFrom": "events",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -4587,8 +4587,8 @@
         }
       },
       "indexes": {
-        "idx_arp_pet_joined": {
-          "name": "idx_arp_pet_joined",
+        "idx_arp_avatar_joined": {
+          "name": "idx_arp_avatar_joined",
           "columns": [
             {
               "expression": "avatar_id",
@@ -4623,8 +4623,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "activity_room_participants_pet_id_pets_id_fk": {
-          "name": "activity_room_participants_pet_id_pets_id_fk",
+        "activity_room_participants_avatar_id_avatars_id_fk": {
+          "name": "activity_room_participants_avatar_id_avatars_id_fk",
           "tableFrom": "activity_room_participants",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -4638,8 +4638,8 @@
         }
       },
       "compositePrimaryKeys": {
-        "activity_room_participants_room_id_pet_id_pk": {
-          "name": "activity_room_participants_room_id_pet_id_pk",
+        "activity_room_participants_room_id_avatar_id_pk": {
+          "name": "activity_room_participants_room_id_avatar_id_pk",
           "columns": [
             "room_id",
             "avatar_id"
@@ -4782,8 +4782,8 @@
           "method": "btree",
           "with": {}
         },
-        "idx_activity_results_pet_created": {
-          "name": "idx_activity_results_pet_created",
+        "idx_activity_results_avatar_created": {
+          "name": "idx_activity_results_avatar_created",
           "columns": [
             {
               "expression": "avatar_id",
@@ -4853,8 +4853,8 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "activity_results_pet_id_pets_id_fk": {
-          "name": "activity_results_pet_id_pets_id_fk",
+        "activity_results_avatar_id_avatars_id_fk": {
+          "name": "activity_results_avatar_id_avatars_id_fk",
           "tableFrom": "activity_results",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -4954,8 +4954,8 @@
           "method": "btree",
           "with": {}
         },
-        "idx_activity_queue_pet": {
-          "name": "idx_activity_queue_pet",
+        "idx_activity_queue_avatar": {
+          "name": "idx_activity_queue_avatar",
           "columns": [
             {
               "expression": "avatar_id",
@@ -4990,8 +4990,8 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "activity_queue_entries_pet_id_pets_id_fk": {
-          "name": "activity_queue_entries_pet_id_pets_id_fk",
+        "activity_queue_entries_avatar_id_avatars_id_fk": {
+          "name": "activity_queue_entries_avatar_id_avatars_id_fk",
           "tableFrom": "activity_queue_entries",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -5037,8 +5037,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "leader_pet_id": {
-          "name": "leader_pet_id",
+        "leader_avatar_id": {
+          "name": "leader_avatar_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
@@ -5059,12 +5059,12 @@
       },
       "indexes": {},
       "foreignKeys": {
-        "activity_parties_leader_pet_id_pets_id_fk": {
-          "name": "activity_parties_leader_pet_id_pets_id_fk",
+        "activity_parties_leader_avatar_id_avatars_id_fk": {
+          "name": "activity_parties_leader_avatar_id_avatars_id_fk",
           "tableFrom": "activity_parties",
           "tableTo": "avatar",
           "columnsFrom": [
-            "leader_pet_id"
+            "leader_avatar_id"
           ],
           "columnsTo": [
             "id"
@@ -5129,8 +5129,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "activity_party_members_pet_id_pets_id_fk": {
-          "name": "activity_party_members_pet_id_pets_id_fk",
+        "activity_party_members_avatar_id_avatars_id_fk": {
+          "name": "activity_party_members_avatar_id_avatars_id_fk",
           "tableFrom": "activity_party_members",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -5144,8 +5144,8 @@
         }
       },
       "compositePrimaryKeys": {
-        "activity_party_members_party_id_pet_id_pk": {
-          "name": "activity_party_members_party_id_pet_id_pk",
+        "activity_party_members_party_id_avatar_id_pk": {
+          "name": "activity_party_members_party_id_avatar_id_pk",
           "columns": [
             "party_id",
             "avatar_id"
@@ -5387,8 +5387,8 @@
         }
       },
       "indexes": {
-        "uq_reef_race_pb_pet_activity": {
-          "name": "uq_reef_race_pb_pet_activity",
+        "uq_reef_race_pb_avatar_activity": {
+          "name": "uq_reef_race_pb_avatar_activity",
           "columns": [
             {
               "expression": "avatar_id",
@@ -5432,8 +5432,8 @@
         }
       },
       "foreignKeys": {
-        "reef_race_personal_bests_pet_id_pets_id_fk": {
-          "name": "reef_race_personal_bests_pet_id_pets_id_fk",
+        "reef_race_personal_bests_avatar_id_avatars_id_fk": {
+          "name": "reef_race_personal_bests_avatar_id_avatars_id_fk",
           "tableFrom": "reef_race_personal_bests",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -5548,8 +5548,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "tutorial_quest_claims_pet_id_pets_id_fk": {
-          "name": "tutorial_quest_claims_pet_id_pets_id_fk",
+        "tutorial_quest_claims_avatar_id_avatars_id_fk": {
+          "name": "tutorial_quest_claims_avatar_id_avatars_id_fk",
           "tableFrom": "tutorial_quest_claims",
           "tableTo": "avatar",
           "columnsFrom": [
@@ -5567,8 +5567,8 @@
     }
   },
   "enums": {
-    "public.pet_avatar_type": {
-      "name": "pet_avatar_type",
+    "public.avatar_render_type": {
+      "name": "avatar_render_type",
       "schema": "public",
       "values": [
         "glb",

@@ -13,7 +13,7 @@ import { loadFont as loadRobotoMono } from "@remotion/google-fonts/RobotoMono";
 import { GradientBackground } from "../shared/GradientBackground";
 import { MapBackground } from "../shared/MapBackground";
 import { ClawPanel } from "../shared/ClawPanel";
-import { PetSprite } from "../shared/PetSprite";
+import { AvatarSprite } from "../shared/AvatarSprite";
 import { SpeechBubble } from "../shared/SpeechBubble";
 import { TerminalBlock } from "../shared/TerminalBlock";
 import { TypewriterText } from "../shared/TypewriterText";
@@ -119,14 +119,14 @@ const BotConnects: React.FC = () => {
   const terminalSlideY = interpolate(terminalEntrance, [0, 1], [60, 0]);
 
   // Lobster appears after terminal
-  const petEntrance = spring({
+  const avatarEntrance = spring({
     frame,
     fps,
     delay: Math.round(2 * fps),
     config: SPRING_BOUNCY,
   });
-  const petScale = interpolate(petEntrance, [0, 1], [0, 1]);
-  const petOpacity = interpolate(petEntrance, [0, 0.3], [0, 1], {
+  const avatarScale = interpolate(avatarEntrance, [0, 1], [0, 1]);
+  const avatarOpacity = interpolate(avatarEntrance, [0, 0.3], [0, 1], {
     extrapolateRight: "clamp",
   });
 
@@ -181,11 +181,11 @@ const BotConnects: React.FC = () => {
           display: "flex",
           alignItems: "center",
           gap: 16,
-          opacity: petOpacity,
-          transform: `scale(${petScale})`,
+          opacity: avatarOpacity,
+          transform: `scale(${avatarScale})`,
         }}
       >
-        <PetSprite species="fox" size={isVertical ? 100 : 90} enterDelay={Math.round(2 * fps)} bob />
+        <AvatarSprite species="fox" size={isVertical ? 100 : 90} enterDelay={Math.round(2 * fps)} bob />
         <div
           style={{
             opacity: connectedOpacity,
