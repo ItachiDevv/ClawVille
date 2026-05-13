@@ -33,7 +33,7 @@
     "draco3d": "^1.5.7",
     "gifenc": "^1.0.3",
     "gltf-pipeline": "^4.3.1",
-    "meshoptimizer": "^0.22.0",
+    "meshoptimizer": "^1.1.1",
     "obs-websocket-js": "^5.0.7",
     "postcss": "^8.5.8",
     "prettier": "^3.2.0",
