@@ -42,7 +42,15 @@ if (!slug || animQueries.length === 0) {
 // ─── Load registry ────────────────────────────────────────────────────────
 const REGISTRY_PATH = resolve(process.cwd(), "scripts/mixamo/characters.json");
 const registry = JSON.parse(readFileSync(REGISTRY_PATH, "utf-8")) as {
-  characters: Record<string, { id: string; skeletonClass: string }>;
+  characters: Record<
+    string,
+    {
+      id: string;
+      skeletonClass: string;
+      animatorId?: string;
+      animationsDir?: string;
+    }
+  >;
 };
 const char = registry.characters[slug];
 if (!char) {
@@ -53,9 +61,14 @@ if (!char) {
   process.exit(1);
 }
 const CHARACTER_ID = char.id;
+// animationsDir is a URL path like '/avatars/animations/cyrus'; convert to
+// filesystem path under apps/web/public/ for the Blender output. Default for
+// older registry entries (without animationsDir) is '/avatars/animations/<slug>'.
+const ANIMATIONS_URL_PATH = char.animationsDir ?? `/avatars/animations/${slug}`;
 console.log(
   `Character: ${slug} (id=${CHARACTER_ID}, skeleton=${char.skeletonClass})`,
 );
+console.log(`  GLB output URL path: ${ANIMATIONS_URL_PATH}`);
 
 // ─── Output dir ───────────────────────────────────────────────────────────
 const OUT_DIR = resolve(
@@ -319,10 +332,8 @@ function findBlender(): string | null {
 
 console.log("\n=== Finalize: Blender FBX → GLB ===");
 const blender = findBlender();
-const GLB_OUT_DIR = resolve(
-  process.cwd(),
-  `apps/web/public/avatars/animations/${slug}`,
-);
+// URL path '/avatars/animations/<x>' → filesystem 'apps/web/public/avatars/animations/<x>'
+const GLB_OUT_DIR = resolve(process.cwd(), `apps/web/public${ANIMATIONS_URL_PATH}`);
 const PY_SCRIPT = resolve(process.cwd(), "scripts/mixamo/blender-convert-anims.py");
 
 if (!blender) {
