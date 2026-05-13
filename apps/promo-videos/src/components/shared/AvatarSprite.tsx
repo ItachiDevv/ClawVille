@@ -11,7 +11,7 @@ import { SPRING_BOUNCY } from "../../constants/timing";
 import type { Species } from "../../constants/species";
 import { SPECIES_SPRITE_PATH } from "../../constants/species";
 
-type PetSpriteProps = {
+type AvatarSpriteProps = {
   species: Species;
   size?: number;
   enterDelay?: number;
@@ -20,7 +20,7 @@ type PetSpriteProps = {
   style?: React.CSSProperties;
 };
 
-export const PetSprite: React.FC<PetSpriteProps> = ({
+export const AvatarSprite: React.FC<AvatarSpriteProps> = ({
   species,
   size = 120,
   enterDelay = 0,

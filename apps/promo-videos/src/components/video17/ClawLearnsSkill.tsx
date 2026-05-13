@@ -14,7 +14,7 @@ import { loadFont as loadRobotoMono } from "@remotion/google-fonts/RobotoMono";
 import { GradientBackground } from "../shared/GradientBackground";
 import { MapBackground } from "../shared/MapBackground";
 import { ClawPanel } from "../shared/ClawPanel";
-import { PetSprite } from "../shared/PetSprite";
+import { AvatarSprite } from "../shared/AvatarSprite";
 import { TerminalBlock } from "../shared/TerminalBlock";
 import { TypewriterText } from "../shared/TypewriterText";
 import { ParticleField } from "../shared/ParticleField";
@@ -854,14 +854,14 @@ const SkillCompiled: React.FC = () => {
   const skillSlideY = interpolate(skillEntrance, [0, 1], [40, 0]);
 
   // Lobster absorbs the skill -- glow effect
-  const petEntrance = spring({
+  const avatarEntrance = spring({
     frame,
     fps,
     delay: Math.round(2 * fps),
     config: SPRING_BOUNCY,
   });
-  const petScale = interpolate(petEntrance, [0, 1], [0, 1]);
-  const petOpacity = interpolate(petEntrance, [0, 0.3], [0, 1], {
+  const avatarScale = interpolate(avatarEntrance, [0, 1], [0, 1]);
+  const avatarOpacity = interpolate(avatarEntrance, [0, 0.3], [0, 1], {
     extrapolateRight: "clamp",
   });
 
@@ -937,8 +937,8 @@ const SkillCompiled: React.FC = () => {
       <div
         style={{
           position: "relative",
-          opacity: petOpacity,
-          transform: `scale(${petScale})`,
+          opacity: avatarOpacity,
+          transform: `scale(${avatarScale})`,
         }}
       >
         {/* Knowledge ring */}
@@ -955,7 +955,7 @@ const SkillCompiled: React.FC = () => {
             transform: "translate(-50%, -50%)",
           }}
         />
-        <PetSprite species="cat" size={isVertical ? 90 : 80} enterDelay={Math.round(2 * fps)} bob />
+        <AvatarSprite species="cat" size={isVertical ? 90 : 80} enterDelay={Math.round(2 * fps)} bob />
 
         {/* Flying skill text */}
         <div

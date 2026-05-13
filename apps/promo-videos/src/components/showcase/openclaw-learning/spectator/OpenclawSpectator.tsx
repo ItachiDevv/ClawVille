@@ -12,7 +12,7 @@ import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { TitleScreen } from "../../shared/TitleScreen";
 import { RecordingBackground, LiveBadge } from "../../../shared/RecordingBackground";
 import { ParticleField } from "../../../shared/ParticleField";
-import { PetSprite } from "../../../shared/PetSprite";
+import { AvatarSprite } from "../../../shared/AvatarSprite";
 import { ClawPanel } from "../../../shared/ClawPanel";
 import { HPBar } from "../../../shared/HPBar";
 import { DamageNumber } from "../../../shared/DamageNumber";
@@ -55,7 +55,7 @@ const BotSpectatingScene: React.FC = () => {
   const { fps, width, height } = useVideoConfig();
   const isVertical = height > width;
 
-  const petEntrance = spring({
+  const avatarEntrance = spring({
     frame,
     fps,
     config: SPRING_BOUNCY,
@@ -68,7 +68,7 @@ const BotSpectatingScene: React.FC = () => {
     config: SPRING_SNAPPY,
   });
 
-  const petScale = interpolate(petEntrance, [0, 1], [0, 1]);
+  const avatarScale = interpolate(avatarEntrance, [0, 1], [0, 1]);
   const badgeScale = interpolate(badgeEntrance, [0, 1], [0, 1]);
   const badgeOpacity = interpolate(badgeEntrance, [0, 0.5], [0, 1], {
     extrapolateRight: "clamp",
@@ -115,7 +115,7 @@ const BotSpectatingScene: React.FC = () => {
           flexDirection: "column",
           alignItems: "center",
           gap: 12,
-          transform: `scale(${petScale})`,
+          transform: `scale(${avatarScale})`,
         }}
       >
         {/* Glow ring behind avatar */}
@@ -131,7 +131,7 @@ const BotSpectatingScene: React.FC = () => {
           }}
         />
 
-        <PetSprite species="owl" size={isVertical ? 130 : 150} bob />
+        <AvatarSprite species="owl" size={isVertical ? 130 : 150} bob />
 
         {/* Spectating badge */}
         <div
@@ -289,7 +289,7 @@ const BattleFeedScene: React.FC = () => {
             transform: `translateX(${battlePhase === 0 ? 8 : 0}px)`,
           }}
         >
-          <PetSprite species="dragon" size={isVertical ? 64 : 80} bob />
+          <AvatarSprite species="dragon" size={isVertical ? 64 : 80} bob />
           <HPBar hp={70} maxHp={100} width={isVertical ? 80 : 100} />
         </div>
 
@@ -313,7 +313,7 @@ const BattleFeedScene: React.FC = () => {
             transform: `translateX(${battlePhase === 1 ? -8 : 0}px)`,
           }}
         >
-          <PetSprite species="phoenix" size={isVertical ? 64 : 80} flipX bob />
+          <AvatarSprite species="phoenix" size={isVertical ? 64 : 80} flipX bob />
           <HPBar hp={55} maxHp={100} width={isVertical ? 80 : 100} />
         </div>
       </div>
@@ -385,7 +385,7 @@ const BattleFeedScene: React.FC = () => {
           gap: 8,
         }}
       >
-        <PetSprite species="owl" size={isVertical ? 60 : 72} bob />
+        <AvatarSprite species="owl" size={isVertical ? 60 : 72} bob />
         <span
           style={{
             fontFamily: roboto,

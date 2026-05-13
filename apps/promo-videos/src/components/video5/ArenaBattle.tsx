@@ -12,7 +12,7 @@ import { loadFont as loadLobster } from "@remotion/google-fonts/Lobster";
 import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { MapBackground } from "../shared/MapBackground";
 import { ParticleField } from "../shared/ParticleField";
-import { PetSprite } from "../shared/PetSprite";
+import { AvatarSprite } from "../shared/AvatarSprite";
 import { HPBar } from "../shared/HPBar";
 import { DamageNumber } from "../shared/DamageNumber";
 import { CTAButton } from "../shared/CTAButton";
@@ -67,8 +67,8 @@ const Faceoff: React.FC = () => {
     extrapolateRight: "clamp",
   });
 
-  const petSize = isVertical ? 160 : 140;
-  const petSpacing = isVertical ? 100 : 180;
+  const avatarSize = isVertical ? 160 : 140;
+  const avatarSpacing = isVertical ? 100 : 180;
 
   return (
     <AbsoluteFill>
@@ -84,8 +84,8 @@ const Faceoff: React.FC = () => {
       <div
         style={{
           position: "absolute",
-          left: width / 2 - petSpacing - petSize / 2 + abyssalX,
-          top: height / 2 - petSize / 2 - 30,
+          left: width / 2 - avatarSpacing - avatarSize / 2 + abyssalX,
+          top: height / 2 - avatarSize / 2 - 30,
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
@@ -103,16 +103,16 @@ const Faceoff: React.FC = () => {
         >
           Drake Lv12
         </span>
-        <HPBar hp={85} maxHp={85} width={petSize} />
-        <PetSprite species="dragon" size={petSize} enterDelay={0} bob />
+        <HPBar hp={85} maxHp={85} width={avatarSize} />
+        <AvatarSprite species="dragon" size={avatarSize} enterDelay={0} bob />
       </div>
 
       {/* Crusher (right) */}
       <div
         style={{
           position: "absolute",
-          left: width / 2 + petSpacing - petSize / 2 + crusherX,
-          top: height / 2 - petSize / 2 - 30,
+          left: width / 2 + avatarSpacing - avatarSize / 2 + crusherX,
+          top: height / 2 - avatarSize / 2 - 30,
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
@@ -130,8 +130,8 @@ const Faceoff: React.FC = () => {
         >
           Shadow Lv10
         </span>
-        <HPBar hp={72} maxHp={72} width={petSize} />
-        <PetSprite species="wolf" size={petSize} enterDelay={8} flipX bob />
+        <HPBar hp={72} maxHp={72} width={avatarSize} />
+        <AvatarSprite species="wolf" size={avatarSize} enterDelay={8} flipX bob />
       </div>
 
       {/* VS Text */}
@@ -170,8 +170,8 @@ const AttackExchanges: React.FC = () => {
   const { fps, width, height } = useVideoConfig();
   const isVertical = height > width;
 
-  const petSize = isVertical ? 140 : 120;
-  const petSpacing = isVertical ? 100 : 180;
+  const avatarSize = isVertical ? 140 : 120;
+  const avatarSpacing = isVertical ? 100 : 180;
 
   // 3 attack exchanges at frames 0, 70, 140
   const attacks = [
@@ -254,15 +254,15 @@ const AttackExchanges: React.FC = () => {
           position: "absolute",
           left:
             width / 2 -
-            petSpacing -
-            petSize / 2 +
+            avatarSpacing -
+            avatarSize / 2 +
             dragonOffsetX,
-          top: height / 2 - petSize / 2,
+          top: height / 2 - avatarSize / 2,
           transform: `rotate(${dragonTilt}deg)`,
         }}
       >
-        <HPBar hp={dragonHp} maxHp={85} width={petSize} label="Drake Lv12" />
-        <PetSprite species="dragon" size={petSize} enterDelay={0} bob />
+        <HPBar hp={dragonHp} maxHp={85} width={avatarSize} label="Drake Lv12" />
+        <AvatarSprite species="dragon" size={avatarSize} enterDelay={0} bob />
       </div>
 
       {/* Wolf */}
@@ -271,15 +271,15 @@ const AttackExchanges: React.FC = () => {
           position: "absolute",
           left:
             width / 2 +
-            petSpacing -
-            petSize / 2 +
+            avatarSpacing -
+            avatarSize / 2 +
             wolfOffsetX,
-          top: height / 2 - petSize / 2,
+          top: height / 2 - avatarSize / 2,
           transform: `rotate(${wolfTilt}deg)`,
         }}
       >
-        <HPBar hp={wolfHp} maxHp={72} width={petSize} label="Shadow Lv10" />
-        <PetSprite species="wolf" size={petSize} enterDelay={0} flipX bob />
+        <HPBar hp={wolfHp} maxHp={72} width={avatarSize} label="Shadow Lv10" />
+        <AvatarSprite species="wolf" size={avatarSize} enterDelay={0} flipX bob />
       </div>
 
       {/* Damage numbers */}
@@ -288,15 +288,15 @@ const AttackExchanges: React.FC = () => {
         if (attackFrame < 12 || attackFrame > 50) return null;
         const targetX =
           atk.attacker === "dragon"
-            ? width / 2 + petSpacing
-            : width / 2 - petSpacing;
+            ? width / 2 + avatarSpacing
+            : width / 2 - avatarSpacing;
         return (
           <DamageNumber
             key={i}
             damage={atk.damage}
             delay={atk.frame + 12}
             x={targetX - 20}
-            y={height / 2 - petSize / 2 - 20}
+            y={height / 2 - avatarSize / 2 - 20}
             isCritical={atk.damage >= 15}
           />
         );
@@ -310,8 +310,8 @@ const AttackExchanges: React.FC = () => {
         const arcOpacity = 1 - arcProgress;
         const arcX =
           atk.attacker === "dragon"
-            ? width / 2 + petSpacing - 40
-            : width / 2 - petSpacing + 40;
+            ? width / 2 + avatarSpacing - 40
+            : width / 2 - avatarSpacing + 40;
 
         return (
           <div
@@ -341,7 +341,7 @@ const VictoryScene: React.FC = () => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   const isVertical = height > width;
-  const petSize = isVertical ? 160 : 140;
+  const avatarSize = isVertical ? 160 : 140;
 
   // Wolf death spin
   const deathProgress = interpolate(frame, [0, fps * 1.5], [0, 1], {
@@ -407,25 +407,25 @@ const VictoryScene: React.FC = () => {
       <div
         style={{
           position: "absolute",
-          left: width / 2 + 100 - petSize / 2,
-          top: height / 2 - petSize / 2 + wolfY,
+          left: width / 2 + 100 - avatarSize / 2,
+          top: height / 2 - avatarSize / 2 + wolfY,
           opacity: wolfOpacity,
           transform: `rotate(${wolfRotation}deg) scale(${wolfScale})`,
         }}
       >
-        <PetSprite species="wolf" size={petSize} enterDelay={0} bob={false} flipX />
+        <AvatarSprite species="wolf" size={avatarSize} enterDelay={0} bob={false} flipX />
       </div>
 
       {/* Abyssal celebrating */}
       <div
         style={{
           position: "absolute",
-          left: width / 2 - 100 - petSize / 2,
-          top: height / 2 - petSize / 2 - dragonBounceY,
+          left: width / 2 - 100 - avatarSize / 2,
+          top: height / 2 - avatarSize / 2 - dragonBounceY,
           transform: `scale(${dragonScale})`,
         }}
       >
-        <PetSprite species="dragon" size={petSize} enterDelay={0} bob />
+        <AvatarSprite species="dragon" size={avatarSize} enterDelay={0} bob />
       </div>
 
       {/* KO text */}

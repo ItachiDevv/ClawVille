@@ -10,7 +10,7 @@ import {
 import { loadFont as loadLobster } from "@remotion/google-fonts/Lobster";
 import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { RecordingBackground, LiveBadge } from "../../shared/RecordingBackground";
-import { PetSprite } from "../../shared/PetSprite";
+import { AvatarSprite } from "../../shared/AvatarSprite";
 import { SpeechBubble } from "../../shared/SpeechBubble";
 import { ParticleField } from "../../shared/ParticleField";
 import { CTAButton } from "../../shared/CTAButton";
@@ -199,13 +199,13 @@ const InstantGame: React.FC = () => {
   const isVertical = height > width;
 
   // Avatar appears
-  const petEntrance = spring({
+  const avatarEntrance = spring({
     frame,
     fps,
     delay: 5,
     config: SPRING_BOUNCY,
   });
-  const petScale = interpolate(petEntrance, [0, 1], [0, 1]);
+  const avatarScale = interpolate(avatarEntrance, [0, 1], [0, 1]);
 
   // WASD keys
   const keys = [
@@ -226,8 +226,8 @@ const InstantGame: React.FC = () => {
         }}
       >
         {/* Avatar on map */}
-        <div style={{ transform: `scale(${petScale})` }}>
-          <PetSprite species="bunny" size={isVertical ? 120 : 100} enterDelay={5} bob />
+        <div style={{ transform: `scale(${avatarScale})` }}>
+          <AvatarSprite species="bunny" size={isVertical ? 120 : 100} enterDelay={5} bob />
         </div>
 
         {/* WASD keys */}
@@ -408,7 +408,7 @@ const Explore: React.FC = () => {
 
         {/* Avatar walking */}
         <div style={{ transform: `translateX(${avatarX}px)` }}>
-          <PetSprite species="bunny" size={isVertical ? 90 : 80} enterDelay={0} bob />
+          <AvatarSprite species="bunny" size={isVertical ? 90 : 80} enterDelay={0} bob />
         </div>
 
         {/* Chat bubble */}

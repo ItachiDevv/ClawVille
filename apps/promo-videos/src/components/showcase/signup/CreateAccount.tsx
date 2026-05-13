@@ -11,7 +11,7 @@ import { loadFont as loadLobster } from "@remotion/google-fonts/Lobster";
 import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { RecordingBackground, LiveBadge } from "../../shared/RecordingBackground";
 import { ClawPanel } from "../../shared/ClawPanel";
-import { PetSprite } from "../../shared/PetSprite";
+import { AvatarSprite } from "../../shared/AvatarSprite";
 import { TypewriterText } from "../../shared/TypewriterText";
 import { ParticleField } from "../../shared/ParticleField";
 import { CTAButton } from "../../shared/CTAButton";
@@ -225,7 +225,7 @@ const SpeciesSelect: React.FC = () => {
                     : "transparent",
                 }}
               >
-                <PetSprite species={opt.species} size={isVertical ? 90 : 80} enterDelay={Math.round(i * 0.3 * fps)} bob />
+                <AvatarSprite species={opt.species} size={isVertical ? 90 : 80} enterDelay={Math.round(i * 0.3 * fps)} bob />
               </div>
               <span
                 style={{
@@ -379,13 +379,13 @@ const WelcomeScene: React.FC = () => {
   const bannerScale = interpolate(bannerEntrance, [0, 1], [0.3, 1]);
 
   // Avatar on map
-  const petEntrance = spring({
+  const avatarEntrance = spring({
     frame,
     fps,
     delay: Math.round(1 * fps),
     config: SPRING_BOUNCY,
   });
-  const petScale = interpolate(petEntrance, [0, 1], [0, 1]);
+  const avatarScale = interpolate(avatarEntrance, [0, 1], [0, 1]);
 
   // Confetti particles (simple dots)
   const confettiColors = [COLORS.gold, COLORS.green, COLORS.blue, "#FF5722", "#9C27B0"];
@@ -444,14 +444,14 @@ const WelcomeScene: React.FC = () => {
         </div>
 
         {/* Avatar */}
-        <div style={{ transform: `scale(${petScale})` }}>
-          <PetSprite species="fox" size={isVertical ? 110 : 100} enterDelay={Math.round(1 * fps)} bob />
+        <div style={{ transform: `scale(${avatarScale})` }}>
+          <AvatarSprite species="fox" size={isVertical ? 110 : 100} enterDelay={Math.round(1 * fps)} bob />
         </div>
 
         {/* Subtitle */}
         <div
           style={{
-            opacity: petEntrance,
+            opacity: avatarEntrance,
           }}
         >
           <span

@@ -12,7 +12,7 @@ import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { ParticleField } from "../shared/ParticleField";
 import { ClawPanel } from "../shared/ClawPanel";
 import { ClawTokenIcon } from "../shared/ClawTokenIcon";
-import { PetSprite } from "../shared/PetSprite";
+import { AvatarSprite } from "../shared/AvatarSprite";
 import { StatBar } from "../shared/StatBar";
 import { AnimatedCounter } from "../shared/AnimatedCounter";
 import { CTAButton } from "../shared/CTAButton";
@@ -362,7 +362,7 @@ const LevelProgression: React.FC = () => {
       }}
     >
       {/* Lobster sprite */}
-      <PetSprite species="dragon" size={100} enterDelay={0} bob />
+      <AvatarSprite species="dragon" size={100} enterDelay={0} bob />
 
       {/* Level badge */}
       <div

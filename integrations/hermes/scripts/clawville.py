@@ -641,8 +641,8 @@ def cmd_balance(args):
     wb = wallet.get("body") or {}
     sb = stats.get("body") or {}
     emit({
-        "avatarName": wb.get("avatarName") or wb.get("petName"),
-        "avatarId": wb.get("avatarId") or wb.get("petId"),
+        "avatarName": wb.get("avatarName"),
+        "avatarId": wb.get("avatarId"),
         "walletAddress": (wb.get("wallet") or {}).get("address"),
         "clawTokens": (wb.get("balances") or {}).get("clawTokens"),
         "level": sb.get("level"),

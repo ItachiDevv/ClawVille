@@ -12,7 +12,7 @@ import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { TitleScreen } from "../../shared/TitleScreen";
 import { RecordingBackground, LiveBadge } from "../../../shared/RecordingBackground";
 import { ParticleField } from "../../../shared/ParticleField";
-import { PetSprite } from "../../../shared/PetSprite";
+import { AvatarSprite } from "../../../shared/AvatarSprite";
 import { ClawPanel } from "../../../shared/ClawPanel";
 import { HPBar } from "../../../shared/HPBar";
 import { CTAButton } from "../../../shared/CTAButton";
@@ -277,7 +277,7 @@ const BattlePreviewScene: React.FC = () => {
               transform: `translateX(${leftShake}px)`,
             }}
           >
-            <PetSprite species="wolf" size={isVertical ? 72 : 90} bob />
+            <AvatarSprite species="wolf" size={isVertical ? 72 : 90} bob />
             <HPBar hp={82} maxHp={100} width={isVertical ? 90 : 120} />
             <span
               style={{
@@ -311,7 +311,7 @@ const BattlePreviewScene: React.FC = () => {
               transform: `translateX(${rightShake}px)`,
             }}
           >
-            <PetSprite species="fox" size={isVertical ? 72 : 90} flipX bob />
+            <AvatarSprite species="fox" size={isVertical ? 72 : 90} flipX bob />
             <HPBar hp={65} maxHp={100} width={isVertical ? 90 : 120} />
             <span
               style={{
