@@ -304,15 +304,43 @@ const VRM_DIR_ROTATION: Record<string, number> = {
   down: Math.PI, up: 0, right: Math.PI / 2, left: -Math.PI / 2, idle: Math.PI,
 };
 
-// VRM_NPC_SCALE: target visual height ≈ 180 wu for wandering Milady NPCs (4× the
-// 45wu lobster/crab baseline). VRM native height ~1.6m → scale 112 ⇒ 179.2 wu.
-// Doubled twice on 2026-04-23 per user request: the 45-wu "match the lobster"
-// target read as too small on screen, and the first 2× bump (scale 56 ⇒ 90 wu)
-// still wasn't reading as the world's main cast. At scale 112 the Miladys are
-// the dominant human-scale figures the town is built around. Registry scale=13
-// remains for the SelectAgentCanvas picker (~21 wu pedestal surface). VRM feet
-// are at Y=0 per spec — no pivot offset calculation needed (unlike GLBs).
-const VRM_NPC_SCALE = 112;
+// VRM_NPC_SCALE was a flat multiplier tuned for Milady VRMs (~1.6m native
+// height → 1.6 × 112 = 179.2 wu on screen). It still ships as the fallback /
+// picker-pedestal value, but at-mount we now AUTO-FIT each VRM individually:
+//
+// PROBLEM: Hermes-female / hermes-male / tekk export from Blender at CENTIMETER
+// units (Mixamo source × global_scale=100 during import retains cm). Their
+// native bbox.y reads as ~194 three.js units, NOT 1.94. Multiplying 194 × 112
+// would produce a ~21,700wu giant.
+//
+// FIX: replace flat constant at the primitive with per-VRM target-height auto-
+// fit. Measure each VRM's natural bbox once at scale=1 and compute
+// scale = VRM_NPC_TARGET_HEIGHT_WU / bbox.y. Milady (bbox≈1.6) → 112. Hermes
+// (bbox≈194) → 0.92. Both land at the same on-screen height.
+const VRM_NPC_SCALE = 112;                    // legacy fallback (picker, any caller importing this)
+const VRM_NPC_TARGET_HEIGHT_WU = 179.2;       // 1.6m Milady × 112 — keeps existing on-screen size
+
+/**
+ * Compute the per-VRM render scale that makes the avatar exactly
+ * VRM_NPC_TARGET_HEIGHT_WU tall on screen, regardless of whether the source
+ * VRM is authored in meters (Milady) or centimeters (Hermes/Mixamo).
+ *
+ * Mutates vrm.scene.scale during measurement and restores it before returning
+ * — safe because the bbox read happens inside a useMemo, before R3F's primitive
+ * applies its own scale prop.
+ */
+function computeVRMNpcScale(vrm: { scene: THREE.Object3D } | null | undefined): number {
+  if (!vrm) return VRM_NPC_SCALE;
+  const prev = vrm.scene.scale.clone();
+  vrm.scene.scale.setScalar(1);
+  vrm.scene.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(vrm.scene);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  vrm.scene.scale.copy(prev);
+  vrm.scene.updateMatrixWorld(true);
+  return size.y > 0 ? VRM_NPC_TARGET_HEIGHT_WU / size.y : VRM_NPC_SCALE;
+}
 
 // 2026-05-11: all NPC distance/behind-camera/occlusion culling REMOVED per user
 // directive ("let's remove all the culling completely it ruins the game"). No
@@ -751,6 +779,11 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // skeleton, humanoid, no sharing with player-avatar or other NPCs (Codex Critical #1).
   const vrm = useVRMInstance(vrmPath, npc.id);
 
+  // Per-VRM render scale — bbox-fit so cm-authored Hermes VRMs and m-authored
+  // Milady VRMs both land at VRM_NPC_TARGET_HEIGHT_WU on screen. Runs once
+  // per loaded VRM instance.
+  const vrmRenderScale = useMemo(() => computeVRMNpcScale(vrm), [vrm]);
+
   // Dispose this instance when the NPC unmounts or path/id changes.
   useEffect(() => {
     return () => disposeVRMInstance(vrmPath, npc.id);
@@ -901,11 +934,13 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
 
   return (
     <group ref={groupRef}>
-      {/* VRM scale applied here — registry scale=13 is for the picker (21wu).
-          VRM_NPC_SCALE=28 targets TARGET_NPC_HEIGHT=45wu (28 × 1.6m ≈ 44.8wu). */}
+      {/* VRM scale: per-VRM bbox auto-fit (computeVRMNpcScale).
+          Milady (1.6m native) → ~112. Hermes-female / -male / Tekk
+          (cm-authored Mixamo VRMs) → ~0.93. Both land at
+          VRM_NPC_TARGET_HEIGHT_WU = 179.2 wu on screen. */}
       <primitive
         object={vrm.scene}
-        scale={[VRM_NPC_SCALE, VRM_NPC_SCALE, VRM_NPC_SCALE]}
+        scale={[vrmRenderScale, vrmRenderScale, vrmRenderScale]}
       />
       {/* Name label — WorldLabelsOverlay manages projection + DOM writes.
           offset [0,100,0]: 100wu clearance, matches GLBNpcMesh. */}
