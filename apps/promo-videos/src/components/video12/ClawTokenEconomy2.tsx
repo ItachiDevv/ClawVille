@@ -11,7 +11,7 @@ import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { ClawTokenIcon } from "../shared/ClawTokenIcon";
 import { AnimatedCounter } from "../shared/AnimatedCounter";
 import { ClawPanel } from "../shared/ClawPanel";
-import { PetSprite } from "../shared/PetSprite";
+import { AvatarSprite } from "../shared/AvatarSprite";
 import { BookIcon } from "../shared/BookIcon";
 import { StatBar } from "../shared/StatBar";
 import { CTAButton } from "../shared/CTAButton";
@@ -264,7 +264,7 @@ const SpendOnBooksScene: React.FC = () => {
       </div>
 
       {/* Avatar sprite below books */}
-      <PetSprite species="cat" size={80} enterDelay={5} bob />
+      <AvatarSprite species="cat" size={80} enterDelay={5} bob />
 
       {/* Counter counting down from 100 to 55 */}
       <AnimatedCounter

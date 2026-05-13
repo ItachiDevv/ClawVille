@@ -9,7 +9,7 @@ import {
 } from "remotion";
 import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { GradientBackground } from "../shared/GradientBackground";
-import { PetSprite } from "../shared/PetSprite";
+import { AvatarSprite } from "../shared/AvatarSprite";
 import { LogoReveal } from "../shared/LogoReveal";
 import { CTAButton } from "../shared/CTAButton";
 import { ALL_SPECIES, SPECIES_LABELS, type Species } from "../../constants/species";
@@ -170,7 +170,7 @@ const SpeciesShowcase: React.FC = () => {
               opacity,
             }}
           >
-            <PetSprite
+            <AvatarSprite
               species={species}
               size={160}
               enterDelay={speciesStart}
@@ -304,7 +304,7 @@ const AllTogether: React.FC = () => {
               opacity,
             }}
           >
-            <PetSprite species={species} size={spriteSize} enterDelay={i * 4} bob />
+            <AvatarSprite species={species} size={spriteSize} enterDelay={i * 4} bob />
             <span
               style={{
                 fontFamily: roboto,

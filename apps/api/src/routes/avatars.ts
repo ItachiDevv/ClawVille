@@ -91,7 +91,7 @@ const createAvatarSchema = z.object({
     .optional(),
   /**
    * Phase 2 — agent framework category. Drizzle CHECK constraint
-   * `pets_agent_category_valid` enforces the same enum at the DB layer.
+   * `avatars_agent_category_valid` enforces the same enum at the DB layer.
    * `z.enum` works directly because AGENT_CATEGORIES is a tuple literal
    * (Phase 2 audit Fix A) — no `as unknown as [T, ...T[]]` cast needed.
    */
@@ -102,7 +102,7 @@ const createAvatarSchema = z.object({
    * the system prompt by `buildCharacterConfig`.
    */
   learningFocus: z.string().max(120).optional(),
-  /** Phase 2 — preferred runtime harness. DB CHECK `pets_harness_valid`. */
+  /** Phase 2 — preferred runtime harness. DB CHECK `avatars_harness_valid`. */
   harness: z.enum(AGENT_HARNESSES).optional(),
 });
 

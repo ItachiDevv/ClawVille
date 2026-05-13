@@ -10,7 +10,7 @@ import {
 import { loadFont as loadLobster } from "@remotion/google-fonts/Lobster";
 import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { MapBackground } from "../shared/MapBackground";
-import { PetSprite } from "../shared/PetSprite";
+import { AvatarSprite } from "../shared/AvatarSprite";
 import { ClawPanel } from "../shared/ClawPanel";
 import { SpeechBubble } from "../shared/SpeechBubble";
 import { TypewriterText } from "../shared/TypewriterText";
@@ -93,7 +93,7 @@ const NpcLife: React.FC = () => {
   const { fps, width, height } = useVideoConfig();
   const isVertical = height > width;
 
-  const petSize = isVertical ? 100 : 90;
+  const avatarSize = isVertical ? 100 : 90;
 
   // NPC positions with slow translateX movement
   const npcs = [
@@ -123,8 +123,8 @@ const NpcLife: React.FC = () => {
             key={i}
             style={{
               position: "absolute",
-              left: x - petSize / 2,
-              top: y - petSize / 2,
+              left: x - avatarSize / 2,
+              top: y - avatarSize / 2,
               display: "flex",
               flexDirection: "column",
               alignItems: "center",
@@ -148,9 +148,9 @@ const NpcLife: React.FC = () => {
                 {npc.label}
               </span>
             </ClawPanel>
-            <PetSprite
+            <AvatarSprite
               species={npc.species}
-              size={petSize}
+              size={avatarSize}
               enterDelay={i * 8}
               bob
             />
@@ -168,8 +168,8 @@ const NpcLife: React.FC = () => {
               [0, 7 * fps],
               [0, 100],
               { extrapolateRight: "clamp" }
-            ) + petSize / 2 + 10,
-            top: 0.5 * height - petSize - 20,
+            ) + avatarSize / 2 + 10,
+            top: 0.5 * height - avatarSize - 20,
           }}
         >
           <SpeechBubble
@@ -191,8 +191,8 @@ const NpcLife: React.FC = () => {
               [0, 7 * fps],
               [0, 100],
               { extrapolateRight: "clamp" }
-            ) + petSize / 2 + 10,
-            top: 0.45 * height - petSize - 20,
+            ) + avatarSize / 2 + 10,
+            top: 0.45 * height - avatarSize - 20,
           }}
         >
           <SpeechBubble

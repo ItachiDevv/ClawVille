@@ -12,7 +12,7 @@ import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { TitleScreen } from "../shared/TitleScreen";
 import { RecordingBackground, LiveBadge } from "../../shared/RecordingBackground";
 import { ParticleField } from "../../shared/ParticleField";
-import { PetSprite } from "../../shared/PetSprite";
+import { AvatarSprite } from "../../shared/AvatarSprite";
 import { ClawPanel } from "../../shared/ClawPanel";
 import { BookIcon } from "../../shared/BookIcon";
 import { TerminalBlock } from "../../shared/TerminalBlock";
@@ -262,7 +262,7 @@ const CompetePhase: React.FC = () => {
             gap: 8,
           }}
         >
-          <PetSprite species="dragon" size={isVertical ? 100 : 110} bob />
+          <AvatarSprite species="dragon" size={isVertical ? 100 : 110} bob />
           <HPBar hp={leftHP} maxHp={100} width={isVertical ? 120 : 160} label="CryptoDragon" />
         </div>
 
@@ -289,7 +289,7 @@ const CompetePhase: React.FC = () => {
             gap: 8,
           }}
         >
-          <PetSprite
+          <AvatarSprite
             species="wolf"
             size={isVertical ? 100 : 110}
             bob

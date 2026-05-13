@@ -12,7 +12,7 @@ import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { TitleScreen } from "../../shared/TitleScreen";
 import { RecordingBackground, LiveBadge } from "../../../shared/RecordingBackground";
 import { ParticleField } from "../../../shared/ParticleField";
-import { PetSprite } from "../../../shared/PetSprite";
+import { AvatarSprite } from "../../../shared/AvatarSprite";
 import { SpeechBubble } from "../../../shared/SpeechBubble";
 import { BookIcon } from "../../../shared/BookIcon";
 import { ClawPanel } from "../../../shared/ClawPanel";
@@ -214,7 +214,7 @@ const EnterBuildingScene: React.FC = () => {
             transform: `scale(${npcScale})`,
           }}
         >
-          <PetSprite species="owl" size={isVertical ? 90 : 100} enterDelay={npcDelay} bob />
+          <AvatarSprite species="owl" size={isVertical ? 90 : 100} enterDelay={npcDelay} bob />
           <SpeechBubble
             text="Blockchains are distributed ledgers that enable trustless transactions..."
             delay={npcDelay + 8}

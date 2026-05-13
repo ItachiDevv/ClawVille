@@ -15,7 +15,7 @@ import { ParticleField } from "../shared/ParticleField";
 import { ClawTokenIcon } from "../shared/ClawTokenIcon";
 import { ClawPanel } from "../shared/ClawPanel";
 import { StatBar } from "../shared/StatBar";
-import { PetSprite } from "../shared/PetSprite";
+import { AvatarSprite } from "../shared/AvatarSprite";
 import { CTAButton } from "../shared/CTAButton";
 import { LogoReveal } from "../shared/LogoReveal";
 import { COLORS } from "../../constants/colors";
@@ -461,7 +461,7 @@ const IntelligenceComparison: React.FC = () => {
           >
             Before
           </span>
-          <PetSprite species="fox" size={80} enterDelay={0} bob />
+          <AvatarSprite species="fox" size={80} enterDelay={0} bob />
           <StatBar label="DeFi" value={0.1} delay={10} width={160} color="#78909C" />
           <StatBar label="NFTs" value={0.05} delay={15} width={160} color="#78909C" />
           <StatBar label="Solana" value={0.08} delay={20} width={160} color="#78909C" />
@@ -497,7 +497,7 @@ const IntelligenceComparison: React.FC = () => {
           >
             After
           </span>
-          <PetSprite species="fox" size={80} enterDelay={5} bob />
+          <AvatarSprite species="fox" size={80} enterDelay={5} bob />
           <StatBar label="DeFi" value={0.85} delay={fps + 10} width={160} color={COLORS.success} />
           <StatBar label="NFTs" value={0.7} delay={fps + 15} width={160} color={COLORS.info} />
           <StatBar label="Solana" value={0.9} delay={fps + 20} width={160} color="#7C4DFF" />

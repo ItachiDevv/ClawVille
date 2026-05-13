@@ -12,7 +12,7 @@ import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { TitleScreen } from "../shared/TitleScreen";
 import { RecordingBackground, LiveBadge } from "../../shared/RecordingBackground";
 import { ParticleField } from "../../shared/ParticleField";
-import { PetSprite } from "../../shared/PetSprite";
+import { AvatarSprite } from "../../shared/AvatarSprite";
 import { ClawPanel } from "../../shared/ClawPanel";
 import { SpeechBubble } from "../../shared/SpeechBubble";
 import { AnimatedCounter } from "../../shared/AnimatedCounter";
@@ -170,7 +170,7 @@ const SpeciesGrid: React.FC = () => {
                 width: spriteSize,
               }}
             >
-              <PetSprite
+              <AvatarSprite
                 species={species}
                 size={spriteSize - 20}
                 enterDelay={i * 6}
@@ -331,7 +331,7 @@ const NPCChat: React.FC = () => {
           maxWidth: isVertical ? 380 : 500,
         }}
       >
-        <PetSprite species="cat" size={56} enterDelay={0} bob={false} />
+        <AvatarSprite species="cat" size={56} enterDelay={0} bob={false} />
         <SpeechBubble
           text="How does Jupiter route my swaps?"
           delay={8}
@@ -350,7 +350,7 @@ const NPCChat: React.FC = () => {
           flexDirection: "row-reverse",
         }}
       >
-        <PetSprite
+        <AvatarSprite
           species="owl"
           size={56}
           enterDelay={fps}

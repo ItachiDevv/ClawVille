@@ -29,7 +29,7 @@ END $$;
 
 DO $$ BEGIN
   ALTER TABLE "tutorial_quest_claims"
-  ADD CONSTRAINT "tutorial_quest_claims_pet_id_pets_id_fk"
+  ADD CONSTRAINT "tutorial_quest_claims_avatar_id_avatars_id_fk"
   FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id")
   ON DELETE cascade ON UPDATE no action;
 EXCEPTION

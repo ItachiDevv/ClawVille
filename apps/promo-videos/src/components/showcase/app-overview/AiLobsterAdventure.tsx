@@ -12,7 +12,7 @@ import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { TitleScreen } from "../shared/TitleScreen";
 import { RecordingBackground, LiveBadge } from "../../shared/RecordingBackground";
 import { ParticleField } from "../../shared/ParticleField";
-import { PetSprite } from "../../shared/PetSprite";
+import { AvatarSprite } from "../../shared/AvatarSprite";
 import { ClawPanel } from "../../shared/ClawPanel";
 import { SpeechBubble } from "../../shared/SpeechBubble";
 import { BookIcon } from "../../shared/BookIcon";
@@ -39,7 +39,7 @@ const { fontFamily: roboto } = loadRoboto("normal", {
 });
 
 // Scene 2: Avatar Creation (1-5s, frames 30-150)
-const PetCreation: React.FC = () => {
+const AvatarCreation: React.FC = () => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   const isVertical = height > width;
@@ -97,7 +97,7 @@ const PetCreation: React.FC = () => {
                 gap: 8,
               }}
             >
-              <PetSprite
+              <AvatarSprite
                 species={s}
                 size={isVertical ? 120 : 110}
                 enterDelay={i * 12}
@@ -239,7 +239,7 @@ const WorldExploration: React.FC = () => {
           top: height * (isVertical ? 0.35 : 0.3),
         }}
       >
-        <PetSprite species="fox" size={90} bob />
+        <AvatarSprite species="fox" size={90} bob />
       </div>
 
       {/* Building icons grid */}
@@ -338,7 +338,7 @@ const LearningMontage: React.FC = () => {
           width: isVertical ? "90%" : "70%",
         }}
       >
-        <PetSprite species="owl" size={60} enterDelay={0} bob={false} />
+        <AvatarSprite species="owl" size={60} enterDelay={0} bob={false} />
         <SpeechBubble
           text="Let me teach you about Solana validators..."
           delay={5}
@@ -561,7 +561,7 @@ export const AiLobsterAdventure: React.FC = () => {
 
       {/* Scene 2: Avatar Creation (1-5s) */}
       <Sequence from={1 * fps} durationInFrames={4 * fps} premountFor={fps}>
-        <PetCreation />
+        <AvatarCreation />
       </Sequence>
 
       {/* Scene 3: World Exploration (5-9s) */}

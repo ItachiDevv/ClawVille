@@ -12,7 +12,7 @@ import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { RecordingBackground, LiveBadge } from "../../../shared/RecordingBackground";
 import { ParticleField } from "../../../shared/ParticleField";
 import { ClawPanel } from "../../../shared/ClawPanel";
-import { PetSprite } from "../../../shared/PetSprite";
+import { AvatarSprite } from "../../../shared/AvatarSprite";
 import { CTAButton } from "../../../shared/CTAButton";
 import { LogoReveal } from "../../../shared/LogoReveal";
 import { TitleScreen } from "../../shared/TitleScreen";
@@ -249,15 +249,15 @@ const PreBattleConfig: React.FC = () => {
   const { fps, width, height } = useVideoConfig();
   const isVertical = height > width;
 
-  const petSize = isVertical ? 120 : 110;
+  const avatarSize = isVertical ? 120 : 110;
 
   // Avatar entrance
-  const petEntrance = spring({
+  const avatarEntrance = spring({
     frame,
     fps,
     config: SPRING_BOUNCY,
   });
-  const petScale = interpolate(petEntrance, [0, 1], [0, 1]);
+  const avatarScale = interpolate(avatarEntrance, [0, 1], [0, 1]);
 
   // Config items appear
   const configItems = [
@@ -295,14 +295,14 @@ const PreBattleConfig: React.FC = () => {
       {/* Avatar ready */}
       <div
         style={{
-          transform: `scale(${petScale})`,
+          transform: `scale(${avatarScale})`,
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
           gap: 6,
         }}
       >
-        <PetSprite species="wolf" size={petSize} enterDelay={0} bob />
+        <AvatarSprite species="wolf" size={avatarSize} enterDelay={0} bob />
         <span
           style={{
             fontFamily: roboto,

@@ -11,7 +11,7 @@ import { loadFont as loadLobster } from "@remotion/google-fonts/Lobster";
 import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { MapBackground } from "../shared/MapBackground";
 import { ParticleField } from "../shared/ParticleField";
-import { PetSprite } from "../shared/PetSprite";
+import { AvatarSprite } from "../shared/AvatarSprite";
 import { SpeechBubble } from "../shared/SpeechBubble";
 import { ClawPanel } from "../shared/ClawPanel";
 import { AnimatedCounter } from "../shared/AnimatedCounter";
@@ -57,7 +57,7 @@ const LearnHook: React.FC = () => {
           gap: 16,
         }}
       >
-        <PetSprite species="cat" size={isVertical ? 140 : 120} enterDelay={0} bob />
+        <AvatarSprite species="cat" size={isVertical ? 140 : 120} enterDelay={0} bob />
         <Sequence from={10} layout="none">
           <SpeechBubble
             text="Time to learn!"

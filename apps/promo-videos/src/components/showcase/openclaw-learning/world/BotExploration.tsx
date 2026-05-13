@@ -13,7 +13,7 @@ import { TitleScreen } from "../../shared/TitleScreen";
 import { RecordingBackground, LiveBadge } from "../../../shared/RecordingBackground";
 import { MapBackground } from "../../../shared/MapBackground";
 import { ParticleField } from "../../../shared/ParticleField";
-import { PetSprite } from "../../../shared/PetSprite";
+import { AvatarSprite } from "../../../shared/AvatarSprite";
 import { CTAButton } from "../../../shared/CTAButton";
 import { TerminalBlock } from "../../../shared/TerminalBlock";
 import { LogoReveal } from "../../../shared/LogoReveal";
@@ -36,13 +36,13 @@ const BotIntroScene: React.FC = () => {
   const { fps, width, height } = useVideoConfig();
   const isVertical = height > width;
 
-  const petEntrance = spring({
+  const avatarEntrance = spring({
     frame,
     fps,
     config: SPRING_BOUNCY,
   });
 
-  const petScale = interpolate(petEntrance, [0, 1], [0, 1]);
+  const avatarScale = interpolate(avatarEntrance, [0, 1], [0, 1]);
 
   // Badge pops in after avatar
   const badgeDelay = Math.round(fps * 0.6);
@@ -83,8 +83,8 @@ const BotIntroScene: React.FC = () => {
       }}
     >
       {/* Avatar with bot badge */}
-      <div style={{ position: "relative", transform: `scale(${petScale})` }}>
-        <PetSprite species="dragon" size={isVertical ? 140 : 160} bob />
+      <div style={{ position: "relative", transform: `scale(${avatarScale})` }}>
+        <AvatarSprite species="dragon" size={isVertical ? 140 : 160} bob />
 
         {/* Bot badge */}
         <div
@@ -312,7 +312,7 @@ const AutonomousWalkScene: React.FC = () => {
           top: height * 0.5 - 20,
         }}
       >
-        <PetSprite species="dragon" size={80} bob />
+        <AvatarSprite species="dragon" size={80} bob />
         {/* Auto badge */}
         <div
           style={{

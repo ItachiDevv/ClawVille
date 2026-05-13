@@ -16,4 +16,4 @@ CREATE INDEX IF NOT EXISTS "idx_users_guest_expires" ON "users" ("guest_expires_
 --> statement-breakpoint
 -- Joinless filter helper for the per-activity leaderboard SQL —
 -- bots already use isActive=false, guests use is_guest=true.
-CREATE INDEX IF NOT EXISTS "idx_pets_is_guest" ON "avatars" ("is_guest") WHERE "is_guest" = true;
+CREATE INDEX IF NOT EXISTS "idx_avatars_is_guest" ON "avatars" ("is_guest") WHERE "is_guest" = true;

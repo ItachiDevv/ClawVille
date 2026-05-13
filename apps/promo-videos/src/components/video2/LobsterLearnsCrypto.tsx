@@ -11,7 +11,7 @@ import { loadFont as loadLobster } from "@remotion/google-fonts/Lobster";
 import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { MapBackground } from "../shared/MapBackground";
 import { ParticleField } from "../shared/ParticleField";
-import { PetSprite } from "../shared/PetSprite";
+import { AvatarSprite } from "../shared/AvatarSprite";
 import { BookIcon } from "../shared/BookIcon";
 import { ClawPanel } from "../shared/ClawPanel";
 import { CTAButton } from "../shared/CTAButton";
@@ -196,7 +196,7 @@ const KnowledgeAbsorption: React.FC = () => {
           top: lobsterY - 70,
         }}
       >
-        <PetSprite species="fox" size={140} enterDelay={0} bob />
+        <AvatarSprite species="fox" size={140} enterDelay={0} bob />
       </div>
 
       {/* Knowledge orbs orbiting then absorbing */}

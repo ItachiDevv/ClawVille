@@ -12,7 +12,7 @@ import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { RecordingBackground, LiveBadge } from "../../shared/RecordingBackground";
 import { ParticleField } from "../../shared/ParticleField";
 import { ClawPanel } from "../../shared/ClawPanel";
-import { PetSprite } from "../../shared/PetSprite";
+import { AvatarSprite } from "../../shared/AvatarSprite";
 import { SpeechBubble } from "../../shared/SpeechBubble";
 import { CTAButton } from "../../shared/CTAButton";
 import { LogoReveal } from "../../shared/LogoReveal";
@@ -228,7 +228,7 @@ const SameQuestion: React.FC = () => {
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <PetSprite species="dragon" size={56} enterDelay={response1Delay} bob />
+          <AvatarSprite species="dragon" size={56} enterDelay={response1Delay} bob />
           <span
             style={{
               fontFamily: roboto,
@@ -260,7 +260,7 @@ const SameQuestion: React.FC = () => {
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <PetSprite species="owl" size={56} enterDelay={response2Delay} bob />
+          <AvatarSprite species="owl" size={56} enterDelay={response2Delay} bob />
           <span
             style={{
               fontFamily: roboto,
