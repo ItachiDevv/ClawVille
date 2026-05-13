@@ -20,9 +20,10 @@ const MAX_VISIBLE_DIST = 3800; // 2026-05-13 cut 4500 → 3800
 const TILE_SIZE = 32;
 
 // Building zone exclusions — match buildingZones positions in tilemap-data
-// 10 buildings on ring at radius ~2176 from center
+// 10 buildings on ring at radius 2304wu (= 72 tiles × 32). Was 2176 / 68 tiles
+// pre 2026-05-13.
 const BUILDING_ZONES = [];
-const ringR = 2176;
+const ringR = 2304;
 for (let i = 0; i < 10; i++) {
   const angle = -Math.PI / 2 + i * (Math.PI / 5);
   BUILDING_ZONES.push({

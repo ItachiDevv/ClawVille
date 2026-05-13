@@ -9,7 +9,7 @@
 > grep results. Update this when you touch any file listed in the "Source"
 > column. Update the affected file when you change a row here.
 
-**Last edit:** 2026-05-13 — decoration scatter retune (user-reported invisible decos): TARGET 30→60, DECO_INNER_EXCLUSION_R 2700→1500, MAX_VISIBLE_DIST 4500→3800, EXTENT 1.76→1.4. The old constants pushed every prop outside the building ring (R=2176, ~800wu tall) where the ring occluded them and fog hid the rest. New constants land all 60 props in the 1500–3800wu visible annulus. Same diff: sand bumpFreq 0.15→1.5 + bumpAmp 0.04→0.08 (visible grain at gameplay distance); seaweed sparse-band acceptance 0.25→0.5; removed dead atmosphere/light-rays imports + duplicate TownDirectorySign mount + orphan trail-renderer.tsx.
+**Last edit:** 2026-05-13 — decoration scatter retune (user-reported invisible decos): TARGET 30→60, DECO_INNER_EXCLUSION_R 2700→1500, MAX_VISIBLE_DIST 4500→3800, EXTENT 1.76→1.4. The old constants pushed every prop outside the then-R=2176 building ring (~800wu tall) where the ring occluded them and fog hid the rest. New constants land all 60 props in the 1500–3800wu visible annulus. Same diff: sand bumpFreq 0.15→1.5 + bumpAmp 0.04→0.08 (visible grain at gameplay distance); seaweed sparse-band acceptance 0.25→0.5; removed dead atmosphere/light-rays imports + duplicate TownDirectorySign mount + orphan trail-renderer.tsx. Building ring expanded 2176 → 2304wu (68 → 72 tiles) on follow-up for inner-band breathing room.
 
 ---
 
@@ -35,7 +35,7 @@ Composes the entire R3F scene. Mounted by `SceneContents` in `apps/web/src/compo
 
 ## 2. Buildings (10)
 
-Loaded by `<ArenaBuildings>`. Each is a single GLB clone placed on a ring at radius ~2176wu around (0,0,0). Config table is `BUILDING_MODELS` in `lib/three/arena-buildings.tsx`.
+Loaded by `<ArenaBuildings>`. Each is a single GLB clone placed on a ring at radius 2304wu (= 72 tiles × 32) around (0,0,0). Config table is `BUILDING_MODELS` in `lib/three/arena-buildings.tsx`. Ring expanded 2176 → 2304 on 2026-05-13.
 
 | Zone id | GLB | Renders | Notes |
 |---|---|---|---|
@@ -104,7 +104,7 @@ Code: `lib/three/arena-terrain.tsx`.
 - `TARGET_COUNT = 60` (was 30; doubled to fill the wider visible band created by the closer exclusion radius)
 - `EXTENT_X = MAP_WIDTH * 1.4 = 7168wu` half-range (was 1.76 = 9000; further narrowed so cluster centres land inside the visible annulus)
 - `MAX_VISIBLE_DIST = 3800` — hard distance gate (was 4500)
-- `DECO_INNER_EXCLUSION_R = 1500wu` — was 2700 which pushed every prop outside the ring buildings (R=2176, ~800wu tall) where they were occluded; 1500 places decos between town plaza and the ring
+- `DECO_INNER_EXCLUSION_R = 1500wu` — was 2700 which pushed every prop outside the ring buildings (then R=2176, ~800wu tall) where they were occluded; 1500 places decos between town plaza and the ring (ring now R=2304 since 2026-05-13)
 - 24 cluster centres, 280wu triangular-distribution radius per cluster
 - Stable seed (`12345`) — positions don't change between reloads
 - Audit: `node scripts/audit-decorations.mjs` confirms 60/60 props land in 1500–3800wu band
