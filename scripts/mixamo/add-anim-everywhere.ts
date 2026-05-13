@@ -27,6 +27,13 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { patchOverrides } from "./patch-overrides";
+
+// Path to the runtime override map (now JSON, see vrm-character-animator.ts).
+const OVERRIDES_PATH = resolve(
+  process.cwd(),
+  "apps/web/src/lib/three/character-anim-overrides.json",
+);
 
 const [animName, skeletonClass] = process.argv.slice(2);
 if (!animName || !skeletonClass) {
@@ -133,23 +140,20 @@ function slotFor(s: string): string {
 }
 const slot = slotFor(animName);
 
-// Slot keys in CHARACTER_ANIM_OVERRIDES use camelCase / underscore (matches
-// AnimName in vrm-character-animator.ts). Most slots are 1-word so no
-// transform; "surf_idle" / "skateboarding" overlap is currently handled
-// case-by-case in the existing overrides. Print the raw slot here; the
-// reviewer copy-pastes and remaps if needed.
-console.log("\n=== Patch CHARACTER_ANIM_OVERRIDES manually ===");
-console.log("Open apps/web/src/lib/three/vrm-character-animator.ts and add/update these entries:\n");
+// ─── Patch character-anim-overrides.json automatically ──────────────────
+// Runtime reads this JSON via vrm-character-animator.ts; updating it here
+// is the entire "wire the new animation into the game" step.
+console.log("\n=== Patching character-anim-overrides.json ===");
 
-for (const r of results) {
-  if (r.status !== "ok") continue;
-  const glbPath = `${r.animationsDir}/${slot}.glb`;
-  console.log(`  ${r.animatorId}.${slot}  →  '${glbPath}'`);
+const summary = patchOverrides(OVERRIDES_PATH, results, slot);
+for (const e of summary.entries) {
+  console.log(`  ${e.animatorId}.${e.slot}  →  '${e.glbPath}'`);
 }
-
-console.log(
-  "\n(auto-patcher pending: scripts/mixamo/patch-overrides.ts will do this in-place once we agree on the AST approach.)",
-);
+if (summary.patched > 0) {
+  console.log(`\n✓ wrote ${summary.patched} entries to ${OVERRIDES_PATH}`);
+} else {
+  console.log("  (no successful fetches to patch)");
+}
 
 // ─── Failures ────────────────────────────────────────────────────────────
 const failed = results.filter((r) => r.status !== "ok");
