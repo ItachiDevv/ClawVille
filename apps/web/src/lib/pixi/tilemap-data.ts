@@ -40,12 +40,16 @@ export type TileIndex = (typeof TILES)[keyof typeof TILES];
 // ---------------------------------------------------------------------------
 // Building positions (tile coords)
 // Circular ring layout in 160×160 grid, center at (80,80)
-// Radius: 68 tiles, 10 buildings at 36° spacing (2π/10), starting at top (θ=-π/2) clockwise.
-// center_x = round(80 + 68*cos(θ)), center_y = round(80 + 68*sin(θ))
+// Radius: 72 tiles, 10 buildings at 36° spacing (2π/10), starting at top (θ=-π/2) clockwise.
+// 2026-05-13: expanded ring 68 → 72 tiles to give the town-plaza inner band
+// breathing room after the decoration retune packed 60 props into the
+// 1500-3800wu visible annulus (was 30 in 2700-4500wu). +128wu / +5.9%.
+// Practical max — R=73 puts deployment-ops zone end at tile 160 (off-map).
+// center_x = round(80 + 72*cos(θ)), center_y = round(80 + 72*sin(θ))
 // zone upper-left = (center_x - 7, center_y - 7)  [14×14 tile footprint]
-// Ring radius in world units: 68 × 32 = 2176 wu
-// Circumference / 10 = 1367 wu per slot; MAX_FOOTPRINT=1000 → 367 wu gap between buildings
-// Max zone edge: deployment-ops bottom = tile 155 — fits within 160-tile map.
+// Ring radius in world units: 72 × 32 = 2304 wu
+// Circumference / 10 = 1448 wu per slot; MAX_FOOTPRINT=1000 → 448 wu gap between buildings
+// Max zone edge: deployment-ops bottom = tile 159 (1-tile map buffer).
 // ---------------------------------------------------------------------------
 export interface BuildingZone {
   id: string;
@@ -57,26 +61,26 @@ export interface BuildingZone {
 
 export const buildingZones: BuildingZone[] = [
   // Ring order: θ = -π/2 + i*(π/5), i=0..9 (top-center, clockwise)
-  // i=0  θ=-π/2       center=(80, 12)  → visual-creation    (Pineapple House)
-  { id: 'visual-creation',     x:  73, y:   5, width: 14, height: 14 },
-  // i=1  θ=-3π/10     center=(120, 25) → memory-rag      (Squidward's House)
-  { id: 'memory-rag',      x: 113, y:  18, width: 14, height: 14 },
-  // i=2  θ=-π/10      center=(145, 59) → api-integrations   (Salty Spitoon)
-  { id: 'api-integrations',   x: 138, y:  52, width: 14, height: 14 },
-  // i=3  θ=+π/10      center=(145,101) → cron-automation          (Downtown Building)
-  { id: 'cron-automation',          x: 138, y:  94, width: 14, height: 14 },
-  // i=4  θ=+3π/10     center=(120,135) → app-publishing       (Boating School)
-  { id: 'app-publishing',       x: 113, y: 128, width: 14, height: 14 },
-  // i=5  θ=+π/2       center=(80, 148) → deployment-ops    (Lighthouse)
-  { id: 'deployment-ops',    x:  73, y: 141, width: 14, height: 14 },
-  // i=6  θ=+7π/10     center=(40, 135) → mcp-tool-use     (Krusty Krab)
-  { id: 'mcp-tool-use',     x:  33, y: 128, width: 14, height: 14 },
-  // i=7  θ=+9π/10     center=(15, 101) → code-development       (Chum Bucket)
-  { id: 'code-development',       x:   8, y:  94, width: 14, height: 14 },
-  // i=8  θ=+11π/10    center=(15,  59) → messaging-channels    (Sandy's Treedome)
-  { id: 'messaging-channels',    x:   8, y:  52, width: 14, height: 14 },
-  // i=9  θ=+13π/10    center=(40,  25) → agent-security (Patrick's Rock)
-  { id: 'agent-security', x:  33, y:  18, width: 14, height: 14 },
+  // i=0  θ=-π/2       center=(80,  8)  → visual-creation    (Pineapple House)
+  { id: 'visual-creation',     x:  73, y:   1, width: 14, height: 14 },
+  // i=1  θ=-3π/10     center=(122, 22) → memory-rag        (Squidward's House)
+  { id: 'memory-rag',          x: 115, y:  15, width: 14, height: 14 },
+  // i=2  θ=-π/10      center=(148, 58) → api-integrations  (Salty Spitoon)
+  { id: 'api-integrations',    x: 141, y:  51, width: 14, height: 14 },
+  // i=3  θ=+π/10      center=(148,102) → cron-automation   (Downtown Building)
+  { id: 'cron-automation',     x: 141, y:  95, width: 14, height: 14 },
+  // i=4  θ=+3π/10     center=(122,138) → app-publishing    (Boating School)
+  { id: 'app-publishing',      x: 115, y: 131, width: 14, height: 14 },
+  // i=5  θ=+π/2       center=(80, 152) → deployment-ops    (Lighthouse)
+  { id: 'deployment-ops',      x:  73, y: 145, width: 14, height: 14 },
+  // i=6  θ=+7π/10     center=(38, 138) → mcp-tool-use      (Krusty Krab)
+  { id: 'mcp-tool-use',        x:  31, y: 131, width: 14, height: 14 },
+  // i=7  θ=+9π/10     center=(12, 102) → code-development  (Chum Bucket)
+  { id: 'code-development',    x:   5, y:  95, width: 14, height: 14 },
+  // i=8  θ=+11π/10    center=(12,  58) → messaging-channels (Sandy's Treedome)
+  { id: 'messaging-channels',  x:   5, y:  51, width: 14, height: 14 },
+  // i=9  θ=+13π/10    center=(38,  22) → agent-security    (Patrick's Rock)
+  { id: 'agent-security',      x:  31, y:  15, width: 14, height: 14 },
 ];
 
 // ---------------------------------------------------------------------------
