@@ -255,7 +255,10 @@ function generateBlades(): BladeData[] {
 
     if (distSq < SEAWEED_INNER_R_SQ) continue;
     if (isNearBuilding(x, z)) continue;
-    if (distSq < SEAWEED_SPARSE_R_SQ && rng() > 0.25) continue;
+    // 2026-05-13: sparse-band acceptance bumped 0.25 → 0.5 so the seaweed
+    // ring around the town reads as a forest, not a few stray blades. Still
+    // sparser than the fully-dense outer area (no rejection past sparse R).
+    if (distSq < SEAWEED_SPARSE_R_SQ && rng() > 0.5) continue;
 
     // Determine variant by ratio thresholds
     const variantRoll = rng();
