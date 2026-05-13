@@ -318,7 +318,19 @@ const VRM_DIR_ROTATION: Record<string, number> = {
 // scale = VRM_NPC_TARGET_HEIGHT_WU / bbox.y. Milady (bbox≈1.6) → 112. Hermes
 // (bbox≈194) → 0.92. Both land at the same on-screen height.
 const VRM_NPC_SCALE = 112;                    // legacy fallback (picker, any caller importing this)
-const VRM_NPC_TARGET_HEIGHT_WU = 179.2;       // 1.6m Milady × 112 — keeps existing on-screen size
+const VRM_NPC_TARGET_HEIGHT_WU = 179.2;       // 1.6m Milady × 112 — default on-screen height
+
+// Per-species target overrides. The default fits the WHOLE bbox into 179.2 wu,
+// which undersizes characters whose bbox is inflated by props that aren't part
+// of the body silhouette (wings, big hair, capes). Override the target for
+// those species so the BODY reads at the right size and the prop overshoots.
+//
+// Tekk has mechanical fan-wings that extend ~25% above his head — without an
+// override his body+wings cluster at 179.2 wu, leaving the body itself at
+// ~150 wu (visibly shorter than Mira/Cyrus/Milady).
+const SPECIES_TARGET_HEIGHT_WU: Record<string, number> = {
+  tekk: 230,  // 179.2 × 1.28 — body lands at ~Milady height, wings fan above
+};
 
 /**
  * Compute the per-VRM render scale + foot-grounding offsetY so the avatar
@@ -333,6 +345,7 @@ const VRM_NPC_TARGET_HEIGHT_WU = 179.2;       // 1.6m Milady × 112 — keeps ex
  */
 function computeVRMNpcScale(
   vrm: { scene: THREE.Object3D } | null | undefined,
+  species?: string,
 ): { scale: number; offsetY: number } {
   if (!vrm) return { scale: VRM_NPC_SCALE, offsetY: 0 };
   const prev = vrm.scene.scale.clone();
@@ -343,7 +356,9 @@ function computeVRMNpcScale(
   box.getSize(size);
   vrm.scene.scale.copy(prev);
   vrm.scene.updateMatrixWorld(true);
-  const scale = size.y > 0 ? VRM_NPC_TARGET_HEIGHT_WU / size.y : VRM_NPC_SCALE;
+  const target =
+    (species && SPECIES_TARGET_HEIGHT_WU[species]) || VRM_NPC_TARGET_HEIGHT_WU;
+  const scale = size.y > 0 ? target / size.y : VRM_NPC_SCALE;
   // Lift the model so its lowest point (feet) lands at the primitive's local
   // y=0. For Mixamo-rigged VRMs box.min.y is negative (feet below hips/pivot),
   // so offsetY = -box.min.y * scale > 0.
@@ -793,8 +808,8 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // (VRoid spec, feet at origin) both land at VRM_NPC_TARGET_HEIGHT_WU with
   // feet on the terrain. Runs once per loaded VRM instance.
   const { scale: vrmRenderScale, offsetY: vrmFootOffsetY } = useMemo(
-    () => computeVRMNpcScale(vrm),
-    [vrm],
+    () => computeVRMNpcScale(vrm, npc.species),
+    [vrm, npc.species],
   );
 
   // Dispose this instance when the NPC unmounts or path/id changes.
