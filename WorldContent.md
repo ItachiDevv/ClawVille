@@ -9,7 +9,7 @@
 > grep results. Update this when you touch any file listed in the "Source"
 > column. Update the affected file when you change a row here.
 
-**Last edit:** 2026-05-12 — decoration cut: 80 → 30, scatter radius capped at 4500wu (was 6144), no functional change to anything else.
+**Last edit:** 2026-05-13 — decoration scatter retune (user-reported invisible decos): TARGET 30→60, DECO_INNER_EXCLUSION_R 2700→1500, MAX_VISIBLE_DIST 4500→3800, EXTENT 1.76→1.4. The old constants pushed every prop outside the building ring (R=2176, ~800wu tall) where the ring occluded them and fog hid the rest. New constants land all 60 props in the 1500–3800wu visible annulus. Same diff: sand bumpFreq 0.15→1.5 + bumpAmp 0.04→0.08 (visible grain at gameplay distance); seaweed sparse-band acceptance 0.25→0.5; removed dead atmosphere/light-rays imports + duplicate TownDirectorySign mount + orphan trail-renderer.tsx.
 
 ---
 
@@ -100,13 +100,14 @@ Code: `lib/three/arena-terrain.tsx`.
 
 ## 5. Ground decorations (procedural scatter)
 
-**Current state (2026-05-12):**
-- `TARGET_COUNT = 30` (was 80, cut to remove fog-lost props)
-- `EXTENT_X = MAP_WIDTH * 1.76 = 9000wu` half-range (was 2.4 = 12288; props beyond ~4500wu radius were invisible behind fog)
-- `MAX_VISIBLE_DIST = 4500` — hard distance gate added 2026-05-12
-- `DECO_INNER_EXCLUSION_R = 2700wu` — keeps the town plaza clear
+**Current state (2026-05-13 retune):**
+- `TARGET_COUNT = 60` (was 30; doubled to fill the wider visible band created by the closer exclusion radius)
+- `EXTENT_X = MAP_WIDTH * 1.4 = 7168wu` half-range (was 1.76 = 9000; further narrowed so cluster centres land inside the visible annulus)
+- `MAX_VISIBLE_DIST = 3800` — hard distance gate (was 4500)
+- `DECO_INNER_EXCLUSION_R = 1500wu` — was 2700 which pushed every prop outside the ring buildings (R=2176, ~800wu tall) where they were occluded; 1500 places decos between town plaza and the ring
 - 24 cluster centres, 280wu triangular-distribution radius per cluster
 - Stable seed (`12345`) — positions don't change between reloads
+- Audit: `node scripts/audit-decorations.mjs` confirms 60/60 props land in 1500–3800wu band
 
 Code: `MergedDecorationsInner` + `generateDecorations` in `arena-terrain.tsx`.
 
@@ -176,4 +177,4 @@ Tracked here so they don't get lost across sessions:
 
 - [ ] **Duplicate `<TownDirectorySign>` render** — `World3DCanvas.tsx` L773 was added as a diagnostic and should be removed. Net cost: 1 extra mesh tree.
 - [ ] **`<BountyBoardObject>` import path** — verify it's actually mounted by any production flow; if not, drop the import.
-- [ ] **Decoration density per zone** — the 30 props are in an annulus 2700–4500wu from center. If you want denser-looking ground, raise `TARGET_COUNT` and re-tune cluster radius/spacing. Update this doc when you do.
+- [x] **Decoration density per zone** — 2026-05-13: TARGET_COUNT 30→60, annulus 1500–3800wu. Audit script (`scripts/audit-decorations.mjs`) verifies placement.

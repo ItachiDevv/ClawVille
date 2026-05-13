@@ -19,9 +19,6 @@ import ArenaLocationNpcs from '@/lib/three/arena-location-npcs';
 import PlayerAvatar from '@/lib/three/player-avatar';
 import NpcController from '@/lib/three/npc-controller';
 import MergedSeaweed from '@/lib/three/merged-seaweed';
-import UnderwaterAtmosphere from '@/lib/three/underwater-atmosphere';
-import UnderwaterLightRays from '@/lib/three/underwater-light-rays';
-import { detectGpuTier } from '@/lib/three/gpu-tier';
 import QuestNpc from '@/lib/three/quest-npc';
 import TownGuide from '@/lib/three/town-guide';
 import BazaarStall from '@/lib/three/bazaar-stall';
@@ -430,48 +427,6 @@ function kickRenderLoop(state: any): void {
 // NPC-mode by copying the possessed NPC's map coordinates on each tick.
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// AtmosphereGate / AtmosphereGateRays — render UnderwaterAtmosphere /
-// UnderwaterLightRays only on capable GPUs.
-//
-// Detection runs once on mount. Intel-integrated GPUs (Iris Xe etc.)
-// skip the mount; the render-cost win is documented in the perf audit
-// (~8-15ms/frame freed on Iris Xe due to caustic + ray overdraw).
-//
-// We default to OFF until detection completes so the user sees one
-// consistent visual rather than a flicker of caustics that disappear a
-// frame later. Detection is synchronous on WebGL fallback; on WebGPU
-// the adapter info may not be populated until after the renderer's
-// init() resolves but `useThree().gl` is already that initialized
-// renderer — so reading `gl.backend.adapter.info` works at first
-// render. If detection fails we leave atmosphere OFF for the user that
-// asked for perf wins, rather than risk re-enabling overdraw on the
-// hardware we can't classify.
-// ---------------------------------------------------------------------------
-function useAtmosphereEnabled(): boolean {
-  const { gl } = useThree();
-  const [enabled, setEnabled] = useState(false);
-  useEffect(() => {
-    const tier = detectGpuTier(gl);
-    if (typeof window !== 'undefined') {
-      // Surface the detection result for /browser-live perf inspection.
-      (window as any).__GPU_TIER = tier;
-    }
-    setEnabled(!tier.isIntel && tier.renderer !== null);
-  }, [gl]);
-  return enabled;
-}
-
-function AtmosphereGate() {
-  const enabled = useAtmosphereEnabled();
-  return enabled ? <UnderwaterAtmosphere /> : null;
-}
-
-function AtmosphereGateRays() {
-  const enabled = useAtmosphereEnabled();
-  return enabled ? <UnderwaterLightRays /> : null;
-}
-
 function MinimapPositionTracker() {
   const { camera } = useThree();
   const lastWriteRef = useRef(0);
@@ -769,9 +724,6 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       )}
       <ArrowKeyRotationController controlsRef={controlsRef} />
 
-      {/* DIAGNOSTIC: put sign FIRST to isolate if sibling position matters */}
-      <TownDirectorySign />
-
       {/* Underwater lighting — warm caustic tones with strong contrast.
           3 lights max for Intel Iris Xe budget: hemisphereLight already
           provides ambient sky/ground fill, so no separate ambientLight. */}
@@ -787,22 +739,6 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
           camera.far=6800 already clips beyond 6800wu so fog far >6800 has no visual
           effect but does waste GPU time computing fog for invisible fragments. */}
       <fog attach="fog" args={[FOG_COLOR, 1200, 6400]} />
-
-      {/*
-        UnderwaterAtmosphere (caustic plane + dust + depth backdrop) and
-        UnderwaterLightRays (7 cone shafts with TSL pulsing opacity) are
-        DISABLED globally. Both use additive transparent meshes that paint
-        across the full visible area — even on capable GPUs the overdraw
-        costs measurable frame budget (8-15ms on integrated GPUs, still
-        non-trivial on discrete). User-reported emergency perf regression
-        2026-04-30: scene was choppy on a good discrete GPU, so the
-        previous Intel-only gate wasn't enough. Effects can be toggled
-        back on by a future graphics-quality preference; for now the
-        scene relies on fog + base lighting only. The mounts stay imported
-        + alive in the bundle so re-enabling is a one-line edit.
-      */}
-      {false && <UnderwaterAtmosphere />}
-      {false && <UnderwaterLightRays />}
 
       {/* Shared world geometry */}
       <ArenaTerrain />
