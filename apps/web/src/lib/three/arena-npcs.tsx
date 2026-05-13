@@ -321,16 +321,20 @@ const VRM_NPC_SCALE = 112;                    // legacy fallback (picker, any ca
 const VRM_NPC_TARGET_HEIGHT_WU = 179.2;       // 1.6m Milady × 112 — keeps existing on-screen size
 
 /**
- * Compute the per-VRM render scale that makes the avatar exactly
- * VRM_NPC_TARGET_HEIGHT_WU tall on screen, regardless of whether the source
- * VRM is authored in meters (Milady) or centimeters (Hermes/Mixamo).
+ * Compute the per-VRM render scale + foot-grounding offsetY so the avatar
+ * stands at VRM_NPC_TARGET_HEIGHT_WU on screen with feet at world Y=0,
+ * regardless of the source rig's pivot convention.
  *
- * Mutates vrm.scene.scale during measurement and restores it before returning
- * — safe because the bbox read happens inside a useMemo, before R3F's primitive
- * applies its own scale prop.
+ *  - Milady (VRoid spec): feet at local Y=0, bbox.min.y ≈ 0 → offsetY ≈ 0.
+ *  - Hermes / Tekk (Mixamo rig): HIPS at local Y=0, feet at Y≈-95cm.
+ *    Without the offset, scale alone leaves the feet at world Y=-87 (buried).
+ *
+ * Mutates vrm.scene.scale during measurement and restores it before returning.
  */
-function computeVRMNpcScale(vrm: { scene: THREE.Object3D } | null | undefined): number {
-  if (!vrm) return VRM_NPC_SCALE;
+function computeVRMNpcScale(
+  vrm: { scene: THREE.Object3D } | null | undefined,
+): { scale: number; offsetY: number } {
+  if (!vrm) return { scale: VRM_NPC_SCALE, offsetY: 0 };
   const prev = vrm.scene.scale.clone();
   vrm.scene.scale.setScalar(1);
   vrm.scene.updateMatrixWorld(true);
@@ -339,7 +343,12 @@ function computeVRMNpcScale(vrm: { scene: THREE.Object3D } | null | undefined): 
   box.getSize(size);
   vrm.scene.scale.copy(prev);
   vrm.scene.updateMatrixWorld(true);
-  return size.y > 0 ? VRM_NPC_TARGET_HEIGHT_WU / size.y : VRM_NPC_SCALE;
+  const scale = size.y > 0 ? VRM_NPC_TARGET_HEIGHT_WU / size.y : VRM_NPC_SCALE;
+  // Lift the model so its lowest point (feet) lands at the primitive's local
+  // y=0. For Mixamo-rigged VRMs box.min.y is negative (feet below hips/pivot),
+  // so offsetY = -box.min.y * scale > 0.
+  const offsetY = -box.min.y * scale;
+  return { scale, offsetY };
 }
 
 // 2026-05-11: all NPC distance/behind-camera/occlusion culling REMOVED per user
@@ -779,10 +788,14 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // skeleton, humanoid, no sharing with player-avatar or other NPCs (Codex Critical #1).
   const vrm = useVRMInstance(vrmPath, npc.id);
 
-  // Per-VRM render scale — bbox-fit so cm-authored Hermes VRMs and m-authored
-  // Milady VRMs both land at VRM_NPC_TARGET_HEIGHT_WU on screen. Runs once
-  // per loaded VRM instance.
-  const vrmRenderScale = useMemo(() => computeVRMNpcScale(vrm), [vrm]);
+  // Per-VRM render scale + foot-grounding offset — bbox-fit so cm-authored
+  // Hermes VRMs (Mixamo rig, hips at origin) and m-authored Milady VRMs
+  // (VRoid spec, feet at origin) both land at VRM_NPC_TARGET_HEIGHT_WU with
+  // feet on the terrain. Runs once per loaded VRM instance.
+  const { scale: vrmRenderScale, offsetY: vrmFootOffsetY } = useMemo(
+    () => computeVRMNpcScale(vrm),
+    [vrm],
+  );
 
   // Dispose this instance when the NPC unmounts or path/id changes.
   useEffect(() => {
@@ -934,13 +947,13 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
 
   return (
     <group ref={groupRef}>
-      {/* VRM scale: per-VRM bbox auto-fit (computeVRMNpcScale).
-          Milady (1.6m native) → ~112. Hermes-female / -male / Tekk
-          (cm-authored Mixamo VRMs) → ~0.93. Both land at
-          VRM_NPC_TARGET_HEIGHT_WU = 179.2 wu on screen. */}
+      {/* VRM scale + foot-ground offset: per-VRM auto-fit (computeVRMNpcScale).
+          Milady (1.6m, feet at Y=0)        → scale ~112, offsetY ~0.
+          Hermes/Tekk (Mixamo, hips at Y=0) → scale ~0.93, offsetY ~+87. */}
       <primitive
         object={vrm.scene}
         scale={[vrmRenderScale, vrmRenderScale, vrmRenderScale]}
+        position={[0, vrmFootOffsetY, 0]}
       />
       {/* Name label — WorldLabelsOverlay manages projection + DOM writes.
           offset [0,100,0]: 100wu clearance, matches GLBNpcMesh. */}
