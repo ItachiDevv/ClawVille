@@ -48,7 +48,7 @@ Sand floor sits at `y = -2` (`arena-terrain.tsx:203`). Buildings, NPCs, and deco
 Source: `arena-buildings.tsx`. See `WorldContent.md §2` for the building roster + per-building GLB paths.
 
 **Ring geometry:**
-- Radius: **2176 wu** (= 68 tiles × 32). Expanded from 56→68 tiles 2026-04-16 to eliminate building overlap.
+- Radius: **2304 wu** (= 72 tiles × 32). Expanded 56→68 tiles 2026-04-16 (eliminate building overlap) then 68→72 tiles 2026-05-13 (give inner band breathing room after decoration retune). Practical max — R=73 puts deployment-ops zone end at row 160 (off-map).
 - Angular spacing 36° (π/5). Start angle −π/2 (north). 10 slots, clockwise.
 - Position formula: `cx = round(80 + 68·cos(θ_i))`, `cy = round(80 + 68·sin(θ_i))` where `θ_i = −π/2 + i·(π/5)`.
 - Zone footprint: 14×14 tiles = 448×448 wu. Upper-left = `(cx−7, cy−7)`.
@@ -423,6 +423,7 @@ Compact log. Single line per change with commit reference where applicable.
 - 2026-04-21 — Two-axis pivot system (`pivotOffsetX/Y/Z`) — fixes rotation-shifted building placement (downtown-building.glb at rotY=-1.882 was landing 4856 wu east of target). Charge-and-release jump rewrite.
 - 2026-04-21 — Perf sweep over all 14 `lib/three/*` files (`matrixAutoUpdate=false` on static meshes, vector pool recycling, scratch-object hoisting). Est. 4-6 ms/frame saved.
 - 2026-04-16 — Building ring expanded 56 → 68 tiles to eliminate overlap. Building target height switched from `max(w,h,d)` → Y-height normalization. `MAX_FOOTPRINT` 1400 → 1000.
+- 2026-05-13 — Building ring expanded 68 → 72 tiles (R=2176 → 2304 wu) for inner-band breathing room post decoration retune. All 10 zone coords recomputed in `tilemap-data.ts`.
 - 2026-04-10 — Ultrathink decommission: `plugin-anthropic` + `plugin-openai` removed. Gemini providers only.
 
 Older history: `git log apps/web/src/lib/three/ apps/web/src/components/three/`.
