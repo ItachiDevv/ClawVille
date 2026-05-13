@@ -6,44 +6,49 @@
  *
  * Usage:
  *   bun scripts/mixamo/save-character.ts <slug> <character_id> <skeleton_class>
+ *       [--animator-id=<id>] [--animations-dir=<path>]
  *
- * Example:
- *   bun scripts/mixamo/save-character.ts cyrus ef7eb018-7cf3-4ae1-99ac-bab1c2c5d419 mixamo-adult-male
+ * Example (basic):
+ *   bun scripts/mixamo/save-character.ts cyrus ef7eb018-... mixamo-adult-male
+ *
+ * Example (legacy folder name doesn't match slug — Tekk uses tekk-male/):
+ *   bun scripts/mixamo/save-character.ts tekk abcd-... mixamo-adult-male \
+ *       --animator-id=tekk --animations-dir=/avatars/animations/tekk-male
+ *
+ * The slug is the local identifier used in commands. animator-id is the key in
+ * CHARACTER_ANIM_OVERRIDES (defaults to slug). animations-dir is the URL path
+ * prefix that runtime imports use (defaults to /avatars/animations/<slug>).
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadMixamoAuth, mxHeaders, MIXAMO_BASE } from "./auth";
 
-const [slug, characterId, skeletonClass] = process.argv.slice(2);
+const rawArgs = process.argv.slice(2);
+const flagMap = new Map<string, string>();
+const positional: string[] = [];
+for (const a of rawArgs) {
+  const m = a.match(/^--([\w-]+)=(.*)$/);
+  if (m) flagMap.set(m[1]!, m[2]!);
+  else positional.push(a);
+}
+
+const [slug, characterId, skeletonClass] = positional;
 if (!slug || !characterId || !skeletonClass) {
   console.error(
-    "Usage: bun scripts/mixamo/save-character.ts <slug> <character_id> <skeleton_class>",
-  );
-  console.error("\nExample:");
-  console.error(
-    "  bun scripts/mixamo/save-character.ts cyrus ef7eb018-7cf3-4ae1-99ac-bab1c2c5d419 mixamo-adult-male",
+    "Usage: bun scripts/mixamo/save-character.ts <slug> <character_id> <skeleton_class> [--animator-id=<id>] [--animations-dir=<path>]",
   );
   process.exit(1);
 }
 
-const REGISTRY_PATH = resolve(process.cwd(), "scripts/mixamo/characters.json");
-const registry = JSON.parse(readFileSync(REGISTRY_PATH, "utf-8")) as {
-  _comment?: string;
-  characters: Record<
-    string,
-    { id: string; skeletonClass: string; registeredAt: string }
-  >;
-};
+const animatorId = flagMap.get("animator-id") ?? slug;
+const animationsDir =
+  flagMap.get("animations-dir") ?? `/avatars/animations/${slug}`;
 
-// Sanity check: hit /products?character_id=<id> with a placeholder anim to
-// confirm Mixamo recognises the character_id as one of ours.
+// ─── Validate against Mixamo ─────────────────────────────────────────────
 const auth = loadMixamoAuth();
 console.log(`Validating character_id ${characterId} against Mixamo...`);
 
-// Get any one Motion to use as a probe. The /products endpoint with a
-// character_id parameter only succeeds if the character belongs to the
-// authenticated user.
 const probeRes = await fetch(
   `${MIXAMO_BASE}/products?page=1&limit=1&type=Motion`,
   { headers: mxHeaders(auth) },
@@ -69,13 +74,28 @@ if (!validateRes.ok) {
   );
   if (validateRes.status === 404) {
     console.error(
-      "\n404 usually means: (a) the character_id is wrong, or (b) the character was deleted from Mixamo.",
+      "\n404 usually means: (a) wrong character_id, or (b) Mixamo has purged the upload (free tier; happens after ~24h).",
     );
   }
   process.exit(1);
 }
 
-// All good — write to registry.
+// ─── Write registry ──────────────────────────────────────────────────────
+const REGISTRY_PATH = resolve(process.cwd(), "scripts/mixamo/characters.json");
+const registry = JSON.parse(readFileSync(REGISTRY_PATH, "utf-8")) as {
+  _comment?: string;
+  characters: Record<
+    string,
+    {
+      id: string;
+      skeletonClass: string;
+      animatorId: string;
+      animationsDir: string;
+      registeredAt: string;
+    }
+  >;
+};
+
 const existing = registry.characters[slug];
 if (existing) {
   console.log(`Overwriting existing slug "${slug}" (was ${existing.id}).`);
@@ -83,9 +103,15 @@ if (existing) {
 registry.characters[slug] = {
   id: characterId,
   skeletonClass,
+  animatorId,
+  animationsDir,
   registeredAt: new Date().toISOString(),
 };
 writeFileSync(REGISTRY_PATH, JSON.stringify(registry, null, 2) + "\n");
+
 console.log(
-  `OK — registered ${slug} (${characterId}) under skeleton class "${skeletonClass}".`,
+  `OK — registered ${slug} (${characterId})\n` +
+    `     skeletonClass:  ${skeletonClass}\n` +
+    `     animatorId:     ${animatorId}\n` +
+    `     animationsDir:  ${animationsDir}`,
 );
