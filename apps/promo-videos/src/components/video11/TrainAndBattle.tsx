@@ -11,7 +11,7 @@ import { loadFont as loadLobster } from "@remotion/google-fonts/Lobster";
 import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { GradientBackground } from "../shared/GradientBackground";
 import { MapBackground } from "../shared/MapBackground";
-import { PetSprite } from "../shared/PetSprite";
+import { AvatarSprite } from "../shared/AvatarSprite";
 import { ClawPanel } from "../shared/ClawPanel";
 import { SpeechBubble } from "../shared/SpeechBubble";
 import { ClawTokenIcon } from "../shared/ClawTokenIcon";
@@ -174,7 +174,7 @@ const WorldMode: React.FC = () => {
   const { fps, width, height } = useVideoConfig();
   const isVertical = height > width;
 
-  const petSize = isVertical ? 120 : 100;
+  const avatarSize = isVertical ? 120 : 100;
 
   // Chat panel slides in from right
   const panelEntrance = spring({
@@ -227,7 +227,7 @@ const WorldMode: React.FC = () => {
           top: height * 0.4,
         }}
       >
-        <PetSprite species="fox" size={petSize} enterDelay={5} bob />
+        <AvatarSprite species="fox" size={avatarSize} enterDelay={5} bob />
       </div>
 
       {/* Chat panel sliding in from right */}
@@ -320,7 +320,7 @@ const ArenaMode: React.FC = () => {
   const { fps, width, height } = useVideoConfig();
   const isVertical = height > width;
 
-  const petSize = 100;
+  const avatarSize = 100;
 
   // Dragon slides in from left
   const dragonEntrance = spring({
@@ -371,14 +371,14 @@ const ArenaMode: React.FC = () => {
         style={{
           position: "absolute",
           left: dragonX,
-          top: centerY - petSize / 2,
+          top: centerY - avatarSize / 2,
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
           gap: 8,
         }}
       >
-        <PetSprite species="dragon" size={petSize} enterDelay={5} bob />
+        <AvatarSprite species="dragon" size={avatarSize} enterDelay={5} bob />
       </div>
 
       {/* Wolf from right */}
@@ -386,14 +386,14 @@ const ArenaMode: React.FC = () => {
         style={{
           position: "absolute",
           left: wolfX,
-          top: centerY - petSize / 2,
+          top: centerY - avatarSize / 2,
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
           gap: 8,
         }}
       >
-        <PetSprite species="wolf" size={petSize} enterDelay={12} flipX bob />
+        <AvatarSprite species="wolf" size={avatarSize} enterDelay={12} flipX bob />
         {/* HP bar below wolf */}
         <div style={{ marginTop: 8 }}>
           <HPBar hp={42} maxHp={72} width={200} />

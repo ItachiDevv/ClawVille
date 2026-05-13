@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS "avatar_skins" (
 
 DO $$ BEGIN
   ALTER TABLE "avatar_skins"
-  ADD CONSTRAINT "pet_skins_pet_id_pets_id_fk"
+  ADD CONSTRAINT "avatar_skins_avatar_id_avatars_id_fk"
   FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id")
   ON DELETE cascade ON UPDATE no action;
 EXCEPTION
@@ -71,12 +71,12 @@ END $$;
 
 DO $$ BEGIN
   ALTER TABLE "avatar_skins"
-  ADD CONSTRAINT "pet_skins_sku_id_cosmetic_skus_id_fk"
+  ADD CONSTRAINT "avatar_skins_sku_id_cosmetic_skus_id_fk"
   FOREIGN KEY ("sku_id") REFERENCES "public"."cosmetic_skus"("id")
   ON DELETE cascade ON UPDATE no action;
 EXCEPTION
   WHEN duplicate_object THEN null;
 END $$;
 
-CREATE UNIQUE INDEX IF NOT EXISTS "uniq_pet_skin_pet_sku" ON "avatar_skins" USING btree ("avatar_id", "sku_id");
-CREATE INDEX IF NOT EXISTS "idx_pet_skin_pet_equipped" ON "avatar_skins" USING btree ("avatar_id", "equipped");
+CREATE UNIQUE INDEX IF NOT EXISTS "uniq_avatar_skin_avatar_sku" ON "avatar_skins" USING btree ("avatar_id", "sku_id");
+CREATE INDEX IF NOT EXISTS "idx_avatar_skin_avatar_equipped" ON "avatar_skins" USING btree ("avatar_id", "equipped");

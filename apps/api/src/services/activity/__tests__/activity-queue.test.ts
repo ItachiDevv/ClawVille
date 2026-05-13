@@ -31,7 +31,7 @@ mock.module('@clawville/database', () => ({
     leftAt: 'left_at',
     matchedRoomId: 'matched_room_id',
   },
-  activityParties: { id: 'id', leaderAvatarId: 'leader_pet_id' },
+  activityParties: { id: 'id', leaderAvatarId: 'leader_avatar_id' },
   activityPartyMembers: {
     partyId: 'party_id',
     avatarId: 'avatar_id',

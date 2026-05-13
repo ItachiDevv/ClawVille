@@ -395,7 +395,7 @@
         },
         "avatar_type": {
           "name": "avatar_type",
-          "type": "pet_avatar_type",
+          "type": "avatar_render_type",
           "typeSchema": "public",
           "primaryKey": false,
           "notNull": true,
@@ -457,8 +457,8 @@
       },
       "indexes": {},
       "foreignKeys": {
-        "pets_user_id_users_id_fk": {
-          "name": "pets_user_id_users_id_fk",
+        "avatars_user_id_users_id_fk": {
+          "name": "avatars_user_id_users_id_fk",
           "tableFrom": "avatars",
           "tableTo": "users",
           "columnsFrom": [
@@ -470,8 +470,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "pets_platform_agent_id_platform_agents_id_fk": {
-          "name": "pets_platform_agent_id_platform_agents_id_fk",
+        "avatars_platform_agent_id_platform_agents_id_fk": {
+          "name": "avatars_platform_agent_id_platform_agents_id_fk",
           "tableFrom": "avatars",
           "tableTo": "platform_agents",
           "columnsFrom": [
@@ -486,15 +486,15 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "pets_user_id_unique": {
-          "name": "pets_user_id_unique",
+        "avatars_user_id_unique": {
+          "name": "avatars_user_id_unique",
           "nullsNotDistinct": false,
           "columns": [
             "user_id"
           ]
         },
-        "pets_name_unique": {
-          "name": "pets_name_unique",
+        "avatars_name_unique": {
+          "name": "avatars_name_unique",
           "nullsNotDistinct": false,
           "columns": [
             "name"
@@ -1113,8 +1113,8 @@
       },
       "indexes": {},
       "foreignKeys": {
-        "activity_log_pet_id_pets_id_fk": {
-          "name": "activity_log_pet_id_pets_id_fk",
+        "activity_log_avatar_id_avatars_id_fk": {
+          "name": "activity_log_avatar_id_avatars_id_fk",
           "tableFrom": "activity_log",
           "tableTo": "avatars",
           "columnsFrom": [
@@ -1296,8 +1296,8 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
-        "author_pet_id": {
-          "name": "author_pet_id",
+        "author_avatar_id": {
+          "name": "author_avatar_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
@@ -1390,12 +1390,12 @@
       },
       "indexes": {},
       "foreignKeys": {
-        "published_skills_author_pet_id_pets_id_fk": {
-          "name": "published_skills_author_pet_id_pets_id_fk",
+        "published_skills_author_avatar_id_avatars_id_fk": {
+          "name": "published_skills_author_avatar_id_avatars_id_fk",
           "tableFrom": "published_skills",
           "tableTo": "avatars",
           "columnsFrom": [
-            "author_pet_id"
+            "author_avatar_id"
           ],
           "columnsTo": [
             "id"
@@ -1445,8 +1445,8 @@
         }
       },
       "indexes": {
-        "skill_upvotes_skill_pet_unique": {
-          "name": "skill_upvotes_skill_pet_unique",
+        "skill_upvotes_skill_avatar_unique": {
+          "name": "skill_upvotes_skill_avatar_unique",
           "columns": [
             {
               "expression": "skill_id",
@@ -1481,8 +1481,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "skill_upvotes_pet_id_pets_id_fk": {
-          "name": "skill_upvotes_pet_id_pets_id_fk",
+        "skill_upvotes_avatar_id_avatars_id_fk": {
+          "name": "skill_upvotes_avatar_id_avatars_id_fk",
           "tableFrom": "skill_upvotes",
           "tableTo": "avatars",
           "columnsFrom": [
@@ -1577,8 +1577,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "bazaar_listings_seller_id_pets_id_fk": {
-          "name": "bazaar_listings_seller_id_pets_id_fk",
+        "bazaar_listings_seller_id_avatars_id_fk": {
+          "name": "bazaar_listings_seller_id_avatars_id_fk",
           "tableFrom": "bazaar_listings",
           "tableTo": "avatars",
           "columnsFrom": [
@@ -1658,8 +1658,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "bazaar_reviews_reviewer_id_pets_id_fk": {
-          "name": "bazaar_reviews_reviewer_id_pets_id_fk",
+        "bazaar_reviews_reviewer_id_avatars_id_fk": {
+          "name": "bazaar_reviews_reviewer_id_avatars_id_fk",
           "tableFrom": "bazaar_reviews",
           "tableTo": "avatars",
           "columnsFrom": [
@@ -1764,8 +1764,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "bazaar_transactions_buyer_id_pets_id_fk": {
-          "name": "bazaar_transactions_buyer_id_pets_id_fk",
+        "bazaar_transactions_buyer_id_avatars_id_fk": {
+          "name": "bazaar_transactions_buyer_id_avatars_id_fk",
           "tableFrom": "bazaar_transactions",
           "tableTo": "avatars",
           "columnsFrom": [
@@ -1777,8 +1777,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "bazaar_transactions_seller_id_pets_id_fk": {
-          "name": "bazaar_transactions_seller_id_pets_id_fk",
+        "bazaar_transactions_seller_id_avatars_id_fk": {
+          "name": "bazaar_transactions_seller_id_avatars_id_fk",
           "tableFrom": "bazaar_transactions",
           "tableTo": "avatars",
           "columnsFrom": [
@@ -1954,8 +1954,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "token_launches_pet_id_pets_id_fk": {
-          "name": "token_launches_pet_id_pets_id_fk",
+        "token_launches_avatar_id_avatars_id_fk": {
+          "name": "token_launches_avatar_id_avatars_id_fk",
           "tableFrom": "token_launches",
           "tableTo": "avatars",
           "columnsFrom": [
@@ -2165,8 +2165,8 @@
         }
       },
       "indexes": {
-        "claw_token_tx_pet_idx": {
-          "name": "claw_token_tx_pet_idx",
+        "claw_token_tx_avatar_idx": {
+          "name": "claw_token_tx_avatar_idx",
           "columns": [
             {
               "expression": "avatar_id",
@@ -2230,8 +2230,8 @@
         }
       },
       "foreignKeys": {
-        "claw_token_transactions_pet_id_pets_id_fk": {
-          "name": "claw_token_transactions_pet_id_pets_id_fk",
+        "claw_token_transactions_avatar_id_avatars_id_fk": {
+          "name": "claw_token_transactions_avatar_id_avatars_id_fk",
           "tableFrom": "claw_token_transactions",
           "tableTo": "avatars",
           "columnsFrom": [
@@ -2384,8 +2384,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "auction_agent_configs_pet_id_pets_id_fk": {
-          "name": "auction_agent_configs_pet_id_pets_id_fk",
+        "auction_agent_configs_avatar_id_avatars_id_fk": {
+          "name": "auction_agent_configs_avatar_id_avatars_id_fk",
           "tableFrom": "auction_agent_configs",
           "tableTo": "avatars",
           "columnsFrom": [
@@ -2460,8 +2460,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "auction_bids_bidder_id_pets_id_fk": {
-          "name": "auction_bids_bidder_id_pets_id_fk",
+        "auction_bids_bidder_id_avatars_id_fk": {
+          "name": "auction_bids_bidder_id_avatars_id_fk",
           "tableFrom": "auction_bids",
           "tableTo": "avatars",
           "columnsFrom": [
@@ -2599,8 +2599,8 @@
       },
       "indexes": {},
       "foreignKeys": {
-        "auctions_seller_id_pets_id_fk": {
-          "name": "auctions_seller_id_pets_id_fk",
+        "auctions_seller_id_avatars_id_fk": {
+          "name": "auctions_seller_id_avatars_id_fk",
           "tableFrom": "auctions",
           "tableTo": "avatars",
           "columnsFrom": [
@@ -2625,8 +2625,8 @@
           "onDelete": "set null",
           "onUpdate": "no action"
         },
-        "auctions_current_bidder_id_pets_id_fk": {
-          "name": "auctions_current_bidder_id_pets_id_fk",
+        "auctions_current_bidder_id_avatars_id_fk": {
+          "name": "auctions_current_bidder_id_avatars_id_fk",
           "tableFrom": "auctions",
           "tableTo": "avatars",
           "columnsFrom": [
@@ -2712,8 +2712,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "quest_rewards_pet_id_pets_id_fk": {
-          "name": "quest_rewards_pet_id_pets_id_fk",
+        "quest_rewards_avatar_id_avatars_id_fk": {
+          "name": "quest_rewards_avatar_id_avatars_id_fk",
           "tableFrom": "quest_rewards",
           "tableTo": "avatars",
           "columnsFrom": [
@@ -2859,8 +2859,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "quest_submissions_pet_id_pets_id_fk": {
-          "name": "quest_submissions_pet_id_pets_id_fk",
+        "quest_submissions_avatar_id_avatars_id_fk": {
+          "name": "quest_submissions_avatar_id_avatars_id_fk",
           "tableFrom": "quest_submissions",
           "tableTo": "avatars",
           "columnsFrom": [
@@ -3116,8 +3116,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "agent_configs_pet_id_pets_id_fk": {
-          "name": "agent_configs_pet_id_pets_id_fk",
+        "agent_configs_avatar_id_avatars_id_fk": {
+          "name": "agent_configs_avatar_id_avatars_id_fk",
           "tableFrom": "agent_configs",
           "tableTo": "avatars",
           "columnsFrom": [
@@ -3247,8 +3247,8 @@
       },
       "indexes": {},
       "foreignKeys": {
-        "bounties_creator_id_pets_id_fk": {
-          "name": "bounties_creator_id_pets_id_fk",
+        "bounties_creator_id_avatars_id_fk": {
+          "name": "bounties_creator_id_avatars_id_fk",
           "tableFrom": "bounties",
           "tableTo": "avatars",
           "columnsFrom": [
@@ -3362,8 +3362,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "bounty_attempts_hunter_id_pets_id_fk": {
-          "name": "bounty_attempts_hunter_id_pets_id_fk",
+        "bounty_attempts_hunter_id_avatars_id_fk": {
+          "name": "bounty_attempts_hunter_id_avatars_id_fk",
           "tableFrom": "bounty_attempts",
           "tableTo": "avatars",
           "columnsFrom": [
@@ -3455,8 +3455,8 @@
       },
       "indexes": {},
       "foreignKeys": {
-        "bounty_reputation_pet_id_pets_id_fk": {
-          "name": "bounty_reputation_pet_id_pets_id_fk",
+        "bounty_reputation_avatar_id_avatars_id_fk": {
+          "name": "bounty_reputation_avatar_id_avatars_id_fk",
           "tableFrom": "bounty_reputation",
           "tableTo": "avatars",
           "columnsFrom": [
@@ -3471,8 +3471,8 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "bounty_reputation_pet_id_unique": {
-          "name": "bounty_reputation_pet_id_unique",
+        "bounty_reputation_avatar_id_unique": {
+          "name": "bounty_reputation_avatar_id_unique",
           "nullsNotDistinct": false,
           "columns": [
             "avatar_id"
@@ -3876,8 +3876,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "agent_session_tickets_pet_id_pets_id_fk": {
-          "name": "agent_session_tickets_pet_id_pets_id_fk",
+        "agent_session_tickets_avatar_id_avatars_id_fk": {
+          "name": "agent_session_tickets_avatar_id_avatars_id_fk",
           "tableFrom": "agent_session_tickets",
           "tableTo": "avatars",
           "columnsFrom": [
@@ -3996,8 +3996,8 @@
           "method": "btree",
           "with": {}
         },
-        "idx_events_pet_ts": {
-          "name": "idx_events_pet_ts",
+        "idx_events_avatar_ts": {
+          "name": "idx_events_avatar_ts",
           "columns": [
             {
               "expression": "avatar_id",
@@ -4053,8 +4053,8 @@
           "onDelete": "set null",
           "onUpdate": "no action"
         },
-        "events_pet_id_pets_id_fk": {
-          "name": "events_pet_id_pets_id_fk",
+        "events_avatar_id_avatars_id_fk": {
+          "name": "events_avatar_id_avatars_id_fk",
           "tableFrom": "events",
           "tableTo": "avatars",
           "columnsFrom": [
@@ -4262,8 +4262,8 @@
     }
   },
   "enums": {
-    "public.pet_avatar_type": {
-      "name": "pet_avatar_type",
+    "public.avatar_render_type": {
+      "name": "avatar_render_type",
       "schema": "public",
       "values": [
         "glb",

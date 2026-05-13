@@ -10,7 +10,7 @@ import {
 import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { MapBackground } from "../shared/MapBackground";
 import { ParticleField } from "../shared/ParticleField";
-import { PetSprite } from "../shared/PetSprite";
+import { AvatarSprite } from "../shared/AvatarSprite";
 import { ClawPanel } from "../shared/ClawPanel";
 import { TypewriterText } from "../shared/TypewriterText";
 import { TerminalBlock } from "../shared/TerminalBlock";
@@ -191,13 +191,13 @@ const BotConnection: React.FC = () => {
   const connectedScale = interpolate(connectedEntrance, [0, 1], [0.5, 1]);
 
   // Lobster entrance
-  const petEntrance = spring({
+  const avatarEntrance = spring({
     frame,
     fps,
     delay: fps * 3,
     config: SPRING_BOUNCY,
   });
-  const petScale = interpolate(petEntrance, [0, 1], [0, 1]);
+  const avatarScale = interpolate(avatarEntrance, [0, 1], [0, 1]);
 
   const terminalWidth = isVertical ? width * 0.85 : 480;
 
@@ -282,10 +282,10 @@ const BotConnection: React.FC = () => {
           {/* Lobster */}
           <div
             style={{
-              transform: `scale(${petScale})`,
+              transform: `scale(${avatarScale})`,
             }}
           >
-            <PetSprite species="cat" size={120} enterDelay={0} bob />
+            <AvatarSprite species="cat" size={120} enterDelay={0} bob />
           </div>
         </div>
       </div>

@@ -32,7 +32,7 @@ ALTER TABLE "activity_results" ADD COLUMN "acknowledged_at" timestamp with time 
 ALTER TABLE "activity_results" ADD COLUMN "match_best_streak" integer;--> statement-breakpoint
 ALTER TABLE "activity_results" ADD COLUMN "match_pb_daily_rank" integer;--> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "reef_race_personal_bests" ADD CONSTRAINT "reef_race_personal_bests_pet_id_pets_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatar"("id") ON DELETE no action ON UPDATE no action;
+ ALTER TABLE "reef_race_personal_bests" ADD CONSTRAINT "reef_race_personal_bests_avatar_id_avatars_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatar"("id") ON DELETE no action ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
@@ -50,11 +50,11 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "tutorial_quest_claims" ADD CONSTRAINT "tutorial_quest_claims_pet_id_pets_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatar"("id") ON DELETE cascade ON UPDATE no action;
+ ALTER TABLE "tutorial_quest_claims" ADD CONSTRAINT "tutorial_quest_claims_avatar_id_avatars_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatar"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
 --> statement-breakpoint
-CREATE UNIQUE INDEX IF NOT EXISTS "uq_reef_race_pb_pet_activity" ON "reef_race_personal_bests" USING btree ("avatar_id","activity_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "uq_reef_race_pb_avatar_activity" ON "reef_race_personal_bests" USING btree ("avatar_id","activity_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_reef_race_pb_recorded_lap" ON "reef_race_personal_bests" USING btree ("best_lap_recorded_at" DESC NULLS LAST,"best_lap_ms") WHERE activity_id = 'reef-race';--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "uniq_tutorial_quest_claim_user_quest" ON "tutorial_quest_claims" USING btree ("user_id","quest_id");

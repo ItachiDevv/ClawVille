@@ -41,8 +41,8 @@ try {
       'idx_cosmetic_skus_scope',
       'idx_cosmetic_skus_avail_until',
       'uniq_cosmetic_variant_sku_rig',
-      'uniq_pet_skin_pet_sku',
-      'idx_pet_skin_pet_equipped'
+      'uniq_avatar_skin_avatar_sku',
+      'idx_avatar_skin_avatar_equipped'
     )
     ORDER BY indexname
   `;

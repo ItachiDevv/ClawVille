@@ -11,7 +11,7 @@ import { loadFont as loadLobster } from "@remotion/google-fonts/Lobster";
 import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { RecordingBackground, LiveBadge } from "../../shared/RecordingBackground";
 import { ClawPanel } from "../../shared/ClawPanel";
-import { PetSprite } from "../../shared/PetSprite";
+import { AvatarSprite } from "../../shared/AvatarSprite";
 import { ParticleField } from "../../shared/ParticleField";
 import { CTAButton } from "../../shared/CTAButton";
 import { TitleScreen } from "../shared/TitleScreen";
@@ -290,7 +290,7 @@ const PlayDemo: React.FC = () => {
             transform: `translateX(${avatarX}px) translateY(${bobOffset}px)`,
           }}
         >
-          <PetSprite
+          <AvatarSprite
             species="wolf"
             size={isVertical ? 100 : 90}
             enterDelay={0}
