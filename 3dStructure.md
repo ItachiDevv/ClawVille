@@ -104,7 +104,7 @@ Hard cap: **3 lights** on Iris Xe (uniform limit + shader compile cost).
 | `directionalLight` (key) | `position [150, 350, 80], intensity 2.0, color 0xffeedd` | Warm key light from upper-right. |
 | `directionalLight` (fill) | `position [-100, 200, -60], intensity 0.5, color 0x88aacc` | Cool fill from opposite side for depth. |
 
-**Fog:** `fog(FOG_COLOR, 1200, 6400)` (`World3DCanvas.tsx:789`). Calibrated for Iris Xe — pushing far past 6400 wastes GPU on fragments the camera-far (6800) is about to clip anyway. `WorldContent.md §5 MAX_VISIBLE_DIST=4500` rejects decoration placements past the perceptual fog cutoff so we don't ship invisible draws.
+**Fog:** `fog(FOG_COLOR, 1200, 6400)` (`World3DCanvas.tsx:789`). Calibrated for Iris Xe — pushing far past 6400 wastes GPU on fragments the camera-far (6800) is about to clip anyway. `WorldContent.md §5 MAX_VISIBLE_DIST=3800` rejects decoration placements past the perceptual fog cutoff so we don't ship invisible draws (cut from 4500 on 2026-05-13).
 
 **Disabled atmosphere effects** (mounted but gated with `{false && <X />}`):
 - `<UnderwaterAtmosphere />` — caustic plane + depth backdrop + dust particles. Overdraw on the additive transparent meshes is 8–15 ms/frame on integrated GPUs even when occluded. Last disabled 2026-04-30.
@@ -171,7 +171,7 @@ Every hot path uses module-scope `THREE.Vector3 / Matrix4 / Raycaster` scratch o
 
 Set during clone for every static object so `updateMatrixWorld` skips them:
 - All 10 buildings + their cloned children (`arena-buildings.tsx`)
-- 80 → 30 decoration groups + their merged children (`arena-terrain.tsx`)
+- 80 → 30 → 60 decoration groups + their merged children (`arena-terrain.tsx` — 2026-05-13 retune: 60 props in 1500–3800wu visible annulus, was 30 props in 2700–4500wu hidden behind ring buildings)
 - 3 underwater atmosphere meshes (when enabled) + 7 light ray cones
 - Bounty board (4 meshes), bazaar fish stall, marketplace stall, auction dome, auction podium
 

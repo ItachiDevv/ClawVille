@@ -169,8 +169,13 @@ function createSandMaterial(): THREE.MeshStandardNodeMaterial {
 
   // ---- Normal perturbation — sand grain feel ----
   // Perturb the flat normals with a sin-based bump in XY, scaled very small
-  const bumpFreq = float(0.15);
-  const bumpAmp  = float(0.04);
+  // 2026-05-13: bumped bumpFreq 0.15 → 1.5 (10× higher freq, ~4.2wu wavelength
+  // so detail reads from gameplay camera distance instead of being sub-pixel
+  // at the Iris Xe dpr=0.7 cap) and bumpAmp 0.04 → 0.08 for more visible
+  // normal variation. Combined with the existing height-driven colour bands
+  // this gives the sand actual texture from afar.
+  const bumpFreq = float(1.5);
+  const bumpAmp  = float(0.08);
   const bumpX = sin(px.mul(bumpFreq).add(float(1.1))).mul(bumpAmp);
   const bumpY = cos(py.mul(bumpFreq).add(float(0.7))).mul(bumpAmp);
   // vec3(perturbX, perturbY, 1) normalised approximation — sufficient at low amp
@@ -282,12 +287,15 @@ function isNearBuilding(x: number, z: number): boolean {
 // worldZ = -HALF_MH + 80*TILE_SIZE = -2560 + 2560 = 0
 const VILLAGE_CX = 0;
 const VILLAGE_CZ = 0;
-// No decorations within this radius of village center — keeps the town plaza and ring clear.
-// Increased from 2300→2700 (2026-04-16 ring expansion 56→68 tiles):
-// ring buildings now sit at radius 2176 (68 tiles × 32);
-// 2700 = 2176 + 224 (one building zone half, 7 tiles × 32) + 300 wu buffer.
-// Decorations scatter in the annulus outside the ring, not through it.
-const DECO_INNER_EXCLUSION_R = 2700;
+// No decorations within this radius — keeps the town plaza clear.
+// 2026-05-13 (user-reported "scatter decos invisible"): cut 2700 → 1500.
+// The old 2700 wu pushed every prop OUTSIDE the building ring (R=2176,
+// buildings ~800wu tall) where the ring buildings occlude them AND
+// camera-distance (camera spawn Z=+1300) puts them past 3700 wu — deep
+// in the fog falloff (1200→6400). The new 1500 places decos in the
+// visible annulus between town center and the inner building ring,
+// where they show up between/around buildings instead of behind them.
+const DECO_INNER_EXCLUSION_R = 1500;
 
 /** Generate all decorations with cluster-based organic scatter.
  *
@@ -306,24 +314,24 @@ function generateDecorations(): DecoEntry[] {
   const rng = seededRandom(12345);
   const totalWeight = DECO_TYPES.reduce((s, d) => s + d.weight, 0);
   const entries: DecoEntry[] = [];
-  // 2026-05-12: cut from 80 → 30. Audit (scripts/audit-decorations.mjs) showed
-  // that with the old extent (MAP_WIDTH × 2.4) and fog (1200→6400wu), only ~10
-  // of the 80 props were in the close-visible band, ~20 deep-fogged, ~30 lost
-  // beyond fog cutoff, ~19 off-map. The remaining 30 are concentrated in the
-  // 2700–4500wu visible annulus. Update WorldContent.md §5 when you change.
-  const TARGET_COUNT = 30;
+  // 2026-05-13: bumped 30 → 60. With DECO_INNER_EXCLUSION_R reduced to 1500
+  // the visible annulus is now ~1500–3800wu (3300wu band) instead of the old
+  // 2700–4500wu (1800wu band) — close to 2× the visible area, so 2× props.
+  // Update WorldContent.md §5 when you change.
+  const TARGET_COUNT = 60;
 
-  // Hard distance cap — any prop placed beyond this radius from world origin
-  // is rejected. 4500wu sits inside the fog's perceptual cutoff, so every
-  // surviving prop reads clearly.
-  const MAX_VISIBLE_DIST = 4500;
+  // Hard distance cap — any prop beyond this radius from world origin is
+  // rejected. 3800wu chosen so even decorations placed laterally from spawn
+  // (camera at +1300 Z) end up ≤5100wu from camera — well inside the fog's
+  // perceptual fade (heavy past ~5500wu).
+  const MAX_VISIBLE_DIST = 3800;
   const MAX_VISIBLE_DIST_SQ = MAX_VISIBLE_DIST * MAX_VISIBLE_DIST;
 
-  // Map extents — narrowed from MAP_WIDTH × 2.4 to × 1.76 so the cluster
-  // centres themselves land inside (or near) the visible band, not way out
-  // past the fog where they used to waste placement attempts.
-  const EXTENT_X = MAP_WIDTH  * 1.76;
-  const EXTENT_Z = MAP_HEIGHT * 1.76;
+  // Map extents — narrowed further (1.76 → 1.4) on 2026-05-13 so cluster
+  // centres land inside the new closer visible annulus (1500–3800wu) rather
+  // than the old 2700–4500wu band.
+  const EXTENT_X = MAP_WIDTH  * 1.4;
+  const EXTENT_Z = MAP_HEIGHT * 1.4;
 
   // ---- Cluster centres ----
   // 12 clusters (down from 24) — fewer entries to spread across, so fewer
