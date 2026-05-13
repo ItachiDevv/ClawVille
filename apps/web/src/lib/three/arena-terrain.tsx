@@ -289,12 +289,13 @@ const VILLAGE_CX = 0;
 const VILLAGE_CZ = 0;
 // No decorations within this radius — keeps the town plaza clear.
 // 2026-05-13 (user-reported "scatter decos invisible"): cut 2700 → 1500.
-// The old 2700 wu pushed every prop OUTSIDE the building ring (R=2176,
-// buildings ~800wu tall) where the ring buildings occlude them AND
-// camera-distance (camera spawn Z=+1300) puts them past 3700 wu — deep
+// The old 2700 wu pushed every prop OUTSIDE the building ring (then R=2176,
+// buildings ~800wu tall) where the ring buildings occluded them AND
+// camera-distance (camera spawn Z=+1300) put them past 3700 wu — deep
 // in the fog falloff (1200→6400). The new 1500 places decos in the
 // visible annulus between town center and the inner building ring,
 // where they show up between/around buildings instead of behind them.
+// Ring expanded to R=2304 same day for extra inner-band breathing room.
 const DECO_INNER_EXCLUSION_R = 1500;
 
 /** Generate all decorations with cluster-based organic scatter.
