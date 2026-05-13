@@ -15,13 +15,13 @@ CREATE TABLE IF NOT EXISTS "reef_race_personal_bests" (
   "ghost_replay_data" jsonb NOT NULL,
   "created_at" timestamp with time zone NOT NULL DEFAULT now(),
   "updated_at" timestamp with time zone NOT NULL DEFAULT now(),
-  CONSTRAINT "reef_race_personal_bests_pet_id_pets_id_fk"
+  CONSTRAINT "reef_race_personal_bests_avatar_id_avatars_id_fk"
     FOREIGN KEY ("avatar_id") REFERENCES "avatars"("id"),
   CONSTRAINT "reef_race_personal_bests_source_room_id_activity_rooms_id_fk"
     FOREIGN KEY ("source_room_id") REFERENCES "activity_rooms"("id")
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX IF NOT EXISTS "uq_reef_race_pb_pet_activity"
+CREATE UNIQUE INDEX IF NOT EXISTS "uq_reef_race_pb_avatar_activity"
   ON "reef_race_personal_bests" ("avatar_id", "activity_id");
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_reef_race_pb_recorded_lap"

@@ -13,7 +13,7 @@ import {
 import { loadFont as loadLobster } from "@remotion/google-fonts/Lobster";
 import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { MapBackground } from "../shared/MapBackground";
-import { PetSprite } from "../shared/PetSprite";
+import { AvatarSprite } from "../shared/AvatarSprite";
 import { SpeechBubble } from "../shared/SpeechBubble";
 import { CTAButton } from "../shared/CTAButton";
 import { LogoReveal } from "../shared/LogoReveal";
@@ -161,7 +161,7 @@ const NpcMovement: React.FC = () => {
                 top: y - 40 + bobY,
               }}
             >
-              <PetSprite
+              <AvatarSprite
                 species={npc.species}
                 size={80}
                 enterDelay={i * 8}
@@ -213,7 +213,7 @@ const NpcConversation: React.FC = () => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
   const isVertical = height > width;
-  const petSize = isVertical ? 100 : 90;
+  const avatarSize = isVertical ? 100 : 90;
 
   // Typing dots animation
   const showTyping = frame >= 10 && frame < 40;
@@ -248,13 +248,13 @@ const NpcConversation: React.FC = () => {
           }}
         >
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-            <PetSprite species="fox" size={petSize} enterDelay={0} bob />
+            <AvatarSprite species="fox" size={avatarSize} enterDelay={0} bob />
             <span style={{ fontFamily: roboto, fontSize: 14, color: COLORS.panel, fontWeight: 700 }}>
               Snapper
             </span>
           </div>
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-            <PetSprite species="owl" size={petSize} enterDelay={5} flipX bob />
+            <AvatarSprite species="owl" size={avatarSize} enterDelay={5} flipX bob />
             <span style={{ fontFamily: roboto, fontSize: 14, color: COLORS.panel, fontWeight: 700 }}>
               Barnacle
             </span>

@@ -1,5 +1,5 @@
 /**
- * Apply 0004_guest_pet_columns.sql to the prod Supabase database.
+ * Apply 0004_guest_avatar_columns.sql to the prod Supabase database.
  *
  * Additive only — adds:
  *   - users.is_guest, users.guest_expires_at
@@ -31,7 +31,7 @@ const migrationPath = resolve(
   __dirname,
   '..',
   'drizzle',
-  '0004_guest_pet_columns.sql',
+  '0004_guest_avatar_columns.sql',
 );
 const sql = readFileSync(migrationPath, 'utf-8');
 

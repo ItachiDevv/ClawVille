@@ -12,7 +12,7 @@ import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { loadFont as loadRobotoMono } from "@remotion/google-fonts/RobotoMono";
 import { GradientBackground } from "../shared/GradientBackground";
 import { ClawPanel } from "../shared/ClawPanel";
-import { PetSprite } from "../shared/PetSprite";
+import { AvatarSprite } from "../shared/AvatarSprite";
 import { TerminalBlock } from "../shared/TerminalBlock";
 import { TypewriterText } from "../shared/TypewriterText";
 import { CTAButton } from "../shared/CTAButton";
@@ -394,7 +394,7 @@ const TwoModes: React.FC = () => {
   });
 
   const panelWidth = isVertical ? 340 : 320;
-  const petSize = 80;
+  const avatarSize = 80;
 
   return (
     <AbsoluteFill
@@ -433,7 +433,7 @@ const TwoModes: React.FC = () => {
             >
               Avatar Mode
             </span>
-            <PetSprite species="fox" size={petSize} enterDelay={5} bob />
+            <AvatarSprite species="fox" size={avatarSize} enterDelay={5} bob />
             <span
               style={{
                 fontFamily: roboto,
@@ -476,15 +476,15 @@ const TwoModes: React.FC = () => {
               Override Mode
             </span>
             <div style={{ position: "relative" }}>
-              <PetSprite species="wolf" size={petSize} enterDelay={15} bob />
+              <AvatarSprite species="wolf" size={avatarSize} enterDelay={15} bob />
               {/* Green tinted overlay */}
               <div
                 style={{
                   position: "absolute",
                   top: 0,
                   left: 0,
-                  width: petSize,
-                  height: petSize,
+                  width: avatarSize,
+                  height: avatarSize,
                   borderRadius: "50%",
                   background: `${COLORS.accent}40`,
                   pointerEvents: "none",

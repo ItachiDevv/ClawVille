@@ -13,7 +13,7 @@ import { TitleScreen } from "../../shared/TitleScreen";
 import { RecordingBackground, LiveBadge } from "../../../shared/RecordingBackground";
 import { MapBackground } from "../../../shared/MapBackground";
 import { ParticleField } from "../../../shared/ParticleField";
-import { PetSprite } from "../../../shared/PetSprite";
+import { AvatarSprite } from "../../../shared/AvatarSprite";
 import { SpeechBubble } from "../../../shared/SpeechBubble";
 import { BookIcon } from "../../../shared/BookIcon";
 import { CTAButton } from "../../../shared/CTAButton";
@@ -171,7 +171,7 @@ const EnterWorldScene: React.FC = () => {
           top: height * 0.5 - 60,
         }}
       >
-        <PetSprite species="fox" size={isVertical ? 100 : 120} bob />
+        <AvatarSprite species="fox" size={isVertical ? 100 : 120} bob />
       </div>
 
       {/* Connected badge */}
@@ -318,7 +318,7 @@ const BuildingVisitScene: React.FC = () => {
             transform: `scale(${npcScale})`,
           }}
         >
-          <PetSprite species="owl" size={80} enterDelay={npcDelay} bob />
+          <AvatarSprite species="owl" size={80} enterDelay={npcDelay} bob />
           <SpeechBubble
             text="Welcome! Let me teach you about token sniping strategies..."
             delay={npcDelay + 10}

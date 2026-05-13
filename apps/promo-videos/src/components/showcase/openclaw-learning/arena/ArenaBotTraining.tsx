@@ -11,7 +11,7 @@ import { loadFont as loadLobster } from "@remotion/google-fonts/Lobster";
 import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { RecordingBackground, LiveBadge } from "../../../shared/RecordingBackground";
 import { ParticleField } from "../../../shared/ParticleField";
-import { PetSprite } from "../../../shared/PetSprite";
+import { AvatarSprite } from "../../../shared/AvatarSprite";
 import { HPBar } from "../../../shared/HPBar";
 import { DamageNumber } from "../../../shared/DamageNumber";
 import { ClawPanel } from "../../../shared/ClawPanel";
@@ -154,8 +154,8 @@ const BattleMontage: React.FC = () => {
   const { fps, width, height } = useVideoConfig();
   const isVertical = height > width;
 
-  const petSize = isVertical ? 120 : 110;
-  const petSpacing = isVertical ? 80 : 160;
+  const avatarSize = isVertical ? 120 : 110;
+  const avatarSpacing = isVertical ? 80 : 160;
 
   // 3 rounds, each ~60 frames
   const roundLength = 60;
@@ -300,14 +300,14 @@ const BattleMontage: React.FC = () => {
         <div
           style={{
             position: "absolute",
-            left: width / 2 - petSpacing - petSize / 2 + leftOffsetX,
-            top: height / 2 - petSize / 2,
+            left: width / 2 - avatarSpacing - avatarSize / 2 + leftOffsetX,
+            top: height / 2 - avatarSize / 2,
           }}
         >
-          <HPBar hp={leftHp} maxHp={60} width={petSize} label={round.leftName} />
-          <PetSprite
+          <HPBar hp={leftHp} maxHp={60} width={avatarSize} label={round.leftName} />
+          <AvatarSprite
             species={round.leftSpecies}
-            size={petSize}
+            size={avatarSize}
             enterDelay={0}
             bob
           />
@@ -317,19 +317,19 @@ const BattleMontage: React.FC = () => {
         <div
           style={{
             position: "absolute",
-            left: width / 2 + petSpacing - petSize / 2 + rightOffsetX,
-            top: height / 2 - petSize / 2,
+            left: width / 2 + avatarSpacing - avatarSize / 2 + rightOffsetX,
+            top: height / 2 - avatarSize / 2,
           }}
         >
           <HPBar
             hp={rightHp}
             maxHp={round.rightHp[0]}
-            width={petSize}
+            width={avatarSize}
             label={round.rightName}
           />
-          <PetSprite
+          <AvatarSprite
             species={round.rightSpecies}
-            size={petSize}
+            size={avatarSize}
             enterDelay={0}
             flipX
             bob
@@ -342,15 +342,15 @@ const BattleMontage: React.FC = () => {
           if (af < 10 || af > 45) return null;
           const tx =
             atk.attacker === "left"
-              ? width / 2 + petSpacing
-              : width / 2 - petSpacing;
+              ? width / 2 + avatarSpacing
+              : width / 2 - avatarSpacing;
           return (
             <DamageNumber
               key={`r${currentRound}-${i}`}
               damage={atk.damage}
               delay={atk.f + 10}
               x={tx - 20}
-              y={height / 2 - petSize / 2 - 20}
+              y={height / 2 - avatarSize / 2 - 20}
               isCritical={atk.damage >= 14}
             />
           );

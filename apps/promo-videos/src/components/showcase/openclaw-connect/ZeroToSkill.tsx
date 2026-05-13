@@ -12,7 +12,7 @@ import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { loadFont as loadRobotoMono } from "@remotion/google-fonts/RobotoMono";
 import { RecordingBackground, LiveBadge } from "../../shared/RecordingBackground";
 import { ClawPanel } from "../../shared/ClawPanel";
-import { PetSprite } from "../../shared/PetSprite";
+import { AvatarSprite } from "../../shared/AvatarSprite";
 import { TerminalBlock } from "../../shared/TerminalBlock";
 import { ParticleField } from "../../shared/ParticleField";
 import { CTAButton } from "../../shared/CTAButton";
@@ -79,7 +79,7 @@ const ZeroState: React.FC = () => {
               gap: 16,
             }}
           >
-            <PetSprite species="owl" size={80} enterDelay={10} bob />
+            <AvatarSprite species="owl" size={80} enterDelay={10} bob />
             <span
               style={{
                 fontFamily: lobster,

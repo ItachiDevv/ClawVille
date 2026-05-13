@@ -12,7 +12,7 @@ import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { RecordingBackground, LiveBadge } from "../../shared/RecordingBackground";
 import { ParticleField } from "../../shared/ParticleField";
 import { ClawPanel } from "../../shared/ClawPanel";
-import { PetSprite } from "../../shared/PetSprite";
+import { AvatarSprite } from "../../shared/AvatarSprite";
 import { SpeechBubble } from "../../shared/SpeechBubble";
 import { BookIcon } from "../../shared/BookIcon";
 import { ClawTokenIcon } from "../../shared/ClawTokenIcon";
@@ -139,7 +139,7 @@ const SignupScene: React.FC = () => {
 
       {/* Species cycling display */}
       <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-        <PetSprite
+        <AvatarSprite
           species={ALL_SPECIES[speciesIdx]}
           size={isVertical ? 100 : 90}
           enterDelay={0}
@@ -271,7 +271,7 @@ const FirstBuilding: React.FC = () => {
 
       {/* Avatar walking in */}
       <div style={{ transform: `translateX(${avatarX}px)` }}>
-        <PetSprite species="fox" size={isVertical ? 80 : 72} enterDelay={0} bob />
+        <AvatarSprite species="fox" size={isVertical ? 80 : 72} enterDelay={0} bob />
       </div>
 
       {/* NPC conversation */}

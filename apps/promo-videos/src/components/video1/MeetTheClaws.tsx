@@ -11,7 +11,7 @@ import { loadFont as loadLobster } from "@remotion/google-fonts/Lobster";
 import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { GradientBackground } from "../shared/GradientBackground";
 import { ParticleField } from "../shared/ParticleField";
-import { PetSprite } from "../shared/PetSprite";
+import { AvatarSprite } from "../shared/AvatarSprite";
 import { ClawPanel } from "../shared/ClawPanel";
 import { LogoReveal } from "../shared/LogoReveal";
 import { CTAButton } from "../shared/CTAButton";
@@ -120,7 +120,7 @@ const SpeciesCarousel: React.FC = () => {
               opacity: soloOpacity,
             }}
           >
-            <PetSprite species={species} size={spriteSize} enterDelay={showFrame} bob />
+            <AvatarSprite species={species} size={spriteSize} enterDelay={showFrame} bob />
             <div
               style={{
                 textAlign: "center",

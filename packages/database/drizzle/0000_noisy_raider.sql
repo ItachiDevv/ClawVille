@@ -1,5 +1,5 @@
 DO $$ BEGIN
- CREATE TYPE "public"."pet_avatar_type" AS ENUM('glb', 'vrm');
+ CREATE TYPE "public"."avatar_render_type" AS ENUM('glb', 'vrm');
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
@@ -209,7 +209,7 @@ CREATE TABLE IF NOT EXISTS "avatars" (
 	"level" integer DEFAULT 1 NOT NULL,
 	"xp" integer DEFAULT 0 NOT NULL,
 	"total_xp" integer DEFAULT 0 NOT NULL,
-	"avatar_type" "pet_avatar_type" DEFAULT 'glb' NOT NULL,
+	"avatar_type" "avatar_render_type" DEFAULT 'glb' NOT NULL,
 	"avatar_url" varchar(1024),
 	"vrm_metadata" jsonb,
 	"agent_category" varchar(16) DEFAULT 'openclaw' NOT NULL,
@@ -218,8 +218,8 @@ CREATE TABLE IF NOT EXISTS "avatars" (
 	"wallet_address" varchar(64),
 	"created_at" timestamp DEFAULT now() NOT NULL,
 	"updated_at" timestamp DEFAULT now() NOT NULL,
-	CONSTRAINT "pets_user_id_unique" UNIQUE("user_id"),
-	CONSTRAINT "pets_name_unique" UNIQUE("name")
+	CONSTRAINT "avatars_user_id_unique" UNIQUE("user_id"),
+	CONSTRAINT "avatars_name_unique" UNIQUE("name")
 );
 --> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "map_locations" (
@@ -337,7 +337,7 @@ CREATE TABLE IF NOT EXISTS "research_articles" (
 --> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "published_skills" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"author_pet_id" uuid,
+	"author_avatar_id" uuid,
 	"author_claw_name" varchar(100),
 	"author_claw_species" varchar(20),
 	"location_id" varchar(50),
@@ -601,7 +601,7 @@ CREATE TABLE IF NOT EXISTS "bounty_reputation" (
 	"last_activity_at" timestamp,
 	"created_at" timestamp DEFAULT now() NOT NULL,
 	"updated_at" timestamp DEFAULT now() NOT NULL,
-	CONSTRAINT "bounty_reputation_pet_id_unique" UNIQUE("avatar_id")
+	CONSTRAINT "bounty_reputation_avatar_id_unique" UNIQUE("avatar_id")
 );
 --> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "bounty_rewards" (
@@ -694,13 +694,13 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "avatars" ADD CONSTRAINT "pets_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;
+ ALTER TABLE "avatars" ADD CONSTRAINT "avatars_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "avatars" ADD CONSTRAINT "pets_platform_agent_id_platform_agents_id_fk" FOREIGN KEY ("platform_agent_id") REFERENCES "public"."platform_agents"("id") ON DELETE set null ON UPDATE no action;
+ ALTER TABLE "avatars" ADD CONSTRAINT "avatars_platform_agent_id_platform_agents_id_fk" FOREIGN KEY ("platform_agent_id") REFERENCES "public"."platform_agents"("id") ON DELETE set null ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
@@ -748,13 +748,13 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "activity_log" ADD CONSTRAINT "activity_log_pet_id_pets_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
+ ALTER TABLE "activity_log" ADD CONSTRAINT "activity_log_avatar_id_avatars_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "published_skills" ADD CONSTRAINT "published_skills_author_pet_id_pets_id_fk" FOREIGN KEY ("author_pet_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
+ ALTER TABLE "published_skills" ADD CONSTRAINT "published_skills_author_avatar_id_avatars_id_fk" FOREIGN KEY ("author_avatar_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
@@ -766,7 +766,7 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "skill_upvotes" ADD CONSTRAINT "skill_upvotes_pet_id_pets_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
+ ALTER TABLE "skill_upvotes" ADD CONSTRAINT "skill_upvotes_avatar_id_avatars_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
@@ -778,7 +778,7 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "bazaar_listings" ADD CONSTRAINT "bazaar_listings_seller_id_pets_id_fk" FOREIGN KEY ("seller_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
+ ALTER TABLE "bazaar_listings" ADD CONSTRAINT "bazaar_listings_seller_id_avatars_id_fk" FOREIGN KEY ("seller_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
@@ -790,7 +790,7 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "bazaar_reviews" ADD CONSTRAINT "bazaar_reviews_reviewer_id_pets_id_fk" FOREIGN KEY ("reviewer_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
+ ALTER TABLE "bazaar_reviews" ADD CONSTRAINT "bazaar_reviews_reviewer_id_avatars_id_fk" FOREIGN KEY ("reviewer_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
@@ -808,13 +808,13 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "bazaar_transactions" ADD CONSTRAINT "bazaar_transactions_buyer_id_pets_id_fk" FOREIGN KEY ("buyer_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
+ ALTER TABLE "bazaar_transactions" ADD CONSTRAINT "bazaar_transactions_buyer_id_avatars_id_fk" FOREIGN KEY ("buyer_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "bazaar_transactions" ADD CONSTRAINT "bazaar_transactions_seller_id_pets_id_fk" FOREIGN KEY ("seller_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
+ ALTER TABLE "bazaar_transactions" ADD CONSTRAINT "bazaar_transactions_seller_id_avatars_id_fk" FOREIGN KEY ("seller_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
@@ -832,7 +832,7 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "token_launches" ADD CONSTRAINT "token_launches_pet_id_pets_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
+ ALTER TABLE "token_launches" ADD CONSTRAINT "token_launches_avatar_id_avatars_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
@@ -850,7 +850,7 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "claw_token_transactions" ADD CONSTRAINT "claw_token_transactions_pet_id_pets_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
+ ALTER TABLE "claw_token_transactions" ADD CONSTRAINT "claw_token_transactions_avatar_id_avatars_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
@@ -862,7 +862,7 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "auction_agent_configs" ADD CONSTRAINT "auction_agent_configs_pet_id_pets_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
+ ALTER TABLE "auction_agent_configs" ADD CONSTRAINT "auction_agent_configs_avatar_id_avatars_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
@@ -874,13 +874,13 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "auction_bids" ADD CONSTRAINT "auction_bids_bidder_id_pets_id_fk" FOREIGN KEY ("bidder_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
+ ALTER TABLE "auction_bids" ADD CONSTRAINT "auction_bids_bidder_id_avatars_id_fk" FOREIGN KEY ("bidder_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "auctions" ADD CONSTRAINT "auctions_seller_id_pets_id_fk" FOREIGN KEY ("seller_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
+ ALTER TABLE "auctions" ADD CONSTRAINT "auctions_seller_id_avatars_id_fk" FOREIGN KEY ("seller_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
@@ -892,7 +892,7 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "auctions" ADD CONSTRAINT "auctions_current_bidder_id_pets_id_fk" FOREIGN KEY ("current_bidder_id") REFERENCES "public"."avatars"("id") ON DELETE set null ON UPDATE no action;
+ ALTER TABLE "auctions" ADD CONSTRAINT "auctions_current_bidder_id_avatars_id_fk" FOREIGN KEY ("current_bidder_id") REFERENCES "public"."avatars"("id") ON DELETE set null ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
@@ -904,7 +904,7 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "quest_rewards" ADD CONSTRAINT "quest_rewards_pet_id_pets_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
+ ALTER TABLE "quest_rewards" ADD CONSTRAINT "quest_rewards_avatar_id_avatars_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
@@ -928,7 +928,7 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "quest_submissions" ADD CONSTRAINT "quest_submissions_pet_id_pets_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
+ ALTER TABLE "quest_submissions" ADD CONSTRAINT "quest_submissions_avatar_id_avatars_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
@@ -958,13 +958,13 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "agent_configs" ADD CONSTRAINT "agent_configs_pet_id_pets_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE set null ON UPDATE no action;
+ ALTER TABLE "agent_configs" ADD CONSTRAINT "agent_configs_avatar_id_avatars_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE set null ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "bounties" ADD CONSTRAINT "bounties_creator_id_pets_id_fk" FOREIGN KEY ("creator_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
+ ALTER TABLE "bounties" ADD CONSTRAINT "bounties_creator_id_avatars_id_fk" FOREIGN KEY ("creator_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
@@ -976,13 +976,13 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "bounty_attempts" ADD CONSTRAINT "bounty_attempts_hunter_id_pets_id_fk" FOREIGN KEY ("hunter_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
+ ALTER TABLE "bounty_attempts" ADD CONSTRAINT "bounty_attempts_hunter_id_avatars_id_fk" FOREIGN KEY ("hunter_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "bounty_reputation" ADD CONSTRAINT "bounty_reputation_pet_id_pets_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
+ ALTER TABLE "bounty_reputation" ADD CONSTRAINT "bounty_reputation_avatar_id_avatars_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
@@ -1012,7 +1012,7 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "agent_session_tickets" ADD CONSTRAINT "agent_session_tickets_pet_id_pets_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
+ ALTER TABLE "agent_session_tickets" ADD CONSTRAINT "agent_session_tickets_avatar_id_avatars_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
@@ -1024,7 +1024,7 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 DO $$ BEGIN
- ALTER TABLE "events" ADD CONSTRAINT "events_pet_id_pets_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE set null ON UPDATE no action;
+ ALTER TABLE "events" ADD CONSTRAINT "events_avatar_id_avatars_id_fk" FOREIGN KEY ("avatar_id") REFERENCES "public"."avatars"("id") ON DELETE set null ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
@@ -1035,8 +1035,8 @@ EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
 --> statement-breakpoint
-CREATE UNIQUE INDEX IF NOT EXISTS "skill_upvotes_skill_pet_unique" ON "skill_upvotes" USING btree ("skill_id","avatar_id");--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "claw_token_tx_pet_idx" ON "claw_token_transactions" USING btree ("avatar_id","created_at");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "skill_upvotes_skill_avatar_unique" ON "skill_upvotes" USING btree ("skill_id","avatar_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "claw_token_tx_avatar_idx" ON "claw_token_transactions" USING btree ("avatar_id","created_at");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "claw_token_tx_user_idx" ON "claw_token_transactions" USING btree ("user_id","created_at");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "claw_token_tx_source_idx" ON "claw_token_transactions" USING btree ("source","created_at");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "treasury_purpose_idx" ON "treasury_wallets" USING btree ("purpose");--> statement-breakpoint
@@ -1045,7 +1045,7 @@ CREATE INDEX IF NOT EXISTS "wallets_subject_type_idx" ON "wallets" USING btree (
 CREATE INDEX IF NOT EXISTS "agent_session_tickets_expires_idx" ON "agent_session_tickets" USING btree ("expires_at") WHERE "agent_session_tickets"."consumed_at" IS NULL;--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_events_type_ts" ON "events" USING btree ("event_type","ts" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_events_agent_ts" ON "events" USING btree ("agent_id","ts" DESC NULLS LAST);--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "idx_events_pet_ts" ON "events" USING btree ("avatar_id","ts" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "idx_events_avatar_ts" ON "events" USING btree ("avatar_id","ts" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_events_building_ts" ON "events" USING btree ("building_id","ts" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_event_write_failures_ts" ON "event_write_failures" USING btree ("ts" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_event_write_failures_unretried" ON "event_write_failures" USING btree ("ts" DESC NULLS LAST) WHERE retried_at IS NULL;--> statement-breakpoint

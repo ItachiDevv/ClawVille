@@ -12,7 +12,7 @@ import { loadFont as loadRoboto } from "@remotion/google-fonts/Roboto";
 import { loadFont as loadRobotoMono } from "@remotion/google-fonts/RobotoMono";
 import { RecordingBackground, LiveBadge } from "../../shared/RecordingBackground";
 import { ClawPanel } from "../../shared/ClawPanel";
-import { PetSprite } from "../../shared/PetSprite";
+import { AvatarSprite } from "../../shared/AvatarSprite";
 import { TypewriterText } from "../../shared/TypewriterText";
 import { AnimatedCounter } from "../../shared/AnimatedCounter";
 import { ParticleField } from "../../shared/ParticleField";
@@ -397,7 +397,7 @@ const Connected: React.FC = () => {
           transform: `scale(${badgeScale})`,
         }}
       >
-        <PetSprite species="fox" size={isVertical ? 100 : 90} enterDelay={0} bob />
+        <AvatarSprite species="fox" size={isVertical ? 100 : 90} enterDelay={0} bob />
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <div
             style={{
