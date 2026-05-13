@@ -1,0 +1,4 @@
+{
+  "_comment": "Mixamo character registry. Keyed by our slug. character_id is Adobe's permanent UUID — survives across sessions, so once registered, fetching new animations never requires re-uploading the FBX. skeletonClass groups characters by which Mixamo animation library translates cleanly. See README.md for the add-anim-everywhere workflow.",
+  "characters": {}
+}
