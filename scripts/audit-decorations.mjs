@@ -1,19 +1,22 @@
 #!/usr/bin/env node
 /**
- * Replicate generateDecorations() to see where the 80 props actually land
- * and how far they end up from the camera/center.
+ * Replicate generateDecorations() to see where the N props actually land
+ * and how far they end up from the camera/center. KEEP IN SYNC with the
+ * constants in apps/web/src/lib/three/arena-terrain.tsx — otherwise this
+ * script lies and the next agent trusts stale audit output.
  */
 
 // Match constants from arena-terrain.tsx + tilemap-data.ts
 const MAP_WIDTH = 5120;
 const MAP_HEIGHT = 5120;
-const EXTENT_X = MAP_WIDTH * 2.4; // 12288
-const EXTENT_Z = MAP_HEIGHT * 2.4;
-const TARGET_COUNT = 80;
+const EXTENT_X = MAP_WIDTH * 1.4; // 7168 — 2026-05-13 narrowed from 2.4 then 1.76
+const EXTENT_Z = MAP_HEIGHT * 1.4;
+const TARGET_COUNT = 60; // 2026-05-13 bumped 30 → 60 after exclusion radius cut
 const N_CLUSTERS = 24;
 const CLUSTER_RADIUS = 280;
 const MIN_SPACING_SQ = 35 * 35;
-const DECO_INNER_EXCLUSION_R = 2700;
+const DECO_INNER_EXCLUSION_R = 1500; // 2026-05-13 cut 2700 → 1500
+const MAX_VISIBLE_DIST = 3800; // 2026-05-13 cut 4500 → 3800
 const TILE_SIZE = 32;
 
 // Building zone exclusions — match buildingZones positions in tilemap-data
@@ -83,6 +86,7 @@ function pickModel() {
 // Track rejection reasons
 let rejOffMap = 0;
 let rejInnerEx = 0;
+let rejFarFog = 0;
 let rejBuilding = 0;
 let rejSpacing = 0;
 let attempts = 0;
@@ -96,7 +100,9 @@ while (entries.length < TARGET_COUNT && attempts < 1200) {
   const z = cluster.z + Math.sin(angle) * dist;
   if (Math.abs(x) > EXTENT_X * 0.5 || Math.abs(z) > EXTENT_Z * 0.5) { rejOffMap++; continue; }
   const dcx = x, dcz = z;
-  if (dcx * dcx + dcz * dcz < DECO_INNER_EXCLUSION_R * DECO_INNER_EXCLUSION_R) { rejInnerEx++; continue; }
+  const radSq = dcx * dcx + dcz * dcz;
+  if (radSq < DECO_INNER_EXCLUSION_R * DECO_INNER_EXCLUSION_R) { rejInnerEx++; continue; }
+  if (radSq > MAX_VISIBLE_DIST * MAX_VISIBLE_DIST) { rejFarFog++; continue; }
   if (isNearBuilding(x, z)) { rejBuilding++; continue; }
   const tooClose = entries.some(e => {
     const dx = e.x - x, dz = e.z - z;
@@ -108,15 +114,14 @@ while (entries.length < TARGET_COUNT && attempts < 1200) {
   entries.push({ model: dt.name, x, z, scale, dist: Math.sqrt(x*x + z*z) });
 }
 
-// Distance bins from origin
-const bins = { 'innerEx(<2700)': 0, '2700-3500': 0, '3500-4500': 0, '4500-5500': 0, '5500-6144': 0, '>6144': 0 };
+// Distance bins from origin (post 2026-05-13 scatter retune)
+const bins = { '<1500(excluded)': 0, '1500-2500': 0, '2500-3500': 0, '3500-3800': 0, '>3800(rej)': 0 };
 for (const e of entries) {
-  if (e.dist < 2700) bins['innerEx(<2700)']++;
-  else if (e.dist < 3500) bins['2700-3500']++;
-  else if (e.dist < 4500) bins['3500-4500']++;
-  else if (e.dist < 5500) bins['4500-5500']++;
-  else if (e.dist < 6144) bins['5500-6144']++;
-  else bins['>6144']++;
+  if (e.dist < 1500) bins['<1500(excluded)']++;
+  else if (e.dist < 2500) bins['1500-2500']++;
+  else if (e.dist < 3500) bins['2500-3500']++;
+  else if (e.dist < 3800) bins['3500-3800']++;
+  else bins['>3800(rej)']++;
 }
 
 const byModel = {};
@@ -127,6 +132,7 @@ console.log(`Target: ${TARGET_COUNT}   Placed: ${entries.length}   Attempts: ${a
 console.log(`\nRejected (per attempt):`);
 console.log(`  off-map (|xy| > ${(EXTENT_X*0.5).toFixed(0)}):  ${rejOffMap}`);
 console.log(`  inner-exclusion (<${DECO_INNER_EXCLUSION_R}wu of center):  ${rejInnerEx}`);
+console.log(`  far-fog (>${MAX_VISIBLE_DIST}wu of center):  ${rejFarFog}`);
 console.log(`  near-building:  ${rejBuilding}`);
 console.log(`  too-close-to-other-deco:  ${rejSpacing}`);
 console.log(`\nDistance from origin (camera/town center):`);
