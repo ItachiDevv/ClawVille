@@ -31,6 +31,14 @@ export interface ModelRegistryEntry {
   yOffset?: number;
   /** Optional thumbnail path for the picker UI (VRM models use dedicated previews). */
   preview?: string;
+  /**
+   * Key into character-anim-overrides.json. When set, VRMCharacterAnimator
+   * uses this to look up character-specific Mixamo bakes (jump.glb, etc.).
+   * Models sharing the same rig + proportions share an animatorId so one
+   * Mixamo upload powers them all — every Milady VRM uses 'vrm-milady'.
+   * GLB crustaceans omit this (no Mixamo path).
+   */
+  animatorId?: string;
 }
 
 export const MODEL_REGISTRY = {
@@ -74,14 +82,14 @@ export const MODEL_REGISTRY = {
   //   vrm-loader.ts (adds π rotation to scene) → both face -Z after load.
   //   DIR_ROTATION for -Z forward: atan2(vx, -vy) — verified in player-avatar.tsx
   //   VRM fork. See gotcha: "Lobster faces +Z" — VRM is the OPPOSITE convention.
-  milady_official_1: { path: '/avatars/milady-official-1.vrm', scale: 13, label: 'Milady Official 1', category: 'milady', avatar_type: 'vrm', preview: '/avatars/previews/milady-official-1.png' },
-  milady_official_2: { path: '/avatars/milady-official-2.vrm', scale: 13, label: 'Milady Official 2', category: 'milady', avatar_type: 'vrm', preview: '/avatars/previews/milady-official-2.png' },
-  milady_official_3: { path: '/avatars/milady-official-3.vrm', scale: 13, label: 'Milady Official 3', category: 'milady', avatar_type: 'vrm', preview: '/avatars/previews/milady-official-3.png' },
-  milady_official_4: { path: '/avatars/milady-official-4.vrm', scale: 13, label: 'Milady Official 4', category: 'milady', avatar_type: 'vrm', preview: '/avatars/previews/milady-official-4.png' },
-  milady_official_5: { path: '/avatars/milady-official-5.vrm', scale: 13, label: 'Milady Official 5', category: 'milady', avatar_type: 'vrm', preview: '/avatars/previews/milady-official-5.png' },
-  milady_official_6: { path: '/avatars/milady-official-6.vrm', scale: 13, label: 'Milady Official 6', category: 'milady', avatar_type: 'vrm', preview: '/avatars/previews/milady-official-6.png' },
-  milady_official_7: { path: '/avatars/milady-official-7.vrm', scale: 13, label: 'Milady Official 7', category: 'milady', avatar_type: 'vrm', preview: '/avatars/previews/milady-official-7.png' },
-  milady_official_8: { path: '/avatars/milady-official-8.vrm', scale: 13, label: 'Milady Official 8', category: 'milady', avatar_type: 'vrm', preview: '/avatars/previews/milady-official-8.png' },
+  milady_official_1: { path: '/avatars/milady-official-1.vrm', scale: 13, label: 'Milady Official 1', category: 'milady', avatar_type: 'vrm', animatorId: 'vrm-milady', preview: '/avatars/previews/milady-official-1.png' },
+  milady_official_2: { path: '/avatars/milady-official-2.vrm', scale: 13, label: 'Milady Official 2', category: 'milady', avatar_type: 'vrm', animatorId: 'vrm-milady', preview: '/avatars/previews/milady-official-2.png' },
+  milady_official_3: { path: '/avatars/milady-official-3.vrm', scale: 13, label: 'Milady Official 3', category: 'milady', avatar_type: 'vrm', animatorId: 'vrm-milady', preview: '/avatars/previews/milady-official-3.png' },
+  milady_official_4: { path: '/avatars/milady-official-4.vrm', scale: 13, label: 'Milady Official 4', category: 'milady', avatar_type: 'vrm', animatorId: 'vrm-milady', preview: '/avatars/previews/milady-official-4.png' },
+  milady_official_5: { path: '/avatars/milady-official-5.vrm', scale: 13, label: 'Milady Official 5', category: 'milady', avatar_type: 'vrm', animatorId: 'vrm-milady', preview: '/avatars/previews/milady-official-5.png' },
+  milady_official_6: { path: '/avatars/milady-official-6.vrm', scale: 13, label: 'Milady Official 6', category: 'milady', avatar_type: 'vrm', animatorId: 'vrm-milady', preview: '/avatars/previews/milady-official-6.png' },
+  milady_official_7: { path: '/avatars/milady-official-7.vrm', scale: 13, label: 'Milady Official 7', category: 'milady', avatar_type: 'vrm', animatorId: 'vrm-milady', preview: '/avatars/previews/milady-official-7.png' },
+  milady_official_8: { path: '/avatars/milady-official-8.vrm', scale: 13, label: 'Milady Official 8', category: 'milady', avatar_type: 'vrm', animatorId: 'vrm-milady', preview: '/avatars/previews/milady-official-8.png' },
 
   // Hermes-hosted VRM avatars (added 2026-05-12, third entry added the same
   // day after the user pointed out the male/Tekk mix-up). Three distinct
@@ -92,9 +100,9 @@ export const MODEL_REGISTRY = {
   // normalizes screen-space height regardless of native VRM units.
   // Animation clips: hermes-female/ → female rig, hermes-male/ → male rig,
   // tekk-male/ → Tekk rig.
-  hermes_female: { path: '/avatars/hermes-female.vrm', scale: 13, label: 'Hermes',      category: 'hermes', avatar_type: 'vrm', preview: '/models/hermes-turnaround/female-front.png' },
-  hermes_male:   { path: '/avatars/hermes-male.vrm',   scale: 13, label: 'Hermes Male', category: 'hermes', avatar_type: 'vrm', preview: '/models/hermes-turnaround/male-front.png' },
-  tekk:          { path: '/avatars/tekk.vrm',          scale: 13, label: 'Tekk',        category: 'hermes', avatar_type: 'vrm', preview: '/models/tekk-turnaround/with-wings-front.png' },
+  hermes_female: { path: '/avatars/hermes-female.vrm', scale: 13, label: 'Hermes',      category: 'hermes', avatar_type: 'vrm', animatorId: 'hermes-female', preview: '/models/hermes-turnaround/female-front.png' },
+  hermes_male:   { path: '/avatars/hermes-male.vrm',   scale: 13, label: 'Hermes Male', category: 'hermes', avatar_type: 'vrm', animatorId: 'hermes-male',   preview: '/models/hermes-turnaround/male-front.png' },
+  tekk:          { path: '/avatars/tekk.vrm',          scale: 13, label: 'Tekk',        category: 'hermes', avatar_type: 'vrm', animatorId: 'tekk',          preview: '/models/tekk-turnaround/with-wings-front.png' },
 
   // NOTE: `crayfish` removed from the picker 2026-04-16 — the mesh renders
   // noticeably larger than lobster at the same scale (different pivot) and
@@ -109,6 +117,19 @@ export const MODEL_REGISTRY = {
 } as const satisfies Record<string, ModelRegistryEntry>;
 
 export type ModelKey = keyof typeof MODEL_REGISTRY;
+
+/**
+ * Reverse-lookup the animatorId for a model by its VRM/GLB path.
+ * Used by surfaces that hold only the path (ReefRacePlayer, dynamic loaders)
+ * — anywhere with the full registry entry should prefer `reg.animatorId`.
+ * Returns undefined for unregistered paths or entries without an animatorId.
+ */
+export function getAnimatorIdByPath(path: string): string | undefined {
+  for (const entry of Object.values(MODEL_REGISTRY) as ModelRegistryEntry[]) {
+    if (entry.path === path) return entry.animatorId;
+  }
+  return undefined;
+}
 
 // Category metadata for the picker UI tabs.
 export const CATEGORY_META: Partial<Record<AgentCategory, { label: string; description: string }>> = {

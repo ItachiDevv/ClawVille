@@ -253,7 +253,10 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
 
   useEffect(() => {
     if (!vrm) return;
-    const animator = new VRMCharacterAnimator(vrm);
+    // animatorId routes per-character Mixamo overrides. Sourced from the
+    // model registry so all Milady VRMs share 'vrm-milady', Hermes/Tekk
+    // use their own slugs, and GLB entries (no Mixamo path) pass undefined.
+    const animator = new VRMCharacterAnimator(vrm, reg.animatorId);
     vrmAnimatorRef.current = animator;
     animator.init().catch((err) => {
       console.warn('[PlayerAvatar VRM] animator init failed:', err);
