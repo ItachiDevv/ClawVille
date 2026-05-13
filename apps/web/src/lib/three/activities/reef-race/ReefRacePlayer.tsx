@@ -87,6 +87,7 @@ import {
   VRMCharacterAnimator,
   preloadMixamoClips,
 } from '@/lib/three/vrm-character-animator';
+import { getAnimatorIdByPath } from '@/lib/three/agent-model-registry';
 import { useActivityStore } from '@/stores/activity';
 import { triggerBurst } from '@/lib/three/activities/shared/activity-particles';
 
@@ -330,7 +331,11 @@ function ReefRaceVRMRiderInner({
   // Initialise animator once we have the VRM.
   useEffect(() => {
     if (!vrm) return;
-    const animator = new VRMCharacterAnimator(vrm);
+    // Reverse-lookup animatorId by path so surf_idle/wipeout/victory use
+    // per-character Mixamo bakes when available (Hermes/Tekk have their own;
+    // Miladies share 'vrm-milady'). Surfaces holding only the path use this
+    // helper instead of importing the full registry.
+    const animator = new VRMCharacterAnimator(vrm, getAnimatorIdByPath(vrmPath));
     vrmAnimatorRef.current = animator;
     animator.init('surf_idle').then(() => {
       // setSurfaceClip AFTER init so surf_idle retarget is cached in this.actions;

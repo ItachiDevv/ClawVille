@@ -223,6 +223,19 @@ Three Mixamo clips loaded once at module level:
 
 Per VRM, `VRMCharacterAnimator` retargets `mixamorig:*` bone tracks onto the VRM's VRMHumanBoneName via a canonical map, drives an `AnimationMixer` with 0.3 s idle ↔ walk crossfade. Must `reset().fadeIn().play()` the incoming clip — `crossFadeTo` alone only schedules weights and leaves a non-playing incoming action frozen (see memory `feedback_vrm_crossfade_must_play`).
 
+**Per-character animation overrides** (`apps/web/src/lib/three/character-anim-overrides.json`) — when a VRM's proportions diverge enough from the generic Mixamo skeleton (chibi vs adult-realistic, female vs male gait), the retargeter produces visible foot-slide / hand-hip clipping. Fix: per-skeleton-class Mixamo bakes downloaded with "Skin: With Skin", retargeted to each character's actual bone lengths. `VRMCharacterAnimator(vrm, animatorId)` looks up `animatorId` → slot → GLB path in the JSON, falling back to the generic clip when no override exists. The JSON is the single source of truth; `agent-model-registry.ts` exposes `animatorId` per `ModelRegistryEntry` so picker / arena-npcs / player-avatar / reef-race all agree.
+
+**Skeleton classes** (`scripts/mixamo/characters.json`):
+
+| Class | Members | Bake strategy |
+|---|---|---|
+| `mixamo-adult-male` | tekk, hermes-male | Per-character (different proportions: wings vs lean adult) |
+| `mixamo-adult-female` | hermes-female | Per-character bake |
+| `vrm-milady` | all 8 Milady VRMs | **Shared** — one Mixamo upload powers every Milady; `animatorId='vrm-milady'` on every entry |
+| `crustacean` | lobster + future GLB crustaceans | No Mixamo path; hand-animated in Blender |
+
+CLI: `bun scripts/mixamo/save-character.ts <slug> <character_id> <skeletonClass>` registers; `bun scripts/mixamo/add-anim-everywhere.ts <AnimName> <skeletonClass>` fetches the new bake for every character in the class, auto-patches `character-anim-overrides.json` via `patch-overrides.ts`. Smoke test: `bun scripts/mixamo/smoke-patcher.ts` (10 assertions, ~5 s).
+
 `fadeIn` multiplies the action's current weight by the interpolated fade, so an action whose weight is 0 stays at 0 (memory `feedback_fade_multiplies_weight`). Always start with `enabled = false` (gated by `crossFadeTo`), never `weight = 0`.
 
 ### 6d. Verse-Engine skeleton.update batching

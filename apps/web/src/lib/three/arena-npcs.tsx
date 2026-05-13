@@ -24,7 +24,7 @@ import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { jumpState } from '@/lib/three/jump-state';
 import { useVRMInstance, disposeVRMInstance, preloadVRMBytes } from '@/lib/three/vrm-loader';
 import { VRMCharacterAnimator, preloadMixamoClips } from '@/lib/three/vrm-character-animator';
-import { MODEL_REGISTRY } from '@/lib/three/agent-model-registry';
+import { MODEL_REGISTRY, getAnimatorIdByPath } from '@/lib/three/agent-model-registry';
 // Camera-cull import REMOVED 2026-05-11 — all NPC/label culling deleted per user
 // directive ("remove all the culling completely it ruins the game"). The helper
 // still ships for BumperShellsPlayer but is not used in the open world scene.
@@ -828,15 +828,11 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // toggles frustumCulled back on. Cheap (no-op if already false).
     vrm.scene.traverse((o) => { o.frustumCulled = false; });
     // characterId routes per-character Mixamo overrides in VRMCharacterAnimator.
-    // Hermes-female / hermes-male have rig proportions that diverge enough from
-    // the generic Mixamo skeleton that without their own baked clips, locomotion
-    // deforms (feet meshing together, hands clipping the hips). Milady VRMs use
-    // the generic Mixamo set and pass characterId=undefined.
-    const characterId =
-      npc.species === 'hermes_female' ? 'hermes-female' :
-      npc.species === 'hermes_male'   ? 'hermes-male'   :
-      npc.species === 'tekk'          ? 'tekk'          :
-      undefined;
+    // Sourced from the model registry's animatorId field — single source of
+    // truth so picker + arena + player all agree. Hermes/Tekk use distinct
+    // slugs (their bakes were per-character); every Milady shares 'vrm-milady'
+    // (one shared bake — same mesh + proportions across the Milady fork).
+    const characterId = getAnimatorIdByPath(vrmPath);
     const animator = new VRMCharacterAnimator(vrm, characterId);
     vrmAnimatorRef.current = animator;
     // Debug: track useEffect mount/cleanup on window for CDP diagnostics
