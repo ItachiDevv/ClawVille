@@ -235,7 +235,9 @@ const PlatformModelVRM = memo(function PlatformModelVRM({
 
   React.useEffect(() => {
     if (!vrm) return;
-    const animator = new VRMCharacterAnimator(vrm);
+    // animatorId from the registry so the picker preview plays the same
+    // per-character Mixamo bakes the live game does.
+    const animator = new VRMCharacterAnimator(vrm, reg.animatorId);
     vrmAnimatorRef.current = animator;
     animator.init().catch((err) => {
       console.warn('[SelectAgentCanvas VRM] animator init failed:', err);

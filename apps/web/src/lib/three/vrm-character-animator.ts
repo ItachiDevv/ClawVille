@@ -102,55 +102,27 @@ export type AnimName = keyof typeof ANIM_PATHS;
 // diverge enough (Hermes-female, Hermes-male/Tekk), the resulting deformations
 // look wrong (feet meshing together mid-stride, hands clipping through hips).
 //
-// Fix: re-download each animation from Mixamo with the character loaded
-// (Skin: With Skin → keyframes baked to THAT character's bone lengths) and
-// register the per-character GLB path here. When VRMCharacterAnimator is
-// constructed with a matching characterId, it loads the override; otherwise
-// it falls back to the generic ANIM_PATHS entry.
+// Fix: per-character bakes downloaded from Mixamo with Skin:With Skin and
+// retargeted to the character's actual bone lengths. Override table is now
+// data, not code — lives in ./character-anim-overrides.json so the Mixamo
+// CLI (scripts/mixamo/{fetch-animations,add-anim-everywhere}.ts) can update
+// it programmatically without touching this file. JSON keys must match an
+// AnimName; unknown keys are silently ignored (the strip-and-cast below).
 // ---------------------------------------------------------------------------
 
-const CHARACTER_ANIM_OVERRIDES: Record<string, Partial<Record<AnimName, string>>> = {
-  // Tekk — winged operator. Separate selectable character; his bone-baked
-  // animations live in /avatars/animations/tekk-male/ (named after the
-  // source character file, not the slot). flying is Tekk-exclusive.
-  'tekk': {
-    idle:          '/avatars/animations/tekk-male/idle.glb',
-    walk:          '/avatars/animations/tekk-male/walk.glb',
-    run:           '/avatars/animations/tekk-male/run.glb',
-    victory:       '/avatars/animations/tekk-male/cheering.glb',
-    surf_idle:     '/avatars/animations/tekk-male/skateboarding.glb',
-    wipeout:       '/avatars/animations/tekk-male/wipeout.glb',
-    swimming:      '/avatars/animations/tekk-male/swimming.glb',
-    flying:        '/avatars/animations/tekk-male/flying.glb',
-  },
-  // hermes-male is the Paul-Atreides-style MaleHermes (cape behind body,
-  // tunic + utility belt + leather pants + boots). No flying clip — Paul
-  // has no wings; flying stays Tekk-exclusive.
-  'hermes-male': {
-    idle:          '/avatars/animations/hermes-male/idle.glb',
-    walk:          '/avatars/animations/hermes-male/walk.glb',
-    run:           '/avatars/animations/hermes-male/run.glb',
-    victory:       '/avatars/animations/hermes-male/cheering.glb',
-    surf_idle:     '/avatars/animations/hermes-male/skateboarding.glb',
-    wipeout:       '/avatars/animations/hermes-male/wipeout.glb',
-    swimming:      '/avatars/animations/hermes-male/swimming.glb',
-    // No flying override — flying stays Tekk-exclusive via ANIM_PATHS.flying.
-  },
-  'hermes-female': {
-    idle:          '/avatars/animations/hermes-female/idle.glb',
-    walk:          '/avatars/animations/hermes-female/walk.glb',
-    run:           '/avatars/animations/hermes-female/run.glb',
-    victory:       '/avatars/animations/hermes-female/cheering.glb',
-    surf_idle:     '/avatars/animations/hermes-female/skateboarding.glb',
-    wipeout:       '/avatars/animations/hermes-female/wipeout.glb',
-    swimming:      '/avatars/animations/hermes-female/swimming.glb',
-    praying:       '/avatars/animations/hermes-female/praying.glb',
-    // Note: she also downloaded a `praying.glb` bonus emote at
-    // /avatars/animations/hermes-female/praying.glb — not yet bound
-    // to an AnimName slot. Add a 'praying' clip to ANIM_PATHS if we
-    // want it as an emote.
-  },
-};
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import characterAnimOverridesJson from './character-anim-overrides.json';
+
+const CHARACTER_ANIM_OVERRIDES: Record<string, Partial<Record<AnimName, string>>> =
+  Object.fromEntries(
+    Object.entries(characterAnimOverridesJson as Record<string, unknown>)
+      // Drop the JSON $comment field — it's documentation, not an animatorId.
+      .filter(([k]) => !k.startsWith('$'))
+      .map(([animatorId, slots]) => [
+        animatorId,
+        slots as Partial<Record<AnimName, string>>,
+      ]),
+  );
 
 function resolveAnimPath(name: AnimName, characterId?: string): string {
   if (characterId && CHARACTER_ANIM_OVERRIDES[characterId]?.[name]) {
