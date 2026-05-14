@@ -25,6 +25,11 @@ import { jumpState } from '@/lib/three/jump-state';
 import { useVRMInstance, disposeVRMInstance, preloadVRMBytes } from '@/lib/three/vrm-loader';
 import { VRMCharacterAnimator, preloadMixamoClips } from '@/lib/three/vrm-character-animator';
 import { MODEL_REGISTRY, getAnimatorIdByPath } from '@/lib/three/agent-model-registry';
+import {
+  computeVRMAvatarFit,
+  VRM_AVATAR_TARGET_HEIGHT_WU,
+  VRM_AVATAR_FALLBACK_SCALE,
+} from '@/lib/three/vrm-avatar-sizing';
 // Camera-cull import REMOVED 2026-05-11 — all NPC/label culling deleted per user
 // directive ("remove all the culling completely it ruins the game"). The helper
 // still ships for BumperShellsPlayer but is not used in the open world scene.
@@ -313,58 +318,12 @@ const VRM_DIR_ROTATION: Record<string, number> = {
 // native bbox.y reads as ~194 three.js units, NOT 1.94. Multiplying 194 × 112
 // would produce a ~21,700wu giant.
 //
-// FIX: replace flat constant at the primitive with per-VRM target-height auto-
-// fit. Measure each VRM's natural bbox once at scale=1 and compute
-// scale = VRM_NPC_TARGET_HEIGHT_WU / bbox.y. Milady (bbox≈1.6) → 112. Hermes
-// (bbox≈194) → 0.92. Both land at the same on-screen height.
-const VRM_NPC_SCALE = 112;                    // legacy fallback (picker, any caller importing this)
-const VRM_NPC_TARGET_HEIGHT_WU = 179.2;       // 1.6m Milady × 112 — default on-screen height
-
-// Per-species target overrides. The default fits the WHOLE bbox into 179.2 wu,
-// which undersizes characters whose bbox is inflated by props that aren't part
-// of the body silhouette (wings, big hair, capes). Override the target for
-// those species so the BODY reads at the right size and the prop overshoots.
-//
-// Tekk has mechanical fan-wings that extend ~25% above his head — without an
-// override his body+wings cluster at 179.2 wu, leaving the body itself at
-// ~150 wu (visibly shorter than Mira/Cyrus/Milady).
-const SPECIES_TARGET_HEIGHT_WU: Record<string, number> = {
-  tekk: 230,  // 179.2 × 1.28 — body lands at ~Milady height, wings fan above
-};
-
-/**
- * Compute the per-VRM render scale + foot-grounding offsetY so the avatar
- * stands at VRM_NPC_TARGET_HEIGHT_WU on screen with feet at world Y=0,
- * regardless of the source rig's pivot convention.
- *
- *  - Milady (VRoid spec): feet at local Y=0, bbox.min.y ≈ 0 → offsetY ≈ 0.
- *  - Hermes / Tekk (Mixamo rig): HIPS at local Y=0, feet at Y≈-95cm.
- *    Without the offset, scale alone leaves the feet at world Y=-87 (buried).
- *
- * Mutates vrm.scene.scale during measurement and restores it before returning.
- */
-function computeVRMNpcScale(
-  vrm: { scene: THREE.Object3D } | null | undefined,
-  species?: string,
-): { scale: number; offsetY: number } {
-  if (!vrm) return { scale: VRM_NPC_SCALE, offsetY: 0 };
-  const prev = vrm.scene.scale.clone();
-  vrm.scene.scale.setScalar(1);
-  vrm.scene.updateMatrixWorld(true);
-  const box = new THREE.Box3().setFromObject(vrm.scene);
-  const size = new THREE.Vector3();
-  box.getSize(size);
-  vrm.scene.scale.copy(prev);
-  vrm.scene.updateMatrixWorld(true);
-  const target =
-    (species && SPECIES_TARGET_HEIGHT_WU[species]) || VRM_NPC_TARGET_HEIGHT_WU;
-  const scale = size.y > 0 ? target / size.y : VRM_NPC_SCALE;
-  // Lift the model so its lowest point (feet) lands at the primitive's local
-  // y=0. For Mixamo-rigged VRMs box.min.y is negative (feet below hips/pivot),
-  // so offsetY = -box.min.y * scale > 0.
-  const offsetY = -box.min.y * scale;
-  return { scale, offsetY };
-}
+// VRM sizing lives in vrm-avatar-sizing.ts — shared with player-avatar.tsx so
+// player + NPC humanoids always render at the same target height. Re-export
+// the legacy names below for back-compat with any in-file references.
+const VRM_NPC_SCALE = VRM_AVATAR_FALLBACK_SCALE;
+const VRM_NPC_TARGET_HEIGHT_WU = VRM_AVATAR_TARGET_HEIGHT_WU;
+const computeVRMNpcScale = computeVRMAvatarFit;
 
 // 2026-05-11: all NPC distance/behind-camera/occlusion culling REMOVED per user
 // directive ("let's remove all the culling completely it ruins the game"). No
