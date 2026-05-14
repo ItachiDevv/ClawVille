@@ -238,6 +238,8 @@ Per VRM, `VRMCharacterAnimator` retargets `mixamorig:*` bone tracks onto the VRM
 
 CLI: `bun scripts/mixamo/save-character.ts <slug> <character_id> <skeletonClass>` registers; `bun scripts/mixamo/add-anim-everywhere.ts <AnimName> <skeletonClass>` fetches the new bake for every character in the class, auto-patches `character-anim-overrides.json` via `patch-overrides.ts`. Smoke test: `bun scripts/mixamo/smoke-patcher.ts` (10 assertions, ~5 s).
 
+**Mixamo In-Place toggle is forced ON.** Without it, Mixamo bakes forward locomotion into the hip bone's Z track (verified empirically on `female-walk.fbx`: hip.Z ramps 0→1.73 across 30 frames while hip.Y oscillates 5cm for the bob). After Blender's Y-up→glTF axis conversion the Z forward drift becomes Y up drift, so the avatar "shoots vertically into the sky" every walk cycle. `fetch-animations.ts` mutates the `In Place` param in `gms_hash.params` before submitting the export job. Override with `--no-inplace` only when you actively want baked root motion (e.g., a one-off cinematic clip). Diagnostic helper: `bun scripts/mixamo/diagnose-fbx-walk.py` via headless Blender dumps the hip translation curves so you can confirm root motion is gone after the bake.
+
 `fadeIn` multiplies the action's current weight by the interpolated fade, so an action whose weight is 0 stays at 0 (memory `feedback_fade_multiplies_weight`). Always start with `enabled = false` (gated by `crossFadeTo`), never `weight = 0`.
 
 ### 6d. Verse-Engine skeleton.update batching

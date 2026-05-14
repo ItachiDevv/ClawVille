@@ -25,19 +25,33 @@ import { loadMixamoAuth, mxHeaders, MIXAMO_BASE } from "./auth";
 // `--no-finalize` skips the Blender batch convert and stops after FBX
 // download (useful for debugging just the Mixamo half). Default: run the
 // full pipeline through GLB.
+// `--no-inplace` opts out of forcing the In-Place toggle ON. Default ON
+// because every animation in our runtime is played at a transform-driven
+// character position; root motion baked into the bone tracks shoots the
+// character along whatever axis Mixamo chose (locked-camera locomotion
+// reference rigs use Z forward in cm). Pass --no-inplace for a one-off
+// motion clip where you actually want the baked drift (e.g. a cinematic).
 const rawArgs = process.argv.slice(2);
 const flags = new Set(rawArgs.filter((a) => a.startsWith("--")));
 const args = rawArgs.filter((a) => !a.startsWith("--"));
 const slug = args[0];
 const animQueries = args.slice(1);
 const SHOULD_FINALIZE = !flags.has("--no-finalize");
+const FORCE_INPLACE = !flags.has("--no-inplace");
 
 if (!slug || animQueries.length === 0) {
   console.error(
-    "Usage: bun scripts/mixamo/fetch-animations.ts <slug> <anim1> [anim2] ... [--no-finalize]",
+    "Usage: bun scripts/mixamo/fetch-animations.ts <slug> <anim1> [anim2] ... [--no-finalize] [--no-inplace]",
   );
   process.exit(1);
 }
+
+console.log(
+  `Flags: finalize=${SHOULD_FINALIZE}  inplace=${FORCE_INPLACE}` +
+    (FORCE_INPLACE
+      ? ""
+      : "  (⚠ root motion will be baked into the bone tracks — see fetch-animations.ts header)"),
+);
 
 // ─── Load registry ────────────────────────────────────────────────────────
 const REGISTRY_PATH = resolve(process.cwd(), "scripts/mixamo/characters.json");
@@ -162,15 +176,62 @@ async function getGmsHash(animId: string): Promise<GmsHash> {
   return json.details.gms_hash;
 }
 
+// Mutate gms_hash.params so the In-Place toggle is forced ON. Diagnosis on
+// 2026-05-14: with In-Place off, Mixamo bakes forward locomotion into the
+// hip bone's Z track (verified via diagnose-fbx-walk.py — female-walk.fbx
+// hip.Z goes 0→1.73 linearly across 30 frames while hip.Y oscillates 5cm
+// for the bob). After Blender's Y-up→glTF conversion that Z forward drift
+// becomes Y up drift, so the character appears to "shoot into the sky".
+//
+// Mixamo's param array is `[[name, value], ...]` — case-insensitive match
+// against common in-place toggle names. Logs whatever it mutated so we can
+// see the canonical name(s) the API uses for diagnostic confirmation.
+const INPLACE_NAME_REGEX = /^in[\s_-]?place$/i;
+function forceInPlace(params: GmsHash["params"]): GmsHash["params"] {
+  let mutated = false;
+  const next = params.map(([name, value]) => {
+    if (typeof name === "string" && INPLACE_NAME_REGEX.test(name.trim())) {
+      // Match the existing value's type so the CSV flatten produces a token
+      // Mixamo will accept. Adobe's web UI sends either "true"/"false" (string)
+      // or "1"/"0" depending on the param; never break the existing convention.
+      const truthy: string | number | boolean =
+        typeof value === "boolean"
+          ? true
+          : typeof value === "number"
+            ? 1
+            : typeof value === "string"
+              ? /^[01]$/.test(value)
+                ? "1"
+                : "true"
+              : true;
+      console.log(
+        `    forcing in-place ON: "${name}" was ${JSON.stringify(value)} → ${JSON.stringify(truthy)}`,
+      );
+      mutated = true;
+      return [name, truthy] as [string, string | number | boolean];
+    }
+    return [name, value] as [string, string | number | boolean];
+  });
+  if (!mutated) {
+    console.warn(
+      "    ⚠ no 'in-place' param found in gms_hash.params — dump:",
+      JSON.stringify(params.map((p) => p[0])),
+    );
+  }
+  return next;
+}
+
 // ─── Submit export job ───────────────────────────────────────────────────
 async function submitExport(
   gmsHash: GmsHash,
   productName: string,
+  inPlace: boolean,
 ): Promise<void> {
   // Replicate the bake recipe the manual UI uses: flatten params to a CSV
   // string (Mixamo expects "0,0,0,..." rather than the [[k,v],...] array
   // returned by /products). The other gms_hash fields pass through.
-  const params = gmsHash.params.map((p) => p[1]).join(",");
+  const mutatedParams = inPlace ? forceInPlace(gmsHash.params) : gmsHash.params;
+  const params = mutatedParams.map((p) => p[1]).join(",");
   const bakedHash = { ...gmsHash, params };
   const body = {
     character_id: CHARACTER_ID,
@@ -263,7 +324,7 @@ for (const query of animQueries) {
     const gmsHash = await getGmsHash(anim.id);
     console.log(`  got gms_hash, submitting export with skin=true...`);
 
-    await submitExport(gmsHash, displayName);
+    await submitExport(gmsHash, displayName, FORCE_INPLACE);
     const downloadUrl = await pollMonitor();
     console.log(`  download ready: …${downloadUrl.slice(-50)}`);
 
