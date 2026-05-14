@@ -34,6 +34,7 @@ import {
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { CosmeticLoader } from '@/lib/three/cosmetic-loader';
 import { subscribeEmote } from '@/lib/three/emote-bus';
+import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
 
 // ---------------------------------------------------------------------------
 // GLB-based player avatar — lobster.glb model = 1-2 draw calls
@@ -58,16 +59,12 @@ const BOB_AMPLITUDE = 0.3;
 // need ~3-4s to cross visible area ~2000 wu → 2000/550 ≈ 3.6s).
 const AVATAR_SCALE = 40;
 
-// AVATAR_VRM_SCALE: scale for the player-controlled VRM avatar (Milady) in the main world.
-// Matches VRM_NPC_SCALE = 112 from arena-npcs.tsx so the player's Milady reads at the
-// same size as the wandering Milady NPCs (Miu / Kyoko / etc.) rather than the lobster
-// AVATAR_SCALE height. User feedback 2026-04-24: "should match the size of the milady NPCs,
-// it's about 1/10th the size of a regular one now" — at scale=13 (reg.scale) the
-// player-avatar was 13/112 ≈ 11.6% of the wandering-Milady size, confirming "1/10th".
-// Brand direction: Milady is the hero silhouette of the world, so the player avatar
-// matches the wandering Miladys, not the crustacean player avatars.
-// Do NOT use reg.scale (=13, picker-only).
-const AVATAR_VRM_SCALE = 112;
+// Player-controlled VRM sizing is auto-fit via computeVRMAvatarFit() from
+// vrm-avatar-sizing.ts — same target height as wandering NPCs so the player
+// Hermes / Milady / future humanoid all stand at VRM_AVATAR_TARGET_HEIGHT_WU
+// (~179 wu) regardless of native bbox unit convention. Previously a flat
+// AVATAR_VRM_SCALE=112 hardcoded Milady's 1.6m bbox, which left Hermes (Mixamo
+// cm units) at the wrong on-screen height. Do NOT use reg.scale (=13, picker-only).
 
 const COLOR_TINTS: Record<string, number> = {
   blue: 0x42a5f5, red: 0xef5350, green: 0x66bb6a, yellow: 0xffee58,
@@ -242,6 +239,15 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
   // means the player's VRM is fully disjoint from any wandering NPC sharing
   // the same path — no scene reparenting wars (Codex Critical #1).
   const vrm = useVRMInstance(reg.path, 'player-avatar');
+
+  // Auto-fit scale + foot-grounding offset. Recomputed when the VRM swaps
+  // (model picker change → new path → new instance → useMemo re-runs).
+  // Cm-authored Mixamo VRMs land at the same on-screen height as m-authored
+  // Milady VRMs because we measure the native bbox per-VRM.
+  const { scale: vrmRenderScale, offsetY: vrmFootOffsetY } = useMemo(
+    () => computeVRMAvatarFit(vrm, reg.animatorId),
+    [vrm, reg.animatorId],
+  );
 
   // Dispose this player-avatar's instance when the avatar path changes or unmounts.
   useEffect(() => {
@@ -468,9 +474,13 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
 
   return (
     <group ref={groupRef}>
+      {/* Auto-fit scale + foot-ground offset: Milady (1.6m, feet at Y=0)
+          → scale ~112, offsetY ~0. Hermes/Tekk (Mixamo cm, hips at Y=0)
+          → scale ~0.93, offsetY ~+87. Matches arena-npcs VRMNpcMesh. */}
       <primitive
         object={vrm.scene}
-        scale={[AVATAR_VRM_SCALE, AVATAR_VRM_SCALE, AVATAR_VRM_SCALE]}
+        scale={[vrmRenderScale, vrmRenderScale, vrmRenderScale]}
+        position={[0, vrmFootOffsetY, 0]}
       />
       {/*
         Equipped cosmetics (hats / glasses / aura / particles) for the
