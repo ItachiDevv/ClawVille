@@ -61,19 +61,18 @@ Loaded by `<ArenaBuildings>`. Each is a single GLB clone placed on a ring at rad
 
 ## 3. NPC roster
 
-### 3a. Wandering NPCs — 18 total
+### 3a. Wandering NPCs — 9 total
 
-5 Milady VRMs + 13 GLB sea creatures. Server-driven positions via SSE; client smooths them. Code: `lib/three/arena-npcs.tsx`. Definitions: `packages/shared/src/constants/npc-definitions.ts` (or the demo NPCs in `stores/npc.ts` when SSE is disconnected).
+3 Milady VRMs + 3 Hermes/Tekk VRMs + 3 GLB sea creatures. Server-driven positions via SSE; client smooths them. Code: `lib/three/arena-npcs.tsx`. Definitions: `packages/shared/src/constants/npc-definitions.ts` (or the demo NPCs in `stores/npc.ts` when SSE is disconnected). All VRM sizing is handled by `computeVRMAvatarFit()` from `lib/three/vrm-avatar-sizing.ts` — every humanoid renders at `VRM_AVATAR_TARGET_HEIGHT_WU = 179.2` regardless of native bbox unit convention.
 
 | Species | Count | Asset |
 |---|---|---|
-| Milady VRM | 5 | `milady-official-{2,3,4,7,8}.vrm` (one per NPC, must be distinct paths — shared paths cause T-pose collisions) |
-| Lobster GLB | 8 | `models/lobster.glb` |
-| Sweet crab | 1 | `models/sweet_crab.glb` |
-| Hermit crab | 1 | `models/hermitcrab.glb` |
-| Crayfish | 3 | scattered (Marlin/Driftwood/Riptide use `lobster` species, not crayfish prop) |
-
-> **Hermes VRM scaffold (Mira/Tekk) is wired but unused.** `MODEL_REGISTRY` carries `hermes_female` + `hermes_male`, `arena-npcs.tsx` preloads both VRMs and routes `characterId` through `VRMCharacterAnimator`, but the wanderer roster reverted from Mira/Tekk to Maple/Ash on 2026-05-12 because shared `VRM_NPC_SCALE=112` blows the Hermes meshes up massively. Add a per-species scale override in `arena-npcs.tsx` before reinstating them.
+| Milady VRM | 3 | `milady-official-{2,7,8}.vrm` (Vivi / Miu / Kyoko — distinct paths required, shared paths cause T-pose collisions) |
+| Hermes VRM | 2 | `hermes-female.vrm` (Mira), `hermes-male.vrm` (Cyrus) |
+| Tekk VRM | 1 | `tekk.vrm` — uses `SPECIES_TARGET_HEIGHT_WU.tekk = 230` so wings can overshoot the body silhouette |
+| Lobster GLB | 1 | `models/lobster.glb` (Driftwood) |
+| Sweet crab | 1 | `models/sweet_crab.glb` (Marlin) |
+| Hermit crab | 1 | `models/hermitcrab.glb` (Riptide) |
 
 ### 3b. Building residents — 10 total
 
