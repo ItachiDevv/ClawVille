@@ -1175,17 +1175,17 @@ async function validateTutorialQuestEngagement(
       // tutorial gating we recompute on-demand (per claim, infrequent).
       const rankRows = await db.execute<{ rank: number }>(sql`
         WITH events_window AS (
-          SELECT subject_type, subject_id FROM events
-          WHERE created_at > NOW() - INTERVAL '24 hours'
-            AND subject_id IS NOT NULL
+          SELECT avatar_id FROM events
+          WHERE ts > NOW() - INTERVAL '24 hours'
+            AND avatar_id IS NOT NULL
         ),
         ranked AS (
-          SELECT subject_id,
+          SELECT avatar_id,
                  ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC) AS rank
           FROM events_window
-          GROUP BY subject_id
+          GROUP BY avatar_id
         )
-        SELECT rank::int FROM ranked WHERE subject_id = ${avatarId}
+        SELECT rank::int FROM ranked WHERE avatar_id = ${avatarId}
       `);
       const rank = Number(rankRows[0]?.rank ?? 9999);
       return rank > 0 && rank <= 100 ? ok() : fail('rank_too_low');
@@ -1195,21 +1195,21 @@ async function validateTutorialQuestEngagement(
       // Avatar is the top-visited subject for any single building (24h).
       const rows = await db.execute<{ matched: number }>(sql`
         WITH per_building AS (
-          SELECT building_id, subject_id, COUNT(*) AS visits
+          SELECT building_id, avatar_id, COUNT(*) AS visits
           FROM events
           WHERE event_type = 'building.visited'
-            AND created_at > NOW() - INTERVAL '24 hours'
+            AND ts > NOW() - INTERVAL '24 hours'
             AND building_id IS NOT NULL
-            AND subject_id IS NOT NULL
-          GROUP BY building_id, subject_id
+            AND avatar_id IS NOT NULL
+          GROUP BY building_id, avatar_id
         ),
         winners AS (
-          SELECT building_id, subject_id,
+          SELECT building_id, avatar_id,
                  ROW_NUMBER() OVER (PARTITION BY building_id ORDER BY visits DESC) AS rk
           FROM per_building
         )
         SELECT COUNT(*)::int AS matched FROM winners
-        WHERE rk = 1 AND subject_id = ${avatarId}
+        WHERE rk = 1 AND avatar_id = ${avatarId}
       `);
       return Number(rows[0]?.matched ?? 0) >= 1 ? ok() : fail('not_top_visitor');
     }
@@ -1247,17 +1247,17 @@ async function validateTutorialQuestEngagement(
       // Reuse top-100 rank check.
       const rankRows = await db.execute<{ rank: number }>(sql`
         WITH events_window AS (
-          SELECT subject_id FROM events
-          WHERE created_at > NOW() - INTERVAL '24 hours'
-            AND subject_id IS NOT NULL
+          SELECT avatar_id FROM events
+          WHERE ts > NOW() - INTERVAL '24 hours'
+            AND avatar_id IS NOT NULL
         ),
         ranked AS (
-          SELECT subject_id,
+          SELECT avatar_id,
                  ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC) AS rank
           FROM events_window
-          GROUP BY subject_id
+          GROUP BY avatar_id
         )
-        SELECT rank::int FROM ranked WHERE subject_id = ${avatarId}
+        SELECT rank::int FROM ranked WHERE avatar_id = ${avatarId}
       `);
       const rank = Number(rankRows[0]?.rank ?? 9999);
       return connected >= 1 && wins >= 3 && learned >= 10 && rank > 0 && rank <= 100
