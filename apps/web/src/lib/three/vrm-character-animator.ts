@@ -43,52 +43,59 @@ import { retargetMixamoClip, type MixamoGltf } from './mixamo-retarget';
 // Mixamo animation asset paths
 // ---------------------------------------------------------------------------
 
+// Phase 2 (2026-05-17): 19 emote GLBs (the 6 originals + 13 from the Milady
+// fork) are baked into ONE multi-clip bundle by scripts/build-anim-bundles.mjs.
+// Path syntax `bundle.glb#clipName` tells loadRawGltf to fetch the bundle
+// once and pick the named clip from its `animations[]`. First emote trigger
+// pays 2.2 MB once (vs 19 × ~80-300 KB lazy fetches over a session); every
+// subsequent emote across that VRM's lifetime is cache-served at zero
+// network cost. The bundle is 11% SMALLER than the sum of 19 single-clip
+// GLBs after gltf-transform dedup() (skeleton accessors shared).
+//
+// Locomotion (idle/walk/run) stays as 3 separate GLBs — SW v3 precaches
+// them, they're loaded eagerly via preloadLocomotionClips() at /game mount,
+// and bundling them would force the 2.2 MB emote payload to load alongside
+// (or split the locomotion across two fetches). The 3-file pattern is
+// already optimal there.
+//
+// Surf clips (skateboarding/wipeout/cheering) and cross-character clips
+// (swimming/flying/praying) stay separate too — they're prewarmed by the
+// reef-race entry point and almost never touched outside that activity.
+const EMOTE_BUNDLE = '/avatars/animations/_emotes.glb';
+
 const ANIM_PATHS = {
-  // Locomotion
+  // Locomotion — separate GLBs (precached by SW).
   idle:            '/avatars/animations/idle.glb',
   walk:            '/avatars/animations/walk.glb',
   run:             '/avatars/animations/run.glb',
-  // Emotes — original 6 (PR #37)
-  looking_around:  '/avatars/animations/emotes/looking-around.glb',
-  squat:           '/avatars/animations/emotes/squat.glb',
-  waving:          '/avatars/animations/emotes/waving-both-hands.glb',
-  talk:            '/avatars/animations/emotes/talk.glb',
-  dance_happy:     '/avatars/animations/emotes/dance-happy.glb',
-  float:           '/avatars/animations/emotes/float.glb',
-  // Reef Race v2 surf clips (Mixamo CC0; downloaded 2026-04-29).
-  // - surf_idle:  Mixamo "Skateboarding" (knees bent, arms balanced) — used as
-  //               the surf-stand idle. No "Surfing" exists in Mixamo's library;
-  //               Skateboarding gives the cleanest riding stance for a surfboard.
-  // - wipeout:    Mixamo "Stumble Backwards" — backward flailing fall when the
-  //               player crashes off the board.
-  // - victory:    Mixamo "Cheering" — finish-line/podium pose.
+  // Emotes — multi-clip bundle (one fetch on first emote of session).
+  looking_around:  `${EMOTE_BUNDLE}#looking_around`,
+  squat:           `${EMOTE_BUNDLE}#squat`,
+  waving:          `${EMOTE_BUNDLE}#waving`,
+  talk:            `${EMOTE_BUNDLE}#talk`,
+  dance_happy:     `${EMOTE_BUNDLE}#dance_happy`,
+  float:           `${EMOTE_BUNDLE}#float`,
+  crawling:        `${EMOTE_BUNDLE}#crawling`,
+  crying:          `${EMOTE_BUNDLE}#crying`,
+  dance_breaking:  `${EMOTE_BUNDLE}#dance_breaking`,
+  dance_hiphop:    `${EMOTE_BUNDLE}#dance_hiphop`,
+  dance_popping:   `${EMOTE_BUNDLE}#dance_popping`,
+  fall:            `${EMOTE_BUNDLE}#fall`,
+  fishing:         `${EMOTE_BUNDLE}#fishing`,
+  flip:            `${EMOTE_BUNDLE}#flip`,
+  jump:            `${EMOTE_BUNDLE}#jump`,
+  kiss:            `${EMOTE_BUNDLE}#kiss`,
+  rude_gesture:    `${EMOTE_BUNDLE}#rude_gesture`,
+  sorrow:          `${EMOTE_BUNDLE}#sorrow`,
+  spell_cast:      `${EMOTE_BUNDLE}#spell_cast`,
+  // Reef Race v2 surf clips — separate, prewarmed by ReefRacePlayer.
   surf_idle:       '/avatars/animations/skateboarding.glb',
   wipeout:         '/avatars/animations/wipeout.glb',
   victory:         '/avatars/animations/cheering.glb',
-  // Cross-character locomotion clips. Generic fallback uses Hermes-female's
-  // bake so Milady/legacy VRMs still get a usable swim loop via the retargeter;
-  // hermes-male overrides swimming with its own bake. Flying has no generic
-  // fallback (only Tekk has wings) — Milady gets the path-not-found that the
-  // animator silently handles as a no-op.
+  // Cross-character bakes — separate (small + only-when-needed).
   swimming:        '/avatars/animations/hermes-female/swimming.glb',
   flying:          '/avatars/animations/tekk-male/flying.glb',
-  // praying is intended as a female-only emote; generic fallback uses
-  // Hermes-female's bake so retargeting works for any humanoid VRM.
   praying:         '/avatars/animations/hermes-female/praying.glb',
-  // Emotes — 13 new peaceful clips (imported from Milady fork)
-  crawling:        '/avatars/animations/emotes/crawling.glb',
-  crying:          '/avatars/animations/emotes/crying.glb',
-  dance_breaking:  '/avatars/animations/emotes/dance-breaking.glb',
-  dance_hiphop:    '/avatars/animations/emotes/dance-hiphop.glb',
-  dance_popping:   '/avatars/animations/emotes/dance-popping.glb',
-  fall:            '/avatars/animations/emotes/fall.glb',
-  fishing:         '/avatars/animations/emotes/fishing.glb',
-  flip:            '/avatars/animations/emotes/flip.glb',
-  jump:            '/avatars/animations/emotes/jump.glb',
-  kiss:            '/avatars/animations/emotes/kiss.glb',
-  rude_gesture:    '/avatars/animations/emotes/rude-gesture.glb',
-  sorrow:          '/avatars/animations/emotes/sorrow.glb',
-  spell_cast:      '/avatars/animations/emotes/spell-cast.glb',
 } as const;
 
 export type AnimName = keyof typeof ANIM_PATHS;
@@ -180,10 +187,31 @@ type RawGltfEntry =
   | { status: 'resolved'; gltf:    MixamoGltf }
   | { status: 'rejected'; error:   unknown };
 
-// Cache keyed by the FULL resolved path, so per-character overrides don't
-// collide with the generic clip of the same AnimName, and so two characters
-// sharing the same override path still hit the same cached GLTF.
+// Cache keyed by the FULL resolved path including the optional `#clipName`
+// suffix, so per-character overrides don't collide with the generic clip
+// of the same AnimName, and so two characters sharing the same override
+// path still hit the same cached entry. The bundle GLB itself is cached
+// separately in BUNDLE_CACHE so 19 clips from the same bundle share one
+// download.
 const RAW_CLIP_CACHE = new Map<string, RawGltfEntry>();
+
+// Separate cache for raw bundle GLBs keyed by file path only (no `#clip`
+// suffix). Letting multiple `#clip` entries in RAW_CLIP_CACHE share one
+// underlying GLB fetch is the whole point of the bundle — without this
+// the first 19 emote triggers would each spin up a separate fetch even
+// though they all target the same file.
+type BundleEntry =
+  | { status: 'pending';  promise: Promise<MixamoGltf> }
+  | { status: 'resolved'; gltf:    MixamoGltf }
+  | { status: 'rejected'; error:   unknown };
+const BUNDLE_CACHE = new Map<string, BundleEntry>();
+
+/** Split `path.glb#clipName` into [path, clipName | null]. */
+function splitBundlePath(fullPath: string): [string, string | null] {
+  const hash = fullPath.indexOf('#');
+  if (hash === -1) return [fullPath, null];
+  return [fullPath.slice(0, hash), fullPath.slice(hash + 1)];
+}
 
 // Separate loader for anim GLBs — no VRMLoaderPlugin needed
 let _animLoader: GLTFLoader | null = null;
@@ -198,40 +226,94 @@ function getAnimLoader(): GLTFLoader {
 }
 
 /**
- * Load a Mixamo animation GLB and return the full GLTF bundle ({ scene, animations }).
- * Promise is cached at module level — each path loads only once.
+ * Load a Mixamo animation GLB and return a MixamoGltf bundle for the
+ * requested clip. Promise is cached at module level — each (file, clip)
+ * pair resolves only once and each underlying GLB downloads only once
+ * even when many `#clip` entries reference it.
+ *
+ * Two cache layers:
+ *   - RAW_CLIP_CACHE  — keyed by `${path}#${clip}` (per-AnimName view)
+ *   - BUNDLE_CACHE    — keyed by `${path}` (file fetch dedup)
+ *
+ * For single-clip GLBs (no `#`), the bundle cache holds the same MixamoGltf
+ * that ends up in RAW_CLIP_CACHE and the two caches store the same object.
+ * For multi-clip bundles (`#clipName`), each AnimName gets a MixamoGltf
+ * whose `animations[]` contains the ONE matching clip (so the retargeter's
+ * existing `animations[0]` pick keeps working). The shared `scene` is the
+ * bundle's single base scene — all clips inherit it via Mixamo's shared
+ * rest-pose invariant (see build-anim-bundles.mjs for the merge details).
  */
 function loadRawGltf(name: AnimName, characterId?: string): Promise<MixamoGltf> {
-  const path = resolveAnimPath(name, characterId);
-  const cached = RAW_CLIP_CACHE.get(path);
+  const fullPath = resolveAnimPath(name, characterId);
+
+  const cached = RAW_CLIP_CACHE.get(fullPath);
   if (cached) {
     if (cached.status === 'resolved') return Promise.resolve(cached.gltf);
     if (cached.status === 'rejected') return Promise.reject(cached.error);
     return cached.promise;
   }
 
-  const promise = getAnimLoader()
-    .loadAsync(path)
-    .then((gltf) => {
-      if (!gltf.animations.length) {
-        throw new Error(`[vrm-animator] No animation clips in ${path}`);
+  const [filePath, clipName] = splitBundlePath(fullPath);
+
+  // Fetch the underlying GLB once (per filePath), reused across all clips.
+  const fetchBundle = (): Promise<MixamoGltf> => {
+    const b = BUNDLE_CACHE.get(filePath);
+    if (b) {
+      if (b.status === 'resolved') return Promise.resolve(b.gltf);
+      if (b.status === 'rejected') return Promise.reject(b.error);
+      return b.promise;
+    }
+    const p = getAnimLoader()
+      .loadAsync(filePath)
+      .then((gltf) => {
+        if (!gltf.animations.length) {
+          throw new Error(`[vrm-animator] No animation clips in ${filePath}`);
+        }
+        const entry: MixamoGltf = {
+          scene:      gltf.scene as THREE.Group,
+          animations: gltf.animations,
+        };
+        entry.scene.updateMatrixWorld(true);
+        BUNDLE_CACHE.set(filePath, { status: 'resolved', gltf: entry });
+        return entry;
+      })
+      .catch((err) => {
+        BUNDLE_CACHE.set(filePath, { status: 'rejected', error: err });
+        throw err;
+      });
+    BUNDLE_CACHE.set(filePath, { status: 'pending', promise: p });
+    return p;
+  };
+
+  const promise = fetchBundle()
+    .then((bundle) => {
+      let entry: MixamoGltf;
+      if (clipName) {
+        const clip = bundle.animations.find((a) => a.name === clipName);
+        if (!clip) {
+          throw new Error(
+            `[vrm-animator] Bundle ${filePath} missing clip "${clipName}" ` +
+            `(found: ${bundle.animations.map((a) => a.name).join(', ')})`,
+          );
+        }
+        // The retargeter reads animations[0] and uses bundle.scene for
+        // rest-pose lookups. Sharing the scene across clips is correct —
+        // every Mixamo bake uses the same default rig with the same rest
+        // pose, and the bundle build script preserved exactly one base
+        // scene + N animations that all bind to it by node name.
+        entry = { scene: bundle.scene, animations: [clip] };
+      } else {
+        entry = bundle;
       }
-      const entry: MixamoGltf = {
-        scene:      gltf.scene as THREE.Group,
-        animations: gltf.animations,
-      };
-      // Force matrix world computation once at load time so the retargeter
-      // gets accurate rest-pose world quaternions from the source rig nodes.
-      entry.scene.updateMatrixWorld(true);
-      RAW_CLIP_CACHE.set(path, { status: 'resolved', gltf: entry });
+      RAW_CLIP_CACHE.set(fullPath, { status: 'resolved', gltf: entry });
       return entry;
     })
     .catch((err) => {
-      RAW_CLIP_CACHE.set(path, { status: 'rejected', error: err });
+      RAW_CLIP_CACHE.set(fullPath, { status: 'rejected', error: err });
       throw err;
     });
 
-  RAW_CLIP_CACHE.set(path, { status: 'pending', promise });
+  RAW_CLIP_CACHE.set(fullPath, { status: 'pending', promise });
   return promise;
 }
 
