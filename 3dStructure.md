@@ -11,7 +11,7 @@
 > - **`GameFeatures.md`** — gameplay.
 > - **This doc** — *how* the 3D scene is wired: coordinates, camera, lights, GPU budget, animation, asset pipeline.
 
-**Last edit:** 2026-05-12 — restructured into a tight manifest (was 2430 lines / 200 KB with 14 stacked audit entries). Content unchanged except for the recap log; this is purely a readability + binding pass.
+**Last edit:** 2026-05-17 — §9d added: Mixamo animation GLB load policy. Mount-time `preloadMixamoClips()` no longer fans out 19 emote fetches via `requestIdleCallback`; emotes load on first `playOneShot()` (or via `preloadClips()` from the hotbar). 2026-05-12 — restructured into a tight manifest (was 2430 lines / 200 KB with 14 stacked audit entries).
 
 ---
 
@@ -344,6 +344,15 @@ No `InstancedMesh + ShaderMaterial` — known WebGPU silent crash on Iris Xe. Me
 - `<PreCompilePipelines />` (`World3DCanvas.tsx`) — `gl.compileAsync(scene, camera)` after first RAF. Moves 274 ms hitch into loading spinner. WebGL no-op.
 - `<StaggeredTextureUpload />` — `requestIdleCallback` with 6 ms budget per slice (~98 textures in ~352 ms). Safari fallback: rAF batched 4/frame. Was 200 textures × 2/frame = 8 s pre-rIC.
 - `<DeferredTerrainPreloads />` (rendered outside the Canvas) — fires `useGLTF.preload()` for all decoration + environment GLBs inside a `requestAnimationFrame` so the preloads land AFTER the first painted frame, not at module evaluation.
+
+### 9d. Mixamo animation GLB load policy (2026-05-17)
+
+22 Mixamo animation GLBs live under `apps/web/public/avatars/animations/` (3 locomotion + 13 emotes + 4 surf clips + swimming/flying/praying). Per-character bakes for Hermes-male / Hermes-female / Tekk add variants under subfolders.
+
+- **Mount-time eager fetch — locomotion only.** `preloadMixamoClips()` in `vrm-character-animator.ts` now calls only `preloadLocomotionClips()` (idle / walk / run). Callers: `player-avatar.tsx`, `arena-npcs.tsx`, `SelectAgentCanvas.tsx`, `ReefRacePlayer.tsx`.
+- **Emote tier — on-demand via `playOneShot()`.** First trigger per VRM instance fetches the GLB through `loadRawGltf` and caches it. Players who never emote pay zero.
+- **Hotbar warm-up — targeted `preloadClips()`.** `emote-hotbar.tsx` warms the ≤4 currently equipped emote GLBs the moment the equipped list resolves. Overlaps fetches with first interactive frame without fanning out all 22.
+- **History.** Pre-2026-05-17 `preloadMixamoClips()` also kicked off `preloadEmoteClips()` (all 19 emotes via `requestIdleCallback`). That fanout was the visible queue of `injected.js`-initiated fetches in the network panel and contributed ~3 s to first-interactive on Cloudflare Falkenstein POPs. `preloadEmoteClips()` is still exported for code that genuinely wants the whole tier.
 
 ### 9c. Renderer factory
 
