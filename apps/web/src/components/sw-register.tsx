@@ -19,7 +19,23 @@ export function SWRegister() {
         const reg = await navigator.serviceWorker.register('/sw.js', {
           // Scope to entire origin — needs to cover /game and /models/**
           scope: '/',
+          // Bypass HTTP cache when fetching the sw.js bytes themselves.
+          // Default `'imports'` means Chrome HTTP-caches sw.js for the
+          // server-set max-age, so a sw.js redeploy can take up to 24 h
+          // (Chrome's default update-check interval) to roll out to all
+          // existing clients even after the new bytes are on the origin.
+          // 'none' makes EVERY registration/update check refetch sw.js
+          // bypass-cache, so the moment we ship a new version it lands
+          // on the next page load. Standard option, zero compat cost.
+          updateViaCache: 'none',
         });
+
+        // Belt-and-suspenders: explicitly poke the browser to recheck the
+        // origin for a newer sw.js right now (within the 5 s post-load
+        // budget). Without this, Chrome relies entirely on its built-in
+        // 24 h heuristic, which means a hot user who hasn't closed their
+        // tab in a day misses every same-day deploy.
+        try { await reg.update(); } catch { /* non-fatal */ }
 
         reg.addEventListener('updatefound', () => {
           const newWorker = reg.installing;
