@@ -61,7 +61,15 @@ import { retargetMixamoClip, type MixamoGltf } from './mixamo-retarget';
 // Surf clips (skateboarding/wipeout/cheering) and cross-character clips
 // (swimming/flying/praying) stay separate too — they're prewarmed by the
 // reef-race entry point and almost never touched outside that activity.
-const EMOTE_BUNDLE = '/avatars/animations/_emotes.glb';
+// Content-version suffix on the bundle URL is the cache-buster: bumping
+// EMOTE_BUNDLE_VERSION any time scripts/build-anim-bundles.mjs regenerates
+// the file forces Cloudflare's edge + the browser SW to fetch a fresh copy
+// without touching the CF cache-purge API (the deploy token we have has
+// zone:edit but not cache_purge scope). The page rule matches on path
+// only; the `?v=N` query is opaque to it but Cloudflare keys the cache
+// entry on the full URL incl. query string, giving us cheap manual purges.
+const EMOTE_BUNDLE_VERSION = 1;
+const EMOTE_BUNDLE = `/avatars/animations/_emotes.glb?v=${EMOTE_BUNDLE_VERSION}`;
 
 const ANIM_PATHS = {
   // Locomotion — separate GLBs (precached by SW).
