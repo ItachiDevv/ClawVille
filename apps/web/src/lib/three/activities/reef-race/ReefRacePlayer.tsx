@@ -85,6 +85,7 @@ import {
 } from '@/lib/three/vrm-loader';
 import {
   VRMCharacterAnimator,
+  preloadClips,
   preloadMixamoClips,
 } from '@/lib/three/vrm-character-animator';
 import { getAnimatorIdByPath } from '@/lib/three/agent-model-registry';
@@ -100,10 +101,16 @@ useGLTF.preload('/models/crayfish.glb');  // SPEC 1 — 3rd species, static mesh
 useGLTF.preload('/models/reef-race/surfboards/surfboard_1.glb');
 
 // SPEC 2 — Milady VRM preloads.
-// preloadMixamoClips() warms the raw Mixamo GLB cache (idle/walk/run + surf clips).
+// preloadMixamoClips() warms the raw Mixamo GLB cache (idle/walk/run only).
+// preloadClips() warms the specific Reef Race surf clips that ReefRacePlayer
+// fires via playOneShot ('wipeout' on crash, 'victory' on finish). Without
+// this they'd network-fetch lazily on the click, adding ~150 ms RTT.
+// Surf_idle is set via setSurfaceClip() at init — its load races the avatar
+// fetch and is rarely user-visible, but we warm it for symmetry.
 // preloadVRMBytes() warms the ArrayBuffer fetch cache for all 8 official VRMs.
 // Both are fire-and-forget — errors surface later when useVRMInstance() resolves.
 preloadMixamoClips();
+preloadClips(['surf_idle', 'wipeout', 'victory']);
 for (let _n = 1; _n <= 8; _n++) {
   preloadVRMBytes(`/avatars/milady-official-${_n}.vrm`);
 }
