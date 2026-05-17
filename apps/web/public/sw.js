@@ -1,16 +1,31 @@
 // ClawVille Service Worker
-// Cache-first for GLBs + basis WASM; network-first for Next.js JS chunks.
-// Bump CACHE_VERSION whenever GLB content changes to bust the GLB cache.
+// Cache-first for static 3D assets (GLB + VRM + basis WASM); SWR for Next.js
+// JS chunks. Bump CACHE_VERSION whenever the asset matcher or layout changes.
+//
+// 2026-05-17 v3:
+//   - isGlbRequest used to match ONLY /models/*.glb, which silently bypassed
+//     the entire /avatars/animations/** tree (22 Mixamo GLBs) and the
+//     /cosmetics/** tree. Repeat visitors paid full network cost for every
+//     animation on every page load — the bug behind the 80+ animation-GLB
+//     fan-out in the network panel even after the v2 SW shipped.
+//   - Renamed isGlbRequest -> isAssetRequest. Now matches any .glb or .vrm
+//     under the static-asset roots we serve (/models, /avatars, /cosmetics,
+//     /skins). VRMs go through the same cache-first path so returning
+//     visitors don't re-download a 1–2 MB avatar on every load.
+//   - Bumped MAX_GLB_CACHE_BYTES 20 -> 60 MB. The active /game working set
+//     (player VRM + 10 buildings + a few decorations + 3 locomotion clips +
+//     the player's equipped emotes) fits in well under 30 MB but headroom
+//     prevents eviction churn when a player wanders into a new building.
 
-const CACHE_VERSION = 'v2';
-const GLB_CACHE = `clawville-glb-${CACHE_VERSION}`;
+const CACHE_VERSION = 'v3';
+const GLB_CACHE = `clawville-assets-${CACHE_VERSION}`;
 const STATIC_CACHE = `clawville-static-${CACHE_VERSION}`;
 
 // Individual file size limit: skip caching files larger than this.
 const MAX_INDIVIDUAL_BYTES = 10 * 1024 * 1024; // 10 MB
 
-// Total GLB cache size limit. Entries are evicted oldest-first if exceeded.
-const MAX_GLB_CACHE_BYTES = 20 * 1024 * 1024; // 20 MB
+// Total asset cache size limit. Entries are evicted oldest-first if exceeded.
+const MAX_GLB_CACHE_BYTES = 60 * 1024 * 1024; // 60 MB
 
 // Critical-path GLBs pre-cached at install time.
 // All 10 building models + player + terrain decorations (~6.2 MB total).
@@ -33,6 +48,13 @@ const PRECACHE_GLBS = [
   '/models/boating-school.glb',         // 548 KB
   '/models/building-submarine.glb',     // 363 KB
   '/models/building-lighthouse.glb',    // 197 KB
+  // The 3 locomotion clips every VRM avatar needs to render without a T-pose
+  // flash. Loaded eagerly on /game mount by preloadLocomotionClips() —
+  // pre-caching them here means the SECOND-visit network panel has 0 anim GLB
+  // requests at mount instead of 3.
+  '/avatars/animations/idle.glb',
+  '/avatars/animations/walk.glb',
+  '/avatars/animations/run.glb',
 ];
 
 // Basis KTX2 WASM transcoder — tiny but needed before any KTX2 texture loads.
@@ -45,8 +67,18 @@ const ALL_PRECACHE = [...PRECACHE_GLBS, ...PRECACHE_BASIS];
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-function isGlbRequest(url) {
-  return url.pathname.startsWith('/models/') && url.pathname.endsWith('.glb');
+// Match any static 3D asset (.glb or .vrm) under our known asset roots.
+// We restrict to specific path prefixes so we never accidentally cache,
+// say, a user-uploaded GLB served from /api or some future dynamic route.
+const ASSET_PATH_PREFIXES = ['/models/', '/avatars/', '/cosmetics/', '/skins/'];
+
+function isAssetRequest(url) {
+  const p = url.pathname;
+  if (!(p.endsWith('.glb') || p.endsWith('.vrm'))) return false;
+  for (const prefix of ASSET_PATH_PREFIXES) {
+    if (p.startsWith(prefix)) return true;
+  }
+  return false;
 }
 
 function isBasisRequest(url) {
@@ -131,7 +163,10 @@ self.addEventListener('activate', (event) => {
         allKeys
           .filter(
             (key) =>
+              // v2's name was clawville-glb-* — delete on activate so v3
+              // doesn't double-spend the QuotaManager budget.
               (key.startsWith('clawville-glb-') && key !== GLB_CACHE) ||
+              (key.startsWith('clawville-assets-') && key !== GLB_CACHE) ||
               (key.startsWith('clawville-static-') && key !== STATIC_CACHE)
           )
           .map((key) => caches.delete(key))
@@ -153,7 +188,7 @@ self.addEventListener('fetch', (event) => {
   // Never intercept API calls or HTML navigations.
   if (isApiRequest(url) || isHtmlNavigation(event.request)) return;
 
-  if (isGlbRequest(url) || isBasisRequest(url)) {
+  if (isAssetRequest(url) || isBasisRequest(url)) {
     // Cache-first: serve from cache, fall back to network and populate cache.
     event.respondWith(cacheFirstGlb(event.request, url));
     return;
