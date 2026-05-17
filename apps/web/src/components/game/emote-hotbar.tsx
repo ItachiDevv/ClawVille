@@ -20,7 +20,11 @@
 import { useEffect, useMemo } from 'react';
 import { useOwnedCosmetics, type OwnedCosmetic } from '@/hooks/use-cosmetics';
 import { fireEmote } from '@/lib/three/emote-bus';
-import { isEmoteAnimName } from '@/lib/three/vrm-character-animator';
+import {
+  isEmoteAnimName,
+  preloadClips,
+  type AnimName,
+} from '@/lib/three/vrm-character-animator';
 
 const SLOT_COUNT = 4;
 
@@ -86,6 +90,20 @@ export default function EmoteHotbar() {
     }
     return list;
   }, [data]);
+
+  // Warm the GLB cache for the player's equipped emotes the moment we
+  // know which ones they are. We no longer eager-preload all 22 emote
+  // clips at mount (see vrm-character-animator.ts preloadMixamoClips),
+  // so this is the targeted prefetch for the ≤4 the player can actually
+  // trigger from the hotbar. Cache is keyed by path, so repeat invocations
+  // are free.
+  useEffect(() => {
+    if (equipped.length === 0) return;
+    const names = equipped
+      .map((e) => e.animationKey)
+      .filter(isEmoteAnimName) as AnimName[];
+    if (names.length > 0) preloadClips(names);
+  }, [equipped]);
 
   // Hotkeys 1-4 — fire the corresponding slot. Skip if user is typing
   // (chat input focused) or any other input/textarea/contenteditable owns focus.
