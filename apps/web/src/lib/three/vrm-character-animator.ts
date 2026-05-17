@@ -259,6 +259,19 @@ export function preloadLocomotionClips(): void {
 }
 
 /**
+ * Warm a specific set of clip GLBs without retargeting. Useful when the
+ * player has equipped a small set of emotes (≤4 on the hotbar) and we
+ * want the network fetch to overlap with the first interactive frame
+ * instead of starting after the click. Fetches deduplicate against
+ * RAW_CLIP_CACHE so calling this repeatedly is free.
+ */
+export function preloadClips(names: readonly AnimName[], characterId?: string): void {
+  for (const name of names) {
+    loadRawGltf(name, characterId).catch(() => undefined);
+  }
+}
+
+/**
  * Deferred preload of all emote / surf clips. Call this on idle (after
  * first paint) or just-in-time when the player opens the emote hotbar.
  * Uses `requestIdleCallback` when available so it doesn't compete with
@@ -285,13 +298,25 @@ export function preloadEmoteClips(): void {
 }
 
 /**
- * Backwards-compat alias. Preloads locomotion (eager) + schedules the
- * emote tier to load on idle. Existing call sites keep working but now
- * the 19 emote fetches don't block first paint.
+ * Mount-time preload. Eagerly fetches only the 3 locomotion GLBs.
+ *
+ * NOTE 2026-05-17: the emote tier is NO LONGER preloaded on idle. Even
+ * `requestIdleCallback`-deferred, fanning out 19 emote GLB fetches at
+ * page load cost ~20 round-trips × ~150ms each on Cloudflare's
+ * Falkenstein POP — visible in DevTools as a queue of `injected.js`-
+ * initiated fetches that stretched first-interactive by several seconds.
+ *
+ * Emotes now load on-demand inside `playOneShot()` (see ~line 720) on
+ * first trigger per VRM instance, and the result is cached in
+ * RAW_CLIP_CACHE so subsequent plays are free. Players who never spam
+ * emotes never pay for them.
+ *
+ * Code that genuinely wants to warm the emote cache (e.g. just before
+ * opening the emote hotbar) can still call `preloadEmoteClips()`
+ * directly — it remains exported.
  */
 export function preloadMixamoClips(): void {
   preloadLocomotionClips();
-  preloadEmoteClips();
 }
 
 // ---------------------------------------------------------------------------
