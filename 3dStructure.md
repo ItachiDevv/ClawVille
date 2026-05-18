@@ -11,7 +11,7 @@
 > - **`GameFeatures.md`** — gameplay.
 > - **This doc** — *how* the 3D scene is wired: coordinates, camera, lights, GPU budget, animation, asset pipeline.
 
-**Last edit:** 2026-05-18 — Concern 6.0.2: Casino interior scene at `/casino`. New §10c. `arena-buildings.tsx` casino onClick navigates to `/casino` via `window.location.href`. Prior 2026-05-18: Phase 6.1 grid+ring expand, BuildingPedestal. Prior 2026-05-17: Circle revert, R=72, casino +30%.
+**Last edit:** 2026-05-18 — Concern 6.1 regression fix: MAX_FOOTPRINT 1000→1500, building targetHeights tuned (Krusty Krab 1200, Sandy 1300, Salty Spitoon 1200, Boating School 1100, Downtown 1400, Squidward 1300), pivotZBias system (Squidward +180wu), fog 1200/6400→2500/6800, casino-interior auto-fit position bake. Prior 2026-05-18: casino interior scene. Prior 2026-05-18: Phase 6.1 grid+ring expand, BuildingPedestal. Prior 2026-05-17: Circle revert, R=72, casino +30%.
 
 ---
 
@@ -70,16 +70,16 @@ Slot table (clockwise from North, cx/cy in tile coords):
 |---|---|---|---|---|---|---|---|
 | 0 | N (0°) | 120 | 20 | visual-creation | 0.000 | 1100 | |
 | 1 | NNE (30°) | 170 | 33 | code-development | −0.524 | 900 | |
-| 2 | ENE (60°) | 207 | 70 | mcp-tool-use | −1.047 | 1000 | |
-| 3 | E (90°) | 220 | 120 | messaging-channels | −1.571 | 1000 | rotYOffset +π |
-| 4 | ESE (120°) | 207 | 170 | api-integrations | −2.094 | 1000 | rotYOffset −π/2 |
-| 5 | SSE (150°) | 170 | 207 | app-publishing | −2.618 | 950 | rotYOffset +π/2 |
-| 6 | S (180°) | 120 | 220 | cron-automation | 3.142 | 1200 | |
+| 2 | ENE (60°) | 207 | 70 | mcp-tool-use | −1.047 | 1200 | raised from 1000 (footprint-cap fix) |
+| 3 | E (90°) | 220 | 120 | messaging-channels | −1.571 | 1300 | raised from 1000; rotYOffset +π |
+| 4 | ESE (120°) | 207 | 170 | api-integrations | −2.094 | 1200 | raised from 1000; rotYOffset −π/2 |
+| 5 | SSE (150°) | 170 | 207 | app-publishing | −2.618 | 1100 | raised from 950; rotYOffset +π/2 |
+| 6 | S (180°) | 120 | 220 | cron-automation | 3.142 | 1400 | raised from 1200 |
 | 7 | SSW (210°) | 70 | 207 | deployment-ops | 2.618 | 1500 | tallest landmark |
 | 8 | WSW (240°) | 33 | 170 | agent-security | 2.094 | 900 | |
 | 9 | W (270°) | 20 | 120 | casino | 1.571 | 1040 | entertainment district; box3Recenter=true |
 | 10 | WNW (300°) | 33 | 70 | claw-arcade | 1.047 | 900 | entertainment district (adjacent) |
-| 11 | NNW (330°) | 70 | 33 | memory-rag | 0.524 | 1100 | |
+| 11 | NNW (330°) | 70 | 33 | memory-rag | 0.524 | 1300 | raised from 1100; pivotZBias=+180 |
 
 **rotY formula:** `atan2(120 − cx, 120 − cy)` — each building's +Z axis points toward plaza center (world 0, 0). Values are identical to the R=72 layout because atan2 depends only on direction, not magnitude. Model-authored `rotYOffset` values are additive and stay with the building regardless of slot.
 
@@ -89,7 +89,7 @@ Slot table (clockwise from North, cx/cy in tile coords):
 
 **Building height target:** `BUILDING_TARGET_HEIGHT = 800 wu` (default fallback). Per-building `targetHeight` overrides in `BUILDING_MODELS` take precedence via `computeBuildingScale(c, config.targetHeight ?? BUILDING_TARGET_HEIGHT)`.
 
-**Footprint cap:** `MAX_FOOTPRINT = 1000 wu`. If post-scale `max(sx, sz) > 1000`, scale is reduced.
+**Footprint cap:** `MAX_FOOTPRINT = 1500 wu` (changed from 1000 in Phase 6.1 regression fix, 2026-05-18). If post-scale `max(sx, sz) > 1500`, scale is reduced. The old 1000wu cap was set for the R=72-tile ring. With R=100 (slot spacing ≈1675wu), many buildings (Squidward, Sandy, Krusty Krab, Salty Spitoon, Downtown) have GLBs wider than tall; at targetHeight≥1000 their scaledMaxXZ exceeded 1000wu, silently shrinking rendered height to 500-700wu — causing characters to tower over buildings. 1500wu leaves a 175wu gap between adjacent max-footprint buildings.
 
 **Terrain lerp:** `terrainYRef.current += (ty - terrainYRef.current) * 0.6` (both VRM and GLB paths in `player-avatar.tsx`). Increased from 0.3→0.6 so avatars snap to dune peaks faster and don't visibly sink into bumpy terrain.
 
@@ -97,11 +97,13 @@ Slot table (clockwise from North, cx/cy in tile coords):
 
 ```
 outer group:  position=(cx, -2 + yOffset, cz), rotation=(0, rotY, 0)
-  inner group: position=(-pivotOffsetX, -pivotOffsetY, -pivotOffsetZ)
+  inner group: position=(-pivotOffsetX, -pivotOffsetY, -pivotOffsetZ + pivotZBias)
     primitive (GLB scene)
 ```
 
 XZ correction rotates with the geometry because the inner group lives in the outer's local frame. Y correction grounds the geometry floor at `y = -2` for all three authoring cases (`bbox.min.y` positive, zero, or negative).
+
+**pivotZBias** (added 2026-05-18): optional per-building extra Z offset in the inner group, on top of `-pivotOffsetZ`. Use when foreground geometry (steps, path, decorative base) pulls the bbox center forward, causing the house body to appear too far back. Positive value moves building toward village center. Currently: `memory-rag` (Squidward's house) = +180wu to compensate for stone steps at front. Preferred over splitting the GLB (no asset modification required).
 
 **Strip rules** (run in order on every cloned scene):
 1. `stripDecorativeMeshes(c)` — mesh-name prefix `Skybox_` AND parent-name match `{Flowers, Path, Skybox, Road, Sand}` + exact-name `BACKDROP_KILL_NAMES` set + material-name `BACKDROP_KILL_MATERIALS` set. Both kill sets currently empty.
@@ -140,7 +142,7 @@ Hard cap: **3 lights** on Iris Xe (uniform limit + shader compile cost).
 | `directionalLight` (key) | `position [150, 350, 80], intensity 2.0, color 0xffeedd` | Warm key light from upper-right. |
 | `directionalLight` (fill) | `position [-100, 200, -60], intensity 0.5, color 0x88aacc` | Cool fill from opposite side for depth. |
 
-**Fog:** `fog(FOG_COLOR, 1200, 6400)` (`World3DCanvas.tsx:789`). Calibrated for Iris Xe — pushing far past 6400 wastes GPU on fragments the camera-far (6800) is about to clip anyway. `WorldContent.md §5 MAX_VISIBLE_DIST=3800` rejects decoration placements past the perceptual fog cutoff so we don't ship invisible draws (cut from 4500 on 2026-05-13).
+**Fog:** `fog(FOG_COLOR, 2500, 6800)` (`World3DCanvas.tsx`). Updated 2026-05-18: near pushed from 1200→2500, far kept at 6800 (=camera.far). Rationale: ring radius = 3200wu; with near=1200 the ring buildings at 2800-3500wu from spawn were 50-80% fogged, making them barely visible — contributing to the "characters taller than buildings" perception. near=2500 gives a clear view from spawn to ring edge; far=6800=camera.far is the safe ceiling (fragments past camera.far are clipped anyway). Iris Xe safety preserved via DPR cap [0.55,0.7]. `WorldContent.md §5 MAX_VISIBLE_DIST=3800` rejects decoration placements past the perceptual fog cutoff so we don't ship invisible draws (cut from 4500 on 2026-05-13).
 
 **Disabled atmosphere effects** (mounted but gated with `{false && <X />}`):
 - `<UnderwaterAtmosphere />` — caustic plane + depth backdrop + dust particles. Overdraw on the additive transparent meshes is 8–15 ms/frame on integrated GPUs even when occluded. Last disabled 2026-04-30.
