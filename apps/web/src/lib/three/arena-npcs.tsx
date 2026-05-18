@@ -41,15 +41,64 @@ import {
 
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
-// LERP_SPEED controls how fast currentPos catches up to targetPos from server.
-// 2026-04-25 (re-locked 2026-04-26 after PR #65 reverted): server ticks at 5Hz
-// (200ms) with baseStep=44 → 8.8wu per snapshot. LERP_SPEED=1.5 means
-// exp(-1.5·0.2) = 0.74 → 26% convergence per snapshot.
-// Steady-state lag = 8.8/0.26 ≈ 34wu (about 0.7 m at world scale), not visible.
-// What IS visible is the smoothness — small per-tick delta + slow lerp = no
-// burst-stop pattern, motion reads as continuous like Nori (who is static).
-// DO NOT raise this back to 5 — that's the jittery value.
-const LERP_SPEED = 1.5;
+/**
+ * Dead-reckoning corrective-lerp speed (replaces the deleted LERP_SPEED=1.5).
+ *
+ * Server publishes NPC positions at 5 Hz (200 ms / 44 wu per step). The old
+ * pattern lerped toward the raw snapshot at LERP_SPEED=1.5, so velocity
+ * pumped visibly every 200 ms — fast at the start of each window, slow at
+ * the end. User-reported as NPC stutter 2026-05-17. Lowering LERP_SPEED
+ * masked the pumping at the cost of position lag, never eliminated it.
+ *
+ * Dead reckoning extrapolates the target forward at the velocity implied
+ * by the last 2 snapshots, so the target moves smoothly every frame and
+ * the lerp only has to correct small prediction errors (direction changes,
+ * missed snapshots). Steady-state lag for a lerp tracking a constant-
+ * velocity target is `v / LERP_SPEED_DR` — at 220 wu/s NPC speed and
+ * LERP_SPEED_DR=8 that's ~27 wu (well under one step). High enough to
+ * snap to direction changes within a few frames; low enough that a wrong
+ * prediction doesn't jerk the character.
+ */
+const LERP_SPEED_DR = 8;
+
+/**
+ * Dead-reckon the SERVER-side target position for an NPC at wall-clock NOW,
+ * using the velocity implied by the last two server snapshots.
+ *
+ *   target = current_snapshot_pos + velocity × elapsed_since_snapshot
+ *
+ * Falls back to the raw snapshot position when:
+ *   - No server snapshot has been received yet (ts === 0 sentinel — set by
+ *     makeDemoNpc / spawnPlayerNpc for client-only NPCs that don't ride the
+ *     SSE stream).
+ *   - The NPC is idle on the server (direction === 'idle'): velocity is
+ *     zero, projecting forward would jitter the character around the
+ *     stationary point as wall-clock drifts.
+ *
+ * Elapsed is clamped to ONE tick period (tsDelta, typically 200 ms). If
+ * the server's next snapshot hasn't arrived by then, the NPC may have
+ * stopped, turned, or died — holding the last-known position is safer
+ * than extrapolating further forward.
+ *
+ * Called from each NPC's useFrame at 60 Hz. No allocations — returns
+ * into the provided scratch [x, y] tuple to avoid GC pressure.
+ */
+function reckonNpcTarget(
+  d: NpcSpriteState,
+  now: number,
+  out: [number, number],
+): [number, number] {
+  if (d.ts === 0 || d.direction === 'idle') {
+    out[0] = d.x;
+    out[1] = d.y;
+    return out;
+  }
+  const tsDelta = d.tsDelta || 200;
+  const elapsed = Math.max(0, Math.min(tsDelta, now - d.ts));
+  out[0] = d.x + (d.x - d.prevX) * (elapsed / tsDelta);
+  out[1] = d.y + (d.y - d.prevY) * (elapsed / tsDelta);
+  return out;
+}
 // TARGET_NPC_HEIGHT: desired world-unit height for wandering NPCs.
 // Previously NPC_SCALE=50 was a flat multiplier applied to all species; measured
 // heights were 30-36 wu because species GLBs have native heights of 0.6-0.7 units
@@ -180,6 +229,10 @@ function computeLocalMinY(scene: THREE.Object3D): number {
 // Module-scope scratch Box3 for the rendered-height hard cap (Layer 2 safety net).
 // Allocated once — never inside useFrame to avoid GC pressure.
 const _renderedBbox = new THREE.Box3();
+
+// Scratch tuple for reckonNpcTarget — returned by reference so each useFrame
+// can read out[0], out[1] without allocating a new array per call.
+const _reckonOut: [number, number] = [0, 0];
 
 // Shared raycaster — set to only hit layer 1 (terrain)
 const _raycaster = new THREE.Raycaster();
@@ -509,8 +562,14 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
 
     const dt = Math.min(delta, 0.1);
 
-    // Update target XZ position
-    targetPos.current.set(d.x - HALF_W, 0, d.y - HALF_H);
+    // Dead-reckoning target — project the server position forward at the
+    // velocity implied by the last 2 snapshots, clamped to one tick. Then
+    // lerp toward the projected target at a faster rate. Pure exp-lerp
+    // toward the raw snapshot pumped visibly at the server's 5 Hz tick;
+    // the projected target moves continuously so the lerp is just smoothing
+    // out direction-change corrections.
+    reckonNpcTarget(d, Date.now(), _reckonOut);
+    targetPos.current.set(_reckonOut[0] - HALF_W, 0, _reckonOut[1] - HALF_H);
 
     // Lerp + set group.position unconditionally so culled NPCs still track
     // their real world position. Previously group.position was only updated
@@ -520,8 +579,9 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // for the velocity-based facing calculation below.
     const glbPrevX = currentPos.current.x;
     const glbPrevZ = currentPos.current.z;
-    currentPos.current.x += (targetPos.current.x - currentPos.current.x) * (1 - Math.exp(-LERP_SPEED * dt));
-    currentPos.current.z += (targetPos.current.z - currentPos.current.z) * (1 - Math.exp(-LERP_SPEED * dt));
+    const lerpAlpha = 1 - Math.exp(-LERP_SPEED_DR * dt);
+    currentPos.current.x += (targetPos.current.x - currentPos.current.x) * lerpAlpha;
+    currentPos.current.z += (targetPos.current.z - currentPos.current.z) * lerpAlpha;
     group.position.x = currentPos.current.x;
     group.position.z = currentPos.current.z;
 
@@ -825,16 +885,21 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
 
     const dt = Math.min(delta, 0.1);
 
-    // Update target XZ position
-    targetPos.current.set(d.x - HALF_W, 0, d.y - HALF_H);
+    // Dead-reckoning target — see GLBNpcMesh useFrame for full rationale.
+    // Server publishes positions at 5 Hz; projecting forward by velocity
+    // makes the target move smoothly each frame, eliminating the visible
+    // pumping pattern of the old pure-lerp-toward-stale-snapshot approach.
+    reckonNpcTarget(d, Date.now(), _reckonOut);
+    targetPos.current.set(_reckonOut[0] - HALF_W, 0, _reckonOut[1] - HALF_H);
 
     // Lerp + set group.position unconditionally (same reasoning as GLBNpcMesh):
     // culled NPCs still need their group at the correct world position so that
     // on un-cull they don't flash in at origin.
     const prevX = currentPos.current.x;
     const prevZ = currentPos.current.z;
-    currentPos.current.x += (targetPos.current.x - currentPos.current.x) * (1 - Math.exp(-LERP_SPEED * dt));
-    currentPos.current.z += (targetPos.current.z - currentPos.current.z) * (1 - Math.exp(-LERP_SPEED * dt));
+    const lerpAlpha = 1 - Math.exp(-LERP_SPEED_DR * dt);
+    currentPos.current.x += (targetPos.current.x - currentPos.current.x) * lerpAlpha;
+    currentPos.current.z += (targetPos.current.z - currentPos.current.z) * lerpAlpha;
     group.position.x = currentPos.current.x;
     group.position.z = currentPos.current.z;
 
