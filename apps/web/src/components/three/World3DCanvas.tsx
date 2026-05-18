@@ -733,16 +733,26 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       <directionalLight position={[-100, 200, -60]} intensity={0.5} color={0x88aacc} />
 
       {/* Underwater fog — scaled for 240x240 map (7680x7680 world units) / R=100-tile ring.
-          Phase 6.1 change (2026-05-18): near 1200→2500, far 6400→6800.
-          Rationale: ring radius = 3200wu. With near=1200 buildings at ~2800-3500wu from spawn
-          were already 50-80% fogged out — characters could tower over them but not see them.
-          New range: near=2500 gives clear visibility from spawn (0,0) to the ring edge (~3500wu
-          at slot slot midpoints); far=6800 = camera.far, ensures no fragments render past clip.
-          Iris Xe safety: fog fragment count stays bounded because camera.far=6800 clips geometry
-          at the same distance regardless. DPR cap [0.55,0.7] on Iris Xe offsets fragment cost.
-          Prior note on 1800/9000 regression: far=9000 > camera.far=6800 was the waste source
-          (rasterizing invisible geometry), not the near push. far=6800 = safe ceiling. */}
-      <fog attach="fog" args={[FOG_COLOR, 2500, 6800]} />
+          Phase 6.1 fog tuning (2026-05-18): near 2500→3800, far stays 6800.
+          Geometry: camera at (0,600,1300). Ring radius=3200wu.
+            Near-side ring (slot 6, South, world z≈+3200): d=√(600²+1900²)≈1992wu
+            Far-side ring  (slot 0, North, world z≈-3200): d=√(600²+4500²)≈4540wu
+          Linear fog factor = clamp((d−near)/(far−near), 0, 1).
+          With near=2500, far=6800: far-ring factor = (4540−2500)/4300 ≈ 0.47 → buildings were
+          47% blended toward FOG_COLOR=0x0e3458 (very dark navy) → dark silhouettes, 70-90%
+          effectively invisible because fog target is nearly as dark as the geometry.
+          With near=3800, far=6800:
+            near-ring (1992wu): factor = (1992−3800)/3000 → clamped 0.00 → fully clear ✓
+            far-ring  (4540wu): factor = (4540−3800)/3000 = 740/3000 ≈ 0.25 → 25% fog blend
+          At 25% toward dark navy the building colors/textures read clearly while still carrying
+          the underwater haze. Horizon (6000wu) = 0.73 — still heavily fogged, identity preserved.
+          fog.far rule: MUST stay ≤ camera.far (6800). We are NOT raising far — it stays 6800.
+          1800/9000 regression post-mortem: the prior danger was far=9000 > camera.far=6800
+          (rasterising invisible geometry); this change only pushes near, far is untouched.
+          Iris Xe cost: pushing near further out means MORE geometry is fully unfogged but fog
+          does not change rasterisation counts — GPU still clips at camera.far=6800. No new
+          draw calls. DPR cap [0.55,0.7] on low-end GPUs absorbs the fragment budget. */}
+      <fog attach="fog" args={[FOG_COLOR, 3800, 6800]} />
 
       {/* Shared world geometry */}
       <ArenaTerrain />
