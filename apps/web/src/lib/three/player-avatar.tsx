@@ -256,6 +256,13 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
 
   // VRM animator — created once per VRM instance
   const vrmAnimatorRef = useRef<VRMCharacterAnimator | null>(null);
+  /**
+   * Tracks the grounded ↔ airborne edge across frames so the jump
+   * animation pipeline only fires playOneShot('jump') + surfaceClip
+   * swap ONCE per leap, not every frame the avatar is in the air.
+   * Initialised false (grounded). Read+written in the useFrame below.
+   */
+  const wasAirborneRef = useRef(false);
 
   useEffect(() => {
     if (!vrm) return;
@@ -469,7 +476,43 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
     group.rotation.y = rotRef.current;
 
     const dt = Math.min(delta, 0.1);
-    vrmAnimatorRef.current?.update(dt, isMoving);
+
+    // Jump animation pipeline (2026-05-17).
+    //
+    //   grounded → airborne: fire playOneShot('jump') as the takeoff
+    //     emote, AND swap the animator's surfaceClip to swimming (or
+    //     flying for Tekk — he has wings). When the jump one-shot
+    //     finishes, the animator's existing onFinished handler
+    //     crossfades to surfaceClip, so we land in the air loop
+    //     automatically without an explicit transition here.
+    //
+    //   airborne (any moving state): pass isMoving=false to the
+    //     animator. Walk on the ground, swim/fly in the air — never
+    //     "walking through the air" if the player holds WASD while
+    //     mid-jump.
+    //
+    //   airborne → grounded: restore surfaceClip to 'idle' so the
+    //     next isMoving=false transition crossfades back to the
+    //     standing idle loop, not swimming.
+    //
+    // setSurfaceClip lazy-loads the clip GLB on first call per VRM
+    // instance — fine on the first jump, free on every subsequent.
+    const animator = vrmAnimatorRef.current;
+    if (animator) {
+      const wasAirborne = wasAirborneRef.current;
+      if (airborne && !wasAirborne) {
+        const airborneClip: AnimName = reg.animatorId === 'tekk' ? 'flying' : 'swimming';
+        animator.setSurfaceClip(airborneClip);
+        void animator.playOneShot('jump');
+      } else if (!airborne && wasAirborne) {
+        animator.setSurfaceClip('idle');
+      }
+      wasAirborneRef.current = airborne;
+      // While airborne, gate the locomotion crossfade to surfaceClip
+      // by reporting isMoving=false. On the ground, propagate the
+      // real isMoving so walk↔idle works normally.
+      animator.update(dt, airborne ? false : isMoving);
+    }
   });
 
   return (

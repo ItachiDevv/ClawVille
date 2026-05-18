@@ -23,7 +23,7 @@ import { PLAYER_NPC_ID } from '@/stores/npc';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { jumpState } from '@/lib/three/jump-state';
 import { useVRMInstance, disposeVRMInstance, preloadVRMBytes } from '@/lib/three/vrm-loader';
-import { VRMCharacterAnimator, preloadMixamoClips } from '@/lib/three/vrm-character-animator';
+import { VRMCharacterAnimator, preloadMixamoClips, type AnimName } from '@/lib/three/vrm-character-animator';
 import { MODEL_REGISTRY, getAnimatorIdByPath } from '@/lib/three/agent-model-registry';
 import {
   computeVRMAvatarFit,
@@ -813,6 +813,14 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // idle NPCs) by summing frame deltas and flushing them in a single vrm.update() call.
   // The verlet integrator is time-step independent so passing 2× dt is physically correct.
   const springDeltaAccRef = useRef(0);
+  /**
+   * Grounded ↔ airborne edge for the possessed-player-NPC jump animation
+   * pipeline. False on mount; flips true the first frame an upward leap
+   * starts. Only meaningful when isPossessedPlayerNpc is true — wandering
+   * NPCs never jump. See useFrame for the playOneShot('jump') + surface
+   * clip swap that this ref gates.
+   */
+  const wasAirborneRef = useRef(false);
 
   // Resolve VRM path from the model registry (or use the species key directly as path suffix)
   const regEntry = MODEL_REGISTRY[npc.species as keyof typeof MODEL_REGISTRY];
@@ -969,8 +977,31 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
 
     const animator = vrmAnimatorRef.current;
     if (animator) {
+      // Jump animation pipeline for the possessed-player NPC. Mirrors the
+      // VRM player-avatar branch in player-avatar.tsx: on takeoff fire a
+      // 'jump' one-shot and swap surfaceClip to 'swimming' (or 'flying'
+      // for Tekk). The animator's onFinished handler then crossfades into
+      // that surface clip automatically. On landing, restore 'idle'.
+      // wasAirborneRef gates the transition so we only fire ONCE per leap,
+      // not every frame. Wandering NPCs (isPossessedPlayerNpc=false) skip
+      // this entire block — `airborne` is always false for them above.
+      if (isPossessedPlayerNpc) {
+        const wasAirborne = wasAirborneRef.current;
+        if (airborne && !wasAirborne) {
+          const airborneClip: AnimName = d.species === 'tekk' ? 'flying' : 'swimming';
+          animator.setSurfaceClip(airborneClip);
+          void animator.playOneShot('jump');
+        } else if (!airborne && wasAirborne) {
+          animator.setSurfaceClip('idle');
+        }
+        wasAirborneRef.current = airborne;
+      }
       springDeltaAccRef.current += dt;
-      animator.updateMixerOnly(dt, isMoving);
+      // While airborne, gate the locomotion crossfade to surfaceClip
+      // (swim/fly) by reporting isMoving=false. Walk on the ground,
+      // swim/fly in the air — never "walking through the air" if the
+      // player holds movement input mid-jump.
+      animator.updateMixerOnly(dt, isPossessedPlayerNpc && airborne ? false : isMoving);
       const springMod = 4; // 15Hz — see comment block above
       if ((frame + seed) % springMod === 0) {
         const acc = Math.min(springDeltaAccRef.current, 0.1);
