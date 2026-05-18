@@ -28,9 +28,9 @@ import type { MapLocation } from '../types/location';
 //   Slot  5 (150°/SSE) app-publishing     cx=170, cy=207  zone=(163,200) posX=5216, posY=6400
 //   Slot  6 (180°/S)   cron-automation    cx=120, cy=220  zone=(113,213) posX=3616, posY=6816
 //   Slot  7 (210°/SSW) deployment-ops     cx=70,  cy=207  zone=(63,200)  posX=2016, posY=6400
-//   Slot  8 (240°/WSW) agent-security     cx=33,  cy=170  zone=(26,163)  posX=832,  posY=5216
+//   Slot  8 (240°/WSW) claw-arcade        cx=33,  cy=170  zone=(26,163)  posX=832,  posY=5216  [swapped 2026-05-18]
 //   Slot  9 (270°/W)   casino             cx=20,  cy=120  zone=(13,113)  posX=416,  posY=3616  ← entertainment
-//   Slot 10 (300°/WNW) claw-arcade        cx=33,  cy=70   zone=(26,63)   posX=832,  posY=2016  ← adjacent
+//   Slot 10 (300°/WNW) agent-security     cx=33,  cy=70   zone=(26,63)   posX=832,  posY=2016  [swapped 2026-05-18]
 //   Slot 11 (330°/NNW) memory-rag         cx=70,  cy=33   zone=(63,26)   posX=2016, posY=832
 export const MAP_LOCATIONS: MapLocation[] = [
   // Slot 0 — N (cx=120, cy=20) → zone(113,13) → posX=113*32=3616, posY=13*32=416
@@ -122,18 +122,20 @@ export const MAP_LOCATIONS: MapLocation[] = [
     height: 448,
   },
   // Slot 8 — WSW (cx=33, cy=170) → zone(26,163) → posX=26*32=832, posY=163*32=5216
+  // 2026-05-18: SWAPPED — claw-arcade moved here from slot 10. Patrick's Rock moved to slot 10.
+  // CASINO ADJACENCY FLAG: claw-arcade (slot 8/WSW) is 2 slots from casino (slot 9/W) — no longer adjacent.
   {
-    id: 'agent-security',
-    name: "Patrick's Rock",
-    description: 'Defend against prompt injection, design agent permissions, and threat-model autonomous systems.',
-    icon: '🛡️',
+    id: 'claw-arcade',
+    name: 'Arcade City',
+    description: 'Skill-based crane game and arcade fun. Phase 6.3 coming soon.',
+    icon: '🕹️',
     positionX: 832,
     positionY: 5216,
     width: 448,
     height: 448,
   },
   // Slot 9 — W (cx=20, cy=120) → zone(13,113) → posX=13*32=416, posY=113*32=3616
-  // Entertainment district: casino (slot 9) + claw-arcade (slot 10) are adjacent.
+  // Entertainment district: casino (slot 9) + patrick's rock (slot 10, after swap) are now adjacent.
   {
     id: 'casino',
     name: 'Predictive Gaming Cove',
@@ -145,12 +147,12 @@ export const MAP_LOCATIONS: MapLocation[] = [
     height: 448,
   },
   // Slot 10 — WNW (cx=33, cy=70) → zone(26,63) → posX=26*32=832, posY=63*32=2016
-  // Entertainment district (adjacent to casino at slot 9).
+  // 2026-05-18: SWAPPED — agent-security moved here from slot 8. claw-arcade moved to slot 8.
   {
-    id: 'claw-arcade',
-    name: 'Arcade City',
-    description: 'Skill-based crane game and arcade fun. Phase 6.3 coming soon.',
-    icon: '🕹️',
+    id: 'agent-security',
+    name: "Patrick's Rock",
+    description: 'Defend against prompt injection, design agent permissions, and threat-model autonomous systems.',
+    icon: '🛡️',
     positionX: 832,
     positionY: 2016,
     width: 448,

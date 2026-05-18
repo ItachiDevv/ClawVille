@@ -9,7 +9,7 @@
 > grep results. Update this when you touch any file listed in the "Source"
 > column. Update the affected file when you change a row here.
 
-**Last edit:** 2026-05-18 — Concern 6.1 regression fix: MAX_FOOTPRINT 1000→1500, per-building targetHeights updated (slots 2/3/4/5/6/11 raised), pivotZBias on memory-rag, fog near/far updated. §2 building table updated. Prior 2026-05-18: Casino interior scene at `/casino`. Prior 2026-05-18: Phase 6.1 grid+ring expand, pedestal discs.
+**Last edit:** 2026-05-18 — Pass 3 fixes: MAX_FOOTPRINT 1500→1800; NPC_INSET_WORLD 600→1000 (NPCs now stand outside building entrance); targetHeights bumped (Chum Bucket 900→1100, Krusty Krab 1200→1400, Salty Spitoon 1200→1500); Pearl scaleOverride 150→184, Mrs. Puff 2.7→3.3; Patrick's Rock ↔ Arcade City slot swap (agent-security slot 8→10, claw-arcade slot 10→8); casino adjacency now Patrick's Rock not claw-arcade. §2 building table updated. Prior 2026-05-18: MAX_FOOTPRINT 1000→1500, targetHeights raised across 6 slots, pivotZBias, fog tuned. Prior 2026-05-18: Casino interior. Prior 2026-05-18: Phase 6.1 grid+ring expand, pedestal discs.
 
 ---
 
@@ -42,16 +42,16 @@ Each building has a flat **stone pedestal disc** (radius=560wu, 15wu thick, colo
 | Slot | Angle | Zone id | GLB path | Renders | targetHeight | Notes |
 |---|---|---|---|---|---|---|
 | 0 | N | `visual-creation` | `pineapple-house.glb` | SpongeBob's pineapple house | 1100 | |
-| 1 | NNE | `code-development` | `chum-bucket-v2.glb` | Bucket | 900 | 2026-05-12 swap |
-| 2 | ENE | `mcp-tool-use` | `krusty-krab-v2.glb` | Ship-restaurant | 1200 | raised from 1000 (footprint-cap fix 2026-05-18); 2026-05-12 swap |
+| 1 | NNE | `code-development` | `chum-bucket-v2.glb` | Bucket | 1100 | raised 900→1100 (2026-05-18 pass 3); 2026-05-12 swap |
+| 2 | ENE | `mcp-tool-use` | `krusty-krab-v2.glb` | Ship-restaurant | 1400 | raised 1200→1400 (2026-05-18 pass 3); raised from 1000 (footprint-cap fix); 2026-05-12 swap |
 | 3 | E | `messaging-channels` | `sandy-treedome-v3.glb` | Tree platform + glass dome | 1300 | raised from 1000; 2026-05-12 swap; rotYOffset +π |
-| 4 | ESE | `api-integrations` | `salty-spitoon.glb` | Bar | 1200 | raised from 1000; rotYOffset -π/2 |
+| 4 | ESE | `api-integrations` | `salty-spitoon.glb` | Bar | 1500 | raised 1200→1500 (2026-05-18 pass 3); wide GLB (~2:1 aspect) was hitting MAX_FOOTPRINT cap; rotYOffset -π/2 |
 | 5 | SSE | `app-publishing` | `boating-school.glb` | Mrs. Puff's classroom | 1100 | raised from 950; rotYOffset +π/2 |
 | 6 | S | `cron-automation` | `patty-building.glb` | Pearl's downtown | 1400 | raised from 1200 |
 | 7 | SSW | `deployment-ops` | `building-lighthouse.glb` | Lighthouse | 1500 | tallest landmark |
-| 8 | WSW | `agent-security` | `patricks-rock-v2.glb` | Patrick's rock | 900 | 2026-05-12 swap |
-| 9 | W | `casino` | `casino/casino-exterior.glb` | Predictive Gaming Cove — Mayan step-pyramid | 1040 | Entertainment district. box3Recenter=true. Interior: **6.0.2 SHIPPED** — `/casino` route, `casino-interior.glb` (Draco 4.2MB) + fallback (58KB). onClick → `window.location.href = '/casino'`. |
-| 10 | WNW | `claw-arcade` | `arcade/claw-arcade-exterior.glb` | Arcade City — domed building | 900 | Entertainment district (slot 9+10 adjacent). Interior / crane game: Phase 6.3. |
+| 8 | WSW | `claw-arcade` | `arcade/claw-arcade-exterior.glb` | Arcade City — domed building | 900 | **Swapped from slot 10 (2026-05-18)**. Casino adjacency BROKEN — now 2 slots (60°) from casino. Interior / crane game: Phase 6.3. |
+| 9 | W | `casino` | `casino/casino-exterior-cove.glb` | Predictive Gaming Cove — Mayan step-pyramid | 1040 | Entertainment district. box3Recenter=true. Interior: **6.0.2 SHIPPED** — `/casino` route, `casino-interior.glb` (Draco 4.2MB) + fallback (58KB). onClick → `window.location.href = '/casino'`. |
+| 10 | WNW | `agent-security` | `patricks-rock-v2.glb` | Patrick's rock | 900 | **Swapped from slot 8 (2026-05-18)**. Now adjacent to casino (slot 9). |
 | 11 | NNW | `memory-rag` | `squidward-house.glb` | Easter-Island moai head | 1300 | raised from 1100; pivotZBias=+180wu (step offset compensation) |
 
 **Strip rules** (run on every cloned building scene, `stripDecorativeMeshes` in `arena-buildings.tsx`):
@@ -74,7 +74,7 @@ Each building has a flat **stone pedestal disc** (radius=560wu, 15wu thick, colo
 | Milady VRM | 3 | `milady-official-{2,7,8}.vrm` (Vivi / Miu / Kyoko — distinct paths required, shared paths cause T-pose collisions) |
 | Hermes VRM | 2 | `hermes-female.vrm` (Mira), `hermes-male.vrm` (Cyrus) |
 | Tekk VRM | 1 | `tekk.vrm` — uses `SPECIES_TARGET_HEIGHT_WU.tekk = 230` so wings can overshoot the body silhouette |
-| Lobster GLB | 1 | `models/lobster.glb` (Driftwood) — homeX 2232, homeY 3408, W inner near entertainment district (casino+arcade) |
+| Lobster GLB | 1 | `models/lobster.glb` (Driftwood) — homeX 2232, homeY 3408, W inner near entertainment district (casino+patrick's-rock) |
 | Sweet crab | 1 | `models/sweet_crab.glb` (Marlin) — homeX 5100, homeY 4200, E inner near messaging-channels+api-integrations |
 | Hermit crab | 1 | `models/hermitcrab.glb` (Riptide) — homeX 2850, homeY 4800, SW inner near deployment-ops+agent-security |
 
