@@ -12,7 +12,7 @@
 > - **`ARCHITECTURE.md`** — backend routes / services / schema / events / leaderboard rubric.
 > - **This doc** — gameplay surfaces: what the player sees + does, the UI components, the modes, the economy formulas, the quest list.
 
-**Last edit:** 2026-05-18 — Concern 6.0.2: Casino interior scene (§18a.casino). Click casino building in world → `/casino` interior. FPS-fallback, click hotspots. 2D slot screen (6.0.4) + wager program (6.1) still pending.
+**Last edit:** 2026-05-18 — Concern 6.0.3: Casino walk-in animation + SceneTransition. Avatar walks to door, fade-to-black, route push, fade-from-black on arrival. Walk-out uses `triggerTransition` + mid-fade avatar reposition. §18a updated. Prior: Concern 6.0.2 — casino interior scene.
 
 ---
 
@@ -644,7 +644,11 @@ Visibility:
 
 ## 18a. Casino — Predictive Gaming Cove (Phase 6, Concern 6.0.x)
 
-Accessible by clicking the casino building (slot 9, W ring, `casino-exterior.glb` pyramid) in the open world. The building onClick in `arena-buildings.tsx` navigates via `window.location.href = '/casino'`.
+Accessible by clicking the casino building (slot 9, W ring, `casino-exterior.glb` pyramid) in the open world.
+
+**Walk-in flow (Concern 6.0.3 — SHIPPED):** Click casino building → `triggerCasinoWalkIn()` in `arena-buildings.tsx`. In player/NPC/autonomous modes: avatar walks toward door at `(940, 5760 game-px)` using existing `setClickPath`. When within 200 game-px of door OR after 1500ms max-wait → 500ms fade-to-black → mid-fade router push to `/casino` → `/casino` page mounts with `<SceneTransition fadeInOnMount />` and fades from black over 500ms. In explore mode (no avatar): immediate fade with no walk. Total perceived time ≤ 3s.
+
+**Walk-out flow:** "Back to World" button in `/casino` → `triggerTransition({ to: '/game', onMidway })`. Mid-fade: `avatarPositionRef` + `useGameStore` both set to casino door position `(940, 5760 game-px)` so avatar spawns outside the building, not at default world center. `/game` page fade-in is handled by its own `<SceneTransition />` (no `fadeInOnMount` — only fades on triggered exit, not on raw page load).
 
 ### 18a.a. Interior scene (Concern 6.0.2 — SHIPPED)
 
@@ -655,13 +659,17 @@ Route `/casino` mounts a route-isolated R3F Canvas (`key="casino-interior"`) wit
 | `casino-interior.glb` | Gameready, Draco-compressed, 4.2MB, ~211k tris |
 | `casino-interior-fallback.glb` | Cartoon, no Draco, 58KB, 449 tris — Object_8+Object_9 = slot cluster |
 
-**FPS auto-fallback:** if avg FPS < 40 over the first 5 seconds, the scene silently reloads the fallback GLB. Force fallback: `?fallback=1`. Back to World button top-left → `router.push('/game')`.
+**FPS auto-fallback:** if avg FPS < 40 over the first 5 seconds, the scene silently reloads the fallback GLB. Force fallback: `?fallback=1`. Back to World button top-left → `triggerTransition({ to: '/game', onMidway: reposition })` (see walk-out flow above).
 
-### 18a.b. 2D slot screen (Concern 6.0.4 — PENDING)
+### 18a.b. Walk-in / walk-out animation (Concern 6.0.3 — SHIPPED)
+
+See walk-in + walk-out flow descriptions in the §18a header above. Key files: `SceneTransition.tsx` (generic), `arena-buildings.tsx` (`triggerCasinoWalkIn`), `casino/page.tsx` (walk-out + `fadeInOnMount`), `game/page.tsx` (`<SceneTransition />`).
+
+### 18a.c. 2D slot screen (Concern 6.0.4 — PENDING)
 
 Clicking a slot machine hotspot will open a 2D UI overlay with the actual slot game. Not yet implemented — current click handler is a `console.info` placeholder.
 
-### 18a.c. Backend / RNG / wager program (Concern 6.1+ — PENDING)
+### 18a.d. Backend / RNG / wager program (Concern 6.1+ — PENDING)
 
 On-chain slot RNG, SOL/USDC wagering, settlement via `clawville_wager` Anchor program. Out of scope for Concerns 6.0.x. See `.claude/plans/phase6-casino-slots.md`.
 
@@ -679,6 +687,7 @@ See **`3dStructure.md §1`** for the full coordinate system + axis conventions, 
 
 Compact log. The audit-history wall at the top of the prior version of this doc has been replaced with this. Entries are gameplay-facing — backend/service changes belong in `ARCHITECTURE.md §13`, 3D-render changes in `3dStructure.md §13`.
 
+- 2026-05-18 — Concern 6.0.3: Casino walk-in animation. `SceneTransition.tsx` (new generic rAF fade). `triggerCasinoWalkIn()` in `arena-buildings.tsx` (walk + 500ms fade, explore-mode bypass). `/casino` page: `fadeInOnMount` fade-from-black on arrival, `triggerTransition` + mid-fade avatar reposition `(940, 5760)` on exit. `/game` page: mounts `<SceneTransition />`. `avatarPositionRef` spawn updated to `(5760, 6140)`.
 - 2026-05-18 — Concern 6.0.2: Casino interior scene shipped. New §18a (casino). Click casino building → `/casino`. Route-isolated Canvas, gameready GLB + cartoon fallback, FPS-fallback gate, invisible slot hotspots, Back to World button. 2D slot screen (6.0.4) + RNG/wager (6.1) pending.
 - 2026-05-12 — Wager lobbies vertical slice. New §18z covers the reusable `<LobbyLanding>` gate on every activity match page, the 4 lobby flows (create / wait / lock / cancel-refund), the 3 modes (multiplayer / solo-bots / free-play), and the 3 visibility levels (public / private / friends). On-chain settlement via the deployed `clawville_wager` Anchor program on devnet. Match-server auto-locks on `room → LIVE` and auto-settles to placement-1 avatar on `room → RESULTS`.
 - 2026-05-12 — `40e7ed4` — new canonical `WorldContent.md` + bidirectional sync rule across all four docs. This doc's tight-manifest rewrite landed under `c2be3e0`-equivalent same series.
