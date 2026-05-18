@@ -11,7 +11,7 @@
 > - **`GameFeatures.md`** — gameplay.
 > - **This doc** — *how* the 3D scene is wired: coordinates, camera, lights, GPU budget, animation, asset pipeline.
 
-**Last edit:** 2026-05-17 — §6a NPC position smoothing rewritten: dead reckoning + LERP_SPEED_DR=8 corrective lerp replaces the old LERP_SPEED=1.5 that pumped at the server's 5 Hz tick. §9d added: Mixamo animation GLB load policy. 2026-05-12 — restructured into a tight manifest (was 2430 lines / 200 KB with 14 stacked audit entries).
+**Last edit:** 2026-05-17 — §6e jump animation pipeline added: VRM avatars now play `jump` one-shot on takeoff then transition to `swimming` (or `flying` for Tekk) while airborne, restoring `idle` on landing. §6a NPC position smoothing rewritten: dead reckoning + LERP_SPEED_DR=8 corrective lerp replaces the old LERP_SPEED=1.5 that pumped at the server's 5 Hz tick. §9d added: Mixamo animation GLB load policy. 2026-05-12 — restructured into a tight manifest (was 2430 lines / 200 KB with 14 stacked audit entries).
 
 ---
 
@@ -273,6 +273,14 @@ Per-frame physics (`updateJump(rawDt)`): `dt = min(rawDt, 0.1)`. Gravity: quick 
 Modes that ignore SPACE: `explore` (no avatar) and `autonomous` (engine-driven).
 
 `playerAltitude` is a persistent swim altitude separate from the jump arc — accumulated by input controllers from camera-forward Y. Both stack at render time. Reset to 0 by `resetJump()`.
+
+**Jump animation pipeline (2026-05-17).** Until 2026-05-17 the avatar translated vertically with no animation drive. New pipeline (`player-avatar.tsx` VRM branch + `arena-npcs.tsx` VRMNpcMesh possessed-player branch):
+
+- `grounded → airborne` (rising `wasAirborneRef` edge): fire `animator.playOneShot('jump')` as a takeoff emote AND `animator.setSurfaceClip(airborneClip)` where `airborneClip = 'flying'` if `animatorId === 'tekk'` else `'swimming'`. The animator's onFinished handler crossfades from the jump one-shot into the new surface clip automatically — single trigger, no manual sequencing.
+- While airborne: pass `isMoving = false` to `animator.update()` / `animator.updateMixerOnly()` so the locomotion crossfade lands on `surfaceClip` (swim/fly) regardless of horizontal input. Players using WASD mid-jump don't get "walking in air".
+- `airborne → grounded`: restore `setSurfaceClip('idle')`. Next `isMoving=false` frame crossfades to standing idle, not stuck on swim.
+
+Lobster / crayfish GLB avatars don't participate (no swim/fly clip in their procedural animator) — they keep the existing vertical-only behaviour.
 
 ---
 
