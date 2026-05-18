@@ -42,63 +42,28 @@ import {
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 /**
- * Dead-reckoning corrective-lerp speed (replaces the deleted LERP_SPEED=1.5).
+ * NPC motion smoother — direct velocity integration (CURRENT, 2026-05-18).
  *
- * Server publishes NPC positions at 5 Hz (200 ms / 44 wu per step). The old
- * pattern lerped toward the raw snapshot at LERP_SPEED=1.5, so velocity
- * pumped visibly every 200 ms — fast at the start of each window, slow at
- * the end. User-reported as NPC stutter 2026-05-17. Lowering LERP_SPEED
- * masked the pumping at the cost of position lag, never eliminated it.
+ * History (oldest → current):
+ *   1. Pure exp-lerp toward raw d.x/d.y at LERP_SPEED=1.5. Tracked a
+ *      stale 5 Hz snapshot, so visible velocity pumped every 200 ms —
+ *      fast at the start of each tick, slow at the end. Removed 2026-05-17.
+ *   2. Dead reckoning + exp-lerp toward projected target at
+ *      LERP_SPEED_DR=8. Projected target moved linearly, but the
+ *      asymptotic catch-up of the exp-lerp still produced visible drift
+ *      on direction changes. User reported continued pumping. Removed.
+ *   3. Direct velocity integration. Each new server snapshot resets
+ *      `simVel` to (d.x − d.prevX) / tsDelta and applies a 30 %
+ *      corrective snap toward server truth. Between snapshots,
+ *      `simPos += simVel × dtMs` every frame — perfectly constant-
+ *      velocity motion that matches the server simulation step-for-step.
+ *      Idle NPCs zero out simVel so they don't drift past their stop.
  *
- * Dead reckoning extrapolates the target forward at the velocity implied
- * by the last 2 snapshots, so the target moves smoothly every frame and
- * the lerp only has to correct small prediction errors (direction changes,
- * missed snapshots). Steady-state lag for a lerp tracking a constant-
- * velocity target is `v / LERP_SPEED_DR` — at 220 wu/s NPC speed and
- * LERP_SPEED_DR=8 that's ~27 wu (well under one step). High enough to
- * snap to direction changes within a few frames; low enough that a wrong
- * prediction doesn't jerk the character.
+ * The integration step is two lines inlined in each NPC component's
+ * useFrame — no helper function so we avoid an extra call + return tuple
+ * allocation 60 ×/s per NPC. Search for `simPos` / `simVel` to find the
+ * current sites.
  */
-const LERP_SPEED_DR = 8;
-
-/**
- * Dead-reckon the SERVER-side target position for an NPC at wall-clock NOW,
- * using the velocity implied by the last two server snapshots.
- *
- *   target = current_snapshot_pos + velocity × elapsed_since_snapshot
- *
- * Falls back to the raw snapshot position when:
- *   - No server snapshot has been received yet (ts === 0 sentinel — set by
- *     makeDemoNpc / spawnPlayerNpc for client-only NPCs that don't ride the
- *     SSE stream).
- *   - The NPC is idle on the server (direction === 'idle'): velocity is
- *     zero, projecting forward would jitter the character around the
- *     stationary point as wall-clock drifts.
- *
- * Elapsed is clamped to ONE tick period (tsDelta, typically 200 ms). If
- * the server's next snapshot hasn't arrived by then, the NPC may have
- * stopped, turned, or died — holding the last-known position is safer
- * than extrapolating further forward.
- *
- * Called from each NPC's useFrame at 60 Hz. No allocations — returns
- * into the provided scratch [x, y] tuple to avoid GC pressure.
- */
-function reckonNpcTarget(
-  d: NpcSpriteState,
-  now: number,
-  out: [number, number],
-): [number, number] {
-  if (d.ts === 0 || d.direction === 'idle') {
-    out[0] = d.x;
-    out[1] = d.y;
-    return out;
-  }
-  const tsDelta = d.tsDelta || 200;
-  const elapsed = Math.max(0, Math.min(tsDelta, now - d.ts));
-  out[0] = d.x + (d.x - d.prevX) * (elapsed / tsDelta);
-  out[1] = d.y + (d.y - d.prevY) * (elapsed / tsDelta);
-  return out;
-}
 // TARGET_NPC_HEIGHT: desired world-unit height for wandering NPCs.
 // Previously NPC_SCALE=50 was a flat multiplier applied to all species; measured
 // heights were 30-36 wu because species GLBs have native heights of 0.6-0.7 units
@@ -229,10 +194,6 @@ function computeLocalMinY(scene: THREE.Object3D): number {
 // Module-scope scratch Box3 for the rendered-height hard cap (Layer 2 safety net).
 // Allocated once — never inside useFrame to avoid GC pressure.
 const _renderedBbox = new THREE.Box3();
-
-// Scratch tuple for reckonNpcTarget — returned by reference so each useFrame
-// can read out[0], out[1] without allocating a new array per call.
-const _reckonOut: [number, number] = [0, 0];
 
 // Shared raycaster — set to only hit layer 1 (terrain)
 const _raycaster = new THREE.Raycaster();
@@ -447,8 +408,19 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     initialVisible: true,
   });
 
-  const targetPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
-  const currentPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
+  // Simulated position + velocity for the direct-integration smoother.
+  // Replaced the old `targetPos`/`currentPos` exp-lerp pair (2026-05-18)
+  // because that pattern asymptotically catches a moving target, which
+  // visibly drifts at the 5 Hz tick rate — see the comment block at
+  // LERP_SPEED_DR for the full story. Direct integration: hold a
+  // velocity (wu/ms) constant between snapshots, advance `simPos` by
+  // `velocity * dt` each frame, apply a small one-shot correction
+  // when a new snapshot lands. Constant-velocity motion between ticks
+  // is exactly what the server simulation is doing, so the client
+  // visual matches.
+  const simPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
+  const simVel = useRef({ x: 0, z: 0 }); // wu / ms (NOT wu/s — matches reckonNpcTarget unit)
+  const lastSeenTs = useRef(0);
   const currentRotY = useRef(0);
   const currentTerrainY = useRef(0);
 
@@ -561,29 +533,44 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     if (!group || !animGroup) return;
 
     const dt = Math.min(delta, 0.1);
+    const dtMs = dt * 1000;
 
-    // Dead-reckoning target — project the server position forward at the
-    // velocity implied by the last 2 snapshots, clamped to one tick. Then
-    // lerp toward the projected target at a faster rate. Pure exp-lerp
-    // toward the raw snapshot pumped visibly at the server's 5 Hz tick;
-    // the projected target moves continuously so the lerp is just smoothing
-    // out direction-change corrections.
-    reckonNpcTarget(d, Date.now(), _reckonOut);
-    targetPos.current.set(_reckonOut[0] - HALF_W, 0, _reckonOut[1] - HALF_H);
-
-    // Lerp + set group.position unconditionally so culled NPCs still track
-    // their real world position. Previously group.position was only updated
-    // inside the visible branch — a far-culled NPC's group stayed at (0,0,0)
-    // throughout the culled window, causing users to see NPCs "teleport in
-    // at origin" when the camera panned toward them. Capture pre-lerp x/z
-    // for the velocity-based facing calculation below.
-    const glbPrevX = currentPos.current.x;
-    const glbPrevZ = currentPos.current.z;
-    const lerpAlpha = 1 - Math.exp(-LERP_SPEED_DR * dt);
-    currentPos.current.x += (targetPos.current.x - currentPos.current.x) * lerpAlpha;
-    currentPos.current.z += (targetPos.current.z - currentPos.current.z) * lerpAlpha;
-    group.position.x = currentPos.current.x;
-    group.position.z = currentPos.current.z;
+    // Direct velocity integration (replaces the dead-reckoning + exp-lerp
+    // pair as of 2026-05-18). Each new server snapshot updates `simVel`
+    // to the velocity implied by (prevX,prevY)→(x,y) over tsDelta, and
+    // applies a SMALL one-shot correction toward the new server position
+    // (CORRECTION_ALPHA below). Between snapshots, simPos advances by
+    // `simVel · dt` each frame — perfectly constant-velocity motion,
+    // exactly matching what the server simulation is doing. Direction
+    // changes produce a one-shot correction at the next snapshot, not
+    // an exponential drift across frames; idle NPCs zero out velocity.
+    const tx = d.x - HALF_W;
+    const tz = d.y - HALF_H;
+    if (d.ts !== 0 && d.ts !== lastSeenTs.current) {
+      lastSeenTs.current = d.ts;
+      if (d.direction === 'idle' || d.tsDelta <= 0) {
+        simVel.current.x = 0;
+        simVel.current.z = 0;
+      } else {
+        simVel.current.x = (d.x - d.prevX) / d.tsDelta;  // wu / ms
+        simVel.current.z = (d.y - d.prevY) / d.tsDelta;
+      }
+      // Snap-correct ~30 % of the gap toward server truth. Too low and
+      // we drift forever; too high (e.g. 1.0) and we re-introduce the
+      // 5 Hz pumping by yanking the sim to the snapshot every tick.
+      const CORRECTION_ALPHA = 0.3;
+      simPos.current.x += (tx - simPos.current.x) * CORRECTION_ALPHA;
+      simPos.current.z += (tz - simPos.current.z) * CORRECTION_ALPHA;
+    }
+    // Integrate forward every frame at constant velocity. Capture pre-step
+    // x/z for the velocity-based facing calculation further down (it reads
+    // velMagSq from (curr - prev) so the direction stays accurate).
+    const glbPrevX = simPos.current.x;
+    const glbPrevZ = simPos.current.z;
+    simPos.current.x += simVel.current.x * dtMs;
+    simPos.current.z += simVel.current.z * dtMs;
+    group.position.x = simPos.current.x;
+    group.position.z = simPos.current.z;
 
     // 2026-05-11 — All NPC culling removed per user directive.
     // Previously: distance-cull (hide group past 10000² wu), behind-camera cull
@@ -638,8 +625,8 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     if (d.facingAngle != null) {
       targetRot = d.facingAngle;
     } else {
-      const glbVx = currentPos.current.x - glbPrevX;
-      const glbVz = currentPos.current.z - glbPrevZ;
+      const glbVx = simPos.current.x - glbPrevX;
+      const glbVz = simPos.current.z - glbPrevZ;
       const velMagSq = glbVx * glbVx + glbVz * glbVz;
       if (velMagSq > 0.25 && d.direction !== 'idle') {
         // GLB crustaceans face +Z at rest (model faces +Z after preview calibration
@@ -805,8 +792,15 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     initialVisible: true,
   });
 
-  const targetPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
-  const currentPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
+  // Same direct-integration smoother as GLBNpcMesh — see the long comment
+  // there for full rationale. Holds velocity constant between server
+  // snapshots, integrates forward at 60 Hz, snap-corrects 30 % toward the
+  // new server position on each snapshot. Replaces the dead-reckoning +
+  // exp-lerp pair (2026-05-18). simVel is in wu/ms, matching the velocity
+  // unit derived from (d.x - d.prevX) / d.tsDelta.
+  const simPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
+  const simVel = useRef({ x: 0, z: 0 });
+  const lastSeenTs = useRef(0);
   const currentRotY = useRef(VRM_DIR_ROTATION.idle);
   const currentTerrainY = useRef(-2);
   // PERF: accumulated spring delta — we tick spring bones at 30Hz (every 2nd frame for
@@ -814,13 +808,13 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // The verlet integrator is time-step independent so passing 2× dt is physically correct.
   const springDeltaAccRef = useRef(0);
   /**
-   * Grounded ↔ airborne edge for the possessed-player-NPC jump animation
-   * pipeline. False on mount; flips true the first frame an upward leap
-   * starts. Only meaningful when isPossessedPlayerNpc is true — wandering
-   * NPCs never jump. See useFrame for the playOneShot('jump') + surface
-   * clip swap that this ref gates.
+   * Most recently applied surfaceClip for the possessed-player NPC.
+   * useFrame computes desiredClip every frame (idle / jump / swim /
+   * fly) and only calls setSurfaceClip when it changes — avoids
+   * thrashing the animator's lazy GLB load + crossfade machinery
+   * 60×/s. Wandering NPCs never touch this; defaults to 'idle'.
    */
-  const wasAirborneRef = useRef(false);
+  const lastSurfaceClipRef = useRef<AnimName>('idle');
 
   // Resolve VRM path from the model registry (or use the species key directly as path suffix)
   const regEntry = MODEL_REGISTRY[npc.species as keyof typeof MODEL_REGISTRY];
@@ -892,24 +886,34 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     if (!group) return;
 
     const dt = Math.min(delta, 0.1);
+    const dtMs = dt * 1000;
 
-    // Dead-reckoning target — see GLBNpcMesh useFrame for full rationale.
-    // Server publishes positions at 5 Hz; projecting forward by velocity
-    // makes the target move smoothly each frame, eliminating the visible
-    // pumping pattern of the old pure-lerp-toward-stale-snapshot approach.
-    reckonNpcTarget(d, Date.now(), _reckonOut);
-    targetPos.current.set(_reckonOut[0] - HALF_W, 0, _reckonOut[1] - HALF_H);
-
-    // Lerp + set group.position unconditionally (same reasoning as GLBNpcMesh):
-    // culled NPCs still need their group at the correct world position so that
-    // on un-cull they don't flash in at origin.
-    const prevX = currentPos.current.x;
-    const prevZ = currentPos.current.z;
-    const lerpAlpha = 1 - Math.exp(-LERP_SPEED_DR * dt);
-    currentPos.current.x += (targetPos.current.x - currentPos.current.x) * lerpAlpha;
-    currentPos.current.z += (targetPos.current.z - currentPos.current.z) * lerpAlpha;
-    group.position.x = currentPos.current.x;
-    group.position.z = currentPos.current.z;
+    // Direct velocity integration — see GLBNpcMesh useFrame for full
+    // rationale. Each new server snapshot resets velocity and applies a
+    // 30 % corrective snap toward server truth; between snapshots, simPos
+    // advances at constant velocity. Eliminates the asymptotic exp-lerp
+    // drift that caused visible pumping at the 5 Hz tick.
+    const tx = d.x - HALF_W;
+    const tz = d.y - HALF_H;
+    if (d.ts !== 0 && d.ts !== lastSeenTs.current) {
+      lastSeenTs.current = d.ts;
+      if (d.direction === 'idle' || d.tsDelta <= 0) {
+        simVel.current.x = 0;
+        simVel.current.z = 0;
+      } else {
+        simVel.current.x = (d.x - d.prevX) / d.tsDelta;
+        simVel.current.z = (d.y - d.prevY) / d.tsDelta;
+      }
+      const CORRECTION_ALPHA = 0.3;
+      simPos.current.x += (tx - simPos.current.x) * CORRECTION_ALPHA;
+      simPos.current.z += (tz - simPos.current.z) * CORRECTION_ALPHA;
+    }
+    const prevX = simPos.current.x;
+    const prevZ = simPos.current.z;
+    simPos.current.x += simVel.current.x * dtMs;
+    simPos.current.z += simVel.current.z * dtMs;
+    group.position.x = simPos.current.x;
+    group.position.z = simPos.current.z;
 
     // 2026-05-11 — All VRM NPC culling removed per user directive
     // ("remove all the culling completely it ruins the game"). Mirrors GLBNpcMesh.
@@ -949,8 +953,8 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // User confirmed live 2026-04-25; PR #65 "resolve to master version" reverted to
     // atan2(vx, -vz) which makes Miladys walk backwards. DO NOT change this without
     // a screenshot proving otherwise — see .claude/memory/feedback_vrm_facing_formula.md.
-    const vx = currentPos.current.x - prevX;
-    const vz = currentPos.current.z - prevZ;
+    const vx = simPos.current.x - prevX;
+    const vz = simPos.current.z - prevZ;
     const velMagSq = vx * vx + vz * vz;
     if (velMagSq > 0.1 && d.direction !== 'idle') {
       const targetRot = Math.atan2(vx, vz);
@@ -977,24 +981,32 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
 
     const animator = vrmAnimatorRef.current;
     if (animator) {
-      // Jump animation pipeline for the possessed-player NPC. Mirrors the
-      // VRM player-avatar branch in player-avatar.tsx: on takeoff fire a
-      // 'jump' one-shot and swap surfaceClip to 'swimming' (or 'flying'
-      // for Tekk). The animator's onFinished handler then crossfades into
-      // that surface clip automatically. On landing, restore 'idle'.
-      // wasAirborneRef gates the transition so we only fire ONCE per leap,
-      // not every frame. Wandering NPCs (isPossessedPlayerNpc=false) skip
-      // this entire block — `airborne` is always false for them above.
+      // Jump / swim / fly pipeline for the possessed-player NPC.
+      // Mirrors the VRM player-avatar branch — surfaceClip is selected
+      // every frame from jumpState.phase + airborne and only re-set when
+      // it changes (so the animator's lazy GLB load + crossfade only
+      // fire on state transitions, not 60×/s).
+      //
+      //   ASCENDING (jumpState.phase launch/quick): surfaceClip='jump'
+      //     loop. Was originally a 0.5 s playOneShot which was
+      //     'barely visible' on a 1-2 s leap; now loops until apex.
+      //   DESCENDING / FREE-SWIM (any other airborne state):
+      //     surfaceClip='flying' for Tekk, else 'swimming'.
+      //   GROUNDED: surfaceClip='idle'.
+      //
+      // Wandering NPCs (isPossessedPlayerNpc=false) skip this entire
+      // block — airborne is always false for them above.
       if (isPossessedPlayerNpc) {
-        const wasAirborne = wasAirborneRef.current;
-        if (airborne && !wasAirborne) {
-          const airborneClip: AnimName = d.species === 'tekk' ? 'flying' : 'swimming';
-          animator.setSurfaceClip(airborneClip);
-          void animator.playOneShot('jump');
-        } else if (!airborne && wasAirborne) {
-          animator.setSurfaceClip('idle');
+        const phaseAscending = jumpState.phase === 'launch' || jumpState.phase === 'quick';
+        const swimClip: AnimName = d.species === 'tekk' ? 'flying' : 'swimming';
+        const desiredClip: AnimName =
+          airborne && phaseAscending ? 'jump'
+          : airborne                 ? swimClip
+          :                            'idle';
+        if (desiredClip !== lastSurfaceClipRef.current) {
+          animator.setSurfaceClip(desiredClip);
+          lastSurfaceClipRef.current = desiredClip;
         }
-        wasAirborneRef.current = airborne;
       }
       springDeltaAccRef.current += dt;
       // While airborne, gate the locomotion crossfade to surfaceClip
