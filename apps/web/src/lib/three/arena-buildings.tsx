@@ -64,56 +64,60 @@ const BUILDING_TARGET_HEIGHT = 800;
  * yOffset: world-unit shift applied AFTER scaling. Negative values lower the
  * building (use to ground a floating model whose pivot isn't at its base).
  */
-const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number; rotYOffset?: number; scaleOverride?: number }> = {
-  // i=0  center=(80,24)    dx=0,   dz=56   → atan2(0,56)=0
-  'visual-creation':     { model: '/models/pineapple-house.glb',     yOffset: 0, rotY:  0.000 },
-  // i=1  center=(113,35)   dx=-33, dz=45   → atan2(-33,45)≈-0.632
-  // squidward-house.glb = Squidward's Easter Island moai head house (CC-BY, Yanez Designs, Sketchfab)
-  'memory-rag':      { model: '/models/squidward-house.glb',     yOffset: 0, rotY: -0.632 },
-  // i=2  center=(133,63)   dx=-53, dz=17   → atan2(-53,17)≈-1.259
-  // rotYOffset: salty-spitoon.glb is authored facing +X; -π/2 aligns it toward village center.
-  'api-integrations':   { model: '/models/salty-spitoon.glb',       yOffset: 0, rotY: -1.259, rotYOffset: -Math.PI / 2 },
-  // i=3  center=(133,97)   dx=-53, dz=-17  → atan2(-53,-17)≈-1.882
-  // patty-building.glb moved here from mcp-tool-use (2026-04-29: Pearl's downtown teen aesthetic)
-  'cron-automation':          { model: '/models/patty-building.glb',      yOffset: 0, rotY: -1.882 },
-  // i=4  center=(113,125)  dx=-33, dz=-45  → atan2(-33,-45)≈-2.510
-  // rotYOffset: boating-school.glb classroom (open side with desks + door) must face center.
-  // Changed -π/2 → +π/2 (2026-04-16): flips 180° so classroom faces inward.
-  'app-publishing':       { model: '/models/boating-school.glb',      yOffset: 0, rotY: -2.510, rotYOffset: Math.PI / 2 },
-  // i=5  center=(80,136)   dx=0,   dz=-56  → atan2(0,-56)=π≈3.142
-  'deployment-ops':    { model: '/models/building-lighthouse.glb', yOffset: 0, rotY:  3.142 },
-  // i=6  center=(47,125)   dx=33,  dz=-45  → atan2(33,-45)≈2.510
-  // krusty-krab-v2.glb = the iconic ship-shaped restaurant (CC-BY, Yanez Designs).
-  // 2026-05-12: restored from the_krusty_krab_spongebob.glb (1.59 MB original).
-  // The previous krusty-krab.glb (0.30 MB Apr-30 recompression) had degraded
-  // geometry — user reported "doesn't even look like our old GLB, has floor
-  // aspects we didn't have before".
-  'mcp-tool-use':     { model: '/models/krusty-krab-v2.glb',      yOffset: 0, rotY:  2.510 },
-  // i=7  center=(27,97)    dx=53,  dz=-17  → atan2(53,-17)≈1.882
-  // 2026-05-12: chum-bucket-v2.glb restored from spongebob_chum_bucket.glb
-  // (1.85 MB original) for the same reason as Krusty Krab.
-  'code-development':       { model: '/models/chum-bucket-v2.glb',      yOffset: 0, rotY:  1.882 },
-  // i=8  center=(27,63)    dx=53,  dz=17   → atan2(53,17)≈1.259
-  // sandy-treedome.glb — low-poly version (4,011 tris). Auto-scaled via
-  // computeBuildingScale (the new model has an honest bbox). The yOffset:-50
-  // hack was inherited from the OLD GLB which had EXT_mesh_gpu_instancing
-  // and a tiny source bbox — that's not the case anymore, so yOffset reset
-  // to 0 to keep it on the ground like the other buildings.
-  // 2026-05-12: swapped to sandy-treedome-v3.glb (sandy_tree_final.glb,
-  // 4.4 MB). Confirmed correct origin via scripts/read-glb-bbox.mjs:
-  // Object_31 (26×2×26 platform base) has minY=-1.34 → grounds at y=-2
-  // naturally with yOffset=0. v2 had a 2.2M-vert Object that dominated
-  // the bbox and forced the tree to float; v3 has 123 properly-laid-out
-  // meshes with a sensible bbox.
-  'messaging-channels':    { model: '/models/sandy-treedome-v3.glb',   yOffset: 0, rotY:  1.259, rotYOffset: Math.PI },
-  // i=9  center=(47,35)    dx=33,  dz=45   → atan2(33,45)≈0.632
-  // patricks-rock.glb = Patrick's Rock (CC-BY, Yanez Designs, Sketchfab, 3.5k tris)
-  // building-submarine.glb is now a fixed-landmark decoration only (arena-terrain.tsx FixedLandmarks)
-  // 2026-05-12: swapped to patricks-rock-v2.glb (the user's original
-  // patricks_house_spongebob.glb, 3.88MB uncompressed). The previous
-  // 663 KB meshopt-recompressed version had degraded geometry; user
-  // confirmed "this is not the Patrick's Rock we were using".
-  'agent-security': { model: '/models/patricks-rock-v2.glb',    yOffset: 0, rotY:  0.632 },
+const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number; rotYOffset?: number; scaleOverride?: number; box3Recenter?: boolean; onClick?: () => void }> = {
+  // ---------------------------------------------------------------------------
+  // 12-building square ring (Phase 6.0.1, 2026-05-17)
+  // rotY = atan2(80 − cx_tile, 80 − cy_tile) so building faces plaza center.
+  // Square ring slots: N1-N3 (north), E1-E3 (east), S1-S3 (south), W1-W3 (west).
+  // ---------------------------------------------------------------------------
+
+  // === NORTH SIDE ===
+  // N1 center=(32,8)  dx=48,dz=72  → atan2(48,72)≈0.588
+  'visual-creation':     { model: '/models/pineapple-house.glb',     yOffset: 0, rotY:  0.588 },
+  // N2 center=(80,8)  dx= 0,dz=72  → atan2(0,72)=0
+  // squidward-house.glb = Squidward's Easter Island moai head house (CC-BY, Yanez Designs)
+  'memory-rag':          { model: '/models/squidward-house.glb',     yOffset: 0, rotY:  0.000 },
+  // N3 center=(128,8) dx=-48,dz=72 → atan2(-48,72)≈-0.588
+  // rotYOffset: salty-spitoon.glb authored facing +X; -π/2 aligns toward village center.
+  'api-integrations':    { model: '/models/salty-spitoon.glb',       yOffset: 0, rotY: -0.588, rotYOffset: -Math.PI / 2 },
+
+  // === EAST SIDE ===
+  // E1 center=(152,32) dx=-72,dz=48 → atan2(-72,48)≈-0.983
+  'cron-automation':     { model: '/models/patty-building.glb',      yOffset: 0, rotY: -0.983 },
+  // E2 center=(152,80) dx=-72,dz= 0 → atan2(-72,0)=-π/2≈-1.571
+  // casino-exterior.glb = Pyramid Casino (CC-BY-4.0, tl0615 / Sketchfab).
+  // GLB author placed geometry at ~(-1800, 166, 4540) Blender units from scene origin.
+  // box3Recenter=true documents the origin-offset; centering is handled by
+  // computeBuildingScale's pivotOffsetX/Z (same pipeline as every other building).
+  // Interior load is Concern 6.0.2; onClick is a placeholder per Concern 6.0.1 spec.
+  'casino':              { model: '/models/casino/casino-exterior.glb', yOffset: 0, rotY: -1.571, box3Recenter: true,
+                           onClick: () => { console.info('[casino] interior pending — Concern 6.0.2'); } },
+  // E3 center=(152,128) dx=-72,dz=-48 → atan2(-72,-48)≈-2.159
+  // rotYOffset: boating-school.glb classroom must face center.
+  'app-publishing':      { model: '/models/boating-school.glb',      yOffset: 0, rotY: -2.159, rotYOffset: Math.PI / 2 },
+
+  // === SOUTH SIDE ===
+  // S1 center=(32,152) dx=48,dz=-72 → atan2(48,-72)≈2.554
+  'deployment-ops':      { model: '/models/building-lighthouse.glb', yOffset: 0, rotY:  2.554 },
+  // S2 center=(80,152) dx= 0,dz=-72 → atan2(0,-72)=π≈3.142
+  // patricks-rock-v2.glb (3.88 MB, original patricks_house_spongebob.glb)
+  'agent-security':      { model: '/models/patricks-rock-v2.glb',    yOffset: 0, rotY:  3.142 },
+  // S3 center=(128,152) dx=-48,dz=-72 → atan2(-48,-72)≈-2.554
+  // claw-arcade-exterior.glb = Arcade City (CC-BY-4.0, vanessalani / Sketchfab).
+  // Interior / crane game is Phase 6.3 — onClick is placeholder per Concern 6.0.1.
+  'claw-arcade':         { model: '/models/arcade/claw-arcade-exterior.glb', yOffset: 0, rotY: -2.554,
+                           onClick: () => { console.info('[claw-arcade] interior pending — Concern 6.3'); } },
+
+  // === WEST SIDE ===
+  // W1 center=(8,32)  dx=72,dz=48  → atan2(72,48)≈0.983
+  // 2026-05-12: swapped to sandy-treedome-v3.glb (sandy_tree_final.glb, 4.4 MB).
+  'messaging-channels':  { model: '/models/sandy-treedome-v3.glb',   yOffset: 0, rotY:  0.983, rotYOffset: Math.PI },
+  // W2 center=(8,80)  dx=72,dz= 0  → atan2(72,0)=π/2≈1.571
+  // krusty-krab-v2.glb = iconic ship restaurant (CC-BY, Yanez Designs, 1.59 MB original).
+  'mcp-tool-use':        { model: '/models/krusty-krab-v2.glb',      yOffset: 0, rotY:  1.571 },
+  // W3 center=(8,128) dx=72,dz=-48 → atan2(72,-48)≈2.159
+  // 2026-05-12: chum-bucket-v2.glb restored from spongebob_chum_bucket.glb (1.85 MB original).
+  'code-development':    { model: '/models/chum-bucket-v2.glb',      yOffset: 0, rotY:  2.159 },
 };
 
 // Scratch objects for stripGroundPlanes — reused across calls to avoid GC.
@@ -400,14 +404,22 @@ function computeBuildingScale(scene: THREE.Object3D): BuildingScaleResult {
   return { scale, pivotOffsetX, pivotOffsetY, pivotOffsetZ };
 }
 
-// Preload all models. extendLoaderWithMeshopt registers MeshoptDecoder on the
-// per-call loader so GLBs with EXT_meshopt_compression (patricks-rock,
-// krusty-krab, chum-bucket) decode at preload time. Without this, the
-// module-scope preload fires before drei's shared loader has the decoder
-// registered → those 3 buildings load as empty scenes and don't render.
+// Preload all 12 models (Phase 6.0.1: added casino-exterior.glb + claw-arcade-exterior.glb).
+// extendLoaderWithMeshopt registers MeshoptDecoder on the per-call loader so
+// GLBs with EXT_meshopt_compression (patricks-rock, krusty-krab, chum-bucket)
+// decode at preload time. Without this, the module-scope preload fires before
+// drei's shared loader has the decoder registered → those buildings load as
+// empty scenes and don't render.
 Object.values(BUILDING_MODELS).forEach(({ model }) => {
   useGLTF.preload(model, undefined, undefined, extendLoaderWithMeshopt);
 });
+
+// Entertainment building labels (casino, claw-arcade) — not in BUILDING_OPENCLAW_THEMES
+// (those are shop-only). Defined here so GLBBuilding can render a label for them.
+const ENTERTAINMENT_LABELS: Record<string, { label: string; category: string }> = {
+  'casino':      { label: 'Pyramid Casino', category: 'Entertainment' },
+  'claw-arcade': { label: 'Arcade City',    category: 'Arcade' },
+};
 
 // ---------------------------------------------------------------------------
 // Normal mode: static buildings with terrain raycasting
@@ -502,17 +514,34 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
     });
   }, [cloned]);
 
-  const theme = BUILDING_OPENCLAW_THEMES[zone.id];
+  // Shop buildings use BUILDING_OPENCLAW_THEMES; entertainment buildings (casino,
+  // claw-arcade) use ENTERTAINMENT_LABELS fallback. Both render the same label UI.
+  const theme = BUILDING_OPENCLAW_THEMES[zone.id] ?? ENTERTAINMENT_LABELS[zone.id];
 
   // Buildings sit on the flat sand floor (y=-2). No raycasting needed —
   // dune ripples are small relative to the 100-unit building height.
   // pivotOffsetX/Z corrects for GLBs authored with geometry far from their pivot
-  // (e.g. downtown-building.glb bbox center is ~4120wu east of scene origin).
+  // (e.g. downtown-building.glb bbox center is ~4120wu east of scene origin;
+  //  casino-exterior.glb authored at ~(-1800, 166, 4540) Blender units — box3Recenter
+  //  flag documents this but the actual centering is handled by computeBuildingScale
+  //  pivotOffsetX/Z like every other building).
   return (
     <group ref={groupRef} position={[cx, -2 + config.yOffset, cz]} rotation={[0, (config.rotY ?? 0) + (config.rotYOffset ?? 0), 0]}>
       <group position={[-pivotOffsetX, -pivotOffsetY, -pivotOffsetZ]}>
         <primitive object={cloned} scale={buildingScale} />
       </group>
+      {/* Invisible click volume — used by entertainment buildings (casino, claw-arcade)
+          that have a config.onClick handler. Sized to ~1/8 of BUILDING_TARGET_HEIGHT
+          to give a generous click target without needing a visible mesh. */}
+      {config.onClick && (
+        <mesh
+          position={[0, BUILDING_TARGET_HEIGHT * 0.4, 0]}
+          onClick={(e) => { e.stopPropagation(); config.onClick!(); }}
+        >
+          <boxGeometry args={[200, BUILDING_TARGET_HEIGHT * 0.8, 200]} />
+          <meshBasicMaterial visible={false} />
+        </mesh>
+      )}
       {/* Floating building label — WorldLabelsOverlay projects offset [0, BUILDING_TARGET_HEIGHT+20, 0].
           pointerEvents='auto' preserves click-target behavior. */}
       {theme && (

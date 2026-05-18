@@ -28,3 +28,25 @@ The following 3D models are used under CC-BY license. Full credit to their creat
   https://sketchfab.com/3d-models/sandy-cheeks-mixamo-rig-9fda6cf3ae534385885ac27bb84e0bb8
   Mixamo-rigged with 1 idle clip (named `mixamo.com`); replaces the prior static
   Gusifer719 export which was authored lying-down (no T-pose). 1.2 MB.
+
+## Phase 6 — Casino + Claw Arcade (added 2026-05-17)
+
+- **Pyramid Casino** by tl0615 (CC-BY-4.0) — `casino/casino-exterior.glb`
+  https://sketchfab.com/3d-models/pyramid-casino-8ec6e308a328418db19dc9212962640c
+  Neon Mayan step-pyramid casino exterior. 450 KB, 7,578 tris, 5 meshes.
+  Origin offset from author (~(-1800, 166, 4540) Blender units) — recenter before placing in world.
+
+- **Gameready Casino scene** by Katydid (Sketchfab Standard, commercial use verified by repo owner 2026-05-17) — `casino/casino-interior.glb`
+  https://sketchfab.com/3d-models/gameready-casino-scene-685736a30da846b4ad7f2ddb3b9a56fc
+  Casino interior. Optimized 32.2 MB → 4.2 MB via gltf-transform optimize+simplify(0.15, error=0.05)+draco+webp(1024).
+  Tri count post-optimize: 211,575. Renders only in route-isolated casino scene (not world ring) — perf-budget headroom relies on isolation.
+
+- **Casino (low-poly cartoon)** by Poly-Polygonal (CC-BY-4.0) — `casino/casino-interior-fallback.glb`
+  https://sketchfab.com/3d-models/casino-5924b8057f5c498c8a4e8f6b31f43877
+  Lightweight fallback casino interior. 58 KB, 449 tris, 10 meshes (Object_8/9 = slot machines, Object_4/5/6 = tables).
+  Used if `casino-interior.glb` fails Iris Xe FPS gate in playtest.
+
+- **Arcade City** by vanessalani (CC-BY-4.0) — `arcade/claw-arcade-exterior.glb`
+  https://sketchfab.com/3d-models/arcade-city-2619e948be514311b234c4e55f91ed20
+  12th-building exterior — domed building with ARCADE CITY signage and arched entrance. 4.2 MB, 2,473 tris.
+  Interior added separately in Phase 6.3 (claw machine game).
