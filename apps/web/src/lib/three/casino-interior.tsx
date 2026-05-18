@@ -6,9 +6,22 @@
  * Route-isolated R3F scene component for the casino interior.
  * Mounted exclusively at /casino — torn down on exit via Canvas key prop.
  *
+ * Concern 6.0.5 — Walkable interior:
+ *   - Player avatar (VRM or GLB) mounted inside the casino room.
+ *   - WASD movement bounded to the interior (x∈[-115,+115], z∈[-270,+270]).
+ *   - Third-person follow camera: +55wu above, +160wu behind avatar, looks
+ *     at avatar+Y*18 — similar framing to the main world FPSFollowCamera.
+ *   - Player spawns at z=+240 (near the front-wall entrance), facing -Z
+ *     (into the room, toward the gaming floor).
+ *
+ * Concern 6.0.5 — Slot machine cabinet props:
+ *   - 4 low-poly slot cabinet meshes along the left wall (x≈-120).
+ *   - Each cabinet has a body box, emissive cyan screen panel, and a lever.
+ *   - Hotspots are now positioned ON the cabinets (z spread at left wall).
+ *   - Slot UI opens when player clicks a cabinet (useCasinoStore.openSlotScreen).
+ *
  * Asset: /models/casino/casino-interior.glb (gameready, 4.2MB, Draco)
  *        /models/casino/casino-interior-fallback.glb (cartoon, 58KB, no Draco)
- *        Object_8 + Object_9 in fallback GLB = left-wall slot cluster
  *
  * Iris Xe invariants (enforced in this file):
  *   - NO shadows
@@ -16,12 +29,7 @@
  *   - NO InstancedMesh + ShaderMaterial
  *   - NO per-frame `new Vector3()` — module-scope scratch vectors only
  *   - matrixAutoUpdate=false on all static meshes after first transform
- *   - Draw calls < 120 (gameready ~21 meshes; hotspot boxes add 4-6)
- *
- * Concern 6.0.2 scope:
- *   - Click hotspots over slot machines → opens 2D slot screen modal (Concern 6.0.4)
- *   - Walk-in animation (6.0.3) wired
- *   - 2D slot screen (6.0.4): useCasinoStore.openSlotScreen() → DOM modal renders over canvas
+ *   - Draw calls < 140 (room ~21 + cabinets 12 + avatar ~2-4 + hotspot 4)
  */
 
 import { Suspense, useRef, useEffect, useMemo, useState } from 'react';
@@ -33,24 +41,43 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { CasinoLighting } from '@/components/three/CasinoLighting';
 import { useCasinoStore } from '@/stores/casino';
 import { useAvatar } from '@/hooks/use-avatar';
+import { useGameStore } from '@/stores/game';
+import { useVRMInstance, disposeVRMInstance } from '@/lib/three/vrm-loader';
+import { VRMCharacterAnimator } from '@/lib/three/vrm-character-animator';
+import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
+import { MODEL_REGISTRY, type ModelRegistryEntry } from '@/lib/three/agent-model-registry';
+import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import type { MachineSlug } from '@/lib/casino/types';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Gameready GLB path — Draco compressed, 4.2MB, ~211k tris */
+/** Gameready GLB path */
 const INTERIOR_GLB = '/models/casino/casino-interior.glb';
-/** Fallback cartoon GLB — no Draco, 58KB, 449 tris, CC-BY-4.0 */
+/** Fallback cartoon GLB */
 const FALLBACK_GLB = '/models/casino/casino-interior-fallback.glb';
 
-/** FPS threshold below which we auto-switch to fallback GLB.
- *  Checked during the first 5 seconds after scene load. */
+/** FPS threshold below which we auto-switch to fallback GLB */
 const FPS_FALLBACK_THRESHOLD = 40;
 
-/** Target world-unit height for auto-fit scale normalisation.
- *  Both GLBs are independently fitted to this target height. */
+/** Target world-unit height for auto-fit scale normalisation */
 const INTERIOR_TARGET_HEIGHT = 600; // world units
+
+/** Player spawn position — near the front entrance, facing into the room (-Z) */
+const PLAYER_SPAWN_X = 0;
+const PLAYER_SPAWN_Z = 240; // Near front wall (room extends z∈[-300..+300])
+
+/** Interior bounds — keep avatar inside the room */
+const BOUNDS_X = 115;
+const BOUNDS_Z_MIN = -270;
+const BOUNDS_Z_MAX = 270;
+
+/** Player movement speed (world units / second) */
+const CASINO_PLAYER_SPEED = 250;
+
+/** GLB avatar scale — matches AVATAR_SCALE in player-avatar.tsx */
+const CASINO_AVATAR_SCALE = 40;
 
 // ---------------------------------------------------------------------------
 // Module-scope scratch objects — NEVER allocated inside useFrame
@@ -60,33 +87,72 @@ const _center = new THREE.Vector3();
 const _size = new THREE.Vector3();
 const _meshBbox = new THREE.Box3();
 
+// Follow-camera scratch vectors
+const _camTarget = new THREE.Vector3();
+const _camDesiredPos = new THREE.Vector3();
+
 // ---------------------------------------------------------------------------
-// Draco loader singleton — shared across scene lifetime
+// Module-scope casino WASD key state — separate from the world player-avatar
+// keyState module to avoid cross-canvas contamination (casino is a different
+// R3F Canvas instance entirely — it can't share global input state with the
+// world canvas which may still be active in the component tree).
+// ---------------------------------------------------------------------------
+interface CasinoKeyState {
+  w: boolean; a: boolean; s: boolean; d: boolean;
+}
+const casinoKeys: CasinoKeyState = { w: false, a: false, s: false, d: false };
+let casinoKeyListenersAttached = false;
+
+function attachCasinoKeyListeners() {
+  if (casinoKeyListenersAttached) return;
+  casinoKeyListenersAttached = true;
+  const onKeyDown = (e: KeyboardEvent) => {
+    const k = e.key.toLowerCase();
+    if (k === 'w') casinoKeys.w = true;
+    if (k === 'a') casinoKeys.a = true;
+    if (k === 's') casinoKeys.s = true;
+    if (k === 'd') casinoKeys.d = true;
+  };
+  const onKeyUp = (e: KeyboardEvent) => {
+    const k = e.key.toLowerCase();
+    if (k === 'w') casinoKeys.w = false;
+    if (k === 'a') casinoKeys.a = false;
+    if (k === 's') casinoKeys.s = false;
+    if (k === 'd') casinoKeys.d = false;
+  };
+  const onBlur = () => { casinoKeys.w = casinoKeys.a = casinoKeys.s = casinoKeys.d = false; };
+  const onVis = () => { if (document.hidden) { casinoKeys.w = casinoKeys.a = casinoKeys.s = casinoKeys.d = false; } };
+  window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('keyup', onKeyUp);
+  window.addEventListener('blur', onBlur);
+  document.addEventListener('visibilitychange', onVis);
+}
+
+// ---------------------------------------------------------------------------
+// Draco loader singleton
 // ---------------------------------------------------------------------------
 const _dracoLoader = new DRACOLoader();
-// Google CDN for the Draco decoder WASM (stable, versioned)
 _dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
 
-// Extend the shared GLTF loader with Draco for the gameready asset
 const extendWithDraco = (loader: unknown) => {
   (loader as GLTFLoader).setDRACOLoader(_dracoLoader);
 };
 
-// Preload both GLBs at module scope — browser only (guards SSR)
+// Preload both GLBs at module scope
 if (typeof window !== 'undefined') {
   useGLTF.preload(INTERIOR_GLB, undefined, undefined, extendWithDraco);
   useGLTF.preload(FALLBACK_GLB);
-  // Kick Draco WASM preload in background so first decode is instant
+  useGLTF.preload('/models/lobster.glb');
   _dracoLoader.preload();
 }
 
 // ---------------------------------------------------------------------------
-// Utility: Box3 auto-fit — scale + pivot offsets from a cloned scene
+// Utility: Box3 auto-fit
 // ---------------------------------------------------------------------------
 interface FitResult {
   scale: number;
-  offsetX: number; // subtract from world X to center geometry
-  offsetY: number; // subtract from world Y to ground geometry (bbox.min.y * scale)
+  offsetX: number;
+  offsetY: number;
   offsetZ: number;
 }
 
@@ -107,11 +173,6 @@ function computeAutoFit(scene: THREE.Object3D, targetHeight: number): FitResult 
   }
 
   _bbox.getSize(_size);
-  // Use MAX dimension as the auto-fit divisor — the gameready casino is a
-  // wide flat room (485×203×1017 wu) where Y is the SHORT axis, not the
-  // tall one. Using _size.y would scale the model by 600/203 ≈ 2.95× and
-  // push Z extent to 3000 wu, putting the camera at (0,120,350) INSIDE
-  // the room with backface culling hiding the walls.
   const maxDim = Math.max(_size.x, _size.y, _size.z);
   const scale = maxDim > 0.001 ? targetHeight / maxDim : 1;
 
@@ -125,7 +186,27 @@ function computeAutoFit(scene: THREE.Object3D, targetHeight: number): FitResult 
 }
 
 // ---------------------------------------------------------------------------
-// Hotspot definitions
+// Slot machine cabinet geometry + material constants
+// (Module-scope: built once, never re-allocated; matrixAutoUpdate=false on meshes)
+// ---------------------------------------------------------------------------
+const CABINET_BODY_GEO    = new THREE.BoxGeometry(38, 68, 28);
+const CABINET_SCREEN_GEO  = new THREE.BoxGeometry(24, 34, 2);
+const CABINET_LEVER_GEO   = new THREE.CylinderGeometry(3, 3, 22, 8);
+const CABINET_BASE_GEO    = new THREE.BoxGeometry(42, 6, 32);
+
+const CABINET_BODY_MAT = new THREE.MeshStandardMaterial({ color: 0x1a0a2e, roughness: 0.7, metalness: 0.4 });
+const CABINET_BASE_MAT = new THREE.MeshStandardMaterial({ color: 0x0d0520, roughness: 0.8, metalness: 0.3 });
+const CABINET_LEVER_MAT= new THREE.MeshStandardMaterial({ color: 0xcc3333, roughness: 0.5, metalness: 0.6 });
+const CABINET_SCREEN_MAT = new THREE.MeshStandardMaterial({
+  color: 0x00ffe0,
+  emissive: new THREE.Color(0x00ffe0),
+  emissiveIntensity: 1.2,
+  roughness: 0.2,
+  metalness: 0.1,
+});
+
+// ---------------------------------------------------------------------------
+// Hotspot definitions — now placed ON the slot cabinet positions
 // ---------------------------------------------------------------------------
 interface HotspotDef {
   position: [number, number, number];
@@ -134,31 +215,70 @@ interface HotspotDef {
 }
 
 /**
- * Fallback GLB (cartoon, 58KB):
- * Object_8 + Object_9 are the left-wall slot cluster.
- * Positions are in world units after auto-fit scale (INTERIOR_TARGET_HEIGHT=600).
+ * Slot cabinet positions: left wall (x=-120), spread Z from -200 to +100.
+ * Rotated 90° (facing +X / into the room).
+ * Base at y=0 (floor), body center y=37, so hotspot center y=37.
  */
-const FALLBACK_HOTSPOTS: HotspotDef[] = [
-  // Object_8 — left cabinet
-  { position: [-80, 60, -40], size: [50, 80, 40], machineSlug: 'classic-3x5' },
-  // Object_9 — right cabinet
-  { position: [80, 60, -40],  size: [50, 80, 40], machineSlug: 'classic-3x5' },
+const SLOT_CABINET_POSITIONS: Array<{ x: number; z: number }> = [
+  { x: -115, z: -175 },
+  { x: -115, z: -100 },
+  { x: -115, z: -25  },
+  { x: -115, z:  50  },
 ];
 
-/**
- * Gameready GLB (~211k tris) — post-fit room bbox is x∈[-143,+143], y∈[0,120], z∈[-300,+300].
- * Four hotspots tile the back-wall area where slot cabinets / stage props are visible.
- * Camera at (0,80,250) looking at origin → these land in the upper-center of the frame.
- */
-const GAMEREADY_HOTSPOTS: HotspotDef[] = [
-  { position: [-100, 60, -250], size: [50, 90, 40], machineSlug: 'classic-3x5' },
-  { position: [-33,  60, -250], size: [50, 90, 40], machineSlug: 'classic-3x5' },
-  { position: [33,   60, -250], size: [50, 90, 40], machineSlug: 'classic-3x5' },
-  { position: [100,  60, -250], size: [50, 90, 40], machineSlug: 'classic-3x5' },
+/** Hotspots placed at each cabinet position — large enough for easy clicking */
+const GAMEREADY_HOTSPOTS: HotspotDef[] = SLOT_CABINET_POSITIONS.map((pos) => ({
+  position: [pos.x + 25, 37, pos.z] as [number, number, number], // reach into room from cabinet
+  size: [55, 75, 40] as [number, number, number],
+  machineSlug: 'classic-3x5' as MachineSlug,
+}));
+
+const FALLBACK_HOTSPOTS: HotspotDef[] = [
+  { position: [-80, 60, -40], size: [50, 80, 40], machineSlug: 'classic-3x5' },
+  { position: [80,  60, -40], size: [50, 80, 40], machineSlug: 'classic-3x5' },
 ];
 
 // ---------------------------------------------------------------------------
-// Invisible slot machine clickbox component
+// SlotCabinets — 4 primitive-based slot machine props on the left wall
+// Static geometry; matrixAutoUpdate=false after initial placement.
+// ---------------------------------------------------------------------------
+function SlotCabinets() {
+  const groupRef = useRef<THREE.Group>(null);
+
+  useEffect(() => {
+    const g = groupRef.current;
+    if (!g) return;
+    // Lock matrix on the root group and every mesh child — all static.
+    g.updateMatrixWorld(true);
+    g.traverse((obj) => {
+      obj.matrixAutoUpdate = false;
+    });
+  }, []);
+
+  return (
+    <group ref={groupRef}>
+      {SLOT_CABINET_POSITIONS.map((pos, i) => (
+        <group
+          key={i}
+          position={[pos.x, 0, pos.z]}
+          rotation={[0, Math.PI / 2, 0]} // face into room (+X direction)
+        >
+          {/* Base plinth */}
+          <mesh geometry={CABINET_BASE_GEO} material={CABINET_BASE_MAT} position={[0, 3, 0]} />
+          {/* Body */}
+          <mesh geometry={CABINET_BODY_GEO} material={CABINET_BODY_MAT} position={[0, 40, 0]} />
+          {/* Emissive screen */}
+          <mesh geometry={CABINET_SCREEN_GEO} material={CABINET_SCREEN_MAT} position={[0, 47, -15]} />
+          {/* Lever — extends from right side of cabinet */}
+          <mesh geometry={CABINET_LEVER_GEO} material={CABINET_LEVER_MAT} position={[16, 40, -5]} rotation={[0, 0, Math.PI / 5]} />
+        </group>
+      ))}
+    </group>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Slot hotspot click box
 // ---------------------------------------------------------------------------
 function SlotHotspot({ def }: { def: HotspotDef }) {
   const meshRef = useRef<THREE.Mesh>(null);
@@ -168,13 +288,11 @@ function SlotHotspot({ def }: { def: HotspotDef }) {
   useEffect(() => {
     const mesh = meshRef.current;
     if (!mesh) return;
-    // Static position — disable matrix auto-update
     mesh.matrixAutoUpdate = false;
     mesh.updateMatrix();
   }, []);
 
   const handleClick = () => {
-    // Read current ClawToken balance from avatar (fallback 60 if not loaded yet)
     const startBalance = avatar?.clawTokens ?? 60;
     openSlotScreen(def.machineSlug, 'classic-3x5', startBalance);
   };
@@ -197,13 +315,260 @@ function SlotHotspot({ def }: { def: HotspotDef }) {
       }}
     >
       <boxGeometry args={def.size} />
-      {/*
-       * Invisible click target. visible=false means Three.js skips rasterisation
-       * but raycasting still works (raycast tests the geometry, not the rendered pixels).
-       */}
       <meshBasicMaterial visible={false} />
     </mesh>
   );
+}
+
+// ---------------------------------------------------------------------------
+// VRM player avatar for casino interior
+// Minimal version: loads VRM via useVRMInstance, drives VRMCharacterAnimator,
+// WASD movement, no world-map coupling, no terrain raycast (flat floor).
+// ---------------------------------------------------------------------------
+
+// Scratch: follow camera + rotation
+const _casinoAvatarFwd = new THREE.Vector3();
+const _casinoAvatarRight = new THREE.Vector3();
+const _casinoWorldUp = new THREE.Vector3(0, 1, 0);
+
+interface CasinoVRMAvatarProps {
+  reg: ModelRegistryEntry;
+}
+
+function CasinoVRMAvatarInner({ reg }: CasinoVRMAvatarProps) {
+  const groupRef = useRef<THREE.Group>(null);
+  const rotRef = useRef(Math.PI); // face -Z = into the room on spawn
+  const { camera } = useThree();
+
+  const vrm = useVRMInstance(reg.path, 'casino-player');
+
+  const { scale: vrmRenderScale, offsetY: vrmFootOffsetY } = useMemo(
+    () => computeVRMAvatarFit(vrm, reg.animatorId),
+    [vrm, reg.animatorId],
+  );
+
+  useEffect(() => {
+    return () => disposeVRMInstance(reg.path, 'casino-player');
+  }, [reg.path]);
+
+  const vrmAnimRef = useRef<VRMCharacterAnimator | null>(null);
+  useEffect(() => {
+    if (!vrm) return;
+    const anim = new VRMCharacterAnimator(vrm, reg.animatorId);
+    vrmAnimRef.current = anim;
+    anim.init().catch((e) => console.warn('[CasinoVRM] animator init:', e));
+    return () => { vrmAnimRef.current = null; anim.dispose(); };
+  }, [vrm, reg.animatorId]);
+
+  // Position state held in refs (zero React overhead)
+  const posX = useRef(PLAYER_SPAWN_X);
+  const posZ = useRef(PLAYER_SPAWN_Z);
+
+  useFrame((_, delta) => {
+    attachCasinoKeyListeners();
+
+    let vx = 0, vz = 0;
+    // Camera-relative WASD: project camera forward onto XZ plane
+    camera.getWorldDirection(_casinoAvatarFwd);
+    _casinoAvatarFwd.y = 0;
+    const fwdLen = _casinoAvatarFwd.length();
+    if (fwdLen > 0.001) {
+      _casinoAvatarFwd.divideScalar(fwdLen);
+      _casinoAvatarRight.crossVectors(_casinoAvatarFwd, _casinoWorldUp).normalize();
+      let inputFwd = 0, inputRight = 0;
+      if (casinoKeys.w) inputFwd += 1;
+      if (casinoKeys.s) inputFwd -= 1;
+      if (casinoKeys.a) inputRight -= 1;
+      if (casinoKeys.d) inputRight += 1;
+      if (inputFwd !== 0 || inputRight !== 0) {
+        vx = _casinoAvatarFwd.x * inputFwd + _casinoAvatarRight.x * inputRight;
+        vz = _casinoAvatarFwd.z * inputFwd + _casinoAvatarRight.z * inputRight;
+        const len = Math.sqrt(vx * vx + vz * vz);
+        if (len > 1) { vx /= len; vz /= len; }
+      }
+    }
+
+    const isMoving = vx !== 0 || vz !== 0;
+
+    if (isMoving) {
+      posX.current = Math.max(-BOUNDS_X, Math.min(BOUNDS_X, posX.current + vx * CASINO_PLAYER_SPEED * delta));
+      posZ.current = Math.max(BOUNDS_Z_MIN, Math.min(BOUNDS_Z_MAX, posZ.current + vz * CASINO_PLAYER_SPEED * delta));
+      // Facing: VRM faces -Z at rot=0; atan2(vx, vz) gives facing toward movement direction
+      const targetRot = Math.atan2(vx, vz);
+      let diff = targetRot - rotRef.current;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      rotRef.current += diff * 0.15;
+    }
+
+    const group = groupRef.current;
+    if (!group) return;
+
+    group.position.x = posX.current;
+    group.position.y = 0;
+    group.position.z = posZ.current;
+    group.rotation.y = rotRef.current;
+
+    // Follow camera — +55wu above, +160wu behind, look at avatar+Y18
+    // Only drive camera when slot screen is NOT open (user is interacting with 2D modal)
+    const slotOpen = useCasinoStore.getState().slotScreenOpen;
+    if (!slotOpen) {
+      const cam = camera as THREE.PerspectiveCamera;
+      // Behind = opposite of facing direction
+      const behindX = -Math.sin(rotRef.current) * 160;
+      const behindZ = -Math.cos(rotRef.current) * 160;
+      _camDesiredPos.set(
+        posX.current + behindX,
+        55,
+        posZ.current + behindZ,
+      );
+      // Soft lerp — exp-decay for smooth follow
+      cam.position.lerp(_camDesiredPos, 1 - Math.exp(-8 * delta));
+      _camTarget.set(posX.current, 18, posZ.current);
+      cam.lookAt(_camTarget);
+    }
+
+    // Animate VRM
+    const anim = vrmAnimRef.current;
+    if (anim) {
+      anim.update(Math.min(delta, 0.1), isMoving, false);
+    }
+  });
+
+  return (
+    <group ref={groupRef} position={[PLAYER_SPAWN_X, 0, PLAYER_SPAWN_Z]} rotation={[0, Math.PI, 0]}>
+      <primitive
+        object={vrm.scene}
+        scale={[vrmRenderScale, vrmRenderScale, vrmRenderScale]}
+        position={[0, vrmFootOffsetY, 0]}
+      />
+    </group>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// GLB fallback player avatar (lobster)
+// ---------------------------------------------------------------------------
+
+// Scratch for GLB pivot
+const _glbAvatarBbox = new THREE.Box3();
+const _glbMeshBbox   = new THREE.Box3();
+
+function computeGlbLocalMinY(scene: THREE.Object3D): number {
+  scene.updateMatrixWorld(true);
+  _glbAvatarBbox.makeEmpty();
+  scene.traverse((child) => {
+    if ((child as THREE.Mesh).isMesh && !(child as THREE.SkinnedMesh).isSkinnedMesh) {
+      const mesh = child as THREE.Mesh;
+      if (!mesh.geometry) return;
+      mesh.geometry.computeBoundingBox();
+      const bb = mesh.geometry.boundingBox; if (!bb) return;
+      _glbMeshBbox.copy(bb).applyMatrix4(mesh.matrixWorld);
+      _glbAvatarBbox.union(_glbMeshBbox);
+    }
+  });
+  if (_glbAvatarBbox.isEmpty()) _glbAvatarBbox.setFromObject(scene);
+  return _glbAvatarBbox.isEmpty() ? 0 : _glbAvatarBbox.min.y;
+}
+
+function CasinoGLBAvatarInner() {
+  const groupRef  = useRef<THREE.Group>(null);
+  const rotRef    = useRef(Math.PI);
+  const { camera } = useThree();
+  const { scene } = useGLTF('/models/lobster.glb');
+
+  const { cloned, pivotOffsetY } = useMemo(() => {
+    const c = scene.clone(true);
+    makeObject3DWebGPUSafe(c);
+    c.traverse((obj) => { obj.frustumCulled = false; });
+    const localMinY = computeGlbLocalMinY(c);
+    return { cloned: c, pivotOffsetY: localMinY * CASINO_AVATAR_SCALE };
+  }, [scene]);
+
+  const posX = useRef(PLAYER_SPAWN_X);
+  const posZ = useRef(PLAYER_SPAWN_Z);
+
+  useFrame((_, delta) => {
+    attachCasinoKeyListeners();
+
+    let vx = 0, vz = 0;
+    camera.getWorldDirection(_casinoAvatarFwd);
+    _casinoAvatarFwd.y = 0;
+    const fwdLen = _casinoAvatarFwd.length();
+    if (fwdLen > 0.001) {
+      _casinoAvatarFwd.divideScalar(fwdLen);
+      _casinoAvatarRight.crossVectors(_casinoAvatarFwd, _casinoWorldUp).normalize();
+      let inputFwd = 0, inputRight = 0;
+      if (casinoKeys.w) inputFwd += 1;
+      if (casinoKeys.s) inputFwd -= 1;
+      if (casinoKeys.a) inputRight -= 1;
+      if (casinoKeys.d) inputRight += 1;
+      if (inputFwd !== 0 || inputRight !== 0) {
+        vx = _casinoAvatarFwd.x * inputFwd + _casinoAvatarRight.x * inputRight;
+        vz = _casinoAvatarFwd.z * inputFwd + _casinoAvatarRight.z * inputRight;
+        const len = Math.sqrt(vx * vx + vz * vz);
+        if (len > 1) { vx /= len; vz /= len; }
+      }
+    }
+
+    const isMoving = vx !== 0 || vz !== 0;
+
+    if (isMoving) {
+      posX.current = Math.max(-BOUNDS_X, Math.min(BOUNDS_X, posX.current + vx * CASINO_PLAYER_SPEED * delta));
+      posZ.current = Math.max(BOUNDS_Z_MIN, Math.min(BOUNDS_Z_MAX, posZ.current + vz * CASINO_PLAYER_SPEED * delta));
+      // lobster.glb faces +Z at rot=0 — same formula as main world
+      const targetRot = Math.atan2(vx, vz);
+      let diff = targetRot - rotRef.current;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      rotRef.current += diff * 0.15;
+    }
+
+    const group = groupRef.current;
+    if (!group) return;
+
+    group.position.x = posX.current;
+    group.position.y = 2 - pivotOffsetY;
+    group.position.z = posZ.current;
+    group.rotation.y = rotRef.current;
+
+    // Follow camera
+    const slotOpen = useCasinoStore.getState().slotScreenOpen;
+    if (!slotOpen) {
+      const cam = camera as THREE.PerspectiveCamera;
+      const behindX = -Math.sin(rotRef.current) * 160;
+      const behindZ = -Math.cos(rotRef.current) * 160;
+      _camDesiredPos.set(posX.current + behindX, 55, posZ.current + behindZ);
+      cam.position.lerp(_camDesiredPos, 1 - Math.exp(-8 * delta));
+      _camTarget.set(posX.current, 18, posZ.current);
+      cam.lookAt(_camTarget);
+    }
+  });
+
+  return (
+    <group ref={groupRef} position={[PLAYER_SPAWN_X, 2 - 0, PLAYER_SPAWN_Z]} rotation={[0, Math.PI, 0]}>
+      <primitive object={cloned} scale={CASINO_AVATAR_SCALE} />
+    </group>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// CasinoPlayerAvatar — routes to VRM or GLB based on avatarModelKey
+// ---------------------------------------------------------------------------
+function CasinoPlayerAvatar() {
+  const avatarModelKey = useGameStore((s) => s.avatarModelKey);
+  const reg: ModelRegistryEntry =
+    MODEL_REGISTRY[avatarModelKey as keyof typeof MODEL_REGISTRY] ?? MODEL_REGISTRY.lobster;
+
+  if (reg.avatar_type === 'vrm') {
+    return (
+      <Suspense fallback={null}>
+        <CasinoVRMAvatarInner reg={reg} />
+      </Suspense>
+    );
+  }
+
+  return <CasinoGLBAvatarInner />;
 }
 
 // ---------------------------------------------------------------------------
@@ -212,7 +577,6 @@ function SlotHotspot({ def }: { def: HotspotDef }) {
 interface InteriorSceneProps {
   useFallback: boolean;
   onFallbackRequest: () => void;
-  /** Called if scene appears empty after 3s (meshCount=0 or no geometry visible) */
   onSceneEmpty: () => void;
 }
 
@@ -228,39 +592,21 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
 
   const groupRef = useRef<THREE.Group>(null);
 
-  // FPS tracking for auto-fallback (first 5s only, skipped if already on fallback)
   const fpsFrames  = useRef(0);
   const fpsAccum   = useRef(0);
   const fpsChecked = useRef(false);
-  // Fail-safe: did we already call onSceneEmpty?
   const emptyFired = useRef(false);
 
   const { cloned, hotspots, meshCount } = useMemo(() => {
     const c = scene.clone(true);
     c.updateMatrixWorld(true);
 
-    // Compute auto-fit at native scale (scale=1) — measures actual geometry bbox.
-    // IMPORTANT: matrixAutoUpdate must still be TRUE here so updateMatrixWorld
-    // propagates correctly. We disable it AFTER applying both scale AND position.
     const fitResult = computeAutoFit(c, INTERIOR_TARGET_HEIGHT);
 
-    // Step 1: Apply scale directly onto the cloned root.
-    // Do NOT pass scale as a R3F prop — if matrixAutoUpdate=false the prop write
-    // never triggers a matrix recompute and the model stays at native micro-scale.
     c.scale.setScalar(fitResult.scale);
-
-    // Step 2: Bake the centering offset into the cloned root's position.
-    // This is safer than relying on the outer <group> position prop being reconciled
-    // before matrixAutoUpdate is locked — R3F prop timing is not guaranteed to
-    // complete before the useEffect that locks the matrix fires.
-    // offsetX/Z: moves geometry center to scene origin (XZ centering).
-    // offsetY: bbox.min.y*scale — grounds the floor at Y=0 of the parent.
     c.position.set(-fitResult.offsetX, -fitResult.offsetY, -fitResult.offsetZ);
-
-    // Step 3: Propagate both transforms into matrixWorld BEFORE locking.
     c.updateMatrixWorld(true);
 
-    // Step 4: Lock all nodes — matrices are current and correct.
     c.traverse((obj) => {
       obj.matrixAutoUpdate = false;
     });
@@ -277,14 +623,12 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
 
     const hotspotDefs = useFallback ? FALLBACK_HOTSPOTS : GAMEREADY_HOTSPOTS;
 
-    // Count visible meshes so the fail-safe overlay can detect an empty scene.
     let count = 0;
     c.traverse((obj) => { if ((obj as THREE.Mesh).isMesh) count++; });
 
     return { cloned: c, hotspots: hotspotDefs, meshCount: count };
   }, [scene, useFallback]);
 
-  // Dispose cloned geometry + materials when component unmounts
   useEffect(() => {
     return () => {
       cloned.traverse((obj) => {
@@ -298,8 +642,6 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
     };
   }, [cloned]);
 
-  // matrixAutoUpdate=false on the parent group.
-  // The group stays at origin (0,0,0) — all centering is baked into cloned.position.
   useEffect(() => {
     const g = groupRef.current;
     if (!g) return;
@@ -307,7 +649,7 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
     g.updateMatrix();
   }, [cloned]);
 
-  // Camera debug log — fires once on first frame when NEXT_PUBLIC_CASINO_DEBUG=1
+  // Camera debug log
   const debugLogged = useRef(false);
   useFrame(() => {
     if (debugLogged.current) return;
@@ -328,45 +670,38 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
     }
   });
 
-  // Combined timing loop: FPS auto-fallback (5s) + scene-empty fail-safe (3s).
+  // FPS auto-fallback + scene-empty fail-safe
   useFrame((_, delta) => {
-    if (useFallback && fpsChecked.current && emptyFired.current) return; // all checks done
+    if (useFallback && fpsChecked.current && emptyFired.current) return;
 
     fpsAccum.current += delta;
     fpsFrames.current += 1;
 
-    // Scene-empty fail-safe: after 3s, if no meshes were cloned, notify parent.
-    // This catches edge cases where both GLBs silently produce zero geometry.
     if (!emptyFired.current && fpsAccum.current >= 3.0 && meshCount === 0) {
       emptyFired.current = true;
       onSceneEmpty();
     }
 
-    // FPS auto-fallback: after 5s on the gameready GLB, check average FPS.
     if (!fpsChecked.current && !useFallback && fpsAccum.current >= 5.0) {
       fpsChecked.current = true;
       const avgFps = fpsFrames.current / fpsAccum.current;
       if (avgFps < FPS_FALLBACK_THRESHOLD) {
-        console.warn(
-          `[casino-interior] avg FPS ${avgFps.toFixed(1)} < ${FPS_FALLBACK_THRESHOLD} threshold — switching to fallback GLB`
-        );
+        console.warn(`[casino-interior] avg FPS ${avgFps.toFixed(1)} < ${FPS_FALLBACK_THRESHOLD} — switching to fallback GLB`);
         onFallbackRequest();
       } else {
-        console.log(`[casino-interior] FPS OK (avg ${avgFps.toFixed(1)}), staying on gameready GLB`);
+        console.log(`[casino-interior] FPS OK (avg ${avgFps.toFixed(1)})`);
       }
     }
   });
 
   return (
-    <group
-      ref={groupRef}
-    >
-      {/* scale and centering offset are both baked into cloned.position / cloned.scale
-           in useMemo — do NOT pass scale or position props to <primitive>.
-           R3F prop writes after matrixAutoUpdate=false don't trigger matrix recomputes. */}
+    <group ref={groupRef}>
       <primitive object={cloned} />
 
-      {/* Invisible click hotspots over slot machine positions */}
+      {/* Slot cabinet props — visible 3D objects players click to open slot screen */}
+      {!useFallback && <SlotCabinets />}
+
+      {/* Invisible click hotspots over slot machines */}
       {hotspots.map((def, i) => (
         <SlotHotspot key={i} def={def} />
       ))}
@@ -375,12 +710,9 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
 }
 
 // ---------------------------------------------------------------------------
-// Default export — full casino interior scene (rendered inside R3F Canvas)
-// onSceneEmpty is wired by CasinoCanvas (DOM context) via a module-level ref,
-// so the fail-safe overlay can be rendered in the DOM tree, not the R3F tree.
+// Default export — full casino interior scene
 // ---------------------------------------------------------------------------
 export interface CasinoInteriorSceneProps {
-  /** Called when meshCount===0 after 3s — lets CasinoCanvas render a DOM overlay */
   onSceneEmpty?: () => void;
 }
 
@@ -394,7 +726,6 @@ export default function CasinoInteriorScene({ onSceneEmpty }: CasinoInteriorScen
     <>
       <CasinoLighting />
 
-      {/* Interior fog — pushed out so 600wu model isn't fogged into the dark background */}
       <fog attach="fog" args={[0x0a0015, 1200, 3000]} />
 
       <Suspense fallback={null}>
@@ -404,6 +735,10 @@ export default function CasinoInteriorScene({ onSceneEmpty }: CasinoInteriorScen
           onSceneEmpty={onSceneEmpty ?? (() => {})}
         />
       </Suspense>
+
+      {/* Walkable player avatar — mounted outside InteriorScene Suspense so
+          GLB/VRM loading doesn't block the casino room from appearing first. */}
+      <CasinoPlayerAvatar />
     </>
   );
 }
