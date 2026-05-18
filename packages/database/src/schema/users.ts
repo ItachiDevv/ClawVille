@@ -31,6 +31,23 @@ export const users = pgTable(
     emailVerified: boolean('email_verified').default(false),
     passwordHash: varchar('password_hash', { length: 255 }),
     name: varchar('name', { length: 255 }),
+    /**
+     * Public handle for the user — case-insensitive UNIQUE across all users.
+     * Initialized from the user's first avatar.name at avatar-create time
+     * (POST /api/avatars), then independently editable via
+     * `PATCH /api/users/me/username` (uniqueness re-checked at edit time).
+     *
+     * Format: 3-20 alphanumeric chars + underscore. The check constraint
+     * `users_username_format` enforces this at the DB level too so a
+     * malformed value can't sneak in via direct SQL. Nullable for
+     * backward compat with rows created before this column existed
+     * (Phase 5 / 5.1 era); a one-off backfill copies avatar.name into
+     * username for legacy rows.
+     *
+     * NOT the same as `name` (display name, free-form, no uniqueness).
+     * Added 2026-05-19.
+     */
+    username: varchar('username', { length: 20 }).unique(),
     avatarUrl: varchar('avatar_url', { length: 500 }),
     /**
      * Phase 5 — SHA-256 hex of `{identityType}:{identityKey}`. Populated
@@ -120,6 +137,17 @@ export const users = pgTable(
     hasAuthMethod: check(
       'users_has_auth_method',
       sql`(${t.email} IS NOT NULL AND ${t.passwordHash} IS NOT NULL) OR ${t.identityFingerprint} IS NOT NULL`,
+    ),
+    /**
+     * Defense-in-depth: enforce the same 3-20 alnum + underscore format
+     * the API checks. NULL is allowed (legacy rows pre-backfill); any
+     * non-null value MUST match. Without this, a buggy migration or
+     * raw-SQL admin tool could land "TekkProbe91617!" or "x" and the
+     * UI would later choke on it.
+     */
+    usernameFormat: check(
+      'users_username_format',
+      sql`${t.username} IS NULL OR ${t.username} ~ '^[a-zA-Z0-9_]{3,20}$'`,
     ),
   }),
 );

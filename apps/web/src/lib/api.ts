@@ -102,7 +102,30 @@ export const api = {
     request<{ success: boolean }>('/api/auth/logout', { method: 'POST' }),
 
   me: () =>
-    request<{ user: { id: string; email: string; name: string } }>('/api/auth/me'),
+    request<{
+      user: {
+        id: string;
+        email: string;
+        name: string;
+        /** Public handle — added 2026-05-19, null for legacy un-backfilled rows */
+        username: string | null;
+      };
+    }>('/api/auth/me'),
+
+  // Username availability probe — public, case-insensitive. Used by the
+  // settings modal as the user types a new handle.
+  checkUsername: (name: string) =>
+    request<{ available: boolean; reason?: string }>(
+      `/api/users/check-username/${encodeURIComponent(name)}`,
+    ),
+
+  // Update the caller's username. 429 on rate limit (5/min/IP); 409 if
+  // taken by another user; 400 on format violation.
+  updateUsername: (username: string) =>
+    request<{ user: { id: string; username: string }; changed: boolean }>(
+      '/api/users/me/username',
+      { method: 'PATCH', body: JSON.stringify({ username }) },
+    ),
 
   // Phase 6 — authoritative agent-session liveness probe. UI calls on
   // game-page mount to hydrate `agentConnected` from the server instead
