@@ -813,6 +813,11 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // position each frame so the facing math can read previous-frame state.
   const simPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
   const currentRotY = useRef(VRM_DIR_ROTATION.idle);
+  // Pitch ref for the swim-upward lean — see player-avatar.tsx for full
+  // rationale. Only meaningful for the possessed-player NPC; wandering
+  // NPCs stay at pitch=0 because they're never airborne. Apply via the
+  // YXZ Euler order so .x is in the local frame after the facing .y.
+  const currentPitchX = useRef(0);
   const currentTerrainY = useRef(-2);
   // PERF: accumulated spring delta — we tick spring bones at 30Hz (every 2nd frame for
   // idle NPCs) by summing frame deltas and flushing them in a single vrm.update() call.
@@ -964,7 +969,20 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
       while (diff < -Math.PI) diff += Math.PI * 2;
       currentRotY.current += diff * Math.min(1, 12 * dt);
     }
+
+    // Pitch — possessed-player NPC leans back while ascending so the
+    // swim/fly pose reads as "swimming upward". See player-avatar.tsx
+    // for full rationale. Wandering NPCs are never airborne so this
+    // stays at 0 for them automatically.
+    const phaseAscendingPitch = isPossessedPlayerNpc &&
+      (jumpState.phase === 'launch' || jumpState.phase === 'quick');
+    const PITCH_ASCEND_NPC = -Math.PI / 3;
+    const pitchTargetNpc = phaseAscendingPitch ? PITCH_ASCEND_NPC : 0;
+    currentPitchX.current += (pitchTargetNpc - currentPitchX.current) * 0.15;
+
+    group.rotation.order = 'YXZ';
     group.rotation.y = currentRotY.current;
+    group.rotation.x = currentPitchX.current;
 
     // PERF: split mixer (60Hz unconditional) from spring-bone physics (15Hz).
     // Re-locked 2026-04-26 after PR #65 reverted to the early-return pattern that
@@ -982,18 +1000,17 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
 
     const animator = vrmAnimatorRef.current;
     if (animator) {
-      // Squat / jump / swim / fly pipeline for the possessed-player NPC.
+      // Squat / swim / fly pipeline for the possessed-player NPC.
       // Mirrors the VRM player-avatar branch — surfaceClip is selected
-      // every frame from jumpState.phase + airborne and only re-set when
-      // it changes (so the animator's lazy GLB load + crossfade only
-      // fire on state transitions, not 60×/s).
+      // every frame from jumpState.phase + airborne and only re-set
+      // when it changes.
       //
-      //   CHARGING (phase==='charging'): surfaceClip='squat'. Plays as
-      //     SPACE goes down; releases via crossfade into 'jump' when
-      //     phase flips to launch/quick.
-      //   ASCENDING (phase in launch/quick): surfaceClip='jump' loop.
-      //   DESCENDING / FREE-SWIM (any other airborne state):
-      //     surfaceClip='flying' for Tekk, else 'swimming'.
+      //   CHARGING (phase==='charging'): surfaceClip='squat'.
+      //   AIRBORNE (any phase): surfaceClip='flying' for Tekk else
+      //     'swimming'. Body pitch (computed above) leans back while
+      //     ascending so the swim pose reads as upward motion;
+      //     descending leaves pitch=0 so the same pose reads as
+      //     forward/horizontal swim.
       //   GROUNDED non-charging: surfaceClip='idle'.
       //
       // Wandering NPCs (isPossessedPlayerNpc=false) skip this entire
@@ -1001,13 +1018,11 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
       if (isPossessedPlayerNpc) {
         const phase = jumpState.phase;
         const phaseCharging = phase === 'charging';
-        const phaseAscending = phase === 'launch' || phase === 'quick';
         const swimClip: AnimName = d.species === 'tekk' ? 'flying' : 'swimming';
         const desiredClip: AnimName =
-          phaseCharging              ? 'squat'
-          : airborne && phaseAscending ? 'jump'
-          : airborne                 ? swimClip
-          :                            'idle';
+          phaseCharging ? 'squat'
+          : airborne    ? swimClip
+          :               'idle';
         if (desiredClip !== lastSurfaceClipRef.current) {
           animator.setSurfaceClip(desiredClip);
           lastSurfaceClipRef.current = desiredClip;
