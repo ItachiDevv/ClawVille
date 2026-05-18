@@ -12,7 +12,7 @@
 > - **`ARCHITECTURE.md`** — backend routes / services / schema / events / leaderboard rubric.
 > - **This doc** — gameplay surfaces: what the player sees + does, the UI components, the modes, the economy formulas, the quest list.
 
-**Last edit:** 2026-05-18 — Concern 6.0.3: Casino walk-in animation + SceneTransition. Avatar walks to door, fade-to-black, route push, fade-from-black on arrival. Walk-out uses `triggerTransition` + mid-fade avatar reposition. §18a updated. Prior: Concern 6.0.2 — casino interior scene.
+**Last edit:** 2026-05-18 — Concern 6.0.4: 2D slot screen (mock data). Full 5×3 reel UI, sequential-stop animation, win highlights, HUD, win celebration, paytable modal, autoplay. §18a.c updated. Prior: Concern 6.0.3 — casino walk-in animation.
 
 ---
 
@@ -652,7 +652,7 @@ Accessible by clicking the casino building (slot 9, W ring, `casino-exterior.glb
 
 ### 18a.a. Interior scene (Concern 6.0.2 — SHIPPED)
 
-Route `/casino` mounts a route-isolated R3F Canvas (`key="casino-interior"`) with a separate WebGPU context. Scene shows the casino interior GLB (Predictive Gaming Cove theme). Slot machine hotspots are invisible click boxes — cursor: pointer on hover; click fires `console.info('[slot-screen pending — Concern 6.0.4]')`.
+Route `/casino` mounts a route-isolated R3F Canvas (`key="casino-interior"`) with a separate WebGPU context. Scene shows the casino interior GLB (Predictive Gaming Cove theme). Slot machine hotspots are invisible click boxes — cursor: pointer on hover; click opens the 2D slot screen (§18a.c).
 
 | Asset | Detail |
 |---|---|
@@ -665,9 +665,49 @@ Route `/casino` mounts a route-isolated R3F Canvas (`key="casino-interior"`) wit
 
 See walk-in + walk-out flow descriptions in the §18a header above. Key files: `SceneTransition.tsx` (generic), `arena-buildings.tsx` (`triggerCasinoWalkIn`), `casino/page.tsx` (walk-out + `fadeInOnMount`), `game/page.tsx` (`<SceneTransition />`).
 
-### 18a.c. 2D slot screen (Concern 6.0.4 — PENDING)
+### 18a.c. 2D slot screen (Concern 6.0.4 — SHIPPED)
 
-Clicking a slot machine hotspot will open a 2D UI overlay with the actual slot game. Not yet implemented — current click handler is a `console.info` placeholder.
+Clicking a slot machine hotspot opens a full-viewport DOM overlay (z-index 9990) over the 3D canvas. The 3D interior stays mounted and rendering underneath. No real money — ClawToken fun-money only in Phase 6.0.
+
+**Paytable:** 5×3 reel grid, 20 paylines, 8 symbols (Cherry → Wild). Publicly verifiable constants in `packages/shared/src/constants/slot-paytables.ts` (`CLASSIC_REEL_STRIPS`, `CLASSIC_SYMBOLS`, `CLASSIC_LINES`). Exported from `@clawville/shared`. Target RTP 96%.
+
+**Mock engine (`apps/web/src/lib/casino/mock-engine.ts`):** `Math.random()` only — no HMAC, no backend. Outcome-forcing: picks tier first (60% loss / 25% small / 10% medium / 4% big / 1% mega), then tries up to 200 random reel stops to hit the target multiplier range. Falls back to `constructGuaranteedWin()`. Phase 6.1 SWAP: same `mockSpin(MockSpinParams): SpinResult` signature and return type, implementation only changes.
+
+**`SpinResult` contract** (`apps/web/src/lib/casino/types.ts`) — frozen for Phase 6.1 swap-in:
+```ts
+interface SpinResult {
+  reels: number[][];        // [5 reels][3 rows], symbol IDs
+  winningLines: WinningLine[];
+  winAmount: bigint;        // atomic ClawToken units
+  freeSpinsAwarded: number;
+  isFreeSpin: boolean;
+  cursorAfter: number;
+}
+interface WinningLine { lineIndex: number; symbols: number[]; winAmount: bigint; multiplier: number; }
+```
+
+**Reel animation (`SlotReels.tsx`):** CSS keyframes only (no canvas), Iris Xe safe. Sequential stop: reel `i` settles at `2.0 + i×0.4`s → [2.0, 2.4, 2.8, 3.2, 3.6s]. Win cell highlight: radial-gradient bg + neon border + `slotPulse` animation. Win line overlay: horizontal neon strip at the row of each winning payline. Mobile responsive via `--slot-cell-size` CSS custom property.
+
+**Slot HUD (`SlotHUD.tsx`):** top strip (balance CT / session P&L / spin count) + bottom bar (bet selector 1–100, SPIN button, autoplay dropdown, mute, paytable, fairness, Walk Away). SPIN button states: `ready | spinning | evaluating | insufficient`. Walk Away = `closeSlotScreen()`.
+
+**Win celebration (`WinCelebration.tsx`):** tier detection from `winAmount / bet` ratio → none / micro / small / medium / big / mega. RAF count-up animation 0→winAmount over 0.8s. Dark vignette + `winShake` CSS on big/mega wins. Auto-dismisses after tier-dependent duration.
+
+**Paytable modal (`PaytableModal.tsx`):** symbol payout table (2–5 of a kind × bet) + 20 payline mini-grid diagrams in per-line color. Opens from HUD info button. Closes on Escape or backdrop click.
+
+**State (`apps/web/src/stores/casino.ts`):** `useCasinoStore` Zustand slice. `openSlotScreen(machineSlug, paytableId, startBalance)` resets session state + calls `resetMockCursor()`. `recordSpin(result, bet)` updates `sessionBalance`, `sessionPnl`, `spinCount`. Starting balance: `avatar.clawTokens` read via `useAvatar()` at hotspot click; in-memory only (no API call in 6.0.4).
+
+**Autoplay:** `AutoplayState { count, remaining, active }` — modes: fixed spins, until cashout, until big win. Continues if session balance ≥ bet after each reel settle; otherwise halts with a low-balance banner.
+
+**Key files:**
+- `apps/web/src/lib/casino/types.ts` — SpinResult contract (Phase 6.1 freeze)
+- `apps/web/src/lib/casino/mock-engine.ts` — mock spin engine
+- `apps/web/src/stores/casino.ts` — Zustand store
+- `apps/web/src/components/casino/SlotScreenModal.tsx` — root modal + orchestration
+- `apps/web/src/components/casino/SlotReels.tsx` — 5×3 reel grid
+- `apps/web/src/components/casino/SlotHUD.tsx` — balance strip + controls
+- `apps/web/src/components/casino/WinCelebration.tsx` — win tier overlay
+- `apps/web/src/components/casino/PaytableModal.tsx` — symbol/line viewer
+- `packages/shared/src/constants/slot-paytables.ts` — canonical paytable constants
 
 ### 18a.d. Backend / RNG / wager program (Concern 6.1+ — PENDING)
 
@@ -687,6 +727,7 @@ See **`3dStructure.md §1`** for the full coordinate system + axis conventions, 
 
 Compact log. The audit-history wall at the top of the prior version of this doc has been replaced with this. Entries are gameplay-facing — backend/service changes belong in `ARCHITECTURE.md §13`, 3D-render changes in `3dStructure.md §13`.
 
+- 2026-05-18 — Concern 6.0.4: 2D slot screen shipped. Full 5×3 reel UI with sequential-stop CSS animation, win highlights, paytable modal, win celebration, autoplay. Mock engine (Math.random + outcome forcing). SpinResult/WinningLine types frozen for Phase 6.1 swap. Slot hotspot onClick wired to `openSlotScreen`. `SlotScreenModal` mounted on `/casino` page as fixed DOM overlay (z-index 9990). No real money; in-memory CT balance only.
 - 2026-05-18 — Concern 6.0.3: Casino walk-in animation. `SceneTransition.tsx` (new generic rAF fade). `triggerCasinoWalkIn()` in `arena-buildings.tsx` (walk + 500ms fade, explore-mode bypass). `/casino` page: `fadeInOnMount` fade-from-black on arrival, `triggerTransition` + mid-fade avatar reposition `(940, 5760)` on exit. `/game` page: mounts `<SceneTransition />`. `avatarPositionRef` spawn updated to `(5760, 6140)`.
 - 2026-05-18 — Concern 6.0.2: Casino interior scene shipped. New §18a (casino). Click casino building → `/casino`. Route-isolated Canvas, gameready GLB + cartoon fallback, FPS-fallback gate, invisible slot hotspots, Back to World button. 2D slot screen (6.0.4) + RNG/wager (6.1) pending.
 - 2026-05-12 — Wager lobbies vertical slice. New §18z covers the reusable `<LobbyLanding>` gate on every activity match page, the 4 lobby flows (create / wait / lock / cancel-refund), the 3 modes (multiplayer / solo-bots / free-play), and the 3 visibility levels (public / private / friends). On-chain settlement via the deployed `clawville_wager` Anchor program on devnet. Match-server auto-locks on `room → LIVE` and auto-settles to placement-1 avatar on `room → RESULTS`.
