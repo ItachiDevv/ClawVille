@@ -64,6 +64,8 @@ Complex AI integrations: multi-phase plan in `.claude/plans/` + research deep-di
 - Tech-stack code (Hono routes, DB tables, services, deploy/env) → `ARCHITECTURE.md`.
 - A single change can touch multiple docs. Bump "Last Audited" + one-line drift note each time.
 
+**Animation shipping — STRICT (added 2026-05-18).** Any change that adds, removes, retargets, or triggers a Mixamo/VRM clip MUST satisfy the 8-point checklist in `3dStructure.md` §6f. Hard-won across an evening of stutter / load / pumping iteration. Quick reference: (1) bundle new emotes into `_emotes.glb` via `scripts/build-anim-bundles.mjs`, (2) `preloadMixamoClips()` is locomotion-only — use `preloadClips(names)` for targeted warming, (3) new asset path prefixes go in `ASSET_PATH_PREFIXES` in `sw.js`, (4) SW registration keeps `updateViaCache: 'none'` + explicit `reg.update()`, (5) NPC position = entity interpolation (lerp between two known snapshots, 1 tick behind real-time — never extrapolate), (6) `updateMixerOnly` flushes skeleton every frame, only spring physics throttles to 15 Hz, (7) state-held animations use `setSurfaceClip`, one-shots only for true single-fire emotes, (8) all humanoid VRM sizing routes through `VRM_AVATAR_TARGET_HEIGHT_WU` — one number, every avatar scales.
+
 **Precedence (high→low):** (1) source code · (2) three canonical docs · (3) `CLAUDE.md`/`README.md` · (4) memory files (advisory). Memory vs doc → doc wins, update/delete memory same turn. Doc vs code → code wins, update doc same turn.
 
 ---
