@@ -39,17 +39,20 @@ export type TileIndex = (typeof TILES)[keyof typeof TILES];
 
 // ---------------------------------------------------------------------------
 // Building positions (tile coords)
-// Circular ring layout in 160×160 grid, center at (80,80)
-// Radius: 72 tiles, 10 buildings at 36° spacing (2π/10), starting at top (θ=-π/2) clockwise.
-// 2026-05-13: expanded ring 68 → 72 tiles to give the town-plaza inner band
-// breathing room after the decoration retune packed 60 props into the
-// 1500-3800wu visible annulus (was 30 in 2700-4500wu). +128wu / +5.9%.
-// Practical max — R=73 puts deployment-ops zone end at tile 160 (off-map).
-// center_x = round(80 + 72*cos(θ)), center_y = round(80 + 72*sin(θ))
-// zone upper-left = (center_x - 7, center_y - 7)  [14×14 tile footprint]
-// Ring radius in world units: 72 × 32 = 2304 wu
-// Circumference / 10 = 1448 wu per slot; MAX_FOOTPRINT=1000 → 448 wu gap between buildings
-// Max zone edge: deployment-ops bottom = tile 159 (1-tile map buffer).
+// 12-building SQUARE ring layout in 160×160 grid, center at (80,80).
+// 2026-05-17 (Phase 6.0.1): expanded from 10-building circular ring to
+// 12-building square ring — 3 buildings per side (N/E/S/W), corners stay
+// empty as plaza space. Two new buildings added: casino (E2) + claw-arcade (S3).
+//
+// Square geometry:
+//   Side distance from center: 72 tiles (= 2304 wu)
+//   Side slot positions: center ± 0, ± 48 tiles along the side
+//   Zone footprint: 14×14 tiles (448×448 wu) — unchanged
+//   Zone upper-left = (slot_center_x − 7, slot_center_y − 7)
+//
+// The 10 original buildings retain their IDs; only positions changed.
+// All consumer code (arena-buildings.tsx, minimap.tsx, PixiCanvas.tsx,
+// map-locations.ts) reads buildingZones from here — update propagates.
 // ---------------------------------------------------------------------------
 export interface BuildingZone {
   id: string;
@@ -60,27 +63,45 @@ export interface BuildingZone {
 }
 
 export const buildingZones: BuildingZone[] = [
-  // Ring order: θ = -π/2 + i*(π/5), i=0..9 (top-center, clockwise)
-  // i=0  θ=-π/2       center=(80,  8)  → visual-creation    (Pineapple House)
-  { id: 'visual-creation',     x:  73, y:   1, width: 14, height: 14 },
-  // i=1  θ=-3π/10     center=(122, 22) → memory-rag        (Squidward's House)
-  { id: 'memory-rag',          x: 115, y:  15, width: 14, height: 14 },
-  // i=2  θ=-π/10      center=(148, 58) → api-integrations  (Salty Spitoon)
-  { id: 'api-integrations',    x: 141, y:  51, width: 14, height: 14 },
-  // i=3  θ=+π/10      center=(148,102) → cron-automation   (Downtown Building)
-  { id: 'cron-automation',     x: 141, y:  95, width: 14, height: 14 },
-  // i=4  θ=+3π/10     center=(122,138) → app-publishing    (Boating School)
-  { id: 'app-publishing',      x: 115, y: 131, width: 14, height: 14 },
-  // i=5  θ=+π/2       center=(80, 152) → deployment-ops    (Lighthouse)
-  { id: 'deployment-ops',      x:  73, y: 145, width: 14, height: 14 },
-  // i=6  θ=+7π/10     center=(38, 138) → mcp-tool-use      (Krusty Krab)
-  { id: 'mcp-tool-use',        x:  31, y: 131, width: 14, height: 14 },
-  // i=7  θ=+9π/10     center=(12, 102) → code-development  (Chum Bucket)
-  { id: 'code-development',    x:   5, y:  95, width: 14, height: 14 },
-  // i=8  θ=+11π/10    center=(12,  58) → messaging-channels (Sandy's Treedome)
-  { id: 'messaging-channels',  x:   5, y:  51, width: 14, height: 14 },
-  // i=9  θ=+13π/10    center=(38,  22) → agent-security    (Patrick's Rock)
-  { id: 'agent-security',      x:  31, y:  15, width: 14, height: 14 },
+  // ---------------------------------------------------------------------------
+  // 12-building square ring (3 per side, no corner buildings — corners = plaza).
+  // Square radius: 72 tiles from center (80, 80). Side spacing: 48 tiles.
+  // Zone footprint: 14×14 tiles. Upper-left = center − 7.
+  // Added 2026-05-17 (Phase 6.0.1): casino + claw-arcade fill E2 and S3.
+  // rotY = atan2(80 − cx, 80 − cy) so each building faces the plaza center.
+  // ---------------------------------------------------------------------------
+
+  // === NORTH SIDE (y-fixed at 8, x varies: 32, 80, 128) ===
+  // N1  center=(32,  8)   dx=48, dz=72  → visual-creation (Pineapple House)
+  { id: 'visual-creation',     x:  25, y:   1, width: 14, height: 14 },
+  // N2  center=(80,  8)   dx= 0, dz=72  → memory-rag (Squidward's House)
+  { id: 'memory-rag',          x:  73, y:   1, width: 14, height: 14 },
+  // N3  center=(128, 8)   dx=-48,dz=72  → api-integrations (Salty Spitoon)
+  { id: 'api-integrations',    x: 121, y:   1, width: 14, height: 14 },
+
+  // === EAST SIDE (x-fixed at 152, y varies: 32, 80, 128) ===
+  // E1  center=(152,32)   dx=-72,dz=48  → cron-automation (Downtown Building)
+  { id: 'cron-automation',     x: 145, y:  25, width: 14, height: 14 },
+  // E2  center=(152,80)   dx=-72,dz= 0  → casino (Phase 6 new building)
+  { id: 'casino',              x: 145, y:  73, width: 14, height: 14 },
+  // E3  center=(152,128)  dx=-72,dz=-48 → app-publishing (Boating School)
+  { id: 'app-publishing',      x: 145, y: 121, width: 14, height: 14 },
+
+  // === SOUTH SIDE (y-fixed at 152, x varies: 32, 80, 128) ===
+  // S1  center=(32, 152)  dx=48, dz=-72 → deployment-ops (Lighthouse)
+  { id: 'deployment-ops',      x:  25, y: 145, width: 14, height: 14 },
+  // S2  center=(80, 152)  dx= 0, dz=-72 → agent-security (Patrick's Rock)
+  { id: 'agent-security',      x:  73, y: 145, width: 14, height: 14 },
+  // S3  center=(128,152)  dx=-48,dz=-72 → claw-arcade (Phase 6 new building)
+  { id: 'claw-arcade',         x: 121, y: 145, width: 14, height: 14 },
+
+  // === WEST SIDE (x-fixed at 8, y varies: 32, 80, 128) ===
+  // W1  center=(8,  32)   dx=72, dz=48  → messaging-channels (Sandy's Treedome)
+  { id: 'messaging-channels',  x:   1, y:  25, width: 14, height: 14 },
+  // W2  center=(8,  80)   dx=72, dz= 0  → mcp-tool-use (Krusty Krab)
+  { id: 'mcp-tool-use',        x:   1, y:  73, width: 14, height: 14 },
+  // W3  center=(8, 128)   dx=72, dz=-48 → code-development (Chum Bucket)
+  { id: 'code-development',    x:   1, y: 121, width: 14, height: 14 },
 ];
 
 // ---------------------------------------------------------------------------

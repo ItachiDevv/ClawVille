@@ -14,6 +14,31 @@ export const SHOP_BUILDINGS = [
 
 export type ShopBuildingId = (typeof SHOP_BUILDINGS)[number];
 
+/**
+ * Phase 6 entertainment buildings — casino (slots, Phase 6.0+) and
+ * claw-arcade (crane game, Phase 6.3). Not shop buildings (no knowledge books).
+ * Added 2026-05-17.
+ */
+export const ENTERTAINMENT_BUILDINGS = [
+  'casino',
+  'claw-arcade',
+] as const;
+
+export type EntertainmentBuildingId = (typeof ENTERTAINMENT_BUILDINGS)[number];
+
+/** All 12 building IDs in the current square ring layout. */
+export const ALL_BUILDING_IDS = [
+  ...SHOP_BUILDINGS,
+  ...ENTERTAINMENT_BUILDINGS,
+] as const;
+
+export type AllBuildingId = (typeof ALL_BUILDING_IDS)[number];
+
+/** Check if a building is an entertainment venue (casino / arcade). */
+export function isEntertainmentBuilding(buildingId: string): boolean {
+  return (ENTERTAINMENT_BUILDINGS as readonly string[]).includes(buildingId);
+}
+
 /** Check if a building is a shop (has items for sale) */
 export function isShopBuilding(buildingId: string): boolean {
   return (SHOP_BUILDINGS as readonly string[]).includes(buildingId);
