@@ -6,6 +6,7 @@ import { useGLTF } from '@react-three/drei';
 import { useWorldLabel, WorldLabel } from '@/lib/three/world-labels-overlay';
 import * as THREE from 'three';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
+import { extendLoaderWithMeshopt } from '@/lib/three/meshopt-loader-setup';
 import {
   MAP_WIDTH,
   MAP_HEIGHT,
@@ -411,7 +412,12 @@ const NpcMesh = memo(function NpcMesh({
     fadeBaseOpacity: 0.65,
     occlude: true,
   });
-  const { scene, animations } = useGLTF(modelCfg.model);
+  // extendLoaderWithMeshopt: belt-and-suspenders for location NPC GLBs that are
+  // compressed with EXT_meshopt_compression (e.g. sandy.glb). The global
+  // MeshoptLoaderSetup component handles most cases, but passing extendLoader
+  // here ensures the decoder is registered on this exact loader instance so
+  // quantized geometry (KHR_mesh_quantization) decodes with full bone data intact.
+  const { scene, animations } = useGLTF(modelCfg.model, undefined, undefined, extendLoaderWithMeshopt);
   const terrainY = useRef(-2);
   const placed = useRef(false);
 
@@ -500,15 +506,30 @@ const NpcMesh = memo(function NpcMesh({
 
   // Built-in AnimationMixer for GLBs that ship with their own clips.
   // Pearl Krabs: 5 clips (Walk / Breathing Idle / Standard Run / Jump / Breakdance).
+  // Sandy: 1 Mixamo clip named "mixamo.com" (idle walk cycle from Mixamo auto-rig).
   // Picks 'Breathing Idle' if present, else first clip. Plays on loop.
   // Other location NPCs have no animations — this hook is a no-op for them.
+  //
+  // IMPORTANT: always pass `cloned` as the optionalRoot to clipAction().
+  // The animation clips from useGLTF() target nodes by name from the ORIGINAL
+  // scene root. After SkeletonUtils.clone(), the cloned bones have the same
+  // names but different UUIDs. Passing `cloned` as the explicit root pins
+  // track resolution to the cloned hierarchy — Three.js resolves node paths
+  // via getObjectByName() from this root, matching the cloned bone names.
+  // Without this, Three.js may reuse a cached binding pointing at the ORIGINAL
+  // scene's nodes (which are not in our scene graph), producing T-pose.
   useEffect(() => {
     if (!animations || animations.length === 0) return;
     const mixer = new THREE.AnimationMixer(cloned);
     mixerRef.current = mixer;
     const idleClip =
       animations.find((c) => /idle|breathing/i.test(c.name)) ?? animations[0];
-    mixer.clipAction(idleClip).play();
+    // Pass cloned as optionalRoot to force track resolution against the cloned
+    // bone hierarchy. reset() clears any cached weight/time from prior plays.
+    const action = mixer.clipAction(idleClip, cloned);
+    action.reset();
+    action.setLoop(THREE.LoopRepeat, Infinity);
+    action.play();
     return () => {
       mixer.stopAllAction();
       mixer.uncacheRoot(cloned);
@@ -695,14 +716,15 @@ export function DeferredNpcPreloads(): ReactElement | null {
     const raf = requestAnimationFrame(() => {
       const seen = new Set<string>();
       Object.values(LOCATION_NPCS).forEach((cfg) => {
-        // Primary model
+        // Primary model — use extendLoaderWithMeshopt for belt-and-suspenders
+        // on any location NPC GLB that may be meshopt-compressed (e.g. sandy.glb).
         if (!seen.has(cfg.model)) {
-          useGLTF.preload(cfg.model);
+          useGLTF.preload(cfg.model, undefined, undefined, extendLoaderWithMeshopt);
           seen.add(cfg.model);
         }
         // Companion model (if any)
         if (cfg.companion && !seen.has(cfg.companion.model)) {
-          useGLTF.preload(cfg.companion.model);
+          useGLTF.preload(cfg.companion.model, undefined, undefined, extendLoaderWithMeshopt);
           seen.add(cfg.companion.model);
         }
       });
