@@ -16,6 +16,11 @@ export const lucia = new Lucia(adapter, {
       email: attributes.email,
       name: attributes.name,
       avatarUrl: attributes.avatar_url,
+      // Username system (added 2026-05-19). Surfaced on the Lucia user
+      // object so c.get('user').username is available wherever
+      // sessionMiddleware/requireAuth runs — no extra DB hit needed in
+      // the username-edit + check-name flows.
+      username: attributes.username,
     };
   },
 });
@@ -27,6 +32,7 @@ declare module 'lucia' {
       email: string | null;
       name: string | null;
       avatar_url: string | null;
+      username: string | null;
     };
   }
 }

@@ -5,6 +5,7 @@ import { secureHeaders } from 'hono/secure-headers';
 import { HTTPException } from 'hono/http-exception';
 import { authRoutes } from './routes/auth';
 import { avatarRoutes } from './routes/avatars';
+import { userRoutes } from './routes/users';
 import { locationRoutes } from './routes/locations';
 import { chatRoutes } from './routes/chat';
 import { transientChatRoutes } from './routes/chat-transient';
@@ -140,6 +141,7 @@ app.get('/.well-known/clawville-issuer.json', (c) => {
 // API routes
 app.route('/api/auth', authRoutes);
 app.route('/api/avatars', avatarRoutes);
+app.route('/api/users', userRoutes);
 app.route('/api/locations', locationRoutes);
 app.route('/api/locations', chatRoutes);
 // Also mount under `/api/chat` so the system-agent route is addressable as
