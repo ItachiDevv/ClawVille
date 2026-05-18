@@ -22,8 +22,8 @@ import {
 // Each building sits on the actual terrain surface
 // ---------------------------------------------------------------------------
 
-const OFFSET_X = -MAP_WIDTH / 2;
-const OFFSET_Z = -MAP_HEIGHT / 2;
+const OFFSET_X = -MAP_WIDTH / 2;  // -5760 (Phase 6.2: 11520-world)
+const OFFSET_Z = -MAP_HEIGHT / 2; // -5760
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 
@@ -43,10 +43,14 @@ _buildRaycaster.layers.set(TERRAIN_LAYER);
 const _buildRayOrigin = new THREE.Vector3();
 const _buildRayDir = new THREE.Vector3(0, -1, 0);
 
-// Target height for all buildings (world units).
-// 800 is the fallback default; each building has an explicit targetHeight override in BUILDING_MODELS.
-// Range: 900–1500 wu. Previously 480 made buildings feel tiny; 800+ standard gives proper visual weight.
-const BUILDING_TARGET_HEIGHT = 800;
+// Target max-dimension for all buildings (world units).
+// Phase 6.2 (2026-05-18): switched from Y-only normalization to max(X,Y,Z) normalization.
+// Y-only caused wide/squat buildings (Chum Bucket, Patrick's Rock) to balloon in XZ
+// while tall/narrow buildings (Squidward) stayed small — wildly inconsistent visual size.
+// max-dim normalization means every building fits in a bounding cube of the same size,
+// giving consistent visual presence across all architectural forms.
+// 1000 is the ring floor; lighthouse stays at 1400 as the tallest landmark.
+const BUILDING_TARGET_HEIGHT = 1000;
 
 // Map each building ID to a GLB model + display config.
 // rotY: each building faces the village center at tile (120, 120) = world (0, 0).
@@ -73,98 +77,74 @@ const BUILDING_TARGET_HEIGHT = 800;
  * toward the steps, causing the house body to appear too far back. pivotZBias=+180
  * shifts the house toward center to compensate.
  */
-const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number; rotYOffset?: number; scaleOverride?: number; targetHeight?: number; box3Recenter?: boolean; pivotZBias?: number; onClick?: () => void }> = {
+const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number; rotYOffset?: number; scaleOverride?: number; targetMaxDim?: number; box3Recenter?: boolean; pivotZBias?: number; onClick?: () => void }> = {
   // ---------------------------------------------------------------------------
-  // 12-building TRUE CIRCULAR ring — Phase 6.1 (2026-05-18).
-  // Grid expanded 160→240 tiles; ring expanded R=72→100 tiles.
+  // 12-building TRUE CIRCULAR ring — Phase 6.2 (2026-05-18).
+  // Grid expanded 240→360 tiles; ring expanded R=100→160 tiles.
   //
-  // Radius: 100 tiles = 3200 wu from center (120, 120) / world (0, 0).
+  // Radius: 160 tiles = 5120 wu from center (180, 180) / world (0, 0).
   // Angular spacing: 30° (π/6 rad) — 12 evenly spaced slots, clockwise from North.
-  // rotY = atan2(120 − cx_tile, 120 − cy_tile) — identical values to R=72 layout
+  // Arc spacing at R=160: ~2680wu (was ~1675wu at R=100 — buildings were packed).
+  // rotY = atan2(180 − cx_tile, 180 − cy_tile) — identical values to R=100 layout
   // because atan2 depends only on direction angle, not radius magnitude.
   //
   // Slot assignment (clockwise from North):
-  //   Slot  0 (  0°/N)   visual-creation    cx=120, cy=20   rotY= 0.000
-  //   Slot  1 ( 30°/NNE) code-development   cx=170, cy=33   rotY=-0.524
-  //   Slot  2 ( 60°/ENE) mcp-tool-use       cx=207, cy=70   rotY=-1.047
-  //   Slot  3 ( 90°/E)   messaging-channels cx=220, cy=120  rotY=-1.571
-  //   Slot  4 (120°/ESE) api-integrations   cx=207, cy=170  rotY=-2.094
-  //   Slot  5 (150°/SSE) app-publishing     cx=170, cy=207  rotY=-2.618
-  //   Slot  6 (180°/S)   cron-automation    cx=120, cy=220  rotY= 3.142
-  //   Slot  7 (210°/SSW) deployment-ops     cx=70,  cy=207  rotY= 2.618
-  //   Slot  8 (240°/WSW) claw-arcade        cx=33,  cy=170  rotY= 2.094  [swapped 2026-05-18]
-  //   Slot  9 (270°/W)   casino             cx=20,  cy=120  rotY= 1.571  ← entertainment district
-  //   Slot 10 (300°/WNW) agent-security     cx=33,  cy=70   rotY= 1.047  [swapped 2026-05-18]
-  //   Slot 11 (330°/NNW) memory-rag         cx=70,  cy=33   rotY= 0.524
+  //   Slot  0 (  0°/N)   visual-creation    cx=180, cy=20   rotY= 0.000
+  //   Slot  1 ( 30°/NNE) code-development   cx=260, cy=41   rotY=-0.524
+  //   Slot  2 ( 60°/ENE) mcp-tool-use       cx=319, cy=100  rotY=-1.047
+  //   Slot  3 ( 90°/E)   messaging-channels cx=340, cy=180  rotY=-1.571
+  //   Slot  4 (120°/ESE) api-integrations   cx=319, cy=260  rotY=-2.094
+  //   Slot  5 (150°/SSE) app-publishing     cx=260, cy=319  rotY=-2.618
+  //   Slot  6 (180°/S)   cron-automation    cx=180, cy=340  rotY= 3.142
+  //   Slot  7 (210°/SSW) deployment-ops     cx=100, cy=319  rotY= 2.618
+  //   Slot  8 (240°/WSW) claw-arcade        cx=41,  cy=260  rotY= 2.094
+  //   Slot  9 (270°/W)   casino             cx=20,  cy=180  rotY= 1.571  ← entertainment district
+  //   Slot 10 (300°/WNW) agent-security     cx=41,  cy=100  rotY= 1.047
+  //   Slot 11 (330°/NNW) memory-rag         cx=100, cy=41   rotY= 0.524
   // ---------------------------------------------------------------------------
 
-  // Slot 0 — N (cx=120, cy=20): dx=0, dz=100 → atan2(0,100)=0
-  // targetHeight: 1100 — pineapple house needs extra height to read from a distance.
-  'visual-creation':     { model: '/models/pineapple-house.glb',     yOffset: 0, rotY:  0.000, targetHeight: 1100 },
-  // Slot 1 — NNE (cx=170, cy=33): dx=-50, dz=87 → atan2(-50,87)≈-0.524 (-π/6)
-  // 2026-05-12: chum-bucket-v2.glb restored from spongebob_chum_bucket.glb (1.85 MB original).
-  // targetHeight: 1100 (was 900) — user reported still too small; bumped +22% to match ring peers.
-  'code-development':    { model: '/models/chum-bucket-v2.glb',      yOffset: 0, rotY: -0.524, targetHeight: 1100 },
-  // Slot 2 — ENE (cx=207, cy=70): dx=-87, dz=50 → atan2(-87,50)≈-1.047 (-π/3)
+  // Slot 0 — N (cx=180, cy=20): dx=0, dz=160 → atan2(0,160)=0
+  // targetMaxDim: 1100 — pineapple house needs extra size to read from a distance.
+  'visual-creation':     { model: '/models/pineapple-house.glb',     yOffset: 0, rotY:  0.000, targetMaxDim: 1100 },
+  // Slot 1 — NNE (cx=260, cy=41): dx=-80, dz=139 → atan2(-80,139)≈-0.524 (-π/6)
+  // Phase 6.2: targetMaxDim=1000 caps the bucket — Y-only normalization inflated XZ 2×.
+  'code-development':    { model: '/models/chum-bucket-v2.glb',      yOffset: 0, rotY: -0.524, targetMaxDim: 1000 },
+  // Slot 2 — ENE (cx=319, cy=100): dx=-139, dz=80 → atan2(-139,80)≈-1.047 (-π/3)
   // krusty-krab-v2.glb = iconic ship restaurant (CC-BY, Yanez Designs, 1.59 MB original).
-  // targetHeight: 1400 (was 1200) — user reported still too small (door at avatar head level);
-  //   1400 ≈ 7.8× avatar (180wu), well within the 5-8× guideline for landmark buildings.
-  'mcp-tool-use':        { model: '/models/krusty-krab-v2.glb',      yOffset: 0, rotY: -1.047, targetHeight: 1400 },
-  // Slot 3 — E (cx=220, cy=120): dx=-100, dz=0 → atan2(-100,0)=-π/2≈-1.571
-  // 2026-05-12: swapped to sandy-treedome-v3.glb (sandy_tree_final.glb, 4.4 MB).
-  // rotYOffset: sandy-treedome-v3.glb authored facing +Z; +π rotates 180° for inward-facing door.
-  // targetHeight: 1300 — dome must visually dominate the E slot; user reported "barely peeking above camera".
-  'messaging-channels':  { model: '/models/sandy-treedome-v3.glb',   yOffset: 0, rotY: -1.571, rotYOffset: Math.PI, targetHeight: 1300 },
-  // Slot 4 — ESE (cx=207, cy=170): dx=-87, dz=-50 → atan2(-87,-50)≈-2.094 (-2π/3)
+  'mcp-tool-use':        { model: '/models/krusty-krab-v2.glb',      yOffset: 0, rotY: -1.047, targetMaxDim: 1000 },
+  // Slot 3 — E (cx=340, cy=180): dx=-160, dz=0 → atan2(-160,0)=-π/2≈-1.571
+  // sandy-treedome-v3.glb: rotYOffset +π for inward-facing door.
+  // Phase 6.2: dome glass DoubleSide fix applied post-load (see GLBBuilding).
+  'messaging-channels':  { model: '/models/sandy-treedome-v3.glb',   yOffset: 0, rotY: -1.571, rotYOffset: Math.PI, targetMaxDim: 1000 },
+  // Slot 4 — ESE (cx=319, cy=260): dx=-139, dz=-80 → atan2(-139,-80)≈-2.094 (-2π/3)
   // rotYOffset: salty-spitoon.glb authored facing +X; -π/2 aligns toward village center.
-  // targetHeight: 1500 (was 1200) — still too small after 62fd806. salty-spitoon.glb is
-  //   authored wide (aspect ~2:1); it was hitting the MAX_FOOTPRINT cap at 1500 and rendering
-  //   at ~900wu. Combined with MAX_FOOTPRINT bump to 1800 this should reach target.
-  'api-integrations':    { model: '/models/salty-spitoon.glb',       yOffset: 0, rotY: -2.094, rotYOffset: -Math.PI / 2, targetHeight: 1500 },
-  // Slot 5 — SSE (cx=170, cy=207): dx=-50, dz=-87 → atan2(-50,-87)≈-2.618 (-5π/6)
-  // rotYOffset: boating-school.glb classroom must face center (model-authored offset — stays with building).
-  // targetHeight: 1100 — school raised to match general ring floor; 950 was too low.
-  'app-publishing':      { model: '/models/boating-school.glb',      yOffset: 0, rotY: -2.618, rotYOffset: Math.PI / 2, targetHeight: 1100 },
-  // Slot 6 — S (cx=120, cy=220): dx=0, dz=-100 → atan2(0,-100)=π≈3.142
-  // targetHeight: 1400 — downtown building is the civic anchor; raised from 1200 because
-  //   user reported tiny stub buildings. 1400 gives strong civic presence vs 1500 lighthouse.
-  'cron-automation':     { model: '/models/patty-building.glb',      yOffset: 0, rotY:  3.142, targetHeight: 1400 },
-  // Slot 7 — SSW (cx=70, cy=207): dx=50, dz=-87 → atan2(50,-87)≈2.618 (5π/6)
-  // targetHeight: 1500 — lighthouse is the tallest landmark by definition.
-  'deployment-ops':      { model: '/models/building-lighthouse.glb', yOffset: 0, rotY:  2.618, targetHeight: 1500 },
-  // Slot 8 — WSW (cx=33, cy=170): dx=87, dz=-50 → atan2(87,-50)≈2.094 (2π/3)
-  // 2026-05-18: SWAPPED — claw-arcade moved from slot 10 to slot 8 (Patrick's Rock moved to slot 10).
-  // rotY=2.094 is the correct WSW facing angle — model points inward toward plaza center.
-  // claw-arcade-exterior.glb = Arcade City (CC-BY-4.0, vanessalani / Sketchfab).
-  // Interior / crane game is Phase 6.3.
-  // CASINO ADJACENCY FLAG: claw-arcade (slot 8/WSW) is now 2 slots from casino (slot 9/W) — NO LONGER ADJACENT.
-  // Patrick's Rock (slot 10/WNW) is now adjacent to casino instead.
-  'claw-arcade':         { model: '/models/arcade/claw-arcade-exterior.glb', yOffset: 0, rotY:  2.094, targetHeight: 900,
+  'api-integrations':    { model: '/models/salty-spitoon.glb',       yOffset: 0, rotY: -2.094, rotYOffset: -Math.PI / 2, targetMaxDim: 1000 },
+  // Slot 5 — SSE (cx=260, cy=319): dx=-80, dz=-139 → atan2(-80,-139)≈-2.618 (-5π/6)
+  // rotYOffset: boating-school.glb classroom must face center (model-authored offset).
+  'app-publishing':      { model: '/models/boating-school.glb',      yOffset: 0, rotY: -2.618, rotYOffset: Math.PI / 2, targetMaxDim: 1000 },
+  // Slot 6 — S (cx=180, cy=340): dx=0, dz=-160 → atan2(0,-160)=π≈3.142
+  'cron-automation':     { model: '/models/patty-building.glb',      yOffset: 0, rotY:  3.142, targetMaxDim: 1000 },
+  // Slot 7 — SSW (cx=100, cy=319): dx=80, dz=-139 → atan2(80,-139)≈2.618 (5π/6)
+  // Lighthouse is the tallest landmark — targetMaxDim 1400 keeps it visually dominant.
+  'deployment-ops':      { model: '/models/building-lighthouse.glb', yOffset: 0, rotY:  2.618, targetMaxDim: 1400 },
+  // Slot 8 — WSW (cx=41, cy=260): dx=139, dz=-80 → atan2(139,-80)≈2.094 (2π/3)
+  // Phase 6.1 swap preserved: claw-arcade at slot 8/WSW. Casino is at slot 9/W (2 slots away).
+  'claw-arcade':         { model: '/models/arcade/claw-arcade-exterior.glb', yOffset: 0, rotY:  2.094, targetMaxDim: 1100,
                            onClick: () => { console.info('[claw-arcade] interior pending — Concern 6.3'); } },
-  // Slot 9 — W (cx=20, cy=120): dx=100, dz=0 → atan2(100,0)=π/2≈1.571  ← entertainment district
-  // casino-exterior-cove.glb = "Pyramid Casino" by tl0615 (CC-BY-4.0, Sketchfab); in-game name: Predictive Gaming Cove.
-  // GLB author placed geometry at ~(-1800, 166, 4540) Blender units from scene origin.
-  // box3Recenter=true documents the origin-offset; centering is handled by
-  // computeBuildingScale's pivotOffsetX/Z (same pipeline as every other building).
-  // targetHeight: 1040 — casino is 30% larger than standard 800 to be the
-  // entertainment-district landmark (user request 2026-05-17 circle revert).
-  // Interior route wired in Concern 6.0.2: click → /casino. Walk-in anim is 6.0.3.
-  'casino':              { model: '/models/casino/casino-exterior-cove.glb', yOffset: 0, rotY:  1.571, targetHeight: 1040, box3Recenter: true,
+  // Slot 9 — W (cx=20, cy=180): dx=160, dz=0 → atan2(160,0)=π/2≈1.571  ← entertainment district
+  // casino-exterior-cove.glb = "Pyramid Casino" by tl0615 (CC-BY-4.0, Sketchfab).
+  // box3Recenter=true: geometry authored at ~(-1800, 166, 4540) Blender origin — centering handled by pivotOffset.
+  // targetMaxDim: 1300 — casino is the entertainment-district landmark, deserves more visual mass.
+  'casino':              { model: '/models/casino/casino-exterior-cove.glb', yOffset: 0, rotY:  1.571, targetMaxDim: 1300, box3Recenter: true,
                            onClick: () => { window.location.href = '/casino'; } },
-  // Slot 10 — WNW (cx=33, cy=70): dx=87, dz=50 → atan2(87,50)≈1.047 (π/3)
-  // 2026-05-18: SWAPPED — agent-security moved from slot 8 to slot 10 (claw-arcade moved to slot 8).
-  // rotY=1.047 is the correct WNW facing angle — model points inward toward plaza center.
-  // patricks-rock-v2.glb (3.88 MB, original patricks_house_spongebob.glb).
-  // targetHeight: 900 — Patrick's rock is naturally squat; don't over-scale.
-  'agent-security':      { model: '/models/patricks-rock-v2.glb',    yOffset: 0, rotY:  1.047, targetHeight: 900 },
-  // Slot 11 — NNW (cx=70, cy=33): dx=50, dz=87 → atan2(50,87)≈0.524 (π/6)
-  // squidward-house.glb = Squidward's Easter Island moai head house (CC-BY, Yanez Designs)
-  // targetHeight: 1300 — moai head must tower visibly across the ring (user: "should be ~5-8× avatar").
-  // pivotZBias: +180 — the stone steps at the front of the moai head shift the GLB bbox center
-  // toward the steps, causing the house body to appear too far back from the village center.
-  // The bias shifts the inner group toward the player-facing side, compensating for the step offset.
-  // This is the preferred fix over splitting the GLB (no asset modification required).
-  'memory-rag':          { model: '/models/squidward-house.glb',     yOffset: 0, rotY:  0.524, targetHeight: 1300, pivotZBias: 180 },
+  // Slot 10 — WNW (cx=41, cy=100): dx=139, dz=80 → atan2(139,80)≈1.047 (π/3)
+  // Phase 6.1 swap preserved: agent-security at slot 10/WNW.
+  // targetMaxDim: 1100 — wide dome, max-dim normalization prevents over-inflation.
+  'agent-security':      { model: '/models/patricks-rock-v2.glb',    yOffset: 0, rotY:  1.047, targetMaxDim: 1100 },
+  // Slot 11 — NNW (cx=100, cy=41): dx=80, dz=139 → atan2(80,139)≈0.524 (π/6)
+  // squidward-house.glb = Easter Island moai head (CC-BY, Yanez Designs).
+  // pivotZBias: +180 — stone steps at front shift GLB bbox center, compensated here.
+  'memory-rag':          { model: '/models/squidward-house.glb',     yOffset: 0, rotY:  0.524, targetMaxDim: 1000, pivotZBias: 180 },
 };
 
 // Scratch objects for stripGroundPlanes — reused across calls to avoid GC.
@@ -400,14 +380,17 @@ interface BuildingScaleResult {
 
 /** Measure bounding box and return scale + XZ pivot-correction offsets.
  *
- *  Scale: normalizes so the building's Y-height = targetHeight (default: BUILDING_TARGET_HEIGHT).
- *  Uses size.y exclusively — NOT max(w,h,d). Wide/squat buildings (salty-spitoon,
- *  boating-school) would otherwise have their width become the normalizing dim,
- *  crushing actual height far below 800.
+ *  Scale: normalizes so the building's max(X,Y,Z) dimension = targetMaxDim.
+ *  Phase 6.2 (2026-05-18): switched from Y-only normalization. Y-only caused
+ *  wide/squat GLBs (Chum Bucket bucket, Patrick's Rock dome) to balloon in XZ
+ *  while tall/narrow GLBs (Squidward) stayed compact — wildly uneven visual size.
+ *  max(X,Y,Z) normalization fits every building in a bounding cube of the same
+ *  size, giving consistent visual presence regardless of architectural form.
+ *  Matches the casino-interior computeAutoFit pattern (commit 166961d).
  *
- *  Footprint cap: if after height normalization max(scaled_sx, scaled_sz) > MAX_FOOTPRINT,
+ *  Footprint cap: if after max-dim normalization max(scaled_sx, scaled_sz) > MAX_FOOTPRINT,
  *  scale is reduced so the widest XZ dimension = MAX_FOOTPRINT. Wide buildings will be
- *  shorter than targetHeight but won't sprawl and dominate the scene.
+ *  smaller than targetMaxDim but won't sprawl and dominate the scene.
  *
  *  Pivot correction: some GLBs (e.g. downtown-building.glb) have their geometry
  *  authored far from the scene pivot. pivotOffsetX/Z = bbox_center_XZ * scale,
@@ -416,7 +399,7 @@ interface BuildingScaleResult {
  *
  *  Excludes SkinnedMesh nodes from the bbox to avoid bind-pose inflation.
  *  Called AFTER stripping ground planes. */
-function computeBuildingScale(scene: THREE.Object3D, targetHeight: number = BUILDING_TARGET_HEIGHT): BuildingScaleResult {
+function computeBuildingScale(scene: THREE.Object3D, targetMaxDim: number = BUILDING_TARGET_HEIGHT): BuildingScaleResult {
   scene.updateMatrixWorld(true);
   _buildBbox.makeEmpty();
 
@@ -437,12 +420,13 @@ function computeBuildingScale(scene: THREE.Object3D, targetHeight: number = BUIL
   }
 
   _buildBbox.getSize(_buildSize);
-  // Use Y (height) as the normalizing dimension. Fall back to maxDim only if Y
-  // is degenerate (e.g. a completely flat mesh or a scene with zero height content).
-  const h = _buildSize.y > 0.001 ? _buildSize.y : Math.max(_buildSize.x, _buildSize.y, _buildSize.z);
-  let scale = h === 0 ? 1 : targetHeight / h;
+  // Use max(X,Y,Z) as the normalizing dimension so every building occupies a
+  // comparably-sized bounding cube. This prevents wide/squat buildings from
+  // dominating and tall/narrow buildings from appearing tiny.
+  const maxDim = Math.max(_buildSize.x, _buildSize.y, _buildSize.z);
+  let scale = maxDim > 0.001 ? targetMaxDim / maxDim : 1;
 
-  // Footprint cap — shrink wide buildings so they don't dominate the scene.
+  // Footprint cap — shrink extremely wide buildings so they don't sprawl.
   const scaledMaxXZ = Math.max(_buildSize.x, _buildSize.z) * scale;
   if (scaledMaxXZ > MAX_FOOTPRINT) {
     scale *= MAX_FOOTPRINT / scaledMaxXZ;
@@ -524,10 +508,13 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
   // WorldLabelsOverlay label — distance-faded landmark.
   // Base opacity 0.40 at ≤2000wu, linear fade to 0 at 5000wu.
   // pointerEvents='auto' preserves click-target behavior.
+  // Label floats above the building: use per-building targetMaxDim so tall buildings
+  // (lighthouse 1400) get a proportionally elevated label. Fallback to BUILDING_TARGET_HEIGHT.
+  const labelYOffset = (config.targetMaxDim ?? BUILDING_TARGET_HEIGHT) + 20;
   const { divRef: labelDivRef } = useWorldLabel({
     id: `building-label-${zone.id}`,
     anchorRef: groupRef,
-    offset: [0, BUILDING_TARGET_HEIGHT + 20, 0],
+    offset: [0, labelYOffset, 0],
     initialVisible: true,
     fadeNear: 2000,
     fadeFar: 5000,
@@ -552,15 +539,31 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
     if (config.scaleOverride != null) {
       result = { cloned: c, buildingScale: config.scaleOverride, pivotOffsetX: 0, pivotOffsetY: 0, pivotOffsetZ: 0 };
     } else {
-      // Strip flat ground planes before measuring height so the target height
-      // is accurate — ground planes inflate the bounding box and make buildings
-      // appear shorter than 100 world units after scaling.
+      // Strip flat ground planes before measuring so the max-dim normalization
+      // is accurate — ground planes inflate bbox and distort the normalizing dim.
       stripGroundPlanes(c);
-      // targetHeight overrides the module-level BUILDING_TARGET_HEIGHT for
-      // individual buildings. Used for the casino (+30% = 1040 wu).
-      const targetH = config.targetHeight ?? BUILDING_TARGET_HEIGHT;
-      const { scale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz } = computeBuildingScale(c, targetH);
+      // Phase 6.2: targetMaxDim replaces targetHeight; computeBuildingScale now
+      // normalises by max(X,Y,Z) for consistent visual size across all shapes.
+      const targetMD = config.targetMaxDim ?? BUILDING_TARGET_HEIGHT;
+      const { scale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz } = computeBuildingScale(c, targetMD);
       result = { cloned: c, buildingScale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz };
+    }
+    // Phase 6.2 — Sandy's Treedome dome glass fix:
+    // sandy-treedome-v3.glb dome mesh is single-sided (THREE.FrontSide), so the
+    // camera looking from outside sees nothing (backfaces culled). Apply DoubleSide
+    // to any transparent/alphaTest material on the messaging-channels building so
+    // the glass dome is visible from outside without modifying the GLB asset.
+    if (zone.id === 'messaging-channels') {
+      c.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const mat of mats) {
+          if (mat && (mat.transparent || (mat as THREE.MeshStandardMaterial).alphaTest > 0)) {
+            (mat as THREE.MeshStandardMaterial).side = THREE.DoubleSide;
+          }
+        }
+      });
     }
     // 2026-05-11 — collapse same-material draw calls into one mesh each.
     // Buildings have ~5-15 submeshes from the source GLB but many share a
@@ -571,7 +574,7 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
       console.log(`[building-merge] ${zone.id}: ${merge.meshesBefore} → ${merge.meshesAfter} meshes (${merge.buckets} buckets merged, ${merge.skipped} skipped)`);
     }
     return result;
-  }, [scene, config.model, config.scaleOverride, config.targetHeight, config.pivotZBias, zone.id]);
+  }, [scene, config.model, config.scaleOverride, config.targetMaxDim, config.pivotZBias, zone.id]);
 
   // Dispose cloned geometry + materials on unmount (navigation away / hot-reload)
   useEffect(() => {
@@ -635,10 +638,10 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
             to give a generous click target without needing a visible mesh. */}
         {config.onClick && (
           <mesh
-            position={[0, BUILDING_TARGET_HEIGHT * 0.4, 0]}
+            position={[0, (config.targetMaxDim ?? BUILDING_TARGET_HEIGHT) * 0.4, 0]}
             onClick={(e) => { e.stopPropagation(); config.onClick!(); }}
           >
-            <boxGeometry args={[200, BUILDING_TARGET_HEIGHT * 0.8, 200]} />
+            <boxGeometry args={[200, (config.targetMaxDim ?? BUILDING_TARGET_HEIGHT) * 0.8, 200]} />
             <meshBasicMaterial visible={false} />
           </mesh>
         )}

@@ -287,16 +287,13 @@ function isNearBuilding(x: number, z: number): boolean {
 // worldZ = -HALF_MH + 120*TILE_SIZE = -3840 + 3840 = 0
 const VILLAGE_CX = 0;
 const VILLAGE_CZ = 0;
-// No decorations within this radius — keeps the town plaza clear.
-// 2026-05-13 (user-reported "scatter decos invisible"): cut 2700 → 1500.
-// The old 2700 wu pushed every prop OUTSIDE the building ring (then R=2176,
-// buildings ~800wu tall) where the ring buildings occluded them AND
-// camera-distance (camera spawn Z=+1300) put them past 3700 wu — deep
-// in the fog falloff (1200→6400). The new 1500 places decos in the
-// visible annulus between town center and the inner building ring,
-// where they show up between/around buildings instead of behind them.
-// Ring expanded to R=2304 same day for extra inner-band breathing room.
-const DECO_INNER_EXCLUSION_R = 1500;
+// No decorations within this radius — keeps the immediate town plaza clear.
+// Phase 6.2 (2026-05-18): reduced from 1500 to 800 now that props (bazaar stall,
+// marketplace stall, auction dome) are spread to 800-1000wu from center. Decorations
+// in the 800-3000wu band give the plaza natural context; inside 800wu stays clear for
+// the NPC/guide/stall cluster. Building ring is now at R=5120wu so the old 1500wu
+// exclusion was unnecessarily tight (props were already spread beyond that radius).
+const DECO_INNER_EXCLUSION_R = 800;
 
 /** Generate all decorations with cluster-based organic scatter.
  *

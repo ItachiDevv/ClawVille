@@ -1,12 +1,12 @@
 /**
- * A* pathfinding for NPC navigation on the 240×240 tile grid (Phase 6.1, 2026-05-18).
+ * A* pathfinding for NPC navigation on the 360×360 tile grid (Phase 6.2, 2026-05-18).
  * Buildings are blocked tiles; NPCs navigate around them.
  */
 
 import { BUILDING_TILE_ZONES } from '@clawville/shared';
 
-const COLS = 240;
-const ROWS = 240;
+const COLS = 360;
+const ROWS = 360;
 const TILE = 32;
 
 export interface PathNode {

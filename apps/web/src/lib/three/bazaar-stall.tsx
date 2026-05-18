@@ -30,10 +30,13 @@ useGLTF.preload('/models/bazaar-fish-stall.glb');
 
 // ---------------------------------------------------------------------------
 // World position
+// Phase 6.2 (2026-05-18): spread from (-600, -2, -60) to (-800, -2, 300) as part
+// of the plaza expansion. Props now form a loose ring at 800-1000wu from center
+// instead of clustering at ~600wu, giving the town square more breathing room.
 // ---------------------------------------------------------------------------
-const STALL_X = -600;
+const STALL_X = -800;
 const STALL_Y = -2;
-const STALL_Z = -60;
+const STALL_Z = 300;
 
 // Target visual height in world units (tall enough to be readable at a distance)
 const TARGET_HEIGHT_WU = 400;
