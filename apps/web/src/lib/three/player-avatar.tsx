@@ -376,6 +376,15 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
       // Decoupled from camera pitch — mouse orbit never causes altitude drift.
       // Arrow keys continue to rotate the camera via ArrowKeyRotationController;
       // they ALSO drive altitude here when the avatar is airborne.
+      //
+      // Auto-sink (2026-05-18): once the jump arc finishes (phase=grounded)
+      // but playerAltitude is still > 0 — e.g. arrow keys nudged altitude
+      // up while the jump arc was active, or the user landed atop a
+      // structure and is still aloft — gently pull the avatar back down
+      // when no vertical input is held. Without this the player got
+      // stuck "swimming" mid-air after a jump because nothing decayed
+      // playerAltitude. Holding arrow-up still works to free-swim
+      // upward — auto-sink only kicks in when neither direction is held.
       const airborne =
         jumpState.phase !== 'grounded' || jumpState.playerAltitude > 0;
       if (airborne) {
@@ -386,6 +395,19 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
           jumpState.playerAltitude = Math.max(
             0,
             jumpState.playerAltitude + verticalInput * SPEED * delta
+          );
+        } else if (
+          jumpState.phase === 'grounded' &&
+          jumpState.playerAltitude > 0
+        ) {
+          // Gravity pull. SPEED * 0.6 chosen empirically — slower than
+          // active arrow-down (which uses full SPEED) so a player can
+          // still briefly hover, but quick enough that an accidentally
+          // elevated landing returns to ground within ~1 s.
+          const SINK_RATE = SPEED * 0.6;
+          jumpState.playerAltitude = Math.max(
+            0,
+            jumpState.playerAltitude - SINK_RATE * delta
           );
         }
       }
@@ -748,6 +770,15 @@ function PlayerAvatarGLBInner() {
       // Decoupled from camera pitch — mouse orbit never causes altitude drift.
       // Arrow keys continue to rotate the camera via ArrowKeyRotationController;
       // they ALSO drive altitude here when the avatar is airborne.
+      //
+      // Auto-sink (2026-05-18): once the jump arc finishes (phase=grounded)
+      // but playerAltitude is still > 0 — e.g. arrow keys nudged altitude
+      // up while the jump arc was active, or the user landed atop a
+      // structure and is still aloft — gently pull the avatar back down
+      // when no vertical input is held. Without this the player got
+      // stuck "swimming" mid-air after a jump because nothing decayed
+      // playerAltitude. Holding arrow-up still works to free-swim
+      // upward — auto-sink only kicks in when neither direction is held.
       const airborne =
         jumpState.phase !== 'grounded' || jumpState.playerAltitude > 0;
       if (airborne) {
@@ -758,6 +789,19 @@ function PlayerAvatarGLBInner() {
           jumpState.playerAltitude = Math.max(
             0,
             jumpState.playerAltitude + verticalInput * SPEED * delta
+          );
+        } else if (
+          jumpState.phase === 'grounded' &&
+          jumpState.playerAltitude > 0
+        ) {
+          // Gravity pull. SPEED * 0.6 chosen empirically — slower than
+          // active arrow-down (which uses full SPEED) so a player can
+          // still briefly hover, but quick enough that an accidentally
+          // elevated landing returns to ground within ~1 s.
+          const SINK_RATE = SPEED * 0.6;
+          jumpState.playerAltitude = Math.max(
+            0,
+            jumpState.playerAltitude - SINK_RATE * delta
           );
         }
       }
