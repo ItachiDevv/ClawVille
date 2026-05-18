@@ -2,7 +2,8 @@ import type { MapLocation } from '../types/location';
 
 // 12-building square ring layout (3 buildings per side, corners empty as plaza space).
 // Phase 6.0.1 (2026-05-17): expanded from 10-building circular ring to 12-building square.
-// Two new buildings: casino (E2 slot) and claw-arcade (S3 slot).
+// Two new buildings: casino (E2 slot) and claw-arcade (originally S3, moved to E3 2026-05-17).
+// Entertainment district swap 2026-05-17: claw-arcade → E3, app-publishing → S3.
 //
 // Square ring geometry (160×160 tile grid, center tile 80,80 = world origin):
 //   Side distance from center: 72 tiles (= 2304 wu)
@@ -77,11 +78,12 @@ export const MAP_LOCATIONS: MapLocation[] = [
     height: 448,
   },
   // E3 center=(152,128) zone upper-left=(145,121) → 145*32=4640, 121*32=3872
+  // Entertainment district: casino (E2) + claw-arcade (E3) adjacent on east wall — swapped 2026-05-17.
   {
-    id: 'app-publishing',
-    name: 'Boating School',
-    description: 'Ship apps to Apple App Store, Google Play, Microsoft Store, Steam, and alt stores. Cross-platform frameworks and code signing.',
-    icon: '🐋',
+    id: 'claw-arcade',
+    name: 'Arcade City',
+    description: 'Skill-based crane game and arcade fun. Phase 6.3 coming soon.',
+    icon: '🕹️',
     positionX: 4640,
     positionY: 3872,
     width: 448,
@@ -112,11 +114,12 @@ export const MAP_LOCATIONS: MapLocation[] = [
     height: 448,
   },
   // S3 center=(128,152) zone upper-left=(121,145) → 121*32=3872, 145*32=4640
+  // app-publishing moved from E3 to S3 in entertainment district swap 2026-05-17.
   {
-    id: 'claw-arcade',
-    name: 'Arcade City',
-    description: 'Skill-based crane game and arcade fun. Phase 6.3 coming soon.',
-    icon: '🕹️',
+    id: 'app-publishing',
+    name: 'Boating School',
+    description: 'Ship apps to Apple App Store, Google Play, Microsoft Store, Steam, and alt stores. Cross-platform frameworks and code signing.',
+    icon: '🐋',
     positionX: 3872,
     positionY: 4640,
     width: 448,
