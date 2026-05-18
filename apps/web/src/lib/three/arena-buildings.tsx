@@ -92,9 +92,9 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   //   Slot  5 (150°/SSE) app-publishing     cx=170, cy=207  rotY=-2.618
   //   Slot  6 (180°/S)   cron-automation    cx=120, cy=220  rotY= 3.142
   //   Slot  7 (210°/SSW) deployment-ops     cx=70,  cy=207  rotY= 2.618
-  //   Slot  8 (240°/WSW) agent-security     cx=33,  cy=170  rotY= 2.094
+  //   Slot  8 (240°/WSW) claw-arcade        cx=33,  cy=170  rotY= 2.094  [swapped 2026-05-18]
   //   Slot  9 (270°/W)   casino             cx=20,  cy=120  rotY= 1.571  ← entertainment district
-  //   Slot 10 (300°/WNW) claw-arcade        cx=33,  cy=70   rotY= 1.047  ← adjacent
+  //   Slot 10 (300°/WNW) agent-security     cx=33,  cy=70   rotY= 1.047  [swapped 2026-05-18]
   //   Slot 11 (330°/NNW) memory-rag         cx=70,  cy=33   rotY= 0.524
   // ---------------------------------------------------------------------------
 
@@ -103,13 +103,13 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   'visual-creation':     { model: '/models/pineapple-house.glb',     yOffset: 0, rotY:  0.000, targetHeight: 1100 },
   // Slot 1 — NNE (cx=170, cy=33): dx=-50, dz=87 → atan2(-50,87)≈-0.524 (-π/6)
   // 2026-05-12: chum-bucket-v2.glb restored from spongebob_chum_bucket.glb (1.85 MB original).
-  // targetHeight: 900 — chum bucket is squat; 900 gives it authority without over-scaling.
-  'code-development':    { model: '/models/chum-bucket-v2.glb',      yOffset: 0, rotY: -0.524, targetHeight: 900 },
+  // targetHeight: 1100 (was 900) — user reported still too small; bumped +22% to match ring peers.
+  'code-development':    { model: '/models/chum-bucket-v2.glb',      yOffset: 0, rotY: -0.524, targetHeight: 1100 },
   // Slot 2 — ENE (cx=207, cy=70): dx=-87, dz=50 → atan2(-87,50)≈-1.047 (-π/3)
   // krusty-krab-v2.glb = iconic ship restaurant (CC-BY, Yanez Designs, 1.59 MB original).
-  // targetHeight: 1200 — user reported roof at avatar head level; needs more height so
-  //   interior entrance zone is clearly visible. 1200 ensures ~6.7× avatar (180wu).
-  'mcp-tool-use':        { model: '/models/krusty-krab-v2.glb',      yOffset: 0, rotY: -1.047, targetHeight: 1200 },
+  // targetHeight: 1400 (was 1200) — user reported still too small (door at avatar head level);
+  //   1400 ≈ 7.8× avatar (180wu), well within the 5-8× guideline for landmark buildings.
+  'mcp-tool-use':        { model: '/models/krusty-krab-v2.glb',      yOffset: 0, rotY: -1.047, targetHeight: 1400 },
   // Slot 3 — E (cx=220, cy=120): dx=-100, dz=0 → atan2(-100,0)=-π/2≈-1.571
   // 2026-05-12: swapped to sandy-treedome-v3.glb (sandy_tree_final.glb, 4.4 MB).
   // rotYOffset: sandy-treedome-v3.glb authored facing +Z; +π rotates 180° for inward-facing door.
@@ -117,8 +117,10 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   'messaging-channels':  { model: '/models/sandy-treedome-v3.glb',   yOffset: 0, rotY: -1.571, rotYOffset: Math.PI, targetHeight: 1300 },
   // Slot 4 — ESE (cx=207, cy=170): dx=-87, dz=-50 → atan2(-87,-50)≈-2.094 (-2π/3)
   // rotYOffset: salty-spitoon.glb authored facing +X; -π/2 aligns toward village center.
-  // targetHeight: 1200 — bar needs height parity with krusty krab; user reported too small.
-  'api-integrations':    { model: '/models/salty-spitoon.glb',       yOffset: 0, rotY: -2.094, rotYOffset: -Math.PI / 2, targetHeight: 1200 },
+  // targetHeight: 1500 (was 1200) — still too small after 62fd806. salty-spitoon.glb is
+  //   authored wide (aspect ~2:1); it was hitting the MAX_FOOTPRINT cap at 1500 and rendering
+  //   at ~900wu. Combined with MAX_FOOTPRINT bump to 1800 this should reach target.
+  'api-integrations':    { model: '/models/salty-spitoon.glb',       yOffset: 0, rotY: -2.094, rotYOffset: -Math.PI / 2, targetHeight: 1500 },
   // Slot 5 — SSE (cx=170, cy=207): dx=-50, dz=-87 → atan2(-50,-87)≈-2.618 (-5π/6)
   // rotYOffset: boating-school.glb classroom must face center (model-authored offset — stays with building).
   // targetHeight: 1100 — school raised to match general ring floor; 950 was too low.
@@ -135,14 +137,14 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // targetHeight: 900 — Patrick's rock is naturally squat; don't over-scale.
   'agent-security':      { model: '/models/patricks-rock-v2.glb',    yOffset: 0, rotY:  2.094, targetHeight: 900 },
   // Slot 9 — W (cx=20, cy=120): dx=100, dz=0 → atan2(100,0)=π/2≈1.571  ← entertainment district
-  // casino-exterior.glb = "Pyramid Casino" by tl0615 (CC-BY-4.0, Sketchfab); in-game name: Predictive Gaming Cove.
+  // casino-exterior-cove.glb = "Pyramid Casino" by tl0615 (CC-BY-4.0, Sketchfab); in-game name: Predictive Gaming Cove.
   // GLB author placed geometry at ~(-1800, 166, 4540) Blender units from scene origin.
   // box3Recenter=true documents the origin-offset; centering is handled by
   // computeBuildingScale's pivotOffsetX/Z (same pipeline as every other building).
   // targetHeight: 1040 — casino is 30% larger than standard 800 to be the
   // entertainment-district landmark (user request 2026-05-17 circle revert).
   // Interior route wired in Concern 6.0.2: click → /casino. Walk-in anim is 6.0.3.
-  'casino':              { model: '/models/casino/casino-exterior.glb', yOffset: 0, rotY:  1.571, targetHeight: 1040, box3Recenter: true,
+  'casino':              { model: '/models/casino/casino-exterior-cove.glb', yOffset: 0, rotY:  1.571, targetHeight: 1040, box3Recenter: true,
                            onClick: () => { window.location.href = '/casino'; } },
   // Slot 10 — WNW (cx=33, cy=70): dx=87, dz=50 → atan2(87,50)≈1.047 (π/3)  ← entertainment district (adjacent to casino)
   // claw-arcade-exterior.glb = Arcade City (CC-BY-4.0, vanessalani / Sketchfab).
@@ -362,7 +364,12 @@ function stripGroundPlanes(scene: THREE.Object3D): void {
 //             circumference ≈ 20106 wu, slot spacing ≈ 1675 wu. MAX_FOOTPRINT=1500 gives
 //             175 wu gap between adjacent building footprints — still visually separated.
 //             Most buildings now hit their targetHeight rather than the footprint cap.
-const MAX_FOOTPRINT = 1500;
+//   1800 wu — Phase 6.1.1 fix (2026-05-18). Salty Spitoon is authored facing +X (wide)
+//             and its GLB aspect ratio means it hits 1500 cap before reaching targetHeight.
+//             1800 wu gives 33% more room while still leaving 33 wu gap between worst-case
+//             adjacent footprints. Other wide buildings (Sandy's Treedome, Boating School)
+//             benefit similarly — they no longer get crushed to under-target heights.
+const MAX_FOOTPRINT = 1800;
 
 // Scratch objects for computeBuildingScale — module-scope to avoid per-call GC.
 const _buildBbox = new THREE.Box3();
@@ -450,7 +457,7 @@ function computeBuildingScale(scene: THREE.Object3D, targetHeight: number = BUIL
   return { scale, pivotOffsetX, pivotOffsetY, pivotOffsetZ };
 }
 
-// Preload all 12 models (Phase 6.0.1: added casino-exterior.glb + claw-arcade-exterior.glb).
+// Preload all 12 models (Phase 6.0.1: added casino-exterior-cove.glb + claw-arcade-exterior.glb).
 // extendLoaderWithMeshopt registers MeshoptDecoder on the per-call loader so
 // GLBs with EXT_meshopt_compression (patricks-rock, krusty-krab, chum-bucket)
 // decode at preload time. Without this, the module-scope preload fires before
@@ -599,7 +606,7 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
   // dune ripples are small relative to the 100-unit building height.
   // pivotOffsetX/Z corrects for GLBs authored with geometry far from their pivot
   // (e.g. downtown-building.glb bbox center is ~4120wu east of scene origin;
-  //  casino-exterior.glb authored at ~(-1800, 166, 4540) Blender units — box3Recenter
+  //  casino-exterior-cove.glb authored at ~(-1800, 166, 4540) Blender units — box3Recenter
   //  flag documents this but the actual centering is handled by computeBuildingScale
   //  pivotOffsetX/Z like every other building).
   return (
