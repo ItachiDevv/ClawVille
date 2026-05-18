@@ -22,11 +22,11 @@ import {
 // ---------------------------------------------------------------------------
 
 /** Village center in tile space.
- *  The 160×160 tile grid has its center at tile (80, 80).
- *  worldX = -2560 + 80*32 = 0, worldZ = -2560 + 80*32 = 0. */
-export const VILLAGE_CENTER_TILE_X = 80;
+ *  Phase 6.1 (2026-05-18): 240×240 tile grid, center at tile (120, 120).
+ *  worldX = -3840 + 120*32 = 0, worldZ = -3840 + 120*32 = 0. */
+export const VILLAGE_CENTER_TILE_X = 120;
 /** Tile Y column mapping to world Z axis — village center row. */
-export const VILLAGE_CENTER_TILE_Z = 80;
+export const VILLAGE_CENTER_TILE_Z = 120;
 
 /** How far (in world units) NPCs stand from their building center toward
  *  village center.  600 = MAX_FOOTPRINT/2 + 100 wu margin, placing NPCs
@@ -37,8 +37,8 @@ export const NPC_INSET_WORLD = 600; // world units
 // ---------------------------------------------------------------------------
 // World-space offsets (tile-space origin → Three.js world origin)
 // ---------------------------------------------------------------------------
-const OFFSET_X = -MAP_WIDTH  / 2; // -2560
-const OFFSET_Z = -MAP_HEIGHT / 2; // -2560
+const OFFSET_X = -MAP_WIDTH  / 2; // -3840 (Phase 6.1: 7680-world)
+const OFFSET_Z = -MAP_HEIGHT / 2; // -3840
 
 // ---------------------------------------------------------------------------
 // computeNpcPlacement — identical logic to arena-location-npcs.tsx.

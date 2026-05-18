@@ -9,7 +9,7 @@
 > grep results. Update this when you touch any file listed in the "Source"
 > column. Update the affected file when you change a row here.
 
-**Last edit:** 2026-05-17 — Circle revert: square ring topology (cdc8011/1433589) reverted to true 12-building circular ring (30° spacing, R=72 tiles). Slot assignments completely reordered — all 10 original IDs preserved, casino+arcade remain adjacent (now slots 9+10 on W/WNW arc). Casino gets +30% targetHeight=1040 as entertainment landmark. §2 header + table rewritten. Prior 2026-05-17: Entertainment-district swap (claw-arcade E3, app-publishing S3). Prior 2026-05-17: Phase 6.0.1 square ring + casino + claw-arcade added.
+**Last edit:** 2026-05-18 — Phase 6.1: ring expanded R=72→100 tiles on a 240×240 grid. Building slot table updated (cx/cy now relative to center 120,120). Per-building targetHeight overrides added to §2. BuildingPedestal stone discs added under each building. NPC home coords scaled ×1.5 for new world size. §3a GLB wanderer homes updated. Prior 2026-05-17: Circle revert, R=72, casino +30%.
 
 ---
 
@@ -35,22 +35,24 @@ Composes the entire R3F scene. Mounted by `SceneContents` in `apps/web/src/compo
 
 ## 2. Buildings (12)
 
-Loaded by `<ArenaBuildings>`. Each is a single GLB clone placed on a **true circular ring** — 12 buildings at 30° angular spacing, radius 72 tiles (2304 wu) from center (0,0,0). Config: `BUILDING_MODELS` in `lib/three/arena-buildings.tsx`. Authoritative positions: `buildingZones[]` in `tilemap-data.ts`. Ring history: 56→68 tiles (2026-04-16) → 68→72 tiles (2026-05-13) → briefly square (2026-05-17 Phase 6.0.1) → true circle revert (2026-05-17).
+Loaded by `<ArenaBuildings>`. Each is a single GLB clone placed on a **true circular ring** — 12 buildings at 30° angular spacing, radius 100 tiles (3200 wu) from center (0,0,0). Config: `BUILDING_MODELS` in `lib/three/arena-buildings.tsx`. Authoritative positions: `buildingZones[]` in `tilemap-data.ts`. Ring history: 56→68 tiles (2026-04-16) → 68→72 tiles (2026-05-13) → briefly square (2026-05-17 Phase 6.0.1) → true circle revert R=72 (2026-05-17) → Phase 6.1 R=100 on 240×240 grid (2026-05-18).
 
-| Slot | Angle | Zone id | GLB path | Renders | Notes |
-|---|---|---|---|---|---|
-| 0 | N | `visual-creation` | `pineapple-house.glb` | SpongeBob's pineapple house | |
-| 1 | NNE | `code-development` | `chum-bucket-v2.glb` | Bucket | 2026-05-12 swap |
-| 2 | ENE | `mcp-tool-use` | `krusty-krab-v2.glb` | Ship-restaurant | 2026-05-12 swap |
-| 3 | E | `messaging-channels` | `sandy-treedome-v3.glb` | Tree platform + glass dome | 2026-05-12 swap; rotYOffset +π |
-| 4 | ESE | `api-integrations` | `salty-spitoon.glb` | Bar | rotYOffset -π/2 |
-| 5 | SSE | `app-publishing` | `boating-school.glb` | Mrs. Puff's classroom | rotYOffset +π/2 |
-| 6 | S | `cron-automation` | `patty-building.glb` | Pearl's downtown | |
-| 7 | SSW | `deployment-ops` | `building-lighthouse.glb` | Lighthouse | |
-| 8 | WSW | `agent-security` | `patricks-rock-v2.glb` | Patrick's rock | 2026-05-12 swap |
-| 9 | W | `casino` | `casino/casino-exterior.glb` | Predictive Gaming Cove — Mayan step-pyramid | Entertainment district. targetHeight=1040 (+30%). box3Recenter=true. Interior: Concern 6.0.2. |
-| 10 | WNW | `claw-arcade` | `arcade/claw-arcade-exterior.glb` | Arcade City — domed building | Entertainment district (slot 9+10 adjacent, ~1206 wu arc). Interior / crane game: Phase 6.3. |
-| 11 | NNW | `memory-rag` | `squidward-house.glb` | Easter-Island moai head | |
+Each building has a flat **stone pedestal disc** (radius=560wu, 15wu thick, color `0x8b7d6b`) rendered at y=−2 by `BuildingPedestal` in `arena-buildings.tsx`.
+
+| Slot | Angle | Zone id | GLB path | Renders | targetHeight | Notes |
+|---|---|---|---|---|---|---|
+| 0 | N | `visual-creation` | `pineapple-house.glb` | SpongeBob's pineapple house | 1100 | |
+| 1 | NNE | `code-development` | `chum-bucket-v2.glb` | Bucket | 900 | 2026-05-12 swap |
+| 2 | ENE | `mcp-tool-use` | `krusty-krab-v2.glb` | Ship-restaurant | 1000 | 2026-05-12 swap |
+| 3 | E | `messaging-channels` | `sandy-treedome-v3.glb` | Tree platform + glass dome | 1000 | 2026-05-12 swap; rotYOffset +π |
+| 4 | ESE | `api-integrations` | `salty-spitoon.glb` | Bar | 1000 | rotYOffset -π/2 |
+| 5 | SSE | `app-publishing` | `boating-school.glb` | Mrs. Puff's classroom | 950 | rotYOffset +π/2 |
+| 6 | S | `cron-automation` | `patty-building.glb` | Pearl's downtown | 1200 | |
+| 7 | SSW | `deployment-ops` | `building-lighthouse.glb` | Lighthouse | 1500 | tallest landmark |
+| 8 | WSW | `agent-security` | `patricks-rock-v2.glb` | Patrick's rock | 900 | 2026-05-12 swap |
+| 9 | W | `casino` | `casino/casino-exterior.glb` | Predictive Gaming Cove — Mayan step-pyramid | 1040 | Entertainment district. box3Recenter=true. Interior: Concern 6.0.2. |
+| 10 | WNW | `claw-arcade` | `arcade/claw-arcade-exterior.glb` | Arcade City — domed building | 900 | Entertainment district (slot 9+10 adjacent). Interior / crane game: Phase 6.3. |
+| 11 | NNW | `memory-rag` | `squidward-house.glb` | Easter-Island moai head | 1100 | |
 
 **Strip rules** (run on every cloned building scene, `stripDecorativeMeshes` in `arena-buildings.tsx`):
 - Prefix match `Skybox_` → strip (kills the blue hemisphere baked into Yanez assets)
@@ -72,9 +74,9 @@ Loaded by `<ArenaBuildings>`. Each is a single GLB clone placed on a **true circ
 | Milady VRM | 3 | `milady-official-{2,7,8}.vrm` (Vivi / Miu / Kyoko — distinct paths required, shared paths cause T-pose collisions) |
 | Hermes VRM | 2 | `hermes-female.vrm` (Mira), `hermes-male.vrm` (Cyrus) |
 | Tekk VRM | 1 | `tekk.vrm` — uses `SPECIES_TARGET_HEIGHT_WU.tekk = 230` so wings can overshoot the body silhouette |
-| Lobster GLB | 1 | `models/lobster.glb` (Driftwood) — homeX 1488, homeY 2272, W inner near entertainment district (casino+arcade) |
-| Sweet crab | 1 | `models/sweet_crab.glb` (Marlin) — homeX 3400, homeY 2800, E inner near messaging-channels+api-integrations |
-| Hermit crab | 1 | `models/hermitcrab.glb` (Riptide) — homeX 1900, homeY 3200, SW inner near deployment-ops+agent-security |
+| Lobster GLB | 1 | `models/lobster.glb` (Driftwood) — homeX 2232, homeY 3408, W inner near entertainment district (casino+arcade) |
+| Sweet crab | 1 | `models/sweet_crab.glb` (Marlin) — homeX 5100, homeY 4200, E inner near messaging-channels+api-integrations |
+| Hermit crab | 1 | `models/hermitcrab.glb` (Riptide) — homeX 2850, homeY 4800, SW inner near deployment-ops+agent-security |
 
 ### 3b. Building residents — 10 total
 

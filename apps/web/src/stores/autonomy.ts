@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { NPC_BUILDING_CENTERS } from '@clawville/shared';
 import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 import { findPath } from '@/lib/pixi/client-pathfinding';
+import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -33,7 +34,7 @@ type TickState = 'idle' | 'planning' | 'traveling' | 'entering' | 'inside' | 'ex
 // ---------------------------------------------------------------------------
 
 const ALL_BUILDING_IDS = Object.keys(NPC_BUILDING_CENTERS);
-const MAP_DIAGONAL = Math.sqrt(5120 * 5120 + 5120 * 5120);
+const MAP_DIAGONAL = Math.sqrt(MAP_WIDTH * MAP_WIDTH + MAP_HEIGHT * MAP_HEIGHT);
 
 // Thoughts the agent thinks while inside buildings
 const BUILDING_THOUGHTS: Record<string, string[]> = {};
