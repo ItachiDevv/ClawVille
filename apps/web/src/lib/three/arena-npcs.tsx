@@ -1117,7 +1117,7 @@ export default function ArenaNpcs() {
   const controlMode = useGameStore((s) => s.controlMode);
 
   // Filter out the dedicated player NPC when not in NPC mode.
-  // spawnPlayerNpc() places PLAYER_NPC_ID at world center (2560,2560) for NPC-mode
+  // spawnPlayerNpc() places PLAYER_NPC_ID at world center (3840,3840) for NPC-mode
   // possession. In agent modes ('player' / 'autonomous') this NPC must not render —
   // it obscures the bazaar / town-center buildings at the world center.
   const npcs = controlMode === 'npc'

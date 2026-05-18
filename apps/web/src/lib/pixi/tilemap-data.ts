@@ -1,13 +1,16 @@
 // ---------------------------------------------------------------------------
 // Tilemap data for ClawVille The Depths
-// 160 x 160 grid of 32px tiles = 5120 x 5120 pixel world
+// 240 x 240 grid of 32px tiles = 7680 x 7680 pixel world
+// Expanded 2026-05-18 (Phase 6.1): 160→240 to accommodate R=100 building ring
+// with ≥13 tiles of clearance on all sides (prev R=72 was constrained to R≤73).
+// All consumers import MAP_WIDTH/MAP_HEIGHT/MAP_COLS/MAP_ROWS — no hardcodes.
 // ---------------------------------------------------------------------------
 
 export const TILE_SIZE = 32;
-export const MAP_COLS = 160;
-export const MAP_ROWS = 160;
-export const MAP_WIDTH = MAP_COLS * TILE_SIZE; // 5120
-export const MAP_HEIGHT = MAP_ROWS * TILE_SIZE; // 5120
+export const MAP_COLS = 240;
+export const MAP_ROWS = 240;
+export const MAP_WIDTH = MAP_COLS * TILE_SIZE; // 7680
+export const MAP_HEIGHT = MAP_ROWS * TILE_SIZE; // 7680
 
 /** Tile indices matching the tileset spritesheet columns */
 export const TILES = {
@@ -39,31 +42,37 @@ export type TileIndex = (typeof TILES)[keyof typeof TILES];
 
 // ---------------------------------------------------------------------------
 // Building positions (tile coords)
-// 12-building TRUE CIRCULAR ring layout in 160×160 grid, center at (80,80).
-// 2026-05-17 (Phase 6.0.1): first pass used a square ring (3 per side).
-// 2026-05-17 (circle revert): reverted to true circle — 12 buildings at 30°
-// angular spacing, radius 72 tiles. Matches the minimap dashed-circle guide.
+// 12-building TRUE CIRCULAR ring layout in 240×240 grid, center at (120,120).
+// 2026-05-17 (Phase 6.0.1): circle ring at R=72 tiles on 160×160 grid.
+// 2026-05-18 (Phase 6.1): grid expanded 160→240 and ring expanded R=72→100
+//   to give more breathing room between buildings and better visual separation.
+//   New max safe R = 120-7 = 113 tiles; R=100 leaves 13-tile border clearance.
 //
 // Circle geometry:
-//   Radius: 72 tiles from center (80, 80) = 2304 wu
+//   Grid:   240×240 tiles, center at tile (120, 120) = world origin (0, 0, 0)
+//   Radius: 100 tiles from center = 3200 wu
 //   Angular spacing: 30° (π/6 rad) between slots
 //   Slot 0 starts at north (top), angles increase clockwise
 //   Zone footprint: 14×14 tiles (448×448 wu) — unchanged
 //   Zone upper-left = (round(cx) − 7, round(cy) − 7)
+//   Formula: cx = 120 + 100*cos(θ), cy = 120 + 100*sin(θ), θ = -π/2 + slot*(π/6)
 //
 // Slot assignment (clockwise from north):
-//   Slot  0 (  0°/N)   → visual-creation    (Pineapple House)
-//   Slot  1 ( 30°/NNE) → code-development   (Chum Bucket)
-//   Slot  2 ( 60°/ENE) → mcp-tool-use       (Krusty Krab)
-//   Slot  3 ( 90°/E)   → messaging-channels (Sandy's Treedome)
-//   Slot  4 (120°/SSE) → api-integrations   (Salty Spitoon)
-//   Slot  5 (150°/SSE) → app-publishing     (Boating School)
-//   Slot  6 (180°/S)   → cron-automation    (Downtown Building)
-//   Slot  7 (210°/SSW) → deployment-ops     (Lighthouse)
-//   Slot  8 (240°/WSW) → agent-security     (Patrick's Rock)
-//   Slot  9 (270°/W)   → casino             (Predictive Gaming Cove) ─┐ entertainment
-//   Slot 10 (300°/WNW) → claw-arcade        (Arcade City)     ┘ district — adjacent
-//   Slot 11 (330°/NNW) → memory-rag         (Squidward's House)
+//   Slot  0 (  0°/N)   → visual-creation    (Pineapple House)   cx=120, cy=20
+//   Slot  1 ( 30°/NNE) → code-development   (Chum Bucket)       cx=170, cy=33
+//   Slot  2 ( 60°/ENE) → mcp-tool-use       (Krusty Krab)       cx=207, cy=70
+//   Slot  3 ( 90°/E)   → messaging-channels (Sandy's Treedome)  cx=220, cy=120
+//   Slot  4 (120°/ESE) → api-integrations   (Salty Spitoon)     cx=207, cy=170
+//   Slot  5 (150°/SSE) → app-publishing     (Boating School)    cx=170, cy=207
+//   Slot  6 (180°/S)   → cron-automation    (Downtown Building) cx=120, cy=220
+//   Slot  7 (210°/SSW) → deployment-ops     (Lighthouse)        cx=70,  cy=207
+//   Slot  8 (240°/WSW) → agent-security     (Patrick's Rock)    cx=33,  cy=170
+//   Slot  9 (270°/W)   → casino             (Predictive Gaming) cx=20,  cy=120  ← entertainment
+//   Slot 10 (300°/WNW) → claw-arcade        (Arcade City)       cx=33,  cy=70   ← adjacent
+//   Slot 11 (330°/NNW) → memory-rag         (Squidward's House) cx=70,  cy=33
+//
+// rotY = atan2(120-cx, 120-cy) — faces building's +Z toward plaza center.
+// rotY values are identical to R=72 (depend only on angle, not radius).
 //
 // The 10 original building IDs are PRESERVED — only positions updated.
 // All consumer code (arena-buildings.tsx, minimap.tsx, PixiCanvas.tsx,
@@ -79,41 +88,42 @@ export interface BuildingZone {
 
 export const buildingZones: BuildingZone[] = [
   // ---------------------------------------------------------------------------
-  // 12-building circular ring. R=72 tiles, center=(80,80), 30° spacing.
-  // cx = 80 + 72*cos(θ), cy = 80 + 72*sin(θ), θ = -π/2 + slot*(π/6).
+  // 12-building circular ring. R=100 tiles, center=(120,120), 30° spacing.
+  // cx = 120 + 100*cos(θ), cy = 120 + 100*sin(θ), θ = -π/2 + slot*(π/6).
   // Zone upper-left = (round(cx)-7, round(cy)-7). Width/height = 14.
-  // rotY = atan2(80-cx, 80-cy) so each building faces the plaza center.
+  // rotY = atan2(120-cx, 120-cy) so each building faces the plaza center.
+  // Phase 6.1 (2026-05-18): expanded from R=72 on 160×160 to R=100 on 240×240.
   // ---------------------------------------------------------------------------
 
-  // Slot 0 — N  (θ=-π/2):  cx=80, cy=8
-  { id: 'visual-creation',    x:  73, y:   1, width: 14, height: 14 },
-  // Slot 1 — NNE (θ=-π/3):  cx≈116, cy≈18
-  { id: 'code-development',   x: 109, y:  11, width: 14, height: 14 },
-  // Slot 2 — ENE (θ=-π/6):  cx≈142, cy≈44
-  { id: 'mcp-tool-use',       x: 135, y:  37, width: 14, height: 14 },
-  // Slot 3 — E  (θ=0):      cx=152, cy=80
-  { id: 'messaging-channels', x: 145, y:  73, width: 14, height: 14 },
-  // Slot 4 — ESE (θ=π/6):   cx≈142, cy≈116
-  { id: 'api-integrations',   x: 135, y: 109, width: 14, height: 14 },
-  // Slot 5 — SSE (θ=π/3):   cx≈116, cy≈142
-  { id: 'app-publishing',     x: 109, y: 135, width: 14, height: 14 },
-  // Slot 6 — S  (θ=π/2):    cx=80, cy=152
-  { id: 'cron-automation',    x:  73, y: 145, width: 14, height: 14 },
-  // Slot 7 — SSW (θ=2π/3):  cx≈44, cy≈142
-  { id: 'deployment-ops',     x:  37, y: 135, width: 14, height: 14 },
-  // Slot 8 — WSW (θ=5π/6):  cx≈18, cy≈116
-  { id: 'agent-security',     x:  11, y: 109, width: 14, height: 14 },
-  // Slot 9 — W  (θ=π):      cx=8, cy=80     ← entertainment district
-  { id: 'casino',             x:   1, y:  73, width: 14, height: 14 },
-  // Slot 10 — WNW (θ=7π/6): cx≈18, cy≈44   ← entertainment district (adjacent to casino)
-  { id: 'claw-arcade',        x:  11, y:  37, width: 14, height: 14 },
-  // Slot 11 — NNW (θ=4π/3): cx≈44, cy≈18
-  { id: 'memory-rag',         x:  37, y:  11, width: 14, height: 14 },
+  // Slot 0 — N  (θ=-π/2):  cx=120, cy=20   → zone(113, 13)
+  { id: 'visual-creation',    x: 113, y:  13, width: 14, height: 14 },
+  // Slot 1 — NNE (θ=-π/3):  cx≈170, cy≈33  → zone(163, 26)
+  { id: 'code-development',   x: 163, y:  26, width: 14, height: 14 },
+  // Slot 2 — ENE (θ=-π/6):  cx≈207, cy≈70  → zone(200, 63)
+  { id: 'mcp-tool-use',       x: 200, y:  63, width: 14, height: 14 },
+  // Slot 3 — E  (θ=0):      cx=220, cy=120  → zone(213, 113)
+  { id: 'messaging-channels', x: 213, y: 113, width: 14, height: 14 },
+  // Slot 4 — ESE (θ=π/6):   cx≈207, cy≈170 → zone(200, 163)
+  { id: 'api-integrations',   x: 200, y: 163, width: 14, height: 14 },
+  // Slot 5 — SSE (θ=π/3):   cx≈170, cy≈207 → zone(163, 200)
+  { id: 'app-publishing',     x: 163, y: 200, width: 14, height: 14 },
+  // Slot 6 — S  (θ=π/2):    cx=120, cy=220  → zone(113, 213)
+  { id: 'cron-automation',    x: 113, y: 213, width: 14, height: 14 },
+  // Slot 7 — SSW (θ=2π/3):  cx≈70, cy≈207  → zone(63, 200)
+  { id: 'deployment-ops',     x:  63, y: 200, width: 14, height: 14 },
+  // Slot 8 — WSW (θ=5π/6):  cx≈33, cy≈170  → zone(26, 163)
+  { id: 'agent-security',     x:  26, y: 163, width: 14, height: 14 },
+  // Slot 9 — W  (θ=π):      cx=20, cy=120   → zone(13, 113)  ← entertainment district
+  { id: 'casino',             x:  13, y: 113, width: 14, height: 14 },
+  // Slot 10 — WNW (θ=7π/6): cx≈33, cy≈70   → zone(26, 63)   ← entertainment district (adjacent)
+  { id: 'claw-arcade',        x:  26, y:  63, width: 14, height: 14 },
+  // Slot 11 — NNW (θ=4π/3): cx≈70, cy≈33   → zone(63, 26)
+  { id: 'memory-rag',         x:  63, y:  26, width: 14, height: 14 },
 ];
 
 // ---------------------------------------------------------------------------
 // Layer 1: GROUND  (grass base — deterministic seeded PRNG)
-// 160 cols x 160 rows = 25600 tiles
+// 240 cols x 240 rows = 57600 tiles
 // ---------------------------------------------------------------------------
 function generateGroundLayer(): number[] {
   const tiles = [TILES.GRASS_1, TILES.GRASS_2, TILES.GRASS_3];
@@ -129,21 +139,21 @@ export const groundLayer: number[] = generateGroundLayer();
 
 // ---------------------------------------------------------------------------
 // Layer 2: PATHS  (dirt paths connecting buildings, stone at entrances)
-// 160 cols x 160 rows = 25600 tiles — all empty (paths handled by 3D world)
+// 240 cols x 240 rows = 57600 tiles — all empty (paths handled by 3D world)
 // ---------------------------------------------------------------------------
 // prettier-ignore
 export const pathLayer: number[] = Array(MAP_COLS * MAP_ROWS).fill(TILES.EMPTY);
 
 // ---------------------------------------------------------------------------
 // Layer 3: DECORATIONS  (trees, flowers, bushes along edges and between buildings)
-// 160 cols x 160 rows = 25600 tiles — all empty (decorations handled by 3D world)
+// 240 cols x 240 rows = 57600 tiles — all empty (decorations handled by 3D world)
 // ---------------------------------------------------------------------------
 // prettier-ignore
 export const decorationLayer: number[] = Array(MAP_COLS * MAP_ROWS).fill(TILES.EMPTY);
 
 // ---------------------------------------------------------------------------
 // Layer 4: BUILDINGS  (building structures at each location)
-// 160 cols x 160 rows = 25600 tiles — all empty (buildings handled by 3D world)
+// 240 cols x 240 rows = 57600 tiles — all empty (buildings handled by 3D world)
 // ---------------------------------------------------------------------------
 // prettier-ignore
 export const buildingLayer: number[] = Array(MAP_COLS * MAP_ROWS).fill(TILES.EMPTY);

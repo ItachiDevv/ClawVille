@@ -282,9 +282,9 @@ function isNearBuilding(x: number, z: number): boolean {
   return false;
 }
 
-// Village center world coordinates: center tile (80, 80) in 160×160 grid
-// worldX = -HALF_MW + 80*TILE_SIZE = -2560 + 2560 = 0
-// worldZ = -HALF_MH + 80*TILE_SIZE = -2560 + 2560 = 0
+// Village center world coordinates: center tile (120, 120) in 240×240 grid (Phase 6.1)
+// worldX = -HALF_MW + 120*TILE_SIZE = -3840 + 3840 = 0
+// worldZ = -HALF_MH + 120*TILE_SIZE = -3840 + 3840 = 0
 const VILLAGE_CX = 0;
 const VILLAGE_CZ = 0;
 // No decorations within this radius — keeps the town plaza clear.

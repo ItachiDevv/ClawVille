@@ -11,7 +11,7 @@
 > - **`GameFeatures.md`** — gameplay.
 > - **This doc** — *how* the 3D scene is wired: coordinates, camera, lights, GPU budget, animation, asset pipeline.
 
-**Last edit:** 2026-05-17 — Circle revert: square ring topology reverted to 12-building TRUE circular ring (30° spacing, R=72 tiles). Casino moved to slot 9 (W) and gets +30% targetHeight=1040 as entertainment-district landmark. §2 ring geometry + slot table fully rewritten. Prior last-edit 2026-05-17: Entertainment-district swap: claw-arcade → E3, app-publishing → S3. Prior 2026-05-17: Phase 6.0.1: 10-building circular ring → 12-building square ring; casino + claw-arcade added. `WorldContent.md` §2 has the full 12-building roster + GLB paths. §6e jump animation pipeline added. §6a NPC position smoothing rewritten. §9d added. 2026-05-12 — restructured into a tight manifest.
+**Last edit:** 2026-05-18 — Phase 6.1: grid expanded 160→240 tiles; ring expanded R=72→100 tiles; center tile (80,80)→(120,120); MAP_WIDTH/HEIGHT 5120→7680 wu; all per-building targetHeight overrides added (see §2); BuildingPedestal stone disc added under each building (Concern C); terrain lerp factor 0.3→0.6 for faster ground-snap. Prior 2026-05-17: Circle revert, R=72, casino +30% targetHeight=1040.
 
 ---
 
@@ -22,15 +22,15 @@ Source: `apps/web/src/lib/pixi/tilemap-data.ts:6-10`
 | Constant | Value |
 |---|---|
 | `TILE_SIZE` | 32 px |
-| `MAP_COLS`, `MAP_ROWS` | 160 |
-| `MAP_WIDTH`, `MAP_HEIGHT` | 5120 wu (= 160 × 32) |
-| `HALF_W`, `HALF_H` | 2560 wu |
+| `MAP_COLS`, `MAP_ROWS` | 240 (expanded from 160 in Phase 6.1 2026-05-18) |
+| `MAP_WIDTH`, `MAP_HEIGHT` | 7680 wu (= 240 × 32) |
+| `HALF_W`, `HALF_H` | 3840 wu |
 
 **Game-space → 3D world:**
-- Game-space (2D pixel plane): `(0..5120, 0..5120)` — origin top-left, +x right, +y down.
-- Three.js world (XZ plane): `(-2560..+2560, -2560..+2560)` — origin center.
+- Game-space (2D pixel plane): `(0..7680, 0..7680)` — origin top-left, +x right, +y down.
+- Three.js world (XZ plane): `(-3840..+3840, -3840..+3840)` — origin center.
 - Conversion: `worldX = gameX - HALF_W; worldZ = gameY - HALF_H` (`World3DCanvas.tsx:291-293`, `player-avatar.tsx:84-86`, `arena-npcs.tsx:31-33`).
-- Village center tile `(80, 80)` → world `(0, 0)`.
+- Village center tile `(120, 120)` → world `(0, 0)`.
 
 | Axis | Meaning |
 |---|---|
@@ -47,51 +47,51 @@ Sand floor sits at `y = -2` (`arena-terrain.tsx:203`). Buildings, NPCs, and deco
 
 Source: `arena-buildings.tsx`. See `WorldContent.md §2` for the building roster + per-building GLB paths.
 
-**Ring geometry (circle revert — 2026-05-17):**
+**Ring geometry — Phase 6.1 (2026-05-18):**
 
-Reverted from the short-lived square ring (commit cdc8011 / 1433589) back to a **true circular ring**. The square topology created visual rhythm gaps at the 4 empty corners and mismatched the minimap dashed-circle guide. Casino is the entertainment-district landmark at +30% height.
+Grid expanded from 160×160 to 240×240 tiles, center shifted from (80,80) to (120,120). Ring radius expanded from R=72 tiles (impossible at R≥74 on 160-grid) to R=100 tiles on the 240-grid, giving 13-tile border clearance on all sides (max safe R = 120−7 = 113). Casino is the entertainment-district landmark at +30% height.
 
-**Entertainment district:** casino (slot 9, W) + claw-arcade (slot 10, WNW) are adjacent at 30° separation (≈1206 wu arc between centers).
+**Entertainment district:** casino (slot 9, W) + claw-arcade (slot 10, WNW) are adjacent at 30° separation (≈2094 wu arc between centers at R=100).
 
 | Dimension | Value |
 |---|---|
 | Layout | 12 buildings at 30° angular spacing (true circle) |
-| Radius | 72 tiles = 2304 wu from center (80,80) / world (0,0,0) |
+| Radius | 100 tiles = 3200 wu from center (120,120) / world (0,0,0) |
 | Angular spacing | 30° (π/6 rad) per slot |
 | Starting angle | −π/2 (North), clockwise |
 | Zone footprint | 14×14 tiles = 448×448 wu |
 | Zone upper-left | `(round(cx) − 7, round(cy) − 7)` |
-| cx formula | `80 + 72 * cos(−π/2 + slot * π/6)` |
-| cy formula | `80 + 72 * sin(−π/2 + slot * π/6)` |
+| cx formula | `120 + 100 * cos(−π/2 + slot * π/6)` |
+| cy formula | `120 + 100 * sin(−π/2 + slot * π/6)` |
 
 Slot table (clockwise from North, cx/cy in tile coords):
 
-| Slot | Angle | cx | cy | Building | rotY | Notes |
-|---|---|---|---|---|---|---|
-| 0 | N (0°) | 80 | 8 | visual-creation | 0.000 | |
-| 1 | NNE (30°) | 116 | 18 | code-development | −0.524 | |
-| 2 | ENE (60°) | 142 | 44 | mcp-tool-use | −1.047 | |
-| 3 | E (90°) | 152 | 80 | messaging-channels | −1.571 | rotYOffset +π |
-| 4 | ESE (120°) | 142 | 116 | api-integrations | −2.094 | rotYOffset −π/2 |
-| 5 | SSE (150°) | 116 | 142 | app-publishing | −2.618 | rotYOffset +π/2 |
-| 6 | S (180°) | 80 | 152 | cron-automation | 3.142 | |
-| 7 | SSW (210°) | 44 | 142 | deployment-ops | 2.618 | |
-| 8 | WSW (240°) | 18 | 116 | agent-security | 2.094 | |
-| 9 | W (270°) | 8 | 80 | casino | 1.571 | entertainment district; targetHeight=1040 (+30%) |
-| 10 | WNW (300°) | 18 | 44 | claw-arcade | 1.047 | entertainment district (adjacent) |
-| 11 | NNW (330°) | 44 | 18 | memory-rag | 0.524 | |
+| Slot | Angle | cx | cy | Building | rotY | targetHeight | Notes |
+|---|---|---|---|---|---|---|---|
+| 0 | N (0°) | 120 | 20 | visual-creation | 0.000 | 1100 | |
+| 1 | NNE (30°) | 170 | 33 | code-development | −0.524 | 900 | |
+| 2 | ENE (60°) | 207 | 70 | mcp-tool-use | −1.047 | 1000 | |
+| 3 | E (90°) | 220 | 120 | messaging-channels | −1.571 | 1000 | rotYOffset +π |
+| 4 | ESE (120°) | 207 | 170 | api-integrations | −2.094 | 1000 | rotYOffset −π/2 |
+| 5 | SSE (150°) | 170 | 207 | app-publishing | −2.618 | 950 | rotYOffset +π/2 |
+| 6 | S (180°) | 120 | 220 | cron-automation | 3.142 | 1200 | |
+| 7 | SSW (210°) | 70 | 207 | deployment-ops | 2.618 | 1500 | tallest landmark |
+| 8 | WSW (240°) | 33 | 170 | agent-security | 2.094 | 900 | |
+| 9 | W (270°) | 20 | 120 | casino | 1.571 | 1040 | entertainment district; box3Recenter=true |
+| 10 | WNW (300°) | 33 | 70 | claw-arcade | 1.047 | 900 | entertainment district (adjacent) |
+| 11 | NNW (330°) | 70 | 33 | memory-rag | 0.524 | 1100 | |
 
-**rotY formula:** `atan2(80 − cx, 80 − cy)` — each building's +Z axis points toward plaza center (world 0, 0). Model-authored `rotYOffset` values are additive and stay with the building regardless of slot.
+**rotY formula:** `atan2(120 − cx, 120 − cy)` — each building's +Z axis points toward plaza center (world 0, 0). Values are identical to the R=72 layout because atan2 depends only on direction, not magnitude. Model-authored `rotYOffset` values are additive and stay with the building regardless of slot.
 
-**Casino scale:** `targetHeight = 1040 wu` (= 800 × 1.3) — 30% taller than the 800 wu standard to landmark the entertainment district. Computed by passing `targetHeight` through `computeBuildingScale()`. `scaleOverride` is NOT used — bbox-based normalization and pivot correction still apply.
-
-**Note on larger radii:** R=90 tiles (as initially requested) is geometrically impossible on the 160×160 tile grid — the N/S/E/W slots would extend to tile ±10 outside the map boundary (zones need 7 tiles of clearance from center). R=72 is the safe maximum with 14×14 tile zones. The 3D world extends to ±2560 wu, so the constraint is the pixi tilemap, not the Three.js scene.
+**Building pedestals (Phase 6.1):** A flat `CylinderGeometry` stone disc (radius=560wu, height=15wu) is rendered under every building via `BuildingPedestal` component in `arena-buildings.tsx`. Color: warm sandstone (`0x8b7d6b`). Shares one `MeshStandardMaterial` instance across all 12 pedestals. Positioned at `y=-2` (flush with the sand floor). Purpose: visually separates building bases from sand terrain so they don't blend together.
 
 **Authoritative source:** `buildingZones[]` in `apps/web/src/lib/pixi/tilemap-data.ts`. All consumers (arena-buildings.tsx, minimap.tsx, PixiCanvas.tsx, map-locations.ts) derive from it.
 
-**Building height target:** `BUILDING_TARGET_HEIGHT = 800 wu` (`arena-buildings.tsx:44`). Each GLB is measured and scaled so its **Y-height** = 800. Changed from `max(w,h,d)` normalization 2026-04-16 — wide/squat buildings had their width > height under the old approach.
+**Building height target:** `BUILDING_TARGET_HEIGHT = 800 wu` (default fallback). Per-building `targetHeight` overrides in `BUILDING_MODELS` take precedence via `computeBuildingScale(c, config.targetHeight ?? BUILDING_TARGET_HEIGHT)`.
 
-**Footprint cap:** `MAX_FOOTPRINT = 1000 wu`. If post-scale `max(sx, sz) > 1000`, scale is reduced. Tightened from 1400→1000 same date.
+**Footprint cap:** `MAX_FOOTPRINT = 1000 wu`. If post-scale `max(sx, sz) > 1000`, scale is reduced.
+
+**Terrain lerp:** `terrainYRef.current += (ty - terrainYRef.current) * 0.6` (both VRM and GLB paths in `player-avatar.tsx`). Increased from 0.3→0.6 so avatars snap to dune peaks faster and don't visibly sink into bumpy terrain.
 
 **Pivot correction (rotation-aware):** `computeBuildingScale()` returns `{ scale, pivotOffsetX, pivotOffsetY, pivotOffsetZ }` where `pivotOffsetX/Z = bbox_center_XZ * scale` and `pivotOffsetY = bbox.min.y * scale`. Applied via a nested inner group inside the rotating outer group:
 
