@@ -12,7 +12,7 @@
 > - **`ARCHITECTURE.md`** — backend routes / services / schema / events / leaderboard rubric.
 > - **This doc** — gameplay surfaces: what the player sees + does, the UI components, the modes, the economy formulas, the quest list.
 
-**Last edit:** 2026-05-18 — Concern 6.0.4: 2D slot screen (mock data). Full 5×3 reel UI, sequential-stop animation, win highlights, HUD, win celebration, paytable modal, autoplay. §18a.c updated. Prior: Concern 6.0.3 — casino walk-in animation.
+**Last edit:** 2026-05-18 — Concern 6.0.5: Walkable casino interior + slot cabinet props. Player VRM/GLB mounts inside casino, WASD movement, follow camera. 4 primitive slot cabinets on left wall. Walk-out exit position corrected to (2000, 5760). §18a.e added. Prior: Concern 6.0.4 — 2D slot screen (mock data).
 
 ---
 
@@ -648,7 +648,9 @@ Accessible by clicking the casino building (slot 9, W ring, `casino-exterior.glb
 
 **Walk-in flow (Concern 6.0.3 — SHIPPED):** Click casino building → `triggerCasinoWalkIn()` in `arena-buildings.tsx`. In player/NPC/autonomous modes: avatar walks toward door at `(940, 5760 game-px)` using existing `setClickPath`. When within 200 game-px of door OR after 1500ms max-wait → 500ms fade-to-black → mid-fade router push to `/casino` → `/casino` page mounts with `<SceneTransition fadeInOnMount />` and fades from black over 500ms. In explore mode (no avatar): immediate fade with no walk. Total perceived time ≤ 3s.
 
-**Walk-out flow:** "Back to World" button in `/casino` → `triggerTransition({ to: '/game', onMidway })`. Mid-fade: `avatarPositionRef` + `useGameStore` both set to casino door position `(940, 5760 game-px)` so avatar spawns outside the building, not at default world center. `/game` page fade-in is handled by its own `<SceneTransition />` (no `fadeInOnMount` — only fades on triggered exit, not on raw page load).
+**Walk-out flow:** "Back to World" button in `/casino` → `triggerTransition({ to: '/game', onMidway })`. Mid-fade: `avatarPositionRef` + `useGameStore` both set to casino door position `(2000, 5760 game-px)` — 400 wu east of building center (toward town center), so avatar spawns on the entrance side of the building, not the back. `/game` page fade-in is handled by its own `<SceneTransition />` (no `fadeInOnMount` — only fades on triggered exit, not on raw page load).
+
+_Exit position math: Casino slot 9 W → cx=50 tiles → worldX = 50×32 − 5760 = −4160 wu. Exit = −3760 wu = game-px x=2000. Prior value (940) was WRONG — placed avatar on the far (back) wall._
 
 ### 18a.a. Interior scene (Concern 6.0.2 — SHIPPED)
 
@@ -713,6 +715,26 @@ interface WinningLine { lineIndex: number; symbols: number[]; winAmount: bigint;
 
 On-chain slot RNG, SOL/USDC wagering, settlement via `clawville_wager` Anchor program. Out of scope for Concerns 6.0.x. See `.claude/plans/phase6-casino-slots.md`.
 
+### 18a.e. Walkable interior + slot cabinet props (Concern 6.0.5 — SHIPPED)
+
+Player avatar (VRM or GLB) mounts inside the casino interior scene. Fully self-contained movement system in `casino-interior.tsx` — does NOT reuse `player-avatar.tsx` (too coupled to world map, terrain, quests).
+
+**Player spawn:** position `(0, 0, +240)` — near the front wall entrance. Initial rotation π (facing −Z into the room).
+
+**WASD movement:** camera-relative, 250 wu/s, bounded to `x∈[-115,+115], z∈[-270,+270]`. Module-scope key state (`casinoKeys`, `casinoKeyListenersAttached`) — separate from world-canvas state to avoid cross-canvas contamination.
+
+**Follow camera:** +55 wu above avatar, +160 wu behind (opposite heading). Exp-decay lerp `1 - Math.exp(-8 * delta)`, looks at `avatar + Y×18`. Camera is frozen when the 2D slot screen modal is open (`useCasinoStore.getState().slotScreenOpen === true`).
+
+**Avatar routing:** `CasinoPlayerAvatar` reads `useGameStore(s => s.avatarModelKey)` + `MODEL_REGISTRY.avatar_type`. VRM avatars use `useVRMInstance('casino-player')` + `VRMCharacterAnimator`. GLB avatars use the lobster path with `CASINO_AVATAR_SCALE=40`. VRM facing: `atan2(vx, vz)` (same as world player — verified correct for Mixamo-rigged VRMs that face −Z natively).
+
+**Slot cabinet props:** 4 low-poly cabinets along the left wall (`x=-115`, z spread at −175/−100/−25/+50). Each cabinet: base plinth (`BoxGeometry 42×6×32`), body (`38×68×28`, dark purple), emissive cyan screen panel (`24×34×2`, `emissiveIntensity 1.2`), red lever (`CylinderGeometry r3 h22`). All geometry at module scope (built once). `matrixAutoUpdate=false` after first placement. 4 cabinets × 4 meshes = 16 additional draw calls.
+
+**Hotspots:** now positioned at cabinet faces (`x=-90, y=37`), one per cabinet. Click → `useCasinoStore.openSlotScreen`. Invisible `MeshBasicMaterial`.
+
+**Canvas initial camera:** `[0, 55, 400]` — directly behind spawn point, follow-cam takes over frame 1.
+
+**Initial camera position:** `CasinoCanvas` starts at `[0, 55, 400]` (behind spawn + 160wu). R3F follow-camera overrides this on the first useFrame tick so there is no visual jump.
+
 ---
 
 ## 19. Map layout
@@ -727,6 +749,7 @@ See **`3dStructure.md §1`** for the full coordinate system + axis conventions, 
 
 Compact log. The audit-history wall at the top of the prior version of this doc has been replaced with this. Entries are gameplay-facing — backend/service changes belong in `ARCHITECTURE.md §13`, 3D-render changes in `3dStructure.md §13`.
 
+- 2026-05-18 — Concern 6.0.5: Walkable casino interior + slot cabinet props. Self-contained WASD movement + follow camera in `casino-interior.tsx`. `CasinoPlayerAvatar` routes VRM (`useVRMInstance`+`VRMCharacterAnimator`) vs GLB (lobster, scale=40). Player spawns at (0,0,240) facing −Z. 4 primitive slot cabinets on left wall (x=−115, module-scope geometry). Hotspots moved onto cabinet faces. Walk-out exit corrected to (2000, 5760) — was wrong (940). Canvas initial camera updated to [0,55,400].
 - 2026-05-18 — Concern 6.0.4: 2D slot screen shipped. Full 5×3 reel UI with sequential-stop CSS animation, win highlights, paytable modal, win celebration, autoplay. Mock engine (Math.random + outcome forcing). SpinResult/WinningLine types frozen for Phase 6.1 swap. Slot hotspot onClick wired to `openSlotScreen`. `SlotScreenModal` mounted on `/casino` page as fixed DOM overlay (z-index 9990). No real money; in-memory CT balance only.
 - 2026-05-18 — Concern 6.0.3: Casino walk-in animation. `SceneTransition.tsx` (new generic rAF fade). `triggerCasinoWalkIn()` in `arena-buildings.tsx` (walk + 500ms fade, explore-mode bypass). `/casino` page: `fadeInOnMount` fade-from-black on arrival, `triggerTransition` + mid-fade avatar reposition `(940, 5760)` on exit. `/game` page: mounts `<SceneTransition />`. `avatarPositionRef` spawn updated to `(5760, 6140)`.
 - 2026-05-18 — Concern 6.0.2: Casino interior scene shipped. New §18a (casino). Click casino building → `/casino`. Route-isolated Canvas, gameready GLB + cartoon fallback, FPS-fallback gate, invisible slot hotspots, Back to World button. 2D slot screen (6.0.4) + RNG/wager (6.1) pending.
