@@ -982,26 +982,30 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
 
     const animator = vrmAnimatorRef.current;
     if (animator) {
-      // Jump / swim / fly pipeline for the possessed-player NPC.
+      // Squat / jump / swim / fly pipeline for the possessed-player NPC.
       // Mirrors the VRM player-avatar branch — surfaceClip is selected
       // every frame from jumpState.phase + airborne and only re-set when
       // it changes (so the animator's lazy GLB load + crossfade only
       // fire on state transitions, not 60×/s).
       //
-      //   ASCENDING (jumpState.phase launch/quick): surfaceClip='jump'
-      //     loop. Was originally a 0.5 s playOneShot which was
-      //     'barely visible' on a 1-2 s leap; now loops until apex.
+      //   CHARGING (phase==='charging'): surfaceClip='squat'. Plays as
+      //     SPACE goes down; releases via crossfade into 'jump' when
+      //     phase flips to launch/quick.
+      //   ASCENDING (phase in launch/quick): surfaceClip='jump' loop.
       //   DESCENDING / FREE-SWIM (any other airborne state):
       //     surfaceClip='flying' for Tekk, else 'swimming'.
-      //   GROUNDED: surfaceClip='idle'.
+      //   GROUNDED non-charging: surfaceClip='idle'.
       //
       // Wandering NPCs (isPossessedPlayerNpc=false) skip this entire
       // block — airborne is always false for them above.
       if (isPossessedPlayerNpc) {
-        const phaseAscending = jumpState.phase === 'launch' || jumpState.phase === 'quick';
+        const phase = jumpState.phase;
+        const phaseCharging = phase === 'charging';
+        const phaseAscending = phase === 'launch' || phase === 'quick';
         const swimClip: AnimName = d.species === 'tekk' ? 'flying' : 'swimming';
         const desiredClip: AnimName =
-          airborne && phaseAscending ? 'jump'
+          phaseCharging              ? 'squat'
+          : airborne && phaseAscending ? 'jump'
           : airborne                 ? swimClip
           :                            'idle';
         if (desiredClip !== lastSurfaceClipRef.current) {
@@ -1010,11 +1014,14 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
         }
       }
       springDeltaAccRef.current += dt;
-      // While airborne, gate the locomotion crossfade to surfaceClip
-      // (swim/fly) by reporting isMoving=false. Walk on the ground,
-      // swim/fly in the air — never "walking through the air" if the
-      // player holds movement input mid-jump.
-      animator.updateMixerOnly(dt, isPossessedPlayerNpc && airborne ? false : isMoving);
+      // While charging OR airborne, gate the locomotion crossfade to
+      // surfaceClip (squat/jump/swim/fly) by reporting isMoving=false.
+      // Walk on the ground when neither is true; never "walking while
+      // charging" or "walking through the air" if movement input is
+      // held mid-leap.
+      const npcLockIdle = isPossessedPlayerNpc &&
+        (airborne || jumpState.phase === 'charging');
+      animator.updateMixerOnly(dt, npcLockIdle ? false : isMoving);
       const springMod = 4; // 15Hz — see comment block above
       if ((frame + seed) % springMod === 0) {
         const acc = Math.min(springDeltaAccRef.current, 0.1);
