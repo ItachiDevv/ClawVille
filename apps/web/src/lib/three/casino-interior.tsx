@@ -379,8 +379,8 @@ export default function CasinoInteriorScene({ onSceneEmpty }: CasinoInteriorScen
     <>
       <CasinoLighting />
 
-      {/* Interior fog — short range, tinted neon-dark */}
-      <fog attach="fog" args={[0x0a0015, 400, 1200]} />
+      {/* Interior fog — pushed out so 600wu model isn't fogged into the dark background */}
+      <fog attach="fog" args={[0x0a0015, 1200, 3000]} />
 
       <Suspense fallback={null}>
         <InteriorScene

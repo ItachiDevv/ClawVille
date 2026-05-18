@@ -22,39 +22,39 @@ const AMBIENT_COLOR = new THREE.Color(0x1a0a2e);
 export function CasinoLighting() {
   return (
     <>
-      {/* Dark purple ambient fill — prevents pitch-black corners */}
-      <ambientLight color={AMBIENT_COLOR} intensity={2.5} />
+      {/* Ambient fill — strong enough to reveal the 600wu interior even at distance */}
+      <ambientLight color={AMBIENT_COLOR} intensity={6.0} />
 
       {/* Hemisphere — cool ceiling / warm floor bounce for depth */}
-      <hemisphereLight args={[0x1a0a3a, 0x2a0a1a, 1.2]} />
+      <hemisphereLight args={[0x4a3a7a, 0x6a4a3a, 2.5]} />
 
-      {/* Cyan neon — left wall */}
+      {/* Cyan neon — left wall (linear decay so it reaches across the 600wu room) */}
       <pointLight
-        position={[-180, 120, -60]}
+        position={[-180, 200, -60]}
         color={CYAN_COLOR}
-        intensity={3.5}
-        distance={600}
-        decay={2}
+        intensity={8.0}
+        distance={1400}
+        decay={1}
         castShadow={false}
       />
 
       {/* Magenta neon — right wall */}
       <pointLight
-        position={[180, 120, -60]}
+        position={[180, 200, -60]}
         color={MAGENTA_COLOR}
-        intensity={3.5}
-        distance={600}
-        decay={2}
+        intensity={8.0}
+        distance={1400}
+        decay={1}
         castShadow={false}
       />
 
       {/* Cyan fill above slot bank — illuminates cabinet tops */}
       <pointLight
-        position={[0, 200, -100]}
+        position={[0, 300, -100]}
         color={CYAN_COLOR}
-        intensity={2.0}
-        distance={500}
-        decay={2}
+        intensity={5.0}
+        distance={1200}
+        decay={1}
         castShadow={false}
       />
     </>
