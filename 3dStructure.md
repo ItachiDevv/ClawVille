@@ -11,7 +11,7 @@
 > - **`GameFeatures.md`** — gameplay.
 > - **This doc** — *how* the 3D scene is wired: coordinates, camera, lights, GPU budget, animation, asset pipeline.
 
-**Last edit:** 2026-05-17 — Phase 6.0.1: 10-building circular ring → 12-building square ring. Two new buildings added (casino E2, claw-arcade S3). §2 ring geometry updated. `WorldContent.md` §2 has the full 12-building roster + GLB paths. §6e jump animation pipeline added: VRM avatars now play `jump` one-shot on takeoff then transition to `swimming` (or `flying` for Tekk) while airborne, restoring `idle` on landing. §6a NPC position smoothing rewritten: dead reckoning + LERP_SPEED_DR=8 corrective lerp replaces the old LERP_SPEED=1.5 that pumped at the server's 5 Hz tick. §9d added: Mixamo animation GLB load policy. 2026-05-12 — restructured into a tight manifest (was 2430 lines / 200 KB with 14 stacked audit entries).
+**Last edit:** 2026-05-17 — Entertainment-district swap: claw-arcade → E3, app-publishing → S3. Slot table in §2 updated. Prior last-edit 2026-05-17: Phase 6.0.1: 10-building circular ring → 12-building square ring; casino E2 + claw-arcade S3 added. §2 ring geometry updated. `WorldContent.md` §2 has the full 12-building roster + GLB paths. §6e jump animation pipeline added: VRM avatars now play `jump` one-shot on takeoff then transition to `swimming` (or `flying` for Tekk) while airborne, restoring `idle` on landing. §6a NPC position smoothing rewritten: dead reckoning + LERP_SPEED_DR=8 corrective lerp replaces the old LERP_SPEED=1.5 that pumped at the server's 5 Hz tick. §9d added: Mixamo animation GLB load policy. 2026-05-12 — restructured into a tight manifest (was 2430 lines / 200 KB with 14 stacked audit entries).
 
 ---
 
@@ -49,7 +49,9 @@ Source: `arena-buildings.tsx`. See `WorldContent.md §2` for the building roster
 
 **Ring geometry (Phase 6.0.1 — 12-building square ring, 2026-05-17):**
 
-Changed from 10-building circular ring to 12-building **square ring**. Two new buildings added: `casino` (E2) and `claw-arcade` (S3).
+Changed from 10-building circular ring to 12-building **square ring**. Two new buildings added: `casino` (E2) and `claw-arcade` (originally S3, moved to E3 2026-05-17 entertainment-district swap; `app-publishing` moved from E3 to S3).
+
+**Entertainment district:** casino (E2) + claw-arcade (E3) are adjacent on the east wall, 1536 wu apart — same inter-building spacing as all other pairs on a side.
 
 | Dimension | Value |
 |---|---|
@@ -68,10 +70,10 @@ Slot centers (tile coords, center at (80, 80)):
 | N | N3 | 128 | 8 | api-integrations |
 | E | E1 | 152 | 32 | cron-automation |
 | E | E2 | 152 | 80 | casino |
-| E | E3 | 152 | 128 | app-publishing |
+| E | E3 | 152 | 128 | claw-arcade (entertainment district, adjacent to E2) |
 | S | S1 | 32 | 152 | deployment-ops |
 | S | S2 | 80 | 152 | agent-security |
-| S | S3 | 128 | 152 | claw-arcade |
+| S | S3 | 128 | 152 | app-publishing |
 | W | W1 | 8 | 32 | messaging-channels |
 | W | W2 | 8 | 80 | mcp-tool-use |
 | W | W3 | 8 | 128 | code-development |
@@ -457,6 +459,7 @@ Draw-call budget (full equipped set): hat ≤ 1, aura ≤ 4 (instanced particles
 
 Compact log. Single line per change with commit reference where applicable.
 
+- 2026-05-17 — Entertainment-district swap: `claw-arcade` → E3, `app-publishing` → S3. `tilemap-data.ts` zone ids swapped; `map-locations.ts` positionX/Y swapped; `arena-buildings.tsx` rotY updated (claw-arcade −2.159, app-publishing −2.554 + rotYOffset +π/2); §2 slot table updated. Casino (E2) + claw-arcade (E3) now adjacent on east wall.
 - 2026-05-17 — Phase 6.0.1: `tilemap-data.ts` buildingZones expanded from 10 circular → 12 square ring; `map-locations.ts` and `building-types.ts` updated; `arena-buildings.tsx` BUILDING_MODELS adds casino (E2, box3Recenter) + claw-arcade (S3) with placeholder onClick handlers; `minimap.tsx` accent colors + ring guide radius updated; `3dStructure.md` §2 rewritten.
 - 2026-05-12 — dead-code cleanup in `arena-npcs.tsx` — removed unused `NPC_CULL_DIST_SQ` / `VRM_NPC_HALF_RATE_DIST_SQ` / `VRM_NPC_CULL_DIST_SQ` constants and the entire `checkLabelOcclusion` / `buildOccluderList` / `invalidateOccluderCache` infra block (5 module-scope variables + 3 functions, all orphaned by the 2026-05-11 culling removal). Also flattened a duplicated spring-throttle comment block. No behavior change.
 - 2026-05-12 — `ed1f4a0` / `2728ac6` — Sandy's Treedome swap to `sandy_tree_final.glb` after measuring every candidate via `scripts/read-glb-bbox.mjs`. Vertex-count strip rule attempted then reverted (Object_5 was the building, not a backdrop).

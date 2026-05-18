@@ -66,7 +66,9 @@ const BUILDING_TARGET_HEIGHT = 800;
  */
 const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number; rotYOffset?: number; scaleOverride?: number; box3Recenter?: boolean; onClick?: () => void }> = {
   // ---------------------------------------------------------------------------
-  // 12-building square ring (Phase 6.0.1, 2026-05-17)
+  // 12-building square ring (Phase 6.0.1, 2026-05-17).
+  // Entertainment-district swap 2026-05-17: claw-arcade → E3, app-publishing → S3.
+  // Casino (E2) + claw-arcade (E3) are now adjacent on the east wall (1536 wu apart).
   // rotY = atan2(80 − cx_tile, 80 − cy_tile) so building faces plaza center.
   // Square ring slots: N1-N3 (north), E1-E3 (east), S1-S3 (south), W1-W3 (west).
   // ---------------------------------------------------------------------------
@@ -93,8 +95,12 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   'casino':              { model: '/models/casino/casino-exterior.glb', yOffset: 0, rotY: -1.571, box3Recenter: true,
                            onClick: () => { console.info('[casino] interior pending — Concern 6.0.2'); } },
   // E3 center=(152,128) dx=-72,dz=-48 → atan2(-72,-48)≈-2.159
-  // rotYOffset: boating-school.glb classroom must face center.
-  'app-publishing':      { model: '/models/boating-school.glb',      yOffset: 0, rotY: -2.159, rotYOffset: Math.PI / 2 },
+  // Entertainment district: casino (E2) + claw-arcade (E3) are now adjacent on the east wall.
+  // claw-arcade moved from S3 to E3 in the entertainment-district swap (2026-05-17).
+  // claw-arcade-exterior.glb = Arcade City (CC-BY-4.0, vanessalani / Sketchfab).
+  // Interior / crane game is Phase 6.3 — onClick is placeholder per Concern 6.0.1.
+  'claw-arcade':         { model: '/models/arcade/claw-arcade-exterior.glb', yOffset: 0, rotY: -2.159,
+                           onClick: () => { console.info('[claw-arcade] interior pending — Concern 6.3'); } },
 
   // === SOUTH SIDE ===
   // S1 center=(32,152) dx=48,dz=-72 → atan2(48,-72)≈2.554
@@ -103,10 +109,9 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // patricks-rock-v2.glb (3.88 MB, original patricks_house_spongebob.glb)
   'agent-security':      { model: '/models/patricks-rock-v2.glb',    yOffset: 0, rotY:  3.142 },
   // S3 center=(128,152) dx=-48,dz=-72 → atan2(-48,-72)≈-2.554
-  // claw-arcade-exterior.glb = Arcade City (CC-BY-4.0, vanessalani / Sketchfab).
-  // Interior / crane game is Phase 6.3 — onClick is placeholder per Concern 6.0.1.
-  'claw-arcade':         { model: '/models/arcade/claw-arcade-exterior.glb', yOffset: 0, rotY: -2.554,
-                           onClick: () => { console.info('[claw-arcade] interior pending — Concern 6.3'); } },
+  // app-publishing moved from E3 to S3 in the entertainment-district swap (2026-05-17).
+  // rotYOffset: boating-school.glb classroom must face center (model-authored offset — stays with building).
+  'app-publishing':      { model: '/models/boating-school.glb',      yOffset: 0, rotY: -2.554, rotYOffset: Math.PI / 2 },
 
   // === WEST SIDE ===
   // W1 center=(8,32)  dx=72,dz=48  → atan2(72,48)≈0.983
