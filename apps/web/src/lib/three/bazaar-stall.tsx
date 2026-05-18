@@ -97,7 +97,14 @@ const BazaarStallInner = memo(function BazaarStallInner() {
       userData={{ isOccluder: true }}
       onClick={(e) => {
         e.stopPropagation();
-        useGameStore.getState().openBazaar();
+        // Repointed 2026-05-18: was openBazaar() (peer skill trading,
+        // gated under the marketplace-pause attack-vector policy). The
+        // Bazaar stall now functions as the first-party COSMETICS SHOP
+        // entry from the world — opens the cosmetic drawer which lands
+        // on the Shop tab when the player owns nothing. The 3D model
+        // stays for now (fish-market stall reads as a shop visually);
+        // can swap to a more cosmetic-themed asset in a later pass.
+        useGameStore.getState().setCosmeticDrawerOpen(true);
       }}
       onPointerEnter={(e) => {
         e.stopPropagation();
