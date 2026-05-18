@@ -19,8 +19,9 @@
  *   - Draw calls < 120 (gameready ~21 meshes; hotspot boxes add 4-6)
  *
  * Concern 6.0.2 scope:
- *   - Click hotspots over slot machines → placeholder console.info handler
- *   - Walk-in animation (6.0.3) and 2D slot screen (6.0.4) are OUT of scope
+ *   - Click hotspots over slot machines → opens 2D slot screen modal (Concern 6.0.4)
+ *   - Walk-in animation (6.0.3) wired
+ *   - 2D slot screen (6.0.4): useCasinoStore.openSlotScreen() → DOM modal renders over canvas
  */
 
 import { Suspense, useRef, useEffect, useMemo, useState } from 'react';
@@ -30,6 +31,8 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { CasinoLighting } from '@/components/three/CasinoLighting';
+import { useCasinoStore } from '@/stores/casino';
+import { useAvatar } from '@/hooks/use-avatar';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -158,7 +161,8 @@ const GAMEREADY_HOTSPOTS: HotspotDef[] = [
 // ---------------------------------------------------------------------------
 function SlotHotspot({ def }: { def: HotspotDef }) {
   const meshRef = useRef<THREE.Mesh>(null);
-  const [hovered, setHovered] = useState(false);
+  const openSlotScreen = useCasinoStore((s) => s.openSlotScreen);
+  const { data: avatar } = useAvatar();
 
   useEffect(() => {
     const mesh = meshRef.current;
@@ -168,30 +172,33 @@ function SlotHotspot({ def }: { def: HotspotDef }) {
     mesh.updateMatrix();
   }, []);
 
+  const handleClick = () => {
+    // Read current ClawToken balance from avatar (fallback 60 if not loaded yet)
+    const startBalance = avatar?.clawTokens ?? 60;
+    openSlotScreen(def.machineSlug, 'classic-3x5', startBalance);
+  };
+
   return (
     <mesh
       ref={meshRef}
       position={def.position}
       onPointerOver={(e) => {
         e.stopPropagation();
-        setHovered(true);
         if (typeof document !== 'undefined') document.body.style.cursor = 'pointer';
       }}
       onPointerOut={(e) => {
         e.stopPropagation();
-        setHovered(false);
         if (typeof document !== 'undefined') document.body.style.cursor = 'default';
       }}
       onClick={(e) => {
         e.stopPropagation();
-        console.info(`[slot-screen pending — Concern 6.0.4] machineSlug=${def.machineSlug}`);
+        handleClick();
       }}
     >
       <boxGeometry args={def.size} />
       {/*
        * Invisible click target. visible=false means Three.js skips rasterisation
        * but raycasting still works (raycast tests the geometry, not the rendered pixels).
-       * hovered tracking is used internally; no visual change needed per brief.
        */}
       <meshBasicMaterial visible={false} />
     </mesh>
