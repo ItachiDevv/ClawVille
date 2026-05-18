@@ -33,6 +33,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { CasinoLighting } from '@/components/three/CasinoLighting';
 import { useCasinoStore } from '@/stores/casino';
 import { useAvatar } from '@/hooks/use-avatar';
+import type { MachineSlug } from '@/lib/casino/types';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -129,7 +130,7 @@ function computeAutoFit(scene: THREE.Object3D, targetHeight: number): FitResult 
 interface HotspotDef {
   position: [number, number, number];
   size: [number, number, number];
-  machineSlug: string;
+  machineSlug: MachineSlug;
 }
 
 /**
