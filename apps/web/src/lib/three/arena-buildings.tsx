@@ -154,8 +154,24 @@ function triggerCasinoWalkIn(): void {
  * Example: Squidward's house has steps at the front — the bbox center is pulled
  * toward the steps, causing the house body to appear too far back. pivotZBias=+180
  * shifts the house toward center to compensate.
+ *
+ * childScaleOverrides: differential scale multipliers applied to named child nodes
+ * AFTER computeBuildingScale. Keys are Three.js-sanitized node names (spaces→_, special
+ * chars→_). The uniform buildingScale is still applied via <primitive scale={buildingScale} />;
+ * child overrides multiply on top of that in the node's local space.
+ *
+ * Use when a GLB bundles a building body + pathway/sign into one file but the pathway/sign
+ * forces the bbox max-dim to compress the building to a fraction of target height. Solution:
+ * boost the building body node alone so it reads larger while the path/sign scales normally.
+ *
+ * Important: nodes targeted by childScaleOverrides MUST NOT be stripped by
+ * stripDecorativeMeshes/stripGroundPlanes (the overrides run after those strip passes).
+ *
+ * Example:
+ *   'memory-rag': { ..., childScaleOverrides: { "Squidward_s_House": 1.4 } }
+ *   → the moai head body grows 1.4× relative to steps/pathway.
  */
-const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number; rotYOffset?: number; scaleOverride?: number; targetMaxDim?: number; box3Recenter?: boolean; pivotZBias?: number; onClick?: () => void }> = {
+const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number; rotYOffset?: number; scaleOverride?: number; targetMaxDim?: number; box3Recenter?: boolean; pivotZBias?: number; childScaleOverrides?: Record<string, number>; onClick?: () => void }> = {
   // ---------------------------------------------------------------------------
   // 12-building TRUE CIRCULAR ring — Phase 6.2.1 (2026-05-18).
   // Ring tuned R=160→130 tiles (5120→4160wu — R=160 was too spaced out).
@@ -190,7 +206,11 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   'code-development':    { model: '/models/chum-bucket-v2.glb',      yOffset: 0, rotY: -0.522, targetMaxDim: 1000 },
   // Slot 2 — ENE (cx=293, cy=115): dx=-113, dz=65 → atan2(-113,65)≈-1.049 (-π/3)
   // krusty-krab-v2.glb = iconic ship restaurant (CC-BY, Yanez Designs, 1.59 MB original).
-  'mcp-tool-use':        { model: '/models/krusty-krab-v2.glb',      yOffset: 0, rotY: -1.049, targetMaxDim: 1000 },
+  // targetMaxDim 1000→1400: sign pole Z (≈1438 GLB units) dominates bbox — raises base scale so
+  // building reads bigger. childScaleOverride 1.5× on "The_Krusty_Krab" node (ship body) gives
+  // differential sizing: restaurant body ≈600wu, sign stays at base scale proportionally.
+  'mcp-tool-use':        { model: '/models/krusty-krab-v2.glb',      yOffset: 0, rotY: -1.049, targetMaxDim: 1400,
+                           childScaleOverrides: { 'The_Krusty_Krab': 1.5 } },
   // Slot 3 — E (cx=310, cy=180): dx=-130, dz=0 → atan2(-130,0)=-π/2≈-1.571
   // sandy-treedome-v3.glb: rotYOffset +π for inward-facing door.
   // Phase 6.2: dome glass DoubleSide fix applied post-load (see GLBBuilding).
@@ -226,7 +246,11 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // Slot 11 — NNW (cx=115, cy=67): dx=65, dz=113 → atan2(65,113)≈0.522 (π/6)
   // squidward-house.glb = Easter Island moai head (CC-BY, Yanez Designs).
   // pivotZBias: +180 — stone steps at front shift GLB bbox center, compensated here.
-  'memory-rag':          { model: '/models/squidward-house.glb',     yOffset: 0, rotY:  0.522, targetMaxDim: 1000, pivotZBias: 180 },
+  // targetMaxDim 1000→1400: Stones node Y range (370wu) dominates bbox — raising targetMaxDim
+  // increases base scale. childScaleOverride 1.4× on "Squidward_s_House" node (head body) gives
+  // differential sizing: moai head ≈1010wu, stepping stones stay at base scale proportionally.
+  'memory-rag':          { model: '/models/squidward-house.glb',     yOffset: 0, rotY:  0.522, targetMaxDim: 1400, pivotZBias: 180,
+                           childScaleOverrides: { 'Squidward_s_House': 1.4 } },
 };
 
 // Scratch objects for stripGroundPlanes — reused across calls to avoid GC.
@@ -528,6 +552,33 @@ function computeBuildingScale(scene: THREE.Object3D, targetMaxDim: number = BUIL
   return { scale, pivotOffsetX, pivotOffsetY, pivotOffsetZ };
 }
 
+/**
+ * applyChildScaleOverrides — differential scale pass applied after computeBuildingScale.
+ *
+ * For each entry in overrides, walk the cloned scene and find Object3D nodes whose
+ * sanitized name (Three.js replaces non-word chars with '_' when loading GLTF)
+ * matches the key. Multiply that node's local scale by the override factor.
+ *
+ * This is applied BEFORE matrixAutoUpdate=false so the override becomes part of the
+ * locked static transform. The outer <primitive scale={buildingScale} /> still provides
+ * the uniform baseline — child overrides compound on top in local space.
+ *
+ * Important: this must run AFTER stripDecorativeMeshes/stripGroundPlanes so overridden
+ * nodes are guaranteed to still exist in the scene.
+ *
+ * @param scene  — cloned GLB scene (already stripped)
+ * @param overrides — Record<sanitizedNodeName, scaleMultiplier>
+ */
+function applyChildScaleOverrides(scene: THREE.Object3D, overrides: Record<string, number>): void {
+  if (!overrides || Object.keys(overrides).length === 0) return;
+  scene.traverse((child) => {
+    const factor = overrides[child.name];
+    if (factor != null && factor !== 1) {
+      child.scale.multiplyScalar(factor);
+    }
+  });
+}
+
 // Preload all 12 models (Phase 6.0.1: added casino-exterior-cove.glb + claw-arcade-exterior.glb).
 // extendLoaderWithMeshopt registers MeshoptDecoder on the per-call loader so
 // GLBs with EXT_meshopt_compression (patricks-rock, krusty-krab, chum-bucket)
@@ -630,6 +681,21 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
       const { scale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz } = computeBuildingScale(c, targetMD);
       result = { cloned: c, buildingScale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz };
     }
+    // Differential child-scale pass — applied BEFORE mergeStaticMeshesByMaterial so that
+    // the overridden child node scales are baked into vertex positions by the merger.
+    // After the merge the named parent nodes (e.g. "Squidward_s_House") still exist as
+    // empty containers, but all their mesh children will have had their matrixWorld
+    // (which incorporates this scale) snapshotted and baked into merged geo vertex positions.
+    // This gives differential sizing: building body reads larger, pathway/sign unchanged.
+    if (config.childScaleOverrides) {
+      // Force a matrixWorld update BEFORE applying overrides so mergeStaticMeshesByMaterial
+      // sees the correct inherited transforms when it snapshots each mesh's matrixWorld.
+      c.updateMatrixWorld(true);
+      applyChildScaleOverrides(c, config.childScaleOverrides);
+      // Re-update matrixWorld so the override scales propagate to all descendants
+      // before mergeStaticMeshesByMaterial reads them.
+      c.updateMatrixWorld(true);
+    }
     // Phase 6.2 — Sandy's Treedome dome glass fix:
     // sandy-treedome-v3.glb dome mesh is single-sided (THREE.FrontSide), so the
     // camera looking from outside sees nothing (backfaces culled). Apply DoubleSide
@@ -656,7 +722,7 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
       console.log(`[building-merge] ${zone.id}: ${merge.meshesBefore} → ${merge.meshesAfter} meshes (${merge.buckets} buckets merged, ${merge.skipped} skipped)`);
     }
     return result;
-  }, [scene, config.model, config.scaleOverride, config.targetMaxDim, config.pivotZBias, zone.id]);
+  }, [scene, config.model, config.scaleOverride, config.targetMaxDim, config.pivotZBias, config.childScaleOverrides, zone.id]);
 
   // Dispose cloned geometry + materials on unmount (navigation away / hot-reload)
   useEffect(() => {
@@ -808,9 +874,15 @@ function EditableBuilding({
     makeObject3DWebGPUSafe(c);
     stripDecorativeMeshes(c);
     stripGroundPlanes(c);
-    const { scale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz } = computeBuildingScale(c);
+    const targetMD = config.targetMaxDim ?? BUILDING_TARGET_HEIGHT;
+    const { scale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz } = computeBuildingScale(c, targetMD);
+    if (config.childScaleOverrides) {
+      c.updateMatrixWorld(true);
+      applyChildScaleOverrides(c, config.childScaleOverrides);
+      c.updateMatrixWorld(true);
+    }
     return { cloned: c, buildingScale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz };
-  }, [scene]);
+  }, [scene, config.targetMaxDim, config.childScaleOverrides]);
 
   // Re-raycast terrain Y whenever position changes
   useFrame(() => {
