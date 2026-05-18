@@ -96,6 +96,12 @@ const ANIM_PATHS = {
   rude_gesture:    `${EMOTE_BUNDLE}#rude_gesture`,
   sorrow:          `${EMOTE_BUNDLE}#sorrow`,
   spell_cast:      `${EMOTE_BUNDLE}#spell_cast`,
+  // Added 2026-05-18: charge-jump prep pose. Plays while jumpState.phase
+  // === 'charging' (SPACE held). Must be added to _emotes.glb via the
+  // Mixamo fetch + bundle rebuild workflow — see player-avatar.tsx
+  // surface-clip selector for the exact commands. Until the bundle ships
+  // this clip, charging visibly falls back to 'idle'.
+  crouch_idle:     `${EMOTE_BUNDLE}#crouch_idle`,
   // Reef Race v2 surf clips — separate, prewarmed by ReefRacePlayer.
   surf_idle:       '/avatars/animations/skateboarding.glb',
   wipeout:         '/avatars/animations/wipeout.glb',
@@ -453,6 +459,13 @@ export class VRMCharacterAnimator {
   private ready = false;
   private wasMoving = false;
   /**
+   * Tracks the resolved locomotion state ('idle' | 'walk' | 'run') across
+   * frames so applyCrossfade fires exactly when it changes — not 60×/s.
+   * Mirrors `wasMoving` but distinguishes walk vs run so SHIFT-down /
+   * joystick-deflect-past-threshold transitions trigger a clip swap.
+   */
+  private wasMotion: 'idle' | 'walk' | 'run' = 'idle';
+  /**
    * The resting locomotion target when isMoving=false.
    * Defaults to 'idle' — existing callers (player-avatar.tsx, arena-npcs.tsx)
    * never call setSurfaceClip() so they remain on 'idle'.
@@ -666,17 +679,22 @@ export class VRMCharacterAnimator {
    * @param delta    Clamped frame delta (Math.min(rawDelta, 0.1))
    * @param isMoving true when the avatar is walking/running
    */
-  update(delta: number, isMoving: boolean): void {
+  update(delta: number, isMoving: boolean, isRunning = false): void {
     if (!this.ready) return;
 
     // While a one-shot emote is playing, suppress the locomotion crossfade
     // but keep `wasMoving` updated so we crossfade to the correct target
     // when the emote finishes. Otherwise: apply locomotion crossfade as normal.
+    const motion: 'idle' | 'walk' | 'run' = !isMoving
+      ? 'idle'
+      : isRunning ? 'run' : 'walk';
     if (this.oneShotActive) {
       this.wasMoving = isMoving;
-    } else if (isMoving !== this.wasMoving) {
-      this.applyCrossfade(isMoving);
+      this.wasMotion = motion;
+    } else if (motion !== this.wasMotion) {
+      this.applyCrossfade(motion);
       this.wasMoving = isMoving;
+      this.wasMotion = motion;
     }
 
     this.mixer.update(delta);
@@ -714,7 +732,7 @@ export class VRMCharacterAnimator {
           // Only crossfade if user is still asking for this surface clip
           // and not actively moving / mid-emote.
           if (this.surfaceClip === name && !this.oneShotActive && !this.wasMoving) {
-            this.applyCrossfade(false);
+            this.applyCrossfade('idle');
           }
         })
         .catch((err) => {
@@ -724,7 +742,7 @@ export class VRMCharacterAnimator {
     }
 
     if (!this.oneShotActive && !this.wasMoving) {
-      this.applyCrossfade(false);
+      this.applyCrossfade('idle');
     }
   }
 
@@ -750,8 +768,13 @@ export class VRMCharacterAnimator {
    * produced a warp ratio of ~11.65× that persisted on the idle action after
    * every transition, accumulating drift across repeated idle↔walk toggles.
    */
-  private applyCrossfade(isMoving: boolean): void {
-    const next = this.actions[isMoving ? 'walk' : this.surfaceClip];
+  private applyCrossfade(motion: 'idle' | 'walk' | 'run'): void {
+    const clipName: AnimName = motion === 'idle' ? this.surfaceClip : motion;
+    // Run clip falls back to walk if the character doesn't have a baked
+    // run override AND the generic run.glb hasn't been loaded yet — happens
+    // briefly during init(). Walking is a strictly better visual than
+    // T-posing or losing the locomotion entirely in that window.
+    const next = this.actions[clipName] ?? (motion === 'run' ? this.actions.walk : undefined);
     if (!next || next === this.currentAction) return;
     next.reset().fadeIn(CROSSFADE_DURATION).play();
     if (this.currentAction) {
@@ -771,15 +794,20 @@ export class VRMCharacterAnimator {
    * @param delta    Clamped frame delta
    * @param isMoving true when walking/running
    */
-  updateMixerOnly(delta: number, isMoving: boolean): void {
+  updateMixerOnly(delta: number, isMoving: boolean, isRunning = false): void {
     if (!this.ready) return;
 
     // Same one-shot guard as update() — see that method for rationale.
+    const motion: 'idle' | 'walk' | 'run' = !isMoving
+      ? 'idle'
+      : isRunning ? 'run' : 'walk';
     if (this.oneShotActive) {
       this.wasMoving = isMoving;
-    } else if (isMoving !== this.wasMoving) {
-      this.applyCrossfade(isMoving);
+      this.wasMotion = motion;
+    } else if (motion !== this.wasMotion) {
+      this.applyCrossfade(motion);
       this.wasMoving = isMoving;
+      this.wasMotion = motion;
     }
 
     this.mixer.update(delta);
@@ -904,10 +932,21 @@ export class VRMCharacterAnimator {
       this.mixer.removeEventListener('finished', onFinished as any);
       this.oneShotFinishedHandler = null;
       this.oneShotActive = false;
-      // Crossfade back to whatever locomotion state we are in NOW.
-      // In surf context (surfaceClip='surf_idle') this returns to surf_idle;
-      // in world context (default surfaceClip='idle') returns to idle as before.
-      const back = this.actions[this.wasMoving ? 'walk' : this.surfaceClip];
+      // Crossfade back to whatever locomotion state we are in NOW —
+      // including run when the player is sprinting through the emote.
+      // In surf context (surfaceClip='surf_idle') resolves to surf_idle;
+      // world context (default surfaceClip='idle') returns to idle.
+      const backName: AnimName =
+        this.wasMotion === 'run' ? 'run'
+        : this.wasMotion === 'walk' ? 'walk'
+        : this.surfaceClip;
+      const back =
+        this.actions[backName] ??
+        // Fallback: the run clip may not be retargeted on this VRM yet
+        // (init only force-loads idle/walk/run, but the per-character
+        // override may be in flight). Walk → idle/surfaceClip in order.
+        (backName === 'run' ? this.actions.walk : undefined) ??
+        this.actions[this.surfaceClip];
       if (back) {
         back.reset().fadeIn(CROSSFADE_DURATION).play();
         oneShot.fadeOut(CROSSFADE_DURATION);

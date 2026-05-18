@@ -11,7 +11,7 @@
 > - **`GameFeatures.md`** — gameplay.
 > - **This doc** — *how* the 3D scene is wired: coordinates, camera, lights, GPU budget, animation, asset pipeline.
 
-**Last edit:** 2026-05-18 — World-space DOM label redesign: all pills removed; NPC labels now 10px uppercase wordmarks with black text-shadow + no background, opacity 0.65 within 800wu fading to 0 at 3000wu, 10 Hz building-occluder raycast via `_checkOcclusion` in `world-labels-overlay.tsx`; building labels now 11px italic cyan wordmarks with glow text-shadow, opacity 0.40 within 2000wu fading to 0 at 5000wu, CSS hover → opacity 1; OpenClaw chip replaced by 7px green dot. `LabelEntry` gains `fadeNear/fadeFar/fadeBaseOpacity/_prevOpacity/occlude/occludePhase/_occludeResult`; `UseWorldLabelOpts` gains matching opts. §5d WorldLabelsOverlay row updated. Prior 2026-05-18 — §6f Animation Shipping Rules added.
+**Last edit:** 2026-05-18 — Phase 6.2: grid 240→360 tiles, ring R=100→160 tiles (3200→5120wu), center tile 120→180, MAP_WIDTH/HEIGHT 7680→11520wu, arc spacing 1675→2680wu. NPC_INSET_WORLD 1000→1300wu (Patrick fix). `computeBuildingScale` switched to max(X,Y,Z) normalization (`targetMaxDim` param replaces `targetHeight`); all per-building values updated. Sandy Treedome DoubleSide fix for transparent materials. DECO_INNER_EXCLUSION_R 1500→800wu. Town-center props spread: bazaar (-600,300), marketplace (800,300), auction dome z=-1000. All building zone positions, NPC home coords, pathfinding COLS/ROWS, and free-roamer radii updated to match. §1, §2, §5e, §7 updated. Prior 2026-05-18 — World-space DOM label redesign: all pills removed; NPC labels now 10px uppercase wordmarks with black text-shadow + no background, opacity 0.65 within 800wu fading to 0 at 3000wu, 10 Hz building-occluder raycast via `_checkOcclusion` in `world-labels-overlay.tsx`; building labels now 11px italic cyan wordmarks with glow text-shadow, opacity 0.40 within 2000wu fading to 0 at 5000wu, CSS hover → opacity 1; OpenClaw chip replaced by 7px green dot. `LabelEntry` gains `fadeNear/fadeFar/fadeBaseOpacity/_prevOpacity/occlude/occludePhase/_occludeResult`; `UseWorldLabelOpts` gains matching opts. §5d WorldLabelsOverlay row updated. Prior prior 2026-05-18 — §6f Animation Shipping Rules added.
 
 ---
 
@@ -22,15 +22,16 @@ Source: `apps/web/src/lib/pixi/tilemap-data.ts:6-10`
 | Constant | Value |
 |---|---|
 | `TILE_SIZE` | 32 px |
-| `MAP_COLS`, `MAP_ROWS` | 240 (expanded from 160 in Phase 6.1 2026-05-18) |
-| `MAP_WIDTH`, `MAP_HEIGHT` | 7680 wu (= 240 × 32) |
-| `HALF_W`, `HALF_H` | 3840 wu |
+| `MAP_COLS`, `MAP_ROWS` | 360 (Phase 6.2 2026-05-18: 240→360; Phase 6.1: 160→240) |
+| `MAP_WIDTH`, `MAP_HEIGHT` | 11520 wu (= 360 × 32) |
+| `CENTER_TILE` | 180 (= MAP_COLS / 2) |
+| `HALF_W`, `HALF_H` | 5760 wu |
 
 **Game-space → 3D world:**
-- Game-space (2D pixel plane): `(0..7680, 0..7680)` — origin top-left, +x right, +y down.
-- Three.js world (XZ plane): `(-3840..+3840, -3840..+3840)` — origin center.
+- Game-space (2D pixel plane): `(0..11520, 0..11520)` — origin top-left, +x right, +y down.
+- Three.js world (XZ plane): `(-5760..+5760, -5760..+5760)` — origin center.
 - Conversion: `worldX = gameX - HALF_W; worldZ = gameY - HALF_H` (`World3DCanvas.tsx:291-293`, `player-avatar.tsx:84-86`, `arena-npcs.tsx:31-33`).
-- Village center tile `(120, 120)` → world `(0, 0)`.
+- Village center tile `(180, 180)` → world `(0, 0)`.
 
 | Axis | Meaning |
 |---|---|
@@ -47,49 +48,49 @@ Sand floor sits at `y = -2` (`arena-terrain.tsx:203`). Buildings, NPCs, and deco
 
 Source: `arena-buildings.tsx`. See `WorldContent.md §2` for the building roster + per-building GLB paths.
 
-**Ring geometry — Phase 6.1 (2026-05-18):**
+**Ring geometry — Phase 6.2 (2026-05-18):**
 
-Grid expanded from 160×160 to 240×240 tiles, center shifted from (80,80) to (120,120). Ring radius expanded from R=72 tiles (impossible at R≥74 on 160-grid) to R=100 tiles on the 240-grid, giving 13-tile border clearance on all sides (max safe R = 120−7 = 113). Casino is the entertainment-district landmark at +30% height.
+Grid expanded 240→360 tiles; ring radius expanded R=100→160 tiles. Center shifted (120,120)→(180,180). Arc spacing ≈ 2680wu (was 1675wu — 60% improvement). 13-tile border clearance on all sides (max safe R = 180−7 = 173). Casino is the entertainment-district landmark.
 
-**Entertainment district:** casino (slot 9, W) + agent-security/Patrick's Rock (slot 10, WNW) are adjacent at 30° separation (≈2094 wu arc). claw-arcade was swapped to slot 8 (WSW, 2026-05-18) — it is now 2 slots (60°) from casino and NO LONGER ADJACENT. Patrick's Rock is the new casino neighbor.
+**Phase 6.1 history (also 2026-05-18):** Grid 160→240, ring R=72→100. Casino + Patrick's Rock swap to entertainment district. claw-arcade at WSW (2 slots from casino, NOT adjacent — preserved in Phase 6.2).
 
 | Dimension | Value |
 |---|---|
 | Layout | 12 buildings at 30° angular spacing (true circle) |
-| Radius | 100 tiles = 3200 wu from center (120,120) / world (0,0,0) |
+| Radius | 160 tiles = 5120 wu from center (180,180) / world (0,0,0) |
 | Angular spacing | 30° (π/6 rad) per slot |
 | Starting angle | −π/2 (North), clockwise |
 | Zone footprint | 14×14 tiles = 448×448 wu |
 | Zone upper-left | `(round(cx) − 7, round(cy) − 7)` |
-| cx formula | `120 + 100 * cos(−π/2 + slot * π/6)` |
-| cy formula | `120 + 100 * sin(−π/2 + slot * π/6)` |
+| cx formula | `180 + 160 * cos(−π/2 + slot * π/6)` |
+| cy formula | `180 + 160 * sin(−π/2 + slot * π/6)` |
 
-Slot table (clockwise from North, cx/cy in tile coords):
+Slot table (clockwise from North, cx/cy in tile coords, Phase 6.2):
 
-| Slot | Angle | cx | cy | Building | rotY | targetHeight | Notes |
+| Slot | Angle | cx | cy | Building | rotY | targetMaxDim | Notes |
 |---|---|---|---|---|---|---|---|
-| 0 | N (0°) | 120 | 20 | visual-creation | 0.000 | 1100 | |
-| 1 | NNE (30°) | 170 | 33 | code-development | −0.524 | 1100 | raised from 900 (2026-05-18 pass 3) |
-| 2 | ENE (60°) | 207 | 70 | mcp-tool-use | −1.047 | 1400 | raised from 1200 (2026-05-18 pass 3) |
-| 3 | E (90°) | 220 | 120 | messaging-channels | −1.571 | 1300 | raised from 1000; rotYOffset +π |
-| 4 | ESE (120°) | 207 | 170 | api-integrations | −2.094 | 1500 | raised from 1200 (2026-05-18 pass 3); rotYOffset −π/2 |
-| 5 | SSE (150°) | 170 | 207 | app-publishing | −2.618 | 1100 | raised from 950; rotYOffset +π/2 |
-| 6 | S (180°) | 120 | 220 | cron-automation | 3.142 | 1400 | raised from 1200 |
-| 7 | SSW (210°) | 70 | 207 | deployment-ops | 2.618 | 1500 | tallest landmark |
-| 8 | WSW (240°) | 33 | 170 | claw-arcade | 2.094 | 900 | swapped from slot 10 (2026-05-18); casino adjacency BROKEN — now 2 slots from casino |
-| 9 | W (270°) | 20 | 120 | casino | 1.571 | 1040 | entertainment district; box3Recenter=true |
-| 10 | WNW (300°) | 33 | 70 | agent-security | 1.047 | 900 | swapped from slot 8 (2026-05-18); now adjacent to casino |
-| 11 | NNW (330°) | 70 | 33 | memory-rag | 0.524 | 1300 | raised from 1100; pivotZBias=+180 |
+| 0 | N (0°) | 180 | 20 | visual-creation | 0.000 | 1100 | |
+| 1 | NNE (30°) | 260 | 41 | code-development | −0.524 | 1000 | max-dim normalization replaces targetHeight |
+| 2 | ENE (60°) | 319 | 100 | mcp-tool-use | −1.047 | 1000 | |
+| 3 | E (90°) | 340 | 180 | messaging-channels | −1.571 | 1000 | rotYOffset +π; DoubleSide fix on transparent mats |
+| 4 | ESE (120°) | 319 | 260 | api-integrations | −2.094 | 1000 | rotYOffset −π/2 |
+| 5 | SSE (150°) | 260 | 319 | app-publishing | −2.618 | 1000 | rotYOffset +π/2 |
+| 6 | S (180°) | 180 | 340 | cron-automation | 3.142 | 1000 | |
+| 7 | SSW (210°) | 100 | 319 | deployment-ops | 2.618 | 1400 | tallest landmark |
+| 8 | WSW (240°) | 41 | 260 | claw-arcade | 2.094 | 1100 | 2 slots (60°) from casino — NOT adjacent |
+| 9 | W (270°) | 20 | 180 | casino | 1.571 | 1300 | entertainment district; box3Recenter=true |
+| 10 | WNW (300°) | 41 | 100 | agent-security | 1.047 | 1100 | adjacent to casino (slot 9) |
+| 11 | NNW (330°) | 100 | 41 | memory-rag | 0.524 | 1000 | pivotZBias=+180 |
 
-**rotY formula:** `atan2(120 − cx, 120 − cy)` — each building's +Z axis points toward plaza center (world 0, 0). Values are identical to the R=72 layout because atan2 depends only on direction, not magnitude. Model-authored `rotYOffset` values are additive and stay with the building regardless of slot.
+**rotY formula:** `atan2(180 − cx, 180 − cy)` — each building's +Z axis points toward plaza center (world 0, 0). Values are identical across all ring expansions because atan2 depends only on direction, not magnitude. Model-authored `rotYOffset` values are additive and stay with the building regardless of slot.
 
-**Building pedestals (Phase 6.1):** A flat `CylinderGeometry` stone disc (radius=560wu, height=15wu) is rendered under every building via `BuildingPedestal` component in `arena-buildings.tsx`. Color: warm sandstone (`0x8b7d6b`). Shares one `MeshStandardMaterial` instance across all 12 pedestals. Positioned at `y=-2` (flush with the sand floor). Purpose: visually separates building bases from sand terrain so they don't blend together.
+**Building scale normalization — Phase 6.2:** `computeBuildingScale` now normalizes to `max(X,Y,Z)` of the bounding box (`targetMaxDim` parameter). Prior `targetHeight` normalized Y-only, causing wide/squat buildings (Chum Bucket, Patrick's Rock) to balloon in XZ while tall/narrow buildings stayed small. Max-dim normalization gives consistent visual cube size across all GLB aspect ratios. `BUILDING_TARGET_HEIGHT = 800 wu` remains as default fallback; per-building `targetMaxDim` in `BUILDING_MODELS` overrides it via `computeBuildingScale(c, config.targetMaxDim ?? BUILDING_TARGET_HEIGHT)`.
+
+**Building pedestals (Phase 6.1):** A flat `CylinderGeometry` stone disc (radius=560wu, height=15wu) is rendered under every building via `BuildingPedestal` component in `arena-buildings.tsx`. Color: warm sandstone (`0x8b7d6b`). Shares one `MeshStandardMaterial` instance across all 12 pedestals. Positioned at `y=-2` (flush with the sand floor). Only the per-building ring pedestals exist — there is NO central plaza disc geometry.
 
 **Authoritative source:** `buildingZones[]` in `apps/web/src/lib/pixi/tilemap-data.ts`. All consumers (arena-buildings.tsx, minimap.tsx, PixiCanvas.tsx, map-locations.ts) derive from it.
 
-**Building height target:** `BUILDING_TARGET_HEIGHT = 800 wu` (default fallback). Per-building `targetHeight` overrides in `BUILDING_MODELS` take precedence via `computeBuildingScale(c, config.targetHeight ?? BUILDING_TARGET_HEIGHT)`.
-
-**Footprint cap:** `MAX_FOOTPRINT = 1800 wu` (raised 1000→1500→1800 across Phase 6.1 fixes). If post-scale `max(sx, sz) > 1800`, scale is reduced. History: 1000wu was set for R=72; raised to 1500 for R=100 ring (2026-05-18 Phase 6.1); raised again to 1800 (2026-05-18 pass 3) because salty-spitoon.glb has ~2:1 aspect ratio — at targetHeight=1500 its XZ hit the 1500 cap and rendered at only ~900wu. At 1800wu the gap between adjacent max-footprint buildings is still ~(1675−1800/2−1800/2) ≈ negative — so realistically only the widest outlier building (Salty Spitoon) approaches the cap; most buildings are constrained by targetHeight, not footprint.
+**Footprint cap:** `MAX_FOOTPRINT = 1800 wu`. If post-scale `max(sx, sz) > 1800`, scale is reduced. At R=160 (5120wu), arc gap ≈ 2680wu − footprint, so even 1800wu footprint leaves ~880wu clearance per side. Wide outliers (Salty Spitoon ~2:1 aspect) hit the cap; most buildings are constrained by targetMaxDim, not footprint.
 
 **Terrain lerp:** `terrainYRef.current += (ty - terrainYRef.current) * 0.6` (both VRM and GLB paths in `player-avatar.tsx`). Increased from 0.3→0.6 so avatars snap to dune peaks faster and don't visibly sink into bumpy terrain.
 
@@ -371,7 +372,7 @@ Lobster / crayfish GLB avatars don't participate (no swim/fly clip in their proc
 
 | Spec | Value |
 |---|---|
-| Plane size | `MAP_WIDTH × 3` × `MAP_HEIGHT × 3` = 15360 × 15360 wu |
+| Plane size | `MAP_WIDTH × 3` × `MAP_HEIGHT × 3` = 34560 × 34560 wu (Phase 6.2: MAP_WIDTH=11520) |
 | Segments | 120 × 120 |
 | Material | `MeshStandardNodeMaterial` (TSL) |
 | Render Y | -2 |
@@ -534,6 +535,7 @@ Draw-call budget (full equipped set): hat ≤ 1, aura ≤ 4 (instanced particles
 
 Compact log. Single line per change with commit reference where applicable.
 
+- 2026-05-18 — Phase 6.2: grid 240→360 (MAP_WIDTH 7680→11520wu), ring R=100→160 (3200→5120wu), center tile (120,120)→(180,180). `computeBuildingScale` max(X,Y,Z) normalization via `targetMaxDim`. NPC_INSET_WORLD 1000→1300wu (Patrick's Rock clearance). Sandy Treedome DoubleSide transparent-mat fix. DECO_INNER_EXCLUSION_R 1500→800wu. Town-center props spread to 800–1000wu radius. pathfinding COLS/ROWS, npc-simulation ranges, NPC home coords, all 12 building zones, map-locations positionX/Y updated.
 - 2026-05-18 — World-space DOM label redesign: pill backgrounds removed; NPC/teacher labels = 10px uppercase wordmark, opacity 0.65→0 over 800–3000wu, 10 Hz occluder raycast; building labels = 11px italic cyan wordmark, opacity 0.40→0 over 2000–5000wu, CSS hover → 1.0; OpenClaw chip → 7px green dot. `LabelEntry` + `UseWorldLabelOpts` extended; `3dStructure.md` §5d updated.
 - 2026-05-18 — Concern 6.0.2: `/casino` route + casino interior scene. New §10c. 4 new files (`casino/page.tsx`, `CasinoCanvas.tsx`, `casino-interior.tsx`, `CasinoLighting.tsx`). Gameready + fallback GLB auto-fit to 600wu. FPS-fallback (< 40 avg over 5s). Invisible slot hotspots. Casino onClick in `arena-buildings.tsx` wired to `window.location.href = '/casino'`.
 - 2026-05-17 — Circle revert: `tilemap-data.ts` buildingZones already circular (fixed); `map-locations.ts` fully rewritten to circular positions; `arena-buildings.tsx` BUILDING_MODELS completely reordered with new rotY values for each slot, `computeBuildingScale` gains optional `targetHeight` param, casino gets `targetHeight=1040` (+30%); `minimap.tsx` ring-guide comment corrected; `npc-definitions.ts` wanderer homeX/homeY updated for new ring (patrolRadius 700→500); §2 slot table rewritten as 12-slot circle; §2 note added explaining R=90 tile constraint.

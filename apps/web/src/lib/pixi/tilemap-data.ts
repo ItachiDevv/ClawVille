@@ -1,16 +1,21 @@
 // ---------------------------------------------------------------------------
 // Tilemap data for ClawVille The Depths
-// 240 x 240 grid of 32px tiles = 7680 x 7680 pixel world
-// Expanded 2026-05-18 (Phase 6.1): 160→240 to accommodate R=100 building ring
-// with ≥13 tiles of clearance on all sides (prev R=72 was constrained to R≤73).
+// 360 x 360 grid of 32px tiles = 11520 x 11520 pixel world
+// Expanded 2026-05-18 (Phase 6.1): 160→240 to accommodate R=100 building ring.
+// Expanded 2026-05-18 (Phase 6.2): 240→360 to accommodate R=160 building ring
+// with 13 tiles of clearance on all sides. R=160 gives arc spacing of 2680wu
+// between buildings (vs 1675wu at R=100 — buildings were visually packed).
 // All consumers import MAP_WIDTH/MAP_HEIGHT/MAP_COLS/MAP_ROWS — no hardcodes.
 // ---------------------------------------------------------------------------
 
 export const TILE_SIZE = 32;
-export const MAP_COLS = 240;
-export const MAP_ROWS = 240;
-export const MAP_WIDTH = MAP_COLS * TILE_SIZE; // 7680
-export const MAP_HEIGHT = MAP_ROWS * TILE_SIZE; // 7680
+export const MAP_COLS = 360;
+export const MAP_ROWS = 360;
+export const MAP_WIDTH = MAP_COLS * TILE_SIZE; // 11520
+export const MAP_HEIGHT = MAP_ROWS * TILE_SIZE; // 11520
+
+/** Center tile (grid / 2). Must equal MAP_COLS / 2. */
+export const CENTER_TILE = MAP_COLS / 2; // 180
 
 /** Tile indices matching the tileset spritesheet columns */
 export const TILES = {
@@ -42,39 +47,41 @@ export type TileIndex = (typeof TILES)[keyof typeof TILES];
 
 // ---------------------------------------------------------------------------
 // Building positions (tile coords)
-// 12-building TRUE CIRCULAR ring layout in 240×240 grid, center at (120,120).
+// 12-building TRUE CIRCULAR ring layout in 360×360 grid, center at (180,180).
 // 2026-05-17 (Phase 6.0.1): circle ring at R=72 tiles on 160×160 grid.
-// 2026-05-18 (Phase 6.1): grid expanded 160→240 and ring expanded R=72→100
-//   to give more breathing room between buildings and better visual separation.
-//   New max safe R = 120-7 = 113 tiles; R=100 leaves 13-tile border clearance.
+// 2026-05-18 (Phase 6.1): grid expanded 160→240 and ring expanded R=72→100.
+// 2026-05-18 (Phase 6.2): grid expanded 240→360 and ring expanded R=100→160.
+//   Arc spacing at R=160: 2π×5120/12 ≈ 2680wu (was 1675wu at R=100).
+//   New max safe R = 180-7 = 173 tiles; R=160 leaves 13-tile border clearance
+//   on all four cardinal sides (matching Phase 6.1 border clearance).
 //
 // Circle geometry:
-//   Grid:   240×240 tiles, center at tile (120, 120) = world origin (0, 0, 0)
-//   Radius: 100 tiles from center = 3200 wu
+//   Grid:   360×360 tiles, center at tile (180, 180) = world origin (0, 0, 0)
+//   Radius: 160 tiles from center = 5120 wu
 //   Angular spacing: 30° (π/6 rad) between slots
 //   Slot 0 starts at north (top), angles increase clockwise
 //   Zone footprint: 14×14 tiles (448×448 wu) — unchanged
 //   Zone upper-left = (round(cx) − 7, round(cy) − 7)
-//   Formula: cx = 120 + 100*cos(θ), cy = 120 + 100*sin(θ), θ = -π/2 + slot*(π/6)
+//   Formula: cx = 180 + 160*cos(θ), cy = 180 + 160*sin(θ), θ = -π/2 + slot*(π/6)
 //
 // Slot assignment (clockwise from north):
-//   Slot  0 (  0°/N)   → visual-creation    (Pineapple House)   cx=120, cy=20
-//   Slot  1 ( 30°/NNE) → code-development   (Chum Bucket)       cx=170, cy=33
-//   Slot  2 ( 60°/ENE) → mcp-tool-use       (Krusty Krab)       cx=207, cy=70
-//   Slot  3 ( 90°/E)   → messaging-channels (Sandy's Treedome)  cx=220, cy=120
-//   Slot  4 (120°/ESE) → api-integrations   (Salty Spitoon)     cx=207, cy=170
-//   Slot  5 (150°/SSE) → app-publishing     (Boating School)    cx=170, cy=207
-//   Slot  6 (180°/S)   → cron-automation    (Downtown Building) cx=120, cy=220
-//   Slot  7 (210°/SSW) → deployment-ops     (Lighthouse)        cx=70,  cy=207
-//   Slot  8 (240°/WSW) → claw-arcade        (Arcade City)       cx=33,  cy=170  [swapped 2026-05-18]
-//   Slot  9 (270°/W)   → casino             (Predictive Gaming) cx=20,  cy=120  ← entertainment
-//   Slot 10 (300°/WNW) → agent-security     (Patrick's Rock)    cx=33,  cy=70   [swapped 2026-05-18]
-//   Slot 11 (330°/NNW) → memory-rag         (Squidward's House) cx=70,  cy=33
+//   Slot  0 (  0°/N)   → visual-creation    (Pineapple House)   cx=180, cy=20
+//   Slot  1 ( 30°/NNE) → code-development   (Chum Bucket)       cx=260, cy=41
+//   Slot  2 ( 60°/ENE) → mcp-tool-use       (Krusty Krab)       cx=319, cy=100
+//   Slot  3 ( 90°/E)   → messaging-channels (Sandy's Treedome)  cx=340, cy=180
+//   Slot  4 (120°/ESE) → api-integrations   (Salty Spitoon)     cx=319, cy=260
+//   Slot  5 (150°/SSE) → app-publishing     (Boating School)    cx=260, cy=319
+//   Slot  6 (180°/S)   → cron-automation    (Downtown Building) cx=180, cy=340
+//   Slot  7 (210°/SSW) → deployment-ops     (Lighthouse)        cx=100, cy=319
+//   Slot  8 (240°/WSW) → claw-arcade        (Arcade City)       cx=41,  cy=260  [swapped 2026-05-18]
+//   Slot  9 (270°/W)   → casino             (Predictive Gaming) cx=20,  cy=180  ← entertainment
+//   Slot 10 (300°/WNW) → agent-security     (Patrick's Rock)    cx=41,  cy=100  [swapped 2026-05-18]
+//   Slot 11 (330°/NNW) → memory-rag         (Squidward's House) cx=100, cy=41
 //
-// rotY = atan2(120-cx, 120-cy) — faces building's +Z toward plaza center.
-// rotY values are identical to R=72 (depend only on angle, not radius).
+// rotY = atan2(180-cx, 180-cy) — faces building's +Z toward plaza center.
+// rotY values are identical to R=100 (depend only on angle, not radius).
 //
-// The 10 original building IDs are PRESERVED — only positions updated.
+// The 12 building IDs are PRESERVED — only positions updated.
 // All consumer code (arena-buildings.tsx, minimap.tsx, PixiCanvas.tsx,
 // map-locations.ts) reads buildingZones from here — update propagates.
 // ---------------------------------------------------------------------------
@@ -88,46 +95,44 @@ export interface BuildingZone {
 
 export const buildingZones: BuildingZone[] = [
   // ---------------------------------------------------------------------------
-  // 12-building circular ring. R=100 tiles, center=(120,120), 30° spacing.
-  // cx = 120 + 100*cos(θ), cy = 120 + 100*sin(θ), θ = -π/2 + slot*(π/6).
+  // 12-building circular ring. R=160 tiles, center=(180,180), 30° spacing.
+  // cx = 180 + 160*cos(θ), cy = 180 + 160*sin(θ), θ = -π/2 + slot*(π/6).
   // Zone upper-left = (round(cx)-7, round(cy)-7). Width/height = 14.
-  // rotY = atan2(120-cx, 120-cy) so each building faces the plaza center.
-  // Phase 6.1 (2026-05-18): expanded from R=72 on 160×160 to R=100 on 240×240.
+  // rotY = atan2(180-cx, 180-cy) so each building faces the plaza center.
+  // Phase 6.2 (2026-05-18): expanded from R=100 on 240×240 to R=160 on 360×360.
   // ---------------------------------------------------------------------------
 
-  // Slot 0 — N  (θ=-π/2):  cx=120, cy=20   → zone(113, 13)
-  { id: 'visual-creation',    x: 113, y:  13, width: 14, height: 14 },
-  // Slot 1 — NNE (θ=-π/3):  cx≈170, cy≈33  → zone(163, 26)
-  { id: 'code-development',   x: 163, y:  26, width: 14, height: 14 },
-  // Slot 2 — ENE (θ=-π/6):  cx≈207, cy≈70  → zone(200, 63)
-  { id: 'mcp-tool-use',       x: 200, y:  63, width: 14, height: 14 },
-  // Slot 3 — E  (θ=0):      cx=220, cy=120  → zone(213, 113)
-  { id: 'messaging-channels', x: 213, y: 113, width: 14, height: 14 },
-  // Slot 4 — ESE (θ=π/6):   cx≈207, cy≈170 → zone(200, 163)
-  { id: 'api-integrations',   x: 200, y: 163, width: 14, height: 14 },
-  // Slot 5 — SSE (θ=π/3):   cx≈170, cy≈207 → zone(163, 200)
-  { id: 'app-publishing',     x: 163, y: 200, width: 14, height: 14 },
-  // Slot 6 — S  (θ=π/2):    cx=120, cy=220  → zone(113, 213)
-  { id: 'cron-automation',    x: 113, y: 213, width: 14, height: 14 },
-  // Slot 7 — SSW (θ=2π/3):  cx≈70, cy≈207  → zone(63, 200)
-  { id: 'deployment-ops',     x:  63, y: 200, width: 14, height: 14 },
-  // Slot 8 — WSW (θ=5π/6):  cx≈33, cy≈170  → zone(26, 163)
-  // 2026-05-18: swapped claw-arcade to slot 8 (was agent-security). Patrick's Rock moved to slot 10.
-  { id: 'claw-arcade',        x:  26, y: 163, width: 14, height: 14 },
-  // Slot 9 — W  (θ=π):      cx=20, cy=120   → zone(13, 113)  ← entertainment district
-  { id: 'casino',             x:  13, y: 113, width: 14, height: 14 },
-  // Slot 10 — WNW (θ=7π/6): cx≈33, cy≈70   → zone(26, 63)
-  // 2026-05-18: swapped agent-security to slot 10 (was claw-arcade). Casino adjacency flag:
-  //   claw-arcade (slot 8/WSW) is now 2 slots from casino (slot 9/W) — NO LONGER ADJACENT.
-  //   Patrick's Rock (slot 10/WNW) is now adjacent to casino instead.
-  { id: 'agent-security',     x:  26, y:  63, width: 14, height: 14 },
-  // Slot 11 — NNW (θ=4π/3): cx≈70, cy≈33   → zone(63, 26)
-  { id: 'memory-rag',         x:  63, y:  26, width: 14, height: 14 },
+  // Slot 0 — N  (θ=-π/2):  cx=180, cy=20   → zone(173, 13)
+  { id: 'visual-creation',    x: 173, y:  13, width: 14, height: 14 },
+  // Slot 1 — NNE (θ=-π/3):  cx=260, cy≈41  → zone(253, 34)
+  { id: 'code-development',   x: 253, y:  34, width: 14, height: 14 },
+  // Slot 2 — ENE (θ=-π/6):  cx≈319, cy=100 → zone(312, 93)
+  { id: 'mcp-tool-use',       x: 312, y:  93, width: 14, height: 14 },
+  // Slot 3 — E  (θ=0):      cx=340, cy=180  → zone(333, 173)
+  { id: 'messaging-channels', x: 333, y: 173, width: 14, height: 14 },
+  // Slot 4 — ESE (θ=π/6):   cx≈319, cy=260 → zone(312, 253)
+  { id: 'api-integrations',   x: 312, y: 253, width: 14, height: 14 },
+  // Slot 5 — SSE (θ=π/3):   cx=260, cy≈319 → zone(253, 312)
+  { id: 'app-publishing',     x: 253, y: 312, width: 14, height: 14 },
+  // Slot 6 — S  (θ=π/2):    cx=180, cy=340  → zone(173, 333)
+  { id: 'cron-automation',    x: 173, y: 333, width: 14, height: 14 },
+  // Slot 7 — SSW (θ=2π/3):  cx=100, cy≈319  → zone(93, 312)
+  { id: 'deployment-ops',     x:  93, y: 312, width: 14, height: 14 },
+  // Slot 8 — WSW (θ=5π/6):  cx≈41,  cy=260  → zone(34, 253)
+  // Phase 6.2: slot preserved from Phase 6.1 swap (claw-arcade at slot 8/WSW).
+  { id: 'claw-arcade',        x:  34, y: 253, width: 14, height: 14 },
+  // Slot 9 — W  (θ=π):      cx=20,  cy=180  → zone(13, 173)  ← entertainment district
+  { id: 'casino',             x:  13, y: 173, width: 14, height: 14 },
+  // Slot 10 — WNW (θ=7π/6): cx≈41,  cy=100  → zone(34, 93)
+  // Phase 6.2: slot preserved from Phase 6.1 swap (agent-security at slot 10/WNW).
+  { id: 'agent-security',     x:  34, y:  93, width: 14, height: 14 },
+  // Slot 11 — NNW (θ=4π/3): cx=100, cy≈41   → zone(93, 34)
+  { id: 'memory-rag',         x:  93, y:  34, width: 14, height: 14 },
 ];
 
 // ---------------------------------------------------------------------------
 // Layer 1: GROUND  (grass base — deterministic seeded PRNG)
-// 240 cols x 240 rows = 57600 tiles
+// 360 cols x 360 rows = 129600 tiles
 // ---------------------------------------------------------------------------
 function generateGroundLayer(): number[] {
   const tiles = [TILES.GRASS_1, TILES.GRASS_2, TILES.GRASS_3];
