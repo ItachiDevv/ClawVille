@@ -68,7 +68,7 @@
 
 ## Building Scale Patterns
 - [Building scale max(X,Y,Z) normalization — targetMaxDim](patterns/building-maxdim-normalization.md) — Normalize to max(X,Y,Z) not Y-only; prevents wide/squat GLBs from ballooning in XZ. All buildings now use `targetMaxDim` in `BUILDING_MODELS`. MAX_FOOTPRINT=1800wu hard cap still applies. (Phase 6.2, 2026-05-18)
-- [childScaleOverrides — differential scale on named GLB child groups](patterns/child-scale-overrides.md) — When a GLB bundles a building body + pathway/sign, the pathway/sign can dominate the max-dim bbox and compress the body. Solution: `childScaleOverrides: Record<sanitizedNodeName, multiplier>` in BUILDING_MODELS. Apply AFTER strip passes, BEFORE mergeStaticMeshesByMaterial so scales bake into vertex positions. Node names: Three.js sanitizes GLTF names with replace(/[^\w-]/g,'_'). (2026-05-18)
+- [childScaleOverrides + bodyAnchorChild — differential scale + body-centered placement](patterns/child-scale-overrides.md) — When a GLB bundles a building body + pathway/sign, the pathway/sign can dominate the max-dim bbox and compress the body. Solution: `childScaleOverrides` boosts the body node's scale; `bodyAnchorChild` shifts pivotOffsetX/Z so the body's bbox center lands at the ring slot (not the full-GLB center pulled toward the pathway). NEVER combine bodyAnchorChild with pivotZBias — double-offsets. Apply AFTER strip passes, BEFORE merge. (2026-05-18)
 
 ## WebGPU
 - [WebGPU renderer setup with fallback](webgpu/renderer-setup-fallback.md) — detection, init, WebGL fallback pattern

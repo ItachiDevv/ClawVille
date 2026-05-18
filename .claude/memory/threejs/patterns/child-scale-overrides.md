@@ -78,10 +78,20 @@ doc.getRoot().listNodes().forEach(n => console.log(n.getName(), n.getMesh() ? 'M
 
 ### Active overrides (2026-05-18)
 
-| Building | `targetMaxDim` | Override | Node | Factor | Result |
-|---|---|---|---|---|---|
-| `memory-rag` (squidward-house.glb) | 1400 | `childScaleOverrides` | `Squidward_s_House` | 1.4× | Head body ~1010wu, stepping stones at base |
-| `mcp-tool-use` (krusty-krab-v2.glb) | 1400 | `childScaleOverrides` | `The_Krusty_Krab` | 1.5× | Restaurant ~605wu, sign/pole at base |
+| Building | `targetMaxDim` | Override | Node | Factor | bodyAnchorChild | Result |
+|---|---|---|---|---|---|---|
+| `memory-rag` (squidward-house.glb) | 1400 | `childScaleOverrides` | `Squidward_s_House` | 1.4× | `Squidward_s_House` | Head body ~1010wu, stepping stones at base; head center at slot |
+| `mcp-tool-use` (krusty-krab-v2.glb) | 1400 | `childScaleOverrides` | `The_Krusty_Krab` | 1.5× | `The_Krusty_Krab` | Restaurant ~605wu, sign/pole at base; restaurant center at slot |
+
+### bodyAnchorChild — companion field for placement fix
+
+The `childScaleOverrides` alone fixes SIZE but not PLACEMENT. When a GLB has body + forward-extending pathway/sign, the full-bbox center (used by `computeBuildingScale`) is pulled toward the pathway. The inner group then anchors that combined center to the ring slot → building body is behind the slot, pathway is in front.
+
+`bodyAnchorChild` (added 2026-05-18): after `childScaleOverrides` propagate via `updateMatrixWorld`, compute the body child's bbox center in scene-local space. Diff it against the saved full-bbox center, multiply by scale → world-space correction. Apply to `pivotOffsetX/Z`. The body center now lands at the slot.
+
+See implementation in `GLBBuilding` useMemo → `if (config.bodyAnchorChild)` block.
+
+IMPORTANT: `pivotZBias` is deprecated for buildings that use `bodyAnchorChild`. The two together double-offset and break placement. Remove `pivotZBias` when adding `bodyAnchorChild`.
 
 ### Gotcha: pivotOffsetY / grounding
 
@@ -89,7 +99,7 @@ doc.getRoot().listNodes().forEach(n => console.log(n.getName(), n.getMesh() ? 'M
 
 ### Gotcha: useMemo deps
 
-Add `config.childScaleOverrides` to the `useMemo` dependency array. The value is a module-scope constant object, so `Object.is` comparison always returns true and the memo never re-invalidates — but the dep must be listed for ESLint correctness.
+Add `config.childScaleOverrides` AND `config.bodyAnchorChild` to the `useMemo` dependency array. Both are module-scope constant objects; `Object.is` always returns true so memo never re-invalidates — but deps must be listed for ESLint correctness.
 
 ## Context
-User flagged Squidward's house and Krusty Krab as too small 3+ times across sessions. The root cause was the bundled pathway/sign dominating the max-dim normalizer. Implemented 2026-05-18 in `arena-buildings.tsx`.
+User flagged Squidward's house and Krusty Krab as too small 3+ times across sessions. Root cause was bundled pathway/sign dominating the max-dim normalizer. `childScaleOverrides` implemented 2026-05-18. User then flagged placement (building pushed back toward ring). Root cause was full-bbox center vs body center. `bodyAnchorChild` implemented 2026-05-18 in `arena-buildings.tsx`.
