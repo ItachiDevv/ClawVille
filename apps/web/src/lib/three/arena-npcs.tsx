@@ -42,27 +42,46 @@ import {
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 /**
- * NPC motion smoother — direct velocity integration (CURRENT, 2026-05-18).
+ * NPC motion smoother — entity interpolation (CURRENT, 2026-05-18 PM).
+ *
+ * Render 1 server tick BEHIND real-time, lerp between the two most
+ * recent snapshots. Adds ~200 ms latency (irrelevant for wandering
+ * NPCs), removes ALL extrapolation, makes network jitter invisible:
+ * we're only interpolating between positions the server has already
+ * confirmed, never predicting forward.
+ *
+ *   alpha   = clamp((Date.now() - d.ts) / d.tsDelta, 0, 1)
+ *   renderX = lerp(d.prevX, d.x, alpha)
+ *
+ * Both GLBNpcMesh and VRMNpcMesh useFrames use this pattern inline (no
+ * helper function — keeps the hot path allocation-free at 60 × NPC × Hz).
  *
  * History (oldest → current):
  *   1. Pure exp-lerp toward raw d.x/d.y at LERP_SPEED=1.5. Tracked a
  *      stale 5 Hz snapshot, so visible velocity pumped every 200 ms —
  *      fast at the start of each tick, slow at the end. Removed 2026-05-17.
- *   2. Dead reckoning + exp-lerp toward projected target at
- *      LERP_SPEED_DR=8. Projected target moved linearly, but the
- *      asymptotic catch-up of the exp-lerp still produced visible drift
- *      on direction changes. User reported continued pumping. Removed.
- *   3. Direct velocity integration. Each new server snapshot resets
- *      `simVel` to (d.x − d.prevX) / tsDelta and applies a 30 %
- *      corrective snap toward server truth. Between snapshots,
- *      `simPos += simVel × dtMs` every frame — perfectly constant-
- *      velocity motion that matches the server simulation step-for-step.
- *      Idle NPCs zero out simVel so they don't drift past their stop.
+ *   2. Dead reckoning + exp-lerp toward projected target. Projected
+ *      target moved linearly, but the asymptotic catch-up of the
+ *      exp-lerp still produced visible drift on direction changes.
+ *   3. Direct velocity integration (`simVel = (d.x - d.prevX) / tsDelta`
+ *      held between snapshots, integrate forward). Theoretically smooth
+ *      but `tsDelta` is wall-clock arrival time and network jitter
+ *      amplifies straight into velocity errors (e.g. burst-delivered
+ *      snapshots → tsDelta = 16ms → velocity 12×). User reported NPCs
+ *      still stuttered. Removed.
+ *   4. Entity interpolation (current). The endpoint positions are
+ *      exactly what the server simulated; jitter only shifts elapsed-
+ *      time alpha, never produces wrong-speed motion. Standard AAA
+ *      pattern (Quake/HL/CS lineage).
  *
- * The integration step is two lines inlined in each NPC component's
- * useFrame — no helper function so we avoid an extra call + return tuple
- * allocation 60 ×/s per NPC. Search for `simPos` / `simVel` to find the
- * current sites.
+ * NOTE: the wandering-NPC stutter the user reported through patterns
+ * 1–3 also turned out to have a SECOND root cause — the VRM animator's
+ * 15 Hz spring-bone throttle was also throttling skeleton.update, so
+ * the body's boneMatrices uniform refreshed only every 4th frame even
+ * though group.position changed every frame. Fixed independently in
+ * vrm-character-animator.ts: updateMixerOnly now does the cheap
+ * humanoid copy + matrix update + skeleton flush every frame, while
+ * updateSpringOnly handles only the expensive spring physics at 15 Hz.
  */
 // TARGET_NPC_HEIGHT: desired world-unit height for wandering NPCs.
 // Previously NPC_SCALE=50 was a flat multiplier applied to all species; measured
@@ -408,19 +427,13 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     initialVisible: true,
   });
 
-  // Simulated position + velocity for the direct-integration smoother.
-  // Replaced the old `targetPos`/`currentPos` exp-lerp pair (2026-05-18)
-  // because that pattern asymptotically catches a moving target, which
-  // visibly drifts at the 5 Hz tick rate — see the comment block at
-  // LERP_SPEED_DR for the full story. Direct integration: hold a
-  // velocity (wu/ms) constant between snapshots, advance `simPos` by
-  // `velocity * dt` each frame, apply a small one-shot correction
-  // when a new snapshot lands. Constant-velocity motion between ticks
-  // is exactly what the server simulation is doing, so the client
-  // visual matches.
+  // Per-frame rendered position. The entity-interpolation smoother
+  // (see useFrame below) computes renderX/renderZ from the two latest
+  // server snapshots; we mirror it into simPos so the facing/velocity
+  // math further down can read previous-frame position via `simPos -
+  // glbPrev`. simPos holds RENDER coordinates (post-HALF_W shift),
+  // matching what's written to group.position.
   const simPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
-  const simVel = useRef({ x: 0, z: 0 }); // wu / ms (NOT wu/s — matches reckonNpcTarget unit)
-  const lastSeenTs = useRef(0);
   const currentRotY = useRef(0);
   const currentTerrainY = useRef(0);
 
@@ -533,44 +546,46 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     if (!group || !animGroup) return;
 
     const dt = Math.min(delta, 0.1);
-    const dtMs = dt * 1000;
 
-    // Direct velocity integration (replaces the dead-reckoning + exp-lerp
-    // pair as of 2026-05-18). Each new server snapshot updates `simVel`
-    // to the velocity implied by (prevX,prevY)→(x,y) over tsDelta, and
-    // applies a SMALL one-shot correction toward the new server position
-    // (CORRECTION_ALPHA below). Between snapshots, simPos advances by
-    // `simVel · dt` each frame — perfectly constant-velocity motion,
-    // exactly matching what the server simulation is doing. Direction
-    // changes produce a one-shot correction at the next snapshot, not
-    // an exponential drift across frames; idle NPCs zero out velocity.
-    const tx = d.x - HALF_W;
-    const tz = d.y - HALF_H;
-    if (d.ts !== 0 && d.ts !== lastSeenTs.current) {
-      lastSeenTs.current = d.ts;
-      if (d.direction === 'idle' || d.tsDelta <= 0) {
-        simVel.current.x = 0;
-        simVel.current.z = 0;
-      } else {
-        simVel.current.x = (d.x - d.prevX) / d.tsDelta;  // wu / ms
-        simVel.current.z = (d.y - d.prevY) / d.tsDelta;
-      }
-      // Snap-correct ~30 % of the gap toward server truth. Too low and
-      // we drift forever; too high (e.g. 1.0) and we re-introduce the
-      // 5 Hz pumping by yanking the sim to the snapshot every tick.
-      const CORRECTION_ALPHA = 0.3;
-      simPos.current.x += (tx - simPos.current.x) * CORRECTION_ALPHA;
-      simPos.current.z += (tz - simPos.current.z) * CORRECTION_ALPHA;
-    }
-    // Integrate forward every frame at constant velocity. Capture pre-step
-    // x/z for the velocity-based facing calculation further down (it reads
-    // velMagSq from (curr - prev) so the direction stays accurate).
+    // Entity interpolation — render 1 tick BEHIND real-time and lerp
+    // between the two most recent server snapshots. This is the standard
+    // network smoothing pattern in AAA games (Quake/HL/CS lineage) and
+    // it produces perfectly smooth visible motion at the cost of one
+    // tick (~200 ms) of latency. Acceptable for wandering NPCs.
+    //
+    // Why this beats extrapolation/dead-reckoning:
+    //   - Extrapolation predicts FORWARD from the latest snapshot at
+    //     the implied velocity. Network jitter (snapshot arrival
+    //     timing) amplifies into velocity errors, which read as
+    //     visible speed bursts + snap-back corrections.
+    //   - Interpolation goes BACKWARD between two known snapshots.
+    //     The endpoint positions are exactly what the server simulated;
+    //     network jitter only shifts the elapsed-time alpha, never
+    //     produces wrong-speed motion.
+    //
+    // For idle NPCs (direction==='idle'): d.x === d.prevX so the lerp
+    // resolves to d.x — they sit still without any special-case path.
+    //
+    // For ts === 0 (demo wanderers, no SSE): the (now - d.ts) elapsed
+    // is enormous → alpha clamps to 1 → render = d.x. Demo wander
+    // updates x/prevX every 100 ms and we follow snap-to-current, same
+    // as the pre-interpolation behaviour for that path.
+    const nowMs = Date.now();
+    const tsDelta = d.tsDelta > 0 ? d.tsDelta : 200;
+    const elapsed = nowMs - d.ts;
+    const alpha = d.ts === 0 ? 1 : Math.max(0, Math.min(1, elapsed / tsDelta));
+    const renderX = (d.prevX + (d.x - d.prevX) * alpha) - HALF_W;
+    const renderZ = (d.prevY + (d.y - d.prevY) * alpha) - HALF_H;
+
+    // Facing velocity from displayed motion (not raw server step).
+    // Reads simPos as a 1-frame velocity tracker — interp positions
+    // change every frame so this is non-zero whenever the NPC is moving.
     const glbPrevX = simPos.current.x;
     const glbPrevZ = simPos.current.z;
-    simPos.current.x += simVel.current.x * dtMs;
-    simPos.current.z += simVel.current.z * dtMs;
-    group.position.x = simPos.current.x;
-    group.position.z = simPos.current.z;
+    simPos.current.x = renderX;
+    simPos.current.z = renderZ;
+    group.position.x = renderX;
+    group.position.z = renderZ;
 
     // 2026-05-11 — All NPC culling removed per user directive.
     // Previously: distance-cull (hide group past 10000² wu), behind-camera cull
@@ -792,15 +807,11 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     initialVisible: true,
   });
 
-  // Same direct-integration smoother as GLBNpcMesh — see the long comment
-  // there for full rationale. Holds velocity constant between server
-  // snapshots, integrates forward at 60 Hz, snap-corrects 30 % toward the
-  // new server position on each snapshot. Replaces the dead-reckoning +
-  // exp-lerp pair (2026-05-18). simVel is in wu/ms, matching the velocity
-  // unit derived from (d.x - d.prevX) / d.tsDelta.
+  // Same entity-interpolation smoother as GLBNpcMesh — see the long
+  // comment block at the top of this file (around line 44) and the
+  // GLBNpcMesh useFrame for full rationale. simPos mirrors the rendered
+  // position each frame so the facing math can read previous-frame state.
   const simPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
-  const simVel = useRef({ x: 0, z: 0 });
-  const lastSeenTs = useRef(0);
   const currentRotY = useRef(VRM_DIR_ROTATION.idle);
   const currentTerrainY = useRef(-2);
   // PERF: accumulated spring delta — we tick spring bones at 30Hz (every 2nd frame for
@@ -886,34 +897,24 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     if (!group) return;
 
     const dt = Math.min(delta, 0.1);
-    const dtMs = dt * 1000;
 
-    // Direct velocity integration — see GLBNpcMesh useFrame for full
-    // rationale. Each new server snapshot resets velocity and applies a
-    // 30 % corrective snap toward server truth; between snapshots, simPos
-    // advances at constant velocity. Eliminates the asymptotic exp-lerp
-    // drift that caused visible pumping at the 5 Hz tick.
-    const tx = d.x - HALF_W;
-    const tz = d.y - HALF_H;
-    if (d.ts !== 0 && d.ts !== lastSeenTs.current) {
-      lastSeenTs.current = d.ts;
-      if (d.direction === 'idle' || d.tsDelta <= 0) {
-        simVel.current.x = 0;
-        simVel.current.z = 0;
-      } else {
-        simVel.current.x = (d.x - d.prevX) / d.tsDelta;
-        simVel.current.z = (d.y - d.prevY) / d.tsDelta;
-      }
-      const CORRECTION_ALPHA = 0.3;
-      simPos.current.x += (tx - simPos.current.x) * CORRECTION_ALPHA;
-      simPos.current.z += (tz - simPos.current.z) * CORRECTION_ALPHA;
-    }
+    // Entity interpolation — see GLBNpcMesh useFrame for the full
+    // rationale. Render 1 tick behind real-time, lerp between the two
+    // most recent server snapshots. Perfectly smooth visible motion,
+    // ~200 ms latency (irrelevant for wandering NPCs).
+    const nowMs = Date.now();
+    const tsDelta = d.tsDelta > 0 ? d.tsDelta : 200;
+    const elapsed = nowMs - d.ts;
+    const alpha = d.ts === 0 ? 1 : Math.max(0, Math.min(1, elapsed / tsDelta));
+    const renderX = (d.prevX + (d.x - d.prevX) * alpha) - HALF_W;
+    const renderZ = (d.prevY + (d.y - d.prevY) * alpha) - HALF_H;
+
     const prevX = simPos.current.x;
     const prevZ = simPos.current.z;
-    simPos.current.x += simVel.current.x * dtMs;
-    simPos.current.z += simVel.current.z * dtMs;
-    group.position.x = simPos.current.x;
-    group.position.z = simPos.current.z;
+    simPos.current.x = renderX;
+    simPos.current.z = renderZ;
+    group.position.x = renderX;
+    group.position.z = renderZ;
 
     // 2026-05-11 — All VRM NPC culling removed per user directive
     // ("remove all the culling completely it ruins the game"). Mirrors GLBNpcMesh.
