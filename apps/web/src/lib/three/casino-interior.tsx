@@ -8,11 +8,13 @@
  *
  * Concern 6.0.5 — Walkable interior:
  *   - Player avatar (VRM or GLB) mounted inside the casino room.
- *   - WASD movement bounded to the interior (x∈[-115,+115], z∈[-270,+270]).
- *   - Third-person follow camera: +55wu above, +160wu behind avatar, looks
- *     at avatar+Y*18 — similar framing to the main world FPSFollowCamera.
- *   - Player spawns at z=+240 (near the front-wall entrance), facing -Z
+ *   - WASD movement bounded to the interior (x∈[-383,+383], z∈[-900,+900]).
+ *   - Third-person follow camera: +200wu above, +450wu behind avatar, looks
+ *     at avatar Y=100 — calibrated for VRM avatar at ~270wu tall.
+ *   - Player spawns at z≈+800 (near the front-wall entrance), facing -Z
  *     (into the room, toward the gaming floor).
+ *   - Room scaled to INTERIOR_TARGET_HEIGHT=2000wu so ceiling (~400wu) clears
+ *     VRM avatar height (~270wu). Was 600wu → 120wu ceiling → head clip.
  *
  * Concern 6.0.5 — Slot machine cabinet props:
  *   - 4 low-poly slot cabinet meshes along the left wall (x≈-120).
@@ -61,23 +63,45 @@ const FALLBACK_GLB = '/models/casino/casino-interior-fallback.glb';
 /** FPS threshold below which we auto-switch to fallback GLB */
 const FPS_FALLBACK_THRESHOLD = 40;
 
-/** Target world-unit height for auto-fit scale normalisation */
-const INTERIOR_TARGET_HEIGHT = 600; // world units
+/**
+ * Target world-unit height for auto-fit scale normalisation.
+ *
+ * Bug fix 2026-05-18: was 600wu → room ceiling only ~120wu but VRM avatar
+ * renders at ~270wu (computeVRMAvatarFit target). Head went through ceiling;
+ * follow camera at Y=55 was below avatar feet → only legs visible.
+ *
+ * 2000wu gives ceiling ~400wu — plenty of headroom for 270wu avatar.
+ * Room proportions scale proportionally (maxDim axis = 2000, the rest scale
+ * by 2000/600 ≈ 3.333). Bounds, spawn, cabinet positions all follow.
+ */
+const INTERIOR_TARGET_HEIGHT = 2000; // world units — was 600
+
+/** Scale factor applied to all room-relative coordinates (bounds, spawn, cabinets). */
+const _ROOM_SCALE = 2000 / 600; // ≈ 3.333
 
 /** Player spawn position — near the front entrance, facing into the room (-Z) */
 const PLAYER_SPAWN_X = 0;
-const PLAYER_SPAWN_Z = 240; // Near front wall (room extends z∈[-300..+300])
+const PLAYER_SPAWN_Z = Math.round(240 * _ROOM_SCALE); // ≈ 800
 
 /** Interior bounds — keep avatar inside the room */
-const BOUNDS_X = 115;
-const BOUNDS_Z_MIN = -270;
-const BOUNDS_Z_MAX = 270;
+const BOUNDS_X     = Math.round(115 * _ROOM_SCALE); // ≈ 383
+const BOUNDS_Z_MIN = -Math.round(270 * _ROOM_SCALE); // ≈ -900
+const BOUNDS_Z_MAX =  Math.round(270 * _ROOM_SCALE); // ≈  900
 
-/** Player movement speed (world units / second) */
-const CASINO_PLAYER_SPEED = 250;
+/** Player movement speed (world units / second) — boosted for larger room */
+const CASINO_PLAYER_SPEED = 830; // was 250; ≈ 250 × 3.333 so same perceived traversal time
 
 /** GLB avatar scale — matches AVATAR_SCALE in player-avatar.tsx */
 const CASINO_AVATAR_SCALE = 40;
+
+// Follow-camera offsets calibrated for VRM avatar at ~270wu tall.
+// Camera sits behind+above the avatar and looks toward mid-torso.
+//   Y=200  → camera hovers above the avatar's waist
+//   Z=450  → generous behind distance for the large room
+//   lookY=100 → lookAt aims at mid-chest of 270wu avatar
+const CAM_ABOVE  = 200; // was 55
+const CAM_BEHIND = 450; // was 160
+const CAM_LOOK_Y = 100; // was 18
 
 // ---------------------------------------------------------------------------
 // Module-scope scratch objects — NEVER allocated inside useFrame
@@ -188,11 +212,29 @@ function computeAutoFit(scene: THREE.Object3D, targetHeight: number): FitResult 
 // ---------------------------------------------------------------------------
 // Slot machine cabinet geometry + material constants
 // (Module-scope: built once, never re-allocated; matrixAutoUpdate=false on meshes)
+// All dimensions scaled by _ROOM_SCALE (≈3.333) to match the 2000wu room.
 // ---------------------------------------------------------------------------
-const CABINET_BODY_GEO    = new THREE.BoxGeometry(38, 68, 28);
-const CABINET_SCREEN_GEO  = new THREE.BoxGeometry(24, 34, 2);
-const CABINET_LEVER_GEO   = new THREE.CylinderGeometry(3, 3, 22, 8);
-const CABINET_BASE_GEO    = new THREE.BoxGeometry(42, 6, 32);
+const CABINET_BODY_GEO    = new THREE.BoxGeometry(
+  Math.round(38 * _ROOM_SCALE),  // 127
+  Math.round(68 * _ROOM_SCALE),  // 227
+  Math.round(28 * _ROOM_SCALE),  // 93
+);
+const CABINET_SCREEN_GEO  = new THREE.BoxGeometry(
+  Math.round(24 * _ROOM_SCALE),  // 80
+  Math.round(34 * _ROOM_SCALE),  // 113
+  Math.round(2  * _ROOM_SCALE),  // 7
+);
+const CABINET_LEVER_GEO   = new THREE.CylinderGeometry(
+  Math.round(3  * _ROOM_SCALE),  // 10
+  Math.round(3  * _ROOM_SCALE),  // 10
+  Math.round(22 * _ROOM_SCALE),  // 73
+  8,
+);
+const CABINET_BASE_GEO    = new THREE.BoxGeometry(
+  Math.round(42 * _ROOM_SCALE),  // 140
+  Math.round(6  * _ROOM_SCALE),  // 20
+  Math.round(32 * _ROOM_SCALE),  // 107
+);
 
 const CABINET_BODY_MAT = new THREE.MeshStandardMaterial({ color: 0x1a0a2e, roughness: 0.7, metalness: 0.4 });
 const CABINET_BASE_MAT = new THREE.MeshStandardMaterial({ color: 0x0d0520, roughness: 0.8, metalness: 0.3 });
@@ -214,28 +256,38 @@ interface HotspotDef {
   machineSlug: MachineSlug;
 }
 
+// Cabinet Y helpers (body center is at base_height + body_half_height)
+const _CAB_BASE_H  = Math.round(6  * _ROOM_SCALE); // 20
+const _CAB_BODY_H  = Math.round(68 * _ROOM_SCALE); // 227
+const _CAB_BODY_CY = _CAB_BASE_H + _CAB_BODY_H / 2; // ≈ 134 (body center Y)
+
 /**
- * Slot cabinet positions: left wall (x=-120), spread Z from -200 to +100.
+ * Slot cabinet positions: left wall (x≈-380), spread Z across the room.
  * Rotated 90° (facing +X / into the room).
- * Base at y=0 (floor), body center y=37, so hotspot center y=37.
+ * All X/Z coordinates scaled by _ROOM_SCALE from the original 600wu values.
  */
 const SLOT_CABINET_POSITIONS: Array<{ x: number; z: number }> = [
-  { x: -115, z: -175 },
-  { x: -115, z: -100 },
-  { x: -115, z: -25  },
-  { x: -115, z:  50  },
+  { x: -BOUNDS_X, z: Math.round(-175 * _ROOM_SCALE) }, // ≈ -583
+  { x: -BOUNDS_X, z: Math.round(-100 * _ROOM_SCALE) }, // ≈ -333
+  { x: -BOUNDS_X, z: Math.round( -25 * _ROOM_SCALE) }, // ≈  -83
+  { x: -BOUNDS_X, z: Math.round(  50 * _ROOM_SCALE) }, // ≈  166
 ];
 
-/** Hotspots placed at each cabinet position — large enough for easy clicking */
+/** Hotspots placed at each cabinet position — scaled to the 2000wu room */
+const _CAB_REACH   = Math.round(25 * _ROOM_SCALE); // ≈ 83 — reach into room from cabinet face
+const _HOT_SIZE_X  = Math.round(55 * _ROOM_SCALE); // ≈ 183
+const _HOT_SIZE_Y  = Math.round(75 * _ROOM_SCALE); // ≈ 250
+const _HOT_SIZE_Z  = Math.round(40 * _ROOM_SCALE); // ≈ 133
+
 const GAMEREADY_HOTSPOTS: HotspotDef[] = SLOT_CABINET_POSITIONS.map((pos) => ({
-  position: [pos.x + 25, 37, pos.z] as [number, number, number], // reach into room from cabinet
-  size: [55, 75, 40] as [number, number, number],
+  position: [pos.x + _CAB_REACH, _CAB_BODY_CY, pos.z] as [number, number, number],
+  size: [_HOT_SIZE_X, _HOT_SIZE_Y, _HOT_SIZE_Z] as [number, number, number],
   machineSlug: 'classic-3x5' as MachineSlug,
 }));
 
 const FALLBACK_HOTSPOTS: HotspotDef[] = [
-  { position: [-80, 60, -40], size: [50, 80, 40], machineSlug: 'classic-3x5' },
-  { position: [80,  60, -40], size: [50, 80, 40], machineSlug: 'classic-3x5' },
+  { position: [-267, 200, -133], size: [167, 267, 133], machineSlug: 'classic-3x5' },
+  { position: [ 267, 200, -133], size: [167, 267, 133], machineSlug: 'classic-3x5' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -263,14 +315,14 @@ function SlotCabinets() {
           position={[pos.x, 0, pos.z]}
           rotation={[0, Math.PI / 2, 0]} // face into room (+X direction)
         >
-          {/* Base plinth */}
-          <mesh geometry={CABINET_BASE_GEO} material={CABINET_BASE_MAT} position={[0, 3, 0]} />
-          {/* Body */}
-          <mesh geometry={CABINET_BODY_GEO} material={CABINET_BODY_MAT} position={[0, 40, 0]} />
-          {/* Emissive screen */}
-          <mesh geometry={CABINET_SCREEN_GEO} material={CABINET_SCREEN_MAT} position={[0, 47, -15]} />
-          {/* Lever — extends from right side of cabinet */}
-          <mesh geometry={CABINET_LEVER_GEO} material={CABINET_LEVER_MAT} position={[16, 40, -5]} rotation={[0, 0, Math.PI / 5]} />
+          {/* Base plinth — sits on floor, y = half of base height */}
+          <mesh geometry={CABINET_BASE_GEO} material={CABINET_BASE_MAT} position={[0, _CAB_BASE_H / 2, 0]} />
+          {/* Body — sits on top of base */}
+          <mesh geometry={CABINET_BODY_GEO} material={CABINET_BODY_MAT} position={[0, _CAB_BASE_H + _CAB_BODY_H / 2, 0]} />
+          {/* Emissive screen — upper face of body, inset toward room */}
+          <mesh geometry={CABINET_SCREEN_GEO} material={CABINET_SCREEN_MAT} position={[0, _CAB_BASE_H + Math.round(47 * _ROOM_SCALE), -Math.round(15 * _ROOM_SCALE)]} />
+          {/* Lever — extends from right side */}
+          <mesh geometry={CABINET_LEVER_GEO} material={CABINET_LEVER_MAT} position={[Math.round(16 * _ROOM_SCALE), _CAB_BASE_H + _CAB_BODY_H / 2, -Math.round(5 * _ROOM_SCALE)]} rotation={[0, 0, Math.PI / 5]} />
         </group>
       ))}
     </group>
@@ -409,22 +461,24 @@ function CasinoVRMAvatarInner({ reg }: CasinoVRMAvatarProps) {
     group.position.z = posZ.current;
     group.rotation.y = rotRef.current;
 
-    // Follow camera — +55wu above, +160wu behind, look at avatar+Y18
+    // Follow camera — CAM_ABOVE wu above, CAM_BEHIND wu behind, look at avatar mid-torso.
+    // Calibrated for VRM avatar at ~270wu tall (see CAM_ABOVE / CAM_BEHIND / CAM_LOOK_Y
+    // constants declared at the top of this file).
     // Only drive camera when slot screen is NOT open (user is interacting with 2D modal)
     const slotOpen = useCasinoStore.getState().slotScreenOpen;
     if (!slotOpen) {
       const cam = camera as THREE.PerspectiveCamera;
       // Behind = opposite of facing direction
-      const behindX = -Math.sin(rotRef.current) * 160;
-      const behindZ = -Math.cos(rotRef.current) * 160;
+      const behindX = -Math.sin(rotRef.current) * CAM_BEHIND;
+      const behindZ = -Math.cos(rotRef.current) * CAM_BEHIND;
       _camDesiredPos.set(
         posX.current + behindX,
-        55,
+        CAM_ABOVE,
         posZ.current + behindZ,
       );
       // Soft lerp — exp-decay for smooth follow
       cam.position.lerp(_camDesiredPos, 1 - Math.exp(-8 * delta));
-      _camTarget.set(posX.current, 18, posZ.current);
+      _camTarget.set(posX.current, CAM_LOOK_Y, posZ.current);
       cam.lookAt(_camTarget);
     }
 
@@ -480,7 +534,23 @@ function CasinoGLBAvatarInner() {
   const { cloned, pivotOffsetY } = useMemo(() => {
     const c = scene.clone(true);
     makeObject3DWebGPUSafe(c);
-    c.traverse((obj) => { obj.frustumCulled = false; });
+    c.traverse((obj) => {
+      obj.frustumCulled = false;
+      // Bug fix 2026-05-18: clone every material so this canvas's renderer
+      // context gets fresh GPU program compilations instead of sharing the
+      // MeshStandardMaterial instances that were compiled in the world
+      // canvas's WebGL context.  Shared materials across renderer contexts
+      // produce the purple/pink #ff00ff "missing program" fallback color.
+      // This mirrors the pattern in player-avatar.tsx PlayerAvatarGLBInner.
+      const mesh = obj as THREE.Mesh;
+      if (mesh.isMesh && mesh.material) {
+        if (Array.isArray(mesh.material)) {
+          mesh.material = mesh.material.map((m) => m.clone());
+        } else {
+          mesh.material = mesh.material.clone();
+        }
+      }
+    });
     const localMinY = computeGlbLocalMinY(c);
     return { cloned: c, pivotOffsetY: localMinY * CASINO_AVATAR_SCALE };
   }, [scene]);
@@ -532,15 +602,15 @@ function CasinoGLBAvatarInner() {
     group.position.z = posZ.current;
     group.rotation.y = rotRef.current;
 
-    // Follow camera
+    // Follow camera — same offsets as VRM branch (CAM_ABOVE/CAM_BEHIND/CAM_LOOK_Y)
     const slotOpen = useCasinoStore.getState().slotScreenOpen;
     if (!slotOpen) {
       const cam = camera as THREE.PerspectiveCamera;
-      const behindX = -Math.sin(rotRef.current) * 160;
-      const behindZ = -Math.cos(rotRef.current) * 160;
-      _camDesiredPos.set(posX.current + behindX, 55, posZ.current + behindZ);
+      const behindX = -Math.sin(rotRef.current) * CAM_BEHIND;
+      const behindZ = -Math.cos(rotRef.current) * CAM_BEHIND;
+      _camDesiredPos.set(posX.current + behindX, CAM_ABOVE, posZ.current + behindZ);
       cam.position.lerp(_camDesiredPos, 1 - Math.exp(-8 * delta));
-      _camTarget.set(posX.current, 18, posZ.current);
+      _camTarget.set(posX.current, CAM_LOOK_Y, posZ.current);
       cam.lookAt(_camTarget);
     }
   });
@@ -726,7 +796,8 @@ export default function CasinoInteriorScene({ onSceneEmpty }: CasinoInteriorScen
     <>
       <CasinoLighting />
 
-      <fog attach="fog" args={[0x0a0015, 1200, 3000]} />
+      {/* Fog scaled with room: near=4000, far=10000 (was 1200/3000 for 600wu room → ×3.333) */}
+      <fog attach="fog" args={[0x0a0015, 4000, 10000]} />
 
       <Suspense fallback={null}>
         <InteriorScene
