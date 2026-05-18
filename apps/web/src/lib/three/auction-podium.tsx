@@ -158,7 +158,15 @@ const AuctionPodiumInner = memo(function AuctionPodiumInner() {
       userData={{ isOccluder: true }}
       onClick={(e) => {
         e.stopPropagation();
-        useGameStore.getState().openAuction();
+        // Repointed 2026-05-18: was openAuction() (peer skill auction,
+        // gated under the marketplace-pause attack-vector policy). The
+        // auction podium now opens the QUEST BOARD — daily/weekly
+        // quests and bounties. Same drop-in pattern as the bazaar
+        // stall → cosmetic drawer repoint earlier today. The dome
+        // 3D model stays for now (reads as a "showcase / call to
+        // action" visually); can swap to a quest-themed pinboard
+        // asset in a follow-up pass if needed.
+        useGameStore.getState().openQuestBoard();
       }}
       onPointerEnter={(e) => {
         e.stopPropagation();
