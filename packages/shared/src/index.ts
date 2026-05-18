@@ -37,6 +37,8 @@ export type {
 export { ReefSpline } from './reef-race/spline';
 export * from './reef-race/track-layout';
 export * from './constants/milady-skills';
+// Phase 6.0 — slot machine paytables (publicly verifiable, provably-fair)
+export * from './constants/slot-paytables';
 export * from './constants/orientation-skill';
 // Q3 plan §2.6 — server-credited token rewards for tutorial quests.
 export * from './constants/tutorial-quest-rewards';
