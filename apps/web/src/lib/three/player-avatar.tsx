@@ -59,6 +59,28 @@ const BOB_AMPLITUDE = 0.3;
 // need ~3-4s to cross visible area ~2000 wu → 2000/550 ≈ 3.6s).
 const AVATAR_SCALE = 40;
 
+/**
+ * Sprint speed multiplier. Pressed SHIFT (desktop) or joystick deflection
+ * past `RUN_JOYSTICK_THRESHOLD` (mobile) promotes the player from walk to
+ * run — `effectiveSpeed = isRunning ? SPEED * RUN_SPEED_MULT : SPEED`.
+ *
+ * 1.5× matches the Mixamo "Running" clip's natural gait speed relative
+ * to "Walking"; foot-skating is minimal at this ratio. Crustacean GLB
+ * avatars (no run clip) get this same multiplier on BOTH position step
+ * and the procedural-animation rate so their walk cycle visibly speeds
+ * up to match the faster ground motion.
+ */
+const RUN_SPEED_MULT = 1.5;
+
+/**
+ * Joystick magnitude threshold for the mobile sprint trigger. Push the
+ * stick beyond 70 % deflection and the player promotes to run; below
+ * that, they walk. Sharp threshold (no hysteresis yet) — acceptable
+ * because the joystick visual is far from the center at this point so
+ * the snap is intentional.
+ */
+const RUN_JOYSTICK_THRESHOLD = 0.7;
+
 // Player-controlled VRM sizing is auto-fit via computeVRMAvatarFit() from
 // vrm-avatar-sizing.ts — same target height as wandering NPCs so the player
 // Hermes / Milady / future humanoid all stand at VRM_AVATAR_TARGET_HEIGHT_WU
@@ -101,12 +123,14 @@ interface KeyState {
   w: boolean; a: boolean; s: boolean; d: boolean;
   arrowup: boolean; arrowdown: boolean; arrowleft: boolean; arrowright: boolean;
   e: boolean; escape: boolean;
+  /** Either shift key → sprint while held + WASD/joystick gives movement input. */
+  shift: boolean;
 }
 
 const keyState: KeyState = {
   w: false, a: false, s: false, d: false,
   arrowup: false, arrowdown: false, arrowleft: false, arrowright: false,
-  e: false, escape: false,
+  e: false, escape: false, shift: false,
 };
 let keyListenersAttached = false;
 let lastEState = false;
@@ -450,11 +474,20 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
     }
     store.setMovementDirection(dir as any);
 
+    // Sprint gate (2026-05-18): SHIFT held (desktop) OR joystick magnitude
+    // past threshold (mobile) promotes walk → run while moving. Identical
+    // logic in both useFrame branches (VRM + GLB) — see RUN_SPEED_MULT /
+    // RUN_JOYSTICK_THRESHOLD declarations near the top of this file.
+    const _joyMag = Math.hypot(store.joystickVelocity.x, store.joystickVelocity.y);
+    const isRunning = (vx !== 0 || vy !== 0) &&
+      (keyState.shift || _joyMag > RUN_JOYSTICK_THRESHOLD);
+    const speedMult = isRunning ? RUN_SPEED_MULT : 1;
+
     if (vx !== 0 || vy !== 0) {
       // Read from ref (zero React overhead) for current position, write via
       // setAvatarPosition which updates both ref + throttled reactive store.
-      let newX = avatarPositionRef.x + vx * SPEED * delta;
-      let newY = avatarPositionRef.y + vy * SPEED * delta;
+      let newX = avatarPositionRef.x + vx * SPEED * speedMult * delta;
+      let newY = avatarPositionRef.y + vy * SPEED * speedMult * delta;
       newX = Math.max(16, Math.min(MAP_WIDTH - 16, newX));
       newY = Math.max(16, Math.min(MAP_HEIGHT - 16, newY));
       store.setAvatarPosition(newX, newY);
@@ -554,8 +587,18 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
       const phase = jumpState.phase;
       const phaseCharging = phase === 'charging';
       const swimClip: AnimName = reg.animatorId === 'tekk' ? 'flying' : 'swimming';
+      // Charging clip is 'crouch_idle' (Mixamo "Crouch Idle" — knees bent,
+      // feet planted, weight forward). The previous 'squat' clip is a
+      // squat-down-and-stand cycle that lifts the feet during loop; users
+      // reported it read as "floating mid-air" instead of a charge-prep
+      // pose. crouch_idle must be added via:
+      //   bun scripts/mixamo/fetch-animations.ts vrm-milady "Crouch Idle"
+      // then mv the resulting GLB to /avatars/animations/emotes/crouch-idle.glb
+      // and run `node scripts/build-anim-bundles.mjs`. Until the bundle
+      // includes the clip, setSurfaceClip('crouch_idle') silently fails
+      // to load — the animator stays on 'idle' which is a clean fallback.
       const desiredClip: AnimName =
-        phaseCharging ? 'squat'
+        phaseCharging ? 'crouch_idle'
         : airborne    ? swimClip
         :               'idle';
       if (desiredClip !== lastSurfaceClipRef.current) {
@@ -563,7 +606,7 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
         lastSurfaceClipRef.current = desiredClip;
       }
       const lockIdle = phaseCharging || airborne;
-      animator.update(dt, lockIdle ? false : isMoving);
+      animator.update(dt, lockIdle ? false : isMoving, lockIdle ? false : isRunning);
     }
   });
 
@@ -840,11 +883,20 @@ function PlayerAvatarGLBInner() {
     }
     store.setMovementDirection(dir as any);
 
+    // Sprint gate (2026-05-18): SHIFT held (desktop) OR joystick magnitude
+    // past threshold (mobile) promotes walk → run while moving. Identical
+    // logic in both useFrame branches (VRM + GLB) — see RUN_SPEED_MULT /
+    // RUN_JOYSTICK_THRESHOLD declarations near the top of this file.
+    const _joyMag = Math.hypot(store.joystickVelocity.x, store.joystickVelocity.y);
+    const isRunning = (vx !== 0 || vy !== 0) &&
+      (keyState.shift || _joyMag > RUN_JOYSTICK_THRESHOLD);
+    const speedMult = isRunning ? RUN_SPEED_MULT : 1;
+
     if (vx !== 0 || vy !== 0) {
       // Read from ref (zero React overhead) for current position, write via
       // setAvatarPosition which updates both ref + throttled reactive store.
-      let newX = avatarPositionRef.x + vx * SPEED * delta;
-      let newY = avatarPositionRef.y + vy * SPEED * delta;
+      let newX = avatarPositionRef.x + vx * SPEED * speedMult * delta;
+      let newY = avatarPositionRef.y + vy * SPEED * speedMult * delta;
       newX = Math.max(16, Math.min(MAP_WIDTH - 16, newX));
       newY = Math.max(16, Math.min(MAP_HEIGHT - 16, newY));
       store.setAvatarPosition(newX, newY);
@@ -921,13 +973,20 @@ function PlayerAvatarGLBInner() {
     const dt = Math.min(delta, 0.1);
     const animGroup = animGroupRef.current;
 
+    // Crustaceans have no run clip — they reuse their walk cycle but the
+    // PROCEDURAL animator advances at speedMult× the normal rate when
+    // sprinting, so the visible foot cadence matches the faster ground
+    // motion and avoids foot-skating. Both the universal character
+    // animator (charAnimator) and the legacy lobster animator
+    // (lobsterAnimator) consume a scaled dt for this reason.
+    const animDt = dt * speedMult;
     if (useNewAnimSystem && charAnimator && animGroup) {
       // Universal animator handles both idle and walk in one call
-      charAnimator.update(animGroup, elapsed, dt, isMoving);
+      charAnimator.update(animGroup, elapsed, animDt, isMoving);
     } else if (lobsterAnimator && animGroup) {
       // Legacy lobster/crayfish path — skeletal + procedural squash/stretch
       const suggestedAnim = isMoving ? 'walk' : 'idle';
-      lobsterAnimator.update(dt, elapsed, suggestedAnim as any, dir);
+      lobsterAnimator.update(animDt, elapsed, suggestedAnim as any, dir);
 
       const animStateData = {
         group: animGroup,
