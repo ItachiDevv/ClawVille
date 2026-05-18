@@ -3,7 +3,7 @@
 import { useMemo, useRef, useState, useEffect, useCallback, Suspense } from 'react';
 import * as THREE from 'three';
 import { useGLTF, Html } from '@react-three/drei';
-import { useWorldLabel, WorldLabel } from '@/lib/three/world-labels-overlay';
+import { useWorldLabel, WorldLabel, resetLabelPrevOpacity } from '@/lib/three/world-labels-overlay';
 import { useFrame, useThree } from '@react-three/fiber';
 import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 import { mergeStaticMeshesByMaterial } from '@/lib/three/utils/merge-static-meshes';
@@ -661,10 +661,21 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
                 textShadow: '0 0 8px rgba(56,189,248,0.9), 0 1px 3px rgba(0,0,0,0.9)',
                 transition: 'opacity 0.15s',
               }}
-              // CSS :hover opacity is blocked by the outer div's pointer-events
-              // boundary — use onMouseEnter/Leave on the span itself.
-              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = '1'; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = ''; }}
+              // CSS :hover on the span is blocked by the OUTER div's opacity
+              // (multiplicative: 0.40 × 1.0 = 0.40, invisible hover).
+              // Fix: boost the OUTER div to opacity=1 on hover, then reset
+              // entry._prevOpacity=-1 on leave so the projection useFrame
+              // unconditionally re-writes the correct distance-fade value on
+              // the very next frame (skips the |Δopacity|<0.01 guard otherwise).
+              onMouseEnter={() => {
+                if (labelDivRef.current) labelDivRef.current.style.opacity = '1';
+              }}
+              onMouseLeave={() => {
+                if (labelDivRef.current) labelDivRef.current.style.opacity = '';
+                // Reset _prevOpacity so the next useFrame re-writes targetOpacity
+                // rather than seeing |targetOpacity - 0.40| < 0.01 and skipping.
+                resetLabelPrevOpacity(labelDivRef);
+              }}
             >
               {theme.label}
             </span>
