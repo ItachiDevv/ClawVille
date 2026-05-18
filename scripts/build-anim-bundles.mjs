@@ -69,12 +69,6 @@ const EMOTE_CLIPS = [
   ['rude_gesture',   'emotes/rude-gesture.glb'],
   ['sorrow',         'emotes/sorrow.glb'],
   ['spell_cast',     'emotes/spell-cast.glb'],
-  // Charge-jump prep pose (added 2026-05-18). Fetch via Mixamo CLI
-  // ("Crouch Idle" — must be a static feet-on-floor knees-bent pose,
-  // NOT the squat-cycle variant). The build script auto-skips this
-  // entry until the source file exists, so this can be merged before
-  // the asset lands without breaking the bundle build.
-  ['crouch_idle',    'emotes/crouch-idle.glb'],
 ];
 
 // Mixamo bakes use EXT_meshopt_compression — register encoder + decoder so

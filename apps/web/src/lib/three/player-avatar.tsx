@@ -532,6 +532,33 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
     group.position.y = terrainYRef.current + bob
                      + jumpState.heightOffset + jumpState.playerAltitude;
 
+    // Runtime foot-anchor (2026-05-18). The Mixamo crouch/squat clip
+    // has hip-translation tracks that lower the hip in world space;
+    // the legs bend per their rotation tracks and the feet end up
+    // ABOVE the floor (user-reported "floating mid-air, feet tucked
+    // up"). Mixamo bakes don't ship IK so the rig can't auto-plant.
+    // Fix: after group.position.y is set + animator has flushed bones,
+    // measure where the foot bone actually IS in world space and add a
+    // compensating offset so feet land at terrainYRef.current. Only
+    // active while charging (and any future clip flagged for anchoring)
+    // — locomotion clips intentionally let the body bob naturally.
+    if (jumpState.phase === 'charging' && vrm?.humanoid) {
+      const footNode =
+        vrm.humanoid.getNormalizedBoneNode('leftFoot' as any) ??
+        vrm.humanoid.getNormalizedBoneNode('rightFoot' as any);
+      if (footNode) {
+        // Bone world matrix is current — updateMixerOnly (called above
+        // via animator.update on the prior frame, or via the next call
+        // this same frame) refreshes scene.updateMatrixWorld every
+        // frame so footNode.matrixWorld reflects the current pose.
+        footNode.updateMatrixWorld(true);
+        const footWorldY = footNode.matrixWorld.elements[13]; // m[3][1]
+        const desiredFootY = terrainYRef.current;
+        // Positive when foot was lifted; subtract to bring it back down.
+        group.position.y += desiredFootY - footWorldY;
+      }
+    }
+
     // Rotation: see atan2(-vx, -vy) derivation above (VRM faces -Z, need sign negation).
     if (continuousRot !== null) {
       let rotDiff = continuousRot - rotRef.current;
@@ -587,18 +614,15 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
       const phase = jumpState.phase;
       const phaseCharging = phase === 'charging';
       const swimClip: AnimName = reg.animatorId === 'tekk' ? 'flying' : 'swimming';
-      // Charging clip is 'crouch_idle' (Mixamo "Crouch Idle" — knees bent,
-      // feet planted, weight forward). The previous 'squat' clip is a
-      // squat-down-and-stand cycle that lifts the feet during loop; users
-      // reported it read as "floating mid-air" instead of a charge-prep
-      // pose. crouch_idle must be added via:
-      //   bun scripts/mixamo/fetch-animations.ts vrm-milady "Crouch Idle"
-      // then mv the resulting GLB to /avatars/animations/emotes/crouch-idle.glb
-      // and run `node scripts/build-anim-bundles.mjs`. Until the bundle
-      // includes the clip, setSurfaceClip('crouch_idle') silently fails
-      // to load — the animator stays on 'idle' which is a clean fallback.
+      // Charging clip is 'squat'. The clip itself is correct — the
+      // pose is a Mixamo squat-down anticipation. The "floating mid-
+      // air, feet tucked up" appearance the user reported 2026-05-18
+      // is fixed by the runtime foot-anchor block above (search for
+      // "foot-anchor"), which measures the foot bone's actual world Y
+      // every frame during charging and lifts/lowers the avatar group
+      // to keep that foot at terrainYRef.current.
       const desiredClip: AnimName =
-        phaseCharging ? 'crouch_idle'
+        phaseCharging ? 'squat'
         : airborne    ? swimClip
         :               'idle';
       if (desiredClip !== lastSurfaceClipRef.current) {
