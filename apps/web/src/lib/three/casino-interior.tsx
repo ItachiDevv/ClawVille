@@ -370,14 +370,9 @@ export interface CasinoInteriorSceneProps {
 }
 
 export default function CasinoInteriorScene({ onSceneEmpty }: CasinoInteriorSceneProps = {}) {
-  // Default to the CARTOON fallback GLB. The gameready scene uses
-  // KHR_materials_unlit — materials ignore all scene lights, baked textures
-  // are dim, and the result is a near-black interior on Iris Xe. The cartoon
-  // GLB has lit materials, bright pixel-art textures, and matches the
-  // SpongeBob aesthetic of the rest of the world. Override with ?gameready=1.
   const [useFallback, setUseFallback] = useState(() => {
-    if (typeof window === 'undefined') return true;
-    return new URLSearchParams(window.location.search).get('gameready') !== '1';
+    if (typeof window === 'undefined') return false;
+    return new URLSearchParams(window.location.search).get('fallback') === '1';
   });
 
   return (
