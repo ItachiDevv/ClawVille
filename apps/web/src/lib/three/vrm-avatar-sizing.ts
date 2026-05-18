@@ -30,18 +30,19 @@ import * as THREE from 'three';
 /**
  * Default on-screen height (world units) for every humanoid VRM avatar.
  *
- * Set to MATCH NORI (the town-guide character at world center, scale 200,
- * rendered separately via town-guide.tsx with its own GUIDE_SCALE constant
- * — not this auto-fit pipeline). User-reported 2026-05-18 that all
- * wandering VRMs and the player avatar were noticeably shorter than Nori;
- * raised this constant from 179.2 → 360 wu (≈ 2× Nori's apparent height
- * in the screenshot reference) so every VRM in the auto-fit pipeline
- * lands at the same on-screen height as Nori. If Nori herself ever moves
- * to this pipeline, set her SPECIES_TARGET_HEIGHT_WU['nori'] = 360 too.
+ * Set to MATCH NORI (the town-guide character at world center,
+ * GUIDE_SCALE=200, rendered separately via town-guide.tsx — not this
+ * auto-fit pipeline). User-reported iteration 2026-05-18:
+ *   - 179.2 (original): VRMs noticeably shorter than Nori
+ *   - 360 (over-correction): VRMs noticeably TALLER than Nori
+ *   - 270 (current): tuned from screenshot ratio — Nori was ≈ 75 %
+ *     of the 360-scaled player, so 360 × 0.75 = 270
  *
- * Change this and every humanoid resizes uniformly.
+ * Change this and every humanoid resizes uniformly. If Nori herself
+ * ever moves to this pipeline, drop her SPECIES_TARGET_HEIGHT_WU
+ * override at 270 too.
  */
-export const VRM_AVATAR_TARGET_HEIGHT_WU = 360;
+export const VRM_AVATAR_TARGET_HEIGHT_WU = 270;
 
 /**
  * Per-species/animatorId target-height overrides. Use when a model's bbox
@@ -54,7 +55,7 @@ export const VRM_AVATAR_TARGET_HEIGHT_WU = 360;
  * 'tekk' for tekk; if they ever diverge we'll need separate maps.
  */
 export const SPECIES_TARGET_HEIGHT_WU: Record<string, number> = {
-  tekk: 460, // 360 × 1.28 — body lands at ~Milady height, wings fan above (kept proportional after the 2026-05-18 base height bump 179.2 → 360)
+  tekk: 346, // 270 × 1.28 — body lands at Nori/Milady height, wings fan above (kept proportional through the 2026-05-18 retune 179.2 → 360 → 270)
 };
 
 /**
@@ -62,10 +63,10 @@ export const SPECIES_TARGET_HEIGHT_WU: Record<string, number> = {
  * so the placeholder reads at the standard height. Most callers should
  * already early-return before this matters.
  */
-// Sized so a 1.6m placeholder renders at the new VRM_AVATAR_TARGET_HEIGHT_WU
-// (360 / 1.6 = 225). Most call sites early-return before hitting this; it
-// only matters if a VRM is unavailable at measurement time.
-export const VRM_AVATAR_FALLBACK_SCALE = 225;
+// Sized so a 1.6m placeholder renders at VRM_AVATAR_TARGET_HEIGHT_WU
+// (270 / 1.6 ≈ 169). Most call sites early-return before hitting this;
+// it only matters if a VRM is unavailable at measurement time.
+export const VRM_AVATAR_FALLBACK_SCALE = 169;
 
 /**
  * Compute the per-VRM render scale + foot-grounding offsetY so the avatar
