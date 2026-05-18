@@ -28,6 +28,9 @@ const BUILDING_ACCENT: Record<string, string> = {
   'code-development': '#c4b5fd',        // chum bucket violet
   'messaging-channels': '#67e8f9',     // sandy treedome cyan
   'agent-security': '#fbbf24',  // patrick rock yellow
+  // Phase 6.0.1 entertainment buildings
+  'casino': '#fbbf24',           // pyramid casino gold
+  'claw-arcade': '#f472b6',      // arcade city neon pink
 };
 
 export default function Minimap() {
@@ -131,11 +134,13 @@ export default function Minimap() {
             fill="url(#center-glow)"
           />
 
-          {/* Ring guide — dashed circle matching the 68-tile building ring */}
+          {/* Ring guide — dashed circle approximating the 72-tile square building ring.
+              Phase 6.0.1: ring is now a square (3 buildings × 4 sides) at 72-tile
+              side-distance from center. Circle shown as a perceptual guide only. */}
           <circle
             cx={CENTER_TILE_PX_X * SCALE_X}
             cy={CENTER_TILE_PX_Y * SCALE_Y}
-            r={68 * TILE_SIZE * SCALE_X}
+            r={72 * TILE_SIZE * SCALE_X}
             fill="none"
             stroke="rgba(34,211,238,0.18)"
             strokeWidth="0.8"
