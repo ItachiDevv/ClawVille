@@ -129,10 +129,11 @@ export default function CasinoCanvas() {
           near: 1,
           far: 2000,
           // INSIDE the room — casino interior bbox is z∈[-300,+300], y∈[0,120].
-          // Walls face inward (backface culling hides them from outside camera).
-          // Position camera at +250 (near front wall), eye-height 80, slight
-          // back-tilt to see floor + slot machines on far wall (z=-300).
-          position: [0, 80, 250],
+          // Follow camera takes control on frame 1 from CasinoPlayerAvatar.
+          // Starting position is behind the player spawn (z=240) + 160wu back
+          // and 55wu above, matching the follow-camera steady-state framing.
+          // R3F will overwrite this on the first useFrame anyway.
+          position: [0, 55, 400],
         }}
         gl={{
           antialias: false,
