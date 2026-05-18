@@ -135,8 +135,8 @@ function triggerCasinoWalkIn(): void {
 // Formula: cx = zone.x + zone.width/2, cz = zone.y + zone.height/2
 //          dx = 120 - cx, dz = 120 - cz
 //          rotY = Math.atan2(dx, dz)  (model faces +Z at rotY=0)
-// Ring layout (R=100 tiles, 30° spacing, 12 slots): rotY values are identical to
-// R=72 layout — atan2 depends only on angle direction, not ring radius.
+// Ring layout (R=130 tiles, 30° spacing, 12 slots): rotY values are nearly identical to
+// R=160 layout — atan2 depends only on angle direction, not ring radius.
 /**
  * scaleOverride: bypasses computeBuildingScale entirely. Use for GLBs that
  * confuse the bbox-based auto-scale — typically GLBs that use
@@ -157,75 +157,76 @@ function triggerCasinoWalkIn(): void {
  */
 const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number; rotYOffset?: number; scaleOverride?: number; targetMaxDim?: number; box3Recenter?: boolean; pivotZBias?: number; onClick?: () => void }> = {
   // ---------------------------------------------------------------------------
-  // 12-building TRUE CIRCULAR ring — Phase 6.2 (2026-05-18).
-  // Grid expanded 240→360 tiles; ring expanded R=100→160 tiles.
+  // 12-building TRUE CIRCULAR ring — Phase 6.2.1 (2026-05-18).
+  // Ring tuned R=160→130 tiles (5120→4160wu — R=160 was too spaced out).
+  // Grid stays at 360×360 tiles.
   //
-  // Radius: 160 tiles = 5120 wu from center (180, 180) / world (0, 0).
+  // Radius: 130 tiles = 4160 wu from center (180, 180) / world (0, 0).
   // Angular spacing: 30° (π/6 rad) — 12 evenly spaced slots, clockwise from North.
-  // Arc spacing at R=160: ~2680wu (was ~1675wu at R=100 — buildings were packed).
-  // rotY = atan2(180 − cx_tile, 180 − cy_tile) — identical values to R=100 layout
+  // Arc spacing at R=130: ~2178wu (was ~2680wu at R=160 — too far).
+  // rotY = atan2(180 − cx_tile, 180 − cy_tile) — nearly identical to R=160 layout
   // because atan2 depends only on direction angle, not radius magnitude.
   //
   // Slot assignment (clockwise from North):
-  //   Slot  0 (  0°/N)   visual-creation    cx=180, cy=20   rotY= 0.000
-  //   Slot  1 ( 30°/NNE) code-development   cx=260, cy=41   rotY=-0.524
-  //   Slot  2 ( 60°/ENE) mcp-tool-use       cx=319, cy=100  rotY=-1.047
-  //   Slot  3 ( 90°/E)   messaging-channels cx=340, cy=180  rotY=-1.571
-  //   Slot  4 (120°/ESE) api-integrations   cx=319, cy=260  rotY=-2.094
-  //   Slot  5 (150°/SSE) app-publishing     cx=260, cy=319  rotY=-2.618
-  //   Slot  6 (180°/S)   cron-automation    cx=180, cy=340  rotY= 3.142
-  //   Slot  7 (210°/SSW) deployment-ops     cx=100, cy=319  rotY= 2.618
-  //   Slot  8 (240°/WSW) claw-arcade        cx=41,  cy=260  rotY= 2.094
-  //   Slot  9 (270°/W)   casino             cx=20,  cy=180  rotY= 1.571  ← entertainment district
-  //   Slot 10 (300°/WNW) agent-security     cx=41,  cy=100  rotY= 1.047
-  //   Slot 11 (330°/NNW) memory-rag         cx=100, cy=41   rotY= 0.524
+  //   Slot  0 (  0°/N)   visual-creation    cx=180, cy=50   rotY= 0.000
+  //   Slot  1 ( 30°/NNE) code-development   cx=245, cy=67   rotY=-0.522
+  //   Slot  2 ( 60°/ENE) mcp-tool-use       cx=293, cy=115  rotY=-1.049
+  //   Slot  3 ( 90°/E)   messaging-channels cx=310, cy=180  rotY=-1.571
+  //   Slot  4 (120°/ESE) api-integrations   cx=293, cy=245  rotY=-2.093
+  //   Slot  5 (150°/SSE) app-publishing     cx=245, cy=293  rotY=-2.620
+  //   Slot  6 (180°/S)   cron-automation    cx=180, cy=310  rotY= 3.142
+  //   Slot  7 (210°/SSW) deployment-ops     cx=115, cy=293  rotY= 2.620
+  //   Slot  8 (240°/WSW) claw-arcade        cx=67,  cy=245  rotY= 2.093
+  //   Slot  9 (270°/W)   casino             cx=50,  cy=180  rotY= 1.571  ← entertainment district
+  //   Slot 10 (300°/WNW) agent-security     cx=67,  cy=115  rotY= 1.049
+  //   Slot 11 (330°/NNW) memory-rag         cx=115, cy=67   rotY= 0.522
   // ---------------------------------------------------------------------------
 
-  // Slot 0 — N (cx=180, cy=20): dx=0, dz=160 → atan2(0,160)=0
+  // Slot 0 — N (cx=180, cy=50): dx=0, dz=130 → atan2(0,130)=0
   // targetMaxDim: 1100 — pineapple house needs extra size to read from a distance.
   'visual-creation':     { model: '/models/pineapple-house.glb',     yOffset: 0, rotY:  0.000, targetMaxDim: 1100 },
-  // Slot 1 — NNE (cx=260, cy=41): dx=-80, dz=139 → atan2(-80,139)≈-0.524 (-π/6)
+  // Slot 1 — NNE (cx=245, cy=67): dx=-65, dz=113 → atan2(-65,113)≈-0.522 (-π/6)
   // Phase 6.2: targetMaxDim=1000 caps the bucket — Y-only normalization inflated XZ 2×.
-  'code-development':    { model: '/models/chum-bucket-v2.glb',      yOffset: 0, rotY: -0.524, targetMaxDim: 1000 },
-  // Slot 2 — ENE (cx=319, cy=100): dx=-139, dz=80 → atan2(-139,80)≈-1.047 (-π/3)
+  'code-development':    { model: '/models/chum-bucket-v2.glb',      yOffset: 0, rotY: -0.522, targetMaxDim: 1000 },
+  // Slot 2 — ENE (cx=293, cy=115): dx=-113, dz=65 → atan2(-113,65)≈-1.049 (-π/3)
   // krusty-krab-v2.glb = iconic ship restaurant (CC-BY, Yanez Designs, 1.59 MB original).
-  'mcp-tool-use':        { model: '/models/krusty-krab-v2.glb',      yOffset: 0, rotY: -1.047, targetMaxDim: 1000 },
-  // Slot 3 — E (cx=340, cy=180): dx=-160, dz=0 → atan2(-160,0)=-π/2≈-1.571
+  'mcp-tool-use':        { model: '/models/krusty-krab-v2.glb',      yOffset: 0, rotY: -1.049, targetMaxDim: 1000 },
+  // Slot 3 — E (cx=310, cy=180): dx=-130, dz=0 → atan2(-130,0)=-π/2≈-1.571
   // sandy-treedome-v3.glb: rotYOffset +π for inward-facing door.
   // Phase 6.2: dome glass DoubleSide fix applied post-load (see GLBBuilding).
   'messaging-channels':  { model: '/models/sandy-treedome-v3.glb',   yOffset: 0, rotY: -1.571, rotYOffset: Math.PI, targetMaxDim: 1000 },
-  // Slot 4 — ESE (cx=319, cy=260): dx=-139, dz=-80 → atan2(-139,-80)≈-2.094 (-2π/3)
+  // Slot 4 — ESE (cx=293, cy=245): dx=-113, dz=-65 → atan2(-113,-65)≈-2.093 (-2π/3)
   // rotYOffset: salty-spitoon.glb authored facing +X; -π/2 aligns toward village center.
-  'api-integrations':    { model: '/models/salty-spitoon.glb',       yOffset: 0, rotY: -2.094, rotYOffset: -Math.PI / 2, targetMaxDim: 1000 },
-  // Slot 5 — SSE (cx=260, cy=319): dx=-80, dz=-139 → atan2(-80,-139)≈-2.618 (-5π/6)
+  'api-integrations':    { model: '/models/salty-spitoon.glb',       yOffset: 0, rotY: -2.093, rotYOffset: -Math.PI / 2, targetMaxDim: 1000 },
+  // Slot 5 — SSE (cx=245, cy=293): dx=-65, dz=-113 → atan2(-65,-113)≈-2.620 (-5π/6)
   // rotYOffset: boating-school.glb classroom must face center (model-authored offset).
-  'app-publishing':      { model: '/models/boating-school.glb',      yOffset: 0, rotY: -2.618, rotYOffset: Math.PI / 2, targetMaxDim: 1000 },
-  // Slot 6 — S (cx=180, cy=340): dx=0, dz=-160 → atan2(0,-160)=π≈3.142
+  'app-publishing':      { model: '/models/boating-school.glb',      yOffset: 0, rotY: -2.620, rotYOffset: Math.PI / 2, targetMaxDim: 1000 },
+  // Slot 6 — S (cx=180, cy=310): dx=0, dz=-130 → atan2(0,-130)=π≈3.142
   'cron-automation':     { model: '/models/patty-building.glb',      yOffset: 0, rotY:  3.142, targetMaxDim: 1000 },
-  // Slot 7 — SSW (cx=100, cy=319): dx=80, dz=-139 → atan2(80,-139)≈2.618 (5π/6)
+  // Slot 7 — SSW (cx=115, cy=293): dx=65, dz=-113 → atan2(65,-113)≈2.620 (5π/6)
   // Lighthouse is the tallest landmark — targetMaxDim 1400 keeps it visually dominant.
-  'deployment-ops':      { model: '/models/building-lighthouse.glb', yOffset: 0, rotY:  2.618, targetMaxDim: 1400 },
-  // Slot 8 — WSW (cx=41, cy=260): dx=139, dz=-80 → atan2(139,-80)≈2.094 (2π/3)
+  'deployment-ops':      { model: '/models/building-lighthouse.glb', yOffset: 0, rotY:  2.620, targetMaxDim: 1400 },
+  // Slot 8 — WSW (cx=67, cy=245): dx=113, dz=-65 → atan2(113,-65)≈2.093 (2π/3)
   // Phase 6.1 swap preserved: claw-arcade at slot 8/WSW. Casino is at slot 9/W (2 slots away).
-  'claw-arcade':         { model: '/models/arcade/claw-arcade-exterior.glb', yOffset: 0, rotY:  2.094, targetMaxDim: 1100,
+  'claw-arcade':         { model: '/models/arcade/claw-arcade-exterior.glb', yOffset: 0, rotY:  2.093, targetMaxDim: 1100,
                            onClick: () => { console.info('[claw-arcade] interior pending — Concern 6.3'); } },
-  // Slot 9 — W (cx=20, cy=180): dx=160, dz=0 → atan2(160,0)=π/2≈1.571  ← entertainment district
+  // Slot 9 — W (cx=50, cy=180): dx=130, dz=0 → atan2(130,0)=π/2≈1.571  ← entertainment district
   // casino-exterior-cove.glb = "Pyramid Casino" by tl0615 (CC-BY-4.0, Sketchfab).
   // box3Recenter=true: geometry authored at ~(-1800, 166, 4540) Blender origin — centering handled by pivotOffset.
   // targetMaxDim: 1300 — casino is the entertainment-district landmark, deserves more visual mass.
   // onClick: Phase 6.0.3 walk-in flow — avatar walks toward door, then SceneTransition fades to /casino.
-  // Door target in game-px: casino zone cx=20 tiles → x=640, cy=180 tiles → y=5760; door is ~300 game-px
+  // Door target in game-px: casino zone cx=50 tiles → x=1600, cy=180 tiles → y=5760; door is ~300 game-px
   // east of building center (toward town center at 5760,5760).
   'casino':              { model: '/models/casino/casino-exterior-cove.glb', yOffset: 0, rotY:  1.571, targetMaxDim: 1300, box3Recenter: true,
                            onClick: () => { triggerCasinoWalkIn(); } },
-  // Slot 10 — WNW (cx=41, cy=100): dx=139, dz=80 → atan2(139,80)≈1.047 (π/3)
+  // Slot 10 — WNW (cx=67, cy=115): dx=113, dz=65 → atan2(113,65)≈1.049 (π/3)
   // Phase 6.1 swap preserved: agent-security at slot 10/WNW.
   // targetMaxDim: 1100 — wide dome, max-dim normalization prevents over-inflation.
-  'agent-security':      { model: '/models/patricks-rock-v2.glb',    yOffset: 0, rotY:  1.047, targetMaxDim: 1100 },
-  // Slot 11 — NNW (cx=100, cy=41): dx=80, dz=139 → atan2(80,139)≈0.524 (π/6)
+  'agent-security':      { model: '/models/patricks-rock-v2.glb',    yOffset: 0, rotY:  1.049, targetMaxDim: 1100 },
+  // Slot 11 — NNW (cx=115, cy=67): dx=65, dz=113 → atan2(65,113)≈0.522 (π/6)
   // squidward-house.glb = Easter Island moai head (CC-BY, Yanez Designs).
   // pivotZBias: +180 — stone steps at front shift GLB bbox center, compensated here.
-  'memory-rag':          { model: '/models/squidward-house.glb',     yOffset: 0, rotY:  0.524, targetMaxDim: 1000, pivotZBias: 180 },
+  'memory-rag':          { model: '/models/squidward-house.glb',     yOffset: 0, rotY:  0.522, targetMaxDim: 1000, pivotZBias: 180 },
 };
 
 // Scratch objects for stripGroundPlanes — reused across calls to avoid GC.
