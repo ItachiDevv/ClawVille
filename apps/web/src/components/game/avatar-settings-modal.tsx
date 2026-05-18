@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useGameStore } from '@/stores/game';
 import { useAvatar } from '@/hooks/use-avatar';
 import { api } from '@/lib/api';
@@ -127,6 +127,11 @@ export default function AvatarSettingsModal() {
             </div>
           )}
 
+          {/* Username editor (2026-05-19) — separate from avatar.name so a
+              user can change their public handle without renaming their
+              in-world character. */}
+          <UsernameSection />
+
           {/* Phase 4c Layer 1 — in-game appearance edits */}
           <EditAppearanceSection
             avatar={{
@@ -171,6 +176,186 @@ export default function AvatarSettingsModal() {
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * UsernameSection — change the public handle.
+ *
+ * Lives next to appearance edits in the Avatar Settings modal. Username
+ * is initialized from avatar.name at avatar-create time (see
+ * apps/api/src/routes/avatars.ts) and editable here after the fact —
+ * 5 changes per minute per IP per the API rate limit.
+ *
+ * Debounce: 400ms after the last keystroke before /check-username fires.
+ * The Save button stays disabled until the entered value is both valid
+ * (regex) and confirmed-available (200 with available:true) AND
+ * different from the current username.
+ */
+function UsernameSection() {
+  const queryClient = useQueryClient();
+  const [draft, setDraft] = useState('');
+  const [status, setStatus] = useState<
+    | { kind: 'idle' }
+    | { kind: 'checking' }
+    | { kind: 'available' }
+    | { kind: 'taken'; reason: string }
+    | { kind: 'invalid'; reason: string }
+  >({ kind: 'idle' });
+  const [editing, setEditing] = useState(false);
+  const [error, setError] = useState('');
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const meQuery = useQuery({
+    queryKey: ['auth-me'],
+    queryFn: () => api.me(),
+    staleTime: 30_000,
+  });
+  const currentUsername = meQuery.data?.user?.username ?? '';
+
+  const mutation = useMutation({
+    mutationFn: (username: string) => api.updateUsername(username),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['auth-me'] });
+      setEditing(false);
+      setError('');
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  useEffect(() => {
+    if (!editing) return;
+    if (!draft) {
+      setStatus({ kind: 'idle' });
+      return;
+    }
+    if (!/^[a-zA-Z0-9_]{3,20}$/.test(draft)) {
+      setStatus({
+        kind: 'invalid',
+        reason: '3-20 letters, numbers, or underscore',
+      });
+      return;
+    }
+    if (draft.toLowerCase() === currentUsername.toLowerCase()) {
+      setStatus({ kind: 'idle' });
+      return;
+    }
+    setStatus({ kind: 'checking' });
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const res = await api.checkUsername(draft);
+        if (res.available) {
+          setStatus({ kind: 'available' });
+        } else {
+          setStatus({ kind: 'taken', reason: res.reason ?? 'Already taken' });
+        }
+      } catch (e) {
+        setStatus({ kind: 'invalid', reason: 'Could not check availability' });
+      }
+    }, 400);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [draft, editing, currentUsername]);
+
+  const startEdit = () => {
+    setDraft(currentUsername);
+    setStatus({ kind: 'idle' });
+    setError('');
+    setEditing(true);
+  };
+  const cancelEdit = () => {
+    setEditing(false);
+    setDraft('');
+    setStatus({ kind: 'idle' });
+    setError('');
+  };
+  const canSave = status.kind === 'available' && !mutation.isPending;
+
+  if (!editing) {
+    return (
+      <div className="bg-white/5 rounded-lg p-3 space-y-1.5">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-[10px] uppercase tracking-[0.2em] font-mono text-white/40">
+              Username
+            </div>
+            <div className="text-sm font-bold text-white mt-0.5">
+              {currentUsername || (
+                <span className="text-yellow-400/80 italic">
+                  not set — click change to pick one
+                </span>
+              )}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={startEdit}
+            className="px-3 py-1.5 rounded-md bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-200 text-xs font-bold transition-colors"
+          >
+            Change
+          </button>
+        </div>
+        <p className="text-[10px] text-white/40 leading-relaxed">
+          Your public handle on chat, leaderboards, and shared links.
+          Independent from your avatar&apos;s in-world name.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white/5 rounded-lg p-3 space-y-2">
+      <div className="text-[10px] uppercase tracking-[0.2em] font-mono text-white/40">
+        Change username
+      </div>
+      <input
+        type="text"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value.slice(0, 20))}
+        maxLength={20}
+        autoFocus
+        placeholder="pick a handle"
+        className="w-full px-3 py-2 rounded-md bg-black/40 border border-white/15 text-white placeholder:text-white/30 text-sm focus:outline-none focus:border-cyan-400/60"
+      />
+      <div className="text-[11px] font-mono min-h-[1rem]">
+        {status.kind === 'checking' && (
+          <span className="text-white/40">Checking…</span>
+        )}
+        {status.kind === 'available' && (
+          <span className="text-green-400">Available</span>
+        )}
+        {status.kind === 'taken' && (
+          <span className="text-red-400">{status.reason}</span>
+        )}
+        {status.kind === 'invalid' && (
+          <span className="text-yellow-400/80">{status.reason}</span>
+        )}
+      </div>
+      {error && (
+        <div className="text-[11px] text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2 py-1">
+          {error}
+        </div>
+      )}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => mutation.mutate(draft)}
+          disabled={!canSave}
+          className="flex-1 px-3 py-2 rounded-md bg-cyan-500 hover:bg-cyan-400 text-white text-xs font-bold disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        >
+          {mutation.isPending ? 'Saving…' : 'Save'}
+        </button>
+        <button
+          type="button"
+          onClick={cancelEdit}
+          className="px-3 py-2 rounded-md bg-white/10 hover:bg-white/20 text-white/70 text-xs font-bold transition-colors"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
   );
 }
 

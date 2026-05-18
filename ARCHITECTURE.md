@@ -47,7 +47,8 @@ LLM: **Gemini only**. `plugin-anthropic` and `plugin-openai` were ripped out 202
 | File | Mount | Purpose |
 |---|---|---|
 | `auth.ts` | `/api/auth/*` | Lucia signup/login/logout · `GET /api/auth/enter?t=<ticket>` (Phase 5 magic-link exchange) · `POST /api/auth/milady-session-exchange` · `POST /api/auth/guest` (un-authed visitor bootstrap, 5/min/IP rate-limited) · `GET /api/auth/me/agent-session` (UI hydration of agent liveness) |
-| `avatars.ts` | `/api/avatars/*` | Avatar CRUD · `POST /api/avatars/me/heartbeat` · `POST /api/avatars/me/daily-login` |
+| `avatars.ts` | `/api/avatars/*` | Avatar CRUD · `POST /api/avatars/me/heartbeat` · `POST /api/avatars/me/daily-login` · `GET /check-name/:name` (validates against `avatars.name` AND `users.username`) |
+| `users.ts` | `/api/users/*` | Username system (2026-05-19) — `GET /check-username/:name` (public availability probe) · `PATCH /me/username` (Lucia-authed, 5/min/IP, 409 on collision). |
 | `locations.ts` | `/api/locations/*` | 10-building zone metadata |
 | `chat.ts` | `/api/locations/:id/chat`, `/api/chat/system/:slug` | Building chat (dynamic context injection) · system-agent chat (currently `town-guide` only; `503 Retry-After: 3` during boot race; reward rate-limited 1/60s per `(userId, slug)`) |
 | `items.ts` | `/api/items/*` | Knowledge-book shop, inventory, buy, learn |
@@ -284,7 +285,7 @@ All 35 schema files re-exported from `schema/index.ts`. **Single source of truth
 
 | Table | Purpose |
 |---|---|
-| `users` / `sessions` | Lucia auth. Phase 5: `identity_fingerprint`. Phase 5.1: `identity_pubkey/encrypted_sk/iv/tag/dek_wrapped/encryption_version`, plus 'scape `scape_principal_id / scape_world_character_id / linked_scape_*`. Guest auto-create: `is_guest`, `guest_expires_at`. |
+| `users` / `sessions` | Lucia auth. Phase 5: `identity_fingerprint`. Phase 5.1: `identity_pubkey/encrypted_sk/iv/tag/dek_wrapped/encryption_version`, plus 'scape `scape_principal_id / scape_world_character_id / linked_scape_*`. Guest auto-create: `is_guest`, `guest_expires_at`. **Username (2026-05-19):** `username VARCHAR(20) UNIQUE`, check constraint `users_username_format = '^[a-zA-Z0-9_]{3,20}$'`. Seeded from `avatar.name` on first `POST /api/avatars`; editable via `PATCH /api/users/me/username`. Independent from `avatar.name` thereafter. See `GameFeatures.md §14a.bis`. |
 | `agent_session_tickets` | Phase 5 magic-link store. 32-byte token, 5-min TTL, `consumed_at`. |
 | `avatars` | One per user. Identity/species/color/archetype/stats/position. Phase 2: `model_key`, `agent_category`, `harness` (NOT NULL + CHECK). Guest: `is_guest`. |
 | `avatar_inventory` | Knowledge books owned per avatar (quantity). |
