@@ -30,14 +30,16 @@ useGLTF.preload('/models/marketplace-food-stall.glb');
 
 // ---------------------------------------------------------------------------
 // World position
+// Phase 6.2 (2026-05-18): spread from (600, 4, -60) to (800, 4, 300) as part
+// of the plaza expansion. Props now form a loose ring at 800-1000wu from center.
 // ---------------------------------------------------------------------------
-const STALL_X = 600;
+const STALL_X = 800;
 // Raised to +4 so the stall base clears the sand terrain (Y=-2). The food
 // stall GLB's pivot is not at the very bottom of its geometry — the wooden
 // frame / stand extends slightly below the root origin, causing a visible
 // clip when placed flush at sand level. Sitting 6wu above sand hides this.
 const STALL_Y = 4;
-const STALL_Z = -60;
+const STALL_Z = 300;
 
 // Target visual height — slightly larger than the bazaar to give the more
 // elaborate food stall structure visual presence.
