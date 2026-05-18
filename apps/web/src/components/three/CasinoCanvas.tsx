@@ -125,10 +125,14 @@ export default function CasinoCanvas() {
         dpr={LOW_END_GPU ? [0.55, 0.7] : [0.75, 1]}
         frameloop="always"
         camera={{
-          fov: 55,
+          fov: 65,
           near: 1,
           far: 2000,
-          position: [0, 120, 350],
+          // INSIDE the room — casino interior bbox is z∈[-300,+300], y∈[0,120].
+          // Walls face inward (backface culling hides them from outside camera).
+          // Position camera at +250 (near front wall), eye-height 80, slight
+          // back-tilt to see floor + slot machines on far wall (z=-300).
+          position: [0, 80, 250],
         }}
         gl={{
           antialias: false,
