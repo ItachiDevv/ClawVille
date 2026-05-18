@@ -11,7 +11,7 @@
 > - **`GameFeatures.md`** — gameplay.
 > - **This doc** — *how* the 3D scene is wired: coordinates, camera, lights, GPU budget, animation, asset pipeline.
 
-**Last edit:** 2026-05-18 — Concern 6.1 regression fix: MAX_FOOTPRINT 1000→1500, building targetHeights tuned (Krusty Krab 1200, Sandy 1300, Salty Spitoon 1200, Boating School 1100, Downtown 1400, Squidward 1300), pivotZBias system (Squidward +180wu), fog 1200/6400→2500/6800, casino-interior auto-fit position bake. Prior 2026-05-18: casino interior scene. Prior 2026-05-18: Phase 6.1 grid+ring expand, BuildingPedestal. Prior 2026-05-17: Circle revert, R=72, casino +30%.
+**Last edit:** 2026-05-18 — Fog near tuned 2500→3800 (far stays 6800=camera.far) so far-ring buildings at ~4540wu land at ≈25% fog factor instead of 47%; textures/colors now readable from spawn. Prior 2026-05-18: MAX_FOOTPRINT 1000→1500, building targetHeights tuned, pivotZBias system, fog 1200/6400→2500/6800, casino-interior position bake. Prior 2026-05-18: casino interior scene. Prior 2026-05-18: Phase 6.1 grid+ring expand, BuildingPedestal. Prior 2026-05-17: Circle revert, R=72, casino +30%.
 
 ---
 
@@ -142,7 +142,7 @@ Hard cap: **3 lights** on Iris Xe (uniform limit + shader compile cost).
 | `directionalLight` (key) | `position [150, 350, 80], intensity 2.0, color 0xffeedd` | Warm key light from upper-right. |
 | `directionalLight` (fill) | `position [-100, 200, -60], intensity 0.5, color 0x88aacc` | Cool fill from opposite side for depth. |
 
-**Fog:** `fog(FOG_COLOR, 2500, 6800)` (`World3DCanvas.tsx`). Updated 2026-05-18: near pushed from 1200→2500, far kept at 6800 (=camera.far). Rationale: ring radius = 3200wu; with near=1200 the ring buildings at 2800-3500wu from spawn were 50-80% fogged, making them barely visible — contributing to the "characters taller than buildings" perception. near=2500 gives a clear view from spawn to ring edge; far=6800=camera.far is the safe ceiling (fragments past camera.far are clipped anyway). Iris Xe safety preserved via DPR cap [0.55,0.7]. `WorldContent.md §5 MAX_VISIBLE_DIST=3800` rejects decoration placements past the perceptual fog cutoff so we don't ship invisible draws (cut from 4500 on 2026-05-13).
+**Fog:** `fog(FOG_COLOR=0x0e3458, near=3800, far=6800)` (`World3DCanvas.tsx`). Updated 2026-05-18: near pushed from 2500→3800, far unchanged at 6800 (=camera.far). Rationale: camera at (0,600,1300), ring radius 3200wu. Near-ring buildings (South, ~1992wu from camera): factor 0.00 — fully clear. Far-ring buildings (North, ~4540wu): factor=(4540−3800)/(6800−3800)=740/3000≈0.25 — 25% fog blend, textures/colors visible. Prior near=2500 gave 47% blend toward the very dark FOG_COLOR, making far-ring buildings appear as near-black silhouettes. Far kept at 6800=camera.far enforces the fog.far≤camera.far constraint (violating this by setting far>camera.far was the root cause of the 1800/9000 Iris Xe regression — rasterising geometry beyond the clip plane). Iris Xe safety: only fog.near moved; no geometry, draw call, or shader change. DPR cap [0.55,0.7] unchanged. `WorldContent.md §5 MAX_VISIBLE_DIST=3800` rejects decoration placements past the perceptual fog cutoff.
 
 **Disabled atmosphere effects** (mounted but gated with `{false && <X />}`):
 - `<UnderwaterAtmosphere />` — caustic plane + depth backdrop + dust particles. Overdraw on the additive transparent meshes is 8–15 ms/frame on integrated GPUs even when occluded. Last disabled 2026-04-30.
