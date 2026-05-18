@@ -96,12 +96,6 @@ const ANIM_PATHS = {
   rude_gesture:    `${EMOTE_BUNDLE}#rude_gesture`,
   sorrow:          `${EMOTE_BUNDLE}#sorrow`,
   spell_cast:      `${EMOTE_BUNDLE}#spell_cast`,
-  // Added 2026-05-18: charge-jump prep pose. Plays while jumpState.phase
-  // === 'charging' (SPACE held). Must be added to _emotes.glb via the
-  // Mixamo fetch + bundle rebuild workflow — see player-avatar.tsx
-  // surface-clip selector for the exact commands. Until the bundle ships
-  // this clip, charging visibly falls back to 'idle'.
-  crouch_idle:     `${EMOTE_BUNDLE}#crouch_idle`,
   // Reef Race v2 surf clips — separate, prewarmed by ReefRacePlayer.
   surf_idle:       '/avatars/animations/skateboarding.glb',
   wipeout:         '/avatars/animations/wipeout.glb',
