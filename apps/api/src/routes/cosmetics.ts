@@ -99,6 +99,12 @@ cosmeticsRoutes.get('/catalog', async (c) => {
       id: r.id,
       slug: r.slug,
       category: r.category,
+      // thumbnailUrl was added to the SKU schema 2026-04-29 but never
+      // exposed by either /catalog or /owned — the drawer fell back to
+      // a category emoji for every item even when a thumbnail existed
+      // on disk. Pass it through here so the shop card can render the
+      // actual preview when present.
+      thumbnailUrl: r.thumbnailUrl,
       scope: r.scope,
       displayName: r.displayName,
       description: r.description,
@@ -168,6 +174,7 @@ cosmeticsRoutes.get('/owned', sessionMiddleware, requireAuth, async (c) => {
         id: sku.id,
         slug: sku.slug,
         category: sku.category,
+        thumbnailUrl: sku.thumbnailUrl,
         scope: sku.scope,
         displayName: sku.displayName,
         description: sku.description,

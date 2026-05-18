@@ -64,7 +64,14 @@ interface CosmeticDrawerProps {
 type Tab = 'owned' | 'shop';
 
 export default function CosmeticDrawer({ open, onClose }: CosmeticDrawerProps) {
-  const [tab, setTab] = useState<Tab>('owned');
+  const { data: ownedData } = useOwnedCosmetics();
+  const ownedCount = ownedData?.owned.length ?? 0;
+  // Auto-default to the Shop tab when the player has nothing equipped /
+  // owned yet — the previous default of 'owned' surfaced an empty state
+  // ("no cosmetics — open the Shop tab") which led to user-reported
+  // confusion about where to actually buy items 2026-05-18. Once they
+  // own at least one cosmetic the Owned tab makes sense as the entry.
+  const [tab, setTab] = useState<Tab>(ownedCount > 0 ? 'owned' : 'shop');
   const [filter, setFilter] = useState<string>('all');
   const { data: avatar } = useAvatar();
   const tokens = avatar?.clawTokens ?? 0;
@@ -135,6 +142,43 @@ export default function CosmeticDrawer({ open, onClose }: CosmeticDrawerProps) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Square thumbnail slot used by both OwnedCard and ShopCard. Renders the
+ * SKU's pre-baked PNG when one exists, falls back to the category emoji
+ * if no thumbnail is set OR the image 404s at load time (handled via the
+ * onError handler + state). Image is lazy-loaded and decoded async so
+ * the drawer doesn't block its initial paint on N preview fetches.
+ */
+function CosmeticThumbnail({
+  thumbnailUrl,
+  fallbackIcon,
+  displayName,
+}: {
+  thumbnailUrl: string | null;
+  fallbackIcon: string;
+  displayName: string;
+}) {
+  const [errored, setErrored] = useState(false);
+  const showImage = !!thumbnailUrl && !errored;
+  return (
+    <div className="flex aspect-square items-center justify-center overflow-hidden rounded-lg bg-black/30 text-3xl">
+      {showImage ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={thumbnailUrl!}
+          alt={displayName}
+          loading="lazy"
+          decoding="async"
+          onError={() => setErrored(true)}
+          className="h-full w-full object-contain"
+        />
+      ) : (
+        <span aria-hidden>{fallbackIcon}</span>
+      )}
     </div>
   );
 }
@@ -227,9 +271,11 @@ function OwnedCard({
           : rarityBorder
       }`}
     >
-      <div className="flex aspect-square items-center justify-center rounded-lg bg-black/30 text-3xl">
-        <span aria-hidden>{icon}</span>
-      </div>
+      <CosmeticThumbnail
+        thumbnailUrl={cosmetic.sku.thumbnailUrl}
+        fallbackIcon={icon}
+        displayName={cosmetic.sku.displayName}
+      />
       <h3 className="mt-2 truncate font-mono text-[11px] uppercase tracking-[0.16em] text-cyan-100">
         {cosmetic.sku.displayName}
       </h3>
@@ -347,9 +393,11 @@ function ShopCard({
   const canAfford = tokens >= item.priceCt;
   return (
     <div className={`relative rounded-xl border bg-cyan-500/[0.04] p-3 ${rarityBorder}`}>
-      <div className="flex aspect-square items-center justify-center rounded-lg bg-black/30 text-3xl">
-        <span aria-hidden>{icon}</span>
-      </div>
+      <CosmeticThumbnail
+        thumbnailUrl={item.thumbnailUrl}
+        fallbackIcon={icon}
+        displayName={item.displayName}
+      />
       <h3 className="mt-2 truncate font-mono text-[11px] uppercase tracking-[0.16em] text-cyan-100">
         {item.displayName}
       </h3>
