@@ -68,6 +68,7 @@ export const buildingZones: BuildingZone[] = [
   // Square radius: 72 tiles from center (80, 80). Side spacing: 48 tiles.
   // Zone footprint: 14×14 tiles. Upper-left = center − 7.
   // Added 2026-05-17 (Phase 6.0.1): casino + claw-arcade fill E2 and S3.
+  // 2026-05-17 entertainment-district swap: claw-arcade moved E3, app-publishing moved S3.
   // rotY = atan2(80 − cx, 80 − cy) so each building faces the plaza center.
   // ---------------------------------------------------------------------------
 
@@ -84,16 +85,16 @@ export const buildingZones: BuildingZone[] = [
   { id: 'cron-automation',     x: 145, y:  25, width: 14, height: 14 },
   // E2  center=(152,80)   dx=-72,dz= 0  → casino (Phase 6 new building)
   { id: 'casino',              x: 145, y:  73, width: 14, height: 14 },
-  // E3  center=(152,128)  dx=-72,dz=-48 → app-publishing (Boating School)
-  { id: 'app-publishing',      x: 145, y: 121, width: 14, height: 14 },
+  // E3  center=(152,128)  dx=-72,dz=-48 → claw-arcade (entertainment district — swapped 2026-05-17)
+  { id: 'claw-arcade',         x: 145, y: 121, width: 14, height: 14 },
 
   // === SOUTH SIDE (y-fixed at 152, x varies: 32, 80, 128) ===
   // S1  center=(32, 152)  dx=48, dz=-72 → deployment-ops (Lighthouse)
   { id: 'deployment-ops',      x:  25, y: 145, width: 14, height: 14 },
   // S2  center=(80, 152)  dx= 0, dz=-72 → agent-security (Patrick's Rock)
   { id: 'agent-security',      x:  73, y: 145, width: 14, height: 14 },
-  // S3  center=(128,152)  dx=-48,dz=-72 → claw-arcade (Phase 6 new building)
-  { id: 'claw-arcade',         x: 121, y: 145, width: 14, height: 14 },
+  // S3  center=(128,152)  dx=-48,dz=-72 → app-publishing / Boating School (swapped 2026-05-17)
+  { id: 'app-publishing',      x: 121, y: 145, width: 14, height: 14 },
 
   // === WEST SIDE (x-fixed at 8, y varies: 32, 80, 128) ===
   // W1  center=(8,  32)   dx=72, dz=48  → messaging-channels (Sandy's Treedome)
