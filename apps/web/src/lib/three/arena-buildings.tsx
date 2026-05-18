@@ -217,31 +217,47 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   'code-development':    { model: '/models/chum-bucket-v2.glb',      yOffset: 0, rotY: -0.522, targetMaxDim: 1400 },
   // Slot 2 — ENE (cx=293, cy=115): dx=-113, dz=65 → atan2(-113,65)≈-1.049 (-π/3)
   // krusty-krab-v2.glb = iconic ship restaurant (CC-BY, Yanez Designs, 1.59 MB original).
+  // GLB node tree (verified 2026-05-18): RootNode → "The Krusty Krab" (with spaces),
+  //   "Road", "Skybox", "Sand", "Pole", "Enter Sign". Three.js preserves names verbatim.
   // targetMaxDim 1000→1400: sign pole Z (≈1438 GLB units) dominates bbox — raises base scale so
-  // building reads bigger. childScaleOverride 1.5× on "The_Krusty_Krab" node (ship body) gives
+  // building reads bigger. childScaleOverride 1.5× on "The Krusty Krab" node (ship body) gives
   // differential sizing: restaurant body ≈600wu, sign stays at base scale proportionally.
   // bodyAnchorChild: sign extends in front → full-GLB bbox center is pulled toward sign → restaurant
   // body was behind the slot. Dynamic anchor ensures the restaurant body center lands at the slot.
+  // FIXED in Phase 6.2.2: was "The_Krusty_Krab" (underscores) — never matched the real node
+  //   name "The Krusty Krab" (spaces). Both childScaleOverrides and bodyAnchorChild were no-ops.
   'mcp-tool-use':        { model: '/models/krusty-krab-v2.glb',      yOffset: 0, rotY: -1.049, targetMaxDim: 1400,
-                           childScaleOverrides: { 'The_Krusty_Krab': 1.5 },
-                           bodyAnchorChild: 'The_Krusty_Krab' },
+                           childScaleOverrides: { 'The Krusty Krab': 1.5 },
+                           bodyAnchorChild: 'The Krusty Krab' },
   // Slot 3 — E (cx=310, cy=180): dx=-130, dz=0 → atan2(-130,0)=-π/2≈-1.571
   // sandy-treedome-v3.glb: rotYOffset +π for inward-facing door.
   // Phase 6.2: dome glass DoubleSide fix applied post-load (see GLBBuilding).
-  'messaging-channels':  { model: '/models/sandy-treedome-v3.glb',   yOffset: 0, rotY: -1.571, rotYOffset: Math.PI, targetMaxDim: 1000 },
+  // Phase 6.2.2: targetMaxDim 1000→2500. The dome GLB is square (XZ≈25.87, Y≈10.61),
+  // so max-dim normalization limits height to 410wu at targetMaxDim=1000 — dome always
+  // hits the footprint cap, not the height target. With targetMaxDim=2500 and
+  // MAX_FOOTPRINT=2000, effective scale = 2000/25.87=77.3; height = 10.61×77.3≈820wu (≈4.6× avatar).
+  // The dome is wide by design — the globe shape naturally tapers, so visual overlap with
+  // adjacent buildings at the 2000wu footprint is minimal.
+  'messaging-channels':  { model: '/models/sandy-treedome-v3.glb',   yOffset: 0, rotY: -1.571, rotYOffset: Math.PI, targetMaxDim: 2500 },
   // Slot 4 — ESE (cx=293, cy=245): dx=-113, dz=-65 → atan2(-113,-65)≈-2.093 (-2π/3)
   // rotYOffset: salty-spitoon.glb authored facing +X; -π/2 aligns toward village center.
-  // targetMaxDim 1000→1300 (+30%) — user reports spitoon reads too small vs ring neighbors.
-  // salty-spitoon.glb has ~2:1 aspect ratio (wide facade); MAX_FOOTPRINT=1800 cap applies.
-  // At targetMaxDim=1300 the effective rendered height ≈ 1300*(1800/scaledXZ). Still noticeably
-  // larger than 1000. If still too small, raise further and/or increase MAX_FOOTPRINT.
-  'api-integrations':    { model: '/models/salty-spitoon.glb',       yOffset: 0, rotY: -2.093, rotYOffset: -Math.PI / 2, targetMaxDim: 1300 },
+  // Phase 6.2.2: targetMaxDim 1300→2500. salty-spitoon.glb is authored at km-scale
+  // (bbox ~655k×340k×655k GLB units — the base Circle.002 flat plane is stripped by
+  // stripGroundPlanes). After strip, max-dim ≈507198. Scale = 2500/507198 = 0.00493.
+  // Height = 340557×0.00493 = 1679wu — hits MAX_FOOTPRINT=2000: cap adjusts to
+  // scale×(2000/XZ_scaled). Final height ≈ 1209wu (≈6.7× avatar). Visible improvement.
+  // rotYOffset -π/2: the spitoon GLB is authored facing +X; rotate to face village center.
+  'api-integrations':    { model: '/models/salty-spitoon.glb',       yOffset: 0, rotY: -2.093, rotYOffset: -Math.PI / 2, targetMaxDim: 2500 },
   // Slot 5 — SSE (cx=245, cy=293): dx=-65, dz=-113 → atan2(-65,-113)≈-2.620 (-5π/6)
   // rotYOffset: boating-school.glb classroom must face center (model-authored offset).
   'app-publishing':      { model: '/models/boating-school.glb',      yOffset: 0, rotY: -2.620, rotYOffset: Math.PI / 2, targetMaxDim: 1000 },
   // Slot 6 — S (cx=180, cy=310): dx=0, dz=-130 → atan2(0,-130)=π≈3.142
-  // targetMaxDim 1000→1300 (+30%) — user reports downtown building reads too small.
-  'cron-automation':     { model: '/models/patty-building.glb',      yOffset: 0, rotY:  3.142, targetMaxDim: 1300 },
+  // Phase 6.2.2: targetMaxDim 1300→2200. patty-building.glb bbox ≈255.78×193.50×150.
+  // Max dim = 255.78 (X width). At targetMaxDim=2200: scale = 2200/255.78 = 8.6.
+  // Height = 193.50×8.6 = 1664wu. XZ = 255.78×8.6 = 2200 — hits MAX_FOOTPRINT=2000.
+  // Adjusted: scale×(2000/2200) = 7.82. Height = 193.50×7.82 = 1513wu (≈8.4× avatar). ✓
+  // The civic anchor building visually dominates the south slot as intended.
+  'cron-automation':     { model: '/models/patty-building.glb',      yOffset: 0, rotY:  3.142, targetMaxDim: 2200 },
   // Slot 7 — SSW (cx=115, cy=293): dx=65, dz=-113 → atan2(65,-113)≈2.620 (5π/6)
   // Lighthouse is the tallest landmark — targetMaxDim 1400 keeps it visually dominant.
   'deployment-ops':      { model: '/models/building-lighthouse.glb', yOffset: 0, rotY:  2.620, targetMaxDim: 1400 },
@@ -264,17 +280,27 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   'agent-security':      { model: '/models/patricks-rock-v2.glb',    yOffset: 0, rotY:  1.049, targetMaxDim: 1100 },
   // Slot 11 — NNW (cx=115, cy=67): dx=65, dz=113 → atan2(65,113)≈0.522 (π/6)
   // squidward-house.glb = Easter Island moai head (CC-BY, Yanez Designs).
-  // targetMaxDim 1000→1400: Stones node Y range (370wu) dominates bbox — raising targetMaxDim
-  // increases base scale. childScaleOverride 1.4× on "Squidward_s_House" node (head body) gives
-  // differential sizing: moai head ≈1010wu, stepping stones stay at base scale proportionally.
-  // bodyAnchorChild: stone steps at front shift the full-GLB bbox center toward the pathway,
-  // causing the moai head to sit behind the ring slot. Dynamic anchor uses the Squidward_s_House
-  // bbox center (after 1.4× override) so the head body lands on the slot.
-  // Note: pivotZBias: 180 removed — it was a stale magic-number workaround superseded by this
-  // dynamic anchor. The two together would double-offset and push the head too far forward.
-  'memory-rag':          { model: '/models/squidward-house.glb',     yOffset: 0, rotY:  0.522, targetMaxDim: 1400,
-                           childScaleOverrides: { 'Squidward_s_House': 1.4 },
-                           bodyAnchorChild: 'Squidward_s_House' },
+  // GLB node tree (verified via GLB JSON inspection 2026-05-18):
+  //   Sketchfab_model → Squidward's House.FBX → RootNode
+  //     ├─ Skybox  [stripped by DECORATIVE_NAME_PREFIXES "Skybox_"]
+  //     ├─ Sand    [stripped by DECORATIVE_PARENT_NAMES]
+  //     ├─ Squidward's House  ← Three.js preserves apostrophe/space verbatim
+  //     └─ Stones
+  // IMPORTANT: Three.js GLTFLoader does NOT sanitize node names — colons, apostrophes,
+  //   and spaces are preserved verbatim. The node name IS "Squidward's House" (with
+  //   apostrophe and space). Use this exact string in childScaleOverrides + bodyAnchorChild.
+  //   Prior commits used "Squidward_s_House" (underscores) which never matched → T-pose
+  //   remained and bodyAnchorChild was silently skipped. Fixed in Phase 6.2.2.
+  // Phase 6.2.2: targetMaxDim 1400→1700, childScaleOverrides 1.4→1.7.
+  //   Raw GLB bbox ≈4.57×1.90×4.59. Max dim = 4.59 (Z). Scale at targetMaxDim=1700:
+  //   1700/4.59 ≈ 370wu/unit. childScaleOverride 1.7× on "Squidward's House" node:
+  //   moai head reads 1.7× larger than the uniform scale; Stones stay proportional.
+  // bodyAnchorChild "Squidward's House": stone steps extend in +Z from the moai body,
+  //   pulling full-GLB bbox center toward the pathway. The dynamic anchor aligns the
+  //   moai body center (after 1.7× override) with the ring slot — not the combined bbox.
+  "memory-rag":          { model: '/models/squidward-house.glb',     yOffset: 0, rotY:  0.522, targetMaxDim: 1700,
+                           childScaleOverrides: { "Squidward's House": 1.7 },
+                           bodyAnchorChild: "Squidward's House" },
 };
 
 // Scratch objects for stripGroundPlanes — reused across calls to avoid GC.
@@ -484,7 +510,11 @@ function stripGroundPlanes(scene: THREE.Object3D): void {
 //             1800 wu gives 33% more room while still leaving 33 wu gap between worst-case
 //             adjacent footprints. Other wide buildings (Sandy's Treedome, Boating School)
 //             benefit similarly — they no longer get crushed to under-target heights.
-const MAX_FOOTPRINT = 1800;
+//   2000 wu — Phase 6.2.2 fix (2026-05-18). Sandy's Treedome dome is square (aspect ≈ 1.0)
+//             and hits the 1800 cap, rendering at only 738wu (4.1× avatar). R=130 ring arc
+//             spacing is 2178wu so allowing 2000wu footprint keeps a 178wu clearance between
+//             the widest adjacent pair. Only the dome and km-scale Salty Spitoon hit this cap.
+const MAX_FOOTPRINT = 2000;
 
 // Scratch objects for computeBuildingScale — module-scope to avoid per-call GC.
 const _buildBbox = new THREE.Box3();
