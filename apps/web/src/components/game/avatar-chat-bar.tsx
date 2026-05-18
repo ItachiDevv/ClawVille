@@ -6,10 +6,12 @@ import { useGameStore } from '@/stores/game';
 import { useQuestStore, triggerQuestCheck } from '@/stores/quest';
 import { api } from '@/lib/api';
 import { KNOWLEDGE_BOOKS, type AgentCategory } from '@clawville/shared';
+import { MODEL_REGISTRY } from '@/lib/three/agent-model-registry';
 
-// Per-model glyph for the chat pill. Falls back to a category-level glyph so
-// new modelKeys still render a sensible icon without a code change. The old
-// hard-coded 🦞 made every Hermes/Milady/Other agent appear as a lobster.
+// Per-model glyph fallback for the chat pill when no preview PNG exists
+// (mostly the GLB crustaceans + sea creatures). VRM models — every Milady,
+// Hermes, and Tekk variant — render their actual preview thumbnail instead,
+// so the chat pill matches what walks around in the 3D world.
 const MODEL_GLYPH: Record<string, string> = {
   lobster: '🦞',
   sweet_crab: '🦀',
@@ -18,9 +20,6 @@ const MODEL_GLYPH: Record<string, string> = {
   jellyfish: '🪼',
   octopus: '🐙',
   seahorse: '🐉',
-  hermes_female: '⚡',
-  hermes_male: '⚡',
-  tekk: '⚡',
 };
 
 const CATEGORY_GLYPH: Record<AgentCategory, string> = {
@@ -29,6 +28,11 @@ const CATEGORY_GLYPH: Record<AgentCategory, string> = {
   milady: '💗',
   other: '🐠',
 };
+
+function getAgentChatPreview(modelKey: string | undefined): string | undefined {
+  if (!modelKey) return undefined;
+  return (MODEL_REGISTRY as Record<string, { preview?: string }>)[modelKey]?.preview;
+}
 
 function getAgentChatGlyph(modelKey: string | undefined, category: AgentCategory | undefined): string {
   if (modelKey && MODEL_GLYPH[modelKey]) return MODEL_GLYPH[modelKey];
@@ -70,13 +74,38 @@ export default function AvatarChatBar() {
   // Don't render when location chat is open or no avatar
   if (chatOpen || !avatar) return null;
 
-  // Derive the chat glyph from the avatar's actual modelKey + agentCategory so
-  // Hermes/Milady/Other agents stop showing as a lobster. Falls back to the
-  // openclaw lobster only for unknown configurations.
-  const agentGlyph = getAgentChatGlyph(
-    (avatar as { modelKey?: string }).modelKey,
-    (avatar as { agentCategory?: AgentCategory }).agentCategory,
-  );
+  // Prefer a real avatar thumbnail (Milady/Hermes PNG previews) so the chat
+  // pill matches the 3D character; fall back to a category-aware emoji for
+  // models without a registered preview (mostly OpenClaw GLB crustaceans).
+  const modelKey = (avatar as { modelKey?: string }).modelKey;
+  const agentCategory = (avatar as { agentCategory?: AgentCategory }).agentCategory;
+  const agentPreview = getAgentChatPreview(modelKey);
+  const agentGlyph = getAgentChatGlyph(modelKey, agentCategory);
+
+  function AgentIcon({ size }: { size: number }) {
+    if (agentPreview) {
+      return (
+        <img
+          src={agentPreview}
+          alt=""
+          aria-hidden
+          width={size}
+          height={size}
+          className="rounded-full object-cover shrink-0 ring-1 ring-cyan-300/40 shadow-[0_0_8px_rgba(0,229,255,0.35)]"
+          style={{ width: size, height: size }}
+        />
+      );
+    }
+    return (
+      <span
+        className="leading-none drop-shadow-[0_0_6px_rgba(0,229,255,0.35)]"
+        style={{ fontSize: Math.round(size * 0.9) }}
+        aria-hidden
+      >
+        {agentGlyph}
+      </span>
+    );
+  }
 
   const scrollToBottom = () => {
     setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
@@ -163,7 +192,7 @@ export default function AvatarChatBar() {
         <div className="w-full mb-2 claw-panel !p-0 overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-200">
           {/* Chat header */}
           <div className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-cyan-600/25 to-cyan-500/10 border-b border-cyan-500/25">
-            <span className="text-xl leading-none drop-shadow-[0_0_6px_rgba(0,229,255,0.35)]" aria-hidden>{agentGlyph}</span>
+            <AgentIcon size={22} />
             <span className="text-white font-bold text-sm">{avatar.name}</span>
             <span className="text-white/45 text-xs ml-auto font-mono">
               {knowledgeTopics.length > 0
@@ -237,7 +266,7 @@ export default function AvatarChatBar() {
         onClick={toggleExpand}
         className="group flex items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-cyan-600 to-cyan-500 border border-cyan-400/40 shadow-[0_0_25px_rgba(0,229,255,0.35)] hover:shadow-[0_0_35px_rgba(0,229,255,0.55)] hover:brightness-110 transition-all active:translate-y-0.5"
       >
-        <span className="text-2xl leading-none drop-shadow-[0_1px_2px_rgba(0,0,0,0.35)]" aria-hidden>{agentGlyph}</span>
+        <AgentIcon size={26} />
         {agentConnected && (
           <span className="text-emerald-300 text-xs" title="Agent connected">
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
