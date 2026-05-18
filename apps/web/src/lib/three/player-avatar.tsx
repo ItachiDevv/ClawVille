@@ -231,6 +231,15 @@ function getTerrainY(x: number, z: number, scene: THREE.Scene): number {
 function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
   const groupRef = useRef<THREE.Group>(null);
   const rotRef = useRef(VRM_DIR_ROTATION.idle);
+  /**
+   * Pitch (X-axis rotation, radians) for the avatar — drives the
+   * "swimming upward" tilt while ascending. Lerped each frame toward
+   * a per-phase target in useFrame. Order on group.rotation is set to
+   * 'YXZ' so this pitch is applied AFTER facing (rotRef → .y) in the
+   * avatar's local frame, i.e. tilting "back" always means leaning
+   * head-toward-up regardless of which way they're facing.
+   */
+  const pitchRef = useRef(0);
   const terrainYRef = useRef(-2);
   const { scene: threeScene, camera } = useThree();
 
@@ -475,52 +484,58 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
       while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
       rotRef.current += rotDiff * 0.15;
     }
+
+    // Pitch — lean back while ascending so the swim-pose reads as
+    // "swimming upward" (head up, body tilted skyward). Zeroed out
+    // when grounded, charging, or descending so the default swim
+    // pose stays for any horizontal/downward state. 0.15 lerp matches
+    // the facing-rotation cadence so pitch + yaw smooth together.
+    const _phaseAscendingPitch = jumpState.phase === 'launch' || jumpState.phase === 'quick';
+    const PITCH_ASCEND = -Math.PI / 3; // -60° lean back, head up
+    const pitchTarget = _phaseAscendingPitch ? PITCH_ASCEND : 0;
+    pitchRef.current += (pitchTarget - pitchRef.current) * 0.15;
+
+    // YXZ order ensures pitch (.x) is applied in the local frame
+    // AFTER facing (.y) — so leaning back is always "head-up", never
+    // dependent on which direction the avatar is facing.
+    group.rotation.order = 'YXZ';
     group.rotation.y = rotRef.current;
+    group.rotation.x = pitchRef.current;
 
     const dt = Math.min(delta, 0.1);
 
-    // Jump / squat / swim / fly animation pipeline (2026-05-18 final).
+    // Squat / swim / fly animation pipeline (2026-05-18 revised).
     //
-    // Four phases drive distinct loops via `setSurfaceClip`:
+    //   CHARGING (jumpState.phase === 'charging'): surfaceClip = 'squat'.
+    //     Mixamo squat plays from the moment SPACE goes down so the
+    //     avatar visibly preps while the player holds-to-charge.
     //
-    //   CHARGING (jumpState.phase === 'charging' — SPACE pressed, still
-    //     grounded, heightOffset=0): surfaceClip = 'squat'. Mixamo squat
-    //     plays from the moment SPACE goes down so the avatar visibly
-    //     squats while the player holds-to-charge. When SPACE releases
-    //     and we transition into launch/quick, surfaceClip flips to
-    //     'jump' and the animator crossfades — continuous squat → push-
-    //     off → airborne feel.
+    //   AIRBORNE (any phase ascending/descending/free-swim): surfaceClip
+    //     = 'flying' for Tekk, else 'swimming'. The previous revision
+    //     used 'jump' during ascent then crossfaded to swim at apex;
+    //     user-reported 2026-05-18 the jump loop looked weird while
+    //     they were flying upward. Now the swim/fly clip plays for the
+    //     entire airborne arc and the body pitch (computed above) tilts
+    //     the avatar BACK while ascending so the pose reads as
+    //     "swimming upward". Descending leaves pitch=0 → the same swim
+    //     pose reads as horizontal/forward swim.
     //
-    //   ASCENDING (jumpState.phase in {launch, quick}): surfaceClip =
-    //     'jump'. Loops until apex. Was originally a 0.5 s playOneShot
-    //     which barely registered on a 1–2 s leap; looping keeps the
-    //     pose on screen until the descending phase kicks in.
-    //
-    //   DESCENDING / FLOATING (airborne via sinking, quicksink, or
-    //     playerAltitude alone — free-swim with arrow keys, no SPACE):
-    //     surfaceClip = 'flying' for Tekk (he has wings),
-    //     'swimming' for every other VRM. Loops until landing.
-    //
-    //   GROUNDED idle/walk:
-    //     surfaceClip = 'idle'. Normal walk↔idle crossfade resumes.
+    //   GROUNDED idle/walk: surfaceClip = 'idle'. Normal walk↔idle
+    //     crossfade resumes.
     //
     // While charging OR airborne we pass isMoving=false to update() so
     // the animator's walk↔surfaceClip crossfade always picks
-    // surfaceClip (squat/jump/swim/fly) — no "walking while charging"
-    // or "walking through the air" with WASD held. setSurfaceClip
-    // lazy-loads the clip GLB on first call per VRM instance, then
-    // it's free.
+    // surfaceClip — no "walking while charging" or "walking through
+    // the air" with WASD held.
     const animator = vrmAnimatorRef.current;
     if (animator) {
       const phase = jumpState.phase;
       const phaseCharging = phase === 'charging';
-      const phaseAscending = phase === 'launch' || phase === 'quick';
       const swimClip: AnimName = reg.animatorId === 'tekk' ? 'flying' : 'swimming';
       const desiredClip: AnimName =
-        phaseCharging              ? 'squat'
-        : airborne && phaseAscending ? 'jump'
-        : airborne                 ? swimClip
-        :                            'idle';
+        phaseCharging ? 'squat'
+        : airborne    ? swimClip
+        :               'idle';
       if (desiredClip !== lastSurfaceClipRef.current) {
         animator.setSurfaceClip(desiredClip);
         lastSurfaceClipRef.current = desiredClip;
