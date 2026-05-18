@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { ACTIVITY_REGISTRY, DEFAULT_AGENT_MODEL_KEY } from '@clawville/shared';
+import { buildingZones } from '@/lib/pixi/tilemap-data';
 
 // ---------------------------------------------------------------------------
 // B6 — module-scope mutable position ref
@@ -31,7 +32,17 @@ const VISITED_STORAGE_KEY = 'clawville-visited-buildings';
 function loadVisited(): Set<string> {
   try {
     const raw = localStorage.getItem(VISITED_STORAGE_KEY);
-    return raw ? new Set(JSON.parse(raw)) : new Set();
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw) as string[];
+    // Prune phantom IDs from prior building-set revisions (e.g. pre-Phase-6.1
+    // renames). Without this, visitedBuildings.size can exceed
+    // buildingZones.length and the HUD shows "14/12 visited".
+    const validIds = new Set(buildingZones.map((z) => z.id));
+    const pruned = parsed.filter((id) => validIds.has(id));
+    if (pruned.length !== parsed.length) {
+      localStorage.setItem(VISITED_STORAGE_KEY, JSON.stringify(pruned));
+    }
+    return new Set(pruned);
   } catch {
     return new Set();
   }
