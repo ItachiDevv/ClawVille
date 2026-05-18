@@ -263,12 +263,22 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
       const bbox2 = new THREE.Box3().setFromObject(c);
       const sz = new THREE.Vector3(); bbox2.getSize(sz);
       const ct = new THREE.Vector3(); bbox2.getCenter(ct);
-      const mnz = bbox2.min.z, mxz = bbox2.max.z;
-      console.info('[casino-fit] scale=', fitResult.scale.toFixed(4),
-        'fit-offset=', fitResult,
-        'post-fit world bbox: center=', [+ct.x.toFixed(1), +ct.y.toFixed(1), +ct.z.toFixed(1)],
-        'size=', [+sz.x.toFixed(1), +sz.y.toFixed(1), +sz.z.toFixed(1)],
-        'z-range=', [+mnz.toFixed(1), +mxz.toFixed(1)]);
+      // Expose on window for inspection
+      (window as any).__casinoFit = {
+        scale: fitResult.scale,
+        offsetX: fitResult.offsetX, offsetY: fitResult.offsetY, offsetZ: fitResult.offsetZ,
+        worldBbox: {
+          minX: bbox2.min.x, minY: bbox2.min.y, minZ: bbox2.min.z,
+          maxX: bbox2.max.x, maxY: bbox2.max.y, maxZ: bbox2.max.z,
+          sizeX: sz.x, sizeY: sz.y, sizeZ: sz.z,
+          centerX: ct.x, centerY: ct.y, centerZ: ct.z,
+        },
+      };
+      console.info('[casino-fit] scale=' + fitResult.scale.toFixed(4) +
+        ' offset=(' + fitResult.offsetX.toFixed(1) + ',' + fitResult.offsetY.toFixed(1) + ',' + fitResult.offsetZ.toFixed(1) + ')' +
+        ' worldCenter=(' + ct.x.toFixed(1) + ',' + ct.y.toFixed(1) + ',' + ct.z.toFixed(1) + ')' +
+        ' worldSize=(' + sz.x.toFixed(1) + ',' + sz.y.toFixed(1) + ',' + sz.z.toFixed(1) + ')' +
+        ' check window.__casinoFit');
     }
 
     const hotspotDefs = useFallback ? FALLBACK_HOTSPOTS : GAMEREADY_HOTSPOTS;
