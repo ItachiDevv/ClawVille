@@ -11,7 +11,7 @@
 > - **`GameFeatures.md`** — gameplay.
 > - **This doc** — *how* the 3D scene is wired: coordinates, camera, lights, GPU budget, animation, asset pipeline.
 
-**Last edit:** 2026-05-17 — Entertainment-district swap: claw-arcade → E3, app-publishing → S3. Slot table in §2 updated. Prior last-edit 2026-05-17: Phase 6.0.1: 10-building circular ring → 12-building square ring; casino E2 + claw-arcade S3 added. §2 ring geometry updated. `WorldContent.md` §2 has the full 12-building roster + GLB paths. §6e jump animation pipeline added: VRM avatars now play `jump` one-shot on takeoff then transition to `swimming` (or `flying` for Tekk) while airborne, restoring `idle` on landing. §6a NPC position smoothing rewritten: dead reckoning + LERP_SPEED_DR=8 corrective lerp replaces the old LERP_SPEED=1.5 that pumped at the server's 5 Hz tick. §9d added: Mixamo animation GLB load policy. 2026-05-12 — restructured into a tight manifest (was 2430 lines / 200 KB with 14 stacked audit entries).
+**Last edit:** 2026-05-17 — Circle revert: square ring topology reverted to 12-building TRUE circular ring (30° spacing, R=72 tiles). Casino moved to slot 9 (W) and gets +30% targetHeight=1040 as entertainment-district landmark. §2 ring geometry + slot table fully rewritten. Prior last-edit 2026-05-17: Entertainment-district swap: claw-arcade → E3, app-publishing → S3. Prior 2026-05-17: Phase 6.0.1: 10-building circular ring → 12-building square ring; casino + claw-arcade added. `WorldContent.md` §2 has the full 12-building roster + GLB paths. §6e jump animation pipeline added. §6a NPC position smoothing rewritten. §9d added. 2026-05-12 — restructured into a tight manifest.
 
 ---
 
@@ -47,38 +47,45 @@ Sand floor sits at `y = -2` (`arena-terrain.tsx:203`). Buildings, NPCs, and deco
 
 Source: `arena-buildings.tsx`. See `WorldContent.md §2` for the building roster + per-building GLB paths.
 
-**Ring geometry (Phase 6.0.1 — 12-building square ring, 2026-05-17):**
+**Ring geometry (circle revert — 2026-05-17):**
 
-Changed from 10-building circular ring to 12-building **square ring**. Two new buildings added: `casino` (E2) and `claw-arcade` (originally S3, moved to E3 2026-05-17 entertainment-district swap; `app-publishing` moved from E3 to S3).
+Reverted from the short-lived square ring (commit cdc8011 / 1433589) back to a **true circular ring**. The square topology created visual rhythm gaps at the 4 empty corners and mismatched the minimap dashed-circle guide. Casino is the entertainment-district landmark at +30% height.
 
-**Entertainment district:** casino (E2) + claw-arcade (E3) are adjacent on the east wall, 1536 wu apart — same inter-building spacing as all other pairs on a side.
+**Entertainment district:** casino (slot 9, W) + claw-arcade (slot 10, WNW) are adjacent at 30° separation (≈1206 wu arc between centers).
 
 | Dimension | Value |
 |---|---|
-| Layout | 3 buildings per side (N / E / S / W), corners open as plaza space |
-| Side distance from center | 72 tiles = 2304 wu |
-| Slot spacing along each side | 48 tiles = 1536 wu (center ± 0 and ± 48 tiles) |
+| Layout | 12 buildings at 30° angular spacing (true circle) |
+| Radius | 72 tiles = 2304 wu from center (80,80) / world (0,0,0) |
+| Angular spacing | 30° (π/6 rad) per slot |
+| Starting angle | −π/2 (North), clockwise |
 | Zone footprint | 14×14 tiles = 448×448 wu |
-| Zone upper-left | `(slot_cx − 7, slot_cy − 7)` |
+| Zone upper-left | `(round(cx) − 7, round(cy) − 7)` |
+| cx formula | `80 + 72 * cos(−π/2 + slot * π/6)` |
+| cy formula | `80 + 72 * sin(−π/2 + slot * π/6)` |
 
-Slot centers (tile coords, center at (80, 80)):
+Slot table (clockwise from North, cx/cy in tile coords):
 
-| Side | Slot | cx | cy | Building |
-|---|---|---|---|---|
-| N | N1 | 32 | 8 | visual-creation |
-| N | N2 | 80 | 8 | memory-rag |
-| N | N3 | 128 | 8 | api-integrations |
-| E | E1 | 152 | 32 | cron-automation |
-| E | E2 | 152 | 80 | casino |
-| E | E3 | 152 | 128 | claw-arcade (entertainment district, adjacent to E2) |
-| S | S1 | 32 | 152 | deployment-ops |
-| S | S2 | 80 | 152 | agent-security |
-| S | S3 | 128 | 152 | app-publishing |
-| W | W1 | 8 | 32 | messaging-channels |
-| W | W2 | 8 | 80 | mcp-tool-use |
-| W | W3 | 8 | 128 | code-development |
+| Slot | Angle | cx | cy | Building | rotY | Notes |
+|---|---|---|---|---|---|---|
+| 0 | N (0°) | 80 | 8 | visual-creation | 0.000 | |
+| 1 | NNE (30°) | 116 | 18 | code-development | −0.524 | |
+| 2 | ENE (60°) | 142 | 44 | mcp-tool-use | −1.047 | |
+| 3 | E (90°) | 152 | 80 | messaging-channels | −1.571 | rotYOffset +π |
+| 4 | ESE (120°) | 142 | 116 | api-integrations | −2.094 | rotYOffset −π/2 |
+| 5 | SSE (150°) | 116 | 142 | app-publishing | −2.618 | rotYOffset +π/2 |
+| 6 | S (180°) | 80 | 152 | cron-automation | 3.142 | |
+| 7 | SSW (210°) | 44 | 142 | deployment-ops | 2.618 | |
+| 8 | WSW (240°) | 18 | 116 | agent-security | 2.094 | |
+| 9 | W (270°) | 8 | 80 | casino | 1.571 | entertainment district; targetHeight=1040 (+30%) |
+| 10 | WNW (300°) | 18 | 44 | claw-arcade | 1.047 | entertainment district (adjacent) |
+| 11 | NNW (330°) | 44 | 18 | memory-rag | 0.524 | |
 
-**rotY formula:** `atan2(80 − cx, 80 − cy)` — each building's +Z axis points toward plaza center (world 0, 0).
+**rotY formula:** `atan2(80 − cx, 80 − cy)` — each building's +Z axis points toward plaza center (world 0, 0). Model-authored `rotYOffset` values are additive and stay with the building regardless of slot.
+
+**Casino scale:** `targetHeight = 1040 wu` (= 800 × 1.3) — 30% taller than the 800 wu standard to landmark the entertainment district. Computed by passing `targetHeight` through `computeBuildingScale()`. `scaleOverride` is NOT used — bbox-based normalization and pivot correction still apply.
+
+**Note on larger radii:** R=90 tiles (as initially requested) is geometrically impossible on the 160×160 tile grid — the N/S/E/W slots would extend to tile ±10 outside the map boundary (zones need 7 tiles of clearance from center). R=72 is the safe maximum with 14×14 tile zones. The 3D world extends to ±2560 wu, so the constraint is the pixi tilemap, not the Three.js scene.
 
 **Authoritative source:** `buildingZones[]` in `apps/web/src/lib/pixi/tilemap-data.ts`. All consumers (arena-buildings.tsx, minimap.tsx, PixiCanvas.tsx, map-locations.ts) derive from it.
 
@@ -459,8 +466,9 @@ Draw-call budget (full equipped set): hat ≤ 1, aura ≤ 4 (instanced particles
 
 Compact log. Single line per change with commit reference where applicable.
 
-- 2026-05-17 — Entertainment-district swap: `claw-arcade` → E3, `app-publishing` → S3. `tilemap-data.ts` zone ids swapped; `map-locations.ts` positionX/Y swapped; `arena-buildings.tsx` rotY updated (claw-arcade −2.159, app-publishing −2.554 + rotYOffset +π/2); §2 slot table updated. Casino (E2) + claw-arcade (E3) now adjacent on east wall.
-- 2026-05-17 — Phase 6.0.1: `tilemap-data.ts` buildingZones expanded from 10 circular → 12 square ring; `map-locations.ts` and `building-types.ts` updated; `arena-buildings.tsx` BUILDING_MODELS adds casino (E2, box3Recenter) + claw-arcade (S3) with placeholder onClick handlers; `minimap.tsx` accent colors + ring guide radius updated; `3dStructure.md` §2 rewritten.
+- 2026-05-17 — Circle revert: `tilemap-data.ts` buildingZones already circular (fixed); `map-locations.ts` fully rewritten to circular positions; `arena-buildings.tsx` BUILDING_MODELS completely reordered with new rotY values for each slot, `computeBuildingScale` gains optional `targetHeight` param, casino gets `targetHeight=1040` (+30%); `minimap.tsx` ring-guide comment corrected; `npc-definitions.ts` wanderer homeX/homeY updated for new ring (patrolRadius 700→500); §2 slot table rewritten as 12-slot circle; §2 note added explaining R=90 tile constraint.
+- 2026-05-17 — Entertainment-district swap: `claw-arcade` → E3, `app-publishing` → S3. `tilemap-data.ts` zone ids swapped; `map-locations.ts` positionX/Y swapped; `arena-buildings.tsx` rotY updated; §2 slot table updated.
+- 2026-05-17 — Phase 6.0.1: `tilemap-data.ts` buildingZones expanded from 10 circular → 12 square ring; `map-locations.ts` and `building-types.ts` updated; `arena-buildings.tsx` BUILDING_MODELS adds casino + claw-arcade; `minimap.tsx` accent colors + ring guide radius updated; §2 rewritten.
 - 2026-05-12 — dead-code cleanup in `arena-npcs.tsx` — removed unused `NPC_CULL_DIST_SQ` / `VRM_NPC_HALF_RATE_DIST_SQ` / `VRM_NPC_CULL_DIST_SQ` constants and the entire `checkLabelOcclusion` / `buildOccluderList` / `invalidateOccluderCache` infra block (5 module-scope variables + 3 functions, all orphaned by the 2026-05-11 culling removal). Also flattened a duplicated spring-throttle comment block. No behavior change.
 - 2026-05-12 — `ed1f4a0` / `2728ac6` — Sandy's Treedome swap to `sandy_tree_final.glb` after measuring every candidate via `scripts/read-glb-bbox.mjs`. Vertex-count strip rule attempted then reverted (Object_5 was the building, not a backdrop).
 - 2026-05-12 — `3b9d64b` / `c3934a1` — `Skybox_`-prefix mesh-name strip added to `stripDecorativeMeshes` (the actual blue-dome backdrop in Yanez Designs Sketchfab GLBs).

@@ -39,18 +39,33 @@ export type TileIndex = (typeof TILES)[keyof typeof TILES];
 
 // ---------------------------------------------------------------------------
 // Building positions (tile coords)
-// 12-building SQUARE ring layout in 160×160 grid, center at (80,80).
-// 2026-05-17 (Phase 6.0.1): expanded from 10-building circular ring to
-// 12-building square ring — 3 buildings per side (N/E/S/W), corners stay
-// empty as plaza space. Two new buildings added: casino (E2) + claw-arcade (S3).
+// 12-building TRUE CIRCULAR ring layout in 160×160 grid, center at (80,80).
+// 2026-05-17 (Phase 6.0.1): first pass used a square ring (3 per side).
+// 2026-05-17 (circle revert): reverted to true circle — 12 buildings at 30°
+// angular spacing, radius 72 tiles. Matches the minimap dashed-circle guide.
 //
-// Square geometry:
-//   Side distance from center: 72 tiles (= 2304 wu)
-//   Side slot positions: center ± 0, ± 48 tiles along the side
+// Circle geometry:
+//   Radius: 72 tiles from center (80, 80) = 2304 wu
+//   Angular spacing: 30° (π/6 rad) between slots
+//   Slot 0 starts at north (top), angles increase clockwise
 //   Zone footprint: 14×14 tiles (448×448 wu) — unchanged
-//   Zone upper-left = (slot_center_x − 7, slot_center_y − 7)
+//   Zone upper-left = (round(cx) − 7, round(cy) − 7)
 //
-// The 10 original buildings retain their IDs; only positions changed.
+// Slot assignment (clockwise from north):
+//   Slot  0 (  0°/N)   → visual-creation    (Pineapple House)
+//   Slot  1 ( 30°/NNE) → code-development   (Chum Bucket)
+//   Slot  2 ( 60°/ENE) → mcp-tool-use       (Krusty Krab)
+//   Slot  3 ( 90°/E)   → messaging-channels (Sandy's Treedome)
+//   Slot  4 (120°/SSE) → api-integrations   (Salty Spitoon)
+//   Slot  5 (150°/SSE) → app-publishing     (Boating School)
+//   Slot  6 (180°/S)   → cron-automation    (Downtown Building)
+//   Slot  7 (210°/SSW) → deployment-ops     (Lighthouse)
+//   Slot  8 (240°/WSW) → agent-security     (Patrick's Rock)
+//   Slot  9 (270°/W)   → casino             (Predictive Gaming Cove) ─┐ entertainment
+//   Slot 10 (300°/WNW) → claw-arcade        (Arcade City)     ┘ district — adjacent
+//   Slot 11 (330°/NNW) → memory-rag         (Squidward's House)
+//
+// The 10 original building IDs are PRESERVED — only positions updated.
 // All consumer code (arena-buildings.tsx, minimap.tsx, PixiCanvas.tsx,
 // map-locations.ts) reads buildingZones from here — update propagates.
 // ---------------------------------------------------------------------------
@@ -64,45 +79,36 @@ export interface BuildingZone {
 
 export const buildingZones: BuildingZone[] = [
   // ---------------------------------------------------------------------------
-  // 12-building square ring (3 per side, no corner buildings — corners = plaza).
-  // Square radius: 72 tiles from center (80, 80). Side spacing: 48 tiles.
-  // Zone footprint: 14×14 tiles. Upper-left = center − 7.
-  // Added 2026-05-17 (Phase 6.0.1): casino + claw-arcade fill E2 and S3.
-  // 2026-05-17 entertainment-district swap: claw-arcade moved E3, app-publishing moved S3.
-  // rotY = atan2(80 − cx, 80 − cy) so each building faces the plaza center.
+  // 12-building circular ring. R=72 tiles, center=(80,80), 30° spacing.
+  // cx = 80 + 72*cos(θ), cy = 80 + 72*sin(θ), θ = -π/2 + slot*(π/6).
+  // Zone upper-left = (round(cx)-7, round(cy)-7). Width/height = 14.
+  // rotY = atan2(80-cx, 80-cy) so each building faces the plaza center.
   // ---------------------------------------------------------------------------
 
-  // === NORTH SIDE (y-fixed at 8, x varies: 32, 80, 128) ===
-  // N1  center=(32,  8)   dx=48, dz=72  → visual-creation (Pineapple House)
-  { id: 'visual-creation',     x:  25, y:   1, width: 14, height: 14 },
-  // N2  center=(80,  8)   dx= 0, dz=72  → memory-rag (Squidward's House)
-  { id: 'memory-rag',          x:  73, y:   1, width: 14, height: 14 },
-  // N3  center=(128, 8)   dx=-48,dz=72  → api-integrations (Salty Spitoon)
-  { id: 'api-integrations',    x: 121, y:   1, width: 14, height: 14 },
-
-  // === EAST SIDE (x-fixed at 152, y varies: 32, 80, 128) ===
-  // E1  center=(152,32)   dx=-72,dz=48  → cron-automation (Downtown Building)
-  { id: 'cron-automation',     x: 145, y:  25, width: 14, height: 14 },
-  // E2  center=(152,80)   dx=-72,dz= 0  → casino (Phase 6 new building)
-  { id: 'casino',              x: 145, y:  73, width: 14, height: 14 },
-  // E3  center=(152,128)  dx=-72,dz=-48 → claw-arcade (entertainment district — swapped 2026-05-17)
-  { id: 'claw-arcade',         x: 145, y: 121, width: 14, height: 14 },
-
-  // === SOUTH SIDE (y-fixed at 152, x varies: 32, 80, 128) ===
-  // S1  center=(32, 152)  dx=48, dz=-72 → deployment-ops (Lighthouse)
-  { id: 'deployment-ops',      x:  25, y: 145, width: 14, height: 14 },
-  // S2  center=(80, 152)  dx= 0, dz=-72 → agent-security (Patrick's Rock)
-  { id: 'agent-security',      x:  73, y: 145, width: 14, height: 14 },
-  // S3  center=(128,152)  dx=-48,dz=-72 → app-publishing / Boating School (swapped 2026-05-17)
-  { id: 'app-publishing',      x: 121, y: 145, width: 14, height: 14 },
-
-  // === WEST SIDE (x-fixed at 8, y varies: 32, 80, 128) ===
-  // W1  center=(8,  32)   dx=72, dz=48  → messaging-channels (Sandy's Treedome)
-  { id: 'messaging-channels',  x:   1, y:  25, width: 14, height: 14 },
-  // W2  center=(8,  80)   dx=72, dz= 0  → mcp-tool-use (Krusty Krab)
-  { id: 'mcp-tool-use',        x:   1, y:  73, width: 14, height: 14 },
-  // W3  center=(8, 128)   dx=72, dz=-48 → code-development (Chum Bucket)
-  { id: 'code-development',    x:   1, y: 121, width: 14, height: 14 },
+  // Slot 0 — N  (θ=-π/2):  cx=80, cy=8
+  { id: 'visual-creation',    x:  73, y:   1, width: 14, height: 14 },
+  // Slot 1 — NNE (θ=-π/3):  cx≈116, cy≈18
+  { id: 'code-development',   x: 109, y:  11, width: 14, height: 14 },
+  // Slot 2 — ENE (θ=-π/6):  cx≈142, cy≈44
+  { id: 'mcp-tool-use',       x: 135, y:  37, width: 14, height: 14 },
+  // Slot 3 — E  (θ=0):      cx=152, cy=80
+  { id: 'messaging-channels', x: 145, y:  73, width: 14, height: 14 },
+  // Slot 4 — ESE (θ=π/6):   cx≈142, cy≈116
+  { id: 'api-integrations',   x: 135, y: 109, width: 14, height: 14 },
+  // Slot 5 — SSE (θ=π/3):   cx≈116, cy≈142
+  { id: 'app-publishing',     x: 109, y: 135, width: 14, height: 14 },
+  // Slot 6 — S  (θ=π/2):    cx=80, cy=152
+  { id: 'cron-automation',    x:  73, y: 145, width: 14, height: 14 },
+  // Slot 7 — SSW (θ=2π/3):  cx≈44, cy≈142
+  { id: 'deployment-ops',     x:  37, y: 135, width: 14, height: 14 },
+  // Slot 8 — WSW (θ=5π/6):  cx≈18, cy≈116
+  { id: 'agent-security',     x:  11, y: 109, width: 14, height: 14 },
+  // Slot 9 — W  (θ=π):      cx=8, cy=80     ← entertainment district
+  { id: 'casino',             x:   1, y:  73, width: 14, height: 14 },
+  // Slot 10 — WNW (θ=7π/6): cx≈18, cy≈44   ← entertainment district (adjacent to casino)
+  { id: 'claw-arcade',        x:  11, y:  37, width: 14, height: 14 },
+  // Slot 11 — NNW (θ=4π/3): cx≈44, cy≈18
+  { id: 'memory-rag',         x:  37, y:  11, width: 14, height: 14 },
 ];
 
 // ---------------------------------------------------------------------------
