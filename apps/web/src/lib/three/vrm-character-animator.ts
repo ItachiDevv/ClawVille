@@ -783,12 +783,36 @@ export class VRMCharacterAnimator {
     }
 
     this.mixer.update(delta);
-    // Note: vrm.update() intentionally skipped — caller must call updateSpringOnly()
-    // at the desired spring-bone rate (e.g. every 2nd frame for idle NPCs).
-    // Skeleton flush is also deferred to updateSpringOnly because the bone
-    // matrices won't have changed until vrm.update() copies the normalized
-    // bones across to the raw rig. Flushing here would write stale boneMatrices
-    // and the body would draw one tick behind any bone-anchored cosmetic.
+
+    // 2026-05-18 — body-tracks-group fix.
+    //
+    // Historically this method skipped vrm.update() + scene.updateMatrixWorld
+    // + skeleton flush entirely; updateSpringOnly handled all of them at
+    // 15 Hz. That was correct when the only source of bone movement was
+    // animation pose (which the spring-bone throttle is what we're saving
+    // cycles on). But it ALSO meant the SkinnedMesh's boneMatrices uniform
+    // only refreshed every 4th frame — so when arena-npcs.tsx moves
+    // group.position every frame via the entity-interpolation smoother,
+    // the body drew at 15 Hz while the group moved at 60 Hz. Visible
+    // stutter ("body chunks forward every 4 frames"), reported by the
+    // user 2026-05-18 with the diagnostic clue that GLB crustaceans
+    // (no animator override of skeleton.update) moved smoothly while
+    // VRMs stuttered.
+    //
+    // Fix: split vrm.update into its CHEAP parts (humanoid norm→raw copy,
+    // ~1µs per VRM) which run every frame, and the EXPENSIVE part
+    // (spring-bone physics) which stays on the 15 Hz schedule in
+    // updateSpringOnly. scene.updateMatrixWorld + skeleton.update also
+    // run every frame here — both cheap (a few µs per VRM) and required
+    // for the boneMatrices upload to reflect the new group.position.
+    //
+    // Tradeoff: spring bones lag one frame behind animation pose (since
+    // skeleton flush in MixerOnly captures bones BEFORE the next
+    // updateSpringOnly mutates them). Imperceptible on hair/skirt at
+    // typical viewing distance.
+    this.vrm.humanoid?.update();
+    this.vrm.scene.updateMatrixWorld(true);
+    for (const fn of this._skeletonUpdateFns.values()) fn();
   }
 
   /**
@@ -805,10 +829,18 @@ export class VRMCharacterAnimator {
    */
   updateSpringOnly(accumulatedDelta: number): void {
     if (!this.ready) return;
-    this.vrm.update(accumulatedDelta);
-    // Same ordering invariant as `update()` — refresh bone matrixWorld
-    // before flushing the skeleton boneMatrices buffer, otherwise the
-    // SkinnedMesh body draws one tick behind any bone-anchored cosmetic.
+    // 2026-05-18 — narrowed from full vrm.update() to just spring physics.
+    // humanoid + scene.updateMatrixWorld + skeleton.update now run every
+    // frame in updateMixerOnly (see that method's comment block for the
+    // body-tracks-group stutter fix). Spring-bone physics is the only
+    // expensive part of vrm.update(), so it stays on the 15 Hz schedule.
+    //
+    // Calling springBoneManager.update directly bypasses the wrapper but
+    // matches the public API @pixiv/three-vrm exposes (3.5.x). If a
+    // future VRM version moves the manager, fall back to vrm.update().
+    this.vrm.springBoneManager?.update(accumulatedDelta);
+    // Refresh bone matrixWorld + skeleton flush so the spring-driven raw-bone
+    // movements upload to the GPU. Same ordering invariant as update().
     this.vrm.scene.updateMatrixWorld(true);
     for (const fn of this._skeletonUpdateFns.values()) fn();
   }
