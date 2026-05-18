@@ -11,7 +11,7 @@
 > - **`GameFeatures.md`** — gameplay.
 > - **This doc** — *how* the 3D scene is wired: coordinates, camera, lights, GPU budget, animation, asset pipeline.
 
-**Last edit:** 2026-05-18 — Fog near tuned 2500→3800 (far stays 6800=camera.far) so far-ring buildings at ~4540wu land at ≈25% fog factor instead of 47%; textures/colors now readable from spawn. Prior 2026-05-18: MAX_FOOTPRINT 1000→1500, building targetHeights tuned, pivotZBias system, fog 1200/6400→2500/6800, casino-interior position bake. Prior 2026-05-18: casino interior scene. Prior 2026-05-18: Phase 6.1 grid+ring expand, BuildingPedestal. Prior 2026-05-17: Circle revert, R=72, casino +30%.
+**Last edit:** 2026-05-18 — §6f Animation Shipping Rules added (STRICT — 8-point checklist covering bundling, lazy preload, SW matcher, SW propagation, entity interpolation, 60 Hz skeleton flush, surface-clip pipeline, single-knob sizing). Prior 2026-05-18 — Issue 6 bundle: NPC_INSET_WORLD 600→1000 (NPCs now outside MAX_FOOTPRINT boundary); MAX_FOOTPRINT 1500→1800 (Salty Spitoon/Sandy/Boating School were hitting 1500 cap); targetHeights bumped (Salty Spitoon 1200→1500, Chum Bucket 900→1100, Krusty Krab 1200→1400); Pearl scaleOverride 150→184, Mrs. Puff 2.7→3.3; Patrick's Rock ↔ Arcade City slot swap (agent-security slot 8→10, claw-arcade slot 10→8); rotY values swapped accordingly. Casino adjacency flag: claw-arcade no longer adjacent to casino. Prior 2026-05-18: Fog near tuned 2500→3800. Prior 2026-05-18: MAX_FOOTPRINT 1000→1500, building targetHeights tuned, pivotZBias system, fog 1200/6400→2500/6800. Prior 2026-05-18: Phase 6.1 grid+ring expand, BuildingPedestal. Prior 2026-05-17: Circle revert, R=72, casino +30%.
 
 ---
 
@@ -51,7 +51,7 @@ Source: `arena-buildings.tsx`. See `WorldContent.md §2` for the building roster
 
 Grid expanded from 160×160 to 240×240 tiles, center shifted from (80,80) to (120,120). Ring radius expanded from R=72 tiles (impossible at R≥74 on 160-grid) to R=100 tiles on the 240-grid, giving 13-tile border clearance on all sides (max safe R = 120−7 = 113). Casino is the entertainment-district landmark at +30% height.
 
-**Entertainment district:** casino (slot 9, W) + claw-arcade (slot 10, WNW) are adjacent at 30° separation (≈2094 wu arc between centers at R=100).
+**Entertainment district:** casino (slot 9, W) + agent-security/Patrick's Rock (slot 10, WNW) are adjacent at 30° separation (≈2094 wu arc). claw-arcade was swapped to slot 8 (WSW, 2026-05-18) — it is now 2 slots (60°) from casino and NO LONGER ADJACENT. Patrick's Rock is the new casino neighbor.
 
 | Dimension | Value |
 |---|---|
@@ -69,16 +69,16 @@ Slot table (clockwise from North, cx/cy in tile coords):
 | Slot | Angle | cx | cy | Building | rotY | targetHeight | Notes |
 |---|---|---|---|---|---|---|---|
 | 0 | N (0°) | 120 | 20 | visual-creation | 0.000 | 1100 | |
-| 1 | NNE (30°) | 170 | 33 | code-development | −0.524 | 900 | |
-| 2 | ENE (60°) | 207 | 70 | mcp-tool-use | −1.047 | 1200 | raised from 1000 (footprint-cap fix) |
+| 1 | NNE (30°) | 170 | 33 | code-development | −0.524 | 1100 | raised from 900 (2026-05-18 pass 3) |
+| 2 | ENE (60°) | 207 | 70 | mcp-tool-use | −1.047 | 1400 | raised from 1200 (2026-05-18 pass 3) |
 | 3 | E (90°) | 220 | 120 | messaging-channels | −1.571 | 1300 | raised from 1000; rotYOffset +π |
-| 4 | ESE (120°) | 207 | 170 | api-integrations | −2.094 | 1200 | raised from 1000; rotYOffset −π/2 |
+| 4 | ESE (120°) | 207 | 170 | api-integrations | −2.094 | 1500 | raised from 1200 (2026-05-18 pass 3); rotYOffset −π/2 |
 | 5 | SSE (150°) | 170 | 207 | app-publishing | −2.618 | 1100 | raised from 950; rotYOffset +π/2 |
 | 6 | S (180°) | 120 | 220 | cron-automation | 3.142 | 1400 | raised from 1200 |
 | 7 | SSW (210°) | 70 | 207 | deployment-ops | 2.618 | 1500 | tallest landmark |
-| 8 | WSW (240°) | 33 | 170 | agent-security | 2.094 | 900 | |
+| 8 | WSW (240°) | 33 | 170 | claw-arcade | 2.094 | 900 | swapped from slot 10 (2026-05-18); casino adjacency BROKEN — now 2 slots from casino |
 | 9 | W (270°) | 20 | 120 | casino | 1.571 | 1040 | entertainment district; box3Recenter=true |
-| 10 | WNW (300°) | 33 | 70 | claw-arcade | 1.047 | 900 | entertainment district (adjacent) |
+| 10 | WNW (300°) | 33 | 70 | agent-security | 1.047 | 900 | swapped from slot 8 (2026-05-18); now adjacent to casino |
 | 11 | NNW (330°) | 70 | 33 | memory-rag | 0.524 | 1300 | raised from 1100; pivotZBias=+180 |
 
 **rotY formula:** `atan2(120 − cx, 120 − cy)` — each building's +Z axis points toward plaza center (world 0, 0). Values are identical to the R=72 layout because atan2 depends only on direction, not magnitude. Model-authored `rotYOffset` values are additive and stay with the building regardless of slot.
@@ -89,7 +89,7 @@ Slot table (clockwise from North, cx/cy in tile coords):
 
 **Building height target:** `BUILDING_TARGET_HEIGHT = 800 wu` (default fallback). Per-building `targetHeight` overrides in `BUILDING_MODELS` take precedence via `computeBuildingScale(c, config.targetHeight ?? BUILDING_TARGET_HEIGHT)`.
 
-**Footprint cap:** `MAX_FOOTPRINT = 1500 wu` (changed from 1000 in Phase 6.1 regression fix, 2026-05-18). If post-scale `max(sx, sz) > 1500`, scale is reduced. The old 1000wu cap was set for the R=72-tile ring. With R=100 (slot spacing ≈1675wu), many buildings (Squidward, Sandy, Krusty Krab, Salty Spitoon, Downtown) have GLBs wider than tall; at targetHeight≥1000 their scaledMaxXZ exceeded 1000wu, silently shrinking rendered height to 500-700wu — causing characters to tower over buildings. 1500wu leaves a 175wu gap between adjacent max-footprint buildings.
+**Footprint cap:** `MAX_FOOTPRINT = 1800 wu` (raised 1000→1500→1800 across Phase 6.1 fixes). If post-scale `max(sx, sz) > 1800`, scale is reduced. History: 1000wu was set for R=72; raised to 1500 for R=100 ring (2026-05-18 Phase 6.1); raised again to 1800 (2026-05-18 pass 3) because salty-spitoon.glb has ~2:1 aspect ratio — at targetHeight=1500 its XZ hit the 1500 cap and rendered at only ~900wu. At 1800wu the gap between adjacent max-footprint buildings is still ~(1675−1800/2−1800/2) ≈ negative — so realistically only the widest outlier building (Salty Spitoon) approaches the cap; most buildings are constrained by targetHeight, not footprint.
 
 **Terrain lerp:** `terrainYRef.current += (ty - terrainYRef.current) * 0.6` (both VRM and GLB paths in `player-avatar.tsx`). Increased from 0.3→0.6 so avatars snap to dune peaks faster and don't visibly sink into bumpy terrain.
 
@@ -319,6 +319,49 @@ Modes that ignore SPACE: `explore` (no avatar) and `autonomous` (engine-driven).
 - `airborne → grounded`: restore `setSurfaceClip('idle')`. Next `isMoving=false` frame crossfades to standing idle, not stuck on swim.
 
 Lobster / crayfish GLB avatars don't participate (no swim/fly clip in their procedural animator) — they keep the existing vertical-only behaviour.
+
+### 6f. Animation shipping rules (STRICT — added 2026-05-18)
+
+**Every animation change MUST follow this checklist.** Hard-won across an evening of iteration on emote loading, NPC stutter, and jump pipeline. Skipping any of these reintroduces a class of bug we've already paid for. Same standing as the same-diff doc rule.
+
+**1. Asset delivery — bundle, don't fan out.**
+- New emote / one-shot clips go INTO `apps/web/public/avatars/animations/_emotes.glb` via `scripts/build-anim-bundles.mjs`. Single multi-clip GLB per group; runtime picks by name via the `bundle.glb#clipName` syntax in `ANIM_PATHS`.
+- Never add 19 individual `.glb` files to the manifest. The hosting cost is fine; the **request count** at mount is what kills cold-load (visible in network panel as the `injected.js` fanout pattern). gltf-transform `dedup()` shrinks the bundle 11 % below the sum of singles anyway.
+- Locomotion (idle/walk/run) stays separate per-character — they're SW-precached and must load eagerly, and bundling them would force the 2.2 MB emote payload to load alongside.
+
+**2. Mount-time fetch budget.**
+- `preloadMixamoClips()` is locomotion-only. NEVER call `preloadEmoteClips()` from a mount path — it kicks 19 emote fetches via `requestIdleCallback`, which is still 19 round-trips against the Cloudflare edge.
+- If a feature genuinely needs a specific set of emotes warm before its trigger (e.g. `EmoteHotbar`'s ≤4 equipped emotes, `ReefRacePlayer`'s wipeout/victory), call `preloadClips(names)` with the EXACT list — never the whole tier.
+
+**3. Service worker matcher.**
+- Any new asset path prefix (`/cosmetics/`, `/skins/`, future…) MUST be added to `ASSET_PATH_PREFIXES` in `apps/web/public/sw.js`. The matcher is path-prefix + extension `.glb`/`.vrm`; assets under a missing prefix bypass the cache silently and pay full network cost on every return visit.
+- Bump `CACHE_VERSION` whenever sw.js changes — the activate handler reaps the prior cache. Without the bump existing clients keep the old matcher.
+
+**4. SW propagation.**
+- `apps/web/src/components/sw-register.tsx` MUST keep `updateViaCache: 'none'` + an explicit `reg.update()` on registration. Without those Chrome HTTP-caches sw.js for the server's max-age and only checks for an updated SW once per 24 h on navigation — sw.js redeploys can take a full day to roll out. Verified rollout via `swVersion` console probe (see CLAUDE.md operational notes).
+
+**5. NPC position smoothing — entity interpolation only.**
+- For ANY server-driven NPC position rendered on the client: **render 1 tick behind real-time and lerp between two known snapshots.** Inline pattern, no helper function (allocation-free at 60 × NPC × Hz).
+  ```ts
+  const alpha = clamp((Date.now() - d.ts) / d.tsDelta, 0, 1);
+  renderX = lerp(d.prevX, d.x, alpha);
+  ```
+- DO NOT extrapolate forward, dead-reckon, or exp-lerp toward `d.x`. We tried all three; each had a failure mode (5 Hz pumping / direction-change drift / network-jitter-amplified velocity). Entity interpolation is the only pattern that handles network jitter without producing wrong-speed motion. AAA standard (Quake/HL/CS lineage).
+- Demo / client-only NPCs use `ts === 0` sentinel — interpolation alpha clamps to 1 (snap to current). Idle direction zeros velocity.
+
+**6. VRM skeleton flush at 60 Hz, springs at 15 Hz.**
+- `VRMCharacterAnimator.updateMixerOnly()` MUST flush `scene.updateMatrixWorld(true)` + every `_skeletonUpdateFns` value every frame. The cheap part of `vrm.update()` — `vrm.humanoid?.update()` — also runs every frame here.
+- `updateSpringOnly()` runs ONLY `vrm.springBoneManager?.update(delta)` + a re-flush. Spring physics is the expensive part; throttle that to 15 Hz, not the whole vrm.update.
+- Throttling skeleton flush is the bug that made VRM wanderers chunk forward every 4 frames while GLB NPCs stayed smooth — the SkinnedMesh's `boneMatrices` GPU uniform only refreshes when `skeleton.update()` runs, and we patch the renderer's auto-flush to a no-op for skeleton-batching reasons. The body draws stale bone matrices on every frame the flush is skipped.
+
+**7. Surface-clip pipeline for state transitions.**
+- Don't fire `playOneShot()` for animations that should hold for an entire phase (jump ascent, swim, charging squat). Use `setSurfaceClip(name)` — loops the clip via `LoopRepeat` and crossfades on the next call.
+- Compute the desired clip every frame from state (`phaseCharging`, `airborne`, etc.) but only call `setSurfaceClip` when it CHANGES (gated by a `lastSurfaceClipRef`). The animator's lazy GLB load + crossfade should only fire on state transitions, not 60 ×/s.
+- While in a non-locomotion state (charging, airborne), gate the locomotion crossfade by passing `isMoving = false` to `update()` / `updateMixerOnly()`. Otherwise WASD held mid-leap re-introduces walk.
+
+**8. Per-character sizing has ONE knob.**
+- All humanoid VRMs route through `computeVRMAvatarFit()` from `vrm-avatar-sizing.ts` targeting `VRM_AVATAR_TARGET_HEIGHT_WU` (currently 270 wu). Change one number, every humanoid resizes. Per-character overrides go in `SPECIES_TARGET_HEIGHT_WU` keyed by BOTH the species key (NPC) AND the animatorId (player) — those names diverge (`hermes_male` vs `hermes-male`) and both call sites resolve through the same map.
+- Don't use `reg.scale` from the model registry — that's picker-thumbnail metadata only, never load-bearing on world render.
 
 ---
 
