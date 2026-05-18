@@ -784,7 +784,13 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
           <SidebarRow
             icon="⚖"
             label="Bazaar"
-            onClick={runAction(openBazaar)}
+            // Sidebar Bazaar opens the COSMETIC DRAWER per the
+            // 2026-05-18 repoint (Bazaar stand was repurposed to the
+            // first-party cosmetics shop; "Bazaar" name kept). The
+            // legacy peer-skill-bazaar route is still in the store as
+            // openBazaar() but gated 503 by the marketplace-pause
+            // policy — leaving it unreachable from the UI.
+            onClick={runAction(() => setCosmeticDrawerOpen(true))}
             rarity="rare"
           />
           <SidebarRow
