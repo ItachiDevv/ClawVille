@@ -9,7 +9,7 @@
 > grep results. Update this when you touch any file listed in the "Source"
 > column. Update the affected file when you change a row here.
 
-**Last edit:** 2026-05-18 — Concern 6.0.2: Casino interior scene at `/casino`. §2 casino row note updated (Interior: 6.0.2 SHIPPED). No open-world objects added — interior is a separate route-isolated Canvas. Prior 2026-05-18: Phase 6.1 grid+ring expand, pedestal discs.
+**Last edit:** 2026-05-18 — Concern 6.1 regression fix: MAX_FOOTPRINT 1000→1500, per-building targetHeights updated (slots 2/3/4/5/6/11 raised), pivotZBias on memory-rag, fog near/far updated. §2 building table updated. Prior 2026-05-18: Casino interior scene at `/casino`. Prior 2026-05-18: Phase 6.1 grid+ring expand, pedestal discs.
 
 ---
 
@@ -19,9 +19,9 @@ Composes the entire R3F scene. Mounted by `SceneContents` in `apps/web/src/compo
 
 | Group | Component | What renders | Source |
 |---|---|---|---|
-| **Lighting** | inline JSX | 1 hemisphere + 2 directional + fog (1200→6400wu) | `World3DCanvas.tsx` ~778 |
+| **Lighting** | inline JSX | 1 hemisphere + 2 directional + fog (2500→6800wu) | `World3DCanvas.tsx` ~778 |
 | **Terrain** | `<ArenaTerrain>` | sand floor + decorations + (disabled landmarks) | `lib/three/arena-terrain.tsx` |
-| **Buildings** | `<ArenaBuildings>` | 12 themed building GLBs on a circular ring (R=72 tiles, 30° spacing; was square briefly in Phase 6.0.1) | `lib/three/arena-buildings.tsx` |
+| **Buildings** | `<ArenaBuildings>` | 12 themed building GLBs on a circular ring (R=100 tiles, 30° spacing; Phase 6.1 2026-05-18) | `lib/three/arena-buildings.tsx` |
 | **Wandering NPCs** | `<ArenaNpcs>` | 18 NPCs (5 VRM + 13 GLB), SSE-driven positions | `lib/three/arena-npcs.tsx` |
 | **Building residents** | `<ArenaLocationNpcs>` | 10 character NPCs, one per building | `lib/three/arena-location-npcs.tsx` |
 | **Ground cover** | `<MergedSeaweed>` | TSL-animated seaweed, single merged mesh | `lib/three/merged-seaweed.tsx` |
@@ -43,16 +43,16 @@ Each building has a flat **stone pedestal disc** (radius=560wu, 15wu thick, colo
 |---|---|---|---|---|---|---|
 | 0 | N | `visual-creation` | `pineapple-house.glb` | SpongeBob's pineapple house | 1100 | |
 | 1 | NNE | `code-development` | `chum-bucket-v2.glb` | Bucket | 900 | 2026-05-12 swap |
-| 2 | ENE | `mcp-tool-use` | `krusty-krab-v2.glb` | Ship-restaurant | 1000 | 2026-05-12 swap |
-| 3 | E | `messaging-channels` | `sandy-treedome-v3.glb` | Tree platform + glass dome | 1000 | 2026-05-12 swap; rotYOffset +π |
-| 4 | ESE | `api-integrations` | `salty-spitoon.glb` | Bar | 1000 | rotYOffset -π/2 |
-| 5 | SSE | `app-publishing` | `boating-school.glb` | Mrs. Puff's classroom | 950 | rotYOffset +π/2 |
-| 6 | S | `cron-automation` | `patty-building.glb` | Pearl's downtown | 1200 | |
+| 2 | ENE | `mcp-tool-use` | `krusty-krab-v2.glb` | Ship-restaurant | 1200 | raised from 1000 (footprint-cap fix 2026-05-18); 2026-05-12 swap |
+| 3 | E | `messaging-channels` | `sandy-treedome-v3.glb` | Tree platform + glass dome | 1300 | raised from 1000; 2026-05-12 swap; rotYOffset +π |
+| 4 | ESE | `api-integrations` | `salty-spitoon.glb` | Bar | 1200 | raised from 1000; rotYOffset -π/2 |
+| 5 | SSE | `app-publishing` | `boating-school.glb` | Mrs. Puff's classroom | 1100 | raised from 950; rotYOffset +π/2 |
+| 6 | S | `cron-automation` | `patty-building.glb` | Pearl's downtown | 1400 | raised from 1200 |
 | 7 | SSW | `deployment-ops` | `building-lighthouse.glb` | Lighthouse | 1500 | tallest landmark |
 | 8 | WSW | `agent-security` | `patricks-rock-v2.glb` | Patrick's rock | 900 | 2026-05-12 swap |
 | 9 | W | `casino` | `casino/casino-exterior.glb` | Predictive Gaming Cove — Mayan step-pyramid | 1040 | Entertainment district. box3Recenter=true. Interior: **6.0.2 SHIPPED** — `/casino` route, `casino-interior.glb` (Draco 4.2MB) + fallback (58KB). onClick → `window.location.href = '/casino'`. |
 | 10 | WNW | `claw-arcade` | `arcade/claw-arcade-exterior.glb` | Arcade City — domed building | 900 | Entertainment district (slot 9+10 adjacent). Interior / crane game: Phase 6.3. |
-| 11 | NNW | `memory-rag` | `squidward-house.glb` | Easter-Island moai head | 1100 | |
+| 11 | NNW | `memory-rag` | `squidward-house.glb` | Easter-Island moai head | 1300 | raised from 1100; pivotZBias=+180wu (step offset compensation) |
 
 **Strip rules** (run on every cloned building scene, `stripDecorativeMeshes` in `arena-buildings.tsx`):
 - Prefix match `Skybox_` → strip (kills the blue hemisphere baked into Yanez assets)
