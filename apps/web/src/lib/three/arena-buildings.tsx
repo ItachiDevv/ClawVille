@@ -63,8 +63,17 @@ const BUILDING_TARGET_HEIGHT = 800;
  *
  * yOffset: world-unit shift applied AFTER scaling. Negative values lower the
  * building (use to ground a floating model whose pivot isn't at its base).
+ *
+ * pivotZBias: optional extra Z bias added to the inner group's position,
+ * on top of the computed -pivotOffsetZ. Use when the GLB's visual "front" is
+ * displaced from the bbox center because foreground elements (steps, path,
+ * decorative base) shift the bbox forward. A positive pivotZBias moves the
+ * building body forward (toward camera / village center). Unit: world units.
+ * Example: Squidward's house has steps at the front — the bbox center is pulled
+ * toward the steps, causing the house body to appear too far back. pivotZBias=+180
+ * shifts the house toward center to compensate.
  */
-const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number; rotYOffset?: number; scaleOverride?: number; targetHeight?: number; box3Recenter?: boolean; onClick?: () => void }> = {
+const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number; rotYOffset?: number; scaleOverride?: number; targetHeight?: number; box3Recenter?: boolean; pivotZBias?: number; onClick?: () => void }> = {
   // ---------------------------------------------------------------------------
   // 12-building TRUE CIRCULAR ring — Phase 6.1 (2026-05-18).
   // Grid expanded 160→240 tiles; ring expanded R=72→100 tiles.
@@ -98,24 +107,26 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   'code-development':    { model: '/models/chum-bucket-v2.glb',      yOffset: 0, rotY: -0.524, targetHeight: 900 },
   // Slot 2 — ENE (cx=207, cy=70): dx=-87, dz=50 → atan2(-87,50)≈-1.047 (-π/3)
   // krusty-krab-v2.glb = iconic ship restaurant (CC-BY, Yanez Designs, 1.59 MB original).
-  // targetHeight: 1000 — krusty krab door must clear ~250wu avatar height.
-  'mcp-tool-use':        { model: '/models/krusty-krab-v2.glb',      yOffset: 0, rotY: -1.047, targetHeight: 1000 },
+  // targetHeight: 1200 — user reported roof at avatar head level; needs more height so
+  //   interior entrance zone is clearly visible. 1200 ensures ~6.7× avatar (180wu).
+  'mcp-tool-use':        { model: '/models/krusty-krab-v2.glb',      yOffset: 0, rotY: -1.047, targetHeight: 1200 },
   // Slot 3 — E (cx=220, cy=120): dx=-100, dz=0 → atan2(-100,0)=-π/2≈-1.571
   // 2026-05-12: swapped to sandy-treedome-v3.glb (sandy_tree_final.glb, 4.4 MB).
   // rotYOffset: sandy-treedome-v3.glb authored facing +Z; +π rotates 180° for inward-facing door.
-  // targetHeight: 1000 — treedome dome needs to feel large and distinct.
-  'messaging-channels':  { model: '/models/sandy-treedome-v3.glb',   yOffset: 0, rotY: -1.571, rotYOffset: Math.PI, targetHeight: 1000 },
+  // targetHeight: 1300 — dome must visually dominate the E slot; user reported "barely peeking above camera".
+  'messaging-channels':  { model: '/models/sandy-treedome-v3.glb',   yOffset: 0, rotY: -1.571, rotYOffset: Math.PI, targetHeight: 1300 },
   // Slot 4 — ESE (cx=207, cy=170): dx=-87, dz=-50 → atan2(-87,-50)≈-2.094 (-2π/3)
   // rotYOffset: salty-spitoon.glb authored facing +X; -π/2 aligns toward village center.
-  // targetHeight: 1000 — bar needs height parity with krusty krab.
-  'api-integrations':    { model: '/models/salty-spitoon.glb',       yOffset: 0, rotY: -2.094, rotYOffset: -Math.PI / 2, targetHeight: 1000 },
+  // targetHeight: 1200 — bar needs height parity with krusty krab; user reported too small.
+  'api-integrations':    { model: '/models/salty-spitoon.glb',       yOffset: 0, rotY: -2.094, rotYOffset: -Math.PI / 2, targetHeight: 1200 },
   // Slot 5 — SSE (cx=170, cy=207): dx=-50, dz=-87 → atan2(-50,-87)≈-2.618 (-5π/6)
   // rotYOffset: boating-school.glb classroom must face center (model-authored offset — stays with building).
-  // targetHeight: 950 — school is low-profile by design; slight boost.
-  'app-publishing':      { model: '/models/boating-school.glb',      yOffset: 0, rotY: -2.618, rotYOffset: Math.PI / 2, targetHeight: 950 },
+  // targetHeight: 1100 — school raised to match general ring floor; 950 was too low.
+  'app-publishing':      { model: '/models/boating-school.glb',      yOffset: 0, rotY: -2.618, rotYOffset: Math.PI / 2, targetHeight: 1100 },
   // Slot 6 — S (cx=120, cy=220): dx=0, dz=-100 → atan2(0,-100)=π≈3.142
-  // targetHeight: 1200 — downtown building is the civic anchor; taller than shops.
-  'cron-automation':     { model: '/models/patty-building.glb',      yOffset: 0, rotY:  3.142, targetHeight: 1200 },
+  // targetHeight: 1400 — downtown building is the civic anchor; raised from 1200 because
+  //   user reported tiny stub buildings. 1400 gives strong civic presence vs 1500 lighthouse.
+  'cron-automation':     { model: '/models/patty-building.glb',      yOffset: 0, rotY:  3.142, targetHeight: 1400 },
   // Slot 7 — SSW (cx=70, cy=207): dx=50, dz=-87 → atan2(50,-87)≈2.618 (5π/6)
   // targetHeight: 1500 — lighthouse is the tallest landmark by definition.
   'deployment-ops':      { model: '/models/building-lighthouse.glb', yOffset: 0, rotY:  2.618, targetHeight: 1500 },
@@ -141,8 +152,12 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
                            onClick: () => { console.info('[claw-arcade] interior pending — Concern 6.3'); } },
   // Slot 11 — NNW (cx=70, cy=33): dx=50, dz=87 → atan2(50,87)≈0.524 (π/6)
   // squidward-house.glb = Squidward's Easter Island moai head house (CC-BY, Yanez Designs)
-  // targetHeight: 1100 — moai head is the NNW landmark; needs height to read across the ring.
-  'memory-rag':          { model: '/models/squidward-house.glb',     yOffset: 0, rotY:  0.524, targetHeight: 1100 },
+  // targetHeight: 1300 — moai head must tower visibly across the ring (user: "should be ~5-8× avatar").
+  // pivotZBias: +180 — the stone steps at the front of the moai head shift the GLB bbox center
+  // toward the steps, causing the house body to appear too far back from the village center.
+  // The bias shifts the inner group toward the player-facing side, compensating for the step offset.
+  // This is the preferred fix over splitting the GLB (no asset modification required).
+  'memory-rag':          { model: '/models/squidward-house.glb',     yOffset: 0, rotY:  0.524, targetHeight: 1300, pivotZBias: 180 },
 };
 
 // Scratch objects for stripGroundPlanes — reused across calls to avoid GC.
@@ -335,13 +350,19 @@ function stripGroundPlanes(scene: THREE.Object3D): void {
 
 // Maximum footprint (XZ) allowed after height-based normalization (world units).
 // Buildings wider than this get shrunk so their widest dimension = MAX_FOOTPRINT.
-// This prevents wide GLBs (pineapple, boating-school, salty-spitoon) from
-// dominating the scene — they'll stand shorter than 800 but won't sprawl.
-// Tightened 1400→1000 (2026-04-16 ring expansion): ring is now radius 72 tiles
-// (2304 wu, was 68/2176 — bumped 2026-05-13 for inner-band breathing room).
-// Circumference/10 = 1448 wu per slot. MAX_FOOTPRINT=1000 gives a 448 wu
-// (~14 tile) gap between neighboring buildings — visually spread out.
-const MAX_FOOTPRINT = 1000;
+//
+// History:
+//   1000 wu — used for R=72-tile ring (Phase 6.1 initial). Circumference/10 = 1448 wu.
+//             THIS WAS THE BUG: many buildings (Squidward, Sandy, Krusty Krab, Salty Spitoon,
+//             Downtown) have GLBs that are wider than they are tall. At targetHeight=1000-1100
+//             their scaledMaxXZ ≈ 1400-2000 wu — hitting the 1000 cap and shrinking rendered
+//             height to 500-700 wu instead of the intended 900-1500 wu. Characters were taller
+//             than buildings as a result.
+//   1500 wu — Phase 6.1 fix (2026-05-18). Ring expanded to R=100 tiles (3200 wu radius),
+//             circumference ≈ 20106 wu, slot spacing ≈ 1675 wu. MAX_FOOTPRINT=1500 gives
+//             175 wu gap between adjacent building footprints — still visually separated.
+//             Most buildings now hit their targetHeight rather than the footprint cap.
+const MAX_FOOTPRINT = 1500;
 
 // Scratch objects for computeBuildingScale — module-scope to avoid per-call GC.
 const _buildBbox = new THREE.Box3();
@@ -533,7 +554,7 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
       console.log(`[building-merge] ${zone.id}: ${merge.meshesBefore} → ${merge.meshesAfter} meshes (${merge.buckets} buckets merged, ${merge.skipped} skipped)`);
     }
     return result;
-  }, [scene, config.model, config.scaleOverride, config.targetHeight, zone.id]);
+  }, [scene, config.model, config.scaleOverride, config.targetHeight, config.pivotZBias, zone.id]);
 
   // Dispose cloned geometry + materials on unmount (navigation away / hot-reload)
   useEffect(() => {
@@ -586,7 +607,10 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
       {/* Stone pedestal disc — separates building base from sand terrain */}
       <BuildingPedestal cx={cx} cz={cz} />
       <group ref={groupRef} position={[cx, -2 + config.yOffset, cz]} rotation={[0, (config.rotY ?? 0) + (config.rotYOffset ?? 0), 0]}>
-        <group position={[-pivotOffsetX, -pivotOffsetY, -pivotOffsetZ]}>
+        {/* pivotZBias: extra Z shift to compensate for step/foreground geometry displacing the bbox center.
+            Positive value moves inner group toward village center (closer to camera at standard view).
+            Applied on top of -pivotOffsetZ. Zero for all buildings except those with explicit pivotZBias config. */}
+        <group position={[-pivotOffsetX, -pivotOffsetY, -pivotOffsetZ + (config.pivotZBias ?? 0)]}>
           <primitive object={cloned} scale={buildingScale} />
         </group>
         {/* Invisible click volume — used by entertainment buildings (casino, claw-arcade)

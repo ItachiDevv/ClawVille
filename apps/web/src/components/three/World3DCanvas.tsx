@@ -732,13 +732,17 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       {/* Secondary fill from opposite side for depth */}
       <directionalLight position={[-100, 200, -60]} intensity={0.5} color={0x88aacc} />
 
-      {/* Underwater fog — scaled for 160x160 map (5120x5120 world units).
-          Near 1200 / far 6400 is calibrated for Iris Xe: keeps distant geometry
-          fog-culled so the GPU stays under budget. Pushing to 1800/9000 caused a
-          ~40 FPS regression on Iris Xe (more rasterized fragments past fog cutoff).
-          camera.far=6800 already clips beyond 6800wu so fog far >6800 has no visual
-          effect but does waste GPU time computing fog for invisible fragments. */}
-      <fog attach="fog" args={[FOG_COLOR, 1200, 6400]} />
+      {/* Underwater fog — scaled for 240x240 map (7680x7680 world units) / R=100-tile ring.
+          Phase 6.1 change (2026-05-18): near 1200→2500, far 6400→6800.
+          Rationale: ring radius = 3200wu. With near=1200 buildings at ~2800-3500wu from spawn
+          were already 50-80% fogged out — characters could tower over them but not see them.
+          New range: near=2500 gives clear visibility from spawn (0,0) to the ring edge (~3500wu
+          at slot slot midpoints); far=6800 = camera.far, ensures no fragments render past clip.
+          Iris Xe safety: fog fragment count stays bounded because camera.far=6800 clips geometry
+          at the same distance regardless. DPR cap [0.55,0.7] on Iris Xe offsets fragment cost.
+          Prior note on 1800/9000 regression: far=9000 > camera.far=6800 was the waste source
+          (rasterizing invisible geometry), not the near push. far=6800 = safe ceiling. */}
+      <fog attach="fog" args={[FOG_COLOR, 2500, 6800]} />
 
       {/* Shared world geometry */}
       <ArenaTerrain />
