@@ -10,9 +10,9 @@ import { buildingZones } from '@/lib/pixi/tilemap-data';
 // via setAvatarPosition so that subscribers like Minimap rebuild at most 10×/sec
 // instead of 60×/sec during movement.
 // ---------------------------------------------------------------------------
-// Phase 6.1 (2026-05-18): world is 7680×7680 px. Center = (3840, 3840).
-// y=4220 places avatar ~380 game-px south of center (same relative offset as before).
-export const avatarPositionRef: { x: number; y: number } = { x: 3840, y: 4220 };
+// Phase 6.2 (2026-05-18): world is 11520×11520 px. Center = (5760, 5760).
+// y=6140 places avatar ~380 game-px south of center (same relative offset as before).
+export const avatarPositionRef: { x: number; y: number } = { x: 5760, y: 6140 };
 // Module-scope timestamp of the last reactive (zustand set) write.
 let lastReactiveWriteAt = 0;
 
@@ -449,7 +449,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   // podium visible as a landmark ~190wu behind her. Earlier Rev-3 attempts at
   // z=+200 (guide z=+100) rendered the podium wrapping the guide; z=+240 places
   // the guide fully south of the podium's 144u bottom radius at ground level.
-  avatarPosition: { x: 3840, y: 4220 },
+  avatarPosition: { x: 5760, y: 6140 },
   setAvatarPosition: (x, y) => {
     // Always update the module-scope ref — zero React overhead, safe to call
     // at 60 Hz from useFrame / rAF loops. Per-frame readers (player-avatar.tsx,
@@ -865,7 +865,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     // GLB until setAvatarAppearance fired, which for an unauthenticated
     // session may never happen.
     avatarModelKey: 'lobster',
-    avatarPosition: { x: 3840, y: 4220 }, // ~380 game-px south of center (3840,3840); Phase 6.1 7680×7680 world
+    avatarPosition: { x: 5760, y: 6140 }, // Phase 6.2 (2026-05-18): world is 11520×11520 px. Center = (5760, 5760). y=6140 places avatar ~380 game-px south of center
     movementDirection: 'idle',
     avatarSpeed: 0,
     nearLocation: null,
