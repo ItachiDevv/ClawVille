@@ -134,9 +134,9 @@ export default function Minimap() {
             fill="url(#center-glow)"
           />
 
-          {/* Ring guide — dashed circle approximating the 72-tile square building ring.
-              Phase 6.0.1: ring is now a square (3 buildings × 4 sides) at 72-tile
-              side-distance from center. Circle shown as a perceptual guide only. */}
+          {/* Ring guide — dashed circle at the 72-tile building ring radius.
+              Circle revert (2026-05-17): ring topology is now a true circle —
+              12 buildings at 30° spacing, radius 72 tiles. Circle guide is exact. */}
           <circle
             cx={CENTER_TILE_PX_X * SCALE_X}
             cy={CENTER_TILE_PX_Y * SCALE_Y}
