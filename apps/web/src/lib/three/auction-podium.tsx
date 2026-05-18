@@ -44,7 +44,10 @@ const DOME_X = 0;
 // Kept climbing Y — 12 and 80 both still looked buried. Going way up to +200
 // because the GLB's geometry extends dramatically below its pivot point.
 const DOME_Y = 200;
-const DOME_Z = -500; // -Z is north; pushed well back near the building ring for visual depth
+// Phase 6.2 (2026-05-18): moved from z=-500 to z=-1000 as part of plaza expansion.
+// Props now form a loose ring at 800-1000wu from center. The auction dome anchors
+// the north edge of the town square at ~1000wu north of plaza center.
+const DOME_Z = -1000;
 
 // Target visual height for the dome (the centerpiece — give it presence)
 const DOME_TARGET_HEIGHT_WU = 380;

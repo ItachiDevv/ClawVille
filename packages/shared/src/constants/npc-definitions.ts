@@ -26,8 +26,8 @@ export interface NpcDefinition {
 // Tile size = 32px; building zone centers computed from tilemap-data buildingZones
 // Each building zone is defined as {x, y, width, height} in tile coords
 // Center pixel = (x + width/2) * 32, (y + height/2) * 32
-// Phase 6.1 (2026-05-18): world is 7680×7680 px (was 5120×5120).
-// Town center pixel = 3840, 3840 (was 2560, 2560).
+// Phase 6.2 (2026-05-18): world is 11520×11520 px (360×360 tiles).
+// Town center pixel = 5760, 5760 (center tile 180, 180).
 const TILE = 32;
 
 function center(tileX: number, tileY: number, tileW: number, tileH: number) {
@@ -38,30 +38,30 @@ function center(tileX: number, tileY: number, tileW: number, tileH: number) {
 }
 
 // Building zone tile coords from tilemap-data.ts (10 OpenClaw integrations)
-// Phase 6.1 (2026-05-18): 240×240 grid, R=100 tiles from center (120,120), 30° spacing.
-// cx = round(120 + 100*cos(θ)), zone x = cx - 7  (14-tile width)
+// Phase 6.2 (2026-05-18): 360×360 grid, R=160 tiles from center (180,180), 30° spacing.
+// cx = round(180 + 160*cos(θ)), zone x = cx - 7  (14-tile width)
 // Matches buildingZones in tilemap-data.ts — keep in sync when ring changes.
 export const BUILDING_TILE_ZONES: Record<string, { x: number; y: number; w: number; h: number }> = {
-  // Slot 0  θ=-π/2        cx=120, cy=20   zone=(113,13)
-  'visual-creation':     { x: 113, y:  13, w: 14, h: 14 },
-  // Slot 11 θ=4π/3        cx=70,  cy=33   zone=(63,26)
-  'memory-rag':          { x:  63, y:  26, w: 14, h: 14 },
-  // Slot 4  θ=π/6         cx=207, cy=170  zone=(200,163)
-  'api-integrations':    { x: 200, y: 163, w: 14, h: 14 },
-  // Slot 6  θ=π/2         cx=120, cy=220  zone=(113,213)
-  'cron-automation':     { x: 113, y: 213, w: 14, h: 14 },
-  // Slot 5  θ=π/3         cx=170, cy=207  zone=(163,200)
-  'app-publishing':      { x: 163, y: 200, w: 14, h: 14 },
-  // Slot 7  θ=2π/3        cx=70,  cy=207  zone=(63,200)
-  'deployment-ops':      { x:  63, y: 200, w: 14, h: 14 },
-  // Slot 2  θ=-π/6        cx=207, cy=70   zone=(200,63)
-  'mcp-tool-use':        { x: 200, y:  63, w: 14, h: 14 },
-  // Slot 1  θ=-π/3        cx=170, cy=33   zone=(163,26)
-  'code-development':    { x: 163, y:  26, w: 14, h: 14 },
-  // Slot 3  θ=0           cx=220, cy=120  zone=(213,113)
-  'messaging-channels':  { x: 213, y: 113, w: 14, h: 14 },
-  // Slot 8  θ=5π/6        cx=33,  cy=170  zone=(26,163)
-  'agent-security':      { x:  26, y: 163, w: 14, h: 14 },
+  // Slot 0  θ=-π/2        cx=180, cy=20   zone=(173,13)
+  'visual-creation':     { x: 173, y:  13, w: 14, h: 14 },
+  // Slot 11 θ=4π/3        cx=100, cy=41   zone=(93,34)
+  'memory-rag':          { x:  93, y:  34, w: 14, h: 14 },
+  // Slot 4  θ=π/6         cx=319, cy=260  zone=(312,253)
+  'api-integrations':    { x: 312, y: 253, w: 14, h: 14 },
+  // Slot 6  θ=π/2         cx=180, cy=340  zone=(173,333)
+  'cron-automation':     { x: 173, y: 333, w: 14, h: 14 },
+  // Slot 5  θ=π/3         cx=260, cy=319  zone=(253,312)
+  'app-publishing':      { x: 253, y: 312, w: 14, h: 14 },
+  // Slot 7  θ=2π/3        cx=100, cy=319  zone=(93,312)
+  'deployment-ops':      { x:  93, y: 312, w: 14, h: 14 },
+  // Slot 2  θ=-π/6        cx=319, cy=100  zone=(312,93)
+  'mcp-tool-use':        { x: 312, y:  93, w: 14, h: 14 },
+  // Slot 1  θ=-π/3        cx=260, cy=41   zone=(253,34)
+  'code-development':    { x: 253, y:  34, w: 14, h: 14 },
+  // Slot 3  θ=0           cx=340, cy=180  zone=(333,173)
+  'messaging-channels':  { x: 333, y: 173, w: 14, h: 14 },
+  // Slot 10 θ=7π/6        cx=41,  cy=100  zone=(34,93)  [was slot 8 before Phase 6.1 swap]
+  'agent-security':      { x:  34, y:  93, w: 14, h: 14 },
 };
 
 /** Map of building ID to {homeX, homeY} for NPC definitions */
@@ -112,10 +112,11 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   // next planning tick same result. Both Milady spawns sit in the wide
   // open-water gaps between buildings on the ring.
   //
-  //   Map: 7680×7680 px / 240×240 tiles, town center (3840, 3840).
-  //   Building ring radius = 100 tiles (3200 wu) from center. Open gaps lie roughly
+  //   Map: 11520×11520 px / 360×360 tiles, town center (5760, 5760).
+  //   Building ring radius = 160 tiles (5120 wu) from center. Open gaps lie roughly
   //   between the 12 ring positions and well inside (closer to center).
-  //   Phase 6.1 (2026-05-18): all homeX/homeY scaled ×1.5 from original 5120-world coords.
+  //   Phase 6.2 (2026-05-18): all homeX/homeY scaled ×1.5 from Phase 6.1 (7680-world)
+  //   then shifted to new center (5760 vs 3840). Formula: new = 5760 + (old-3840)*1.5.
   {
     id: 'milady-miu',
     name: 'Miu',
@@ -123,8 +124,8 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     color: 0xffc0ff,             // lavender (ignored — VRM MToon pipeline skips tint)
     buildingId: '',              // no building anchor; free wanderer
     patrolRadius: 500,
-    homeX: 2550,
-    homeY: 4800,                 // SW of town, inside the ring
+    homeX: 3825,
+    homeY: 7200,                 // SW of town, inside the ring
     stats: { hp: 95, attack: 14, defense: 12, speed: 15 },
     personality: 'A soft-spoken Milady wanderer with a fascination for the neon-tide rhythms of the reef.',
   },
@@ -135,8 +136,8 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     color: 0xc0e8ff,             // sky-blue (ignored — VRM MToon)
     buildingId: '',
     patrolRadius: 500,
-    homeX: 5100,
-    homeY: 2850,                 // NE of town, inside the ring
+    homeX: 7650,
+    homeY: 4275,                 // NE of town, inside the ring
     stats: { hp: 90, attack: 13, defense: 14, speed: 16 },
     personality: 'A curious Milady explorer cataloguing every agent signal she overhears across ClawVille.',
   },
@@ -151,8 +152,8 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     color: 0xffd0a0,             // peach (ignored — MToon)
     buildingId: '',
     patrolRadius: 500,
-    homeX: 2550,
-    homeY: 2850,                 // NW of town, inside the ring
+    homeX: 3825,
+    homeY: 4275,                 // NW of town, inside the ring
     stats: { hp: 90, attack: 13, defense: 13, speed: 16 },
     personality: 'A bookish Milady sketcher who maps every reef formation she encounters into her field journal.',
   },
@@ -171,8 +172,8 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     color: 0xb088ff,             // ignored — MToon
     buildingId: '',
     patrolRadius: 500,
-    homeX: 5100,
-    homeY: 4800,                 // SE of town, inside the ring
+    homeX: 7650,
+    homeY: 7200,                 // SE of town, inside the ring
     stats: { hp: 95, attack: 12, defense: 14, speed: 15 },
     personality: 'A wide-eyed Hermes scholar mapping every glyph on every building she passes.',
   },
@@ -183,8 +184,8 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     color: 0x4b6cb7,             // ignored — MToon
     buildingId: '',
     patrolRadius: 500,
-    homeX: 3840,
-    homeY: 2550,                 // N of town, inside the ring
+    homeX: 5760,
+    homeY: 3825,                 // N of town, inside the ring
     stats: { hp: 92, attack: 14, defense: 12, speed: 17 },
     personality: 'A composed Hermes operator who treats every door in town like a problem worth solving.',
   },
@@ -195,8 +196,8 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     color: 0x30c060,             // ignored — MToon
     buildingId: '',
     patrolRadius: 500,
-    homeX: 2850,
-    homeY: 5700,                 // SW of town, inside the ring
+    homeX: 4275,
+    homeY: 8550,                 // SW of town, inside the ring
     stats: { hp: 88, attack: 16, defense: 10, speed: 19 },
     personality: 'A winged scout who landed three buildings ago and has not stopped narrating since.',
   },
@@ -204,10 +205,11 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   // Sea-creature GLBs scale + clone per-instance, so multiple NPCs can share
   // the same species path without cache collision (unlike VRMs).
   //
-  // Positions updated 2026-05-18 (Phase 6.1): ring is now R=100 tiles (3200 wu)
-  // centered at game-space pixel (3840, 3840) in the 7680×7680 world.
+  // Positions updated 2026-05-18 (Phase 6.2): ring is now R=160 tiles (5120 wu)
+  // centered at game-space pixel (5760, 5760) in the 11520×11520 world.
   // Wanderers placed ~40-50% of the ring radius from center, near thematically
   // appropriate building pairs. PatrolRadius 500 prevents drifting into the plaza.
+  // Formula: new = 5760 + (Phase-6.1-pos - 3840) * 1.5
   {
     id: 'wanderer-driftwood',
     name: 'Driftwood',
@@ -215,8 +217,8 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     color: 0x8d6e63,             // driftwood brown
     buildingId: '',
     patrolRadius: 500,
-    homeX: 2232,
-    homeY: 3408,                 // W inner — between casino (slot 9, W) + claw-arcade (slot 10, WNW) — entertainment district
+    homeX: 3348,
+    homeY: 5112,                 // W inner — between casino (slot 9, W) + claw-arcade (slot 8, WSW)
     stats: { hp: 100, attack: 14, defense: 14, speed: 12 },
     personality: 'A weather-worn vagabond lobster who treats the whole reef as his personal backyard.',
   },
@@ -227,8 +229,8 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     color: 0x00acc1,             // teal
     buildingId: '',
     patrolRadius: 500,
-    homeX: 5100,
-    homeY: 4200,                 // E inner — between messaging-channels (slot 3, E) + api-integrations (slot 4, ESE)
+    homeX: 7650,
+    homeY: 6300,                 // E inner — between messaging-channels (slot 3, E) + api-integrations (slot 4, ESE)
     stats: { hp: 85, attack: 17, defense: 11, speed: 19 },
     personality: 'A speedy crab courier who claims to know every tide pool shortcut on the map.',
   },
@@ -239,8 +241,8 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     color: 0xa1887f,             // sand
     buildingId: '',
     patrolRadius: 500,
-    homeX: 2850,
-    homeY: 4800,                 // SW inner — between deployment-ops (slot 7, SSW) + agent-security (slot 8, WSW)
+    homeX: 4275,
+    homeY: 7200,                 // SW inner — between deployment-ops (slot 7, SSW) + agent-security (slot 10, WNW)
     stats: { hp: 110, attack: 13, defense: 17, speed: 11 },
     personality: 'A philosophical hermit crab who borrows shells from every building he visits and returns each one.',
   },

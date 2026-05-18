@@ -11,7 +11,7 @@ const MM_H = MM_W * (MAP_HEIGHT / MAP_WIDTH); // preserve aspect
 const SCALE_X = MM_W / MAP_WIDTH;
 const SCALE_Y = MM_H / MAP_HEIGHT;
 
-// Village-center tile (80, 80) = map center
+// Village-center tile (180, 180) = map center (Phase 6.2: 360×360 grid)
 const CENTER_TILE_PX_X = (MAP_WIDTH / 2);
 const CENTER_TILE_PX_Y = (MAP_HEIGHT / 2);
 
