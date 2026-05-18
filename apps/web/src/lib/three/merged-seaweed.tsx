@@ -221,7 +221,7 @@ function generateBlades(): BladeData[] {
     clusters.push({ x: cx, z: cz, radius });
   }
 
-  // Village center world coords — symmetric square map (160x160 grid, center tile 80,80)
+  // Village center world coords — symmetric square map (240×240 grid, center tile 120,120, Phase 6.1)
   const VILLAGE_CX        = 0;
   const VILLAGE_CZ        = 0;  // was -16 (old non-symmetric 64x40 grid offset), now 0
   const SEAWEED_INNER_R   = 280; // Increased from 220 — bigger town center on 5120x5120 map

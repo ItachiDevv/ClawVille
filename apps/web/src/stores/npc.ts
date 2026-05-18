@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 
 export interface NpcSpriteState {
   id: string;
@@ -156,19 +157,20 @@ function makeDemoNpc(id: string, name: string, x: number, y: number, species: st
   return { id, name, x, y, prevX: x, prevY: y, ts: 0, tsDelta: 200, direction: 'idle', species, color, hp: 100, maxHp: 100, isDead: false, hasSword: false, inCombat: false, inConversation: false, inventory: [], isOpenClaw, combatAction: null, combatActionAt: 0, facingAngle: null, defaultIdleClip };
 }
 
-// Demo NPC positions spread around the village center (2560,2560) to match
-// the 5120x5120 map (160x160 tiles).
+// Demo NPC positions spread around the village center (3840,3840) in the
+// 7680×7680 map (240×240 tiles). Phase 6.1 (2026-05-18): all coords scaled
+// ×1.5 from the old 5120×5120 world (160×160 tiles).
 const DEMO_NPCS: NpcSpriteState[] = [
-  makeDemoNpc('demo-1',  'Captain Claw', 2600, 2200, 'lobster',          0xff2020),       // bright red
-  makeDemoNpc('demo-2',  'Pearl',        3000, 1800, 'lobster',          0xff80ab),       // pink
-  makeDemoNpc('demo-3',  'Rusty',        1800, 2800, 'lobster',          0xff8c00),       // orange
-  makeDemoNpc('demo-4',  'Abyssal',      3400, 2400, 'lobster',          0x2244ff, true), // deep blue
-  makeDemoNpc('demo-5',  'Mantis',       2200, 1600, 'lobster',          0x00e676),       // green
-  makeDemoNpc('demo-6',  'Goldie',       2800, 3000, 'lobster',          0xffd700),       // gold
-  makeDemoNpc('demo-7',  'Shadow',       1600, 2200, 'lobster',          0x8844cc),       // purple
-  makeDemoNpc('demo-8',  'Coral',        3600, 2000, 'lobster',          0xff4488),       // hot pink
-  makeDemoNpc('demo-9',  'Frost',        2400, 1400, 'lobster',          0x00ccdd),       // cyan/teal
-  makeDemoNpc('demo-10', 'Ember',        3200, 3200, 'lobster',          0xff5500),       // burnt orange
+  makeDemoNpc('demo-1',  'Captain Claw', 3900, 3300, 'lobster',          0xff2020),       // bright red
+  makeDemoNpc('demo-2',  'Pearl',        4500, 2700, 'lobster',          0xff80ab),       // pink
+  makeDemoNpc('demo-3',  'Rusty',        2700, 4200, 'lobster',          0xff8c00),       // orange
+  makeDemoNpc('demo-4',  'Abyssal',      5100, 3600, 'lobster',          0x2244ff, true), // deep blue
+  makeDemoNpc('demo-5',  'Mantis',       3300, 2400, 'lobster',          0x00e676),       // green
+  makeDemoNpc('demo-6',  'Goldie',       4200, 4500, 'lobster',          0xffd700),       // gold
+  makeDemoNpc('demo-7',  'Shadow',       2400, 3300, 'lobster',          0x8844cc),       // purple
+  makeDemoNpc('demo-8',  'Coral',        5400, 3000, 'lobster',          0xff4488),       // hot pink
+  makeDemoNpc('demo-9',  'Frost',        3600, 2100, 'lobster',          0x00ccdd),       // cyan/teal
+  makeDemoNpc('demo-10', 'Ember',        4800, 4800, 'lobster',          0xff5500),       // burnt orange
   // Milady VRM wandering NPCs — use milady_official_7 and milady_official_8 to avoid
   // sharing a VRM instance with the most-common player avatar picks (official_1 is the
   // default; official_5 is popular). The vrm-loader caches one VRM per path — two NPCs
@@ -177,18 +179,18 @@ const DEMO_NPCS: NpcSpriteState[] = [
   // are clear of building pathfinding-blocked zones. When connected, server
   // snapshots replace these in place by id; disconnected mode runs them
   // through the client wander loop.
-  makeDemoNpc('milady-miu',     'Miu',       1400, 3000, 'milady_official_7', 0xffc0ff, false, 'looking_around'),
-  makeDemoNpc('milady-kyoko',   'Kyoko',     3700, 2000, 'milady_official_8', 0xc0e8ff, false, 'squat'),
-  makeDemoNpc('milady-vivi',    'Vivi',      1600, 1500, 'milady_official_2', 0xffd0a0),
+  makeDemoNpc('milady-miu',     'Miu',       2100, 4500, 'milady_official_7', 0xffc0ff, false, 'looking_around'),
+  makeDemoNpc('milady-kyoko',   'Kyoko',     5550, 3000, 'milady_official_8', 0xc0e8ff, false, 'squat'),
+  makeDemoNpc('milady-vivi',    'Vivi',      2400, 2250, 'milady_official_2', 0xffd0a0),
   // 2026-05-12 PM: Hermes wanderers restored with per-VRM auto-fit (Mira,
   // Cyrus, Tekk) — see npc-definitions.ts. Each species lands at
   // VRM_NPC_TARGET_HEIGHT_WU regardless of cm-vs-m authoring units.
-  makeDemoNpc('hermes-mira',  'Mira',  3500, 3500, 'hermes_female', 0xb088ff),
-  makeDemoNpc('hermes-cyrus', 'Cyrus', 2700, 1500, 'hermes_male',   0x4b6cb7),
-  makeDemoNpc('hermes-tekk',  'Tekk',  1900, 3800, 'tekk',          0x30c060),
-  makeDemoNpc('wanderer-driftwood', 'Driftwood', 1500, 2400, 'lobster',     0x8d6e63),
-  makeDemoNpc('wanderer-marlin',    'Marlin',    3700, 2700, 'sweet_crab',  0x00acc1),
-  makeDemoNpc('wanderer-riptide',   'Riptide',   2600, 3500, 'hermitcrab',  0xa1887f),
+  makeDemoNpc('hermes-mira',  'Mira',  5250, 5250, 'hermes_female', 0xb088ff),
+  makeDemoNpc('hermes-cyrus', 'Cyrus', 4050, 2250, 'hermes_male',   0x4b6cb7),
+  makeDemoNpc('hermes-tekk',  'Tekk',  2850, 5700, 'tekk',          0x30c060),
+  makeDemoNpc('wanderer-driftwood', 'Driftwood', 2250, 3600, 'lobster',     0x8d6e63),
+  makeDemoNpc('wanderer-marlin',    'Marlin',    5550, 4050, 'sweet_crab',  0x00acc1),
+  makeDemoNpc('wanderer-riptide',   'Riptide',   3900, 5250, 'hermitcrab',  0xa1887f),
 ];
 
 // Demo NPC wandering — makes NPCs walk around when not connected to server
@@ -196,8 +198,8 @@ interface WanderState { targetX: number; targetY: number; waitUntil: number; }
 const wanderStates = new Map<string, WanderState>();
 
 const WANDER_MARGIN = 80;
-const WANDER_MAX_X = 5120 - WANDER_MARGIN; // MAP_WIDTH - margin
-const WANDER_MAX_Y = 5120 - WANDER_MARGIN; // MAP_HEIGHT - margin
+const WANDER_MAX_X = MAP_WIDTH - WANDER_MARGIN;
+const WANDER_MAX_Y = MAP_HEIGHT - WANDER_MARGIN;
 
 function pickNewTarget(npc: NpcSpriteState): WanderState {
   const tx = WANDER_MARGIN + Math.random() * (WANDER_MAX_X - WANDER_MARGIN);
@@ -557,8 +559,8 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
     const playerNpc: NpcSpriteState = {
       id: PLAYER_NPC_ID,
       name: 'You',
-      x: 2560, y: 2560, // World center (tile 80,80)
-      prevX: 2560, prevY: 2560,
+      x: 3840, y: 3840, // World center (tile 120,120)
+      prevX: 3840, prevY: 3840,
       ts: 0, tsDelta: 200,
       direction: 'idle',
       // 2026-04-25: NPC-mode default flipped from 'lobster' to 'milady_official_1'
