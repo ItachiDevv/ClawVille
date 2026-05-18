@@ -38,30 +38,30 @@ function center(tileX: number, tileY: number, tileW: number, tileH: number) {
 }
 
 // Building zone tile coords from tilemap-data.ts (10 OpenClaw integrations)
-// Phase 6.2 (2026-05-18): 360×360 grid, R=160 tiles from center (180,180), 30° spacing.
-// cx = round(180 + 160*cos(θ)), zone x = cx - 7  (14-tile width)
+// Phase 6.2.1 (2026-05-18): 360×360 grid, R=130 tiles from center (180,180), 30° spacing.
+// cx = round(180 + 130*cos(θ)), zone x = cx - 7  (14-tile width)
 // Matches buildingZones in tilemap-data.ts — keep in sync when ring changes.
 export const BUILDING_TILE_ZONES: Record<string, { x: number; y: number; w: number; h: number }> = {
-  // Slot 0  θ=-π/2        cx=180, cy=20   zone=(173,13)
-  'visual-creation':     { x: 173, y:  13, w: 14, h: 14 },
-  // Slot 11 θ=4π/3        cx=100, cy=41   zone=(93,34)
-  'memory-rag':          { x:  93, y:  34, w: 14, h: 14 },
-  // Slot 4  θ=π/6         cx=319, cy=260  zone=(312,253)
-  'api-integrations':    { x: 312, y: 253, w: 14, h: 14 },
-  // Slot 6  θ=π/2         cx=180, cy=340  zone=(173,333)
-  'cron-automation':     { x: 173, y: 333, w: 14, h: 14 },
-  // Slot 5  θ=π/3         cx=260, cy=319  zone=(253,312)
-  'app-publishing':      { x: 253, y: 312, w: 14, h: 14 },
-  // Slot 7  θ=2π/3        cx=100, cy=319  zone=(93,312)
-  'deployment-ops':      { x:  93, y: 312, w: 14, h: 14 },
-  // Slot 2  θ=-π/6        cx=319, cy=100  zone=(312,93)
-  'mcp-tool-use':        { x: 312, y:  93, w: 14, h: 14 },
-  // Slot 1  θ=-π/3        cx=260, cy=41   zone=(253,34)
-  'code-development':    { x: 253, y:  34, w: 14, h: 14 },
-  // Slot 3  θ=0           cx=340, cy=180  zone=(333,173)
-  'messaging-channels':  { x: 333, y: 173, w: 14, h: 14 },
-  // Slot 10 θ=7π/6        cx=41,  cy=100  zone=(34,93)  [was slot 8 before Phase 6.1 swap]
-  'agent-security':      { x:  34, y:  93, w: 14, h: 14 },
+  // Slot 0  θ=-π/2        cx=180, cy=50   zone=(173,43)
+  'visual-creation':     { x: 173, y:  43, w: 14, h: 14 },
+  // Slot 11 θ=4π/3        cx=115, cy=67   zone=(108,60)
+  'memory-rag':          { x: 108, y:  60, w: 14, h: 14 },
+  // Slot 4  θ=π/6         cx=293, cy=245  zone=(286,238)
+  'api-integrations':    { x: 286, y: 238, w: 14, h: 14 },
+  // Slot 6  θ=π/2         cx=180, cy=310  zone=(173,303)
+  'cron-automation':     { x: 173, y: 303, w: 14, h: 14 },
+  // Slot 5  θ=π/3         cx=245, cy=293  zone=(238,286)
+  'app-publishing':      { x: 238, y: 286, w: 14, h: 14 },
+  // Slot 7  θ=2π/3        cx=115, cy=293  zone=(108,286)
+  'deployment-ops':      { x: 108, y: 286, w: 14, h: 14 },
+  // Slot 2  θ=-π/6        cx=293, cy=115  zone=(286,108)
+  'mcp-tool-use':        { x: 286, y: 108, w: 14, h: 14 },
+  // Slot 1  θ=-π/3        cx=245, cy=67   zone=(238,60)
+  'code-development':    { x: 238, y:  60, w: 14, h: 14 },
+  // Slot 3  θ=0           cx=310, cy=180  zone=(303,173)
+  'messaging-channels':  { x: 303, y: 173, w: 14, h: 14 },
+  // Slot 10 θ=7π/6        cx=67,  cy=115  zone=(60,108)  [was slot 8 before Phase 6.1 swap]
+  'agent-security':      { x:  60, y: 108, w: 14, h: 14 },
 };
 
 /** Map of building ID to {homeX, homeY} for NPC definitions */
@@ -113,7 +113,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   // open-water gaps between buildings on the ring.
   //
   //   Map: 11520×11520 px / 360×360 tiles, town center (5760, 5760).
-  //   Building ring radius = 160 tiles (5120 wu) from center. Open gaps lie roughly
+  //   Building ring radius = 130 tiles (4160 wu) from center. Open gaps lie roughly
   //   between the 12 ring positions and well inside (closer to center).
   //   Phase 6.2 (2026-05-18): all homeX/homeY scaled ×1.5 from Phase 6.1 (7680-world)
   //   then shifted to new center (5760 vs 3840). Formula: new = 5760 + (old-3840)*1.5.
