@@ -120,10 +120,55 @@ export function mergeStaticMeshesByMaterial(root: THREE.Object3D): MergeResult {
       bucket.geos[0].dispose?.();
       continue;
     }
+
+    // Pre-flight attribute compatibility (2026-05-18). normalizeAttributes
+    // above restricts to {position, normal, uv} but some source meshes
+    // ship without UVs or normals; within a bucket, one geometry might
+    // have {position, normal, uv} while another has only {position,
+    // normal}. mergeGeometries() console.errors and returns null in that
+    // case (caught by the try/catch + null-check below — but the user
+    // still sees the noisy error). Fix: strip every bucket geometry to
+    // the INTERSECTION of attribute names so the merge call always sees
+    // a uniform set.
+    const commonAttrs = Object.keys(bucket.geos[0].attributes).filter((n) =>
+      bucket.geos.every((g) => n in g.attributes),
+    );
+    // itemSize sanity — a position attribute must have the same itemSize
+    // across all geometries; if it doesn't, drop it from the common set
+    // rather than letting mergeGeometries fail.
+    const safeCommon = commonAttrs.filter((n) => {
+      const size0 = bucket.geos[0].attributes[n].itemSize;
+      return bucket.geos.every((g) => g.attributes[n].itemSize === size0);
+    });
+    for (const g of bucket.geos) {
+      for (const n of Object.keys(g.attributes)) {
+        if (!safeCommon.includes(n)) g.deleteAttribute(n);
+      }
+    }
+    // Index uniformity — mergeGeometries() requires all-indexed OR
+    // all-non-indexed. If mixed, de-index everything (cheap; meshes are
+    // already small after the per-bucket merge target).
+    const hasIndexFlags = bucket.geos.map((g) => !!g.index);
+    if (hasIndexFlags.some((b) => b) && hasIndexFlags.some((b) => !b)) {
+      for (let i = 0; i < bucket.geos.length; i++) {
+        if (bucket.geos[i].index) {
+          const ni = bucket.geos[i].toNonIndexed();
+          bucket.geos[i].dispose?.();
+          bucket.geos[i] = ni;
+        }
+      }
+    }
+    // If the intersection wiped out position (shouldn't happen, but
+    // belt-and-suspenders) there's nothing to merge.
+    if (!safeCommon.includes('position')) {
+      for (const g of bucket.geos) g.dispose?.();
+      continue;
+    }
+
     try {
       const merged = mergeGeometries(bucket.geos, false);
       if (!merged) {
-        // Attribute mismatch — leave the originals.
+        // Attribute mismatch slipped past the pre-flight — leave originals.
         for (const g of bucket.geos) g.dispose?.();
         continue;
       }
