@@ -150,8 +150,13 @@ const _scratchAnchorWorld = new THREE.Vector3();
 
 const _occRaycaster = new THREE.Raycaster();
 const _occDir = new THREE.Vector3();
-/** Lazily built from userData.isOccluder meshes; rebuilt on first frame. */
+/** Lazily built from userData.isOccluder meshes; rebuilt every 2 s (wall-clock)
+ *  so late-mounted buildings and hot-swaps in edit mode are picked up regardless
+ *  of framerate. Frame-counter cadence (300 frames) caused a 10 s stale window
+ *  at 30 fps (Iris Xe), letting the empty-on-first-frame cache persist forever. */
 let _occluderMeshes: THREE.Mesh[] | null = null;
+/** Timestamp (performance.now()) of the last occluder-list rebuild. 0 = force rebuild on first frame. */
+let _occluderRebuildTime = 0;
 /** Frame counter incremented in the projection useFrame for 10Hz stagger. */
 let _occFrameCounter = 0;
 /** Three.js scene reference captured in WorldLabelsOverlayMount. */
@@ -171,8 +176,12 @@ function _buildOccluderList(scene: THREE.Scene): THREE.Mesh[] {
 /** Returns true if the camera→anchor ray is blocked by a building mesh. */
 function _checkOcclusion(anchorWorld: THREE.Vector3, cameraPos: THREE.Vector3): boolean {
   if (!_sceneRef) return false;
-  if (!_occluderMeshes) {
+  // Rebuild every 2 s (wall-clock) so late-mounted buildings are picked up.
+  // Initialised to 0 so the very first call always builds the list.
+  const now = performance.now();
+  if (!_occluderMeshes || now - _occluderRebuildTime > 2000) {
     _occluderMeshes = _buildOccluderList(_sceneRef);
+    _occluderRebuildTime = now;
   }
   const anchorDist = cameraPos.distanceTo(anchorWorld);
   if (anchorDist < 10) return false;
@@ -254,8 +263,9 @@ export function WorldLabelsOverlayMount() {
   // Capture scene for the module-scope occluder raycaster.
   useEffect(() => {
     _sceneRef = scene;
-    // Invalidate cached occluder list when scene changes.
+    // Invalidate cached occluder list when scene changes; 0 forces rebuild on next frame.
     _occluderMeshes = null;
+    _occluderRebuildTime = 0;
     return () => { _sceneRef = null; };
   }, [scene]);
 
@@ -548,6 +558,22 @@ export function useWorldLabel({
   );
 
   return { divRef, setVisible };
+}
+
+// ---------------------------------------------------------------------------
+// resetLabelPrevOpacity — forces the projection useFrame to re-write opacity
+// on the very next frame after an external caller (e.g. onMouseLeave) has
+// cleared or overridden the div's style.opacity without going through
+// entry._prevOpacity. Without this, the "|targetOpacity - _prevOpacity| < 0.01"
+// skip-guard keeps the stale hover opacity alive until the camera moves enough
+// to change targetOpacity by ≥0.01.
+// ---------------------------------------------------------------------------
+
+export function resetLabelPrevOpacity(divRef: RefObject<HTMLDivElement | null>): void {
+  const id = _refToId.get(divRef);
+  if (!id) return;
+  const entry = _registry.get(id);
+  if (entry) entry._prevOpacity = -1;
 }
 
 // ---------------------------------------------------------------------------
