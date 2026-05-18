@@ -142,16 +142,15 @@ const FALLBACK_HOTSPOTS: HotspotDef[] = [
 ];
 
 /**
- * Gameready GLB (~211k tris):
- * Material names are generic (Material2, Material3 etc). Four floor-pedestal
- * clickboxes cover the left-wall cabinet zone where slot machines appear visually.
- * Positions in post-fit world units; adjust after first deploy verification.
+ * Gameready GLB (~211k tris) — post-fit room bbox is x∈[-143,+143], y∈[0,120], z∈[-300,+300].
+ * Four hotspots tile the back-wall area where slot cabinets / stage props are visible.
+ * Camera at (0,80,250) looking at origin → these land in the upper-center of the frame.
  */
 const GAMEREADY_HOTSPOTS: HotspotDef[] = [
-  { position: [-200, 50, -80], size: [55, 90, 45], machineSlug: 'classic-3x5' },
-  { position: [-120, 50, -80], size: [55, 90, 45], machineSlug: 'classic-3x5' },
-  { position: [-40, 50, -80],  size: [55, 90, 45], machineSlug: 'classic-3x5' },
-  { position: [40, 50, -80],   size: [55, 90, 45], machineSlug: 'classic-3x5' },
+  { position: [-100, 60, -250], size: [50, 90, 40], machineSlug: 'classic-3x5' },
+  { position: [-33,  60, -250], size: [50, 90, 40], machineSlug: 'classic-3x5' },
+  { position: [33,   60, -250], size: [50, 90, 40], machineSlug: 'classic-3x5' },
+  { position: [100,  60, -250], size: [50, 90, 40], machineSlug: 'classic-3x5' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -258,27 +257,14 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
       obj.matrixAutoUpdate = false;
     });
 
-    // Always log fit math while debugging — remove after casino renders correctly
-    if (typeof window !== 'undefined') {
+    if (typeof window !== 'undefined' && process.env.NEXT_PUBLIC_CASINO_DEBUG === '1') {
       const bbox2 = new THREE.Box3().setFromObject(c);
       const sz = new THREE.Vector3(); bbox2.getSize(sz);
       const ct = new THREE.Vector3(); bbox2.getCenter(ct);
-      // Expose on window for inspection
-      (window as any).__casinoFit = {
-        scale: fitResult.scale,
-        offsetX: fitResult.offsetX, offsetY: fitResult.offsetY, offsetZ: fitResult.offsetZ,
-        worldBbox: {
-          minX: bbox2.min.x, minY: bbox2.min.y, minZ: bbox2.min.z,
-          maxX: bbox2.max.x, maxY: bbox2.max.y, maxZ: bbox2.max.z,
-          sizeX: sz.x, sizeY: sz.y, sizeZ: sz.z,
-          centerX: ct.x, centerY: ct.y, centerZ: ct.z,
-        },
-      };
-      console.info('[casino-fit] scale=' + fitResult.scale.toFixed(4) +
-        ' offset=(' + fitResult.offsetX.toFixed(1) + ',' + fitResult.offsetY.toFixed(1) + ',' + fitResult.offsetZ.toFixed(1) + ')' +
-        ' worldCenter=(' + ct.x.toFixed(1) + ',' + ct.y.toFixed(1) + ',' + ct.z.toFixed(1) + ')' +
-        ' worldSize=(' + sz.x.toFixed(1) + ',' + sz.y.toFixed(1) + ',' + sz.z.toFixed(1) + ')' +
-        ' check window.__casinoFit');
+      console.info('[casino-fit]',
+        'scale=' + fitResult.scale.toFixed(4),
+        'worldCenter=(' + ct.x.toFixed(1) + ',' + ct.y.toFixed(1) + ',' + ct.z.toFixed(1) + ')',
+        'worldSize=(' + sz.x.toFixed(1) + ',' + sz.y.toFixed(1) + ',' + sz.z.toFixed(1) + ')');
     }
 
     const hotspotDefs = useFallback ? FALLBACK_HOTSPOTS : GAMEREADY_HOTSPOTS;
