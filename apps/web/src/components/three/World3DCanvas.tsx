@@ -732,27 +732,24 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       {/* Secondary fill from opposite side for depth */}
       <directionalLight position={[-100, 200, -60]} intensity={0.5} color={0x88aacc} />
 
-      {/* Underwater fog — scaled for 240x240 map (7680x7680 world units) / R=100-tile ring.
-          Phase 6.1 fog tuning (2026-05-18): near 2500→3800, far stays 6800.
-          Geometry: camera at (0,600,1300). Ring radius=3200wu.
-            Near-side ring (slot 6, South, world z≈+3200): d=√(600²+1900²)≈1992wu
-            Far-side ring  (slot 0, North, world z≈-3200): d=√(600²+4500²)≈4540wu
+      {/* Underwater fog — scaled for 360x360 map (11520wu world) / R=130-tile ring.
+          Phase 6.2.1 fog tuning (2026-05-18): near 3800→4500, far 6800→9000, camera.far 6800→10000.
+          Geometry: camera at (0,600,1300). Ring radius=4160wu.
+            Near-side ring (slot 6, South, world z≈+4160): d=√(600²+2860²)≈2922wu
+            Far-side ring  (slot 0, North, world z≈-4160): d=√(600²+5460²)≈5493wu
           Linear fog factor = clamp((d−near)/(far−near), 0, 1).
-          With near=2500, far=6800: far-ring factor = (4540−2500)/4300 ≈ 0.47 → buildings were
-          47% blended toward FOG_COLOR=0x0e3458 (very dark navy) → dark silhouettes, 70-90%
-          effectively invisible because fog target is nearly as dark as the geometry.
-          With near=3800, far=6800:
-            near-ring (1992wu): factor = (1992−3800)/3000 → clamped 0.00 → fully clear ✓
-            far-ring  (4540wu): factor = (4540−3800)/3000 = 740/3000 ≈ 0.25 → 25% fog blend
-          At 25% toward dark navy the building colors/textures read clearly while still carrying
-          the underwater haze. Horizon (6000wu) = 0.73 — still heavily fogged, identity preserved.
-          fog.far rule: MUST stay ≤ camera.far (6800). We are NOT raising far — it stays 6800.
-          1800/9000 regression post-mortem: the prior danger was far=9000 > camera.far=6800
-          (rasterising invisible geometry); this change only pushes near, far is untouched.
-          Iris Xe cost: pushing near further out means MORE geometry is fully unfogged but fog
-          does not change rasterisation counts — GPU still clips at camera.far=6800. No new
-          draw calls. DPR cap [0.55,0.7] on low-end GPUs absorbs the fragment budget. */}
-      <fog attach="fog" args={[FOG_COLOR, 3800, 6800]} />
+          With near=4500, far=9000:
+            near-ring (2922wu): factor = (2922−4500)/4500 → clamped 0.00 → fully clear ✓
+            far-ring  (5493wu): factor = (5493−4500)/4500 = 993/4500 ≈ 0.22 → 22% fog blend
+          At 22% toward dark navy the building colors/textures read clearly — 78% visible.
+          Horizon (9000wu) = 1.00 — full fog at twice ring distance, distant void fades naturally.
+          fog.far rule: MUST stay ≤ camera.far. camera.far raised to 10000 to satisfy constraint
+          (fog.far=9000 < camera.far=10000 ✓). Iris Xe safety: DPR cap [0.55,0.7] unchanged;
+          geometry past 5500wu is sparse (only sky/terrain); fragment cost negligible.
+          R=160 regression post-mortem: old near=3800 with far-ring at 5493wu → 0.56 factor →
+          44% fog blend → buildings near-invisible against dark FOG_COLOR. Increasing R from
+          160→130 didn't help enough alone; fog near/far must track ring radius. */}
+      <fog attach="fog" args={[FOG_COLOR, 4500, 9000]} />
 
       {/* Shared world geometry */}
       <ArenaTerrain />
@@ -973,7 +970,7 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
         camera={{
           fov: 50,
           near: 1,
-          far: 6800,
+          far: 10000,
           // Game mode: tighter starting position reinforces the bigger buildings/characters.
           // Pulled in from [0,700,1600] after proportions pass (2026-04-16).
           position: mode === 'game' ? [0, 600, 1300] : [0, 560, 1000],

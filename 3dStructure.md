@@ -11,7 +11,7 @@
 > - **`GameFeatures.md`** — gameplay.
 > - **This doc** — *how* the 3D scene is wired: coordinates, camera, lights, GPU budget, animation, asset pipeline.
 
-**Last edit:** 2026-05-18 — Concern 6.0.3: Casino walk-in animation + SceneTransition pattern. `SceneTransition.tsx` (new, generic), casino onClick wired to walk-in flow (triggerCasinoWalkIn), avatar exit position = casino door (940, 5760 game-px), spawn fix avatarPositionRef → (5760, 6140). §1 spawn, §10c updated. Prior 2026-05-18 — Phase 6.2: grid 240→360 tiles, ring R=100→160 tiles (3200→5120wu), center tile 120→180, MAP_WIDTH/HEIGHT 7680→11520wu, arc spacing 1675→2680wu. NPC_INSET_WORLD 1000→1300wu (Patrick fix). `computeBuildingScale` switched to max(X,Y,Z) normalization (`targetMaxDim` param replaces `targetHeight`); all per-building values updated. Sandy Treedome DoubleSide fix for transparent materials. DECO_INNER_EXCLUSION_R 1500→800wu. Town-center props spread: bazaar (-600,300), marketplace (800,300), auction dome z=-1000. All building zone positions, NPC home coords, pathfinding COLS/ROWS, and free-roamer radii updated to match. §1, §2, §5e, §7 updated. Prior 2026-05-18 — World-space DOM label redesign: all pills removed; NPC labels now 10px uppercase wordmarks with black text-shadow + no background, opacity 0.65 within 800wu fading to 0 at 3000wu, 10 Hz building-occluder raycast via `_checkOcclusion` in `world-labels-overlay.tsx`; building labels now 11px italic cyan wordmarks with glow text-shadow, opacity 0.40 within 2000wu fading to 0 at 5000wu, CSS hover → opacity 1; OpenClaw chip replaced by 7px green dot. `LabelEntry` gains `fadeNear/fadeFar/fadeBaseOpacity/_prevOpacity/occlude/occludePhase/_occludeResult`; `UseWorldLabelOpts` gains matching opts. §5d WorldLabelsOverlay row updated. Prior prior 2026-05-18 — §6f Animation Shipping Rules added.
+**Last edit:** 2026-05-18 — Phase 6.2.1: ring R=160→130 tiles (5120→4160wu — R=160 too spaced out from spawn). Arc spacing 2680→2178wu. Fog near 3800→4500, far 6800→9000, camera.far 6800→10000. All 12 building zone positions updated in tilemap-data.ts, arena-buildings.tsx, npc-definitions.ts, map-locations.ts. §2 slot table, §3 camera.far, §4 fog updated. Prior 2026-05-18 — Concern 6.0.3: Casino walk-in animation + SceneTransition pattern. `SceneTransition.tsx` (new, generic), casino onClick wired to walk-in flow (triggerCasinoWalkIn), avatar exit position = casino door (940, 5760 game-px), spawn fix avatarPositionRef → (5760, 6140). §1 spawn, §10c updated. Prior 2026-05-18 — Phase 6.2: grid 240→360 tiles, ring R=100→160 tiles (3200→5120wu), center tile 120→180, MAP_WIDTH/HEIGHT 7680→11520wu, arc spacing 1675→2680wu. NPC_INSET_WORLD 1000→1300wu (Patrick fix). `computeBuildingScale` switched to max(X,Y,Z) normalization (`targetMaxDim` param replaces `targetHeight`); all per-building values updated. Sandy Treedome DoubleSide fix for transparent materials. DECO_INNER_EXCLUSION_R 1500→800wu. Town-center props spread: bazaar (-600,300), marketplace (800,300), auction dome z=-1000. All building zone positions, NPC home coords, pathfinding COLS/ROWS, and free-roamer radii updated to match. §1, §2, §5e, §7 updated. Prior 2026-05-18 — World-space DOM label redesign: all pills removed; NPC labels now 10px uppercase wordmarks with black text-shadow + no background, opacity 0.65 within 800wu fading to 0 at 3000wu, 10 Hz building-occluder raycast via `_checkOcclusion` in `world-labels-overlay.tsx`; building labels now 11px italic cyan wordmarks with glow text-shadow, opacity 0.40 within 2000wu fading to 0 at 5000wu, CSS hover → opacity 1; OpenClaw chip replaced by 7px green dot. `LabelEntry` gains `fadeNear/fadeFar/fadeBaseOpacity/_prevOpacity/occlude/occludePhase/_occludeResult`; `UseWorldLabelOpts` gains matching opts. §5d WorldLabelsOverlay row updated. Prior prior 2026-05-18 — §6f Animation Shipping Rules added.
 
 ---
 
@@ -48,39 +48,39 @@ Sand floor sits at `y = -2` (`arena-terrain.tsx:203`). Buildings, NPCs, and deco
 
 Source: `arena-buildings.tsx`. See `WorldContent.md §2` for the building roster + per-building GLB paths.
 
-**Ring geometry — Phase 6.2 (2026-05-18):**
+**Ring geometry — Phase 6.2.1 (2026-05-18):**
 
-Grid expanded 240→360 tiles; ring radius expanded R=100→160 tiles. Center shifted (120,120)→(180,180). Arc spacing ≈ 2680wu (was 1675wu — 60% improvement). 13-tile border clearance on all sides (max safe R = 180−7 = 173). Casino is the entertainment-district landmark.
+Ring tuned R=160→130 tiles (5120→4160wu — R=160 was too spaced out from player spawn at (0,0,1300)). Arc spacing ≈ 2178wu (was 2680wu at R=160). 43-tile border clearance on all sides. Grid stays at 360×360.
 
-**Phase 6.1 history (also 2026-05-18):** Grid 160→240, ring R=72→100. Casino + Patrick's Rock swap to entertainment district. claw-arcade at WSW (2 slots from casino, NOT adjacent — preserved in Phase 6.2).
+**Phase 6.2 history (2026-05-18):** Grid 240→360, ring R=100→160. **Phase 6.1 history (2026-05-18):** Grid 160→240, ring R=72→100. Casino + Patrick's Rock swap to entertainment district. claw-arcade at WSW (2 slots from casino, NOT adjacent — preserved in Phase 6.2/6.2.1).
 
 | Dimension | Value |
 |---|---|
 | Layout | 12 buildings at 30° angular spacing (true circle) |
-| Radius | 160 tiles = 5120 wu from center (180,180) / world (0,0,0) |
+| Radius | 130 tiles = 4160 wu from center (180,180) / world (0,0,0) |
 | Angular spacing | 30° (π/6 rad) per slot |
 | Starting angle | −π/2 (North), clockwise |
 | Zone footprint | 14×14 tiles = 448×448 wu |
 | Zone upper-left | `(round(cx) − 7, round(cy) − 7)` |
-| cx formula | `180 + 160 * cos(−π/2 + slot * π/6)` |
-| cy formula | `180 + 160 * sin(−π/2 + slot * π/6)` |
+| cx formula | `180 + 130 * cos(−π/2 + slot * π/6)` |
+| cy formula | `180 + 130 * sin(−π/2 + slot * π/6)` |
 
-Slot table (clockwise from North, cx/cy in tile coords, Phase 6.2):
+Slot table (clockwise from North, cx/cy in tile coords, Phase 6.2.1):
 
 | Slot | Angle | cx | cy | Building | rotY | targetMaxDim | Notes |
 |---|---|---|---|---|---|---|---|
-| 0 | N (0°) | 180 | 20 | visual-creation | 0.000 | 1100 | |
-| 1 | NNE (30°) | 260 | 41 | code-development | −0.524 | 1000 | max-dim normalization replaces targetHeight |
-| 2 | ENE (60°) | 319 | 100 | mcp-tool-use | −1.047 | 1000 | |
-| 3 | E (90°) | 340 | 180 | messaging-channels | −1.571 | 1000 | rotYOffset +π; DoubleSide fix on transparent mats |
-| 4 | ESE (120°) | 319 | 260 | api-integrations | −2.094 | 1000 | rotYOffset −π/2 |
-| 5 | SSE (150°) | 260 | 319 | app-publishing | −2.618 | 1000 | rotYOffset +π/2 |
-| 6 | S (180°) | 180 | 340 | cron-automation | 3.142 | 1000 | |
-| 7 | SSW (210°) | 100 | 319 | deployment-ops | 2.618 | 1400 | tallest landmark |
-| 8 | WSW (240°) | 41 | 260 | claw-arcade | 2.094 | 1100 | 2 slots (60°) from casino — NOT adjacent |
-| 9 | W (270°) | 20 | 180 | casino | 1.571 | 1300 | entertainment district; box3Recenter=true |
-| 10 | WNW (300°) | 41 | 100 | agent-security | 1.047 | 1100 | adjacent to casino (slot 9) |
-| 11 | NNW (330°) | 100 | 41 | memory-rag | 0.524 | 1000 | pivotZBias=+180 |
+| 0 | N (0°) | 180 | 50 | visual-creation | 0.000 | 1100 | |
+| 1 | NNE (30°) | 245 | 67 | code-development | −0.522 | 1000 | max-dim normalization |
+| 2 | ENE (60°) | 293 | 115 | mcp-tool-use | −1.049 | 1000 | |
+| 3 | E (90°) | 310 | 180 | messaging-channels | −1.571 | 1000 | rotYOffset +π; DoubleSide fix on transparent mats |
+| 4 | ESE (120°) | 293 | 245 | api-integrations | −2.093 | 1000 | rotYOffset −π/2 |
+| 5 | SSE (150°) | 245 | 293 | app-publishing | −2.620 | 1000 | rotYOffset +π/2 |
+| 6 | S (180°) | 180 | 310 | cron-automation | 3.142 | 1000 | |
+| 7 | SSW (210°) | 115 | 293 | deployment-ops | 2.620 | 1400 | tallest landmark |
+| 8 | WSW (240°) | 67 | 245 | claw-arcade | 2.093 | 1100 | 2 slots (60°) from casino — NOT adjacent |
+| 9 | W (270°) | 50 | 180 | casino | 1.571 | 1300 | entertainment district; box3Recenter=true |
+| 10 | WNW (300°) | 67 | 115 | agent-security | 1.049 | 1100 | adjacent to casino (slot 9) |
+| 11 | NNW (330°) | 115 | 67 | memory-rag | 0.522 | 1000 | pivotZBias=+180 |
 
 **rotY formula:** `atan2(180 − cx, 180 − cy)` — each building's +Z axis points toward plaza center (world 0, 0). Values are identical across all ring expansions because atan2 depends only on direction, not magnitude. Model-authored `rotYOffset` values are additive and stay with the building regardless of slot.
 
@@ -90,7 +90,7 @@ Slot table (clockwise from North, cx/cy in tile coords, Phase 6.2):
 
 **Authoritative source:** `buildingZones[]` in `apps/web/src/lib/pixi/tilemap-data.ts`. All consumers (arena-buildings.tsx, minimap.tsx, PixiCanvas.tsx, map-locations.ts) derive from it.
 
-**Footprint cap:** `MAX_FOOTPRINT = 1800 wu`. If post-scale `max(sx, sz) > 1800`, scale is reduced. At R=160 (5120wu), arc gap ≈ 2680wu − footprint, so even 1800wu footprint leaves ~880wu clearance per side. Wide outliers (Salty Spitoon ~2:1 aspect) hit the cap; most buildings are constrained by targetMaxDim, not footprint.
+**Footprint cap:** `MAX_FOOTPRINT = 1800 wu`. If post-scale `max(sx, sz) > 1800`, scale is reduced. At R=130 (4160wu), arc gap ≈ 2178wu − footprint, so 1800wu footprint leaves ~190wu clearance per side (tight but passable). Wide outliers (Salty Spitoon ~2:1 aspect) hit the cap; most buildings are constrained by targetMaxDim, not footprint.
 
 **Terrain lerp:** `terrainYRef.current += (ty - terrainYRef.current) * 0.6` (both VRM and GLB paths in `player-avatar.tsx`). Increased from 0.3→0.6 so avatars snap to dune peaks faster and don't visibly sink into bumpy terrain.
 
@@ -127,7 +127,7 @@ Three controllers, mutually exclusive except arrow rotation:
 | `<OrbitControls>` | always mounted | Mouse drag rotates orbit; scroll zooms. minDistance differs per mode. |
 | `ArrowKeyRotationController` | always mounted | ↑↓ adjust polar, ←→ adjust azimuth at constant speed. Works in every mode. |
 
-**Canvas initial camera:** `fov=50, near=1, far=6800`, `position = mode==='game' ? [0, 600, 1300] : [0, 560, 1000]`.
+**Canvas initial camera:** `fov=50, near=1, far=10000`, `position = mode==='game' ? [0, 600, 1300] : [0, 560, 1000]`. (camera.far raised from 6800 to 10000 in Phase 6.2.1 to satisfy fog.far=9000 ≤ camera.far constraint.)
 
 **DPR cap:** `dpr={LOW_END_GPU_DETECTED ? [0.55, 0.7] : [0.75, 1]}`. `LOW_END_GPU_DETECTED` is computed once at module load via `WEBGL_debug_renderer_info` — Intel/Iris/UHD/Adreno/Mali/PowerVR/Apple-integrated + `pointer:coarse` mobile. Do NOT call `gl.setPixelRatio()` inside `onCreated` — that overrides the prop and was reverted 2026-04-21.
 
@@ -143,7 +143,7 @@ Hard cap: **3 lights** on Iris Xe (uniform limit + shader compile cost).
 | `directionalLight` (key) | `position [150, 350, 80], intensity 2.0, color 0xffeedd` | Warm key light from upper-right. |
 | `directionalLight` (fill) | `position [-100, 200, -60], intensity 0.5, color 0x88aacc` | Cool fill from opposite side for depth. |
 
-**Fog:** `fog(FOG_COLOR=0x0e3458, near=3800, far=6800)` (`World3DCanvas.tsx`). Updated 2026-05-18: near pushed from 2500→3800, far unchanged at 6800 (=camera.far). Rationale: camera at (0,600,1300), ring radius 3200wu. Near-ring buildings (South, ~1992wu from camera): factor 0.00 — fully clear. Far-ring buildings (North, ~4540wu): factor=(4540−3800)/(6800−3800)=740/3000≈0.25 — 25% fog blend, textures/colors visible. Prior near=2500 gave 47% blend toward the very dark FOG_COLOR, making far-ring buildings appear as near-black silhouettes. Far kept at 6800=camera.far enforces the fog.far≤camera.far constraint (violating this by setting far>camera.far was the root cause of the 1800/9000 Iris Xe regression — rasterising geometry beyond the clip plane). Iris Xe safety: only fog.near moved; no geometry, draw call, or shader change. DPR cap [0.55,0.7] unchanged. `WorldContent.md §5 MAX_VISIBLE_DIST=3800` rejects decoration placements past the perceptual fog cutoff.
+**Fog:** `fog(FOG_COLOR=0x0e3458, near=4500, far=9000)` (`World3DCanvas.tsx`). Updated Phase 6.2.1 (2026-05-18): near 3800→4500, far 6800→9000. Rationale: camera at (0,600,1300), ring radius 4160wu (R=130). Near-ring buildings (South, ~2922wu from camera): factor 0.00 — fully clear. Far-ring buildings (North, ~5493wu): factor=(5493−4500)/(9000−4500)=993/4500≈0.22 — 22% fog blend, 78% visible. Prior near=3800/far=6800 at R=130 gave 56% blend toward the very dark FOG_COLOR for far-ring buildings — effectively invisible. fog.far=9000 ≤ camera.far=10000 ✓ constraint preserved. Iris Xe safety: DPR cap [0.55,0.7] unchanged; geometry past 5500wu is sparse sky/terrain. `WorldContent.md §5 MAX_VISIBLE_DIST=3800` still rejects decoration placements (decorations sit below the 4500wu fog.near threshold — all clear).
 
 **Disabled atmosphere effects** (mounted but gated with `{false && <X />}`):
 - `<UnderwaterAtmosphere />` — caustic plane + depth backdrop + dust particles. Overdraw on the additive transparent meshes is 8–15 ms/frame on integrated GPUs even when occluded. Last disabled 2026-04-30.
