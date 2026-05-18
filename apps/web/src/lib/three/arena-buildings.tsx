@@ -133,9 +133,14 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // targetHeight: 1500 — lighthouse is the tallest landmark by definition.
   'deployment-ops':      { model: '/models/building-lighthouse.glb', yOffset: 0, rotY:  2.618, targetHeight: 1500 },
   // Slot 8 — WSW (cx=33, cy=170): dx=87, dz=-50 → atan2(87,-50)≈2.094 (2π/3)
-  // patricks-rock-v2.glb (3.88 MB, original patricks_house_spongebob.glb)
-  // targetHeight: 900 — Patrick's rock is naturally squat; don't over-scale.
-  'agent-security':      { model: '/models/patricks-rock-v2.glb',    yOffset: 0, rotY:  2.094, targetHeight: 900 },
+  // 2026-05-18: SWAPPED — claw-arcade moved from slot 10 to slot 8 (Patrick's Rock moved to slot 10).
+  // rotY=2.094 is the correct WSW facing angle — model points inward toward plaza center.
+  // claw-arcade-exterior.glb = Arcade City (CC-BY-4.0, vanessalani / Sketchfab).
+  // Interior / crane game is Phase 6.3.
+  // CASINO ADJACENCY FLAG: claw-arcade (slot 8/WSW) is now 2 slots from casino (slot 9/W) — NO LONGER ADJACENT.
+  // Patrick's Rock (slot 10/WNW) is now adjacent to casino instead.
+  'claw-arcade':         { model: '/models/arcade/claw-arcade-exterior.glb', yOffset: 0, rotY:  2.094, targetHeight: 900,
+                           onClick: () => { console.info('[claw-arcade] interior pending — Concern 6.3'); } },
   // Slot 9 — W (cx=20, cy=120): dx=100, dz=0 → atan2(100,0)=π/2≈1.571  ← entertainment district
   // casino-exterior-cove.glb = "Pyramid Casino" by tl0615 (CC-BY-4.0, Sketchfab); in-game name: Predictive Gaming Cove.
   // GLB author placed geometry at ~(-1800, 166, 4540) Blender units from scene origin.
@@ -146,12 +151,12 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // Interior route wired in Concern 6.0.2: click → /casino. Walk-in anim is 6.0.3.
   'casino':              { model: '/models/casino/casino-exterior-cove.glb', yOffset: 0, rotY:  1.571, targetHeight: 1040, box3Recenter: true,
                            onClick: () => { window.location.href = '/casino'; } },
-  // Slot 10 — WNW (cx=33, cy=70): dx=87, dz=50 → atan2(87,50)≈1.047 (π/3)  ← entertainment district (adjacent to casino)
-  // claw-arcade-exterior.glb = Arcade City (CC-BY-4.0, vanessalani / Sketchfab).
-  // Interior / crane game is Phase 6.3 — onClick is placeholder per Concern 6.0.1.
-  // targetHeight: 900 — arcade is peer to Patrick's rock; compact footprint.
-  'claw-arcade':         { model: '/models/arcade/claw-arcade-exterior.glb', yOffset: 0, rotY:  1.047, targetHeight: 900,
-                           onClick: () => { console.info('[claw-arcade] interior pending — Concern 6.3'); } },
+  // Slot 10 — WNW (cx=33, cy=70): dx=87, dz=50 → atan2(87,50)≈1.047 (π/3)
+  // 2026-05-18: SWAPPED — agent-security moved from slot 8 to slot 10 (claw-arcade moved to slot 8).
+  // rotY=1.047 is the correct WNW facing angle — model points inward toward plaza center.
+  // patricks-rock-v2.glb (3.88 MB, original patricks_house_spongebob.glb).
+  // targetHeight: 900 — Patrick's rock is naturally squat; don't over-scale.
+  'agent-security':      { model: '/models/patricks-rock-v2.glb',    yOffset: 0, rotY:  1.047, targetHeight: 900 },
   // Slot 11 — NNW (cx=70, cy=33): dx=50, dz=87 → atan2(50,87)≈0.524 (π/6)
   // squidward-house.glb = Squidward's Easter Island moai head house (CC-BY, Yanez Designs)
   // targetHeight: 1300 — moai head must tower visibly across the ring (user: "should be ~5-8× avatar").
@@ -516,13 +521,18 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
   const { scene } = useGLTF(config.model, undefined, undefined, extendLoaderWithMeshopt);
   const groupRef = useRef<THREE.Group>(null);
 
-  // WorldLabelsOverlay label — always visible (buildings are never distance-culled).
-  // pointerEvents='auto' preserves click-target behavior from the original <Html>.
+  // WorldLabelsOverlay label — distance-faded landmark.
+  // Base opacity 0.40 at ≤2000wu, linear fade to 0 at 5000wu.
+  // pointerEvents='auto' preserves click-target behavior.
   const { divRef: labelDivRef } = useWorldLabel({
     id: `building-label-${zone.id}`,
     anchorRef: groupRef,
     offset: [0, BUILDING_TARGET_HEIGHT + 20, 0],
     initialVisible: true,
+    fadeNear: 2000,
+    fadeFar: 5000,
+    fadeBaseOpacity: 0.40,
+    occlude: false,
   });
 
   const { cloned, buildingScale, pivotOffsetX, pivotOffsetY, pivotOffsetZ } = useMemo(() => {
@@ -632,26 +642,32 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
             <meshBasicMaterial visible={false} />
           </mesh>
         )}
-        {/* Floating building label — WorldLabelsOverlay projects offset [0, BUILDING_TARGET_HEIGHT+20, 0].
+        {/* Floating building label — minimal wordmark, no pill background.
+            Baseline opacity 0.40 set via distance fade in WorldLabelsOverlay.
+            CSS :hover boosts to 1.0 so the click target is always discoverable.
             pointerEvents='auto' preserves click-target behavior. */}
         {theme && (
           <WorldLabel divRef={labelDivRef} pointerEvents="auto">
-            <div
+            <span
               style={{
-                background: 'rgba(10, 22, 40, 0.85)',
-                backdropFilter: 'blur(4px)',
-                border: '1px solid rgba(56, 189, 248, 0.3)',
-                borderRadius: 8,
-                padding: '6px 12px',
-                cursor: 'pointer',
-                textAlign: 'center',
+                color: '#7dd3fc',
+                fontSize: 11,
+                fontStyle: 'italic',
+                fontWeight: 500,
+                letterSpacing: '0.06em',
                 whiteSpace: 'nowrap',
                 userSelect: 'none',
+                cursor: 'pointer',
+                textShadow: '0 0 8px rgba(56,189,248,0.9), 0 1px 3px rgba(0,0,0,0.9)',
+                transition: 'opacity 0.15s',
               }}
+              // CSS :hover opacity is blocked by the outer div's pointer-events
+              // boundary — use onMouseEnter/Leave on the span itself.
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.opacity = '1'; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = ''; }}
             >
-              <div style={{ color: '#7dd3fc', fontWeight: 'bold', fontSize: 13 }}>{theme.label}</div>
-              <div style={{ color: 'rgba(148,163,184,0.7)', fontSize: 10, marginTop: 2 }}>{theme.category}</div>
-            </div>
+              {theme.label}
+            </span>
           </WorldLabel>
         )}
       </group>
