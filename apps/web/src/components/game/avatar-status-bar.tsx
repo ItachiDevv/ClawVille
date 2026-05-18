@@ -1,8 +1,9 @@
 'use client';
 
 import { useAvatar } from '@/hooks/use-avatar';
-import { AVATAR_SPECIES } from '@clawville/shared';
+import { AVATAR_SPECIES, KNOWLEDGE_BOOKS } from '@clawville/shared';
 import { useGameStore } from '@/stores/game';
+import { buildingZones } from '@/lib/pixi/tilemap-data';
 
 function StatBar({ label, value, max = 20, color = 'bg-emerald-400' }: { label: string; value: number; max?: number; color?: string }) {
   const pct = Math.min(100, Math.round((value / max) * 100));
@@ -24,13 +25,26 @@ function StatBar({ label, value, max = 20, color = 'bg-emerald-400' }: { label: 
 export default function AvatarStatusBar() {
   const { data: avatar, isLoading } = useAvatar();
   const openInventory = useGameStore((s) => s.openInventory);
-  const visitedCount = useGameStore((s) => s.visitedBuildings.size);
+  const visitedBuildings = useGameStore((s) => s.visitedBuildings);
 
   if (isLoading || !avatar) return null;
 
   const species = AVATAR_SPECIES.find((s) => s.id === avatar.species);
   const emoji = species?.emoji ?? '?';
-  const knowledgeCount = (avatar.characterConfig as any)?.knowledge?.length ?? 0;
+  // Skills learned = distinct knowledge books the avatar has at least one
+  // entry from. The raw `characterConfig.knowledge[]` array stores many
+  // chunks per book (1 book → ~6 entries), so its length massively
+  // over-reports — the bug behind the "61 skills learned" HUD reading.
+  const knowledgeEntries: string[] = (avatar.characterConfig as any)?.knowledge ?? [];
+  const knowledgeSet = new Set(knowledgeEntries);
+  const skillsLearned = knowledgeSet.size === 0
+    ? 0
+    : KNOWLEDGE_BOOKS.filter((b) => b.knowledgeEntries.some((e) => knowledgeSet.has(e))).length;
+  // Filter visited set against current building IDs — defensive in case the
+  // prune in loadVisited() missed a stale entry written during this session.
+  const validIds = new Set(buildingZones.map((z) => z.id));
+  const validVisitedCount = [...visitedBuildings].filter((id) => validIds.has(id)).length;
+  const totalBuildings = buildingZones.length;
 
   return (
     <div className="claw-panel fixed bottom-4 left-4 z-40 w-auto md:w-56">
@@ -60,17 +74,17 @@ export default function AvatarStatusBar() {
           <div className="flex-1 h-1.5 bg-white/10 rounded-full overflow-hidden">
             <div
               className="h-full bg-cyan-400 rounded-full transition-all"
-              style={{ width: `${Math.round((visitedCount / 10) * 100)}%` }}
+              style={{ width: `${Math.min(100, Math.round((validVisitedCount / totalBuildings) * 100))}%` }}
             />
           </div>
-          <span className="text-white/40 text-[10px] font-mono">{visitedCount}/10</span>
+          <span className="text-white/40 text-[10px] font-mono">{validVisitedCount}/{totalBuildings}</span>
         </div>
 
         {/* Knowledge counter */}
-        {knowledgeCount > 0 && (
+        {skillsLearned > 0 && (
           <div className="flex items-center gap-1.5 text-[10px] text-cyan-300/60">
             <span>&#x1F4DA;</span>
-            <span className="font-bold">{knowledgeCount} skills learned</span>
+            <span className="font-bold">{skillsLearned} skill{skillsLearned === 1 ? '' : 's'} learned</span>
           </div>
         )}
 

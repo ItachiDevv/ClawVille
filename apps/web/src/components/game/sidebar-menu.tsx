@@ -55,7 +55,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import { MAP_LOCATIONS, AVATAR_SPECIES } from '@clawville/shared';
+import { MAP_LOCATIONS, AVATAR_SPECIES, KNOWLEDGE_BOOKS } from '@clawville/shared';
 import { RuneFrame, RpgButton, RpgModal, RpgTooltip, getRarity, type RarityId } from '@/components/rpg';
 import { useGameStore, type GameState } from '@/stores/game';
 import { useLocationAgent } from '@/hooks/use-locations';
@@ -145,8 +145,15 @@ function CharacterFrame({ onCreateAvatar }: { onCreateAvatar: () => void }) {
   const emoji = species?.emoji ?? '🦞';
   const level = avatar.level ?? 1;
   const tokens = avatar.clawTokens ?? 0;
-  const knowledgeCount =
-    (avatar.characterConfig as { knowledge?: unknown[] } | null)?.knowledge?.length ?? 0;
+  // Skills = distinct KNOWLEDGE_BOOKS the avatar has at least one entry of.
+  // Reading `knowledge.length` directly over-reports because each book contributes
+  // many chunks (1 book ≈ 6 entries), producing the spurious "61 SKILLS" tag.
+  const knowledgeEntries =
+    (avatar.characterConfig as { knowledge?: string[] } | null)?.knowledge ?? [];
+  const knowledgeSet = new Set(knowledgeEntries);
+  const knowledgeCount = knowledgeSet.size === 0
+    ? 0
+    : KNOWLEDGE_BOOKS.filter((b) => b.knowledgeEntries.some((e) => knowledgeSet.has(e))).length;
 
   return (
     <div
@@ -884,10 +891,33 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
 // Top-level component — desktop column OR mobile gear FAB + RpgModal.
 // ---------------------------------------------------------------------------
 
+const SIDEBAR_COLLAPSED_KEY = 'clawville-sidebar-collapsed';
+
 export default function SidebarMenu() {
   const isMobile = useIsMobile();
   const menuOpen = useGameStore((s: GameState) => s.menuOpen);
   const setMenuOpen = useGameStore((s: GameState) => s.setMenuOpen);
+
+  // Desktop-only collapse state. The sidebar occupies ~224px on the right
+  // edge and intrudes on gameplay; users can pin it closed and reopen via
+  // a thin edge handle. Persisted to localStorage so the choice survives
+  // reloads. Mobile is unaffected — it already uses the gear-FAB modal.
+  const [desktopCollapsed, setDesktopCollapsed] = useState(false);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    setDesktopCollapsed(window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true');
+  }, []);
+  const toggleDesktopCollapsed = () => {
+    setDesktopCollapsed((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next));
+      } catch {
+        /* ignore quota errors */
+      }
+      return next;
+    });
+  };
 
   // On desktop the sidebar is always visible, so we keep menuOpen in sync so
   // external code (e.g. modals) can still close it. On mobile menuOpen drives
@@ -972,6 +1002,20 @@ export default function SidebarMenu() {
   }
 
   // Desktop: floating column pinned to the right edge below the perf-hud row.
+  if (desktopCollapsed) {
+    return (
+      <button
+        type="button"
+        onClick={toggleDesktopCollapsed}
+        aria-label="Open ClawVille sidebar menu"
+        className="rpg-sidebar-edge-handle"
+      >
+        <span aria-hidden className="rpg-sidebar-edge-handle__chevron">‹</span>
+        <span className="rpg-sidebar-edge-handle__label">MENU</span>
+      </button>
+    );
+  }
+
   return (
     <aside
       className="rpg-sidebar-desktop"
@@ -1023,9 +1067,20 @@ export default function SidebarMenu() {
               The Depths
             </div>
           </div>
-          <span aria-hidden style={{ fontSize: 18 }}>
-            ⚓
-          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span aria-hidden style={{ fontSize: 18 }}>
+              ⚓
+            </span>
+            <button
+              type="button"
+              onClick={toggleDesktopCollapsed}
+              aria-label="Collapse sidebar"
+              title="Collapse sidebar"
+              className="rpg-sidebar-collapse-btn"
+            >
+              ›
+            </button>
+          </div>
         </div>
         <SidebarContent closeMenu={closeMenuForMobile} />
       </RuneFrame>
@@ -1313,6 +1368,87 @@ const SIDEBAR_CSS = `
 .rpg-sidebar-fab:active {
   transform: translateY(0);
   filter: brightness(0.95);
+}
+
+.rpg-sidebar-collapse-btn {
+  appearance: none;
+  background: transparent;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  color: #cbd5e1;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.rpg-sidebar-collapse-btn:hover,
+.rpg-sidebar-collapse-btn:focus-visible {
+  background: rgba(15, 31, 58, 0.7);
+  border-color: rgba(56, 189, 248, 0.7);
+  color: #f1f5f9;
+  outline: none;
+}
+
+.rpg-sidebar-edge-handle {
+  position: fixed;
+  top: 56px;
+  right: 0;
+  z-index: 45;
+  width: 22px;
+  min-height: 96px;
+  padding: 10px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  border-right: none;
+  border-radius: 6px 0 0 6px;
+  background: linear-gradient(160deg, rgba(15, 31, 58, 0.95) 0%, rgba(3, 10, 22, 0.95) 100%);
+  color: #e0f2fe;
+  cursor: pointer;
+  box-shadow:
+    0 0 0 1px rgba(56, 189, 248, 0.2),
+    -4px 0 18px rgba(0, 0, 0, 0.45),
+    inset 0 0 14px rgba(56, 189, 248, 0.12);
+  transition: background 160ms ease, box-shadow 200ms ease, border-color 160ms ease, transform 140ms ease;
+}
+
+.rpg-sidebar-edge-handle:hover,
+.rpg-sidebar-edge-handle:focus-visible {
+  border-color: rgba(56, 189, 248, 0.85);
+  box-shadow:
+    0 0 0 1px rgba(56, 189, 248, 0.35),
+    -6px 0 22px rgba(56, 189, 248, 0.3),
+    inset 0 0 18px rgba(56, 189, 248, 0.22);
+  outline: none;
+  transform: translateX(-1px);
+}
+
+.rpg-sidebar-edge-handle__chevron {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  color: #38bdf8;
+  text-shadow: 0 0 8px rgba(56, 189, 248, 0.55);
+}
+
+.rpg-sidebar-edge-handle__label {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-family: var(--font-orbitron, ui-sans-serif), sans-serif;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.32em;
+  color: rgba(56, 189, 248, 0.85);
 }
 
 .rpg-sidebar-mobile-body {
