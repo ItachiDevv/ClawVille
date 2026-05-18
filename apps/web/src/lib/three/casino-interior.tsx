@@ -258,11 +258,17 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
       obj.matrixAutoUpdate = false;
     });
 
-    if (typeof window !== 'undefined' && process.env.NEXT_PUBLIC_CASINO_DEBUG === '1') {
+    // Always log fit math while debugging — remove after casino renders correctly
+    if (typeof window !== 'undefined') {
       const bbox2 = new THREE.Box3().setFromObject(c);
       const sz = new THREE.Vector3(); bbox2.getSize(sz);
       const ct = new THREE.Vector3(); bbox2.getCenter(ct);
-      console.info('[casino-interior] post-fit bbox center:', ct, 'size:', sz, 'scale:', fitResult.scale, 'offset applied:', fitResult);
+      const mnz = bbox2.min.z, mxz = bbox2.max.z;
+      console.info('[casino-fit] scale=', fitResult.scale.toFixed(4),
+        'fit-offset=', fitResult,
+        'post-fit world bbox: center=', [+ct.x.toFixed(1), +ct.y.toFixed(1), +ct.z.toFixed(1)],
+        'size=', [+sz.x.toFixed(1), +sz.y.toFixed(1), +sz.z.toFixed(1)],
+        'z-range=', [+mnz.toFixed(1), +mxz.toFixed(1)]);
     }
 
     const hotspotDefs = useFallback ? FALLBACK_HOTSPOTS : GAMEREADY_HOTSPOTS;
