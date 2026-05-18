@@ -7,6 +7,25 @@ export interface NpcSpriteState {
   y: number;
   prevX: number;
   prevY: number;
+  /**
+   * Time (Date.now ms) the LATEST snapshot for this NPC arrived from the
+   * server. Used by the dead-reckoning extrapolator in arena-npcs.tsx —
+   * between server ticks (5 Hz / 200 ms) the client projects the target
+   * position forward at the velocity derived from (prevX,prevY)→(x,y)
+   * over the elapsed snapshot interval, then lerps `currentPos` toward
+   * that PROJECTED target instead of the stale snapshot. Eliminates the
+   * 5 Hz pumping pattern that the pure-lerp approach inherited from the
+   * server tick rate.
+   */
+  ts: number;
+  /**
+   * ms between the previous and current server snapshot for this NPC.
+   * Approximately 200 (server tick) but can be larger if the SSE stream
+   * skipped a snapshot. Used as the denominator when computing velocity
+   * for dead reckoning — without it a missed frame would inflate velocity
+   * and snap the NPC forward.
+   */
+  tsDelta: number;
   direction: 'idle' | 'left' | 'right' | 'up' | 'down';
   species: string;
   color: number;
@@ -130,7 +149,11 @@ export interface NpcStoreState {
 
 // Demo NPCs shown when API server is not connected
 function makeDemoNpc(id: string, name: string, x: number, y: number, species: string, color: number, isOpenClaw = false, defaultIdleClip?: string): NpcSpriteState {
-  return { id, name, x, y, prevX: x, prevY: y, direction: 'idle', species, color, hp: 100, maxHp: 100, isDead: false, hasSword: false, inCombat: false, inConversation: false, inventory: [], isOpenClaw, combatAction: null, combatActionAt: 0, facingAngle: null, defaultIdleClip };
+  // ts=0 (sentinel) tells the dead-reckoning extrapolator in arena-npcs.tsx
+  // to skip projection entirely — demo NPCs are wandered client-side and
+  // never have a server snapshot to extrapolate from. tsDelta=200 is the
+  // safe default so any code that divides by it doesn't see Infinity.
+  return { id, name, x, y, prevX: x, prevY: y, ts: 0, tsDelta: 200, direction: 'idle', species, color, hp: 100, maxHp: 100, isDead: false, hasSword: false, inCombat: false, inConversation: false, inventory: [], isOpenClaw, combatAction: null, combatActionAt: 0, facingAngle: null, defaultIdleClip };
 }
 
 // Demo NPC positions spread around the village center (2560,2560) to match
@@ -307,6 +330,13 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
       // If every field is equal we return the PREVIOUS reference — this preserves
       // React.memo's shallow-prop bailout in GLBNpcMesh / VRMNpcMesh and prevents
       // 13-18 needless re-renders per SSE tick when nothing actually changed.
+      // Dead-reckoning bookkeeping. tsDelta is the wall-clock gap between
+      // this snapshot and the previous one for this NPC. Default ~200 ms
+      // (server tick) but we measure rather than assume so a skipped SSE
+      // frame doesn't double the inferred velocity. Clamp the floor to
+      // avoid divide-by-near-zero if two snapshots somehow land in the
+      // same ms (test fixtures, replay tools).
+      const tsDelta = prev ? Math.max(16, now - prev.ts) : 200;
       const candidate: NpcSpriteState = {
         id: n.id,
         name: n.name,
@@ -314,6 +344,8 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
         y: useClientPos ? prev.y : n.y,
         prevX: prev?.x ?? n.x,
         prevY: prev?.y ?? n.y,
+        ts: now,
+        tsDelta,
         // direction always from server — never sticky (see comment above).
         direction: n.direction as NpcSpriteState['direction'],
         species: n.species,
@@ -361,6 +393,12 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
         prev.y = candidate.y;
         prev.prevX = candidate.prevX;
         prev.prevY = candidate.prevY;
+        // ts / tsDelta drive dead-reckoning in useFrame. They must reflect
+        // the LATEST snapshot timing even when we're returning the prev
+        // reference — otherwise the extrapolator keeps using a stale base
+        // time and the projected target falls further behind every tick.
+        prev.ts = candidate.ts;
+        prev.tsDelta = candidate.tsDelta;
         prev.direction = candidate.direction;
         prev.hp = candidate.hp;
         prev.maxHp = candidate.maxHp;
@@ -521,6 +559,7 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
       name: 'You',
       x: 2560, y: 2560, // World center (tile 80,80)
       prevX: 2560, prevY: 2560,
+      ts: 0, tsDelta: 200,
       direction: 'idle',
       // 2026-04-25: NPC-mode default flipped from 'lobster' to 'milady_official_1'
       // so the player avatar matches the world's signature cast. ArenaNpcs routes
