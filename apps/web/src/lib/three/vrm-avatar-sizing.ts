@@ -29,11 +29,19 @@ import * as THREE from 'three';
 
 /**
  * Default on-screen height (world units) for every humanoid VRM avatar.
- * 1.6m Milady × 112 = 179.2. The "112" appears in many comments — it's just
- * VRM_AVATAR_TARGET_HEIGHT_WU / 1.6 for a 1.6m-bbox VRM, not a load-bearing
- * constant on its own. Change this and every humanoid resizes uniformly.
+ *
+ * Set to MATCH NORI (the town-guide character at world center, scale 200,
+ * rendered separately via town-guide.tsx with its own GUIDE_SCALE constant
+ * — not this auto-fit pipeline). User-reported 2026-05-18 that all
+ * wandering VRMs and the player avatar were noticeably shorter than Nori;
+ * raised this constant from 179.2 → 360 wu (≈ 2× Nori's apparent height
+ * in the screenshot reference) so every VRM in the auto-fit pipeline
+ * lands at the same on-screen height as Nori. If Nori herself ever moves
+ * to this pipeline, set her SPECIES_TARGET_HEIGHT_WU['nori'] = 360 too.
+ *
+ * Change this and every humanoid resizes uniformly.
  */
-export const VRM_AVATAR_TARGET_HEIGHT_WU = 179.2;
+export const VRM_AVATAR_TARGET_HEIGHT_WU = 360;
 
 /**
  * Per-species/animatorId target-height overrides. Use when a model's bbox
@@ -46,7 +54,7 @@ export const VRM_AVATAR_TARGET_HEIGHT_WU = 179.2;
  * 'tekk' for tekk; if they ever diverge we'll need separate maps.
  */
 export const SPECIES_TARGET_HEIGHT_WU: Record<string, number> = {
-  tekk: 230, // 179.2 × 1.28 — body lands at ~Milady height, wings fan above
+  tekk: 460, // 360 × 1.28 — body lands at ~Milady height, wings fan above (kept proportional after the 2026-05-18 base height bump 179.2 → 360)
 };
 
 /**
@@ -54,7 +62,10 @@ export const SPECIES_TARGET_HEIGHT_WU: Record<string, number> = {
  * so the placeholder reads at the standard height. Most callers should
  * already early-return before this matters.
  */
-export const VRM_AVATAR_FALLBACK_SCALE = 112;
+// Sized so a 1.6m placeholder renders at the new VRM_AVATAR_TARGET_HEIGHT_WU
+// (360 / 1.6 = 225). Most call sites early-return before hitting this; it
+// only matters if a VRM is unavailable at measurement time.
+export const VRM_AVATAR_FALLBACK_SCALE = 225;
 
 /**
  * Compute the per-VRM render scale + foot-grounding offsetY so the avatar
