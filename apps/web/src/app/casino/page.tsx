@@ -69,9 +69,13 @@ const CasinoCanvas = dynamic(
 // ---------------------------------------------------------------------------
 // Casino door position in game-px — avatar spawns here on exit so it feels
 // like stepping back out through the same door they entered.
-// Casino zone: cx=20 tiles, cy=180 tiles. Door ~300 game-px east of building center.
+//
+// Casino zone: slot 9 W → cx=50 tiles, cy=180 tiles.
+// World formula: worldX = cx×32 − 5760 = 50×32 − 5760 = −4160 wu.
+// Exit = 400 wu east (toward town-center at origin) → −3760 wu.
+// game-px x = −3760 + 5760 = 2000.   game-px y = 5760 (center row, unchanged).
 // ---------------------------------------------------------------------------
-const CASINO_EXIT_PX = { x: 940, y: 5760 };
+const CASINO_EXIT_PX = { x: 2000, y: 5760 };
 
 // ---------------------------------------------------------------------------
 // Page component
