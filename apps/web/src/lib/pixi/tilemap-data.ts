@@ -66,9 +66,9 @@ export type TileIndex = (typeof TILES)[keyof typeof TILES];
 //   Slot  5 (150°/SSE) → app-publishing     (Boating School)    cx=170, cy=207
 //   Slot  6 (180°/S)   → cron-automation    (Downtown Building) cx=120, cy=220
 //   Slot  7 (210°/SSW) → deployment-ops     (Lighthouse)        cx=70,  cy=207
-//   Slot  8 (240°/WSW) → agent-security     (Patrick's Rock)    cx=33,  cy=170
+//   Slot  8 (240°/WSW) → claw-arcade        (Arcade City)       cx=33,  cy=170  [swapped 2026-05-18]
 //   Slot  9 (270°/W)   → casino             (Predictive Gaming) cx=20,  cy=120  ← entertainment
-//   Slot 10 (300°/WNW) → claw-arcade        (Arcade City)       cx=33,  cy=70   ← adjacent
+//   Slot 10 (300°/WNW) → agent-security     (Patrick's Rock)    cx=33,  cy=70   [swapped 2026-05-18]
 //   Slot 11 (330°/NNW) → memory-rag         (Squidward's House) cx=70,  cy=33
 //
 // rotY = atan2(120-cx, 120-cy) — faces building's +Z toward plaza center.
@@ -112,11 +112,15 @@ export const buildingZones: BuildingZone[] = [
   // Slot 7 — SSW (θ=2π/3):  cx≈70, cy≈207  → zone(63, 200)
   { id: 'deployment-ops',     x:  63, y: 200, width: 14, height: 14 },
   // Slot 8 — WSW (θ=5π/6):  cx≈33, cy≈170  → zone(26, 163)
-  { id: 'agent-security',     x:  26, y: 163, width: 14, height: 14 },
+  // 2026-05-18: swapped claw-arcade to slot 8 (was agent-security). Patrick's Rock moved to slot 10.
+  { id: 'claw-arcade',        x:  26, y: 163, width: 14, height: 14 },
   // Slot 9 — W  (θ=π):      cx=20, cy=120   → zone(13, 113)  ← entertainment district
   { id: 'casino',             x:  13, y: 113, width: 14, height: 14 },
-  // Slot 10 — WNW (θ=7π/6): cx≈33, cy≈70   → zone(26, 63)   ← entertainment district (adjacent)
-  { id: 'claw-arcade',        x:  26, y:  63, width: 14, height: 14 },
+  // Slot 10 — WNW (θ=7π/6): cx≈33, cy≈70   → zone(26, 63)
+  // 2026-05-18: swapped agent-security to slot 10 (was claw-arcade). Casino adjacency flag:
+  //   claw-arcade (slot 8/WSW) is now 2 slots from casino (slot 9/W) — NO LONGER ADJACENT.
+  //   Patrick's Rock (slot 10/WNW) is now adjacent to casino instead.
+  { id: 'agent-security',     x:  26, y:  63, width: 14, height: 14 },
   // Slot 11 — NNW (θ=4π/3): cx≈70, cy≈33   → zone(63, 26)
   { id: 'memory-rag',         x:  63, y:  26, width: 14, height: 14 },
 ];
