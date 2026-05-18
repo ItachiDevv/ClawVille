@@ -24,7 +24,7 @@
  */
 
 import { Suspense, useRef, useEffect, useMemo, useState } from 'react';
-import { useFrame } from '@react-three/fiber';
+import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -200,9 +200,11 @@ function SlotHotspot({ def }: { def: HotspotDef }) {
 interface InteriorSceneProps {
   useFallback: boolean;
   onFallbackRequest: () => void;
+  /** Called if scene appears empty after 3s (meshCount=0 or no geometry visible) */
+  onSceneEmpty: () => void;
 }
 
-function InteriorScene({ useFallback, onFallbackRequest }: InteriorSceneProps) {
+function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: InteriorSceneProps) {
   const glbPath = useFallback ? FALLBACK_GLB : INTERIOR_GLB;
   const { scene } = useGLTF(
     glbPath,
@@ -210,6 +212,7 @@ function InteriorScene({ useFallback, onFallbackRequest }: InteriorSceneProps) {
     undefined,
     useFallback ? undefined : extendWithDraco,
   );
+  const { camera } = useThree();
 
   const groupRef = useRef<THREE.Group>(null);
 
@@ -217,20 +220,37 @@ function InteriorScene({ useFallback, onFallbackRequest }: InteriorSceneProps) {
   const fpsFrames  = useRef(0);
   const fpsAccum   = useRef(0);
   const fpsChecked = useRef(false);
+  // Fail-safe: did we already call onSceneEmpty?
+  const emptyFired = useRef(false);
 
-  const { cloned, fit, hotspots } = useMemo(() => {
+  const { cloned, fit, hotspots, meshCount } = useMemo(() => {
     const c = scene.clone(true);
     c.updateMatrixWorld(true);
 
-    // Lock all cloned nodes — they're static
+    // Compute auto-fit at native scale (scale=1) — measures actual geometry bbox.
+    // IMPORTANT: matrixAutoUpdate must still be TRUE here so updateMatrixWorld
+    // propagates correctly. We disable it AFTER applying the scale.
+    const fitResult = computeAutoFit(c, INTERIOR_TARGET_HEIGHT);
+
+    // Apply the target scale directly onto the cloned root so Three.js owns
+    // the transform, not R3F's prop reconciler. If we instead pass scale={fitResult.scale}
+    // to <primitive> after disabling matrixAutoUpdate, R3F writes to .scale but the
+    // matrix is never recomputed — the model renders at native micro-scale (invisible).
+    c.scale.setScalar(fitResult.scale);
+    c.updateMatrixWorld(true);
+
+    // NOW lock all nodes — matrices are current and correct.
     c.traverse((obj) => {
       obj.matrixAutoUpdate = false;
     });
 
-    const fitResult = computeAutoFit(c, INTERIOR_TARGET_HEIGHT);
     const hotspotDefs = useFallback ? FALLBACK_HOTSPOTS : GAMEREADY_HOTSPOTS;
 
-    return { cloned: c, fit: fitResult, hotspots: hotspotDefs };
+    // Count visible meshes so the fail-safe overlay can detect an empty scene.
+    let count = 0;
+    c.traverse((obj) => { if ((obj as THREE.Mesh).isMesh) count++; });
+
+    return { cloned: c, fit: fitResult, hotspots: hotspotDefs, meshCount: count };
   }, [scene, useFallback]);
 
   // Dispose cloned geometry + materials when component unmounts
@@ -255,13 +275,43 @@ function InteriorScene({ useFallback, onFallbackRequest }: InteriorSceneProps) {
     g.updateMatrix();
   }, [cloned]);
 
-  // FPS auto-fallback — runs for first 5 seconds, then stops
+  // Camera debug log — fires once on first frame when NEXT_PUBLIC_CASINO_DEBUG=1
+  const debugLogged = useRef(false);
+  useFrame(() => {
+    if (debugLogged.current) return;
+    debugLogged.current = true;
+    if (process.env.NEXT_PUBLIC_CASINO_DEBUG === '1') {
+      const cam = camera as THREE.PerspectiveCamera;
+      const g = groupRef.current;
+      console.info(
+        '[casino-interior DEBUG]\n' +
+        `  glb: ${glbPath}\n` +
+        `  meshCount: ${meshCount}\n` +
+        `  fit.scale: ${fit.scale.toFixed(4)}\n` +
+        `  fit.offset: x=${fit.offsetX.toFixed(1)} y=${fit.offsetY.toFixed(1)} z=${fit.offsetZ.toFixed(1)}\n` +
+        `  group.position: ${g ? `(${g.position.x.toFixed(1)}, ${g.position.y.toFixed(1)}, ${g.position.z.toFixed(1)})` : 'null'}\n` +
+        `  camera.position: (${cam.position.x.toFixed(1)}, ${cam.position.y.toFixed(1)}, ${cam.position.z.toFixed(1)})\n` +
+        `  camera.fov=${cam.fov} near=${cam.near} far=${cam.far}`
+      );
+    }
+  });
+
+  // Combined timing loop: FPS auto-fallback (5s) + scene-empty fail-safe (3s).
   useFrame((_, delta) => {
-    if (useFallback || fpsChecked.current) return;
+    if (useFallback && fpsChecked.current && emptyFired.current) return; // all checks done
+
     fpsAccum.current += delta;
     fpsFrames.current += 1;
 
-    if (fpsAccum.current >= 5.0) {
+    // Scene-empty fail-safe: after 3s, if no meshes were cloned, notify parent.
+    // This catches edge cases where both GLBs silently produce zero geometry.
+    if (!emptyFired.current && fpsAccum.current >= 3.0 && meshCount === 0) {
+      emptyFired.current = true;
+      onSceneEmpty();
+    }
+
+    // FPS auto-fallback: after 5s on the gameready GLB, check average FPS.
+    if (!fpsChecked.current && !useFallback && fpsAccum.current >= 5.0) {
       fpsChecked.current = true;
       const avgFps = fpsFrames.current / fpsAccum.current;
       if (avgFps < FPS_FALLBACK_THRESHOLD) {
@@ -280,7 +330,10 @@ function InteriorScene({ useFallback, onFallbackRequest }: InteriorSceneProps) {
       ref={groupRef}
       position={[-fit.offsetX, -fit.offsetY, -fit.offsetZ]}
     >
-      <primitive object={cloned} scale={fit.scale} />
+      {/* scale already baked into cloned.scale in useMemo — do NOT pass scale prop here.
+           Passing scale={fit.scale} after matrixAutoUpdate=false would write to .scale
+           but never trigger a matrix recompute, leaving the model at native micro-size. */}
+      <primitive object={cloned} />
 
       {/* Invisible click hotspots over slot machine positions */}
       {hotspots.map((def, i) => (
@@ -291,9 +344,16 @@ function InteriorScene({ useFallback, onFallbackRequest }: InteriorSceneProps) {
 }
 
 // ---------------------------------------------------------------------------
-// Default export — full casino interior scene
+// Default export — full casino interior scene (rendered inside R3F Canvas)
+// onSceneEmpty is wired by CasinoCanvas (DOM context) via a module-level ref,
+// so the fail-safe overlay can be rendered in the DOM tree, not the R3F tree.
 // ---------------------------------------------------------------------------
-export default function CasinoInteriorScene() {
+export interface CasinoInteriorSceneProps {
+  /** Called when meshCount===0 after 3s — lets CasinoCanvas render a DOM overlay */
+  onSceneEmpty?: () => void;
+}
+
+export default function CasinoInteriorScene({ onSceneEmpty }: CasinoInteriorSceneProps = {}) {
   const [useFallback, setUseFallback] = useState(() => {
     if (typeof window === 'undefined') return false;
     return new URLSearchParams(window.location.search).get('fallback') === '1';
@@ -310,6 +370,7 @@ export default function CasinoInteriorScene() {
         <InteriorScene
           useFallback={useFallback}
           onFallbackRequest={() => setUseFallback(true)}
+          onSceneEmpty={onSceneEmpty ?? (() => {})}
         />
       </Suspense>
     </>

@@ -17,7 +17,7 @@
  *   - compileAsync fired once after first R3F commit
  */
 
-import { Suspense, useEffect } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import CasinoInteriorScene from '@/lib/three/casino-interior';
@@ -77,9 +77,47 @@ function SceneBackground() {
 }
 
 // ---------------------------------------------------------------------------
+// Scene-empty fail-safe overlay — pure DOM, rendered in this component
+// (not inside the R3F Canvas) so it safely targets the DOM reconciler.
+// ---------------------------------------------------------------------------
+function SceneEmptyOverlay() {
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        inset: 0,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: 'rgba(10,0,21,0.85)',
+        zIndex: 10,
+        pointerEvents: 'none',
+      }}
+    >
+      <div
+        style={{
+          color: '#ff4dff',
+          fontFamily: 'monospace',
+          fontSize: 16,
+          textAlign: 'center',
+          padding: '24px 32px',
+          border: '1px solid #ff00cc',
+          borderRadius: 8,
+          background: 'rgba(0,0,0,0.6)',
+        }}
+      >
+        Casino interior failed to load — please refresh
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main export — route-isolated Canvas
 // ---------------------------------------------------------------------------
 export default function CasinoCanvas() {
+  const [sceneEmpty, setSceneEmpty] = useState(false);
+
   return (
     <div style={{ width: '100%', height: '100%', position: 'absolute', inset: 0 }}>
       <Canvas
@@ -101,9 +139,12 @@ export default function CasinoCanvas() {
         <PreCompilePipelines />
 
         <Suspense fallback={null}>
-          <CasinoInteriorScene />
+          <CasinoInteriorScene onSceneEmpty={() => setSceneEmpty(true)} />
         </Suspense>
       </Canvas>
+
+      {/* DOM fail-safe overlay — rendered over the Canvas in pure DOM context */}
+      {sceneEmpty && <SceneEmptyOverlay />}
     </div>
   );
 }
