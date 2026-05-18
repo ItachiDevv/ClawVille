@@ -775,6 +775,11 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       <BazaarStall />
       <MarketplaceStall />
       <AuctionPodium />
+      {/* Bounty Board — 4th town-center stand. 3D object + modal + API + DB
+          schema all already exist (bounty-board-object.tsx, bounty-board-modal.tsx,
+          /api/bounties, schema/bounties.ts); was just never mounted. Click
+          opens the bounty-board modal via openBountyBoard(). */}
+      <BountyBoardObject />
       {/* Wooden signboard directory — informational landmark at centre of stall row */}
       <TownDirectorySign />
 
