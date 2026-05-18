@@ -204,15 +204,20 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
   // ─── Additional free-roaming crustaceans (added 2026-04-22) ──────────────
   // Sea-creature GLBs scale + clone per-instance, so multiple NPCs can share
   // the same species path without cache collision (unlike VRMs).
+  //
+  // Positions updated 2026-05-17 (circle revert): ring is now R=72 tiles (2304 wu)
+  // centered at game-space pixel (2560, 2560). Wanderers placed ~40-50% of the ring
+  // radius from center, near thematically appropriate building pairs. PatrolRadius
+  // reduced 700→500 to prevent drifting into the dead-center plaza.
   {
     id: 'wanderer-driftwood',
     name: 'Driftwood',
     species: 'lobster',
     color: 0x8d6e63,             // driftwood brown
     buildingId: '',
-    patrolRadius: 700,
-    homeX: 1500,
-    homeY: 2400,                 // W inner — between messaging-channels + code-development
+    patrolRadius: 500,
+    homeX: 1488,
+    homeY: 2272,                 // W inner — between casino (slot 9, W) + claw-arcade (slot 10, WNW) — entertainment district
     stats: { hp: 100, attack: 14, defense: 14, speed: 12 },
     personality: 'A weather-worn vagabond lobster who treats the whole reef as his personal backyard.',
   },
@@ -222,9 +227,9 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     species: 'sweet_crab',
     color: 0x00acc1,             // teal
     buildingId: '',
-    patrolRadius: 700,
-    homeX: 3700,
-    homeY: 2700,                 // E inner — between api-integrations + cron-automation
+    patrolRadius: 500,
+    homeX: 3400,
+    homeY: 2800,                 // E inner — between messaging-channels (slot 3, E) + api-integrations (slot 4, ESE)
     stats: { hp: 85, attack: 17, defense: 11, speed: 19 },
     personality: 'A speedy crab courier who claims to know every tide pool shortcut on the map.',
   },
@@ -234,9 +239,9 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     species: 'hermitcrab',
     color: 0xa1887f,             // sand
     buildingId: '',
-    patrolRadius: 700,
-    homeX: 2600,
-    homeY: 3500,                 // S inner — between app-publishing + deployment-ops
+    patrolRadius: 500,
+    homeX: 1900,
+    homeY: 3200,                 // SW inner — between deployment-ops (slot 7, SSW) + agent-security (slot 8, WSW)
     stats: { hp: 110, attack: 13, defense: 17, speed: 11 },
     personality: 'A philosophical hermit crab who borrows shells from every building he visits and returns each one.',
   },

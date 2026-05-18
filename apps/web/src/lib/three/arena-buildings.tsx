@@ -64,65 +64,74 @@ const BUILDING_TARGET_HEIGHT = 800;
  * yOffset: world-unit shift applied AFTER scaling. Negative values lower the
  * building (use to ground a floating model whose pivot isn't at its base).
  */
-const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number; rotYOffset?: number; scaleOverride?: number; box3Recenter?: boolean; onClick?: () => void }> = {
+const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number; rotYOffset?: number; scaleOverride?: number; targetHeight?: number; box3Recenter?: boolean; onClick?: () => void }> = {
   // ---------------------------------------------------------------------------
-  // 12-building square ring (Phase 6.0.1, 2026-05-17).
-  // Entertainment-district swap 2026-05-17: claw-arcade → E3, app-publishing → S3.
-  // Casino (E2) + claw-arcade (E3) are now adjacent on the east wall (1536 wu apart).
-  // rotY = atan2(80 − cx_tile, 80 − cy_tile) so building faces plaza center.
-  // Square ring slots: N1-N3 (north), E1-E3 (east), S1-S3 (south), W1-W3 (west).
+  // 12-building TRUE CIRCULAR ring (circle revert — 2026-05-17).
+  // Was briefly a square ring (commit cdc8011 / 1433589); reverted because
+  // 4 empty corners created visual gaps and mismatched the minimap dashed circle.
+  //
+  // Radius: 72 tiles = 2304 wu from center (80, 80) / world (0, 0).
+  // Angular spacing: 30° (π/6 rad) — 12 evenly spaced slots, clockwise from North.
+  // rotY = atan2(80 − cx_tile, 80 − cy_tile) so each building's +Z faces the plaza.
+  //
+  // Slot assignment (clockwise from North):
+  //   Slot  0 (  0°/N)   visual-creation    cx=80,  cy=8    rotY= 0.000
+  //   Slot  1 ( 30°/NNE) code-development   cx=116, cy=18   rotY=-0.524
+  //   Slot  2 ( 60°/ENE) mcp-tool-use       cx=142, cy=44   rotY=-1.047
+  //   Slot  3 ( 90°/E)   messaging-channels cx=152, cy=80   rotY=-1.571
+  //   Slot  4 (120°/ESE) api-integrations   cx=142, cy=116  rotY=-2.094
+  //   Slot  5 (150°/SSE) app-publishing     cx=116, cy=142  rotY=-2.618
+  //   Slot  6 (180°/S)   cron-automation    cx=80,  cy=152  rotY= 3.142
+  //   Slot  7 (210°/SSW) deployment-ops     cx=44,  cy=142  rotY= 2.618
+  //   Slot  8 (240°/WSW) agent-security     cx=18,  cy=116  rotY= 2.094
+  //   Slot  9 (270°/W)   casino             cx=8,   cy=80   rotY= 1.571  ← entertainment district
+  //   Slot 10 (300°/WNW) claw-arcade        cx=18,  cy=44   rotY= 1.047  ← adjacent
+  //   Slot 11 (330°/NNW) memory-rag         cx=44,  cy=18   rotY= 0.524
   // ---------------------------------------------------------------------------
 
-  // === NORTH SIDE ===
-  // N1 center=(32,8)  dx=48,dz=72  → atan2(48,72)≈0.588
-  'visual-creation':     { model: '/models/pineapple-house.glb',     yOffset: 0, rotY:  0.588 },
-  // N2 center=(80,8)  dx= 0,dz=72  → atan2(0,72)=0
-  // squidward-house.glb = Squidward's Easter Island moai head house (CC-BY, Yanez Designs)
-  'memory-rag':          { model: '/models/squidward-house.glb',     yOffset: 0, rotY:  0.000 },
-  // N3 center=(128,8) dx=-48,dz=72 → atan2(-48,72)≈-0.588
+  // Slot 0 — N (cx=80, cy=8): dx=0, dz=72 → atan2(0,72)=0
+  'visual-creation':     { model: '/models/pineapple-house.glb',     yOffset: 0, rotY:  0.000 },
+  // Slot 1 — NNE (cx=116, cy=18): dx=-36, dz=62 → atan2(-36,62)≈-0.524 (-π/6)
+  // 2026-05-12: chum-bucket-v2.glb restored from spongebob_chum_bucket.glb (1.85 MB original).
+  'code-development':    { model: '/models/chum-bucket-v2.glb',      yOffset: 0, rotY: -0.524 },
+  // Slot 2 — ENE (cx=142, cy=44): dx=-62, dz=36 → atan2(-62,36)≈-1.047 (-π/3)
+  // krusty-krab-v2.glb = iconic ship restaurant (CC-BY, Yanez Designs, 1.59 MB original).
+  'mcp-tool-use':        { model: '/models/krusty-krab-v2.glb',      yOffset: 0, rotY: -1.047 },
+  // Slot 3 — E (cx=152, cy=80): dx=-72, dz=0 → atan2(-72,0)=-π/2≈-1.571
+  // 2026-05-12: swapped to sandy-treedome-v3.glb (sandy_tree_final.glb, 4.4 MB).
+  // rotYOffset: sandy-treedome-v3.glb authored facing +Z; +π rotates 180° for inward-facing door.
+  'messaging-channels':  { model: '/models/sandy-treedome-v3.glb',   yOffset: 0, rotY: -1.571, rotYOffset: Math.PI },
+  // Slot 4 — ESE (cx=142, cy=116): dx=-62, dz=-36 → atan2(-62,-36)≈-2.094 (-2π/3)
   // rotYOffset: salty-spitoon.glb authored facing +X; -π/2 aligns toward village center.
-  'api-integrations':    { model: '/models/salty-spitoon.glb',       yOffset: 0, rotY: -0.588, rotYOffset: -Math.PI / 2 },
-
-  // === EAST SIDE ===
-  // E1 center=(152,32) dx=-72,dz=48 → atan2(-72,48)≈-0.983
-  'cron-automation':     { model: '/models/patty-building.glb',      yOffset: 0, rotY: -0.983 },
-  // E2 center=(152,80) dx=-72,dz= 0 → atan2(-72,0)=-π/2≈-1.571
-  // casino-exterior.glb = Pyramid Casino (CC-BY-4.0, tl0615 / Sketchfab).
+  'api-integrations':    { model: '/models/salty-spitoon.glb',       yOffset: 0, rotY: -2.094, rotYOffset: -Math.PI / 2 },
+  // Slot 5 — SSE (cx=116, cy=142): dx=-36, dz=-62 → atan2(-36,-62)≈-2.618 (-5π/6)
+  // rotYOffset: boating-school.glb classroom must face center (model-authored offset — stays with building).
+  'app-publishing':      { model: '/models/boating-school.glb',      yOffset: 0, rotY: -2.618, rotYOffset: Math.PI / 2 },
+  // Slot 6 — S (cx=80, cy=152): dx=0, dz=-72 → atan2(0,-72)=π≈3.142
+  'cron-automation':     { model: '/models/patty-building.glb',      yOffset: 0, rotY:  3.142 },
+  // Slot 7 — SSW (cx=44, cy=142): dx=36, dz=-62 → atan2(36,-62)≈2.618 (5π/6)
+  'deployment-ops':      { model: '/models/building-lighthouse.glb', yOffset: 0, rotY:  2.618 },
+  // Slot 8 — WSW (cx=18, cy=116): dx=62, dz=-36 → atan2(62,-36)≈2.094 (2π/3)
+  // patricks-rock-v2.glb (3.88 MB, original patricks_house_spongebob.glb)
+  'agent-security':      { model: '/models/patricks-rock-v2.glb',    yOffset: 0, rotY:  2.094 },
+  // Slot 9 — W (cx=8, cy=80): dx=72, dz=0 → atan2(72,0)=π/2≈1.571  ← entertainment district
+  // casino-exterior.glb = "Pyramid Casino" by tl0615 (CC-BY-4.0, Sketchfab); in-game name: Predictive Gaming Cove.
   // GLB author placed geometry at ~(-1800, 166, 4540) Blender units from scene origin.
   // box3Recenter=true documents the origin-offset; centering is handled by
   // computeBuildingScale's pivotOffsetX/Z (same pipeline as every other building).
+  // targetHeight: 800 * 1.3 = 1040 — casino is 30% larger than standard to be the
+  // entertainment-district landmark (user request 2026-05-17 circle revert).
   // Interior load is Concern 6.0.2; onClick is a placeholder per Concern 6.0.1 spec.
-  'casino':              { model: '/models/casino/casino-exterior.glb', yOffset: 0, rotY: -1.571, box3Recenter: true,
+  'casino':              { model: '/models/casino/casino-exterior.glb', yOffset: 0, rotY:  1.571, targetHeight: 1040, box3Recenter: true,
                            onClick: () => { console.info('[casino] interior pending — Concern 6.0.2'); } },
-  // E3 center=(152,128) dx=-72,dz=-48 → atan2(-72,-48)≈-2.159
-  // Entertainment district: casino (E2) + claw-arcade (E3) are now adjacent on the east wall.
-  // claw-arcade moved from S3 to E3 in the entertainment-district swap (2026-05-17).
+  // Slot 10 — WNW (cx=18, cy=44): dx=62, dz=36 → atan2(62,36)≈1.047 (π/3)  ← entertainment district (adjacent to casino)
   // claw-arcade-exterior.glb = Arcade City (CC-BY-4.0, vanessalani / Sketchfab).
   // Interior / crane game is Phase 6.3 — onClick is placeholder per Concern 6.0.1.
-  'claw-arcade':         { model: '/models/arcade/claw-arcade-exterior.glb', yOffset: 0, rotY: -2.159,
+  'claw-arcade':         { model: '/models/arcade/claw-arcade-exterior.glb', yOffset: 0, rotY:  1.047,
                            onClick: () => { console.info('[claw-arcade] interior pending — Concern 6.3'); } },
-
-  // === SOUTH SIDE ===
-  // S1 center=(32,152) dx=48,dz=-72 → atan2(48,-72)≈2.554
-  'deployment-ops':      { model: '/models/building-lighthouse.glb', yOffset: 0, rotY:  2.554 },
-  // S2 center=(80,152) dx= 0,dz=-72 → atan2(0,-72)=π≈3.142
-  // patricks-rock-v2.glb (3.88 MB, original patricks_house_spongebob.glb)
-  'agent-security':      { model: '/models/patricks-rock-v2.glb',    yOffset: 0, rotY:  3.142 },
-  // S3 center=(128,152) dx=-48,dz=-72 → atan2(-48,-72)≈-2.554
-  // app-publishing moved from E3 to S3 in the entertainment-district swap (2026-05-17).
-  // rotYOffset: boating-school.glb classroom must face center (model-authored offset — stays with building).
-  'app-publishing':      { model: '/models/boating-school.glb',      yOffset: 0, rotY: -2.554, rotYOffset: Math.PI / 2 },
-
-  // === WEST SIDE ===
-  // W1 center=(8,32)  dx=72,dz=48  → atan2(72,48)≈0.983
-  // 2026-05-12: swapped to sandy-treedome-v3.glb (sandy_tree_final.glb, 4.4 MB).
-  'messaging-channels':  { model: '/models/sandy-treedome-v3.glb',   yOffset: 0, rotY:  0.983, rotYOffset: Math.PI },
-  // W2 center=(8,80)  dx=72,dz= 0  → atan2(72,0)=π/2≈1.571
-  // krusty-krab-v2.glb = iconic ship restaurant (CC-BY, Yanez Designs, 1.59 MB original).
-  'mcp-tool-use':        { model: '/models/krusty-krab-v2.glb',      yOffset: 0, rotY:  1.571 },
-  // W3 center=(8,128) dx=72,dz=-48 → atan2(72,-48)≈2.159
-  // 2026-05-12: chum-bucket-v2.glb restored from spongebob_chum_bucket.glb (1.85 MB original).
-  'code-development':    { model: '/models/chum-bucket-v2.glb',      yOffset: 0, rotY:  2.159 },
+  // Slot 11 — NNW (cx=44, cy=18): dx=36, dz=62 → atan2(36,62)≈0.524 (π/6)
+  // squidward-house.glb = Squidward's Easter Island moai head house (CC-BY, Yanez Designs)
+  'memory-rag':          { model: '/models/squidward-house.glb',     yOffset: 0, rotY:  0.524 },
 };
 
 // Scratch objects for stripGroundPlanes — reused across calls to avoid GC.
@@ -347,14 +356,14 @@ interface BuildingScaleResult {
 
 /** Measure bounding box and return scale + XZ pivot-correction offsets.
  *
- *  Scale: normalizes so the building's Y-height = BUILDING_TARGET_HEIGHT.
+ *  Scale: normalizes so the building's Y-height = targetHeight (default: BUILDING_TARGET_HEIGHT).
  *  Uses size.y exclusively — NOT max(w,h,d). Wide/squat buildings (salty-spitoon,
  *  boating-school) would otherwise have their width become the normalizing dim,
  *  crushing actual height far below 800.
  *
  *  Footprint cap: if after height normalization max(scaled_sx, scaled_sz) > MAX_FOOTPRINT,
  *  scale is reduced so the widest XZ dimension = MAX_FOOTPRINT. Wide buildings will be
- *  shorter than 800 but won't sprawl and dominate the scene.
+ *  shorter than targetHeight but won't sprawl and dominate the scene.
  *
  *  Pivot correction: some GLBs (e.g. downtown-building.glb) have their geometry
  *  authored far from the scene pivot. pivotOffsetX/Z = bbox_center_XZ * scale,
@@ -363,7 +372,7 @@ interface BuildingScaleResult {
  *
  *  Excludes SkinnedMesh nodes from the bbox to avoid bind-pose inflation.
  *  Called AFTER stripping ground planes. */
-function computeBuildingScale(scene: THREE.Object3D): BuildingScaleResult {
+function computeBuildingScale(scene: THREE.Object3D, targetHeight: number = BUILDING_TARGET_HEIGHT): BuildingScaleResult {
   scene.updateMatrixWorld(true);
   _buildBbox.makeEmpty();
 
@@ -387,7 +396,7 @@ function computeBuildingScale(scene: THREE.Object3D): BuildingScaleResult {
   // Use Y (height) as the normalizing dimension. Fall back to maxDim only if Y
   // is degenerate (e.g. a completely flat mesh or a scene with zero height content).
   const h = _buildSize.y > 0.001 ? _buildSize.y : Math.max(_buildSize.x, _buildSize.y, _buildSize.z);
-  let scale = h === 0 ? 1 : BUILDING_TARGET_HEIGHT / h;
+  let scale = h === 0 ? 1 : targetHeight / h;
 
   // Footprint cap — shrink wide buildings so they don't dominate the scene.
   const scaledMaxXZ = Math.max(_buildSize.x, _buildSize.z) * scale;
@@ -422,7 +431,7 @@ Object.values(BUILDING_MODELS).forEach(({ model }) => {
 // Entertainment building labels (casino, claw-arcade) — not in BUILDING_OPENCLAW_THEMES
 // (those are shop-only). Defined here so GLBBuilding can render a label for them.
 const ENTERTAINMENT_LABELS: Record<string, { label: string; category: string }> = {
-  'casino':      { label: 'Pyramid Casino', category: 'Entertainment' },
+  'casino':      { label: 'Predictive Gaming Cove', category: 'Entertainment' },
   'claw-arcade': { label: 'Arcade City',    category: 'Arcade' },
 };
 
@@ -466,11 +475,14 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
     if (config.scaleOverride != null) {
       result = { cloned: c, buildingScale: config.scaleOverride, pivotOffsetX: 0, pivotOffsetY: 0, pivotOffsetZ: 0 };
     } else {
-      // Strip flat ground planes before measuring height so BUILDING_TARGET_HEIGHT
+      // Strip flat ground planes before measuring height so the target height
       // is accurate — ground planes inflate the bounding box and make buildings
       // appear shorter than 100 world units after scaling.
       stripGroundPlanes(c);
-      const { scale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz } = computeBuildingScale(c);
+      // targetHeight overrides the module-level BUILDING_TARGET_HEIGHT for
+      // individual buildings. Used for the casino (+30% = 1040 wu).
+      const targetH = config.targetHeight ?? BUILDING_TARGET_HEIGHT;
+      const { scale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz } = computeBuildingScale(c, targetH);
       result = { cloned: c, buildingScale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz };
     }
     // 2026-05-11 — collapse same-material draw calls into one mesh each.
@@ -482,7 +494,7 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
       console.log(`[building-merge] ${zone.id}: ${merge.meshesBefore} → ${merge.meshesAfter} meshes (${merge.buckets} buckets merged, ${merge.skipped} skipped)`);
     }
     return result;
-  }, [scene, config.model, config.scaleOverride, zone.id]);
+  }, [scene, config.model, config.scaleOverride, config.targetHeight, zone.id]);
 
   // Dispose cloned geometry + materials on unmount (navigation away / hot-reload)
   useEffect(() => {
