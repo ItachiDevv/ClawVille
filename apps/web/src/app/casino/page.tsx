@@ -28,6 +28,7 @@
 import { useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import SceneTransition, { useSceneTransition } from '@/components/transitions/SceneTransition';
+import SlotScreenModal from '@/components/casino/SlotScreenModal';
 
 /**
  * CasinoCanvas — dynamically imported with ssr:false so Three.js /
@@ -162,6 +163,11 @@ export default function CasinoPage() {
       >
         Back to World
       </button>
+
+      {/* 2D Slot Screen Modal — DOM overlay, renders on top of 3D canvas.
+          z-index 9990 ensures it layers above the Canvas (z-index ~0) but below
+          browser UI. The 3D interior stays mounted and rendering underneath. */}
+      <SlotScreenModal />
 
       {/* Interior branding — bottom-center */}
       <div
