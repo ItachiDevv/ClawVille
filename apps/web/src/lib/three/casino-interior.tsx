@@ -103,8 +103,13 @@ function computeAutoFit(scene: THREE.Object3D, targetHeight: number): FitResult 
   }
 
   _bbox.getSize(_size);
-  const h = _size.y > 0.001 ? _size.y : Math.max(_size.x, _size.y, _size.z);
-  const scale = h > 0 ? targetHeight / h : 1;
+  // Use MAX dimension as the auto-fit divisor — the gameready casino is a
+  // wide flat room (485×203×1017 wu) where Y is the SHORT axis, not the
+  // tall one. Using _size.y would scale the model by 600/203 ≈ 2.95× and
+  // push Z extent to 3000 wu, putting the camera at (0,120,350) INSIDE
+  // the room with backface culling hiding the walls.
+  const maxDim = Math.max(_size.x, _size.y, _size.z);
+  const scale = maxDim > 0.001 ? targetHeight / maxDim : 1;
 
   _bbox.getCenter(_center);
   return {
