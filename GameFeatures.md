@@ -416,6 +416,27 @@ Lucia 3.x sessions backed by `users` + `sessions` tables.
 - `POST /api/auth/login` — sets `clawville_session` cookie
 - `POST /api/auth/logout` — invalidates the session
 
+### 14a.bis. Username / identity layer (2026-05-19)
+
+ClawVille separates two human-readable identifiers:
+
+| Field | Where | Uniqueness | Mutability |
+|---|---|---|---|
+| `users.username` | One per account, case-insensitive UNIQUE | platform-wide | editable via `PATCH /api/users/me/username` |
+| `avatars.name` | Per character, UNIQUE | per-avatar | only on avatar creation |
+
+**Initialization rule:** on first avatar creation (`POST /api/avatars`), the server copies `avatar.name` into `users.username` if that column is `NULL`. From then on the two values are independent — swapping or renaming the avatar does NOT touch the username.
+
+**Edit endpoint:** `PATCH /api/users/me/username` (Lucia-authed, 5/min/IP). Body: `{ username: string }`. 409 on collision, 400 on format violation, 429 on rate-limit. Allowed format: `^[a-zA-Z0-9_]{3,20}$` (DB-enforced via `users_username_format` check constraint).
+
+**Availability probe:** `GET /api/users/check-username/:name` (public). Returns `{ available: boolean, reason?: string }`. Case-insensitive lookup.
+
+**Create-agent name check:** `GET /api/avatars/check-name/:name` now validates against **both** `avatars.name` AND `users.username` since the create flow copies one into the other. A name that's already someone else's username will be rejected at probe time, not at insert.
+
+**Legacy rows:** users created before this column existed get `username = NULL` until backfill (`bun run scripts/backfill-usernames.ts`) — that script picks the oldest avatar's name per user, skipping format-incompatible legacy names so the user can pick a fresh handle from Avatar Settings.
+
+**UI:** Avatar Settings modal renders a "Username" section with debounced availability check + Save. Out-of-flow change — does not invalidate avatar.name or restart the runtime.
+
 ### 14b. Phase 5 — agent-issued magic link (`b527636`)
 
 A connected agent can mint a one-time login URL for its human operator without exchanging passwords or OAuth.

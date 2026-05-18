@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, sql, isNull } from 'drizzle-orm';
 import { db, avatars, agents, avatarInventory, users } from '@clawville/database';
 import {
   AVATAR_ARCHETYPES,
@@ -65,7 +65,7 @@ avatarRoutes.use('*', sessionMiddleware);
 // older clients still work, but when present they're validated against the
 // shared AGENT_MODELS registry. Server applies the defaults if omitted.
 const createAvatarSchema = z.object({
-  name: z.string().min(3).max(20).regex(/^[a-zA-Z0-9]+$/, 'Name must be alphanumeric'),
+  name: z.string().min(3).max(20).regex(/^[a-zA-Z0-9_]+$/, 'Name must be 3-20 alphanumeric characters or underscore'),
   species: z.enum(['cat', 'dragon', 'fox', 'owl', 'wolf', 'bunny', 'phoenix', 'turtle']),
   color: z.enum(['green', 'red', 'blue', 'yellow']),
   gender: z.enum(['male', 'female']),
@@ -380,6 +380,21 @@ avatarRoutes.post('/', async (c) => {
           learningFocus,
         })
         .returning();
+
+      // Username system (2026-05-19): initialize users.username from the
+      // avatar's name when the user doesn't have one yet. avatars.name has
+      // a UNIQUE constraint and check-name pre-validates against both
+      // tables, so this insert is safe at the format level. If there's
+      // still a race (concurrent /api/users/me/username PATCH on a fresh
+      // row), the users.username UNIQUE constraint would 23505 — that's
+      // caught by the same try/catch and surfaced as a clean 400. We
+      // only set the column when it's NULL so a returning user whose
+      // username was explicitly changed via /users/me/username doesn't
+      // get reverted to their next avatar's name.
+      await tx
+        .update(users)
+        .set({ username: result.data.name, updatedAt: new Date() })
+        .where(and(eq(users.id, ownerId), isNull(users.username)));
 
       return { avatar: insertedAvatar, agent: insertedAgent };
     });
@@ -777,19 +792,34 @@ avatarRoutes.patch('/me/appearance', requireAuth, async (c) => {
   return c.json({ avatar: updated });
 });
 
-// Check name availability
+// Check name availability — checks BOTH `avatars.name` AND `users.username`
+// because POST /api/avatars copies the avatar's name into the creator's
+// `users.username` if that column is null. Without the dual check, a name
+// could pass this probe but 23505 on insert because another user already
+// claimed it as their username (or vice versa). Case-insensitive lookup
+// for the username side mirrors the create / PATCH paths.
 avatarRoutes.get('/check-name/:name', sessionMiddleware, async (c) => {
   const name = c.req.param('name');
 
-  if (!name || name.length < 3 || name.length > 20 || !/^[a-zA-Z0-9]+$/.test(name)) {
-    return c.json({ available: false, reason: 'Name must be 3-20 alphanumeric characters' });
+  if (!name || name.length < 3 || name.length > 20 || !/^[a-zA-Z0-9_]+$/.test(name)) {
+    return c.json({ available: false, reason: 'Name must be 3-20 alphanumeric characters or underscore' });
   }
 
-  const existing = await db.query.avatars.findFirst({
+  const existingAvatar = await db.query.avatars.findFirst({
     where: eq(avatars.name, name),
   });
+  if (existingAvatar) {
+    return c.json({ available: false, reason: 'That name is already taken' });
+  }
 
-  return c.json({ available: !existing });
+  const existingUsername = await db.query.users.findFirst({
+    where: sql`lower(${users.username}) = lower(${name})`,
+  });
+  if (existingUsername) {
+    return c.json({ available: false, reason: 'That name is already taken' });
+  }
+
+  return c.json({ available: true });
 });
 
 // Chat with your avatar
