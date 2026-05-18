@@ -29,6 +29,12 @@ export interface CosmeticSkuOwned {
   id: string;
   slug: string;
   category: string;
+  /**
+   * Pre-rendered preview thumbnail URL (square PNG, ~256×256). Null
+   * when no asset has been baked for this SKU yet — drawer should fall
+   * back to a category emoji in that case.
+   */
+  thumbnailUrl: string | null;
   scope: string;
   displayName: string;
   description: string | null;
@@ -90,6 +96,8 @@ export interface CosmeticCatalogItem {
   id: string;
   slug: string;
   category: string;
+  /** Pre-rendered preview thumbnail URL — see CosmeticSkuOwned for details. */
+  thumbnailUrl: string | null;
   scope: string;
   displayName: string;
   description: string | null;
