@@ -36,6 +36,8 @@ function zoneCenter(zone: BuildingZone): [number, number, number] {
 import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { extendLoaderWithMeshopt } from '@/lib/three/meshopt-loader-setup';
+import { useGameStore, avatarPositionRef } from '@/stores/game';
+import { useTransitionStore } from '@/components/transitions/SceneTransition';
 
 // Shared raycaster -- only hits layer 1 (terrain)
 const _buildRaycaster = new THREE.Raycaster();
@@ -51,6 +53,82 @@ const _buildRayDir = new THREE.Vector3(0, -1, 0);
 // giving consistent visual presence across all architectural forms.
 // 1000 is the ring floor; lighthouse stays at 1400 as the tallest landmark.
 const BUILDING_TARGET_HEIGHT = 1000;
+
+// ---------------------------------------------------------------------------
+// Casino walk-in flow — Phase 6.0.3
+//
+// 1. Avatar pathfinds toward the casino door position (game-px coords).
+//    Door target: ~300 game-px east of casino building center so the avatar
+//    approaches from the plaza rather than teleporting inside the building.
+//    Casino zone: cx=20 tiles → game-px x=640, cy=180 tiles → game-px y=5760.
+//    Door target = (940, 5760) — 300px east, on the side facing town center.
+// 2. When within DOOR_ARRIVE_DIST (200 game-px) of door target OR after
+//    MAX_WAIT_MS (1500ms) — whichever comes first — trigger the SceneTransition.
+// 3. SceneTransition fades to black (500ms), mid-fade pushes to /casino,
+//    casino page fades in (500ms). Total flow ≤ 3s per plan acceptance criteria.
+// ---------------------------------------------------------------------------
+
+/** Casino door position in game-px (world tilemap space). */
+const CASINO_DOOR_PX = { x: 940, y: 5760 };
+/** Avatar must be within this distance (game-px) to trigger the fade. */
+const DOOR_ARRIVE_DIST = 200;
+/** Hard timeout before triggering fade even if avatar hasn't arrived. */
+const MAX_WALK_WAIT_MS = 1500;
+
+/**
+ * triggerCasinoWalkIn() — called when the user clicks on the casino building.
+ *
+ * Sets a click-path to the casino door, then starts a polling loop that
+ * watches avatarPositionRef until arrival (or timeout), then triggers the
+ * SceneTransition to /casino.
+ *
+ * Deliberately avoids React state so it can be called from the module-scope
+ * BUILDING_MODELS onClick without needing a hook context.
+ */
+function triggerCasinoWalkIn(): void {
+  const store = useGameStore.getState();
+
+  // Only walk in player/npc mode — in explore mode there is no avatar to walk.
+  if (store.controlMode === 'explore') {
+    // Fallback for explore mode: direct transition, no walk.
+    useTransitionStore.getState().triggerTransition({ to: '/casino' });
+    return;
+  }
+
+  // Build a minimal two-waypoint path: current position → door target.
+  // The existing click-to-move system in player-avatar.tsx will drive the avatar.
+  const path = [
+    { x: avatarPositionRef.x, y: avatarPositionRef.y },
+    { x: CASINO_DOOR_PX.x,    y: CASINO_DOOR_PX.y },
+  ];
+  store.setClickPath(path, null);
+
+  const startMs = Date.now();
+  let rafId = 0;
+
+  function poll() {
+    const dx = avatarPositionRef.x - CASINO_DOOR_PX.x;
+    const dy = avatarPositionRef.y - CASINO_DOOR_PX.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const elapsed = Date.now() - startMs;
+
+    if (dist <= DOOR_ARRIVE_DIST || elapsed >= MAX_WALK_WAIT_MS) {
+      // Avatar has arrived (or timed out) — clear the path and fade.
+      store.clearClickPath();
+      useTransitionStore.getState().triggerTransition({ to: '/casino' });
+      return;
+    }
+
+    rafId = requestAnimationFrame(poll);
+  }
+
+  rafId = requestAnimationFrame(poll);
+
+  // Safety: if this function is somehow called twice, a prior loop's rafId
+  // will be orphaned. Acceptable since the transition store ignores re-triggers
+  // while active (the guard `if (get().active) return` in triggerTransition).
+  void rafId; // suppress unused-variable warning
+}
 
 // Map each building ID to a GLB model + display config.
 // rotY: each building faces the village center at tile (120, 120) = world (0, 0).
@@ -135,8 +213,11 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // casino-exterior-cove.glb = "Pyramid Casino" by tl0615 (CC-BY-4.0, Sketchfab).
   // box3Recenter=true: geometry authored at ~(-1800, 166, 4540) Blender origin — centering handled by pivotOffset.
   // targetMaxDim: 1300 — casino is the entertainment-district landmark, deserves more visual mass.
+  // onClick: Phase 6.0.3 walk-in flow — avatar walks toward door, then SceneTransition fades to /casino.
+  // Door target in game-px: casino zone cx=20 tiles → x=640, cy=180 tiles → y=5760; door is ~300 game-px
+  // east of building center (toward town center at 5760,5760).
   'casino':              { model: '/models/casino/casino-exterior-cove.glb', yOffset: 0, rotY:  1.571, targetMaxDim: 1300, box3Recenter: true,
-                           onClick: () => { window.location.href = '/casino'; } },
+                           onClick: () => { triggerCasinoWalkIn(); } },
   // Slot 10 — WNW (cx=41, cy=100): dx=139, dz=80 → atan2(139,80)≈1.047 (π/3)
   // Phase 6.1 swap preserved: agent-security at slot 10/WNW.
   // targetMaxDim: 1100 — wide dome, max-dim normalization prevents over-inflation.

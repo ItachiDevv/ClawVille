@@ -51,6 +51,7 @@ import AutonomyHUD from '@/components/game/autonomy-hud';
 import { useResearchStream } from '@/hooks/use-research-stream';
 import { DeferredTerrainPreloads } from '@/lib/three/arena-terrain';
 import { DeferredNpcPreloads } from '@/lib/three/arena-location-npcs';
+import SceneTransition from '@/components/transitions/SceneTransition';
 
 const World3DCanvas = dynamic(() => import('@/components/three/World3DCanvas'), {
   ssr: false,
@@ -395,6 +396,12 @@ export default function GamePage() {
 
       {/* Research thought log — visible for all users */}
       <ThoughtLog />
+
+      {/* SceneTransition overlay — handles fade-to-black for casino walk-in
+          (and future building entries). Sits at z-index 9999 above all HUD
+          but below critical system modals. pointerEvents=none while transparent
+          so it never blocks normal HUD interactions. */}
+      <SceneTransition />
 
       {/* Deferred GLB preloads — fire after first paint via requestAnimationFrame.
           These components render nothing; they only schedule useGLTF.preload()
