@@ -9,7 +9,7 @@
 > grep results. Update this when you touch any file listed in the "Source"
 > column. Update the affected file when you change a row here.
 
-**Last edit:** 2026-05-18 — Phase 6.2.1: ring R=160→130 tiles (5120→4160wu — R=160 too spaced out). Arc spacing 2680→2178wu. All 12 building slot positions updated. §2 slot table updated. Prior 2026-05-18 — Phase 6.2: ring R=100→160 tiles (5120wu), grid 240→360 (11520wu). All 12 building slot positions updated. `targetMaxDim` normalization (max-dim) replaces `targetHeight` (Y-only) — uniform visual size across wide/squat and tall/narrow GLBs. NPC_INSET_WORLD 1000→1300wu (Patrick fix). Sandy Treedome DoubleSide transparent-mat fix. Town-center props spread to 800–1000wu ring: BazaarStall (-800,-2,300), MarketplaceStall (800,4,300), AuctionPodium (0,200,-1000). DECO_INNER_EXCLUSION_R 1500→800wu (scatter fills central plaza area). §2 slot table updated. Prior 2026-05-18 — Pass 3 fixes: MAX_FOOTPRINT 1500→1800; NPC_INSET_WORLD 600→1000; targetHeights bumped; Patrick's Rock ↔ Arcade City swap. Prior prior 2026-05-18: Phase 6.1 grid+ring expand, pedestal discs.
+**Last edit:** 2026-05-18 — Differential child-scale: Squidward house body ×1.4, Krusty Krab restaurant ×1.5 vs stepping stones/sign. Both targetMaxDim 1000→1400. §2 slot table rows 2+11 updated. Prior 2026-05-18 — Phase 6.2.1: ring R=160→130 tiles (5120→4160wu — R=160 too spaced out). Arc spacing 2680→2178wu. All 12 building slot positions updated. §2 slot table updated. Prior 2026-05-18 — Phase 6.2: ring R=100→160 tiles (5120wu), grid 240→360 (11520wu). All 12 building slot positions updated. `targetMaxDim` normalization (max-dim) replaces `targetHeight` (Y-only) — uniform visual size across wide/squat and tall/narrow GLBs. NPC_INSET_WORLD 1000→1300wu (Patrick fix). Sandy Treedome DoubleSide transparent-mat fix. Town-center props spread to 800–1000wu ring: BazaarStall (-800,-2,300), MarketplaceStall (800,4,300), AuctionPodium (0,200,-1000). DECO_INNER_EXCLUSION_R 1500→800wu (scatter fills central plaza area). §2 slot table updated. Prior 2026-05-18 — Pass 3 fixes: MAX_FOOTPRINT 1500→1800; NPC_INSET_WORLD 600→1000; targetHeights bumped; Patrick's Rock ↔ Arcade City swap. Prior prior 2026-05-18: Phase 6.1 grid+ring expand, pedestal discs.
 
 ---
 
@@ -48,7 +48,7 @@ Slot geometry: cx=180+130×cos(θ), cy=180+130×sin(θ), θ=−π/2+slot×(π/6)
 |---|---|---|---|---|---|---|---|
 | 0 | N | 180,50 | `visual-creation` | `pineapple-house.glb` | SpongeBob's pineapple house | 1100 | |
 | 1 | NNE | 245,67 | `code-development` | `chum-bucket-v2.glb` | Bucket | 1000 | max-dim norm (was targetHeight=1100) |
-| 2 | ENE | 293,115 | `mcp-tool-use` | `krusty-krab-v2.glb` | Ship-restaurant | 1000 | max-dim norm (was 1400) |
+| 2 | ENE | 293,115 | `mcp-tool-use` | `krusty-krab-v2.glb` | Ship-restaurant | 1400 | childScaleOverrides: The_Krusty_Krab ×1.5 (sign/pole at base scale) |
 | 3 | E | 310,180 | `messaging-channels` | `sandy-treedome-v3.glb` | Tree platform + glass dome | 1000 | rotYOffset +π; DoubleSide transparent-mat fix |
 | 4 | ESE | 293,245 | `api-integrations` | `salty-spitoon.glb` | Bar | 1000 | rotYOffset -π/2; wide ~2:1 aspect hits MAX_FOOTPRINT=1800 |
 | 5 | SSE | 245,293 | `app-publishing` | `boating-school.glb` | Mrs. Puff's classroom | 1000 | rotYOffset +π/2 |
@@ -57,7 +57,7 @@ Slot geometry: cx=180+130×cos(θ), cy=180+130×sin(θ), θ=−π/2+slot×(π/6)
 | 8 | WSW | 67,245 | `claw-arcade` | `arcade/claw-arcade-exterior.glb` | Arcade City — domed building | 1100 | 2 slots (60°) from casino — NOT adjacent. Interior / crane game: Phase 6.3. |
 | 9 | W | 50,180 | `casino` | `casino/casino-exterior-cove.glb` | Predictive Gaming Cove — Mayan step-pyramid | 1300 | Entertainment district. box3Recenter=true. Interior: **6.0.2 SHIPPED** — `/casino` route. |
 | 10 | WNW | 67,115 | `agent-security` | `patricks-rock-v2.glb` | Patrick's rock | 1100 | Adjacent to casino (slot 9). Max-dim prevents dome over-inflation. |
-| 11 | NNW | 115,67 | `memory-rag` | `squidward-house.glb` | Easter-Island moai head | 1000 | pivotZBias=+180wu (step offset compensation) |
+| 11 | NNW | 115,67 | `memory-rag` | `squidward-house.glb` | Easter-Island moai head | 1400 | pivotZBias=+180wu; childScaleOverrides: Squidward_s_House ×1.4 (stepping stones at base scale) |
 
 **Strip rules** (run on every cloned building scene, `stripDecorativeMeshes` in `arena-buildings.tsx`):
 - Prefix match `Skybox_` → strip (kills the blue hemisphere baked into Yanez assets)
@@ -194,6 +194,7 @@ Tracked here so they don't get lost across sessions:
 
 Compact log. Single line per change.
 
+- 2026-05-18 — Differential child-scale pass for Squidward house (`Squidward_s_House` ×1.4) and Krusty Krab (`The_Krusty_Krab` ×1.5). Both targetMaxDim 1000→1400. Stepping stones and Krusty Krab sign/pole remain at base scale. §2 rows 2+11 updated.
 - 2026-05-18 — Phase 6.2: ring R=100→160 (5120wu), grid 240→360 (11520wu). All 12 building positions recomputed. `targetMaxDim` replaces `targetHeight` (max-dim vs Y-only normalization). NPC_INSET_WORLD 1000→1300wu. Sandy DoubleSide fix. DECO_INNER_EXCLUSION_R 1500→800wu. Town-center props spread to 800–1000wu ring. NPC home coords rescaled to Phase 6.2 world.
 - 2026-05-18 — Concern 6.0.2: Casino interior scene shipped. No new open-world objects. Casino building onClick in `arena-buildings.tsx` now navigates to `/casino`. §2 casino row updated (interior status SHIPPED).
 - 2026-05-18 — Phase 6.1: ring expanded R=72→100 tiles on 240×240 grid. BuildingPedestal stone disc added under each building. All 12 building cx/cy updated in slot table. NPC home coords scaled ×1.5.
