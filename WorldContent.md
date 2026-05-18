@@ -9,7 +9,7 @@
 > grep results. Update this when you touch any file listed in the "Source"
 > column. Update the affected file when you change a row here.
 
-**Last edit:** 2026-05-17 — Phase 6.0.1: building ring expanded from 10-building circular to 12-building square ring. Two new buildings: `casino` (E2, `casino/casino-exterior.glb`) and `claw-arcade` (S3, `arcade/claw-arcade-exterior.glb`). §1 top-level mounts updated (10→12), §2 rewritten to 12-entry table. Interior scenes are Concern 6.0.2+ (casino) and Phase 6.3 (claw-arcade). Prior last-edit: 2026-05-13 — decoration scatter retune; building ring expanded 2176→2304wu.
+**Last edit:** 2026-05-17 — Entertainment-district swap: `claw-arcade` moved E3 (was S3), `app-publishing` moved S3 (was E3). Casino (E2) + claw-arcade (E3) now adjacent on east wall as entertainment district. §2 table updated. Prior last-edit 2026-05-17: Phase 6.0.1: building ring expanded from 10-building circular to 12-building square ring; two new buildings casino (E2) + claw-arcade (S3).
 
 ---
 
@@ -44,10 +44,10 @@ Loaded by `<ArenaBuildings>`. Each is a single GLB clone placed on a **square ri
 | N3 | `api-integrations` | `salty-spitoon.glb` | Bar | rotYOffset -π/2 |
 | E1 | `cron-automation` | `patty-building.glb` | Pearl's downtown | |
 | E2 | `casino` | `casino/casino-exterior.glb` | Pyramid Casino — Mayan step-pyramid | Phase 6.0.1 NEW. box3Recenter=true (GLB origin offset ~(-1800,166,4540) Blender units). Interior: Concern 6.0.2. |
-| E3 | `app-publishing` | `boating-school.glb` | Mrs. Puff's classroom | rotYOffset +π/2 |
+| E3 | `claw-arcade` | `arcade/claw-arcade-exterior.glb` | Arcade City — domed building with ARCADE CITY signage | Entertainment district (E2+E3 adjacent, 1536 wu apart). Swapped from S3 2026-05-17. Interior / crane game: Phase 6.3. |
 | S1 | `deployment-ops` | `building-lighthouse.glb` | Lighthouse | |
 | S2 | `agent-security` | `patricks-rock-v2.glb` | Patrick's rock | 2026-05-12 swap |
-| S3 | `claw-arcade` | `arcade/claw-arcade-exterior.glb` | Arcade City — domed building with ARCADE CITY signage | Phase 6.0.1 NEW. Interior / crane game: Phase 6.3. |
+| S3 | `app-publishing` | `boating-school.glb` | Mrs. Puff's classroom | Swapped from E3 2026-05-17. rotYOffset +π/2. |
 | W1 | `messaging-channels` | `sandy-treedome-v3.glb` | Tree platform + glass dome | 2026-05-12 swap; rotYOffset +π |
 | W2 | `mcp-tool-use` | `krusty-krab-v2.glb` | Ship-restaurant | 2026-05-12 swap |
 | W3 | `code-development` | `chum-bucket-v2.glb` | Bucket | 2026-05-12 swap |
