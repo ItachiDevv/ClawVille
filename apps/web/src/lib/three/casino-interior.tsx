@@ -223,26 +223,42 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
   // Fail-safe: did we already call onSceneEmpty?
   const emptyFired = useRef(false);
 
-  const { cloned, fit, hotspots, meshCount } = useMemo(() => {
+  const { cloned, hotspots, meshCount } = useMemo(() => {
     const c = scene.clone(true);
     c.updateMatrixWorld(true);
 
     // Compute auto-fit at native scale (scale=1) — measures actual geometry bbox.
     // IMPORTANT: matrixAutoUpdate must still be TRUE here so updateMatrixWorld
-    // propagates correctly. We disable it AFTER applying the scale.
+    // propagates correctly. We disable it AFTER applying both scale AND position.
     const fitResult = computeAutoFit(c, INTERIOR_TARGET_HEIGHT);
 
-    // Apply the target scale directly onto the cloned root so Three.js owns
-    // the transform, not R3F's prop reconciler. If we instead pass scale={fitResult.scale}
-    // to <primitive> after disabling matrixAutoUpdate, R3F writes to .scale but the
-    // matrix is never recomputed — the model renders at native micro-scale (invisible).
+    // Step 1: Apply scale directly onto the cloned root.
+    // Do NOT pass scale as a R3F prop — if matrixAutoUpdate=false the prop write
+    // never triggers a matrix recompute and the model stays at native micro-scale.
     c.scale.setScalar(fitResult.scale);
+
+    // Step 2: Bake the centering offset into the cloned root's position.
+    // This is safer than relying on the outer <group> position prop being reconciled
+    // before matrixAutoUpdate is locked — R3F prop timing is not guaranteed to
+    // complete before the useEffect that locks the matrix fires.
+    // offsetX/Z: moves geometry center to scene origin (XZ centering).
+    // offsetY: bbox.min.y*scale — grounds the floor at Y=0 of the parent.
+    c.position.set(-fitResult.offsetX, -fitResult.offsetY, -fitResult.offsetZ);
+
+    // Step 3: Propagate both transforms into matrixWorld BEFORE locking.
     c.updateMatrixWorld(true);
 
-    // NOW lock all nodes — matrices are current and correct.
+    // Step 4: Lock all nodes — matrices are current and correct.
     c.traverse((obj) => {
       obj.matrixAutoUpdate = false;
     });
+
+    if (typeof window !== 'undefined' && process.env.NEXT_PUBLIC_CASINO_DEBUG === '1') {
+      const bbox2 = new THREE.Box3().setFromObject(c);
+      const sz = new THREE.Vector3(); bbox2.getSize(sz);
+      const ct = new THREE.Vector3(); bbox2.getCenter(ct);
+      console.info('[casino-interior] post-fit bbox center:', ct, 'size:', sz, 'scale:', fitResult.scale, 'offset applied:', fitResult);
+    }
 
     const hotspotDefs = useFallback ? FALLBACK_HOTSPOTS : GAMEREADY_HOTSPOTS;
 
@@ -250,7 +266,7 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
     let count = 0;
     c.traverse((obj) => { if ((obj as THREE.Mesh).isMesh) count++; });
 
-    return { cloned: c, fit: fitResult, hotspots: hotspotDefs, meshCount: count };
+    return { cloned: c, hotspots: hotspotDefs, meshCount: count };
   }, [scene, useFallback]);
 
   // Dispose cloned geometry + materials when component unmounts
@@ -267,7 +283,8 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
     };
   }, [cloned]);
 
-  // matrixAutoUpdate=false on the parent group
+  // matrixAutoUpdate=false on the parent group.
+  // The group stays at origin (0,0,0) — all centering is baked into cloned.position.
   useEffect(() => {
     const g = groupRef.current;
     if (!g) return;
@@ -287,8 +304,8 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
         '[casino-interior DEBUG]\n' +
         `  glb: ${glbPath}\n` +
         `  meshCount: ${meshCount}\n` +
-        `  fit.scale: ${fit.scale.toFixed(4)}\n` +
-        `  fit.offset: x=${fit.offsetX.toFixed(1)} y=${fit.offsetY.toFixed(1)} z=${fit.offsetZ.toFixed(1)}\n` +
+        `  cloned.position: (${cloned.position.x.toFixed(1)}, ${cloned.position.y.toFixed(1)}, ${cloned.position.z.toFixed(1)})\n` +
+        `  cloned.scale: ${cloned.scale.x.toFixed(4)}\n` +
         `  group.position: ${g ? `(${g.position.x.toFixed(1)}, ${g.position.y.toFixed(1)}, ${g.position.z.toFixed(1)})` : 'null'}\n` +
         `  camera.position: (${cam.position.x.toFixed(1)}, ${cam.position.y.toFixed(1)}, ${cam.position.z.toFixed(1)})\n` +
         `  camera.fov=${cam.fov} near=${cam.near} far=${cam.far}`
@@ -328,11 +345,10 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
   return (
     <group
       ref={groupRef}
-      position={[-fit.offsetX, -fit.offsetY, -fit.offsetZ]}
     >
-      {/* scale already baked into cloned.scale in useMemo — do NOT pass scale prop here.
-           Passing scale={fit.scale} after matrixAutoUpdate=false would write to .scale
-           but never trigger a matrix recompute, leaving the model at native micro-size. */}
+      {/* scale and centering offset are both baked into cloned.position / cloned.scale
+           in useMemo — do NOT pass scale or position props to <primitive>.
+           R3F prop writes after matrixAutoUpdate=false don't trigger matrix recomputes. */}
       <primitive object={cloned} />
 
       {/* Invisible click hotspots over slot machine positions */}
