@@ -11,7 +11,7 @@
 > - **`GameFeatures.md`** — gameplay.
 > - **This doc** — *how* the 3D scene is wired: coordinates, camera, lights, GPU budget, animation, asset pipeline.
 
-**Last edit:** 2026-05-17 — §9d added: Mixamo animation GLB load policy. Mount-time `preloadMixamoClips()` no longer fans out 19 emote fetches via `requestIdleCallback`; emotes load on first `playOneShot()` (or via `preloadClips()` from the hotbar). 2026-05-12 — restructured into a tight manifest (was 2430 lines / 200 KB with 14 stacked audit entries).
+**Last edit:** 2026-05-17 — §6a NPC position smoothing rewritten: dead reckoning + LERP_SPEED_DR=8 corrective lerp replaces the old LERP_SPEED=1.5 that pumped at the server's 5 Hz tick. §9d added: Mixamo animation GLB load policy. 2026-05-12 — restructured into a tight manifest (was 2430 lines / 200 KB with 14 stacked audit entries).
 
 ---
 
@@ -196,7 +196,7 @@ Two paths based on species key:
 
 Switch point: `arena-npcs.tsx:102` — `useNewSystem = key !== 'lobster' && key !== 'crayfish'`.
 
-XZ lerp: `LERP_SPEED = 1.5` → `1 - exp(-1.5·dt)` (`arena-npcs.tsx:44`). Server-driven positions at 5 Hz; client smooths.
+XZ position smoothing (2026-05-17): **dead reckoning + corrective lerp**. The server publishes positions at 5 Hz (one snapshot per 200 ms / 44 wu step). Each frame, `reckonNpcTarget(d, now, out)` (`arena-npcs.tsx`) projects the target forward at `(d.x − d.prevX) / d.tsDelta · elapsed`, clamped to one tick period. The displayed `currentPos` then lerps toward that projected target at `LERP_SPEED_DR = 8` (`1 − exp(−8·dt)`), giving ~27 wu steady-state lag — well under one step. Replaced the old pure exp-lerp at `LERP_SPEED = 1.5` that pumped visibly every 200 ms because it tracked the stale snapshot, not the moving target. Sentinel `d.ts === 0` (set by `makeDemoNpc` / `spawnPlayerNpc`) bypasses projection for client-only NPCs; `direction === 'idle'` bypasses to prevent jitter around stationary points.
 
 Bob: `sin(t · 4.0 + seed) · 0.6` when moving (`arena-npcs.tsx:172`).
 
