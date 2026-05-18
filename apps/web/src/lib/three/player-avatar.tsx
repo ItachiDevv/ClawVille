@@ -467,7 +467,7 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
     const frame = Math.floor(elapsed * 60);
     if (frame % 3 === 0) {
       const ty = getTerrainY(group.position.x, group.position.z, threeScene);
-      terrainYRef.current += (ty - terrainYRef.current) * 0.3;
+      terrainYRef.current += (ty - terrainYRef.current) * 0.6;
     }
     // VRM feet at Y=0 per spec — no pivot offset, no bob (humanoid avatar).
     // playerAltitude stacks on top of heightOffset for explicit arrow-key 3D swim.
@@ -842,7 +842,7 @@ function PlayerAvatarGLBInner() {
     const frame = Math.floor(elapsed * 60);
     if (frame % 3 === 0) {
       const ty = getTerrainY(group.position.x, group.position.z, threeScene);
-      terrainYRef.current += (ty - terrainYRef.current) * 0.3;
+      terrainYRef.current += (ty - terrainYRef.current) * 0.6;
     }
     // Suppress ambient bob when airborne — it looks wrong to bob while jumping.
     // resetJump() guarantees heightOffset=0 and playerAltitude=0 outside player/npc modes.

@@ -134,13 +134,13 @@ export default function Minimap() {
             fill="url(#center-glow)"
           />
 
-          {/* Ring guide — dashed circle at the 72-tile building ring radius.
-              Circle revert (2026-05-17): ring topology is now a true circle —
-              12 buildings at 30° spacing, radius 72 tiles. Circle guide is exact. */}
+          {/* Ring guide — dashed circle at the 100-tile building ring radius.
+              Phase 6.1 (2026-05-18): grid expanded 160→240 tiles, ring expanded
+              R=72→100 tiles. 12 buildings at 30° spacing. Circle guide is exact. */}
           <circle
             cx={CENTER_TILE_PX_X * SCALE_X}
             cy={CENTER_TILE_PX_Y * SCALE_Y}
-            r={72 * TILE_SIZE * SCALE_X}
+            r={100 * TILE_SIZE * SCALE_X}
             fill="none"
             stroke="rgba(34,211,238,0.18)"
             strokeWidth="0.8"

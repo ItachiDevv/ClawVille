@@ -24,28 +24,26 @@ import {
 } from '@clawville/agent-runtime';
 import type { OpenClawClient } from './openclaw-client';
 
-// Map dimensions from tilemap-data (160×160 grid of 32px tiles)
-const MAP_WIDTH = 5120;
-const MAP_HEIGHT = 5120;
+// Map dimensions — Phase 6.1 (2026-05-18): 240×240 grid of 32px tiles = 7680×7680 world.
+const MAP_WIDTH = 7680;
+const MAP_HEIGHT = 7680;
 
 // Town-center anchor and the annulus (ring) free-roaming wanderers stay inside.
-// Buildings are on a ring at ~2176wu from center. The annulus keeps free
-// roamers (Miladys + crustacean wanderers) in the OPEN BAND between the
+// Buildings are on a ring at ~3200wu from center (R=100 tiles). The annulus keeps
+// free roamers (Miladys + crustacean wanderers) in the OPEN BAND between the
 // town-center furniture (Nori, auction podium, bazaar pedestals, bounty
 // board, quest NPC — all within ~300wu of center) and the outer building
 // ring. They read as "town residents patrolling the commons" instead of
 // either crowding on top of the podium (previous disk sampling) or
 // walking off toward the map edge (original behavior before the fix).
-const TOWN_CENTER_X = MAP_WIDTH / 2;       // 2560
-const TOWN_CENTER_Y = MAP_HEIGHT / 2;      // 2560
-// Ring of wander bounds centered ON the building ring (radius ~2176wu).
-// 2026-04-25: 1400-2600 → 1200-2750. User asked for "more room" — widening
-// inward (NPCs can drift closer to town center) and outward (further behind
-// buildings, toward map edge). Combined with BUILDING_EXCLUSION_PAD reduction
-// 14 → 11 in pathfinding.ts, the effective walkable area between buildings
-// and inside the ring is now ~1.4× larger than before.
-const FREE_ROAMER_MIN_RADIUS = 1200;
-const FREE_ROAMER_MAX_RADIUS = 2750;
+const TOWN_CENTER_X = MAP_WIDTH / 2;       // 3840
+const TOWN_CENTER_Y = MAP_HEIGHT / 2;      // 3840
+// Ring of wander bounds centered ON the building ring (radius ~3200wu).
+// Phase 6.1: scaled ×1.5 from old 5120-world values (1200-2750 → 1800-4125).
+// Combined with BUILDING_EXCLUSION_PAD=11 in pathfinding.ts, the effective
+// walkable area between buildings and inside the ring is ample.
+const FREE_ROAMER_MIN_RADIUS = 1800;
+const FREE_ROAMER_MAX_RADIUS = 4125;
 
 // --- Types ---
 
