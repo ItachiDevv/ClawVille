@@ -13,15 +13,21 @@
  *   - Click hotspots over slot machines → placeholder console.info handler
  *   - "Back to World" exit button (top-left, absolute over Canvas) → /game
  *
+ * Walk-in flow — Concern 6.0.3:
+ *   - SceneTransition with fadeInOnMount=true: page fades in from black after
+ *     the route push that happened at the midpoint of the walk-in fade-out.
+ *   - "Back to World" button uses triggerTransition({ to: '/game' }) so there
+ *     is a matching 500ms fade-out before the route push back to the world,
+ *     and the /game page avatar spawns at the casino door position (outside).
+ *
  * Out of scope:
- *   - Walk-in animation (Concern 6.0.3)
  *   - 2D slot screen UI (Concern 6.0.4)
  *   - Backend / RNG / wager program (Concern 6.1+)
  */
 
 import { useCallback } from 'react';
-import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
+import SceneTransition, { useSceneTransition } from '@/components/transitions/SceneTransition';
 
 /**
  * CasinoCanvas — dynamically imported with ssr:false so Three.js /
@@ -60,16 +66,46 @@ const CasinoCanvas = dynamic(
 );
 
 // ---------------------------------------------------------------------------
+// Casino door position in game-px — avatar spawns here on exit so it feels
+// like stepping back out through the same door they entered.
+// Casino zone: cx=20 tiles, cy=180 tiles. Door ~300 game-px east of building center.
+// ---------------------------------------------------------------------------
+const CASINO_EXIT_PX = { x: 940, y: 5760 };
+
+// ---------------------------------------------------------------------------
 // Page component
 // ---------------------------------------------------------------------------
 export default function CasinoPage() {
-  const router = useRouter();
+  const { triggerTransition } = useSceneTransition();
 
   const handleBack = useCallback(() => {
     // Reset cursor in case the player was hovering a slot hotspot
     if (typeof document !== 'undefined') document.body.style.cursor = 'default';
-    router.push('/game');
-  }, [router]);
+    // Fade-out → restore avatar at casino door → push /game → fade-in handled
+    // by the /game page. Avatar position is set at midway so the world scene
+    // mounts with the avatar already at the door, not at the default spawn.
+    triggerTransition({
+      to: '/game',
+      onMidway: () => {
+        // Reposition avatar to outside the casino door in game-px space.
+        // avatarPositionRef is updated directly (zero React overhead) and the
+        // zustand reactive slice is updated via setAvatarPosition so the 2D
+        // minimap and any other subscribers see the new position immediately.
+        if (typeof window !== 'undefined') {
+          try {
+            // Dynamic import to avoid SSR issues
+            const { avatarPositionRef } = require('@/stores/game') as typeof import('@/stores/game');
+            const { useGameStore } = require('@/stores/game') as typeof import('@/stores/game');
+            avatarPositionRef.x = CASINO_EXIT_PX.x;
+            avatarPositionRef.y = CASINO_EXIT_PX.y;
+            useGameStore.getState().setAvatarPosition(CASINO_EXIT_PX.x, CASINO_EXIT_PX.y);
+          } catch {
+            // Silently degrade — avatar will be at default spawn position
+          }
+        }
+      },
+    });
+  }, [triggerTransition]);
 
   return (
     <div
@@ -84,6 +120,10 @@ export default function CasinoPage() {
       <div style={{ position: 'absolute', inset: 0 }}>
         <CasinoCanvas />
       </div>
+
+      {/* SceneTransition overlay — fades in from black on mount (walk-in arrival),
+          also handles fade-out for "Back to World" button via triggerTransition(). */}
+      <SceneTransition fadeInOnMount />
 
       {/* Back to World — top-left, always above canvas */}
       <button
