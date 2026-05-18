@@ -319,9 +319,9 @@ function generateDecorations(): DecoEntry[] {
   const TARGET_COUNT = 60;
 
   // Hard distance cap — any prop beyond this radius from world origin is
-  // rejected. 3800wu chosen so even decorations placed laterally from spawn
-  // (camera at +1300 Z) end up ≤5100wu from camera — well inside the fog's
-  // perceptual fade (heavy past ~5500wu).
+  // rejected. 3800wu chosen so decorations sit fully inside the fog-free zone
+  // (fog.near=4500wu). Lateral placement at +1300 Z camera still lands ≤5100wu
+  // from camera — below the 22% fog factor threshold at 5493wu far-ring.
   const MAX_VISIBLE_DIST = 3800;
   const MAX_VISIBLE_DIST_SQ = MAX_VISIBLE_DIST * MAX_VISIBLE_DIST;
 
@@ -379,8 +379,8 @@ function generateDecorations(): DecoEntry[] {
     const radiusSq = dcx * dcx + dcz * dcz;
     if (radiusSq < DECO_INNER_EXCLUSION_R * DECO_INNER_EXCLUSION_R) continue;
 
-    // 2026-05-12: hard cap on outer distance. Anything past 4500wu is lost in
-    // fog (fog far=6400 with significant haze starting ~4000). Audited via
+    // 2026-05-12: hard cap on outer distance. Anything past MAX_VISIBLE_DIST is
+    // above the fog.near=4500wu threshold (Phase 6.2.1). Audited via
     // scripts/audit-decorations.mjs.
     if (radiusSq > MAX_VISIBLE_DIST_SQ) continue;
 
