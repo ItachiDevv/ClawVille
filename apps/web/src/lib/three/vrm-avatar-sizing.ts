@@ -55,7 +55,25 @@ export const VRM_AVATAR_TARGET_HEIGHT_WU = 270;
  * 'tekk' for tekk; if they ever diverge we'll need separate maps.
  */
 export const SPECIES_TARGET_HEIGHT_WU: Record<string, number> = {
-  tekk: 346, // 270 × 1.28 — body lands at Nori/Milady height, wings fan above (kept proportional through the 2026-05-18 retune 179.2 → 360 → 270)
+  // Cyrus (hermes-male) — user feedback 2026-05-18: looks frail next to
+  // the Milady VRMs at the shared 270 base. Bumped +10 % → 297 so he
+  // reads as a slightly broader / taller male silhouette without
+  // breaking proportions vs Nori. Two keys because the species key on
+  // wandering NPCs is `hermes_male` (underscore, from the demo/SSE
+  // payload) while the player-avatar path passes `reg.animatorId =
+  // 'hermes-male'` (dash); both call sites resolve through this map.
+  'hermes-male': 297,
+  hermes_male:   297,
+
+  // Tekk — design intent is "taller than everyone else" + wing-bbox
+  // overhead. Iteration 2026-05-18:
+  //   - 230 (original): body ~Milady height, wings fan above (base 179.2)
+  //   - 460 (after 360 retune): "bigger than some buildings", way too big
+  //   - 346 (after 270 retune): still too big
+  //   - 320 (current): body lands ~310 wu (≈ 15 % taller than base
+  //     270), bbox ceiling ~320 to give wings just a little headroom.
+  //     If this still reads as "too big" drop to 300.
+  tekk: 320,
 };
 
 /**
