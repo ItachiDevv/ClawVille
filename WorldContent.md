@@ -9,7 +9,7 @@
 > grep results. Update this when you touch any file listed in the "Source"
 > column. Update the affected file when you change a row here.
 
-**Last edit:** 2026-05-18 — Phase 6.2: ring R=100→160 tiles (5120wu), grid 240→360 (11520wu). All 12 building slot positions updated. `targetMaxDim` normalization (max-dim) replaces `targetHeight` (Y-only) — uniform visual size across wide/squat and tall/narrow GLBs. NPC_INSET_WORLD 1000→1300wu (Patrick fix). Sandy Treedome DoubleSide transparent-mat fix. Town-center props spread to 800–1000wu ring: BazaarStall (-800,-2,300), MarketplaceStall (800,4,300), AuctionPodium (0,200,-1000). DECO_INNER_EXCLUSION_R 1500→800wu (scatter fills central plaza area). §2 slot table updated. Prior 2026-05-18 — Pass 3 fixes: MAX_FOOTPRINT 1500→1800; NPC_INSET_WORLD 600→1000; targetHeights bumped; Patrick's Rock ↔ Arcade City swap. Prior prior 2026-05-18: Phase 6.1 grid+ring expand, pedestal discs.
+**Last edit:** 2026-05-18 — Phase 6.2.1: ring R=160→130 tiles (5120→4160wu — R=160 too spaced out). Arc spacing 2680→2178wu. All 12 building slot positions updated. §2 slot table updated. Prior 2026-05-18 — Phase 6.2: ring R=100→160 tiles (5120wu), grid 240→360 (11520wu). All 12 building slot positions updated. `targetMaxDim` normalization (max-dim) replaces `targetHeight` (Y-only) — uniform visual size across wide/squat and tall/narrow GLBs. NPC_INSET_WORLD 1000→1300wu (Patrick fix). Sandy Treedome DoubleSide transparent-mat fix. Town-center props spread to 800–1000wu ring: BazaarStall (-800,-2,300), MarketplaceStall (800,4,300), AuctionPodium (0,200,-1000). DECO_INNER_EXCLUSION_R 1500→800wu (scatter fills central plaza area). §2 slot table updated. Prior 2026-05-18 — Pass 3 fixes: MAX_FOOTPRINT 1500→1800; NPC_INSET_WORLD 600→1000; targetHeights bumped; Patrick's Rock ↔ Arcade City swap. Prior prior 2026-05-18: Phase 6.1 grid+ring expand, pedestal discs.
 
 ---
 
@@ -19,9 +19,9 @@ Composes the entire R3F scene. Mounted by `SceneContents` in `apps/web/src/compo
 
 | Group | Component | What renders | Source |
 |---|---|---|---|
-| **Lighting** | inline JSX | 1 hemisphere + 2 directional + fog (3800→6800wu) | `World3DCanvas.tsx` ~778 |
+| **Lighting** | inline JSX | 1 hemisphere + 2 directional + fog (4500→9000wu) | `World3DCanvas.tsx` ~778 |
 | **Terrain** | `<ArenaTerrain>` | sand floor + decorations + (disabled landmarks) | `lib/three/arena-terrain.tsx` |
-| **Buildings** | `<ArenaBuildings>` | 12 themed building GLBs on a circular ring (R=160 tiles = 5120wu, 30° spacing; Phase 6.2 2026-05-18) | `lib/three/arena-buildings.tsx` |
+| **Buildings** | `<ArenaBuildings>` | 12 themed building GLBs on a circular ring (R=130 tiles = 4160wu, 30° spacing; Phase 6.2.1 2026-05-18) | `lib/three/arena-buildings.tsx` |
 | **Wandering NPCs** | `<ArenaNpcs>` | 18 NPCs (5 VRM + 13 GLB), SSE-driven positions | `lib/three/arena-npcs.tsx` |
 | **Building residents** | `<ArenaLocationNpcs>` | 10 character NPCs, one per building | `lib/three/arena-location-npcs.tsx` |
 | **Ground cover** | `<MergedSeaweed>` | TSL-animated seaweed, single merged mesh | `lib/three/merged-seaweed.tsx` |
@@ -35,28 +35,29 @@ Composes the entire R3F scene. Mounted by `SceneContents` in `apps/web/src/compo
 
 ## 2. Buildings (12)
 
-Loaded by `<ArenaBuildings>`. Each is a single GLB clone placed on a **true circular ring** — 12 buildings at 30° angular spacing, radius 160 tiles (5120wu) from center (0,0,0). Config: `BUILDING_MODELS` in `lib/three/arena-buildings.tsx`. Authoritative positions: `buildingZones[]` in `tilemap-data.ts`. Ring history: 56→68 tiles (2026-04-16) → 68→72 tiles (2026-05-13) → briefly square (2026-05-17 Phase 6.0.1) → true circle revert R=72 (2026-05-17) → Phase 6.1 R=100 on 240×240 grid (2026-05-18) → Phase 6.2 R=160 on 360×360 grid (2026-05-18).
+Loaded by `<ArenaBuildings>`. Each is a single GLB clone placed on a **true circular ring** — 12 buildings at 30° angular spacing, radius 130 tiles (4160wu) from center (0,0,0). Arc spacing ≈2178wu. Config: `BUILDING_MODELS` in `lib/three/arena-buildings.tsx`. Authoritative positions: `buildingZones[]` in `tilemap-data.ts`. Ring history: 56→68 tiles (2026-04-16) → 68→72 tiles (2026-05-13) → briefly square (2026-05-17 Phase 6.0.1) → true circle revert R=72 (2026-05-17) → Phase 6.1 R=100 on 240×240 grid (2026-05-18) → Phase 6.2 R=160 on 360×360 grid (2026-05-18) → Phase 6.2.1 R=130 on 360×360 grid (2026-05-18, R=160 too far from spawn).
 
 Scale normalization: `computeBuildingScale` uses max(X,Y,Z) (`targetMaxDim`) — consistent visual cube size regardless of GLB aspect ratio. All buildings normalized to 1000–1400wu max-dim range.
 
 Each building has a flat **stone pedestal disc** (radius=560wu, 15wu thick, color `0x8b7d6b`) rendered at y=−2 by `BuildingPedestal` in `arena-buildings.tsx`.
 
-Phase 6.2 slot table (R=160 tiles, center tile (180,180)):
+Phase 6.2.1 slot table (R=130 tiles, center tile (180,180)):
+Slot geometry: cx=180+130×cos(θ), cy=180+130×sin(θ), θ=−π/2+slot×(π/6). Zone=(round(cx)−7, round(cy)−7), 14×14 tiles.
 
-| Slot | Angle | Zone id | GLB path | Renders | targetMaxDim | Notes |
-|---|---|---|---|---|---|---|
-| 0 | N | `visual-creation` | `pineapple-house.glb` | SpongeBob's pineapple house | 1100 | |
-| 1 | NNE | `code-development` | `chum-bucket-v2.glb` | Bucket | 1000 | max-dim norm (was targetHeight=1100) |
-| 2 | ENE | `mcp-tool-use` | `krusty-krab-v2.glb` | Ship-restaurant | 1000 | max-dim norm (was 1400) |
-| 3 | E | `messaging-channels` | `sandy-treedome-v3.glb` | Tree platform + glass dome | 1000 | rotYOffset +π; DoubleSide transparent-mat fix |
-| 4 | ESE | `api-integrations` | `salty-spitoon.glb` | Bar | 1000 | rotYOffset -π/2; wide ~2:1 aspect hits MAX_FOOTPRINT=1800 |
-| 5 | SSE | `app-publishing` | `boating-school.glb` | Mrs. Puff's classroom | 1000 | rotYOffset +π/2 |
-| 6 | S | `cron-automation` | `patty-building.glb` | Pearl's downtown | 1000 | |
-| 7 | SSW | `deployment-ops` | `building-lighthouse.glb` | Lighthouse | 1400 | tallest landmark |
-| 8 | WSW | `claw-arcade` | `arcade/claw-arcade-exterior.glb` | Arcade City — domed building | 1100 | 2 slots (60°) from casino — NOT adjacent. Interior / crane game: Phase 6.3. |
-| 9 | W | `casino` | `casino/casino-exterior-cove.glb` | Predictive Gaming Cove — Mayan step-pyramid | 1300 | Entertainment district. box3Recenter=true. Interior: **6.0.2 SHIPPED** — `/casino` route. |
-| 10 | WNW | `agent-security` | `patricks-rock-v2.glb` | Patrick's rock | 1100 | Adjacent to casino (slot 9). Max-dim prevents dome over-inflation. |
-| 11 | NNW | `memory-rag` | `squidward-house.glb` | Easter-Island moai head | 1000 | pivotZBias=+180wu (step offset compensation) |
+| Slot | Angle | cx,cy (tiles) | Zone id | GLB path | Renders | targetMaxDim | Notes |
+|---|---|---|---|---|---|---|---|
+| 0 | N | 180,50 | `visual-creation` | `pineapple-house.glb` | SpongeBob's pineapple house | 1100 | |
+| 1 | NNE | 245,67 | `code-development` | `chum-bucket-v2.glb` | Bucket | 1000 | max-dim norm (was targetHeight=1100) |
+| 2 | ENE | 293,115 | `mcp-tool-use` | `krusty-krab-v2.glb` | Ship-restaurant | 1000 | max-dim norm (was 1400) |
+| 3 | E | 310,180 | `messaging-channels` | `sandy-treedome-v3.glb` | Tree platform + glass dome | 1000 | rotYOffset +π; DoubleSide transparent-mat fix |
+| 4 | ESE | 293,245 | `api-integrations` | `salty-spitoon.glb` | Bar | 1000 | rotYOffset -π/2; wide ~2:1 aspect hits MAX_FOOTPRINT=1800 |
+| 5 | SSE | 245,293 | `app-publishing` | `boating-school.glb` | Mrs. Puff's classroom | 1000 | rotYOffset +π/2 |
+| 6 | S | 180,310 | `cron-automation` | `patty-building.glb` | Pearl's downtown | 1000 | |
+| 7 | SSW | 115,293 | `deployment-ops` | `building-lighthouse.glb` | Lighthouse | 1400 | tallest landmark |
+| 8 | WSW | 67,245 | `claw-arcade` | `arcade/claw-arcade-exterior.glb` | Arcade City — domed building | 1100 | 2 slots (60°) from casino — NOT adjacent. Interior / crane game: Phase 6.3. |
+| 9 | W | 50,180 | `casino` | `casino/casino-exterior-cove.glb` | Predictive Gaming Cove — Mayan step-pyramid | 1300 | Entertainment district. box3Recenter=true. Interior: **6.0.2 SHIPPED** — `/casino` route. |
+| 10 | WNW | 67,115 | `agent-security` | `patricks-rock-v2.glb` | Patrick's rock | 1100 | Adjacent to casino (slot 9). Max-dim prevents dome over-inflation. |
+| 11 | NNW | 115,67 | `memory-rag` | `squidward-house.glb` | Easter-Island moai head | 1000 | pivotZBias=+180wu (step offset compensation) |
 
 **Strip rules** (run on every cloned building scene, `stripDecorativeMeshes` in `arena-buildings.tsx`):
 - Prefix match `Skybox_` → strip (kills the blue hemisphere baked into Yanez assets)
