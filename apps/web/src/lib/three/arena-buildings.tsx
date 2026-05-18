@@ -44,17 +44,17 @@ const _buildRayOrigin = new THREE.Vector3();
 const _buildRayDir = new THREE.Vector3(0, -1, 0);
 
 // Target height for all buildings (world units).
-// 800 gives buildings proper visual weight on the 160x160 (5120 world-unit) map —
-// previously 480 made buildings feel like tiny props relative to the vast sand floor.
+// 800 is the fallback default; each building has an explicit targetHeight override in BUILDING_MODELS.
+// Range: 900–1500 wu. Previously 480 made buildings feel tiny; 800+ standard gives proper visual weight.
 const BUILDING_TARGET_HEIGHT = 800;
 
 // Map each building ID to a GLB model + display config.
-// rotY: each building faces the village center at tile (80, 80) = world (0, 0).
+// rotY: each building faces the village center at tile (120, 120) = world (0, 0).
 // Formula: cx = zone.x + zone.width/2, cz = zone.y + zone.height/2
-//          dx = 80 - cx, dz = 80 - cz
+//          dx = 120 - cx, dz = 120 - cz
 //          rotY = Math.atan2(dx, dz)  (model faces +Z at rotY=0)
-// Ring layout (radius 56, 36° spacing): all angles are exactly atan2(−sin_i, −cos_i)
-// where θ_i = −π/2 + i*(π/5). Values recomputed for 2026-04-16 ring layout.
+// Ring layout (R=100 tiles, 30° spacing, 12 slots): rotY values are identical to
+// R=72 layout — atan2 depends only on angle direction, not ring radius.
 /**
  * scaleOverride: bypasses computeBuildingScale entirely. Use for GLBs that
  * confuse the bbox-based auto-scale — typically GLBs that use
@@ -66,72 +66,83 @@ const BUILDING_TARGET_HEIGHT = 800;
  */
 const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number; rotYOffset?: number; scaleOverride?: number; targetHeight?: number; box3Recenter?: boolean; onClick?: () => void }> = {
   // ---------------------------------------------------------------------------
-  // 12-building TRUE CIRCULAR ring (circle revert — 2026-05-17).
-  // Was briefly a square ring (commit cdc8011 / 1433589); reverted because
-  // 4 empty corners created visual gaps and mismatched the minimap dashed circle.
+  // 12-building TRUE CIRCULAR ring — Phase 6.1 (2026-05-18).
+  // Grid expanded 160→240 tiles; ring expanded R=72→100 tiles.
   //
-  // Radius: 72 tiles = 2304 wu from center (80, 80) / world (0, 0).
+  // Radius: 100 tiles = 3200 wu from center (120, 120) / world (0, 0).
   // Angular spacing: 30° (π/6 rad) — 12 evenly spaced slots, clockwise from North.
-  // rotY = atan2(80 − cx_tile, 80 − cy_tile) so each building's +Z faces the plaza.
+  // rotY = atan2(120 − cx_tile, 120 − cy_tile) — identical values to R=72 layout
+  // because atan2 depends only on direction angle, not radius magnitude.
   //
   // Slot assignment (clockwise from North):
-  //   Slot  0 (  0°/N)   visual-creation    cx=80,  cy=8    rotY= 0.000
-  //   Slot  1 ( 30°/NNE) code-development   cx=116, cy=18   rotY=-0.524
-  //   Slot  2 ( 60°/ENE) mcp-tool-use       cx=142, cy=44   rotY=-1.047
-  //   Slot  3 ( 90°/E)   messaging-channels cx=152, cy=80   rotY=-1.571
-  //   Slot  4 (120°/ESE) api-integrations   cx=142, cy=116  rotY=-2.094
-  //   Slot  5 (150°/SSE) app-publishing     cx=116, cy=142  rotY=-2.618
-  //   Slot  6 (180°/S)   cron-automation    cx=80,  cy=152  rotY= 3.142
-  //   Slot  7 (210°/SSW) deployment-ops     cx=44,  cy=142  rotY= 2.618
-  //   Slot  8 (240°/WSW) agent-security     cx=18,  cy=116  rotY= 2.094
-  //   Slot  9 (270°/W)   casino             cx=8,   cy=80   rotY= 1.571  ← entertainment district
-  //   Slot 10 (300°/WNW) claw-arcade        cx=18,  cy=44   rotY= 1.047  ← adjacent
-  //   Slot 11 (330°/NNW) memory-rag         cx=44,  cy=18   rotY= 0.524
+  //   Slot  0 (  0°/N)   visual-creation    cx=120, cy=20   rotY= 0.000
+  //   Slot  1 ( 30°/NNE) code-development   cx=170, cy=33   rotY=-0.524
+  //   Slot  2 ( 60°/ENE) mcp-tool-use       cx=207, cy=70   rotY=-1.047
+  //   Slot  3 ( 90°/E)   messaging-channels cx=220, cy=120  rotY=-1.571
+  //   Slot  4 (120°/ESE) api-integrations   cx=207, cy=170  rotY=-2.094
+  //   Slot  5 (150°/SSE) app-publishing     cx=170, cy=207  rotY=-2.618
+  //   Slot  6 (180°/S)   cron-automation    cx=120, cy=220  rotY= 3.142
+  //   Slot  7 (210°/SSW) deployment-ops     cx=70,  cy=207  rotY= 2.618
+  //   Slot  8 (240°/WSW) agent-security     cx=33,  cy=170  rotY= 2.094
+  //   Slot  9 (270°/W)   casino             cx=20,  cy=120  rotY= 1.571  ← entertainment district
+  //   Slot 10 (300°/WNW) claw-arcade        cx=33,  cy=70   rotY= 1.047  ← adjacent
+  //   Slot 11 (330°/NNW) memory-rag         cx=70,  cy=33   rotY= 0.524
   // ---------------------------------------------------------------------------
 
-  // Slot 0 — N (cx=80, cy=8): dx=0, dz=72 → atan2(0,72)=0
-  'visual-creation':     { model: '/models/pineapple-house.glb',     yOffset: 0, rotY:  0.000 },
-  // Slot 1 — NNE (cx=116, cy=18): dx=-36, dz=62 → atan2(-36,62)≈-0.524 (-π/6)
+  // Slot 0 — N (cx=120, cy=20): dx=0, dz=100 → atan2(0,100)=0
+  // targetHeight: 1100 — pineapple house needs extra height to read from a distance.
+  'visual-creation':     { model: '/models/pineapple-house.glb',     yOffset: 0, rotY:  0.000, targetHeight: 1100 },
+  // Slot 1 — NNE (cx=170, cy=33): dx=-50, dz=87 → atan2(-50,87)≈-0.524 (-π/6)
   // 2026-05-12: chum-bucket-v2.glb restored from spongebob_chum_bucket.glb (1.85 MB original).
-  'code-development':    { model: '/models/chum-bucket-v2.glb',      yOffset: 0, rotY: -0.524 },
-  // Slot 2 — ENE (cx=142, cy=44): dx=-62, dz=36 → atan2(-62,36)≈-1.047 (-π/3)
+  // targetHeight: 900 — chum bucket is squat; 900 gives it authority without over-scaling.
+  'code-development':    { model: '/models/chum-bucket-v2.glb',      yOffset: 0, rotY: -0.524, targetHeight: 900 },
+  // Slot 2 — ENE (cx=207, cy=70): dx=-87, dz=50 → atan2(-87,50)≈-1.047 (-π/3)
   // krusty-krab-v2.glb = iconic ship restaurant (CC-BY, Yanez Designs, 1.59 MB original).
-  'mcp-tool-use':        { model: '/models/krusty-krab-v2.glb',      yOffset: 0, rotY: -1.047 },
-  // Slot 3 — E (cx=152, cy=80): dx=-72, dz=0 → atan2(-72,0)=-π/2≈-1.571
+  // targetHeight: 1000 — krusty krab door must clear ~250wu avatar height.
+  'mcp-tool-use':        { model: '/models/krusty-krab-v2.glb',      yOffset: 0, rotY: -1.047, targetHeight: 1000 },
+  // Slot 3 — E (cx=220, cy=120): dx=-100, dz=0 → atan2(-100,0)=-π/2≈-1.571
   // 2026-05-12: swapped to sandy-treedome-v3.glb (sandy_tree_final.glb, 4.4 MB).
   // rotYOffset: sandy-treedome-v3.glb authored facing +Z; +π rotates 180° for inward-facing door.
-  'messaging-channels':  { model: '/models/sandy-treedome-v3.glb',   yOffset: 0, rotY: -1.571, rotYOffset: Math.PI },
-  // Slot 4 — ESE (cx=142, cy=116): dx=-62, dz=-36 → atan2(-62,-36)≈-2.094 (-2π/3)
+  // targetHeight: 1000 — treedome dome needs to feel large and distinct.
+  'messaging-channels':  { model: '/models/sandy-treedome-v3.glb',   yOffset: 0, rotY: -1.571, rotYOffset: Math.PI, targetHeight: 1000 },
+  // Slot 4 — ESE (cx=207, cy=170): dx=-87, dz=-50 → atan2(-87,-50)≈-2.094 (-2π/3)
   // rotYOffset: salty-spitoon.glb authored facing +X; -π/2 aligns toward village center.
-  'api-integrations':    { model: '/models/salty-spitoon.glb',       yOffset: 0, rotY: -2.094, rotYOffset: -Math.PI / 2 },
-  // Slot 5 — SSE (cx=116, cy=142): dx=-36, dz=-62 → atan2(-36,-62)≈-2.618 (-5π/6)
+  // targetHeight: 1000 — bar needs height parity with krusty krab.
+  'api-integrations':    { model: '/models/salty-spitoon.glb',       yOffset: 0, rotY: -2.094, rotYOffset: -Math.PI / 2, targetHeight: 1000 },
+  // Slot 5 — SSE (cx=170, cy=207): dx=-50, dz=-87 → atan2(-50,-87)≈-2.618 (-5π/6)
   // rotYOffset: boating-school.glb classroom must face center (model-authored offset — stays with building).
-  'app-publishing':      { model: '/models/boating-school.glb',      yOffset: 0, rotY: -2.618, rotYOffset: Math.PI / 2 },
-  // Slot 6 — S (cx=80, cy=152): dx=0, dz=-72 → atan2(0,-72)=π≈3.142
-  'cron-automation':     { model: '/models/patty-building.glb',      yOffset: 0, rotY:  3.142 },
-  // Slot 7 — SSW (cx=44, cy=142): dx=36, dz=-62 → atan2(36,-62)≈2.618 (5π/6)
-  'deployment-ops':      { model: '/models/building-lighthouse.glb', yOffset: 0, rotY:  2.618 },
-  // Slot 8 — WSW (cx=18, cy=116): dx=62, dz=-36 → atan2(62,-36)≈2.094 (2π/3)
+  // targetHeight: 950 — school is low-profile by design; slight boost.
+  'app-publishing':      { model: '/models/boating-school.glb',      yOffset: 0, rotY: -2.618, rotYOffset: Math.PI / 2, targetHeight: 950 },
+  // Slot 6 — S (cx=120, cy=220): dx=0, dz=-100 → atan2(0,-100)=π≈3.142
+  // targetHeight: 1200 — downtown building is the civic anchor; taller than shops.
+  'cron-automation':     { model: '/models/patty-building.glb',      yOffset: 0, rotY:  3.142, targetHeight: 1200 },
+  // Slot 7 — SSW (cx=70, cy=207): dx=50, dz=-87 → atan2(50,-87)≈2.618 (5π/6)
+  // targetHeight: 1500 — lighthouse is the tallest landmark by definition.
+  'deployment-ops':      { model: '/models/building-lighthouse.glb', yOffset: 0, rotY:  2.618, targetHeight: 1500 },
+  // Slot 8 — WSW (cx=33, cy=170): dx=87, dz=-50 → atan2(87,-50)≈2.094 (2π/3)
   // patricks-rock-v2.glb (3.88 MB, original patricks_house_spongebob.glb)
-  'agent-security':      { model: '/models/patricks-rock-v2.glb',    yOffset: 0, rotY:  2.094 },
-  // Slot 9 — W (cx=8, cy=80): dx=72, dz=0 → atan2(72,0)=π/2≈1.571  ← entertainment district
+  // targetHeight: 900 — Patrick's rock is naturally squat; don't over-scale.
+  'agent-security':      { model: '/models/patricks-rock-v2.glb',    yOffset: 0, rotY:  2.094, targetHeight: 900 },
+  // Slot 9 — W (cx=20, cy=120): dx=100, dz=0 → atan2(100,0)=π/2≈1.571  ← entertainment district
   // casino-exterior.glb = "Pyramid Casino" by tl0615 (CC-BY-4.0, Sketchfab); in-game name: Predictive Gaming Cove.
   // GLB author placed geometry at ~(-1800, 166, 4540) Blender units from scene origin.
   // box3Recenter=true documents the origin-offset; centering is handled by
   // computeBuildingScale's pivotOffsetX/Z (same pipeline as every other building).
-  // targetHeight: 800 * 1.3 = 1040 — casino is 30% larger than standard to be the
+  // targetHeight: 1040 — casino is 30% larger than standard 800 to be the
   // entertainment-district landmark (user request 2026-05-17 circle revert).
   // Interior load is Concern 6.0.2; onClick is a placeholder per Concern 6.0.1 spec.
   'casino':              { model: '/models/casino/casino-exterior.glb', yOffset: 0, rotY:  1.571, targetHeight: 1040, box3Recenter: true,
                            onClick: () => { console.info('[casino] interior pending — Concern 6.0.2'); } },
-  // Slot 10 — WNW (cx=18, cy=44): dx=62, dz=36 → atan2(62,36)≈1.047 (π/3)  ← entertainment district (adjacent to casino)
+  // Slot 10 — WNW (cx=33, cy=70): dx=87, dz=50 → atan2(87,50)≈1.047 (π/3)  ← entertainment district (adjacent to casino)
   // claw-arcade-exterior.glb = Arcade City (CC-BY-4.0, vanessalani / Sketchfab).
   // Interior / crane game is Phase 6.3 — onClick is placeholder per Concern 6.0.1.
-  'claw-arcade':         { model: '/models/arcade/claw-arcade-exterior.glb', yOffset: 0, rotY:  1.047,
+  // targetHeight: 900 — arcade is peer to Patrick's rock; compact footprint.
+  'claw-arcade':         { model: '/models/arcade/claw-arcade-exterior.glb', yOffset: 0, rotY:  1.047, targetHeight: 900,
                            onClick: () => { console.info('[claw-arcade] interior pending — Concern 6.3'); } },
-  // Slot 11 — NNW (cx=44, cy=18): dx=36, dz=62 → atan2(36,62)≈0.524 (π/6)
+  // Slot 11 — NNW (cx=70, cy=33): dx=50, dz=87 → atan2(50,87)≈0.524 (π/6)
   // squidward-house.glb = Squidward's Easter Island moai head house (CC-BY, Yanez Designs)
-  'memory-rag':          { model: '/models/squidward-house.glb',     yOffset: 0, rotY:  0.524 },
+  // targetHeight: 1100 — moai head is the NNW landmark; needs height to read across the ring.
+  'memory-rag':          { model: '/models/squidward-house.glb',     yOffset: 0, rotY:  0.524, targetHeight: 1100 },
 };
 
 // Scratch objects for stripGroundPlanes — reused across calls to avoid GC.
@@ -436,6 +447,34 @@ const ENTERTAINMENT_LABELS: Record<string, { label: string; category: string }> 
 };
 
 // ---------------------------------------------------------------------------
+// BuildingPedestal — flat stone disc under each building.
+// Visually separates the building base from the sand terrain so buildings
+// don't blend into the floor. Geometry: flat CylinderGeometry (radiusTop =
+// radiusBottom), slightly wider than MAX_FOOTPRINT / 2 and only 15wu thick.
+// Positioned just above the sand plane (y=-2) so it caps flush with the floor.
+// One shared material instance across all pedestals (static, no disposal needed).
+// ---------------------------------------------------------------------------
+const _pedestalMaterial = new THREE.MeshStandardMaterial({
+  color: 0x8b7d6b,   // warm sandstone
+  roughness: 0.85,
+  metalness: 0.05,
+});
+
+function BuildingPedestal({ cx, cz }: { cx: number; cz: number }) {
+  return (
+    <mesh
+      position={[cx, -2, cz]}
+      rotation={[-Math.PI / 2, 0, 0]}
+      receiveShadow={false}
+      matrixAutoUpdate={false}
+    >
+      <cylinderGeometry args={[560, 560, 15, 32, 1]} />
+      <primitive object={_pedestalMaterial} attach="material" />
+    </mesh>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Normal mode: static buildings with terrain raycasting
 // ---------------------------------------------------------------------------
 
@@ -543,45 +582,49 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
   //  flag documents this but the actual centering is handled by computeBuildingScale
   //  pivotOffsetX/Z like every other building).
   return (
-    <group ref={groupRef} position={[cx, -2 + config.yOffset, cz]} rotation={[0, (config.rotY ?? 0) + (config.rotYOffset ?? 0), 0]}>
-      <group position={[-pivotOffsetX, -pivotOffsetY, -pivotOffsetZ]}>
-        <primitive object={cloned} scale={buildingScale} />
-      </group>
-      {/* Invisible click volume — used by entertainment buildings (casino, claw-arcade)
-          that have a config.onClick handler. Sized to ~1/8 of BUILDING_TARGET_HEIGHT
-          to give a generous click target without needing a visible mesh. */}
-      {config.onClick && (
-        <mesh
-          position={[0, BUILDING_TARGET_HEIGHT * 0.4, 0]}
-          onClick={(e) => { e.stopPropagation(); config.onClick!(); }}
-        >
-          <boxGeometry args={[200, BUILDING_TARGET_HEIGHT * 0.8, 200]} />
-          <meshBasicMaterial visible={false} />
-        </mesh>
-      )}
-      {/* Floating building label — WorldLabelsOverlay projects offset [0, BUILDING_TARGET_HEIGHT+20, 0].
-          pointerEvents='auto' preserves click-target behavior. */}
-      {theme && (
-        <WorldLabel divRef={labelDivRef} pointerEvents="auto">
-          <div
-            style={{
-              background: 'rgba(10, 22, 40, 0.85)',
-              backdropFilter: 'blur(4px)',
-              border: '1px solid rgba(56, 189, 248, 0.3)',
-              borderRadius: 8,
-              padding: '6px 12px',
-              cursor: 'pointer',
-              textAlign: 'center',
-              whiteSpace: 'nowrap',
-              userSelect: 'none',
-            }}
+    <>
+      {/* Stone pedestal disc — separates building base from sand terrain */}
+      <BuildingPedestal cx={cx} cz={cz} />
+      <group ref={groupRef} position={[cx, -2 + config.yOffset, cz]} rotation={[0, (config.rotY ?? 0) + (config.rotYOffset ?? 0), 0]}>
+        <group position={[-pivotOffsetX, -pivotOffsetY, -pivotOffsetZ]}>
+          <primitive object={cloned} scale={buildingScale} />
+        </group>
+        {/* Invisible click volume — used by entertainment buildings (casino, claw-arcade)
+            that have a config.onClick handler. Sized to ~1/8 of BUILDING_TARGET_HEIGHT
+            to give a generous click target without needing a visible mesh. */}
+        {config.onClick && (
+          <mesh
+            position={[0, BUILDING_TARGET_HEIGHT * 0.4, 0]}
+            onClick={(e) => { e.stopPropagation(); config.onClick!(); }}
           >
-            <div style={{ color: '#7dd3fc', fontWeight: 'bold', fontSize: 13 }}>{theme.label}</div>
-            <div style={{ color: 'rgba(148,163,184,0.7)', fontSize: 10, marginTop: 2 }}>{theme.category}</div>
-          </div>
-        </WorldLabel>
-      )}
-    </group>
+            <boxGeometry args={[200, BUILDING_TARGET_HEIGHT * 0.8, 200]} />
+            <meshBasicMaterial visible={false} />
+          </mesh>
+        )}
+        {/* Floating building label — WorldLabelsOverlay projects offset [0, BUILDING_TARGET_HEIGHT+20, 0].
+            pointerEvents='auto' preserves click-target behavior. */}
+        {theme && (
+          <WorldLabel divRef={labelDivRef} pointerEvents="auto">
+            <div
+              style={{
+                background: 'rgba(10, 22, 40, 0.85)',
+                backdropFilter: 'blur(4px)',
+                border: '1px solid rgba(56, 189, 248, 0.3)',
+                borderRadius: 8,
+                padding: '6px 12px',
+                cursor: 'pointer',
+                textAlign: 'center',
+                whiteSpace: 'nowrap',
+                userSelect: 'none',
+              }}
+            >
+              <div style={{ color: '#7dd3fc', fontWeight: 'bold', fontSize: 13 }}>{theme.label}</div>
+              <div style={{ color: 'rgba(148,163,184,0.7)', fontSize: 10, marginTop: 2 }}>{theme.category}</div>
+            </div>
+          </WorldLabel>
+        )}
+      </group>
+    </>
   );
 }
 
