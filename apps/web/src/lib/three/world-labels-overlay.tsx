@@ -67,6 +67,26 @@ interface LabelEntry {
   _prevDisplay: string;
   _prevX: number;
   _prevY: number;
+  // ---------------------------------------------------------------------------
+  // Distance fade — opacity blends from 1 at fadeNear to 0 at fadeFar.
+  // 0/Infinity disables fade (always-full or always-visible).
+  // ---------------------------------------------------------------------------
+  /** World-unit distance at which label reaches full opacity. 0 = immediate. */
+  fadeNear: number;
+  /** World-unit distance at which label is fully faded out. Infinity = no fade. */
+  fadeFar: number;
+  /** Base opacity at/within fadeNear (0–1). Buildings: 0.40, NPCs: 0.65. */
+  fadeBaseOpacity: number;
+  _prevOpacity: number;
+  // ---------------------------------------------------------------------------
+  // Occlusion raycast — skip for building labels (occlude: false).
+  // ---------------------------------------------------------------------------
+  /** Whether to run 10Hz occluder raycast against building meshes. */
+  occlude: boolean;
+  /** Frame-stagger phase (0–5) so not all labels raycast in the same frame. */
+  occludePhase: number;
+  /** Cached occlude result — updated at 10Hz, read every frame. */
+  _occludeResult: boolean;
 }
 
 const _registry = new Map<string, LabelEntry>();
@@ -120,6 +140,49 @@ function _getSnapshot(): ReadonlyArray<LabelEntry> {
 
 const _scratchPos = new THREE.Vector3();
 const _scratchOffset = new THREE.Vector3();
+// Holds the anchor world-position before .project(camera) destroys it — needed
+// for distance calculation and occlusion raycast direction.
+const _scratchAnchorWorld = new THREE.Vector3();
+
+// ---------------------------------------------------------------------------
+// Occlusion raycaster (module-scope — one allocation at module load)
+// ---------------------------------------------------------------------------
+
+const _occRaycaster = new THREE.Raycaster();
+const _occDir = new THREE.Vector3();
+/** Lazily built from userData.isOccluder meshes; rebuilt on first frame. */
+let _occluderMeshes: THREE.Mesh[] | null = null;
+/** Frame counter incremented in the projection useFrame for 10Hz stagger. */
+let _occFrameCounter = 0;
+/** Three.js scene reference captured in WorldLabelsOverlayMount. */
+let _sceneRef: THREE.Scene | null = null;
+
+function _buildOccluderList(scene: THREE.Scene): THREE.Mesh[] {
+  const meshes: THREE.Mesh[] = [];
+  scene.traverse((obj) => {
+    if (!obj.userData.isOccluder) return;
+    obj.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) meshes.push(child as THREE.Mesh);
+    });
+  });
+  return meshes;
+}
+
+/** Returns true if the camera→anchor ray is blocked by a building mesh. */
+function _checkOcclusion(anchorWorld: THREE.Vector3, cameraPos: THREE.Vector3): boolean {
+  if (!_sceneRef) return false;
+  if (!_occluderMeshes) {
+    _occluderMeshes = _buildOccluderList(_sceneRef);
+  }
+  const anchorDist = cameraPos.distanceTo(anchorWorld);
+  if (anchorDist < 10) return false;
+  _occDir.subVectors(anchorWorld, cameraPos).normalize();
+  _occRaycaster.set(cameraPos, _occDir);
+  // Stop 80wu before anchor to avoid catching the building in front of which
+  // an NPC is standing (teacher NPCs at building entrances).
+  _occRaycaster.far = Math.max(0, anchorDist - 80);
+  return _occRaycaster.intersectObjects(_occluderMeshes, false).length > 0;
+}
 
 // ---------------------------------------------------------------------------
 // Module-scope overlay node (set by WorldLabelsOverlayMount)
@@ -186,7 +249,15 @@ let _canvasW = 0;
 let _canvasH = 0;
 
 export function WorldLabelsOverlayMount() {
-  const { gl, camera } = useThree();
+  const { gl, camera, scene } = useThree();
+
+  // Capture scene for the module-scope occluder raycaster.
+  useEffect(() => {
+    _sceneRef = scene;
+    // Invalidate cached occluder list when scene changes.
+    _occluderMeshes = null;
+    return () => { _sceneRef = null; };
+  }, [scene]);
 
   useEffect(() => {
     const canvas = gl.domElement;
@@ -246,6 +317,8 @@ export function WorldLabelsOverlayMount() {
     const H = _canvasH;
     if (W <= 0 || H <= 0) return;
 
+    _occFrameCounter++;
+
     _registry.forEach((entry) => {
       const div = entry.divRef.current;
       if (!div) return;
@@ -270,6 +343,44 @@ export function WorldLabelsOverlayMount() {
       anchor.getWorldPosition(_scratchPos);
       _scratchOffset.set(entry.offset[0], entry.offset[1], entry.offset[2]);
       _scratchPos.add(_scratchOffset);
+
+      // --- Distance fade ---
+      // Compute camera→anchor distance BEFORE project() clobbers _scratchPos.
+      // _scratchAnchorWorld holds the world-space anchor for the occlusion ray.
+      _scratchAnchorWorld.copy(_scratchPos);
+      const distToCamera = camera.position.distanceTo(_scratchAnchorWorld);
+
+      // Compute target opacity from distance band.
+      let targetOpacity: number;
+      if (entry.fadeFar <= 0 || distToCamera >= entry.fadeFar) {
+        targetOpacity = 0;
+      } else if (distToCamera <= entry.fadeNear) {
+        targetOpacity = entry.fadeBaseOpacity;
+      } else {
+        const t = (distToCamera - entry.fadeNear) / (entry.fadeFar - entry.fadeNear);
+        targetOpacity = entry.fadeBaseOpacity * (1 - t);
+      }
+
+      // --- Occlusion check (10Hz stagger) ---
+      // Only runs for NPC labels (occlude: true). Skip building labels.
+      if (entry.occlude) {
+        if ((_occFrameCounter + entry.occludePhase) % 6 === 0) {
+          entry._occludeResult = _checkOcclusion(_scratchAnchorWorld, camera.position);
+        }
+        if (entry._occludeResult) {
+          targetOpacity = 0;
+        }
+      }
+
+      // If fully transparent, hide the div entirely (no pointer events, no render).
+      if (targetOpacity < 0.01) {
+        if (entry._prevDisplay !== 'none') {
+          div.style.display = 'none';
+          entry._prevDisplay = 'none';
+        }
+        return;
+      }
+
       _scratchPos.project(camera);
 
       // NDC z > 1 → behind near plane → hide.
@@ -297,6 +408,11 @@ export function WorldLabelsOverlayMount() {
         entry._prevX = cssX;
         entry._prevY = cssY;
       }
+
+      if (Math.abs(targetOpacity - entry._prevOpacity) >= 0.01) {
+        div.style.opacity = String(targetOpacity.toFixed(2));
+        entry._prevOpacity = targetOpacity;
+      }
     });
     });
   });
@@ -320,6 +436,27 @@ export interface UseWorldLabelOpts {
   offset?: [number, number, number];
   /** Initial visibility. Default true. */
   initialVisible?: boolean;
+  /**
+   * Distance (world units) at which the label reaches full opacity.
+   * Labels remain at full opacity below this distance.
+   * Default: 0 (always full within fadeFar).
+   */
+  fadeNear?: number;
+  /**
+   * Distance (world units) at which the label fades to opacity 0.
+   * Default: Infinity (no distance fade).
+   */
+  fadeFar?: number;
+  /**
+   * Base opacity at/within fadeNear. Buildings: 0.40, NPCs: 0.65.
+   * Default: 1.0 (no dimming at near range).
+   */
+  fadeBaseOpacity?: number;
+  /**
+   * If true, runs a 10Hz raycast against building occluder meshes.
+   * Use for NPC labels. Default: false.
+   */
+  occlude?: boolean;
 }
 
 export interface UseWorldLabelReturn {
@@ -333,6 +470,10 @@ export function useWorldLabel({
   anchorRef,
   offset = [0, 0, 0],
   initialVisible = true,
+  fadeNear = 0,
+  fadeFar = Infinity,
+  fadeBaseOpacity = 1.0,
+  occlude = false,
 }: UseWorldLabelOpts): UseWorldLabelReturn {
   // Stable ref the consumer + LabelView share.
   const divRef = useRef<HTMLDivElement | null>(null);
@@ -359,6 +500,14 @@ export function useWorldLabel({
       _prevDisplay: '',
       _prevX: -9999,
       _prevY: -9999,
+      fadeNear,
+      fadeFar,
+      fadeBaseOpacity,
+      _prevOpacity: -1,
+      occlude,
+      // Stagger phase based on registry size at registration time (0–5).
+      occludePhase: _registry.size % 6,
+      _occludeResult: false,
     };
     _registry.set(id, entry);
     _refToId.set(divRef, id);

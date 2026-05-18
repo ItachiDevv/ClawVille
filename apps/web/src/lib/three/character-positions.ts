@@ -29,10 +29,19 @@ export const VILLAGE_CENTER_TILE_X = 120;
 export const VILLAGE_CENTER_TILE_Z = 120;
 
 /** How far (in world units) NPCs stand from their building center toward
- *  village center.  600 = MAX_FOOTPRINT/2 + 100 wu margin, placing NPCs
- *  clearly in front of the widest possible building without clipping through
- *  the face.  Replaces the old NPC_INSET_TILES=4.0 (128 wu). */
-export const NPC_INSET_WORLD = 600; // world units
+ *  village center.  1000 = MAX_FOOTPRINT/2 (900) + 100 wu margin, placing NPCs
+ *  clearly OUTSIDE the widest possible building (MAX_FOOTPRINT=1800 → half=900)
+ *  without clipping through the entrance face.
+ *
+ *  History:
+ *    600 wu — used when MAX_FOOTPRINT=1000 (Phase 6.0). Caused NPCs to spawn
+ *             INSIDE buildings when MAX_FOOTPRINT was raised to 1500/1800 (Phase 6.1),
+ *             because 600 < 900 (new half-footprint max). Mrs. Puff visible through
+ *             Boating School back wall; Sandy inside Sandy's Treedome dome.
+ *   1000 wu — Phase 6.1.1 fix (2026-05-18): MAX_FOOTPRINT/2 + 100 wu clearance.
+ *             With ring R=100 tiles (3200 wu), NPCs land at ~2200 wu from center
+ *             vs building center at 3200 wu — 1000 wu in front of building face. */
+export const NPC_INSET_WORLD = 1000; // world units
 
 // ---------------------------------------------------------------------------
 // World-space offsets (tile-space origin → Three.js world origin)

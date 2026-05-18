@@ -417,14 +417,18 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // uses integer arithmetic — float modulo with strict === 0 never fires.
   const seed = useMemo(() => Math.round(idToSeed(npc.id)), [npc.id]);
 
-  // WorldLabelsOverlay label — name tag, always visible (no cull, 2026-05-11).
-  // The projection useFrame still hides via NDC z>1 when the anchor is behind
-  // the near plane, which is correct projection math — not "culling".
+  // WorldLabelsOverlay label — subtle wordmark with distance fade + occlusion.
+  // Baseline opacity 0.65 at ≤800wu; fades to 0 at 3000wu.
+  // 10Hz raycast against building occluder meshes hides when covered.
   const { divRef: labelRef } = useWorldLabel({
     id: `glb-npc-label-${npc.id}`,
     anchorRef: groupRef,
     offset: [0, 100, 0],
     initialVisible: true,
+    fadeNear: 800,
+    fadeFar: 3000,
+    fadeBaseOpacity: 0.65,
+    occlude: true,
   });
 
   // Per-frame rendered position. The entity-interpolation smoother
@@ -733,48 +737,39 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
           <primitive object={cloned} />
         </group>
       </group>
-      {/* Name label — WorldLabelsOverlay manages projection + DOM writes.
-          offset [0,100,0]: 100wu clearance above TARGET_NPC_HEIGHT=45. */}
+      {/* Name label — minimal uppercase wordmark, no pill background.
+          Opacity managed by WorldLabelsOverlay distance fade + occlusion.
+          OpenClaw indicator: small green dot instead of chip text. */}
       <WorldLabel divRef={labelRef}>
-        <div
+        <span
           style={{
-            display: 'flex',
+            display: 'inline-flex',
             alignItems: 'center',
             gap: 4,
-            background: 'rgba(8, 20, 38, 0.78)',
-            border: '1px solid rgba(100, 200, 255, 0.25)',
-            borderRadius: 6,
-            padding: '2px 8px',
             whiteSpace: 'nowrap',
             userSelect: 'none',
+            color: '#fff',
+            fontSize: 10,
+            fontWeight: 600,
+            letterSpacing: '0.08em',
+            textTransform: 'uppercase',
+            textShadow: '0 0 3px #000, 0 1px 2px #000, -1px 0 2px #000, 1px 0 2px #000',
           }}
         >
-          <span
-            style={{
-              color: '#fff',
-              fontWeight: 700,
-              fontSize: 11,
-              letterSpacing: '0.03em',
-            }}
-          >
-            {npc.name}
-          </span>
+          {npc.name}
           {npc.isOpenClaw && (
             <span
+              title="OpenClaw agent"
               style={{
-                background: 'rgba(16, 185, 129, 0.85)',
-                color: '#fff',
-                fontWeight: 700,
-                fontSize: 9,
-                borderRadius: 4,
-                padding: '1px 4px',
-                letterSpacing: '0.04em',
+                color: '#10b981',
+                fontSize: 7,
+                lineHeight: 1,
               }}
             >
-              OpenClaw
+              ●
             </span>
           )}
-        </div>
+        </span>
       </WorldLabel>
     </group>
   );
@@ -798,13 +793,17 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // idToSeed returns float — round to int so (frame + seed) % 3 uses integer arithmetic.
   const seed = useMemo(() => Math.round(idToSeed(npc.id)), [npc.id]);
 
-  // WorldLabelsOverlay label — always visible (no cull, 2026-05-11).
-  // NDC z>1 hide in WorldLabelsOverlay handles behind-near-plane projection.
+  // WorldLabelsOverlay label — subtle wordmark with distance fade + occlusion.
+  // Same parameters as GLBNpcMesh for visual consistency.
   const { divRef: labelRef } = useWorldLabel({
     id: `vrm-npc-label-${npc.id}`,
     anchorRef: groupRef,
     offset: [0, 100, 0],
     initialVisible: true,
+    fadeNear: 800,
+    fadeFar: 3000,
+    fadeBaseOpacity: 0.65,
+    occlude: true,
   });
 
   // Same entity-interpolation smoother as GLBNpcMesh — see the long
@@ -1056,48 +1055,38 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
         scale={[vrmRenderScale, vrmRenderScale, vrmRenderScale]}
         position={[0, vrmFootOffsetY, 0]}
       />
-      {/* Name label — WorldLabelsOverlay manages projection + DOM writes.
-          offset [0,100,0]: 100wu clearance, matches GLBNpcMesh. */}
+      {/* Name label — minimal uppercase wordmark, matching GLBNpcMesh style.
+          Opacity managed by WorldLabelsOverlay distance fade + occlusion. */}
       <WorldLabel divRef={labelRef}>
-        <div
+        <span
           style={{
-            display: 'flex',
+            display: 'inline-flex',
             alignItems: 'center',
             gap: 4,
-            background: 'rgba(8, 20, 38, 0.78)',
-            border: '1px solid rgba(100, 200, 255, 0.25)',
-            borderRadius: 6,
-            padding: '2px 8px',
             whiteSpace: 'nowrap',
             userSelect: 'none',
+            color: '#fff',
+            fontSize: 10,
+            fontWeight: 600,
+            letterSpacing: '0.08em',
+            textTransform: 'uppercase',
+            textShadow: '0 0 3px #000, 0 1px 2px #000, -1px 0 2px #000, 1px 0 2px #000',
           }}
         >
-          <span
-            style={{
-              color: '#fff',
-              fontWeight: 700,
-              fontSize: 11,
-              letterSpacing: '0.03em',
-            }}
-          >
-            {npc.name}
-          </span>
+          {npc.name}
           {npc.isOpenClaw && (
             <span
+              title="OpenClaw agent"
               style={{
-                background: 'rgba(16, 185, 129, 0.85)',
-                color: '#fff',
-                fontWeight: 700,
-                fontSize: 9,
-                borderRadius: 4,
-                padding: '1px 4px',
-                letterSpacing: '0.04em',
+                color: '#10b981',
+                fontSize: 7,
+                lineHeight: 1,
               }}
             >
-              OpenClaw
+              ●
             </span>
           )}
-        </div>
+        </span>
       </WorldLabel>
     </group>
   );

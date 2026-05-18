@@ -121,15 +121,15 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   // Slot 3 — cron-automation — Downtown Building (Pearl Krabs's downtown teen vibe)
   // Pearl Krabs GLB sourced from Sketchfab (CC-BY 4.0) 2026-04-23 — official-look
   // low-poly Pearl, rigged with 5 idle/talk animations. ~4k tris, 2.1MB.
-  // scaleOverride=150 (2026-04-29 pass 2): prior 80 rendered ~96wu which read tiny next to
-  // the player VRM (AVATAR_VRM_SCALE=112 → ~180wu). Bumped 1.8× to match Kyoko's visual height.
-  'cron-automation': { name: 'Pearl', model: '/models/characters/pearl.glb', scaleOverride: 150 },
+  // scaleOverride=184 (2026-05-18 pass 3): user requested 20-25% size increase from 150.
+  // Midpoint 22.5% → 150 * 1.225 ≈ 184.
+  'cron-automation': { name: 'Pearl', model: '/models/characters/pearl.glb', scaleOverride: 184 },
 
   // Slot 4 — app-publishing — Boating School (Mrs. Puff's workplace)
-  // scaleOverride=2.7 (2026-04-29 pass 2): prior 1.45 rendered ~96wu — half the player VRM's
-  // ~180wu, so she read tiny next to Kyoko. Bumped 1.86× to match Kyoko's visual height.
+  // scaleOverride=3.3 (2026-05-18 pass 3): user requested 20-25% size increase from 2.7.
+  // Midpoint 22.5% → 2.7 * 1.225 ≈ 3.3.
   // mrs-puff.glb uses INT16-quantized positions; native visual height ≈ 66.5wu post-node-scale.
-  'app-publishing': { name: 'Mrs. Puff', model: '/models/characters/mrs-puff.glb', scaleOverride: 2.7 },
+  'app-publishing': { name: 'Mrs. Puff', model: '/models/characters/mrs-puff.glb', scaleOverride: 3.3 },
 
   // Slot 5 — deployment-ops — Lighthouse (Larry the Lobster as lighthouse keeper)
   // TODO: source proper larry.glb asset — currently using lobster_plush as a distinct stand-in.
@@ -395,15 +395,21 @@ const NpcMesh = memo(function NpcMesh({
   const mixerRef = useRef<THREE.AnimationMixer | null>(null);
   const { scene: threeScene } = useThree();
 
-  // WorldLabelsOverlay label — always visible for primary NPCs (showLabel=true),
-  // invisible/skipped for companions (showLabel=false). No distance cull needed —
-  // location NPCs are stationary and the user must approach them to interact.
-  // id encodes model path + position so companion instances don't collide with primary.
+  // WorldLabelsOverlay label — distance-faded wordmark for primary NPCs.
+  // Same style as wandering NPC labels; teacher NPCs are stationary so users
+  // approach them — a near-range cap of 800wu fits the interaction distance.
+  // Occlusion raycasting enabled (teacher can be behind a building at certain
+  // camera angles). id encodes model path + position so companion instances
+  // don't collide with primary.
   const { divRef: locationLabelRef } = useWorldLabel({
     id: `location-npc-label-${modelCfg.model}-${worldX}-${worldZ}`,
     anchorRef: groupRef,
     offset: [0, 150, 0],
     initialVisible: showLabel,
+    fadeNear: 800,
+    fadeFar: 3000,
+    fadeBaseOpacity: 0.65,
+    occlude: true,
   });
   const { scene, animations } = useGLTF(modelCfg.model);
   const terrainY = useRef(-2);
@@ -602,27 +608,24 @@ const NpcMesh = memo(function NpcMesh({
           <primitive object={cloned} />
         </group>
       </group>
-      {/* Name label — WorldLabelsOverlay projects offset [0,150,0].
+      {/* Name label — minimal uppercase wordmark, matching wandering NPC style.
           Only primary NPCs get a label (showLabel=true via initialVisible). */}
       {showLabel && (
         <WorldLabel divRef={locationLabelRef}>
-          <div
+          <span
             style={{
-              display: 'flex',
-              background: 'rgba(8, 20, 38, 0.78)',
-              border: '1px solid rgba(100, 200, 255, 0.25)',
-              borderRadius: 6,
-              padding: '2px 8px',
-              color: '#fff',
-              fontWeight: 700,
-              fontSize: 11,
               whiteSpace: 'nowrap',
               userSelect: 'none',
-              letterSpacing: '0.03em',
+              color: '#fff',
+              fontSize: 10,
+              fontWeight: 600,
+              letterSpacing: '0.08em',
+              textTransform: 'uppercase',
+              textShadow: '0 0 3px #000, 0 1px 2px #000, -1px 0 2px #000, 1px 0 2px #000',
             }}
           >
             {modelCfg.name}
-          </div>
+          </span>
         </WorldLabel>
       )}
     </group>
