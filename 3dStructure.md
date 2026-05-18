@@ -11,7 +11,7 @@
 > - **`GameFeatures.md`** — gameplay.
 > - **This doc** — *how* the 3D scene is wired: coordinates, camera, lights, GPU budget, animation, asset pipeline.
 
-**Last edit:** 2026-05-18 — Phase 6.1: grid expanded 160→240 tiles; ring expanded R=72→100 tiles; center tile (80,80)→(120,120); MAP_WIDTH/HEIGHT 5120→7680 wu; all per-building targetHeight overrides added (see §2); BuildingPedestal stone disc added under each building (Concern C); terrain lerp factor 0.3→0.6 for faster ground-snap. Prior 2026-05-17: Circle revert, R=72, casino +30% targetHeight=1040.
+**Last edit:** 2026-05-18 — Concern 6.0.2: Casino interior scene at `/casino`. New §10c. `arena-buildings.tsx` casino onClick navigates to `/casino` via `window.location.href`. Prior 2026-05-18: Phase 6.1 grid+ring expand, BuildingPedestal. Prior 2026-05-17: Circle revert, R=72, casino +30%.
 
 ---
 
@@ -429,6 +429,29 @@ Each activity ID (`bumper-shells`, `reef-race`) has a dedicated 3D scene compone
 
 All scenery GLBs (`reef-race/scenery/cliff-rock-{1,2,3}.glb`, `prop-fence.glb`, `prop-rock-{1,2,3}.glb`, `prop-tree-{leafy,pine}.glb`) use meshopt + Draco compression.
 
+### 10c. Casino Interior (`apps/web/src/app/casino/`, Concern 6.0.2)
+
+Route-isolated scene at `/casino`. Canvas `key="casino-interior"` tears down the WebGPU context cleanly on exit.
+
+| File | Purpose |
+|---|---|
+| `apps/web/src/app/casino/page.tsx` | Next.js route. Dynamically imports `CasinoCanvas` with `ssr:false`. Back to World button (`router.push('/game')`). Bottom branding label. |
+| `apps/web/src/components/three/CasinoCanvas.tsx` | Route-isolated `<Canvas>`. DPR cap mirrors World3DCanvas (`[0.55,0.7]` low-end, `[0.75,1]` otherwise). `PreCompilePipelines` fires `compileAsync` after first R3F commit. `SceneBackground` sets `scene.background = #0a0015`. |
+| `apps/web/src/lib/three/casino-interior.tsx` | Scene component. Loads `casino-interior.glb` (gameready, Draco, ~211k tris, 4.2MB). Auto-falls back to `casino-interior-fallback.glb` (cartoon, 58KB) if avg FPS < 40 in first 5s or `?fallback=1` query param. Box3 auto-fit scales both GLBs to `INTERIOR_TARGET_HEIGHT=600 wu`. Click hotspots (`SlotHotspot`) over slot machine positions. |
+| `apps/web/src/components/three/CasinoLighting.tsx` | Neon lighting: ambientLight `#1a0a2e` (2.5), hemisphereLight `#1a0a3a`/`#2a0a1a` (1.2), 3 point lights (cyan × 2 + magenta × 1). Total 5 light objects — under 7-light Iris Xe context-loss threshold. All `castShadow={false}`. |
+
+**Assets:** `/models/casino/casino-interior.glb` (Draco, 4.2MB, ~211k tris) · `/models/casino/casino-interior-fallback.glb` (no Draco, 58KB, 449 tris, CC-BY-4.0). Draco decoder: Google CDN `https://www.gstatic.com/draco/versioned/decoders/1.5.6/`.
+
+**Iris Xe invariants:** no shadows, no drei Text/Billboard, no InstancedMesh+ShaderMaterial, no per-frame `new Vector3()`, `matrixAutoUpdate=false` on all static meshes.
+
+**Hotspots:** `FALLBACK_HOTSPOTS` (2 boxes over Object_8+Object_9), `GAMEREADY_HOTSPOTS` (4 floor-plane boxes on left-wall slot zone). Click → `console.info('[slot-screen pending — Concern 6.0.4]')`. Cursor: pointer on hover. Boxes are invisible (`visible=false` on meshBasicMaterial) — raycasting still works.
+
+**Camera:** fov 55, near 1, far 2000, position `[0, 120, 350]`. Interior fog: `0x0a0015`, near 400, far 1200.
+
+**Navigation hook:** `arena-buildings.tsx` casino onClick changed from `console.info` stub to `window.location.href = '/casino'` (R3F scene has no Next.js router context — `window.location.href` is the correct pattern).
+
+**Out of scope (Concern 6.0.2):** walk-in animation (6.0.3), 2D slot screen (6.0.4), backend RNG/wager program (6.1+).
+
 ---
 
 ## 11. Agent picker scene (`apps/web/src/components/three/SelectAgentCanvas.tsx`)
@@ -466,6 +489,7 @@ Draw-call budget (full equipped set): hat ≤ 1, aura ≤ 4 (instanced particles
 
 Compact log. Single line per change with commit reference where applicable.
 
+- 2026-05-18 — Concern 6.0.2: `/casino` route + casino interior scene. New §10c. 4 new files (`casino/page.tsx`, `CasinoCanvas.tsx`, `casino-interior.tsx`, `CasinoLighting.tsx`). Gameready + fallback GLB auto-fit to 600wu. FPS-fallback (< 40 avg over 5s). Invisible slot hotspots. Casino onClick in `arena-buildings.tsx` wired to `window.location.href = '/casino'`.
 - 2026-05-17 — Circle revert: `tilemap-data.ts` buildingZones already circular (fixed); `map-locations.ts` fully rewritten to circular positions; `arena-buildings.tsx` BUILDING_MODELS completely reordered with new rotY values for each slot, `computeBuildingScale` gains optional `targetHeight` param, casino gets `targetHeight=1040` (+30%); `minimap.tsx` ring-guide comment corrected; `npc-definitions.ts` wanderer homeX/homeY updated for new ring (patrolRadius 700→500); §2 slot table rewritten as 12-slot circle; §2 note added explaining R=90 tile constraint.
 - 2026-05-17 — Entertainment-district swap: `claw-arcade` → E3, `app-publishing` → S3. `tilemap-data.ts` zone ids swapped; `map-locations.ts` positionX/Y swapped; `arena-buildings.tsx` rotY updated; §2 slot table updated.
 - 2026-05-17 — Phase 6.0.1: `tilemap-data.ts` buildingZones expanded from 10 circular → 12 square ring; `map-locations.ts` and `building-types.ts` updated; `arena-buildings.tsx` BUILDING_MODELS adds casino + claw-arcade; `minimap.tsx` accent colors + ring guide radius updated; §2 rewritten.

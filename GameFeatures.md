@@ -12,7 +12,7 @@
 > - **`ARCHITECTURE.md`** — backend routes / services / schema / events / leaderboard rubric.
 > - **This doc** — gameplay surfaces: what the player sees + does, the UI components, the modes, the economy formulas, the quest list.
 
-**Last edit:** 2026-05-12 — restructured into a tight manifest (was 2057 lines / 192 KB with 19 stacked sections + many stale claims). Verified against code during rewrite — see §0 for the four corrections.
+**Last edit:** 2026-05-18 — Concern 6.0.2: Casino interior scene (§18a.casino). Click casino building in world → `/casino` interior. FPS-fallback, click hotspots. 2D slot screen (6.0.4) + wager program (6.1) still pending.
 
 ---
 
@@ -621,6 +621,31 @@ Visibility:
 
 ---
 
+## 18a. Casino — Predictive Gaming Cove (Phase 6, Concern 6.0.x)
+
+Accessible by clicking the casino building (slot 9, W ring, `casino-exterior.glb` pyramid) in the open world. The building onClick in `arena-buildings.tsx` navigates via `window.location.href = '/casino'`.
+
+### 18a.a. Interior scene (Concern 6.0.2 — SHIPPED)
+
+Route `/casino` mounts a route-isolated R3F Canvas (`key="casino-interior"`) with a separate WebGPU context. Scene shows the casino interior GLB (Predictive Gaming Cove theme). Slot machine hotspots are invisible click boxes — cursor: pointer on hover; click fires `console.info('[slot-screen pending — Concern 6.0.4]')`.
+
+| Asset | Detail |
+|---|---|
+| `casino-interior.glb` | Gameready, Draco-compressed, 4.2MB, ~211k tris |
+| `casino-interior-fallback.glb` | Cartoon, no Draco, 58KB, 449 tris — Object_8+Object_9 = slot cluster |
+
+**FPS auto-fallback:** if avg FPS < 40 over the first 5 seconds, the scene silently reloads the fallback GLB. Force fallback: `?fallback=1`. Back to World button top-left → `router.push('/game')`.
+
+### 18a.b. 2D slot screen (Concern 6.0.4 — PENDING)
+
+Clicking a slot machine hotspot will open a 2D UI overlay with the actual slot game. Not yet implemented — current click handler is a `console.info` placeholder.
+
+### 18a.c. Backend / RNG / wager program (Concern 6.1+ — PENDING)
+
+On-chain slot RNG, SOL/USDC wagering, settlement via `clawville_wager` Anchor program. Out of scope for Concerns 6.0.x. See `.claude/plans/phase6-casino-slots.md`.
+
+---
+
 ## 19. Map layout
 
 Source: `packages/shared/src/constants/map-locations.ts`. 160×160 tile grid, 32 px/tile = 5120×5120 world units. Village center tile `(80, 80)` → world `(0, 0)`. Building ring at radius 68 tiles = 2176 wu, 10 slots at 36° spacing.
@@ -633,6 +658,7 @@ See **`3dStructure.md §1`** for the full coordinate system + axis conventions, 
 
 Compact log. The audit-history wall at the top of the prior version of this doc has been replaced with this. Entries are gameplay-facing — backend/service changes belong in `ARCHITECTURE.md §13`, 3D-render changes in `3dStructure.md §13`.
 
+- 2026-05-18 — Concern 6.0.2: Casino interior scene shipped. New §18a (casino). Click casino building → `/casino`. Route-isolated Canvas, gameready GLB + cartoon fallback, FPS-fallback gate, invisible slot hotspots, Back to World button. 2D slot screen (6.0.4) + RNG/wager (6.1) pending.
 - 2026-05-12 — Wager lobbies vertical slice. New §18z covers the reusable `<LobbyLanding>` gate on every activity match page, the 4 lobby flows (create / wait / lock / cancel-refund), the 3 modes (multiplayer / solo-bots / free-play), and the 3 visibility levels (public / private / friends). On-chain settlement via the deployed `clawville_wager` Anchor program on devnet. Match-server auto-locks on `room → LIVE` and auto-settles to placement-1 avatar on `room → RESULTS`.
 - 2026-05-12 — `40e7ed4` — new canonical `WorldContent.md` + bidirectional sync rule across all four docs. This doc's tight-manifest rewrite landed under `c2be3e0`-equivalent same series.
 - 2026-05-08 — Pets → Avatars rename pass. UI components `PetStatusBar` → `AvatarStatusBar`, `PetChatBar` → `AvatarChatBar`; routes `/api/pets/*` → `/api/avatars/*`; game-store fields `petPosition`/`petSpeed` → `avatarPosition`/`avatarSpeed`. `avatar_type` / `avatar_url` columns kept (those describe the render asset format, not the table name).

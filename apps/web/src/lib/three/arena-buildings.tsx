@@ -130,9 +130,9 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // computeBuildingScale's pivotOffsetX/Z (same pipeline as every other building).
   // targetHeight: 1040 — casino is 30% larger than standard 800 to be the
   // entertainment-district landmark (user request 2026-05-17 circle revert).
-  // Interior load is Concern 6.0.2; onClick is a placeholder per Concern 6.0.1 spec.
+  // Interior route wired in Concern 6.0.2: click → /casino. Walk-in anim is 6.0.3.
   'casino':              { model: '/models/casino/casino-exterior.glb', yOffset: 0, rotY:  1.571, targetHeight: 1040, box3Recenter: true,
-                           onClick: () => { console.info('[casino] interior pending — Concern 6.0.2'); } },
+                           onClick: () => { window.location.href = '/casino'; } },
   // Slot 10 — WNW (cx=33, cy=70): dx=87, dz=50 → atan2(87,50)≈1.047 (π/3)  ← entertainment district (adjacent to casino)
   // claw-arcade-exterior.glb = Arcade City (CC-BY-4.0, vanessalani / Sketchfab).
   // Interior / crane game is Phase 6.3 — onClick is placeholder per Concern 6.0.1.
