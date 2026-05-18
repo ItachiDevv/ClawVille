@@ -11,7 +11,7 @@
 > - **`GameFeatures.md`** — gameplay.
 > - **This doc** — *how* the 3D scene is wired: coordinates, camera, lights, GPU budget, animation, asset pipeline.
 
-**Last edit:** 2026-05-17 — §6e jump animation pipeline added: VRM avatars now play `jump` one-shot on takeoff then transition to `swimming` (or `flying` for Tekk) while airborne, restoring `idle` on landing. §6a NPC position smoothing rewritten: dead reckoning + LERP_SPEED_DR=8 corrective lerp replaces the old LERP_SPEED=1.5 that pumped at the server's 5 Hz tick. §9d added: Mixamo animation GLB load policy. 2026-05-12 — restructured into a tight manifest (was 2430 lines / 200 KB with 14 stacked audit entries).
+**Last edit:** 2026-05-17 — Phase 6.0.1: 10-building circular ring → 12-building square ring. Two new buildings added (casino E2, claw-arcade S3). §2 ring geometry updated. `WorldContent.md` §2 has the full 12-building roster + GLB paths. §6e jump animation pipeline added: VRM avatars now play `jump` one-shot on takeoff then transition to `swimming` (or `flying` for Tekk) while airborne, restoring `idle` on landing. §6a NPC position smoothing rewritten: dead reckoning + LERP_SPEED_DR=8 corrective lerp replaces the old LERP_SPEED=1.5 that pumped at the server's 5 Hz tick. §9d added: Mixamo animation GLB load policy. 2026-05-12 — restructured into a tight manifest (was 2430 lines / 200 KB with 14 stacked audit entries).
 
 ---
 
@@ -47,11 +47,38 @@ Sand floor sits at `y = -2` (`arena-terrain.tsx:203`). Buildings, NPCs, and deco
 
 Source: `arena-buildings.tsx`. See `WorldContent.md §2` for the building roster + per-building GLB paths.
 
-**Ring geometry:**
-- Radius: **2304 wu** (= 72 tiles × 32). Expanded 56→68 tiles 2026-04-16 (eliminate building overlap) then 68→72 tiles 2026-05-13 (give inner band breathing room after decoration retune). Practical max — R=73 puts deployment-ops zone end at row 160 (off-map).
-- Angular spacing 36° (π/5). Start angle −π/2 (north). 10 slots, clockwise.
-- Position formula: `cx = round(80 + 68·cos(θ_i))`, `cy = round(80 + 68·sin(θ_i))` where `θ_i = −π/2 + i·(π/5)`.
-- Zone footprint: 14×14 tiles = 448×448 wu. Upper-left = `(cx−7, cy−7)`.
+**Ring geometry (Phase 6.0.1 — 12-building square ring, 2026-05-17):**
+
+Changed from 10-building circular ring to 12-building **square ring**. Two new buildings added: `casino` (E2) and `claw-arcade` (S3).
+
+| Dimension | Value |
+|---|---|
+| Layout | 3 buildings per side (N / E / S / W), corners open as plaza space |
+| Side distance from center | 72 tiles = 2304 wu |
+| Slot spacing along each side | 48 tiles = 1536 wu (center ± 0 and ± 48 tiles) |
+| Zone footprint | 14×14 tiles = 448×448 wu |
+| Zone upper-left | `(slot_cx − 7, slot_cy − 7)` |
+
+Slot centers (tile coords, center at (80, 80)):
+
+| Side | Slot | cx | cy | Building |
+|---|---|---|---|---|
+| N | N1 | 32 | 8 | visual-creation |
+| N | N2 | 80 | 8 | memory-rag |
+| N | N3 | 128 | 8 | api-integrations |
+| E | E1 | 152 | 32 | cron-automation |
+| E | E2 | 152 | 80 | casino |
+| E | E3 | 152 | 128 | app-publishing |
+| S | S1 | 32 | 152 | deployment-ops |
+| S | S2 | 80 | 152 | agent-security |
+| S | S3 | 128 | 152 | claw-arcade |
+| W | W1 | 8 | 32 | messaging-channels |
+| W | W2 | 8 | 80 | mcp-tool-use |
+| W | W3 | 8 | 128 | code-development |
+
+**rotY formula:** `atan2(80 − cx, 80 − cy)` — each building's +Z axis points toward plaza center (world 0, 0).
+
+**Authoritative source:** `buildingZones[]` in `apps/web/src/lib/pixi/tilemap-data.ts`. All consumers (arena-buildings.tsx, minimap.tsx, PixiCanvas.tsx, map-locations.ts) derive from it.
 
 **Building height target:** `BUILDING_TARGET_HEIGHT = 800 wu` (`arena-buildings.tsx:44`). Each GLB is measured and scaled so its **Y-height** = 800. Changed from `max(w,h,d)` normalization 2026-04-16 — wide/squat buildings had their width > height under the old approach.
 
@@ -170,7 +197,7 @@ Every hot path uses module-scope `THREE.Vector3 / Matrix4 / Raycaster` scratch o
 ### 5e. Static meshes — `matrixAutoUpdate = false`
 
 Set during clone for every static object so `updateMatrixWorld` skips them:
-- All 10 buildings + their cloned children (`arena-buildings.tsx`)
+- All 12 buildings + their cloned children (`arena-buildings.tsx` — Phase 6.0.1: was 10)
 - 80 → 30 → 60 decoration groups + their merged children (`arena-terrain.tsx` — 2026-05-13 retune: 60 props in 1500–3800wu visible annulus, was 30 props in 2700–4500wu hidden behind ring buildings)
 - 3 underwater atmosphere meshes (when enabled) + 7 light ray cones
 - Bounty board (4 meshes), bazaar fish stall, marketplace stall, auction dome, auction podium
@@ -430,6 +457,7 @@ Draw-call budget (full equipped set): hat ≤ 1, aura ≤ 4 (instanced particles
 
 Compact log. Single line per change with commit reference where applicable.
 
+- 2026-05-17 — Phase 6.0.1: `tilemap-data.ts` buildingZones expanded from 10 circular → 12 square ring; `map-locations.ts` and `building-types.ts` updated; `arena-buildings.tsx` BUILDING_MODELS adds casino (E2, box3Recenter) + claw-arcade (S3) with placeholder onClick handlers; `minimap.tsx` accent colors + ring guide radius updated; `3dStructure.md` §2 rewritten.
 - 2026-05-12 — dead-code cleanup in `arena-npcs.tsx` — removed unused `NPC_CULL_DIST_SQ` / `VRM_NPC_HALF_RATE_DIST_SQ` / `VRM_NPC_CULL_DIST_SQ` constants and the entire `checkLabelOcclusion` / `buildOccluderList` / `invalidateOccluderCache` infra block (5 module-scope variables + 3 functions, all orphaned by the 2026-05-11 culling removal). Also flattened a duplicated spring-throttle comment block. No behavior change.
 - 2026-05-12 — `ed1f4a0` / `2728ac6` — Sandy's Treedome swap to `sandy_tree_final.glb` after measuring every candidate via `scripts/read-glb-bbox.mjs`. Vertex-count strip rule attempted then reverted (Object_5 was the building, not a backdrop).
 - 2026-05-12 — `3b9d64b` / `c3934a1` — `Skybox_`-prefix mesh-name strip added to `stripDecorativeMeshes` (the actual blue-dome backdrop in Yanez Designs Sketchfab GLBs).
