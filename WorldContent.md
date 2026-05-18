@@ -9,7 +9,7 @@
 > grep results. Update this when you touch any file listed in the "Source"
 > column. Update the affected file when you change a row here.
 
-**Last edit:** 2026-05-13 — decoration scatter retune (user-reported invisible decos): TARGET 30→60, DECO_INNER_EXCLUSION_R 2700→1500, MAX_VISIBLE_DIST 4500→3800, EXTENT 1.76→1.4. The old constants pushed every prop outside the then-R=2176 building ring (~800wu tall) where the ring occluded them and fog hid the rest. New constants land all 60 props in the 1500–3800wu visible annulus. Same diff: sand bumpFreq 0.15→1.5 + bumpAmp 0.04→0.08 (visible grain at gameplay distance); seaweed sparse-band acceptance 0.25→0.5; removed dead atmosphere/light-rays imports + duplicate TownDirectorySign mount + orphan trail-renderer.tsx. Building ring expanded 2176 → 2304wu (68 → 72 tiles) on follow-up for inner-band breathing room.
+**Last edit:** 2026-05-17 — Phase 6.0.1: building ring expanded from 10-building circular to 12-building square ring. Two new buildings: `casino` (E2, `casino/casino-exterior.glb`) and `claw-arcade` (S3, `arcade/claw-arcade-exterior.glb`). §1 top-level mounts updated (10→12), §2 rewritten to 12-entry table. Interior scenes are Concern 6.0.2+ (casino) and Phase 6.3 (claw-arcade). Prior last-edit: 2026-05-13 — decoration scatter retune; building ring expanded 2176→2304wu.
 
 ---
 
@@ -21,7 +21,7 @@ Composes the entire R3F scene. Mounted by `SceneContents` in `apps/web/src/compo
 |---|---|---|---|
 | **Lighting** | inline JSX | 1 hemisphere + 2 directional + fog (1200→6400wu) | `World3DCanvas.tsx` ~778 |
 | **Terrain** | `<ArenaTerrain>` | sand floor + decorations + (disabled landmarks) | `lib/three/arena-terrain.tsx` |
-| **Buildings** | `<ArenaBuildings>` | 10 themed building GLBs on a ring | `lib/three/arena-buildings.tsx` |
+| **Buildings** | `<ArenaBuildings>` | 12 themed building GLBs on a square ring (Phase 6.0.1: was 10) | `lib/three/arena-buildings.tsx` |
 | **Wandering NPCs** | `<ArenaNpcs>` | 18 NPCs (5 VRM + 13 GLB), SSE-driven positions | `lib/three/arena-npcs.tsx` |
 | **Building residents** | `<ArenaLocationNpcs>` | 10 character NPCs, one per building | `lib/three/arena-location-npcs.tsx` |
 | **Ground cover** | `<MergedSeaweed>` | TSL-animated seaweed, single merged mesh | `lib/three/merged-seaweed.tsx` |
@@ -33,22 +33,24 @@ Composes the entire R3F scene. Mounted by `SceneContents` in `apps/web/src/compo
 
 ---
 
-## 2. Buildings (10)
+## 2. Buildings (12)
 
-Loaded by `<ArenaBuildings>`. Each is a single GLB clone placed on a ring at radius 2304wu (= 72 tiles × 32) around (0,0,0). Config table is `BUILDING_MODELS` in `lib/three/arena-buildings.tsx`. Ring expanded 2176 → 2304 on 2026-05-13.
+Loaded by `<ArenaBuildings>`. Each is a single GLB clone placed on a **square ring** — 3 buildings per side (N/E/S/W) at 72 tiles (2304wu) side-distance from center (0,0,0). Config: `BUILDING_MODELS` in `lib/three/arena-buildings.tsx`. Authoritative positions: `buildingZones[]` in `tilemap-data.ts`. Ring geometry: 68→72 tiles on 2026-05-13; circular→square on 2026-05-17 (Phase 6.0.1).
 
-| Zone id | GLB | Renders | Notes |
-|---|---|---|---|
-| `visual-creation` | `pineapple-house.glb` | SpongeBob's pineapple house |  |
-| `memory-rag` | `squidward-house.glb` | Easter-Island moai head (Squidward's house) |  |
-| `api-integrations` | `salty-spitoon.glb` | Bar |  |
-| `cron-automation` | `patty-building.glb` | Pearl's downtown |  |
-| `app-publishing` | `boating-school.glb` | Mrs. Puff's classroom |  |
-| `deployment-ops` | `building-lighthouse.glb` | Lighthouse |  |
-| `mcp-tool-use` | `krusty-krab-v2.glb` | Ship-restaurant | 2026-05-12 swap from re-compressed glb |
-| `code-development` | `chum-bucket-v2.glb` | Bucket | 2026-05-12 swap |
-| `messaging-channels` | `sandy-treedome-v3.glb` | Tree platform + glass dome | 2026-05-12 swap to `sandy_tree_final.glb` |
-| `agent-security` | `patricks-rock-v2.glb` | Patrick's rock | 2026-05-12 swap |
+| Slot | Zone id | GLB path | Renders | Notes |
+|---|---|---|---|---|
+| N1 | `visual-creation` | `pineapple-house.glb` | SpongeBob's pineapple house | |
+| N2 | `memory-rag` | `squidward-house.glb` | Easter-Island moai head | |
+| N3 | `api-integrations` | `salty-spitoon.glb` | Bar | rotYOffset -π/2 |
+| E1 | `cron-automation` | `patty-building.glb` | Pearl's downtown | |
+| E2 | `casino` | `casino/casino-exterior.glb` | Pyramid Casino — Mayan step-pyramid | Phase 6.0.1 NEW. box3Recenter=true (GLB origin offset ~(-1800,166,4540) Blender units). Interior: Concern 6.0.2. |
+| E3 | `app-publishing` | `boating-school.glb` | Mrs. Puff's classroom | rotYOffset +π/2 |
+| S1 | `deployment-ops` | `building-lighthouse.glb` | Lighthouse | |
+| S2 | `agent-security` | `patricks-rock-v2.glb` | Patrick's rock | 2026-05-12 swap |
+| S3 | `claw-arcade` | `arcade/claw-arcade-exterior.glb` | Arcade City — domed building with ARCADE CITY signage | Phase 6.0.1 NEW. Interior / crane game: Phase 6.3. |
+| W1 | `messaging-channels` | `sandy-treedome-v3.glb` | Tree platform + glass dome | 2026-05-12 swap; rotYOffset +π |
+| W2 | `mcp-tool-use` | `krusty-krab-v2.glb` | Ship-restaurant | 2026-05-12 swap |
+| W3 | `code-development` | `chum-bucket-v2.glb` | Bucket | 2026-05-12 swap |
 
 **Strip rules** (run on every cloned building scene, `stripDecorativeMeshes` in `arena-buildings.tsx`):
 - Prefix match `Skybox_` → strip (kills the blue hemisphere baked into Yanez assets)
