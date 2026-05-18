@@ -202,7 +202,7 @@ Every hot path uses module-scope `THREE.Vector3 / Matrix4 / Raycaster` scratch o
 | GLB walk animation | Full 60 Hz — 8 rad/s cycle needs Nyquist. | `arena-npcs.tsx` |
 | VRM AnimationMixer | Full 60 Hz unconditional (B9 fix 2026-04-24). | `vrm-character-animator.ts:updateMixerOnly` |
 | VRM spring bones | Uniform 15 Hz (`springMod = 4`) for all VRM NPCs. Was tiered 10/20 Hz by distance; flattened with the culling removal 2026-05-11. | `arena-npcs.tsx:VRMNpcMesh` |
-| WorldLabelsOverlay projection | Full 60 Hz, single root, ResizeObserver-cached canvas size (kills the per-frame `getBoundingClientRect` forced reflow). | `world-labels-overlay.tsx` |
+| WorldLabelsOverlay projection | Full 60 Hz, single root, ResizeObserver-cached canvas size. Per-label: distance-fade opacity (linear, no allocations), 10 Hz building-occluder raycast (staggered by `occludePhase % 6`). | `world-labels-overlay.tsx` |
 | Texture upload | `requestIdleCallback` with 6 ms time budget per slice. 98 textures via rIC = ~352 ms total (down from 8 s rAF-based). | `World3DCanvas.tsx:StaggeredTextureUpload` |
 
 ### 5e. Static meshes — `matrixAutoUpdate = false`
