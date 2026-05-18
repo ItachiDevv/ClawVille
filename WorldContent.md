@@ -9,7 +9,7 @@
 > grep results. Update this when you touch any file listed in the "Source"
 > column. Update the affected file when you change a row here.
 
-**Last edit:** 2026-05-18 — Phase 6.1: ring expanded R=72→100 tiles on a 240×240 grid. Building slot table updated (cx/cy now relative to center 120,120). Per-building targetHeight overrides added to §2. BuildingPedestal stone discs added under each building. NPC home coords scaled ×1.5 for new world size. §3a GLB wanderer homes updated. Prior 2026-05-17: Circle revert, R=72, casino +30%.
+**Last edit:** 2026-05-18 — Concern 6.0.2: Casino interior scene at `/casino`. §2 casino row note updated (Interior: 6.0.2 SHIPPED). No open-world objects added — interior is a separate route-isolated Canvas. Prior 2026-05-18: Phase 6.1 grid+ring expand, pedestal discs.
 
 ---
 
@@ -50,7 +50,7 @@ Each building has a flat **stone pedestal disc** (radius=560wu, 15wu thick, colo
 | 6 | S | `cron-automation` | `patty-building.glb` | Pearl's downtown | 1200 | |
 | 7 | SSW | `deployment-ops` | `building-lighthouse.glb` | Lighthouse | 1500 | tallest landmark |
 | 8 | WSW | `agent-security` | `patricks-rock-v2.glb` | Patrick's rock | 900 | 2026-05-12 swap |
-| 9 | W | `casino` | `casino/casino-exterior.glb` | Predictive Gaming Cove — Mayan step-pyramid | 1040 | Entertainment district. box3Recenter=true. Interior: Concern 6.0.2. |
+| 9 | W | `casino` | `casino/casino-exterior.glb` | Predictive Gaming Cove — Mayan step-pyramid | 1040 | Entertainment district. box3Recenter=true. Interior: **6.0.2 SHIPPED** — `/casino` route, `casino-interior.glb` (Draco 4.2MB) + fallback (58KB). onClick → `window.location.href = '/casino'`. |
 | 10 | WNW | `claw-arcade` | `arcade/claw-arcade-exterior.glb` | Arcade City — domed building | 900 | Entertainment district (slot 9+10 adjacent). Interior / crane game: Phase 6.3. |
 | 11 | NNW | `memory-rag` | `squidward-house.glb` | Easter-Island moai head | 1100 | |
 
@@ -181,3 +181,16 @@ Tracked here so they don't get lost across sessions:
 - [ ] **Duplicate `<TownDirectorySign>` render** — `World3DCanvas.tsx` L773 was added as a diagnostic and should be removed. Net cost: 1 extra mesh tree.
 - [ ] **`<BountyBoardObject>` import path** — verify it's actually mounted by any production flow; if not, drop the import.
 - [x] **Decoration density per zone** — 2026-05-13: TARGET_COUNT 30→60, annulus 1500–3800wu. Audit script (`scripts/audit-decorations.mjs`) verifies placement.
+
+---
+
+## 10. Recent material changes
+
+Compact log. Single line per change.
+
+- 2026-05-18 — Concern 6.0.2: Casino interior scene shipped. No new open-world objects. Casino building onClick in `arena-buildings.tsx` now navigates to `/casino`. §2 casino row updated (interior status SHIPPED).
+- 2026-05-18 — Phase 6.1: ring expanded R=72→100 tiles on 240×240 grid. BuildingPedestal stone disc added under each building. All 12 building cx/cy updated in slot table. NPC home coords scaled ×1.5.
+- 2026-05-17 — Circle revert + Phase 6.0.1 casino+claw-arcade additions. Ring R=72 on 160×160, then square ring attempted + reverted.
+- 2026-05-13 — Ring 68→72 tiles. Decoration retune: TARGET_COUNT 30→60, DECO_INNER_EXCLUSION_R 2700→1500.
+- 2026-05-12 — Sandy's Treedome swapped to `sandy_tree_final.glb`. Krusty Krab + Chum Bucket restored from original GLBs (renamed -v2 to bust cache).
+- 2026-05-12 — `WorldContent.md` created as new canonical doc (split from 3dStructure.md).
