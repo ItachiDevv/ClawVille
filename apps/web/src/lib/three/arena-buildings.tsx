@@ -151,9 +151,8 @@ function triggerCasinoWalkIn(): void {
  * displaced from the bbox center because foreground elements (steps, path,
  * decorative base) shift the bbox forward. A positive pivotZBias moves the
  * building body forward (toward camera / village center). Unit: world units.
- * Example: Squidward's house has steps at the front — the bbox center is pulled
- * toward the steps, causing the house body to appear too far back. pivotZBias=+180
- * shifts the house toward center to compensate.
+ * DEPRECATED for buildings that use bodyAnchorChild — the dynamic anchor
+ * replaces this magic number.
  *
  * childScaleOverrides: differential scale multipliers applied to named child nodes
  * AFTER computeBuildingScale. Keys are Three.js-sanitized node names (spaces→_, special
@@ -167,11 +166,22 @@ function triggerCasinoWalkIn(): void {
  * Important: nodes targeted by childScaleOverrides MUST NOT be stripped by
  * stripDecorativeMeshes/stripGroundPlanes (the overrides run after those strip passes).
  *
+ * bodyAnchorChild: name of the GLB child node whose bbox center should be used as the
+ * building's anchor point (instead of the full-GLB bbox center). Set to the same node
+ * name used in childScaleOverrides for buildings that bundle body + pathway/sign.
+ *
+ * Problem it solves: computeBuildingScale uses the FULL GLB bbox center as the anchor.
+ * When a GLB has a building body + a forward-extending pathway/sign, the full bbox center
+ * lands BETWEEN them — anchoring that combined center to the slot means the building body
+ * sits BEHIND the slot center while the pathway extends in front. bodyAnchorChild computes
+ * the body child's bbox center AFTER childScaleOverrides are applied, then shifts the
+ * inner group so the body center aligns with the slot position.
+ *
  * Example:
- *   'memory-rag': { ..., childScaleOverrides: { "Squidward_s_House": 1.4 } }
- *   → the moai head body grows 1.4× relative to steps/pathway.
+ *   'memory-rag': { ..., childScaleOverrides: { "Squidward_s_House": 1.4 }, bodyAnchorChild: "Squidward_s_House" }
+ *   → the moai head body grows 1.4× AND its center aligns with the ring slot.
  */
-const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number; rotYOffset?: number; scaleOverride?: number; targetMaxDim?: number; box3Recenter?: boolean; pivotZBias?: number; childScaleOverrides?: Record<string, number>; onClick?: () => void }> = {
+const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number; rotYOffset?: number; scaleOverride?: number; targetMaxDim?: number; box3Recenter?: boolean; pivotZBias?: number; childScaleOverrides?: Record<string, number>; bodyAnchorChild?: string; onClick?: () => void }> = {
   // ---------------------------------------------------------------------------
   // 12-building TRUE CIRCULAR ring — Phase 6.2.1 (2026-05-18).
   // Ring tuned R=160→130 tiles (5120→4160wu — R=160 was too spaced out).
@@ -202,27 +212,36 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // targetMaxDim: 1100 — pineapple house needs extra size to read from a distance.
   'visual-creation':     { model: '/models/pineapple-house.glb',     yOffset: 0, rotY:  0.000, targetMaxDim: 1100 },
   // Slot 1 — NNE (cx=245, cy=67): dx=-65, dz=113 → atan2(-65,113)≈-0.522 (-π/6)
-  // Phase 6.2: targetMaxDim=1000 caps the bucket — Y-only normalization inflated XZ 2×.
-  'code-development':    { model: '/models/chum-bucket-v2.glb',      yOffset: 0, rotY: -0.522, targetMaxDim: 1000 },
+  // Phase 6.2: targetMaxDim=1000→1400 — user reports bucket reads too small vs adjacent buildings.
+  // 1400 puts Chum Bucket in the same landmark tier as Squidward + Krusty Krab (5-7× avatar height).
+  'code-development':    { model: '/models/chum-bucket-v2.glb',      yOffset: 0, rotY: -0.522, targetMaxDim: 1400 },
   // Slot 2 — ENE (cx=293, cy=115): dx=-113, dz=65 → atan2(-113,65)≈-1.049 (-π/3)
   // krusty-krab-v2.glb = iconic ship restaurant (CC-BY, Yanez Designs, 1.59 MB original).
   // targetMaxDim 1000→1400: sign pole Z (≈1438 GLB units) dominates bbox — raises base scale so
   // building reads bigger. childScaleOverride 1.5× on "The_Krusty_Krab" node (ship body) gives
   // differential sizing: restaurant body ≈600wu, sign stays at base scale proportionally.
+  // bodyAnchorChild: sign extends in front → full-GLB bbox center is pulled toward sign → restaurant
+  // body was behind the slot. Dynamic anchor ensures the restaurant body center lands at the slot.
   'mcp-tool-use':        { model: '/models/krusty-krab-v2.glb',      yOffset: 0, rotY: -1.049, targetMaxDim: 1400,
-                           childScaleOverrides: { 'The_Krusty_Krab': 1.5 } },
+                           childScaleOverrides: { 'The_Krusty_Krab': 1.5 },
+                           bodyAnchorChild: 'The_Krusty_Krab' },
   // Slot 3 — E (cx=310, cy=180): dx=-130, dz=0 → atan2(-130,0)=-π/2≈-1.571
   // sandy-treedome-v3.glb: rotYOffset +π for inward-facing door.
   // Phase 6.2: dome glass DoubleSide fix applied post-load (see GLBBuilding).
   'messaging-channels':  { model: '/models/sandy-treedome-v3.glb',   yOffset: 0, rotY: -1.571, rotYOffset: Math.PI, targetMaxDim: 1000 },
   // Slot 4 — ESE (cx=293, cy=245): dx=-113, dz=-65 → atan2(-113,-65)≈-2.093 (-2π/3)
   // rotYOffset: salty-spitoon.glb authored facing +X; -π/2 aligns toward village center.
-  'api-integrations':    { model: '/models/salty-spitoon.glb',       yOffset: 0, rotY: -2.093, rotYOffset: -Math.PI / 2, targetMaxDim: 1000 },
+  // targetMaxDim 1000→1300 (+30%) — user reports spitoon reads too small vs ring neighbors.
+  // salty-spitoon.glb has ~2:1 aspect ratio (wide facade); MAX_FOOTPRINT=1800 cap applies.
+  // At targetMaxDim=1300 the effective rendered height ≈ 1300*(1800/scaledXZ). Still noticeably
+  // larger than 1000. If still too small, raise further and/or increase MAX_FOOTPRINT.
+  'api-integrations':    { model: '/models/salty-spitoon.glb',       yOffset: 0, rotY: -2.093, rotYOffset: -Math.PI / 2, targetMaxDim: 1300 },
   // Slot 5 — SSE (cx=245, cy=293): dx=-65, dz=-113 → atan2(-65,-113)≈-2.620 (-5π/6)
   // rotYOffset: boating-school.glb classroom must face center (model-authored offset).
   'app-publishing':      { model: '/models/boating-school.glb',      yOffset: 0, rotY: -2.620, rotYOffset: Math.PI / 2, targetMaxDim: 1000 },
   // Slot 6 — S (cx=180, cy=310): dx=0, dz=-130 → atan2(0,-130)=π≈3.142
-  'cron-automation':     { model: '/models/patty-building.glb',      yOffset: 0, rotY:  3.142, targetMaxDim: 1000 },
+  // targetMaxDim 1000→1300 (+30%) — user reports downtown building reads too small.
+  'cron-automation':     { model: '/models/patty-building.glb',      yOffset: 0, rotY:  3.142, targetMaxDim: 1300 },
   // Slot 7 — SSW (cx=115, cy=293): dx=65, dz=-113 → atan2(65,-113)≈2.620 (5π/6)
   // Lighthouse is the tallest landmark — targetMaxDim 1400 keeps it visually dominant.
   'deployment-ops':      { model: '/models/building-lighthouse.glb', yOffset: 0, rotY:  2.620, targetMaxDim: 1400 },
@@ -245,12 +264,17 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   'agent-security':      { model: '/models/patricks-rock-v2.glb',    yOffset: 0, rotY:  1.049, targetMaxDim: 1100 },
   // Slot 11 — NNW (cx=115, cy=67): dx=65, dz=113 → atan2(65,113)≈0.522 (π/6)
   // squidward-house.glb = Easter Island moai head (CC-BY, Yanez Designs).
-  // pivotZBias: +180 — stone steps at front shift GLB bbox center, compensated here.
   // targetMaxDim 1000→1400: Stones node Y range (370wu) dominates bbox — raising targetMaxDim
   // increases base scale. childScaleOverride 1.4× on "Squidward_s_House" node (head body) gives
   // differential sizing: moai head ≈1010wu, stepping stones stay at base scale proportionally.
-  'memory-rag':          { model: '/models/squidward-house.glb',     yOffset: 0, rotY:  0.522, targetMaxDim: 1400, pivotZBias: 180,
-                           childScaleOverrides: { 'Squidward_s_House': 1.4 } },
+  // bodyAnchorChild: stone steps at front shift the full-GLB bbox center toward the pathway,
+  // causing the moai head to sit behind the ring slot. Dynamic anchor uses the Squidward_s_House
+  // bbox center (after 1.4× override) so the head body lands on the slot.
+  // Note: pivotZBias: 180 removed — it was a stale magic-number workaround superseded by this
+  // dynamic anchor. The two together would double-offset and push the head too far forward.
+  'memory-rag':          { model: '/models/squidward-house.glb',     yOffset: 0, rotY:  0.522, targetMaxDim: 1400,
+                           childScaleOverrides: { 'Squidward_s_House': 1.4 },
+                           bodyAnchorChild: 'Squidward_s_House' },
 };
 
 // Scratch objects for stripGroundPlanes — reused across calls to avoid GC.
@@ -467,6 +491,9 @@ const _buildBbox = new THREE.Box3();
 const _buildMeshBox = new THREE.Box3();
 const _buildSize = new THREE.Vector3();
 const _buildCenter = new THREE.Vector3();
+// Scratch for body-anchor offset computation — used after computeBuildingScale.
+const _bodyBbox = new THREE.Box3();
+const _bodyCenter = new THREE.Vector3();
 
 interface BuildingScaleResult {
   scale: number;
@@ -679,22 +706,88 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
       // normalises by max(X,Y,Z) for consistent visual size across all shapes.
       const targetMD = config.targetMaxDim ?? BUILDING_TARGET_HEIGHT;
       const { scale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz } = computeBuildingScale(c, targetMD);
+      // Save the full-bbox center IMMEDIATELY after computeBuildingScale returns.
+      // _buildCenter is a module-scope scratch that may be overwritten by later calls —
+      // capture the XZ values before the child-override pass runs.
+      const fullCenterX = _buildCenter.x;
+      const fullCenterZ = _buildCenter.z;
+
       result = { cloned: c, buildingScale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz };
-    }
-    // Differential child-scale pass — applied BEFORE mergeStaticMeshesByMaterial so that
-    // the overridden child node scales are baked into vertex positions by the merger.
-    // After the merge the named parent nodes (e.g. "Squidward_s_House") still exist as
-    // empty containers, but all their mesh children will have had their matrixWorld
-    // (which incorporates this scale) snapshotted and baked into merged geo vertex positions.
-    // This gives differential sizing: building body reads larger, pathway/sign unchanged.
-    if (config.childScaleOverrides) {
-      // Force a matrixWorld update BEFORE applying overrides so mergeStaticMeshesByMaterial
-      // sees the correct inherited transforms when it snapshots each mesh's matrixWorld.
-      c.updateMatrixWorld(true);
-      applyChildScaleOverrides(c, config.childScaleOverrides);
-      // Re-update matrixWorld so the override scales propagate to all descendants
-      // before mergeStaticMeshesByMaterial reads them.
-      c.updateMatrixWorld(true);
+
+      // Differential child-scale pass — applied BEFORE mergeStaticMeshesByMaterial so that
+      // the overridden child node scales are baked into vertex positions by the merger.
+      // After the merge the named parent nodes (e.g. "Squidward_s_House") still exist as
+      // empty containers, but all their mesh children will have had their matrixWorld
+      // (which incorporates this scale) snapshotted and baked into merged geo vertex positions.
+      // This gives differential sizing: building body reads larger, pathway/sign unchanged.
+      if (config.childScaleOverrides) {
+        // Force a matrixWorld update BEFORE applying overrides so mergeStaticMeshesByMaterial
+        // sees the correct inherited transforms when it snapshots each mesh's matrixWorld.
+        c.updateMatrixWorld(true);
+        applyChildScaleOverrides(c, config.childScaleOverrides);
+        // Re-update matrixWorld so the override scales propagate to all descendants
+        // before mergeStaticMeshesByMaterial reads them.
+        c.updateMatrixWorld(true);
+      }
+
+      // Body anchor correction — when a GLB bundles a building body + forward-extending
+      // pathway/sign, the full-bbox center is pulled between them. anchoring that combined
+      // center at the slot means the building body sits BEHIND the slot. Fix: compute the
+      // body child's bbox center (AFTER childScaleOverrides propagated) and offset pivotX/Z
+      // so the body center aligns with the slot instead.
+      //
+      // This runs AFTER the child-override updateMatrixWorld so the body bbox reflects the
+      // post-override scale. It runs BEFORE mergeStaticMeshesByMaterial because the named
+      // body node (e.g. "Squidward_s_House") becomes an empty container after the merge.
+      if (config.bodyAnchorChild) {
+        const bodyChild = c.getObjectByName(config.bodyAnchorChild);
+        if (bodyChild) {
+          // Measure body child bbox in scene-local space (same coordinate space as _buildCenter).
+          _bodyBbox.makeEmpty();
+          bodyChild.traverse((child) => {
+            if ((child as THREE.Mesh).isMesh && !(child as THREE.SkinnedMesh).isSkinnedMesh) {
+              const mesh = child as THREE.Mesh;
+              if (!mesh.geometry) return;
+              mesh.geometry.computeBoundingBox();
+              const geoBB = mesh.geometry.boundingBox;
+              if (!geoBB) return;
+              _buildMeshBox.copy(geoBB).applyMatrix4(mesh.matrixWorld);
+              _bodyBbox.union(_buildMeshBox);
+            }
+          });
+
+          if (!_bodyBbox.isEmpty()) {
+            _bodyBbox.getCenter(_bodyCenter);
+            // anchorDelta: body center minus full-bbox center (both scene-local).
+            // Multiplied by scale → world units.
+            // Add to pivotOffset so the inner group shifts toward the body center:
+            //   inner group position = [-pivotOffsetX, -pivotOffsetY, -pivotOffsetZ]
+            //   currently slots full-bbox center at origin; we want body center at origin.
+            //   body center = fullCenter + anchorDelta
+            //   new pivotOffsetX = (fullCenter.x + anchorDelta.x) * s = body center * s
+            const bodyDeltaX = _bodyCenter.x - fullCenterX;
+            const bodyDeltaZ = _bodyCenter.z - fullCenterZ;
+            result = {
+              ...result,
+              pivotOffsetX: px + bodyDeltaX * s,
+              pivotOffsetZ: pz + bodyDeltaZ * s,
+            };
+
+            if (typeof window !== 'undefined') {
+              console.log(
+                `[body-anchor] ${zone.id}: fullCenter=(${fullCenterX.toFixed(1)},${fullCenterZ.toFixed(1)})` +
+                ` bodyCenter=(${_bodyCenter.x.toFixed(1)},${_bodyCenter.z.toFixed(1)})` +
+                ` delta=(${bodyDeltaX.toFixed(1)},${bodyDeltaZ.toFixed(1)})` +
+                ` worldDelta=(${(bodyDeltaX * s).toFixed(0)},${(bodyDeltaZ * s).toFixed(0)})wu`
+              );
+            }
+          }
+        } else {
+          if (typeof window !== 'undefined') {
+            console.warn(`[body-anchor] ${zone.id}: bodyAnchorChild "${config.bodyAnchorChild}" not found in scene`);
+          }
+        }
+      }
     }
     // Phase 6.2 — Sandy's Treedome dome glass fix:
     // sandy-treedome-v3.glb dome mesh is single-sided (THREE.FrontSide), so the
@@ -722,7 +815,7 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
       console.log(`[building-merge] ${zone.id}: ${merge.meshesBefore} → ${merge.meshesAfter} meshes (${merge.buckets} buckets merged, ${merge.skipped} skipped)`);
     }
     return result;
-  }, [scene, config.model, config.scaleOverride, config.targetMaxDim, config.pivotZBias, config.childScaleOverrides, zone.id]);
+  }, [scene, config.model, config.scaleOverride, config.targetMaxDim, config.pivotZBias, config.childScaleOverrides, config.bodyAnchorChild, zone.id]);
 
   // Dispose cloned geometry + materials on unmount (navigation away / hot-reload)
   useEffect(() => {
@@ -876,13 +969,39 @@ function EditableBuilding({
     stripGroundPlanes(c);
     const targetMD = config.targetMaxDim ?? BUILDING_TARGET_HEIGHT;
     const { scale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz } = computeBuildingScale(c, targetMD);
+    const fullCenterX = _buildCenter.x;
+    const fullCenterZ = _buildCenter.z;
     if (config.childScaleOverrides) {
       c.updateMatrixWorld(true);
       applyChildScaleOverrides(c, config.childScaleOverrides);
       c.updateMatrixWorld(true);
     }
-    return { cloned: c, buildingScale: s, pivotOffsetX: px, pivotOffsetY: py, pivotOffsetZ: pz };
-  }, [scene, config.targetMaxDim, config.childScaleOverrides]);
+    // Body anchor correction — mirrors GLBBuilding logic.
+    let finalPX = px, finalPZ = pz;
+    if (config.bodyAnchorChild) {
+      const bodyChild = c.getObjectByName(config.bodyAnchorChild);
+      if (bodyChild) {
+        _bodyBbox.makeEmpty();
+        bodyChild.traverse((child) => {
+          if ((child as THREE.Mesh).isMesh && !(child as THREE.SkinnedMesh).isSkinnedMesh) {
+            const mesh = child as THREE.Mesh;
+            if (!mesh.geometry) return;
+            mesh.geometry.computeBoundingBox();
+            const geoBB = mesh.geometry.boundingBox;
+            if (!geoBB) return;
+            _buildMeshBox.copy(geoBB).applyMatrix4(mesh.matrixWorld);
+            _bodyBbox.union(_buildMeshBox);
+          }
+        });
+        if (!_bodyBbox.isEmpty()) {
+          _bodyBbox.getCenter(_bodyCenter);
+          finalPX = px + (_bodyCenter.x - fullCenterX) * s;
+          finalPZ = pz + (_bodyCenter.z - fullCenterZ) * s;
+        }
+      }
+    }
+    return { cloned: c, buildingScale: s, pivotOffsetX: finalPX, pivotOffsetY: py, pivotOffsetZ: finalPZ };
+  }, [scene, config.targetMaxDim, config.childScaleOverrides, config.bodyAnchorChild]);
 
   // Re-raycast terrain Y whenever position changes
   useFrame(() => {
