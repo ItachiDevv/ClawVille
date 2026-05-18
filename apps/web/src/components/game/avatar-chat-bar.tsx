@@ -5,7 +5,36 @@ import { useAvatar } from '@/hooks/use-avatar';
 import { useGameStore } from '@/stores/game';
 import { useQuestStore, triggerQuestCheck } from '@/stores/quest';
 import { api } from '@/lib/api';
-import { KNOWLEDGE_BOOKS } from '@clawville/shared';
+import { KNOWLEDGE_BOOKS, type AgentCategory } from '@clawville/shared';
+
+// Per-model glyph for the chat pill. Falls back to a category-level glyph so
+// new modelKeys still render a sensible icon without a code change. The old
+// hard-coded 🦞 made every Hermes/Milady/Other agent appear as a lobster.
+const MODEL_GLYPH: Record<string, string> = {
+  lobster: '🦞',
+  sweet_crab: '🦀',
+  lobster_plush: '🧸',
+  hermitcrab: '🐚',
+  jellyfish: '🪼',
+  octopus: '🐙',
+  seahorse: '🐉',
+  hermes_female: '⚡',
+  hermes_male: '⚡',
+  tekk: '⚡',
+};
+
+const CATEGORY_GLYPH: Record<AgentCategory, string> = {
+  openclaw: '🦞',
+  hermes: '⚡',
+  milady: '💗',
+  other: '🐠',
+};
+
+function getAgentChatGlyph(modelKey: string | undefined, category: AgentCategory | undefined): string {
+  if (modelKey && MODEL_GLYPH[modelKey]) return MODEL_GLYPH[modelKey];
+  if (category && CATEGORY_GLYPH[category]) return CATEGORY_GLYPH[category];
+  return '🦞';
+}
 
 interface AvatarMessage {
   id: string;
@@ -41,10 +70,13 @@ export default function AvatarChatBar() {
   // Don't render when location chat is open or no avatar
   if (chatOpen || !avatar) return null;
 
-  // Use lobster emoji as the agent icon — replaces the legacy cat sprite that
-  // used to render here via SPECIES_SPRITE_MAP (every agent backfills to 'cat'
-  // legacy species, producing the wrong visual). Lobster matches the 3D avatar.
-  const agentGlyph = '🦞';
+  // Derive the chat glyph from the avatar's actual modelKey + agentCategory so
+  // Hermes/Milady/Other agents stop showing as a lobster. Falls back to the
+  // openclaw lobster only for unknown configurations.
+  const agentGlyph = getAgentChatGlyph(
+    (avatar as { modelKey?: string }).modelKey,
+    (avatar as { agentCategory?: AgentCategory }).agentCategory,
+  );
 
   const scrollToBottom = () => {
     setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);

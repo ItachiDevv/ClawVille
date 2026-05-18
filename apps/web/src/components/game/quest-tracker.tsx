@@ -64,7 +64,9 @@ export default function QuestTracker() {
 
   return (
     <>
-      {/* Desktop: top-left below minimap */}
+      {/* Desktop: top-left below minimap. Width must match QuestPanel's
+          inner shell (w-60) — they were w-60/w-80 before, which produced the
+          "child wider than parent" overflow seen in the HUD audit. */}
       <div className="fixed top-[calc(theme(spacing.4)+232px+8px)] left-4 z-40 hidden md:block w-60">
         <QuestPanel
           expanded={expanded}
@@ -140,7 +142,7 @@ function QuestPanel({
   })();
 
   return (
-    <div className={mobile ? 'w-[220px] max-w-[75vw]' : 'w-80'}>
+    <div className={mobile ? 'w-[220px] max-w-[75vw]' : 'w-full'}>
       {/* Collapsed header — always visible */}
       <button
         onClick={onToggle}
@@ -159,10 +161,10 @@ function QuestPanel({
         <div className="flex-1 min-w-0 text-left">
           <div className={`text-white font-black truncate ${isCompactMobile ? 'text-xs' : 'text-base'}`}>
             {allDone
-              ? 'All Quests Complete!'
+              ? 'Tutorial Complete!'
               : activeQuest
               ? activeQuest.title
-              : 'Quests'}
+              : 'Tutorial'}
           </div>
           {!isCompactMobile && !allDone && activeQuest && !expanded && (
             <div className="text-sm text-white/75 truncate mt-1 font-medium">
