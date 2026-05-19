@@ -629,14 +629,14 @@ Added Phase 6.1.6, rewritten Phase 6.1.7→6.1.8 (per-cell-plane drum wheel).
 **Textures:** `~11` unique symbol textures (`TILE_PX = 192×192px`) — one per symbol ID. Built once per unique symbol, shared across all 60 plane materials. Purple `#6b3aa0` rounded-corner card, emoji centred, label at bottom. Distinct emojis per BAR tier: BAR=`1️⃣`, BAR×2=`2️⃣`, BAR×3=`3️⃣` (previously all three used `🎰` — indistinguishable at display size). GPU memory: ~2.1MB (11 textures × 192² × 4B × 1.33 mipmap overhead). Per-face `MeshBasicMaterial` holds a pointer to one symbol texture. On spin, faces cycling through the back (angle≈π) get their `.map` pointer swapped to the next strip symbol — zero texture rebuilding, only JS reference update + `mat.needsUpdate = true`.
 
 **Spin phases per reel (group.rotation.x):**
-- ACCEL (200ms): 0 → `MAX_RAD_PER_SEC = 4 × 2π ≈ 25.1 rad/s`, easeInQuad.
+- ACCEL (200ms): 0 → `MAX_RAD_PER_SEC = 2 × 2π ≈ 12.6 rad/s`, easeInQuad. (2 RPS cap — 4 RPS produced 1.6 planes/frame at 30fps = wagon-wheel strobe on Iris Xe.)
 - STEADY: hold MAX_RAD_PER_SEC until `DECEL_AT[r]` and `targetSet`.
 - DECEL (600ms, stagger 1800/2200/2600/3000/3400ms L→R): tween `rotation.x` → `targetRot`, easeOutCubic.
 - POP (120ms): overshoot `STEP/3` then spring back. Fires `onReelsSettled` after last reel.
 
 **Deterministic landing:** `findStripPosition(strip, top, mid, bot)` → strip position `p`. `stripPosToAngle(p)` maps p → drum stop via `round(p × 12 / 84)` → `targetRot = rotation + forward_delta_to_stop`. At landing, face at drum stop is front-facing; texture was assigned during spin's back-crossing swaps. `anim.targetSet` flag prevents double-computation; no `isSpinning` guard (deadlock fix from 6.1.5).
 
-**Iris Xe invariants:** 60 plane meshes + 10 bezel rings = 70 meshes total. 2 shared geometries (PlaneGeometry, RingGeometry). `~11` symbol textures + 1 shared bezel material. No per-frame allocations — only pointer swap (`mat.map = ref`) + `rotation.x` scalar mutation. No drei Text/Billboard. `MeshBasicMaterial` only, no shadows, no ShaderMaterial. `compileAsync` fired once on mount.
+**Iris Xe invariants:** 60 plane meshes + 10 bezel rings = 70 meshes total. 2 shared geometries (PlaneGeometry, RingGeometry). `~11` symbol textures + 1 shared bezel material. No per-frame allocations — only pointer swap (`mat.map = ref`) + `rotation.x` scalar mutation. No drei Text/Billboard. `MeshBasicMaterial` only (DoubleSide — prevents hollow-drum void visible through side planes), no shadows, no ShaderMaterial. `compileAsync` fired once on mount.
 
 ---
 
@@ -698,6 +698,7 @@ Draw-call budget (full equipped set): hat ≤ 1, aura ≤ 4 (instanced particles
 
 Compact log. Single line per change with commit reference where applicable.
 
+- 2026-05-19 — Phase 6.1.8 adversarial pass (3da-impl-2): MAX_RPS 4→2 (4 RPS = 1.6 planes/frame at 30fps = wagon-wheel strobe on Iris Xe); faceMaterials FrontSide→DoubleSide (prevents hollow-drum void visible through side planes). §10d spin phases + Iris Xe invariants updated.
 - 2026-05-19 — Phase 6.1.8 reconciler (3da-impl-2): BAR/BAR×2/BAR×3 emojis disambiguated (1️⃣/2️⃣/3️⃣ — were all identical 🎰); TILE_PX 128→192 for sharper mipmap steps (~2.1MB GPU). §10d textures entry updated.
 - 2026-05-19 — Phase 6.1.8: per-cell-plane drum wheel. 12 PlaneGeometry quads per reel orbiting X-axis at DRUM_RADIUS=1.5wu. ~11 shared 128×128 symbol textures. Ortho camera left=-8.5/right=8.5/top=2.2/bot=-2.2. Texture-swap at back-crossing = zero rebuild cost. §10d rewritten.
 - 2026-05-19 — Slot reel camera fix (Phase 6.1.7b): camera `z=120 fov=60` → `z=45 fov=50`, far 200 preserved. Geometry decoupled: `RADIUS=8wu HEIGHT=15wu SPACING=18wu` (frisbee 13.37×3 replaced). Bezels `RingGeometry(7.85,8.15,64)`. Drums now fill 36% vertical / 93% horizontal at prod 2.32 aspect. §10d updated.
