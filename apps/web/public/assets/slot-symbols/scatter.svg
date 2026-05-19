@@ -1,45 +1,62 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
-    <radialGradient id="glowS" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#00ffe0" stop-opacity="0.4"/>
-      <stop offset="100%" stop-color="#00ffe0" stop-opacity="0"/>
+    <linearGradient id="bScg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe28a"/>
+      <stop offset="0.5" stop-color="#ffc857"/>
+      <stop offset="1" stop-color="#7a5208"/>
+    </linearGradient>
+    <linearGradient id="bSc2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff39a"/>
+      <stop offset="0.55" stop-color="#e8a91c"/>
+      <stop offset="1" stop-color="#5a3604"/>
+    </linearGradient>
+    <radialGradient id="bSb" cx="40%" cy="35%" r="65%">
+      <stop offset="0" stop-color="#3a8acf"/>
+      <stop offset="0.55" stop-color="#1a3a52"/>
+      <stop offset="1" stop-color="#06223a"/>
     </radialGradient>
-    <radialGradient id="starS" cx="40%" cy="35%" r="65%">
-      <stop offset="0%" stop-color="#aaffef"/>
-      <stop offset="100%" stop-color="#006655"/>
+    <radialGradient id="hlSc" cx="32%" cy="22%" r="55%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
     </radialGradient>
   </defs>
-  <ellipse cx="128" cy="128" rx="112" ry="112" fill="url(#glowS)"/>
-  <!-- Outer ring -->
-  <circle cx="128" cy="128" r="105" fill="none" stroke="#00ffe0" stroke-width="5" opacity="0.5"/>
-  <!-- Long compass rays (N S E W) -->
-  <line x1="128" y1="25" x2="128" y2="70" stroke="#00ffe0" stroke-width="7" stroke-linecap="round"/>
-  <line x1="128" y1="186" x2="128" y2="231" stroke="#00ffe0" stroke-width="7" stroke-linecap="round"/>
-  <line x1="25" y1="128" x2="70" y2="128" stroke="#00ffe0" stroke-width="7" stroke-linecap="round"/>
-  <line x1="186" y1="128" x2="231" y2="128" stroke="#00ffe0" stroke-width="7" stroke-linecap="round"/>
-  <!-- Diagonal rays (shorter) -->
-  <line x1="164" y1="48" x2="148" y2="82" stroke="#00ffe0" stroke-width="5" stroke-linecap="round"/>
-  <line x1="208" y1="92" x2="174" y2="108" stroke="#00ffe0" stroke-width="5" stroke-linecap="round"/>
-  <line x1="208" y1="164" x2="174" y2="148" stroke="#00ffe0" stroke-width="5" stroke-linecap="round"/>
-  <line x1="164" y1="208" x2="148" y2="174" stroke="#00ffe0" stroke-width="5" stroke-linecap="round"/>
-  <line x1="92" y1="208" x2="108" y2="174" stroke="#00ffe0" stroke-width="5" stroke-linecap="round"/>
-  <line x1="48" y1="164" x2="82" y2="148" stroke="#00ffe0" stroke-width="5" stroke-linecap="round"/>
-  <line x1="48" y1="92" x2="82" y2="108" stroke="#00ffe0" stroke-width="5" stroke-linecap="round"/>
-  <line x1="92" y1="48" x2="108" y2="82" stroke="#00ffe0" stroke-width="5" stroke-linecap="round"/>
-  <!-- Ray arrowheads N/S/E/W -->
-  <polygon points="128,25 121,44 135,44" fill="#00ffe0"/>
-  <polygon points="128,231 121,212 135,212" fill="#00ffe0"/>
-  <polygon points="25,128 44,121 44,135" fill="#00ffe0"/>
-  <polygon points="231,128 212,121 212,135" fill="#00ffe0"/>
-  <!-- Center starfish body -->
-  <circle cx="128" cy="128" r="32" fill="url(#starS)" stroke="#00ffe0" stroke-width="6"/>
-  <!-- Center ring -->
-  <circle cx="128" cy="128" r="20" fill="none" stroke="#00ffe0" stroke-width="3" opacity="0.6"/>
-  <!-- Center dot -->
-  <circle cx="128" cy="128" r="8" fill="#00ffe0"/>
-  <!-- North label triangle at tip -->
-  <polygon points="128,28 123,38 133,38" fill="#ffc857" opacity="0.9"/>
-  <!-- Shine -->
-  <ellipse cx="116" cy="116" rx="9" ry="6" fill="white" opacity="0.4" transform="rotate(-30,116,116)"/>
+  <ellipse cx="128" cy="228" rx="92" ry="10" fill="#0a1428" opacity="0.55"/>
+  <!-- 8 starfish-arm rays alternating long/short -->
+  <g fill="url(#bSc2)" stroke="#0a1428" stroke-width="5" stroke-linejoin="round">
+    <!-- 4 main long arms (N S E W) -->
+    <polygon points="128,16 116,98 140,98"/>
+    <polygon points="240,128 158,116 158,140"/>
+    <polygon points="128,240 116,158 140,158"/>
+    <polygon points="16,128 98,116 98,140"/>
+  </g>
+  <g fill="url(#bScg)" stroke="#0a1428" stroke-width="4" stroke-linejoin="round">
+    <!-- 4 diagonal shorter arms (NE SE SW NW) -->
+    <polygon points="200,56 138,104 152,118"/>
+    <polygon points="200,200 138,152 152,138"/>
+    <polygon points="56,200 118,152 104,138"/>
+    <polygon points="56,56 118,104 104,118"/>
+  </g>
+  <!-- outer gold ring -->
+  <circle cx="128" cy="128" r="56" fill="url(#bScg)" stroke="#0a1428" stroke-width="6"/>
+  <circle cx="128" cy="128" r="56" fill="none" stroke="#7a5208" stroke-width="3" opacity="0.7" transform="translate(0,2)"/>
+  <!-- deep-blue inner circle -->
+  <circle cx="128" cy="128" r="40" fill="url(#bSb)" stroke="#0a1428" stroke-width="5"/>
+  <!-- N marker on inner ring -->
+  <polygon points="128,90 122,108 134,108" fill="url(#bSc2)" stroke="#0a1428" stroke-width="2.5"/>
+  <!-- center star -->
+  <polygon points="128,108 134,124 150,124 138,134 142,150 128,140 114,150 118,134 106,124 122,124"
+           fill="url(#bSc2)" stroke="#0a1428" stroke-width="2.5" stroke-linejoin="round"/>
+  <!-- center dot -->
+  <circle cx="128" cy="131" r="4" fill="#0a1428"/>
+  <!-- pebble dots on long arms -->
+  <g fill="#ffffff" opacity="0.7">
+    <circle cx="128" cy="60" r="2.5"/>
+    <circle cx="128" cy="196" r="2.5"/>
+    <circle cx="60" cy="128" r="2.5"/>
+    <circle cx="196" cy="128" r="2.5"/>
+  </g>
+  <!-- highlight on inner blue circle -->
+  <circle cx="128" cy="128" r="40" fill="url(#hlSc)"/>
+  <ellipse cx="112" cy="112" rx="11" ry="6" fill="#ffffff" opacity="0.55" transform="rotate(-30 112 112)"/>
 </svg>
