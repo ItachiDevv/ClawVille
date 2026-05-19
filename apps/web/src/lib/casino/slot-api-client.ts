@@ -161,6 +161,12 @@ export interface OpenSessionResponse {
   escrowAmount: string;
   predict: string;
   createdAt: string;
+  /**
+   * Authoritative ClawTokens balance at /session/open response time —
+   * snapshotted on the server, not pulled from a stale client cache.
+   * Frontend uses this as `sessionStartBalance` for PnL math.
+   */
+  walletBalance: number;
 }
 
 export interface CloseSessionResponse {
