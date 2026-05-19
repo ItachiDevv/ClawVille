@@ -12,9 +12,9 @@
  *   Row 0 → top cell strip[k-1], row 1 → middle strip[k], row 2 → bottom strip[k+1].
  *   wrapS=RepeatWrapping makes the drum wrap seamlessly.
  *
- * Camera: position [0, 0, 120], fov=60°.
- *   Viewport half-width = 120×tan(30°) = 69.3 wu, full = 138.6 wu.
- *   5 reels × 27.5 wu spacing = 137.5 wu total — fits with 1 wu margin.
+ * Camera (in SlotReelsCanvas): z=20, fov=70°.
+ *   Vertical viewport ≈ 28 wu — drums (h=20wu) fill ~71% vertically.
+ *   Horizontal ≈ 61.6 wu (2.2 aspect) — 5 drums at 9wu spacing = 44wu, fits.
  *
  * Bezel rings: RingGeometry(r-0.1, r+0.1, 64) at y=±CYLINDER_HEIGHT/2, rotation.x=-π/2 → horizontal.
  *
@@ -37,19 +37,28 @@ import type { SpinResult } from '@/lib/casino/types';
 // Constants
 // ---------------------------------------------------------------------------
 const REEL_COUNT = 5;
-const STRIP_LEN  = 84;
+const STRIP_LEN  = 84; // virtual symbol deck length — independent of cylinder geometry
 
-const CELL_WU         = 1.0;
-const CYLINDER_HEIGHT = CELL_WU * 3; // 3 wu visible window
+/**
+ * Cylinder visual dimensions (world units).
+ *
+ * Design constraint: canvas is ~2.2:1 aspect (wide/short). To fill vertical
+ * space the drum must be tall relative to radius (like a real mechanical reel).
+ * Camera z=20, fov=70°:
+ *   vertical viewport = 2×20×tan(35°) ≈ 28 wu  → drum height 20wu fills 71%
+ *   horizontal viewport = 28×2.2 ≈ 61.6 wu → 5 drums at 9wu spacing = 44wu, fits
+ *
+ * DECOUPLED from STRIP_LEN — the 84-symbol deck maps to rotation angles only.
+ */
+const CYLINDER_RADIUS  = 4.0;   // wu
+const CYLINDER_HEIGHT  = 20.0;  // wu  (3 visible rows × ~6.7 wu each)
+const REEL_RADIAL_SEGS = 64;    // smooth; no per-symbol face required
 
-/** Circumference = STRIP_LEN×CELL_WU → radius = C / 2π ≈ 13.37 wu */
-const CYLINDER_RADIUS = (STRIP_LEN * CELL_WU) / (2 * Math.PI);
-
-/** Centre-to-centre spacing. Must exceed 2×CYLINDER_RADIUS (26.74 wu). */
-const REEL_SPACING = 27.5; // wu
+/** Centre-to-centre drum spacing. Must exceed 2×CYLINDER_RADIUS = 8 wu. */
+const REEL_SPACING = 9.0; // wu  (8 + 1 gap)
 
 /** Max rotations per second during steady spin */
-const MAX_RPS          = 6;
+const MAX_RPS          = 3;
 const MAX_RADS_PER_SEC = MAX_RPS * 2 * Math.PI;
 
 /** Phase durations (ms) */
@@ -58,7 +67,7 @@ const DECEL_AT: [number, number, number, number, number] = [1800, 2200, 2600, 30
 const DECEL_MS = 600;
 const POP_MS   = 120;
 
-/** Over-rotation for stop-pop (1.5 segment widths in radians) */
+/** Over-rotation for stop-pop (1.5 symbol widths in radians) */
 const POP_OVERSHOOT = (2 * Math.PI / STRIP_LEN) * 1.5;
 
 /** Texture repeat.y during spin for motion-blur illusion */
@@ -259,15 +268,16 @@ export default function SlotReels3D({
     [strips],
   );
 
-  // Shared drum geometry
+  // Shared drum geometry — radialSegs=64 (smooth), NOT STRIP_LEN.
+  // STRIP_LEN maps to rotation angles only; cylinder faces are purely visual.
   const geometry = useMemo(() => new THREE.CylinderGeometry(
     CYLINDER_RADIUS, CYLINDER_RADIUS, CYLINDER_HEIGHT,
-    STRIP_LEN, 3, true, // radialSegs=84, heightSegs=3, openEnded=true
+    REEL_RADIAL_SEGS, 3, true, // heightSegs=3, openEnded=true
   ), []);
 
   // Bezel ring geometry — flat RingGeometry at drum top/bottom edges, horizontal
   const bezelGeometry = useMemo(() => new THREE.RingGeometry(
-    CYLINDER_RADIUS - 0.1, CYLINDER_RADIUS + 0.1, 64,
+    CYLINDER_RADIUS - 0.15, CYLINDER_RADIUS + 0.15, 64,
   ), []);
 
   const bezelMaterial = useMemo(() => new THREE.MeshBasicMaterial({
