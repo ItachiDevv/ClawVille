@@ -51,7 +51,25 @@ The following 3D models are used under CC-BY license. Full credit to their creat
   12th-building exterior — domed building with ARCADE CITY signage and arched entrance. 4.2 MB, 2,473 tris.
   Interior added separately in Phase 6.3 (claw machine game).
 
-- **Slot Machine Symbol Set** (ClawVille first-party, 2026-05-18) — `apps/web/public/assets/slot-symbols/s0..s7.svg`
-  Eight ClawVille-themed SVG reel symbols (Kelp, Anchor, Shell, Pearl, Coin, Crab, Trident, Lobster).
-  Authored in-repo for Concern 6.0.4 polish pass via Codex + gpt-image-2 ideation, hand-tuned SVG paths.
+- **Slot Machine Symbol Set** (ClawVille first-party, hand-drafted 2026-05-18) —
+  `apps/web/public/assets/slot-symbols/{s0..s10,wild,scatter,bonus}.svg`
+  Fourteen hand-drafted SVG reel symbols reimagining classic Vegas slot iconography with a sea theme.
+  Every symbol uses a heavy dark outline + 3-stop linearGradient bevel + radialGradient highlight
+  + drop-shadow ellipse for a "cast plastic" classic-slot read. Replaces the prior flat-line "neon
+  emoji" pass (Codex + gpt-image-2 ideation) which user rejected as vibecode slop. All path data,
+  gradients, and masks authored by hand in this commit.
+  - `s0.svg` — KELP: triple dark-teal kelp blade silhouette
+  - `s1.svg` — SEA ANEMONE (cherry replacement): pair of crimson anemones with pink tentacle tips on coral stems
+  - `s2.svg` — STARFISH (lemon replacement): 5-arm yellow starfish with white pebble dots
+  - `s3.svg` — PUFFERFISH (orange replacement): round orange puffer with 16-spike halo
+  - `s4.svg` — SEA URCHIN (plum replacement): deep-purple urchin with 16 radial spikes
+  - `s5.svg` — GIANT CLAM (watermelon replacement): green half-shell, pink flesh, gold lipped rim, center pearl
+  - `s6.svg` — DIVING HELMET BELL: brass bell with two porthole windows
+  - `s7.svg` — CORAL 7 (hero): chunky crimson "7" with coral branches + gold drop shadow
+  - `s8.svg` — ANCHOR BAR: classic red+gold BAR with gold anchor emblem
+  - `s9.svg` — DOUBLE-ANCHOR BAR: two stacked BARs each with anchor emblem
+  - `s10.svg` — TRIDENT BAR: three stacked BARs with trident emblem
+  - `wild.svg` — KRAKEN EYE: gold eye-of-providence in pyramid frame with 8 tentacle border
+  - `scatter.svg` — COMPASS STARFISH: gold compass rose with 8 starfish-arm rays + deep-blue inner disc
+  - `bonus.svg` — TREASURE CHEST: open wooden chest with spilling gold coins + sparkles
   No external license; covered by the ClawVille repo license.
