@@ -626,7 +626,7 @@ Added Phase 6.1.6, rewritten Phase 6.1.7→6.1.8 (per-cell-plane drum wheel).
 - Camera at +Z: face 0 (angle=0) faces viewer directly (mid symbol). Faces ±1 (±30°) show top/bot symbols slightly angled. Side faces (±2 to ±5) visible at progressively steeper angles — gives mechanical drum curvature.
 - `RingGeometry(1.45, 1.65, 64)` bezel rings at `y = ±(DRUM_RADIUS×sin(30°) + CELL_WU/2 + 0.06) ≈ ±1.19wu`, `rotation.x = −π/2`. 2 bezels × 5 drums = 10 ring meshes.
 
-**Textures:** `~11` unique symbol textures (`TILE_PX = 128×128px`) — one per symbol ID. Built once per unique symbol, shared across all 60 plane materials. Purple `#6b3aa0` rounded-corner card, emoji centred, label at bottom. Per-face `MeshBasicMaterial` holds a pointer to one symbol texture. On spin, faces cycling through the back (angle≈π) get their `.map` pointer swapped to the next strip symbol — zero texture rebuilding, only JS reference update + `mat.needsUpdate = true`.
+**Textures:** `~11` unique symbol textures (`TILE_PX = 192×192px`) — one per symbol ID. Built once per unique symbol, shared across all 60 plane materials. Purple `#6b3aa0` rounded-corner card, emoji centred, label at bottom. Distinct emojis per BAR tier: BAR=`1️⃣`, BAR×2=`2️⃣`, BAR×3=`3️⃣` (previously all three used `🎰` — indistinguishable at display size). GPU memory: ~2.1MB (11 textures × 192² × 4B × 1.33 mipmap overhead). Per-face `MeshBasicMaterial` holds a pointer to one symbol texture. On spin, faces cycling through the back (angle≈π) get their `.map` pointer swapped to the next strip symbol — zero texture rebuilding, only JS reference update + `mat.needsUpdate = true`.
 
 **Spin phases per reel (group.rotation.x):**
 - ACCEL (200ms): 0 → `MAX_RAD_PER_SEC = 4 × 2π ≈ 25.1 rad/s`, easeInQuad.
@@ -698,6 +698,7 @@ Draw-call budget (full equipped set): hat ≤ 1, aura ≤ 4 (instanced particles
 
 Compact log. Single line per change with commit reference where applicable.
 
+- 2026-05-19 — Phase 6.1.8 reconciler (3da-impl-2): BAR/BAR×2/BAR×3 emojis disambiguated (1️⃣/2️⃣/3️⃣ — were all identical 🎰); TILE_PX 128→192 for sharper mipmap steps (~2.1MB GPU). §10d textures entry updated.
 - 2026-05-19 — Phase 6.1.8: per-cell-plane drum wheel. 12 PlaneGeometry quads per reel orbiting X-axis at DRUM_RADIUS=1.5wu. ~11 shared 128×128 symbol textures. Ortho camera left=-8.5/right=8.5/top=2.2/bot=-2.2. Texture-swap at back-crossing = zero rebuild cost. §10d rewritten.
 - 2026-05-19 — Slot reel camera fix (Phase 6.1.7b): camera `z=120 fov=60` → `z=45 fov=50`, far 200 preserved. Geometry decoupled: `RADIUS=8wu HEIGHT=15wu SPACING=18wu` (frisbee 13.37×3 replaced). Bezels `RingGeometry(7.85,8.15,64)`. Drums now fill 36% vertical / 93% horizontal at prod 2.32 aspect. §10d updated.
 - 2026-05-19 `812fea9` — Slot reels `frameloop='demand'`→`'always'`: demand mode with no `invalidate()` call kept the GL canvas transparent-black on mount (no first frame ever committed). Modal-scoped continuous loop is acceptable. Added `[SlotReels3D]` mount + texture-build diagnostic `console.log`s (not prod-gated; remove before tagging 6.1.6). §10d updated.
