@@ -12,7 +12,7 @@
 > - **`ARCHITECTURE.md`** — backend routes / services / schema / events / leaderboard rubric.
 > - **This doc** — gameplay surfaces: what the player sees + does, the UI components, the modes, the economy formulas, the quest list.
 
-**Last edit:** 2026-05-18 — Concern 6.1.2: backend slot engine landed (`apps/api/src/services/slot-engine.ts`, deterministic, 40+ tests, bigint payouts) — no production callers yet; frontend mock remains live until slice 5. Prior: Concern 6.0.4 polish pass: Slot UI redesign. New design-token system (`casino-tokens.css`), `useFX` 5-tier FX state machine, NeonButton/NeonCard/NeonModal/BetChips UI primitives, SVG symbol art (Kelp/Anchor/Shell/Pearl/Coin/Crab/Trident/Lobster) replacing emoji, coin+confetti particle bursts, mega-win screen flash + 3s lockout, prefers-reduced-motion honored. SpinResult contract untouched. Prior: Concern 6.0.5 — walkable interior. Prior: Concern 6.0.4 — 2D slot screen (mock data).
+**Last edit:** 2026-05-19 — Concern 6.1.3 + 6.1.4 (slice 3): fun-money casino slots backend LIVE for ClawTokens. New `/api/casino/slots/*` route group — `session/open` (commit publishes `serverSeedHash`, reserves bet), `spin` (idempotency-key required, 60/min/user rate limit, atomic txn debit+spin+credit), `session/close` (reveals `serverSeed`, refunds escrow), `paytables/:id` + `verify` (both public, pure compute). New tables `slot_sessions` + `slot_spins` with partial unique index for one-open-session-per-user + per-session idempotency-key uniqueness. SOL/USDC stubbed at 501 until Phase 6.2 custody. Frontend mock (`apps/web/src/lib/casino/mock-engine.ts`) still live until slice 5 swap. Prior: Concern 6.1.2: backend slot engine landed (`apps/api/src/services/slot-engine.ts`, deterministic, 40+ tests, bigint payouts). Prior: Concern 6.0.4 polish pass: Slot UI redesign. New design-token system (`casino-tokens.css`), `useFX` 5-tier FX state machine, NeonButton/NeonCard/NeonModal/BetChips UI primitives, SVG symbol art (Kelp/Anchor/Shell/Pearl/Coin/Crab/Trident/Lobster) replacing emoji, coin+confetti particle bursts, mega-win screen flash + 3s lockout, prefers-reduced-motion honored. SpinResult contract untouched. Prior: Concern 6.0.5 — walkable interior. Prior: Concern 6.0.4 — 2D slot screen (mock data).
 
 ---
 
@@ -720,11 +720,27 @@ interface WinningLine { lineIndex: number; symbols: number[]; winAmount: bigint;
 - `packages/shared/src/constants/slot-paytables.ts` — canonical paytable constants
 - `packages/shared/src/constants/slot-symbols.ts` — SVG asset manifest
 
-### 18a.d. Backend / RNG / wager program (Concern 6.1+ — PENDING)
+### 18a.d. Backend / RNG / wager program (Concern 6.1 — fun-money LIVE for ClawTokens; SOL/USDC pending 6.2)
 
-On-chain slot RNG, SOL/USDC wagering, settlement via `clawville_wager` Anchor program. Out of scope for Concerns 6.0.x. See `.claude/plans/phase6-casino-slots.md`.
+On-chain slot RNG (SOL/USDC) + settlement via `clawville_wager` Anchor program land in Phase 6.2. ClawTokens fun-money tier is LIVE end-to-end as of 2026-05-19 (slice 3).
 
-**2026-05-18:** Phase 6.1 backend math live (`apps/api/src/services/slot-engine.ts`, deterministic, 40+ tests, bigint payouts). No production callers yet — route wiring lands in slice 3. The frontend mock at `apps/web/src/lib/casino/mock-engine.ts` remains live until slice 5.
+**Phase 6.1 backend (LIVE 2026-05-19):**
+
+- `POST /api/casino/slots/session/open` — Lucia auth. Body `{paytableId: 'classic-3x5', currency: 'clawtokens', bet}`. Debits `bet` ClawTokens (reservation), generates `(serverSeed, serverSeedHash, clientSeed)`, returns `{sessionId, serverSeedHash, clientSeed, bet, startingBalance, escrowAmount, createdAt}`. `serverSeed` is NEVER returned at open. One open session per user (partial unique index on `slot_sessions` enforces race-safety; 409 on duplicate). `currency: 'sol' | 'usdc'` → 501 `CURRENCY_COMING_SOON`.
+- `POST /api/casino/slots/spin` — Lucia auth. Header `Idempotency-Key` required (1-64 chars). Body `{sessionId, bet}`. Bet must equal session's reserved bet (slice 3 simplicity — variable bet lands later). 60 spins/min/user rate limit. Atomic transaction: row-locks session FOR UPDATE, asserts pre-engine counter snapshot still current (concurrent-spin guard via `session_counter_changed_retry`), debits bet via `claw-token-ledger`, inserts spin row (duplicate `(sessionId, idempotencyKey)` trips 23505 → cached replay), updates session counters (`nonceCounter++`, `cursorCounter = result.cursorAfter`, `totalStaked += bet`, `totalWon += winAmount`, `escrowAmount -= bet` capped at 0, `currentBalance += winAmount - bet`, `spinCount++`), credits winnings via `claw-token-ledger`. Idempotency replay short-circuits BEFORE engine call, BEFORE debit, BEFORE all session writes — same key always returns the same `spinId` + reels + winAmount.
+- `POST /api/casino/slots/session/close` — Lucia auth. Body `{sessionId}`. Locks session, refunds remaining `escrowAmount` (via `creditClawTokens`), sets `status='closed'`, REVEALS `serverSeed` in response. Public verifier at `POST /api/casino/slots/verify` can now replay every spin against the released seed.
+- `GET /api/casino/slots/session/:id` — Lucia auth, owner-only (403 cross-user). Returns the full session row; `serverSeed` is `null` while `status='open'`, REVEALED once closed.
+- `GET /api/casino/slots/session/:id/spins?limit=N` — Lucia auth, owner-only, paginated (default 50, max 200).
+- `GET /api/casino/slots/paytables/:id` — **public**, no auth. Returns the `classic-3x5` paytable bundle (symbols + lines + reel strips + rtp) for verifier replay.
+- `POST /api/casino/slots/verify` — **public**, pure compute. Body `{paytableId, serverSeed, clientSeed, nonce, cursor, bet}` → returns the same `SpinResult` shape the spin endpoint emits. Does NOT persist anything.
+
+**BigInt wire serialization** — `winAmount` and `winningLines[i].winAmount` are bigints in the engine. Every API response converts via `serializeSpinResult` / `serializeWinningLine` (`apps/api/src/routes/casino-slots.types.ts`) — bigints stringified, no global `BigInt.prototype.toJSON` monkey-patch.
+
+**Frontend mock (`apps/web/src/lib/casino/mock-engine.ts`)** remains live until slice 5 swaps it for the real API calls. Same `SpinResult` shape both sides.
+
+**Events emitted:** `casino.slots.session.opened`, `casino.slots.spin.executed`, `casino.slots.session.closed` — visible in `/dash` event tile once the leaderboard hook is added.
+
+**Real-money path (SOL + USDC):** Phase 6.2 (`clawville_wager` Anchor program extension — 8 new ix). Slice 3 stubs return 501 with a friendly "coming in 6.2" message.
 
 ### 18a.e. Walkable interior + slot cabinet props (Concern 6.0.5 — SHIPPED)
 
