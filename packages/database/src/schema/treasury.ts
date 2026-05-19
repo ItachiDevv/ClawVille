@@ -82,6 +82,7 @@ export const clawTokenSourceEnum = pgEnum('claw_token_source', [
   'simulation',       // autonomous avatar action (Phase 2 bridge)
   'quest',            // quest reward
   'bounty',           // bounty reward
+  'exchange',         // exchange listing escrow / release / refund (2026-05-18)
   'daily_login',      // daily login streak
   'admin',            // manual admin grant
   'x402',             // future: real USDC top-up via x402 (deferred)

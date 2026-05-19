@@ -8,6 +8,11 @@
 
 -- ─── Enums ───────────────────────────────────────────────────────────────
 
+-- Extend the existing claw_token_source enum so exchange escrow / release /
+-- refund ledger rows can use source='exchange'. ALTER TYPE ADD VALUE is
+-- idempotent via IF NOT EXISTS (Postgres ≥ 12).
+ALTER TYPE "claw_token_source" ADD VALUE IF NOT EXISTS 'exchange';
+
 DO $$ BEGIN
   CREATE TYPE "exchange_listing_type" AS ENUM ('need', 'offer');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
