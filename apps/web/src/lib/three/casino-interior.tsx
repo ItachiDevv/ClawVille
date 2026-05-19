@@ -134,15 +134,14 @@ const CASINO_VRM_TARGET_HEIGHT = 160; // wu — deliberately SMALLER than VRM_AV
 //                                       44% of H puts us level with the screen
 //                                       panels on the slot machines (nice framing).
 //
-// The camera azimuth is driven by a SEPARATE _casinoCamYaw that lerps toward
-// the avatar's facing yaw at a SLOWER rate (0.05 vs avatar's 0.15). This
-// decouples the camera from the avatar's immediate turn so that pressing A
-// or D doesn't instantly swing the full viewport by 45° — the avatar turns
-// smoothly while the camera follows with a comfortable lag.
+// The camera azimuth is FIXED at spawn yaw (Math.PI) and only changes via
+// arrow-key orbit. It is NOT coupled to the avatar's facing — that produces
+// a positive feedback loop with camera-relative strafe (see Bug 4 fix
+// 2026-05-19 in the follow-camera block below). The avatar's body still
+// rotates to face movement direction; only the camera is decoupled.
 const CAM_ABOVE  = 190;
 const CAM_BEHIND = 450;
 const CAM_LOOK_Y = 70;
-const CAM_YAW_LERP = 0.05; // camera azimuth tracks avatar yaw at 1/3 of avatar turn rate
 
 /**
  * Arrow-key orbit constants — mirror of World3DCanvas ArrowKeyRotationController.
@@ -182,10 +181,11 @@ const _meshBbox = new THREE.Box3();
 const _camTarget = new THREE.Vector3();
 const _camDesiredPos = new THREE.Vector3();
 
-// Camera yaw state — separate from avatar yaw so the camera follows with lag.
-// Initialized at Math.PI so camera starts behind spawn (avatar faces -Z = Math.PI).
-// This is module-scope (not component-scope) because CasinoVRMAvatarInner and
-// CasinoGLBAvatarInner both need it, and only one is ever mounted at a time.
+// Camera yaw anchor — STATIC spawn-direction reference (avatar faces -Z = Math.PI).
+// Bug 4 fix 2026-05-19: this is no longer auto-tracked to `rotRef.current`.
+// Camera-relative WASD + auto-track = positive feedback loop on strafe input
+// (every A/D press snapped the viewport ~45°). The camera now stays at spawn
+// yaw and only orbits via `_casinoArrowYawOffset` (arrow-key controlled).
 let _casinoCamYaw = Math.PI;
 
 // Arrow-key perspective-orbit offsets (Bug 2 fix 2026-05-19).
@@ -767,19 +767,29 @@ function CasinoVRMAvatarInner({ reg }: CasinoVRMAvatarProps) {
     group.rotation.y = rotRef.current;
 
     // Follow camera — CAM_ABOVE wu above, CAM_BEHIND wu behind.
-    // Camera azimuth uses _casinoCamYaw (lerps at CAM_YAW_LERP=0.05) plus
-    // _casinoArrowYawOffset (arrow-key orbit, persists until key released).
-    // Camera height uses CAM_ABOVE + _casinoArrowPitchOffset.
+    //
+    // Bug 4 fix 2026-05-19: camera yaw is NO LONGER coupled to avatar yaw.
+    //
+    // The previous design lerped `_casinoCamYaw` toward `rotRef.current` so
+    // the camera tracked the avatar's facing. Combined with camera-relative
+    // WASD (W = camera-forward), strafe input created a positive feedback
+    // loop: A press → avatar yaw rotates 90° to face strafe direction →
+    // camera yaw lerps to follow → camera forward rotates → strafe vector
+    // rotates → avatar yaw rotates more → ... Result: every A/D tap snapped
+    // the viewport ~45° and holding the key spun the world continuously.
+    //
+    // Fix: `_casinoCamYaw` is now a STATIC spawn-direction anchor (Math.PI)
+    // that only changes via arrow-key orbit (`_casinoArrowYawOffset`). The
+    // avatar's body still rotates to face movement direction (atan2(vx,vz)),
+    // but the camera does not auto-follow. This matches the main world's
+    // OrbitControls behavior — the camera is user-driven (arrow keys here),
+    // not avatar-driven.
+    //
     // Camera position is AABB-clamped to keep it inside the room walls.
     const slotOpen = useCasinoStore.getState().slotScreenOpen;
     if (!slotOpen) {
       const cam = camera as THREE.PerspectiveCamera;
-      // Auto-follow yaw — shortest-path lerp toward avatar facing
-      let camYawDiff = rotRef.current - _casinoCamYaw;
-      while (camYawDiff > Math.PI) camYawDiff -= Math.PI * 2;
-      while (camYawDiff < -Math.PI) camYawDiff += Math.PI * 2;
-      _casinoCamYaw += camYawDiff * CAM_YAW_LERP;
-      // Orbit yaw = auto-follow + arrow-key offset
+      // Orbit yaw = static spawn yaw + arrow-key offset (no avatar coupling)
       const orbitYaw = _casinoCamYaw + _casinoArrowYawOffset;
       const behindX = -Math.sin(orbitYaw) * CAM_BEHIND;
       const behindZ = -Math.cos(orbitYaw) * CAM_BEHIND;
@@ -935,13 +945,12 @@ function CasinoGLBAvatarInner() {
     group.rotation.y = rotRef.current;
 
     // Follow camera — same offsets as VRM branch + arrow orbit + AABB clamp.
+    // Bug 4 fix 2026-05-19: camera yaw is decoupled from avatar yaw (was a
+    // positive feedback loop with camera-relative strafe). See VRM branch
+    // for full rationale.
     const slotOpen = useCasinoStore.getState().slotScreenOpen;
     if (!slotOpen) {
       const cam = camera as THREE.PerspectiveCamera;
-      let camYawDiff = rotRef.current - _casinoCamYaw;
-      while (camYawDiff > Math.PI) camYawDiff -= Math.PI * 2;
-      while (camYawDiff < -Math.PI) camYawDiff += Math.PI * 2;
-      _casinoCamYaw += camYawDiff * CAM_YAW_LERP;
       const orbitYaw = _casinoCamYaw + _casinoArrowYawOffset;
       const behindX = -Math.sin(orbitYaw) * CAM_BEHIND;
       const behindZ = -Math.cos(orbitYaw) * CAM_BEHIND;
