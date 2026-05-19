@@ -7,5 +7,5 @@ export { default as NeonCard } from './NeonCard';
 export type { NeonCardProps } from './NeonCard';
 export { default as NeonModal } from './NeonModal';
 export type { NeonModalProps } from './NeonModal';
-export { default as BetChips } from './BetChips';
-export type { BetChipsProps } from './BetChips';
+export { default as PredictChips } from './PredictChips';
+export type { PredictChipsProps } from './PredictChips';

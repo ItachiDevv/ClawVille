@@ -62,7 +62,7 @@ export interface OpenSessionResponse {
   currency: 'clawtokens';
   serverSeedHash: string;
   clientSeed: string;
-  /** Informational snapshot of the user's chosen per-spin bet at open time. */
+  /** Informational snapshot of the user's chosen per-spin predict at open time. */
   startingBalance: string;
   /**
    * Reserved for Phase 6.2 SOL/USDC buy-in model. On the ClawTokens path
@@ -70,13 +70,13 @@ export interface OpenSessionResponse {
    * + credits independently via /spin.
    */
   escrowAmount: string;
-  bet: string;
+  predict: string;
   createdAt: string;
 }
 
 export interface SpinResponse extends SerializedSpinResult {
   spinId: string;
-  bet: string;
+  predict: string;
   /** Authoritative balance after this spin (avatar ClawTokens). */
   balance: number;
   /** Remaining escrow (Phase 6.2 SOL/USDC only; always '0' on ClawTokens path). */

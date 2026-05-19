@@ -1,11 +1,11 @@
 'use client';
 
 /**
- * BetChips — chip-style bet selector.
+ * PredictChips — chip-style predict selector.
  *
- * Renders a row of selectable bet values as poker-style chips. Active
- * chip pulses with the gold-accent ring; inactive chips show the
- * theme-color rim at low opacity. Keyboard-navigable via arrow keys.
+ * Renders a row of selectable predict values as poker-style chips.
+ * Active chip pulses with the gold-accent ring; inactive chips show
+ * the theme-color rim at low opacity. Keyboard-navigable via arrow keys.
  *
  * Used inside the SlotHUD bottom bar in place of the legacy `+/−`
  * stepper. The stepper still ships as a fallback on screens that
@@ -15,12 +15,12 @@
 import { useCallback, useRef } from 'react';
 import type { KeyboardEvent } from 'react';
 
-export interface BetChipsProps {
+export interface PredictChipsProps {
   options: number[];
   value: number;
   onChange: (next: number) => void;
   disabled?: boolean;
-  /** Accessible group label, e.g. "Bet size in ClawTokens". */
+  /** Accessible group label, e.g. "Predict size in ClawTokens". */
   ariaLabel: string;
 }
 
@@ -40,13 +40,13 @@ function chipTheme(value: number, index: number) {
   return palette[index % palette.length] ?? CHIP_THEMES[0];
 }
 
-export default function BetChips({
+export default function PredictChips({
   options,
   value,
   onChange,
   disabled,
   ariaLabel,
-}: BetChipsProps) {
+}: PredictChipsProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   const handleKey = useCallback(
