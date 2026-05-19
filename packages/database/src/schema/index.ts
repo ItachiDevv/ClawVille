@@ -42,6 +42,9 @@ export * from './tutorial-quest-claims';
 export * from './cosmetics';
 // Q3 plan §gamification dashboard — phase status (mutable via dashboard MCP).
 export * from './dashboard-phases';
+// 2026-05-18 — peer marketplace replacing gated bazaar/auction. Needs +
+// one_shot/repeatable offers. Subscriptions deferred.
+export * from './exchange';
 // Wager lobbies + escrow — mirrors deployed `clawville_wager` Anchor program.
 // On-chain is authoritative for money; these tables back FE discovery / FE
 // polling / event timelines / leaderboard hooks. See `wager.ts` header.
