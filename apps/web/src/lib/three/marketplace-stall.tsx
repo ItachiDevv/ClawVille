@@ -105,7 +105,13 @@ const MarketplaceStallInner = memo(function MarketplaceStallInner() {
       userData={{ isOccluder: true }}
       onClick={(e) => {
         e.stopPropagation();
-        useGameStore.getState().openMarketplace();
+        // Repointed 2026-05-18: was openMarketplace() (knowledge-book
+        // cross-building catalogue, now redundant with the per-building
+        // shop overlays). The Marketplace stand now opens the EXCHANGE
+        // modal — peer marketplace for Needs + Offers (one-shot or
+        // repeatable). The 3D model stays; can swap to a more
+        // marketplace-themed asset later if needed.
+        useGameStore.getState().openExchange();
       }}
       onPointerEnter={(e) => {
         e.stopPropagation();
