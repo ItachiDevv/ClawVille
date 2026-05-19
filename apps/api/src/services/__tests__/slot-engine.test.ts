@@ -15,9 +15,12 @@
 import { describe, expect, it } from 'bun:test';
 
 import {
+  BONUS_REEL_STRIPS,
+  BONUS_SYMBOLS,
   CLASSIC_LINES,
   CLASSIC_REEL_STRIPS,
   CLASSIC_SYMBOLS,
+  FREE_SPIN_RULES,
 } from '@clawville/shared';
 
 import { sampleIntFromBytes } from '../provable-rng';
@@ -26,6 +29,7 @@ import {
   evaluateReels,
   getPaytableBundle,
   runSpin,
+  wildMultiplierForDraw,
   type SymbolId,
 } from '../slot-engine';
 
@@ -776,5 +780,399 @@ describe('buildBundle invariant guards', () => {
       [0, 0, 0],
     ];
     expect(() => evaluateReels(reels, 'classic-3x5', 20n)).toThrow(/out of range/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 6.1.5 — Bundle B (classic-3x5-bonus) — scatter / wild multipliers / free spins
+//
+// These tests pin the Bundle B contract end-to-end. They are independent
+// of the classic-3x5 tests above and never touch CLASSIC_* constants.
+// ---------------------------------------------------------------------------
+
+const SCATTER = 10;
+
+describe('wildMultiplierForDraw — mapping table', () => {
+  it('draw=0 → 2× (head of 60% bucket)', () => {
+    expect(wildMultiplierForDraw(0)).toBe(2);
+  });
+  it('draw=59 → 2× (tail of 60% bucket)', () => {
+    expect(wildMultiplierForDraw(59)).toBe(2);
+  });
+  it('draw=60 → 3× (head of 30% bucket)', () => {
+    expect(wildMultiplierForDraw(60)).toBe(3);
+  });
+  it('draw=89 → 3× (tail of 30% bucket)', () => {
+    expect(wildMultiplierForDraw(89)).toBe(3);
+  });
+  it('draw=90 → 5× (head of 10% bucket)', () => {
+    expect(wildMultiplierForDraw(90)).toBe(5);
+  });
+  it('draw=99 → 5× (tail of 10% bucket)', () => {
+    expect(wildMultiplierForDraw(99)).toBe(5);
+  });
+  it('rejects out-of-range draws', () => {
+    expect(() => wildMultiplierForDraw(-1)).toThrow();
+    expect(() => wildMultiplierForDraw(100)).toThrow();
+    expect(() => wildMultiplierForDraw(1.5)).toThrow();
+  });
+});
+
+describe('bonus paytable bundle', () => {
+  it('builds with scatterId=10 and wildId=7', () => {
+    const b = getPaytableBundle('classic-3x5-bonus');
+    expect(b.id).toBe('classic-3x5-bonus');
+    expect(b.wildId).toBe(7);
+    expect(b.scatterId).toBe(10);
+    expect(b.symbols.length).toBe(11);
+    expect(b.reelStrips.length).toBe(5);
+    for (const strip of b.reelStrips) expect(strip.length).toBe(84);
+  });
+
+  it('every bonus reel strip has exactly 3 scatters', () => {
+    for (let r = 0; r < BONUS_REEL_STRIPS.length; r++) {
+      const count = BONUS_REEL_STRIPS[r]!.filter((s) => s === SCATTER).length;
+      expect(count).toBe(3);
+    }
+  });
+
+  it('scatter symbol has payouts [0,0,0,0] (line-pay path skips it)', () => {
+    const scatter = BONUS_SYMBOLS.find((s) => s.id === SCATTER)!;
+    expect(scatter.isScatter).toBe(true);
+    expect(scatter.payouts).toEqual([0, 0, 0, 0]);
+    expect(scatter.isWild).toBeUndefined();
+  });
+});
+
+describe('runSpin classic-3x5-bonus — base mode determinism', () => {
+  it('same inputs ⇒ byte-identical SpinResult including wildMultipliers + scatterPayout', () => {
+    const a = runSpin({
+      paytableId: 'classic-3x5-bonus',
+      serverSeed: SERVER_SEED_A,
+      clientSeed: CLIENT_SEED,
+      nonce: 7,
+      cursor: 100,
+      predict: 20n,
+    });
+    const b = runSpin({
+      paytableId: 'classic-3x5-bonus',
+      serverSeed: SERVER_SEED_A,
+      clientSeed: CLIENT_SEED,
+      nonce: 7,
+      cursor: 100,
+      predict: 20n,
+    });
+    expect(a.reels).toEqual(b.reels);
+    expect(a.winAmount).toBe(b.winAmount);
+    expect(a.cursorAfter).toBe(b.cursorAfter);
+    expect(a.wildMultipliers).toEqual(b.wildMultipliers);
+    expect(a.scatterPayout).toBe(b.scatterPayout);
+    expect(a.freeSpinsAwarded).toBe(b.freeSpinsAwarded);
+  });
+
+  it('classic-3x5 spins still draw no wildMultipliers + scatterPayout=0', () => {
+    // Regression — bonus-only code paths must not bleed back into the
+    // classic paytable's RTP (CI gate would catch but a unit assertion
+    // surfaces the bug at engine layer faster).
+    const r = runSpin({
+      paytableId: 'classic-3x5',
+      serverSeed: SERVER_SEED_A,
+      clientSeed: CLIENT_SEED,
+      nonce: 0,
+      cursor: 0,
+      predict: 20n,
+    });
+    expect(r.wildMultipliers).toEqual([]);
+    expect(r.scatterPayout).toBe(0n);
+    expect(r.freeSpinsAwarded).toBe(0);
+    expect(r.isFreeSpin).toBe(false);
+  });
+});
+
+describe('evaluateReels classic-3x5-bonus — scatter does NOT extend lines', () => {
+  function gridBonus(middle: SymbolId[], fill: SymbolId): SymbolId[][] {
+    if (middle.length !== 5) throw new Error('middle must be 5 entries');
+    return middle.map((m) => [fill, m, fill]);
+  }
+
+  it('Cherry,Cherry,Scatter,Cherry,Cherry on middle line pays 2-of-kind Cherry only', () => {
+    // Scatter is NOT a wild — it must BREAK the run, leaving 2 Cherries.
+    const reels = gridBonus([CHERRY, CHERRY, SCATTER, CHERRY, CHERRY], LEMON);
+    const { winningLines } = evaluateReels(reels, 'classic-3x5-bonus', 20n);
+    const mid = winningLines.find((w) => w.lineIndex === 0);
+    expect(mid).toBeDefined();
+    expect(mid!.multiplier).toBe(2); // 2-of-kind Cherry
+    expect(mid!.winAmount).toBe(2n);
+  });
+
+  it('Scatter on the leading cell of a line pays nothing (cannot be a kind)', () => {
+    const reels = gridBonus([SCATTER, CHERRY, CHERRY, CHERRY, CHERRY], LEMON);
+    const { winningLines } = evaluateReels(reels, 'classic-3x5-bonus', 20n);
+    const mid = winningLines.find((w) => w.lineIndex === 0);
+    // kindId = first non-wild, non-scatter symbol = Cherry at r=1.
+    // matchLen counted from r=0 stops on r=0 because Scatter != Cherry
+    // and Scatter != Wild. matchLen=0 → no line pay.
+    expect(mid).toBeUndefined();
+  });
+});
+
+describe('evaluateReels classic-3x5-bonus — wild multiplier products', () => {
+  function gridBonus(middle: SymbolId[], fill: SymbolId): SymbolId[][] {
+    return middle.map((m) => [fill, m, fill]);
+  }
+
+  it('Wild on the middle line with mult=3 triples a 5-of-kind Cherry line', () => {
+    // Cherry,Cherry,Wild(×3),Cherry,Cherry → 5-of-kind Cherry, baseline
+    // payout 20, with the wild contributing ×3 → line win 60n
+    // (perLinePredict=1n × 20 × 3).
+    const reels = gridBonus([CHERRY, CHERRY, WILD_ID, CHERRY, CHERRY], LEMON);
+    const { winningLines } = evaluateReels(reels, 'classic-3x5-bonus', 20n, {
+      wildMultipliers: [{ reelIndex: 2, rowIndex: 1, multiplier: 3 }],
+    });
+    const mid = winningLines.find((w) => w.lineIndex === 0)!;
+    expect(mid.multiplier).toBe(20); // raw kind multiplier
+    expect(mid.winAmount).toBe(60n); // 20 × 3
+  });
+
+  it('Two wilds on one line multiply their multipliers together (×2 × ×5 = ×10)', () => {
+    const reels = gridBonus([WILD_ID, CHERRY, WILD_ID, CHERRY, CHERRY], LEMON);
+    const { winningLines } = evaluateReels(reels, 'classic-3x5-bonus', 20n, {
+      wildMultipliers: [
+        { reelIndex: 0, rowIndex: 1, multiplier: 2 },
+        { reelIndex: 2, rowIndex: 1, multiplier: 5 },
+      ],
+    });
+    const mid = winningLines.find((w) => w.lineIndex === 0)!;
+    expect(mid.multiplier).toBe(20); // 5-of-kind Cherry
+    expect(mid.winAmount).toBe(200n); // 20 × 2 × 5
+  });
+
+  it('Wild OUTSIDE the matchLen prefix does NOT apply its multiplier', () => {
+    // Line: Cherry,Cherry,Plum (breaks run),Wild(×5),... → matchLen=2,
+    // wild at r=3 should NOT amplify. Line pays 2n.
+    const reels = gridBonus([CHERRY, CHERRY, PLUM, WILD_ID, CHERRY], LEMON);
+    const { winningLines } = evaluateReels(reels, 'classic-3x5-bonus', 20n, {
+      wildMultipliers: [{ reelIndex: 3, rowIndex: 1, multiplier: 5 }],
+    });
+    const mid = winningLines.find((w) => w.lineIndex === 0)!;
+    expect(mid.multiplier).toBe(2); // 2-of-kind Cherry
+    expect(mid.winAmount).toBe(2n);
+  });
+
+  it('throws if wildMultiplier points at a non-WILD cell (adversarial guard)', () => {
+    const reels = gridBonus([CHERRY, CHERRY, CHERRY, CHERRY, CHERRY], LEMON);
+    expect(() =>
+      evaluateReels(reels, 'classic-3x5-bonus', 20n, {
+        wildMultipliers: [{ reelIndex: 0, rowIndex: 1, multiplier: 3 }],
+      }),
+    ).toThrow(/does not sit on a WILD cell/);
+  });
+});
+
+describe('runSpin classic-3x5-bonus — scatter pay anywhere', () => {
+  it('3+ scatters anywhere → scatterPayout matches table × predict', () => {
+    // Walk many spins and assert: when scatterPayout > 0, the multiplier
+    // matches the scatter count for that spin.
+    let totalSpins = 0;
+    let hits = 0;
+    const predict = 20n;
+    let cursor = 0;
+    for (let nonce = 1; nonce < 500; nonce++) {
+      const r = runSpin({
+        paytableId: 'classic-3x5-bonus',
+        serverSeed: SERVER_SEED_A,
+        clientSeed: CLIENT_SEED,
+        nonce,
+        cursor,
+        predict,
+      });
+      cursor = r.cursorAfter;
+      totalSpins++;
+      if (r.scatterPayout > 0n) {
+        hits++;
+        // Count scatters in window.
+        let count = 0;
+        for (let reel = 0; reel < 5; reel++) {
+          for (let row = 0; row < 3; row++) {
+            if (r.reels[reel]![row] === SCATTER) count++;
+          }
+        }
+        expect(count).toBeGreaterThanOrEqual(3);
+        // 3 → 2×, 4 → 10×, 5 → 50×
+        const expectedMultiplier = count === 3 ? 2 : count === 4 ? 10 : 50;
+        expect(r.scatterPayout).toBe(predict * BigInt(expectedMultiplier));
+        // free spins awarded — base trigger = 10
+        expect(r.freeSpinsAwarded).toBe(FREE_SPIN_RULES.AWARD_BASE);
+      }
+    }
+    // Trigger rate ~1 per 96 — expect at least one hit in 500 spins.
+    expect(hits).toBeGreaterThan(0);
+    expect(totalSpins).toBe(499);
+  });
+});
+
+describe('runSpin classic-3x5-bonus — free-spin vs base mode behaviour', () => {
+  // RTP-shape lock (team-lead decision 2026-05-19):
+  //   • wild multipliers ONLY amplify line wins in free-spin mode (base
+  //     mode records them but does NOT apply them).
+  //   • `FS_LINE_WIN_MULTIPLIER=1` — no outer FS scalar on line wins.
+  //   • `FS_WILD_MULTIPLIER_DOUBLE=false` — wild multipliers emit their
+  //     raw table value (2×/3×/5×) regardless of mode.
+  //
+  // Consequence: when NO wild lands on a winning line's matchLen prefix,
+  // `fsLine === baseLine`. When a wild DOES land on the prefix, FS line
+  // win > base line win (base contributed 0× amplification, FS multiplied
+  // by the wild's value). Scatter pay is identical in both modes
+  // (industry convention: FS doesn't double scatter).
+
+  it('FS line wins >= base line wins (multipliers only apply in FS)', () => {
+    let cursorBase = 0;
+    let cursorFs = 0;
+    let fsBumpedSeen = false; // strictly-greater FS spin observed at least once
+    for (let nonce = 1; nonce < 200; nonce++) {
+      const base = runSpin({
+        paytableId: 'classic-3x5-bonus',
+        serverSeed: SERVER_SEED_A,
+        clientSeed: CLIENT_SEED,
+        nonce,
+        cursor: cursorBase,
+        predict: 20n,
+        freeSpinMode: false,
+      });
+      const fs = runSpin({
+        paytableId: 'classic-3x5-bonus',
+        serverSeed: SERVER_SEED_A,
+        clientSeed: CLIENT_SEED,
+        nonce,
+        cursor: cursorFs,
+        predict: 20n,
+        freeSpinMode: true,
+      });
+      // Reels MUST match (same RNG draws for reel sampling + wild draws).
+      expect(fs.reels).toEqual(base.reels);
+      expect(fs.cursorAfter).toBe(base.cursorAfter);
+      cursorBase = base.cursorAfter;
+      cursorFs = fs.cursorAfter;
+
+      // Line win component (excluding scatter pay).
+      const baseLine = base.winAmount - base.scatterPayout;
+      const fsLine = fs.winAmount - fs.scatterPayout;
+      // FS line wins are >= base line wins. Equal when no wild crosses
+      // the winning matchLen prefix; strictly greater when a wild does
+      // (base contributed 0× amplification, FS multiplied by the wild's
+      // table value).
+      expect(fsLine).toBeGreaterThanOrEqual(baseLine);
+      if (fsLine > baseLine) fsBumpedSeen = true;
+
+      // Scatter pay is NOT doubled in FS mode (per spec).
+      expect(fs.scatterPayout).toBe(base.scatterPayout);
+      // isFreeSpin reflects the mode.
+      expect(fs.isFreeSpin).toBe(true);
+      expect(base.isFreeSpin).toBe(false);
+      // FS retrigger awards 5 not 10.
+      if (fs.scatterPayout > 0n) {
+        expect(fs.freeSpinsAwarded).toBe(FREE_SPIN_RULES.AWARD_RETRIGGER);
+      }
+    }
+    // Across 200 nonces we expect at least one spin where a wild sat on
+    // a winning line's prefix — proving the FS amplification path is
+    // load-bearing, not dead code. (Wild density 1/84 per reel + 20
+    // paylines makes this near-certain.)
+    expect(fsBumpedSeen).toBe(true);
+  });
+
+  it('wild multiplier values are identical between base and FS (no FS doubling)', () => {
+    // Same RNG draws ⇒ same emitted multiplier value. The FS amplification
+    // happens at line-evaluation time (gated by isFreeSpin), not at the
+    // multiplier-emit step. With FS_WILD_MULTIPLIER_DOUBLE=false the
+    // emit-time value is the raw table draw in both modes.
+    let baseCursor = 0;
+    let fsCursor = 0;
+    let checked = 0;
+    for (let nonce = 1; nonce < 500 && checked < 5; nonce++) {
+      const base = runSpin({
+        paytableId: 'classic-3x5-bonus',
+        serverSeed: SERVER_SEED_A,
+        clientSeed: CLIENT_SEED,
+        nonce,
+        cursor: baseCursor,
+        predict: 20n,
+        freeSpinMode: false,
+      });
+      const fs = runSpin({
+        paytableId: 'classic-3x5-bonus',
+        serverSeed: SERVER_SEED_A,
+        clientSeed: CLIENT_SEED,
+        nonce,
+        cursor: fsCursor,
+        predict: 20n,
+        freeSpinMode: true,
+      });
+      baseCursor = base.cursorAfter;
+      fsCursor = fs.cursorAfter;
+      expect(fs.wildMultipliers.length).toBe(base.wildMultipliers.length);
+      for (let i = 0; i < base.wildMultipliers.length; i++) {
+        const b = base.wildMultipliers[i]!;
+        const f = fs.wildMultipliers[i]!;
+        expect(f.reelIndex).toBe(b.reelIndex);
+        expect(f.rowIndex).toBe(b.rowIndex);
+        // FS_WILD_MULTIPLIER_DOUBLE=false → identical values in both modes.
+        expect(f.multiplier).toBe(b.multiplier);
+        checked++;
+      }
+    }
+    // We need at least a couple multiplier draws to make the assertion
+    // non-vacuous.
+    expect(checked).toBeGreaterThan(0);
+  });
+});
+
+describe('runSpin classic-3x5-bonus — wild multiplier distribution', () => {
+  it('1000-spin empirical distribution is ~60/30/10 (within tolerance)', () => {
+    // Run many spins, count wild multiplier draws across all landed
+    // wilds, and assert the empirical share of {2×, 3×, 5×} sits inside
+    // a ±15pp band of the table values.
+    const counts: Record<number, number> = { 2: 0, 3: 0, 5: 0 };
+    let cursor = 0;
+    for (let nonce = 1; nonce <= 1000; nonce++) {
+      const r = runSpin({
+        paytableId: 'classic-3x5-bonus',
+        serverSeed: SERVER_SEED_A,
+        clientSeed: CLIENT_SEED,
+        nonce,
+        cursor,
+        predict: 20n,
+      });
+      cursor = r.cursorAfter;
+      for (const wm of r.wildMultipliers) {
+        counts[wm.multiplier] = (counts[wm.multiplier] ?? 0) + 1;
+      }
+    }
+    const total = counts[2]! + counts[3]! + counts[5]!;
+    // Need a reasonable sample — at least a few dozen wild landings.
+    expect(total).toBeGreaterThan(20);
+    const p2 = counts[2]! / total;
+    const p3 = counts[3]! / total;
+    const p5 = counts[5]! / total;
+    // ±15pp band — sample size is small (~50 landings) so binomial
+    // half-width can be ~7pp. 15pp is comfortably loose for CI.
+    expect(p2).toBeGreaterThan(0.45);
+    expect(p2).toBeLessThan(0.75);
+    expect(p3).toBeGreaterThan(0.15);
+    expect(p3).toBeLessThan(0.45);
+    expect(p5).toBeGreaterThan(0);
+    expect(p5).toBeLessThan(0.25);
+  });
+});
+
+describe('FREE_SPIN_RULES — invariants', () => {
+  it('AWARD_RETRIGGER < AWARD_BASE (retriggers cheaper than initial trigger)', () => {
+    expect(FREE_SPIN_RULES.AWARD_RETRIGGER).toBeLessThan(FREE_SPIN_RULES.AWARD_BASE);
+  });
+  it('CAP_REMAINING is large enough to chain 4 retriggers (4×5+10=30) without clipping', () => {
+    expect(FREE_SPIN_RULES.CAP_REMAINING).toBeGreaterThanOrEqual(50);
+  });
+  it('TRIGGER_THRESHOLD is 3', () => {
+    expect(FREE_SPIN_RULES.TRIGGER_THRESHOLD).toBe(3);
   });
 });

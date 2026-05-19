@@ -38,9 +38,20 @@ import {
   CLASSIC_LINES,
   CLASSIC_REEL_STRIPS,
   CLASSIC_SYMBOLS,
+  BONUS_REEL_STRIPS,
+  BONUS_SYMBOLS,
+  FREE_SPIN_RULES,
+  SCATTER_PAY_TABLE,
+  WILD_MULTIPLIER_TABLE,
 } from '@clawville/shared';
 
-import type { SpinResult, WinningLine, SymbolId, MachineSlug } from './types';
+import type {
+  SpinResult,
+  WinningLine,
+  WildMultiplier,
+  SymbolId,
+  MachineSlug,
+} from './types';
 
 // ---------------------------------------------------------------------------
 // Constants — must match `apps/api/src/services/provable-rng.ts` exactly.
@@ -94,6 +105,43 @@ export interface RunSpinLocalArgs {
   nonce: number;
   cursor: number;
   predict: bigint;
+  /**
+   * Phase 6.1.5 (Bundle B) — when true, evaluate as a FREE spin:
+   *   • line wins are multiplied by `FREE_SPIN_RULES.FS_LINE_WIN_MULTIPLIER`
+   *     (1 in the shipped rules — line wins NOT doubled per the RTP-shape
+   *     decision; see `slot-paytables.ts` commentary).
+   *   • wild multiplier products amplify line wins crossing those cells.
+   *   • per-Wild multiplier values are doubled iff
+   *     `FREE_SPIN_RULES.FS_WILD_MULTIPLIER_DOUBLE` is true (false in
+   *     the shipped rules).
+   *   • scatter pay-anywhere is NOT doubled in FS mode.
+   *   • a 3+ scatter retrigger awards `FREE_SPIN_RULES.AWARD_RETRIGGER`
+   *     spins (vs. `AWARD_BASE` in base mode).
+   *
+   * Default false. ALWAYS false on `classic-3x5` (no bonus paytable).
+   */
+  freeSpinMode?: boolean;
+}
+
+/**
+ * Phase 6.1.5 — options passed to `evaluateReelsLocal` so the bonus
+ * paytable can apply wild multipliers + free-spin line scalar without
+ * changing the existing slice-2 call site. Defaults reproduce slice-2
+ * line math byte-for-byte (empty wilds + scalar=1).
+ */
+export interface EvaluateReelsLocalOptions {
+  /**
+   * Per-cell wild multipliers (output of `runSpinLocal`'s wild-detection
+   * pass). Engine multiplies a line's payout by the PRODUCT of any wild
+   * multipliers that sit on the matchLen prefix of that line.
+   */
+  wildMultipliers?: readonly WildMultiplier[];
+  /**
+   * Scalar applied to every line win AFTER wild-multiplier products.
+   * In free-spin mode this is `FREE_SPIN_RULES.FS_LINE_WIN_MULTIPLIER`
+   * (1 in the shipped rules). 1 in base mode.
+   */
+  freeSpinLineMultiplier?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -341,29 +389,53 @@ export async function sampleIntFromBytes(
 
 // ---------------------------------------------------------------------------
 // Paytable lookup — local mirror of the server's `PaytableBundle`.
+// Phase 6.1.5 adds `classic-3x5-bonus` with the scatter id pre-resolved
+// from the BONUS_SYMBOLS table so the runSpin path can branch cheaply.
 // ---------------------------------------------------------------------------
 
 interface VerifierBundle {
   id: MachineSlug;
-  symbols: typeof CLASSIC_SYMBOLS;
+  symbols: readonly { id: number; isWild?: boolean; isScatter?: boolean; payouts: readonly number[] }[];
   lines: typeof CLASSIC_LINES;
-  reelStrips: typeof CLASSIC_REEL_STRIPS;
+  reelStrips: readonly (readonly number[])[];
   wildId: SymbolId;
+  /**
+   * Bundle B — scatter symbol id, or null if the paytable has no scatter
+   * (classic-3x5). Set ONCE here from `isScatter` flag.
+   */
+  scatterId: SymbolId | null;
 }
 
-const CLASSIC_WILD_ID = CLASSIC_SYMBOLS.find((s) => s.isWild)?.id ?? -1;
-if (CLASSIC_WILD_ID < 0) {
-  throw new Error('verifier: classic-3x5 paytable has no wild symbol');
+function buildVerifierBundle(
+  id: MachineSlug,
+  symbols: readonly { id: number; isWild?: boolean; isScatter?: boolean; payouts: readonly number[] }[],
+  lines: typeof CLASSIC_LINES,
+  reelStrips: readonly (readonly number[])[],
+): VerifierBundle {
+  const wild = symbols.find((s) => s.isWild);
+  if (!wild) throw new Error(`verifier: paytable '${id}' has no wild symbol`);
+  const scatters = symbols.filter((s) => s.isScatter);
+  if (scatters.length > 1) {
+    throw new Error(`verifier: paytable '${id}' has ${scatters.length} scatter symbols — at most one supported`);
+  }
+  const scatterId = scatters[0]?.id ?? null;
+  if (scatterId !== null && symbols[scatterId]?.isWild) {
+    throw new Error(`verifier: paytable '${id}' scatter id=${scatterId} is also wild — cannot be both`);
+  }
+  if (reelStrips.length !== 5) {
+    throw new Error(`verifier: paytable '${id}' must have exactly 5 reel strips`);
+  }
+  return { id, symbols, lines, reelStrips, wildId: wild.id, scatterId };
 }
 
 const BUNDLES: Record<MachineSlug, VerifierBundle> = {
-  'classic-3x5': {
-    id: 'classic-3x5',
-    symbols: CLASSIC_SYMBOLS,
-    lines: CLASSIC_LINES,
-    reelStrips: CLASSIC_REEL_STRIPS,
-    wildId: CLASSIC_WILD_ID,
-  },
+  'classic-3x5': buildVerifierBundle('classic-3x5', CLASSIC_SYMBOLS, CLASSIC_LINES, CLASSIC_REEL_STRIPS),
+  'classic-3x5-bonus': buildVerifierBundle(
+    'classic-3x5-bonus',
+    BONUS_SYMBOLS,
+    CLASSIC_LINES,
+    BONUS_REEL_STRIPS,
+  ),
 };
 
 export function getVerifierBundle(paytableId: MachineSlug): VerifierBundle {
@@ -374,6 +446,30 @@ export function getVerifierBundle(paytableId: MachineSlug): VerifierBundle {
   return bundle;
 }
 
+/**
+ * Map a `sampleIntFromBytes(range=100)` draw → wild multiplier tier.
+ * Mirrors server `wildMultiplierForDraw`. Buckets are cumulative; the
+ * first tier whose `cum` strictly exceeds the draw wins.
+ *
+ * With the shipped table `[{cum:60,2},{cum:90,3},{cum:100,5}]`:
+ *   draws  0..59  → 2×
+ *   draws 60..89  → 3×
+ *   draws 90..99  → 5×
+ */
+export function wildMultiplierForDrawLocal(draw: number): number {
+  if (!Number.isInteger(draw) || draw < 0 || draw >= 100) {
+    throw new Error(
+      `verifier.wildMultiplierForDraw: expects 0 <= draw < 100, got ${draw}`,
+    );
+  }
+  for (const tier of WILD_MULTIPLIER_TABLE) {
+    if (draw < tier.cum) return tier.multiplier;
+  }
+  throw new Error(
+    `verifier.wildMultiplierForDraw: WILD_MULTIPLIER_TABLE does not cover draw=${draw}`,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // evaluateReelsLocal — synchronous, mirrors server `evaluateReels`.
 // ---------------------------------------------------------------------------
@@ -382,6 +478,7 @@ export function evaluateReelsLocal(
   reels: readonly (readonly SymbolId[])[],
   paytableId: MachineSlug,
   predict: bigint,
+  options: EvaluateReelsLocalOptions = {},
 ): { winningLines: WinningLine[]; winAmount: bigint } {
   const bundle = getVerifierBundle(paytableId);
   if (typeof predict !== 'bigint') {
@@ -414,6 +511,44 @@ export function evaluateReelsLocal(
     }
   }
 
+  const wildMultipliers = options.wildMultipliers ?? [];
+  const freeSpinLineMultiplier = options.freeSpinLineMultiplier ?? 1;
+  if (!Number.isInteger(freeSpinLineMultiplier) || freeSpinLineMultiplier < 1) {
+    throw new Error(
+      `verifier.evaluateReels: freeSpinLineMultiplier must be a positive integer, got ${freeSpinLineMultiplier}`,
+    );
+  }
+  // Adversarial guard mirroring server: every passed wild multiplier
+  // must sit on an actual WILD cell. Mismatch = caller lying about the
+  // grid, which would inflate the payout.
+  for (const wm of wildMultipliers) {
+    if (
+      !Number.isInteger(wm.reelIndex) || wm.reelIndex < 0 || wm.reelIndex >= 5 ||
+      !Number.isInteger(wm.rowIndex) || wm.rowIndex < 0 || wm.rowIndex >= 3
+    ) {
+      throw new Error(
+        `verifier.evaluateReels: wildMultiplier index out of range: reel=${wm.reelIndex}, row=${wm.rowIndex}`,
+      );
+    }
+    if (reels[wm.reelIndex]![wm.rowIndex] !== bundle.wildId) {
+      throw new Error(
+        `verifier.evaluateReels: wildMultiplier at (${wm.reelIndex},${wm.rowIndex}) does not sit on a WILD cell`,
+      );
+    }
+    if (!Number.isInteger(wm.multiplier) || wm.multiplier <= 0) {
+      throw new Error(
+        `verifier.evaluateReels: wildMultiplier.multiplier must be a positive integer, got ${wm.multiplier}`,
+      );
+    }
+  }
+
+  // Fast (reel,row) → multiplier lookup for the matchLen scan. Empty when
+  // no wildMultipliers passed (classic-3x5 + base bonus spins).
+  const wmLookup = new Map<number, number>();
+  for (const wm of wildMultipliers) {
+    wmLookup.set(wm.reelIndex * 3 + wm.rowIndex, wm.multiplier);
+  }
+
   const perLinePredict = predict / lineCount;
   const winningLines: WinningLine[] = [];
   let totalWin = 0n;
@@ -424,18 +559,28 @@ export function evaluateReelsLocal(
       lineSymbols[r] = reels[r]![line.rows[r]]!;
     }
 
+    // kindId = first non-wild, non-scatter symbol on the line.
+    // Scatter NEVER counts as kind (its payouts are all zero anyway,
+    // but explicit skip keeps the intent obvious + prevents accidental
+    // scatter-line-match inflation when payouts table is later edited).
     let kindId: SymbolId | undefined;
     for (let r = 0; r < 5; r++) {
-      if (lineSymbols[r] !== bundle.wildId) {
-        kindId = lineSymbols[r];
+      const sym = lineSymbols[r]!;
+      if (sym !== bundle.wildId && sym !== bundle.scatterId) {
+        kindId = sym;
         break;
       }
     }
-    if (kindId === undefined) kindId = bundle.wildId;
+    if (kindId === undefined) {
+      kindId = bundle.wildId;
+    }
 
+    // Scatter BREAKS the prefix run. A run "Cherry,Cherry,Scatter,Cherry"
+    // pays 2-of-kind Cherry, NOT 4-of-kind. This mirrors the server.
     let matchLen = 0;
     for (let r = 0; r < 5; r++) {
       const sym = lineSymbols[r]!;
+      if (sym === bundle.scatterId) break;
       if (sym === kindId || sym === bundle.wildId) {
         matchLen++;
       } else {
@@ -449,7 +594,28 @@ export function evaluateReelsLocal(
     const multiplier = symDef.payouts[matchLen - 2] ?? 0;
     if (multiplier <= 0) continue;
 
-    const lineWin = perLinePredict * BigInt(multiplier);
+    let lineWin = perLinePredict * BigInt(multiplier);
+
+    // Bundle B — multiply by the product of any wild multipliers on the
+    // matchLen prefix of this line. No-op when wmLookup is empty.
+    if (wmLookup.size > 0) {
+      for (let r = 0; r < matchLen; r++) {
+        const cellRow = line.rows[r]!;
+        const key = r * 3 + cellRow;
+        const wm = wmLookup.get(key);
+        if (wm !== undefined) {
+          lineWin *= BigInt(wm);
+        }
+      }
+    }
+
+    // Bundle B free-spin line scalar (1 in shipped rules — effectively
+    // a no-op when FS_LINE_WIN_MULTIPLIER=1). Branch kept so re-enabling
+    // doubling later only requires a constant flip.
+    if (freeSpinLineMultiplier !== 1) {
+      lineWin *= BigInt(freeSpinLineMultiplier);
+    }
+
     winningLines.push({
       lineIndex: line.id,
       symbols: lineSymbols,
@@ -484,6 +650,9 @@ export async function runSpinLocal(args: RunSpinLocalArgs): Promise<SpinResult> 
     throw new Error(`verifier.runSpin: cursor must be a non-negative integer, got ${args.cursor}`);
   }
 
+  const isFreeSpin = args.freeSpinMode === true;
+
+  // ---- Reel sampling (5 reel stops) ----
   const reels: SymbolId[][] = new Array(5);
   let cursor = args.cursor;
   for (let r = 0; r < 5; r++) {
@@ -505,14 +674,101 @@ export async function runSpinLocal(args: RunSpinLocalArgs): Promise<SpinResult> 
     reels[r] = [top, middle, bottom];
   }
 
-  const { winningLines, winAmount } = evaluateReelsLocal(reels, args.paytableId, args.predict);
+  // ---- Wild multiplier draws (bonus paytable only) ----
+  // Walk the visible window in (reel, row) order. Each landed WILD
+  // consumes ONE more `sampleIntFromBytes(range=100)` call. Server runs
+  // these draws on the bonus paytable regardless of mode (cursor advances
+  // identically in base + FS — only the applied scalar differs).
+  //
+  // Detection key: `scatterId !== null` — classic-3x5 has no scatter, so
+  // no multiplier draws happen there (preserving slice-2 cursor math
+  // byte-for-byte). Mirrors server `isBonusPaytable` flag.
+  const wildMultipliers: WildMultiplier[] = [];
+  const isBonusPaytable = bundle.scatterId !== null;
+  if (isBonusPaytable) {
+    for (let r = 0; r < 5; r++) {
+      for (let row = 0; row < 3; row++) {
+        if (reels[r]![row] !== bundle.wildId) continue;
+        // eslint-disable-next-line no-await-in-loop -- sequential cursor advancement
+        const { value: draw, bytesConsumed } = await sampleIntFromBytes({
+          serverSeed: args.serverSeed,
+          clientSeed: args.clientSeed,
+          nonce: args.nonce,
+          cursorStart: cursor,
+          min: 0,
+          max: 100,
+        });
+        cursor += bytesConsumed;
+        const baseMultiplier = wildMultiplierForDrawLocal(draw);
+        // In FS mode emit the doubled value iff the rules flag says so;
+        // otherwise emit the raw draw (informational in base mode).
+        // Server applies the SAME logic in `runSpin` — verifier must
+        // match byte-identically.
+        const effectiveMultiplier = isFreeSpin && FREE_SPIN_RULES.FS_WILD_MULTIPLIER_DOUBLE
+          ? baseMultiplier * 2
+          : baseMultiplier;
+        wildMultipliers.push({
+          reelIndex: r,
+          rowIndex: row,
+          multiplier: effectiveMultiplier,
+        });
+      }
+    }
+  }
+
+  // ---- Win evaluation ----
+  // Bundle B: pass wildMultipliers + FS scalar ONLY in free-spin mode
+  // (per the RTP-shape decision — see slot-paytables.ts commentary).
+  // Base mode reproduces slice-2 line math byte-for-byte (empty wilds +
+  // scalar=1).
+  const evalOptions: EvaluateReelsLocalOptions = isFreeSpin
+    ? {
+        wildMultipliers,
+        freeSpinLineMultiplier: FREE_SPIN_RULES.FS_LINE_WIN_MULTIPLIER,
+      }
+    : {};
+  const { winningLines, winAmount: lineWinTotal } = evaluateReelsLocal(
+    reels,
+    args.paytableId,
+    args.predict,
+    evalOptions,
+  );
+
+  // ---- Scatter pay-anywhere (bonus paytable only) ----
+  let scatterPayout = 0n;
+  let freeSpinsAwarded = 0;
+  if (bundle.scatterId !== null) {
+    let scatterCount = 0;
+    for (let r = 0; r < 5; r++) {
+      for (let row = 0; row < 3; row++) {
+        if (reels[r]![row] === bundle.scatterId) scatterCount++;
+      }
+    }
+    if (scatterCount >= FREE_SPIN_RULES.TRIGGER_THRESHOLD) {
+      // Pay multiplier on TOTAL PREDICT (not perLine). Clamp to table
+      // length to avoid OOB on a future 6-of-kind misprint.
+      const tier =
+        SCATTER_PAY_TABLE[Math.min(scatterCount, SCATTER_PAY_TABLE.length - 1)] ?? 0;
+      scatterPayout = args.predict * BigInt(tier);
+      // Free spin award: base trigger = 10 outside FS, +5 retrigger inside.
+      // Engine emits per-spin award; SESSION cap (`CAP_REMAINING`) is the
+      // route's responsibility — verifier replays per-spin value as-is.
+      freeSpinsAwarded = isFreeSpin
+        ? FREE_SPIN_RULES.AWARD_RETRIGGER
+        : FREE_SPIN_RULES.AWARD_BASE;
+    }
+  }
+
+  const winAmount = lineWinTotal + scatterPayout;
 
   return {
     reels,
     winningLines,
     winAmount,
-    freeSpinsAwarded: 0,
-    isFreeSpin: false,
+    freeSpinsAwarded,
+    isFreeSpin,
+    wildMultipliers,
+    scatterPayout,
     cursorAfter: cursor,
   };
 }
@@ -528,11 +784,26 @@ export interface SpinReplayInput {
   nonce: number;
   cursor: number;
   predict: bigint;
+  /**
+   * Phase 6.1.5 — was this spin executed in free-spin mode? Drives FS
+   * cursor + payout math. Required for replay correctness; the session
+   * verifier page reads `spin.isFreeSpin` (defaulting to false on legacy
+   * classic-3x5 rows where the column may be absent).
+   */
+  freeSpinMode?: boolean;
   /** What the server stored for this spin (already-serialized winAmount string). */
   expected: {
     reels: SymbolId[][];
     winAmount: string;
     cursorAfter: number;
+    /**
+     * Phase 6.1.5 — server-recorded wild multipliers + scatter payout.
+     * Optional so legacy classic-3x5 rows (no wildMultipliers/scatterPayout
+     * column) still replay green. When present, the verifier deep-compares.
+     */
+    wildMultipliers?: readonly WildMultiplier[];
+    scatterPayout?: string;
+    freeSpinsAwarded?: number;
   };
 }
 
@@ -550,6 +821,7 @@ export async function replaySpin(input: SpinReplayInput): Promise<SpinReplayVerd
     nonce: input.nonce,
     cursor: input.cursor,
     predict: input.predict,
+    freeSpinMode: input.freeSpinMode,
   });
 
   const reasons: string[] = [];
@@ -582,6 +854,41 @@ export async function replaySpin(input: SpinReplayInput): Promise<SpinReplayVerd
     reasons.push(
       `cursorAfter mismatch: computed=${computed.cursorAfter}, expected=${input.expected.cursorAfter}`,
     );
+  }
+
+  // Bundle B — only compare when the server sent these (legacy rows lack
+  // them). Missing fields ⇒ skip rather than spuriously fail.
+  if (input.expected.wildMultipliers !== undefined) {
+    const expWilds = input.expected.wildMultipliers;
+    if (expWilds.length !== computed.wildMultipliers.length) {
+      reasons.push(
+        `wildMultipliers length mismatch: computed=${computed.wildMultipliers.length}, expected=${expWilds.length}`,
+      );
+    } else {
+      for (let i = 0; i < expWilds.length; i++) {
+        const a = computed.wildMultipliers[i]!;
+        const b = expWilds[i]!;
+        if (a.reelIndex !== b.reelIndex || a.rowIndex !== b.rowIndex || a.multiplier !== b.multiplier) {
+          reasons.push(
+            `wildMultipliers[${i}] mismatch: computed=(${a.reelIndex},${a.rowIndex},×${a.multiplier}), expected=(${b.reelIndex},${b.rowIndex},×${b.multiplier})`,
+          );
+        }
+      }
+    }
+  }
+  if (input.expected.scatterPayout !== undefined) {
+    if (computed.scatterPayout.toString() !== input.expected.scatterPayout) {
+      reasons.push(
+        `scatterPayout mismatch: computed=${computed.scatterPayout.toString()}, expected=${input.expected.scatterPayout}`,
+      );
+    }
+  }
+  if (input.expected.freeSpinsAwarded !== undefined) {
+    if (computed.freeSpinsAwarded !== input.expected.freeSpinsAwarded) {
+      reasons.push(
+        `freeSpinsAwarded mismatch: computed=${computed.freeSpinsAwarded}, expected=${input.expected.freeSpinsAwarded}`,
+      );
+    }
   }
 
   return { ok: reasons.length === 0, reasons, computed };

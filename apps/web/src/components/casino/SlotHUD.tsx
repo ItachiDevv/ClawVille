@@ -37,6 +37,18 @@ export interface SlotHUDProps {
   isLockedOut?: boolean;
   autoplayCount: number | 'until-cashout' | 'until-big-win';
   isMuted: boolean;
+  /**
+   * Phase 6.1.5 — true while the session is in free-spin mode (i.e.
+   * `mode === 'free-spin'` on the most-recent SpinResponse). Drives the
+   * spin button label swap ("SPIN" → "FREE SPIN") and gates the FS
+   * counter chip.
+   */
+  inFreeSpin?: boolean;
+  /**
+   * Phase 6.1.5 — unspent free-spin balance from the most-recent
+   * SpinResponse. Shown next to the button as `× N` when > 0.
+   */
+  freeSpinsRemaining?: number;
   onPredictChange: (predict: number) => void;
   onSpin: () => void;
   onAutoplayChange: (count: number | 'until-cashout' | 'until-big-win') => void;
@@ -102,6 +114,8 @@ export default function SlotHUD({
   isLockedOut = false,
   autoplayCount,
   isMuted,
+  inFreeSpin = false,
+  freeSpinsRemaining = 0,
   onPredictChange,
   onSpin,
   onAutoplayChange,
@@ -275,13 +289,22 @@ export default function SlotHUD({
         </div>
 
         {/* SPIN button */}
-        <div className="cv-hud-spin-row" style={{ display: 'flex', justifyContent: 'center', flex: '0 0 auto' }}>
+        <div
+          className="cv-hud-spin-row"
+          style={{
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            gap: 'var(--cv-space-2)',
+            flex: '0 0 auto',
+          }}
+        >
           <NeonButton
             variant="primary"
             size="lg"
             onClick={disabled ? undefined : onSpin}
             disabled={disabled}
-            aria-label={SPIN_LABEL[spinState]}
+            aria-label={spinState === 'ready' && inFreeSpin ? 'FREE SPIN' : SPIN_LABEL[spinState]}
             style={{
               minWidth: 160,
               animation:
@@ -291,10 +314,48 @@ export default function SlotHUD({
                 : undefined,
               fontSize: 18,
               letterSpacing: '0.2em',
+              /* Phase 6.1.5 — distinct gold tint when the next spin is
+                 a free spin so the player notices the predict won't
+                 debit. Layered on top of the variant gradient. */
+              ...(spinState === 'ready' && inFreeSpin
+                ? {
+                    boxShadow:
+                      '0 0 18px var(--cv-gold-accent, #ffc857), 0 0 36px rgba(255, 200, 87, 0.55)',
+                    borderColor: 'var(--cv-gold-accent, #ffc857)',
+                  }
+                : {}),
             }}
           >
-            {SPIN_LABEL[spinState]}
+            {spinState === 'ready' && inFreeSpin ? 'FREE SPIN' : SPIN_LABEL[spinState]}
           </NeonButton>
+
+          {/* Phase 6.1.5 — unspent free-spin counter chip. Shown only
+              when the session has free spins in the bank, regardless
+              of whether this particular spin is FS (so the player can
+              see the remaining count winding down). */}
+          {freeSpinsRemaining > 0 && (
+            <div
+              role="status"
+              aria-label={`${freeSpinsRemaining} free spins remaining`}
+              style={{
+                padding: '6px 12px',
+                borderRadius: 'var(--cv-radius-pill, 999px)',
+                background:
+                  'linear-gradient(180deg, rgba(10,20,40,0.95) 0%, rgba(5,10,24,0.97) 100%)',
+                border: '2px solid var(--cv-gold-accent, #ffc857)',
+                color: 'var(--cv-gold-bright, #ffd684)',
+                fontFamily: 'monospace',
+                fontSize: 12,
+                fontWeight: 900,
+                letterSpacing: '0.1em',
+                textShadow: '0 0 8px rgba(255, 200, 87, 0.7)',
+                boxShadow: '0 0 12px rgba(255, 200, 87, 0.4)',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              FS × {freeSpinsRemaining}
+            </div>
+          )}
         </div>
 
         {/* Autoplay select */}

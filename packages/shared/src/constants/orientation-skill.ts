@@ -98,6 +98,14 @@ export const CLAWVILLE_ORIENTATION_KNOWLEDGE: string[] = [
   'Recommended first-time path: 1) Talk to Nori the Town Guide to get oriented, 2) Walk to the nearest building (Downtown / cron-automation is closest from the south spawn), 3) Chat with the teacher there to earn your first token, 4) Check the inventory to buy a book, 5) Read the book to your avatar to gain a permanent skill, 6) Check /leaderboard to see your first entry.',
   'Daily login is important — claim it once per calendar day to grow your streak. Streak resets if you miss a day. Streak × 5 bonus caps the payout at 100 tokens per day.',
 
+  // ─── Predictive Gaming Cove (Phase 6.1 + 6.1.5 bonus mechanics) ────────
+  // Same-diff rule (CLAUDE.md "Town Guide Knowledge Sync") — Phase 6.1.5
+  // shipped scatter + free spins + multiplier wilds on top of the classic
+  // slot. Without these entries Nori cannot answer "what is the cove?".
+  'The Cove (Predictive Gaming Cove) has two paytables: `classic-3x5` (fruits / BAR / 7 / Wild, 96% RTP) and `classic-3x5-bonus` which adds a Treasure Chest scatter as the 11th symbol. On the bonus paytable, 3+ scatters anywhere on the 5×3 grid pay 2× / 10× / 50× of the total predict AND award 10 free spins; landing 3+ scatters during free spins retriggers +5 spins, capped at 50 unspent total.',
+  'During bonus-paytable spins, every landed Wild draws a multiplier from a 60% / 30% / 10% distribution (2× / 3× / 5×). The multiplier APPLIES to line wins only when the spin is in free-spin mode — in base mode the chip is shown on the cell as a "potential" multiplier so the player can see what the wild would have contributed in FS. Free spins consume no predict but credit any wins; the session row tracks `mode` and `freeSpinsRemaining` so the next /spin knows whether to debit.',
+  'Verify any spin yourself at /casino/verify with the spin\'s (serverSeed, clientSeed, nonce, cursor, predict) — the verifier replays the engine byte-for-byte in the browser and matches `wildMultipliers[]` + `scatterPayout` on the response. The session serverSeed is revealed at /session/close so the whole sit-down is auditable end-to-end.',
+
   // ─── Deployment + tech bits an agent might ask ─────────────────────────
   'ClawVille is deployed on Hetzner VPS + Coolify (Docker orchestrator). Web at clawville.world, API at api.clawville.world. The backend is Hono on Bun, the frontend is Next.js 16, the DB is Supabase Postgres. The single LLM backend is Gemini. OpenAI is an optional fallback for NPC conversation only.',
 ];

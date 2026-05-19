@@ -27,7 +27,7 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { MachineSlug, SymbolId, WinningLine } from './types';
+import type { MachineSlug, SymbolId, WildMultiplier, WinningLine } from './types';
 
 // ---------------------------------------------------------------------------
 // Env + helper
@@ -97,6 +97,17 @@ export interface SerializedWinningLineWire {
   multiplier: number;
 }
 
+/**
+ * Phase 6.1.5 — serialized mirror of the server `WildMultiplier`. No
+ * bigint fields, so structurally identical to the runtime type; kept
+ * separate so a future change (e.g. percent-fraction) stays wire-typed.
+ */
+export interface SerializedWildMultiplierWire {
+  reelIndex: number;
+  rowIndex: number;
+  multiplier: number;
+}
+
 export interface SpinResponse {
   spinId: string;
   reels: SymbolId[][];
@@ -104,6 +115,32 @@ export interface SpinResponse {
   winAmount: string;
   freeSpinsAwarded: number;
   isFreeSpin: boolean;
+  /**
+   * Phase 6.1.5 (Bundle B) — per-landed-Wild multiplier. ALWAYS present
+   * (server contract locked 2026-05-19). Empty array on `classic-3x5`
+   * paytable and on bonus paytable when no wild lands.
+   * Per server contract: raw table draw (2/3/5), NEVER doubled in FS.
+   */
+  wildMultipliers: SerializedWildMultiplierWire[];
+  /**
+   * Phase 6.1.5 (Bundle B) — scatter pay-anywhere payout (stringified
+   * bigint, atomic units). `'0'` when fewer than 3 scatters land.
+   * ALWAYS present (server contract locked 2026-05-19).
+   */
+  scatterPayout: string;
+  /**
+   * Phase 6.1.5 — session-level bonus mode AFTER this spin. ALWAYS
+   * present (server contract locked 2026-05-19).
+   *   • 'base'      — predict-debiting spins.
+   *   • 'free-spin' — NEXT spin is free; frontend swaps button label.
+   */
+  mode: 'base' | 'free-spin';
+  /**
+   * Phase 6.1.5 — unspent free-spin balance AFTER this spin. ALWAYS
+   * present (server contract locked 2026-05-19). Server-enforced cap
+   * = `FREE_SPIN_RULES.CAP_REMAINING` (50).
+   */
+  freeSpinsRemaining: number;
   cursorAfter: number;
   predict: string;
   balance: number;
@@ -177,8 +214,12 @@ export interface SessionSpinRow {
   reels: SymbolId[][];
   winningLines: SerializedWinningLineWire[];
   winAmount: string;
-  wildMultipliers: unknown[];
+  /** Phase 6.1.5 — per-landed-Wild multipliers. `[]` on classic-3x5. */
+  wildMultipliers: SerializedWildMultiplierWire[];
+  /** Phase 6.1.5 — scatter pay-anywhere (stringified bigint, atomic units). */
   scatterPayout: string;
+  /** Phase 6.1.5 — free spins awarded by this spin (0 if no trigger). */
+  freeSpinsAwarded?: number;
   idempotencyKey: string;
   createdAt: string;
 }
@@ -236,6 +277,16 @@ export function spinResponseToSpinResult(res: SpinResponse): SpinResult {
     winAmount: BigInt(res.winAmount),
     freeSpinsAwarded: res.freeSpinsAwarded,
     isFreeSpin: res.isFreeSpin,
+    // Phase 6.1.5 — wire fields are required on the locked contract;
+    // classic-3x5 paytable still returns `[]` / `'0'` (server-side).
+    wildMultipliers: res.wildMultipliers.map(
+      (w): WildMultiplier => ({
+        reelIndex: w.reelIndex,
+        rowIndex: w.rowIndex,
+        multiplier: w.multiplier,
+      }),
+    ),
+    scatterPayout: BigInt(res.scatterPayout),
     cursorAfter: res.cursorAfter,
   };
 }
