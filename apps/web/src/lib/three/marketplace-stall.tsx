@@ -38,9 +38,10 @@ useGLTF.preload('/models/marketplace-food-stall.glb');
 const STALL_X = 800;
 const STALL_Z = 300;
 
-// Target visual height — slightly larger than the bazaar to give the more
-// elaborate food stall structure visual presence.
-const TARGET_HEIGHT_WU = 450;
+// Target visual height — slightly larger than the bazaar.
+// 2026-05-19: bumped 450→1300 to match the building ring scale (see
+// bazaar-stall.tsx for rationale).
+const TARGET_HEIGHT_WU = 1300;
 
 // ---------------------------------------------------------------------------
 // Scale helper — same algorithm as arena-location-npcs.tsx computeNormalizedScale.
