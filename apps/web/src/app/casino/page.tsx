@@ -27,6 +27,7 @@
 
 import { useCallback } from 'react';
 import dynamic from 'next/dynamic';
+import Link from 'next/link';
 import SceneTransition, { useSceneTransition } from '@/components/transitions/SceneTransition';
 import SlotScreenModal from '@/components/casino/SlotScreenModal';
 
@@ -167,6 +168,36 @@ export default function CasinoPage() {
       >
         Back to World
       </button>
+
+      {/* Provably-fair verifier link — top-right, mirrors the Back button style. */}
+      <Link
+        href="/casino/verify"
+        target="_blank"
+        rel="noopener noreferrer"
+        style={{
+          position: 'absolute',
+          top: 16,
+          right: 16,
+          zIndex: 50,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '10px 18px',
+          background: 'rgba(10, 0, 21, 0.82)',
+          backdropFilter: 'blur(6px)',
+          border: '1px solid rgba(0, 255, 224, 0.35)',
+          borderRadius: 10,
+          color: '#00ffe0',
+          fontWeight: 700,
+          fontSize: 14,
+          fontFamily: 'monospace',
+          textDecoration: 'none',
+          letterSpacing: '0.04em',
+          transition: 'border-color 0.2s, background 0.2s',
+        }}
+      >
+        🔐 Verify
+      </Link>
 
       {/* 2D Slot Screen Modal — DOM overlay, renders on top of 3D canvas.
           z-index 9990 ensures it layers above the Canvas (z-index ~0) but below
