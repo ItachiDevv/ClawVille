@@ -26,6 +26,73 @@
   background-position: 0 0, 20px 30px;
 }
 
+/* ─── Bio-luminescent label animations ──────────────────────────────────── */
+
+/* Anchor dot pulse — 2.4s, staggered per-label via animation-delay on consumer.
+   Only transform + opacity are animated here — both are compositor-only properties
+   that avoid paint invalidation on Iris Xe with ~42 concurrent pulsing dots.
+   The glow effect lives on the ::after pseudo-element (see .bio-anchor::after). */
+@keyframes bio-pulse {
+  0%, 100% {
+    opacity: 0.45;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+/* Glow halo pulse for the anchor dot pseudo-element — opacity-only, compositor safe. */
+@keyframes bio-glow-pulse {
+  0%, 100% { opacity: 0.45; }
+  50%       { opacity: 1; }
+}
+
+/* OpenClaw agent status dot pulse — slightly different cadence (1.6s vs 2.4s)
+   so it doesn't phase-lock with the anchor dot. Opacity-only → compositor safe. */
+@keyframes oc-pulse {
+  0%, 100% { opacity: 0.7; }
+  50%       { opacity: 1; }
+}
+
+/* Capsule idle drift — 5.4s, ±2.5px vertical float */
+@keyframes bio-drift {
+  0%, 100% { transform: translateY(0); }
+  50%       { transform: translateY(-2.5px); }
+}
+
+/* ── Anchor dot — split glow onto ::after for paint-free pulsing ── */
+/* The dot itself keeps a static box-shadow for the resting halo.
+   The animated glow lives in ::after, which only changes opacity — no repaint. */
+.bio-anchor {
+  position: relative;
+  isolation: isolate;
+  /* Static resting glow on the dot element itself (not animated) */
+  box-shadow: 0 0 6px rgba(120, 240, 255, 0.45);
+}
+
+.bio-anchor::after {
+  content: '';
+  position: absolute;
+  inset: 50% auto auto 50%;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(120, 240, 255, 0.6) 0%, transparent 70%);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  will-change: opacity;
+  animation: bio-glow-pulse 2.4s ease-in-out infinite;
+  /* Inherit the per-label phase delay set on the dot element */
+  animation-delay: calc(var(--label-phase, 0) * -2.4s);
+}
+
+/* OpenClaw agent status dot — opacity-only pulse animation */
+.oc-status-dot {
+  animation: oc-pulse 1.6s ease-in-out infinite;
+}
+
 /* ─── Panel system ────────────────────────────────────────────────────── */
 
 /* Primary glass panel — used for status bars, menus, overlays */

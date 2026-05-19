@@ -916,43 +916,107 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
             <meshBasicMaterial visible={false} />
           </mesh>
         )}
-        {/* Floating building label — minimal wordmark, no pill background.
-            Baseline opacity 0.40 set via distance fade in WorldLabelsOverlay.
-            CSS :hover boosts to 1.0 so the click target is always discoverable.
-            pointerEvents='auto' preserves click-target behavior. */}
+        {/* Bio-luminescent building label — Fraunces serif capsule with brighter glow.
+            Rig stack (top→bottom): capsule (name + category) → longer tether → anchor dot.
+            translateY(-50%) anchors the dot at the projected screen point (top of building).
+            Hover: onMouseEnter writes opacity=1 to the outer div (labelDivRef.current);
+            onMouseLeave clears it and resets _prevOpacity so the fade re-derives on next frame.
+            pointerEvents='auto' keeps the click target active. */}
         {theme && (
           <WorldLabel divRef={labelDivRef} pointerEvents="auto">
-            <span
+            <div
               style={{
-                color: '#7dd3fc',
-                fontSize: 11,
-                fontStyle: 'italic',
-                fontWeight: 500,
-                letterSpacing: '0.06em',
-                whiteSpace: 'nowrap',
-                userSelect: 'none',
-                cursor: 'pointer',
-                textShadow: '0 0 8px rgba(56,189,248,0.9), 0 1px 3px rgba(0,0,0,0.9)',
-                transition: 'opacity 0.15s',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                transform: 'translateY(-50%)',
+                ['--label-phase' as string]: String(
+                  (zone.id.charCodeAt(0) + zone.id.length) % 10 / 10,
+                ),
               }}
-              // CSS :hover on the span is blocked by the OUTER div's opacity
-              // (multiplicative: 0.40 × 1.0 = 0.40, invisible hover).
-              // Fix: boost the OUTER div to opacity=1 on hover, then reset
-              // entry._prevOpacity=-1 on leave so the projection useFrame
-              // unconditionally re-writes the correct distance-fade value on
-              // the very next frame (skips the |Δopacity|<0.01 guard otherwise).
               onMouseEnter={() => {
-                if (labelDivRef.current) labelDivRef.current.style.opacity = '1';
+                if (labelDivRef.current) {
+                  labelDivRef.current.style.opacity = '1';
+                  // Boost glow on hover by overriding the capsule box-shadow inline
+                  const capsule = labelDivRef.current.querySelector<HTMLElement>('[data-bio-capsule]');
+                  if (capsule) capsule.style.boxShadow = '0 0 28px rgba(120,240,255,0.85), 0 0 70px -8px rgba(80,220,255,0.7), inset 0 0 16px rgba(180,245,255,0.25)';
+                }
               }}
               onMouseLeave={() => {
-                if (labelDivRef.current) labelDivRef.current.style.opacity = '';
-                // Reset _prevOpacity so the next useFrame re-writes targetOpacity
-                // rather than seeing |targetOpacity - 0.40| < 0.01 and skipping.
+                if (labelDivRef.current) {
+                  labelDivRef.current.style.opacity = '';
+                  const capsule = labelDivRef.current.querySelector<HTMLElement>('[data-bio-capsule]');
+                  if (capsule) capsule.style.boxShadow = '';
+                }
                 resetLabelPrevOpacity(labelDivRef);
               }}
             >
-              {theme.label}
-            </span>
+              {/* Glowing Fraunces capsule — brighter than NPC variant */}
+              <div
+                data-bio-capsule
+                style={{
+                  fontFamily: 'var(--font-fraunces, "Cormorant Garamond", "Spectral", Georgia, serif)',
+                  fontVariationSettings: '"opsz" 9',
+                  fontWeight: 520,
+                  fontSize: 15,
+                  color: '#a0eaff',
+                  padding: '7px 15px 9px',
+                  borderRadius: 999,
+                  background: 'radial-gradient(ellipse at center, rgba(80,220,255,0.18), rgba(80,220,255,0.04))',
+                  boxShadow: '0 0 22px rgba(120,240,255,0.6), 0 0 60px -10px rgba(120,240,255,0.55), inset 0 0 16px rgba(180,245,255,0.2)',
+                  whiteSpace: 'nowrap',
+                  letterSpacing: '0.02em',
+                  lineHeight: 1,
+                  userSelect: 'none',
+                  cursor: 'pointer',
+                  animation: 'bio-drift 5.4s ease-in-out infinite',
+                  animationDelay: 'calc(var(--label-phase, 0) * -5.4s)',
+                  transition: 'box-shadow 0.18s ease',
+                }}
+              >
+                {theme.label}
+                <span
+                  style={{
+                    display: 'block',
+                    fontSize: 9,
+                    fontStyle: 'italic',
+                    fontFamily: 'var(--font-oxanium, sans-serif)',
+                    fontWeight: 400,
+                    color: '#cdf5ff',
+                    opacity: 0.7,
+                    marginTop: 2,
+                    letterSpacing: '0.1em',
+                    textTransform: 'uppercase',
+                  }}
+                >
+                  {theme.category}
+                </span>
+              </div>
+              {/* Longer tether for buildings */}
+              <div
+                style={{
+                  width: 1,
+                  height: 56,
+                  backgroundImage: 'linear-gradient(rgba(140,240,255,0.78) 50%, transparent 50%)',
+                  backgroundSize: '1px 6px',
+                  backgroundRepeat: 'repeat-y',
+                  boxShadow: '0 0 6px rgba(120,240,255,0.55)',
+                  marginBottom: 2,
+                }}
+              />
+              {/* Pulsing anchor dot — glow lives on ::after pseudo (compositor-safe) */}
+              <div
+                className="bio-anchor"
+                style={{
+                  width: 5,
+                  height: 5,
+                  borderRadius: '50%',
+                  background: 'rgba(160,234,255,1)',
+                  animation: 'bio-pulse 2.4s ease-in-out infinite',
+                  animationDelay: 'calc(var(--label-phase, 0) * -2.4s)',
+                }}
+              />
+            </div>
           </WorldLabel>
         )}
       </group>
