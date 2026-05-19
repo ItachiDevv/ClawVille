@@ -612,28 +612,33 @@ Route-isolated scene at `/casino`. Canvas `key="casino-interior"` tears down the
 
 ### 10d. Slot Modal R3F Reel Rig (`apps/web/src/components/casino/SlotReels3D.tsx` + `SlotReelsCanvas.tsx`)
 
-Added Phase 6.1.6 — replaces the 2D DOM/CSS `SlotReels.tsx` grid with a 5-drum R3F scene.
+Added Phase 6.1.6, rewritten Phase 6.1.7 (e5966f3) — replaces the 2D DOM/CSS `SlotReels.tsx` grid with a 5-drum R3F scene styled after cherry-charm's rotating slot drums.
 
 **Files:**
 - `SlotReels3D.tsx` — R3F scene content (must be inside `<Canvas>`).
-- `SlotReelsCanvas.tsx` — `<Canvas>` wrapper (480×360px, `frameloop='demand'`, DPR-capped).
-- `SlotScreenModal.tsx` — mounts `SlotReelsCanvas`; `spinTrigger` counter drives animation.
+- `SlotReelsCanvas.tsx` — `<Canvas>` wrapper, `width:100% height:100%` flex child (was fixed 480×360 in 6.1.6), `frameloop='always'`, DPR `[0.55,0.7]` low-end / `[0.75,1]` desktop, `preserveDrawingBuffer:true`.
+- `SlotScreenModal.tsx` — mounts `SlotReelsCanvas` in a `flex:1 minHeight:50vh` reel area, with `SlotHUD section="top"` and `section="bottom"` strips sandwiching it. `spinTrigger` counter drives animation.
 
-**Drum geometry:** `CylinderGeometry(CYLINDER_RADIUS, CYLINDER_RADIUS, 3wu, 84, 3, openEnded=true)` — 84 radial segments (one per strip position), 3 height segments (one per visible row). `CYLINDER_RADIUS = 84 × 1wu / 2π ≈ 13.4wu`. `FrontSide` material — camera is outside.
+**Reel geometry (cylinder drums — Phase 6.1.7 e5966f3, restored after the planar 65b860e intermediate):**
+- `CYLINDER_RADIUS = (STRIP_LEN × CELL_WU) / (2π) ≈ 13.37wu` — derived so the 84-cell strip's circumference equals 2π×r.
+- `REEL_SPACING = 27.5wu` — `2×radius + 0.76wu` gap. (The 6.1.6 cylinder bug was `REEL_SPACING=1.3wu`, which collapsed all 5 drums into a single tangled mass with the camera *inside* the cylinder surface — fixed in 6.1.7.)
+- `CylinderGeometry(13.37, 13.37, 3, 84, 3, true)` — open-ended, 84 radial × 3 height segments. 5 instances at `x = (r − 2) × 27.5`.
+- `TorusGeometry(13.52, 0.12, 8, 84)` bezel rings at `y = ±1.5wu` per drum, rotated π/2 to lie horizontal. White `MeshBasicMaterial`. 2 bezels × 5 drums = 10 ring meshes.
+- Camera at `[0, 0, 120]`, fov 60° → viewport width `2 × 120 × tan(30°) ≈ 138.6wu` (containing 5 drums × 27.5wu = 137.5wu span with 1.1wu margin). Far plane 200 (must be > 120 + 13.37).
 
-**Texture:** Per-reel `CanvasTexture`, `TEX_W=84×128px` wide × `TEX_H=3×128px` tall. Column k, row r encodes `strip[(k+r-1+L)%L]` (so when drum at position p is centered, the 3 visible cells show `strip[p-1]`, `strip[p]`, `strip[p+1]`). Built once in `useMemo`, never reallocated. `flipY=true` (default) so canvas row 0 → v=1 (cylinder top). `MeshBasicMaterial` — no lighting, no shader changes.
+**Texture:** Per-reel `CanvasTexture` (`TEX_W = STRIP_LEN × 128 = 10752px`, `TEX_H = 3 × 128 = 384px`) — 84 columns × 3 rows, NOT the 6.1.6 1×84 vertical strip. Cell `(k, row)` lives at `(k × 128, row × 128)`. UV map: `theta ∈ [0, 2π] → u ∈ [0, 1]` (auto from CylinderGeometry), `y ∈ [−h/2, +h/2] → v ∈ [0, 1]` split into 3 rows. `wrapS = RepeatWrapping`, `wrapT = ClampToEdgeWrapping`. Cell backgrounds drawn as `#6b3aa0` Tyrian purple rounded cards (matches cherry-charm aesthetic; replaces the dark-slate rectangles of 6.1.6). Built once in `useMemo([textures])`, never reallocated.
 
-**Spin phases per reel (stagger 150ms L→R):**
-- ACCEL (200ms): velocity 0→MAX_RADS_PER_SEC, easeInQuad.
-- STEADY: hold MAX_RADS_PER_SEC. Blur: `texture.repeat.y = 0.35` (v-stretch = motion blur).
-- DECEL (600ms, stagger at 2000/2400/2800/3200/3600ms): lerp rotation → targetRot, easeOutCubic. Restores `repeat.y=1` on entry.
-- POP (120ms): over-rotate +1.5 segment widths, spring back. Fires `onReelsSettled` after last reel.
+**Spin phases per reel (Y-axis rotation, NOT texture-offset scroll — drums physically rotate):**
+- ACCEL (200ms): angular velocity 0 → `MAX_STRIP_PER_SEC=5` traversals/sec, easeInQuad.
+- STEADY (1.5s): hold 5 traversals/sec. `texture.repeat.y = 0.35` motion-blur compression while spinning; restored to `1.0` on DECEL entry.
+- DECEL (600ms, staggered start at 2000/2400/2800/3200/3600ms L→R): tween absolute `rotation.y` from cur → target = `2π × (p / STRIP_LEN)`, easeOutCubic.
+- POP (120ms): over-rotate +0.04rad, spring back. Fires `onReelsSettled` after last reel.
 
-**Deterministic landing:** `findStripPosition(strip, top, mid, bot)` — scans for `strip[p-1]==top && strip[p]==mid && strip[p+1]==bot`. Target rotation = `2π × (p/84)`. Minimum half-revolution guaranteed before landing.
+**Deterministic landing:** `findStripPosition(strip, top, mid, bot)` — scans for `strip[(p-1+L)%L]==top && strip[p]==mid && strip[(p+1)%L]==bot`. Sets `targetRotation = 2π × (p / STRIP_LEN)`. At least one full revolution forward guaranteed before landing. After POP, the visible 3-cell window centred at the front of the drum matches `SpinResult.reels[r]` byte-identically.
 
-**`spinTrigger` protocol:** `SlotScreenModal` increments `spinTrigger` at spin-press (same tick as `setIsSpinning(true)`). `SlotReels3D` `useEffect([spinTrigger])` starts ACCEL. Server result arrives later → `useEffect([isSpinning, reels])` computes `targetRot` → DECEL when time comes.
+**`spinTrigger` protocol:** unchanged from 6.1.6. `SlotScreenModal` increments `spinTrigger` at spin-press (same tick as `setIsSpinning(true)`). `SlotReels3D` `useEffect([spinTrigger])` starts ACCEL. Server result arrives later → `useEffect([reels])` (NO `isSpinning` guard, fixes the 6.1.5 deadlock at 565e93d) computes `targetRotation` via `anim.targetSet` flag → DECEL when time comes.
 
-**Iris Xe invariants:** no per-frame allocations, no drei Text/Billboard, `MeshBasicMaterial` only, `frameloop='demand'` (invalidated by `useFrame` during spin only), DPR `[0.55,0.7]` on low-end GPU, `compileAsync` fired once on mount.
+**Iris Xe invariants:** no per-frame allocations in `useFrame` — pure scalar arithmetic + in-place `mesh.rotation.y = anim.rotation` + `materials[r].map.repeat.set / .offset.set`. 5 cylinder meshes + 10 torus bezels share 2 geometries + 6 materials (5 reel mats + 1 shared bezel mat). No drei Text/Billboard. `MeshBasicMaterial` only, no shadows, no ShaderMaterial. `frameloop='always'` mandatory (`demand` left canvas transparent-black at 812fea9). `compileAsync` fired once on mount.
 
 ---
 
@@ -695,7 +700,9 @@ Draw-call budget (full equipped set): hat ≤ 1, aura ≤ 4 (instanced particles
 
 Compact log. Single line per change with commit reference where applicable.
 
-- 2026-05-19 — Slot modal R3F reel rig: new `SlotReels3D.tsx` (5 CylinderGeometry drums, per-reel CanvasTexture 84×128×3×128px, ACCEL/STEADY/DECEL/POP phases, deterministic landing via `findStripPosition`, `frameloop='demand'`) + `SlotReelsCanvas.tsx` (Canvas wrapper, DPR-capped, `compileAsync`). `SlotScreenModal` integrates via `spinTrigger` + `winningCells3D`. `CLASSIC_LINES` import added. §10d added.
+- 2026-05-19 `812fea9` — Slot reels `frameloop='demand'`→`'always'`: demand mode with no `invalidate()` call kept the GL canvas transparent-black on mount (no first frame ever committed). Modal-scoped continuous loop is acceptable. Added `[SlotReels3D]` mount + texture-build diagnostic `console.log`s (not prod-gated; remove before tagging 6.1.6). §10d updated.
+- 2026-05-19 `65b860e` — Slot reels CylinderGeometry → PlaneGeometry refactor: cylinder radius `13.4wu` had camera (`z=5`) sitting INSIDE the drum surface → zero pixels. Replaced with 5 × `PlaneGeometry(1wu × 3wu)` panels, vertical-strip texture (1 col × 84 rows × 128px), scroll via `texture.offset.y` instead of mesh rotation. Motion blur via `texture.repeat.y` v-compression. Same `findStripPosition` deterministic landing logic. §10d rewritten.
+- 2026-05-19 — Slot modal R3F reel rig (initial): new `SlotReels3D.tsx` + `SlotReelsCanvas.tsx` (Canvas wrapper, DPR-capped, `compileAsync`). `SlotScreenModal` integrates via `spinTrigger` + `winningCells3D`. `CLASSIC_LINES` import added. §10d added.
 - 2026-05-19 — Cabinet differentiation + WinCascadeOverlay3D: `HotspotDef` gains `paytableId` + `isBonus`; cabinets 0+1 classic, 2+3 bonus (gold tint + canvas BONUS badge at Y=194wu); click handler now routes `def.paytableId`. New `WinCascadeOverlay3D.tsx`: additive glow+ring cascade (200ms stagger), per-instance material clones, wild-label DOM portal via camera projection. §10c + §10e updated.
 - 2026-05-19 — World colliders: new `collision/world-colliders.ts` (19 disc colliders — 12 buildings ≈190wu + 7 town-center props 50–220wu). `clampMovement2D` radial push-out with slide-along-wall feel + escape hatch for inside-collider spawn. Integrated into player-avatar.tsx (VRM+GLB branches) + arena-npcs.tsx (GLBNpcMesh+VRMNpcMesh useFrame) + arena-location-npcs.tsx (spawn-time sanity push-out). Zero per-frame allocations (module-scope scratch). scaleFactor=0.85. §2h added.
 - 2026-05-18 — Phase 6.2.2: MAX_FOOTPRINT 1800→2000wu; node name bug fixed (`The_Krusty_Krab`/`Squidward_s_House` → literal `"The Krusty Krab"`/`"Squidward's House"` — Three.js GLTFLoader preserves verbatim names); targetMaxDim bumps: messaging-channels 1000→2500, api-integrations 1300→2500, cron-automation 1300→2200, memory-rag 1400→1700; memory-rag childScale 1.4→1.7. Sandy NPC T-pose: `extendLoaderWithMeshopt` added to useGLTF + preloads; `clipAction(idleClip, cloned)` with explicit optionalRoot; `reset().setLoop(LoopRepeat).play()` chain. §2 slot table + footprint cap + childScaleOverrides doc + bodyAnchorChild doc updated.
