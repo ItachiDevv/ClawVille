@@ -35,6 +35,7 @@ import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { CosmeticLoader } from '@/lib/three/cosmetic-loader';
 import { subscribeEmote } from '@/lib/three/emote-bus';
 import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
+import { clampMovement2D } from '@/lib/three/collision/world-colliders';
 
 // ---------------------------------------------------------------------------
 // GLB-based player avatar — lobster.glb model = 1-2 draw calls
@@ -490,7 +491,12 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
       let newY = avatarPositionRef.y + vy * SPEED * speedMult * delta;
       newX = Math.max(16, Math.min(MAP_WIDTH - 16, newX));
       newY = Math.max(16, Math.min(MAP_HEIGHT - 16, newY));
-      store.setAvatarPosition(newX, newY);
+      // World-space XZ disc collision — clamp against buildings and props.
+      // Convert game-px → world, clamp, convert back. Zero per-frame allocations.
+      const prevWX = avatarPositionRef.x - HALF_W;
+      const prevWZ = avatarPositionRef.y - HALF_H;
+      const clamped = clampMovement2D(prevWX, prevWZ, newX - HALF_W, newY - HALF_H);
+      store.setAvatarPosition(clamped.x + HALF_W, clamped.z + HALF_H);
     }
 
     {
@@ -923,7 +929,12 @@ function PlayerAvatarGLBInner() {
       let newY = avatarPositionRef.y + vy * SPEED * speedMult * delta;
       newX = Math.max(16, Math.min(MAP_WIDTH - 16, newX));
       newY = Math.max(16, Math.min(MAP_HEIGHT - 16, newY));
-      store.setAvatarPosition(newX, newY);
+      // World-space XZ disc collision — clamp against buildings and props.
+      // Convert game-px → world, clamp, convert back. Zero per-frame allocations.
+      const prevWX = avatarPositionRef.x - HALF_W;
+      const prevWZ = avatarPositionRef.y - HALF_H;
+      const clamped = clampMovement2D(prevWX, prevWZ, newX - HALF_W, newY - HALF_H);
+      store.setAvatarPosition(clamped.x + HALF_W, clamped.z + HALF_H);
     }
 
     // Character proximity check — replaces building-zone area check.
