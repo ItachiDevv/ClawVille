@@ -89,8 +89,13 @@ const BOUNDS_X     = Math.round(115 * _ROOM_SCALE); // ≈ 383
 const BOUNDS_Z_MIN = -Math.round(270 * _ROOM_SCALE); // ≈ -900
 const BOUNDS_Z_MAX =  Math.round(270 * _ROOM_SCALE); // ≈  900
 
-/** Player movement speed (world units / second) — boosted for larger room */
-const CASINO_PLAYER_SPEED = 830; // was 250; ≈ 250 × 3.333 so same perceived traversal time
+/** Player movement speed (world units / second) — tuned for cove interior */
+// 2026-05-19: 830→450. User report: "WASD movement is way too fast". The
+// 830 value (250×_ROOM_SCALE) preserved traversal *time* across the bigger
+// room but ignored that the avatar reads as smaller now (160wu vs 270wu
+// outdoors) — perceived speed scales with avatar height, not room size.
+// 450wu/s feels like a brisk walk at this avatar scale.
+const CASINO_PLAYER_SPEED = 450;
 
 /** GLB avatar scale — matches AVATAR_SCALE in player-avatar.tsx */
 const CASINO_AVATAR_SCALE = 40;
@@ -154,7 +159,9 @@ const CAM_LOOK_Y = 70;
  * Unlike the world they do NOT decay back to 0; the player must press the
  * opposite key (same as world OrbitControls behaviour).
  */
-const ARROW_YAW_SPEED   = 1.5;   // radians / second (matches World3DCanvas ARROW_ROT_SPEED)
+// 2026-05-19: 1.5→2.2 (user: "camera turn angles is a little bit too slow").
+// 2.2 rad/s = ~126°/s — full 360° in 2.85s, comfortable orbit feel.
+const ARROW_YAW_SPEED   = 2.2;   // radians / second
 const ARROW_PITCH_SPEED = 200;   // wu / second  (camera height shift per second while held)
 const ARROW_PITCH_MIN   = -100;  // wu relative to CAM_ABOVE (look down)
 const ARROW_PITCH_MAX   =  400;  // wu relative to CAM_ABOVE (look up — sky)
