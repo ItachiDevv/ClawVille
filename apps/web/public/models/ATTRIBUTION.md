@@ -50,3 +50,8 @@ The following 3D models are used under CC-BY license. Full credit to their creat
   https://sketchfab.com/3d-models/arcade-city-2619e948be514311b234c4e55f91ed20
   12th-building exterior — domed building with ARCADE CITY signage and arched entrance. 4.2 MB, 2,473 tris.
   Interior added separately in Phase 6.3 (claw machine game).
+
+- **Slot Machine Symbol Set** (ClawVille first-party, 2026-05-18) — `apps/web/public/assets/slot-symbols/s0..s7.svg`
+  Eight ClawVille-themed SVG reel symbols (Kelp, Anchor, Shell, Pearl, Coin, Crab, Trident, Lobster).
+  Authored in-repo for Concern 6.0.4 polish pass via Codex + gpt-image-2 ideation, hand-tuned SVG paths.
+  No external license; covered by the ClawVille repo license.

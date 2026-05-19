@@ -3,17 +3,15 @@
 /**
  * SlotScreenModal — full-viewport 2D slot machine UI
  *
- * Opens on top of the casino 3D interior (z-index 9990).
- * Interior 3D scene stays mounted underneath — no route change.
+ * Polish pass (Concern 6.0.4):
+ *   - Imports `casino-tokens.css` once at module level so every child
+ *     component can reach the CSS variables.
+ *   - Hosts the `useFX` hook and drives the FX state into SlotReels +
+ *     WinCelebration.
+ *   - SpinResult contract untouched. Mock engine still authoritative.
  *
- * Architecture:
- *   - Reads open/close state from useCasinoStore
- *   - Delegates spin to mockSpin() (Phase 6.0); Phase 6.1 swaps to API call
- *   - Contains SlotReels, SlotHUD, WinCelebration, PaytableModal
- *   - ClawToken balance: from useCasinoStore.sessionBalance (in-memory, no API)
- *
- * Iris Xe safe: pure DOM/CSS overlay — zero extra draw calls on the 3D canvas.
- * The 3D canvas renders underneath at normal rate; this modal is DOM only.
+ * Iris Xe safe: pure DOM/CSS overlay — zero extra draw calls on the 3D
+ * canvas underneath. Modal is DOM only.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -21,9 +19,14 @@ import dynamic from 'next/dynamic';
 import { useCasinoStore } from '@/stores/casino';
 import { mockSpin } from '@/lib/casino/mock-engine';
 import type { SpinResult } from '@/lib/casino/types';
+import { useFX } from '@/lib/casino/useFX';
 import SlotHUD from './SlotHUD';
 import WinCelebration from './WinCelebration';
 import PaytableModal from './PaytableModal';
+import { NeonButton } from './ui';
+
+// Import design tokens once at the module level.
+import '@/styles/casino-tokens.css';
 
 // SlotReels has complex CSS animation — dynamic import avoids SSR issues
 const SlotReels = dynamic(() => import('./SlotReels'), { ssr: false });
@@ -35,7 +38,7 @@ type AutoplayValue = number | 'until-cashout' | 'until-big-win';
 
 interface AutoplayState {
   count: AutoplayValue;
-  remaining: number;  // only meaningful when count is a number
+  remaining: number;
   active: boolean;
 }
 
@@ -53,13 +56,11 @@ function initAutoplay(count: AutoplayValue): AutoplayState {
 export default function SlotScreenModal() {
   const {
     slotScreenOpen,
-    machineSlug,
     paytableId,
     sessionBalance,
     sessionPnl,
     spinCount,
     isSpinning,
-    lastSpinResult,
     closeSlotScreen,
     setIsSpinning,
     recordSpin,
@@ -69,45 +70,30 @@ export default function SlotScreenModal() {
   const [bet, setBet] = useState(10);
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [paytableOpen, setPaytableOpen] = useState(false);
-  const [winAmount, setWinAmount] = useState(0);
   const [muted, setMuted] = useState(() => {
     try { return localStorage.getItem('casino-muted') === '1'; } catch { return false; }
   });
   const [autoplay, setAutoplay] = useState<AutoplayState>({ count: 0, remaining: 0, active: false });
 
+  // ── FX hook (5-tier dispatcher) ────────────────────────────────────────
+  const fx = useFX();
+
   // Current reel window to display
   const [displayWindow, setDisplayWindow] = useState<number[][] | null>(null);
   const [pendingWinLines, setPendingWinLines] = useState<SpinResult['winningLines']>([]);
 
-  const spinLockRef = useRef(false); // prevent double-spin
+  const spinLockRef = useRef(false);
   const autoplayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // ── Keyboard handler ────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!slotScreenOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        handleClose();
-      } else if (e.key === ' ' || e.key === 'Enter') {
-        e.preventDefault();
-        if (!isSpinning && !isEvaluating && sessionBalance >= bet) {
-          doSpin();
-        }
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slotScreenOpen, isSpinning, isEvaluating, sessionBalance, bet]);
+  const pendingResultRef = useRef<SpinResult | null>(null);
 
   // ── Close handler ───────────────────────────────────────────────────────
   const handleClose = useCallback(() => {
     if (autoplayTimerRef.current) clearTimeout(autoplayTimerRef.current);
     setAutoplay({ count: 0, remaining: 0, active: false });
-    setWinAmount(0);
     setPendingWinLines([]);
+    fx.reset();
     closeSlotScreen();
-  }, [closeSlotScreen]);
+  }, [closeSlotScreen, fx]);
 
   // ── Mute persistence ────────────────────────────────────────────────────
   const toggleMute = useCallback(() => {
@@ -118,35 +104,48 @@ export default function SlotScreenModal() {
     });
   }, []);
 
-  // ── Core spin logic ─────────────────────────────────────────────────────
+  // ── Core spin trigger ───────────────────────────────────────────────────
   const doSpin = useCallback(() => {
     if (spinLockRef.current) return;
+    if (fx.state.isLockedOut) return;
     if (sessionBalance < bet) return;
     if (!paytableId) return;
 
     spinLockRef.current = true;
-    setWinAmount(0);
     setPendingWinLines([]);
+    fx.onSpinStart();
     setIsSpinning(true);
-  }, [bet, paytableId, sessionBalance, setIsSpinning]);
+  }, [bet, fx, paytableId, sessionBalance, setIsSpinning]);
+
+  // ── Keyboard handler ────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!slotScreenOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        // Don't close while paytable modal is open — let it handle ESC.
+        if (paytableOpen) return;
+        handleClose();
+      } else if (e.key === ' ' || e.key === 'Enter') {
+        e.preventDefault();
+        if (!isSpinning && !isEvaluating && !fx.state.isLockedOut && sessionBalance >= bet) {
+          doSpin();
+        }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [slotScreenOpen, isSpinning, isEvaluating, sessionBalance, bet, paytableOpen, doSpin, fx.state.isLockedOut, handleClose]);
 
   // When isSpinning flips true, compute the result immediately
-  // The result is held until reels settle (onReelsSettled callback)
-  const pendingResultRef = useRef<SpinResult | null>(null);
-
   useEffect(() => {
     if (!isSpinning || !paytableId) return;
-
-    // Compute result now (decouple from animation)
     const result = mockSpin({ bet, paytableId });
     pendingResultRef.current = result;
-
-    // Debit bet immediately in balance
     recordSpin(result, bet);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSpinning]);
 
-  // ── Reel settled callback (called by SlotReels after last reel stops) ────
+  // ── Reel settled callback ───────────────────────────────────────────────
   const handleReelsSettled = useCallback(() => {
     const result = pendingResultRef.current;
     if (!result) {
@@ -164,10 +163,8 @@ export default function SlotScreenModal() {
 
     const evalDelay = setTimeout(() => {
       setIsEvaluating(false);
-      const win = Number(result.winAmount);
-      if (win > 0) {
-        setWinAmount(win);
-      }
+      // Drive FX dispatch for this spin
+      fx.onSpinResolved(result, bet);
       spinLockRef.current = false;
 
       // Continue autoplay if active
@@ -177,7 +174,9 @@ export default function SlotScreenModal() {
           const remaining = typeof autoplay.count === 'number' ? autoplay.remaining - 1 : Infinity;
           if (remaining > 0) {
             setAutoplay(prev => ({ ...prev, remaining }));
-            autoplayTimerRef.current = setTimeout(doSpin, 600);
+            // Wait long enough for any celebration to clear OR the lockout to lift.
+            const delay = Math.max(700, fx.state.isLockedOut ? 3200 : 700);
+            autoplayTimerRef.current = setTimeout(doSpin, delay);
           } else {
             setAutoplay({ count: 0, remaining: 0, active: false });
           }
@@ -188,14 +187,16 @@ export default function SlotScreenModal() {
     }, 350);
 
     return () => clearTimeout(evalDelay);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoplay]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoplay, bet, fx]);
 
   function checkAutoplayStop(ap: AutoplayState, result: SpinResult): boolean {
-    if (ap.count === 'until-cashout') return false; // cashout is manual
+    if (ap.count === 'until-cashout') return false;
     if (ap.count === 'until-big-win') {
-      const mult = Number(result.winAmount) / bet;
-      return mult >= 10;
+      // bigint-safe: stop when winAmount >= 10 × bet
+      const betBn = BigInt(Math.max(0, Math.floor(bet)));
+      if (betBn === 0n) return false;
+      return result.winAmount >= betBn * 10n;
     }
     return false;
   }
@@ -209,14 +210,13 @@ export default function SlotScreenModal() {
     }
     const newState = initAutoplay(count);
     setAutoplay(newState);
-    if (!isSpinning && !isEvaluating && sessionBalance >= bet) {
+    if (!isSpinning && !isEvaluating && !fx.state.isLockedOut && sessionBalance >= bet) {
       doSpin();
     }
-  }, [isSpinning, isEvaluating, sessionBalance, bet, doSpin]);
+  }, [isSpinning, isEvaluating, sessionBalance, bet, doSpin, fx.state.isLockedOut]);
 
   // ── Fairness placeholder ────────────────────────────────────────────────
   const handleFairness = useCallback(() => {
-    // Phase 6.1 will wire this to /casino/verify
     alert('Provably-fair verifier coming in Phase 6.1.\nYour seed commitment will be shown here.');
   }, []);
 
@@ -225,15 +225,6 @@ export default function SlotScreenModal() {
   return (
     <>
       <style>{`
-        @keyframes slotModalIn {
-          from { opacity: 0; transform: scale(0.96); }
-          to   { opacity: 1; transform: scale(1); }
-        }
-        @keyframes slotModalBg {
-          from { opacity: 0; }
-          to   { opacity: 1; }
-        }
-
         /* Mobile: scale cell size */
         @media (max-width: 480px) {
           :root { --slot-cell-size: 52px; }
@@ -260,9 +251,12 @@ export default function SlotScreenModal() {
           zIndex: 9990,
           display: 'flex',
           flexDirection: 'column',
-          background: 'rgba(0,0,5,0.93)',
-          backdropFilter: 'blur(2px)',
-          animation: 'slotModalBg 0.25s ease',
+          background:
+            'radial-gradient(ellipse at 50% 30%, rgba(123,47,247,0.08) 0%, transparent 60%), ' +
+            'linear-gradient(180deg, rgba(5,10,24,0.94) 0%, rgba(2,4,10,0.97) 100%)',
+          backdropFilter: 'blur(4px)',
+          WebkitBackdropFilter: 'blur(4px)',
+          animation: 'cv-modal-bg-in var(--cv-motion-base) var(--cv-ease-standard)',
         }}
       >
         {/* Modal card */}
@@ -271,11 +265,11 @@ export default function SlotScreenModal() {
             flex: 1,
             display: 'flex',
             flexDirection: 'column',
-            maxWidth: 680,
+            maxWidth: 720,
             width: '100%',
             margin: '0 auto',
             position: 'relative',
-            animation: 'slotModalIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)',
+            animation: 'cv-modal-in var(--cv-motion-base) var(--cv-ease-bounce)',
           }}
         >
           {/* ── Header ─────────────────────────────────────────────── */}
@@ -284,46 +278,47 @@ export default function SlotScreenModal() {
               display: 'flex',
               justifyContent: 'space-between',
               alignItems: 'center',
-              padding: '14px 20px',
-              background: 'rgba(0,0,21,0.9)',
+              padding: 'var(--cv-space-4) var(--cv-space-5)',
+              background: 'var(--cv-surface-1)',
               borderBottom: '1px solid rgba(0,255,224,0.15)',
               flexShrink: 0,
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <span style={{ fontSize: 20 }}>🎰</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--cv-space-3)' }}>
+              <span style={{ fontSize: 24, filter: 'drop-shadow(0 0 6px rgba(0,255,224,0.4))' }}>🎰</span>
               <div>
-                <div style={{ color: '#00ffe0', fontFamily: 'monospace', fontSize: 14, fontWeight: 800, letterSpacing: '0.1em' }}>
+                <div style={{
+                  color: 'var(--cv-neon-cyan)',
+                  fontFamily: 'monospace',
+                  fontSize: 14,
+                  fontWeight: 800,
+                  letterSpacing: '0.12em',
+                  textShadow: '0 0 10px rgba(0,255,224,0.4)',
+                }}>
                   CLASSIC 3×5
                 </div>
-                <div style={{ color: 'rgba(255,255,255,0.35)', fontFamily: 'monospace', fontSize: 10, letterSpacing: '0.06em' }}>
-                  20 PAYLINES · 96% RTP
+                <div style={{
+                  color: 'rgba(255,255,255,0.4)',
+                  fontFamily: 'monospace',
+                  fontSize: 10,
+                  letterSpacing: '0.18em',
+                  textTransform: 'uppercase',
+                }}>
+                  20 Paylines · 96% RTP
                 </div>
               </div>
             </div>
 
-            {/* Close X */}
-            <button
+            <NeonButton
+              variant="ghost"
+              size="sm"
               onClick={handleClose}
               aria-label="Close slot machine"
-              style={{
-                background: 'none',
-                border: 'none',
-                color: 'rgba(255,255,255,0.45)',
-                fontSize: 22,
-                cursor: 'pointer',
-                padding: '4px 8px',
-                lineHeight: 1,
-                transition: 'color 0.15s',
-              }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.color = '#ff4488'; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.color = 'rgba(255,255,255,0.45)'; }}
-            >
-              ✕
-            </button>
+              style={{ width: 38, padding: 0, fontSize: 18 }}
+            >✕</NeonButton>
           </div>
 
-          {/* ── Top HUD strip ──────────────────────────────────────── */}
+          {/* ── HUD top strip + bottom controls ─────────────────────── */}
           <SlotHUD
             balance={sessionBalance}
             sessionPnl={sessionPnl}
@@ -333,6 +328,7 @@ export default function SlotScreenModal() {
             maxBet={100}
             isSpinning={isSpinning}
             isEvaluating={isEvaluating}
+            isLockedOut={fx.state.isLockedOut}
             autoplayCount={autoplay.count}
             isMuted={muted}
             onBetChange={setBet}
@@ -352,30 +348,33 @@ export default function SlotScreenModal() {
               alignItems: 'center',
               justifyContent: 'center',
               background: `
-                radial-gradient(ellipse at 50% 30%, rgba(0,255,224,0.06) 0%, transparent 70%),
-                linear-gradient(180deg, rgba(0,0,21,0.98) 0%, rgba(5,0,30,0.98) 100%)
+                radial-gradient(ellipse at 50% 30%, rgba(0,255,224,0.07) 0%, transparent 65%),
+                radial-gradient(ellipse at 50% 80%, rgba(255,0,204,0.04) 0%, transparent 60%),
+                linear-gradient(180deg, rgba(5,10,24,0.98) 0%, rgba(2,4,10,0.99) 100%)
               `,
-              padding: '24px 16px',
+              padding: 'var(--cv-space-6) var(--cv-space-4)',
               position: 'relative',
               minHeight: 0,
+              filter: fx.state.isGlowActive ? 'saturate(1.15)' : 'saturate(1)',
+              transition: 'filter var(--cv-motion-base) var(--cv-ease-standard)',
             }}
           >
             {/* Decorative corner lights */}
-            {['topleft','topright','botleft','botright'].map((pos) => (
+            {(['topleft','topright','botleft','botright'] as const).map((pos) => (
               <div
                 key={pos}
                 style={{
                   position: 'absolute',
-                  width: 8, height: 8,
+                  width: 10, height: 10,
                   borderRadius: '50%',
-                  background: '#00ffe0',
-                  boxShadow: '0 0 12px #00ffe0',
-                  ...(pos === 'topleft'  ? { top: 12, left: 12  } : {}),
-                  ...(pos === 'topright' ? { top: 12, right: 12 } : {}),
-                  ...(pos === 'botleft'  ? { bottom: 12, left: 12  } : {}),
-                  ...(pos === 'botright' ? { bottom: 12, right: 12 } : {}),
-                  opacity: isSpinning ? 1 : 0.4,
-                  transition: 'opacity 0.3s',
+                  background: 'var(--cv-neon-cyan)',
+                  boxShadow: '0 0 14px var(--cv-neon-cyan), 0 0 28px var(--cv-neon-cyan)',
+                  ...(pos === 'topleft'  ? { top: 14, left: 14  } : {}),
+                  ...(pos === 'topright' ? { top: 14, right: 14 } : {}),
+                  ...(pos === 'botleft'  ? { bottom: 14, left: 14  } : {}),
+                  ...(pos === 'botright' ? { bottom: 14, right: 14 } : {}),
+                  opacity: isSpinning ? 1 : 0.55,
+                  transition: 'opacity 0.3s var(--cv-ease-standard)',
                   pointerEvents: 'none',
                 }}
               />
@@ -385,19 +384,20 @@ export default function SlotScreenModal() {
             <div
               style={{
                 position: 'absolute',
-                top: 12,
+                top: 14,
                 left: '50%',
                 transform: 'translateX(-50%)',
-                color: 'rgba(0,255,224,0.3)',
+                color: 'rgba(0,255,224,0.45)',
                 fontFamily: 'monospace',
                 fontSize: 11,
-                letterSpacing: '0.2em',
+                letterSpacing: '0.28em',
                 textTransform: 'uppercase',
+                textShadow: '0 0 10px rgba(0,255,224,0.45)',
                 pointerEvents: 'none',
                 whiteSpace: 'nowrap',
               }}
             >
-              PREDICTIVE GAMING COVE
+              Predictive Gaming Cove
             </div>
 
             {/* Reel grid */}
@@ -406,20 +406,14 @@ export default function SlotScreenModal() {
               isSpinning={isSpinning}
               winningLines={pendingWinLines}
               onReelsSettled={handleReelsSettled}
+              shakeLevel={fx.state.shakeLevel}
             />
           </div>
-
-          {/* ── Bottom HUD controls already rendered inside SlotHUD ─ */}
-          {/* (SlotHUD renders both top strip and bottom bar) */}
         </div>
       </div>
 
-      {/* Win celebration — absolutely positioned, renders on top of modal */}
-      <WinCelebration
-        winAmount={winAmount}
-        bet={bet}
-        onComplete={() => setWinAmount(0)}
-      />
+      {/* Win celebration overlay (5-tier dispatcher reads from useFX) */}
+      <WinCelebration fx={fx.state} />
 
       {/* Paytable modal — stacks on top of slot modal */}
       <PaytableModal

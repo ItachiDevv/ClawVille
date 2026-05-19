@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <radialGradient id="glow6" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#00ffe0" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#00ffe0" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="shaft6" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0a1428"/>
+      <stop offset="40%" stop-color="#00ffe0"/>
+      <stop offset="100%" stop-color="#0a1428"/>
+    </linearGradient>
+  </defs>
+  <ellipse cx="128" cy="128" rx="110" ry="110" fill="url(#glow6)"/>
+  <!-- Trident shaft -->
+  <rect x="121" y="90" width="14" height="140" rx="4" fill="url(#shaft6)" stroke="#00ffe0" stroke-width="3"/>
+  <!-- Center prong -->
+  <path d="M128 38 L118 90 L138 90 Z" fill="#00ffe0" stroke="#00ffe0" stroke-width="3" stroke-linejoin="round"/>
+  <!-- Left prong -->
+  <path d="M100 55 L93 90 L113 90 Z" fill="#00ffe0" stroke="#00ffe0" stroke-width="3" stroke-linejoin="round"/>
+  <!-- Right prong -->
+  <path d="M156 55 L163 90 L143 90 Z" fill="#00ffe0" stroke="#00ffe0" stroke-width="3" stroke-linejoin="round"/>
+  <!-- Left prong connector -->
+  <path d="M103 70 Q113 78 118 90" fill="none" stroke="#00ffe0" stroke-width="5" stroke-linecap="round"/>
+  <!-- Right prong connector -->
+  <path d="M153 70 Q143 78 138 90" fill="none" stroke="#00ffe0" stroke-width="5" stroke-linecap="round"/>
+  <!-- Base crossguard -->
+  <rect x="104" y="195" width="48" height="10" rx="5" fill="#ffc857" stroke="#ffc857" stroke-width="2"/>
+  <!-- Shaft accent rings -->
+  <rect x="118" y="145" width="20" height="6" rx="3" fill="#ffc857" opacity="0.8"/>
+  <rect x="118" y="165" width="20" height="6" rx="3" fill="#ffc857" opacity="0.8"/>
+  <!-- Prong tips glow -->
+  <circle cx="128" cy="38" r="5" fill="white" opacity="0.9"/>
+  <circle cx="97" cy="52" r="4" fill="white" opacity="0.7"/>
+  <circle cx="159" cy="52" r="4" fill="white" opacity="0.7"/>
+</svg>

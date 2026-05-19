@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <radialGradient id="glow1" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#00ffe0" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#00ffe0" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="body1" cx="50%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="#1a3a5c"/>
+      <stop offset="100%" stop-color="#0a1428"/>
+    </radialGradient>
+  </defs>
+  <ellipse cx="128" cy="128" rx="110" ry="110" fill="url(#glow1)"/>
+  <!-- Anchor ring -->
+  <circle cx="128" cy="88" r="20" fill="none" stroke="#00ffe0" stroke-width="6"/>
+  <!-- Anchor stem -->
+  <line x1="128" y1="108" x2="128" y2="190" stroke="#00ffe0" stroke-width="6" stroke-linecap="round"/>
+  <!-- Anchor crossbar -->
+  <line x1="92" y1="130" x2="164" y2="130" stroke="#00ffe0" stroke-width="6" stroke-linecap="round"/>
+  <!-- Anchor arms -->
+  <path d="M128 190 Q98 175 88 155" fill="none" stroke="#00ffe0" stroke-width="6" stroke-linecap="round"/>
+  <path d="M128 190 Q158 175 168 155" fill="none" stroke="#00ffe0" stroke-width="6" stroke-linecap="round"/>
+  <!-- Arm curls -->
+  <circle cx="88" cy="155" r="8" fill="none" stroke="#00ffe0" stroke-width="6"/>
+  <circle cx="168" cy="155" r="8" fill="none" stroke="#00ffe0" stroke-width="6"/>
+  <!-- Ring fill dot -->
+  <circle cx="128" cy="88" r="6" fill="#ffc857"/>
+</svg>
