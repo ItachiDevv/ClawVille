@@ -2,20 +2,28 @@
  * Phase 6.1 — slice 3 wire types.
  *
  * The slot engine returns `SpinResult` with bigint fields (`winAmount`,
- * `winningLines[i].winAmount`). Bigints don't survive `JSON.stringify`
- * — Hono's `c.json` throws. We define a "serialized" mirror here that
- * stringifies every bigint, plus the helper that converts.
+ * `winningLines[i].winAmount`, `scatterPayout`). Bigints don't survive
+ * `JSON.stringify` — Hono's `c.json` throws. We define a "serialized"
+ * mirror here that stringifies every bigint, plus the helper that converts.
  *
  * Both server routes (apps/api) and the future frontend slice (apps/web)
  * import these types so the wire contract is one source-of-truth. The
  * monkey-patch `BigInt.prototype.toJSON` route was rejected because it's
  * a global side-effect that breaks other code (event-logger sanitization,
  * tests, third-party deps).
+ *
+ * Phase 6.1.5 (Bundle B) — adds `wildMultipliers` + `scatterPayout` to the
+ * serialized result, and `mode`/`freeSpinsRemaining` to the SpinResponse.
+ * On `classic-3x5` (no bonus paytable) `wildMultipliers` is always `[]`,
+ * `scatterPayout` is always `'0'`, `mode` is always `'base'`, and
+ * `freeSpinsRemaining` is always `0` — so frontend code that ignores
+ * those fields keeps working unchanged.
  */
 
 import type {
   SpinResult,
   WinningLine,
+  WildMultiplier,
   SymbolId,
   MachineSlug,
 } from '../services/slot-engine';
@@ -27,12 +35,27 @@ export type SerializedWinningLine = {
   multiplier: number;
 };
 
+/**
+ * Phase 6.1.5 — serialized mirror of `WildMultiplier`. No bigint fields,
+ * so structurally identical to the engine type; defined explicitly here
+ * so the web type-graph doesn't have to reach across to apps/api.
+ */
+export type SerializedWildMultiplier = {
+  reelIndex: number;
+  rowIndex: number;
+  multiplier: number;
+};
+
 export interface SerializedSpinResult {
   reels: SymbolId[][];
   winningLines: SerializedWinningLine[];
   winAmount: string;
   freeSpinsAwarded: number;
   isFreeSpin: boolean;
+  /** Phase 6.1.5 — per-landed-Wild multiplier (empty array on `classic-3x5`). */
+  wildMultipliers: SerializedWildMultiplier[];
+  /** Phase 6.1.5 — total scatter pay × total predict, stringified bigint. '0' on `classic-3x5`. */
+  scatterPayout: string;
   cursorAfter: number;
 }
 
@@ -43,7 +66,17 @@ export function serializeSpinResult(result: SpinResult): SerializedSpinResult {
     winAmount: result.winAmount.toString(),
     freeSpinsAwarded: result.freeSpinsAwarded,
     isFreeSpin: result.isFreeSpin,
+    wildMultipliers: result.wildMultipliers.map(serializeWildMultiplier),
+    scatterPayout: result.scatterPayout.toString(),
     cursorAfter: result.cursorAfter,
+  };
+}
+
+export function serializeWildMultiplier(wm: WildMultiplier): SerializedWildMultiplier {
+  return {
+    reelIndex: wm.reelIndex,
+    rowIndex: wm.rowIndex,
+    multiplier: wm.multiplier,
   };
 }
 
@@ -85,6 +118,14 @@ export interface SpinResponse extends SerializedSpinResult {
   totalStaked: string;
   totalWon: string;
   spinCount: number;
+  /**
+   * Phase 6.1.5 — session-level bonus mode AFTER this spin.
+   *   • 'base'      — predict-debiting spins.
+   *   • 'free-spin' — predict-free spins, frontend should display banner.
+   */
+  mode: 'base' | 'free-spin';
+  /** Phase 6.1.5 — unspent free-spin balance AFTER this spin. */
+  freeSpinsRemaining: number;
   idempotencyReplay: boolean;
 }
 
@@ -112,6 +153,7 @@ export interface PaytableResponse {
     color: string;
     payouts: readonly [number, number, number, number];
     isWild?: boolean;
+    isScatter?: boolean;
   }>;
   lines: ReadonlyArray<{
     id: number;

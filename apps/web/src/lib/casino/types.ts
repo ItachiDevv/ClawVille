@@ -23,9 +23,29 @@
 export type SymbolId = number;
 
 // ---------------------------------------------------------------------------
-// Machine slug — identifies which paytable to load
+// Machine slug — identifies which paytable to load.
+// Phase 6.1.5 (Bundle B) adds 'classic-3x5-bonus' for the scatter +
+// multiplier-wild + free-spin paytable.
 // ---------------------------------------------------------------------------
-export type MachineSlug = 'classic-3x5';
+export type MachineSlug = 'classic-3x5' | 'classic-3x5-bonus';
+
+// ---------------------------------------------------------------------------
+// Per-landed-Wild multiplier (Phase 6.1.5, Bundle B).
+// Mirrors server `WildMultiplier`. Each landed WILD in the visible 5×3
+// grid draws one multiplier via `sampleIntFromBytes(range=100)` in
+// (reel,row) order. `multiplier` is the EFFECTIVE value emitted by the
+// engine (raw table draw, doubled only when both `freeSpinMode=true`
+// AND `FS_WILD_MULTIPLIER_DOUBLE=true` in the shared rules). On
+// `classic-3x5` (no scatter symbol) the engine returns `[]`.
+// ---------------------------------------------------------------------------
+export interface WildMultiplier {
+  /** 0..4 — left-to-right reel index. */
+  reelIndex: number;
+  /** 0..2 — top/middle/bottom row in the visible window. */
+  rowIndex: number;
+  /** Effective multiplier applied to lines crossing this cell. */
+  multiplier: number;
+}
 
 // ---------------------------------------------------------------------------
 // A single winning payline result
@@ -55,15 +75,40 @@ export interface SpinResult {
   winningLines: WinningLine[];
   /** Total win across all lines + scatter (bigint, atomic units). 0n on loss. */
   winAmount: bigint;
-  /** Free spins awarded (always 0 in 6.0 MVP). */
+  /**
+   * Free spins awarded by THIS spin (Phase 6.1.5).
+   *   • classic-3x5: always 0.
+   *   • classic-3x5-bonus: 10 on first scatter trigger (>=3 scatters in
+   *     base mode), 5 on retrigger inside free-spin mode.
+   */
   freeSpinsAwarded: number;
-  /** Whether this spin is itself a free spin (always false in 6.0 MVP). */
+  /** Whether this spin was executed in free-spin mode. */
   isFreeSpin: boolean;
+  /**
+   * Phase 6.1.5 (Bundle B) — per-landed-Wild multiplier in (reel,row)
+   * order. Always `[]` on `classic-3x5` (no bonus features). On
+   * `classic-3x5-bonus` the engine draws ONE multiplier per landed WILD
+   * regardless of mode, but the line evaluator only multiplies line
+   * wins by these in free-spin mode (per the RTP-shape decision in
+   * `FREE_SPIN_RULES`).
+   */
+  wildMultipliers: WildMultiplier[];
+  /**
+   * Phase 6.1.5 (Bundle B) — scatter pay-anywhere payout (atomic units).
+   * `0n` when fewer than 3 scatters land. Scatter pay is NOT doubled in
+   * free-spin mode (industry standard; FS scalar applies to line wins +
+   * wild multipliers only).
+   */
+  scatterPayout: bigint;
   /**
    * Monotonically incrementing cursor for the HMAC derivation chain.
    * In mock: simple counter starting from 0.
    * In real engine (6.1): byte offset into the HMAC stream.
    * Stored per-session to let the verifier replay all spins.
+   *
+   * Bonus paytable cursor delta = 20 bytes (5 reel samples × 4) +
+   * 4 bytes × wildCount (one multiplier draw per landed WILD), plus
+   * any rejection-sampling overhead emitted by `sampleIntFromBytes`.
    */
   cursorAfter: number;
 }

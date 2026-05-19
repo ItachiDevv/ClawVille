@@ -75,6 +75,16 @@ export const townGuide: LocationTemplate = {
     'Compound quests: many quests now require multiple things at once. "Door Knocker" = visit a building AND chat its teacher. "Town Tour" = 3 buildings AND 2 teachers. "Game Day" = 2 teachers AND 1 match. "Inventory in Action" = buy AND use. The capstones (Full House / Elite Trainer / Brand Ambassador) chain four+ predicates. The progress bar averages sub-predicate completion so you see partial fill.',
     'Pending quests (rendered "soon" in amber): Style Statement and Big Spender are gated on the cosmetic shop shipping. Wallet Aware is gated on the wallet UI emitting a view event. Brand Ambassador is gated on Milady install verification. The server validator hard-rejects claims for these with `pending_feature` until their backends ship — no farming risk.',
     'Server-only quests: On the Board, Top 100, Building Champion, Open House, Crossover, Full House, Elite Trainer all need server-side state that the client cannot fully see (leaderboard rank, distinct bot teacher chats, portal crosses). The client never auto-completes these; instead it polls the claim endpoint once prerequisites land. Server reads the `events` table and returns 200 + tokens when you actually qualify.',
+
+    // Phase 6.1.5 — Bundle B casino bonus mechanics. Same-diff rule
+    // (CLAUDE.md "Town Guide Knowledge Sync"). Three knowledge entries
+    // also live in CLAWVILLE_ORIENTATION_KNOWLEDGE upstream and ride the
+    // spread above — these inline copies guarantee a string-grep against
+    // this file alone finds the bonus mechanics, matching the same
+    // pattern used for Reef Race Phase 3 + Q3 tutorial ladder above.
+    'Predictive Gaming Cove has two paytables — `classic-3x5` (fruits / BAR / 7 / Wild, 96% RTP) and `classic-3x5-bonus` (adds a Treasure Chest scatter as the 11th symbol). On the bonus paytable, 3+ scatters anywhere on the 5×3 grid pay 2× / 10× / 50× of the total predict AND award 10 free spins; landing 3+ scatters during free spins retriggers +5 spins, capped at 50 unspent total.',
+    'Bonus-paytable wild multipliers: every landed Wild draws a multiplier from a 60% / 30% / 10% distribution (2× / 3× / 5×). RTP-shape lock (team-lead decision 2026-05-19): the multiplier amplifies line wins only when the spin is in free-spin mode. In base mode the chip is shown on the cell as a "potential" multiplier so the player can see what the wild would have contributed in FS. Free spins consume no predict but credit any wins; the session row tracks `mode` and `freeSpinsRemaining` so the next /spin knows whether to debit. `FS_LINE_WIN_MULTIPLIER=1`, `FS_WILD_MULTIPLIER_DOUBLE=false` — combined RTP 96–98%.',
+    'Cove fairness: every spin is provably fair via the commit-reveal scheme. Verify any spin at /casino/verify with `(serverSeed, clientSeed, nonce, cursor, predict)` — the verifier replays the engine byte-for-byte in the browser and matches `wildMultipliers[]` + `scatterPayout` on the response. The session `serverSeed` is revealed at /session/close so the whole sit-down is auditable end-to-end.',
   ],
   topics: [
     'ClawVille world overview',
