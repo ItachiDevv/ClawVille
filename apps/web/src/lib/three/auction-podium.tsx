@@ -138,10 +138,17 @@ function DomeGlb() {
   }, [cloned]);
 
   // Freeze world matrix — dome never moves.
+  // Also hide the GLB's "Background" plate — Sketchfab's "Space Dome Showcase"
+  // bakes in a flat circular platform under the dome for its original product-
+  // photography render. In our scene this reads as a stray grey disc on the
+  // sand. Same pattern as marketplace-stall hiding its ground_ground_0 plate.
   useEffect(() => {
     cloned.traverse((obj) => {
       obj.matrixAutoUpdate = false;
       obj.updateMatrix();
+      if (/^Background_Material/i.test(obj.name)) {
+        obj.visible = false;
+      }
     });
   }, [cloned]);
 
