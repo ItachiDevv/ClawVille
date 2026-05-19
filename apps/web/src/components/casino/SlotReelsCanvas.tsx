@@ -3,14 +3,17 @@
 /**
  * SlotReelsCanvas — R3F Canvas wrapper for the 3D cylinder drum rig.
  *
- * Camera: z=5, fov=65° — viewport half-width ≈ 3.19 wu, fits 5 reels × 1 wu.
- * Far plane: 10 — well beyond camera z (5) + plane depth (0).
+ * Camera: OrthographicCamera with fixed world bounds — independent of
+ * canvas pixel aspect, so the reels fill the visible region whether the
+ * modal is 600px wide or 1400px wide. Bounds chosen for 5 reels × 1.1wu
+ * pitch + 1wu vertical margin: left=-2.85, right=2.85, top=2.1, bottom=-2.1.
  * frameloop='always' — demand mode causes transparent-black canvas on mount.
  * DPR cap [0.55, 0.7] on low-end keeps Iris Xe pixel budget manageable.
  */
 
 import { Suspense } from 'react';
 import { Canvas } from '@react-three/fiber';
+import { OrthographicCamera } from '@react-three/drei';
 import dynamic from 'next/dynamic';
 import type { SlotReels3DProps } from './SlotReels3D';
 
@@ -61,12 +64,6 @@ export default function SlotReelsCanvas(props: SlotReelsCanvasProps) {
       <Canvas
         dpr={LOW_END_GPU ? [0.55, 0.7] : [0.75, 1]}
         frameloop="always"
-        camera={{
-          fov:      65,
-          near:     0.1,
-          far:      10,
-          position: [0, 0, 5],
-        }}
         gl={{
           antialias:             false,
           powerPreference:       'high-performance',
@@ -74,6 +71,16 @@ export default function SlotReelsCanvas(props: SlotReelsCanvasProps) {
         }}
         style={{ display: 'block', width: '100%', height: '100%' }}
       >
+        <OrthographicCamera
+          makeDefault
+          position={[0, 0, 5]}
+          near={0.1}
+          far={20}
+          left={-3.0}
+          right={3.0}
+          top={2.2}
+          bottom={-2.2}
+        />
         <Suspense fallback={null}>
           <SlotReels3D {...props} />
         </Suspense>
