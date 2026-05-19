@@ -29,18 +29,23 @@ export interface SlotSymbolAsset {
  * Stable indexing — entry `[i]` is the asset for `SymbolId === i`.
  * Order MUST match `CLASSIC_SYMBOLS` in slot-paytables.ts. The display
  * name here OVERRIDES the legacy fruit name (Cherry, Lemon, …) so the
- * UI uses ClawVille-flavoured icons (Kelp, Anchor, Shell, …) while the
- * SpinResult contract stays untouched.
+ * UI uses ClawVille-flavoured icons (sea-twisted classic Vegas symbols)
+ * while the SpinResult contract stays untouched.
+ *
+ * SVG art was redesigned in commit f1946fb (2026-05-18) from flat neon
+ * icons → chunky bevel-cast classic-slot symbols with sea twist:
+ * cherries → anemones, lemon → starfish, orange → pufferfish,
+ * plum → urchin, watermelon → clam, bell → diving-helmet, 7 → coral 7.
  */
 export const CLASSIC_SLOT_SYMBOL_ASSETS: SlotSymbolAsset[] = [
-  { id: 0, svgPath: '/assets/slot-symbols/s0.svg', displayName: 'Kelp',    themeColor: '#5cffae' },
-  { id: 1, svgPath: '/assets/slot-symbols/s1.svg', displayName: 'Anchor',  themeColor: '#00ffe0' },
-  { id: 2, svgPath: '/assets/slot-symbols/s2.svg', displayName: 'Shell',   themeColor: '#7adfff' },
-  { id: 3, svgPath: '/assets/slot-symbols/s3.svg', displayName: 'Pearl',   themeColor: '#cba8ff' },
-  { id: 4, svgPath: '/assets/slot-symbols/s4.svg', displayName: 'Coin',    themeColor: '#ffc857' },
-  { id: 5, svgPath: '/assets/slot-symbols/s5.svg', displayName: 'Crab',    themeColor: '#ff9447' },
-  { id: 6, svgPath: '/assets/slot-symbols/s6.svg', displayName: 'Trident', themeColor: '#ff3860' },
-  { id: 7, svgPath: '/assets/slot-symbols/s7.svg', displayName: 'Lobster', themeColor: '#ff00cc' },
+  { id: 0, svgPath: '/assets/slot-symbols/s0.svg', displayName: 'Kelp',           themeColor: '#5cffae' },
+  { id: 1, svgPath: '/assets/slot-symbols/s1.svg', displayName: 'Anemones',       themeColor: '#d62828' },
+  { id: 2, svgPath: '/assets/slot-symbols/s2.svg', displayName: 'Starfish',       themeColor: '#ffc857' },
+  { id: 3, svgPath: '/assets/slot-symbols/s3.svg', displayName: 'Pufferfish',     themeColor: '#ff8c42' },
+  { id: 4, svgPath: '/assets/slot-symbols/s4.svg', displayName: 'Sea Urchin',     themeColor: '#7a3aff' },
+  { id: 5, svgPath: '/assets/slot-symbols/s5.svg', displayName: 'Giant Clam',     themeColor: '#6cb98a' },
+  { id: 6, svgPath: '/assets/slot-symbols/s6.svg', displayName: 'Diving Helmet',  themeColor: '#ffd778' },
+  { id: 7, svgPath: '/assets/slot-symbols/s7.svg', displayName: 'Coral 7',        themeColor: '#ff3838' },
 ];
 
 /**
