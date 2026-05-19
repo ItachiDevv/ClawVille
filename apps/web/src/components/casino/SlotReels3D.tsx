@@ -1,34 +1,36 @@
 'use client';
 
 /**
- * SlotReels3D — R3F 3D reel rig for the slot modal.
+ * SlotReels3D — R3F 3D reel rig using planar geometry.
  *
- * Architecture:
- *   5 CylinderGeometry drums, one per reel. Each drum has radialSegments=84
- *   (one face per strip position) and heightSegments=3 (top/mid/bottom row).
+ * Architecture (Option B — planar):
+ *   5 PlaneGeometry panels, one per reel.
+ *   Each plane is CELL_WU wide × (CELL_WU * 3) tall, showing a 3-cell
+ *   vertical window. The reel strip is a vertical texture: 1 column × STRIP_LEN
+ *   rows (canvas width = TILE_PX, canvas height = STRIP_LEN * TILE_PX).
  *
- *   Texture layout (TEX_W × TEX_H canvas, 84 columns × 3 rows):
- *     Column k, row r (r=0 at TOP of canvas, v=1 in THREE):
- *       r=0 → strip[(k-1+L)%L]   (top visible cell when k is centred)
- *       r=1 → strip[k]            (middle)
- *       r=2 → strip[(k+1)%L]      (bottom)
- *
- *   Rotation: drum.rotation.y = 2π × (p/L) → strip position p at front.
- *   THREE CylinderGeometry u=0 is at θ=0; u increases CCW when viewed from +Y.
- *   FrontSide material so the outer face renders toward the camera.
+ *   Spin = tween texture.offset.y (no mesh rotation).
+ *   Middle visible cell = strip[p] is positioned by:
+ *     offset.y = 1 - (p + 1.5) / STRIP_LEN   (with flipY=true default)
+ *   wrapT=RepeatWrapping makes seamless vertical looping.
  *
  * Spin phases per reel i:
- *   ACCEL  (200 ms):          velocity 0 → MAX_RADS_PER_SEC, easeInQuad
- *   STEADY (until DECEL_AT):  hold MAX_RADS_PER_SEC
- *   DECEL  (600 ms, stagger): rotation lerp → targetRot, easeOutCubic
- *   POP    (120 ms):          over-rotate +POP_OVERSHOOT, spring back
+ *   ACCEL  (200 ms):          scroll speed 0 → MAX_STRIP_PER_SEC (ease-in)
+ *   STEADY (until DECEL_AT):  hold MAX_STRIP_PER_SEC + blur (repeat.y compressed)
+ *   DECEL  (600 ms, stagger): tween offset.y → targetOffset, ease-out-cubic
+ *   POP    (120 ms):          overshoot 1.5 cells, spring back
  *
- * Blur trick: texture.repeat.y = BLUR_REPEAT during ACCEL/STEADY
- * (stretches symbol tiles vertically = motion blur). Restored to 1 on
- * DECEL start — no material program change, pure texture param update.
+ * Blur trick: during ACCEL/STEADY texture.repeat.y = (3 + BLUR_EXTRA) / STRIP_LEN
+ *   (shows more cells compressed vertically = motion blur illusion).
+ *   Restored to 3 / STRIP_LEN at DECEL start — zero material program change.
+ *
+ * Camera: position [0, 0, 5], fov 65. At z=5, tan(32.5°)=0.637 → half-width
+ *   3.185wu → full width 6.37wu, comfortably containing 5 reels × 1.0wu
+ *   spacing = 4.0wu span.
  *
  * Iris Xe invariants:
  *   MeshBasicMaterial only · no per-frame allocations · no drei Text/Billboard
+ *   · no ShaderMaterial · no shadows
  */
 
 import { useRef, useEffect, useMemo, useCallback } from 'react';
@@ -44,39 +46,42 @@ import type { SpinResult } from '@/lib/casino/types';
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-const REEL_COUNT  = 5;
-const STRIP_LEN   = 84;
+const REEL_COUNT = 5;
+const STRIP_LEN  = 84;
 
-/** World-unit height of the visible 3-cell window */
-const CELL_WU         = 1.0;
-const CYLINDER_HEIGHT = CELL_WU * 3; // 3 wu
+/** World-unit size of each visible cell (and reel width) */
+const CELL_WU = 1.0;
 
-/** Radius: circumference = STRIP_LEN cells, each CELL_WU wide */
-const CYLINDER_RADIUS = (STRIP_LEN * CELL_WU) / (2 * Math.PI);
+/** Visible window height = 3 cells */
+const PLANE_HEIGHT = CELL_WU * 3;
 
-/** Max rotations per second during steady spin */
-const MAX_RPS          = 6;
-const MAX_RADS_PER_SEC = MAX_RPS * 2 * Math.PI;
+/** Horizontal gap between reel centres (wu) */
+const REEL_SPACING = 1.0;
+
+/** Scroll speed: full strip traversals per second during steady spin */
+const MAX_STRIP_PER_SEC = 5.0; // 5 full loops/s = visually fast
 
 /** Phase durations (ms) */
-const ACCEL_MS  = 200;
-const DECEL_AT  = [2000, 2400, 2800, 3200, 3600]; // elapsed ms when reel starts decelerating
-const DECEL_MS  = 600;
-const POP_MS    = 120;
+const ACCEL_MS = 200;
+const DECEL_AT: [number, number, number, number, number] = [1800, 2200, 2600, 3000, 3400];
+const DECEL_MS = 600;
+const POP_MS   = 120;
 
-/** Over-rotation for stop-pop (1.5 segment widths) */
-const POP_OVERSHOOT = (2 * Math.PI / STRIP_LEN) * 1.5;
+/** Over-scroll for stop-pop (1.5 cell widths in strip-fraction units) */
+const POP_OVERSHOOT = 1.5 / STRIP_LEN;
 
-/** Texture repeat.y during spin for motion-blur illusion */
-const BLUR_REPEAT = 0.35;
+/** Motion-blur: show 3 + BLUR_EXTRA cells compressed into the window height */
+const BLUR_EXTRA = 8;
 
 /** Tile resolution — px per symbol tile in the texture canvas */
 const TILE_PX = 128;
-const TEX_W   = STRIP_LEN * TILE_PX;
-const TEX_H   = 3 * TILE_PX;
+const TEX_W   = TILE_PX;                // 1 column
+const TEX_H   = STRIP_LEN * TILE_PX;   // STRIP_LEN rows
 
-/** Horizontal gap between drum axes (wu) */
-const REEL_SPACING = 1.3;
+/** UV repeat.y for normal (crisp) view */
+const REPEAT_CRISP = 3 / STRIP_LEN;
+/** UV repeat.y during spin (blur illusion) */
+const REPEAT_BLUR  = (3 + BLUR_EXTRA) / STRIP_LEN;
 
 // ---------------------------------------------------------------------------
 // Phase constants
@@ -89,33 +94,49 @@ const PHASE_POP    = 4;
 const PHASE_DONE   = 5;
 
 // ---------------------------------------------------------------------------
-// Easing (pure functions, no allocations)
+// Easing (pure functions, zero allocations)
 // ---------------------------------------------------------------------------
-function easeInQuad(t: number): number  { return t * t; }
+function easeInQuad(t: number): number   { return t * t; }
 function easeOutCubic(t: number): number { const u = 1 - t; return 1 - u * u * u; }
 
 // ---------------------------------------------------------------------------
 // Per-reel animation state (mutated in useFrame, NOT React state)
 // ---------------------------------------------------------------------------
 interface ReelAnim {
-  phase:         number;
-  spinStart:     number;  // ms when spin began
-  rotation:      number;  // unbounded radians
-  velocity:      number;  // rads/sec
-  targetRot:     number;  // landing rotation (set when reels data arrives)
-  targetSet:     boolean; // true once targetRot is computed
-  decelRotStart: number;  // rotation at start of DECEL phase
-  popBaseRot:    number;  // rotation at start of POP phase
-  popStartMs:    number;  // ms when POP started
-  settled:       boolean;
+  phase:            number;
+  spinStart:        number;    // ms when spin began
+  scrollPos:        number;    // current offset.y (unbounded; mod 1 at draw)
+  velocity:         number;    // strip-fractions/second
+  targetOffset:     number;    // landing offset.y fractional value (set when reels data arrives)
+  targetSet:        boolean;
+  decelScrollStart: number;    // scrollPos at start of DECEL
+  decelAbsTarget:   number;    // absolute scrollPos target computed once at DECEL entry
+  popBaseOffset:    number;    // scrollPos at start of POP phase
+  popStartMs:       number;
+  settled:          boolean;
 }
 
 function makeIdleAnim(): ReelAnim {
   return {
-    phase: PHASE_IDLE, spinStart: 0, rotation: 0, velocity: 0,
-    targetRot: 0, targetSet: false, decelRotStart: 0,
-    popBaseRot: 0, popStartMs: 0, settled: true,
+    phase: PHASE_IDLE, spinStart: 0, scrollPos: 0, velocity: 0,
+    targetOffset: 0, targetSet: false, decelScrollStart: 0, decelAbsTarget: 0,
+    popBaseOffset: 0, popStartMs: 0, settled: true,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Compute target offset.y from strip position p.
+//
+// Three.js CanvasTexture has flipY=true (default): canvas y=0 → UV v=1.
+// We show 3 cells via repeat.y = 3/STRIP_LEN and scroll via offset.y.
+// The visible UV range is [offset.y, offset.y + 3/STRIP_LEN].
+// UV v = 1 - k/STRIP_LEN maps to canvas row k.
+// Middle cell (p) centre UV = 1 - p/STRIP_LEN.
+// We want middle cell at v_centre = offset.y + 1.5/STRIP_LEN.
+// → offset.y = 1 - p/STRIP_LEN - 1.5/STRIP_LEN = 1 - (p + 1.5)/STRIP_LEN
+// ---------------------------------------------------------------------------
+function stripPositionToOffset(p: number): number {
+  return 1 - (p + 1.5) / STRIP_LEN;
 }
 
 // ---------------------------------------------------------------------------
@@ -161,20 +182,11 @@ function roundRectPath(
 }
 
 // ---------------------------------------------------------------------------
-// Build reel texture canvas — called once per reel at mount.
-//
-// Layout: TEX_W × TEX_H, 84 columns (u) × 3 rows (v).
-// Row 0 (y=0 in canvas) corresponds to v=1 in THREE (top of cylinder).
-// THREE CylinderGeometry: v=0=bottom, v=1=top.
-// We store row 0 at canvas y=0 and flip the texture (flipY=true by default
-// in CanvasTexture) so row 0 maps to v=1 (top). That means:
-//   v=1 (canvas y=0):       top    cell → strip[(k-1+L)%L]
-//   v=2/3 (canvas y=TILE):  middle cell → strip[k]
-//   v=1/3 (canvas y=2TILE): bottom cell → strip[(k+1)%L]
+// Build reel texture — 1 column × STRIP_LEN rows vertical strip.
+// Canvas y = k * TILE_PX → strip symbol k.
+// flipY=true (default CanvasTexture): canvas y=0 ↔ UV v=1 (top of strip).
 // ---------------------------------------------------------------------------
 function buildReelTexture(strip: number[]): THREE.CanvasTexture {
-  const L = strip.length;
-
   const canvas = document.createElement('canvas');
   canvas.width  = TEX_W;
   canvas.height = TEX_H;
@@ -184,53 +196,48 @@ function buildReelTexture(strip: number[]): THREE.CanvasTexture {
   ctx.fillRect(0, 0, TEX_W, TEX_H);
 
   for (let k = 0; k < STRIP_LEN; k++) {
-    for (let row = 0; row < 3; row++) {
-      const symbolId =
-        row === 0 ? strip[(k - 1 + L) % L]
-        : row === 1 ? strip[k]
-        : strip[(k + 1) % L];
+    const symbolId = strip[k] ?? 0;
+    const asset    = CLASSIC_SLOT_SYMBOL_ASSETS[symbolId] ?? CLASSIC_SLOT_SYMBOL_ASSETS[0];
+    const emoji    = SYMBOL_EMOJIS[symbolId] ?? '?';
 
-      const asset = CLASSIC_SLOT_SYMBOL_ASSETS[symbolId] ?? CLASSIC_SLOT_SYMBOL_ASSETS[0];
-      const emoji = SYMBOL_EMOJIS[symbolId] ?? '?';
+    const px  = 0;
+    const py  = k * TILE_PX;
+    const pad = 4;
 
-      const px = k * TILE_PX;
-      const py = row * TILE_PX;
-      const pad = 4;
+    // Cell background
+    ctx.fillStyle = 'rgba(17,32,61,0.88)';
+    roundRectPath(ctx, px + pad, py + pad, TILE_PX - pad * 2, TILE_PX - pad * 2, 12);
+    ctx.fill();
 
-      // Cell background
-      ctx.fillStyle = 'rgba(17,32,61,0.88)';
-      roundRectPath(ctx, px + pad, py + pad, TILE_PX - pad * 2, TILE_PX - pad * 2, 12);
-      ctx.fill();
+    // Theme color ring
+    ctx.strokeStyle = asset.themeColor + '77';
+    ctx.lineWidth   = 2;
+    ctx.stroke();
 
-      // Theme color ring
-      ctx.strokeStyle = asset.themeColor + '77';
-      ctx.lineWidth   = 2;
-      ctx.stroke();
+    // Emoji
+    ctx.font         = `${Math.round(TILE_PX * 0.50)}px serif`;
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle    = '#ffffff';
+    ctx.fillText(emoji, px + TILE_PX / 2, py + TILE_PX * 0.46);
 
-      // Emoji (synchronous, always available)
-      ctx.font         = `${Math.round(TILE_PX * 0.50)}px serif`;
-      ctx.textAlign    = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillStyle    = '#ffffff';
-      ctx.fillText(emoji, px + TILE_PX / 2, py + TILE_PX * 0.46);
-
-      // Symbol name label
-      ctx.font         = `bold ${Math.round(TILE_PX * 0.11)}px monospace`;
-      ctx.textBaseline = 'alphabetic';
-      ctx.fillStyle    = asset.themeColor;
-      ctx.fillText(asset.displayName.toUpperCase(), px + TILE_PX / 2, py + TILE_PX - 8);
-    }
+    // Symbol name label
+    ctx.font         = `bold ${Math.round(TILE_PX * 0.11)}px monospace`;
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle    = asset.themeColor;
+    ctx.fillText(asset.displayName.toUpperCase(), px + TILE_PX / 2, py + TILE_PX - 8);
   }
 
   const tex = new THREE.CanvasTexture(canvas);
-  // flipY=true (default) → canvas row 0 maps to v=1 (top of cylinder), correct.
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.minFilter  = THREE.LinearMipmapLinearFilter;
-  tex.magFilter  = THREE.LinearFilter;
+  tex.colorSpace    = THREE.SRGBColorSpace;
+  tex.minFilter     = THREE.LinearMipmapLinearFilter;
+  tex.magFilter     = THREE.LinearFilter;
   tex.generateMipmaps = true;
-  // wrapS=RepeatWrapping so that rotating past u=1 wraps to u=0 (seamless drum)
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.wrapS         = THREE.ClampToEdgeWrapping;
+  tex.wrapT         = THREE.RepeatWrapping; // vertical scroll loops seamlessly
+  // Start centred on strip position 0 (will be overridden by tween)
+  tex.repeat.set(1, REPEAT_CRISP);
+  tex.offset.set(0, stripPositionToOffset(0));
   return tex;
 }
 
@@ -271,34 +278,30 @@ export default function SlotReels3D({
     [strips],
   );
 
-  // Shared geometry
-  const geometry = useMemo(() => new THREE.CylinderGeometry(
-    CYLINDER_RADIUS, CYLINDER_RADIUS, CYLINDER_HEIGHT,
-    STRIP_LEN, 3, true,
-  ), []);
+  // Shared geometry: 1wu wide × 3wu tall plane
+  const geometry = useMemo(() => new THREE.PlaneGeometry(CELL_WU, PLANE_HEIGHT), []);
 
-  // Per-reel materials
+  // Per-reel materials — MeshBasicMaterial, Iris Xe safe
   const materials = useMemo<THREE.MeshBasicMaterial[]>(
     () => textures.map(tex => new THREE.MeshBasicMaterial({
       map:         tex,
-      side:        THREE.FrontSide, // outer face toward camera
-      transparent: true,
+      side:        THREE.FrontSide,
+      transparent: false,
     })),
     [textures],
   );
 
-  const meshRefs    = useRef<(THREE.Mesh | null)[]>(Array(REEL_COUNT).fill(null));
-  const animState   = useRef<ReelAnim[]>(Array.from({ length: REEL_COUNT }, makeIdleAnim));
-  const settledRef  = useRef(0);
-  const prevTrigger = useRef(spinTrigger);
-  // Track latest reels data for use in useFrame (avoids stale closure)
-  const reelsRef    = useRef<SpinResult['reels'] | null>(null);
+  const meshRefs     = useRef<(THREE.Mesh | null)[]>(Array(REEL_COUNT).fill(null));
+  const animState    = useRef<ReelAnim[]>(Array.from({ length: REEL_COUNT }, makeIdleAnim));
+  const settledRef   = useRef(0);
+  const prevTrigger  = useRef(spinTrigger);
+  const reelsRef     = useRef<SpinResult['reels'] | null>(null);
   const isSpinningRef = useRef(isSpinning);
 
   useEffect(() => { reelsRef.current = reels; }, [reels]);
   useEffect(() => { isSpinningRef.current = isSpinning; }, [isSpinning]);
 
-  // Fire compileAsync once to pre-warm GPU pipelines
+  // Pre-warm GPU pipelines once after mount
   useEffect(() => {
     const raf = requestAnimationFrame(() => {
       if (typeof (gl as any).compileAsync === 'function') {
@@ -308,11 +311,10 @@ export default function SlotReels3D({
       }
     });
     return () => cancelAnimationFrame(raf);
-    // stable R3F refs — intentionally omitted
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Start spin when spinTrigger increments
+  // ── Start spin when spinTrigger increments ─────────────────────────────
   useEffect(() => {
     if (spinTrigger === prevTrigger.current) return;
     prevTrigger.current = spinTrigger;
@@ -322,24 +324,23 @@ export default function SlotReels3D({
 
     for (let r = 0; r < REEL_COUNT; r++) {
       const anim = animState.current[r];
-      anim.phase         = PHASE_ACCEL;
-      anim.spinStart     = now;
-      anim.velocity      = 0;
-      anim.settled       = false;
-      anim.targetSet     = false;
-      anim.decelRotStart = 0;
+      anim.phase           = PHASE_ACCEL;
+      anim.spinStart       = now;
+      anim.velocity        = 0;
+      anim.settled         = false;
+      anim.targetSet       = false;
+      anim.decelScrollStart = 0;
 
-      // Enable blur
+      // Enable motion-blur repeat
       const map = materials[r].map;
       if (map) {
-        map.repeat.set(1, BLUR_REPEAT);
-        map.offset.set(0, (1 - BLUR_REPEAT) / 2);
+        map.repeat.set(1, REPEAT_BLUR);
         map.needsUpdate = true;
       }
     }
   }, [spinTrigger, materials]);
 
-  // Compute target rotations when reels data lands
+  // ── Compute target offsets when server result arrives ──────────────────
   useEffect(() => {
     if (isSpinning || !reels) return;
 
@@ -353,18 +354,8 @@ export default function SlotReels3D({
 
       const [top, mid, bot] = window3;
       const p = findStripPosition(strip, top, mid, bot);
-
-      // Target angle for this strip position
-      const targetAngle = (2 * Math.PI * p) / STRIP_LEN;
-
-      // Find nearest forward landing: current rotation mod 2π → next occurrence
-      const curMod = ((anim.rotation % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
-      let diff = ((targetAngle - curMod) + 2 * Math.PI) % (2 * Math.PI);
-      // Guarantee at least a half-revolution before landing
-      if (diff < Math.PI) diff += 2 * Math.PI;
-
-      anim.targetRot = anim.rotation + diff;
-      anim.targetSet = true;
+      anim.targetOffset = stripPositionToOffset(p);
+      anim.targetSet    = true;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSpinning, reels]);
@@ -376,6 +367,7 @@ export default function SlotReels3D({
     }
   }, [onReelsSettled]);
 
+  // ── Per-frame animation ────────────────────────────────────────────────
   useFrame((_, delta) => {
     const now = performance.now();
 
@@ -384,32 +376,40 @@ export default function SlotReels3D({
       const mesh = meshRefs.current[r];
       if (!mesh || anim.settled) continue;
 
+      const map = (mesh.material as THREE.MeshBasicMaterial).map;
+      if (!map) continue;
+
       const elapsed = now - anim.spinStart;
 
       switch (anim.phase) {
 
         case PHASE_ACCEL: {
           const t = Math.min(elapsed / ACCEL_MS, 1);
-          anim.velocity = MAX_RADS_PER_SEC * easeInQuad(t);
-          anim.rotation += anim.velocity * delta;
+          anim.velocity   = MAX_STRIP_PER_SEC * easeInQuad(t);
+          anim.scrollPos += anim.velocity * delta;
           if (t >= 1) anim.phase = PHASE_STEADY;
+          // Apply scroll (mod 1 to stay in [0, 1))
+          map.offset.set(0, anim.scrollPos % 1);
           break;
         }
 
         case PHASE_STEADY: {
-          anim.rotation += MAX_RADS_PER_SEC * delta;
-          // Start decel only if we have the target rotation computed
-          if (elapsed >= DECEL_AT[r] && anim.targetSet) {
-            anim.phase         = PHASE_DECEL;
-            anim.decelRotStart = anim.rotation;
+          anim.scrollPos += MAX_STRIP_PER_SEC * delta;
+          map.offset.set(0, anim.scrollPos % 1);
 
-            // Restore crisp texture
-            const map = materials[r].map;
-            if (map) {
-              map.repeat.set(1, 1);
-              map.offset.set(0, 0);
-              map.needsUpdate = true;
-            }
+          if (elapsed >= DECEL_AT[r] && anim.targetSet) {
+            // Compute absolute decel target once at transition point
+            const curFrac = anim.scrollPos % 1;
+            let diff = (anim.targetOffset - curFrac + 1) % 1;
+            if (diff < 0.5) diff += 1; // guarantee at least half a loop forward
+
+            anim.phase            = PHASE_DECEL;
+            anim.decelScrollStart = anim.scrollPos;
+            anim.decelAbsTarget   = anim.scrollPos + diff;
+
+            // Restore crisp repeat
+            map.repeat.set(1, REPEAT_CRISP);
+            map.needsUpdate = true;
           }
           break;
         }
@@ -417,13 +417,16 @@ export default function SlotReels3D({
         case PHASE_DECEL: {
           const decelElapsed = elapsed - DECEL_AT[r];
           const t = Math.min(decelElapsed / DECEL_MS, 1);
-          anim.rotation = anim.decelRotStart + (anim.targetRot - anim.decelRotStart) * easeOutCubic(t);
+
+          const current  = anim.decelScrollStart + (anim.decelAbsTarget - anim.decelScrollStart) * easeOutCubic(t);
+          anim.scrollPos = current;
+          map.offset.set(0, current % 1);
 
           if (t >= 1) {
-            anim.rotation   = anim.targetRot;
-            anim.phase      = PHASE_POP;
-            anim.popBaseRot = anim.targetRot;
-            anim.popStartMs = now;
+            anim.scrollPos     = anim.decelAbsTarget;
+            anim.phase         = PHASE_POP;
+            anim.popBaseOffset = anim.decelAbsTarget;
+            anim.popStartMs    = now;
           }
           break;
         }
@@ -431,29 +434,32 @@ export default function SlotReels3D({
         case PHASE_POP: {
           const popElapsed = now - anim.popStartMs;
           const half       = POP_MS / 2;
+          let offset: number;
 
           if (popElapsed < half) {
-            anim.rotation = anim.popBaseRot + POP_OVERSHOOT * easeInQuad(popElapsed / half);
+            offset = anim.popBaseOffset + POP_OVERSHOOT * easeInQuad(popElapsed / half);
           } else {
             const t2 = Math.min((popElapsed - half) / half, 1);
-            anim.rotation = anim.popBaseRot + POP_OVERSHOOT * (1 - easeOutCubic(t2));
+            offset = anim.popBaseOffset + POP_OVERSHOOT * (1 - easeOutCubic(t2));
           }
 
+          anim.scrollPos = offset;
+          map.offset.set(0, offset % 1);
+
           if (popElapsed >= POP_MS) {
-            anim.rotation = anim.popBaseRot;
-            anim.settled  = true;
-            anim.phase    = PHASE_DONE;
+            anim.scrollPos = anim.popBaseOffset;
+            map.offset.set(0, anim.popBaseOffset % 1);
+            anim.settled = true;
+            anim.phase   = PHASE_DONE;
             handleReelSettled();
           }
           break;
         }
       }
-
-      mesh.rotation.y = anim.rotation;
     }
   });
 
-  // Dispose resources on unmount
+  // ── Dispose on unmount ─────────────────────────────────────────────────
   useEffect(() => {
     return () => {
       geometry.dispose();
@@ -462,16 +468,11 @@ export default function SlotReels3D({
         mat.dispose();
       }
     };
-    // stable refs, intentional
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
     <group>
-      {/* Ambient light so symbols are visible (MeshBasicMaterial ignores lights,
-          but a subtle point light adds depth to the surrounding scene) */}
-      <ambientLight intensity={0.6} />
-
       {Array.from({ length: REEL_COUNT }, (_, r) => (
         <mesh
           key={r}
@@ -481,6 +482,22 @@ export default function SlotReels3D({
           position={[(r - (REEL_COUNT - 1) / 2) * REEL_SPACING, 0, 0]}
         />
       ))}
+
+      {/* Thin separator lines between reels (cheap LineSegments, no shader) */}
+      {Array.from({ length: REEL_COUNT - 1 }, (_, i) => {
+        const x = (i - (REEL_COUNT - 2) / 2) * REEL_SPACING + REEL_SPACING / 2;
+        return (
+          <lineSegments key={`sep-${i}`} position={[x, 0, 0.01]}>
+            <bufferGeometry>
+              <bufferAttribute
+                attach="attributes-position"
+                args={[new Float32Array([0, -PLANE_HEIGHT / 2, 0, 0, PLANE_HEIGHT / 2, 0]), 3]}
+              />
+            </bufferGeometry>
+            <lineBasicMaterial color={0x00ffe0} opacity={0.25} transparent />
+          </lineSegments>
+        );
+      })}
     </group>
   );
 }
