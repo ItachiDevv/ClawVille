@@ -80,8 +80,9 @@ const BEZEL_HALF_H = DRUM_RADIUS * Math.sin(STEP) + CELL_WU * 0.5 + 0.06;
 // ---------------------------------------------------------------------------
 // Spin physics
 // ---------------------------------------------------------------------------
-/** Max rotations per second during steady spin. */
-const MAX_RPS          = 4;
+/** Max rotations per second during steady spin. 2 RPS keeps drum below 1 plane/frame
+ *  at 30fps (0.8 planes/frame), preventing wagon-wheel strobe on Iris Xe. */
+const MAX_RPS          = 2;
 const MAX_RAD_PER_SEC  = MAX_RPS * 2 * Math.PI;
 
 const ACCEL_MS = 200;
@@ -334,7 +335,7 @@ export default function SlotReels3D({
         const symbolId = strip[f % strip.length] ?? 0;
         const mat = new THREE.MeshBasicMaterial({
           map:  symbolTextures[symbolId] ?? symbolTextures[0],
-          side: THREE.FrontSide,
+          side: THREE.DoubleSide,
           transparent: false,
         });
         return mat;
