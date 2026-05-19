@@ -475,7 +475,12 @@ casinoSlotsRouter.post('/session/open', requireAuth, async (c) => {
       // sent a different chip value but will discover the session-pinned
       // predict via startingBalance and adopt it.
       predict: predictBig.toString(),
-      createdAt: resumed.createdAt.toISOString(),
+      // Drizzle raw SQL execute returns timestamps as strings (not Date
+      // objects). Coerce defensively so both shapes work.
+      createdAt:
+        resumed.createdAt instanceof Date
+          ? resumed.createdAt.toISOString()
+          : new Date(resumed.createdAt as unknown as string).toISOString(),
     };
     return c.json(response, 200);
   }
