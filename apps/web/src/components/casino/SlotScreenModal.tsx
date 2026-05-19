@@ -621,7 +621,7 @@ export default function SlotScreenModal() {
                   letterSpacing: '0.18em',
                   textTransform: 'uppercase',
                 }}>
-                  20 Paylines · 96% RTP · Provably Fair
+                  20 Paylines · 94% RTP · Provably Fair
                 </div>
               </div>
             </div>
