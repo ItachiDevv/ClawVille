@@ -67,10 +67,10 @@ export default function SlotReelsCanvas(props: SlotReelsCanvasProps) {
         dpr={LOW_END_GPU ? [0.55, 0.7] : [0.75, 1]}
         frameloop={props.isSpinning ? 'always' : 'demand'}
         camera={{
-          fov:      55,
+          fov:      65,
           near:     0.1,
-          far:      100,
-          position: [0, 0, 6],
+          far:      50,
+          position: [0, 0, 5],
         }}
         gl={{
           antialias:        false,
