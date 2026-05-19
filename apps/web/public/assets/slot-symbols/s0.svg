@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <radialGradient id="glow0" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#5cffae" stop-opacity="0.28"/>
+      <stop offset="100%" stop-color="#5cffae" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="kelp0" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#7affc9"/>
+      <stop offset="55%" stop-color="#1cbb71"/>
+      <stop offset="100%" stop-color="#073f25"/>
+    </linearGradient>
+  </defs>
+  <ellipse cx="128" cy="128" rx="110" ry="110" fill="url(#glow0)"/>
+  <!-- Center kelp frond -->
+  <path d="M128 222 Q116 178 124 132 Q114 92 132 56 Q146 90 138 132 Q146 178 128 222 Z"
+        fill="url(#kelp0)" stroke="#0a3a22" stroke-width="4" stroke-linejoin="round"/>
+  <!-- Left frond -->
+  <path d="M76 218 Q70 178 84 144 Q74 108 92 78 Q104 110 100 144 Q108 180 90 218 Z"
+        fill="url(#kelp0)" stroke="#0a3a22" stroke-width="3" stroke-linejoin="round" opacity="0.92"/>
+  <!-- Right frond -->
+  <path d="M180 218 Q186 178 172 144 Q182 108 164 78 Q152 110 156 144 Q148 180 166 218 Z"
+        fill="url(#kelp0)" stroke="#0a3a22" stroke-width="3" stroke-linejoin="round" opacity="0.92"/>
+  <!-- Bubbles -->
+  <circle cx="98" cy="64" r="6"  fill="none" stroke="#00ffe0" stroke-width="2.5"/>
+  <circle cx="158" cy="48" r="4" fill="none" stroke="#00ffe0" stroke-width="2.5"/>
+  <circle cx="134" cy="32" r="3" fill="none" stroke="#00ffe0" stroke-width="2"/>
+  <!-- Leaf vein highlight -->
+  <path d="M128 96 Q126 144 130 192" fill="none" stroke="#bcffd9" stroke-width="2" opacity="0.7"/>
+</svg>

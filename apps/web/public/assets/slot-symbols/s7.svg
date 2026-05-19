@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <radialGradient id="glow7" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ff00cc" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#ff00cc" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="lobster7" cx="40%" cy="30%" r="70%">
+      <stop offset="0%" stop-color="#ff5544"/>
+      <stop offset="100%" stop-color="#880022"/>
+    </radialGradient>
+  </defs>
+  <ellipse cx="128" cy="128" rx="110" ry="110" fill="url(#glow7)"/>
+  <!-- Body -->
+  <ellipse cx="128" cy="145" rx="40" ry="55" fill="url(#lobster7)" stroke="#ff00cc" stroke-width="6"/>
+  <!-- Head -->
+  <ellipse cx="128" cy="88" rx="32" ry="28" fill="url(#lobster7)" stroke="#ff00cc" stroke-width="6"/>
+  <!-- Antennae -->
+  <path d="M110 68 Q85 45 70 30" fill="none" stroke="#ff00cc" stroke-width="4" stroke-linecap="round"/>
+  <path d="M146 68 Q171 45 186 30" fill="none" stroke="#ff00cc" stroke-width="4" stroke-linecap="round"/>
+  <!-- Left big claw -->
+  <path d="M92 120 Q65 105 52 115 Q42 128 55 138 Q48 145 54 155 Q68 160 80 148 Q86 140 92 130"
+        fill="url(#lobster7)" stroke="#ff00cc" stroke-width="5" stroke-linejoin="round"/>
+  <!-- Right big claw -->
+  <path d="M164 120 Q191 105 204 115 Q214 128 201 138 Q208 145 202 155 Q188 160 176 148 Q170 140 164 130"
+        fill="url(#lobster7)" stroke="#ff00cc" stroke-width="5" stroke-linejoin="round"/>
+  <!-- Legs -->
+  <line x1="100" y1="175" x2="80" y2="196" stroke="#ff00cc" stroke-width="4" stroke-linecap="round"/>
+  <line x1="112" y1="183" x2="96" y2="205" stroke="#ff00cc" stroke-width="4" stroke-linecap="round"/>
+  <line x1="156" y1="175" x2="176" y2="196" stroke="#ff00cc" stroke-width="4" stroke-linecap="round"/>
+  <line x1="144" y1="183" x2="160" y2="205" stroke="#ff00cc" stroke-width="4" stroke-linecap="round"/>
+  <!-- Tail fan -->
+  <path d="M105 195 Q128 210 151 195 Q145 220 128 228 Q111 220 105 195 Z"
+        fill="url(#lobster7)" stroke="#ff00cc" stroke-width="4" stroke-linejoin="round"/>
+  <!-- Eyes -->
+  <circle cx="114" cy="82" r="7" fill="#0a1428" stroke="#00ffe0" stroke-width="3"/>
+  <circle cx="114" cy="82" r="3" fill="#00ffe0"/>
+  <circle cx="142" cy="82" r="7" fill="#0a1428" stroke="#00ffe0" stroke-width="3"/>
+  <circle cx="142" cy="82" r="3" fill="#00ffe0"/>
+  <!-- Body segments -->
+  <path d="M90 135 Q128 122 166 135" fill="none" stroke="#ff00cc" stroke-width="2.5" opacity="0.6"/>
+  <path d="M90 155 Q128 142 166 155" fill="none" stroke="#ff00cc" stroke-width="2.5" opacity="0.6"/>
+  <path d="M92 175 Q128 162 164 175" fill="none" stroke="#ff00cc" stroke-width="2.5" opacity="0.6"/>
+  <!-- Neon crown accent -->
+  <path d="M96 72 L88 58 L104 65 L128 50 L152 65 L168 58 L160 72" fill="none" stroke="#ffc857" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

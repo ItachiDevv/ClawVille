@@ -12,7 +12,7 @@
 > - **`ARCHITECTURE.md`** — backend routes / services / schema / events / leaderboard rubric.
 > - **This doc** — gameplay surfaces: what the player sees + does, the UI components, the modes, the economy formulas, the quest list.
 
-**Last edit:** 2026-05-18 — Concern 6.0.5: Walkable casino interior + slot cabinet props. Player VRM/GLB mounts inside casino, WASD movement, follow camera. 4 primitive slot cabinets on left wall. Walk-out exit position corrected to (2000, 5760). §18a.e added. Prior: Concern 6.0.4 — 2D slot screen (mock data).
+**Last edit:** 2026-05-18 — Concern 6.0.4 polish pass: Slot UI redesign. New design-token system (`casino-tokens.css`), `useFX` 5-tier FX state machine, NeonButton/NeonCard/NeonModal/BetChips UI primitives, SVG symbol art (Kelp/Anchor/Shell/Pearl/Coin/Crab/Trident/Lobster) replacing emoji, coin+confetti particle bursts, mega-win screen flash + 3s lockout, prefers-reduced-motion honored. SpinResult contract untouched. Prior: Concern 6.0.5 — walkable interior. Prior: Concern 6.0.4 — 2D slot screen (mock data).
 
 ---
 
@@ -688,13 +688,17 @@ interface SpinResult {
 interface WinningLine { lineIndex: number; symbols: number[]; winAmount: bigint; multiplier: number; }
 ```
 
-**Reel animation (`SlotReels.tsx`):** CSS keyframes only (no canvas), Iris Xe safe. Sequential stop: reel `i` settles at `2.0 + i×0.4`s → [2.0, 2.4, 2.8, 3.2, 3.6s]. Win cell highlight: radial-gradient bg + neon border + `slotPulse` animation. Win line overlay: horizontal neon strip at the row of each winning payline. Mobile responsive via `--slot-cell-size` CSS custom property.
+**UI polish pass (Concern 6.0.4 — 2026-05-18):** Replaced emoji symbols + inline-style hodgepodge with a real design system. New files: `apps/web/src/styles/casino-tokens.css` (single source of truth for neon palette, spacing, radius, motion, shadows, plus shared keyframes — `cv-spin-jitter`, `cv-stop-pop`, `cv-coin-burst`, `cv-confetti-burst`, `cv-shake-soft|hard`, `cv-screen-flash`, `cv-mega-banner-in`, `cv-glow-pulse`), `apps/web/src/lib/casino/useFX.ts` (5-tier FX state machine — see below), `apps/web/src/components/casino/ui/` (NeonButton primary/secondary/ghost, NeonCard with title+subtitle+action, NeonModal with backdrop blur + ESC + click-outside + focus trap, BetChips chip-style selector), `packages/shared/src/constants/slot-symbols.ts` (`CLASSIC_SLOT_SYMBOL_ASSETS` — maps SymbolId → SVG path + ClawVille-themed display name). SVG art at `apps/web/public/assets/slot-symbols/s0..s7.svg` — Kelp / Anchor / Shell / Pearl / Coin / Crab / Trident / Lobster (wild). `<img onError>` falls back to legacy emoji if a SVG is missing — no 404 surfaces to the player.
 
-**Slot HUD (`SlotHUD.tsx`):** top strip (balance CT / session P&L / spin count) + bottom bar (bet selector 1–100, SPIN button, autoplay dropdown, mute, paytable, fairness, Walk Away). SPIN button states: `ready | spinning | evaluating | insufficient`. Walk Away = `closeSlotScreen()`.
+**Reel animation (`SlotReels.tsx`):** CSS keyframes only (no canvas), Iris Xe safe. Sequential stop: reel `i` settles at `2.0 + i×0.4`s → [2.0, 2.4, 2.8, 3.2, 3.6s]. While spinning: `cv-spin-jitter` 240ms linear infinite + `saturate(1.15)` filter. On stop: `cv-stop-pop` 260ms `cubic-bezier(0.2,0.8,0.2,1)` one-shot. Win cells: gold ring + bloom box-shadow + `cv-symbol-stopped-pulse`. Win line overlay: horizontal neon strip at the row of each winning payline. Mobile responsive via `--slot-cell-size`. Shake intensity passed in via prop — `useFX().state.shakeLevel` drives `cv-shake-soft` or `cv-shake-hard` on the reel container.
 
-**Win celebration (`WinCelebration.tsx`):** tier detection from `winAmount / bet` ratio → none / micro / small / medium / big / mega. RAF count-up animation 0→winAmount over 0.8s. Dark vignette + `winShake` CSS on big/mega wins. Auto-dismisses after tier-dependent duration.
+**Slot HUD (`SlotHUD.tsx`):** top strip (balance CT / session P&L / spin count) + bottom bar built on `NeonButton` + `BetChips`. SPIN button states: `ready | spinning | evaluating | insufficient | locked` (locked = mega-win 3s lockout). Bottom bar sticks to safe-area-inset-bottom on mobile (`position: sticky; bottom: 12px; padding-bottom: env(safe-area-inset-bottom)`).
 
-**Paytable modal (`PaytableModal.tsx`):** symbol payout table (2–5 of a kind × bet) + 20 payline mini-grid diagrams in per-line color. Opens from HUD info button. Closes on Escape or backdrop click.
+**Win celebration (`WinCelebration.tsx`):** 5-tier dispatcher reading from `useFX().state`. Tiers (derived in `useFX.deriveWinTier` via bigint math `winAmount * 100n / bet`): **micro** (< 2× — 4 coins, no overlay), **small** (< 10× — 8 confetti + soft shake), **medium** (< 50× — 18 coins + 14 confetti + soft shake + vignette), **big** (< 500× — 24 coins + 18 confetti + hard shake + WIN banner), **mega** (≥ 500× — 42 coins + 30 confetti + hard shake + screen flash + 3s spin lockout). Each particle gets `--cv-idx` and `--cv-count` inline so a single `cv-coin-burst`/`cv-confetti-burst` keyframe handles spread and stagger. RAF count-up drives the big/mega banner amount. `prefers-reduced-motion` halves particle counts, disables screen flash, demotes `hard` shake to `soft`.
+
+**useFX hook (`apps/web/src/lib/casino/useFX.ts`):** `{state, onSpinStart, onSpinResolved, reset}`. State surface: `{tier, winAmount, bet, shakeLevel, isGlowActive, isSnapActive, isHugeWinFlashActive, particles[], isLockedOut}`. All timers tracked in a ref array + cleaned up on unmount or `reset()`. `reset()` called from `handleClose` so closing mid-celebration drops every pending particle and clears the lockout.
+
+**Paytable modal (`PaytableModal.tsx`):** Built on `NeonModal` + `NeonCard`. Symbol rows render the SVG asset (with emoji fallback) keyed off `CLASSIC_SLOT_SYMBOL_ASSETS`. Payout chips use the symbol's theme color. Closes on Escape or backdrop click (handled by NeonModal).
 
 **State (`apps/web/src/stores/casino.ts`):** `useCasinoStore` Zustand slice. `openSlotScreen(machineSlug, paytableId, startBalance)` resets session state + calls `resetMockCursor()`. `recordSpin(result, bet)` updates `sessionBalance`, `sessionPnl`, `spinCount`. Starting balance: `avatar.clawTokens` read via `useAvatar()` at hotspot click; in-memory only (no API call in 6.0.4).
 
@@ -703,13 +707,18 @@ interface WinningLine { lineIndex: number; symbols: number[]; winAmount: bigint;
 **Key files:**
 - `apps/web/src/lib/casino/types.ts` — SpinResult contract (Phase 6.1 freeze)
 - `apps/web/src/lib/casino/mock-engine.ts` — mock spin engine
+- `apps/web/src/lib/casino/useFX.ts` — 5-tier FX state machine (polish pass)
 - `apps/web/src/stores/casino.ts` — Zustand store
+- `apps/web/src/styles/casino-tokens.css` — design tokens + shared keyframes (polish pass)
 - `apps/web/src/components/casino/SlotScreenModal.tsx` — root modal + orchestration
-- `apps/web/src/components/casino/SlotReels.tsx` — 5×3 reel grid
+- `apps/web/src/components/casino/SlotReels.tsx` — 5×3 reel grid (SVG symbols)
 - `apps/web/src/components/casino/SlotHUD.tsx` — balance strip + controls
-- `apps/web/src/components/casino/WinCelebration.tsx` — win tier overlay
+- `apps/web/src/components/casino/WinCelebration.tsx` — 5-tier FX dispatcher
 - `apps/web/src/components/casino/PaytableModal.tsx` — symbol/line viewer
+- `apps/web/src/components/casino/ui/{NeonButton,NeonCard,NeonModal,BetChips}.tsx` — branded primitives (polish pass)
+- `apps/web/public/assets/slot-symbols/s0..s7.svg` — ClawVille-themed reel art
 - `packages/shared/src/constants/slot-paytables.ts` — canonical paytable constants
+- `packages/shared/src/constants/slot-symbols.ts` — SVG asset manifest
 
 ### 18a.d. Backend / RNG / wager program (Concern 6.1+ — PENDING)
 
@@ -749,7 +758,7 @@ See **`3dStructure.md §1`** for the full coordinate system + axis conventions, 
 
 Compact log. The audit-history wall at the top of the prior version of this doc has been replaced with this. Entries are gameplay-facing — backend/service changes belong in `ARCHITECTURE.md §13`, 3D-render changes in `3dStructure.md §13`.
 
-- 2026-05-18 — Concern 6.0.5: Walkable casino interior + slot cabinet props. Self-contained WASD movement + follow camera in `casino-interior.tsx`. `CasinoPlayerAvatar` routes VRM (`useVRMInstance`+`VRMCharacterAnimator`) vs GLB (lobster, scale=40). Player spawns at (0,0,240) facing −Z. 4 primitive slot cabinets on left wall (x=−115, module-scope geometry). Hotspots moved onto cabinet faces. Walk-out exit corrected to (2000, 5760) — was wrong (940). Canvas initial camera updated to [0,55,400].
+- 2026-05-18 `b1c36b3` — Concern 6.0.5: Walkable casino interior + slot cabinet props. Self-contained WASD movement + follow camera in `casino-interior.tsx`. `CasinoPlayerAvatar` routes VRM (`useVRMInstance`+`VRMCharacterAnimator`) vs GLB (lobster, scale=40). Player spawns at (0,0,240) facing −Z. 4 primitive slot cabinets on left wall (x=−115, module-scope geometry). Hotspots moved onto cabinet faces. Walk-out exit corrected to (2000, 5760) — was wrong (940). Canvas initial camera updated to [0,55,400].
 - 2026-05-18 — Concern 6.0.4: 2D slot screen shipped. Full 5×3 reel UI with sequential-stop CSS animation, win highlights, paytable modal, win celebration, autoplay. Mock engine (Math.random + outcome forcing). SpinResult/WinningLine types frozen for Phase 6.1 swap. Slot hotspot onClick wired to `openSlotScreen`. `SlotScreenModal` mounted on `/casino` page as fixed DOM overlay (z-index 9990). No real money; in-memory CT balance only.
 - 2026-05-18 — Concern 6.0.3: Casino walk-in animation. `SceneTransition.tsx` (new generic rAF fade). `triggerCasinoWalkIn()` in `arena-buildings.tsx` (walk + 500ms fade, explore-mode bypass). `/casino` page: `fadeInOnMount` fade-from-black on arrival, `triggerTransition` + mid-fade avatar reposition `(940, 5760)` on exit. `/game` page: mounts `<SceneTransition />`. `avatarPositionRef` spawn updated to `(5760, 6140)`.
 - 2026-05-18 — Concern 6.0.2: Casino interior scene shipped. New §18a (casino). Click casino building → `/casino`. Route-isolated Canvas, gameready GLB + cartoon fallback, FPS-fallback gate, invisible slot hotspots, Back to World button. 2D slot screen (6.0.4) + RNG/wager (6.1) pending.

@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <radialGradient id="glowB" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffc857" stop-opacity="0.4"/>
+      <stop offset="60%" stop-color="#ff00cc" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#ff00cc" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="chest" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#7a4a00"/>
+      <stop offset="40%" stop-color="#5a3200"/>
+      <stop offset="100%" stop-color="#2a1400"/>
+    </linearGradient>
+    <linearGradient id="lid" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#8a5500"/>
+      <stop offset="100%" stop-color="#5a3200"/>
+    </linearGradient>
+  </defs>
+  <ellipse cx="128" cy="148" rx="112" ry="95" fill="url(#glowB)"/>
+  <!-- Sparkles top-left -->
+  <line x1="52" y1="60" x2="52" y2="40" stroke="#ffc857" stroke-width="4" stroke-linecap="round"/>
+  <line x1="42" y1="50" x2="62" y2="50" stroke="#ffc857" stroke-width="4" stroke-linecap="round"/>
+  <!-- Sparkles top-right -->
+  <line x1="200" y1="55" x2="200" y2="35" stroke="#00ffe0" stroke-width="4" stroke-linecap="round"/>
+  <line x1="190" y1="45" x2="210" y2="45" stroke="#00ffe0" stroke-width="4" stroke-linecap="round"/>
+  <!-- Sparkles top-center -->
+  <line x1="128" y1="35" x2="128" y2="20" stroke="#ff00cc" stroke-width="3.5" stroke-linecap="round"/>
+  <line x1="120" y1="28" x2="136" y2="28" stroke="#ff00cc" stroke-width="3.5" stroke-linecap="round"/>
+  <line x1="122" y1="22" x2="127" y2="27" stroke="#ff00cc" stroke-width="2.5" opacity="0.7"/>
+  <line x1="134" y1="22" x2="129" y2="27" stroke="#ff00cc" stroke-width="2.5" opacity="0.7"/>
+  <!-- Coins spilling out of lid gap -->
+  <ellipse cx="100" cy="88" rx="12" ry="8" fill="#ffc857" stroke="#ffc857" stroke-width="2" transform="rotate(-25,100,88)"/>
+  <ellipse cx="128" cy="80" rx="12" ry="8" fill="#ffc857" stroke="#ffc857" stroke-width="2"/>
+  <ellipse cx="156" cy="88" rx="12" ry="8" fill="#ffc857" stroke="#ffc857" stroke-width="2" transform="rotate(25,156,88)"/>
+  <!-- Chest lid (open at angle) -->
+  <path d="M52 115 Q52 95 128 90 Q204 95 204 115 Q204 125 128 130 Q52 125 52 115 Z"
+        fill="url(#lid)" stroke="#ffc857" stroke-width="6" stroke-linejoin="round"/>
+  <!-- Lid top highlight strip -->
+  <path d="M60 110 Q128 100 196 110" fill="none" stroke="#ffc857" stroke-width="3" opacity="0.5"/>
+  <!-- Lid latch plate -->
+  <rect x="110" y="107" width="36" height="16" rx="5" fill="#ffc857" stroke="#ffc857" stroke-width="2"/>
+  <circle cx="128" cy="115" r="5" fill="#0a1428"/>
+  <!-- Chest body -->
+  <rect x="52" y="120" width="152" height="100" rx="10" fill="url(#chest)" stroke="#ffc857" stroke-width="6"/>
+  <!-- Chest front strap / band -->
+  <rect x="52" y="155" width="152" height="14" rx="2" fill="#ffc857" opacity="0.35"/>
+  <!-- Chest latch front -->
+  <rect x="110" y="148" width="36" height="22" rx="6" fill="#ffc857" stroke="#ffc857" stroke-width="2"/>
+  <circle cx="128" cy="159" r="6" fill="#0a1428"/>
+  <!-- Corner reinforcements -->
+  <rect x="52" y="120" width="18" height="100" rx="5" fill="#ffc857" opacity="0.18"/>
+  <rect x="186" y="120" width="18" height="100" rx="5" fill="#ffc857" opacity="0.18"/>
+  <!-- Neon outline glow on chest body -->
+  <rect x="52" y="120" width="152" height="100" rx="10" fill="none" stroke="#ff00cc" stroke-width="3" opacity="0.45"/>
+  <!-- Neon outline glow on lid -->
+  <path d="M52 115 Q52 95 128 90 Q204 95 204 115 Q204 125 128 130 Q52 125 52 115 Z"
+        fill="none" stroke="#ff00cc" stroke-width="3" opacity="0.4"/>
+</svg>
