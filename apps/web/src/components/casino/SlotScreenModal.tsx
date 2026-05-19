@@ -196,11 +196,19 @@ export default function SlotScreenModal() {
     // Fire-and-forget close any open server-side session — prevents the
     // 409 "You already have an open slot session" trap on next re-open.
     // Skipped when revealedServerSeed is set (cash-out already closed it).
-    if (sessionId && !revealedServerSeed) {
+    // Also gated on "no spin in flight" to prevent racing the spin's
+    // FOR UPDATE lock — see Phase 6.1.7 adversary audit, 2026-05-19.
+    if (
+      sessionId &&
+      !revealedServerSeed &&
+      !spinLockRef.current &&
+      !isSpinning &&
+      !isEvaluating
+    ) {
       closeSession.mutate({ sessionId });
     }
     closeSlotScreen();
-  }, [sessionId, revealedServerSeed, closeSession, closeSlotScreen, fx]);
+  }, [sessionId, revealedServerSeed, isSpinning, isEvaluating, closeSession, closeSlotScreen, fx]);
 
   const handleCashOut = useCallback(async () => {
     if (!sessionId) {
