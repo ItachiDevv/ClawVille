@@ -275,7 +275,9 @@ export default function SlotReels3D({
   // Textures — built once per strip set
   const textures = useMemo<THREE.CanvasTexture[]>(() => {
     const built = Array.from({ length: REEL_COUNT }, (_, i) => buildReelTexture(strips[i]));
-    console.log('[SlotReels3D] textures built:', built.length, built.map(t => `${t.image.width}x${t.image.height}`));
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[SlotReels3D] textures built:', built.length, built.map(t => `${t.image.width}x${t.image.height}`));
+    }
     return built;
   }, [strips]);
 
@@ -304,7 +306,9 @@ export default function SlotReels3D({
 
   // Mount diagnostic
   useEffect(() => {
-    console.log('[SlotReels3D] mount: meshRefs=', meshRefs.current.map(m => (m ? 'ok' : 'null')), 'materials=', materials.length, 'camera=', camera.position.toArray());
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[SlotReels3D] mount: meshRefs=', meshRefs.current.map(m => (m ? 'ok' : 'null')), 'materials=', materials.length, 'camera=', camera.position.toArray());
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -348,8 +352,11 @@ export default function SlotReels3D({
   }, [spinTrigger, materials]);
 
   // ── Compute target offsets when server result arrives ──────────────────
+  // Guard: !reels only. Server result arrives while isSpinning=true (mid-animation);
+  // blocking on isSpinning created a deadlock where targets were never set so
+  // DECEL never fired, handleReelsSettled never fired, and reels stayed null forever.
   useEffect(() => {
-    if (isSpinning || !reels) return;
+    if (!reels) return;
 
     for (let r = 0; r < REEL_COUNT; r++) {
       const anim = animState.current[r];
@@ -365,7 +372,7 @@ export default function SlotReels3D({
       anim.targetSet    = true;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSpinning, reels]);
+  }, [reels]);
 
   const handleReelSettled = useCallback(() => {
     settledRef.current += 1;
