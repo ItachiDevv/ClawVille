@@ -334,6 +334,27 @@ export default function SlotScreenModal() {
       )) {
         clearSessionMeta();
       }
+      // Auto-recover from "different paytable already open" — close the
+      // stranded session (revealing its seed for verifier-replay) then
+      // surface a single toast. Player can repress SPIN to open the new
+      // paytable cleanly.
+      if (err instanceof CasinoApiError && err.code?.startsWith('session_already_open_different_paytable')) {
+        const idMatch = err.serverMessage.match(/existingSessionId=([a-f0-9-]+)/);
+        const ptMatch = err.serverMessage.match(/open=([\w-]+)/);
+        if (idMatch) {
+          const oldSessionId = idMatch[1];
+          const oldPaytable  = ptMatch ? ptMatch[1] : 'previous session';
+          closeSession.mutateAsync({ sessionId: oldSessionId }).then((closed) => {
+            showToast(
+              `Auto-closed ${oldPaytable} (seed ${closed.serverSeed.slice(0, 8)}…${closed.serverSeed.slice(-6)} revealed). Press SPIN again to start ${paytableId}.`,
+              'info',
+            );
+            clearSessionMeta();
+          }).catch(() => {
+            showToast('Could not auto-close the previous session. Refresh the page and try again.', 'error');
+          });
+        }
+      }
       // Diagnostic: when the server reports a counter-changed race, log
       // the full client-side state at the moment of the 409 so we can
       // bisect frontend vs backend causation in browser-live. Dev-only —
