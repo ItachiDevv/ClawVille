@@ -29,7 +29,7 @@ import { runSpin } from '../slot-engine';
 const SERVER_SEED = 'a'.repeat(64);
 const CLIENT_SEED = 'deadbeef';
 const SPINS = 10_000;
-const BET = 100n;
+const PREDICT = 100n;
 const LINE_COUNT = CLASSIC_LINES.length; // 20
 
 describe('classic-3x5 RTP fixture', () => {
@@ -49,10 +49,10 @@ describe('classic-3x5 RTP fixture', () => {
           clientSeed: CLIENT_SEED,
           nonce: i + 1,
           cursor,
-          bet: BET,
+          predict: PREDICT,
         });
         cursor = spin.cursorAfter;
-        totalWagered += BET;
+        totalWagered += PREDICT;
         totalPaid += spin.winAmount;
         if (spin.winAmount > 0n) hits++;
         if (spin.winAmount > maxWin) maxWin = spin.winAmount;
@@ -77,16 +77,16 @@ describe('classic-3x5 RTP fixture', () => {
 
       // Sanity: max single-spin win must not explode past the highest
       // possible analytic payout. Top combo is 5x Seven on all 20
-      // lines = 800 mult × perLineBet = 800 × (100 / 20) = 4000 per
+      // lines = 800 mult × perLinePredict = 800 × (100 / 20) = 4000 per
       // line × 20 lines = 80000 max in theory (5x Seven across every
       // line). We assert maxWin <= 200000n as a comically wide ceiling
       // — the real expected max at 10k spins is well under 10000n.
       expect(maxWin).toBeLessThanOrEqual(200_000n);
 
-      // Adversarial: a non-zero wager guarantees totalWagered === SPINS * BET.
-      expect(totalWagered).toBe(BigInt(SPINS) * BET);
-      // perLineBet is BET / LINE_COUNT — make sure that hasn't drifted.
-      expect(BET % BigInt(LINE_COUNT)).toBe(0n);
+      // Adversarial: a non-zero wager guarantees totalWagered === SPINS * PREDICT.
+      expect(totalWagered).toBe(BigInt(SPINS) * PREDICT);
+      // perLinePredict is PREDICT / LINE_COUNT — make sure that hasn't drifted.
+      expect(PREDICT % BigInt(LINE_COUNT)).toBe(0n);
     },
     // Default bun test timeout is 5s; 10k spins comfortably finishes
     // in <0.5s on CI hardware. The 30s ceiling here is for slow CI

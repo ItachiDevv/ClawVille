@@ -19,9 +19,9 @@
  *
  * Money model (slice 3, ClawTokens only):
  *   - /session/open does NOT debit. It records startingBalance for UI display.
- *     It DOES pre-check that the avatar can afford at least one bet, returning
+ *     It DOES pre-check that the avatar can afford at least one predict, returning
  *     400 `insufficient_clawtokens` early so we don't open a fund-less session.
- *   - /spin direct-debits bet, credits winAmount. Atomic within a single
+ *   - /spin direct-debits predict, credits winAmount. Atomic within a single
  *     transaction (debit + counters + spin insert + win credit all-or-nothing).
  *   - /session/close has no refund. Player's balance equals real-time
  *     avatar.clawTokens — there is nothing in escrow to give back because
@@ -31,7 +31,7 @@
  *
  * Design choices:
  *
- *  1) BigInt JSON: every response that carries bigint (winAmount, bet,
+ *  1) BigInt JSON: every response that carries bigint (winAmount, predict,
  *     escrow, totals) goes through `serializeSpinResult` / explicit
  *     `.toString()` so Hono's `c.json` never sees a bigint. No
  *     `BigInt.prototype.toJSON` monkey-patch — global side effects bite
@@ -41,10 +41,10 @@
  *     On the hot path we SELECT first inside a transaction. A cached row
  *     short-circuits BEFORE we call `runSpin`, BEFORE we debit, BEFORE
  *     we touch the session counters — pure replay. We ALSO assert the
- *     cached spin's `bet` matches the new request's `bet` before serving
- *     the cache (Stripe-style); a mismatched replay returns 409 so a
- *     leaked key can't be replayed at a different stake when slice 4+
- *     relaxes the per-session fixed-bet constraint. The partial unique
+ *     cached spin's `predict` matches the new request's `predict` before
+ *     serving the cache (Stripe-style); a mismatched replay returns 409 so
+ *     a leaked key can't be replayed at a different stake when slice 4+
+ *     relaxes the per-session fixed-predict constraint. The partial unique
  *     index (sessionId, idempotencyKey) is the race-safe backstop if two
  *     concurrent retries with the same key reach the INSERT.
  *
@@ -168,20 +168,20 @@ export function __resetSpinRateLimit(): void {
 const bigintPositiveString = z
   .string()
   .regex(/^\d+$/, 'must be a non-negative integer string')
-  .refine((s) => s.length <= 30, 'bet too large to be sane');
+  .refine((s) => s.length <= 30, 'predict too large to be sane');
 
 const openSchema = z
   .object({
     paytableId: z.enum(SUPPORTED_PAYTABLES),
     currency: z.enum(SUPPORTED_CURRENCIES),
-    bet: bigintPositiveString,
+    predict: bigintPositiveString,
   })
   .strict();
 
 const spinSchema = z
   .object({
     sessionId: z.string().uuid(),
-    bet: bigintPositiveString,
+    predict: bigintPositiveString,
   })
   .strict();
 
@@ -205,7 +205,7 @@ const verifySchema = z
       .regex(/^[0-9a-fA-F]+$/, 'clientSeed must be hex'),
     nonce: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     cursor: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-    bet: bigintPositiveString,
+    predict: bigintPositiveString,
   })
   .strict();
 
@@ -310,15 +310,15 @@ casinoSlotsRouter.post('/session/open', requireAuth, async (c) => {
     );
   }
 
-  const betBig = BigInt(input.bet);
-  if (betBig <= 0n) {
-    throw new HTTPException(400, { message: 'bet_must_be_positive' });
+  const predictBig = BigInt(input.predict);
+  if (predictBig <= 0n) {
+    throw new HTTPException(400, { message: 'predict_must_be_positive' });
   }
   // ClawTokens are stored as int4, so this must fit a JS number.
-  if (betBig > BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw new HTTPException(400, { message: 'bet_exceeds_supported_range' });
+  if (predictBig > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new HTTPException(400, { message: 'predict_exceeds_supported_range' });
   }
-  const betNumber = Number(betBig);
+  const predictNumber = Number(predictBig);
 
   // Pre-flight: refuse a second open session before we even hit the
   // INSERT. The partial unique index will catch races; this is the
@@ -344,9 +344,9 @@ casinoSlotsRouter.post('/session/open', requireAuth, async (c) => {
   // but we still gate at open time so we don't strand the player with an
   // unspendable session. A later spin will re-check inside its txn under
   // the row lock — that's the authoritative gate; this is UX.
-  if (avatar.clawTokens < betNumber) {
+  if (avatar.clawTokens < predictNumber) {
     throw new HTTPException(400, {
-      message: `insufficient_clawtokens: need ${betNumber}, have ${avatar.clawTokens}`,
+      message: `insufficient_clawtokens: need ${predictNumber}, have ${avatar.clawTokens}`,
     });
   }
 
@@ -375,8 +375,8 @@ casinoSlotsRouter.post('/session/open', requireAuth, async (c) => {
           serverSeedHash,
           clientSeed,
           // startingBalance: informational snapshot of the user's chosen
-          // per-spin bet at open time. Used by the UI; not load-bearing.
-          startingBalance: betBig.toString(),
+          // per-spin predict at open time. Used by the UI; not load-bearing.
+          startingBalance: predictBig.toString(),
           // currentBalance: net session P&L (negative = down, positive = up).
           // Starts at 0 because no real money has moved at open time.
           currentBalance: '0',
@@ -411,7 +411,7 @@ casinoSlotsRouter.post('/session/open', requireAuth, async (c) => {
       sessionId: inserted.id,
       paytableId: input.paytableId,
       currency: input.currency,
-      bet: betBig.toString(),
+      predict: predictBig.toString(),
     },
   });
 
@@ -423,7 +423,7 @@ casinoSlotsRouter.post('/session/open', requireAuth, async (c) => {
     clientSeed: inserted.clientSeed,
     startingBalance: inserted.startingBalance,
     escrowAmount: inserted.escrowAmount,
-    bet: betBig.toString(),
+    predict: predictBig.toString(),
     createdAt: inserted.createdAt.toISOString(),
   };
   return c.json(response, 200);
@@ -472,30 +472,30 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
     });
   }
 
-  // Slice 3 simplicity — bet per spin must equal session's reserved bet.
+  // Slice 3 simplicity — predict per spin must equal session's reserved predict.
   // Later phases may relax this; the engine itself doesn't care.
-  if (input.bet !== session.startingBalance) {
+  if (input.predict !== session.startingBalance) {
     throw new HTTPException(400, {
-      message: `bet_must_equal_session_reserved_bet (expected ${session.startingBalance}, got ${input.bet})`,
+      message: `predict_must_equal_session_reserved_predict (expected ${session.startingBalance}, got ${input.predict})`,
     });
   }
-  const betBig = BigInt(input.bet);
-  if (betBig <= 0n) {
-    throw new HTTPException(400, { message: 'bet_must_be_positive' });
+  const predictBig = BigInt(input.predict);
+  if (predictBig <= 0n) {
+    throw new HTTPException(400, { message: 'predict_must_be_positive' });
   }
-  if (betBig > BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw new HTTPException(400, { message: 'bet_exceeds_supported_range' });
+  if (predictBig > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new HTTPException(400, { message: 'predict_exceeds_supported_range' });
   }
-  const betNumber = Number(betBig);
+  const predictNumber = Number(predictBig);
 
   // ─── Idempotency fast-path ─────────────────────────────────────────
   // If the same (sessionId, idempotencyKey) tuple already exists, return
   // the cached row verbatim — NEVER re-run RNG, NEVER re-debit.
   //
-  // Stripe-style guard: a key replayed with DIFFERENT bet args is a
+  // Stripe-style guard: a key replayed with DIFFERENT predict args is a
   // misuse (or an exploitation attempt) — return 409 instead of serving
   // the cached result at the new stake. Today's pre-cache check at
-  // input.bet === session.startingBalance makes this coincidentally
+  // input.predict === session.startingBalance makes this coincidentally
   // unreachable, but slice 4+ will relax that and this guard becomes
   // load-bearing. Keep it in place now so the bug can't slip in later.
   const cached = await db.query.slotSpins.findFirst({
@@ -505,9 +505,9 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
     ),
   });
   if (cached) {
-    if (cached.bet !== input.bet) {
+    if (cached.predict !== input.predict) {
       throw new HTTPException(409, {
-        message: `idempotency_key_reused_with_different_args: cached bet=${cached.bet}, new bet=${input.bet}. Use a fresh Idempotency-Key.`,
+        message: `idempotency_key_reused_with_different_args: cached predict=${cached.predict}, new predict=${input.predict}. Use a fresh Idempotency-Key.`,
       });
     }
     // Re-load the session so the response reflects post-cached-spin state.
@@ -527,7 +527,7 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
       freeSpinsAwarded: 0,
       isFreeSpin: cached.isFreeSpin,
       cursorAfter: cached.cursorAfter,
-      bet: cached.bet,
+      predict: cached.predict,
       balance: avatar.clawTokens,
       escrowRemaining: fresh?.escrowAmount ?? session.escrowAmount,
       totalStaked: fresh?.totalStaked ?? session.totalStaked,
@@ -551,7 +551,7 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
       clientSeed: session.clientSeed,
       nonce: session.nonceCounter,
       cursor: session.cursorCounter,
-      bet: betBig,
+      predict: predictBig,
     });
   } catch (err) {
     throw new HTTPException(400, {
@@ -561,7 +561,7 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
   const winAmountBig = spinResult.winAmount;
 
   // ─── Atomic spin write ──────────────────────────────────────────────
-  // 1. Debit `bet` from user (skip if the open's escrow still covers it
+  // 1. Debit `predict` from user (skip if the open's escrow still covers it
   //    — we instead burn the escrow on the first spin).
   // 2. Update session counters / cursor.
   // 3. INSERT spin row (idempotency key trips here on race).
@@ -617,13 +617,13 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
         });
       }
 
-      // Debit bet from user (ledger row + balance update).
+      // Debit predict from user (ledger row + balance update).
       let debitBalance: number;
       try {
         const debit = await debitClawTokens(
           {
             avatarId: avatar.id,
-            amount: betNumber,
+            amount: predictNumber,
             reason: 'casino_slots_spin',
             source: 'api',
             metadata: {
@@ -638,7 +638,7 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
       } catch (err) {
         if (err instanceof InsufficientTokensError) {
           throw new HTTPException(400, {
-            message: `insufficient_clawtokens_for_spin: need ${betNumber}, have ${err.available}`,
+            message: `insufficient_clawtokens_for_spin: need ${predictNumber}, have ${err.available}`,
           });
         }
         throw err;
@@ -655,7 +655,7 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
           nonce: session.nonceCounter,
           cursorBefore: session.cursorCounter,
           cursorAfter: spinResult.cursorAfter,
-          bet: betBig.toString(),
+          predict: predictBig.toString(),
           isFreeSpin: spinResult.isFreeSpin,
           reels: spinResult.reels,
           winningLines: winningLinesJson,
@@ -672,22 +672,22 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
       // Update session counters.
       const newNonce = session.nonceCounter + 1;
       const newCursor = spinResult.cursorAfter;
-      const newTotalStaked = (BigInt(lockRow.total_staked) + betBig).toString();
+      const newTotalStaked = (BigInt(lockRow.total_staked) + predictBig).toString();
       const newTotalWon = (BigInt(lockRow.total_won) + winAmountBig).toString();
       // escrowAmount stays '0' on the ClawTokens path — no reservation was
       // made at open time, so there's nothing to drain. Phase 6.2 SOL/USDC
       // will pre-fund the column and decrement here.
       const oldEscrow = BigInt(lockRow.escrow_amount);
-      const newEscrow = oldEscrow > betBig ? (oldEscrow - betBig).toString() : '0';
+      const newEscrow = oldEscrow > predictBig ? (oldEscrow - predictBig).toString() : '0';
       const newSpinCount = lockRow.spin_count + 1;
       // currentBalance is net session P&L (signed). It starts at 0 on
-      // open, drops by `bet` each spin, recovers by `winAmount`. Negative
+      // open, drops by `predict` each spin, recovers by `winAmount`. Negative
       // values are valid and expected when the player is down for the
       // session — there is NO invariant that this stays >= 0.
       const newCurrentBalance = (
         BigInt(lockRow.total_won) +
         winAmountBig -
-        (BigInt(lockRow.total_staked) + betBig)
+        (BigInt(lockRow.total_staked) + predictBig)
       ).toString();
 
       const [updated] = await tx
@@ -756,12 +756,12 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
       });
       if (cachedRetry) {
         // Same Stripe-style guard as the fast-path: a concurrent retry
-        // that won the race MUST still have used the same bet, otherwise
+        // that won the race MUST still have used the same predict, otherwise
         // the second caller is replaying at a different stake. Fail
         // closed.
-        if (cachedRetry.bet !== input.bet) {
+        if (cachedRetry.predict !== input.predict) {
           throw new HTTPException(409, {
-            message: `idempotency_key_reused_with_different_args: cached bet=${cachedRetry.bet}, new bet=${input.bet}. Use a fresh Idempotency-Key.`,
+            message: `idempotency_key_reused_with_different_args: cached predict=${cachedRetry.predict}, new predict=${input.predict}. Use a fresh Idempotency-Key.`,
           });
         }
         const fresh = await db.query.slotSessions.findFirst({
@@ -777,7 +777,7 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
           freeSpinsAwarded: 0,
           isFreeSpin: cachedRetry.isFreeSpin,
           cursorAfter: cachedRetry.cursorAfter,
-          bet: cachedRetry.bet,
+          predict: cachedRetry.predict,
           balance: avatarAfter.clawTokens,
           escrowRemaining: fresh?.escrowAmount ?? session.escrowAmount,
           totalStaked: fresh?.totalStaked ?? session.totalStaked,
@@ -798,7 +798,7 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
     payload: {
       sessionId: session.id,
       spinId: spinRowId,
-      bet: betBig.toString(),
+      predict: predictBig.toString(),
       winAmount: winAmountBig.toString(),
       nonce: session.nonceCounter,
     },
@@ -808,7 +808,7 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
   const response: SpinResponse = {
     spinId: spinRowId,
     ...serialized,
-    bet: betBig.toString(),
+    predict: predictBig.toString(),
     balance: balanceAfter,
     escrowRemaining: finalSession.escrowAmount,
     totalStaked: finalSession.totalStaked,
@@ -988,7 +988,7 @@ casinoSlotsRouter.get('/session/:id/spins', requireAuth, async (c) => {
         nonce: r.nonce,
         cursorBefore: r.cursorBefore,
         cursorAfter: r.cursorAfter,
-        bet: r.bet,
+        predict: r.predict,
         isFreeSpin: r.isFreeSpin,
         reels: r.reels,
         winningLines: r.winningLines,
@@ -1025,9 +1025,9 @@ casinoSlotsRouter.post('/verify', async (c) => {
     });
   }
   const input = parsed.data;
-  const betBig = BigInt(input.bet);
-  if (betBig <= 0n) {
-    throw new HTTPException(400, { message: 'bet_must_be_positive' });
+  const predictBig = BigInt(input.predict);
+  if (predictBig <= 0n) {
+    throw new HTTPException(400, { message: 'predict_must_be_positive' });
   }
 
   let result: SpinResult;
@@ -1038,7 +1038,7 @@ casinoSlotsRouter.post('/verify', async (c) => {
       clientSeed: input.clientSeed,
       nonce: input.nonce,
       cursor: input.cursor,
-      bet: betBig,
+      predict: predictBig,
     });
   } catch (err) {
     throw new HTTPException(400, {
