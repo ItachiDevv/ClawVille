@@ -296,7 +296,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
       });
     });
 
-    it('returns 409 when a second open is attempted', async () => {
+    it('is idempotent — second /open returns 200 with the existing session', async () => {
       const open1 = await app.request('/api/casino/slots/session/open', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
@@ -318,7 +318,49 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
           predict: '20',
         }),
       });
+      expect(open2.status).toBe(200);
+      const data2 = (await open2.json()) as any;
+
+      // Same session — server replayed the existing row (Task #7 idempotent /open).
+      expect(data2.sessionId).toBe(data1.sessionId);
+      expect(data2.serverSeedHash).toBe(data1.serverSeedHash);
+      expect(data2.clientSeed).toBe(data1.clientSeed);
+      expect(data2.paytableId).toBe(data1.paytableId);
+      expect(data2.createdAt).toBe(data1.createdAt);
+
+      // Clean up.
+      await app.request('/api/casino/slots/session/close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
+        body: JSON.stringify({ sessionId: data1.sessionId }),
+      });
+    });
+
+    it('refuses 409 when an existing open session has a different paytable', async () => {
+      const open1 = await app.request('/api/casino/slots/session/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
+        body: JSON.stringify({
+          paytableId: 'classic-3x5',
+          currency: 'clawtokens',
+          predict: '20',
+        }),
+      });
+      expect(open1.status).toBe(200);
+      const data1 = (await open1.json()) as any;
+
+      const open2 = await app.request('/api/casino/slots/session/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
+        body: JSON.stringify({
+          paytableId: 'classic-3x5-bonus',
+          currency: 'clawtokens',
+          predict: '20',
+        }),
+      });
       expect(open2.status).toBe(409);
+      const err = (await open2.json()) as any;
+      expect(err.message).toMatch(/session_already_open_different_paytable/);
 
       // Clean up.
       await app.request('/api/casino/slots/session/close', {

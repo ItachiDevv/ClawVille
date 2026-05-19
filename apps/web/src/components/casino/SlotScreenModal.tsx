@@ -306,10 +306,16 @@ export default function SlotScreenModal() {
       spinIdemKeyRef.current = null;
       if (autoplayTimerRef.current) clearTimeout(autoplayTimerRef.current);
       setAutoplay({ count: 0, remaining: 0, active: false });
-      // Stale-session recovery: 404 or 409 session_already_open / session_not_open
-      // means our local sessionId no longer maps to a server-open session
-      // (closed by operator, expired, or never replicated). Clear the local
-      // pointer so the next spin press triggers a fresh /session/open.
+      // Stale-session recovery: 404 / session_not_open from /spin means our
+      // local sessionId no longer maps to a server-open session (closed by
+      // operator, expired, or never replicated). Clear the local pointer so
+      // the next spin press triggers a fresh /session/open.
+      //
+      // `session_already_open` is no longer surfaced from /session/open —
+      // the route is idempotent now (Task #7) and returns the existing
+      // session as a 200. Only /session/close can still 409 with that code
+      // if the session was closed concurrently; treat that as terminal
+      // stale-session too.
       if (err instanceof CasinoApiError && (
         err.status === 404 ||
         err.code === 'session_already_open' ||
