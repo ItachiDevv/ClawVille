@@ -499,6 +499,12 @@ export function describeCasinoError(err: unknown): string {
       if (err.code === 'session_already_open') {
         return 'You already have an open slot session. Cash out the existing one to start fresh.';
       }
+      if (err.code?.startsWith('session_already_open_different_paytable')) {
+        // Server includes openPaytable in the message body — parse for UX.
+        const m = err.serverMessage.match(/open=([\w-]+)/);
+        const which = m ? m[1] : 'another paytable';
+        return `You have an open session on ${which}. Cash out there first, or use the Switch Table button to close it.`;
+      }
       if (err.code === 'session_counter_changed_retry') {
         return 'A concurrent spin won the race. Press spin again.';
       }
