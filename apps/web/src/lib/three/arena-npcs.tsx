@@ -22,6 +22,7 @@ import { useGameStore } from '@/stores/game';
 import { PLAYER_NPC_ID } from '@/stores/npc';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { jumpState } from '@/lib/three/jump-state';
+import { clampMovement2D } from '@/lib/three/collision/world-colliders';
 import { useVRMInstance, disposeVRMInstance, preloadVRMBytes } from '@/lib/three/vrm-loader';
 import { VRMCharacterAnimator, preloadMixamoClips, type AnimName } from '@/lib/three/vrm-character-animator';
 import { MODEL_REGISTRY, getAnimatorIdByPath } from '@/lib/three/agent-model-registry';
@@ -586,10 +587,17 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     // change every frame so this is non-zero whenever the NPC is moving.
     const glbPrevX = simPos.current.x;
     const glbPrevZ = simPos.current.z;
-    simPos.current.x = renderX;
-    simPos.current.z = renderZ;
-    group.position.x = renderX;
-    group.position.z = renderZ;
+
+    // XZ disc collision clamp — prevents NPCs from walking inside buildings
+    // and props. Clamping AFTER entity-interpolation so visible NPC position
+    // never enters a building even if the server-side sim doesn't have walls.
+    // Wandering NPCs use simPos.current as the "from" position (previous
+    // render-frame position). clampMovement2D is zero-alloc (module-scope scratch).
+    const npcClamped = clampMovement2D(simPos.current.x, simPos.current.z, renderX, renderZ);
+    simPos.current.x = npcClamped.x;
+    simPos.current.z = npcClamped.z;
+    group.position.x = npcClamped.x;
+    group.position.z = npcClamped.z;
 
     // 2026-05-11 — All NPC culling removed per user directive.
     // Previously: distance-cull (hide group past 10000² wu), behind-camera cull
@@ -959,12 +967,15 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const renderX = (d.prevX + (d.x - d.prevX) * alpha) - HALF_W;
     const renderZ = (d.prevY + (d.y - d.prevY) * alpha) - HALF_H;
 
+    // XZ disc collision clamp for VRM NPC — mirrors GLBNpcMesh pattern.
+    // Clamp AFTER entity-interpolation so visible position never enters a building.
+    const vrmClamped = clampMovement2D(simPos.current.x, simPos.current.z, renderX, renderZ);
     const prevX = simPos.current.x;
     const prevZ = simPos.current.z;
-    simPos.current.x = renderX;
-    simPos.current.z = renderZ;
-    group.position.x = renderX;
-    group.position.z = renderZ;
+    simPos.current.x = vrmClamped.x;
+    simPos.current.z = vrmClamped.z;
+    group.position.x = vrmClamped.x;
+    group.position.z = vrmClamped.z;
 
     // 2026-05-11 — All VRM NPC culling removed per user directive
     // ("remove all the culling completely it ruins the game"). Mirrors GLBNpcMesh.
