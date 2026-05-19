@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * SlotScreenModal — full-viewport 2D slot machine UI
+ * SlotScreenModal — full-viewport slot machine UI with R3F 3D reel rig.
  *
  * Phase 6.1 slice 5: real backend wire.
  *   - Lazy-opens a slot session on first spin press (`useOpenSlotSession`).
@@ -13,13 +13,15 @@
  *   - All bigint-shaped wire fields stay as strings; only `recordSpin` /
  *     useFX promotes to bigint via `spinResponseToSpinResult`.
  *
- * Iris Xe safe: pure DOM/CSS overlay — zero extra draw calls on the 3D
- * canvas underneath. Modal is DOM only.
+ * Phase 6.1.6: 2D SlotReels grid replaced with SlotReelsCanvas (R3F 3D
+ *   cylinder drums). `spinTrigger` counter increments on each spin press to
+ *   drive the 3D reel animation independently of React re-render cycles.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
+import { CLASSIC_LINES } from '@clawville/shared';
 import { useCasinoStore } from '@/stores/casino';
 import type { SpinResult } from '@/lib/casino/types';
 import { useFX } from '@/lib/casino/useFX';
@@ -43,8 +45,8 @@ import { NeonButton } from './ui';
 // Import design tokens once at the module level.
 import '@/styles/casino-tokens.css';
 
-// SlotReels has complex CSS animation — dynamic import avoids SSR issues
-const SlotReels = dynamic(() => import('./SlotReels'), { ssr: false });
+// SlotReelsCanvas — R3F 3D reel rig (dynamic import: canvas APIs are browser-only)
+const SlotReelsCanvas = dynamic(() => import('./SlotReelsCanvas'), { ssr: false });
 
 // ---------------------------------------------------------------------------
 // Autoplay state machine
@@ -136,21 +138,34 @@ export default function SlotScreenModal() {
   const [displayWindow, setDisplayWindow] = useState<number[][] | null>(null);
   const [pendingWinLines, setPendingWinLines] = useState<SpinResult['winningLines']>([]);
 
+  // Increments each spin press to trigger the 3D reel animation
+  const [spinTrigger, setSpinTrigger] = useState(0);
+
+  // Deduplicated winning cells for the 3D reel highlight cascade
+  const winningCells3D = useMemo(() => {
+    const seen  = new Set<string>();
+    const cells: { reel: number; row: number }[] = [];
+    for (const wl of pendingWinLines) {
+      const lineDef = CLASSIC_LINES.find(l => l.id === wl.lineIndex);
+      if (!lineDef) continue;
+      for (let r = 0; r < 5; r++) {
+        const key = `${r}:${lineDef.rows[r]}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          cells.push({ reel: r, row: lineDef.rows[r] });
+        }
+      }
+    }
+    return cells;
+  }, [pendingWinLines]);
+
   // ── Phase 6.1.5 bonus-mechanic display state ─────────────────────────────
-  // Carries the LAST-LANDED spin's bonus fields into the overlay components.
-  // Reset on modal close. `bonusTriggerId` flips per landed spin so the
-  // banner + sparkle effects re-trigger on every fresh land (incl. retrigger
-  // on a free-spin chain).
   const [lastWildMultipliers, setLastWildMultipliers] = useState<SpinResult['wildMultipliers']>([]);
   const [lastScatterCells, setLastScatterCells] = useState<ScatterCell[]>([]);
   const [lastScatterPayout, setLastScatterPayout] = useState<bigint>(0n);
   const [lastFreeSpinsAwarded, setLastFreeSpinsAwarded] = useState(0);
   const [lastIsFreeSpin, setLastIsFreeSpin] = useState(false);
   const [bonusTriggerId, setBonusTriggerId] = useState(0);
-  // Phase 6.1.5 — session-level FS state from the most-recent
-  // SpinResponse. `inFreeSpin` drives the SPIN button label swap;
-  // `freeSpinsRemaining` drives the HUD counter chip. Optional fields
-  // on SpinResponse so pre-bonus rows degrade gracefully.
   const [inFreeSpin, setInFreeSpin] = useState(false);
   const [freeSpinsRemaining, setFreeSpinsRemaining] = useState(0);
 
@@ -181,15 +196,8 @@ export default function SlotScreenModal() {
     closeSlotScreen();
   }, [closeSlotScreen, fx]);
 
-  /**
-   * Cash-out — close the active session, reveal seed, then close modal.
-   * On API error we leave the modal open so the user can retry; the
-   * server idempotently rejects double-close with 409 if the first call
-   * actually landed (which the toast covers).
-   */
   const handleCashOut = useCallback(async () => {
     if (!sessionId) {
-      // No active session — just close (player never spun).
       handleClose();
       return;
     }
@@ -200,7 +208,6 @@ export default function SlotScreenModal() {
         `Cashed out — seed ${res.serverSeed.slice(0, 12)}…${res.serverSeed.slice(-6)} revealed.`,
         'info',
       );
-      // Brief delay so user sees the reveal before close.
       setTimeout(() => handleClose(), 1200);
     } catch (err) {
       showToast(describeCasinoError(err), 'error');
@@ -216,11 +223,6 @@ export default function SlotScreenModal() {
     });
   }, []);
 
-  /**
-   * Single spin step. Ensures a session exists (lazy-open on first press),
-   * mints an idempotency key, fires the spin mutation, and threads the
-   * resolved SpinResult through the existing reel-animation pipeline.
-   */
   const doSpin = useCallback(async () => {
     if (spinLockRef.current) return;
     if (fx.state.isLockedOut) return;
@@ -230,9 +232,10 @@ export default function SlotScreenModal() {
     setPendingWinLines([]);
     fx.onSpinStart();
     setIsSpinning(true);
+    // Increment trigger so the 3D reel rig starts its animation
+    setSpinTrigger(prev => prev + 1);
 
     try {
-      // Lazy open: first spin in this modal lifecycle opens a session.
       let activeSessionId = sessionId;
       if (!activeSessionId) {
         const opened = await openSession.mutateAsync({
@@ -248,10 +251,6 @@ export default function SlotScreenModal() {
         });
       }
 
-      // Mint a per-spin idempotency key. Same key survives across this
-      // mutation's react-query retry pass (which we disabled, but
-      // defense-in-depth: identical key never hits the 409 predict-mismatch
-      // guard because predict is identical too).
       if (!spinIdemKeyRef.current) {
         spinIdemKeyRef.current = crypto.randomUUID();
       }
@@ -263,26 +262,17 @@ export default function SlotScreenModal() {
         idempotencyKey: idemKey,
       });
 
-      // SpinResult is the bigint-flavored shape the existing reel-anim
-      // pipeline + useFX expect. Adapter promotes string → bigint exactly
-      // once at the boundary.
       const spinResult = spinResponseToSpinResult(res);
       pendingResultRef.current = spinResult;
       recordSpin(spinResult, res.balance, res.spinCount);
-      // Phase 6.1.5 — session-level FS state. Required on the locked
-      // SpinResponse contract (server returns 'base' / 0 on classic-3x5
-      // and on bonus paytable when no FS budget is active).
       setInFreeSpin(res.mode === 'free-spin');
       setFreeSpinsRemaining(res.freeSpinsRemaining);
-      // Now we wait for SlotReels to call handleReelsSettled.
     } catch (err) {
-      // Restore from the spinning state — the reel anim was never started.
       pendingResultRef.current = null;
       setIsSpinning(false);
       fx.reset();
       spinLockRef.current = false;
       spinIdemKeyRef.current = null;
-      // Stop autoplay loop on error.
       if (autoplayTimerRef.current) clearTimeout(autoplayTimerRef.current);
       setAutoplay({ count: 0, remaining: 0, active: false });
       const message = describeCasinoError(err);
@@ -339,11 +329,6 @@ export default function SlotScreenModal() {
     setDisplayWindow(result.reels);
     setPendingWinLines(result.winningLines);
 
-    // Phase 6.1.5 — surface bonus state to the overlay components. We
-    // derive scatter cells from the grid here (id 10 on `classic-3x5-bonus`;
-    // classic-3x5 never has id 10 so the loop is a no-op there). Bumping
-    // `bonusTriggerId` per landed spin re-fires the banner + sparkle
-    // animations even on consecutive retriggers.
     const SCATTER_ID = 10;
     const scatterCells: ScatterCell[] = [];
     for (let r = 0; r < result.reels.length; r++) {
@@ -360,27 +345,22 @@ export default function SlotScreenModal() {
     setLastIsFreeSpin(result.isFreeSpin);
     setBonusTriggerId((prev) => prev + 1);
 
-    // Show evaluating state briefly
     setIsEvaluating(true);
     setIsSpinning(false);
 
     const evalDelay = setTimeout(() => {
       setIsEvaluating(false);
-      // Drive FX dispatch for this spin
       fx.onSpinResolved(result, predict);
-      // Now that the spin landed, mint a fresh idempotency key for the next press.
       spinLockRef.current = false;
       spinIdemKeyRef.current = null;
       pendingResultRef.current = null;
 
-      // Continue autoplay if active
       if (autoplay.active) {
         const shouldStop = checkAutoplayStop(autoplay, result);
         if (!shouldStop) {
           const remaining = typeof autoplay.count === 'number' ? autoplay.remaining - 1 : Infinity;
           if (remaining > 0) {
             setAutoplay(prev => ({ ...prev, remaining }));
-            // Wait long enough for any celebration to clear OR the lockout to lift.
             const delay = Math.max(700, fx.state.isLockedOut ? 3200 : 700);
             autoplayTimerRef.current = setTimeout(() => { void doSpin(); }, delay);
           } else {
@@ -399,7 +379,6 @@ export default function SlotScreenModal() {
   function checkAutoplayStop(ap: AutoplayState, result: SpinResult): boolean {
     if (ap.count === 'until-cashout') return false;
     if (ap.count === 'until-big-win') {
-      // bigint-safe: stop when winAmount >= 10 × predict
       const predictBn = BigInt(Math.max(0, Math.floor(predict)));
       if (predictBn === 0n) return false;
       return result.winAmount >= predictBn * 10n;
@@ -421,16 +400,13 @@ export default function SlotScreenModal() {
     }
   }, [isSpinning, isEvaluating, sessionBalance, predict, doSpin, fx.state.isLockedOut]);
 
-  // ── Fairness pop-over (lightweight; not a Modal) ────────────────────────
   const handleFairness = useCallback(() => {
     setFairnessTooltipOpen(true);
   }, []);
 
-  // ── Predict validation — only multiples of CLASSIC_LINES.length=20 ──────
   const handlePredictChange = useCallback((next: number) => {
     if (next <= 0) return;
     if (next % 20 !== 0) {
-      // Round to nearest valid stake.
       const rounded = Math.max(20, Math.round(next / 20) * 20);
       setPredict(rounded);
       return;
@@ -438,7 +414,7 @@ export default function SlotScreenModal() {
     setPredict(next);
   }, []);
 
-  // ── Reset state when the modal closes externally (e.g. /casino unmount) ─
+  // ── Reset state when the modal closes externally ─────────────────────────
   useEffect(() => {
     if (!slotScreenOpen) {
       pendingResultRef.current = null;
@@ -458,7 +434,6 @@ export default function SlotScreenModal() {
     }
   }, [slotScreenOpen, clearSessionMeta]);
 
-  // ── Compact fairness HUD chip (placed below the title strip) ────────────
   const fairnessSummary = useMemo(() => {
     if (!serverSeedHash) return 'Fairness: open a spin to commit seed';
     const short = `${serverSeedHash.slice(0, 8)}…${serverSeedHash.slice(-6)}`;
@@ -472,19 +447,10 @@ export default function SlotScreenModal() {
   return (
     <>
       <style>{`
-        /* Mobile: scale cell size */
-        @media (max-width: 480px) {
-          :root { --slot-cell-size: 52px; }
-        }
-        @media (min-width: 481px) and (max-width: 640px) {
-          :root { --slot-cell-size: 60px; }
-        }
-        @media (min-width: 641px) and (max-width: 900px) {
-          :root { --slot-cell-size: 70px; }
-        }
-        @media (min-width: 901px) {
-          :root { --slot-cell-size: 80px; }
-        }
+        @media (max-width: 480px) { :root { --slot-cell-size: 52px; } }
+        @media (min-width: 481px) and (max-width: 640px) { :root { --slot-cell-size: 60px; } }
+        @media (min-width: 641px) and (max-width: 900px) { :root { --slot-cell-size: 70px; } }
+        @media (min-width: 901px) { :root { --slot-cell-size: 80px; } }
       `}</style>
 
       {/* Full-viewport overlay */}
@@ -673,38 +639,19 @@ export default function SlotScreenModal() {
               Predictive Gaming Cove
             </div>
 
-            {/*
-              Reel grid wrapper — `position: relative` so the bonus
-              overlays (WildMultiplierBadge / ScatterCelebration) can
-              absolute-position themselves against the SAME origin the
-              SlotReels grid uses (outer padding 8px + per-reel padding
-              4px). Both overlays consume the result of the LAST landed
-              spin and only render when there's content to show.
-              See WildMultiplierBadge.tsx / ScatterCelebration.tsx
-              header comments for the cell-coord math.
-            */}
-            <div
-              style={{
-                position: 'relative',
-                /* Reel grid is intrinsically sized by SlotReels; this
-                   wrapper is just an anchor for absolute overlays. */
-              }}
-            >
-              <SlotReels
-                targetWindow={displayWindow}
+            {/* 3D reel canvas + bonus overlays */}
+            <div style={{ position: 'relative' }}>
+              <SlotReelsCanvas
+                reels={displayWindow}
                 isSpinning={isSpinning}
-                winningLines={pendingWinLines}
+                spinTrigger={spinTrigger}
+                winningCells={winningCells3D}
+                wildMultipliers={lastWildMultipliers}
+                scatterCells={lastScatterCells.map(c => ({ reelIndex: c.reelIndex, rowIndex: c.rowIndex }))}
                 onReelsSettled={handleReelsSettled}
-                shakeLevel={fx.state.shakeLevel}
+                paytableId={paytableId ?? undefined}
               />
 
-              {/* Phase 6.1.5 — wild multiplier chips. Empty array on
-                  classic-3x5; non-empty only on bonus paytable spins
-                  where at least one WILD landed in the visible window.
-                  `dimmed={!lastIsFreeSpin}` reflects the RTP-shape
-                  decision: in BASE mode the multiplier is recorded but
-                  not applied to line wins (potential chip); in FS mode
-                  it IS applied (active chip). */}
               {!isSpinning && lastWildMultipliers.map((wm) => (
                 <WildMultiplierBadge
                   key={`wm-${bonusTriggerId}-${wm.reelIndex}-${wm.rowIndex}`}
@@ -716,10 +663,6 @@ export default function SlotScreenModal() {
                 />
               ))}
 
-              {/* Phase 6.1.5 — scatter sparkle bursts + counter pill.
-                  Fires only when 3+ scatters land AND the spin awarded
-                  a scatter payout (the component itself gates on
-                  `cells.length >= 3` internally). */}
               <ScatterCelebration
                 cells={lastScatterCells}
                 scatterCount={lastScatterCells.length}
@@ -730,7 +673,7 @@ export default function SlotScreenModal() {
           </div>
         </div>
 
-        {/* Toast — bottom-center over the modal but below paytable */}
+        {/* Toast */}
         {toast && (
           <div
             role="status"
@@ -774,7 +717,7 @@ export default function SlotScreenModal() {
           </div>
         )}
 
-        {/* Fairness tooltip card */}
+        {/* Fairness tooltip */}
         {fairnessTooltipOpen && (
           <div
             role="dialog"
@@ -883,20 +826,15 @@ export default function SlotScreenModal() {
         )}
       </div>
 
-      {/* Win celebration overlay (5-tier dispatcher reads from useFX) */}
+      {/* Win celebration overlay */}
       <WinCelebration fx={fx.state} />
 
-      {/* Phase 6.1.5 — free-spin trigger banner. Fires when the last
-          spin awarded freeSpinsAwarded > 0 (`bonusTriggerId` flip drives
-          the show/hide cycle). Component honors prefers-reduced-motion
-          internally. */}
       <FreeSpinBanner
         freeSpinsAwarded={lastFreeSpinsAwarded}
         triggerId={bonusTriggerId}
         isRetrigger={lastIsFreeSpin}
       />
 
-      {/* Paytable modal — stacks on top of slot modal */}
       <PaytableModal
         isOpen={paytableOpen}
         onClose={() => setPaytableOpen(false)}
