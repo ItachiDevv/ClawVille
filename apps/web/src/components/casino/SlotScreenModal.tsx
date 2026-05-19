@@ -193,8 +193,14 @@ export default function SlotScreenModal() {
     setAutoplay({ count: 0, remaining: 0, active: false });
     setPendingWinLines([]);
     fx.reset();
+    // Fire-and-forget close any open server-side session — prevents the
+    // 409 "You already have an open slot session" trap on next re-open.
+    // Skipped when revealedServerSeed is set (cash-out already closed it).
+    if (sessionId && !revealedServerSeed) {
+      closeSession.mutate({ sessionId });
+    }
     closeSlotScreen();
-  }, [closeSlotScreen, fx]);
+  }, [sessionId, revealedServerSeed, closeSession, closeSlotScreen, fx]);
 
   const handleCashOut = useCallback(async () => {
     if (!sessionId) {
