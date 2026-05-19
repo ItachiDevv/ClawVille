@@ -8,7 +8,7 @@
  *   - clientSeed (server-generated, shown in the slot HUD fairness chip)
  *   - nonce (per-spin counter)
  *   - cursor (byte offset into the HMAC stream this spin started at)
- *   - bet (atomic units, stringified bigint; e.g. "20")
+ *   - predict (atomic units, stringified bigint; e.g. "20")
  *   - paytable (only "classic-3x5" today)
  *
  * Then hit Verify:
@@ -39,7 +39,7 @@ interface FormState {
   clientSeed: string;
   nonce: string;
   cursor: string;
-  bet: string;
+  predict: string;
 }
 
 const DEFAULT_FORM: FormState = {
@@ -48,7 +48,7 @@ const DEFAULT_FORM: FormState = {
   clientSeed: '',
   nonce: '0',
   cursor: '0',
-  bet: '20',
+  predict: '20',
 };
 
 interface Verdict {
@@ -97,15 +97,15 @@ export default function CasinoVerifyPage() {
         setErrorMsg('cursor must be a non-negative integer');
         return;
       }
-      let betBig: bigint;
+      let predictBig: bigint;
       try {
-        betBig = BigInt(form.bet);
+        predictBig = BigInt(form.predict);
       } catch {
-        setErrorMsg('bet must be a stringified integer (e.g. "20")');
+        setErrorMsg('predict must be a stringified integer (e.g. "20")');
         return;
       }
-      if (betBig <= 0n) {
-        setErrorMsg('bet must be > 0');
+      if (predictBig <= 0n) {
+        setErrorMsg('predict must be > 0');
         return;
       }
 
@@ -116,7 +116,7 @@ export default function CasinoVerifyPage() {
         clientSeed: form.clientSeed.trim(),
         nonce: parsedNonce,
         cursor: parsedCursor,
-        bet: betBig,
+        predict: predictBig,
       });
 
       // 2. Re-derive sha256(serverSeed) — independently confirms the commit
@@ -135,7 +135,7 @@ export default function CasinoVerifyPage() {
         clientSeed: form.clientSeed.trim(),
         nonce: parsedNonce,
         cursor: parsedCursor,
-        bet: form.bet,
+        predict: form.predict,
       });
 
       // 4. Compare local ↔ remote.
@@ -333,11 +333,11 @@ export default function CasinoVerifyPage() {
                   pattern="[0-9]*"
                 />
               </Field>
-              <Field label="Bet (atomic units)">
+              <Field label="Predict (atomic units)">
                 <input
                   style={inputStyle()}
-                  value={form.bet}
-                  onChange={onField('bet')}
+                  value={form.predict}
+                  onChange={onField('predict')}
                   inputMode="numeric"
                   pattern="[0-9]*"
                 />

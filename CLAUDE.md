@@ -70,20 +70,35 @@ Complex AI integrations: multi-phase plan in `.claude/plans/` + research deep-di
 
 ---
 
-## MANDATORY: 3D / Blender / long tasks run as EXPERIMENTAL COLLABORATIVE AGENT TEAMS
+## MANDATORY: Non-trivial implementation runs as EXPERIMENTAL COLLABORATIVE AGENT TEAMS
 
 **Status (2026-05-19):** `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` + `teammateMode=in-process` are enabled globally. We use the real teams feature — multiple specialist agents spawned in PARALLEL sharing a `team_name`, coordinating via `TaskList`/`TaskUpdate`/`SendMessage`. Not "one agent that recursively sub-spawns" — that's the legacy fallback and is only acceptable when teammateMode is unavailable.
+
+### ANTI-PATTERN (do not do this, do not ship slow ever again)
+
+> "I'll dispatch a single Implementer agent. When it returns, I'll dispatch 3 audit-lens agents in parallel. If any block, I'll dispatch a Fixer. Then I'll re-dispatch the auditors that blocked."
+
+This is **wrong**. It serializes 4+ Agent round-trips for a single concern. Every dispatch round = full agent context load + thinking warm-up + output streaming. On a non-trivial concern this turns 5 minutes of real work into 30 minutes of wall-clock waiting between dispatches.
+
+The right pattern is **ONE parallel message spawning the WHOLE TEAM upfront** (Lead Implementer + Reconciler + Spec auditor + Regression auditor + Adversarial auditor, all sharing the same `team_name`). They coordinate via `SendMessage` and `TaskList` internally — auditors block-wait on implementers via task dependencies, fixers spawn themselves when blocked. Orchestrator only commits + pushes + verifies.
+
+If you find yourself thinking "I'll dispatch the auditors after the implementer finishes" — STOP. Spawn the auditors at the same time with `addBlockedBy: [implementer_task_id]`. They'll wait for the implementer's task to flip to `completed` and then start automatically. Zero orchestrator round-trip cost.
 
 ### When teams are mandatory
 
 - **3D work** — Three.js / R3F / shaders / GLB / post-proc / materials / lights / cameras / TSL / WGSL / WebGPU under `apps/web/src/lib/three/**`, `apps/web/src/components/three/**`, `apps/web/public/models/**`, render-loop, animations, rigs, atmosphere/particles, new world-surface 3D objects.
 - **Blender pipelines** — multi-asset exports, mesh edits, rigging, MMD/glTF/FBX imports, Mixamo, Marvelous Designer.
+- **Backend / API / DB work** — Hono routes, Drizzle schemas, service files, money-handling paths, auth, custodial wallets, anything user-facing or financially load-bearing. **`bun test` passing in the implementer's report is NOT a substitute for an Adversarial-lens audit** — adversarial auditors catch exploits that test suites don't.
 - **Any task** > 5 min agent runtime, > 300 LOC across files, or touching ≥ 3 files in different subsystems.
 - User-tagged quality verbs ("polish", "iterate", "rework", "feel like X", "elite", "professional").
 
-### Standard 3D team composition
+If `experimentalAgentTeams` is enabled (it is), teams are the DEFAULT for the categories above. Solo dispatch is the rare exception (trivial work — see below).
 
-For a typical 3D / world-structure task, spawn this team in ONE message (parallel Agent tool uses):
+### Standard team compositions
+
+**Spawn the whole team in ONE message (multiple parallel Agent tool calls in a single assistant turn).** All agents share a `team_name` like `'casino-routes-2026-05-19'` (concern + date, unique per dispatch).
+
+#### 3D / world-structure task
 
 | Role | subagent_type | name (addressable via SendMessage) |
 |---|---|---|
@@ -94,9 +109,25 @@ For a typical 3D / world-structure task, spawn this team in ONE message (paralle
 | **Adversarial auditor** | `3da` or `blend007:three` | `3da-adversary` |
 | **Blender inspector** (when GLB inspection needed) | `blend007:mesh` | `blender-inspect` |
 
-All spawned with the same `team_name` (e.g. `team_name: 'collider-system-2026-05-19'`). The orchestrator picks a name unique to the concern + date.
+For Blender-heavy work, substitute `blend007:mesh` for the implementer roles. For pure Three.js with no GLB editing, drop `blender-inspect`.
 
-For Blender-heavy work (rigging, exports, MMD/Marvelous), substitute `blend007:mesh` for the implementer roles. For pure Three.js with no GLB editing, drop `blender-inspect`.
+#### Backend / API / DB / money-handling task
+
+| Role | subagent_type | name |
+|---|---|---|
+| **Lead implementer** | `general-purpose` | `impl-1` |
+| **Reconciler implementer** | `general-purpose` | `impl-2` |
+| **Spec auditor** | `general-purpose` | `spec-auditor` |
+| **Regression auditor** | `general-purpose` | `regress-auditor` |
+| **Adversarial auditor** | `general-purpose` | `adversary` |
+| **Solana auditor** (when Anchor program logic touched) | `solana-auditor` | `solana-auditor` |
+| **Codex rescue** (when Claude impl-1 gets stuck — invoked LATER, not at team launch) | `codex:codex-rescue` | `codex-rescue` |
+
+For ClawTokens-only paths drop `solana-auditor`. For anything in `contracts/` or `apps/api/src/services/wager-program-client.ts` keep it.
+
+The Lead Implementer drafts the diff and reports via `TaskUpdate(status='completed')`. The 3 auditors are blocked on the impl task via `addBlockedBy` and start the moment the implementer finishes. Each posts APPROVED or BLOCKING ISSUES. If any block, the team's Reconciler (impl-2) becomes the Fixer (no new dispatch needed — `SendMessage` with the consolidated punch list). After fix, the auditors that blocked re-run automatically via task re-trigger.
+
+The orchestrator (you) only sees the team's final consolidated status — never the back-and-forth between members.
 
 ### Coordination protocol
 
@@ -115,9 +146,22 @@ Every agent prompt MUST include:
 
 ### When to skip the full team
 
-Trivial work (single-file ≤ 100 LOC, doc edit, env var add) — flat 2-agent team (1 ultrathink Implementer + 1 ultrathink Auditor), no auditor split. Bar: "would the cost of getting this wrong justify ~5× parallel agent invocations?" If no → flat. If yes → full team.
+Trivial work — direct orchestrator edit, NO agent at all:
+- Single-file SVG path tweak, single typo fix, single comment change, single env var add, regenerate a derived file from a script you already wrote.
+- These are 5-line edits. Dispatching even a single Implementer for these wastes a full agent context.
 
-High-stakes work (DB migrations, custodial keys, auth, billing, scale-system rewrites) → ALWAYS full team + a `Reconciler-Manager` that re-implements independently and compares against impl-1. No exceptions.
+Light work — flat 2-agent team:
+- ≤ 100 LOC change, doc edit, scoped refactor in a single file with deterministic tests.
+- Composition: 1 ultrathink Implementer + 1 ultrathink Auditor (combined-lens: spec + regression + adversarial in one prompt).
+- Spawn both in one message with shared `team_name`.
+
+Full team — every other case (DEFAULT):
+- 3D, Blender, backend, money paths, anything > 100 LOC or > 3 files.
+- 5 agents in one parallel dispatch as the table above.
+
+High-stakes work (DB migrations, custodial keys, auth, billing, scale-system rewrites) → ALWAYS full team + a `reconciler-manager` that re-implements independently and compares against impl-1. No exceptions.
+
+**Test: would the cost of getting this wrong justify ~5× parallel agent invocations?** If no → light or direct. If yes → full team. When in doubt, full team. The orchestrator's job is to never become the bottleneck.
 
 ### Concerns: sequential or parallel?
 

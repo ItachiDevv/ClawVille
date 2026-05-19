@@ -25,8 +25,8 @@
  *     avatar.clawTokens(before_open) + totalWon - totalStaked. Catches the
  *     double-debit class of bugs immediately. Reads balance DIRECTLY from
  *     the DB, not the API response.
- *   - Idempotency-key replay with mismatched bet returns 409 (Stripe rule).
- *     Latent bomb if slice-4+ relaxes per-session fixed bets without this
+ *   - Idempotency-key replay with mismatched predict returns 409 (Stripe rule).
+ *     Latent bomb if slice-4+ relaxes per-session fixed predicts without this
  *     guard.
  *   - Spin Zod schema is .strict() so client-supplied nonce/cursor in the
  *     body get rejected — preserves the server-side commit-reveal chain.
@@ -100,7 +100,7 @@ describe('Casino Slots — paytable + verify (no DB)', () => {
       clientSeed: 'deadbeef',
       nonce: 0,
       cursor: 0,
-      bet: '20',
+      predict: '20',
     };
     const expected = serializeSpinResult(
       runSpin({
@@ -109,7 +109,7 @@ describe('Casino Slots — paytable + verify (no DB)', () => {
         clientSeed: inputs.clientSeed,
         nonce: inputs.nonce,
         cursor: inputs.cursor,
-        bet: BigInt(inputs.bet),
+        predict: BigInt(inputs.predict),
       }),
     );
 
@@ -136,13 +136,13 @@ describe('Casino Slots — paytable + verify (no DB)', () => {
         clientSeed: 'cafebabe',
         nonce: 0,
         cursor: 0,
-        bet: '20',
+        predict: '20',
       }),
     });
     expect(res.status).toBe(400);
   });
 
-  it('POST /verify rejects non-positive bet', async () => {
+  it('POST /verify rejects non-positive predict', async () => {
     const res = await app.request('/api/casino/slots/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -152,7 +152,7 @@ describe('Casino Slots — paytable + verify (no DB)', () => {
         clientSeed: 'cafebabe',
         nonce: 0,
         cursor: 0,
-        bet: '0',
+        predict: '0',
       }),
     });
     expect(res.status).toBe(400);
@@ -277,7 +277,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
         body: JSON.stringify({
           paytableId: 'classic-3x5',
           currency: 'clawtokens',
-          bet: '20',
+          predict: '20',
         }),
       });
       expect(res.status).toBe(200);
@@ -286,7 +286,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
       expect(data.serverSeedHash).toMatch(/^[0-9a-f]{64}$/);
       expect(data.clientSeed).toMatch(/^[0-9a-f]+$/);
       expect(data.serverSeed).toBeUndefined();
-      expect(data.bet).toBe('20');
+      expect(data.predict).toBe('20');
 
       // Close the session so subsequent tests can open new ones.
       await app.request('/api/casino/slots/session/close', {
@@ -303,7 +303,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
         body: JSON.stringify({
           paytableId: 'classic-3x5',
           currency: 'clawtokens',
-          bet: '20',
+          predict: '20',
         }),
       });
       expect(open1.status).toBe(200);
@@ -315,7 +315,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
         body: JSON.stringify({
           paytableId: 'classic-3x5',
           currency: 'clawtokens',
-          bet: '20',
+          predict: '20',
         }),
       });
       expect(open2.status).toBe(409);
@@ -335,7 +335,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
         body: JSON.stringify({
           paytableId: 'classic-3x5',
           currency: 'sol',
-          bet: '20',
+          predict: '20',
         }),
       });
       expect(solRes.status).toBe(501);
@@ -348,7 +348,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
         body: JSON.stringify({
           paytableId: 'classic-3x5',
           currency: 'usdc',
-          bet: '20',
+          predict: '20',
         }),
       });
       expect(usdcRes.status).toBe(501);
@@ -361,7 +361,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
         body: JSON.stringify({
           paytableId: 'classic-3x5',
           currency: 'clawtokens',
-          bet: '20',
+          predict: '20',
         }),
       });
       expect(res.status).toBe(401);
@@ -376,7 +376,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
         body: JSON.stringify({
           paytableId: 'classic-3x5',
           currency: 'clawtokens',
-          bet: '20',
+          predict: '20',
         }),
       });
       expect(openRes.status).toBe(200);
@@ -391,7 +391,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
           Cookie: cookie1,
           'Idempotency-Key': 'test-spin-key-1',
         },
-        body: JSON.stringify({ sessionId, bet: '20' }),
+        body: JSON.stringify({ sessionId, predict: '20' }),
       });
       expect(spin1.status).toBe(200);
       const spin1Data = (await spin1.json()) as any;
@@ -409,7 +409,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
           Cookie: cookie1,
           'Idempotency-Key': 'test-spin-key-1',
         },
-        body: JSON.stringify({ sessionId, bet: '20' }),
+        body: JSON.stringify({ sessionId, predict: '20' }),
       });
       expect(spin1replay.status).toBe(200);
       const replayData = (await spin1replay.json()) as any;
@@ -426,7 +426,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
           Cookie: cookie1,
           'Idempotency-Key': 'test-spin-key-2',
         },
-        body: JSON.stringify({ sessionId, bet: '20' }),
+        body: JSON.stringify({ sessionId, predict: '20' }),
       });
       expect(spin2.status).toBe(200);
       const spin2Data = (await spin2.json()) as any;
@@ -436,7 +436,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
       const noKey = await app.request('/api/casino/slots/spin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
-        body: JSON.stringify({ sessionId, bet: '20' }),
+        body: JSON.stringify({ sessionId, predict: '20' }),
       });
       expect(noKey.status).toBe(400);
 
@@ -461,7 +461,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
           clientSeed: closeData.clientSeed,
           nonce: 0,
           cursor: 0,
-          bet: '20',
+          predict: '20',
         }),
       });
       expect(verifyRes.status).toBe(200);
@@ -479,7 +479,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
           Cookie: cookie1,
           'Idempotency-Key': 'x-404',
         },
-        body: JSON.stringify({ sessionId: fakeId, bet: '20' }),
+        body: JSON.stringify({ sessionId: fakeId, predict: '20' }),
       });
       expect(res404.status).toBe(404);
 
@@ -490,7 +490,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
         body: JSON.stringify({
           paytableId: 'classic-3x5',
           currency: 'clawtokens',
-          bet: '20',
+          predict: '20',
         }),
       });
       expect(openRes.status).toBe(200);
@@ -502,7 +502,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
           Cookie: cookie2,
           'Idempotency-Key': 'x-403',
         },
-        body: JSON.stringify({ sessionId: openData.sessionId, bet: '20' }),
+        body: JSON.stringify({ sessionId: openData.sessionId, predict: '20' }),
       });
       expect(res403.status).toBe(403);
       void userId2; // suppress unused-var
@@ -530,7 +530,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
         body: JSON.stringify({
           paytableId: 'classic-3x5',
           currency: 'clawtokens',
-          bet: '20',
+          predict: '20',
         }),
       });
       expect(openRes.status).toBe(200);
@@ -550,7 +550,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
             Cookie: cookie1,
             'Idempotency-Key': `rl-${i}`,
           },
-          body: JSON.stringify({ sessionId: openData.sessionId, bet: '20' }),
+          body: JSON.stringify({ sessionId: openData.sessionId, predict: '20' }),
         });
         lastStatus = r.status;
         if (r.status !== 200) {
@@ -567,7 +567,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
           Cookie: cookie1,
           'Idempotency-Key': 'rl-over',
         },
-        body: JSON.stringify({ sessionId: openData.sessionId, bet: '20' }),
+        body: JSON.stringify({ sessionId: openData.sessionId, predict: '20' }),
       });
       expect(over.status).toBe(429);
 
@@ -608,7 +608,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
         body: JSON.stringify({
           paytableId: 'classic-3x5',
           currency: 'clawtokens',
-          bet: '20',
+          predict: '20',
         }),
       });
       expect(openRes.status).toBe(200);
@@ -634,17 +634,17 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
             Cookie: cookie1,
             'Idempotency-Key': `net-bal-${Date.now()}-${i}`,
           },
-          body: JSON.stringify({ sessionId, bet: '20' }),
+          body: JSON.stringify({ sessionId, predict: '20' }),
         });
         expect(r.status).toBe(200);
         const data = (await r.json()) as any;
-        const bet = 20n;
+        const predict = 20n;
         const win = BigInt(data.winAmount);
-        totalStaked += bet;
+        totalStaked += predict;
         totalWon += win;
         runningBalance = runningBalance - 20 + Number(win);
 
-        // After each spin, DB balance reflects `prev - bet + win`.
+        // After each spin, DB balance reflects `prev - predict + win`.
         const dbBal = await readAvatarBalance(avatarId1);
         expect(dbBal).toBe(runningBalance);
       }
@@ -673,7 +673,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
       expect(closeData.totalWon).toBe(totalWon.toString());
     });
 
-    it('idempotency-key replay with mismatched bet returns 409', async () => {
+    it('idempotency-key replay with mismatched predict returns 409', async () => {
       // Open a fresh session.
       const openRes = await app.request('/api/casino/slots/session/open', {
         method: 'POST',
@@ -681,14 +681,14 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
         body: JSON.stringify({
           paytableId: 'classic-3x5',
           currency: 'clawtokens',
-          bet: '20',
+          predict: '20',
         }),
       });
       expect(openRes.status).toBe(200);
       const openData = (await openRes.json()) as any;
       const sessionId = openData.sessionId;
 
-      // Run a spin with key='mismatch-key-1' and bet=20.
+      // Run a spin with key='mismatch-key-1' and predict=20.
       const idemKey = `mismatch-key-${Date.now()}`;
       const spin1 = await app.request('/api/casino/slots/spin', {
         method: 'POST',
@@ -697,23 +697,23 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
           Cookie: cookie1,
           'Idempotency-Key': idemKey,
         },
-        body: JSON.stringify({ sessionId, bet: '20' }),
+        body: JSON.stringify({ sessionId, predict: '20' }),
       });
       expect(spin1.status).toBe(200);
 
-      // Today the per-session fixed-bet rule (input.bet ===
-      // session.startingBalance) blocks bet=999 BEFORE the cache lookup.
-      // To exercise the NEW guard, mutate the cached row's `bet` column
+      // Today the per-session fixed-predict rule (input.predict ===
+      // session.startingBalance) blocks predict=999 BEFORE the cache lookup.
+      // To exercise the NEW guard, mutate the cached row's `predict` column
       // out-of-band to a different value, then replay with the same key
-      // + a bet that still matches startingBalance ('20'). The cache-hit
-      // branch compares cached.bet ('999') vs input.bet ('20') and 409s.
+      // + a predict that still matches startingBalance ('20'). The cache-hit
+      // branch compares cached.predict ('999') vs input.predict ('20') and 409s.
       //
-      // This simulates the slice-4+ world where variable bets are
+      // This simulates the slice-4+ world where variable predicts are
       // allowed and a leaked Idempotency-Key could be replayed at a
       // different stake.
       await dbMod.db
         .update(dbMod.slotSpins)
-        .set({ bet: '999' })
+        .set({ predict: '999' })
         .where(
           eq(dbMod.slotSpins.idempotencyKey, idemKey),
         );
@@ -725,7 +725,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
           Cookie: cookie1,
           'Idempotency-Key': idemKey,
         },
-        body: JSON.stringify({ sessionId, bet: '20' }),
+        body: JSON.stringify({ sessionId, predict: '20' }),
       });
       expect(replay.status).toBe(409);
 
@@ -745,7 +745,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
         body: JSON.stringify({
           paytableId: 'classic-3x5',
           currency: 'clawtokens',
-          bet: '20',
+          predict: '20',
         }),
       });
       expect(openRes.status).toBe(200);
@@ -763,7 +763,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
         },
         body: JSON.stringify({
           sessionId: openData.sessionId,
-          bet: '20',
+          predict: '20',
           nonce: 0,
           cursor: 0,
         }),
@@ -785,7 +785,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
         body: JSON.stringify({
           paytableId: 'classic-3x5',
           currency: 'clawtokens',
-          bet: '100',
+          predict: '100',
         }),
       });
       expect(openRes.status).toBe(200);
@@ -811,7 +811,7 @@ describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () =>
             Cookie: cookie1,
             'Idempotency-Key': `neg-bal-${Date.now()}-${i}`,
           },
-          body: JSON.stringify({ sessionId, bet: '100' }),
+          body: JSON.stringify({ sessionId, predict: '100' }),
         });
         expect(r.status).toBe(200);
         const data = (await r.json()) as any;

@@ -6,7 +6,7 @@
  * Polish pass (Concern 6.0.4):
  *   - Uses design tokens from `casino-tokens.css`
  *   - NeonButton for SPIN, Walk Away, and icon utility buttons
- *   - BetChips replace the legacy +/− stepper on screens wide enough
+ *   - PredictChips replace the legacy +/− stepper on screens wide enough
  *   - Bottom bar sticks to the safe area on mobile
  *
  * SPIN button states:
@@ -20,7 +20,7 @@
  */
 
 import { useCallback } from 'react';
-import { NeonButton, BetChips } from './ui';
+import { NeonButton, PredictChips } from './ui';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -29,15 +29,15 @@ export interface SlotHUDProps {
   balance: number;
   sessionPnl: number;
   spinCount: number;
-  bet: number;
-  minBet?: number;
-  maxBet?: number;
+  predict: number;
+  minPredict?: number;
+  maxPredict?: number;
   isSpinning: boolean;
   isEvaluating: boolean;
   isLockedOut?: boolean;
   autoplayCount: number | 'until-cashout' | 'until-big-win';
   isMuted: boolean;
-  onBetChange: (bet: number) => void;
+  onPredictChange: (predict: number) => void;
   onSpin: () => void;
   onAutoplayChange: (count: number | 'until-cashout' | 'until-big-win') => void;
   onMuteToggle: () => void;
@@ -52,13 +52,13 @@ const AUTOPLAY_OPTIONS: Array<{ label: string; value: number | 'until-cashout' |
   { label: '25 spins',      value: 25             },
   { label: '100 spins',     value: 100            },
   { label: 'Until cash-out',value: 'until-cashout' },
-  { label: 'Win > 10× bet', value: 'until-big-win' },
+  { label: 'Win > 10× predict', value: 'until-big-win' },
 ];
 
-// Phase 6.1 slice 5: bet must be divisible by CLASSIC_LINES.length=20.
-// The slot-engine rejects non-divisible bets to avoid silent value-truncation
-// in `perLineBet = bet / lineCount`.
-const BET_CHIPS = [20, 40, 100, 200, 500, 1000];
+// Phase 6.1 slice 5: predict must be divisible by CLASSIC_LINES.length=20.
+// The slot-engine rejects non-divisible predict amounts to avoid silent
+// value-truncation in `perLinePredict = predict / lineCount`.
+const PREDICT_CHIPS = [20, 40, 100, 200, 500, 1000];
 
 // ---------------------------------------------------------------------------
 // Spin button state
@@ -70,12 +70,12 @@ function getSpinState(
   isEvaluating: boolean,
   isLockedOut: boolean,
   balance: number,
-  bet: number,
+  predict: number,
 ): SpinButtonState {
-  if (isSpinning)    return 'spinning';
-  if (isEvaluating)  return 'evaluating';
-  if (isLockedOut)   return 'locked';
-  if (balance < bet) return 'insufficient';
+  if (isSpinning)        return 'spinning';
+  if (isEvaluating)      return 'evaluating';
+  if (isLockedOut)       return 'locked';
+  if (balance < predict) return 'insufficient';
   return 'ready';
 }
 
@@ -94,15 +94,15 @@ export default function SlotHUD({
   balance,
   sessionPnl,
   spinCount,
-  bet,
-  minBet = 1,
-  maxBet = 100,
+  predict,
+  minPredict = 1,
+  maxPredict = 100,
   isSpinning,
   isEvaluating,
   isLockedOut = false,
   autoplayCount,
   isMuted,
-  onBetChange,
+  onPredictChange,
   onSpin,
   onAutoplayChange,
   onMuteToggle,
@@ -110,17 +110,17 @@ export default function SlotHUD({
   onFairnessOpen,
   onWalkAway,
 }: SlotHUDProps) {
-  const spinState = getSpinState(isSpinning, isEvaluating, isLockedOut, balance, bet);
+  const spinState = getSpinState(isSpinning, isEvaluating, isLockedOut, balance, predict);
   const disabled = spinState !== 'ready';
 
-  // Step in multiples of 20 — server requires `bet % lineCount === 0`.
-  const handleBetDown = useCallback(() => {
-    onBetChange(Math.max(minBet, bet - 20));
-  }, [bet, minBet, onBetChange]);
+  // Step in multiples of 20 — server requires `predict % lineCount === 0`.
+  const handlePredictDown = useCallback(() => {
+    onPredictChange(Math.max(minPredict, predict - 20));
+  }, [predict, minPredict, onPredictChange]);
 
-  const handleBetUp = useCallback(() => {
-    onBetChange(Math.min(maxBet, bet + 20));
-  }, [bet, maxBet, onBetChange]);
+  const handlePredictUp = useCallback(() => {
+    onPredictChange(Math.min(maxPredict, predict + 20));
+  }, [predict, maxPredict, onPredictChange]);
 
   const handleAutoplay = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
     const val = e.target.value;
@@ -160,7 +160,7 @@ export default function SlotHUD({
 
         /* Hide chips on very narrow screens — stepper still works */
         @media (max-width: 380px) {
-          .cv-bet-chips-wrap { display: none !important; }
+          .cv-predict-chips-wrap { display: none !important; }
         }
 
         /* Sticky bottom bar on mobile to clear the safe-area inset */
@@ -223,7 +223,7 @@ export default function SlotHUD({
           zIndex: 5,
         }}
       >
-        {/* Bet stepper + chips */}
+        {/* Predict stepper + chips */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--cv-space-2)', flex: '1 1 auto', flexWrap: 'wrap' }}>
           <span style={{
             color: 'rgba(255,255,255,0.5)',
@@ -231,14 +231,14 @@ export default function SlotHUD({
             fontFamily: 'monospace',
             letterSpacing: '0.16em',
             textTransform: 'uppercase',
-          }}>BET</span>
+          }}>PREDICT</span>
 
           <NeonButton
             variant="secondary"
             size="sm"
-            onClick={handleBetDown}
-            disabled={isSpinning || bet <= minBet}
-            aria-label="Decrease bet"
+            onClick={handlePredictDown}
+            disabled={isSpinning || predict <= minPredict}
+            aria-label="Decrease predict"
             style={{ minWidth: 32, padding: '0 10px' }}
           >−</NeonButton>
 
@@ -251,25 +251,25 @@ export default function SlotHUD({
             textAlign: 'center',
             textShadow: '0 0 10px rgba(0,255,224,0.35)',
           }}>
-            {bet}
+            {predict}
           </span>
 
           <NeonButton
             variant="secondary"
             size="sm"
-            onClick={handleBetUp}
-            disabled={isSpinning || bet >= maxBet}
-            aria-label="Increase bet"
+            onClick={handlePredictUp}
+            disabled={isSpinning || predict >= maxPredict}
+            aria-label="Increase predict"
             style={{ minWidth: 32, padding: '0 10px' }}
           >+</NeonButton>
 
-          <div className="cv-bet-chips-wrap" style={{ marginLeft: 'var(--cv-space-2)' }}>
-            <BetChips
-              options={BET_CHIPS}
-              value={bet}
-              onChange={onBetChange}
+          <div className="cv-predict-chips-wrap" style={{ marginLeft: 'var(--cv-space-2)' }}>
+            <PredictChips
+              options={PREDICT_CHIPS}
+              value={predict}
+              onChange={onPredictChange}
               disabled={isSpinning}
-              ariaLabel="Bet size in ClawTokens"
+              ariaLabel="Predict size in ClawTokens"
             />
           </div>
         </div>
