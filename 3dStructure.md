@@ -11,7 +11,7 @@
 > - **`GameFeatures.md`** — gameplay.
 > - **This doc** — *how* the 3D scene is wired: coordinates, camera, lights, GPU budget, animation, asset pipeline.
 
-**Last edit:** 2026-05-19 — Bio-luminescent label system: Fraunces serif capsule + dashed-cyan tether + pulsing anchor dot replaces plain uppercase wordmarks on all NPC and building labels. See §5d for full spec. Prior: 2026-05-18 — Casino interior bug-fix pass 2: avatar scale override was a no-op (CASINO_VRM_TARGET_HEIGHT was 270 = same as VRM_AVATAR_TARGET_HEIGHT_WU). Dropped to 160wu so cabinet tops (159wu) reach avatar forehead — tall Vegas slot-machine feel. Camera offsets recomputed proportionally: CAM_ABOVE 270→190, CAM_BEHIND 520→450, CAM_LOOK_Y 120→70. _casinoCamYaw module-scope var reset to π on mount in both CasinoVRMAvatarInner and CasinoGLBAvatarInner to prevent catch-up swing on re-entry. §10c updated. Prior: 2026-05-18 — Casino interior bug-fix trio (Bug 1: arrow-key support; Bug 2: chase-camera yaw decoupled via `_casinoCamYaw` module ref + `CAM_YAW_LERP=0.05` slow-lerp applied to BOTH VRM and GLB branches; Bug 3: cabinet heights now world-scale 159wu total vs 270wu avatar = 59% chest-height). `computeVRMAvatarFit` gained optional 3rd param `targetHeightOverride`. §10c slot-cabinet sub-entry updated.
+**Last edit:** 2026-05-19 — World colliders: new `collision/world-colliders.ts` with 19 XZ-plane disc colliders (12 buildings ≈ 190wu + 7 props 50–220wu). Integrated into `player-avatar.tsx` (VRM+GLB), `arena-npcs.tsx` (GLBNpcMesh+VRMNpcMesh), `arena-location-npcs.tsx` (spawn sanity push-out). Zero per-frame allocs. Slide-along-wall semantics. §2h added. Prior: 2026-05-19 — Bio-luminescent label system: Fraunces serif capsule + dashed-cyan tether + pulsing anchor dot replaces plain uppercase wordmarks on all NPC and building labels. See §5d for full spec. Prior: 2026-05-18 — Casino interior bug-fix pass 2: avatar scale override was a no-op (CASINO_VRM_TARGET_HEIGHT was 270 = same as VRM_AVATAR_TARGET_HEIGHT_WU). Dropped to 160wu so cabinet tops (159wu) reach avatar forehead — tall Vegas slot-machine feel. Camera offsets recomputed proportionally: CAM_ABOVE 270→190, CAM_BEHIND 520→450, CAM_LOOK_Y 120→70. _casinoCamYaw module-scope var reset to π on mount in both CasinoVRMAvatarInner and CasinoGLBAvatarInner to prevent catch-up swing on re-entry. §10c updated. Prior: 2026-05-18 — Casino interior bug-fix trio (Bug 1: arrow-key support; Bug 2: chase-camera yaw decoupled via `_casinoCamYaw` module ref + `CAM_YAW_LERP=0.05` slow-lerp applied to BOTH VRM and GLB branches; Bug 3: cabinet heights now world-scale 159wu total vs 270wu avatar = 59% chest-height). `computeVRMAvatarFit` gained optional 3rd param `targetHeightOverride`. §10c slot-cabinet sub-entry updated.
 
 Prior: 2026-05-18 — Phase 6.2.2 building scale + T-pose fixes. MAX_FOOTPRINT 1800→2000wu (Sandy's dome is square XZ≈25.87, hit 1800 cap at 738wu height; 2000wu cap → 820wu, leaves 178wu clearance at R=130 arc). Node name bug fixed: `childScaleOverrides` + `bodyAnchorChild` keys for Squidward + Krusty Krab used underscore-sanitized names (silent no-ops since Three.js GLTFLoader preserves verbatim names). Corrected to literal GLB names: `"Squidward's House"` (apostrophe+space) and `"The Krusty Krab"` (spaces). targetMaxDim bumps: messaging-channels 1000→2500 (Sandy dome effective 820wu), api-integrations 1300→2500 (Salty Spitoon km-scale, effective 1209wu), cron-automation 1300→2200 (Patty Building effective 1513wu), memory-rag 1400→1700 (Squidward +childScale 1.4→1.7). Sandy NPC T-pose fixed: `useGLTF` now passes `extendLoaderWithMeshopt` for `EXT_meshopt_compression` GLBs; `clipAction(idleClip, cloned)` passes cloned as optionalRoot to force track resolution against cloned bone hierarchy; `reset().setLoop(THREE.LoopRepeat, Infinity).play()` chain. §2 slot table + footprint cap doc + childScaleOverrides doc + bodyAnchorChild doc updated. Prior 2026-05-18 — Concern 6.0.5: Walkable casino interior. Self-contained WASD + follow camera in casino-interior.tsx. CasinoPlayerAvatar (VRM/GLB router). 4 primitive slot cabinets on left wall (module-scope BoxGeometry/CylinderGeometry, matrixAutoUpdate=false). Walk-out exit corrected to (2000, 5760). Canvas camera [0,80,250]→[0,55,400]. §10c updated. Prior 2026-05-18 — Body-anchor pass: `bodyAnchorChild` field on `BUILDING_MODELS`. For buildings whose GLB bundles body + pathway/sign, computes body child's bbox center (post-childScaleOverrides) and shifts pivotOffsetX/Z so the BODY center lands at the ring slot — not the full-GLB combined center. Fixes Squidward's house + Krusty Krab placement pushed-back bug. `pivotZBias: 180` removed from memory-rag (superseded). `_bodyBbox`/`_bodyCenter` scratch added. `EditableBuilding` useMemo also updated. Size bumps: code-development 1000→1400, api-integrations 1000→1300, cron-automation 1000→1300. §2 slot table + §2 body-anchor doc updated. Prior 2026-05-18 — Differential child-scale pass (`childScaleOverrides`) for Squidward house and Krusty Krab: building body nodes scaled 1.4–1.5× on top of uniform base scale; pathway/sign unchanged. targetMaxDim raised to 1400 for both buildings. `applyChildScaleOverrides()` helper added to arena-buildings.tsx; runs after strip passes, before mergeStaticMeshesByMaterial so scales are baked into merged vertex positions. §2 slot table rows 2+11, §2 childScaleOverrides doc added. Prior 2026-05-18 — Phase 6.2.1: ring R=160→130 tiles (5120→4160wu — R=160 too spaced out from spawn). Arc spacing 2680→2178wu. Fog near 3800→4500, far 6800→9000, camera.far 6800→10000. All 12 building zone positions updated in tilemap-data.ts, arena-buildings.tsx, npc-definitions.ts, map-locations.ts. §2 slot table, §3 camera.far, §4 fog updated. Prior 2026-05-18 — Concern 6.0.3: Casino walk-in animation + SceneTransition pattern. `SceneTransition.tsx` (new, generic), casino onClick wired to walk-in flow (triggerCasinoWalkIn), avatar exit position = casino door (940, 5760 game-px), spawn fix avatarPositionRef → (5760, 6140). §1 spawn, §10c updated. Prior 2026-05-18 — Phase 6.2: grid 240→360 tiles, ring R=100→160 tiles (3200→5120wu), center tile 120→180, MAP_WIDTH/HEIGHT 7680→11520wu, arc spacing 1675→2680wu. NPC_INSET_WORLD 1000→1300wu (Patrick fix). `computeBuildingScale` switched to max(X,Y,Z) normalization (`targetMaxDim` param replaces `targetHeight`); all per-building values updated. Sandy Treedome DoubleSide fix for transparent materials. DECO_INNER_EXCLUSION_R 1500→800wu. Town-center props spread: bazaar (-600,300), marketplace (800,300), auction dome z=-1000. All building zone positions, NPC home coords, pathfinding COLS/ROWS, and free-roamer radii updated to match. §1, §2, §5e, §7 updated. Prior 2026-05-18 — World-space DOM label redesign: all pills removed; NPC labels now 10px uppercase wordmarks with black text-shadow + no background, opacity 0.65 within 800wu fading to 0 at 3000wu, 10 Hz building-occluder raycast via `_checkOcclusion` in `world-labels-overlay.tsx`; building labels now 11px italic cyan wordmarks with glow text-shadow, opacity 0.40 within 2000wu fading to 0 at 5000wu, CSS hover → opacity 1; OpenClaw chip replaced by 7px green dot. `LabelEntry` gains `fadeNear/fadeFar/fadeBaseOpacity/_prevOpacity/occlude/occludePhase/_occludeResult`; `UseWorldLabelOpts` gains matching opts. §5d WorldLabelsOverlay row updated. Prior prior 2026-05-18 — §6f Animation Shipping Rules added.
 
@@ -152,6 +152,60 @@ return <group position={[X, groundedY, Z]} scale={scale}>{/* … */}</group>;
 `groundedYOffset(root, scale, clearance = 0)` returns the Y such that the LOWEST scaled vertex sits exactly at `SAND_BASELINE_Y` (currently `-2`). Add a small `clearance` (0.5–2wu) only if you observe z-fighting flicker at the base; for most assets `clearance = 0` is correct.
 
 **Already converted:** `bazaar-stall.tsx`, `marketplace-stall.tsx`. Future stalls/decorations follow this pattern. `arena-buildings.tsx` building ring uses its own terrain-raycast grounding (different system — that one snaps to the actual displaced terrain height per-building, this helper grounds to the flat sand-baseline).
+
+---
+
+## 2h. World colliders (XZ-plane disc collision)
+
+Source: `apps/web/src/lib/three/collision/world-colliders.ts` (new 2026-05-19).
+
+Pure XZ-plane disc collision — no physics engine, no draw calls, zero per-frame allocations. Blocks players and NPCs from walking into buildings and town-center props.
+
+**Architecture:**
+- Module-scope collider cache (`getAllColliders()`) — recomputed only when `buildingZones.length` changes (never in practice). Returns `readonly Collider2D[]`.
+- `clampMovement2D(fromX, fromZ, toX, toZ)` — called once per entity per frame, after position delta is computed, before writing to the scene graph. Returns `{ x, z, hit }`.
+- Scratch vars `_sDx`/`_sDz` at module scope — zero `new Vector3()` or object allocations in the hot path.
+- Slide-along-wall semantics: radial push-out from collider boundary, NOT velocity zeroing. Entity slides along curved wall surface naturally.
+- Escape hatch: if entity is ALREADY inside a collider (rare — new collider placed on top of existing entity), allow outward motion to prevent permanent trapping.
+
+**Collider counts:**
+
+| Kind | Count | Radius | Source |
+|---|---|---|---|
+| Building (ring) | 12 | ≈ 190.4 wu | `buildingZones` in `tilemap-data.ts` |
+| Prop (town center) | 7 | 50–220 wu each | Hardcoded from each prop's TSX constants |
+| **Total** | **19** | | |
+
+**Building radius derivation:**
+```
+zone tile extent  = 14 × 32 = 448 wu (diameter)
+half-extent       = 224 wu
+BUILDING_SCALE_FACTOR = 0.85
+BUILDING_RADIUS   = 224 × 0.85 ≈ 190.4 wu
+```
+`scaleFactor = 0.85` gives slight corner clearance (player can brush a corner without hitting an invisible wall) while still blocking interior access. Raise to 0.90–0.95 if corners are still enterable; lower to 0.75–0.80 if the wall feels too far out.
+
+**Prop colliders (positions verified from each TSX's exported constants, 2026-05-19):**
+
+| ID | World XZ | Radius |
+|---|---|---|
+| auction-podium | (0, −1000) | 180 wu |
+| town-directory-sign | (0, −120) | 80 wu |
+| bazaar-stall | (−800, 300) | 200 wu |
+| marketplace-stall | (800, 300) | 220 wu |
+| bounty-board | (50, 0) | 60 wu |
+| quest-npc | (−110, −60) | 50 wu |
+| town-guide | (0, 240) | 50 wu |
+
+**Integration points:**
+- `player-avatar.tsx` — VRM branch (line ≈498) + GLB branch (line ≈936). Both call `clampMovement2D(prevWX, prevWZ, newX − HALF_W, newY − HALF_H)` then convert back to game-px via `+ HALF_W/HALF_H`.
+- `arena-npcs.tsx` — `GLBNpcMesh` useFrame + `VRMNpcMesh` useFrame. Clamp applied after entity-interpolation lerp, before writing `simPos.current` + `group.position`.
+- `arena-location-npcs.tsx` — Sanity push-out in `ArenaLocationNpcs` useMemo at spawn time: `clampMovement2D(0, 0, worldX, worldZ)`. Origin (0,0) is the village center — guaranteed outside all colliders — so the push direction is always radially outward from any collider the NPC might land inside.
+
+**What is NOT covered (by design):**
+- Vertical collision (Y axis) — terrain raycasting handles Y grounding.
+- NPC→NPC collision — server simulation owns NPC pathfinding; client only renders.
+- Casino interior — separate scene with its own bounds logic.
 
 ---
 
@@ -589,6 +643,7 @@ Draw-call budget (full equipped set): hat ≤ 1, aura ≤ 4 (instanced particles
 
 Compact log. Single line per change with commit reference where applicable.
 
+- 2026-05-19 — World colliders: new `collision/world-colliders.ts` (19 disc colliders — 12 buildings ≈190wu + 7 town-center props 50–220wu). `clampMovement2D` radial push-out with slide-along-wall feel + escape hatch for inside-collider spawn. Integrated into player-avatar.tsx (VRM+GLB branches) + arena-npcs.tsx (GLBNpcMesh+VRMNpcMesh useFrame) + arena-location-npcs.tsx (spawn-time sanity push-out). Zero per-frame allocations (module-scope scratch). scaleFactor=0.85. §2h added.
 - 2026-05-18 — Phase 6.2.2: MAX_FOOTPRINT 1800→2000wu; node name bug fixed (`The_Krusty_Krab`/`Squidward_s_House` → literal `"The Krusty Krab"`/`"Squidward's House"` — Three.js GLTFLoader preserves verbatim names); targetMaxDim bumps: messaging-channels 1000→2500, api-integrations 1300→2500, cron-automation 1300→2200, memory-rag 1400→1700; memory-rag childScale 1.4→1.7. Sandy NPC T-pose: `extendLoaderWithMeshopt` added to useGLTF + preloads; `clipAction(idleClip, cloned)` with explicit optionalRoot; `reset().setLoop(LoopRepeat).play()` chain. §2 slot table + footprint cap + childScaleOverrides doc + bodyAnchorChild doc updated.
 - 2026-05-18 — Bio-luminescent label system: Fraunces capsule + dashed-cyan tether + pulsing anchor dot on all NPC/building labels. `fadeBaseOpacity` 0.65 → 0.85 for NPC labels. Two CSS keyframes in `globals.css`. `--font-fraunces` in `layout.tsx`. §5d WorldLabelsOverlay row updated.
 - 2026-05-18 — `childScaleOverrides` differential scaling: Squidward house head ×1.4, Krusty Krab restaurant ×1.5; stepping stones/sign remain at base scale. Both buildings targetMaxDim 1000→1400. `applyChildScaleOverrides()` added to `arena-buildings.tsx`; runs post-strip, pre-merge so scales bake into vertex positions.
