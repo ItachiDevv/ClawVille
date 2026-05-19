@@ -273,10 +273,11 @@ export default function SlotReels3D({
   );
 
   // Textures — built once per strip set
-  const textures = useMemo<THREE.CanvasTexture[]>(
-    () => Array.from({ length: REEL_COUNT }, (_, i) => buildReelTexture(strips[i])),
-    [strips],
-  );
+  const textures = useMemo<THREE.CanvasTexture[]>(() => {
+    const built = Array.from({ length: REEL_COUNT }, (_, i) => buildReelTexture(strips[i]));
+    console.log('[SlotReels3D] textures built:', built.length, built.map(t => `${t.image.width}x${t.image.height}`));
+    return built;
+  }, [strips]);
 
   // Shared geometry: 1wu wide × 3wu tall plane
   const geometry = useMemo(() => new THREE.PlaneGeometry(CELL_WU, PLANE_HEIGHT), []);
@@ -300,6 +301,12 @@ export default function SlotReels3D({
 
   useEffect(() => { reelsRef.current = reels; }, [reels]);
   useEffect(() => { isSpinningRef.current = isSpinning; }, [isSpinning]);
+
+  // Mount diagnostic
+  useEffect(() => {
+    console.log('[SlotReels3D] mount: meshRefs=', meshRefs.current.map(m => (m ? 'ok' : 'null')), 'materials=', materials.length, 'camera=', camera.position.toArray());
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Pre-warm GPU pipelines once after mount
   useEffect(() => {
