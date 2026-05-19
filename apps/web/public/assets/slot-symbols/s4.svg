@@ -1,57 +1,83 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
-    <radialGradient id="b4p" cx="38%" cy="30%" r="72%">
-      <stop offset="0" stop-color="#c97afc"/>
-      <stop offset="0.5" stop-color="#7a2db8"/>
-      <stop offset="1" stop-color="#2a0440"/>
-    </radialGradient>
-    <linearGradient id="b4s" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#e0a2ff"/>
-      <stop offset="0.55" stop-color="#9a3edb"/>
-      <stop offset="1" stop-color="#360860"/>
+    <!-- Brass bell bevel: light brass top → mid-gold → dark bronze bottom -->
+    <linearGradient id="b4b" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe9a8"/>
+      <stop offset="0.45" stop-color="#ffc857"/>
+      <stop offset="1" stop-color="#6a4408"/>
     </linearGradient>
-    <radialGradient id="hl4" cx="32%" cy="22%" r="50%">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.6"/>
+    <!-- Clapper / dark brass ball -->
+    <linearGradient id="b4c" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c08828"/>
+      <stop offset="1" stop-color="#3a2604"/>
+    </linearGradient>
+    <!-- Specular highlight -->
+    <radialGradient id="hl4" cx="35%" cy="22%" r="55%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.7"/>
       <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
     </radialGradient>
+    <!-- Coral-tinged loop top (sea twist) -->
+    <linearGradient id="b4l" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffb08a"/>
+      <stop offset="1" stop-color="#a04020"/>
+    </linearGradient>
   </defs>
-  <ellipse cx="128" cy="228" rx="68" ry="10" fill="#0a1428" opacity="0.5"/>
-  <!-- radial spikes (16 long blades) -->
-  <g fill="url(#b4s)" stroke="#0a1428" stroke-width="3.5" stroke-linejoin="round">
-    <polygon points="128,18 120,80 136,80" />
-    <polygon points="128,18 120,80 136,80" transform="rotate(22.5 128 128)"/>
-    <polygon points="128,18 120,80 136,80" transform="rotate(45 128 128)"/>
-    <polygon points="128,18 120,80 136,80" transform="rotate(67.5 128 128)"/>
-    <polygon points="128,18 120,80 136,80" transform="rotate(90 128 128)"/>
-    <polygon points="128,18 120,80 136,80" transform="rotate(112.5 128 128)"/>
-    <polygon points="128,18 120,80 136,80" transform="rotate(135 128 128)"/>
-    <polygon points="128,18 120,80 136,80" transform="rotate(157.5 128 128)"/>
-    <polygon points="128,18 120,80 136,80" transform="rotate(180 128 128)"/>
-    <polygon points="128,18 120,80 136,80" transform="rotate(202.5 128 128)"/>
-    <polygon points="128,18 120,80 136,80" transform="rotate(225 128 128)"/>
-    <polygon points="128,18 120,80 136,80" transform="rotate(247.5 128 128)"/>
-    <polygon points="128,18 120,80 136,80" transform="rotate(270 128 128)"/>
-    <polygon points="128,18 120,80 136,80" transform="rotate(292.5 128 128)"/>
-    <polygon points="128,18 120,80 136,80" transform="rotate(315 128 128)"/>
-    <polygon points="128,18 120,80 136,80" transform="rotate(337.5 128 128)"/>
-  </g>
-  <!-- urchin body -->
-  <circle cx="128" cy="128" r="58" fill="url(#b4p)" stroke="#0a1428" stroke-width="6"/>
-  <!-- magenta highlight stripes -->
-  <g fill="none" stroke="#ff5fd6" stroke-width="2.5" opacity="0.7">
-    <path d="M86 116 Q128 88 170 116"/>
-    <path d="M86 140 Q128 168 170 140"/>
-  </g>
-  <!-- bump dots -->
-  <g fill="#ff5fd6" opacity="0.85">
-    <circle cx="106" cy="108" r="4"/>
-    <circle cx="148" cy="108" r="4"/>
-    <circle cx="128" cy="130" r="4"/>
-    <circle cx="110" cy="148" r="4"/>
-    <circle cx="146" cy="148" r="4"/>
-  </g>
+  <!-- ground shadow -->
+  <ellipse cx="128" cy="228" rx="84" ry="10" fill="#0a1428" opacity="0.5"/>
+
+  <!-- coral-tinted top loop (small sea twist) -->
+  <path d="M114 36 Q100 12 128 12 Q156 12 142 36"
+        fill="url(#b4l)" stroke="#0a1428" stroke-width="5"
+        stroke-linejoin="round" stroke-linecap="round"/>
+
+  <!-- bell crown stem between loop and dome -->
+  <rect x="118" y="32" width="20" height="18"
+        fill="url(#b4b)" stroke="#0a1428" stroke-width="5" stroke-linejoin="round"/>
+
+  <!-- MAIN BELL BODY: dome + flared rim. Fills ~75% of frame -->
+  <path d="M128 48
+           C 72 48 52 112 52 158
+           L 52 178
+           Q 52 188 64 188
+           L 192 188
+           Q 204 188 204 178
+           L 204 158
+           C 204 112 184 48 128 48 Z"
+        fill="url(#b4b)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"/>
+
+  <!-- inner ridge stroke for slot-cast depth -->
+  <path d="M128 60
+           C 86 60 70 118 70 156
+           L 70 174
+           L 186 174
+           L 186 156
+           C 186 118 170 60 128 60 Z"
+        fill="none" stroke="#8a5a08" stroke-width="2.5"
+        stroke-linejoin="round" opacity="0.75"/>
+
+  <!-- bell rim base lip (darker band) -->
+  <rect x="52" y="174" width="152" height="16" rx="7"
+        fill="url(#b4b)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"/>
+  <line x1="62" y1="182" x2="194" y2="182" stroke="#7a5208" stroke-width="1.5" opacity="0.7"/>
+
   <!-- highlight overlay -->
-  <circle cx="128" cy="128" r="58" fill="url(#hl4)"/>
-  <ellipse cx="108" cy="106" rx="14" ry="9" fill="#ffffff" opacity="0.55" transform="rotate(-30 108 106)"/>
+  <path d="M128 48
+           C 72 48 52 112 52 158
+           L 52 178
+           Q 52 188 64 188
+           L 192 188
+           Q 204 188 204 178
+           L 204 158
+           C 204 112 184 48 128 48 Z"
+        fill="url(#hl4)"/>
+
+  <!-- crisp top-left spec ellipse -->
+  <ellipse cx="92" cy="86" rx="18" ry="9" fill="#ffffff" opacity="0.72"
+           transform="rotate(-32 92 86)"/>
+
+  <!-- clapper (small brass ball hanging below the rim) -->
+  <line x1="128" y1="190" x2="128" y2="206" stroke="#0a1428" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="128" cy="214" r="13" fill="url(#b4c)" stroke="#0a1428" stroke-width="4.5"/>
+  <ellipse cx="124" cy="210" rx="4.5" ry="2.5" fill="#ffffff" opacity="0.6"/>
 </svg>
