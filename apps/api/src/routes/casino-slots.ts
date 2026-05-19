@@ -419,6 +419,9 @@ casinoSlotsRouter.post('/session/open', requireAuth, async (c) => {
           message: `session_already_open_different_paytable: open=${lockRow.paytable_id}, requested=${input.paytableId}`,
         });
       }
+      // Drizzle tx.execute returns INT columns as strings (PG wire format).
+      // Coerce explicitly so the values used in downstream comparisons +
+      // engine inputs + event payloads are typed correctly.
       return {
         id:                  lockRow.id,
         userId:              lockRow.user_id,
@@ -427,8 +430,8 @@ casinoSlotsRouter.post('/session/open', requireAuth, async (c) => {
         serverSeed:          lockRow.server_seed,
         serverSeedHash:      lockRow.server_seed_hash,
         clientSeed:          lockRow.client_seed,
-        nonceCounter:        lockRow.nonce_counter,
-        cursorCounter:       lockRow.cursor_counter,
+        nonceCounter:        Number(lockRow.nonce_counter),
+        cursorCounter:       Number(lockRow.cursor_counter),
         startingBalance:     lockRow.starting_balance,
         currentBalance:      lockRow.current_balance,
         escrowAmount:        lockRow.escrow_amount,
@@ -436,8 +439,8 @@ casinoSlotsRouter.post('/session/open', requireAuth, async (c) => {
         totalWon:            lockRow.total_won,
         status:              lockRow.status,
         mode:                lockRow.mode,
-        freeSpinsRemaining:  lockRow.free_spins_remaining,
-        spinCount:           lockRow.spin_count,
+        freeSpinsRemaining:  Number(lockRow.free_spins_remaining),
+        spinCount:           Number(lockRow.spin_count),
         createdAt:           lockRow.created_at,
         lastSpinAt:          lockRow.last_spin_at,
         closedAt:            lockRow.closed_at,
@@ -795,6 +798,15 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
           message: `session_not_open: status=${lockRow.status}`,
         });
       }
+      // Drizzle's `tx.execute` returns ALL column values as strings (PG
+      // wire-format), regardless of the type assertion above. Coerce the
+      // integer columns explicitly so equality checks against
+      // `session.*` (which `findFirst` returns as numbers) don't trip
+      // on string-vs-number mismatch.
+      const lockNonceCounter        = Number(lockRow.nonce_counter);
+      const lockCursorCounter       = Number(lockRow.cursor_counter);
+      const lockFreeSpinsRemaining  = Number(lockRow.free_spins_remaining);
+
       // Engine was called on a pre-lock snapshot. If the session's
       // counters or mode have moved (concurrent spin won the race,
       // OR the row has stale state from a partial earlier txn /
@@ -803,10 +815,10 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
       // further drift is possible — the recomputed spinResult is
       // guaranteed consistent with what we'll commit.
       const lockIsFreeSpinSpin =
-        isBonusPaytable && lockRow.mode === 'free-spin' && lockRow.free_spins_remaining > 0;
+        isBonusPaytable && lockRow.mode === 'free-spin' && lockFreeSpinsRemaining > 0;
       if (
-        lockRow.nonce_counter !== session.nonceCounter ||
-        lockRow.cursor_counter !== session.cursorCounter ||
+        lockNonceCounter !== session.nonceCounter ||
+        lockCursorCounter !== session.cursorCounter ||
         lockIsFreeSpinSpin !== isFreeSpinSpin
       ) {
         try {
@@ -814,8 +826,8 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
             paytableId: session.paytableId as MachineSlug,
             serverSeed:  session.serverSeed,
             clientSeed:  session.clientSeed,
-            nonce:       lockRow.nonce_counter,
-            cursor:      lockRow.cursor_counter,
+            nonce:       lockNonceCounter,
+            cursor:      lockCursorCounter,
             predict:     predictBig,
             freeSpinMode: lockIsFreeSpinSpin,
           });
@@ -829,10 +841,10 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
         // Mutate the session snapshot so downstream INSERT/UPDATE
         // references (session.nonceCounter, session.cursorCounter,
         // session.mode, session.freeSpinsRemaining) use locked values.
-        (session as { nonceCounter: number }).nonceCounter         = lockRow.nonce_counter;
-        (session as { cursorCounter: number }).cursorCounter       = lockRow.cursor_counter;
+        (session as { nonceCounter: number }).nonceCounter         = lockNonceCounter;
+        (session as { cursorCounter: number }).cursorCounter       = lockCursorCounter;
         (session as { mode: string }).mode                         = lockRow.mode;
-        (session as { freeSpinsRemaining: number }).freeSpinsRemaining = lockRow.free_spins_remaining;
+        (session as { freeSpinsRemaining: number }).freeSpinsRemaining = lockFreeSpinsRemaining;
       }
 
       // Phase 6.1.5 — debit only on BASE spins. Free spins consume no
