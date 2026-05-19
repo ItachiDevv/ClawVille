@@ -319,9 +319,13 @@ export default function SlotScreenModal() {
       }
       // Diagnostic: when the server reports a counter-changed race, log
       // the full client-side state at the moment of the 409 so we can
-      // bisect frontend vs backend causation in browser-live. Always
-      // logs (cheap; only fires on the error path).
-      if (err instanceof CasinoApiError && err.code === 'session_counter_changed_retry') {
+      // bisect frontend vs backend causation in browser-live. Dev-only —
+      // d90d160 close-gate should drive prod 409 rate to ~zero.
+      if (
+        process.env.NODE_ENV !== 'production' &&
+        err instanceof CasinoApiError &&
+        err.code === 'session_counter_changed_retry'
+      ) {
         // eslint-disable-next-line no-console
         console.warn('[casino-slots] 409 session_counter_changed_retry', {
           sessionId,
