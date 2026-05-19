@@ -619,12 +619,12 @@ Added Phase 6.1.6, rewritten Phase 6.1.7 (e5966f3) — replaces the 2D DOM/CSS `
 - `SlotReelsCanvas.tsx` — `<Canvas>` wrapper, `width:100% height:100%` flex child (was fixed 480×360 in 6.1.6), `frameloop='always'`, DPR `[0.55,0.7]` low-end / `[0.75,1]` desktop, `preserveDrawingBuffer:true`.
 - `SlotScreenModal.tsx` — mounts `SlotReelsCanvas` in a `flex:1 minHeight:50vh` reel area, with `SlotHUD section="top"` and `section="bottom"` strips sandwiching it. `spinTrigger` counter drives animation.
 
-**Reel geometry (cylinder drums — Phase 6.1.7 e5966f3, restored after the planar 65b860e intermediate):**
-- `CYLINDER_RADIUS = (STRIP_LEN × CELL_WU) / (2π) ≈ 13.37wu` — derived so the 84-cell strip's circumference equals 2π×r.
-- `REEL_SPACING = 27.5wu` — `2×radius + 0.76wu` gap. (The 6.1.6 cylinder bug was `REEL_SPACING=1.3wu`, which collapsed all 5 drums into a single tangled mass with the camera *inside* the cylinder surface — fixed in 6.1.7.)
-- `CylinderGeometry(13.37, 13.37, 3, 84, 3, true)` — open-ended, 84 radial × 3 height segments. 5 instances at `x = (r − 2) × 27.5`.
-- `TorusGeometry(13.52, 0.12, 8, 84)` bezel rings at `y = ±1.5wu` per drum, rotated π/2 to lie horizontal. White `MeshBasicMaterial`. 2 bezels × 5 drums = 10 ring meshes.
-- Camera at `[0, 0, 120]`, fov 60° → viewport width `2 × 120 × tan(30°) ≈ 138.6wu` (containing 5 drums × 27.5wu = 137.5wu span with 1.1wu margin). Far plane 200 (must be > 120 + 13.37).
+**Reel geometry (cylinder drums — Phase 6.1.7, corrected camera Phase 6.1.7b):**
+- `CYLINDER_RADIUS = 8.0wu`, `CYLINDER_HEIGHT = 15.0wu` — decoupled from STRIP_LEN. Strip maps to rotation angles only; geometry is purely visual.
+- `REEL_SPACING = 18.0wu` — `2×radius + 2wu` gap. 5 drums span `4 × 18 = 72wu` centre-to-centre, outermost edges at `±(36 + 8) = ±44wu`.
+- `CylinderGeometry(8, 8, 15, 64, 3, true)` — open-ended, 64 radial × 3 height segments. 5 instances at `x = (r − 2) × 18.0`.
+- `RingGeometry(7.85, 8.15, 64)` bezel rings at `y = ±7.5wu` per drum, `rotation.x = −π/2` to lie horizontal. White `MeshBasicMaterial(side:DoubleSide)`. 2 bezels × 5 drums = 10 ring meshes.
+- Camera at `[0, 0, 45]`, fov 50° → vertical viewport `2 × 45 × tan(25°) ≈ 42wu` (drum height 15wu fills 36%), horizontal `42 × 2.32 ≈ 97wu` (5-drum span 90wu fits with 7wu margin). Far plane 200.
 
 **Texture:** Per-reel `CanvasTexture` (`TEX_W = STRIP_LEN × 128 = 10752px`, `TEX_H = 3 × 128 = 384px`) — 84 columns × 3 rows, NOT the 6.1.6 1×84 vertical strip. Cell `(k, row)` lives at `(k × 128, row × 128)`. UV map: `theta ∈ [0, 2π] → u ∈ [0, 1]` (auto from CylinderGeometry), `y ∈ [−h/2, +h/2] → v ∈ [0, 1]` split into 3 rows. `wrapS = RepeatWrapping`, `wrapT = ClampToEdgeWrapping`. Cell backgrounds drawn as `#6b3aa0` Tyrian purple rounded cards (matches cherry-charm aesthetic; replaces the dark-slate rectangles of 6.1.6). Built once in `useMemo([textures])`, never reallocated.
 
@@ -638,7 +638,7 @@ Added Phase 6.1.6, rewritten Phase 6.1.7 (e5966f3) — replaces the 2D DOM/CSS `
 
 **`spinTrigger` protocol:** unchanged from 6.1.6. `SlotScreenModal` increments `spinTrigger` at spin-press (same tick as `setIsSpinning(true)`). `SlotReels3D` `useEffect([spinTrigger])` starts ACCEL. Server result arrives later → `useEffect([reels])` (NO `isSpinning` guard, fixes the 6.1.5 deadlock at 565e93d) computes `targetRotation` via `anim.targetSet` flag → DECEL when time comes.
 
-**Iris Xe invariants:** no per-frame allocations in `useFrame` — pure scalar arithmetic + in-place `mesh.rotation.y = anim.rotation` + `materials[r].map.repeat.set / .offset.set`. 5 cylinder meshes + 10 torus bezels share 2 geometries + 6 materials (5 reel mats + 1 shared bezel mat). No drei Text/Billboard. `MeshBasicMaterial` only, no shadows, no ShaderMaterial. `frameloop='always'` mandatory (`demand` left canvas transparent-black at 812fea9). `compileAsync` fired once on mount.
+**Iris Xe invariants:** no per-frame allocations in `useFrame` — pure scalar arithmetic + in-place `mesh.rotation.y = anim.rotation` + `materials[r].map.repeat.set / .offset.set`. 5 cylinder meshes + 10 ring bezels share 2 geometries + 6 materials (5 reel mats + 1 shared bezel mat). No drei Text/Billboard. `MeshBasicMaterial` only, no shadows, no ShaderMaterial. `frameloop='always'` mandatory (`demand` left canvas transparent-black at 812fea9). `compileAsync` fired once on mount.
 
 ---
 
@@ -700,6 +700,7 @@ Draw-call budget (full equipped set): hat ≤ 1, aura ≤ 4 (instanced particles
 
 Compact log. Single line per change with commit reference where applicable.
 
+- 2026-05-19 — Slot reel camera fix (Phase 6.1.7b): camera `z=120 fov=60` → `z=45 fov=50`, far 200 preserved. Geometry decoupled: `RADIUS=8wu HEIGHT=15wu SPACING=18wu` (frisbee 13.37×3 replaced). Bezels `RingGeometry(7.85,8.15,64)`. Drums now fill 36% vertical / 93% horizontal at prod 2.32 aspect. §10d updated.
 - 2026-05-19 `812fea9` — Slot reels `frameloop='demand'`→`'always'`: demand mode with no `invalidate()` call kept the GL canvas transparent-black on mount (no first frame ever committed). Modal-scoped continuous loop is acceptable. Added `[SlotReels3D]` mount + texture-build diagnostic `console.log`s (not prod-gated; remove before tagging 6.1.6). §10d updated.
 - 2026-05-19 `65b860e` — Slot reels CylinderGeometry → PlaneGeometry refactor: cylinder radius `13.4wu` had camera (`z=5`) sitting INSIDE the drum surface → zero pixels. Replaced with 5 × `PlaneGeometry(1wu × 3wu)` panels, vertical-strip texture (1 col × 84 rows × 128px), scroll via `texture.offset.y` instead of mesh rotation. Motion blur via `texture.repeat.y` v-compression. Same `findStripPosition` deterministic landing logic. §10d rewritten.
 - 2026-05-19 — Slot modal R3F reel rig (initial): new `SlotReels3D.tsx` + `SlotReelsCanvas.tsx` (Canvas wrapper, DPR-capped, `compileAsync`). `SlotScreenModal` integrates via `spinTrigger` + `winningCells3D`. `CLASSIC_LINES` import added. §10d added.
