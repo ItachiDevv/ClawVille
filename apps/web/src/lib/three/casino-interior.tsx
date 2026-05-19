@@ -49,6 +49,7 @@ import { VRMCharacterAnimator } from '@/lib/three/vrm-character-animator';
 import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
 import { MODEL_REGISTRY, type ModelRegistryEntry } from '@/lib/three/agent-model-registry';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
+import { clampCameraToRoom, type RoomBounds } from '@/lib/three/room-camera';
 import type { MachineSlug } from '@/lib/casino/types';
 
 // ---------------------------------------------------------------------------
@@ -143,6 +144,32 @@ const CAM_BEHIND = 450;
 const CAM_LOOK_Y = 70;
 const CAM_YAW_LERP = 0.05; // camera azimuth tracks avatar yaw at 1/3 of avatar turn rate
 
+/**
+ * Arrow-key orbit constants — mirror of World3DCanvas ArrowKeyRotationController.
+ *
+ * Left/Right: orbit the camera horizontally around the avatar (yaw offset).
+ * Up/Down:    tilt the camera up or down (pitch offset, wu added to CAM_ABOVE).
+ *
+ * The offsets persist — pressing ArrowLeft keeps rotating until ArrowRight
+ * is pressed or the key is released (same hold-to-orbit feel as the world).
+ * Unlike the world they do NOT decay back to 0; the player must press the
+ * opposite key (same as world OrbitControls behaviour).
+ */
+const ARROW_YAW_SPEED   = 1.5;   // radians / second (matches World3DCanvas ARROW_ROT_SPEED)
+const ARROW_PITCH_SPEED = 200;   // wu / second  (camera height shift per second while held)
+const ARROW_PITCH_MIN   = -100;  // wu relative to CAM_ABOVE (look down)
+const ARROW_PITCH_MAX   =  400;  // wu relative to CAM_ABOVE (look up — sky)
+
+// AABB for camera containment — derived from room bounds + small inward margin.
+const CASINO_ROOM_BOUNDS: RoomBounds = {
+  halfX: BOUNDS_X,
+  zMin:  BOUNDS_Z_MIN,
+  zMax:  BOUNDS_Z_MAX,
+  yMin:  30,    // floor + clearance
+  yMax:  600,   // ceiling − clearance (room ceiling ≈ 400wu, 600 gives slack for tilt)
+  margin: 50,   // wu inset from each wall face
+};
+
 // ---------------------------------------------------------------------------
 // Module-scope scratch objects — NEVER allocated inside useFrame
 // ---------------------------------------------------------------------------
@@ -161,11 +188,24 @@ const _camDesiredPos = new THREE.Vector3();
 // CasinoGLBAvatarInner both need it, and only one is ever mounted at a time.
 let _casinoCamYaw = Math.PI;
 
+// Arrow-key perspective-orbit offsets (Bug 2 fix 2026-05-19).
+// These accumulate while arrow keys are held, exactly like
+// World3DCanvas.ArrowKeyRotationController — the camera orbits around
+// the avatar and stays at the new angle when keys are released.
+// Separate from WASD movement; avatars never rotate from arrow keys.
+let _casinoArrowYawOffset   = 0; // radians added to _casinoCamYaw for behind-position
+let _casinoArrowPitchOffset = 0; // wu added to CAM_ABOVE for camera height
+
 // ---------------------------------------------------------------------------
 // Module-scope casino WASD key state — separate from the world player-avatar
 // keyState module to avoid cross-canvas contamination (casino is a different
 // R3F Canvas instance entirely — it can't share global input state with the
 // world canvas which may still be active in the component tree).
+//
+// Bug 2 fix 2026-05-19: Arrow keys are NO LONGER mapped to WASD movement.
+// They now drive camera perspective-orbit only (see _casinoArrowKeys below).
+// WASD-only movement matches how the main world works: WASD moves the avatar,
+// arrows rotate the camera.
 // ---------------------------------------------------------------------------
 interface CasinoKeyState {
   w: boolean; a: boolean; s: boolean; d: boolean;
@@ -177,39 +217,70 @@ function attachCasinoKeyListeners() {
   if (casinoKeyListenersAttached) return;
   casinoKeyListenersAttached = true;
 
-  /**
-   * Bug fix 2026-05-18: arrow keys produced no movement.
-   *
-   * Arrow key e.key values are multi-character ('ArrowUp' etc.), so
-   * e.key.toLowerCase() gives 'arrowup' — not 'w'. We detect them by
-   * checking the raw e.key value (case-sensitive for arrows) and map:
-   *   ArrowUp    → w (forward)
-   *   ArrowDown  → s (back)
-   *   ArrowLeft  → a (strafe left / turn left)
-   *   ArrowRight → d (strafe right / turn right)
-   *
-   * Single-character keys (a/s/d/w) are lowercased before the checks.
-   * This pattern mirrors player-avatar.tsx keyState which stores both
-   * 'w' and 'arrowup' as separate keys; here we collapse them onto
-   * the same four casinoKeys slots so the movement logic below is
-   * unchanged — no additional branches needed.
-   */
   const onKeyDown = (e: KeyboardEvent) => {
-    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-    if (k === 'w' || k === 'ArrowUp')    casinoKeys.w = true;
-    if (k === 's' || k === 'ArrowDown')  casinoKeys.s = true;
-    if (k === 'a' || k === 'ArrowLeft')  casinoKeys.a = true;
-    if (k === 'd' || k === 'ArrowRight') casinoKeys.d = true;
+    // Only single-character keys drive movement. Arrow keys (multi-char)
+    // are handled exclusively by attachCasinoArrowListeners for camera orbit.
+    const k = e.key.length === 1 ? e.key.toLowerCase() : null;
+    if (k === 'w') casinoKeys.w = true;
+    if (k === 's') casinoKeys.s = true;
+    if (k === 'a') casinoKeys.a = true;
+    if (k === 'd') casinoKeys.d = true;
   };
   const onKeyUp = (e: KeyboardEvent) => {
-    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-    if (k === 'w' || k === 'ArrowUp')    casinoKeys.w = false;
-    if (k === 's' || k === 'ArrowDown')  casinoKeys.s = false;
-    if (k === 'a' || k === 'ArrowLeft')  casinoKeys.a = false;
-    if (k === 'd' || k === 'ArrowRight') casinoKeys.d = false;
+    const k = e.key.length === 1 ? e.key.toLowerCase() : null;
+    if (k === 'w') casinoKeys.w = false;
+    if (k === 's') casinoKeys.s = false;
+    if (k === 'a') casinoKeys.a = false;
+    if (k === 'd') casinoKeys.d = false;
   };
   const onBlur = () => { casinoKeys.w = casinoKeys.a = casinoKeys.s = casinoKeys.d = false; };
   const onVis = () => { if (document.hidden) { casinoKeys.w = casinoKeys.a = casinoKeys.s = casinoKeys.d = false; } };
+  window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('keyup', onKeyUp);
+  window.addEventListener('blur', onBlur);
+  document.addEventListener('visibilitychange', onVis);
+}
+
+// ---------------------------------------------------------------------------
+// Arrow-key perspective-orbit listener — mirrors World3DCanvas.ArrowKeyRotationController.
+//
+// ArrowLeft/Right → horizontal orbit (yaw around avatar, matches world theta).
+// ArrowUp/Down    → vertical tilt (camera height, matches world phi).
+//
+// No movement whatsoever — these keys ONLY affect the camera, not the avatar.
+// ---------------------------------------------------------------------------
+interface CasinoArrowState {
+  left: boolean; right: boolean; up: boolean; down: boolean;
+}
+const _casinoArrowKeys: CasinoArrowState = { left: false, right: false, up: false, down: false };
+let casinoArrowListenersAttached = false;
+
+function attachCasinoArrowListeners() {
+  if (casinoArrowListenersAttached) return;
+  casinoArrowListenersAttached = true;
+
+  const onKeyDown = (e: KeyboardEvent) => {
+    switch (e.key) {
+      case 'ArrowLeft':  _casinoArrowKeys.left  = true; e.preventDefault(); break;
+      case 'ArrowRight': _casinoArrowKeys.right = true; e.preventDefault(); break;
+      case 'ArrowUp':    _casinoArrowKeys.up    = true; e.preventDefault(); break;
+      case 'ArrowDown':  _casinoArrowKeys.down  = true; e.preventDefault(); break;
+    }
+  };
+  const onKeyUp = (e: KeyboardEvent) => {
+    switch (e.key) {
+      case 'ArrowLeft':  _casinoArrowKeys.left  = false; break;
+      case 'ArrowRight': _casinoArrowKeys.right = false; break;
+      case 'ArrowUp':    _casinoArrowKeys.up    = false; break;
+      case 'ArrowDown':  _casinoArrowKeys.down  = false; break;
+    }
+  };
+  const onBlur = () => {
+    _casinoArrowKeys.left = _casinoArrowKeys.right = _casinoArrowKeys.up = _casinoArrowKeys.down = false;
+  };
+  const onVis = () => { if (document.hidden) {
+    _casinoArrowKeys.left = _casinoArrowKeys.right = _casinoArrowKeys.up = _casinoArrowKeys.down = false;
+  } };
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
   window.addEventListener('blur', onBlur);
@@ -490,11 +561,13 @@ function CasinoVRMAvatarInner({ reg }: CasinoVRMAvatarProps) {
   const rotRef = useRef(Math.PI); // face -Z = into the room on spawn
   const { camera } = useThree();
 
-  // Fix C 2026-05-18: reset module-scope camera yaw on mount so re-entering
-  // the casino starts with the camera directly behind the avatar, not carrying
-  // over yaw from the previous visit.
+  // Reset module-scope camera state on mount so re-entering the casino
+  // starts with the camera directly behind the avatar (no stale yaw /
+  // arrow offsets from a previous visit).
   useEffect(() => {
-    _casinoCamYaw = Math.PI;
+    _casinoCamYaw          = Math.PI;
+    _casinoArrowYawOffset   = 0;
+    _casinoArrowPitchOffset = 0;
   }, []);
 
   const vrm = useVRMInstance(reg.path, 'casino-player');
@@ -523,6 +596,17 @@ function CasinoVRMAvatarInner({ reg }: CasinoVRMAvatarProps) {
 
   useFrame((_, delta) => {
     attachCasinoKeyListeners();
+    attachCasinoArrowListeners();
+
+    // --- Arrow-key perspective orbit (Bug 2 fix 2026-05-19) ---
+    // Accumulate yaw + pitch offsets while keys are held.
+    // ArrowLeft orbits camera left (positive dTheta), ArrowRight orbits right.
+    // Mirrors World3DCanvas ARROW_ROT_SPEED convention.
+    const dYaw = ((_casinoArrowKeys.left ? 1 : 0) - (_casinoArrowKeys.right ? 1 : 0)) * ARROW_YAW_SPEED * delta;
+    _casinoArrowYawOffset += dYaw;
+
+    const dPitch = ((_casinoArrowKeys.up ? 1 : 0) - (_casinoArrowKeys.down ? 1 : 0)) * ARROW_PITCH_SPEED * delta;
+    _casinoArrowPitchOffset = Math.max(ARROW_PITCH_MIN, Math.min(ARROW_PITCH_MAX, _casinoArrowPitchOffset + dPitch));
 
     let vx = 0, vz = 0;
     // Camera-relative WASD: project camera forward onto XZ plane
@@ -550,12 +634,16 @@ function CasinoVRMAvatarInner({ reg }: CasinoVRMAvatarProps) {
     if (isMoving) {
       posX.current = Math.max(-BOUNDS_X, Math.min(BOUNDS_X, posX.current + vx * CASINO_PLAYER_SPEED * delta));
       posZ.current = Math.max(BOUNDS_Z_MIN, Math.min(BOUNDS_Z_MAX, posZ.current + vz * CASINO_PLAYER_SPEED * delta));
-      // Facing: VRM faces -Z at rot=0; atan2(vx, vz) gives facing toward movement direction
+      // Bug 1 fix 2026-05-19: lerp rate reduced 0.15→0.08.
+      // At 60fps, 0.15 produced ~13.5°/frame on A/D press — visually
+      // snapping 45° in 3-4 frames. 0.08 spreads the same 90° turn over
+      // ~35 frames (0.58s) for a smooth rotation-through-the-angle feel.
+      // VRM facing: atan2(vx, vz) — see feedback_vrm_facing_formula memory.
       const targetRot = Math.atan2(vx, vz);
       let diff = targetRot - rotRef.current;
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
-      rotRef.current += diff * 0.15;
+      rotRef.current += diff * 0.08;
     }
 
     const group = groupRef.current;
@@ -566,28 +654,31 @@ function CasinoVRMAvatarInner({ reg }: CasinoVRMAvatarProps) {
     group.position.z = posZ.current;
     group.rotation.y = rotRef.current;
 
-    // Follow camera — CAM_ABOVE wu above, CAM_BEHIND wu behind, look at avatar mid-torso.
-    // Bug fix 2026-05-18: camera azimuth now uses a SEPARATE _casinoCamYaw that
-    // lerps toward the avatar's rotRef.current at CAM_YAW_LERP=0.05 (1/3 of avatar
-    // turn rate 0.15). This decouples the viewport from immediate avatar yaw so
-    // pressing A/D causes the avatar to turn while the camera follows with lag —
-    // feels like a real room camera rather than the whole view snapping 45°.
+    // Follow camera — CAM_ABOVE wu above, CAM_BEHIND wu behind.
+    // Camera azimuth uses _casinoCamYaw (lerps at CAM_YAW_LERP=0.05) plus
+    // _casinoArrowYawOffset (arrow-key orbit, persists until key released).
+    // Camera height uses CAM_ABOVE + _casinoArrowPitchOffset.
+    // Camera position is AABB-clamped to keep it inside the room walls.
     const slotOpen = useCasinoStore.getState().slotScreenOpen;
     if (!slotOpen) {
       const cam = camera as THREE.PerspectiveCamera;
-      // Smooth camera yaw — shortest-path lerp toward avatar facing
+      // Auto-follow yaw — shortest-path lerp toward avatar facing
       let camYawDiff = rotRef.current - _casinoCamYaw;
       while (camYawDiff > Math.PI) camYawDiff -= Math.PI * 2;
       while (camYawDiff < -Math.PI) camYawDiff += Math.PI * 2;
       _casinoCamYaw += camYawDiff * CAM_YAW_LERP;
-      // Camera behind position derived from lagged camYaw, not avatar yaw
-      const behindX = -Math.sin(_casinoCamYaw) * CAM_BEHIND;
-      const behindZ = -Math.cos(_casinoCamYaw) * CAM_BEHIND;
+      // Orbit yaw = auto-follow + arrow-key offset
+      const orbitYaw = _casinoCamYaw + _casinoArrowYawOffset;
+      const behindX = -Math.sin(orbitYaw) * CAM_BEHIND;
+      const behindZ = -Math.cos(orbitYaw) * CAM_BEHIND;
       _camDesiredPos.set(
         posX.current + behindX,
-        CAM_ABOVE,
+        CAM_ABOVE + _casinoArrowPitchOffset,
         posZ.current + behindZ,
       );
+      // Bug 3 fix 2026-05-19: clamp camera inside room AABB so it never
+      // pokes through a wall and renders the black void background.
+      clampCameraToRoom(_camDesiredPos, CASINO_ROOM_BOUNDS);
       // Soft lerp — exp-decay for smooth position follow
       cam.position.lerp(_camDesiredPos, 1 - Math.exp(-8 * delta));
       _camTarget.set(posX.current, CAM_LOOK_Y, posZ.current);
@@ -642,9 +733,11 @@ function CasinoGLBAvatarInner() {
   const rotRef    = useRef(Math.PI);
   const { camera } = useThree();
 
-  // Fix C 2026-05-18: reset module-scope camera yaw on mount (mirrors VRM branch).
+  // Reset module-scope camera state on mount (mirrors VRM branch).
   useEffect(() => {
-    _casinoCamYaw = Math.PI;
+    _casinoCamYaw          = Math.PI;
+    _casinoArrowYawOffset   = 0;
+    _casinoArrowPitchOffset = 0;
   }, []);
 
   const { scene } = useGLTF('/models/lobster.glb');
@@ -678,6 +771,14 @@ function CasinoGLBAvatarInner() {
 
   useFrame((_, delta) => {
     attachCasinoKeyListeners();
+    attachCasinoArrowListeners();
+
+    // --- Arrow-key perspective orbit (Bug 2 fix 2026-05-19) ---
+    // Shared with VRM branch via module-scope vars.
+    const dYaw = ((_casinoArrowKeys.left ? 1 : 0) - (_casinoArrowKeys.right ? 1 : 0)) * ARROW_YAW_SPEED * delta;
+    _casinoArrowYawOffset += dYaw;
+    const dPitch = ((_casinoArrowKeys.up ? 1 : 0) - (_casinoArrowKeys.down ? 1 : 0)) * ARROW_PITCH_SPEED * delta;
+    _casinoArrowPitchOffset = Math.max(ARROW_PITCH_MIN, Math.min(ARROW_PITCH_MAX, _casinoArrowPitchOffset + dPitch));
 
     let vx = 0, vz = 0;
     camera.getWorldDirection(_casinoAvatarFwd);
@@ -704,12 +805,13 @@ function CasinoGLBAvatarInner() {
     if (isMoving) {
       posX.current = Math.max(-BOUNDS_X, Math.min(BOUNDS_X, posX.current + vx * CASINO_PLAYER_SPEED * delta));
       posZ.current = Math.max(BOUNDS_Z_MIN, Math.min(BOUNDS_Z_MAX, posZ.current + vz * CASINO_PLAYER_SPEED * delta));
-      // lobster.glb faces +Z at rot=0 — same formula as main world
+      // Bug 1 fix 2026-05-19: lerp rate 0.15→0.08 (smoother yaw, same formula).
+      // lobster.glb faces +Z at rot=0 — see feedback_lobster_faces_negative_z memory.
       const targetRot = Math.atan2(vx, vz);
       let diff = targetRot - rotRef.current;
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
-      rotRef.current += diff * 0.15;
+      rotRef.current += diff * 0.08;
     }
 
     const group = groupRef.current;
@@ -720,21 +822,20 @@ function CasinoGLBAvatarInner() {
     group.position.z = posZ.current;
     group.rotation.y = rotRef.current;
 
-    // Follow camera — same offsets as VRM branch (CAM_ABOVE/CAM_BEHIND/CAM_LOOK_Y).
-    // Bug fix 2026-05-18: use shared _casinoCamYaw (same module-scope ref as VRM
-    // branch) so the GLB lobster fallback also gets the lagged camera behaviour —
-    // pressing A/D turns the lobster smoothly without snapping the viewport 45°.
+    // Follow camera — same offsets as VRM branch + arrow orbit + AABB clamp.
     const slotOpen = useCasinoStore.getState().slotScreenOpen;
     if (!slotOpen) {
       const cam = camera as THREE.PerspectiveCamera;
-      // Smooth camera yaw — shortest-path lerp toward avatar facing (same as VRM branch)
       let camYawDiff = rotRef.current - _casinoCamYaw;
       while (camYawDiff > Math.PI) camYawDiff -= Math.PI * 2;
       while (camYawDiff < -Math.PI) camYawDiff += Math.PI * 2;
       _casinoCamYaw += camYawDiff * CAM_YAW_LERP;
-      const behindX = -Math.sin(_casinoCamYaw) * CAM_BEHIND;
-      const behindZ = -Math.cos(_casinoCamYaw) * CAM_BEHIND;
-      _camDesiredPos.set(posX.current + behindX, CAM_ABOVE, posZ.current + behindZ);
+      const orbitYaw = _casinoCamYaw + _casinoArrowYawOffset;
+      const behindX = -Math.sin(orbitYaw) * CAM_BEHIND;
+      const behindZ = -Math.cos(orbitYaw) * CAM_BEHIND;
+      _camDesiredPos.set(posX.current + behindX, CAM_ABOVE + _casinoArrowPitchOffset, posZ.current + behindZ);
+      // Bug 3 fix 2026-05-19: clamp inside room so camera never clips a wall.
+      clampCameraToRoom(_camDesiredPos, CASINO_ROOM_BOUNDS);
       cam.position.lerp(_camDesiredPos, 1 - Math.exp(-8 * delta));
       _camTarget.set(posX.current, CAM_LOOK_Y, posZ.current);
       cam.lookAt(_camTarget);
