@@ -267,6 +267,10 @@ export default function SlotScreenModal() {
       recordSpin(spinResult, res.balance, res.spinCount);
       setInFreeSpin(res.mode === 'free-spin');
       setFreeSpinsRemaining(res.freeSpinsRemaining);
+      // Feed reels to 3D rig immediately so it can compute decel targets while
+      // still animating. Without this, reels=null until handleReelsSettled fires,
+      // which itself waits for the animation — a deadlock.
+      setDisplayWindow(spinResult.reels);
     } catch (err) {
       pendingResultRef.current = null;
       setIsSpinning(false);
