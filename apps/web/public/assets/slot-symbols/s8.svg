@@ -1,46 +1,53 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
-    <radialGradient id="glow8" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#ff00cc" stop-opacity="0.4"/>
-      <stop offset="100%" stop-color="#ff00cc" stop-opacity="0"/>
-    </radialGradient>
-    <radialGradient id="iris8" cx="40%" cy="35%" r="60%">
-      <stop offset="0%" stop-color="#ff44aa"/>
-      <stop offset="60%" stop-color="#aa0066"/>
-      <stop offset="100%" stop-color="#330022"/>
-    </radialGradient>
-    <radialGradient id="pupil8" cx="38%" cy="35%" r="55%">
-      <stop offset="0%" stop-color="#1a0033"/>
-      <stop offset="100%" stop-color="#000000"/>
+    <linearGradient id="b8r" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff5a5a"/>
+      <stop offset="0.5" stop-color="#d62828"/>
+      <stop offset="1" stop-color="#7a0a14"/>
+    </linearGradient>
+    <linearGradient id="b8g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe28a"/>
+      <stop offset="0.5" stop-color="#ffc857"/>
+      <stop offset="1" stop-color="#8a5e0a"/>
+    </linearGradient>
+    <radialGradient id="hl8" cx="32%" cy="20%" r="55%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
     </radialGradient>
   </defs>
-  <ellipse cx="128" cy="128" rx="110" ry="110" fill="url(#glow8)"/>
-  <!-- Tentacle wisps radiating out -->
-  <path d="M128 128 Q90 80 68 50" fill="none" stroke="#ff00cc" stroke-width="5" stroke-linecap="round" opacity="0.6"/>
-  <path d="M128 128 Q166 82 188 52" fill="none" stroke="#ff00cc" stroke-width="5" stroke-linecap="round" opacity="0.6"/>
-  <path d="M128 128 Q80 128 48 118" fill="none" stroke="#ff00cc" stroke-width="5" stroke-linecap="round" opacity="0.6"/>
-  <path d="M128 128 Q176 128 208 118" fill="none" stroke="#ff00cc" stroke-width="5" stroke-linecap="round" opacity="0.6"/>
-  <path d="M128 128 Q90 168 68 200" fill="none" stroke="#ff00cc" stroke-width="5" stroke-linecap="round" opacity="0.6"/>
-  <path d="M128 128 Q166 168 188 200" fill="none" stroke="#ff00cc" stroke-width="5" stroke-linecap="round" opacity="0.6"/>
-  <!-- Eyelid shape outer -->
-  <path d="M52 128 Q90 70 128 68 Q166 70 204 128 Q166 186 128 188 Q90 186 52 128 Z"
-        fill="#0a1428" stroke="#ff00cc" stroke-width="6" stroke-linejoin="round"/>
-  <!-- Iris -->
-  <circle cx="128" cy="128" r="50" fill="url(#iris8)" stroke="#ff00cc" stroke-width="3"/>
-  <!-- Sclera ring detail -->
-  <circle cx="128" cy="128" r="55" fill="none" stroke="#ff00cc" stroke-width="2" opacity="0.5"/>
-  <!-- Pupil -->
-  <ellipse cx="128" cy="128" rx="24" ry="26" fill="url(#pupil8)"/>
-  <!-- Pupil slit (vertical) -->
-  <ellipse cx="128" cy="128" rx="8" ry="22" fill="#0a0010"/>
-  <!-- Iris detail rays -->
-  <line x1="128" y1="80" x2="128" y2="105" stroke="#ff44aa" stroke-width="2" opacity="0.6"/>
-  <line x1="128" y1="151" x2="128" y2="176" stroke="#ff44aa" stroke-width="2" opacity="0.6"/>
-  <line x1="80" y1="128" x2="104" y2="128" stroke="#ff44aa" stroke-width="2" opacity="0.6"/>
-  <line x1="152" y1="128" x2="176" y2="128" stroke="#ff44aa" stroke-width="2" opacity="0.6"/>
-  <!-- Shine -->
-  <ellipse cx="108" cy="105" rx="12" ry="8" fill="white" opacity="0.35" transform="rotate(-25,108,105)"/>
-  <!-- Upper eyelid line -->
-  <path d="M52 128 Q90 80 128 78 Q166 80 204 128" fill="none" stroke="#ff00cc" stroke-width="4" opacity="0.8"/>
+  <ellipse cx="128" cy="226" rx="92" ry="11" fill="#0a1428" opacity="0.55"/>
+  <!-- gold drop-shadow bar behind -->
+  <rect x="37" y="105" width="200" height="76" rx="14"
+        fill="url(#b8g)" stroke="#0a1428" stroke-width="5"/>
+  <!-- main red BAR -->
+  <rect x="24" y="92" width="208" height="76" rx="14"
+        fill="url(#b8r)" stroke="#0a1428" stroke-width="6"/>
+  <!-- gold inner border -->
+  <rect x="36" y="104" width="184" height="52" rx="8"
+        fill="none" stroke="url(#b8g)" stroke-width="5"/>
+  <!-- gold corner studs -->
+  <g fill="url(#b8g)" stroke="#0a1428" stroke-width="2.5">
+    <circle cx="44" cy="112" r="5"/>
+    <circle cx="212" cy="112" r="5"/>
+    <circle cx="44" cy="148" r="5"/>
+    <circle cx="212" cy="148" r="5"/>
+  </g>
+  <!-- anchor emblem in gold on top of bar -->
+  <g stroke="#0a1428" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" fill="url(#b8g)">
+    <!-- ring at top -->
+    <circle cx="128" cy="106" r="8"/>
+    <!-- stem -->
+    <rect x="124" y="112" width="8" height="38"/>
+    <!-- crossbar -->
+    <rect x="108" y="120" width="40" height="6"/>
+    <!-- bottom curve (hooks) -->
+    <path d="M104 142 Q104 158 128 158 Q152 158 152 142 L160 142 Q160 166 128 166 Q96 166 96 142 Z"/>
+  </g>
+  <!-- ring center hole -->
+  <circle cx="128" cy="106" r="3" fill="url(#b8r)" stroke="#0a1428" stroke-width="1.5"/>
+  <!-- highlight on bar -->
+  <rect x="24" y="92" width="208" height="76" rx="14" fill="url(#hl8)"/>
+  <!-- top spec streak -->
+  <rect x="48" y="100" width="160" height="5" rx="2.5" fill="#ffffff" opacity="0.35"/>
 </svg>
