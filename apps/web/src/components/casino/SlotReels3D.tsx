@@ -328,6 +328,14 @@ export default function SlotReels3D({
   // Per-reel, per-face materials — each face gets its own material so we can
   // swap .map independently. 12 faces × 5 reels = 60 material instances.
   // Initialised pointing at the symbol for strip[faceIndex].
+  //
+  // FrontSide is REQUIRED with our OrthographicCamera. DoubleSide would
+  // render the BACK-half drum planes too, projecting them to the same
+  // screen-space pixels as the front-arc planes (ortho has no perspective
+  // foreshortening), producing a chaotic stack of 4-6 cards per reel
+  // instead of the front-arc 3. Plane normals point radially outward
+  // from drum centre; only planes whose normal points toward +Z (camera)
+  // should render. FrontSide enforces this.
   const faceMaterials = useMemo<THREE.MeshBasicMaterial[][]>(() => {
     return Array.from({ length: REEL_COUNT }, (_, r) => {
       const strip = strips[r];
@@ -335,7 +343,7 @@ export default function SlotReels3D({
         const symbolId = strip[f % strip.length] ?? 0;
         const mat = new THREE.MeshBasicMaterial({
           map:  symbolTextures[symbolId] ?? symbolTextures[0],
-          side: THREE.DoubleSide,
+          side: THREE.FrontSide,
           transparent: false,
         });
         return mat;
