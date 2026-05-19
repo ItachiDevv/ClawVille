@@ -24,6 +24,7 @@ import { useMemo, useEffect, memo } from 'react';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
 import { useGameStore } from '@/stores/game';
+import { groundedYOffset } from '@/lib/three/utils/ground-prop';
 
 // ---------------------------------------------------------------------------
 // Preload at module scope so Suspense has the data ready before first render.
@@ -31,13 +32,11 @@ import { useGameStore } from '@/stores/game';
 useGLTF.preload('/models/bazaar-merchant-stand.glb');
 
 // ---------------------------------------------------------------------------
-// World position
-// Phase 6.2 (2026-05-18): spread from (-600, -2, -60) to (-800, -2, 300) as part
-// of the plaza expansion. Props now form a loose ring at 800-1000wu from center
-// instead of clustering at ~600wu, giving the town square more breathing room.
+// World position (Y computed at runtime via groundedYOffset — see below).
+// Phase 6.2 (2026-05-18): spread from (-600, -60) to (-800, 300) as part of
+// the plaza expansion. Props now form a loose ring at 800-1000wu from center.
 // ---------------------------------------------------------------------------
 const STALL_X = -800;
-const STALL_Y = -2;
 const STALL_Z = 300;
 
 // Target visual height in world units (tall enough to be readable at a distance)
@@ -68,6 +67,12 @@ const BazaarStallInner = memo(function BazaarStallInner() {
   // Compute normalized scale and apply it.
   const scale = useMemo(() => computeScale(cloned), [cloned]);
 
+  // Ground the prop on the sand floor via canonical bbox-derived Y offset.
+  // The new merchant-tent GLB has its origin at the apex, so a flat Y=-2
+  // sinks most of it underground. groundedYOffset() computes the Y that
+  // puts the LOWEST vertex of the scaled mesh exactly at SAND_BASELINE_Y.
+  const groundedY = useMemo(() => groundedYOffset(cloned, scale), [cloned, scale]);
+
   // Dispose cloned geometry/materials on unmount.
   useEffect(() => {
     return () => {
@@ -94,7 +99,7 @@ const BazaarStallInner = memo(function BazaarStallInner() {
 
   return (
     <group
-      position={[STALL_X, STALL_Y, STALL_Z]}
+      position={[STALL_X, groundedY, STALL_Z]}
       scale={[scale, scale, scale]}
       userData={{ isOccluder: true }}
       onClick={(e) => {
