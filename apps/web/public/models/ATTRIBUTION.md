@@ -51,25 +51,39 @@ The following 3D models are used under CC-BY license. Full credit to their creat
   12th-building exterior — domed building with ARCADE CITY signage and arched entrance. 4.2 MB, 2,473 tris.
   Interior added separately in Phase 6.3 (claw machine game).
 
-- **Slot Machine Symbol Set** (ClawVille first-party, hand-drafted 2026-05-18) —
-  `apps/web/public/assets/slot-symbols/{s0..s10,wild,scatter,bonus}.svg`
-  Fourteen hand-drafted SVG reel symbols reimagining classic Vegas slot iconography with a sea theme.
-  Every symbol uses a heavy dark outline + 3-stop linearGradient bevel + radialGradient highlight
-  + drop-shadow ellipse for a "cast plastic" classic-slot read. Replaces the prior flat-line "neon
-  emoji" pass (Codex + gpt-image-2 ideation) which user rejected as vibecode slop. All path data,
-  gradients, and masks authored by hand in this commit.
-  - `s0.svg` — KELP: triple dark-teal kelp blade silhouette
-  - `s1.svg` — SEA ANEMONE (cherry replacement): pair of crimson anemones with pink tentacle tips on coral stems
-  - `s2.svg` — STARFISH (lemon replacement): 5-arm yellow starfish with white pebble dots
-  - `s3.svg` — PUFFERFISH (orange replacement): round orange puffer with 16-spike halo
-  - `s4.svg` — SEA URCHIN (plum replacement): deep-purple urchin with 16 radial spikes
-  - `s5.svg` — GIANT CLAM (watermelon replacement): green half-shell, pink flesh, gold lipped rim, center pearl
-  - `s6.svg` — DIVING HELMET BELL: brass bell with two porthole windows
-  - `s7.svg` — CORAL 7 (hero): chunky crimson "7" with coral branches + gold drop shadow
-  - `s8.svg` — ANCHOR BAR: classic red+gold BAR with gold anchor emblem
-  - `s9.svg` — DOUBLE-ANCHOR BAR: two stacked BARs each with anchor emblem
-  - `s10.svg` — TRIDENT BAR: three stacked BARs with trident emblem
-  - `wild.svg` — KRAKEN EYE: gold eye-of-providence in pyramid frame with 8 tentacle border
-  - `scatter.svg` — COMPASS STARFISH: gold compass rose with 8 starfish-arm rays + deep-blue inner disc
-  - `bonus.svg` — TREASURE CHEST: open wooden chest with spilling gold coins + sparkles
+- **Slot Machine Symbol Set** (ClawVille first-party, hand-drafted; third pass 2026-05-19) —
+  `apps/web/public/assets/slot-symbols/s0.svg` … `s9.svg`
+  Ten hand-drafted SVG reel symbols. Every symbol uses a heavy dark outline (`#0a1428`, stroke 6)
+  + 3-stop linearGradient bevel + radialGradient highlight + drop-shadow ellipse for a "cast plastic"
+  classic-slot read. All path data, gradients, masks authored by hand.
+
+  **Pass history:**
+  - First pass (14 SVGs) — rejected; only s1 (Anemones), s2 (Starfish), s3 (Pufferfish), and s7
+    (Coral 7) read as recognizable Vegas symbols. Six SVGs deleted as unused.
+  - Second pass (8 SVGs, 2026-05-18) — Pearl/Anemones/Starfish/Pufferfish low/mid + Bell/BAR/7/WILD high.
+  - **Third pass (10 SVGs, 2026-05-19)** — Vegas-accurate ordering with 3-tier BAR added (modern
+    5-reel convention: each tier evaluates independently, no "any BAR" mixed-tier rule). Anemones
+    art moved from id 1 → id 0 (renamed Cherry); Pufferfish art moved from id 3 → id 2 (renamed
+    Orange). New art authored for Lemon (id 1), Plum (id 3), BAR×2 (id 8), BAR×3 (id 9).
+
+  Final 10-symbol set (id → asset file → description):
+  - `s0.svg` — CHERRY (was Pearl/Anemones; uses crimson anemone art the user approved as cherries):
+    pair of crimson anemones with pink tentacle tips on coral stems
+  - `s1.svg` — LEMON (new third-pass art; replaces Starfish): oval citrus body with classic
+    "nipple" tip on the side, cream→yellow→amber bevel, green leaf + stem at top
+  - `s2.svg` — ORANGE (was Starfish/Pufferfish; uses round orange-puffer art the user approved
+    as orange): round orange puffer with 16-spike halo
+  - `s3.svg` — PLUM (new third-pass art; replaces Pufferfish in slot 3): round-oval plum with
+    small heart-indent at top, lavender→purple→violet bevel, waxy-bloom ellipse, stem + green leaf
+  - `s4.svg` — BELL (unchanged from pass-2): classic Vegas brass bell — dome, flared rim, hanging
+    brass clapper, coral-tinted top loop for thin sea twist
+  - `s5.svg` — BAR (unchanged; tier 1): red-top + gold-bottom rounded plaque with path-traced
+    chunky "BAR" letters, gold inner border, 4 corner rivets
+  - `s6.svg` — SEVEN (unchanged): chunky crimson "7" with coral branches + gold drop shadow
+  - `s7.svg` — WILD (unchanged): steel-blue/cyan plaque with cyan glow halo, horizontal SHARK
+    silhouette behind path-traced "WILD" letters
+  - `s8.svg` — BAR×2 (new third-pass art; tier 2): two BAR plaques stacked at 0.8 scale,
+    deeper red (#c0223a) bevel for tier distinction, identical text/rivet pattern as s5
+  - `s9.svg` — BAR×3 (new third-pass art; tier 3): three BAR plaques stacked at 0.62 scale,
+    deepest red (#a01828) bevel, identical text/rivet pattern
   No external license; covered by the ClawVille repo license.

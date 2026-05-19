@@ -1,36 +1,43 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
-    <linearGradient id="b0k" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#3fa28a"/>
-      <stop offset="0.5" stop-color="#1a6a5c"/>
-      <stop offset="1" stop-color="#06302a"/>
+    <radialGradient id="b1r" cx="35%" cy="30%" r="70%">
+      <stop offset="0" stop-color="#ff7a7a"/>
+      <stop offset="0.55" stop-color="#d62828"/>
+      <stop offset="1" stop-color="#5a0a14"/>
+    </radialGradient>
+    <radialGradient id="b1p" cx="35%" cy="30%" r="70%">
+      <stop offset="0" stop-color="#ffc7cc"/>
+      <stop offset="0.6" stop-color="#ff8aa0"/>
+      <stop offset="1" stop-color="#a04055"/>
+    </radialGradient>
+    <linearGradient id="b1s" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5fcf7a"/>
+      <stop offset="1" stop-color="#1a5a2a"/>
     </linearGradient>
-    <linearGradient id="b0k2" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#5fd6a8"/>
-      <stop offset="0.5" stop-color="#2b8a6e"/>
-      <stop offset="1" stop-color="#093d34"/>
-    </linearGradient>
-    <radialGradient id="hl0" cx="35%" cy="25%" r="55%">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.45"/>
+    <radialGradient id="hl1" cx="35%" cy="25%" r="50%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.65"/>
       <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
     </radialGradient>
   </defs>
-  <ellipse cx="128" cy="226" rx="58" ry="9" fill="#0a1428" opacity="0.5"/>
-  <!-- back blade -->
-  <path d="M150 220 Q132 178 138 132 Q150 88 178 52 Q170 92 168 130 Q170 178 158 220 Z"
-        fill="url(#b0k2)" stroke="#0a1428" stroke-width="5" stroke-linejoin="round"/>
-  <!-- middle blade -->
-  <path d="M118 224 Q108 174 116 124 Q126 76 110 36 Q138 80 134 130 Q138 184 132 224 Z"
-        fill="url(#b0k)" stroke="#0a1428" stroke-width="5.5" stroke-linejoin="round"/>
-  <!-- front blade ribbon -->
-  <path d="M90 222 Q80 184 92 142 Q104 102 86 64 Q70 110 78 156 Q80 196 78 222 Z"
-        fill="url(#b0k2)" stroke="#0a1428" stroke-width="5" stroke-linejoin="round"/>
-  <!-- midrib accent -->
-  <path d="M125 220 Q120 170 124 124 Q126 84 116 50" fill="none" stroke="#0a1428" stroke-width="2.5" opacity="0.55"/>
-  <!-- top highlight overlay -->
-  <path d="M118 224 Q108 174 116 124 Q126 76 110 36 Q138 80 134 130 Q138 184 132 224 Z"
-        fill="url(#hl0)"/>
-  <!-- spec -->
-  <ellipse cx="120" cy="80" rx="6" ry="14" fill="#ffffff" opacity="0.55"/>
+  <ellipse cx="128" cy="225" rx="68" ry="10" fill="#0a1428" opacity="0.5"/>
+  <!-- coiled coral stems -->
+  <path d="M128 40 Q128 60 108 78 Q86 96 90 130" fill="none" stroke="#0a1428" stroke-width="6" stroke-linecap="round"/>
+  <path d="M128 40 Q128 60 148 78 Q170 96 166 130" fill="none" stroke="#0a1428" stroke-width="6" stroke-linecap="round"/>
+  <path d="M128 40 Q128 60 108 78 Q86 96 90 130" fill="none" stroke="url(#b1s)" stroke-width="3.5" stroke-linecap="round"/>
+  <path d="M128 40 Q128 60 148 78 Q170 96 166 130" fill="none" stroke="url(#b1s)" stroke-width="3.5" stroke-linecap="round"/>
+  <!-- leaf at stem join -->
+  <path d="M118 50 Q108 38 120 30 Q138 30 138 50 Z" fill="url(#b1s)" stroke="#0a1428" stroke-width="3.5" stroke-linejoin="round"/>
+  <!-- LEFT cherry -->
+  <g>
+    <circle cx="90" cy="160" r="38" fill="url(#b1r)" stroke="#0a1428" stroke-width="6"/>
+    <circle cx="90" cy="160" r="38" fill="url(#hl1)"/>
+    <ellipse cx="76" cy="146" rx="8" ry="5" fill="#ffffff" opacity="0.55"/>
+  </g>
+  <!-- RIGHT cherry (slightly bigger, front-overlap) -->
+  <g>
+    <circle cx="166" cy="172" r="42" fill="url(#b1r)" stroke="#0a1428" stroke-width="6"/>
+    <circle cx="166" cy="172" r="42" fill="url(#hl1)"/>
+    <ellipse cx="150" cy="156" rx="10" ry="6" fill="#ffffff" opacity="0.6"/>
+  </g>
 </svg>
