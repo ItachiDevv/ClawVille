@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <radialGradient id="glowW" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffc857" stop-opacity="0.5"/>
+      <stop offset="100%" stop-color="#ffc857" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="qmark" cx="40%" cy="30%" r="70%">
+      <stop offset="0%" stop-color="#ffe599"/>
+      <stop offset="100%" stop-color="#cc8800"/>
+    </radialGradient>
+  </defs>
+  <ellipse cx="128" cy="128" rx="112" ry="112" fill="url(#glowW)"/>
+  <!-- Outer sigil ring -->
+  <circle cx="128" cy="128" r="105" fill="none" stroke="#ffc857" stroke-width="7"/>
+  <!-- Inner sigil ring -->
+  <circle cx="128" cy="128" r="90" fill="none" stroke="#ffc857" stroke-width="3" opacity="0.6"/>
+  <!-- Sigil tick marks (12 positions) -->
+  <line x1="128" y1="23" x2="128" y2="38" stroke="#ffc857" stroke-width="5" stroke-linecap="round"/>
+  <line x1="180" y1="38" x2="172" y2="51" stroke="#ffc857" stroke-width="5" stroke-linecap="round"/>
+  <line x1="215" y1="82" x2="202" y2="88" stroke="#ffc857" stroke-width="5" stroke-linecap="round"/>
+  <line x1="233" y1="128" x2="218" y2="128" stroke="#ffc857" stroke-width="5" stroke-linecap="round"/>
+  <line x1="215" y1="174" x2="202" y2="168" stroke="#ffc857" stroke-width="5" stroke-linecap="round"/>
+  <line x1="180" y1="218" x2="172" y2="205" stroke="#ffc857" stroke-width="5" stroke-linecap="round"/>
+  <line x1="128" y1="233" x2="128" y2="218" stroke="#ffc857" stroke-width="5" stroke-linecap="round"/>
+  <line x1="76" y1="218" x2="84" y2="205" stroke="#ffc857" stroke-width="5" stroke-linecap="round"/>
+  <line x1="41" y1="174" x2="54" y2="168" stroke="#ffc857" stroke-width="5" stroke-linecap="round"/>
+  <line x1="23" y1="128" x2="38" y2="128" stroke="#ffc857" stroke-width="5" stroke-linecap="round"/>
+  <line x1="41" y1="82" x2="54" y2="88" stroke="#ffc857" stroke-width="5" stroke-linecap="round"/>
+  <line x1="76" y1="38" x2="84" y2="51" stroke="#ffc857" stroke-width="5" stroke-linecap="round"/>
+  <!-- Sigil diagonal connectors (star pattern) -->
+  <polygon points="128,50 140,120 210,105 155,155 178,225 128,175 78,225 101,155 46,105 116,120"
+           fill="none" stroke="#ffc857" stroke-width="2" opacity="0.35"/>
+  <!-- Question mark body arc -->
+  <path d="M98 95 Q98 68 128 65 Q160 62 162 90 Q162 112 140 125 Q128 132 128 148"
+        fill="none" stroke="url(#qmark)" stroke-width="14" stroke-linecap="round"/>
+  <!-- Question mark dot -->
+  <circle cx="128" cy="168" r="10" fill="url(#qmark)"/>
+  <!-- Question mark dot ring -->
+  <circle cx="128" cy="168" r="14" fill="none" stroke="#ffc857" stroke-width="3" opacity="0.6"/>
+  <!-- Gold shine -->
+  <ellipse cx="112" cy="80" rx="10" ry="7" fill="white" opacity="0.45" transform="rotate(-20,112,80)"/>
+</svg>

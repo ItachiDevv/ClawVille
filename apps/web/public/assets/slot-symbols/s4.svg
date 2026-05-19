@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <radialGradient id="glow4" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffc857" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#ffc857" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="coin4" cx="38%" cy="32%" r="65%">
+      <stop offset="0%" stop-color="#ffe599"/>
+      <stop offset="50%" stop-color="#ffc857"/>
+      <stop offset="100%" stop-color="#7a4a00"/>
+    </radialGradient>
+  </defs>
+  <ellipse cx="128" cy="128" rx="110" ry="110" fill="url(#glow4)"/>
+  <!-- Coin body -->
+  <circle cx="128" cy="128" r="76" fill="url(#coin4)" stroke="#ffc857" stroke-width="6"/>
+  <!-- Coin rim detail -->
+  <circle cx="128" cy="128" r="65" fill="none" stroke="#ffaa00" stroke-width="3" opacity="0.6"/>
+  <!-- Claw symbol on coin -->
+  <path d="M108 105 C108 85 148 85 148 105 C148 120 138 125 128 130 C118 125 108 120 108 105 Z"
+        fill="#0a1428" stroke="#00ffe0" stroke-width="4" stroke-linejoin="round"/>
+  <!-- Three claw lines -->
+  <line x1="116" y1="130" x2="108" y2="160" stroke="#00ffe0" stroke-width="5" stroke-linecap="round"/>
+  <line x1="128" y1="130" x2="128" y2="162" stroke="#00ffe0" stroke-width="5" stroke-linecap="round"/>
+  <line x1="140" y1="130" x2="148" y2="160" stroke="#00ffe0" stroke-width="5" stroke-linecap="round"/>
+  <!-- Shine -->
+  <ellipse cx="102" cy="100" rx="16" ry="10" fill="white" opacity="0.4" transform="rotate(-30,102,100)"/>
+</svg>

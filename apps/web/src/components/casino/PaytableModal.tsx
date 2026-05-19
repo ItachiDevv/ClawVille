@@ -3,18 +3,62 @@
 /**
  * PaytableModal — symbol payout table + line pattern viewer
  *
- * Reads directly from CLASSIC_SYMBOLS and CLASSIC_LINES constants
- * so it always matches the live paytable.
+ * Polish pass (Concern 6.0.4):
+ *   - Built on NeonModal + NeonCard primitives
+ *   - Symbol rows render the SVG asset (with emoji fallback)
+ *   - Payout chips use the symbol's theme color
+ *   - Line diagrams keep the original 5×3 dot grid (works great mobile)
+ *
+ * Reads directly from CLASSIC_SYMBOLS / CLASSIC_LINES /
+ * CLASSIC_SLOT_SYMBOL_ASSETS so it always matches the live paytable
+ * and asset manifest.
  *
  * Iris Xe safe: pure DOM/CSS, zero Three.js.
  */
 
-import { useCallback } from 'react';
-import { CLASSIC_SYMBOLS, CLASSIC_LINES } from '@clawville/shared';
+import { useState } from 'react';
+import { CLASSIC_SYMBOLS, CLASSIC_LINES, CLASSIC_SLOT_SYMBOL_ASSETS } from '@clawville/shared';
+import { NeonModal, NeonCard, NeonButton } from './ui';
 
 export interface PaytableModalProps {
   isOpen: boolean;
   onClose: () => void;
+}
+
+// ---------------------------------------------------------------------------
+// Symbol art with SVG → emoji fallback
+// ---------------------------------------------------------------------------
+
+function SymbolArt({ id, size = 40 }: { id: number; size?: number }) {
+  const sym = CLASSIC_SYMBOLS[id] ?? CLASSIC_SYMBOLS[0];
+  const asset = CLASSIC_SLOT_SYMBOL_ASSETS[id] ?? CLASSIC_SLOT_SYMBOL_ASSETS[0];
+  const [failed, setFailed] = useState(false);
+  return (
+    <div
+      style={{
+        width: size,
+        height: size,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: `radial-gradient(circle, ${asset.themeColor}22 0%, transparent 70%)`,
+        borderRadius: 'var(--cv-radius-sm)',
+        flexShrink: 0,
+      }}
+    >
+      {failed ? (
+        <span style={{ fontSize: size * 0.6, lineHeight: 1 }}>{sym.emoji}</span>
+      ) : (
+        <img
+          src={asset.svgPath}
+          alt={asset.displayName}
+          draggable={false}
+          onError={() => setFailed(true)}
+          style={{ width: '85%', height: '85%', objectFit: 'contain' }}
+        />
+      )}
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -24,14 +68,7 @@ function LineDiagram({ rows, color }: { rows: [number, number, number, number, n
   return (
     <div style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
       {rows.map((row, reel) => (
-        <div
-          key={reel}
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 2,
-          }}
-        >
+        <div key={reel} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           {[0, 1, 2].map((r) => (
             <div
               key={r}
@@ -40,7 +77,7 @@ function LineDiagram({ rows, color }: { rows: [number, number, number, number, n
                 height: 9,
                 borderRadius: 2,
                 background: r === row ? color : 'rgba(255,255,255,0.08)',
-                boxShadow: r === row ? `0 0 4px ${color}` : 'none',
+                boxShadow: r === row ? `0 0 6px ${color}` : 'none',
               }}
             />
           ))}
@@ -54,106 +91,99 @@ function LineDiagram({ rows, color }: { rows: [number, number, number, number, n
 // Main component
 // ---------------------------------------------------------------------------
 export default function PaytableModal({ isOpen, onClose }: PaytableModalProps) {
-  const handleKey = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') onClose();
-  }, [onClose]);
-
-  if (!isOpen) return null;
-
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="Paytable"
-      onKeyDown={handleKey}
-      style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 9998,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'rgba(0,0,0,0.82)',
-        backdropFilter: 'blur(6px)',
-      }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    <NeonModal
+      isOpen={isOpen}
+      onClose={onClose}
+      ariaLabel="Paytable"
+      maxWidth={560}
+      zIndex={9998}
     >
-      <div
-        style={{
-          background: 'rgba(10,0,21,0.97)',
-          border: '1px solid rgba(0,255,224,0.3)',
-          borderRadius: 16,
-          maxWidth: 520,
-          width: '94vw',
-          maxHeight: '86vh',
-          overflowY: 'auto',
-          padding: '24px 28px',
-          position: 'relative',
-        }}
-      >
-        {/* Header */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-          <h2 style={{ color: '#00ffe0', fontFamily: 'monospace', fontSize: 16, fontWeight: 800, margin: 0, letterSpacing: '0.1em' }}>
-            PAYTABLE — CLASSIC 3×5
-          </h2>
-          <button
-            onClick={onClose}
-            style={{
-              background: 'none', border: 'none', color: 'rgba(255,255,255,0.5)',
-              fontSize: 20, cursor: 'pointer', padding: '2px 6px', lineHeight: 1,
-            }}
-            aria-label="Close paytable"
-          >
-            ✕
-          </button>
-        </div>
-
-        {/* Symbol payouts */}
-        <div style={{ marginBottom: 24 }}>
-          <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 11, letterSpacing: '0.12em', fontFamily: 'monospace', marginBottom: 10, textTransform: 'uppercase' }}>
-            Symbol Payouts (× Bet)
+      {/* Header */}
+      <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 'var(--cv-space-5)',
+      }}>
+        <div>
+          <div style={{
+            color: 'var(--cv-neon-cyan)',
+            fontFamily: 'monospace',
+            fontSize: 11,
+            fontWeight: 800,
+            letterSpacing: '0.22em',
+            textTransform: 'uppercase',
+            textShadow: '0 0 12px var(--cv-neon-cyan)',
+          }}>
+            Predictive Gaming Cove
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-            {CLASSIC_SYMBOLS.map((sym) => (
+          <h2 style={{
+            color: '#fff',
+            fontFamily: 'monospace',
+            fontSize: 22,
+            fontWeight: 900,
+            margin: '4px 0 0 0',
+            letterSpacing: '0.06em',
+          }}>
+            Paytable — Classic 3×5
+          </h2>
+        </div>
+        <NeonButton
+          variant="ghost"
+          size="sm"
+          onClick={onClose}
+          aria-label="Close paytable"
+          style={{ width: 36, padding: 0, fontSize: 18 }}
+        >✕</NeonButton>
+      </div>
+
+      {/* Symbol payouts */}
+      <NeonCard
+        title="Symbol Payouts (× Bet)"
+        style={{ marginBottom: 'var(--cv-space-5)' }}
+      >
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 'var(--cv-space-2)' }}>
+          {CLASSIC_SYMBOLS.map((sym) => {
+            const asset = CLASSIC_SLOT_SYMBOL_ASSETS[sym.id] ?? CLASSIC_SLOT_SYMBOL_ASSETS[0];
+            return (
               <div
                 key={sym.id}
                 style={{
-                  background: 'rgba(255,255,255,0.04)',
-                  border: `1px solid ${sym.color}44`,
-                  borderRadius: 8,
-                  padding: '8px 12px',
+                  background: 'rgba(5,10,24,0.55)',
+                  border: `1px solid ${asset.themeColor}33`,
+                  borderRadius: 'var(--cv-radius-md)',
+                  padding: 'var(--cv-space-2) var(--cv-space-3)',
                   display: 'flex',
                   alignItems: 'center',
-                  gap: 10,
+                  gap: 'var(--cv-space-3)',
+                  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)',
                 }}
               >
-                {/* Symbol */}
-                <div style={{
-                  fontSize: 24,
-                  width: 32,
-                  textAlign: 'center',
-                  background: `radial-gradient(circle, ${sym.color}33 0%, transparent 100%)`,
-                  borderRadius: 6,
-                }}>
-                  {sym.emoji}
-                </div>
-
-                {/* Payouts */}
-                <div style={{ flex: 1 }}>
-                  <div style={{ color: sym.color, fontFamily: 'monospace', fontSize: 11, fontWeight: 700, marginBottom: 4 }}>
-                    {sym.name}{sym.isWild ? ' (WILD)' : ''}
+                <SymbolArt id={sym.id} size={44} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{
+                    color: asset.themeColor,
+                    fontFamily: 'monospace',
+                    fontSize: 12,
+                    fontWeight: 800,
+                    marginBottom: 4,
+                    letterSpacing: '0.06em',
+                  }}>
+                    {asset.displayName}{sym.isWild ? ' · WILD' : ''}
                   </div>
-                  <div style={{ display: 'flex', gap: 6 }}>
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                     {sym.payouts.map((p, i) => (
                       p > 0 && (
                         <span key={i} style={{
-                          background: `${sym.color}22`,
-                          color: sym.color,
+                          background: `${asset.themeColor}1f`,
+                          color: asset.themeColor,
                           fontFamily: 'monospace',
                           fontSize: 10,
-                          padding: '2px 5px',
-                          borderRadius: 3,
+                          padding: '2px 6px',
+                          borderRadius: 'var(--cv-radius-pill)',
                           whiteSpace: 'nowrap',
+                          border: `1px solid ${asset.themeColor}33`,
                         }}>
                           {i + 2}× = {p}×
                         </span>
@@ -162,53 +192,57 @@ export default function PaytableModal({ isOpen, onClose }: PaytableModalProps) {
                   </div>
                 </div>
               </div>
-            ))}
-          </div>
+            );
+          })}
         </div>
+      </NeonCard>
 
-        {/* Line patterns */}
-        <div>
-          <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 11, letterSpacing: '0.12em', fontFamily: 'monospace', marginBottom: 10, textTransform: 'uppercase' }}>
-            20 Paylines
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
-            {CLASSIC_LINES.map((line) => (
-              <div key={line.id} style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                gap: 4,
-                background: 'rgba(255,255,255,0.03)',
-                borderRadius: 6,
-                padding: '6px 4px',
-                border: `1px solid ${line.color}33`,
+      {/* Line patterns */}
+      <NeonCard title="20 Paylines">
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(96px, 1fr))', gap: 'var(--cv-space-2)' }}>
+          {CLASSIC_LINES.map((line) => (
+            <div key={line.id} style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: 6,
+              background: 'rgba(5,10,24,0.55)',
+              borderRadius: 'var(--cv-radius-sm)',
+              padding: '8px 6px',
+              border: `1px solid ${line.color}33`,
+              boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)',
+            }}>
+              <div style={{
+                color: line.color,
+                fontFamily: 'monospace',
+                fontSize: 9,
+                letterSpacing: '0.1em',
+                textShadow: `0 0 6px ${line.color}66`,
               }}>
-                <div style={{ color: line.color, fontFamily: 'monospace', fontSize: 9, letterSpacing: '0.08em' }}>
-                  #{line.id + 1}
-                </div>
-                <LineDiagram rows={line.rows} color={line.color} />
+                #{line.id + 1}
               </div>
-            ))}
-          </div>
+              <LineDiagram rows={line.rows} color={line.color} />
+            </div>
+          ))}
         </div>
+      </NeonCard>
 
-        {/* RTP notice */}
-        <div style={{
-          marginTop: 20,
-          padding: '10px 14px',
-          background: 'rgba(0,255,224,0.05)',
-          border: '1px solid rgba(0,255,224,0.15)',
-          borderRadius: 8,
-          color: 'rgba(255,255,255,0.5)',
-          fontSize: 11,
-          fontFamily: 'monospace',
-          lineHeight: 1.6,
-        }}>
-          Theoretical RTP: <span style={{ color: '#00ffe0' }}>96%</span> · 20 paylines · Left-to-right matching
-          <br/>
-          Wild substitutes any non-scatter symbol · Free spins coming in Phase 6.1
-        </div>
+      {/* RTP notice */}
+      <div style={{
+        marginTop: 'var(--cv-space-5)',
+        padding: 'var(--cv-space-3) var(--cv-space-4)',
+        background: 'rgba(0,255,224,0.05)',
+        border: '1px solid rgba(0,255,224,0.15)',
+        borderRadius: 'var(--cv-radius-md)',
+        color: 'rgba(255,255,255,0.6)',
+        fontSize: 11,
+        fontFamily: 'monospace',
+        lineHeight: 1.7,
+      }}>
+        Theoretical RTP: <span style={{ color: 'var(--cv-neon-cyan)', fontWeight: 700 }}>96%</span> · 20 paylines · Left-to-right matching
+        <br/>
+        Wild substitutes any non-scatter symbol · Free spins coming in Phase 6.1
       </div>
-    </div>
+    </NeonModal>
   );
 }

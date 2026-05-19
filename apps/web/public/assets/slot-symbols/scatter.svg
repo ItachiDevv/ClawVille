@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <radialGradient id="glowS" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#00ffe0" stop-opacity="0.4"/>
+      <stop offset="100%" stop-color="#00ffe0" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="starS" cx="40%" cy="35%" r="65%">
+      <stop offset="0%" stop-color="#aaffef"/>
+      <stop offset="100%" stop-color="#006655"/>
+    </radialGradient>
+  </defs>
+  <ellipse cx="128" cy="128" rx="112" ry="112" fill="url(#glowS)"/>
+  <!-- Outer ring -->
+  <circle cx="128" cy="128" r="105" fill="none" stroke="#00ffe0" stroke-width="5" opacity="0.5"/>
+  <!-- Long compass rays (N S E W) -->
+  <line x1="128" y1="25" x2="128" y2="70" stroke="#00ffe0" stroke-width="7" stroke-linecap="round"/>
+  <line x1="128" y1="186" x2="128" y2="231" stroke="#00ffe0" stroke-width="7" stroke-linecap="round"/>
+  <line x1="25" y1="128" x2="70" y2="128" stroke="#00ffe0" stroke-width="7" stroke-linecap="round"/>
+  <line x1="186" y1="128" x2="231" y2="128" stroke="#00ffe0" stroke-width="7" stroke-linecap="round"/>
+  <!-- Diagonal rays (shorter) -->
+  <line x1="164" y1="48" x2="148" y2="82" stroke="#00ffe0" stroke-width="5" stroke-linecap="round"/>
+  <line x1="208" y1="92" x2="174" y2="108" stroke="#00ffe0" stroke-width="5" stroke-linecap="round"/>
+  <line x1="208" y1="164" x2="174" y2="148" stroke="#00ffe0" stroke-width="5" stroke-linecap="round"/>
+  <line x1="164" y1="208" x2="148" y2="174" stroke="#00ffe0" stroke-width="5" stroke-linecap="round"/>
+  <line x1="92" y1="208" x2="108" y2="174" stroke="#00ffe0" stroke-width="5" stroke-linecap="round"/>
+  <line x1="48" y1="164" x2="82" y2="148" stroke="#00ffe0" stroke-width="5" stroke-linecap="round"/>
+  <line x1="48" y1="92" x2="82" y2="108" stroke="#00ffe0" stroke-width="5" stroke-linecap="round"/>
+  <line x1="92" y1="48" x2="108" y2="82" stroke="#00ffe0" stroke-width="5" stroke-linecap="round"/>
+  <!-- Ray arrowheads N/S/E/W -->
+  <polygon points="128,25 121,44 135,44" fill="#00ffe0"/>
+  <polygon points="128,231 121,212 135,212" fill="#00ffe0"/>
+  <polygon points="25,128 44,121 44,135" fill="#00ffe0"/>
+  <polygon points="231,128 212,121 212,135" fill="#00ffe0"/>
+  <!-- Center starfish body -->
+  <circle cx="128" cy="128" r="32" fill="url(#starS)" stroke="#00ffe0" stroke-width="6"/>
+  <!-- Center ring -->
+  <circle cx="128" cy="128" r="20" fill="none" stroke="#00ffe0" stroke-width="3" opacity="0.6"/>
+  <!-- Center dot -->
+  <circle cx="128" cy="128" r="8" fill="#00ffe0"/>
+  <!-- North label triangle at tip -->
+  <polygon points="128,28 123,38 133,38" fill="#ffc857" opacity="0.9"/>
+  <!-- Shine -->
+  <ellipse cx="116" cy="116" rx="9" ry="6" fill="white" opacity="0.4" transform="rotate(-30,116,116)"/>
+</svg>

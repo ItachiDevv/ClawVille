@@ -1,65 +1,53 @@
 'use client';
 
 /**
- * WinCelebration — Phase 6.0 MVP (single tier)
+ * WinCelebration — 5-tier dispatcher reading from useFX state.
  *
- * Shows a center-screen count-up toast on any win > 0.
- * Multi-tier system (Concern 6.0.5) will expand this to 5 distinct tiers;
- * the component API is designed to accept the full SpinResult already.
+ * Renders nothing on `tier === 'loss'`. Otherwise composes:
+ *   - Optional dark vignette (medium+)
+ *   - Coin burst layer (CSS keyframe `cv-coin-burst`)
+ *   - Confetti burst layer (CSS keyframe `cv-confetti-burst`)
+ *   - Win banner (big+ tiers)
+ *   - Full-screen flash overlay (mega only)
  *
- * Sound: silent in 6.0.4 (Concern 6.0.6).
- * Iris Xe safe: pure CSS, no canvas, no WebGL.
+ * Iris Xe safe: pure CSS variables drive each particle's spread; no
+ * Three.js, no Canvas2D, no per-frame allocations. Particles render
+ * once, animate once, then auto-clear when `useFX` drops them from
+ * state. Count-up uses requestAnimationFrame inside the banner only.
  */
 
 import { useEffect, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
+import type { FXState, FXParticle, WinTier } from '@/lib/casino/useFX';
 
 export interface WinCelebrationProps {
-  /** Win amount in ClawTokens (0 = no celebration) */
-  winAmount: number;
-  /** Bet size (used to compute multiplier tier) */
-  bet: number;
-  /** Called when the celebration animation completes */
-  onComplete?: () => void;
+  /** Active FX state from `useFX().state`. */
+  fx: FXState;
 }
 
 // ---------------------------------------------------------------------------
-// Tier detection
+// Per-tier banner config (label + colors + size)
 // ---------------------------------------------------------------------------
-type WinTier = 'none' | 'micro' | 'small' | 'medium' | 'big' | 'mega';
 
-function detectTier(winAmount: number, bet: number): WinTier {
-  if (winAmount <= 0) return 'none';
-  const mult = bet > 0 ? winAmount / bet : 0;
-  if (mult < 2)   return 'micro';
-  if (mult < 10)  return 'small';
-  if (mult < 50)  return 'medium';
-  if (mult < 500) return 'big';
-  return 'mega';
-}
-
-// ---------------------------------------------------------------------------
-// Tier configs
-// ---------------------------------------------------------------------------
-interface TierConfig {
-  duration: number;      // ms for the count-up
-  displayMs: number;     // total display duration
-  scale: number;         // max scale of toast
-  color: string;
+interface BannerConfig {
   label: string;
+  accent: string;
+  fontSize: number;
 }
 
-const TIER_CONFIGS: Record<Exclude<WinTier, 'none'>, TierConfig> = {
-  micro:  { duration: 400,  displayMs: 1200, scale: 1.0,  color: '#00ffe0', label: 'WIN' },
-  small:  { duration: 600,  displayMs: 1600, scale: 1.1,  color: '#ffe600', label: 'WIN!' },
-  medium: { duration: 700,  displayMs: 2200, scale: 1.2,  color: '#ff9900', label: 'BIG WIN!' },
-  big:    { duration: 800,  displayMs: 3000, scale: 1.35, color: '#ff4400', label: 'SUPER WIN!' },
-  mega:   { duration: 1000, displayMs: 4000, scale: 1.5,  color: '#ff00cc', label: 'MEGA WIN!!!' },
+const BANNER_CONFIGS: Record<Exclude<WinTier, 'loss'>, BannerConfig | null> = {
+  micro:  null, // no banner — just particles
+  small:  null, // no banner — just particles
+  medium: { label: 'BIG WIN',   accent: 'var(--cv-tier-medium)', fontSize: 38 },
+  big:    { label: 'SUPER WIN', accent: 'var(--cv-tier-big)',    fontSize: 46 },
+  mega:   { label: 'MEGA WIN',  accent: 'var(--cv-tier-mega)',   fontSize: 56 },
 };
 
 // ---------------------------------------------------------------------------
-// Count-up hook
+// Count-up hook (banner amount)
 // ---------------------------------------------------------------------------
-function useCountUp(target: number, duration: number, active: boolean): number {
+
+function useCountUp(target: number, durationMs: number, active: boolean): number {
   const [current, setCurrent] = useState(0);
   const rafRef = useRef<number>(0);
   const startRef = useRef<number>(0);
@@ -72,166 +60,219 @@ function useCountUp(target: number, duration: number, active: boolean): number {
     startRef.current = performance.now();
     const tick = (now: number) => {
       const elapsed = now - startRef.current;
-      const t = Math.min(elapsed / duration, 1);
-      // Ease-out quad
-      const eased = 1 - (1 - t) * (1 - t);
+      const t = Math.min(elapsed / durationMs, 1);
+      const eased = 1 - (1 - t) * (1 - t); // ease-out quad
       setCurrent(Math.round(eased * target));
-      if (t < 1) {
-        rafRef.current = requestAnimationFrame(tick);
-      }
+      if (t < 1) rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [active, target, duration]);
+  }, [active, target, durationMs]);
 
   return current;
 }
 
 // ---------------------------------------------------------------------------
+// Particle layer
+// ---------------------------------------------------------------------------
+
+function Particle({ particle }: { particle: FXParticle }) {
+  // CSS custom properties aren't in the React CSSProperties type, so we
+  // build the style as a plain record and cast at the React boundary.
+  const style: Record<string, string | number> = {
+    position: 'absolute',
+    left: '50%',
+    top: '50%',
+    width: particle.kind === 'coin' ? 26 : 12,
+    height: particle.kind === 'coin' ? 26 : 4,
+    borderRadius: particle.kind === 'coin' ? '50%' : 2,
+    background: particle.kind === 'coin'
+      ? 'radial-gradient(circle at 35% 30%, #ffe089 0%, #ffc857 50%, #8a5a00 100%)'
+      : (particle.color ?? '#00ffe0'),
+    boxShadow: particle.kind === 'coin'
+      ? '0 0 12px rgba(255,200,87,0.7), inset 0 0 4px rgba(255,255,255,0.8)'
+      : `0 0 6px ${particle.color ?? '#00ffe0'}aa`,
+    transform: 'translate(-50%, -50%)',
+    animation:
+      particle.kind === 'coin'
+        ? 'cv-coin-burst 1100ms var(--cv-ease-standard) forwards'
+        : 'cv-confetti-burst 1300ms var(--cv-ease-standard) forwards',
+    animationDelay: `${particle.idx * 18}ms`,
+    pointerEvents: 'none',
+    '--cv-idx': particle.idx,
+    '--cv-count': particle.count,
+  };
+  return <div style={style as CSSProperties} aria-hidden />;
+}
+
+// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
-export default function WinCelebration({ winAmount, bet, onComplete }: WinCelebrationProps) {
-  const tier = detectTier(winAmount, bet);
-  const [visible, setVisible] = useState(false);
-  const [animIn, setAnimIn] = useState(false);
 
-  const config = tier !== 'none' ? TIER_CONFIGS[tier] : null;
-  const countedValue = useCountUp(winAmount, config?.duration ?? 600, visible);
+export default function WinCelebration({ fx }: WinCelebrationProps) {
+  const showAny = fx.tier !== 'loss';
+  const banner = fx.tier !== 'loss' ? BANNER_CONFIGS[fx.tier] : null;
 
-  useEffect(() => {
-    if (tier === 'none' || !config) {
-      setVisible(false);
-      setAnimIn(false);
-      return;
-    }
+  // Count-up driven by particles still being on screen — gives us a
+  // banner that stays in sync with the celebration rhythm.
+  const countActive = showAny && banner !== null;
+  const counted = useCountUp(fx.winAmount, 900, countActive);
 
-    setVisible(true);
-    const t1 = setTimeout(() => setAnimIn(true), 16); // next frame
-    const t2 = setTimeout(() => {
-      setAnimIn(false);
-    }, config.displayMs - 300);
-    const t3 = setTimeout(() => {
-      setVisible(false);
-      onComplete?.();
-    }, config.displayMs);
-
-    return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
-  }, [winAmount, tier, config, onComplete]);
-
-  if (!visible || !config || tier === 'none') return null;
+  if (!showAny) return null;
 
   return (
     <>
-      <style>{`
-        @keyframes winPop {
-          0%   { transform: translate(-50%, -50%) scale(0.3); opacity: 0; }
-          40%  { transform: translate(-50%, -50%) scale(${config.scale + 0.1}); opacity: 1; }
-          60%  { transform: translate(-50%, -50%) scale(${config.scale - 0.05}); opacity: 1; }
-          80%  { transform: translate(-50%, -50%) scale(${config.scale}); opacity: 1; }
-          100% { transform: translate(-50%, -50%) scale(${config.scale}); opacity: 1; }
-        }
-        @keyframes winFadeOut {
-          from { opacity: 1; transform: translate(-50%, -50%) scale(${config.scale}); }
-          to   { opacity: 0; transform: translate(-50%, -50%) scale(${config.scale * 0.8}); }
-        }
-        @keyframes winShake {
-          0%,100% { transform: translate(-50%, -50%) scale(${config.scale}); }
-          25%  { transform: translate(-50%, calc(-50% - 6px)) scale(${config.scale}); }
-          75%  { transform: translate(-50%, calc(-50% + 6px)) scale(${config.scale}); }
-        }
-        @keyframes sparkle {
-          0%,100% { opacity: 0; transform: scale(0); }
-          50%      { opacity: 1; transform: scale(1); }
-        }
-      `}</style>
-
-      {/* Dark vignette for big/mega wins */}
-      {(tier === 'big' || tier === 'mega') && (
+      {/* Full-screen flash (mega only) */}
+      {fx.isHugeWinFlashActive && (
         <div
+          aria-hidden
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0,0,0,0.55)',
-            zIndex: 9995,
+            zIndex: 9999,
             pointerEvents: 'none',
-            animation: animIn ? 'none' : 'winFadeOut 0.3s ease forwards',
+            background:
+              'radial-gradient(circle at 50% 45%, rgba(255,255,255,0.95) 0%, rgba(255,255,255,0.6) 30%, rgba(123,47,247,0.25) 70%, transparent 100%)',
+            animation: 'cv-screen-flash 600ms var(--cv-ease-standard) forwards',
+            mixBlendMode: 'screen',
           }}
         />
       )}
 
-      {/* Win toast */}
+      {/* Vignette for medium+ tiers */}
+      {(fx.tier === 'medium' || fx.tier === 'big' || fx.tier === 'mega') && (
+        <div
+          aria-hidden
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 9994,
+            pointerEvents: 'none',
+            background:
+              'radial-gradient(circle at 50% 50%, transparent 35%, rgba(0,0,0,0.6) 100%)',
+            transition: 'opacity var(--cv-motion-base) var(--cv-ease-standard)',
+          }}
+        />
+      )}
+
+      {/* Particle layer */}
       <div
-        role="status"
-        aria-live="assertive"
+        aria-hidden
         style={{
           position: 'fixed',
           left: '50%',
-          top: '42%',
+          top: '50%',
+          width: 0,
+          height: 0,
           zIndex: 9996,
           pointerEvents: 'none',
-          animation: animIn
-            ? `winPop 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) forwards`
-            : `winFadeOut 0.3s ease forwards`,
-          transformOrigin: 'center',
         }}
       >
+        {fx.particles.map(p => <Particle key={p.id} particle={p} />)}
+      </div>
+
+      {/* Banner (medium+ tiers) */}
+      {banner && (
         <div
+          role="status"
+          aria-live="assertive"
           style={{
-            background: `radial-gradient(circle at 50% 40%, ${config.color}22 0%, rgba(0,0,0,0.92) 100%)`,
-            border: `2px solid ${config.color}`,
-            borderRadius: 18,
-            padding: '22px 44px',
-            textAlign: 'center',
-            boxShadow: `0 0 40px ${config.color}66, 0 0 80px ${config.color}33, inset 0 1px 0 ${config.color}44`,
-            minWidth: 220,
-            backdropFilter: 'blur(8px)',
+            position: 'fixed',
+            left: '50%',
+            top: '42%',
+            zIndex: 9997,
+            pointerEvents: 'none',
+            transform: 'translate(-50%, -50%)',
+            animation: 'cv-mega-banner-in 700ms var(--cv-ease-bounce)',
           }}
         >
-          {/* Tier label */}
           <div
             style={{
-              color: config.color,
-              fontSize: 13,
-              fontWeight: 800,
-              letterSpacing: '0.18em',
-              fontFamily: 'monospace',
-              textShadow: `0 0 12px ${config.color}`,
-              marginBottom: 8,
-              textTransform: 'uppercase',
+              background: `linear-gradient(180deg, rgba(10,20,40,0.92) 0%, rgba(5,10,24,0.94) 100%)`,
+              border: `2px solid ${banner.accent}`,
+              borderRadius: 'var(--cv-radius-xl)',
+              padding: '22px 48px',
+              textAlign: 'center',
+              boxShadow: `0 0 36px ${banner.accent}66, 0 0 72px ${banner.accent}33, inset 0 1px 0 rgba(255,255,255,0.08)`,
+              minWidth: 260,
+              backdropFilter: 'blur(8px)',
+              WebkitBackdropFilter: 'blur(8px)',
             }}
           >
-            {config.label}
-          </div>
-
-          {/* Count-up amount */}
-          <div
-            style={{
-              color: '#fff',
-              fontSize: tier === 'mega' ? 52 : tier === 'big' ? 44 : tier === 'medium' ? 38 : 30,
-              fontWeight: 900,
-              fontFamily: 'monospace',
-              letterSpacing: '0.04em',
-              lineHeight: 1,
-              textShadow: `0 0 20px ${config.color}`,
-              marginBottom: 6,
-            }}
-          >
-            +{countedValue.toLocaleString()}
-          </div>
-
-          {/* CT label */}
-          <div
-            style={{
-              color: 'rgba(255,255,255,0.55)',
-              fontSize: 11,
-              fontFamily: 'monospace',
-              letterSpacing: '0.1em',
-            }}
-          >
-            CLAW TOKENS
+            <div
+              style={{
+                color: banner.accent,
+                fontSize: 14,
+                fontWeight: 800,
+                letterSpacing: '0.22em',
+                fontFamily: 'monospace',
+                textShadow: `0 0 12px ${banner.accent}`,
+                marginBottom: 8,
+              }}
+            >
+              {banner.label}
+            </div>
+            <div
+              style={{
+                color: '#ffffff',
+                fontSize: banner.fontSize,
+                fontWeight: 900,
+                fontFamily: 'monospace',
+                letterSpacing: '0.04em',
+                lineHeight: 1,
+                textShadow: `0 0 24px ${banner.accent}`,
+                marginBottom: 6,
+              }}
+            >
+              +{counted.toLocaleString()}
+            </div>
+            <div
+              style={{
+                color: 'rgba(255,255,255,0.55)',
+                fontSize: 11,
+                fontFamily: 'monospace',
+                letterSpacing: '0.18em',
+              }}
+            >
+              CLAW TOKENS
+            </div>
           </div>
         </div>
-      </div>
+      )}
+
+      {/* Micro/small tier toast — small floating label */}
+      {(fx.tier === 'micro' || fx.tier === 'small') && (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            position: 'fixed',
+            left: '50%',
+            top: '46%',
+            zIndex: 9997,
+            pointerEvents: 'none',
+            transform: 'translate(-50%, -50%)',
+            animation: 'cv-mega-banner-in 500ms var(--cv-ease-bounce)',
+          }}
+        >
+          <div
+            style={{
+              background: 'rgba(5,10,24,0.85)',
+              border: `1px solid var(--cv-tier-${fx.tier})`,
+              borderRadius: 'var(--cv-radius-pill)',
+              padding: '8px 22px',
+              color: `var(--cv-tier-${fx.tier})`,
+              fontFamily: 'monospace',
+              fontSize: 16,
+              fontWeight: 800,
+              letterSpacing: '0.12em',
+              boxShadow: `0 0 18px var(--cv-tier-${fx.tier})66`,
+            }}
+          >
+            +{fx.winAmount.toLocaleString()} CT
+          </div>
+        </div>
+      )}
     </>
   );
 }

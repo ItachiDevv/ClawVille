@@ -39,6 +39,8 @@ export * from './reef-race/track-layout';
 export * from './constants/milady-skills';
 // Phase 6.0 — slot machine paytables (publicly verifiable, provably-fair)
 export * from './constants/slot-paytables';
+// Phase 6.0.4 — slot symbol SVG asset manifest (UI polish pass)
+export * from './constants/slot-symbols';
 export * from './constants/orientation-skill';
 // Q3 plan §2.6 — server-credited token rewards for tutorial quests.
 export * from './constants/tutorial-quest-rewards';
