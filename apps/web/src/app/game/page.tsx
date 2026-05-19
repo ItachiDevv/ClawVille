@@ -40,6 +40,7 @@ const BazaarModal = dynamic(() => import('@/components/game/bazaar-modal'), { ss
 const AuctionModal = dynamic(() => import('@/components/game/auction-modal'), { ssr: false });
 const QuestBoardModal = dynamic(() => import('@/components/game/quest-board-modal'), { ssr: false });
 const BountyBoardModal = dynamic(() => import('@/components/game/bounty-board-modal'), { ssr: false });
+const ExchangeModal = dynamic(() => import('@/components/game/exchange-modal'), { ssr: false });
 const LeaderboardModal = dynamic(() => import('@/components/game/leaderboard-modal'), { ssr: false });
 import BuildingTooltip from '@/components/game/building-tooltip';
 import DailyLoginModal from '@/components/game/daily-login-modal';
@@ -311,6 +312,7 @@ export default function GamePage() {
       <AuctionModal />
       <QuestBoardModal />
       <BountyBoardModal />
+      <ExchangeModal />
       <LeaderboardModal />
 
       {/* Always visible — sidebar menu, minimap, controls for all visitors */}
