@@ -8,16 +8,18 @@ name: Casino RTP Monte Carlo gate
 #   - apps/api/src/services/provable-rng.ts            (HMAC stream)
 #   - scripts/casino/rtp-sim.ts                        (simulator itself)
 #
-# Bands:
-#   - classic-3x5        — strict RTP ∈ [95.00%, 97.00%] (1M local: ~96.00%)
-#   - classic-3x5-bonus  — strict combined RTP ∈ [95.50%, 99.50%] (bonus
-#                          features add scatter pay + free-spin doubling)
+# Bands (Phase 6.1.10 RTP retune — 94% target across both tables):
+#   - classic-3x5        — strict RTP ∈ [92.50%, 95.50%] (1M local: ~94.0%)
+#   - classic-3x5-bonus  — strict combined RTP ∈ [92.00%, 96.00%] (bonus
+#                          features still add scatter pay + free-spin
+#                          variance, but reduced FS award + scatter pay
+#                          cuts bring combined target equal to classic)
 #
 # Local equivalent of this gate:
 #   bun scripts/casino/rtp-sim.ts --spins 100000 \
-#     --strict-rtp 0.95,0.97 --exit-on-fail
+#     --strict-rtp 0.925,0.955 --exit-on-fail
 #   bun scripts/casino/rtp-sim.ts --spins 100000 \
-#     --paytable classic-3x5-bonus --strict-rtp 0.955,0.995 --exit-on-fail
+#     --paytable classic-3x5-bonus --strict-rtp 0.92,0.96 --exit-on-fail
 #
 # Intentionally pinned: --seed is OMITTED so we sample a fresh server
 # seed each CI run. With a 100k sample the variance is small enough
@@ -75,7 +77,7 @@ jobs:
           bun scripts/casino/rtp-sim.ts \
             --spins 100000 \
             --paytable classic-3x5 \
-            --strict-rtp 0.95,0.97 \
+            --strict-rtp 0.925,0.955 \
             --exit-on-fail
 
       - name: Run 100k Monte Carlo with strict RTP gate (classic-3x5-bonus)
@@ -88,5 +90,5 @@ jobs:
           bun scripts/casino/rtp-sim.ts \
             --spins 100000 \
             --paytable classic-3x5-bonus \
-            --strict-rtp 0.955,0.995 \
+            --strict-rtp 0.92,0.96 \
             --exit-on-fail
