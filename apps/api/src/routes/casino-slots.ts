@@ -415,8 +415,13 @@ casinoSlotsRouter.post('/session/open', requireAuth, async (c) => {
       const lockRow = lockRows[0];
       if (!lockRow) return null;
       if (lockRow.paytable_id !== input.paytableId) {
+        // Carry the existing session's id + paytable in the error payload so
+        // the frontend can surface a "switch table" affordance without an
+        // extra round-trip. The 409 message body is parsed by
+        // describeCasinoError; we include a machine-readable suffix so the
+        // client can extract the id reliably.
         throw new HTTPException(409, {
-          message: `session_already_open_different_paytable: open=${lockRow.paytable_id}, requested=${input.paytableId}`,
+          message: `session_already_open_different_paytable: open=${lockRow.paytable_id}, requested=${input.paytableId}, existingSessionId=${lockRow.id}`,
         });
       }
       // Drizzle tx.execute returns INT columns as strings (PG wire format).
