@@ -75,9 +75,9 @@ export default function SlotReelsCanvas(props: SlotReelsCanvasProps) {
           position: [0, 0, 5],
         }}
         gl={{
-          antialias:        false,
-          powerPreference:  'high-performance',
-          preserveDrawingBuffer: false,
+          antialias:             false,
+          powerPreference:       'high-performance',
+          preserveDrawingBuffer: true,  // required for readPixels verification; canvas is modal-scoped so no perf issue
         }}
         style={{ display: 'block', width: '100%', height: '100%' }}
       >
