@@ -1,18 +1,26 @@
 'use client';
 
 /**
- * SlotReelsCanvas — R3F Canvas wrapper for the per-cell-plane drum rig.
+ * SlotReelsCanvas — R3F Canvas wrapper for the flat-reel presentation rig
+ * (Phase 6.1.9 / SlotReels3D.tsx).
  *
  * Camera: OrthographicCamera, fixed world bounds — independent of canvas
- * pixel aspect so drums fill the region at any modal width.
+ * pixel aspect so reels fill the region at any modal width.
  *
- * Bounds chosen for drum geometry (DRUM_RADIUS=1.5, REEL_SPACING=3.2):
- *   Horizontal: 5 reels, outermost centres at ±2×3.2=±6.4wu, edges at ±(6.4+1.5)=±7.9wu
- *     → left=-8.5, right=8.5 (0.6wu breathing room)
- *   Vertical: drum diameter=3wu (2×DRUM_RADIUS) + bezel margin
- *     → top=2.2, bottom=-2.2
+ * Bounds chosen for flat reel cluster (CELL_WU=1.5, REEL_PITCH=1.68,
+ * REEL_HEIGHT=4.5):
+ *   Horizontal: 5 reels × 1.68wu = 8.4wu span, reel edges at ±4.2wu
+ *     → left=-5.0, right=5.0 (0.8wu breathing room each side for frame FX)
+ *   Vertical: reel height 4.5wu + vignette/frame margin
+ *     → top=2.8, bottom=-2.8 (5.6wu total)
+ *
+ * Aspect-mismatch note: canvas pixel aspect ≈ 2:1 in the modal; ortho world
+ * aspect here is 10:5.6 ≈ 1.78:1. Slight horizontal stretch is acceptable
+ * and intentional — the reels stay aligned, only the side breathing-room
+ * grows on wide viewports.
  *
  * frameloop='always' — demand mode causes transparent-black canvas on mount.
+ * preserveDrawingBuffer=true — required by readPixels verification path.
  * DPR cap [0.55, 0.7] on low-end keeps Iris Xe pixel budget manageable.
  */
 
@@ -81,10 +89,10 @@ export default function SlotReelsCanvas(props: SlotReelsCanvasProps) {
           position={[0, 0, 10]}
           near={0.1}
           far={30}
-          left={-8.5}
-          right={8.5}
-          top={2.2}
-          bottom={-2.2}
+          left={-5.0}
+          right={5.0}
+          top={2.8}
+          bottom={-2.8}
         />
         <Suspense fallback={null}>
           <SlotReels3D {...props} />
