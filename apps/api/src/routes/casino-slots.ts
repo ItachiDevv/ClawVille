@@ -484,6 +484,7 @@ casinoSlotsRouter.post('/session/open', requireAuth, async (c) => {
         resumed.createdAt instanceof Date
           ? resumed.createdAt.toISOString()
           : new Date(resumed.createdAt as unknown as string).toISOString(),
+      walletBalance: avatar.clawTokens,
     };
     return c.json(response, 200);
   }
@@ -558,6 +559,7 @@ casinoSlotsRouter.post('/session/open', requireAuth, async (c) => {
           escrowAmount: raceRow.escrowAmount,
           predict: predictBig.toString(),
           createdAt: raceRow.createdAt.toISOString(),
+          walletBalance: avatar.clawTokens,
         };
         return c.json(response, 200);
       }
@@ -591,6 +593,7 @@ casinoSlotsRouter.post('/session/open', requireAuth, async (c) => {
     escrowAmount: inserted.escrowAmount,
     predict: predictBig.toString(),
     createdAt: inserted.createdAt.toISOString(),
+    walletBalance: avatar.clawTokens,
   };
   return c.json(response, 200);
 });

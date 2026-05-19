@@ -65,6 +65,7 @@ export interface CasinoStore {
     sessionId: string;
     serverSeedHash: string;
     clientSeed: string;
+    walletBalance: number;
   }) => void;
   /** Reset session metadata to null (called on closeSlotScreen). */
   clearSessionMeta: () => void;
@@ -119,12 +120,18 @@ export const useCasinoStore = create<CasinoStore>((set, get) => ({
     });
   },
 
-  setSessionMeta: ({ sessionId, serverSeedHash, clientSeed }) => {
+  setSessionMeta: ({ sessionId, serverSeedHash, clientSeed, walletBalance }) => {
+    // walletBalance is the AUTHORITATIVE balance from the server, snapshot
+    // both as the PnL baseline AND the displayed balance. Replaces the
+    // stale-cache `avatar?.clawTokens ?? 60` heuristic from openSlotScreen.
     set({
       sessionId,
       serverSeedHash,
       clientSeed,
       revealedServerSeed: null,
+      sessionStartBalance: walletBalance,
+      sessionBalance: walletBalance,
+      sessionPnl: 0,
     });
   },
 
