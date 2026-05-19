@@ -733,23 +733,19 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       <directionalLight position={[-100, 200, -60]} intensity={0.5} color={0x88aacc} />
 
       {/* Underwater fog — scaled for 360x360 map (11520wu world) / R=130-tile ring.
-          Phase 6.2.1 fog tuning (2026-05-18): near 3800→4500, far 6800→9000, camera.far 6800→10000.
+          Phase 6.2.3 fog tuning (2026-05-19): near 4500→6000, far 9000→15000.
+          User feedback: "the blue density of far off buildings that makes you unable to see them"
+          even at [4500, 9000]. Far-ring buildings at 5493wu were still at 22% fog blend.
           Geometry: camera at (0,600,1300). Ring radius=4160wu.
             Near-side ring (slot 6, South, world z≈+4160): d=√(600²+2860²)≈2922wu
             Far-side ring  (slot 0, North, world z≈-4160): d=√(600²+5460²)≈5493wu
-          Linear fog factor = clamp((d−near)/(far−near), 0, 1).
-          With near=4500, far=9000:
-            near-ring (2922wu): factor = (2922−4500)/4500 → clamped 0.00 → fully clear ✓
-            far-ring  (5493wu): factor = (5493−4500)/4500 = 993/4500 ≈ 0.22 → 22% fog blend
-          At 22% toward dark navy the building colors/textures read clearly — 78% visible.
-          Horizon (9000wu) = 1.00 — full fog at twice ring distance, distant void fades naturally.
-          fog.far rule: MUST stay ≤ camera.far. camera.far raised to 10000 to satisfy constraint
-          (fog.far=9000 < camera.far=10000 ✓). Iris Xe safety: DPR cap [0.55,0.7] unchanged;
-          geometry past 5500wu is sparse (only sky/terrain); fragment cost negligible.
-          R=160 regression post-mortem: old near=3800 with far-ring at 5493wu → 0.56 factor →
-          44% fog blend → buildings near-invisible against dark FOG_COLOR. Increasing R from
-          160→130 didn't help enough alone; fog near/far must track ring radius. */}
-      <fog attach="fog" args={[FOG_COLOR, 4500, 9000]} />
+          With near=6000, far=15000:
+            near-ring (2922wu):  factor = clamp((2922−6000)/9000, 0, 1) = 0.00 → fully clear ✓
+            far-ring  (5493wu):  factor = clamp((5493−6000)/9000, 0, 1) = 0.00 → fully clear ✓ (FIX)
+            mid       (10000wu): factor = (10000−6000)/9000 ≈ 0.44 → gradual fade
+            horizon   (15000wu): factor = 1.00 → full fog at horizon
+          fog.far rule: camera.far raised 10000→16000 to satisfy fog.far(15000) ≤ camera.far(16000). */}
+      <fog attach="fog" args={[FOG_COLOR, 6000, 15000]} />
 
       {/* Shared world geometry */}
       <ArenaTerrain />
@@ -975,7 +971,7 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
         camera={{
           fov: 50,
           near: 1,
-          far: 10000,
+          far: 16000,
           // Game mode: tighter starting position reinforces the bigger buildings/characters.
           // Pulled in from [0,700,1600] after proportions pass (2026-04-16).
           position: mode === 'game' ? [0, 600, 1300] : [0, 560, 1000],
