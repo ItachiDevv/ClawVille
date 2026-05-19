@@ -206,7 +206,7 @@ describe('verifier.sampleIntFromBytes — parity', () => {
 describe('verifier.runSpinLocal — byte-identity', () => {
   it('matches the server slot-engine output for the canonical fixture', async () => {
     // Expected = output of `runSpin({serverSeed:'a'*64, clientSeed:'abcd1234',
-    // nonce:0, cursor:0, bet:20n, paytableId:'classic-3x5'})`. Captured
+    // nonce:0, cursor:0, predict:20n, paytableId:'classic-3x5'})`. Captured
     // by executing the server engine separately during slice 5 authoring.
     const result = await runSpinLocal({
       paytableId: 'classic-3x5',
@@ -214,7 +214,7 @@ describe('verifier.runSpinLocal — byte-identity', () => {
       clientSeed: 'abcd1234',
       nonce: 0,
       cursor: 0,
-      bet: 20n,
+      predict: 20n,
     });
     expect(result.reels).toEqual([
       [7, 1, 1],
@@ -241,7 +241,7 @@ describe('verifier.runSpinLocal — byte-identity', () => {
       clientSeed: 'abcd1234',
       nonce: 0,
       cursor: 0,
-      bet: 20n,
+      predict: 20n,
     });
     const b = await runSpinLocal({
       paytableId: 'classic-3x5',
@@ -249,12 +249,12 @@ describe('verifier.runSpinLocal — byte-identity', () => {
       clientSeed: 'abcd1234',
       nonce: 0,
       cursor: 100,
-      bet: 20n,
+      predict: 20n,
     });
     expect(a.reels).not.toEqual(b.reels);
   });
 
-  it('rejects bet not divisible by line count (20)', async () => {
+  it('rejects predict not divisible by line count (20)', async () => {
     await expect(
       runSpinLocal({
         paytableId: 'classic-3x5',
@@ -262,7 +262,7 @@ describe('verifier.runSpinLocal — byte-identity', () => {
         clientSeed: 'abcd1234',
         nonce: 0,
         cursor: 0,
-        bet: 25n, // not % 20
+        predict: 25n, // not % 20
       }),
     ).rejects.toThrow(/divisible/);
   });
@@ -285,7 +285,7 @@ describe('verifier.evaluateReelsLocal', () => {
     ];
     const { winAmount, winningLines } = evaluateReelsLocal(reels, 'classic-3x5', 20n);
     // Line 0 is rows [1,1,1,1,1] — middle row all Cherries → 5-of-kind = payouts[3]=20.
-    // perLineBet = 20 / 20 = 1. So at least line 0 contributes 20.
+    // perLinePredict = 20 / 20 = 1. So at least line 0 contributes 20.
     const line0 = winningLines.find((l) => l.lineIndex === 0);
     expect(line0).toBeDefined();
     expect(line0!.multiplier).toBe(20);
@@ -306,7 +306,7 @@ describe('verifier.replaySpin', () => {
       clientSeed: 'abcd1234',
       nonce: 0,
       cursor: 0,
-      bet: 20n,
+      predict: 20n,
       expected: {
         reels: [
           [7, 1, 1],
@@ -330,7 +330,7 @@ describe('verifier.replaySpin', () => {
       clientSeed: 'abcd1234',
       nonce: 0,
       cursor: 0,
-      bet: 20n,
+      predict: 20n,
       expected: {
         reels: [
           [7, 1, 1],
@@ -354,7 +354,7 @@ describe('verifier.replaySpin', () => {
       clientSeed: 'abcd1234',
       nonce: 0,
       cursor: 0,
-      bet: 20n,
+      predict: 20n,
       expected: {
         reels: [
           [7, 1, 1],

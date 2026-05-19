@@ -15,7 +15,7 @@
  *   2. Fetch ALL spins (limit=200) via /session/:id/spins.
  *   3. For each spin: run browser `replaySpin()` using
  *      (session.serverSeed, session.clientSeed, spin.nonce, spin.cursorBefore,
- *      spin.bet) and compare reels[][] + winAmount + cursorAfter.
+ *      spin.predict) and compare reels[][] + winAmount + cursorAfter.
  *   4. Show table: green/red per row, divergence reasons, summary line at top.
  */
 
@@ -84,7 +84,7 @@ export default function SessionVerifyPage({ params }: PageProps) {
             clientSeed: session.clientSeed,
             nonce: spin.nonce,
             cursor: spin.cursorBefore,
-            bet: BigInt(spin.bet),
+            predict: BigInt(spin.predict),
             expected: {
               reels: spin.reels,
               winAmount: spin.winAmount,
@@ -331,7 +331,7 @@ function SpinsTable({
           <tr style={{ color: 'rgba(0,255,224,0.75)', textAlign: 'left' }}>
             <th style={th()}>nonce</th>
             <th style={th()}>cursorBefore → cursorAfter</th>
-            <th style={th()}>bet</th>
+            <th style={th()}>predict</th>
             <th style={th()}>winAmount (server)</th>
             <th style={th()}>winAmount (local)</th>
             <th style={th()}>verdict</th>
@@ -355,7 +355,7 @@ function SpinsTable({
               >
                 <td style={td()}>{spin.nonce}</td>
                 <td style={td()}>{spin.cursorBefore} → {spin.cursorAfter}</td>
-                <td style={td()}>{spin.bet}</td>
+                <td style={td()}>{spin.predict}</td>
                 <td style={td()}>{spin.winAmount}</td>
                 <td style={td()}>{computedWin ?? '…'}</td>
                 <td style={td()}>

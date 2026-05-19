@@ -6,7 +6,7 @@
  * Mirrors the shipped contract in `apps/api/src/routes/casino-slots.types.ts`.
  * Every wire field that the server emits as a stringified bigint stays a
  * string on the client too — we never `parseInt` or `Number()` a balance,
- * bet, win, or escrow value. The verifier and the UI promote to `bigint`
+ * predict, win, or escrow value. The verifier and the UI promote to `bigint`
  * only at the boundaries where math happens (FX tier derivation, balance
  * pretty-printing where it fits in a JS number).
  *
@@ -105,7 +105,7 @@ export interface SpinResponse {
   freeSpinsAwarded: number;
   isFreeSpin: boolean;
   cursorAfter: number;
-  bet: string;
+  predict: string;
   balance: number;
   escrowRemaining: string;
   totalStaked: string;
@@ -122,7 +122,7 @@ export interface OpenSessionResponse {
   clientSeed: string;
   startingBalance: string;
   escrowAmount: string;
-  bet: string;
+  predict: string;
   createdAt: string;
 }
 
@@ -172,7 +172,7 @@ export interface SessionSpinRow {
   nonce: number;
   cursorBefore: number;
   cursorAfter: number;
-  bet: string;
+  predict: string;
   isFreeSpin: boolean;
   reels: SymbolId[][];
   winningLines: SerializedWinningLineWire[];
@@ -258,8 +258,8 @@ export const casinoKeys = {
 export interface OpenSlotSessionArgs {
   paytableId: MachineSlug;
   currency: Currency;
-  /** Bet as a string of decimal digits (stringified bigint). */
-  bet: string;
+  /** Predict as a string of decimal digits (stringified bigint). */
+  predict: string;
 }
 
 export function useOpenSlotSession() {
@@ -279,7 +279,7 @@ export function useOpenSlotSession() {
 export interface SpinArgs {
   sessionId: string;
   /** Stringified bigint. Must match session.startingBalance on the slice-3 path. */
-  bet: string;
+  predict: string;
   /** Caller-minted UUID. Re-use on retry to dedupe; mint fresh on a new spin press. */
   idempotencyKey: string;
 }
@@ -287,11 +287,11 @@ export interface SpinArgs {
 export function useSpin() {
   const qc = useQueryClient();
   return useMutation<SpinResponse, CasinoApiError, SpinArgs>({
-    mutationFn: ({ sessionId, bet, idempotencyKey }) =>
+    mutationFn: ({ sessionId, predict, idempotencyKey }) =>
       casinoFetch<SpinResponse>('/api/casino/slots/spin', {
         method: 'POST',
         headers: { 'Idempotency-Key': idempotencyKey },
-        body: JSON.stringify({ sessionId, bet }),
+        body: JSON.stringify({ sessionId, predict }),
       }),
     onSuccess: (_data, vars) => {
       // Invalidate session detail so any open viewer sees fresh counters.
@@ -299,7 +299,7 @@ export function useSpin() {
     },
     // No retry on spin — the idempotency key is intended for caller-managed
     // retries, not blind react-query auto-retry which would mint duplicate
-    // requests with the same key and hit our 409 guard on bet mismatch.
+    // requests with the same key and hit our 409 guard on predict mismatch.
     retry: false,
   });
 }
@@ -398,7 +398,7 @@ export interface VerifySpinArgs {
   nonce: number;
   cursor: number;
   /** Stringified bigint. */
-  bet: string;
+  predict: string;
 }
 
 export function useVerifySpinRemote() {
@@ -423,10 +423,10 @@ export function describeCasinoError(err: unknown): string {
     case 400:
       // Surface specific 400 codes that the user can fix.
       if (err.code?.startsWith('insufficient_clawtokens')) {
-        return 'Not enough ClawTokens for that bet.';
+        return 'Not enough ClawTokens for that predict.';
       }
-      if (err.code === 'bet_must_equal_session_reserved_bet') {
-        return 'Bet was changed mid-session. Cash out and start a new session to bet differently.';
+      if (err.code === 'predict_must_equal_session_reserved_predict') {
+        return 'Predict was changed mid-session. Cash out and start a new session to predict differently.';
       }
       if (err.code === 'missing_idempotency_key_header') {
         return 'Internal error: missing idempotency key. Refresh and try again.';
@@ -446,7 +446,7 @@ export function describeCasinoError(err: unknown): string {
         return 'A concurrent spin won the race. Press spin again.';
       }
       if (err.code?.startsWith('idempotency_key_reused')) {
-        return 'Spin was retried with a different bet. Press spin to mint a fresh ticket.';
+        return 'Spin was retried with a different predict. Press spin to mint a fresh ticket.';
       }
       if (err.code?.startsWith('session_not_open')) {
         return 'That session is no longer open.';

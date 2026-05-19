@@ -110,7 +110,7 @@ describe('runSpin — determinism', () => {
       clientSeed: CLIENT_SEED,
       nonce: 0,
       cursor: 0,
-      bet: 20n,
+      predict: 20n,
     });
     const b = runSpin({
       paytableId: 'classic-3x5',
@@ -118,7 +118,7 @@ describe('runSpin — determinism', () => {
       clientSeed: CLIENT_SEED,
       nonce: 0,
       cursor: 0,
-      bet: 20n,
+      predict: 20n,
     });
     expect(JSON.stringify(a, (_, v) => (typeof v === 'bigint' ? `${v}n` : v))).toBe(
       JSON.stringify(b, (_, v) => (typeof v === 'bigint' ? `${v}n` : v)),
@@ -135,7 +135,7 @@ describe('runSpin — determinism', () => {
       clientSeed: CLIENT_SEED,
       nonce: 0,
       cursor: 0,
-      bet: 20n,
+      predict: 20n,
     });
     const b = runSpin({
       paytableId: 'classic-3x5',
@@ -143,7 +143,7 @@ describe('runSpin — determinism', () => {
       clientSeed: CLIENT_SEED,
       nonce: 0,
       cursor: 0,
-      bet: 20n,
+      predict: 20n,
     });
     // Both grids being identical across 5 reels is cryptographically
     // negligible (≈ 1 / 40^5 ≈ 1e-8) so this is a safe assertion.
@@ -157,7 +157,7 @@ describe('runSpin — determinism', () => {
       clientSeed: CLIENT_SEED,
       nonce: 0,
       cursor: 0,
-      bet: 20n,
+      predict: 20n,
     });
     const b = runSpin({
       paytableId: 'classic-3x5',
@@ -165,7 +165,7 @@ describe('runSpin — determinism', () => {
       clientSeed: CLIENT_SEED,
       nonce: 1,
       cursor: 0,
-      bet: 20n,
+      predict: 20n,
     });
     expect(a.reels).not.toEqual(b.reels);
   });
@@ -177,7 +177,7 @@ describe('runSpin — determinism', () => {
       clientSeed: CLIENT_SEED,
       nonce: 0,
       cursor: 0,
-      bet: 20n,
+      predict: 20n,
     });
     const b = runSpin({
       paytableId: 'classic-3x5',
@@ -185,7 +185,7 @@ describe('runSpin — determinism', () => {
       clientSeed: CLIENT_SEED,
       nonce: 0,
       cursor: 100,
-      bet: 20n,
+      predict: 20n,
     });
     expect(a.reels).not.toEqual(b.reels);
   });
@@ -207,7 +207,7 @@ describe('runSpin — reel correctness', () => {
     const actual = runSpin({
       paytableId: 'classic-3x5',
       ...args,
-      bet: 20n,
+      predict: 20n,
     });
     expect(actual.reels).toEqual(expected.reels);
     expect(actual.cursorAfter).toBe(expected.cursorAfter);
@@ -220,7 +220,7 @@ describe('runSpin — reel correctness', () => {
       clientSeed: CLIENT_SEED,
       nonce: 0,
       cursor: 0,
-      bet: 20n,
+      predict: 20n,
     });
     expect(result.reels.length).toBe(5);
     for (const reel of result.reels) {
@@ -239,7 +239,7 @@ describe('runSpin — reel correctness', () => {
       clientSeed: CLIENT_SEED,
       nonce: 0,
       cursor: 0,
-      bet: 20n,
+      predict: 20n,
     });
     expect(result.cursorAfter).toBeGreaterThanOrEqual(20);
     // Each sample is 4 bytes; rejection sampling may take extra. So
@@ -262,7 +262,7 @@ describe('runSpin — reel correctness', () => {
     const actual = runSpin({
       paytableId: 'classic-3x5',
       ...args,
-      bet: 20n,
+      predict: 20n,
     });
     expect(actual.cursorAfter).toBe(expected.cursorAfter);
   });
@@ -280,7 +280,7 @@ describe('evaluateReels — wild substitution', () => {
     const middleLineWin = winningLines.find((w) => w.lineIndex === 0);
     expect(middleLineWin).toBeDefined();
     expect(middleLineWin!.multiplier).toBe(findSymbol(WILD_ID).payouts[3]); // 5-of-kind Wild = 200
-    // winAmount = perLineBet * multiplier = 1 * 200 = 200n
+    // winAmount = perLinePredict * multiplier = 1 * 200 = 200n
     expect(middleLineWin!.winAmount).toBe(200n);
   });
 
@@ -355,10 +355,10 @@ describe('evaluateReels — wild substitution', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Loss + bet math
+// Loss + predict math
 // ---------------------------------------------------------------------------
 
-describe('evaluateReels — loss + bet math', () => {
+describe('evaluateReels — loss + predict math', () => {
   it('no-match grid returns no winning lines and 0n total', () => {
     // Carefully chosen: each reel's full column (top/mid/bot) is the
     // SAME symbol so every line on that reel sees that symbol, but
@@ -376,8 +376,8 @@ describe('evaluateReels — loss + bet math', () => {
     expect(winAmount).toBe(0n);
   });
 
-  it('perLineBet math: bet=20n, 5-of-kind Cherry on middle line ⇒ 20n win on that line', () => {
-    // perLineBet = 20n / 20n = 1n; multiplier = 20 → 20n total on that line.
+  it('perLinePredict math: predict=20n, 5-of-kind Cherry on middle line ⇒ 20n win on that line', () => {
+    // perLinePredict = 20n / 20n = 1n; multiplier = 20 → 20n total on that line.
     const reels = gridFromMiddle([CHERRY, CHERRY, CHERRY, CHERRY, CHERRY], LEMON);
     const { winningLines } = evaluateReels(reels, 'classic-3x5', 20n);
     const w = winningLines.find((x) => x.lineIndex === 0)!;
@@ -385,8 +385,8 @@ describe('evaluateReels — loss + bet math', () => {
     expect(w.winAmount).toBe(20n);
   });
 
-  it('perLineBet math: bet=400n, 2-of-kind Cherry ⇒ 40n win on that line', () => {
-    // perLineBet = 400n / 20n = 20n; multiplier = 2 → 40n.
+  it('perLinePredict math: predict=400n, 2-of-kind Cherry ⇒ 40n win on that line', () => {
+    // perLinePredict = 400n / 20n = 20n; multiplier = 2 → 40n.
     const reels = gridFromMiddle([CHERRY, CHERRY, ORANGE, PLUM, BELL], LEMON);
     const { winningLines } = evaluateReels(reels, 'classic-3x5', 400n);
     const w = winningLines.find((x) => x.lineIndex === 0)!;
@@ -394,8 +394,8 @@ describe('evaluateReels — loss + bet math', () => {
     expect(w.winAmount).toBe(40n);
   });
 
-  it('perLineBet math: bet=2000n, 5-of-kind Seven ⇒ 80_000n win on that line', () => {
-    // perLineBet = 2000n / 20n = 100n; multiplier = 800 → 80_000n.
+  it('perLinePredict math: predict=2000n, 5-of-kind Seven ⇒ 80_000n win on that line', () => {
+    // perLinePredict = 2000n / 20n = 100n; multiplier = 800 → 80_000n.
     const reels = gridFromMiddle([SEVEN, SEVEN, SEVEN, SEVEN, SEVEN], CHERRY);
     const { winningLines } = evaluateReels(reels, 'classic-3x5', 2000n);
     const w = winningLines.find((x) => x.lineIndex === 0)!;
@@ -403,20 +403,20 @@ describe('evaluateReels — loss + bet math', () => {
     expect(w.winAmount).toBe(80_000n);
   });
 
-  it('rejects bet of 0n', () => {
+  it('rejects predict of 0n', () => {
     const reels = gridFromMiddle([CHERRY, CHERRY, CHERRY, CHERRY, CHERRY], LEMON);
-    expect(() => evaluateReels(reels, 'classic-3x5', 0n)).toThrow(/bet must be > 0/);
+    expect(() => evaluateReels(reels, 'classic-3x5', 0n)).toThrow(/predict must be > 0/);
   });
 
-  it('rejects bet not divisible by 20 (lineCount)', () => {
+  it('rejects predict not divisible by 20 (lineCount)', () => {
     const reels = gridFromMiddle([CHERRY, CHERRY, CHERRY, CHERRY, CHERRY], LEMON);
     expect(() => evaluateReels(reels, 'classic-3x5', 21n)).toThrow(/divisible by lineCount/);
   });
 
-  it('rejects non-bigint bet', () => {
+  it('rejects non-bigint predict', () => {
     const reels = gridFromMiddle([CHERRY, CHERRY, CHERRY, CHERRY, CHERRY], LEMON);
     // @ts-expect-error - intentionally wrong type for runtime guard
-    expect(() => evaluateReels(reels, 'classic-3x5', 20)).toThrow(/bet must be a bigint/);
+    expect(() => evaluateReels(reels, 'classic-3x5', 20)).toThrow(/predict must be a bigint/);
   });
 });
 
@@ -463,7 +463,7 @@ describe('evaluateReels — payline scan', () => {
     expect(line0!.multiplier).toBe(20);
 
     // For every winning line, verify the symbol math is internally
-    // consistent (winAmount = perLineBet × multiplier, perLineBet=1n).
+    // consistent (winAmount = perLinePredict × multiplier, perLinePredict=1n).
     for (const w of winningLines) {
       expect(w.winAmount).toBe(BigInt(w.multiplier));
     }
@@ -475,7 +475,7 @@ describe('evaluateReels — payline scan', () => {
 
   it('full Cherry grid wins on every line with the right multiplier and total', () => {
     // Trivially: if every cell is Cherry, every line is 5-of-kind
-    // Cherry. 20 lines × multiplier 20 × perLineBet 1 = 400n.
+    // Cherry. 20 lines × multiplier 20 × perLinePredict 1 = 400n.
     const reels: SymbolId[][] = Array.from({ length: 5 }, () => [CHERRY, CHERRY, CHERRY]);
     const { winningLines, winAmount } = evaluateReels(reels, 'classic-3x5', 20n);
     expect(winningLines.length).toBe(LINE_COUNT);
@@ -514,7 +514,7 @@ describe('runSpin — top-level invariants', () => {
         clientSeed: CLIENT_SEED,
         nonce,
         cursor: 0,
-        bet: 20n,
+        predict: 20n,
       });
       const sum = result.winningLines.reduce((acc, w) => acc + w.winAmount, 0n);
       expect(sum).toBe(result.winAmount);
@@ -529,7 +529,7 @@ describe('runSpin — top-level invariants', () => {
         clientSeed: CLIENT_SEED,
         nonce,
         cursor: 0,
-        bet: 20n,
+        predict: 20n,
       });
       expect(result.freeSpinsAwarded).toBe(0);
       expect(result.isFreeSpin).toBe(false);
@@ -545,12 +545,12 @@ describe('runSpin — top-level invariants', () => {
         clientSeed: CLIENT_SEED,
         nonce: 0,
         cursor: 0,
-        bet: 20n,
+        predict: 20n,
       }),
     ).toThrow(/unknown paytableId/);
   });
 
-  it('rejects bet=0n', () => {
+  it('rejects predict=0n', () => {
     expect(() =>
       runSpin({
         paytableId: 'classic-3x5',
@@ -558,12 +558,12 @@ describe('runSpin — top-level invariants', () => {
         clientSeed: CLIENT_SEED,
         nonce: 0,
         cursor: 0,
-        bet: 0n,
+        predict: 0n,
       }),
-    ).toThrow(/bet must be > 0/);
+    ).toThrow(/predict must be > 0/);
   });
 
-  it('rejects bet not divisible by lineCount', () => {
+  it('rejects predict not divisible by lineCount', () => {
     expect(() =>
       runSpin({
         paytableId: 'classic-3x5',
@@ -571,7 +571,7 @@ describe('runSpin — top-level invariants', () => {
         clientSeed: CLIENT_SEED,
         nonce: 0,
         cursor: 0,
-        bet: 25n,
+        predict: 25n,
       }),
     ).toThrow(/divisible by lineCount/);
   });
@@ -584,7 +584,7 @@ describe('runSpin — top-level invariants', () => {
         clientSeed: CLIENT_SEED,
         nonce: 0,
         cursor: 1.5,
-        bet: 20n,
+        predict: 20n,
       }),
     ).toThrow(/cursor/);
   });
@@ -597,7 +597,7 @@ describe('runSpin — top-level invariants', () => {
         clientSeed: CLIENT_SEED,
         nonce: 0,
         cursor: -1,
-        bet: 20n,
+        predict: 20n,
       }),
     ).toThrow(/cursor/);
   });
@@ -618,7 +618,7 @@ describe('runSpin — 1000-spin snapshot', () => {
         clientSeed: CLIENT_SEED,
         nonce,
         cursor,
-        bet: 20n,
+        predict: 20n,
       });
       cursor = result.cursorAfter;
       seedHashes.push(
@@ -635,7 +635,7 @@ describe('runSpin — 1000-spin snapshot', () => {
         clientSeed: CLIENT_SEED,
         nonce,
         cursor: replayCursor,
-        bet: 20n,
+        predict: 20n,
       });
       replayCursor = result.cursorAfter;
       const fp = `${result.reels.map((r) => r.join(',')).join('|')}::${result.winAmount}::${result.cursorAfter}`;
@@ -647,7 +647,7 @@ describe('runSpin — 1000-spin snapshot', () => {
     let cursor = 0;
     let totalStake = 0n;
     let totalPayout = 0n;
-    const bet = 20n;
+    const predict = 20n;
     for (let nonce = 0; nonce < 1000; nonce++) {
       const result = runSpin({
         paytableId: 'classic-3x5',
@@ -655,10 +655,10 @@ describe('runSpin — 1000-spin snapshot', () => {
         clientSeed: CLIENT_SEED,
         nonce,
         cursor,
-        bet,
+        predict,
       });
       cursor = result.cursorAfter;
-      totalStake += bet;
+      totalStake += predict;
       totalPayout += result.winAmount;
     }
     // For 1000 spins at 96% RTP target, expected payout is ~0.96 × stake.

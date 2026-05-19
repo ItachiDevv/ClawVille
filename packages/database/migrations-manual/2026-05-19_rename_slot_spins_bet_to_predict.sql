@@ -1,0 +1,23 @@
+-- Phase 6.1 — rename slot_spins.bet → slot_spins.predict.
+--
+-- Context: ClawVille is pivoting to "Predictive Gaming Cove" branding;
+-- the public-facing API/UI must avoid the word "bet" entirely. The
+-- Drizzle schema, Hono routes, Zod schemas, engine types, tests, CLI
+-- flags, frontend client and verifier UI all reference the new column
+-- name as of this commit. This migration brings the deployed DB in
+-- line with the codebase.
+--
+-- Pre-conditions:
+--   - slot_spins.predict does NOT yet exist
+--   - slot_spins.bet exists (added earlier today via raw SQL; 0 rows
+--     in production at the time of writing)
+--
+-- Apply via:
+--   scp .tmp/rename-bet-to-predict.sql <coolify-host>:/tmp/
+--   ssh <coolify-host> "docker exec <api-container> \
+--     psql \"$DATABASE_URL\" -f /tmp/rename-bet-to-predict.sql"
+--
+-- Rollback (only if absolutely required — the codebase will be broken):
+--   ALTER TABLE slot_spins RENAME COLUMN predict TO bet;
+
+ALTER TABLE slot_spins RENAME COLUMN bet TO predict;

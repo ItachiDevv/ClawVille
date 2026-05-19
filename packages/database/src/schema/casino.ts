@@ -85,7 +85,7 @@ export const slotSessions = pgTable(
     // ─── money (stringified bigint so future lamport/µUSDC values survive) ──
     /** Reserved escrow at session open — refunded on close. */
     startingBalance: text('starting_balance').notNull(),
-    /** Current session balance — debited per bet, credited per win. */
+    /** Current session balance — debited per predict, credited per win. */
     currentBalance: text('current_balance').notNull(),
     /** Unused reservation — refunded to the user on close. */
     escrowAmount: text('escrow_amount').notNull().default('0'),
@@ -139,7 +139,7 @@ export const slotSpins = pgTable(
     cursorAfter: bigint('cursor_after', { mode: 'number' }).notNull(),
 
     // ─── wager ────────────────────────────────────────────────────────
-    bet: text('bet').notNull(),
+    predict: text('predict').notNull(),
     isFreeSpin: boolean('is_free_spin').notNull().default(false),
 
     // ─── outcome (JSONB so the verifier can re-derive structurally) ──
