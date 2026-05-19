@@ -12,7 +12,7 @@
 > - **`ARCHITECTURE.md`** — backend routes / services / schema / events / leaderboard rubric.
 > - **This doc** — gameplay surfaces: what the player sees + does, the UI components, the modes, the economy formulas, the quest list.
 
-**Last edit:** 2026-05-18 — Concern 6.0.4 polish pass: Slot UI redesign. New design-token system (`casino-tokens.css`), `useFX` 5-tier FX state machine, NeonButton/NeonCard/NeonModal/BetChips UI primitives, SVG symbol art (Kelp/Anchor/Shell/Pearl/Coin/Crab/Trident/Lobster) replacing emoji, coin+confetti particle bursts, mega-win screen flash + 3s lockout, prefers-reduced-motion honored. SpinResult contract untouched. Prior: Concern 6.0.5 — walkable interior. Prior: Concern 6.0.4 — 2D slot screen (mock data).
+**Last edit:** 2026-05-18 — Concern 6.1.2: backend slot engine landed (`apps/api/src/services/slot-engine.ts`, deterministic, 40+ tests, bigint payouts) — no production callers yet; frontend mock remains live until slice 5. Prior: Concern 6.0.4 polish pass: Slot UI redesign. New design-token system (`casino-tokens.css`), `useFX` 5-tier FX state machine, NeonButton/NeonCard/NeonModal/BetChips UI primitives, SVG symbol art (Kelp/Anchor/Shell/Pearl/Coin/Crab/Trident/Lobster) replacing emoji, coin+confetti particle bursts, mega-win screen flash + 3s lockout, prefers-reduced-motion honored. SpinResult contract untouched. Prior: Concern 6.0.5 — walkable interior. Prior: Concern 6.0.4 — 2D slot screen (mock data).
 
 ---
 
@@ -723,6 +723,8 @@ interface WinningLine { lineIndex: number; symbols: number[]; winAmount: bigint;
 ### 18a.d. Backend / RNG / wager program (Concern 6.1+ — PENDING)
 
 On-chain slot RNG, SOL/USDC wagering, settlement via `clawville_wager` Anchor program. Out of scope for Concerns 6.0.x. See `.claude/plans/phase6-casino-slots.md`.
+
+**2026-05-18:** Phase 6.1 backend math live (`apps/api/src/services/slot-engine.ts`, deterministic, 40+ tests, bigint payouts). No production callers yet — route wiring lands in slice 3. The frontend mock at `apps/web/src/lib/casino/mock-engine.ts` remains live until slice 5.
 
 ### 18a.e. Walkable interior + slot cabinet props (Concern 6.0.5 — SHIPPED)
 
