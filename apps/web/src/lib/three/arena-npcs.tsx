@@ -427,7 +427,7 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     initialVisible: true,
     fadeNear: 800,
     fadeFar: 3000,
-    fadeBaseOpacity: 0.65,
+    fadeBaseOpacity: 0.85,
     occlude: true,
   });
 
@@ -737,39 +737,85 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
           <primitive object={cloned} />
         </group>
       </group>
-      {/* Name label — minimal uppercase wordmark, no pill background.
-          Opacity managed by WorldLabelsOverlay distance fade + occlusion.
-          OpenClaw indicator: small green dot instead of chip text. */}
+      {/* Bio-luminescent NPC label — Fraunces serif capsule + dashed-cyan tether + pulsing anchor dot.
+          Rig stack (top→bottom): capsule → tether → anchor-dot.
+          transform: translateY(-50%) on the rig wrapper shifts the rig UP by half its height so
+          the anchor dot (at the rig bottom) lands at the overlay's projected screen point (= head). */}
       <WorldLabel divRef={labelRef}>
-        <span
+        <div
           style={{
-            display: 'inline-flex',
+            display: 'flex',
+            flexDirection: 'column',
             alignItems: 'center',
-            gap: 4,
-            whiteSpace: 'nowrap',
-            userSelect: 'none',
-            color: '#fff',
-            fontSize: 10,
-            fontWeight: 600,
-            letterSpacing: '0.08em',
-            textTransform: 'uppercase',
-            textShadow: '0 0 3px #000, 0 1px 2px #000, -1px 0 2px #000, 1px 0 2px #000',
+            transform: 'translateY(-50%)',
+            // Per-label stagger so 30 NPCs don't all pulse in unison.
+            // idToSeed returns a float; mod 10 / 10 gives [0, 0.9] in 0.1 steps.
+            ['--label-phase' as string]: String(Math.round(idToSeed(npc.id)) % 10 / 10),
           }}
         >
-          {npc.name}
-          {npc.isOpenClaw && (
-            <span
-              title="OpenClaw agent"
-              style={{
-                color: '#10b981',
-                fontSize: 7,
-                lineHeight: 1,
-              }}
-            >
-              ●
-            </span>
-          )}
-        </span>
+          {/* Glowing Fraunces capsule */}
+          <div
+            style={{
+              fontFamily: 'var(--font-fraunces, "Cormorant Garamond", "Spectral", Georgia, serif)',
+              fontVariationSettings: '"opsz" 9',
+              fontWeight: 480,
+              fontSize: 13,
+              color: '#effeff',
+              padding: '5px 11px 6px',
+              borderRadius: 999,
+              background: 'radial-gradient(ellipse at center, rgba(80,220,255,0.12), rgba(80,220,255,0.04))',
+              boxShadow: '0 0 14px rgba(100,230,255,0.55), 0 0 38px -4px rgba(80,220,255,0.45), inset 0 0 12px rgba(180,245,255,0.18)',
+              whiteSpace: 'nowrap',
+              letterSpacing: '0.01em',
+              lineHeight: 1,
+              userSelect: 'none',
+              animation: 'bio-drift 5.4s ease-in-out infinite',
+              animationDelay: 'calc(var(--label-phase, 0) * -5.4s)',
+            }}
+          >
+            {npc.isOpenClaw && (
+              <span
+                className="oc-status-dot"
+                title="OpenClaw agent"
+                style={{
+                  display: 'inline-block',
+                  width: 6,
+                  height: 6,
+                  borderRadius: '50%',
+                  background: '#4ade80',
+                  marginRight: 6,
+                  verticalAlign: 'middle',
+                  boxShadow: '0 0 8px rgba(74,222,128,0.8)',
+                }}
+              />
+            )}
+            {npc.name}
+          </div>
+          {/* Dashed-cyan tether */}
+          <div
+            style={{
+              width: 1,
+              height: 38,
+              backgroundImage: 'linear-gradient(rgba(140,240,255,0.78) 50%, transparent 50%)',
+              backgroundSize: '1px 6px',
+              backgroundRepeat: 'repeat-y',
+              boxShadow: '0 0 6px rgba(120,240,255,0.55)',
+              marginBottom: 2,
+            }}
+          />
+          {/* Pulsing anchor dot — glow lives on ::after pseudo (compositor-safe) */}
+          <div
+            className="bio-anchor"
+            style={{
+              width: 5,
+              height: 5,
+              borderRadius: '50%',
+              background: 'rgba(160,234,255,1)',
+              animation: 'bio-pulse 2.4s ease-in-out infinite',
+              animationDelay: 'calc(var(--label-phase, 0) * -2.4s)',
+            }}
+          />
+        </div>
       </WorldLabel>
     </group>
   );
@@ -802,7 +848,7 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     initialVisible: true,
     fadeNear: 800,
     fadeFar: 3000,
-    fadeBaseOpacity: 0.65,
+    fadeBaseOpacity: 0.85,
     occlude: true,
   });
 
@@ -1055,38 +1101,78 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
         scale={[vrmRenderScale, vrmRenderScale, vrmRenderScale]}
         position={[0, vrmFootOffsetY, 0]}
       />
-      {/* Name label — minimal uppercase wordmark, matching GLBNpcMesh style.
-          Opacity managed by WorldLabelsOverlay distance fade + occlusion. */}
+      {/* Bio-luminescent NPC label — same rig as GLBNpcMesh. */}
       <WorldLabel divRef={labelRef}>
-        <span
+        <div
           style={{
-            display: 'inline-flex',
+            display: 'flex',
+            flexDirection: 'column',
             alignItems: 'center',
-            gap: 4,
-            whiteSpace: 'nowrap',
-            userSelect: 'none',
-            color: '#fff',
-            fontSize: 10,
-            fontWeight: 600,
-            letterSpacing: '0.08em',
-            textTransform: 'uppercase',
-            textShadow: '0 0 3px #000, 0 1px 2px #000, -1px 0 2px #000, 1px 0 2px #000',
+            transform: 'translateY(-50%)',
+            ['--label-phase' as string]: String(Math.round(idToSeed(npc.id)) % 10 / 10),
           }}
         >
-          {npc.name}
-          {npc.isOpenClaw && (
-            <span
-              title="OpenClaw agent"
-              style={{
-                color: '#10b981',
-                fontSize: 7,
-                lineHeight: 1,
-              }}
-            >
-              ●
-            </span>
-          )}
-        </span>
+          <div
+            style={{
+              fontFamily: 'var(--font-fraunces, "Cormorant Garamond", "Spectral", Georgia, serif)',
+              fontVariationSettings: '"opsz" 9',
+              fontWeight: 480,
+              fontSize: 13,
+              color: '#effeff',
+              padding: '5px 11px 6px',
+              borderRadius: 999,
+              background: 'radial-gradient(ellipse at center, rgba(80,220,255,0.12), rgba(80,220,255,0.04))',
+              boxShadow: '0 0 14px rgba(100,230,255,0.55), 0 0 38px -4px rgba(80,220,255,0.45), inset 0 0 12px rgba(180,245,255,0.18)',
+              whiteSpace: 'nowrap',
+              letterSpacing: '0.01em',
+              lineHeight: 1,
+              userSelect: 'none',
+              animation: 'bio-drift 5.4s ease-in-out infinite',
+              animationDelay: 'calc(var(--label-phase, 0) * -5.4s)',
+            }}
+          >
+            {npc.isOpenClaw && (
+              <span
+                className="oc-status-dot"
+                title="OpenClaw agent"
+                style={{
+                  display: 'inline-block',
+                  width: 6,
+                  height: 6,
+                  borderRadius: '50%',
+                  background: '#4ade80',
+                  marginRight: 6,
+                  verticalAlign: 'middle',
+                  boxShadow: '0 0 8px rgba(74,222,128,0.8)',
+                }}
+              />
+            )}
+            {npc.name}
+          </div>
+          <div
+            style={{
+              width: 1,
+              height: 38,
+              backgroundImage: 'linear-gradient(rgba(140,240,255,0.78) 50%, transparent 50%)',
+              backgroundSize: '1px 6px',
+              backgroundRepeat: 'repeat-y',
+              boxShadow: '0 0 6px rgba(120,240,255,0.55)',
+              marginBottom: 2,
+            }}
+          />
+          {/* Pulsing anchor dot — glow lives on ::after pseudo (compositor-safe) */}
+          <div
+            className="bio-anchor"
+            style={{
+              width: 5,
+              height: 5,
+              borderRadius: '50%',
+              background: 'rgba(160,234,255,1)',
+              animation: 'bio-pulse 2.4s ease-in-out infinite',
+              animationDelay: 'calc(var(--label-phase, 0) * -2.4s)',
+            }}
+          />
+        </div>
       </WorldLabel>
     </group>
   );
