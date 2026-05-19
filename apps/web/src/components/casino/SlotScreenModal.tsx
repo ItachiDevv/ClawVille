@@ -35,6 +35,9 @@ import {
 import SlotHUD from './SlotHUD';
 import WinCelebration from './WinCelebration';
 import PaytableModal from './PaytableModal';
+import FreeSpinBanner from './FreeSpinBanner';
+import WildMultiplierBadge from './WildMultiplierBadge';
+import ScatterCelebration, { type ScatterCell } from './ScatterCelebration';
 import { NeonButton } from './ui';
 
 // Import design tokens once at the module level.
@@ -132,6 +135,24 @@ export default function SlotScreenModal() {
   // Current reel window to display
   const [displayWindow, setDisplayWindow] = useState<number[][] | null>(null);
   const [pendingWinLines, setPendingWinLines] = useState<SpinResult['winningLines']>([]);
+
+  // ── Phase 6.1.5 bonus-mechanic display state ─────────────────────────────
+  // Carries the LAST-LANDED spin's bonus fields into the overlay components.
+  // Reset on modal close. `bonusTriggerId` flips per landed spin so the
+  // banner + sparkle effects re-trigger on every fresh land (incl. retrigger
+  // on a free-spin chain).
+  const [lastWildMultipliers, setLastWildMultipliers] = useState<SpinResult['wildMultipliers']>([]);
+  const [lastScatterCells, setLastScatterCells] = useState<ScatterCell[]>([]);
+  const [lastScatterPayout, setLastScatterPayout] = useState<bigint>(0n);
+  const [lastFreeSpinsAwarded, setLastFreeSpinsAwarded] = useState(0);
+  const [lastIsFreeSpin, setLastIsFreeSpin] = useState(false);
+  const [bonusTriggerId, setBonusTriggerId] = useState(0);
+  // Phase 6.1.5 — session-level FS state from the most-recent
+  // SpinResponse. `inFreeSpin` drives the SPIN button label swap;
+  // `freeSpinsRemaining` drives the HUD counter chip. Optional fields
+  // on SpinResponse so pre-bonus rows degrade gracefully.
+  const [inFreeSpin, setInFreeSpin] = useState(false);
+  const [freeSpinsRemaining, setFreeSpinsRemaining] = useState(0);
 
   const spinLockRef = useRef(false);
   const autoplayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -248,6 +269,11 @@ export default function SlotScreenModal() {
       const spinResult = spinResponseToSpinResult(res);
       pendingResultRef.current = spinResult;
       recordSpin(spinResult, res.balance, res.spinCount);
+      // Phase 6.1.5 — session-level FS state. Required on the locked
+      // SpinResponse contract (server returns 'base' / 0 on classic-3x5
+      // and on bonus paytable when no FS budget is active).
+      setInFreeSpin(res.mode === 'free-spin');
+      setFreeSpinsRemaining(res.freeSpinsRemaining);
       // Now we wait for SlotReels to call handleReelsSettled.
     } catch (err) {
       // Restore from the spinning state — the reel anim was never started.
@@ -312,6 +338,27 @@ export default function SlotScreenModal() {
 
     setDisplayWindow(result.reels);
     setPendingWinLines(result.winningLines);
+
+    // Phase 6.1.5 — surface bonus state to the overlay components. We
+    // derive scatter cells from the grid here (id 10 on `classic-3x5-bonus`;
+    // classic-3x5 never has id 10 so the loop is a no-op there). Bumping
+    // `bonusTriggerId` per landed spin re-fires the banner + sparkle
+    // animations even on consecutive retriggers.
+    const SCATTER_ID = 10;
+    const scatterCells: ScatterCell[] = [];
+    for (let r = 0; r < result.reels.length; r++) {
+      const reel = result.reels[r];
+      if (!reel) continue;
+      for (let row = 0; row < reel.length; row++) {
+        if (reel[row] === SCATTER_ID) scatterCells.push({ reelIndex: r, rowIndex: row });
+      }
+    }
+    setLastWildMultipliers(result.wildMultipliers);
+    setLastScatterCells(scatterCells);
+    setLastScatterPayout(result.scatterPayout);
+    setLastFreeSpinsAwarded(result.freeSpinsAwarded);
+    setLastIsFreeSpin(result.isFreeSpin);
+    setBonusTriggerId((prev) => prev + 1);
 
     // Show evaluating state briefly
     setIsEvaluating(true);
@@ -399,6 +446,13 @@ export default function SlotScreenModal() {
       spinIdemKeyRef.current = null;
       setDisplayWindow(null);
       setPendingWinLines([]);
+      setLastWildMultipliers([]);
+      setLastScatterCells([]);
+      setLastScatterPayout(0n);
+      setLastFreeSpinsAwarded(0);
+      setLastIsFreeSpin(false);
+      setInFreeSpin(false);
+      setFreeSpinsRemaining(0);
       setIsEvaluating(false);
       clearSessionMeta();
     }
@@ -548,6 +602,8 @@ export default function SlotScreenModal() {
             isLockedOut={fx.state.isLockedOut}
             autoplayCount={autoplay.count}
             isMuted={muted}
+            inFreeSpin={inFreeSpin}
+            freeSpinsRemaining={freeSpinsRemaining}
             onPredictChange={handlePredictChange}
             onSpin={() => { void doSpin(); }}
             onAutoplayChange={handleAutoplayChange}
@@ -617,14 +673,60 @@ export default function SlotScreenModal() {
               Predictive Gaming Cove
             </div>
 
-            {/* Reel grid */}
-            <SlotReels
-              targetWindow={displayWindow}
-              isSpinning={isSpinning}
-              winningLines={pendingWinLines}
-              onReelsSettled={handleReelsSettled}
-              shakeLevel={fx.state.shakeLevel}
-            />
+            {/*
+              Reel grid wrapper — `position: relative` so the bonus
+              overlays (WildMultiplierBadge / ScatterCelebration) can
+              absolute-position themselves against the SAME origin the
+              SlotReels grid uses (outer padding 8px + per-reel padding
+              4px). Both overlays consume the result of the LAST landed
+              spin and only render when there's content to show.
+              See WildMultiplierBadge.tsx / ScatterCelebration.tsx
+              header comments for the cell-coord math.
+            */}
+            <div
+              style={{
+                position: 'relative',
+                /* Reel grid is intrinsically sized by SlotReels; this
+                   wrapper is just an anchor for absolute overlays. */
+              }}
+            >
+              <SlotReels
+                targetWindow={displayWindow}
+                isSpinning={isSpinning}
+                winningLines={pendingWinLines}
+                onReelsSettled={handleReelsSettled}
+                shakeLevel={fx.state.shakeLevel}
+              />
+
+              {/* Phase 6.1.5 — wild multiplier chips. Empty array on
+                  classic-3x5; non-empty only on bonus paytable spins
+                  where at least one WILD landed in the visible window.
+                  `dimmed={!lastIsFreeSpin}` reflects the RTP-shape
+                  decision: in BASE mode the multiplier is recorded but
+                  not applied to line wins (potential chip); in FS mode
+                  it IS applied (active chip). */}
+              {!isSpinning && lastWildMultipliers.map((wm) => (
+                <WildMultiplierBadge
+                  key={`wm-${bonusTriggerId}-${wm.reelIndex}-${wm.rowIndex}`}
+                  reelIndex={wm.reelIndex}
+                  rowIndex={wm.rowIndex}
+                  multiplier={wm.multiplier}
+                  triggerId={bonusTriggerId}
+                  dimmed={!lastIsFreeSpin}
+                />
+              ))}
+
+              {/* Phase 6.1.5 — scatter sparkle bursts + counter pill.
+                  Fires only when 3+ scatters land AND the spin awarded
+                  a scatter payout (the component itself gates on
+                  `cells.length >= 3` internally). */}
+              <ScatterCelebration
+                cells={lastScatterCells}
+                scatterCount={lastScatterCells.length}
+                scatterPayout={lastScatterPayout}
+                triggerId={bonusTriggerId}
+              />
+            </div>
           </div>
         </div>
 
@@ -783,6 +885,16 @@ export default function SlotScreenModal() {
 
       {/* Win celebration overlay (5-tier dispatcher reads from useFX) */}
       <WinCelebration fx={fx.state} />
+
+      {/* Phase 6.1.5 — free-spin trigger banner. Fires when the last
+          spin awarded freeSpinsAwarded > 0 (`bonusTriggerId` flip drives
+          the show/hide cycle). Component honors prefers-reduced-motion
+          internally. */}
+      <FreeSpinBanner
+        freeSpinsAwarded={lastFreeSpinsAwarded}
+        triggerId={bonusTriggerId}
+        isRetrigger={lastIsFreeSpin}
+      />
 
       {/* Paytable modal — stacks on top of slot modal */}
       <PaytableModal

@@ -52,16 +52,20 @@ export interface SlotSymbolAsset {
  * Order MUST match `CLASSIC_SYMBOLS` in slot-paytables.ts.
  */
 export const CLASSIC_SLOT_SYMBOL_ASSETS: SlotSymbolAsset[] = [
-  { id: 0, svgPath: '/assets/slot-symbols/s0.svg', displayName: 'Cherry',     themeColor: '#d62828' },
-  { id: 1, svgPath: '/assets/slot-symbols/s1.svg', displayName: 'Lemon',      themeColor: '#f1c40f' },
-  { id: 2, svgPath: '/assets/slot-symbols/s2.svg', displayName: 'Orange',     themeColor: '#ff8c42' },
-  { id: 3, svgPath: '/assets/slot-symbols/s3.svg', displayName: 'Plum',       themeColor: '#7c3aed' },
-  { id: 4, svgPath: '/assets/slot-symbols/s4.svg', displayName: 'Bell',       themeColor: '#ffc857' },
-  { id: 5, svgPath: '/assets/slot-symbols/s5.svg', displayName: 'BAR',        themeColor: '#d62828' },
-  { id: 6, svgPath: '/assets/slot-symbols/s6.svg', displayName: 'Seven',      themeColor: '#ff3838' },
-  { id: 7, svgPath: '/assets/slot-symbols/s7.svg', displayName: 'WILD',       themeColor: '#00d4ff' },
-  { id: 8, svgPath: '/assets/slot-symbols/s8.svg', displayName: 'BAR×2',      themeColor: '#c0223a' },
-  { id: 9, svgPath: '/assets/slot-symbols/s9.svg', displayName: 'BAR×3',      themeColor: '#a01828' },
+  { id: 0,  svgPath: '/assets/slot-symbols/s0.svg',  displayName: 'Cherry',  themeColor: '#d62828' },
+  { id: 1,  svgPath: '/assets/slot-symbols/s1.svg',  displayName: 'Lemon',   themeColor: '#f1c40f' },
+  { id: 2,  svgPath: '/assets/slot-symbols/s2.svg',  displayName: 'Orange',  themeColor: '#ff8c42' },
+  { id: 3,  svgPath: '/assets/slot-symbols/s3.svg',  displayName: 'Plum',    themeColor: '#7c3aed' },
+  { id: 4,  svgPath: '/assets/slot-symbols/s4.svg',  displayName: 'Bell',    themeColor: '#ffc857' },
+  { id: 5,  svgPath: '/assets/slot-symbols/s5.svg',  displayName: 'BAR',     themeColor: '#d62828' },
+  { id: 6,  svgPath: '/assets/slot-symbols/s6.svg',  displayName: 'Seven',   themeColor: '#ff3838' },
+  { id: 7,  svgPath: '/assets/slot-symbols/s7.svg',  displayName: 'WILD',    themeColor: '#00d4ff' },
+  { id: 8,  svgPath: '/assets/slot-symbols/s8.svg',  displayName: 'BAR×2',   themeColor: '#c0223a' },
+  { id: 9,  svgPath: '/assets/slot-symbols/s9.svg',  displayName: 'BAR×3',   themeColor: '#a01828' },
+  // Phase 6.1.5 — Bundle B scatter (Treasure Chest). NOT a wild.
+  // Pays anywhere (no payline restriction); 3/4/5 anywhere triggers
+  // 2×/10×/50× total predict + 10 free spins (capped retrigger at 50).
+  { id: 10, svgPath: '/assets/slot-symbols/s10.svg', displayName: 'Scatter', themeColor: '#ffd778' },
 ];
 
 /**
