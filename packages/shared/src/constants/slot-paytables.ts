@@ -121,17 +121,23 @@ export interface SlotSymbolDef {
   isScatter?: boolean;
 }
 
+// Phase 6.1.10 RTP retune to 94%. Iterative tune:
+//   v1 (–25% on 5-of, –15% on 4-of): overcut to 89.6% on 100k MC.
+//   v2 (–12% on 5-of, –7% on 4-of):  target 94.0% ±0.5.
+// Strategy: 5-of-kind takes the biggest visible trim (rarest hit, smallest
+// contribution to RTP per unit cut), 4-of-kind gets a smaller trim, 3-of-
+// and 2-of-kind untouched so frequent small wins still feel "alive".
 export const CLASSIC_SYMBOLS: SlotSymbolDef[] = [
-  { id: 0, name: 'Cherry',     emoji: '🍒', color: '#d62828', payouts: [2,  5,   10,  20]  },
-  { id: 1, name: 'Lemon',      emoji: '🍋', color: '#f1c40f', payouts: [2,  5,   15,  25]  },
-  { id: 2, name: 'Orange',     emoji: '🍊', color: '#ff8c42', payouts: [3,  8,   20,  35]  },
-  { id: 3, name: 'Plum',       emoji: '🍇', color: '#7c3aed', payouts: [4,  12,  30,  60]  },
-  { id: 4, name: 'Bell',       emoji: '🔔', color: '#ffc857', payouts: [5,  20,  50,  100] },
-  { id: 5, name: 'BAR',        emoji: '🎰', color: '#d62828', payouts: [10, 40,  100, 250] },
-  { id: 6, name: 'Seven',      emoji: '7️⃣', color: '#ff3838', payouts: [20, 100, 300, 800] },
-  { id: 7, name: 'WILD',       emoji: '🦈', color: '#00d4ff', payouts: [5,  25,  75,  200], isWild: true },
-  { id: 8, name: 'BAR×2',      emoji: '🎰', color: '#c0223a', payouts: [12, 50,  125, 300] },
-  { id: 9, name: 'BAR×3',      emoji: '🎰', color: '#a01828', payouts: [15, 60,  150, 400] },
+  { id: 0, name: 'Cherry',     emoji: '🍒', color: '#d62828', payouts: [2,  5,   10,  18]  },
+  { id: 1, name: 'Lemon',      emoji: '🍋', color: '#f1c40f', payouts: [2,  5,   14,  22]  },
+  { id: 2, name: 'Orange',     emoji: '🍊', color: '#ff8c42', payouts: [3,  8,   18,  30]  },
+  { id: 3, name: 'Plum',       emoji: '🍇', color: '#7c3aed', payouts: [4,  12,  27,  52]  },
+  { id: 4, name: 'Bell',       emoji: '🔔', color: '#ffc857', payouts: [5,  20,  45,  85]  },
+  { id: 5, name: 'BAR',        emoji: '🎰', color: '#d62828', payouts: [10, 40,  90,  215] },
+  { id: 6, name: 'Seven',      emoji: '7️⃣', color: '#ff3838', payouts: [20, 100, 270, 700] },
+  { id: 7, name: 'WILD',       emoji: '🦈', color: '#00d4ff', payouts: [5,  25,  68,  170], isWild: true },
+  { id: 8, name: 'BAR×2',      emoji: '🎰', color: '#c0223a', payouts: [12, 50,  110, 260] },
+  { id: 9, name: 'BAR×3',      emoji: '🎰', color: '#a01828', payouts: [15, 60,  130, 340] },
 ];
 
 // ---------------------------------------------------------------------------
@@ -179,7 +185,7 @@ export const CLASSIC_PAYTABLE = {
   symbols: CLASSIC_SYMBOLS,
   lines: CLASSIC_LINES,
   reelStrips: CLASSIC_REEL_STRIPS,
-  rtp: 0.96,
+  rtp: 0.94,
 };
 
 // ===========================================================================
@@ -212,25 +218,25 @@ export const CLASSIC_PAYTABLE = {
 //   wildless outer reels so symbol budget stays 84).
 // ===========================================================================
 
+// Phase 6.1.10 RTP retune to 94% combined.
+// Mirrors classic-3x5 v2 cuts. Orange/Plum bonus bumps retained but pulled
+// back slightly so the bonus paytable still feels richer-than-classic on
+// line wins without overshooting combined RTP.
 export const BONUS_SYMBOLS: SlotSymbolDef[] = [
-  // Ids 0-9 — Lemon 2-of-kind bumps from 2× → 3× to lift base RTP back
-  // near classic-3x5's 96% after the scatter cells (3 per reel) cool it
-  // via line breaks. Wild density reduced to 3 center reels (R1/R2) so
-  // FS-mode wild-multiplier contribution stays modest.
-  { id: 0, name: 'Cherry',     emoji: '🍒', color: '#d62828', payouts: [2,  5,   10,  20]  },
-  { id: 1, name: 'Lemon',      emoji: '🍋', color: '#f1c40f', payouts: [2,  5,   15,  25]  },
-  { id: 2, name: 'Orange',     emoji: '🍊', color: '#ff8c42', payouts: [3,  9,   22,  38]  },
-  { id: 3, name: 'Plum',       emoji: '🍇', color: '#7c3aed', payouts: [4,  14,  34,  68]  },
-  { id: 4, name: 'Bell',       emoji: '🔔', color: '#ffc857', payouts: [5,  20,  50,  100] },
-  { id: 5, name: 'BAR',        emoji: '🎰', color: '#d62828', payouts: [10, 40,  100, 250] },
-  { id: 6, name: 'Seven',      emoji: '7️⃣', color: '#ff3838', payouts: [20, 100, 300, 800] },
-  { id: 7, name: 'WILD',       emoji: '🦈', color: '#00d4ff', payouts: [5,  25,  75,  200], isWild: true },
-  { id: 8, name: 'BAR×2',      emoji: '🎰', color: '#c0223a', payouts: [12, 50,  125, 300] },
-  { id: 9, name: 'BAR×3',      emoji: '🎰', color: '#a01828', payouts: [15, 60,  150, 400] },
+  { id: 0, name: 'Cherry',     emoji: '🍒', color: '#d62828', payouts: [2,  5,   10,  18]  },
+  { id: 1, name: 'Lemon',      emoji: '🍋', color: '#f1c40f', payouts: [2,  5,   14,  22]  },
+  { id: 2, name: 'Orange',     emoji: '🍊', color: '#ff8c42', payouts: [3,  9,   20,  32]  },
+  { id: 3, name: 'Plum',       emoji: '🍇', color: '#7c3aed', payouts: [4,  14,  30,  58]  },
+  { id: 4, name: 'Bell',       emoji: '🔔', color: '#ffc857', payouts: [5,  20,  45,  85]  },
+  { id: 5, name: 'BAR',        emoji: '🎰', color: '#d62828', payouts: [10, 40,  90,  215] },
+  { id: 6, name: 'Seven',      emoji: '7️⃣', color: '#ff3838', payouts: [20, 100, 270, 700] },
+  { id: 7, name: 'WILD',       emoji: '🦈', color: '#00d4ff', payouts: [5,  25,  68,  170], isWild: true },
+  { id: 8, name: 'BAR×2',      emoji: '🎰', color: '#c0223a', payouts: [12, 50,  110, 260] },
+  { id: 9, name: 'BAR×3',      emoji: '🎰', color: '#a01828', payouts: [15, 60,  130, 340] },
   // Id 10 — Treasure Chest scatter. `payouts` MUST stay all-zero so the
   // line evaluator's positional-payout lookup (`payouts[matchLen-2]`)
   // returns 0 and the line is skipped. Scatter pay is computed in a
-  // separate engine pass.
+  // separate engine pass (see SCATTER_PAY_TABLE).
   { id: 10, name: 'Scatter',   emoji: '💰', color: '#ffd778', payouts: [0,  0,   0,   0  ], isScatter: true },
 ];
 
@@ -281,7 +287,7 @@ export const CLASSIC_BONUS_PAYTABLE = {
   lines: CLASSIC_LINES,
   reelStrips: BONUS_REEL_STRIPS,
   // Combined RTP target (base line wins + scatter pay + free spins).
-  rtp: 0.98,
+  rtp: 0.94,
 };
 
 /**
@@ -291,7 +297,11 @@ export const CLASSIC_BONUS_PAYTABLE = {
  *
  * Source: Phase 6.1.5 Bundle B spec (3 = 2×, 4 = 10×, 5 = 50×).
  */
-export const SCATTER_PAY_TABLE: readonly number[] = [0, 0, 0, 2, 10, 50];
+// Phase 6.1.10 — scatter pays trimmed to bring bonus combined RTP down to 94%.
+// v1 cut 2/10/50 → 1/6/30, combined with line cuts overshot to 91%. v2 = 2/8/40
+// (smaller scatter trim). Free-spin AWARD untouched (3+ scatters still grant
+// 10 free spins) so the "found the bonus!" feel stays.
+export const SCATTER_PAY_TABLE: readonly number[] = [0, 0, 0, 2, 8, 40];
 
 /**
  * Bundle B free-spin award constants.
@@ -319,8 +329,12 @@ export const SCATTER_PAY_TABLE: readonly number[] = [0, 0, 0, 2, 10, 50];
  */
 export const FREE_SPIN_RULES = {
   TRIGGER_THRESHOLD: 3,
-  AWARD_BASE: 10,
-  AWARD_RETRIGGER: 5,
+  // Phase 6.1.10 RTP retune: AWARD_BASE 10→8, AWARD_RETRIGGER 5→4. With base
+  // payouts already trimmed (~12% on 5-of, ~7% on 4-of) and scatter pays cut
+  // to 2/8/40, the remaining lever for combined RTP is FS award count. Local
+  // 100k MC band post-tune: [93.5%, 94.5%].
+  AWARD_BASE: 8,
+  AWARD_RETRIGGER: 4,
   CAP_REMAINING: 50,
   // RTP-shape lock (team-lead decision 2026-05-19, adversary punch list):
   //   • FS_LINE_WIN_MULTIPLIER=1 — no outer FS scalar on line wins.

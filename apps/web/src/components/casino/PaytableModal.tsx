@@ -239,7 +239,7 @@ export default function PaytableModal({ isOpen, onClose }: PaytableModalProps) {
         fontFamily: 'monospace',
         lineHeight: 1.7,
       }}>
-        Theoretical RTP: <span style={{ color: 'var(--cv-neon-cyan)', fontWeight: 700 }}>96%</span> · 20 paylines · Left-to-right matching
+        Theoretical RTP: <span style={{ color: 'var(--cv-neon-cyan)', fontWeight: 700 }}>94%</span> · 20 paylines · Left-to-right matching
         <br/>
         Wild substitutes any non-scatter symbol · Free spins coming in Phase 6.1
       </div>
