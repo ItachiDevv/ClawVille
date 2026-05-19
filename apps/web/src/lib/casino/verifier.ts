@@ -93,7 +93,7 @@ export interface RunSpinLocalArgs {
   clientSeed: string;
   nonce: number;
   cursor: number;
-  bet: bigint;
+  predict: bigint;
 }
 
 // ---------------------------------------------------------------------------
@@ -381,19 +381,19 @@ export function getVerifierBundle(paytableId: MachineSlug): VerifierBundle {
 export function evaluateReelsLocal(
   reels: readonly (readonly SymbolId[])[],
   paytableId: MachineSlug,
-  bet: bigint,
+  predict: bigint,
 ): { winningLines: WinningLine[]; winAmount: bigint } {
   const bundle = getVerifierBundle(paytableId);
-  if (typeof bet !== 'bigint') {
-    throw new Error(`verifier.evaluateReels: bet must be bigint, got ${typeof bet}`);
+  if (typeof predict !== 'bigint') {
+    throw new Error(`verifier.evaluateReels: predict must be bigint, got ${typeof predict}`);
   }
-  if (bet <= 0n) {
-    throw new Error(`verifier.evaluateReels: bet must be > 0, got ${bet}`);
+  if (predict <= 0n) {
+    throw new Error(`verifier.evaluateReels: predict must be > 0, got ${predict}`);
   }
   const lineCount = BigInt(bundle.lines.length);
-  if (bet % lineCount !== 0n) {
+  if (predict % lineCount !== 0n) {
     throw new Error(
-      `verifier.evaluateReels: bet (${bet}) must be divisible by lineCount (${lineCount})`,
+      `verifier.evaluateReels: predict (${predict}) must be divisible by lineCount (${lineCount})`,
     );
   }
   if (reels.length !== 5) {
@@ -414,7 +414,7 @@ export function evaluateReelsLocal(
     }
   }
 
-  const perLineBet = bet / lineCount;
+  const perLinePredict = predict / lineCount;
   const winningLines: WinningLine[] = [];
   let totalWin = 0n;
 
@@ -449,7 +449,7 @@ export function evaluateReelsLocal(
     const multiplier = symDef.payouts[matchLen - 2] ?? 0;
     if (multiplier <= 0) continue;
 
-    const lineWin = perLineBet * BigInt(multiplier);
+    const lineWin = perLinePredict * BigInt(multiplier);
     winningLines.push({
       lineIndex: line.id,
       symbols: lineSymbols,
@@ -468,16 +468,16 @@ export function evaluateReelsLocal(
 
 export async function runSpinLocal(args: RunSpinLocalArgs): Promise<SpinResult> {
   const bundle = getVerifierBundle(args.paytableId);
-  if (typeof args.bet !== 'bigint') {
-    throw new Error(`verifier.runSpin: bet must be bigint, got ${typeof args.bet}`);
+  if (typeof args.predict !== 'bigint') {
+    throw new Error(`verifier.runSpin: predict must be bigint, got ${typeof args.predict}`);
   }
-  if (args.bet <= 0n) {
-    throw new Error(`verifier.runSpin: bet must be > 0, got ${args.bet}`);
+  if (args.predict <= 0n) {
+    throw new Error(`verifier.runSpin: predict must be > 0, got ${args.predict}`);
   }
   const lineCount = BigInt(bundle.lines.length);
-  if (args.bet % lineCount !== 0n) {
+  if (args.predict % lineCount !== 0n) {
     throw new Error(
-      `verifier.runSpin: bet (${args.bet}) must be divisible by lineCount (${lineCount})`,
+      `verifier.runSpin: predict (${args.predict}) must be divisible by lineCount (${lineCount})`,
     );
   }
   if (!Number.isInteger(args.cursor) || args.cursor < 0) {
@@ -505,7 +505,7 @@ export async function runSpinLocal(args: RunSpinLocalArgs): Promise<SpinResult> 
     reels[r] = [top, middle, bottom];
   }
 
-  const { winningLines, winAmount } = evaluateReelsLocal(reels, args.paytableId, args.bet);
+  const { winningLines, winAmount } = evaluateReelsLocal(reels, args.paytableId, args.predict);
 
   return {
     reels,
@@ -527,7 +527,7 @@ export interface SpinReplayInput {
   clientSeed: string;
   nonce: number;
   cursor: number;
-  bet: bigint;
+  predict: bigint;
   /** What the server stored for this spin (already-serialized winAmount string). */
   expected: {
     reels: SymbolId[][];
@@ -549,7 +549,7 @@ export async function replaySpin(input: SpinReplayInput): Promise<SpinReplayVerd
     clientSeed: input.clientSeed,
     nonce: input.nonce,
     cursor: input.cursor,
-    bet: input.bet,
+    predict: input.predict,
   });
 
   const reasons: string[] = [];

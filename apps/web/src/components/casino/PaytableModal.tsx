@@ -140,7 +140,7 @@ export default function PaytableModal({ isOpen, onClose }: PaytableModalProps) {
 
       {/* Symbol payouts */}
       <NeonCard
-        title="Symbol Payouts (× Bet)"
+        title="Symbol Payouts (× Predict)"
         style={{ marginBottom: 'var(--cv-space-5)' }}
       >
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 'var(--cv-space-2)' }}>

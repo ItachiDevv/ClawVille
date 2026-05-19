@@ -63,16 +63,17 @@ function initAutoplay(count: AutoplayValue): AutoplayState {
 }
 
 /**
- * The slice-3 server requires `spin.bet === session.startingBalance`,
- * which is `bet * 1` (single line bet * 20-line stake). The bet picker
- * sets per-spin total stake in multiples of 20 (line count). Multiplying
- * here keeps the modal's "bet=10" UX while shipping total-stake=200 etc.
+ * The slice-3 server requires `spin.predict === session.startingBalance`,
+ * which is `predict * 1` (single line predict * 20-line stake). The
+ * predict picker sets per-spin total stake in multiples of 20 (line
+ * count). Multiplying here keeps the modal's "predict=10" UX while
+ * shipping total-stake=200 etc.
  * Easier: just use the chip values as the *total* stake — the existing
- * BetChips of 1/5/10/25/50/100 are NOT divisible by 20.
+ * PredictChips of 1/5/10/25/50/100 are NOT divisible by 20.
  *
  * Resolution: clamp the visible chip values to 20-divisible multiples
  * (20/40/100/200/500/1000). The chips array lives in SlotHUD and is the
- * single source of truth for legal bet values.
+ * single source of truth for legal predict values.
  */
 
 // ---------------------------------------------------------------------------
@@ -109,8 +110,8 @@ export default function SlotScreenModal() {
   } = useCasinoStore();
 
   // ── Local UI state ─────────────────────────────────────────────────────
-  // Default bet = 20 (matches CLASSIC_LINES.length, smallest legal total-stake).
-  const [bet, setBet] = useState(20);
+  // Default predict = 20 (matches CLASSIC_LINES.length, smallest legal total-stake).
+  const [predict, setPredict] = useState(20);
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [paytableOpen, setPaytableOpen] = useState(false);
   const [fairnessTooltipOpen, setFairnessTooltipOpen] = useState(false);
@@ -202,7 +203,7 @@ export default function SlotScreenModal() {
   const doSpin = useCallback(async () => {
     if (spinLockRef.current) return;
     if (fx.state.isLockedOut) return;
-    if (sessionBalance < bet) return;
+    if (sessionBalance < predict) return;
     if (!paytableId) return;
     spinLockRef.current = true;
     setPendingWinLines([]);
@@ -216,7 +217,7 @@ export default function SlotScreenModal() {
         const opened = await openSession.mutateAsync({
           paytableId,
           currency: 'clawtokens',
-          bet: bet.toString(),
+          predict: predict.toString(),
         });
         activeSessionId = opened.sessionId;
         setSessionMeta({
@@ -228,8 +229,8 @@ export default function SlotScreenModal() {
 
       // Mint a per-spin idempotency key. Same key survives across this
       // mutation's react-query retry pass (which we disabled, but
-      // defense-in-depth: identical key never hits the 409 bet-mismatch
-      // guard because bet is identical too).
+      // defense-in-depth: identical key never hits the 409 predict-mismatch
+      // guard because predict is identical too).
       if (!spinIdemKeyRef.current) {
         spinIdemKeyRef.current = crypto.randomUUID();
       }
@@ -237,7 +238,7 @@ export default function SlotScreenModal() {
 
       const res: SpinResponse = await spin.mutateAsync({
         sessionId: activeSessionId,
-        bet: bet.toString(),
+        predict: predict.toString(),
         idempotencyKey: idemKey,
       });
 
@@ -268,7 +269,7 @@ export default function SlotScreenModal() {
       showToast(message, tone);
     }
   }, [
-    bet,
+    predict,
     fx,
     paytableId,
     sessionBalance,
@@ -290,14 +291,14 @@ export default function SlotScreenModal() {
         handleClose();
       } else if (e.key === ' ' || e.key === 'Enter') {
         e.preventDefault();
-        if (!isSpinning && !isEvaluating && !fx.state.isLockedOut && sessionBalance >= bet) {
+        if (!isSpinning && !isEvaluating && !fx.state.isLockedOut && sessionBalance >= predict) {
           void doSpin();
         }
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [slotScreenOpen, isSpinning, isEvaluating, sessionBalance, bet, paytableOpen, fairnessTooltipOpen, doSpin, fx.state.isLockedOut, handleClose]);
+  }, [slotScreenOpen, isSpinning, isEvaluating, sessionBalance, predict, paytableOpen, fairnessTooltipOpen, doSpin, fx.state.isLockedOut, handleClose]);
 
   // ── Reel settled callback ───────────────────────────────────────────────
   const handleReelsSettled = useCallback(() => {
@@ -319,7 +320,7 @@ export default function SlotScreenModal() {
     const evalDelay = setTimeout(() => {
       setIsEvaluating(false);
       // Drive FX dispatch for this spin
-      fx.onSpinResolved(result, bet);
+      fx.onSpinResolved(result, predict);
       // Now that the spin landed, mint a fresh idempotency key for the next press.
       spinLockRef.current = false;
       spinIdemKeyRef.current = null;
@@ -346,15 +347,15 @@ export default function SlotScreenModal() {
 
     return () => clearTimeout(evalDelay);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoplay, bet, fx]);
+  }, [autoplay, predict, fx]);
 
   function checkAutoplayStop(ap: AutoplayState, result: SpinResult): boolean {
     if (ap.count === 'until-cashout') return false;
     if (ap.count === 'until-big-win') {
-      // bigint-safe: stop when winAmount >= 10 × bet
-      const betBn = BigInt(Math.max(0, Math.floor(bet)));
-      if (betBn === 0n) return false;
-      return result.winAmount >= betBn * 10n;
+      // bigint-safe: stop when winAmount >= 10 × predict
+      const predictBn = BigInt(Math.max(0, Math.floor(predict)));
+      if (predictBn === 0n) return false;
+      return result.winAmount >= predictBn * 10n;
     }
     return false;
   }
@@ -368,26 +369,26 @@ export default function SlotScreenModal() {
     }
     const newState = initAutoplay(count);
     setAutoplay(newState);
-    if (!isSpinning && !isEvaluating && !fx.state.isLockedOut && sessionBalance >= bet) {
+    if (!isSpinning && !isEvaluating && !fx.state.isLockedOut && sessionBalance >= predict) {
       void doSpin();
     }
-  }, [isSpinning, isEvaluating, sessionBalance, bet, doSpin, fx.state.isLockedOut]);
+  }, [isSpinning, isEvaluating, sessionBalance, predict, doSpin, fx.state.isLockedOut]);
 
   // ── Fairness pop-over (lightweight; not a Modal) ────────────────────────
   const handleFairness = useCallback(() => {
     setFairnessTooltipOpen(true);
   }, []);
 
-  // ── Bet validation — only multiples of CLASSIC_LINES.length=20 ──────────
-  const handleBetChange = useCallback((next: number) => {
+  // ── Predict validation — only multiples of CLASSIC_LINES.length=20 ──────
+  const handlePredictChange = useCallback((next: number) => {
     if (next <= 0) return;
     if (next % 20 !== 0) {
       // Round to nearest valid stake.
       const rounded = Math.max(20, Math.round(next / 20) * 20);
-      setBet(rounded);
+      setPredict(rounded);
       return;
     }
-    setBet(next);
+    setPredict(next);
   }, []);
 
   // ── Reset state when the modal closes externally (e.g. /casino unmount) ─
@@ -539,15 +540,15 @@ export default function SlotScreenModal() {
             balance={sessionBalance}
             sessionPnl={sessionPnl}
             spinCount={spinCount}
-            bet={bet}
-            minBet={20}
-            maxBet={2000}
+            predict={predict}
+            minPredict={20}
+            maxPredict={2000}
             isSpinning={isSpinning || openSession.isPending || spin.isPending}
             isEvaluating={isEvaluating}
             isLockedOut={fx.state.isLockedOut}
             autoplayCount={autoplay.count}
             isMuted={muted}
-            onBetChange={handleBetChange}
+            onPredictChange={handlePredictChange}
             onSpin={() => { void doSpin(); }}
             onAutoplayChange={handleAutoplayChange}
             onMuteToggle={toggleMute}

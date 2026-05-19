@@ -3,7 +3,7 @@
  *
  * Pure, deterministic spin evaluator built on top of `provable-rng.ts`
  * (slice 1, commit 37041b8). Same `(serverSeed, clientSeed, nonce,
- * cursor, bet)` ⇒ byte-identical `SpinResult`. No I/O, no time, no
+ * cursor, predict)` ⇒ byte-identical `SpinResult`. No I/O, no time, no
  * global state. The verifier in `apps/web/src/lib/casino/verifier.ts`
  * (slice 3) MUST be able to replay every spin by importing this same
  * module, or by reimplementing the algorithm with identical results.
@@ -21,11 +21,11 @@
  *    *math conventions* (LTR matching, wild-as-leader, payouts indexed
  *    by matchLen-2), not the package itself.
  *
- * 2) Bet shape: `bet: bigint` = total stake per spin. Internally split
- *    across `lines.length` paylines as `perLineBet = bet / lineCount`.
- *    Bet MUST be a positive bigint divisible by `lineCount` (20 for
- *    classic-3x5) — caller's UI is responsible for clamping bet
- *    increments to a multiple of 20. Refusing odd bets up-front beats
+ * 2) Predict shape: `predict: bigint` = total stake per spin. Internally split
+ *    across `lines.length` paylines as `perLinePredict = predict / lineCount`.
+ *    Predict MUST be a positive bigint divisible by `lineCount` (20 for
+ *    classic-3x5) — caller's UI is responsible for clamping predict
+ *    increments to a multiple of 20. Refusing odd predicts up-front beats
  *    truncating value silently.
  *
  * 3) Reel sampling: 5 independent `sampleIntFromBytes` calls in
@@ -47,7 +47,7 @@
  *      kind        = first non-wild in lineSymbols  (Wild itself if all wild)
  *      matchLen    = longest contiguous prefix where sym === kind || sym === WILD
  *      multiplier  = kind.payouts[matchLen - 2]    (0 if matchLen < 2)
- *      lineWin     = perLineBet * BigInt(multiplier)
+ *      lineWin     = perLinePredict * BigInt(multiplier)
  *
  *    All-wild line → kind = Wild (uses Wild's own payouts table). This
  *    matches the Stake/standard convention. We do NOT do dual-evaluation
@@ -217,7 +217,7 @@ export interface RunSpinArgs {
    * lamports). MUST be > 0n and divisible by the paytable's line
    * count. For classic-3x5 (20 lines): 20n, 40n, 60n, ... 2000n etc.
    */
-  bet: bigint;
+  predict: bigint;
 }
 
 /**
@@ -225,7 +225,7 @@ export interface RunSpinArgs {
  *
  * Pure. No I/O, no time, no global state. Same inputs ⇒ byte-identical
  * `SpinResult`. Throws on invalid inputs (bad paytable id, non-positive
- * bet, bet not divisible by line count, malformed seeds — the last is
+ * predict, predict not divisible by line count, malformed seeds — the last is
  * raised inside `provable-rng`).
  */
 export function runSpin(args: RunSpinArgs): SpinResult {
@@ -233,16 +233,16 @@ export function runSpin(args: RunSpinArgs): SpinResult {
   if (!bundle) {
     throw new Error(`slot-engine: unknown paytableId '${args.paytableId}'`);
   }
-  if (typeof args.bet !== 'bigint') {
-    throw new Error(`slot-engine: bet must be a bigint, got ${typeof args.bet}`);
+  if (typeof args.predict !== 'bigint') {
+    throw new Error(`slot-engine: predict must be a bigint, got ${typeof args.predict}`);
   }
-  if (args.bet <= 0n) {
-    throw new Error(`slot-engine: bet must be > 0, got ${args.bet}`);
+  if (args.predict <= 0n) {
+    throw new Error(`slot-engine: predict must be > 0, got ${args.predict}`);
   }
   const lineCount = BigInt(bundle.lines.length);
-  if (args.bet % lineCount !== 0n) {
+  if (args.predict % lineCount !== 0n) {
     throw new Error(
-      `slot-engine: bet (${args.bet}) must be divisible by lineCount (${lineCount}) for paytable '${bundle.id}'`,
+      `slot-engine: predict (${args.predict}) must be divisible by lineCount (${lineCount}) for paytable '${bundle.id}'`,
     );
   }
   if (!Number.isInteger(args.cursor) || args.cursor < 0) {
@@ -279,7 +279,7 @@ export function runSpin(args: RunSpinArgs): SpinResult {
   }
 
   // ---- Win evaluation (pure math on the visible window) ----
-  const { winningLines, winAmount } = evaluateReels(reels, bundle.id, args.bet);
+  const { winningLines, winAmount } = evaluateReels(reels, bundle.id, args.predict);
 
   return {
     reels,
@@ -299,28 +299,28 @@ export function runSpin(args: RunSpinArgs): SpinResult {
  * and (b) unit tests that synthesize specific reel grids to cover the
  * wild-substitution / payline edge cases.
  *
- * Same `bet` rules as `runSpin` (positive bigint, divisible by line
+ * Same `predict` rules as `runSpin` (positive bigint, divisible by line
  * count).
  */
 export function evaluateReels(
   reels: readonly (readonly SymbolId[])[],
   paytableId: MachineSlug,
-  bet: bigint,
+  predict: bigint,
 ): { winningLines: WinningLine[]; winAmount: bigint } {
   const bundle = PAYTABLE_BUNDLES[paytableId];
   if (!bundle) {
     throw new Error(`slot-engine: unknown paytableId '${paytableId}'`);
   }
-  if (typeof bet !== 'bigint') {
-    throw new Error(`slot-engine: bet must be a bigint, got ${typeof bet}`);
+  if (typeof predict !== 'bigint') {
+    throw new Error(`slot-engine: predict must be a bigint, got ${typeof predict}`);
   }
-  if (bet <= 0n) {
-    throw new Error(`slot-engine: bet must be > 0, got ${bet}`);
+  if (predict <= 0n) {
+    throw new Error(`slot-engine: predict must be > 0, got ${predict}`);
   }
   const lineCount = BigInt(bundle.lines.length);
-  if (bet % lineCount !== 0n) {
+  if (predict % lineCount !== 0n) {
     throw new Error(
-      `slot-engine: bet (${bet}) must be divisible by lineCount (${lineCount}) for paytable '${bundle.id}'`,
+      `slot-engine: predict (${predict}) must be divisible by lineCount (${lineCount}) for paytable '${bundle.id}'`,
     );
   }
   if (reels.length !== 5) {
@@ -345,7 +345,7 @@ export function evaluateReels(
     }
   }
 
-  const perLineBet = bet / lineCount;
+  const perLinePredict = predict / lineCount;
   const winningLines: WinningLine[] = [];
   let totalWin = 0n;
 
@@ -388,7 +388,7 @@ export function evaluateReels(
     const multiplier = symDef.payouts[matchLen - 2] ?? 0;
     if (multiplier <= 0) continue;
 
-    const lineWin = perLineBet * BigInt(multiplier);
+    const lineWin = perLinePredict * BigInt(multiplier);
     winningLines.push({
       lineIndex: line.id,
       symbols: lineSymbols,

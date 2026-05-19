@@ -6,11 +6,11 @@
  * One hook consumed by SlotScreenModal + WinCelebration + SlotReels.
  * Returns a small state surface and two callbacks:
  *
- *   onSpinStart()                   — call when the player hits spin
- *   onSpinResolved(result, bet)     — call after reels settle
+ *   onSpinStart()                       — call when the player hits spin
+ *   onSpinResolved(result, predict)     — call after reels settle
  *
- * Derives a `WinTier` from `(winAmount, bet)` using bigint-safe math
- * (winAmount * 100n / bet → integer hundredths of a multiplier).
+ * Derives a `WinTier` from `(winAmount, predict)` using bigint-safe math
+ * (winAmount * 100n / predict → integer hundredths of a multiplier).
  *
  * Tier dispatch:
  *   loss   (mult < 0)    — no reaction, just clears any lingering state
@@ -57,8 +57,8 @@ export interface FXState {
   tier: WinTier;
   /** Active win amount in CT (mirrors the result for the banner). */
   winAmount: number;
-  /** Bet that produced this win (passed through for display). */
-  bet: number;
+  /** Predict that produced this win (passed through for display). */
+  predict: number;
   /** Reels container shake intensity. */
   shakeLevel: ShakeLevel;
   /** Whether the global saturation/brightness glow is active. */
@@ -76,7 +76,7 @@ export interface FXState {
 export interface UseFXReturn {
   state: FXState;
   onSpinStart: () => void;
-  onSpinResolved: (result: SpinResult, bet: number) => void;
+  onSpinResolved: (result: SpinResult, predict: number) => void;
   /** Manual reset — used by the modal's close handler. */
   reset: () => void;
 }
@@ -93,11 +93,11 @@ const TIER_THRESHOLDS: Array<{ tier: Exclude<WinTier, 'loss'>; max100: number }>
   { tier: 'mega',   max100: Infinity },
 ];
 
-export function deriveWinTier(winAmount: bigint, bet: bigint): WinTier {
-  if (winAmount <= 0n) return 'loss';
-  if (bet <= 0n)       return 'micro'; // defensive — bet should never be 0
+export function deriveWinTier(winAmount: bigint, predict: bigint): WinTier {
+  if (winAmount <= 0n)  return 'loss';
+  if (predict <= 0n)    return 'micro'; // defensive — predict should never be 0
   // mult * 100 as an integer (hundredths of a multiplier)
-  const mult100 = Number((winAmount * 100n) / bet);
+  const mult100 = Number((winAmount * 100n) / predict);
   for (const { tier, max100 } of TIER_THRESHOLDS) {
     if (mult100 < max100) return tier;
   }
@@ -138,7 +138,7 @@ const CONFETTI_COLORS = ['#00ffe0', '#ff00cc', '#ffc857', '#7b2ff7', '#5cffae', 
 const DEFAULT_STATE: FXState = {
   tier: 'loss',
   winAmount: 0,
-  bet: 0,
+  predict: 0,
   shakeLevel: 'none',
   isGlowActive: false,
   isSnapActive: false,
@@ -214,9 +214,9 @@ export function useFX(): UseFXReturn {
     }));
   }, [clearTimers]);
 
-  const onSpinResolved = useCallback((result: SpinResult, bet: number) => {
-    const betBn = BigInt(Math.max(0, Math.floor(bet)));
-    const tier = deriveWinTier(result.winAmount, betBn);
+  const onSpinResolved = useCallback((result: SpinResult, predict: number) => {
+    const predictBn = BigInt(Math.max(0, Math.floor(predict)));
+    const tier = deriveWinTier(result.winAmount, predictBn);
 
     if (tier === 'loss') {
       // Drop the spin-start glow, no celebration.
@@ -258,7 +258,7 @@ export function useFX(): UseFXReturn {
     setState({
       tier,
       winAmount: Number(result.winAmount),
-      bet,
+      predict,
       shakeLevel,
       isGlowActive: true,
       isSnapActive: true,

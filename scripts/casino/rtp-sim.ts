@@ -25,21 +25,21 @@
  *
  * CLI:
  *   bun scripts/casino/rtp-sim.ts \
- *     [--spins 1000000] [--bet 100] [--seed <64hex>] \
+ *     [--spins 1000000] [--predict 100] [--seed <64hex>] \
  *     [--strict-rtp <low>,<high>] [--exit-on-fail] [--client-seed <hex>]
  *
  * Notes:
- *   - `bet=100n` is the default to match the engine test fixture (must
- *     stay divisible by lineCount=20). The CLI clamps non-divisible bets
- *     up to the nearest multiple.
+ *   - `predict=100n` is the default to match the engine test fixture
+ *     (must stay divisible by lineCount=20). The CLI clamps non-divisible
+ *     predict amounts up to the nearest multiple.
  *   - The clientSeed is fixed at `'deadbeef'` by default (must be hex
  *     per `normalizeClientSeed` in provable-rng); pass `--client-seed`
  *     for sensitivity analysis.
  *   - nonce starts at 1 and increments per spin. cursor accumulates from
  *     `cursorAfter` so the HMAC stream is consumed contiguously (mirrors
  *     a real session's bookkeeping).
- *   - The histogram uses `winRatio = win/bet` so a 3.5x payout on bet=100
- *     lands in the 1-5x bucket regardless of bet size.
+ *   - The histogram uses `winRatio = win/predict` so a 3.5x payout on
+ *     predict=100 lands in the 1-5x bucket regardless of predict size.
  */
 
 import { performance } from 'node:perf_hooks';
@@ -58,7 +58,7 @@ import {
 
 interface CliOptions {
   spins: number;
-  bet: bigint;
+  predict: bigint;
   seed: string | null;
   clientSeed: string;
   strictRtpLow: number | null;
@@ -69,7 +69,7 @@ interface CliOptions {
 function parseCli(argv: readonly string[]): CliOptions {
   const opts: CliOptions = {
     spins: 1_000_000,
-    bet: 100n,
+    predict: 100n,
     seed: null,
     clientSeed: 'deadbeef',
     strictRtpLow: null,
@@ -89,12 +89,12 @@ function parseCli(argv: readonly string[]): CliOptions {
         opts.spins = n;
         break;
       }
-      case '--bet': {
+      case '--predict': {
         const v = argv[++i];
-        if (!v) throw new Error('--bet requires a value');
+        if (!v) throw new Error('--predict requires a value');
         const n = BigInt(v);
-        if (n <= 0n) throw new Error(`--bet must be > 0, got ${v}`);
-        opts.bet = n;
+        if (n <= 0n) throw new Error(`--predict must be > 0, got ${v}`);
+        opts.predict = n;
         break;
       }
       case '--seed': {
@@ -150,7 +150,7 @@ Usage:
 
 Options:
   --spins <n>             Number of spins to simulate (default 1000000)
-  --bet <n>               Stake per spin in atomic units (default 100, must
+  --predict <n>           Stake per spin in atomic units (default 100, must
                           be divisible by line count = 20)
   --seed <64hex>          Pin server seed for reproducibility (default:
                           freshly generated each run)
@@ -173,7 +173,7 @@ interface SimResult {
   totalWagered: bigint;
   totalPaid: bigint;
   hitCount: number;
-  maxWinStake: number; // win / bet (float, ratio)
+  maxWinStake: number; // win / predict (float, ratio)
   maxWinRaw: bigint;
   histogram: Record<string, number>;
   /** symbolHits[symbolId] = number of times this symbol appeared at the MIDDLE
@@ -197,9 +197,9 @@ const BUCKETS = [
 
 function runSimulation(opts: CliOptions, serverSeed: string): SimResult {
   const lineCount = CLASSIC_LINES.length;
-  if (opts.bet % BigInt(lineCount) !== 0n) {
+  if (opts.predict % BigInt(lineCount) !== 0n) {
     throw new Error(
-      `--bet (${opts.bet}) must be divisible by line count (${lineCount})`,
+      `--predict (${opts.predict}) must be divisible by line count (${lineCount})`,
     );
   }
 
@@ -217,7 +217,7 @@ function runSimulation(opts: CliOptions, serverSeed: string): SimResult {
     wallClockMs: 0,
   };
 
-  const betFloat = Number(opts.bet);
+  const predictFloat = Number(opts.predict);
   const t0 = performance.now();
   let cursor = 0;
 
@@ -233,17 +233,17 @@ function runSimulation(opts: CliOptions, serverSeed: string): SimResult {
       clientSeed: opts.clientSeed,
       nonce: i + 1,
       cursor,
-      bet: opts.bet,
+      predict: opts.predict,
     });
 
     cursor = spin.cursorAfter;
-    result.totalWagered += opts.bet;
+    result.totalWagered += opts.predict;
     result.totalPaid += spin.winAmount;
 
     if (spin.winAmount > 0n) {
       result.hitCount++;
       const winFloat = Number(spin.winAmount);
-      const ratio = winFloat / betFloat;
+      const ratio = winFloat / predictFloat;
       if (ratio > result.maxWinStake) {
         result.maxWinStake = ratio;
         result.maxWinRaw = spin.winAmount;
@@ -292,7 +292,7 @@ function formatReport(opts: CliOptions, serverSeed: string, r: SimResult): strin
   // 95% CI half-width for a Bernoulli-ish per-spin payout ratio. We use a
   // simple normal approximation: stderr = sqrt(p*(1-p)/n) IS WRONG for
   // payout ratios because the variance is dominated by mega wins. Instead,
-  // compute the empirical std of (paid/bet) per spin lazily.
+  // compute the empirical std of (paid/predict) per spin lazily.
   // For a quick CI bound, use:
   //   approx 95% CI half-width = 1.96 * stddev_per_spin / sqrt(n)
   // We don't have per-spin variance tallied here, so fall back to a
@@ -306,7 +306,7 @@ function formatReport(opts: CliOptions, serverSeed: string, r: SimResult): strin
   lines.push('═'.repeat(72));
   lines.push('');
   lines.push(`Spins:           ${r.spins.toLocaleString()}`);
-  lines.push(`Bet/spin:        ${opts.bet} (${Number(opts.bet)})`);
+  lines.push(`Predict/spin:    ${opts.predict} (${Number(opts.predict)})`);
   lines.push(`Server seed:     ${serverSeed}`);
   lines.push(`Client seed:     ${opts.clientSeed}`);
   lines.push(`Wall clock:      ${(r.wallClockMs / 1000).toFixed(2)}s`);
@@ -384,8 +384,8 @@ function expectedSymbolPercent(symbolId: number): number {
  * derived empirically: weight mega-wins disproportionately because they
  * dominate variance.
  *
- *   sigma_per_spin ≈ sqrt( sum_buckets( freq_b * (mid_payout_b)^2 ) ) * bet
- *   ci_half = 1.96 * sigma_per_spin / (sqrt(n) * bet)
+ *   sigma_per_spin ≈ sqrt( sum_buckets( freq_b * (mid_payout_b)^2 ) ) * predict
+ *   ci_half = 1.96 * sigma_per_spin / (sqrt(n) * predict)
  *
  * For classic-3x5 at ~96% RTP the expected ci_half at 100k spins is
  * roughly 0.3% and at 1M is ~0.1%; this rough number lets a reviewer
@@ -418,7 +418,7 @@ function main(): void {
   const opts = parseCli(process.argv.slice(2));
   const serverSeed = opts.seed ?? createServerSeed().serverSeed;
 
-  process.stderr.write(`Starting Monte Carlo: ${opts.spins.toLocaleString()} spins, bet=${opts.bet}\n`);
+  process.stderr.write(`Starting Monte Carlo: ${opts.spins.toLocaleString()} spins, predict=${opts.predict}\n`);
   process.stderr.write(`Reel strip lengths: [${CLASSIC_REEL_STRIPS.map((s) => s.length).join(', ')}]\n\n`);
 
   const result = runSimulation(opts, serverSeed);
