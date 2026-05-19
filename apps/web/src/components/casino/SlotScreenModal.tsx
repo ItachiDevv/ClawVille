@@ -230,7 +230,20 @@ export default function SlotScreenModal() {
   }, []);
 
   const doSpin = useCallback(async () => {
+    // Belt-and-suspenders against double-fire on a single press:
+    // (1) `spinLockRef` is the synchronous guard — set inside this fn
+    //     before the first await, so a re-entrant call from React's
+    //     same micro-task lane is a hard no-op.
+    // (2) `spin.isPending` / `openSession.isPending` catch the case
+    //     where Zustand's `isSpinning` hasn't propagated yet but a
+    //     mutation is already on the wire — TanStack's pending state
+    //     flips synchronously inside `mutate()` / `mutateAsync()`.
+    // (3) `closeSession.isPending` catches the rare path where a
+    //     fire-and-forget close from a prior `handleClose` is still on
+    //     the wire — issuing a /spin against a sessionId the server is
+    //     about to close races into a counter-changed 409.
     if (spinLockRef.current) return;
+    if (spin.isPending || openSession.isPending || closeSession.isPending) return;
     if (fx.state.isLockedOut) return;
     if (sessionBalance < predict) return;
     if (!paytableId) return;
@@ -296,6 +309,23 @@ export default function SlotScreenModal() {
       )) {
         clearSessionMeta();
       }
+      // Diagnostic: when the server reports a counter-changed race, log
+      // the full client-side state at the moment of the 409 so we can
+      // bisect frontend vs backend causation in browser-live. Always
+      // logs (cheap; only fires on the error path).
+      if (err instanceof CasinoApiError && err.code === 'session_counter_changed_retry') {
+        // eslint-disable-next-line no-console
+        console.warn('[casino-slots] 409 session_counter_changed_retry', {
+          sessionId,
+          spinIsPending: spin.isPending,
+          openIsPending: openSession.isPending,
+          closeIsPending: closeSession.isPending,
+          isSpinningStore: isSpinning,
+          spinLockBefore: 'set-true-before-throw',
+          predict,
+          serverMessage: err.serverMessage,
+        });
+      }
       const message = describeCasinoError(err);
       const tone: ToastTone =
         err instanceof CasinoApiError && err.status === 429
@@ -314,9 +344,12 @@ export default function SlotScreenModal() {
     setIsSpinning,
     openSession,
     spin,
+    closeSession,
     setSessionMeta,
+    clearSessionMeta,
     recordSpin,
     showToast,
+    isSpinning,
   ]);
 
   // ── Keyboard handler ────────────────────────────────────────────────────
@@ -499,7 +532,7 @@ export default function SlotScreenModal() {
             flex: 1,
             display: 'flex',
             flexDirection: 'column',
-            maxWidth: 720,
+            maxWidth: 1200,
             width: '100%',
             margin: '0 auto',
             position: 'relative',
@@ -576,8 +609,9 @@ export default function SlotScreenModal() {
             <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: 10 }}>tap to verify</span>
           </div>
 
-          {/* ── HUD top strip + bottom controls ─────────────────────── */}
+          {/* ── HUD top strip (balance / session / spins) ────────────── */}
           <SlotHUD
+            section="top"
             balance={sessionBalance}
             sessionPnl={sessionPnl}
             spinCount={spinCount}
@@ -600,21 +634,21 @@ export default function SlotScreenModal() {
             onWalkAway={() => { void handleCashOut(); }}
           />
 
-          {/* ── Reel area ───────────────────────────────────────────── */}
+          {/* ── Reel area — dominant, fills available flex space ────── */}
           <div
             style={{
               flex: 1,
+              minHeight: '50vh',
               display: 'flex',
-              alignItems: 'center',
+              alignItems: 'stretch',
               justifyContent: 'center',
               background: `
                 radial-gradient(ellipse at 50% 30%, rgba(0,255,224,0.07) 0%, transparent 65%),
                 radial-gradient(ellipse at 50% 80%, rgba(255,0,204,0.04) 0%, transparent 60%),
                 linear-gradient(180deg, rgba(5,10,24,0.98) 0%, rgba(2,4,10,0.99) 100%)
               `,
-              padding: 'var(--cv-space-6) var(--cv-space-4)',
+              padding: '16px',
               position: 'relative',
-              minHeight: 0,
               filter: fx.state.isGlowActive ? 'saturate(1.15)' : 'saturate(1)',
               transition: 'filter var(--cv-motion-base) var(--cv-ease-standard)',
             }}
@@ -640,28 +674,8 @@ export default function SlotScreenModal() {
               />
             ))}
 
-            {/* Machine title */}
-            <div
-              style={{
-                position: 'absolute',
-                top: 14,
-                left: '50%',
-                transform: 'translateX(-50%)',
-                color: 'rgba(0,255,224,0.45)',
-                fontFamily: 'monospace',
-                fontSize: 11,
-                letterSpacing: '0.28em',
-                textTransform: 'uppercase',
-                textShadow: '0 0 10px rgba(0,255,224,0.45)',
-                pointerEvents: 'none',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              Predictive Gaming Cove
-            </div>
-
-            {/* 3D reel canvas + bonus overlays */}
-            <div style={{ position: 'relative' }}>
+            {/* 3D reel canvas + bonus overlays — fills full reel area */}
+            <div style={{ position: 'relative', width: '100%', height: '100%' }}>
               <SlotReelsCanvas
                 reels={displayWindow}
                 isSpinning={isSpinning}
@@ -692,6 +706,31 @@ export default function SlotScreenModal() {
               />
             </div>
           </div>
+
+          {/* ── HUD bottom controls (predict + spin + walk away) ─────── */}
+          <SlotHUD
+            section="bottom"
+            balance={sessionBalance}
+            sessionPnl={sessionPnl}
+            spinCount={spinCount}
+            predict={predict}
+            minPredict={20}
+            maxPredict={2000}
+            isSpinning={isSpinning || openSession.isPending || spin.isPending}
+            isEvaluating={isEvaluating}
+            isLockedOut={fx.state.isLockedOut}
+            autoplayCount={autoplay.count}
+            isMuted={muted}
+            inFreeSpin={inFreeSpin}
+            freeSpinsRemaining={freeSpinsRemaining}
+            onPredictChange={handlePredictChange}
+            onSpin={() => { void doSpin(); }}
+            onAutoplayChange={handleAutoplayChange}
+            onMuteToggle={toggleMute}
+            onPaytableOpen={() => setPaytableOpen(true)}
+            onFairnessOpen={handleFairness}
+            onWalkAway={() => { void handleCashOut(); }}
+          />
         </div>
 
         {/* Toast */}
