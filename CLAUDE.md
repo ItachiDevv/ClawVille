@@ -70,47 +70,62 @@ Complex AI integrations: multi-phase plan in `.claude/plans/` + research deep-di
 
 ---
 
-## MANDATORY: 3D / Blender / long tasks run as COLLABORATIVE TEAMS
+## MANDATORY: 3D / Blender / long tasks run as EXPERIMENTAL COLLABORATIVE AGENT TEAMS
 
-**A "team" is multiple agents working SEQUENTIALLY on the SAME concern, stacking perspectives.** NOT N agents on N concerns in parallel — that's parallelization. The point is the audit step.
+**Status (2026-05-19):** `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` + `teammateMode=in-process` are enabled globally. We use the real teams feature — multiple specialist agents spawned in PARALLEL sharing a `team_name`, coordinating via `TaskList`/`TaskUpdate`/`SendMessage`. Not "one agent that recursively sub-spawns" — that's the legacy fallback and is only acceptable when teammateMode is unavailable.
 
 ### When teams are mandatory
 
-- **3D work** — Three.js / R3F / shaders / GLB / post-proc / materials / lights / cameras / TSL / WGSL / WebGPU under `apps/web/src/lib/three/**`, `apps/web/src/components/three/**`, `apps/web/public/models/**`, render-loop, animations, rigs, atmosphere/particles, new world-surface 3D objects. Use `3da`.
-- **Blender pipelines** — multi-asset exports, mesh edits, rigging, MMD/glTF/FBX imports, Mixamo, Marvelous Designer. Use `blender07`.
+- **3D work** — Three.js / R3F / shaders / GLB / post-proc / materials / lights / cameras / TSL / WGSL / WebGPU under `apps/web/src/lib/three/**`, `apps/web/src/components/three/**`, `apps/web/public/models/**`, render-loop, animations, rigs, atmosphere/particles, new world-surface 3D objects.
+- **Blender pipelines** — multi-asset exports, mesh edits, rigging, MMD/glTF/FBX imports, Mixamo, Marvelous Designer.
 - **Any task** > 5 min agent runtime, > 300 LOC across files, or touching ≥ 3 files in different subsystems.
 - User-tagged quality verbs ("polish", "iterate", "rework", "feel like X", "elite", "professional").
 
-### Per-concern collaboration sequence
+### Standard 3D team composition
 
-For EACH concern:
+For a typical 3D / world-structure task, spawn this team in ONE message (parallel Agent tool uses):
 
-1. **Implementer-Manager** — ultrathink, drafts code. Runs ≥ 2 sequential passes: a Drafter pass + a Reconciler-Drafter pass that sees the Drafter's diff and re-implements or refines. Either spawns 2 sub-agents in sequence (preferred) OR executes both passes itself with explicit ultrathink between them (fallback when sub-agent Agent tool isn't exposed). Reports consolidated diff + rationale.
-2. **Auditor-Manager** — ultrathink, runs ≥ 3 independent audit lenses:
-   - **Spec-Auditor** — does the diff match the brief? Cite line-by-line.
-   - **Regression-Auditor** — does it break consumers, standing patterns (`.claude/memory/**/MEMORY.md`), canonical docs, or known gotchas (Iris Xe, ElizaOS roomId)?
-   - **Adversarial-Auditor** — what subtle thing slipped through? Word-boundary, missed literal, broken JSON schema, edge case.
-   Returns **APPROVED** or **BLOCKING ISSUES** as a single verdict. Disagreement resolved in the manager's report, not silently dropped.
-3. If BLOCKING ISSUES → Fixer-Manager (same Drafter + Reconciler-Drafter shape). Re-audit. Loop until APPROVED.
-4. Orchestrator commits the approved concern.
+| Role | subagent_type | name (addressable via SendMessage) |
+|---|---|---|
+| **Lead implementer** | `3da` | `3da-impl-1` |
+| **Reconciler implementer** | `3da` or `blend007:three` | `3da-impl-2` |
+| **Spec auditor** | `3da` | `3da-spec` |
+| **Regression auditor** | `3da` | `3da-regress` |
+| **Adversarial auditor** | `3da` or `blend007:three` | `3da-adversary` |
+| **Blender inspector** (when GLB inspection needed) | `blend007:mesh` | `blender-inspect` |
 
-Optional **Reconciler-Manager** for high-stakes work (DB migrations, custodial keys, auth, billing): spawns its own re-implementation team + comparison auditor. Always recursive teams here, no exceptions.
+All spawned with the same `team_name` (e.g. `team_name: 'collider-system-2026-05-19'`). The orchestrator picks a name unique to the concern + date.
+
+For Blender-heavy work (rigging, exports, MMD/Marvelous), substitute `blend007:mesh` for the implementer roles. For pure Three.js with no GLB editing, drop `blender-inspect`.
+
+### Coordination protocol
+
+- **Shared task state via `TaskList`**: orchestrator creates one task per role with `addBlockedBy` dependencies (e.g. spec auditor blocked by impl-2's reconciliation). Each agent updates its own task status.
+- **Cross-agent messages via `SendMessage`**: implementers DM auditors with "diff ready", auditors DM back "APPROVED" or "BLOCKING ISSUES". No silent dropping of disagreements.
+- **Memory share is automatic** within a team_name (in-process mode). Patterns saved by impl-1 are visible to the auditors in the same team.
+- **Orchestrator (you) never writes code** — only decomposes into concerns, picks team composition, monitors task state, commits the approved diff, pushes, polls Coolify, verifies in browser.
 
 ### Required prompt elements
 
-Every agent prompt MUST include the literal phrase **"use ultrathink reasoning before writing code"** (or "before reviewing code" for auditors) in its first paragraph. Manager prompts must include: "you are a manager — spawn N sub-agents, give each ultrathink, reconcile their output before returning". The Agent tool has no thinking-mode flag — prompt text is the only channel.
+Every agent prompt MUST include:
+1. The literal phrase **"use ultrathink reasoning before writing code"** (or "before reviewing code" for auditors) in the first paragraph. The Agent tool has no thinking-mode flag — prompt text is the only channel.
+2. Their addressable team name + role: "You are `3da-spec` in team `<team_name>`. The other members are: ... DM them via SendMessage when you have findings."
+3. Their explicit blocking dependencies + downstream consumers ("you start after impl-2 reports diff ready; your verdict gates the commit").
+4. Hard constraints from this CLAUDE.md (Iris Xe rules, same-diff doc updates, etc.) — don't assume they read it.
 
-### When to skip recursive teams
+### When to skip the full team
 
-Trivial work (single-file ≤ 100 LOC, doc edit, env var add) — flat 2-agent team (1 ultrathink Implementer + 1 ultrathink Auditor), no sub-teams. Bar: "would the cost of getting this wrong justify ~3× agent invocations?" If no → flat. If yes → recursive. High-stakes work → always recursive.
+Trivial work (single-file ≤ 100 LOC, doc edit, env var add) — flat 2-agent team (1 ultrathink Implementer + 1 ultrathink Auditor), no auditor split. Bar: "would the cost of getting this wrong justify ~5× parallel agent invocations?" If no → flat. If yes → full team.
+
+High-stakes work (DB migrations, custodial keys, auth, billing, scale-system rewrites) → ALWAYS full team + a `Reconciler-Manager` that re-implements independently and compares against impl-1. No exceptions.
 
 ### Concerns: sequential or parallel?
 
-Truly independent concerns (different files, no shared state) can run in parallel. Concerns that share state or build on each other: sequence them. Default to sequential when in doubt.
+Truly independent concerns (different files, no shared state) — spawn separate teams in parallel, each with its own `team_name`. Concerns that share state or build on each other — single team, sequence via task dependencies. Default to sequential when in doubt.
 
 ### Orchestrator responsibilities (never delegated)
 
-Decompose into concerns · run the per-concern Implementer → Auditor → Fix → Re-audit loop · wire across concerns after each is approved · build / push / deploy (manual Coolify tinker when webhook misses) / browser verification.
+Decompose into concerns · pick team composition + team_name · spawn the team in one parallel Agent call · monitor task state via TaskList polling · resolve audit-disagreement protocol (DON'T silently drop blocking issues) · build / push / deploy (manual Coolify tinker when webhook misses) / browser verification.
 
 ### 3da context
 
