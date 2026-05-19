@@ -64,7 +64,7 @@ Complex AI integrations: multi-phase plan in `.claude/plans/` + research deep-di
 - Tech-stack code (Hono routes, DB tables, services, deploy/env) → `ARCHITECTURE.md`.
 - A single change can touch multiple docs. Bump "Last Audited" + one-line drift note each time.
 
-**Animation shipping — STRICT (added 2026-05-18).** Any change that adds, removes, retargets, or triggers a Mixamo/VRM clip MUST satisfy the 8-point checklist in `3dStructure.md` §6f. Hard-won across an evening of stutter / load / pumping iteration. Quick reference: (1) bundle new emotes into `_emotes.glb` via `scripts/build-anim-bundles.mjs`, (2) `preloadMixamoClips()` is locomotion-only — use `preloadClips(names)` for targeted warming, (3) new asset path prefixes go in `ASSET_PATH_PREFIXES` in `sw.js`, (4) SW registration keeps `updateViaCache: 'none'` + explicit `reg.update()`, (5) NPC position = entity interpolation (lerp between two known snapshots, 1 tick behind real-time — never extrapolate), (6) `updateMixerOnly` flushes skeleton every frame, only spring physics throttles to 15 Hz, (7) state-held animations use `setSurfaceClip`, one-shots only for true single-fire emotes, (8) all humanoid VRM sizing routes through `VRM_AVATAR_TARGET_HEIGHT_WU` — one number, every avatar scales.
+**Animation shipping — STRICT (2026-05-18).** Any Mixamo/VRM clip add/remove/retarget/trigger MUST satisfy the 8-point checklist in `3dStructure.md` §6f (bundle into `_emotes.glb`, `preloadClips(names)` for non-locomotion warming, `ASSET_PATH_PREFIXES` in `sw.js`, `updateViaCache:'none'` + `reg.update()`, NPC entity-interp not extrapolation, `updateMixerOnly` every frame, `setSurfaceClip` for state-held, all humanoid VRMs sized via `VRM_AVATAR_TARGET_HEIGHT_WU`).
 
 **Precedence (high→low):** (1) source code · (2) three canonical docs · (3) `CLAUDE.md`/`README.md` · (4) memory files (advisory). Memory vs doc → doc wins, update/delete memory same turn. Doc vs code → code wins, update doc same turn.
 
@@ -189,19 +189,15 @@ Required in `.env.local`:
 - `ITACHI_DEBUG_BOT_TOKEN` + `ITACHI_DEBUG_CHAT_ID` — itachi-debug Telegram bot for `alert-error.ts`. Missing ⇒ degrades to `console.warn`. Staged via tinker from `~/.itachi-api-keys`.
 - `METRICS_MEASUREMENT_START` — ISO date for `/dash` "Measuring since …" banner. Default `2026-04-21`.
 - `AGENT_SESSION_TICKET_TTL_SECONDS` — Phase 5 magic-link TTL (default 600, min 60, max 3600 — `session-ticket-service.ts`).
-- **Phase 5.1:**
-  - `CLOUDFLARE_WORKER_URL` — Secrets Store envelope-encryption Worker (no trailing slash). `/wrap` + `/unwrap`. `infra/cf-secrets-worker/`.
-  - `CLOUDFLARE_WORKER_BEARER` — Bearer for API→Worker (`wrangler secret put WORKER_BEARER`). Rotatable independent of KEK.
-  - `CLAWVILLE_SERVICE_ISSUER_SK` — Base58 ed25519 SK; signs outbound partner calls. `bun run scripts/generate-service-issuer-keypair.ts`. Never commit.
-  - `CLAWVILLE_SERVICE_ISSUER_PUBKEY` — Base58 ed25519 PK matching SK. Published at `GET /.well-known/clawville-issuer.json`.
-  - `SCAPE_HOSTED_SESSION_URL` — 'scape `/hosted-session/issue` endpoint.
-  - `SCAPE_WEB_ORIGIN` — 'scape web origin for `?sessionToken=…` redirect.
-  - `PARTNER_PUBKEYS` — JSON allowlist by partner id: `{"scape":"<base58>"}`. Empty ⇒ inbound portal routes return 401.
-- **Wager program** (added 2026-05-12, `clawville_wager` Anchor program `HgQhHVYV2C5Mw8K81kEnADkqsuS5YQRmGJDUR5wnZVuG` on devnet):
-  - `SOLANA_RPC_URL` — RPC for `wager-program-client.ts`. Default `https://api.devnet.solana.com`. Production MUST stay on devnet until `wager-mainnet-paid` graduates.
-  - `WAGER_SETTLEMENT_AUTHORITY_PUBKEY` — Base58 pubkey API expects after decrypting `treasury_wallets` row with `purpose='wager-settlement-authority'`. Mismatch ⇒ API refuses to sign lock/settle/authority-cancel. Default = devnet deployer `G5WgvGYK5mLxQbVUmNhFKeWwEhT235p2HjKmkbpMbMWy`.
-  - `WAGER_SETTLEMENT_AUTHORITY_KEYPAIR_PATH` — Path to 64-element JSON keypair for `scripts/seed-wager-settlement-authority.ts`. Defaults to `$HOME/.config/solana/id.json`. Never set in prod env.
-  - `WAGER_PROGRAM_CLUSTER` — `'devnet'` (default) or `'localnet'`. Mainnet wiring intentionally requires a code change, not just an env flip.
+- **Phase 5.1** (full descriptions in `.claude/plans/phase5.1-wallet-identity-and-scape-portal.md`):
+  - `CLOUDFLARE_WORKER_URL` + `CLOUDFLARE_WORKER_BEARER` — envelope-encryption Worker `/wrap` `/unwrap`. `infra/cf-secrets-worker/`.
+  - `CLAWVILLE_SERVICE_ISSUER_SK` / `_PUBKEY` — Base58 ed25519 pair; SK signs outbound partner calls, PK at `/.well-known/clawville-issuer.json`. Generate via `scripts/generate-service-issuer-keypair.ts`.
+  - `SCAPE_HOSTED_SESSION_URL` + `SCAPE_WEB_ORIGIN` — 'scape `/hosted-session/issue` endpoint + redirect origin.
+  - `PARTNER_PUBKEYS` — `{"scape":"<base58>"}`. Empty ⇒ inbound portal returns 401.
+- **Wager program** (2026-05-12, `clawville_wager` `HgQhHVYV2C5Mw8K81kEnADkqsuS5YQRmGJDUR5wnZVuG` devnet):
+  - `SOLANA_RPC_URL` (default `api.devnet.solana.com`; prod stays devnet until `wager-mainnet-paid` graduates).
+  - `WAGER_SETTLEMENT_AUTHORITY_PUBKEY` — must match decrypted `treasury_wallets.purpose='wager-settlement-authority'`. Default = devnet deployer `G5WgvGYK5mLxQbVUmNhFKeWwEhT235p2HjKmkbpMbMWy`.
+  - `WAGER_SETTLEMENT_AUTHORITY_KEYPAIR_PATH` (local seed only, never prod). `WAGER_PROGRAM_CLUSTER` = `'devnet'`/`'localnet'`; mainnet requires a code change.
 
 **Optional:** `OPENAI_API_KEY` — fallback ONLY for `npc-conversation-engine.ts` on Gemini `GEMINI_MAX_FAILURES` backoff. Not a general replacement.
 
@@ -410,13 +406,7 @@ Only production lesson category is `lesson`. Do NOT write to `task_lesson` or `p
 
 ### RULE 4 — Drive the test yourself, don't loop the user (MANDATORY)
 
-When user reports something broken — reproduce end-to-end YOURSELF before asking them to verify. Looping them through "try again / what do you see / now try X" is laziness.
-
-**Telegram repro** (`Itachi_bot`, forum hash `#-1003521359823_1`): open `web.telegram.org/a/` via `mcp__claude-in-chrome__*`. If synthetic `.click()` is swallowed by React/Teact, click inner `.ListItem-button` or use `document.execCommand('insertText', …)`. Type `execCommand('insertText', false, 'yo')` into `#editable-message-text`, click `.Button.send.main-button`. Tail logs: `ssh hetzner-public "sudo journalctl -u itachi.service --since '1 min ago'"` — grep `diag.*text=|SERVICE:MESSAGE|Response discarded|409|Conflict|recentMemoriesProvider`. Confirm reply LANDED via `document.querySelectorAll('#MiddleColumn [id^="message-"]')` — ElizaOS has silent `Response discarded` path.
-
-**Common signatures:** `409 Conflict` → another instance has the token (check `Get-NetTCPConnection 149.154.166.*`); `Response discarded - newer message being processed` → multiple messages while LLM runs (speed LLM, remove `recentMemoriesProvider` retries); `recentMemoriesProvider error: [object Object]` → provider bug, ~15s retry latency; `[diag]` fires but no `SERVICE:MESSAGE` → shouldRespond filter (needs `ALWAYS_RESPOND_SOURCES=telegram` in `eliza/.env`); no `[diag]` and `pending_update_count=0` → never reached Telegram or offset advanced by competing poller.
-
-Never ask "send yo again" twice. Confirm reply LANDED in DOM. Report log evidence + timestamps, not speculation.
+When user reports broken — reproduce end-to-end YOURSELF before asking them. "Try again / what do you see" loops are laziness. Confirm via DOM/logs, not speculation. Telegram repro recipe + ElizaOS silent-`Response discarded` signatures live in `_global` lessons — `/recall telegram itachi`.
 
 ### RULE 5 — NEVER ASSUME, always verify (MANDATORY)
 
