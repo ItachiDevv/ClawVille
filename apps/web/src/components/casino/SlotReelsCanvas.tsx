@@ -1,12 +1,17 @@
 'use client';
 
 /**
- * SlotReelsCanvas — R3F Canvas wrapper for the 3D cylinder drum rig.
+ * SlotReelsCanvas — R3F Canvas wrapper for the per-cell-plane drum rig.
  *
- * Camera: OrthographicCamera with fixed world bounds — independent of
- * canvas pixel aspect, so the reels fill the visible region whether the
- * modal is 600px wide or 1400px wide. Bounds chosen for 5 reels × 1.1wu
- * pitch + 1wu vertical margin: left=-2.85, right=2.85, top=2.1, bottom=-2.1.
+ * Camera: OrthographicCamera, fixed world bounds — independent of canvas
+ * pixel aspect so drums fill the region at any modal width.
+ *
+ * Bounds chosen for drum geometry (DRUM_RADIUS=1.5, REEL_SPACING=3.2):
+ *   Horizontal: 5 reels, outermost centres at ±2×3.2=±6.4wu, edges at ±(6.4+1.5)=±7.9wu
+ *     → left=-8.5, right=8.5 (0.6wu breathing room)
+ *   Vertical: drum diameter=3wu (2×DRUM_RADIUS) + bezel margin
+ *     → top=2.2, bottom=-2.2
+ *
  * frameloop='always' — demand mode causes transparent-black canvas on mount.
  * DPR cap [0.55, 0.7] on low-end keeps Iris Xe pixel budget manageable.
  */
@@ -73,11 +78,11 @@ export default function SlotReelsCanvas(props: SlotReelsCanvasProps) {
       >
         <OrthographicCamera
           makeDefault
-          position={[0, 0, 5]}
+          position={[0, 0, 10]}
           near={0.1}
-          far={20}
-          left={-3.0}
-          right={3.0}
+          far={30}
+          left={-8.5}
+          right={8.5}
           top={2.2}
           bottom={-2.2}
         />
