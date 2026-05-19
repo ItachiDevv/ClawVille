@@ -351,20 +351,6 @@ casinoSlotsRouter.post('/session/open', requireAuth, async (c) => {
   }
   const predictNumber = Number(predictBig);
 
-  // Pre-flight: refuse a second open session before we even hit the
-  // INSERT. The partial unique index will catch races; this is the
-  // fast/clean path so users get a friendly 409 with the offending id.
-  const existing = await db
-    .select({ id: slotSessions.id })
-    .from(slotSessions)
-    .where(and(eq(slotSessions.userId, user.id), eq(slotSessions.status, 'open')))
-    .limit(1);
-  if (existing.length > 0) {
-    throw new HTTPException(409, {
-      message: 'session_already_open',
-    });
-  }
-
   // Load avatar — required so a user without an active avatar gets a
   // clean 400 instead of a foreign-key surprise downstream, and so we can
   // pre-flight check their ClawTokens balance before opening the session.
@@ -379,6 +365,119 @@ casinoSlotsRouter.post('/session/open', requireAuth, async (c) => {
     throw new HTTPException(400, {
       message: `insufficient_clawtokens: need ${predictNumber}, have ${avatar.clawTokens}`,
     });
+  }
+
+  // Idempotent open: if an open session already exists for this user, return
+  // it instead of 409 so a fresh tab / store-cleared client can adopt the
+  // orphan and keep playing. SELECT … FOR UPDATE serializes us against any
+  // concurrent /spin or /close on the same row — we never return data for a
+  // session another request is mid-mutating.
+  //
+  // Paytable-match policy: if the existing session uses a DIFFERENT paytable,
+  // we refuse with 409 instead of returning it (changing paytables mid-session
+  // would drop the commit-reveal state); the player must close the prior
+  // session first. Same paytable → idempotent 200.
+  let resumed: SlotSession | null = null;
+  try {
+    resumed = await db.transaction(async (tx) => {
+      const lockRows = await tx.execute<{
+        id: string;
+        user_id: string;
+        paytable_id: string;
+        currency: string;
+        server_seed: string;
+        server_seed_hash: string;
+        client_seed: string;
+        nonce_counter: number;
+        cursor_counter: number;
+        starting_balance: string;
+        current_balance: string;
+        escrow_amount: string;
+        total_staked: string;
+        total_won: string;
+        status: string;
+        mode: string;
+        free_spins_remaining: number;
+        spin_count: number;
+        created_at: Date;
+        last_spin_at: Date | null;
+        closed_at: Date | null;
+      }>(
+        sql`SELECT id, user_id, paytable_id, currency, server_seed, server_seed_hash,
+                   client_seed, nonce_counter, cursor_counter, starting_balance,
+                   current_balance, escrow_amount, total_staked, total_won, status,
+                   mode, free_spins_remaining, spin_count, created_at, last_spin_at,
+                   closed_at
+            FROM slot_sessions
+            WHERE user_id = ${user.id} AND status = 'open'
+            FOR UPDATE`,
+      );
+      const lockRow = lockRows[0];
+      if (!lockRow) return null;
+      if (lockRow.paytable_id !== input.paytableId) {
+        throw new HTTPException(409, {
+          message: `session_already_open_different_paytable: open=${lockRow.paytable_id}, requested=${input.paytableId}`,
+        });
+      }
+      return {
+        id:                  lockRow.id,
+        userId:              lockRow.user_id,
+        paytableId:          lockRow.paytable_id,
+        currency:            lockRow.currency,
+        serverSeed:          lockRow.server_seed,
+        serverSeedHash:      lockRow.server_seed_hash,
+        clientSeed:          lockRow.client_seed,
+        nonceCounter:        lockRow.nonce_counter,
+        cursorCounter:       lockRow.cursor_counter,
+        startingBalance:     lockRow.starting_balance,
+        currentBalance:      lockRow.current_balance,
+        escrowAmount:        lockRow.escrow_amount,
+        totalStaked:         lockRow.total_staked,
+        totalWon:            lockRow.total_won,
+        status:              lockRow.status,
+        mode:                lockRow.mode,
+        freeSpinsRemaining:  lockRow.free_spins_remaining,
+        spinCount:           lockRow.spin_count,
+        createdAt:           lockRow.created_at,
+        lastSpinAt:          lockRow.last_spin_at,
+        closedAt:            lockRow.closed_at,
+      } as SlotSession;
+    });
+  } catch (err) {
+    if (err instanceof HTTPException) throw err;
+    throw err;
+  }
+
+  if (resumed) {
+    void logEventFromContext(c, {
+      eventType: 'casino.slots.session.resumed',
+      userId: user.id,
+      avatarId: avatar.id,
+      payload: {
+        sessionId: resumed.id,
+        paytableId: resumed.paytableId,
+        currency: resumed.currency,
+        nonceCounter: resumed.nonceCounter,
+        spinCount: resumed.spinCount,
+      },
+    });
+    const response: OpenSessionResponse = {
+      sessionId: resumed.id,
+      paytableId: resumed.paytableId as MachineSlug,
+      currency: 'clawtokens',
+      serverSeedHash: resumed.serverSeedHash,
+      clientSeed: resumed.clientSeed,
+      startingBalance: resumed.startingBalance,
+      escrowAmount: resumed.escrowAmount,
+      // predict echoes the client's request; the session's authoritative
+      // per-spin stake stays in startingBalance (which the /spin handler
+      // pins against). Mismatch is intentional UX — the client may have
+      // sent a different chip value but will discover the session-pinned
+      // predict via startingBalance and adopt it.
+      predict: predictBig.toString(),
+      createdAt: resumed.createdAt.toISOString(),
+    };
+    return c.json(response, 200);
   }
 
   const { serverSeed, serverSeedHash } = createServerSeed();
@@ -424,11 +523,39 @@ casinoSlotsRouter.post('/session/open', requireAuth, async (c) => {
       return row;
     });
   } catch (err) {
-    // Map race-condition unique-index violation to a clean 409 — Postgres
-    // error code 23505 (unique_violation). Without this catch, the
-    // generic onError handler would return 500 and alert Telegram.
+    // Race: between our SELECT FOR UPDATE above and the INSERT, another
+    // request inserted the user's open session. Re-read it and serve
+    // idempotently — same paytable → 200, different paytable → 409.
     const pgCode = (err as { code?: string } | undefined)?.code;
     if (pgCode === '23505') {
+      const raceRows = await db
+        .select()
+        .from(slotSessions)
+        .where(and(eq(slotSessions.userId, user.id), eq(slotSessions.status, 'open')))
+        .limit(1);
+      const raceRow = raceRows[0];
+      if (raceRow) {
+        if (raceRow.paytableId !== input.paytableId) {
+          throw new HTTPException(409, {
+            message: `session_already_open_different_paytable: open=${raceRow.paytableId}, requested=${input.paytableId}`,
+          });
+        }
+        const response: OpenSessionResponse = {
+          sessionId: raceRow.id,
+          paytableId: raceRow.paytableId as MachineSlug,
+          currency: 'clawtokens',
+          serverSeedHash: raceRow.serverSeedHash,
+          clientSeed: raceRow.clientSeed,
+          startingBalance: raceRow.startingBalance,
+          escrowAmount: raceRow.escrowAmount,
+          predict: predictBig.toString(),
+          createdAt: raceRow.createdAt.toISOString(),
+        };
+        return c.json(response, 200);
+      }
+      // Vanishingly unlikely: 23505 fired but the row isn't there on
+      // re-read (closed in between). Surface 409 so the client knows
+      // to retry.
       throw new HTTPException(409, { message: 'session_already_open' });
     }
     throw err;
