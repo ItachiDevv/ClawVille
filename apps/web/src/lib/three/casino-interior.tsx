@@ -393,6 +393,14 @@ const CABINET_BASE_GEO    = new THREE.BoxGeometry(
 );
 
 const CABINET_BODY_MAT = new THREE.MeshStandardMaterial({ color: 0x1a0a2e, roughness: 0.7, metalness: 0.4 });
+// Bonus cabinet body: subtle gold tint so players can distinguish at a glance
+const CABINET_BODY_BONUS_MAT = new THREE.MeshStandardMaterial({
+  color: 0x2a1800,
+  emissive: new THREE.Color(0xffaa00),
+  emissiveIntensity: 0.18,
+  roughness: 0.55,
+  metalness: 0.55,
+});
 const CABINET_BASE_MAT = new THREE.MeshStandardMaterial({ color: 0x0d0520, roughness: 0.8, metalness: 0.3 });
 const CABINET_LEVER_MAT= new THREE.MeshStandardMaterial({ color: 0xcc3333, roughness: 0.5, metalness: 0.6 });
 const CABINET_SCREEN_MAT = new THREE.MeshStandardMaterial({
@@ -410,12 +418,76 @@ interface HotspotDef {
   position: [number, number, number];
   size: [number, number, number];
   machineSlug: MachineSlug;
+  /** Which paytable to load when this cabinet is clicked. */
+  paytableId: MachineSlug;
+  /** True for the bonus-paytable cabinets (tinted gold body + BONUS badge). */
+  isBonus: boolean;
 }
 
 // Cabinet Y helpers (world-scale heights — bug fix 2026-05-18, removed _ROOM_SCALE)
 const _CAB_BASE_H  = _CAB_BASE_H_WU;                   // 16wu (world-scale)
 const _CAB_BODY_H  = _CAB_BODY_H_WU;                   // 143wu (world-scale)
 const _CAB_BODY_CY = _CAB_BASE_H + _CAB_BODY_H / 2;   // 87.5wu body center Y
+
+// ---------------------------------------------------------------------------
+// BONUS badge — canvas texture built once at module scope.
+// PlaneGeometry + MeshBasicMaterial (no lighting, always visible).
+// Iris Xe safe: no drei Text/Billboard.
+// Declared after _CAB_BASE_H/_CAB_BODY_H so _BADGE_Y can reference them.
+// ---------------------------------------------------------------------------
+function _buildBonusBadgeTexture(): THREE.CanvasTexture {
+  const W = 256, H = 64;
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d')!;
+
+  // Transparent background
+  ctx.clearRect(0, 0, W, H);
+
+  // Background pill
+  const grad = ctx.createLinearGradient(0, 0, W, 0);
+  grad.addColorStop(0,   'rgba(255,170,0,0.85)');
+  grad.addColorStop(0.5, 'rgba(255,210,80,0.92)');
+  grad.addColorStop(1,   'rgba(255,170,0,0.85)');
+  ctx.fillStyle = grad;
+  const r = H / 2;
+  ctx.beginPath();
+  ctx.moveTo(r, 0); ctx.lineTo(W - r, 0);
+  ctx.arcTo(W, 0, W, H, r);
+  ctx.lineTo(W, H); ctx.lineTo(0, H);
+  ctx.arcTo(0, H, 0, 0, r);
+  ctx.closePath();
+  ctx.fill();
+
+  // "💎 BONUS" text
+  ctx.fillStyle = '#1a0800';
+  ctx.font = 'bold 28px Arial, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('\u{1F48E} BONUS', W / 2, H / 2);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+// Lazy-init: only allocate when running in browser (CanvasTexture needs a DOM).
+let _bonusBadgeTexture: THREE.CanvasTexture | null = null;
+function getBonusBadgeTexture(): THREE.CanvasTexture {
+  if (!_bonusBadgeTexture) _bonusBadgeTexture = _buildBonusBadgeTexture();
+  return _bonusBadgeTexture;
+}
+
+const BONUS_BADGE_GEO = (() => {
+  // Badge plane: 120wu wide × 30wu tall — readable above 159wu cabinet top.
+  // Built at module scope but only in browser context.
+  if (typeof window === 'undefined') return new THREE.PlaneGeometry(1, 1);
+  return new THREE.PlaneGeometry(120, 30);
+})();
+
+// Badge center Y: cabinet top (159wu) + 20wu gap + 15wu (half badge height) = 194wu.
+const _BADGE_Y = _CAB_BASE_H + _CAB_BODY_H + 20 + 15;
 
 /**
  * Slot cabinet positions: left wall (x≈-380), spread Z across the room.
@@ -446,23 +518,48 @@ const _HOT_SIZE_X  = 100; // wu — interaction depth (x)
 const _HOT_SIZE_Y  = _CAB_BASE_H + _CAB_BODY_H; // 159wu — full cabinet height
 const _HOT_SIZE_Z  = 150; // wu — width along wall (z)
 
-const GAMEREADY_HOTSPOTS: HotspotDef[] = SLOT_CABINET_POSITIONS.map((pos) => ({
-  position: [pos.x + _CAB_REACH, _CAB_BODY_CY, pos.z] as [number, number, number],
-  size: [_HOT_SIZE_X, _HOT_SIZE_Y, _HOT_SIZE_Z] as [number, number, number],
-  machineSlug: 'classic-3x5' as MachineSlug,
-}));
+/**
+ * Cabinet paytable assignment: first 2 cabinets are classic, last 2 are bonus.
+ * Cabinet order: z≈-583, z≈-333 = classic; z≈-83, z≈166 = bonus.
+ */
+const GAMEREADY_HOTSPOTS: HotspotDef[] = SLOT_CABINET_POSITIONS.map((pos, i) => {
+  const isBonus = i >= 2;
+  return {
+    position: [pos.x + _CAB_REACH, _CAB_BODY_CY, pos.z] as [number, number, number],
+    size: [_HOT_SIZE_X, _HOT_SIZE_Y, _HOT_SIZE_Z] as [number, number, number],
+    machineSlug: (isBonus ? 'classic-3x5-bonus' : 'classic-3x5') as MachineSlug,
+    paytableId: (isBonus ? 'classic-3x5-bonus' : 'classic-3x5') as MachineSlug,
+    isBonus,
+  };
+});
 
 const FALLBACK_HOTSPOTS: HotspotDef[] = [
-  { position: [-267, 200, -133], size: [167, 267, 133], machineSlug: 'classic-3x5' },
-  { position: [ 267, 200, -133], size: [167, 267, 133], machineSlug: 'classic-3x5' },
+  { position: [-267, 200, -133], size: [167, 267, 133], machineSlug: 'classic-3x5', paytableId: 'classic-3x5', isBonus: false },
+  { position: [ 267, 200, -133], size: [167, 267, 133], machineSlug: 'classic-3x5', paytableId: 'classic-3x5', isBonus: false },
 ];
 
 // ---------------------------------------------------------------------------
 // SlotCabinets — 4 primitive-based slot machine props on the left wall
 // Static geometry; matrixAutoUpdate=false after initial placement.
+// Props: hotspots array provides isBonus flag for material + badge selection.
 // ---------------------------------------------------------------------------
-function SlotCabinets() {
+interface SlotCabinetsProps {
+  hotspots: HotspotDef[];
+}
+
+function SlotCabinets({ hotspots }: SlotCabinetsProps) {
   const groupRef = useRef<THREE.Group>(null);
+
+  // Resolve badge material lazily — CanvasTexture requires browser DOM.
+  const bonusBadgeMat = useMemo(() => {
+    if (typeof window === 'undefined') return null;
+    return new THREE.MeshBasicMaterial({
+      map: getBonusBadgeTexture(),
+      transparent: true,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+  }, []);
 
   useEffect(() => {
     const g = groupRef.current;
@@ -476,24 +573,39 @@ function SlotCabinets() {
 
   return (
     <group ref={groupRef}>
-      {SLOT_CABINET_POSITIONS.map((pos, i) => (
-        <group
-          key={i}
-          position={[pos.x, 0, pos.z]}
-          rotation={[0, Math.PI / 2, 0]} // face into room (+X direction)
-        >
-          {/* Base plinth — sits on floor, y = half of base height */}
-          <mesh geometry={CABINET_BASE_GEO} material={CABINET_BASE_MAT} position={[0, _CAB_BASE_H / 2, 0]} />
-          {/* Body — sits on top of base */}
-          <mesh geometry={CABINET_BODY_GEO} material={CABINET_BODY_MAT} position={[0, _CAB_BASE_H + _CAB_BODY_H / 2, 0]} />
-          {/* Emissive screen — upper 75% of body face, inset slightly toward room.
-              Y: base + 75% of body = 16 + 107 = 123wu.
-              Z: 45wu inset (world-scale, was room-scaled 50wu). */}
-          <mesh geometry={CABINET_SCREEN_GEO} material={CABINET_SCREEN_MAT} position={[0, _CAB_BASE_H + Math.round(_CAB_BODY_H * 0.75), -45]} />
-          {/* Lever — extends from right side, world-scale offsets */}
-          <mesh geometry={CABINET_LEVER_GEO} material={CABINET_LEVER_MAT} position={[50, _CAB_BASE_H + _CAB_BODY_H / 2, -15]} rotation={[0, 0, Math.PI / 5]} />
-        </group>
-      ))}
+      {SLOT_CABINET_POSITIONS.map((pos, i) => {
+        const isBonus = hotspots[i]?.isBonus ?? false;
+        const bodyMat = isBonus ? CABINET_BODY_BONUS_MAT : CABINET_BODY_MAT;
+        return (
+          <group
+            key={i}
+            position={[pos.x, 0, pos.z]}
+            rotation={[0, Math.PI / 2, 0]} // face into room (+X direction)
+          >
+            {/* Base plinth — sits on floor, y = half of base height */}
+            <mesh geometry={CABINET_BASE_GEO} material={CABINET_BASE_MAT} position={[0, _CAB_BASE_H / 2, 0]} />
+            {/* Body — classic or gold-tinted bonus */}
+            <mesh geometry={CABINET_BODY_GEO} material={bodyMat} position={[0, _CAB_BASE_H + _CAB_BODY_H / 2, 0]} />
+            {/* Emissive screen — upper 75% of body face, inset slightly toward room.
+                Y: base + 75% of body = 16 + 107 = 123wu.
+                Z: 45wu inset (world-scale, was room-scaled 50wu). */}
+            <mesh geometry={CABINET_SCREEN_GEO} material={CABINET_SCREEN_MAT} position={[0, _CAB_BASE_H + Math.round(_CAB_BODY_H * 0.75), -45]} />
+            {/* Lever — extends from right side, world-scale offsets */}
+            <mesh geometry={CABINET_LEVER_GEO} material={CABINET_LEVER_MAT} position={[50, _CAB_BASE_H + _CAB_BODY_H / 2, -15]} rotation={[0, 0, Math.PI / 5]} />
+            {/* BONUS badge — canvas texture plane above bonus cabinet only.
+                Faces +Z in cabinet-local space (= +X world after PI/2 rotation),
+                which is the room-facing direction. DoubleSide so player sees it
+                from any approach angle. */}
+            {isBonus && bonusBadgeMat && (
+              <mesh
+                geometry={BONUS_BADGE_GEO}
+                material={bonusBadgeMat}
+                position={[0, _BADGE_Y, -45]}
+              />
+            )}
+          </group>
+        );
+      })}
     </group>
   );
 }
@@ -515,7 +627,7 @@ function SlotHotspot({ def }: { def: HotspotDef }) {
 
   const handleClick = () => {
     const startBalance = avatar?.clawTokens ?? 60;
-    openSlotScreen(def.machineSlug, 'classic-3x5', startBalance);
+    openSlotScreen(def.machineSlug, def.paytableId, startBalance);
   };
 
   return (
@@ -996,7 +1108,7 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
       <primitive object={cloned} />
 
       {/* Slot cabinet props — visible 3D objects players click to open slot screen */}
-      {!useFallback && <SlotCabinets />}
+      {!useFallback && <SlotCabinets hotspots={hotspots} />}
 
       {/* Invisible click hotspots over slot machines */}
       {hotspots.map((def, i) => (
