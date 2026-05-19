@@ -1,0 +1,75 @@
+name: Casino RTP Monte Carlo gate
+
+# Phase 6.1 — slot RTP CI gate.
+#
+# Runs a 100k-spin Monte Carlo simulation against `classic-3x5` on every
+# PR that touches:
+#   - packages/shared/src/constants/slot-paytables.ts  (reel strips, payouts)
+#   - apps/api/src/services/slot-engine.ts             (spin logic)
+#   - apps/api/src/services/provable-rng.ts            (HMAC stream)
+#   - scripts/casino/rtp-sim.ts                        (simulator itself)
+#
+# Fails the build if RTP lands outside [95.00%, 97.00%]. The local 1M
+# acceptance band is the tighter [95.50%, 96.50%]; the CI band is
+# widened by ~0.5% on each side to absorb 100k Monte Carlo stderr
+# (empirically ~0.3% half-width per `_analyze.ts` variance estimate).
+#
+# Local equivalent of this gate:
+#   bun scripts/casino/rtp-sim.ts --spins 100000 \
+#     --strict-rtp 0.95,0.97 --exit-on-fail
+#
+# Intentionally pinned: --seed is OMITTED so we sample a fresh server
+# seed each CI run. With a 100k sample the variance is small enough
+# that any genuine paytable regression (e.g. doubling a payout, deleting
+# a wild) bursts the band on every seed.
+
+on:
+  pull_request:
+    paths:
+      - 'packages/shared/src/constants/slot-paytables.ts'
+      - 'apps/api/src/services/slot-engine.ts'
+      - 'apps/api/src/services/provable-rng.ts'
+      - 'scripts/casino/rtp-sim.ts'
+      - '.github/workflows/rtp-gate.yml'
+  push:
+    branches:
+      - master
+    paths:
+      - 'packages/shared/src/constants/slot-paytables.ts'
+      - 'apps/api/src/services/slot-engine.ts'
+      - 'apps/api/src/services/provable-rng.ts'
+      - 'scripts/casino/rtp-sim.ts'
+
+concurrency:
+  group: rtp-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rtp-monte-carlo:
+    name: RTP gate (100k Monte Carlo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install workspace deps
+        run: bun install --frozen-lockfile
+
+      - name: Build @clawville/shared
+        # The simulator imports CLASSIC_PAYTABLE from the shared package's
+        # `dist/`. Skip the broader monorepo build (turbo would also pull
+        # in next, etc.) — only the shared package is on the import path.
+        run: bun run --filter @clawville/shared build
+
+      - name: Run 100k Monte Carlo with strict RTP gate
+        run: |
+          bun scripts/casino/rtp-sim.ts \
+            --spins 100000 \
+            --strict-rtp 0.95,0.97 \
+            --exit-on-fail
