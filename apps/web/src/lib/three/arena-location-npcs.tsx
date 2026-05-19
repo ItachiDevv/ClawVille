@@ -409,7 +409,7 @@ const NpcMesh = memo(function NpcMesh({
     initialVisible: showLabel,
     fadeNear: 800,
     fadeFar: 3000,
-    fadeBaseOpacity: 0.65,
+    fadeBaseOpacity: 0.85,
     occlude: true,
   });
   // extendLoaderWithMeshopt: belt-and-suspenders for location NPC GLBs that are
@@ -629,24 +629,66 @@ const NpcMesh = memo(function NpcMesh({
           <primitive object={cloned} />
         </group>
       </group>
-      {/* Name label — minimal uppercase wordmark, matching wandering NPC style.
+      {/* Bio-luminescent NPC label — same rig as GLBNpcMesh / VRMNpcMesh.
           Only primary NPCs get a label (showLabel=true via initialVisible). */}
       {showLabel && (
         <WorldLabel divRef={locationLabelRef}>
-          <span
+          <div
             style={{
-              whiteSpace: 'nowrap',
-              userSelect: 'none',
-              color: '#fff',
-              fontSize: 10,
-              fontWeight: 600,
-              letterSpacing: '0.08em',
-              textTransform: 'uppercase',
-              textShadow: '0 0 3px #000, 0 1px 2px #000, -1px 0 2px #000, 1px 0 2px #000',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              transform: 'translateY(-50%)',
+              ['--label-phase' as string]: String(
+                (modelCfg.name.charCodeAt(0) + modelCfg.name.length) % 10 / 10,
+              ),
             }}
           >
-            {modelCfg.name}
-          </span>
+            <div
+              style={{
+                fontFamily: 'var(--font-fraunces, "Cormorant Garamond", "Spectral", Georgia, serif)',
+                fontVariationSettings: '"opsz" 9',
+                fontWeight: 480,
+                fontSize: 13,
+                color: '#effeff',
+                padding: '5px 11px 6px',
+                borderRadius: 999,
+                background: 'radial-gradient(ellipse at center, rgba(80,220,255,0.12), rgba(80,220,255,0.04))',
+                boxShadow: '0 0 14px rgba(100,230,255,0.55), 0 0 38px -4px rgba(80,220,255,0.45), inset 0 0 12px rgba(180,245,255,0.18)',
+                whiteSpace: 'nowrap',
+                letterSpacing: '0.01em',
+                lineHeight: 1,
+                userSelect: 'none',
+                animation: 'bio-drift 5.4s ease-in-out infinite',
+                animationDelay: 'calc(var(--label-phase, 0) * -5.4s)',
+              }}
+            >
+              {modelCfg.name}
+            </div>
+            <div
+              style={{
+                width: 1,
+                height: 38,
+                backgroundImage: 'linear-gradient(rgba(140,240,255,0.78) 50%, transparent 50%)',
+                backgroundSize: '1px 6px',
+                backgroundRepeat: 'repeat-y',
+                boxShadow: '0 0 6px rgba(120,240,255,0.55)',
+                marginBottom: 2,
+              }}
+            />
+            {/* Pulsing anchor dot — glow lives on ::after pseudo (compositor-safe) */}
+            <div
+              className="bio-anchor"
+              style={{
+                width: 5,
+                height: 5,
+                borderRadius: '50%',
+                background: 'rgba(160,234,255,1)',
+                animation: 'bio-pulse 2.4s ease-in-out infinite',
+                animationDelay: 'calc(var(--label-phase, 0) * -2.4s)',
+              }}
+            />
+          </div>
         </WorldLabel>
       )}
     </group>
