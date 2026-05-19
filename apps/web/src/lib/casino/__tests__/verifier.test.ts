@@ -28,7 +28,10 @@ import {
   runSpinLocal,
   evaluateReelsLocal,
   replaySpin,
+  wildMultiplierForDrawLocal,
+  getVerifierBundle,
 } from '../verifier';
+import { FREE_SPIN_RULES, SCATTER_PAY_TABLE } from '@clawville/shared';
 
 // ---------------------------------------------------------------------------
 // Fixtures — verified byte-for-byte against the server provable-rng module
@@ -369,5 +372,402 @@ describe('verifier.replaySpin', () => {
     });
     expect(verdict.ok).toBe(false);
     expect(verdict.reasons.some((r) => r.includes('reels[4][2]'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 6.1.5 (Bundle B) — classic-3x5-bonus paytable
+// ---------------------------------------------------------------------------
+
+describe('verifier.wildMultiplierForDrawLocal — mapping table', () => {
+  it('draw=0..59 → 2×', () => {
+    expect(wildMultiplierForDrawLocal(0)).toBe(2);
+    expect(wildMultiplierForDrawLocal(59)).toBe(2);
+  });
+  it('draw=60..89 → 3×', () => {
+    expect(wildMultiplierForDrawLocal(60)).toBe(3);
+    expect(wildMultiplierForDrawLocal(89)).toBe(3);
+  });
+  it('draw=90..99 → 5×', () => {
+    expect(wildMultiplierForDrawLocal(90)).toBe(5);
+    expect(wildMultiplierForDrawLocal(99)).toBe(5);
+  });
+  it('out-of-range draws throw', () => {
+    expect(() => wildMultiplierForDrawLocal(-1)).toThrow();
+    expect(() => wildMultiplierForDrawLocal(100)).toThrow();
+    expect(() => wildMultiplierForDrawLocal(1.5)).toThrow();
+  });
+});
+
+describe('verifier.getVerifierBundle — bonus paytable', () => {
+  it('classic-3x5-bonus has scatterId=10 and wildId=7', () => {
+    const b = getVerifierBundle('classic-3x5-bonus');
+    expect(b.id).toBe('classic-3x5-bonus');
+    expect(b.wildId).toBe(7);
+    expect(b.scatterId).toBe(10);
+    expect(b.symbols.length).toBe(11);
+    expect(b.reelStrips.length).toBe(5);
+    for (const strip of b.reelStrips) {
+      expect(strip.length).toBe(84);
+    }
+  });
+
+  it('classic-3x5 keeps scatterId=null (no bonus side-effects)', () => {
+    const b = getVerifierBundle('classic-3x5');
+    expect(b.scatterId).toBeNull();
+    expect(b.wildId).toBe(7);
+  });
+});
+
+describe('verifier.runSpinLocal — classic-3x5-bonus determinism', () => {
+  it('same inputs ⇒ byte-identical SpinResult (reels, cursor, wilds, scatter)', async () => {
+    const args = {
+      paytableId: 'classic-3x5-bonus' as const,
+      serverSeed: 'a'.repeat(64),
+      clientSeed: 'abcd1234',
+      nonce: 7,
+      cursor: 100,
+      predict: 20n,
+    };
+    const a = await runSpinLocal(args);
+    const b = await runSpinLocal(args);
+    expect(a.reels).toEqual(b.reels);
+    expect(a.cursorAfter).toBe(b.cursorAfter);
+    expect(a.winAmount).toBe(b.winAmount);
+    expect(a.wildMultipliers).toEqual(b.wildMultipliers);
+    expect(a.scatterPayout).toBe(b.scatterPayout);
+    expect(a.freeSpinsAwarded).toBe(b.freeSpinsAwarded);
+    expect(a.isFreeSpin).toBe(false);
+  });
+
+  it('cursor advances 20 bytes + 4 bytes per landed WILD (no rejection sampling)', async () => {
+    // Scan many nonces; for each spin assert cursorDelta is
+    //   20 (reel samples) + 4 × wildCount + 4 × rejection-resamples.
+    // Per-reel sampleIntFromBytes(range=84) almost never rejects
+    // (threshold = 2^32 - 2^32 % 84 ≈ 99.999% pass rate); same for
+    // range=100 (threshold ≈ 99.999996%). So a typical spin lands at
+    // exactly 20 + 4 × wildCount; assertion uses a >= floor with the
+    // observation that rejection-overhead is a multiple of 4.
+    let cursor = 0;
+    for (let nonce = 1; nonce <= 30; nonce++) {
+      const result = await runSpinLocal({
+        paytableId: 'classic-3x5-bonus',
+        serverSeed: 'a'.repeat(64),
+        clientSeed: 'abcd1234',
+        nonce,
+        cursor,
+        predict: 20n,
+      });
+      const delta = result.cursorAfter - cursor;
+      expect(delta % 4).toBe(0);
+      expect(delta).toBeGreaterThanOrEqual(20 + 4 * result.wildMultipliers.length);
+      cursor = result.cursorAfter;
+    }
+  });
+
+  it('classic-3x5 still yields wildMultipliers=[] and scatterPayout=0n (no bonus bleed)', async () => {
+    const result = await runSpinLocal({
+      paytableId: 'classic-3x5',
+      serverSeed: 'a'.repeat(64),
+      clientSeed: 'abcd1234',
+      nonce: 0,
+      cursor: 0,
+      predict: 20n,
+    });
+    expect(result.wildMultipliers).toEqual([]);
+    expect(result.scatterPayout).toBe(0n);
+    expect(result.freeSpinsAwarded).toBe(0);
+    expect(result.isFreeSpin).toBe(false);
+    // Slice-2 baseline: classic-3x5 cursorAfter must still be 20 (no
+    // wild-multiplier draws ever run on the no-scatter paytable).
+    expect(result.cursorAfter).toBe(20);
+  });
+
+  it('wildMultipliers sit on actual WILD cells in (reel,row) order', async () => {
+    // Scan a range of nonces and verify every emitted wildMultiplier
+    // {reelIndex,rowIndex} corresponds to a WILD on the grid.
+    const bundle = getVerifierBundle('classic-3x5-bonus');
+    let cursor = 0;
+    for (let nonce = 1; nonce <= 50; nonce++) {
+      const result = await runSpinLocal({
+        paytableId: 'classic-3x5-bonus',
+        serverSeed: 'a'.repeat(64),
+        clientSeed: 'abcd1234',
+        nonce,
+        cursor,
+        predict: 20n,
+      });
+      cursor = result.cursorAfter;
+      // Emission order must be (reel asc, row asc).
+      let prevKey = -1;
+      for (const wm of result.wildMultipliers) {
+        expect(result.reels[wm.reelIndex]![wm.rowIndex]).toBe(bundle.wildId);
+        const key = wm.reelIndex * 3 + wm.rowIndex;
+        expect(key).toBeGreaterThan(prevKey);
+        prevKey = key;
+        // 2× / 3× / 5× are the only legal effective multipliers when
+        // FS_WILD_MULTIPLIER_DOUBLE=false (shipped). Sanity-check.
+        expect([2, 3, 5]).toContain(wm.multiplier);
+      }
+    }
+  });
+});
+
+describe('verifier.runSpinLocal — base vs free-spin mode parity', () => {
+  it('reels + cursor identical across freeSpinMode=false vs true (same RNG)', async () => {
+    // Reel samples + wild multiplier draws consume bytes deterministically
+    // regardless of mode — only the doubling/scalar step differs. Server
+    // engine has the same guarantee (cursor parity is load-bearing for
+    // session-level replay).
+    for (let nonce = 1; nonce <= 10; nonce++) {
+      const base = await runSpinLocal({
+        paytableId: 'classic-3x5-bonus',
+        serverSeed: 'a'.repeat(64),
+        clientSeed: 'abcd1234',
+        nonce,
+        cursor: 0,
+        predict: 20n,
+        freeSpinMode: false,
+      });
+      const fs = await runSpinLocal({
+        paytableId: 'classic-3x5-bonus',
+        serverSeed: 'a'.repeat(64),
+        clientSeed: 'abcd1234',
+        nonce,
+        cursor: 0,
+        predict: 20n,
+        freeSpinMode: true,
+      });
+      expect(fs.reels).toEqual(base.reels);
+      expect(fs.cursorAfter).toBe(base.cursorAfter);
+      expect(fs.isFreeSpin).toBe(true);
+      expect(base.isFreeSpin).toBe(false);
+      // Scatter pay NEVER doubles in FS.
+      expect(fs.scatterPayout).toBe(base.scatterPayout);
+      // Line-win component honoring shipped FS_LINE_WIN_MULTIPLIER:
+      //   • FS_LINE_WIN_MULTIPLIER=1 (shipped) ⇒ fsLine equals baseLine
+      //     when no wild participates in a winning line, or some integer
+      //     multiple of baseLine when at least one wild does.
+      //   • If a future tune flips FS_LINE_WIN_MULTIPLIER back to 2,
+      //     fsLine becomes >= 2 × baseLine; this assertion auto-tracks
+      //     the constant via floor = baseLine * FS_LINE_WIN_MULTIPLIER.
+      const baseLine = base.winAmount - base.scatterPayout;
+      const fsLine = fs.winAmount - fs.scatterPayout;
+      if (baseLine > 0n) {
+        const minFsLine = baseLine * BigInt(FREE_SPIN_RULES.FS_LINE_WIN_MULTIPLIER);
+        expect(fsLine).toBeGreaterThanOrEqual(minFsLine);
+      }
+    }
+  });
+});
+
+describe('verifier.runSpinLocal — scatter pay-anywhere', () => {
+  it('over 500 nonces, scatter-paying spins match SCATTER_PAY_TABLE multipliers', async () => {
+    // Walk many spins; whenever scatterPayout > 0, verify the multiplier
+    // matches the on-grid scatter count via SCATTER_PAY_TABLE.
+    const predict = 20n;
+    let cursor = 0;
+    let hits = 0;
+    const bundle = getVerifierBundle('classic-3x5-bonus');
+    for (let nonce = 1; nonce < 500; nonce++) {
+      const r = await runSpinLocal({
+        paytableId: 'classic-3x5-bonus',
+        serverSeed: 'a'.repeat(64),
+        clientSeed: 'abcd1234',
+        nonce,
+        cursor,
+        predict,
+      });
+      cursor = r.cursorAfter;
+      if (r.scatterPayout > 0n) {
+        hits++;
+        let count = 0;
+        for (let reel = 0; reel < 5; reel++) {
+          for (let row = 0; row < 3; row++) {
+            if (r.reels[reel]![row] === bundle.scatterId) count++;
+          }
+        }
+        expect(count).toBeGreaterThanOrEqual(FREE_SPIN_RULES.TRIGGER_THRESHOLD);
+        const tier =
+          SCATTER_PAY_TABLE[Math.min(count, SCATTER_PAY_TABLE.length - 1)] ?? 0;
+        expect(r.scatterPayout).toBe(predict * BigInt(tier));
+        // Base-mode trigger awards AWARD_BASE free spins.
+        expect(r.freeSpinsAwarded).toBe(FREE_SPIN_RULES.AWARD_BASE);
+      }
+    }
+    // Trigger rate ~1 per 96 base spins; expect >0 hits in 500 nonces.
+    expect(hits).toBeGreaterThan(0);
+  });
+
+  it('free-spin retrigger awards AWARD_RETRIGGER (vs AWARD_BASE in base)', async () => {
+    // Scan many nonces with a FIXED cursor=0; for each one run both BASE
+    // and FS mode. When the BASE-mode spin pays scatter, the same nonce
+    // in FS mode pays the same scatter amount (reels are identical), but
+    // awards AWARD_RETRIGGER instead of AWARD_BASE.
+    let foundRetrigger = false;
+    for (let nonce = 1; nonce < 500 && !foundRetrigger; nonce++) {
+      const base = await runSpinLocal({
+        paytableId: 'classic-3x5-bonus',
+        serverSeed: 'a'.repeat(64),
+        clientSeed: 'abcd1234',
+        nonce,
+        cursor: 0,
+        predict: 20n,
+      });
+      if (base.scatterPayout === 0n) continue;
+      const fs = await runSpinLocal({
+        paytableId: 'classic-3x5-bonus',
+        serverSeed: 'a'.repeat(64),
+        clientSeed: 'abcd1234',
+        nonce,
+        cursor: 0,
+        predict: 20n,
+        freeSpinMode: true,
+      });
+      expect(base.freeSpinsAwarded).toBe(FREE_SPIN_RULES.AWARD_BASE);
+      expect(fs.freeSpinsAwarded).toBe(FREE_SPIN_RULES.AWARD_RETRIGGER);
+      expect(fs.scatterPayout).toBe(base.scatterPayout);
+      foundRetrigger = true;
+    }
+    // In 500 base-mode nonces we expect at least one scatter trigger
+    // (~1 per 96 spins from the binomial trigger rate).
+    expect(foundRetrigger).toBe(true);
+  });
+});
+
+describe('verifier.evaluateReelsLocal — bonus scatter + wild multiplier math', () => {
+  // SYMBOL id constants for grid synthesis (match BONUS_SYMBOLS / CLASSIC_SYMBOLS).
+  const CHERRY = 0;
+  const LEMON = 1;
+  const PLUM = 3;
+  const WILD_ID = 7;
+  const SCATTER = 10;
+
+  function gridBonus(middle: number[], fill: number): number[][] {
+    if (middle.length !== 5) throw new Error('middle must be 5 entries');
+    return middle.map((m) => [fill, m, fill]);
+  }
+
+  it('scatter on a payline BREAKS the run (Cherry,Cherry,Scatter,Cherry,Cherry → 2-of-kind only)', () => {
+    const reels = gridBonus([CHERRY, CHERRY, SCATTER, CHERRY, CHERRY], LEMON);
+    const { winningLines } = evaluateReelsLocal(reels, 'classic-3x5-bonus', 20n);
+    const mid = winningLines.find((w) => w.lineIndex === 0);
+    expect(mid).toBeDefined();
+    expect(mid!.multiplier).toBe(2); // 2-of-kind Cherry payouts[0]
+    expect(mid!.winAmount).toBe(2n);
+  });
+
+  it('two wilds on one line multiply their multipliers (×2 × ×5 = ×10 line scalar)', () => {
+    const reels = gridBonus([WILD_ID, CHERRY, WILD_ID, CHERRY, CHERRY], LEMON);
+    const { winningLines } = evaluateReelsLocal(reels, 'classic-3x5-bonus', 20n, {
+      wildMultipliers: [
+        { reelIndex: 0, rowIndex: 1, multiplier: 2 },
+        { reelIndex: 2, rowIndex: 1, multiplier: 5 },
+      ],
+    });
+    const mid = winningLines.find((w) => w.lineIndex === 0)!;
+    expect(mid.multiplier).toBe(20); // 5-of-kind Cherry
+    // perLine=1, raw payout=20, wild product=10 ⇒ 20 × 10 = 200
+    expect(mid.winAmount).toBe(200n);
+  });
+
+  it('wild OUTSIDE matchLen prefix does NOT multiply (line broken before it)', () => {
+    const reels = gridBonus([CHERRY, CHERRY, PLUM, WILD_ID, CHERRY], LEMON);
+    const { winningLines } = evaluateReelsLocal(reels, 'classic-3x5-bonus', 20n, {
+      wildMultipliers: [{ reelIndex: 3, rowIndex: 1, multiplier: 5 }],
+    });
+    const mid = winningLines.find((w) => w.lineIndex === 0)!;
+    expect(mid.multiplier).toBe(2); // 2-of-kind Cherry only
+    expect(mid.winAmount).toBe(2n);
+  });
+
+  it('rejects wildMultiplier pointing at a non-WILD cell (adversarial guard)', () => {
+    const reels = gridBonus([CHERRY, CHERRY, CHERRY, CHERRY, CHERRY], LEMON);
+    expect(() =>
+      evaluateReelsLocal(reels, 'classic-3x5-bonus', 20n, {
+        wildMultipliers: [{ reelIndex: 0, rowIndex: 1, multiplier: 3 }],
+      }),
+    ).toThrow(/does not sit on a WILD cell/);
+  });
+});
+
+describe('verifier.replaySpin — bonus paytable round-trip', () => {
+  it('byte-identity replay of a bonus spin (computed = expected)', async () => {
+    // Generate a real bonus spin and feed its outputs back as `expected`
+    // — replay must report ok=true. This is the canonical session-verifier
+    // path: server emits a spin row → page asks verifier to replay → match.
+    const args = {
+      paytableId: 'classic-3x5-bonus' as const,
+      serverSeed: 'a'.repeat(64),
+      clientSeed: 'abcd1234',
+      nonce: 11,
+      cursor: 0,
+      predict: 40n,
+    };
+    const truth = await runSpinLocal(args);
+    const verdict = await replaySpin({
+      ...args,
+      expected: {
+        reels: truth.reels,
+        winAmount: truth.winAmount.toString(),
+        cursorAfter: truth.cursorAfter,
+        wildMultipliers: truth.wildMultipliers,
+        scatterPayout: truth.scatterPayout.toString(),
+        freeSpinsAwarded: truth.freeSpinsAwarded,
+      },
+    });
+    expect(verdict.ok).toBe(true);
+    expect(verdict.reasons).toEqual([]);
+  });
+
+  it('detects a tampered scatterPayout', async () => {
+    const args = {
+      paytableId: 'classic-3x5-bonus' as const,
+      serverSeed: 'a'.repeat(64),
+      clientSeed: 'abcd1234',
+      nonce: 11,
+      cursor: 0,
+      predict: 40n,
+    };
+    const truth = await runSpinLocal(args);
+    const verdict = await replaySpin({
+      ...args,
+      expected: {
+        reels: truth.reels,
+        winAmount: truth.winAmount.toString(),
+        cursorAfter: truth.cursorAfter,
+        wildMultipliers: truth.wildMultipliers,
+        scatterPayout: (truth.scatterPayout + 99n).toString(),
+        freeSpinsAwarded: truth.freeSpinsAwarded,
+      },
+    });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reasons.some((r) => r.includes('scatterPayout'))).toBe(true);
+  });
+
+  it('replays a FS-mode spin correctly when freeSpinMode is passed through', async () => {
+    const args = {
+      paytableId: 'classic-3x5-bonus' as const,
+      serverSeed: 'a'.repeat(64),
+      clientSeed: 'abcd1234',
+      nonce: 5,
+      cursor: 0,
+      predict: 20n,
+      freeSpinMode: true,
+    };
+    const truth = await runSpinLocal(args);
+    const verdict = await replaySpin({
+      ...args,
+      expected: {
+        reels: truth.reels,
+        winAmount: truth.winAmount.toString(),
+        cursorAfter: truth.cursorAfter,
+        wildMultipliers: truth.wildMultipliers,
+        scatterPayout: truth.scatterPayout.toString(),
+        freeSpinsAwarded: truth.freeSpinsAwarded,
+      },
+    });
+    expect(verdict.ok).toBe(true);
+    expect(truth.isFreeSpin).toBe(true);
   });
 });

@@ -85,10 +85,20 @@ export default function SessionVerifyPage({ params }: PageProps) {
             nonce: spin.nonce,
             cursor: spin.cursorBefore,
             predict: BigInt(spin.predict),
+            // Phase 6.1.5 — propagate FS mode so bonus-session replays
+            // pick the right cursor/payout math. Defaults to false for
+            // legacy classic-3x5 rows where the column may be absent.
+            freeSpinMode: spin.isFreeSpin,
             expected: {
               reels: spin.reels,
               winAmount: spin.winAmount,
               cursorAfter: spin.cursorAfter,
+              // Phase 6.1.5 — deep-compare bonus fields when the server
+              // shipped them. Absence on a row means classic-3x5 (no
+              // bonus features) and the verifier skips those checks.
+              wildMultipliers: spin.wildMultipliers,
+              scatterPayout: spin.scatterPayout,
+              freeSpinsAwarded: spin.freeSpinsAwarded,
             },
           });
           next.set(spin.id, verdict);
@@ -103,6 +113,8 @@ export default function SessionVerifyPage({ params }: PageProps) {
               winAmount: 0n,
               freeSpinsAwarded: 0,
               isFreeSpin: false,
+              wildMultipliers: [],
+              scatterPayout: 0n,
               cursorAfter: 0,
             },
           });
