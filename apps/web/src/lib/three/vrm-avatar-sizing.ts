@@ -100,6 +100,14 @@ export const VRM_AVATAR_FALLBACK_SCALE = 169;
 export function computeVRMAvatarFit(
   vrm: { scene: THREE.Object3D } | null | undefined,
   speciesOrAnimatorId?: string,
+  /**
+   * Optional explicit target height (world units). When provided, takes
+   * precedence over SPECIES_TARGET_HEIGHT_WU and VRM_AVATAR_TARGET_HEIGHT_WU.
+   * Used by the casino interior to pass CASINO_VRM_TARGET_HEIGHT without
+   * polluting the shared SPECIES_TARGET_HEIGHT_WU map with a scene-specific
+   * override.
+   */
+  targetHeightOverride?: number,
 ): { scale: number; offsetY: number } {
   if (!vrm) return { scale: VRM_AVATAR_FALLBACK_SCALE, offsetY: 0 };
   const prev = vrm.scene.scale.clone();
@@ -112,6 +120,7 @@ export function computeVRMAvatarFit(
   vrm.scene.updateMatrixWorld(true);
 
   const target =
+    targetHeightOverride ||
     (speciesOrAnimatorId && SPECIES_TARGET_HEIGHT_WU[speciesOrAnimatorId]) ||
     VRM_AVATAR_TARGET_HEIGHT_WU;
   const scale = size.y > 0 ? target / size.y : VRM_AVATAR_FALLBACK_SCALE;

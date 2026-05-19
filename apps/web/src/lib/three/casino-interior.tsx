@@ -94,14 +94,54 @@ const CASINO_PLAYER_SPEED = 830; // was 250; ≈ 250 × 3.333 so same perceived 
 /** GLB avatar scale — matches AVATAR_SCALE in player-avatar.tsx */
 const CASINO_AVATAR_SCALE = 40;
 
-// Follow-camera offsets calibrated for VRM avatar at ~270wu tall.
-// Camera sits behind+above the avatar and looks toward mid-torso.
-//   Y=200  → camera hovers above the avatar's waist
-//   Z=450  → generous behind distance for the large room
-//   lookY=100 → lookAt aims at mid-chest of 270wu avatar
-const CAM_ABOVE  = 200; // was 55
-const CAM_BEHIND = 450; // was 160
-const CAM_LOOK_Y = 100; // was 18
+/**
+ * VRM avatar target height inside the casino (world units).
+ *
+ * BUG FIX 2026-05-18 (pass 2): dropped from 270wu → 160wu.
+ *
+ * The previous Implementer set CASINO_VRM_TARGET_HEIGHT = 270, which equals
+ * VRM_AVATAR_TARGET_HEIGHT_WU — so computeVRMAvatarFit() produced the same
+ * scale as the open world. The avatar was still towering at 270wu inside a
+ * room whose ceiling is only ~400wu.
+ *
+ * Target sizing math (world-scale units, 158.8wu ≈ 1m):
+ *   Real slot cabinet body: ~0.9m + ~0.1m base = 1.0m total → 159wu
+ *   Target avatar height:   ~1.0m = 159wu  (matches cabinet top)
+ *
+ * Chosen value: 160wu
+ *   Cabinet top / avatar = 159 / 160 = 99.4% — machine reaches forehead.
+ *   This is accurate for traditional tall Vegas slot machines (5-6 ft /
+ *   ~180cm), where the cabinet top meets standing player eye-level.
+ *   Avatar / ceiling = 160 / 400 = 40% — slightly short person in a tall
+ *   room. IRL ratio is ~49% (1.7m / 3.5m), so the player reads as modestly
+ *   shorter than real scale — appropriate for a stylised game interior.
+ *
+ * Cabinet WIDTH/DEPTH still use _ROOM_SCALE so the footprint fills the floor.
+ * Cabinet HEIGHT dimensions remain world-scale (not room-scale) so they are
+ * calibrated against the avatar, not the 2000wu room max-dim.
+ */
+const CASINO_VRM_TARGET_HEIGHT = 160; // wu — deliberately SMALLER than VRM_AVATAR_TARGET_HEIGHT_WU=270
+
+// Follow-camera offsets calibrated for VRM avatar at CASINO_VRM_TARGET_HEIGHT = 160wu.
+//
+//   Framing rules (proportional to avatar height H=160wu):
+//     CAM_ABOVE  = H × 1.19 ≈ 190wu  — camera sits ~1.2× avatar height above
+//                                       the floor; sees full body + some ceiling.
+//     CAM_BEHIND = H × 2.81 ≈ 450wu  — generous pull-back so the tiny avatar
+//                                       reads clearly against the wide room.
+//     CAM_LOOK_Y = H × 0.44 ≈  70wu  — lookAt at avatar upper-chest / chin;
+//                                       44% of H puts us level with the screen
+//                                       panels on the slot machines (nice framing).
+//
+// The camera azimuth is driven by a SEPARATE _casinoCamYaw that lerps toward
+// the avatar's facing yaw at a SLOWER rate (0.05 vs avatar's 0.15). This
+// decouples the camera from the avatar's immediate turn so that pressing A
+// or D doesn't instantly swing the full viewport by 45° — the avatar turns
+// smoothly while the camera follows with a comfortable lag.
+const CAM_ABOVE  = 190;
+const CAM_BEHIND = 450;
+const CAM_LOOK_Y = 70;
+const CAM_YAW_LERP = 0.05; // camera azimuth tracks avatar yaw at 1/3 of avatar turn rate
 
 // ---------------------------------------------------------------------------
 // Module-scope scratch objects — NEVER allocated inside useFrame
@@ -114,6 +154,12 @@ const _meshBbox = new THREE.Box3();
 // Follow-camera scratch vectors
 const _camTarget = new THREE.Vector3();
 const _camDesiredPos = new THREE.Vector3();
+
+// Camera yaw state — separate from avatar yaw so the camera follows with lag.
+// Initialized at Math.PI so camera starts behind spawn (avatar faces -Z = Math.PI).
+// This is module-scope (not component-scope) because CasinoVRMAvatarInner and
+// CasinoGLBAvatarInner both need it, and only one is ever mounted at a time.
+let _casinoCamYaw = Math.PI;
 
 // ---------------------------------------------------------------------------
 // Module-scope casino WASD key state — separate from the world player-avatar
@@ -130,19 +176,37 @@ let casinoKeyListenersAttached = false;
 function attachCasinoKeyListeners() {
   if (casinoKeyListenersAttached) return;
   casinoKeyListenersAttached = true;
+
+  /**
+   * Bug fix 2026-05-18: arrow keys produced no movement.
+   *
+   * Arrow key e.key values are multi-character ('ArrowUp' etc.), so
+   * e.key.toLowerCase() gives 'arrowup' — not 'w'. We detect them by
+   * checking the raw e.key value (case-sensitive for arrows) and map:
+   *   ArrowUp    → w (forward)
+   *   ArrowDown  → s (back)
+   *   ArrowLeft  → a (strafe left / turn left)
+   *   ArrowRight → d (strafe right / turn right)
+   *
+   * Single-character keys (a/s/d/w) are lowercased before the checks.
+   * This pattern mirrors player-avatar.tsx keyState which stores both
+   * 'w' and 'arrowup' as separate keys; here we collapse them onto
+   * the same four casinoKeys slots so the movement logic below is
+   * unchanged — no additional branches needed.
+   */
   const onKeyDown = (e: KeyboardEvent) => {
-    const k = e.key.toLowerCase();
-    if (k === 'w') casinoKeys.w = true;
-    if (k === 'a') casinoKeys.a = true;
-    if (k === 's') casinoKeys.s = true;
-    if (k === 'd') casinoKeys.d = true;
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (k === 'w' || k === 'ArrowUp')    casinoKeys.w = true;
+    if (k === 's' || k === 'ArrowDown')  casinoKeys.s = true;
+    if (k === 'a' || k === 'ArrowLeft')  casinoKeys.a = true;
+    if (k === 'd' || k === 'ArrowRight') casinoKeys.d = true;
   };
   const onKeyUp = (e: KeyboardEvent) => {
-    const k = e.key.toLowerCase();
-    if (k === 'w') casinoKeys.w = false;
-    if (k === 'a') casinoKeys.a = false;
-    if (k === 's') casinoKeys.s = false;
-    if (k === 'd') casinoKeys.d = false;
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (k === 'w' || k === 'ArrowUp')    casinoKeys.w = false;
+    if (k === 's' || k === 'ArrowDown')  casinoKeys.s = false;
+    if (k === 'a' || k === 'ArrowLeft')  casinoKeys.a = false;
+    if (k === 'd' || k === 'ArrowRight') casinoKeys.d = false;
   };
   const onBlur = () => { casinoKeys.w = casinoKeys.a = casinoKeys.s = casinoKeys.d = false; };
   const onVis = () => { if (document.hidden) { casinoKeys.w = casinoKeys.a = casinoKeys.s = casinoKeys.d = false; } };
@@ -212,28 +276,49 @@ function computeAutoFit(scene: THREE.Object3D, targetHeight: number): FitResult 
 // ---------------------------------------------------------------------------
 // Slot machine cabinet geometry + material constants
 // (Module-scope: built once, never re-allocated; matrixAutoUpdate=false on meshes)
-// All dimensions scaled by _ROOM_SCALE (≈3.333) to match the 2000wu room.
+//
+// BUG FIX 2026-05-18 — cabinet HEIGHT dimensions are now WORLD-SCALE (wu),
+// not room-scale. The VRM avatar renders at CASINO_VRM_TARGET_HEIGHT=270wu
+// (same as the open world), so cabinet heights must be calibrated against
+// that 270wu avatar, NOT against the 2000wu room max-dim.
+//
+// Width/depth still use _ROOM_SCALE (≈3.333) so the cabinet footprint
+// fills the room floor proportionally — the cabinets are physically large
+// objects that should span a meaningful fraction of the wall.
+//
+// World-scale sizing (158.8wu ≈ 1m, avatar = 1.7m = 270wu):
+//   Body:  ~0.9m tall × 0.6m wide × 0.5m deep  → 143wu × 127wu × 93wu
+//   Base:  ~0.1m tall × 0.65m wide × 0.55m deep →  16wu × 140wu × 107wu
+//   Screen: ~0.5m tall × 0.38m wide × 0.02m deep → 79wu × 80wu × 5wu
+//   Lever: ~0.35m tall, r≈0.04m                  → 56wu height, r=8wu
+//
+// Cabinet top Y = base(16) + body(143) = 159wu = 59% of 270wu avatar = chest.
 // ---------------------------------------------------------------------------
+const _CAB_BODY_H_WU  = 143; // world units (NOT room-scaled)
+const _CAB_BASE_H_WU  =  16; // world units (NOT room-scaled)
+const _CAB_SCREEN_H   =  79; // world units
+const _CAB_LEVER_H    =  56; // world units
+
 const CABINET_BODY_GEO    = new THREE.BoxGeometry(
-  Math.round(38 * _ROOM_SCALE),  // 127
-  Math.round(68 * _ROOM_SCALE),  // 227
-  Math.round(28 * _ROOM_SCALE),  // 93
+  Math.round(38 * _ROOM_SCALE),  // 127wu wide (room-scaled footprint)
+  _CAB_BODY_H_WU,                // 143wu tall (world-scale height)
+  Math.round(28 * _ROOM_SCALE),  // 93wu deep (room-scaled footprint)
 );
 const CABINET_SCREEN_GEO  = new THREE.BoxGeometry(
-  Math.round(24 * _ROOM_SCALE),  // 80
-  Math.round(34 * _ROOM_SCALE),  // 113
-  Math.round(2  * _ROOM_SCALE),  // 7
+  Math.round(24 * _ROOM_SCALE),  // 80wu wide
+  _CAB_SCREEN_H,                 // 79wu tall (world-scale)
+  Math.round(2  * _ROOM_SCALE),  // 7wu thick
 );
 const CABINET_LEVER_GEO   = new THREE.CylinderGeometry(
-  Math.round(3  * _ROOM_SCALE),  // 10
-  Math.round(3  * _ROOM_SCALE),  // 10
-  Math.round(22 * _ROOM_SCALE),  // 73
+  8,  // radius 8wu (world-scale)
+  8,
+  _CAB_LEVER_H, // 56wu tall (world-scale)
   8,
 );
 const CABINET_BASE_GEO    = new THREE.BoxGeometry(
-  Math.round(42 * _ROOM_SCALE),  // 140
-  Math.round(6  * _ROOM_SCALE),  // 20
-  Math.round(32 * _ROOM_SCALE),  // 107
+  Math.round(42 * _ROOM_SCALE),  // 140wu wide (room-scaled)
+  _CAB_BASE_H_WU,                // 16wu tall (world-scale)
+  Math.round(32 * _ROOM_SCALE),  // 107wu deep (room-scaled)
 );
 
 const CABINET_BODY_MAT = new THREE.MeshStandardMaterial({ color: 0x1a0a2e, roughness: 0.7, metalness: 0.4 });
@@ -256,10 +341,10 @@ interface HotspotDef {
   machineSlug: MachineSlug;
 }
 
-// Cabinet Y helpers (body center is at base_height + body_half_height)
-const _CAB_BASE_H  = Math.round(6  * _ROOM_SCALE); // 20
-const _CAB_BODY_H  = Math.round(68 * _ROOM_SCALE); // 227
-const _CAB_BODY_CY = _CAB_BASE_H + _CAB_BODY_H / 2; // ≈ 134 (body center Y)
+// Cabinet Y helpers (world-scale heights — bug fix 2026-05-18, removed _ROOM_SCALE)
+const _CAB_BASE_H  = _CAB_BASE_H_WU;                   // 16wu (world-scale)
+const _CAB_BODY_H  = _CAB_BODY_H_WU;                   // 143wu (world-scale)
+const _CAB_BODY_CY = _CAB_BASE_H + _CAB_BODY_H / 2;   // 87.5wu body center Y
 
 /**
  * Slot cabinet positions: left wall (x≈-380), spread Z across the room.
@@ -273,11 +358,22 @@ const SLOT_CABINET_POSITIONS: Array<{ x: number; z: number }> = [
   { x: -BOUNDS_X, z: Math.round(  50 * _ROOM_SCALE) }, // ≈  166
 ];
 
-/** Hotspots placed at each cabinet position — scaled to the 2000wu room */
-const _CAB_REACH   = Math.round(25 * _ROOM_SCALE); // ≈ 83 — reach into room from cabinet face
-const _HOT_SIZE_X  = Math.round(55 * _ROOM_SCALE); // ≈ 183
-const _HOT_SIZE_Y  = Math.round(75 * _ROOM_SCALE); // ≈ 250
-const _HOT_SIZE_Z  = Math.round(40 * _ROOM_SCALE); // ≈ 133
+/**
+ * Hotspots placed at each cabinet position.
+ *
+ * Reach/size are world-scale (bug fix 2026-05-18) so the interaction
+ * volume matches a 270wu avatar, not the room scale.
+ *
+ * _CAB_REACH: horizontal distance from cabinet face into room for hotspot center.
+ *   Room-scaled width of cabinet footprint / 2 ≈ 47wu + small reach into room.
+ * _HOT_SIZE_X: depth into room (x axis) = cabinet footprint depth ≈ 93wu
+ * _HOT_SIZE_Y: interaction height = full cabinet body height + base = 159wu
+ * _HOT_SIZE_Z: width along wall (z axis) = cabinet width + small buffer = 140wu
+ */
+const _CAB_REACH   = 80; // wu — reach into room from wall
+const _HOT_SIZE_X  = 100; // wu — interaction depth (x)
+const _HOT_SIZE_Y  = _CAB_BASE_H + _CAB_BODY_H; // 159wu — full cabinet height
+const _HOT_SIZE_Z  = 150; // wu — width along wall (z)
 
 const GAMEREADY_HOTSPOTS: HotspotDef[] = SLOT_CABINET_POSITIONS.map((pos) => ({
   position: [pos.x + _CAB_REACH, _CAB_BODY_CY, pos.z] as [number, number, number],
@@ -319,10 +415,12 @@ function SlotCabinets() {
           <mesh geometry={CABINET_BASE_GEO} material={CABINET_BASE_MAT} position={[0, _CAB_BASE_H / 2, 0]} />
           {/* Body — sits on top of base */}
           <mesh geometry={CABINET_BODY_GEO} material={CABINET_BODY_MAT} position={[0, _CAB_BASE_H + _CAB_BODY_H / 2, 0]} />
-          {/* Emissive screen — upper face of body, inset toward room */}
-          <mesh geometry={CABINET_SCREEN_GEO} material={CABINET_SCREEN_MAT} position={[0, _CAB_BASE_H + Math.round(47 * _ROOM_SCALE), -Math.round(15 * _ROOM_SCALE)]} />
-          {/* Lever — extends from right side */}
-          <mesh geometry={CABINET_LEVER_GEO} material={CABINET_LEVER_MAT} position={[Math.round(16 * _ROOM_SCALE), _CAB_BASE_H + _CAB_BODY_H / 2, -Math.round(5 * _ROOM_SCALE)]} rotation={[0, 0, Math.PI / 5]} />
+          {/* Emissive screen — upper 75% of body face, inset slightly toward room.
+              Y: base + 75% of body = 16 + 107 = 123wu.
+              Z: 45wu inset (world-scale, was room-scaled 50wu). */}
+          <mesh geometry={CABINET_SCREEN_GEO} material={CABINET_SCREEN_MAT} position={[0, _CAB_BASE_H + Math.round(_CAB_BODY_H * 0.75), -45]} />
+          {/* Lever — extends from right side, world-scale offsets */}
+          <mesh geometry={CABINET_LEVER_GEO} material={CABINET_LEVER_MAT} position={[50, _CAB_BASE_H + _CAB_BODY_H / 2, -15]} rotation={[0, 0, Math.PI / 5]} />
         </group>
       ))}
     </group>
@@ -392,10 +490,17 @@ function CasinoVRMAvatarInner({ reg }: CasinoVRMAvatarProps) {
   const rotRef = useRef(Math.PI); // face -Z = into the room on spawn
   const { camera } = useThree();
 
+  // Fix C 2026-05-18: reset module-scope camera yaw on mount so re-entering
+  // the casino starts with the camera directly behind the avatar, not carrying
+  // over yaw from the previous visit.
+  useEffect(() => {
+    _casinoCamYaw = Math.PI;
+  }, []);
+
   const vrm = useVRMInstance(reg.path, 'casino-player');
 
   const { scale: vrmRenderScale, offsetY: vrmFootOffsetY } = useMemo(
-    () => computeVRMAvatarFit(vrm, reg.animatorId),
+    () => computeVRMAvatarFit(vrm, reg.animatorId, CASINO_VRM_TARGET_HEIGHT),
     [vrm, reg.animatorId],
   );
 
@@ -462,21 +567,28 @@ function CasinoVRMAvatarInner({ reg }: CasinoVRMAvatarProps) {
     group.rotation.y = rotRef.current;
 
     // Follow camera — CAM_ABOVE wu above, CAM_BEHIND wu behind, look at avatar mid-torso.
-    // Calibrated for VRM avatar at ~270wu tall (see CAM_ABOVE / CAM_BEHIND / CAM_LOOK_Y
-    // constants declared at the top of this file).
-    // Only drive camera when slot screen is NOT open (user is interacting with 2D modal)
+    // Bug fix 2026-05-18: camera azimuth now uses a SEPARATE _casinoCamYaw that
+    // lerps toward the avatar's rotRef.current at CAM_YAW_LERP=0.05 (1/3 of avatar
+    // turn rate 0.15). This decouples the viewport from immediate avatar yaw so
+    // pressing A/D causes the avatar to turn while the camera follows with lag —
+    // feels like a real room camera rather than the whole view snapping 45°.
     const slotOpen = useCasinoStore.getState().slotScreenOpen;
     if (!slotOpen) {
       const cam = camera as THREE.PerspectiveCamera;
-      // Behind = opposite of facing direction
-      const behindX = -Math.sin(rotRef.current) * CAM_BEHIND;
-      const behindZ = -Math.cos(rotRef.current) * CAM_BEHIND;
+      // Smooth camera yaw — shortest-path lerp toward avatar facing
+      let camYawDiff = rotRef.current - _casinoCamYaw;
+      while (camYawDiff > Math.PI) camYawDiff -= Math.PI * 2;
+      while (camYawDiff < -Math.PI) camYawDiff += Math.PI * 2;
+      _casinoCamYaw += camYawDiff * CAM_YAW_LERP;
+      // Camera behind position derived from lagged camYaw, not avatar yaw
+      const behindX = -Math.sin(_casinoCamYaw) * CAM_BEHIND;
+      const behindZ = -Math.cos(_casinoCamYaw) * CAM_BEHIND;
       _camDesiredPos.set(
         posX.current + behindX,
         CAM_ABOVE,
         posZ.current + behindZ,
       );
-      // Soft lerp — exp-decay for smooth follow
+      // Soft lerp — exp-decay for smooth position follow
       cam.position.lerp(_camDesiredPos, 1 - Math.exp(-8 * delta));
       _camTarget.set(posX.current, CAM_LOOK_Y, posZ.current);
       cam.lookAt(_camTarget);
@@ -529,6 +641,12 @@ function CasinoGLBAvatarInner() {
   const groupRef  = useRef<THREE.Group>(null);
   const rotRef    = useRef(Math.PI);
   const { camera } = useThree();
+
+  // Fix C 2026-05-18: reset module-scope camera yaw on mount (mirrors VRM branch).
+  useEffect(() => {
+    _casinoCamYaw = Math.PI;
+  }, []);
+
   const { scene } = useGLTF('/models/lobster.glb');
 
   const { cloned, pivotOffsetY } = useMemo(() => {
@@ -602,12 +720,20 @@ function CasinoGLBAvatarInner() {
     group.position.z = posZ.current;
     group.rotation.y = rotRef.current;
 
-    // Follow camera — same offsets as VRM branch (CAM_ABOVE/CAM_BEHIND/CAM_LOOK_Y)
+    // Follow camera — same offsets as VRM branch (CAM_ABOVE/CAM_BEHIND/CAM_LOOK_Y).
+    // Bug fix 2026-05-18: use shared _casinoCamYaw (same module-scope ref as VRM
+    // branch) so the GLB lobster fallback also gets the lagged camera behaviour —
+    // pressing A/D turns the lobster smoothly without snapping the viewport 45°.
     const slotOpen = useCasinoStore.getState().slotScreenOpen;
     if (!slotOpen) {
       const cam = camera as THREE.PerspectiveCamera;
-      const behindX = -Math.sin(rotRef.current) * CAM_BEHIND;
-      const behindZ = -Math.cos(rotRef.current) * CAM_BEHIND;
+      // Smooth camera yaw — shortest-path lerp toward avatar facing (same as VRM branch)
+      let camYawDiff = rotRef.current - _casinoCamYaw;
+      while (camYawDiff > Math.PI) camYawDiff -= Math.PI * 2;
+      while (camYawDiff < -Math.PI) camYawDiff += Math.PI * 2;
+      _casinoCamYaw += camYawDiff * CAM_YAW_LERP;
+      const behindX = -Math.sin(_casinoCamYaw) * CAM_BEHIND;
+      const behindZ = -Math.cos(_casinoCamYaw) * CAM_BEHIND;
       _camDesiredPos.set(posX.current + behindX, CAM_ABOVE, posZ.current + behindZ);
       cam.position.lerp(_camDesiredPos, 1 - Math.exp(-8 * delta));
       _camTarget.set(posX.current, CAM_LOOK_Y, posZ.current);
