@@ -1,56 +1,72 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
-    <radialGradient id="b1r" cx="35%" cy="30%" r="70%">
-      <stop offset="0" stop-color="#ff7a7a"/>
-      <stop offset="0.55" stop-color="#d62828"/>
-      <stop offset="1" stop-color="#5a0a14"/>
-    </radialGradient>
-    <radialGradient id="b1p" cx="35%" cy="30%" r="70%">
-      <stop offset="0" stop-color="#ffc7cc"/>
-      <stop offset="0.6" stop-color="#ff8aa0"/>
-      <stop offset="1" stop-color="#a04055"/>
-    </radialGradient>
-    <linearGradient id="b1s" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#5fcf7a"/>
-      <stop offset="1" stop-color="#1a5a2a"/>
+    <!-- Lemon body: cream-yellow → saturated yellow → amber -->
+    <linearGradient id="b1L" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"    stop-color="#fff7c2"/>
+      <stop offset="0.5"  stop-color="#f1c40f"/>
+      <stop offset="1"    stop-color="#c89b00"/>
     </linearGradient>
-    <radialGradient id="hl1" cx="35%" cy="25%" r="50%">
+    <!-- Leaf gradient -->
+    <linearGradient id="b1Lf" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4caf50"/>
+      <stop offset="1" stop-color="#2e7d32"/>
+    </linearGradient>
+    <!-- Top-left specular highlight -->
+    <radialGradient id="hl1L" cx="30%" cy="25%" r="55%">
       <stop offset="0" stop-color="#ffffff" stop-opacity="0.65"/>
       <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
     </radialGradient>
   </defs>
-  <ellipse cx="128" cy="225" rx="68" ry="10" fill="#0a1428" opacity="0.5"/>
-  <!-- coiled coral stems -->
-  <path d="M128 40 Q128 60 108 78 Q86 96 90 130" fill="none" stroke="#0a1428" stroke-width="6" stroke-linecap="round"/>
-  <path d="M128 40 Q128 60 148 78 Q170 96 166 130" fill="none" stroke="#0a1428" stroke-width="6" stroke-linecap="round"/>
-  <path d="M128 40 Q128 60 108 78 Q86 96 90 130" fill="none" stroke="url(#b1s)" stroke-width="3.5" stroke-linecap="round"/>
-  <path d="M128 40 Q128 60 148 78 Q170 96 166 130" fill="none" stroke="url(#b1s)" stroke-width="3.5" stroke-linecap="round"/>
-  <!-- leaf at stem join -->
-  <path d="M118 50 Q108 38 120 30 Q138 30 138 50 Z" fill="url(#b1s)" stroke="#0a1428" stroke-width="3.5" stroke-linejoin="round"/>
-  <!-- LEFT anemone (back) -->
+
+  <!-- Drop-shadow ellipse beneath object -->
+  <ellipse cx="128" cy="225" rx="72" ry="10" fill="#0a1428" opacity="0.25"/>
+
+  <!-- LEMON BODY — four cubic Bezier segments producing genuine pointed tips at left (~38,128) and right (~218,128)
+       Top arc rises to y≈70 at center; bottom arc falls to y≈186 at center.
+       Tips are formed by identical control-point y values forcing the curve to arrive horizontally. -->
+  <path d="M 38,128
+           C  55,70  98,52 128,52
+           C 158,52 201,70 218,128
+           C 201,186 158,204 128,204
+           C  98,204  55,186  38,128
+           Z"
+        fill="url(#b1L)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"/>
+
+  <!-- Citrus pore dots (5 dots, darker amber, scattered naturally) -->
+  <ellipse cx="100" cy="105" rx="5" ry="3.5" fill="#d4a800" opacity="0.70"/>
+  <ellipse cx="148" cy="102" rx="4.5" ry="3"   fill="#d4a800" opacity="0.70"/>
+  <ellipse cx="115" cy="142" rx="5" ry="3.5"   fill="#d4a800" opacity="0.70"/>
+  <ellipse cx="158" cy="146" rx="4.5" ry="3"   fill="#d4a800" opacity="0.70"/>
+  <ellipse cx="130" cy="122" rx="4" ry="2.8"   fill="#d4a800" opacity="0.65"/>
+
+  <!-- Specular white highlight, top-left of body -->
+  <ellipse cx="88" cy="88" rx="28" ry="18" fill="#ffffff" opacity="0.65" transform="rotate(-20 88 88)"/>
+
+  <!-- Radial highlight overlay matching lemon shape -->
+  <path d="M 38,128
+           C  55,70  98,52 128,52
+           C 158,52 201,70 218,128
+           C 201,186 158,204 128,204
+           C  98,204  55,186  38,128
+           Z"
+        fill="url(#hl1L)"/>
+
+  <!-- Leaf + stem (angled ~30° right, attached at top of lemon) -->
   <g>
-    <circle cx="90" cy="160" r="38" fill="url(#b1r)" stroke="#0a1428" stroke-width="6"/>
-    <!-- tentacle tips -->
-    <g fill="url(#b1p)" stroke="#0a1428" stroke-width="3.5" stroke-linejoin="round">
-      <path d="M62 142 Q54 130 58 120 Q70 124 74 138 Z"/>
-      <path d="M78 124 Q72 108 80 100 Q92 108 90 122 Z"/>
-      <path d="M98 120 Q96 102 108 98 Q116 110 110 124 Z"/>
-      <path d="M120 130 Q126 116 138 118 Q140 132 130 140 Z"/>
-    </g>
-    <circle cx="90" cy="160" r="38" fill="url(#hl1)"/>
-    <ellipse cx="76" cy="146" rx="8" ry="5" fill="#ffffff" opacity="0.55"/>
-  </g>
-  <!-- RIGHT anemone (front) -->
-  <g>
-    <circle cx="166" cy="172" r="42" fill="url(#b1r)" stroke="#0a1428" stroke-width="6"/>
-    <g fill="url(#b1p)" stroke="#0a1428" stroke-width="3.5" stroke-linejoin="round">
-      <path d="M134 140 Q132 122 144 116 Q156 124 152 138 Z"/>
-      <path d="M156 130 Q156 112 168 110 Q178 122 172 134 Z"/>
-      <path d="M180 132 Q186 116 198 120 Q200 134 190 142 Z"/>
-      <path d="M196 150 Q210 144 214 156 Q206 168 194 164 Z"/>
-    </g>
-    <circle cx="166" cy="172" r="42" fill="url(#hl1)"/>
-    <ellipse cx="150" cy="156" rx="10" ry="6" fill="#ffffff" opacity="0.6"/>
+    <!-- Short stem from lemon top up to leaf base -->
+    <path d="M128,54 Q132,42 136,34"
+          fill="none" stroke="#0a1428" stroke-width="5" stroke-linecap="round"/>
+    <path d="M128,54 Q132,42 136,34"
+          fill="none" stroke="#2e7d32" stroke-width="3" stroke-linecap="round"/>
+    <!-- Leaf body: teardrop, angled ~30° clockwise -->
+    <path d="M 136,34
+             C 148,12 174,16 176,32
+             C 178,46 158,60 136,34
+             Z"
+          fill="url(#b1Lf)" stroke="#0a1428" stroke-width="4" stroke-linejoin="round"/>
+    <!-- Leaf center vein -->
+    <path d="M138,36 Q157,28 172,34"
+          fill="none" stroke="#1b5e20" stroke-width="1.8" opacity="0.55"/>
   </g>
 </svg>

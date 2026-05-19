@@ -1,54 +1,77 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
-    <radialGradient id="b3o" cx="38%" cy="30%" r="72%">
-      <stop offset="0" stop-color="#ffd28a"/>
-      <stop offset="0.5" stop-color="#ff8a2a"/>
-      <stop offset="1" stop-color="#7a2a04"/>
+    <!-- Plum body: light lavender → deep purple → near-black violet -->
+    <radialGradient id="b3P" cx="38%" cy="28%" r="78%">
+      <stop offset="0" stop-color="#d3aaff"/>
+      <stop offset="0.45" stop-color="#7c3aed"/>
+      <stop offset="1" stop-color="#3b0764"/>
     </radialGradient>
-    <linearGradient id="b3s" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffd28a"/>
-      <stop offset="1" stop-color="#a04a08"/>
+    <!-- Stem gradient -->
+    <linearGradient id="b3St" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6b4226"/>
+      <stop offset="1" stop-color="#2a1608"/>
     </linearGradient>
-    <radialGradient id="hl3" cx="35%" cy="25%" r="50%">
+    <!-- Leaf gradient -->
+    <linearGradient id="b3Le" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7fd58a"/>
+      <stop offset="1" stop-color="#1f5a2a"/>
+    </linearGradient>
+    <!-- Specular highlight -->
+    <radialGradient id="hl3P" cx="35%" cy="22%" r="55%">
       <stop offset="0" stop-color="#ffffff" stop-opacity="0.6"/>
       <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
     </radialGradient>
   </defs>
-  <ellipse cx="128" cy="228" rx="68" ry="10" fill="#0a1428" opacity="0.5"/>
-  <!-- spike halo (16 spikes) drawn first as triangles around radius 90 -->
-  <g fill="url(#b3s)" stroke="#0a1428" stroke-width="3" stroke-linejoin="round">
-    <polygon points="128,32 122,60 134,60"/>
-    <polygon points="56,84 78,72 80,86" transform="rotate(-22.5 128 128)"/>
-    <polygon points="56,84 78,72 80,86" transform="rotate(-45 128 128)"/>
-    <polygon points="56,84 78,72 80,86" transform="rotate(-67.5 128 128)"/>
-    <polygon points="32,128 60,122 60,134"/>
-    <polygon points="56,84 78,72 80,86" transform="rotate(-112.5 128 128)"/>
-    <polygon points="56,84 78,72 80,86" transform="rotate(-135 128 128)"/>
-    <polygon points="56,84 78,72 80,86" transform="rotate(-157.5 128 128)"/>
-    <polygon points="128,224 122,196 134,196"/>
-    <polygon points="56,84 78,72 80,86" transform="rotate(-202.5 128 128)"/>
-    <polygon points="56,84 78,72 80,86" transform="rotate(-225 128 128)"/>
-    <polygon points="56,84 78,72 80,86" transform="rotate(-247.5 128 128)"/>
-    <polygon points="224,128 196,122 196,134"/>
-    <polygon points="56,84 78,72 80,86" transform="rotate(-292.5 128 128)"/>
-    <polygon points="56,84 78,72 80,86" transform="rotate(-315 128 128)"/>
-    <polygon points="56,84 78,72 80,86" transform="rotate(-337.5 128 128)"/>
+
+  <!-- ground shadow -->
+  <ellipse cx="128" cy="228" rx="78" ry="10" fill="#0a1428" opacity="0.5"/>
+
+  <!-- Plum body — round-oval with small indent at top (heart-ish where stem joins) -->
+  <path d="M128 64
+           Q124 78 116 80
+           Q72 88 64 138
+           Q60 188 110 204
+           Q160 218 196 184
+           Q220 148 204 110
+           Q188 80 140 80
+           Q132 78 128 64 Z"
+        fill="url(#b3P)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"/>
+
+  <!-- Subtle longitudinal crease down the body (classic plum) -->
+  <path d="M128 80 Q124 130 130 200" fill="none" stroke="#3b0764" stroke-width="3" opacity="0.55"/>
+
+  <!-- "Waxy bloom" — soft white semi-transparent ellipse on side -->
+  <ellipse cx="92" cy="140" rx="20" ry="36" fill="#ffffff" opacity="0.18" transform="rotate(-18 92 140)"/>
+
+  <!-- Specular highlight (white ellipse top-left) -->
+  <ellipse cx="106" cy="106" rx="22" ry="14" fill="#ffffff" opacity="0.6" transform="rotate(-25 106 106)"/>
+
+  <!-- Highlight overlay -->
+  <path d="M128 64
+           Q124 78 116 80
+           Q72 88 64 138
+           Q60 188 110 204
+           Q160 218 196 184
+           Q220 148 204 110
+           Q188 80 140 80
+           Q132 78 128 64 Z"
+        fill="url(#hl3P)"/>
+
+  <!-- Stem at top -->
+  <path d="M128 64 Q132 50 138 38"
+        fill="none" stroke="#0a1428" stroke-width="6" stroke-linecap="round"/>
+  <path d="M128 64 Q132 50 138 38"
+        fill="none" stroke="url(#b3St)" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- Leaf at top, angled -->
+  <g>
+    <path d="M138 38
+             Q160 18 192 24
+             Q198 50 174 58
+             Q150 62 138 38 Z"
+          fill="url(#b3Le)" stroke="#0a1428" stroke-width="5" stroke-linejoin="round"/>
+    <!-- leaf vein -->
+    <path d="M146 40 Q166 36 188 32" fill="none" stroke="#0a1428" stroke-width="2" opacity="0.6"/>
   </g>
-  <!-- round body -->
-  <circle cx="128" cy="132" r="64" fill="url(#b3o)" stroke="#0a1428" stroke-width="6"/>
-  <!-- inner ridge -->
-  <circle cx="128" cy="132" r="56" fill="none" stroke="#cc5a0c" stroke-width="2.5" opacity="0.7"/>
-  <!-- highlight -->
-  <circle cx="128" cy="132" r="64" fill="url(#hl3)"/>
-  <ellipse cx="104" cy="104" rx="18" ry="12" fill="#ffffff" opacity="0.55" transform="rotate(-25 104 104)"/>
-  <!-- eyes -->
-  <circle cx="108" cy="130" r="8" fill="#ffffff" stroke="#0a1428" stroke-width="3"/>
-  <circle cx="148" cy="130" r="8" fill="#ffffff" stroke="#0a1428" stroke-width="3"/>
-  <circle cx="110" cy="132" r="3.5" fill="#0a1428"/>
-  <circle cx="150" cy="132" r="3.5" fill="#0a1428"/>
-  <!-- mouth -->
-  <path d="M114 158 Q128 168 142 158" fill="none" stroke="#0a1428" stroke-width="3.5" stroke-linecap="round"/>
-  <!-- belly highlight -->
-  <ellipse cx="128" cy="170" rx="22" ry="6" fill="#ffd28a" opacity="0.5"/>
 </svg>
