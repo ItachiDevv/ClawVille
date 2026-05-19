@@ -22,6 +22,7 @@ import { TERRAIN_LAYER } from '@/lib/three/arena-terrain';
 import { applyStationaryIdleAnimation, idToSeed } from '@/lib/three/procedural-animation';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { applyColorTint } from '@/lib/three/character-animations';
+import { clampMovement2D } from '@/lib/three/collision/world-colliders';
 
 // ---------------------------------------------------------------------------
 // Location NPCs — SpongeBob characters at their canonical buildings
@@ -782,7 +783,12 @@ export default function ArenaLocationNpcs() {
       const config = LOCATION_NPCS[zone.id];
       if (!config) return null;
       const { worldX, worldZ, facingRotY } = computeNpcPlacement(zone);
-      return { zoneId: zone.id, worldX, worldZ, facingRotY };
+      // Sanity push-out: location NPCs are stationary. If NPC_INSET_WORLD + tile rounding
+      // accidentally places this NPC inside any disc collider (its own building or a prop),
+      // push it radially outward. Village center (0,0) is always outside all building
+      // colliders, so using it as "from" guarantees the push direction is away from center.
+      const clamped = clampMovement2D(0, 0, worldX, worldZ);
+      return { zoneId: zone.id, worldX: clamped.x, worldZ: clamped.z, facingRotY };
     }).filter(Boolean) as { zoneId: string; worldX: number; worldZ: number; facingRotY: number }[];
   }, []);
 
