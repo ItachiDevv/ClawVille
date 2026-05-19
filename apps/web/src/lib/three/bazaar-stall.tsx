@@ -39,8 +39,12 @@ useGLTF.preload('/models/bazaar-merchant-stand.glb');
 const STALL_X = -800;
 const STALL_Z = 300;
 
-// Target visual height in world units (tall enough to be readable at a distance)
-const TARGET_HEIGHT_WU = 400;
+// Target visual height in world units.
+// 2026-05-19: bumped 400→1200 to match the building ring scale. After the
+// Phase 6.2 plaza expansion (R=130, props spread to 800-1000wu radius),
+// the stalls looked tiny next to 1300-1700wu-tall buildings. 1200 reads as
+// a real landmark from across the plaza instead of a speck.
+const TARGET_HEIGHT_WU = 1200;
 
 // ---------------------------------------------------------------------------
 // Scale helper — same algorithm as arena-location-npcs.tsx computeNormalizedScale.
