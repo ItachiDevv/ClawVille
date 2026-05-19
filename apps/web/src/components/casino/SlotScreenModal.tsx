@@ -285,6 +285,17 @@ export default function SlotScreenModal() {
       spinIdemKeyRef.current = null;
       if (autoplayTimerRef.current) clearTimeout(autoplayTimerRef.current);
       setAutoplay({ count: 0, remaining: 0, active: false });
+      // Stale-session recovery: 404 or 409 session_already_open / session_not_open
+      // means our local sessionId no longer maps to a server-open session
+      // (closed by operator, expired, or never replicated). Clear the local
+      // pointer so the next spin press triggers a fresh /session/open.
+      if (err instanceof CasinoApiError && (
+        err.status === 404 ||
+        err.code === 'session_already_open' ||
+        err.code === 'session_not_open'
+      )) {
+        clearSessionMeta();
+      }
       const message = describeCasinoError(err);
       const tone: ToastTone =
         err instanceof CasinoApiError && err.status === 429
