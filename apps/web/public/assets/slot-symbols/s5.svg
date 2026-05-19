@@ -1,53 +1,126 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
+    <!-- Plaque top half: deep red gradient -->
+    <linearGradient id="b5r" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff6a6a"/>
+      <stop offset="0.5" stop-color="#d62828"/>
+      <stop offset="1" stop-color="#7a0a14"/>
+    </linearGradient>
+    <!-- Plaque bottom half: gold/cream gradient -->
     <linearGradient id="b5g" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#9ade5a"/>
-      <stop offset="0.5" stop-color="#2e7a1f"/>
-      <stop offset="1" stop-color="#0c3008"/>
-    </linearGradient>
-    <linearGradient id="b5p" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffb0c2"/>
-      <stop offset="0.55" stop-color="#ec5d83"/>
-      <stop offset="1" stop-color="#7a1232"/>
-    </linearGradient>
-    <linearGradient id="b5gold" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#ffe28a"/>
-      <stop offset="1" stop-color="#a06808"/>
+      <stop offset="0.5" stop-color="#ffc857"/>
+      <stop offset="1" stop-color="#9a6a08"/>
     </linearGradient>
+    <!-- Rivet bevel -->
+    <radialGradient id="b5riv" cx="50%" cy="35%" r="60%">
+      <stop offset="0" stop-color="#fff3c0"/>
+      <stop offset="0.6" stop-color="#ffc857"/>
+      <stop offset="1" stop-color="#6a4408"/>
+    </radialGradient>
+    <!-- Specular highlight overlay -->
     <radialGradient id="hl5" cx="35%" cy="22%" r="55%">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.6"/>
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
       <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
     </radialGradient>
+    <!-- Cream gradient for BAR letters -->
+    <linearGradient id="b5letter" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff7d8"/>
+      <stop offset="1" stop-color="#f0c860"/>
+    </linearGradient>
   </defs>
-  <ellipse cx="128" cy="226" rx="86" ry="11" fill="#0a1428" opacity="0.55"/>
-  <!-- bottom green half-shell (large rounded D) -->
-  <path d="M40 156 Q40 92 128 92 Q216 92 216 156 L216 192 Q216 208 200 208 L56 208 Q40 208 40 192 Z"
+  <!-- ground shadow -->
+  <ellipse cx="128" cy="222" rx="92" ry="11" fill="#0a1428" opacity="0.5"/>
+
+  <!-- gold drop-plate behind (offset for layered look) -->
+  <rect x="22" y="62" width="212" height="132" rx="20"
+        fill="url(#b5g)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"
+        transform="translate(6,6)" opacity="0.65"/>
+
+  <!-- main plaque (red top) -->
+  <rect x="22" y="56" width="212" height="132" rx="20"
+        fill="url(#b5r)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"/>
+
+  <!-- bottom gold half overlay (clipped to plaque footprint by matching radius) -->
+  <path d="M22 124 L234 124 L234 168 Q234 188 214 188 L42 188 Q22 188 22 168 Z"
         fill="url(#b5g)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"/>
-  <!-- shell ridges -->
-  <g fill="none" stroke="#0a1428" stroke-width="3" opacity="0.55">
-    <path d="M62 200 Q62 130 128 130"/>
-    <path d="M90 204 Q90 138 128 138"/>
-    <path d="M194 200 Q194 130 128 130"/>
-    <path d="M166 204 Q166 138 128 138"/>
+
+  <!-- inner gold border (offset inset) -->
+  <rect x="34" y="68" width="188" height="108" rx="14"
+        fill="none" stroke="url(#b5g)" stroke-width="3" opacity="0.95"/>
+  <rect x="34" y="68" width="188" height="108" rx="14"
+        fill="none" stroke="#5a3a08" stroke-width="1.2" opacity="0.8"/>
+
+  <!-- corner rivets (4) -->
+  <g stroke="#0a1428" stroke-width="2">
+    <circle cx="44"  cy="78"  r="6" fill="url(#b5riv)"/>
+    <circle cx="212" cy="78"  r="6" fill="url(#b5riv)"/>
+    <circle cx="44"  cy="166" r="6" fill="url(#b5riv)"/>
+    <circle cx="212" cy="166" r="6" fill="url(#b5riv)"/>
   </g>
-  <!-- pink flesh inside (drawn before gold lip) -->
-  <path d="M58 156 Q58 116 128 116 Q198 116 198 156 L198 168 Q128 144 58 168 Z"
-        fill="url(#b5p)" stroke="#0a1428" stroke-width="4.5" stroke-linejoin="round"/>
-  <!-- pearl center -->
-  <circle cx="128" cy="148" r="13" fill="#fff6e0" stroke="#0a1428" stroke-width="3"/>
-  <ellipse cx="124" cy="143" rx="5" ry="3" fill="#ffffff" opacity="0.85"/>
-  <!-- gold lipped edge along shell rim -->
-  <path d="M40 156 Q40 92 128 92 Q216 92 216 156"
-        fill="none" stroke="url(#b5gold)" stroke-width="8" stroke-linecap="round"/>
-  <path d="M40 156 Q40 92 128 92 Q216 92 216 156"
-        fill="none" stroke="#0a1428" stroke-width="3"/>
-  <!-- top half-shell (small, opened upward) -->
-  <path d="M58 96 Q72 56 128 52 Q184 56 198 96 Q200 102 192 102 L64 102 Q56 102 58 96 Z"
-        fill="url(#b5g)" stroke="#0a1428" stroke-width="5.5" stroke-linejoin="round"/>
-  <path d="M86 92 Q92 70 128 66 Q164 70 170 92" fill="none" stroke="#0a1428" stroke-width="3" opacity="0.5"/>
-  <!-- highlight on bottom shell -->
-  <path d="M40 156 Q40 92 128 92 Q216 92 216 156 L216 192 Q216 208 200 208 L56 208 Q40 208 40 192 Z"
-        fill="url(#hl5)"/>
-  <ellipse cx="80" cy="120" rx="22" ry="10" fill="#ffffff" opacity="0.4" transform="rotate(-15 80 120)"/>
+
+  <!-- BAR text — path-traced chunky condensed letters (cross-browser identical) -->
+  <!-- Letter span x=56..230 (174 wide), shifted left 14 so it centers on the 256 frame
+       between the two rivets at x=44 / x=212. -->
+  <g fill="url(#b5letter)" stroke="#0a1428" stroke-width="5"
+     stroke-linejoin="round" stroke-linecap="round" transform="translate(-14,0)">
+    <!-- B (x: 56-100) -->
+    <path d="M56 84
+             L92 84
+             Q108 84 108 100
+             Q108 114 96 118
+             Q112 122 112 138
+             Q112 160 92 160
+             L56 160 Z
+             M72 96
+             L88 96
+             Q96 96 96 104
+             Q96 112 88 112
+             L72 112 Z
+             M72 124
+             L90 124
+             Q98 124 98 134
+             Q98 148 88 148
+             L72 148 Z"
+          fill-rule="evenodd"/>
+
+    <!-- A (x: 116-164) -->
+    <path d="M116 160
+             L134 84
+             L156 84
+             L174 160
+             L158 160
+             L154 144
+             L136 144
+             L132 160 Z
+             M139 132
+             L151 132
+             L145 108 Z"
+          fill-rule="evenodd"/>
+
+    <!-- R (x: 180-220) -->
+    <path d="M180 160
+             L180 84
+             L210 84
+             Q228 84 228 102
+             Q228 116 216 122
+             L230 160
+             L214 160
+             L204 128
+             L196 128
+             L196 160 Z
+             M196 96
+             L208 96
+             Q216 96 216 104
+             Q216 116 208 116
+             L196 116 Z"
+          fill-rule="evenodd"/>
+  </g>
+
+  <!-- highlight overlay on plaque -->
+  <rect x="22" y="56" width="212" height="132" rx="20" fill="url(#hl5)"/>
+
+  <!-- top-left spec streak -->
+  <ellipse cx="62" cy="74" rx="22" ry="6" fill="#ffffff" opacity="0.55"/>
 </svg>
