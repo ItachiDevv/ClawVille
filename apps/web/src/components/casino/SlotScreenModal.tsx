@@ -276,6 +276,16 @@ export default function SlotScreenModal() {
           serverSeedHash: opened.serverSeedHash,
           clientSeed: opened.clientSeed,
         });
+        // If we adopted an existing session (idempotent /open path), the
+        // server's per-spin stake is baked into `startingBalance`. If the
+        // user's local chip differs, the next /spin would 400 with
+        // `predict_must_equal_session_reserved_predict`. Snap the chip to
+        // the session's pinned value so the spin succeeds.
+        const sessionPredict = Number(opened.startingBalance);
+        if (Number.isFinite(sessionPredict) && sessionPredict > 0 && sessionPredict !== predict) {
+          setPredict(sessionPredict);
+          showToast(`Resumed session — predict locked to ${sessionPredict}`, 'info');
+        }
       }
 
       if (!spinIdemKeyRef.current) {
