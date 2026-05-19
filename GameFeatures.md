@@ -12,7 +12,7 @@
 > - **`ARCHITECTURE.md`** — backend routes / services / schema / events / leaderboard rubric.
 > - **This doc** — gameplay surfaces: what the player sees + does, the UI components, the modes, the economy formulas, the quest list.
 
-**Last edit:** 2026-05-19 — Concern 6.1.3 + 6.1.4 (slice 3): fun-money casino slots backend LIVE for ClawTokens. New `/api/casino/slots/*` route group — `session/open` (commit publishes `serverSeedHash`, reserves bet), `spin` (idempotency-key required, 60/min/user rate limit, atomic txn debit+spin+credit), `session/close` (reveals `serverSeed`, refunds escrow), `paytables/:id` + `verify` (both public, pure compute). New tables `slot_sessions` + `slot_spins` with partial unique index for one-open-session-per-user + per-session idempotency-key uniqueness. SOL/USDC stubbed at 501 until Phase 6.2 custody. Frontend mock (`apps/web/src/lib/casino/mock-engine.ts`) still live until slice 5 swap. Prior: Concern 6.1.2: backend slot engine landed (`apps/api/src/services/slot-engine.ts`, deterministic, 40+ tests, bigint payouts). Prior: Concern 6.0.4 polish pass: Slot UI redesign. New design-token system (`casino-tokens.css`), `useFX` 5-tier FX state machine, NeonButton/NeonCard/NeonModal/BetChips UI primitives, SVG symbol art (Kelp/Anchor/Shell/Pearl/Coin/Crab/Trident/Lobster) replacing emoji, coin+confetti particle bursts, mega-win screen flash + 3s lockout, prefers-reduced-motion honored. SpinResult contract untouched. Prior: Concern 6.0.5 — walkable interior. Prior: Concern 6.0.4 — 2D slot screen (mock data).
+**Last edit:** 2026-05-19 — Concern 6.1.6 + 6.1.7 (slice 5): **Phase 6.1 fully LIVE end-to-end for ClawTokens.** The slot UI now talks to the real `/api/casino/slots/*` backend — open / spin / cash-out — and the mock engine has been deleted. Every spin is recorded server-side with provably-fair commit-reveal; the player can replay every spin in a closed session via the new `/casino/verify` page (anonymous manual replay) or `/casino/verify/<sessionId>` (auth-gated owner-only, runs the whole session through a browser-side WebCrypto port of the server's HMAC-SHA256 engine and shows green/red verdict per spin). The slot screen now shows a 🔐 fairness chip with the committed `serverSeedHash` and a deeplink to the per-session verifier; cashing out reveals the seed in-line. Bet chips changed to [20, 40, 100, 200, 500, 1000] ClawTokens (must be a multiple of 20 paylines per slot-engine guard). Casino interior gets a top-right "🔐 Verify" link to the manual verifier. Browser-side test suite at `apps/web/src/lib/casino/__tests__/verifier.test.ts` (20 tests, all green) re-uses slice-1 hand-computed RNG fixtures to prove byte-identity between WebCrypto and Node `crypto`. Toast layer handles 4xx + 501 (SOL/USDC "coming in Phase 6.2"). Prior: Concern 6.1.5 (slice 4): Monte Carlo RTP CI gate. Slot `classic-3x5` paytable RTP officially **96.00%** (analytic over uniform-stop sampling) / **95.89%** (empirical, 1M-spin Monte Carlo on fixed seed). Strip length retuned 80→84 with composition (Cherry×22 + Lemon×22 + Orange×14 + Plum×14 + Bell×7 + 1× each of BAR/Seven/WILD/BAR×2/BAR×3) per reel; payout multipliers unchanged. `scripts/casino/rtp-sim.ts` runs 1M spins in ~11s; `.github/workflows/rtp-gate.yml` enforces RTP ∈ [95%, 97%] on every PR touching `slot-paytables.ts`/`slot-engine.ts`/`provable-rng.ts`. Acceptance band per plan: ±0.5% of 96.00% (= [95.50%, 96.50%]). Prior: Concern 6.1.3 + 6.1.4 (slice 3): fun-money casino slots backend LIVE for ClawTokens. New `/api/casino/slots/*` route group — `session/open` (commit publishes `serverSeedHash`, reserves bet), `spin` (idempotency-key required, 60/min/user rate limit, atomic txn debit+spin+credit), `session/close` (reveals `serverSeed`, refunds escrow), `paytables/:id` + `verify` (both public, pure compute). New tables `slot_sessions` + `slot_spins` with partial unique index for one-open-session-per-user + per-session idempotency-key uniqueness. SOL/USDC stubbed at 501 until Phase 6.2 custody. Frontend mock (`apps/web/src/lib/casino/mock-engine.ts`) still live until slice 5 swap. Prior: Concern 6.1.2: backend slot engine landed (`apps/api/src/services/slot-engine.ts`, deterministic, 40+ tests, bigint payouts). Prior: Concern 6.0.4 polish pass: Slot UI redesign. New design-token system (`casino-tokens.css`), `useFX` 5-tier FX state machine, NeonButton/NeonCard/NeonModal/BetChips UI primitives, SVG symbol art (Kelp/Anchor/Shell/Pearl/Coin/Crab/Trident/Lobster) replacing emoji, coin+confetti particle bursts, mega-win screen flash + 3s lockout, prefers-reduced-motion honored. SpinResult contract untouched. Prior: Concern 6.0.5 — walkable interior. Prior: Concern 6.0.4 — 2D slot screen (mock data).
 
 ---
 
@@ -667,9 +667,17 @@ Route `/casino` mounts a route-isolated R3F Canvas (`key="casino-interior"`) wit
 
 See walk-in + walk-out flow descriptions in the §18a header above. Key files: `SceneTransition.tsx` (generic), `arena-buildings.tsx` (`triggerCasinoWalkIn`), `casino/page.tsx` (walk-out + `fadeInOnMount`), `game/page.tsx` (`<SceneTransition />`).
 
-### 18a.c. 2D slot screen (Concern 6.0.4 — SHIPPED)
+### 18a.c. 2D slot screen (Concern 6.0.4 — SHIPPED · slice 5 real-backend wire LIVE 2026-05-19)
 
-Clicking a slot machine hotspot opens a full-viewport DOM overlay (z-index 9990) over the 3D canvas. The 3D interior stays mounted and rendering underneath. No real money — ClawToken fun-money only in Phase 6.0.
+Clicking a slot machine hotspot opens a full-viewport DOM overlay (z-index 9990) over the 3D canvas. The 3D interior stays mounted and rendering underneath. ClawTokens-only currency in Phase 6.1; the modal now talks to `/api/casino/slots/*` for real (mock engine deleted in slice 5).
+
+**Lifecycle (slice 5):**
+1. Hotspot click → `openSlotScreen(machineSlug, paytableId, startBalance)`. `startBalance` = current `avatar.clawTokens`. No API call yet.
+2. First spin press → `useOpenSlotSession.mutate({paytableId, currency:'clawtokens', bet})` → server returns `{sessionId, serverSeedHash, clientSeed}` → store mirror via `setSessionMeta`.
+3. Every spin press → mint fresh `crypto.randomUUID()` Idempotency-Key (re-used on a single press's retries) → `useSpin.mutate({sessionId, bet, idempotencyKey})` → atomic server txn debits bet + credits any winnings → response `{spinId, reels, winAmount, balance, ...}` (BigInt fields are strings on the wire) → adapter `spinResponseToSpinResult` promotes to bigint → existing reel-anim pipeline + `useFX` consume it unchanged.
+4. Cash-out (✕ button or "Walk Away") → `useCloseSlotSession.mutate({sessionId})` → server REVEALS `serverSeed` → store `setRevealedServerSeed` → fairness tooltip shows it inline → modal auto-closes after 1.2s.
+
+**Fairness chip (slice 5):** Below the header, a clickable cyan chip displays the short `serverSeedHash` (committed at open) or, after cash-out, the revealed seed. Tapping it opens a dialog with full hashes + clientSeed + deeplinks to `/casino/verify/<sessionId>` (per-session) and `/casino/verify` (manual).
 
 **Paytable:** 5×3 reel grid, 20 paylines, 8 symbols (Cherry → Wild). Publicly verifiable constants in `packages/shared/src/constants/slot-paytables.ts` (`CLASSIC_REEL_STRIPS`, `CLASSIC_SYMBOLS`, `CLASSIC_LINES`). Exported from `@clawville/shared`. Target RTP 96%.
 
@@ -700,22 +708,27 @@ interface WinningLine { lineIndex: number; symbols: number[]; winAmount: bigint;
 
 **Paytable modal (`PaytableModal.tsx`):** Built on `NeonModal` + `NeonCard`. Symbol rows render the SVG asset (with emoji fallback) keyed off `CLASSIC_SLOT_SYMBOL_ASSETS`. Payout chips use the symbol's theme color. Closes on Escape or backdrop click (handled by NeonModal).
 
-**State (`apps/web/src/stores/casino.ts`):** `useCasinoStore` Zustand slice. `openSlotScreen(machineSlug, paytableId, startBalance)` resets session state + calls `resetMockCursor()`. `recordSpin(result, bet)` updates `sessionBalance`, `sessionPnl`, `spinCount`. Starting balance: `avatar.clawTokens` read via `useAvatar()` at hotspot click; in-memory only (no API call in 6.0.4).
+**State (`apps/web/src/stores/casino.ts`, slice 5):** `useCasinoStore` Zustand slice. Tracks UI state PLUS server session metadata mirrored from the open response: `sessionId`, `serverSeedHash`, `clientSeed`, `revealedServerSeed`. `openSlotScreen(machineSlug, paytableId, startBalance)` resets every slot of session state. `recordSpin(result, balance, spinCount)` writes the AUTHORITATIVE post-spin balance from the server response — we never re-derive balance locally (defends against out-of-band ClawToken deltas between spins). `closeSlotScreen()` resets all session metadata. The mock cursor system was deleted with `mock-engine.ts` in slice 5.
 
 **Autoplay:** `AutoplayState { count, remaining, active }` — modes: fixed spins, until cashout, until big win. Continues if session balance ≥ bet after each reel settle; otherwise halts with a low-balance banner.
 
 **Key files:**
-- `apps/web/src/lib/casino/types.ts` — SpinResult contract (Phase 6.1 freeze)
-- `apps/web/src/lib/casino/mock-engine.ts` — mock spin engine
+- `apps/web/src/lib/casino/types.ts` — SpinResult contract (frozen, shared with verifier)
+- `apps/web/src/lib/casino/slot-api-client.ts` — TanStack Query hooks + wire types (slice 5)
+- `apps/web/src/lib/casino/verifier.ts` — browser-safe WebCrypto port of slot-engine (slice 5)
+- `apps/web/src/lib/casino/__tests__/verifier.test.ts` — byte-identity tests (slice 5)
 - `apps/web/src/lib/casino/useFX.ts` — 5-tier FX state machine (polish pass)
-- `apps/web/src/stores/casino.ts` — Zustand store
+- `apps/web/src/stores/casino.ts` — Zustand store (mirrors server session metadata)
 - `apps/web/src/styles/casino-tokens.css` — design tokens + shared keyframes (polish pass)
-- `apps/web/src/components/casino/SlotScreenModal.tsx` — root modal + orchestration
+- `apps/web/src/components/casino/SlotScreenModal.tsx` — root modal + orchestration (slice 5 real-backend wire)
 - `apps/web/src/components/casino/SlotReels.tsx` — 5×3 reel grid (SVG symbols)
-- `apps/web/src/components/casino/SlotHUD.tsx` — balance strip + controls
+- `apps/web/src/components/casino/SlotHUD.tsx` — balance strip + controls (bet chips now 20-divisible)
 - `apps/web/src/components/casino/WinCelebration.tsx` — 5-tier FX dispatcher
 - `apps/web/src/components/casino/PaytableModal.tsx` — symbol/line viewer
 - `apps/web/src/components/casino/ui/{NeonButton,NeonCard,NeonModal,BetChips}.tsx` — branded primitives (polish pass)
+- `apps/web/src/app/casino/page.tsx` — interior page + top-right 🔐 Verify link (slice 5)
+- `apps/web/src/app/casino/verify/page.tsx` — manual verifier (slice 5)
+- `apps/web/src/app/casino/verify/[sessionId]/page.tsx` — per-session verifier (slice 5)
 - `apps/web/public/assets/slot-symbols/s0..s7.svg` — ClawVille-themed reel art
 - `packages/shared/src/constants/slot-paytables.ts` — canonical paytable constants
 - `packages/shared/src/constants/slot-symbols.ts` — SVG asset manifest
@@ -736,11 +749,18 @@ On-chain slot RNG (SOL/USDC) + settlement via `clawville_wager` Anchor program l
 
 **BigInt wire serialization** — `winAmount` and `winningLines[i].winAmount` are bigints in the engine. Every API response converts via `serializeSpinResult` / `serializeWinningLine` (`apps/api/src/routes/casino-slots.types.ts`) — bigints stringified, no global `BigInt.prototype.toJSON` monkey-patch.
 
-**Frontend mock (`apps/web/src/lib/casino/mock-engine.ts`)** remains live until slice 5 swaps it for the real API calls. Same `SpinResult` shape both sides.
+**Frontend wire (slice 5, LIVE 2026-05-19):** The mock engine (`apps/web/src/lib/casino/mock-engine.ts`) has been DELETED. The slot UI now calls the API directly via TanStack Query hooks in `apps/web/src/lib/casino/slot-api-client.ts`: `useOpenSlotSession`, `useSpin` (caller-managed `Idempotency-Key`), `useCloseSlotSession`, `useSlotSession`, `useSlotSessionSpins`, `useSlotPaytable`, `useVerifySpinRemote`. BigInt-as-string contract preserved end-to-end; only `spinResponseToSpinResult` promotes to bigint at the FX boundary.
+
+**Provably-fair verifier UI (slice 5, public + auth-gated):** Two new routes ship the player-visible side of the commit-reveal scheme.
+
+- `/casino/verify` — **anonymous**, paste your own seeds. Form takes `serverSeed` (revealed at session close), `clientSeed`, `nonce`, `cursor`, `bet`, paytable. Verify button runs the spin TWICE: once in the browser via `runSpinLocal` (WebCrypto port in `apps/web/src/lib/casino/verifier.ts`), once on the server via `POST /api/casino/slots/verify`. Reels + winAmount + cursorAfter compared byte-by-byte; green check if identical, red flag with divergence reasons if not. Also recomputes `sha256(serverSeed)` and shows it for player-side commit-hash checking.
+- `/casino/verify/[sessionId]` — **auth-gated, owner-only**. Loads session detail via `GET /session/:id`; if status='open' shows "verify after session closes" (server redacts `serverSeed` while open anyway). Once closed, fetches all spins via `GET /session/:id/spins?limit=200`, runs `replaySpin` per row in nonce order, displays a green/red table with divergence details. Includes a top-of-page `sha256(serverSeed)` recompute that asserts the commit-hash invariant.
+
+**Verifier guarantee (slice 5 test suite):** `apps/web/src/lib/casino/__tests__/verifier.test.ts` (20 tests, all green) re-uses the slice-1 hand-computed RNG fixtures to assert byte-identity between browser WebCrypto and Node `crypto`. `runSpinLocal({serverSeed:'a'*64, clientSeed:'abcd1234', nonce:0, cursor:0, bet:20n})` produces `reels=[[7,1,1],[1,3,0],[3,1,1],[1,4,3],[2,2,0]]`, `winAmount=55n`, `cursorAfter=20` — identical to the server's `runSpin` output. If WebCrypto drifts by one byte, the test suite fails and the casino's provably-fair claim is broken.
 
 **Events emitted:** `casino.slots.session.opened`, `casino.slots.spin.executed`, `casino.slots.session.closed` — visible in `/dash` event tile once the leaderboard hook is added.
 
-**Real-money path (SOL + USDC):** Phase 6.2 (`clawville_wager` Anchor program extension — 8 new ix). Slice 3 stubs return 501 with a friendly "coming in 6.2" message.
+**Real-money path (SOL + USDC):** Phase 6.2 (`clawville_wager` Anchor program extension — 8 new ix). Slice 3 stubs return 501 with a friendly "coming in 6.2" message — the UI's toast layer in `slot-api-client.ts` already maps 501 to "SOL/USDC coming in Phase 6.2".
 
 ### 18a.e. Walkable interior + slot cabinet props (Concern 6.0.5 — SHIPPED)
 
