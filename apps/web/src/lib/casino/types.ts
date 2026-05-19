@@ -2,11 +2,13 @@
  * Casino Slot Types — Single Source of Truth
  *
  * This file defines the SpinResult contract shared between:
- *   - apps/web/src/lib/casino/mock-engine.ts  (Phase 6.0 — Math.random() mock)
- *   - apps/api/src/services/slot-engine.ts    (Phase 6.1 — HMAC-derived RNG + pokie)
+ *   - apps/api/src/services/slot-engine.ts    (Phase 6.1 — HMAC-derived RNG)
+ *   - apps/web/src/lib/casino/verifier.ts     (Phase 6.1 slice 5 — browser replay)
+ *   - apps/web/src/lib/casino/slot-api-client.ts (wire ↔ bigint adapter)
  *
- * SWAP CONTRACT: Phase 6.1 swap-in is implementation-only.
- * SpinResult, WinningLine, Paytable, SymbolId, MachineSlug must NOT change.
+ * Slice 5 deleted `mock-engine.ts`; the real engine ships via REST.
+ * SpinResult, WinningLine, Paytable, SymbolId, MachineSlug must NOT change
+ * — drift breaks the verifier's byte-identity guarantee.
  *
  * Key invariants:
  *   - reels is ALWAYS [5][3] — 5 reels × 3 visible rows.
