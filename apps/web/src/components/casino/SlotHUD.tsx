@@ -55,7 +55,10 @@ const AUTOPLAY_OPTIONS: Array<{ label: string; value: number | 'until-cashout' |
   { label: 'Win > 10× bet', value: 'until-big-win' },
 ];
 
-const BET_CHIPS = [1, 5, 10, 25, 50, 100];
+// Phase 6.1 slice 5: bet must be divisible by CLASSIC_LINES.length=20.
+// The slot-engine rejects non-divisible bets to avoid silent value-truncation
+// in `perLineBet = bet / lineCount`.
+const BET_CHIPS = [20, 40, 100, 200, 500, 1000];
 
 // ---------------------------------------------------------------------------
 // Spin button state
@@ -110,12 +113,13 @@ export default function SlotHUD({
   const spinState = getSpinState(isSpinning, isEvaluating, isLockedOut, balance, bet);
   const disabled = spinState !== 'ready';
 
+  // Step in multiples of 20 — server requires `bet % lineCount === 0`.
   const handleBetDown = useCallback(() => {
-    onBetChange(Math.max(minBet, bet - (bet >= 10 ? 5 : 1)));
+    onBetChange(Math.max(minBet, bet - 20));
   }, [bet, minBet, onBetChange]);
 
   const handleBetUp = useCallback(() => {
-    onBetChange(Math.min(maxBet, bet + (bet >= 10 ? 5 : 1)));
+    onBetChange(Math.min(maxBet, bet + 20));
   }, [bet, maxBet, onBetChange]);
 
   const handleAutoplay = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {

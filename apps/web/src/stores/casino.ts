@@ -1,23 +1,24 @@
 'use client';
 
 /**
- * Casino slot screen Zustand store — Phase 6.0
+ * Casino slot screen Zustand store — Phase 6.1 (slice 5: real API wired)
  *
- * Manages:
- *   - Which slot machine is open (machineSlug + paytableId)
- *   - In-memory ClawToken balance delta (no API calls in 6.0)
- *   - Session spin count
- *   - Session P&L (cumulative win - cumulative bet)
+ * Holds UI-only state for the slot machine modal. The authoritative balance,
+ * counters, and seed material live in the API (slot_sessions + slot_spins).
+ * This store tracks:
  *
- * Phase 6.1: replace in-memory balance with API session state.
- * The store shape is designed so 6.1 can add sessionId/sessionStatus
- * fields without touching any call-site.
+ *   - Which slot machine is open
+ *   - Server-issued session id + seed material (mirrored from open response)
+ *   - Latest balance + session totals (snapshot, refreshed per spin)
+ *   - Spin animation state (transient)
+ *
+ * Reset on close. NEVER persisted to localStorage — auth/cookie + server
+ * state are the durable record. Local mock state has been removed; the
+ * `mockSpin` engine was deleted in slice 5.
  */
 
 import { create } from 'zustand';
-import type { SpinResult } from '@/lib/casino/types';
-import type { MachineSlug } from '@/lib/casino/types';
-import { resetMockCursor } from '@/lib/casino/mock-engine';
+import type { MachineSlug, SpinResult } from '@/lib/casino/types';
 
 // ---------------------------------------------------------------------------
 // Store state
@@ -31,28 +32,57 @@ export interface CasinoStore {
   /** Which paytable is loaded */
   paytableId: MachineSlug | null;
 
-  // ── Session tracking (in-memory only for 6.0) ────────────────────────────
-  /** Starting balance at session open (snapshot of avatar.clawTokens) */
-  sessionStartBalance: number;
-  /** Current in-session balance (startBalance + wins - bets) */
+  // ── Server session metadata (populated after openSlotSession succeeds) ───
+  /** Server-issued session UUID. null until /session/open returns. */
+  sessionId: string | null;
+  /** Public commit hash — safe to display in HUD/fairness tooltip. */
+  serverSeedHash: string | null;
+  /** Server-issued client seed (8 random hex bytes today). */
+  clientSeed: string | null;
+  /** Revealed server seed after close (null while open). */
+  revealedServerSeed: string | null;
+
+  // ── Live balance + session totals (snapshot, refreshed per spin) ─────────
+  /** Authoritative ClawToken balance after the last spin. */
   sessionBalance: number;
-  /** Number of spins in this session */
+  /** Snapshot of the balance at open-time, used to derive sessionPnl in the HUD. */
+  sessionStartBalance: number;
+  /** Number of spins recorded in this session (server count). */
   spinCount: number;
-  /** Cumulative net P&L this session (negative = loss) */
+  /** Cumulative net P&L this session (sessionBalance - sessionStartBalance). */
   sessionPnl: number;
 
   // ── Spin animation / result state ────────────────────────────────────────
-  /** Whether a spin is currently animating */
+  /** Whether a spin is currently animating (reels spinning). */
   isSpinning: boolean;
-  /** Last spin result (null before first spin) */
+  /** Last spin result (null before first spin). */
   lastSpinResult: SpinResult | null;
 
   // ── Actions ──────────────────────────────────────────────────────────────
   openSlotScreen: (machineSlug: MachineSlug, paytableId: MachineSlug, startBalance: number) => void;
+  /** Populate server-issued session metadata after /session/open succeeds. */
+  setSessionMeta: (meta: {
+    sessionId: string;
+    serverSeedHash: string;
+    clientSeed: string;
+  }) => void;
+  /** Reset session metadata to null (called on closeSlotScreen). */
+  clearSessionMeta: () => void;
+  /** Reveal the server seed after /session/close. */
+  setRevealedServerSeed: (seed: string) => void;
   closeSlotScreen: () => void;
   setIsSpinning: (spinning: boolean) => void;
-  recordSpin: (result: SpinResult, bet: number) => void;
-  /** Update session balance directly (for win credit, loss debit) */
+  /**
+   * Record a fully resolved spin (from the server response). Updates
+   * lastSpinResult + spinCount + sessionBalance + sessionPnl.
+   *
+   * Note: `balance` is the authoritative post-spin balance from the server,
+   * NOT a delta. We deliberately do NOT recompute balance locally to avoid
+   * drift if the server credits an out-of-band ClawToken delta between
+   * /spin responses (e.g. login bonus interleaving).
+   */
+  recordSpin: (result: SpinResult, balance: number, spinCount: number) => void;
+  /** Update session balance directly (for win credit, loss debit). */
   adjustBalance: (delta: number) => void;
 }
 
@@ -60,6 +90,10 @@ export const useCasinoStore = create<CasinoStore>((set, get) => ({
   slotScreenOpen: false,
   machineSlug: null,
   paytableId: null,
+  sessionId: null,
+  serverSeedHash: null,
+  clientSeed: null,
+  revealedServerSeed: null,
   sessionStartBalance: 0,
   sessionBalance: 0,
   spinCount: 0,
@@ -68,11 +102,14 @@ export const useCasinoStore = create<CasinoStore>((set, get) => ({
   lastSpinResult: null,
 
   openSlotScreen: (machineSlug, paytableId, startBalance) => {
-    resetMockCursor();
     set({
       slotScreenOpen: true,
       machineSlug,
       paytableId,
+      sessionId: null,
+      serverSeedHash: null,
+      clientSeed: null,
+      revealedServerSeed: null,
       sessionStartBalance: startBalance,
       sessionBalance: startBalance,
       spinCount: 0,
@@ -82,27 +119,50 @@ export const useCasinoStore = create<CasinoStore>((set, get) => ({
     });
   },
 
+  setSessionMeta: ({ sessionId, serverSeedHash, clientSeed }) => {
+    set({
+      sessionId,
+      serverSeedHash,
+      clientSeed,
+      revealedServerSeed: null,
+    });
+  },
+
+  clearSessionMeta: () => {
+    set({
+      sessionId: null,
+      serverSeedHash: null,
+      clientSeed: null,
+      revealedServerSeed: null,
+    });
+  },
+
+  setRevealedServerSeed: (seed) => {
+    set({ revealedServerSeed: seed });
+  },
+
   closeSlotScreen: () => {
     set({
       slotScreenOpen: false,
       machineSlug: null,
       paytableId: null,
+      sessionId: null,
+      serverSeedHash: null,
+      clientSeed: null,
+      revealedServerSeed: null,
       isSpinning: false,
     });
   },
 
   setIsSpinning: (spinning) => set({ isSpinning: spinning }),
 
-  recordSpin: (result, bet) => {
-    const { sessionBalance, spinCount, sessionPnl, sessionStartBalance } = get();
-    const winAmount = Number(result.winAmount); // safe: ClawTokens fit in JS number
-    const newBalance = sessionBalance - bet + winAmount;
-    const newPnl = newBalance - sessionStartBalance;
+  recordSpin: (result, balance, spinCount) => {
+    const { sessionStartBalance } = get();
     set({
       lastSpinResult: result,
-      sessionBalance: newBalance,
-      spinCount: spinCount + 1,
-      sessionPnl: newPnl,
+      sessionBalance: balance,
+      spinCount,
+      sessionPnl: balance - sessionStartBalance,
     });
   },
 
