@@ -19,8 +19,9 @@
  *
  * Money model (slice 3, ClawTokens only):
  *   - /session/open does NOT debit. It records startingBalance for UI display.
- *     It DOES pre-check that the avatar can afford at least one predict, returning
- *     400 `insufficient_clawtokens` early so we don't open a fund-less session.
+ *     It DOES pre-check that the avatar can afford at least one predict,
+ *     returning 400 `insufficient_clawtokens` early so we don't open a
+ *     fund-less session.
  *   - /spin direct-debits predict, credits winAmount. Atomic within a single
  *     transaction (debit + counters + spin insert + win credit all-or-nothing).
  *   - /session/close has no refund. Player's balance equals real-time
@@ -29,11 +30,22 @@
  * Phase 6.2 will add SOL/USDC buy-in semantics with on-chain escrow; the
  * `escrowAmount` column is reserved for that path and stays at '0' here.
  *
+ * Phase 6.1.5 — bonus paytable (`classic-3x5-bonus`) adds free-spin state:
+ *   - /spin reads `session.mode` + `freeSpinsRemaining` to decide whether
+ *     THIS spin is a FREE spin (no debit, line wins doubled, wild multipliers
+ *     doubled).
+ *   - Engine result's `freeSpinsAwarded` bumps `freeSpinsRemaining` (capped at
+ *     `FREE_SPIN_RULES.CAP_REMAINING`) and flips mode to 'free-spin' on
+ *     trigger. When the counter hits 0 after a free spin, mode flips back
+ *     to 'base'.
+ *   - Free spins NEVER count toward `totalStaked` (they are free — the
+ *     money-safety invariant depends on this).
+ *
  * Design choices:
  *
  *  1) BigInt JSON: every response that carries bigint (winAmount, predict,
- *     escrow, totals) goes through `serializeSpinResult` / explicit
- *     `.toString()` so Hono's `c.json` never sees a bigint. No
+ *     escrow, totals, scatterPayout) goes through `serializeSpinResult` /
+ *     explicit `.toString()` so Hono's `c.json` never sees a bigint. No
  *     `BigInt.prototype.toJSON` monkey-patch — global side effects bite
  *     event-logger sanitization and third-party deps.
  *
@@ -42,11 +54,10 @@
  *     short-circuits BEFORE we call `runSpin`, BEFORE we debit, BEFORE
  *     we touch the session counters — pure replay. We ALSO assert the
  *     cached spin's `predict` matches the new request's `predict` before
- *     serving the cache (Stripe-style); a mismatched replay returns 409 so
- *     a leaked key can't be replayed at a different stake when slice 4+
- *     relaxes the per-session fixed-predict constraint. The partial unique
- *     index (sessionId, idempotencyKey) is the race-safe backstop if two
- *     concurrent retries with the same key reach the INSERT.
+ *     serving the cache (Stripe-style); a mismatched replay returns 409
+ *     so a leaked key can't be replayed at a different stake when slice
+ *     4+ relaxes the per-session fixed-predict constraint. The partial
+ *     unique index (sessionId, idempotencyKey) is the race-safe backstop.
  *
  *  3) Spin atomicity: the spin's debit + spin row insert + session
  *     update + winnings credit all run inside one DB transaction. If any
@@ -78,9 +89,12 @@ import {
   type SlotSession,
 } from '@clawville/database';
 import {
+  BONUS_REEL_STRIPS,
+  BONUS_SYMBOLS,
   CLASSIC_LINES,
   CLASSIC_REEL_STRIPS,
   CLASSIC_SYMBOLS,
+  FREE_SPIN_RULES,
 } from '@clawville/shared';
 import { requireAuth, sessionMiddleware } from '../middleware/auth';
 import {
@@ -100,10 +114,12 @@ import {
 import { logEventFromContext } from '../services/event-logger';
 import {
   serializeSpinResult,
+  serializeWildMultiplier,
   serializeWinningLine,
   type CloseSessionResponse,
   type OpenSessionResponse,
   type PaytableResponse,
+  type SerializedWildMultiplier,
   type SpinResponse,
 } from './casino-slots.types';
 import type { AppContext } from '../types';
@@ -113,7 +129,7 @@ casinoSlotsRouter.use('*', sessionMiddleware);
 
 // ─── Constants ────────────────────────────────────────────────────────────
 
-const SUPPORTED_PAYTABLES = ['classic-3x5'] as const satisfies readonly MachineSlug[];
+const SUPPORTED_PAYTABLES = ['classic-3x5', 'classic-3x5-bonus'] as const satisfies readonly MachineSlug[];
 const SUPPORTED_CURRENCIES = ['clawtokens', 'sol', 'usdc'] as const;
 
 /** Max length on the `Idempotency-Key` header (matches Stripe convention). */
@@ -259,16 +275,31 @@ function publicSession(row: SlotSession) {
 }
 
 function buildPaytableResponse(paytableId: MachineSlug): PaytableResponse {
-  if (paytableId !== 'classic-3x5') {
-    throw new HTTPException(404, { message: 'paytable_not_found' });
+  switch (paytableId) {
+    case 'classic-3x5':
+      return {
+        paytableId,
+        symbols: CLASSIC_SYMBOLS,
+        lines: CLASSIC_LINES,
+        reelStrips: CLASSIC_REEL_STRIPS,
+        rtp: 0.96,
+      };
+    case 'classic-3x5-bonus':
+      return {
+        paytableId,
+        symbols: BONUS_SYMBOLS,
+        lines: CLASSIC_LINES,
+        reelStrips: BONUS_REEL_STRIPS,
+        rtp: 0.98,
+      };
+    default: {
+      // Exhaustiveness check — TS catches missing arms at compile time.
+      const _exhaustive: never = paytableId;
+      throw new HTTPException(404, {
+        message: `paytable_not_found: ${_exhaustive}`,
+      });
+    }
   }
-  return {
-    paytableId,
-    symbols: CLASSIC_SYMBOLS,
-    lines: CLASSIC_LINES,
-    reelStrips: CLASSIC_REEL_STRIPS,
-    rtp: 0.96,
-  };
 }
 
 async function loadAvatarForUser(userId: string): Promise<{
@@ -472,8 +503,8 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
     });
   }
 
-  // Slice 3 simplicity — predict per spin must equal session's reserved predict.
-  // Later phases may relax this; the engine itself doesn't care.
+  // Slice 3 simplicity — predict per spin must equal session's reserved
+  // predict. Later phases may relax this; the engine itself doesn't care.
   if (input.predict !== session.startingBalance) {
     throw new HTTPException(400, {
       message: `predict_must_equal_session_reserved_predict (expected ${session.startingBalance}, got ${input.predict})`,
@@ -524,8 +555,20 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
       reels: cached.reels as SpinResult['reels'],
       winningLines: cached.winningLines as SpinResponse['winningLines'],
       winAmount: cached.winAmount,
-      freeSpinsAwarded: 0,
+      // Phase 6.1.5 — `freeSpinsAwarded` is the value that was emitted
+      // for this exact spin (not 0 unconditionally). The exact value
+      // is lost on cache (slotSpins schema doesn't persist it), but the
+      // SESSION state was already updated when the original spin landed
+      // — that's what matters for client UI. We derive a best-effort
+      // value: a non-zero `scatterPayout` implies a 3+ scatter trigger
+      // fired, so award was BASE (10) or RETRIGGER (5) depending on
+      // whether the spin itself was a free spin.
+      freeSpinsAwarded: BigInt(cached.scatterPayout) > 0n
+        ? (cached.isFreeSpin ? FREE_SPIN_RULES.AWARD_RETRIGGER : FREE_SPIN_RULES.AWARD_BASE)
+        : 0,
       isFreeSpin: cached.isFreeSpin,
+      wildMultipliers: cached.wildMultipliers as SerializedWildMultiplier[],
+      scatterPayout: cached.scatterPayout,
       cursorAfter: cached.cursorAfter,
       predict: cached.predict,
       balance: avatar.clawTokens,
@@ -533,12 +576,24 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
       totalStaked: fresh?.totalStaked ?? session.totalStaked,
       totalWon: fresh?.totalWon ?? session.totalWon,
       spinCount: fresh?.spinCount ?? session.spinCount,
+      mode: (fresh?.mode ?? session.mode) as 'base' | 'free-spin',
+      freeSpinsRemaining: fresh?.freeSpinsRemaining ?? session.freeSpinsRemaining,
       idempotencyReplay: true,
     };
     return c.json(response, 200);
   }
 
   const avatar = await loadAvatarForUser(user.id);
+
+  // Phase 6.1.5 — derive free-spin mode from the session row read above.
+  // Defensive: only the bonus paytable can ever set mode='free-spin', so
+  // a classic-3x5 session with mode='free-spin' AND freeSpinsRemaining>0
+  // is treated as base (engine ignores freeSpinMode for non-bonus paytables
+  // anyway — no wild draws, no scatter — but skipping the debit on classic
+  // would be a money bug). We belt-and-suspenders this here.
+  const isBonusPaytable = session.paytableId === 'classic-3x5-bonus';
+  const isFreeSpinSpin =
+    isBonusPaytable && session.mode === 'free-spin' && session.freeSpinsRemaining > 0;
 
   // Run the engine OUTSIDE the transaction — `runSpin` is pure and bounded
   // (no I/O). Doing it before the txn keeps the row lock window tight and
@@ -552,6 +607,7 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
       nonce: session.nonceCounter,
       cursor: session.cursorCounter,
       predict: predictBig,
+      freeSpinMode: isFreeSpinSpin,
     });
   } catch (err) {
     throw new HTTPException(400, {
@@ -561,9 +617,9 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
   const winAmountBig = spinResult.winAmount;
 
   // ─── Atomic spin write ──────────────────────────────────────────────
-  // 1. Debit `predict` from user (skip if the open's escrow still covers it
-  //    — we instead burn the escrow on the first spin).
-  // 2. Update session counters / cursor.
+  // 1. Debit `predict` from user (skip on a free spin — FS spins consume
+  //    no predict, only credit any winAmount).
+  // 2. Update session counters / cursor / mode / free-spin remaining.
   // 3. INSERT spin row (idempotency key trips here on race).
   // 4. Credit `winAmount` to user.
   //
@@ -585,12 +641,15 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
         nonce_counter: number;
         cursor_counter: number;
         status: string;
+        mode: string;
+        free_spins_remaining: number;
         escrow_amount: string;
         total_staked: string;
         total_won: string;
         spin_count: number;
       }>(
-        sql`SELECT nonce_counter, cursor_counter, status, escrow_amount, total_staked, total_won, spin_count
+        sql`SELECT nonce_counter, cursor_counter, status, mode, free_spins_remaining,
+                   escrow_amount, total_staked, total_won, spin_count
             FROM slot_sessions
             WHERE id = ${session.id}
             FOR UPDATE`,
@@ -616,38 +675,63 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
           message: 'session_counter_changed_retry',
         });
       }
+      // Phase 6.1.5 — guard against mode-changed-mid-flight too. The
+      // engine call above used `isFreeSpinSpin` derived from `session.mode`
+      // (pre-lock snapshot). If a concurrent path mutated the mode (e.g.
+      // a previous spin in this session burned the last free spin and
+      // flipped to 'base'), the runSpin result is no longer valid for
+      // this row's mode — fail closed and let the client retry.
+      const lockIsFreeSpinSpin =
+        isBonusPaytable && lockRow.mode === 'free-spin' && lockRow.free_spins_remaining > 0;
+      if (lockIsFreeSpinSpin !== isFreeSpinSpin) {
+        throw new HTTPException(409, {
+          message: 'session_mode_changed_retry',
+        });
+      }
 
-      // Debit predict from user (ledger row + balance update).
+      // Phase 6.1.5 — debit only on BASE spins. Free spins consume no
+      // predict (FREE in name and in money), but still credit any win.
       let debitBalance: number;
-      try {
-        const debit = await debitClawTokens(
-          {
-            avatarId: avatar.id,
-            amount: predictNumber,
-            reason: 'casino_slots_spin',
-            source: 'api',
-            metadata: {
-              sessionId: session.id,
-              paytableId: session.paytableId,
-              nonce: session.nonceCounter,
-            },
-          },
-          tx,
+      if (isFreeSpinSpin) {
+        // Re-read balance so the response reflects current truth without
+        // a debit. The credit path below mutates this if winAmount > 0.
+        const balRows = await tx.execute<{ claw_tokens: number }>(
+          sql`SELECT claw_tokens FROM avatars WHERE id = ${avatar.id}`,
         );
-        debitBalance = debit.balanceAfter;
-      } catch (err) {
-        if (err instanceof InsufficientTokensError) {
-          throw new HTTPException(400, {
-            message: `insufficient_clawtokens_for_spin: need ${predictNumber}, have ${err.available}`,
-          });
+        debitBalance = balRows[0]?.claw_tokens ?? avatar.clawTokens;
+      } else {
+        // Debit predict from user (ledger row + balance update).
+        try {
+          const debit = await debitClawTokens(
+            {
+              avatarId: avatar.id,
+              amount: predictNumber,
+              reason: 'casino_slots_spin',
+              source: 'api',
+              metadata: {
+                sessionId: session.id,
+                paytableId: session.paytableId,
+                nonce: session.nonceCounter,
+              },
+            },
+            tx,
+          );
+          debitBalance = debit.balanceAfter;
+        } catch (err) {
+          if (err instanceof InsufficientTokensError) {
+            throw new HTTPException(400, {
+              message: `insufficient_clawtokens_for_spin: need ${predictNumber}, have ${err.available}`,
+            });
+          }
+          throw err;
         }
-        throw err;
       }
 
       // INSERT spin row — duplicate (sessionId, idempotencyKey) trips
       // the unique index and rolls back the debit above.
       const winAmountStr = winAmountBig.toString();
       const winningLinesJson = spinResult.winningLines.map(serializeWinningLine);
+      const wildMultipliersJson = spinResult.wildMultipliers.map(serializeWildMultiplier);
       const [spinRow] = await tx
         .insert(slotSpins)
         .values({
@@ -660,8 +744,8 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
           reels: spinResult.reels,
           winningLines: winningLinesJson,
           winAmount: winAmountStr,
-          wildMultipliers: [],
-          scatterPayout: '0',
+          wildMultipliers: wildMultipliersJson,
+          scatterPayout: spinResult.scatterPayout.toString(),
           idempotencyKey,
         })
         .returning();
@@ -672,23 +756,51 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
       // Update session counters.
       const newNonce = session.nonceCounter + 1;
       const newCursor = spinResult.cursorAfter;
-      const newTotalStaked = (BigInt(lockRow.total_staked) + predictBig).toString();
+      // Phase 6.1.5 — totalStaked counts only DEBITED predicts. Free
+      // spins do not add to totalStaked (they are free); RTP analysis
+      // and Money-safety invariant depend on this.
+      const newTotalStaked = isFreeSpinSpin
+        ? lockRow.total_staked
+        : (BigInt(lockRow.total_staked) + predictBig).toString();
       const newTotalWon = (BigInt(lockRow.total_won) + winAmountBig).toString();
       // escrowAmount stays '0' on the ClawTokens path — no reservation was
       // made at open time, so there's nothing to drain. Phase 6.2 SOL/USDC
       // will pre-fund the column and decrement here.
       const oldEscrow = BigInt(lockRow.escrow_amount);
-      const newEscrow = oldEscrow > predictBig ? (oldEscrow - predictBig).toString() : '0';
+      const newEscrow = !isFreeSpinSpin && oldEscrow > predictBig
+        ? (oldEscrow - predictBig).toString()
+        : (isFreeSpinSpin ? lockRow.escrow_amount : '0');
       const newSpinCount = lockRow.spin_count + 1;
-      // currentBalance is net session P&L (signed). It starts at 0 on
-      // open, drops by `predict` each spin, recovers by `winAmount`. Negative
-      // values are valid and expected when the player is down for the
-      // session — there is NO invariant that this stays >= 0.
+      // currentBalance is net session P&L (signed). On a free spin we
+      // don't subtract the predict — only the winAmount counts up.
+      const debitDelta = isFreeSpinSpin ? 0n : predictBig;
       const newCurrentBalance = (
         BigInt(lockRow.total_won) +
         winAmountBig -
-        (BigInt(lockRow.total_staked) + predictBig)
+        (BigInt(lockRow.total_staked) + debitDelta)
       ).toString();
+
+      // Phase 6.1.5 — mode + free_spins_remaining state machine.
+      //   • If this spin was a FREE spin, decrement the remaining counter.
+      //   • If this spin awarded free spins (scatters >= 3), add them
+      //     (capped at CAP_REMAINING) and flip mode to 'free-spin'.
+      //   • When remaining hits 0 after a free spin, flip back to 'base'.
+      let newMode = lockRow.mode;
+      let newFreeSpinsRemaining = lockRow.free_spins_remaining;
+      if (isFreeSpinSpin) {
+        newFreeSpinsRemaining = Math.max(0, newFreeSpinsRemaining - 1);
+      }
+      if (spinResult.freeSpinsAwarded > 0) {
+        newFreeSpinsRemaining = Math.min(
+          FREE_SPIN_RULES.CAP_REMAINING,
+          newFreeSpinsRemaining + spinResult.freeSpinsAwarded,
+        );
+        newMode = 'free-spin';
+      }
+      if (newFreeSpinsRemaining <= 0) {
+        newMode = 'base';
+        newFreeSpinsRemaining = 0;
+      }
 
       const [updated] = await tx
         .update(slotSessions)
@@ -700,6 +812,8 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
           escrowAmount: newEscrow,
           currentBalance: newCurrentBalance,
           spinCount: newSpinCount,
+          mode: newMode,
+          freeSpinsRemaining: newFreeSpinsRemaining,
           lastSpinAt: new Date(),
         })
         .where(eq(slotSessions.id, session.id))
@@ -757,8 +871,7 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
       if (cachedRetry) {
         // Same Stripe-style guard as the fast-path: a concurrent retry
         // that won the race MUST still have used the same predict, otherwise
-        // the second caller is replaying at a different stake. Fail
-        // closed.
+        // the second caller is replaying at a different stake. Fail closed.
         if (cachedRetry.predict !== input.predict) {
           throw new HTTPException(409, {
             message: `idempotency_key_reused_with_different_args: cached predict=${cachedRetry.predict}, new predict=${input.predict}. Use a fresh Idempotency-Key.`,
@@ -774,8 +887,14 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
           // Stored already-serialized — pass through.
           winningLines: cachedRetry.winningLines as SpinResponse['winningLines'],
           winAmount: cachedRetry.winAmount,
-          freeSpinsAwarded: 0,
+          freeSpinsAwarded: BigInt(cachedRetry.scatterPayout) > 0n
+            ? (cachedRetry.isFreeSpin
+              ? FREE_SPIN_RULES.AWARD_RETRIGGER
+              : FREE_SPIN_RULES.AWARD_BASE)
+            : 0,
           isFreeSpin: cachedRetry.isFreeSpin,
+          wildMultipliers: cachedRetry.wildMultipliers as SerializedWildMultiplier[],
+          scatterPayout: cachedRetry.scatterPayout,
           cursorAfter: cachedRetry.cursorAfter,
           predict: cachedRetry.predict,
           balance: avatarAfter.clawTokens,
@@ -783,6 +902,8 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
           totalStaked: fresh?.totalStaked ?? session.totalStaked,
           totalWon: fresh?.totalWon ?? session.totalWon,
           spinCount: fresh?.spinCount ?? session.spinCount,
+          mode: (fresh?.mode ?? session.mode) as 'base' | 'free-spin',
+          freeSpinsRemaining: fresh?.freeSpinsRemaining ?? session.freeSpinsRemaining,
           idempotencyReplay: true,
         };
         return c.json(response, 200);
@@ -814,6 +935,8 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
     totalStaked: finalSession.totalStaked,
     totalWon: finalSession.totalWon,
     spinCount: finalSession.spinCount,
+    mode: finalSession.mode as 'base' | 'free-spin',
+    freeSpinsRemaining: finalSession.freeSpinsRemaining,
     idempotencyReplay: false,
   };
   return c.json(response, 200);
@@ -1007,7 +1130,7 @@ casinoSlotsRouter.get('/session/:id/spins', requireAuth, async (c) => {
 
 casinoSlotsRouter.get('/paytables/:id', async (c) => {
   const id = c.req.param('id');
-  if (id !== 'classic-3x5') {
+  if (id !== 'classic-3x5' && id !== 'classic-3x5-bonus') {
     throw new HTTPException(404, { message: 'paytable_not_found' });
   }
   const response = buildPaytableResponse(id);
