@@ -33,6 +33,7 @@ export type ClawTokenSource =
   | 'simulation'
   | 'quest'
   | 'bounty'
+  | 'exchange'
   | 'daily_login'
   | 'admin'
   | 'x402'
