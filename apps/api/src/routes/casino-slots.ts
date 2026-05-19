@@ -724,7 +724,7 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
   // anyway — no wild draws, no scatter — but skipping the debit on classic
   // would be a money bug). We belt-and-suspenders this here.
   const isBonusPaytable = session.paytableId === 'classic-3x5-bonus';
-  const isFreeSpinSpin =
+  let isFreeSpinSpin =
     isBonusPaytable && session.mode === 'free-spin' && session.freeSpinsRemaining > 0;
 
   // Run the engine OUTSIDE the transaction — `runSpin` is pure and bounded
@@ -746,7 +746,7 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
       message: `spin_engine_error: ${(err as Error).message}`,
     });
   }
-  const winAmountBig = spinResult.winAmount;
+  let winAmountBig = spinResult.winAmount;
 
   // ─── Atomic spin write ──────────────────────────────────────────────
   // 1. Debit `predict` from user (skip on a free spin — FS spins consume
@@ -795,30 +795,44 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
           message: `session_not_open: status=${lockRow.status}`,
         });
       }
-      // Engine was called on a pre-lock snapshot — if the session's
-      // counters have moved (concurrent spin won the race), abort and
-      // let the client retry with a fresh Idempotency-Key. The runSpin
-      // result is now stale and unsafe to persist.
-      if (
-        lockRow.nonce_counter !== session.nonceCounter ||
-        lockRow.cursor_counter !== session.cursorCounter
-      ) {
-        throw new HTTPException(409, {
-          message: 'session_counter_changed_retry',
-        });
-      }
-      // Phase 6.1.5 — guard against mode-changed-mid-flight too. The
-      // engine call above used `isFreeSpinSpin` derived from `session.mode`
-      // (pre-lock snapshot). If a concurrent path mutated the mode (e.g.
-      // a previous spin in this session burned the last free spin and
-      // flipped to 'base'), the runSpin result is no longer valid for
-      // this row's mode — fail closed and let the client retry.
+      // Engine was called on a pre-lock snapshot. If the session's
+      // counters or mode have moved (concurrent spin won the race,
+      // OR the row has stale state from a partial earlier txn /
+      // resumed orphan), recompute the spin under the row lock with
+      // the authoritative locked values. We hold FOR UPDATE so no
+      // further drift is possible — the recomputed spinResult is
+      // guaranteed consistent with what we'll commit.
       const lockIsFreeSpinSpin =
         isBonusPaytable && lockRow.mode === 'free-spin' && lockRow.free_spins_remaining > 0;
-      if (lockIsFreeSpinSpin !== isFreeSpinSpin) {
-        throw new HTTPException(409, {
-          message: 'session_mode_changed_retry',
-        });
+      if (
+        lockRow.nonce_counter !== session.nonceCounter ||
+        lockRow.cursor_counter !== session.cursorCounter ||
+        lockIsFreeSpinSpin !== isFreeSpinSpin
+      ) {
+        try {
+          spinResult = runSpin({
+            paytableId: session.paytableId as MachineSlug,
+            serverSeed:  session.serverSeed,
+            clientSeed:  session.clientSeed,
+            nonce:       lockRow.nonce_counter,
+            cursor:      lockRow.cursor_counter,
+            predict:     predictBig,
+            freeSpinMode: lockIsFreeSpinSpin,
+          });
+        } catch (err) {
+          throw new HTTPException(500, {
+            message: `engine_recompute_failed_under_lock: ${err instanceof Error ? err.message : String(err)}`,
+          });
+        }
+        winAmountBig    = spinResult.winAmount;
+        isFreeSpinSpin  = lockIsFreeSpinSpin;
+        // Mutate the session snapshot so downstream INSERT/UPDATE
+        // references (session.nonceCounter, session.cursorCounter,
+        // session.mode, session.freeSpinsRemaining) use locked values.
+        (session as { nonceCounter: number }).nonceCounter         = lockRow.nonce_counter;
+        (session as { cursorCounter: number }).cursorCounter       = lockRow.cursor_counter;
+        (session as { mode: string }).mode                         = lockRow.mode;
+        (session as { freeSpinsRemaining: number }).freeSpinsRemaining = lockRow.free_spins_remaining;
       }
 
       // Phase 6.1.5 — debit only on BASE spins. Free spins consume no
