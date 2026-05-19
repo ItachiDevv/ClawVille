@@ -71,6 +71,7 @@
 - [AVATAR_SCALE must be calibrated against actual GLB bbox — never assume from comments](gotchas/avatar-scale-vs-glb-native-height.md) — lobster.glb native height=1.12; AVATAR_SCALE=20 gave 22.4 wu (2× smaller than NPC 45 wu); verify with GLTF accessor bounds before setting flat scale constants
 
 - [Room-scale vs world-scale geometry in a scaled interior scene](patterns/interior-room-scale-vs-world-scale-geometry.md) — Y-dimension of props must be calibrated against avatar height (270wu), NOT room max-dim (2000wu); XZ footprint can follow room scale. Also: `computeVRMAvatarFit` gains optional 3rd `targetHeightOverride` param for scene-specific overrides without polluting SPECIES map. (2026-05-18)
+- [Interior chase camera AABB clamp — prevents wall-clip black void](patterns/interior-camera-clamp.md) — `clampCameraToRoom(pos, RoomBounds)` in `room-camera.ts` mutates desired cam position in-place before lerp; no allocations; AABB sufficient for rectangular rooms; raycast path available for curved walls. (2026-05-19)
 
 ## Building Scale Patterns
 - [Building scale max(X,Y,Z) normalization — targetMaxDim](patterns/building-maxdim-normalization.md) — Normalize to max(X,Y,Z) not Y-only; prevents wide/squat GLBs from ballooning in XZ. All buildings now use `targetMaxDim` in `BUILDING_MODELS`. MAX_FOOTPRINT=1800wu hard cap still applies. (Phase 6.2, 2026-05-18)
