@@ -3,10 +3,10 @@
 /**
  * SlotReelsCanvas — R3F Canvas wrapper for the 3D cylinder drum rig.
  *
- * Camera: z=20, fov=70°.
- *   Vertical viewport = 2×20×tan(35°) ≈ 28 wu — drums (h=20wu) fill ~71%.
- *   Horizontal viewport = 28 × aspect (≈2.2) ≈ 61.6 wu — 5 drums × 9wu = 44wu, fits.
- * Far plane: 60 — well beyond camera z (20) + CYLINDER_RADIUS (4).
+ * Camera: z=45, fov=50°.
+ *   Vertical viewport = 2×45×tan(25°) ≈ 42 wu — drums (h=15wu) fill ~36%.
+ *   Horizontal viewport = 42 × aspect (≈2.32) ≈ 97 wu — 5 drums × 18wu = 90wu, fits.
+ * Far plane: 200 — well beyond camera z (45) + CYLINDER_RADIUS (8).
  * frameloop='always' — demand mode causes transparent-black canvas on mount.
  * DPR cap [0.55, 0.7] on low-end keeps Iris Xe pixel budget manageable.
  */
@@ -64,10 +64,10 @@ export default function SlotReelsCanvas(props: SlotReelsCanvasProps) {
         dpr={LOW_END_GPU ? [0.55, 0.7] : [0.75, 1]}
         frameloop="always"
         camera={{
-          fov:      70,
+          fov:      50,
           near:     0.1,
-          far:      60,
-          position: [0, 0, 20],
+          far:      200,
+          position: [0, 0, 45],
         }}
         gl={{
           antialias:             false,
