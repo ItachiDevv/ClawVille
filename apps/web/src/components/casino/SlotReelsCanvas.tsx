@@ -3,14 +3,16 @@
 /**
  * SlotReelsCanvas — R3F Canvas wrapper for the 3D reel rig.
  *
- * Sized 480×360px (desktop). `frameloop='demand'` so the GL context only
- * renders during active spin + cascade — zero GPU cost in idle state.
+ * Sized 480×360px (desktop). `frameloop='always'` — demand mode with no
+ * explicit invalidate() call causes the canvas to stay black on mount
+ * (no frames are ever committed). The modal is only open while the user
+ * is at the slot machine, so always-loop is acceptable.
  * Low-end GPU detection mirrors CasinoCanvas.tsx exactly.
  *
  * Iris Xe invariants:
  *   - DPR cap [0.55, 0.7] on low-end, [0.75, 1] otherwise
  *   - No shadows
- *   - frameloop='demand' (invalidated by useFrame calls inside SlotReels3D)
+ *   - frameloop='always' (demand caused transparent-black canvas on mount)
  */
 
 import { Suspense } from 'react';
@@ -65,7 +67,7 @@ export default function SlotReelsCanvas(props: SlotReelsCanvasProps) {
     >
       <Canvas
         dpr={LOW_END_GPU ? [0.55, 0.7] : [0.75, 1]}
-        frameloop={props.isSpinning ? 'always' : 'demand'}
+        frameloop="always"
         camera={{
           fov:      65,
           near:     0.1,
