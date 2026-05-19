@@ -37,6 +37,8 @@ export interface SlotHUDProps {
   isLockedOut?: boolean;
   autoplayCount: number | 'until-cashout' | 'until-big-win';
   isMuted: boolean;
+  /** Which section to render: 'top' = balance strip only, 'bottom' = controls only, undefined = both (legacy). */
+  section?: 'top' | 'bottom';
   /**
    * Phase 6.1.5 — true while the session is in free-spin mode (i.e.
    * `mode === 'free-spin'` on the most-recent SpinResponse). Drives the
@@ -114,6 +116,7 @@ export default function SlotHUD({
   isLockedOut = false,
   autoplayCount,
   isMuted,
+  section,
   inFreeSpin = false,
   freeSpinsRemaining = 0,
   onPredictChange,
@@ -148,9 +151,12 @@ export default function SlotHUD({
   const pnlColor = sessionPnl > 0 ? 'var(--cv-tier-small)' : sessionPnl < 0 ? '#ff4466' : 'rgba(255,255,255,0.5)';
   const pnlSign  = sessionPnl > 0 ? '+' : '';
 
+  const showTop    = !section || section === 'top';
+  const showBottom = !section || section === 'bottom';
+
   return (
     <>
-      <style>{`
+      {showTop && <style>{`
         @keyframes cv-spin-shimmer {
           0%   { opacity: 0.55; }
           50%  { opacity: 0.85; }
@@ -185,10 +191,10 @@ export default function SlotHUD({
             padding-bottom: calc(var(--cv-space-3) + env(safe-area-inset-bottom, 0px)) !important;
           }
         }
-      `}</style>
+      `}</style>}
 
       {/* ── Top strip ────────────────────────────────────────────────────── */}
-      <div style={{
+      {showTop && <div style={{
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
@@ -221,10 +227,10 @@ export default function SlotHUD({
           <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 11, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Spins</span>
           <span style={{ color: 'rgba(255,255,255,0.65)', fontSize: 14, fontWeight: 600 }}>{spinCount}</span>
         </div>
-      </div>
+      </div>}
 
       {/* ── Bottom control bar ───────────────────────────────────────────── */}
-      <div
+      {showBottom && <div
         className="cv-hud-bottom"
         style={{
           display: 'flex',
@@ -428,7 +434,7 @@ export default function SlotHUD({
         >
           Walk Away
         </NeonButton>
-      </div>
+      </div>}
     </>
   );
 }

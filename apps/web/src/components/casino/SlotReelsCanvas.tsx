@@ -1,18 +1,12 @@
 'use client';
 
 /**
- * SlotReelsCanvas — R3F Canvas wrapper for the 3D reel rig.
+ * SlotReelsCanvas — R3F Canvas wrapper for the 3D cylinder drum rig.
  *
- * Sized 480×360px (desktop). `frameloop='always'` — demand mode with no
- * explicit invalidate() call causes the canvas to stay black on mount
- * (no frames are ever committed). The modal is only open while the user
- * is at the slot machine, so always-loop is acceptable.
- * Low-end GPU detection mirrors CasinoCanvas.tsx exactly.
- *
- * Iris Xe invariants:
- *   - DPR cap [0.55, 0.7] on low-end, [0.75, 1] otherwise
- *   - No shadows
- *   - frameloop='always' (demand caused transparent-black canvas on mount)
+ * Camera: z=120, fov=60° — viewport width ≈ 138.6 wu, fits 5 drums × 27.5 wu.
+ * Far plane: 200 — must be > camera z (120) + CYLINDER_RADIUS (13.37).
+ * frameloop='always' — demand mode causes transparent-black canvas on mount.
+ * DPR cap [0.55, 0.7] on low-end keeps Iris Xe pixel budget manageable.
  */
 
 import { Suspense } from 'react';
@@ -54,9 +48,8 @@ export default function SlotReelsCanvas(props: SlotReelsCanvasProps) {
   return (
     <div
       style={{
-        width:    480,
-        height:   360,
-        maxWidth: '100%',
+        width:    '100%',
+        height:   '100%',
         position: 'relative',
         background: 'linear-gradient(180deg, rgba(5,10,24,0.95) 0%, rgba(2,4,10,0.98) 100%)',
         borderRadius: 12,
@@ -69,10 +62,10 @@ export default function SlotReelsCanvas(props: SlotReelsCanvasProps) {
         dpr={LOW_END_GPU ? [0.55, 0.7] : [0.75, 1]}
         frameloop="always"
         camera={{
-          fov:      65,
+          fov:      60,
           near:     0.1,
-          far:      50,
-          position: [0, 0, 5],
+          far:      200,
+          position: [0, 0, 120],
         }}
         gl={{
           antialias:             false,
