@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <radialGradient id="glow5" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ff00cc" stop-opacity="0.2"/>
+      <stop offset="100%" stop-color="#ff00cc" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="body5" cx="40%" cy="35%" r="65%">
+      <stop offset="0%" stop-color="#cc2266"/>
+      <stop offset="100%" stop-color="#660033"/>
+    </radialGradient>
+  </defs>
+  <ellipse cx="128" cy="128" rx="110" ry="110" fill="url(#glow5)"/>
+  <!-- Crab body (oval) -->
+  <ellipse cx="128" cy="140" rx="55" ry="42" fill="url(#body5)" stroke="#ff00cc" stroke-width="6"/>
+  <!-- Crab shell segments -->
+  <path d="M80 130 Q128 118 176 130" fill="none" stroke="#ff00cc" stroke-width="3" opacity="0.6"/>
+  <path d="M85 145 Q128 133 171 145" fill="none" stroke="#ff00cc" stroke-width="3" opacity="0.6"/>
+  <!-- Left claw arm -->
+  <path d="M76 135 Q55 115 44 120 Q38 132 50 138 Q44 142 46 152 Q58 155 68 145 Q72 140 76 135"
+        fill="url(#body5)" stroke="#ff00cc" stroke-width="5" stroke-linejoin="round"/>
+  <!-- Right claw arm -->
+  <path d="M180 135 Q201 115 212 120 Q218 132 206 138 Q212 142 210 152 Q198 155 188 145 Q184 140 180 135"
+        fill="url(#body5)" stroke="#ff00cc" stroke-width="5" stroke-linejoin="round"/>
+  <!-- Left legs -->
+  <line x1="96" y1="175" x2="76" y2="195" stroke="#ff00cc" stroke-width="4" stroke-linecap="round"/>
+  <line x1="108" y1="178" x2="95" y2="200" stroke="#ff00cc" stroke-width="4" stroke-linecap="round"/>
+  <!-- Right legs -->
+  <line x1="160" y1="175" x2="180" y2="195" stroke="#ff00cc" stroke-width="4" stroke-linecap="round"/>
+  <line x1="148" y1="178" x2="161" y2="200" stroke="#ff00cc" stroke-width="4" stroke-linecap="round"/>
+  <!-- Eyes on stalks -->
+  <line x1="110" y1="102" x2="105" y2="82" stroke="#ff00cc" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="105" cy="78" r="8" fill="#0a1428" stroke="#00ffe0" stroke-width="3"/>
+  <circle cx="105" cy="78" r="3" fill="#00ffe0"/>
+  <line x1="146" y1="102" x2="151" y2="82" stroke="#ff00cc" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="151" cy="78" r="8" fill="#0a1428" stroke="#00ffe0" stroke-width="3"/>
+  <circle cx="151" cy="78" r="3" fill="#00ffe0"/>
+</svg>

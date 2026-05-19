@@ -1,0 +1,196 @@
+/**
+ * Casino Design Tokens — Phase 6.0.4 polish
+ *
+ * Single source of truth for the slot-machine visual system.
+ * Imported once at the top of SlotScreenModal so the variables
+ * are scoped via :root and reachable from every casino component.
+ *
+ * Palette draws from the ClawVille brand (deep ocean + neon coral)
+ * with a casino-only gold accent for "house" moments (gold rings on
+ * winning cells, big-win banner trim, jackpot count-up tint).
+ *
+ * No external assets required — pure CSS variables + keyframes.
+ */
+
+:root {
+  /* ── Neon palette ────────────────────────────────────────────────── */
+  --cv-neon-cyan:     #00ffe0;
+  --cv-neon-magenta:  #ff00cc;
+  --cv-neon-purple:   #7b2ff7;
+  --cv-ocean-deep:    #050a18;
+  --cv-ocean-mid:     #0a1428;
+  --cv-ocean-rise:    #11203d;
+  --cv-gold-accent:   #ffc857;
+  --cv-gold-bright:   #ffe089;
+
+  /* Win-tier semantic colors */
+  --cv-tier-micro:    var(--cv-neon-cyan);
+  --cv-tier-small:    #5cffae;
+  --cv-tier-medium:   var(--cv-gold-accent);
+  --cv-tier-big:      var(--cv-neon-magenta);
+  --cv-tier-mega:     var(--cv-neon-purple);
+
+  /* ── Spacing scale ───────────────────────────────────────────────── */
+  --cv-space-1: 4px;
+  --cv-space-2: 8px;
+  --cv-space-3: 12px;
+  --cv-space-4: 16px;
+  --cv-space-5: 20px;
+  --cv-space-6: 24px;
+  --cv-space-7: 32px;
+  --cv-space-8: 48px;
+
+  /* ── Radius ──────────────────────────────────────────────────────── */
+  --cv-radius-sm:   10px;
+  --cv-radius-md:   14px;
+  --cv-radius-lg:   18px;
+  --cv-radius-xl:   24px;
+  --cv-radius-pill: 999px;
+
+  /* ── Motion ──────────────────────────────────────────────────────── */
+  --cv-motion-fast: 200ms;
+  --cv-motion-base: 280ms;
+  --cv-motion-slow: 360ms;
+  --cv-ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --cv-ease-bounce:   cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* ── Shadows ─────────────────────────────────────────────────────── */
+  --cv-shadow-cta:
+    0 0 0 1px rgba(0, 255, 224, 0.6),
+    0 0 18px rgba(0, 255, 224, 0.45),
+    0 6px 22px rgba(0, 0, 0, 0.55);
+  --cv-shadow-cta-hover:
+    0 0 0 1px rgba(255, 0, 204, 0.7),
+    0 0 28px rgba(255, 0, 204, 0.55),
+    0 6px 22px rgba(0, 0, 0, 0.55);
+  --cv-shadow-modal:
+    0 32px 80px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(0, 255, 224, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --cv-shadow-card:
+    0 12px 32px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+
+  /* ── Surfaces (semi-transparent on top of the 3D canvas) ─────────── */
+  --cv-surface-1: linear-gradient(180deg, rgba(8, 14, 32, 0.96) 0%, rgba(5, 10, 24, 0.97) 100%);
+  --cv-surface-2: linear-gradient(180deg, rgba(17, 32, 61, 0.78) 0%, rgba(10, 20, 40, 0.82) 100%);
+  --cv-surface-glass: rgba(10, 20, 40, 0.55);
+}
+
+/* ── Reduced motion overrides ──────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --cv-motion-fast: 0ms;
+    --cv-motion-base: 0ms;
+    --cv-motion-slow: 0ms;
+  }
+}
+
+/* ── Shared keyframes — referenced by SlotReels + useFX ────────────── */
+@keyframes cv-spin-jitter {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(1px); }
+}
+
+@keyframes cv-stop-pop {
+  0%   { transform: scale(1); }
+  60%  { transform: scale(1.04); }
+  100% { transform: scale(1); }
+}
+
+@keyframes cv-symbol-stopped-pulse {
+  0%, 100% { box-shadow: 0 0 16px var(--cv-gold-accent), inset 0 0 12px rgba(255, 200, 87, 0.35); }
+  50%      { box-shadow: 0 0 28px var(--cv-gold-bright), inset 0 0 18px rgba(255, 224, 137, 0.55); }
+}
+
+@keyframes cv-coin-burst {
+  0%   { transform: translate(0, 0) scale(0.4); opacity: 0; }
+  10%  { opacity: 1; }
+  100% {
+    transform:
+      translate(calc((var(--cv-idx, 0) - var(--cv-count, 0) * 0.5) * 24px),
+                calc(-160px - var(--cv-idx, 0) * 4px))
+      scale(1.05) rotate(calc(var(--cv-idx, 0) * 35deg));
+    opacity: 0;
+  }
+}
+
+@keyframes cv-confetti-burst {
+  0%   { transform: translate(0, 0) rotate(0deg); opacity: 0; }
+  10%  { opacity: 1; }
+  100% {
+    transform:
+      translate(calc((var(--cv-idx, 0) - var(--cv-count, 0) * 0.5) * 28px),
+                calc(140px + var(--cv-idx, 0) * 6px))
+      rotate(calc(var(--cv-idx, 0) * 60deg));
+    opacity: 0;
+  }
+}
+
+@keyframes cv-shake-soft {
+  0%, 100% { transform: translate(0, 0); }
+  25%      { transform: translate(-2px, 1px); }
+  50%      { transform: translate(2px, -1px); }
+  75%      { transform: translate(-1px, 2px); }
+}
+
+@keyframes cv-shake-hard {
+  0%, 100% { transform: translate(0, 0); }
+  20%      { transform: translate(-5px, 2px); }
+  40%      { transform: translate(5px, -3px); }
+  60%      { transform: translate(-4px, 4px); }
+  80%      { transform: translate(4px, -2px); }
+}
+
+@keyframes cv-screen-flash {
+  0%   { opacity: 0; }
+  15%  { opacity: 0.85; }
+  100% { opacity: 0; }
+}
+
+@keyframes cv-mega-banner-in {
+  0%   { transform: translate(-50%, -50%) scale(0.4); opacity: 0; }
+  55%  { transform: translate(-50%, -50%) scale(1.08); opacity: 1; }
+  75%  { transform: translate(-50%, -50%) scale(0.97); opacity: 1; }
+  100% { transform: translate(-50%, -50%) scale(1);    opacity: 1; }
+}
+
+@keyframes cv-banner-fade-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+@keyframes cv-glow-pulse {
+  0%, 100% { filter: saturate(1) brightness(1); }
+  50%      { filter: saturate(1.25) brightness(1.08); }
+}
+
+@keyframes cv-modal-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.985); }
+  to   { opacity: 1; transform: translateY(0)   scale(1);     }
+}
+
+@keyframes cv-modal-bg-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* ── Disable motion-heavy keyframes when user prefers reduced motion ─
+   Targets the celebration FX explicitly — reels still animate so the
+   player can see results, but particle bursts, screen flash, and the
+   shake keyframes drop to a single end-frame. */
+@media (prefers-reduced-motion: reduce) {
+  [style*="cv-coin-burst"],
+  [style*="cv-confetti-burst"] {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+  }
+  [style*="cv-screen-flash"],
+  [style*="cv-shake-hard"] {
+    animation: none !important;
+  }
+  /* Keep banner + count-up but skip the bounce overshoot. */
+  [style*="cv-mega-banner-in"] {
+    animation-duration: 200ms !important;
+  }
+}

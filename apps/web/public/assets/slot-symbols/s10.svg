@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <radialGradient id="glow10" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#00ffe0" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#00ffe0" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="xtal10a" x1="0%" y1="0%" x2="60%" y2="100%">
+      <stop offset="0%" stop-color="#aaffef"/>
+      <stop offset="100%" stop-color="#0a4a5c"/>
+    </linearGradient>
+    <linearGradient id="xtal10b" x1="100%" y1="0%" x2="30%" y2="100%">
+      <stop offset="0%" stop-color="#88ffee"/>
+      <stop offset="100%" stop-color="#0a2a3c"/>
+    </linearGradient>
+    <linearGradient id="xtal10c" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#ccffee"/>
+      <stop offset="100%" stop-color="#0a3a4c"/>
+    </linearGradient>
+  </defs>
+  <ellipse cx="128" cy="128" rx="110" ry="110" fill="url(#glow10)"/>
+  <!-- Center crystal (tallest) -->
+  <polygon points="128,42 144,95 138,160 128,175 118,160 112,95" fill="url(#xtal10c)" stroke="#00ffe0" stroke-width="6" stroke-linejoin="round"/>
+  <!-- Center crystal face line -->
+  <line x1="128" y1="42" x2="128" y2="175" stroke="white" stroke-width="2" opacity="0.4"/>
+  <!-- Left crystal -->
+  <polygon points="90,70 102,112 98,158 88,168 78,158 75,112" fill="url(#xtal10a)" stroke="#00ffe0" stroke-width="5" stroke-linejoin="round"/>
+  <line x1="90" y1="70" x2="88" y2="168" stroke="white" stroke-width="1.5" opacity="0.35"/>
+  <!-- Right crystal -->
+  <polygon points="166,70 178,112 177,158 168,168 158,158 154,112" fill="url(#xtal10b)" stroke="#00ffe0" stroke-width="5" stroke-linejoin="round"/>
+  <line x1="166" y1="70" x2="168" y2="168" stroke="white" stroke-width="1.5" opacity="0.35"/>
+  <!-- Far left small crystal -->
+  <polygon points="58,105 66,130 64,158 56,165 48,158 46,130" fill="url(#xtal10a)" stroke="#00ffe0" stroke-width="4" stroke-linejoin="round" opacity="0.85"/>
+  <!-- Far right small crystal -->
+  <polygon points="198,105 206,130 205,158 197,165 189,158 190,130" fill="url(#xtal10b)" stroke="#00ffe0" stroke-width="4" stroke-linejoin="round" opacity="0.85"/>
+  <!-- Base platform -->
+  <ellipse cx="128" cy="190" rx="80" ry="14" fill="#0a1428" stroke="#00ffe0" stroke-width="4"/>
+  <!-- Crystal tips sparkle -->
+  <circle cx="128" cy="42" r="6" fill="white" opacity="0.95"/>
+  <circle cx="90" cy="70" r="5" fill="white" opacity="0.8"/>
+  <circle cx="166" cy="70" r="5" fill="white" opacity="0.8"/>
+  <!-- Magenta accent shards -->
+  <line x1="128" y1="42" x2="115" y2="28" stroke="#ff00cc" stroke-width="3" opacity="0.7"/>
+  <line x1="128" y1="42" x2="141" y2="28" stroke="#ff00cc" stroke-width="3" opacity="0.7"/>
+</svg>

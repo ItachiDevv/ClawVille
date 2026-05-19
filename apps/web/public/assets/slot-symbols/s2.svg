@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <radialGradient id="glow2" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#00ffe0" stop-opacity="0.25"/>
+      <stop offset="100%" stop-color="#00ffe0" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="shell2" cx="35%" cy="30%" r="70%">
+      <stop offset="0%" stop-color="#1a4a5c"/>
+      <stop offset="100%" stop-color="#0a1428"/>
+    </radialGradient>
+  </defs>
+  <ellipse cx="128" cy="128" rx="110" ry="110" fill="url(#glow2)"/>
+  <!-- Shell body -->
+  <path d="M128 60 Q190 80 200 140 Q195 195 128 205 Q61 195 56 140 Q66 80 128 60 Z"
+        fill="url(#shell2)" stroke="#00ffe0" stroke-width="6" stroke-linejoin="round"/>
+  <!-- Shell ribs -->
+  <path d="M128 60 Q145 120 148 200" fill="none" stroke="#00ffe0" stroke-width="3" opacity="0.7"/>
+  <path d="M128 60 Q160 100 185 165" fill="none" stroke="#00ffe0" stroke-width="3" opacity="0.7"/>
+  <path d="M128 60 Q100 120 108 200" fill="none" stroke="#00ffe0" stroke-width="3" opacity="0.7"/>
+  <path d="M128 60 Q96 100 71 165" fill="none" stroke="#00ffe0" stroke-width="3" opacity="0.7"/>
+  <path d="M128 60 Q128 130 128 205" fill="none" stroke="#00ffe0" stroke-width="3" opacity="0.7"/>
+  <!-- Shell opening -->
+  <path d="M78 170 Q128 155 178 170" fill="none" stroke="#ffc857" stroke-width="5" stroke-linecap="round"/>
+  <!-- Shine dot -->
+  <ellipse cx="108" cy="95" rx="10" ry="7" fill="white" opacity="0.4" transform="rotate(-20,108,95)"/>
+</svg>
