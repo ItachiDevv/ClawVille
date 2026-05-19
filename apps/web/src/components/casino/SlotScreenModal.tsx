@@ -275,6 +275,7 @@ export default function SlotScreenModal() {
           sessionId: opened.sessionId,
           serverSeedHash: opened.serverSeedHash,
           clientSeed: opened.clientSeed,
+          walletBalance: opened.walletBalance,
         });
         // If we adopted an existing session (idempotent /open path), the
         // server's per-spin stake is baked into `startingBalance`. If the
