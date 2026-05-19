@@ -12,9 +12,9 @@
  *   Row 0 → top cell strip[k-1], row 1 → middle strip[k], row 2 → bottom strip[k+1].
  *   wrapS=RepeatWrapping makes the drum wrap seamlessly.
  *
- * Camera (in SlotReelsCanvas): z=20, fov=70°.
- *   Vertical viewport ≈ 28 wu — drums (h=20wu) fill ~71% vertically.
- *   Horizontal ≈ 61.6 wu (2.2 aspect) — 5 drums at 9wu spacing = 44wu, fits.
+ * Camera (in SlotReelsCanvas): z=45, fov=50°.
+ *   Vertical viewport ≈ 42 wu — drums (h=15wu) fill ~36% vertically.
+ *   Horizontal ≈ 97 wu (2.32 aspect) — 5 drums at 18wu spacing = 90wu, fits.
  *
  * Bezel rings: RingGeometry(r-0.1, r+0.1, 64) at y=±CYLINDER_HEIGHT/2, rotation.x=-π/2 → horizontal.
  *
@@ -42,20 +42,18 @@ const STRIP_LEN  = 84; // virtual symbol deck length — independent of cylinder
 /**
  * Cylinder visual dimensions (world units).
  *
- * Design constraint: canvas is ~2.2:1 aspect (wide/short). To fill vertical
- * space the drum must be tall relative to radius (like a real mechanical reel).
- * Camera z=20, fov=70°:
- *   vertical viewport = 2×20×tan(35°) ≈ 28 wu  → drum height 20wu fills 71%
- *   horizontal viewport = 28×2.2 ≈ 61.6 wu → 5 drums at 9wu spacing = 44wu, fits
+ * Camera z=45, fov=50°:
+ *   vertical viewport  = 2×45×tan(25°) ≈ 42 wu → drum height 15wu fills 36%
+ *   horizontal viewport = 42×2.32 ≈ 97 wu → 5 drums at 18wu spacing = 90wu, fits with 7wu margin
  *
  * DECOUPLED from STRIP_LEN — the 84-symbol deck maps to rotation angles only.
  */
-const CYLINDER_RADIUS  = 4.0;   // wu
-const CYLINDER_HEIGHT  = 20.0;  // wu  (3 visible rows × ~6.7 wu each)
+const CYLINDER_RADIUS  = 8.0;   // wu
+const CYLINDER_HEIGHT  = 15.0;  // wu  (3 visible rows × 5 wu each)
 const REEL_RADIAL_SEGS = 64;    // smooth; no per-symbol face required
 
-/** Centre-to-centre drum spacing. Must exceed 2×CYLINDER_RADIUS = 8 wu. */
-const REEL_SPACING = 9.0; // wu  (8 + 1 gap)
+/** Centre-to-centre drum spacing. Must exceed 2×CYLINDER_RADIUS = 16 wu. */
+const REEL_SPACING = 18.0; // wu  (16 + 2 gap)
 
 /** Max rotations per second during steady spin */
 const MAX_RPS          = 3;
