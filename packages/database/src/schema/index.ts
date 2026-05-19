@@ -49,6 +49,9 @@ export * from './exchange';
 // On-chain is authoritative for money; these tables back FE discovery / FE
 // polling / event timelines / leaderboard hooks. See `wager.ts` header.
 export * from './wager';
+// Phase 6.1 slice 3 — casino slot sessions + spin audit trail. ClawTokens
+// fun-money tier today; SOL/USDC route paths return 501 until 6.2 custody.
+export * from './casino';
 
 import { users, sessions } from './users';
 import { npcMemories, activityLog } from './memories';
