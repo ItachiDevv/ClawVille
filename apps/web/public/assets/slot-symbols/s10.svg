@@ -1,45 +1,67 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
-    <radialGradient id="glow10" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#00ffe0" stop-opacity="0.45"/>
-      <stop offset="100%" stop-color="#00ffe0" stop-opacity="0"/>
+    <linearGradient id="b10r" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff5a5a"/>
+      <stop offset="0.5" stop-color="#d62828"/>
+      <stop offset="1" stop-color="#7a0a14"/>
+    </linearGradient>
+    <linearGradient id="b10g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe28a"/>
+      <stop offset="0.5" stop-color="#ffc857"/>
+      <stop offset="1" stop-color="#8a5e0a"/>
+    </linearGradient>
+    <radialGradient id="hl10" cx="32%" cy="20%" r="55%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
     </radialGradient>
-    <linearGradient id="xtal10a" x1="0%" y1="0%" x2="60%" y2="100%">
-      <stop offset="0%" stop-color="#aaffef"/>
-      <stop offset="100%" stop-color="#0a4a5c"/>
-    </linearGradient>
-    <linearGradient id="xtal10b" x1="100%" y1="0%" x2="30%" y2="100%">
-      <stop offset="0%" stop-color="#88ffee"/>
-      <stop offset="100%" stop-color="#0a2a3c"/>
-    </linearGradient>
-    <linearGradient id="xtal10c" x1="50%" y1="0%" x2="50%" y2="100%">
-      <stop offset="0%" stop-color="#ccffee"/>
-      <stop offset="100%" stop-color="#0a3a4c"/>
-    </linearGradient>
   </defs>
-  <ellipse cx="128" cy="128" rx="110" ry="110" fill="url(#glow10)"/>
-  <!-- Center crystal (tallest) -->
-  <polygon points="128,42 144,95 138,160 128,175 118,160 112,95" fill="url(#xtal10c)" stroke="#00ffe0" stroke-width="6" stroke-linejoin="round"/>
-  <!-- Center crystal face line -->
-  <line x1="128" y1="42" x2="128" y2="175" stroke="white" stroke-width="2" opacity="0.4"/>
-  <!-- Left crystal -->
-  <polygon points="90,70 102,112 98,158 88,168 78,158 75,112" fill="url(#xtal10a)" stroke="#00ffe0" stroke-width="5" stroke-linejoin="round"/>
-  <line x1="90" y1="70" x2="88" y2="168" stroke="white" stroke-width="1.5" opacity="0.35"/>
-  <!-- Right crystal -->
-  <polygon points="166,70 178,112 177,158 168,168 158,158 154,112" fill="url(#xtal10b)" stroke="#00ffe0" stroke-width="5" stroke-linejoin="round"/>
-  <line x1="166" y1="70" x2="168" y2="168" stroke="white" stroke-width="1.5" opacity="0.35"/>
-  <!-- Far left small crystal -->
-  <polygon points="58,105 66,130 64,158 56,165 48,158 46,130" fill="url(#xtal10a)" stroke="#00ffe0" stroke-width="4" stroke-linejoin="round" opacity="0.85"/>
-  <!-- Far right small crystal -->
-  <polygon points="198,105 206,130 205,158 197,165 189,158 190,130" fill="url(#xtal10b)" stroke="#00ffe0" stroke-width="4" stroke-linejoin="round" opacity="0.85"/>
-  <!-- Base platform -->
-  <ellipse cx="128" cy="190" rx="80" ry="14" fill="#0a1428" stroke="#00ffe0" stroke-width="4"/>
-  <!-- Crystal tips sparkle -->
-  <circle cx="128" cy="42" r="6" fill="white" opacity="0.95"/>
-  <circle cx="90" cy="70" r="5" fill="white" opacity="0.8"/>
-  <circle cx="166" cy="70" r="5" fill="white" opacity="0.8"/>
-  <!-- Magenta accent shards -->
-  <line x1="128" y1="42" x2="115" y2="28" stroke="#ff00cc" stroke-width="3" opacity="0.7"/>
-  <line x1="128" y1="42" x2="141" y2="28" stroke="#ff00cc" stroke-width="3" opacity="0.7"/>
+  <ellipse cx="128" cy="232" rx="92" ry="9" fill="#0a1428" opacity="0.55"/>
+
+  <!-- top BAR -->
+  <rect x="32" y="14" width="192" height="52" rx="10" fill="url(#b10r)" stroke="#0a1428" stroke-width="5"/>
+  <rect x="42" y="22" width="172" height="36" rx="5" fill="none" stroke="url(#b10g)" stroke-width="3"/>
+  <!-- trident emblem top -->
+  <g stroke="#0a1428" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" fill="url(#b10g)">
+    <path d="M128 18 L122 32 L134 32 Z"/>
+    <path d="M114 24 L118 50 L122 50 L122 32 L118 32 Z"/>
+    <path d="M142 24 L138 50 L134 50 L134 32 L138 32 Z"/>
+    <rect x="114" y="48" width="28" height="5"/>
+    <rect x="125" y="22" width="6" height="40"/>
+  </g>
+  <rect x="32" y="14" width="192" height="52" rx="10" fill="url(#hl10)"/>
+
+  <!-- middle BAR -->
+  <rect x="32" y="86" width="192" height="52" rx="10" fill="url(#b10r)" stroke="#0a1428" stroke-width="5"/>
+  <rect x="42" y="94" width="172" height="36" rx="5" fill="none" stroke="url(#b10g)" stroke-width="3"/>
+  <g stroke="#0a1428" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" fill="url(#b10g)">
+    <path d="M128 90 L122 104 L134 104 Z"/>
+    <path d="M114 96 L118 122 L122 122 L122 104 L118 104 Z"/>
+    <path d="M142 96 L138 122 L134 122 L134 104 L138 104 Z"/>
+    <rect x="114" y="120" width="28" height="5"/>
+    <rect x="125" y="94" width="6" height="40"/>
+  </g>
+  <rect x="32" y="86" width="192" height="52" rx="10" fill="url(#hl10)"/>
+
+  <!-- bottom BAR -->
+  <rect x="32" y="158" width="192" height="52" rx="10" fill="url(#b10r)" stroke="#0a1428" stroke-width="5"/>
+  <rect x="42" y="166" width="172" height="36" rx="5" fill="none" stroke="url(#b10g)" stroke-width="3"/>
+  <g stroke="#0a1428" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" fill="url(#b10g)">
+    <path d="M128 162 L122 176 L134 176 Z"/>
+    <path d="M114 168 L118 194 L122 194 L122 176 L118 176 Z"/>
+    <path d="M142 168 L138 194 L134 194 L134 176 L138 176 Z"/>
+    <rect x="114" y="192" width="28" height="5"/>
+    <rect x="125" y="166" width="6" height="40"/>
+  </g>
+  <rect x="32" y="158" width="192" height="52" rx="10" fill="url(#hl10)"/>
+
+  <!-- corner studs -->
+  <g fill="url(#b10g)" stroke="#0a1428" stroke-width="2">
+    <circle cx="46" cy="26" r="3.5"/><circle cx="210" cy="26" r="3.5"/>
+    <circle cx="46" cy="54" r="3.5"/><circle cx="210" cy="54" r="3.5"/>
+    <circle cx="46" cy="98" r="3.5"/><circle cx="210" cy="98" r="3.5"/>
+    <circle cx="46" cy="126" r="3.5"/><circle cx="210" cy="126" r="3.5"/>
+    <circle cx="46" cy="170" r="3.5"/><circle cx="210" cy="170" r="3.5"/>
+    <circle cx="46" cy="198" r="3.5"/><circle cx="210" cy="198" r="3.5"/>
+  </g>
 </svg>
