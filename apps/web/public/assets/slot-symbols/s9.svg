@@ -1,36 +1,57 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
-    <radialGradient id="glow9" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#ffc857" stop-opacity="0.4"/>
-      <stop offset="100%" stop-color="#ffc857" stop-opacity="0"/>
-    </radialGradient>
-    <linearGradient id="crown9" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#ffe599"/>
-      <stop offset="50%" stop-color="#ffc857"/>
-      <stop offset="100%" stop-color="#7a4a00"/>
+    <linearGradient id="b9r" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff5a5a"/>
+      <stop offset="0.5" stop-color="#d62828"/>
+      <stop offset="1" stop-color="#7a0a14"/>
     </linearGradient>
+    <linearGradient id="b9g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe28a"/>
+      <stop offset="0.5" stop-color="#ffc857"/>
+      <stop offset="1" stop-color="#8a5e0a"/>
+    </linearGradient>
+    <radialGradient id="hl9" cx="32%" cy="20%" r="55%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
   </defs>
-  <ellipse cx="128" cy="128" rx="110" ry="110" fill="url(#glow9)"/>
-  <!-- Crown base band -->
-  <rect x="60" y="165" width="136" height="38" rx="8" fill="url(#crown9)" stroke="#ffc857" stroke-width="6"/>
-  <!-- Crown body -->
-  <path d="M60 165 L60 105 L88 135 L128 75 L168 135 L196 105 L196 165 Z"
-        fill="url(#crown9)" stroke="#ffc857" stroke-width="6" stroke-linejoin="round"/>
-  <!-- Crown gem center -->
-  <polygon points="128,88 120,108 100,108 115,120 109,140 128,128 147,140 141,120 156,108 136,108"
-           fill="#ff00cc" stroke="#ff00cc" stroke-width="2" opacity="0.9"/>
-  <!-- Crown gem left -->
-  <circle cx="88" cy="148" r="10" fill="#00ffe0" stroke="#00ffe0" stroke-width="2"/>
-  <circle cx="88" cy="148" r="5" fill="white" opacity="0.6"/>
-  <!-- Crown gem right -->
-  <circle cx="168" cy="148" r="10" fill="#00ffe0" stroke="#00ffe0" stroke-width="2"/>
-  <circle cx="168" cy="148" r="5" fill="white" opacity="0.6"/>
-  <!-- Crown gem center base -->
-  <circle cx="128" cy="148" r="10" fill="#ff00cc" stroke="#ff00cc" stroke-width="2"/>
-  <circle cx="128" cy="148" r="5" fill="white" opacity="0.6"/>
-  <!-- Band detail lines -->
-  <line x1="60" y1="178" x2="196" y2="178" stroke="#ffc857" stroke-width="2.5" opacity="0.5"/>
-  <!-- Shine on crown -->
-  <ellipse cx="95" cy="120" rx="10" ry="7" fill="white" opacity="0.35" transform="rotate(-20,95,120)"/>
+  <ellipse cx="128" cy="232" rx="92" ry="9" fill="#0a1428" opacity="0.55"/>
+
+  <!-- top BAR -->
+  <rect x="28" y="44" width="200" height="64" rx="12" fill="url(#b9r)" stroke="#0a1428" stroke-width="6"/>
+  <rect x="40" y="56" width="176" height="40" rx="6" fill="none" stroke="url(#b9g)" stroke-width="4"/>
+  <!-- anchor emblem top -->
+  <g stroke="#0a1428" stroke-width="3.5" stroke-linejoin="round" stroke-linecap="round" fill="url(#b9g)">
+    <circle cx="128" cy="58" r="6.5"/>
+    <rect x="124.5" y="63" width="7" height="32"/>
+    <rect x="112" y="69" width="32" height="5"/>
+    <path d="M108 88 Q108 102 128 102 Q148 102 148 88 L154 88 Q154 110 128 110 Q102 110 102 88 Z"/>
+  </g>
+  <circle cx="128" cy="58" r="2.5" fill="url(#b9r)"/>
+  <rect x="28" y="44" width="200" height="64" rx="12" fill="url(#hl9)"/>
+
+  <!-- bottom BAR -->
+  <rect x="28" y="142" width="200" height="64" rx="12" fill="url(#b9r)" stroke="#0a1428" stroke-width="6"/>
+  <rect x="40" y="154" width="176" height="40" rx="6" fill="none" stroke="url(#b9g)" stroke-width="4"/>
+  <g stroke="#0a1428" stroke-width="3.5" stroke-linejoin="round" stroke-linecap="round" fill="url(#b9g)">
+    <circle cx="128" cy="156" r="6.5"/>
+    <rect x="124.5" y="161" width="7" height="32"/>
+    <rect x="112" y="167" width="32" height="5"/>
+    <path d="M108 186 Q108 200 128 200 Q148 200 148 186 L154 186 Q154 208 128 208 Q102 208 102 186 Z"/>
+  </g>
+  <circle cx="128" cy="156" r="2.5" fill="url(#b9r)"/>
+  <rect x="28" y="142" width="200" height="64" rx="12" fill="url(#hl9)"/>
+
+  <!-- corner studs both bars -->
+  <g fill="url(#b9g)" stroke="#0a1428" stroke-width="2.5">
+    <circle cx="46" cy="60" r="4"/>
+    <circle cx="210" cy="60" r="4"/>
+    <circle cx="46" cy="92" r="4"/>
+    <circle cx="210" cy="92" r="4"/>
+    <circle cx="46" cy="158" r="4"/>
+    <circle cx="210" cy="158" r="4"/>
+    <circle cx="46" cy="190" r="4"/>
+    <circle cx="210" cy="190" r="4"/>
+  </g>
 </svg>

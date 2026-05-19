@@ -1,38 +1,53 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
-    <radialGradient id="glow5" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#ff00cc" stop-opacity="0.2"/>
-      <stop offset="100%" stop-color="#ff00cc" stop-opacity="0"/>
-    </radialGradient>
-    <radialGradient id="body5" cx="40%" cy="35%" r="65%">
-      <stop offset="0%" stop-color="#cc2266"/>
-      <stop offset="100%" stop-color="#660033"/>
+    <linearGradient id="b5g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9ade5a"/>
+      <stop offset="0.5" stop-color="#2e7a1f"/>
+      <stop offset="1" stop-color="#0c3008"/>
+    </linearGradient>
+    <linearGradient id="b5p" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffb0c2"/>
+      <stop offset="0.55" stop-color="#ec5d83"/>
+      <stop offset="1" stop-color="#7a1232"/>
+    </linearGradient>
+    <linearGradient id="b5gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe28a"/>
+      <stop offset="1" stop-color="#a06808"/>
+    </linearGradient>
+    <radialGradient id="hl5" cx="35%" cy="22%" r="55%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.6"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
     </radialGradient>
   </defs>
-  <ellipse cx="128" cy="128" rx="110" ry="110" fill="url(#glow5)"/>
-  <!-- Crab body (oval) -->
-  <ellipse cx="128" cy="140" rx="55" ry="42" fill="url(#body5)" stroke="#ff00cc" stroke-width="6"/>
-  <!-- Crab shell segments -->
-  <path d="M80 130 Q128 118 176 130" fill="none" stroke="#ff00cc" stroke-width="3" opacity="0.6"/>
-  <path d="M85 145 Q128 133 171 145" fill="none" stroke="#ff00cc" stroke-width="3" opacity="0.6"/>
-  <!-- Left claw arm -->
-  <path d="M76 135 Q55 115 44 120 Q38 132 50 138 Q44 142 46 152 Q58 155 68 145 Q72 140 76 135"
-        fill="url(#body5)" stroke="#ff00cc" stroke-width="5" stroke-linejoin="round"/>
-  <!-- Right claw arm -->
-  <path d="M180 135 Q201 115 212 120 Q218 132 206 138 Q212 142 210 152 Q198 155 188 145 Q184 140 180 135"
-        fill="url(#body5)" stroke="#ff00cc" stroke-width="5" stroke-linejoin="round"/>
-  <!-- Left legs -->
-  <line x1="96" y1="175" x2="76" y2="195" stroke="#ff00cc" stroke-width="4" stroke-linecap="round"/>
-  <line x1="108" y1="178" x2="95" y2="200" stroke="#ff00cc" stroke-width="4" stroke-linecap="round"/>
-  <!-- Right legs -->
-  <line x1="160" y1="175" x2="180" y2="195" stroke="#ff00cc" stroke-width="4" stroke-linecap="round"/>
-  <line x1="148" y1="178" x2="161" y2="200" stroke="#ff00cc" stroke-width="4" stroke-linecap="round"/>
-  <!-- Eyes on stalks -->
-  <line x1="110" y1="102" x2="105" y2="82" stroke="#ff00cc" stroke-width="4" stroke-linecap="round"/>
-  <circle cx="105" cy="78" r="8" fill="#0a1428" stroke="#00ffe0" stroke-width="3"/>
-  <circle cx="105" cy="78" r="3" fill="#00ffe0"/>
-  <line x1="146" y1="102" x2="151" y2="82" stroke="#ff00cc" stroke-width="4" stroke-linecap="round"/>
-  <circle cx="151" cy="78" r="8" fill="#0a1428" stroke="#00ffe0" stroke-width="3"/>
-  <circle cx="151" cy="78" r="3" fill="#00ffe0"/>
+  <ellipse cx="128" cy="226" rx="86" ry="11" fill="#0a1428" opacity="0.55"/>
+  <!-- bottom green half-shell (large rounded D) -->
+  <path d="M40 156 Q40 92 128 92 Q216 92 216 156 L216 192 Q216 208 200 208 L56 208 Q40 208 40 192 Z"
+        fill="url(#b5g)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"/>
+  <!-- shell ridges -->
+  <g fill="none" stroke="#0a1428" stroke-width="3" opacity="0.55">
+    <path d="M62 200 Q62 130 128 130"/>
+    <path d="M90 204 Q90 138 128 138"/>
+    <path d="M194 200 Q194 130 128 130"/>
+    <path d="M166 204 Q166 138 128 138"/>
+  </g>
+  <!-- pink flesh inside (drawn before gold lip) -->
+  <path d="M58 156 Q58 116 128 116 Q198 116 198 156 L198 168 Q128 144 58 168 Z"
+        fill="url(#b5p)" stroke="#0a1428" stroke-width="4.5" stroke-linejoin="round"/>
+  <!-- pearl center -->
+  <circle cx="128" cy="148" r="13" fill="#fff6e0" stroke="#0a1428" stroke-width="3"/>
+  <ellipse cx="124" cy="143" rx="5" ry="3" fill="#ffffff" opacity="0.85"/>
+  <!-- gold lipped edge along shell rim -->
+  <path d="M40 156 Q40 92 128 92 Q216 92 216 156"
+        fill="none" stroke="url(#b5gold)" stroke-width="8" stroke-linecap="round"/>
+  <path d="M40 156 Q40 92 128 92 Q216 92 216 156"
+        fill="none" stroke="#0a1428" stroke-width="3"/>
+  <!-- top half-shell (small, opened upward) -->
+  <path d="M58 96 Q72 56 128 52 Q184 56 198 96 Q200 102 192 102 L64 102 Q56 102 58 96 Z"
+        fill="url(#b5g)" stroke="#0a1428" stroke-width="5.5" stroke-linejoin="round"/>
+  <path d="M86 92 Q92 70 128 66 Q164 70 170 92" fill="none" stroke="#0a1428" stroke-width="3" opacity="0.5"/>
+  <!-- highlight on bottom shell -->
+  <path d="M40 156 Q40 92 128 92 Q216 92 216 156 L216 192 Q216 208 200 208 L56 208 Q40 208 40 192 Z"
+        fill="url(#hl5)"/>
+  <ellipse cx="80" cy="120" rx="22" ry="10" fill="#ffffff" opacity="0.4" transform="rotate(-15 80 120)"/>
 </svg>

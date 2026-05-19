@@ -1,27 +1,50 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
-    <radialGradient id="glow2" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#00ffe0" stop-opacity="0.25"/>
-      <stop offset="100%" stop-color="#00ffe0" stop-opacity="0"/>
+    <radialGradient id="b2y" cx="40%" cy="30%" r="75%">
+      <stop offset="0" stop-color="#fff39a"/>
+      <stop offset="0.5" stop-color="#f5c727"/>
+      <stop offset="1" stop-color="#7a5208"/>
     </radialGradient>
-    <radialGradient id="shell2" cx="35%" cy="30%" r="70%">
-      <stop offset="0%" stop-color="#1a4a5c"/>
-      <stop offset="100%" stop-color="#0a1428"/>
+    <radialGradient id="hl2" cx="35%" cy="25%" r="55%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
     </radialGradient>
   </defs>
-  <ellipse cx="128" cy="128" rx="110" ry="110" fill="url(#glow2)"/>
-  <!-- Shell body -->
-  <path d="M128 60 Q190 80 200 140 Q195 195 128 205 Q61 195 56 140 Q66 80 128 60 Z"
-        fill="url(#shell2)" stroke="#00ffe0" stroke-width="6" stroke-linejoin="round"/>
-  <!-- Shell ribs -->
-  <path d="M128 60 Q145 120 148 200" fill="none" stroke="#00ffe0" stroke-width="3" opacity="0.7"/>
-  <path d="M128 60 Q160 100 185 165" fill="none" stroke="#00ffe0" stroke-width="3" opacity="0.7"/>
-  <path d="M128 60 Q100 120 108 200" fill="none" stroke="#00ffe0" stroke-width="3" opacity="0.7"/>
-  <path d="M128 60 Q96 100 71 165" fill="none" stroke="#00ffe0" stroke-width="3" opacity="0.7"/>
-  <path d="M128 60 Q128 130 128 205" fill="none" stroke="#00ffe0" stroke-width="3" opacity="0.7"/>
-  <!-- Shell opening -->
-  <path d="M78 170 Q128 155 178 170" fill="none" stroke="#ffc857" stroke-width="5" stroke-linecap="round"/>
-  <!-- Shine dot -->
-  <ellipse cx="108" cy="95" rx="10" ry="7" fill="white" opacity="0.4" transform="rotate(-20,108,95)"/>
+  <ellipse cx="128" cy="228" rx="70" ry="10" fill="#0a1428" opacity="0.5"/>
+  <!-- 5-arm starfish: chunky star using cubic curves between arm tips -->
+  <path d="M128 30
+           C140 80 148 92 196 92
+           C156 116 150 130 168 188
+           C128 156 116 156 88 188
+           C100 132 96 116 56 92
+           C108 92 116 80 128 30 Z"
+        fill="url(#b2y)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"/>
+  <!-- inner stroke ridge -->
+  <path d="M128 56
+           C138 96 144 104 178 104
+           C150 124 146 134 158 174
+           C128 150 120 150 98 174
+           C108 130 104 124 78 104
+           C112 104 118 96 128 56 Z"
+        fill="none" stroke="#c4900c" stroke-width="2.5" stroke-linejoin="round" opacity="0.8"/>
+  <!-- highlight overlay (below dots so dots stay visible) -->
+  <path d="M128 30
+           C140 80 148 92 196 92
+           C156 116 150 130 168 188
+           C128 156 116 156 88 188
+           C100 132 96 116 56 92
+           C108 92 116 80 128 30 Z"
+        fill="url(#hl2)"/>
+  <!-- pebble dots (on top) -->
+  <g fill="#ffffff" stroke="#a06808" stroke-width="1.2" opacity="0.95">
+    <circle cx="124" cy="78" r="5"/>
+    <circle cx="142" cy="100" r="4.5"/>
+    <circle cx="108" cy="100" r="4"/>
+    <circle cx="156" cy="130" r="5"/>
+    <circle cx="100" cy="134" r="4.5"/>
+    <circle cx="128" cy="124" r="4"/>
+    <circle cx="138" cy="160" r="4"/>
+    <circle cx="116" cy="162" r="4"/>
+  </g>
 </svg>

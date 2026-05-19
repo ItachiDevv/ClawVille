@@ -1,28 +1,56 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
-    <radialGradient id="glow1" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#00ffe0" stop-opacity="0.3"/>
-      <stop offset="100%" stop-color="#00ffe0" stop-opacity="0"/>
+    <radialGradient id="b1r" cx="35%" cy="30%" r="70%">
+      <stop offset="0" stop-color="#ff7a7a"/>
+      <stop offset="0.55" stop-color="#d62828"/>
+      <stop offset="1" stop-color="#5a0a14"/>
     </radialGradient>
-    <radialGradient id="body1" cx="50%" cy="40%" r="60%">
-      <stop offset="0%" stop-color="#1a3a5c"/>
-      <stop offset="100%" stop-color="#0a1428"/>
+    <radialGradient id="b1p" cx="35%" cy="30%" r="70%">
+      <stop offset="0" stop-color="#ffc7cc"/>
+      <stop offset="0.6" stop-color="#ff8aa0"/>
+      <stop offset="1" stop-color="#a04055"/>
+    </radialGradient>
+    <linearGradient id="b1s" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5fcf7a"/>
+      <stop offset="1" stop-color="#1a5a2a"/>
+    </linearGradient>
+    <radialGradient id="hl1" cx="35%" cy="25%" r="50%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.65"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
     </radialGradient>
   </defs>
-  <ellipse cx="128" cy="128" rx="110" ry="110" fill="url(#glow1)"/>
-  <!-- Anchor ring -->
-  <circle cx="128" cy="88" r="20" fill="none" stroke="#00ffe0" stroke-width="6"/>
-  <!-- Anchor stem -->
-  <line x1="128" y1="108" x2="128" y2="190" stroke="#00ffe0" stroke-width="6" stroke-linecap="round"/>
-  <!-- Anchor crossbar -->
-  <line x1="92" y1="130" x2="164" y2="130" stroke="#00ffe0" stroke-width="6" stroke-linecap="round"/>
-  <!-- Anchor arms -->
-  <path d="M128 190 Q98 175 88 155" fill="none" stroke="#00ffe0" stroke-width="6" stroke-linecap="round"/>
-  <path d="M128 190 Q158 175 168 155" fill="none" stroke="#00ffe0" stroke-width="6" stroke-linecap="round"/>
-  <!-- Arm curls -->
-  <circle cx="88" cy="155" r="8" fill="none" stroke="#00ffe0" stroke-width="6"/>
-  <circle cx="168" cy="155" r="8" fill="none" stroke="#00ffe0" stroke-width="6"/>
-  <!-- Ring fill dot -->
-  <circle cx="128" cy="88" r="6" fill="#ffc857"/>
+  <ellipse cx="128" cy="225" rx="68" ry="10" fill="#0a1428" opacity="0.5"/>
+  <!-- coiled coral stems -->
+  <path d="M128 40 Q128 60 108 78 Q86 96 90 130" fill="none" stroke="#0a1428" stroke-width="6" stroke-linecap="round"/>
+  <path d="M128 40 Q128 60 148 78 Q170 96 166 130" fill="none" stroke="#0a1428" stroke-width="6" stroke-linecap="round"/>
+  <path d="M128 40 Q128 60 108 78 Q86 96 90 130" fill="none" stroke="url(#b1s)" stroke-width="3.5" stroke-linecap="round"/>
+  <path d="M128 40 Q128 60 148 78 Q170 96 166 130" fill="none" stroke="url(#b1s)" stroke-width="3.5" stroke-linecap="round"/>
+  <!-- leaf at stem join -->
+  <path d="M118 50 Q108 38 120 30 Q138 30 138 50 Z" fill="url(#b1s)" stroke="#0a1428" stroke-width="3.5" stroke-linejoin="round"/>
+  <!-- LEFT anemone (back) -->
+  <g>
+    <circle cx="90" cy="160" r="38" fill="url(#b1r)" stroke="#0a1428" stroke-width="6"/>
+    <!-- tentacle tips -->
+    <g fill="url(#b1p)" stroke="#0a1428" stroke-width="3.5" stroke-linejoin="round">
+      <path d="M62 142 Q54 130 58 120 Q70 124 74 138 Z"/>
+      <path d="M78 124 Q72 108 80 100 Q92 108 90 122 Z"/>
+      <path d="M98 120 Q96 102 108 98 Q116 110 110 124 Z"/>
+      <path d="M120 130 Q126 116 138 118 Q140 132 130 140 Z"/>
+    </g>
+    <circle cx="90" cy="160" r="38" fill="url(#hl1)"/>
+    <ellipse cx="76" cy="146" rx="8" ry="5" fill="#ffffff" opacity="0.55"/>
+  </g>
+  <!-- RIGHT anemone (front) -->
+  <g>
+    <circle cx="166" cy="172" r="42" fill="url(#b1r)" stroke="#0a1428" stroke-width="6"/>
+    <g fill="url(#b1p)" stroke="#0a1428" stroke-width="3.5" stroke-linejoin="round">
+      <path d="M134 140 Q132 122 144 116 Q156 124 152 138 Z"/>
+      <path d="M156 130 Q156 112 168 110 Q178 122 172 134 Z"/>
+      <path d="M180 132 Q186 116 198 120 Q200 134 190 142 Z"/>
+      <path d="M196 150 Q210 144 214 156 Q206 168 194 164 Z"/>
+    </g>
+    <circle cx="166" cy="172" r="42" fill="url(#hl1)"/>
+    <ellipse cx="150" cy="156" rx="10" ry="6" fill="#ffffff" opacity="0.6"/>
+  </g>
 </svg>
