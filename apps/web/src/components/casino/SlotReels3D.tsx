@@ -1,43 +1,52 @@
 'use client';
 
 /**
- * SlotReels3D — per-cell-plane drum rig.
+ * SlotReels3D — polished animated reel presentation layer (Phase 6.1.9).
  *
- * Architecture (Phase 6.1.8 — "drum wheel"):
- *   Each reel is a Group containing PLANES_PER_DRUM PlaneGeometry quads
- *   arranged in a circle around the X-axis (horizontal drum axle). The
- *   drum rotates around X; the camera looks down the +Z axis, so:
- *     - angle=0 → plane faces camera (mid symbol)
- *     - angle=-STEP → plane slightly above (top symbol)
- *     - angle=+STEP → plane slightly below (bot symbol)
+ * Replaces the previous per-cell-plane "3D drum" approach (df53dd3..bdbd124).
+ * That rig tried to be a literal 3D mechanical drum and ended up looking like
+ * scattered cards under orthographic projection.
  *
- *   Each plane holds a MeshBasicMaterial pointing to one of 12 pre-built
- *   symbol textures (128×128px, built once per unique symbol ID). As the
- *   drum rotates, planes cycling through the back (angle≈π) get their
- *   texture swapped to the next strip symbol — exactly like a mechanical
- *   reel drum refreshing its faces.
+ * This rig is a flat camera-facing reel layer in the style of modern social
+ * casino slots (Stake / Hacksaw / Pragmatic Play presentation quality) — the
+ * "drum" feeling is faked with timing, easing, motion blur, and layered alpha
+ * overlays. NOT geometry complexity.
  *
- *   Visible 3-row window: the front plane (mid) plus its two immediate
- *   neighbours (top/bot at ±STEP). Visual curvature from side planes
- *   (±2*STEP, ±3*STEP) visible at decreasing angles — matches cherry-charm.
+ * Architecture
+ * ============
+ * 5 reel columns × PlaneGeometry(CELL_WU, CELL_WU * VISIBLE_ROWS).
+ * Each reel has a per-reel CanvasTexture: 1 column × STRIP_LEN rows, built once
+ * from the corresponding row of CLASSIC_REEL_STRIPS / BONUS_REEL_STRIPS so the
+ * visible scroll is genuinely the weighted strip the engine samples.
  *
- * Camera: OrthographicCamera (SlotReelsCanvas) with bounds
- *   left=-8.5, right=8.5, top=2.2, bottom=-2.2.
- *   5 reels × 3.2wu spacing = 12.8wu + 2×1.5wu radius margin = 15.8wu fits.
+ * Spin = animate `texture.offset.y` (no mesh translation, no rotation). With
+ * wrapT=RepeatWrapping the texture loops seamlessly. Visible 3-row window
+ * lands deterministically on `reels[r] = [top, mid, bot]` via
+ * findStripPosition() — same math as 565e93d's planar implementation, but
+ * with modern slot motion polish on top.
  *
- * Animation phases per reel (group.rotation.x):
- *   ACCEL  200ms  0 → MAX_RPS easeInQuad
- *   STEADY hold MAX_RPS until DECEL_AT[r] and targetSet
- *   DECEL  600ms  stagger L→R, tween to targetAngle easeOutCubic
- *   POP    120ms  overshoot STEP/3 then spring back
+ * Layered FX (all transparent MeshBasicMaterial overlays — no shaders):
+ *   - top/bottom vignette gradient (fakes drum curvature without 3D)
+ *   - centre-row payline glow strip
+ *   - per-reel side-bevel highlights
+ *   - whole-cluster frame border
  *
- * Iris Xe invariants:
- *   MeshBasicMaterial only · no ShaderMaterial · no shadows · no drei
- *   Text/Billboard · max 70 meshes (60 planes + 10 bezels) · no per-frame
- *   allocations (all texture refs pre-indexed, only pointer swaps in useFrame)
+ * Spin pacing (modern online slot feel):
+ *   ACCEL  (280ms)            — velocity 0 → MAX, easeInQuad
+ *   STEADY (≥600ms hold)      — texture.repeat.y compressed (11 cells in 3-cell window) = motion blur
+ *   DECEL  (720ms, staggered) — each reel decels 180ms later than the previous, easeOutCubic
+ *   BOUNCE (220ms)            — 0.32-cell overshoot + ease back via easeOutBack-style spring
+ *
+ * Iris Xe invariants (project-wide ban list):
+ *   - MeshBasicMaterial only (no Standard, no Shader, no PBR)
+ *   - No shadows, no postprocessing
+ *   - Zero per-frame allocations in useFrame
+ *   - Geometry / materials / textures useMemo'd at mount
+ *   - No drei <Text> / <Billboard>
+ *   - frameloop="always" + preserveDrawingBuffer:true preserved by parent Canvas
  */
 
-import { useRef, useEffect, useMemo, useCallback } from 'react';
+import { useRef, useEffect, useMemo, useCallback, useState } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import {
@@ -48,234 +57,316 @@ import {
 import type { SpinResult } from '@/lib/casino/types';
 
 // ---------------------------------------------------------------------------
-// Geometry constants
+// Constants — geometry
 // ---------------------------------------------------------------------------
-const REEL_COUNT      = 5;
-const STRIP_LEN       = 84;
+const REEL_COUNT   = 5;
+const VISIBLE_ROWS = 3;
+const STRIP_LEN    = 84;
 
-/** Drum planes per reel. Must divide evenly into 360°. 12 → 30° per step. */
-const PLANES_PER_DRUM = 12;
-const STEP            = (2 * Math.PI) / PLANES_PER_DRUM; // 30° in radians
+const CELL_WU     = 1.5;                            // world units per cell (square)
+const REEL_WIDTH  = CELL_WU;
+const REEL_HEIGHT = CELL_WU * VISIBLE_ROWS;         // 4.5 wu
+const REEL_GAP    = 0.18;                           // gap between reels
+const REEL_PITCH  = REEL_WIDTH + REEL_GAP;          // centre-to-centre = 1.68 wu
 
-/**
- * Drum radius. At 12 planes, adjacent plane edges meet at:
- *   chord = 2 × R × sin(π/12) ≈ 0.518 × R
- * CELL_WU ≈ 0.76wu at R=1.5 → planes nearly touch = no visible gaps at front.
- */
-const DRUM_RADIUS = 1.5;  // wu
-
-/** Each symbol plane: square face, fills one drum stop. */
-const CELL_WU = 0.76;  // wu — slightly less than chord to avoid z-fighting at edges
-
-/** Centre-to-centre reel spacing. Must exceed 2 × DRUM_RADIUS = 3wu. */
-const REEL_SPACING = 3.2;  // wu
-
-/** Bezel ring inner/outer radii (flat ring flush with drum edges). */
-const BEZEL_INNER  = DRUM_RADIUS - 0.05;
-const BEZEL_OUTER  = DRUM_RADIUS + 0.15;
-// Bezel y-position: top/bot symbols sit at y=±DRUM_RADIUS*sin(STEP)≈±0.75wu.
-// Add half-cell margin so the ring frames the outer edge of top/bot cells.
-const BEZEL_HALF_H = DRUM_RADIUS * Math.sin(STEP) + CELL_WU * 0.5 + 0.06;
+// Total reel cluster span: 5 × 1.5 + 4 × 0.18 = 8.22 wu wide
+// Centred at x=0 → reel r at x = (r - 2) × 1.68
 
 // ---------------------------------------------------------------------------
-// Spin physics
+// Constants — spin physics
 // ---------------------------------------------------------------------------
-/** Max rotations per second during steady spin. 2 RPS keeps drum below 1 plane/frame
- *  at 30fps (0.8 planes/frame), preventing wagon-wheel strobe on Iris Xe. */
-const MAX_RPS          = 2;
-const MAX_RAD_PER_SEC  = MAX_RPS * 2 * Math.PI;
+const ACCEL_MS         = 280;
+const STEADY_MIN_MS    = 620;                       // min steady before first reel decels
+const DECEL_MS         = 720;                       // per-reel decel duration
+const DECEL_STAGGER_MS = 160;                       // reel r starts decel STAGGER_MS after reel r-1
+const BOUNCE_MS        = 220;
+const BOUNCE_OVERSHOOT = 0.32 / STRIP_LEN;          // 0.32 cells of strip-fraction overshoot
 
-const ACCEL_MS = 200;
-const DECEL_AT: [number, number, number, number, number] = [1800, 2200, 2600, 3000, 3400];
-const DECEL_MS = 600;
-const POP_MS   = 120;
+/** Peak scroll velocity (offset units per second). 5 = 5 full strip loops/sec. */
+const MAX_SCROLL_PER_SEC = 5.5;
 
-/** Pop overshoot — 1/3 of a drum step. */
-const POP_OVERSHOOT = STEP / 3;
-
-// ---------------------------------------------------------------------------
-// Texture constants
-// ---------------------------------------------------------------------------
-const TILE_PX = 192;
+/** Motion-blur compression — squeezes 11 cells into the 3-cell visible window. */
+const VISIBLE_REPEAT = VISIBLE_ROWS / STRIP_LEN;
+const BLUR_REPEAT    = (VISIBLE_ROWS + 8) / STRIP_LEN;
 
 // ---------------------------------------------------------------------------
-// Phase constants
+// Constants — texture
+// ---------------------------------------------------------------------------
+const TILE_PX = 256;
+const TEX_W   = TILE_PX;
+const TEX_H   = TILE_PX * STRIP_LEN;
+
+// ---------------------------------------------------------------------------
+// Phases
 // ---------------------------------------------------------------------------
 const PHASE_IDLE   = 0;
 const PHASE_ACCEL  = 1;
 const PHASE_STEADY = 2;
 const PHASE_DECEL  = 3;
-const PHASE_POP    = 4;
+const PHASE_BOUNCE = 4;
 const PHASE_DONE   = 5;
 
 // ---------------------------------------------------------------------------
-// Easing
-// ---------------------------------------------------------------------------
-function easeInQuad(t: number): number   { return t * t; }
-function easeOutCubic(t: number): number { const u = 1 - t; return 1 - u * u * u; }
-
-// ---------------------------------------------------------------------------
-// Per-reel animation state — mutated by useFrame, never triggers React renders
+// Per-reel animation state — mutated in useFrame, NEVER React state
 // ---------------------------------------------------------------------------
 interface ReelAnim {
-  phase:         number;
-  spinStart:     number;   // performance.now() at spin-press
-  rotation:      number;   // unbounded radians applied to group.rotation.x
-  velocity:      number;   // rad/s
-  targetRot:     number;   // absolute rotation.x for landing
-  targetSet:     boolean;
-  decelStart:    number;   // rotation at DECEL entry
-  popBase:       number;   // rotation at POP entry
-  popStartMs:    number;
-  settled:       boolean;
-  // Texture-swap bookkeeping: which strip index is currently facing "backwards"
-  // (being refreshed). Advances by 1 every 30° of rotation.
-  backFaceIdx:   number;   // index into drum faces array (0..11)
-  stripHead:     number;   // strip index currently assigned to face[backFaceIdx]
+  phase:            number;
+  spinStart:        number;   // performance.now() at trigger
+  offset:           number;   // current texture.offset.y (unwrapped)
+  velocity:         number;   // offset units / second
+  targetOffset:     number;   // landing offset (set after server result arrives)
+  targetSet:        boolean;
+  decelStartMs:     number;   // performance.now() at DECEL entry
+  decelStartOffset: number;
+  bounceStartMs:    number;
+  bounceBaseOffset: number;
+  settled:          boolean;
 }
 
 function makeIdleAnim(): ReelAnim {
   return {
-    phase: PHASE_IDLE, spinStart: 0, rotation: 0, velocity: 0,
-    targetRot: 0, targetSet: false, decelStart: 0,
-    popBase: 0, popStartMs: 0, settled: true,
-    backFaceIdx: 6, stripHead: 6,  // face 6 = opposite from face 0 (front)
+    phase: PHASE_IDLE,
+    spinStart: 0,
+    offset: 0,
+    velocity: 0,
+    targetOffset: 0,
+    targetSet: false,
+    decelStartMs: 0,
+    decelStartOffset: 0,
+    bounceStartMs: 0,
+    bounceBaseOffset: 0,
+    settled: true,
   };
 }
 
 // ---------------------------------------------------------------------------
-// Symbol emojis
+// Easing — pure, zero allocations
 // ---------------------------------------------------------------------------
-const SYMBOL_EMOJIS: Record<number, string> = {
-  0: '🍒', 1: '🍋', 2: '🍊', 3: '🍇', 4: '🔔',
-  5: '1️⃣', 6: '7️⃣', 7: '🦈', 8: '2️⃣', 9: '3️⃣', 10: '💰',
-};
+function easeInQuad(t: number): number   { return t * t; }
+function easeOutCubic(t: number): number { const u = 1 - t; return 1 - u * u * u; }
+function easeOutBack(t: number): number {
+  const c1 = 1.70158;
+  const c3 = c1 + 1;
+  const u  = t - 1;
+  return 1 + c3 * u * u * u + c1 * u * u;
+}
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Find strip position where visible window = [top, mid, bot]
+// ---------------------------------------------------------------------------
+function findStripPosition(strip: number[], top: number, mid: number, bot: number): number {
+  const L = strip.length;
+  for (let k = 0; k < L; k++) {
+    if (strip[(k - 1 + L) % L] === top && strip[k] === mid && strip[(k + 1) % L] === bot) {
+      return k;
+    }
+  }
+  // Fallback: any k where middle matches
+  for (let k = 0; k < L; k++) {
+    if (strip[k] === mid) return k;
+  }
+  return 0;
+}
+
+/** Offset where cell `p` sits in the centre of the visible window. */
+function offsetForStripPosition(p: number): number {
+  return 1 - (p + (VISIBLE_ROWS / 2)) / STRIP_LEN;
+}
+
+// ---------------------------------------------------------------------------
+// Symbol → SVG path lookup (extends shared asset registry with id 10 fallback)
+// ---------------------------------------------------------------------------
+const SYMBOL_SVG_PATHS: Record<number, string> = (() => {
+  const out: Record<number, string> = {};
+  for (const a of CLASSIC_SLOT_SYMBOL_ASSETS) {
+    out[a.id] = a.svgPath;
+  }
+  // Scatter id 10 is in CLASSIC_SLOT_SYMBOL_ASSETS already (bonus paytable)
+  return out;
+})();
+
+// ---------------------------------------------------------------------------
+// Image cache (module-scope, shared across spin sessions)
+// ---------------------------------------------------------------------------
+const imageCache = new Map<number, HTMLImageElement>();
+
+function loadSymbolImage(id: number, path: string): Promise<HTMLImageElement> {
+  const cached = imageCache.get(id);
+  if (cached) return Promise.resolve(cached);
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload  = () => { imageCache.set(id, img); resolve(img); };
+    img.onerror = () => reject(new Error(`Failed to load slot symbol ${id} (${path})`));
+    img.src = path;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Round-rect path helper (no closePath needed — caller fills/strokes)
 // ---------------------------------------------------------------------------
 function roundRectPath(
   ctx: CanvasRenderingContext2D,
   x: number, y: number, w: number, h: number, r: number,
 ): void {
+  const rr = Math.min(r, w / 2, h / 2);
   ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.lineTo(x + w - r, y);
-  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-  ctx.lineTo(x + w, y + h - r);
-  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-  ctx.lineTo(x + r, y + h);
-  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-  ctx.lineTo(x, y + r);
-  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.moveTo(x + rr, y);
+  ctx.lineTo(x + w - rr, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + rr);
+  ctx.lineTo(x + w, y + h - rr);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - rr, y + h);
+  ctx.lineTo(x + rr, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - rr);
+  ctx.lineTo(x, y + rr);
+  ctx.quadraticCurveTo(x, y, x + rr, y);
   ctx.closePath();
 }
 
-/**
- * Build a single symbol tile texture (TILE_PX × TILE_PX).
- * Purple rounded-corner card with emoji + label. Built once per symbolId.
- */
-function buildSymbolTexture(symbolId: number): THREE.CanvasTexture {
-  const asset = CLASSIC_SLOT_SYMBOL_ASSETS[symbolId] ?? CLASSIC_SLOT_SYMBOL_ASSETS[0];
-  const emoji = SYMBOL_EMOJIS[symbolId] ?? '?';
+// ---------------------------------------------------------------------------
+// Draw a single cell into a canvas at (x, y) — premium social-casino styling.
+//   - dark vertical-gradient card background (deeper-than-purple slate)
+//   - cyan border outline
+//   - top rim highlight gradient (fake light)
+//   - thick-outlined symbol artwork centered ~64% of cell size
+//   - theme-color accent stroke around symbol art for high-motion readability
+// ---------------------------------------------------------------------------
+function drawCell(
+  ctx:       CanvasRenderingContext2D,
+  x:         number,
+  y:         number,
+  size:      number,
+  symbolId:  number,
+  themeColor: string,
+  img?:      HTMLImageElement,
+): void {
+  const pad = size * 0.04;
+  const ix  = x + pad;
+  const iy  = y + pad;
+  const iw  = size - pad * 2;
+  const ih  = size - pad * 2;
+  const r   = size * 0.10;
 
-  const canvas = document.createElement('canvas');
-  canvas.width  = TILE_PX;
-  canvas.height = TILE_PX;
-  const ctx = canvas.getContext('2d')!;
-
-  // Background
-  ctx.fillStyle = '#050a18';
-  ctx.fillRect(0, 0, TILE_PX, TILE_PX);
-
-  const pad = 5;
-  const r   = 14;
-  const w   = TILE_PX - pad * 2;
-  const h   = TILE_PX - pad * 2;
-
-  // Purple card
-  ctx.fillStyle = '#6b3aa0';
-  roundRectPath(ctx, pad, pad, w, h, r);
+  // Card background — vertical slate gradient (top-light, bottom-dark)
+  const bg = ctx.createLinearGradient(ix, iy, ix, iy + ih);
+  bg.addColorStop(0, '#1c2440');
+  bg.addColorStop(1, '#0a0e1c');
+  ctx.fillStyle = bg;
+  roundRectPath(ctx, ix, iy, iw, ih, r);
   ctx.fill();
 
-  // Top highlight
-  const grad = ctx.createLinearGradient(pad, pad, pad, pad + 28);
-  grad.addColorStop(0, 'rgba(255,255,255,0.22)');
-  grad.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = grad;
-  roundRectPath(ctx, pad, pad, w, h, r);
+  // Top rim highlight — fake specular
+  const rim = ctx.createLinearGradient(ix, iy, ix, iy + ih * 0.45);
+  rim.addColorStop(0, 'rgba(180, 220, 255, 0.22)');
+  rim.addColorStop(1, 'rgba(180, 220, 255, 0)');
+  ctx.fillStyle = rim;
+  roundRectPath(ctx, ix, iy, iw, ih * 0.45, r);
   ctx.fill();
 
-  // Theme-color border
-  ctx.strokeStyle = asset.themeColor;
-  ctx.lineWidth   = 2.5;
-  roundRectPath(ctx, pad, pad, w, h, r);
+  // Theme-color accent bottom blob for high-pay symbols (Bell+, Seven, WILD,
+  // BARs, Scatter) — adds visual weight to rarer symbols
+  const isHighPay = symbolId >= 4;
+  if (isHighPay) {
+    const accent = ctx.createRadialGradient(
+      ix + iw / 2, iy + ih * 0.7, 0,
+      ix + iw / 2, iy + ih * 0.7, iw * 0.6,
+    );
+    accent.addColorStop(0, themeColor + 'aa'); // semi-transparent
+    accent.addColorStop(1, themeColor + '00');
+    ctx.fillStyle = accent;
+    roundRectPath(ctx, ix, iy, iw, ih, r);
+    ctx.fill();
+  }
+
+  // Cyan card outline
+  ctx.strokeStyle = 'rgba(0, 224, 255, 0.55)';
+  ctx.lineWidth   = size * 0.012;
+  roundRectPath(ctx, ix, iy, iw, ih, r);
   ctx.stroke();
 
-  // Emoji
-  ctx.font         = `${Math.round(TILE_PX * 0.50)}px serif`;
-  ctx.textAlign    = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillStyle    = '#ffffff';
-  ctx.fillText(emoji, TILE_PX / 2, TILE_PX * 0.43);
+  // Inner contour outline — extra readability during motion
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.35)';
+  ctx.lineWidth   = size * 0.008;
+  roundRectPath(ctx, ix + size * 0.025, iy + size * 0.025, iw - size * 0.05, ih - size * 0.05, r * 0.85);
+  ctx.stroke();
 
-  // Label
-  ctx.font         = `bold ${Math.round(TILE_PX * 0.11)}px monospace`;
-  ctx.textBaseline = 'alphabetic';
-  ctx.fillStyle    = 'rgba(255,255,255,0.9)';
-  ctx.fillText(asset.displayName.toUpperCase(), TILE_PX / 2, TILE_PX - 9);
+  // Symbol artwork
+  if (img && img.complete && img.naturalWidth > 0) {
+    const symSize = size * 0.64;
+    const sx = x + (size - symSize) / 2;
+    const sy = y + (size - symSize) / 2;
+    // Draw the SVG twice — once as a darker drop-shadow, once as the real
+    // symbol — for a subtle stamped-in-the-card depth without using actual
+    // shadow filters (which Iris Xe can choke on).
+    try {
+      ctx.save();
+      ctx.globalAlpha = 0.35;
+      ctx.drawImage(img, sx + size * 0.012, sy + size * 0.014, symSize, symSize);
+      ctx.restore();
+      ctx.drawImage(img, sx, sy, symSize, symSize);
+    } catch {
+      // Some SVGs can throw on certain browsers — silently fall through to
+      // the unicode fallback below
+    }
+  } else {
+    // Unicode fallback — gigantic, theme-coloured, high-contrast
+    const fallback: Record<number, string> = {
+      0: '🍒', 1: '🍋', 2: '🍊', 3: '🍇', 4: '🔔',
+      5: 'BAR', 6: '7', 7: 'WILD', 8: 'BAR×2', 9: 'BAR×3', 10: '💰',
+    };
+    const text = fallback[symbolId] ?? '?';
+    const isWord = text.length > 1 && !/^[\u{1F300}-\u{1FAFF}\u{2700}-\u{27BF}]/u.test(text);
+    ctx.font         = `900 ${Math.round(size * (isWord ? 0.22 : 0.48))}px system-ui, sans-serif`;
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+
+    // Stroke first (high-contrast outline)
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth   = size * 0.04;
+    ctx.lineJoin    = 'round';
+    ctx.strokeText(text, x + size / 2, y + size / 2);
+
+    // Fill — theme colour for high-pay, white for low-pay
+    ctx.fillStyle = isHighPay ? themeColor : '#ffffff';
+    ctx.fillText(text, x + size / 2, y + size / 2);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Build per-reel CanvasTexture from the strip
+// ---------------------------------------------------------------------------
+function buildReelTexture(strip: number[]): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width  = TEX_W;
+  canvas.height = TEX_H;
+  const ctx = canvas.getContext('2d', { alpha: false })!;
+
+  // Deep slate fill — what shows through any gaps
+  ctx.fillStyle = '#080b18';
+  ctx.fillRect(0, 0, TEX_W, TEX_H);
+
+  for (let k = 0; k < strip.length; k++) {
+    const id    = strip[k];
+    const asset = CLASSIC_SLOT_SYMBOL_ASSETS.find(a => a.id === id) ?? CLASSIC_SLOT_SYMBOL_ASSETS[0];
+    const img   = imageCache.get(id);
+    drawCell(ctx, 0, k * TILE_PX, TILE_PX, id, asset.themeColor, img);
+  }
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace      = THREE.SRGBColorSpace;
   tex.minFilter       = THREE.LinearMipmapLinearFilter;
   tex.magFilter       = THREE.LinearFilter;
   tex.generateMipmaps = true;
+  tex.wrapS           = THREE.ClampToEdgeWrapping;
+  tex.wrapT           = THREE.RepeatWrapping;        // seamless vertical scroll
+  tex.repeat.set(1, VISIBLE_REPEAT);                 // show 3 cells at rest
+  tex.offset.set(0, 1 - VISIBLE_REPEAT);             // align to top of strip
+  tex.needsUpdate = true;
   return tex;
 }
 
 // ---------------------------------------------------------------------------
-// Find strip position p where 3-row window = [top, mid, bot].
-// ---------------------------------------------------------------------------
-function findStripPosition(strip: number[], top: number, mid: number, bot: number): number {
-  const L = strip.length;
-  for (let p = 0; p < L; p++) {
-    if (strip[(p - 1 + L) % L] === top && strip[p] === mid && strip[(p + 1) % L] === bot) {
-      return p;
-    }
-  }
-  for (let p = 0; p < L; p++) {
-    if (strip[p] === mid) return p;
-  }
-  return 0;
-}
-
-/**
- * Given strip position p (0..83), return the drum rotation.x where face 0
- * (at angle=0 = front) shows strip[p] as the mid symbol.
- *
- * The drum has PLANES_PER_DRUM=12 faces. Face k sits at base angle k*STEP.
- * After rotation r, face k's world angle = k*STEP + r.
- * Face 0 is at front when its world angle ≡ 0 (mod 2π).
- * We want face 0 to show strip[p], meaning the drum has been rotated to a
- * position where the strip head aligns with p.
- *
- * Since we accumulate rotation.x during spin, targetRot must be forward
- * from current position by at least one full revolution + the angular offset
- * to land on the desired face.
- */
-function stripPosToAngle(p: number): number {
-  // Map strip position 0..83 to one of 12 drum stops.
-  const drumStop = Math.round(p * PLANES_PER_DRUM / STRIP_LEN) % PLANES_PER_DRUM;
-  // drum.rotation.x needed for face 0 to show the symbol at drumStop:
-  // face f's world angle = f*STEP + rotation.x.
-  // Face 0 is at front when rotation.x ≡ 0 (mod 2π). But we want face drumStop
-  // to be at front (world angle 0): drumStop*STEP + rotation.x ≡ 0
-  // → rotation.x ≡ -drumStop*STEP (mod 2π) = (PLANES_PER_DRUM - drumStop) * STEP mod 2π.
-  return ((PLANES_PER_DRUM - drumStop) % PLANES_PER_DRUM) * STEP;
-}
-
-// ---------------------------------------------------------------------------
-// Props
+// Props (canonical SlotReels3DProps contract — DO NOT change shape)
 // ---------------------------------------------------------------------------
 export interface SlotReels3DProps {
   reels:           SpinResult['reels'] | null;
@@ -289,330 +380,439 @@ export interface SlotReels3DProps {
 }
 
 // ---------------------------------------------------------------------------
-// SlotReels3D — R3F scene content (must live inside <Canvas>)
+// SlotReels3D — must mount inside <Canvas>
 // ---------------------------------------------------------------------------
 export default function SlotReels3D({
   reels,
-  isSpinning,
   spinTrigger,
   onReelsSettled,
   paytableId,
-}: SlotReels3DProps) {
+}: SlotReels3DProps): React.ReactElement {
   const { gl, scene, camera } = useThree();
 
-  const strips = useMemo(
-    () => paytableId === 'classic-3x5-bonus' ? BONUS_REEL_STRIPS : CLASSIC_REEL_STRIPS,
+  // Resolve strips for the active paytable
+  const strips = useMemo<number[][]>(
+    () => (paytableId === 'classic-3x5-bonus' ? BONUS_REEL_STRIPS : CLASSIC_REEL_STRIPS),
     [paytableId],
   );
 
-  // Build one texture per unique symbol ID (0..10). Shared across all planes/reels.
-  const symbolTextures = useMemo<Record<number, THREE.CanvasTexture>>(() => {
-    const map: Record<number, THREE.CanvasTexture> = {};
-    const ids = Object.keys(CLASSIC_SLOT_SYMBOL_ASSETS).map(Number);
-    for (const id of ids) {
-      map[id] = buildSymbolTexture(id);
-    }
-    return map;
+  // -------------------------------------------------------------------------
+  // Symbol image preload — gated state so textures rebuild AFTER SVGs load
+  // -------------------------------------------------------------------------
+  const [imagesReady, setImagesReady] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all(
+      Object.entries(SYMBOL_SVG_PATHS).map(([idStr, path]) =>
+        loadSymbolImage(Number(idStr), path).catch(() => null),
+      ),
+    ).then(() => {
+      if (!cancelled) setImagesReady(true);
+    });
+    return () => { cancelled = true; };
   }, []);
 
-  // Shared geometries
-  const planeGeo  = useMemo(() => new THREE.PlaneGeometry(CELL_WU, CELL_WU), []);
-  // Flat ring for bezels: RingGeometry(inner, outer, segments) in XY plane.
-  // We'll rotate each ring -π/2 around X to make it horizontal (XZ plane).
-  const bezelGeo  = useMemo(() => new THREE.RingGeometry(BEZEL_INNER, BEZEL_OUTER, 64), []);
-  const bezelMat  = useMemo(() => new THREE.MeshBasicMaterial({
-    color: 0xffffff,
-    side: THREE.DoubleSide,
-  }), []);
-
-  // Per-reel, per-face materials — each face gets its own material so we can
-  // swap .map independently. 12 faces × 5 reels = 60 material instances.
-  // Initialised pointing at the symbol for strip[faceIndex].
-  //
-  // FrontSide is REQUIRED with our OrthographicCamera. DoubleSide would
-  // render the BACK-half drum planes too, projecting them to the same
-  // screen-space pixels as the front-arc planes (ortho has no perspective
-  // foreshortening), producing a chaotic stack of 4-6 cards per reel
-  // instead of the front-arc 3. Plane normals point radially outward
-  // from drum centre; only planes whose normal points toward +Z (camera)
-  // should render. FrontSide enforces this.
-  const faceMaterials = useMemo<THREE.MeshBasicMaterial[][]>(() => {
-    return Array.from({ length: REEL_COUNT }, (_, r) => {
-      const strip = strips[r];
-      return Array.from({ length: PLANES_PER_DRUM }, (_, f) => {
-        const symbolId = strip[f % strip.length] ?? 0;
-        const mat = new THREE.MeshBasicMaterial({
-          map:  symbolTextures[symbolId] ?? symbolTextures[0],
-          side: THREE.FrontSide,
-          transparent: false,
-        });
-        return mat;
-      });
-    });
-  }, [strips, symbolTextures]);
-
-  // Refs to the drum Group nodes (one per reel)
-  const drumRefs  = useRef<(THREE.Group | null)[]>(Array(REEL_COUNT).fill(null));
-  // Refs to each plane mesh: [reel][face]
-  const planeMeshRefs = useRef<(THREE.Mesh | null)[][]>(
-    Array.from({ length: REEL_COUNT }, () => Array(PLANES_PER_DRUM).fill(null)),
+  // -------------------------------------------------------------------------
+  // Textures — 5 per-reel CanvasTextures. Built once images are loaded, then
+  // rebuilt only if strips/paytable change. Disposed on unmount.
+  // -------------------------------------------------------------------------
+  const textures = useMemo<THREE.CanvasTexture[]>(
+    () => strips.map(s => buildReelTexture(s)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [strips, imagesReady],
   );
 
-  const animState    = useRef<ReelAnim[]>(Array.from({ length: REEL_COUNT }, makeIdleAnim));
-  const settledRef   = useRef(0);
-  const prevTrigger  = useRef(spinTrigger);
-  const reelsRef     = useRef<SpinResult['reels'] | null>(null);
-  const isSpinningRef = useRef(isSpinning);
+  // -------------------------------------------------------------------------
+  // Materials — one per reel, all share the same plane geometry
+  // -------------------------------------------------------------------------
+  const reelGeometry = useMemo(
+    () => new THREE.PlaneGeometry(REEL_WIDTH, REEL_HEIGHT),
+    [],
+  );
 
-  useEffect(() => { reelsRef.current = reels; }, [reels]);
-  useEffect(() => { isSpinningRef.current = isSpinning; }, [isSpinning]);
+  const reelMaterials = useMemo<THREE.MeshBasicMaterial[]>(
+    () => textures.map(t => new THREE.MeshBasicMaterial({
+      map:         t,
+      side:        THREE.FrontSide,
+      transparent: false,
+    })),
+    [textures],
+  );
 
-  // Mount diagnostic
+  // -------------------------------------------------------------------------
+  // Layered FX geometry (all camera-facing transparent quads, module-scoped)
+  // -------------------------------------------------------------------------
+  // Top vignette
+  const vignetteTopGeom = useMemo(
+    () => new THREE.PlaneGeometry(REEL_PITCH * REEL_COUNT, CELL_WU * 0.6),
+    [],
+  );
+  // Bottom vignette
+  const vignetteBotGeom = useMemo(
+    () => new THREE.PlaneGeometry(REEL_PITCH * REEL_COUNT, CELL_WU * 0.6),
+    [],
+  );
+  // Center payline glow strip
+  const paylineGlowGeom = useMemo(
+    () => new THREE.PlaneGeometry(REEL_PITCH * REEL_COUNT + 0.4, 0.12),
+    [],
+  );
+  // Outer frame border (4 thin strips)
+  const frameGeom = useMemo(
+    () => new THREE.PlaneGeometry(REEL_PITCH * REEL_COUNT + 0.5, REEL_HEIGHT + 0.5),
+    [],
+  );
+
+  const vignetteTopTex = useMemo(() => makeVerticalGradientTexture(
+    ['rgba(2,4,12,0.92)', 'rgba(2,4,12,0)'],
+  ), []);
+  const vignetteBotTex = useMemo(() => makeVerticalGradientTexture(
+    ['rgba(2,4,12,0)', 'rgba(2,4,12,0.92)'],
+  ), []);
+  const paylineGlowTex = useMemo(() => makeHorizontalGradientTexture(
+    ['rgba(0,224,255,0)', 'rgba(0,224,255,0.55)', 'rgba(0,224,255,0)'],
+  ), []);
+  const frameBorderTex = useMemo(() => makeFrameBorderTexture(), []);
+
+  const vignetteTopMat = useMemo(() => new THREE.MeshBasicMaterial({
+    map: vignetteTopTex, transparent: true, depthWrite: false,
+  }), [vignetteTopTex]);
+  const vignetteBotMat = useMemo(() => new THREE.MeshBasicMaterial({
+    map: vignetteBotTex, transparent: true, depthWrite: false,
+  }), [vignetteBotTex]);
+  const paylineGlowMat = useMemo(() => new THREE.MeshBasicMaterial({
+    map: paylineGlowTex, transparent: true, depthWrite: false,
+  }), [paylineGlowTex]);
+  const frameBorderMat = useMemo(() => new THREE.MeshBasicMaterial({
+    map: frameBorderTex, transparent: true, depthWrite: false,
+  }), [frameBorderTex]);
+
+  // -------------------------------------------------------------------------
+  // Refs
+  // -------------------------------------------------------------------------
+  const reelMeshRefs   = useRef<(THREE.Mesh | null)[]>(Array(REEL_COUNT).fill(null));
+  const paylineMeshRef = useRef<THREE.Mesh | null>(null);
+  const animState      = useRef<ReelAnim[]>(Array.from({ length: REEL_COUNT }, makeIdleAnim));
+  const settledCount   = useRef(0);
+  const prevTrigger    = useRef(spinTrigger);
+  const onSettledRef   = useRef(onReelsSettled);
+
+  useEffect(() => { onSettledRef.current = onReelsSettled; }, [onReelsSettled]);
+
+  // -------------------------------------------------------------------------
+  // Diagnostic + GPU pre-warm
+  // -------------------------------------------------------------------------
   useEffect(() => {
     if (process.env.NODE_ENV !== 'production') {
-      console.log(
-        '[SlotReels3D] mount drum-rig — PLANES_PER_DRUM:', PLANES_PER_DRUM,
-        'DRUM_RADIUS:', DRUM_RADIUS, 'REEL_SPACING:', REEL_SPACING,
-        'camera:', camera.position.toArray(),
-      );
+      // eslint-disable-next-line no-console
+      console.log('[SlotReels3D] mount — paytableId:', paytableId, 'imagesReady:', imagesReady);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Pre-warm GPU pipelines once after mount
-  useEffect(() => {
     const raf = requestAnimationFrame(() => {
-      if (typeof (gl as any).compileAsync === 'function') {
-        (gl as any).compileAsync(scene, camera).catch((err: unknown) => {
-          console.warn('[SlotReels3D] compileAsync failed:', err);
-        });
+      const gAny = gl as unknown as { compileAsync?: (s: THREE.Scene, c: THREE.Camera) => Promise<unknown> };
+      if (typeof gAny.compileAsync === 'function') {
+        gAny.compileAsync(scene, camera).catch(() => { /* compile failure non-fatal */ });
       }
     });
     return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [imagesReady]);
 
-  // ── Start spin when spinTrigger increments ─────────────────────────────
+  // -------------------------------------------------------------------------
+  // Trigger spin on spinTrigger increment
+  // -------------------------------------------------------------------------
   useEffect(() => {
     if (spinTrigger === prevTrigger.current) return;
     prevTrigger.current = spinTrigger;
 
     const now = performance.now();
-    settledRef.current = 0;
+    settledCount.current = 0;
 
     for (let r = 0; r < REEL_COUNT; r++) {
-      const anim = animState.current[r];
-      anim.phase     = PHASE_ACCEL;
-      anim.spinStart = now;
-      anim.velocity  = 0;
-      anim.settled   = false;
-      anim.targetSet = false;
-      anim.backFaceIdx = (Math.round(anim.rotation / STEP) + PLANES_PER_DRUM / 2) % PLANES_PER_DRUM;
-      anim.stripHead   = (Math.round(anim.rotation / STEP) + PLANES_PER_DRUM / 2) % STRIP_LEN;
-    }
-  }, [spinTrigger]);
+      const a = animState.current[r];
+      a.phase            = PHASE_ACCEL;
+      a.spinStart        = now;
+      a.velocity         = 0;
+      a.targetSet        = false;
+      a.settled          = false;
+      a.decelStartMs     = 0;
+      a.decelStartOffset = 0;
+      a.bounceStartMs    = 0;
+      a.bounceBaseOffset = 0;
 
-  // ── Compute target rotations when server result arrives ─────────────────
-  // No isSpinning guard — blocking on isSpinning causes deadlock (DECEL never fires).
+      // Bump map repeat to blur during spin
+      const map = reelMaterials[r]?.map;
+      if (map) {
+        map.repeat.set(1, BLUR_REPEAT);
+        // Shift offset so middle of compressed window stays roughly aligned
+        map.offset.set(0, 1 - BLUR_REPEAT);
+        map.needsUpdate = true;
+      }
+    }
+  }, [spinTrigger, reelMaterials]);
+
+  // -------------------------------------------------------------------------
+  // Compute landing target when server result arrives.
+  // No isSpinning guard — that path caused the 565e93d deadlock.
+  // -------------------------------------------------------------------------
   useEffect(() => {
     if (!reels) return;
-
     for (let r = 0; r < REEL_COUNT; r++) {
-      const anim = animState.current[r];
-      if (anim.settled || anim.targetSet) continue;
+      const a = animState.current[r];
+      if (a.settled || a.targetSet) continue;
 
-      const strip   = strips[r];
       const window3 = reels[r];
       if (!window3 || window3.length < 3) continue;
 
-      const [top, mid, bot] = window3;
-      const p = findStripPosition(strip, top, mid, bot);
+      const strip = strips[r];
+      const p     = findStripPosition(strip, window3[0], window3[1], window3[2]);
 
-      // Desired drum angle for mid symbol = p
-      const desiredBaseAngle = stripPosToAngle(p);
+      const landingOffset = offsetForStripPosition(p);
 
-      // Current rotation mod 2π
-      const curMod = ((anim.rotation % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
-      // Forward delta to land at desiredBaseAngle
-      let diff = ((desiredBaseAngle - curMod) + 2 * Math.PI) % (2 * Math.PI);
-      // Guarantee at least one full revolution so the drum visibly spins
-      if (diff < Math.PI) diff += 2 * Math.PI;
-
-      anim.targetRot = anim.rotation + diff;
-      anim.targetSet = true;
+      // We accumulate offset DOWNWARD (subtract) during spin so the texture
+      // appears to scroll up. landingOffset is in [0,1). We need to find the
+      // smallest forward (smaller-than-current, since we're decrementing)
+      // offset that's at least 0.5 strip-loops away from current to keep the
+      // spin visually substantial.
+      const cur     = a.offset;
+      const minDist = 0.5;                                // half a strip-loop minimum
+      // Walk forward (decrementing) until we land precisely on landingOffset
+      // mod 1, with at least minDist of travel.
+      let target = landingOffset;
+      // Express target as cur − k − fraction. Find k such that
+      //   cur − target − k  ≥  minDist
+      const baseDelta = cur - target;        // could be negative
+      const k         = Math.max(1, Math.ceil(minDist - baseDelta));
+      a.targetOffset  = target - k;          // i.e. cur − target + k loops forward
+      a.targetSet     = true;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reels]);
 
   const handleReelSettled = useCallback(() => {
-    settledRef.current += 1;
-    if (settledRef.current >= REEL_COUNT) {
-      onReelsSettled();
+    settledCount.current += 1;
+    if (settledCount.current >= REEL_COUNT) {
+      // Defer to next tick so the final frame paints first
+      const cb = onSettledRef.current;
+      setTimeout(() => cb(), 0);
     }
-  }, [onReelsSettled]);
+  }, []);
 
-  // ── Per-frame animation ────────────────────────────────────────────────
+  // -------------------------------------------------------------------------
+  // useFrame — pure scalar arithmetic, ZERO allocations
+  // -------------------------------------------------------------------------
   useFrame((_, delta) => {
     const now = performance.now();
 
     for (let r = 0; r < REEL_COUNT; r++) {
-      const anim  = animState.current[r];
-      const drum  = drumRefs.current[r];
-      if (!drum || anim.settled) continue;
+      const a   = animState.current[r];
+      const map = reelMaterials[r]?.map;
+      if (!map || a.settled) continue;
 
-      const elapsed = now - anim.spinStart;
-      const prevRot = anim.rotation;
+      const elapsed = now - a.spinStart;
 
-      switch (anim.phase) {
+      switch (a.phase) {
 
         case PHASE_ACCEL: {
           const t = Math.min(elapsed / ACCEL_MS, 1);
-          anim.velocity   = MAX_RAD_PER_SEC * easeInQuad(t);
-          anim.rotation  += anim.velocity * delta;
-          if (t >= 1) anim.phase = PHASE_STEADY;
+          a.velocity = MAX_SCROLL_PER_SEC * easeInQuad(t);
+          a.offset  -= a.velocity * delta;
+          if (t >= 1) a.phase = PHASE_STEADY;
           break;
         }
 
         case PHASE_STEADY: {
-          anim.rotation += MAX_RAD_PER_SEC * delta;
-          if (elapsed >= DECEL_AT[r] && anim.targetSet) {
-            anim.phase      = PHASE_DECEL;
-            anim.decelStart = anim.rotation;
+          a.offset -= MAX_SCROLL_PER_SEC * delta;
+          // Reel r enters DECEL after ACCEL_MS + STEADY_MIN_MS + r * STAGGER,
+          // but ONLY when the server target has been set.
+          const myDecelStartElapsed = ACCEL_MS + STEADY_MIN_MS + r * DECEL_STAGGER_MS;
+          if (elapsed >= myDecelStartElapsed && a.targetSet) {
+            a.phase            = PHASE_DECEL;
+            a.decelStartMs     = now;
+            a.decelStartOffset = a.offset;
+
+            // Restore crisp texture repeat
+            map.repeat.set(1, VISIBLE_REPEAT);
+            // Don't snap offset — DECEL handles convergence
+            map.needsUpdate = true;
           }
           break;
         }
 
         case PHASE_DECEL: {
-          const decelElapsed = elapsed - DECEL_AT[r];
-          const t = Math.min(decelElapsed / DECEL_MS, 1);
-          anim.rotation = anim.decelStart + (anim.targetRot - anim.decelStart) * easeOutCubic(t);
+          const t = Math.min((now - a.decelStartMs) / DECEL_MS, 1);
+          a.offset = a.decelStartOffset + (a.targetOffset - a.decelStartOffset) * easeOutCubic(t);
           if (t >= 1) {
-            anim.rotation  = anim.targetRot;
-            anim.phase     = PHASE_POP;
-            anim.popBase   = anim.targetRot;
-            anim.popStartMs = now;
+            a.offset           = a.targetOffset;
+            a.phase            = PHASE_BOUNCE;
+            a.bounceStartMs    = now;
+            a.bounceBaseOffset = a.targetOffset;
           }
           break;
         }
 
-        case PHASE_POP: {
-          const popElapsed = now - anim.popStartMs;
-          const half       = POP_MS / 2;
-          if (popElapsed < half) {
-            const t = popElapsed / half;
-            anim.rotation = anim.popBase + POP_OVERSHOOT * easeInQuad(t);
-          } else {
-            const t = Math.min((popElapsed - half) / half, 1);
-            anim.rotation = anim.popBase + POP_OVERSHOOT * (1 - easeOutCubic(t));
-          }
-          if (popElapsed >= POP_MS) {
-            anim.rotation = anim.popBase;
-            anim.settled  = true;
-            anim.phase    = PHASE_DONE;
+        case PHASE_BOUNCE: {
+          const t = Math.min((now - a.bounceStartMs) / BOUNCE_MS, 1);
+          // Spring: overshoot 0.32 cells past target then ease back via easeOutBack
+          const overshoot = BOUNCE_OVERSHOOT * (1 - easeOutBack(t));
+          a.offset = a.bounceBaseOffset - overshoot;
+          if (t >= 1) {
+            a.offset  = a.bounceBaseOffset;
+            a.phase   = PHASE_DONE;
+            a.settled = true;
             handleReelSettled();
           }
           break;
         }
       }
 
-      // Apply rotation to drum group
-      drum.rotation.x = anim.rotation;
+      // Apply offset. RepeatWrapping handles loop seamlessly even with
+      // negative values.
+      map.offset.y = a.offset;
+    }
 
-      // ── Texture-swap: when a face crosses the "back" position (angle≈π),
-      // assign it the next strip symbol. This keeps the visible faces
-      // correct without rebuilding any textures.
-      // Back position in local drum space = rotation such that face's world
-      // angle ≡ π. Face k's world angle = k*STEP + drum.rotation.x.
-      // We detect when any face passes through angle π (the back).
-      const rotDelta = anim.rotation - prevRot;
-      if (Math.abs(rotDelta) > 0) {
-        const strips_r = strips[r];
-        for (let f = 0; f < PLANES_PER_DRUM; f++) {
-          const worldAnglePrev = f * STEP + prevRot;
-          const worldAngleNow  = f * STEP + anim.rotation;
-          // Detect crossing of π (mod 2π)
-          const prevMod = ((worldAnglePrev % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
-          const nowMod  = ((worldAngleNow  % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
-          // Crossing π when the interval (prevMod, nowMod) straddles π
-          const crossedBack = rotDelta > 0
-            ? (prevMod < Math.PI && nowMod >= Math.PI)
-            : (prevMod >= Math.PI && nowMod < Math.PI);
-
-          if (crossedBack) {
-            // Advance strip head and assign new texture
-            anim.stripHead = (anim.stripHead + (rotDelta > 0 ? 1 : -1) + STRIP_LEN) % STRIP_LEN;
-            const symbolId = strips_r[anim.stripHead] ?? 0;
-            const mat = faceMaterials[r][f];
-            const newTex = symbolTextures[symbolId] ?? symbolTextures[0];
-            if (mat.map !== newTex) {
-              mat.map = newTex;
-              mat.needsUpdate = true;
-            }
-          }
-        }
-      }
+    // Animate payline glow pulse during spin (subtle 2Hz sin)
+    const pulseMesh = paylineMeshRef.current;
+    if (pulseMesh) {
+      const anySpinning = animState.current.some(a => !a.settled);
+      const baseAlpha   = anySpinning ? 0.25 : 0.5;
+      const pulse       = anySpinning ? (0.05 * Math.sin(now * 0.012)) : 0;
+      (pulseMesh.material as THREE.MeshBasicMaterial).opacity = baseAlpha + pulse;
     }
   });
 
-  // ── Dispose on unmount ─────────────────────────────────────────────────
+  // -------------------------------------------------------------------------
+  // Dispose
+  // -------------------------------------------------------------------------
   useEffect(() => {
     return () => {
-      planeGeo.dispose();
-      bezelGeo.dispose();
-      bezelMat.dispose();
-      for (const row of faceMaterials) {
-        for (const mat of row) mat.dispose();
-      }
-      for (const tex of Object.values(symbolTextures)) {
-        tex.dispose();
-      }
+      reelGeometry.dispose();
+      vignetteTopGeom.dispose();
+      vignetteBotGeom.dispose();
+      paylineGlowGeom.dispose();
+      frameGeom.dispose();
+      vignetteTopMat.dispose();
+      vignetteBotMat.dispose();
+      paylineGlowMat.dispose();
+      frameBorderMat.dispose();
+      vignetteTopTex.dispose();
+      vignetteBotTex.dispose();
+      paylineGlowTex.dispose();
+      frameBorderTex.dispose();
+      for (const m of reelMaterials) { m.map?.dispose(); m.dispose(); }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // -------------------------------------------------------------------------
+  // Scene graph
+  // -------------------------------------------------------------------------
   return (
     <group>
-      {Array.from({ length: REEL_COUNT }, (_, r) => {
-        const reelX = (r - (REEL_COUNT - 1) / 2) * REEL_SPACING;
-        return (
-          <group key={r} position={[reelX, 0, 0]}>
-            {/* Drum group — rotation.x is animated */}
-            <group ref={(el) => { drumRefs.current[r] = el; }}>
-              {Array.from({ length: PLANES_PER_DRUM }, (_, f) => {
-                const angle = f * STEP;
-                const pz    = DRUM_RADIUS * Math.cos(angle);
-                const py    = DRUM_RADIUS * Math.sin(angle);
-                return (
-                  <mesh
-                    key={f}
-                    ref={(el) => { planeMeshRefs.current[r][f] = el; }}
-                    geometry={planeGeo}
-                    material={faceMaterials[r][f]}
-                    position={[0, py, pz]}
-                    rotation={[angle, 0, 0]}
-                  />
-                );
-              })}
-            </group>
+      {/* Reels */}
+      {Array.from({ length: REEL_COUNT }, (_, r) => (
+        <mesh
+          key={`reel-${r}`}
+          ref={(el) => { reelMeshRefs.current[r] = el; }}
+          geometry={reelGeometry}
+          material={reelMaterials[r]}
+          position={[(r - (REEL_COUNT - 1) / 2) * REEL_PITCH, 0, 0]}
+        />
+      ))}
 
-            {/* Bezel rings — static, not part of drum rotation group */}
-            {/* Top bezel: at y = +BEZEL_HALF_H, facing horizontal (XZ) */}
-            <mesh
-              geometry={bezelGeo}
-              material={bezelMat}
-              position={[0, BEZEL_HALF_H, 0]}
-              rotation={[-Math.PI / 2, 0, 0]}
-            />
-            {/* Bottom bezel */}
-            <mesh
-              geometry={bezelGeo}
-              material={bezelMat}
-              position={[0, -BEZEL_HALF_H, 0]}
-              rotation={[-Math.PI / 2, 0, 0]}
-            />
-          </group>
-        );
-      })}
+      {/* Centre payline glow — z=0.01 to render above reels */}
+      <mesh
+        ref={paylineMeshRef}
+        geometry={paylineGlowGeom}
+        material={paylineGlowMat}
+        position={[0, 0, 0.01]}
+      />
+
+      {/* Top vignette — fakes drum curvature */}
+      <mesh
+        geometry={vignetteTopGeom}
+        material={vignetteTopMat}
+        position={[0, REEL_HEIGHT / 2 - CELL_WU * 0.3, 0.02]}
+      />
+
+      {/* Bottom vignette */}
+      <mesh
+        geometry={vignetteBotGeom}
+        material={vignetteBotMat}
+        position={[0, -REEL_HEIGHT / 2 + CELL_WU * 0.3, 0.02]}
+      />
+
+      {/* Outer frame — z=-0.01 to sit behind reels */}
+      <mesh
+        geometry={frameGeom}
+        material={frameBorderMat}
+        position={[0, 0, -0.01]}
+      />
     </group>
   );
+}
+
+// ===========================================================================
+// FX texture builders (module-scope, pure)
+// ===========================================================================
+
+function makeVerticalGradientTexture(stops: [string, string]): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 4;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d')!;
+  const g = ctx.createLinearGradient(0, 0, 0, 256);
+  g.addColorStop(0, stops[0]);
+  g.addColorStop(1, stops[1]);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 4, 256);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+function makeHorizontalGradientTexture(stops: string[]): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 4;
+  const ctx = canvas.getContext('2d')!;
+  const g = ctx.createLinearGradient(0, 0, 512, 0);
+  for (let i = 0; i < stops.length; i++) {
+    g.addColorStop(i / (stops.length - 1), stops[i]);
+  }
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 512, 4);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+function makeFrameBorderTexture(): THREE.CanvasTexture {
+  const W = 512;
+  const H = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d')!;
+  ctx.clearRect(0, 0, W, H);
+
+  // Inner dark frame
+  ctx.strokeStyle = 'rgba(0, 224, 255, 0.18)';
+  ctx.lineWidth = 6;
+  ctx.strokeRect(8, 8, W - 16, H - 16);
+
+  // Subtle inner highlight
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(14, 14, W - 28, H - 28);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.needsUpdate = true;
+  return tex;
 }
