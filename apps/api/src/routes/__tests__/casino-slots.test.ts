@@ -1,0 +1,845 @@
+/**
+ * Phase 6.1 — slice 3 route tests.
+ *
+ * Strategy:
+ *
+ *   - Pure-compute paths (`GET /paytables/:id`, `POST /verify`) are tested
+ *     unconditionally — they never touch the DB so they're safe in any
+ *     environment.
+ *   - DB-backed paths (open/spin/close/list) live inside a
+ *     `describeIfDb()` block that skips when DATABASE_URL is missing.
+ *     Local dev on Windows runs without DATABASE_URL per CLAUDE.md
+ *     ("NEVER run bun run dev"); CI / Coolify env provides it. Avatar
+ *     tests follow the same gating today.
+ *
+ * Coverage (per the slice-3 spec):
+ *   - Session open: 200 happy path, no serverSeed leak, 409 dup, 501 SOL/USDC.
+ *   - Spin: 200 happy + idempotency replay + 404 unknown + 403 wrong-user
+ *     + 400 missing idempotency key.
+ *   - Session close: serverSeed revealed.
+ *   - Paytables: anonymous GET returns shape.
+ *   - Verify: known seed/cursor/nonce reproduces engine output.
+ *
+ * Money-safety invariants (BLOCKING — added in slice-3 punch-list round 1):
+ *   - Net-balance invariant: avatar.clawTokens(after_close) ===
+ *     avatar.clawTokens(before_open) + totalWon - totalStaked. Catches the
+ *     double-debit class of bugs immediately. Reads balance DIRECTLY from
+ *     the DB, not the API response.
+ *   - Idempotency-key replay with mismatched bet returns 409 (Stripe rule).
+ *     Latent bomb if slice-4+ relaxes per-session fixed bets without this
+ *     guard.
+ *   - Spin Zod schema is .strict() so client-supplied nonce/cursor in the
+ *     body get rejected — preserves the server-side commit-reveal chain.
+ *   - currentBalance is signed session P&L (negative allowed). Tracks the
+ *     semantic shift away from "stays positive" since open no longer pre-
+ *     funds the session.
+ */
+
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
+import { Hono } from 'hono';
+import { eq } from 'drizzle-orm';
+
+import { casinoSlotsRouter, __resetSpinRateLimit } from '../casino-slots';
+import { authRoutes } from '../auth';
+import { avatarRoutes } from '../avatars';
+import { sha256Hex } from '../../services/provable-rng';
+import { runSpin } from '../../services/slot-engine';
+import { serializeSpinResult } from '../casino-slots.types';
+import type { AppContext } from '../../types';
+
+const HAS_DB = !!process.env.DATABASE_URL;
+const describeIfDb = HAS_DB ? describe : describe.skip;
+
+function buildApp() {
+  const app = new Hono<AppContext>();
+  // Stub the fingerprint context vars the routes expect (set globally in
+  // index.ts via fingerprintMiddleware; tests don't mount that middleware
+  // so we provide empty strings).
+  app.use('*', async (c, next) => {
+    c.set('fpHash', '');
+    c.set('ipPrefixHash', '');
+    await next();
+  });
+  app.route('/api/auth', authRoutes);
+  app.route('/api/avatars', avatarRoutes);
+  app.route('/api/casino/slots', casinoSlotsRouter);
+  return app;
+}
+
+// ─── Pure-compute (no DB) tests ────────────────────────────────────────────
+
+describe('Casino Slots — paytable + verify (no DB)', () => {
+  const app = buildApp();
+
+  it('GET /paytables/classic-3x5 returns the public bundle', async () => {
+    const res = await app.request('/api/casino/slots/paytables/classic-3x5');
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(data.paytableId).toBe('classic-3x5');
+    expect(Array.isArray(data.symbols)).toBe(true);
+    expect(Array.isArray(data.lines)).toBe(true);
+    expect(Array.isArray(data.reelStrips)).toBe(true);
+    // Symbol count is paytable-dependent (8 today; 9+ once 6.1.5 scatter
+    // lands). Pin the structural invariants instead — every shipped
+    // paytable has 5 reels and 20 paylines.
+    expect(data.symbols.length).toBeGreaterThanOrEqual(8);
+    expect(data.lines.length).toBe(20);
+    expect(data.reelStrips.length).toBe(5);
+    expect(typeof data.rtp).toBe('number');
+  });
+
+  it('GET /paytables/unknown returns 404', async () => {
+    const res = await app.request('/api/casino/slots/paytables/nope-999');
+    expect(res.status).toBe(404);
+  });
+
+  it('POST /verify replays a known-seed spin and matches the engine', async () => {
+    const inputs = {
+      paytableId: 'classic-3x5' as const,
+      serverSeed: 'a'.repeat(64),
+      clientSeed: 'deadbeef',
+      nonce: 0,
+      cursor: 0,
+      bet: '20',
+    };
+    const expected = serializeSpinResult(
+      runSpin({
+        paytableId: inputs.paytableId,
+        serverSeed: inputs.serverSeed,
+        clientSeed: inputs.clientSeed,
+        nonce: inputs.nonce,
+        cursor: inputs.cursor,
+        bet: BigInt(inputs.bet),
+      }),
+    );
+
+    const res = await app.request('/api/casino/slots/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(inputs),
+    });
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as any;
+    expect(data.reels).toEqual(expected.reels);
+    expect(data.winAmount).toBe(expected.winAmount);
+    expect(data.cursorAfter).toBe(expected.cursorAfter);
+    expect(data.winningLines).toEqual(expected.winningLines);
+  });
+
+  it('POST /verify rejects malformed serverSeed', async () => {
+    const res = await app.request('/api/casino/slots/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        paytableId: 'classic-3x5',
+        serverSeed: 'not-64-hex',
+        clientSeed: 'cafebabe',
+        nonce: 0,
+        cursor: 0,
+        bet: '20',
+      }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /verify rejects non-positive bet', async () => {
+    const res = await app.request('/api/casino/slots/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        paytableId: 'classic-3x5',
+        serverSeed: 'a'.repeat(64),
+        clientSeed: 'cafebabe',
+        nonce: 0,
+        cursor: 0,
+        bet: '0',
+      }),
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
+// ─── DB-backed lifecycle tests ─────────────────────────────────────────────
+
+describeIfDb('Casino Slots — session lifecycle (requires DATABASE_URL)', () => {
+  // We import @clawville/database here so the module load itself doesn't
+  // crash test discovery when DATABASE_URL is unset.
+  const dbMod = HAS_DB ? require('@clawville/database') : null;
+
+  const TEST_EMAIL = `casino-${Date.now()}@clawville-test.com`;
+  const TEST_PASSWORD = 'casinopassword123';
+  const TEST_EMAIL_2 = `casino2-${Date.now()}@clawville-test.com`;
+  let app: ReturnType<typeof buildApp>;
+  let cookie1 = '';
+  let userId1 = '';
+  let avatarId1 = '';
+  let cookie2 = '';
+  let userId2 = '';
+
+  async function signupAndCreateAvatar(email: string) {
+    const signup = await app.request('/api/auth/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password: TEST_PASSWORD, name: 'Casino Tester' }),
+    });
+    expect(signup.status).toBe(200);
+    const cookieHeader = signup.headers.get('set-cookie') ?? '';
+    const sessionCookie = cookieHeader.split(';')[0]!;
+
+    // Create avatar (required for ClawTokens debit/credit).
+    const avatarRes = await app.request('/api/avatars', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: sessionCookie },
+      body: JSON.stringify({
+        name: `Casino${Date.now()}${Math.floor(Math.random() * 10000)}`,
+        species: 'cat',
+        color: 'green',
+        gender: 'male',
+        personality: {
+          habitat: 'forest',
+          hobby: 'exploring',
+          greeting: 'wave-hello',
+        },
+        characterConfig: {
+          bio: 'A casino-test avatar.',
+          greeting: 'Hello there!',
+          personality: 'Test avatar',
+          tone: 'friendly',
+          topics: ['casino'],
+          adjectives: ['lucky'],
+          rules: [],
+          style: [],
+        },
+      }),
+    });
+    expect(avatarRes.status).toBe(200);
+    const avatarData = (await avatarRes.json()) as any;
+
+    // Reload user to grab id.
+    const userRow = await dbMod.db.query.users.findFirst({
+      where: eq(dbMod.users.email, email),
+    });
+    return {
+      cookie: sessionCookie,
+      userId: userRow.id as string,
+      avatarId: avatarData.avatar.id as string,
+    };
+  }
+
+  beforeAll(async () => {
+    app = buildApp();
+    const u1 = await signupAndCreateAvatar(TEST_EMAIL);
+    cookie1 = u1.cookie;
+    userId1 = u1.userId;
+    avatarId1 = u1.avatarId;
+    // Top up balance so we can do many spins without InsufficientTokens.
+    await dbMod.db
+      .update(dbMod.avatars)
+      .set({ clawTokens: 100_000 })
+      .where(eq(dbMod.avatars.id, avatarId1));
+
+    const u2 = await signupAndCreateAvatar(TEST_EMAIL_2);
+    cookie2 = u2.cookie;
+    userId2 = u2.userId;
+  });
+
+  afterAll(async () => {
+    if (!dbMod) return;
+    // Cleanup in reverse-FK order.
+    for (const uid of [userId1, userId2]) {
+      if (!uid) continue;
+      const sessRows = await dbMod.db
+        .select({ id: dbMod.slotSessions.id })
+        .from(dbMod.slotSessions)
+        .where(eq(dbMod.slotSessions.userId, uid));
+      for (const r of sessRows) {
+        await dbMod.db
+          .delete(dbMod.slotSpins)
+          .where(eq(dbMod.slotSpins.sessionId, r.id));
+      }
+      await dbMod.db
+        .delete(dbMod.slotSessions)
+        .where(eq(dbMod.slotSessions.userId, uid));
+      await dbMod.db.delete(dbMod.avatars).where(eq(dbMod.avatars.userId, uid));
+      await dbMod.db.delete(dbMod.users).where(eq(dbMod.users.id, uid));
+    }
+  });
+
+  beforeEach(() => {
+    __resetSpinRateLimit();
+  });
+
+  describe('POST /session/open', () => {
+    it('returns 200 + hash + clientSeed (no serverSeed leak)', async () => {
+      const res = await app.request('/api/casino/slots/session/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
+        body: JSON.stringify({
+          paytableId: 'classic-3x5',
+          currency: 'clawtokens',
+          bet: '20',
+        }),
+      });
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as any;
+      expect(data.sessionId).toBeDefined();
+      expect(data.serverSeedHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(data.clientSeed).toMatch(/^[0-9a-f]+$/);
+      expect(data.serverSeed).toBeUndefined();
+      expect(data.bet).toBe('20');
+
+      // Close the session so subsequent tests can open new ones.
+      await app.request('/api/casino/slots/session/close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
+        body: JSON.stringify({ sessionId: data.sessionId }),
+      });
+    });
+
+    it('returns 409 when a second open is attempted', async () => {
+      const open1 = await app.request('/api/casino/slots/session/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
+        body: JSON.stringify({
+          paytableId: 'classic-3x5',
+          currency: 'clawtokens',
+          bet: '20',
+        }),
+      });
+      expect(open1.status).toBe(200);
+      const data1 = (await open1.json()) as any;
+
+      const open2 = await app.request('/api/casino/slots/session/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
+        body: JSON.stringify({
+          paytableId: 'classic-3x5',
+          currency: 'clawtokens',
+          bet: '20',
+        }),
+      });
+      expect(open2.status).toBe(409);
+
+      // Clean up.
+      await app.request('/api/casino/slots/session/close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
+        body: JSON.stringify({ sessionId: data1.sessionId }),
+      });
+    });
+
+    it('returns 501 for SOL/USDC currency stubs', async () => {
+      const solRes = await app.request('/api/casino/slots/session/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
+        body: JSON.stringify({
+          paytableId: 'classic-3x5',
+          currency: 'sol',
+          bet: '20',
+        }),
+      });
+      expect(solRes.status).toBe(501);
+      const data = (await solRes.json()) as any;
+      expect(data.error).toBe('CURRENCY_COMING_SOON');
+
+      const usdcRes = await app.request('/api/casino/slots/session/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
+        body: JSON.stringify({
+          paytableId: 'classic-3x5',
+          currency: 'usdc',
+          bet: '20',
+        }),
+      });
+      expect(usdcRes.status).toBe(501);
+    });
+
+    it('returns 401 without auth', async () => {
+      const res = await app.request('/api/casino/slots/session/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          paytableId: 'classic-3x5',
+          currency: 'clawtokens',
+          bet: '20',
+        }),
+      });
+      expect(res.status).toBe(401);
+    });
+  });
+
+  describe('POST /spin + close + verifier round-trip', () => {
+    it('runs a spin, replays it via idempotency key, closes + reveals seed', async () => {
+      const openRes = await app.request('/api/casino/slots/session/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
+        body: JSON.stringify({
+          paytableId: 'classic-3x5',
+          currency: 'clawtokens',
+          bet: '20',
+        }),
+      });
+      expect(openRes.status).toBe(200);
+      const openData = (await openRes.json()) as any;
+      const sessionId = openData.sessionId;
+
+      // First spin.
+      const spin1 = await app.request('/api/casino/slots/spin', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: cookie1,
+          'Idempotency-Key': 'test-spin-key-1',
+        },
+        body: JSON.stringify({ sessionId, bet: '20' }),
+      });
+      expect(spin1.status).toBe(200);
+      const spin1Data = (await spin1.json()) as any;
+      expect(spin1Data.spinId).toBeDefined();
+      expect(Array.isArray(spin1Data.reels)).toBe(true);
+      expect(spin1Data.reels.length).toBe(5);
+      expect(spin1Data.idempotencyReplay).toBe(false);
+      expect(typeof spin1Data.winAmount).toBe('string');
+
+      // Idempotency replay — same key returns the same spinId + values.
+      const spin1replay = await app.request('/api/casino/slots/spin', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: cookie1,
+          'Idempotency-Key': 'test-spin-key-1',
+        },
+        body: JSON.stringify({ sessionId, bet: '20' }),
+      });
+      expect(spin1replay.status).toBe(200);
+      const replayData = (await spin1replay.json()) as any;
+      expect(replayData.spinId).toBe(spin1Data.spinId);
+      expect(replayData.reels).toEqual(spin1Data.reels);
+      expect(replayData.winAmount).toBe(spin1Data.winAmount);
+      expect(replayData.idempotencyReplay).toBe(true);
+
+      // A different idempotency key triggers a NEW spin.
+      const spin2 = await app.request('/api/casino/slots/spin', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: cookie1,
+          'Idempotency-Key': 'test-spin-key-2',
+        },
+        body: JSON.stringify({ sessionId, bet: '20' }),
+      });
+      expect(spin2.status).toBe(200);
+      const spin2Data = (await spin2.json()) as any;
+      expect(spin2Data.spinId).not.toBe(spin1Data.spinId);
+
+      // Missing idempotency key → 400.
+      const noKey = await app.request('/api/casino/slots/spin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
+        body: JSON.stringify({ sessionId, bet: '20' }),
+      });
+      expect(noKey.status).toBe(400);
+
+      // Close → reveals seed + verifies hash.
+      const closeRes = await app.request('/api/casino/slots/session/close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
+        body: JSON.stringify({ sessionId }),
+      });
+      expect(closeRes.status).toBe(200);
+      const closeData = (await closeRes.json()) as any;
+      expect(closeData.status).toBe('closed');
+      expect(closeData.serverSeed).toMatch(/^[0-9a-f]{64}$/);
+      expect(sha256Hex(closeData.serverSeed)).toBe(openData.serverSeedHash);
+      // Verifier can now re-derive the first spin from the revealed seed.
+      const verifyRes = await app.request('/api/casino/slots/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          paytableId: 'classic-3x5',
+          serverSeed: closeData.serverSeed,
+          clientSeed: closeData.clientSeed,
+          nonce: 0,
+          cursor: 0,
+          bet: '20',
+        }),
+      });
+      expect(verifyRes.status).toBe(200);
+      const verifyData = (await verifyRes.json()) as any;
+      expect(verifyData.reels).toEqual(spin1Data.reels);
+      expect(verifyData.winAmount).toBe(spin1Data.winAmount);
+    });
+
+    it('404s on unknown session, 403s on foreign-user session', async () => {
+      const fakeId = '00000000-0000-0000-0000-000000000000';
+      const res404 = await app.request('/api/casino/slots/spin', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: cookie1,
+          'Idempotency-Key': 'x-404',
+        },
+        body: JSON.stringify({ sessionId: fakeId, bet: '20' }),
+      });
+      expect(res404.status).toBe(404);
+
+      // Open a session for user1, then have user2 try to spin against it.
+      const openRes = await app.request('/api/casino/slots/session/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
+        body: JSON.stringify({
+          paytableId: 'classic-3x5',
+          currency: 'clawtokens',
+          bet: '20',
+        }),
+      });
+      expect(openRes.status).toBe(200);
+      const openData = (await openRes.json()) as any;
+      const res403 = await app.request('/api/casino/slots/spin', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: cookie2,
+          'Idempotency-Key': 'x-403',
+        },
+        body: JSON.stringify({ sessionId: openData.sessionId, bet: '20' }),
+      });
+      expect(res403.status).toBe(403);
+      void userId2; // suppress unused-var
+
+      // Same 403 for GET endpoints.
+      const get403 = await app.request(
+        `/api/casino/slots/session/${openData.sessionId}`,
+        { headers: { Cookie: cookie2 } },
+      );
+      expect(get403.status).toBe(403);
+
+      // Cleanup.
+      await app.request('/api/casino/slots/session/close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
+        body: JSON.stringify({ sessionId: openData.sessionId }),
+      });
+    });
+
+    it('rate-limits at 61st spin/minute', async () => {
+      __resetSpinRateLimit();
+      const openRes = await app.request('/api/casino/slots/session/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
+        body: JSON.stringify({
+          paytableId: 'classic-3x5',
+          currency: 'clawtokens',
+          bet: '20',
+        }),
+      });
+      expect(openRes.status).toBe(200);
+      const openData = (await openRes.json()) as any;
+
+      // 60 spins go through, all using DISTINCT idempotency keys so they
+      // each consume a rate-limit token. (Cached replays don't bump the
+      // bucket — but DO bump it, because the limiter runs BEFORE the
+      // cache check; that's the intentional safeguard against spammed
+      // cached reads.)
+      let lastStatus = 0;
+      for (let i = 0; i < 60; i++) {
+        const r = await app.request('/api/casino/slots/spin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Cookie: cookie1,
+            'Idempotency-Key': `rl-${i}`,
+          },
+          body: JSON.stringify({ sessionId: openData.sessionId, bet: '20' }),
+        });
+        lastStatus = r.status;
+        if (r.status !== 200) {
+          throw new Error(`Spin ${i} failed unexpectedly with status ${r.status}`);
+        }
+      }
+      expect(lastStatus).toBe(200);
+
+      // 61st spin should be 429.
+      const over = await app.request('/api/casino/slots/spin', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: cookie1,
+          'Idempotency-Key': 'rl-over',
+        },
+        body: JSON.stringify({ sessionId: openData.sessionId, bet: '20' }),
+      });
+      expect(over.status).toBe(429);
+
+      // Cleanup.
+      __resetSpinRateLimit();
+      await app.request('/api/casino/slots/session/close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
+        body: JSON.stringify({ sessionId: openData.sessionId }),
+      });
+    });
+  });
+
+  // ─── Money-safety invariants (BLOCKING) ───────────────────────────────
+  //
+  // These tests assert against `avatar.clawTokens` read DIRECTLY from the
+  // DB — not from the API response. The API response could lie; the DB
+  // is the source of truth. A passing test here proves no tokens were
+  // burned or minted across a session lifecycle.
+
+  describe('Money-safety invariants', () => {
+    async function readAvatarBalance(avId: string): Promise<number> {
+      const row = await dbMod.db.query.avatars.findFirst({
+        where: eq(dbMod.avatars.id, avId),
+        columns: { clawTokens: true },
+      });
+      if (!row) throw new Error(`avatar ${avId} not found mid-test`);
+      return row.clawTokens as number;
+    }
+
+    it('spin lifecycle preserves net-balance invariant (no token burn or mint)', async () => {
+      // Snapshot pre-open balance directly from the DB.
+      const balanceBeforeOpen = await readAvatarBalance(avatarId1);
+
+      const openRes = await app.request('/api/casino/slots/session/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
+        body: JSON.stringify({
+          paytableId: 'classic-3x5',
+          currency: 'clawtokens',
+          bet: '20',
+        }),
+      });
+      expect(openRes.status).toBe(200);
+      const openData = (await openRes.json()) as any;
+      const sessionId = openData.sessionId;
+
+      // Open MUST NOT debit — balance is unchanged.
+      const balanceAfterOpen = await readAvatarBalance(avatarId1);
+      expect(balanceAfterOpen).toBe(balanceBeforeOpen);
+
+      // escrowAmount is informational '0' for the ClawTokens path.
+      expect(openData.escrowAmount).toBe('0');
+
+      // Run 5 spins; track running totals.
+      let totalStaked = 0n;
+      let totalWon = 0n;
+      let runningBalance = balanceAfterOpen;
+      for (let i = 0; i < 5; i++) {
+        const r = await app.request('/api/casino/slots/spin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Cookie: cookie1,
+            'Idempotency-Key': `net-bal-${Date.now()}-${i}`,
+          },
+          body: JSON.stringify({ sessionId, bet: '20' }),
+        });
+        expect(r.status).toBe(200);
+        const data = (await r.json()) as any;
+        const bet = 20n;
+        const win = BigInt(data.winAmount);
+        totalStaked += bet;
+        totalWon += win;
+        runningBalance = runningBalance - 20 + Number(win);
+
+        // After each spin, DB balance reflects `prev - bet + win`.
+        const dbBal = await readAvatarBalance(avatarId1);
+        expect(dbBal).toBe(runningBalance);
+      }
+
+      // Close the session.
+      const closeRes = await app.request('/api/casino/slots/session/close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
+        body: JSON.stringify({ sessionId }),
+      });
+      expect(closeRes.status).toBe(200);
+      const closeData = (await closeRes.json()) as any;
+
+      // Close MUST NOT refund — escrow was '0' so finalBalance is just
+      // the live avatar balance.
+      const balanceAfterClose = await readAvatarBalance(avatarId1);
+      expect(balanceAfterClose).toBe(runningBalance);
+      expect(closeData.finalBalance).toBe(balanceAfterClose);
+
+      // The headline invariant — net balance change == totalWon - totalStaked.
+      // If bug #1 ever re-appears, this assertion fails hard.
+      expect(BigInt(balanceAfterClose - balanceBeforeOpen)).toBe(
+        totalWon - totalStaked,
+      );
+      expect(closeData.totalStaked).toBe(totalStaked.toString());
+      expect(closeData.totalWon).toBe(totalWon.toString());
+    });
+
+    it('idempotency-key replay with mismatched bet returns 409', async () => {
+      // Open a fresh session.
+      const openRes = await app.request('/api/casino/slots/session/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
+        body: JSON.stringify({
+          paytableId: 'classic-3x5',
+          currency: 'clawtokens',
+          bet: '20',
+        }),
+      });
+      expect(openRes.status).toBe(200);
+      const openData = (await openRes.json()) as any;
+      const sessionId = openData.sessionId;
+
+      // Run a spin with key='mismatch-key-1' and bet=20.
+      const idemKey = `mismatch-key-${Date.now()}`;
+      const spin1 = await app.request('/api/casino/slots/spin', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: cookie1,
+          'Idempotency-Key': idemKey,
+        },
+        body: JSON.stringify({ sessionId, bet: '20' }),
+      });
+      expect(spin1.status).toBe(200);
+
+      // Today the per-session fixed-bet rule (input.bet ===
+      // session.startingBalance) blocks bet=999 BEFORE the cache lookup.
+      // To exercise the NEW guard, mutate the cached row's `bet` column
+      // out-of-band to a different value, then replay with the same key
+      // + a bet that still matches startingBalance ('20'). The cache-hit
+      // branch compares cached.bet ('999') vs input.bet ('20') and 409s.
+      //
+      // This simulates the slice-4+ world where variable bets are
+      // allowed and a leaked Idempotency-Key could be replayed at a
+      // different stake.
+      await dbMod.db
+        .update(dbMod.slotSpins)
+        .set({ bet: '999' })
+        .where(
+          eq(dbMod.slotSpins.idempotencyKey, idemKey),
+        );
+
+      const replay = await app.request('/api/casino/slots/spin', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: cookie1,
+          'Idempotency-Key': idemKey,
+        },
+        body: JSON.stringify({ sessionId, bet: '20' }),
+      });
+      expect(replay.status).toBe(409);
+
+      // Cleanup.
+      await app.request('/api/casino/slots/session/close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
+        body: JSON.stringify({ sessionId }),
+      });
+    });
+
+    it('spin schema rejects client-supplied nonce/cursor in body (.strict())', async () => {
+      // Open a session so we have a valid sessionId.
+      const openRes = await app.request('/api/casino/slots/session/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
+        body: JSON.stringify({
+          paytableId: 'classic-3x5',
+          currency: 'clawtokens',
+          bet: '20',
+        }),
+      });
+      expect(openRes.status).toBe(200);
+      const openData = (await openRes.json()) as any;
+
+      // .strict() on the spinSchema should reject extra `nonce` + `cursor`
+      // fields. If this assertion ever flips to 200, someone removed
+      // .strict() and opened a cursor-replay attack surface.
+      const cursorAttack = await app.request('/api/casino/slots/spin', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: cookie1,
+          'Idempotency-Key': `cursor-attack-${Date.now()}`,
+        },
+        body: JSON.stringify({
+          sessionId: openData.sessionId,
+          bet: '20',
+          nonce: 0,
+          cursor: 0,
+        }),
+      });
+      expect(cursorAttack.status).toBe(400);
+
+      // Cleanup.
+      await app.request('/api/casino/slots/session/close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
+        body: JSON.stringify({ sessionId: openData.sessionId }),
+      });
+    });
+
+    it('currentBalance can be negative after losing spins (signed P&L)', async () => {
+      const openRes = await app.request('/api/casino/slots/session/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
+        body: JSON.stringify({
+          paytableId: 'classic-3x5',
+          currency: 'clawtokens',
+          bet: '100',
+        }),
+      });
+      expect(openRes.status).toBe(200);
+      const openData = (await openRes.json()) as any;
+      const sessionId = openData.sessionId;
+
+      // After open, currentBalance starts at '0'.
+      const afterOpenRow = await dbMod.db.query.slotSessions.findFirst({
+        where: eq(dbMod.slotSessions.id, sessionId),
+        columns: { currentBalance: true },
+      });
+      expect(afterOpenRow!.currentBalance).toBe('0');
+
+      // Run 3 spins. Whatever the wins are, totalStaked = 300, so
+      // currentBalance = totalWon - 300. The session's currentBalance
+      // ROW must equal that value — including negative if totalWon < 300.
+      let totalWon = 0n;
+      for (let i = 0; i < 3; i++) {
+        const r = await app.request('/api/casino/slots/spin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Cookie: cookie1,
+            'Idempotency-Key': `neg-bal-${Date.now()}-${i}`,
+          },
+          body: JSON.stringify({ sessionId, bet: '100' }),
+        });
+        expect(r.status).toBe(200);
+        const data = (await r.json()) as any;
+        totalWon += BigInt(data.winAmount);
+      }
+      const sessionRow = await dbMod.db.query.slotSessions.findFirst({
+        where: eq(dbMod.slotSessions.id, sessionId),
+        columns: { currentBalance: true, totalStaked: true, totalWon: true },
+      });
+      expect(sessionRow!.totalStaked).toBe('300');
+      expect(sessionRow!.totalWon).toBe(totalWon.toString());
+      // currentBalance = totalWon - totalStaked. Often negative for the
+      // RTP=0.96 paytable across just 3 spins.
+      expect(BigInt(sessionRow!.currentBalance)).toBe(totalWon - 300n);
+      // API still serves the session despite the (possibly) negative
+      // currentBalance — no validation regression.
+      const getSession = await app.request(
+        `/api/casino/slots/session/${sessionId}`,
+        { headers: { Cookie: cookie1 } },
+      );
+      expect(getSession.status).toBe(200);
+
+      // Cleanup.
+      await app.request('/api/casino/slots/session/close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie1 },
+        body: JSON.stringify({ sessionId }),
+      });
+    });
+  });
+});
