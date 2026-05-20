@@ -58,13 +58,30 @@ Complex AI integrations: multi-phase plan in `.claude/plans/` + research deep-di
 
 **Standing rule:** abide by these unless user says otherwise. Code vs doc → **live code wins**, update doc same turn.
 
-**Same-diff doc updates (NO EXCEPTIONS):**
-- 3D code (`apps/web/src/lib/three/*`, `components/three/*`, models, shaders, materials, cameras, lighting, post-proc) → `3dStructure.md` + spawn `3da`.
-- Gameplay/feature code → `GameFeatures.md`.
-- Tech-stack code (Hono routes, DB tables, services, deploy/env) → `ARCHITECTURE.md`.
-- A single change can touch multiple docs. Bump "Last Audited" + one-line drift note each time.
+### File-path trigger table (MANDATORY — read the matching doc BEFORE editing)
+
+| Editing files matching… | Must have read |
+|---|---|
+| `apps/web/src/lib/three/**`, `apps/web/src/components/three/**`, `apps/web/public/models/**` | `3dStructure.md` (+ spawn `3da` for non-trivial 3D work) |
+| `apps/web/src/components/game/**`, token-economy code, `packages/shared/src/constants/knowledge-books.ts`, `avatar-archetypes.ts`, `map-locations.ts`, quest/login routes | `GameFeatures.md` |
+| `apps/api/src/routes/portal/*`, `services/cf-secrets-*`, `services/service-issuer.ts`, `services/auth-challenge.ts`, `services/identity-service.ts`, `services/keypair-vault.ts`, `services/wallet-service.ts`, anything under `users.identity_*` / `wallets.dek_wrapped` | `ARCHITECTURE.md §7` (Phase 5.1) |
+| `apps/api/src/services/wager-program-client.ts`, `apps/api/src/routes/wager.ts`, `contracts/wager/**`, `packages/wager-program/**`, anything touching `treasury_purpose='wager-settlement-authority'` | `ARCHITECTURE.md` (wager rows §2/§4 + recent changes §13) |
+| `apps/api/src/routes/agent.ts`, agent-connect modal, `/api/agent/*` | `GameFeatures.md §2` + `ARCHITECTURE.md §6` |
+| Any new Hono route, Drizzle schema change, service file, env var, deploy/CI config | `ARCHITECTURE.md` |
+
+**Same-diff rule:** every code change above MUST update its matching doc in the same diff. Bump "Last Audited" + one-line drift note.
 
 **Animation shipping — STRICT (2026-05-18).** Any Mixamo/VRM clip add/remove/retarget/trigger MUST satisfy the 8-point checklist in `3dStructure.md` §6f (bundle into `_emotes.glb`, `preloadClips(names)` for non-locomotion warming, `ASSET_PATH_PREFIXES` in `sw.js`, `updateViaCache:'none'` + `reg.update()`, NPC entity-interp not extrapolation, `updateMixerOnly` every frame, `setSurfaceClip` for state-held, all humanoid VRMs sized via `VRM_AVATAR_TARGET_HEIGHT_WU`).
+
+### Kill-the-build invariants — ALWAYS-ON (never demoted to a referenced doc)
+
+These cost real money / crash the GPU / leak secrets. They stay inline regardless of scope.
+
+- **Iris Xe GPU:** NO drei `<Text>` / `<Billboard>` in game/world scenes — hard crash. NO `InstancedMesh + ShaderMaterial` — silent WebGPU crash. NO per-frame `new Vector3()` in `useFrame` — GC thrash.
+- **Local dev:** NEVER run `bun run dev` locally (Iris Xe crash → PC restart). Push → Coolify auto-deploys → test against prod.
+- **Phase 5.1 wallet:** `wallet.secretKey` is returned **EXACTLY ONCE** on first-connect. Subsequent reads MUST omit it. SKILL.md instructs agent to display once + store only pubkey. Server never re-emits — no recovery path. Full spec: `ARCHITECTURE.md §7`.
+- **Verification:** never claim deployed/fixed without evidence (curl, bundle grep, DOM read). "Should work" is banned.
+- **Push-auth fallback chain:** `gh auth status` → `unset GITHUB_TOKEN && gh auth setup-git` → SSH remote → `gh` CLI. Only escalate with all errors quoted. Never hand the push to the user as the first move.
 
 **Precedence (high→low):** (1) source code · (2) three canonical docs · (3) `CLAUDE.md`/`README.md` · (4) memory files (advisory). Memory vs doc → doc wins, update/delete memory same turn. Doc vs code → code wins, update doc same turn.
 
@@ -233,19 +250,10 @@ Required in `.env.local`:
 - `ITACHI_DEBUG_BOT_TOKEN` + `ITACHI_DEBUG_CHAT_ID` — itachi-debug Telegram bot for `alert-error.ts`. Missing ⇒ degrades to `console.warn`. Staged via tinker from `~/.itachi-api-keys`.
 - `METRICS_MEASUREMENT_START` — ISO date for `/dash` "Measuring since …" banner. Default `2026-04-21`.
 - `AGENT_SESSION_TICKET_TTL_SECONDS` — Phase 5 magic-link TTL (default 600, min 60, max 3600 — `session-ticket-service.ts`).
-- **Phase 5.1** (full descriptions in `.claude/plans/phase5.1-wallet-identity-and-scape-portal.md`):
-  - `CLOUDFLARE_WORKER_URL` + `CLOUDFLARE_WORKER_BEARER` — envelope-encryption Worker `/wrap` `/unwrap`. `infra/cf-secrets-worker/`.
-  - `CLAWVILLE_SERVICE_ISSUER_SK` / `_PUBKEY` — Base58 ed25519 pair; SK signs outbound partner calls, PK at `/.well-known/clawville-issuer.json`. Generate via `scripts/generate-service-issuer-keypair.ts`.
-  - `SCAPE_HOSTED_SESSION_URL` + `SCAPE_WEB_ORIGIN` — 'scape `/hosted-session/issue` endpoint + redirect origin.
-  - `PARTNER_PUBKEYS` — `{"scape":"<base58>"}`. Empty ⇒ inbound portal returns 401.
-- **Wager program** (2026-05-12, `clawville_wager` `HgQhHVYV2C5Mw8K81kEnADkqsuS5YQRmGJDUR5wnZVuG` devnet):
-  - `SOLANA_RPC_URL` (default `api.devnet.solana.com`; prod stays devnet until `wager-mainnet-paid` graduates).
-  - `WAGER_SETTLEMENT_AUTHORITY_PUBKEY` — must match decrypted `treasury_wallets.purpose='wager-settlement-authority'`. Default = devnet deployer `G5WgvGYK5mLxQbVUmNhFKeWwEhT235p2HjKmkbpMbMWy`.
-  - `WAGER_SETTLEMENT_AUTHORITY_KEYPAIR_PATH` (local seed only, never prod). `WAGER_PROGRAM_CLUSTER` = `'devnet'`/`'localnet'`; mainnet requires a code change.
+- **Phase 5.1 env vars** (`CLOUDFLARE_WORKER_URL/_BEARER`, `CLAWVILLE_SERVICE_ISSUER_SK/_PUBKEY`, `SCAPE_HOSTED_SESSION_URL`, `SCAPE_WEB_ORIGIN`, `PARTNER_PUBKEYS`) — see `ARCHITECTURE.md §7`. Crash-loud rule: `FINGERPRINT_SECRET` + `CLOUDFLARE_WORKER_*` are hard-required on boot; missing ⇒ API refuses to start.
+- **Wager program env vars** (`SOLANA_RPC_URL`, `WAGER_SETTLEMENT_AUTHORITY_PUBKEY`, `WAGER_SETTLEMENT_AUTHORITY_KEYPAIR_PATH`, `WAGER_PROGRAM_CLUSTER`) — see `ARCHITECTURE.md §13` (2026-05-13 entry). Devnet-only; mainnet requires a code change, not just `WAGER_PROGRAM_CLUSTER=mainnet`.
 
-**Optional:** `OPENAI_API_KEY` — fallback ONLY for `npc-conversation-engine.ts` on Gemini `GEMINI_MAX_FAILURES` backoff. Not a general replacement.
-
-**Removed:** `ANTHROPIC_API_KEY` (ultrathink decommission — see `docs/ultrathink-migration-decision.md`).
+**Optional:** `OPENAI_API_KEY` — fallback ONLY for `npc-conversation-engine.ts` on Gemini `GEMINI_MAX_FAILURES` backoff. **Removed:** `ANTHROPIC_API_KEY` (ultrathink decommission).
 
 ## Deployment — Hetzner + Coolify
 
@@ -322,89 +330,15 @@ Git Bash uses schannel and rejects CRLs — always pass `--ssl-no-revoke`.
 - **One avatar per user** — unique constraint `avatars.userId`.
 - **Building zones**: 10 locations in `map-locations.ts`. **NPC simulation** `npc-simulation.ts` (pathfinding, convos, activities).
 
-## 10 SpongeBob-Landmark Buildings
+## Scoped detail — lives in canonical docs
 
-Source: `packages/shared/src/constants/map-locations.ts` + `building-types.ts`. Old sea-themed names (Tide Clock Grotto, Hydrothermal Forge, etc.) were superseded.
+These topics used to be inlined here; they're now owned by the canonical doc that already tracks them same-diff with code. Read the doc when you hit the file-path trigger above.
 
-| ID | Display | OpenClaw Focus |
-|---|---|---|
-| cron-automation | Downtown Building | Automation & Workflows |
-| api-integrations | Salty Spitoon | APIs & Integrations |
-| memory-rag | Squidward's House | Memory & Knowledge |
-| code-development | Chum Bucket | Code & Development |
-| messaging-channels | Sandy's Treedome | Communication |
-| mcp-tool-use | Krusty Krab | Tool Use & MCP |
-| visual-creation | Pineapple House | Visual Creation |
-| app-publishing | Boating School | App Publishing |
-| agent-security | Patrick's Rock | Crypto & Web3 |
-| deployment-ops | Lighthouse | Business & Productivity |
-
-All 10 are shop buildings for knowledge books (visit + chat MiladyAI teacher to learn). Paid marketplace write paths return 503 — see Priority #3.
-
-## Database Schema
-
-- `users` + `sessions` — Lucia auth.
-- `avatars` (one per user) — identity (`name`, `species`, `color`, `gender`, `archetype`, `personality`, `stats`); **Phase 2 agent framework** `model_key` (default `lobster`), `agent_category` (`openclaw`/`hermes`/`milady`/`other`, default `openclaw`), `harness` (`openclaw`/`hermes`/`milady`/`custom`, default `milady`) — NOT NULL w/ DEFAULTs + CHECK `avatars_agent_category_valid`; VRM-ready (`avatar_type` `glb`/`vrm`, `avatar_url`, `vrm_metadata` JSONB); position + activity + economy + progression + `wallet_address` (base58 custodial Solana) + `platform_agent_id` → `platform_agents`.
-- `avatar_inventory` — books + quantity.
-- `map_locations` — static, seeded, 10 buildings.
-- `location_agents` — user's agent config per location.
-- `platform_agents` + `platform_agent_logs` — ElizaOS agent records.
-- `openclaw_bots` — external agent identity, gateway config, learned knowledge.
-- `treasury_wallets` — team merchant supply (x402 receiver, per-purpose via `treasury_purpose` enum; never user-facing).
-- `wallets` — unified per-subject custodial (`subject_type='avatar'|'agent'|'treasury-reserved'`). Encrypted Solana keypairs; Phase 5.1 adds envelope encryption via CF-held KEK with per-row DEKs, version-dispatched at read.
-- `agent_configs` — export/import bundle (round-trips `modelKey`/`agentCategory`/`harness`).
-- `bazaar_listings` + `auctions` + `claw_token_transactions` — marketplace + economy ledger.
-
-## ClawToken Economy / Books / Daily Login / Archetype
-
-- `clawTokens` int col (default 100) on `avatars`. 20 books in `knowledge-books.ts` (2/building). Themes in `BUILDING_OPENCLAW_THEMES`.
-- Shop API: `apps/api/src/routes/items.ts` — `GET /shop/:buildingId`, `GET /inventory`, `POST /buy`, `POST /learn`. Buy → inventory → "Read to Avatar" → merges into `characterConfig.knowledge[]` → agent restart.
-- Dynamic context via `processMessage(dynamicContext)` prepended. Avatar chat injects token balance + knowledge count + NPC world state. Location chat injects visitor info + shop items + OpenClaw theme; +1 token per message.
-- **Daily login** `POST /api/avatars/me/daily-login` — `10 + streak * 5` (max 100). Resets on missed day.
-- **Heartbeat** `POST /api/avatars/me/heartbeat` — position + activity; updates `lastActiveAt` fire-and-forget.
-- **Archetypes** — 14 in `avatar-archetypes.ts`. `avatars.archetype` varchar; `characterConfig` JSONB stores resolved.
-
-## Agent Connection (Moltbook Pattern)
-
-Agent-initiated — humans never paste credentials. Full flow: `GameFeatures.md`.
-
-**Quick Connect:** click "Generate Connect Link" in `agent-connect-modal.tsx` → `POST /api/agent/connect-token` returns `{token, connectUrl}` → human pastes into agent chat → agent reads SKILL.md, calls `POST /api/agent/connect {connectionToken}` → frontend polls `GET /api/agent/connect-status/:token` 2s → auto "Connected".
-
-**API:**
-- `POST /api/agent/connect-token` — 5-min token (auth cookie).
-- `GET /api/agent/connect-status/:token` — poll status.
-- `GET /api/agent/connect-skill?token=xxx` — SKILL.md (alias `/api/skills/connect`).
-- `POST /api/agent/connect` — universal registration (accepts `connectionToken`).
-- `POST /api/agent/export-character` — **Phase 3** Milady-installable bundle: `{character, skillPack, miladyInstallPayload, installCommand, exportedAt, summary}`. Accepts `{avatarId, targetHarness?, miladyBaseUrl?}`. `character.knowledge` intentionally empty (ElizaOS v2 treats knowledge strings as FS paths — skill pack is authoritative RAG carrier). Phase 4a UI wraps one-click install.
-- `POST /api/openclaw/register` — legacy manual gateway.
-
-**Manual Connect** (power users): legacy form in modal's "Manual" tab — Gateway URL + Auth Token + Agent ID + Protocol. ClawVille calls out to agent's API.
-
-**Identity Types:** `openclaw`/`ironclaw` (OpenAI-compat gateway) · `nanoclaw` (self-managed SSE pull) · `milady` (inside plugin, zero config) · `custom`/`anonymous`.
-
-**Building Themes:** `BUILDING_OPENCLAW_THEMES` maps building → focus; NPC conversations inject as dynamic context.
-
-## Phase 5.1 — Wallet Identity + 'scape Portal
-
-Full spec: `.claude/plans/phase5.1-wallet-identity-and-scape-portal.md`. Load-bearing invariants:
-
-**Two-keypair split (both ed25519), day 1, no shortcut:**
-- **Identity** — pubkey at `users.identity_pubkey` (rotatable). Agent holds private key at `clawville:identity:<userId>`, signs reconnect challenges. Envelope-encrypted backup at `users.identity_encrypted_sk` for support-recovery only. Never on-chain, never funded, never signs txs.
-- **Avatar wallet (Solana)** — in `wallets` as `{subject_type='avatar', subject_id=avatar.id}`. Server holds authoritative private key (envelope-encrypted under CF KEK), signs $CLAWVILLE custodially. Plaintext shown to human **exactly once** in first-connect; agent stores only pubkey.
-- **Service issuer** (singleton) — SK in CF Secrets Store; PK at `GET /.well-known/clawville-issuer.json`. Signs outbound partner calls.
-
-**Blast-radius.** Agent config leak ⇒ login + 'scape cross, NOT $CLAWVILLE drain. DB dump ⇒ ciphertext only (unwrap needs CF KEK). User wallet-backup leak ⇒ only that user's $CLAWVILLE.
-
-**First-connect.** `POST /api/agent/connect` + `POST /api/agent/join` return `identity` + `wallet` blocks when secrets fresh-generated; subsequent calls omit `secretKey` (server NEVER returns again). SKILL.md instructs agent: store identity SK in config, wallet PUBLIC address in config, display wallet address + secret to human ONE TIME. Top-level `walletAddress` = agent's internal bot wallet (bookkeeping); `wallet.address` = human's avatar wallet.
-
-**Reconnect:** `POST /api/agent/challenge` (nonce) + `POST /api/agent/reconnect` (signature). Wallet key not involved.
-
-**'scape portal** (ClawVille ↔ `github.com/Dexploarer/scape`) — bidirectional, signature-based, no shared bearer secrets:
-- **Outbound** — `POST /api/portal/scape` (Lucia-authed). Signs `sha256(canonical-JSON body)` with service issuer SK, POSTs to `SCAPE_HOSTED_SESSION_URL` with `X-Clawville-Issuer-Pubkey` + `X-Clawville-Signature`. First crossing auto-provisions: `principalId = principal:clawville:<user.id>`, `worldCharacterId = cv-<avatar.id>`.
-- **Inbound** — `POST /api/portal/mint-for-scape` verifies `X-Scape-*` against `PARTNER_PUBKEYS.scape`, mints Phase 5 ticket, returns `{redirectUrl}`.
-- **Link existing** — `POST /api/portal/scape-link-code` (one-time code) → paste in 'scape UI → 'scape `POST /api/portal/accept-scape-link` with signature. Consumes `pending_account_links`, sets `users.linked_scape_*`. Portal-minter prefers linked thereafter.
-
-Every crossing + link emits `portal.scape.crossed` / `portal.scape.linked` — `/dash` auto-tracks.
+- **10 buildings + OpenClaw focus mapping** — `packages/shared/src/constants/map-locations.ts` + `building-types.ts`. Roster summary: `WorldContent.md §2`. Old sea-themed names (Tide Clock Grotto, etc.) are superseded.
+- **Database schema (full row-level)** — `ARCHITECTURE.md §8`. Key invariants: one avatar per user (unique `avatars.userId`); `wallets` is the unified custodial table (`subject_type ∈ {avatar, agent, treasury}`); `treasury_wallets` is team merchant supply, never user-facing.
+- **ClawToken economy + books + daily login + archetypes** — `GameFeatures.md §4 / §5 / §8 / §9a`. Canonical write path: `claw-token-ledger.transferClawTokens()` — NEVER write `avatars.clawTokens` directly.
+- **Agent Connection (Moltbook)** — `GameFeatures.md §2` (UX/flow) + `ARCHITECTURE.md §6` (endpoints). Rule: agent-initiated, humans never paste credentials.
+- **Phase 5.1 wallet identity + 'scape portal** — `ARCHITECTURE.md §7`. Two-keypair split (identity ed25519 + Solana avatar wallet), envelope encryption via CF KEK, signed-challenge reconnect, bidirectional portal via service-issuer signatures. The "secretKey returned exactly once" invariant is in the Kill-the-build block above.
 
 ## Code Style
 
