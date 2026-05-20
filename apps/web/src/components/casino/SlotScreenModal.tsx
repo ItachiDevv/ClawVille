@@ -28,6 +28,7 @@ import { useFX } from '@/lib/casino/useFX';
 import {
   CasinoApiError,
   describeCasinoError,
+  fetchCurrentSlotSession,
   spinResponseToSpinResult,
   useCloseSlotSession,
   useOpenSlotSession,
@@ -270,6 +271,13 @@ export default function SlotScreenModal() {
 
     try {
       let activeSessionId = sessionId;
+      // `effectivePredict` is what this spin will actually wager. If we
+      // adopt an existing server session, its `startingBalance` is the
+      // authoritative pinned predict and supersedes the local chip — using
+      // the React-state `predict` here would lose the chip-snap to the
+      // very spin that triggered it, hitting 400
+      // predict_must_equal_session_reserved_predict on the wire.
+      let effectivePredict = predict;
       if (!activeSessionId) {
         const opened = await openSession.mutateAsync({
           paytableId,
@@ -283,15 +291,11 @@ export default function SlotScreenModal() {
           clientSeed: opened.clientSeed,
           walletBalance: opened.walletBalance,
         });
-        // If we adopted an existing session (idempotent /open path), the
-        // server's per-spin stake is baked into `startingBalance`. If the
-        // user's local chip differs, the next /spin would 400 with
-        // `predict_must_equal_session_reserved_predict`. Snap the chip to
-        // the session's pinned value so the spin succeeds.
         const sessionPredict = Number(opened.startingBalance);
         if (Number.isFinite(sessionPredict) && sessionPredict > 0 && sessionPredict !== predict) {
           setPredict(sessionPredict);
           showToast(`Resumed session — predict locked to ${sessionPredict}`, 'info');
+          effectivePredict = sessionPredict;
         }
       }
 
@@ -302,7 +306,7 @@ export default function SlotScreenModal() {
 
       const res: SpinResponse = await spin.mutateAsync({
         sessionId: activeSessionId,
-        predict: predict.toString(),
+        predict: effectivePredict.toString(),
         idempotencyKey: idemKey,
       });
 
@@ -407,6 +411,50 @@ export default function SlotScreenModal() {
     showToast,
     isSpinning,
   ]);
+
+  // ── Eager session restore on modal mount ─────────────────────────────────
+  //
+  // After a page refresh, Zustand state is empty but the server may still
+  // have an open session for this user. Discover it via GET /session/current
+  // and adopt its sessionId + seed + pinned predict BEFORE the player presses
+  // SPIN. This eliminates the "first SPIN fails with predict mismatch + reel
+  // animation hangs" trap that the previous lazy-on-first-press flow could
+  // hit when local chip != session.startingBalance.
+  //
+  // Runs ONCE per modal open (slotScreenOpen 0→1 edge). Idempotent: if we
+  // already have a local sessionId set, no-op (e.g. the user just clicked
+  // a fresh cabinet in the same tab).
+  useEffect(() => {
+    if (!slotScreenOpen) return;
+    if (sessionId) return;            // already populated this session
+    let cancelled = false;
+    void (async () => {
+      try {
+        const current = await fetchCurrentSlotSession();
+        if (cancelled || !current) return;
+        if (current.session.status !== 'open') return;
+        // Adopt the server session into local state.
+        setSessionMeta({
+          sessionId:      current.session.id,
+          serverSeedHash: current.session.serverSeedHash,
+          clientSeed:     current.session.clientSeed,
+          walletBalance:  current.walletBalance,
+        });
+        const sessionPredict = Number(current.session.startingBalance);
+        if (Number.isFinite(sessionPredict) && sessionPredict > 0) {
+          setPredict(sessionPredict);
+          showToast(
+            `Resumed previous session — predict locked to ${sessionPredict}, ${current.session.spinCount} spin${current.session.spinCount === 1 ? '' : 's'} so far.`,
+            'info',
+          );
+        }
+      } catch {
+        // Network blip or non-404 error — fall through to lazy-on-first-spin path.
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slotScreenOpen]);
 
   // ── Keyboard handler ────────────────────────────────────────────────────
   useEffect(() => {
