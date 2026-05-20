@@ -364,6 +364,15 @@
   transition: border-color var(--cv-motion-base) var(--cv-ease-standard),
               box-shadow var(--cv-motion-base) var(--cv-ease-standard);
 }
+/* Force every descendant in the canvas chain (R3F's internal wrapper
+   divs included) to be shrinkable — they default to min-width:auto. */
+.pt-reel-frame > *,
+.pt-reel-frame > * > *,
+.pt-reel-frame > * > * > *,
+.pt-reel-frame canvas {
+  min-width: 0;
+  min-height: 0;
+}
 .pt-reel-frame-active {
   border-color: var(--cv-pearl);
   box-shadow:
