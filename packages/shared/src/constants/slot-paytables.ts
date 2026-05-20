@@ -363,6 +363,112 @@ export interface WildMultiplierTier {
   cum: number;
   multiplier: number;
 }
+// ===========================================================================
+// PAYTABLE VERSION SNAPSHOTS — engine/verifier replay against historical
+// payouts.
+//
+// When the live paytable changes (e.g. Phase 6.1.10's RTP cut from 96%→94%),
+// spins recorded under the OLD payouts must still verify correctly. The
+// `slot_spins.paytable_version` column stores which snapshot to use; the
+// engine + verifier branch on it via `getPaytableSnapshot(version)`.
+//
+// Adding a new version:
+//   1. Snapshot CURRENT constants into the named V<N> exports BEFORE editing
+//      the live tables. The freshly-frozen constants become the new V<N>.
+//   2. Bump the engine's CURRENT_PAYTABLE_VERSION literal.
+//   3. Add a migration row to `slot_spins.paytable_version` (existing rows
+//      get backfilled to the old version; new rows default to current).
+//
+// ===========================================================================
+
+/** Symbol-table snapshot. */
+export interface PaytableSnapshot {
+  classicSymbols:     readonly SlotSymbolDef[];
+  bonusSymbols:       readonly SlotSymbolDef[];
+  scatterPayTable:    readonly number[];
+  /** Free-spin rules subset that affects RTP — counts + FS multiplier flags. */
+  freeSpinRules: {
+    readonly TRIGGER_THRESHOLD: number;
+    readonly AWARD_BASE:        number;
+    readonly AWARD_RETRIGGER:   number;
+    readonly CAP_REMAINING:     number;
+    readonly FS_LINE_WIN_MULTIPLIER:     number;
+    readonly FS_WILD_MULTIPLIER_DOUBLE:  boolean;
+  };
+}
+
+/** v1 — pre-Phase 6.1.10 (classic ~96% RTP, bonus ~97.5% combined). */
+const CLASSIC_SYMBOLS_V1: readonly SlotSymbolDef[] = [
+  { id: 0, name: 'Cherry',     emoji: '🍒', color: '#d62828', payouts: [2,  5,   10,  20]  },
+  { id: 1, name: 'Lemon',      emoji: '🍋', color: '#f1c40f', payouts: [2,  5,   15,  25]  },
+  { id: 2, name: 'Orange',     emoji: '🍊', color: '#ff8c42', payouts: [3,  8,   20,  35]  },
+  { id: 3, name: 'Plum',       emoji: '🍇', color: '#7c3aed', payouts: [4,  12,  30,  60]  },
+  { id: 4, name: 'Bell',       emoji: '🔔', color: '#ffc857', payouts: [5,  20,  50,  100] },
+  { id: 5, name: 'BAR',        emoji: '🎰', color: '#d62828', payouts: [10, 40,  100, 250] },
+  { id: 6, name: 'Seven',      emoji: '7️⃣', color: '#ff3838', payouts: [20, 100, 300, 800] },
+  { id: 7, name: 'WILD',       emoji: '🦈', color: '#00d4ff', payouts: [5,  25,  75,  200], isWild: true },
+  { id: 8, name: 'BAR×2',      emoji: '🎰', color: '#c0223a', payouts: [12, 50,  125, 300] },
+  { id: 9, name: 'BAR×3',      emoji: '🎰', color: '#a01828', payouts: [15, 60,  150, 400] },
+];
+
+const BONUS_SYMBOLS_V1: readonly SlotSymbolDef[] = [
+  { id: 0, name: 'Cherry',     emoji: '🍒', color: '#d62828', payouts: [2,  5,   10,  20]  },
+  { id: 1, name: 'Lemon',      emoji: '🍋', color: '#f1c40f', payouts: [2,  5,   15,  25]  },
+  { id: 2, name: 'Orange',     emoji: '🍊', color: '#ff8c42', payouts: [3,  9,   22,  38]  },
+  { id: 3, name: 'Plum',       emoji: '🍇', color: '#7c3aed', payouts: [4,  14,  34,  68]  },
+  { id: 4, name: 'Bell',       emoji: '🔔', color: '#ffc857', payouts: [5,  20,  50,  100] },
+  { id: 5, name: 'BAR',        emoji: '🎰', color: '#d62828', payouts: [10, 40,  100, 250] },
+  { id: 6, name: 'Seven',      emoji: '7️⃣', color: '#ff3838', payouts: [20, 100, 300, 800] },
+  { id: 7, name: 'WILD',       emoji: '🦈', color: '#00d4ff', payouts: [5,  25,  75,  200], isWild: true },
+  { id: 8, name: 'BAR×2',      emoji: '🎰', color: '#c0223a', payouts: [12, 50,  125, 300] },
+  { id: 9, name: 'BAR×3',      emoji: '🎰', color: '#a01828', payouts: [15, 60,  150, 400] },
+  { id: 10, name: 'Scatter',   emoji: '💰', color: '#ffd778', payouts: [0,  0,   0,   0  ], isScatter: true },
+];
+
+export const PAYTABLE_V1: PaytableSnapshot = {
+  classicSymbols:  CLASSIC_SYMBOLS_V1,
+  bonusSymbols:    BONUS_SYMBOLS_V1,
+  scatterPayTable: [0, 0, 0, 2, 10, 50],
+  freeSpinRules: {
+    TRIGGER_THRESHOLD:          3,
+    AWARD_BASE:                 10,
+    AWARD_RETRIGGER:            5,
+    CAP_REMAINING:              50,
+    FS_LINE_WIN_MULTIPLIER:     1,
+    FS_WILD_MULTIPLIER_DOUBLE:  false,
+  },
+};
+
+/** v2 — Phase 6.1.10 (classic 94% / bonus 94% combined). Mirrors live tables. */
+export const PAYTABLE_V2: PaytableSnapshot = {
+  classicSymbols:  CLASSIC_SYMBOLS,
+  bonusSymbols:    BONUS_SYMBOLS,
+  scatterPayTable: SCATTER_PAY_TABLE,
+  freeSpinRules: {
+    TRIGGER_THRESHOLD:          FREE_SPIN_RULES.TRIGGER_THRESHOLD,
+    AWARD_BASE:                 FREE_SPIN_RULES.AWARD_BASE,
+    AWARD_RETRIGGER:            FREE_SPIN_RULES.AWARD_RETRIGGER,
+    CAP_REMAINING:              FREE_SPIN_RULES.CAP_REMAINING,
+    FS_LINE_WIN_MULTIPLIER:     FREE_SPIN_RULES.FS_LINE_WIN_MULTIPLIER,
+    FS_WILD_MULTIPLIER_DOUBLE:  FREE_SPIN_RULES.FS_WILD_MULTIPLIER_DOUBLE,
+  },
+};
+
+export type PaytableVersion = 'v1' | 'v2';
+
+/** Engine + verifier read paytable snapshots by version. */
+export const PAYTABLE_SNAPSHOTS: Readonly<Record<PaytableVersion, PaytableSnapshot>> = {
+  v1: PAYTABLE_V1,
+  v2: PAYTABLE_V2,
+};
+
+/** Current paytable version — every NEW spin writes this to slot_spins. */
+export const CURRENT_PAYTABLE_VERSION: PaytableVersion = 'v2';
+
+export function getPaytableSnapshot(version: PaytableVersion): PaytableSnapshot {
+  return PAYTABLE_SNAPSHOTS[version];
+}
+
 export const WILD_MULTIPLIER_TABLE: readonly WildMultiplierTier[] = [
   // Bundle B spec — 60% 2× / 30% 3× / 10% 5×.
   { cum: 60,  multiplier: 2 },   // [0,  60) — 60%

@@ -89,6 +89,11 @@ export default function SessionVerifyPage({ params }: PageProps) {
             // pick the right cursor/payout math. Defaults to false for
             // legacy classic-3x5 rows where the column may be absent.
             freeSpinMode: spin.isFreeSpin,
+            // Phase 6.1.10 — propagate paytable version so v1 (pre-retune)
+            // spins skip the winAmount cross-check (recomputed under v2
+            // payouts wouldn't match the stored v1 amount). Reels + cursor
+            // still fully verify on both versions.
+            paytableVersion: spin.paytableVersion,
             expected: {
               reels: spin.reels,
               winAmount: spin.winAmount,
