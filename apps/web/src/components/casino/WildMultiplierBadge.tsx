@@ -147,39 +147,39 @@ export default function WildMultiplierBadge({
 
   const chipStyle: CSSProperties = dimmed
     ? {
-        // BASE-mode "potential" — outlined brass on tobacco, no glow.
+        // BASE-mode "potential" — outlined coral on deep water, no glow.
         position: 'absolute',
         top: 4,
         right: 4,
         minWidth: 30,
         padding: '3px 7px',
-        background: 'rgba(31, 14, 21, 0.65)',
-        color: 'var(--pt-cream-soft)',
-        fontFamily: 'var(--pt-data)',
+        background: 'rgba(6, 46, 59, 0.65)',
+        color: 'var(--cv-foam-soft)',
+        fontFamily: 'var(--cv-data)',
         fontSize: 12,
         fontWeight: 500,
         letterSpacing: '0.04em',
         textAlign: 'center',
-        border: '1.5px dashed var(--pt-brass-dim)',
+        border: '1.5px dashed var(--cv-coral-dim)',
         opacity: 0.85,
       }
     : {
-        // FS-mode ACTIVE — amber fill on velvet, scale-pulse on land.
+        // FS-mode ACTIVE — anemone-pink fill, scale-pulse on land.
         position: 'absolute',
         top: 4,
         right: 4,
         minWidth: 30,
         padding: '3px 7px',
-        background: 'linear-gradient(180deg, var(--pt-amber-glow) 0%, var(--pt-amber) 100%)',
-        color: 'var(--pt-velvet)',
-        fontFamily: 'var(--pt-data)',
+        background: 'linear-gradient(180deg, var(--cv-anemone) 0%, #e04663 100%)',
+        color: 'var(--cv-foam)',
+        fontFamily: 'var(--cv-data)',
         fontSize: 12,
         fontWeight: 700,
         letterSpacing: '0.04em',
         textAlign: 'center',
         boxShadow:
-          '0 0 12px rgba(255, 174, 0, 0.85), 0 0 22px rgba(255, 204, 68, 0.45), inset 0 1px 0 rgba(255,233,200,0.45)',
-        border: '1px solid var(--pt-brass)',
+          '0 0 12px rgba(255, 94, 126, 0.85), 0 0 22px rgba(255, 137, 112, 0.45), inset 0 1px 0 rgba(255,255,255,0.35)',
+        border: '1px solid var(--cv-foam)',
         transform: pulsed ? 'scale(1.18)' : 'scale(1)',
         transition: reduced ? 'none' : 'transform 700ms cubic-bezier(0.2, 0.8, 0.2, 1)',
         animation: pulsed && !reduced ? 'cv-stop-pop 600ms cubic-bezier(0.2, 0.8, 0.2, 1)' : 'none',
