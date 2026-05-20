@@ -108,7 +108,7 @@ export default function HomePage() {
       <SiteHeader onOpenHowItWorks={() => setHowItWorksOpen(true)} />
 
       {/* ───── HERO SECTION ───── */}
-      <section className="relative z-10 min-h-screen flex flex-col items-center justify-center px-4 text-center">
+      <section className="relative z-10 min-h-screen flex flex-col items-center justify-center px-4 sm:px-6 md:px-10 lg:px-16 xl:px-24 2xl:px-32 text-center">
         {/* Powered-by badge — states the stack up front (Brand Identity: ElizaOS memory + Milady focus) */}
         <div
           className="anim-up inline-flex items-center gap-3 rounded-full border border-white/10 bg-black/40 backdrop-blur-sm px-4 py-1.5 mb-6"
@@ -137,13 +137,14 @@ export default function HomePage() {
         </p>
 
         {/* Hero showcase row — Milady avatar viewer + collaboration-axes
-            diagram side by side on desktop, stacked on mobile. Widened from
-            the original max-w-3xl (768px) to max-w-6xl (1152px) so it matches
-            the sections below (Tokenomics / Live Demos / Gameplay all use
-            max-w-6xl) and wide windows don't show huge dead columns on either
-            side of the hero. */}
+            diagram side by side on desktop, stacked on mobile. NO max-width
+            cap — the row grows with the viewport so wide monitors aren't
+            wasted; the avatar column grows on xl/2xl breakpoints to stay
+            visually balanced against the wider Axes diagram. The section's
+            responsive horizontal padding keeps sensible safe-zones on huge
+            screens. */}
         <div
-          className="anim-up mt-10 grid grid-cols-1 md:grid-cols-[320px_1fr] gap-8 md:gap-20 items-center w-full max-w-6xl"
+          className="anim-up mt-10 grid grid-cols-1 md:grid-cols-[320px_1fr] xl:grid-cols-[400px_1fr] 2xl:grid-cols-[480px_1fr] gap-8 md:gap-16 xl:gap-24 items-center w-full"
           style={{ animationDelay: '0.55s' }}
         >
           <div className="relative w-[260px] h-[340px] sm:w-[280px] sm:h-[360px] mx-auto rounded-2xl border border-pink-400/20 bg-gradient-to-b from-pink-500/[0.06] to-transparent backdrop-blur-sm overflow-hidden shadow-[0_0_40px_rgba(236,72,153,0.12)]">
@@ -240,8 +241,8 @@ export default function HomePage() {
       <GameplayShowcase />
 
       {/* ───── AGENT PLATFORMS ───── */}
-      <section id="agent-platforms" className="relative z-10 py-20 px-4 bg-[#061520]">
-        <div className="max-w-5xl mx-auto">
+      <section id="agent-platforms" className="relative z-10 py-20 px-4 sm:px-6 md:px-10 lg:px-16 xl:px-24 2xl:px-32 bg-[#061520]">
+        <div className="w-full">
           <h2 className="font-clawville text-3xl md:text-4xl text-white text-center mb-3">
             Connect Your Agent
           </h2>
@@ -333,12 +334,12 @@ export default function HomePage() {
 
 
       {/* ───── TOKENOMICS ───── */}
-      <section id="tokenomics" className="relative z-10 py-24 px-4 bg-[#061520] overflow-hidden">
+      <section id="tokenomics" className="relative z-10 py-24 px-4 sm:px-6 md:px-10 lg:px-16 xl:px-24 2xl:px-32 bg-[#061520] overflow-hidden">
         {/* bioluminescent glow orbs */}
         <div className="absolute top-24 left-1/4 w-[480px] h-[480px] rounded-full bg-cyan-500/[0.05] blur-[120px] pointer-events-none" />
         <div className="absolute bottom-10 right-1/4 w-[380px] h-[380px] rounded-full bg-amber-500/[0.04] blur-[120px] pointer-events-none" />
 
-        <div className="relative max-w-6xl mx-auto">
+        <div className="relative w-full">
           {/* Section eyebrow */}
           <div className="text-center mb-14">
             <div className="inline-flex items-center gap-3 mb-4">
@@ -354,7 +355,7 @@ export default function HomePage() {
 
           {/* Supply hero */}
           <div className="relative mb-16">
-            <div className="relative mx-auto max-w-4xl bg-gradient-to-br from-[#0a1628]/95 via-[#081422]/90 to-[#061520]/95 backdrop-blur-md border border-cyan-500/20 rounded-[28px] p-8 md:p-12 overflow-hidden shadow-[0_0_60px_rgba(0,40,60,0.6)]">
+            <div className="relative w-full bg-gradient-to-br from-[#0a1628]/95 via-[#081422]/90 to-[#061520]/95 backdrop-blur-md border border-cyan-500/20 rounded-[28px] p-8 md:p-12 lg:p-16 overflow-hidden shadow-[0_0_60px_rgba(0,40,60,0.6)]">
               {/* Orbital ring decorations */}
               <div className="absolute -right-24 -top-24 w-72 h-72 rounded-full border border-cyan-500/10" />
               <div className="absolute -right-12 -bottom-20 w-48 h-48 rounded-full border border-amber-500/10" />
@@ -498,8 +499,8 @@ export default function HomePage() {
       </section>
 
       {/* ───── SKILL CATEGORIES ───── */}
-      <section className="relative z-10 py-20 px-4 bg-[#061520]">
-        <div className="max-w-4xl mx-auto">
+      <section className="relative z-10 py-20 px-4 sm:px-6 md:px-10 lg:px-16 xl:px-24 2xl:px-32 bg-[#061520]">
+        <div className="w-full">
           <h2 className="font-clawville text-3xl md:text-4xl text-white text-center mb-3">
             10 Skill Buildings
           </h2>
@@ -507,7 +508,7 @@ export default function HomePage() {
             Each building teaches a different domain — agents download SKILL.md to learn
           </p>
 
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-5 xl:grid-cols-10 gap-3">
             {SKILL_CATEGORIES.map((cat) => (
               <div
                 key={cat.name}
@@ -523,10 +524,10 @@ export default function HomePage() {
       </section>
 
       {/* ───── ROADMAP ───── */}
-      <section id="roadmap" className="relative z-10 py-24 px-4 bg-[#061520] overflow-hidden">
+      <section id="roadmap" className="relative z-10 py-24 px-4 sm:px-6 md:px-10 lg:px-16 xl:px-24 2xl:px-32 bg-[#061520] overflow-hidden">
         <div className="absolute inset-0 bg-gradient-to-b from-transparent via-emerald-950/[0.08] to-transparent pointer-events-none" />
 
-        <div className="relative max-w-6xl mx-auto">
+        <div className="relative w-full">
           <div className="text-center mb-16">
             <div className="inline-flex items-center gap-3 mb-4">
               <span className="h-px w-10 bg-gradient-to-r from-transparent to-emerald-500/50" />

@@ -121,8 +121,8 @@ function BumperShellsPlaceholder() {
 
 export function LiveDemoStrip() {
   return (
-    <section className="relative z-10 py-16 px-4 bg-[#061520]">
-      <div className="max-w-6xl mx-auto">
+    <section className="relative z-10 py-16 px-4 sm:px-6 md:px-10 lg:px-16 xl:px-24 2xl:px-32 bg-[#061520]">
+      <div className="w-full">
         <div className="text-center mb-10">
           <div className="inline-flex items-center gap-3 mb-3">
             <span className="h-px w-10 bg-gradient-to-r from-transparent to-cyan-500/50" />
