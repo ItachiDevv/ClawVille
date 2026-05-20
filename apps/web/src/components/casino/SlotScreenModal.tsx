@@ -260,7 +260,11 @@ export default function SlotScreenModal() {
     if (spinLockRef.current) return;
     if (spin.isPending || openSession.isPending || closeSession.isPending) return;
     if (fx.state.isLockedOut) return;
-    if (sessionBalance < predict) return;
+    // Balance gate — but bypass when the player is mid-free-spin. Free spins
+    // cost zero predict server-side; gating on `sessionBalance < predict`
+    // would lock out a player who hit the bonus then refreshed back into a
+    // low-CT state.
+    if (!(inFreeSpin && freeSpinsRemaining > 0) && sessionBalance < predict) return;
     if (!paytableId) return;
     spinLockRef.current = true;
     setPendingWinLines([]);
@@ -440,11 +444,23 @@ export default function SlotScreenModal() {
           clientSeed:     current.session.clientSeed,
           walletBalance:  current.walletBalance,
         });
+        // Free-spin restore — preserve unspent free spins across refresh.
+        // Without this, a player who earned 8 free spins, refreshed mid-bonus,
+        // and re-entered the modal would see their free-spin balance
+        // disappear from the HUD (server still has it, just invisible).
+        const fs = current.session.freeSpinsRemaining;
+        if (current.session.mode === 'free-spin' && fs > 0) {
+          setInFreeSpin(true);
+          setFreeSpinsRemaining(fs);
+        }
         const sessionPredict = Number(current.session.startingBalance);
         if (Number.isFinite(sessionPredict) && sessionPredict > 0) {
           setPredict(sessionPredict);
+          const fsSuffix = current.session.mode === 'free-spin' && fs > 0
+            ? `, ${fs} free spin${fs === 1 ? '' : 's'} unspent`
+            : '';
           showToast(
-            `Resumed previous session — predict locked to ${sessionPredict}, ${current.session.spinCount} spin${current.session.spinCount === 1 ? '' : 's'} so far.`,
+            `Resumed previous session — predict locked to ${sessionPredict}, ${current.session.spinCount} spin${current.session.spinCount === 1 ? '' : 's'} so far${fsSuffix}.`,
             'info',
           );
         }
