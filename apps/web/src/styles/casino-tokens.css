@@ -1,30 +1,58 @@
 /**
- * Casino Design Tokens — "Predict Terminal" (2026-05-20).
- * Palette: tobacco, brass, velvet maroon, cream, electric amber. No cyan/magenta.
- * Legacy --cv-* tokens (motion, ease, space, surface, radius, shadows + keyframes) preserved.
+ * Casino Design Tokens — "Tide Pool Casino" (2026-05-20).
+ *
+ * Underwater cove + beach + SpongeBob mashup, restraint > novelty.
+ * Palette: deep ocean / driftwood / coral / foam / kelp / sand / pearl / anemone.
+ *
+ * The reel modal architecture (3-strip layout, .pt-* class catalog,
+ * keyframes, motion/space/radius tokens) is preserved verbatim. Only the
+ * visual skin is swapped — every `--pt-*` token is kept as an ALIAS that
+ * maps to the new `--cv-*` palette so legacy class consumers don't need
+ * a wholesale rename.
  */
 
-@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap');
 
 :root {
-  /* ── Predict Terminal palette ─────────────────────────────────────── */
-  --pt-velvet:        #15090e;
-  --pt-velvet-soft:   #1f0e15;
-  --pt-tobacco:       #3d2418;
-  --pt-tobacco-light: #523221;
-  --pt-brass:         #c89a4d;
-  --pt-brass-dim:     #8b6b34;
-  --pt-cream:         #f4e9d4;
-  --pt-cream-soft:    #d8c8a9;
-  --pt-mute:          #8b7960;
-  --pt-amber:         #ffae00;
-  --pt-amber-glow:    #ffcc44;
-  --pt-loss:          #b85450;
-  --pt-win:           #ffcc44;
+  /* ── Tide Pool palette ────────────────────────────────────────────── */
+  --cv-deep:            #062e3b;   /* deep ocean — modal backdrop */
+  --cv-deep-soft:       #0a3a4a;   /* mid-water gradient stop */
+  --cv-shallow:         #1d6f8a;   /* shallow water — top of action strip */
+  --cv-driftwood:       #8b5a3c;   /* weathered wood — frames + headers */
+  --cv-driftwood-light: #a76d49;
+  --cv-coral:           #ff8970;   /* coral hairlines + accents */
+  --cv-coral-dim:       #c0664f;
+  --cv-foam:            #fdf6e3;   /* foam/sun — bright text */
+  --cv-foam-soft:       #e8d8b8;
+  --cv-kelp:            #5a8a7a;   /* seagrass — muted label */
+  --cv-sand:            #f4d99a;   /* warm sand — beach floor */
+  --cv-sand-light:      #fce7b6;
+  --cv-pearl:           #ffd54f;   /* pineapple-pearl — SPIN hero */
+  --cv-pearl-shine:     #fff1a3;
+  --cv-anemone:         #ff5e7e;   /* pop accent — wins, free spin */
+  --cv-starfish:        #d4554e;   /* loss-state red */
 
-  --pt-display:       'Cormorant Garamond', 'Garamond', serif;
-  --pt-data:          'JetBrains Mono', 'Menlo', monospace;
-  --pt-label-letter:  0.22em;
+  --cv-display:         'Fraunces', var(--font-fraunces), 'Cormorant Garamond', 'Georgia', serif;
+  --cv-data:            'JetBrains Mono', 'Menlo', monospace;
+  --cv-label-letter:    0.22em;
+
+  /* ── Legacy --pt-* aliases (read-only — new code uses --cv-*) ─────── */
+  --pt-velvet:          var(--cv-deep);
+  --pt-velvet-soft:     var(--cv-deep-soft);
+  --pt-tobacco:         var(--cv-driftwood);
+  --pt-tobacco-light:   var(--cv-driftwood-light);
+  --pt-brass:           var(--cv-coral);
+  --pt-brass-dim:       var(--cv-coral-dim);
+  --pt-cream:           var(--cv-foam);
+  --pt-cream-soft:      var(--cv-foam-soft);
+  --pt-mute:            var(--cv-kelp);
+  --pt-amber:           var(--cv-pearl);
+  --pt-amber-glow:      var(--cv-pearl-shine);
+  --pt-loss:            var(--cv-starfish);
+  --pt-win:             var(--cv-pearl-shine);
+  --pt-display:         var(--cv-display);
+  --pt-data:            var(--cv-data);
+  --pt-label-letter:    var(--cv-label-letter);
 
   /* ── Spacing scale ───────────────────────────────────────────────── */
   --cv-space-1: 4px;
@@ -50,23 +78,23 @@
   --cv-ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
   --cv-ease-bounce:   cubic-bezier(0.34, 1.56, 0.64, 1);
 
-  /* ── Shadows (retheme to brass/amber) ────────────────────────────── */
+  /* ── Shadows (Tide Pool retheme) ─────────────────────────────────── */
   --cv-shadow-cta:
-    0 0 0 1px var(--pt-brass-dim),
+    0 0 0 1px var(--cv-coral-dim),
     0 6px 22px rgba(0, 0, 0, 0.55);
   --cv-shadow-cta-hover:
-    0 0 0 1px var(--pt-brass),
+    0 0 0 1px var(--cv-coral),
     0 6px 22px rgba(0, 0, 0, 0.55);
   --cv-shadow-modal:
     0 32px 80px rgba(0, 0, 0, 0.7),
-    0 0 0 1px var(--pt-brass-dim),
-    inset 0 1px 0 rgba(244, 233, 212, 0.04);
+    0 0 0 1px var(--cv-coral-dim),
+    inset 0 1px 0 rgba(253, 246, 227, 0.04);
   --cv-shadow-card:
     0 12px 32px rgba(0, 0, 0, 0.5),
-    inset 0 1px 0 rgba(244, 233, 212, 0.04);
+    inset 0 1px 0 rgba(253, 246, 227, 0.04);
 
-  /* ── Surface (preserved — only --cv-surface-1 referenced externally) ─ */
-  --cv-surface-1: linear-gradient(180deg, var(--pt-velvet-soft) 0%, var(--pt-velvet) 100%);
+  /* ── Surface (preserved name — only --cv-surface-1 referenced externally) ─ */
+  --cv-surface-1: linear-gradient(180deg, var(--cv-deep-soft) 0%, var(--cv-deep) 100%);
 }
 
 /* ── Reduced motion overrides ──────────────────────────────────────── */
@@ -91,8 +119,8 @@
 }
 
 @keyframes cv-symbol-stopped-pulse {
-  0%, 100% { box-shadow: 0 0 16px var(--pt-amber), inset 0 0 12px rgba(255, 174, 0, 0.35); }
-  50%      { box-shadow: 0 0 28px var(--pt-amber-glow), inset 0 0 18px rgba(255, 204, 68, 0.55); }
+  0%, 100% { box-shadow: 0 0 16px var(--cv-pearl), inset 0 0 12px rgba(255, 213, 79, 0.35); }
+  50%      { box-shadow: 0 0 28px var(--cv-pearl-shine), inset 0 0 18px rgba(255, 241, 163, 0.55); }
 }
 
 @keyframes cv-coin-burst {
@@ -167,8 +195,29 @@
   to   { opacity: 1; }
 }
 
-@keyframes pt-spin-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.025); } }
-@keyframes pt-spin-glow  { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.6; } }
+/* Tide Pool: pearl button breathing pulse + halo glow */
+@keyframes cv-pearl-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.03); } }
+@keyframes cv-pearl-glow  { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.55; } }
+/* Legacy aliases — kept for any existing animation references */
+@keyframes pt-spin-pulse  { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.025); } }
+@keyframes pt-spin-glow   { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.6; } }
+
+/* Tide Pool: bubble drift — single composited layer, transform-only */
+@keyframes cv-bubble-drift {
+  0%   { transform: translateY(0); }
+  100% { transform: translateY(-50%); }
+}
+
+/* Tide Pool: caustic shimmer slide across the sand-floor strip.
+ * Animates `transform` only (not background-position) so Iris Xe gets
+ * compositor-only per-frame cost — the gradient is rasterised once into
+ * a 300%-wide layer (left:-100% right:-100%) and slid via translateX.
+ * -50% → +50% traverses from transparent-left-edge to transparent-right-
+ * edge so the loop snap happens between transparent states (no flash). */
+@keyframes cv-caustic-translate {
+  0%   { transform: translateX(-50%); }
+  100% { transform: translateX(50%); }
+}
 
 @media (prefers-reduced-motion: reduce) {
   [style*="cv-coin-burst"],
@@ -184,41 +233,86 @@
     animation-duration: 200ms !important;
   }
   .pt-spin-btn,
-  .pt-spin-btn::after {
+  .pt-spin-btn::after,
+  .pt-modal-shell::before,
+  .pt-action-strip::before {
     animation: none !important;
   }
 }
 
-/* ── Predict Terminal class catalog ───────────────────────────────── */
+/* ── Tide Pool modal shell ────────────────────────────────────────── */
 .pt-modal-shell {
+  position: relative;
   background:
-    radial-gradient(ellipse at 50% 0%, rgba(200, 154, 77, 0.05) 0%, transparent 55%),
-    linear-gradient(180deg, var(--pt-velvet-soft) 0%, var(--pt-velvet) 100%);
-  color: var(--pt-cream);
-  font-family: var(--pt-data);
+    radial-gradient(ellipse at 50% 0%, rgba(29, 111, 138, 0.20) 0%, transparent 55%),
+    linear-gradient(180deg, var(--cv-deep-soft) 0%, var(--cv-deep) 100%);
+  color: var(--cv-foam);
+  font-family: var(--cv-data);
+  overflow: hidden;
 }
 
-/* Header (≤ 48px) — brass double-rule underline ───────────────────── */
+/* Bubble field — single pseudo, single transform animation. The layer is
+ * sized 100% × 200% with the bubble gradients duplicated top/bottom so a
+ * 50% translateY wraps seamlessly. Iris Xe safe: one compositor layer,
+ * one transform key, no per-bubble GPU layers. */
+.pt-modal-shell::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 200%;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.55;
+  background-image:
+    radial-gradient(circle at 12% 92%, rgba(253, 246, 227, 0.22) 0%, transparent 1.4%),
+    radial-gradient(circle at 28% 78%, rgba(253, 246, 227, 0.18) 0%, transparent 1.1%),
+    radial-gradient(circle at 44% 88%, rgba(253, 246, 227, 0.20) 0%, transparent 1.6%),
+    radial-gradient(circle at 62% 72%, rgba(253, 246, 227, 0.16) 0%, transparent 1.2%),
+    radial-gradient(circle at 78% 86%, rgba(253, 246, 227, 0.20) 0%, transparent 1.5%),
+    radial-gradient(circle at 88% 70%, rgba(253, 246, 227, 0.18) 0%, transparent 1.0%),
+    radial-gradient(circle at 18% 60%, rgba(253, 246, 227, 0.16) 0%, transparent 1.3%),
+    radial-gradient(circle at 70% 50%, rgba(253, 246, 227, 0.20) 0%, transparent 1.4%),
+    radial-gradient(circle at 12% 42%, rgba(253, 246, 227, 0.22) 0%, transparent 1.4%),
+    radial-gradient(circle at 28% 28%, rgba(253, 246, 227, 0.18) 0%, transparent 1.1%),
+    radial-gradient(circle at 44% 38%, rgba(253, 246, 227, 0.20) 0%, transparent 1.6%),
+    radial-gradient(circle at 62% 22%, rgba(253, 246, 227, 0.16) 0%, transparent 1.2%),
+    radial-gradient(circle at 78% 36%, rgba(253, 246, 227, 0.20) 0%, transparent 1.5%),
+    radial-gradient(circle at 88% 20%, rgba(253, 246, 227, 0.18) 0%, transparent 1.0%),
+    radial-gradient(circle at 18% 10%, rgba(253, 246, 227, 0.16) 0%, transparent 1.3%),
+    radial-gradient(circle at 70% 00%, rgba(253, 246, 227, 0.20) 0%, transparent 1.4%);
+  animation: cv-bubble-drift 14s linear infinite;
+  will-change: transform;
+}
+
+/* Ensure shell children render above the bubble layer */
+.pt-modal-shell > * { position: relative; z-index: 1; }
+
+/* ── Header — driftwood plank with subtle grain + coral double-rule ─ */
 .pt-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   height: 48px;
   padding: 0 var(--cv-space-5);
-  background: linear-gradient(180deg, rgba(31, 14, 21, 0.95) 0%, rgba(21, 9, 14, 0.97) 100%);
-  border-bottom: 1px solid var(--pt-brass-dim);
-  box-shadow: 0 3px 0 -1px var(--pt-tobacco-light); /* 2px gap then 1px rule */
+  background:
+    repeating-linear-gradient(90deg, transparent 0, transparent 38px, rgba(0, 0, 0, 0.08) 38px, rgba(0, 0, 0, 0.08) 39px),
+    linear-gradient(180deg, var(--cv-driftwood) 0%, var(--cv-driftwood-light) 100%);
+  border-bottom: 1px solid var(--cv-coral);
+  box-shadow: 0 3px 0 -1px var(--cv-coral-dim); /* 2px gap then 1px rule */
   flex-shrink: 0;
 }
 
 .pt-header-title {
-  font-family: var(--pt-display);
-  font-size: 16px;
+  font-family: var(--cv-display);
+  font-size: 18px;
   font-weight: 600;
   letter-spacing: 0.18em;
-  color: var(--pt-cream);
+  font-variant-caps: small-caps;
+  color: var(--cv-foam);
   text-transform: uppercase;
   white-space: nowrap;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
 }
 
 .pt-header-side {
@@ -228,7 +322,7 @@
 }
 
 .pt-icon-stroke {
-  color: var(--pt-brass);
+  color: var(--cv-foam-soft);
   cursor: pointer;
   background: transparent;
   border: 0;
@@ -240,11 +334,11 @@
 }
 .pt-icon-stroke:hover,
 .pt-icon-stroke:focus-visible {
-  color: var(--pt-amber);
+  color: var(--cv-pearl);
   outline: none;
 }
 
-/* Reel hero ───────────────────────────────────────────────────────── */
+/* ── Reel hero — coral-hairline frame over deep water gradient ────── */
 .pt-reel-frame {
   flex: 1;
   min-height: 60vh;
@@ -252,28 +346,65 @@
   align-items: stretch;
   justify-content: center;
   position: relative;
-  background: var(--pt-velvet-soft);
-  border: 1px solid var(--pt-brass-dim);
+  background: linear-gradient(180deg, var(--cv-deep) 0%, var(--cv-deep-soft) 65%, var(--cv-shallow) 100%);
+  border: 1.5px solid var(--cv-coral-dim);
+  border-radius: 2px;
+  box-shadow:
+    0 0 0 1px rgba(255, 137, 112, 0.18),
+    0 0 20px rgba(255, 137, 112, 0.08);
   margin: var(--cv-space-3);
-  padding: 4px;
-  transition: border-color var(--cv-motion-base) var(--cv-ease-standard);
+  padding: 12px;
+  transition: border-color var(--cv-motion-base) var(--cv-ease-standard),
+              box-shadow var(--cv-motion-base) var(--cv-ease-standard);
 }
 .pt-reel-frame-active {
-  border-color: var(--pt-amber);
+  border-color: var(--cv-pearl);
+  box-shadow:
+    0 0 0 1px rgba(255, 213, 79, 0.35),
+    0 0 28px rgba(255, 213, 79, 0.18);
 }
 
-/* Action strip ────────────────────────────────────────────────────── */
+/* ── Action strip — water-meets-sand floor with caustic shimmer ───── */
 .pt-action-strip {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(180px, 1fr) minmax(280px, 1.4fr) minmax(220px, 1fr);
   align-items: center;
   gap: var(--cv-space-4);
   padding: var(--cv-space-4) var(--cv-space-5);
-  background: linear-gradient(180deg, rgba(31, 14, 21, 0.95) 0%, rgba(21, 9, 14, 0.98) 100%);
-  border-top: 1px solid var(--pt-brass-dim);
+  /* Crisp water/sand line at 22% — the brand moment */
+  background: linear-gradient(180deg,
+    var(--cv-shallow) 0%,
+    var(--cv-shallow) 18%,
+    var(--cv-sand) 22%,
+    var(--cv-sand-light) 100%);
+  border-top: 1px solid var(--cv-coral-dim);
   height: 140px;
   flex-shrink: 0;
+  overflow: hidden;
 }
+
+/* Subtle caustic shimmer — light rippling on the sand. Wrapper is 200%
+ * wide (inset: 0 -100%) so the gradient renders once and translateX is
+ * pure compositor on Iris Xe. */
+.pt-action-strip::before {
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0;
+  left: -100%;
+  right: -100%;
+  pointer-events: none;
+  background: linear-gradient(115deg,
+    transparent 0%,
+    rgba(255, 213, 79, 0.06) 45%,
+    transparent 55%,
+    rgba(255, 213, 79, 0.04) 65%,
+    transparent 100%);
+  animation: cv-caustic-translate 12s linear infinite;
+  will-change: transform;
+  z-index: 0;
+}
+.pt-action-strip > * { position: relative; z-index: 1; }
 
 .pt-action-col-left,
 .pt-action-col-center,
@@ -287,119 +418,142 @@
 .pt-action-col-right  { align-items: flex-end; }
 
 @media (max-width: 720px) {
-  .pt-action-strip { grid-template-columns: 1fr; height: auto; row-gap: var(--cv-space-3); padding: var(--cv-space-3) var(--cv-space-4); }
+  .pt-action-strip {
+    grid-template-columns: 1fr;
+    height: auto;
+    row-gap: var(--cv-space-3);
+    padding: var(--cv-space-3) var(--cv-space-4);
+    /* Drop the 22% water/sand seam — at stacked auto-height the horizon
+     * lands at random points behind specific controls. Solid sand reads
+     * cleaner. */
+    background: linear-gradient(180deg, var(--cv-sand) 0%, var(--cv-sand-light) 100%);
+  }
   .pt-action-col-left, .pt-action-col-center, .pt-action-col-right { align-items: center; }
 }
 
 .pt-label {
-  font-family: var(--pt-data);
+  font-family: var(--cv-data);
   font-size: 10px;
-  letter-spacing: var(--pt-label-letter);
+  letter-spacing: var(--cv-label-letter);
   text-transform: uppercase;
-  color: var(--pt-mute);
+  color: var(--cv-driftwood);
   font-weight: 500;
 }
 
-/* Balance display ─────────────────────────────────────────────────── */
+/* ── Balance display ──────────────────────────────────────────────── */
 .pt-balance {
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
 .pt-balance-value {
-  font-family: var(--pt-data);
+  font-family: var(--cv-data);
   font-size: 32px;
   font-weight: 700;
-  color: var(--pt-cream);
+  color: var(--cv-driftwood);
   letter-spacing: 0.02em;
   line-height: 1;
 }
 .pt-balance-suffix {
-  color: var(--pt-mute);
+  color: var(--cv-driftwood);
   font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.16em;
   margin-left: 6px;
+  opacity: 0.75;
 }
 .pt-pnl {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-family: var(--pt-data);
+  font-family: var(--cv-data);
   font-size: 13px;
   font-weight: 500;
   letter-spacing: 0.04em;
   margin-top: 2px;
 }
-.pt-pnl-up { color: var(--pt-win); } .pt-pnl-down { color: var(--pt-loss); } .pt-pnl-flat { color: var(--pt-mute); }
+.pt-pnl-up   { color: #1f5e2c; }   /* deeper kelp-green for AA on sand-light */
+.pt-pnl-down { color: var(--cv-starfish); }
+.pt-pnl-flat { color: var(--cv-driftwood); opacity: 0.7; }
 
-/* Predict chips ───────────────────────────────────────────────────── */
+/* ── Sand-dollar predict chips ────────────────────────────────────── */
 .pt-chip-row {
   display: flex;
-  gap: var(--cv-space-2);
+  gap: 10px;
   flex-wrap: wrap;
   justify-content: center;
 }
 .pt-chip {
-  min-width: 56px;
-  height: 40px;
-  padding: 0 12px;
-  background: var(--pt-tobacco);
-  border: 1px solid var(--pt-brass-dim);
-  color: var(--pt-cream);
-  font-family: var(--pt-data);
-  font-size: 13px;
-  font-weight: 500;
-  letter-spacing: 0.04em;
-  cursor: pointer;
+  width: 48px;
+  height: 48px;
+  min-width: 48px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1.5px solid var(--cv-coral-dim);
+  background:
+    radial-gradient(circle at 50% 50%, transparent 28%, rgba(255, 137, 112, 0.12) 30%, transparent 32%),
+    radial-gradient(circle, var(--cv-foam) 0%, var(--cv-foam-soft) 80%, var(--cv-coral-dim) 100%);
+  color: var(--cv-driftwood);
+  font-family: var(--cv-data);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  cursor: pointer;
   transition:
     border-color var(--cv-motion-fast) var(--cv-ease-standard),
-    color var(--cv-motion-fast) var(--cv-ease-standard),
+    transform var(--cv-motion-fast) var(--cv-ease-standard),
     box-shadow var(--cv-motion-fast) var(--cv-ease-standard);
 }
 .pt-chip:hover:not(.pt-chip-disabled) {
-  border-color: var(--pt-brass);
-  color: var(--pt-cream);
+  border-color: var(--cv-coral);
+  transform: translateY(-2px);
 }
 .pt-chip-active {
-  border-color: var(--pt-amber);
-  color: var(--pt-amber-glow);
+  border: 2px solid var(--cv-pearl);
   box-shadow:
-    0 0 0 1px var(--pt-amber),
-    0 0 10px rgba(255, 174, 0, 0.35);
+    0 0 0 3px rgba(255, 213, 79, 0.25),
+    0 0 14px rgba(255, 213, 79, 0.40);
+  color: var(--cv-driftwood);
 }
 .pt-chip-disabled {
-  opacity: 0.4;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
-/* Spin button (88px hero) ─────────────────────────────────────────── */
+/* ── Pearl SPIN button (88px hero — pineapple/pearl gradient) ─────── */
 .pt-spin-btn {
   position: relative;
   isolation: isolate;
   width: 88px;
   height: 88px;
   border-radius: 50%;
-  border: 2px solid var(--pt-brass);
+  border: 2px solid var(--cv-coral);
   box-shadow:
-    inset 0 0 0 1px var(--pt-tobacco),
-    0 4px 14px rgba(0, 0, 0, 0.55);
+    inset 0 0 0 1px rgba(0, 0, 0, 0.25),
+    inset 4px 6px 14px rgba(255, 255, 255, 0.45),
+    0 6px 18px rgba(255, 213, 79, 0.35),
+    0 0 0 4px rgba(255, 213, 79, 0.10);
   background:
-    radial-gradient(circle at 50% 35%, var(--pt-amber-glow), var(--pt-amber) 65%, #c8810c 100%);
-  color: var(--pt-velvet);
-  font-family: var(--pt-data);
+    radial-gradient(circle at 38% 30%,
+      #ffffff 0%,
+      var(--cv-pearl-shine) 18%,
+      var(--cv-pearl) 50%,
+      #c89a1a 88%,
+      #6b4a0c 100%);
+  color: #2a1900;
+  font-family: var(--cv-data);
   font-size: 16px;
   font-weight: 700;
-  letter-spacing: 0.15em;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  animation: pt-spin-pulse 2.4s var(--cv-ease-standard) infinite;
+  animation: cv-pearl-pulse 2.6s var(--cv-ease-standard) infinite;
   transition:
     transform var(--cv-motion-fast) var(--cv-ease-standard),
     border-color var(--cv-motion-fast) var(--cv-ease-standard);
@@ -407,41 +561,41 @@
 .pt-spin-btn::after {
   content: '';
   position: absolute;
-  inset: -16px;
+  inset: -10px;
   border-radius: 50%;
-  background: radial-gradient(circle, var(--pt-amber) 0%, transparent 70%);
-  opacity: 0.35;
+  background: radial-gradient(circle, rgba(255, 213, 79, 0.45) 0%, transparent 70%);
+  opacity: 0.4;
   pointer-events: none;
   z-index: -1;
-  animation: pt-spin-glow 2.4s var(--cv-ease-standard) infinite;
+  animation: cv-pearl-glow 2.6s var(--cv-ease-standard) infinite;
 }
 .pt-spin-btn:hover {
-  border-color: var(--pt-amber-glow);
+  border-color: var(--cv-pearl);
 }
 .pt-spin-btn:active {
-  transform: scale(0.95);
+  transform: scale(0.93);
 }
 .pt-spin-btn:active::after {
-  opacity: 0.8;
+  opacity: 0.7;
 }
 .pt-spin-btn:focus-visible {
-  outline: 2px solid var(--pt-cream);
+  outline: 2px solid var(--cv-foam);
   outline-offset: 4px;
 }
 .pt-spin-btn-disabled,
 .pt-spin-btn-disabled:hover {
-  background: var(--pt-tobacco-light);
-  color: var(--pt-mute);
-  border-color: var(--pt-brass-dim);
+  background: radial-gradient(circle, #4a5a55 0%, #2a3530 100%);
+  color: var(--cv-kelp);
+  border-color: var(--cv-driftwood);
   cursor: not-allowed;
   animation: none;
-  box-shadow: inset 0 0 0 1px var(--pt-tobacco);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.3);
 }
 .pt-spin-btn-disabled::after {
   display: none;
 }
 
-/* Icon-button row under spin ──────────────────────────────────────── */
+/* ── Icon-button row under SPIN ───────────────────────────────────── */
 .pt-icon-row {
   display: flex;
   gap: var(--cv-space-3);
@@ -456,103 +610,130 @@
   border: 0;
   padding: 4px 6px;
   cursor: pointer;
-  color: var(--pt-brass);
+  color: var(--cv-driftwood);
   transition: color var(--cv-motion-fast) var(--cv-ease-standard);
 }
 .pt-icon-btn span {
-  font-family: var(--pt-data);
+  font-family: var(--cv-data);
   font-size: 9px;
   letter-spacing: 0.18em;
-  color: var(--pt-mute);
+  color: var(--cv-driftwood);
   text-transform: uppercase;
   font-weight: 500;
+  opacity: 0.85;
 }
 .pt-icon-btn:hover:not(:disabled),
 .pt-icon-btn:focus-visible {
-  color: var(--pt-amber);
+  color: var(--cv-coral);
   outline: none;
 }
 .pt-icon-btn:hover:not(:disabled) span,
 .pt-icon-btn:focus-visible span {
-  color: var(--pt-cream-soft);
+  color: var(--cv-driftwood);
+  opacity: 1;
 }
 .pt-icon-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 .pt-icon-btn-active {
-  color: var(--pt-amber);
+  color: var(--cv-coral);
 }
 .pt-icon-btn-active span {
-  color: var(--pt-amber);
+  color: var(--cv-coral);
+  opacity: 1;
 }
 
-/* Toast ───────────────────────────────────────────────────────────── */
+/* ── Toast — message in a bottle ──────────────────────────────────── */
 .pt-toast {
   position: fixed;
   bottom: 160px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 10000;
-  padding: 10px 18px;
+  padding: 10px 18px 10px 36px;
   max-width: 460px;
-  text-align: center;
-  font-family: var(--pt-data);
+  text-align: left;
+  font-family: var(--cv-data);
   font-size: 12px;
   letter-spacing: 0.06em;
-  background: var(--pt-velvet);
-  border: 1px solid var(--pt-brass-dim);
-  color: var(--pt-cream);
-  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.55);
+  background: var(--cv-foam-soft);
+  border: 1px solid var(--cv-driftwood-light);
+  border-left: 4px solid var(--cv-coral);
+  /* deep-water text on foam — ~12:1 contrast, AA passes for 12px body */
+  color: var(--cv-deep);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.45);
   animation: cv-modal-in var(--cv-motion-base) var(--cv-ease-standard);
 }
+.pt-toast::before {
+  content: '';
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  width: 16px;
+  height: 20px;
+  transform: translateY(-50%);
+  background-color: var(--cv-coral);
+  /* tiny bottle silhouette via SVG mask */
+  -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 20'><path d='M6 1h4v3l1 1v2c1 0 2 1 2 2v9c0 1-1 2-2 2H5c-1 0-2-1-2-2V9c0-1 1-2 2-2V5l1-1V1z' fill='black'/></svg>") center/contain no-repeat;
+          mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 20'><path d='M6 1h4v3l1 1v2c1 0 2 1 2 2v9c0 1-1 2-2 2H5c-1 0-2-1-2-2V9c0-1 1-2 2-2V5l1-1V1z' fill='black'/></svg>") center/contain no-repeat;
+}
 .pt-toast-warn {
-  border-color: var(--pt-amber);
-  color: var(--pt-amber-glow);
+  border-left-color: var(--cv-pearl);
+  /* deep-water text — sufficient contrast on foam-soft */
+  color: var(--cv-deep);
 }
+.pt-toast-warn::before { background-color: var(--cv-pearl); }
 .pt-toast-error {
-  border-color: var(--pt-loss);
-  color: #d77471;
+  border-left-color: var(--cv-starfish);
+  /* deeper crimson for AA on foam-soft (#a8332c ~ 6.4:1) */
+  color: #a8332c;
 }
+.pt-toast-error::before { background-color: var(--cv-starfish); }
 
-/* Fairness / paytable modal ───────────────────────────────────────── */
+/* ── Fairness / paytable modal — chest interior ───────────────────── */
 .pt-fairness-modal {
-  background: var(--pt-velvet);
-  border: 1px solid var(--pt-brass);
+  position: relative;
+  background: linear-gradient(180deg, var(--cv-driftwood) 0%, var(--cv-driftwood-light) 100%);
+  border: 2px solid var(--cv-coral-dim);
   padding: var(--cv-space-6);
   max-width: 540px;
   width: 100%;
-  color: var(--pt-cream);
-  font-family: var(--pt-data);
+  color: var(--cv-foam);
+  font-family: var(--cv-data);
   font-size: 13px;
   line-height: 1.55;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.7), 0 0 0 1px var(--pt-brass-dim);
+  box-shadow:
+    inset 0 8px 24px rgba(0, 0, 0, 0.30),
+    0 24px 64px rgba(0, 0, 0, 0.70),
+    0 0 0 1px var(--cv-coral-dim);
 }
 .pt-fairness-title {
-  font-family: var(--pt-display);
+  font-family: var(--cv-display);
   font-size: 22px;
   letter-spacing: 0.06em;
   font-weight: 600;
-  color: var(--pt-cream);
+  color: var(--cv-foam);
   margin-bottom: 8px;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
 }
 .pt-fairness-eyebrow {
-  font-family: var(--pt-data);
+  font-family: var(--cv-data);
   font-size: 10px;
   font-weight: 500;
-  letter-spacing: var(--pt-label-letter);
-  color: var(--pt-brass);
+  letter-spacing: var(--cv-label-letter);
+  color: var(--cv-pearl);
   text-transform: uppercase;
   margin-bottom: 4px;
 }
 
-/* Terminal button (replaces NeonButton internals) ─────────────────── */
+/* ── Driftwood button (replaces NeonButton internals) ─────────────── */
 .pt-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: var(--cv-space-2);
-  font-family: var(--pt-data);
+  font-family: var(--cv-data);
   text-transform: uppercase;
   font-weight: 500;
   letter-spacing: 0.14em;
@@ -571,29 +752,30 @@
   opacity: 0.45;
 }
 .pt-btn-primary {
-  background: var(--pt-amber);
-  border-color: var(--pt-amber);
-  color: var(--pt-velvet);
+  background: linear-gradient(180deg, var(--cv-driftwood-light) 0%, var(--cv-driftwood) 100%);
+  border-color: var(--cv-coral);
+  color: var(--cv-foam);
 }
 .pt-btn-primary:hover:not(:disabled) {
-  background: var(--pt-amber-glow);
-  border-color: var(--pt-amber-glow);
+  background: var(--cv-driftwood-light);
+  border-color: var(--cv-pearl);
+  color: var(--cv-foam);
 }
 .pt-btn-ghost {
   background: transparent;
-  border-color: var(--pt-brass-dim);
-  color: var(--pt-cream);
+  border-color: var(--cv-coral-dim);
+  color: var(--cv-foam);
 }
 .pt-btn-ghost:hover:not(:disabled) {
-  border-color: var(--pt-brass);
-  color: var(--pt-amber);
+  border-color: var(--cv-coral);
+  color: var(--cv-pearl-shine);
 }
 .pt-btn-danger {
   background: transparent;
-  border-color: var(--pt-loss);
-  color: #d77471;
+  border-color: var(--cv-starfish);
+  color: var(--cv-starfish);
 }
 .pt-btn-danger:hover:not(:disabled) {
-  background: rgba(184, 84, 80, 0.12);
-  color: var(--pt-cream);
+  background: rgba(212, 85, 78, 0.12);
+  color: var(--cv-foam);
 }
