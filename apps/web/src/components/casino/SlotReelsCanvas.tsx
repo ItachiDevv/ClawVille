@@ -67,11 +67,10 @@ export default function SlotReelsCanvas(props: SlotReelsCanvasProps) {
         width:    '100%',
         height:   '100%',
         position: 'relative',
-        background: 'linear-gradient(180deg, rgba(5,10,24,0.95) 0%, rgba(2,4,10,0.98) 100%)',
-        borderRadius: 12,
+        background: 'var(--pt-velvet)',
         overflow: 'hidden',
-        border: '1px solid rgba(0,255,224,0.18)',
-        boxShadow: 'inset 0 0 24px rgba(0,255,224,0.06), 0 0 24px rgba(0,0,0,0.6)',
+        border: '1px solid var(--pt-brass-dim)',
+        boxShadow: 'inset 0 0 24px rgba(0, 0, 0, 0.45), 0 4px 14px rgba(0, 0, 0, 0.55)',
       }}
     >
       <Canvas

@@ -84,9 +84,9 @@ export default function NeonModal({
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        background: 'rgba(2,4,10,0.82)',
-        backdropFilter: 'blur(8px)',
-        WebkitBackdropFilter: 'blur(8px)',
+        background: 'rgba(2, 1, 3, 0.82)',
+        backdropFilter: 'blur(6px)',
+        WebkitBackdropFilter: 'blur(6px)',
         animation: 'cv-modal-bg-in var(--cv-motion-base) var(--cv-ease-standard)',
         padding: 'var(--cv-space-4)',
       }}
@@ -98,10 +98,11 @@ export default function NeonModal({
         aria-label={ariaLabel}
         tabIndex={-1}
         style={{
-          background: 'var(--cv-surface-1)',
-          border: '1px solid rgba(0,255,224,0.25)',
-          borderRadius: 'var(--cv-radius-xl)',
+          background: 'var(--pt-velvet)',
+          border: '1px solid var(--pt-brass)',
           boxShadow: 'var(--cv-shadow-modal)',
+          color: 'var(--pt-cream)',
+          fontFamily: 'var(--pt-data)',
           width: '100%',
           maxWidth,
           maxHeight: '86vh',
