@@ -137,14 +137,15 @@ export default function HomePage() {
         </p>
 
         {/* Hero showcase row — Milady avatar viewer + collaboration-axes
-            diagram side by side on desktop, stacked on mobile. NO max-width
-            cap — the row grows with the viewport so wide monitors aren't
-            wasted; the avatar column grows on xl/2xl breakpoints to stay
-            visually balanced against the wider Axes diagram. The section's
-            responsive horizontal padding keeps sensible safe-zones on huge
-            screens. */}
+            diagram side by side on desktop, stacked on mobile. The two
+            visuals are fixed-size (avatar viewer ~280px, axes SVG ~320px),
+            so this block keeps a balanced max-width centered on the page —
+            without a cap the pieces fly to opposite edges leaving a huge
+            empty middle. The cap matches max-w-4xl (896px) which fits both
+            pieces side by side with room to breathe. The SECTIONS below are
+            uncapped and grow with the viewport. */}
         <div
-          className="anim-up mt-10 grid grid-cols-1 md:grid-cols-[320px_1fr] xl:grid-cols-[400px_1fr] 2xl:grid-cols-[480px_1fr] gap-8 md:gap-16 xl:gap-24 items-center w-full"
+          className="anim-up mt-10 grid grid-cols-1 md:grid-cols-[280px_1fr] gap-8 md:gap-12 items-center w-full max-w-4xl mx-auto"
           style={{ animationDelay: '0.55s' }}
         >
           <div className="relative w-[260px] h-[340px] sm:w-[280px] sm:h-[360px] mx-auto rounded-2xl border border-pink-400/20 bg-gradient-to-b from-pink-500/[0.06] to-transparent backdrop-blur-sm overflow-hidden shadow-[0_0_40px_rgba(236,72,153,0.12)]">
