@@ -227,6 +227,13 @@ export interface SessionSpinRow {
   /** Phase 6.1.5 — free spins awarded by this spin (0 if no trigger). */
   freeSpinsAwarded?: number;
   idempotencyKey: string;
+  /**
+   * Phase 6.1.10 — paytable snapshot version this row was recorded under.
+   * 'v1' = pre-retune (96% / ~97.5% RTP), 'v2' = post-retune (94%).
+   * Verifier branches on this to avoid spurious winAmount mismatches when
+   * the current engine's payouts differ from the row's historical ones.
+   */
+  paytableVersion?: 'v1' | 'v2';
   createdAt: string;
 }
 
@@ -340,13 +347,16 @@ export function useOpenSlotSession() {
 
 export interface CurrentSessionResponse {
   session: {
-    id:             string;
-    paytableId:     MachineSlug;
-    serverSeedHash: string;
-    clientSeed:     string;
-    startingBalance: string;
-    spinCount:      number;
-    status:         'open' | 'closed';
+    id:                  string;
+    paytableId:          MachineSlug;
+    serverSeedHash:      string;
+    clientSeed:          string;
+    startingBalance:     string;
+    spinCount:           number;
+    status:              'open' | 'closed';
+    /** Free-spin state — preserved across refresh so the player doesn't lose unspent free spins. */
+    mode:                'base' | 'free-spin';
+    freeSpinsRemaining:  number;
   };
   walletBalance: number;
 }
