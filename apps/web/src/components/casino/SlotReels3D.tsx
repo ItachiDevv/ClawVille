@@ -91,8 +91,19 @@ const BLUR_REPEAT    = (VISIBLE_ROWS + 8) / STRIP_LEN;
 
 // ---------------------------------------------------------------------------
 // Constants — texture
+//
+// TEX_H must stay under both the GPU's GL_MAX_TEXTURE_SIZE AND the browser's
+// Canvas2D max dimension (Chrome caps at 16384 in any axis, silently clipping
+// drawImage calls beyond that). At TILE_PX=256 × STRIP_LEN=84 = 21504, Chrome
+// would clamp the canvas, leaving the bottom of the strip blank. UV offsets
+// set to (0, 1−VISIBLE_REPEAT) sample exactly that blank zone → reels render
+// as a single missing-pixel dot after viewport resize re-triggers texture
+// upload.
+//
+// TILE_PX=192 → TEX_H=16128, comfortably under 16384. Each cell still renders
+// at ~80–120 CSS px on screen, so 192 vs 256 is invisible at runtime.
 // ---------------------------------------------------------------------------
-const TILE_PX = 256;
+const TILE_PX = 192;
 const TEX_W   = TILE_PX;
 const TEX_H   = TILE_PX * STRIP_LEN;
 

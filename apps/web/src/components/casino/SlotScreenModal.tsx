@@ -661,13 +661,13 @@ export default function SlotScreenModal() {
           animation: 'cv-modal-bg-in var(--cv-motion-base) var(--cv-ease-standard)',
         }}
       >
-        {/* Modal card */}
+        {/* Modal card — fills viewport on wide screens (was capped at 1200 leaving teal gutters) */}
         <div
           style={{
             flex: 1,
             display: 'flex',
             flexDirection: 'column',
-            maxWidth: 1200,
+            maxWidth: 1680,
             width: '100%',
             margin: '0 auto',
             position: 'relative',
