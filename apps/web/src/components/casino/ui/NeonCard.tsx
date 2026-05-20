@@ -3,7 +3,7 @@
 /**
  * NeonCard — sectioned content surface with title/subtitle.
  *
- * Uses the `--cv-surface-2` gradient + soft cyan rim. Title is rendered
+ * Uses the `--pt-velvet-soft` surface + brass rim. Title is rendered
  * as a small uppercase mono label (mirrors HUD typography). The card
  * is purely presentational — content shapes itself.
  */
@@ -17,7 +17,7 @@ export interface NeonCardProps {
   subtitle?: ReactNode;
   /** Action node aligned to the right of the title (close button, link, etc). */
   action?: ReactNode;
-  /** Optional accent color override (defaults to neon cyan). */
+  /** Optional accent color override (defaults to brass). */
   accentColor?: string;
   /** Card padding override. */
   padding?: CSSProperties['padding'];
@@ -35,15 +35,15 @@ export default function NeonCard({
   children,
   style,
 }: NeonCardProps) {
-  const accent = accentColor ?? 'var(--cv-neon-cyan)';
+  const accent = accentColor ?? 'var(--pt-brass)';
   return (
     <section
       style={{
-        background: 'var(--cv-surface-2)',
-        border: `1px solid ${accentColor ? accentColor + '33' : 'rgba(0,255,224,0.18)'}`,
-        borderRadius: 'var(--cv-radius-lg)',
+        background: 'var(--pt-velvet-soft)',
+        border: `1px solid ${accentColor ? accentColor + '55' : 'var(--pt-brass-dim)'}`,
         boxShadow: 'var(--cv-shadow-card)',
         padding: padding ?? 'var(--cv-space-5)',
+        color: 'var(--pt-cream)',
         ...style,
       }}
     >
@@ -62,12 +62,11 @@ export default function NeonCard({
               <div
                 style={{
                   color: accent,
-                  fontFamily: 'monospace',
-                  fontSize: 11,
-                  fontWeight: 800,
-                  letterSpacing: '0.18em',
+                  fontFamily: 'var(--pt-data)',
+                  fontSize: 10,
+                  fontWeight: 500,
+                  letterSpacing: 'var(--pt-label-letter)',
                   textTransform: 'uppercase',
-                  textShadow: `0 0 12px ${accent}`,
                 }}
               >
                 {title}
@@ -76,10 +75,10 @@ export default function NeonCard({
             {subtitle && (
               <div
                 style={{
-                  color: 'rgba(255,255,255,0.55)',
+                  color: 'var(--pt-mute)',
                   fontSize: 12,
                   marginTop: 4,
-                  fontFamily: 'monospace',
+                  fontFamily: 'var(--pt-data)',
                   letterSpacing: '0.04em',
                 }}
               >

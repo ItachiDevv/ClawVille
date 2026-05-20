@@ -38,9 +38,9 @@ interface BannerConfig {
 const BANNER_CONFIGS: Record<Exclude<WinTier, 'loss'>, BannerConfig | null> = {
   micro:  null, // no banner — just particles
   small:  null, // no banner — just particles
-  medium: { label: 'BIG WIN',   accent: 'var(--cv-tier-medium)', fontSize: 38 },
-  big:    { label: 'SUPER WIN', accent: 'var(--cv-tier-big)',    fontSize: 46 },
-  mega:   { label: 'MEGA WIN',  accent: 'var(--cv-tier-mega)',   fontSize: 56 },
+  medium: { label: 'BIG WIN',   accent: 'var(--pt-amber)',      fontSize: 38 },
+  big:    { label: 'SUPER WIN', accent: 'var(--pt-amber-glow)', fontSize: 46 },
+  mega:   { label: 'EPIC WIN',  accent: 'var(--pt-amber-glow)', fontSize: 56 },
 };
 
 // ---------------------------------------------------------------------------
@@ -87,11 +87,11 @@ function Particle({ particle }: { particle: FXParticle }) {
     height: particle.kind === 'coin' ? 26 : 4,
     borderRadius: particle.kind === 'coin' ? '50%' : 2,
     background: particle.kind === 'coin'
-      ? 'radial-gradient(circle at 35% 30%, #ffe089 0%, #ffc857 50%, #8a5a00 100%)'
-      : (particle.color ?? '#00ffe0'),
+      ? 'radial-gradient(circle at 35% 30%, #ffe089 0%, #ffae00 50%, #6b4400 100%)'
+      : (particle.color ?? '#ffae00'),
     boxShadow: particle.kind === 'coin'
-      ? '0 0 12px rgba(255,200,87,0.7), inset 0 0 4px rgba(255,255,255,0.8)'
-      : `0 0 6px ${particle.color ?? '#00ffe0'}aa`,
+      ? '0 0 12px rgba(255,174,0,0.7), inset 0 0 4px rgba(255,233,200,0.8)'
+      : `0 0 6px ${particle.color ?? '#ffae00'}aa`,
     transform: 'translate(-50%, -50%)',
     animation:
       particle.kind === 'coin'
@@ -132,7 +132,7 @@ export default function WinCelebration({ fx }: WinCelebrationProps) {
             zIndex: 9999,
             pointerEvents: 'none',
             background:
-              'radial-gradient(circle at 50% 45%, rgba(255,255,255,0.95) 0%, rgba(255,255,255,0.6) 30%, rgba(123,47,247,0.25) 70%, transparent 100%)',
+              'radial-gradient(circle at 50% 45%, rgba(255,233,200,0.95) 0%, rgba(255,204,68,0.55) 30%, rgba(200,154,77,0.22) 70%, transparent 100%)',
             animation: 'cv-screen-flash 600ms var(--cv-ease-standard) forwards',
             mixBlendMode: 'screen',
           }}
@@ -188,25 +188,21 @@ export default function WinCelebration({ fx }: WinCelebrationProps) {
         >
           <div
             style={{
-              background: `linear-gradient(180deg, rgba(10,20,40,0.92) 0%, rgba(5,10,24,0.94) 100%)`,
+              background: 'linear-gradient(180deg, var(--pt-velvet-soft) 0%, var(--pt-velvet) 100%)',
               border: `2px solid ${banner.accent}`,
-              borderRadius: 'var(--cv-radius-xl)',
               padding: '22px 48px',
               textAlign: 'center',
-              boxShadow: `0 0 36px ${banner.accent}66, 0 0 72px ${banner.accent}33, inset 0 1px 0 rgba(255,255,255,0.08)`,
+              boxShadow: `0 0 36px ${banner.accent}66, 0 0 72px ${banner.accent}33, inset 0 1px 0 rgba(244,233,212,0.08)`,
               minWidth: 260,
-              backdropFilter: 'blur(8px)',
-              WebkitBackdropFilter: 'blur(8px)',
             }}
           >
             <div
               style={{
                 color: banner.accent,
-                fontSize: 14,
-                fontWeight: 800,
-                letterSpacing: '0.22em',
-                fontFamily: 'monospace',
-                textShadow: `0 0 12px ${banner.accent}`,
+                fontSize: 12,
+                fontWeight: 500,
+                letterSpacing: 'var(--pt-label-letter)',
+                fontFamily: 'var(--pt-data)',
                 marginBottom: 8,
               }}
             >
@@ -214,10 +210,10 @@ export default function WinCelebration({ fx }: WinCelebrationProps) {
             </div>
             <div
               style={{
-                color: '#ffffff',
+                color: 'var(--pt-cream)',
                 fontSize: banner.fontSize,
-                fontWeight: 900,
-                fontFamily: 'monospace',
+                fontWeight: 600,
+                fontFamily: 'var(--pt-display)',
                 letterSpacing: '0.04em',
                 lineHeight: 1,
                 textShadow: `0 0 24px ${banner.accent}`,
@@ -228,10 +224,10 @@ export default function WinCelebration({ fx }: WinCelebrationProps) {
             </div>
             <div
               style={{
-                color: 'rgba(255,255,255,0.55)',
-                fontSize: 11,
-                fontFamily: 'monospace',
-                letterSpacing: '0.18em',
+                color: 'var(--pt-mute)',
+                fontSize: 10,
+                fontFamily: 'var(--pt-data)',
+                letterSpacing: 'var(--pt-label-letter)',
               }}
             >
               CLAW TOKENS
@@ -257,16 +253,14 @@ export default function WinCelebration({ fx }: WinCelebrationProps) {
         >
           <div
             style={{
-              background: 'rgba(5,10,24,0.85)',
-              border: `1px solid var(--cv-tier-${fx.tier})`,
-              borderRadius: 'var(--cv-radius-pill)',
+              background: 'var(--pt-velvet)',
+              border: '1px solid var(--pt-brass)',
               padding: '8px 22px',
-              color: `var(--cv-tier-${fx.tier})`,
-              fontFamily: 'monospace',
-              fontSize: 16,
-              fontWeight: 800,
+              color: 'var(--pt-amber-glow)',
+              fontFamily: 'var(--pt-data)',
+              fontSize: 14,
+              fontWeight: 500,
               letterSpacing: '0.12em',
-              boxShadow: `0 0 18px var(--cv-tier-${fx.tier})66`,
             }}
           >
             +{fx.winAmount.toLocaleString()} CT

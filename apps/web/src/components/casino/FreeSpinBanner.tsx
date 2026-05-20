@@ -139,21 +139,19 @@ export default function FreeSpinBanner({
     opacity,
     transition: `opacity ${fadeMs}ms var(--cv-ease-standard)`,
     background:
-      'radial-gradient(ellipse at 50% 50%, rgba(255, 200, 87, 0.18) 0%, rgba(5,10,24,0.55) 45%, rgba(2,4,10,0.85) 100%)',
+      'radial-gradient(ellipse at 50% 50%, rgba(255, 174, 0, 0.18) 0%, rgba(21,9,14,0.55) 45%, rgba(2,1,3,0.85) 100%)',
     backdropFilter: 'blur(2px)',
     WebkitBackdropFilter: 'blur(2px)',
   };
 
   const cardStyle: CSSProperties = {
-    background:
-      'linear-gradient(180deg, rgba(10,20,40,0.96) 0%, rgba(5,10,24,0.98) 100%)',
-    border: '2px solid var(--cv-gold-accent)',
-    borderRadius: 'var(--cv-radius-xl)',
+    background: 'linear-gradient(180deg, var(--pt-velvet-soft) 0%, var(--pt-velvet) 100%)',
+    border: '2px solid var(--pt-amber)',
     padding: '28px 56px',
     textAlign: 'center',
     minWidth: 320,
     boxShadow:
-      '0 0 36px var(--cv-gold-accent), 0 0 80px rgba(255,200,87,0.35), inset 0 1px 0 rgba(255,255,255,0.1)',
+      '0 0 36px var(--pt-amber), 0 0 80px rgba(255,174,0,0.35), inset 0 1px 0 rgba(244,233,212,0.1)',
     animation: reduced
       ? 'none'
       : phase === 'in'
@@ -166,12 +164,11 @@ export default function FreeSpinBanner({
       <div style={cardStyle}>
         <div
           style={{
-            color: 'var(--cv-gold-accent)',
-            fontSize: 13,
-            fontWeight: 800,
-            letterSpacing: '0.28em',
-            fontFamily: 'monospace',
-            textShadow: '0 0 12px var(--cv-gold-accent)',
+            color: 'var(--pt-amber)',
+            fontSize: 11,
+            fontWeight: 500,
+            letterSpacing: 'var(--pt-label-letter)',
+            fontFamily: 'var(--pt-data)',
             marginBottom: 10,
             textTransform: 'uppercase',
           }}
@@ -180,13 +177,13 @@ export default function FreeSpinBanner({
         </div>
         <div
           style={{
-            color: '#ffffff',
+            color: 'var(--pt-cream)',
             fontSize: 44,
-            fontWeight: 900,
-            fontFamily: 'monospace',
+            fontWeight: 600,
+            fontFamily: 'var(--pt-display)',
             letterSpacing: '0.04em',
             lineHeight: 1.05,
-            textShadow: '0 0 24px var(--cv-gold-bright, var(--cv-gold-accent))',
+            textShadow: '0 0 24px var(--pt-amber-glow)',
             marginBottom: 12,
             whiteSpace: 'nowrap',
           }}
@@ -195,12 +192,12 @@ export default function FreeSpinBanner({
         </div>
         <div
           style={{
-            color: 'rgba(255,200,87,0.95)',
-            fontSize: 14,
-            fontFamily: 'monospace',
+            color: 'var(--pt-amber-glow)',
+            fontSize: 12,
+            fontFamily: 'var(--pt-data)',
             letterSpacing: '0.18em',
             textTransform: 'uppercase',
-            fontWeight: 700,
+            fontWeight: 500,
           }}
         >
           {fsBenefitLabel}
