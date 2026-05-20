@@ -167,6 +167,21 @@ export const slotSpins = pgTable(
      */
     idempotencyKey: text('idempotency_key').notNull(),
 
+    /**
+     * Paytable version snapshot at spin-time. Required for verifier
+     * replay after a paytable retune — when payouts change, replaying
+     * an old spin through the CURRENT engine produces a winAmount
+     * mismatch even though the reels are byte-identical. Verifier
+     * branches on this column to load the historical payout table.
+     *
+     *   'v1' — pre-Phase 6.1.10 (classic 96% / bonus ~97.5% RTP)
+     *   'v2' — Phase 6.1.10+ (94% RTP across both paytables)
+     *
+     * Existing rows backfill to 'v1' via the same-diff manual migration
+     * (packages/database/migrations-manual/2026-05-20_add_slot_spins_paytable_version.sql).
+     */
+    paytableVersion: text('paytable_version').notNull().default('v2'),
+
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({

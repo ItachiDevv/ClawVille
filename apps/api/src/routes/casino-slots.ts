@@ -94,6 +94,8 @@ import {
   CLASSIC_LINES,
   CLASSIC_REEL_STRIPS,
   CLASSIC_SYMBOLS,
+  CLASSIC_PAYTABLE,
+  CLASSIC_BONUS_PAYTABLE,
   FREE_SPIN_RULES,
 } from '@clawville/shared';
 import { requireAuth, sessionMiddleware } from '../middleware/auth';
@@ -282,7 +284,7 @@ function buildPaytableResponse(paytableId: MachineSlug): PaytableResponse {
         symbols: CLASSIC_SYMBOLS,
         lines: CLASSIC_LINES,
         reelStrips: CLASSIC_REEL_STRIPS,
-        rtp: 0.96,
+        rtp: CLASSIC_PAYTABLE.rtp,
       };
     case 'classic-3x5-bonus':
       return {
@@ -290,7 +292,7 @@ function buildPaytableResponse(paytableId: MachineSlug): PaytableResponse {
         symbols: BONUS_SYMBOLS,
         lines: CLASSIC_LINES,
         reelStrips: BONUS_REEL_STRIPS,
-        rtp: 0.98,
+        rtp: CLASSIC_BONUS_PAYTABLE.rtp,
       };
     default: {
       // Exhaustiveness check — TS catches missing arms at compile time.
@@ -550,8 +552,11 @@ casinoSlotsRouter.post('/session/open', requireAuth, async (c) => {
       const raceRow = raceRows[0];
       if (raceRow) {
         if (raceRow.paytableId !== input.paytableId) {
+          // Same machine-readable suffix shape as the SELECT FOR UPDATE path
+          // (~line 419) so the frontend auto-close parser at
+          // SlotScreenModal.tsx can recover from this rare race too.
           throw new HTTPException(409, {
-            message: `session_already_open_different_paytable: open=${raceRow.paytableId}, requested=${input.paytableId}`,
+            message: `session_already_open_different_paytable: open=${raceRow.paytableId}, requested=${input.paytableId}, existingSessionId=${raceRow.id}`,
           });
         }
         const response: OpenSessionResponse = {
@@ -640,38 +645,23 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
   if (session.userId !== user.id) {
     throw new HTTPException(403, { message: 'session_not_owned' });
   }
-  if (session.status !== 'open') {
-    throw new HTTPException(409, {
-      message: `session_not_open: status=${session.status}`,
-    });
-  }
-
-  // Slice 3 simplicity — predict per spin must equal session's reserved
-  // predict. Later phases may relax this; the engine itself doesn't care.
-  if (input.predict !== session.startingBalance) {
-    throw new HTTPException(400, {
-      message: `predict_must_equal_session_reserved_predict (expected ${session.startingBalance}, got ${input.predict})`,
-    });
-  }
-  const predictBig = BigInt(input.predict);
-  if (predictBig <= 0n) {
-    throw new HTTPException(400, { message: 'predict_must_be_positive' });
-  }
-  if (predictBig > BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw new HTTPException(400, { message: 'predict_exceeds_supported_range' });
-  }
-  const predictNumber = Number(predictBig);
 
   // ─── Idempotency fast-path ─────────────────────────────────────────
-  // If the same (sessionId, idempotencyKey) tuple already exists, return
-  // the cached row verbatim — NEVER re-run RNG, NEVER re-debit.
   //
-  // Stripe-style guard: a key replayed with DIFFERENT predict args is a
-  // misuse (or an exploitation attempt) — return 409 instead of serving
-  // the cached result at the new stake. Today's pre-cache check at
-  // input.predict === session.startingBalance makes this coincidentally
-  // unreachable, but slice 4+ will relax that and this guard becomes
-  // load-bearing. Keep it in place now so the bug can't slip in later.
+  // The cache MUST be checked BEFORE the session-status / predict
+  // validation. A spin that landed and committed (cached row exists)
+  // can have its session closed afterwards — auto-close path,
+  // /session/close, expiry. A client replay of the same Idempotency-Key
+  // after that window must STILL return the cached row, NOT 409
+  // session_not_open. Otherwise an honest client retry races the close
+  // and the player loses visibility into their own spin result.
+  //
+  // (Phase 6.1.10 audit finding — moved up from after the status check
+  // where it used to live.)
+  //
+  // Stripe-style guard: a key replayed with DIFFERENT predict args is
+  // a misuse (or an exploitation attempt) — return 409 instead of
+  // serving the cached result at the new stake.
   const cached = await db.query.slotSpins.findFirst({
     where: and(
       eq(slotSpins.sessionId, session.id),
@@ -725,6 +715,27 @@ casinoSlotsRouter.post('/spin', requireAuth, async (c) => {
     };
     return c.json(response, 200);
   }
+
+  // Cache miss — proceed with a fresh spin. Status + predict validation
+  // moved AFTER the cache lookup (audit finding 6.1.10):
+  if (session.status !== 'open') {
+    throw new HTTPException(409, {
+      message: `session_not_open: status=${session.status}`,
+    });
+  }
+  if (input.predict !== session.startingBalance) {
+    throw new HTTPException(400, {
+      message: `predict_must_equal_session_reserved_predict (expected ${session.startingBalance}, got ${input.predict})`,
+    });
+  }
+  const predictBig = BigInt(input.predict);
+  if (predictBig <= 0n) {
+    throw new HTTPException(400, { message: 'predict_must_be_positive' });
+  }
+  if (predictBig > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new HTTPException(400, { message: 'predict_exceeds_supported_range' });
+  }
+  const predictNumber = Number(predictBig);
 
   const avatar = await loadAvatarForUser(user.id);
 
@@ -1315,6 +1326,7 @@ casinoSlotsRouter.get('/session/:id/spins', requireAuth, async (c) => {
         wildMultipliers: r.wildMultipliers,
         scatterPayout: r.scatterPayout,
         idempotencyKey: r.idempotencyKey,
+        paytableVersion: r.paytableVersion,
         createdAt: r.createdAt.toISOString(),
       })),
     },
