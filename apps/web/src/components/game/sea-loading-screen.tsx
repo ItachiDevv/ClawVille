@@ -60,13 +60,27 @@ const SPLASH_RINGS = [
 
 const SLOW_MS = 15_000;
 const TIMEOUT_MS = 30_000;
+/** Time constant for the simulated progress curve (ms). pct = 1 - exp(-t/τ). */
+const PROGRESS_TAU = 3500;
+/** Cap the simulated curve below 1.0 until the real ready signal fires. */
+const SIMULATED_CEILING = 0.92;
 
 export default function SeaLoadingScreen({ forceReady }: Props) {
   const [visible, setVisible]       = useState(true);
   const [fading, setFading]         = useState(false);
   const [slow, setSlow]             = useState(false);
+  /**
+   * Progress in [0, 1]. Animated via an exp-eased curve toward SIMULATED_CEILING
+   * while we wait for `window.__W3D`; snaps to 1.0 when ready fires. Honest by
+   * construction — never claims 100% before the real ready signal, but also
+   * never sits at 0% while large GLBs stream. The user sees the bar move and
+   * the lobster looping continuously, so "frozen" reads as "still loading".
+   */
+  const [progress, setProgress]     = useState(0);
   const rafRef     = useRef<number | null>(null);
   const mountedRef = useRef(true);
+  const startedAtRef = useRef<number>(0);
+  const readyRef = useRef(false);
 
   // Read avatar color from game store (set by game/page.tsx via setAvatarAppearance)
   const avatarColorId = useGameStore((s) => s.avatarColor);
@@ -76,6 +90,7 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
 
   useEffect(() => {
     mountedRef.current = true;
+    startedAtRef.current = performance.now();
 
     // Show "taking longer" hint after 15s
     const slowTimer = setTimeout(() => {
@@ -85,6 +100,8 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
     // Force-dismiss after 30s so user isn't stuck forever
     const forceTimer = setTimeout(() => {
       if (mountedRef.current) {
+        readyRef.current = true;
+        setProgress(1);
         setFading(true);
         setTimeout(() => {
           if (mountedRef.current) setVisible(false);
@@ -92,20 +109,31 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
       }
     }, TIMEOUT_MS);
 
-    function check() {
+    function tick() {
       if (!mountedRef.current) return;
       const ready = forceReady || !!(window as any).__W3D;
+      const elapsed = performance.now() - startedAtRef.current;
+
       if (ready) {
+        // Snap to full, fade out. One last frame to flush progress=1 before fade.
+        readyRef.current = true;
+        setProgress(1);
         setFading(true);
         setTimeout(() => {
           if (mountedRef.current) setVisible(false);
         }, 420);
         return;
       }
-      rafRef.current = requestAnimationFrame(check);
+
+      // Eased simulated progress capped below the ready signal.
+      const eased = 1 - Math.exp(-elapsed / PROGRESS_TAU);
+      const next = Math.min(SIMULATED_CEILING, eased);
+      setProgress(next);
+
+      rafRef.current = requestAnimationFrame(tick);
     }
 
-    rafRef.current = requestAnimationFrame(check);
+    rafRef.current = requestAnimationFrame(tick);
     return () => {
       mountedRef.current = false;
       clearTimeout(slowTimer);
@@ -136,29 +164,32 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
           50%       { text-shadow: 0 0 38px rgba(45,212,191,0.85), 0 0 60px rgba(45,212,191,0.35); }
         }
 
-        /* ── Avatar drop — gravity fall from off-screen top ───────────── */
-        /*  Starts above viewport (-120px), lands at water surface (30vh) */
-        @keyframes claw-avatar-drop {
-          0%   { transform: translateY(-120px) rotate(-8deg) scale(1);   opacity: 0; }
-          5%   { opacity: 1; }
-          55%  { transform: translateY(calc(30vh - 40px)) rotate(4deg) scale(1);   opacity: 1; }
-          70%  { transform: translateY(calc(30vh - 2px))  rotate(0deg) scale(1.06); opacity: 1; }
-          80%  { transform: translateY(calc(30vh + 8px))  rotate(0deg) scale(0.96); opacity: 1; }
-          100% { transform: translateY(calc(30vh))        rotate(0deg) scale(1);   opacity: 1; }
+        /* ── Avatar loop — single keyframe covers drop + splash + sink + reset ── */
+        /*  Period = 7s (set on .style.animationDuration below). Loops infinite     */
+        /*  so the user always sees motion while assets stream. Splash percentages  */
+        /*  align with the splash-ring keyframe below so each loop iteration the    */
+        /*  rings expand exactly when the lobster hits the surface.                 */
+        @keyframes claw-avatar-loop {
+          0%   { transform: translateY(-120px) rotate(-8deg) scale(1);      opacity: 0; }
+          3%   { opacity: 1; }
+          10%  { transform: translateY(calc(30vh - 40px)) rotate(4deg) scale(1);     opacity: 1; }
+          12%  { transform: translateY(calc(30vh - 2px))  rotate(0deg) scale(1.06);  opacity: 1; }
+          14%  { transform: translateY(calc(30vh + 8px))  rotate(0deg) scale(0.96);  opacity: 1; }
+          17%  { transform: translateY(calc(30vh))        rotate(0deg) scale(1);     opacity: 1; }
+          60%  { transform: translateY(calc(70vh))        rotate(6deg) scale(0.55);  opacity: 0.65; }
+          88%  { transform: translateY(calc(95vh))        rotate(12deg) scale(0.32); opacity: 0.22; }
+          94%  { transform: translateY(calc(110vh))       rotate(14deg) scale(0.28); opacity: 0; }
+          100% { transform: translateY(-120px) rotate(-8deg) scale(1);      opacity: 0; }
         }
 
-        /* ── Avatar sink — continues downward after splash ─────────────── */
-        /*  Starts at 30vh (splash point) and sinks toward 90vh           */
-        @keyframes claw-avatar-sink {
-          0%   { transform: translateY(calc(30vh))  scale(1)    rotate(0deg);  opacity: 1; }
-          60%  { transform: translateY(calc(70vh))  scale(0.55) rotate(6deg);  opacity: 0.65; }
-          100% { transform: translateY(calc(90vh))  scale(0.35) rotate(12deg); opacity: 0.3; }
-        }
-
-        /* ── Splash rings ─────────────────────────────────────────────── */
-        @keyframes claw-splash-ring {
-          0%   { transform: scale(0.1); opacity: 0.8; }
-          100% { transform: scale(1);   opacity: 0; }
+        /* ── Splash rings ───────────────────────────────────────────────────── */
+        /* Same 7s period as the avatar loop. Rings fade in around the 12-13%   */
+        /* mark (when lobster pierces the surface) and expand+fade out by 18%.  */
+        @keyframes claw-splash-ring-loop {
+          0%, 10%   { transform: scale(0.1); opacity: 0; }
+          12%       { transform: scale(0.15); opacity: 0.8; }
+          18%       { transform: scale(1);    opacity: 0; }
+          100%      { transform: scale(1);    opacity: 0; }
         }
 
         /* ── Bubble rise — trail bubbles from sinking avatar ────────────── */
@@ -178,12 +209,6 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
         @keyframes claw-ray-pulse {
           0%, 100% { opacity: 0.12; }
           50%       { opacity: 0.22; }
-        }
-
-        /* ── Progress shimmer bar ────────────────────────────────────── */
-        @keyframes claw-shimmer {
-          0%   { left: -60%; }
-          100% { left: 110%; }
         }
 
         /* ── Water surface ripple ───────────────────────────────────── */
@@ -291,12 +316,15 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
                 marginTop: -(ring.size / 6),
                 borderRadius: '50%',
                 border: '2px solid rgba(45,212,191,0.7)',
-                // Appear at 800ms (0.8s) + individual ring delay
-                animationDelay: `calc(0.8s + ${ring.delay})`,
-                animationDuration: '0.55s',
-                animationName: 'claw-splash-ring',
+                // Loop-aware: each ring shares the 7s avatar period; the per-ring
+                // delay staggers them inside the splash window. Infinite iteration
+                // so rings re-expand every time the lobster hits the surface.
+                animationDelay: ring.delay,
+                animationDuration: '7s',
+                animationName: 'claw-splash-ring-loop',
                 animationTimingFunction: 'ease-out',
                 animationFillMode: 'both',
+                animationIterationCount: 'infinite',
                 opacity: 0,
               }}
             />
@@ -304,7 +332,8 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
         </div>
 
         {/* ── Avatar lobster ──────────────────────────────────────────────── */}
-        {/* Phase 1: drop (0.3s–1.0s), Phase 2: sink (1.0s onward)        */}
+        {/* Single 7s looping keyframe combining drop + splash + sink + reset.  */}
+        {/* Loops infinitely until window.__W3D fires and the overlay fades.    */}
         <div
           aria-hidden="true"
           style={{
@@ -314,13 +343,11 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
             marginLeft: '-40px',   // half of 80px SVG width
             width: '80px',
             height: '80px',
-            // Phase 1: drop animation — runs once, 700ms, starts at 300ms
-            animationName: 'claw-avatar-drop, claw-avatar-sink',
-            animationDuration: '0.7s, 4.5s',
-            animationDelay: '0.3s, 1.0s',
-            animationTimingFunction: 'cubic-bezier(0.55, 0, 1, 0.45), cubic-bezier(0.3, 0, 0.6, 1)',
-            animationFillMode: 'both, forwards',
-            animationIterationCount: '1, 1',
+            animationName: 'claw-avatar-loop',
+            animationDuration: '7s',
+            animationTimingFunction: 'cubic-bezier(0.4, 0, 0.6, 1)',
+            animationIterationCount: 'infinite',
+            animationFillMode: 'both',
             filter: 'drop-shadow(0 4px 12px rgba(0,0,0,0.6))',
           }}
         >
@@ -442,29 +469,45 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
             Dropping in...
           </p>
 
-          {/* Progress shimmer bar */}
+          {/* Progress bar — width-driven fill, eased toward SIMULATED_CEILING
+              while waiting, snaps to 100% when window.__W3D fires. */}
           <div
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(progress * 100)}
+            aria-label="Loading ClawVille"
             style={{
-              width: '140px',
-              height: '2px',
+              width: '180px',
+              height: '4px',
               borderRadius: '99px',
-              background: 'rgba(45,212,191,0.15)',
+              background: 'rgba(45,212,191,0.12)',
+              border: '1px solid rgba(45,212,191,0.18)',
               overflow: 'hidden',
               position: 'relative',
             }}
           >
             <div
               style={{
-                position: 'absolute',
-                top: 0,
-                left: '-60%',
-                width: '60%',
+                width: `${progress * 100}%`,
                 height: '100%',
                 borderRadius: '99px',
-                background: 'linear-gradient(90deg, transparent 0%, #2dd4bf 50%, transparent 100%)',
-                animation: 'claw-shimmer 1.6s linear infinite',
+                background: 'linear-gradient(90deg, #2dd4bf 0%, #67e8f9 60%, #a5f3fc 100%)',
+                boxShadow: '0 0 10px rgba(45,212,191,0.55)',
+                transition: 'width 280ms cubic-bezier(0.2, 0, 0.2, 1)',
               }}
             />
+          </div>
+          <div
+            style={{
+              fontFamily: 'var(--font-oxanium), sans-serif',
+              fontSize: '10px',
+              color: 'rgba(125,211,252,0.45)',
+              letterSpacing: '0.18em',
+            }}
+            aria-hidden="true"
+          >
+            {Math.round(progress * 100)}%
           </div>
 
           {/* Three pulsing dots */}
