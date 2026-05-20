@@ -66,6 +66,12 @@ export default function SlotReelsCanvas(props: SlotReelsCanvasProps) {
       style={{
         width:    '100%',
         height:   '100%',
+        // min-width:0 / min-height:0 — see .pt-reel-frame comment in
+        // casino-tokens.css. Without these, the canvas's intrinsic
+        // width/height attrs (set by Three.js) become the flex item
+        // min-content, blocking modal shrinkage on viewport resize.
+        minWidth:  0,
+        minHeight: 0,
         position: 'relative',
         background: 'var(--pt-velvet)',
         overflow: 'hidden',
