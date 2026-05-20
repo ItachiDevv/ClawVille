@@ -84,7 +84,7 @@ export default function NeonModal({
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        background: 'rgba(2, 1, 3, 0.82)',
+        background: 'rgba(6, 46, 59, 0.82)',
         backdropFilter: 'blur(6px)',
         WebkitBackdropFilter: 'blur(6px)',
         animation: 'cv-modal-bg-in var(--cv-motion-base) var(--cv-ease-standard)',

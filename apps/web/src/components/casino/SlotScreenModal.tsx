@@ -675,7 +675,7 @@ export default function SlotScreenModal() {
               </button>
             </div>
 
-            <div className="pt-header-title">CLASSIC 3×5 · PREDICT TERMINAL</div>
+            <div className="pt-header-title">Tide Pool Casino · Classic 3×5</div>
 
             <div className="pt-header-side">
               <button
@@ -776,7 +776,7 @@ export default function SlotScreenModal() {
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              background: 'rgba(2, 1, 3, 0.78)',
+              background: 'rgba(6, 46, 59, 0.78)',
               padding: 20,
             }}
           >
