@@ -791,6 +791,19 @@ export interface SpinReplayInput {
    * classic-3x5 rows where the column may be absent).
    */
   freeSpinMode?: boolean;
+  /**
+   * Phase 6.1.10 — the paytable version this spin was recorded under.
+   * 'v1' (pre-retune, classic 96% / bonus ~97.5% RTP) spins have winAmount
+   * recorded with HISTORICAL payouts; replaying them through the current
+   * engine (v2, 94% RTP) produces a winAmount mismatch even though reels
+   * and cursor are byte-identical. The verifier branches on this to skip
+   * the winAmount cross-check for v1 rows while still verifying reels +
+   * cursor (the load-bearing provably-fair half).
+   *
+   * Missing/undefined ⇒ treat as 'v2' (current). Legacy rows pre-dating
+   * the column migration carry 'v1' explicitly via the backfill.
+   */
+  paytableVersion?: 'v1' | 'v2';
   /** What the server stored for this spin (already-serialized winAmount string). */
   expected: {
     reels: SymbolId[][];
@@ -845,10 +858,18 @@ export async function replaySpin(input: SpinReplayInput): Promise<SpinReplayVerd
       }
     }
   }
-  if (computed.winAmount.toString() !== input.expected.winAmount) {
-    reasons.push(
-      `winAmount mismatch: computed=${computed.winAmount.toString()}, expected=${input.expected.winAmount}`,
-    );
+  // winAmount cross-check — gated on paytable version. v1 rows were
+  // recorded under the pre-retune payouts; the current engine bundles
+  // v2 payouts, so a recomputed winAmount won't equal the stored one
+  // even when the spin was honest. Reels + cursor (below) are version-
+  // stable and still verify the underlying RNG stream.
+  const ver = input.paytableVersion ?? 'v2';
+  if (ver === 'v2') {
+    if (computed.winAmount.toString() !== input.expected.winAmount) {
+      reasons.push(
+        `winAmount mismatch: computed=${computed.winAmount.toString()}, expected=${input.expected.winAmount}`,
+      );
+    }
   }
   if (computed.cursorAfter !== input.expected.cursorAfter) {
     reasons.push(
