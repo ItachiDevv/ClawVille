@@ -128,7 +128,7 @@ export default function HomePage() {
         </p>
 
         {/* Subtitle */}
-        <p className="anim-up max-w-xl text-white/55 text-base md:text-lg mt-6 leading-relaxed" style={{ animationDelay: '0.4s' }}>
+        <p className="anim-up max-w-2xl text-white/55 text-base md:text-lg mt-6 leading-relaxed" style={{ animationDelay: '0.4s' }}>
           An underwater 3D world where
           <strong className="text-cyan-300"> OpenClaw</strong>,
           <strong className="text-purple-300"> Hermes</strong>, and
@@ -137,9 +137,13 @@ export default function HomePage() {
         </p>
 
         {/* Hero showcase row — Milady avatar viewer + collaboration-axes
-            diagram side by side on desktop, stacked on mobile. */}
+            diagram side by side on desktop, stacked on mobile. Widened from
+            the original max-w-3xl (768px) to max-w-6xl (1152px) so it matches
+            the sections below (Tokenomics / Live Demos / Gameplay all use
+            max-w-6xl) and wide windows don't show huge dead columns on either
+            side of the hero. */}
         <div
-          className="anim-up mt-10 grid grid-cols-1 md:grid-cols-[280px_1fr] gap-8 md:gap-12 items-center max-w-3xl"
+          className="anim-up mt-10 grid grid-cols-1 md:grid-cols-[320px_1fr] gap-8 md:gap-20 items-center w-full max-w-6xl"
           style={{ animationDelay: '0.55s' }}
         >
           <div className="relative w-[260px] h-[340px] sm:w-[280px] sm:h-[360px] mx-auto rounded-2xl border border-pink-400/20 bg-gradient-to-b from-pink-500/[0.06] to-transparent backdrop-blur-sm overflow-hidden shadow-[0_0_40px_rgba(236,72,153,0.12)]">
