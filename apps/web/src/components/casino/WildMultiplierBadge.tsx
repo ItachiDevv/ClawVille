@@ -89,7 +89,7 @@ export interface WildMultiplierBadgeProps {
    *
    * In FS mode (`mode === 'free-spin'`), the engine DOES apply the
    * multiplier to any line whose matchLen prefix crosses this cell.
-   * Render the chip ACTIVE — full saturation, magenta glow, pulse on
+   * Render the chip ACTIVE — full saturation, amber glow, pulse on
    * land.
    *
    * Default `false` (ACTIVE), so callers that don't yet pass the prop
@@ -147,49 +147,39 @@ export default function WildMultiplierBadge({
 
   const chipStyle: CSSProperties = dimmed
     ? {
-        // BASE-mode "potential" — outlined, low-saturation, no glow,
-        // no land-pulse animation. Player sees the wild value the spin
-        // WOULD have multiplied by in FS, without misreading it as an
-        // applied multiplier on the current line win.
+        // BASE-mode "potential" — outlined brass on tobacco, no glow.
         position: 'absolute',
         top: 4,
         right: 4,
         minWidth: 30,
         padding: '3px 7px',
-        borderRadius: 'var(--cv-radius-pill, 999px)',
-        background: 'rgba(10, 20, 40, 0.55)',
-        color: 'rgba(255, 200, 255, 0.85)',
-        fontFamily: 'monospace',
+        background: 'rgba(31, 14, 21, 0.65)',
+        color: 'var(--pt-cream-soft)',
+        fontFamily: 'var(--pt-data)',
         fontSize: 12,
-        fontWeight: 900,
+        fontWeight: 500,
         letterSpacing: '0.04em',
         textAlign: 'center',
-        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.08)',
-        border: '1.5px dashed rgba(255, 55, 193, 0.55)',
-        textShadow: '0 0 4px rgba(255, 55, 193, 0.45)',
-        opacity: 0.82,
+        border: '1.5px dashed var(--pt-brass-dim)',
+        opacity: 0.85,
       }
     : {
-        // FS-mode ACTIVE — full saturation, magenta+violet glow, scale-pulse
-        // on land. Indicates the multiplier IS applied to any winning line
-        // crossing this cell.
+        // FS-mode ACTIVE — amber fill on velvet, scale-pulse on land.
         position: 'absolute',
         top: 4,
         right: 4,
         minWidth: 30,
         padding: '3px 7px',
-        borderRadius: 'var(--cv-radius-pill, 999px)',
-        background: 'linear-gradient(180deg, #ff37c1 0%, #7b2ff7 100%)',
-        color: '#ffffff',
-        fontFamily: 'monospace',
+        background: 'linear-gradient(180deg, var(--pt-amber-glow) 0%, var(--pt-amber) 100%)',
+        color: 'var(--pt-velvet)',
+        fontFamily: 'var(--pt-data)',
         fontSize: 12,
-        fontWeight: 900,
+        fontWeight: 700,
         letterSpacing: '0.04em',
         textAlign: 'center',
         boxShadow:
-          '0 0 12px rgba(255, 55, 193, 0.85), 0 0 22px rgba(123, 47, 247, 0.55), inset 0 1px 0 rgba(255,255,255,0.35)',
-        border: '1px solid rgba(255,255,255,0.45)',
-        textShadow: '0 0 6px rgba(255, 55, 193, 0.9)',
+          '0 0 12px rgba(255, 174, 0, 0.85), 0 0 22px rgba(255, 204, 68, 0.45), inset 0 1px 0 rgba(255,233,200,0.45)',
+        border: '1px solid var(--pt-brass)',
         transform: pulsed ? 'scale(1.18)' : 'scale(1)',
         transition: reduced ? 'none' : 'transform 700ms cubic-bezier(0.2, 0.8, 0.2, 1)',
         animation: pulsed && !reduced ? 'cv-stop-pop 600ms cubic-bezier(0.2, 0.8, 0.2, 1)' : 'none',

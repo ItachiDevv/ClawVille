@@ -101,9 +101,9 @@ function SparkleCell({
           height: 8,
           borderRadius: '50%',
           background:
-            'radial-gradient(circle at 35% 30%, #ffffff 0%, #fff7c8 50%, rgba(255,200,87,0) 100%)',
+            'radial-gradient(circle at 35% 30%, #fff3d2 0%, #ffd684 50%, rgba(255,174,0,0) 100%)',
           boxShadow:
-            '0 0 8px #fff7c8, 0 0 16px rgba(255,200,87,0.85), 0 0 24px rgba(255,55,193,0.4)',
+            '0 0 8px #ffe9b3, 0 0 16px rgba(255,174,0,0.85), 0 0 24px rgba(200,154,77,0.4)',
           transform: 'translate(-50%, -50%)',
           animation: reduced
             ? 'none'
@@ -124,8 +124,8 @@ function SparkleCell({
           inset: 6,
           borderRadius: 'var(--cv-radius-sm, 6px)',
           boxShadow:
-            'inset 0 0 24px rgba(255, 200, 87, 0.55), 0 0 22px rgba(255, 200, 87, 0.4)',
-          border: '1px solid rgba(255, 200, 87, 0.75)',
+            'inset 0 0 24px rgba(255, 174, 0, 0.55), 0 0 22px rgba(255, 174, 0, 0.4)',
+          border: '1px solid var(--pt-amber)',
           animation: reduced ? 'none' : 'cv-glow-pulse 900ms ease-in-out infinite',
         }}
       />
@@ -186,18 +186,17 @@ export default function ScatterCelebration({
           zIndex: 8,
           pointerEvents: 'none',
           padding: '6px 14px',
-          borderRadius: 'var(--cv-radius-pill, 999px)',
-          background:
-            'linear-gradient(180deg, rgba(10,20,40,0.95) 0%, rgba(5,10,24,0.97) 100%)',
-          border: '2px solid var(--cv-gold-accent, #ffc857)',
-          color: 'var(--cv-gold-bright, #ffd684)',
-          fontFamily: 'monospace',
-          fontSize: 14,
-          fontWeight: 900,
-          letterSpacing: '0.1em',
-          textShadow: '0 0 10px rgba(255, 200, 87, 0.85)',
+          background: 'linear-gradient(180deg, var(--pt-velvet-soft) 0%, var(--pt-velvet) 100%)',
+          border: '2px solid var(--pt-amber)',
+          color: 'var(--pt-amber-glow)',
+          fontFamily: 'var(--pt-data)',
+          fontSize: 13,
+          fontWeight: 500,
+          letterSpacing: '0.18em',
+          textTransform: 'uppercase',
+          textShadow: '0 0 10px rgba(255, 174, 0, 0.85)',
           boxShadow:
-            '0 0 16px rgba(255, 200, 87, 0.55), 0 0 36px rgba(255, 200, 87, 0.25)',
+            '0 0 16px rgba(255, 174, 0, 0.55), 0 0 36px rgba(255, 174, 0, 0.25)',
           animation: reduced
             ? 'none'
             : 'cv-mega-banner-in 500ms var(--cv-ease-bounce)',

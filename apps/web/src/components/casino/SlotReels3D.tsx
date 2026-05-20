@@ -226,7 +226,7 @@ function roundRectPath(
 // ---------------------------------------------------------------------------
 // Draw a single cell into a canvas at (x, y) — premium social-casino styling.
 //   - dark vertical-gradient card background (deeper-than-purple slate)
-//   - cyan border outline
+//   - brass border outline
 //   - top rim highlight gradient (fake light)
 //   - thick-outlined symbol artwork centered ~64% of cell size
 //   - theme-color accent stroke around symbol art for high-motion readability
@@ -278,8 +278,8 @@ function drawCell(
     ctx.fill();
   }
 
-  // Cyan card outline
-  ctx.strokeStyle = 'rgba(0, 224, 255, 0.55)';
+  // Brass card outline
+  ctx.strokeStyle = 'rgba(200, 154, 77, 0.55)';
   ctx.lineWidth   = size * 0.012;
   roundRectPath(ctx, ix, iy, iw, ih, r);
   ctx.stroke();
@@ -465,13 +465,13 @@ export default function SlotReels3D({
   );
 
   const vignetteTopTex = useMemo(() => makeVerticalGradientTexture(
-    ['rgba(2,4,12,0.92)', 'rgba(2,4,12,0)'],
+    ['rgba(21, 9, 14, 0.92)', 'rgba(21, 9, 14, 0)'],
   ), []);
   const vignetteBotTex = useMemo(() => makeVerticalGradientTexture(
-    ['rgba(2,4,12,0)', 'rgba(2,4,12,0.92)'],
+    ['rgba(21, 9, 14, 0)', 'rgba(21, 9, 14, 0.92)'],
   ), []);
   const paylineGlowTex = useMemo(() => makeHorizontalGradientTexture(
-    ['rgba(0,224,255,0)', 'rgba(0,224,255,0.55)', 'rgba(0,224,255,0)'],
+    ['rgba(255, 174, 0, 0)', 'rgba(255, 174, 0, 0.55)', 'rgba(255, 174, 0, 0)'],
   ), []);
   const frameBorderTex = useMemo(() => makeFrameBorderTexture(), []);
 
@@ -801,7 +801,7 @@ function makeFrameBorderTexture(): THREE.CanvasTexture {
   ctx.clearRect(0, 0, W, H);
 
   // Inner dark frame
-  ctx.strokeStyle = 'rgba(0, 224, 255, 0.18)';
+  ctx.strokeStyle = 'rgba(200, 154, 77, 0.18)';
   ctx.lineWidth = 6;
   ctx.strokeRect(8, 8, W - 16, H - 16);
 
