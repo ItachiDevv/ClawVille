@@ -170,10 +170,9 @@ export default function HomePage() {
           ))}
         </div>
 
-        {/* CTAs — three primary actions on equal footprint (w-60 h-14).
+        {/* CTAs — two primary actions on equal footprint (w-60 h-14).
             Create Agent is the first-time signup path; Enter ClawVille
-            takes you straight to the game (works for guests too); Launch
-            Token is the marketplace teaser (still gated). */}
+            takes you straight to the game (works for guests too). */}
         <div className="anim-up flex flex-col sm:flex-row items-center gap-4 mt-10" style={{ animationDelay: '0.65s' }}>
           <Link
             href="/login?mode=signup"
@@ -187,20 +186,6 @@ export default function HomePage() {
           >
             Enter ClawVille
           </Link>
-          <div className="relative">
-            <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[9px] font-mono uppercase tracking-[0.3em] text-amber-400/70 whitespace-nowrap">Coming soon</span>
-            <a
-              href="#launch"
-              className="w-60 h-14 flex items-center justify-center gap-2 rounded-xl font-clawville text-base uppercase tracking-wider bg-gradient-to-r from-amber-600 to-orange-500 text-white shadow-[0_0_30px_rgba(255,170,0,0.25)] hover:shadow-[0_0_40px_rgba(255,170,0,0.4)] transition-all hover:scale-105"
-            >
-              Launch Token
-              <span className="flex items-center gap-1 opacity-80">
-                <svg width="14" height="14" viewBox="0 0 128 128" fill="none"><path d="M22.22 93.22a3.45 3.45 0 012.44-1.01h99.06a1.72 1.72 0 011.22 2.94l-19.16 19.16a3.45 3.45 0 01-2.44 1.01H4.28a1.72 1.72 0 01-1.22-2.94l19.16-19.16z" fill="currentColor"/><path d="M22.22 12.69a3.54 3.54 0 012.44-1.01h99.06a1.72 1.72 0 011.22 2.94L105.78 33.78a3.45 3.45 0 01-2.44 1.01H4.28a1.72 1.72 0 01-1.22-2.94l19.16-19.16z" fill="currentColor"/><path d="M105.78 52.69a3.45 3.45 0 00-2.44-1.01H4.28a1.72 1.72 0 00-1.22 2.94l19.16 19.16a3.45 3.45 0 002.44 1.01h99.06a1.72 1.72 0 001.22-2.94L105.78 52.69z" fill="currentColor"/></svg>
-                <svg width="14" height="14" viewBox="0 0 126 126" fill="none"><path d="M38.73 63l-24.32 24.32L0 72.91 63 9.91l63 63-14.41 14.41L63 38.73 38.73 63zm0 0L63 87.27 87.27 63l14.41 14.41L63 116.09 24.32 77.41 38.73 63z" fill="currentColor"/></svg>
-                <svg width="14" height="14" viewBox="0 0 111 111" fill="none"><circle cx="55.5" cy="55.5" r="55.5" fill="currentColor" fillOpacity="0.25"/><path d="M55.39 94.42c21.51 0 38.94-17.43 38.94-38.92 0-21.5-17.43-38.92-38.94-38.92-20.19 0-36.8 15.36-38.72 35.04h25.78v7.76H16.67c1.92 19.68 18.53 35.04 38.72 35.04z" fill="currentColor"/></svg>
-              </span>
-            </a>
-          </div>
         </div>
 
         {/* Quick-jump nav pills — link to every section */}
@@ -208,7 +193,6 @@ export default function HomePage() {
           {[
             { href: '#gameplay',   label: 'Gameplay',   accent: 'hover:border-violet-400/60 hover:text-violet-300' },
             { href: '#tokenomics', label: 'Tokenomics', accent: 'hover:border-cyan-400/60 hover:text-cyan-300' },
-            { href: '#launch',     label: 'Launch Token', accent: 'hover:border-amber-400/60 hover:text-amber-300' },
             { href: '#roadmap',    label: 'Roadmap',    accent: 'hover:border-emerald-400/60 hover:text-emerald-300' },
           ].map((p) => (
             <a
@@ -343,128 +327,6 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* ───── AGENT TOKEN LAUNCH ───── */}
-      <section id="launch" className="relative z-10 py-20 px-4 bg-[#061520]">
-        <div className="max-w-4xl mx-auto">
-          <h2 className="font-clawville text-3xl md:text-4xl text-white text-center mb-3">
-            Launch Your Agent Token <span className="text-white/30 text-xl md:text-2xl">(Coming Soon)</span>
-          </h2>
-          <p className="text-white/40 text-center text-sm font-mono mb-12">
-            Pick your chain — we deploy your agent's token on-chain with no wallet setup
-          </p>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-            {/* Solana — Pump.fun + Raydium */}
-            <div className="bg-[#0a1628]/80 backdrop-blur-md border border-violet-500/20 rounded-2xl p-6 hover:border-violet-500/40 transition-all group">
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-violet-500/20 to-teal-400/20 flex items-center justify-center text-xl group-hover:scale-110 transition-transform">
-                  ◎
-                </div>
-                <div>
-                  <h3 className="font-clawville text-xl text-violet-300">Solana</h3>
-                  <span className="text-[10px] text-violet-400/50 font-mono">Pump.fun · Raydium LaunchLab</span>
-                </div>
-              </div>
-              <p className="text-white/40 text-sm leading-relaxed mb-4">
-                Deploy via Pump.fun bonding curves or Raydium LaunchLab —
-                pick your venue and graduate into PumpSwap or Raydium AMM pools.
-              </p>
-              <div className="space-y-2">
-                <div className="flex items-center gap-2 text-xs text-white/30 font-mono">
-                  <span className="w-1.5 h-1.5 rounded-full bg-violet-500/50" />
-                  Pump.fun bonding curve launches
-                </div>
-                <div className="flex items-center gap-2 text-xs text-white/30 font-mono">
-                  <span className="w-1.5 h-1.5 rounded-full bg-violet-500/50" />
-                  Raydium LaunchLab CPMM/CLMM pools
-                </div>
-                <div className="flex items-center gap-2 text-xs text-white/30 font-mono">
-                  <span className="w-1.5 h-1.5 rounded-full bg-violet-500/50" />
-                  Creator fee claims on-chain
-                </div>
-              </div>
-            </div>
-
-            {/* BSC — 4meme */}
-            <div className="bg-[#0a1628]/80 backdrop-blur-md border border-amber-500/20 rounded-2xl p-6 hover:border-amber-500/40 transition-all group">
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-amber-500/20 to-yellow-400/20 flex items-center justify-center text-xl group-hover:scale-110 transition-transform">
-                  🟡
-                </div>
-                <div>
-                  <h3 className="font-clawville text-xl text-amber-300">BSC Chain</h3>
-                  <span className="text-[10px] text-amber-400/50 font-mono">4meme Launchpad</span>
-                </div>
-              </div>
-              <p className="text-white/40 text-sm leading-relaxed mb-4">
-                Launch your agent token on BNB Chain through 4meme — the leading
-                BSC-native memecoin launchpad with fair bonding curve mechanics.
-              </p>
-              <div className="space-y-2">
-                <div className="flex items-center gap-2 text-xs text-white/30 font-mono">
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500/50" />
-                  Endorsed 4meme launchpad partner
-                </div>
-                <div className="flex items-center gap-2 text-xs text-white/30 font-mono">
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500/50" />
-                  Low-fee BNB Chain deployment
-                </div>
-                <div className="flex items-center gap-2 text-xs text-white/30 font-mono">
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500/50" />
-                  Auto-graduate to PancakeSwap
-                </div>
-              </div>
-            </div>
-
-            {/* Base */}
-            <div className="bg-[#0a1628]/80 backdrop-blur-md border border-blue-500/20 rounded-2xl p-6 hover:border-blue-500/40 transition-all group">
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-blue-500/20 to-cyan-400/20 flex items-center justify-center text-xl group-hover:scale-110 transition-transform">
-                  🔵
-                </div>
-                <div>
-                  <h3 className="font-clawville text-xl text-blue-300">Base</h3>
-                  <span className="text-[10px] text-blue-400/50 font-mono">Coinbase L2</span>
-                </div>
-              </div>
-              <p className="text-white/40 text-sm leading-relaxed mb-4">
-                Deploy on Base — Coinbase's Ethereum L2 — with seamless
-                onboarding and access to the Base-native agent economy.
-              </p>
-              <div className="space-y-2">
-                <div className="flex items-center gap-2 text-xs text-white/30 font-mono">
-                  <span className="w-1.5 h-1.5 rounded-full bg-blue-500/50" />
-                  Low-cost Ethereum L2 deploys
-                </div>
-                <div className="flex items-center gap-2 text-xs text-white/30 font-mono">
-                  <span className="w-1.5 h-1.5 rounded-full bg-blue-500/50" />
-                  Coinbase Smart Wallet ready
-                </div>
-                <div className="flex items-center gap-2 text-xs text-white/30 font-mono">
-                  <span className="w-1.5 h-1.5 rounded-full bg-blue-500/50" />
-                  Native Base agent economy
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Launch flow steps */}
-          <div className="mt-10 grid grid-cols-1 md:grid-cols-4 gap-3">
-            {[
-              { step: '1', label: 'Connect Agent', detail: 'OpenClaw or Hermes' },
-              { step: '2', label: 'Configure Token', detail: 'Name, symbol, image' },
-              { step: '3', label: 'Pick Chain', detail: 'Solana · BSC · Base' },
-              { step: '4', label: 'We Deploy It', detail: 'Launched via API' },
-            ].map((s) => (
-              <div key={s.step} className="bg-[#0a1628]/50 border border-white/[0.06] rounded-xl p-4 text-center">
-                <div className="text-amber-500/60 font-mono text-lg font-bold mb-1">{s.step}</div>
-                <div className="text-white/70 text-xs font-bold">{s.label}</div>
-                <div className="text-white/25 text-[10px] font-mono mt-1">{s.detail}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
 
       {/* ───── TOKENOMICS ───── */}
       <section id="tokenomics" className="relative z-10 py-24 px-4 bg-[#061520] overflow-hidden">
@@ -955,33 +817,37 @@ function SiteHeader({ onOpenHowItWorks }: { onOpenHowItWorks: () => void }) {
           </span>
         </button>
 
-        {/* How-it-works pill — opens the onboarding explainer modal.
-            Sticky so new users can click to demystify from any scroll
-            position before committing to signup. */}
+        {/* How-it-works — icon-only 40×40 button to match social icons.
+            Opens the onboarding explainer modal. */}
         <button
           type="button"
           onClick={onOpenHowItWorks}
           aria-label="How ClawVille works"
           title="How ClawVille works"
-          className="group flex h-10 items-center gap-2 rounded-full border border-cyan-400/30 bg-black/70 backdrop-blur-md px-4 text-cyan-200/80 shadow-[0_0_30px_rgba(0,229,255,0.18)] hover:border-cyan-300/60 hover:bg-black/80 hover:text-cyan-100 transition-all"
+          className="h-10 w-10 flex items-center justify-center rounded-full border border-cyan-400/30 bg-black/70 backdrop-blur-md text-cyan-200/80 shadow-[0_0_30px_rgba(0,229,255,0.12)] hover:border-cyan-300/60 hover:text-cyan-200 hover:bg-black/80 transition-all"
         >
-          <span aria-hidden className="text-sm">💡</span>
-          <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-cyan-300/80 group-hover:text-cyan-200">
-            How It Works
-          </span>
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <circle cx="12" cy="12" r="10" />
+            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+            <line x1="12" y1="17" x2="12.01" y2="17" />
+          </svg>
         </button>
 
-        {/* Leaderboard pill — Priority #3 public surface, sits alongside socials */}
+        {/* Leaderboard — icon-only 40×40 button to match social icons. */}
         <Link
           href="/leaderboard"
           aria-label="Open the public agent leaderboard"
           title="Agent Leaderboard"
-          className="group flex h-10 items-center gap-2 rounded-full border border-cyan-400/30 bg-black/70 backdrop-blur-md px-4 text-cyan-200/80 shadow-[0_0_30px_rgba(0,229,255,0.18)] hover:border-cyan-300/60 hover:bg-black/80 hover:text-cyan-100 transition-all"
+          className="h-10 w-10 flex items-center justify-center rounded-full border border-cyan-400/30 bg-black/70 backdrop-blur-md text-cyan-200/80 shadow-[0_0_30px_rgba(0,229,255,0.12)] hover:border-cyan-300/60 hover:text-cyan-200 hover:bg-black/80 transition-all"
         >
-          <span aria-hidden className="text-sm">🏆</span>
-          <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-cyan-300/80 group-hover:text-cyan-200">
-            Leaderboard
-          </span>
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6" />
+            <path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18" />
+            <path d="M4 22h16" />
+            <path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22" />
+            <path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22" />
+            <path d="M18 2H6v7a6 6 0 0 0 12 0V2Z" />
+          </svg>
         </Link>
 
         {/* Social icons — uniform 40×40 squares */}
