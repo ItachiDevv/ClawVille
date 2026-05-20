@@ -1216,6 +1216,36 @@ casinoSlotsRouter.post('/session/close', requireAuth, async (c) => {
   return c.json(response, 200);
 });
 
+// ─── GET /session/current ─────────────────────────────────────────────────
+//
+// Returns the user's currently-open session (status='open') if any, else 404.
+// Used by the slot modal on mount to restore session state after a page
+// refresh — the Zustand store wipes on reload but the server session is
+// durable until /close. Without this endpoint, refresh-during-mid-spin would
+// orphan the session and the next /open would race the idempotent path on
+// the first SPIN click (cleaner UX to discover the open session eagerly).
+
+casinoSlotsRouter.get('/session/current', requireAuth, async (c) => {
+  const user = c.get('user')!;
+  const row = await db.query.slotSessions.findFirst({
+    where: and(
+      eq(slotSessions.userId, user.id),
+      eq(slotSessions.status, 'open'),
+    ),
+  });
+  if (!row) {
+    throw new HTTPException(404, { message: 'no_open_session' });
+  }
+  // Include the authoritative wallet balance so the client can snapshot
+  // it as the PnL baseline without a second round-trip (mirrors the
+  // `walletBalance` field on /session/open's response).
+  const avatar = await loadAvatarForUser(user.id);
+  return c.json({
+    session: publicSession(row),
+    walletBalance: avatar.clawTokens,
+  }, 200);
+});
+
 // ─── GET /session/:id ─────────────────────────────────────────────────────
 
 casinoSlotsRouter.get('/session/:id', requireAuth, async (c) => {
