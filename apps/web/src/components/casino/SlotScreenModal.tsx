@@ -661,12 +661,17 @@ export default function SlotScreenModal() {
           animation: 'cv-modal-bg-in var(--cv-motion-base) var(--cv-ease-standard)',
         }}
       >
-        {/* Modal card — fills viewport on wide screens (was capped at 1200 leaving teal gutters) */}
+        {/* Modal card — fills viewport on wide screens (was capped at 1200 leaving teal gutters).
+            min-width:0 / min-height:0 lets the flex-column card shrink below its content
+            min-size — required so the reel-frame + canvas chain can shrink on viewport
+            resize. Without these the card pinned itself to ~820px even on a 700px viewport. */}
         <div
           style={{
             flex: 1,
             display: 'flex',
             flexDirection: 'column',
+            minWidth: 0,
+            minHeight: 0,
             maxWidth: 1680,
             width: '100%',
             margin: '0 auto',
