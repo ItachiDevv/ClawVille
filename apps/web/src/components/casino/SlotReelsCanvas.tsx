@@ -91,6 +91,7 @@ export default function SlotReelsCanvas(props: SlotReelsCanvasProps) {
       >
         <OrthographicCamera
           makeDefault
+          manual
           position={[0, 0, 10]}
           near={0.1}
           far={30}
