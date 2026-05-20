@@ -384,6 +384,7 @@ export interface SlotReels3DProps {
 // ---------------------------------------------------------------------------
 export default function SlotReels3D({
   reels,
+  isSpinning,
   spinTrigger,
   onReelsSettled,
   paytableId,
@@ -588,6 +589,37 @@ export default function SlotReels3D({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reels]);
+
+  // -------------------------------------------------------------------------
+  // Abort-on-spin-failure safety. When `isSpinning` flips from true → false
+  // WITHOUT all reels having settled (i.e. /spin failed and the modal's
+  // catch block reset the spin lock), force-stop every unsettled reel at
+  // its current strip position so the animation doesn't loop forever.
+  // -------------------------------------------------------------------------
+  useEffect(() => {
+    if (isSpinning) return; // only act on the false-edge
+    let anyForceStopped = false;
+    for (let r = 0; r < REEL_COUNT; r++) {
+      const a = animState.current[r];
+      if (a.settled) continue;
+      // Snap visible window back to the cell its current offset lands on so
+      // the player sees a clean idle state instead of a half-blurred mid-spin.
+      const map = reelMaterials[r]?.map;
+      if (map) {
+        map.repeat.set(1, VISIBLE_REPEAT);
+        map.needsUpdate = true;
+      }
+      a.phase   = PHASE_DONE;
+      a.settled = true;
+      anyForceStopped = true;
+    }
+    if (anyForceStopped) {
+      settledCount.current = REEL_COUNT;
+      // DO NOT call onReelsSettled here — the modal already handled the
+      // error path and reset its own state. Calling onReelsSettled would
+      // double-fire balance / win-celebration logic.
+    }
+  }, [isSpinning, reelMaterials]);
 
   const handleReelSettled = useCallback(() => {
     settledCount.current += 1;

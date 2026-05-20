@@ -330,6 +330,40 @@ export function useOpenSlotSession() {
 }
 
 // ---------------------------------------------------------------------------
+// fetchCurrentSlotSession — GET /session/current
+//
+// Returns the user's currently-open session (if any). 404 = no open session.
+// Used on slot modal mount to restore state after a page refresh. The
+// response shape mirrors enough of OpenSessionResponse to call setSessionMeta
+// + chip-snap without an extra round-trip.
+// ---------------------------------------------------------------------------
+
+export interface CurrentSessionResponse {
+  session: {
+    id:             string;
+    paytableId:     MachineSlug;
+    serverSeedHash: string;
+    clientSeed:     string;
+    startingBalance: string;
+    spinCount:      number;
+    status:         'open' | 'closed';
+  };
+  walletBalance: number;
+}
+
+export async function fetchCurrentSlotSession(): Promise<CurrentSessionResponse | null> {
+  try {
+    return await casinoFetch<CurrentSessionResponse>('/api/casino/slots/session/current', {
+      method: 'GET',
+    });
+  } catch (err) {
+    // 404 = no open session, expected. Anything else bubbles.
+    if (err instanceof CasinoApiError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // useSpin — POST /spin (idempotency-keyed)
 // ---------------------------------------------------------------------------
 
