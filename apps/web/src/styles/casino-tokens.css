@@ -190,6 +190,20 @@
   to   { opacity: 1; transform: translateY(0)   scale(1);     }
 }
 
+/* SpinResultPanel — slides up from below the reel frame on each settle. */
+@keyframes cv-result-strip-in {
+  0%   { transform: translate(-50%, 12px) scale(0.94); opacity: 0; }
+  60%  { transform: translate(-50%, -2px) scale(1.02); opacity: 1; }
+  100% { transform: translate(-50%, 0)    scale(1);    opacity: 1; }
+}
+
+/* Balance count-up — soft pulse on the BALANCE number when it changes. */
+@keyframes cv-balance-bump {
+  0%   { transform: scale(1);    color: var(--cv-foam); }
+  35%  { transform: scale(1.12); color: var(--cv-pearl-shine); }
+  100% { transform: scale(1);    color: var(--cv-foam); }
+}
+
 @keyframes cv-modal-bg-in {
   from { opacity: 0; }
   to   { opacity: 1; }
