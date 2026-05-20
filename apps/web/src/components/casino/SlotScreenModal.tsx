@@ -41,6 +41,7 @@ import PaytableModal from './PaytableModal';
 import FreeSpinBanner from './FreeSpinBanner';
 import WildMultiplierBadge from './WildMultiplierBadge';
 import ScatterCelebration, { type ScatterCell } from './ScatterCelebration';
+import SpinResultPanel from './SpinResultPanel';
 import { NeonButton } from './ui';
 
 // Import design tokens once at the module level.
@@ -107,6 +108,7 @@ export default function SlotScreenModal() {
     sessionPnl,
     spinCount,
     isSpinning,
+    lastSpinResult,
     closeSlotScreen,
     setIsSpinning,
     recordSpin,
@@ -747,6 +749,17 @@ export default function SlotScreenModal() {
                 scatterCount={lastScatterCells.length}
                 scatterPayout={lastScatterPayout}
                 triggerId={bonusTriggerId}
+              />
+
+              {/* Persistent result readout — replaces "what just happened?"
+                  silence with a themed strip that lingers until the next spin. */}
+              <SpinResultPanel
+                lastSpin={lastSpinResult}
+                predict={predict}
+                isSpinning={isSpinning}
+                isEvaluating={isEvaluating}
+                inFreeSpin={inFreeSpin}
+                freeSpinsRemaining={freeSpinsRemaining}
               />
             </div>
           </div>

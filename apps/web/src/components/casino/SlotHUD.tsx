@@ -15,7 +15,7 @@
  * now rendered ONCE at the bottom of the modal.
  */
 
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { PredictChips } from './ui';
 
 // ---------------------------------------------------------------------------
@@ -168,6 +168,19 @@ export default function SlotHUD({
   void spinCount;
   void onFairnessOpen;
 
+  // ── Balance pulse on change ──────────────────────────────────────────────
+  // Triggers cv-balance-bump keyframe whenever the balance number changes
+  // (e.g. post-spin credit). Gives the BALANCE display a satisfying tick
+  // instead of a silent re-render.
+  const [balancePulseKey, setBalancePulseKey] = useState(0);
+  const prevBalanceRef = useRef(balance);
+  useEffect(() => {
+    if (prevBalanceRef.current !== balance) {
+      prevBalanceRef.current = balance;
+      setBalancePulseKey(k => k + 1);
+    }
+  }, [balance]);
+
   const handleAutoplayClick = useCallback(() => {
     // Cycle through Off → 10 → 25 → 100 → until-cashout → until-big-win → Off
     const idx = AUTOPLAY_OPTIONS.findIndex(o => o.value === autoplayCount);
@@ -203,7 +216,18 @@ export default function SlotHUD({
         <span className="pt-label">Balance</span>
         <div className="pt-balance">
           <div>
-            <span className="pt-balance-value">{balance.toLocaleString()}</span>
+            <span
+              key={balancePulseKey}
+              className="pt-balance-value"
+              style={{
+                display: 'inline-block',
+                animation: balancePulseKey > 0
+                  ? 'cv-balance-bump 480ms var(--cv-ease-bounce)'
+                  : undefined,
+              }}
+            >
+              {balance.toLocaleString()}
+            </span>
             <span className="pt-balance-suffix">CT</span>
           </div>
           <div className={pnlClass} aria-label={`Session profit and loss: ${sessionPnl}`}>
