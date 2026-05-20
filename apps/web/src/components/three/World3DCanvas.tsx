@@ -840,6 +840,33 @@ async function waitForCanvasCssSize(canvas: HTMLCanvasElement): Promise<{ width:
   return getCanvasCssSize(canvas) ?? { width: 1, height: 1 };
 }
 
+// iOS Safari does not have navigator.gpu even in recent versions. When WebGPU
+// is unavailable, three/webgpu's WebGPUBackend.init() reaches the line
+//   await navigator.gpu.requestAdapter(...)
+// and throws TypeError because navigator.gpu is undefined — even though the
+// getFallback() path catches it and falls back to WebGLBackend, iOS Safari
+// may already have entered a broken canvas state before the catch fires.
+// Passing forceWebGL:true skips the WebGPU adapter path entirely and goes
+// straight to the WebGL2 backend while retaining full TSL node-material support.
+const IOS_SAFARI =
+  typeof navigator !== 'undefined' &&
+  /iP(hone|ad|od)/i.test(navigator.userAgent) &&
+  /WebKit/i.test(navigator.userAgent) &&
+  !/CriOS|FxiOS|OPiOS|mercury/i.test(navigator.userAgent);
+
+// Also force WebGL when navigator.gpu is completely absent — catches any
+// other browser/device that lacks WebGPU support.
+const WEBGPU_ABSENT =
+  typeof navigator !== 'undefined' && !('gpu' in navigator);
+
+const FORCE_WEBGL = IOS_SAFARI || WEBGPU_ABSENT;
+
+if (typeof window !== 'undefined') {
+  console.log(
+    `[World3D] GPU path: ${FORCE_WEBGL ? 'forceWebGL (WebGL2+TSL)' : 'WebGPU'} — iOS:${IOS_SAFARI} noGPU:${WEBGPU_ABSENT}`,
+  );
+}
+
 async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
   // -------------------------------------------------------------------------
   // Fix: depth-stencil attachment size mismatch (300×150 vs actual CSS size)
@@ -871,11 +898,17 @@ async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
   const renderer = new WebGPURenderer({
     canvas,
     antialias: false,
+    // forceWebGL: bypass the navigator.gpu adapter path on iOS Safari and any
+    // browser where WebGPU is absent. WebGLBackend with TSL (GLSLNodeBuilder)
+    // compiles all MeshBasicNodeMaterial / PointsNodeMaterial / MeshStandardNodeMaterial
+    // to GLSL — same visual output, no WebGPU negotiation, no iOS black-screen.
+    forceWebGL: FORCE_WEBGL,
     // powerPreference is not a WebGPURenderer option; low-power is handled
     // by the browser's GPU adapter selection (it prefers integrated GPU by default)
   });
   // WebGPURenderer.render() throws if not initialized — must await init()
-  // init() internally: tries WebGPU backend → falls back to WebGL2 if unavailable
+  // With forceWebGL:true, init() goes straight to WebGLBackend (no adapter request).
+  // Without forceWebGL, init() tries WebGPU first then falls back to WebGL2.
   await renderer.init();
   renderer.setSize(cssW, cssH, false);
 

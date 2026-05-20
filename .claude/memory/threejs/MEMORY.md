@@ -4,6 +4,9 @@
 - [Three-Doc Standing Rule](standing-rules/three-doc-standing-rule.md) — Abide by `3dStructure.md` for all visual/3D decisions; `GameFeatures.md` for gameplay; `ARCHITECTURE.md` for tech stack. Unless the main session tells you to change behavior, do NOT deviate from what these docs specify. Every 3D code change requires a same-diff update to `3dStructure.md` (and a "Last Audited" bump). Live code > doc > CLAUDE.md > memory; memory is advisory only. Set 2026-04-17.
 - [Collaborative ultrathink team mandatory for 3D / Blender / long tasks](standing-rules/parallel-ultrathink-team-mandatory.md) — A "team" is multiple agents working SEQUENTIALLY on the SAME concern (Implementer → Auditor → Fix loop), NOT N agents working on N different concerns in parallel. The audit step is the point. Every agent prompt must include "use ultrathink reasoning before writing code". Set + corrected 2026-04-29.
 
+## Casino Slot Drums
+- [Per-cell-plane drum wheel — cherry-charm 3D slot drums](solutions/slot-drum-per-cell-plane.md) — 12 PlaneGeometry quads orbiting X-axis at DRUM_RADIUS=1.5wu. One 128×128 symbol texture per face. Back-crossing swap for zero-rebuild animation. Ortho camera left=-8.5/right=8.5. Verified prod df53dd3 2026-05-19.
+
 ## Reef Race v2 Performance
 - [Scenery InstancedMesh per prop type — ScenerySpawner draw-call collapse](patterns/reef-race-scene.md) — Replace per-instance scene.clone(true) with InstancedMesh per SpawnerDef; extract first Mesh geo+mat from GLB; guard: replace ShaderMaterial with MeshStandardMaterial to avoid Iris Xe silent crash. 104→6 draw calls. (2026-04-29)
 - [Ramp wedges merged into single BufferGeometry — 6→1 draw call](patterns/reef-race-scene.md) — buildAllRampsGeo() applies per-ramp transform matrix to wedge template, mergeGeometries all 6 at module scope. 6→1 draw call. (2026-04-29)
@@ -21,6 +24,7 @@
 - [Hand-baking VRM via Blender raw export produces corrupted GLB](gotchas/blender-hand-bake-vrm-corruption.md) — drops VRM extensions, breaks meshopt, may re-encode WebP → `Malformed buffer data: -1`. Use `@gltf-transform/core` + meshopt extension instead. Validate with `scripts/validate-vrm-load.mjs`. (2026-04-28)
 
 ## Gotchas
+- [CylinderGeometry slot reel — camera inside cylinder when radius computed from strip circumference](gotchas/cylinder-reel-inside-camera-unit-math.md) — STRIP_LEN=84, CELL_WU=1.0 → radius 13.37wu; camera at z=6 is inside; fix: PlaneGeometry + UV scroll; offset.y = 1-(p+1.5)/STRIP_LEN; fov 65, z=5
 - [GLB material purple/pink when scene.clone(true) used across separate renderer contexts](gotchas/glb-material-purple-cross-renderer-context.md) — `useGLTF` cache shares material references; different Canvas = different WebGL context → purple fallback; fix: clone every material after `scene.clone(true)`
 - [GLTFLoader node names are verbatim — no sanitization](gotchas/gltfloader-node-names-verbatim-not-sanitized.md) — Three.js preserves apostrophes, spaces, colons exactly as authored. `getObjectByName("Squidward_s_House")` never finds `"Squidward's House"`. Use GLB JSON inspection to get real names. Surfaced: childScaleOverrides + bodyAnchorChild were silent no-ops for 10+ commits. (2026-05-18)
 - [matrixAutoUpdate=false before R3F scale prop — model renders at native micro-scale](gotchas/matrixautoupdate-false-before-r3f-scale-prop.md) — traverse sets autoUpdate=false on scene root BEFORE <primitive scale={n}> prop is applied; Three.js never recomputes matrix; model is invisible; fix: apply scale directly to cloned root + updateMatrixWorld BEFORE the traverse, then NO scale prop on <primitive>. (2026-05-18)
@@ -79,6 +83,8 @@
 
 ## WebGPU
 - [WebGPU renderer setup with fallback](webgpu/renderer-setup-fallback.md) — detection, init, WebGL fallback pattern
+- [WebGPURenderer catch-path plain WebGLRenderer = dual-instance bomb on iOS](gotchas/webgpurenderer-catch-path-plain-webglrenderer-dual-instance.md) — glFactory catch block imports WebGLRenderer from plain 'three' while extend(THREE as any) registered NodeMaterials from three/webgpu → vertexShader.replace() crash on iOS low-RAM or WebGL2-unavailable. Fix: use WebGPURenderer({forceWebGL:true}) instead. (2026-05-20)
+- [iOS Safari black scene — navigator.gpu undefined crashes WebGPUBackend.init()](gotchas/ios-safari-webgpu-navigator-gpu-undefined.md) — `navigator.gpu.requestAdapter()` throws TypeError on iOS (navigator.gpu is undefined). While getFallback() catches it, iOS WebKit leaves canvas in bad state → pure black 3D viewport. Fix: detect iOS + WEBGPU_ABSENT, pass `forceWebGL:true` to WebGPURenderer. TSL node materials fully work on WebGL2 backend. (2026-05-20)
 
 ## Performance
 - [Fog density directly controls fragment count on Iris Xe](performance/fog-density-iris-xe-regression.md) — fog far > camera.far wastes GPU; pushing 1200/6400→1800/9000 dropped FPS 90→50 on Iris Xe; always keep fog far ≤ camera.far
