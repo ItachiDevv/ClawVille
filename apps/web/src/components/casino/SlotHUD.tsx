@@ -218,11 +218,13 @@ export default function SlotHUD({
             style={{
               marginTop: 4,
               padding: '3px 9px',
-              border: '1px solid var(--pt-amber)',
-              color: 'var(--pt-amber-glow)',
-              fontFamily: 'var(--pt-data)',
+              background: 'var(--cv-anemone)',
+              border: '1px solid #5a0418',
+              /* deep wine on anemone — ~5.78:1, AA normal pass; keeps the pink brand signal */
+              color: '#5a0418',
+              fontFamily: 'var(--cv-data)',
               fontSize: 10,
-              fontWeight: 500,
+              fontWeight: 700,
               letterSpacing: '0.18em',
               textTransform: 'uppercase',
             }}
