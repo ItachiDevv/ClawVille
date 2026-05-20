@@ -140,11 +140,11 @@ function Card({ card }: { card: GameplayCard }) {
 
 export function GameplayShowcase() {
   return (
-    <section id="gameplay" className="relative z-10 py-24 px-4 bg-[#061520] overflow-hidden">
+    <section id="gameplay" className="relative z-10 py-24 px-4 sm:px-6 md:px-10 lg:px-16 xl:px-24 2xl:px-32 bg-[#061520] overflow-hidden">
       <div className="absolute top-20 right-1/4 w-[420px] h-[420px] rounded-full bg-violet-500/[0.04] blur-[120px] pointer-events-none" />
       <div className="absolute bottom-20 left-1/4 w-[420px] h-[420px] rounded-full bg-cyan-500/[0.04] blur-[120px] pointer-events-none" />
 
-      <div className="relative max-w-6xl mx-auto">
+      <div className="relative w-full">
         <div className="text-center mb-14">
           <div className="inline-flex items-center gap-3 mb-4">
             <span className="h-px w-10 bg-gradient-to-r from-transparent to-cyan-500/50" />
