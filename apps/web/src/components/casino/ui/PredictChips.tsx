@@ -1,15 +1,13 @@
 'use client';
 
 /**
- * PredictChips — chip-style predict selector.
+ * PredictChips — Predict Terminal chip-style stake selector.
  *
- * Renders a row of selectable predict values as poker-style chips.
- * Active chip pulses with the gold-accent ring; inactive chips show
- * the theme-color rim at low opacity. Keyboard-navigable via arrow keys.
+ * Renders a row of selectable predict values as small tobacco-on-brass
+ * rectangular tabs. Active chip uses amber border + glow accent. Hover
+ * lightens border to brass. Keyboard-navigable via arrow keys.
  *
- * Used inside the SlotHUD bottom bar in place of the legacy `+/−`
- * stepper. The stepper still ships as a fallback on screens that
- * can't fit all chips (the chip row hides under 380px).
+ * Used inside the SlotActionStrip center column.
  */
 
 import { useCallback, useRef } from 'react';
@@ -22,22 +20,6 @@ export interface PredictChipsProps {
   disabled?: boolean;
   /** Accessible group label, e.g. "Predict size in ClawTokens". */
   ariaLabel: string;
-}
-
-const CHIP_THEMES: Record<number, { ring: string; ink: string }> = {
-  0: { ring: 'rgba(255,255,255,0.4)', ink: 'rgba(255,255,255,0.85)' }, // fallback
-};
-
-function chipTheme(value: number, index: number) {
-  // Vary the rim color so the row feels alive — cycle a palette.
-  const palette = [
-    { ring: '#00ffe0', ink: '#9ffff2' },
-    { ring: '#7b2ff7', ink: '#cba8ff' },
-    { ring: '#ff00cc', ink: '#ffa6e8' },
-    { ring: '#ffc857', ink: '#ffe089' },
-    { ring: '#5cffae', ink: '#a8ffce' },
-  ];
-  return palette[index % palette.length] ?? CHIP_THEMES[0];
 }
 
 export default function PredictChips({
@@ -71,16 +53,15 @@ export default function PredictChips({
       ref={containerRef}
       role="radiogroup"
       aria-label={ariaLabel}
-      style={{
-        display: 'flex',
-        gap: 'var(--cv-space-2)',
-        alignItems: 'center',
-        flexWrap: 'wrap',
-      }}
+      className="pt-chip-row"
     >
       {options.map((opt, idx) => {
         const isActive = opt === value;
-        const theme = chipTheme(opt, idx);
+        const cls = [
+          'pt-chip',
+          isActive ? 'pt-chip-active' : '',
+          disabled ? 'pt-chip-disabled' : '',
+        ].filter(Boolean).join(' ');
         return (
           <button
             key={opt}
@@ -92,31 +73,7 @@ export default function PredictChips({
             tabIndex={isActive ? 0 : -1}
             onClick={() => onChange(opt)}
             onKeyDown={(e) => handleKey(e, idx)}
-            style={{
-              minWidth: 44,
-              height: 38,
-              padding: '0 12px',
-              borderRadius: 'var(--cv-radius-pill)',
-              fontFamily: 'monospace',
-              fontWeight: 800,
-              fontSize: 13,
-              letterSpacing: '0.04em',
-              color: isActive ? '#0a1428' : theme.ink,
-              background: isActive
-                ? `radial-gradient(circle at 50% 35%, ${theme.ring} 0%, ${theme.ring}cc 100%)`
-                : 'rgba(10,20,40,0.7)',
-              border: `1px solid ${isActive ? theme.ring : `${theme.ring}55`}`,
-              cursor: disabled ? 'not-allowed' : 'pointer',
-              opacity: disabled ? 0.4 : 1,
-              boxShadow: isActive
-                ? `0 0 14px ${theme.ring}aa, inset 0 1px 0 rgba(255,255,255,0.35)`
-                : 'inset 0 1px 0 rgba(255,255,255,0.05)',
-              transition:
-                'background var(--cv-motion-fast) var(--cv-ease-standard), ' +
-                'border-color var(--cv-motion-fast) var(--cv-ease-standard), ' +
-                'color var(--cv-motion-fast) var(--cv-ease-standard), ' +
-                'box-shadow var(--cv-motion-fast) var(--cv-ease-standard)',
-            }}
+            className={cls}
           >
             {opt}
           </button>

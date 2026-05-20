@@ -103,29 +103,12 @@ export default function PaytableModal({ isOpen, onClose }: PaytableModalProps) {
       <div style={{
         display: 'flex',
         justifyContent: 'space-between',
-        alignItems: 'center',
+        alignItems: 'flex-start',
         marginBottom: 'var(--cv-space-5)',
       }}>
         <div>
-          <div style={{
-            color: 'var(--cv-neon-cyan)',
-            fontFamily: 'monospace',
-            fontSize: 11,
-            fontWeight: 800,
-            letterSpacing: '0.22em',
-            textTransform: 'uppercase',
-            textShadow: '0 0 12px var(--cv-neon-cyan)',
-          }}>
-            Predictive Gaming Cove
-          </div>
-          <h2 style={{
-            color: '#fff',
-            fontFamily: 'monospace',
-            fontSize: 22,
-            fontWeight: 900,
-            margin: '4px 0 0 0',
-            letterSpacing: '0.06em',
-          }}>
+          <div className="pt-fairness-eyebrow">Predict Terminal</div>
+          <h2 className="pt-fairness-title" style={{ margin: '4px 0 0 0' }}>
             Paytable — Classic 3×5
           </h2>
         </div>
@@ -134,8 +117,13 @@ export default function PaytableModal({ isOpen, onClose }: PaytableModalProps) {
           size="sm"
           onClick={onClose}
           aria-label="Close paytable"
-          style={{ width: 36, padding: 0, fontSize: 18 }}
-        >✕</NeonButton>
+          style={{ width: 36, padding: 0 }}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <line x1="6" y1="6" x2="18" y2="18" />
+            <line x1="18" y1="6" x2="6" y2="18" />
+          </svg>
+        </NeonButton>
       </div>
 
       {/* Symbol payouts */}
@@ -150,25 +138,24 @@ export default function PaytableModal({ isOpen, onClose }: PaytableModalProps) {
               <div
                 key={sym.id}
                 style={{
-                  background: 'rgba(5,10,24,0.55)',
+                  background: 'var(--pt-velvet-soft)',
                   border: `1px solid ${asset.themeColor}33`,
-                  borderRadius: 'var(--cv-radius-md)',
                   padding: 'var(--cv-space-2) var(--cv-space-3)',
                   display: 'flex',
                   alignItems: 'center',
                   gap: 'var(--cv-space-3)',
-                  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)',
                 }}
               >
                 <SymbolArt id={sym.id} size={44} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{
                     color: asset.themeColor,
-                    fontFamily: 'monospace',
+                    fontFamily: 'var(--pt-data)',
                     fontSize: 12,
-                    fontWeight: 800,
+                    fontWeight: 500,
                     marginBottom: 4,
-                    letterSpacing: '0.06em',
+                    letterSpacing: 'var(--pt-label-letter)',
+                    textTransform: 'uppercase',
                   }}>
                     {asset.displayName}{sym.isWild ? ' · WILD' : ''}
                   </div>
@@ -178,10 +165,9 @@ export default function PaytableModal({ isOpen, onClose }: PaytableModalProps) {
                         <span key={i} style={{
                           background: `${asset.themeColor}1f`,
                           color: asset.themeColor,
-                          fontFamily: 'monospace',
+                          fontFamily: 'var(--pt-data)',
                           fontSize: 10,
                           padding: '2px 6px',
-                          borderRadius: 'var(--cv-radius-pill)',
                           whiteSpace: 'nowrap',
                           border: `1px solid ${asset.themeColor}33`,
                         }}>
@@ -206,18 +192,15 @@ export default function PaytableModal({ isOpen, onClose }: PaytableModalProps) {
               flexDirection: 'column',
               alignItems: 'center',
               gap: 6,
-              background: 'rgba(5,10,24,0.55)',
-              borderRadius: 'var(--cv-radius-sm)',
+              background: 'var(--pt-velvet-soft)',
               padding: '8px 6px',
               border: `1px solid ${line.color}33`,
-              boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)',
             }}>
               <div style={{
                 color: line.color,
-                fontFamily: 'monospace',
+                fontFamily: 'var(--pt-data)',
                 fontSize: 9,
                 letterSpacing: '0.1em',
-                textShadow: `0 0 6px ${line.color}66`,
               }}>
                 #{line.id + 1}
               </div>
@@ -231,17 +214,16 @@ export default function PaytableModal({ isOpen, onClose }: PaytableModalProps) {
       <div style={{
         marginTop: 'var(--cv-space-5)',
         padding: 'var(--cv-space-3) var(--cv-space-4)',
-        background: 'rgba(0,255,224,0.05)',
-        border: '1px solid rgba(0,255,224,0.15)',
-        borderRadius: 'var(--cv-radius-md)',
-        color: 'rgba(255,255,255,0.6)',
+        background: 'var(--pt-velvet-soft)',
+        border: '1px solid var(--pt-brass-dim)',
+        color: 'var(--pt-cream-soft)',
         fontSize: 11,
-        fontFamily: 'monospace',
+        fontFamily: 'var(--pt-data)',
         lineHeight: 1.7,
       }}>
-        Theoretical RTP: <span style={{ color: 'var(--cv-neon-cyan)', fontWeight: 700 }}>94%</span> · 20 paylines · Left-to-right matching
+        Theoretical RTP: <span style={{ color: 'var(--pt-amber)', fontWeight: 700 }}>94%</span> · 20 paylines · Left-to-right matching
         <br/>
-        Wild substitutes any non-scatter symbol · Free spins coming in Phase 6.1
+        Wild substitutes any non-scatter symbol · Free spins active in Phase 6.1
       </div>
     </NeonModal>
   );
