@@ -400,7 +400,27 @@ export default function SlotReels3D({
   onReelsSettled,
   paytableId,
 }: SlotReels3DProps): React.ReactElement {
-  const { gl, scene, camera } = useThree();
+  const { gl, scene, camera, size } = useThree();
+
+  // The reel rig uses a FIXED-bounds OrthographicCamera (-5/5/-2.8/2.8) so the
+  // 5-reel cluster stays framed at any modal width. R3F's viewport handling
+  // (and drei's OrthographicCamera even with `manual`) was observed to drop
+  // the projection bounds on viewport resize, leaving only the payline-glow
+  // pixel at world origin visible — every reel mesh ends up outside the
+  // implicit (-1/1) box. Re-assert the bounds on every size change.
+  useEffect(() => {
+    const orthoCam = camera as THREE.OrthographicCamera;
+    if (orthoCam.isOrthographicCamera) {
+      orthoCam.left   = -5.0;
+      orthoCam.right  =  5.0;
+      orthoCam.top    =  2.8;
+      orthoCam.bottom = -2.8;
+      orthoCam.near   =  0.1;
+      orthoCam.far    = 30;
+      orthoCam.zoom   = 1;
+      orthoCam.updateProjectionMatrix();
+    }
+  }, [camera, size.width, size.height]);
 
   // Resolve strips for the active paytable
   const strips = useMemo<number[][]>(
