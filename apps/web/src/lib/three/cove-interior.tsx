@@ -1370,45 +1370,48 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
         'worldSize=(' + sz.x.toFixed(1) + ',' + sz.y.toFixed(1) + ',' + sz.z.toFixed(1) + ')');
     }
 
-    // ─── Slot cabinet discovery ──────────────────────────────────────────
-    // The cove-interior.glb has slot machine cabinets BAKED IN (visible as
-    // the two long rows of dark machines with pink chairs). We bind click
-    // hotspots to those baked meshes instead of overlaying procedural
-    // cabinets at the bar.
+    // ─── Slot cabinet discovery — BANK CLUSTER + X-AXIS SPLIT ────────────
     //
-    // Heuristic (no name match — GLB nodes are named after materials):
-    //   - World bbox height between 80wu and 350wu
-    //   - Footprint (min of width, depth) between 30wu and 220wu
-    //   - World Y center between 30wu and 250wu (sits on the floor)
-    //   - Reject anything with a huge X or Z span (walls, ceiling, floor)
+    // The cove-interior.glb merges every cabinet in a bank into one mesh
+    // per material slot (sketchfab "merge by material" export setting).
+    // There are NO individual cabinet meshes. CDP runtime dump confirmed:
     //
-    // Returns one HotspotDef per matched mesh. If discovery finds <2 cabinets,
-    // we fall back to the legacy hand-placed GAMEREADY_HOTSPOTS.
-    // ── Slot cabinet discovery — NAME-BASED ──────────────────────────────
+    //   Material2 / Material3_{2,3,5,8} all cluster at pos≈(1, 79, -453)
+    //   with footprint 670-690wu wide × 337-358wu deep. That's ONE BANK
+    //   (the only bank in the room). The "two rows" visible in screenshots
+    //   are back-to-back cabinets in that same bank, each row facing
+    //   outward to the chairs on either side.
     //
-    // The cove-interior.glb (via Three.js DevTools inspection) names each
-    // slot machine bank's geometry as `Material3` / `Material3_2` ..
-    // `Material3_9` (sketchfab-merged by material slot). These are the
-    // actual baked slot cabinets in the scene graph.
+    // So instead of per-mesh discovery, we:
+    //   1. Find the bank-cluster meshes (low height, large but not
+    //      room-spanning footprint, far Z from room center).
+    //   2. UNION their bboxes into one bank bbox.
+    //   3. SPLIT the bank bbox in half along X.
+    //   4. Emit TWO hotspots: left half = classic, right half = bonus.
+    //   5. Place a BANNER above each half centred on that half's centroid.
     //
-    // We target THOSE meshes directly by name pattern. No more bbox
-    // heuristic — the previous approach matched walls because the wall
-    // chunks happened to land in cabinet-sized bbox dimensions.
-    //
-    // Each Material3 mesh's world bounding box gives us the position +
-    // size for the corresponding click-zone.
-    const SLOT_MESH_NAME_PATTERN = /^Material3(_\d+)?$/;
-
+    // If we can't find a bank cluster, fall back to GAMEREADY_HOTSPOTS so
+    // the room stays clickable.
     const _bb = new THREE.Box3();
     const _bbSize = new THREE.Vector3();
     const _bbCenter = new THREE.Vector3();
-    interface CandidateCabinet {
-      name: string;
-      pos: [number, number, number];
-      size: [number, number, number];
-    }
-    const candidates: CandidateCabinet[] = [];
+
+    // Cluster filter: meshes with "bank-row" geometry — wide along one
+    // axis, narrow on the others, sitting near the floor, AT LEAST one
+    // axis ≥ 400wu, AND total volume ≤ 30M wu³ (rejects room shells).
+    //
+    // Derived from the CDP dump (2026-05-21):
+    //   Material2:    688×63×358  vol≈15.5M ✓
+    //   Material3_2:  673×11×337  vol≈2.5M  ✓
+    //   Material3_3:  685×14×338  vol≈3.2M  ✓
+    //   Material3_5:  688×63×347  vol≈15.0M ✓
+    //   Material3_8:  672×2×354   vol≈0.5M  ✓
+    //   Material3_4 (room shell): 954×400×1999 vol≈762M ✗
+    //   Material3_1 (floor):      897×99×1377 vol≈122M  ✗
+    interface ClusterMesh { name: string; pos: [number, number, number]; size: [number, number, number]; }
+    const clusterMeshes: ClusterMesh[] = [];
     const allMeshDebug: Array<{ name: string; pos: string; size: string; verdict: string }> = [];
+
     c.traverse((obj) => {
       const mesh = obj as THREE.Mesh;
       if (!mesh.isMesh) return;
@@ -1422,32 +1425,27 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
       const w = _bbSize.x;
       const h = _bbSize.y;
       const d = _bbSize.z;
-
-      const name = mesh.name || '(unnamed)';
-      const nameMatches = SLOT_MESH_NAME_PATTERN.test(name);
-
-      // Name-match is necessary but not sufficient — sketchfab merges meshes
-      // by material, so Material3 may also tag floor decals / ceiling trim /
-      // wall accents. Add a Y-range + size guard so only cabinet-shaped
-      // meshes sitting on the floor count.
-      //
-      //   - yMid 20..220wu        (must sit on the floor)
-      //   - height 60..300wu       (not a thin slab or wall section)
-      //   - minDim 25..220wu       (skinny cabinet footprint, not a long strip)
-      //
-      // The Material3 meshes the user wants targeted (the rows of cabinets
-      // in DevTools) all sit in this window; floor/ceiling Material3 meshes
-      // fall outside it.
       const yMid = _bbCenter.y;
-      const minDim = Math.min(w, d);
-      const okShape = h >= 60 && h <= 300 && minDim >= 25 && minDim <= 220 && yMid >= 20 && yMid <= 220;
-      const isSlot = nameMatches && okShape;
+      const name = mesh.name || '(unnamed)';
+      const volume = w * h * d;
 
-      const verdict = isSlot
-        ? '✓SLOT'
-        : nameMatches
-          ? `Material3 but shape rejected (yMid=${yMid.toFixed(0)}, h=${h.toFixed(0)}, minDim=${minDim.toFixed(0)})`
-          : 'skipped';
+      // Bank-row filter
+      const okHeight = h >= 1   && h <= 200;          // flat-ish (cabinet tops / bases)
+      const okWidth  = w >= 400 && w <= 1000;          // bank-width
+      const okDepth  = d >= 250 && d <= 500;           // bank-depth (one row deep)
+      const okY      = yMid >= 30 && yMid <= 200;     // floor-level
+      const okVolume = volume <= 30_000_000;          // not a room shell
+      const ok = okHeight && okWidth && okDepth && okY && okVolume;
+
+      const verdict = ok
+        ? '✓BANK-MESH'
+        : `skipped (${[
+            !okHeight && `h=${h.toFixed(0)}`,
+            !okWidth  && `w=${w.toFixed(0)}`,
+            !okDepth  && `d=${d.toFixed(0)}`,
+            !okY      && `y=${yMid.toFixed(0)}`,
+            !okVolume && `vol=${(volume/1e6).toFixed(0)}M`,
+          ].filter(Boolean).join(',') || 'unknown'})`;
 
       allMeshDebug.push({
         name,
@@ -1455,95 +1453,93 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
         size: `${w.toFixed(0)}×${h.toFixed(0)}×${d.toFixed(0)}`,
         verdict,
       });
-      if (!isSlot) return;
-      candidates.push({
+      if (!ok) return;
+      clusterMeshes.push({
         name,
         pos:  [_bbCenter.x, _bbCenter.y, _bbCenter.z],
-        size: [w + 20, h, d + 20],
+        size: [w, h, d],
       });
     });
 
-    // ── Position-based paytable split ────────────────────────────────────
-    //
-    // Auto-detect whether the LEFT / RIGHT banks are separated along X or
-    // Z. Pick the axis with greater spread among discovered cabinets — the
-    // long axis of the bank-pair is the split axis. Cabinets BELOW the
-    // midpoint on that axis = classic; ABOVE = bonus.
-    //
-    // User-spec direction: "left of my screenshot = classic". The cove
-    // camera enters from -Z looking +Z (or similar), so "screenshot left"
-    // typically maps to negative axis on the discovered spread. We honour
-    // this via the BELOW-midpoint = classic convention.
-    let splitAxis: 0 | 2 = 0;       // 0 = X, 2 = Z
-    let splitValue = 0;
-    let classicCentroid: [number, number, number] = [0, 0, 0];
-    let bonusCentroid:   [number, number, number] = [0, 0, 0];
-    if (candidates.length >= 2) {
-      const xs = candidates.map(c => c.pos[0]);
-      const zs = candidates.map(c => c.pos[2]);
-      const xSpread = Math.max(...xs) - Math.min(...xs);
-      const zSpread = Math.max(...zs) - Math.min(...zs);
-      splitAxis = xSpread >= zSpread ? 0 : 2;
-      const sorted = (splitAxis === 0 ? xs : zs).slice().sort((a, b) => a - b);
-      splitValue = (sorted[0] + sorted[sorted.length - 1]) / 2;
-    }
-    const discoveredHotspots: HotspotDef[] = candidates.map((c) => {
-      const isBonus = c.pos[splitAxis] >= splitValue;
-      return {
-        position: c.pos,
-        size:     c.size,
-        machineSlug: (isBonus ? 'classic-3x5-bonus' : 'classic-3x5') as MachineSlug,
-        paytableId:  (isBonus ? 'classic-3x5-bonus' : 'classic-3x5') as MachineSlug,
-        isBonus,
-      };
-    });
-    // Compute centroid of each bank for banner-label placement.
-    if (discoveredHotspots.length > 0) {
-      const classics = discoveredHotspots.filter(h => !h.isBonus);
-      const bonuses  = discoveredHotspots.filter(h =>  h.isBonus);
-      const avg = (arr: HotspotDef[]): [number, number, number] => {
-        if (arr.length === 0) return [0, 0, 0];
-        let sx = 0, sy = 0, sz = 0;
-        for (const h of arr) { sx += h.position[0]; sy += h.position[1]; sz += h.position[2]; }
-        return [sx / arr.length, sy / arr.length, sz / arr.length];
-      };
-      classicCentroid = avg(classics);
-      bonusCentroid   = avg(bonuses);
+    // Union the cluster meshes into one bank bbox.
+    let bankBox: { minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number } | null = null;
+    for (const m of clusterMeshes) {
+      const halfW = m.size[0] / 2, halfH = m.size[1] / 2, halfD = m.size[2] / 2;
+      const mx0 = m.pos[0] - halfW, mx1 = m.pos[0] + halfW;
+      const my0 = m.pos[1] - halfH, my1 = m.pos[1] + halfH;
+      const mz0 = m.pos[2] - halfD, mz1 = m.pos[2] + halfD;
+      if (!bankBox) {
+        bankBox = { minX: mx0, maxX: mx1, minY: my0, maxY: my1, minZ: mz0, maxZ: mz1 };
+      } else {
+        bankBox.minX = Math.min(bankBox.minX, mx0); bankBox.maxX = Math.max(bankBox.maxX, mx1);
+        bankBox.minY = Math.min(bankBox.minY, my0); bankBox.maxY = Math.max(bankBox.maxY, my1);
+        bankBox.minZ = Math.min(bankBox.minZ, mz0); bankBox.maxZ = Math.max(bankBox.maxZ, mz1);
+      }
     }
 
-    // Always-on debug log + per-mesh verdict dump — needed to diagnose
-    // misfires on prod, where NEXT_PUBLIC_COVE_DEBUG isn't set. The dump
-    // fires unconditionally on the FIRST scene load so we get a single
-    // diagnostic snapshot per session without env-var gating.
-    const nBonus = discoveredHotspots.filter(h => h.isBonus).length;
-    console.info(
-      `[cove-interior] discovered ${discoveredHotspots.length} slot cabinets ` +
-      `(splitAxis=${splitAxis === 0 ? 'X' : 'Z'}, splitValue=${splitValue.toFixed(0)}, ` +
-      `${discoveredHotspots.length - nBonus} classic / ${nBonus} bonus)`,
-    );
-    // Per-mesh verdict log — fires once per scene-clone. Cheap (one-time
-    // traversal already done above) and gives us the exact mesh names +
-    // positions so we can target-fix the heuristic.
+    // Split the bank box in half along X. Left half (lower X) = classic;
+    // right half = bonus. The vertical extent is padded to ~200wu so the
+    // click-zones cover the full visual cabinet height (the merged-by-
+    // material meshes only contain low trim; cabinet bodies must be
+    // attached to OTHER meshes the heuristic doesn't pick up, but our
+    // click-zone bbox is what matters for raycast targeting).
+    const discoveredHotspots: HotspotDef[] = [];
+    let classicCentroid: [number, number, number] = [0, 0, 0];
+    let bonusCentroid:   [number, number, number] = [0, 0, 0];
+    let splitValue = 0;
+    if (bankBox) {
+      const cx = (bankBox.minX + bankBox.maxX) / 2;
+      const cz = (bankBox.minZ + bankBox.maxZ) / 2;
+      splitValue = cx;
+      const halfW = (bankBox.maxX - bankBox.minX) / 2;
+      const depth = bankBox.maxZ - bankBox.minZ;
+      const clickHeight = 220;                        // visual cabinet height
+      const clickCenterY = 110;                       // above floor, below ceiling
+      // Slight reach into the room (+ on Z towards the player) so the
+      // click-zone catches the player walking up to the bank face.
+      const reach = 30;
+      const halfHalfW = halfW / 2;
+
+      classicCentroid = [cx - halfHalfW, clickCenterY, cz];
+      bonusCentroid   = [cx + halfHalfW, clickCenterY, cz];
+
+      discoveredHotspots.push({
+        position: classicCentroid,
+        size:     [halfW + reach, clickHeight, depth + reach],
+        machineSlug: 'classic-3x5' as MachineSlug,
+        paytableId:  'classic-3x5' as MachineSlug,
+        isBonus:     false,
+      });
+      discoveredHotspots.push({
+        position: bonusCentroid,
+        size:     [halfW + reach, clickHeight, depth + reach],
+        machineSlug: 'classic-3x5-bonus' as MachineSlug,
+        paytableId:  'classic-3x5-bonus' as MachineSlug,
+        isBonus:     true,
+      });
+    }
+
+    // Always-on diagnostic
+    if (bankBox) {
+      console.info(
+        `[cove-interior] bank bbox: X=[${bankBox.minX.toFixed(0)}..${bankBox.maxX.toFixed(0)}] ` +
+        `Y=[${bankBox.minY.toFixed(0)}..${bankBox.maxY.toFixed(0)}] ` +
+        `Z=[${bankBox.minZ.toFixed(0)}..${bankBox.maxZ.toFixed(0)}] ` +
+        `· splitX=${splitValue.toFixed(0)} · ${clusterMeshes.length} cluster meshes`,
+      );
+    } else {
+      console.warn(`[cove-interior] no bank cluster found — falling back to GAMEREADY_HOTSPOTS`);
+    }
     console.groupCollapsed('[cove-interior] mesh inventory (click to expand)');
     for (const d of allMeshDebug) {
       console.info(`  ${d.name.padEnd(30)} pos=${d.pos.padEnd(20)} size=${d.size.padEnd(20)} ${d.verdict}`);
     }
     console.groupEnd();
-    // Also dump the discovered hotspots so we can verify the split decision
-    // (which cabinets ended up classic vs bonus).
-    if (discoveredHotspots.length > 0) {
-      console.groupCollapsed(`[cove-interior] hotspot split (${splitAxis === 0 ? 'X' : 'Z'} > ${splitValue.toFixed(0)} = bonus)`);
-      for (const h of discoveredHotspots) {
-        console.info(`  pos=(${h.position[0].toFixed(0)},${h.position[1].toFixed(0)},${h.position[2].toFixed(0)}) size=(${h.size[0].toFixed(0)},${h.size[1].toFixed(0)},${h.size[2].toFixed(0)}) ${h.isBonus ? 'BONUS' : 'classic'}`);
-      }
-      console.groupEnd();
-    }
 
-    // If discovery worked, use those positions. Otherwise fall back to the
-    // legacy hand-placed array (so the room is never un-clickable).
+    // If discovery worked, use the two split hotspots; otherwise fall back.
     const hotspotDefs = useFallback
       ? FALLBACK_HOTSPOTS
-      : (discoveredHotspots.length >= 2 ? discoveredHotspots : GAMEREADY_HOTSPOTS);
+      : (discoveredHotspots.length === 2 ? discoveredHotspots : GAMEREADY_HOTSPOTS);
 
     let count = 0;
     c.traverse((obj) => { if ((obj as THREE.Mesh).isMesh) count++; });
