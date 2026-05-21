@@ -749,6 +749,33 @@ function SlotCabinets({ hotspots }: SlotCabinetsProps) {
 }
 
 // ---------------------------------------------------------------------------
+// BonusBadge — floating "💎 BONUS" plane above each bonus-paytable cabinet.
+// Reuses BONUS_BADGE_GEO + the canvas-texture material. Faces the player
+// roughly — DoubleSide so it reads from any approach angle.
+// ---------------------------------------------------------------------------
+function BonusBadge({ position }: { position: [number, number, number] }) {
+  const meshRef = useRef<THREE.Mesh>(null);
+  const mat = useMemo(() => {
+    if (typeof window === 'undefined') return null;
+    return new THREE.MeshBasicMaterial({
+      map: getBonusBadgeTexture(),
+      transparent: true,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+  }, []);
+  useEffect(() => {
+    if (!meshRef.current) return;
+    meshRef.current.matrixAutoUpdate = false;
+    meshRef.current.updateMatrix();
+  }, []);
+  if (!mat) return null;
+  return (
+    <mesh ref={meshRef} geometry={BONUS_BADGE_GEO} material={mat} position={position} />
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Slot hotspot click box
 // ---------------------------------------------------------------------------
 function SlotHotspot({ def }: { def: HotspotDef }) {
@@ -1287,7 +1314,11 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
     const _bb = new THREE.Box3();
     const _bbSize = new THREE.Vector3();
     const _bbCenter = new THREE.Vector3();
-    const discoveredHotspots: HotspotDef[] = [];
+    interface CandidateCabinet {
+      pos: [number, number, number];
+      size: [number, number, number];
+    }
+    const candidates: CandidateCabinet[] = [];
     const discoveredDebug: Array<{ name: string; pos: string; size: string }> = [];
     c.traverse((obj) => {
       const mesh = obj as THREE.Mesh;
@@ -1318,19 +1349,36 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
         });
       }
       if (!ok) return;
-      // Build a click-zone roughly matching the cabinet bbox + 20wu reach
-      // into the room.
-      discoveredHotspots.push({
-        position: [_bbCenter.x, _bbCenter.y, _bbCenter.z] as [number, number, number],
-        size:     [w + 20, h, d + 20] as [number, number, number],
-        machineSlug: 'classic-3x5' as MachineSlug,
-        paytableId:  'classic-3x5' as MachineSlug,
-        isBonus:     false,
+      candidates.push({
+        pos:  [_bbCenter.x, _bbCenter.y, _bbCenter.z],
+        size: [w + 20, h, d + 20],
       });
     });
 
+    // Position-based paytable split: cabinets in the LEFT half of the room
+    // (lower X) get the classic paytable, cabinets in the RIGHT half (higher X)
+    // get the bonus paytable. Per user spec — left row = classic, right row =
+    // bonus. Computed from the discovered candidates so it adapts to any
+    // future GLB rearrangement.
+    let splitX = 0;
+    if (candidates.length >= 2) {
+      const xs = candidates.map(c => c.pos[0]).sort((a, b) => a - b);
+      splitX = (xs[0] + xs[xs.length - 1]) / 2;
+    }
+    const discoveredHotspots: HotspotDef[] = candidates.map((c) => {
+      const isBonus = c.pos[0] >= splitX;
+      return {
+        position: c.pos,
+        size:     c.size,
+        machineSlug: (isBonus ? 'classic-3x5-bonus' : 'classic-3x5') as MachineSlug,
+        paytableId:  (isBonus ? 'classic-3x5-bonus' : 'classic-3x5') as MachineSlug,
+        isBonus,
+      };
+    });
+
     if (process.env.NEXT_PUBLIC_COVE_DEBUG === '1') {
-      console.info(`[cove-interior] discovered ${discoveredHotspots.length} slot cabinets from ${discoveredDebug.length} candidate meshes`);
+      const nBonus = discoveredHotspots.filter(h => h.isBonus).length;
+      console.info(`[cove-interior] discovered ${discoveredHotspots.length} slot cabinets from ${discoveredDebug.length} candidate meshes — splitX=${splitX.toFixed(0)} (${discoveredHotspots.length - nBonus} classic / ${nBonus} bonus)`);
       for (const d of discoveredDebug) {
         console.info(`  ${d.name.padEnd(30)} pos=${d.pos.padEnd(18)} size=${d.size}`);
       }
@@ -1434,6 +1482,15 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
           are used only when the entire fallback GLB is in play. */}
       {hotspots.map((def, i) => (
         <SlotHotspot key={i} def={def} />
+      ))}
+
+      {/* BONUS badges floating above each right-row (bonus paytable) slot
+          machine. Visually differentiates the bonus row from the classic
+          row without re-introducing the procedural cabinet geometry.
+          Reuses BONUS_BADGE_GEO + getBonusBadgeTexture from the (now
+          dead) procedural cabinet code. */}
+      {hotspots.filter(h => h.isBonus).map((def, i) => (
+        <BonusBadge key={`badge-${i}`} position={[def.position[0], def.position[1] + def.size[1] / 2 + 30, def.position[2]]} />
       ))}
     </group>
   );
