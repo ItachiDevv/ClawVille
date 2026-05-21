@@ -745,7 +745,7 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
 
       // Differential child-scale pass — applied BEFORE mergeStaticMeshesByMaterial so that
       // the overridden child node scales are baked into vertex positions by the merger.
-      // After the merge the named parent nodes (e.g. "Squidward_s_House") still exist as
+      // After the merge the named parent nodes (e.g. "Squidward's_House") still exist as
       // empty containers, but all their mesh children will have had their matrixWorld
       // (which incorporates this scale) snapshotted and baked into merged geo vertex positions.
       // This gives differential sizing: building body reads larger, pathway/sign unchanged.
@@ -767,7 +767,7 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
       //
       // This runs AFTER the child-override updateMatrixWorld so the body bbox reflects the
       // post-override scale. It runs BEFORE mergeStaticMeshesByMaterial because the named
-      // body node (e.g. "Squidward_s_House") becomes an empty container after the merge.
+      // body node (e.g. "Squidward's_House") becomes an empty container after the merge.
       if (config.bodyAnchorChild) {
         const bodyChild = c.getObjectByName(config.bodyAnchorChild);
         if (bodyChild) {

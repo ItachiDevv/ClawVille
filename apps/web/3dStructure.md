@@ -82,7 +82,7 @@ Slot table (clockwise from North, cx/cy in tile coords, Phase 6.2.1):
 | 8 | WSW (240°) | 67 | 245 | claw-arcade | 2.093 | 1100 | 2 slots (60°) from casino — NOT adjacent |
 | 9 | W (270°) | 50 | 180 | casino | 1.571 | 1300 | entertainment district; box3Recenter=true |
 | 10 | WNW (300°) | 67 | 115 | agent-security | 1.049 | 1100 | adjacent to casino (slot 9) |
-| 11 | NNW (330°) | 115 | 67 | memory-rag | 0.522 | 1700 | 1400→1700; childScaleOverrides: "Squidward's House" ×1.7 (was 1.4; literal name — apostrophe+space); bodyAnchorChild: "Squidward's House"; pivotZBias removed |
+| 11 | NNW (330°) | 115 | 67 | memory-rag | 0.522 | 1700 | 1400→1700; childScaleOverrides: "Squidward's_House" ×1.7 (straight U+0027 + underscore — CDP-verified node name); bodyAnchorChild: "Squidward's_House"; pivotZBias removed |
 
 **rotY formula:** `atan2(180 − cx, 180 − cy)` — each building's +Z axis points toward plaza center (world 0, 0). Values are identical across all ring expansions because atan2 depends only on direction, not magnitude. Model-authored `rotYOffset` values are additive and stay with the building regardless of slot.
 
@@ -120,7 +120,7 @@ Pipeline ordering (inside useMemo):
 5. `mergeStaticMeshesByMaterial`
 
 Currently active:
-- `memory-rag` (`squidward-house.glb`): `"Squidward's House"` × 1.7 childScaleOverride (was ×1.4 with wrong underscore key — silent no-op); `bodyAnchorChild: "Squidward's House"` — moai head center aligns to slot, steps extend forward.
+- `memory-rag` (`squidward-house.glb`): `"Squidward's_House"` × 1.7 childScaleOverride (straight U+0027 + underscore — CDP-verified; prior commits used space or U+2019, both silent no-ops); `bodyAnchorChild: "Squidward's_House"` — moai head center aligns to slot, steps extend forward.
 - `mcp-tool-use` (`krusty-krab-v2.glb`): `"The Krusty Krab"` × 1.5 childScaleOverride (was `The_Krusty_Krab` — silent no-op; corrected to literal name); `bodyAnchorChild: "The Krusty Krab"` — restaurant center aligns to slot, sign/pole extends forward.
 
 **Strip rules** (run in order on every cloned scene):
