@@ -75,7 +75,7 @@ export type TileIndex = (typeof TILES)[keyof typeof TILES];
 //   Slot  6 (180°/S)   → cron-automation    (Downtown Building) cx=180, cy=310
 //   Slot  7 (210°/SSW) → deployment-ops     (Lighthouse)        cx=115, cy=293
 //   Slot  8 (240°/WSW) → claw-arcade        (Arcade City)       cx=67,  cy=245  [swapped 2026-05-18]
-//   Slot  9 (270°/W)   → casino             (Predictive Gaming) cx=50,  cy=180  ← entertainment
+//   Slot  9 (270°/W)   → cove             (Predictive Gaming) cx=50,  cy=180  ← entertainment
 //   Slot 10 (300°/WNW) → agent-security     (Patrick's Rock)    cx=67,  cy=115  [swapped 2026-05-18]
 //   Slot 11 (330°/NNW) → memory-rag         (Squidward's House) cx=115, cy=67
 //
@@ -123,7 +123,7 @@ export const buildingZones: BuildingZone[] = [
   // Phase 6.2: slot preserved from Phase 6.1 swap (claw-arcade at slot 8/WSW).
   { id: 'claw-arcade',        x:  60, y: 238, width: 14, height: 14 },
   // Slot 9 — W  (θ=π):      cx=50,  cy=180  → zone(43, 173)  ← entertainment district
-  { id: 'casino',             x:  43, y: 173, width: 14, height: 14 },
+  { id: 'cove',             x:  43, y: 173, width: 14, height: 14 },
   // Slot 10 — WNW (θ=7π/6): cx≈67,  cy=115  → zone(60, 108)
   // Phase 6.2: slot preserved from Phase 6.1 swap (agent-security at slot 10/WNW).
   { id: 'agent-security',     x:  60, y: 108, width: 14, height: 14 },

@@ -2,9 +2,9 @@
  * Slot Paytables — publicly verifiable constants
  *
  * These are the ONLY paytable constants used by both:
- *   - Client: apps/web/src/lib/casino/mock-engine.ts
+ *   - Client: apps/web/src/lib/cove/mock-engine.ts
  *   - Server: apps/api/src/services/slot-engine.ts (Phase 6.1)
- *   - Verifier: apps/web/src/app/casino/verify (Phase 6.1)
+ *   - Verifier: apps/web/src/app/cove/verify (Phase 6.1)
  *
  * Public exposure is intentional — provably-fair requires the player
  * can verify their spins client-side using these definitions.
@@ -75,10 +75,10 @@
 // no two adjacent cells share the same singleton — preserves visual
 // readability of the 3-row window.
 //
-// Generator: `node scripts/casino/_emit-strips.mjs 22 22 14 14 7 84 42`.
+// Generator: `node scripts/cove/_emit-strips.mjs 22 22 14 14 7 84 42`.
 // CI gate: `.github/workflows/rtp-gate.yml` runs 100k Monte Carlo on every
 // PR touching this file (or the engine) and fails if RTP ∉ [95%, 97%].
-// Local acceptance: `bun scripts/casino/rtp-sim.ts --spins 1000000`.
+// Local acceptance: `bun scripts/cove/rtp-sim.ts --spins 1000000`.
 // ---------------------------------------------------------------------------
 export const CLASSIC_REEL_STRIPS: number[][] = [
   // Reel 0 (leftmost, len=84): C=22 L=22 O=14 P=14 B=7, +1 each BAR/Seven/WILD/BAR×2/BAR×3
@@ -327,7 +327,7 @@ export const SCATTER_PAY_TABLE: readonly number[] = [0, 0, 0, 2, 8, 40];
  *   • Scatter pays are NOT doubled in FS — industry convention.
  *
  * RTP tuning note: the reel strips above were drafted assuming the
- * spec-correct FS doubling. Live Monte Carlo (`scripts/casino/rtp-sim.ts
+ * spec-correct FS doubling. Live Monte Carlo (`scripts/cove/rtp-sim.ts
  * --paytable classic-3x5-bonus --spins 1000000`) should land combined
  * RTP in [96.5%, 99.5%]; if it overshoots the CI gate may need a
  * single-pass strip retune (drop Plum 14→12 or Lemon payout floor 2→1

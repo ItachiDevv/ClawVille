@@ -218,7 +218,7 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     buildingId: '',
     patrolRadius: 500,
     homeX: 3348,
-    homeY: 5112,                 // W inner — between casino (slot 9, W) + claw-arcade (slot 8, WSW)
+    homeY: 5112,                 // W inner — between cove (slot 9, W) + claw-arcade (slot 8, WSW)
     stats: { hp: 100, attack: 14, defense: 14, speed: 12 },
     personality: 'A weather-worn vagabond lobster who treats the whole reef as his personal backyard.',
   },
