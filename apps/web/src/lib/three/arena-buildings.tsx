@@ -897,8 +897,14 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
   //  pivotOffsetX/Z like every other building).
   return (
     <>
-      {/* Stone pedestal disc — separates building base from sand terrain */}
-      <BuildingPedestal cx={cx} cz={cz} />
+      {/* BuildingPedestal removed 2026-05-21 — was authoring as a sandstone
+          ground-separator disc under each building, but the canonical
+          groundedYOffset pattern already keeps buildings flush with the sand
+          terrain. With the matrixAutoUpdate=false bug fixed earlier today the
+          pedestals were finally rendering at the correct per-building
+          positions instead of stacking at origin, and showed up as dark plates
+          under every building. Removed entirely — the canonical grounding +
+          terrain texture is sufficient. */}
       <group ref={groupRef} position={[cx, -2 + config.yOffset, cz]} rotation={[0, (config.rotY ?? 0) + (config.rotYOffset ?? 0), 0]}>
         {/* pivotZBias: extra Z shift to compensate for step/foreground geometry displacing the bbox center.
             Positive value moves inner group toward village center (closer to camera at standard view).
