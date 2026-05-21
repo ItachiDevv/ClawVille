@@ -71,6 +71,9 @@ const LOW_END_GPU_DETECTED: boolean = (() => {
     const isTouch =
       typeof window.matchMedia === 'function' &&
       window.matchMedia('(pointer: coarse)').matches;
+    // Release the probe context so Firefox (strict context-count limit) doesn't
+    // waste one of its ~16 WebGL2 slots on this throwaway canvas.
+    gl.getExtension('WEBGL_lose_context')?.loseContext();
     return lowEnd || isTouch;
   } catch {
     return false;
@@ -974,14 +977,25 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
       try {
         return await createWebGPURenderer(defaultProps.canvas);
       } catch (err) {
-        console.warn('[World3D] WebGPURenderer unavailable, falling back to WebGLRenderer:', err);
-        // Import classic WebGLRenderer from base three (not three/webgpu)
-        const { WebGLRenderer } = await import('three');
-        return new WebGLRenderer({
-          canvas: defaultProps.canvas,
+        console.warn('[World3D] WebGPURenderer init failed, retrying with forceWebGL on fresh canvas:', err);
+        // CRITICAL: do NOT import WebGLRenderer from plain 'three' here.
+        // The scene uses NodeMaterials registered via extend(THREE as any) from
+        // 'three/webgpu' — mixing those with a plain 'three' WebGLRenderer causes
+        // a dual-instance crash (NodeMaterial.vertexShader=undefined → .replace() on
+        // undefined). Use WebGPURenderer({forceWebGL:true}) from the same 'three/webgpu'
+        // namespace, on a FRESH canvas so the original canvas is not double-bound.
+        const { WebGPURenderer } = await import('three/webgpu');
+        const fallbackCanvas = document.createElement('canvas');
+        fallbackCanvas.width = defaultProps.canvas.width || window.innerWidth;
+        fallbackCanvas.height = defaultProps.canvas.height || window.innerHeight;
+        const fallbackRenderer = new WebGPURenderer({
+          canvas: fallbackCanvas,
           antialias: false,
-          powerPreference: 'low-power',
+          forceWebGL: true,
         });
+        await fallbackRenderer.init();
+        fallbackRenderer.setSize(fallbackCanvas.width, fallbackCanvas.height, false);
+        return fallbackRenderer;
       }
     },
     [],
