@@ -40,6 +40,25 @@ import { useNpcStore } from '@/stores/npc';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 
 // ---------------------------------------------------------------------------
+// SeaLoadingScreen progress bridge — wire THREE.DefaultLoadingManager.onProgress
+// to window.__W3D_PROGRESS once at module load. The pre-mount loader screen
+// prefers this real ratio (assets loaded / assets total) over its simulated
+// curve so the bar tracks actual download progress instead of stalling at the
+// fast-tail of an exponential ease. drei's useGLTF, useVRM, KTX2Loader and
+// MeshoptLoader all route through DefaultLoadingManager, so this captures
+// every GLB / VRM / texture the world streams in.
+// ---------------------------------------------------------------------------
+if (typeof window !== 'undefined') {
+  const _mgr = THREE.DefaultLoadingManager;
+  const _prevOnProgress = _mgr.onProgress?.bind(_mgr);
+  _mgr.onProgress = (url: string, loaded: number, total: number) => {
+    (window as unknown as { __W3D_PROGRESS?: number }).__W3D_PROGRESS =
+      total > 0 ? Math.max(0, Math.min(1, loaded / total)) : 0;
+    if (_prevOnProgress) _prevOnProgress(url, loaded, total);
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 const HALF_W = MAP_WIDTH / 2;
