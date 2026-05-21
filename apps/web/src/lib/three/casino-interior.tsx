@@ -34,7 +34,7 @@
  *   - Draw calls < 140 (room ~21 + cabinets 12 + avatar ~2-4 + hotspot 4)
  */
 
-import { Suspense, useRef, useEffect, useMemo, useState } from 'react';
+import { Suspense, useRef, useEffect, useMemo, useState, type RefObject, type MutableRefObject } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
@@ -50,6 +50,7 @@ import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
 import { MODEL_REGISTRY, type ModelRegistryEntry } from '@/lib/three/agent-model-registry';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { clampCameraToRoom, type RoomBounds } from '@/lib/three/room-camera';
+import { useWorldLabel, WorldLabel, WorldLabelsOverlayMount } from '@/lib/three/world-labels-overlay';
 import type { MachineSlug } from '@/lib/casino/types';
 
 // ---------------------------------------------------------------------------
@@ -215,9 +216,9 @@ let _casinoArrowPitchOffset = 0; // wu added to CAM_ABOVE for camera height
 // arrows rotate the camera.
 // ---------------------------------------------------------------------------
 interface CasinoKeyState {
-  w: boolean; a: boolean; s: boolean; d: boolean;
+  w: boolean; a: boolean; s: boolean; d: boolean; e: boolean;
 }
-const casinoKeys: CasinoKeyState = { w: false, a: false, s: false, d: false };
+const casinoKeys: CasinoKeyState = { w: false, a: false, s: false, d: false, e: false };
 let casinoKeyListenersAttached = false;
 
 function attachCasinoKeyListeners() {
@@ -232,6 +233,7 @@ function attachCasinoKeyListeners() {
     if (k === 's') casinoKeys.s = true;
     if (k === 'a') casinoKeys.a = true;
     if (k === 'd') casinoKeys.d = true;
+    if (k === 'e') casinoKeys.e = true;
   };
   const onKeyUp = (e: KeyboardEvent) => {
     const k = e.key.length === 1 ? e.key.toLowerCase() : null;
@@ -239,9 +241,18 @@ function attachCasinoKeyListeners() {
     if (k === 's') casinoKeys.s = false;
     if (k === 'a') casinoKeys.a = false;
     if (k === 'd') casinoKeys.d = false;
+    if (k === 'e') { casinoKeys.e = false; _eKeyConsumed = false; }
   };
-  const onBlur = () => { casinoKeys.w = casinoKeys.a = casinoKeys.s = casinoKeys.d = false; };
-  const onVis = () => { if (document.hidden) { casinoKeys.w = casinoKeys.a = casinoKeys.s = casinoKeys.d = false; } };
+  const onBlur = () => {
+    casinoKeys.w = casinoKeys.a = casinoKeys.s = casinoKeys.d = casinoKeys.e = false;
+    _eKeyConsumed = false;
+  };
+  const onVis = () => {
+    if (document.hidden) {
+      casinoKeys.w = casinoKeys.a = casinoKeys.s = casinoKeys.d = casinoKeys.e = false;
+      _eKeyConsumed = false;
+    }
+  };
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
   window.addEventListener('blur', onBlur);
@@ -546,6 +557,126 @@ const FALLBACK_HOTSPOTS: HotspotDef[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Proximity label + E-key interaction constants
+// (placed after SLOT_CABINET_POSITIONS so computed Z values are accurate)
+// ---------------------------------------------------------------------------
+
+/** Distance at which the bank label becomes visible. */
+const BANK_LABEL_FADE_NEAR = 50;
+/** Distance at which the bank label fades to 0. */
+const BANK_LABEL_FADE_FAR  = 600;
+/** Distance at which "press E" hint appears in label. */
+const BANK_INTERACT_NEAR = 250;
+/** Distance at which pressing E actually fires openSlotScreen. */
+const BANK_INTERACT_ARM  = 200;
+
+// Classic bank: cabinets 0+1 (z≈-583, z≈-333)
+// _CAB_BASE_H_WU=16, _CAB_BODY_H_WU=143 → top=159wu; label at 219wu
+const CLASSIC_BANK_CENTROID_X = -(Math.round(115 * (2000 / 600))) + 60; // -383+60 = -323
+const CLASSIC_BANK_CENTROID_Z = -458; // midpoint of cabs 0+1
+const CLASSIC_BANK_LABEL_Y    = 219;  // 159wu cabinet top + 60wu
+
+// Bonus bank: cabinets 2+3 (z≈-83, z≈166)
+const BONUS_BANK_CENTROID_X = -(Math.round(115 * (2000 / 600))) + 60;
+const BONUS_BANK_CENTROID_Z = 41;   // midpoint of cabs 2+3
+const BONUS_BANK_LABEL_Y    = 219;
+
+// Module-scope anchor Object3Ds for label projection (never added to scene — getWorldPosition still works)
+const _classicBankAnchor = new THREE.Object3D();
+_classicBankAnchor.position.set(CLASSIC_BANK_CENTROID_X, CLASSIC_BANK_LABEL_Y, CLASSIC_BANK_CENTROID_Z);
+_classicBankAnchor.matrixAutoUpdate = false;
+_classicBankAnchor.updateMatrix();
+_classicBankAnchor.updateWorldMatrix(false, false);
+
+const _bonusBankAnchor = new THREE.Object3D();
+_bonusBankAnchor.position.set(BONUS_BANK_CENTROID_X, BONUS_BANK_LABEL_Y, BONUS_BANK_CENTROID_Z);
+_bonusBankAnchor.matrixAutoUpdate = false;
+_bonusBankAnchor.updateMatrix();
+_bonusBankAnchor.updateWorldMatrix(false, false);
+
+// Stable RefObjects wrapping the module-scope anchors
+const _classicAnchorRef = { current: _classicBankAnchor } as RefObject<THREE.Object3D | null>;
+const _bonusAnchorRef   = { current: _bonusBankAnchor }   as RefObject<THREE.Object3D | null>;
+
+// E-key armed state
+type ArmedBank = 'classic' | 'bonus' | null;
+let _eKeyArmedBank: ArmedBank = null;
+// Consumed guard: prevent repeat-fire while E is held
+let _eKeyConsumed = false;
+// Proximity hint flags: true = player is within BANK_INTERACT_NEAR of that bank
+// Read by BankLabels useFrame to update label content
+let _classicBankNearHint = false;
+let _bonusBankNearHint   = false;
+// Avatar ClawToken balance — written by avatar components via useEffect, read by E-key handler
+let _casinoAvatarClawTokens = 60;
+
+// ---------------------------------------------------------------------------
+// AABB collision — cabinet footprints + dealer station (XZ plane only)
+// All computations use read-time values (post-const, post-SLOT_CABINET_POSITIONS).
+// ---------------------------------------------------------------------------
+
+// Cabinet AABB half-extents
+const _CAB_AABB_HALF_X = 60; // wu — depth into room from wall face
+const _CAB_AABB_HALF_Z = 80; // wu — half width along wall
+
+interface CabinetAABB {
+  centerX: number;
+  centerZ: number;
+  halfX: number;
+  halfZ: number;
+}
+
+const _cabinetAABBs: CabinetAABB[] = SLOT_CABINET_POSITIONS.map((pos) => ({
+  centerX: pos.x + _CAB_AABB_HALF_X, // cabinet face + half depth into room
+  centerZ: pos.z,
+  halfX: _CAB_AABB_HALF_X,
+  halfZ: _CAB_AABB_HALF_Z,
+}));
+
+// Dealer station AABB (world X ≈ +367 post-autofit, Z ≈ 0)
+const _DEALER_CENTER_X =  367;
+const _DEALER_CENTER_Z =    0;
+const _DEALER_HALF_X   =  100;
+const _DEALER_HALF_Z   =  100;
+
+// Scratch for collision — never allocated in useFrame
+let _col_px = 0, _col_pz = 0;
+
+function _resolveCasinoCollisions(posX: MutableRefObject<number>, posZ: MutableRefObject<number>, avatarHalf: number): void {
+  _col_px = posX.current;
+  _col_pz = posZ.current;
+  const aw = avatarHalf;
+
+  for (let i = 0; i < _cabinetAABBs.length; i++) {
+    const cab = _cabinetAABBs[i]!;
+    const ox = (cab.halfX + aw) - Math.abs(_col_px - cab.centerX);
+    const oz = (cab.halfZ + aw) - Math.abs(_col_pz - cab.centerZ);
+    if (ox > 0 && oz > 0) {
+      if (ox < oz) {
+        _col_px += _col_px < cab.centerX ? -ox : ox;
+      } else {
+        _col_pz += _col_pz < cab.centerZ ? -oz : oz;
+      }
+    }
+  }
+
+  {
+    const ox = (_DEALER_HALF_X + aw) - Math.abs(_col_px - _DEALER_CENTER_X);
+    const oz = (_DEALER_HALF_Z + aw) - Math.abs(_col_pz - _DEALER_CENTER_Z);
+    if (ox > 0 && oz > 0) {
+      if (ox < oz) {
+        _col_px += _col_px < _DEALER_CENTER_X ? -ox : ox;
+      } else {
+        _col_pz += _col_pz < _DEALER_CENTER_Z ? -oz : oz;
+      }
+    }
+  }
+
+  posX.current = _col_px;
+  posZ.current = _col_pz;
+}
+
+// ---------------------------------------------------------------------------
 // SlotCabinets — 4 primitive-based slot machine props on the left wall
 // Static geometry; matrixAutoUpdate=false after initial placement.
 // Props: hotspots array provides isBonus flag for material + badge selection.
@@ -679,6 +810,12 @@ function CasinoVRMAvatarInner({ reg }: CasinoVRMAvatarProps) {
   const groupRef = useRef<THREE.Group>(null);
   const rotRef = useRef(Math.PI); // face -Z = into the room on spawn
   const { camera } = useThree();
+  const { data: avatar } = useAvatar();
+
+  // Sync avatar balance to module-scope so E-key handler can read it without hooks
+  useEffect(() => {
+    if (avatar?.clawTokens != null) _casinoAvatarClawTokens = avatar.clawTokens;
+  }, [avatar?.clawTokens]);
 
   // Reset module-scope camera state on mount so re-entering the casino
   // starts with the camera directly behind the avatar (no stale yaw /
@@ -753,6 +890,11 @@ function CasinoVRMAvatarInner({ reg }: CasinoVRMAvatarProps) {
     if (isMoving) {
       posX.current = Math.max(-BOUNDS_X, Math.min(BOUNDS_X, posX.current + vx * CASINO_PLAYER_SPEED * delta));
       posZ.current = Math.max(BOUNDS_Z_MIN, Math.min(BOUNDS_Z_MAX, posZ.current + vz * CASINO_PLAYER_SPEED * delta));
+      // Cabinet + dealer AABB push-out (before wall-bounds clamp so wall still wins)
+      _resolveCasinoCollisions(posX, posZ, 30);
+      // Re-clamp to room bounds after push-out (collision may have nudged past wall)
+      posX.current = Math.max(-BOUNDS_X, Math.min(BOUNDS_X, posX.current));
+      posZ.current = Math.max(BOUNDS_Z_MIN, Math.min(BOUNDS_Z_MAX, posZ.current));
       // Bug 1 fix 2026-05-19: lerp rate reduced 0.15→0.08.
       // At 60fps, 0.15 produced ~13.5°/frame on A/D press — visually
       // snapping 45° in 3-4 frames. 0.08 spreads the same 90° turn over
@@ -763,6 +905,46 @@ function CasinoVRMAvatarInner({ reg }: CasinoVRMAvatarProps) {
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
       rotRef.current += diff * 0.08;
+    }
+
+    // --- Proximity + E-key interaction ---
+    // Compute XZ distance to each bank centroid. Arm / disarm E key based on distance.
+    // All arithmetic is scalar — zero allocations.
+    {
+      const px = posX.current;
+      const pz = posZ.current;
+      const dClassicSq = (px - CLASSIC_BANK_CENTROID_X) ** 2 + (pz - CLASSIC_BANK_CENTROID_Z) ** 2;
+      const dBonusSq   = (px - BONUS_BANK_CENTROID_X)   ** 2 + (pz - BONUS_BANK_CENTROID_Z)   ** 2;
+      const armSq      = BANK_INTERACT_ARM  * BANK_INTERACT_ARM;
+      const nearSq     = BANK_INTERACT_NEAR * BANK_INTERACT_NEAR;
+
+      if (dClassicSq <= armSq) {
+        _eKeyArmedBank = 'classic';
+      } else if (dBonusSq <= armSq) {
+        _eKeyArmedBank = 'bonus';
+      } else {
+        _eKeyArmedBank = null;
+        _eKeyConsumed  = false;
+      }
+
+      // Update setVisible for the "press E" prompt labels (handled in BankLabels component
+      // via _eKeyArmedBank read — WorldLabel content is updated there each render tick).
+
+      // Fire on E if armed and not already consumed this press
+      if (_eKeyArmedBank !== null && casinoKeys.e && !_eKeyConsumed) {
+        _eKeyConsumed = true;
+        const slotAlreadyOpen = useCasinoStore.getState().slotScreenOpen;
+        if (!slotAlreadyOpen) {
+          const startBalance = _casinoAvatarClawTokens;
+          const slug: MachineSlug = _eKeyArmedBank === 'bonus' ? 'classic-3x5-bonus' : 'classic-3x5';
+          useCasinoStore.getState().openSlotScreen(slug, slug, startBalance);
+        }
+      }
+
+      // Expose proximity state so BankLabels useFrame can read it
+      // nearHint = true when player is within BANK_INTERACT_NEAR (250wu) of that bank
+      _classicBankNearHint = dClassicSq <= nearSq;
+      _bonusBankNearHint   = dBonusSq   <= nearSq;
     }
 
     const group = groupRef.current;
@@ -861,6 +1043,12 @@ function CasinoGLBAvatarInner() {
   const groupRef  = useRef<THREE.Group>(null);
   const rotRef    = useRef(Math.PI);
   const { camera } = useThree();
+  const { data: avatar } = useAvatar();
+
+  // Sync avatar balance to module-scope so E-key handler can read it
+  useEffect(() => {
+    if (avatar?.clawTokens != null) _casinoAvatarClawTokens = avatar.clawTokens;
+  }, [avatar?.clawTokens]);
 
   // Reset module-scope camera state on mount (mirrors VRM branch).
   useEffect(() => {
@@ -934,6 +1122,10 @@ function CasinoGLBAvatarInner() {
     if (isMoving) {
       posX.current = Math.max(-BOUNDS_X, Math.min(BOUNDS_X, posX.current + vx * CASINO_PLAYER_SPEED * delta));
       posZ.current = Math.max(BOUNDS_Z_MIN, Math.min(BOUNDS_Z_MAX, posZ.current + vz * CASINO_PLAYER_SPEED * delta));
+      // Cabinet + dealer AABB push-out
+      _resolveCasinoCollisions(posX, posZ, 30);
+      posX.current = Math.max(-BOUNDS_X, Math.min(BOUNDS_X, posX.current));
+      posZ.current = Math.max(BOUNDS_Z_MIN, Math.min(BOUNDS_Z_MAX, posZ.current));
       // Bug 1 fix 2026-05-19: lerp rate 0.15→0.08 (smoother yaw, same formula).
       // lobster.glb faces +Z at rot=0 — see feedback_lobster_faces_negative_z memory.
       const targetRot = Math.atan2(vx, vz);
@@ -941,6 +1133,38 @@ function CasinoGLBAvatarInner() {
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
       rotRef.current += diff * 0.08;
+    }
+
+    // --- Proximity + E-key (mirrors VRM branch) ---
+    {
+      const px = posX.current;
+      const pz = posZ.current;
+      const dClassicSq = (px - CLASSIC_BANK_CENTROID_X) ** 2 + (pz - CLASSIC_BANK_CENTROID_Z) ** 2;
+      const dBonusSq   = (px - BONUS_BANK_CENTROID_X)   ** 2 + (pz - BONUS_BANK_CENTROID_Z)   ** 2;
+      const armSq      = BANK_INTERACT_ARM  * BANK_INTERACT_ARM;
+      const nearSq     = BANK_INTERACT_NEAR * BANK_INTERACT_NEAR;
+
+      if (dClassicSq <= armSq) {
+        _eKeyArmedBank = 'classic';
+      } else if (dBonusSq <= armSq) {
+        _eKeyArmedBank = 'bonus';
+      } else {
+        _eKeyArmedBank = null;
+        _eKeyConsumed  = false;
+      }
+
+      if (_eKeyArmedBank !== null && casinoKeys.e && !_eKeyConsumed) {
+        _eKeyConsumed = true;
+        const slotAlreadyOpen = useCasinoStore.getState().slotScreenOpen;
+        if (!slotAlreadyOpen) {
+          const startBalance = _casinoAvatarClawTokens;
+          const slug: MachineSlug = _eKeyArmedBank === 'bonus' ? 'classic-3x5-bonus' : 'classic-3x5';
+          useCasinoStore.getState().openSlotScreen(slug, slug, startBalance);
+        }
+      }
+
+      _classicBankNearHint = dClassicSq <= nearSq;
+      _bonusBankNearHint   = dBonusSq   <= nearSq;
     }
 
     const group = groupRef.current;
@@ -1135,6 +1359,136 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
 }
 
 // ---------------------------------------------------------------------------
+// BankLabels — proximity-driven floating labels for Classic and Bonus banks.
+//
+// Each label registers via useWorldLabel with a module-scope anchor Object3D.
+// The anchor is at each bank's centroid (XZ) + CLASSIC_BANK_LABEL_Y above floor.
+// In useFrame, the label content is updated imperatively each frame based on
+// _classicBankNearHint / _eKeyArmedBank — zero React re-renders per frame.
+// ---------------------------------------------------------------------------
+
+// Bio-label style (shared with building labels in arena-buildings.tsx)
+function _bankLabelCapsule(name: string, hint: boolean) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        transform: 'translateY(-50%)',
+      }}
+    >
+      <div
+        style={{
+          fontFamily: 'var(--font-fraunces, "Cormorant Garamond", "Spectral", Georgia, serif)',
+          fontVariationSettings: '"opsz" 9',
+          fontWeight: 520,
+          fontSize: 15,
+          color: '#a0eaff',
+          padding: '7px 15px 9px',
+          borderRadius: 999,
+          background: 'rgba(8, 18, 32, 0.85)',
+          border: '1px solid rgba(120, 220, 255, 0.55)',
+          boxShadow: '0 0 22px rgba(120,240,255,0.5), 0 0 60px -10px rgba(120,240,255,0.45), inset 0 0 14px rgba(120,200,240,0.18)',
+          whiteSpace: 'nowrap',
+          letterSpacing: '0.02em',
+          lineHeight: 1,
+          userSelect: 'none',
+        }}
+      >
+        {name}
+        {hint && (
+          <span
+            style={{
+              display: 'block',
+              fontSize: 9,
+              fontStyle: 'italic',
+              fontFamily: 'var(--font-oxanium, sans-serif)',
+              fontWeight: 400,
+              color: '#ffe875',
+              opacity: 0.9,
+              marginTop: 2,
+              letterSpacing: '0.1em',
+              textTransform: 'uppercase',
+            }}
+          >
+            press E to play
+          </span>
+        )}
+      </div>
+      <div
+        style={{
+          width: 1,
+          height: 40,
+          backgroundImage: 'linear-gradient(rgba(140,240,255,0.78) 50%, transparent 50%)',
+          backgroundSize: '1px 6px',
+          backgroundRepeat: 'repeat-y',
+          boxShadow: '0 0 6px rgba(120,240,255,0.55)',
+          marginBottom: 2,
+        }}
+      />
+      <div
+        style={{
+          width: 5,
+          height: 5,
+          borderRadius: '50%',
+          background: 'rgba(160,234,255,1)',
+        }}
+      />
+    </div>
+  );
+}
+
+function BankLabels() {
+  // State-driven hint flags so React re-renders only when proximity changes
+  const [classicHint, setClassicHint] = useState(false);
+  const [bonusHint,   setBonusHint]   = useState(false);
+
+  const { divRef: classicDivRef, setVisible: setClassicVisible } = useWorldLabel({
+    id:             'casino-classic-bank',
+    anchorRef:      _classicAnchorRef,
+    offset:         [0, 0, 0],
+    initialVisible: true,
+    fadeNear:       BANK_LABEL_FADE_NEAR,
+    fadeFar:        BANK_LABEL_FADE_FAR,
+    fadeBaseOpacity: 0.9,
+    occlude:        false,
+  });
+
+  const { divRef: bonusDivRef } = useWorldLabel({
+    id:             'casino-bonus-bank',
+    anchorRef:      _bonusAnchorRef,
+    offset:         [0, 0, 0],
+    initialVisible: true,
+    fadeNear:       BANK_LABEL_FADE_NEAR,
+    fadeFar:        BANK_LABEL_FADE_FAR,
+    fadeBaseOpacity: 0.9,
+    occlude:        false,
+  });
+
+  // Poll module-scope hint flags in useFrame and drive React state
+  // only when they actually change — one setState per transition.
+  useFrame(() => {
+    if (_classicBankNearHint !== classicHint) setClassicHint(_classicBankNearHint);
+    if (_bonusBankNearHint   !== bonusHint)   setBonusHint(_bonusBankNearHint);
+  });
+
+  // Suppress unused variable warning from setClassicVisible
+  void setClassicVisible;
+
+  return (
+    <>
+      <WorldLabel divRef={classicDivRef}>
+        {_bankLabelCapsule('Classic', classicHint)}
+      </WorldLabel>
+      <WorldLabel divRef={bonusDivRef}>
+        {_bankLabelCapsule('Bonus', bonusHint)}
+      </WorldLabel>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Default export — full casino interior scene
 // ---------------------------------------------------------------------------
 export interface CasinoInteriorSceneProps {
@@ -1154,6 +1508,9 @@ export default function CasinoInteriorScene({ onSceneEmpty }: CasinoInteriorScen
       {/* Fog scaled with room: near=4000, far=10000 (was 1200/3000 for 600wu room → ×3.333) */}
       <fog attach="fog" args={[0x0a0015, 4000, 10000]} />
 
+      {/* WorldLabelsOverlay — single overlay root for BankLabels */}
+      <WorldLabelsOverlayMount />
+
       <Suspense fallback={null}>
         <InteriorScene
           useFallback={useFallback}
@@ -1165,6 +1522,9 @@ export default function CasinoInteriorScene({ onSceneEmpty }: CasinoInteriorScen
       {/* Walkable player avatar — mounted outside InteriorScene Suspense so
           GLB/VRM loading doesn't block the casino room from appearing first. */}
       <CasinoPlayerAvatar />
+
+      {/* Bank labels + E-key proximity hints */}
+      <BankLabels />
     </>
   );
 }
