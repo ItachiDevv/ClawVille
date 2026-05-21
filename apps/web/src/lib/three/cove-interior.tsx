@@ -1424,12 +1424,36 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
       const d = _bbSize.z;
 
       const name = mesh.name || '(unnamed)';
-      const isSlot = SLOT_MESH_NAME_PATTERN.test(name);
+      const nameMatches = SLOT_MESH_NAME_PATTERN.test(name);
+
+      // Name-match is necessary but not sufficient — sketchfab merges meshes
+      // by material, so Material3 may also tag floor decals / ceiling trim /
+      // wall accents. Add a Y-range + size guard so only cabinet-shaped
+      // meshes sitting on the floor count.
+      //
+      //   - yMid 20..220wu        (must sit on the floor)
+      //   - height 60..300wu       (not a thin slab or wall section)
+      //   - minDim 25..220wu       (skinny cabinet footprint, not a long strip)
+      //
+      // The Material3 meshes the user wants targeted (the rows of cabinets
+      // in DevTools) all sit in this window; floor/ceiling Material3 meshes
+      // fall outside it.
+      const yMid = _bbCenter.y;
+      const minDim = Math.min(w, d);
+      const okShape = h >= 60 && h <= 300 && minDim >= 25 && minDim <= 220 && yMid >= 20 && yMid <= 220;
+      const isSlot = nameMatches && okShape;
+
+      const verdict = isSlot
+        ? '✓SLOT'
+        : nameMatches
+          ? `Material3 but shape rejected (yMid=${yMid.toFixed(0)}, h=${h.toFixed(0)}, minDim=${minDim.toFixed(0)})`
+          : 'skipped';
+
       allMeshDebug.push({
         name,
         pos: `(${_bbCenter.x.toFixed(0)},${_bbCenter.y.toFixed(0)},${_bbCenter.z.toFixed(0)})`,
         size: `${w.toFixed(0)}×${h.toFixed(0)}×${d.toFixed(0)}`,
-        verdict: isSlot ? '✓SLOT' : 'skipped',
+        verdict,
       });
       if (!isSlot) return;
       candidates.push({
@@ -1623,19 +1647,22 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
       ))}
 
       {/* Bank labels — one big banner above each of the two slot banks.
-          Floats ~80wu above the cabinet centroid, faces +Y so it's
-          readable from any approach angle inside the room. */}
+          Banner Y is PINNED to 280wu (just above cabinet tops, well below
+          the ceiling) instead of computed-from-centroid + offset, so a
+          weird centroid (caused by Material3 meshes outside the cabinet
+          Y range — floor decals, ceiling trim) can't push the banner
+          out of view. */}
       {hasDiscovery && (
         <>
           <BankBanner
             label="CLASSIC"
             color="#00d4ff"
-            position={[classicCentroid[0], classicCentroid[1] + 220, classicCentroid[2]]}
+            position={[classicCentroid[0], 280, classicCentroid[2]]}
           />
           <BankBanner
             label="BONUS"
             color="#ffd54f"
-            position={[bonusCentroid[0], bonusCentroid[1] + 220, bonusCentroid[2]]}
+            position={[bonusCentroid[0], 280, bonusCentroid[2]]}
           />
         </>
       )}
