@@ -907,9 +907,14 @@ async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
   canvas.width = cssW;
   canvas.height = cssH;
 
-  // Dynamic import — tree-shakes out when WebGPU path isn't taken
-  const { WebGPURenderer } = await import('three/webgpu');
-  const renderer = new WebGPURenderer({
+  // Use WebGPURenderer from the SAME static 'three/webgpu' import at the top of
+  // this module (via the THREE namespace). Dynamic import('three/webgpu') would
+  // create a SECOND webpack chunk with a separate module instance — its IndexNode,
+  // NodeShaderStage, etc. would be different objects from those used by materials
+  // registered via extend(THREE). That mismatch causes IndexNode.VERTEX to appear
+  // undefined during shader compilation → SES_UNCAUGHT_EXCEPTION crash on first
+  // load for any browser without navigator.gpu (Chrome without WebGPU, Brave, etc).
+  const renderer = new THREE.WebGPURenderer({
     canvas,
     antialias: false,
     // forceWebGL: bypass the navigator.gpu adapter path on iOS Safari and any
@@ -978,17 +983,14 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
         return await createWebGPURenderer(defaultProps.canvas);
       } catch (err) {
         console.warn('[World3D] WebGPURenderer init failed, retrying with forceWebGL on fresh canvas:', err);
-        // CRITICAL: do NOT import WebGLRenderer from plain 'three' here.
-        // The scene uses NodeMaterials registered via extend(THREE as any) from
-        // 'three/webgpu' — mixing those with a plain 'three' WebGLRenderer causes
-        // a dual-instance crash (NodeMaterial.vertexShader=undefined → .replace() on
-        // undefined). Use WebGPURenderer({forceWebGL:true}) from the same 'three/webgpu'
-        // namespace, on a FRESH canvas so the original canvas is not double-bound.
-        const { WebGPURenderer } = await import('three/webgpu');
+        // Use THREE.WebGPURenderer from the static import — same module instance
+        // as the materials registered via extend(THREE). A dynamic import would
+        // create a separate chunk and separate IndexNode instance → shader crash.
+        // Fresh canvas prevents double-binding the R3F canvas that just failed.
         const fallbackCanvas = document.createElement('canvas');
         fallbackCanvas.width = defaultProps.canvas.width || window.innerWidth;
         fallbackCanvas.height = defaultProps.canvas.height || window.innerHeight;
-        const fallbackRenderer = new WebGPURenderer({
+        const fallbackRenderer = new THREE.WebGPURenderer({
           canvas: fallbackCanvas,
           antialias: false,
           forceWebGL: true,
