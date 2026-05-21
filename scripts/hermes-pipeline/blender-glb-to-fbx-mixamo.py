@@ -92,6 +92,12 @@ if active and active.type == "MESH":
 #   - object_types={'MESH'}  (no empties, no armature — we stripped those)
 #   - bake_space_transform=True   so the FBX bakes Blender's Z-up→FBX Y-up swap
 print(f"=== exporting {FBX} ===")
+# embed_textures + path_mode=COPY: pack ALL referenced images into the FBX so
+# Mixamo's auto-rig pipeline preserves them on the round-trip. Without these
+# the diffuse + normal textures ship as 0×0 references → VRM finalize loses
+# them → in-game avatar renders monochrome. Lesson learned 2026-05-21 after
+# eliza-chibi + milady-chibi shipped colorless. See feedback memory:
+# fbx-export-must-embed-textures-for-mixamo.
 bpy.ops.export_scene.fbx(
     filepath=FBX,
     use_selection=False,
@@ -105,6 +111,8 @@ bpy.ops.export_scene.fbx(
     use_mesh_modifiers=True,
     add_leaf_bones=False,
     bake_anim=False,
+    embed_textures=True,
+    path_mode="COPY",
 )
 size_kb = os.path.getsize(FBX) / 1024.0
 print(f"=== done: {FBX} ({size_kb:.1f} KB) ===")
