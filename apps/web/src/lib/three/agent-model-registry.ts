@@ -18,7 +18,7 @@
  *            rendered visually on VRM avatars.
  */
 
-export type AgentCategory = 'openclaw' | 'hermes' | 'milady' | 'other';
+export type AgentCategory = 'openclaw' | 'hermes' | 'milady' | 'chibi' | 'other';
 
 export interface ModelRegistryEntry {
   path: string;
@@ -104,6 +104,17 @@ export const MODEL_REGISTRY = {
   hermes_male:   { path: '/avatars/hermes-male.vrm',   scale: 13, label: 'Hermes Male', category: 'hermes', avatar_type: 'vrm', animatorId: 'hermes-male',   preview: '/models/hermes-turnaround/male-front.png' },
   tekk:          { path: '/avatars/tekk.vrm',          scale: 13, label: 'Tekk',        category: 'hermes', avatar_type: 'vrm', animatorId: 'tekk',          preview: '/models/tekk-turnaround/with-wings-front.png' },
 
+  // ── Chibi VRM avatars (added 2026-05-21) ──────────────────────────────────
+  // Mini-Nori-style stylized humanoids — large head, short stubby limbs.
+  // Both share animatorId='chibi' → /avatars/animations/chibi/ (one Mixamo
+  // rig source, 8 bakes shared via the runtime retargeter). Same pattern as
+  // the 8 Miladies sharing animatorId='vrm-milady'.
+  //
+  // Sized at SPECIES_TARGET_HEIGHT_WU.chibi = 135 (half of the 270 default)
+  // per user direction "around half the height of the others".
+  eliza_chibi:   { path: '/avatars/eliza-chibi.vrm',   scale: 13, label: 'Eliza Chibi',  category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', preview: '/models/eliza-chibi-turnaround/front.png' },
+  milady_chibi:  { path: '/avatars/milady-chibi.vrm',  scale: 13, label: 'Milady Chibi', category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', preview: '/models/milady-chibi-turnaround/front.png' },
+
   // NOTE: `crayfish` removed from the picker 2026-04-16 — the mesh renders
   // noticeably larger than lobster at the same scale (different pivot) and
   // consistently clipped the modal card. The GLB still ships under
@@ -137,11 +148,12 @@ export const CATEGORY_META: Partial<Record<AgentCategory, { label: string; descr
   other:    { label: 'Other',    description: 'Sea-creature agents — any framework' },
   milady:   { label: 'Milady',   description: 'Milady VRM avatars — humanoid Milady AI characters' },
   hermes:   { label: 'Hermes',   description: 'Hermes VRM avatars — ClawVille-hosted Hermes runtimes' },
+  chibi:    { label: 'Chibi',    description: 'Mini stylized humanoids — half-height chibi proportions' },
 };
 
 // Ordered list of categories for tab rendering.
-// milady restored 2026-04-21 with 8 VRM avatars; hermes added 2026-05-12.
-export const CATEGORY_ORDER: AgentCategory[] = ['openclaw', 'other', 'milady', 'hermes'];
+// milady restored 2026-04-21 with 8 VRM avatars; hermes added 2026-05-12; chibi added 2026-05-21.
+export const CATEGORY_ORDER: AgentCategory[] = ['openclaw', 'other', 'milady', 'hermes', 'chibi'];
 
 // Color presets — aligned with COLOR_TINTS hex values in SelectAgentCanvas so
 // the button background matches the actual GLB tint applied.
@@ -161,6 +173,7 @@ export const CATEGORY_DEFAULT_MODEL: Partial<Record<AgentCategory, ModelKey>> = 
   other:    'jellyfish',
   milady:   'milady_official_1',
   hermes:   'hermes_female',
+  chibi:    'eliza_chibi',
 };
 
 // Agent harness options — controls which export format Phase 3 uses.
@@ -220,4 +233,7 @@ export const MODEL_KEY_TO_LEGACY_SPECIES: Record<ModelKey, LegacySpecies> = {
   hermes_female:      'fox',
   hermes_male:        'fox',
   tekk:               'fox',
+  // Chibi VRMs (added 2026-05-21) — same 'fox' fallback as other humanoids.
+  eliza_chibi:        'fox',
+  milady_chibi:       'fox',
 };
