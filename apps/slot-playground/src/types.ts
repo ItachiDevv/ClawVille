@@ -1,6 +1,6 @@
 /**
  * Mirrors the production SlotReels3DProps + SpinResult contracts so a rig
- * built here drops into apps/web/src/components/casino/SlotReels3D.tsx
+ * built here drops into apps/web/src/components/cove/SlotReels3D.tsx
  * with zero contract changes.
  */
 

@@ -5,7 +5,7 @@
  *
  * Usage:
  *   const { triggerTransition } = useSceneTransition();
- *   triggerTransition({ to: '/casino', onMidway: () => { ... } });
+ *   triggerTransition({ to: '/cove', onMidway: () => { ... } });
  *
  * The component must be mounted persistently above the canvas layer (e.g.
  * in the root layout or the game page wrapper). It reads from a Zustand slice
@@ -17,7 +17,7 @@
  *   HALF_MS   → fade reverses (opacity 1 → 0)
  *   TOTAL_MS  → overlay hidden, transition complete
  *
- * Phase 6.0.3 — Concern 6.0.3 (walk-in animation for casino + future buildings).
+ * Phase 6.0.3 — Concern 6.0.3 (walk-in animation for cove + future buildings).
  * zIndex 9999 sits above sidebar (z-index ~40) but below critical system modals.
  * pointerEvents 'none' while transparent so HUD inputs are never blocked.
  */
@@ -80,7 +80,7 @@ export function useSceneTransition() {
 interface SceneTransitionProps {
   /**
    * Called when a fade-IN from black is desired on initial mount
-   * (e.g. the casino page fading in after route push).
+   * (e.g. the cove page fading in after route push).
    * Pass `true` to trigger an immediate fade-from-black on mount.
    */
   fadeInOnMount?: boolean;

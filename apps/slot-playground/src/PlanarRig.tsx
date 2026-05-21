@@ -1,6 +1,6 @@
 /**
  * PlanarRig — the currently-shipped texture-scroll planar reel layer
- * (mirror of apps/web/src/components/casino/SlotReels3D.tsx).
+ * (mirror of apps/web/src/components/cove/SlotReels3D.tsx).
  *
  * Stub here. To be lifted in if both Drum and Hybrid fail, used as a
  * comparison baseline.

@@ -18,8 +18,8 @@
  * Iris Xe constraint: this file allocates NO Vector3 — the caller passes the
  * position vector in-place and we mutate it. All scratch math is inline.
  *
- * Usage (casino-interior.tsx):
- *   clampCameraToRoom(_camDesiredPos, CASINO_ROOM_BOUNDS);
+ * Usage (cove-interior.tsx):
+ *   clampCameraToRoom(_camDesiredPos, COVE_ROOM_BOUNDS);
  */
 
 import * as THREE from 'three';

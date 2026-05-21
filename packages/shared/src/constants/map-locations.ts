@@ -18,7 +18,7 @@ import type { MapLocation } from '../types/location';
 // kept in sync for data completeness — do NOT use them for proximity checks.
 //
 // All 12 building IDs are PRESERVED — only positions updated.
-// Casino (slot 9, W) adjacent to Patrick's Rock (slot 10, WNW) — preserved from Phase 6.1.
+// Cove (slot 9, W) adjacent to Patrick's Rock (slot 10, WNW) — preserved from Phase 6.1.
 //
 // Slot assignment (clockwise from North):
 //   Slot  0 (  0°/N)   visual-creation    cx=180, cy=50   zone=(173,43)  posX=5536,  posY=1376
@@ -30,7 +30,7 @@ import type { MapLocation } from '../types/location';
 //   Slot  6 (180°/S)   cron-automation    cx=180, cy=310  zone=(173,303) posX=5536,  posY=9696
 //   Slot  7 (210°/SSW) deployment-ops     cx=115, cy=293  zone=(108,286) posX=3456,  posY=9152
 //   Slot  8 (240°/WSW) claw-arcade        cx=67,  cy=245  zone=(60,238)  posX=1920,  posY=7616
-//   Slot  9 (270°/W)   casino             cx=50,  cy=180  zone=(43,173)  posX=1376,  posY=5536  ← entertainment
+//   Slot  9 (270°/W)   cove             cx=50,  cy=180  zone=(43,173)  posX=1376,  posY=5536  ← entertainment
 //   Slot 10 (300°/WNW) agent-security     cx=67,  cy=115  zone=(60,108)  posX=1920,  posY=3456
 //   Slot 11 (330°/NNW) memory-rag         cx=115, cy=67   zone=(108,60)  posX=3456,  posY=1920
 export const MAP_LOCATIONS: MapLocation[] = [
@@ -123,7 +123,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
     height: 448,
   },
   // Slot 8 — WSW (cx=67, cy=245) → zone(60,238) → posX=60*32=1920, posY=238*32=7616
-  // Phase 6.1 swap preserved: claw-arcade at WSW. Casino is at W (2 slots away).
+  // Phase 6.1 swap preserved: claw-arcade at WSW. Cove is at W (2 slots away).
   {
     id: 'claw-arcade',
     name: 'Arcade City',
@@ -137,7 +137,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
   // Slot 9 — W (cx=50, cy=180) → zone(43,173) → posX=43*32=1376, posY=173*32=5536
   // Entertainment district anchor. Adjacent to Patrick's Rock (slot 10, WNW).
   {
-    id: 'casino',
+    id: 'cove',
     name: 'Predictive Gaming Cove',
     description: 'Try your luck at the slot machines. ClawTokens welcome — real money coming soon.',
     icon: '🎰',
@@ -147,7 +147,7 @@ export const MAP_LOCATIONS: MapLocation[] = [
     height: 448,
   },
   // Slot 10 — WNW (cx=67, cy=115) → zone(60,108) → posX=60*32=1920, posY=108*32=3456
-  // Phase 6.1 swap preserved: agent-security at WNW. Adjacent to casino (slot 9, W).
+  // Phase 6.1 swap preserved: agent-security at WNW. Adjacent to cove (slot 9, W).
   {
     id: 'agent-security',
     name: "Patrick's Rock",
