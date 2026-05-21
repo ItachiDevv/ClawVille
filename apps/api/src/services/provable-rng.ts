@@ -1,5 +1,5 @@
 /**
- * Phase 6.1 — Provably-fair RNG core for ClawVille's casino slots.
+ * Phase 6.1 — Provably-fair RNG core for ClawVille's cove slots.
  *
  * Commit-reveal HMAC-SHA256 scheme (industry-standard, used by Stake,
  * Roobet, et al.). Player and server jointly contribute entropy; the
@@ -52,7 +52,7 @@
  * Determinism contract: same inputs → same output, byte-for-byte,
  * across machines, Node versions, and platforms. This is the WHOLE
  * point of the module — the frontend verifier in `apps/web/src/lib/
- * casino/verifier.ts` (next slice) must produce identical bytes given
+ * cove/verifier.ts` (next slice) must produce identical bytes given
  * identical inputs.
  *
  * No state, no caching, no I/O. Pure functions only (modulo

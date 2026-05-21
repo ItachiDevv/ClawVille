@@ -55,43 +55,43 @@ const _buildRayDir = new THREE.Vector3(0, -1, 0);
 const BUILDING_TARGET_HEIGHT = 1000;
 
 // ---------------------------------------------------------------------------
-// Casino walk-in flow — Phase 6.0.3
+// Cove walk-in flow — Phase 6.0.3
 //
-// 1. Avatar pathfinds toward the casino door position (game-px coords).
-//    Door target: ~300 game-px east of casino building center so the avatar
+// 1. Avatar pathfinds toward the cove door position (game-px coords).
+//    Door target: ~300 game-px east of cove building center so the avatar
 //    approaches from the plaza rather than teleporting inside the building.
-//    Casino zone: cx=20 tiles → game-px x=640, cy=180 tiles → game-px y=5760.
+//    Cove zone: cx=20 tiles → game-px x=640, cy=180 tiles → game-px y=5760.
 //    Door target = (940, 5760) — 300px east, on the side facing town center.
 // 2. When within DOOR_ARRIVE_DIST (200 game-px) of door target OR after
 //    MAX_WAIT_MS (1500ms) — whichever comes first — trigger the SceneTransition.
-// 3. SceneTransition fades to black (500ms), mid-fade pushes to /casino,
-//    casino page fades in (500ms). Total flow ≤ 3s per plan acceptance criteria.
+// 3. SceneTransition fades to black (500ms), mid-fade pushes to /cove,
+//    cove page fades in (500ms). Total flow ≤ 3s per plan acceptance criteria.
 // ---------------------------------------------------------------------------
 
-/** Casino door position in game-px (world tilemap space). */
-const CASINO_DOOR_PX = { x: 940, y: 5760 };
+/** Cove door position in game-px (world tilemap space). */
+const COVE_DOOR_PX = { x: 940, y: 5760 };
 /** Avatar must be within this distance (game-px) to trigger the fade. */
 const DOOR_ARRIVE_DIST = 200;
 /** Hard timeout before triggering fade even if avatar hasn't arrived. */
 const MAX_WALK_WAIT_MS = 1500;
 
 /**
- * triggerCasinoWalkIn() — called when the user clicks on the casino building.
+ * triggerCoveWalkIn() — called when the user clicks on the cove building.
  *
- * Sets a click-path to the casino door, then starts a polling loop that
+ * Sets a click-path to the cove door, then starts a polling loop that
  * watches avatarPositionRef until arrival (or timeout), then triggers the
- * SceneTransition to /casino.
+ * SceneTransition to /cove.
  *
  * Deliberately avoids React state so it can be called from the module-scope
  * BUILDING_MODELS onClick without needing a hook context.
  */
-function triggerCasinoWalkIn(): void {
+function triggerCoveWalkIn(): void {
   const store = useGameStore.getState();
 
   // Only walk in player/npc mode — in explore mode there is no avatar to walk.
   if (store.controlMode === 'explore') {
     // Fallback for explore mode: direct transition, no walk.
-    useTransitionStore.getState().triggerTransition({ to: '/casino' });
+    useTransitionStore.getState().triggerTransition({ to: '/cove' });
     return;
   }
 
@@ -99,7 +99,7 @@ function triggerCasinoWalkIn(): void {
   // The existing click-to-move system in player-avatar.tsx will drive the avatar.
   const path = [
     { x: avatarPositionRef.x, y: avatarPositionRef.y },
-    { x: CASINO_DOOR_PX.x,    y: CASINO_DOOR_PX.y },
+    { x: COVE_DOOR_PX.x,    y: COVE_DOOR_PX.y },
   ];
   store.setClickPath(path, null);
 
@@ -107,15 +107,15 @@ function triggerCasinoWalkIn(): void {
   let rafId = 0;
 
   function poll() {
-    const dx = avatarPositionRef.x - CASINO_DOOR_PX.x;
-    const dy = avatarPositionRef.y - CASINO_DOOR_PX.y;
+    const dx = avatarPositionRef.x - COVE_DOOR_PX.x;
+    const dy = avatarPositionRef.y - COVE_DOOR_PX.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
     const elapsed = Date.now() - startMs;
 
     if (dist <= DOOR_ARRIVE_DIST || elapsed >= MAX_WALK_WAIT_MS) {
       // Avatar has arrived (or timed out) — clear the path and fade.
       store.clearClickPath();
-      useTransitionStore.getState().triggerTransition({ to: '/casino' });
+      useTransitionStore.getState().triggerTransition({ to: '/cove' });
       return;
     }
 
@@ -203,7 +203,7 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   //   Slot  6 (180°/S)   cron-automation    cx=180, cy=310  rotY= 3.142
   //   Slot  7 (210°/SSW) deployment-ops     cx=115, cy=293  rotY= 2.620
   //   Slot  8 (240°/WSW) claw-arcade        cx=67,  cy=245  rotY= 2.093
-  //   Slot  9 (270°/W)   casino             cx=50,  cy=180  rotY= 1.571  ← entertainment district
+  //   Slot  9 (270°/W)   cove             cx=50,  cy=180  rotY= 1.571  ← entertainment district
   //   Slot 10 (300°/WNW) agent-security     cx=67,  cy=115  rotY= 1.049
   //   Slot 11 (330°/NNW) memory-rag         cx=115, cy=67   rotY= 0.522
   // ---------------------------------------------------------------------------
@@ -262,18 +262,18 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   // Lighthouse is the tallest landmark — targetMaxDim 1400 keeps it visually dominant.
   'deployment-ops':      { model: '/models/building-lighthouse.glb', yOffset: 0, rotY:  2.620, targetMaxDim: 1400 },
   // Slot 8 — WSW (cx=67, cy=245): dx=113, dz=-65 → atan2(113,-65)≈2.093 (2π/3)
-  // Phase 6.1 swap preserved: claw-arcade at slot 8/WSW. Casino is at slot 9/W (2 slots away).
+  // Phase 6.1 swap preserved: claw-arcade at slot 8/WSW. Cove is at slot 9/W (2 slots away).
   'claw-arcade':         { model: '/models/arcade/claw-arcade-exterior.glb', yOffset: 0, rotY:  2.093, targetMaxDim: 1100,
                            onClick: () => { console.info('[claw-arcade] interior pending — Concern 6.3'); } },
   // Slot 9 — W (cx=50, cy=180): dx=130, dz=0 → atan2(130,0)=π/2≈1.571  ← entertainment district
-  // casino-exterior-cove.glb = "Pyramid Casino" by tl0615 (CC-BY-4.0, Sketchfab).
+  // cove-exterior-cove.glb = "Pyramid Cove" by tl0615 (CC-BY-4.0, Sketchfab).
   // box3Recenter=true: geometry authored at ~(-1800, 166, 4540) Blender origin — centering handled by pivotOffset.
-  // targetMaxDim: 1300 — casino is the entertainment-district landmark, deserves more visual mass.
-  // onClick: Phase 6.0.3 walk-in flow — avatar walks toward door, then SceneTransition fades to /casino.
-  // Door target in game-px: casino zone cx=50 tiles → x=1600, cy=180 tiles → y=5760; door is ~300 game-px
+  // targetMaxDim: 1300 — cove is the entertainment-district landmark, deserves more visual mass.
+  // onClick: Phase 6.0.3 walk-in flow — avatar walks toward door, then SceneTransition fades to /cove.
+  // Door target in game-px: cove zone cx=50 tiles → x=1600, cy=180 tiles → y=5760; door is ~300 game-px
   // east of building center (toward town center at 5760,5760).
-  'casino':              { model: '/models/casino/casino-exterior-cove.glb', yOffset: 0, rotY:  1.571, targetMaxDim: 1300, box3Recenter: true,
-                           onClick: () => { triggerCasinoWalkIn(); } },
+  'cove':              { model: '/models/cove/cove-exterior-cove.glb', yOffset: 0, rotY:  1.571, targetMaxDim: 1300, box3Recenter: true,
+                           onClick: () => { triggerCoveWalkIn(); } },
   // Slot 10 — WNW (cx=67, cy=115): dx=113, dz=65 → atan2(113,65)≈1.049 (π/3)
   // Phase 6.1 swap preserved: agent-security at slot 10/WNW.
   // targetMaxDim: 1100 — wide dome, max-dim normalization prevents over-inflation.
@@ -547,7 +547,7 @@ interface BuildingScaleResult {
  *  while tall/narrow GLBs (Squidward) stayed compact — wildly uneven visual size.
  *  max(X,Y,Z) normalization fits every building in a bounding cube of the same
  *  size, giving consistent visual presence regardless of architectural form.
- *  Matches the casino-interior computeAutoFit pattern (commit 166961d).
+ *  Matches the cove-interior computeAutoFit pattern (commit 166961d).
  *
  *  Footprint cap: if after max-dim normalization max(scaled_sx, scaled_sz) > MAX_FOOTPRINT,
  *  scale is reduced so the widest XZ dimension = MAX_FOOTPRINT. Wide buildings will be
@@ -634,7 +634,7 @@ function applyChildScaleOverrides(scene: THREE.Object3D, overrides: Record<strin
   });
 }
 
-// Preload all 12 models (Phase 6.0.1: added casino-exterior-cove.glb + claw-arcade-exterior.glb).
+// Preload all 12 models (Phase 6.0.1: added cove-exterior-cove.glb + claw-arcade-exterior.glb).
 // extendLoaderWithMeshopt registers MeshoptDecoder on the per-call loader so
 // GLBs with EXT_meshopt_compression (patricks-rock, krusty-krab, chum-bucket)
 // decode at preload time. Without this, the module-scope preload fires before
@@ -644,10 +644,10 @@ Object.values(BUILDING_MODELS).forEach(({ model }) => {
   useGLTF.preload(model, undefined, undefined, extendLoaderWithMeshopt);
 });
 
-// Entertainment building labels (casino, claw-arcade) — not in BUILDING_OPENCLAW_THEMES
+// Entertainment building labels (cove, claw-arcade) — not in BUILDING_OPENCLAW_THEMES
 // (those are shop-only). Defined here so GLBBuilding can render a label for them.
 const ENTERTAINMENT_LABELS: Record<string, { label: string; category: string }> = {
-  'casino':      { label: 'Predictive Gaming Cove', category: 'Entertainment' },
+  'cove':      { label: 'Predictive Gaming Cove', category: 'Entertainment' },
   'claw-arcade': { label: 'Arcade City',    category: 'Arcade' },
 };
 
@@ -881,7 +881,7 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
     });
   }, [cloned]);
 
-  // Shop buildings use BUILDING_OPENCLAW_THEMES; entertainment buildings (casino,
+  // Shop buildings use BUILDING_OPENCLAW_THEMES; entertainment buildings (cove,
   // claw-arcade) use ENTERTAINMENT_LABELS fallback. Both render the same label UI.
   const theme = BUILDING_OPENCLAW_THEMES[zone.id] ?? ENTERTAINMENT_LABELS[zone.id];
 
@@ -889,7 +889,7 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
   // dune ripples are small relative to the 100-unit building height.
   // pivotOffsetX/Z corrects for GLBs authored with geometry far from their pivot
   // (e.g. downtown-building.glb bbox center is ~4120wu east of scene origin;
-  //  casino-exterior-cove.glb authored at ~(-1800, 166, 4540) Blender units — box3Recenter
+  //  cove-exterior-cove.glb authored at ~(-1800, 166, 4540) Blender units — box3Recenter
   //  flag documents this but the actual centering is handled by computeBuildingScale
   //  pivotOffsetX/Z like every other building).
   return (
@@ -903,7 +903,7 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
         <group position={[-pivotOffsetX, -pivotOffsetY, -pivotOffsetZ + (config.pivotZBias ?? 0)]}>
           <primitive object={cloned} scale={buildingScale} />
         </group>
-        {/* Invisible click volume — used by entertainment buildings (casino, claw-arcade)
+        {/* Invisible click volume — used by entertainment buildings (cove, claw-arcade)
             that have a config.onClick handler. Sized to ~1/8 of BUILDING_TARGET_HEIGHT
             to give a generous click target without needing a visible mesh. */}
         {config.onClick && (

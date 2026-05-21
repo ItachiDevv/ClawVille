@@ -29,7 +29,7 @@ const BUILDING_ACCENT: Record<string, string> = {
   'messaging-channels': '#67e8f9',     // sandy treedome cyan
   'agent-security': '#fbbf24',  // patrick rock yellow
   // Phase 6.0.1 entertainment buildings
-  'casino': '#fbbf24',           // pyramid casino gold
+  'cove': '#fbbf24',           // pyramid cove gold
   'claw-arcade': '#f472b6',      // arcade city neon pink
 };
 

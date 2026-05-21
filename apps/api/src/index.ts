@@ -62,9 +62,9 @@ import { fingerprintMiddleware } from './middleware/fingerprint';
 import { cosmeticsRoutes } from './routes/cosmetics';
 import { dashAuthRoutes } from './routes/dash-auth';
 import { wagerRoutes } from './routes/wager';
-// Phase 6.1 slice 3 — casino slots fun-money backend wire (ClawTokens live;
+// Phase 6.1 slice 3 — cove slots fun-money backend wire (ClawTokens live;
 // SOL/USDC return 501 until Phase 6.2 custody).
-import { casinoSlotsRouter } from './routes/casino-slots';
+import { coveSlotsRouter } from './routes/cove-slots';
 import type { AppContext } from './types';
 
 const app = new Hono<AppContext>();
@@ -198,10 +198,10 @@ app.route('/api/portal', portalRoutes);
 // Wager lobbies + escrow (gambling-contracts vertical slice).
 // See routes/wager.ts header for the full surface + feature gates.
 app.route('/api/wager', wagerRoutes);
-// Phase 6.1 slice 3 — Casino slots (commit-reveal RNG + session escrow).
+// Phase 6.1 slice 3 — Cove slots (commit-reveal RNG + session escrow).
 // ClawTokens path is fully wired; SOL/USDC routes return 501 with a
 // friendly message until Phase 6.2 lands real-money custody.
-app.route('/api/casino/slots', casinoSlotsRouter);
+app.route('/api/cove/slots', coveSlotsRouter);
 // Phase 5.1 — admin identity recovery stub. Returns 501 behind a
 // FEATURE_GATE until the support-chat verification workflow lights up.
 app.route('/api/admin', adminIdentityRoutes);
