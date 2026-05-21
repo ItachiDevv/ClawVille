@@ -112,8 +112,13 @@ export const MODEL_REGISTRY = {
   //
   // Sized at SPECIES_TARGET_HEIGHT_WU.chibi = 135 (half of the 270 default)
   // per user direction "around half the height of the others".
-  eliza_chibi:   { path: '/avatars/eliza-chibi.vrm',   scale: 13, label: 'Eliza Chibi',  category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', preview: '/models/eliza-chibi-turnaround/front.png' },
-  milady_chibi:  { path: '/avatars/milady-chibi.vrm',  scale: 13, label: 'Milady Chibi', category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', preview: '/models/milady-chibi-turnaround/front.png' },
+  // ?v=2 cache-bust (2026-05-21): bump query whenever the chibi VRM file
+  // content changes. Cloudflare's edge cache (1-week TTL) keys on the full
+  // URL including query; bumping invalidates the edge cache without needing
+  // the cache_purge token scope we don't have. Matches the existing pattern
+  // used for the emote bundle (EMOTE_BUNDLE_VERSION in vrm-character-animator.ts).
+  eliza_chibi:   { path: '/avatars/eliza-chibi.vrm?v=2',   scale: 13, label: 'Eliza Chibi',  category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', preview: '/models/eliza-chibi-turnaround/front.png' },
+  milady_chibi:  { path: '/avatars/milady-chibi.vrm?v=2',  scale: 13, label: 'Milady Chibi', category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', preview: '/models/milady-chibi-turnaround/front.png' },
 
   // NOTE: `crayfish` removed from the picker 2026-04-16 — the mesh renders
   // noticeably larger than lobster at the same scale (different pivot) and
