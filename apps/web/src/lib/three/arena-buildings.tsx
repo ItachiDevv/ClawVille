@@ -266,13 +266,13 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   'claw-arcade':         { model: '/models/arcade/claw-arcade-exterior.glb', yOffset: 0, rotY:  2.093, targetMaxDim: 1100,
                            onClick: () => { console.info('[claw-arcade] interior pending — Concern 6.3'); } },
   // Slot 9 — W (cx=50, cy=180): dx=130, dz=0 → atan2(130,0)=π/2≈1.571  ← entertainment district
-  // cove-exterior-cove.glb = "Pyramid Cove" by tl0615 (CC-BY-4.0, Sketchfab).
+  // cove-exterior.glb = "Pyramid Cove" by tl0615 (CC-BY-4.0, Sketchfab).
   // box3Recenter=true: geometry authored at ~(-1800, 166, 4540) Blender origin — centering handled by pivotOffset.
   // targetMaxDim: 1300 — cove is the entertainment-district landmark, deserves more visual mass.
   // onClick: Phase 6.0.3 walk-in flow — avatar walks toward door, then SceneTransition fades to /cove.
   // Door target in game-px: cove zone cx=50 tiles → x=1600, cy=180 tiles → y=5760; door is ~300 game-px
   // east of building center (toward town center at 5760,5760).
-  'cove':              { model: '/models/cove/cove-exterior-cove.glb', yOffset: 0, rotY:  1.571, targetMaxDim: 1300, box3Recenter: true,
+  'cove':              { model: '/models/cove/cove-exterior.glb', yOffset: 0, rotY:  1.571, targetMaxDim: 1300, box3Recenter: true,
                            onClick: () => { triggerCoveWalkIn(); } },
   // Slot 10 — WNW (cx=67, cy=115): dx=113, dz=65 → atan2(113,65)≈1.049 (π/3)
   // Phase 6.1 swap preserved: agent-security at slot 10/WNW.
@@ -634,7 +634,7 @@ function applyChildScaleOverrides(scene: THREE.Object3D, overrides: Record<strin
   });
 }
 
-// Preload all 12 models (Phase 6.0.1: added cove-exterior-cove.glb + claw-arcade-exterior.glb).
+// Preload all 12 models (Phase 6.0.1: added cove-exterior.glb + claw-arcade-exterior.glb).
 // extendLoaderWithMeshopt registers MeshoptDecoder on the per-call loader so
 // GLBs with EXT_meshopt_compression (patricks-rock, krusty-krab, chum-bucket)
 // decode at preload time. Without this, the module-scope preload fires before
@@ -889,7 +889,7 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
   // dune ripples are small relative to the 100-unit building height.
   // pivotOffsetX/Z corrects for GLBs authored with geometry far from their pivot
   // (e.g. downtown-building.glb bbox center is ~4120wu east of scene origin;
-  //  cove-exterior-cove.glb authored at ~(-1800, 166, 4540) Blender units — box3Recenter
+  //  cove-exterior.glb authored at ~(-1800, 166, 4540) Blender units — box3Recenter
   //  flag documents this but the actual centering is handled by computeBuildingScale
   //  pivotOffsetX/Z like every other building).
   return (
