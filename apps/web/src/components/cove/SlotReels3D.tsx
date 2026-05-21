@@ -398,11 +398,17 @@ export default function SlotReels3D({
   useEffect(() => {
     const orthoCam = camera as THREE.OrthographicCamera;
     if (orthoCam.isOrthographicCamera) {
-      // Bumped bounds to fit cabinet (8.9wu × 5.1wu) + brass frame + lever
-      orthoCam.left   = -5.7;
-      orthoCam.right  =  5.7;
-      orthoCam.top    =  3.2;
-      orthoCam.bottom = -3.2;
+      // World height is FIXED to fit cabinet + lever (5.65 + breathing room).
+      // World WIDTH follows canvas aspect so cells stay square regardless of
+      // modal width — wide modals just show more side breathing room.
+      // Without this, ortho's stretch-to-fit distorts cells (Phase 6.1.15.1).
+      const aspect = (size.width > 0 && size.height > 0) ? (size.width / size.height) : 1.78;
+      const halfH  = 3.2;
+      const halfW  = Math.max(halfH * aspect, 5.7);  // floor at 5.7 so lever stays in view on narrow modals
+      orthoCam.left   = -halfW;
+      orthoCam.right  =  halfW;
+      orthoCam.top    =  halfH;
+      orthoCam.bottom = -halfH;
       orthoCam.near   =  0.1;
       orthoCam.far    = 30;
       orthoCam.zoom   = 1;
