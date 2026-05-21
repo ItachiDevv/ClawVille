@@ -981,13 +981,18 @@ class NpcSimulation {
             const approachStep = Math.min(baseStep * 1.5, dist);
             const desiredX = npc.x + (dx / dist) * approachStep;
             const desiredY = npc.y + (dy / dist) * approachStep;
-            const clamped = clampPosition2D(
-              desiredX - WORLD_COLLIDER_MAP_HALF,
-              desiredY - WORLD_COLLIDER_MAP_HALF,
-              30,
-            );
-            npc.x = Math.max(16, Math.min(MAP_WIDTH - 16, clamped.x + WORLD_COLLIDER_MAP_HALF));
-            npc.y = Math.max(16, Math.min(MAP_HEIGHT - 16, clamped.z + WORLD_COLLIDER_MAP_HALF));
+            if (!this.arenaMode) {
+              const clamped = clampPosition2D(
+                desiredX - WORLD_COLLIDER_MAP_HALF,
+                desiredY - WORLD_COLLIDER_MAP_HALF,
+                30,
+              );
+              npc.x = Math.max(16, Math.min(MAP_WIDTH - 16, clamped.x + WORLD_COLLIDER_MAP_HALF));
+              npc.y = Math.max(16, Math.min(MAP_HEIGHT - 16, clamped.z + WORLD_COLLIDER_MAP_HALF));
+            } else {
+              npc.x = Math.max(16, Math.min(MAP_WIDTH - 16, desiredX));
+              npc.y = Math.max(16, Math.min(MAP_HEIGHT - 16, desiredY));
+            }
             npc.direction = dx > 0 ? 'right' : 'left';
           }
         }
@@ -1058,13 +1063,18 @@ class NpcSimulation {
       const step = Math.min(baseStep, dist);
       const desiredX = npc.x + (dx / dist) * step;
       const desiredY = npc.y + (dy / dist) * step;
-      const clamped = clampPosition2D(
-        desiredX - WORLD_COLLIDER_MAP_HALF,
-        desiredY - WORLD_COLLIDER_MAP_HALF,
-        30,
-      );
-      npc.x = Math.max(16, Math.min(MAP_WIDTH - 16, clamped.x + WORLD_COLLIDER_MAP_HALF));
-      npc.y = Math.max(16, Math.min(MAP_HEIGHT - 16, clamped.z + WORLD_COLLIDER_MAP_HALF));
+      if (!this.arenaMode) {
+        const clamped = clampPosition2D(
+          desiredX - WORLD_COLLIDER_MAP_HALF,
+          desiredY - WORLD_COLLIDER_MAP_HALF,
+          30,
+        );
+        npc.x = Math.max(16, Math.min(MAP_WIDTH - 16, clamped.x + WORLD_COLLIDER_MAP_HALF));
+        npc.y = Math.max(16, Math.min(MAP_HEIGHT - 16, clamped.z + WORLD_COLLIDER_MAP_HALF));
+      } else {
+        npc.x = Math.max(16, Math.min(MAP_WIDTH - 16, desiredX));
+        npc.y = Math.max(16, Math.min(MAP_HEIGHT - 16, desiredY));
+      }
       npc.direction = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
     }
   }

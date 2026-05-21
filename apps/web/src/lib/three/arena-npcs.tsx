@@ -599,11 +599,12 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     simPos.current.z = npcClamped.z;
 
     // Entity-vs-player push-out (Phase 4 — client-side visual correction).
-    // Keeps NPCs from overlapping the player avatar visually even when the
-    // server sim hasn't resolved the overlap yet (latency / tick-rate gap).
-    // Only applies in world mode (not arena) — avatarPositionRef is populated
-    // when a player avatar is present. Zero allocations: inline math only.
+    // Only active when a real player avatar is present ('player'/'npc' mode).
+    // In 'explore'/'autonomous' mode avatarPositionRef sits at the default
+    // game-px origin (5760,6300) = world center, causing spurious push-outs.
     {
+      const _cm = useGameStore.getState().controlMode;
+      if (_cm === 'player' || _cm === 'npc') {
       const playerWX = avatarPositionRef.x - HALF_W;
       const playerWZ = avatarPositionRef.y - HALF_H;
       const npcHalf = (npc.id.startsWith('milady-') || npc.id.startsWith('chibi-')) ? ENTITY_HALF_CHIBI : ENTITY_HALF_HUMANOID;
@@ -616,6 +617,7 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
         const push = combinedHalf - dist;
         simPos.current.x += (dvx / dist) * push;
         simPos.current.z += (dvz / dist) * push;
+      }
       }
     }
 
@@ -1002,19 +1004,23 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     simPos.current.z = vrmClamped.z;
 
     // Entity-vs-player push-out (Phase 4) — mirrors GLBNpcMesh inline push-out.
+    // Guard: only active when a real player avatar is present ('player'/'npc').
     {
-      const playerWX = avatarPositionRef.x - HALF_W;
-      const playerWZ = avatarPositionRef.y - HALF_H;
-      const npcHalf = (npc.id.startsWith('milady-') || npc.id.startsWith('chibi-')) ? ENTITY_HALF_CHIBI : ENTITY_HALF_HUMANOID;
-      const combinedHalf = npcHalf + ENTITY_HALF_HUMANOID;
-      const dvx = simPos.current.x - playerWX;
-      const dvz = simPos.current.z - playerWZ;
-      const distSq = dvx * dvx + dvz * dvz;
-      if (distSq > 0 && distSq < combinedHalf * combinedHalf) {
-        const dist = Math.sqrt(distSq);
-        const push = combinedHalf - dist;
-        simPos.current.x += (dvx / dist) * push;
-        simPos.current.z += (dvz / dist) * push;
+      const _cm = useGameStore.getState().controlMode;
+      if (_cm === 'player' || _cm === 'npc') {
+        const playerWX = avatarPositionRef.x - HALF_W;
+        const playerWZ = avatarPositionRef.y - HALF_H;
+        const npcHalf = (npc.id.startsWith('milady-') || npc.id.startsWith('chibi-')) ? ENTITY_HALF_CHIBI : ENTITY_HALF_HUMANOID;
+        const combinedHalf = npcHalf + ENTITY_HALF_HUMANOID;
+        const dvx = simPos.current.x - playerWX;
+        const dvz = simPos.current.z - playerWZ;
+        const distSq = dvx * dvx + dvz * dvz;
+        if (distSq > 0 && distSq < combinedHalf * combinedHalf) {
+          const dist = Math.sqrt(distSq);
+          const push = combinedHalf - dist;
+          simPos.current.x += (dvx / dist) * push;
+          simPos.current.z += (dvz / dist) * push;
+        }
       }
     }
 
