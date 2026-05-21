@@ -904,17 +904,16 @@ export default function SidebarMenu() {
   const menuOpen = useGameStore((s: GameState) => s.menuOpen);
   const setMenuOpen = useGameStore((s: GameState) => s.setMenuOpen);
 
-  // Desktop-only collapse state. The sidebar occupies ~224px on the right
-  // edge and intrudes on gameplay; default to COLLAPSED so the 3D world
-  // breathes — users pop it open via the thin edge handle. Persisted to
-  // localStorage so the choice survives reloads. Anything other than the
-  // explicit string 'false' counts as collapsed (so first-ever visit is
-  // collapsed, and users who once opened it stay opened on return).
+  // Desktop-only collapse state. Default EXPANDED (the user explicitly asked
+  // for this default to be restored — collapsed-by-default was the wrong
+  // call). Users can still pin it closed via the › button; the choice is
+  // persisted to localStorage. Anything other than the explicit string
+  // 'true' counts as expanded.
   // Mobile is unaffected — it already uses the gear-FAB modal.
-  const [desktopCollapsed, setDesktopCollapsed] = useState(true);
+  const [desktopCollapsed, setDesktopCollapsed] = useState(false);
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    setDesktopCollapsed(window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) !== 'false');
+    setDesktopCollapsed(window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true');
   }, []);
   const toggleDesktopCollapsed = () => {
     setDesktopCollapsed((prev) => {

@@ -127,13 +127,29 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
     }, TIMEOUT_MS);
 
     let highWaterMark = 0;
+    let realDoneAt = 0;     // performance.now() when real ratio first hit 1.0
+    let realDoneMark = 0;   // bar position when real first hit 1.0
+    /**
+     * Three phases, blended so the bar always moves until ready fires:
+     *  1. Pre-canvas (no real progress yet) — eased simulated curve, capped
+     *     at REAL_CAP so the bar doesn't run past where real assets will
+     *     fill it.
+     *  2. Asset streaming (real ∈ (0, 1)) — drive bar from real ratio,
+     *     scaled to [0, REAL_CAP]. Real ratio = 1.0 → bar = REAL_CAP (0.78),
+     *     leaving room above for the post-load tail.
+     *  3. Post-load tail (real === 1, waiting on canvas mount + first
+     *     frame) — eased curve from REAL_CAP → SIMULATED_CEILING over
+     *     TAIL_MS. The bar keeps moving smoothly during the compile gap
+     *     instead of stalling at the ceiling.
+     */
+    const REAL_CAP = 0.78;
+    const TAIL_MS = 1200;
     function tick() {
       if (!mountedRef.current) return;
       const ready = forceReady || !!(window as any).__W3D;
       const elapsed = performance.now() - startedAtRef.current;
 
       if (ready) {
-        // Snap to full, fade out. One last frame to flush progress=1 before fade.
         readyRef.current = true;
         setProgress(1);
         setFading(true);
@@ -143,18 +159,30 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
         return;
       }
 
-      // Prefer real progress from THREE.DefaultLoadingManager (wired in
-      // World3DCanvas at module load) once it starts firing events. Fall
-      // back to the eased simulated curve until then.
       const realRatio = (window as unknown as { __W3D_PROGRESS?: number }).__W3D_PROGRESS;
-      const eased = 1 - Math.exp(-elapsed / PROGRESS_TAU);
-      const candidate = typeof realRatio === 'number' ? realRatio : eased;
-      // Ratchet — the bar never moves backward (e.g. if a new loader registers
-      // mid-stream and total spikes faster than loaded). Hard-cap at the
-      // simulated ceiling so the final 8% is reserved for the ready signal.
+      let candidate: number;
+      if (typeof realRatio === 'number' && realRatio >= 1) {
+        // Phase 3 — post-load tail. Ease from where we were when real hit
+        // 1.0 toward SIMULATED_CEILING over TAIL_MS.
+        if (!realDoneAt) {
+          realDoneAt = performance.now();
+          realDoneMark = Math.max(highWaterMark, REAL_CAP);
+        }
+        const tailT = performance.now() - realDoneAt;
+        const tailEase = 1 - Math.exp(-tailT / (TAIL_MS / 3));
+        candidate = realDoneMark + (SIMULATED_CEILING - realDoneMark) * tailEase;
+      } else if (typeof realRatio === 'number') {
+        // Phase 2 — real asset streaming, mapped to [0, REAL_CAP].
+        candidate = realRatio * REAL_CAP;
+      } else {
+        // Phase 1 — pre-canvas, eased simulated curve also capped at REAL_CAP
+        // so we don't overshoot what real loading is about to fill in.
+        const eased = 1 - Math.exp(-elapsed / PROGRESS_TAU);
+        candidate = Math.min(REAL_CAP, eased);
+      }
+      // Ratchet — never move backward. Hard-cap below 1.0 until ready.
       highWaterMark = Math.max(highWaterMark, candidate);
-      const next = Math.min(SIMULATED_CEILING, highWaterMark);
-      setProgress(next);
+      setProgress(Math.min(SIMULATED_CEILING, highWaterMark));
 
       rafRef.current = requestAnimationFrame(tick);
     }
