@@ -731,6 +731,8 @@ export default function SlotScreenModal() {
                 scatterCells={lastScatterCells.map(c => ({ reelIndex: c.reelIndex, rowIndex: c.rowIndex }))}
                 onReelsSettled={handleReelsSettled}
                 paytableId={paytableId ?? undefined}
+                onSpinClick={() => { void doSpin(); }}
+                spinDisabled={isSpinning || isEvaluating || openSession.isPending || spin.isPending || fx.state.isLockedOut}
               />
 
               {!isSpinning && lastWildMultipliers.map((wm) => (
