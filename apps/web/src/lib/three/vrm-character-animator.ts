@@ -452,9 +452,36 @@ const IN_PLACE_CLIPS: ReadonlySet<AnimName> = new Set([
 ]);
 
 /**
+ * Per-animatorId IN_PLACE override. Some character classes need position-
+ * stripped variants of clips that are normally kept (idle, walk) because the
+ * character's scale + foot-grounding math makes even a small hip-Y bob clip
+ * the feet through the world floor.
+ *
+ * Chibi case (2026-05-21): chibi VRMs target 135 wu (half the 270 wu default),
+ * so the auto-fit scale on a ~2m native bbox is ~67.5. Mixamo's idle has
+ * ~3 cm of Y hip oscillation in the source FBX → 2 wu visible bob at render.
+ * The retargeter keeps Y for spring-bone impulse, so on every "exhale" the
+ * chibi's feet dip ~2 wu below world Y=0. Mixamo's web UI has NO In-Place
+ * toggle for `Idle` (it's the canonical in-place pose) so we must strip
+ * positions at runtime for this character class only — Hermes/Milady at full
+ * scale still benefit from their idle hip bob.
+ *
+ * Key by animatorId (the second arg to `new VRMCharacterAnimator(vrm, animatorId)`).
+ */
+const PER_CHARACTER_IN_PLACE_CLIPS: Record<string, ReadonlySet<AnimName>> = {
+  chibi: new Set(['idle', 'walk']),
+};
+
+function shouldStripPosition(name: AnimName, animatorId?: string): boolean {
+  if (IN_PLACE_CLIPS.has(name)) return true;
+  if (animatorId && PER_CHARACTER_IN_PLACE_CLIPS[animatorId]?.has(name)) return true;
+  return false;
+}
+
+/**
  * Strip ALL position tracks from a retargeted clip so the character plays in
- * place. Walk/idle keep their hip-bob; everything in IN_PLACE_CLIPS gets a
- * pure rotation-only clip.
+ * place. Walk/idle keep their hip-bob; everything in IN_PLACE_CLIPS or in the
+ * per-character override gets a pure rotation-only clip.
  */
 function stripPositionTracks(clip: THREE.AnimationClip): THREE.AnimationClip {
   clip.tracks = clip.tracks.filter((t) => !t.name.endsWith('.position'));
@@ -596,7 +623,7 @@ export class VRMCharacterAnimator {
         let retargeted: THREE.AnimationClip;
         try {
           retargeted = retargetMixamoClip(gltf, this.vrm, name);
-          if (IN_PLACE_CLIPS.has(name)) stripPositionTracks(retargeted);
+          if (shouldStripPosition(name, this.characterId)) stripPositionTracks(retargeted);
         } catch (err) {
           console.warn(`[VRMCharacterAnimator] retarget failed for clip "${name}":`, err);
           continue;
@@ -734,7 +761,7 @@ export class VRMCharacterAnimator {
         .then((gltf) => {
           if (!this.mixer) return; // disposed mid-load
           const retargeted = retargetMixamoClip(gltf, this.vrm, name);
-          if (IN_PLACE_CLIPS.has(name)) stripPositionTracks(retargeted);
+          if (shouldStripPosition(name, this.characterId)) stripPositionTracks(retargeted);
           const action = this.mixer.clipAction(retargeted);
           action.setLoop(THREE.LoopRepeat, Infinity);
           action.clampWhenFinished = false;
@@ -910,7 +937,7 @@ export class VRMCharacterAnimator {
       try {
         const gltf = await loadRawGltf(name, this.characterId);
         const retargeted = retargetMixamoClip(gltf, this.vrm, name);
-        if (IN_PLACE_CLIPS.has(name)) stripPositionTracks(retargeted);
+        if (shouldStripPosition(name, this.characterId)) stripPositionTracks(retargeted);
         const action = this.mixer.clipAction(retargeted);
         this.actions[name] = action;
       } catch (err) {
