@@ -13,6 +13,8 @@ import {
   type ArenaSettings,
   type ArenaRoundState,
   DEFAULT_ARENA_SETTINGS,
+  clampPosition2D,
+  WORLD_COLLIDER_MAP_HALF,
 } from '@clawville/shared';
 import { generateNpcConversation, generateOpenClawConversation } from './npc-conversation-engine';
 import { findPath, hasClearance, type PathNode } from './pathfinding';
@@ -567,6 +569,43 @@ class NpcSimulation {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Phase 4 — NPC-vs-NPC entity push-out
+  // ---------------------------------------------------------------------------
+
+  private resolveNpcNpcOverlaps() {
+    const alive: NpcRuntimeState[] = [];
+    for (const npc of this.npcs.values()) {
+      if (!npc.isDead && !npc.inConversation) alive.push(npc);
+    }
+
+    // Half-width: chibi Miladys 25wu, everything else 50wu.
+    const halfOf = (npc: NpcRuntimeState): number =>
+      npc.id.startsWith('milady-') ? 25 : 50;
+
+    for (let i = 0; i < alive.length; i++) {
+      for (let j = i + 1; j < alive.length; j++) {
+        const a = alive[i]!;
+        const b = alive[j]!;
+        const combinedHalf = halfOf(a) + halfOf(b);
+        const dx = a.x - b.x;
+        const dy = a.y - b.y;
+        const distSq = dx * dx + dy * dy;
+        if (distSq >= combinedHalf * combinedHalf || distSq === 0) continue;
+
+        const dist = Math.sqrt(distSq);
+        const overlap = combinedHalf - dist;
+        const pushX = (dx / dist) * (overlap * 0.5);
+        const pushY = (dy / dist) * (overlap * 0.5);
+
+        a.x = Math.max(16, Math.min(MAP_WIDTH - 16, a.x + pushX));
+        a.y = Math.max(16, Math.min(MAP_HEIGHT - 16, a.y + pushY));
+        b.x = Math.max(16, Math.min(MAP_WIDTH - 16, b.x - pushX));
+        b.y = Math.max(16, Math.min(MAP_HEIGHT - 16, b.y - pushY));
+      }
+    }
+  }
+
   private nextId(): string { return `ev-${++this.idCounter}`; }
 
   private tick() {
@@ -585,6 +624,14 @@ class NpcSimulation {
     }
 
     this.moveNpcs();
+
+    // NPC-vs-NPC push-out (world mode only, Phase 4).
+    // Runs after all positions are updated so we resolve overlaps once per tick
+    // rather than re-checking every individual step. The push amount is small
+    // enough (~30wu max) that one pass per 200ms tick is sufficient.
+    if (!this.arenaMode) {
+      this.resolveNpcNpcOverlaps();
+    }
 
     if (this.conversationCooldown === 0 && this.tickCount % 40 === 0) {
       this.tryStartConversation().catch((err) => {
@@ -922,10 +969,15 @@ class NpcSimulation {
           const dist = Math.sqrt(dx * dx + dy * dy);
           if (dist > 40) {
             const approachStep = Math.min(baseStep * 1.5, dist);
-            npc.x += (dx / dist) * approachStep;
-            npc.y += (dy / dist) * approachStep;
-            npc.x = Math.max(16, Math.min(MAP_WIDTH - 16, npc.x));
-            npc.y = Math.max(16, Math.min(MAP_HEIGHT - 16, npc.y));
+            const desiredX = npc.x + (dx / dist) * approachStep;
+            const desiredY = npc.y + (dy / dist) * approachStep;
+            const clamped = clampPosition2D(
+              desiredX - WORLD_COLLIDER_MAP_HALF,
+              desiredY - WORLD_COLLIDER_MAP_HALF,
+              30,
+            );
+            npc.x = Math.max(16, Math.min(MAP_WIDTH - 16, clamped.x + WORLD_COLLIDER_MAP_HALF));
+            npc.y = Math.max(16, Math.min(MAP_HEIGHT - 16, clamped.z + WORLD_COLLIDER_MAP_HALF));
             npc.direction = dx > 0 ? 'right' : 'left';
           }
         }
@@ -958,11 +1010,28 @@ class NpcSimulation {
           if (npc.pathIndex >= npc.path.length) npc.direction = 'idle';
         } else {
           const step = Math.min(baseStep, dist);
-          npc.x += (dx / dist) * step;
-          npc.y += (dy / dist) * step;
-          npc.x = Math.max(16, Math.min(MAP_WIDTH - 16, npc.x));
-          npc.y = Math.max(16, Math.min(MAP_HEIGHT - 16, npc.y));
-          npc.direction = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
+          const desiredX = npc.x + (dx / dist) * step;
+          const desiredY = npc.y + (dy / dist) * step;
+
+          // AABB world-collider clamp — convert game-px to world-space, clamp,
+          // then convert back. entityHalf=30 (NPC capsule half-width in wu).
+          const wx = desiredX - WORLD_COLLIDER_MAP_HALF;
+          const wz = desiredY - WORLD_COLLIDER_MAP_HALF;
+          const clamped = clampPosition2D(wx, wz, 30);
+          npc.x = Math.max(16, Math.min(MAP_WIDTH - 16, clamped.x + WORLD_COLLIDER_MAP_HALF));
+          npc.y = Math.max(16, Math.min(MAP_HEIGHT - 16, clamped.z + WORLD_COLLIDER_MAP_HALF));
+
+          // If collider blocked this step, abandon current path and pick a new
+          // patrol target — prevents NPCs humping a wall for the whole path.
+          if (clamped.hit) {
+            npc.path = [];
+            npc.pathIndex = 0;
+            npc.activity = 'idle';
+            npc.activityEmoji = '';
+            npc.behaviorCooldown = 5 + Math.floor(Math.random() * 10);
+          } else {
+            npc.direction = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
+          }
         }
       } else if (npc.activity === 'idle' && npc.path.length === 0) {
         npc.direction = 'idle';
@@ -977,10 +1046,15 @@ class NpcSimulation {
       npc.direction = 'idle';
     } else {
       const step = Math.min(baseStep, dist);
-      npc.x += (dx / dist) * step;
-      npc.y += (dy / dist) * step;
-      npc.x = Math.max(16, Math.min(MAP_WIDTH - 16, npc.x));
-      npc.y = Math.max(16, Math.min(MAP_HEIGHT - 16, npc.y));
+      const desiredX = npc.x + (dx / dist) * step;
+      const desiredY = npc.y + (dy / dist) * step;
+      const clamped = clampPosition2D(
+        desiredX - WORLD_COLLIDER_MAP_HALF,
+        desiredY - WORLD_COLLIDER_MAP_HALF,
+        30,
+      );
+      npc.x = Math.max(16, Math.min(MAP_WIDTH - 16, clamped.x + WORLD_COLLIDER_MAP_HALF));
+      npc.y = Math.max(16, Math.min(MAP_HEIGHT - 16, clamped.z + WORLD_COLLIDER_MAP_HALF));
       npc.direction = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
     }
   }
@@ -1024,7 +1098,14 @@ class NpcSimulation {
     if (idle.length < 2) return;
 
     const initiator = idle[Math.floor(Math.random() * idle.length)];
-    const partner = this.findNearestIdleNpc(initiator, 400);
+    // 2500 game-px partner-search radius — tuned for the Phase 6.2 world
+    // (11520×11520). Earlier 400px value was sized for the ~5120 world and
+    // was too tight after the expansion: NPCs scattered across 12 ring slots
+    // (each ~2680px apart on the ring) almost never landed within 400px, so
+    // tryStartConversation kept exiting without a partner and no bubbles
+    // appeared. 2500px lets adjacent ring residents + town-center wanderers
+    // find each other while still requiring meaningful proximity.
+    const partner = this.findNearestIdleNpc(initiator, 2500);
     if (!partner) return;
 
     initiator.inConversation = true; partner.inConversation = true;
