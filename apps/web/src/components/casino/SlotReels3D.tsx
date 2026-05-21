@@ -320,10 +320,11 @@ function drawCell(
       // the unicode fallback below
     }
   } else {
-    // Unicode fallback — gigantic, theme-coloured, high-contrast
+    // Unicode fallback (Phase 6.1.12 ClawVille roster — only shown if the
+    // PNG image fails to decode; the real artwork is in /assets/slot-symbols).
     const fallback: Record<number, string> = {
-      0: '🍒', 1: '🍋', 2: '🍊', 3: '🍇', 4: '🔔',
-      5: 'BAR', 6: '7', 7: 'WILD', 8: 'BAR×2', 9: 'BAR×3', 10: '💰',
+      0: '🦞', 1: '🤖', 2: 'ELIZA', 3: '🐿️', 4: 'MILADY',
+      5: 'BAR', 6: '7', 7: 'CLAW', 8: 'BAR×2', 9: 'BAR×3', 10: '🪙',
     };
     const text = fallback[symbolId] ?? '?';
     const isWord = text.length > 1 && !/^[\u{1F300}-\u{1FAFF}\u{2700}-\u{27BF}]/u.test(text);
