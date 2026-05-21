@@ -43,7 +43,9 @@ const STALL_Z = -120;
 // Target visual height — slightly larger than the bazaar.
 // 2026-05-19: bumped 450→1300 to match the building ring scale.
 // 2026-05-21: reduced 1300→1105 (×0.85) — see bazaar-stall.tsx rationale.
-const TARGET_HEIGHT_WU = 1105;
+// 2026-05-21 (pass 2): shisha-oasis swap — reduced 1105→994 (a further ×0.9)
+// per user direction "make the new structure 10% smaller".
+const TARGET_HEIGHT_WU = 994;
 
 // ---------------------------------------------------------------------------
 // Scale helper — same algorithm as arena-location-npcs.tsx computeNormalizedScale.
@@ -70,8 +72,14 @@ const MarketplaceStallInner = memo(function MarketplaceStallInner() {
   // Compute normalized scale and apply it.
   const scale = useMemo(() => computeScale(cloned), [cloned]);
 
-  // Canonical sand-grounding (replaces the old magic Y=4 patch).
-  const groundedY = useMemo(() => groundedYOffset(cloned, scale), [cloned, scale]);
+  // Canonical sand-grounding plus a lightly-sunk nudge so the GLB's stone
+  // platform base sits partially under the sand line (user direction
+  // 2026-05-21: "lightly sunk into the ground").
+  const FLOOR_NUDGE_Y = -30;
+  const groundedY = useMemo(
+    () => groundedYOffset(cloned, scale) + FLOOR_NUDGE_Y,
+    [cloned, scale]
+  );
 
   // Dispose cloned geometry/materials on unmount.
   useEffect(() => {
