@@ -893,7 +893,18 @@ const IOS_SAFARI =
 const WEBGPU_ABSENT =
   typeof navigator !== 'undefined' && !('gpu' in navigator);
 
-const FORCE_WEBGL = IOS_SAFARI || WEBGPU_ABSENT;
+// 2026-05-21: Added LOW_END_GPU_DETECTED (Iris Xe / Adreno / Mali / Apple
+// integrated) to the force-WebGL gate. These GPUs technically support
+// WebGPU but the driver path is unstable on Chrome — particularly Iris Xe,
+// where the D3DImageBacking_D3DSharedImage_WebGPUSwapBufferProvider texture
+// gets associated with a device that the renderer subsequently can't use,
+// firing a `THREE.[Texture ...] is associated with [Device], and cannot
+// be used with [Device]` error every frame during copyFramebufferToTexture.
+// The error originates in the browser's GPU process layer (Chromium D3D
+// backend); no Three.js or app-level fix exists. WebGL2 backend with TSL
+// produces the same visual output via GLSLNodeBuilder and has no such
+// stability issue on integrated GPUs.
+const FORCE_WEBGL = IOS_SAFARI || WEBGPU_ABSENT || LOW_END_GPU_DETECTED;
 
 if (typeof window !== 'undefined') {
   console.log(
