@@ -83,7 +83,7 @@
 
 ## WebGPU
 - [WebGPU renderer setup with fallback](webgpu/renderer-setup-fallback.md) — detection, init, WebGL fallback pattern
-- [WebGPURenderer catch-path plain WebGLRenderer = dual-instance bomb on iOS](gotchas/webgpurenderer-catch-path-plain-webglrenderer-dual-instance.md) — glFactory catch block imports WebGLRenderer from plain 'three' while extend(THREE as any) registered NodeMaterials from three/webgpu → vertexShader.replace() crash on iOS low-RAM or WebGL2-unavailable. Fix: use WebGPURenderer({forceWebGL:true}) instead. (2026-05-20)
+- [NEVER await import('three/webgpu') inside renderer factory — dual-instance crash](gotchas/webgpurenderer-catch-path-plain-webglrenderer-dual-instance.md) — Dynamic import creates a second webpack chunk with a separate module instance; IndexNode/NodeShaderStage from instance B are different objects from materials registered via extend(THREE) (instance A). Result: IndexNode.VERTEX=undefined during shader compilation → SES_UNCAUGHT_EXCEPTION on Chrome/Brave without navigator.gpu, first-time visitors only. Fix: use THREE.WebGPURenderer from the static import at the top. Also covers: catch block using WebGLRenderer from plain 'three' (same root issue). (2026-05-21, commit 7350cfb)
 - [iOS Safari black scene — navigator.gpu undefined crashes WebGPUBackend.init()](gotchas/ios-safari-webgpu-navigator-gpu-undefined.md) — `navigator.gpu.requestAdapter()` throws TypeError on iOS (navigator.gpu is undefined). While getFallback() catches it, iOS WebKit leaves canvas in bad state → pure black 3D viewport. Fix: detect iOS + WEBGPU_ABSENT, pass `forceWebGL:true` to WebGPURenderer. TSL node materials fully work on WebGL2 backend. (2026-05-20)
 
 ## iOS / Mobile
