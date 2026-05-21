@@ -1,5 +1,15 @@
 {
   "$comment": "Per-character animation overrides — the canonical source of truth for which character-baked GLB plays for each AnimName slot. Maintained by scripts/mixamo/add-anim-everywhere.ts and scripts/mixamo/fetch-animations.ts; safe to edit by hand. Schema: { <animatorId>: { <AnimName>: '<url-path-to-glb>', ... }, ... }. animatorId matches the second arg of `new VRMCharacterAnimator(vrm, animatorId)`. Slot keys must match the AnimName type in vrm-character-animator.ts.",
+  "chibi": {
+    "idle": "/avatars/animations/chibi/idle.glb",
+    "walk": "/avatars/animations/chibi/walk.glb",
+    "run": "/avatars/animations/chibi/run.glb",
+    "victory": "/avatars/animations/chibi/cheering.glb",
+    "surf_idle": "/avatars/animations/chibi/skateboarding.glb",
+    "wipeout": "/avatars/animations/chibi/wipeout.glb",
+    "swimming": "/avatars/animations/chibi/swimming.glb",
+    "kip_up": "/avatars/animations/chibi/kip_up.glb"
+  },
   "tekk": {
     "idle": "/avatars/animations/tekk-male/idle.glb",
     "walk": "/avatars/animations/tekk-male/walk.glb",
