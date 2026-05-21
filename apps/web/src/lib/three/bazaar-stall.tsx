@@ -38,7 +38,9 @@ useGLTF.preload('/models/bazaar-merchant-stand.glb');
 // stalls clear the building footprint ring at R=130 tiles (4160wu).
 // ---------------------------------------------------------------------------
 const STALL_X = -1273;
-const STALL_Z = 450;
+// 2026-05-21: STALL_Z moved from 450 → -120 to align on the same Z axis as
+// the town-directory sign. The bazaar now flanks the sign west-side.
+const STALL_Z = -120;
 
 // Target visual height in world units.
 // 2026-05-19: bumped 400→1200 to match the building ring scale.

@@ -96,8 +96,16 @@ const QuestBountyPavilionInner = memo(function QuestBountyPavilionInner() {
   // Normalize scale
   const scale = useMemo(() => computeScale(cloned), [cloned]);
 
-  // Canonical sand-grounding (computes Y so the lowest scaled vertex sits at SAND_BASELINE_Y)
-  const groundedY = useMemo(() => groundedYOffset(cloned, scale), [cloned, scale]);
+  // Canonical sand-grounding (computes Y so the lowest scaled vertex sits at
+  // SAND_BASELINE_Y). The pavilion's GLB has trim/skirting geometry slightly
+  // below the visible wooden floor — naive grounding leaves the floor hovering.
+  // FLOOR_NUDGE_Y pulls the whole pavilion down so the wooden floor reads
+  // flush with the sand. Adjust if the structure clips into the sand instead.
+  const FLOOR_NUDGE_Y = -60;
+  const groundedY = useMemo(
+    () => groundedYOffset(cloned, scale) + FLOOR_NUDGE_Y,
+    [cloned, scale]
+  );
 
   // Anchor refs for label projection
   const questAnchorRef = useRef<THREE.Object3D | null>(null);

@@ -11,8 +11,10 @@ import { buildingZones } from '@/lib/pixi/tilemap-data';
 // instead of 60×/sec during movement.
 // ---------------------------------------------------------------------------
 // Phase 6.2 (2026-05-18): world is 11520×11520 px. Center = (5760, 5760).
-// y=6140 places avatar ~380 game-px south of center (same relative offset as before).
-export const avatarPositionRef: { x: number; y: number } = { x: 5760, y: 6140 };
+// 2026-05-21: bumped from y=6140 → y=6300 to keep the avatar 160 wu further
+// from the now-larger town-directory sign (sign at world Z = −120, Nori at
+// world Z = 400, avatar spawn at world Z = 6300 − 5760 = 540).
+export const avatarPositionRef: { x: number; y: number } = { x: 5760, y: 6300 };
 // Module-scope timestamp of the last reactive (zustand set) write.
 let lastReactiveWriteAt = 0;
 
@@ -453,12 +455,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     avatarModelKey: modelKey ?? DEFAULT_AGENT_MODEL_KEY,
   }),
 
-  // Spawn 380 world units south of center (world Z+380 = store y=2940) so the
-  // player stands ~140wu south of the town guide at z=+240, with the auction
-  // podium visible as a landmark ~190wu behind her. Earlier Rev-3 attempts at
-  // z=+200 (guide z=+100) rendered the podium wrapping the guide; z=+240 places
-  // the guide fully south of the podium's 144u bottom radius at ground level.
-  avatarPosition: { x: 5760, y: 6140 },
+  // Spawn 540 world units south of center (game-y = 6300 ⇒ world Z = +540) so
+  // the player stands ~140wu south of Nori (Nori at world Z = +400 as of 2026-05-21).
+  // Sign moved south by sign-size growth + Nori moved 240→400 to keep them in scale.
+  avatarPosition: { x: 5760, y: 6300 },
   setAvatarPosition: (x, y) => {
     // Always update the module-scope ref — zero React overhead, safe to call
     // at 60 Hz from useFrame / rAF loops. Per-frame readers (player-avatar.tsx,
@@ -880,7 +880,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     // GLB until setAvatarAppearance fired, which for an unauthenticated
     // session may never happen.
     avatarModelKey: 'lobster',
-    avatarPosition: { x: 5760, y: 6140 }, // Phase 6.2 (2026-05-18): world is 11520×11520 px. Center = (5760, 5760). y=6140 places avatar ~380 game-px south of center
+    avatarPosition: { x: 5760, y: 6300 }, // 2026-05-21: bumped 6140→6300 to keep avatar 160 wu further from the now-larger town-directory sign (world Z=+540)
     movementDirection: 'idle',
     avatarSpeed: 0,
     nearLocation: null,
