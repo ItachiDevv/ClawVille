@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <!-- Plaque steel-blue → electric-cyan bevel -->
+    <linearGradient id="b7w" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7feaff"/>
+      <stop offset="0.5" stop-color="#1a9adb"/>
+      <stop offset="1" stop-color="#06223a"/>
+    </linearGradient>
+    <!-- Cyan glow ring -->
+    <radialGradient id="b7glow" cx="50%" cy="50%" r="55%">
+      <stop offset="0" stop-color="#00d4ff" stop-opacity="0"/>
+      <stop offset="0.75" stop-color="#00d4ff" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#00d4ff" stop-opacity="0"/>
+    </radialGradient>
+    <!-- Shark body gradient -->
+    <linearGradient id="b7shark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8ea8c4"/>
+      <stop offset="0.5" stop-color="#4a6680"/>
+      <stop offset="1" stop-color="#1a2638"/>
+    </linearGradient>
+    <!-- Specular highlight overlay -->
+    <radialGradient id="hl7" cx="35%" cy="22%" r="55%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <!-- WILD letter cream-gold gradient -->
+    <linearGradient id="b7letter" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff7d8"/>
+      <stop offset="1" stop-color="#f0c860"/>
+    </linearGradient>
+  </defs>
+
+  <!-- ground shadow -->
+  <ellipse cx="128" cy="226" rx="94" ry="11" fill="#0a1428" opacity="0.5"/>
+
+  <!-- outer cyan glow halo (suggests "special tier") -->
+  <rect x="10" y="48" width="236" height="148" rx="26" fill="url(#b7glow)"/>
+
+  <!-- main plaque -->
+  <rect x="22" y="56" width="212" height="132" rx="20"
+        fill="url(#b7w)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"/>
+
+  <!-- SHARK silhouette behind the WILD text (left-facing, body sweeping right→left across plaque) -->
+  <g stroke="#0a1428" stroke-width="5" stroke-linejoin="round" stroke-linecap="round">
+    <!-- shark body (torpedo) -->
+    <path d="M220 124
+             Q176 90 110 96
+             Q66 100 38 124
+             Q66 148 110 152
+             Q176 158 220 124 Z"
+          fill="url(#b7shark)"/>
+    <!-- dorsal fin -->
+    <path d="M140 96
+             L150 60
+             L172 96 Z"
+          fill="url(#b7shark)"/>
+    <!-- tail fluke (right side) -->
+    <path d="M220 124
+             L246 96
+             L240 124
+             L246 152
+             Z"
+          fill="url(#b7shark)"/>
+    <!-- pectoral fin -->
+    <path d="M120 148
+             L102 174
+             L138 152 Z"
+          fill="url(#b7shark)"/>
+    <!-- gill slashes -->
+    <g stroke="#0a1428" stroke-width="2.5" fill="none" opacity="0.7">
+      <path d="M64 116 L60 132"/>
+      <path d="M72 114 L68 134"/>
+      <path d="M80 114 L76 134"/>
+    </g>
+    <!-- eye -->
+    <circle cx="56" cy="120" r="3.5" fill="#ffffff" stroke="#0a1428" stroke-width="2"/>
+    <circle cx="55" cy="120" r="1.5" fill="#0a1428" stroke="none"/>
+    <!-- toothy mouth (small open snarl) -->
+    <path d="M38 130 L52 134 L48 130 L56 132 L52 128 L60 130"
+          fill="none" stroke="#ffffff" stroke-width="2" opacity="0.85"/>
+  </g>
+
+  <!-- "WILD" — path-traced chunky condensed letters, cream/gold with dark outline -->
+  <!-- Letters sit centered horizontally; baseline y=152, cap y=88 -->
+  <g fill="url(#b7letter)" stroke="#0a1428" stroke-width="5"
+     stroke-linejoin="round" stroke-linecap="round">
+    <!-- W (x: 36-86) -->
+    <path d="M36 88
+             L48 88
+             L54 130
+             L62 88
+             L72 88
+             L80 130
+             L86 88
+             L98 88
+             L86 152
+             L74 152
+             L66 110
+             L58 152
+             L46 152 Z"/>
+
+    <!-- I (x: 104-122) -->
+    <path d="M104 88
+             L122 88
+             L122 152
+             L104 152 Z"/>
+
+    <!-- L (x: 130-172) -->
+    <path d="M130 88
+             L148 88
+             L148 138
+             L172 138
+             L172 152
+             L130 152 Z"/>
+
+    <!-- D (x: 180-220) -->
+    <path d="M180 88
+             L210 88
+             Q228 88 228 120
+             Q228 152 210 152
+             L180 152 Z
+             M196 102
+             L204 102
+             Q212 102 212 120
+             Q212 138 204 138
+             L196 138 Z"
+          fill-rule="evenodd"/>
+  </g>
+
+  <!-- highlight overlay -->
+  <rect x="22" y="56" width="212" height="132" rx="20" fill="url(#hl7)"/>
+
+  <!-- top-left spec streak -->
+  <ellipse cx="62" cy="72" rx="22" ry="6" fill="#ffffff" opacity="0.6"/>
+</svg>

@@ -1,0 +1,28 @@
+{
+  "name": "@clawville/slot-playground",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Standalone Vite + R3F sandbox for iterating the slot reel 3D rig without shipping to prod. Loads in StackBlitz via the GitHub URL: https://stackblitz.com/github/ItachiDevv/ClawVille/tree/master/apps/slot-playground",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@react-three/drei": "^9.114.0",
+    "@react-three/fiber": "^8.17.10",
+    "leva": "^0.10.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "three": "^0.170.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/three": "^0.170.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}

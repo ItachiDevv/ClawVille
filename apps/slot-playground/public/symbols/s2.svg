@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <!-- Orange body: light orange highlight → saturated orange → deep rust -->
+    <radialGradient id="b2O" cx="38%" cy="30%" r="72%">
+      <stop offset="0"    stop-color="#ffd28a"/>
+      <stop offset="0.5"  stop-color="#ff8a2a"/>
+      <stop offset="1"    stop-color="#7a2a04"/>
+    </radialGradient>
+    <!-- Leaf gradient -->
+    <linearGradient id="b2Lf" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4caf50"/>
+      <stop offset="1" stop-color="#2e7d32"/>
+    </linearGradient>
+    <!-- Top-left specular highlight -->
+    <radialGradient id="hl2O" cx="30%" cy="25%" r="55%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.65"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Drop-shadow ellipse beneath object -->
+  <ellipse cx="128" cy="228" rx="72" ry="10" fill="#0a1428" opacity="0.25"/>
+
+  <!-- ORANGE BODY — clean round sphere -->
+  <circle cx="128" cy="132" r="80" fill="url(#b2O)" stroke="#0a1428" stroke-width="6"/>
+
+  <!-- Faint segment lines (subtle — radial cuts to suggest citrus segments) -->
+  <g fill="none" stroke="#cc5a0c" stroke-width="2" opacity="0.45" stroke-linecap="round">
+    <path d="M128 56 Q128 132 128 208"/>
+    <path d="M58 100 Q128 132 198 100" opacity="0.35"/>
+    <path d="M58 164 Q128 132 198 164" opacity="0.35"/>
+  </g>
+
+  <!-- Specular white highlight, top-left of body -->
+  <ellipse cx="92" cy="92" rx="28" ry="18" fill="#ffffff" opacity="0.65" transform="rotate(-20 92 92)"/>
+
+  <!-- Radial highlight overlay matching sphere -->
+  <circle cx="128" cy="132" r="80" fill="url(#hl2O)"/>
+
+  <!-- Leaf + stem on top (angled ~30° right, attached at top of orange) -->
+  <g>
+    <!-- Short stem -->
+    <path d="M128,54 Q132,42 136,34"
+          fill="none" stroke="#0a1428" stroke-width="5" stroke-linecap="round"/>
+    <path d="M128,54 Q132,42 136,34"
+          fill="none" stroke="#2e7d32" stroke-width="3" stroke-linecap="round"/>
+    <!-- Leaf body: teardrop, angled ~30° clockwise -->
+    <path d="M 136,34
+             C 148,12 174,16 176,32
+             C 178,46 158,60 136,34
+             Z"
+          fill="url(#b2Lf)" stroke="#0a1428" stroke-width="4" stroke-linejoin="round"/>
+    <!-- Leaf center vein -->
+    <path d="M138,36 Q157,28 172,34"
+          fill="none" stroke="#1b5e20" stroke-width="1.8" opacity="0.55"/>
+  </g>
+</svg>
