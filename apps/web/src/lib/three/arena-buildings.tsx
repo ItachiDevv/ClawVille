@@ -287,10 +287,12 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   //     ├─ Squidward's House  ← Three.js preserves apostrophe/space verbatim
   //     └─ Stones
   // IMPORTANT: Three.js GLTFLoader does NOT sanitize node names — colons, apostrophes,
-  //   and spaces are preserved verbatim. The node name IS "Squidward's House" (with
-  //   apostrophe and space). Use this exact string in childScaleOverrides + bodyAnchorChild.
-  //   Prior commits used "Squidward_s_House" (underscores) which never matched → T-pose
-  //   remained and bodyAnchorChild was silently skipped. Fixed in Phase 6.2.2.
+  //   and spaces are preserved verbatim. The node name IS "Squidward’s House" (curly
+  //   right-single-quotation-mark U+2019, not straight apostrophe U+0027). The strings in
+  //   childScaleOverrides and bodyAnchorChild MUST use U+2019 to match the GLB. Confirmed
+  //   by hex-dumping squidward-house.glb JSON chunk: node[7].name = "Squidward’s House".
+  //   Prior commits used "Squidward_s_House" (underscores — Phase 6.2.2 fix) and then
+  //   "Squidward's House" (U+0027 straight — still wrong). Both were silent no-ops.
   // Phase 6.2.2: targetMaxDim 1400→1700, childScaleOverrides 1.4→1.7.
   //   Raw GLB bbox ≈4.57×1.90×4.59. Max dim = 4.59 (Z). Scale at targetMaxDim=1700:
   //   1700/4.59 ≈ 370wu/unit. childScaleOverride 1.7× on "Squidward's House" node:
@@ -299,8 +301,8 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   //   pulling full-GLB bbox center toward the pathway. The dynamic anchor aligns the
   //   moai body center (after 1.7× override) with the ring slot — not the combined bbox.
   "memory-rag":          { model: '/models/squidward-house.glb',     yOffset: 0, rotY:  0.522, targetMaxDim: 1700,
-                           childScaleOverrides: { "Squidward's House": 1.7 },
-                           bodyAnchorChild: "Squidward's House" },
+                           childScaleOverrides: { "Squidward’s House": 1.7 },
+                           bodyAnchorChild: "Squidward’s House" },
 };
 
 // Scratch objects for stripGroundPlanes — reused across calls to avoid GC.
