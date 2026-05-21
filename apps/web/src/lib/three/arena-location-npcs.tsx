@@ -403,14 +403,18 @@ const NpcMesh = memo(function NpcMesh({
   // Occlusion raycasting enabled (teacher can be behind a building at certain
   // camera angles). id encodes model path + position so companion instances
   // don't collide with primary.
+  // Location NPCs are SpongeBob-style GLB cartoons — taller than the
+  // sea-floor crustaceans (Patrick, Sandy, Squidward all read ~300-350wu
+  // tall after scale). A 150wu offset sits at the chest; 320wu sits above
+  // the head where the label belongs.
   const { divRef: locationLabelRef } = useWorldLabel({
     id: `location-npc-label-${modelCfg.model}-${worldX}-${worldZ}`,
     anchorRef: groupRef,
-    offset: [0, 150, 0],
+    offset: [0, 320, 0],
     initialVisible: showLabel,
     fadeNear: 800,
     fadeFar: 3000,
-    fadeBaseOpacity: 0.85,
+    fadeBaseOpacity: 0.95,
     occlude: true,
   });
   // extendLoaderWithMeshopt: belt-and-suspenders for location NPC GLBs that are
@@ -654,7 +658,8 @@ const NpcMesh = memo(function NpcMesh({
                 color: '#effeff',
                 padding: '5px 11px 6px',
                 borderRadius: 999,
-                background: 'radial-gradient(ellipse at center, rgba(80,220,255,0.12), rgba(80,220,255,0.04))',
+                background: 'rgba(8, 18, 32, 0.85)',
+                border: '1px solid rgba(120, 220, 255, 0.45)',
                 boxShadow: '0 0 14px rgba(100,230,255,0.55), 0 0 38px -4px rgba(80,220,255,0.45), inset 0 0 12px rgba(180,245,255,0.18)',
                 whiteSpace: 'nowrap',
                 letterSpacing: '0.01em',
