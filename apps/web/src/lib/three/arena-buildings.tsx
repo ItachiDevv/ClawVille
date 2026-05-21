@@ -693,8 +693,10 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
   const groupRef = useRef<THREE.Group>(null);
 
   // WorldLabelsOverlay label — distance-faded landmark.
-  // Base opacity 0.40 at ≤2000wu, linear fade to 0 at 5000wu.
-  // pointerEvents='auto' preserves click-target behavior.
+  // Base opacity 0.85 at ≤2000wu, linear fade to 0 at 5000wu. Was 0.40, which
+  // multiplied with the new solid dark-navy capsule (alpha 0.85) landed at
+  // ~0.34 effective — barely visible. 0.85 baseline reads like a proper
+  // landmark while still fading naturally at distance.
   // Label floats above the building: use per-building targetMaxDim so tall buildings
   // (lighthouse 1400) get a proportionally elevated label. Fallback to BUILDING_TARGET_HEIGHT.
   const labelYOffset = (config.targetMaxDim ?? BUILDING_TARGET_HEIGHT) + 20;
@@ -705,7 +707,7 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
     initialVisible: true,
     fadeNear: 2000,
     fadeFar: 5000,
-    fadeBaseOpacity: 0.40,
+    fadeBaseOpacity: 0.85,
     occlude: false,
   });
 
