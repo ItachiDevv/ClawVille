@@ -4,7 +4,7 @@
  * Pure, deterministic spin evaluator built on top of `provable-rng.ts`
  * (slice 1, commit 37041b8). Same `(serverSeed, clientSeed, nonce,
  * cursor, predict, freeSpinMode)` ⇒ byte-identical `SpinResult`. No I/O,
- * no time, no global state. The verifier in `apps/web/src/lib/casino/
+ * no time, no global state. The verifier in `apps/web/src/lib/cove/
  * verifier.ts` MUST be able to replay every spin by importing this same
  * module, or by reimplementing the algorithm with identical results.
  *
@@ -92,10 +92,10 @@ import type {
 import { sampleIntFromBytes } from './provable-rng';
 
 // ---------------------------------------------------------------------------
-// Local mirrors of the frozen casino contract types
+// Local mirrors of the frozen cove contract types
 // ---------------------------------------------------------------------------
 //
-// These mirror `apps/web/src/lib/casino/types.ts` byte-for-byte
+// These mirror `apps/web/src/lib/cove/types.ts` byte-for-byte
 // (SymbolId, MachineSlug, WinningLine, SpinResult). They are duplicated
 // here — not imported — because the apps/api tsconfig has
 // `rootDir: ./src` which forbids cross-package source imports. The

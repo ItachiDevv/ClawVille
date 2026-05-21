@@ -415,7 +415,7 @@ export default function GamePage() {
       {/* Research thought log — visible for all users */}
       <ThoughtLog />
 
-      {/* SceneTransition overlay — handles fade-to-black for casino walk-in
+      {/* SceneTransition overlay — handles fade-to-black for cove walk-in
           (and future building entries). Sits at z-index 9999 above all HUD
           but below critical system modals. pointerEvents=none while transparent
           so it never blocks normal HUD interactions. */}
