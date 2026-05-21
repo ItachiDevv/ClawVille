@@ -60,6 +60,14 @@ const SpeechBubble = memo(function SpeechBubble({ npc, bubble }: SpeechBubblePro
     // offset [0,0,0]: group is already positioned at [worldX, BUBBLE_Y, worldZ].
     offset: [0, 0, 0],
     initialVisible: true,
+    // Light proximity fade so distant NPC chatter doesn't clutter the screen
+    // with unreadable text — bubbles stay full opacity within ~4000wu of the
+    // camera and fade out by ~10000wu. NPC name labels above are NOT faded
+    // (they're identity, not content). Bubbles ARE content the player has
+    // to read, so fading them at distance keeps the world calm.
+    fadeNear: 4000,
+    fadeFar: 10000,
+    fadeBaseOpacity: 1.0,
   });
 
   // Update group world position each frame to track NPC movement.
