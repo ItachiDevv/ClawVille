@@ -60,9 +60,19 @@ const SPLASH_RINGS = [
 
 const SLOW_MS = 15_000;
 const TIMEOUT_MS = 30_000;
-/** Time constant for the simulated progress curve (ms). pct = 1 - exp(-t/τ). */
-const PROGRESS_TAU = 3500;
-/** Cap the simulated curve below 1.0 until the real ready signal fires. */
+/**
+ * Time constant for the SIMULATED progress curve (ms). pct = 1 - exp(-t/τ).
+ * Only used as a fallback before THREE.DefaultLoadingManager fires its first
+ * event (i.e. during Next.js chunk fetch). World3DCanvas hooks the manager
+ * and writes `window.__W3D_PROGRESS` once asset loads start; from that point
+ * on we drive the bar from real `loaded / total` events. τ=1100ms means the
+ * fallback bar reaches ~60% in 1s and ~85% in 2s — fast enough that even a
+ * sub-second chunk fetch hits 35-50% before real progress takes over.
+ */
+const PROGRESS_TAU = 1100;
+/** Cap the simulated curve (and the real ratio mid-load) below 1.0 until the
+ *  ready signal fires. The last 8% is reserved for the world-mount + first
+ *  frame compile so the bar never sits at 100% with a black screen. */
 const SIMULATED_CEILING = 0.92;
 
 export default function SeaLoadingScreen({ forceReady }: Props) {
@@ -91,6 +101,13 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
   useEffect(() => {
     mountedRef.current = true;
     startedAtRef.current = performance.now();
+    // Clear any progress ratio left over from a prior SPA visit so the bar
+    // starts honest at 0% rather than inheriting the previous session's
+    // high-water-mark. World3DCanvas's onProgress hook will re-fill this as
+    // the next batch of assets loads.
+    if (typeof window !== 'undefined') {
+      (window as unknown as { __W3D_PROGRESS?: number }).__W3D_PROGRESS = 0;
+    }
 
     // Show "taking longer" hint after 15s
     const slowTimer = setTimeout(() => {
@@ -109,6 +126,7 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
       }
     }, TIMEOUT_MS);
 
+    let highWaterMark = 0;
     function tick() {
       if (!mountedRef.current) return;
       const ready = forceReady || !!(window as any).__W3D;
@@ -125,9 +143,17 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
         return;
       }
 
-      // Eased simulated progress capped below the ready signal.
+      // Prefer real progress from THREE.DefaultLoadingManager (wired in
+      // World3DCanvas at module load) once it starts firing events. Fall
+      // back to the eased simulated curve until then.
+      const realRatio = (window as unknown as { __W3D_PROGRESS?: number }).__W3D_PROGRESS;
       const eased = 1 - Math.exp(-elapsed / PROGRESS_TAU);
-      const next = Math.min(SIMULATED_CEILING, eased);
+      const candidate = typeof realRatio === 'number' ? realRatio : eased;
+      // Ratchet — the bar never moves backward (e.g. if a new loader registers
+      // mid-stream and total spikes faster than loaded). Hard-cap at the
+      // simulated ceiling so the final 8% is reserved for the ready signal.
+      highWaterMark = Math.max(highWaterMark, candidate);
+      const next = Math.min(SIMULATED_CEILING, highWaterMark);
       setProgress(next);
 
       rafRef.current = requestAnimationFrame(tick);
