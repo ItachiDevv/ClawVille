@@ -7,6 +7,7 @@ import { useAvatar } from '@/hooks/use-avatar';
 import { useMiladyEmbed } from '@/hooks/use-milady-embed';
 import { useNpcStream } from '@/hooks/use-npc-stream';
 import { useGameStore, type GameState } from '@/stores/game';
+import { useQuestStore } from '@/stores/quest';
 import { api } from '@/lib/api';
 import SeaLoadingScreen from '@/components/game/sea-loading-screen';
 import AvatarSettingsModal from '@/components/game/avatar-settings-modal';
@@ -171,6 +172,16 @@ export default function GamePage() {
    * is already `'use client'` and uses other window-only APIs throughout,
    * so this stays consistent.
    */
+  // Manually rehydrate the quest store from localStorage AFTER the first
+  // client render. The store is persist({ skipHydration: true }) — without
+  // this trigger the counters stay at initial state. With it, the rehydrate
+  // happens in a post-mount effect, so React's hydration pass has already
+  // completed and the subsequent re-render with persisted state is a normal
+  // state update (no #418 mismatch).
+  useEffect(() => {
+    useQuestStore.persist.rehydrate();
+  }, []);
+
   const [autoQueuePending, setAutoQueuePending] = useState(false);
   useEffect(() => {
     if (typeof window === 'undefined') return;
