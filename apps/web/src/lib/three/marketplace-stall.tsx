@@ -1,14 +1,15 @@
 'use client';
 
 /**
- * MarketplaceStall — world-surface anchor for the Marketplace modal.
+ * MarketplaceStall — world-surface anchor for the Exchange modal.
  *
- * Asset: /models/marketplace-food-stall.glb (medieval food stall by
- * SpatialNeglect, CC-BY). Optimised with gltf-transform WebP@512 — DO NOT
- * re-optimise.
+ * Asset: /models/shisha-oasis.glb (DAE bazaar — shisha oasis, user-supplied
+ * 2026-05-21, optimised via gltf-transform resize 1024 + webp = 1.6 MB).
+ * DO NOT re-optimise. Replaces the prior `marketplace-food-stall.glb` which
+ * never thematically matched the Exchange modal it opens.
  *
- * Position: (1273, -2, 450) — east diagonal of the town plaza
- * (plaza cleanup 2026-05-21: moved outward from 800,300 to r≈1350wu).
+ * Position: (1273, groundedY, -120) — east of the town-directory sign,
+ * aligned on the same Z axis as the sign (sign at z=-120).
  *
  * GPU constraints (Iris Xe invariants):
  *   - NO drei Text/Billboard — hard crash
@@ -27,17 +28,17 @@ import { groundedYOffset } from '@/lib/three/utils/ground-prop';
 // ---------------------------------------------------------------------------
 // Preload at module scope so Suspense has the data ready before first render.
 // ---------------------------------------------------------------------------
-useGLTF.preload('/models/marketplace-food-stall.glb');
+useGLTF.preload('/models/shisha-oasis.glb');
 
 // ---------------------------------------------------------------------------
 // World position (Y computed at runtime via groundedYOffset — same canonical
-// pattern as bazaar-stall.tsx). Previously hard-coded Y=4 as a magic-number
-// workaround for the stall's below-origin frame; the canonical helper
-// computes a correct Y from the post-scale bbox.min.y instead.
-// Plaza cleanup (2026-05-21): moved outward to r≈1350wu (1273, 450).
+// pattern as bazaar-stall.tsx).
+// 2026-05-21: STALL_Z moved from 450 → -120 to align on the same Z axis
+// as the town-directory sign. The stall now flanks the sign east-side instead
+// of standing south of the player.
 // ---------------------------------------------------------------------------
 const STALL_X = 1273;
-const STALL_Z = 450;
+const STALL_Z = -120;
 
 // Target visual height — slightly larger than the bazaar.
 // 2026-05-19: bumped 450→1300 to match the building ring scale.
@@ -61,7 +62,7 @@ function computeScale(root: THREE.Group): number {
 // Inner component (wrapped in memo — position never changes)
 // ---------------------------------------------------------------------------
 const MarketplaceStallInner = memo(function MarketplaceStallInner() {
-  const { scene } = useGLTF('/models/marketplace-food-stall.glb');
+  const { scene } = useGLTF('/models/shisha-oasis.glb');
 
   // Clone so multiple mounts don't share mutable scene state.
   const cloned = useMemo(() => scene.clone(true), [scene]);
@@ -87,16 +88,10 @@ const MarketplaceStallInner = memo(function MarketplaceStallInner() {
   }, [cloned]);
 
   // After mount: freeze world matrix (static object, never moves).
-  // Also hide the GLB's ground plane mesh — it pokes through the sand terrain.
   useEffect(() => {
     cloned.traverse((obj) => {
       obj.matrixAutoUpdate = false;
       obj.updateMatrix();
-      // ground_ground_0 is a 2-triangle floor plate baked into the GLB; hiding
-      // it prevents the cobblestone base from clipping through the sand terrain.
-      if (/^ground/i.test(obj.name)) {
-        obj.visible = false;
-      }
     });
   }, [cloned]);
 
