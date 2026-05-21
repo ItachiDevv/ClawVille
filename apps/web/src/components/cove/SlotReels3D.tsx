@@ -692,11 +692,20 @@ export default function SlotReels3D({
   }, []);
 
   // -------------------------------------------------------------------------
-  // Cabinet geometry — bright brass frame + rivets (Phase 6.1.15)
+  // Cabinet geometry — bright brass frame + rivets (Phase 6.1.15.2)
+  // Cabinet SCALES with canvas aspect so it fills the visible width on wide
+  // modals instead of leaving dead teal space on the sides. Inner ledge
+  // (between reel cluster and brass edge) grows with cabinet width.
   // -------------------------------------------------------------------------
-  const clusterW = REEL_PITCH * REEL_COUNT;
-  const frameW   = clusterW + 0.55;
-  const frameH   = REEL_HEIGHT + 0.55;
+  const clusterW       = REEL_PITCH * REEL_COUNT;             // 9.0 wu (fixed)
+  const REEL_INNER_GAP = 0.55;                                // min ledge from reel to brass
+  const aspect         = (size.width > 0 && size.height > 0) ? size.width / size.height : 1.78;
+  const halfH          = 3.2;
+  const halfW          = Math.max(halfH * aspect, 5.7);       // matches ortho fix
+  // Cabinet width = full visible width minus a small breathing margin,
+  // but never smaller than (reel cluster + inner gap).
+  const frameW         = Math.max(halfW * 2 - 0.4, clusterW + REEL_INNER_GAP * 2);
+  const frameH         = REEL_HEIGHT + REEL_INNER_GAP;
 
   const rivetPositions = useMemo<Array<[number, number]>>(() => {
     const out: Array<[number, number]> = [];
@@ -797,9 +806,11 @@ export default function SlotReels3D({
         );
       })}
 
-      {/* 3D pull-lever — replaces the DOM SPIN button. Click red ball to spin. */}
+      {/* 3D pull-lever — replaces the DOM SPIN button. Click red ball to spin.
+          Positioned just right of the rightmost reel — sits INSIDE the cabinet
+          on wide aspects, sticks out the right edge on narrow ones. */}
       {onSpinClick && (
-        <group position={[frameW / 2 + 0.35, 0, 0]}>
+        <group position={[clusterW / 2 + 0.65, 0, 0]}>
           <SlotPullLever
             cabinetHalfH={frameH / 2}
             onPull={onSpinClick}
