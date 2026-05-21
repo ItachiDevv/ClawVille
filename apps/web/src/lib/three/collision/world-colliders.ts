@@ -95,32 +95,35 @@ function buildColliders(): Collider2D[] {
 
   // ---------------------------------------------------------------------------
   // 2. Town-center prop colliders — hardcoded world-space positions.
-  //    Positions sourced from each prop's tsx file (verified 2026-05-19):
+  //    Positions sourced from each prop's tsx file (verified 2026-05-21):
   //      AuctionPodium:       (0, -1000) — auction-podium.tsx DOME_X/Z
   //      TownDirectorySign:   (0, -120)  — town-directory-sign.tsx SIGN_X/Z
   //      BazaarStall:         (-1273, 450) — bazaar-stall.tsx STALL_X/Z
   //      MarketplaceStall:    (1273, 450)  — marketplace-stall.tsx STALL_X/Z
-  //      BountyBoardObject:   (50, 0)     — bounty-board-object.tsx BOARD_X/Z
+  //      QuestBountyPavilion: (0, -1220)   — quest-bounty-pavilion.tsx PAV_X/Z
   //      QuestNpc:            (-110, -60) — quest-npc.tsx QUEST_NPC_X/Z
   //      TownGuide (Nori):    (0, 240)    — town-guide.tsx NORI_WORLD_X/Z
   //
+  //    Removed 2026-05-21: bounty-board (replaced by QuestBountyPavilion).
+  //
   //  Radius tuning:
-  //    AuctionPodium:     180wu — dome is relatively small (~200wu base radius)
-  //    TownDirectorySign:  80wu — narrow sign, doesn't need large exclusion
-  //    BazaarStall:       200wu — tall tent, wide physical footprint
-  //    MarketplaceStall:  220wu — slightly wider stall
-  //    BountyBoardObject:  60wu — flat board on a post
-  //    QuestNpc:           50wu — character NPC, tight enough to chat with
-  //    TownGuide:          50wu — same as QuestNpc; tight so talking is easy
+  //    AuctionPodium:       180wu — dome is relatively small (~200wu base radius)
+  //    TownDirectorySign:    80wu — narrow sign, doesn't need large exclusion
+  //    BazaarStall:         200wu — tall tent, wide physical footprint
+  //    MarketplaceStall:    220wu — slightly wider stall
+  //    QuestBountyPavilion: 320wu — octagonal pavilion, ~540wu footprint;
+  //                                 320 keeps player from clipping interior walls
+  //    QuestNpc:             50wu — character NPC, tight enough to chat with
+  //    TownGuide:            50wu — same as QuestNpc; tight so talking is easy
   // ---------------------------------------------------------------------------
   const PROPS: Collider2D[] = [
-    { id: 'auction-podium',     x:    0, z: -1000, radius: 180, kind: 'prop' },
-    { id: 'town-directory-sign',x:    0, z:  -120, radius:  80, kind: 'prop' },
-    { id: 'bazaar-stall',       x: -1273, z:   450, radius: 200, kind: 'prop' },
-    { id: 'marketplace-stall',  x:  1273, z:   450, radius: 220, kind: 'prop' },
-    { id: 'bounty-board',       x:   50, z:     0, radius:  60, kind: 'prop' },
-    { id: 'quest-npc',          x: -110, z:   -60, radius:  50, kind: 'prop' },
-    { id: 'town-guide',         x:    0, z:   240, radius:  50, kind: 'prop' },
+    { id: 'auction-podium',       x:    0, z: -1000, radius: 180, kind: 'prop' },
+    { id: 'town-directory-sign',  x:    0, z:  -120, radius:  80, kind: 'prop' },
+    { id: 'bazaar-stall',         x: -1273, z:   450, radius: 200, kind: 'prop' },
+    { id: 'marketplace-stall',    x:  1273, z:   450, radius: 220, kind: 'prop' },
+    { id: 'quest-bounty-pavilion',x:    0, z: -1220, radius: 320, kind: 'prop' },
+    { id: 'quest-npc',            x: -110, z:   -60, radius:  50, kind: 'prop' },
+    { id: 'town-guide',           x:    0, z:   240, radius:  50, kind: 'prop' },
   ];
   colliders.push(...PROPS);
 
