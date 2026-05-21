@@ -431,6 +431,33 @@ function kickRenderLoop(state: any): void {
       // hidden and RAF is throttled to 0 Hz.
       (window as any).__W3D_step = () =>
         state.advance(performance.now() / 1000, true);
+
+      // Force-resize kick (2026-05-21): on initial mount the WebGPU swap
+      // chain can settle at a stale size between onCreated and the first
+      // frame, leaving the canvas painting "plain blue" (just the
+      // page-background showing through an empty backbuffer) until the
+      // user manually resizes the window. Resize triggers R3F's onResize
+      // → gl.setSize → swap-chain reconfigure → first valid frame. Doing
+      // that programmatically after first RAF reliably kicks the
+      // pipeline so users don't have to. Two RAFs ensures layout has
+      // settled AND R3F's own setSize from the dpr prop has applied.
+      requestAnimationFrame(() => {
+        try {
+          const canvas = state.gl?.domElement as HTMLCanvasElement | undefined;
+          if (canvas) {
+            // Use the canvas's CURRENT CSS size — R3F's resize handler
+            // will recompute backbuffer dims at the configured DPR.
+            const w = canvas.clientWidth || window.innerWidth;
+            const h = canvas.clientHeight || window.innerHeight;
+            // setSize(w, h, updateStyle=false) — don't touch CSS dims,
+            // only the underlying renderer backbuffer.
+            state.gl.setSize?.(w, h, false);
+          }
+          state.invalidate?.();
+        } catch {
+          /* best-effort — never block the loader on this kick */
+        }
+      });
     });
   }
 }
