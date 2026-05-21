@@ -16,8 +16,14 @@
 //     (player VRM + 10 buildings + a few decorations + 3 locomotion clips +
 //     the player's equipped emotes) fits in well under 30 MB but headroom
 //     prevents eviction churn when a player wanders into a new building.
+//
+// 2026-05-20 v4:
+//   - Bumped version to bust v3 stale-while-revalidate chunks after cc26908
+//     (forceWebGL iOS fix). v3 clients would receive the pre-fix JS bundle
+//     from the static cache on first load, causing a double-load appearance
+//     on iOS Safari as the SW update cycle completed in the background.
 
-const CACHE_VERSION = 'v3';
+const CACHE_VERSION = 'v4';
 const GLB_CACHE = `clawville-assets-${CACHE_VERSION}`;
 const STATIC_CACHE = `clawville-static-${CACHE_VERSION}`;
 
