@@ -270,14 +270,18 @@ export default function SlotHUD({
         />
       </div>
 
-      {/* ── RIGHT: SPIN button + icon row ────────────────────────────── */}
+      {/* ── RIGHT: icon row only — SPIN moved to 3D lever in SlotReels3D
+           Phase 6.1.15. Kept `onSpin` prop typed for autoplay + keyboard
+           shortcuts; the visible SPIN button is gone. ──────────────────── */}
       <div className="pt-action-col-right">
+        {/* Hidden — preserves keyboard SPIN focusability for accessibility */}
         <button
           type="button"
-          className={`pt-spin-btn${spinDisabled ? ' pt-spin-btn-disabled' : ''}`}
+          className="pt-spin-btn-hidden"
           onClick={spinDisabled ? undefined : onSpin}
           disabled={spinDisabled}
           aria-label={spinState === 'ready' && inFreeSpin ? 'FREE SPIN' : `SPIN, ${SPIN_LABEL[spinState]}`}
+          style={{ position: 'absolute', width: 0, height: 0, overflow: 'hidden', opacity: 0, pointerEvents: 'none' }}
         >
           {spinLabel}
         </button>

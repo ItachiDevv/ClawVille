@@ -95,10 +95,10 @@ export default function SlotReelsCanvas(props: SlotReelsCanvasProps) {
           position={[0, 0, 10]}
           near={0.1}
           far={30}
-          left={-5.0}
-          right={5.0}
-          top={2.8}
-          bottom={-2.8}
+          left={-5.7}
+          right={5.7}
+          top={3.2}
+          bottom={-3.2}
         />
         <Suspense fallback={null}>
           <SlotReels3D {...props} />
