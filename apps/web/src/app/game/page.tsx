@@ -151,6 +151,19 @@ function NanoClawBanner({ hasAvatar }: { hasAvatar: boolean }) {
 }
 
 export default function GamePage() {
+  // Mount gate — eliminates React #418 hydration mismatch at the source.
+  // The /game tree pulls state from Zustand, localStorage, TanStack Query,
+  // dynamic imports and a Three.js Canvas. Any of those returning a
+  // different value on SSR vs client first-render triggers React #418.
+  // Rather than fighting individual mismatches one-by-one, render `null`
+  // on the SSR pass AND on the first client render (which must match SSR
+  // for hydration to pass), then flip `mounted` in a post-commit effect
+  // so the real tree mounts client-only. No SSR'd subtree to compare
+  // against → impossible to hit #418. Trade-off: ~16ms extra before the
+  // loading screen paints; acceptable vs an error spamming every load.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+
   const { data: avatar, isLoading } = useAvatar();
   const controlMode = useGameStore((s: GameState) => s.controlMode);
   const agentConnected = useGameStore((s: GameState) => s.agentConnected);
@@ -321,6 +334,12 @@ export default function GamePage() {
   // and the SeaLoadingScreen covers the viewport the whole time anyway.
   // miladyEmbed.exchanging is similarly safe: exchange is an auth side-effect
   // and the canvas starts booting in parallel while the cookie is set.
+
+  // Mount gate (see top of component). SSR + first client render both
+  // return null; React's hydration check sees identical "no children",
+  // passes, then the post-commit setMounted(true) triggers the real
+  // mount. No SSR/client divergence is possible.
+  if (!mounted) return null;
 
   return (
     <div className="game-container" suppressHydrationWarning>
