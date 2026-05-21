@@ -86,6 +86,9 @@
 - [WebGPURenderer catch-path plain WebGLRenderer = dual-instance bomb on iOS](gotchas/webgpurenderer-catch-path-plain-webglrenderer-dual-instance.md) — glFactory catch block imports WebGLRenderer from plain 'three' while extend(THREE as any) registered NodeMaterials from three/webgpu → vertexShader.replace() crash on iOS low-RAM or WebGL2-unavailable. Fix: use WebGPURenderer({forceWebGL:true}) instead. (2026-05-20)
 - [iOS Safari black scene — navigator.gpu undefined crashes WebGPUBackend.init()](gotchas/ios-safari-webgpu-navigator-gpu-undefined.md) — `navigator.gpu.requestAdapter()` throws TypeError on iOS (navigator.gpu is undefined). While getFallback() catches it, iOS WebKit leaves canvas in bad state → pure black 3D viewport. Fix: detect iOS + WEBGPU_ABSENT, pass `forceWebGL:true` to WebGPURenderer. TSL node materials fully work on WebGL2 backend. (2026-05-20)
 
+## iOS / Mobile
+- [Conditional early-return in page component resets loader to 0% on iOS](gotchas/react-conditional-return-remounts-loader.md) — `if (isLoading) return <Loader />` before main layout mounts a fresh Loader instance when auth resolves → loader resets from mid-progress to 0% ("loaded twice"). Fix: remove early-return; let Canvas mount unconditionally; gate individual UI on hasAvatar. (2026-05-20)
+
 ## Performance
 - [Fog density directly controls fragment count on Iris Xe](performance/fog-density-iris-xe-regression.md) — fog far > camera.far wastes GPU; pushing 1200/6400→1800/9000 dropped FPS 90→50 on Iris Xe; always keep fog far ≤ camera.far
 - [Draw call reduction techniques](performance/draw-call-batching.md) — instancing, merging, LOD, measurement targets
