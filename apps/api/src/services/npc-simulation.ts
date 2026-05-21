@@ -598,10 +598,20 @@ class NpcSimulation {
         const pushX = (dx / dist) * (overlap * 0.5);
         const pushY = (dy / dist) * (overlap * 0.5);
 
-        a.x = Math.max(16, Math.min(MAP_WIDTH - 16, a.x + pushX));
-        a.y = Math.max(16, Math.min(MAP_HEIGHT - 16, a.y + pushY));
-        b.x = Math.max(16, Math.min(MAP_WIDTH - 16, b.x - pushX));
-        b.y = Math.max(16, Math.min(MAP_HEIGHT - 16, b.y - pushY));
+        const rawAX = Math.max(16, Math.min(MAP_WIDTH - 16, a.x + pushX));
+        const rawAY = Math.max(16, Math.min(MAP_HEIGHT - 16, a.y + pushY));
+        const rawBX = Math.max(16, Math.min(MAP_WIDTH - 16, b.x - pushX));
+        const rawBY = Math.max(16, Math.min(MAP_HEIGHT - 16, b.y - pushY));
+
+        // Re-clamp pushed positions against building AABBs so two NPCs meeting
+        // near a building wall can't push each other through it.
+        const clA = clampPosition2D(rawAX - WORLD_COLLIDER_MAP_HALF, rawAY - WORLD_COLLIDER_MAP_HALF, halfOf(a));
+        a.x = Math.max(16, Math.min(MAP_WIDTH - 16, clA.x + WORLD_COLLIDER_MAP_HALF));
+        a.y = Math.max(16, Math.min(MAP_HEIGHT - 16, clA.z + WORLD_COLLIDER_MAP_HALF));
+
+        const clB = clampPosition2D(rawBX - WORLD_COLLIDER_MAP_HALF, rawBY - WORLD_COLLIDER_MAP_HALF, halfOf(b));
+        b.x = Math.max(16, Math.min(MAP_WIDTH - 16, clB.x + WORLD_COLLIDER_MAP_HALF));
+        b.y = Math.max(16, Math.min(MAP_HEIGHT - 16, clB.z + WORLD_COLLIDER_MAP_HALF));
       }
     }
   }

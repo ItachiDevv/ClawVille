@@ -260,11 +260,10 @@ export function clampEntityMovement2D(
   otherEntities: readonly EntityPosition[] = [],
   otherHalf: number = entityHalf,
 ): { x: number; z: number; hit: boolean } {
-  void fromX;
-  void fromZ;
-
-  // Pass 1: world AABB colliders (reuse existing function's scratch).
-  const worldResult = clampMovement2D(0, 0, toX, toZ, entityHalf);
+  // Pass 1: world AABB colliders. Pass real fromX/fromZ so clampMovement2D's
+  // escape-hatch (allow outward movement when entity is already inside a
+  // collider) uses the entity's actual position, not a hardcoded origin.
+  const worldResult = clampMovement2D(fromX, fromZ, toX, toZ, entityHalf);
   _eEx = worldResult.x;
   _eEz = worldResult.z;
   let hit = worldResult.hit;
