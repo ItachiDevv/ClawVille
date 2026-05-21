@@ -4,6 +4,7 @@
     "idle": "/avatars/animations/chibi/idle.glb",
     "walk": "/avatars/animations/chibi/walk.glb",
     "run": "/avatars/animations/chibi/run.glb",
+    "jump": "/avatars/animations/chibi/jump.glb",
     "victory": "/avatars/animations/chibi/cheering.glb",
     "surf_idle": "/avatars/animations/chibi/skateboarding.glb",
     "wipeout": "/avatars/animations/chibi/wipeout.glb",
