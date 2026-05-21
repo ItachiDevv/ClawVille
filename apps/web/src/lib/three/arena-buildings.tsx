@@ -178,7 +178,7 @@ function triggerCasinoWalkIn(): void {
  * inner group so the body center aligns with the slot position.
  *
  * Example:
- *   'memory-rag': { ..., childScaleOverrides: { "Squidward_s_House": 1.4 }, bodyAnchorChild: "Squidward_s_House" }
+ *   'memory-rag': { ..., childScaleOverrides: { "Squidward's_House": 1.7 }, bodyAnchorChild: "Squidward's_House" }
  *   → the moai head body grows 1.4× AND its center aligns with the ring slot.
  */
 const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: number; rotYOffset?: number; scaleOverride?: number; targetMaxDim?: number; box3Recenter?: boolean; pivotZBias?: number; childScaleOverrides?: Record<string, number>; bodyAnchorChild?: string; onClick?: () => void }> = {
@@ -297,11 +297,8 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   //   pulling full-GLB bbox center toward the pathway. The dynamic anchor aligns the
   //   moai body center (after 1.7× override) with the ring slot — not the combined bbox.
   "memory-rag":          { model: '/models/squidward-house.glb',     yOffset: 0, rotY:  0.522, targetMaxDim: 1700,
-                           // GLB node is exactly "Squidward's House" — ASCII U+0027 apostrophe + SPACE.
-                           // Prior attempts used U+2019 curly + underscore; both silently no-op'd.
-                           // Verified by direct GLB node-name dump 2026-05-21.
-                           childScaleOverrides: { "Squidward's House": 1.7 },
-                           bodyAnchorChild: "Squidward's House" },
+                           childScaleOverrides: { "Squidward's_House": 1.7 },
+                           bodyAnchorChild: "Squidward's_House" },
 };
 
 // Scratch objects for stripGroundPlanes — reused across calls to avoid GC.
