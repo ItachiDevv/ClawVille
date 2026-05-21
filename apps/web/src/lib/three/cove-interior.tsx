@@ -1384,6 +1384,21 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
     //
     // Returns one HotspotDef per matched mesh. If discovery finds <2 cabinets,
     // we fall back to the legacy hand-placed GAMEREADY_HOTSPOTS.
+    // ── Slot cabinet discovery — NAME-BASED ──────────────────────────────
+    //
+    // The cove-interior.glb (via Three.js DevTools inspection) names each
+    // slot machine bank's geometry as `Material3` / `Material3_2` ..
+    // `Material3_9` (sketchfab-merged by material slot). These are the
+    // actual baked slot cabinets in the scene graph.
+    //
+    // We target THOSE meshes directly by name pattern. No more bbox
+    // heuristic — the previous approach matched walls because the wall
+    // chunks happened to land in cabinet-sized bbox dimensions.
+    //
+    // Each Material3 mesh's world bounding box gives us the position +
+    // size for the corresponding click-zone.
+    const SLOT_MESH_NAME_PATTERN = /^Material3(_\d+)?$/;
+
     const _bb = new THREE.Box3();
     const _bbSize = new THREE.Vector3();
     const _bbCenter = new THREE.Vector3();
@@ -1391,9 +1406,6 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
       name: string;
       pos: [number, number, number];
       size: [number, number, number];
-      h: number;
-      w: number;
-      d: number;
     }
     const candidates: CandidateCabinet[] = [];
     const allMeshDebug: Array<{ name: string; pos: string; size: string; verdict: string }> = [];
@@ -1407,58 +1419,23 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
       if (_bb.isEmpty()) return;
       _bb.getSize(_bbSize);
       _bb.getCenter(_bbCenter);
-      const h = _bbSize.y;
       const w = _bbSize.x;
+      const h = _bbSize.y;
       const d = _bbSize.z;
-      const minDim = Math.min(w, d);
-      const maxDim = Math.max(w, d);
-      const yMid = _bbCenter.y;
 
-      // ── Slot cabinet heuristic (tightened to reject walls/floors/chairs) ──
-      //
-      //   - height       80wu .. 350wu  (cabinet body height range)
-      //   - minDim       30wu .. 200wu  (skinny footprint — cabinets are narrow)
-      //   - maxDim       30wu .. 400wu  (NOT room-spanning — rejects long walls)
-      //   - aspect       maxDim/minDim ≤ 3.5  (square-ish footprint — walls are long)
-      //   - tall enough  h ≥ minDim  (cabinets are taller than they are wide)
-      //   - sits on floor  yMid 30wu .. 250wu
-      //   - volume       w·h·d ≤ 4_500_000wu³  (rejects big merged geometry)
-      const aspect = maxDim / Math.max(minDim, 1);
-      const volume = w * h * d;
-      let verdict = 'rejected';
-      const okHeight    = h >= 80 && h <= 350;
-      const okMinDim    = minDim >= 30 && minDim <= 200;
-      const okMaxDim    = maxDim >= 30 && maxDim <= 400;
-      const okAspect    = aspect <= 3.5;
-      const okTall      = h >= minDim;
-      const okY         = yMid >= 30 && yMid <= 250;
-      const okVolume    = volume <= 4_500_000;
-      const ok = okHeight && okMinDim && okMaxDim && okAspect && okTall && okY && okVolume;
-      if (!ok) {
-        verdict = `rejected (${[
-          !okHeight && `h=${h.toFixed(0)}`,
-          !okMinDim && `minDim=${minDim.toFixed(0)}`,
-          !okMaxDim && `maxDim=${maxDim.toFixed(0)}`,
-          !okAspect && `aspect=${aspect.toFixed(1)}`,
-          !okTall   && `flat`,
-          !okY      && `y=${yMid.toFixed(0)}`,
-          !okVolume && `vol=${(volume/1e6).toFixed(1)}M`,
-        ].filter(Boolean).join(',')})`;
-      } else {
-        verdict = '✓SLOT';
-      }
+      const name = mesh.name || '(unnamed)';
+      const isSlot = SLOT_MESH_NAME_PATTERN.test(name);
       allMeshDebug.push({
-        name: mesh.name || '(unnamed)',
+        name,
         pos: `(${_bbCenter.x.toFixed(0)},${_bbCenter.y.toFixed(0)},${_bbCenter.z.toFixed(0)})`,
         size: `${w.toFixed(0)}×${h.toFixed(0)}×${d.toFixed(0)}`,
-        verdict,
+        verdict: isSlot ? '✓SLOT' : 'skipped',
       });
-      if (!ok) return;
+      if (!isSlot) return;
       candidates.push({
-        name: mesh.name || '(unnamed)',
+        name,
         pos:  [_bbCenter.x, _bbCenter.y, _bbCenter.z],
         size: [w + 20, h, d + 20],
-        h, w, d,
       });
     });
 
