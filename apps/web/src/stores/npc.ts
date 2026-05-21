@@ -1,5 +1,9 @@
 import { create } from 'zustand';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
+import { clampMovement2D, ENTITY_HALF_HUMANOID } from '@/lib/three/collision/world-colliders';
+
+const NPC_HALF_W = MAP_WIDTH / 2;
+const NPC_HALF_H = MAP_HEIGHT / 2;
 
 export interface NpcSpriteState {
   id: string;
@@ -250,8 +254,20 @@ function tickDemoNpcs(npcs: NpcSpriteState[]): NpcSpriteState[] {
     const my = (dy / dist) * speed;
     npc.prevX = npc.x;
     npc.prevY = npc.y;
-    npc.x = npc.x + mx;
-    npc.y = npc.y + my;
+    // SIM-LEVEL collision clamp against world AABB colliders. Without this
+    // the wander loop walks NPCs straight through buildings/props; only the
+    // render-time clamp in arena-npcs.tsx kept the visible mesh pinned to
+    // walls while the sim happily marched on inside. Convert game-px ↔ world
+    // (worldX = gameX - HALF; gameX = worldX + HALF) around the clamp.
+    const newGameX = npc.x + mx;
+    const newGameY = npc.y + my;
+    const clamped = clampMovement2D(
+      npc.x - NPC_HALF_W, npc.y - NPC_HALF_H,
+      newGameX - NPC_HALF_W, newGameY - NPC_HALF_H,
+      ENTITY_HALF_HUMANOID,
+    );
+    npc.x = clamped.x + NPC_HALF_W;
+    npc.y = clamped.z + NPC_HALF_H;
     if (Math.abs(dx) > Math.abs(dy)) {
       npc.direction = dx > 0 ? 'right' : 'left';
     } else {
