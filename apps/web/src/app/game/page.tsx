@@ -180,6 +180,13 @@ export default function GamePage() {
   // state update (no #418 mismatch).
   useEffect(() => {
     useQuestStore.persist.rehydrate();
+    // Same hydration-safety pattern as the quest store, but for visited
+    // buildings (stored in localStorage as a plain JSON array — no zustand
+    // persist middleware). Calling this AFTER first paint replaces the
+    // empty initial Set with the actual visited IDs, so Minimap's
+    // <rect opacity={isVisited ? 0.8 : 0.55}> matches between SSR HTML and
+    // client first render (React #418 root cause).
+    useGameStore.getState().hydrateVisitedFromStorage();
   }, []);
 
   const [autoQueuePending, setAutoQueuePending] = useState(false);
