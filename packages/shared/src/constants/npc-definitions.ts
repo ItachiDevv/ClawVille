@@ -201,6 +201,34 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     stats: { hp: 88, attack: 16, defense: 10, speed: 19 },
     personality: 'A winged scout who landed three buildings ago and has not stopped narrating since.',
   },
+  // ─── Chibi wanderers (added 2026-05-21) ──────────────────────────────────
+  // Both share animatorId='chibi' → /avatars/animations/chibi/. Rendered at
+  // SPECIES_TARGET_HEIGHT_WU.chibi=135 (half-height). Placed near center so
+  // they're visible at spawn. patrolRadius 400 keeps them in the plaza zone.
+  {
+    id: 'chibi-eliza',
+    name: 'Eliza',
+    species: 'eliza_chibi',
+    color: 0xff7043,             // ignored — MToon
+    buildingId: '',
+    patrolRadius: 400,
+    homeX: 6700,
+    homeY: 5500,                 // ESE of center, plaza-adjacent
+    stats: { hp: 70, attack: 10, defense: 12, speed: 18 },
+    personality: 'A pint-sized ClawVille intern who claims she invented the orange tee.',
+  },
+  {
+    id: 'chibi-milady',
+    name: 'Mila',
+    species: 'milady_chibi',
+    color: 0xec407a,             // ignored — MToon
+    buildingId: '',
+    patrolRadius: 400,
+    homeX: 4900,
+    homeY: 6100,                 // WSW of center, plaza-adjacent
+    stats: { hp: 70, attack: 10, defense: 13, speed: 17 },
+    personality: 'An eliza-labs partner chibi taking notes on every passing agent in the plaza.',
+  },
   // ─── Additional free-roaming crustaceans (added 2026-04-22) ──────────────
   // Sea-creature GLBs scale + clone per-instance, so multiple NPCs can share
   // the same species path without cache collision (unlike VRMs).
