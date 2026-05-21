@@ -68,3 +68,5 @@ export type {
 // Q2 Activity Portals — protocol types + activity registry. See
 // `packages/shared/src/activities/index.ts` for the surface.
 export * from './activities';
+// Server-usable AABB collision data (buildings + town-center props).
+export * from './constants/world-colliders-data';
