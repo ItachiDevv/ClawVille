@@ -749,29 +749,102 @@ function SlotCabinets({ hotspots }: SlotCabinetsProps) {
 }
 
 // ---------------------------------------------------------------------------
-// BonusBadge — floating "💎 BONUS" plane above each bonus-paytable cabinet.
-// Reuses BONUS_BADGE_GEO + the canvas-texture material. Faces the player
-// roughly — DoubleSide so it reads from any approach angle.
+// BankBanner — big floating bank label (CLASSIC / BONUS) above each slot
+// cluster. Built fresh per-label so the canvas texture carries the right
+// text + accent colour. PlaneGeometry + MeshBasicMaterial transparent;
+// Iris Xe safe (no drei Text/Billboard).
+//
+// Banner faces +X by default; spinning the plane is unnecessary since the
+// room is small enough that the banner reads from any approach angle when
+// rendered DoubleSide.
 // ---------------------------------------------------------------------------
-function BonusBadge({ position }: { position: [number, number, number] }) {
-  const meshRef = useRef<THREE.Mesh>(null);
-  const mat = useMemo(() => {
-    if (typeof window === 'undefined') return null;
-    return new THREE.MeshBasicMaterial({
-      map: getBonusBadgeTexture(),
+function _buildBankBannerTexture(label: string, color: string): THREE.CanvasTexture {
+  const W = 512, H = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d')!;
+  ctx.clearRect(0, 0, W, H);
+
+  // Dark capsule background — wood-tinted to match the cove palette
+  ctx.fillStyle = 'rgba(15, 25, 40, 0.92)';
+  const r = H / 2;
+  ctx.beginPath();
+  ctx.moveTo(r, 0);
+  ctx.lineTo(W - r, 0);
+  ctx.quadraticCurveTo(W, 0, W, r);
+  ctx.lineTo(W, H - r);
+  ctx.quadraticCurveTo(W, H, W - r, H);
+  ctx.lineTo(r, H);
+  ctx.quadraticCurveTo(0, H, 0, H - r);
+  ctx.lineTo(0, r);
+  ctx.quadraticCurveTo(0, 0, r, 0);
+  ctx.closePath();
+  ctx.fill();
+
+  // Accent-color border
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 4;
+  ctx.stroke();
+
+  // Label text
+  ctx.font = '700 64px system-ui, -apple-system, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = color;
+  // Soft glow
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 18;
+  ctx.fillText(label, W / 2, H / 2 + 4);
+  ctx.shadowBlur = 0;
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.generateMipmaps = true;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+const _bankBannerCache = new Map<string, { tex: THREE.CanvasTexture; mat: THREE.MeshBasicMaterial }>();
+function _getBankBanner(label: string, color: string) {
+  const key = `${label}:${color}`;
+  let cached = _bankBannerCache.get(key);
+  if (!cached) {
+    const tex = _buildBankBannerTexture(label, color);
+    const mat = new THREE.MeshBasicMaterial({
+      map: tex,
       transparent: true,
       side: THREE.DoubleSide,
       depthWrite: false,
     });
-  }, []);
+    cached = { tex, mat };
+    _bankBannerCache.set(key, cached);
+  }
+  return cached;
+}
+
+// Module-scope geometry — 240wu wide × 60wu tall, readable from across the room.
+const _BANK_BANNER_GEO = (() => {
+  if (typeof window === 'undefined') return new THREE.PlaneGeometry(240, 60);
+  return new THREE.PlaneGeometry(240, 60);
+})();
+
+function BankBanner({ label, color, position }: { label: string; color: string; position: [number, number, number] }) {
+  const meshRef = useRef<THREE.Mesh>(null);
+  const cached = useMemo(() => {
+    if (typeof window === 'undefined') return null;
+    return _getBankBanner(label, color);
+  }, [label, color]);
   useEffect(() => {
     if (!meshRef.current) return;
     meshRef.current.matrixAutoUpdate = false;
     meshRef.current.updateMatrix();
   }, []);
-  if (!mat) return null;
+  if (!cached) return null;
   return (
-    <mesh ref={meshRef} geometry={BONUS_BADGE_GEO} material={mat} position={position} />
+    <mesh ref={meshRef} geometry={_BANK_BANNER_GEO} material={cached.mat} position={position} />
   );
 }
 
@@ -1273,7 +1346,7 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
   const fpsChecked = useRef(false);
   const emptyFired = useRef(false);
 
-  const { cloned, hotspots, meshCount } = useMemo(() => {
+  const { cloned, hotspots, meshCount, classicCentroid, bonusCentroid, hasDiscovery } = useMemo(() => {
     const c = scene.clone(true);
     c.updateMatrixWorld(true);
 
@@ -1315,11 +1388,15 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
     const _bbSize = new THREE.Vector3();
     const _bbCenter = new THREE.Vector3();
     interface CandidateCabinet {
+      name: string;
       pos: [number, number, number];
       size: [number, number, number];
+      h: number;
+      w: number;
+      d: number;
     }
     const candidates: CandidateCabinet[] = [];
-    const discoveredDebug: Array<{ name: string; pos: string; size: string }> = [];
+    const allMeshDebug: Array<{ name: string; pos: string; size: string; verdict: string }> = [];
     c.traverse((obj) => {
       const mesh = obj as THREE.Mesh;
       if (!mesh.isMesh) return;
@@ -1333,40 +1410,84 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
       const h = _bbSize.y;
       const w = _bbSize.x;
       const d = _bbSize.z;
-      const minFootprint = Math.min(w, d);
-      const maxFootprint = Math.max(w, d);
+      const minDim = Math.min(w, d);
+      const maxDim = Math.max(w, d);
       const yMid = _bbCenter.y;
-      const ok =
-        h >= 80 && h <= 350 &&
-        minFootprint >= 30 && minFootprint <= 220 &&
-        maxFootprint <= 600 &&     // reject room-spanning shells
-        yMid >= 30 && yMid <= 250;
-      if (process.env.NEXT_PUBLIC_COVE_DEBUG === '1') {
-        discoveredDebug.push({
-          name: mesh.name || '(unnamed)',
-          pos: `(${_bbCenter.x.toFixed(0)},${_bbCenter.y.toFixed(0)},${_bbCenter.z.toFixed(0)})`,
-          size: `${w.toFixed(0)}×${h.toFixed(0)}×${d.toFixed(0)}${ok ? ' ✓SLOT' : ''}`,
-        });
+
+      // ── Slot cabinet heuristic (tightened to reject walls/floors/chairs) ──
+      //
+      //   - height       80wu .. 350wu  (cabinet body height range)
+      //   - minDim       30wu .. 200wu  (skinny footprint — cabinets are narrow)
+      //   - maxDim       30wu .. 400wu  (NOT room-spanning — rejects long walls)
+      //   - aspect       maxDim/minDim ≤ 3.5  (square-ish footprint — walls are long)
+      //   - tall enough  h ≥ minDim  (cabinets are taller than they are wide)
+      //   - sits on floor  yMid 30wu .. 250wu
+      //   - volume       w·h·d ≤ 4_500_000wu³  (rejects big merged geometry)
+      const aspect = maxDim / Math.max(minDim, 1);
+      const volume = w * h * d;
+      let verdict = 'rejected';
+      const okHeight    = h >= 80 && h <= 350;
+      const okMinDim    = minDim >= 30 && minDim <= 200;
+      const okMaxDim    = maxDim >= 30 && maxDim <= 400;
+      const okAspect    = aspect <= 3.5;
+      const okTall      = h >= minDim;
+      const okY         = yMid >= 30 && yMid <= 250;
+      const okVolume    = volume <= 4_500_000;
+      const ok = okHeight && okMinDim && okMaxDim && okAspect && okTall && okY && okVolume;
+      if (!ok) {
+        verdict = `rejected (${[
+          !okHeight && `h=${h.toFixed(0)}`,
+          !okMinDim && `minDim=${minDim.toFixed(0)}`,
+          !okMaxDim && `maxDim=${maxDim.toFixed(0)}`,
+          !okAspect && `aspect=${aspect.toFixed(1)}`,
+          !okTall   && `flat`,
+          !okY      && `y=${yMid.toFixed(0)}`,
+          !okVolume && `vol=${(volume/1e6).toFixed(1)}M`,
+        ].filter(Boolean).join(',')})`;
+      } else {
+        verdict = '✓SLOT';
       }
+      allMeshDebug.push({
+        name: mesh.name || '(unnamed)',
+        pos: `(${_bbCenter.x.toFixed(0)},${_bbCenter.y.toFixed(0)},${_bbCenter.z.toFixed(0)})`,
+        size: `${w.toFixed(0)}×${h.toFixed(0)}×${d.toFixed(0)}`,
+        verdict,
+      });
       if (!ok) return;
       candidates.push({
+        name: mesh.name || '(unnamed)',
         pos:  [_bbCenter.x, _bbCenter.y, _bbCenter.z],
         size: [w + 20, h, d + 20],
+        h, w, d,
       });
     });
 
-    // Position-based paytable split: cabinets in the LEFT half of the room
-    // (lower X) get the classic paytable, cabinets in the RIGHT half (higher X)
-    // get the bonus paytable. Per user spec — left row = classic, right row =
-    // bonus. Computed from the discovered candidates so it adapts to any
-    // future GLB rearrangement.
-    let splitX = 0;
+    // ── Position-based paytable split ────────────────────────────────────
+    //
+    // Auto-detect whether the LEFT / RIGHT banks are separated along X or
+    // Z. Pick the axis with greater spread among discovered cabinets — the
+    // long axis of the bank-pair is the split axis. Cabinets BELOW the
+    // midpoint on that axis = classic; ABOVE = bonus.
+    //
+    // User-spec direction: "left of my screenshot = classic". The cove
+    // camera enters from -Z looking +Z (or similar), so "screenshot left"
+    // typically maps to negative axis on the discovered spread. We honour
+    // this via the BELOW-midpoint = classic convention.
+    let splitAxis: 0 | 2 = 0;       // 0 = X, 2 = Z
+    let splitValue = 0;
+    let classicCentroid: [number, number, number] = [0, 0, 0];
+    let bonusCentroid:   [number, number, number] = [0, 0, 0];
     if (candidates.length >= 2) {
-      const xs = candidates.map(c => c.pos[0]).sort((a, b) => a - b);
-      splitX = (xs[0] + xs[xs.length - 1]) / 2;
+      const xs = candidates.map(c => c.pos[0]);
+      const zs = candidates.map(c => c.pos[2]);
+      const xSpread = Math.max(...xs) - Math.min(...xs);
+      const zSpread = Math.max(...zs) - Math.min(...zs);
+      splitAxis = xSpread >= zSpread ? 0 : 2;
+      const sorted = (splitAxis === 0 ? xs : zs).slice().sort((a, b) => a - b);
+      splitValue = (sorted[0] + sorted[sorted.length - 1]) / 2;
     }
     const discoveredHotspots: HotspotDef[] = candidates.map((c) => {
-      const isBonus = c.pos[0] >= splitX;
+      const isBonus = c.pos[splitAxis] >= splitValue;
       return {
         position: c.pos,
         size:     c.size,
@@ -1375,12 +1496,31 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
         isBonus,
       };
     });
+    // Compute centroid of each bank for banner-label placement.
+    if (discoveredHotspots.length > 0) {
+      const classics = discoveredHotspots.filter(h => !h.isBonus);
+      const bonuses  = discoveredHotspots.filter(h =>  h.isBonus);
+      const avg = (arr: HotspotDef[]): [number, number, number] => {
+        if (arr.length === 0) return [0, 0, 0];
+        let sx = 0, sy = 0, sz = 0;
+        for (const h of arr) { sx += h.position[0]; sy += h.position[1]; sz += h.position[2]; }
+        return [sx / arr.length, sy / arr.length, sz / arr.length];
+      };
+      classicCentroid = avg(classics);
+      bonusCentroid   = avg(bonuses);
+    }
 
+    // Always-on debug log (one line summary) — needed to diagnose
+    // misfires on prod, where NEXT_PUBLIC_COVE_DEBUG isn't set.
+    const nBonus = discoveredHotspots.filter(h => h.isBonus).length;
+    console.info(
+      `[cove-interior] discovered ${discoveredHotspots.length} slot cabinets ` +
+      `(splitAxis=${splitAxis === 0 ? 'X' : 'Z'}, splitValue=${splitValue.toFixed(0)}, ` +
+      `${discoveredHotspots.length - nBonus} classic / ${nBonus} bonus)`,
+    );
     if (process.env.NEXT_PUBLIC_COVE_DEBUG === '1') {
-      const nBonus = discoveredHotspots.filter(h => h.isBonus).length;
-      console.info(`[cove-interior] discovered ${discoveredHotspots.length} slot cabinets from ${discoveredDebug.length} candidate meshes — splitX=${splitX.toFixed(0)} (${discoveredHotspots.length - nBonus} classic / ${nBonus} bonus)`);
-      for (const d of discoveredDebug) {
-        console.info(`  ${d.name.padEnd(30)} pos=${d.pos.padEnd(18)} size=${d.size}`);
+      for (const d of allMeshDebug) {
+        console.info(`  ${d.name.padEnd(30)} pos=${d.pos.padEnd(20)} size=${d.size.padEnd(20)} ${d.verdict}`);
       }
     }
 
@@ -1393,7 +1533,14 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
     let count = 0;
     c.traverse((obj) => { if ((obj as THREE.Mesh).isMesh) count++; });
 
-    return { cloned: c, hotspots: hotspotDefs, meshCount: count };
+    return {
+      cloned:   c,
+      hotspots: hotspotDefs,
+      meshCount: count,
+      classicCentroid,
+      bonusCentroid,
+      hasDiscovery: discoveredHotspots.length >= 2,
+    };
   }, [scene, useFallback]);
 
   useEffect(() => {
@@ -1484,14 +1631,23 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
         <SlotHotspot key={i} def={def} />
       ))}
 
-      {/* BONUS badges floating above each right-row (bonus paytable) slot
-          machine. Visually differentiates the bonus row from the classic
-          row without re-introducing the procedural cabinet geometry.
-          Reuses BONUS_BADGE_GEO + getBonusBadgeTexture from the (now
-          dead) procedural cabinet code. */}
-      {hotspots.filter(h => h.isBonus).map((def, i) => (
-        <BonusBadge key={`badge-${i}`} position={[def.position[0], def.position[1] + def.size[1] / 2 + 30, def.position[2]]} />
-      ))}
+      {/* Bank labels — one big banner above each of the two slot banks.
+          Floats ~80wu above the cabinet centroid, faces +Y so it's
+          readable from any approach angle inside the room. */}
+      {hasDiscovery && (
+        <>
+          <BankBanner
+            label="CLASSIC"
+            color="#00d4ff"
+            position={[classicCentroid[0], classicCentroid[1] + 220, classicCentroid[2]]}
+          />
+          <BankBanner
+            label="BONUS"
+            color="#ffd54f"
+            position={[bonusCentroid[0], bonusCentroid[1] + 220, bonusCentroid[2]]}
+          />
+        </>
+      )}
     </group>
   );
 }
