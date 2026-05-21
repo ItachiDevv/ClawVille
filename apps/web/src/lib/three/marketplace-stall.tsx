@@ -7,8 +7,8 @@
  * SpatialNeglect, CC-BY). Optimised with gltf-transform WebP@512 — DO NOT
  * re-optimise.
  *
- * Position: (600, -2, -60) — east of town center, mirror of BazaarStall to
- * the west.
+ * Position: (1273, -2, 450) — east diagonal of the town plaza
+ * (plaza cleanup 2026-05-21: moved outward from 800,300 to r≈1350wu).
  *
  * GPU constraints (Iris Xe invariants):
  *   - NO drei Text/Billboard — hard crash
