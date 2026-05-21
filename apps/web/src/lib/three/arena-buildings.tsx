@@ -617,9 +617,9 @@ function computeBuildingScale(scene: THREE.Object3D, targetMaxDim: number = BUIL
  * sanitized name (Three.js replaces non-word chars with '_' when loading GLTF)
  * matches the key. Multiply that node's local scale by the override factor.
  *
- * This is applied BEFORE matrixAutoUpdate=false so the override becomes part of the
- * locked static transform. The outer <primitive scale={buildingScale} /> still provides
- * the uniform baseline — child overrides compound on top in local space.
+ * This is applied BEFORE the static matrix lock in GLBBuilding's useEffect so the
+ * override becomes part of the locked transform. The outer <primitive scale={buildingScale} />
+ * still provides the uniform baseline — child overrides compound on top in local space.
  *
  * Important: this must run AFTER stripDecorativeMeshes/stripGroundPlanes so overridden
  * nodes are guaranteed to still exist in the scene.
@@ -674,7 +674,6 @@ function BuildingPedestal({ cx, cz }: { cx: number; cz: number }) {
       position={[cx, -2, cz]}
       rotation={[-Math.PI / 2, 0, 0]}
       receiveShadow={false}
-      matrixAutoUpdate={false}
     >
       <cylinderGeometry args={[560, 560, 15, 32, 1]} />
       <primitive object={_pedestalMaterial} attach="material" />
