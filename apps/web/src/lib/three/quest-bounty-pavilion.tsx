@@ -20,9 +20,9 @@
  * the canonical `groundedYOffset()` helper so the pavilion sits flush with
  * the sand floor regardless of where the GLB's pivot lives.
  *
- * Size: TARGET_HEIGHT_WU = 1080 (matches the post-85%-reduction bazaar +
- * marketplace stalls: 1020 / 1105). The pavilion reads as a third plaza
- * landmark at the same scale as the trade stalls.
+ * Size: TARGET_HEIGHT_WU = 1080 (matches the bazaar + marketplace stalls
+ * after their 15% reduction: 1200→1020 / 1300→1105). The pavilion reads as
+ * a third plaza landmark at the same scale as the trade stalls.
  *
  * GPU constraints (Iris Xe invariants):
  *   - NO drei <Text> / <Billboard> — hard crash on integrated GPUs
@@ -51,7 +51,7 @@ const PAV_X = 0;
 const PAV_Z = -1220;
 
 // ---------------------------------------------------------------------------
-// Target visual height. Matches the 85%-reduced trade stalls:
+// Target visual height. Matches the trade stalls after their 15% reduction:
 // bazaar 1200→1020, marketplace 1300→1105. 1080 lands in the middle.
 // ---------------------------------------------------------------------------
 const TARGET_HEIGHT_WU = 1080;
