@@ -412,8 +412,8 @@ const NpcMesh = memo(function NpcMesh({
     anchorRef: groupRef,
     offset: [0, 320, 0],
     initialVisible: showLabel,
-    fadeNear: 800,
-    fadeFar: 3000,
+    fadeNear: 15000,
+    fadeFar: 25000,
     fadeBaseOpacity: 0.95,
     occlude: true,
   });
