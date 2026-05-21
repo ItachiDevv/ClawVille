@@ -74,6 +74,11 @@ export const SPECIES_TARGET_HEIGHT_WU: Record<string, number> = {
   //     270), bbox ceiling ~320 to give wings just a little headroom.
   //     If this still reads as "too big" drop to 300.
   tekk: 320,
+
+  // Chibi class (added 2026-05-21) — eliza-chibi + milady-chibi share
+  // animatorId='chibi'. User direction: "around half the height of the
+  // others". Base 270 → half = 135. Both chibis use this override.
+  chibi: 135,
 };
 
 /**
@@ -103,7 +108,7 @@ export function computeVRMAvatarFit(
   /**
    * Optional explicit target height (world units). When provided, takes
    * precedence over SPECIES_TARGET_HEIGHT_WU and VRM_AVATAR_TARGET_HEIGHT_WU.
-   * Used by the casino interior to pass CASINO_VRM_TARGET_HEIGHT without
+   * Used by the cove interior to pass COVE_VRM_TARGET_HEIGHT without
    * polluting the shared SPECIES_TARGET_HEIGHT_WU map with a scene-specific
    * override.
    */
