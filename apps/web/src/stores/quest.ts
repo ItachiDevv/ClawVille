@@ -230,6 +230,13 @@ export const useQuestStore = create<QuestStoreState>()(
       // Bumped to v3 for the 30-quest redesign (new counter keys, new
       // distinct sets, new quest IDs).
       version: 3,
+      // skipHydration: true defers the localStorage read until a top-level
+      // component explicitly calls useQuestStore.persist.rehydrate() inside
+      // a useEffect. Without this, persist reads localStorage during the
+      // first client render — server-rendered HTML (initial state) does not
+      // match the now-hydrated client HTML → React #418 hydration mismatch
+      // fires every page load. See game/page.tsx for the rehydrate trigger.
+      skipHydration: true,
       partialize: (state) => ({
         progress: state.progress,
         counters: state.counters,
