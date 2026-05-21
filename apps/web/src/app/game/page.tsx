@@ -323,7 +323,7 @@ export default function GamePage() {
   // and the canvas starts booting in parallel while the cookie is set.
 
   return (
-    <div className="game-container">
+    <div className="game-container" suppressHydrationWarning>
       {/* Sea loading overlay — renders immediately, fades out once window.__W3D is set */}
       <SeaLoadingScreen />
       <World3DCanvas mode="game" />
