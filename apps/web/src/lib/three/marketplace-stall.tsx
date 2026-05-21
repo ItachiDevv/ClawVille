@@ -40,9 +40,9 @@ const STALL_X = 1273;
 const STALL_Z = 450;
 
 // Target visual height — slightly larger than the bazaar.
-// 2026-05-19: bumped 450→1300 to match the building ring scale (see
-// bazaar-stall.tsx for rationale).
-const TARGET_HEIGHT_WU = 1300;
+// 2026-05-19: bumped 450→1300 to match the building ring scale.
+// 2026-05-21: reduced 1300→1105 (×0.85) — see bazaar-stall.tsx rationale.
+const TARGET_HEIGHT_WU = 1105;
 
 // ---------------------------------------------------------------------------
 // Scale helper — same algorithm as arena-location-npcs.tsx computeNormalizedScale.
