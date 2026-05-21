@@ -186,25 +186,32 @@ skillsRoutes.get('/:buildingId/skill.md', async (c) => {
     });
   }
 
-  // Entry-point skill: always public so agents can install the play loop
-  // before they own anything.
+  // Entry-point skill: always public so agents can install the play loop.
   const isEntrySkill = buildingId === 'clawville-play';
 
-  let unlocked = isEntrySkill;
-  if (!unlocked) {
-    const avatarId = await resolveAvatarId(c);
-    if (avatarId) {
-      unlocked = await avatarOwnsBuilding(avatarId, buildingId);
-    }
-  }
-
-  if (!unlocked) {
-    return c.text(teaserBody(buildingId, row.name, row.description), 402, {
-      'Content-Type': 'text/markdown; charset=utf-8',
-      'X-Skill-Locked': 'true',
-      'X-Skill-Building': buildingId,
-    });
-  }
+  // FEATURE_GATE: skill_ownership_paywall
+  // Status: DISABLED 2026-05-21 per user direction ("these are not payment-
+  //   gated skills right now"). All SKILL.md endpoints are public until peer-
+  //   skill commerce un-pauses (see CLAUDE.md Brand Identity §3 "Cosmetic
+  //   shop carve-out... marketplace pause applies to peer skill commerce").
+  // Metric to graduate: peer-skill-commerce unpause shipping (improvements.md §7)
+  // Current reading: paused
+  // Review deadline: TBD on commerce re-enable
+  // On deadline: re-enable the avatarOwnsBuilding(avatarId, buildingId) gate
+  //   below by uncommenting the resolveAvatarId + check block and the 402
+  //   teaser return. The 402 path code is preserved but commented to make
+  //   re-enable a 3-line diff.
+  // Reference: CLAUDE.md Brand Identity §3, improvements.md §7
+  //
+  // // const avatarId = await resolveAvatarId(c);
+  // // const unlocked = isEntrySkill || (avatarId ? await avatarOwnsBuilding(avatarId, buildingId) : false);
+  // // if (!unlocked) {
+  // //   return c.text(teaserBody(buildingId, row.name, row.description), 402, {
+  // //     'Content-Type': 'text/markdown; charset=utf-8',
+  // //     'X-Skill-Locked': 'true',
+  // //     'X-Skill-Building': buildingId,
+  // //   });
+  // // }
 
   void logEventFromContext(c, {
     eventType: 'skill_md.fetched',
