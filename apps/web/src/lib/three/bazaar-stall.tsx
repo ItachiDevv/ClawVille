@@ -9,8 +9,8 @@
  * though the stand now functions as the first-party Cosmetics shop —
  * click handler opens setCosmeticDrawerOpen(true) (see below).
  *
- * Position: world-surface (-800, -2, 300) — west arc of the town plaza
- * after the Phase 6.2 stand spread.
+ * Position: world-surface (-1273, -2, 450) — west diagonal of the town plaza
+ * (plaza cleanup 2026-05-21: moved outward from -800,300 to r≈1350wu).
  *
  * GPU constraints (Iris Xe invariants):
  *   - NO drei Text/Billboard — hard crash
