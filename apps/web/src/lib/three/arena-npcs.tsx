@@ -428,7 +428,7 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     initialVisible: true,
     fadeNear: 800,
     fadeFar: 3000,
-    fadeBaseOpacity: 0.85,
+    fadeBaseOpacity: 0.95,
     occlude: true,
   });
 
@@ -771,8 +771,9 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
               color: '#effeff',
               padding: '5px 11px 6px',
               borderRadius: 999,
-              background: 'radial-gradient(ellipse at center, rgba(80,220,255,0.12), rgba(80,220,255,0.04))',
-              boxShadow: '0 0 14px rgba(100,230,255,0.55), 0 0 38px -4px rgba(80,220,255,0.45), inset 0 0 12px rgba(180,245,255,0.18)',
+              background: 'rgba(8, 18, 32, 0.85)',
+              border: '1px solid rgba(120, 220, 255, 0.45)',
+              boxShadow: '0 0 14px rgba(100,230,255,0.45), 0 0 38px -4px rgba(80,220,255,0.35), inset 0 0 10px rgba(120,200,240,0.18)',
               whiteSpace: 'nowrap',
               letterSpacing: '0.01em',
               lineHeight: 1,
@@ -847,16 +848,18 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
   // idToSeed returns float — round to int so (frame + seed) % 3 uses integer arithmetic.
   const seed = useMemo(() => Math.round(idToSeed(npc.id)), [npc.id]);
 
-  // WorldLabelsOverlay label — subtle wordmark with distance fade + occlusion.
-  // Same parameters as GLBNpcMesh for visual consistency.
+  // WorldLabelsOverlay label — same parameters as GLBNpcMesh except for the
+  // Y offset: VRM humanoids are ~270wu tall (vs ~45wu for GLB crustaceans),
+  // so a 100wu offset would land the capsule at the VRM's waist/chest and
+  // cover the body. 320wu sits cleanly above the head.
   const { divRef: labelRef } = useWorldLabel({
     id: `vrm-npc-label-${npc.id}`,
     anchorRef: groupRef,
-    offset: [0, 100, 0],
+    offset: [0, 320, 0],
     initialVisible: true,
     fadeNear: 800,
     fadeFar: 3000,
-    fadeBaseOpacity: 0.85,
+    fadeBaseOpacity: 0.95,
     occlude: true,
   });
 
@@ -1132,8 +1135,9 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
               color: '#effeff',
               padding: '5px 11px 6px',
               borderRadius: 999,
-              background: 'radial-gradient(ellipse at center, rgba(80,220,255,0.12), rgba(80,220,255,0.04))',
-              boxShadow: '0 0 14px rgba(100,230,255,0.55), 0 0 38px -4px rgba(80,220,255,0.45), inset 0 0 12px rgba(180,245,255,0.18)',
+              background: 'rgba(8, 18, 32, 0.85)',
+              border: '1px solid rgba(120, 220, 255, 0.45)',
+              boxShadow: '0 0 14px rgba(100,230,255,0.45), 0 0 38px -4px rgba(80,220,255,0.35), inset 0 0 10px rgba(120,200,240,0.18)',
               whiteSpace: 'nowrap',
               letterSpacing: '0.01em',
               lineHeight: 1,
