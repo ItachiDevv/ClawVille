@@ -579,9 +579,9 @@ class NpcSimulation {
       if (!npc.isDead && !npc.inConversation) alive.push(npc);
     }
 
-    // Half-width: chibi Miladys 25wu, everything else 50wu.
+    // Half-width: chibi VRMs (milady-* and chibi-*) 25wu, everything else 50wu.
     const halfOf = (npc: NpcRuntimeState): number =>
-      npc.id.startsWith('milady-') ? 25 : 50;
+      npc.id.startsWith('milady-') || npc.id.startsWith('chibi-') ? 25 : 50;
 
     for (let i = 0; i < alive.length; i++) {
       for (let j = i + 1; j < alive.length; j++) {
