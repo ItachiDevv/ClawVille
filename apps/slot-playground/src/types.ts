@@ -20,4 +20,6 @@ export interface SlotRigProps {
   onReelsSettled: () => void;
   /** Toggle layered FX overlays (bezels, payline glow, vignette). */
   showFx?:       boolean;
+  /** Optional in-scene SPIN trigger (e.g. lever pull). No-op when omitted. */
+  onSpinClick?:  () => void;
 }
