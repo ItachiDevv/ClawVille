@@ -50,9 +50,23 @@ import ThoughtLog from '@/components/game/thought-log';
 import ControlModeToggle from '@/components/game/control-mode-toggle';
 import AutonomyHUD from '@/components/game/autonomy-hud';
 import { useResearchStream } from '@/hooks/use-research-stream';
-import { DeferredTerrainPreloads } from '@/lib/three/arena-terrain';
-import { DeferredNpcPreloads } from '@/lib/three/arena-location-npcs';
 import SceneTransition from '@/components/transitions/SceneTransition';
+
+// arena-terrain.tsx evaluates FORCE_WEBGL_TERRAIN at module scope using
+// navigator.userAgent. On the server navigator is undefined → false; on the
+// client it may be true (iOS Safari). Static import causes React #418 hydration
+// mismatch because the SandFloor useMemo returns a different material type on
+// server vs client, making the React tree diverge. Dynamic + ssr:false prevents
+// the module from executing on the server at all — safe because DeferredTerrainPreloads
+// and DeferredNpcPreloads only fire useGLTF.preload() in useEffect (no server output).
+const DeferredTerrainPreloads = dynamic(
+  () => import('@/lib/three/arena-terrain').then(m => ({ default: m.DeferredTerrainPreloads })),
+  { ssr: false, loading: () => null },
+);
+const DeferredNpcPreloads = dynamic(
+  () => import('@/lib/three/arena-location-npcs').then(m => ({ default: m.DeferredNpcPreloads })),
+  { ssr: false, loading: () => null },
+);
 
 const World3DCanvas = dynamic(() => import('@/components/three/World3DCanvas'), {
   ssr: false,
