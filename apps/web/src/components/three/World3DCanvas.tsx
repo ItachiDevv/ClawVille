@@ -23,7 +23,7 @@ import QuestNpc from '@/lib/three/quest-npc';
 import TownGuide from '@/lib/three/town-guide';
 import BazaarStall from '@/lib/three/bazaar-stall';
 import MarketplaceStall from '@/lib/three/marketplace-stall';
-import BountyBoardObject from '@/lib/three/bounty-board-object';
+import QuestBountyPavilion from '@/lib/three/quest-bounty-pavilion';
 import AuctionPodium from '@/lib/three/auction-podium';
 import TownDirectorySign from '@/lib/three/town-directory-sign';
 import ActivityIndicators from '@/lib/three/activity-indicators';
@@ -804,11 +804,12 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       <BazaarStall />
       <MarketplaceStall />
       <AuctionPodium />
-      {/* Bounty Board — 4th town-center stand. 3D object + modal + API + DB
-          schema all already exist (bounty-board-object.tsx, bounty-board-modal.tsx,
-          /api/bounties, schema/bounties.ts); was just never mounted. Click
-          opens the bounty-board modal via openBountyBoard(). */}
-      <BountyBoardObject />
+      {/* Quest + Bounty Pavilion — octagonal open-air pavilion 1100wu behind
+          the town directory sign. Houses both the Quest Board (boards 1+2, left
+          half) and the Bounty Board (boards 3+4, right half). Replaces the
+          standalone BountyBoardObject mount. Click zones split L/R; bio-luminescent
+          labels float above each half. See quest-bounty-pavilion.tsx for layout. */}
+      <QuestBountyPavilion />
       {/* Wooden signboard directory — informational landmark at centre of stall row */}
       <TownDirectorySign />
 
