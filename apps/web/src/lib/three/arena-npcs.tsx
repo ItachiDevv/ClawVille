@@ -22,7 +22,8 @@ import { useGameStore } from '@/stores/game';
 import { PLAYER_NPC_ID } from '@/stores/npc';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { jumpState } from '@/lib/three/jump-state';
-import { clampMovement2D } from '@/lib/three/collision/world-colliders';
+import { clampMovement2D, ENTITY_HALF_HUMANOID, ENTITY_HALF_CHIBI } from '@/lib/three/collision/world-colliders';
+import { avatarPositionRef } from '@/stores/game';
 import { useVRMInstance, disposeVRMInstance, preloadVRMBytes } from '@/lib/three/vrm-loader';
 import { VRMCharacterAnimator, preloadMixamoClips, type AnimName } from '@/lib/three/vrm-character-animator';
 import { MODEL_REGISTRY, getAnimatorIdByPath } from '@/lib/three/agent-model-registry';
@@ -588,7 +589,7 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const glbPrevX = simPos.current.x;
     const glbPrevZ = simPos.current.z;
 
-    // XZ disc collision clamp — prevents NPCs from walking inside buildings
+    // XZ AABB collision clamp — prevents NPCs from walking inside buildings
     // and props. Clamping AFTER entity-interpolation so visible NPC position
     // never enters a building even if the server-side sim doesn't have walls.
     // Wandering NPCs use simPos.current as the "from" position (previous
@@ -596,8 +597,30 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const npcClamped = clampMovement2D(simPos.current.x, simPos.current.z, renderX, renderZ);
     simPos.current.x = npcClamped.x;
     simPos.current.z = npcClamped.z;
-    group.position.x = npcClamped.x;
-    group.position.z = npcClamped.z;
+
+    // Entity-vs-player push-out (Phase 4 — client-side visual correction).
+    // Keeps NPCs from overlapping the player avatar visually even when the
+    // server sim hasn't resolved the overlap yet (latency / tick-rate gap).
+    // Only applies in world mode (not arena) — avatarPositionRef is populated
+    // when a player avatar is present. Zero allocations: inline math only.
+    {
+      const playerWX = avatarPositionRef.x - HALF_W;
+      const playerWZ = avatarPositionRef.y - HALF_H;
+      const npcHalf = (npc.id.startsWith('milady-') || npc.id.startsWith('chibi-')) ? ENTITY_HALF_CHIBI : ENTITY_HALF_HUMANOID;
+      const combinedHalf = npcHalf + ENTITY_HALF_HUMANOID;
+      const dvx = simPos.current.x - playerWX;
+      const dvz = simPos.current.z - playerWZ;
+      const distSq = dvx * dvx + dvz * dvz;
+      if (distSq > 0 && distSq < combinedHalf * combinedHalf) {
+        const dist = Math.sqrt(distSq);
+        const push = combinedHalf - dist;
+        simPos.current.x += (dvx / dist) * push;
+        simPos.current.z += (dvz / dist) * push;
+      }
+    }
+
+    group.position.x = simPos.current.x;
+    group.position.z = simPos.current.z;
 
     // 2026-05-11 — All NPC culling removed per user directive.
     // Previously: distance-cull (hide group past 10000² wu), behind-camera cull
@@ -970,15 +993,33 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     const renderX = (d.prevX + (d.x - d.prevX) * alpha) - HALF_W;
     const renderZ = (d.prevY + (d.y - d.prevY) * alpha) - HALF_H;
 
-    // XZ disc collision clamp for VRM NPC — mirrors GLBNpcMesh pattern.
+    // XZ AABB collision clamp for VRM NPC — mirrors GLBNpcMesh pattern.
     // Clamp AFTER entity-interpolation so visible position never enters a building.
     const vrmClamped = clampMovement2D(simPos.current.x, simPos.current.z, renderX, renderZ);
     const prevX = simPos.current.x;
     const prevZ = simPos.current.z;
     simPos.current.x = vrmClamped.x;
     simPos.current.z = vrmClamped.z;
-    group.position.x = vrmClamped.x;
-    group.position.z = vrmClamped.z;
+
+    // Entity-vs-player push-out (Phase 4) — mirrors GLBNpcMesh inline push-out.
+    {
+      const playerWX = avatarPositionRef.x - HALF_W;
+      const playerWZ = avatarPositionRef.y - HALF_H;
+      const npcHalf = (npc.id.startsWith('milady-') || npc.id.startsWith('chibi-')) ? ENTITY_HALF_CHIBI : ENTITY_HALF_HUMANOID;
+      const combinedHalf = npcHalf + ENTITY_HALF_HUMANOID;
+      const dvx = simPos.current.x - playerWX;
+      const dvz = simPos.current.z - playerWZ;
+      const distSq = dvx * dvx + dvz * dvz;
+      if (distSq > 0 && distSq < combinedHalf * combinedHalf) {
+        const dist = Math.sqrt(distSq);
+        const push = combinedHalf - dist;
+        simPos.current.x += (dvx / dist) * push;
+        simPos.current.z += (dvz / dist) * push;
+      }
+    }
+
+    group.position.x = simPos.current.x;
+    group.position.z = simPos.current.z;
 
     // 2026-05-11 — All VRM NPC culling removed per user directive
     // ("remove all the culling completely it ruins the game"). Mirrors GLBNpcMesh.

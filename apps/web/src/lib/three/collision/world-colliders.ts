@@ -212,3 +212,88 @@ export function clampMovement2D(
 
   return { x: _sCx, z: _sCz, hit };
 }
+
+// ---------------------------------------------------------------------------
+// Entity-vs-entity collision (Phase 4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal XZ position descriptor for entity-vs-entity push-out.
+ * Both player-avatar and NPC snapshots satisfy this shape.
+ */
+export interface EntityPosition {
+  x: number; // Three.js world X
+  z: number; // Three.js world Z
+}
+
+// Scratch vars for entity push-out — separate from world-collider scratch to
+// allow future composition without aliasing.
+let _eEx = 0;
+let _eEz = 0;
+
+/**
+ * Clamp a proposed XZ movement against BOTH world AABB colliders AND a list
+ * of other entity positions (NPC vs player, player vs NPC on client).
+ *
+ * Runs world-collider pass first, then entity push-out pass. Each entity is
+ * treated as a circle of radius `otherHalf` (same as `entityHalf` by default).
+ * Push-out is symmetric-impulse style: the mover is pushed away from each
+ * other entity by the full overlap amount (not half), because only one entity
+ * is being updated per call (the other's position is treated as fixed).
+ *
+ * @param fromX         Previous world X (back-compat, currently unused).
+ * @param fromZ         Previous world Z.
+ * @param toX           Desired world X.
+ * @param toZ           Desired world Z.
+ * @param entityHalf    Half-width of the moving entity.
+ * @param otherEntities Other entity positions to push out against.
+ * @param otherHalf     Half-width to use for each other entity (defaults to
+ *                      `entityHalf` for same-species push-out).
+ * @returns             `{ x, z, hit }` clamped world position.
+ */
+export function clampEntityMovement2D(
+  fromX: number,
+  fromZ: number,
+  toX: number,
+  toZ: number,
+  entityHalf: number = 0,
+  otherEntities: readonly EntityPosition[] = [],
+  otherHalf: number = entityHalf,
+): { x: number; z: number; hit: boolean } {
+  void fromX;
+  void fromZ;
+
+  // Pass 1: world AABB colliders (reuse existing function's scratch).
+  const worldResult = clampMovement2D(0, 0, toX, toZ, entityHalf);
+  _eEx = worldResult.x;
+  _eEz = worldResult.z;
+  let hit = worldResult.hit;
+
+  // Pass 2: entity-vs-entity push-out (circle approximation for speed).
+  const combinedHalf = entityHalf + otherHalf;
+  const combinedHalfSq = combinedHalf * combinedHalf;
+  for (let i = 0; i < otherEntities.length; i++) {
+    const other = otherEntities[i]!;
+    const dx = _eEx - other.x;
+    const dz = _eEz - other.z;
+    const distSq = dx * dx + dz * dz;
+    if (distSq < combinedHalfSq && distSq > 0) {
+      hit = true;
+      const dist = Math.sqrt(distSq);
+      const overlap = combinedHalf - dist;
+      // Push the mover fully away from the other entity.
+      _eEx += (dx / dist) * overlap;
+      _eEz += (dz / dist) * overlap;
+    } else if (distSq === 0) {
+      // Exact overlap — push in a deterministic direction to avoid NaN.
+      hit = true;
+      _eEx += combinedHalf;
+    }
+  }
+
+  return { x: _eEx, z: _eEz, hit };
+}
+
+/** Half-width constants for entity push-out. */
+export const ENTITY_HALF_CHIBI = 25;    // chibi VRM (135 wu height)
+export const ENTITY_HALF_HUMANOID = 50; // adult humanoid (270 wu height)
