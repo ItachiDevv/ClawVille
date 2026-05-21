@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useRef, useMemo, type ReactElement } from 'react';
+import { Suspense, useEffect, useRef, useMemo, useState, type ReactElement } from 'react';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
@@ -189,28 +189,48 @@ function createSandMaterial(): THREE.MeshStandardNodeMaterial {
 // channels on 14k vertices compiles to GLSL loops on WebGL2 backend and stalls
 // the A-series GPU for 200-400ms on first draw). Vertex colors are baked into
 // the geometry so a plain MeshStandardMaterial preserves the sand appearance.
-const IOS_SAFARI_TERRAIN =
-  typeof navigator !== 'undefined' &&
-  /iP(hone|ad|od)/i.test(navigator.userAgent) &&
-  /WebKit/i.test(navigator.userAgent) &&
-  !/CriOS|FxiOS|OPiOS|mercury/i.test(navigator.userAgent);
-const FORCE_WEBGL_TERRAIN =
-  IOS_SAFARI_TERRAIN ||
-  (typeof navigator !== 'undefined' && !('gpu' in navigator));
+//
+// PERF + SSR: this branch decision MUST be made AT MODULE SCOPE on the
+// client only. Doing it at module scope evaluates on the server too
+// (navigator is undefined → returns FORCE_WEBGL_TERRAIN=false), then the
+// client evaluates again → may differ → hydration mismatch → React #418.
+//
+// Five other files statically import this module (World3DCanvas,
+// arena-buildings, arena-location-npcs, arena-npcs, player-avatar), so we
+// can't dodge SSR with a dynamic wrapper. Compute the flag lazily inside
+// the component so the module's first evaluation is server-safe.
+function detectForceWebglTerrain(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent;
+  const isIOSSafari =
+    /iP(hone|ad|od)/i.test(ua) &&
+    /WebKit/i.test(ua) &&
+    !/CriOS|FxiOS|OPiOS|mercury/i.test(ua);
+  return isIOSSafari || !('gpu' in navigator);
+}
 
 function SandFloor() {
   const ref = useRef<THREE.Mesh>(null);
+  // Defer the navigator-touching decision until AFTER hydration. On SSR + first
+  // client render we use the SSR default (false → TSL NodeMaterial path), then
+  // after mount we may switch to the WebGL fallback. React will reconcile the
+  // swap as a normal re-render rather than a hydration mismatch.
+  const [forceWebgl, setForceWebgl] = useState(false);
+  useEffect(() => {
+    setForceWebgl(detectForceWebglTerrain());
+  }, []);
+
   const sandGeo = useMemo(() => createSandGeometry(), []);
   const sandMat = useMemo(
     () =>
-      FORCE_WEBGL_TERRAIN
+      forceWebgl
         ? new THREE.MeshStandardMaterial({
             vertexColors: true,
             roughness: 0.8,
             metalness: 0,
           })
         : createSandMaterial(),
-    [],
+    [forceWebgl],
   );
 
   useEffect(() => {
