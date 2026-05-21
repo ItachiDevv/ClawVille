@@ -922,28 +922,24 @@ async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
   // -------------------------------------------------------------------------
   const { width: cssW, height: cssH } = await waitForCanvasCssSize(canvas);
   // -------------------------------------------------------------------------
-  // FIX (2026-05-21): depth-stencil size mismatch on high-DPR displays.
+  // FIX (2026-05-21 v2): depth-stencil size mismatch — first attempt used the
+  // raw devicePixelRatio (capped at 2). That was wrong: R3F's <Canvas dpr=...
+  // prop CAPS the pixel ratio further. On Iris/low-end GPUs the cap is
+  // [0.55, 0.7]; on dedicated [0.75, 1]. R3F applies its dpr AFTER our factory
+  // returns by calling setPixelRatio + setSize, overriding our stamp. Result:
+  // depth allocated at 1776×1238 (our raw-DPR guess) but R3F sized the
+  // backbuffer to 828×577 (Iris cap × cssDims) — same mismatch, mirrored.
   //
-  // Previous code stamped canvas.width = cssW (CSS pixels). Three's
-  // WebGPURenderer initialised the depth buffer at that size. R3F's Canvas
-  // then applied its `dpr` setting after our factory returned, calling
-  // setSize() at the DPR-multiplied dimensions. Three resized the swapchain
-  // (color attachment) but not the depth/stencil attachment, producing every
-  // frame:
-  //   "The depth stencil attachment size (1012, 577) does not match the size
-  //    of the other attachments' base plane (1446, 825)."
+  // The fix is to compute the IDENTICAL dpr R3F will resolve from the same
+  // LOW_END_GPU_DETECTED flag the Canvas prop reads. Stamp canvas dims at
+  // that ratio; setPixelRatio to match; init; setSize. R3F's later setSize
+  // at the same (cssW, cssH) with the same pixelRatio is a true no-op.
   //
-  // The console errors `THREE.[Texture "D3DImageBacking..."] is associated
-  // with [Device], and cannot be used with [Device]` are downstream of this
-  // failure — the canvas backbuffer gets recreated and old textures stay
-  // bound to the dead device.
-  //
-  // Fix: read the DPR R3F will use (capped at 2 to match its default), stamp
-  // the device-pixel dimensions onto the canvas, and call setPixelRatio
-  // before init. R3F's later setSize(cssW, cssH) lands on matching dims and
-  // is a true no-op.
+  // KEEP THIS IN SYNC with the <Canvas dpr={...}> prop below.
   // -------------------------------------------------------------------------
-  const dpr = Math.min(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1, 2);
+  const dprRange: readonly [number, number] = LOW_END_GPU_DETECTED ? [0.55, 0.7] : [0.75, 1];
+  const rawDpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+  const dpr = Math.max(dprRange[0], Math.min(rawDpr, dprRange[1]));
   canvas.width = Math.round(cssW * dpr);
   canvas.height = Math.round(cssH * dpr);
 
