@@ -297,8 +297,8 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   //   pulling full-GLB bbox center toward the pathway. The dynamic anchor aligns the
   //   moai body center (after 1.7× override) with the ring slot — not the combined bbox.
   "memory-rag":          { model: '/models/squidward-house.glb',     yOffset: 0, rotY:  0.522, targetMaxDim: 1700,
-                           childScaleOverrides: { "Squidward’s_House": 1.7 },
-                           bodyAnchorChild: "Squidward’s_House" },
+                           childScaleOverrides: { "Squidward's_House": 1.7 },
+                           bodyAnchorChild: "Squidward's_House" },
 };
 
 // Scratch objects for stripGroundPlanes — reused across calls to avoid GC.
