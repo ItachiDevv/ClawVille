@@ -393,16 +393,23 @@ function FPSFollowCamera({
 // races in future upgrades, the explicit kick keeps the scene alive.
 // ---------------------------------------------------------------------------
 function kickRenderLoop(state: any): void {
-  if (typeof window !== 'undefined') {
-    (window as any).__W3D = state;
-    // Convenience helper for MCP browser automation / devtools — call
-    // window.__W3D_step() to manually advance one frame when the tab is
-    // hidden and RAF is throttled to 0 Hz.
-    (window as any).__W3D_step = () =>
-      state.advance(performance.now() / 1000, true);
-  }
   if (typeof state.invalidate === 'function') {
     state.invalidate();
+  }
+  // Delay __W3D assignment until after the first rendered frame. On iOS
+  // WebGL2, shaders compile synchronously on first draw — setting __W3D in
+  // onCreated (before any frame renders) let the loading screen dismiss while
+  // the canvas was still blank during shader compilation, producing the
+  // "loaded twice" appearance. The RAF fires after the first paint.
+  if (typeof window !== 'undefined') {
+    requestAnimationFrame(() => {
+      (window as any).__W3D = state;
+      // Convenience helper for MCP browser automation / devtools — call
+      // window.__W3D_step() to manually advance one frame when the tab is
+      // hidden and RAF is throttled to 0 Hz.
+      (window as any).__W3D_step = () =>
+        state.advance(performance.now() / 1000, true);
+    });
   }
 }
 
@@ -753,8 +760,12 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
       <ArenaNpcs />
       <ArenaLocationNpcs />
 
-      {/* Seaweed ground cover — merged geometry + TSL GPU animation (no InstancedMesh) */}
-      <MergedSeaweed />
+      {/* Seaweed ground cover — merged geometry + TSL GPU animation (no InstancedMesh).
+          Skipped on iOS/forceWebGL: 4500 blades with per-vertex TSL positionNode wind
+          animation compile to GLSL loops on WebGL2 backend and spike frame time past
+          the A-series GPU budget on first draw. Plain WebGL path has no equivalent
+          GPU-side procedural animation so the cost isn't recoverable. */}
+      {!FORCE_WEBGL && <MergedSeaweed />}
 
       {/* NPC possession controller — active when controlMode === 'npc' */}
       <NpcController />
