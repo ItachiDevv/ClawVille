@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <radialGradient id="b1r" cx="35%" cy="30%" r="70%">
+      <stop offset="0" stop-color="#ff7a7a"/>
+      <stop offset="0.55" stop-color="#d62828"/>
+      <stop offset="1" stop-color="#5a0a14"/>
+    </radialGradient>
+    <radialGradient id="b1p" cx="35%" cy="30%" r="70%">
+      <stop offset="0" stop-color="#ffc7cc"/>
+      <stop offset="0.6" stop-color="#ff8aa0"/>
+      <stop offset="1" stop-color="#a04055"/>
+    </radialGradient>
+    <linearGradient id="b1s" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5fcf7a"/>
+      <stop offset="1" stop-color="#1a5a2a"/>
+    </linearGradient>
+    <radialGradient id="hl1" cx="35%" cy="25%" r="50%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.65"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <ellipse cx="128" cy="225" rx="68" ry="10" fill="#0a1428" opacity="0.5"/>
+  <!-- coiled coral stems -->
+  <path d="M128 40 Q128 60 108 78 Q86 96 90 130" fill="none" stroke="#0a1428" stroke-width="6" stroke-linecap="round"/>
+  <path d="M128 40 Q128 60 148 78 Q170 96 166 130" fill="none" stroke="#0a1428" stroke-width="6" stroke-linecap="round"/>
+  <path d="M128 40 Q128 60 108 78 Q86 96 90 130" fill="none" stroke="url(#b1s)" stroke-width="3.5" stroke-linecap="round"/>
+  <path d="M128 40 Q128 60 148 78 Q170 96 166 130" fill="none" stroke="url(#b1s)" stroke-width="3.5" stroke-linecap="round"/>
+  <!-- leaf at stem join -->
+  <path d="M118 50 Q108 38 120 30 Q138 30 138 50 Z" fill="url(#b1s)" stroke="#0a1428" stroke-width="3.5" stroke-linejoin="round"/>
+  <!-- LEFT cherry -->
+  <g>
+    <circle cx="90" cy="160" r="38" fill="url(#b1r)" stroke="#0a1428" stroke-width="6"/>
+    <circle cx="90" cy="160" r="38" fill="url(#hl1)"/>
+    <ellipse cx="76" cy="146" rx="8" ry="5" fill="#ffffff" opacity="0.55"/>
+  </g>
+  <!-- RIGHT cherry (slightly bigger, front-overlap) -->
+  <g>
+    <circle cx="166" cy="172" r="42" fill="url(#b1r)" stroke="#0a1428" stroke-width="6"/>
+    <circle cx="166" cy="172" r="42" fill="url(#hl1)"/>
+    <ellipse cx="150" cy="156" rx="10" ry="6" fill="#ffffff" opacity="0.6"/>
+  </g>
+</svg>

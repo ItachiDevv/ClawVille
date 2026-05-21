@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <!-- Plum body: light lavender → deep purple → near-black violet -->
+    <radialGradient id="b3P" cx="38%" cy="28%" r="78%">
+      <stop offset="0" stop-color="#d3aaff"/>
+      <stop offset="0.45" stop-color="#7c3aed"/>
+      <stop offset="1" stop-color="#3b0764"/>
+    </radialGradient>
+    <!-- Stem gradient -->
+    <linearGradient id="b3St" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6b4226"/>
+      <stop offset="1" stop-color="#2a1608"/>
+    </linearGradient>
+    <!-- Leaf gradient -->
+    <linearGradient id="b3Le" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7fd58a"/>
+      <stop offset="1" stop-color="#1f5a2a"/>
+    </linearGradient>
+    <!-- Specular highlight -->
+    <radialGradient id="hl3P" cx="35%" cy="22%" r="55%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.6"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- ground shadow -->
+  <ellipse cx="128" cy="228" rx="78" ry="10" fill="#0a1428" opacity="0.5"/>
+
+  <!-- Plum body — round-oval with small indent at top (heart-ish where stem joins) -->
+  <path d="M128 64
+           Q124 78 116 80
+           Q72 88 64 138
+           Q60 188 110 204
+           Q160 218 196 184
+           Q220 148 204 110
+           Q188 80 140 80
+           Q132 78 128 64 Z"
+        fill="url(#b3P)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"/>
+
+  <!-- Subtle longitudinal crease down the body (classic plum) -->
+  <path d="M128 80 Q124 130 130 200" fill="none" stroke="#3b0764" stroke-width="3" opacity="0.55"/>
+
+  <!-- "Waxy bloom" — soft white semi-transparent ellipse on side -->
+  <ellipse cx="92" cy="140" rx="20" ry="36" fill="#ffffff" opacity="0.18" transform="rotate(-18 92 140)"/>
+
+  <!-- Specular highlight (white ellipse top-left) -->
+  <ellipse cx="106" cy="106" rx="22" ry="14" fill="#ffffff" opacity="0.6" transform="rotate(-25 106 106)"/>
+
+  <!-- Highlight overlay -->
+  <path d="M128 64
+           Q124 78 116 80
+           Q72 88 64 138
+           Q60 188 110 204
+           Q160 218 196 184
+           Q220 148 204 110
+           Q188 80 140 80
+           Q132 78 128 64 Z"
+        fill="url(#hl3P)"/>
+
+  <!-- Stem at top -->
+  <path d="M128 64 Q132 50 138 38"
+        fill="none" stroke="#0a1428" stroke-width="6" stroke-linecap="round"/>
+  <path d="M128 64 Q132 50 138 38"
+        fill="none" stroke="url(#b3St)" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- Leaf at top, angled -->
+  <g>
+    <path d="M138 38
+             Q160 18 192 24
+             Q198 50 174 58
+             Q150 62 138 38 Z"
+          fill="url(#b3Le)" stroke="#0a1428" stroke-width="5" stroke-linejoin="round"/>
+    <!-- leaf vein -->
+    <path d="M146 40 Q166 36 188 32" fill="none" stroke="#0a1428" stroke-width="2" opacity="0.6"/>
+  </g>
+</svg>

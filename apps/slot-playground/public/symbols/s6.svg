@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="b7r" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff5a5a"/>
+      <stop offset="0.45" stop-color="#d62828"/>
+      <stop offset="1" stop-color="#7a0a14"/>
+    </linearGradient>
+    <linearGradient id="b7g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe28a"/>
+      <stop offset="0.5" stop-color="#ffc857"/>
+      <stop offset="1" stop-color="#9a6a08"/>
+    </linearGradient>
+    <radialGradient id="hl7" cx="35%" cy="22%" r="55%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.65"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="b7c" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffa07a"/>
+      <stop offset="0.5" stop-color="#ff6b4a"/>
+      <stop offset="1" stop-color="#7a2010"/>
+    </linearGradient>
+  </defs>
+  <!-- ground shadow -->
+  <ellipse cx="128" cy="225" rx="72" ry="10" fill="#0a1428" opacity="0.5"/>
+  <!-- gold drop shadow behind 7 -->
+  <path d="M70 64 L196 64 L196 96 L150 232 L96 232 L142 96 L70 96 Z"
+        fill="url(#b7g)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round" transform="translate(8,8)" opacity="0.85"/>
+  <!-- coral branches on top of 7 -->
+  <g stroke="#0a1428" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" fill="url(#b7c)">
+    <path d="M84 64 Q78 44 66 36 Q78 38 86 50 Q84 36 92 26 Q94 42 92 56 Q104 44 116 42 Q108 54 96 64 Z"/>
+    <path d="M156 64 Q170 48 184 44 Q176 56 168 62 Q184 60 192 50 Q188 64 178 70 Q190 70 198 64 Q188 78 172 78 Z"/>
+    <path d="M120 60 Q124 42 132 34 Q138 44 134 60 Q146 50 156 50 Q150 62 138 66 Z"/>
+  </g>
+  <!-- main red 7 silhouette -->
+  <path d="M62 60 L188 60 L188 92 L142 228 L88 228 L134 92 L62 92 Z"
+        fill="url(#b7r)" stroke="#0a1428" stroke-width="6" stroke-linejoin="round"/>
+  <!-- inner stroke for slot-cast depth -->
+  <path d="M74 72 L176 72 L176 86 L130 220 L98 220 L144 86 L74 86 Z"
+        fill="none" stroke="#9c0e0e" stroke-width="2.5" stroke-linejoin="round" opacity="0.85"/>
+  <!-- highlight overlay -->
+  <path d="M62 60 L188 60 L188 92 L142 228 L88 228 L134 92 L62 92 Z"
+        fill="url(#hl7)"/>
+  <!-- spec dot top-left -->
+  <ellipse cx="80" cy="76" rx="10" ry="4" fill="#ffffff" opacity="0.7"/>
+</svg>
