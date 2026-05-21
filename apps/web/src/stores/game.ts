@@ -200,6 +200,9 @@ export interface GameState {
 
   // Discovery tracker
   visitedBuildings: Set<string>;
+  /** Hydrate visitedBuildings from localStorage. Called from a top-level
+   *  useEffect AFTER hydration so SSR HTML matches client first-render. */
+  hydrateVisitedFromStorage: () => void;
   markBuildingVisited: (id: string) => boolean; // returns true if newly discovered
 
   // Avatar autonomy
@@ -658,7 +661,18 @@ export const useGameStore = create<GameState>((set, get) => ({
   cameraJoystickVelocity: { x: 0, y: 0 },
   setCameraJoystickVelocity: (x, y) => set({ cameraJoystickVelocity: { x, y } }),
 
-  visitedBuildings: typeof window !== 'undefined' ? loadVisited() : new Set(),
+  // SSR/client hydration safety — start as empty Set on BOTH server and
+  // client. A top-level effect (game/page.tsx) calls
+  // `hydrateVisitedFromStorage` after first paint, which replaces this
+  // with the real values from localStorage. Without this, Minimap renders
+  // different <rect opacity> values between server HTML (no visited) and
+  // client (12 visited) → React #418 hydration mismatch every page load.
+  visitedBuildings: new Set<string>(),
+  hydrateVisitedFromStorage: () => {
+    if (typeof window === 'undefined') return;
+    const stored = loadVisited();
+    if (stored.size > 0) set({ visitedBuildings: stored });
+  },
   markBuildingVisited: (id) => {
     const current = get().visitedBuildings;
     if (current.has(id)) return false;
