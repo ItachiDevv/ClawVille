@@ -281,6 +281,35 @@ Both pull from `github.com/ItachiDevv/ClawVille` via deploy key, auto-deploy on 
 | Force-redeploy / missed webhook | SSH in, then `bash scripts/deploy/clawville-deploy.sh` (wraps both api+web tinker) |
 | Env-var add/update | SSH in, run targeted tinker per template below |
 
+### Skip-ahead-to-latest — MANDATORY when newer commits queue up
+
+Coolify processes deploys FIFO. If you push commit B while commit A is still
+building, A finishes serving its (now-superseded) bundle, then B starts —
+total wait ≈ build_A + build_B. Wasted: ~5 min and a window where users get
+the obsolete A bundle before B replaces it.
+
+**Rule: whenever you push and an older-commit deploy is still `in_progress` or
+`queued` for the same app, cancel it.** Only the latest commit should be
+allowed to finish. Two-step cancel:
+
+```bash
+# (a) Find redundant pids:
+ssh -i ~/.ssh/clawville_deploy root@$PROD_VPS_IP \
+  "docker exec coolify php artisan tinker --execute='use App\\Models\\ApplicationDeploymentQueue; \$q = ApplicationDeploymentQueue::orderByDesc(\"id\")->limit(8)->get([\"id\",\"application_id\",\"status\",\"commit\",\"current_process_id\"]); foreach(\$q as \$r) { echo \$r->id.\"|app\".\$r->application_id.\"|\".\$r->status.\"|\".substr(\$r->commit,0,7).\"|pid:\".\$r->current_process_id.PHP_EOL; }'"
+
+# (b) Kill the build container PID + mark queue rows cancelled (only for
+#     rows whose commit ≠ your latest HEAD; never touch the latest):
+ssh -i ~/.ssh/clawville_deploy root@$PROD_VPS_IP \
+  "kill -9 <PID> 2>/dev/null; docker exec coolify php artisan tinker --execute='use App\\Models\\ApplicationDeploymentQueue; foreach([<IDs>] as \$id) { \$r = ApplicationDeploymentQueue::find(\$id); if (\$r) { \$r->status = \"cancelled-by-user\"; \$r->save(); echo \"canceled \$id\".PHP_EOL; } }'"
+```
+
+The latest-commit row is the ONLY survivor. It either starts immediately
+(if no other deploy is running) or runs next after the cancellation flushes.
+Never cancel the latest-commit row, ever — even if it's been running a
+while. Cancel older same-app rows in `queued` first, then in_progress.
+
+Apply per app: app 3 (api) and app 4 (web) have independent queues.
+
 ### Manual redeploy via SSH tinker (env-var add/update — swap the closure body)
 
 Load IP first: `source scripts/deploy/.env.deploy` (gitignored). Then:
