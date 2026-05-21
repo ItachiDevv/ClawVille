@@ -1487,18 +1487,32 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
       bonusCentroid   = avg(bonuses);
     }
 
-    // Always-on debug log (one line summary) — needed to diagnose
-    // misfires on prod, where NEXT_PUBLIC_COVE_DEBUG isn't set.
+    // Always-on debug log + per-mesh verdict dump — needed to diagnose
+    // misfires on prod, where NEXT_PUBLIC_COVE_DEBUG isn't set. The dump
+    // fires unconditionally on the FIRST scene load so we get a single
+    // diagnostic snapshot per session without env-var gating.
     const nBonus = discoveredHotspots.filter(h => h.isBonus).length;
     console.info(
       `[cove-interior] discovered ${discoveredHotspots.length} slot cabinets ` +
       `(splitAxis=${splitAxis === 0 ? 'X' : 'Z'}, splitValue=${splitValue.toFixed(0)}, ` +
       `${discoveredHotspots.length - nBonus} classic / ${nBonus} bonus)`,
     );
-    if (process.env.NEXT_PUBLIC_COVE_DEBUG === '1') {
-      for (const d of allMeshDebug) {
-        console.info(`  ${d.name.padEnd(30)} pos=${d.pos.padEnd(20)} size=${d.size.padEnd(20)} ${d.verdict}`);
+    // Per-mesh verdict log — fires once per scene-clone. Cheap (one-time
+    // traversal already done above) and gives us the exact mesh names +
+    // positions so we can target-fix the heuristic.
+    console.groupCollapsed('[cove-interior] mesh inventory (click to expand)');
+    for (const d of allMeshDebug) {
+      console.info(`  ${d.name.padEnd(30)} pos=${d.pos.padEnd(20)} size=${d.size.padEnd(20)} ${d.verdict}`);
+    }
+    console.groupEnd();
+    // Also dump the discovered hotspots so we can verify the split decision
+    // (which cabinets ended up classic vs bonus).
+    if (discoveredHotspots.length > 0) {
+      console.groupCollapsed(`[cove-interior] hotspot split (${splitAxis === 0 ? 'X' : 'Z'} > ${splitValue.toFixed(0)} = bonus)`);
+      for (const h of discoveredHotspots) {
+        console.info(`  pos=(${h.position[0].toFixed(0)},${h.position[1].toFixed(0)},${h.position[2].toFixed(0)}) size=(${h.size[0].toFixed(0)},${h.size[1].toFixed(0)},${h.size[2].toFixed(0)}) ${h.isBonus ? 'BONUS' : 'classic'}`);
       }
+      console.groupEnd();
     }
 
     // If discovery worked, use those positions. Otherwise fall back to the
