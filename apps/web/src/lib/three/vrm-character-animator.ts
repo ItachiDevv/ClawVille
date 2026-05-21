@@ -104,6 +104,10 @@ const ANIM_PATHS = {
   swimming:        '/avatars/animations/hermes-female/swimming.glb',
   flying:          '/avatars/animations/tekk-male/flying.glb',
   praying:         '/avatars/animations/hermes-female/praying.glb',
+  // Chibi-introduced emote (2026-05-21). Source bake is chibi-proportioned;
+  // retargeter handles proportion drift if a non-chibi VRM ever plays it.
+  // Triggered as a one-shot via the emote bus (see EMOTE_ANIM_NAMES below).
+  kip_up:          '/avatars/animations/chibi/kip_up.glb',
 } as const;
 
 export type AnimName = keyof typeof ANIM_PATHS;
@@ -175,6 +179,7 @@ export const EMOTE_ANIM_NAMES = [
   'wipeout',
   'float',
   'praying',   // female-only emote: serenity/devotion (kneels, hands together)
+  'kip_up',    // chibi-introduced 2026-05-21: prone-to-stand springback emote
 ] as const satisfies readonly AnimName[];
 export type EmoteAnimName = (typeof EMOTE_ANIM_NAMES)[number];
 
@@ -433,6 +438,17 @@ const IN_PLACE_CLIPS: ReadonlySet<AnimName> = new Set([
   'swimming',
   'flying',
   'praying',  // kneeling/standing prayer pose — strictly stationary
+  // 'wipeout' added 2026-05-21 because chibi's "Knocked Out" replacement bakes
+  // ~77cm of Mixamo Z (forward) motion that, after Blender's Y-up→glTF axis
+  // swap, becomes vertical Y drift. Mixamo's web UI doesn't expose an In-Place
+  // toggle for Knocked Out specifically; stripping position tracks at runtime
+  // is the only fix. Tradeoff: legacy Hermes wipeout (Stumble Backwards) loses
+  // its small intentional backward step — acceptable since wipeout is a
+  // crash one-shot, not a locomotion-defining motion.
+  'wipeout',
+  // 'kip_up' added 2026-05-21. Knocked-Out-and-recover one-shot pair; user
+  // wants character to spring up in place, not drift across the floor.
+  'kip_up',
 ]);
 
 /**
