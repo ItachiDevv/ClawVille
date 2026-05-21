@@ -191,8 +191,8 @@ BUILDING_RADIUS   = 224 × 0.85 ≈ 190.4 wu
 |---|---|---|
 | auction-podium | (0, −1000) | 180 wu |
 | town-directory-sign | (0, −120) | 80 wu |
-| bazaar-stall | (−800, 300) | 200 wu |
-| marketplace-stall | (800, 300) | 220 wu |
+| bazaar-stall | (−1273, 450) | 200 wu |
+| marketplace-stall | (1273, 450) | 220 wu |
 | bounty-board | (50, 0) | 60 wu |
 | quest-npc | (−110, −60) | 50 wu |
 | town-guide | (0, 240) | 50 wu |

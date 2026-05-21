@@ -33,11 +33,12 @@ useGLTF.preload('/models/bazaar-merchant-stand.glb');
 
 // ---------------------------------------------------------------------------
 // World position (Y computed at runtime via groundedYOffset — see below).
-// Phase 6.2 (2026-05-18): spread from (-600, -60) to (-800, 300) as part of
-// the plaza expansion. Props now form a loose ring at 800-1000wu from center.
+// Phase 6.2 (2026-05-18): spread from (-600, -60) to (-800, 300).
+// Plaza cleanup (2026-05-21): moved outward to r≈1350wu (-1273, 450) so
+// stalls clear the building footprint ring at R=130 tiles (4160wu).
 // ---------------------------------------------------------------------------
-const STALL_X = -800;
-const STALL_Z = 300;
+const STALL_X = -1273;
+const STALL_Z = 450;
 
 // Target visual height in world units.
 // 2026-05-19: bumped 400→1200 to match the building ring scale. After the
