@@ -41,11 +41,11 @@ const STALL_X = -1273;
 const STALL_Z = 450;
 
 // Target visual height in world units.
-// 2026-05-19: bumped 400→1200 to match the building ring scale. After the
-// Phase 6.2 plaza expansion (R=130, props spread to 800-1000wu radius),
-// the stalls looked tiny next to 1300-1700wu-tall buildings. 1200 reads as
-// a real landmark from across the plaza instead of a speck.
-const TARGET_HEIGHT_WU = 1200;
+// 2026-05-19: bumped 400→1200 to match the building ring scale.
+// 2026-05-21: reduced 1200→1020 (×0.85) to set size budget for the new
+// quest/bounty pavilion landmark — stalls and pavilion should read at the
+// same visual tier.
+const TARGET_HEIGHT_WU = 1020;
 
 // ---------------------------------------------------------------------------
 // Scale helper — same algorithm as arena-location-npcs.tsx computeNormalizedScale.
