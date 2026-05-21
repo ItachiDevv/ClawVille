@@ -280,29 +280,25 @@ const BUILDING_MODELS: Record<string, { model: string; yOffset: number; rotY?: n
   'agent-security':      { model: '/models/patricks-rock-v2.glb',    yOffset: 0, rotY:  1.049, targetMaxDim: 1100 },
   // Slot 11 — NNW (cx=115, cy=67): dx=65, dz=113 → atan2(65,113)≈0.522 (π/6)
   // squidward-house.glb = Easter Island moai head (CC-BY, Yanez Designs).
-  // GLB node tree (verified via GLB JSON inspection 2026-05-18):
-  //   Sketchfab_model → Squidward's House.FBX → RootNode
-  //     ├─ Skybox  [stripped by DECORATIVE_NAME_PREFIXES "Skybox_"]
-  //     ├─ Sand    [stripped by DECORATIVE_PARENT_NAMES]
-  //     ├─ Squidward's House  ← Three.js preserves apostrophe/space verbatim
+  // GLB node tree (AUTHORITATIVE — verified via CDP live scene traversal 2026-05-21):
+  //   Sketchfab_model → "Squidward’s_HouseFBX" → RootNode (straight U+0027, underscore not space)
+  //     ├─ Skybox_*  [stripped by DECORATIVE_NAME_PREFIXES "Skybox_"]
+  //     ├─ Sand      [stripped by DECORATIVE_PARENT_NAMES]
+  //     ├─ Squidward’s_House  ← STRAIGHT U+0027 apostrophe + underscore (not space)
   //     └─ Stones
-  // IMPORTANT: Three.js GLTFLoader does NOT sanitize node names — colons, apostrophes,
-  //   and spaces are preserved verbatim. The node name IS "Squidward’s House" (curly
-  //   right-single-quotation-mark U+2019, not straight apostrophe U+0027). The strings in
-  //   childScaleOverrides and bodyAnchorChild MUST use U+2019 to match the GLB. Confirmed
-  //   by hex-dumping squidward-house.glb JSON chunk: node[7].name = "Squidward’s House".
-  //   Prior commits used "Squidward_s_House" (underscores — Phase 6.2.2 fix) and then
-  //   "Squidward's House" (U+0027 straight — still wrong). Both were silent no-ops.
+  // IMPORTANT: Use CDP `window.__W3D.scene.getObjectByName("Squidward’s_House")` to verify
+  //   node names — hex-dumps of the GLB binary have proven unreliable due to possible
+  //   transcoding. CDP traversal is ground truth. Pattern: spaces → underscores, U+0027 straight.
   // Phase 6.2.2: targetMaxDim 1400→1700, childScaleOverrides 1.4→1.7.
   //   Raw GLB bbox ≈4.57×1.90×4.59. Max dim = 4.59 (Z). Scale at targetMaxDim=1700:
-  //   1700/4.59 ≈ 370wu/unit. childScaleOverride 1.7× on "Squidward's House" node:
+  //   1700/4.59 ≈ 370wu/unit. childScaleOverride 1.7× on "Squidward’s_House" node:
   //   moai head reads 1.7× larger than the uniform scale; Stones stay proportional.
-  // bodyAnchorChild "Squidward's House": stone steps extend in +Z from the moai body,
+  // bodyAnchorChild "Squidward’s_House": stone steps extend in +Z from the moai body,
   //   pulling full-GLB bbox center toward the pathway. The dynamic anchor aligns the
   //   moai body center (after 1.7× override) with the ring slot — not the combined bbox.
   "memory-rag":          { model: '/models/squidward-house.glb',     yOffset: 0, rotY:  0.522, targetMaxDim: 1700,
-                           childScaleOverrides: { "Squidward’s House": 1.7 },
-                           bodyAnchorChild: "Squidward’s House" },
+                           childScaleOverrides: { "Squidward’s_House": 1.7 },
+                           bodyAnchorChild: "Squidward’s_House" },
 };
 
 // Scratch objects for stripGroundPlanes — reused across calls to avoid GC.
