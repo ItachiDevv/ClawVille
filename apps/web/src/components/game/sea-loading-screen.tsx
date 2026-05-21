@@ -60,31 +60,16 @@ const SPLASH_RINGS = [
 
 const SLOW_MS = 15_000;
 const TIMEOUT_MS = 30_000;
-/**
- * Time constant for the SIMULATED progress curve (ms). pct = 1 - exp(-t/τ).
- * Only used as a fallback before THREE.DefaultLoadingManager fires its first
- * event (i.e. during Next.js chunk fetch). World3DCanvas hooks the manager
- * and writes `window.__W3D_PROGRESS` once asset loads start; from that point
- * on we drive the bar from real `loaded / total` events. τ=1100ms means the
- * fallback bar reaches ~60% in 1s and ~85% in 2s — fast enough that even a
- * sub-second chunk fetch hits 35-50% before real progress takes over.
- */
-const PROGRESS_TAU = 1100;
-/** Cap the simulated curve (and the real ratio mid-load) below 1.0 until the
- *  ready signal fires. The last 8% is reserved for the world-mount + first
- *  frame compile so the bar never sits at 100% with a black screen. */
-const SIMULATED_CEILING = 0.92;
 
 export default function SeaLoadingScreen({ forceReady }: Props) {
   const [visible, setVisible]       = useState(true);
   const [fading, setFading]         = useState(false);
   const [slow, setSlow]             = useState(false);
   /**
-   * Progress in [0, 1]. Animated via an exp-eased curve toward SIMULATED_CEILING
-   * while we wait for `window.__W3D`; snaps to 1.0 when ready fires. Honest by
-   * construction — never claims 100% before the real ready signal, but also
-   * never sits at 0% while large GLBs stream. The user sees the bar move and
-   * the lobster looping continuously, so "frozen" reads as "still loading".
+   * Progress in [0, 1]. Driven directly from `window.__W3D_PROGRESS`
+   * (THREE.DefaultLoadingManager: loaded/total). Capped at 0.99 until the
+   * ready signal fires so the bar never hits 100% with a black world still
+   * compiling. Ratcheted forward so it never moves backward.
    */
   const [progress, setProgress]     = useState(0);
   const rafRef     = useRef<number | null>(null);
@@ -126,29 +111,14 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
       }
     }, TIMEOUT_MS);
 
+    // Bar = real progress, full stop. window.__W3D_PROGRESS comes from
+    // THREE.DefaultLoadingManager (wired in World3DCanvas at module load),
+    // updates with every GLB/VRM/texture load. Bar tracks it 1:1 and snaps
+    // to 100% when the world ready signal fires.
     let highWaterMark = 0;
-    let realDoneAt = 0;     // performance.now() when real ratio first hit 1.0
-    let realDoneMark = 0;   // bar position when real first hit 1.0
-    /**
-     * Three phases, blended so the bar always moves until ready fires:
-     *  1. Pre-canvas (no real progress yet) — eased simulated curve, capped
-     *     at REAL_CAP so the bar doesn't run past where real assets will
-     *     fill it.
-     *  2. Asset streaming (real ∈ (0, 1)) — drive bar from real ratio,
-     *     scaled to [0, REAL_CAP]. Real ratio = 1.0 → bar = REAL_CAP (0.78),
-     *     leaving room above for the post-load tail.
-     *  3. Post-load tail (real === 1, waiting on canvas mount + first
-     *     frame) — eased curve from REAL_CAP → SIMULATED_CEILING over
-     *     TAIL_MS. The bar keeps moving smoothly during the compile gap
-     *     instead of stalling at the ceiling.
-     */
-    const REAL_CAP = 0.78;
-    const TAIL_MS = 1200;
     function tick() {
       if (!mountedRef.current) return;
       const ready = forceReady || !!(window as any).__W3D;
-      const elapsed = performance.now() - startedAtRef.current;
-
       if (ready) {
         readyRef.current = true;
         setProgress(1);
@@ -158,32 +128,14 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
         }, 420);
         return;
       }
-
-      const realRatio = (window as unknown as { __W3D_PROGRESS?: number }).__W3D_PROGRESS;
-      let candidate: number;
-      if (typeof realRatio === 'number' && realRatio >= 1) {
-        // Phase 3 — post-load tail. Ease from where we were when real hit
-        // 1.0 toward SIMULATED_CEILING over TAIL_MS.
-        if (!realDoneAt) {
-          realDoneAt = performance.now();
-          realDoneMark = Math.max(highWaterMark, REAL_CAP);
-        }
-        const tailT = performance.now() - realDoneAt;
-        const tailEase = 1 - Math.exp(-tailT / (TAIL_MS / 3));
-        candidate = realDoneMark + (SIMULATED_CEILING - realDoneMark) * tailEase;
-      } else if (typeof realRatio === 'number') {
-        // Phase 2 — real asset streaming, mapped to [0, REAL_CAP].
-        candidate = realRatio * REAL_CAP;
-      } else {
-        // Phase 1 — pre-canvas, eased simulated curve also capped at REAL_CAP
-        // so we don't overshoot what real loading is about to fill in.
-        const eased = 1 - Math.exp(-elapsed / PROGRESS_TAU);
-        candidate = Math.min(REAL_CAP, eased);
-      }
-      // Ratchet — never move backward. Hard-cap below 1.0 until ready.
-      highWaterMark = Math.max(highWaterMark, candidate);
-      setProgress(Math.min(SIMULATED_CEILING, highWaterMark));
-
+      const real = (window as unknown as { __W3D_PROGRESS?: number }).__W3D_PROGRESS;
+      // Ratchet — bar never moves backward (e.g. if a new loader registers
+      // mid-stream and total spikes faster than loaded).
+      highWaterMark = Math.max(highWaterMark, typeof real === 'number' ? real : 0);
+      // Cap at 0.99 so the bar never hits 100% before the ready signal —
+      // otherwise the bar fills, the % shows 100, and the user stares at a
+      // "complete" bar while the world is still mounting.
+      setProgress(Math.min(0.99, highWaterMark));
       rafRef.current = requestAnimationFrame(tick);
     }
 
@@ -523,8 +475,8 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
             Dropping in...
           </p>
 
-          {/* Progress bar — width-driven fill, eased toward SIMULATED_CEILING
-              while waiting, snaps to 100% when window.__W3D fires. */}
+          {/* Progress bar — width = real % loaded (THREE.DefaultLoadingManager),
+              capped at 99% until window.__W3D fires, then snaps to 100%. */}
           <div
             role="progressbar"
             aria-valuemin={0}
