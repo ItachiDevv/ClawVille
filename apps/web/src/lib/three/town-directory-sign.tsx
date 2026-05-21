@@ -8,18 +8,20 @@
 
 import * as THREE from 'three/webgpu';
 
-const POST_W = 14;
-const POST_H = 280;
-const POST_D = 14;
-const POST_SPACING = 280;
+// 2026-05-21 — Bumped all sign geometry by ×1.4 per user direction
+// (was POST 14×280×14 / SPACING 280 / PLANK 380×190 / BACK 6).
+const POST_W = 20;     // was 14
+const POST_H = 392;    // was 280
+const POST_D = 20;     // was 14
+const POST_SPACING = 392; // was 280
 
-const PLANK_W = 380;
-const PLANK_H = 190;
+const PLANK_W = 532;   // was 380
+const PLANK_H = 266;   // was 190
 const PLANK_Y = POST_H - PLANK_H / 2;
-const BACKING_D = 6;
+const BACKING_D = 8;   // was 6
 
 const SIGN_X = 0;
-const SIGN_Y = 0; // posts rest just above sand (sand at Y=-2); was 150 — too high
+const SIGN_Y = 0; // posts rest just above sand (sand at Y=-2)
 const SIGN_Z = -120;
 
 const WOOD_COLOR = 0x7c4a1b;

@@ -51,7 +51,9 @@ import { useGameStore } from '@/stores/game';
 useGLTF.preload('/models/guide-rigged.glb');
 
 const GROUND_Y    = -2;
-const GUIDE_Z     = 240;
+// 2026-05-21 — moved Nori south by 160 wu (240→400) to give the bigger
+// town-directory sign more breathing room from her.
+const GUIDE_Z     = 400;
 const GUIDE_SCALE = 200;
 
 // Exported so player-avatar / npc-controller can run the same proximity

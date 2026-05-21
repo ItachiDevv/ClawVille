@@ -98,8 +98,8 @@ function buildColliders(): Collider2D[] {
   //    Positions sourced from each prop's tsx file (verified 2026-05-21):
   //      AuctionPodium:       (0, -1000) — auction-podium.tsx DOME_X/Z
   //      TownDirectorySign:   (0, -120)  — town-directory-sign.tsx SIGN_X/Z
-  //      BazaarStall:         (-1273, 450) — bazaar-stall.tsx STALL_X/Z
-  //      MarketplaceStall:    (1273, 450)  — marketplace-stall.tsx STALL_X/Z
+  //      BazaarStall:         (-1273, -120) — bazaar-stall.tsx STALL_X/Z (z aligned to sign 2026-05-21)
+  //      MarketplaceStall:    (1273, -120)  — marketplace-stall.tsx STALL_X/Z (z aligned to sign 2026-05-21)
   //      QuestBountyPavilion: (0, -1220)   — quest-bounty-pavilion.tsx PAV_X/Z
   //      QuestNpc:            (-110, -60) — quest-npc.tsx QUEST_NPC_X/Z
   //      TownGuide (Nori):    (0, 240)    — town-guide.tsx NORI_WORLD_X/Z
@@ -119,8 +119,8 @@ function buildColliders(): Collider2D[] {
   const PROPS: Collider2D[] = [
     { id: 'auction-podium',       x:    0, z: -1000, radius: 180, kind: 'prop' },
     { id: 'town-directory-sign',  x:    0, z:  -120, radius:  80, kind: 'prop' },
-    { id: 'bazaar-stall',         x: -1273, z:   450, radius: 200, kind: 'prop' },
-    { id: 'marketplace-stall',    x:  1273, z:   450, radius: 220, kind: 'prop' },
+    { id: 'bazaar-stall',         x: -1273, z:  -120, radius: 200, kind: 'prop' },
+    { id: 'marketplace-stall',    x:  1273, z:  -120, radius: 220, kind: 'prop' },
     { id: 'quest-bounty-pavilion',x:    0, z: -1220, radius: 320, kind: 'prop' },
     { id: 'quest-npc',            x: -110, z:   -60, radius:  50, kind: 'prop' },
     { id: 'town-guide',           x:    0, z:   240, radius:  50, kind: 'prop' },
