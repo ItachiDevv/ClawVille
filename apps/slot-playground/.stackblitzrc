@@ -1,0 +1,8 @@
+{
+  "installDependencies": true,
+  "startCommand": "npm run dev",
+  "compileTrigger": "save",
+  "env": {
+    "ENABLE_CJS_IMPORTS": true
+  }
+}
