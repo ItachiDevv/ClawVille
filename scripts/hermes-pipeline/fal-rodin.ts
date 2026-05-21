@@ -1,14 +1,23 @@
 #!/usr/bin/env bun
-// Submit a 3-view turnaround to fal.ai Tripo v2.5 multiview-to-3d, poll until done,
-// download the resulting .glb. No Blender required.
+// Submit a turnaround (3 views: front/side/back) to fal.ai's Hyper3D Rodin
+// (`fal-ai/hyper3d/rodin`) image-to-3d model, poll until done, download GLB.
 //
-// Usage: bun scripts/hermes-pipeline/fal-i2m.ts <character>
-//   character = male | female
+// Why Rodin: better mesh quality + cleaner topology than Tripo v2.5 for
+// stylized / chibi characters (per user request 2026-05-21). Tripo lives in
+// fal-i2m.ts and stays for the legacy Hermes path.
 //
-// Reads .env.local explicitly (overrides OS-env shadows from ~/.itachi-api-keys).
+// Usage:
+//   bun scripts/hermes-pipeline/fal-rodin.ts <character-slug>
+//
+// Reads turnarounds from:
+//   apps/web/public/models/<slug>-turnaround/{front,side,back}.png
+// Writes:
+//   apps/web/public/models/<slug>-mesh/raw.glb
+//
+// FAL_KEY is read from .env.local first, then ~/.itachi-api-keys, then env.
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve } from "node:path";
 
 function loadEnvLocal(): Record<string, string> {
   const path = resolve(process.cwd(), ".env.local");
@@ -35,43 +44,31 @@ function loadItachiKeys(): Record<string, string> {
 const env = { ...loadItachiKeys(), ...loadEnvLocal() };
 const FAL_KEY = env.FAL_KEY || process.env.FAL_KEY;
 if (!FAL_KEY) {
-  console.error("FAL_KEY missing.");
+  console.error("FAL_KEY missing. Add to .env.local or ~/.itachi-api-keys.");
   process.exit(1);
 }
 
-const character = process.argv[2];
-if (!character) {
-  console.error(
-    "Usage: bun scripts/hermes-pipeline/fal-i2m.ts <character-slug>",
-  );
-  console.error("");
-  console.error("Legacy slugs (Hermes pipeline):");
-  console.error("  male    → apps/web/public/models/hermes-turnaround/male-{front,side,back}.png");
-  console.error("  female  → apps/web/public/models/hermes-turnaround/female-{front,side,back}.png");
-  console.error("");
-  console.error("New slug convention (post-2026-05-21):");
-  console.error("  <slug>  → apps/web/public/models/<slug>-turnaround/{front,side,back}.png");
-  console.error("           → apps/web/public/models/<slug>-mesh/raw.glb");
+const slug = process.argv[2];
+if (!slug) {
+  console.error("Usage: bun scripts/hermes-pipeline/fal-rodin.ts <character-slug>");
+  console.error("Example: bun scripts/hermes-pipeline/fal-rodin.ts eliza-chibi");
   process.exit(1);
 }
 
-// Legacy Hermes layout used `<character>-{front,side,back}.png` files inside
-// a shared `hermes-turnaround/` dir. New characters use `{front,side,back}.png`
-// inside a dedicated `<slug>-turnaround/` dir. Branch on the slug.
-const isLegacyHermes = character === "male" || character === "female";
-const turnaroundDir = isLegacyHermes
-  ? "apps/web/public/models/hermes-turnaround"
-  : `apps/web/public/models/${character}-turnaround`;
-const filePrefix = isLegacyHermes ? `${character}-` : "";
-const outDir = isLegacyHermes
-  ? "apps/web/public/models/hermes-mesh"
-  : `apps/web/public/models/${character}-mesh`;
+const turnaroundDir = `apps/web/public/models/${slug}-turnaround`;
+const outDir = `apps/web/public/models/${slug}-mesh`;
 mkdirSync(outDir, { recursive: true });
-const outPath = isLegacyHermes
-  ? resolve(`${outDir}/${character}-raw.glb`)
-  : resolve(`${outDir}/raw.glb`);
+const outPath = resolve(`${outDir}/raw.glb`);
 
-// Upload one image to fal.ai storage, return its URL.
+// Sanity check inputs exist
+for (const view of ["front", "side", "back"] as const) {
+  const p = resolve(`${turnaroundDir}/${view}.png`);
+  if (!existsSync(p)) {
+    console.error(`Missing input: ${p}`);
+    process.exit(1);
+  }
+}
+
 async function uploadImage(localPath: string): Promise<string> {
   const fileName = localPath.split(/[\\/]/).pop()!;
   const initRes = await fetch("https://rest.alpha.fal.ai/storage/upload/initiate", {
@@ -80,7 +77,7 @@ async function uploadImage(localPath: string): Promise<string> {
     body: JSON.stringify({ file_name: fileName, content_type: "image/png" }),
   });
   if (!initRes.ok) throw new Error(`upload initiate failed: ${initRes.status} ${await initRes.text()}`);
-  const { upload_url, file_url } = await initRes.json() as { upload_url: string; file_url: string };
+  const { upload_url, file_url } = (await initRes.json()) as { upload_url: string; file_url: string };
 
   const bytes = readFileSync(resolve(localPath));
   const putRes = await fetch(upload_url, { method: "PUT", body: bytes, headers: { "Content-Type": "image/png" } });
@@ -90,29 +87,32 @@ async function uploadImage(localPath: string): Promise<string> {
 
 async function main() {
   const t0 = Date.now();
-  console.log(`=== ${character} I2M via Tripo v2.5 multi-view ===`);
+  console.log(`=== ${slug} → Hyper3D Rodin (fal-ai/hyper3d/rodin) ===`);
 
-  console.log("Uploading 3 views to fal storage...");
+  console.log("Uploading 3 turnaround views to fal storage...");
   const [frontUrl, sideUrl, backUrl] = await Promise.all([
-    uploadImage(`${turnaroundDir}/${character}-front.png`),
-    uploadImage(`${turnaroundDir}/${character}-side.png`),
-    uploadImage(`${turnaroundDir}/${character}-back.png`),
+    uploadImage(`${turnaroundDir}/front.png`),
+    uploadImage(`${turnaroundDir}/side.png`),
+    uploadImage(`${turnaroundDir}/back.png`),
   ]);
   console.log(`  front: ${frontUrl.slice(-60)}`);
   console.log(`  side:  ${sideUrl.slice(-60)}`);
   console.log(`  back:  ${backUrl.slice(-60)}`);
 
+  // Rodin's input_image_urls accepts an array of multi-view images.
+  // Per fal-ai/hyper3d/rodin schema: pass 1-4 views, prefer 3 (front/left/back)
+  // for full-body characters. quality='high' is the default; geometry_file_format='glb'
+  // gives us the format the rest of the pipeline expects.
   const submitBody = {
-    front_image_url: frontUrl,
-    left_image_url: sideUrl,
-    back_image_url: backUrl,
-    texture: "standard",
-    pbr: false,
-    style: "person:person2cartoon",
+    input_image_urls: [frontUrl, sideUrl, backUrl],
+    geometry_file_format: "glb",
+    quality: "high",
+    use_hyper: false,
+    tier: "Regular",
   };
 
-  console.log("Submitting to tripo3d/tripo/v2.5/multiview-to-3d...");
-  const submitRes = await fetch("https://queue.fal.run/tripo3d/tripo/v2.5/multiview-to-3d", {
+  console.log("Submitting to fal-ai/hyper3d/rodin...");
+  const submitRes = await fetch("https://queue.fal.run/fal-ai/hyper3d/rodin", {
     method: "POST",
     headers: { Authorization: `Key ${FAL_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify(submitBody),
@@ -121,15 +121,19 @@ async function main() {
     console.error(`Submit failed: HTTP ${submitRes.status}\n${await submitRes.text()}`);
     process.exit(1);
   }
-  const submit = await submitRes.json() as { request_id: string; status_url: string; response_url: string };
+  const submit = (await submitRes.json()) as {
+    request_id: string;
+    status_url: string;
+    response_url: string;
+  };
   console.log(`  request_id: ${submit.request_id}`);
 
-  // Poll
+  // Rodin typically completes in 60-180s; poll every 5s for up to 20min.
   let lastLog = 0;
   for (let i = 0; i < 240; i++) {
     await new Promise((r) => setTimeout(r, 5000));
     const sRes = await fetch(submit.status_url, { headers: { Authorization: `Key ${FAL_KEY}` } });
-    const s = await sRes.json() as { status: string; logs?: Array<{ message: string }> };
+    const s = (await sRes.json()) as { status: string; logs?: Array<{ message: string }> };
     if (Date.now() - lastLog > 10000) {
       console.log(`  [${((Date.now() - t0) / 1000).toFixed(0)}s] status=${s.status}`);
       lastLog = Date.now();
@@ -141,12 +145,14 @@ async function main() {
     }
   }
 
-  // Get result
   const resultRes = await fetch(submit.response_url, { headers: { Authorization: `Key ${FAL_KEY}` } });
-  const result = await resultRes.json() as { model_mesh?: { url: string }; pbr_model?: { url: string } };
-  const modelUrl = result.model_mesh?.url || result.pbr_model?.url;
+  const result = (await resultRes.json()) as {
+    model_mesh?: { url: string };
+    textures?: Array<{ url: string }>;
+  };
+  const modelUrl = result.model_mesh?.url;
   if (!modelUrl) {
-    console.error(`No model_mesh/pbr_model URL in result:\n${JSON.stringify(result, null, 2).slice(0, 2000)}`);
+    console.error(`No model_mesh URL in result:\n${JSON.stringify(result, null, 2).slice(0, 2000)}`);
     process.exit(1);
   }
 
