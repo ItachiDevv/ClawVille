@@ -185,10 +185,33 @@ function createSandMaterial(): THREE.MeshStandardNodeMaterial {
   return mat;
 }
 
+// iOS/forceWebGL: skip TSL NodeMaterial (MeshStandardNodeMaterial with 3 node
+// channels on 14k vertices compiles to GLSL loops on WebGL2 backend and stalls
+// the A-series GPU for 200-400ms on first draw). Vertex colors are baked into
+// the geometry so a plain MeshStandardMaterial preserves the sand appearance.
+const IOS_SAFARI_TERRAIN =
+  typeof navigator !== 'undefined' &&
+  /iP(hone|ad|od)/i.test(navigator.userAgent) &&
+  /WebKit/i.test(navigator.userAgent) &&
+  !/CriOS|FxiOS|OPiOS|mercury/i.test(navigator.userAgent);
+const FORCE_WEBGL_TERRAIN =
+  IOS_SAFARI_TERRAIN ||
+  (typeof navigator !== 'undefined' && !('gpu' in navigator));
+
 function SandFloor() {
   const ref = useRef<THREE.Mesh>(null);
   const sandGeo = useMemo(() => createSandGeometry(), []);
-  const sandMat = useMemo(() => createSandMaterial(), []);
+  const sandMat = useMemo(
+    () =>
+      FORCE_WEBGL_TERRAIN
+        ? new THREE.MeshStandardMaterial({
+            vertexColors: true,
+            roughness: 0.8,
+            metalness: 0,
+          })
+        : createSandMaterial(),
+    [],
+  );
 
   useEffect(() => {
     if (ref.current) {
