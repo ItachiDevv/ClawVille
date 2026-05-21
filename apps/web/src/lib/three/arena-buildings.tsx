@@ -705,8 +705,11 @@ function GLBBuilding({ zone }: { zone: BuildingZone }) {
     anchorRef: groupRef,
     offset: [0, labelYOffset, 0],
     initialVisible: true,
-    fadeNear: 2000,
-    fadeFar: 5000,
+    // Buildings are permanent landmarks, NOT proximity-faded. World diagonal
+    // is ~16300wu; fadeNear=15000 / fadeFar=25000 keeps every label at full
+    // opacity within the playable area.
+    fadeNear: 15000,
+    fadeFar: 25000,
     fadeBaseOpacity: 0.85,
     occlude: false,
   });

@@ -426,8 +426,8 @@ const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteState }) {
     anchorRef: groupRef,
     offset: [0, 100, 0],
     initialVisible: true,
-    fadeNear: 800,
-    fadeFar: 3000,
+    fadeNear: 15000,
+    fadeFar: 25000,
     fadeBaseOpacity: 0.95,
     occlude: true,
   });
@@ -857,8 +857,8 @@ const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteState }) {
     anchorRef: groupRef,
     offset: [0, 320, 0],
     initialVisible: true,
-    fadeNear: 800,
-    fadeFar: 3000,
+    fadeNear: 15000,
+    fadeFar: 25000,
     fadeBaseOpacity: 0.95,
     occlude: true,
   });
