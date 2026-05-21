@@ -71,7 +71,7 @@ Complex AI integrations: multi-phase plan in `.claude/plans/` + research deep-di
 
 **Same-diff rule:** every code change above MUST update its matching doc in the same diff. Bump "Last Audited" + one-line drift note.
 
-**Animation shipping — STRICT (2026-05-18).** Any Mixamo/VRM clip add/remove/retarget/trigger MUST satisfy the 8-point checklist in `3dStructure.md` §6f (bundle into `_emotes.glb`, `preloadClips(names)` for non-locomotion warming, `ASSET_PATH_PREFIXES` in `sw.js`, `updateViaCache:'none'` + `reg.update()`, NPC entity-interp not extrapolation, `updateMixerOnly` every frame, `setSurfaceClip` for state-held, all humanoid VRMs sized via `VRM_AVATAR_TARGET_HEIGHT_WU`).
+**Animation shipping — STRICT (2026-05-18).** Any Mixamo/VRM clip add/remove/retarget/trigger MUST satisfy the 9-point checklist in `3dStructure.md` §6f (bundle into `_emotes.glb`, `preloadClips(names)` for non-locomotion warming, `ASSET_PATH_PREFIXES` in `sw.js`, `updateViaCache:'none'` + `reg.update()`, NPC entity-interp not extrapolation, `updateMixerOnly` every frame, `setSurfaceClip` for state-held, all humanoid VRMs sized via `VRM_AVATAR_TARGET_HEIGHT_WU`, **bump `?v=N` query when mutating an asset at an existing path** — Cloudflare's 1-week edge cache cannot be purged via our deploy token, so the URL query is the only invalidator).
 
 ### Kill-the-build invariants — ALWAYS-ON (never demoted to a referenced doc)
 
@@ -82,6 +82,7 @@ These cost real money / crash the GPU / leak secrets. They stay inline regardles
 - **Phase 5.1 wallet:** `wallet.secretKey` is returned **EXACTLY ONCE** on first-connect. Subsequent reads MUST omit it. SKILL.md instructs agent to display once + store only pubkey. Server never re-emits — no recovery path. Full spec: `ARCHITECTURE.md §7`.
 - **Verification:** never claim deployed/fixed without evidence (curl, bundle grep, DOM read). "Should work" is banned.
 - **Push-auth fallback chain:** `gh auth status` → `unset GITHUB_TOKEN && gh auth setup-git` → SSH remote → `gh` CLI. Only escalate with all errors quoted. Never hand the push to the user as the first move.
+- **Asset cache-bust:** mutating an existing static asset at a stable URL (`/avatars/*.vrm`, `/avatars/animations/*.glb`, `/cosmetics/*.glb`) WITHOUT bumping a `?v=N` query in every reference is a silent 1-week regression on prod — Cloudflare's edge cache TTL is 7 days and our deploy token has zone:edit but **no cache_purge scope**, so we can't invalidate via API. Full rule + verified examples in `3dStructure.md §6f rule 9`. Diagnostic: `curl ?cache_bust=$(date +%s)` returns the new file; bare URL returns the stale one.
 
 **Precedence (high→low):** (1) source code · (2) three canonical docs · (3) `CLAUDE.md`/`README.md` · (4) memory files (advisory). Memory vs doc → doc wins, update/delete memory same turn. Doc vs code → code wins, update doc same turn.
 
@@ -261,21 +262,31 @@ Required in `.env.local`:
 
 ### Infrastructure
 
-Hetzner CCX13 (2 AMD vCPU / 8 GB / 80 GB NVMe) — `<PROD_VPS_IP>` (Ashburn, `ash-dc1`), name `clawville-prod`. Coolify v4.0.0-beta.472 at `https://coolify.clawville.world` + Traefik + Let's Encrypt. DNS: Cloudflare-proxied. DB: Supabase Postgres (`aws-1-us-east-1.pooler.supabase.com:6543`). SSH key `~/.ssh/clawville_deploy` (`provision-hetzner.sh`).
+Hetzner VPS — `<PROD_VPS_IP>` (real IP in gitignored `scripts/deploy/.env.deploy` under `PROD_VPS_IP=…`), name `clawville-prod`. Coolify + Traefik + Let's Encrypt. DNS: Cloudflare-proxied (subdomains in `scripts/deploy/.env.deploy`). DB: Supabase Postgres (endpoint in env). SSH key `~/.ssh/clawville_deploy` (`provision-hetzner.sh`).
 
 ### Coolify app IDs
 
-| App | ID | UUID | Domain |
-|---|---|---|---|
-| web | 4 | `ju0n3sddhll3cuhbrspt4muy` | `clawville.world` |
-| api | 3 | `yvtwz7snaghxifkjhyxknffu` | `api.clawville.world` |
+| App | ID | Domain |
+|---|---|---|
+| web | 4 | `clawville.world` |
+| api | 3 | `api.clawville.world` |
 
 Both pull from `github.com/ItachiDevv/ClawVille` via deploy key, auto-deploy on push to `master`. Web ~3–5 min, api ~2–3 min. Verify: `curl -sS --ssl-no-revoke https://api.clawville.world/health`.
 
-### Manual redeploy via SSH tinker (same pattern works for env-var add/update — swap the closure body)
+### Deploy paths — prefer the script, do not hand-roll tinker
+
+| Goal | Path |
+|---|---|
+| Normal code deploy | `git push origin master` (Coolify auto-build via deploy key) |
+| Force-redeploy / missed webhook | SSH in, then `bash scripts/deploy/clawville-deploy.sh` (wraps both api+web tinker) |
+| Env-var add/update | SSH in, run targeted tinker per template below |
+
+### Manual redeploy via SSH tinker (env-var add/update — swap the closure body)
+
+Load IP first: `source scripts/deploy/.env.deploy` (gitignored). Then:
 
 ```bash
-ssh -i ~/.ssh/clawville_deploy root@<PROD_VPS_IP> \
+ssh -i ~/.ssh/clawville_deploy root@$PROD_VPS_IP \
   "docker exec coolify php artisan tinker --execute='
     use App\\Models\\Application;
     \$app = Application::find(3);  // 3=api, 4=web
@@ -313,7 +324,7 @@ After every push to master, verify visually. NOT optional.
 
 ### Emergency access
 
-SSH `ssh -i ~/.ssh/clawville_deploy root@<PROD_VPS_IP>` · container restart `docker restart <name>` · Coolify UI `https://coolify.clawville.world` · logs `docker logs --tail 200 <name>` · DB `docker exec coolify-db psql -U coolify -d coolify -c "<sql>"` · full playbook `docs/DEPLOY-HETZNER.md`.
+SSH `ssh -i ~/.ssh/clawville_deploy root@$PROD_VPS_IP` (load IP from `scripts/deploy/.env.deploy`) · container restart `docker restart <name>` · Coolify UI subdomain in env · logs `docker logs --tail 200 <name>` · DB `docker exec coolify-db psql -U coolify -d coolify -c "<sql>"` · full playbook `docs/DEPLOY-HETZNER.md`.
 
 ### Curl gotcha on Windows
 
