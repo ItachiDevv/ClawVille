@@ -1270,7 +1270,77 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
         'worldSize=(' + sz.x.toFixed(1) + ',' + sz.y.toFixed(1) + ',' + sz.z.toFixed(1) + ')');
     }
 
-    const hotspotDefs = useFallback ? FALLBACK_HOTSPOTS : GAMEREADY_HOTSPOTS;
+    // ─── Slot cabinet discovery ──────────────────────────────────────────
+    // The cove-interior.glb has slot machine cabinets BAKED IN (visible as
+    // the two long rows of dark machines with pink chairs). We bind click
+    // hotspots to those baked meshes instead of overlaying procedural
+    // cabinets at the bar.
+    //
+    // Heuristic (no name match — GLB nodes are named after materials):
+    //   - World bbox height between 80wu and 350wu
+    //   - Footprint (min of width, depth) between 30wu and 220wu
+    //   - World Y center between 30wu and 250wu (sits on the floor)
+    //   - Reject anything with a huge X or Z span (walls, ceiling, floor)
+    //
+    // Returns one HotspotDef per matched mesh. If discovery finds <2 cabinets,
+    // we fall back to the legacy hand-placed GAMEREADY_HOTSPOTS.
+    const _bb = new THREE.Box3();
+    const _bbSize = new THREE.Vector3();
+    const _bbCenter = new THREE.Vector3();
+    const discoveredHotspots: HotspotDef[] = [];
+    const discoveredDebug: Array<{ name: string; pos: string; size: string }> = [];
+    c.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      if ((mesh as THREE.SkinnedMesh).isSkinnedMesh) return;
+      if (!mesh.geometry) return;
+      mesh.updateWorldMatrix(true, false);
+      _bb.setFromObject(mesh);
+      if (_bb.isEmpty()) return;
+      _bb.getSize(_bbSize);
+      _bb.getCenter(_bbCenter);
+      const h = _bbSize.y;
+      const w = _bbSize.x;
+      const d = _bbSize.z;
+      const minFootprint = Math.min(w, d);
+      const maxFootprint = Math.max(w, d);
+      const yMid = _bbCenter.y;
+      const ok =
+        h >= 80 && h <= 350 &&
+        minFootprint >= 30 && minFootprint <= 220 &&
+        maxFootprint <= 600 &&     // reject room-spanning shells
+        yMid >= 30 && yMid <= 250;
+      if (process.env.NEXT_PUBLIC_COVE_DEBUG === '1') {
+        discoveredDebug.push({
+          name: mesh.name || '(unnamed)',
+          pos: `(${_bbCenter.x.toFixed(0)},${_bbCenter.y.toFixed(0)},${_bbCenter.z.toFixed(0)})`,
+          size: `${w.toFixed(0)}×${h.toFixed(0)}×${d.toFixed(0)}${ok ? ' ✓SLOT' : ''}`,
+        });
+      }
+      if (!ok) return;
+      // Build a click-zone roughly matching the cabinet bbox + 20wu reach
+      // into the room.
+      discoveredHotspots.push({
+        position: [_bbCenter.x, _bbCenter.y, _bbCenter.z] as [number, number, number],
+        size:     [w + 20, h, d + 20] as [number, number, number],
+        machineSlug: 'classic-3x5' as MachineSlug,
+        paytableId:  'classic-3x5' as MachineSlug,
+        isBonus:     false,
+      });
+    });
+
+    if (process.env.NEXT_PUBLIC_COVE_DEBUG === '1') {
+      console.info(`[cove-interior] discovered ${discoveredHotspots.length} slot cabinets from ${discoveredDebug.length} candidate meshes`);
+      for (const d of discoveredDebug) {
+        console.info(`  ${d.name.padEnd(30)} pos=${d.pos.padEnd(18)} size=${d.size}`);
+      }
+    }
+
+    // If discovery worked, use those positions. Otherwise fall back to the
+    // legacy hand-placed array (so the room is never un-clickable).
+    const hotspotDefs = useFallback
+      ? FALLBACK_HOTSPOTS
+      : (discoveredHotspots.length >= 2 ? discoveredHotspots : GAMEREADY_HOTSPOTS);
 
     let count = 0;
     c.traverse((obj) => { if ((obj as THREE.Mesh).isMesh) count++; });
@@ -1347,10 +1417,21 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
     <group ref={groupRef}>
       <primitive object={cloned} />
 
-      {/* Slot cabinet props — visible 3D objects players click to open slot screen */}
-      {!useFallback && <SlotCabinets hotspots={hotspots} />}
+      {/*
+        Procedural <SlotCabinets/> render REMOVED — the cove-interior.glb
+        already has slot machines baked in (the two long rows of dark
+        cabinets with pink chairs). Overlaying procedural cabinets at the
+        bar was creating "double slot machines" — the bonus-badge boxes
+        the user pointed out as wrong. We now discover the baked slot
+        meshes via bbox-heuristic above and bind click hotspots directly
+        to them. The procedural SlotCabinets component is dead code as
+        of Phase 6.1.13; leaving the source for now in case future work
+        wants the bonus-badge / lever style for a different cabinet type.
+      */}
 
-      {/* Invisible click hotspots over slot machines */}
+      {/* Invisible click hotspots over the BAKED slot machines (discovered
+          at runtime from the GLB). Fallback hotspots from FALLBACK_HOTSPOTS
+          are used only when the entire fallback GLB is in play. */}
       {hotspots.map((def, i) => (
         <SlotHotspot key={i} def={def} />
       ))}
