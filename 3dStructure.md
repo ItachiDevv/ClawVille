@@ -471,6 +471,13 @@ Lobster / crayfish GLB avatars don't participate (no swim/fly clip in their proc
 - All humanoid VRMs route through `computeVRMAvatarFit()` from `vrm-avatar-sizing.ts` targeting `VRM_AVATAR_TARGET_HEIGHT_WU` (currently 270 wu). Change one number, every humanoid resizes. Per-character overrides go in `SPECIES_TARGET_HEIGHT_WU` keyed by BOTH the species key (NPC) AND the animatorId (player) — those names diverge (`hermes_male` vs `hermes-male`) and both call sites resolve through the same map.
 - Don't use `reg.scale` from the model registry — that's picker-thumbnail metadata only, never load-bearing on world render.
 
+**9. Asset cache-bust on content change (MANDATORY).**
+- When you ship a NEW BINARY for an existing asset path (`/avatars/<name>.vrm`, `/avatars/animations/<dir>/<slot>.glb`, `/cosmetics/<x>.glb`, …), you MUST bump a `?v=N` query in every URL referencing it. Cloudflare's edge serves `Cache-Control: public, max-age=604800` (1-week TTL) and **our deploy token lacks `cache_purge` scope** — we cannot invalidate via API. Bumping the query is the only no-token-required invalidator (CF + the SW `cacheFirstGlb` both key on full URL including query).
+- Symptom of skipping this: prod still serves the OLD binary even though `git push` shipped + Coolify deployed. `curl` with `?cache_bust=$(date +%s)` returns the new file; bare URL returns the stale one. Verified pattern 2026-05-21 after chibi VRM textures landed on origin but Cloudflare kept serving the 3.4 MB textureless response for 1 week.
+- Existing patterns: `EMOTE_BUNDLE_VERSION` in `vrm-character-animator.ts` (emote bundle), `?v=2` on `eliza_chibi` + `milady_chibi` paths in `agent-model-registry.ts` (chibi VRM textures, 2026-05-21).
+- **When to bump**: any time you commit a new `.vrm`/`.glb`/`.png` binary at a path that's referenced elsewhere with a stable string. Greenfield assets (first time at a new path) don't need a version; only mutations of an existing URL do.
+- Mid-term fix: the deploy script should auto-bump these via a content hash. Not implemented yet — manual bump required.
+
 ---
 
 ## 7. Terrain shader
