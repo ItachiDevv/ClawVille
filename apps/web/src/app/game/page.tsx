@@ -277,16 +277,18 @@ export default function GamePage() {
     }
   }, [avatar]);
 
-  // While embed session exchange is in flight, show loading
-  if (isLoading || authLoading || miladyEmbed.exchanging) {
-    return (
-      <div className="game-container">
-        <SeaLoadingScreen />
-      </div>
-    );
-  }
-
+  // hasAvatar is safe to derive even while loading — avatar is undefined during
+  // the fetch so this is false, which correctly hides avatar-gated UI until resolved.
   const hasAvatar = !!avatar;
+
+  // NOTE: do NOT conditionally return early here based on isLoading/authLoading.
+  // An early-return swaps the whole React tree, which unmounts the first
+  // SeaLoadingScreen and mounts a fresh second one — user sees the loading
+  // animation reset from 0% ("loaded twice" on iOS). The Canvas is safe to
+  // mount immediately; it renders nothing visible until the 3D scene is ready
+  // and the SeaLoadingScreen covers the viewport the whole time anyway.
+  // miladyEmbed.exchanging is similarly safe: exchange is an auth side-effect
+  // and the canvas starts booting in parallel while the cookie is set.
 
   return (
     <div className="game-container">
