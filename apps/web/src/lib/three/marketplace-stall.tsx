@@ -34,9 +34,10 @@ useGLTF.preload('/models/marketplace-food-stall.glb');
 // pattern as bazaar-stall.tsx). Previously hard-coded Y=4 as a magic-number
 // workaround for the stall's below-origin frame; the canonical helper
 // computes a correct Y from the post-scale bbox.min.y instead.
+// Plaza cleanup (2026-05-21): moved outward to r≈1350wu (1273, 450).
 // ---------------------------------------------------------------------------
-const STALL_X = 800;
-const STALL_Z = 300;
+const STALL_X = 1273;
+const STALL_Z = 450;
 
 // Target visual height — slightly larger than the bazaar.
 // 2026-05-19: bumped 450→1300 to match the building ring scale (see
