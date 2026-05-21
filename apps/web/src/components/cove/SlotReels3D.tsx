@@ -63,14 +63,14 @@ const REEL_COUNT   = 5;
 const VISIBLE_ROWS = 3;
 const STRIP_LEN    = 84;
 
-const CELL_WU     = 1.5;                            // world units per cell (square)
+const CELL_WU     = 1.7;                            // world units per cell (square) — bumped 1.5→1.7 Phase 6.1.15
 const REEL_WIDTH  = CELL_WU;
-const REEL_HEIGHT = CELL_WU * VISIBLE_ROWS;         // 4.5 wu
-const REEL_GAP    = 0.18;                           // gap between reels
-const REEL_PITCH  = REEL_WIDTH + REEL_GAP;          // centre-to-centre = 1.68 wu
+const REEL_HEIGHT = CELL_WU * VISIBLE_ROWS;         // 5.1 wu
+const REEL_GAP    = 0.10;                           // gap between reels — tightened 0.18→0.10
+const REEL_PITCH  = REEL_WIDTH + REEL_GAP;          // centre-to-centre = 1.80 wu
 
-// Total reel cluster span: 5 × 1.5 + 4 × 0.18 = 8.22 wu wide
-// Centred at x=0 → reel r at x = (r - 2) × 1.68
+// Total reel cluster span: 5 × 1.7 + 4 × 0.10 = 8.90 wu wide
+// Centred at x=0 → reel r at x = (r - 2) × 1.80
 
 // ---------------------------------------------------------------------------
 // Constants — spin physics
@@ -179,9 +179,18 @@ function findStripPosition(strip: number[], top: number, mid: number, bot: numbe
   return 0;
 }
 
-/** Offset where cell `p` sits in the centre of the visible window. */
+/** Offset where cell `p` sits in the centre of the visible window.
+ *
+ * Phase 6.1.15 half-cell fix: the previous formula `1 - (p + N/2)/STRIP_LEN`
+ * straddled cell boundaries (showed half + full + full + half instead of
+ * 3 full cells). Adding the 0.5 aligns the visible window so cell `p` lands
+ * at the exact middle row UV-centered. Derivation:
+ *   Cell p UV-center  = (STRIP_LEN − p − 0.5) / STRIP_LEN
+ *   Window UV-center  = offset + repeat/2 = offset + N/(2·STRIP_LEN)
+ *   ⇒ offset = 1 − (p + 0.5 + N/2) / STRIP_LEN
+ */
 function offsetForStripPosition(p: number): number {
-  return 1 - (p + (VISIBLE_ROWS / 2)) / STRIP_LEN;
+  return 1 - (p + 0.5 + VISIBLE_ROWS / 2) / STRIP_LEN;
 }
 
 // ---------------------------------------------------------------------------
@@ -235,12 +244,12 @@ function roundRectPath(
 }
 
 // ---------------------------------------------------------------------------
-// Draw a single cell into a canvas at (x, y) — premium social-cove styling.
-//   - dark vertical-gradient card background (deeper-than-purple slate)
-//   - brass border outline
-//   - top rim highlight gradient (fake light)
-//   - thick-outlined symbol artwork centered ~64% of cell size
-//   - theme-color accent stroke around symbol art for high-motion readability
+// drawCell — Phase 6.1.15 CLEAN treatment (applies to BOTH classic + bonus).
+//
+// Reference: classic arcade fruit-slot. Symbol-first. No per-cell card frame,
+// no corner ornaments, no double borders. Cream background, BIG symbol with
+// a soft drop shadow, faint paper stripes for printed-cardboard feel, hairline
+// dividers at top + bottom so row boundaries register at a glance.
 // ---------------------------------------------------------------------------
 function drawCell(
   ctx:       CanvasRenderingContext2D,
@@ -251,73 +260,42 @@ function drawCell(
   themeColor: string,
   img?:      HTMLImageElement,
 ): void {
-  const pad = size * 0.04;
-  const ix  = x + pad;
-  const iy  = y + pad;
-  const iw  = size - pad * 2;
-  const ih  = size - pad * 2;
-  const r   = size * 0.10;
+  void themeColor;
 
-  // Card background — vertical slate gradient (top-light, bottom-dark)
-  const bg = ctx.createLinearGradient(ix, iy, ix, iy + ih);
-  bg.addColorStop(0, '#1c2440');
-  bg.addColorStop(1, '#0a0e1c');
+  // 1. Cream background — 3-stop vertical gradient
+  const bg = ctx.createLinearGradient(x, y, x, y + size);
+  bg.addColorStop(0,   '#fef9ec');
+  bg.addColorStop(0.5, '#fdf3d5');
+  bg.addColorStop(1,   '#f4e3b3');
   ctx.fillStyle = bg;
-  roundRectPath(ctx, ix, iy, iw, ih, r);
-  ctx.fill();
+  ctx.fillRect(x, y, size, size);
 
-  // Top rim highlight — fake specular
-  const rim = ctx.createLinearGradient(ix, iy, ix, iy + ih * 0.45);
-  rim.addColorStop(0, 'rgba(180, 220, 255, 0.22)');
-  rim.addColorStop(1, 'rgba(180, 220, 255, 0)');
-  ctx.fillStyle = rim;
-  roundRectPath(ctx, ix, iy, iw, ih * 0.45, r);
-  ctx.fill();
-
-  // Theme-color accent bottom blob for high-pay symbols (Bell+, Seven, WILD,
-  // BARs, Scatter) — adds visual weight to rarer symbols
-  const isHighPay = symbolId >= 4;
-  if (isHighPay) {
-    const accent = ctx.createRadialGradient(
-      ix + iw / 2, iy + ih * 0.7, 0,
-      ix + iw / 2, iy + ih * 0.7, iw * 0.6,
-    );
-    accent.addColorStop(0, themeColor + 'aa'); // semi-transparent
-    accent.addColorStop(1, themeColor + '00');
-    ctx.fillStyle = accent;
-    roundRectPath(ctx, ix, iy, iw, ih, r);
-    ctx.fill();
+  // 2. Faint vertical stripe texture — printed-paper feel
+  ctx.fillStyle = 'rgba(180, 120, 40, 0.04)';
+  const stripeStep = size * 0.08;
+  for (let sx = 0; sx < size; sx += stripeStep) {
+    ctx.fillRect(x + sx, y, 1, size);
   }
 
-  // Brass card outline
-  ctx.strokeStyle = 'rgba(200, 154, 77, 0.55)';
-  ctx.lineWidth   = size * 0.012;
-  roundRectPath(ctx, ix, iy, iw, ih, r);
-  ctx.stroke();
+  // 3. Row dividers — top + bottom hairlines
+  ctx.fillStyle = 'rgba(60, 30, 0, 0.12)';
+  ctx.fillRect(x, y, size, 1);
+  ctx.fillRect(x, y + size - 1, size, 1);
 
-  // Inner contour outline — extra readability during motion
-  ctx.strokeStyle = 'rgba(0, 0, 0, 0.35)';
-  ctx.lineWidth   = size * 0.008;
-  roundRectPath(ctx, ix + size * 0.025, iy + size * 0.025, iw - size * 0.05, ih - size * 0.05, r * 0.85);
-  ctx.stroke();
-
-  // Symbol artwork
+  // 4. Symbol artwork — BIG (84% of cell), soft drop shadow
+  const isHighPay = symbolId >= 4;
   if (img && img.complete && img.naturalWidth > 0) {
-    const symSize = size * 0.64;
+    const symSize = size * 0.84;
     const sx = x + (size - symSize) / 2;
     const sy = y + (size - symSize) / 2;
-    // Draw the SVG twice — once as a darker drop-shadow, once as the real
-    // symbol — for a subtle stamped-in-the-card depth without using actual
-    // shadow filters (which Iris Xe can choke on).
     try {
       ctx.save();
-      ctx.globalAlpha = 0.35;
-      ctx.drawImage(img, sx + size * 0.012, sy + size * 0.014, symSize, symSize);
+      ctx.globalAlpha = 0.22;
+      ctx.drawImage(img, sx + size * 0.014, sy + size * 0.022, symSize, symSize);
       ctx.restore();
       ctx.drawImage(img, sx, sy, symSize, symSize);
     } catch {
-      // Some SVGs can throw on certain browsers — silently fall through to
-      // the unicode fallback below
+      /* fall through to unicode fallback */
     }
   } else {
     // Unicode fallback (Phase 6.1.12 ClawVille roster — only shown if the
@@ -353,8 +331,8 @@ function buildReelTexture(strip: number[]): THREE.CanvasTexture {
   canvas.height = TEX_H;
   const ctx = canvas.getContext('2d', { alpha: false })!;
 
-  // Deep slate fill — what shows through any gaps
-  ctx.fillStyle = '#080b18';
+  // Cream fill — matches the new clean drawCell base
+  ctx.fillStyle = '#fef9ec';
   ctx.fillRect(0, 0, TEX_W, TEX_H);
 
   for (let k = 0; k < strip.length; k++) {
@@ -389,6 +367,10 @@ export interface SlotReels3DProps {
   scatterCells:    { reelIndex: number; rowIndex: number }[];
   onReelsSettled:  () => void;
   paytableId?:     string;
+  /** In-scene 3D pull-lever SPIN trigger. When omitted, the lever is hidden. */
+  onSpinClick?:    () => void;
+  /** Disables the lever (spinning, locked-out, low balance, evaluating). */
+  spinDisabled?:   boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -398,8 +380,12 @@ export default function SlotReels3D({
   reels,
   isSpinning,
   spinTrigger,
+  winningCells,
+  scatterCells,
   onReelsSettled,
   paytableId,
+  onSpinClick,
+  spinDisabled,
 }: SlotReels3DProps): React.ReactElement {
   const { gl, scene, camera, size } = useThree();
 
@@ -412,10 +398,11 @@ export default function SlotReels3D({
   useEffect(() => {
     const orthoCam = camera as THREE.OrthographicCamera;
     if (orthoCam.isOrthographicCamera) {
-      orthoCam.left   = -5.0;
-      orthoCam.right  =  5.0;
-      orthoCam.top    =  2.8;
-      orthoCam.bottom = -2.8;
+      // Bumped bounds to fit cabinet (8.9wu × 5.1wu) + brass frame + lever
+      orthoCam.left   = -5.7;
+      orthoCam.right  =  5.7;
+      orthoCam.top    =  3.2;
+      orthoCam.bottom = -3.2;
       orthoCam.near   =  0.1;
       orthoCam.far    = 30;
       orthoCam.zoom   = 1;
@@ -474,58 +461,9 @@ export default function SlotReels3D({
   );
 
   // -------------------------------------------------------------------------
-  // Layered FX geometry (all camera-facing transparent quads, module-scoped)
-  // -------------------------------------------------------------------------
-  // Top vignette
-  const vignetteTopGeom = useMemo(
-    () => new THREE.PlaneGeometry(REEL_PITCH * REEL_COUNT, CELL_WU * 0.6),
-    [],
-  );
-  // Bottom vignette
-  const vignetteBotGeom = useMemo(
-    () => new THREE.PlaneGeometry(REEL_PITCH * REEL_COUNT, CELL_WU * 0.6),
-    [],
-  );
-  // Center payline glow strip
-  const paylineGlowGeom = useMemo(
-    () => new THREE.PlaneGeometry(REEL_PITCH * REEL_COUNT + 0.4, 0.12),
-    [],
-  );
-  // Outer frame border (4 thin strips)
-  const frameGeom = useMemo(
-    () => new THREE.PlaneGeometry(REEL_PITCH * REEL_COUNT + 0.5, REEL_HEIGHT + 0.5),
-    [],
-  );
-
-  const vignetteTopTex = useMemo(() => makeVerticalGradientTexture(
-    ['rgba(21, 9, 14, 0.92)', 'rgba(21, 9, 14, 0)'],
-  ), []);
-  const vignetteBotTex = useMemo(() => makeVerticalGradientTexture(
-    ['rgba(21, 9, 14, 0)', 'rgba(21, 9, 14, 0.92)'],
-  ), []);
-  const paylineGlowTex = useMemo(() => makeHorizontalGradientTexture(
-    ['rgba(255, 174, 0, 0)', 'rgba(255, 174, 0, 0.55)', 'rgba(255, 174, 0, 0)'],
-  ), []);
-  const frameBorderTex = useMemo(() => makeFrameBorderTexture(), []);
-
-  const vignetteTopMat = useMemo(() => new THREE.MeshBasicMaterial({
-    map: vignetteTopTex, transparent: true, depthWrite: false,
-  }), [vignetteTopTex]);
-  const vignetteBotMat = useMemo(() => new THREE.MeshBasicMaterial({
-    map: vignetteBotTex, transparent: true, depthWrite: false,
-  }), [vignetteBotTex]);
-  const paylineGlowMat = useMemo(() => new THREE.MeshBasicMaterial({
-    map: paylineGlowTex, transparent: true, depthWrite: false,
-  }), [paylineGlowTex]);
-  const frameBorderMat = useMemo(() => new THREE.MeshBasicMaterial({
-    map: frameBorderTex, transparent: true, depthWrite: false,
-  }), [frameBorderTex]);
-
-  // -------------------------------------------------------------------------
   // Refs
   // -------------------------------------------------------------------------
   const reelMeshRefs   = useRef<(THREE.Mesh | null)[]>(Array(REEL_COUNT).fill(null));
-  const paylineMeshRef = useRef<THREE.Mesh | null>(null);
   const animState      = useRef<ReelAnim[]>(Array.from({ length: REEL_COUNT }, makeIdleAnim));
   const settledCount   = useRef(0);
   const prevTrigger    = useRef(spinTrigger);
@@ -734,15 +672,6 @@ export default function SlotReels3D({
       // negative values.
       map.offset.y = a.offset;
     }
-
-    // Animate payline glow pulse during spin (subtle 2Hz sin)
-    const pulseMesh = paylineMeshRef.current;
-    if (pulseMesh) {
-      const anySpinning = animState.current.some(a => !a.settled);
-      const baseAlpha   = anySpinning ? 0.25 : 0.5;
-      const pulse       = anySpinning ? (0.05 * Math.sin(now * 0.012)) : 0;
-      (pulseMesh.material as THREE.MeshBasicMaterial).opacity = baseAlpha + pulse;
-    }
   });
 
   // -------------------------------------------------------------------------
@@ -751,28 +680,79 @@ export default function SlotReels3D({
   useEffect(() => {
     return () => {
       reelGeometry.dispose();
-      vignetteTopGeom.dispose();
-      vignetteBotGeom.dispose();
-      paylineGlowGeom.dispose();
-      frameGeom.dispose();
-      vignetteTopMat.dispose();
-      vignetteBotMat.dispose();
-      paylineGlowMat.dispose();
-      frameBorderMat.dispose();
-      vignetteTopTex.dispose();
-      vignetteBotTex.dispose();
-      paylineGlowTex.dispose();
-      frameBorderTex.dispose();
       for (const m of reelMaterials) { m.map?.dispose(); m.dispose(); }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // -------------------------------------------------------------------------
+  // Cabinet geometry — bright brass frame + rivets (Phase 6.1.15)
+  // -------------------------------------------------------------------------
+  const clusterW = REEL_PITCH * REEL_COUNT;
+  const frameW   = clusterW + 0.55;
+  const frameH   = REEL_HEIGHT + 0.55;
+
+  const rivetPositions = useMemo<Array<[number, number]>>(() => {
+    const out: Array<[number, number]> = [];
+    const halfW = frameW / 2 - 0.12;
+    const halfH = frameH / 2 - 0.12;
+    const COLS = 11;
+    for (let i = 0; i <= COLS; i++) {
+      const t = i / COLS;
+      const xs = -halfW + t * (2 * halfW);
+      out.push([xs,  halfH]);
+      out.push([xs, -halfH]);
+    }
+    const ROWS = 4;
+    for (let i = 1; i < ROWS + 1; i++) {
+      const t = i / (ROWS + 1);
+      const ys = -halfH + t * (2 * halfH);
+      out.push([-halfW, ys]);
+      out.push([ halfW, ys]);
+    }
+    return out;
+  }, [frameW, frameH]);
+
+  // -------------------------------------------------------------------------
   // Scene graph
   // -------------------------------------------------------------------------
   return (
     <group>
+      {/* Cabinet outer frame — bright brass */}
+      <mesh position={[0, 0, -0.04]}>
+        <planeGeometry args={[frameW + 0.18, frameH + 0.18]} />
+        <meshBasicMaterial color={0xf4b840} />
+      </mesh>
+      {/* Cabinet inner bezel — darker brass for depth */}
+      <mesh position={[0, 0, -0.03]}>
+        <planeGeometry args={[frameW, frameH]} />
+        <meshBasicMaterial color={0xb8801f} />
+      </mesh>
+      {/* Inner shadow rim — thin dark line just outside reels */}
+      <mesh position={[0, 0, -0.02]}>
+        <planeGeometry args={[clusterW + 0.08, REEL_HEIGHT + 0.08]} />
+        <meshBasicMaterial color={0x2a1810} />
+      </mesh>
+
+      {/* Brass rivets around the cabinet perimeter */}
+      {rivetPositions.map(([rx, ry], i) => (
+        <mesh key={`rivet-${i}`} position={[rx, ry, -0.025]}>
+          <circleGeometry args={[0.06, 12]} />
+          <meshBasicMaterial color={0xfff1a3} />
+        </mesh>
+      ))}
+
+      {/* Reel column dividers */}
+      {Array.from({ length: REEL_COUNT - 1 }, (_, i) => (
+        <mesh
+          key={`div-${i}`}
+          position={[((i - (REEL_COUNT - 1) / 2) + 0.5) * REEL_PITCH, 0, 0.005]}
+        >
+          <planeGeometry args={[REEL_GAP * 0.5, REEL_HEIGHT]} />
+          <meshBasicMaterial color={0x2a1810} />
+        </mesh>
+      ))}
+
       {/* Reels */}
       {Array.from({ length: REEL_COUNT }, (_, r) => (
         <mesh
@@ -784,99 +764,232 @@ export default function SlotReels3D({
         />
       ))}
 
-      {/* Centre payline glow — z=0.01 to render above reels */}
-      <mesh
-        ref={paylineMeshRef}
-        geometry={paylineGlowGeom}
-        material={paylineGlowMat}
-        position={[0, 0, 0.01]}
-      />
+      {/* Server-driven win cell highlights — animated marching marquee.
+          `winningCells` covers BOTH classic and bonus paytables; bonus also
+          has `scatterCells` for the Eliza Coin scatter (rendered with a
+          distinct cyan tint via SlotWinHighlight's `variant`). */}
+      {!isSpinning && winningCells.map(({ reel, row }, i) => {
+        const cx = (reel - (REEL_COUNT - 1) / 2) * REEL_PITCH;
+        const cy = (1 - row) * CELL_WU;
+        return (
+          <SlotWinHighlight
+            key={`win-${reel}-${row}-${i}`}
+            x={cx} y={cy} size={CELL_WU * 0.86}
+            variant="line"
+          />
+        );
+      })}
+      {!isSpinning && scatterCells.map(({ reelIndex, rowIndex }, i) => {
+        const cx = (reelIndex - (REEL_COUNT - 1) / 2) * REEL_PITCH;
+        const cy = (1 - rowIndex) * CELL_WU;
+        return (
+          <SlotWinHighlight
+            key={`scatter-${reelIndex}-${rowIndex}-${i}`}
+            x={cx} y={cy} size={CELL_WU * 0.86}
+            variant="scatter"
+          />
+        );
+      })}
 
-      {/* Top vignette — fakes drum curvature */}
-      <mesh
-        geometry={vignetteTopGeom}
-        material={vignetteTopMat}
-        position={[0, REEL_HEIGHT / 2 - CELL_WU * 0.3, 0.02]}
-      />
-
-      {/* Bottom vignette */}
-      <mesh
-        geometry={vignetteBotGeom}
-        material={vignetteBotMat}
-        position={[0, -REEL_HEIGHT / 2 + CELL_WU * 0.3, 0.02]}
-      />
-
-      {/* Outer frame — z=-0.01 to sit behind reels */}
-      <mesh
-        geometry={frameGeom}
-        material={frameBorderMat}
-        position={[0, 0, -0.01]}
-      />
+      {/* 3D pull-lever — replaces the DOM SPIN button. Click red ball to spin. */}
+      {onSpinClick && (
+        <group position={[frameW / 2 + 0.35, 0, 0]}>
+          <SlotPullLever
+            cabinetHalfH={frameH / 2}
+            onPull={onSpinClick}
+            disabled={spinDisabled ?? false}
+          />
+        </group>
+      )}
     </group>
   );
 }
 
-// ===========================================================================
-// FX texture builders (module-scope, pure)
-// ===========================================================================
+// ---------------------------------------------------------------------------
+// SlotPullLever — 3D pull-handle on the right side of the cabinet.
+// Red ball at top, animated brass shaft, click ball to fire `onPull`.
+// ---------------------------------------------------------------------------
+function SlotPullLever({
+  cabinetHalfH, onPull, disabled,
+}: {
+  cabinetHalfH: number;
+  onPull: () => void;
+  disabled: boolean;
+}): React.ReactElement {
+  const SHAFT_X      = 0;
+  const SHAFT_W      = 0.16;
+  const SHAFT_TOP    =  cabinetHalfH * 0.82;
+  const SHAFT_BOTTOM = -cabinetHalfH * 0.82;
+  const SHAFT_LEN    = SHAFT_TOP - SHAFT_BOTTOM;
+  const BALL_R       = 0.21;
+  const BALL_TRAVEL  = SHAFT_LEN * 0.55;
 
-function makeVerticalGradientTexture(stops: [string, string]): THREE.CanvasTexture {
-  const canvas = document.createElement('canvas');
-  canvas.width = 4;
-  canvas.height = 256;
-  const ctx = canvas.getContext('2d')!;
-  const g = ctx.createLinearGradient(0, 0, 0, 256);
-  g.addColorStop(0, stops[0]);
-  g.addColorStop(1, stops[1]);
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 4, 256);
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.minFilter = THREE.LinearFilter;
-  tex.magFilter = THREE.LinearFilter;
-  tex.needsUpdate = true;
-  return tex;
+  const ballRef  = useRef<THREE.Mesh>(null);
+  const shaftRef = useRef<THREE.Mesh>(null);
+  const animRef  = useRef<{ active: boolean; startMs: number }>({ active: false, startMs: 0 });
+
+  const handlePull = useCallback(() => {
+    if (disabled || animRef.current.active) return;
+    animRef.current.active  = true;
+    animRef.current.startMs = performance.now();
+    onPull();
+  }, [disabled, onPull]);
+
+  useFrame(() => {
+    if (!animRef.current.active) return;
+    const PULL_MS = 220, RETURN_MS = 380;
+    const elapsed = performance.now() - animRef.current.startMs;
+    let offset = 0;
+    if (elapsed < PULL_MS) {
+      const t = elapsed / PULL_MS;
+      offset = -BALL_TRAVEL * easeOutCubic(t);
+    } else if (elapsed < PULL_MS + RETURN_MS) {
+      const t = (elapsed - PULL_MS) / RETURN_MS;
+      offset = -BALL_TRAVEL * (1 - easeOutBack(t));
+    } else {
+      animRef.current.active = false;
+      offset = 0;
+    }
+    if (ballRef.current)  ballRef.current.position.y  = SHAFT_TOP + offset;
+    if (shaftRef.current) {
+      const newLen = SHAFT_LEN + offset;
+      shaftRef.current.position.y = SHAFT_BOTTOM + newLen / 2;
+      shaftRef.current.scale.y    = Math.max(0.01, newLen / SHAFT_LEN);
+    }
+  });
+
+  return (
+    <group>
+      {/* Shaft socket at bottom */}
+      <mesh position={[SHAFT_X, SHAFT_BOTTOM - 0.05, 0]}>
+        <circleGeometry args={[SHAFT_W * 1.4, 16]} />
+        <meshBasicMaterial color={0x4a2818} />
+      </mesh>
+      {/* Shaft — scales with pull */}
+      <mesh ref={shaftRef} position={[SHAFT_X, (SHAFT_TOP + SHAFT_BOTTOM) / 2, 0]}>
+        <planeGeometry args={[SHAFT_W, SHAFT_LEN]} />
+        <meshBasicMaterial color={0xd9a55a} />
+      </mesh>
+      {/* Shaft highlight stripe */}
+      <mesh position={[SHAFT_X - SHAFT_W * 0.22, (SHAFT_TOP + SHAFT_BOTTOM) / 2, 0.001]}>
+        <planeGeometry args={[SHAFT_W * 0.22, SHAFT_LEN]} />
+        <meshBasicMaterial color={0xfff1a3} transparent opacity={0.55} />
+      </mesh>
+      {/* Ball shadow disc */}
+      <mesh position={[SHAFT_X + 0.04, SHAFT_TOP - 0.05, 0.005]}>
+        <circleGeometry args={[BALL_R * 1.08, 24]} />
+        <meshBasicMaterial color={0x2a0808} transparent opacity={0.55} />
+      </mesh>
+      {/* Ball tip — clickable */}
+      <mesh
+        ref={ballRef}
+        position={[SHAFT_X, SHAFT_TOP, 0.01]}
+        onPointerDown={(e) => { e.stopPropagation(); handlePull(); }}
+        onPointerOver={() => { document.body.style.cursor = disabled ? 'not-allowed' : 'pointer'; }}
+        onPointerOut={() => { document.body.style.cursor = 'default'; }}
+      >
+        <circleGeometry args={[BALL_R, 24]} />
+        <meshBasicMaterial color={disabled ? 0x6a3030 : 0xe53935} />
+      </mesh>
+      {/* Ball specular highlight */}
+      <mesh position={[SHAFT_X - BALL_R * 0.3, SHAFT_TOP + BALL_R * 0.25, 0.02]}>
+        <circleGeometry args={[BALL_R * 0.32, 16]} />
+        <meshBasicMaterial color={0xffffff} transparent opacity={0.7} />
+      </mesh>
+    </group>
+  );
 }
 
-function makeHorizontalGradientTexture(stops: string[]): THREE.CanvasTexture {
-  const canvas = document.createElement('canvas');
-  canvas.width = 512;
-  canvas.height = 4;
-  const ctx = canvas.getContext('2d')!;
-  const g = ctx.createLinearGradient(0, 0, 512, 0);
-  for (let i = 0; i < stops.length; i++) {
-    g.addColorStop(i / (stops.length - 1), stops[i]);
-  }
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 512, 4);
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.minFilter = THREE.LinearFilter;
-  tex.magFilter = THREE.LinearFilter;
-  tex.needsUpdate = true;
-  return tex;
+// ---------------------------------------------------------------------------
+// SlotWinHighlight — animated marching marquee frame around a winning cell.
+// `variant="line"`    → yellow (default line wins)
+// `variant="scatter"` → cyan   (bonus paytable scatters)
+// ---------------------------------------------------------------------------
+function SlotWinHighlight({ x, y, size, variant }: {
+  x: number; y: number; size: number;
+  variant: 'line' | 'scatter';
+}): React.ReactElement {
+  const rootRef  = useRef<THREE.Group>(null);
+  const haloRef  = useRef<THREE.Mesh>(null);
+  const sideRefs = [useRef<THREE.Mesh>(null), useRef<THREE.Mesh>(null), useRef<THREE.Mesh>(null), useRef<THREE.Mesh>(null)];
+  const dotRefs  = [useRef<THREE.Mesh>(null), useRef<THREE.Mesh>(null), useRef<THREE.Mesh>(null), useRef<THREE.Mesh>(null)];
+  const startMs  = useRef(performance.now());
+
+  const frameColor = variant === 'scatter' ? 0x00d4ff : 0xffd54f;
+
+  useFrame(({ clock }) => {
+    const t = clock.getElapsedTime();
+    const elapsed = performance.now() - startMs.current;
+
+    // Entry scale-pop — 320ms easeOutBack 0 → 1.0 (overshoots ~1.15)
+    const ENTRY_MS = 320;
+    let entry = 1;
+    if (elapsed < ENTRY_MS) {
+      entry = easeOutBack(elapsed / ENTRY_MS);
+    }
+    if (rootRef.current) rootRef.current.scale.setScalar(entry);
+
+    // Halo — pulse scale + alpha
+    const haloPulse = 0.5 + 0.5 * Math.sin(t * 5);
+    if (haloRef.current) {
+      const s = 1.0 + 0.12 * haloPulse;
+      haloRef.current.scale.set(s, s, 1);
+      (haloRef.current.material as THREE.MeshBasicMaterial).opacity = 0.35 + 0.4 * haloPulse;
+    }
+
+    // Sides — chasing wave
+    for (let i = 0; i < 4; i++) {
+      const m = sideRefs[i].current;
+      if (!m) continue;
+      const wave = 0.55 + 0.45 * Math.sin((t * 4) - i * (Math.PI / 2));
+      (m.material as THREE.MeshBasicMaterial).opacity = wave;
+    }
+
+    // Corner dots — synced strobe
+    const dotPulse = 0.6 + 0.4 * Math.abs(Math.sin(t * 7));
+    for (let i = 0; i < 4; i++) {
+      const m = dotRefs[i].current;
+      if (!m) continue;
+      const s = 0.85 + 0.3 * dotPulse;
+      m.scale.set(s, s, 1);
+      (m.material as THREE.MeshBasicMaterial).opacity = dotPulse;
+    }
+  });
+
+  const halfS = size / 2;
+  const T     = size * 0.07;
+
+  return (
+    <group ref={rootRef} position={[x, y, 0.035]} scale={[0, 0, 0]}>
+      <mesh ref={haloRef}>
+        <planeGeometry args={[size * 1.20, size * 1.20]} />
+        <meshBasicMaterial color={frameColor} transparent opacity={0.5} depthWrite={false} />
+      </mesh>
+      <mesh ref={sideRefs[0]} position={[0, halfS - T / 2, 0.001]}>
+        <planeGeometry args={[size, T]} />
+        <meshBasicMaterial color={frameColor} transparent opacity={1} />
+      </mesh>
+      <mesh ref={sideRefs[1]} position={[halfS - T / 2, 0, 0.001]}>
+        <planeGeometry args={[T, size]} />
+        <meshBasicMaterial color={frameColor} transparent opacity={1} />
+      </mesh>
+      <mesh ref={sideRefs[2]} position={[0, -halfS + T / 2, 0.001]}>
+        <planeGeometry args={[size, T]} />
+        <meshBasicMaterial color={frameColor} transparent opacity={1} />
+      </mesh>
+      <mesh ref={sideRefs[3]} position={[-halfS + T / 2, 0, 0.001]}>
+        <planeGeometry args={[T, size]} />
+        <meshBasicMaterial color={frameColor} transparent opacity={1} />
+      </mesh>
+      {([[-halfS, halfS], [halfS, halfS], [-halfS, -halfS], [halfS, -halfS]] as Array<[number, number]>).map(([cx, cy], i) => (
+        <mesh key={i} ref={dotRefs[i]} position={[cx, cy, 0.002]}>
+          <circleGeometry args={[T * 1.4, 14]} />
+          <meshBasicMaterial color={0xffffff} transparent opacity={1} />
+        </mesh>
+      ))}
+    </group>
+  );
 }
 
-function makeFrameBorderTexture(): THREE.CanvasTexture {
-  const W = 512;
-  const H = 256;
-  const canvas = document.createElement('canvas');
-  canvas.width = W;
-  canvas.height = H;
-  const ctx = canvas.getContext('2d')!;
-  ctx.clearRect(0, 0, W, H);
-
-  // Inner dark frame
-  ctx.strokeStyle = 'rgba(200, 154, 77, 0.18)';
-  ctx.lineWidth = 6;
-  ctx.strokeRect(8, 8, W - 16, H - 16);
-
-  // Subtle inner highlight
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
-  ctx.lineWidth = 2;
-  ctx.strokeRect(14, 14, W - 28, H - 28);
-
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.minFilter = THREE.LinearFilter;
-  tex.magFilter = THREE.LinearFilter;
-  tex.needsUpdate = true;
-  return tex;
-}
+// FX texture builders removed Phase 6.1.15 — vignettes + frame-border + payline
+// glow were replaced by procedural brass cabinet + animated SlotWinHighlight.

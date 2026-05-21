@@ -33,8 +33,8 @@ export default function App() {
   const { rig, cameraType, showFx } = useControls({
     'Rig variant': folder({
       rig: {
-        value: 'drum' as RigKey,
-        options: { 'Drum (3D)': 'drum', Hybrid: 'hybrid', 'Planar (shipped)': 'planar' },
+        value: 'planar' as RigKey,
+        options: { 'Planar (polished)': 'planar', 'Drum (3D)': 'drum', Hybrid: 'hybrid' },
       },
       cameraType: {
         value: 'ortho' as 'ortho' | 'perspective',
@@ -53,7 +53,7 @@ export default function App() {
     ? { ortho: { left: -5, right: 5, top: 2.8, bottom: -2.8 }, persp: { fov: 35, z: 9 } }
     : rig === 'hybrid'
       ? { ortho: { left: -5, right: 5, top: 2.8, bottom: -2.8 }, persp: { fov: 30, z: 9 } }
-      : { ortho: { left: -5, right: 5, top: 2.8, bottom: -2.8 }, persp: { fov: 38, z: 6 } };
+      : { ortho: { left: -6.2, right: 6.2, top: 3.2, bottom: -3.2 }, persp: { fov: 38, z: 6 } };
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
@@ -139,6 +139,7 @@ export default function App() {
               spinTrigger={spinTrigger}
               onReelsSettled={handleReelsSettled}
               showFx={showFx}
+              onSpinClick={triggerSpin}
             />
           )}
         </Canvas>
