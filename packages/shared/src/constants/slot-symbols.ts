@@ -51,21 +51,30 @@ export interface SlotSymbolAsset {
  * Stable indexing — entry `[i]` is the asset for `SymbolId === i`.
  * Order MUST match `CLASSIC_SYMBOLS` in slot-paytables.ts.
  */
+// Phase 6.1.12 — ClawVille character roster replaces the classic fruit
+// machine icons. Engine math unchanged (94% RTP, same strip frequencies,
+// same payout multipliers, same wild/scatter flags) — pure brand swap.
+// The `svgPath` field still carries the path (it points at PNGs now;
+// renaming the field would ripple through 6+ consumer files for a label
+// change with no behavioural value).
 export const CLASSIC_SLOT_SYMBOL_ASSETS: SlotSymbolAsset[] = [
-  { id: 0,  svgPath: '/assets/slot-symbols/s0.svg',  displayName: 'Cherry',  themeColor: '#d62828' },
-  { id: 1,  svgPath: '/assets/slot-symbols/s1.svg',  displayName: 'Lemon',   themeColor: '#f1c40f' },
-  { id: 2,  svgPath: '/assets/slot-symbols/s2.svg',  displayName: 'Orange',  themeColor: '#ff8c42' },
-  { id: 3,  svgPath: '/assets/slot-symbols/s3.svg',  displayName: 'Plum',    themeColor: '#7c3aed' },
-  { id: 4,  svgPath: '/assets/slot-symbols/s4.svg',  displayName: 'Bell',    themeColor: '#ffc857' },
-  { id: 5,  svgPath: '/assets/slot-symbols/s5.svg',  displayName: 'BAR',     themeColor: '#d62828' },
-  { id: 6,  svgPath: '/assets/slot-symbols/s6.svg',  displayName: 'Seven',   themeColor: '#ff3838' },
-  { id: 7,  svgPath: '/assets/slot-symbols/s7.svg',  displayName: 'WILD',    themeColor: '#00d4ff' },
-  { id: 8,  svgPath: '/assets/slot-symbols/s8.svg',  displayName: 'BAR×2',   themeColor: '#c0223a' },
-  { id: 9,  svgPath: '/assets/slot-symbols/s9.svg',  displayName: 'BAR×3',   themeColor: '#a01828' },
-  // Phase 6.1.5 — Bundle B scatter (Treasure Chest). NOT a wild.
-  // Pays anywhere (no payline restriction); 3/4/5 anywhere triggers
-  // 2×/10×/50× total predict + 10 free spins (capped retrigger at 50).
-  { id: 10, svgPath: '/assets/slot-symbols/s10.svg', displayName: 'Scatter', themeColor: '#ffd778' },
+  { id: 0,  svgPath: '/assets/slot-symbols/claw.png',       displayName: 'Claw',       themeColor: '#d62828' },
+  { id: 1,  svgPath: '/assets/slot-symbols/robot.png',      displayName: 'Robot',      themeColor: '#fbbf24' },
+  { id: 2,  svgPath: '/assets/slot-symbols/eliza.png',      displayName: 'Eliza',      themeColor: '#ff8c42' },
+  { id: 3,  svgPath: '/assets/slot-symbols/squirrel.png',   displayName: 'Squirrel',   themeColor: '#ff6b35' },
+  { id: 4,  svgPath: '/assets/slot-symbols/milady.png',     displayName: 'Milady',     themeColor: '#ec4899' },
+  { id: 5,  svgPath: '/assets/slot-symbols/s5.svg',         displayName: 'BAR',        themeColor: '#d62828' },
+  { id: 6,  svgPath: '/assets/slot-symbols/s6.svg',         displayName: 'Seven',      themeColor: '#ff3838' },
+  // s7 — WILD (substitutes any non-scatter). Clawbster as the brand's
+  // hero crustacean — its claws "grab" the matching line.
+  { id: 7,  svgPath: '/assets/slot-symbols/clawbster.png',  displayName: 'Clawbster',  themeColor: '#d65950' },
+  { id: 8,  svgPath: '/assets/slot-symbols/s8.svg',         displayName: 'BAR×2',      themeColor: '#c0223a' },
+  { id: 9,  svgPath: '/assets/slot-symbols/s9.svg',         displayName: 'BAR×3',      themeColor: '#a01828' },
+  // s10 — Phase 6.1.5 Bundle B scatter. Pays anywhere (no payline
+  // restriction); 3/4/5 anywhere triggers 2×/8×/40× total predict +
+  // 8 free spins (capped retrigger at 50). Eliza-coin pixel art reads
+  // as "treasure" — perfect bonus trigger icon.
+  { id: 10, svgPath: '/assets/slot-symbols/eliza-coin.png', displayName: 'Eliza Coin', themeColor: '#3b82f6' },
 ];
 
 /**

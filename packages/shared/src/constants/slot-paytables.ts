@@ -127,15 +127,20 @@ export interface SlotSymbolDef {
 // Strategy: 5-of-kind takes the biggest visible trim (rarest hit, smallest
 // contribution to RTP per unit cut), 4-of-kind gets a smaller trim, 3-of-
 // and 2-of-kind untouched so frequent small wins still feel "alive".
+// Phase 6.1.12 — ClawVille brand swap. Symbol IDENTITIES change (names,
+// emojis, theme colors) but PAYOUTS + WILD/SCATTER flags do NOT. The
+// engine math, reel strips, Monte Carlo RTP, and verifier replay are
+// unaffected. Old-version (pre-6.1.10) and current spins both verify
+// against PAYTABLE_V1 / PAYTABLE_V2 — names are display-only.
 export const CLASSIC_SYMBOLS: SlotSymbolDef[] = [
-  { id: 0, name: 'Cherry',     emoji: '🍒', color: '#d62828', payouts: [2,  5,   10,  18]  },
-  { id: 1, name: 'Lemon',      emoji: '🍋', color: '#f1c40f', payouts: [2,  5,   14,  22]  },
-  { id: 2, name: 'Orange',     emoji: '🍊', color: '#ff8c42', payouts: [3,  8,   18,  30]  },
-  { id: 3, name: 'Plum',       emoji: '🍇', color: '#7c3aed', payouts: [4,  12,  27,  52]  },
-  { id: 4, name: 'Bell',       emoji: '🔔', color: '#ffc857', payouts: [5,  20,  45,  85]  },
+  { id: 0, name: 'Claw',       emoji: '🦞', color: '#d62828', payouts: [2,  5,   10,  18]  },
+  { id: 1, name: 'Robot',      emoji: '🤖', color: '#fbbf24', payouts: [2,  5,   14,  22]  },
+  { id: 2, name: 'Eliza',      emoji: '👧', color: '#ff8c42', payouts: [3,  8,   18,  30]  },
+  { id: 3, name: 'Squirrel',   emoji: '🐿️', color: '#ff6b35', payouts: [4,  12,  27,  52]  },
+  { id: 4, name: 'Milady',     emoji: '🧢', color: '#ec4899', payouts: [5,  20,  45,  85]  },
   { id: 5, name: 'BAR',        emoji: '🎰', color: '#d62828', payouts: [10, 40,  90,  215] },
   { id: 6, name: 'Seven',      emoji: '7️⃣', color: '#ff3838', payouts: [20, 100, 270, 700] },
-  { id: 7, name: 'WILD',       emoji: '🦈', color: '#00d4ff', payouts: [5,  25,  68,  170], isWild: true },
+  { id: 7, name: 'Clawbster',  emoji: '🦞', color: '#d65950', payouts: [5,  25,  68,  170], isWild: true },
   { id: 8, name: 'BAR×2',      emoji: '🎰', color: '#c0223a', payouts: [12, 50,  110, 260] },
   { id: 9, name: 'BAR×3',      emoji: '🎰', color: '#a01828', payouts: [15, 60,  130, 340] },
 ];
@@ -223,21 +228,22 @@ export const CLASSIC_PAYTABLE = {
 // back slightly so the bonus paytable still feels richer-than-classic on
 // line wins without overshooting combined RTP.
 export const BONUS_SYMBOLS: SlotSymbolDef[] = [
-  { id: 0, name: 'Cherry',     emoji: '🍒', color: '#d62828', payouts: [2,  5,   10,  18]  },
-  { id: 1, name: 'Lemon',      emoji: '🍋', color: '#f1c40f', payouts: [2,  5,   14,  22]  },
-  { id: 2, name: 'Orange',     emoji: '🍊', color: '#ff8c42', payouts: [3,  9,   20,  32]  },
-  { id: 3, name: 'Plum',       emoji: '🍇', color: '#7c3aed', payouts: [4,  14,  30,  58]  },
-  { id: 4, name: 'Bell',       emoji: '🔔', color: '#ffc857', payouts: [5,  20,  45,  85]  },
+  { id: 0, name: 'Claw',       emoji: '🦞', color: '#d62828', payouts: [2,  5,   10,  18]  },
+  { id: 1, name: 'Robot',      emoji: '🤖', color: '#fbbf24', payouts: [2,  5,   14,  22]  },
+  { id: 2, name: 'Eliza',      emoji: '👧', color: '#ff8c42', payouts: [3,  9,   20,  32]  },
+  { id: 3, name: 'Squirrel',   emoji: '🐿️', color: '#ff6b35', payouts: [4,  14,  30,  58]  },
+  { id: 4, name: 'Milady',     emoji: '🧢', color: '#ec4899', payouts: [5,  20,  45,  85]  },
   { id: 5, name: 'BAR',        emoji: '🎰', color: '#d62828', payouts: [10, 40,  90,  215] },
   { id: 6, name: 'Seven',      emoji: '7️⃣', color: '#ff3838', payouts: [20, 100, 270, 700] },
-  { id: 7, name: 'WILD',       emoji: '🦈', color: '#00d4ff', payouts: [5,  25,  68,  170], isWild: true },
+  { id: 7, name: 'Clawbster',  emoji: '🦞', color: '#d65950', payouts: [5,  25,  68,  170], isWild: true },
   { id: 8, name: 'BAR×2',      emoji: '🎰', color: '#c0223a', payouts: [12, 50,  110, 260] },
   { id: 9, name: 'BAR×3',      emoji: '🎰', color: '#a01828', payouts: [15, 60,  130, 340] },
-  // Id 10 — Treasure Chest scatter. `payouts` MUST stay all-zero so the
-  // line evaluator's positional-payout lookup (`payouts[matchLen-2]`)
-  // returns 0 and the line is skipped. Scatter pay is computed in a
-  // separate engine pass (see SCATTER_PAY_TABLE).
-  { id: 10, name: 'Scatter',   emoji: '💰', color: '#ffd778', payouts: [0,  0,   0,   0  ], isScatter: true },
+  // Id 10 — Eliza Coin scatter (Phase 6.1.12 brand swap of Treasure
+  // Chest). `payouts` MUST stay all-zero so the line evaluator's
+  // positional-payout lookup (`payouts[matchLen-2]`) returns 0 and the
+  // line is skipped. Scatter pay is computed in a separate engine pass
+  // (see SCATTER_PAY_TABLE — 3/4/5 anywhere → 2×/8×/40× total predict).
+  { id: 10, name: 'Eliza Coin', emoji: '🪙', color: '#3b82f6', payouts: [0,  0,   0,   0  ], isScatter: true },
 ];
 
 // ---------------------------------------------------------------------------
