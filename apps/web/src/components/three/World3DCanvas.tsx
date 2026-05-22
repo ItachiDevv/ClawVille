@@ -958,7 +958,7 @@ async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
   //
   // KEEP THIS IN SYNC with the <Canvas dpr={...}> prop below.
   // -------------------------------------------------------------------------
-  const dprRange: readonly [number, number] = LOW_END_GPU_DETECTED ? [0.55, 0.7] : [0.75, 1];
+  const dprRange: readonly [number, number] = LOW_END_GPU_DETECTED ? [0.5, 0.65] : [0.75, 1];
   const rawDpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
   const dpr = Math.max(dprRange[0], Math.min(rawDpr, dprRange[1]));
   canvas.width = Math.round(cssW * dpr);
@@ -1073,15 +1073,15 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
     >
       <Canvas
         gl={glFactory as any}
-        // 2026-05-11 — DPR is detected per-device.
+        // 2026-05-22 — DPR floor dropped to [0.5, 0.65] on Iris Xe (was [0.55, 0.7]).
         //   Integrated/mobile GPU (Iris Xe, Adreno, Mali, Apple integrated):
-        //     [0.55, 0.7]  → 56% fewer fragments than [0.75, 1].
+        //     [0.5, 0.65] → 18% fewer fragments than [0.55, 0.7], 65% fewer than [1, 1].
         //   Discrete desktop GPU: [0.75, 1] (unchanged from prior).
-        // Fragment shading at full resolution on Iris Xe was a major chunk of
-        // frame time given 1.58M visible triangles through fog. 0.5 was tried
-        // earlier and judged too blurry; 0.7 keeps the scene crisp while
-        // halving the pixel count vs 1.0.
-        dpr={LOW_END_GPU_DETECTED ? [0.55, 0.7] : [0.75, 1]}
+        // History: 0.5 was tried in 2026-05-11 and judged too blurry on its own.
+        // After Wave 1 NPC cap + spring-bone LOD + pavilion VRAM relief landed,
+        // the scene is much less fragment-bound, so dropping the cap to 0.5 floor
+        // is now visually acceptable on the device classes that need it.
+        dpr={LOW_END_GPU_DETECTED ? [0.5, 0.65] : [0.75, 1]}
         // MUST be "always" — R3F v9 with an async gl factory appears to skip
         // calling the factory entirely when frameloop="never" is set, so the
         // Canvas never initializes. "always" drives the normal RAF loop.
