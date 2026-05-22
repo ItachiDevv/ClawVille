@@ -35,7 +35,10 @@ import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { CosmeticLoader } from '@/lib/three/cosmetic-loader';
 import { subscribeEmote } from '@/lib/three/emote-bus';
 import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
-import { clampMovement2D } from '@/lib/three/collision/world-colliders';
+import {
+  clampMovement2D,
+  ENTITY_HALF_CHIBI,
+} from '@/lib/three/collision/world-colliders';
 
 // ---------------------------------------------------------------------------
 // GLB-based player avatar — lobster.glb model = 1-2 draw calls
@@ -266,6 +269,11 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
    */
   const pitchRef = useRef(0);
   const terrainYRef = useRef(-2);
+  // walkableYRef: current walkable-surface Y from collision system.
+  // Updated each frame from clamped.groundY. When -2, falls back to terrain.
+  // Allows stair/ramp zones (e.g. shisha-oasis) to lift the avatar's Y
+  // without blocking XZ movement. Lerped via terrainYRef blend coefficient.
+  const walkableYRef = useRef(-2);
   const { scene: threeScene, camera } = useThree();
 
   // Load a fresh VRM instance for the player. Stable instanceId 'player-avatar'
@@ -495,7 +503,10 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
       // Convert game-px → world, clamp, convert back. Zero per-frame allocations.
       const prevWX = avatarPositionRef.x - HALF_W;
       const prevWZ = avatarPositionRef.y - HALF_H;
-      const clamped = clampMovement2D(prevWX, prevWZ, newX - HALF_W, newY - HALF_H);
+      const clamped = clampMovement2D(prevWX, prevWZ, newX - HALF_W, newY - HALF_H, ENTITY_HALF_CHIBI);
+      // Update walkable surface Y — used below to lift avatar onto stair zones.
+      // groundY is -2 (sand floor) when not over any walkable collider.
+      walkableYRef.current = clamped.groundY;
       store.setAvatarPosition(clamped.x + HALF_W, clamped.z + HALF_H);
     }
 
@@ -535,7 +546,11 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
     const airborne = jumpState.phase !== 'grounded' && jumpState.phase !== 'charging'
                   || jumpState.playerAltitude > 0;
     const bob = airborne ? 0 : (isMoving ? 0 : Math.sin(elapsed * 2) * 0.08);
-    group.position.y = terrainYRef.current + bob
+    // effectiveFloorY: when walkableYRef > terrainYRef (avatar is on a stair/ramp
+    // collider zone), use the walkable surface height so feet ride the stair.
+    // When not on any walkable zone, walkableYRef = -2 = sand floor = same as terrain.
+    const effectiveFloorY = Math.max(terrainYRef.current, walkableYRef.current);
+    group.position.y = effectiveFloorY + bob
                      + jumpState.heightOffset + jumpState.playerAltitude;
 
     // Runtime foot-anchor (2026-05-18). The Mixamo crouch/squat clip
@@ -672,6 +687,10 @@ function PlayerAvatarGLBInner() {
   const animGroupRef = useRef<THREE.Group>(null);
   const rotRef = useRef(0);
   const terrainYRef = useRef(-2); // -2 matches sand floor Y so avatar spawns flush with terrain
+  // walkableYRef: tracks the walkable-surface Y returned by clampMovement2D.
+  // When the GLB avatar enters a walkable collider zone (e.g. shisha-oasis stairs),
+  // this ref rises to the stair topY and the avatar's Y follows.
+  const walkableYRef = useRef(-2);
   const { scene: threeScene, camera } = useThree();
 
   attachKeyListeners();
@@ -933,7 +952,10 @@ function PlayerAvatarGLBInner() {
       // Convert game-px → world, clamp, convert back. Zero per-frame allocations.
       const prevWX = avatarPositionRef.x - HALF_W;
       const prevWZ = avatarPositionRef.y - HALF_H;
-      const clamped = clampMovement2D(prevWX, prevWZ, newX - HALF_W, newY - HALF_H);
+      const clamped = clampMovement2D(prevWX, prevWZ, newX - HALF_W, newY - HALF_H, ENTITY_HALF_CHIBI);
+      // Update walkable surface Y — used below to lift avatar onto stair zones.
+      // groundY is -2 (sand floor) when not over any walkable collider.
+      walkableYRef.current = clamped.groundY;
       store.setAvatarPosition(clamped.x + HALF_W, clamped.z + HALF_H);
     }
 
@@ -984,12 +1006,16 @@ function PlayerAvatarGLBInner() {
     const finalBob = airborne
       ? 0
       : (isMoving ? Math.abs(Math.sin(elapsed * BOB_SPEED)) * BOB_AMPLITUDE : Math.sin(elapsed * 2) * 0.15);
+    // effectiveFloorY: when walkableYRef > terrainYRef (avatar entered a stair/ramp
+    // collider zone), use the walkable surface height so feet ride the stair.
+    // When not on any walkable zone, walkableYRef = -2 = sand floor = terrain.
+    const effectiveFloorY = Math.max(terrainYRef.current, walkableYRef.current);
     // Subtract pivotOffsetY to ground the avatar regardless of GLB pivot placement.
     // pivotOffsetY = localMinY * finalScale (world units).
     // If pivot is above feet (localMinY < 0), pivotOffsetY is negative —
-    // subtracting a negative raises the model so feet align with terrainY.
+    // subtracting a negative raises the model so feet align with effectiveFloorY.
     // jumpState.playerAltitude stacks on top of heightOffset for full 3D swim.
-    group.position.y = terrainYRef.current + 2 + (airborne ? 0 : finalBob)
+    group.position.y = effectiveFloorY + 2 + (airborne ? 0 : finalBob)
                      + jumpState.heightOffset + jumpState.playerAltitude - pivotOffsetY;
 
     // Idle rotation freeze: don't snap back to +Z when movement stops — preserve last moved direction so the avatar doesn't twist back after every WASD release.
