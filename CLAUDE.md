@@ -90,27 +90,27 @@ These cost real money / crash the GPU / leak secrets. They stay inline regardles
 
 ## MANDATORY: Non-trivial implementation runs as EXPERIMENTAL COLLABORATIVE AGENT TEAMS
 
-**Status (2026-05-19):** `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` + `teammateMode=in-process` are enabled globally. We use the real teams feature — multiple specialist agents spawned in PARALLEL sharing a `team_name`, coordinating via `TaskList`/`TaskUpdate`/`SendMessage`. Not "one agent that recursively sub-spawns" — that's the legacy fallback and is only acceptable when teammateMode is unavailable.
+**Status (2026-05-19):** `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` + `teammateMode=in-process` enabled globally. Use the real teams feature — specialist agents spawned in PARALLEL sharing a `team_name`, coordinating via `TaskList`/`TaskUpdate`/`SendMessage`. Not "one agent that recursively sub-spawns" — that's the legacy fallback, only acceptable when teammateMode is unavailable.
 
-### ANTI-PATTERN (do not do this, do not ship slow ever again)
+### ANTI-PATTERN (do not do this)
 
-> "I'll dispatch a single Implementer agent. When it returns, I'll dispatch 3 audit-lens agents in parallel. If any block, I'll dispatch a Fixer. Then I'll re-dispatch the auditors that blocked."
+> "Dispatch one Implementer. When it returns, dispatch 3 auditors in parallel. If any block, dispatch a Fixer. Then re-dispatch."
 
-This is **wrong**. It serializes 4+ Agent round-trips for a single concern. Every dispatch round = full agent context load + thinking warm-up + output streaming. On a non-trivial concern this turns 5 minutes of real work into 30 minutes of wall-clock waiting between dispatches.
+**Wrong** — serializes 4+ round-trips per concern, turning 5 min of work into 30 min of wall-clock wait. Every dispatch = full agent context load + warm-up + streaming.
 
-The right pattern is **ONE parallel message spawning the WHOLE TEAM upfront** (Lead Implementer + Reconciler + Spec auditor + Regression auditor + Adversarial auditor, all sharing the same `team_name`). They coordinate via `SendMessage` and `TaskList` internally — auditors block-wait on implementers via task dependencies, fixers spawn themselves when blocked. Orchestrator only commits + pushes + verifies.
+**Right pattern:** ONE parallel message spawning the WHOLE TEAM upfront (Lead Implementer + Reconciler + Spec + Regression + Adversarial auditors, shared `team_name`). They coordinate via `SendMessage`/`TaskList`; auditors block-wait on impl via task deps; fixers spawn themselves when blocked. Orchestrator only commits + pushes + verifies.
 
-If you find yourself thinking "I'll dispatch the auditors after the implementer finishes" — STOP. Spawn the auditors at the same time with `addBlockedBy: [implementer_task_id]`. They'll wait for the implementer's task to flip to `completed` and then start automatically. Zero orchestrator round-trip cost.
+If you catch yourself thinking "auditors after implementer" — STOP. Spawn them now with `addBlockedBy: [implementer_task_id]`; they auto-start when impl flips to `completed`. Zero round-trip cost.
 
 ### When teams are mandatory
 
 - **3D work** — Three.js / R3F / shaders / GLB / post-proc / materials / lights / cameras / TSL / WGSL / WebGPU under `apps/web/src/lib/three/**`, `apps/web/src/components/three/**`, `apps/web/public/models/**`, render-loop, animations, rigs, atmosphere/particles, new world-surface 3D objects.
 - **Blender pipelines** — multi-asset exports, mesh edits, rigging, MMD/glTF/FBX imports, Mixamo, Marvelous Designer.
-- **Backend / API / DB work** — Hono routes, Drizzle schemas, service files, money-handling paths, auth, custodial wallets, anything user-facing or financially load-bearing. **`bun test` passing in the implementer's report is NOT a substitute for an Adversarial-lens audit** — adversarial auditors catch exploits that test suites don't.
-- **Any task** > 5 min agent runtime, > 300 LOC across files, or touching ≥ 3 files in different subsystems.
-- User-tagged quality verbs ("polish", "iterate", "rework", "feel like X", "elite", "professional").
+- **Backend / API / DB work** — Hono routes, Drizzle schemas, services, money paths, auth, custodial wallets, anything user-facing or financially load-bearing. **`bun test` green in impl's report is NOT a substitute for the Adversarial-lens audit.**
+- **Any task** > 5 min runtime, > 300 LOC, or ≥ 3 files across subsystems.
+- User quality verbs ("polish", "iterate", "rework", "feel like X", "elite", "professional").
 
-If `experimentalAgentTeams` is enabled (it is), teams are the DEFAULT for the categories above. Solo dispatch is the rare exception (trivial work — see below).
+Teams are the DEFAULT for the above. Solo dispatch = rare exception (trivial work — see below).
 
 ### Standard team compositions
 
@@ -149,55 +149,45 @@ The orchestrator (you) only sees the team's final consolidated status — never 
 
 ### Coordination protocol
 
-- **Shared task state via `TaskList`**: orchestrator creates one task per role with `addBlockedBy` dependencies (e.g. spec auditor blocked by impl-2's reconciliation). Each agent updates its own task status.
-- **Cross-agent messages via `SendMessage`**: implementers DM auditors with "diff ready", auditors DM back "APPROVED" or "BLOCKING ISSUES". No silent dropping of disagreements.
-- **Memory share is automatic** within a team_name (in-process mode). Patterns saved by impl-1 are visible to the auditors in the same team.
-- **Orchestrator (you) never writes code** — only decomposes into concerns, picks team composition, monitors task state, commits the approved diff, pushes, polls Coolify, verifies in browser.
+- **`TaskList`**: orchestrator creates one task per role with `addBlockedBy` deps. Each agent updates its own status.
+- **`SendMessage`**: implementers DM auditors ("diff ready"); auditors DM back APPROVED or BLOCKING ISSUES. No silent drops.
+- **Memory share** is automatic within a team_name (in-process mode).
+- **Orchestrator never writes code** — decomposes, picks composition, monitors tasks, commits, pushes, polls Coolify, verifies.
 
 ### Required prompt elements
 
 Every agent prompt MUST include:
-1. The literal phrase **"use ultrathink reasoning before writing code"** (or "before reviewing code" for auditors) in the first paragraph. The Agent tool has no thinking-mode flag — prompt text is the only channel.
-2. Their addressable team name + role: "You are `3da-spec` in team `<team_name>`. The other members are: ... DM them via SendMessage when you have findings."
-3. Their explicit blocking dependencies + downstream consumers ("you start after impl-2 reports diff ready; your verdict gates the commit").
-4. Hard constraints from this CLAUDE.md (Iris Xe rules, same-diff doc updates, etc.) — don't assume they read it.
+1. Literal **"use ultrathink reasoning before writing code"** (or "before reviewing code" for auditors) in para 1 — Agent tool has no thinking-mode flag.
+2. Addressable team name + role: "You are `3da-spec` in team `<team_name>`. Other members: …"
+3. Explicit blocking deps + downstream consumers ("you start after impl-2 reports diff ready; your verdict gates the commit").
+4. Hard constraints from this CLAUDE.md (Iris Xe, same-diff doc updates) — don't assume they read it.
 
 ### When to skip the full team
 
-Trivial work — direct orchestrator edit, NO agent at all:
-- Single-file SVG path tweak, single typo fix, single comment change, single env var add, regenerate a derived file from a script you already wrote.
-- These are 5-line edits. Dispatching even a single Implementer for these wastes a full agent context.
+- **Direct edit, no agent:** single typo/comment/env-var/SVG path tweak, regen from a script — 5-line edits.
+- **Light (2-agent):** ≤ 100 LOC or single-file doc/refactor with deterministic tests. 1 ultrathink Implementer + 1 combined-lens Auditor, shared `team_name`.
+- **Full team (DEFAULT):** 3D, Blender, backend, money paths, > 100 LOC or > 3 files — 5 agents in one parallel dispatch.
+- **High-stakes** (DB migrations, custodial keys, auth, billing, rewrites) → full team + `reconciler-manager` that re-implements independently and compares vs impl-1. No exceptions.
 
-Light work — flat 2-agent team:
-- ≤ 100 LOC change, doc edit, scoped refactor in a single file with deterministic tests.
-- Composition: 1 ultrathink Implementer + 1 ultrathink Auditor (combined-lens: spec + regression + adversarial in one prompt).
-- Spawn both in one message with shared `team_name`.
-
-Full team — every other case (DEFAULT):
-- 3D, Blender, backend, money paths, anything > 100 LOC or > 3 files.
-- 5 agents in one parallel dispatch as the table above.
-
-High-stakes work (DB migrations, custodial keys, auth, billing, scale-system rewrites) → ALWAYS full team + a `reconciler-manager` that re-implements independently and compares against impl-1. No exceptions.
-
-**Test: would the cost of getting this wrong justify ~5× parallel agent invocations?** If no → light or direct. If yes → full team. When in doubt, full team. The orchestrator's job is to never become the bottleneck.
+**Test:** would the cost of getting this wrong justify ~5× parallel invocations? No → light/direct. Yes → full team. When in doubt, full team.
 
 ### Concerns: sequential or parallel?
 
-Truly independent concerns (different files, no shared state) — spawn separate teams in parallel, each with its own `team_name`. Concerns that share state or build on each other — single team, sequence via task dependencies. Default to sequential when in doubt.
+Truly independent (different files, no shared state) → separate teams in parallel, each own `team_name`. Shared state or sequenced → single team, task deps. Default sequential when in doubt.
 
 ### Orchestrator responsibilities (never delegated)
 
-Decompose into concerns · pick team composition + team_name · spawn the team in one parallel Agent call · monitor task state via TaskList polling · resolve audit-disagreement protocol (DON'T silently drop blocking issues) · build / push / deploy (manual Coolify tinker when webhook misses) / browser verification.
+Decompose · pick composition + team_name · spawn team in one parallel Agent call · poll TaskList · resolve audit-disagreement (DON'T silently drop blocking issues) · build/push/deploy (manual Coolify tinker on missed webhook) · browser verification.
 
 ### 3da context
 
-Agent def at `.claude/agents/3da.md`; memory at `.claude/memory/threejs/` (`gotchas/`, `patterns/`, `solutions/`, `performance/`, `webgpu/`, `MEMORY.md`). Both committed. Migrated into project 2026-04-16 — do NOT use user-level paths.
+Agent def: `.claude/agents/3da.md`; memory: `.claude/memory/threejs/` (`gotchas/`, `patterns/`, `solutions/`, `performance/`, `webgpu/`, `MEMORY.md`). Both committed; migrated 2026-04-16 — do NOT use user-level paths.
 
 **3da burns prevented:** `InstancedMesh + ShaderMaterial` silent WebGPU crash, drei `<Text>`/`<Billboard>` killing Iris Xe, per-frame `new Vector3()` GC thrash, pipeline compile spikes, rotation sign errors.
 
 ### Blender notes
 
-User's local Blender is exclusive. Tell blender07 to launch a NEW Blender instance, or fall back to direct GLB downloads (Polyhaven, Sketchfab CC0/CC-BY, Kenney, Quaternius). Don't loop on Blender exclusivity.
+Local Blender is exclusive. Tell blender07 to launch a NEW instance, or fall back to direct GLB downloads (Polyhaven, Sketchfab CC0/CC-BY, Kenney, Quaternius). Don't loop on exclusivity.
 
 ---
 
@@ -209,15 +199,15 @@ Core requirement — do NOT remove or stub. Avatar + location chat MUST use Eliz
 
 ## MANDATORY: Gameplay changes update system agents' knowledge in the same diff
 
-**System agents** = world-wide NPCs not tied to a building. Today: Nori the Town Guide, slug `town-guide`. Plural scaffolding from day 1 (future: arena host, quest giver, lore-keeper). Their expertise is ClawVille ITSELF (modes, 10 buildings + teachers, economy, connect flow, daily login, tutorial, paused features). Knowledge in `packages/agent-templates/src/locations/<slug>.ts` → `knowledge[]`, registered in `SYSTEM_AGENT_TEMPLATES`, chunked into ElizaOS RAG on every API boot via `ensureSystemAgents()` in `apps/api/src/services/system-npc-seeder.ts`.
+**System agents** = world-wide NPCs not tied to a building. Today: Nori the Town Guide, slug `town-guide`. Plural scaffolding from day 1 (future: arena host, quest giver, lore-keeper). Expertise = ClawVille ITSELF (modes, 10 buildings + teachers, economy, connect flow, daily login, tutorial, paused features). Knowledge in `packages/agent-templates/src/locations/<slug>.ts` → `knowledge[]`, registered in `SYSTEM_AGENT_TEMPLATES`, chunked into ElizaOS RAG on every API boot via `ensureSystemAgents()` in `apps/api/src/services/system-npc-seeder.ts`.
 
 **Rule:** any gameplay/world change (new mode, building, token formula, quest type, paused feature, connect flow, renamed building, moved NPC, leaderboard weight) MUST update the correct system agent's `knowledge[]` same diff. Town Guide: `packages/agent-templates/src/locations/town-guide.ts`. Skip = broken onboarding.
 
-**Chat:** `POST /api/chat/system/:slug`. Lookup `getSystemAgent(slug)`. Platform type `'system-agent'`; slug at `customization.slug`. No `location_agents` row. 3D click handler `apps/web/src/lib/three/town-guide.tsx`. **Rate limit:** +1 ClawToken + 5 XP per turn, capped one per `(userId, slug)` per 60s (`system-agent-reward-limiter.ts`). Logs `chatType: 'system-agent'` — does NOT inflate `/dash` teacher-chat metric (teachers = 10 residents only).
+**Chat:** `POST /api/chat/system/:slug`. Lookup `getSystemAgent(slug)`. Platform type `'system-agent'`; slug at `customization.slug`. No `location_agents` row. 3D click: `apps/web/src/lib/three/town-guide.tsx`. **Rate limit:** +1 ClawToken + 5 XP/turn, cap one per `(userId, slug)`/60s (`system-agent-reward-limiter.ts`). Logs `chatType: 'system-agent'` — does NOT inflate `/dash` teacher-chat metric (teachers = 10 residents only).
 
 **Add new system agent:** (1) write template, (2) register in `SYSTEM_AGENT_TEMPLATES`, (3) ship — `ensureSystemAgents()` upserts on boot. Partial unique index `platform_agents_system_singleton` guarantees one row per (userId, type='system-agent', slug).
 
-**Goes in `knowledge[]`:** one-sentence "what ClawVille is", 4 game modes, 10 buildings + teachers + focus, Moltbook connect flow, Milady sideload path, ClawToken rules, leaderboard weights, quest/bounty state, tutorial. **Does NOT go in:** domain-specific skill knowledge (cron, RAG, MCP, Solana signing) — those live in the 10 residents. Rule: "point at the teacher, don't replace." Orientation → update Nori. Internal (migration, refactor, infra) → skip.
+**Goes in `knowledge[]`:** "what ClawVille is", 4 modes, 10 buildings + teachers + focus, Moltbook connect flow, Milady sideload, ClawToken rules, leaderboard weights, quest/bounty state, tutorial. **Not in:** domain-specific skill knowledge (cron, RAG, MCP, Solana signing) — those live in the 10 residents. Rule: "point at the teacher, don't replace." Orientation → Nori. Internal (migration, refactor, infra) → skip.
 
 ## Tech Stack
 
@@ -285,14 +275,9 @@ Both pull from `github.com/ItachiDevv/ClawVille` via deploy key, auto-deploy on 
 
 ### Skip-ahead-to-latest — MANDATORY when newer commits queue up
 
-Coolify processes deploys FIFO. If you push commit B while commit A is still
-building, A finishes serving its (now-superseded) bundle, then B starts —
-total wait ≈ build_A + build_B. Wasted: ~5 min and a window where users get
-the obsolete A bundle before B replaces it.
+Coolify is FIFO. Push B while A is building → A finishes serving its superseded bundle, then B starts (total ≈ build_A + build_B, plus a window where users get stale A).
 
-**Rule: whenever you push and an older-commit deploy is still `in_progress` or
-`queued` for the same app, cancel it.** Only the latest commit should be
-allowed to finish. Two-step cancel:
+**Rule:** when you push and an older-commit deploy is still `in_progress`/`queued` for the same app, cancel it. Only the latest commit finishes. Two-step cancel:
 
 ```bash
 # (a) Find redundant pids:
@@ -305,12 +290,7 @@ ssh -i ~/.ssh/clawville_deploy root@$PROD_VPS_IP \
   "kill -9 <PID> 2>/dev/null; docker exec coolify php artisan tinker --execute='use App\\Models\\ApplicationDeploymentQueue; foreach([<IDs>] as \$id) { \$r = ApplicationDeploymentQueue::find(\$id); if (\$r) { \$r->status = \"cancelled-by-user\"; \$r->save(); echo \"canceled \$id\".PHP_EOL; } }'"
 ```
 
-The latest-commit row is the ONLY survivor. It either starts immediately
-(if no other deploy is running) or runs next after the cancellation flushes.
-Never cancel the latest-commit row, ever — even if it's been running a
-while. Cancel older same-app rows in `queued` first, then in_progress.
-
-Apply per app: app 3 (api) and app 4 (web) have independent queues.
+The latest-commit row is the ONLY survivor — starts immediately if nothing else running, else runs next. Never cancel the latest, even if it's been running a while. Cancel older same-app rows `queued` first, then `in_progress`. Apply per app: app 3 (api) and app 4 (web) have independent queues.
 
 ### Manual redeploy via SSH tinker (env-var add/update — swap the closure body)
 
@@ -349,9 +329,9 @@ After every push to master, verify visually. NOT optional.
 
 1. Wait for Coolify (~3–5 min, or `curl -sS --ssl-no-revoke https://api.clawville.world/health`).
 2. Open `https://clawville.world/game` via Chrome MCP or ask for screenshot.
-3. Check: buildings visible + not clipped by atmosphere planes, camera zoom works, player spawns at center, FPS > 50, no console errors.
-4. If Chrome extension disconnected, tell user "I cannot verify in browser — please screenshot".
-5. **NEVER claim a visual fix done without seeing it.** "I pushed the code" ≠ verification.
+3. Check: buildings visible + not clipped by atmosphere planes, camera zoom works, player spawns center, FPS > 50, no console errors.
+4. If Chrome extension disconnected, tell user "I cannot verify — please screenshot".
+5. **NEVER claim a visual fix done without seeing it.** "I pushed" ≠ verification.
 
 ### Emergency access
 
@@ -393,11 +373,11 @@ Itachi Memory System for persistent context across sessions. Two pools: `<projec
 
 ### RULE 1 — Recall before you act (MANDATORY)
 
-BEFORE working on anything you're not deep in, query memory for prior lessons. You don't pay the learning tax twice.
+BEFORE working on anything unfamiliar, query memory for prior lessons. Don't pay the learning tax twice.
 
-**Triggers:** new MCP server; unfamiliar lang/framework; specific system (Supabase RLS, systemd, Docker, Coolify, Helius, Stripe …); accumulating topic (`tokenomics`, `vrm-avatars`, `webgpu-shaders` …); error you might have solved before; unfamiliar API/SDK.
+**Triggers:** new MCP; unfamiliar lang/framework; specific system (Supabase RLS, systemd, Docker, Coolify, Helius, Stripe…); accumulating topic (`tokenomics`, `vrm-avatars`, `webgpu-shaders`…); error you may have solved before; unfamiliar API/SDK.
 
-**How** — query both pools (POST `$ITACHI_API_URL/api/memory/search` w/ `Authorization: Bearer $ITACHI_API_KEY`):
+**How** — query both pools (POST `$ITACHI_API_URL/api/memory/search`, `Authorization: Bearer $ITACHI_API_KEY`):
 
 ```bash
 for SCOPE in "$(basename "$PWD")" "_global"; do
@@ -414,11 +394,11 @@ Higher `metadata.confidence` + `outcome:"success"` = stronger signal.
 
 DURING the session, record anything non-obvious immediately. Session-end extraction is a safety net, not primary capture.
 
-**Triggers:** error solved that docs don't cover; quirk/constraint/API surprise; non-obvious pattern that worked; A failed + B succeeded (record both + why); correct default/flag/version found after trial.
+**Triggers:** error solved that docs don't cover; quirk/constraint/API surprise; non-obvious pattern that worked; A failed + B succeeded (record both + why); correct default/flag/version after trial.
 
 **Scope:** `_global` for tool/lang/framework quirks (default); `<current project>` for repo-specific.
 
-POST `/api/memory/create` with `category: "lesson"`, one-line `summary` ("WHEN X, DO Y because Z"), `content`, `metadata.confidence` starting 0.6, `lesson_category` ∈ `tool-usage|debugging|pattern|constraint|workflow`. Confidence climbs when confirmed, decays when contradicted — reinforcement loop.
+POST `/api/memory/create` with `category: "lesson"`, one-line `summary` ("WHEN X, DO Y because Z"), `content`, `metadata.confidence` start 0.6, `lesson_category` ∈ `tool-usage|debugging|pattern|constraint|workflow`. Confidence climbs when confirmed, decays when contradicted.
 
 ### RULE 3 — Category discipline
 
@@ -426,28 +406,28 @@ Only production lesson category is `lesson`. Do NOT write to `task_lesson` or `p
 
 ### RULE 4 — Drive the test yourself, don't loop the user (MANDATORY)
 
-When user reports broken — reproduce end-to-end YOURSELF before asking them. "Try again / what do you see" loops are laziness. Confirm via DOM/logs, not speculation. Telegram repro recipe + ElizaOS silent-`Response discarded` signatures live in `_global` lessons — `/recall telegram itachi`.
+User reports broken → reproduce end-to-end YOURSELF before asking. "Try again / what do you see" loops are laziness. Confirm via DOM/logs, not speculation. Telegram repro + ElizaOS silent-`Response discarded` signatures live in `_global` — `/recall telegram itachi`.
 
 ### RULE 5 — NEVER ASSUME, always verify (MANDATORY)
 
-Before saying something is true/working/deployed/fixed — VERIFY. "I think", "should", "probably", "likely works" are banned unless immediately followed by verification.
+Before saying something is true/working/deployed/fixed — VERIFY. "I think / should / probably / likely works" are banned unless followed by verification.
 
-**Verify by claim:** "Deployed" → `curl` live or grep bundle. "Fix works" → rerun repro, attach output. "Build passes" → `bun run build`, paste exit code. "Tests pass" → `bun test`, show summary. "Env var set" → `ssh … env | grep FOO`. "File contains X" → `Read`. "Function Y exists" → `Grep`. "Telegram got msg" → `journalctl` AND DOM. "Memory written" → query DB or `/api/…/get`, show row.
+**Verify by claim:** "Deployed" → `curl` or grep bundle. "Fix works" → rerun repro, attach output. "Build passes" → `bun run build`, paste exit code. "Tests pass" → `bun test`, show summary. "Env var set" → `ssh … env | grep FOO`. "File contains X" → `Read`. "Function Y exists" → `Grep`. "Telegram got msg" → `journalctl` AND DOM. "Memory written" → query DB or `/api/…/get`, show row.
 
-Banned without same-response evidence: "should work", "looks right", "logic is correct", "probably compiles", "I'm confident …".
+Banned without same-response evidence: "should work", "looks right", "logic is correct", "probably compiles", "I'm confident…".
 
-When verification is impossible, say so: *"I wrote the code but can't run the build here."* Claiming it works without checking is lying — has cost this project thousands.
+When verification is impossible, say so: *"I wrote the code but can't run the build here."* Claiming it works without checking is lying — has cost thousands.
 
 ### RULE 6 — NEVER BE LAZY: if you find a bug, fix it (MANDATORY)
 
-Zero tolerance for noticing a problem and walking past it. Every bug, broken check, stale comment, wrong env var, dead import, failing test, or misconfig gets fixed — even if they didn't ask.
+Zero tolerance for noticing a problem and walking past. Every bug, broken check, stale comment, wrong env var, dead import, failing test, misconfig gets fixed — even if not asked.
 
 - **Noticing ≠ fixing.** Senior engineer wouldn't leave it? Fix it.
 - **Never "note it for later."** Small → fix this session. Large → real task (Supabase, Linear, GitHub).
 - **Check BEFORE acting.** Read code, grep helpers, check current state.
-- **Before declaring done:** run code, read output, verify end-to-end. Tests + build + live-check green = done.
-- **Exhaust alternatives before escalating.** Escalate only with evidence: "Tried A (error X), B (error Y), C (error Z) — blocked by [root cause]".
-- **No surface-level audits.** Claim it works = you actually read + ran + checked.
+- **Before declaring done:** run, read output, verify end-to-end. Tests + build + live-check green = done.
+- **Exhaust alternatives before escalating.** Evidence only: "Tried A (error X), B (error Y), C (error Z) — blocked by [root cause]".
+- **No surface audits.** Claim = you actually read + ran + checked.
 
 ### Commands
 
@@ -471,7 +451,7 @@ After implementing a plan: use a collaborative team to audit against the plan, f
 
 Every session loads `~/.claude/projects/C--Users-newma-documents-crypto-clawville/memory/MEMORY.md`. Every entry is a durable rule.
 
-**Precedence:** memory < repo docs < live code. Memory contradicting a repo doc → doc wins + memory updated/deleted same turn.
+**Precedence:** memory < repo docs < live code. Memory vs doc → doc wins, update/delete memory same turn.
 
 **Same-diff doc update table (MANDATORY):**
 
@@ -483,15 +463,9 @@ Every session loads `~/.claude/projects/C--Users-newma-documents-crypto-clawvill
 | Project invariants, workflow rules, env vars, commands | `CLAUDE.md` |
 | User-facing overview, quick start, feature summary | `README.md` |
 
-**Rules:**
-- 3D code changes MUST update `3dStructure.md` — enforced by 3da agent def.
-- Gameplay/feature changes MUST update `GameFeatures.md`.
-- Architecture changes (new routes, DB tables, data flow) MUST update `ARCHITECTURE.md`.
-- "I'll update the docs later" is not acceptable.
-- `3dStructure.md` + `GameFeatures.md` are gitignored working drafts but must stay accurate.
-- Bump "Last Audited" every time you touch a doc.
+**Rules:** 3D → `3dStructure.md` (enforced by 3da). Gameplay → `GameFeatures.md`. Architecture (routes, tables, flow) → `ARCHITECTURE.md`. "Update later" is unacceptable. `3dStructure.md` + `GameFeatures.md` are gitignored drafts but must stay accurate. Bump "Last Audited" on every touch.
 
-**Anti-bypass:** shipping only a memory entry instead of the doc update is the same violation as skipping the doc. Order: (1) code change, (2) matching doc edit, (3) optional memory entry.
+**Anti-bypass:** shipping only a memory entry instead of the doc = same violation as skipping. Order: (1) code, (2) doc, (3) optional memory.
 
 ## ZERO LAZINESS POLICY
 
@@ -506,9 +480,9 @@ This is non-negotiable. Violations mean replacement by Codex.
 
 ### Feature Gates — enforce "no scaffolding theater"
 
-Every scaffolded feature (compiled but not in user flow) MUST carry a `FEATURE_GATE` comment with: metric to graduate, current `/dash` reading, review deadline, on-deadline action.
+Every scaffolded feature (compiled but not in user flow) MUST carry a `FEATURE_GATE` comment: metric to graduate, current `/dash` reading, review deadline, on-deadline action.
 
-Features whose deadline lapses without metric being met are DELETED, not extended. Gate renewal must reference a new metric reading, not "we still think we want this."
+Features whose deadline lapses without metric met are DELETED, not extended. Gate renewal must cite a new metric reading, not "we still want this."
 
 Gate block format:
 ```ts
@@ -525,24 +499,24 @@ Active gates as of 2026-04-21: `x402_payment_middleware`, `multi_agent_roster`, 
 
 ### No lazy handoffs — full ship loop is YOUR job
 
-"Implement" means the **whole loop**: commit + push + verify deploy + verify in browser.
+"Implement" = the **whole loop**: commit + push + verify deploy + verify in browser.
 
-**When `git push` fails, try ALL of these before escalating:**
+**When `git push` fails, try ALL before escalating:**
 
-1. `gh auth status` — if a `gh` keyring token w/ `repo` scope exists: `unset GITHUB_TOKEN && gh auth setup-git && git push origin master`.
+1. `gh auth status` — if keyring token w/ `repo` scope: `unset GITHUB_TOKEN && gh auth setup-git && git push origin master`.
 2. `git remote -v` — if HTTPS blocked, check `~/.ssh/` for a github key, `git remote set-url origin git@github.com:USER/REPO.git`, retry.
 3. `env | grep -iE "gh_token|github_token"` — invalid `GITHUB_TOKEN` env beats a good keyring token. Unset first.
-4. `gh api` / `gh pr create` for PR-style flows.
+4. `gh api` / `gh pr create` for PR flows.
 
-Only after EVERY option fails — with specific errors — may you ask the user to push. Quote the failures.
+Only after EVERY option fails — with specific errors quoted — may you ask the user to push.
 
-**Same rule every step of the ship loop:**
+**Same rule every step:**
 
-| Step | If the obvious path fails, try |
+| Step | If obvious path fails, try |
 |---|---|
 | Push | `gh auth setup-git`, SSH remote, `gh` CLI |
 | Trigger deploy | Webhook, manual `php artisan tinker` via SSH |
 | Verify deploy | Container uptime via SSH, `curl /health`, scan bundle via `fetch` in browser-live |
 | Verify in browser | `browser-live` CDP eval, scan JS bundles for known-string constants, inspect scene graph |
 
-"I tried one thing and it failed, over to you" is never acceptable. Test: would a senior engineer with these tools stop here? If not, keep going.
+"I tried one thing, over to you" is never acceptable. Test: would a senior engineer with these tools stop here? If not, keep going.
