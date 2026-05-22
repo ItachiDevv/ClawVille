@@ -52,6 +52,19 @@ export interface ServerCollider2D {
   centerZ: number;
   halfX: number;
   halfZ: number;
+  /**
+   * If true this zone does NOT block XZ movement — entity Y is raised to topY instead.
+   * NPC simulation (server-side) ignores walkable zones in clampPosition2D (NPCs treat
+   * walkable zones as passable ground), but the field is present for schema parity with
+   * the client-side Collider2D interface. If server-side NPC Y-tracking is ever needed,
+   * consume clamped.groundY from clampPosition2D (TBD).
+   */
+  walkable?: boolean;
+  /**
+   * World Y of the walkable surface top. Only meaningful when walkable === true.
+   * Not currently consumed server-side (NPC Y is set by terrain raycast on the client).
+   */
+  topY?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -83,11 +96,25 @@ function buildServerColliders(): ServerCollider2D[] {
   // 2. Town-center prop colliders — hardcoded Three.js world-space positions.
   //    These MUST match the prop colliders in world-colliders.ts PROPS array.
   //    halfX/halfZ match the values in that file.
+  // Shisha-oasis mesh XZ center is offset from group origin due to asymmetric GLB layout.
+  // World center: X = STALL_X(1273) + X_offset(-94.6) ≈ 1178, Z = STALL_Z(-120) + Z_offset(-120.2) ≈ -240.
+  // Two zones replace the prior single AABB at (1273, -120) halfX=200 halfZ=160 (2026-05-22).
+  //   shisha-approach: walkable outer ring — NPC simulation treats as passable (walkable=true ignored server-side).
+  //   marketplace-stall: solid inner kiosk — blocks NPC pathfinding.
+  // Must match PROPS array in world-colliders.ts.
+  const SHISHA_SERVER_CENTER_X = 1178;
+  const SHISHA_SERVER_CENTER_Z = -240;
+
   const PROP_COLLIDERS: ServerCollider2D[] = [
     { id: 'auction-podium',        centerX:     0, centerZ: -1000, halfX: 160, halfZ: 160 },
     { id: 'town-directory-sign',   centerX:     0, centerZ:  -120, halfX:  70, halfZ:  40 },
     { id: 'bazaar-stall',          centerX: -1273, centerZ:  -120, halfX: 180, halfZ: 140 },
-    { id: 'marketplace-stall',     centerX:  1273, centerZ:  -120, halfX: 200, halfZ: 160 },
+    // Shisha-oasis outer walkable approach zone (2026-05-22 per-GLB collider rework).
+    // Server-side NPC sim uses this as a passable area (walkable flag not enforced server-side).
+    // topY documented for schema parity with client; not consumed by clampPosition2D.
+    { id: 'shisha-approach',       centerX: SHISHA_SERVER_CENTER_X, centerZ: SHISHA_SERVER_CENTER_Z, halfX: 348, halfZ: 340, walkable: true, topY: 38 },
+    // Shisha-oasis solid inner kiosk — blocks NPCs from entering the central structure.
+    { id: 'marketplace-stall',     centerX: SHISHA_SERVER_CENTER_X, centerZ: SHISHA_SERVER_CENTER_Z, halfX: 200, halfZ: 195 },
     { id: 'quest-bounty-pavilion', centerX:     0, centerZ: -1220, halfX: 280, halfZ: 280 },
     { id: 'quest-npc',             centerX:  -110, centerZ:   -60, halfX:  40, halfZ:  40 },
     { id: 'town-guide',            centerX:     0, centerZ:   240, halfX:  40, halfZ:  40 },

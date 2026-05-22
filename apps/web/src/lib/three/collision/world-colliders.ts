@@ -24,6 +24,13 @@
 //   map REQUIRES a matching AABB entry below. Skip = the structure becomes a
 //   walk-through ghost. See "Building/prop spatial registration" rule in
 //   3dStructure.md (§6g, added 2026-05-21).
+//
+// WALKABLE COLLIDERS (added 2026-05-22):
+//   Colliders with walkable:true do NOT block XZ movement. Instead, when the
+//   entity's XZ position overlaps the walkable AABB, clampMovement2D/3D returns
+//   the topY so the caller can raise the entity's Y to that surface. The entity
+//   rides the surface instead of being stopped by an invisible wall.
+//   Use case: shisha-oasis stair approach and platform deck.
 // ---------------------------------------------------------------------------
 
 import { buildingZones, TILE_SIZE, MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
@@ -33,10 +40,17 @@ const HALF_H = MAP_HEIGHT / 2; // 5760
 
 /**
  * Axis-aligned bounding box collider in world XZ coordinates.
+ *
  *   centerX, centerZ — world-space center (Three.js XZ plane)
  *   halfX, halfZ     — half-extents along each axis
  *   kind             — 'building' or 'prop' (informational only, not used in math)
  *   id               — stable identifier for debugging
+ *   walkable         — if true, entity XZ is NOT blocked; instead clampMovement2D
+ *                      returns the surface topY via result.groundY so the caller
+ *                      can lift the entity's Y rather than stopping it.
+ *   topY             — world Y of the walkable surface top (Three.js Y axis, upward).
+ *                      Only meaningful when walkable === true.
+ *                      Default 0 (sand floor level ≈ -2; raise as needed).
  */
 export interface Collider2D {
   id: string;
@@ -45,6 +59,28 @@ export interface Collider2D {
   halfX: number;
   halfZ: number;
   kind: 'building' | 'prop';
+  /** If true this zone lifts entity Y instead of blocking XZ movement. */
+  walkable?: boolean;
+  /**
+   * World Y (Three.js upward) of the surface the entity stands on when
+   * inside this walkable zone. Only used when walkable === true.
+   *
+   * Derivation for shisha-oasis (2026-05-22):
+   *   GLB native minY (after 0.01 FBX node scale) = 0.00183
+   *   Applied scale  = TARGET_HEIGHT_WU / maxDim = 994 / 0.08355 ≈ 11,897
+   *   GLB minY in wu = 0.00183 × 11,897 ≈ 21.8 wu above GLB origin
+   *   groundedYOffset puts bbox.min.y at SAND_BASELINE_Y = -2:
+   *     groupY = -2 - 21.8 = -23.8 wu (+ FLOOR_NUDGE_Y -30 = -53.8 wu)
+   *   First stair step height is approximately 10-15% of total structure
+   *   height (833 wu) = ~83-125 wu above group origin.
+   *   Estimated lower step world Y = -53.8 + 90 ≈ 36 wu → round to 38 wu.
+   *   Player avatar height = 179 wu; step at 38 wu is walkable (≈21% of height).
+   *
+   *   Conservative pick: 38 wu above world Y=0 (sand floor at -2).
+   *   If it reads visually wrong, adjust in marketplace-stall.tsx by changing
+   *   SHISHA_STEP_TOP_Y and bumping the collider entry here.
+   */
+  topY?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -67,6 +103,54 @@ const BUILDING_HALF_TILE_EXTENT = (14 * TILE_SIZE) / 2; // 224
 
 // Building AABB half-extents — same for all 12 buildings (uniform 14×14 zone).
 const BUILDING_HALF = BUILDING_HALF_TILE_EXTENT * BUILDING_SCALE_FACTOR; // ≈ 206wu
+
+// ---------------------------------------------------------------------------
+// Shisha-oasis collider constants (verified from GLB inspection 2026-05-22)
+// ---------------------------------------------------------------------------
+
+// GLB scene bbox at Three.js scale=1 (after 0.01 FBX node scale baked in):
+//   min: (-0.04972, 0.00183, -0.05097)
+//   max: ( 0.03383, 0.07189,  0.03076)
+//   size X = 0.08355, Y = 0.07006, Z = 0.08173
+//   maxDim = X = 0.08355
+//
+// Applied scale (TARGET_HEIGHT_WU=994): 994 / 0.08355 = 11,897
+// World dimensions at that scale:
+//   X = 994 wu, Y = 833 wu, Z = 972 wu
+//
+// XZ center of the GLB bbox relative to GLB origin (group center at STALL_X/Z):
+//   X_center_offset = (0.03383 - 0.04972) / 2 × 11897 = -94.6 wu
+//   Z_center_offset = (0.03076 - 0.05097) / 2 × 11897 = -120.2 wu
+//
+// World XZ center of the shisha-oasis mesh:
+//   X = STALL_X + X_center_offset = 1273 + (-94.6) ≈ 1178 wu
+//   Z = STALL_Z + Z_center_offset = -120 + (-120.2) ≈ -240 wu
+//
+// Full footprint half-extents: halfX = 497 wu, halfZ = 486 wu
+// Central kiosk (estimated inner 40%): halfX = 200 wu, halfZ = 195 wu
+// Lower stair approach zone (estimated 70% of footprint): halfX = 350 wu, halfZ = 340 wu
+
+/** World XZ center of the shisha-oasis mesh (offset from GLB scene origin). */
+export const SHISHA_CENTER_X = 1178;
+export const SHISHA_CENTER_Z = -240;
+
+/**
+ * Step surface height in world Y (Three.js upward axis).
+ * Derived: groupY≈-54 + first structural step ≈90 wu above GLB origin = 36 wu.
+ * Rounded up to 38 wu to ensure avatar clears sand surface.
+ * Bump this constant + update colliders below if visual step height changes.
+ */
+export const SHISHA_STEP_TOP_Y = 38;
+
+/**
+ * Platform deck height in world Y — the main elevated interior floor.
+ * Estimated from GLB mesh 1 (glass/lantern elements) minY × scale:
+ *   0.02049 × 11897 ≈ 244 wu above GLB origin.
+ *   groupY ≈ -54 + 244 ≈ 190 wu.
+ * This is ABOVE avatar head height (179 wu) — cannot be walked on.
+ * Documented here for completeness; no walkable collider at this height.
+ */
+export const SHISHA_PLATFORM_DECK_Y = 190;
 
 // ---------------------------------------------------------------------------
 // Module-scope collider cache
@@ -118,6 +202,14 @@ function buildColliders(): Collider2D[] {
   //      QuestNpc:            (-110, -60) — quest-npc.tsx QUEST_NPC_X/Z
   //      TownGuide (Nori):    (0, 240)    — town-guide.tsx NORI_WORLD_X/Z
   //
+  //    Shisha-oasis (MarketplaceStall) gets THREE collider zones (2026-05-22):
+  //      a. Outer walkable approach zone — large, lifts player Y to stair step.
+  //      b. Inner solid kiosk — the central column+bar structure, blocks entry.
+  //
+  //    GLB mesh center is offset from group origin due to asymmetric layout:
+  //      worldX = STALL_X (1273) + X_center_offset (-94.6) ≈ 1178
+  //      worldZ = STALL_Z (-120) + Z_center_offset (-120.2) ≈ -240
+  //
   //    halfX / halfZ are AABB half-extents (cabinet style) — for roughly-square
   //    props use the same value on both axes; for stalls or wide signs, anisotropic
   //    extents read tighter (less invisible-wall feel along the narrow axis).
@@ -126,7 +218,38 @@ function buildColliders(): Collider2D[] {
     { id: 'auction-podium',       centerX:     0, centerZ: -1000, halfX: 160, halfZ: 160, kind: 'prop' },
     { id: 'town-directory-sign',  centerX:     0, centerZ:  -120, halfX:  70, halfZ:  40, kind: 'prop' },
     { id: 'bazaar-stall',         centerX: -1273, centerZ:  -120, halfX: 180, halfZ: 140, kind: 'prop' },
-    { id: 'marketplace-stall',    centerX:  1273, centerZ:  -120, halfX: 200, halfZ: 160, kind: 'prop' },
+    // -----------------------------------------------------------------------
+    // Shisha-oasis (MarketplaceStall) — 2026-05-22 per-GLB collider rework.
+    // Two zones replace the prior single AABB at (1273, -120) halfX=200 halfZ=160.
+    //
+    // Zone A — walkable outer approach ring: the stair steps and open deck area.
+    //   Sized to 70% of the full GLB footprint so the very edge of the structure
+    //   (decorative filigree, canopy overhang) is accessible without a collider
+    //   stopping the player before they reach the visible architecture.
+    //   When overlapping, entity Y is raised to SHISHA_STEP_TOP_Y (38 wu).
+    //
+    // Zone B — solid central kiosk: the bar/column structure at the heart of
+    //   the pavilion. The player cannot enter this volume; it is a solid blocker.
+    //   Sized to 40% of the full footprint (halfX=200, halfZ=195).
+    // -----------------------------------------------------------------------
+    {
+      id: 'shisha-approach',
+      centerX: SHISHA_CENTER_X,
+      centerZ: SHISHA_CENTER_Z,
+      halfX: 348,
+      halfZ: 340,
+      kind: 'prop',
+      walkable: true,
+      topY: SHISHA_STEP_TOP_Y,
+    },
+    {
+      id: 'marketplace-stall',
+      centerX: SHISHA_CENTER_X,
+      centerZ: SHISHA_CENTER_Z,
+      halfX: 200,
+      halfZ: 195,
+      kind: 'prop',
+    },
     { id: 'quest-bounty-pavilion',centerX:     0, centerZ: -1220, halfX: 280, halfZ: 280, kind: 'prop' },
     { id: 'quest-npc',            centerX:  -110, centerZ:   -60, halfX:  40, halfZ:  40, kind: 'prop' },
     { id: 'town-guide',           centerX:     0, centerZ:   240, halfX:  40, halfZ:  40, kind: 'prop' },
@@ -144,6 +267,8 @@ function buildColliders(): Collider2D[] {
 // Not thread-safe (JavaScript is single-threaded — no concern here).
 let _sCx = 0;
 let _sCz = 0;
+// Scratch for walkable-zone Y result
+let _sGroundY = -2; // default: sand floor
 
 /**
  * Clamp a proposed XZ movement against all world AABB colliders.
@@ -155,22 +280,27 @@ let _sCz = 0;
  *   - Compute X-overlap = (col.halfX + entityHalf) - |to.x - col.centerX|
  *   - Compute Z-overlap = (col.halfZ + entityHalf) - |to.z - col.centerZ|
  *   - If both > 0, the entity is inside the collider's expanded bounds.
- *   - Push along the axis with the SMALLER overlap — that's the closest
- *     escape direction, which naturally gives a "slide along wall" feel
- *     (Y-axis overlap small? push in Y; X-axis small? push in X).
- *   - Direction is signed by which side of center the entity is on.
+ *   - For SOLID colliders: push along the axis of SMALLER overlap — gives
+ *     natural "slide along wall" feel.
+ *   - For WALKABLE colliders: do NOT push XZ. Instead, record the surface
+ *     topY so the caller can raise the entity's Y. The last encountered
+ *     walkable zone wins (outermost-first list order, inner kiosk is solid).
  *
- * @param fromX        Current world X (unused in AABB path — kept for API stability
- *                     with the old disc collider; future entity-vs-entity collision
- *                     may use it for swept-AABB tunneling prevention).
+ * @param fromX        Current world X (retained for API stability with old disc
+ *                     collider; used by clampEntityMovement2D for the outward-
+ *                     movement escape hatch in future swept-AABB work).
  * @param fromZ        Current world Z (see fromX note).
  * @param toX          Desired world X after movement.
  * @param toZ          Desired world Z after movement.
  * @param entityHalf   Half-width of the moving entity (Minkowski expansion of
  *                     each collider AABB). Default 0 = treat entity as a point.
  *                     Typical: 30wu for chibi, 50-60wu for adult humanoid.
- * @returns            `{ x, z }` clamped world position, and `hit` true if any
- *                     collider was intersected and required push-out.
+ * @returns            `{ x, z, hit, groundY }` where:
+ *                       x, z    — clamped world position.
+ *                       hit     — true if any solid collider was entered.
+ *                       groundY — world Y of the walkable surface the entity is
+ *                                 standing on, or -2 (sand floor) if not on any
+ *                                 walkable zone. Use this to raise avatar.y.
  */
 export function clampMovement2D(
   fromX: number,
@@ -178,7 +308,7 @@ export function clampMovement2D(
   toX: number,
   toZ: number,
   entityHalf: number = 0,
-): { x: number; z: number; hit: boolean } {
+): { x: number; z: number; hit: boolean; groundY: number } {
   // Note: fromX / fromZ retained in signature to preserve back-compat with the
   // previous disc implementation. Currently unused. Linter would flag if we
   // dropped them outright, and a future swept-AABB path will reuse them.
@@ -188,6 +318,7 @@ export function clampMovement2D(
   const colliders = getAllColliders();
   _sCx = toX;
   _sCz = toZ;
+  _sGroundY = -2; // reset to sand floor default each call
   let hit = false;
 
   for (let i = 0; i < colliders.length; i++) {
@@ -199,18 +330,24 @@ export function clampMovement2D(
     const ox = expandedHalfX - Math.abs(_sCx - col.centerX);
     const oz = expandedHalfZ - Math.abs(_sCz - col.centerZ);
     if (ox > 0 && oz > 0) {
-      hit = true;
-      // Push along the axis of smaller overlap — that's the minimum-translation
-      // direction, gives natural sliding along walls.
-      if (ox < oz) {
-        _sCx += _sCx < col.centerX ? -ox : ox;
+      if (col.walkable) {
+        // Walkable zone — record surface Y, do NOT push XZ.
+        // The caller is responsible for blending the entity's Y toward groundY.
+        // Use topY ?? -2 so missing topY falls back to sand floor.
+        _sGroundY = col.topY ?? -2;
       } else {
-        _sCz += _sCz < col.centerZ ? -oz : oz;
+        // Solid zone — push along the axis of smaller overlap.
+        hit = true;
+        if (ox < oz) {
+          _sCx += _sCx < col.centerX ? -ox : ox;
+        } else {
+          _sCz += _sCz < col.centerZ ? -oz : oz;
+        }
       }
     }
   }
 
-  return { x: _sCx, z: _sCz, hit };
+  return { x: _sCx, z: _sCz, hit, groundY: _sGroundY };
 }
 
 // ---------------------------------------------------------------------------
@@ -249,7 +386,7 @@ let _eEz = 0;
  * @param otherEntities Other entity positions to push out against.
  * @param otherHalf     Half-width to use for each other entity (defaults to
  *                      `entityHalf` for same-species push-out).
- * @returns             `{ x, z, hit }` clamped world position.
+ * @returns             `{ x, z, hit, groundY }` clamped world position.
  */
 export function clampEntityMovement2D(
   fromX: number,
@@ -259,7 +396,7 @@ export function clampEntityMovement2D(
   entityHalf: number = 0,
   otherEntities: readonly EntityPosition[] = [],
   otherHalf: number = entityHalf,
-): { x: number; z: number; hit: boolean } {
+): { x: number; z: number; hit: boolean; groundY: number } {
   // Pass 1: world AABB colliders. Pass real fromX/fromZ so clampMovement2D's
   // escape-hatch (allow outward movement when entity is already inside a
   // collider) uses the entity's actual position, not a hardcoded origin.
@@ -267,6 +404,7 @@ export function clampEntityMovement2D(
   _eEx = worldResult.x;
   _eEz = worldResult.z;
   let hit = worldResult.hit;
+  const groundY = worldResult.groundY;
 
   // Pass 2: entity-vs-entity push-out (circle approximation for speed).
   const combinedHalf = entityHalf + otherHalf;
@@ -290,7 +428,7 @@ export function clampEntityMovement2D(
     }
   }
 
-  return { x: _eEx, z: _eEz, hit };
+  return { x: _eEx, z: _eEz, hit, groundY };
 }
 
 /** Half-width constants for entity push-out. */
