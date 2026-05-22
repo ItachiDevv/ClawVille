@@ -449,6 +449,20 @@ const IN_PLACE_CLIPS: ReadonlySet<AnimName> = new Set([
   // 'kip_up' added 2026-05-21. Knocked-Out-and-recover one-shot pair; user
   // wants character to spring up in place, not drift across the floor.
   'kip_up',
+  // 'squat' added 2026-05-22. The Mixamo squat bake animates the hip Y
+  // track downward to crouch then snaps back at loop boundary. When set
+  // as surfaceClip during jump-charging (player-avatar.tsx VRM branch +
+  // arena-npcs.tsx VRMNpcMesh branch), the retargeter kept Y per the
+  // walk/idle rule, and the bone's animated Y translation made the
+  // rendered body drop INTO the sand floor for half the loop then snap
+  // back up. User-reported 2026-05-22: "avatars glitch up and down
+  // rapidly, like lightning speed, above and below ground level before
+  // actually jumping" — the screenshot showed the head barely visible
+  // above the floor (squat pose at deepest hip Y). Stripping positions
+  // anchors the hip in place so the visible squat is rotation-only —
+  // knees bend, feet stay flush at terrainY. The visible "squatting
+  // before launch" intent still reads via the leg-bend rotations.
+  'squat',
 ]);
 
 /**
