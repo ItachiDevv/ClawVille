@@ -194,6 +194,20 @@ export default function HomePage() {
           </Link>
         </div>
 
+        {/* Returning-user escape hatch — text link, intentionally lower
+            visual weight than the two primary CTAs above so it doesn't
+            dilute first-time-visitor flow. Critical for users who made
+            an account and need to log back in (no nav bar yet). */}
+        <div className="anim-up mt-4 text-sm font-mono text-white/40" style={{ animationDelay: '0.7s' }}>
+          Already have an account?{' '}
+          <Link
+            href="/login"
+            className="text-cyan-400/80 hover:text-cyan-300 underline underline-offset-4 decoration-cyan-500/30 hover:decoration-cyan-400/60 transition-colors"
+          >
+            Log in
+          </Link>
+        </div>
+
         {/* Quick-jump nav pills — link to every section */}
         <div className="anim-up mt-12 flex flex-wrap justify-center gap-2" style={{ animationDelay: '0.7s' }}>
           {[
