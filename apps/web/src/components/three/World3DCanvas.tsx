@@ -670,89 +670,6 @@ function StaggeredTextureUpload() {
 }
 
 // ---------------------------------------------------------------------------
-// AdaptiveDprMonitor (Wave 3 — perf feedback loop, 2026-05-22)
-// ---------------------------------------------------------------------------
-// Reads rolling avg frame time and adjusts DPR to converge toward 80 FPS,
-// with a hard floor at 60 FPS budget. Bounded by LOW_END_GPU_DETECTED-aware
-// dpr range so quality never drops past visually-acceptable.
-//
-// Rules of the game:
-//   - Sample window: 30 frames (~0.5s at 60 FPS) — enough to smooth jitter
-//   - Cooldown: 1 second between DPR changes — avoids oscillation
-//   - Drop when rolling avg > 18 ms (=55 FPS), step 0.05 down
-//   - Raise when rolling avg < 12 ms (=83 FPS), step 0.05 up
-//   - Hysteresis gap of 6 ms prevents flapping
-//
-// Why r3f's setDpr() not gl.setPixelRatio() directly:
-//   R3F's setDpr() handles the whole reconcile: pixelRatio + canvas
-//   backing-store dims + camera aspect + render target invalidation. Doing
-//   the same via gl.setPixelRatio() leaves R3F's internal pixelRatio state
-//   stale, causing the next render to size the canvas wrong.
-//
-// Why call between frames, not mid-frame:
-//   WebGPU depth-stencil mismatch sweat — changing canvas backing-store
-//   size after BeginRenderPass is undefined behavior. useFrame runs BEFORE
-//   the render pass; setDpr defers the actual setSize until the next
-//   commit, which is safe.
-// ---------------------------------------------------------------------------
-
-function AdaptiveDprMonitor() {
-  // R3F state: setDpr triggers a clean re-init of the canvas backing store.
-  const setDpr = useThree((s) => s.setDpr);
-  const initialDpr = useThree((s) => s.viewport.dpr);
-
-  // Module-scope refs — zero per-frame allocations
-  const frameTimesRef = useRef<number[]>([]);
-  const frameTimeIdxRef = useRef(0);
-  const lastFrameTimeRef = useRef(0);
-  const lastDprChangeRef = useRef(0);
-  const currentDprRef = useRef(initialDpr);
-
-  const minDpr = LOW_END_GPU_DETECTED ? 0.4 : 0.6;
-  const maxDpr = LOW_END_GPU_DETECTED ? 0.7 : 1.0;
-  const SAMPLE_SIZE = 30;
-  const COOLDOWN_MS = 1000;
-  const DROP_THRESHOLD_MS = 18; // < 55 FPS
-  const RAISE_THRESHOLD_MS = 12; // > 83 FPS
-  const STEP = 0.05;
-
-  // Pre-allocate the ring buffer once
-  if (frameTimesRef.current.length === 0) {
-    frameTimesRef.current = new Array(SAMPLE_SIZE).fill(16);
-  }
-
-  useFrame(() => {
-    const now = performance.now();
-    if (lastFrameTimeRef.current > 0) {
-      const dt = now - lastFrameTimeRef.current;
-      // Ring buffer — overwrite oldest slot, zero allocations
-      frameTimesRef.current[frameTimeIdxRef.current] = dt;
-      frameTimeIdxRef.current = (frameTimeIdxRef.current + 1) % SAMPLE_SIZE;
-
-      // Decide whether to adjust DPR every COOLDOWN_MS
-      if (now - lastDprChangeRef.current > COOLDOWN_MS) {
-        let sum = 0;
-        for (let i = 0; i < SAMPLE_SIZE; i++) sum += frameTimesRef.current[i]!;
-        const avg = sum / SAMPLE_SIZE;
-
-        if (avg > DROP_THRESHOLD_MS && currentDprRef.current > minDpr) {
-          currentDprRef.current = Math.max(minDpr, currentDprRef.current - STEP);
-          setDpr(currentDprRef.current);
-          lastDprChangeRef.current = now;
-        } else if (avg < RAISE_THRESHOLD_MS && currentDprRef.current < maxDpr) {
-          currentDprRef.current = Math.min(maxDpr, currentDprRef.current + STEP);
-          setDpr(currentDprRef.current);
-          lastDprChangeRef.current = now;
-        }
-      }
-    }
-    lastFrameTimeRef.current = now;
-  });
-
-  return null;
-}
-
-// ---------------------------------------------------------------------------
 // Scene contents (inside Canvas)
 // ---------------------------------------------------------------------------
 // Detect touch/mobile once (stable across re-renders)
@@ -777,13 +694,6 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
 
   return (
     <>
-      {/* Adaptive DPR feedback loop — drops DPR when rolling-avg frame time
-          exceeds 18 ms (=55 FPS budget), raises when < 12 ms (=83 FPS).
-          Bounded by Iris-Xe / desktop dpr ranges. Critical for hitting the
-          80 FPS target sustained on integrated GPUs as scene complexity
-          grows. See AdaptiveDprMonitor definition above. */}
-      <AdaptiveDprMonitor />
-
       {/* Pre-compile WebGPU render pipelines once after the first frame commit.
           Eliminates the 274ms post-mount main-thread hitch. No-ops on WebGL. */}
       <PreCompilePipelines />
@@ -867,12 +777,15 @@ const SceneContents = memo(function SceneContents({ mode }: { mode: WorldMode })
             mid       (10000wu): factor = (10000−6000)/9000 ≈ 0.44 → gradual fade
             horizon   (15000wu): factor = 1.00 → full fog at horizon
           fog.far rule: camera.far raised 10000→16000 to satisfy fog.far(15000) ≤ camera.far(16000). */}
-      {/* fog.far=16000 matches camera.far exactly — eliminates the 1000 wu over-draw
-          band where geometry was vertex-processed + rasterised at full fog opacity
-          before the depth clip. No visual change: geometry at 15000–16000 wu was
-          already 100% fog-coloured; now it clips instead of rasterising.
-          WIN C — perf-audit-2026-05-22 §A */}
-      <fog attach="fog" args={[FOG_COLOR, 6000, 16000]} />
+      {/* Fog tightened 2026-05-22 per user direction "target the fog more,
+          i don't care about it much".
+          Old: near=6000 far=16000 (camera.far=16000). Geometry past the world
+          half-width (5760 wu) still rendered fully even when fog-faded.
+          New: near=5000 far=10000 (camera.far=10000 matched below). Far-ring
+          buildings at 5493wu start fogging at ~10%, fully fogged by 10000wu,
+          depth-clipped at 10000wu. Real distance culling for the half of the
+          world the player isn't looking at. */}
+      <fog attach="fog" args={[FOG_COLOR, 5000, 10000]} />
 
       {/* Shared world geometry */}
       <ArenaTerrain />
@@ -1048,7 +961,7 @@ async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
   //
   // KEEP THIS IN SYNC with the <Canvas dpr={...}> prop below.
   // -------------------------------------------------------------------------
-  const dprRange: readonly [number, number] = LOW_END_GPU_DETECTED ? [0.5, 0.65] : [0.75, 1];
+  const dprRange: readonly [number, number] = LOW_END_GPU_DETECTED ? [0.55, 0.7] : [0.75, 1];
   const rawDpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
   const dpr = Math.max(dprRange[0], Math.min(rawDpr, dprRange[1]));
   canvas.width = Math.round(cssW * dpr);
@@ -1171,7 +1084,7 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
         // After Wave 1 NPC cap + spring-bone LOD + pavilion VRAM relief landed,
         // the scene is much less fragment-bound, so dropping the cap to 0.5 floor
         // is now visually acceptable on the device classes that need it.
-        dpr={LOW_END_GPU_DETECTED ? [0.5, 0.65] : [0.75, 1]}
+        dpr={LOW_END_GPU_DETECTED ? [0.55, 0.7] : [0.75, 1]}
         // MUST be "always" — R3F v9 with an async gl factory appears to skip
         // calling the factory entirely when frameloop="never" is set, so the
         // Canvas never initializes. "always" drives the normal RAF loop.
@@ -1179,7 +1092,10 @@ function World3DCanvas({ mode }: World3DCanvasProps) {
         camera={{
           fov: 50,
           near: 1,
-          far: 16000,
+          // far: 10000 (tightened 2026-05-22 from 16000) matches fog.far for
+          // real distance culling. World half-width is 5760 wu, so 10000 still
+          // covers any visible neighbor while clipping the far half of the map.
+          far: 10000,
           // Game mode: tighter starting position reinforces the bigger buildings/characters.
           // Pulled in from [0,700,1600] after proportions pass (2026-04-16).
           position: mode === 'game' ? [0, 600, 1300] : [0, 560, 1000],
