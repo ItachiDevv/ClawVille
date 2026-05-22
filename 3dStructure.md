@@ -172,7 +172,7 @@ Source: `apps/web/src/lib/three/collision/world-colliders.ts` (AABB cutover 2026
 Pure XZ-plane AABB (axis-aligned bounding box) collision — no physics engine, no draw calls, zero per-frame allocations. Blocks players AND NPCs from walking into buildings and town-center props. AABB chosen over disc: buildings are 14×14 tile squares; disc over-covers diagonals or leaves corners enterable. AABB gives geometrically correct wall feel at every edge. Minimum-translation-vector (MTV) push-out gives natural wall-sliding.
 
 **Walkable colliders (added 2026-05-22):**
-`Collider2D` now has `walkable?: boolean` and `topY?: number`. When `walkable === true`, the collider does NOT block XZ movement — instead, `clampMovement2D` sets `result.groundY = col.topY` so the caller can raise the entity's Y to ride the surface. Use case: shisha-oasis stair approach zone lifts player/NPC Y to 38 wu when they walk into the stair area. The solid inner kiosk is a separate AABB that blocks entry to the central column structure.
+`Collider2D` has `walkable?: boolean` and `topY?: number`. When `walkable === true`, the collider does NOT block XZ movement — instead, `clampMovement2D` sets `result.groundY = col.topY` so the caller can raise the entity's Y to ride the surface. The schema and entity-Y wiring (player + NPC `effectiveFloorY = max(terrainY, walkableY)`) are in place but no walkable collider is currently registered — see ROUND 2 note below for why the shisha-oasis walkable was reverted to pure-solid.
 
 **Architecture:**
 - Module-scope collider cache (`getAllColliders()`) — recomputed only when `buildingZones.length` changes (never in practice). Returns `readonly Collider2D[]`.
@@ -187,8 +187,8 @@ Pure XZ-plane AABB (axis-aligned bounding box) collision — no physics engine, 
 | Kind | Count | Half-extents | Source |
 |---|---|---|---|
 | Building (ring) | 12 | ≈ 206 × 206 wu | `buildingZones` in `tilemap-data.ts` |
-| Prop (town center) | 8 | 40–348 wu (anisotropic) | Hardcoded from each prop's TSX constants |
-| **Total** | **20** | | |
+| Prop (town center) | 7 | 40–420 wu (anisotropic) | Hardcoded from each prop's TSX constants |
+| **Total** | **19** | | |
 
 **Building half-extent derivation:**
 ```
@@ -199,15 +199,14 @@ BUILDING_HALF     = 224 × 0.92 ≈ 206 wu
 ```
 `scaleFactor = 0.92` of tile-zone half-extent. Slightly inside the full 14-tile zone to give clearance against the visual mesh. Raise to 0.95–1.0 if corners are enterable; lower to 0.85 if walls feel too far from the visible mesh.
 
-**Prop colliders (2026-05-22 — shisha-oasis reworked to two-zone system):**
+**Prop colliders (2026-05-22 ROUND 2 — shisha-oasis pure-solid):**
 
 | ID | World XZ | halfX × halfZ | Kind | Notes |
 |---|---|---|---|---|
 | auction-podium | (0, −1000) | 160 × 160 wu | solid | |
 | town-directory-sign | (0, −120) | 70 × 40 wu | solid | |
 | bazaar-stall | (−1273, −120) | 180 × 140 wu | solid | |
-| **shisha-approach** | **(1178, −240)** | **348 × 340 wu** | **walkable** | **topY=38 wu; lifts entity Y to stair step** |
-| **marketplace-stall** | **(1178, −240)** | **200 × 195 wu** | **solid** | **inner kiosk; blocks entry to central column** |
+| **marketplace-stall** | **(1178, −240)** | **420 × 410 wu** | **solid** | **shisha-oasis full footprint; ROUND 1 walkable zone reverted — see below** |
 | quest-bounty-pavilion | (0, −1220) | 280 × 280 wu | solid | |
 | quest-npc | (−110, −60) | 40 × 40 wu | solid | |
 | town-guide | (0, 240) | 40 × 40 wu | solid | |
@@ -229,10 +228,15 @@ GLB mesh center offset from group origin (STALL_X=1273, STALL_Z=−120):
 groupY ≈ −53.8 wu (groundedYOffset + FLOOR_NUDGE_Y −30)
 Step topY = groupY + ~90 wu structural height ≈ 36 wu → SHISHA_STEP_TOP_Y = 38 wu
 ```
-GLB is a single merged mesh — no separate stair/platform nodes. Two-zone approach (walkable outer + solid inner) is the geometric approximation. Per-step precision requires asset-level node separation.
+GLB is a single merged mesh (3 primitives — main body, canopy, lantern emission). No separate stair/platform nodes. Per-step precision requires asset-level node separation; until then the structure is a pure-solid AABB blocker.
+
+**ROUND 2 revert (2026-05-22 same day):** the initial fix added a walkable outer ring (halfX=348 halfZ=340 topY=38) covering most of the footprint plus a solid inner kiosk (halfX=200 halfZ=195). User reported NPCs spawning inside the mesh and the player walking into the visible structure — the 38 wu Y lift was only ~21% of avatar height, so crossing the visible wall produced "phasing through the wall" rather than "climbing a step". Reverted to a single solid AABB covering the full visible footprint. Walkable schema retained for future stair work after Blender-level per-step measurement.
+
+**NPC spawn-clamp (added 2026-05-22 ROUND 2):** `npc-simulation.ts` `initNpcs()` and `registerOpenClaw()` now run `clampPosition2D()` on the spawn position (`homeX/homeY`, restored `lastX/lastY`) before writing it to the NPC record. Without this, NPCs whose home position overlapped the new larger AABB would visibly spawn inside the building mesh. Conversion: world = game_px − MAP_HALF.
 
 (Removed 2026-05-21: `bounty-board` at (50, 0) — superseded by the QuestBountyPavilion.)
-(Updated 2026-05-22: `marketplace-stall` corrected from wrong (1273, −120) halfX=200 halfZ=160 to correct two-zone system at mesh center (1178, −240).)
+(Updated 2026-05-22 ROUND 1: `marketplace-stall` two-zone system, walkable outer + solid inner.)
+(Updated 2026-05-22 ROUND 2: walkable reverted; pure-solid 420×410 wu at corrected mesh center (1178, −240).)
 
 **Integration points:**
 - `player-avatar.tsx` — VRM branch + GLB branch. Both call `clampMovement2D(..., ENTITY_HALF_CHIBI)`, store `clamped.groundY` in `walkableYRef`, and use `effectiveFloorY = Math.max(terrainYRef.current, walkableYRef.current)` for `group.position.y`.

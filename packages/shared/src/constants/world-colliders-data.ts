@@ -98,10 +98,9 @@ function buildServerColliders(): ServerCollider2D[] {
   //    halfX/halfZ match the values in that file.
   // Shisha-oasis mesh XZ center is offset from group origin due to asymmetric GLB layout.
   // World center: X = STALL_X(1273) + X_offset(-94.6) ≈ 1178, Z = STALL_Z(-120) + Z_offset(-120.2) ≈ -240.
-  // Two zones replace the prior single AABB at (1273, -120) halfX=200 halfZ=160 (2026-05-22).
-  //   shisha-approach: walkable outer ring — NPC simulation treats as passable (walkable=true ignored server-side).
-  //   marketplace-stall: solid inner kiosk — blocks NPC pathfinding.
-  // Must match PROPS array in world-colliders.ts.
+  // 2026-05-22 ROUND 2: pure-solid AABB. The earlier walkable outer ring was wrong
+  // (lift too small to feel like "climbing a step"). Real stair-climb deferred until
+  // per-step GLB geometry can be measured in Blender.
   const SHISHA_SERVER_CENTER_X = 1178;
   const SHISHA_SERVER_CENTER_Z = -240;
 
@@ -109,12 +108,9 @@ function buildServerColliders(): ServerCollider2D[] {
     { id: 'auction-podium',        centerX:     0, centerZ: -1000, halfX: 160, halfZ: 160 },
     { id: 'town-directory-sign',   centerX:     0, centerZ:  -120, halfX:  70, halfZ:  40 },
     { id: 'bazaar-stall',          centerX: -1273, centerZ:  -120, halfX: 180, halfZ: 140 },
-    // Shisha-oasis outer walkable approach zone (2026-05-22 per-GLB collider rework).
-    // Server-side NPC sim uses this as a passable area (walkable flag not enforced server-side).
-    // topY documented for schema parity with client; not consumed by clampPosition2D.
-    { id: 'shisha-approach',       centerX: SHISHA_SERVER_CENTER_X, centerZ: SHISHA_SERVER_CENTER_Z, halfX: 348, halfZ: 340, walkable: true, topY: 38 },
-    // Shisha-oasis solid inner kiosk — blocks NPCs from entering the central structure.
-    { id: 'marketplace-stall',     centerX: SHISHA_SERVER_CENTER_X, centerZ: SHISHA_SERVER_CENTER_Z, halfX: 200, halfZ: 195 },
+    // Shisha-oasis — solid blocker covering the visible structure footprint.
+    // Tightened by ~15% from full GLB bbox (994×972) to exclude lantern overhang.
+    { id: 'marketplace-stall',     centerX: SHISHA_SERVER_CENTER_X, centerZ: SHISHA_SERVER_CENTER_Z, halfX: 420, halfZ: 410 },
     { id: 'quest-bounty-pavilion', centerX:     0, centerZ: -1220, halfX: 280, halfZ: 280 },
     { id: 'quest-npc',             centerX:  -110, centerZ:   -60, halfX:  40, halfZ:  40 },
     { id: 'town-guide',            centerX:     0, centerZ:   240, halfX:  40, halfZ:  40 },
