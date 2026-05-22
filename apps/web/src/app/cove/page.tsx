@@ -25,11 +25,13 @@
  *   - Backend / RNG / wager program (Concern 6.1+)
  */
 
-import { useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import SceneTransition, { useSceneTransition } from '@/components/transitions/SceneTransition';
 import SlotScreenModal from '@/components/cove/SlotScreenModal';
+import { useAvatar } from '@/hooks/use-avatar';
+import { useGameStore } from '@/stores/game';
 
 /**
  * CoveCanvas — dynamically imported with ssr:false so Three.js /
@@ -83,6 +85,24 @@ const COVE_EXIT_PX = { x: 2000, y: 5760 };
 // ---------------------------------------------------------------------------
 export default function CovePage() {
   const { triggerTransition } = useSceneTransition();
+
+  // Phase 6.1.20 — sync the user's authenticated avatar into the gameStore
+  // every time this page mounts. Mirrors the same effect on /game (line 346)
+  // so direct nav to /cove or a stale gameStore.avatarModelKey never makes
+  // the cove render the wrong avatar. Without this, the cove was falling
+  // back to DEFAULT_AGENT_MODEL_KEY ('milady_official_1') for logged-in
+  // users whose selected avatar was anything else.
+  const { data: avatar } = useAvatar();
+  useEffect(() => {
+    if (avatar) {
+      useGameStore.getState().setAvatarAppearance(
+        avatar.species,
+        avatar.color,
+        undefined,
+        avatar.modelKey,
+      );
+    }
+  }, [avatar]);
 
   const handleBack = useCallback(() => {
     // Reset cursor in case the player was hovering a slot hotspot
