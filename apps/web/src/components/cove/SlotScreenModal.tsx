@@ -137,20 +137,32 @@ export default function SlotScreenModal() {
   // ── FX hook (5-tier dispatcher) ────────────────────────────────────────
   const fx = useFX();
 
-  // Phase 6.1.17 — curated showcase reel windows shown BEFORE the first spin.
-  // Designed to advertise the roster at a glance:
-  //   - Classic: high-pay symbols + WILD on the middle row, low-pay roster filling rows 0/2
-  //   - Bonus:   3 scatter coins spread across the top, wild + sevens centered, full roster on row 2
-  // Wild = 7 (Clawbster), Scatter = 10 (Eliza Coin) — only valid on bonus paytable.
+  // Phase 6.1.19 — showcase reel windows that match EXACT strip positions so
+  // `findStripPosition` lands deterministically. Each [top, mid, bot] triplet
+  // below is a real (p-1, p, p+1) slice of CLASSIC_REEL_STRIPS / BONUS_REEL_
+  // STRIPS — verified against packages/shared/.../slot-paytables.ts.
+  //
+  // Classic — all 10 symbols (id 0-9) appear at least once across the 15 cells:
+  //   middle row = BAR, BAR×3, Seven, BAR×2, WILD (all 5 high-pay)
+  //   top/bot rows = Robot, Claw, Squirrel, Eliza, Milady (low-pay roster)
   const CLASSIC_SHOWCASE: number[][] = [
-    [0, 1, 2, 3, 4],   // top:    Claw, Robot, Eliza, Squirrel, Milady
-    [5, 6, 7, 8, 9],   // middle: BAR, Seven, Clawbster (WILD), BAR×2, BAR×3
-    [4, 3, 2, 1, 0],   // bot:    Milady, Squirrel, Eliza, Robot, Claw
+    [1, 5, 2],  // reel 0 @ p=8   — Robot,    BAR,    Eliza
+    [0, 9, 4],  // reel 1 @ p=58  — Claw,     BAR×3,  Milady
+    [1, 6, 3],  // reel 2 @ p=75  — Robot,    Seven,  Squirrel
+    [3, 8, 2],  // reel 3 @ p=8   — Squirrel, BAR×2,  Eliza
+    [1, 7, 1],  // reel 4 @ p=58  — Robot,    WILD,   Robot
   ];
+
+  // Bonus — middle row showcases scatter mechanics: 3 scatters spread across
+  // reels 0/2/4 (the bonus-trigger threshold) + WILD on reel 1 + Seven on reel 3.
+  // Hits id 10 scatter and id 7 wild to advertise the paytable's exclusive
+  // mechanics at a glance.
   const BONUS_SHOWCASE: number[][] = [
-    [10, 6, 10, 7, 10],   // top:    Coin, Seven, Coin, Clawbster (WILD), Coin (3 scatters → trigger zone)
-    [4, 9, 7, 5, 4],      // middle: Milady, BAR×3, Clawbster (WILD), BAR, Milady
-    [3, 1, 2, 4, 3],      // bot:    Squirrel, Robot, Eliza, Milady, Squirrel
+    [3,  10, 2],  // reel 0 @ p=12  — Squirrel, Scatter, Eliza
+    [3,  7,  0],  // reel 1 @ p=25  — Squirrel, WILD,    Claw
+    [2,  10, 4],  // reel 2 @ p=62  — Eliza,    Scatter, Milady
+    [0,  6,  0],  // reel 3 @ p=58  — Claw,     Seven,   Claw
+    [2,  10, 4],  // reel 4 @ p=11  — Eliza,    Scatter, Milady
   ];
 
   // Current reel window to display.
@@ -645,6 +657,17 @@ export default function SlotScreenModal() {
     }
   }, [slotScreenOpen, clearSessionMeta]);
 
+  // Phase 6.1.19 — re-seed the showcase reels whenever the modal opens or
+  // the paytable changes. Without this, the reset-on-close effect above
+  // would clear displayWindow to null on first mount (before openSlotScreen
+  // fires) and the curated showcase would never appear.
+  useEffect(() => {
+    if (!slotScreenOpen) return;
+    if (spinCount > 0) return;          // real spin result wins
+    setDisplayWindow(paytableId === 'classic-3x5-bonus' ? BONUS_SHOWCASE : CLASSIC_SHOWCASE);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slotScreenOpen, paytableId]);
+
   const fairnessSummary = useMemo(() => {
     if (!serverSeedHash) return 'Fairness: open a spin to commit seed';
     const short = `${serverSeedHash.slice(0, 8)}…${serverSeedHash.slice(-6)}`;
@@ -700,20 +723,20 @@ export default function SlotScreenModal() {
           animation: 'cv-modal-bg-in var(--cv-motion-base) var(--cv-ease-standard)',
         }}
       >
-        {/* Phase 6.1.18 — modal is now a centered CARD sized to fit only the
-            cabinet + chips + action strip. No more full-viewport stretch.
-            Card aspect (W:H) ≈ 1.55:1 matches the canvas world bounds
-            (11.2:6.6 → 1.70) plus header (≈48px) + chip strip (≈110px) below.
-            Width capped at 1080px; on narrower viewports we shrink proportionally. */}
+        {/* Phase 6.1.18b — explicit grid: header / accent / reels(1fr) / chips.
+            Action strip pinned at bottom via `auto` row; reel-frame fills
+            residual space via `1fr min-height:0`. Aspect lock removed — the
+            inner canvas adapts its ortho to the available aspect so cells
+            stay square at any modal size. */}
         <div
           style={{
-            display: 'flex',
-            flexDirection: 'column',
+            display: 'grid',
+            gridTemplateRows: 'auto auto minmax(0, 1fr) auto',
             minWidth: 0,
             minHeight: 0,
             width: '100%',
             maxWidth: 1080,
-            maxHeight: '90vh',
+            maxHeight: 'min(90vh, 760px)',
             position: 'relative',
             borderRadius: 14,
             overflow: 'hidden',
@@ -793,12 +816,11 @@ export default function SlotScreenModal() {
             {themeName}
           </div>
 
-          {/* ── Reel hero — aspect-locked to match the world bounds
-                 (ortho ±5.6 × ±3.3 → 11.2 × 6.6 ≈ 1.70:1) so the cabinet
-                 renders square-on without vertical stretching. */}
+          {/* ── Reel hero — fills the grid 1fr row. Canvas's ortho follows
+                 the resulting aspect at runtime so cells stay square. */}
           <div
             className={`pt-reel-frame${fx.state.isGlowActive ? ' pt-reel-frame-active' : ''}`}
-            style={{ aspectRatio: '11.2 / 6.6', width: '100%', flex: 'none' }}
+            style={{ width: '100%', height: '100%', minHeight: 0 }}
           >
             {/* 3D reel canvas + bonus overlays — fills full reel area */}
             <div style={{ position: 'relative', width: '100%', height: '100%' }}>
