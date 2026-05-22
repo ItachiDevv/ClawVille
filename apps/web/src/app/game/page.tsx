@@ -11,7 +11,7 @@ import { useGameStore, type GameState } from '@/stores/game';
 import { useQuestStore } from '@/stores/quest';
 import { api } from '@/lib/api';
 import SeaLoadingScreen from '@/components/game/sea-loading-screen';
-import { preloadWorldAssets, preloadChibiVrm } from '@/lib/three/asset-preload-manifest';
+import { preloadWorldAssets } from '@/lib/three/asset-preload-manifest';
 import AvatarSettingsModal from '@/components/game/avatar-settings-modal';
 import FirstTimeBackupModal from '@/components/game/first-time-backup-modal';
 import LocationConfigModal from '@/components/game/location-config-modal';
@@ -363,18 +363,6 @@ export default function GamePage() {
       useGameStore.getState().setAvatarAppearance(avatar.species, avatar.color, undefined, avatar.modelKey);
     }
   }, [avatar]);
-
-  // Lazy chibi VRM preload — fire only if this user's avatar is a chibi model.
-  // Chibi VRMs are excluded from the unconditional tier-2 pool in
-  // asset-preload-manifest.ts (they total 10.8 MB and are unused by ~98% of
-  // players). The avatar picker warms them on open; this covers returning users
-  // who skip the picker and go straight into the game with an existing chibi avatar.
-  useEffect(() => {
-    if (!avatar?.modelKey) return;
-    if (avatar.modelKey === 'eliza_chibi' || avatar.modelKey === 'milady_chibi') {
-      preloadChibiVrm(avatar.modelKey as 'eliza_chibi' | 'milady_chibi');
-    }
-  }, [avatar?.modelKey]);
 
   // hasAvatar is safe to derive even while loading — avatar is undefined during
   // the fetch so this is false, which correctly hides avatar-gated UI until resolved.
