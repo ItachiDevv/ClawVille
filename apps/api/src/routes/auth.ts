@@ -13,6 +13,7 @@ import {
   verifyEmailTemplate,
   resetPasswordTemplate,
 } from '../templates/email-templates';
+import { logEventFromContext } from '../services/event-logger';
 import type { AppContext } from '../types';
 import { z } from 'zod';
 import { DEFAULT_AGENT_MODEL_KEY } from '@clawville/shared';
@@ -174,9 +175,21 @@ authRoutes.get('/me/agent-session', requireAuth, async (c) => {
 // Logout
 authRoutes.post('/logout', requireAuth, async (c) => {
   const session = c.get('session');
+  const user = c.get('user');
   await lucia.invalidateSession(session.id);
   const cookie = lucia.createBlankSessionCookie();
   c.header('Set-Cookie', cookie.serialize());
+
+  void logEventFromContext(c, {
+    eventType: 'auth.logout',
+    userId: user.id,
+    sessionId: session.id,
+    payload: {
+      route: 'POST /api/auth/logout',
+      outcome: 'success',
+    },
+  });
+
   return c.json({ success: true });
 });
 
@@ -232,6 +245,17 @@ authRoutes.post('/signup', async (c) => {
   const cookie = lucia.createSessionCookie(session.id);
   c.header('Set-Cookie', cookie.serialize());
 
+  void logEventFromContext(c, {
+    eventType: 'auth.signup',
+    userId,
+    sessionId: session.id,
+    payload: {
+      route: 'POST /api/auth/signup',
+      isGuestEmail: isGuestEmail(email),
+      outcome: 'success',
+    },
+  });
+
   // Soft email-verification — fire-and-forget. Signup succeeds even if
   // the email send fails (degraded UX is recoverable; failed signup is
   // not). Guest placeholders never receive mail. Errors are logged
@@ -284,17 +308,48 @@ authRoutes.post('/login', async (c) => {
   });
 
   if (!user || !user.passwordHash) {
+    // Log auth failure WITHOUT userId (since the email might not match
+    // any user). fpHash + ipPrefixHash are still captured by
+    // logEventFromContext, which is what we need to detect
+    // bruteforce / credential stuffing patterns by IP prefix.
+    void logEventFromContext(c, {
+      eventType: 'auth.login.failed',
+      payload: {
+        route: 'POST /api/auth/login',
+        reason: 'no_user_or_no_hash',
+        outcome: '401',
+      },
+    });
     throw new HTTPException(401, { message: 'Invalid email or password' });
   }
 
   const validPassword = await Bun.password.verify(password, user.passwordHash);
   if (!validPassword) {
+    void logEventFromContext(c, {
+      eventType: 'auth.login.failed',
+      userId: user.id,
+      payload: {
+        route: 'POST /api/auth/login',
+        reason: 'bad_password',
+        outcome: '401',
+      },
+    });
     throw new HTTPException(401, { message: 'Invalid email or password' });
   }
 
   const session = await lucia.createSession(user.id, {});
   const cookie = lucia.createSessionCookie(session.id);
   c.header('Set-Cookie', cookie.serialize());
+
+  void logEventFromContext(c, {
+    eventType: 'auth.login',
+    userId: user.id,
+    sessionId: session.id,
+    payload: {
+      route: 'POST /api/auth/login',
+      outcome: 'success',
+    },
+  });
 
   return c.json({ success: true });
 });
@@ -523,6 +578,16 @@ authRoutes.post('/reset-password', async (c) => {
     .set({ passwordHash: newHash, updatedAt: new Date() })
     .where(eq(users.id, target.id));
 
+  void logEventFromContext(c, {
+    eventType: 'auth.password.reset',
+    userId: target.id,
+    payload: {
+      route: 'POST /api/auth/reset-password',
+      sessionsInvalidated: true,
+      outcome: 'success',
+    },
+  });
+
   return c.json({ ok: true });
 });
 
@@ -734,14 +799,26 @@ authRoutes.get('/enter', async (c) => {
   // Create the Lucia session — attributes match the form-login route
   // exactly (same cookie domain, same sameSite/secure settings via
   // `apps/api/src/lib/auth.ts`).
+  let createdSessionId: string | null = null;
   try {
     const session = await lucia.createSession(consumed.userId, {});
     const cookie = lucia.createSessionCookie(session.id);
     c.header('Set-Cookie', cookie.serialize());
+    createdSessionId = session.id;
   } catch (err) {
     console.error('[AuthEnter] session create failed:', err);
     return c.redirect(`${webOrigin}/?error=expired-link`, 302);
   }
+
+  void logEventFromContext(c, {
+    eventType: 'auth.magic_link.enter',
+    userId: consumed.userId,
+    sessionId: createdSessionId,
+    payload: {
+      route: 'GET /api/auth/enter',
+      outcome: 'success',
+    },
+  });
 
   return c.redirect(`${webOrigin}/game`, 302);
 });
@@ -820,6 +897,17 @@ authRoutes.post('/milady-session-exchange', async (c) => {
   const session = await lucia.createSession(user.id, {});
   const cookie = lucia.createSessionCookie(session.id);
   c.header('Set-Cookie', cookie.serialize());
+
+  void logEventFromContext(c, {
+    eventType: 'auth.milady_session.exchanged',
+    userId: user.id,
+    sessionId: session.id,
+    payload: {
+      route: 'POST /api/auth/milady-session-exchange',
+      agentId: botConfig.agentId,
+      outcome: 'success',
+    },
+  });
 
   return c.json({
     success: true,
@@ -1010,6 +1098,18 @@ authRoutes.post('/guest', async (c) => {
   const session = await lucia.createSession(userId, {});
   const cookie = lucia.createSessionCookie(session.id);
   c.header('Set-Cookie', cookie.serialize());
+
+  void logEventFromContext(c, {
+    eventType: 'auth.guest.created',
+    userId,
+    avatarId: avatar.id,
+    sessionId: session.id,
+    payload: {
+      route: 'POST /api/auth/guest',
+      guestExpiresAt: expiresAt.toISOString(),
+      outcome: 'success',
+    },
+  });
 
   return c.json({
     user: {
