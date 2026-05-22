@@ -398,16 +398,18 @@ export default function SlotReels3D({
   useEffect(() => {
     const orthoCam = camera as THREE.OrthographicCamera;
     if (orthoCam.isOrthographicCamera) {
-      // Phase 6.1.18 — tight ortho bounds matching the tight cabinet.
-      // The modal CSS gives the canvas a controlled aspect, so we don't
-      // chase canvas dimensions anymore — fixed world bounds keep the cabinet
-      // a slot-machine shape instead of stretching with viewport width.
-      // Bounds: ±5.6 horizontal (cabinet half 4.95 + lever extending to 5.36)
-      //         ±3.3 vertical (cabinet half 3.0 + breathing)
-      orthoCam.left   = -5.6;
-      orthoCam.right  =  5.6;
-      orthoCam.top    =  3.3;
-      orthoCam.bottom = -3.3;
+      // Phase 6.1.18b — world height locked, width follows canvas aspect.
+      // Cabinet is fixed-size and centered (frameW ≈ 9.9wu). On wide modals
+      // the world width grows beyond the cabinet → cabinet has empty
+      // breathing room on left/right (mirrors a slot machine in a casino).
+      // On narrow modals halfW is floored so the cabinet never gets clipped.
+      const aspect = (size.width > 0 && size.height > 0) ? (size.width / size.height) : 1.78;
+      const halfH  = 3.3;
+      const halfW  = Math.max(halfH * aspect, 5.6);
+      orthoCam.left   = -halfW;
+      orthoCam.right  =  halfW;
+      orthoCam.top    =  halfH;
+      orthoCam.bottom = -halfH;
       orthoCam.near   =  0.1;
       orthoCam.far    = 30;
       orthoCam.zoom   = 1;
@@ -441,12 +443,31 @@ export default function SlotReels3D({
   // -------------------------------------------------------------------------
   // Textures — 5 per-reel CanvasTextures. Built once images are loaded, then
   // rebuilt only if strips/paytable change. Disposed on unmount.
+  //
+  // Phase 6.1.19 — if a showcase `reels` window is provided BEFORE the first
+  // spin, snap each texture's offset directly to that strip position. Sets
+  // the rest state to the curated showcase instead of the strip-default top.
   // -------------------------------------------------------------------------
-  const textures = useMemo<THREE.CanvasTexture[]>(
-    () => strips.map(s => buildReelTexture(s)),
+  const textures = useMemo<THREE.CanvasTexture[]>(() => {
+    const built = strips.map(s => buildReelTexture(s));
+    // Phase 6.1.19 — if a showcase `reels` window is provided BEFORE any
+    // spin, snap each texture's offset directly to that strip position.
+    // animState seeding happens in the useEffect below (animState ref is
+    // declared after this useMemo).
+    if (reels && reels.length === REEL_COUNT) {
+      for (let r = 0; r < REEL_COUNT; r++) {
+        const w = reels[r];
+        if (!w || w.length < 3) continue;
+        const p = findStripPosition(strips[r], w[0], w[1], w[2]);
+        const off = offsetForStripPosition(p);
+        built[r].repeat.set(1, VISIBLE_REPEAT);
+        built[r].offset.set(0, off);
+        built[r].needsUpdate = true;
+      }
+    }
+    return built;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [strips, imagesReady],
-  );
+  }, [strips, imagesReady]);
 
   // -------------------------------------------------------------------------
   // Materials — one per reel, all share the same plane geometry
